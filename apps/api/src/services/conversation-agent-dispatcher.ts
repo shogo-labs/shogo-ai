@@ -27,6 +27,7 @@ import {
   type PostMessageResult,
 } from './conversation.service'
 import type { IRuntimeManager } from '../lib/runtime'
+import { tryAcquireSharedSlot } from '../lib/chat-limits'
 
 const db = prisma as any
 
@@ -62,24 +63,39 @@ const running = new Map<string, AbortController>()
 const activeByWorkspace = new Map<string, number>()
 const waiters = new Map<string, Array<() => void>>()
 
-async function acquireSlot(workspaceId: string): Promise<void> {
+// A lease outlives the longest run so a crashed pod's slots free themselves.
+const SLOT_LEASE_MS = AGENT_REPLY_TIMEOUT_MS + 60_000
+const SLOT_POLL_MS = 1_000
+
+async function acquireLocalSlot(workspaceId: string): Promise<() => void> {
   const active = activeByWorkspace.get(workspaceId) ?? 0
-  if (active < MAX_CONCURRENT_AGENT_REPLIES_PER_WORKSPACE) {
-    activeByWorkspace.set(workspaceId, active + 1)
-    return
+  if (active >= MAX_CONCURRENT_AGENT_REPLIES_PER_WORKSPACE) {
+    await new Promise<void>((resolve) => {
+      const queue = waiters.get(workspaceId) ?? []
+      queue.push(resolve)
+      waiters.set(workspaceId, queue)
+    })
   }
-  await new Promise<void>((resolve) => {
-    const queue = waiters.get(workspaceId) ?? []
-    queue.push(resolve)
-    waiters.set(workspaceId, queue)
-  })
   activeByWorkspace.set(workspaceId, (activeByWorkspace.get(workspaceId) ?? 0) + 1)
+  let released = false
+  return () => {
+    if (released) return
+    released = true
+    activeByWorkspace.set(workspaceId, Math.max(0, (activeByWorkspace.get(workspaceId) ?? 1) - 1))
+    const next = waiters.get(workspaceId)?.shift()
+    if (next) next()
+  }
 }
 
-function releaseSlot(workspaceId: string): void {
-  activeByWorkspace.set(workspaceId, Math.max(0, (activeByWorkspace.get(workspaceId) ?? 1) - 1))
-  const next = waiters.get(workspaceId)?.shift()
-  if (next) next()
+/** One of the workspace's agent-reply slots, shared across pods when Redis is up. */
+async function acquireSlot(workspaceId: string, signal?: AbortSignal): Promise<() => void> {
+  for (;;) {
+    signal?.throwIfAborted()
+    const shared = await tryAcquireSharedSlot(`agent-replies:${workspaceId}`, MAX_CONCURRENT_AGENT_REPLIES_PER_WORKSPACE, SLOT_LEASE_MS)
+    if (shared) return shared
+    if (shared === null) return acquireLocalSlot(workspaceId)
+    await new Promise((resolve) => setTimeout(resolve, SLOT_POLL_MS + Math.random() * 250))
+  }
 }
 
 // ─── Target selection ────────────────────────────────────────────────────────
@@ -425,8 +441,9 @@ export async function runWorkspaceAgentPrompt(args: {
   const timeout = setTimeout(() => controller.abort(new Error('timed out')), args.timeoutMs ?? 5 * 60_000)
   ;(timeout as any).unref?.()
   const startedAt = new Date()
-  await acquireSlot(args.workspaceId)
+  let release: (() => void) | null = null
   try {
+    release = await acquireSlot(args.workspaceId, controller.signal)
     const response = await invokeChat({
       workspaceId: args.workspaceId,
       projectId: null,
@@ -442,7 +459,7 @@ export async function runWorkspaceAgentPrompt(args: {
     return { text: '', failed: true, error: err?.message ?? 'The agent run failed', sessionId }
   } finally {
     clearTimeout(timeout)
-    releaseSlot(args.workspaceId)
+    release?.()
   }
 }
 
@@ -488,9 +505,10 @@ export async function runAgentReply(args: RunAgentReplyArgs): Promise<string | n
     void streamAgentReply(reply, latest)
   }
 
-  await acquireSlot(conversation.workspaceId)
   const startedAt = new Date()
+  let release: (() => void) | null = null
   try {
+    release = await acquireSlot(conversation.workspaceId, controller.signal)
     const prompt = await buildPrompt({
       conversation, trigger, threadRootId, reusedSession: !!reused, name, workspaceName: workspace?.name ?? 'workspace',
     })
@@ -536,7 +554,7 @@ export async function runAgentReply(args: RunAgentReplyArgs): Promise<string | n
     if (pending) clearTimeout(pending)
     clearTimeout(timeout)
     running.delete(messageId)
-    releaseSlot(conversation.workspaceId)
+    release?.()
   }
 }
 

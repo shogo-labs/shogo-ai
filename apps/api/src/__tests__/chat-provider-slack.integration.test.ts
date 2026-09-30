@@ -171,6 +171,11 @@ describe('bridge', () => {
     await waitFor(async () => invocations.length === 1)
     await waitFor(async () => db.conversationMessage.findFirst({ where: { threadRootId: first.row.id, agentStatus: 'done' } }))
 
+    const asked = await deliver(event({ type: 'app_mention', user: 'U_MEMBER', text: '<@B_SHOGO> ask billing bot to chase Acme' }))
+    expect(asked.row.text).toBe(`<@a:p:${seed.projectId}> ask billing bot to chase Acme`)
+    await waitFor(async () => invocations.length === 2)
+    invocations.shift()
+
     const follow = await deliver(event({ user: 'U_MEMBER', text: 'make it shorter', thread_ts: root.event.ts }))
     expect(follow.row.threadRootId).toBe(first.row.id)
     await waitFor(async () => invocations.length === 2)

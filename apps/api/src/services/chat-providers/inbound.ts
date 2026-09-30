@@ -16,6 +16,7 @@ import { getWorkspaceChatConfig, providerLabel, type ExternalChatProvider } from
 import { agentMentionToken } from '../conversation-mentions'
 import { postMessage, updateMessageInternal, type PostMessageResult } from '../conversation.service'
 import { afterMessagePosted, type MessageOrigin } from '../conversation-pipeline'
+import { CHAT_RATE_LIMITS, takeRateLimit } from '../../lib/chat-limits'
 import {
   InstallationConflictError,
   installationForTenant,
@@ -269,7 +270,7 @@ function normalize(value: string): string {
 /**
  * The provider's app was @mentioned. Decide which Shogo agents that means and
  * prepend their mention tokens, in order of precedence:
- *   `project=<name>` or a leading project name ("Billing Bot, ...")
+ *   `project=<name>`, or a leading project name ("ask Billing Bot ...", "Billing Bot, ...")
  *   one matching keyword rule
  *   the channel's agent members that answer mentions
  *   the install's default project
@@ -297,7 +298,7 @@ export async function addressAgents(
     }
   }
   if (!targets.length) {
-    const lower = normalize(body)
+    const lower = normalize(body).replace(/^ask\s+/, '')
     const leading = projects
       .filter((p) => p.name.trim().length > 2)
       .sort((a, b) => b.name.length - a.name.length)
@@ -367,6 +368,9 @@ async function handleMessage(provider: ChatProvider, installation: ChatInstallat
     return result
   }
 
+  // Stored either way; over the limit, the message just doesn't run agents.
+  const limit = CHAT_RATE_LIMITS.message
+  if (!(await takeRateLimit(`msg:${userId}`, limit.max, limit.windowMs)).allowed) return result
   await afterMessagePosted(result, { actorUserId: userId, origin: provider.kind as MessageOrigin })
   return result
 }

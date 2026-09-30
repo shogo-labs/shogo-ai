@@ -16,7 +16,7 @@ import {
   conversationFileUrl,
   putConversationFile,
   readConversationFile,
-  verifyConversationFileToken,
+  verifyAttachmentToken,
 } from '../lib/conversation-files'
 import {
   ConversationError,
@@ -50,6 +50,7 @@ import {
 import { afterMessagePosted } from '../services/conversation-pipeline'
 import { postAgentMessage } from '../services/chat-providers/outbound'
 import { listInstallations } from '../services/chat-providers/installations'
+import { CHAT_RATE_LIMITS, takeRateLimit } from '../lib/chat-limits'
 import { adoptSlackRouting } from '../services/chat-providers/slack-adopt'
 import { catchUp } from '../services/conversation-activity'
 import { stopAgentReply } from '../services/conversation-agent-dispatcher'
@@ -79,6 +80,16 @@ function errorResponse(c: any, err: unknown) {
     return c.json({ error: { code: err.code, message: err.message } }, err.status)
   }
   throw err
+}
+
+type ChatLimit = (typeof CHAT_RATE_LIMITS)[keyof typeof CHAT_RATE_LIMITS]
+
+/** A 429 response once `key` is over its limit, else null. */
+async function rateLimited(c: any, key: string, limit: ChatLimit): Promise<Response | null> {
+  const result = await takeRateLimit(key, limit.max, limit.windowMs)
+  if (result.allowed) return null
+  c.header('Retry-After', String(result.retryAfterSeconds))
+  return c.json({ error: { code: 'rate_limited', message: 'Slow down a little and try again in a moment.' } }, 429)
 }
 
 async function readJson(c: any): Promise<Record<string, any>> {
@@ -192,6 +203,8 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
   router.post('/workspaces/:workspaceId/dms', async (c) => {
     const auth = await requireWorkspace(c)
     if (auth instanceof Response) return auth
+    const limited = await rateLimited(c, `dm:${auth.userId}`, CHAT_RATE_LIMITS.dmOpen)
+    if (limited) return limited
     const body = await readJson(c)
     try {
       const conversation = body.agent && typeof body.agent === 'object'
@@ -443,6 +456,8 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
   router.post('/conversations/:conversationId/messages', async (c) => {
     const userId = await requireUser(c)
     if (userId instanceof Response) return userId
+    const limited = await rateLimited(c, `msg:${userId}`, CHAT_RATE_LIMITS.message)
+    if (limited) return limited
     const body = await readJson(c)
     try {
       const threadRootId = typeof body.threadRootId === 'string' ? body.threadRootId : null
@@ -570,6 +585,8 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
   router.post('/conversation-messages/:messageId/reactions', async (c) => {
     const userId = await requireUser(c)
     if (userId instanceof Response) return userId
+    const limited = await rateLimited(c, `react:${userId}`, CHAT_RATE_LIMITS.reaction)
+    if (limited) return limited
     const body = await readJson(c)
     try {
       const reactions = await setReaction(c.req.param('messageId'), userId, String(body.emoji ?? ''), body.on !== false)
@@ -602,7 +619,11 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
     const id = c.req.param('attachmentId')
     const row = await db.conversationAttachment.findUnique({ where: { id } })
     if (!row) return c.json({ error: { code: 'not_found', message: 'File not found' } }, 404)
-    let allowed = verifyConversationFileToken(id, c.req.query('t'))
+    const conversation = await db.conversation.findUnique({ where: { id: row.conversationId }, select: { workspaceId: true } })
+    if (!conversation || (await getWorkspaceChatConfig(conversation.workspaceId)).mode === 'off') {
+      return c.json({ error: { code: 'chat_disabled', message: 'Team chat is turned off for this workspace' } }, 403)
+    }
+    let allowed = verifyAttachmentToken(id, c.req.query('t'))
     if (!allowed) {
       const userId = await config.resolveUserId(c)
       if (userId) allowed = await loadAccess(row.conversationId, userId).then(() => true, () => false)
@@ -770,6 +791,8 @@ export function agentChannelRoutes(routeConfig: AgentChannelRoutesConfig): Hono 
     if (auth instanceof Response) return auth
     const body = await readJson(c)
     const projectId = await agentIdentity(auth, body.projectId)
+    const limited = await rateLimited(c, `agent:${auth.workspaceId}:${projectId ?? 'ws'}`, CHAT_RATE_LIMITS.agentPost)
+    if (limited) return limited
     const conversation = await resolveAgentConversation(auth.workspaceId, c.req.param('channel'), projectId)
     if (!conversation || conversation.kind === 'activity' || conversation.archivedAt) {
       return c.json({ error: { code: 'not_found', message: 'Channel not found or not open to agent posts' } }, 404)
@@ -793,6 +816,9 @@ export function agentChannelRoutes(routeConfig: AgentChannelRoutesConfig): Hono 
     if (auth instanceof Response) return auth
     const body = await readJson(c)
     const projectId = await agentIdentity(auth, body.projectId)
+    const limited = await rateLimited(c, `agent:${auth.workspaceId}:${projectId ?? 'ws'}`, CHAT_RATE_LIMITS.agentPost)
+      ?? await rateLimited(c, `agent-dm:${auth.workspaceId}:${projectId ?? 'ws'}`, CHAT_RATE_LIMITS.dmOpen)
+    if (limited) return limited
     const who = String(body.user ?? '').trim()
     if (!who) return c.json({ error: { code: 'invalid_input', message: 'user is required' } }, 400)
     const member = await db.member.findFirst({

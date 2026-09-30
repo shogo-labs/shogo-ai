@@ -4,8 +4,11 @@
  * Storage for files shared in workspace channels. Cloud stores objects in the
  * artifact bucket; desktop/local mode writes under the Shogo data directory.
  *
- * Read URLs are capability URLs (HMAC of the attachment id) because image and
- * video elements and native image loaders cannot attach session credentials.
+ * Read URLs are capability URLs (HMAC of the attachment id and an expiry)
+ * because image and video elements and native image loaders cannot attach
+ * session credentials. Expiry is rounded to a day so a message's URLs stay
+ * stable (and cacheable) while clients hold it; members can always re-fetch
+ * the message for a fresh link.
  */
 
 import { createHmac, timingSafeEqual } from 'crypto'
@@ -39,8 +42,27 @@ export function verifyConversationFileToken(attachmentId: string, token: string 
   return actual.length === expected.length && timingSafeEqual(actual, expected)
 }
 
+const FILE_LINK_BUCKET_MS = 24 * 60 * 60 * 1000
+
+/** Valid for 24 to 48 hours. */
+export function signAttachmentToken(attachmentId: string, nowMs = Date.now()): string {
+  const exp = (Math.floor(nowMs / FILE_LINK_BUCKET_MS) + 2) * FILE_LINK_BUCKET_MS
+  const mac = createHmac('sha256', signingSecret()).update(`conversation-file:${attachmentId}:${exp}`).digest('hex')
+  return `${exp.toString(36)}.${mac}`
+}
+
+export function verifyAttachmentToken(attachmentId: string, token: string | undefined | null, nowMs = Date.now()): boolean {
+  const [expPart, mac] = (token ?? '').split('.')
+  if (!expPart || !mac) return false
+  const exp = parseInt(expPart, 36)
+  if (!Number.isFinite(exp) || exp <= nowMs) return false
+  const expected = Buffer.from(createHmac('sha256', signingSecret()).update(`conversation-file:${attachmentId}:${exp}`).digest('hex'))
+  const actual = Buffer.from(mac)
+  return actual.length === expected.length && timingSafeEqual(actual, expected)
+}
+
 export function conversationFileUrl(attachment: { id: string }): string {
-  return `/api/conversation-files/${attachment.id}?t=${signConversationFileToken(attachment.id)}`
+  return `/api/conversation-files/${attachment.id}?t=${signAttachmentToken(attachment.id)}`
 }
 
 function sanitizeName(name: string): string {
