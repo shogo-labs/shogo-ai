@@ -20,7 +20,12 @@ import { createHash } from 'crypto'
 import { join } from 'path'
 import { homedir } from 'os'
 import { existsSync, writeFileSync, readFileSync, readdirSync, readlinkSync, realpathSync, mkdirSync, appendFileSync, unlinkSync, rmSync, watch, type FSWatcher } from 'fs'
-import { BUILD_OUTPUT_MANIFEST, buildOutputManifestPluginSource, pruneStaleBuildOutput } from './build-output-prune'
+import {
+  BUILD_OUTPUT_MANIFEST,
+  buildOutputManifestPluginSource,
+  consumeBuildOutputChange,
+  pruneStaleBuildOutput,
+} from './build-output-prune'
 import { recordBuildEntry } from './runtime-log-dispatcher'
 import { scheduleLogWrite } from './runtime-log-writer'
 import { emitLogToSink } from '@shogo-ai/sdk/logger'
@@ -548,7 +553,7 @@ export interface PreviewManagerConfig {
    * Metro/Expo stacks vite-watch never runs and the callback stays
    * silent — those stacks are still driven by CanvasBuildManager.
    */
-  onBuildComplete?: () => void
+  onBuildComplete?: (info?: { outputChanged: boolean }) => void
   /**
    * Local mode (developer machine, Shogo Desktop) versus cloud (Knative pod).
    * In local mode we can spawn `expo start --tunnel` to expose Metro to a real
@@ -939,7 +944,7 @@ export class PreviewManager {
   private basePath?: string
   private workspaceProjectId?: string
   private onConsoleLogReset?: () => void
-  private onBuildComplete?: () => void
+  private onBuildComplete?: (info?: { outputChanged: boolean }) => void
   private buildWatchProcess: ChildProcess | null = null
   private apiServerProcess: ChildProcess | null = null
   /**
@@ -1210,7 +1215,7 @@ export class PreviewManager {
    * boot, gateway later via attachPreviewManager). Idempotent — calling
    * again replaces the previous subscriber.
    */
-  setOnBuildComplete(cb: (() => void) | undefined): void {
+  setOnBuildComplete(cb: ((info?: { outputChanged: boolean }) => void) | undefined): void {
     this.onBuildComplete = cb
   }
 
@@ -3022,6 +3027,7 @@ export class PreviewManager {
       '// Adds .shogo/ to Vite\'s watch ignore to prevent build-log infinite loops,',
       '// and records each build\'s emitted files so stale chunks can be pruned.',
       "import { writeFileSync } from 'fs'",
+      "import { createHash } from 'crypto'",
       "import { defineConfig, mergeConfig } from 'vite'",
       "import userConfig from '../vite.config'",
       '',
@@ -3289,7 +3295,8 @@ export class PreviewManager {
       }
       if (this.onBuildComplete && BUILT_IN_MS_PATTERN.test(line)) {
         try {
-          this.onBuildComplete()
+          const outputChanged = consumeBuildOutputChange(join(cwd, '.shogo'))
+          this.onBuildComplete({ outputChanged })
         } catch (err: any) {
           // Swallow callback errors — a broken subscriber must not
           // tear down vite-watch, which is the workspace's only
@@ -4259,7 +4266,7 @@ export class PreviewManager {
           // seed both land here; fire the same reload toast CBM uses so
           // the canvas iframe picks up the new hashed `entry-*.js`.
           try {
-            this.onBuildComplete()
+            this.onBuildComplete({ outputChanged: true })
           } catch (err: any) {
             console.warn(`[${LOG_PREFIX}] onBuildComplete subscriber threw: ${err?.message ?? err}`)
           }
