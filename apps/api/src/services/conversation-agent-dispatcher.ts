@@ -11,7 +11,7 @@
  */
 
 import { prisma } from '../lib/prisma'
-import { publishConversationEvent } from '../lib/conversation-bus'
+import { finishAgentReply, startAgentReply, streamAgentReply } from './chat-providers/outbound'
 import {
   agentKey,
   collectMentionIds,
@@ -23,10 +23,7 @@ import {
 } from './conversation-mentions'
 import {
   agentDisplayName,
-  conversationAudience,
   listAgentMembers,
-  postMessage,
-  updateMessageInternal,
   type PostMessageResult,
 } from './conversation.service'
 import type { IRuntimeManager } from '../lib/runtime'
@@ -466,32 +463,27 @@ export async function runAgentReply(args: RunAgentReplyArgs): Promise<string | n
   const label = conversation.name ? `#${conversation.name}: ${trigger.text}` : `Chat: ${trigger.text}`
   const sessionId = reused ?? await createSession(conversation, target, renderMentionsAsText(label))
 
-  const placeholder = await postMessage({
-    conversationId: conversation.id,
-    text: '',
-    authorType: 'agent',
-    authorAgentRef: { projectId: target.projectId, name },
+  const reply = await startAgentReply({
+    conversation,
+    agent: { projectId: target.projectId, name },
     threadRootId,
-    agentStatus: 'running',
     agentSessionId: sessionId,
   })
-  const messageId = placeholder.row.id
+  const messageId = reply.messageId
+  const settle = (text: string, agentStatus: string) => finishAgentReply(reply, { text, agentStatus })
 
   const controller = new AbortController()
   running.set(messageId, controller)
   const timeout = setTimeout(() => controller.abort(new Error('timed out')), AGENT_REPLY_TIMEOUT_MS)
   ;(timeout as any).unref?.()
 
-  const audience = await conversationAudience(conversation)
   let lastPublish = 0
   let pending: ReturnType<typeof setTimeout> | null = null
   let latest = { text: '', tool: null as string | null }
   const flush = () => {
     pending = null
     lastPublish = Date.now()
-    publishConversationEvent(conversation.workspaceId, {
-      type: 'agent.delta', conversationId: conversation.id, messageId, text: latest.text, tool: latest.tool,
-    }, audience)
+    void streamAgentReply(reply, latest)
   }
 
   await acquireSlot(conversation.workspaceId)
@@ -523,23 +515,20 @@ export async function runAgentReply(args: RunAgentReplyArgs): Promise<string | n
     }
     const finalText = summary.text.trim() || (await latestAssistantText(sessionId, startedAt)) || ''
     if (controller.signal.aborted) {
-      await updateMessageInternal(messageId, { text: finalText || '_Stopped._', agentStatus: 'stopped' })
+      await settle(finalText || '_Stopped._', 'stopped')
     } else if (summary.failed && !finalText) {
-      await updateMessageInternal(messageId, {
-        text: `I couldn't finish that: ${summary.error ?? 'the agent run failed'}`,
-        agentStatus: 'error',
-      })
+      await settle(`I couldn't finish that: ${summary.error ?? 'the agent run failed'}`, 'error')
     } else {
-      await updateMessageInternal(messageId, { text: finalText || '_No response._', agentStatus: summary.failed ? 'error' : 'done' })
+      await settle(finalText || '_No response._', summary.failed ? 'error' : 'done')
     }
     return messageId
   } catch (err: any) {
     const stopped = controller.signal.aborted
     const partial = latest.text.trim()
-    await updateMessageInternal(messageId, {
-      text: stopped ? partial || '_Stopped._' : `I couldn't finish that: ${err?.message ?? 'unknown error'}`,
-      agentStatus: stopped ? 'stopped' : 'error',
-    }).catch(() => {})
+    await settle(
+      stopped ? partial || '_Stopped._' : `I couldn't finish that: ${err?.message ?? 'unknown error'}`,
+      stopped ? 'stopped' : 'error',
+    ).catch(() => {})
     return messageId
   } finally {
     if (pending) clearTimeout(pending)

@@ -19,6 +19,7 @@ export interface WorkspaceChatMode {
   provider: ExternalChatProvider | null
   isDefault: boolean
   canManage: boolean
+  installations: Array<{ provider: ExternalChatProvider; tenantName: string | null; createdAt: string }>
 }
 
 /** Whether the Shogo chat UI (sidebar, channels, DMs) is available in this mode. */

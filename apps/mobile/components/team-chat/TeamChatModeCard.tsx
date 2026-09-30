@@ -34,15 +34,9 @@ function selectedId(mode: ChatModeValue | undefined, provider: ExternalChatProvi
   return mode
 }
 
-export function TeamChatModeCard({
-  workspaceId,
-  installedProviders,
-}: {
-  workspaceId: string
-  /** Providers with a completed install; others are shown but need connecting first. */
-  installedProviders?: ExternalChatProvider[]
-}) {
+export function TeamChatModeCard({ workspaceId }: { workspaceId: string }) {
   const { config, loading, update } = useWorkspaceChatMode(workspaceId)
+  const installedProviders = config?.installations.map((i) => i.provider)
   const [saving, setSaving] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const current = selectedId(config?.mode, config?.provider)
@@ -76,6 +70,7 @@ export function TeamChatModeCard({
           {OPTIONS.map((option) => {
             const active = option.id === current
             const needsInstall = !!option.provider && installedProviders !== undefined && !installedProviders.includes(option.provider)
+            const tenant = option.provider ? config?.installations.find((i) => i.provider === option.provider)?.tenantName : null
             const disabled = !canManage || needsInstall || saving !== null
             return (
               <Pressable
@@ -98,7 +93,9 @@ export function TeamChatModeCard({
                     {saving === option.id ? '  Saving…' : ''}
                   </Text>
                   <Text className="text-[11px] text-muted-foreground mt-0.5">
-                    {needsInstall ? `Connect ${option.label} below first.` : option.description}
+                    {needsInstall
+                      ? `Connect ${option.label} below first.`
+                      : tenant ? `${option.description} Connected to ${tenant}.` : option.description}
                   </Text>
                 </View>
               </Pressable>

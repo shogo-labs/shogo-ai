@@ -48,6 +48,8 @@ import {
   updateMembership,
 } from '../services/conversation.service'
 import { afterMessagePosted } from '../services/conversation-pipeline'
+import { postAgentMessage } from '../services/chat-providers/outbound'
+import { listInstallations } from '../services/chat-providers/installations'
 import { catchUp } from '../services/conversation-activity'
 import { stopAgentReply } from '../services/conversation-agent-dispatcher'
 import { getPresence } from '../services/conversation-presence'
@@ -126,8 +128,12 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
     const workspaceId = c.req.param('workspaceId')
     const role = await getWorkspaceRole(workspaceId, userId)
     if (!role) return c.json({ error: { code: 'forbidden', message: 'No access to this workspace' } }, 403)
-    const config = await getWorkspaceChatConfig(workspaceId)
-    return c.json({ ...config, canManage: role === 'owner' || role === 'admin' })
+    const [config, installations] = await Promise.all([getWorkspaceChatConfig(workspaceId), listInstallations(workspaceId)])
+    return c.json({
+      ...config,
+      canManage: role === 'owner' || role === 'admin',
+      installations: installations.map((i: any) => ({ provider: i.provider, tenantName: i.tenantName, createdAt: i.createdAt })),
+    })
   })
 
   router.patch('/workspaces/:workspaceId/chat-mode', async (c) => {
@@ -141,7 +147,12 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
     const body = await readJson(c)
     try {
       const config = await setWorkspaceChatConfig(workspaceId, { mode: body.mode, provider: body.provider })
-      return c.json({ ...config, canManage: true })
+      const installations = await listInstallations(workspaceId)
+      return c.json({
+        ...config,
+        canManage: true,
+        installations: installations.map((i: any) => ({ provider: i.provider, tenantName: i.tenantName, createdAt: i.createdAt })),
+      })
     } catch (err) {
       return errorResponse(c, err)
     }
@@ -762,13 +773,11 @@ export function agentChannelRoutes(routeConfig: AgentChannelRoutesConfig): Hono 
       return c.json({ error: { code: 'not_found', message: 'Channel not found or not open to agent posts' } }, 404)
     }
     try {
-      const result = await postMessage({
+      const result = await postAgentMessage({
         conversationId: conversation.id,
         text: String(body.text ?? ''),
-        authorType: 'agent',
-        authorAgentRef: { projectId, name: await agentDisplayName(auth.workspaceId, projectId) },
+        agent: { projectId, name: await agentDisplayName(auth.workspaceId, projectId) },
         threadRootId: typeof body.threadRootId === 'string' ? body.threadRootId : null,
-        agentStatus: 'done',
       })
       void afterMessagePosted(result, { actorUserId: null, origin: 'agent' })
       return c.json({ message: { id: result.message.id, conversationId: conversation.id } }, 201)
@@ -791,12 +800,10 @@ export function agentChannelRoutes(routeConfig: AgentChannelRoutesConfig): Hono 
     if (!member) return c.json({ error: { code: 'not_found', message: 'No workspace member matches that user' } }, 404)
     try {
       const conversation = await openAgentConversation(auth.workspaceId, member.userId, { projectId })
-      const result = await postMessage({
+      const result = await postAgentMessage({
         conversationId: conversation.id,
         text: String(body.text ?? ''),
-        authorType: 'agent',
-        authorAgentRef: { projectId, name: await agentDisplayName(auth.workspaceId, projectId) },
-        agentStatus: 'done',
+        agent: { projectId, name: await agentDisplayName(auth.workspaceId, projectId) },
       })
       void afterMessagePosted(result, { actorUserId: null, origin: 'agent' })
       return c.json({ message: { id: result.message.id, conversationId: conversation.id } }, 201)

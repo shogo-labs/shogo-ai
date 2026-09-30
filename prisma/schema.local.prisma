@@ -55,6 +55,7 @@ model User {
   mobilePushSubscriptions MobilePushSubscription[]
   appInstalls          AppInstall[]
   slackUserLinks       SlackUserLink[]
+  chatIdentityLinks    ChatIdentityLink[]
   conversationMemberships ConversationMember[]
   conversationMessages ConversationMessage[]
 
@@ -177,6 +178,7 @@ model Workspace {
   chatSessions           ChatSession[]
   proxyTurns             ProxyTurn[]
   conversations          Conversation[]
+  chatInstallations      ChatInstallation[]
   plans                  Plan[]
   modelVisibility        WorkspaceModelVisibility[]
   slackInstallation      SlackWorkspaceInstallation?
@@ -2805,6 +2807,10 @@ model Conversation {
   lastSeq       Int       @default(0)
   lastMessageAt DateTime?
   archivedAt    DateTime?
+  /// "shogo" for native channels, else the external provider this channel mirrors.
+  provider      String    @default("shogo")
+  /// Channel / conversation / space id on the external provider.
+  externalId    String?
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
@@ -2818,8 +2824,53 @@ model Conversation {
 
   @@unique([workspaceId, slug])
   @@unique([workspaceId, dmKey])
+  @@unique([workspaceId, provider, externalId])
   @@index([workspaceId, kind])
   @@map("conversations")
+}
+
+/// A workspace's install of an external chat app (Slack, Teams, Google Chat).
+/// One per workspace and provider; an external tenant maps to one workspace.
+model ChatInstallation {
+  id                String   @id @default(uuid())
+  workspaceId       String
+  /// "slack" | "teams" | "google_chat"
+  provider          String
+  /// Slack team id, Microsoft tenant id, or Google Workspace customer id.
+  externalTenantId  String
+  tenantName        String?
+  botUserId         String?
+  /// Encrypted JSON of provider credentials (or a bare encrypted token for installs backfilled from Slack).
+  tokensEncrypted   String?
+  /// Provider data needed to reply (e.g. Teams serviceUrl).
+  config            String?
+  installedByUserId String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, provider])
+  @@unique([provider, externalTenantId])
+  @@map("chat_installations")
+}
+
+/// Links an account on an external chat app to a Shogo user.
+model ChatIdentityLink {
+  id               String   @id @default(uuid())
+  provider         String
+  externalTenantId String
+  externalUserId   String
+  userId           String
+  displayName      String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, externalTenantId, externalUserId])
+  @@index([userId])
+  @@map("chat_identity_links")
 }
 
 model ConversationMember {

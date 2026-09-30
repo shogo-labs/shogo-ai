@@ -78,6 +78,14 @@ describe('turning chat off', () => {
     expect((await call(seed.member, 'PATCH', path, { mode: 'off' })).status).toBe(403)
     expect((await call(seed.owner, 'PATCH', path, { mode: 'sideways' })).status).toBe(400)
     expect((await call(seed.owner, 'PATCH', path, { mode: 'external' })).status).toBe(400)
+    const notInstalled = await call(seed.owner, 'PATCH', path, { mode: 'external', provider: 'teams' })
+    expect(notInstalled.status).toBe(409)
+    expect(notInstalled.json.error.code).toBe('provider_not_installed')
+    await db.chatInstallation.create({
+      data: { workspaceId: seed.workspaceId, provider: 'teams', externalTenantId: `tenant-${seed.workspaceId}`, tenantName: 'Contoso' },
+    })
+    const teams = await call(seed.owner, 'PATCH', path, { mode: 'external', provider: 'teams' })
+    expect(teams.json).toMatchObject({ mode: 'external', provider: 'teams', installations: [{ provider: 'teams', tenantName: 'Contoso' }] })
     const off = await call(seed.owner, 'PATCH', path, { mode: 'off' })
     expect(off.json).toMatchObject({ mode: 'off', isDefault: false })
     const native = await call(seed.owner, 'PATCH', path, { mode: 'native' })

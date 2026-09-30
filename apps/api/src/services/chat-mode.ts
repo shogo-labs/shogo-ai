@@ -103,6 +103,12 @@ export async function setWorkspaceChatConfig(
     throw new ConversationError(400, 'invalid_provider', `provider must be one of ${EXTERNAL_CHAT_PROVIDERS.join(', ')}`)
   }
   const provider = needsProvider ? (input.provider as ExternalChatProvider) : null
+  if (provider) {
+    const installation = await db.chatInstallation.findFirst({ where: { workspaceId, provider }, select: { id: true } })
+    if (!installation) {
+      throw new ConversationError(409, 'provider_not_installed', `Connect ${providerLabel(provider)} before switching team chat to it`)
+    }
+  }
   await db.workspace.update({ where: { id: workspaceId }, data: { chatMode: input.mode, chatProvider: provider } })
   cache.delete(workspaceId)
   return getWorkspaceChatConfig(workspaceId)

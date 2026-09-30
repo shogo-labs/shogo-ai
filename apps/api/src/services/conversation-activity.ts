@@ -25,6 +25,7 @@ import {
 } from './conversation.service'
 import { renderTranscript, runWorkspaceAgentPrompt } from './conversation-agent-dispatcher'
 import { agentChatEnabled, getWorkspaceChatConfig, nativeChatEnabled } from './chat-mode'
+import { postAgentMessage } from './chat-providers/outbound'
 
 const db = prisma as any
 
@@ -113,11 +114,10 @@ export async function deliverAgentResult(input: {
   if (!agentChatEnabled(await getWorkspaceChatConfig(input.workspaceId))) return null
   if (!(await isHomeRegionFor(input.workspaceId))) return null
   const name = await agentDisplayName(input.workspaceId, input.projectId)
-  return postMessage({
+  return postAgentMessage({
     conversationId: conversation.id,
     text: clip(input.text, MAX_RESULT_CHARS),
-    authorType: 'agent',
-    authorAgentRef: { projectId: input.projectId, name },
+    agent: { projectId: input.projectId, name },
     agentStatus: input.failed ? 'error' : 'done',
     agentSessionId: input.sessionId ?? null,
     externalRef: input.ref,
