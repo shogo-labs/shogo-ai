@@ -1,13 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
-import {
-  test,
-  expect,
-  type APIRequestContext,
-  type Page,
-  type Route,
-} from "@playwright/test"
+import { test, expect, type Page, type Route } from "@playwright/test"
 
 // Local project chats run on the merged workspace runtime (/api/workspaces/:id/chat).
 const CHAT_URL_GLOB = "**/api/{projects,workspaces}/*/chat"
@@ -35,46 +29,85 @@ function completedTurn(text: string): string {
 }
 
 function projectComposerInput(page: Page) {
-  return page.getByTestId("project-composer-input").or(
-    page.getByRole("textbox", { name: "Chat message input" }),
-  )
+  return page
+    .getByTestId("project-composer-input")
+    .or(page.getByRole("textbox", { name: "Chat message input" }))
 }
 
 async function waitForIdle(page: Page) {
-  await page.waitForSelector('[data-testid="stop-streaming"], [aria-label="Stop"]', {
-    state: "detached",
-    timeout: 30_000,
-  }).catch(() => {})
+  await page
+    .waitForSelector('[data-testid="stop-streaming"], [aria-label="Stop"]', {
+      state: "detached",
+      timeout: 30_000,
+    })
+    .catch(() => {})
 }
 
-async function openProject(page: Page, api: APIRequestContext) {
+type LocalApiResult = {
+  ok: boolean
+  status: number
+  body: any
+}
+
+/**
+ * Use the browser's authenticated local-mode session for setup calls.
+ *
+ * The standalone Playwright `request` fixture does not share the browser's
+ * auto-sign-in cookie. Workspace listing is intentionally membership-scoped,
+ * so using that client returns 400 even though the page is authenticated.
+ */
+async function localApi(
+  page: Page,
+  path: string,
+  init: { method?: string; body?: unknown } = {},
+): Promise<LocalApiResult> {
+  return page.evaluate(
+    async ({ apiBase, path, method, body }) => {
+      const response = await fetch(`${apiBase}${path}`, {
+        method,
+        credentials: "include",
+        headers: body === undefined ? undefined : { "content-type": "application/json" },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      })
+      let payload: unknown = null
+      try {
+        payload = await response.json()
+      } catch {
+        payload = null
+      }
+      return { ok: response.ok, status: response.status, body: payload }
+    },
+    { apiBase: API_BASE_URL, path, method: init.method, body: init.body },
+  )
+}
+
+async function openProject(page: Page) {
   await page.goto("/")
   await page.getByRole("link", { name: "Chat", exact: true }).waitFor({
     state: "visible",
     timeout: 20_000,
   })
-  const listed = await api.get(`${API_BASE_URL}/api/projects?limit=1`)
-  if (!listed.ok()) throw new Error(`Unable to list local projects: ${listed.status()}`)
-  const listedPayload = (await listed.json()) as {
+  const listed = await localApi(page, "/api/projects?limit=1")
+  if (!listed.ok) throw new Error(`Unable to list local projects: ${listed.status}`)
+  const listedPayload = listed.body as {
     items?: Array<{ id: string }>
   }
   let project = listedPayload.items?.[0]
 
   if (!project) {
-    const workspacesResponse = await api.get(
-      `${API_BASE_URL}/api/workspaces?limit=1`,
-    )
-    if (!workspacesResponse.ok()) {
-      throw new Error(`Unable to list local workspaces: ${workspacesResponse.status()}`)
+    const workspacesResponse = await localApi(page, "/api/workspaces?limit=1")
+    if (!workspacesResponse.ok) {
+      throw new Error(`Unable to list local workspaces: ${workspacesResponse.status}`)
     }
-    const workspacesPayload = (await workspacesResponse.json()) as {
+    const workspacesPayload = workspacesResponse.body as {
       items?: Array<{ id: string }>
     }
     const workspace = workspacesPayload.items?.[0]
     if (!workspace) throw new Error("No local workspace is available for the queue E2E")
 
-    const created = await api.post(`${API_BASE_URL}/api/projects`, {
-      data: {
+    const created = await localApi(page, "/api/projects", {
+      method: "POST",
+      body: {
         name: `Chat queue E2E ${Date.now()}`,
         description: "Chat queue E2E fixture",
         workspaceId: workspace.id,
@@ -83,8 +116,8 @@ async function openProject(page: Page, api: APIRequestContext) {
         accessLevel: "anyone",
       },
     })
-    if (!created.ok()) throw new Error(`Unable to create local project: ${created.status()}`)
-    project = ((await created.json()) as { data?: { id: string } }).data
+    if (!created.ok) throw new Error(`Unable to create local project: ${created.status}`)
+    project = (created.body as { data?: { id: string } }).data
   }
 
   if (!project?.id) throw new Error("Local project response did not include an id")
@@ -94,12 +127,15 @@ async function openProject(page: Page, api: APIRequestContext) {
   if (await switchToText.isVisible().catch(() => false)) {
     await switchToText.click()
   }
-  await projectComposerInput(page).waitFor({ state: "visible", timeout: 20_000 })
+  await projectComposerInput(page).waitFor({
+    state: "visible",
+    timeout: 20_000,
+  })
   await waitForIdle(page)
 }
 
 test.describe("server-backed chat queue — local UI", () => {
-  test("keeps a queued prompt after reload and supports reorder/delete", async ({ page, request }) => {
+  test("keeps a queued prompt after reload and supports reorder/delete", async ({ page }) => {
     const queueRows: Array<Record<string, unknown>> = []
     let nextId = 0
     let holdNextChat = false
@@ -134,7 +170,11 @@ test.describe("server-backed chat queue — local UI", () => {
         await route.fulfill({
           status: 200,
           contentType: "application/json",
-          body: JSON.stringify({ ok: true, items: queueRows, total: queueRows.length }),
+          body: JSON.stringify({
+            ok: true,
+            items: queueRows,
+            total: queueRows.length,
+          }),
         })
         return
       }
@@ -173,7 +213,10 @@ test.describe("server-backed chat queue — local UI", () => {
       }
       if (request.method() === "DELETE") {
         queueRows.splice(index, 1)
-        await route.fulfill({ status: 200, body: JSON.stringify({ ok: true }) })
+        await route.fulfill({
+          status: 200,
+          body: JSON.stringify({ ok: true }),
+        })
         return
       }
       if (request.method() === "POST" && parts.at(-1) === "reorder") {
@@ -181,19 +224,24 @@ test.describe("server-backed chat queue — local UI", () => {
         const next = body.direction === "up" ? index - 1 : index + 1
         if (index >= 0 && next >= 0 && next < queueRows.length) {
           ;[queueRows[index], queueRows[next]] = [queueRows[next], queueRows[index]]
-          queueRows.forEach((row, position) => { row.position = position })
+          queueRows.forEach((row, position) => {
+            row.position = position
+          })
         }
         await route.fulfill({
           status: 200,
           contentType: "application/json",
-          body: JSON.stringify({ ok: true, data: queueRows.find((row) => row.id === id) }),
+          body: JSON.stringify({
+            ok: true,
+            data: queueRows.find((row) => row.id === id),
+          }),
         })
         return
       }
       await route.continue()
     })
 
-    await openProject(page, request)
+    await openProject(page)
 
     mockChatRequests = true
     holdNextChat = true
@@ -213,10 +261,9 @@ test.describe("server-backed chat queue — local UI", () => {
     expect(queueRows).toHaveLength(2)
 
     await page.getByLabel("Move queued message down").first().click()
-    await expect.poll(() => queueRows.map((row) => row.content)).toEqual([
-      "second queued prompt",
-      "queued prompt",
-    ])
+    await expect
+      .poll(() => queueRows.map((row) => row.content))
+      .toEqual(["second queued prompt", "queued prompt"])
 
     releaseHeldChat?.()
     await page.waitForTimeout(300)
