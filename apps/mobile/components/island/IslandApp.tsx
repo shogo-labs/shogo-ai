@@ -13,7 +13,7 @@ import { loadModelPreference } from "../../lib/agent-mode-preference"
 import type { ChatSendInteractionMode } from "../../lib/chat-send-body"
 import { DEFAULT_MODEL_FREE, DEFAULT_MODEL_PRO } from "../chat/ChatInput"
 import { IslandChatHost, type IslandInitialSend } from "./IslandChatHost"
-import { IslandCollapsed, StatusDot, type IslandPeek } from "./IslandCollapsed"
+import { IslandCollapsed, type IslandPeek } from "./IslandCollapsed"
 import { IslandIdle } from "./IslandIdle"
 import { IslandComposer, fileRefsFromFileList, type IslandComposerHandle } from "./IslandComposer"
 import { IslandConversation } from "./IslandConversation"
@@ -22,7 +22,7 @@ import { IslandMeetingBanner } from "./IslandMeeting"
 import { IslandPlanReview } from "./IslandPlanReview"
 import { IslandUsageChip, IslandUsagePanel, useIslandUsage } from "./IslandUsageChip"
 import { PermissionCard, QuestionCard } from "./PendingCard"
-import { ProjectAvatar, ProjectSwitcher, useWorkspaceProjects } from "./ProjectSwitcher"
+import { ProjectSwitcher, useWorkspaceProjects } from "./ProjectSwitcher"
 import { SessionList, SessionRow } from "./SessionList"
 import { planAddToProject, saveAttachmentsPrompt, type IslandDropAction } from "./island-drop"
 import { orderIslandSessions, sortIslandProjects, type IslandProjectItem } from "./island-inbox"
@@ -682,7 +682,6 @@ export const IslandApp = observer(function IslandApp({
     )
   } else {
     pendingRef.current = false
-    const recent = sortedProjects.slice(0, 6)
     body = (
       <>
         <ScrollView style={{ flexGrow: 0, flexShrink: 1 }} contentContainerStyle={{ padding: 8 }}>
@@ -707,31 +706,7 @@ export const IslandApp = observer(function IslandApp({
               ))}
             </>
           ) : null}
-          {recent.length > 0 ? (
-            <>
-              <Text className="px-2 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-wide text-zinc-500">
-                Projects
-              </Text>
-              {recent.map((project) => (
-                <Pressable
-                  key={project.id}
-                  onPress={() => setView({ name: "project", projectId: project.id, projectName: project.name })}
-                  className="flex-row items-center gap-2.5 rounded-lg px-2 py-1.5 hover:bg-white/5"
-                >
-                  <ProjectAvatar project={project} />
-                  <Text className="min-w-0 flex-1 text-[12px] text-zinc-100" numberOfLines={1}>
-                    {project.name}
-                  </Text>
-                  {snapshot.sessions.some((s) => s.projectId === project.id) ? (
-                    <StatusDot
-                      status={orderedSessions.find((s) => s.projectId === project.id)?.status ?? "idle"}
-                    />
-                  ) : null}
-                </Pressable>
-              ))}
-            </>
-          ) : null}
-          {orderedSessions.length === 0 && recent.length === 0 ? (
+          {orderedSessions.length === 0 ? (
             <Text className="px-2 py-4 text-center text-[12px] text-zinc-500">
               Nothing running. Start a chat below.
             </Text>
