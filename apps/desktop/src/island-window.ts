@@ -175,6 +175,9 @@ export class IslandWindow {
       hasShadow: false,
       show: false,
       focusable: false,
+      // macOS otherwise pushes the window below the menu bar, which puts the
+      // hover zone under the notch instead of on it.
+      enableLargerThanScreen: true,
       webPreferences: {
         // The `/island` route runs the full app bundle, which reads its API
         // URL and local-mode flag from the main preload's `shogoDesktop`.
