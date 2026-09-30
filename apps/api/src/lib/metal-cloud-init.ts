@@ -118,6 +118,8 @@ export interface BurstUserDataOpts {
   idleSuspendMs?: number
   heavyConcurrency?: number
   rootfsCow?: 'dm' | 'reflink' | 'full'
+  /** Per-VM sparse workspace drive (MiB); 0 keeps the workspace on the rootfs. */
+  workspaceDriveMiB?: number
 }
 
 /** Shell-quote a value for safe embedding in a single-quoted env assignment. */
@@ -165,6 +167,7 @@ export function buildBurstUserData(o: BurstUserDataOpts): string {
     envLine('METAL_ROOTFS_COW', cow),
     envLine('METAL_DM_COW_DIR', `${work}/cow`),
     envLine('METAL_DM_COW_SIZE', '2G'),
+    envLine('METAL_WORKSPACE_DRIVE_MIB', o.workspaceDriveMiB ?? 20480),
     envLine('METAL_BASE_CACHE_DIR', `${work}/base-cache`),
     envLine('METAL_GC_INTERVAL_MS', '15000'),
     envLine('METAL_DISK_HIGH_PCT', '85'),

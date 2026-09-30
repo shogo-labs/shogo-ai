@@ -244,6 +244,9 @@ METAL_SNAP_STORE_DIR=$WORK/durable-snapshots
 METAL_ROOTFS_COW=reflink
 METAL_DM_COW_DIR=$WORK/cow
 METAL_BASE_CACHE_DIR=$WORK/base-cache
+# Each VM's workspace + package caches live on their own sparse ext4 drive of
+# this size (MiB) instead of the rootfs's ~2 GiB of headroom. 0 = off.
+METAL_WORKSPACE_DRIVE_MIB=20480
 METAL_GC_INTERVAL_MS=30000
 METAL_DISK_HIGH_PCT=85
 METAL_DISK_LOW_PCT=70
