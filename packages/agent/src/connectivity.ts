@@ -85,9 +85,11 @@ export interface WaitForConnectivityOptions {
   signal?: AbortSignal
   /**
    * Overall wait budget in ms. `0` means unlimited. Defaults to
-   * `resolveMaxWaitMs()` (env `SHOGO_OFFLINE_MAX_WAIT_MS`, else 30 minutes).
+   * `resolveMaxWaitMs()` (env `SHOGO_OFFLINE_MAX_WAIT_MS`, else unlimited).
    */
   maxWaitMs?: number
+  /** Cuts the current backoff sleep short so the next probe runs immediately. */
+  waker?: { onWake(fn: () => void): () => void }
   /** Invoked before every sleep, including the very first (attempt 1). */
   onWaiting?: (info: ConnectivityWaitInfo) => void
   /** Injectable probe (tests script a sequence of reachable/unreachable). */
@@ -99,7 +101,8 @@ export interface WaitForConnectivityOptions {
 }
 
 const BACKOFF_STEPS_MS = [1_000, 5_000, 15_000]
-const DEFAULT_MAX_WAIT_MS = 30 * 60 * 1000 // 30 minutes
+// Unlimited: a parked turn waits for the network until the user stops it.
+const DEFAULT_MAX_WAIT_MS = 0
 
 function envInt(name: string): number | undefined {
   const raw = process.env[name]
@@ -112,7 +115,7 @@ function envInt(name: string): number | undefined {
  * Resolve the effective max-wait budget in ms. `0` (explicit or via env)
  * means unlimited (park forever until reconnect or user cancel).
  *
- * Env: `SHOGO_OFFLINE_MAX_WAIT_MS=<n>` overrides the default (30 min).
+ * Env: `SHOGO_OFFLINE_MAX_WAIT_MS=<n>` overrides the default (unlimited).
  */
 export function resolveMaxWaitMs(explicit?: number): number {
   if (typeof explicit === 'number' && Number.isFinite(explicit) && explicit >= 0) return explicit
@@ -131,16 +134,21 @@ function sleepAbortable(
   ms: number,
   signal: AbortSignal | undefined,
   sleep: (ms: number) => Promise<void>,
+  waker?: { onWake(fn: () => void): () => void },
 ): Promise<'done' | 'aborted'> {
-  if (!signal) return sleep(ms).then(() => 'done' as const)
-  if (signal.aborted) return Promise.resolve('aborted' as const)
+  if (!signal && !waker) return sleep(ms).then(() => 'done' as const)
+  if (signal?.aborted) return Promise.resolve('aborted' as const)
   return new Promise((resolve) => {
-    const onAbort = () => resolve('aborted')
-    signal.addEventListener('abort', onAbort, { once: true })
-    void sleep(ms).then(() => {
-      signal.removeEventListener('abort', onAbort)
-      resolve('done')
-    })
+    let offWake: (() => void) | undefined
+    const finish = (result: 'done' | 'aborted') => {
+      signal?.removeEventListener('abort', onAbort)
+      offWake?.()
+      resolve(result)
+    }
+    const onAbort = () => finish('aborted')
+    signal?.addEventListener('abort', onAbort, { once: true })
+    offWake = waker?.onWake(() => finish('done'))
+    void sleep(ms).then(() => finish('done'))
   })
 }
 
@@ -185,7 +193,7 @@ export async function waitForConnectivity(
 
     onWaiting?.({ attempt, elapsedMs, nextProbeInMs: delayMs })
 
-    const raceResult = await sleepAbortable(delayMs, signal, sleep)
+    const raceResult = await sleepAbortable(delayMs, signal, sleep, options.waker)
     if (raceResult === 'aborted') return 'aborted'
   }
 }

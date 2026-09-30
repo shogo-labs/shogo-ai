@@ -16,6 +16,9 @@
 
 import type { Message, UserMessage, AssistantMessage, ToolResultMessage, TextContent } from '@mariozechner/pi-ai'
 
+/** Rough per-image token cost (a ~1MP image on Anthropic is ~1,600 tokens). */
+const IMAGE_TOKEN_ESTIMATE = 1_600
+
 // ---------------------------------------------------------------------------
 // Session Persistence Interface
 // ---------------------------------------------------------------------------
@@ -344,10 +347,31 @@ export class SessionManager {
       tokens += Math.ceil(session.compactedSummary.length / 4)
     }
     for (const msg of session.messages) {
-      const text = this.extractText(msg)
-      tokens += Math.max(this.config.estimatedTokensPerMessage, Math.ceil(text.length / 4))
+      tokens += Math.max(this.config.estimatedTokensPerMessage, this.estimateMessageTokens(msg))
     }
     return tokens
+  }
+
+  /**
+   * Everything the provider is billed for, not just prose: tool-call
+   * arguments (write_file/edit_file bodies are often the bulk of a long
+   * turn) and images. Undercounting these kept autocompact from ever firing
+   * and left sessions stuck on "prompt is too long".
+   */
+  private estimateMessageTokens(msg: Message): number {
+    const content = (msg as any).content
+    if (typeof content === 'string') return Math.ceil(content.length / 4)
+    if (!Array.isArray(content)) return 0
+    let chars = 0
+    let tokens = 0
+    for (const block of content) {
+      if (block?.type === 'text') chars += block.text?.length ?? 0
+      else if (block?.type === 'thinking') chars += block.thinking?.length ?? 0
+      else if (block?.type === 'toolCall') {
+        chars += (block.name?.length ?? 0) + JSON.stringify(block.arguments ?? {}).length
+      } else if (block?.type === 'image') tokens += IMAGE_TOKEN_ESTIMATE
+    }
+    return tokens + Math.ceil(chars / 4)
   }
 
   /**

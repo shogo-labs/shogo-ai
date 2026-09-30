@@ -349,7 +349,7 @@ afterAll(() => { globalThis.fetch = originalFetch })
 
 // ─── Imports AFTER mocks ──────────────────────────────────────────────────
 const { Hono } = await import('hono')
-const { aiProxyRoutes } = await import('../routes/ai-proxy')
+const { aiProxyRoutes, __resetReasoningNoneCacheForTests } = await import('../routes/ai-proxy')
 const { generateProxyToken } = await import('../lib/ai-proxy-token')
 const { primeModelRegistry, invalidateModelRegistry } = await import('../services/model-registry.service')
 
@@ -373,6 +373,7 @@ beforeEach(async () => {
   hasAdvanced = true
   consumedUsageCalls = []
   nextOpenAIUsage = null
+  __resetReasoningNoneCacheForTests()
   seed()
   await primeModelRegistry()
 })
@@ -904,6 +905,62 @@ describe('ai-proxy DB-defined model routing', () => {
     expect(body.model).toBe('gpt-5.5')
     expect(body.tools).toHaveLength(1)
     expect(body.reasoning_effort).toBeUndefined()
+  })
+
+  test('Chat Completions retries with reasoning_effort=none when a default-reasoning GPT rejects tools', async () => {
+    fetchQueue = [new Response(JSON.stringify({
+      error: {
+        message: "Function tools with reasoning_effort are not supported for gpt-6-astra in /v1/chat/completions. To use function tools, use /v1/responses or set reasoning_effort to 'none'.",
+        type: 'invalid_request_error',
+        param: 'reasoning_effort',
+        code: null,
+      },
+    }), { status: 400, headers: { 'Content-Type': 'application/json' } })]
+    const res = await postChatBody(buildApp(), {
+      model: GPT_UUID,
+      messages: [{ role: 'user', content: 'Run pwd.' }],
+      tools: [{
+        type: 'function',
+        function: { name: 'run_terminal', parameters: { type: 'object', properties: {} } },
+      }],
+    })
+
+    expect(res.status).toBe(200)
+    expect(fetchCalls).toHaveLength(2)
+    expect(JSON.parse(String(fetchCalls[0].init?.body)).reasoning_effort).toBeUndefined()
+    const retried = JSON.parse(String(fetchCalls[1].init?.body))
+    expect(retried.reasoning_effort).toBe('none')
+    expect(retried.tools).toHaveLength(1)
+  })
+
+  test('Chat Completions remembers a model needs reasoning_effort=none, so later tool calls skip the 400', async () => {
+    const rejection = () => new Response(JSON.stringify({
+      error: { message: 'Function tools with reasoning_effort are not supported for gpt-6-astra in /v1/chat/completions.', type: 'invalid_request_error' },
+    }), { status: 400, headers: { 'Content-Type': 'application/json' } })
+    const body = {
+      model: GPT_UUID,
+      messages: [{ role: 'user', content: 'Run pwd.' }],
+      tools: [{ type: 'function', function: { name: 'run_terminal', parameters: { type: 'object', properties: {} } } }],
+    }
+    fetchQueue = [rejection()]
+    expect((await postChatBody(buildApp(), body)).status).toBe(200)
+    expect(fetchCalls).toHaveLength(2)
+
+    fetchCalls = []
+    expect((await postChatBody(buildApp(), body)).status).toBe(200)
+    expect(fetchCalls).toHaveLength(1)
+    expect(JSON.parse(String(fetchCalls[0].init?.body)).reasoning_effort).toBe('none')
+  })
+
+  test('Chat Completions does not retry unrelated GPT 400s', async () => {
+    fetchQueue = [new Response('{"error":{"message":"bad request"}}', { status: 400 })]
+    const res = await postChatBody(buildApp(), {
+      model: GPT_UUID,
+      messages: [{ role: 'user', content: 'Run pwd.' }],
+      tools: [{ type: 'function', function: { name: 'run_terminal' } }],
+    })
+    expect(res.status).not.toBe(200)
+    expect(fetchCalls).toHaveLength(1)
   })
 
   test('Chat Completions also drops reasoning_effort after a GPT tool result', async () => {

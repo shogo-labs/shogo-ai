@@ -1050,9 +1050,11 @@ export async function runSubagent(
   try { callbacks?.onModelResolved?.(model) } catch { /* non-fatal */ }
 
   const runOnce = async (runModel: string): Promise<SubagentResult> => {
-    const runProvider = useAutoRouting
-      ? (autoProviderHints[runModel] ?? inferProviderFromModel(runModel, provider))
-      : provider
+    const runProvider = parentCtx.effectiveProvider && runModel === parentCtx.effectiveModel
+      ? parentCtx.effectiveProvider
+      : useAutoRouting
+        ? (autoProviderHints[runModel] ?? inferProviderFromModel(runModel, provider))
+        : provider
     const result = await runAgentLoop({
       provider: runProvider,
       model: runModel,

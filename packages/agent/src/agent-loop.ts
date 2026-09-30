@@ -38,14 +38,36 @@ import {
   resolveInferenceRetryOptions,
   detectInferenceFailure,
   stripTrailingFailedAssistants,
+  PROVIDER_BACKOFF_REASONS,
+  NO_PROGRESS_THRESHOLD,
+  RetryWaker,
   type InferenceRetryOptions,
   type InferenceRetryInfo,
+  type ProviderBackoffInfo,
 } from './inference-retry'
 import { waitForConnectivity, type ConnectivityWaitInfo } from './connectivity'
+import type { RetryReason } from './retry-classifier'
 
 export type { LoopDetectorConfig, LoopDetectorResult }
 export type { OrchestrationOptions }
-export type { InferenceRetryOptions, InferenceRetryInfo }
+export type { InferenceRetryOptions, InferenceRetryInfo, ProviderBackoffInfo }
+export { RetryWaker }
+
+export type RetryLayer = 'fast' | 'connectivity_park' | 'provider_backoff'
+
+export interface RetryEpisodeSummary {
+  /** Deepest layer the episode reached. */
+  layer: RetryLayer
+  /** Reason of the most recent failure in the episode. */
+  reason: RetryReason
+  /** Total re-issues across all layers. */
+  attempts: number
+  elapsedMs: number
+  outcome: 'recovered' | 'user_stopped' | 'failed_non_transient' | 'gave_up'
+  suspectedDeterministic: boolean
+  /** Last error text, truncated. */
+  error: string
+}
 export type { ConnectivityWaitInfo } from './connectivity'
 // Re-exported so callers surfacing a failed turn (e.g. the agent-runtime
 // gateway) classify inference errors with the SAME logic the loop used to
@@ -161,6 +183,19 @@ export interface AgentLoopOptions {
    * client can clear its "waiting for connection" banner.
    */
   onConnectivityReconnected?: () => void
+  /**
+   * Called before each provider-backoff re-issue (see `providerBackoff` on
+   * `inferenceRetry`). Backoff delays are capped at 30s, so this doubles as a
+   * heartbeat that keeps the client's stall watchdog quiet while waiting.
+   */
+  onProviderBackoff?: (info: ProviderBackoffInfo) => void
+  /**
+   * Called once when a retry episode ends — i.e. a run of consecutive
+   * transient failures for the same model call is resolved (recovered),
+   * stopped by the user, or ends on a non-retryable failure. Used for
+   * "how often does each retry layer fire" telemetry.
+   */
+  onRetryEpisodeEnd?: (summary: RetryEpisodeSummary) => void
   /** Tool orchestration config. Pass false to disable wrapping (tools run raw parallel). */
   orchestration?: OrchestrationOptions | false
   /** AbortSignal for external cancellation (e.g., user stop). */
@@ -349,7 +384,10 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
   let maxIterationsExhausted = false
   let lastStopReason: string | undefined
   let lastTurnHadToolCalls = false
-  let lastProgressMessageCount = history.length
+  // Index where this turn's messages begin in `agent.state.messages`.
+  // Reactive compaction swaps in a shorter history, so this moves with it.
+  let historyLength = history.length
+  let lastProgressMessageCount = historyLength
 
   const { signal } = options
 
@@ -462,9 +500,9 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
         })
 
         await onAfterToolCall?.(event.toolName, args, output, event.isError, event.toolCallId)
-        const progressMessages = agent.state.messages.slice(history.length)
-        if (progressMessages.length > lastProgressMessageCount - history.length) {
-          const newProgress = progressMessages.slice(lastProgressMessageCount - history.length)
+        const progressMessages = agent.state.messages.slice(historyLength)
+        if (progressMessages.length > lastProgressMessageCount - historyLength) {
+          const newProgress = progressMessages.slice(lastProgressMessageCount - historyLength)
           lastProgressMessageCount = agent.state.messages.length
           onProgress?.(newProgress)
         }
@@ -491,9 +529,9 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
         lastTurnHadToolCalls = Array.isArray(turnToolResults) && turnToolResults.length > 0
         onIteration?.(iterations)
         onIterationMessages?.(agent.state.messages)
-        const iterationMessages = agent.state.messages.slice(history.length)
-        if (iterationMessages.length > lastProgressMessageCount - history.length) {
-          const newProgress = iterationMessages.slice(lastProgressMessageCount - history.length)
+        const iterationMessages = agent.state.messages.slice(historyLength)
+        if (iterationMessages.length > lastProgressMessageCount - historyLength) {
+          const newProgress = iterationMessages.slice(lastProgressMessageCount - historyLength)
           lastProgressMessageCount = agent.state.messages.length
           onProgress?.(newProgress)
         }
@@ -545,6 +583,8 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
           const compactedHistory = await options.onContextOverflow()
           if (compactedHistory) {
             agent.state.messages = [...compactedHistory]
+            historyLength = compactedHistory.length
+            lastProgressMessageCount = historyLength
             await agent.prompt(prompt, images && images.length > 0 ? images : undefined)
           } else {
             promptError = err
@@ -586,20 +626,138 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
   // surfaced usage stays consistent with what was actually billed. Retries are
   // capped (default 2) so cost amplification is bounded.
   const discardedUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
+  // Error text of the last failure the retry loop gave up on. Retries strip the
+  // failed assistant (and its `errorMessage`) from the transcript, so without
+  // this a give-up surfaces as "Agent produced no output" and the real cause
+  // (connection dropped, 5xx, overloaded) never reaches the user.
+  let unresolvedFailureText: string | undefined
+
+  // Rebuilds the transcript on compacted history + this turn's messages and
+  // re-issues. Returns false when compaction produced nothing to retry with.
+  const compactAfterOverflow = async (errorText: string): Promise<boolean> => {
+    console.warn(`[AgentLoop] Context overflow reported by provider — attempting reactive compaction: ${errorText.slice(0, 160)}`)
+    let compactedHistory: Message[] | null
+    try {
+      compactedHistory = (await options.onContextOverflow?.()) ?? null
+    } catch (err: any) {
+      console.error(`[AgentLoop] Reactive compaction failed:`, err?.message)
+      return false
+    }
+    if (!compactedHistory) return false
+    const trimmed = stripTrailingFailedAssistants(agent.state.messages) ?? agent.state.messages
+    // Progress persisted mid-turn may survive compaction verbatim (same
+    // object); anything summarized away must be re-added.
+    const kept = new Set<Message>(compactedHistory)
+    const originalTurn = trimmed.slice(historyLength)
+    const turnMessages = originalTurn.filter((m) => !kept.has(m))
+    // The failed attempt itself may have been persisted and kept.
+    const combined = [...compactedHistory, ...turnMessages]
+    const next = stripTrailingFailedAssistants(combined) ?? combined
+    const tail = next[next.length - 1]
+    if (!tail || tail.role === 'assistant') {
+      console.warn(`[AgentLoop] Reactive compaction left no user/tool-result tail to continue from (tail=${tail?.role ?? 'none'})`)
+      return false
+    }
+    const reported = Math.max(0, lastProgressMessageCount - historyLength)
+    agent.state.messages = next
+    const turnStart = originalTurn.length ? next.indexOf(originalTurn[0]) : -1
+    historyLength = turnStart >= 0 ? turnStart : Math.min(compactedHistory.length, next.length)
+    lastProgressMessageCount = historyLength + Math.min(reported, next.length - historyLength)
+    promptError = undefined
+    try {
+      await agent.continue()
+    } catch (err: any) {
+      promptError = err
+    }
+    return true
+  }
+
   if (inferenceRetry && !abortTriggered) {
     let retryAttempt = 0
+    let backoffAttempt = 0
+    let backoffStartedAt: number | null = null
+    let lastFailureLength = -1
+    let lastBackoffReason: RetryReason | null = null
+    let sameReasonStreak = 0
+    const waker = inferenceRetry.waker
+
+    // One "episode" = consecutive failures of the same model call. It ends
+    // when a re-issue gets further (new messages), or the loop exits.
+    let episode: {
+      startedAt: number
+      layer: RetryLayer
+      reason: RetryReason
+      attempts: number
+      suspectedDeterministic: boolean
+      error: string
+    } | null = null
+    const endEpisode = (outcome: RetryEpisodeSummary['outcome']) => {
+      if (!episode) return
+      const summary: RetryEpisodeSummary = {
+        layer: episode.layer,
+        reason: episode.reason,
+        attempts: episode.attempts,
+        elapsedMs: Date.now() - episode.startedAt,
+        outcome,
+        suspectedDeterministic: episode.suspectedDeterministic,
+        error: episode.error.slice(0, 300),
+      }
+      episode = null
+      try {
+        options.onRetryEpisodeEnd?.(summary)
+      } catch { /* listener must not break the loop */ }
+    }
+    const LAYER_DEPTH: Record<RetryLayer, number> = { fast: 0, connectivity_park: 1, provider_backoff: 2 }
+    const noteAttempt = (layer: RetryLayer, reason: RetryReason, error: string) => {
+      if (!episode) {
+        episode = { startedAt: Date.now(), layer, reason, attempts: 0, suspectedDeterministic: false, error }
+      }
+      if (LAYER_DEPTH[layer] > LAYER_DEPTH[episode.layer]) episode.layer = layer
+      episode.reason = reason
+      episode.error = error
+      episode.attempts++
+    }
+    /** Returns true the first time an episode is flagged. */
+    const markSuspectedDeterministic = (): boolean => {
+      if (!episode || episode.suspectedDeterministic) return false
+      episode.suspectedDeterministic = true
+      return true
+    }
+
     while (true) {
-      if (abortTriggered || signal?.aborted) break
+      if (abortTriggered || signal?.aborted) {
+        endEpisode('user_stopped')
+        break
+      }
 
       const failure = detectInferenceFailure(agent.state.messages, promptError)
-      if (!failure) break
+      if (!failure) {
+        unresolvedFailureText = undefined
+        endEpisode('recovered')
+        break
+      }
+      unresolvedFailureText = failure.errorText
 
       const classification = classifyRetryability({
         message: failure.errorText,
         stopReason: failure.stopReason,
         aborted: abortTriggered || signal?.aborted,
       })
-      if (!classification.retryable) break
+      if (!classification.retryable) {
+        // Layer 5 for providers that report context overflow as an error
+        // message (pi-ai doesn't throw) rather than a thrown error.
+        if (
+          options.onContextOverflow &&
+          !reactiveRetried &&
+          isContextOverflowError({ message: failure.errorText })
+        ) {
+          reactiveRetried = true
+          const compacted = await compactAfterOverflow(failure.errorText)
+          if (compacted) continue
+        }
+        endEpisode('failed_non_transient')
+        break
+      }
 
       // Strip the failed assistant tail so continue() resumes from the last
       // user/tool-result message. When the call rejected before pi appended any
@@ -609,7 +767,10 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
       const trimmed = stripTrailingFailedAssistants(agent.state.messages) ?? agent.state.messages
       const last = trimmed[trimmed.length - 1]
       // Can't continue from a clean assistant tail (continue() rejects) — bail.
-      if (!last || last.role === 'assistant') break
+      if (!last || last.role === 'assistant') {
+        endEpisode('failed_non_transient')
+        break
+      }
       if (trimmed !== agent.state.messages) {
         // Preserve the usage of the stripped failed attempt for billing parity.
         const removedUsage = sumUsage(agent.state.messages.slice(trimmed.length))
@@ -620,10 +781,23 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
         agent.state.messages = trimmed
       }
 
+      // A re-issued call succeeded and later work failed anew: the new failure
+      // gets its own backoff window (and its own episode) rather than
+      // inheriting the old one.
+      if (lastFailureLength >= 0 && trimmed.length > lastFailureLength) {
+        endEpisode('recovered')
+        backoffAttempt = 0
+        backoffStartedAt = null
+        lastBackoffReason = null
+        sameReasonStreak = 0
+      }
+      lastFailureLength = trimmed.length
+
       if (retryAttempt < inferenceRetry.maxAttempts) {
         // Fast tier: short bounded backoff for blips (default 2 attempts,
         // 0.5-8s). This is unchanged from before Layer 7 existed.
         retryAttempt++
+        noteAttempt('fast', classification.reason, failure.errorText)
         const delayMs = inferenceRetry.computeDelayMs(retryAttempt)
         try {
           options.onInferenceRetry?.({
@@ -641,7 +815,10 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
 
         promptError = undefined
         if (delayMs > 0) await inferenceRetry.sleep(delayMs)
-        if (abortTriggered || signal?.aborted) break
+        if (abortTriggered || signal?.aborted) {
+          endEpisode('user_stopped')
+          break
+        }
 
         try {
           await agent.continue()
@@ -658,45 +835,126 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
       // backoff until it comes back, instead of failing the turn. Only
       // engages when a probe URL is configured (desktop's RuntimeManager
       // injects `AI_UPSTREAM_HEALTH_URL`; deployments that don't set it, or
-      // that pass `connectivityWait: false`, keep the original fail-fast
-      // behavior here).
+      // that pass `connectivityWait: false`, skip straight to Layer 8).
       const park = inferenceRetry.connectivityWait
-      if (!park) break
+      if (park) {
+        console.warn(
+          `[AgentLoop] CONNECTIVITY_PARK fast-retry budget exhausted (${inferenceRetry.maxAttempts} attempts) ` +
+            `reason=${classification.reason} — probing upstream connectivity before giving up`,
+        )
+        let parked = false
+        const parkResult = await waitForConnectivity({
+          probeUrl: park.probeUrl,
+          signal,
+          maxWaitMs: park.maxWaitMs,
+          probe: park.probe,
+          sleep: park.sleep,
+          now: park.now,
+          waker,
+          onWaiting: (info) => {
+            parked = true
+            try {
+              options.onConnectivityWait?.(info)
+            } catch { /* listener must not break the loop */ }
+          },
+        })
 
-      console.warn(
-        `[AgentLoop] CONNECTIVITY_PARK fast-retry budget exhausted (${inferenceRetry.maxAttempts} attempts) ` +
-          `reason=${classification.reason} — probing upstream connectivity before giving up`,
-      )
-      const parkResult = await waitForConnectivity({
-        probeUrl: park.probeUrl,
-        signal,
-        maxWaitMs: park.maxWaitMs,
-        probe: park.probe,
-        sleep: park.sleep,
-        now: park.now,
-        onWaiting: (info) => {
+        if (parkResult !== 'reconnected') {
+          console.warn(`[AgentLoop] CONNECTIVITY_PARK ended without reconnecting (result=${parkResult})`)
+          endEpisode(parkResult === 'aborted' ? 'user_stopped' : 'gave_up')
+          break
+        }
+
+        if (parked) {
+          console.warn('[AgentLoop] CONNECTIVITY_PARK reconnected — resuming turn')
+          noteAttempt('connectivity_park', classification.reason, failure.errorText)
           try {
-            options.onConnectivityWait?.(info)
+            options.onConnectivityReconnected?.()
           } catch { /* listener must not break the loop */ }
-        },
-      })
 
-      if (parkResult !== 'reconnected') {
-        console.warn(`[AgentLoop] CONNECTIVITY_PARK ended without reconnecting (result=${parkResult})`)
+          // Connectivity is back — reset the fast budget and re-issue the
+          // dropped call. Tools already executed earlier in this turn are
+          // untouched (same idempotency invariant the fast tier relies on).
+          retryAttempt = 0
+          backoffAttempt = 0
+          backoffStartedAt = null
+          lastBackoffReason = null
+          sameReasonStreak = 0
+          promptError = undefined
+          if (abortTriggered || signal?.aborted) {
+            endEpisode('user_stopped')
+            break
+          }
+
+          try {
+            await agent.continue()
+          } catch (err: any) {
+            promptError = err
+          }
+          continue
+        }
+        // Reachable on the first probe: the network is fine and the provider
+        // is the one failing. Resetting the fast budget here would re-issue
+        // every ~1.5s with no end, so hand off to Layer 8 instead.
+      }
+
+      // Layer 8: provider backoff. The network is up but the provider keeps
+      // failing (overloaded, 5xx, dropped connections). Keep re-issuing with
+      // capped exponential backoff — by default until it works or the user
+      // stops the turn.
+      const backoff = inferenceRetry.providerBackoff
+      if (!backoff || !PROVIDER_BACKOFF_REASONS.has(classification.reason)) {
+        endEpisode('gave_up')
         break
       }
 
-      console.warn('[AgentLoop] CONNECTIVITY_PARK reconnected — resuming turn')
-      try {
-        options.onConnectivityReconnected?.()
-      } catch { /* listener must not break the loop */ }
+      const now = backoff.now()
+      if (backoffStartedAt === null) backoffStartedAt = now
+      const elapsedMs = now - backoffStartedAt
+      if (backoffAttempt >= backoff.maxAttempts || elapsedMs >= backoff.maxWaitMs) {
+        console.warn(
+          `[AgentLoop] PROVIDER_BACKOFF giving up after ${backoffAttempt} attempts / ${Math.round(elapsedMs / 1000)}s ` +
+            `reason=${classification.reason} error=${failure.errorText.slice(0, 160)}`,
+        )
+        endEpisode('gave_up')
+        break
+      }
 
-      // Connectivity is back — reset the fast budget and re-issue the
-      // dropped call. Tools already executed earlier in this turn are
-      // untouched (same idempotency invariant the fast tier relies on).
-      retryAttempt = 0
+      sameReasonStreak = classification.reason === lastBackoffReason ? sameReasonStreak + 1 : 1
+      lastBackoffReason = classification.reason
+      const suspectedDeterministic = sameReasonStreak >= NO_PROGRESS_THRESHOLD
+
+      backoffAttempt++
+      noteAttempt('provider_backoff', classification.reason, failure.errorText)
+      if (suspectedDeterministic && markSuspectedDeterministic()) {
+        console.warn(
+          `[AgentLoop] PROVIDER_BACKOFF_NO_PROGRESS ${sameReasonStreak} identical failures with no progress ` +
+            `reason=${classification.reason} error=${failure.errorText.slice(0, 300)}`,
+        )
+      }
+      const delayMs = Math.max(0, Math.min(backoff.computeDelayMs(backoffAttempt), backoff.maxWaitMs - elapsedMs))
+      try {
+        options.onProviderBackoff?.({
+          attempt: backoffAttempt,
+          reason: classification.reason,
+          delayMs,
+          elapsedMs,
+          maxWaitMs: backoff.maxWaitMs,
+          error: failure.errorText,
+          suspectedDeterministic,
+        })
+      } catch { /* listener must not break the loop */ }
+      console.warn(
+        `[AgentLoop] PROVIDER_BACKOFF attempt=${backoffAttempt} reason=${classification.reason} ` +
+          `delayMs=${delayMs} elapsedMs=${elapsedMs} error=${failure.errorText.slice(0, 160)}`,
+      )
+
       promptError = undefined
-      if (abortTriggered || signal?.aborted) break
+      if (delayMs > 0) await backoff.sleep(delayMs, signal, waker)
+      if (abortTriggered || signal?.aborted) {
+        endEpisode('user_stopped')
+        break
+      }
 
       try {
         await agent.continue()
@@ -707,7 +965,7 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
   }
 
   let allMessages = agent.state.messages
-  let newMessages = allMessages.slice(history.length)
+  let newMessages = allMessages.slice(historyLength)
   let finalText = extractFinalText(newMessages)
   let usage = sumUsage(newMessages)
 
@@ -727,7 +985,7 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
   // Also extract error messages from pi-agent-core (it catches stream errors
   // internally and appends error messages instead of re-throwing).
   const coreErrorMsg = newMessages.find((m: any) => m.errorMessage)
-  const rawCoreError = (coreErrorMsg as any)?.errorMessage
+  const rawCoreError = (coreErrorMsg as any)?.errorMessage ?? (promptError ? undefined : unresolvedFailureText)
   const coreError = rawCoreError ? parseProviderError(rawCoreError) : undefined
   const implicitError =
     !promptError && usage.output === 0 && toolCalls.length === 0 && !abortTriggered

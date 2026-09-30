@@ -2500,6 +2500,18 @@ app.post('/agent/plans/:filename/summarize', async (c) => {
 })
 
 // Stop/interrupt the current agent turn (and any active code agent task)
+// "Retry now": cut the active turn's retry backoff short so the dropped model
+// call is re-issued immediately instead of after the remaining delay.
+app.post('/agent/retry-now', async (c) => {
+  if (!agentGateway) return c.json({ error: 'Gateway not ready' }, 503)
+  const body = await c.req.json().catch(() => ({} as any))
+  const sessionKey = (c.req.header('X-Chat-Session-Id') ?? body.chatSessionId) as unknown
+  if (typeof sessionKey !== 'string' || sessionKey.trim() === '') {
+    return c.json({ error: 'chatSessionId is required' }, 400)
+  }
+  return c.json({ success: true, woke: agentGateway.wakeRetry(sessionKey) })
+})
+
 app.post('/agent/stop', async (c) => {
   if (!agentGateway) return c.json({ error: 'Gateway not ready' }, 503)
 

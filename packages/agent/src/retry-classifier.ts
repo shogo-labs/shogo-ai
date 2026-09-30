@@ -93,6 +93,7 @@ function codeToReason(code: string): RetryReason {
     case 'econnrefused':
     case 'epipe':
     case 'network_error':
+    case 'network_drop':
       return 'network'
     case 'etimedout':
     case 'timeout':
@@ -120,6 +121,9 @@ const NON_RETRYABLE_PATTERNS: Array<[RegExp, RetryReason]> = [
   [/content[_\s-]?(policy|filter)|moderation|safety (system|filter)|stop_reason["'\s:]+content_filter/i, 'content_policy'],
   [/billing|insufficient[_\s]?(credits|funds|balance)|payment required|\b402\b|quota (exceeded|reached)|usage limit/i, 'billing'],
   [/invalid[_\s-]?request|\b400\b|\bunprocessable\b|\b422\b|prompt is too long|maximum context length|context (length|window) (exceeded|too)/i, 'invalid_request'],
+  // The proxy can wrap an upstream 413 as a 500 ("500 custom API error (413):
+  // ... length limit exceeded"); a longer wait never shrinks the request.
+  [/\b413\b|payload too large|request entity too large|length limit exceeded/i, 'invalid_request'],
 ]
 
 const RETRYABLE_PATTERNS: Array<[RegExp, RetryReason]> = [

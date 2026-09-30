@@ -433,6 +433,22 @@ describe('runSubagent — success paths', () => {
     expect(events).toEqual(['start', 'model', 'end'])
   })
 
+  it('reuses the parent provider hint when inheriting a DB-defined (UUID) model', async () => {
+    // A bare UUID infers as `custom` → chat completions, which OpenAI rejects
+    // for reasoning models with tools. The parent turn resolved `openai`.
+    const uuid = '33333333-3333-4333-8333-333333333333'
+    let observed: any = {}
+    runAgentLoopImpl = async (opts: any) => {
+      observed = opts
+      return { text: 'ok', toolCalls: [], iterations: 1, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, newMessages: [], effectiveModelId: uuid }
+    }
+    const ctx = makeCtx({ effectiveModel: uuid, effectiveProvider: 'openai' })
+    const cfg = { name: 'c', description: 'd', systemPrompt: 's' } as any
+    await runSubagent(cfg, 'p', ctx, [])
+    expect(observed.model).toBe(uuid)
+    expect(observed.provider).toBe('openai')
+  })
+
   it('filters tools by config.toolNames', async () => {
     let observedTools: any[] = []
     runAgentLoopImpl = async (opts: any) => {

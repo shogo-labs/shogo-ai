@@ -124,4 +124,15 @@ describe('classifyRetryability — structured proxy marker propagation', () => {
     expect(classifyRetryability({ message: 'weird', retryable: true }).retryable).toBe(true)
     expect(classifyRetryability({ message: 'weird', retryable: false }).retryable).toBe(false)
   })
+
+  test('proxy network_drop marker classifies as network', () => {
+    const message =
+      'Upstream anthropic stream dropped after 4000ms (idle 10ms): socket hang up. Please retry. [shogo:retryable=true;code=network_drop]'
+    expect(classifyRetryability({ message })).toEqual({ retryable: true, reason: 'network' })
+  })
+
+  test('a 413 wrapped as a 500 by the proxy is not retryable', () => {
+    const message = '500 custom API error (413): Failed to buffer the request body: length limit exceeded'
+    expect(classifyRetryability({ message })).toEqual({ retryable: false, reason: 'invalid_request' })
+  })
 })
