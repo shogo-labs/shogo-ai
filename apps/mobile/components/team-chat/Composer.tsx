@@ -43,6 +43,8 @@ export interface ComposerProps {
   disabled?: boolean
   disabledReason?: string
   onSend: (input: SendInput) => Promise<void> | void
+  /** ↑ in an empty composer; return true if a message was opened for editing. */
+  onEditLast?: () => boolean
 }
 
 export function Composer(props: ComposerProps) {
@@ -205,7 +207,9 @@ export function Composer(props: ComposerProps) {
     if (key === 'Enter' && !e.nativeEvent.shiftKey) {
       e.preventDefault?.()
       void submit()
+      return
     }
+    if (key === 'ArrowUp' && !text && !attachments.length && props.onEditLast?.()) e.preventDefault?.()
   }
 
   if (props.disabled) {

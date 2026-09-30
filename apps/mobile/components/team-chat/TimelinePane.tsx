@@ -9,7 +9,8 @@ import { Alert, Platform, Pressable, Text, View } from 'react-native'
 import { X } from 'lucide-react-native'
 import type { ChatMessage, ConversationDetail, Mentionables } from '../../lib/team-chat-api'
 import { mentionNames } from '../../lib/team-chat-state'
-import { useConversationTimeline, useMarkReadWhileVisible, useTypingUsers } from '../../hooks/useTeamChat'
+import { TIMELINE_SOFT_LIMIT, useConversationTimeline, useMarkReadWhileVisible, useTypingUsers } from '../../hooks/useTeamChat'
+import { requestEditMessage } from '../../hooks/useChatShortcuts'
 import { MessageList } from './MessageList'
 import { Composer } from './Composer'
 
@@ -64,6 +65,17 @@ export function TimelinePane(props: TimelinePaneProps) {
     if (await confirmDelete()) await timeline.remove(m.id).catch(() => {})
   }, [timeline.remove])
   const onStop = useCallback((m: ChatMessage) => void timeline.stopAgent(m.id).catch(() => {}), [timeline.stopAgent])
+  const onLoadOlder = useCallback(() => void timeline.loadOlder().catch(() => {}), [timeline.loadOlder])
+  const onEditLast = useCallback(() => {
+    const messages = timeline.state.messages
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i]!
+      if (m.pending || m.deletedAt || m.authorType !== 'user' || m.authorUserId !== me) continue
+      requestEditMessage(m.id)
+      return true
+    }
+    return false
+  }, [timeline.state.messages, me])
 
   const isChannel = conversation.kind === 'public' || conversation.kind === 'private'
   const placeholder = threadRootId
@@ -109,7 +121,9 @@ export function TimelinePane(props: TimelinePaneProps) {
           inThread={!!threadRootId}
           header={props.header}
           emptyText={threadRootId ? 'No replies yet.' : isChannel ? `This is the very beginning of #${conversation.name}.` : 'Say hello.'}
-          onLoadOlder={threadRootId ? undefined : () => void timeline.loadOlder().catch(() => {})}
+          onLoadOlder={threadRootId ? undefined : onLoadOlder}
+          onTrim={timeline.trimOld}
+          trimThreshold={TIMELINE_SOFT_LIMIT}
           onReply={props.onOpenThread}
           onReact={onReact}
           onEdit={onEdit}
@@ -141,6 +155,7 @@ export function TimelinePane(props: TimelinePaneProps) {
           disabled={!canPostHere}
           disabledReason={disabledReason}
           onSend={timeline.send}
+          onEditLast={onEditLast}
         />
       )}
     </View>

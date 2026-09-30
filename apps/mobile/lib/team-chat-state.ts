@@ -50,6 +50,17 @@ export function upsertMessages(existing: ChatMessage[], incoming: ChatMessage[])
   return sortMessages(Array.from(byId.values()))
 }
 
+/**
+ * Drop the oldest confirmed messages so at most `keep` remain (pending sends
+ * are always kept). Older history is reloaded on scroll via `hasMoreOlder`.
+ */
+export function trimToNewest(state: TimelineState, keep: number): TimelineState {
+  const confirmed = state.messages.filter((m) => !m.pending)
+  if (confirmed.length <= keep) return state
+  const cutoff = confirmed[confirmed.length - keep]!.seq
+  return { ...state, messages: state.messages.filter((m) => m.pending || m.seq >= cutoff), hasMoreOlder: true }
+}
+
 export function mergePage(
   state: TimelineState,
   page: { messages: ChatMessage[]; hasMore: boolean; root?: ChatMessage },
@@ -215,6 +226,25 @@ export function groupForSidebar(list: ConversationSummary[]): SidebarGroups {
   groups.directMessages.sort(byActivity)
   groups.agents.sort(byActivity)
   return groups
+}
+
+/** Which conversation to move to from `currentId`, or null to stay. */
+export function stepConversation(
+  ordered: ConversationSummary[],
+  currentId: string | null | undefined,
+  direction: 1 | -1,
+  unreadOnly: boolean,
+): ConversationSummary | null {
+  const n = ordered.length
+  if (!n) return null
+  const found = ordered.findIndex((c) => c.id === currentId)
+  const base = found !== -1 ? found : direction === 1 ? -1 : n
+  for (let i = 1; i <= n; i++) {
+    const c = ordered[(((base + direction * i) % n) + n) % n]!
+    if (c.id === currentId) continue
+    if (!unreadOnly || (!c.muted && (c.unreadCount > 0 || c.mentionCount > 0))) return c
+  }
+  return null
 }
 
 // ─── Mentions ────────────────────────────────────────────────────────────────

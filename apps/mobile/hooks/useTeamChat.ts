@@ -18,6 +18,7 @@ import {
 } from '../lib/team-chat-api'
 import { useTeamChatEvents } from '../lib/team-chat-connection'
 import { setActiveChannelNotificationContext } from '../lib/notifications/chat-notifier'
+import { cacheList, cacheTimeline, readCachedList, readCachedTimeline } from '../lib/team-chat-cache'
 import {
   addOptimistic,
   applyListEvent,
@@ -28,12 +29,16 @@ import {
   lastConfirmedSeq,
   mergePage,
   removeOptimistic,
+  trimToNewest,
   type TimelineScope,
   type TimelineState,
 } from '../lib/team-chat-state'
 
 const api = teamChatApi()
 const PAGE_SIZE = 50
+/** Past this many loaded messages, a timeline scrolled to the latest drops its oldest pages. */
+export const TIMELINE_SOFT_LIMIT = 600
+const TIMELINE_TRIM_TO = 300
 
 // ─── Which conversation is on screen (suppresses its unread badge) ──────────
 
@@ -90,6 +95,7 @@ export function useConversationList(workspaceId: string | null | undefined) {
         listCache.set(workspaceId, next)
         setList(next)
         setError(null)
+        if (me) cacheList(me, workspaceId, next)
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Could not load conversations')
       } finally {
@@ -99,12 +105,19 @@ export function useConversationList(workspaceId: string | null | undefined) {
     })()
     inflight.current = run
     return run
-  }, [workspaceId])
+  }, [workspaceId, me])
 
   useEffect(() => {
     setList(workspaceId ? listCache.get(workspaceId) ?? [] : [])
+    if (workspaceId && me && !listCache.has(workspaceId)) {
+      void readCachedList(me, workspaceId).then((cached) => {
+        if (!cached || listCache.has(workspaceId)) return
+        setList(cached)
+        setLoading(false)
+      })
+    }
     void refresh()
-  }, [workspaceId, refresh])
+  }, [workspaceId, me, refresh])
 
   useEffect(() => {
     const onChanged = (id: string) => {
@@ -127,7 +140,10 @@ export function useConversationList(workspaceId: string | null | undefined) {
     setList((current) => {
       const update = applyListEvent(current, event, me, activeRef.current)
       if (update.refetch) queueMicrotask(() => void refresh())
-      if (update.list !== current) listCache.set(workspaceId, update.list)
+      if (update.list !== current) {
+        listCache.set(workspaceId, update.list)
+        cacheList(me, workspaceId, update.list)
+      }
       return update.list
     })
   })
@@ -225,8 +241,26 @@ export function useConversationTimeline(
 
   useEffect(() => {
     setState(emptyTimeline)
-    void loadInitial()
-  }, [loadInitial])
+    let fresh = false
+    if (conversationId && !threadRootId && me) {
+      void readCachedTimeline(me, conversationId).then((cached) => {
+        if (!cached?.messages.length || fresh) return
+        setState((s) => (s.messages.length ? s : { ...emptyTimeline, messages: cached.messages, hasMoreOlder: cached.hasMoreOlder }))
+        setLoading(false)
+      })
+    }
+    void loadInitial().finally(() => {
+      fresh = true
+    })
+    return () => {
+      fresh = true
+    }
+  }, [loadInitial, conversationId, threadRootId, me])
+
+  useEffect(() => {
+    if (!conversationId || threadRootId || !me || loading) return
+    cacheTimeline(me, conversationId, state.messages, state.hasMoreOlder)
+  }, [state.messages, state.hasMoreOlder, conversationId, threadRootId, me, loading])
 
   const backfill = useCallback(async () => {
     if (!conversationId) return
@@ -244,11 +278,19 @@ export function useConversationTimeline(
   useTeamChatEvents(workspaceId, (event: TeamChatEvent) => {
     if (!scope) return
     if (event.type === 'ready') {
-      void backfill()
+      void backfill().then(() => {
+        for (const m of stateRef.current.messages) if (m.pending === 'failed') void retryRef.current(m)
+      })
       return
     }
     setState((s) => applyTimelineEvent(s, event, scope))
   })
+
+  /** Keep long sessions light: once scrolled back to the latest, forget old pages. */
+  const trimOld = useCallback(() => {
+    if (threadRootId) return
+    setState((s) => (s.messages.length > TIMELINE_SOFT_LIMIT ? trimToNewest(s, TIMELINE_TRIM_TO) : s))
+  }, [threadRootId])
 
   const loadOlder = useCallback(async () => {
     const s = stateRef.current
@@ -316,6 +358,9 @@ export function useConversationTimeline(
     await sendWithClientId(clientMsgId, { text: message.text, alsoSentToChannel: message.alsoSentToChannel })
   }, [sendWithClientId])
 
+  const retryRef = useRef(retry)
+  retryRef.current = retry
+
   const discard = useCallback((message: ChatMessage) => {
     if (message.clientMsgId) setState((s) => removeOptimistic(s, message.clientMsgId!))
   }, [])
@@ -338,7 +383,7 @@ export function useConversationTimeline(
 
   const stopAgent = useCallback((messageId: string) => api.stopAgent(messageId), [])
 
-  return { state, loading, error, reload: loadInitial, loadOlder, send, retry, discard, edit, remove, react, stopAgent }
+  return { state, loading, error, reload: loadInitial, loadOlder, trimOld, send, retry, discard, edit, remove, react, stopAgent }
 }
 
 // ─── Read state ──────────────────────────────────────────────────────────────

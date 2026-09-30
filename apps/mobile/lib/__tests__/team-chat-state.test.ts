@@ -24,6 +24,8 @@ import {
   mergePage,
   renderMentions,
   startsGroup,
+  stepConversation,
+  trimToNewest,
 } from '../team-chat-state'
 
 function msg(partial: Partial<ChatMessage> & { id: string; seq: number }): ChatMessage {
@@ -280,5 +282,36 @@ describe('group mentions', () => {
     const group = mentionCandidates(m, null).find((c) => c.kind === 'group')!
     expect(group).toMatchObject({ display: 'design', token: '<@g:g1>', subtitle: 'Design · 2 people' })
     expect(renderMentions('<@g:g1> and <@g:gone>', mentionNames(m))).toBe('**@design** and **@group**')
+  })
+})
+
+describe('long timelines', () => {
+  const at = (seq: number, pending?: 'sending' | 'failed') => msg({ id: `m${seq}`, seq, pending })
+
+  test('trimToNewest keeps the newest confirmed messages and every pending send', () => {
+    const state = { ...emptyTimeline, messages: [at(1), at(2), at(3), at(4), at(99, 'failed')] }
+    const trimmed = trimToNewest(state, 2)
+    expect(trimmed.messages.map((m) => m.id)).toEqual(['m3', 'm4', 'm99'])
+    expect(trimmed.hasMoreOlder).toBe(true)
+    expect(trimToNewest(state, 10)).toBe(state)
+  })
+})
+
+describe('stepConversation', () => {
+  const conv = (id: string, unread = 0, muted = false) => ({ id, unreadCount: unread, mentionCount: 0, muted } as unknown as ConversationSummary)
+  const list = [conv('a'), conv('b', 2), conv('c'), conv('d', 1, true), conv('e', 1)]
+
+  test('moves up and down with wrap-around', () => {
+    expect(stepConversation(list, 'a', 1, false)?.id).toBe('b')
+    expect(stepConversation(list, 'a', -1, false)?.id).toBe('e')
+    expect(stepConversation(list, 'e', 1, false)?.id).toBe('a')
+    expect(stepConversation(list, null, 1, false)?.id).toBe('a')
+    expect(stepConversation(list, null, -1, false)?.id).toBe('e')
+  })
+
+  test('unread-only skips read and muted conversations', () => {
+    expect(stepConversation(list, 'b', 1, true)?.id).toBe('e')
+    expect(stepConversation(list, 'e', 1, true)?.id).toBe('b')
+    expect(stepConversation([conv('a'), conv('b')], 'a', 1, true)).toBeNull()
   })
 })

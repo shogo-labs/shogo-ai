@@ -5,10 +5,10 @@
  * and agent DMs, with unread/mention badges kept live over the realtime
  * connection.
  */
-import { useState } from 'react'
-import { Pressable, Text, View } from 'react-native'
+import { useEffect, useMemo, useState } from 'react'
+import { Platform, Pressable, Text, View } from 'react-native'
 import { usePathname, useRouter } from 'expo-router'
-import { Bell, Bookmark, Bot, ChevronDown, ChevronRight, Hash, Inbox, Lock, MessagesSquare, Pencil, Plus, Radio, Search, Users } from 'lucide-react-native'
+import { Bell, Bookmark, Bot, ChevronDown, ChevronRight, Hash, Inbox, Keyboard, Lock, MessagesSquare, Pencil, Plus, Radio, Search, Users } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { densityFor } from '../../lib/phone-density'
 import { usePhoneLayout } from '../../lib/native-phone-layout'
@@ -17,6 +17,8 @@ import { useConversationList, useMentionables, useMyUserId, invalidateConversati
 import { useInboxFeed, useInboxUnread, useStatusFeed } from '../../hooks/useChatPrefs'
 import { useDraftsFeed, useHasDraft, useSavedFeed } from '../../hooks/useChatItems'
 import { useCustomEmojiFeed } from '../../hooks/useCustomEmoji'
+import { ShortcutsHelp, useChatShortcuts } from '../../hooks/useChatShortcuts'
+import { setChatBadgeCount } from '../../lib/team-chat-badge'
 import { NewConversationModal, type NewConversationMode } from './NewConversationModal'
 import { NavItem } from '../layout/sidebar/NavItem'
 
@@ -62,6 +64,16 @@ export function TeamChatSidebarSection({ workspaceId, collapsed, onNavPress }: T
 
   const activeId = pathname.match(/\/c\/([^/?]+)/)?.[1]
   const totalUnread = list.reduce((n, c) => n + (c.muted ? 0 : c.mentionCount || (c.kind === 'dm' || c.kind === 'group_dm' ? c.unreadCount : 0)), 0)
+  const dmUnread = list.reduce((n, c) => n + (!c.muted && (c.kind === 'dm' || c.kind === 'group_dm') ? c.unreadCount : 0), 0)
+  useEffect(() => setChatBadgeCount(dmUnread + inboxUnread), [dmUnread, inboxUnread])
+  useEffect(() => () => setChatBadgeCount(0), [])
+
+  const ordered = useMemo(() => {
+    const seen = new Set<string>()
+    return [...groups.starred, ...groups.channels, ...groups.directMessages, ...groups.agents].filter((c) => !seen.has(c.id) && seen.add(c.id))
+  }, [groups])
+  const shortcuts = useChatShortcuts({ ordered, activeId: activeId ? decodeURIComponent(activeId) : null, hrefFor: conversationHref })
+  const [helpOpen, setHelpOpen] = useState(false)
 
   if (collapsed) {
     return (
@@ -136,12 +148,17 @@ export function TeamChatSidebarSection({ workspaceId, collapsed, onNavPress }: T
             { label: 'Browse channels', icon: Plus, href: '/(app)/c', count: 0 },
             { label: 'Search messages', icon: Search, href: '/(app)/c/search', count: 0 },
             { label: 'Preferences', icon: Bell, href: '/(app)/c/settings', count: 0 },
+            ...(Platform.OS === 'web' ? [{ label: 'Keyboard shortcuts', icon: Keyboard, href: null, count: 0 }] : []),
           ] as const).map(({ label, icon: Icon, href, count }) => (
             <Pressable
               key={label}
               accessibilityRole="button"
               accessibilityLabel={count ? `${label}, ${count} unread` : label}
               onPress={() => {
+                if (!href) {
+                  setHelpOpen(true)
+                  return
+                }
                 router.push(href as any)
                 onNavPress?.()
               }}
@@ -160,6 +177,13 @@ export function TeamChatSidebarSection({ workspaceId, collapsed, onNavPress }: T
       )}
       {section('Direct messages', groups.directMessages, 'dm')}
       {section('Agents', groups.agents, 'agent')}
+      <ShortcutsHelp
+        visible={helpOpen || shortcuts.helpOpen}
+        onClose={() => {
+          setHelpOpen(false)
+          shortcuts.closeHelp()
+        }}
+      />
       {creating && (
         <NewConversationModal
           workspaceId={workspaceId}

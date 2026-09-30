@@ -15,6 +15,7 @@ import { renderMentions, type MentionNames } from '../../lib/team-chat-state'
 import { useUserStatus } from '../../hooks/useChatPrefs'
 import { toggleSaved, useIsSaved } from '../../hooks/useChatItems'
 import { customEmojiFor, jumboEmojiCodes, useCustomEmoji } from '../../hooks/useCustomEmoji'
+import { useEditRequest } from '../../hooks/useChatShortcuts'
 
 export const QUICK_REACTIONS = ['👍', '✅', '👀', '🎉', '❤️', '😂']
 
@@ -162,6 +163,11 @@ function MessageRowImpl(props: MessageRowProps) {
   const running = message.authorType === 'agent' && message.agentStatus === 'running'
   const body = running ? streaming?.text ?? '' : message.text
   const isWeb = Platform.OS === 'web'
+  useEditRequest(message.id, () => {
+    if (!mine || deleted || message.authorType !== 'user') return
+    setDraft(message.text)
+    setEditing(true)
+  })
 
   const pin = () => void api.pin(message.id, !message.pinned).catch(() => {})
   const save = () => void toggleSaved(message.id, !saved).catch(() => {})
