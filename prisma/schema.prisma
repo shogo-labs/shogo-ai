@@ -185,6 +185,11 @@ model Workspace {
   // pools the parent's plan, usage wallet, and seats (no subscription/wallet
   // of its own). Only Business/Enterprise workspaces may have children.
   parentWorkspaceId String?
+  // Team chat surface: "off" | "native" | "external" | "bridged". Null means
+  // the default for the workspace kind (native for team, off for personal).
+  chatMode      String?
+  // External chat provider for "external" / "bridged": "slack" | "teams" | "google_chat".
+  chatProvider  String?
   createdAt     DateTime     @default(now())
   updatedAt     DateTime     @updatedAt
 

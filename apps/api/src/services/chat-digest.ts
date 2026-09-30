@@ -8,6 +8,7 @@
 import { prisma } from '../lib/prisma'
 import { getFrontendUrl } from '../lib/cloud-urls'
 import { sendChannelDigestEmail } from './email.service'
+import { getWorkspaceChatConfig, nativeChatEnabled } from './chat-mode'
 
 const db = prisma as any
 
@@ -90,6 +91,7 @@ export async function runDigestPass(now = new Date()): Promise<number> {
   let sent = 0
   for (const row of rows) {
     if (!isDigestDue(row, now)) continue
+    if (!nativeChatEnabled(await getWorkspaceChatConfig(row.workspaceId))) continue
     try {
       const digest = await buildDigest(row, now)
       await db.chatUserSettings.update({ where: { id: row.id }, data: { lastDigestAt: now } })

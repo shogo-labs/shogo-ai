@@ -24,6 +24,7 @@ import {
   postMessage,
 } from './conversation.service'
 import { renderTranscript, runWorkspaceAgentPrompt } from './conversation-agent-dispatcher'
+import { agentChatEnabled, getWorkspaceChatConfig, nativeChatEnabled } from './chat-mode'
 
 const db = prisma as any
 
@@ -72,6 +73,7 @@ async function isHomeRegionFor(workspaceId: string): Promise<boolean> {
 }
 
 export async function postActivity(workspaceId: string, input: ActivityInput) {
+  if (!nativeChatEnabled(await getWorkspaceChatConfig(workspaceId))) return null
   if (!(await isHomeRegionFor(workspaceId))) return null
   const activity = await getActivityConversation(workspaceId)
   if (!activity) return null
@@ -108,6 +110,7 @@ export async function deliverAgentResult(input: {
   const conversation = await db.conversation.findUnique({ where: { id: input.conversationId } })
   if (!conversation || conversation.workspaceId !== input.workspaceId) return null
   if (conversation.archivedAt || conversation.kind === 'activity') return null
+  if (!agentChatEnabled(await getWorkspaceChatConfig(input.workspaceId))) return null
   if (!(await isHomeRegionFor(input.workspaceId))) return null
   const name = await agentDisplayName(input.workspaceId, input.projectId)
   return postMessage({

@@ -12,7 +12,8 @@ import { Bell, Bookmark, Bot, ChevronDown, ChevronRight, Hash, Inbox, Keyboard, 
 import { cn } from '@shogo/shared-ui/primitives'
 import { densityFor } from '../../lib/phone-density'
 import { usePhoneLayout } from '../../lib/native-phone-layout'
-import { conversationTitle, type ConversationSummary } from '../../lib/team-chat-api'
+import { conversationTitle, nativeChatVisible, type ConversationSummary } from '../../lib/team-chat-api'
+import { useWorkspaceChatMode } from '../../hooks/useWorkspaceChatMode'
 import { useConversationList, useMentionables, useMyUserId, invalidateConversationList } from '../../hooks/useTeamChat'
 import { useInboxFeed, useInboxUnread, useStatusFeed } from '../../hooks/useChatPrefs'
 import { useDraftsFeed, useHasDraft, useSavedFeed } from '../../hooks/useChatItems'
@@ -46,7 +47,13 @@ function iconFor(c: ConversationSummary) {
   return Users
 }
 
-export function TeamChatSidebarSection({ workspaceId, collapsed, onNavPress }: TeamChatSidebarSectionProps) {
+export function TeamChatSidebarSection(props: TeamChatSidebarSectionProps) {
+  const { config } = useWorkspaceChatMode(props.workspaceId)
+  if (!nativeChatVisible(config?.mode)) return null
+  return <TeamChatSidebarContent {...props} />
+}
+
+function TeamChatSidebarContent({ workspaceId, collapsed, onNavPress }: TeamChatSidebarSectionProps) {
   const router = useRouter()
   const pathname = usePathname()
   const me = useMyUserId()

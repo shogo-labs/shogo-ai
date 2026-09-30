@@ -11,12 +11,16 @@ import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { useWorkspaceExperience } from '../../hooks/useWorkspaceExperience'
 import { useActiveConversationId } from '../../hooks/useTeamChat'
 import { useTeamChatEvents } from '../../lib/team-chat-connection'
+import { useWorkspaceChatMode } from '../../hooks/useWorkspaceChatMode'
+import { nativeChatVisible } from '../../lib/team-chat-api'
 import { isUserInactive, notifyChannelMessage } from '../../lib/notifications/chat-notifier'
 
 export function TeamChatNotifier() {
   const workspace = useActiveWorkspace()
   const experience = useWorkspaceExperience()
-  const workspaceId: string | null = experience.kind === 'team' ? workspace?.id ?? null : null
+  const teamWorkspaceId: string | null = experience.kind === 'team' ? workspace?.id ?? null : null
+  const { config } = useWorkspaceChatMode(teamWorkspaceId)
+  const workspaceId = nativeChatVisible(config?.mode) ? teamWorkspaceId : null
   const active = useActiveConversationId()
   const activeRef = useRef(active)
   activeRef.current = active

@@ -10,6 +10,7 @@
 import { prisma } from '../lib/prisma'
 import { publishConversationEvent } from '../lib/conversation-bus'
 import { parseMentions, type AgentTarget, type ParsedMention } from './conversation-mentions'
+import { assertNativeChat } from './chat-mode'
 
 const db = prisma as any
 
@@ -71,6 +72,7 @@ export async function loadAccess(conversationId: string, userId: string): Promis
   if (!conversation) throw notFound()
   const role = await getWorkspaceRole(conversation.workspaceId, userId)
   if (!role) throw notFound()
+  await assertNativeChat(conversation.workspaceId)
   const membership = await db.conversationMember.findFirst({
     where: { conversationId, userId },
   })

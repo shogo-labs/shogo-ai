@@ -10,6 +10,21 @@ import { API_URL, createHttpClient } from './api'
 import { authClient } from './auth-client'
 
 export type ConversationKind = 'public' | 'private' | 'dm' | 'group_dm' | 'activity'
+
+export type ChatModeValue = 'off' | 'native' | 'external' | 'bridged'
+export type ExternalChatProvider = 'slack' | 'teams' | 'google_chat'
+
+export interface WorkspaceChatMode {
+  mode: ChatModeValue
+  provider: ExternalChatProvider | null
+  isDefault: boolean
+  canManage: boolean
+}
+
+/** Whether the Shogo chat UI (sidebar, channels, DMs) is available in this mode. */
+export function nativeChatVisible(mode: ChatModeValue | null | undefined): boolean {
+  return mode === 'native' || mode === 'bridged'
+}
 export type AgentStatus = 'running' | 'done' | 'error' | 'stopped'
 
 export type Participant =
@@ -333,6 +348,12 @@ export function teamChatApi() {
     },
     async ask(workspaceId: string, question: string): Promise<AskResult> {
       return (await http.post<AskResult>(`${ws(workspaceId)}/conversations/ask`, { question })).data
+    },
+    async chatMode(workspaceId: string): Promise<WorkspaceChatMode> {
+      return (await http.get<WorkspaceChatMode>(`${ws(workspaceId)}/chat-mode`)).data
+    },
+    async setChatMode(workspaceId: string, input: { mode: ChatModeValue; provider?: ExternalChatProvider | null }): Promise<WorkspaceChatMode> {
+      return (await http.patch<WorkspaceChatMode>(`${ws(workspaceId)}/chat-mode`, input)).data
     },
     async chatSettings(workspaceId: string): Promise<ChatSettings> {
       return (await http.get<{ settings: ChatSettings }>(`${ws(workspaceId)}/chat-settings`)).data.settings

@@ -60,6 +60,7 @@ import { registerConversationUnfurls } from '../services/conversation-unfurl'
 import { listStatuses } from '../services/chat-settings'
 import { listGroups } from '../services/chat-customization'
 import { mountConversationExtras } from './conversation-extras'
+import { agentChatEnabled, assertNativeChat, getWorkspaceChatConfig, setWorkspaceChatConfig } from '../services/chat-mode'
 import type { ConversationSocketData } from '../realtime/conversation-socket'
 
 const db = prisma as any
@@ -110,8 +111,41 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
     if (!(await getWorkspaceRole(workspaceId, userId))) {
       return c.json({ error: { code: 'forbidden', message: 'No access to this workspace' } }, 403)
     }
+    try {
+      await assertNativeChat(workspaceId)
+    } catch (err) {
+      return errorResponse(c, err)
+    }
     return { userId, workspaceId }
   }
+
+  // Reachable in every mode so clients can learn whether to show team chat.
+  router.get('/workspaces/:workspaceId/chat-mode', async (c) => {
+    const userId = await requireUser(c)
+    if (userId instanceof Response) return userId
+    const workspaceId = c.req.param('workspaceId')
+    const role = await getWorkspaceRole(workspaceId, userId)
+    if (!role) return c.json({ error: { code: 'forbidden', message: 'No access to this workspace' } }, 403)
+    const config = await getWorkspaceChatConfig(workspaceId)
+    return c.json({ ...config, canManage: role === 'owner' || role === 'admin' })
+  })
+
+  router.patch('/workspaces/:workspaceId/chat-mode', async (c) => {
+    const userId = await requireUser(c)
+    if (userId instanceof Response) return userId
+    const workspaceId = c.req.param('workspaceId')
+    const role = await getWorkspaceRole(workspaceId, userId)
+    if (role !== 'owner' && role !== 'admin') {
+      return c.json({ error: { code: 'forbidden', message: 'Only workspace admins can change team chat settings' } }, 403)
+    }
+    const body = await readJson(c)
+    try {
+      const config = await setWorkspaceChatConfig(workspaceId, { mode: body.mode, provider: body.provider })
+      return c.json({ ...config, canManage: true })
+    } catch (err) {
+      return errorResponse(c, err)
+    }
+  })
 
   mountConversationExtras(router, { requireUser, requireWorkspace, errorResponse, readJson })
 
@@ -638,9 +672,19 @@ async function renderForAgent(rows: any[]) {
   }))
 }
 
-export function agentChannelRoutes(config: AgentChannelRoutesConfig): Hono {
+export function agentChannelRoutes(routeConfig: AgentChannelRoutesConfig): Hono {
   const router = new Hono()
   const base = '/workspaces/:workspaceId/agent-channels'
+  const config: AgentChannelRoutesConfig = {
+    authorize: async (c) => {
+      const auth = await routeConfig.authorize(c)
+      if (auth instanceof Response) return auth
+      if (!agentChatEnabled(await getWorkspaceChatConfig(auth.workspaceId))) {
+        return c.json({ error: { code: 'chat_disabled', message: 'Team chat is turned off for this workspace' } }, 403)
+      }
+      return auth
+    },
+  }
 
   async function agentIdentity(auth: AgentChannelAuthContext, claimed: unknown): Promise<string | null> {
     if (auth.projectId !== undefined) return auth.projectId
