@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
-import type { useRouter } from 'expo-router'
-
-type Router = ReturnType<typeof useRouter>
+import type { Router } from 'expo-router'
 
 export interface ActiveChatTarget {
   chatSessionId?: string

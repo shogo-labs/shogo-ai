@@ -213,7 +213,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   backdrop: {
-    ...StyleSheet.absoluteFill,
+    ...StyleSheet.absoluteFillObject,
     backgroundColor: "rgba(15, 23, 42, 0.62)",
   },
   card: {

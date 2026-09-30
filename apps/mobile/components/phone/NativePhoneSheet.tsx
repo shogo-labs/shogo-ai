@@ -334,7 +334,7 @@ export function NativePhoneSheet({
       <View style={styles.root}>
         <Animated.View style={[styles.backdrop, sheet.backdrop, backdropMotionStyle]}>
           <Pressable
-            style={StyleSheet.absoluteFill}
+            style={StyleSheet.absoluteFillObject}
             onPress={onClose}
             accessibilityRole="button"
             accessibilityLabel="Dismiss"
@@ -415,7 +415,7 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: 'flex-end',
   },
-  backdrop: StyleSheet.absoluteFill,
+  backdrop: StyleSheet.absoluteFillObject,
   panelMotion: {
     width: '100%',
   },

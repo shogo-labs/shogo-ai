@@ -696,13 +696,13 @@ function AdminLayoutInner() {
 
 const overlayStyles = StyleSheet.create({
   root: {
-    ...StyleSheet.absoluteFill,
+    ...StyleSheet.absoluteFillObject,
     zIndex: 50,
     flexDirection: 'row',
     elevation: 10,
   },
   backdrop: {
-    ...StyleSheet.absoluteFill,
+    ...StyleSheet.absoluteFillObject,
     backgroundColor: 'rgba(0,0,0,0.4)',
   },
   panel: {
