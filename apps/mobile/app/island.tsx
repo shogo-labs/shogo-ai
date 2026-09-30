@@ -5,7 +5,7 @@
  * transparent always-on-top window; talks to the main process through
  * `window.shogoIsland` and to the API like any other screen.
  */
-import { useEffect } from "react"
+import { useEffect, useRef } from "react"
 import { Platform, Pressable, Text, View } from "react-native"
 import { observer } from "mobx-react-lite"
 import { useAuth } from "../contexts/auth"
@@ -20,15 +20,21 @@ import { ISLAND_SURFACE_PROPS, ISLAND_TRIGGER_PROPS, getIslandBridge } from "../
 
 const SIGNED_OUT_RETRY_MS = 15_000
 
-function useTransparentPage() {
+/** The overlay window is transparent, but the page and every navigator
+ * container above this route paint an opaque background (react-navigation's
+ * theme background is applied by the stack itself, not the screen's
+ * `contentStyle`). Clear them all, up from the route's root. */
+function useTransparentPage(root: React.RefObject<View | null>, enabled: boolean) {
   useEffect(() => {
-    if (Platform.OS !== "web" || typeof document === "undefined") return
-    const targets = [document.documentElement, document.body, document.getElementById("root")]
-    for (const el of targets) {
-      if (el) el.style.background = "transparent"
+    if (!enabled || Platform.OS !== "web" || typeof document === "undefined") return
+    let el = root.current as unknown as HTMLElement | null
+    while (el) {
+      el.style.backgroundColor = "transparent"
+      el.style.backgroundImage = "none"
+      el = el.parentElement
     }
     document.body.style.overflow = "hidden"
-  }, [])
+  }, [root, enabled])
 }
 
 function SignedOutIsland() {
@@ -85,22 +91,32 @@ const SignedInIsland = observer(function SignedInIsland() {
   return <IslandApp workspaceId={workspace?.id} userId={user?.id} />
 })
 
-export default function IslandRoute() {
-  useTransparentPage()
+function IslandContent() {
   const { isAuthenticated, isLoading } = useAuth()
-
-  if (!getIslandBridge()) {
-    return (
-      <View className="flex-1 items-center justify-center bg-background">
-        <Text className="text-sm text-muted-foreground">The island only runs in Shogo Desktop.</Text>
-      </View>
-    )
-  }
   if (isLoading) return null
   if (!isAuthenticated) return <SignedOutIsland />
   return (
     <DomainProvider>
       <SignedInIsland />
     </DomainProvider>
+  )
+}
+
+export default function IslandRoute() {
+  const root = useRef<View>(null)
+  const inIsland = !!getIslandBridge()
+  useTransparentPage(root, inIsland)
+
+  if (!inIsland) {
+    return (
+      <View className="flex-1 items-center justify-center bg-background">
+        <Text className="text-sm text-muted-foreground">The island only runs in Shogo Desktop.</Text>
+      </View>
+    )
+  }
+  return (
+    <View ref={root} style={{ flex: 1, backgroundColor: "transparent" }}>
+      <IslandContent />
+    </View>
   )
 }
