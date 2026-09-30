@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { useState } from 'react'
 import { ActivityIndicator, Alert, Modal, Platform, Pressable, ScrollView, Text, TextInput, View } from 'react-native'
-import { Archive, Bot, Hash, Lock, LogOut, Radio, Sparkles, Star, UserPlus, Users, X } from 'lucide-react-native'
+import { Archive, Bell, BellOff, Bot, Check, Hash, Lock, LogOut, Radio, Sparkles, Star, UserPlus, Users, X } from 'lucide-react-native'
 import { MarkdownText } from '../chat/MarkdownText'
 import {
   conversationTitle,
@@ -11,9 +11,11 @@ import {
   type CatchUpResult,
   type ConversationDetail,
   type Mentionables,
+  type MembershipNotifyLevel,
   type Participant,
 } from '../../lib/team-chat-api'
 import { mentionNames, renderMentions } from '../../lib/team-chat-state'
+import { useUserStatus } from '../../hooks/useChatPrefs'
 
 const api = teamChatApi()
 
@@ -39,12 +41,15 @@ export function ConversationHeader({ conversation, mentionables, me, onChanged, 
   const [catchUp, setCatchUp] = useState<CatchUpResult | null>(null)
   const [catchingUp, setCatchingUp] = useState(false)
   const [membersOpen, setMembersOpen] = useState(false)
+  const [notifyOpen, setNotifyOpen] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const isChannel = conversation.kind === 'public' || conversation.kind === 'private' || conversation.kind === 'activity'
   const participants: Participant[] = conversation.members
     .filter((m) => m.type === 'agent' || m.userId !== me)
     .map((m) => (m.type === 'agent' ? { type: 'agent', projectId: m.projectId, name: m.name } : { type: 'user', id: m.userId, name: m.name, image: m.image }))
   const title = isChannel ? conversation.name ?? 'channel' : conversationTitle({ kind: conversation.kind, name: conversation.name, participants })
+  const dmPeer = conversation.kind === 'dm' ? participants.find((p) => p.type === 'user') : undefined
+  const peerStatus = useUserStatus(conversation.workspaceId, dmPeer?.type === 'user' ? dmPeer.id : null)
   const Icon = conversation.kind === 'activity' ? Radio : conversation.kind === 'private' ? Lock : isChannel ? Hash : isAgentDm({ kind: conversation.kind, participants }) ? Bot : Users
 
   const run = async (fn: () => Promise<unknown>) => {
@@ -81,7 +86,19 @@ export function ConversationHeader({ conversation, mentionables, me, onChanged, 
             <Text className="text-[10px] font-medium uppercase text-muted-foreground">Archived</Text>
           </View>
         )}
+        {peerStatus ? (
+          <Text className="flex-shrink text-xs text-muted-foreground" numberOfLines={1}>
+            {[peerStatus.emoji, peerStatus.text, peerStatus.dnd ? '· Do not disturb' : null].filter(Boolean).join(' ')}
+          </Text>
+        ) : null}
         <View className="flex-1" />
+        {conversation.joined && conversation.kind !== 'activity' && (
+          <HeaderButton label="Notification settings" onPress={() => setNotifyOpen(true)}>
+            {conversation.muted || conversation.notifyLevel === 'none'
+              ? <BellOff size={16} className="text-muted-foreground" />
+              : <Bell size={16} className={conversation.notifyLevel === 'all' ? 'text-primary' : 'text-muted-foreground'} />}
+          </HeaderButton>
+        )}
         {conversation.joined && (
           <HeaderButton
             label={conversation.starred ? 'Unstar' : 'Star'}
@@ -154,6 +171,14 @@ export function ConversationHeader({ conversation, mentionables, me, onChanged, 
         </Pressable>
       </Modal>
 
+      {notifyOpen && (
+        <NotifyModal
+          conversation={conversation}
+          onClose={() => setNotifyOpen(false)}
+          onPick={(patch) => run(() => api.updateMembership(conversation.id, patch))}
+        />
+      )}
+
       {membersOpen && (
         <MembersModal
           conversation={conversation}
@@ -171,6 +196,69 @@ function HeaderButton({ label, onPress, children }: { label: string; onPress: ()
     <Pressable onPress={onPress} accessibilityRole="button" accessibilityLabel={label} className="rounded-md p-1.5 active:bg-muted hover:bg-muted">
       {children}
     </Pressable>
+  )
+}
+
+const NOTIFY_CHOICES: Array<{ value: MembershipNotifyLevel; label: string; hint: string }> = [
+  { value: 'default', label: 'Use my default', hint: 'Follow your chat preferences' },
+  { value: 'all', label: 'All new messages', hint: 'Every message in this conversation' },
+  { value: 'mentions', label: 'Mentions and keywords', hint: '@mentions, @channel, keywords, and threads you follow' },
+  { value: 'none', label: 'Nothing', hint: 'Only direct @mentions' },
+]
+
+function NotifyModal({
+  conversation,
+  onClose,
+  onPick,
+}: {
+  conversation: ConversationDetail
+  onClose: () => void
+  onPick: (patch: { notifyLevel?: MembershipNotifyLevel; muted?: boolean }) => Promise<void>
+}) {
+  const current = (conversation.notifyLevel || 'default') as MembershipNotifyLevel
+  return (
+    <Modal visible transparent animationType="fade" onRequestClose={onClose}>
+      <Pressable className="flex-1 items-center justify-center bg-black/40 p-6" onPress={onClose}>
+        <Pressable className="w-full max-w-sm rounded-xl bg-card p-5" onPress={() => {}}>
+          <View className="mb-3 flex-row items-center">
+            <Text className="flex-1 text-base font-semibold text-foreground">Notifications</Text>
+            <Pressable onPress={onClose} accessibilityLabel="Close">
+              <X size={16} className="text-muted-foreground" />
+            </Pressable>
+          </View>
+          {NOTIFY_CHOICES.map((c) => (
+            <Pressable
+              key={c.value}
+              accessibilityRole="radio"
+              accessibilityState={{ checked: current === c.value }}
+              onPress={async () => {
+                await onPick({ notifyLevel: c.value })
+                onClose()
+              }}
+              className="flex-row items-center gap-3 rounded-md px-1 py-2 active:bg-muted hover:bg-muted"
+            >
+              <View className="w-4">{current === c.value ? <Check size={14} className="text-primary" /> : null}</View>
+              <View className="flex-1">
+                <Text className="text-sm text-foreground">{c.label}</Text>
+                <Text className="text-xs text-muted-foreground">{c.hint}</Text>
+              </View>
+            </Pressable>
+          ))}
+          <Pressable
+            accessibilityRole="switch"
+            accessibilityState={{ checked: !!conversation.muted }}
+            onPress={async () => {
+              await onPick({ muted: !conversation.muted })
+              onClose()
+            }}
+            className="mt-2 flex-row items-center gap-3 rounded-md border-t border-border px-1 pt-3"
+          >
+            <BellOff size={14} className="text-muted-foreground" />
+            <Text className="flex-1 text-sm text-foreground">{conversation.muted ? 'Unmute' : 'Mute'} conversation</Text>
+          </Pressable>
+        </Pressable>
+      </Pressable>
+    </Modal>
   )
 }
 

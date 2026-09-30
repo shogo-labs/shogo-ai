@@ -12,6 +12,7 @@ import { cn } from '@shogo/shared-ui/primitives'
 import { MarkdownText } from '../chat/MarkdownText'
 import type { ChatMessage } from '../../lib/team-chat-api'
 import { renderMentions, type MentionNames } from '../../lib/team-chat-state'
+import { useUserStatus } from '../../hooks/useChatPrefs'
 
 export const QUICK_REACTIONS = ['👍', '✅', '👀', '🎉', '❤️', '😂']
 
@@ -74,6 +75,18 @@ function authorName(message: ChatMessage): string {
   if (message.authorType === 'system') return 'Shogo'
   if (message.authorType === 'bot') return 'Bot'
   return message.author?.name ?? 'Someone'
+}
+
+function AuthorStatus({ userId }: { userId: string | null | undefined }) {
+  const status = useUserStatus(undefined, userId)
+  if (!status?.emoji && !status?.dnd) return null
+  const label = [status.text, status.dnd ? 'Do not disturb' : null].filter(Boolean).join(' · ')
+  return (
+    <Text className="text-xs" accessibilityLabel={label || 'Status'} {...({ title: label } as object)}>
+      {status.emoji ?? ''}
+      {status.dnd ? <Text className="text-[10px] text-muted-foreground"> 🔕</Text> : null}
+    </Text>
+  )
 }
 
 function MessageRowImpl(props: MessageRowProps) {
@@ -174,6 +187,7 @@ function MessageRowImpl(props: MessageRowProps) {
         {!grouped && (
           <View className="flex-row items-baseline gap-2">
             <Text className="text-sm font-semibold text-foreground">{authorName(message)}</Text>
+            {message.authorType === 'user' ? <AuthorStatus userId={message.authorUserId} /> : null}
             {message.authorType === 'agent' && (
               <View className="rounded bg-primary/10 px-1.5 py-px">
                 <Text className="text-[10px] font-medium text-primary">AGENT</Text>

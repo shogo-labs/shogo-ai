@@ -52,7 +52,7 @@ beforeEach(async () => {
   notifications._setPushSenderForTests(async (userId, payload) => {
     pushes.push({ userId, title: payload.title, body: payload.body, data: payload.data })
   })
-  await db.conversationMember.updateMany({ where: { conversationId: generalId }, data: { muted: false, notifyLevel: 'all' } })
+  await db.conversationMember.updateMany({ where: { conversationId: generalId }, data: { muted: false, notifyLevel: 'default' } })
 })
 
 afterAll(async () => {

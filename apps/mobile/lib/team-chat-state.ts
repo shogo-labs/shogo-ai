@@ -349,3 +349,22 @@ export function searchSnippet(text: string, terms: string[], names: MentionNames
   if (last < excerpt.length) segments.push({ text: excerpt.slice(last), match: false })
   return segments
 }
+
+export type ClearAfter = number | 'today' | 'tomorrow' | null
+
+/** When a status or DND choice ends: minutes from now, end of today, or 9am tomorrow. */
+export function expiryFrom(choice: ClearAfter, now = new Date()): string | null {
+  if (choice === null) return null
+  if (choice === 'today') {
+    const end = new Date(now)
+    end.setHours(23, 59, 59, 0)
+    return end.toISOString()
+  }
+  if (choice === 'tomorrow') {
+    const t = new Date(now)
+    t.setDate(t.getDate() + 1)
+    t.setHours(9, 0, 0, 0)
+    return t.toISOString()
+  }
+  return new Date(now.getTime() + choice * 60_000).toISOString()
+}

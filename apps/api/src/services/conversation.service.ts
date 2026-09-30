@@ -358,7 +358,7 @@ export async function listConversationsForUser(workspaceId: string, userId: stri
       joined: !!m,
       starred: !!m?.starred,
       muted: !!m?.muted,
-      notifyLevel: m?.notifyLevel ?? 'all',
+      notifyLevel: m?.notifyLevel ?? 'default',
       lastReadSeq: m?.lastReadSeq ?? 0,
       unreadCount: unread.get(c.id) ?? 0,
       mentionCount: mentionCounts.get(c.id) ?? 0,
@@ -423,7 +423,7 @@ export async function getConversationForUser(conversationId: string, userId: str
     joined: !!access.membership,
     starred: !!access.membership?.starred,
     muted: !!access.membership?.muted,
-    notifyLevel: access.membership?.notifyLevel ?? 'all',
+    notifyLevel: access.membership?.notifyLevel ?? 'default',
     lastReadSeq: access.membership?.lastReadSeq ?? 0,
     canPost: canPost(access),
     canReply: canPost(access, { threadReply: true }),
@@ -615,7 +615,7 @@ export async function updateMembership(
   const data: Record<string, unknown> = {}
   if (typeof patch.starred === 'boolean') data.starred = patch.starred
   if (typeof patch.muted === 'boolean') data.muted = patch.muted
-  if (patch.notifyLevel && ['all', 'mentions', 'none'].includes(patch.notifyLevel)) data.notifyLevel = patch.notifyLevel
+  if (patch.notifyLevel && ['default', 'all', 'mentions', 'none'].includes(patch.notifyLevel)) data.notifyLevel = patch.notifyLevel
   return db.conversationMember.update({ where: { id: access.membership.id }, data })
 }
 
@@ -961,6 +961,19 @@ export async function getMessage(messageId: string, userId: string) {
   return serializeMessage(row)
 }
 
+export interface ReactionAddedEvent {
+  message: any
+  conversation: any
+  reactorId: string
+  emoji: string
+}
+type ReactionHook = (event: ReactionAddedEvent) => void | Promise<void>
+const reactionHooks: ReactionHook[] = []
+
+export function onReactionAdded(hook: ReactionHook): void {
+  reactionHooks.push(hook)
+}
+
 export async function setReaction(messageId: string, userId: string, emoji: string, on: boolean) {
   const clean = (emoji ?? '').toString().trim()
   if (!clean || clean.length > 64) throw new ConversationError(400, 'invalid_emoji', 'Invalid emoji')
@@ -973,6 +986,10 @@ export async function setReaction(messageId: string, userId: string, emoji: stri
     if (!existing) {
       try {
         await db.conversationReaction.create({ data: { messageId, userId, emoji: clean } })
+        for (const hook of reactionHooks) {
+          void Promise.resolve(hook({ message: row, conversation: access.conversation, reactorId: userId, emoji: clean }))
+            .catch((err) => console.warn('[conversations] reaction hook failed:', err?.message))
+        }
       } catch {
         // Concurrent duplicate toggle; the unique index already holds the reaction.
       }
@@ -1001,6 +1018,16 @@ export async function markRead(conversationId: string, userId: string, seq?: num
   publishConversationEvent(access.conversation.workspaceId, {
     type: 'read', conversationId, userId, seq: updated.lastReadSeq,
   }, [userId])
+  if (target >= lastSeq) {
+    const { count } = await db.chatInboxItem.updateMany({
+      where: { userId, conversationId, readAt: null, kind: { not: 'thread' } },
+      data: { readAt: new Date() },
+    })
+    if (count) {
+      const unread = await db.chatInboxItem.count({ where: { workspaceId: access.conversation.workspaceId, userId, readAt: null } })
+      publishConversationEvent(access.conversation.workspaceId, { type: 'inbox.read', unread }, [userId])
+    }
+  }
   return { lastReadSeq: updated.lastReadSeq }
 }
 

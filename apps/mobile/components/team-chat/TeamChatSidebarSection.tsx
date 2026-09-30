@@ -8,12 +8,13 @@
 import { useState } from 'react'
 import { Pressable, Text, View } from 'react-native'
 import { usePathname, useRouter } from 'expo-router'
-import { Bot, ChevronDown, ChevronRight, Hash, Lock, MessagesSquare, Plus, Radio, Search, Users } from 'lucide-react-native'
+import { Bell, Bot, ChevronDown, ChevronRight, Hash, Inbox, Lock, MessagesSquare, Plus, Radio, Search, Users } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { densityFor } from '../../lib/phone-density'
 import { usePhoneLayout } from '../../lib/native-phone-layout'
 import { conversationTitle, type ConversationSummary } from '../../lib/team-chat-api'
 import { useConversationList, useMentionables, useMyUserId, invalidateConversationList } from '../../hooks/useTeamChat'
+import { useInboxFeed, useInboxUnread, useStatusFeed } from '../../hooks/useChatPrefs'
 import { NewConversationModal, type NewConversationMode } from './NewConversationModal'
 import { NavItem } from '../layout/sidebar/NavItem'
 
@@ -48,6 +49,9 @@ export function TeamChatSidebarSection({ workspaceId, collapsed, onNavPress }: T
   const mentionables = useMentionables(workspaceId)
   const { groups, list } = useConversationList(workspaceId)
   const [creating, setCreating] = useState<NewConversationMode | null>(null)
+  useStatusFeed(workspaceId)
+  useInboxFeed(workspaceId)
+  const inboxUnread = useInboxUnread(workspaceId)
   const comfortable = usePhoneLayout()
   const density = densityFor(comfortable)
 
@@ -121,20 +125,28 @@ export function TeamChatSidebarSection({ workspaceId, collapsed, onNavPress }: T
         'channel',
         <View>
           {([
-            { label: 'Browse channels', icon: Plus, href: '/(app)/c' },
-            { label: 'Search messages', icon: Search, href: '/(app)/c/search' },
-          ] as const).map(({ label, icon: Icon, href }) => (
+            { label: 'Inbox', icon: Inbox, href: '/(app)/c/inbox', count: inboxUnread },
+            { label: 'Browse channels', icon: Plus, href: '/(app)/c', count: 0 },
+            { label: 'Search messages', icon: Search, href: '/(app)/c/search', count: 0 },
+            { label: 'Preferences', icon: Bell, href: '/(app)/c/settings', count: 0 },
+          ] as const).map(({ label, icon: Icon, href, count }) => (
             <Pressable
               key={label}
               accessibilityRole="button"
+              accessibilityLabel={count ? `${label}, ${count} unread` : label}
               onPress={() => {
                 router.push(href as any)
                 onNavPress?.()
               }}
               className={cn('flex-row items-center rounded-md active:bg-accent/50', comfortable ? `${density.rowMin} gap-3 px-3 py-2` : 'gap-2 px-2 py-1')}
             >
-              <Icon size={comfortable ? density.icon.nav : 12} className="text-muted-foreground" />
-              <Text className={cn('text-muted-foreground', comfortable ? density.text.body : 'text-xs')}>{label}</Text>
+              <Icon size={comfortable ? density.icon.nav : 12} className={count ? 'text-foreground' : 'text-muted-foreground'} />
+              <Text className={cn('flex-1', count ? 'font-semibold text-foreground' : 'text-muted-foreground', comfortable ? density.text.body : 'text-xs')}>{label}</Text>
+              {count > 0 && (
+                <View className="min-w-[18px] items-center rounded-full bg-destructive px-1.5">
+                  <Text className="text-[10px] font-semibold text-white">{count > 99 ? '99+' : count}</Text>
+                </View>
+              )}
             </Pressable>
           ))}
         </View>,

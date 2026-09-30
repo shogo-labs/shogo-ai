@@ -4,6 +4,7 @@
 import { describe, expect, test } from 'bun:test'
 import type { ChatMessage, ConversationSummary, Mentionables } from '../team-chat-api'
 import {
+  expiryFrom,
   searchSnippet,
   activeMentionQuery,
   addOptimistic,
@@ -233,5 +234,15 @@ describe('searchSnippet', () => {
 
   test('without terms it is a truncated preview', () => {
     expect(searchSnippet('hello there', [], names)).toEqual([{ text: 'hello there', match: false }])
+  })
+})
+
+describe('expiryFrom', () => {
+  const now = new Date(2026, 5, 10, 14, 0, 0)
+  test('minutes, end of today, 9am tomorrow, and never', () => {
+    expect(expiryFrom(30, now)).toBe(new Date(2026, 5, 10, 14, 30, 0).toISOString())
+    expect(expiryFrom('today', now)).toBe(new Date(2026, 5, 10, 23, 59, 59).toISOString())
+    expect(expiryFrom('tomorrow', now)).toBe(new Date(2026, 5, 11, 9, 0, 0).toISOString())
+    expect(expiryFrom(null, now)).toBeNull()
   })
 })

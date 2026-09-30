@@ -101,9 +101,54 @@ export interface SearchResponse {
   hasMore: boolean
 }
 
+export interface UserStatus {
+  emoji: string | null
+  text: string | null
+  expiresAt: string | null
+  dnd: boolean
+}
+
 export interface Mentionables {
   people: Array<{ id: string; name: string; email: string; image: string | null; role: string }>
   agents: Array<{ key: string; projectId: string | null; name: string; description: string | null; image: string | null }>
+  statuses?: Record<string, UserStatus>
+}
+
+export type NotifyLevel = 'all' | 'mentions' | 'none'
+export type MembershipNotifyLevel = NotifyLevel | 'default'
+
+export interface ChatSettings {
+  statusEmoji: string | null
+  statusText: string | null
+  statusExpiresAt: string | null
+  dndUntil: string | null
+  quietHours: string | null
+  timezone: string | null
+  notifyDefault: NotifyLevel
+  keywords: string[]
+  emailDigest: 'off' | 'daily'
+}
+
+export type InboxKind = 'mention' | 'dm' | 'thread' | 'reaction' | 'reminder' | 'keyword' | 'broadcast' | 'message'
+
+export interface InboxItem {
+  id: string
+  kind: InboxKind
+  conversationId: string | null
+  messageId: string | null
+  threadRootId: string | null
+  actorUserId: string | null
+  title: string
+  preview: string
+  readAt: string | null
+  createdAt: string
+  conversation: { id: string; kind: ConversationKind; name: string | null; slug: string | null } | null
+}
+
+export interface InboxPage {
+  items: InboxItem[]
+  unread: number
+  hasMore: boolean
 }
 
 export interface MessagePage {
@@ -136,10 +181,13 @@ export type TeamChatEvent =
       conversationId: string
       messageId: string
       threadRootId: string | null
-      reason: 'dm' | 'mention' | 'broadcast' | 'thread'
+      reason: 'dm' | 'mention' | 'keyword' | 'broadcast' | 'thread' | 'message'
       title: string
       body: string
     }
+  | { type: 'status.changed'; userId: string; status: UserStatus | null }
+  | { type: 'inbox.created'; item: InboxItem }
+  | { type: 'inbox.read'; unread: number }
 
 export const mentionToken = {
   user: (id: string) => `<@u:${id}>`,
@@ -188,6 +236,25 @@ export function teamChatApi() {
       const params = new URLSearchParams({ q, offset: String(opts.offset ?? 0), sort: opts.sort ?? 'relevance' })
       return (await http.get<SearchResponse>(`${ws(workspaceId)}/conversations/search?${params}`)).data
     },
+    async chatSettings(workspaceId: string): Promise<ChatSettings> {
+      return (await http.get<{ settings: ChatSettings }>(`${ws(workspaceId)}/chat-settings`)).data.settings
+    },
+    async updateChatSettings(workspaceId: string, patch: Partial<ChatSettings>): Promise<ChatSettings> {
+      return (await http.patch<{ settings: ChatSettings }>(`${ws(workspaceId)}/chat-settings`, patch)).data.settings
+    },
+    async inbox(workspaceId: string, opts: { unreadOnly?: boolean; before?: string; limit?: number } = {}): Promise<InboxPage> {
+      const q = new URLSearchParams()
+      if (opts.unreadOnly) q.set('filter', 'unread')
+      if (opts.before) q.set('before', opts.before)
+      if (opts.limit) q.set('limit', String(opts.limit))
+      return (await http.get<InboxPage>(`${ws(workspaceId)}/inbox?${q}`)).data
+    },
+    async markInboxRead(
+      workspaceId: string,
+      input: { ids?: string[]; all?: boolean; conversationId?: string; threadRootId?: string; unread?: boolean },
+    ): Promise<number> {
+      return (await http.post<{ updated: number }>(`${ws(workspaceId)}/inbox/read`, input)).data.updated
+    },
     async mentionables(workspaceId: string): Promise<Mentionables> {
       return (await http.get<Mentionables>(`${ws(workspaceId)}/mentionables`)).data
     },
@@ -212,7 +279,7 @@ export function teamChatApi() {
     async removeMember(id: string, memberId: string) {
       await http.delete(`${conv(id)}/members/${encodeURIComponent(memberId)}`)
     },
-    async updateMembership(id: string, patch: { starred?: boolean; muted?: boolean; notifyLevel?: string }) {
+    async updateMembership(id: string, patch: { starred?: boolean; muted?: boolean; notifyLevel?: MembershipNotifyLevel }) {
       await http.patch(`${conv(id)}/membership`, patch)
     },
     async messages(

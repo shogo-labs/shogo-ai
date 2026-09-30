@@ -34,6 +34,7 @@ import { createAgentTaskRoutes } from './routes/agent-tasks'
 import { startAgentTaskWorker, stopAgentTaskWorker } from './jobs/run-agent-task-dispatch'
 import { startAgentScheduleWorker, stopAgentScheduleWorker } from './jobs/run-agent-schedule-dispatch'
 import { startChatQueueWorker, stopChatQueueWorker } from './jobs/run-chat-queue-drain'
+import { startChannelWorkers, stopChannelWorkers } from './jobs/run-channel-workers'
 import { projectAuthConfigRoutes } from './routes/project-auth-config'
 import { diagnosticsRoutes } from '@shogo/shared-runtime'
 import { testsRoutes } from './routes/tests'
@@ -1570,6 +1571,7 @@ startAgentTaskWorker(getRuntimeManager())
 // Fire due agent-owned recurring schedules in the workspace runtime.
 startAgentScheduleWorker(getRuntimeManager())
 startChatQueueWorker()
+startChannelWorkers()
 app.route('/api', historyRoutes({ resolveUserId: getAuthUserId }))
 // Workspace-level Slack base agent. Slack's Events API must terminate at one
 // stable API URL, then route each request to an enabled project runtime.
@@ -9006,6 +9008,7 @@ async function gracefulShutdown(signal: string) {
   stopAgentTaskWorker()
   stopAgentScheduleWorker()
   stopChatQueueWorker()
+  stopChannelWorkers()
   console.log(`[Server] Received ${signal}, starting graceful shutdown...`)
 
   // Stop warm pool reconciliation so GC doesn't delete services during drain

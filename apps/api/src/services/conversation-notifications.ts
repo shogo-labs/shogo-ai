@@ -12,14 +12,20 @@ import { publishConversationEvent } from '../lib/conversation-bus'
 import { sendPushToUser } from '../lib/push-notifications'
 import { collectMentionIds, renderMentionsAsText } from './conversation-mentions'
 import { registerAfterPostHook } from './conversation-pipeline'
-import { agentDisplayName, getWorkspaceRole, isOpenKind, type PostMessageResult } from './conversation.service'
+import {
+  agentDisplayName, getWorkspaceRole, isOpenKind, onReactionAdded,
+  type PostMessageResult, type ReactionAddedEvent,
+} from './conversation.service'
 import { getPresence } from './conversation-presence'
+import { getSettingsRows, isSilenced, parseKeywords } from './chat-settings'
+import { createInboxItems } from './chat-inbox'
 
 const db = prisma as any
 
-export type NotificationReason = 'dm' | 'mention' | 'broadcast' | 'thread'
+export type NotificationReason = 'dm' | 'mention' | 'keyword' | 'broadcast' | 'thread' | 'message'
 export const PUSH_COALESCE_MS = 15_000
 const BODY_CHARS = 180
+const INBOX_REASONS = new Set<NotificationReason>(['mention', 'keyword', 'broadcast', 'thread'])
 
 type Sender = (userId: string, payload: Parameters<typeof sendPushToUser>[1]) => Promise<void>
 let sendPush: Sender = sendPushToUser
@@ -28,27 +34,53 @@ const lastPush = new Map<string, number>()
 export interface NotificationRecipient {
   userId: string
   reason: NotificationReason
+  /** DND or quiet hours: record it in the inbox but don't alert. */
+  silenced?: boolean
 }
 
 function isDirect(kind: string): boolean {
   return kind === 'dm' || kind === 'group_dm'
 }
 
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+export function matchesKeyword(text: string, keywords: string[]): boolean {
+  if (!text || !keywords.length) return false
+  const plain = text.replace(/<[@#!][^>]*>/g, ' ')
+  return keywords.some((k) =>
+    new RegExp(`(^|[^\\p{L}\\p{N}_])${escapeRegExp(k)}($|[^\\p{L}\\p{N}_])`, 'iu').test(plain))
+}
+
 /**
  * Who should hear about a message, with the strongest reason for each.
- * Direct mentions cut through mute; broadcasts and thread follow-ups don't.
+ * Direct mentions cut through mute; everything else respects mute and the
+ * member's effective level (their channel override, else their workspace
+ * default; DMs default to every message).
  */
 export async function resolveRecipients(result: PostMessageResult): Promise<NotificationRecipient[]> {
   const { row, conversation, mentions } = result
   if (row.authorType === 'system' || conversation.kind === 'activity') return []
   if (row.authorType === 'agent' && row.agentStatus === 'running') return []
+  const direct = isDirect(conversation.kind)
 
   const members = await db.conversationMember.findMany({
     where: { conversationId: conversation.id, memberType: 'user', userId: { not: null } },
     select: { userId: true, muted: true, notifyLevel: true },
   })
-  const byUser = new Map<string, { muted: boolean; notifyLevel: string }>(
-    members.map((m: any) => [m.userId, { muted: !!m.muted, notifyLevel: m.notifyLevel ?? 'all' }]),
+  const mentionedIds = mentions.filter((m) => m.targetType === 'user').map((m) => m.userId)
+  const settings = await getSettingsRows(
+    conversation.workspaceId,
+    [...new Set([...members.map((m: any) => m.userId), ...mentionedIds])],
+  )
+  const levelFor = (userId: string, stored: string | null | undefined): string => {
+    if (stored === 'all' || stored === 'mentions' || stored === 'none') return stored
+    if (direct) return 'all'
+    return settings.get(userId)?.notifyDefault ?? 'mentions'
+  }
+  const byUser = new Map<string, { muted: boolean; level: string }>(
+    members.map((m: any) => [m.userId, { muted: !!m.muted, level: levelFor(m.userId, m.notifyLevel) }]),
   )
   const reasons = new Map<string, NotificationReason>()
   const add = (userId: string, reason: NotificationReason) => {
@@ -57,24 +89,31 @@ export async function resolveRecipients(result: PostMessageResult): Promise<Noti
   }
   const quiet = (userId: string) => {
     const m = byUser.get(userId)
-    return !m || m.muted || m.notifyLevel === 'none'
+    return !m || m.muted || m.level === 'none'
   }
 
   for (const m of mentions) {
     if (m.targetType !== 'user') continue
     const member = byUser.get(m.userId)
-    if (member?.notifyLevel === 'none') continue
+    if (member?.level === 'none') continue
     if (!member && !isOpenKind(conversation.kind)) continue
     if (!member && !(await getWorkspaceRole(conversation.workspaceId, m.userId))) continue
     add(m.userId, 'mention')
   }
 
-  if (isDirect(conversation.kind)) {
+  if (direct) {
     for (const userId of byUser.keys()) if (!quiet(userId)) add(userId, 'dm')
   }
 
+  if (!direct && row.text) {
+    for (const userId of byUser.keys()) {
+      if (quiet(userId)) continue
+      if (matchesKeyword(row.text, parseKeywords(settings.get(userId)?.keywords))) add(userId, 'keyword')
+    }
+  }
+
   const broadcast = mentions.find((m) => m.targetType === 'channel' || m.targetType === 'here')
-  if (broadcast && !isDirect(conversation.kind)) {
+  if (broadcast && !direct) {
     let ids = [...byUser.keys()].filter((id) => !quiet(id))
     if (broadcast.targetType === 'here') {
       const presence = await getPresence(conversation.workspaceId, ids)
@@ -97,7 +136,12 @@ export async function resolveRecipients(result: PostMessageResult): Promise<Noti
     for (const id of followers) if (!quiet(id)) add(id, 'thread')
   }
 
-  return [...reasons].map(([userId, reason]) => ({ userId, reason }))
+  if (!direct && !row.threadRootId) {
+    for (const [userId, m] of byUser) if (!quiet(userId) && m.level === 'all') add(userId, 'message')
+  }
+
+  const now = new Date()
+  return [...reasons].map(([userId, reason]) => ({ userId, reason, silenced: isSilenced(settings.get(userId), now) }))
 }
 
 async function describe(result: PostMessageResult) {
@@ -136,7 +180,21 @@ export async function notifyForMessage(result: PostMessageResult): Promise<Notif
     workspaceId: conversation.workspaceId,
   }
 
-  for (const { userId, reason } of recipients) {
+  await createInboxItems(recipients
+    .filter((r) => INBOX_REASONS.has(r.reason))
+    .map((r) => ({
+      workspaceId: conversation.workspaceId,
+      userId: r.userId,
+      kind: r.reason,
+      conversationId: conversation.id,
+      messageId: row.id,
+      actorUserId: row.authorUserId ?? null,
+      title,
+      preview: body,
+    })))
+
+  for (const { userId, reason, silenced } of recipients) {
+    if (silenced) continue
     if (presence[userId] === 'active') {
       publishConversationEvent(
         conversation.workspaceId,
@@ -157,6 +215,29 @@ export async function notifyForMessage(result: PostMessageResult): Promise<Notif
   return recipients
 }
 
+export async function notifyForReaction({ message, conversation, reactorId, emoji }: ReactionAddedEvent): Promise<void> {
+  const authorId = message.authorUserId
+  if (!authorId || authorId === reactorId || message.authorType !== 'user') return
+  const existing = await db.chatInboxItem.findFirst({
+    where: { userId: authorId, kind: 'reaction', messageId: message.id, actorUserId: reactorId, readAt: null },
+    select: { id: true },
+  })
+  if (existing) return
+  const reactor = await db.user.findUnique({ where: { id: reactorId }, select: { name: true, email: true } })
+  const who = reactor?.name || reactor?.email || 'Someone'
+  const preview = renderMentionsAsText(message.text ?? '').replace(/\s+/g, ' ').trim() || 'your message'
+  await createInboxItems([{
+    workspaceId: conversation.workspaceId,
+    userId: authorId,
+    kind: 'reaction',
+    conversationId: conversation.id,
+    messageId: message.id,
+    actorUserId: reactorId,
+    title: `${who} reacted ${emoji} to your message`,
+    preview: preview.slice(0, BODY_CHARS),
+  }])
+}
+
 let registered = false
 
 export function registerConversationNotifications(): void {
@@ -165,6 +246,7 @@ export function registerConversationNotifications(): void {
   registerAfterPostHook(async (result) => {
     await notifyForMessage(result)
   })
+  onReactionAdded(notifyForReaction)
 }
 
 export function _setPushSenderForTests(sender: Sender | null): void {

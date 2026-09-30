@@ -89,6 +89,9 @@ export const KNOWN_JOB_IDS: Record<string, bigint> = Object.freeze({
   'poll-affiliate-content': jobNameToLockId('poll-affiliate-content'),
   'poll-custom-domains': jobNameToLockId('poll-custom-domains'),
   'chat-queue-drain': jobNameToLockId('chat-queue-drain'),
+  'channels-email-digest': jobNameToLockId('channels-email-digest'),
+  'channels-scheduler': jobNameToLockId('channels-scheduler'),
+  'channels-indexer': jobNameToLockId('channels-indexer'),
 }) as Record<string, bigint>
 
 export type GlobalJobLockResult<T> =
