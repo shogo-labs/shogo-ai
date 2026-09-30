@@ -56,7 +56,7 @@ CREATE TABLE "new_meetings" (
 INSERT INTO "new_meetings" ("audioPath", "createdAt", "duration", "id", "projectId", "status", "summary", "title", "transcript", "updatedAt", "workspaceId") SELECT "audioPath", "createdAt", "duration", "id", "projectId", "status", "summary", "title", "transcript", "updatedAt", "workspaceId" FROM "meetings";
 DROP TABLE "meetings";
 ALTER TABLE "new_meetings" RENAME TO "meetings";
-CREATE UNIQUE INDEX "meetings_recordingId_key" ON "meetings"("recordingId");
+CREATE UNIQUE INDEX "meetings_workspaceId_recordingId_key" ON "meetings"("workspaceId", "recordingId");
 CREATE UNIQUE INDEX "meetings_shareToken_key" ON "meetings"("shareToken");
 CREATE INDEX "meetings_workspaceId_idx" ON "meetings"("workspaceId");
 CREATE INDEX "meetings_workspaceId_createdAt_idx" ON "meetings"("workspaceId", "createdAt");

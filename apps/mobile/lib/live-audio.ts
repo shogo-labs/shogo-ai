@@ -25,14 +25,14 @@ export interface LiveChunk {
 /**
  * Index to cut `samples` at: the centre of the quietest 100 ms window between
  * the minimum and maximum chunk length. Returns 0 when not enough audio is
- * buffered yet.
+ * buffered yet. A forced cut takes everything that fits in one chunk.
  */
 export function pickCutIndex(samples: Float32Array, sampleRate: number, force = false): number {
   const min = Math.floor(LIVE_MIN_CHUNK_SECONDS * sampleRate)
   const target = Math.floor(LIVE_TARGET_CHUNK_SECONDS * sampleRate)
   const max = Math.floor(LIVE_MAX_CHUNK_SECONDS * sampleRate)
   if (samples.length < (force ? 1 : target)) return 0
-  if (force && samples.length < min) return samples.length
+  if (force && samples.length <= max) return samples.length
   const end = Math.min(samples.length, max)
   const window = Math.max(1, Math.floor(sampleRate / 10))
   let bestIndex = end
@@ -219,7 +219,7 @@ export function startLiveCapture(stream: MediaStream, onChunk: (chunk: LiveChunk
         queue.length = 0
         lost = true
       } else {
-        emit(true)
+        while (pendingLength > 0) emit(true)
       }
       void ctx.close().catch(() => {})
       const timeout = new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), options?.timeoutMs ?? 10_000))

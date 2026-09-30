@@ -14,7 +14,7 @@ ALTER TABLE "meetings" ADD COLUMN "userId" TEXT;
 ALTER TABLE "meetings" ADD COLUMN "shareToken" TEXT;
 ALTER TABLE "meetings" ADD COLUMN "sharedAt" TIMESTAMP(3);
 
-CREATE UNIQUE INDEX "meetings_recordingId_key" ON "meetings"("recordingId");
+CREATE UNIQUE INDEX "meetings_workspaceId_recordingId_key" ON "meetings"("workspaceId", "recordingId");
 CREATE UNIQUE INDEX "meetings_shareToken_key" ON "meetings"("shareToken");
 CREATE INDEX "meetings_workspaceId_createdAt_idx" ON "meetings"("workspaceId", "createdAt");
 CREATE INDEX "meetings_userId_idx" ON "meetings"("userId");

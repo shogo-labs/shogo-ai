@@ -2028,7 +2028,7 @@ model Meeting {
   status        String    @default("recording")
   source        String    @default("desktop")
   app           String?
-  recordingId   String?   @unique
+  recordingId   String?
   userId        String?
   shareToken    String?   @unique
   sharedAt      DateTime?
@@ -2040,6 +2040,7 @@ model Meeting {
   project   Project?  @relation(fields: [projectId], references: [id], onDelete: SetNull)
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
+  @@unique([workspaceId, recordingId])
   @@index([workspaceId])
   @@index([workspaceId, createdAt])
   @@index([projectId])

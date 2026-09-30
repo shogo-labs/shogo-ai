@@ -21,8 +21,10 @@ import {
   cleanMeetingNotes,
   defaultMeetingTitle,
   enhanceMeeting,
+  findRecordingDraft,
   friendlyMeetingError,
   isInterruptedDraft,
+  isUsableTemplateId,
   listMeetingTemplates,
   meetingToMarkdown,
   newShareToken,
@@ -38,7 +40,7 @@ import {
 import { isBuiltinTemplateId } from '../services/meeting-templates'
 import type { WorkspaceAgentAuthorize, WorkspaceAgentAuthContext } from './workspace-agent'
 
-const db = prisma as any
+const db = prisma
 
 /** Whisper's upload limit. Mobile records small mono AAC to stay under it. */
 export const MAX_MEETING_UPLOAD_BYTES = 25 * 1024 * 1024
@@ -51,6 +53,16 @@ export interface WorkspaceMeetingRoutesConfig {
 
 function error(c: any, status: number, code: string, message: string) {
   return c.json({ error: { code, message } }, status)
+}
+
+function invalidTemplate(c: any) {
+  return error(c, 400, 'invalid_template', 'Pick a built-in template or one from this workspace')
+}
+
+/** A `limit` query value as an integer in [1, max]; `fallback` when absent or malformed. */
+export function clampLimit(value: string | undefined, fallback: number, max: number): number {
+  const n = Math.floor(Number(value))
+  return Number.isFinite(n) && n >= 1 ? Math.min(n, max) : fallback
 }
 
 function recordingsDir(): string {
@@ -109,9 +121,9 @@ export function workspaceMeetingRoutes(config: WorkspaceMeetingRoutesConfig): Ho
     if (auth instanceof Response) return auth
     const q = c.req.query('q')?.trim()
     if (q) {
-      return c.json({ results: await searchMeetings(auth.workspaceId, q, { limit: Number(c.req.query('limit')) || 20 }) })
+      return c.json({ results: await searchMeetings(auth.workspaceId, q, { limit: clampLimit(c.req.query('limit'), 20, 50) }) })
     }
-    const take = Math.min(Number(c.req.query('limit')) || 100, 200)
+    const take = clampLimit(c.req.query('limit'), 100, 200)
     const meetings = await db.meeting.findMany({
       where: { workspaceId: auth.workspaceId },
       orderBy: { createdAt: 'desc' },
@@ -127,7 +139,7 @@ export function workspaceMeetingRoutes(config: WorkspaceMeetingRoutesConfig): Ho
     const q = c.req.query('q')?.trim() ?? ''
     const sinceDays = Number(c.req.query('sinceDays'))
     const since = Number.isFinite(sinceDays) && sinceDays > 0 ? new Date(Date.now() - sinceDays * 86_400_000) : undefined
-    const results = await searchMeetings(auth.workspaceId, q, { limit: Number(c.req.query('limit')) || 10, since })
+    const results = await searchMeetings(auth.workspaceId, q, { limit: clampLimit(c.req.query('limit'), 10, 50), since })
     return c.json({ results })
   })
 
@@ -177,8 +189,8 @@ export function workspaceMeetingRoutes(config: WorkspaceMeetingRoutesConfig): Ho
   router.get(`${base}/recordings/:recordingId`, async (c) => {
     const auth = await scope(c)
     if (auth instanceof Response) return auth
-    const meeting = await db.meeting.findUnique({ where: { recordingId: c.req.param('recordingId') } })
-    if (!meeting || meeting.workspaceId !== auth.workspaceId) return error(c, 404, 'not_found', 'Meeting not found')
+    const meeting = await findRecordingDraft(auth.workspaceId, c.req.param('recordingId'))
+    if (!meeting) return error(c, 404, 'not_found', 'Meeting not found')
     return c.json({ meeting: serializeMeeting(meeting) })
   })
 
@@ -191,7 +203,6 @@ export function workspaceMeetingRoutes(config: WorkspaceMeetingRoutesConfig): Ho
       c.req.param('recordingId'),
       body,
     )
-    if (!meeting) return error(c, 404, 'not_found', 'Meeting not found')
     return c.json({ meeting: serializeMeeting(meeting) })
   }
   router.put(`${base}/recordings/:recordingId`, saveRecordingDraft)
@@ -212,6 +223,8 @@ export function workspaceMeetingRoutes(config: WorkspaceMeetingRoutesConfig): Ho
     const body = await c.req.json().catch(() => ({}))
     const notes = cleanMeetingNotes(body.notes)
     if (!notes?.trim()) return error(c, 400, 'notes_required', 'Add some notes to create a meeting without audio')
+    const templateId = typeof body.templateId === 'string' ? body.templateId : null
+    if (templateId && !(await isUsableTemplateId(auth.workspaceId, templateId))) return invalidTemplate(c)
     const meeting = await db.meeting.create({
       data: {
         workspaceId: auth.workspaceId,
@@ -220,7 +233,7 @@ export function workspaceMeetingRoutes(config: WorkspaceMeetingRoutesConfig): Ho
         notes,
         status: 'ready',
         source: 'upload',
-        templateId: typeof body.templateId === 'string' ? body.templateId : null,
+        templateId,
       },
     })
     void enhanceMeeting(meeting.id).catch(() => {})
@@ -263,9 +276,9 @@ export function workspaceMeetingRoutes(config: WorkspaceMeetingRoutesConfig): Ho
     const notes = cleanMeetingNotes(String(form.get('notes') || '')) || null
     const recordingId = String(form.get('recordingId') || '').trim()
     // Finish the draft the live transcript was written into, if there is one.
-    const draft = recordingId ? await db.meeting.findUnique({ where: { recordingId } }) : null
+    const draft = recordingId ? await findRecordingDraft(auth.workspaceId, recordingId) : null
     const meeting =
-      draft && draft.workspaceId === auth.workspaceId && (draft.status === 'recording' || isInterruptedDraft(draft))
+      draft && (draft.status === 'recording' || isInterruptedDraft(draft))
         ? await db.meeting.update({
             where: { id: draft.id },
             data: {
@@ -327,7 +340,10 @@ export function workspaceMeetingRoutes(config: WorkspaceMeetingRoutesConfig): Ho
     const notes = cleanMeetingNotes(body.notes)
     if (notes !== undefined) data.notes = notes
     if (typeof body.enhancedNotes === 'string') data.enhancedNotes = body.enhancedNotes.slice(0, MAX_MEETING_NOTES_CHARS)
-    if (typeof body.templateId === 'string') data.templateId = body.templateId
+    if (typeof body.templateId === 'string') {
+      if (!(await isUsableTemplateId(auth.workspaceId, body.templateId))) return invalidTemplate(c)
+      data.templateId = body.templateId
+    }
     if (Array.isArray(body.actionItems)) {
       data.actionItems = JSON.stringify(
         body.actionItems
@@ -354,11 +370,13 @@ export function workspaceMeetingRoutes(config: WorkspaceMeetingRoutesConfig): Ho
     }
     const body = await c.req.json().catch(() => ({}))
     const templateId = typeof body.templateId === 'string' ? body.templateId : undefined
+    if (templateId && !(await isUsableTemplateId(auth.workspaceId, templateId))) return invalidTemplate(c)
     const wait = body.wait === true
     const run = enhanceMeeting(meeting.id, { templateId })
     if (wait) {
       await run
       const updated = await db.meeting.findUnique({ where: { id: meeting.id } })
+      if (!updated) return error(c, 404, 'not_found', 'Meeting not found')
       return c.json({ meeting: serializeMeeting(updated) })
     }
     void run.catch(() => {})
@@ -435,7 +453,6 @@ export async function handleLiveChunk(
   }
 
   const draft = await upsertRecordingDraft(owner, recordingId, {})
-  if (!draft) return error(c, 404, 'not_found', 'Meeting not found')
   try {
     const result = await appendLiveTranscript(draft.id, { audio, start, seq })
     if (!result.ok) {

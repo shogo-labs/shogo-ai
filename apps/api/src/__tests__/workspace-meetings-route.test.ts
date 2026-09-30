@@ -34,7 +34,14 @@ function matches(row: any, where: any): boolean {
 }
 
 function findBy(store: Map<string, any>, where: any) {
-  return Array.from(store.values()).find((row) => matches(row, where)) ?? null
+  const { workspaceId_recordingId: compound, ...rest } = where ?? {}
+  return Array.from(store.values()).find((row) => matches(row, { ...rest, ...compound })) ?? null
+}
+
+function uniqueViolation() {
+  const err: any = new Error('Unique constraint failed')
+  err.code = 'P2002'
+  return err
 }
 
 const prismaMock = {
@@ -49,6 +56,9 @@ const prismaMock = {
         .sort((a, b) => +b.createdAt - +a.createdAt)
         .slice(0, take ?? 1000),
     create: async ({ data }: any) => {
+      if (data.recordingId && findBy(meetings, { workspaceId: data.workspaceId, recordingId: data.recordingId })) {
+        throw uniqueViolation()
+      }
       const row = { id: `m${++seq}`, createdAt: new Date(Date.now() + seq), transcript: null, ...data }
       meetings.set(row.id, row)
       return row
@@ -176,6 +186,18 @@ describe('scoping', () => {
     expect(list.meetings).toHaveLength(0)
   })
 
+  test('list limits are clamped to a sane range', async () => {
+    for (let i = 0; i < 3; i++) seed({})
+    for (const [limit, count] of [['-5', 3], ['0', 3], ['abc', 3], ['2', 2], ['2.9', 2], ['9999', 3]] as const) {
+      const body = await (await req('GET', `/workspaces/ws-me/meetings?limit=${limit}`)).json()
+      expect(body.meetings).toHaveLength(count)
+    }
+    const { clampLimit } = await import('../routes/workspace-meetings')
+    expect(clampLimit('-5', 100, 200)).toBe(100)
+    expect(clampLimit(undefined, 10, 50)).toBe(10)
+    expect(clampLimit('9999', 10, 50)).toBe(50)
+  })
+
   test('audioPath never leaves the server', async () => {
     const m = seed({ audioPath: '/secret/recordings/a.wav', transcript: TRANSCRIPT })
     const body = await (await req('GET', `/workspaces/ws-me/meetings/${m.id}`)).json()
@@ -200,10 +222,23 @@ describe('island recording drafts', () => {
     expect(fetched.meeting.notes).toBe('ask about pricing')
   })
 
-  test("cannot write into another workspace's draft", async () => {
-    seed({ workspaceId: 'ws-other', recordingId: 'rec-2', status: 'recording', notes: 'theirs' })
-    expect((await req('PUT', '/workspaces/ws-me/meetings/recordings/rec-2', { notes: 'mine' })).status).toBe(404)
-    expect(findBy(meetings, { recordingId: 'rec-2' }).notes).toBe('theirs')
+  test("the same recording id in another workspace is a separate draft", async () => {
+    const theirs = seed({ workspaceId: 'ws-other', recordingId: 'rec-2', status: 'recording', notes: 'theirs' })
+    expect((await req('GET', '/workspaces/ws-me/meetings/recordings/rec-2')).status).toBe(404)
+    const mine = await (await req('PUT', '/workspaces/ws-me/meetings/recordings/rec-2', { notes: 'mine' })).json()
+    expect(mine.meeting.id).not.toBe(theirs.id)
+    expect(mine.meeting.notes).toBe('mine')
+    expect(meetings.get(theirs.id).notes).toBe('theirs')
+  })
+
+  test('concurrent first writes create one draft', async () => {
+    const results = await Promise.all([
+      service.upsertRecordingDraft({ workspaceId: 'ws-me', userId: 'user-1' }, 'rec-race', { notes: 'typed' }),
+      service.upsertRecordingDraft({ workspaceId: 'ws-me', userId: 'user-1' }, 'rec-race', {}),
+    ])
+    expect(results[0].id).toBe(results[1].id)
+    expect(Array.from(meetings.values()).filter((m) => m.recordingId === 'rec-race')).toHaveLength(1)
+    expect(findBy(meetings, { recordingId: 'rec-race' }).notes).toBe('typed')
   })
 
   test('enhance waits until the recording is transcribed', async () => {
@@ -290,6 +325,24 @@ describe('templates', () => {
     expect((await req('POST', '/workspaces/ws-me/meetings/templates', { name: '', instructions: 'x' })).status).toBe(400)
     expect((await req('PATCH', '/workspaces/ws-me/meetings/templates/builtin:general', { name: 'x' })).status).toBe(400)
     expect((await req('DELETE', '/workspaces/ws-me/meetings/templates/builtin:general')).status).toBe(400)
+  })
+
+  test("meetings can only use built-ins or the workspace's own templates", async () => {
+    templates.set('t-theirs', { id: 't-theirs', workspaceId: 'ws-other', name: 'Theirs', instructions: 'x' })
+    templates.set('t-mine', { id: 't-mine', workspaceId: 'ws-me', name: 'Mine', instructions: 'x' })
+    const m = seed({ notes: 'x' })
+    for (const templateId of ['t-theirs', 'builtin:nope', 'made-up']) {
+      const patch = await req('PATCH', `/workspaces/ws-me/meetings/${m.id}`, { templateId })
+      expect(patch.status).toBe(400)
+      expect((await patch.json()).error.code).toBe('invalid_template')
+      expect((await req('POST', '/workspaces/ws-me/meetings', { notes: 'x', templateId })).status).toBe(400)
+      expect((await req('POST', `/workspaces/ws-me/meetings/${m.id}/enhance`, { templateId })).status).toBe(400)
+    }
+    expect(meetings.get(m.id).templateId).toBeUndefined()
+    for (const templateId of ['t-mine', 'builtin:standup']) {
+      const body = await (await req('PATCH', `/workspaces/ws-me/meetings/${m.id}`, { templateId })).json()
+      expect(body.meeting.templateId).toBe(templateId)
+    }
   })
 
   test("cannot edit another workspace's template", async () => {
@@ -507,6 +560,36 @@ describe('abandoned recording drafts', () => {
     expect((await res.json()).meeting.id).toBe(draft.id)
     await new Promise((r) => setTimeout(r, 20))
     expect(JSON.parse(meetings.get(draft.id).transcript).text).toBe('the whole meeting')
+  })
+})
+
+describe('interrupted transcription and notes', () => {
+  const minutesAgo = (n: number) => new Date(Date.now() - n * 60_000)
+
+  test('stale runs fail so the user can retry; fresh runs are untouched', async () => {
+    generated = '## Summary\n- From the live transcript'
+    const stuckWithLive = seed({ status: 'transcribing', transcript: TRANSCRIPT, updatedAt: minutesAgo(31) })
+    const stuckEmpty = seed({ status: 'transcribing', updatedAt: minutesAgo(45) })
+    const transcribing = seed({ status: 'transcribing', updatedAt: minutesAgo(5) })
+    const stuckNotes = seed({ enhanceStatus: 'running', updatedAt: minutesAgo(11) })
+    const writingNotes = seed({ enhanceStatus: 'running', updatedAt: minutesAgo(2) })
+
+    expect(await service.sweepStuckMeetings()).toBe(3)
+    await new Promise((r) => setTimeout(r, 10))
+
+    expect(meetings.get(stuckWithLive.id).status).toBe('ready')
+    const kept = JSON.parse(meetings.get(stuckWithLive.id).transcript)
+    expect(kept.segments).toHaveLength(1)
+    expect(kept.error).toContain('interrupted')
+    expect(meetings.get(stuckWithLive.id).enhancedNotes).toContain('live transcript')
+
+    expect(meetings.get(stuckEmpty.id).status).toBe('error')
+    expect(JSON.parse(meetings.get(stuckEmpty.id).transcript).error).toContain('interrupted')
+    expect(meetings.get(transcribing.id).status).toBe('transcribing')
+
+    expect(meetings.get(stuckNotes.id).enhanceStatus).toBe('error')
+    expect(meetings.get(stuckNotes.id).enhanceError).toContain('interrupted')
+    expect(meetings.get(writingNotes.id).enhanceStatus).toBe('running')
   })
 })
 

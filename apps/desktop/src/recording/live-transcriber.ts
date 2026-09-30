@@ -81,7 +81,7 @@ export class LiveTranscriber {
       this.queue = []
       this.lost = true
     } else {
-      this.emit(true)
+      while (this.micLength > 0) this.emit(true)
     }
     this.stopped = true
   }
@@ -182,7 +182,8 @@ export function pickCutIndex(samples: Int16Array, force: boolean, sampleRate = L
   const target = TARGET_SECONDS * sampleRate
   const max = MAX_SECONDS * sampleRate
   if (samples.length < (force ? 1 : target)) return 0
-  if (force && samples.length < min) return samples.length
+  // A forced cut takes everything that fits in one chunk.
+  if (force && samples.length <= max) return samples.length
   const end = Math.min(samples.length, max)
   const window = Math.floor(sampleRate / 10)
   let best = end

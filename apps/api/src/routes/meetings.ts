@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { Hono } from 'hono'
-import { prisma } from '../lib/prisma'
+import { prisma, type Meeting } from '../lib/prisma'
 import {
   isLocalTranscriptionAvailable,
   getSherpaOfflinePath,
@@ -17,7 +17,9 @@ import {
 } from '../services/recording.service'
 import {
   MEETING_LIST_SELECT,
+  cleanMeetingNotes,
   defaultMeetingTitle,
+  findRecordingDraft,
   isInterruptedDraft,
   parseLiveChunks,
   removeAudioFiles,
@@ -60,7 +62,9 @@ function getScriptInterpreter(): string {
   return process.env.SHOGO_BUN_PATH || 'bun'
 }
 
-const db = prisma as any
+const db = prisma
+// LocalConfig exists only in the desktop (SQLite) schema.
+const localDb = prisma as any
 
 export const meetingRoutes = new Hono()
 
@@ -89,16 +93,13 @@ async function finishRecordedMeeting(
   owner: MeetingOwner,
   input: { audioPath: string; duration?: number | null; recordingId?: string | null; title?: string | null; projectId?: string | null },
   options: { preferLocal?: boolean; liveChunks?: number } = {},
-): Promise<{ meeting: any; created: boolean }> {
-  const draft = input.recordingId
-    ? await db.meeting.findUnique({ where: { recordingId: input.recordingId } })
-    : null
+): Promise<{ meeting: Meeting; created: boolean }> {
+  const draft = input.recordingId ? await findRecordingDraft(owner.workspaceId, input.recordingId) : null
   const existing =
-    draft && draft.workspaceId === owner.workspaceId
-      ? draft
-      : input.audioPath
-        ? await db.meeting.findFirst({ where: { audioPath: input.audioPath, workspaceId: owner.workspaceId } })
-        : null
+    draft ??
+    (input.audioPath
+      ? await db.meeting.findFirst({ where: { audioPath: input.audioPath, workspaceId: owner.workspaceId } })
+      : null)
 
   if (existing && existing.status !== 'recording' && !isInterruptedDraft(existing)) {
     return { meeting: existing, created: false }
@@ -150,8 +151,8 @@ meetingRoutes.get('/api/local/meetings/workspace', async (c) => {
 meetingRoutes.get('/api/local/meetings/recordings/:recordingId', async (c) => {
   const owner = await resolveOwner(c)
   if (!owner) return c.json({ error: 'No personal workspace found' }, 404)
-  const meeting = await db.meeting.findUnique({ where: { recordingId: c.req.param('recordingId') } })
-  if (!meeting || meeting.workspaceId !== owner.workspaceId) return c.json({ error: 'Meeting not found' }, 404)
+  const meeting = await findRecordingDraft(owner.workspaceId, c.req.param('recordingId'))
+  if (!meeting) return c.json({ error: 'Meeting not found' }, 404)
   return c.json({ meeting: serializeMeeting(meeting) })
 })
 
@@ -160,7 +161,6 @@ meetingRoutes.put('/api/local/meetings/recordings/:recordingId', async (c) => {
   if (!owner) return c.json({ error: 'No personal workspace found' }, 404)
   const body = await c.req.json().catch(() => ({}))
   const meeting = await upsertRecordingDraft(owner, c.req.param('recordingId'), body)
-  if (!meeting) return c.json({ error: 'Meeting not found' }, 404)
   return c.json({ meeting: serializeMeeting(meeting) })
 })
 
@@ -233,7 +233,7 @@ function configToMeetingResponse(rows: { key: string; value: string }[]) {
 
 meetingRoutes.get('/api/local/meetings/config', async (c) => {
   try {
-    const rows = await db.localConfig.findMany({
+    const rows = await localDb.localConfig.findMany({
       where: { key: { in: [...MEETING_CONFIG_KEYS] } },
     })
     return c.json(configToMeetingResponse(rows))
@@ -262,7 +262,7 @@ meetingRoutes.put('/api/local/meetings/config', async (c) => {
       if (!(field in body)) continue
       const value = String(body[field])
       ops.push(
-        db.localConfig.upsert({
+        localDb.localConfig.upsert({
           where: { key: dbKey },
           update: { value },
           create: { key: dbKey, value },
@@ -272,7 +272,7 @@ meetingRoutes.put('/api/local/meetings/config', async (c) => {
 
     await Promise.all(ops)
 
-    const rows = await db.localConfig.findMany({
+    const rows = await localDb.localConfig.findMany({
       where: { key: { in: [...MEETING_CONFIG_KEYS] } },
     })
     return c.json(configToMeetingResponse(rows))
@@ -614,12 +614,13 @@ meetingRoutes.put('/api/local/meetings/:id', async (c) => {
     const meeting = await loadOwnedMeeting(c, c.req.param('id'))
     if (!meeting) return c.json({ error: 'Meeting not found' }, 404)
 
+    const notes = cleanMeetingNotes(body.notes)
     const updated = await db.meeting.update({
       where: { id: meeting.id },
       data: {
         ...(body.title !== undefined ? { title: body.title } : {}),
         ...(body.projectId !== undefined ? { projectId: body.projectId } : {}),
-        ...(body.notes !== undefined ? { notes: body.notes } : {}),
+        ...(notes !== undefined ? { notes } : {}),
       },
     })
 
