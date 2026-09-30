@@ -184,13 +184,20 @@ function parseSherpaOutput(stdout: string): TranscriptionResult {
 // Cloud transcription (OpenAI Whisper API)
 // ---------------------------------------------------------------------------
 
+/** Proxy credentials to bill a transcription to, instead of the server's own. */
+export interface CloudTranscriptionAuth {
+  proxyUrl: string
+  proxyToken: string
+}
+
 export async function transcribeCloud(
   audioPath: string,
   language?: string,
+  auth?: CloudTranscriptionAuth,
 ): Promise<TranscriptionResult> {
   const apiKey = process.env.OPENAI_API_KEY
-  const proxyUrl = process.env.AI_PROXY_URL
-  const proxyToken = process.env.AI_PROXY_TOKEN
+  const proxyUrl = auth?.proxyUrl ?? process.env.AI_PROXY_URL
+  const proxyToken = auth?.proxyToken ?? process.env.AI_PROXY_TOKEN
 
   // AI_PROXY_URL is set to `${apiBase}/api/ai/v1` (see build-workspace-env.ts /
   // build-project-env.ts / internal-proxy-config.ts). Strip a trailing `/v1`
@@ -260,9 +267,10 @@ export async function transcribe(
     model?: string
     language?: string
     preferLocal?: boolean
+    cloudAuth?: CloudTranscriptionAuth
   } = {},
 ): Promise<TranscriptionResult> {
-  const { model = 'base.en', language, preferLocal = true } = options
+  const { model = 'base.en', language, preferLocal = true, cloudAuth } = options
 
   if (preferLocal) {
     const binPath = getSherpaOfflinePath()
@@ -277,7 +285,7 @@ export async function transcribe(
     }
   }
 
-  return transcribeCloud(audioPath, language)
+  return transcribeCloud(audioPath, language, cloudAuth)
 }
 
 export function isLocalTranscriptionAvailable(model: string = 'base.en'): boolean {

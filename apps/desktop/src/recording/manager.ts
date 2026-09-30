@@ -48,6 +48,8 @@ export interface RecordingManagerOptions {
   /** Fired on significant lifecycle milestones so the main-process code can
    *  forward them to the renderer / log them. */
   onEvent?: (event: RecordingEvent) => void
+  /** Every PCM chunk written for the current session (feeds the live transcript). */
+  onPcm?: (sessionId: string, source: 'mic' | 'system', bytes: Uint8Array, meta: { sampleRate: number; channels: number }) => void
 }
 
 export type RecordingEvent =
@@ -156,7 +158,9 @@ export class RecordingManager {
         current.micMeta = meta
         this.emit({ type: 'source-ready', source: 'mic', sampleRate: meta.sampleRate, channels: meta.channels })
       }
-      current.micWriter.write(new Uint8Array(buffer))
+      const bytes = new Uint8Array(buffer)
+      current.micWriter.write(bytes)
+      this.tapPcm(sessionId, 'mic', bytes, meta)
       return
     }
 
@@ -168,7 +172,13 @@ export class RecordingManager {
       current.systemMeta = meta
       this.emit({ type: 'source-ready', source: 'system', sampleRate: meta.sampleRate, channels: meta.channels })
     }
-    current.systemWriter.write(new Uint8Array(buffer))
+    const bytes = new Uint8Array(buffer)
+    current.systemWriter.write(bytes)
+    this.tapPcm(sessionId, 'system', bytes, meta)
+  }
+
+  private tapPcm(sessionId: string, source: 'mic' | 'system', bytes: Uint8Array, meta: { sampleRate: number; channels: number }): void {
+    try { this.opts.onPcm?.(sessionId, source, bytes, meta) } catch { /* the live transcript must never break recording */ }
   }
 
   abortSession(sessionId: string, reason: string): void {
@@ -241,6 +251,8 @@ export class RecordingManager {
     proc.stdout?.on('data', (data: Buffer) => {
       if (!this.current || this.current.id !== session.id) return
       writer.write(data)
+      const meta = session.systemMeta ?? { sampleRate: 48000, channels: 2 }
+      this.tapPcm(session.id, 'system', data, meta)
     })
 
     proc.stderr?.on('data', (data: Buffer) => {

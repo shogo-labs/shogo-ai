@@ -16,6 +16,7 @@ import {
   LayoutGrid,
   ListTodo,
   MessageCircle,
+  Mic,
   Settings,
   Target,
 } from "lucide-react-native";
@@ -308,6 +309,12 @@ export function MobileBottomNav() {
           : {}),
       } as any),
   };
+  const meetingsItem = {
+    id: "meetings",
+    label: "Meetings",
+    Icon: Mic,
+    onPress: () => router.push("/(app)/meetings" as any),
+  };
   const goalsItem = {
     id: "goals",
     label: "Goals",
@@ -382,6 +389,7 @@ export function MobileBottomNav() {
     }
   > = {
     chat: chatItem,
+    meetings: meetingsItem,
     tasks: taskItem,
     activity: activityItem,
     canvases: canvasesItem,

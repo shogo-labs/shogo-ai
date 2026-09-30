@@ -20,9 +20,12 @@ import { defineConfig, devices } from "@playwright/test"
  * STAGING_URL (both supported for backward compatibility).
  *
  * `E2E_LOCAL_START_STACK=1` (PR CI) makes Playwright boot the stack itself:
- * a throwaway SQLite DB, the local-mode API on :8002 and Expo web on :8081.
+ * a throwaway SQLite DB, the local-mode API on :8002 and Expo web on :8081
+ * (override with E2E_LOCAL_WEB_PORT).
  */
 const startStack = process.env.E2E_LOCAL_START_STACK === "1"
+const webPort = process.env.E2E_LOCAL_WEB_PORT || "8081"
+const webUrl = `http://localhost:${webPort}`
 // Some specs default to a developer's API port; point them at the stack's.
 if (startStack) process.env.E2E_API_URL = "http://localhost:8002"
 const repoRoot = resolve(__dirname, "../..")
@@ -42,6 +45,8 @@ const localEnv = {
   // Every spec shares one local user and IP, so the suite trips the default
   // 600/min global limit partway through.
   RATE_LIMIT_GLOBAL_MAX: "100000",
+  // Keep recordings in the browser instead of a running desktop app's mic.
+  SHOGO_RECORDING_BRIDGE: "off",
   BROWSER: "none",
   ...(process.env.CI ? { CI: "true" } : {}),
 }
@@ -65,10 +70,10 @@ export default defineConfig({
           {
             // --clear: Metro caches inlined EXPO_PUBLIC_* values, which would
             // otherwise keep pointing at a developer's .env.local API port.
-            command: "bun run --cwd apps/mobile dev:web -- --clear",
+            command: `bun run --cwd apps/mobile dev:web -- --port ${webPort} --clear`,
             cwd: repoRoot,
             env: localEnv,
-            url: "http://localhost:8081",
+            url: webUrl,
             timeout: 300_000,
             reuseExistingServer: !process.env.CI,
           },
@@ -91,7 +96,7 @@ export default defineConfig({
     baseURL:
       process.env.E2E_TARGET_URL ||
       process.env.STAGING_URL ||
-      "http://localhost:8081",
+      webUrl,
     trace: "retain-on-failure",
     screenshot: "on",
     video: "retain-on-failure",

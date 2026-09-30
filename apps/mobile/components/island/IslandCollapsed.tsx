@@ -5,7 +5,7 @@ import { Pressable, Text, View, useWindowDimensions } from "react-native"
 import { Motion } from "@legendapp/motion"
 import { Check, Loader2, Mic } from "lucide-react-native"
 import { cn } from "@shogo/shared-ui/primitives"
-import { formatDuration } from "../../lib/use-recording"
+import { formatDuration } from "../../lib/format-duration"
 import { ShogoLogoMark } from "../branding/ShogoLogoMark"
 import { useIslandAccent } from "./island-accent"
 import {

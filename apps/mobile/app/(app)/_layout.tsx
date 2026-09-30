@@ -49,6 +49,7 @@ import { useResolvedTheme } from "../../contexts/theme";
 import { AppSidebar } from "../../components/layout/AppSidebar";
 import { AppHeader } from "../../components/layout/AppHeader";
 import { RecordingIndicator } from "../../components/meetings/RecordingIndicator";
+import { NativeRecorderProvider } from "../../lib/native-recorder";
 import { useNotificationClickRouter } from "../../lib/notifications/useNotificationClickRouter";
 import { useDesktopIslandRouter } from "../../lib/useDesktopIslandRouter";
 import { useMobilePushRegistration } from "../../lib/notifications/mobile-push-registration";
@@ -465,7 +466,7 @@ function AppLayoutInner() {
       }
       drawer={drawer}
     >
-      {localMode && !isIdeEmbed ? <RecordingIndicator /> : null}
+      {(localMode || Platform.OS !== "web") && !isIdeEmbed ? <RecordingIndicator /> : null}
       {useMobileWorkspaceShell ? (
         <MobileWorkspaceShell key={activeWorkspace?.id ?? "workspace-loading"}>
           <Slot />
@@ -486,7 +487,9 @@ function AppLayoutInner() {
 export default function AppLayout() {
   return (
     <DomainProvider>
-      <AppLayoutInner />
+      <NativeRecorderProvider>
+        <AppLayoutInner />
+      </NativeRecorderProvider>
     </DomainProvider>
   );
 }

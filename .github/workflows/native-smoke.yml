@@ -102,6 +102,9 @@ jobs:
       - name: Tune Gradle for CI
         working-directory: apps/mobile/android
         run: |
+          # Expo prebuild leaves no trailing newline; without this the first
+          # appended property is glued onto the last generated one.
+          echo >> gradle.properties
           cat >> gradle.properties <<'PROPS'
           org.gradle.parallel=true
           org.gradle.caching=true
@@ -216,7 +219,11 @@ jobs:
             require 'xcodeproj'
             project = Xcodeproj::Project.open('ios/Pods/Pods.xcodeproj')
             target = project.targets.find { |t| t.name == 'fmt' }
-            abort('fmt CocoaPod target not found') unless target
+            unless target
+              # React Native 0.86+ ships fmt prebuilt in ReactNativeDependencies.
+              puts 'No fmt CocoaPod target; nothing to pin'
+              exit
+            end
             target.build_configurations.each { |c| c.build_settings['CLANG_CXX_LANGUAGE_STANDARD'] = 'c++17' }
             project.save
             Dir.glob('ios/Pods/Target Support Files/fmt/fmt.*.xcconfig').each do |path|

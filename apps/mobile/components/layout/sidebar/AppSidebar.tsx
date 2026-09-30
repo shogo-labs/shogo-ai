@@ -843,6 +843,12 @@ export const AppSidebar = observer(function AppSidebar({
       href: "/(app)",
       active: isHomePage,
     },
+    meetings: {
+      label: "Meetings",
+      icon: Mic,
+      href: "/(app)/meetings",
+      active: isMeetingsPage,
+    },
     tasks: {
       label: "Tasks",
       icon: ListTodo,
@@ -1027,16 +1033,6 @@ export const AppSidebar = observer(function AppSidebar({
               collapsed={collapsed}
               shortcut={formatModKey("k")}
               onPress={handleSearchPress}
-            />
-          )}
-          {localMode && (
-            <NavItem
-              icon={Mic}
-              label="Meetings"
-              href="/(app)/meetings"
-              active={isMeetingsPage}
-              collapsed={collapsed}
-              onNavPress={onNavPress}
             />
           )}
           {experience.showSideChatsNav && (
@@ -1492,7 +1488,7 @@ export const AppSidebar = observer(function AppSidebar({
         {mobileProjectPanel && (
           <Animated.View
             style={[
-              StyleSheet.absoluteFillObject,
+              StyleSheet.absoluteFill,
               {
                 backgroundColor: nativeDrawerCanvas,
                 opacity: mobileProjectTransition.interpolate({

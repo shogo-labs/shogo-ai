@@ -1,5 +1,23 @@
+diff --git a/RNIap.podspec b/RNIap.podspec
+index 79784fddd275afd6a8d6af81fe73e2a4aa6a3c1f..2990f89660d76f2454591a66c6a224b9d2a9336a 100644
+--- a/RNIap.podspec
++++ b/RNIap.podspec
+@@ -20,8 +20,12 @@ Pod::Spec.new do |s|
+ 
+   s.dependency "React-Core"
+ 
++  # React Native 0.86 no longer publishes an RCT-Folly pod; its helper wires
++  # up the prebuilt core headers instead.
++  if respond_to?(:install_modules_dependencies, true) then
++    install_modules_dependencies(s)
+   # Don't install the dependencies when we run `pod install` in the old architecture.
+-  if ENV['RCT_NEW_ARCH_ENABLED'] == '1' then
++  elsif ENV['RCT_NEW_ARCH_ENABLED'] == '1' then
+     s.compiler_flags = folly_compiler_flags + " -DRCT_NEW_ARCH_ENABLED=1"
+     s.pod_target_xcconfig    = {
+         "HEADER_SEARCH_PATHS" => "\"$(PODS_ROOT)/boost\"",
 diff --git a/android/src/play/java/com/dooboolab/rniap/RNIapModule.kt b/android/src/play/java/com/dooboolab/rniap/RNIapModule.kt
-index 0000000000000000000000000000000000000000..1111111111111111111111111111111111111111 100644
+index 54ca6969c543f5826d77b4ff8cdfcf960cbb5ffa..f870ec3d6d49031f5aaa7e04f93bdf6b5831d142 100644
 --- a/android/src/play/java/com/dooboolab/rniap/RNIapModule.kt
 +++ b/android/src/play/java/com/dooboolab/rniap/RNIapModule.kt
 @@ -461,7 +461,12 @@ class RNIapModule(

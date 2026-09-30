@@ -26,7 +26,7 @@
 
 export type WorkspaceExperienceKind = 'personal' | 'team'
 
-export type BottomTabId = 'chat' | 'goals' | 'activity' | 'tasks' | 'canvases' | 'more'
+export type BottomTabId = 'chat' | 'meetings' | 'goals' | 'activity' | 'tasks' | 'canvases' | 'more'
 /** Temporary UI switch; Canvas routes and runtime behavior remain available. */
 export const CANVAS_NAV_HIDDEN = true
 export type PrimaryNavId = Exclude<BottomTabId, 'more'>
@@ -66,6 +66,11 @@ export interface WorkspaceExperience {
   /** Sidebar: show Goals/Activity nav items. */
   showGoalsNav: boolean
   /**
+   * Meetings (recordings, rough notes, enhanced notes) are private to one
+   * person, so they live in the personal workspace only.
+   */
+  showMeetingsNav: boolean
+  /**
    * Sidebar / profile sheet: show a "Side chats" entry — secondary
    * workspace-scoped chat sessions (`ChatSession.isPrimary === false`)
    * for exploring a tangent without polluting the goal-tracking primary
@@ -102,6 +107,7 @@ export function workspaceExperience(
   const bottomTabs: BottomTabId[] = isPersonal
     ? [
         'chat',
+        'meetings',
         'activity',
         'goals',
         ...(CANVAS_NAV_HIDDEN ? [] : ['canvases' as const]),
@@ -124,6 +130,7 @@ export function workspaceExperience(
     showMarketplace: !isPersonal,
     showNewChat: !isPersonal,
     showGoalsNav: isPersonal,
+    showMeetingsNav: isPersonal,
     showSideChatsNav: isPersonal,
     bottomTabs,
     primaryNav,

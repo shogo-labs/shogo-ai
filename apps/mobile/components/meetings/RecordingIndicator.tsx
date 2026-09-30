@@ -5,11 +5,13 @@ import { useEffect, useRef } from 'react'
 import { View, Text, Pressable, Animated, Platform } from 'react-native'
 import { useRouter } from 'expo-router'
 import { Square } from 'lucide-react-native'
+import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { useRecording, formatDuration } from '../../lib/use-recording'
 
 export function RecordingIndicator() {
-  const { isRecording, duration, stopRecording, isDesktop, isLocal } = useRecording()
+  const { isRecording, duration, stopRecording } = useRecording()
   const router = useRouter()
+  const insets = useSafeAreaInsets()
   const pulseAnim = useRef(new Animated.Value(1)).current
 
   useEffect(() => {
@@ -33,12 +35,12 @@ export function RecordingIndicator() {
     return () => pulse.stop()
   }, [isRecording, pulseAnim])
 
-  if ((!isDesktop && !isLocal) || !isRecording) return null
+  if (!isRecording) return null
 
   return (
     <View
       className="absolute top-3 right-3 z-50"
-      style={Platform.OS === 'web' ? { position: 'fixed' as any } : undefined}
+      style={Platform.OS === 'web' ? { position: 'fixed' as any } : { top: insets.top + 4 }}
     >
       <View className="flex-row items-center bg-red-600 rounded-full px-3 py-1.5 gap-2 shadow-lg">
         <Pressable

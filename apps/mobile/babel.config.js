@@ -1,3 +1,7 @@
+const { resolvePath: defaultResolvePath } = require('babel-plugin-module-resolver')
+
+const NODE_MODULES_SEGMENT = /[/\\]node_modules[/\\]/
+
 module.exports = function (api) {
   api.cache(true)
   return {
@@ -17,6 +21,12 @@ module.exports = function (api) {
           alias: {
             '@': './',
             'tailwind.config': './tailwind.config.ts',
+          },
+          // `root` rewrites a bare `require('.')` to the project root, which
+          // breaks dependencies that use it (expo-router 57's navigationEvents).
+          resolvePath(sourcePath, currentFile, opts) {
+            if (NODE_MODULES_SEGMENT.test(currentFile)) return undefined
+            return defaultResolvePath(sourcePath, currentFile, opts)
           },
         },
       ],

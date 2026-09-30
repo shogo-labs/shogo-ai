@@ -162,7 +162,7 @@ contextBridge.exposeInMainWorld('shogoDesktop', {
   onRecordingDuration: (callback: (data: { id: string; duration: number }) => void) => {
     ipcRenderer.on('recording-duration', (_event, data) => callback(data))
   },
-  onRecordingStopped: (callback: (data: { id: string; audioPath: string; duration: number }) => void) => {
+  onRecordingStopped: (callback: (data: { id: string; audioPath: string; duration: number; liveChunks?: number }) => void) => {
     ipcRenderer.on('recording-stopped', (_event, data) => callback(data))
   },
   onRecordingResumed: (callback: (data: { id: string }) => void) => {

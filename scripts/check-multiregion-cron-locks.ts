@@ -581,6 +581,17 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
       'agentRunId is a generated unique id per subagent run; fire-and-forget create. P2 idempotency if double-close becomes a problem.',
   },
   {
+    key: 'Meeting.(recordingId,workspaceId)',
+    category: 'request_scoped',
+    reason:
+      'Recording session id within the owner\'s workspace; meeting.service upsertRecordingDraft find-then-create retries as an update on P2002.',
+  },
+  {
+    key: 'Meeting.shareToken',
+    category: 'random_secret',
+    reason: 'randomBytes(18) base64url share link token; collision impossible.',
+  },
+  {
     key: 'SubagentModelOverride.(agentType,projectId,workspaceId)',
     category: 'single_tenant_upsert',
     reason:

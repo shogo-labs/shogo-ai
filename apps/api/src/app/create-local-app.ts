@@ -19,6 +19,7 @@ import { externalPreviewRoutes } from '../routes/external-preview'
 import { projectChatRoutes } from '../routes/project-chat'
 import { workspaceChatRoutes } from '../routes/workspace-chat'
 import { workspaceAgentRoutes, sessionAuthorize } from '../routes/workspace-agent'
+import { workspaceMeetingRoutes, sharedMeetingRoutes } from '../routes/workspace-meetings'
 import { createAgentTaskRoutes } from '../routes/agent-tasks'
 import { diagnosticsRoutes } from '../../../../packages/shared-runtime/src/diagnostics'
 import { testsRoutes } from '../routes/tests'
@@ -120,6 +121,8 @@ export function createLocalApp(): LocalAppBundle {
   app.route('/api', projectChatRoutes({ runtimeManager }))
   app.route('/api', workspaceChatRoutes({ resolveUserId: getAuthUserId, runtimeManager }))
   app.route('/api', workspaceAgentRoutes({ authorize: sessionAuthorize(getAuthUserId) }))
+  app.route('/api', workspaceMeetingRoutes({ authorize: sessionAuthorize(getAuthUserId) }))
+  app.route('/api', sharedMeetingRoutes())
   app.route('/api', createAgentTaskRoutes({ runtimeManager }))
   app.route('/api', historyRoutes({ resolveUserId: getAuthUserId }))
   app.route('/api', diagnosticsRoutes({ workspacesDir }))

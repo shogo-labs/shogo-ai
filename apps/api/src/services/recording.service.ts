@@ -48,6 +48,9 @@ function getBridgeFilePath(): string {
 }
 
 function loadDescriptor(force = false): BridgeDescriptor | null {
+  // Test stacks share the machine with a developer's real desktop app; they
+  // must never start recordings on its microphone.
+  if (process.env.SHOGO_RECORDING_BRIDGE === 'off') return null
   if (cached && !force) return cached
   const filePath = getBridgeFilePath()
   if (!existsSync(filePath)) return null

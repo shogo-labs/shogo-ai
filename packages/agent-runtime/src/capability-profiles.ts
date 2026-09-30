@@ -101,6 +101,8 @@ export const CORE_TOOL_NAMES = [
   'project_list', 'project_create', 'project_call', 'project_configure',
   'agent_profile_get', 'agent_profile_set', 'goal_create', 'goal_update', 'goal_log', 'goal_list',
   'schedule_create', 'schedule_list', 'schedule_update', 'schedule_delete', 'set_status',
+  // Registered only for the personal profile (see `createTools()`).
+  'meeting_search', 'meeting_list', 'meeting_read', 'meeting_enhance', 'meeting_note_create',
 ]
 
 export interface CapabilityProfile {

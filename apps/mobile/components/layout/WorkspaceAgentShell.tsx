@@ -23,6 +23,7 @@ import {
   Boxes,
   ListTodo,
   MessageSquare,
+  Mic,
   Search,
   Settings,
   Store,
@@ -64,6 +65,9 @@ export function WorkspaceAgentShell({ children }: { children: ReactNode }) {
   const primaryNav: NavItem[] = [
     { label: "Chat", href: "/(app)", icon: MessageSquare },
     { label: "Search", icon: Search, action: "search" },
+    ...(experience.showMeetingsNav
+      ? [{ label: "Meetings", href: "/(app)/meetings", icon: Mic } as NavItem]
+      : []),
     ...(experience.kind === "team"
       ? [{ label: "Tasks", href: "/(app)/tasks", icon: ListTodo } as NavItem]
       : []),

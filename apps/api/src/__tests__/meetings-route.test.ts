@@ -27,6 +27,10 @@
 
 import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
 
+// These routes only mount on desktop, where unauthenticated bridge calls
+// resolve to the install's own personal workspace.
+process.env.SHOGO_LOCAL_MODE = 'true'
+
 // ─── Mock service modules BEFORE the route module loads ───────────────
 
 const transcription = {
@@ -109,6 +113,8 @@ let lastExecCmd = ''
 
 const prismaMock = {
   workspace: { findFirst: async () => workspaceRow },
+  member: { findFirst: async () => (workspaceRow ? { userId: 'u1', workspaceId: workspaceRow.id } : null) },
+  project: { findUnique: async ({ where }: any) => ({ id: where.id, name: 'P' }) },
   meeting: {
     findMany: async ({ where, orderBy: _orderBy, select: _select }: any) => {
       let rows = Array.from(meetings.values())
@@ -124,6 +130,14 @@ const prismaMock = {
       return null
     },
     findUnique: async ({ where, include }: any) => {
+      const draftKey = where.workspaceId_recordingId
+      if (draftKey) {
+        return (
+          Array.from(meetings.values()).find(
+            (row) => row.workspaceId === draftKey.workspaceId && row.recordingId === draftKey.recordingId,
+          ) ?? null
+        )
+      }
       const m = meetings.get(where.id)
       if (!m) return null
       if (include?.project) return { ...m, project: m.projectId ? { id: m.projectId, name: 'P' } : null }
@@ -499,6 +513,90 @@ describe('POST /api/local/meetings', () => {
     const body = await res.json()
     expect(body.meeting.title).toBeTruthy()
   })
+
+  test('new meetings belong to the personal workspace owner', async () => {
+    const res = await post({ audioPath: '/tmp/owned.wav' })
+    const body = await res.json()
+    const row = meetings.get(body.meeting.id)
+    expect(row.workspaceId).toBe('w1')
+    expect(row.userId).toBe('u1')
+    expect(row.source).toBe('desktop')
+  })
+
+  test('finishes the island draft for the same recording instead of creating another', async () => {
+    meetings.set('draft', {
+      id: 'draft', workspaceId: 'w1', recordingId: 'rec-9', status: 'recording',
+      notes: 'pricing concerns', audioPath: '', title: 'Zoom call - Tue',
+    })
+    const res = await post({ audioPath: '/tmp/rec-9.wav', duration: 120, recordingId: 'rec-9' })
+    expect(res.status).toBe(200)
+    expect(meetings.size).toBe(1)
+    const row = meetings.get('draft')
+    expect(row.status).not.toBe('recording')
+    expect(row.audioPath).toBe('/tmp/rec-9.wav')
+    expect(row.duration).toBe(120)
+    expect(row.notes).toBe('pricing concerns')
+  })
+
+  test('ignores a draft from another workspace', async () => {
+    meetings.set('foreign', { id: 'foreign', workspaceId: 'w2', recordingId: 'rec-x', status: 'recording', audioPath: '' })
+    const res = await post({ audioPath: '/tmp/rec-x.wav', recordingId: 'rec-x' })
+    expect(res.status).toBe(201)
+    expect(meetings.get('foreign').status).toBe('recording')
+  })
+})
+
+describe('meeting access is scoped to the personal workspace', () => {
+  test('meetings in other workspaces are not visible or editable', async () => {
+    meetings.set('other', { id: 'other', workspaceId: 'w-team', title: 'Team', audioPath: '/tmp/o.wav' })
+    expect((await meetingRoutes.request('/api/local/meetings/other')).status).toBe(404)
+    const put = await meetingRoutes.request('/api/local/meetings/other', {
+      method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ title: 'x' }),
+    })
+    expect(put.status).toBe(404)
+    expect((await meetingRoutes.request('/api/local/meetings/other', { method: 'DELETE' })).status).toBe(404)
+    expect(meetings.has('other')).toBe(true)
+  })
+
+  test('island notepad writes a draft keyed by recording id', async () => {
+    const put = (body: any) =>
+      meetingRoutes.request('/api/local/meetings/recordings/rec-island', {
+        method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+      })
+    const first = await (await put({ app: 'Zoom' })).json()
+    expect(first.meeting.status).toBe('recording')
+    expect(first.meeting.title).toStartWith('Zoom call - ')
+    await put({ notes: 'budget is fixed' })
+    const got = await (await meetingRoutes.request('/api/local/meetings/recordings/rec-island')).json()
+    expect(got.meeting.id).toBe(first.meeting.id)
+    expect(got.meeting.notes).toBe('budget is fixed')
+    expect(Array.from(meetings.values()).filter((m) => m.recordingId === 'rec-island')).toHaveLength(1)
+  })
+
+  test("island notepad never writes another workspace's draft", async () => {
+    meetings.set('theirs', { id: 'theirs', workspaceId: 'w-team', recordingId: 'rec-t', status: 'recording', notes: 'x' })
+    expect((await meetingRoutes.request('/api/local/meetings/recordings/rec-t')).status).toBe(404)
+    const res = await meetingRoutes.request('/api/local/meetings/recordings/rec-t', {
+      method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ notes: 'y' }),
+    })
+    expect(res.status).toBe(200)
+    expect((await res.json()).meeting.id).not.toBe('theirs')
+    expect(meetings.get('theirs').notes).toBe('x')
+  })
+
+  test('PUT caps notes at the same length as the workspace routes', async () => {
+    meetings.set('mine', { id: 'mine', workspaceId: 'w1', title: 'Mine', audioPath: '' })
+    const res = await meetingRoutes.request('/api/local/meetings/mine', {
+      method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ notes: 'x'.repeat(100_050) }),
+    })
+    expect(res.status).toBe(200)
+    expect(meetings.get('mine').notes).toHaveLength(100_000)
+  })
+
+  test('GET /api/local/meetings/workspace returns the personal workspace id', async () => {
+    const body = await (await meetingRoutes.request('/api/local/meetings/workspace')).json()
+    expect(body.workspaceId).toBe('w1')
+  })
 })
 
 describe('POST /api/local/meetings/:id/transcribe', () => {
@@ -631,8 +729,8 @@ describe('POST /api/local/meetings/recording/upload', () => {
       body: wav,
     })
     expect(res.status).toBe(201)
-    const body = await res.json() as { meeting: { audioPath: string; duration: number } }
-    expect(body.meeting.audioPath).toMatch(/audio\.wav$/)
+    const body = await res.json() as { meeting: { id: string; duration: number } }
+    expect(meetings.get(body.meeting.id).audioPath).toMatch(/audio\.wav$/)
     expect(body.meeting.duration).toBe(10)
     // Let fire-and-forget transcribeMeeting settle (no-throw assertion)
     await new Promise(r => setTimeout(r, 30))
@@ -659,8 +757,8 @@ describe('POST /api/local/meetings/recording/upload', () => {
       body: webm,
     })
     expect(res.status).toBe(201)
-    const body = await res.json() as { meeting: { audioPath: string } }
-    expect(body.meeting.audioPath).toMatch(/\.webm$/)
+    const body = await res.json() as { meeting: { id: string } }
+    expect(meetings.get(body.meeting.id).audioPath).toMatch(/\.webm$/)
     await new Promise(r => setTimeout(r, 30))
   })
 
@@ -831,7 +929,7 @@ describe('POST /api/local/meetings — extra edges', () => {
     })
     expect(res.status).toBe(201)
     const body: any = await res.json()
-    expect(body.meeting.audioPath).toBe('/tmp/new-default.wav')
+    expect(meetings.get(body.meeting.id).audioPath).toBe('/tmp/new-default.wav')
     expect(typeof body.meeting.title).toBe('string')
     expect(body.meeting.title.length).toBeGreaterThan(0)
   })
@@ -1089,7 +1187,8 @@ describe('transcribeMeeting full happy path (getAudioDuration WAV branch)', () =
     await new Promise(r => setTimeout(r, 120))
     const m = meetings.get('m-throw')!
     expect(m.status).toBe('error')
-    expect(m.transcript).toContain('whisper kaboom')
+    expect(m.transcript).toContain('Something went wrong transcribing this recording')
+    expect(m.transcript).not.toContain('whisper kaboom')
   })
 
   test('diarization merges speaker labels into transcript when timed segments present', async () => {
@@ -1210,9 +1309,9 @@ describe('transcribeMeeting full happy path (getAudioDuration WAV branch)', () =
     expect(wrote).toBe(true)
     const md = writeFileCalls.find(w => w.path.endsWith('-m-proj2.md'))?.data as string
     expect(md).toContain('# My Mtg')
-    expect(md).toContain('**Speakers:** 2')
     expect(md).toContain('**Duration:**')
-    expect(md).toContain('A:**')
+    expect(md).toContain('## Transcript')
+    expect(md).toContain('[0:00] A: hi')
     delete process.env.WORKSPACES_DIR
   })
 
