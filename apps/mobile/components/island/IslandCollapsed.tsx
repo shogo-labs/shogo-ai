@@ -1,19 +1,17 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
-import { Pressable, Text, View } from "react-native"
+import { Pressable, Text, View, useWindowDimensions } from "react-native"
 import { Motion } from "@legendapp/motion"
 import { Check, ChevronDown, Loader2, Mic } from "lucide-react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import { formatDuration } from "../../lib/use-recording"
 import { ShogoLogoMark } from "../branding/ShogoLogoMark"
 import { useIslandAccent } from "./island-accent"
+import { IDLE_NOTCHED_WIDTH, ISLAND_CONTENT_IN, ISLAND_OPEN, NOTCH_WIDTH, islandMotion } from "./island-motion"
 import { RecordingDot, useElapsedSeconds } from "./IslandMeeting"
 import { needsAttention, orderIslandSessions } from "./island-inbox"
 import { ISLAND_TRIGGER_PROPS, type IslandLayout, type IslandMeetingState, type IslandSnapshot } from "./types"
-
-/** Camera housing width reserved in the middle of the notched wings. */
-const NOTCH_GAP = 200
 
 export interface IslandPeek {
   title: string
@@ -60,6 +58,7 @@ export function IslandCollapsed({
   const running = sessions.some((s) => s.status === "running")
   const recordingSeconds = useElapsedSeconds(meeting.recording?.startedAt)
   const accent = useIslandAccent()
+  const { width: windowWidth } = useWindowDimensions()
 
   const left = meeting.prompt ? (
     <View className="flex-row items-center gap-2 min-w-0 flex-shrink">
@@ -119,35 +118,52 @@ export function IslandCollapsed({
   )
 
   return (
-    <Motion.View
-      initial={reducedMotion ? undefined : { opacity: 0, scaleX: 0.85 }}
-      animate={{ opacity: 1, scaleX: 1 }}
-      transition={{ type: "spring", damping: 22, stiffness: 260 }}
-      style={{ width: "100%", height: "100%" }}
-    >
-      <Pressable
-        onPress={onExpand}
-        {...ISLAND_TRIGGER_PROPS}
-        accessibilityRole="button"
-        accessibilityLabel="Open Shogo island"
-        className={cn(
-          "h-full w-full flex-row items-center bg-black",
-          layout.notched ? "rounded-b-[14px] px-3.5" : "rounded-[18px] border border-white/10 px-3.5 justify-center gap-2",
-        )}
+    <View className="h-full w-full items-center">
+      <Motion.View
+        // Notched: grow sideways out of the idle wings. Elsewhere there are
+        // no wings to grow from, so the pill scales in.
+        initial={
+          reducedMotion
+            ? undefined
+            : layout.notched
+              ? { width: Math.min(IDLE_NOTCHED_WIDTH, windowWidth) }
+              : { opacity: 0, scale: 0.92 }
+        }
+        animate={layout.notched ? { width: windowWidth } : { opacity: 1, scale: 1 }}
+        transition={islandMotion(reducedMotion, ISLAND_OPEN)}
+        style={{ height: "100%", width: layout.notched ? undefined : "100%" }}
       >
-        {layout.notched ? (
-          <>
-            <View className="flex-1 min-w-0">{left}</View>
-            <View style={{ width: NOTCH_GAP }} />
-            <View className="flex-1 min-w-0 items-end">{right}</View>
-          </>
-        ) : (
-          <>
-            {left}
-            {right}
-          </>
-        )}
-      </Pressable>
-    </Motion.View>
+        <Pressable
+          onPress={onExpand}
+          {...ISLAND_TRIGGER_PROPS}
+          accessibilityRole="button"
+          accessibilityLabel="Open Shogo island"
+          className={cn(
+            "h-full w-full flex-row items-center overflow-hidden bg-black",
+            layout.notched ? "rounded-b-[14px] px-3.5" : "rounded-[18px] border border-white/10 px-3.5 justify-center gap-2",
+          )}
+        >
+          <Motion.View
+            initial={reducedMotion ? undefined : { opacity: 0 }}
+            animate={{ opacity: 1 }}
+            transition={islandMotion(reducedMotion, ISLAND_CONTENT_IN)}
+            style={{ flexDirection: "row", alignItems: "center", flex: 1, minWidth: 0, gap: layout.notched ? 0 : 8, justifyContent: "center" }}
+          >
+            {layout.notched ? (
+              <>
+                <View className="flex-1 min-w-0">{left}</View>
+                <View style={{ width: NOTCH_WIDTH }} />
+                <View className="flex-1 min-w-0 items-end">{right}</View>
+              </>
+            ) : (
+              <>
+                {left}
+                {right}
+              </>
+            )}
+          </Motion.View>
+        </Pressable>
+      </Motion.View>
+    </View>
   )
 }

@@ -2,10 +2,10 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { Pressable, ScrollView, Text, View, type LayoutChangeEvent } from "react-native"
+import { Pressable, ScrollView, Text, View, useWindowDimensions, type LayoutChangeEvent } from "react-native"
 import { Motion } from "@legendapp/motion"
 import { observer } from "mobx-react-lite"
-import { ChevronLeft, ChevronsUpDown, ExternalLink, Minus } from "lucide-react-native"
+import { ChevronDown, ChevronLeft, ChevronsUpDown, ExternalLink, Minus } from "lucide-react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import { useDomainActions } from "../../contexts/domain"
 import { API_URL } from "../../lib/api"
@@ -26,6 +26,17 @@ import { ProjectAvatar, ProjectSwitcher, useWorkspaceProjects } from "./ProjectS
 import { SessionList, SessionRow } from "./SessionList"
 import { planAddToProject, saveAttachmentsPrompt, type IslandDropAction } from "./island-drop"
 import { orderIslandSessions, sortIslandProjects, type IslandProjectItem } from "./island-inbox"
+import {
+  IDLE_NOTCHED_WIDTH,
+  ISLAND_CLOSE,
+  ISLAND_CLOSE_MS,
+  ISLAND_CONTENT_IN,
+  ISLAND_CONTENT_OUT,
+  ISLAND_HOVER,
+  ISLAND_OPEN,
+  NOTCH_WIDTH,
+  islandMotion,
+} from "./island-motion"
 import { islandSoundForTransition, meetingSoundForTransition, playIslandSound } from "./island-sounds"
 import type { IslandChatSession } from "./useIslandChatSession"
 import { useIslandBridge } from "./useIslandBridge"
@@ -38,17 +49,17 @@ import {
   type IslandMeetingDecision,
   type IslandMeetingState,
   type IslandResult,
+  type IslandMode,
   type IslandSnapshot,
 } from "./types"
 
 const PEEK_MS = 4000
-/** Camera housing reserved in the notched header, matching IslandCollapsed. */
-const NOTCH_GAP = 200
 const MAX_CARD_HEIGHT = 640
+const PICKER_WIDTH = 300
+const PICKER_HEIGHT = 320
 
 type IslandView =
   | { name: "inbox" }
-  | { name: "switcher"; returnTo: IslandView }
   | { name: "project"; projectId: string; projectName: string; initialFiles?: IslandFileRef[] }
   | {
       name: "chat"
@@ -65,7 +76,6 @@ function parentView(view: IslandView): IslandView | null {
   switch (view.name) {
     case "inbox":
       return null
-    case "switcher":
     case "drop":
       return view.returnTo
     case "project":
@@ -141,7 +151,7 @@ export const IslandApp = observer(function IslandApp({
   workspaceId: string | undefined
   userId: string | undefined
 }) {
-  const { bridge, snapshot, layout, meeting, requestMode } = useIslandBridge()
+  const { bridge, snapshot, layout, meeting, requestMode: applyMode } = useIslandBridge()
   const actions = useDomainActions()
   const reducedMotion = usePrefersReducedMotion()
   const [view, setView] = useState<IslandView>({ name: "inbox" })
@@ -149,6 +159,10 @@ export const IslandApp = observer(function IslandApp({
   const [peek, setPeek] = useState<IslandPeek | null>(null)
   const [interactionMode, setInteractionMode] = useState<ChatSendInteractionMode>("agent")
   const [notice, setNotice] = useState<string | null>(null)
+  const [pickerOpen, setPickerOpen] = useState(false)
+  const pickerOpenRef = useRef(false)
+  pickerOpenRef.current = pickerOpen
+  const { width: windowWidth } = useWindowDimensions()
   const composerRef = useRef<IslandComposerHandle>(null)
   const hasDraftRef = useRef(false)
   const viewRef = useRef(view)
@@ -158,6 +172,41 @@ export const IslandApp = observer(function IslandApp({
   meetingPromptRef.current = !!meeting.prompt
 
   const cardOpen = layout.mode === "expanded" || layout.mode === "compose"
+
+  // Closing the card plays its fold back into the notch while the window is
+  // still card-sized, then asks main to shrink it. Opening needs no delay:
+  // main grows the window first and the card animates out of the notch.
+  const [closing, setClosing] = useState(false)
+  const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const cardOpenRef = useRef(cardOpen)
+  cardOpenRef.current = cardOpen
+  const requestMode = useCallback(
+    (mode: IslandMode) => {
+      if (closeTimer.current) clearTimeout(closeTimer.current)
+      closeTimer.current = null
+      const closingCard = cardOpenRef.current && (mode === "collapsed" || mode === "hidden")
+      if (!closingCard || reducedMotion) {
+        setClosing(false)
+        applyMode(mode)
+        return
+      }
+      setClosing(true)
+      closeTimer.current = setTimeout(() => {
+        closeTimer.current = null
+        applyMode(mode)
+      }, ISLAND_CLOSE_MS)
+    },
+    [applyMode, reducedMotion],
+  )
+  useEffect(() => {
+    if (!cardOpen) {
+      setClosing(false)
+      setPickerOpen(false)
+    }
+  }, [cardOpen])
+  useEffect(() => () => {
+    if (closeTimer.current) clearTimeout(closeTimer.current)
+  }, [])
   const usage = useIslandUsage(workspaceId, cardOpen)
   const projects = useWorkspaceProjects(workspaceId)
   const sortedProjects = useMemo(() => sortIslandProjects(projects, snapshot.sessions), [projects, snapshot.sessions])
@@ -180,6 +229,7 @@ export const IslandApp = observer(function IslandApp({
       !hasDraftRef.current &&
       !pendingRef.current &&
       !meetingPromptRef.current &&
+      !pickerOpenRef.current &&
       (viewRef.current.name === "inbox" || viewRef.current.name === "project" || viewRef.current.name === "chat"),
     [],
   )
@@ -215,7 +265,7 @@ export const IslandApp = observer(function IslandApp({
     const seen = new Set(previous.sessions.flatMap((s) => (s.pending ? [s.pending.request.id] : [])))
     const fresh = snapshot.sessions.find((s) => s.pending && !seen.has(s.pending.request.id))
     const current = viewRef.current
-    if (fresh && !hasDraftRef.current && current.name !== "drop" && current.name !== "switcher") {
+    if (fresh && !hasDraftRef.current && current.name !== "drop" && !pickerOpenRef.current) {
       setView({
         name: "chat",
         projectId: fresh.projectId,
@@ -258,11 +308,12 @@ export const IslandApp = observer(function IslandApp({
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         event.preventDefault()
-        if (usageOpen) setUsageOpen(false)
+        if (pickerOpenRef.current) setPickerOpen(false)
+        else if (usageOpen) setUsageOpen(false)
         else goBack()
       } else if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
         event.preventDefault()
-        setView((current) => (current.name === "switcher" ? current : { name: "switcher", returnTo: current }))
+        setPickerOpen((open) => !open)
       }
     }
     const onBlur = () => {
@@ -439,11 +490,9 @@ export const IslandApp = observer(function IslandApp({
       ? view.title
       : view.name === "project"
         ? view.projectName
-        : view.name === "switcher"
-          ? "Switch project"
-          : view.name === "drop"
-            ? "Dropped files"
-            : "Shogo"
+        : view.name === "drop"
+          ? "Dropped files"
+          : "Shogo"
   const headerSubtitle = view.name === "chat" ? view.projectName : undefined
 
   const header = (
@@ -458,9 +507,13 @@ export const IslandApp = observer(function IslandApp({
           </Pressable>
         ) : null}
         <Pressable
-          onPress={() => setView({ name: "switcher", returnTo: view })}
-          className="min-w-0 flex-row items-center gap-1"
+          onPress={() => setPickerOpen((open) => !open)}
+          className={cn(
+            "min-w-0 flex-row items-center gap-1 rounded-md px-1 py-0.5 -mx-1",
+            pickerOpen ? "bg-white/10" : "hover:bg-white/5",
+          )}
           accessibilityLabel="Switch project"
+          accessibilityState={{ expanded: pickerOpen }}
         >
           <View className="min-w-0">
             <Text className="text-[12px] font-semibold text-zinc-50" numberOfLines={1}>
@@ -472,10 +525,12 @@ export const IslandApp = observer(function IslandApp({
               </Text>
             ) : null}
           </View>
-          <ChevronsUpDown size={11} color="#71717a" />
+          <Motion.View animate={{ rotate: pickerOpen ? "180deg" : "0deg" }} transition={islandMotion(reducedMotion, ISLAND_CONTENT_OUT)}>
+            <ChevronDown size={12} color={pickerOpen ? "#e4e4e7" : "#71717a"} />
+          </Motion.View>
         </Pressable>
       </View>
-      {layout.notched ? <View style={{ width: NOTCH_GAP }} /> : null}
+      {layout.notched ? <View style={{ width: NOTCH_WIDTH }} /> : null}
       <View className="flex-1 flex-row items-center justify-end gap-2">
         <IslandUsageChip usage={usage} onPress={() => setUsageOpen((open) => !open)} />
         {view.name === "chat" || view.name === "project" ? (
@@ -523,7 +578,7 @@ export const IslandApp = observer(function IslandApp({
       targetChip={
         view.name === "inbox" ? (
           <Pressable
-            onPress={() => setView({ name: "switcher", returnTo: view })}
+            onPress={() => setPickerOpen((open) => !open)}
             className="flex-row items-center gap-1 rounded-full bg-white/10 px-2 py-0.5"
           >
             <Text className="max-w-[140px] text-[10px] font-medium text-zinc-300" numberOfLines={1}>
@@ -537,19 +592,7 @@ export const IslandApp = observer(function IslandApp({
   )
 
   let body: React.ReactNode
-  if (view.name === "switcher") {
-    body = (
-      <ProjectSwitcher
-        workspaceId={workspaceId}
-        liveSessions={snapshot.sessions}
-        currentProjectId={currentProjectId}
-        onInputFocus={focusForTyping}
-        onSelect={(project: IslandProjectItem) =>
-          setView({ name: "project", projectId: project.id, projectName: project.name })
-        }
-      />
-    )
-  } else if (view.name === "drop") {
+  if (view.name === "drop") {
     body = (
       <IslandDropSheet
         files={view.files}
@@ -703,13 +746,24 @@ export const IslandApp = observer(function IslandApp({
   }
 
   const message = notice ?? snapshot.notice
+  const headerHeight = layout.notched ? layout.topInset : 40
+  // The card is sized to its content, so an open dropdown reserves its own
+  // room rather than being clipped by a short card.
+  const pickerMinHeight = pickerOpen ? headerHeight + PICKER_HEIGHT + 12 : undefined
+  // Notched: the card starts as the idle wings and unfolds downward, so it
+  // reads as the notch opening. Elsewhere it drops in from the pill.
+  const folded = layout.notched
+    ? { scaleX: Math.min(1, IDLE_NOTCHED_WIDTH / Math.max(windowWidth, 1)), scaleY: 0.08, opacity: 1 }
+    : { scaleX: 0.94, scaleY: 0.94, opacity: 0 }
+  const unfolded = { scaleX: 1, scaleY: 1, opacity: 1 }
   return (
     <View className="dark" style={{ width: "100%", alignItems: "center" }}>
       <Motion.View
         key="island-card"
-        initial={reducedMotion ? undefined : { opacity: 0, y: -10, scale: 0.97 }}
-        animate={{ opacity: 1, y: 0, scale: 1 }}
-        transition={reducedMotion ? { duration: 0 } : { type: "spring", damping: 24, stiffness: 300 }}
+        initial={reducedMotion ? undefined : folded}
+        animate={closing ? folded : unfolded}
+        transition={islandMotion(reducedMotion, closing ? ISLAND_CLOSE : ISLAND_OPEN)}
+        transformOrigin={{ x: "50%", y: 0 }}
         style={{ width: "100%" }}
       >
         <View
@@ -719,19 +773,64 @@ export const IslandApp = observer(function IslandApp({
             "w-full overflow-hidden bg-black",
             layout.notched ? "rounded-b-[22px]" : "rounded-[22px] border border-white/10",
           )}
-          style={{ maxHeight: maxCardHeight }}
+          style={{ maxHeight: maxCardHeight, minHeight: pickerMinHeight }}
         >
-          {header}
-          {usageOpen ? (
-            <View className="px-3 pb-2">
-              <IslandUsagePanel usage={usage} onOpenBilling={openBilling} />
-            </View>
+          <Motion.View
+            initial={reducedMotion ? undefined : { opacity: 0 }}
+            animate={{ opacity: closing ? 0 : 1 }}
+            transition={islandMotion(reducedMotion, closing ? ISLAND_CONTENT_OUT : ISLAND_CONTENT_IN)}
+            style={{ flexShrink: 1, minHeight: 0 }}
+          >
+            {header}
+            {usageOpen ? (
+              <View className="px-3 pb-2">
+                <IslandUsagePanel usage={usage} onOpenBilling={openBilling} />
+              </View>
+            ) : null}
+            {message ? (
+              <Text className="px-4 pb-1 text-[11px] text-amber-300">{message}</Text>
+            ) : null}
+            <IslandMeetingBanner meeting={meeting} onDecision={respondToMeeting} onOpenMeetings={openMeetings} />
+            <View style={{ flexShrink: 1, minHeight: 0 }}>{body}</View>
+          </Motion.View>
+          {pickerOpen ? (
+            <>
+              <Pressable
+                onPress={() => setPickerOpen(false)}
+                accessibilityLabel="Close project picker"
+                style={{ position: "absolute", top: headerHeight, left: 0, right: 0, bottom: 0 }}
+              />
+              <Motion.View
+                initial={reducedMotion ? undefined : { opacity: 0, y: -6, scale: 0.98 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                transition={islandMotion(reducedMotion, ISLAND_HOVER)}
+                transformOrigin={{ x: 0, y: 0 }}
+                style={{
+                  position: "absolute",
+                  top: headerHeight,
+                  left: 8,
+                  width: Math.min(PICKER_WIDTH, windowWidth - 16),
+                  maxHeight: PICKER_HEIGHT,
+                }}
+              >
+                <View
+                  className="overflow-hidden rounded-xl border border-white/10 bg-zinc-900 shadow-2xl"
+                  style={{ maxHeight: PICKER_HEIGHT }}
+                >
+                  <ProjectSwitcher
+                    workspaceId={workspaceId}
+                    liveSessions={snapshot.sessions}
+                    currentProjectId={currentProjectId}
+                    onInputFocus={focusForTyping}
+                    onSelect={(project: IslandProjectItem) => {
+                      setPickerOpen(false)
+                      setView({ name: "project", projectId: project.id, projectName: project.name })
+                    }}
+                  />
+                </View>
+              </Motion.View>
+            </>
           ) : null}
-          {message ? (
-            <Text className="px-4 pb-1 text-[11px] text-amber-300">{message}</Text>
-          ) : null}
-          <IslandMeetingBanner meeting={meeting} onDecision={respondToMeeting} onOpenMeetings={openMeetings} />
-          <View style={{ flexShrink: 1, minHeight: 0 }}>{body}</View>
         </View>
       </Motion.View>
     </View>

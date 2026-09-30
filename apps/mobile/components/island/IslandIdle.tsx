@@ -6,13 +6,8 @@ import { Pressable, View } from "react-native"
 import { Motion } from "@legendapp/motion"
 import { ShogoLogoMark } from "../branding/ShogoLogoMark"
 import { useIslandAccent } from "./island-accent"
+import { IDLE_WING, IDLE_WING_HOVER, ISLAND_HOVER, NOTCH_WIDTH, islandMotion } from "./island-motion"
 import { ISLAND_TRIGGER_PROPS, type IslandLayout } from "./types"
-
-/** Camera housing width; the wings sit on either side of it. */
-const NOTCH_WIDTH = 200
-/** Wing width at rest and while the pointer is over the notch. */
-const WING_REST = 22
-const WING_HOVER = 36
 
 /** The whole overlay window is the hover target, so "hovered" is simply
  * "the pointer is inside the window". */
@@ -50,9 +45,7 @@ export function IslandIdle({
 }) {
   const hovered = useWindowHovered()
   const accent = useIslandAccent()
-  const transition = reducedMotion
-    ? { type: "timing" as const, duration: 0 }
-    : { type: "spring" as const, damping: 20, stiffness: 320 }
+  const transition = islandMotion(reducedMotion, ISLAND_HOVER)
 
   if (!layout.notched) {
     return (
@@ -72,7 +65,10 @@ export function IslandIdle({
     )
   }
 
-  const wing = hovered ? WING_HOVER : WING_REST
+  const wing = hovered ? IDLE_WING_HOVER : IDLE_WING
+  // Fixed to the menu-bar height: the window grows before the card mounts,
+  // and a full-height shape would flash as a tall black slab.
+  const height = layout.topInset
   return (
     <Pressable
       onPress={onExpand}
@@ -85,7 +81,7 @@ export function IslandIdle({
         animate={{ width: NOTCH_WIDTH + wing * 2 }}
         transition={transition}
         style={{
-          height: "100%",
+          height,
           flexDirection: "row",
           alignItems: "center",
           backgroundColor: "#000",
@@ -93,15 +89,15 @@ export function IslandIdle({
           borderBottomRightRadius: 12,
         }}
       >
-        <View className="h-full items-center justify-center" style={{ width: wing }}>
+        <View className="items-center justify-center" style={{ width: wing, height }}>
           <Motion.View animate={{ scale: hovered ? 1.15 : 1 }} transition={transition}>
             <ShogoLogoMark className="h-3.5 w-3.5" fill={accent} />
           </Motion.View>
         </View>
         <View style={{ width: NOTCH_WIDTH }} />
-        <View className="h-full items-center justify-center" style={{ width: wing }}>
+        <View className="items-center justify-center" style={{ width: wing, height }}>
           <Motion.View
-            animate={{ opacity: hovered ? 1 : 0 }}
+            animate={{ opacity: hovered ? 1 : 0, scale: hovered ? 1 : 0.4 }}
             transition={transition}
             style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: accent }}
           />
