@@ -66,6 +66,58 @@ describe('SSRF guard', () => {
     await expect(safe.assertPublicUrl('file:///etc/passwd')).rejects.toThrow()
     expect((await safe.assertPublicUrl('https://ok.example/a')).hostname).toBe('ok.example')
   })
+
+  test('connections go to the validated address, not a fresh DNS answer', async () => {
+    const server = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch: (req) => new Response(`host=${new URL(req.url).hostname}`) })
+    try {
+      const res = await safe.requestPinned(new URL(`http://does-not-resolve.invalid:${server.port}/`), '127.0.0.1', {
+        headers: {}, maxBytes: 1024, signal: AbortSignal.timeout(2_000),
+      })
+      expect(res.status).toBe(200)
+      expect(new TextDecoder().decode(res.body)).toBe('host=does-not-resolve.invalid')
+    } finally {
+      server.stop(true)
+    }
+  })
+
+  test('a host that re-resolves to a private address after the check is still fetched at the public one', async () => {
+    let lookups = 0
+    safe._setResolverForTests(async () => (lookups++ === 0 ? ['93.184.216.34'] : ['10.0.0.5']))
+    const used: string[] = []
+    safe._setTransportForTests(async (_url, address) => {
+      used.push(address)
+      return { status: 200, headers: { 'content-type': 'text/html' }, body: new TextEncoder().encode('<title>ok</title>') }
+    })
+    try {
+      const res = await safe.safeFetchText('https://rebind.example/')
+      expect(res.body).toBe('<title>ok</title>')
+      expect(used).toEqual(['93.184.216.34'])
+      expect(lookups).toBe(1)
+    } finally {
+      safe._setTransportForTests(null)
+    }
+  })
+
+  test('each redirect hop is re-validated and bodies are capped', async () => {
+    safe._setResolverForTests(async (host) => (host === 'internal.example' ? ['10.0.0.5'] : ['93.184.216.34']))
+    safe._setTransportForTests(async (url) => url.hostname === 'start.example'
+      ? { status: 302, headers: { location: 'http://internal.example/admin' }, body: new Uint8Array() }
+      : { status: 200, headers: {}, body: new Uint8Array() })
+    try {
+      await expect(safe.safeFetchText('https://start.example/')).rejects.toThrow('private')
+    } finally {
+      safe._setTransportForTests(null)
+    }
+    const server = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch: () => new Response('x'.repeat(100_000)) })
+    try {
+      const res = await safe.requestPinned(new URL(`http://big.test:${server.port}/`), '127.0.0.1', {
+        headers: {}, maxBytes: 1000, signal: AbortSignal.timeout(2_000),
+      })
+      expect(res.body.byteLength).toBe(1000)
+    } finally {
+      server.stop(true)
+    }
+  })
 })
 
 describe('link previews', () => {
