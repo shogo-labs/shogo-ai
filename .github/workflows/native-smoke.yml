@@ -152,7 +152,7 @@ jobs:
           arch: x86_64
           target: google_apis
           disable-animations: true
-          script: adb install -r apps/mobile/android/app/build/outputs/apk/release/app-release.apk && bash scripts/ci/native-maestro.sh
+          script: adb install -r apps/mobile/android/app/build/outputs/apk/release/app-release.apk && adb logcat -c && (bash scripts/ci/native-maestro.sh || (mkdir -p "$MAESTRO_OUT" && adb logcat -d > "$MAESTRO_OUT/logcat.txt" && adb exec-out screencap -p > "$MAESTRO_OUT/final.png" && exit 1))
 
       - name: Upload screenshots and reports
         if: always()
