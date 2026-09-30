@@ -52,6 +52,7 @@ import { catchUp } from '../services/conversation-activity'
 import { stopAgentReply } from '../services/conversation-agent-dispatcher'
 import { getPresence } from '../services/conversation-presence'
 import { getChannelMetrics } from '../services/conversation-metrics'
+import { searchMessages } from '../services/conversation-search'
 import { registerConversationNotifications } from '../services/conversation-notifications'
 import type { ConversationSocketData } from '../realtime/conversation-socket'
 
@@ -159,6 +160,16 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
     if (auth instanceof Response) return auth
     const ids = (c.req.query('userIds') ?? '').split(',').map((s) => s.trim()).filter(Boolean).slice(0, 500)
     return c.json({ presence: await getPresence(auth.workspaceId, ids) })
+  })
+
+  router.get('/workspaces/:workspaceId/conversations/search', async (c) => {
+    const auth = await requireWorkspace(c)
+    if (auth instanceof Response) return auth
+    return c.json(await searchMessages(auth.workspaceId, auth.userId, c.req.query('q') ?? '', {
+      limit: numberParam(c.req.query('limit')),
+      offset: numberParam(c.req.query('offset')),
+      sort: c.req.query('sort') === 'recent' ? 'recent' : 'relevance',
+    }))
   })
 
   router.get('/workspaces/:workspaceId/conversations/metrics', async (c) => {

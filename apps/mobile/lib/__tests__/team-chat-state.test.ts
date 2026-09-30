@@ -4,6 +4,7 @@
 import { describe, expect, test } from 'bun:test'
 import type { ChatMessage, ConversationSummary, Mentionables } from '../team-chat-api'
 import {
+  searchSnippet,
   activeMentionQuery,
   addOptimistic,
   applyListEvent,
@@ -206,5 +207,31 @@ describe('mentions', () => {
     expect(renderMentions(`${wire} <!here> <@a:ws> <@u:gone>`, mentionNames(mentionables))).toBe(
       '**@Ana Lopez** and **@Ana**, ask **@Billing Bot**. email@Ana stays **@here** **@Shogo** **@someone**',
     )
+  })
+})
+
+describe('searchSnippet', () => {
+  const names = { users: new Map([['u1', 'Ada']]), agents: new Map() }
+
+  test('highlights word-prefix matches and renders mentions', () => {
+    expect(searchSnippet('<@u:u1> is shipping the Launch', ['ship', 'launch'], names)).toEqual([
+      { text: '@Ada is ', match: false },
+      { text: 'shipping', match: true },
+      { text: ' the ', match: false },
+      { text: 'Launch', match: true },
+    ])
+  })
+
+  test('centers long text on the first match', () => {
+    const text = `${'filler '.repeat(80)}the launch is friday ${'tail '.repeat(80)}`
+    const segments = searchSnippet(text, ['launch'], names, 100)
+    const joined = segments.map((s) => s.text).join('')
+    expect(joined.startsWith('…')).toBe(true)
+    expect(joined.endsWith('…')).toBe(true)
+    expect(segments.some((s) => s.match && s.text === 'launch')).toBe(true)
+  })
+
+  test('without terms it is a truncated preview', () => {
+    expect(searchSnippet('hello there', [], names)).toEqual([{ text: 'hello there', match: false }])
   })
 })

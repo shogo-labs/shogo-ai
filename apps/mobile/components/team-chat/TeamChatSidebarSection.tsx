@@ -8,7 +8,7 @@
 import { useState } from 'react'
 import { Pressable, Text, View } from 'react-native'
 import { usePathname, useRouter } from 'expo-router'
-import { Bot, ChevronDown, ChevronRight, Hash, Lock, MessagesSquare, Plus, Radio, Users } from 'lucide-react-native'
+import { Bot, ChevronDown, ChevronRight, Hash, Lock, MessagesSquare, Plus, Radio, Search, Users } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { densityFor } from '../../lib/phone-density'
 import { usePhoneLayout } from '../../lib/native-phone-layout'
@@ -119,16 +119,25 @@ export function TeamChatSidebarSection({ workspaceId, collapsed, onNavPress }: T
         'Channels',
         groups.channels,
         'channel',
-        <Pressable
-          onPress={() => {
-            router.push('/(app)/c' as any)
-            onNavPress?.()
-          }}
-          className={cn('flex-row items-center rounded-md active:bg-accent/50', comfortable ? `${density.rowMin} gap-3 px-3 py-2` : 'gap-2 px-2 py-1')}
-        >
-          <Plus size={comfortable ? density.icon.nav : 12} className="text-muted-foreground" />
-          <Text className={cn('text-muted-foreground', comfortable ? density.text.body : 'text-xs')}>Browse channels</Text>
-        </Pressable>,
+        <View>
+          {([
+            { label: 'Browse channels', icon: Plus, href: '/(app)/c' },
+            { label: 'Search messages', icon: Search, href: '/(app)/c/search' },
+          ] as const).map(({ label, icon: Icon, href }) => (
+            <Pressable
+              key={label}
+              accessibilityRole="button"
+              onPress={() => {
+                router.push(href as any)
+                onNavPress?.()
+              }}
+              className={cn('flex-row items-center rounded-md active:bg-accent/50', comfortable ? `${density.rowMin} gap-3 px-3 py-2` : 'gap-2 px-2 py-1')}
+            >
+              <Icon size={comfortable ? density.icon.nav : 12} className="text-muted-foreground" />
+              <Text className={cn('text-muted-foreground', comfortable ? density.text.body : 'text-xs')}>{label}</Text>
+            </Pressable>
+          ))}
+        </View>,
       )}
       {section('Direct messages', groups.directMessages, 'dm')}
       {section('Agents', groups.agents, 'agent')}

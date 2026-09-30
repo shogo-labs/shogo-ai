@@ -313,3 +313,39 @@ export function plainPreview(text: string, names: MentionNames, max = 120): stri
   const flat = renderMentions(text, names).replace(/\*\*/g, '').replace(/\s+/g, ' ').trim()
   return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat
 }
+
+export interface HighlightSegment {
+  text: string
+  match: boolean
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+/**
+ * A search-result excerpt around the first matching term, split into
+ * segments so matches can be emphasised. Terms match word prefixes, which
+ * approximates the server's stemming ("ship" highlights "shipping").
+ */
+export function searchSnippet(text: string, terms: string[], names: MentionNames, max = 220): HighlightSegment[] {
+  const flat = renderMentions(text, names).replace(/\*\*/g, '').replace(/\s+/g, ' ').trim()
+  const words = terms.map((t) => t.trim()).filter(Boolean)
+  if (!words.length) return [{ text: flat.length > max ? `${flat.slice(0, max - 1)}…` : flat, match: false }]
+  const re = new RegExp(`\\b(${words.map(escapeRegExp).join('|')})\\w*`, 'gi')
+  const first = flat.search(re)
+  let start = 0
+  if (first > max / 3) start = Math.max(0, flat.lastIndexOf(' ', first - Math.floor(max / 3)) + 1)
+  let excerpt = flat.slice(start, start + max)
+  if (start > 0) excerpt = `…${excerpt}`
+  if (start + max < flat.length) excerpt = `${excerpt}…`
+  const segments: HighlightSegment[] = []
+  let last = 0
+  for (const m of excerpt.matchAll(re)) {
+    if (m.index! > last) segments.push({ text: excerpt.slice(last, m.index), match: false })
+    segments.push({ text: m[0], match: true })
+    last = m.index! + m[0].length
+  }
+  if (last < excerpt.length) segments.push({ text: excerpt.slice(last), match: false })
+  return segments
+}

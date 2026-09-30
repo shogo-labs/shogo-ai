@@ -92,6 +92,15 @@ export interface ChatMessage {
   pending?: 'sending' | 'failed'
 }
 
+export interface SearchResponse {
+  results: Array<{
+    message: ChatMessage
+    conversation: { id: string; kind: ConversationKind; name: string | null; slug: string | null }
+  }>
+  terms: string[]
+  hasMore: boolean
+}
+
 export interface Mentionables {
   people: Array<{ id: string; name: string; email: string; image: string | null; role: string }>
   agents: Array<{ key: string; projectId: string | null; name: string; description: string | null; image: string | null }>
@@ -170,6 +179,14 @@ export function teamChatApi() {
     async openAgentDm(workspaceId: string, projectId: string | null) {
       return (await http.post<{ conversation: ConversationSummary }>(`${ws(workspaceId)}/dms`, { agent: { projectId } }))
         .data.conversation
+    },
+    async search(
+      workspaceId: string,
+      q: string,
+      opts: { offset?: number; sort?: 'relevance' | 'recent' } = {},
+    ): Promise<SearchResponse> {
+      const params = new URLSearchParams({ q, offset: String(opts.offset ?? 0), sort: opts.sort ?? 'relevance' })
+      return (await http.get<SearchResponse>(`${ws(workspaceId)}/conversations/search?${params}`)).data
     },
     async mentionables(workspaceId: string): Promise<Mentionables> {
       return (await http.get<Mentionables>(`${ws(workspaceId)}/mentionables`)).data
