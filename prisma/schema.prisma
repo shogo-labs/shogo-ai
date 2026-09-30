@@ -10,12 +10,14 @@
 // - better-auth: User, Session, Account, Verification
 
 generator client {
-  provider = "prisma-client"
-  output   = "../apps/api/src/generated/prisma-pg"
+  provider        = "prisma-client"
+  output          = "../apps/api/src/generated/prisma-pg"
+  previewFeatures = ["postgresqlExtensions"]
 }
 
 datasource db {
-  provider = "postgresql"
+  provider   = "postgresql"
+  extensions = [vector]
 }
 
 // =============================================================================
@@ -4088,7 +4090,8 @@ model ConversationMessageEmbedding {
   messageId   String   @unique
   workspaceId String
   model       String
-  embedding   Float[]
+  /// pgvector. Read and written with raw SQL; null for messages with nothing to embed.
+  embedding   Unsupported("vector")?
   createdAt   DateTime @default(now())
 
   message ConversationMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)

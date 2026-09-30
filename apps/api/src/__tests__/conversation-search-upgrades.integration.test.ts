@@ -239,6 +239,35 @@ describe('semantic search', () => {
     expect((await find(seed.viewer, 'what was our revenue?', '&mode=semantic')).texts).toEqual([])
     expect((await find(seed.owner, 'was there an incident?', '&mode=semantic')).texts).toEqual(['The outage on login is fixed'])
   })
+
+  test('1536-dimension vectors (the indexed size) rank the same way', async () => {
+    const reindex = async () => {
+      await db.conversationMessageEmbedding.deleteMany({ where: { workspaceId: seed.workspaceId } })
+      while (await semantic.indexPendingMessages(new Date())) {}
+    }
+    semantic._setEmbeddingProviderForTests({
+      model: 'toy-1536',
+      embed: async (texts: string[]) => (await toyProvider.embed(texts)).map((v) => [...v, ...new Array(1536 - v.length).fill(0)]),
+    })
+    try {
+      await reindex()
+      expect((await find(seed.owner, 'what was our revenue?', '&mode=semantic')).texts).toEqual(['Sales numbers beat the plan this quarter'])
+      expect((await find(seed.viewer, 'what was our revenue?', '&mode=semantic')).texts).toEqual([])
+      if (!process.env.CHANNELS_TEST_PG_URL) return
+      const q = `[${[1, ...new Array(1535).fill(0)].join(',')}]`
+      const plan: any[] = await db.$transaction(async (tx: any) => {
+        await tx.$executeRawUnsafe('SET LOCAL enable_seqscan = off')
+        return tx.$queryRawUnsafe(
+          `EXPLAIN SELECT e."messageId" FROM conversation_message_embeddings e
+           WHERE vector_dims(e.embedding) = 1536 ORDER BY e.embedding::vector(1536) <=> $1::vector(1536) LIMIT 5`, q,
+        )
+      })
+      expect(plan.map((r) => Object.values(r)[0]).join('\n')).toContain('conversation_message_embeddings_hnsw_1536')
+    } finally {
+      semantic._setEmbeddingProviderForTests(toyProvider)
+      await reindex()
+    }
+  })
 })
 
 describe('ask the workspace', () => {

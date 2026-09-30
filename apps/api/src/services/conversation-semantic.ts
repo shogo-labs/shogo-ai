@@ -5,10 +5,10 @@
  *
  * A background indexer embeds recent messages (text plus attachment names
  * and extracted file text) and stores the vectors in
- * `conversation_message_embeddings`. Vectors are plain float arrays so the
- * same code runs on Postgres and desktop SQLite; similarity is computed in
- * process over the viewer's readable conversations, capped to the most
- * recent `MAX_SCAN` vectors.
+ * `conversation_message_embeddings`. On Postgres they are pgvector columns
+ * ranked in SQL (with an HNSW index for 1536-dimension models); on desktop
+ * SQLite they are JSON arrays ranked in process over the most recent
+ * `MAX_SCAN` vectors.
  *
  * Embeddings come from the local LLM server when `LOCAL_LLM_BASE_URL` and
  * `LOCAL_EMBEDDING_MODEL` are set, otherwise OpenAI when `OPENAI_API_KEY`
@@ -23,6 +23,7 @@ import { loadMentionNames, runWorkspaceAgentPrompt } from './conversation-agent-
 import { renderMentionsAsText, type MentionNames } from './conversation-mentions'
 
 const db = prisma as any
+const isLocalMode = () => process.env.SHOGO_LOCAL_MODE === 'true'
 
 const INDEX_BATCH = 64
 const INDEX_WINDOW_MS = 90 * 24 * 60 * 60_000
@@ -129,11 +130,71 @@ export async function indexPendingMessages(now = new Date(), batch = INDEX_BATCH
   const vectors = withText.length ? await provider.embed(withText.map((d) => d.text)) : []
   const vectorFor = new Map(withText.map((d, i) => [d.row.id, vectors[i] ?? []]))
   for (const { row } of docs) {
-    await db.conversationMessageEmbedding.create({
-      data: { messageId: row.id, workspaceId: row.workspaceId, model: provider.model, embedding: vectorFor.get(row.id) ?? [] },
-    }).catch(() => {})
+    await storeEmbedding(row, provider.model, vectorFor.get(row.id) ?? []).catch(() => {})
   }
   return docs.length
+}
+
+const MAX_PG_DIMS = 16_000
+
+/** pgvector text form, or null when the vector can't be ranked (empty, all zeros, or not finite). */
+function vectorLiteral(v: number[]): string | null {
+  if (!v.length || v.length > MAX_PG_DIMS || !v.every(Number.isFinite) || v.every((x) => x === 0)) return null
+  return `[${v.join(',')}]`
+}
+
+async function storeEmbedding(row: { id: string; workspaceId: string }, model: string, vector: number[]): Promise<void> {
+  if (isLocalMode()) {
+    await db.conversationMessageEmbedding.create({
+      data: { messageId: row.id, workspaceId: row.workspaceId, model, embedding: vector },
+    })
+    return
+  }
+  await db.$executeRawUnsafe(
+    `INSERT INTO conversation_message_embeddings (id, "messageId", "workspaceId", model, embedding)
+     VALUES ($1, $2, $3, $4, $5::vector)
+     ON CONFLICT ("messageId") DO NOTHING`,
+    crypto.randomUUID(), row.id, row.workspaceId, model, vectorLiteral(vector),
+  )
+}
+
+type Scored = { id: string; score: number }
+
+async function nearestSqlite(workspaceId: string, model: string, conversationIds: string[], query: number[]): Promise<Scored[]> {
+  const vectors = await db.conversationMessageEmbedding.findMany({
+    where: { workspaceId, model, message: { conversationId: { in: conversationIds }, deletedAt: null } },
+    orderBy: { createdAt: 'desc' },
+    take: MAX_SCAN,
+    select: { messageId: true, embedding: true },
+  })
+  return vectors.map((v: any) => ({ id: v.messageId, score: cosine(query, v.embedding ?? []) }))
+}
+
+/**
+ * Nearest neighbours in SQL. The `vector(n)` cast and `vector_dims` filter
+ * match the partial HNSW index for 1536 dimensions; other sizes scan the
+ * workspace's rows exactly. Iterative scan keeps filling results when the
+ * index's first candidates are in conversations the viewer can't read.
+ */
+async function nearestPostgres(workspaceId: string, model: string, conversationIds: string[], query: number[], limit: number): Promise<Scored[]> {
+  const literal = vectorLiteral(query)
+  if (!literal) return []
+  const dims = query.length
+  const distance = `e.embedding::vector(${dims}) <=> $1::vector(${dims})`
+  const rows = await db.$transaction(async (tx: any) => {
+    await tx.$executeRawUnsafe(`SET LOCAL hnsw.iterative_scan = relaxed_order`)
+    return tx.$queryRawUnsafe(
+      `SELECT e."messageId" AS id, 1 - (${distance}) AS score
+       FROM conversation_message_embeddings e
+       JOIN conversation_messages m ON m.id = e."messageId"
+       WHERE e."workspaceId" = $2 AND e.model = $3 AND vector_dims(e.embedding) = ${dims}
+         AND m."conversationId" = ANY($4::text[]) AND m."deletedAt" IS NULL
+       ORDER BY ${distance}
+       LIMIT $5`,
+      literal, workspaceId, model, conversationIds, limit,
+    )
+  })
+  return rows.map((r: any) => ({ id: r.id, score: Number(r.score) }))
 }
 
 export function cosine(a: number[], b: number[]): number {
@@ -174,17 +235,13 @@ export async function semanticSearch(
 
   const conversationIds = await readableConversationIds(workspaceId, viewerId)
   if (!conversationIds.length) return { results: [], available: true }
-  const vectors = await db.conversationMessageEmbedding.findMany({
-    where: { workspaceId, model: provider.model, message: { conversationId: { in: conversationIds }, deletedAt: null } },
-    orderBy: { createdAt: 'desc' },
-    take: MAX_SCAN,
-    select: { messageId: true, embedding: true },
-  })
   const limit = Math.min(Math.max(opts.limit ?? 20, 1), 50)
   const minScore = opts.minScore ?? 0.2
-  const scored = vectors
-    .map((v: any) => ({ id: v.messageId, score: cosine(queryVector, v.embedding ?? []) }))
-    .filter((s: any) => s.score >= minScore)
+  const candidates = isLocalMode()
+    ? await nearestSqlite(workspaceId, provider.model, conversationIds, queryVector)
+    : await nearestPostgres(workspaceId, provider.model, conversationIds, queryVector, limit)
+  const scored = candidates
+    .filter((s) => s.score >= minScore)
     .sort((a: any, b: any) => b.score - a.score)
     .slice(0, limit)
   if (!scored.length) return { results: [], available: true }
