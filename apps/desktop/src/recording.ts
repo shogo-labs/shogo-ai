@@ -442,13 +442,23 @@ function onMeetingMaybeEnded(): void {
   if (!mgr.isRecording() || detectionState !== 'recording') return
   detectionState = 'maybe_ended'
   const config = readConfig()
+  // macOS ends a call when the app releases the mic, which happens on hang-up
+  // (muting keeps it open), so only a short grace is needed. Elsewhere the
+  // signal is "the app's call process went away", which is noisier.
+  const waitSeconds =
+    process.platform === 'darwin' ? config.meetings.gracePeriodSeconds : config.meetings.autoStopSeconds
   autoStopTimer = setTimeout(() => {
+    autoStopTimer = null
     if (detectionState === 'maybe_ended' && mgr.isRecording()) {
-      console.log('[Recording] Auto-stopping: meeting app no longer running')
-      showNotification('Meeting ended', 'Recording stopped automatically.')
-      stopRecording().catch(() => {})
+      console.log('[Recording] Auto-stopping: meeting ended')
+      // Stop through the app window so its mic pipeline shuts down and the
+      // meeting is saved, same as pressing Stop.
+      void stopMeetingCapture().then((result) => {
+        if (result.ok) showNotification('Meeting ended', 'Recording stopped automatically.')
+        else console.error('[Recording] Auto-stop failed:', result.error)
+      })
     }
-  }, config.meetings.autoStopSeconds * 1000)
+  }, waitSeconds * 1000)
 }
 
 function showNotification(title: string, body: string): void {
