@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { describe, expect, test } from 'bun:test'
-import { encodeWav16, pickCutIndex, resampleTo16k, rms } from '../live-audio'
+import { encodeWav16, pickCutIndex, resampleTo16k, rms, startLiveCapture } from '../live-audio'
 
 const RATE = 48000
 
@@ -38,5 +38,65 @@ describe('live-audio', () => {
 
   test('silence has near-zero RMS', () => {
     expect(rms(new Float32Array(RATE))).toBe(0)
+  })
+})
+
+/** Just enough Web Audio to push samples through `startLiveCapture`. */
+function fakeAudio() {
+  let processor: any
+  class FakeContext {
+    sampleRate = RATE
+    state = 'running'
+    createMediaStreamSource() {
+      return { connect() {}, disconnect() {} }
+    }
+    createScriptProcessor() {
+      processor = { connect() {}, disconnect() {}, onaudioprocess: null }
+      return processor
+    }
+    close() {
+      return Promise.resolve()
+    }
+  }
+  ;(globalThis as any).AudioContext = FakeContext
+  return {
+    feed(samples: Float32Array) {
+      processor.onaudioprocess({ inputBuffer: { getChannelData: () => samples } })
+    },
+  }
+}
+
+describe('startLiveCapture', () => {
+  test('stop sends the tail and reports full coverage once it lands', async () => {
+    const audio = fakeAudio()
+    const seqs: number[] = []
+    const capture = startLiveCapture({} as MediaStream, async (chunk) => {
+      await new Promise((r) => setTimeout(r, 5))
+      seqs.push(chunk.seq)
+    })!
+    audio.feed(tone(9))
+    audio.feed(tone(0.5))
+    const summary = await capture.stop()
+    expect(seqs).toEqual([0, 1])
+    expect(summary).toEqual({ complete: true, chunks: 2, seconds: 9.5 })
+  })
+
+  test('a rejected chunk, a discard or a timeout is incomplete', async () => {
+    let audio = fakeAudio()
+    const failing = startLiveCapture({} as MediaStream, async () => {
+      throw new Error('503')
+    })!
+    audio.feed(tone(9))
+    expect((await failing.stop()).complete).toBe(false)
+
+    audio = fakeAudio()
+    const discarded = startLiveCapture({} as MediaStream, async () => {})!
+    audio.feed(tone(3))
+    expect(await discarded.stop({ discard: true })).toMatchObject({ complete: false, chunks: 0 })
+
+    audio = fakeAudio()
+    const stalled = startLiveCapture({} as MediaStream, () => new Promise(() => {}))!
+    audio.feed(tone(9))
+    expect((await stalled.stop({ timeoutMs: 20 })).complete).toBe(false)
   })
 })

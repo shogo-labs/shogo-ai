@@ -24,6 +24,8 @@ function matches(row: any, where: any): boolean {
       if (!value.includes(String((cond as any).contains).toLowerCase())) return false
     } else if (cond && typeof cond === 'object' && 'gte' in (cond as any)) {
       if (!(row[key] >= (cond as any).gte)) return false
+    } else if (cond && typeof cond === 'object' && 'lt' in (cond as any)) {
+      if (!(row[key] < (cond as any).lt)) return false
     } else if (row[key] !== cond) {
       return false
     }
@@ -67,6 +69,11 @@ const prismaMock = {
       meetings.delete(where.id)
       return row
     },
+    deleteMany: async ({ where }: any) => {
+      const rows = Array.from(meetings.values()).filter((row) => matches(row, where))
+      for (const row of rows) meetings.delete(row.id)
+      return { count: rows.length }
+    },
   },
   meetingTemplate: {
     findMany: async ({ where }: any) => Array.from(templates.values()).filter((t) => matches(t, where)),
@@ -95,9 +102,11 @@ mock.module('ai', () => ({ generateText: async () => ({ text: generated }) }))
 const transcription = await import('../services/transcription.service')
 let transcribedText = ''
 let transcribeError: Error | null = null
+let transcribeCalls = 0
 mock.module('../services/transcription.service', () => ({
   ...transcription,
   transcribe: async () => {
+    transcribeCalls++
     if (transcribeError) throw transcribeError
     return { text: transcribedText, segments: [], language: 'en', provider: 'test' }
   },
@@ -143,6 +152,7 @@ beforeEach(() => {
   generated = ''
   transcribedText = ''
   transcribeError = null
+  transcribeCalls = 0
   delete process.env.SHOGO_LOCAL_MODE
 })
 
@@ -412,6 +422,91 @@ describe('live transcription', () => {
     expect(transcript.error).toBe('Something went wrong transcribing this recording. Try again.')
     expect(row.enhancedNotes).toContain('live transcript')
     require('fs').unlinkSync(audioPath)
+  })
+
+  function finishUpload(recordingId: string, liveChunks?: number) {
+    const form = new FormData()
+    form.append('audio', new File([wav(16)], 'meeting.wav', { type: 'audio/wav' }))
+    form.append('duration', '16')
+    form.append('recordingId', recordingId)
+    if (liveChunks !== undefined) form.append('liveChunks', String(liveChunks))
+    return app.request('/api/workspaces/ws-me/meetings/upload', { method: 'POST', body: form })
+  }
+
+  test('a complete live transcript is kept instead of a second cloud pass', async () => {
+    transcribedText = 'first part'
+    await liveChunk('rec-full', 0, 0)
+    transcribedText = 'second part'
+    await liveChunk('rec-full', 8, 1)
+    transcribedText = 'FULL PASS'
+    const res = await finishUpload('rec-full', 2)
+    expect(res.status).toBe(201)
+    await new Promise((r) => setTimeout(r, 20))
+    const row = findBy(meetings, { recordingId: 'rec-full' })
+    expect(transcribeCalls).toBe(2)
+    expect(row.status).toBe('ready')
+    expect(row.audioPath).toBe('')
+    const transcript = JSON.parse(row.transcript)
+    expect(transcript.text).toBe('first part second part')
+    expect(transcript.live).toBeUndefined()
+  })
+
+  test('a live transcript with gaps still gets the full pass', async () => {
+    transcribedText = 'first part'
+    await liveChunk('rec-gap', 0, 0)
+    transcribedText = 'FULL PASS'
+    await finishUpload('rec-gap', 2)
+    await new Promise((r) => setTimeout(r, 20))
+    expect(transcribeCalls).toBe(2)
+    expect(JSON.parse(findBy(meetings, { recordingId: 'rec-gap' }).transcript).text).toBe('FULL PASS')
+
+    transcribedText = 'only part'
+    await liveChunk('rec-unsure', 0, 0)
+    transcribedText = 'FULL PASS'
+    await finishUpload('rec-unsure')
+    await new Promise((r) => setTimeout(r, 20))
+    expect(JSON.parse(findBy(meetings, { recordingId: 'rec-unsure' }).transcript).text).toBe('FULL PASS')
+  })
+})
+
+describe('abandoned recording drafts', () => {
+  const minutesAgo = (n: number) => new Date(Date.now() - n * 60_000)
+
+  test('stale drafts close: transcript or notes kept, empty ones deleted, live ones untouched', async () => {
+    const withTranscript = seed({ recordingId: 'r1', status: 'recording', transcript: TRANSCRIPT, updatedAt: minutesAgo(11) })
+    const withNotes = seed({ recordingId: 'r2', status: 'recording', notes: 'call legal', updatedAt: minutesAgo(30) })
+    const empty = seed({ recordingId: 'r3', status: 'recording', updatedAt: minutesAgo(11) })
+    const active = seed({ recordingId: 'r4', status: 'recording', updatedAt: minutesAgo(2) })
+
+    expect(await service.sweepStaleRecordingDrafts()).toBe(3)
+    expect(meetings.get(withTranscript.id).status).toBe('ready')
+    const transcript = JSON.parse(meetings.get(withTranscript.id).transcript)
+    expect(transcript.segments).toHaveLength(1)
+    expect(transcript.error).toContain('ended unexpectedly')
+    expect(meetings.get(withTranscript.id).duration).toBe(4)
+    expect(meetings.get(withNotes.id).status).toBe('ready')
+    expect(meetings.has(empty.id)).toBe(false)
+    expect(meetings.get(active.id).status).toBe('recording')
+  })
+
+  test('saving the draft is a heartbeat', async () => {
+    const draft = seed({ recordingId: 'r-beat', status: 'recording', updatedAt: minutesAgo(11) })
+    expect((await req('PATCH', '/workspaces/ws-me/meetings/recordings/r-beat', {})).status).toBe(200)
+    expect(await service.sweepStaleRecordingDrafts()).toBe(0)
+    expect(meetings.get(draft.id).status).toBe('recording')
+  })
+
+  test('a recorder that comes back after the sweep still finishes its meeting', async () => {
+    const draft = seed({ recordingId: 'r-late', status: 'recording', transcript: TRANSCRIPT, updatedAt: minutesAgo(11) })
+    await service.sweepStaleRecordingDrafts()
+    transcribedText = 'the whole meeting'
+    const form = new FormData()
+    form.append('audio', new File([wav(4)], 'meeting.wav', { type: 'audio/wav' }))
+    form.append('recordingId', 'r-late')
+    const res = await app.request('/api/workspaces/ws-me/meetings/upload', { method: 'POST', body: form })
+    expect((await res.json()).meeting.id).toBe(draft.id)
+    await new Promise((r) => setTimeout(r, 20))
+    expect(JSON.parse(meetings.get(draft.id).transcript).text).toBe('the whole meeting')
   })
 })
 

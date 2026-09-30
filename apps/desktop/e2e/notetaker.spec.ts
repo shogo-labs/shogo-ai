@@ -17,6 +17,7 @@ import { test, expect, _electron as electron, type ElectronApplication, type Pag
 import path from 'path'
 import fs from 'fs'
 import os from 'os'
+import { E2E_API_PORT, mainAppWindow } from './electron-helpers'
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..')
 const DESKTOP_DIR = path.resolve(__dirname, '..')
@@ -127,13 +128,14 @@ test.beforeAll(async () => {
       // Skip heavy startup paths we don't need for recording: the local
       // Bun API server, etc.
       SHOGO_SKIP_LOCAL_SERVER: 'true',
+      SHOGO_E2E_API_PORT: E2E_API_PORT,
       SHOGO_E2E: 'true',
       ELECTRON_DISABLE_SECURITY_WARNINGS: 'true',
     },
     timeout: 60_000,
   })
 
-  mainWindow = await app.firstWindow({ timeout: 60_000 })
+  mainWindow = await mainAppWindow(app)
 
   // Surface renderer + electron process logs so CI failures are debuggable
   // without round-tripping through the trace viewer.

@@ -13,7 +13,7 @@ import { tmpdir } from 'os'
 import { randomBytes } from 'crypto'
 import { generateText } from 'ai'
 import { prisma } from '../lib/prisma'
-import { transcribe, type CloudTranscriptionAuth } from './transcription.service'
+import { transcribe, isLocalTranscriptionAvailable, type CloudTranscriptionAuth } from './transcription.service'
 import {
   isDiarizationAvailable,
   diarize,
@@ -334,6 +334,45 @@ export interface TranscribeMeetingOptions {
   deleteAudioAfter?: boolean
   /** Run enhancement once the transcript is ready. Defaults to true. */
   enhance?: boolean
+  /**
+   * Set by clients whose live transcript covered the whole recording: the
+   * number of chunks the server acknowledged. When the final pass would be
+   * billed to cloud Whisper, the live transcript is kept instead.
+   */
+  liveChunks?: number
+}
+
+/** Upload field -> `liveChunks`, or undefined when absent or malformed. */
+export function parseLiveChunks(value: unknown): number | undefined {
+  if (value === null || value === undefined || value === '') return undefined
+  const n = Number(value)
+  return Number.isInteger(n) && n >= 0 && n < 100_000 ? n : undefined
+}
+
+async function finalPassUsesCloud(options: TranscribeMeetingOptions): Promise<boolean> {
+  if (!isLocalMode()) return true
+  if (options.preferLocal === false) return true
+  const model = options.model || (await getLocalMeetingConfig()).whisperModel
+  return !isLocalTranscriptionAvailable(model)
+}
+
+/** Promote the live transcript to the final one. False when it doesn't cover every acknowledged chunk. */
+async function finishFromLiveTranscript(meetingId: string, liveChunks: number): Promise<boolean> {
+  const row = await db.meeting.findUnique({ where: { id: meetingId }, select: { transcript: true } })
+  const raw = safeJson(row?.transcript)
+  if (!raw?.live) return false
+  const seqs = Array.isArray(raw.liveSeqs) ? raw.liveSeqs.filter(Number.isInteger) : []
+  if (seqs.length < liveChunks) return false
+  const live = parseTranscript(row.transcript)!
+  const updated = await db.meeting.update({
+    where: { id: meetingId },
+    data: {
+      status: 'ready',
+      transcript: JSON.stringify({ text: live.text, segments: live.segments, language: live.language ?? 'en', numSpeakers: 0 }),
+    },
+  })
+  if (updated.projectId) writeTranscriptToProject(updated.projectId, updated)
+  return true
 }
 
 export async function transcribeMeeting(
@@ -342,6 +381,20 @@ export async function transcribeMeeting(
   options: TranscribeMeetingOptions = {},
 ): Promise<void> {
   try {
+    if (
+      options.liveChunks !== undefined &&
+      (await finalPassUsesCloud(options)) &&
+      (await finishFromLiveTranscript(meetingId, options.liveChunks))
+    ) {
+      console.log(`[Meetings] Kept the live transcript for ${meetingId}; skipped a second cloud pass`)
+      if (options.deleteAudioAfter) {
+        removeAudioFiles(audioPath)
+        await db.meeting.update({ where: { id: meetingId }, data: { audioPath: '' } }).catch(() => {})
+      }
+      if (options.enhance !== false) void enhanceMeeting(meetingId).catch(() => {})
+      return
+    }
+
     if (!existsSync(audioPath)) {
       await db.meeting
         .update({
@@ -620,6 +673,8 @@ export async function upsertRecordingDraft(
       if (isDefaultTitle(existing.title)) data.title = defaultMeetingTitle(meetingDate(existing.createdAt), app)
     }
     if (title) data.title = title
+    // Recorders save the draft (even with no changes) as a heartbeat.
+    if (existing.status === 'recording') data.updatedAt = new Date()
     return db.meeting.update({ where: { id: existing.id }, data })
   }
   return db.meeting.create({
@@ -634,6 +689,72 @@ export async function upsertRecordingDraft(
       title: title ?? defaultMeetingTitle(new Date(), app),
     },
   })
+}
+
+/** Recorders save their draft at least this often while recording. */
+export const RECORDING_HEARTBEAT_MS = 60 * 1000
+/** A draft that hasn't heard from its recorder for this long was abandoned. */
+export const RECORDING_DRAFT_STALE_MS = 10 * 60 * 1000
+
+/** A draft the sweeper closed. Its recorder may still upload, which finishes it normally. */
+export function isInterruptedDraft(meeting: { recordingId?: string | null; transcript?: string | null } | null): boolean {
+  return !!meeting?.recordingId && safeJson(meeting.transcript)?.interrupted === true
+}
+
+/**
+ * Close drafts whose recorder went away (tab closed, app crashed). Drafts
+ * with a live transcript or notes become ready meetings; empty ones are
+ * deleted.
+ */
+export async function sweepStaleRecordingDrafts(now = new Date()): Promise<number> {
+  const cutoff = new Date(now.getTime() - RECORDING_DRAFT_STALE_MS)
+  const stale = await db.meeting.findMany({
+    where: { status: 'recording', updatedAt: { lt: cutoff } },
+    select: { id: true, transcript: true, notes: true, updatedAt: true },
+    take: 100,
+  })
+  let swept = 0
+  for (const row of stale) {
+    const live = parseTranscript(row.transcript)
+    const segments = live?.segments ?? []
+    // Scoped to the row we read, so a recorder that just checked in wins.
+    const where = { id: row.id, status: 'recording', updatedAt: row.updatedAt }
+    if (segments.length === 0 && !row.notes?.trim()) {
+      swept += (await db.meeting.deleteMany({ where })).count
+      continue
+    }
+    const { count } = await db.meeting.updateMany({
+      where,
+      data: {
+        status: 'ready',
+        ...(segments.length ? { duration: Math.round(segments[segments.length - 1].end) || null } : {}),
+        transcript: JSON.stringify({
+          text: live?.text ?? '',
+          segments,
+          language: live?.language ?? 'en',
+          interrupted: true,
+          error: segments.length
+            ? 'The recording ended unexpectedly. This is the live transcript captured before it stopped.'
+            : 'The recording ended unexpectedly before any audio was saved.',
+        }),
+      },
+    })
+    if (count) {
+      swept++
+      void enhanceMeeting(row.id).catch(() => {})
+    }
+  }
+  if (swept) console.log(`[Meetings] Closed ${swept} abandoned recording draft(s)`)
+  return swept
+}
+
+let sweeper: ReturnType<typeof setInterval> | null = null
+export function startRecordingDraftSweeper(): void {
+  if (sweeper) return
+  const run = () => void sweepStaleRecordingDrafts().catch((err) => console.warn('[Meetings] Draft sweep failed:', err?.message ?? err))
+  run()
+  sweeper = setInterval(run, 5 * 60 * 1000)
+  sweeper.unref?.()
 }
 
 // ---------------------------------------------------------------------------

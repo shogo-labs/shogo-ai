@@ -219,7 +219,15 @@ export type MeetingAudio =
 export async function uploadMeetingAudio(
   workspaceId: string,
   audio: MeetingAudio,
-  fields: { source: 'mobile' | 'upload'; duration?: number; notes?: string; title?: string; recordingId?: string },
+  fields: {
+    source: 'mobile' | 'upload'
+    duration?: number
+    notes?: string
+    title?: string
+    recordingId?: string
+    /** Set when the live transcript covers the whole recording (see `useRecording`). */
+    liveChunks?: number
+  },
 ): Promise<MeetingDetail> {
   const form = new FormData()
   if (audio.kind === 'blob') form.append('audio', audio.blob, audio.filename)
@@ -229,6 +237,7 @@ export async function uploadMeetingAudio(
   if (fields.notes?.trim()) form.append('notes', fields.notes)
   if (fields.title?.trim()) form.append('title', fields.title)
   if (fields.recordingId) form.append('recordingId', fields.recordingId)
+  if (fields.liveChunks !== undefined) form.append('liveChunks', String(fields.liveChunks))
 
   const headers: Record<string, string> = {}
   const cookie = Platform.OS === 'web' ? null : nativeAuthCookie()

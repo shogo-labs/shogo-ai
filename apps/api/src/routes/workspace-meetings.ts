@@ -22,9 +22,11 @@ import {
   defaultMeetingTitle,
   enhanceMeeting,
   friendlyMeetingError,
+  isInterruptedDraft,
   listMeetingTemplates,
   meetingToMarkdown,
   newShareToken,
+  parseLiveChunks,
   removeAudioFiles,
   searchMeetings,
   serializeMeeting,
@@ -263,7 +265,7 @@ export function workspaceMeetingRoutes(config: WorkspaceMeetingRoutesConfig): Ho
     // Finish the draft the live transcript was written into, if there is one.
     const draft = recordingId ? await db.meeting.findUnique({ where: { recordingId } }) : null
     const meeting =
-      draft && draft.workspaceId === auth.workspaceId && draft.status === 'recording'
+      draft && draft.workspaceId === auth.workspaceId && (draft.status === 'recording' || isInterruptedDraft(draft))
         ? await db.meeting.update({
             where: { id: draft.id },
             data: {
@@ -287,7 +289,10 @@ export function workspaceMeetingRoutes(config: WorkspaceMeetingRoutesConfig): Ho
               source,
             },
           })
-    void transcribeMeeting(meeting.id, audioPath, { deleteAudioAfter: !isLocalMode() })
+    void transcribeMeeting(meeting.id, audioPath, {
+      deleteAudioAfter: !isLocalMode(),
+      liveChunks: meeting.id === draft?.id ? parseLiveChunks(form.get('liveChunks')) : undefined,
+    })
     return c.json({ meeting: serializeMeeting(meeting) }, 201)
   })
 

@@ -98,14 +98,27 @@ export function encodeWav16(samples: Float32Array, sampleRate = LIVE_SAMPLE_RATE
   return buffer
 }
 
+export interface LiveSummary {
+  /** Every chunk with speech was transcribed: none dropped, none failed. */
+  complete: boolean
+  /** Chunks the server acknowledged. */
+  chunks: number
+  /** Audio covered by the capture, silence included. */
+  seconds: number
+}
+
 export interface LiveCapture {
-  /** Stop capturing. Sends the buffered tail unless `discard` is set. */
-  stop(options?: { discard?: boolean }): void
+  /**
+   * Stop capturing. Sends the buffered tail unless `discard` is set and
+   * resolves once it's acknowledged (or `timeoutMs` passes).
+   */
+  stop(options?: { discard?: boolean; timeoutMs?: number }): Promise<LiveSummary>
 }
 
 /**
  * Start chunking `stream`. `onChunk` calls are serialized; if the server is
- * slower than real time, chunks queue (bounded) rather than overlap.
+ * slower than real time, chunks queue (bounded) rather than overlap. A
+ * rejected `onChunk` marks the capture incomplete.
  */
 export function startLiveCapture(stream: MediaStream, onChunk: (chunk: LiveChunk) => Promise<void>): LiveCapture | null {
   const Ctx = (globalThis as any).AudioContext || (globalThis as any).webkitAudioContext
@@ -122,16 +135,30 @@ export function startLiveCapture(stream: MediaStream, onChunk: (chunk: LiveChunk
   let seq = 0
   let stopped = false
   const queue: LiveChunk[] = []
-  let sending = false
+  let sending: Promise<void> | null = null
+  let acked = 0
+  let lost = false
 
-  const drain = async () => {
-    if (sending) return
-    sending = true
+  const sendQueued = async () => {
     while (queue.length > 0) {
       const next = queue.shift()!
-      await onChunk(next).catch(() => {})
+      try {
+        await onChunk(next)
+        acked++
+      } catch {
+        lost = true
+      }
     }
-    sending = false
+  }
+  const drain = (): Promise<void> => {
+    sending ??= sendQueued().finally(() => {
+      sending = null
+      if (queue.length) void drain()
+    })
+    return sending
+  }
+  const settle = async () => {
+    while (sending || queue.length) await drain()
   }
 
   const flatten = () => {
@@ -156,10 +183,14 @@ export function startLiveCapture(stream: MediaStream, onChunk: (chunk: LiveChunk
     pending = rest.length ? [rest] : []
     pendingLength = rest.length
     const chunkSeq = seq++
-    if (rms(head) < LIVE_SILENCE_RMS || head.length < sampleRate) return
+    // The final tail can be short; mid-recording slivers are too short to transcribe well.
+    if (rms(head) < LIVE_SILENCE_RMS || head.length < (force ? sampleRate / 4 : sampleRate)) return
     queue.push({ wav: new Blob([encodeWav16(resampleTo16k(head, sampleRate))], { type: 'audio/wav' }), start, seq: chunkSeq })
     // Keep at most ~30 s of backlog; a stalled server shouldn't grow memory forever.
-    while (queue.length > 4) queue.shift()
+    while (queue.length > 4) {
+      queue.shift()
+      lost = true
+    }
     void drain()
   }
 
@@ -175,16 +206,29 @@ export function startLiveCapture(stream: MediaStream, onChunk: (chunk: LiveChunk
   // Created after an await (getUserMedia), so it can start suspended.
   if (ctx.state === 'suspended') void ctx.resume().catch(() => {})
 
+  let finished: Promise<LiveSummary> | null = null
   return {
     stop(options) {
-      if (stopped) return
+      if (finished) return finished
       stopped = true
       try {
         processor.disconnect()
         source.disconnect()
       } catch {}
-      if (!options?.discard) emit(true)
+      if (options?.discard) {
+        queue.length = 0
+        lost = true
+      } else {
+        emit(true)
+      }
       void ctx.close().catch(() => {})
+      const timeout = new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), options?.timeoutMs ?? 10_000))
+      finished = Promise.race([settle().then(() => 'done' as const), timeout]).then((outcome) => ({
+        complete: outcome === 'done' && !lost,
+        chunks: acked,
+        seconds: consumed / sampleRate,
+      }))
+      return finished
     },
   }
 }

@@ -33,8 +33,11 @@ export class LiveTranscriber {
   private consumed = 0
   private seq = 0
   private queue: { wav: Buffer; start: number; seq: number }[] = []
-  private sending = false
+  private sending: Promise<void> | null = null
   private stopped = false
+  private acked = 0
+  /** A chunk with speech was dropped or failed, so the live transcript has a gap. */
+  private lost = false
 
   constructor(private readonly post: LiveChunkPost) {}
 
@@ -74,9 +77,31 @@ export class LiveTranscriber {
   /** Stop feeding. The buffered tail is sent unless `discard`. */
   stop(options: { discard?: boolean } = {}): void {
     if (this.stopped) return
-    if (options.discard) this.queue = []
-    else this.emit(true)
+    if (options.discard) {
+      this.queue = []
+      this.lost = true
+    } else {
+      this.emit(true)
+    }
     this.stopped = true
+  }
+
+  /**
+   * Send the tail and wait for every queued chunk. `complete` means the live
+   * transcript covers the recording with no gaps, so the final pass can reuse it.
+   */
+  async finish(timeoutMs = 8000): Promise<{ complete: boolean; chunks: number; seconds: number }> {
+    this.stop()
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const settle = async () => {
+      while (this.sending || this.queue.length) await this.drain()
+    }
+    const timedOut = await Promise.race([
+      settle().then(() => false),
+      new Promise<boolean>((resolve) => { timer = setTimeout(() => resolve(true), timeoutMs) }),
+    ])
+    clearTimeout(timer)
+    return { complete: !timedOut && !this.lost, chunks: this.acked, seconds: this.consumed / LIVE_SOURCE_RATE }
   }
 
   private emit(force: boolean): void {
@@ -94,28 +119,39 @@ export class LiveTranscriber {
     this.system = systemUsed < system.length ? [system.slice(systemUsed)] : []
     this.systemLength = system.length - systemUsed
     const seq = this.seq++
-    if (head.length < LIVE_SOURCE_RATE || rms(head) < SILENCE_RMS) return
+    // The final tail can be short; mid-recording slivers are too short to transcribe well.
+    if (head.length < (force ? LIVE_SOURCE_RATE / 4 : LIVE_SOURCE_RATE) || rms(head) < SILENCE_RMS) return
     this.queue.push({ wav: encodeWav16k(head), start, seq })
-    while (this.queue.length > MAX_QUEUE) this.queue.shift()
+    while (this.queue.length > MAX_QUEUE) {
+      this.queue.shift()
+      this.lost = true
+    }
     void this.drain()
   }
 
-  private async drain(): Promise<void> {
-    if (this.sending) return
-    this.sending = true
-    try {
-      while (this.queue.length > 0) {
-        const next = this.queue.shift()!
-        const result = await this.post(next).catch(() => ({ ok: false, status: 0 }))
-        // 409: the recording already finished. 503: no transcription backend,
-        // so every later chunk would fail the same way.
-        if (result.status === 409 || result.status === 503) {
-          this.queue = []
-          this.stopped = true
-        }
+  private drain(): Promise<void> {
+    this.sending ??= this.sendQueued().finally(() => {
+      this.sending = null
+      if (this.queue.length) void this.drain()
+    })
+    return this.sending
+  }
+
+  private async sendQueued(): Promise<void> {
+    while (this.queue.length > 0) {
+      const next = this.queue.shift()!
+      const result = await this.post(next).catch(() => ({ ok: false, status: 0 }))
+      if (result.ok) {
+        this.acked++
+        continue
       }
-    } finally {
-      this.sending = false
+      this.lost = true
+      // 409: the recording already finished. 503: no transcription backend,
+      // so every later chunk would fail the same way.
+      if (result.status === 409 || result.status === 503) {
+        this.queue = []
+        this.stopped = true
+      }
     }
   }
 }

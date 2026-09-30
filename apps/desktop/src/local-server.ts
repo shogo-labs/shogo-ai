@@ -28,6 +28,14 @@ export function getApiUrl(): string {
   return `http://localhost:${apiPort}`
 }
 
+/**
+ * E2E runs skip the local server; without this they'd talk to whatever owns
+ * the default port, usually the developer's own Shogo install.
+ */
+export function setExternalApiPort(port: number): void {
+  if (Number.isInteger(port) && port > 0 && port < 65536) apiPort = port
+}
+
 function checkPort(port: number): Promise<boolean> {
   return new Promise((resolve) => {
     const server = createServer()

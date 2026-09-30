@@ -52,7 +52,7 @@ const IS_DEV = !app.isPackaged
 // ---------------------------------------------------------------------------
 
 let manager: RecordingManager | null = null
-let liveTranscriber: { sessionId: string; live: LiveTranscriber } | null = null
+let liveTranscriber: { sessionId: string; live: LiveTranscriber; heartbeat: ReturnType<typeof setInterval> } | null = null
 let detector: MeetingDetector | null = null
 let durationTimer: ReturnType<typeof setInterval> | null = null
 let recordingWindowResolver: (() => BrowserWindow | null) | null = null
@@ -167,11 +167,21 @@ function feedLiveTranscript(
   else if (source === 'system') liveTranscriber.live.feedSystem(bytes, meta.channels)
 }
 
+/** Must stay well under the API's stale-draft window (10 minutes). */
+const DRAFT_HEARTBEAT_MS = 60_000
+
 function startLiveTranscript(sessionId: string): void {
   liveTranscriber?.live.stop({ discard: true })
-  const url = `${getApiUrl()}/api/local/meetings/recordings/${encodeURIComponent(sessionId)}/live`
+  if (liveTranscriber) clearInterval(liveTranscriber.heartbeat)
+  const draftUrl = `${getApiUrl()}/api/local/meetings/recordings/${encodeURIComponent(sessionId)}`
+  const url = `${draftUrl}/live`
+  // Live chunks stop during silence, so check in separately or the API closes the draft.
+  const beat = () =>
+    void fetch(draftUrl, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: '{}' }).catch(() => {})
+  beat()
   liveTranscriber = {
     sessionId,
+    heartbeat: setInterval(beat, DRAFT_HEARTBEAT_MS),
     live: new LiveTranscriber(async (chunk) => {
       const res = await fetch(url, {
         method: 'POST',
@@ -191,8 +201,21 @@ function startLiveTranscript(sessionId: string): void {
 }
 
 function stopLiveTranscript(): void {
-  liveTranscriber?.live.stop({ discard: true })
+  if (!liveTranscriber) return
+  clearInterval(liveTranscriber.heartbeat)
+  liveTranscriber.live.stop({ discard: true })
   liveTranscriber = null
+}
+
+/** Chunk count to finish the meeting with when the live transcript covers the whole recording. */
+async function finishLiveTranscript(sessionId: string, durationSeconds: number): Promise<number | undefined> {
+  const current = liveTranscriber
+  if (!current || current.sessionId !== sessionId) return undefined
+  clearInterval(current.heartbeat)
+  liveTranscriber = null
+  const summary = await current.live.finish().catch(() => null)
+  if (!summary?.complete || summary.seconds < durationSeconds - 3) return undefined
+  return summary.chunks
 }
 
 function handleRecordingEvent(evt: RecordingEvent): void {
@@ -203,19 +226,25 @@ function handleRecordingEvent(evt: RecordingEvent): void {
       sendToRenderer('recording-started', { id: evt.session.id, path: evt.session.primaryPath })
       dispatchMeeting({ type: 'recording-started', id: evt.session.id, now: Date.now() })
       break
-    case 'session-stopped':
-      stopLiveTranscript()
+    case 'session-stopped': {
       console.log(
         `[Recording] Session ${evt.session.id} stopped after ${evt.duration}s ` +
         `(mic=${evt.micBytes} bytes, system=${evt.systemBytes} bytes, mixed=${evt.mixedCreated})`,
       )
-      sendToRenderer('recording-stopped', {
-        id: evt.session.id,
-        audioPath: evt.session.primaryPath,
-        duration: evt.duration,
-      })
       dispatchMeeting({ type: 'recording-stopped' })
+      // The renderer finishes the meeting on this event, so hold it until the
+      // last live chunk lands (bounded by the transcriber's timeout).
+      const { session, duration } = evt
+      void finishLiveTranscript(session.id, duration).then((liveChunks) => {
+        sendToRenderer('recording-stopped', {
+          id: session.id,
+          audioPath: session.primaryPath,
+          duration,
+          ...(liveChunks !== undefined ? { liveChunks } : {}),
+        })
+      })
       break
+    }
     case 'session-aborted':
       stopLiveTranscript()
       console.warn(`[Recording] Session ${evt.id} aborted: ${evt.reason}`)

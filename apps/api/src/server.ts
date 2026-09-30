@@ -9651,6 +9651,16 @@ if (isKubernetes()) {
   }, 10_000)
 }
 
+// Close meeting recording drafts whose recorder went away (closed tab, crash).
+setTimeout(async () => {
+  try {
+    const { startRecordingDraftSweeper } = await import('./services/meeting.service')
+    startRecordingDraftSweeper()
+  } catch (err: any) {
+    console.error('[Meetings] Failed to start draft sweeper (non-fatal):', err?.message ?? err)
+  }
+}, 15_000)
+
 // Voice telephony monthly rebill (runs everywhere; the debit itself
 // is a no-op if no VoiceProjectConfig rows exist).
 {

@@ -65,6 +65,40 @@ describe('LiveTranscriber', () => {
     expect(calls).toBe(1)
   })
 
+  test('finish waits for the tail and reports full coverage', async () => {
+    let release: () => void = () => {}
+    const posted: number[] = []
+    const live = new LiveTranscriber(async (chunk) => {
+      posted.push(chunk.seq)
+      if (chunk.seq === 0) await new Promise<void>((r) => (release = r))
+      return { ok: true, status: 200 }
+    })
+    live.feedMic(bytes(tone(9)))
+    live.feedMic(bytes(tone(0.5)))
+    const done = live.finish()
+    await flush()
+    release()
+    const summary = await done
+    expect(posted).toEqual([0, 1])
+    expect(summary.complete).toBe(true)
+    expect(summary.chunks).toBe(2)
+    expect(summary.seconds).toBeCloseTo(9.5, 1)
+  })
+
+  test('a failed chunk or a stalled server means incomplete', async () => {
+    let n = 0
+    const flaky = new LiveTranscriber(async () => ({ ok: n++ > 0, status: n === 1 ? 500 : 200 }))
+    flaky.feedMic(bytes(tone(9)))
+    flaky.feedMic(bytes(tone(9)))
+    expect((await flaky.finish()).complete).toBe(false)
+
+    const stalled = new LiveTranscriber(() => new Promise(() => {}))
+    stalled.feedMic(bytes(tone(9)))
+    const summary = await stalled.finish(20)
+    expect(summary.complete).toBe(false)
+    expect(summary.chunks).toBe(0)
+  })
+
   test('downsamples to a 16 kHz WAV and flushes short tails whole', () => {
     const wav = encodeWav16k(tone(1))
     expect(wav.toString('ascii', 0, 4)).toBe('RIFF')

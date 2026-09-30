@@ -55,6 +55,9 @@ function subscribeLive(listener: () => void) {
 }
 const getLiveTranscript = () => liveTranscript
 
+/** Must stay well under the server's stale-draft window (10 minutes). */
+const RECORDING_HEARTBEAT_MS = 60_000
+
 function newRecordingId(): string {
   return `wrec-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
 }
@@ -109,7 +112,7 @@ export function useRecording() {
     const capture = startLiveCapture(stream, async (chunk) => {
       // Read at send time: recording can start before the workspace id loads.
       const wsId = workspaceIdRef.current
-      if (!wsId) return
+      if (!wsId) throw new Error('Personal workspace not loaded')
       try {
         const res = await postLiveChunk(wsId, liveRecordingId, chunk)
         setLiveTranscript({ segments: res.transcript.segments, unavailable: null })
@@ -120,16 +123,22 @@ export function useRecording() {
       } catch (err) {
         if (err instanceof LiveTranscriptionError && (err.status === 503 || err.status === 409 || err.status === 404)) {
           if (err.status === 503) setLiveTranscript({ unavailable: err.message })
-          capture?.stop({ discard: true })
+          void capture?.stop({ discard: true })
         }
+        throw err
       }
     })
     liveCaptureRef.current = capture
   }, [])
 
-  const stopLive = useCallback(() => {
-    liveCaptureRef.current?.stop()
+  /** Resolves to the chunk count to send with the upload when the live transcript covers the whole recording. */
+  const stopLive = useCallback(async (recordingSeconds: number): Promise<number | undefined> => {
+    const capture = liveCaptureRef.current
     liveCaptureRef.current = null
+    if (!capture) return undefined
+    const summary = await capture.stop()
+    // Allow for the mic starting a moment after the recording clock.
+    return summary.complete && summary.seconds >= recordingSeconds - 3 ? summary.chunks : undefined
   }, [])
 
   // Electron IPC mode
@@ -155,7 +164,7 @@ export function useRecording() {
       setDuration(data.duration)
     }
 
-    const onStopped = (data: { id: string; audioPath: string; duration: number }) => {
+    const onStopped = (data: { id: string; audioPath: string; duration: number; liveChunks?: number }) => {
       setIsRecording(false)
       setRecordingId(null)
       setDuration(0)
@@ -168,6 +177,7 @@ export function useRecording() {
         audioPath: data.audioPath,
         duration: data.duration,
         recordingId: data.id,
+        liveChunks: data.liveChunks,
       })
         .catch((err: any) => console.error('Failed to create meeting record:', err))
         .finally(notifyMeetingsChanged)
@@ -248,7 +258,7 @@ export function useRecording() {
     }
   }, [])
 
-  const uploadAudio = useCallback(async (blob: Blob, recDuration: number, localRecordingId: string | null) => {
+  const uploadAudio = useCallback(async (blob: Blob, recDuration: number, localRecordingId: string | null, liveChunks?: number) => {
     setIsUploading(true)
     try {
       let uploadBlob = blob
@@ -273,6 +283,7 @@ export function useRecording() {
       formData.append('audio', uploadBlob, filename)
       formData.append('duration', String(recDuration))
       if (localRecordingId) formData.append('recordingId', localRecordingId)
+      if (liveChunks !== undefined) formData.append('liveChunks', String(liveChunks))
 
       const res = await fetch(`${API_URL}/api/local/meetings/recording/upload`, {
         method: 'POST',
@@ -297,6 +308,20 @@ export function useRecording() {
   // Cloud web has no local recording bridge: record in the page, upload to the workspace.
   const cloudBrowser = Platform.OS === 'web' && !isDesktop && configLoaded && !localMode
 
+  // Keep the draft alive: the server closes drafts that stop checking in.
+  // Desktop's main process heartbeats for itself.
+  const browserRecording = isRecording && !isDesktop && (localMode || cloudBrowser)
+  useEffect(() => {
+    if (!browserRecording || !recordingId) return
+    const beat = () => {
+      const wsId = workspaceIdRef.current
+      if (wsId) meetingsApi(wsId).saveRecordingDraft(recordingId, {}).catch(() => {})
+    }
+    beat()
+    const interval = setInterval(beat, RECORDING_HEARTBEAT_MS)
+    return () => clearInterval(interval)
+  }, [browserRecording, recordingId])
+
   const updateNotes = useCallback(
     (next: string) => {
       setRecordingNotes(next)
@@ -318,6 +343,7 @@ export function useRecording() {
       recDuration: number,
       source: 'mobile' | 'upload',
       liveRecordingId?: string | null,
+      liveChunks?: number,
     ) => {
       const wsId = workspaceIdRef.current
       if (!wsId) {
@@ -331,6 +357,7 @@ export function useRecording() {
           duration: recDuration,
           notes: getRecordingNotes(),
           recordingId: liveRecordingId ?? undefined,
+          liveChunks,
         })
         setRecordingNotes('')
         return meeting
@@ -459,7 +486,12 @@ export function useRecording() {
     stopRecording: useCallback(async () => {
       const d = desktop.current
       if (d) {
-        await d.stopRecording()
+        const result = await d.stopRecording()
+        // `recording-stopped` arrives once the live transcript's last chunk lands; don't show "recording" meanwhile.
+        if (!(result && 'error' in result)) {
+          setIsRecording(false)
+          setDuration(0)
+        }
         return
       }
 
@@ -488,7 +520,7 @@ export function useRecording() {
           durationRef.current = null
         }
 
-        stopLive()
+        const liveChunks = stopLive(recDuration)
         return new Promise<void>((resolve) => {
           recorder.onstop = async () => {
             const blob = new Blob(chunksRef.current, { type: recorder.mimeType || 'audio/webm' })
@@ -503,9 +535,17 @@ export function useRecording() {
             setIsRecording(false)
             setRecordingId(null)
             setDuration(0)
+            setIsUploading(true)
+            const coveredChunks = await liveChunks
 
             if (!localMode) {
-              await uploadToWorkspace({ kind: 'blob', blob, filename: 'meeting.webm' }, recDuration, 'upload', localRecordingId)
+              await uploadToWorkspace(
+                { kind: 'blob', blob, filename: 'meeting.webm' },
+                recDuration,
+                'upload',
+                localRecordingId,
+                coveredChunks,
+              )
               setLiveTranscript(null)
               resolve()
               return
@@ -521,7 +561,9 @@ export function useRecording() {
             } catch {}
 
             if (!bridgeHandled) {
-              await uploadAudio(blob, recDuration, localRecordingId)
+              await uploadAudio(blob, recDuration, localRecordingId, coveredChunks)
+            } else {
+              setIsUploading(false)
             }
             setRecordingNotes('')
             setLiveTranscript(null)

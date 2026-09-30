@@ -18,6 +18,8 @@ import {
 import {
   MEETING_LIST_SELECT,
   defaultMeetingTitle,
+  isInterruptedDraft,
+  parseLiveChunks,
   removeAudioFiles,
   resolveLocalOwnerUserId,
   resolvePersonalWorkspaceId,
@@ -86,7 +88,7 @@ async function resolveOwner(c: any): Promise<MeetingOwner | null> {
 async function finishRecordedMeeting(
   owner: MeetingOwner,
   input: { audioPath: string; duration?: number | null; recordingId?: string | null; title?: string | null; projectId?: string | null },
-  options: { preferLocal?: boolean } = {},
+  options: { preferLocal?: boolean; liveChunks?: number } = {},
 ): Promise<{ meeting: any; created: boolean }> {
   const draft = input.recordingId
     ? await db.meeting.findUnique({ where: { recordingId: input.recordingId } })
@@ -98,7 +100,9 @@ async function finishRecordedMeeting(
         ? await db.meeting.findFirst({ where: { audioPath: input.audioPath, workspaceId: owner.workspaceId } })
         : null
 
-  if (existing && existing.status !== 'recording') return { meeting: existing, created: false }
+  if (existing && existing.status !== 'recording' && !isInterruptedDraft(existing)) {
+    return { meeting: existing, created: false }
+  }
 
   const data = {
     audioPath: input.audioPath,
@@ -440,6 +444,7 @@ meetingRoutes.post('/api/local/meetings/recording/upload', async (c) => {
     let audioBuffer: Buffer
     let duration = 0
     let recordingId: string | null = null
+    let liveChunks: number | undefined
 
     if (contentType.includes('multipart/form-data')) {
       const formData = await c.req.formData()
@@ -448,10 +453,12 @@ meetingRoutes.post('/api/local/meetings/recording/upload', async (c) => {
       audioBuffer = Buffer.from(await file.arrayBuffer())
       duration = parseInt(formData.get('duration') as string || '0', 10)
       recordingId = (formData.get('recordingId') as string | null) || null
+      liveChunks = parseLiveChunks(formData.get('liveChunks'))
     } else {
       audioBuffer = Buffer.from(await c.req.arrayBuffer())
       duration = parseInt(c.req.header('x-recording-duration') || '0', 10)
       recordingId = c.req.header('x-recording-id') || null
+      liveChunks = parseLiveChunks(c.req.header('x-live-chunks'))
     }
 
     if (audioBuffer.length === 0) {
@@ -495,7 +502,7 @@ meetingRoutes.post('/api/local/meetings/recording/upload', async (c) => {
         const { meeting } = await finishRecordedMeeting(
           owner,
           { audioPath: webmPath, duration, recordingId },
-          { preferLocal: false },
+          { preferLocal: false, liveChunks },
         )
         return c.json({ meeting: serializeMeeting(meeting) }, 201)
       }
@@ -503,7 +510,7 @@ meetingRoutes.post('/api/local/meetings/recording/upload', async (c) => {
 
     const owner = await resolveOwner(c)
     if (!owner) return c.json({ error: 'No personal workspace found' }, 400)
-    const { meeting } = await finishRecordedMeeting(owner, { audioPath, duration, recordingId })
+    const { meeting } = await finishRecordedMeeting(owner, { audioPath, duration, recordingId }, { liveChunks })
     return c.json({ meeting: serializeMeeting(meeting) }, 201)
   } catch (err: any) {
     console.error('[Meetings] Upload error:', err)
@@ -534,13 +541,14 @@ meetingRoutes.post('/api/local/meetings', async (c) => {
       title?: string
       projectId?: string
       recordingId?: string
+      liveChunks?: number
     }>()
     if (!body.audioPath) return c.json({ error: 'audioPath is required' }, 400)
 
     const owner = await resolveOwner(c)
     if (!owner) return c.json({ error: 'No personal workspace found' }, 400)
 
-    const { meeting, created } = await finishRecordedMeeting(owner, body)
+    const { meeting, created } = await finishRecordedMeeting(owner, body, { liveChunks: parseLiveChunks(body.liveChunks) })
     return c.json({ meeting: serializeMeeting(meeting) }, created ? 201 : 200)
   } catch (err: any) {
     return c.json({ error: err.message }, 500)
