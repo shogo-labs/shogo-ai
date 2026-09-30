@@ -208,22 +208,27 @@ export class WindowManager {
       }
     })
 
-    window.webContents.setWindowOpenHandler(({ url }) => {
+    installAppNavigationGuards(window.webContents)
+  }
+}
+
+/** Keeps app windows on the app origin; external links open in the browser. */
+export function installAppNavigationGuards(webContents: WebContents): void {
+  webContents.setWindowOpenHandler(({ url }) => {
+    if (url.startsWith('http://') || url.startsWith('https://')) {
+      shell.openExternal(url)
+    }
+    return { action: 'deny' }
+  })
+
+  webContents.on('will-navigate', (event, url) => {
+    const appOrigins = ['shogo://app', 'http://localhost', 'http://127.0.0.1']
+    const isInternal = appOrigins.some((origin) => url.startsWith(origin))
+    if (!isInternal) {
+      event.preventDefault()
       if (url.startsWith('http://') || url.startsWith('https://')) {
         shell.openExternal(url)
       }
-      return { action: 'deny' }
-    })
-
-    window.webContents.on('will-navigate', (event, url) => {
-      const appOrigins = ['shogo://app', 'http://localhost', 'http://127.0.0.1']
-      const isInternal = appOrigins.some((origin) => url.startsWith(origin))
-      if (!isInternal) {
-        event.preventDefault()
-        if (url.startsWith('http://') || url.startsWith('https://')) {
-          shell.openExternal(url)
-        }
-      }
-    })
-  }
+    }
+  })
 }

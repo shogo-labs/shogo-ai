@@ -18,13 +18,16 @@ import { app, ipcMain, BrowserWindow, Notification } from 'electron'
 import type { IpcMainEvent, MessageEvent as ElectronMessageEvent } from 'electron'
 import path from 'path'
 import fs from 'fs'
+import { execFile } from 'child_process'
 import { readConfig, writeConfig } from './config'
 import { RecordingManager, type RecordingEvent } from './recording/manager'
 import {
   MeetingDetector,
   type MeetingDetectedEvent,
   type MeetingEndedEvent,
+  type MicUser,
   type UpcomingMeetingEvent,
+  type WindowTitle,
 } from './detection/meeting-detector'
 import {
   startRecordingBridge,
@@ -32,6 +35,13 @@ import {
   invokeRendererStart,
   invokeRendererStop,
 } from './recording/bridge'
+import {
+  EMPTY_ISLAND_MEETING_STATE,
+  type IslandActionResult,
+  type IslandMeetingDecision,
+  type IslandMeetingState,
+} from './island-protocol'
+import { MEETING_PROMPT_TTL_MS, reduceMeetingState, type MeetingEvent } from './island-meeting'
 
 const IS_DEV = !app.isPackaged
 
@@ -50,6 +60,15 @@ let recordingWindowResolver: (() => BrowserWindow | null) | null = null
 type DetectionState = 'idle' | 'detected' | 'recording' | 'maybe_ended'
 let detectionState: DetectionState = 'idle'
 let autoStopTimer: ReturnType<typeof setTimeout> | null = null
+
+// What the island shows about meetings: the "record this call?" prompt and
+// the recording in progress.
+let meetingState: IslandMeetingState = EMPTY_ISLAND_MEETING_STATE
+const meetingListeners = new Set<(state: IslandMeetingState) => void>()
+let meetingPromptTimer: ReturnType<typeof setTimeout> | null = null
+/** Returns true when the island will show the prompt, so the native
+ * notification would only duplicate it. */
+let meetingPromptPresenter: (() => boolean) | null = null
 
 // ---------------------------------------------------------------------------
 // Paths / helpers
@@ -80,6 +99,30 @@ function getSysAudioBinaryPath(): string | null {
   }
   const packed = path.join(process.resourcesPath!, 'shogo-sysaudio', `shogo-sysaudio-${arch}`)
   return fs.existsSync(packed) ? packed : null
+}
+
+function runSysAudioQuery(command: 'mic-users' | 'window-titles'): Promise<unknown[] | null> {
+  const binary = getSysAudioBinaryPath()
+  if (!binary) return Promise.resolve(null)
+  return new Promise((resolve, reject) => {
+    execFile(binary, [command], { timeout: 3_000, maxBuffer: 4 * 1024 * 1024 }, (err, stdout) => {
+      if (err) return reject(err)
+      try {
+        const parsed: unknown = JSON.parse(stdout)
+        resolve(Array.isArray(parsed) ? parsed : null)
+      } catch (parseErr) {
+        reject(parseErr)
+      }
+    })
+  })
+}
+
+async function listMicUsers(): Promise<MicUser[] | null> {
+  return (await runSysAudioQuery('mic-users')) as MicUser[] | null
+}
+
+async function listWindowTitles(): Promise<WindowTitle[]> {
+  return ((await runSysAudioQuery('window-titles')) as WindowTitle[] | null) ?? []
 }
 
 function sendToRenderer(channel: string, data?: unknown): void {
@@ -113,6 +156,7 @@ function handleRecordingEvent(evt: RecordingEvent): void {
     case 'session-started':
       console.log(`[Recording] Session ${evt.session.id} started (primary: ${evt.session.primaryPath})`)
       sendToRenderer('recording-started', { id: evt.session.id, path: evt.session.primaryPath })
+      dispatchMeeting({ type: 'recording-started', id: evt.session.id, now: Date.now() })
       break
     case 'session-stopped':
       console.log(
@@ -124,9 +168,11 @@ function handleRecordingEvent(evt: RecordingEvent): void {
         audioPath: evt.session.primaryPath,
         duration: evt.duration,
       })
+      dispatchMeeting({ type: 'recording-stopped' })
       break
     case 'session-aborted':
       console.warn(`[Recording] Session ${evt.id} aborted: ${evt.reason}`)
+      dispatchMeeting({ type: 'recording-stopped' })
       break
     case 'source-ready':
       console.log(`[Recording] ${evt.source} source ready: ${evt.sampleRate}Hz x${evt.channels}`)
@@ -138,6 +184,97 @@ function handleRecordingEvent(evt: RecordingEvent): void {
       console.warn(`[Recording] ${evt.message}`)
       break
   }
+}
+
+// ---------------------------------------------------------------------------
+// Meeting state for the island
+// ---------------------------------------------------------------------------
+
+function dispatchMeeting(event: MeetingEvent): void {
+  const next = reduceMeetingState(meetingState, event)
+  if (next === meetingState) return
+  meetingState = next
+  if (!next.prompt && meetingPromptTimer) {
+    clearTimeout(meetingPromptTimer)
+    meetingPromptTimer = null
+  }
+  for (const listener of meetingListeners) listener(next)
+}
+
+export function getMeetingState(): IslandMeetingState {
+  return meetingState
+}
+
+export function onMeetingStateChange(listener: (state: IslandMeetingState) => void): () => void {
+  meetingListeners.add(listener)
+  return () => {
+    meetingListeners.delete(listener)
+  }
+}
+
+export function setMeetingPromptPresenter(presenter: (() => boolean) | null): void {
+  meetingPromptPresenter = presenter
+}
+
+/** Starts capture in the app window, which owns the mic pipeline. Starting
+ * from main alone would only record system audio. */
+async function startMeetingCapture(): Promise<IslandActionResult> {
+  if (getManager().isRecording()) {
+    dispatchMeeting({ type: 'dismissed' })
+    return { ok: true }
+  }
+  dispatchMeeting({ type: 'busy' })
+  const result = await invokeRendererStart(getRecordingWindow())
+  if (result.ok) return { ok: true }
+  const error = getRecordingWindow()
+    ? `Couldn't start recording: ${result.error}`
+    : 'Open a Shogo window to record meetings'
+  if (detectionState === 'detected') detectionState = 'idle'
+  dispatchMeeting({ type: 'failed', error })
+  return { ok: false, error }
+}
+
+async function stopMeetingCapture(): Promise<IslandActionResult> {
+  if (!getManager().isRecording()) {
+    dispatchMeeting({ type: 'recording-stopped' })
+    return { ok: true }
+  }
+  dispatchMeeting({ type: 'busy' })
+  const result = await invokeRendererStop(getRecordingWindow())
+  if (result.ok) return { ok: true }
+  try {
+    await stopRecording()
+    return { ok: true }
+  } catch (err) {
+    const error = `Couldn't stop recording: ${err instanceof Error ? err.message : String(err)}`
+    dispatchMeeting({ type: 'failed', error })
+    return { ok: false, error }
+  }
+}
+
+/** Answers the island's meeting prompt or its recording controls. */
+export async function respondToMeeting(
+  decision: IslandMeetingDecision,
+  promptId?: string,
+): Promise<IslandActionResult> {
+  if (decision === 'stop') return stopMeetingCapture()
+  if (decision === 'dismiss') {
+    if (detectionState === 'detected') detectionState = 'idle'
+    dispatchMeeting({ type: 'dismissed' })
+    return { ok: true }
+  }
+  if (promptId && meetingState.prompt?.id !== promptId) {
+    return { ok: false, error: 'That meeting prompt has expired' }
+  }
+  const config = readConfig()
+  writeConfig({
+    meetings: {
+      ...config.meetings,
+      autoRecordConfirmCount: config.meetings.autoRecordConfirmCount + 1,
+      ...(decision === 'always' ? { autoRecord: true } : {}),
+    },
+  })
+  return startMeetingCapture()
 }
 
 // ---------------------------------------------------------------------------
@@ -209,7 +346,11 @@ export function startMeetingMonitor(): void {
   }
   if (detector) return
 
-  detector = new MeetingDetector({ platform: process.platform })
+  detector = new MeetingDetector({
+    platform: process.platform,
+    listMicUsers: process.platform === 'darwin' ? listMicUsers : undefined,
+    listWindowTitles: process.platform === 'darwin' ? listWindowTitles : undefined,
+  })
   detector.on('meeting-detected', (evt: MeetingDetectedEvent) => {
     console.log(`[Recording] Meeting detected via ${evt.app} (pid ${evt.pid})`)
     sendToRenderer('meeting-detected', { source: evt.source, app: evt.app })
@@ -217,6 +358,8 @@ export function startMeetingMonitor(): void {
   })
   detector.on('meeting-ended', (evt: MeetingEndedEvent) => {
     console.log(`[Recording] Meeting ended for ${evt.app}`)
+    dispatchMeeting({ type: 'ended', app: evt.app })
+    if (detectionState === 'detected' && !meetingState.prompt) detectionState = 'idle'
     onMeetingMaybeEnded()
   })
   detector.on('upcoming-meeting', (evt: UpcomingMeetingEvent) => {
@@ -232,6 +375,7 @@ export function startMeetingMonitor(): void {
 }
 
 export function stopMeetingMonitor(): void {
+  dispatchMeeting({ type: 'dismissed' })
   if (!detector) return
   detector.stop()
   detector = null
@@ -254,11 +398,22 @@ function onMeetingDetected(appLabel: string): void {
   const config = readConfig()
   if (config.meetings.autoRecord) {
     showNotification('Recording started', `${appLabel} meeting detected — recording automatically.`)
-    startRecording().catch((err) => {
-      console.error('[Recording] Auto-record failed:', err)
+    void startMeetingCapture().then((result) => {
+      if (!result.ok) console.error('[Recording] Auto-record failed:', result.error)
     })
   } else {
     const confirmCount = config.meetings.autoRecordConfirmCount
+    const now = Date.now()
+    dispatchMeeting({ type: 'detected', app: appLabel, now, suggestAutoRecord: confirmCount >= 2 })
+    if (meetingPromptTimer) clearTimeout(meetingPromptTimer)
+    meetingPromptTimer = setTimeout(() => {
+      meetingPromptTimer = null
+      dispatchMeeting({ type: 'expired', now: Date.now() })
+      if (detectionState === 'detected' && !meetingState.prompt) detectionState = 'idle'
+    }, MEETING_PROMPT_TTL_MS)
+    if (meetingPromptPresenter?.()) return
+
+    const promptId = meetingState.prompt?.id
     const notification = new Notification({
       title: 'Meeting detected',
       body:
@@ -271,22 +426,12 @@ function onMeetingDetected(appLabel: string): void {
       ],
     })
     notification.on('action', (_event, index) => {
-      if (index === 0) {
-        writeConfig({
-          meetings: {
-            ...config.meetings,
-            autoRecordConfirmCount: confirmCount + 1,
-          },
-        })
-        startRecording().catch((err) => {
-          console.error('[Recording] Record from notification failed:', err)
-        })
-      } else {
-        detectionState = 'idle'
-      }
+      void respondToMeeting(index === 0 ? 'record' : 'dismiss', promptId).then((result) => {
+        if (!result.ok) console.error('[Recording] Record from notification failed:', result.error)
+      })
     })
     notification.on('close', () => {
-      if (detectionState === 'detected') detectionState = 'idle'
+      if (detectionState === 'detected') void respondToMeeting('dismiss')
     })
     notification.show()
   }
@@ -297,13 +442,23 @@ function onMeetingMaybeEnded(): void {
   if (!mgr.isRecording() || detectionState !== 'recording') return
   detectionState = 'maybe_ended'
   const config = readConfig()
+  // macOS ends a call when the app releases the mic, which happens on hang-up
+  // (muting keeps it open), so only a short grace is needed. Elsewhere the
+  // signal is "the app's call process went away", which is noisier.
+  const waitSeconds =
+    process.platform === 'darwin' ? config.meetings.gracePeriodSeconds : config.meetings.autoStopSeconds
   autoStopTimer = setTimeout(() => {
+    autoStopTimer = null
     if (detectionState === 'maybe_ended' && mgr.isRecording()) {
-      console.log('[Recording] Auto-stopping: meeting app no longer running')
-      showNotification('Meeting ended', 'Recording stopped automatically.')
-      stopRecording().catch(() => {})
+      console.log('[Recording] Auto-stopping: meeting ended')
+      // Stop through the app window so its mic pipeline shuts down and the
+      // meeting is saved, same as pressing Stop.
+      void stopMeetingCapture().then((result) => {
+        if (result.ok) showNotification('Meeting ended', 'Recording stopped automatically.')
+        else console.error('[Recording] Auto-stop failed:', result.error)
+      })
     }
-  }, config.meetings.autoStopSeconds * 1000)
+  }, waitSeconds * 1000)
 }
 
 function showNotification(title: string, body: string): void {

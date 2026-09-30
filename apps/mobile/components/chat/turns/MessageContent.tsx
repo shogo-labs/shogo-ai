@@ -29,7 +29,7 @@ import { FileViewerModal } from "../FileViewerModal"
 import { ChatImageContextMenu, ImagePreviewModal } from "../ImagePreviewModal"
 import { VideoPreviewModal } from "../VideoPreviewModal"
 import { downloadImage, isShogoDesktop } from "../chatImageActions"
-import { usePhoneLayout } from "../../../lib/native-phone-layout"
+import { usePhoneLayout, usePhoneLayoutOverride } from "../../../lib/native-phone-layout"
 import { useMobileWorkspaceChrome } from "../../layout/MobileWorkspaceChromeContext"
 import { resolveChatAttachmentUrl } from "../../../lib/chat-attachment-url"
 import { useAgentImageSource } from "../../../lib/agent-image-source"
@@ -414,9 +414,10 @@ export function MessageContent({
 }: MessageContentProps) {
   const isPhoneLayout = usePhoneLayout()
   const usesMobileWorkspaceChrome = useMobileWorkspaceChrome()
+  const phoneLayoutOverride = usePhoneLayoutOverride()
   const { width: viewportWidth } = useWindowDimensions()
   const usesMobileChatTypography =
-    isPhoneLayout || usesMobileWorkspaceChrome || viewportWidth < 640
+    isPhoneLayout || usesMobileWorkspaceChrome || (phoneLayoutOverride === null && viewportWidth < 640)
   const images = extractImageParts(message)
   const files = extractFileParts(message)
   const isUser = message.role === "user"

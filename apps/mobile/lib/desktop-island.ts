@@ -23,6 +23,8 @@ export interface IslandPermissionRequest {
   toolName: string
   category: string
   params: Record<string, unknown>
+  /** Set by the main process when a large string param was cut short. */
+  paramsTruncated?: boolean
   reason: string
   timeout: number
 }
@@ -45,6 +47,15 @@ export type IslandPendingRequest =
       request: IslandQuestionRequest
     }
 
+export interface IslandPlanSummary {
+  name: string
+  overview: string
+  plan: string
+  todos: Array<{ id: string; content: string }>
+  filepath?: string
+  toolCallId?: string
+}
+
 type SnapshotPending =
   | {
       kind: "permission"
@@ -63,7 +74,9 @@ export interface DesktopIslandSession {
   status: "idle" | "running" | "done" | "needs_approval" | "needs_answer"
   step?: string
   replyPreview?: string
+  lastActivityAt?: number
   pending?: SnapshotPending
+  pendingPlan?: IslandPlanSummary
 }
 
 export interface DesktopIslandProject {
@@ -74,6 +87,8 @@ export interface DesktopIslandProject {
 export interface DesktopIslandSnapshot {
   sessions: DesktopIslandSession[]
   recentProjects: DesktopIslandProject[]
+  /** `${projectId}:${sessionId}` of the chat visible in this window. */
+  focusedSessionKey?: string
   notice?: string
   updatedAt: number
 }
@@ -105,6 +120,15 @@ export type DesktopIslandAction =
       text: string
       files?: IslandFileAttachment[]
     }
+  | { type: "stop"; projectId: string; sessionId: string }
+  | {
+      type: "plan"
+      projectId: string
+      sessionId: string
+      decision: "build" | "feedback"
+      modelId?: string
+      text?: string
+    }
 
 /** Where to route when the target project isn't mounted in this window. */
 export type DesktopIslandNavigation =
@@ -123,6 +147,9 @@ export interface DesktopIslandSessionState {
   step?: string
   replyPreview?: string
   pending?: IslandPendingRequest
+  pendingPlan?: IslandPlanSummary
+  /** This chat is the one on screen in its window. */
+  focused?: boolean
 }
 
 export interface DesktopIslandSessionHandlers {
@@ -133,10 +160,17 @@ export interface DesktopIslandSessionHandlers {
     pattern?: string,
   ) => void | Promise<void>
   respondQuestion?: (requestId: string, response: string) => void | Promise<void>
+  stop?: () => void | Promise<void>
+  buildPlan?: (modelId?: string) => void | Promise<void>
+  sendPlanFeedback?: (text: string) => void | Promise<void>
 }
 
 type RegisteredIslandSession = DesktopIslandSessionState &
-  DesktopIslandSessionHandlers & { sessionId: string; projectId: string }
+  DesktopIslandSessionHandlers & {
+    sessionId: string
+    projectId: string
+    lastActivityAt: number
+  }
 
 interface PendingSend {
   text: string
@@ -241,8 +275,15 @@ function snapshotSession(session: RegisteredIslandSession): DesktopIslandSession
     status,
     ...(session.step ? { step: session.step } : {}),
     ...(session.replyPreview ? { replyPreview: session.replyPreview.slice(-400) } : {}),
+    lastActivityAt: session.lastActivityAt,
     ...(pending ? { pending } : {}),
+    ...(session.pendingPlan ? { pendingPlan: session.pendingPlan } : {}),
   }
+}
+
+function isWindowFocused(): boolean {
+  if (typeof document === "undefined") return true
+  return document.visibilityState !== "hidden"
 }
 
 function publishSnapshot(): void {
@@ -260,9 +301,13 @@ function publishSnapshot(): void {
   }
   if (notice && notice.expiresAt <= Date.now()) notice = null
 
+  const focused = isWindowFocused()
+    ? [...sessions.values()].find((session) => session.focused)
+    : undefined
   lastSnapshot = {
     sessions: nextSessions,
     recentProjects: [...recentProjects.values()],
+    ...(focused ? { focusedSessionKey: `${focused.projectId}:${focused.sessionId}` } : {}),
     ...(notice ? { notice: notice.text } : {}),
     updatedAt: Date.now(),
   }
@@ -306,6 +351,15 @@ async function handleAction(action: DesktopIslandAction): Promise<void> {
     } else {
       navigator?.({ projectId: action.projectId, sessionId: action.sessionId })
     }
+    return
+  }
+
+  if (action.type === "stop" || action.type === "plan") {
+    const registered = sessions.get(sessionKey(action.projectId, action.sessionId))
+    if (!registered) return
+    if (action.type === "stop") await registered.stop?.()
+    else if (action.decision === "build") await registered.buildPlan?.(action.modelId)
+    else if (action.text) await registered.sendPlanFeedback?.(action.text)
     return
   }
 
@@ -370,6 +424,7 @@ export function registerDesktopIslandSession(
     projectName: options.projectName ?? "Project",
     title: options.title ?? "Untitled chat",
     status: options.status ?? "idle",
+    lastActivityAt: Date.now(),
   }
   const key = sessionKey(session.projectId, session.sessionId)
   sessions.set(key, session)
@@ -395,7 +450,17 @@ export function updateDesktopIslandSession(
 ): void {
   const session = sessions.get(sessionKey(projectId, sessionId))
   if (!session) return
+  if (
+    state.status !== session.status ||
+    state.replyPreview !== session.replyPreview ||
+    state.pending?.request.id !== session.pending?.request.id ||
+    state.pendingPlan?.toolCallId !== session.pendingPlan?.toolCallId
+  ) {
+    session.lastActivityAt = Date.now()
+  }
   Object.assign(session, state)
+  if (!("pendingPlan" in state)) session.pendingPlan = undefined
+  if (!("pending" in state)) session.pending = undefined
   schedulePublish()
 }
 
@@ -415,6 +480,12 @@ export function deliverPendingDesktopIslandNewChat(
 
 export function getDesktopIslandSnapshot(): DesktopIslandSnapshot {
   return lastSnapshot
+}
+
+if (typeof document !== "undefined") {
+  document.addEventListener("visibilitychange", () => {
+    if (sessions.size > 0) schedulePublish()
+  })
 }
 
 chatActivityEvents.subscribe((event) => {

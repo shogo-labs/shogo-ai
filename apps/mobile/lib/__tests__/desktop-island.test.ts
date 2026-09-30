@@ -149,4 +149,69 @@ describe("desktop island session routing", () => {
     expect(second.pending).toEqual(first)
     dispose()
   })
+
+  test("bumps lastActivityAt only when something the user would notice changes", async () => {
+    const dispose = registerDesktopIslandSession({
+      sessionId: "session-6",
+      projectId: "project-6",
+      status: "running",
+      sendMessage: () => {},
+    })
+    await flushPublish()
+    const started = getDesktopIslandSnapshot().sessions[0].lastActivityAt ?? 0
+    expect(started).toBeGreaterThan(0)
+
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    updateDesktopIslandSession("project-6", "session-6", { projectName: "Project", title: "Renamed", status: "running" })
+    await flushPublish()
+    expect(getDesktopIslandSnapshot().sessions[0].lastActivityAt).toBe(started)
+
+    updateDesktopIslandSession("project-6", "session-6", { projectName: "Project", title: "Renamed", status: "done" })
+    await flushPublish()
+    expect(getDesktopIslandSnapshot().sessions[0].lastActivityAt ?? 0).toBeGreaterThan(started)
+    dispose()
+  })
+
+  test("reports the focused session and its pending plan", async () => {
+    const plan = { name: "Plan", overview: "Do it", plan: "1. Do it", todos: [], toolCallId: "call-1" }
+    const dispose = registerDesktopIslandSession({
+      sessionId: "session-7",
+      projectId: "project-7",
+      focused: true,
+      pendingPlan: plan,
+      sendMessage: () => {},
+    })
+    await flushPublish()
+    const snapshot = getDesktopIslandSnapshot()
+    expect(snapshot.focusedSessionKey).toBe("project-7:session-7")
+    expect(snapshot.sessions[0].pendingPlan).toEqual(expect.objectContaining({ toolCallId: "call-1" }))
+    dispose()
+    await flushPublish()
+    expect(getDesktopIslandSnapshot().focusedSessionKey).toBeUndefined()
+  })
+
+  test("routes stop and plan actions to the owning session", async () => {
+    const calls: string[] = []
+    const dispose = registerDesktopIslandSession({
+      sessionId: "session-8",
+      projectId: "project-8",
+      sendMessage: () => {},
+      stop: () => {
+        calls.push("stop")
+      },
+      buildPlan: (modelId) => {
+        calls.push(`build:${modelId}`)
+      },
+      sendPlanFeedback: (text) => {
+        calls.push(`feedback:${text}`)
+      },
+    })
+    const target = { projectId: "project-8", sessionId: "session-8" }
+    actionHandler?.({ type: "stop", ...target })
+    actionHandler?.({ type: "plan", ...target, decision: "build", modelId: "model-x" })
+    actionHandler?.({ type: "plan", ...target, decision: "feedback", text: "Smaller steps" })
+    await tick()
+    expect(calls).toEqual(["stop", "build:model-x", "feedback:Smaller steps"])
+    dispose()
+  })
 })

@@ -45,6 +45,10 @@ import {
   cleanupRecording,
   startRecordingHttpBridge,
   setRecordingWindowResolver,
+  getMeetingState,
+  onMeetingStateChange,
+  respondToMeeting,
+  setMeetingPromptPresenter,
 } from './recording'
 import { registerFsIpcHandlers } from './fs-ipc'
 import { registerGitIpcHandlers, disposeGitIpc } from './git/ipc'
@@ -935,7 +939,7 @@ function loadAppWindow(window: BrowserWindow, pathWithQuery = '/'): void {
   const url = getAppWindowUrl(pathWithQuery)
   window.loadURL(url).catch(() => {
     if (!isCloudMode && IS_DEV) {
-      loadProductionWeb(window)
+      loadProductionWeb(window, pathWithQuery)
     }
   })
 }
@@ -1456,7 +1460,7 @@ function createWindow(): void {
   loadAppWindow(windowManager.createPrimaryWindow())
 }
 
-function loadProductionWeb(window: BrowserWindow): void {
+function loadProductionWeb(window: BrowserWindow, pathWithQuery = '/'): void {
   const webDir = getWebDir()
   const indexPath = path.join(webDir, 'index.html')
 
@@ -1466,7 +1470,7 @@ function loadProductionWeb(window: BrowserWindow): void {
     return
   }
 
-  window.loadURL('shogo://app/')
+  window.loadURL(new URL(pathWithQuery, 'shogo://app').toString())
 }
 
 function registerProtocol(): void {
@@ -1767,7 +1771,19 @@ app.whenReady().then(async () => {
   }
 
   createWindow()
-  islandWindow = new IslandWindow(windowManager)
+  islandWindow = new IslandWindow(windowManager, {
+    loadApp: (window) => loadAppWindow(window, '/island'),
+    ...(isCloudMode
+      ? {}
+      : {
+          meeting: {
+            getState: getMeetingState,
+            subscribe: onMeetingStateChange,
+            respond: respondToMeeting,
+          },
+        }),
+  })
+  setMeetingPromptPresenter(() => islandWindow?.canPresentMeetingPrompt() ?? false)
 
   if (!isCloudMode) {
     createTray({

@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { contextBridge, ipcRenderer } from 'electron'
 import { AudioCaptureManager, type PcmChunkMessage } from './audio/audio-capture-manager'
+import type { IslandConfig } from './island-protocol'
 
 const portArg = process.argv.find((a) => a.startsWith('--api-port='))
 const apiPort = portArg ? portArg.split('=')[1] : '39100'
@@ -125,13 +126,9 @@ contextBridge.exposeInMainWorld('shogoDesktop', {
   apiUrl: `http://localhost:${apiPort}`,
   getAppMode: () => ipcRenderer.invoke('get-app-mode'),
   getAppConfig: () => ipcRenderer.invoke('get-app-config'),
-  setIslandConfig: (config: { enabled?: boolean; autoHide?: boolean; shortcut?: string }) =>
-    ipcRenderer.invoke('set-island-config', config),
-  onIslandConfigChanged: (
-    callback: (config: { enabled: boolean; autoHide: boolean; shortcut: string }) => void,
-  ) => {
-    const listener = (_event: Electron.IpcRendererEvent, config: { enabled: boolean; autoHide: boolean; shortcut: string }) =>
-      callback(config)
+  setIslandConfig: (config: Partial<IslandConfig>) => ipcRenderer.invoke('set-island-config', config),
+  onIslandConfigChanged: (callback: (config: IslandConfig) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, config: IslandConfig) => callback(config)
     ipcRenderer.on('island-config-changed', listener)
     return () => {
       ipcRenderer.removeListener('island-config-changed', listener)
@@ -684,6 +681,9 @@ exposeShogoDesktopTerminalBridge()
 // own module so the contextBridge surface stays separable per feature.
 import { exposeShogoDesktopPortsBridge } from './preload-ports'
 exposeShogoDesktopPortsBridge()
+
+import { exposeShogoIslandBridge } from './preload-island'
+exposeShogoIslandBridge()
 
 if (process.env.SHOGO_E2E === '1' || process.env.PLAYWRIGHT_E2E === '1') {
   contextBridge.exposeInMainWorld('shogoTesting', {

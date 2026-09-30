@@ -81,6 +81,7 @@ import { setPendingLicenseCode } from "../lib/pending-license";
 import * as ExpoLinking from "expo-linking";
 import { useWhatsNew } from "../lib/whats-new/use-whats-new";
 import { WhatsNewModal } from "../components/whats-new/WhatsNewModal";
+import { isIslandWindow } from "../components/island/types";
 
 import { isNoiseEvent } from "../lib/sentry-noise-filter";
 
@@ -187,17 +188,24 @@ function AuthenticatedAppShell({
   statusBarScheme: "light" | "dark";
 }) {
   const whatsNew = useWhatsNew();
+  // The desktop island overlay renders only its own route: app-wide banners
+  // and modals would draw into the transparent notch window.
+  const island = isIslandWindow();
 
   return (
     <ActiveInstanceProvider>
-      <InstanceOfflineWatcher />
-      <UpdateBanner />
-      <WhatsNewModal
-        release={whatsNew.release}
-        visible={whatsNew.visible}
-        onDismiss={whatsNew.dismiss}
-      />
-      <StatusBar style={statusBarScheme === "dark" ? "light" : "dark"} />
+      {island ? null : (
+        <>
+          <InstanceOfflineWatcher />
+          <UpdateBanner />
+          <WhatsNewModal
+            release={whatsNew.release}
+            visible={whatsNew.visible}
+            onDismiss={whatsNew.dismiss}
+          />
+          <StatusBar style={statusBarScheme === "dark" ? "light" : "dark"} />
+        </>
+      )}
       <Stack screenOptions={{ headerShown: false, lazy: true }}>
         <Stack.Screen name="index" />
         <Stack.Screen name="(auth)" />
@@ -205,6 +213,10 @@ function AuthenticatedAppShell({
         <Stack.Screen name="(onboarding)" />
         <Stack.Screen name="(app)" />
         <Stack.Screen name="(admin)" />
+        <Stack.Screen
+          name="island"
+          options={{ contentStyle: { backgroundColor: "transparent" } }}
+        />
       </Stack>
     </ActiveInstanceProvider>
   );
