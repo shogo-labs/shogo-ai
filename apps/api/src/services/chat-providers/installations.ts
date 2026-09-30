@@ -12,6 +12,12 @@ import type { ChatInstallationRecord } from './types'
 
 const db = prisma as any
 
+// `config` is Json on Postgres but a String column on SQLite, and too generic a
+// name for the SQLite JSON codec in lib/prisma to handle for every model.
+function storeConfig(config: Record<string, unknown>): unknown {
+  return process.env.SHOGO_LOCAL_MODE === 'true' ? JSON.stringify(config) : config
+}
+
 function parseJson(value: unknown): Record<string, unknown> {
   if (!value) return {}
   if (typeof value === 'object') return value as Record<string, unknown>
@@ -94,7 +100,7 @@ export async function upsertInstallation(input: {
     tenantName: input.tenantName ?? null,
     botUserId: input.botUserId ?? null,
     ...(input.credentials ? { tokensEncrypted: encryptSecret(JSON.stringify(input.credentials)) } : {}),
-    ...(input.config ? { config: input.config } : {}),
+    ...(input.config ? { config: storeConfig(input.config) } : {}),
     installedByUserId: input.installedByUserId ?? null,
   }
   await db.chatInstallation.deleteMany({
@@ -111,7 +117,7 @@ export async function upsertInstallation(input: {
 export async function mergeInstallationConfig(id: string, patch: Record<string, unknown>): Promise<void> {
   const row = await db.chatInstallation.findUnique({ where: { id }, select: { config: true } })
   if (!row) return
-  await db.chatInstallation.update({ where: { id }, data: { config: { ...parseJson(row.config), ...patch } } })
+  await db.chatInstallation.update({ where: { id }, data: { config: storeConfig({ ...parseJson(row.config), ...patch }) } })
 }
 
 export async function removeInstallation(workspaceId: string, provider: ExternalChatProvider): Promise<void> {

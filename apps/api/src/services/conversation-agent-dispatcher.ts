@@ -35,6 +35,7 @@ export const MAX_CONCURRENT_AGENT_REPLIES_PER_WORKSPACE = 6
 const CONTEXT_MESSAGES = 20
 const DELTA_THROTTLE_MS = 350
 const AGENT_REPLY_TIMEOUT_MS = 30 * 60_000
+const PROVIDER_SURFACE: Record<string, string> = { slack: 'Slack', teams: 'Microsoft Teams', google_chat: 'Google Chat' }
 
 interface DispatcherConfig {
   runtimeManager?: IRuntimeManager
@@ -225,7 +226,7 @@ export async function loadMentionNames(workspaceId: string, texts: string[]): Pr
 export async function renderTranscript(workspaceId: string, history: any[], markMessageId?: string): Promise<string> {
   const names = await loadMentionNames(workspaceId, history.map((m) => m.text))
   const author = (m: any) =>
-    m.authorType === 'user' ? (m.authorUser?.name || m.authorUser?.email || 'Someone')
+    m.authorType === 'user' ? (m.authorUser?.name || m.authorUser?.email || m.blocks?.externalAuthor?.name || 'Someone')
       : m.authorType === 'agent' ? `${m.authorAgentRef?.name ?? 'Agent'} (agent)`
         : m.authorType === 'bot' ? 'Bot' : 'System'
   return history
@@ -272,8 +273,9 @@ async function buildPrompt(args: {
     : conversation.kind === 'dm' || conversation.kind === 'group_dm'
       ? 'a direct message between teammates'
       : `the #${conversation.name ?? 'channel'} channel`
+  const surface = PROVIDER_SURFACE[conversation.provider] ?? 'Shogo'
   const lines = [
-    `You are ${name}, a teammate in ${where} of the "${workspaceName}" workspace's team chat in Shogo.`,
+    `You are ${name}, a teammate in ${where} of the "${workspaceName}" workspace's team chat in ${surface}.`,
     threadRootId ? 'You are replying inside a thread; the thread so far is below.' : 'Recent messages are below.',
     'Reply to the latest message addressed to you. Write concise Markdown suitable for a chat message.',
     'Do real work with your tools when asked. The team sees only your final reply here; your full session is linked from it.',

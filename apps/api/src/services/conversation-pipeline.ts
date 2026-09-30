@@ -8,7 +8,9 @@
 import { dispatchAgentsForMessage } from './conversation-agent-dispatcher'
 import type { PostMessageResult } from './conversation.service'
 
-export type MessageOrigin = 'app' | 'agent' | 'slack' | 'bot' | 'system' | 'import'
+export type MessageOrigin = 'app' | 'agent' | 'slack' | 'teams' | 'google_chat' | 'bot' | 'system' | 'import'
+
+const HUMAN_ORIGINS = new Set<MessageOrigin>(['app', 'slack', 'teams', 'google_chat'])
 
 export interface AfterPostContext {
   actorUserId: string | null
@@ -30,11 +32,15 @@ export function registerAfterPostHook(hook: Hook): () => void {
 
 export async function afterMessagePosted(result: PostMessageResult, ctx: AfterPostContext): Promise<void> {
   if (result.duplicate) return
-  if (ctx.actorUserId && (ctx.origin === 'app' || ctx.origin === 'slack')) {
+  if (ctx.actorUserId && HUMAN_ORIGINS.has(ctx.origin)) {
     await dispatchAgentsForMessage(result, ctx.actorUserId).catch((err) => {
       console.error('[Channels] agent dispatch failed:', err)
     })
   }
+  // Mirrored channels live on the external platform, which does its own
+  // notifications and link previews.
+  const provider = result.conversation?.provider
+  if (provider && provider !== 'shogo') return
   for (const hook of hooks) {
     try {
       await hook(result, ctx)

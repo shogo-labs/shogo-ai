@@ -11,6 +11,7 @@
  */
 
 import { prisma } from '../../lib/prisma'
+import { renderMentionsAsText } from '../conversation-mentions'
 import { conversationAudience, type PostMessageResult } from '../conversation.service'
 import { getChatProvider } from './registry'
 import { installationForWorkspace } from './installations'
@@ -39,6 +40,13 @@ export interface AgentReplyHandle {
   external: { provider: ChatProvider; conv: ConversationRef; ref: ExternalMessageRef } | null
   lastExternalUpdate: number
   audience: string[] | null
+}
+
+/** Shogo mention tokens (`<@u:…>`, `<@a:p:…>`) mean nothing on other platforms; send names instead. */
+async function providerText(workspaceId: string, text: string): Promise<string> {
+  if (!/<[@#!]/.test(text)) return text
+  const { loadMentionNames } = await import('../conversation-agent-dispatcher')
+  return renderMentionsAsText(text, await loadMentionNames(workspaceId, [text]))
 }
 
 function isExternal(conversation: any): boolean {
@@ -83,7 +91,7 @@ async function mirror(
   const target = await conversationRef(conversation, row.threadRootId ?? null)
   if (!target) return null
   try {
-    const ref = await target.provider.postMessage(target.conv, { text, author })
+    const ref = await target.provider.postMessage(target.conv, { text: await providerText(conversation.workspaceId, text), author })
     await db.conversationMessage.update({ where: { id: row.id }, data: { externalRef: externalRefFor(ref) } })
     return { ...target, ref }
   } catch (err) {
@@ -169,7 +177,8 @@ export async function streamAgentReply(handle: AgentReplyHandle, state: { text: 
   if (!ext?.provider.updateMessage || !ext.provider.capabilities.edits) return
   if (Date.now() - handle.lastExternalUpdate < EXTERNAL_STREAM_THROTTLE_MS) return
   handle.lastExternalUpdate = Date.now()
-  await ext.provider.updateMessage(ext.conv, ext.ref, { text: externalProgressText(state), author: handle.author })
+  const text = await providerText(ext.conv.workspaceId, externalProgressText(state))
+  await ext.provider.updateMessage(ext.conv, ext.ref, { text, author: handle.author })
     .catch((err) => console.warn(`[ChatOutbound] ${ext.provider.kind} progress update failed:`, (err as Error).message))
 }
 
@@ -178,8 +187,8 @@ export async function finishAgentReply(handle: AgentReplyHandle, final: { text: 
   await shogoProvider.updateMessage(handle.messageId, { text: final.text, agentStatus: final.agentStatus })
   const ext = handle.external
   if (!ext) return
-  const msg = { text: final.text, author: handle.author }
   try {
+    const msg = { text: await providerText(ext.conv.workspaceId, final.text), author: handle.author }
     if (ext.provider.updateMessage && ext.provider.capabilities.edits) {
       await ext.provider.updateMessage(ext.conv, ext.ref, msg)
     } else {

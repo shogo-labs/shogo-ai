@@ -29,6 +29,7 @@ import { workspaceAgentRoutes, sessionAuthorize } from './routes/workspace-agent
 import { workspaceMeetingRoutes, sharedMeetingRoutes } from './routes/workspace-meetings'
 import { conversationRoutes } from './routes/conversations'
 import { configureConversationAgentDispatcher } from './services/conversation-agent-dispatcher'
+import { registerBuiltInChatProviders } from './services/chat-providers'
 import { conversationSocketHandlers, isConversationSocketData } from './realtime/conversation-socket'
 import { createAgentTaskRoutes } from './routes/agent-tasks'
 import { startAgentTaskWorker, stopAgentTaskWorker } from './jobs/run-agent-task-dispatch'
@@ -1563,6 +1564,7 @@ app.route('/api', workspaceMeetingRoutes({ authorize: sessionAuthorize(getAuthUs
 app.route('/api', sharedMeetingRoutes())
 // Workspace channels (team chat with @mentionable agents).
 configureConversationAgentDispatcher({ runtimeManager: getRuntimeManager() })
+registerBuiltInChatProviders()
 app.route('/api', conversationRoutes({ resolveUserId: getAuthUserId }))
 app.route('/api', createAgentTaskRoutes({ runtimeManager: getRuntimeManager() }))
 // Resume queued agent tasks after API restarts and keep dueAt-backed work

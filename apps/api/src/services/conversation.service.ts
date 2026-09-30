@@ -159,7 +159,13 @@ export function serializeMessage(row: any) {
     authorType: row.authorType,
     author: row.authorType === 'user' && row.authorUser
       ? { id: row.authorUser.id, name: row.authorUser.name || row.authorUser.email, image: row.authorUser.image ?? null }
-      : null,
+      : row.authorType === 'user' && row.blocks?.externalAuthor
+        ? {
+            id: `ext:${row.blocks.externalAuthor.provider}:${row.blocks.externalAuthor.id}`,
+            name: row.blocks.externalAuthor.name || 'Someone',
+            image: null,
+          }
+        : null,
     authorUserId: row.authorUserId ?? null,
     authorAgent: row.authorAgentRef ?? null,
     text: deleted ? '' : row.text,

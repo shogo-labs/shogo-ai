@@ -32,6 +32,15 @@ import {
   verifySlackSignature,
 } from '../lib/slack-agent/security'
 import { SlackUiWriter, type SlackApiClient } from '../lib/slack-agent/stream'
+import {
+  InstallationConflictError,
+  installationForWorkspace,
+  linkIdentity,
+  mergeInstallationConfig,
+  upsertInstallation,
+} from '../services/chat-providers/installations'
+import { bridgeActive, handleInboundEvents, resumeAfterLink } from '../services/chat-providers/inbound'
+import { slackEventsFromPayload, slackProvider } from '../services/chat-providers/slack'
 
 const SLACK_API = 'https://slack.com/api'
 const EVENT_TTL_MS = 10 * 60 * 1000
@@ -179,6 +188,20 @@ export function slackAgentRoutes(config: SlackAgentRoutesConfig): Hono {
         installerUserId: oauth.authed_user?.id || parsedState.userId,
       },
     })
+    try {
+      await upsertInstallation({
+        workspaceId: parsedState.workspaceId,
+        provider: 'slack',
+        externalTenantId: oauth.team.id,
+        tenantName: oauth.team.name || null,
+        botUserId: oauth.bot_user_id || null,
+        credentials: { botToken: oauth.access_token },
+        installedByUserId: parsedState.userId,
+      })
+    } catch (err) {
+      if (err instanceof InstallationConflictError) return c.json({ error: err.message }, 409)
+      throw err
+    }
 
     return c.html(`
       <!doctype html><html><head><title>Shogo connected</title></head>
@@ -232,6 +255,28 @@ export function slackAgentRoutes(config: SlackAgentRoutesConfig): Hono {
       },
       update: { shogoUserId: userId },
     })
+    await linkIdentity({
+      provider: 'slack',
+      externalTenantId: parsedState.slackTeamId,
+      externalUserId: parsedState.slackUserId,
+      userId,
+    })
+
+    if (parsedState.pendingChannel && parsedState.pendingTs && (await bridgeActive('slack', installation.workspaceId))) {
+      const resumed = await resumeAfterLink(slackProvider, {
+        tenantId: parsedState.slackTeamId,
+        channelId: parsedState.pendingChannel,
+        messageId: parsedState.pendingTs,
+      }, userId)
+      void slackClient(installation).call('chat.postMessage', {
+        channel: parsedState.pendingChannel,
+        ...(parsedState.pendingThreadTs ? { thread_ts: parsedState.pendingThreadTs } : {}),
+        text: resumed
+          ? '✅ Your Shogo account is linked. Picking up your message…'
+          : '✅ Your Shogo account is linked. Send your message again.',
+      }).catch((error) => console.error('[SlackAgent] Failed to post link confirmation:', error))
+      return c.json({ ok: true, resumed })
+    }
 
     // Confirm the link in Slack and resume whatever request triggered it,
     // instead of making the user notice the DM and repeat themselves. Both
@@ -298,6 +343,13 @@ export function slackAgentRoutes(config: SlackAgentRoutesConfig): Hono {
       where: { slackTeamId: payload.team_id },
     })
     if (!installation) return c.json({ error: 'Slack workspace is not installed in Shogo' }, 404)
+
+    if (await bridgeActive('slack', installation.workspaceId)) {
+      void handleInboundEvents(slackProvider, slackEventsFromPayload(payload, installation.botUserId)).catch((error) => {
+        console.error('[SlackAgent] Team chat bridge failed:', error)
+      })
+      return c.json({ ok: true })
+    }
 
     // Slack requires a quick acknowledgement. The project runtime can cold
     // start and an agent turn can run for hours, so all work happens after the
@@ -389,6 +441,8 @@ export function slackAgentRoutes(config: SlackAgentRoutesConfig): Hono {
         where: { workspaceId },
         data: { defaultProjectId: body.defaultProjectId },
       })
+      const chatInstall = await installationForWorkspace(workspaceId, 'slack')
+      if (chatInstall) await mergeInstallationConfig(chatInstall.id, { defaultProjectId: body.defaultProjectId })
     }
     return c.json({ ok: true })
   })
@@ -1336,6 +1390,7 @@ function slackBotScopes(): string[] {
     'channels:history',
     'channels:read',
     'chat:write',
+    'chat:write.customize',
     'files:read',
     'files:write',
     'groups:history',

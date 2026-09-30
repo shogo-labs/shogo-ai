@@ -77,7 +77,7 @@ export type InboundEvent =
       tenantId: string
       channelId: string
       channelName: string | null
-      channelKind: 'public' | 'private' | 'dm'
+      channelKind: ChannelKind
       messageId: string
       threadId: string | null
       user: InboundUser
@@ -107,8 +107,24 @@ export interface ChatProvider {
   addReaction?(conv: ConversationRef, ref: ExternalMessageRef, emoji: string): Promise<void>
   readHistory?(conv: ConversationRef, opts: { before?: string; limit: number }): Promise<Array<{ id: string; user: InboundUser; text: string; threadId: string | null }>>
   resolveUser?(installation: ChatInstallationRecord, externalUserId: string): Promise<InboundUser>
-  /** Tell an unlinked person how to link their Shogo account (privately where the platform allows). */
-  sendLinkPrompt?(conv: ConversationRef, user: InboundUser, url: string): Promise<void>
+  /** Name and visibility of a channel the bridge hasn't seen yet. */
+  describeChannel?(installation: ChatInstallationRecord, channelId: string): Promise<{ name: string | null; kind: ChannelKind } | null>
+  /**
+   * Tell an unlinked person how to link their Shogo account, privately where
+   * the platform allows. `pending` is the message that prompted it, so the
+   * link flow can resume it.
+   */
+  sendLinkPrompt?(conv: ConversationRef, user: InboundUser, pending: PendingInbound): Promise<void>
+}
+
+export type ChannelKind = 'public' | 'private' | 'dm'
+
+export interface PendingInbound {
+  tenantId: string
+  channelId: string
+  messageId: string
+  threadId: string | null
+  text: string
 }
 
 /**

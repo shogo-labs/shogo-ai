@@ -50,6 +50,7 @@ import {
 import { afterMessagePosted } from '../services/conversation-pipeline'
 import { postAgentMessage } from '../services/chat-providers/outbound'
 import { listInstallations } from '../services/chat-providers/installations'
+import { adoptSlackRouting } from '../services/chat-providers/slack-adopt'
 import { catchUp } from '../services/conversation-activity'
 import { stopAgentReply } from '../services/conversation-agent-dispatcher'
 import { getPresence } from '../services/conversation-presence'
@@ -147,6 +148,7 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
     const body = await readJson(c)
     try {
       const config = await setWorkspaceChatConfig(workspaceId, { mode: body.mode, provider: body.provider })
+      if (config.provider === 'slack') await adoptSlackRouting(workspaceId)
       const installations = await listInstallations(workspaceId)
       return c.json({
         ...config,
