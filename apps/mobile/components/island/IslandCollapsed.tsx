@@ -88,23 +88,41 @@ export function IslandCollapsed({
     <ShogoLogoMark className="h-3.5 w-3.5" fill={accent} />
   )
 
-  const right = meeting.prompt ? (
-    <View className="flex-row items-center gap-1.5 min-w-0 flex-shrink">
-      <Text className="min-w-0 flex-shrink text-[12px] font-semibold text-white" numberOfLines={1}>
-        {meeting.prompt.app}
-      </Text>
-      <View className="rounded-full bg-red-500 px-2 py-0.5">
-        <Text className="text-[10px] font-bold text-white">Record?</Text>
-      </View>
+  // Right wing: a primary label that truncates, plus an optional trailing
+  // detail pinned to the far edge so the wing reads as one full row.
+  const primary = meeting.prompt
+    ? meeting.prompt.app
+    : meeting.recording
+      ? (meeting.recording.app ?? "Recording")
+      : peek
+        ? peek.title
+        : (top?.projectName ?? "Shogo")
+  const secondary = meeting.recording || meeting.prompt
+    ? null
+    : peek
+      ? peek.detail
+      : running && top?.step
+        ? top.step
+        : sessions.length > 1
+          ? `+${sessions.length - 1} more`
+          : null
+  const trailing = meeting.prompt ? (
+    <View className="rounded-full bg-red-500 px-2 py-0.5">
+      <Text className="text-[10px] font-bold text-white">Record?</Text>
     </View>
   ) : meeting.recording ? (
-    <Text className="text-[12px] font-semibold tabular-nums text-white" numberOfLines={1}>
-      {formatDuration(recordingSeconds)}
-    </Text>
-  ) : (
-    <Text className="min-w-0 flex-shrink text-[12px] font-semibold text-white" numberOfLines={1}>
-      {peek ? peek.detail : (top?.projectName ?? "Shogo")}
-    </Text>
+    <Text className="text-[12px] font-semibold tabular-nums text-red-300">{formatDuration(recordingSeconds)}</Text>
+  ) : null
+  const right = (
+    <View className="flex-row items-center gap-1.5 min-w-0">
+      <Text className="flex-shrink-0 max-w-[70%] text-[12px] font-semibold text-white" numberOfLines={1}>
+        {primary}
+      </Text>
+      <Text className="min-w-0 flex-1 text-[11px] text-zinc-400" numberOfLines={1}>
+        {secondary ?? ""}
+      </Text>
+      {trailing}
+    </View>
   )
 
   return (
