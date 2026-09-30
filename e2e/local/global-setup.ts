@@ -21,7 +21,9 @@ export default async function globalSetup(): Promise<void> {
 
   const browser = await chromium.launch()
   try {
-    const page = await browser.newPage({ baseURL: "http://localhost:8081" })
+    const page = await browser.newPage({
+      baseURL: process.env.E2E_TARGET_URL || `http://localhost:${process.env.E2E_LOCAL_WEB_PORT || "8081"}`,
+    })
     await page.goto("/", { timeout: 180_000 })
     await page
       .getByRole("navigation", { name: "App sidebar" })

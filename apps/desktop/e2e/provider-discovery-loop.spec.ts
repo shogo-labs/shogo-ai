@@ -20,8 +20,8 @@ function ensureDesktopBuild(): void {
   const mainJs = path.join(DESKTOP_DIR, 'dist', 'main.js')
   if (fs.existsSync(mainJs)) return
   const { spawnSync } = require('child_process') as typeof import('child_process')
-  const result = spawnSync('npx', ['tsc'], { cwd: DESKTOP_DIR, stdio: 'inherit' })
-  if (result.status !== 0) throw new Error('apps/desktop tsc build failed')
+  const result = spawnSync('npm', ['run', 'build'], { cwd: DESKTOP_DIR, stdio: 'inherit' })
+  if (result.status !== 0) throw new Error('apps/desktop build failed')
 }
 
 async function installMockLocalApi(page: Page): Promise<{ getProviderCalls: () => number }> {
