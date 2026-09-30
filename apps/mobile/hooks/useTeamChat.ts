@@ -144,24 +144,43 @@ export function useConversationList(workspaceId: string | null | undefined) {
 // ─── Mentionables ────────────────────────────────────────────────────────────
 
 const mentionablesCache = new Map<string, { at: number; data: Mentionables }>()
+const mentionablesInflight = new Map<string, Promise<Mentionables>>()
+
+function fetchMentionables(workspaceId: string): Promise<Mentionables> {
+  const running = mentionablesInflight.get(workspaceId)
+  if (running) return running
+  const p = api.mentionables(workspaceId)
+    .then((next) => {
+      mentionablesCache.set(workspaceId, { at: Date.now(), data: next })
+      return next
+    })
+    .finally(() => mentionablesInflight.delete(workspaceId))
+  mentionablesInflight.set(workspaceId, p)
+  return p
+}
 
 export function useMentionables(workspaceId: string | null | undefined): Mentionables | null {
   const cached = workspaceId ? mentionablesCache.get(workspaceId) : undefined
   const [data, setData] = useState<Mentionables | null>(cached?.data ?? null)
+  const [version, setVersion] = useState(0)
   useEffect(() => {
     if (!workspaceId) return
     const hit = mentionablesCache.get(workspaceId)
     if (hit) setData(hit.data)
     if (hit && Date.now() - hit.at < 60_000) return
     let cancelled = false
-    api.mentionables(workspaceId).then((next) => {
-      mentionablesCache.set(workspaceId, { at: Date.now(), data: next })
+    fetchMentionables(workspaceId).then((next) => {
       if (!cancelled) setData(next)
     }).catch(() => {})
     return () => {
       cancelled = true
     }
-  }, [workspaceId])
+  }, [workspaceId, version])
+  useTeamChatEvents(workspaceId, (event) => {
+    if (!workspaceId || event.type !== 'groups.changed') return
+    mentionablesCache.delete(workspaceId)
+    setVersion((v) => v + 1)
+  })
   return data
 }
 

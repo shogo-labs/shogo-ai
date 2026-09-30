@@ -10,10 +10,11 @@ import { ActionSheetIOS, Alert, Image, Linking, Platform, Pressable, Text, TextI
 import { AlarmClock, AlertCircle, Bookmark, Bot, CornerDownRight, FileText, Loader2, MessageSquare, Pencil, Pin, SmilePlus, Square, Trash2 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { MarkdownText } from '../chat/MarkdownText'
-import { teamChatApi, type ChatMessage } from '../../lib/team-chat-api'
+import { absoluteApiUrl, teamChatApi, type ChatMessage, type LinkUnfurl } from '../../lib/team-chat-api'
 import { renderMentions, type MentionNames } from '../../lib/team-chat-state'
 import { useUserStatus } from '../../hooks/useChatPrefs'
 import { toggleSaved, useIsSaved } from '../../hooks/useChatItems'
+import { customEmojiFor, jumboEmojiCodes, useCustomEmoji } from '../../hooks/useCustomEmoji'
 
 export const QUICK_REACTIONS = ['👍', '✅', '👀', '🎉', '❤️', '😂']
 
@@ -110,6 +111,43 @@ function AuthorStatus({ userId }: { userId: string | null | undefined }) {
   )
 }
 
+function UnfurlCards({ message }: { message: ChatMessage }) {
+  const unfurls = (message.blocks as { unfurls?: LinkUnfurl[] } | null)?.unfurls
+  if (!Array.isArray(unfurls)) return null
+  const live = unfurls.filter((u) => message.text.includes(u.url))
+  if (!live.length) return null
+  return (
+    <View className="mt-1.5 gap-1.5">
+      {live.map((u) => (
+        <Pressable
+          key={u.url}
+          onPress={() => Linking.openURL(u.url)}
+          accessibilityRole="link"
+          accessibilityLabel={`Link preview: ${u.title}`}
+          className="max-w-[520px] flex-row gap-3 rounded-md border-l-4 border-border bg-muted/30 py-2 pl-3 pr-2 active:bg-muted"
+        >
+          <View className="min-w-0 flex-1">
+            {u.siteName ? <Text className="text-[11px] text-muted-foreground" numberOfLines={1}>{u.siteName}</Text> : null}
+            <Text className="text-sm font-semibold text-primary" numberOfLines={2}>{u.title}</Text>
+            {u.description ? <Text className="mt-0.5 text-xs text-muted-foreground" numberOfLines={3}>{u.description}</Text> : null}
+          </View>
+          {u.image ? (
+            <Image source={{ uri: u.image }} className="h-16 w-16 rounded" resizeMode="cover" accessibilityIgnoresInvertColors />
+          ) : null}
+        </Pressable>
+      ))}
+    </View>
+  )
+}
+
+function ReactionGlyph({ emoji, size = 12 }: { emoji: string; size?: number }) {
+  const custom = customEmojiFor(emoji, useCustomEmoji())
+  if (custom) {
+    return <Image source={{ uri: custom.url }} style={{ width: size + 4, height: size + 4 }} accessibilityLabel={emoji} />
+  }
+  return <Text style={{ fontSize: size }}>{emoji}</Text>
+}
+
 function MessageRowImpl(props: MessageRowProps) {
   const { message, grouped, me, names, streaming, canManage, inThread } = props
   const [hovered, setHovered] = useState(false)
@@ -117,6 +155,7 @@ function MessageRowImpl(props: MessageRowProps) {
   const [remindOpen, setRemindOpen] = useState(false)
   const [editing, setEditing] = useState(false)
   const saved = useIsSaved(message.id)
+  const customEmoji = useCustomEmoji()
   const [draft, setDraft] = useState(message.text)
   const mine = !!me && message.authorUserId === me
   const deleted = !!message.deletedAt
@@ -288,11 +327,21 @@ function MessageRowImpl(props: MessageRowProps) {
           </View>
         ) : (
           <>
-            {!!body && (
-              <View className={cn(message.pending && 'opacity-60')}>
-                <MarkdownText isStreaming={running}>{renderMentions(body, names)}</MarkdownText>
-              </View>
-            )}
+            {!!body && (() => {
+              const jumbo = running ? null : jumboEmojiCodes(body, customEmoji)
+              return (
+                <View className={cn(message.pending && 'opacity-60')}>
+                  {jumbo ? (
+                    <View className="flex-row flex-wrap gap-1 py-0.5">
+                      {jumbo.map((code, i) => <ReactionGlyph key={`${code}-${i}`} emoji={code} size={32} />)}
+                    </View>
+                  ) : (
+                    <MarkdownText isStreaming={running}>{renderMentions(body, names)}</MarkdownText>
+                  )}
+                </View>
+              )
+            })()}
+            {!running && <UnfurlCards message={message} />}
             {running && (
               <View className="mt-1 flex-row items-center gap-2">
                 <Loader2 size={12} className="text-muted-foreground" />
@@ -328,9 +377,9 @@ function MessageRowImpl(props: MessageRowProps) {
           <View className="mt-1.5 flex-row flex-wrap gap-2">
             {message.attachments.map((a) =>
               a.mimeType.startsWith('image/') ? (
-                <Pressable key={a.id} onPress={() => Linking.openURL(a.url)}>
+                <Pressable key={a.id} onPress={() => Linking.openURL(absoluteApiUrl(a.url))}>
                   <Image
-                    source={{ uri: a.url }}
+                    source={{ uri: absoluteApiUrl(a.url) }}
                     className="rounded-lg border border-border"
                     style={{ width: 220, height: a.width && a.height ? Math.min(260, (220 * a.height) / a.width) : 160 }}
                     resizeMode="cover"
@@ -340,7 +389,7 @@ function MessageRowImpl(props: MessageRowProps) {
               ) : (
                 <Pressable
                   key={a.id}
-                  onPress={() => Linking.openURL(a.url)}
+                  onPress={() => Linking.openURL(absoluteApiUrl(a.url))}
                   className="flex-row items-center gap-2 rounded-lg border border-border bg-card px-3 py-2 active:bg-muted"
                 >
                   <FileText size={16} className="text-muted-foreground" />
@@ -380,7 +429,7 @@ function MessageRowImpl(props: MessageRowProps) {
                     reacted ? 'border-primary/50 bg-primary/10' : 'border-border bg-card',
                   )}
                 >
-                  <Text className="text-xs">{r.emoji}</Text>
+                  <ReactionGlyph emoji={r.emoji} />
                   <Text className={cn('text-[11px]', reacted ? 'text-primary' : 'text-muted-foreground')}>{r.count}</Text>
                 </Pressable>
               )
@@ -455,6 +504,19 @@ function MessageRowImpl(props: MessageRowProps) {
       )}
       {isWeb && hovered && pickerOpen && (
         <View className="absolute right-3 top-6 z-10 w-56 flex-row flex-wrap rounded-lg border border-border bg-card p-1 shadow-md">
+          {[...customEmoji.values()].slice(0, 24).map((e) => (
+            <Pressable
+              key={e.id}
+              accessibilityLabel={`:${e.name}:`}
+              onPress={() => {
+                setPickerOpen(false)
+                props.onReact(message, `:${e.name}:`)
+              }}
+              className="rounded px-1.5 py-1 hover:bg-muted"
+            >
+              <Image source={{ uri: e.url }} style={{ width: 20, height: 20 }} />
+            </Pressable>
+          ))}
           {MORE_REACTIONS.map((emoji) => (
             <Pressable
               key={emoji}

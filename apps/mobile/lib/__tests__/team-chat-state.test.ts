@@ -269,3 +269,16 @@ describe('scheduleOptions', () => {
     expect(scheduleOptions(sun).map((o) => o.label)).toHaveLength(3)
   })
 })
+
+describe('group mentions', () => {
+  test('groups autocomplete by handle and render as @handle', () => {
+    const m = {
+      people: [],
+      agents: [],
+      groups: [{ id: 'g1', handle: 'design', name: 'Design', description: null, createdById: 'u', memberIds: ['a', 'b'] }],
+    } as Mentionables
+    const group = mentionCandidates(m, null).find((c) => c.kind === 'group')!
+    expect(group).toMatchObject({ display: 'design', token: '<@g:g1>', subtitle: 'Design · 2 people' })
+    expect(renderMentions('<@g:g1> and <@g:gone>', mentionNames(m))).toBe('**@design** and **@group**')
+  })
+})

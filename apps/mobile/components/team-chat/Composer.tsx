@@ -7,8 +7,8 @@
  * devices, send later, and `/remind`.
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Platform, Pressable, ScrollView, Text, TextInput, View } from 'react-native'
-import { AlarmClock, Bot, Clock, Paperclip, SendHorizontal, User, Users, X } from 'lucide-react-native'
+import { Image, Platform, Pressable, ScrollView, Text, TextInput, View } from 'react-native'
+import { AlarmClock, Bot, Clock, Paperclip, SendHorizontal, Smile, User, Users, X } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import type { Mentionables, MessageAttachment } from '../../lib/team-chat-api'
 import { teamChatApi } from '../../lib/team-chat-api'
@@ -26,8 +26,10 @@ import {
 } from '../../lib/team-chat-state'
 import type { SendInput } from '../../hooks/useTeamChat'
 import { useDraft } from '../../hooks/useChatItems'
+import { useCustomEmoji } from '../../hooks/useCustomEmoji'
 
 const api = teamChatApi()
+const COMMON_EMOJI = ['😀', '😂', '🙂', '😉', '😍', '🤔', '😅', '😭', '👍', '👎', '👏', '🙏', '🙌', '💪', '👀', '🎉', '🔥', '🚀', '✅', '❌', '⚠️', '💯', '❤️', '✨']
 const MAX_ATTACHMENTS = 10
 const MAX_FILE_BYTES = 50 * 1024 * 1024
 
@@ -55,6 +57,8 @@ export function Composer(props: ComposerProps) {
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [laterOpen, setLaterOpen] = useState(false)
+  const [emojiOpen, setEmojiOpen] = useState(false)
+  const customEmoji = useCustomEmoji(workspaceId)
   const inputRef = useRef<TextInput>(null)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const isWeb = Platform.OS === 'web'
@@ -94,6 +98,18 @@ export function Composer(props: ComposerProps) {
     setText(result.text)
     setSelection({ start: result.cursor, end: result.cursor })
     setPicked((p) => [...p, candidate])
+    inputRef.current?.focus()
+  }
+
+  const insertAtCursor = (insert: string) => {
+    const at = Math.min(selection.start, text.length)
+    const before = text.slice(0, at)
+    const pad = before && !/\s$/.test(before) ? ' ' : ''
+    const next = `${before}${pad}${insert} ${text.slice(at)}`
+    const cursor = at + pad.length + insert.length + 1
+    onChange(next)
+    setSelection({ start: cursor, end: cursor })
+    setEmojiOpen(false)
     inputRef.current?.focus()
   }
 
@@ -256,6 +272,9 @@ export function Composer(props: ComposerProps) {
           <Pressable onPress={pickFiles} accessibilityLabel="Attach files" className="rounded-md p-1.5 active:bg-muted hover:bg-muted">
             <Paperclip size={16} className="text-muted-foreground" />
           </Pressable>
+          <Pressable onPress={() => setEmojiOpen((v) => !v)} accessibilityLabel="Emoji" className="rounded-md p-1.5 active:bg-muted hover:bg-muted">
+            <Smile size={16} className="text-muted-foreground" />
+          </Pressable>
           {threadRootId && (
             <Pressable onPress={() => setAlsoToChannel((v) => !v)} className="flex-row items-center gap-1.5 rounded-md px-1.5 py-1">
               <View className={cn('h-3.5 w-3.5 rounded border', alsoToChannel ? 'border-primary bg-primary' : 'border-border')} />
@@ -282,6 +301,20 @@ export function Composer(props: ComposerProps) {
           </Pressable>
         </View>
       </View>
+      {emojiOpen && (
+        <View className="mt-1 max-w-[340px] flex-row flex-wrap rounded-lg border border-border bg-card p-1 shadow-sm">
+          {[...customEmoji.values()].map((e) => (
+            <Pressable key={e.id} accessibilityLabel={`:${e.name}:`} onPress={() => insertAtCursor(`:${e.name}:`)} className="rounded p-1.5 active:bg-muted hover:bg-muted">
+              <Image source={{ uri: e.url }} style={{ width: 20, height: 20 }} />
+            </Pressable>
+          ))}
+          {COMMON_EMOJI.map((e) => (
+            <Pressable key={e} accessibilityLabel={e} onPress={() => insertAtCursor(e)} className="rounded p-1.5 active:bg-muted hover:bg-muted">
+              <Text className="text-lg">{e}</Text>
+            </Pressable>
+          ))}
+        </View>
+      )}
       {laterOpen && (
         <View className="mt-1 self-end overflow-hidden rounded-lg border border-border bg-card shadow-sm">
           <Text className="px-3 pb-1 pt-2 text-[11px] font-semibold uppercase text-muted-foreground">Send later</Text>

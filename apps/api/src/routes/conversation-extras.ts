@@ -7,6 +7,18 @@
  */
 
 import type { Hono } from 'hono'
+import { prisma } from '../lib/prisma'
+import { readConversationFile, verifyConversationFileToken } from '../lib/conversation-files'
+import {
+  MAX_EMOJI_BYTES,
+  createEmoji,
+  createGroup,
+  deleteEmoji,
+  deleteGroup,
+  listEmoji,
+  listGroups,
+  updateGroup,
+} from '../services/chat-customization'
 import { getChatSettings, listStatuses, updateChatSettings } from '../services/chat-settings'
 import { listInbox, markInboxRead } from '../services/chat-inbox'
 import {
@@ -233,6 +245,108 @@ export function mountConversationExtras(router: Hono, h: ExtrasHelpers): void {
       return c.json({ reminder: await updateReminder(c.req.param('id'), userId, { status: body.status, remindAt: body.remindAt }) })
     } catch (err) {
       return h.errorResponse(c, err)
+    }
+  })
+
+  // ─── User groups ────────────────────────────────────────────────────────
+
+  router.get('/workspaces/:workspaceId/user-groups', async (c) => {
+    const auth = await h.requireWorkspace(c)
+    if (auth instanceof Response) return auth
+    return c.json({ groups: await listGroups(auth.workspaceId) })
+  })
+
+  router.post('/workspaces/:workspaceId/user-groups', async (c) => {
+    const auth = await h.requireWorkspace(c)
+    if (auth instanceof Response) return auth
+    try {
+      return c.json({ group: await createGroup(auth.workspaceId, auth.userId, await h.readJson(c)) }, 201)
+    } catch (err) {
+      return h.errorResponse(c, err)
+    }
+  })
+
+  router.patch('/user-groups/:groupId', async (c) => {
+    const userId = await h.requireUser(c)
+    if (userId instanceof Response) return userId
+    try {
+      return c.json({ group: await updateGroup(c.req.param('groupId'), userId, await h.readJson(c)) })
+    } catch (err) {
+      return h.errorResponse(c, err)
+    }
+  })
+
+  router.delete('/user-groups/:groupId', async (c) => {
+    const userId = await h.requireUser(c)
+    if (userId instanceof Response) return userId
+    try {
+      return c.json(await deleteGroup(c.req.param('groupId'), userId))
+    } catch (err) {
+      return h.errorResponse(c, err)
+    }
+  })
+
+  // ─── Custom emoji ───────────────────────────────────────────────────────
+
+  router.get('/workspaces/:workspaceId/emoji', async (c) => {
+    const auth = await h.requireWorkspace(c)
+    if (auth instanceof Response) return auth
+    return c.json({ emoji: await listEmoji(auth.workspaceId) })
+  })
+
+  router.post('/workspaces/:workspaceId/emoji', async (c) => {
+    const auth = await h.requireWorkspace(c)
+    if (auth instanceof Response) return auth
+    try {
+      const form = await c.req.formData().catch(() => null)
+      const file = form?.get('file')
+      if (!file || typeof file === 'string') {
+        return c.json({ error: { code: 'invalid_file', message: 'Attach an image in the "file" field' } }, 400)
+      }
+      if (file.size > MAX_EMOJI_BYTES) {
+        return c.json({ error: { code: 'too_large', message: 'Emoji images must be 256 KB or smaller' } }, 413)
+      }
+      const emoji = await createEmoji(auth.workspaceId, auth.userId, {
+        name: form?.get('name'),
+        bytes: new Uint8Array(await file.arrayBuffer()),
+        mimeType: file.type,
+      })
+      return c.json({ emoji }, 201)
+    } catch (err) {
+      return h.errorResponse(c, err)
+    }
+  })
+
+  router.delete('/custom-emoji/:emojiId', async (c) => {
+    const userId = await h.requireUser(c)
+    if (userId instanceof Response) return userId
+    try {
+      return c.json(await deleteEmoji(c.req.param('emojiId'), userId))
+    } catch (err) {
+      return h.errorResponse(c, err)
+    }
+  })
+
+  router.get('/custom-emoji/:emojiId', async (c) => {
+    const id = c.req.param('emojiId')
+    if (!verifyConversationFileToken(`emoji:${id}`, c.req.query('t'))) {
+      return c.json({ error: { code: 'forbidden', message: 'Invalid emoji link' } }, 403)
+    }
+    const row = await (prisma as any).customEmoji.findUnique({ where: { id } })
+    if (!row) return c.json({ error: { code: 'not_found', message: 'Emoji not found' } }, 404)
+    try {
+      const file = await readConversationFile(row.storageKey)
+      if (file.kind === 'redirect') return c.redirect(file.url, 302)
+      return new Response(file.bytes as any, {
+        headers: {
+          'Content-Type': row.mimeType,
+          'Content-Length': String(file.bytes.byteLength),
+          'Cache-Control': 'private, max-age=86400',
+          'X-Content-Type-Options': 'nosniff',
+        },
+      })
+    } catch {
+      return c.json({ error: { code: 'not_found', message: 'Emoji not found' } }, 404)
     }
   })
 }

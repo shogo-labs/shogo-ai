@@ -15,6 +15,7 @@ import { publishConversationEvent } from '../lib/conversation-bus'
 import {
   agentKey,
   collectMentionIds,
+  groupNames,
   mentionedAgents,
   renderMentionsAsText,
   type AgentTarget,
@@ -206,6 +207,7 @@ export async function renderTranscript(workspaceId: string, history: any[], mark
     users: new Map<string, string>(users.map((u: any) => [u.id, u.name || u.email])),
     projects: new Map<string, string>(projects.map((p: any) => [p.id, p.name])),
     conversations: new Map<string, string>(conversations.map((c: any) => [c.id, c.name ?? 'channel'])),
+    groups: await groupNames(db, workspaceId, ids.groupIds),
     workspaceAgentName,
   }
   const author = (m: any) =>

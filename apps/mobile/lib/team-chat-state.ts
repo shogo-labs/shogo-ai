@@ -220,7 +220,7 @@ export function groupForSidebar(list: ConversationSummary[]): SidebarGroups {
 // ─── Mentions ────────────────────────────────────────────────────────────────
 
 export interface MentionCandidate {
-  kind: 'user' | 'agent' | 'special'
+  kind: 'user' | 'agent' | 'group' | 'special'
   display: string
   token: string
   subtitle?: string | null
@@ -237,11 +237,17 @@ export function mentionCandidates(mentionables: Mentionables | null, meId: strin
   const people = mentionables.people
     .filter((p) => p.id !== meId)
     .map<MentionCandidate>((p) => ({ kind: 'user', display: p.name, token: `<@u:${p.id}>`, subtitle: p.email }))
+  const groups = (mentionables.groups ?? []).map<MentionCandidate>((g) => ({
+    kind: 'group',
+    display: g.handle,
+    token: `<@g:${g.id}>`,
+    subtitle: `${g.name} · ${g.memberIds.length} ${g.memberIds.length === 1 ? 'person' : 'people'}`,
+  }))
   const special: MentionCandidate[] = [
     { kind: 'special', display: 'here', token: '<!here>', subtitle: 'Notify everyone online' },
     { kind: 'special', display: 'channel', token: '<!channel>', subtitle: 'Notify everyone in this channel' },
   ]
-  return [...agents, ...people, ...special]
+  return [...agents, ...people, ...groups, ...special]
 }
 
 /** The `@query` being typed at the cursor, if any. */
@@ -290,12 +296,14 @@ export interface MentionNames {
   users: Map<string, string>
   agents: Map<string, string>
   conversations?: Map<string, string>
+  groups?: Map<string, string>
 }
 
 export function mentionNames(mentionables: Mentionables | null): MentionNames {
   return {
     users: new Map((mentionables?.people ?? []).map((p) => [p.id, p.name])),
     agents: new Map((mentionables?.agents ?? []).map((a) => [a.key, a.name])),
+    groups: new Map((mentionables?.groups ?? []).map((g) => [g.id, g.handle])),
   }
 }
 
@@ -306,6 +314,7 @@ export function renderMentions(text: string, names: MentionNames): string {
     .replace(/<@a:(ws|p:[^>]+)>/g, (_m, key) => `**@${names.agents.get(key) ?? 'agent'}**`)
     .replace(/<!(here|channel)>/g, (_m, which) => `**@${which}**`)
     .replace(/<#c:([^>]+)>/g, (_m, id) => `**#${names.conversations?.get(id) ?? 'channel'}**`)
+    .replace(/<@g:([^>]+)>/g, (_m, id) => `**@${names.groups?.get(id) ?? 'group'}**`)
 }
 
 /** Plain-text preview for notifications/sidebars. */

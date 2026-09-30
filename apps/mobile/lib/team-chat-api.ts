@@ -113,6 +113,31 @@ export interface Mentionables {
   people: Array<{ id: string; name: string; email: string; image: string | null; role: string }>
   agents: Array<{ key: string; projectId: string | null; name: string; description: string | null; image: string | null }>
   statuses?: Record<string, UserStatus>
+  groups?: UserGroup[]
+}
+
+export interface UserGroup {
+  id: string
+  handle: string
+  name: string
+  description: string | null
+  createdById: string
+  memberIds: string[]
+}
+
+export interface CustomEmoji {
+  id: string
+  name: string
+  url: string
+  createdById: string
+}
+
+export interface LinkUnfurl {
+  url: string
+  title: string
+  description: string | null
+  image: string | null
+  siteName: string | null
 }
 
 export type NotifyLevel = 'all' | 'mentions' | 'none'
@@ -232,6 +257,8 @@ export type TeamChatEvent =
   | { type: 'saved.changed'; messageId: string; saved: boolean }
   | { type: 'draft.changed'; draft: Draft }
   | { type: 'scheduled.failed'; id: string; error: string | null }
+  | { type: 'groups.changed' }
+  | { type: 'emoji.changed' }
 
 export const mentionToken = {
   user: (id: string) => `<@u:${id}>`,
@@ -344,6 +371,40 @@ export function teamChatApi() {
     async updateReminder(id: string, patch: { status?: 'done' | 'cancelled'; remindAt?: string }): Promise<Reminder> {
       return (await http.patch<{ reminder: Reminder }>(`/api/reminders/${encodeURIComponent(id)}`, patch)).data.reminder
     },
+    async groups(workspaceId: string): Promise<UserGroup[]> {
+      return (await http.get<{ groups: UserGroup[] }>(`${ws(workspaceId)}/user-groups`)).data.groups ?? []
+    },
+    async createGroup(workspaceId: string, input: { handle: string; name?: string; description?: string; memberIds?: string[] }) {
+      return (await http.post<{ group: UserGroup }>(`${ws(workspaceId)}/user-groups`, input)).data.group
+    },
+    async updateGroup(id: string, patch: { handle?: string; name?: string; description?: string | null; memberIds?: string[] }) {
+      return (await http.patch<{ group: UserGroup }>(`/api/user-groups/${encodeURIComponent(id)}`, patch)).data.group
+    },
+    async deleteGroup(id: string) {
+      await http.delete(`/api/user-groups/${encodeURIComponent(id)}`)
+    },
+    async emoji(workspaceId: string): Promise<CustomEmoji[]> {
+      return (await http.get<{ emoji: CustomEmoji[] }>(`${ws(workspaceId)}/emoji`)).data.emoji ?? []
+    },
+    async uploadEmoji(workspaceId: string, name: string, file: File | { uri: string; name: string; type: string }): Promise<CustomEmoji> {
+      const form = new FormData()
+      form.append('name', name)
+      form.append('file', file as any)
+      const res = await fetch(`${API_URL}${ws(workspaceId)}/emoji`, {
+        method: 'POST',
+        body: form,
+        credentials: Platform.OS === 'web' ? 'include' : 'omit',
+        headers: nativeCookieHeader(),
+      })
+      if (!res.ok) {
+        const body = await res.json().catch(() => null)
+        throw new Error(body?.error?.message ?? `Upload failed (${res.status})`)
+      }
+      return (await res.json()).emoji
+    },
+    async deleteEmoji(id: string) {
+      await http.delete(`/api/custom-emoji/${encodeURIComponent(id)}`)
+    },
     async mentionables(workspaceId: string): Promise<Mentionables> {
       return (await http.get<Mentionables>(`${ws(workspaceId)}/mentionables`)).data
     },
@@ -422,6 +483,11 @@ export function teamChatApi() {
       return (await res.json()).attachment
     },
   }
+}
+
+/** Server file links are root-relative; resolve them against the API origin. */
+export function absoluteApiUrl(url: string): string {
+  return url.startsWith('/') && API_URL ? `${API_URL}${url}` : url
 }
 
 export function nativeCookieHeader(): Record<string, string> {

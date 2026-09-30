@@ -54,7 +54,9 @@ import { getPresence } from '../services/conversation-presence'
 import { getChannelMetrics } from '../services/conversation-metrics'
 import { searchMessages } from '../services/conversation-search'
 import { registerConversationNotifications } from '../services/conversation-notifications'
+import { registerConversationUnfurls } from '../services/conversation-unfurl'
 import { listStatuses } from '../services/chat-settings'
+import { listGroups } from '../services/chat-customization'
 import { mountConversationExtras } from './conversation-extras'
 import type { ConversationSocketData } from '../realtime/conversation-socket'
 
@@ -91,6 +93,7 @@ function numberParam(value: string | undefined): number | undefined {
 export function conversationRoutes(config: ConversationRoutesConfig): Hono {
   const router = new Hono()
   registerConversationNotifications()
+  registerConversationUnfurls()
 
   async function requireUser(c: any): Promise<string | Response> {
     const userId = await config.resolveUserId(c)
@@ -156,8 +159,12 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
   router.get('/workspaces/:workspaceId/mentionables', async (c) => {
     const auth = await requireWorkspace(c)
     if (auth instanceof Response) return auth
-    const [mentionables, statuses] = await Promise.all([listMentionables(auth.workspaceId), listStatuses(auth.workspaceId)])
-    return c.json({ ...mentionables, statuses })
+    const [mentionables, statuses, groups] = await Promise.all([
+      listMentionables(auth.workspaceId),
+      listStatuses(auth.workspaceId),
+      listGroups(auth.workspaceId),
+    ])
+    return c.json({ ...mentionables, statuses, groups })
   })
 
   router.get('/workspaces/:workspaceId/presence', async (c) => {

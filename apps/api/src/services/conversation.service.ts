@@ -742,6 +742,24 @@ export interface PostMessageResult {
   duplicate: boolean
 }
 
+/** Add a user mention for each member of every mentioned group (members get notified as if mentioned). */
+export async function expandGroupMentions(workspaceId: string, mentions: ParsedMention[]): Promise<ParsedMention[]> {
+  const groupIds = mentions.flatMap((m) => (m.targetType === 'group' ? [m.groupId] : []))
+  if (!groupIds.length) return mentions
+  const members = await db.userGroupMember.findMany({
+    where: { groupId: { in: groupIds }, group: { workspaceId } },
+    select: { userId: true },
+  })
+  const seen = new Set(mentions.flatMap((m) => (m.targetType === 'user' ? [m.userId] : [])))
+  const extra: ParsedMention[] = []
+  for (const { userId } of members) {
+    if (seen.has(userId)) continue
+    seen.add(userId)
+    extra.push({ targetType: 'user', userId })
+  }
+  return [...mentions, ...extra]
+}
+
 export async function postMessage(input: PostMessageInput): Promise<PostMessageResult> {
   const text = (input.text ?? '').toString()
   const attachmentIds = (input.attachmentIds ?? []).filter((id) => typeof id === 'string')
@@ -789,7 +807,7 @@ export async function postMessage(input: PostMessageInput): Promise<PostMessageR
     data: { lastSeq: { increment: 1 }, lastMessageAt: now },
     select: { lastSeq: true },
   })
-  const mentions = input.authorType === 'system' ? [] : parseMentions(text)
+  const mentions = input.authorType === 'system' ? [] : await expandGroupMentions(conversation.workspaceId, parseMentions(text))
 
   const row = await db.conversationMessage.create({
     data: {
@@ -875,7 +893,7 @@ export async function editMessage(messageId: string, userId: string, text: strin
   if (!next.trim()) throw new ConversationError(400, 'empty', 'Message is empty')
   if (next.length > MAX_MESSAGE_CHARS) throw new ConversationError(400, 'too_long', 'Message is too long')
   await db.conversationMention.deleteMany({ where: { messageId } })
-  const mentions = parseMentions(next)
+  const mentions = await expandGroupMentions(row.workspaceId, parseMentions(next))
   if (mentions.length) {
     for (const m of mentions) {
       await db.conversationMention.create({

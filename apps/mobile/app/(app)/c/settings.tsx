@@ -11,6 +11,9 @@ import { cn } from '@shogo/shared-ui/primitives'
 import { useActiveWorkspace } from '../../../hooks/useActiveWorkspace'
 import { useWorkspaceExperience } from '../../../hooks/useWorkspaceExperience'
 import { useChatSettings } from '../../../hooks/useChatPrefs'
+import { useMentionables } from '../../../hooks/useTeamChat'
+import { useCustomEmojiFeed } from '../../../hooks/useCustomEmoji'
+import { CustomEmojiCard, UserGroupsCard } from '../../../components/team-chat/WorkspaceChatAdmin'
 import type { NotifyLevel } from '../../../lib/team-chat-api'
 import { expiryFrom, type ClearAfter } from '../../../lib/team-chat-state'
 
@@ -103,6 +106,8 @@ export default function TeamChatSettings() {
   const [quietStart, setQuietStart] = useState('22:00')
   const [quietEnd, setQuietEnd] = useState('08:00')
   const [perm, requestPerm] = useDesktopPermission()
+  const mentionables = useMentionables(workspaceId)
+  useCustomEmojiFeed(workspaceId)
 
   useEffect(() => {
     if (!settings) return
@@ -293,6 +298,19 @@ export default function TeamChatSettings() {
             <Text className="flex-1 text-sm text-foreground">Send me a daily digest of unread mentions and DMs at 9am</Text>
           </View>
         </Card>
+
+        {workspaceId ? (
+          <>
+            <Text className="mt-10 text-lg font-semibold text-foreground">Workspace</Text>
+            <Text className="text-xs text-muted-foreground">Shared with everyone in {workspace?.name ?? 'this workspace'}.</Text>
+            <Card title="User groups">
+              <UserGroupsCard workspaceId={workspaceId} mentionables={mentionables} />
+            </Card>
+            <Card title="Custom emoji">
+              <CustomEmojiCard workspaceId={workspaceId} />
+            </Card>
+          </>
+        ) : null}
 
         {Platform.OS === 'web' ? (
           <Card title="Desktop notifications">

@@ -10,7 +10,7 @@
 import { prisma } from '../lib/prisma'
 import { publishConversationEvent } from '../lib/conversation-bus'
 import { sendPushToUser } from '../lib/push-notifications'
-import { collectMentionIds, renderMentionsAsText } from './conversation-mentions'
+import { collectMentionIds, groupNames, renderMentionsAsText } from './conversation-mentions'
 import { registerAfterPostHook } from './conversation-pipeline'
 import {
   agentDisplayName, getWorkspaceRole, isOpenKind, onReactionAdded,
@@ -157,6 +157,7 @@ async function describe(result: PostMessageResult) {
   const text = renderMentionsAsText(row.text ?? '', {
     users: new Map(users.map((u: any) => [u.id, u.name || u.email])),
     projects: new Map(projects.map((p: any) => [p.id, p.name])),
+    groups: await groupNames(db, conversation.workspaceId, ids.groupIds),
     workspaceAgentName: await agentDisplayName(conversation.workspaceId, null),
   }).replace(/\s+/g, ' ').trim()
   const attachments = row.attachments?.length ? `📎 ${row.attachments.length} file${row.attachments.length > 1 ? 's' : ''}` : ''

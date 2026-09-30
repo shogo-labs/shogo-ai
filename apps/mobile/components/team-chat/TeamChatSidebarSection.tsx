@@ -16,6 +16,7 @@ import { conversationTitle, type ConversationSummary } from '../../lib/team-chat
 import { useConversationList, useMentionables, useMyUserId, invalidateConversationList } from '../../hooks/useTeamChat'
 import { useInboxFeed, useInboxUnread, useStatusFeed } from '../../hooks/useChatPrefs'
 import { useDraftsFeed, useHasDraft, useSavedFeed } from '../../hooks/useChatItems'
+import { useCustomEmojiFeed } from '../../hooks/useCustomEmoji'
 import { NewConversationModal, type NewConversationMode } from './NewConversationModal'
 import { NavItem } from '../layout/sidebar/NavItem'
 
@@ -54,6 +55,7 @@ export function TeamChatSidebarSection({ workspaceId, collapsed, onNavPress }: T
   useInboxFeed(workspaceId)
   useSavedFeed(workspaceId)
   useDraftsFeed(workspaceId)
+  useCustomEmojiFeed(workspaceId)
   const inboxUnread = useInboxUnread(workspaceId)
   const comfortable = usePhoneLayout()
   const density = densityFor(comfortable)

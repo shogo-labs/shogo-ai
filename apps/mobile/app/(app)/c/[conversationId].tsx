@@ -19,6 +19,7 @@ import {
 } from '../../../hooks/useTeamChat'
 import { useStatusFeed } from '../../../hooks/useChatPrefs'
 import { useDraftsFeed, useSavedFeed } from '../../../hooks/useChatItems'
+import { useCustomEmojiFeed } from '../../../hooks/useCustomEmoji'
 import { ConversationHeader } from '../../../components/team-chat/ConversationHeader'
 import { TimelinePane } from '../../../components/team-chat/TimelinePane'
 
@@ -48,6 +49,7 @@ export default function ConversationScreen() {
   useStatusFeed(workspaceId)
   useSavedFeed(workspaceId)
   useDraftsFeed(workspaceId)
+  useCustomEmojiFeed(workspaceId)
 
   useEffect(() => {
     if (workspaceId && threadRootId) void api.markInboxRead(workspaceId, { threadRootId }).catch(() => {})
