@@ -85,6 +85,26 @@ describe('LiveTranscriber', () => {
     expect(summary.seconds).toBeCloseTo(9.5, 1)
   })
 
+  test('finish sends every buffered sample, not just up to the quietest point', async () => {
+    let posted = 0
+    let postedSeconds = 0
+    const live = new LiveTranscriber(async (chunk) => {
+      posted++
+      postedSeconds += (chunk.wav.length - 44) / 2 / 16000
+      return { ok: true, status: 200 }
+    })
+    // Below the target, so nothing is cut until finish.
+    live.feedMic(bytes(tone(7)))
+    const summary = await live.finish()
+    expect(posted).toBe(1)
+    expect(summary).toEqual({ complete: true, chunks: 1, seconds: 7 })
+    expect(postedSeconds).toBeCloseTo(7, 3)
+
+    expect(pickCutIndex(tone(7), true)).toBe(7 * LIVE_SOURCE_RATE)
+    expect(pickCutIndex(tone(12), true)).toBe(12 * LIVE_SOURCE_RATE)
+    expect(pickCutIndex(tone(15), true)).toBeLessThanOrEqual(12 * LIVE_SOURCE_RATE)
+  })
+
   test('a failed chunk or a stalled server means incomplete', async () => {
     let n = 0
     const flaky = new LiveTranscriber(async () => ({ ok: n++ > 0, status: n === 1 ? 500 : 200 }))

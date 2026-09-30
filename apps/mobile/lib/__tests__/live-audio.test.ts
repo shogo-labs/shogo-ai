@@ -22,8 +22,11 @@ describe('live-audio', () => {
     expect(cut / RATE).toBeLessThan(7.6)
   })
 
-  test('a forced cut flushes a short tail whole', () => {
+  test('a forced cut flushes a tail whole up to one chunk', () => {
     expect(pickCutIndex(tone(2), RATE, true)).toBe(2 * RATE)
+    expect(pickCutIndex(tone(7), RATE, true)).toBe(7 * RATE)
+    expect(pickCutIndex(tone(12), RATE, true)).toBe(12 * RATE)
+    expect(pickCutIndex(tone(15), RATE, true)).toBeLessThanOrEqual(12 * RATE)
   })
 
   test('resamples to 16 kHz and encodes a playable WAV', () => {
@@ -79,6 +82,21 @@ describe('startLiveCapture', () => {
     const summary = await capture.stop()
     expect(seqs).toEqual([0, 1])
     expect(summary).toEqual({ complete: true, chunks: 2, seconds: 9.5 })
+  })
+
+  test.each([
+    [7, 1],
+    [15, 2],
+  ])('stop sends every buffered sample (%d s fed)', async (tailSeconds, tailChunks) => {
+    const audio = fakeAudio()
+    const chunks: { start: number; seq: number }[] = []
+    const capture = startLiveCapture({} as MediaStream, async (chunk) => {
+      chunks.push({ start: chunk.start, seq: chunk.seq })
+    })!
+    audio.feed(tone(tailSeconds))
+    const summary = await capture.stop()
+    expect(summary).toEqual({ complete: true, chunks: tailChunks, seconds: tailSeconds })
+    expect(chunks.map((c) => c.seq)).toEqual(Array.from({ length: tailChunks }, (_, i) => i))
   })
 
   test('a rejected chunk, a discard or a timeout is incomplete', async () => {
