@@ -36,16 +36,37 @@ mock.module('react-native', () =>
 mock.module('@shogo/shared-ui/primitives', () => ({ cn: (...a: unknown[]) => a.filter(Boolean).join(' ') }))
 mock.module('lucide-react-native', () => {
   const Icon = () => createElement('span')
-  const names = ['AlertCircle', 'Bot', 'CornerDownRight', 'FileText', 'Loader2', 'MessageSquare', 'Pencil', 'SmilePlus', 'Square', 'Trash2', 'Paperclip', 'SendHorizontal', 'User', 'Users', 'X']
+  const names = ['AlarmClock', 'AlertCircle', 'Bookmark', 'Bot', 'Clock', 'CornerDownRight', 'FileText', 'Loader2', 'MessageSquare', 'Paperclip', 'Pencil', 'Pin', 'SendHorizontal', 'Smile', 'SmilePlus', 'Square', 'Trash2', 'User', 'Users', 'X']
   return Object.fromEntries(names.map((n) => [n, Icon]))
 })
 mock.module('../../chat/MarkdownText', () => ({ MarkdownText: ({ children }: any) => createElement('p', null, children) }))
 mock.module('../../../lib/team-chat-connection', () => ({
+  useTeamChatEvents: () => 'closed',
   sendTyping: (_ws: string, conversationId: string) => sentTyping.push(conversationId),
 }))
 mock.module('../../../lib/team-chat-api', () => ({
+  absoluteApiUrl: (url: string) => url,
+  newClientMsgId: () => 'client-msg-1',
   teamChatApi: () => ({ upload: async () => ({ id: 'att-1', name: 'a.txt', mimeType: 'text/plain', size: 1, width: null, height: null, url: '/f' }) }),
 }))
+mock.module('../../../hooks/useChatItems', () => ({
+  useDraft: () => ({ stored: '', save: () => {} }),
+  useIsSaved: () => false,
+  toggleSaved: async () => {},
+}))
+mock.module('../../../hooks/useChatPrefs', () => ({
+  useUserStatus: () => null,
+}))
+mock.module('../../../hooks/useCustomEmoji', () => ({
+  useCustomEmoji: () => new Map(),
+  customEmojiFor: () => null,
+  jumboEmojiCodes: () => null,
+}))
+mock.module('../../../hooks/useChatShortcuts', () => ({
+  useEditRequest: () => {},
+}))
+mock.module('../../../hooks/useTeamChat', () => ({}))
+mock.module('expo-router', () => ({}))
 
 const { Composer } = await import('../Composer')
 const { MessageRow } = await import('../MessageRow')

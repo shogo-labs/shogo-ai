@@ -32,6 +32,7 @@ const Icon = forwardRef(function LucideIcon(
 
 export {
   Icon as Activity,
+  Icon as AlarmClock,
   Icon as AlertCircle,
   Icon as AlertTriangle,
   Icon as AppWindow,
@@ -249,6 +250,8 @@ export {
   Icon as SlidersHorizontal,
   Icon as Smartphone,
   Icon as Sparkles,
+  Icon as Smile,
+  Icon as SmilePlus,
   Icon as Square,
   Icon as SquareSplitHorizontal,
   Icon as SquareSplitVertical,

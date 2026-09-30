@@ -27,6 +27,13 @@ import { cleanup } from '@testing-library/react'
 import { reactNativeMockBase } from './react-native-mock'
 
 mock.module('react-native', () => reactNativeMockBase)
+mock.module(require.resolve('react-native'), () => reactNativeMockBase)
+mock.module('react-native/Libraries/Utilities/codegenNativeComponent', () => ({
+  default: () => reactNativeMockBase.View,
+}))
+mock.module('react-native/Libraries/Utilities/codegenNativeCommands', () => ({
+  default: () => ({}),
+}))
 // The gesture-handler package imports React Native's native renderer at module
 // load time. These tests run under happy-dom, so passthrough host views cover
 // the gesture wrapper surface without evaluating native code.
