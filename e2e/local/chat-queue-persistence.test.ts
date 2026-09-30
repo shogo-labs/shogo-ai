@@ -4,7 +4,6 @@
 import {
   test,
   expect,
-  type APIRequestContext,
   type Page,
   type Route,
 } from "@playwright/test"
@@ -47,13 +46,14 @@ async function waitForIdle(page: Page) {
   }).catch(() => {})
 }
 
-async function openProject(page: Page, api: APIRequestContext) {
+async function openProject(page: Page) {
   await page.goto("/")
   await page.getByRole("link", { name: "Chat", exact: true }).waitFor({
     state: "visible",
     timeout: 20_000,
   })
-  const listed = await api.get(`${API_BASE_URL}/api/projects?limit=1`)
+  // Share the browser's local auto-sign-in cookie with API setup requests.
+  const listed = await page.request.get(`${API_BASE_URL}/api/projects?limit=1`)
   if (!listed.ok()) throw new Error(`Unable to list local projects: ${listed.status()}`)
   const listedPayload = (await listed.json()) as {
     items?: Array<{ id: string }>
@@ -61,7 +61,7 @@ async function openProject(page: Page, api: APIRequestContext) {
   let project = listedPayload.items?.[0]
 
   if (!project) {
-    const workspacesResponse = await api.get(
+    const workspacesResponse = await page.request.get(
       `${API_BASE_URL}/api/workspaces?limit=1`,
     )
     if (!workspacesResponse.ok()) {
@@ -73,7 +73,7 @@ async function openProject(page: Page, api: APIRequestContext) {
     const workspace = workspacesPayload.items?.[0]
     if (!workspace) throw new Error("No local workspace is available for the queue E2E")
 
-    const created = await api.post(`${API_BASE_URL}/api/projects`, {
+    const created = await page.request.post(`${API_BASE_URL}/api/projects`, {
       data: {
         name: `Chat queue E2E ${Date.now()}`,
         description: "Chat queue E2E fixture",
@@ -99,7 +99,7 @@ async function openProject(page: Page, api: APIRequestContext) {
 }
 
 test.describe("server-backed chat queue — local UI", () => {
-  test("keeps a queued prompt after reload and supports reorder/delete", async ({ page, request }) => {
+  test("keeps a queued prompt after reload and supports reorder/delete", async ({ page }) => {
     const queueRows: Array<Record<string, unknown>> = []
     let nextId = 0
     let holdNextChat = false
@@ -193,7 +193,7 @@ test.describe("server-backed chat queue — local UI", () => {
       await route.continue()
     })
 
-    await openProject(page, request)
+    await openProject(page)
 
     mockChatRequests = true
     holdNextChat = true
