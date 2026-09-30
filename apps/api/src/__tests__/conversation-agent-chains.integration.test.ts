@@ -66,7 +66,6 @@ beforeEach(() => {
   invocations = []
   scripts = {}
   agentAuth = { projectId: null }
-  delete process.env.SHOGO_AGENT_MENTION_CHAINS
   dispatcher._resetDispatcherForTests()
   dispatcher.configureConversationAgentDispatcher({
     invoke: async (args) => {
@@ -283,15 +282,6 @@ describe('chain limits', () => {
     expect(invocations).toHaveLength(1)
   })
 
-  test('agent-to-agent dispatch can be switched off', async () => {
-    process.env.SHOGO_AGENT_MENTION_CHAINS = 'false'
-    const id = await channel('flag-off')
-    scripts[analyst] = () => `${tag(planner)} over to you`
-    const root = await post(seed.member, id, `${tag(analyst)} go`)
-    await doneReply(root, analyst)
-    await settle()
-    expect(invocations.map((i) => i.projectId)).toEqual([analyst])
-  })
 })
 
 describe('scope', () => {

@@ -72,9 +72,7 @@ tracker comment to merged PR.
    human message), and `SHOGO_AGENT_CHAIN_MAX_PING_PONG` (4 alternating
    replies between two agents). Hitting one posts a paused note tagging the
    person who started the run; their reply resets the counters. Every
-   hand-off is billed to that person. `SHOGO_AGENT_MENTION_CHAINS` turns
-   agent-to-agent dispatch on or off (on by default in local mode and
-   non-production environments).
+   hand-off is billed to that person.
 6. **Task source is an adapter.** `TaskSource` = `{ list, get, comment,
    transition }` with Jira (Composio), GitHub Issues (`gh`), and built-in
    (Prisma table in the intake project) implementations. Nothing downstream

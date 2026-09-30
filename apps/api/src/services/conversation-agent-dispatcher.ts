@@ -34,7 +34,6 @@ import {
 import type { IRuntimeManager } from '../lib/runtime'
 import { tryAcquireSharedSlot } from '../lib/chat-limits'
 import {
-  agentMentionChainsEnabled,
   agentTurnsSinceHuman,
   chainLimitHit,
   envInt,
@@ -232,7 +231,7 @@ function replyThreadRoot(conversation: any, trigger: any): string | null {
  */
 export async function dispatchAgentsFromAgentMessage(result: Pick<PostMessageResult, 'row' | 'conversation' | 'duplicate'>): Promise<AgentTarget[]> {
   const { row, conversation } = result
-  if (result.duplicate || row.authorType !== 'agent' || !agentMentionChainsEnabled()) return []
+  if (result.duplicate || row.authorType !== 'agent') return []
   const chain = readChain(row.agentChain)
   if (!chain?.originUserId || !mentionedAgents(row.text).length) return []
   const targets = await selectAgentTargets(result, { fromAgent: true })

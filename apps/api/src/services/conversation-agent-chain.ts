@@ -42,18 +42,6 @@ export interface AgentChain {
 
 export type ChainLimit = 'depth' | 'thread_turns' | 'ping_pong'
 
-/**
- * Agent-to-agent dispatch rollout flag. Defaults on everywhere except
- * production, where it stays off until explicitly enabled.
- */
-export function agentMentionChainsEnabled(): boolean {
-  const flag = process.env.SHOGO_AGENT_MENTION_CHAINS?.trim().toLowerCase()
-  if (flag) return flag === 'true' || flag === '1' || flag === 'on'
-  if (process.env.SHOGO_LOCAL_MODE === 'true') return true
-  const env = (process.env.SHOGO_ENV || process.env.APP_ENV || process.env.NODE_ENV || '').toLowerCase()
-  return env !== 'production' && env !== 'prod'
-}
-
 export function readChain(value: unknown): AgentChain | null {
   let raw = value
   if (typeof raw === 'string') {

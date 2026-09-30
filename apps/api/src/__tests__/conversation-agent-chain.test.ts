@@ -1,12 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
-import { afterEach, describe, expect, test } from 'bun:test'
+import { describe, expect, test } from 'bun:test'
 import { mkdtempSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import {
-  agentMentionChainsEnabled,
   chainLimitHit,
   humanChain,
   MAX_AGENT_CHAIN_DEPTH,
@@ -78,37 +77,6 @@ describe('chain limits', () => {
     expect(readChain('not json')).toBeNull()
     expect(readChain({ depth: 1 })).toBeNull()
     expect(readChain(null)).toBeNull()
-  })
-})
-
-describe('rollout flag', () => {
-  const saved = { ...process.env }
-  afterEach(() => {
-    for (const key of ['SHOGO_AGENT_MENTION_CHAINS', 'SHOGO_LOCAL_MODE', 'SHOGO_ENV', 'APP_ENV', 'NODE_ENV']) {
-      if (saved[key] === undefined) delete process.env[key]
-      else process.env[key] = saved[key]
-    }
-  })
-
-  test('on outside production, off in production unless enabled, explicit value wins', () => {
-    delete process.env.SHOGO_AGENT_MENTION_CHAINS
-    delete process.env.SHOGO_LOCAL_MODE
-    delete process.env.SHOGO_ENV
-    delete process.env.APP_ENV
-    process.env.NODE_ENV = 'development'
-    expect(agentMentionChainsEnabled()).toBe(true)
-    process.env.NODE_ENV = 'production'
-    expect(agentMentionChainsEnabled()).toBe(false)
-    process.env.SHOGO_ENV = 'staging'
-    expect(agentMentionChainsEnabled()).toBe(true)
-    delete process.env.SHOGO_ENV
-    process.env.SHOGO_LOCAL_MODE = 'true'
-    expect(agentMentionChainsEnabled()).toBe(true)
-    process.env.SHOGO_AGENT_MENTION_CHAINS = 'false'
-    expect(agentMentionChainsEnabled()).toBe(false)
-    delete process.env.SHOGO_LOCAL_MODE
-    process.env.SHOGO_AGENT_MENTION_CHAINS = 'true'
-    expect(agentMentionChainsEnabled()).toBe(true)
   })
 })
 
