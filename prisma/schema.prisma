@@ -3763,6 +3763,9 @@ model Conversation {
   members     ConversationMember[]
   messages    ConversationMessage[]
   attachments ConversationAttachment[]
+  pins              ConversationPin[]
+  drafts            ConversationDraft[]
+  scheduledMessages ScheduledMessage[]
 
   @@unique([workspaceId, slug])
   @@unique([workspaceId, dmKey])
@@ -3782,7 +3785,7 @@ model ConversationMember {
   role           String                 @default("member")
   lastReadSeq    Int                    @default(0)
   lastReadAt     DateTime?
-  notifyLevel    String                 @default("all")
+  notifyLevel    String                 @default("default")
   muted          Boolean                @default(false)
   starred        Boolean                @default(false)
   /// When an agent member replies: "mention", "keyword", or "all".
@@ -3834,6 +3837,9 @@ model ConversationMessage {
   mentions     ConversationMention[]
   reactions    ConversationReaction[]
   attachments  ConversationAttachment[]
+  pin          ConversationPin?
+  savedBy      SavedMessage[]
+  embedding    ConversationMessageEmbedding?
 
   @@unique([conversationId, seq])
   @@unique([conversationId, clientMsgId])
@@ -3888,6 +3894,7 @@ model ConversationAttachment {
   size           Int
   width          Int?
   height         Int?
+  extractedText  String?   @db.Text
   createdAt      DateTime  @default(now())
 
   conversation Conversation         @relation(fields: [conversationId], references: [id], onDelete: Cascade)
@@ -3896,4 +3903,194 @@ model ConversationAttachment {
   @@index([conversationId])
   @@index([messageId])
   @@map("conversation_attachments")
+}
+
+/// Per-workspace chat settings: custom status, Do Not Disturb, and notification defaults.
+model ChatUserSettings {
+  id              String    @id @default(uuid())
+  workspaceId     String
+  userId          String
+  statusEmoji     String?
+  statusText      String?
+  statusExpiresAt DateTime?
+  dndUntil        DateTime?
+  /// Daily quiet hours in `timezone`, as "HH:MM-HH:MM".
+  quietHours      String?
+  timezone        String?
+  /// Channel default when a membership's notifyLevel is "default": "all", "mentions", or "none".
+  notifyDefault   String    @default("mentions")
+  /// Comma-separated words that notify like a mention.
+  keywords        String?
+  /// "off" or "daily": email a digest of unread mentions and DMs.
+  emailDigest     String    @default("off")
+  lastDigestAt    DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@unique([workspaceId, userId])
+  @@index([emailDigest])
+  @@map("chat_user_settings")
+}
+
+model ConversationPin {
+  id             String   @id @default(uuid())
+  conversationId String
+  messageId      String   @unique
+  pinnedById     String
+  createdAt      DateTime @default(now())
+
+  conversation Conversation        @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  message      ConversationMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId, createdAt])
+  @@map("conversation_pins")
+}
+
+model SavedMessage {
+  id        String   @id @default(uuid())
+  userId    String
+  messageId String
+  createdAt DateTime @default(now())
+
+  message ConversationMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, messageId])
+  @@index([userId, createdAt])
+  @@map("saved_messages")
+}
+
+/// Unsent composer text, synced across devices. `threadRootId` is "" for the channel composer.
+model ConversationDraft {
+  id             String   @id @default(uuid())
+  userId         String
+  conversationId String
+  threadRootId   String   @default("")
+  text           String
+  updatedAt      DateTime @updatedAt
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, conversationId, threadRootId])
+  @@index([userId, updatedAt])
+  @@map("conversation_drafts")
+}
+
+model ScheduledMessage {
+  id                String    @id @default(uuid())
+  workspaceId       String
+  conversationId    String
+  userId            String
+  threadRootId      String?
+  alsoSentToChannel Boolean   @default(false)
+  text              String
+  sendAt            DateTime
+  /// pending | sent | cancelled | failed
+  status            String    @default("pending")
+  sentMessageId     String?
+  error             String?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([status, sendAt])
+  @@index([userId, status])
+  @@map("scheduled_messages")
+}
+
+model ChatReminder {
+  id             String    @id @default(uuid())
+  workspaceId    String
+  userId         String
+  text           String
+  remindAt       DateTime
+  messageId      String?
+  conversationId String?
+  /// pending | fired | done | cancelled
+  status         String    @default("pending")
+  firedAt        DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@index([status, remindAt])
+  @@index([userId, status])
+  @@map("chat_reminders")
+}
+
+/// Activity addressed to one person: mentions, thread replies, reactions, reminders.
+model ChatInboxItem {
+  id             String    @id @default(uuid())
+  workspaceId    String
+  userId         String
+  /// mention | dm | thread | reaction | reminder | keyword | broadcast | message
+  kind           String
+  conversationId String?
+  messageId      String?
+  actorUserId    String?
+  title          String
+  preview        String
+  readAt         DateTime?
+  createdAt      DateTime  @default(now())
+
+  @@index([userId, workspaceId, createdAt])
+  @@index([userId, readAt])
+  @@index([messageId])
+  @@map("chat_inbox_items")
+}
+
+model CustomEmoji {
+  id          String   @id @default(uuid())
+  workspaceId String
+  name        String
+  storageKey  String
+  mimeType    String
+  createdById String
+  createdAt   DateTime @default(now())
+
+  @@unique([workspaceId, name])
+  @@map("custom_emoji")
+}
+
+/// A mentionable set of people, e.g. @design.
+model UserGroup {
+  id          String   @id @default(uuid())
+  workspaceId String
+  handle      String
+  name        String
+  description String?
+  createdById String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  members UserGroupMember[]
+
+  @@unique([workspaceId, handle])
+  @@map("user_groups")
+}
+
+model UserGroupMember {
+  id        String   @id @default(uuid())
+  groupId   String
+  userId    String
+  createdAt DateTime @default(now())
+
+  group UserGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  @@unique([groupId, userId])
+  @@index([userId])
+  @@map("user_group_members")
+}
+
+model ConversationMessageEmbedding {
+  id          String   @id @default(uuid())
+  messageId   String   @unique
+  workspaceId String
+  model       String
+  embedding   Float[]
+  createdAt   DateTime @default(now())
+
+  message ConversationMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, createdAt])
+  @@map("conversation_message_embeddings")
 }

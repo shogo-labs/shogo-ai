@@ -41,6 +41,8 @@ const ARRAY_FIELDS = new Set([
   'aliases',
   // User granular admin permission scopes (String[] on PG, JSON String on SQLite)
   'adminScopes',
+  // ConversationMessageEmbedding vector (Float[] on PG, JSON String on SQLite)
+  'embedding',
 ])
 
 // Fields that are Json? in PostgreSQL but stored as String? in SQLite.

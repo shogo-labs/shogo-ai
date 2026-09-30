@@ -652,6 +652,46 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
       'seq comes from an atomic Conversation.lastSeq increment; every post path (/api/conversations/:id/messages, agent-channel internal routes, activity producers) runs in the workspace home region.',
   },
   {
+    key: 'ChatUserSettings.(userId,workspaceId)',
+    category: 'single_tenant_upsert',
+    reason: 'Per-user settings upsert under /api/workspaces/:workspaceId/chat-settings, routed to the workspace home region.',
+  },
+  {
+    key: 'ConversationDraft.(conversationId,threadRootId,userId)',
+    category: 'single_tenant_upsert',
+    reason: 'The owning user upserts their own draft per composer under /api/conversations/:id (home region).',
+  },
+  {
+    key: 'ConversationMessageEmbedding.messageId',
+    category: 'request_scoped',
+    reason: 'Written once per message by the embedding indexer in the region that posted it; create-or-ignore on conflict.',
+  },
+  {
+    key: 'ConversationPin.messageId',
+    category: 'single_tenant_upsert',
+    reason: 'Pin toggle under /api/conversation-messages/:id/pin (home region); create-or-ignore / delete on the same message.',
+  },
+  {
+    key: 'CustomEmoji.(name,workspaceId)',
+    category: 'request_scoped',
+    reason: 'Emoji upload under /api/workspaces/:workspaceId/emoji (home region) rejects a taken name.',
+  },
+  {
+    key: 'SavedMessage.(messageId,userId)',
+    category: 'single_tenant_upsert',
+    reason: 'Save toggle by the saving user only under /api/conversation-messages/:id/save; create-or-ignore / delete.',
+  },
+  {
+    key: 'UserGroup.(handle,workspaceId)',
+    category: 'request_scoped',
+    reason: 'Group create under /api/workspaces/:workspaceId/user-groups (home region) rejects a taken handle.',
+  },
+  {
+    key: 'UserGroupMember.(groupId,userId)',
+    category: 'single_tenant_upsert',
+    reason: 'Membership replace under /api/user-groups/:id (home region) is delete-then-create per (group,user).',
+  },
+  {
     key: 'ConversationMessage.(clientMsgId,conversationId)',
     category: 'random_secret',
     reason: 'Client-generated UUID idempotency key for sends; postMessage returns the existing row on repeat.',
