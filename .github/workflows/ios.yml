@@ -495,7 +495,11 @@ jobs:
             project_path = 'ios/Pods/Pods.xcodeproj'
             project = Xcodeproj::Project.open(project_path)
             target = project.targets.find { |candidate| candidate.name == 'fmt' }
-            abort('fmt CocoaPod target not found') unless target
+            unless target
+              # React Native 0.86+ ships fmt prebuilt in ReactNativeDependencies.
+              puts 'No fmt CocoaPod target; nothing to pin'
+              exit
+            end
 
             target.build_configurations.each do |config|
               config.build_settings['CLANG_CXX_LANGUAGE_STANDARD'] = 'c++17'

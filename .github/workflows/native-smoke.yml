@@ -219,7 +219,11 @@ jobs:
             require 'xcodeproj'
             project = Xcodeproj::Project.open('ios/Pods/Pods.xcodeproj')
             target = project.targets.find { |t| t.name == 'fmt' }
-            abort('fmt CocoaPod target not found') unless target
+            unless target
+              # React Native 0.86+ ships fmt prebuilt in ReactNativeDependencies.
+              puts 'No fmt CocoaPod target; nothing to pin'
+              exit
+            end
             target.build_configurations.each { |c| c.build_settings['CLANG_CXX_LANGUAGE_STANDARD'] = 'c++17' }
             project.save
             Dir.glob('ios/Pods/Target Support Files/fmt/fmt.*.xcconfig').each do |path|
