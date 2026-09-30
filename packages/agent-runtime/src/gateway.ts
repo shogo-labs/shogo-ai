@@ -29,7 +29,8 @@ import { loadAllSkills, migrateFromLegacySkills, matchSkill, buildSkillsPromptSe
 import { loadQuickActions, buildQuickActionsPromptSection, type QuickAction } from './quick-actions'
 import { SkillServerManager } from './skill-server-manager'
 import { setLoadedSkills } from './gateway-tools'
-import { runAgentLoop, classifyRetryability, type LoopDetectorConfig } from './agent-loop'
+import { runAgentLoop, classifyRetryability, RetryWaker, type LoopDetectorConfig } from './agent-loop'
+import { LONG_RETRY_MS, recordRetryEpisode, recordRetryLong, recordRetryNoProgress, recordRetryNow } from './retry-telemetry'
 import type { ToolContext } from './gateway-tools'
 import { createTools, textResult, filterDisabledCapabilityTools, filterSubagentOnlyTools, expectedCoreToolsForAgentMode, createModeUnavailableTool, type RestrictedMode } from './gateway-tools'
 import { PermissionEngine, parseSecurityPolicy } from './permission-engine'
@@ -2709,7 +2710,7 @@ export class AgentGateway {
     // deltas, then emit an explicit marker the client + the API-side
     // accumulator key on to reset (avoids concatenating the discarded partial
     // with the regenerated output).
-    const discardFailedStep = (retry: { attempt: number; maxAttempts: number; reason: string; delayMs: number }) => {
+    const discardFailedStep = (retry: { attempt: number; maxAttempts?: number; reason: string; delayMs: number }) => {
       // Drop any text the rewriter was holding from the failed attempt and
       // reset its scanner state so the regenerated output starts clean.
       linkRewriter = new LocalhostLinkRewriter(previewPublicUrl)
@@ -2730,6 +2731,10 @@ export class AgentGateway {
     // output, so the client's "retrying" banner clears as soon as the model
     // is producing again.
     let providerBackoffActive = false
+    // Telemetry flags, reset per retry episode.
+    let longRetryReported = false
+    let noProgressReported = false
+    const retryCtx = () => ({ sessionId, model: modelId, provider })
     const endProviderBackoff = () => {
       if (!providerBackoffActive) return
       providerBackoffActive = false
@@ -2754,6 +2759,8 @@ export class AgentGateway {
 
     const turnAbort = new AbortController()
     this.turnAbortControllers.set(sessionId, turnAbort)
+    const retryWaker = new RetryWaker()
+    this.retryWakers.set(sessionId, retryWaker)
 
     // Stream live process-list updates to the UI for the duration of this turn.
     // The registry persists across turns; this subscription is per-turn so it
@@ -3172,6 +3179,12 @@ export class AgentGateway {
           autoRouting ? undefined : this.config.model.thinkingLevel,
         ),
         signal: turnAbort.signal,
+        inferenceRetry: { waker: retryWaker },
+        onRetryEpisodeEnd: (summary) => {
+          longRetryReported = false
+          noProgressReported = false
+          recordRetryEpisode(retryCtx(), summary)
+        },
         extraHeaders,
         onContextOverflow: async () => {
           console.warn(`${this.logPrefix} Layer 5: Reactive compaction for session ${sessionId}`)
@@ -3279,11 +3292,16 @@ export class AgentGateway {
         // connection (and the buffer replay a reconnecting client resumes
         // into) alive instead of looking dead.
         onConnectivityWait: (info) => {
+          if (info.elapsedMs >= LONG_RETRY_MS && !longRetryReported) {
+            longRetryReported = true
+            recordRetryLong(retryCtx(), { layer: 'connectivity_park', reason: 'network', attempt: info.attempt, elapsedMs: info.elapsedMs })
+          }
           if (uiWriter) {
             uiWriter.write({
               type: 'data-connectivity-wait',
               data: {
                 state: 'waiting',
+                cause: 'offline',
                 attempt: info.attempt,
                 elapsedMs: info.elapsedMs,
                 nextProbeInMs: info.nextProbeInMs,
@@ -3317,11 +3335,29 @@ export class AgentGateway {
         onProviderBackoff: (info) => {
           discardFailedStep({
             attempt: info.attempt,
-            maxAttempts: 0,
             reason: info.reason,
             delayMs: info.delayMs,
           })
           providerBackoffActive = true
+          if (info.elapsedMs >= LONG_RETRY_MS && !longRetryReported) {
+            longRetryReported = true
+            recordRetryLong(retryCtx(), {
+              layer: 'provider_backoff',
+              reason: info.reason,
+              attempt: info.attempt,
+              elapsedMs: info.elapsedMs,
+              error: info.error,
+            })
+          }
+          if (info.suspectedDeterministic && !noProgressReported) {
+            noProgressReported = true
+            recordRetryNoProgress(retryCtx(), {
+              reason: info.reason,
+              attempt: info.attempt,
+              elapsedMs: info.elapsedMs,
+              error: info.error,
+            })
+          }
           if (uiWriter) {
             uiWriter.write({
               type: 'data-connectivity-wait',
@@ -3332,6 +3368,7 @@ export class AgentGateway {
                 attempt: info.attempt,
                 elapsedMs: info.elapsedMs,
                 nextProbeInMs: info.delayMs,
+                suspectedDeterministic: info.suspectedDeterministic,
               },
               transient: true,
             } as any)
@@ -3776,6 +3813,7 @@ export class AgentGateway {
       return `Sorry, I encountered an error processing your message. Please try again.`
     } finally {
       this.turnAbortControllers.delete(sessionId)
+      if (this.retryWakers.get(sessionId) === retryWaker) this.retryWakers.delete(sessionId)
       if (typingInterval) clearInterval(typingInterval)
       for (const timer of toolHeartbeatTimers.values()) {
         clearInterval(timer)
@@ -5383,6 +5421,20 @@ export class AgentGateway {
    *  turn's prompt is built before the abortee's last few messages settle.
    */
   private turnLocks = new Map<string, Promise<unknown>>()
+
+  /** Per-session waker for the active turn's retry backoff ("Retry now"). */
+  private retryWakers = new Map<string, RetryWaker>()
+
+  /**
+   * Cut the active turn's retry backoff short so the dropped model call is
+   * re-issued now. Returns false when no turn is running for the session.
+   */
+  wakeRetry(sessionId: string): boolean {
+    const waker = this.retryWakers.get(sessionId)
+    waker?.wake()
+    recordRetryNow({ sessionId, model: this.config.model.name }, !!waker)
+    return !!waker
+  }
 
   abortCurrentTurn(sessionId: string): boolean {
     // Release the lock so a new user message on this session can start

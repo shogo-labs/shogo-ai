@@ -13,7 +13,7 @@
 import { describe, test, expect, beforeEach, afterEach, beforeAll, afterAll } from 'bun:test'
 import { mkdirSync, writeFileSync, rmSync } from 'fs'
 import { join } from 'path'
-import { runAgentLoop } from '../agent-loop'
+import { runAgentLoop, RetryWaker } from '../agent-loop'
 import type { AgentLoopResult } from '../agent-loop'
 import { AgentGateway } from '../gateway'
 import type { Message, AssistantMessage, Usage } from '@mariozechner/pi-ai'
@@ -27,15 +27,15 @@ import { createAssistantMessageEventStream } from '@mariozechner/pi-ai'
 import { MockToolTracker } from './helpers/mock-tools'
 
 // These tests assert how a failed turn surfaces, so the provider backoff tier
-// (real timers, up to minutes) is off by default here; the Layer 8 tests
+// (real timers, unlimited by default) is off here; the Layer 8 tests
 // opt back in with an explicit budget and a fake clock.
-const originalProviderRetryMaxWait = process.env.SHOGO_PROVIDER_RETRY_MAX_WAIT_MS
+const originalProviderRetry = process.env.SHOGO_PROVIDER_RETRY
 beforeAll(() => {
-  process.env.SHOGO_PROVIDER_RETRY_MAX_WAIT_MS = '0'
+  process.env.SHOGO_PROVIDER_RETRY = 'off'
 })
 afterAll(() => {
-  if (originalProviderRetryMaxWait === undefined) delete process.env.SHOGO_PROVIDER_RETRY_MAX_WAIT_MS
-  else process.env.SHOGO_PROVIDER_RETRY_MAX_WAIT_MS = originalProviderRetryMaxWait
+  if (originalProviderRetry === undefined) delete process.env.SHOGO_PROVIDER_RETRY
+  else process.env.SHOGO_PROVIDER_RETRY = originalProviderRetry
 })
 
 // ---------------------------------------------------------------------------
@@ -704,6 +704,110 @@ describe('runAgentLoop inference retry', () => {
     expect(clock.sleeps).toEqual([1_000, 1_000, 1_000, 1_000])
     expect(probes).toBe(5) // one probe per failure after the fast budget is spent
     expect(reconnected).toBe(false)
+  })
+
+  test('provider backoff: unlimited by default — keeps retrying until the user stops the turn', async () => {
+    const { fn, getCalls } = createScriptedStreamFn([{ throw: '529 overloaded_error: Overloaded' }])
+    const controller = new AbortController()
+    let clockNow = 0
+    const episodes: any[] = []
+    const ticks: any[] = []
+
+    const result = await runAgentLoop({
+      model: 'claude-sonnet-4-5',
+      system: 'Test',
+      history: [],
+      prompt: 'Hello',
+      tools: [],
+      streamFn: fn,
+      signal: controller.signal,
+      inferenceRetry: {
+        maxAttempts: 1,
+        computeDelayMs: () => 0,
+        sleep: async () => {},
+        providerBackoff: {
+          computeDelayMs: () => 30_000,
+          sleep: async (ms) => {
+            clockNow += ms
+            // Well past any old budget (180s / 12 attempts) before the user stops.
+            if (clockNow >= 30 * 60_000) controller.abort()
+          },
+          now: () => clockNow,
+        },
+      },
+      onProviderBackoff: (info) => ticks.push(info),
+      onRetryEpisodeEnd: (s) => episodes.push(s),
+    })
+
+    expect(ticks.length).toBe(60)
+    expect(ticks[0].maxWaitMs).toBe(Infinity)
+    expect(getCalls()).toBe(2 + 59) // initial + fast retry + backoff re-issues before the abort
+    expect(episodes).toHaveLength(1)
+    expect(episodes[0]).toMatchObject({ layer: 'provider_backoff', reason: 'overloaded', outcome: 'user_stopped' })
+    expect(result.error?.message ?? '').not.toContain('no output')
+  })
+
+  test('provider backoff: flags suspectedDeterministic after repeated identical failures, but keeps retrying', async () => {
+    const steps: ScriptStep[] = Array.from({ length: 9 }, () => ({ throw: '503 Service Unavailable' }))
+    steps.push(buildTextResponse('finally'))
+    const { fn } = createScriptedStreamFn(steps)
+    const ticks: any[] = []
+    const episodes: any[] = []
+
+    const result = await runAgentLoop({
+      model: 'claude-sonnet-4-5',
+      system: 'Test',
+      history: [],
+      prompt: 'Hello',
+      tools: [],
+      streamFn: fn,
+      inferenceRetry: {
+        maxAttempts: 1,
+        computeDelayMs: () => 0,
+        sleep: async () => {},
+        providerBackoff: { computeDelayMs: () => 0, sleep: async () => {}, now: () => 0 },
+      },
+      onProviderBackoff: (info) => ticks.push(info),
+      onRetryEpisodeEnd: (s) => episodes.push(s),
+    })
+
+    expect(result.text).toBe('finally')
+    expect(ticks.map((t) => t.suspectedDeterministic)).toEqual([false, false, false, false, false, true, true, true])
+    expect(episodes).toEqual([
+      expect.objectContaining({ outcome: 'recovered', layer: 'provider_backoff', attempts: 9, suspectedDeterministic: true }),
+    ])
+  })
+
+  test('provider backoff: waker cuts the backoff sleep short (Retry now)', async () => {
+    const { fn, getCalls } = createScriptedStreamFn([
+      { throw: '529 overloaded_error: Overloaded' },
+      { throw: '529 overloaded_error: Overloaded' },
+      buildTextResponse('back'),
+    ])
+    const waker = new RetryWaker()
+    const started = Date.now()
+
+    const result = await runAgentLoop({
+      model: 'claude-sonnet-4-5',
+      system: 'Test',
+      history: [],
+      prompt: 'Hello',
+      tools: [],
+      streamFn: fn,
+      inferenceRetry: {
+        maxAttempts: 1,
+        computeDelayMs: () => 0,
+        sleep: async () => {},
+        waker,
+        // Real abortable sleep with a 60s delay; only the waker lets this finish quickly.
+        providerBackoff: { computeDelayMs: () => 60_000 },
+      },
+      onProviderBackoff: () => setTimeout(() => waker.wake(), 5),
+    })
+
+    expect(result.text).toBe('back')
+    expect(getCalls()).toBe(3)
+    expect(Date.now() - started).toBeLessThan(5_000)
   })
 
   test('provider backoff: truncation is not retried beyond the fast budget', async () => {

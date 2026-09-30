@@ -17,16 +17,15 @@
  * POST /api/chat-messages. That is a *sticky* per-session failure with no
  * retries — the signature of a non-retryable 400 caused by session state.
  *
- * Scenario 1 (sticky, primary): after a long tool-heavy turn the session's
- * real payload exceeds the model context window, but
- * `SessionManager.estimateTokens` only counts `text` blocks and ignores
+ * Scenario 1 (sticky, primary) is FIXED: after a long tool-heavy turn the
+ * session's real payload exceeded the model context window, but
+ * `SessionManager.estimateTokens` only counted `text` blocks and ignored
  * assistant `toolCall.arguments` (write_file/edit_file bodies), so pre-turn
- * autocompact (Layer 4) never fires. Anthropic answers
- * `400 ... prompt is too long`, pi-ai records it as `errorMessage` on a
- * stopReason:'error' message (it does NOT throw), so the agent loop's reactive
- * compaction (Layer 5, only on a thrown error) never runs either. The loop
- * synthesizes `Provider error: 400 prompt is too long ...` → `invalid_request`
- * → generic fallback. Every subsequent send hits the same wall.
+ * autocompact (Layer 4) never fired; and because pi-ai reports
+ * `400 ... prompt is too long` as an `errorMessage` rather than throwing,
+ * reactive compaction (Layer 5) never ran either. Every send hit the same
+ * wall. The estimator now counts tool-call arguments and images, and the
+ * agent loop runs reactive compaction for error-message overflows too.
  *
  * SigNoz later showed the breadcrumb session itself (1691b02a) failed on a
  * different sticky 400: `.messages[113].image[0]: You have uploaded an
@@ -100,22 +99,43 @@ function providerErrorStream(errorMessage: string) {
   return stream as any
 }
 
+function okStream(text: string) {
+  const msg = {
+    role: 'assistant',
+    content: [{ type: 'text', text }],
+    api: 'anthropic-messages',
+    provider: 'anthropic',
+    model: 'claude-sonnet-4-5',
+    usage: { ...ZERO_USAGE, output: 5, totalTokens: 5 },
+    stopReason: 'stop',
+    timestamp: Date.now(),
+  } as AssistantMessage
+  const stream = createAssistantMessageEventStream()
+  queueMicrotask(() => {
+    stream.push({ type: 'start', partial: msg } as any)
+    stream.push({ type: 'done', reason: 'stop', message: msg } as any)
+    stream.end(msg)
+  })
+  return stream as any
+}
+
 /**
  * Fake Anthropic endpoint: rejects with the real 400 body when the serialized
- * request (system + messages, incl. tool-call arguments) exceeds the window.
+ * request (system + messages, incl. tool-call arguments) exceeds `limit`,
+ * otherwise answers normally.
  */
-function anthropicWithContextLimit(calls: { tokens: number }[]): StreamFn {
+function anthropicWithContextLimit(calls: { tokens: number }[], limit = MODEL_CONTEXT_LIMIT): StreamFn {
   return (_model, context) => {
     const tokens = Math.ceil(
       JSON.stringify({ system: context.systemPrompt, messages: context.messages }).length / 4,
     )
     calls.push({ tokens })
-    if (tokens > MODEL_CONTEXT_LIMIT) {
+    if (tokens > limit) {
       return providerErrorStream(
-        `400 {"type":"error","error":{"type":"invalid_request_error","message":"prompt is too long: ${tokens} tokens > ${MODEL_CONTEXT_LIMIT} maximum"},"request_id":"req_repro"}`,
+        `400 {"type":"error","error":{"type":"invalid_request_error","message":"prompt is too long: ${tokens} tokens > ${limit} maximum"},"request_id":"req_repro"}`,
       )
     }
-    throw new Error('repro: request unexpectedly fit in context')
+    return okStream('Upload looks good.')
   }
 }
 
@@ -161,28 +181,28 @@ describe('REPRO JAVASCRIPT-REACT-45 / SHOGO-DESKTOP-F: raw turn failure swallowe
   let gateway: AgentGateway | undefined
   let errSpy: ReturnType<typeof spyOn>
   const prevRetryBase = process.env.SHOGO_INFERENCE_RETRY_BASE_MS
-  const prevProviderMaxWait = process.env.SHOGO_PROVIDER_RETRY_MAX_WAIT_MS
+  const prevProviderRetry = process.env.SHOGO_PROVIDER_RETRY
 
   beforeEach(() => {
     setupWorkspace()
     errSpy = spyOn(console, 'error')
     process.env.SHOGO_INFERENCE_RETRY_BASE_MS = '1'
-    // Exercise the give-up path without the multi-minute provider backoff.
-    process.env.SHOGO_PROVIDER_RETRY_MAX_WAIT_MS = '0'
+    // Exercise the give-up path without the unlimited provider backoff.
+    process.env.SHOGO_PROVIDER_RETRY = 'off'
   })
 
   afterEach(async () => {
     errSpy.mockRestore()
     if (prevRetryBase === undefined) delete process.env.SHOGO_INFERENCE_RETRY_BASE_MS
     else process.env.SHOGO_INFERENCE_RETRY_BASE_MS = prevRetryBase
-    if (prevProviderMaxWait === undefined) delete process.env.SHOGO_PROVIDER_RETRY_MAX_WAIT_MS
-    else process.env.SHOGO_PROVIDER_RETRY_MAX_WAIT_MS = prevProviderMaxWait
+    if (prevProviderRetry === undefined) delete process.env.SHOGO_PROVIDER_RETRY
+    else process.env.SHOGO_PROVIDER_RETRY = prevProviderRetry
     if (gateway) await gateway.stop()
     gateway = undefined
     rmSync(TEST_DIR, { recursive: true, force: true })
   })
 
-  test('scenario 1: context overflow hidden from estimateTokens → sticky 400 on every send → generic error', async () => {
+  test('scenario 1a (fixed): estimateTokens counts tool-call arguments, so pre-turn autocompact fires', async () => {
     const calls: { tokens: number }[] = []
     gateway = new AgentGateway(TEST_DIR, 'test-project')
     gateway.setStreamFn(anthropicWithContextLimit(calls))
@@ -191,34 +211,34 @@ describe('REPRO JAVASCRIPT-REACT-45 / SHOGO-DESKTOP-F: raw turn failure swallowe
     const sessionId = '1691b02a-824d-4e8c-a552-341bb31d6f5c'
     const sm = gateway.getSessionManager()
     sm.addMessages(sessionId, ...longToolHeavyTurn(60, 16_000))
-    const session = sm.get(sessionId)!
+    expect(sm.needsCompaction(sm.get(sessionId)!)).toBe(true)
 
-    // Precondition: the estimator thinks we're far below autocompact...
-    expect(sm.estimateTokens(session)).toBeLessThan(sm.autocompactThreshold)
-    expect(sm.needsCompaction(session)).toBe(false)
-
-    // ...so two consecutive sends (as in the breadcrumbs) both fail identically.
     for (const text of ['can you check the upload?', 'hello?']) {
       const chunks = await send(gateway, sessionId, text)
-      const errors = chunks.filter((c) => c.type === 'error')
-      expect(errors).toHaveLength(1)
-      expect(errors[0].errorText).toBe(GENERIC)
-      expect(JSON.stringify(chunks)).not.toContain('prompt is too long')
+      expect(chunks.filter((c) => c.type === 'error')).toEqual([])
     }
+    expect(sm.get(sessionId)!.compactionCount).toBeGreaterThanOrEqual(1)
+    expect(calls.at(-1)!.tokens).toBeLessThanOrEqual(MODEL_CONTEXT_LIMIT)
+  })
 
-    // The real payload was over the window every time.
-    expect(calls.length).toBeGreaterThanOrEqual(2)
-    for (const c of calls) expect(c.tokens).toBeGreaterThan(MODEL_CONTEXT_LIMIT)
+  test('scenario 1b (fixed): a provider-reported overflow (error message, not a throw) triggers reactive compaction', async () => {
+    const calls: { tokens: number }[] = []
+    // History the estimator considers fine, but this model's window is smaller.
+    const limit = 30_000
+    gateway = new AgentGateway(TEST_DIR, 'test-project')
+    gateway.setStreamFn(anthropicWithContextLimit(calls, limit))
+    await gateway.start()
 
-    // Neither pre-turn (Layer 4) nor reactive (Layer 5) compaction ever ran.
-    expect(sm.get(sessionId)!.compactionCount).toBe(0)
-    const logged = errSpy.mock.calls.map((a) => a.map(String).join(' ')).join('\n')
-    expect(logged).not.toContain('Reactive compaction')
+    const sessionId = 'reactive-overflow'
+    const sm = gateway.getSessionManager()
+    sm.addMessages(sessionId, ...longToolHeavyTurn(10, 16_000))
+    expect(sm.needsCompaction(sm.get(sessionId)!)).toBe(false)
 
-    // The raw cause exists only in the server log line.
-    expect(logged).toMatch(
-      new RegExp(`Agent error for session ${sessionId}: Provider error: 400 prompt is too long: \\d+ tokens > 200000 maximum`),
-    )
+    const chunks = await send(gateway, sessionId, 'can you check the upload?')
+    expect(chunks.filter((c) => c.type === 'error')).toEqual([])
+    expect(calls[0].tokens).toBeGreaterThan(limit)
+    expect(calls.at(-1)!.tokens).toBeLessThanOrEqual(limit)
+    expect(sm.get(sessionId)!.compactionCount).toBe(1)
     expect(classifyRetryability({ message: 'Provider error: 400 prompt is too long: 1 tokens > 200000 maximum' }).reason)
       .toBe('invalid_request')
   })

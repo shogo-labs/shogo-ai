@@ -1833,6 +1833,18 @@ function isAbortError(err: unknown, signal?: AbortSignal): boolean {
 }
 
 const OPENAI_TOOLS_NEED_NO_REASONING = /function tools with reasoning_effort are not supported/i
+const reasoningNoneRetryCounter = aiProxyMeter.createCounter('ai_proxy.reasoning_none_retries', {
+  description: 'OpenAI Chat Completions tool calls sent with reasoning_effort=none, by whether the model was already known to need it',
+})
+/**
+ * OpenAI models that rejected tools with default reasoning on Chat
+ * Completions. Remembered per process so only the first call pays the 400.
+ */
+const modelsNeedingReasoningNone = new Set<string>()
+
+export function __resetReasoningNoneCacheForTests(): void {
+  modelsNeedingReasoningNone.clear()
+}
 
 function isFailoverStatus(status: number): boolean {
   return status === 429 || status >= 500
@@ -1885,8 +1897,14 @@ async function fetchOpenAICompatible(
 
   const fallback = fallbackModelConfig(modelConfig)
   try {
-    let response = await attempt(modelConfig, apiKey)
+    const knownNeedsNone =
+      modelConfig.provider === 'openai' && !!request.tools?.length && modelsNeedingReasoningNone.has(modelConfig.apiModel)
+    if (knownNeedsNone) {
+      reasoningNoneRetryCounter.add(1, { model: modelConfig.apiModel, provider: modelConfig.provider, known: 'true' })
+    }
+    let response = await attempt(modelConfig, apiKey, knownNeedsNone ? { reasoning_effort: 'none' } : undefined)
     if (
+      !knownNeedsNone &&
       response.status === 400 &&
       modelConfig.provider === 'openai' &&
       request.tools?.length &&
@@ -1896,6 +1914,8 @@ async function fetchOpenAICompatible(
       // reasoning_effort isn't enough to allow function tools on Chat
       // Completions — they must be told to skip reasoning explicitly.
       await response.text().catch(() => {})
+      modelsNeedingReasoningNone.add(modelConfig.apiModel)
+      reasoningNoneRetryCounter.add(1, { model: modelConfig.apiModel, provider: modelConfig.provider, known: 'false' })
       console.warn(`[AI Proxy] ${modelConfig.apiModel} rejected tools with default reasoning on chat completions; retrying with reasoning_effort=none`)
       response = await attempt(modelConfig, apiKey, { reasoning_effort: 'none' })
     }
