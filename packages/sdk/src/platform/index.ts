@@ -905,6 +905,25 @@ export class PlatformApi {
     })
   }
 
+  /** Get the admin-configured model agent runtimes use to summarize history
+   *  during context compaction. Returns `{ model: null }` when unset (platform
+   *  default, Hoshi 2.0, applies). */
+  async getSummarizerModel(): Promise<{ model: string | null }> {
+    const res = await this.http.get<{ model: string | null }>(
+      '/api/admin/settings/summarizer-model',
+    )
+    return res.data ?? { model: null }
+  }
+
+  /** Set the context-compaction summarizer model. Pass null/empty to reset to
+   *  the platform default (Hoshi 2.0). Applies to runtimes on their next spawn. */
+  async putSummarizerModel(model: string | null): Promise<void> {
+    await this.http.request('/api/admin/settings/summarizer-model', {
+      method: 'PUT',
+      body: { model },
+    })
+  }
+
   // ===========================================================================
   // Admin: Sandbox Exec (Docker isolation for the agent's exec tool)
   // ===========================================================================

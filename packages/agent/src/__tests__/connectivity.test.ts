@@ -52,9 +52,9 @@ describe('probeConnectivity', () => {
 describe('resolveMaxWaitMs', () => {
   const originalEnv = process.env.SHOGO_OFFLINE_MAX_WAIT_MS
 
-  test('defaults to 30 minutes when nothing is configured', () => {
+  test('defaults to unlimited (0) when nothing is configured', () => {
     delete process.env.SHOGO_OFFLINE_MAX_WAIT_MS
-    expect(resolveMaxWaitMs()).toBe(30 * 60 * 1000)
+    expect(resolveMaxWaitMs()).toBe(0)
     restoreEnv()
   })
 
@@ -78,7 +78,7 @@ describe('resolveMaxWaitMs', () => {
 
   test('ignores a non-numeric env override and falls back to default', () => {
     process.env.SHOGO_OFFLINE_MAX_WAIT_MS = 'not-a-number'
-    expect(resolveMaxWaitMs()).toBe(30 * 60 * 1000)
+    expect(resolveMaxWaitMs()).toBe(0)
     restoreEnv()
   })
 

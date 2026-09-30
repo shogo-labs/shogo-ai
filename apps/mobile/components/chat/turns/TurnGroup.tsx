@@ -119,7 +119,7 @@ export const TurnGroup = memo(
         className={cn(
           "gap-2",
           turn.assistantMessage ? colors.border : "border-primary/30",
-          className
+          className,
         )}
       >
         {/* User message — full-width clickable row. Clicking it swaps
@@ -131,7 +131,12 @@ export const TurnGroup = memo(
           right-align wrapper here: EditableUserMessage now claims
           the full chat-panel width (matching the bottom composer)
           so the click target is unambiguous and large. */}
-        {turn.userMessage && <EditableUserMessage message={turn.userMessage} />}
+        {turn.userMessage && (
+          <EditableUserMessage
+            message={turn.userMessage}
+            answeredQuestion={turn.answeredQuestion}
+          />
+        )}
 
         {/* Tool timeline (legacy mode only) */}
         {showToolTimeline && turn.toolCalls.length > 0 && (
@@ -198,7 +203,7 @@ export const TurnGroup = memo(
     prev.turn === next.turn &&
     prev.phase === next.phase &&
     prev.showToolTimeline === next.showToolTimeline &&
-    prev.className === next.className
+    prev.className === next.className,
 );
 
 export default TurnGroup;

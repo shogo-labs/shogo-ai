@@ -73,6 +73,7 @@ mock.module('../lib/project-user-context', () => ({
 
 mock.module('../lib/cloud-key-wipe', () => ({
   wipeCloudKey: async () => {},
+  wipeCloudKeyIfRejected: async () => ({ wiped: false }),
 }))
 
 const originalFetch = globalThis.fetch
@@ -393,6 +394,105 @@ describe('AI proxy: developer role (OpenAI reasoning) → Anthropic system', () 
     const roles = forwarded.messages.map((m: any) => m.role)
     expect(roles).toEqual(['assistant', 'user'])
     expect(roles.every((r: string) => r === 'user' || r === 'assistant')).toBe(true)
+  })
+})
+
+describe('AI proxy: OpenAI tool calls on the OpenAI-compatible → Anthropic path', () => {
+  const tools = [{
+    type: 'function',
+    function: { name: 'run', parameters: { type: 'object', properties: { command: { type: 'string' } } } },
+  }]
+
+  test('assistant tool_calls with null content become tool_use blocks, tool messages become tool_result', async () => {
+    // Before the fix, `content: null` was forwarded verbatim and Anthropic
+    // rejected it: "messages.1.content: Input should be a valid array".
+    const forwarded = await postAndCapture({
+      model: 'claude-haiku-4-5',
+      tools,
+      messages: [
+        { role: 'user', content: 'Run pwd.' },
+        {
+          role: 'assistant',
+          content: null,
+          tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'run', arguments: '{"command":"pwd"}' } }],
+        },
+        { role: 'tool', tool_call_id: 'call_1', content: '/workspace' },
+      ],
+    })
+
+    expect(forwarded.messages).toEqual([
+      { role: 'user', content: 'Run pwd.' },
+      { role: 'assistant', content: [{ type: 'tool_use', id: 'call_1', name: 'run', input: { command: 'pwd' } }] },
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'call_1', content: '/workspace' }] },
+    ])
+  })
+
+  test('parallel tool results merge into one user turn and assistant text is kept', async () => {
+    const forwarded = await postAndCapture({
+      model: 'claude-haiku-4-5',
+      tools,
+      messages: [
+        { role: 'user', content: 'Two things.' },
+        {
+          role: 'assistant',
+          content: 'On it.',
+          tool_calls: [
+            { id: 'a', type: 'function', function: { name: 'run', arguments: '{"command":"ls"}' } },
+            { id: 'b', type: 'function', function: { name: 'run', arguments: 'not json' } },
+          ],
+        },
+        { role: 'tool', tool_call_id: 'a', content: 'x.txt' },
+        { role: 'tool', tool_call_id: 'b', content: '' },
+        { role: 'user', content: 'thanks' },
+      ],
+    })
+
+    expect(forwarded.messages[1]).toEqual({
+      role: 'assistant',
+      content: [
+        { type: 'text', text: 'On it.' },
+        { type: 'tool_use', id: 'a', name: 'run', input: { command: 'ls' } },
+        { type: 'tool_use', id: 'b', name: 'run', input: {} },
+      ],
+    })
+    expect(forwarded.messages[2]).toEqual({
+      role: 'user',
+      content: [
+        { type: 'tool_result', tool_use_id: 'a', content: 'x.txt' },
+        { type: 'tool_result', tool_use_id: 'b' },
+      ],
+    })
+    expect(forwarded.messages[3]).toEqual({ role: 'user', content: 'thanks' })
+  })
+
+  test('image_url parts become Anthropic image blocks; empty assistant turns are dropped', async () => {
+    const forwarded = await postAndCapture({
+      model: 'claude-haiku-4-5',
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'What is this?' },
+            { type: 'image_url', image_url: { url: 'data:image/png;base64,iVBORw0KGgo=' } },
+            { type: 'image_url', image_url: { url: 'https://example.com/a.jpg' } },
+          ],
+        },
+        { role: 'assistant', content: null },
+        { role: 'user', content: 'hello?' },
+      ],
+    })
+
+    expect(forwarded.messages).toEqual([
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'What is this?' },
+          { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'iVBORw0KGgo=' } },
+          { type: 'image', source: { type: 'url', url: 'https://example.com/a.jpg' } },
+        ],
+      },
+      { role: 'user', content: 'hello?' },
+    ])
   })
 })
 

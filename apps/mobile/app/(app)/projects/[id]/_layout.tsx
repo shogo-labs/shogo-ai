@@ -62,6 +62,7 @@ import {
   chatSessionEvents,
   chatActivityEvents,
 } from "../../../../lib/chat-session-events";
+import { deliverPendingDesktopIslandNewChat } from "../../../../lib/desktop-island";
 import { projectSidebarEvents } from "../../../../lib/project-sidebar-events";
 import { workspaceProjectFilter } from "../../../../lib/project-load";
 import { canvasDisabledRedirect } from "../../../../lib/project-preview-tab";
@@ -71,6 +72,7 @@ import {
   usePlatformConfig,
 } from "../../../../lib/platform-config";
 import { resolveChatScope } from "../../../../lib/chat-scope";
+import { stripAskUserAnswerMarker } from "../../../../components/chat/turns/askUserAnswers";
 import { consumePendingFiles } from "../../../../lib/pending-image-store";
 import {
   isPhoneLayout,
@@ -2564,7 +2566,7 @@ export default observer(function ProjectLayout() {
               .sort(
                 (a: any, b: any) => (a.createdAt || 0) - (b.createdAt || 0)
               );
-            const preview = msgs[0]?.content?.trim();
+            const preview = stripAskUserAnswerMarker(msgs[0]?.content?.trim() ?? "").trim();
             names[s.id] = preview
               ? preview.length > 40
                 ? preview.slice(0, 40) + "…"
@@ -2691,6 +2693,7 @@ export default observer(function ProjectLayout() {
             prev.includes(id) ? prev : [...prev, id]
           );
           setChatSessionId(id);
+          deliverPendingDesktopIslandNewChat(projectId, id);
           chatSessionEvents.emit({
             projectId,
             activeSessionId: id,
@@ -2714,6 +2717,7 @@ export default observer(function ProjectLayout() {
           prev.includes(newSession.id) ? prev : [...prev, newSession.id]
         );
         setChatSessionId(newSession.id);
+        deliverPendingDesktopIslandNewChat(projectId, newSession.id);
         chatSessionEvents.emit({
           projectId,
           activeSessionId: newSession.id,

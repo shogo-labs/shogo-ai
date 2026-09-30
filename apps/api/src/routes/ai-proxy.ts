@@ -44,7 +44,7 @@ import {
   resolveVisibleModelsForWorkspace,
   isModelProviderConfigured,
 } from '../services/visible-models.service'
-import { wipeCloudKey } from '../lib/cloud-key-wipe'
+import { wipeCloudKeyIfRejected } from '../lib/cloud-key-wipe'
 import { getShogoCloudUrl } from '../lib/cloud-urls'
 import { getRuntimeManager } from '../lib/runtime'
 import { beginCapture } from '../lib/proxy-capture'
@@ -610,6 +610,16 @@ export async function fetchAnthropicWithRetry(
 }
 
 /**
+ * Status to relay for a failed provider call. A provider 401 means the
+ * platform's own provider key was rejected; passed through as-is, clients
+ * that authenticate with a Shogo key can't tell it from their key being
+ * revoked.
+ */
+export function relayStatusForProviderError(status: number): number {
+  return status === 401 ? 502 : status
+}
+
+/**
  * Classify a stream error into a typed code for downstream consumers.
  * The code lets the UI decide whether to auto-retry (retryable) or surface
  * a fatal message (non-retryable).
@@ -889,6 +899,43 @@ function logCacheControlIfEnabled(body: Record<string, unknown>, where: string):
  * we keep the simpler string-system fast path for full backwards compatibility with every
  * existing chat-completions caller.
  */
+/** Translate OpenAI content parts to Anthropic blocks, carrying cache metadata. */
+function toAnthropicBlocks(content: ChatCompletionContentBlock[]): any[] {
+  const blocks: any[] = []
+  for (const b of content) {
+    if (b.type === 'text' && !b.text) continue
+    const bcc = b.cache_control ?? mapCacheControl(b.providerOptions?.anthropic?.cacheControl)
+    let out: Record<string, unknown>
+    if (b.type === 'image_url' && b.image_url?.url) {
+      const url = b.image_url.url
+      const dataUrl = /^data:([^;,]+);base64,(.*)$/s.exec(url)
+      out = {
+        type: 'image',
+        source: dataUrl
+          ? { type: 'base64', media_type: dataUrl[1], data: dataUrl[2] }
+          : { type: 'url', url },
+      }
+    } else {
+      out = { ...b }
+      delete out.providerOptions
+      delete out.cache_control
+    }
+    if (bcc) out.cache_control = bcc
+    blocks.push(out)
+  }
+  return blocks
+}
+
+function parseToolArguments(args: string | undefined): Record<string, unknown> {
+  if (!args) return {}
+  try {
+    const parsed = JSON.parse(args)
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
+  } catch {
+    return {}
+  }
+}
+
 function convertToAnthropicFormat(request: ChatCompletionRequest) {
   // Detect whether ANY cache metadata is present. If not, take the fast path.
   const topCC = mapCacheControl(request.providerOptions?.anthropic?.cacheControl)
@@ -932,22 +979,51 @@ function convertToAnthropicFormat(request: ChatCompletionRequest) {
 
     const msgCC = mapCacheControl(msg.providerOptions?.anthropic?.cacheControl)
 
-    if (Array.isArray(msg.content)) {
-      // Preserve / translate per-content-block cache metadata.
-      const blocks = msg.content.map(b => {
-        const bcc = b.cache_control ?? mapCacheControl(b.providerOptions?.anthropic?.cacheControl)
-        const rest = { ...b }
-        delete (rest as { providerOptions?: unknown }).providerOptions
-        if (bcc) (rest as { cache_control?: AnthropicCacheControl }).cache_control = bcc
-        else delete (rest as { cache_control?: unknown }).cache_control
-        return rest
-      })
+    // OpenAI tool results → Anthropic `tool_result` blocks on a user turn.
+    // Parallel calls produce consecutive `tool` messages; Anthropic wants all
+    // of an assistant turn's results together in the following user message.
+    if (msg.role === 'tool') {
+      const resultContent = typeof msg.content === 'string'
+        ? msg.content
+        : toAnthropicBlocks(msg.content ?? [])
+      const block: Record<string, unknown> = { type: 'tool_result', tool_use_id: msg.tool_call_id }
+      if (resultContent.length) block.content = resultContent
+      if (msgCC) block.cache_control = msgCC
+      const prev = messages[messages.length - 1]
+      if (prev?.role === 'user' && Array.isArray(prev.content) && prev.content.every((b: any) => b.type === 'tool_result')) {
+        prev.content.push(block)
+      } else {
+        messages.push({ role: 'user', content: [block] })
+      }
+      continue
+    }
+
+    const role = msg.role === 'assistant' ? 'assistant' : 'user'
+    const toolUses = role === 'assistant'
+      ? (msg.tool_calls ?? []).map(tc => ({
+          type: 'tool_use',
+          id: tc.id,
+          name: tc.function.name,
+          input: parseToolArguments(tc.function.arguments),
+        }))
+      : []
+
+    if (Array.isArray(msg.content) || toolUses.length || msg.content == null) {
+      const blocks: any[] = [
+        ...(Array.isArray(msg.content)
+          ? toAnthropicBlocks(msg.content)
+          : msg.content ? [{ type: 'text', text: msg.content }] : []),
+        ...toolUses,
+      ]
+      // Anthropic rejects empty content (e.g. an assistant turn that was
+      // `content: null` with no tool calls), so drop the message entirely.
+      if (!blocks.length) continue
       // Per-message providerOptions applies to the last block (matches SDK semantics).
-      if (msgCC && blocks.length) {
+      if (msgCC) {
         const last = blocks[blocks.length - 1] as { cache_control?: AnthropicCacheControl }
         if (!last.cache_control) last.cache_control = msgCC
       }
-      messages.push({ role: msg.role === 'assistant' ? 'assistant' : 'user', content: blocks })
+      messages.push({ role, content: blocks })
     } else if (typeof msg.content === 'string' && msgCC) {
       // Coerce string content to a single text block so cache_control has a home.
       messages.push({
@@ -1756,6 +1832,20 @@ function isAbortError(err: unknown, signal?: AbortSignal): boolean {
   return err instanceof Error && err.name === 'AbortError'
 }
 
+const OPENAI_TOOLS_NEED_NO_REASONING = /function tools with reasoning_effort are not supported/i
+const reasoningNoneRetryCounter = aiProxyMeter.createCounter('ai_proxy.reasoning_none_retries', {
+  description: 'OpenAI Chat Completions tool calls sent with reasoning_effort=none, by whether the model was already known to need it',
+})
+/**
+ * OpenAI models that rejected tools with default reasoning on Chat
+ * Completions. Remembered per process so only the first call pays the 400.
+ */
+const modelsNeedingReasoningNone = new Set<string>()
+
+export function __resetReasoningNoneCacheForTests(): void {
+  modelsNeedingReasoningNone.clear()
+}
+
 function isFailoverStatus(status: number): boolean {
   return status === 429 || status >= 500
 }
@@ -1798,16 +1888,37 @@ async function fetchOpenAICompatible(
   extra: Record<string, unknown>,
   signal?: AbortSignal,
 ): Promise<{ response: Response; served: ModelConfig }> {
-  const attempt = (config: ModelConfig, key: string) => fetch(getOpenAICompatibleBaseUrl(config), {
+  const attempt = (config: ModelConfig, key: string, overrides?: Record<string, unknown>) => fetch(getOpenAICompatibleBaseUrl(config), {
     method: 'POST',
     headers: getOpenAICompatibleHeaders(key, config),
-    body: JSON.stringify(buildOpenAICompatibleBody(request, config, extra)),
+    body: JSON.stringify({ ...buildOpenAICompatibleBody(request, config, extra), ...overrides }),
     signal,
   })
 
   const fallback = fallbackModelConfig(modelConfig)
   try {
-    const response = await attempt(modelConfig, apiKey)
+    const knownNeedsNone =
+      modelConfig.provider === 'openai' && !!request.tools?.length && modelsNeedingReasoningNone.has(modelConfig.apiModel)
+    if (knownNeedsNone) {
+      reasoningNoneRetryCounter.add(1, { model: modelConfig.apiModel, provider: modelConfig.provider, known: 'true' })
+    }
+    let response = await attempt(modelConfig, apiKey, knownNeedsNone ? { reasoning_effort: 'none' } : undefined)
+    if (
+      !knownNeedsNone &&
+      response.status === 400 &&
+      modelConfig.provider === 'openai' &&
+      request.tools?.length &&
+      OPENAI_TOOLS_NEED_NO_REASONING.test(await response.clone().text().catch(() => ''))
+    ) {
+      // Some OpenAI reasoning models (gpt-6-*) reason by default, so omitting
+      // reasoning_effort isn't enough to allow function tools on Chat
+      // Completions — they must be told to skip reasoning explicitly.
+      await response.text().catch(() => {})
+      modelsNeedingReasoningNone.add(modelConfig.apiModel)
+      reasoningNoneRetryCounter.add(1, { model: modelConfig.apiModel, provider: modelConfig.provider, known: 'false' })
+      console.warn(`[AI Proxy] ${modelConfig.apiModel} rejected tools with default reasoning on chat completions; retrying with reasoning_effort=none`)
+      response = await attempt(modelConfig, apiKey, { reasoning_effort: 'none' })
+    }
     if (response.ok || !fallback || !isFailoverStatus(response.status)) {
       return { response, served: modelConfig }
     }
@@ -2841,7 +2952,7 @@ export function aiProxyRoutes() {
 
     // Self-heal on revoked / superseded device key.
     if (response.status === 401) {
-      void wipeCloudKey('AI proxy chat-completions got 401 from Shogo Cloud')
+      void wipeCloudKeyIfRejected('AI proxy chat-completions got 401 from Shogo Cloud')
     }
 
     if (request.stream) {
@@ -2890,7 +3001,7 @@ export function aiProxyRoutes() {
 
     // Self-heal on revoked / superseded device key.
     if (response.status === 401) {
-      void wipeCloudKey('AI proxy responses got 401 from Shogo Cloud')
+      void wipeCloudKeyIfRejected('AI proxy responses got 401 from Shogo Cloud')
     }
 
     if (request?.stream) {
@@ -2946,7 +3057,7 @@ export function aiProxyRoutes() {
 
     // Self-heal on revoked / superseded device key.
     if (response.status === 401) {
-      void wipeCloudKey('AI proxy Anthropic messages got 401 from Shogo Cloud')
+      void wipeCloudKeyIfRejected('AI proxy Anthropic messages got 401 from Shogo Cloud')
     }
 
     // Hard errors (billing, auth, invalid request, etc.) come back from Shogo
@@ -3387,6 +3498,21 @@ export function aiProxyRoutes() {
         )
       }
 
+      // This handler only forwards to OpenAI; another provider's model would be
+      // sent there with that provider's key.
+      if (modelConfig.provider !== 'openai') {
+        return c.json(
+          {
+            error: {
+              message: `Model '${requestedModel}' (provider '${modelConfig.provider}') is not supported on the Responses API. Use /ai/v1/chat/completions or /ai/anthropic/v1/messages.`,
+              type: 'invalid_request_error',
+              code: 'model_not_supported_on_endpoint',
+            },
+          },
+          400,
+        )
+      }
+
       if (!isLocalDev && !(await isModelVisibleForWorkspace(tokenPayload.workspaceId, resolvedModel))) {
         return c.json(
           {
@@ -3437,7 +3563,7 @@ export function aiProxyRoutes() {
       if (!response.ok) {
         const errorText = await response.text()
         console.error(`[AI Proxy] Responses API error (${response.status}): ${errorText.slice(0, 300)}`)
-        return new Response(errorText, { status: response.status, headers: { 'Content-Type': 'application/json' } })
+        return new Response(errorText, { status: relayStatusForProviderError(response.status), headers: { 'Content-Type': 'application/json' } })
       }
 
       if (isStream) {
@@ -3913,7 +4039,7 @@ export function aiProxyRoutes() {
           capture?.recordResponse({ status: response.status, body: { error: errorText }, format: 'json', errorType: 'upstream_error' })
           return c.json(
             { type: 'error', error: { type: 'api_error', message: `OpenAI error (${response.status}): ${errorText}` } },
-            response.status as any
+            relayStatusForProviderError(response.status) as any
           )
         }
 
@@ -4013,7 +4139,7 @@ export function aiProxyRoutes() {
         const errorBody = await response.text()
         capture?.recordResponse({ status: response.status, body: { error: errorBody }, format: 'json', errorType: 'upstream_error' })
         return new Response(errorBody, {
-          status: response.status,
+          status: relayStatusForProviderError(response.status),
           headers: { 'Content-Type': response.headers.get('Content-Type') || 'application/json' },
         })
       }
@@ -4141,7 +4267,7 @@ export function aiProxyRoutes() {
       )
       // Self-heal on revoked / superseded device key.
       if (response.status === 401) {
-        void wipeCloudKey('AI proxy count_tokens got 401 from Shogo Cloud')
+        void wipeCloudKeyIfRejected('AI proxy count_tokens got 401 from Shogo Cloud')
       }
       const responseBody = await response.text()
       return new Response(responseBody, {
@@ -4178,7 +4304,7 @@ export function aiProxyRoutes() {
 
     const responseBody = await response.text()
     return new Response(responseBody, {
-      status: response.status,
+      status: relayStatusForProviderError(response.status),
       headers: { 'Content-Type': response.headers.get('Content-Type') || 'application/json' },
     })
   })
@@ -4213,7 +4339,7 @@ export function aiProxyRoutes() {
 
     const responseBody = await response.text()
     return new Response(responseBody, {
-      status: response.status,
+      status: relayStatusForProviderError(response.status),
       headers: { 'Content-Type': response.headers.get('Content-Type') || 'application/json' },
     })
   })

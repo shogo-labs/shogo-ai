@@ -138,6 +138,11 @@ import {
 } from "../../lib/native-phone-layout"
 import { canvasViewerPayload } from "../../lib/canvas-viewer"
 import {
+  buildChatSendBody,
+  generateClientTurnId,
+  normalizePlanData,
+} from "../../lib/chat-send-body"
+import {
   CHAT_TRANSCRIPT_MAX_WIDTH,
   NATIVE_COMPOSER_KEYBOARD_GAP,
 } from "../../lib/native-composer-keyboard"
@@ -211,6 +216,12 @@ import {
   type ChatContextValue,
   type ChatMessage,
 } from "./ChatContext"
+import {
+  registerDesktopIslandSession,
+  updateDesktopIslandSession,
+  type DesktopIslandSessionState,
+  type IslandPendingRequest,
+} from "../../lib/desktop-island"
 import { resolveChatFilePath } from "./file-links"
 import { useIdeBridge } from "./ideBridge"
 
@@ -263,6 +274,10 @@ import {
   askUserQuestionPresentation,
 } from "./turns/pendingQuestion"
 import { AskUserQuestionWidget } from "./turns/AskUserQuestionWidget"
+import {
+  buildAskUserAnswerMessage,
+  stripAskUserAnswerMarker,
+} from "./turns/askUserAnswers"
 import { NativeAskUserQuestionSheet } from "./NativeAskUserQuestionSheet"
 import {
   FIX_IN_AGENT_EVENT,
@@ -375,17 +390,6 @@ export type QueuedMessage = {
     }
     bodyExtra: Record<string, unknown>
   }
-}
-
-/**
- * Client-generated turn idempotency id, forwarded as `X-Client-Turn-Id`
- * (see `useChatTransport.ts`). Not a real UUID — `crypto.randomUUID` isn't
- * reliably available across every Hermes/web/native runtime this file ships
- * on — just unique enough to de-dupe retries of one logical send against
- * `apps/api/src/lib/chat-turn-idempotency.ts`.
- */
-function generateClientTurnId(): string {
-  return `ctid-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
 }
 
 function buildOptimisticUserMessage(
@@ -894,31 +898,14 @@ export function clearChatPanelQueueCache(): void {
   sessionQueueCache.clear()
 }
 
-function normalizePlanFilepath(filepath?: string | null): string | undefined {
-  if (!filepath) return undefined
-  const normalized = filepath.replace(/^\/+/, "").replace(/\\/g, "/")
-  const filename = normalized.split("/").pop()
-  if (!filename || !/^[a-zA-Z0-9._-]+\.plan\.md$/.test(filename))
-    return undefined
-  return `.shogo/plans/${filename}`
-}
-
-function normalizePlanData(plan: PlanData): PlanData {
-  return {
-    ...plan,
-    todos: plan.todos ?? [],
-    filepath: normalizePlanFilepath(plan.filepath),
-    summary: plan.summary,
-    summaryStatus: plan.summaryStatus,
-  }
-}
-
 async function ensureAiConsentForMessage(): Promise<boolean> {
   if (Platform.OS !== "ios") return true
   const alreadyAccepted = await hasAcceptedAiConsent().catch(() => false)
   if (alreadyAccepted) return true
 
-  const providerNames = AI_PROVIDERS.map((provider) => provider.name).join(" or ")
+  const providerNames = AI_PROVIDERS.map((provider) => provider.name).join(
+    " or ",
+  )
   const accepted = await new Promise<boolean>((resolve) => {
     Alert.alert(
       "Share your message with the selected AI provider?",
@@ -1202,8 +1189,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
             currentProjectId,
           ),
         updateProject: (id, changes) => actions.updateProject(id, changes),
-        updateSession: (id, changes) =>
-          actions.updateChatSession(id, changes),
+        updateSession: (id, changes) => actions.updateChatSession(id, changes),
         emitRefresh: ({
           projectId: currentProjectId,
           workspaceId: currentWorkspaceId,
@@ -1215,18 +1201,11 @@ const ChatPanelContent = observer(function ChatPanelContent({
             activeSessionId: currentSessionId,
             refresh: true,
           }),
+      }).catch((err) => {
+        console.warn("[ChatPanel] AI session naming failed:", err)
       })
-        .catch((err) => {
-          console.warn("[ChatPanel] AI session naming failed:", err)
-        })
     },
-    [
-      actions,
-      projectCollection,
-      projectId,
-      studioChat,
-      workspaceId,
-    ],
+    [actions, projectCollection, projectId, studioChat, workspaceId],
   )
 
   // Auto-scroll refs
@@ -2071,11 +2050,17 @@ const ChatPanelContent = observer(function ChatPanelContent({
         const d = (dataPart as any).data ?? {}
         if (d.state === "reconnected") {
           setConnectivityWait(null)
-          setJustReconnected(true)
-          setTimeout(() => setJustReconnected(false), 3000)
+          // A provider backoff ends with the model already streaming output,
+          // so there's no "back online" moment to announce.
+          if (d.cause !== "provider") {
+            setJustReconnected(true)
+            setTimeout(() => setJustReconnected(false), 3000)
+          }
         } else {
           setJustReconnected(false)
           setConnectivityWait({
+            cause: d.cause === "provider" ? "provider" : "offline",
+            reason: typeof d.reason === "string" ? d.reason : undefined,
             attempt: typeof d.attempt === "number" ? d.attempt : 0,
             elapsedMs: typeof d.elapsedMs === "number" ? d.elapsedMs : 0,
             nextProbeInMs:
@@ -3366,6 +3351,10 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // but they're tracked separately since they have different causes and
   // different user-facing copy.
   const [connectivityWait, setConnectivityWait] = useState<{
+    // "provider": the network is fine but the model provider is overloaded
+    // or failing, and the runtime is backing off before re-issuing.
+    cause: "offline" | "provider"
+    reason?: string
     attempt: number
     elapsedMs: number
     nextProbeInMs: number
@@ -5070,14 +5059,18 @@ const ChatPanelContent = observer(function ChatPanelContent({
           generateClientTurnId()
         pendingClientTurnIdRef.current = clientTurnId
 
-        const bodyExtra: Record<string, unknown> = {
+        // Session list reloads replace the MST node for this id, so look it up
+        // now rather than reading a render-time node that may be dead.
+        const liveSession = studioChat.chatSessionCollection.get(
+          currentSessionId,
+        ) as { name?: string; inferredName?: string } | undefined
+        const planToSend = confirmedPlanRef.current
+        confirmedPlanRef.current = null
+        const bodyExtra = buildChatSendBody({
           featureId,
           phase,
           chatSessionId: currentSessionId,
-          chatSessionName:
-            (currentSession as any)?.name ||
-            (currentSession as any)?.inferredName ||
-            undefined,
+          chatSessionName: liveSession?.name || liveSession?.inferredName,
           workspaceId,
           userId,
           projectId,
@@ -5085,7 +5078,6 @@ const ChatPanelContent = observer(function ChatPanelContent({
           agentMode: perMsgModel || selectedModel,
           interactionMode: interactionModeRef.current,
           dualPlan: dualPlanRef.current,
-          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
           clientTurnId,
           // Live canvas preview size (phone vs desktop). The runtime
           // injects this as a layout hint; canvases stay responsive either way.
@@ -5094,29 +5086,19 @@ const ChatPanelContent = observer(function ChatPanelContent({
             platform: Platform.OS,
             width: windowWidth,
           }),
-        }
-        const planToSend = confirmedPlanRef.current
-        if (planToSend) {
-          bodyExtra.confirmedPlan = normalizePlanData(planToSend)
-          bodyExtra.interactionMode = "agent"
-          confirmedPlanRef.current = null
-        }
-        if (
-          ideMode &&
-          (ideBridge.context.activeFile ||
-            ideBridge.context.workspaceFolders.length > 0)
-        ) {
-          bodyExtra.ideContext = ideBridge.context
-        }
-        if (references && references.length > 0) {
+          confirmedPlan: planToSend,
+          ideContext:
+            ideMode &&
+            (ideBridge.context.activeFile ||
+              ideBridge.context.workspaceFolders.length > 0)
+              ? ideBridge.context
+              : undefined,
           // The runtime resolves these into real context (file contents +
           // workspace summaries) before the model runs. Passed through the
           // API proxy untouched, so it also works in direct-to-runtime mode.
-          bodyExtra.references = references
-        }
-        if (extraBody) {
-          Object.assign(bodyExtra, extraBody)
-        }
+          references,
+          extra: extraBody,
+        })
         console.log(
           "[ChatPanel][send] bodyExtra — interactionMode:",
           bodyExtra.interactionMode,
@@ -5516,21 +5498,30 @@ const ChatPanelContent = observer(function ChatPanelContent({
     }
   }, [currentSessionId, messageQueue])
 
-  const handleRemoveQueuedMessage = useCallback((messageId: string) => {
-    if (serverQueue.isServerQueued(messageId)) {
-      void serverQueue.remove(messageId).catch((error) => {
-        console.warn("[ChatPanel] Failed to remove server queued message:", error)
-      })
-      return
-    }
-    setMessageQueue((queue) => queue.filter((m) => m.id !== messageId))
-  }, [serverQueue])
+  const handleRemoveQueuedMessage = useCallback(
+    (messageId: string) => {
+      if (serverQueue.isServerQueued(messageId)) {
+        void serverQueue.remove(messageId).catch((error) => {
+          console.warn(
+            "[ChatPanel] Failed to remove server queued message:",
+            error,
+          )
+        })
+        return
+      }
+      setMessageQueue((queue) => queue.filter((m) => m.id !== messageId))
+    },
+    [serverQueue],
+  )
 
   const handleReorderQueuedMessage = useCallback(
     (messageId: string, direction: "up" | "down") => {
       if (serverQueue.isServerQueued(messageId)) {
         void serverQueue.reorder(messageId, direction).catch((error) => {
-          console.warn("[ChatPanel] Failed to reorder server queued message:", error)
+          console.warn(
+            "[ChatPanel] Failed to reorder server queued message:",
+            error,
+          )
         })
         return
       }
@@ -5560,32 +5551,40 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // tweak the text/attachments and re-send. We remove the original entry
   // immediately so re-submitting just appends a fresh queue item rather than
   // duplicating the in-flight one.
-  const handleEditQueuedMessage = useCallback((messageId: string) => {
-    const serverTarget = serverQueue.queuedMessages.find((m) => m.id === messageId)
-    if (serverTarget) {
-      void serverQueue.remove(messageId).catch((error) => {
-        console.warn("[ChatPanel] Failed to edit server queued message:", error)
+  const handleEditQueuedMessage = useCallback(
+    (messageId: string) => {
+      const serverTarget = serverQueue.queuedMessages.find(
+        (m) => m.id === messageId,
+      )
+      if (serverTarget) {
+        void serverQueue.remove(messageId).catch((error) => {
+          console.warn(
+            "[ChatPanel] Failed to edit server queued message:",
+            error,
+          )
+        })
+        setRestoreDraftRequest({
+          nonce: Date.now(),
+          content: serverTarget.content,
+          files: serverTarget.files,
+        })
+        return
+      }
+      let target: QueuedMessage | undefined
+      setMessageQueue((queue) => {
+        target = queue.find((m) => m.id === messageId)
+        if (!target) return queue
+        return queue.filter((m) => m.id !== messageId)
       })
+      if (!target) return
       setRestoreDraftRequest({
         nonce: Date.now(),
-        content: serverTarget.content,
-        files: serverTarget.files,
+        content: target.content,
+        files: target.files,
       })
-      return
-    }
-    let target: QueuedMessage | undefined
-    setMessageQueue((queue) => {
-      target = queue.find((m) => m.id === messageId)
-      if (!target) return queue
-      return queue.filter((m) => m.id !== messageId)
-    })
-    if (!target) return
-    setRestoreDraftRequest({
-      nonce: Date.now(),
-      content: target.content,
-      files: target.files,
-    })
-  }, [serverQueue])
+    },
+    [serverQueue],
+  )
 
   // "Send now" — interrupt the current streaming turn and immediately drain
   // the chosen queued message. Implemented as "promote to front + stop" so we
@@ -5598,7 +5597,10 @@ const ChatPanelContent = observer(function ChatPanelContent({
     (messageId: string) => {
       if (serverQueue.isServerQueued(messageId)) {
         void serverQueue.sendNow(messageId).catch((error) => {
-          console.warn("[ChatPanel] Failed to send server queued message now:", error)
+          console.warn(
+            "[ChatPanel] Failed to send server queued message now:",
+            error,
+          )
         })
         return
       }
@@ -5641,18 +5643,21 @@ const ChatPanelContent = observer(function ChatPanelContent({
         try {
           wireText = await enrichMessage(trimmedContent)
         } catch (error) {
-          console.warn("[ChatPanel] enrichMessage failed for queued message:", error)
+          console.warn(
+            "[ChatPanel] enrichMessage failed for queued message:",
+            error,
+          )
         }
       }
 
-      const body: Record<string, unknown> = {
+      const planToSend = confirmedPlanRef.current
+      confirmedPlanRef.current = null
+      const body = buildChatSendBody({
         featureId,
         phase,
         chatSessionId: currentSessionId,
         chatSessionName:
-          (currentSession as any)?.name ||
-          (currentSession as any)?.inferredName ||
-          undefined,
+          (currentSession as any)?.name || (currentSession as any)?.inferredName,
         workspaceId,
         userId,
         projectId,
@@ -5660,28 +5665,21 @@ const ChatPanelContent = observer(function ChatPanelContent({
         agentMode: perMsgModel || selectedModel,
         interactionMode: interactionModeRef.current,
         dualPlan: dualPlanRef.current,
-        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-        text: wireText,
         viewer: canvasViewerPayload({
           isPhoneViewport,
           platform: Platform.OS,
           width: windowWidth,
         }),
-      }
-      const planToSend = confirmedPlanRef.current
-      if (planToSend) {
-        body.confirmedPlan = normalizePlanData(planToSend)
-        body.interactionMode = "agent"
-        confirmedPlanRef.current = null
-      }
-      if (
-        ideMode &&
-        (ideBridge.context.activeFile ||
-          ideBridge.context.workspaceFolders.length > 0)
-      ) {
-        body.ideContext = ideBridge.context
-      }
-      if (references && references.length > 0) body.references = references
+        confirmedPlan: planToSend,
+        ideContext:
+          ideMode &&
+          (ideBridge.context.activeFile ||
+            ideBridge.context.workspaceFolders.length > 0)
+            ? ideBridge.context
+            : undefined,
+        references,
+        extra: { text: wireText },
+      })
 
       await serverQueue.enqueue({
         content: trimmedContent,
@@ -6342,7 +6340,9 @@ const ChatPanelContent = observer(function ChatPanelContent({
       if (!msg) return
       const parts = ((msg as any).parts ?? []) as any[]
       const textPart = parts.find((p: any) => p?.type === "text")
-      const content = textPart?.text || extractTextContent(msg) || ""
+      const content = stripAskUserAnswerMarker(
+        textPart?.text || extractTextContent(msg) || "",
+      )
       const fileParts = parts.filter((p: any) => p?.type === "file" && p?.url)
       const files: FileAttachment[] | undefined =
         fileParts.length > 0
@@ -6678,7 +6678,9 @@ const ChatPanelContent = observer(function ChatPanelContent({
   const handleSubmitQuestionResponse = useCallback(
     (response: string) => {
       if (!pendingQuestion) return
-      handleSendMessage(response)
+      handleSendMessage(
+        buildAskUserAnswerMessage(pendingQuestion.tool.id, response),
+      )
       handleSaveToolOutput({
         messageId: pendingQuestion.messageId,
         toolCallId: pendingQuestion.tool.id,
@@ -6687,6 +6689,188 @@ const ChatPanelContent = observer(function ChatPanelContent({
     },
     [pendingQuestion, handleSendMessage, handleSaveToolOutput],
   )
+
+  const respondToPermission = useCallback(
+    async (response: {
+      id: string
+      decision: "allow_once" | "always_allow" | "deny"
+      pattern?: string
+    }) => {
+      setPendingPermissionRequest(null)
+      try {
+        if (projectId) {
+          const http = createHttpClient()
+          await api.sendPermissionResponse(http, projectId, response)
+        }
+      } catch (err) {
+        console.error(
+          "[ChatPanel] Failed to send permission response:",
+          err,
+        )
+      }
+    },
+    [projectId],
+  )
+
+  const islandPending = useMemo<IslandPendingRequest | undefined>(() => {
+    const rawQuestionArgs =
+      (pendingQuestion?.tool.args as Record<string, unknown> | undefined) ?? {}
+    const questions = Array.isArray(rawQuestionArgs.questions)
+      ? rawQuestionArgs.questions
+      : []
+    const firstQuestion =
+      questions[0] && typeof questions[0] === "object"
+        ? (questions[0] as Record<string, unknown>)
+        : null
+    const questionOptions = Array.isArray(firstQuestion?.options)
+      ? firstQuestion.options
+          .filter(
+            (option): option is Record<string, unknown> =>
+              !!option && typeof option === "object",
+          )
+          .map((option) => ({
+            label: typeof option.label === "string" ? option.label : "",
+            description:
+              typeof option.description === "string"
+                ? option.description
+                : undefined,
+          }))
+          .filter((option) => option.label.length > 0)
+      : []
+
+    if (pendingPermissionRequest) {
+      return {
+        kind: "permission",
+        request: pendingPermissionRequest,
+      }
+    }
+    if (!pendingQuestion) return undefined
+    return {
+      kind: "question",
+      request: {
+        id: pendingQuestion.tool.id,
+        prompt:
+          typeof firstQuestion?.question === "string"
+            ? firstQuestion.question
+            : "Shogo needs your answer",
+        options: questionOptions,
+        // The island submits a bare option label, which only matches the
+        // widget's response format for one single-select question.
+        answerInApp:
+          questions.length !== 1 ||
+          firstQuestion?.multiSelect === true ||
+          questionOptions.length === 0,
+      },
+    }
+  }, [pendingPermissionRequest, pendingQuestion])
+
+  const islandReplyPreview = useMemo(() => {
+    for (let index = messages.length - 1; index >= 0; index--) {
+      const message = messages[index]
+      if (message.role !== "assistant") continue
+      return message.parts
+        .map((part) => (part.type === "text" ? part.text : ""))
+        .join("")
+    }
+    return ""
+  }, [messages])
+
+  // `pendingPlan` changes identity on every streamed token; the island only
+  // needs the settled plan.
+  const islandPlan = useMemo(() => {
+    if (isStreaming || !pendingPlan) return undefined
+    return {
+      name: pendingPlan.name,
+      overview: pendingPlan.overview,
+      plan: pendingPlan.plan,
+      todos: pendingPlan.todos ?? [],
+      ...(pendingPlan.filepath ? { filepath: pendingPlan.filepath } : {}),
+      ...(pendingPlan.toolCallId ? { toolCallId: pendingPlan.toolCallId } : {}),
+    }
+  }, [isStreaming, pendingPlan])
+
+  const islandState = useMemo<DesktopIslandSessionState>(
+    () => ({
+      projectName: featureName ?? "Project",
+      title: currentSession?.name ?? featureName ?? "Untitled chat",
+      status: isStreaming ? "running" : "idle",
+      replyPreview: islandReplyPreview,
+      pending: islandPending,
+      pendingPlan: islandPlan,
+      focused: isActivePanel,
+    }),
+    [
+      currentSession?.name,
+      featureName,
+      isStreaming,
+      islandReplyPreview,
+      islandPending,
+      islandPlan,
+      isActivePanel,
+    ],
+  )
+  const islandStateRef = useRef(islandState)
+  islandStateRef.current = islandState
+
+  const islandSendRef = useRef<
+    (text: string, files?: FileAttachment[]) => void | Promise<void>
+  >(() => {})
+  const islandPermissionRef = useRef<
+    (
+      requestId: string,
+      decision: "allow_once" | "always_allow" | "deny",
+      pattern?: string,
+    ) => void | Promise<void>
+  >(() => {})
+  const islandQuestionRef = useRef<
+    (requestId: string, response: string) => void | Promise<void>
+  >(() => {})
+  const islandStopRef = useRef<() => void>(() => {})
+  const islandBuildPlanRef = useRef<(modelId?: string) => void>(() => {})
+  const islandPlanFeedbackRef = useRef<(text: string) => void>(() => {})
+  islandStopRef.current = handleStop
+  islandBuildPlanRef.current = (modelId) => {
+    if (pendingPlanRef.current) handleConfirmPlan(pendingPlanRef.current, modelId)
+  }
+  islandPlanFeedbackRef.current = (text) => {
+    handleInteractionModeChange("plan")
+    handleSendMessage(text)
+  }
+  islandSendRef.current = (text, files) => handleSendMessage(text, files)
+  islandPermissionRef.current = (requestId, decision, pattern) =>
+    respondToPermission({ id: requestId, decision, pattern })
+  islandQuestionRef.current = (requestId, response) => {
+    if (requestId === pendingQuestion?.tool.id) {
+      handleSubmitQuestionResponse(response)
+    }
+  }
+
+  // Register this chat with the desktop island. The registration is a no-op
+  // on web/mobile, but on Electron it lets the overlay reuse the exact same
+  // send, permission and ask-user paths as the in-window composer.
+  useEffect(() => {
+    if (!projectId || !currentSessionId) return
+    return registerDesktopIslandSession({
+      sessionId: currentSessionId,
+      projectId,
+      ...islandStateRef.current,
+      sendMessage: (text, files) => islandSendRef.current(text, files),
+      respondPermission: (requestId, decision, pattern) =>
+        islandPermissionRef.current(requestId, decision, pattern),
+      respondQuestion: (requestId, response) =>
+        islandQuestionRef.current(requestId, response),
+      stop: () => islandStopRef.current(),
+      buildPlan: (modelId) => islandBuildPlanRef.current(modelId),
+      sendPlanFeedback: (text) => islandPlanFeedbackRef.current(text),
+    })
+  }, [currentSessionId, projectId])
+
+  // Streaming ticks and activity transitions update the existing
+  // registration instead of re-registering the session.
+  useEffect(() => {
+    if (!projectId || !currentSessionId) return
+    updateDesktopIslandSession(projectId, currentSessionId, islandState)
+  }, [currentSessionId, islandState, projectId])
 
   // Stable session summary so a new object literal isn't allocated each
   // render even when the underlying session id/name haven't changed.
@@ -6852,24 +7036,11 @@ const ChatPanelContent = observer(function ChatPanelContent({
       render: () => (
         <PermissionApprovalDialog
           request={pendingPermissionRequest}
-          onRespond={async (response) => {
-            setPendingPermissionRequest(null)
-            try {
-              if (projectId) {
-                const http = createHttpClient()
-                await api.sendPermissionResponse(http, projectId, response)
-              }
-            } catch (err) {
-              console.error(
-                "[ChatPanel] Failed to send permission response:",
-                err,
-              )
-            }
-          }}
+          onRespond={respondToPermission}
         />
       ),
     }
-  }, [pendingPermissionRequest, projectId])
+  }, [pendingPermissionRequest, respondToPermission])
   useDockPanel(permissionDockDescriptor, chatDockStore)
 
   const questionDockDescriptor = useMemo<DockPanelDescriptor | null>(() => {
@@ -6899,18 +7070,30 @@ const ChatPanelContent = observer(function ChatPanelContent({
 
   const connectivityDockDescriptor = useMemo<DockPanelDescriptor | null>(() => {
     if (!((connectivityWait || justReconnected) && !errorDismissed)) return null
+    const providerWait = !justReconnected && connectivityWait?.cause === "provider"
+    const elapsedSuffix = connectivityWaitElapsedLabel
+      ? ` (${connectivityWaitElapsedLabel})`
+      : ""
     return {
       id: "connectivity",
       kind: "blocking",
       order: 2,
-      title: justReconnected ? "Back online" : "Waiting for connection",
-      icon: WifiOff,
+      title: justReconnected
+        ? "Back online"
+        : providerWait
+          ? "Retrying model request"
+          : "Waiting for connection",
+      icon: providerWait || justReconnected ? RefreshCw : WifiOff,
       accent: "warning",
       headerActions: !justReconnected ? (
         <Pressable
           onPress={handleStop}
           accessibilityRole="button"
-          accessibilityLabel="Cancel and stop waiting for connection"
+          accessibilityLabel={
+            providerWait
+              ? "Cancel and stop retrying the model request"
+              : "Cancel and stop waiting for connection"
+          }
           className="shrink-0 rounded-md border border-orange-400/30 px-2 py-1"
         >
           <Text className="text-xs font-medium text-orange-700 dark:text-orange-300">
@@ -6920,7 +7103,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
       ) : undefined,
       render: () => (
         <View className="flex-row items-start gap-1.5">
-          {justReconnected ? (
+          {justReconnected || providerWait ? (
             <RefreshCw
               size={14}
               className="h-3.5 w-3.5 shrink-0 mt-0.5 text-orange-600 dark:text-orange-400"
@@ -6934,11 +7117,13 @@ const ChatPanelContent = observer(function ChatPanelContent({
           <Text className="flex-1 text-xs text-orange-700 dark:text-orange-300">
             {justReconnected
               ? "Back online — resuming\u2026"
-              : `No internet connection. Waiting to resume${
-                  connectivityWaitElapsedLabel
-                    ? ` (${connectivityWaitElapsedLabel})`
-                    : ""
-                }\u2026`}
+              : providerWait
+                ? `${
+                    connectivityWait?.reason === "overloaded"
+                      ? "The model is overloaded right now."
+                      : "The model provider isn't responding."
+                  } Retrying automatically${elapsedSuffix}\u2026`
+                : `No internet connection. Waiting to resume${elapsedSuffix}\u2026`}
           </Text>
         </View>
       ),
@@ -7009,7 +7194,12 @@ const ChatPanelContent = observer(function ChatPanelContent({
         </Text>
       ),
     }
-  }, [usageLimitNotice, currentSessionId, handleUpgradeClick, handleSendMessage])
+  }, [
+    usageLimitNotice,
+    currentSessionId,
+    handleUpgradeClick,
+    handleSendMessage,
+  ])
   useDockPanel(usageLimitDockDescriptor, chatDockStore)
 
   const toolErrorDockDescriptor = useMemo<DockPanelDescriptor | null>(() => {

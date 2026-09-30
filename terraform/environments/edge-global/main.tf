@@ -113,8 +113,8 @@ module "preview_router" {
 #
 # Scope is by auth TYPE, not auth presence: this covers the machine-to-machine
 # / API-key (`shogo_sk_*`) surface — the endpoints the codebase itself treats
-# as key-authenticated and session-exempt (see the `publicPrefixes` list in
-# apps/api/src/server.ts and `PUBLIC_PREFIXES` in middleware/auth.ts). These
+# as key-authenticated and session-exempt (see `PUBLIC_PREFIXES` in
+# apps/api/src/middleware/auth.ts and middleware/api-auth-gate.ts). These
 # carry programmatic traffic authenticated by an `x-api-key` / `Authorization:
 # Bearer shogo_sk_*` key at the origin (apps/api resolveApiKey) and rate-limited
 # there, so bot/IP challenges add false positives with no security benefit:

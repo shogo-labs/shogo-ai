@@ -96,6 +96,7 @@ mock.module('../lib/project-user-context', () => ({
 
 mock.module('../lib/cloud-key-wipe', () => ({
   wipeCloudKey: async () => {},
+  wipeCloudKeyIfRejected: async () => ({ wiped: false }),
 }))
 
 // The route import reaches the worker runtime manager through the normal

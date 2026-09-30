@@ -9,7 +9,7 @@
  */
 
 import type { UIMessage } from "@ai-sdk/react";
-import type { ToolCallData } from "../tools/types";
+import type { AskUserQuestionItem, ToolCallData } from "../tools/types";
 
 /**
  * Normalized message part for interleaved rendering.
@@ -67,6 +67,12 @@ export type GroupedMessagePart =
       id: string;
     };
 
+export interface AnsweredQuestion {
+  toolCallId: string;
+  questions: AskUserQuestionItem[];
+  response: string;
+}
+
 /**
  * A conversation turn groups a user message with its subsequent
  * assistant response and any tool calls in between.
@@ -76,6 +82,8 @@ export interface ConversationTurn {
   id: string;
   /** The initiating user message */
   userMessage: UIMessage | null;
+  /** Structured recap metadata for a user answer to an ask_user card */
+  answeredQuestion?: AnsweredQuestion;
   /** The assistant's response message */
   assistantMessage: UIMessage | null;
   /** Tool calls associated with this turn (flat array for summary/counts) */

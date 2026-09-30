@@ -29,7 +29,8 @@ import { loadAllSkills, migrateFromLegacySkills, matchSkill, buildSkillsPromptSe
 import { loadQuickActions, buildQuickActionsPromptSection, type QuickAction } from './quick-actions'
 import { SkillServerManager } from './skill-server-manager'
 import { setLoadedSkills } from './gateway-tools'
-import { runAgentLoop, classifyRetryability, type LoopDetectorConfig } from './agent-loop'
+import { runAgentLoop, classifyRetryability, RetryWaker, type LoopDetectorConfig } from './agent-loop'
+import { LONG_RETRY_MS, recordRetryEpisode, recordRetryLong, recordRetryNoProgress, recordRetryNow } from './retry-telemetry'
 import type { ToolContext } from './gateway-tools'
 import { createTools, textResult, filterDisabledCapabilityTools, filterSubagentOnlyTools, expectedCoreToolsForAgentMode, createModeUnavailableTool, type RestrictedMode } from './gateway-tools'
 import { PermissionEngine, parseSecurityPolicy } from './permission-engine'
@@ -199,6 +200,29 @@ function parseAutoTierOverride(raw: string | undefined): AutoTierOverride | unde
     out[tier] = { id, provider, upstream }
   }
   return Object.keys(out).length > 0 ? out : undefined
+}
+
+const FALLBACK_SUMMARIZER_MODEL = { id: 'claude-haiku-4-5', provider: 'anthropic' }
+
+/**
+ * Parse the admin-injected `AGENT_SUMMARIZER_MODEL` env var (`{ id, provider }`
+ * JSON, resolved by the API server from the `summarizer.model` setting).
+ * Falls back to Haiku on Anthropic when unset or malformed — e.g. a desktop
+ * connected to a cloud that predates the setting.
+ */
+export function resolveSummarizerModel(raw: string | undefined): { id: string; provider: string } {
+  if (!raw) return FALLBACK_SUMMARIZER_MODEL
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>
+    const id = typeof parsed?.id === 'string' ? parsed.id.trim() : ''
+    if (!id) return FALLBACK_SUMMARIZER_MODEL
+    const provider = typeof parsed.provider === 'string' && parsed.provider.trim()
+      ? parsed.provider.trim()
+      : inferProviderFromModel(id, 'anthropic')
+    return { id, provider }
+  } catch {
+    return FALLBACK_SUMMARIZER_MODEL
+  }
 }
 
 type AutoTierCeiling = 'economy' | 'standard' | 'premium'
@@ -1102,12 +1126,17 @@ export class AgentGateway {
       })
     })
 
-    // Wire up LLM-powered summarization for context compaction
+    // Wire up LLM-powered summarization for context compaction. The model is
+    // the admin-selected summarizer (Hoshi 2.0 by default) and must run on its
+    // own provider, never the session's: the proxy routes by provider, so a
+    // mismatched pair sends the model to the wrong upstream.
+    const summarizerModel = resolveSummarizerModel(process.env.AGENT_SUMMARIZER_MODEL)
+    console.log(`[AgentGateway] Summarizer model: ${summarizerModel.id} (provider=${summarizerModel.provider})`)
     this.sessionManager.setSummarizeFn(async (messages) => {
       const { resolveModel: rm, resolveApiKey: rak } = await import('./pi-adapter')
       const { runAgentLoop: summarizeLoop } = await import('./agent-loop')
-      const provider = this.config.model.provider
-      const apiKey = rak(provider)
+      const provider = summarizerModel.provider
+      const apiKey = rak(rm(provider, summarizerModel.id).provider)
       if (!apiKey) throw new Error('No API key for summarization')
 
       const messageTexts = messages.map(m => {
@@ -1128,7 +1157,7 @@ export class AgentGateway {
 
       const result = await summarizeLoop({
         provider,
-        model: 'claude-haiku-4-5',
+        model: summarizerModel.id,
         system: 'Summarize the following conversation excerpt concisely. Preserve: key decisions, files edited, errors encountered, and current task state. Be factual and specific. Output only the summary.',
         history: [],
         prompt: messageTexts.substring(0, 12000),
@@ -2258,6 +2287,7 @@ export class AgentGateway {
       indexEngine: this.indexEngine ?? undefined,
       workspaceGraph: this.workspaceGraph ?? undefined,
       effectiveModel: modelId,
+      effectiveProvider: provider,
       autoRouting,
       autoTierOverride: this.autoTierOverride,
       dualPlan,
@@ -2675,6 +2705,48 @@ export class AgentGateway {
       emitAssistantText(linkRewriter.flush())
     }
 
+    // A dropped model call is being re-issued. Close any in-progress
+    // text/reasoning block so the client can drop the failed step's partial
+    // deltas, then emit an explicit marker the client + the API-side
+    // accumulator key on to reset (avoids concatenating the discarded partial
+    // with the regenerated output).
+    const discardFailedStep = (retry: { attempt: number; maxAttempts?: number; reason: string; delayMs: number }) => {
+      // Drop any text the rewriter was holding from the failed attempt and
+      // reset its scanner state so the regenerated output starts clean.
+      linkRewriter = new LocalhostLinkRewriter(previewPublicUrl)
+      if (uiWriter && uiTextId) {
+        uiWriter.write({ type: 'text-end', id: uiTextId })
+        uiTextId = null
+      }
+      if (uiWriter && uiReasoningId) {
+        uiWriter.write({ type: 'reasoning-end', id: uiReasoningId })
+        uiReasoningId = null
+      }
+      if (uiWriter) {
+        uiWriter.write({ type: 'data-inference-retry', data: retry } as any)
+      }
+    }
+
+    // True between a provider-backoff heartbeat and the re-issued call's first
+    // output, so the client's "retrying" banner clears as soon as the model
+    // is producing again.
+    let providerBackoffActive = false
+    // Telemetry flags, reset per retry episode.
+    let longRetryReported = false
+    let noProgressReported = false
+    const retryCtx = () => ({ sessionId, model: modelId, provider })
+    const endProviderBackoff = () => {
+      if (!providerBackoffActive) return
+      providerBackoffActive = false
+      if (uiWriter) {
+        uiWriter.write({
+          type: 'data-connectivity-wait',
+          data: { state: 'reconnected', cause: 'provider' },
+          transient: true,
+        } as any)
+      }
+    }
+
     // Gate map: onBeforeToolCall stores a promise per toolCallId that
     // resolves once the tool-input-start SSE events have had time to
     // flush to the client.  onAfterToolCall awaits this promise before
@@ -2687,6 +2759,8 @@ export class AgentGateway {
 
     const turnAbort = new AbortController()
     this.turnAbortControllers.set(sessionId, turnAbort)
+    const retryWaker = new RetryWaker()
+    this.retryWakers.set(sessionId, retryWaker)
 
     // Stream live process-list updates to the UI for the duration of this turn.
     // The registry persists across turns; this subscription is per-turn so it
@@ -3105,6 +3179,12 @@ export class AgentGateway {
           autoRouting ? undefined : this.config.model.thinkingLevel,
         ),
         signal: turnAbort.signal,
+        inferenceRetry: { waker: retryWaker },
+        onRetryEpisodeEnd: (summary) => {
+          longRetryReported = false
+          noProgressReported = false
+          recordRetryEpisode(retryCtx(), summary)
+        },
         extraHeaders,
         onContextOverflow: async () => {
           console.warn(`${this.logPrefix} Layer 5: Reactive compaction for session ${sessionId}`)
@@ -3168,6 +3248,7 @@ export class AgentGateway {
           }
         },
         onThinkingStart: () => {
+          endProviderBackoff()
           if (uiWriter) {
             uiReasoningId = `reasoning-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
             uiWriter.write({ type: 'reasoning-start', id: uiReasoningId })
@@ -3185,37 +3266,17 @@ export class AgentGateway {
           }
         },
         onTextDelta: (delta) => {
+          endProviderBackoff()
           runningContextEstimate += Math.ceil(delta.length / 4)
           emitAssistantText(linkRewriter.push(delta))
         },
         onInferenceRetry: (info) => {
-          // The dropped model call is being re-issued. Close any in-progress
-          // text/reasoning block so the client can drop the failed step's
-          // partial deltas, then emit an explicit marker the client + the
-          // API-side accumulator key on to reset (avoids concatenating the
-          // discarded partial with the regenerated output).
-          // Drop any text the rewriter was holding from the failed attempt and
-          // reset its scanner state so the regenerated output starts clean.
-          linkRewriter = new LocalhostLinkRewriter(previewPublicUrl)
-          if (uiWriter && uiTextId) {
-            uiWriter.write({ type: 'text-end', id: uiTextId })
-            uiTextId = null
-          }
-          if (uiWriter && uiReasoningId) {
-            uiWriter.write({ type: 'reasoning-end', id: uiReasoningId })
-            uiReasoningId = null
-          }
-          if (uiWriter) {
-            uiWriter.write({
-              type: 'data-inference-retry',
-              data: {
-                attempt: info.attempt,
-                maxAttempts: info.maxAttempts,
-                reason: info.reason,
-                delayMs: info.delayMs,
-              },
-            } as any)
-          }
+          discardFailedStep({
+            attempt: info.attempt,
+            maxAttempts: info.maxAttempts,
+            reason: info.reason,
+            delayMs: info.delayMs,
+          })
           console.warn(
             `${this.logPrefix} Inference retry ${info.attempt}/${info.maxAttempts} ` +
               `(reason=${info.reason}, delay=${info.delayMs}ms) for session ${sessionId}`,
@@ -3231,11 +3292,16 @@ export class AgentGateway {
         // connection (and the buffer replay a reconnecting client resumes
         // into) alive instead of looking dead.
         onConnectivityWait: (info) => {
+          if (info.elapsedMs >= LONG_RETRY_MS && !longRetryReported) {
+            longRetryReported = true
+            recordRetryLong(retryCtx(), { layer: 'connectivity_park', reason: 'network', attempt: info.attempt, elapsedMs: info.elapsedMs })
+          }
           if (uiWriter) {
             uiWriter.write({
               type: 'data-connectivity-wait',
               data: {
                 state: 'waiting',
+                cause: 'offline',
                 attempt: info.attempt,
                 elapsedMs: info.elapsedMs,
                 nextProbeInMs: info.nextProbeInMs,
@@ -3263,7 +3329,57 @@ export class AgentGateway {
           }
           console.warn(`${this.logPrefix} Connectivity restored — resuming turn for session ${sessionId}`)
         },
+        // Layer 8: provider backoff. The network is up but the provider keeps
+        // failing; the loop is waiting `delayMs` before re-issuing. Each tick is
+        // at most 30s apart, which also keeps the stream alive while waiting.
+        onProviderBackoff: (info) => {
+          discardFailedStep({
+            attempt: info.attempt,
+            reason: info.reason,
+            delayMs: info.delayMs,
+          })
+          providerBackoffActive = true
+          if (info.elapsedMs >= LONG_RETRY_MS && !longRetryReported) {
+            longRetryReported = true
+            recordRetryLong(retryCtx(), {
+              layer: 'provider_backoff',
+              reason: info.reason,
+              attempt: info.attempt,
+              elapsedMs: info.elapsedMs,
+              error: info.error,
+            })
+          }
+          if (info.suspectedDeterministic && !noProgressReported) {
+            noProgressReported = true
+            recordRetryNoProgress(retryCtx(), {
+              reason: info.reason,
+              attempt: info.attempt,
+              elapsedMs: info.elapsedMs,
+              error: info.error,
+            })
+          }
+          if (uiWriter) {
+            uiWriter.write({
+              type: 'data-connectivity-wait',
+              data: {
+                state: 'waiting',
+                cause: 'provider',
+                reason: info.reason,
+                attempt: info.attempt,
+                elapsedMs: info.elapsedMs,
+                nextProbeInMs: info.delayMs,
+                suspectedDeterministic: info.suspectedDeterministic,
+              },
+              transient: true,
+            } as any)
+          }
+          console.warn(
+            `${this.logPrefix} Provider backoff ${info.attempt} (reason=${info.reason}, ` +
+              `elapsed ${Math.round(info.elapsedMs / 1000)}s, retry in ${Math.round(info.delayMs / 1000)}s) for session ${sessionId}`,
+          )
+        },
         onToolCallStart: (toolName, toolCallId) => {
+          endProviderBackoff()
           this._lastTool = toolName
           flushAssistantText()
           if (uiWriter && uiTextId) {
@@ -3697,6 +3813,7 @@ export class AgentGateway {
       return `Sorry, I encountered an error processing your message. Please try again.`
     } finally {
       this.turnAbortControllers.delete(sessionId)
+      if (this.retryWakers.get(sessionId) === retryWaker) this.retryWakers.delete(sessionId)
       if (typingInterval) clearInterval(typingInterval)
       for (const timer of toolHeartbeatTimers.values()) {
         clearInterval(timer)
@@ -5304,6 +5421,20 @@ export class AgentGateway {
    *  turn's prompt is built before the abortee's last few messages settle.
    */
   private turnLocks = new Map<string, Promise<unknown>>()
+
+  /** Per-session waker for the active turn's retry backoff ("Retry now"). */
+  private retryWakers = new Map<string, RetryWaker>()
+
+  /**
+   * Cut the active turn's retry backoff short so the dropped model call is
+   * re-issued now. Returns false when no turn is running for the session.
+   */
+  wakeRetry(sessionId: string): boolean {
+    const waker = this.retryWakers.get(sessionId)
+    waker?.wake()
+    recordRetryNow({ sessionId, model: this.config.model.name }, !!waker)
+    return !!waker
+  }
 
   abortCurrentTurn(sessionId: string): boolean {
     // Release the lock so a new user message on this session can start

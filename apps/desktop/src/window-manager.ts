@@ -142,6 +142,12 @@ export class WindowManager {
     return true
   }
 
+  sendToAllWindows(channel: string, ...args: unknown[]): void {
+    for (const { browserWindow } of this.windows.values()) {
+      if (!browserWindow.isDestroyed()) browserWindow.webContents.send(channel, ...args)
+    }
+  }
+
   sendToPrimaryWindow(channel: string, ...args: unknown[]): boolean {
     const window = this.getPrimaryWindow()
     return window ? this.sendToWindow(window.id, channel, ...args) : false
@@ -202,22 +208,27 @@ export class WindowManager {
       }
     })
 
-    window.webContents.setWindowOpenHandler(({ url }) => {
+    installAppNavigationGuards(window.webContents)
+  }
+}
+
+/** Keeps app windows on the app origin; external links open in the browser. */
+export function installAppNavigationGuards(webContents: WebContents): void {
+  webContents.setWindowOpenHandler(({ url }) => {
+    if (url.startsWith('http://') || url.startsWith('https://')) {
+      shell.openExternal(url)
+    }
+    return { action: 'deny' }
+  })
+
+  webContents.on('will-navigate', (event, url) => {
+    const appOrigins = ['shogo://app', 'http://localhost', 'http://127.0.0.1']
+    const isInternal = appOrigins.some((origin) => url.startsWith(origin))
+    if (!isInternal) {
+      event.preventDefault()
       if (url.startsWith('http://') || url.startsWith('https://')) {
         shell.openExternal(url)
       }
-      return { action: 'deny' }
-    })
-
-    window.webContents.on('will-navigate', (event, url) => {
-      const appOrigins = ['shogo://app', 'http://localhost', 'http://127.0.0.1']
-      const isInternal = appOrigins.some((origin) => url.startsWith(origin))
-      if (!isInternal) {
-        event.preventDefault()
-        if (url.startsWith('http://') || url.startsWith('https://')) {
-          shell.openExternal(url)
-        }
-      }
-    })
-  }
+    }
+  })
 }

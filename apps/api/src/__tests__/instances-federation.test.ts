@@ -406,25 +406,53 @@ describe('ALL /instances/:id/p/* — federated transparent proxy', () => {
 // ─── 401 → cloudKeyRejected wiring ─────────────────────────────────────────
 
 describe('401 from cloud flips cloudKeyRejected', () => {
-  test('a forwarded 401 surfaces through /api/local/cloud-login/status', async () => {
-    // Trigger a 401 via the federated detail handler.
-    installFetch(() => jsonResp({ error: 'unauthorized' }, 401))
-    const res = await buildApp().fetch(new Request('http://x/api/instances/remote-only'))
-    // The forwarded 401 is propagated to the client as-is.
-    expect(res.status).toBe(401)
-
-    // The local-auth status route should now report cloudKeyRejected:true
-    // because the federated module emitted an onUpstreamRejection event
-    // which local-auth subscribes to at module load (installed above).
+  async function readStatus(): Promise<any> {
     localConfigMap.set('SHOGO_API_KEY', 'shogo_sk_test')
     const authApp = new Hono()
     authApp.route('/api', localAuthRoutes())
-    const statusRes = await authApp.fetch(new Request('http://x/api/local/cloud-login/status'))
-    expect(statusRes.status).toBe(200)
-    const body = (await statusRes.json()) as any
-    expect(body.cloudKeyRejected).toBe(true)
+    const res = await authApp.fetch(new Request('http://x/api/local/cloud-login/status'))
+    expect(res.status).toBe(200)
+    return res.json()
+  }
 
-    // Reset the flag by calling signout so subsequent tests don't see it.
+  async function signOut(): Promise<void> {
+    const authApp = new Hono()
+    authApp.route('/api', localAuthRoutes())
     await authApp.fetch(new Request('http://x/api/local/cloud-login/signout', { method: 'POST' }))
+  }
+
+  async function waitForValidateCall(): Promise<void> {
+    for (let i = 0; i < 50; i++) {
+      if (fetchCalls.some((call) => call.url.endsWith('/api/api-keys/validate'))) break
+      await new Promise((resolve) => setTimeout(resolve, 1))
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1))
+  }
+
+  function install401(valid: boolean): void {
+    installFetch((url) => url.endsWith('/api/api-keys/validate')
+      ? jsonResp({ valid })
+      : jsonResp({ error: 'unauthorized' }, 401))
+  }
+
+  test('a forwarded 401 surfaces through /api/local/cloud-login/status once cloud confirms it', async () => {
+    install401(false)
+    const res = await buildApp().fetch(new Request('http://x/api/instances/remote-only'))
+    // The forwarded 401 is propagated to the client as-is.
+    expect(res.status).toBe(401)
+    await waitForValidateCall()
+
+    expect((await readStatus()).cloudKeyRejected).toBe(true)
+    await signOut()
+  })
+
+  test('a forwarded 401 leaves the flag clear when cloud still reports the key valid', async () => {
+    install401(true)
+    const res = await buildApp().fetch(new Request('http://x/api/instances/remote-only'))
+    expect(res.status).toBe(401)
+    await waitForValidateCall()
+
+    expect((await readStatus()).cloudKeyRejected).toBe(false)
+    await signOut()
   })
 })

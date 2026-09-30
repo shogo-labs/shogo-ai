@@ -29,12 +29,13 @@ import { FileViewerModal } from "../FileViewerModal"
 import { ChatImageContextMenu, ImagePreviewModal } from "../ImagePreviewModal"
 import { VideoPreviewModal } from "../VideoPreviewModal"
 import { downloadImage, isShogoDesktop } from "../chatImageActions"
-import { usePhoneLayout } from "../../../lib/native-phone-layout"
+import { usePhoneLayout, usePhoneLayoutOverride } from "../../../lib/native-phone-layout"
 import { useMobileWorkspaceChrome } from "../../layout/MobileWorkspaceChromeContext"
 import { resolveChatAttachmentUrl } from "../../../lib/chat-attachment-url"
 import { useAgentImageSource } from "../../../lib/agent-image-source"
 import { clampAspectRatio, DEFAULT_IMAGE_ASPECT } from "./image-sizing"
 import { useChatImageWidth } from "./use-chat-image-width"
+import { stripAskUserAnswerMarker } from "./askUserAnswers"
 
 export interface MessageContentProps {
   message: UIMessage
@@ -413,13 +414,16 @@ export function MessageContent({
 }: MessageContentProps) {
   const isPhoneLayout = usePhoneLayout()
   const usesMobileWorkspaceChrome = useMobileWorkspaceChrome()
+  const phoneLayoutOverride = usePhoneLayoutOverride()
   const { width: viewportWidth } = useWindowDimensions()
   const usesMobileChatTypography =
-    isPhoneLayout || usesMobileWorkspaceChrome || viewportWidth < 640
-  const content = extractTextContent(message)
+    isPhoneLayout || usesMobileWorkspaceChrome || (phoneLayoutOverride === null && viewportWidth < 640)
   const images = extractImageParts(message)
   const files = extractFileParts(message)
   const isUser = message.role === "user"
+  const content = isUser
+    ? stripAskUserAnswerMarker(extractTextContent(message))
+    : extractTextContent(message)
   const userBubble = isUser && variant === "userBubble"
   // Only show the preview card when there's genuinely long typed text and no
   // file attachments. When file chips are present the text body is just the

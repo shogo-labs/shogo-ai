@@ -45,6 +45,10 @@ import {
   cleanupRecording,
   startRecordingHttpBridge,
   setRecordingWindowResolver,
+  getMeetingState,
+  onMeetingStateChange,
+  respondToMeeting,
+  setMeetingPromptPresenter,
 } from './recording'
 import { registerFsIpcHandlers } from './fs-ipc'
 import { registerGitIpcHandlers, disposeGitIpc } from './git/ipc'
@@ -57,6 +61,7 @@ import { registerPortsIpcHandlers, disposePortsIpcHandlers } from './ipc/ports-i
 import { registerExtensionsIpcHandlers, disposeExtensionsIpcHandlers } from './extensions/ipc'
 import { createTray, destroyTray } from './tray'
 import { WindowManager } from './window-manager'
+import { IslandWindow } from './island-window'
 import { runCloudLogin, CloudLoginError } from '@shogo-ai/worker/cloud-login'
 import {
   openPreview,
@@ -200,8 +205,18 @@ app.on('second-instance', () => {
 
 const IS_DEV = !app.isPackaged
 
+let islandWindow: IslandWindow | null = null
 const windowManager = new WindowManager({
-  onWindowClosed: (window) => closeAllForWindow(window),
+  onWindowClosed: (window) => {
+    closeAllForWindow(window)
+    // The island is itself a BrowserWindow, so `window-all-closed` never
+    // fires while it's alive; quit here once the last app window goes.
+    if (!windowManager.hasWindows() && process.platform !== 'darwin') {
+      islandWindow?.destroy()
+      islandWindow = null
+      app.quit()
+    }
+  },
 })
 setRecordingWindowResolver(() => windowManager.getPrimaryWindow())
 
@@ -924,7 +939,7 @@ function loadAppWindow(window: BrowserWindow, pathWithQuery = '/'): void {
   const url = getAppWindowUrl(pathWithQuery)
   window.loadURL(url).catch(() => {
     if (!isCloudMode && IS_DEV) {
-      loadProductionWeb(window)
+      loadProductionWeb(window, pathWithQuery)
     }
   })
 }
@@ -1152,6 +1167,10 @@ function buildAppMenu(): void {
 function registerIpcHandlers(): void {
   ipcMain.handle('get-app-mode', () => readConfig().mode)
   ipcMain.handle('get-app-config', () => readConfig())
+  ipcMain.handle('set-island-config', (_event, patch: unknown) => {
+    if (!islandWindow) return { ok: false, error: 'Island is unavailable', config: readConfig().island }
+    return islandWindow.updateConfig(patch)
+  })
   ipcMain.handle('code-workbench:open', (event, options?: { projectId?: string; workspacePath?: string }) => {
     return openCodeWorkbenchWindow(options ?? {}, windowManager.getWindowForWebContents(event.sender))
   })
@@ -1441,7 +1460,7 @@ function createWindow(): void {
   loadAppWindow(windowManager.createPrimaryWindow())
 }
 
-function loadProductionWeb(window: BrowserWindow): void {
+function loadProductionWeb(window: BrowserWindow, pathWithQuery = '/'): void {
   const webDir = getWebDir()
   const indexPath = path.join(webDir, 'index.html')
 
@@ -1451,7 +1470,7 @@ function loadProductionWeb(window: BrowserWindow): void {
     return
   }
 
-  window.loadURL('shogo://app/')
+  window.loadURL(new URL(pathWithQuery, 'shogo://app').toString())
 }
 
 function registerProtocol(): void {
@@ -1752,12 +1771,26 @@ app.whenReady().then(async () => {
   }
 
   createWindow()
+  islandWindow = new IslandWindow(windowManager, {
+    loadApp: (window) => loadAppWindow(window, '/island'),
+    ...(isCloudMode
+      ? {}
+      : {
+          meeting: {
+            getState: getMeetingState,
+            subscribe: onMeetingStateChange,
+            respond: respondToMeeting,
+          },
+        }),
+  })
+  setMeetingPromptPresenter(() => islandWindow?.canPresentMeetingPrompt() ?? false)
 
   if (!isCloudMode) {
     createTray({
       openMeetings: () => {
         windowManager.focusAndNavigatePrimaryWindow('/meetings')
       },
+      setIslandEnabled: (enabled) => islandWindow?.updateConfig({ enabled }),
     })
     startMeetingMonitor()
     startCloudLoginHeartbeat()
@@ -1826,6 +1859,8 @@ app.on('before-quit', (event) => {
   // Flush any queued SigNoz log records before exit (best-effort, never blocks).
   void shutdownSignozLogExporter().catch(() => {})
   if (isQuitting) return
+  islandWindow?.destroy()
+  islandWindow = null
   if (isCloudMode) {
     disposeIdeServers()
     return
