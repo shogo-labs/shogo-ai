@@ -30,6 +30,7 @@ oauth_config:
       - channels:history
       - channels:read
       - chat:write
+      - chat:write.customize
       - files:read
       - files:write
       - groups:history
@@ -52,6 +53,11 @@ settings:
       - app_home_opened
       - app_context_changed
       - message.im
+      # Channel messages are only used while team chat runs on Slack (thread
+      # follow-ups, edits, deletes); the Slack agent ignores them otherwise.
+      - message.channels
+      - message.groups
+      - message.mpim
       - app_mention
       - agent_session_stopped
   interactivity:

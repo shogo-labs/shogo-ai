@@ -12,11 +12,19 @@
  */
 
 import { prisma } from '../../lib/prisma'
-import { getWorkspaceChatConfig, type ExternalChatProvider } from '../chat-mode'
+import { getWorkspaceChatConfig, providerLabel, type ExternalChatProvider } from '../chat-mode'
 import { agentMentionToken } from '../conversation-mentions'
 import { postMessage, updateMessageInternal, type PostMessageResult } from '../conversation.service'
 import { afterMessagePosted, type MessageOrigin } from '../conversation-pipeline'
-import { installationForTenant, linkedUserId } from './installations'
+import {
+  InstallationConflictError,
+  installationForTenant,
+  linkedUserId,
+  linkIdentity,
+  mergeInstallationConfig,
+  upsertInstallation,
+} from './installations'
+import { parseConnectCommand, verifyConnectCode } from './link'
 import {
   externalRefFor,
   type ChannelKind,
@@ -53,9 +61,19 @@ export async function handleInboundEvents(provider: ChatProvider, events: Inboun
 }
 
 export async function handleInboundEvent(provider: ChatProvider, event: InboundEvent): Promise<PostMessageResult | null> {
-  const installation = await installationForTenant(provider.kind, event.tenantId)
+  if (event.type === 'message') {
+    const code = parseConnectCommand(event.text)
+    if (code) {
+      await handleConnect(provider, event, code)
+      return null
+    }
+  }
+  let installation = await installationForTenant(provider.kind, event.tenantId)
   if (!installation || !(await bridgeActive(provider.kind, installation.workspaceId))) return null
-  if (event.type === 'message') return handleMessage(provider, installation, event)
+  if (event.type === 'message') {
+    installation = await refreshReplyContext(installation, event)
+    return handleMessage(provider, installation, event)
+  }
 
   const conversation = await findShadowConversation(installation, event.channelId)
   if (!conversation) return null
@@ -71,6 +89,88 @@ export async function handleInboundEvent(provider: ChatProvider, event: InboundE
     await updateMessageInternal(row.id, { text: '', blocks: null, deletedAt: new Date() })
   }
   return null
+}
+
+/** Keep provider routing data (e.g. the Teams serviceUrl) current; it can change per region. */
+async function refreshReplyContext(installation: ChatInstallationRecord, event: MessageEvent): Promise<ChatInstallationRecord> {
+  const context = event.replyContext ?? {}
+  const changed = Object.entries(context).filter(([k, v]) => v != null && installation.config[k] !== v)
+  if (!changed.length) return installation
+  const patch = Object.fromEntries(changed)
+  await mergeInstallationConfig(installation.id, patch)
+  return { ...installation, config: { ...installation.config, ...patch } }
+}
+
+function replyRef(installation: ChatInstallationRecord, event: MessageEvent, conversationId = ''): ConversationRef {
+  return {
+    workspaceId: installation.workspaceId,
+    conversationId,
+    externalId: event.channelId,
+    threadExternalId: event.channelKind === 'dm' ? event.threadId : event.threadId ?? event.threadKey ?? event.messageId,
+    installation,
+  }
+}
+
+/** `@Shogo connect <code>`: bind this tenant to the Shogo workspace that issued the code. */
+async function handleConnect(provider: ChatProvider, event: MessageEvent, code: string): Promise<void> {
+  const context = event.replyContext ?? {}
+  const provisional: ChatInstallationRecord = {
+    id: '',
+    workspaceId: '',
+    provider: provider.kind,
+    externalTenantId: event.tenantId,
+    tenantName: typeof context.tenantName === 'string' ? context.tenantName : null,
+    botUserId: typeof context.botId === 'string' ? context.botId : null,
+    credentials: {},
+    config: context,
+  }
+  const reply = (installation: ChatInstallationRecord, text: string) =>
+    provider.postMessage(replyRef(installation, event), { text, author: { type: 'system' } })
+      .catch((err) => console.warn(`[ChatInbound] ${provider.kind} connect reply failed:`, (err as Error).message))
+
+  const payload = verifyConnectCode(code)
+  if (!payload || payload.provider !== provider.kind) {
+    await reply(provisional, 'That connect code is invalid or has expired. Get a new one from Shogo settings → Integrations.')
+    return
+  }
+  const admin = await db.member.findFirst({
+    where: { userId: payload.userId, workspaceId: payload.workspaceId, role: { in: ['owner', 'admin'] } },
+    select: { id: true },
+  })
+  if (!admin) {
+    await reply(provisional, 'Only a Shogo workspace admin can connect this app.')
+    return
+  }
+  let installation: ChatInstallationRecord
+  try {
+    installation = await upsertInstallation({
+      workspaceId: payload.workspaceId,
+      provider: provider.kind,
+      externalTenantId: event.tenantId,
+      tenantName: provisional.tenantName,
+      botUserId: provisional.botUserId,
+      config: context,
+      installedByUserId: payload.userId,
+    })
+  } catch (err) {
+    if (err instanceof InstallationConflictError) {
+      await reply(provisional, err.message)
+      return
+    }
+    throw err
+  }
+  await linkIdentity({
+    provider: provider.kind,
+    externalTenantId: event.tenantId,
+    externalUserId: event.user.externalUserId,
+    userId: payload.userId,
+    displayName: event.user.displayName,
+  })
+  const workspace = await db.workspace.findUnique({ where: { id: payload.workspaceId }, select: { name: true } })
+  await reply(
+    installation,
+    `Connected to the "${workspace?.name ?? 'Shogo'}" workspace. Switch team chat to ${providerLabel(provider.kind)} in Shogo settings → Integrations to start.`,
+  )
 }
 
 function findShadowConversation(installation: ChatInstallationRecord, channelId: string) {
@@ -149,7 +249,7 @@ async function threadRootFor(provider: ChatProvider, conversation: any, event: M
   if (!event.threadId || event.threadId === event.messageId) return null
   const externalRef = externalRefFor({ provider: provider.kind, channelId: event.channelId, id: event.threadId })
   const root = await db.conversationMessage.findFirst({
-    where: { conversationId: conversation.id, externalRef },
+    where: { conversationId: conversation.id, OR: [{ externalRef }, { externalThreadRef: externalRef }] },
     select: { id: true, threadRootId: true },
   })
   if (root) return root.threadRootId ?? root.id
@@ -157,7 +257,7 @@ async function threadRootFor(provider: ChatProvider, conversation: any, event: M
     conversationId: conversation.id,
     text: '_Earlier message_',
     authorType: 'system',
-    externalRef,
+    ...(event.threadKey === undefined ? { externalRef } : { externalThreadRef: externalRef }),
   })
   return stub.row.id
 }
@@ -244,6 +344,9 @@ async function handleMessage(provider: ChatProvider, installation: ChatInstallat
     authorUserId: userId,
     threadRootId,
     externalRef: externalRefFor({ provider: provider.kind, channelId: event.channelId, id: event.messageId }),
+    externalThreadRef: !threadRootId && event.threadKey
+      ? externalRefFor({ provider: provider.kind, channelId: event.channelId, id: event.threadKey })
+      : null,
     blocks: userId
       ? undefined
       : { externalAuthor: { provider: provider.kind, id: event.user.externalUserId, name: event.user.displayName } },
@@ -252,16 +355,10 @@ async function handleMessage(provider: ChatProvider, installation: ChatInstallat
 
   if (!userId) {
     if ((event.addressed || isDm) && provider.sendLinkPrompt) {
-      const conv: ConversationRef = {
-        workspaceId: installation.workspaceId,
-        conversationId: conversation.id,
-        externalId: event.channelId,
-        threadExternalId: isDm ? event.threadId : event.threadId ?? event.messageId,
-        installation,
-      }
-      await provider.sendLinkPrompt(conv, event.user, {
+      await provider.sendLinkPrompt(replyRef(installation, event, conversation.id), event.user, {
         tenantId: event.tenantId,
         channelId: event.channelId,
+        channelKind: event.channelKind,
         messageId: event.messageId,
         threadId: event.threadId,
         text: event.text,

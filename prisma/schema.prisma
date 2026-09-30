@@ -3887,6 +3887,8 @@ model ConversationMessage {
   agentStatus       String?
   /// External id (e.g. Slack "channel:ts") for bridge dedupe and imports.
   externalRef       String?
+  /// Provider thread id for thread roots whose thread id differs from their message id (Google Chat).
+  externalThreadRef String?
   editedAt          DateTime?
   deletedAt         DateTime?
   createdAt         DateTime               @default(now())
@@ -3908,6 +3910,7 @@ model ConversationMessage {
   @@index([workspaceId, createdAt])
   @@index([agentSessionId])
   @@index([externalRef])
+  @@index([conversationId, externalThreadRef])
   @@map("conversation_messages")
 }
 

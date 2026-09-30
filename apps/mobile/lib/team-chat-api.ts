@@ -356,6 +356,15 @@ export function teamChatApi() {
     async setChatMode(workspaceId: string, input: { mode: ChatModeValue; provider?: ExternalChatProvider | null }): Promise<WorkspaceChatMode> {
       return (await http.patch<WorkspaceChatMode>(`${ws(workspaceId)}/chat-mode`, input)).data
     },
+    async chatConnectCode(workspaceId: string, provider: ExternalChatProvider): Promise<{ code: string; command: string; expiresAt: string }> {
+      return (await http.post<{ code: string; command: string; expiresAt: string }>(
+        `${ws(workspaceId)}/chat-installations/${provider}/connect-code`,
+        {},
+      )).data
+    },
+    async disconnectChatProvider(workspaceId: string, provider: ExternalChatProvider): Promise<void> {
+      await http.delete(`${ws(workspaceId)}/chat-installations/${provider}`)
+    },
     async chatSettings(workspaceId: string): Promise<ChatSettings> {
       return (await http.get<{ settings: ChatSettings }>(`${ws(workspaceId)}/chat-settings`)).data.settings
     },

@@ -739,6 +739,7 @@ export interface PostMessageInput {
   agentStatus?: string | null
   agentSessionId?: string | null
   externalRef?: string | null
+  externalThreadRef?: string | null
   createdAt?: Date
 }
 
@@ -834,6 +835,7 @@ export async function postMessage(input: PostMessageInput): Promise<PostMessageR
       agentStatus: input.agentStatus ?? null,
       agentSessionId: input.agentSessionId ?? null,
       externalRef: input.externalRef ?? null,
+      externalThreadRef: input.externalThreadRef ?? null,
       createdAt: now,
       mentions: mentions.length
         ? {

@@ -63,6 +63,8 @@ export interface ExternalMessageRef {
   channelId: string
   id: string
   threadId: string | null
+  /** Id of the thread this message starts, where threads have their own ids (Google Chat). */
+  threadKey?: string | null
 }
 
 export interface InboundUser {
@@ -79,7 +81,10 @@ export type InboundEvent =
       channelName: string | null
       channelKind: ChannelKind
       messageId: string
+      /** Thread this message replies in; null (or messageId) for top-level messages. */
       threadId: string | null
+      /** Id of the thread a top-level message starts, where threads have their own ids (Google Chat). */
+      threadKey?: string | null
       user: InboundUser
       /** Provider markup already converted to plain text; bot mentions removed. */
       text: string
@@ -122,6 +127,7 @@ export type ChannelKind = 'public' | 'private' | 'dm'
 export interface PendingInbound {
   tenantId: string
   channelId: string
+  channelKind: ChannelKind
   messageId: string
   threadId: string | null
   text: string

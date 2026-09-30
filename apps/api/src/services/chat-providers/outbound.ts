@@ -67,8 +67,8 @@ async function conversationRef(conversation: any, threadRootId: string | null): 
   }
   let threadExternalId: string | null = null
   if (threadRootId) {
-    const root = await db.conversationMessage.findUnique({ where: { id: threadRootId }, select: { externalRef: true } })
-    threadExternalId = parseExternalRef(root?.externalRef)?.id ?? null
+    const root = await db.conversationMessage.findUnique({ where: { id: threadRootId }, select: { externalRef: true, externalThreadRef: true } })
+    threadExternalId = parseExternalRef(root?.externalThreadRef ?? root?.externalRef)?.id ?? null
   }
   return {
     provider,
@@ -92,7 +92,15 @@ async function mirror(
   if (!target) return null
   try {
     const ref = await target.provider.postMessage(target.conv, { text: await providerText(conversation.workspaceId, text), author })
-    await db.conversationMessage.update({ where: { id: row.id }, data: { externalRef: externalRefFor(ref) } })
+    await db.conversationMessage.update({
+      where: { id: row.id },
+      data: {
+        externalRef: externalRefFor(ref),
+        ...(ref.threadKey && !row.threadRootId
+          ? { externalThreadRef: externalRefFor({ provider: ref.provider, channelId: ref.channelId, id: ref.threadKey }) }
+          : {}),
+      },
+    })
     return { ...target, ref }
   } catch (err) {
     console.error(`[ChatOutbound] ${target.provider.kind} post failed:`, (err as Error).message)

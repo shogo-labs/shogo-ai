@@ -66,5 +66,11 @@ export function useWorkspaceChatMode(workspaceId: string | null | undefined) {
     [workspaceId],
   )
 
-  return { config: entry?.value ?? null, loading: !entry, update }
+  const refresh = useCallback(async () => {
+    if (!workspaceId) return null
+    store.delete(workspaceId)
+    return load(workspaceId)
+  }, [workspaceId])
+
+  return { config: entry?.value ?? null, loading: !entry, update, refresh }
 }

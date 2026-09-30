@@ -7,10 +7,18 @@
  */
 import { useState } from 'react'
 import { Pressable, View } from 'react-native'
-import { Card, CardContent, cn } from '@shogo/shared-ui/primitives'
+import { Button, Card, CardContent, cn } from '@shogo/shared-ui/primitives'
 import { Text } from '../settings/account-sheet-chrome'
 import { useWorkspaceChatMode } from '../../hooks/useWorkspaceChatMode'
-import type { ChatModeValue, ExternalChatProvider } from '../../lib/team-chat-api'
+import { teamChatApi, type ChatModeValue, type ExternalChatProvider } from '../../lib/team-chat-api'
+
+const api = teamChatApi()
+
+/** Apps without an OAuth install: an admin sends `@Shogo connect <code>` from the app instead. */
+const CODE_CONNECT: Array<{ provider: ExternalChatProvider; label: string; hint: string }> = [
+  { provider: 'teams', label: 'Microsoft Teams', hint: 'Add the Shogo app to a team or chat, then send it this message:' },
+  { provider: 'google_chat', label: 'Google Chat', hint: 'Add the Shogo app to a space or DM it, then send it this message:' },
+]
 
 interface Option {
   id: string
@@ -35,7 +43,8 @@ function selectedId(mode: ChatModeValue | undefined, provider: ExternalChatProvi
 }
 
 export function TeamChatModeCard({ workspaceId }: { workspaceId: string }) {
-  const { config, loading, update } = useWorkspaceChatMode(workspaceId)
+  const { config, loading, update, refresh } = useWorkspaceChatMode(workspaceId)
+  const [codes, setCodes] = useState<Partial<Record<ExternalChatProvider, string>>>({})
   const installedProviders = config?.installations.map((i) => i.provider)
   const [saving, setSaving] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -52,6 +61,27 @@ export function TeamChatModeCard({ workspaceId }: { workspaceId: string }) {
       setError(err?.message ?? 'Could not change team chat')
     } finally {
       setSaving(null)
+    }
+  }
+
+  const getCode = async (provider: ExternalChatProvider) => {
+    setError(null)
+    try {
+      const { command } = await api.chatConnectCode(workspaceId, provider)
+      setCodes((prev) => ({ ...prev, [provider]: command }))
+    } catch (err: any) {
+      setError(err?.message ?? 'Could not create a connect code')
+    }
+  }
+
+  const disconnect = async (provider: ExternalChatProvider) => {
+    setError(null)
+    try {
+      await api.disconnectChatProvider(workspaceId, provider)
+      setCodes((prev) => ({ ...prev, [provider]: undefined }))
+      await refresh()
+    } catch (err: any) {
+      setError(err?.message ?? 'Could not disconnect')
     }
   }
 
@@ -102,6 +132,38 @@ export function TeamChatModeCard({ workspaceId }: { workspaceId: string }) {
             )
           })}
         </View>
+        {canManage ? (
+          <View className="mt-3 gap-2">
+            {CODE_CONNECT.map(({ provider, label, hint }) => {
+              const installed = config?.installations.find((i) => i.provider === provider)
+              const command = codes[provider]
+              return (
+                <View key={provider} className="rounded-md border border-border px-3 py-2">
+                  <View className="flex-row items-center justify-between gap-2">
+                    <Text className="text-xs text-foreground">
+                      {label}
+                      {installed ? ` · Connected${installed.tenantName ? ` to ${installed.tenantName}` : ''}` : ''}
+                    </Text>
+                    {installed ? (
+                      <Button size="sm" variant="ghost" onPress={() => void disconnect(provider)}>Disconnect</Button>
+                    ) : command ? (
+                      <Button size="sm" variant="ghost" onPress={() => void refresh()}>Check again</Button>
+                    ) : (
+                      <Button size="sm" variant="outline" onPress={() => void getCode(provider)}>Connect</Button>
+                    )}
+                  </View>
+                  {!installed && command ? (
+                    <View className="mt-1.5 gap-1">
+                      <Text className="text-[11px] text-muted-foreground">{hint}</Text>
+                      <Text selectable className="text-[11px] font-mono text-foreground">{command}</Text>
+                      <Text className="text-[11px] text-muted-foreground">The code expires in 30 minutes.</Text>
+                    </View>
+                  ) : null}
+                </View>
+              )
+            })}
+          </View>
+        ) : null}
         {error ? <Text className="mt-2 text-xs text-destructive">{error}</Text> : null}
       </CardContent>
     </Card>

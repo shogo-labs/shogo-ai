@@ -351,6 +351,12 @@ export function slackAgentRoutes(config: SlackAgentRoutesConfig): Hono {
       return c.json({ ok: true })
     }
 
+    // The single-agent flow answers DMs and @mentions only; channel message
+    // events are subscribed for the team chat bridge above.
+    if (payload.event.type === 'message' && !isSlackDirectMessageChannel(String(payload.event.channel ?? ''))) {
+      return c.json({ ok: true })
+    }
+
     // Slack requires a quick acknowledgement. The project runtime can cold
     // start and an agent turn can run for hours, so all work happens after the
     // acknowledgement.
