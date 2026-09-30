@@ -1243,8 +1243,8 @@ export class AgentGateway {
       // stacks. For Expo stacks vite-watch never starts and this
       // callback stays silent; CanvasBuildManager fires the reload as
       // before. Both paths also kick the type-check gate.
-      pm?.setOnBuildComplete(() => {
-        watcher.broadcastReload()
+      pm?.setOnBuildComplete((info) => {
+        if (info?.outputChanged !== false) watcher.broadcastReload()
         typecheckGate.trigger()
       })
       this.canvasBuildManager = new CanvasBuildManager(this.workspaceDir, {
