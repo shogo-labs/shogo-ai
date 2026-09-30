@@ -6,7 +6,6 @@ import { Pressable, Text, TextInput, View } from "react-native"
 import { ArrowUp, Paperclip, Square, X } from "lucide-react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import { MAX_FILES } from "../../lib/composer-attachments"
-import type { ChatSendInteractionMode } from "../../lib/chat-send-body"
 import type { IslandBridge, IslandFileRef, IslandResult } from "./types"
 
 const MIN_INPUT_HEIGHT = 20
@@ -33,8 +32,6 @@ export const IslandComposer = forwardRef<
     initialFiles?: IslandFileRef[]
     placeholder: string
     isStreaming: boolean
-    mode: ChatSendInteractionMode
-    onModeChange: (mode: ChatSendInteractionMode) => void
     onSend: (text: string, files: IslandFileRef[]) => Promise<IslandResult>
     onStop?: () => void
     onFocus: () => void
@@ -42,7 +39,7 @@ export const IslandComposer = forwardRef<
     targetChip?: React.ReactNode
   }
 >(function IslandComposer(
-  { bridge, initialFiles, placeholder, isStreaming, mode, onModeChange, onSend, onStop, onFocus, onDraftChange, targetChip },
+  { bridge, initialFiles, placeholder, isStreaming, onSend, onStop, onFocus, onDraftChange, targetChip },
   ref,
 ) {
   const inputRef = useRef<TextInput>(null)
@@ -173,19 +170,6 @@ export const IslandComposer = forwardRef<
       </View>
       <View className="flex-row items-center gap-2">
         {targetChip}
-        <View className="flex-row overflow-hidden rounded-full bg-white/10">
-          {(["agent", "plan"] as const).map((option) => (
-            <Pressable
-              key={option}
-              onPress={() => onModeChange(option)}
-              className={cn("px-2 py-0.5", mode === option && "bg-white/20")}
-            >
-              <Text className={cn("text-[10px] font-semibold", mode === option ? "text-zinc-50" : "text-zinc-400")}>
-                {option === "agent" ? "Agent" : "Plan"}
-              </Text>
-            </Pressable>
-          ))}
-        </View>
         <View className="flex-1" />
         <Pressable
           onPress={() => fileInputRef.current?.click()}

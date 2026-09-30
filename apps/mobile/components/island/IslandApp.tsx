@@ -55,6 +55,8 @@ import {
 
 const PEEK_MS = 4000
 const MAX_CARD_HEIGHT = 640
+/** The island always sends in agent mode; plan mode lives in the full app. */
+const ISLAND_INTERACTION_MODE: ChatSendInteractionMode = "agent"
 const PICKER_WIDTH = 300
 const PICKER_HEIGHT = 320
 
@@ -157,7 +159,6 @@ export const IslandApp = observer(function IslandApp({
   const [view, setView] = useState<IslandView>({ name: "inbox" })
   const [usageOpen, setUsageOpen] = useState(false)
   const [peek, setPeek] = useState<IslandPeek | null>(null)
-  const [interactionMode, setInteractionMode] = useState<ChatSendInteractionMode>("agent")
   const [notice, setNotice] = useState<string | null>(null)
   const [pickerOpen, setPickerOpen] = useState(false)
   const pickerOpenRef = useRef(false)
@@ -561,8 +562,6 @@ export const IslandApp = observer(function IslandApp({
       initialFiles={initialFiles}
       placeholder={session ? `Reply in ${target.projectName}…` : `New chat in ${target.projectName}…`}
       isStreaming={session?.isStreaming ?? false}
-      mode={interactionMode}
-      onModeChange={setInteractionMode}
       onFocus={focusForTyping}
       onDraftChange={(hasDraft) => {
         hasDraftRef.current = hasDraft
@@ -570,7 +569,7 @@ export const IslandApp = observer(function IslandApp({
       onStop={session ? () => void session.stop() : undefined}
       onSend={async (text, files) => {
         const result = session
-          ? await session.send(text, files, { interactionMode })
+          ? await session.send(text, files, { interactionMode: ISLAND_INTERACTION_MODE })
           : await startNewChat(target.projectId, target.projectName, { text, files })
         if (result.ok && session && layout.sounds) playIslandSound("sent", layout.soundVolume)
         return result
@@ -633,7 +632,7 @@ export const IslandApp = observer(function IslandApp({
           workspaceId,
           userId,
           modelId,
-          interactionMode,
+          interactionMode: ISLAND_INTERACTION_MODE,
         }}
       >
         {(session) => {
