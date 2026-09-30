@@ -44,6 +44,7 @@ import {
   type WorkspaceAgentRoutesConfig,
 } from './workspace-agent'
 import { workspaceMeetingRoutes } from './workspace-meetings'
+import { agentChannelRoutes, type AgentChannelAuthContext } from './conversations'
 import {
   createInternalAuthorizers,
   logAuthReject,
@@ -466,6 +467,23 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
           return c.json({ error: 'Unauthorized' }, 401)
         }
         return { workspaceId }
+      },
+    }),
+  )
+
+  app.route(
+    '/',
+    agentChannelRoutes({
+      authorize: async (c): Promise<AgentChannelAuthContext | Response> => {
+        const workspaceId = c.req.param('workspaceId')
+        if (!(await authorizeWorkspaceScope(c, workspaceId))) {
+          return c.json({ error: 'Unauthorized' }, 401)
+        }
+        const identity = await authenticate(c)
+        const projectId = identity?.kind === 'project' ? identity.projectId
+          : identity?.kind === 'workspace' ? null
+            : undefined
+        return { workspaceId, projectId }
       },
     }),
   )

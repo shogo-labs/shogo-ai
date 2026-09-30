@@ -627,6 +627,41 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
     reason:
       'The proxy capture path upserts one summary per workspace turn key. proxy_turns is region-local (excluded from shogo_all_pub, see k8s/cnpg/logical-replication/exclude-region-local-tables.sql), so the unique is only ever enforced against rows this region wrote; turnKey still hashes in REGION_ID, so a turn served by two regions yields one row in each.',
   },
+  {
+    key: 'Conversation.(slug,workspaceId)',
+    category: 'request_scoped',
+    reason:
+      'Channel create (POST /api/workspaces/:workspaceId/conversations, path-resolved to the home region) picks a free slug; #general/#activity seeding is find-then-create with a raced-create fallback in the same region.',
+  },
+  {
+    key: 'Conversation.(dmKey,workspaceId)',
+    category: 'single_tenant_upsert',
+    reason:
+      'DM open (POST /api/workspaces/:workspaceId/dms) is find-then-create on the deterministic participant key, re-reading on conflict; always routed to the workspace home region.',
+  },
+  {
+    key: 'ConversationMember.(conversationId,userId)',
+    category: 'single_tenant_upsert',
+    reason:
+      'Join/add-member under /api/conversations/:id (resolved to the home region by resolve-workspace-id) is find-then-create per (conversation,user).',
+  },
+  {
+    key: 'ConversationMessage.(conversationId,seq)',
+    category: 'request_scoped',
+    reason:
+      'seq comes from an atomic Conversation.lastSeq increment; every post path (/api/conversations/:id/messages, agent-channel internal routes, activity producers) runs in the workspace home region.',
+  },
+  {
+    key: 'ConversationMessage.(clientMsgId,conversationId)',
+    category: 'random_secret',
+    reason: 'Client-generated UUID idempotency key for sends; postMessage returns the existing row on repeat.',
+  },
+  {
+    key: 'ConversationReaction.(emoji,messageId,userId)',
+    category: 'single_tenant_upsert',
+    reason:
+      'Reaction toggle under /api/conversation-messages/:id/reactions by the reacting user only; create-or-ignore / deleteMany on the same triple.',
+  },
 ]
 
 // ===========================================================================

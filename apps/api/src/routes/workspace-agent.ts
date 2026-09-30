@@ -20,6 +20,7 @@
 
 import { Hono } from 'hono'
 import { hasWorkspaceAccess } from '../services/workspace.service'
+import { ConversationError, resolveNotifyConversation } from '../services/conversation.service'
 import { listActiveChatTurns } from '../services/chat-turn-state.service'
 import {
   AgentScheduleError,
@@ -101,6 +102,9 @@ export function workspaceAgentRoutes(config: WorkspaceAgentRoutesConfig): Hono {
   const saveAvatar = config.saveAgentAvatar ?? saveLocalAgentAvatar
 
   function scheduleError(c: any, error: unknown) {
+    if (error instanceof ConversationError) {
+      return c.json({ error: { code: error.code, message: error.message } }, error.status as any)
+    }
     if (!(error instanceof AgentScheduleError)) throw error
     return c.json({ error: { code: error.code, message: error.message } }, error.status)
   }
@@ -312,6 +316,7 @@ export function workspaceAgentRoutes(config: WorkspaceAgentRoutesConfig): Hono {
       return c.json({ error: { code: 'invalid_field', message: 'enabled must be a boolean' } }, 400)
     }
     try {
+      const notifyConversationId = await resolveNotifyConversation(auth.workspaceId, body.notifyConversationId, userId)
       const schedule = await createSchedule({
         workspaceId: auth.workspaceId,
         userId,
@@ -321,6 +326,7 @@ export function workspaceAgentRoutes(config: WorkspaceAgentRoutesConfig): Hono {
         cronExpression: body.cronExpression.trim(),
         timezone: typeof body.timezone === 'string' ? body.timezone : undefined,
         enabled: body.enabled as boolean | undefined,
+        notifyConversationId,
       })
       return c.json({ schedule }, 201)
     } catch (error) {
@@ -349,7 +355,13 @@ export function workspaceAgentRoutes(config: WorkspaceAgentRoutesConfig): Hono {
       return c.json({ error: { code: 'invalid_field', message: 'enabled must be a boolean' } }, 400)
     }
     try {
+      const actor = body.notifyConversationId === undefined ? null : await resolveScheduleActor(c, auth, body)
+      if (actor instanceof Response) return actor
+      const notifyConversationId = actor
+        ? await resolveNotifyConversation(auth.workspaceId, body.notifyConversationId, actor)
+        : undefined
       const schedule = await updateSchedule(auth.workspaceId, c.req.param('scheduleId'), {
+        notifyConversationId,
         goalId: body.goalId as string | null | undefined,
         name: typeof body.name === 'string' ? body.name.trim().slice(0, 200) : undefined,
         prompt: typeof body.prompt === 'string' ? body.prompt.trim().slice(0, 10_000) : undefined,

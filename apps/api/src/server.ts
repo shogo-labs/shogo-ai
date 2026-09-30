@@ -27,6 +27,9 @@ import { pinChatToHomeRegion } from './lib/chat-region-pin'
 import { workspaceChatRoutes } from './routes/workspace-chat'
 import { workspaceAgentRoutes, sessionAuthorize } from './routes/workspace-agent'
 import { workspaceMeetingRoutes, sharedMeetingRoutes } from './routes/workspace-meetings'
+import { conversationRoutes } from './routes/conversations'
+import { configureConversationAgentDispatcher } from './services/conversation-agent-dispatcher'
+import { conversationSocketHandlers, isConversationSocketData } from './realtime/conversation-socket'
 import { createAgentTaskRoutes } from './routes/agent-tasks'
 import { startAgentTaskWorker, stopAgentTaskWorker } from './jobs/run-agent-task-dispatch'
 import { startAgentScheduleWorker, stopAgentScheduleWorker } from './jobs/run-agent-schedule-dispatch'
@@ -1557,6 +1560,9 @@ app.route('/api', workspaceAgentRoutes({
 }))
 app.route('/api', workspaceMeetingRoutes({ authorize: sessionAuthorize(getAuthUserId) }))
 app.route('/api', sharedMeetingRoutes())
+// Workspace channels (team chat with @mentionable agents).
+configureConversationAgentDispatcher({ runtimeManager: getRuntimeManager() })
+app.route('/api', conversationRoutes({ resolveUserId: getAuthUserId }))
 app.route('/api', createAgentTaskRoutes({ runtimeManager: getRuntimeManager() }))
 // Resume queued agent tasks after API restarts and keep dueAt-backed work
 // moving without relying on a request that happens to remain open.
@@ -8814,6 +8820,9 @@ app.post('/api/invite-links/:token/accept', async (c) => {
     billingService.syncSeatsFromMembership(memberData.workspaceId).catch((err: any) =>
       console.error('[Billing] invite-link accept seat sync failed:', err.message ?? err),
     )
+    void import('./services/conversation-activity')
+      .then((m) => m.recordMemberJoined(memberData.workspaceId, userId))
+      .catch(() => {})
   }
 
   // Send notification emails (non-blocking — errors are logged internally)
@@ -9463,19 +9472,22 @@ export default {
   },
   websocket: {
     open(ws: any) {
-      if (isLiveRelayData(ws.data)) liveRelayOpen(ws)
+      if (isConversationSocketData(ws.data)) conversationSocketHandlers.open(ws)
+      else if (isLiveRelayData(ws.data)) liveRelayOpen(ws)
       else if (isPtyPodBridgeData(ws.data)) ptyPodBridge.open(ws)
       else if (isPortTunnelBridgeData(ws.data)) portTunnelBridge.open(ws)
       else handleInstanceWsOpen(ws)
     },
     message(ws: any, msg: any) {
-      if (isLiveRelayData(ws.data)) liveRelayMessage(ws, msg)
+      if (isConversationSocketData(ws.data)) void conversationSocketHandlers.message(ws, msg)
+      else if (isLiveRelayData(ws.data)) liveRelayMessage(ws, msg)
       else if (isPtyPodBridgeData(ws.data)) ptyPodBridge.message(ws, msg)
       else if (isPortTunnelBridgeData(ws.data)) portTunnelBridge.message(ws, msg)
       else handleInstanceWsMessage(ws, msg)
     },
     close(ws: any, code?: number, reason?: string) {
-      if (isLiveRelayData(ws.data)) liveRelayClose(ws)
+      if (isConversationSocketData(ws.data)) conversationSocketHandlers.close(ws)
+      else if (isLiveRelayData(ws.data)) liveRelayClose(ws)
       else if (isPtyPodBridgeData(ws.data)) ptyPodBridge.close(ws, code, reason)
       else if (isPortTunnelBridgeData(ws.data)) portTunnelBridge.close(ws, code, reason)
       else handleInstanceWsClose(ws, code, reason)

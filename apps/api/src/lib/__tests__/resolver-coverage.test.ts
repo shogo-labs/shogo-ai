@@ -54,6 +54,8 @@ const EXEMPT: Record<string, string> = {
   agentEvalSet: 'Mutated via workspace/project-scoped eval routes — resolved by path params.',
   agentSchedule: 'Mutated via /api/workspaces/:workspaceId/schedules — resolved by path workspaceId (routes/workspace-agent.ts, mounted publicly and internally with the same handler).',
   budgetAlert: 'Mutated via /api/workspaces/:id/... budget routes — resolved by path workspaceId.',
+  conversationMember: 'Mutated only via /api/conversations/:id/... (members, join, leave, agents) — resolved by the conversations lookup.',
+  conversationMention: 'Written only as part of posting a message via /api/conversations/:id/messages — resolved by the conversations lookup.',
   customDomain: 'Mutated via /api/projects/:projectId/domains — resolved by path projectId.',
   gitHubConnection: 'Mutated via /api/projects/:projectId/github — resolved by path projectId.',
   goal: 'Mutated via /api/workspaces/:workspaceId/goals — resolved by path workspaceId (routes/workspace-agent.ts, mounted publicly and internally with the same handler).',

@@ -603,6 +603,7 @@ export interface AgentScheduleCreateRequest {
   goalId?: string | null
   enabled?: boolean
   userId?: string
+  notifyConversationId?: string | null
 }
 
 export interface AgentScheduleUpdateRequest {
@@ -613,6 +614,7 @@ export interface AgentScheduleUpdateRequest {
   goalId?: string | null
   enabled?: boolean
   userId?: string
+  notifyConversationId?: string | null
 }
 
 async function personalFetch<T>(
@@ -805,6 +807,91 @@ export async function createMeetingNote(
     method: 'POST',
     body: JSON.stringify(input),
     parse: (j) => j?.meeting as MeetingListItem,
+  })
+}
+
+// ─── Workspace channels ────────────────────────────────────────────────────
+
+export interface AgentChannelSummary {
+  id: string
+  kind: string
+  name: string | null
+  topic: string | null
+  lastMessageAt: string | null
+}
+
+export interface AgentChannelMessage {
+  id: string
+  seq: number
+  author: string
+  authorType: string
+  text: string
+  threadRootId: string | null
+  replyCount: number
+  createdAt: string
+}
+
+export interface AgentChannelIdentity {
+  projectId: string | null
+}
+
+function channelsPath(workspaceId: string, suffix = ''): string {
+  return `/api/internal/workspaces/${encodeURIComponent(workspaceId)}/agent-channels${suffix}`
+}
+
+export async function listAgentChannels(workspaceId: string): Promise<CheckpointCallResult<AgentChannelSummary[]>> {
+  return personalFetch(channelsPath(workspaceId), {
+    method: 'GET',
+    parse: (j) => (j?.channels ?? []) as AgentChannelSummary[],
+  })
+}
+
+export async function readAgentChannel(
+  workspaceId: string,
+  channel: string,
+  options: { limit?: number; threadRootId?: string } = {},
+): Promise<CheckpointCallResult<{ channel: AgentChannelSummary; messages: AgentChannelMessage[] }>> {
+  const params = new URLSearchParams()
+  if (options.limit) params.set('limit', String(options.limit))
+  if (options.threadRootId) params.set('threadRootId', options.threadRootId)
+  return personalFetch(channelsPath(workspaceId, `/${encodeURIComponent(channel)}/messages?${params}`), {
+    method: 'GET',
+    parse: (j) => ({ channel: j?.channel, messages: j?.messages ?? [] }),
+  })
+}
+
+export async function postAgentChannelMessage(
+  workspaceId: string,
+  channel: string,
+  input: { text: string; threadRootId?: string; identity: AgentChannelIdentity },
+): Promise<CheckpointCallResult<{ id: string; conversationId: string }>> {
+  return personalFetch(channelsPath(workspaceId, `/${encodeURIComponent(channel)}/messages`), {
+    method: 'POST',
+    body: JSON.stringify({ text: input.text, threadRootId: input.threadRootId, projectId: input.identity.projectId }),
+    parse: (j) => ({ id: j?.message?.id, conversationId: j?.message?.conversationId }),
+  })
+}
+
+export async function sendAgentDirectMessage(
+  workspaceId: string,
+  input: { user: string; text: string; identity: AgentChannelIdentity },
+): Promise<CheckpointCallResult<{ id: string; conversationId: string }>> {
+  return personalFetch(channelsPath(workspaceId, '/dm'), {
+    method: 'POST',
+    body: JSON.stringify({ user: input.user, text: input.text, projectId: input.identity.projectId }),
+    parse: (j) => ({ id: j?.message?.id, conversationId: j?.message?.conversationId }),
+  })
+}
+
+export async function searchAgentChannels(
+  workspaceId: string,
+  query: string,
+  limit = 20,
+): Promise<CheckpointCallResult<Array<AgentChannelMessage & { channel: string | null }>>> {
+  const params = new URLSearchParams({ q: query, limit: String(limit) })
+  return personalFetch(channelsPath(workspaceId, `/search?${params}`), {
+    method: 'GET',
+    parse: (j) => j?.results ?? [],
   })
 }
 

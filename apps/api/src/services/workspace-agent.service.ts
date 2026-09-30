@@ -194,6 +194,8 @@ export async function createGoalEvent(
     })
   }
 
+  void import('./conversation-activity').then((m) => m.recordGoalEvent(workspaceId, event)).catch(() => {})
+
   return event
 }
 

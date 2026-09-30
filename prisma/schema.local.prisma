@@ -55,6 +55,8 @@ model User {
   mobilePushSubscriptions MobilePushSubscription[]
   appInstalls          AppInstall[]
   slackUserLinks       SlackUserLink[]
+  conversationMemberships ConversationMember[]
+  conversationMessages ConversationMessage[]
 
   @@map("users")
 }
@@ -169,6 +171,7 @@ model Workspace {
   grants                 WorkspaceGrant[]
   chatSessions           ChatSession[]
   proxyTurns             ProxyTurn[]
+  conversations          Conversation[]
   plans                  Plan[]
   modelVisibility        WorkspaceModelVisibility[]
   slackInstallation      SlackWorkspaceInstallation?
@@ -274,6 +277,7 @@ model AgentSchedule {
   lastRunSummary      String?
   lastError           String?
   chatSessionId       String?
+  notifyConversationId String?
   runningAt           DateTime?
   consecutiveFailures Int       @default(0)
   createdAt           DateTime  @default(now())
@@ -843,6 +847,7 @@ model AgentTask {
   currentStep   String?
   resultSummary String?
   errorMessage  String?
+  notifyConversationId String?
   queuedAt      DateTime?
   startedAt     DateTime?
   completedAt   DateTime?
@@ -2775,4 +2780,152 @@ model AffiliatePostSnapshot {
 
   @@index([postId, capturedAt])
   @@map("affiliate_post_snapshots")
+}
+
+// =============================================================================
+// WORKSPACE CHANNELS (team chat with @mentionable agents)
+// =============================================================================
+
+model Conversation {
+  id            String    @id @default(uuid())
+  workspaceId   String
+  kind          String    @default("public")
+  name          String?
+  slug          String?
+  topic         String?
+  dmKey         String?
+  createdById   String?
+  lastSeq       Int       @default(0)
+  lastMessageAt DateTime?
+  archivedAt    DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  workspace   Workspace                @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  members     ConversationMember[]
+  messages    ConversationMessage[]
+  attachments ConversationAttachment[]
+
+  @@unique([workspaceId, slug])
+  @@unique([workspaceId, dmKey])
+  @@index([workspaceId, kind])
+  @@map("conversations")
+}
+
+model ConversationMember {
+  id             String    @id @default(uuid())
+  conversationId String
+  memberType     String    @default("user")
+  userId         String?
+  projectId      String?
+  projectAgentId String?
+  role           String    @default("member")
+  lastReadSeq    Int       @default(0)
+  lastReadAt     DateTime?
+  notifyLevel    String    @default("all")
+  muted          Boolean   @default(false)
+  starred        Boolean   @default(false)
+  agentTrigger   String    @default("mention")
+  agentKeywords  String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  user         User?        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([conversationId, userId])
+  @@index([userId])
+  @@index([conversationId, memberType])
+  @@map("conversation_members")
+}
+
+model ConversationMessage {
+  id                String    @id @default(uuid())
+  conversationId    String
+  workspaceId       String
+  seq               Int
+  threadRootId      String?
+  replyCount        Int       @default(0)
+  lastReplyAt       DateTime?
+  alsoSentToChannel Boolean   @default(false)
+  authorType        String    @default("user")
+  authorUserId      String?
+  authorAgentRef    String?
+  botId             String?
+  text              String
+  blocks            String?
+  clientMsgId       String?
+  agentSessionId    String?
+  agentStatus       String?
+  externalRef       String?
+  editedAt          DateTime?
+  deletedAt         DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  conversation Conversation             @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  authorUser   User?                    @relation(fields: [authorUserId], references: [id], onDelete: SetNull)
+  mentions     ConversationMention[]
+  reactions    ConversationReaction[]
+  attachments  ConversationAttachment[]
+
+  @@unique([conversationId, seq])
+  @@unique([conversationId, clientMsgId])
+  @@index([conversationId, threadRootId, createdAt])
+  @@index([threadRootId, createdAt])
+  @@index([workspaceId, createdAt])
+  @@index([agentSessionId])
+  @@index([externalRef])
+  @@map("conversation_messages")
+}
+
+model ConversationMention {
+  id             String   @id @default(uuid())
+  messageId      String
+  targetType     String
+  targetUserId   String?
+  projectId      String?
+  projectAgentId String?
+  createdAt      DateTime @default(now())
+
+  message ConversationMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@index([messageId])
+  @@index([targetUserId, createdAt])
+  @@map("conversation_mentions")
+}
+
+model ConversationReaction {
+  id        String   @id @default(uuid())
+  messageId String
+  userId    String
+  emoji     String
+  createdAt DateTime @default(now())
+
+  message ConversationMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@unique([messageId, userId, emoji])
+  @@index([messageId])
+  @@map("conversation_reactions")
+}
+
+model ConversationAttachment {
+  id             String   @id @default(uuid())
+  conversationId String
+  messageId      String?
+  uploaderUserId String
+  storageKey     String
+  name           String
+  mimeType       String
+  size           Int
+  width          Int?
+  height         Int?
+  createdAt      DateTime @default(now())
+
+  conversation Conversation         @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  message      ConversationMessage? @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId])
+  @@index([messageId])
+  @@map("conversation_attachments")
 }
