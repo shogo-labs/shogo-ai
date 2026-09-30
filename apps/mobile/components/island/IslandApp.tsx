@@ -14,6 +14,7 @@ import type { ChatSendInteractionMode } from "../../lib/chat-send-body"
 import { DEFAULT_MODEL_FREE, DEFAULT_MODEL_PRO } from "../chat/ChatInput"
 import { IslandChatHost, type IslandInitialSend } from "./IslandChatHost"
 import { IslandCollapsed, StatusDot, type IslandPeek } from "./IslandCollapsed"
+import { IslandIdle } from "./IslandIdle"
 import { IslandComposer, fileRefsFromFileList, type IslandComposerHandle } from "./IslandComposer"
 import { IslandConversation } from "./IslandConversation"
 import { IslandDropSheet } from "./IslandDropSheet"
@@ -31,7 +32,6 @@ import { useIslandBridge } from "./useIslandBridge"
 import { useIslandPointer } from "./useIslandPointer"
 import {
   ISLAND_SURFACE_PROPS,
-  ISLAND_TRIGGER_PROPS,
   islandSessionKey,
   type IslandBridge,
   type IslandFileRef,
@@ -412,7 +412,11 @@ export const IslandApp = observer(function IslandApp({
   if (!bridge) return null
 
   if (layout.mode === "hidden") {
-    return <View {...ISLAND_TRIGGER_PROPS} style={{ width: "100%", height: "100%" }} />
+    return (
+      <View className="dark" style={{ width: "100%", height: "100%" }}>
+        <IslandIdle layout={layout} reducedMotion={reducedMotion} onExpand={() => requestMode("expanded")} />
+      </View>
+    )
   }
 
   if (layout.mode === "collapsed") {

@@ -35,8 +35,8 @@ describe('Shogo island placement', () => {
     })
   })
 
-  test('makes the whole notch the hover target while hidden', () => {
-    expect(getIslandBounds(notchedMac, 'hidden', 'darwin')).toEqual({ x: 656, y: 0, width: 200, height: 37 })
+  test('covers the notch plus idle wings while hidden', () => {
+    expect(getIslandBounds(notchedMac, 'hidden', 'darwin')).toEqual({ x: 620, y: 0, width: 272, height: 37 })
   })
 
   test('keeps the standard pill on displays without a notch', () => {

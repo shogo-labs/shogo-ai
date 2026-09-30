@@ -6,6 +6,8 @@ import { Motion } from "@legendapp/motion"
 import { Check, ChevronDown, Loader2, Mic } from "lucide-react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import { formatDuration } from "../../lib/use-recording"
+import { ShogoLogoMark } from "../branding/ShogoLogoMark"
+import { useIslandAccent } from "./island-accent"
 import { RecordingDot, useElapsedSeconds } from "./IslandMeeting"
 import { needsAttention, orderIslandSessions } from "./island-inbox"
 import { ISLAND_TRIGGER_PROPS, type IslandLayout, type IslandMeetingState, type IslandSnapshot } from "./types"
@@ -27,7 +29,7 @@ export function StatusDot({ status, size = 8 }: { status: string; size?: number 
         attention
           ? "bg-amber-400 animate-pulse motion-reduce:animate-none"
           : status === "running"
-            ? "bg-emerald-400"
+            ? "bg-primary"
             : status === "done"
               ? "bg-sky-400"
               : "bg-zinc-500",
@@ -57,6 +59,7 @@ export function IslandCollapsed({
   const attentionCount = sessions.filter((s) => needsAttention(s.status)).length
   const running = sessions.some((s) => s.status === "running")
   const recordingSeconds = useElapsedSeconds(meeting.recording?.startedAt)
+  const accent = useIslandAccent()
 
   const left = meeting.prompt ? (
     <View className="flex-row items-center gap-2 min-w-0 flex-shrink">
@@ -74,7 +77,7 @@ export function IslandCollapsed({
     </View>
   ) : (
     <View className="flex-row items-center gap-2 min-w-0 flex-shrink">
-      <StatusDot status={top?.status ?? "idle"} />
+      {top ? <StatusDot status={top.status} /> : <ShogoLogoMark className="h-3.5 w-3.5" fill={accent} />}
       <Text className="text-[12px] font-semibold text-white" numberOfLines={1}>
         {peek?.title ?? top?.projectName ?? "Shogo"}
       </Text>
@@ -100,7 +103,7 @@ export function IslandCollapsed({
         </View>
       ) : running ? (
         <>
-          <Loader2 size={12} color="#34d399" className="animate-spin motion-reduce:animate-none" />
+          <Loader2 size={12} color={accent} className="animate-spin motion-reduce:animate-none" />
           {top?.step ? (
             <Text className="text-[11px] text-zinc-400" numberOfLines={1}>
               {top.step}

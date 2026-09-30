@@ -23,8 +23,9 @@ export const ISLAND_MIN_CONTENT_HEIGHT = 120
 /** Wide enough that the label and chevron clear the camera housing on
  * either side; the renderer reserves the middle via `--notch-width`. */
 const NOTCHED_COLLAPSED_WIDTH = 380
-/** Roughly the camera housing on 14"/16" MacBook Pros. */
-const NOTCH_HOT_ZONE_WIDTH = 200
+/** Camera housing (~200pt on 14"/16" MacBook Pros) plus room for the idle
+ * wings to grow on hover. */
+const NOTCHED_IDLE_WIDTH = 272
 
 export function isNotchedDisplay(
   display: IslandBoundsDisplay,
@@ -57,9 +58,9 @@ export function getIslandBounds(
   const notched = isNotchedDisplay(display, platform)
   let size: Size
   if (notched && mode === 'hidden') {
-    // The camera housing is dead menu-bar space, so the whole notch can be
-    // the hover target without covering menu items.
-    size = { width: NOTCH_HOT_ZONE_WIDTH, height: display.workArea.y - display.bounds.y }
+    // The camera housing is dead menu-bar space, so the notch plus slim
+    // wings can be the hover target without covering menu items.
+    size = { width: NOTCHED_IDLE_WIDTH, height: display.workArea.y - display.bounds.y }
   } else if (notched && mode === 'collapsed') {
     size = { width: NOTCHED_COLLAPSED_WIDTH, height: display.workArea.y - display.bounds.y }
   } else if (isCardMode(mode)) {
