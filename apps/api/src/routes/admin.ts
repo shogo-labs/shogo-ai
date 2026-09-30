@@ -194,6 +194,21 @@ export function adminRoutes(): Hono {
   })
 
   /**
+   * GET /analytics/channels - Workspace channel usage over the last 7 days
+   */
+  router.get('/analytics/channels', async (c) => {
+    try {
+      const { listChannelMetricsOverview } = await import('../services/conversation-metrics')
+      const limit = Number(new URL(c.req.url).searchParams.get('limit') || '50')
+      const data = await listChannelMetricsOverview({ limit: Number.isFinite(limit) ? limit : 50 })
+      return c.json({ ok: true, data })
+    } catch (error: any) {
+      console.error('[Admin] Analytics channels error:', error)
+      return c.json({ error: { code: 'analytics_failed', message: error.message } }, 500)
+    }
+  })
+
+  /**
    * GET /analytics/desktop-installs - Signed-in desktop install metrics
    */
   router.get('/analytics/desktop-installs', async (c) => {

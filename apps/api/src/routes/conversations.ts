@@ -51,6 +51,7 @@ import { afterMessagePosted } from '../services/conversation-pipeline'
 import { catchUp } from '../services/conversation-activity'
 import { stopAgentReply } from '../services/conversation-agent-dispatcher'
 import { getPresence } from '../services/conversation-presence'
+import { getChannelMetrics } from '../services/conversation-metrics'
 import type { ConversationSocketData } from '../realtime/conversation-socket'
 
 const db = prisma as any
@@ -156,6 +157,16 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
     if (auth instanceof Response) return auth
     const ids = (c.req.query('userIds') ?? '').split(',').map((s) => s.trim()).filter(Boolean).slice(0, 500)
     return c.json({ presence: await getPresence(auth.workspaceId, ids) })
+  })
+
+  router.get('/workspaces/:workspaceId/conversations/metrics', async (c) => {
+    const auth = await requireWorkspace(c)
+    if (auth instanceof Response) return auth
+    const role = await getWorkspaceRole(auth.workspaceId, auth.userId)
+    if (role !== 'owner' && role !== 'admin') {
+      return c.json({ error: { code: 'forbidden', message: 'Only workspace admins can view channel metrics' } }, 403)
+    }
+    return c.json(await getChannelMetrics(auth.workspaceId, { weeks: numberParam(c.req.query('weeks')) }))
   })
 
   /** Realtime WebSocket. Auth runs through the normal middleware before the upgrade. */
