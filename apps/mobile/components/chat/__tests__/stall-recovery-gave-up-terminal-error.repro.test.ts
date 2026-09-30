@@ -30,6 +30,12 @@
  *      → ChatPanel captures `chat_stall_recovery_gave_up` with turnStatus
  *      "unknown" and replaces the banner with the stall "tap Retry" message.
  *
+ * FIXED: `sendMessageInternal` now forgets the previous turn when a send
+ * starts (`currentTurnIdRef = null`, `turnCompletedRef = true`), so a send the
+ * API rejects before `data-turn-start` can't be mistaken for a stall. And a
+ * persistently-unknown probe now reloads history rather than showing the
+ * "tap Retry" banner.
+ *
  * Run: bun test apps/mobile/components/chat/__tests__/stall-recovery-gave-up-terminal-error.repro.test.ts
  */
 import { afterEach, describe, expect, test } from "bun:test"
@@ -78,6 +84,11 @@ function makePanelRefs() {
 }
 type Refs = ReturnType<typeof makePanelRefs>
 
+// sendMessageInternal, right before sendMessage()
+const onSendStart = (r: Refs) => {
+  r.currentTurnId = null
+  r.turnCompleted = true
+}
 // isStreaming rising edge (ChatPanel ~3741)
 const onStreamStart = (r: Refs) => {
   r.renderDepthErrorTurnId = null
@@ -119,10 +130,12 @@ async function runStallRecovery(fetchFn: typeof fetch) {
     const turnStatus = await probeChatTurnStatus({ url: TURN_URL, fetch: fetchFn })
     const effects = getStallRecoveryEffects({ turnStatus, attempt, maxAttempts: MAX_ATTEMPTS })
     if (effects.action === "reconnect") return { outcome: "reconnect" as const, captures, showRetryBanner }
-    if (effects.interruptStuckTools) {
-      captures.push({ message: "chat_stall_recovery_gave_up", tags: { turnStatus }, attempt })
+    if (effects.action === "reload-history") {
+      if (turnStatus === "unknown") {
+        captures.push({ message: "chat_stall_recovery_gave_up", tags: { turnStatus }, attempt })
+      }
       showRetryBanner = effects.showRetryBanner
-      return { outcome: "give-up" as const, captures, showRetryBanner }
+      return { outcome: "reload-history" as const, captures, showRetryBanner }
     }
   }
   return { outcome: "exhausted" as const, captures, showRetryBanner }
@@ -134,7 +147,7 @@ afterEach(() => {
 })
 
 describe("REPRODUCTION JAVASCRIPT-REACT-5Z: usage-limit send after a #185 turn reports a false stall give-up", () => {
-  test("stale turn id + evicted buffer → give-up captured with turnStatus 'unknown'", async () => {
+  test("a rejected send no longer launches recovery for the previous turn's stale id", async () => {
     let now = 1_000_000
     Date.now = () => now
     const store = new StreamBufferStore()
@@ -158,20 +171,25 @@ describe("REPRODUCTION JAVASCRIPT-REACT-5Z: usage-limit send after a #185 turn r
 
     // 11:38:49 — user sends again; API returns 402 usage_limit_reached JSON.
     // No data-turn-start / data-turn-complete ever arrives.
+    onSendStart(refs)
     onStreamStart(refs)
     // (onError fires with the usage_limit_reached body — not #185, so no gate.)
     const launched = onStreamEnd(refs)
 
-    expect(refs.currentTurnId).toBe(PREV_TURN) // stale id from the previous turn
-    expect(launched).toBe(true)                // BUG: recovery launched for a 402
+    expect(refs.currentTurnId).toBeNull()
+    expect(launched).toBe(false) // the 402 banner stays; no false stall recovery
 
+    store.dispose()
+  })
+
+  test("a genuinely-unknown stalled turn reloads history instead of showing the stall banner", async () => {
+    const store = new StreamBufferStore()
     const result = await runStallRecovery(turnEndpointFetch(store))
-    expect(result.outcome).toBe("give-up")
+    expect(result.outcome).toBe("reload-history")
     expect(result.captures).toEqual([
       { message: "chat_stall_recovery_gave_up", tags: { turnStatus: "unknown" }, attempt: MAX_ATTEMPTS },
     ])
-    expect(result.showRetryBanner).toBe(true) // stall "tap Retry" banner shown over a billing error
-
+    expect(result.showRetryBanner).toBe(false)
     store.dispose()
   })
 
@@ -184,13 +202,13 @@ describe("REPRODUCTION JAVASCRIPT-REACT-5Z: usage-limit send after a #185 turn r
     store.dispose()
   })
 
-  test("contrast: if the terminal buffer were still in grace, the tag would be 'completed', not 'unknown'", async () => {
+  test("contrast: a completed turn still in grace reloads history without a give-up capture", async () => {
     const store = new StreamBufferStore()
     const w = store.create(SESSION, { turnId: PREV_TURN })
     w.complete()
     const result = await runStallRecovery(turnEndpointFetch(store))
-    expect(result.outcome).toBe("give-up")
-    expect(result.captures[0]).toMatchObject({ tags: { turnStatus: "completed" }, attempt: 1 })
+    expect(result.outcome).toBe("reload-history")
+    expect(result.captures).toEqual([])
     store.dispose()
   })
 })

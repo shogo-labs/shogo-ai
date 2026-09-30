@@ -8,7 +8,7 @@
  */
 
 import { useMemo } from 'react'
-import { createAutoResumingFetch } from './auto-resuming-fetch'
+import { createAutoResumingFetch, type AutoResumeRetryState, type RetryWakeSource } from './auto-resuming-fetch'
 
 export interface ChatTransportOptions {
   /** API base URL (e.g., "http://localhost:8002" or "" for same-origin) */
@@ -55,6 +55,10 @@ export interface ChatTransportOptions {
    * flips. Ignored when `durableResume` is false (no wrapper exists).
    */
   onChunk?: (info: { bytes: number; resumed: boolean }) => void
+  /** Forwarded to auto-resuming-fetch: cuts a network-retry wait short. */
+  retryWake?: RetryWakeSource
+  /** Forwarded to auto-resuming-fetch: network-retry progress for UI + telemetry. */
+  onRetryState?: (state: AutoResumeRetryState) => void
   /**
    * Accessor for the current send's client-generated turn idempotency id,
    * read fresh on every POST and forwarded as `X-Client-Turn-Id`. The caller
@@ -130,6 +134,8 @@ export function useChatTransportConfig({
   chatSessionId,
   durableResume = true,
   onChunk,
+  retryWake,
+  onRetryState,
   getClientTurnId,
 }: ChatTransportOptions): ChatTransportConfig | undefined {
   return useMemo(() => {
@@ -137,7 +143,7 @@ export function useChatTransportConfig({
 
     const baseFetch = customFetch ?? globalThis.fetch
     const fetch = durableResume
-      ? createAutoResumingFetch(baseFetch.bind(globalThis), { onChunk })
+      ? createAutoResumingFetch(baseFetch.bind(globalThis), { onChunk, wake: retryWake, onRetryState })
       : customFetch
 
     // Compose `headers` so the caller-provided headers (cookies, auth), the
@@ -164,5 +170,5 @@ export function useChatTransportConfig({
       fetch,
       headers: composedHeaders,
     }
-  }, [apiBaseUrl, projectId, workspaceId, localAgentUrl, credentials, customFetch, headers, chatSessionId, durableResume, onChunk, getClientTurnId])
+  }, [apiBaseUrl, projectId, workspaceId, localAgentUrl, credentials, customFetch, headers, chatSessionId, durableResume, onChunk, retryWake, onRetryState, getClientTurnId])
 }

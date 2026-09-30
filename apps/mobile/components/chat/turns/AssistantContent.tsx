@@ -25,7 +25,7 @@ import { WorkGroup } from "./WorkGroup"
 import { clampAspectRatio, DEFAULT_IMAGE_ASPECT } from "./image-sizing"
 import { useChatImageWidth } from "./use-chat-image-width"
 import { WorkedForGroup } from "./WorkedForGroup"
-import { PlanningStatusLine } from "./PlanningStatusLine"
+import { TurnActivityStatus } from "./TurnActivityStatus"
 import type { MessagePart, GroupedMessagePart } from "./types"
 import {
   groupWorkParts,
@@ -925,7 +925,10 @@ export const AssistantContent = memo(
         {finalSegment.map((part, index) =>
           renderPart(part, workLog.length + index),
         )}
-        {showPlanningStatus && <PlanningStatusLine />}
+        <TurnActivityStatus
+          isStreaming={isStreaming}
+          showPlanning={showPlanningStatus}
+        />
       </View>
     )
   },

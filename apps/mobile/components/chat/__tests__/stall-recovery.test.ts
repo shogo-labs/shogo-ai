@@ -58,21 +58,27 @@ describe("decideStallRecovery", () => {
     expect(decideStallRecovery({ turnStatus: "unknown", attempt: 4, maxAttempts: 5 })).toBe("retry-later")
   })
 
-  test("unknown on the final attempt -> give-up (fall through to manual banner)", () => {
-    expect(decideStallRecovery({ turnStatus: "unknown", attempt: 5, maxAttempts: 5 })).toBe("give-up")
-    // Defensive: an attempt past the budget also gives up.
-    expect(decideStallRecovery({ turnStatus: "unknown", attempt: 6, maxAttempts: 5 })).toBe("give-up")
+  test("unknown on the final attempt -> reload-history (the turn is gone; show what was saved)", () => {
+    expect(decideStallRecovery({ turnStatus: "unknown", attempt: 5, maxAttempts: 5 })).toBe("reload-history")
+    // Defensive: an attempt past the budget also reloads.
+    expect(decideStallRecovery({ turnStatus: "unknown", attempt: 6, maxAttempts: 5 })).toBe("reload-history")
   })
 
-  test("terminal statuses -> give-up immediately (history already reflects them)", () => {
+  test("terminal statuses -> reload-history immediately", () => {
     for (const turnStatus of ["completed", "failed", "aborted"] as const) {
       // Terminal turns never retry — even on the first attempt.
-      expect(decideStallRecovery({ turnStatus, attempt: 1, maxAttempts: 5 })).toBe("give-up")
+      expect(decideStallRecovery({ turnStatus, attempt: 1, maxAttempts: 5 })).toBe("reload-history")
     }
   })
 
-  test("never re-sends or truncates: the only non-give-up branches are reconnect/retry-later", () => {
-    const actions = (["active", "completed", "failed", "aborted", "unknown"] as const).map((turnStatus) =>
+  test("unreachable -> retry-later without limit (the network is down, not the turn)", () => {
+    for (const attempt of [1, 5, 50, 10_000]) {
+      expect(decideStallRecovery({ turnStatus: "unreachable", attempt, maxAttempts: 5 })).toBe("retry-later")
+    }
+  })
+
+  test("never re-sends or truncates: the only non-reload branches are reconnect/retry-later", () => {
+    const actions = (["active", "completed", "failed", "aborted", "unknown", "unreachable"] as const).map((turnStatus) =>
       decideStallRecovery({ turnStatus, attempt: 1, maxAttempts: 3 }),
     )
     // 'resend'/'continue' belong to MANUAL retry only — auto-recovery must
@@ -81,7 +87,7 @@ describe("decideStallRecovery", () => {
     expect(actions).not.toContain("continue" as never)
   })
 
-  test("give-up interrupts stuck tools and exposes the retry banner", () => {
+  test("an ended turn interrupts stuck tools and reloads history — no retry banner", () => {
     expect(
       getStallRecoveryEffects({
         turnStatus: "unknown",
@@ -89,9 +95,10 @@ describe("decideStallRecovery", () => {
         maxAttempts: 5,
       }),
     ).toEqual({
-      action: "give-up",
+      action: "reload-history",
       interruptStuckTools: true,
-      showRetryBanner: true,
+      reloadHistory: true,
+      showRetryBanner: false,
     })
   })
 

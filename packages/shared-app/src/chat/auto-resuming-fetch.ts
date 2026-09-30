@@ -27,24 +27,69 @@
  * exhausted.
  */
 
+/** Something that can cut a retry wait short (e.g. a "Retry now" tap). */
+export interface RetryWakeSource {
+  onWake(fn: () => void): () => void
+}
+
+/** A tiny wake source the UI can trigger (`wake()`) and the fetch can await. */
+export class ChatRetryWaker implements RetryWakeSource {
+  private listeners = new Set<() => void>()
+  wake(): void {
+    for (const fn of [...this.listeners]) fn()
+  }
+  onWake(fn: () => void): () => void {
+    this.listeners.add(fn)
+    return () => this.listeners.delete(fn)
+  }
+}
+
+/**
+ * Progress of a client-side retry episode: the initial chat request failing
+ * before a response, or a stream being re-attached after a transport error.
+ * `active: false` marks the end of the episode.
+ */
+export interface AutoResumeRetryState {
+  kind: 'initial_request' | 'resume'
+  active: boolean
+  /** 1-based count of retries so far in this episode. */
+  attempt: number
+  startedAt: number
+  /** When the next attempt fires (ms epoch); null when not waiting. */
+  nextAttemptAt: number | null
+  /** The browser reports no network; retrying is paused until it's back. */
+  offline: boolean
+  error?: string
+  outcome?: 'recovered' | 'gave_up' | 'cancelled'
+}
+
 export interface AutoResumingFetchOptions {
   /**
    * Total attempts for the initial chat POST when fetch fails before a
-   * Response exists. A request with a client turn id is idempotent server-side,
-   * so one bounded retry covers transient browser/network failures such as
-   * iOS Safari's "Load failed". Default 2 (one retry).
+   * Response exists. When the request carries `X-Client-Turn-Id` it is
+   * idempotent server-side, so the default is unlimited (retry until the
+   * network is back or the user stops); otherwise 2.
    */
   initialRequestAttempts?: number
   /**
-   * Maximum number of automatic resume attempts after a premature EOF.
-   * Each attempt uses exponential backoff capped at `maxBackoffMs`.
-   * Default 8.
+   * Maximum number of resume attempts that make no progress after a clean
+   * premature EOF (a buffer replaying the same tail). Transport failures
+   * (network errors) never count against this budget — they retry until the
+   * stream is back or the user stops. Default 8.
    */
   maxResumeAttempts?: number
   /** Initial backoff delay in ms. Default 500. */
   initialBackoffMs?: number
-  /** Maximum backoff delay in ms. Default 5000. */
+  /** Maximum backoff delay in ms for EOF resumes. Default 5000. */
   maxBackoffMs?: number
+  /** Maximum backoff delay in ms for network-failure retries. Default 30000. */
+  maxTransportBackoffMs?: number
+  /** Cuts the current retry wait short ("Retry now", app foregrounded). */
+  wake?: RetryWakeSource
+  /** Retry progress for UI status + telemetry. Errors thrown are ignored. */
+  onRetryState?: (state: AutoResumeRetryState) => void
+  /** Whether the device is offline. Default: `navigator.onLine === false`. */
+  isOffline?: () => boolean
   /**
    * Override the resume URL builder. By default the wrapper assumes the
    * chat POST URL ends in `/chat` and the resume URL is the same with
@@ -69,11 +114,60 @@ export interface AutoResumingFetchOptions {
   onChunk?: (info: { bytes: number; resumed: boolean }) => void
 }
 
-const DEFAULT_OPTIONS: Required<Omit<AutoResumingFetchOptions, 'buildResumeUrl' | 'logger' | 'onChunk'>> = {
-  initialRequestAttempts: 2,
+const DEFAULT_OPTIONS = {
   maxResumeAttempts: 8,
   initialBackoffMs: 500,
   maxBackoffMs: 5_000,
+  maxTransportBackoffMs: 30_000,
+}
+
+/** Non-idempotent initial requests (no client turn id) keep one retry. */
+const NON_IDEMPOTENT_INITIAL_ATTEMPTS = 2
+/** While offline, re-check at least this often in case no `online` event fires. */
+const OFFLINE_RECHECK_MS = 60_000
+
+function defaultIsOffline(): boolean {
+  const nav = (globalThis as any).navigator
+  return !!nav && nav.onLine === false
+}
+
+function hasClientTurnId(init: RequestInit | undefined): boolean {
+  const h = init?.headers
+  if (!h) return false
+  if (typeof Headers !== 'undefined' && h instanceof Headers) return h.has('X-Client-Turn-Id')
+  if (Array.isArray(h)) return h.some(([k]) => k.toLowerCase() === 'x-client-turn-id')
+  return Object.keys(h).some((k) => k.toLowerCase() === 'x-client-turn-id')
+}
+
+function isAbortError(error: unknown, signal?: AbortSignal | null): boolean {
+  return !!signal?.aborted || (error instanceof Error && error.name === 'AbortError')
+}
+
+/**
+ * Wait `ms`, ending early on `wake`, the browser `online` event, or abort.
+ * An `online` wake adds 0-1s of jitter so every tab doesn't reconnect at once.
+ */
+export function waitForRetry(ms: number, wake?: RetryWakeSource, signal?: AbortSignal | null): Promise<void> {
+  const g = globalThis as any
+  return new Promise<void>((resolve) => {
+    let settled = false
+    const finish = (jitter: boolean) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      offWake?.()
+      g.removeEventListener?.('online', onOnline)
+      signal?.removeEventListener('abort', onAbort)
+      if (jitter) setTimeout(resolve, Math.floor(Math.random() * 1_000))
+      else resolve()
+    }
+    const onOnline = () => finish(true)
+    const onAbort = () => finish(false)
+    const timer = setTimeout(() => finish(false), ms)
+    const offWake = wake?.onWake(() => finish(false))
+    g.addEventListener?.('online', onOnline)
+    signal?.addEventListener('abort', onAbort, { once: true })
+  })
 }
 
 const TURN_HEADER = {
@@ -244,39 +338,104 @@ export function createAutoResumingFetch(
     ...options,
   }
 
+  const isOffline = opts.isOffline ?? defaultIsOffline
+  const emitRetryState = (state: AutoResumeRetryState) => {
+    try {
+      opts.onRetryState?.(state)
+    } catch {
+      /* advisory */
+    }
+  }
+
   const wrapped: typeof globalThis.fetch = async (input, init) => {
     const method = (init?.method || 'GET').toUpperCase()
-    // Only wrap POST chat requests; GET (resume), DELETE (stop), etc. are
-    // forwarded as-is.
-    if (method !== 'POST') {
+    const requestUrl = typeof input === 'string'
+      ? input
+      : input instanceof URL
+        ? input.toString()
+        : (input as Request).url
+    // Wrap the chat POST and the stream re-attach GET (`…/<sid>/stream`,
+    // used by `resumeStream()`); everything else is forwarded as-is.
+    const isStreamGet = method === 'GET' && /\/stream(\?|$)/.test(requestUrl)
+    if (method !== 'POST' && !isStreamGet) {
       return baseFetch(input as any, init)
     }
 
     let initialResponse: Response | undefined
     let initialRequestError: unknown = null
-    const initialAttempts = Math.max(1, opts.initialRequestAttempts)
+    const initialAttempts = Math.max(
+      1,
+      opts.initialRequestAttempts ??
+        (isStreamGet || hasClientTurnId(init) ? Infinity : NON_IDEMPOTENT_INITIAL_ATTEMPTS),
+    )
+    let initialRetryStartedAt = 0
     for (let attempt = 1; attempt <= initialAttempts; attempt++) {
       try {
         initialResponse = await baseFetch(input as any, init)
         initialRequestError = null
+        if (attempt > 1) {
+          emitRetryState({
+            kind: 'initial_request',
+            active: false,
+            attempt: attempt - 1,
+            startedAt: initialRetryStartedAt,
+            nextAttemptAt: null,
+            offline: false,
+            outcome: 'recovered',
+          })
+        }
         break
       } catch (error) {
         initialRequestError = error
-        const aborted =
-          init?.signal?.aborted ||
-          (error instanceof Error && error.name === 'AbortError')
-        if (aborted || attempt === initialAttempts) throw error
+        const aborted = isAbortError(error, init?.signal)
+        if (aborted || attempt === initialAttempts) {
+          if (attempt > 1) {
+            emitRetryState({
+              kind: 'initial_request',
+              active: false,
+              attempt: attempt - 1,
+              startedAt: initialRetryStartedAt,
+              nextAttemptAt: null,
+              offline: false,
+              outcome: aborted ? 'cancelled' : 'gave_up',
+            })
+          }
+          throw error
+        }
 
-        const backoff = Math.min(
-          opts.initialBackoffMs * Math.pow(2, attempt - 1),
-          opts.maxBackoffMs,
-        )
+        if (attempt === 1) initialRetryStartedAt = Date.now()
+        const offline = isOffline()
+        const backoff = offline
+          ? OFFLINE_RECHECK_MS
+          : Math.min(opts.initialBackoffMs * Math.pow(2, attempt - 1), opts.maxTransportBackoffMs)
+        const message = error instanceof Error ? error.message : String(error)
+        emitRetryState({
+          kind: 'initial_request',
+          active: true,
+          attempt,
+          startedAt: initialRetryStartedAt,
+          nextAttemptAt: Date.now() + backoff,
+          offline,
+          error: message,
+        })
         if (opts.logger) {
           opts.logger.warn(
-            `[AutoResume] initial chat request failed (${error instanceof Error ? error.message : String(error)}); retrying in ${backoff}ms (attempt ${attempt + 1}/${initialAttempts})`,
+            `[AutoResume] initial chat request failed (${message}); retrying in ${offline ? 'when back online' : `${backoff}ms`} (attempt ${attempt + 1})`,
           )
         }
-        await new Promise<void>((resolve) => setTimeout(resolve, backoff))
+        await waitForRetry(backoff, opts.wake, init?.signal)
+        if (init?.signal?.aborted) {
+          emitRetryState({
+            kind: 'initial_request',
+            active: false,
+            attempt,
+            startedAt: initialRetryStartedAt,
+            nextAttemptAt: null,
+            offline: false,
+            outcome: 'cancelled',
+          })
+          throw error
+        }
       }
     }
     // The loop either assigns a response or throws the final request error.
@@ -288,20 +447,21 @@ export function createAutoResumingFetch(
     if (!initialResponse.ok || !initialResponse.body) return initialResponse
 
     const turnId = initialResponse.headers.get(TURN_HEADER.TURN_ID)
-    const chatSessionId = initialResponse.headers.get(TURN_HEADER.CHAT_SESSION_ID)
-    if (!turnId || !chatSessionId) {
-      // Server didn't tag this response with durable turn metadata —
-      // not a chat stream we can resume. Pass through.
-      return initialResponse
+    let resumeUrl: string
+    if (isStreamGet) {
+      // The runtime's /stream proxy exposes X-Turn-Id but not
+      // X-Chat-Session-Id; re-attach to the same URL without its cursor.
+      if (!turnId) return initialResponse
+      resumeUrl = requestUrl.replace(/\?.*$/, '')
+    } else {
+      const chatSessionId = initialResponse.headers.get(TURN_HEADER.CHAT_SESSION_ID)
+      if (!turnId || !chatSessionId) {
+        // Server didn't tag this response with durable turn metadata —
+        // not a chat stream we can resume. Pass through.
+        return initialResponse
+      }
+      resumeUrl = opts.buildResumeUrl(requestUrl, chatSessionId)
     }
-
-    const chatPostUrl = typeof input === 'string'
-      ? input
-      : input instanceof URL
-        ? input.toString()
-        : (input as Request).url
-
-    const resumeUrl = opts.buildResumeUrl(chatPostUrl, chatSessionId)
     const logger = opts.logger
 
     const wrappedBody = createDurableBody({
@@ -311,6 +471,10 @@ export function createAutoResumingFetch(
       maxResumeAttempts: opts.maxResumeAttempts,
       initialBackoffMs: opts.initialBackoffMs,
       maxBackoffMs: opts.maxBackoffMs,
+      maxTransportBackoffMs: opts.maxTransportBackoffMs,
+      wake: opts.wake,
+      isOffline,
+      emitRetryState,
       logger,
       turnId,
       onChunk: options.onChunk,
@@ -321,6 +485,7 @@ export function createAutoResumingFetch(
       // this the resume can be geo-steered to a different region that has
       // no buffer (204) or hasn't replicated the project row yet (404).
       credentials: init?.credentials,
+      signal: init?.signal ?? undefined,
     })
 
     // Re-construct the Response so the AI SDK reads from our durable body
@@ -338,6 +503,10 @@ interface DurableBodyOpts {
   maxResumeAttempts: number
   initialBackoffMs: number
   maxBackoffMs: number
+  maxTransportBackoffMs: number
+  wake?: RetryWakeSource
+  isOffline: () => boolean
+  emitRetryState: (state: AutoResumeRetryState) => void
   logger: { warn: (...args: any[]) => void; log: (...args: any[]) => void } | null
   turnId: string
   onChunk?: (info: { bytes: number; resumed: boolean }) => void
@@ -347,6 +516,8 @@ interface DurableBodyOpts {
    * the reconnect stays in the region that owns the stream buffer.
    */
   credentials?: RequestCredentials
+  /** The original request's signal; aborting it (user Stop) ends retrying. */
+  signal?: AbortSignal
 }
 
 function createDurableBody(opts: DurableBodyOpts): ReadableStream<Uint8Array> {
@@ -357,11 +528,24 @@ function createDurableBody(opts: DurableBodyOpts): ReadableStream<Uint8Array> {
     maxResumeAttempts,
     initialBackoffMs,
     maxBackoffMs,
+    maxTransportBackoffMs,
+    wake,
+    isOffline,
+    emitRetryState,
     logger,
     turnId,
     onChunk,
     credentials,
+    signal,
   } = opts
+
+  // Set by downstream cancel (AI SDK error / user Stop) or the request's
+  // abort signal, so an unlimited network-retry loop never outlives the turn.
+  const stop = new AbortController()
+  if (signal) {
+    if (signal.aborted) stop.abort()
+    else signal.addEventListener('abort', () => stop.abort(), { once: true })
+  }
 
   return new ReadableStream<Uint8Array>({
     async start(controller) {
@@ -372,7 +556,8 @@ function createDurableBody(opts: DurableBodyOpts): ReadableStream<Uint8Array> {
       let streamErrored = false
       let lastSeq = 0
       let turnCompleted = false
-      let cancelled = false
+      let cancelled = stop.signal.aborted
+      stop.signal.addEventListener('abort', () => { cancelled = true }, { once: true })
       let resumeAttempts = 0
       const encoder = new TextEncoder()
       // A fresh decoder is minted per underlying body (initial + each resume)
@@ -521,7 +706,22 @@ function createDurableBody(opts: DurableBodyOpts): ReadableStream<Uint8Array> {
         return { bytes }
       }
 
-      const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
+      // Transport-failure retry episode (for UI status + telemetry).
+      let transportFailures = 0
+      let transportEpisodeStartedAt = 0
+      const endTransportEpisode = (outcome: 'recovered' | 'gave_up' | 'cancelled') => {
+        if (transportFailures === 0) return
+        emitRetryState({
+          kind: 'resume',
+          active: false,
+          attempt: transportFailures,
+          startedAt: transportEpisodeStartedAt,
+          nextAttemptAt: null,
+          offline: false,
+          outcome,
+        })
+        transportFailures = 0
+      }
 
       // Tracks the most recent mid-stream transport error (a thrown
       // `reader.read()`), if any. A clean pump (EOF) clears it. If we
@@ -533,30 +733,56 @@ function createDurableBody(opts: DurableBodyOpts): ReadableStream<Uint8Array> {
         const firstPump = await pumpBody(initialBody, /* resumed */ false)
         lastTransportError = firstPump.error ?? null
 
-        while (!turnCompleted && !cancelled && resumeAttempts < maxResumeAttempts) {
-          resumeAttempts++
-          const backoff = Math.min(
-            initialBackoffMs * Math.pow(2, resumeAttempts - 1),
-            maxBackoffMs,
-          )
-          const reason = lastTransportError
-            ? `stream errored mid-turn (${(lastTransportError as any)?.message || lastTransportError})`
-            : 'stream EOF without turn-complete'
-          warn(
-            `${reason}; reconnecting fromSeq=${lastSeq} (attempt ${resumeAttempts}/${maxResumeAttempts}, backoff ${backoff}ms)`,
-          )
-          await sleep(backoff)
+        // Network failures retry without a limit; only clean-EOF resumes
+        // that make no progress spend `maxResumeAttempts`.
+        let networkFailing = !!lastTransportError
+        while (!turnCompleted && !cancelled && (networkFailing || resumeAttempts < maxResumeAttempts)) {
+          let backoff: number
+          const offline = isOffline()
+          if (networkFailing) {
+            transportFailures++
+            if (transportFailures === 1) transportEpisodeStartedAt = Date.now()
+            backoff = offline
+              ? OFFLINE_RECHECK_MS
+              : Math.min(initialBackoffMs * Math.pow(2, transportFailures - 1), maxTransportBackoffMs)
+            emitRetryState({
+              kind: 'resume',
+              active: true,
+              attempt: transportFailures,
+              startedAt: transportEpisodeStartedAt,
+              nextAttemptAt: Date.now() + backoff,
+              offline,
+              error: String((lastTransportError as any)?.message || lastTransportError),
+            })
+            warn(
+              `stream errored mid-turn (${(lastTransportError as any)?.message || lastTransportError}); ` +
+                `reconnecting fromSeq=${lastSeq} (network retry ${transportFailures}, ` +
+                `${offline ? 'waiting for network' : `backoff ${backoff}ms`})`,
+            )
+          } else {
+            resumeAttempts++
+            backoff = Math.min(initialBackoffMs * Math.pow(2, resumeAttempts - 1), maxBackoffMs)
+            warn(
+              `stream EOF without turn-complete; reconnecting fromSeq=${lastSeq} ` +
+                `(attempt ${resumeAttempts}/${maxResumeAttempts}, backoff ${backoff}ms)`,
+            )
+          }
+          await waitForRetry(backoff, wake, stop.signal)
           if (cancelled) break
 
           let resumeRes: Response
           try {
             const url = `${resumeUrl}?fromSeq=${lastSeq}`
-            resumeRes = await fetcher(url, { method: 'GET', credentials })
+            resumeRes = await fetcher(url, { method: 'GET', credentials, signal: stop.signal })
           } catch (err: any) {
             lastTransportError = err
+            networkFailing = true
             warn(`resume fetch threw: ${err?.message || err}`)
             continue
           }
+          // Reached the server: whatever happens next, the network is back.
+          if (networkFailing) endTransportEpisode('recovered')
+          networkFailing = false
 
           // Only a 200 with a body is a resumable stream. Any other status is
           // terminal: 204 = turn no longer buffered; 4xx/5xx (e.g. a 404 from
@@ -597,6 +823,7 @@ function createDurableBody(opts: DurableBodyOpts): ReadableStream<Uint8Array> {
           // A resume that ended on a clean EOF clears any pending transport
           // error; one that threw again keeps it set for the (bounded) loop.
           lastTransportError = error ?? null
+          networkFailing = !!error
           // Only reset the attempt budget when the resume ADVANCED the seq
           // cursor. The old `if (bytes > 0)` check treated any bytes as
           // progress — but a turn that completed server-side WITHOUT a
@@ -612,6 +839,7 @@ function createDurableBody(opts: DurableBodyOpts): ReadableStream<Uint8Array> {
           if (bytes > 0 && lastSeq > seqBeforeResume) resumeAttempts = 0
         }
 
+        endTransportEpisode(cancelled ? 'cancelled' : 'recovered')
         if (!turnCompleted && !cancelled) {
           warn(`gave up after ${resumeAttempts} resume attempts; closing stream`)
           // If we bailed with an unrecovered transport error still pending,
@@ -638,9 +866,7 @@ function createDurableBody(opts: DurableBodyOpts): ReadableStream<Uint8Array> {
     },
     cancel() {
       // Downstream cancelled (e.g. AI SDK got an error or user-stop).
-      // The async loop above checks `cancelled` and exits its read loop;
-      // we don't have direct access to it here, but pump will notice the
-      // controller refusing further enqueues and stop on the next chunk.
+      stop.abort()
     },
   })
 }
