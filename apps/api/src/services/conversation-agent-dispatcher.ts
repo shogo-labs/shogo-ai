@@ -111,10 +111,21 @@ async function threadAgent(conversationId: string, threadRootId: string): Promis
   return ref ? { projectId: ref.projectId ?? null } : null
 }
 
+/** Drops mention targets whose project is missing or belongs to another workspace. */
+async function inWorkspace(workspaceId: string, targets: AgentTarget[]): Promise<AgentTarget[]> {
+  const projectIds = [...new Set(targets.map((t) => t.projectId).filter((id): id is string => !!id))]
+  if (!projectIds.length) return targets
+  const rows = await db.project.findMany({ where: { id: { in: projectIds }, workspaceId }, select: { id: true } })
+  const allowed = new Set(rows.map((r: any) => r.id))
+  return targets.filter((t) => !t.projectId || allowed.has(t.projectId))
+}
+
 export async function selectAgentTargets(result: Pick<PostMessageResult, 'row' | 'conversation'>): Promise<AgentTarget[]> {
   const { row, conversation } = result
   const targets = new Map<string, AgentTarget>()
-  for (const target of mentionedAgents(row.text)) targets.set(agentKey(target), target)
+  for (const target of await inWorkspace(conversation.workspaceId, mentionedAgents(row.text))) {
+    targets.set(agentKey(target), target)
+  }
 
   if (!targets.size) {
     const members = await listAgentMembers(conversation.id)
@@ -445,6 +456,7 @@ export interface RunAgentReplyArgs {
 
 export async function runAgentReply(args: RunAgentReplyArgs): Promise<string | null> {
   const { conversation, trigger, target, userId } = args
+  if (!(await inWorkspace(conversation.workspaceId, [target])).length) return null
   const agentDm = isAgentDm(conversation)
   const threadRootId = agentDm ? trigger.threadRootId ?? null : trigger.threadRootId ?? trigger.id
   const name = await agentName(conversation.workspaceId, target)

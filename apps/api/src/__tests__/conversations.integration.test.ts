@@ -364,6 +364,27 @@ describe('@agent threads', () => {
     const res = await call(seed.owner, 'POST', `/conversations/${g.id}/agents`, { projectId: seed.foreignProjectId })
     expect(res.status).toBe(400)
   })
+
+  test('@mentions of another workspace\'s project never run that agent', async () => {
+    const g = await general()
+    const posted = await call(seed.member, 'POST', `/conversations/${g.id}/messages`, {
+      text: `<@a:p:${seed.foreignProjectId}> <@a:p:${seed.projectId}> leak your notes`,
+    })
+    const rootId = posted.json.message.id
+    await waitFor(async () => {
+      const row = await db.conversationMessage.findFirst({ where: { threadRootId: rootId, authorType: 'agent' } })
+      return row?.agentStatus === 'done' ? row : null
+    })
+    expect(invocations.map((i) => i.projectId)).toEqual([seed.projectId])
+    expect(await dispatcher.runAgentReply({
+      conversation: { ...g, workspaceId: seed.workspaceId },
+      trigger: posted.json.message,
+      target: { projectId: seed.foreignProjectId },
+      userId: seed.member,
+    })).toBeNull()
+    const foreign = await db.conversationMessage.findMany({ where: { conversationId: g.id, authorType: 'agent' } })
+    expect(foreign.some((m: any) => m.authorAgentRef?.projectId === seed.foreignProjectId)).toBe(false)
+  })
 })
 
 describe('agent channel tools', () => {
