@@ -346,7 +346,7 @@ export default function MeetingDetailScreen() {
               onPress={() => setTab(key)}
               accessibilityRole="tab"
               accessibilityState={{ selected: tab === key }}
-              className={cn('rounded-lg px-3 py-1.5', tab === key && 'bg-card shadow-sm')}
+              className={cn('rounded-lg border px-3 py-1.5', tab === key ? 'border-border/70 bg-card' : 'border-transparent')}
             >
               <Text className={cn('text-xs font-medium', tab === key ? 'text-foreground' : 'text-muted-foreground')}>
                 {label}
