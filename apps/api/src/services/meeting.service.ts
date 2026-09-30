@@ -308,23 +308,24 @@ export function friendlyMeetingError(kind: 'notes' | 'transcript', err: unknown)
  */
 async function markTranscriptError(meetingId: string, error: string): Promise<boolean> {
   const existing = await db.meeting.findUnique({ where: { id: meetingId }, select: { transcript: true } }).catch(() => null)
-  const live = parseTranscript(existing?.transcript)
-  const keepLive = !!live && (live.segments.length > 0 || !!live.text.trim())
-  await db.meeting
-    .update({
-      where: { id: meetingId },
-      data: keepLive
-        ? {
-            status: 'ready',
-            transcript: JSON.stringify({ text: live!.text, segments: live!.segments, language: live!.language ?? 'en', error }),
-          }
-        : {
-            status: 'error',
-            transcript: JSON.stringify({ text: '', segments: [], language: 'en', error }),
-          },
-    })
-    .catch(() => {})
+  const { data, keepLive } = transcriptErrorUpdate(existing?.transcript, error)
+  await db.meeting.update({ where: { id: meetingId }, data }).catch(() => {})
   return keepLive
+}
+
+function transcriptErrorUpdate(raw: string | null | undefined, error: string) {
+  const live = parseTranscript(raw)
+  const keepLive = !!live && (live.segments.length > 0 || !!live.text.trim())
+  const data = keepLive
+    ? {
+        status: 'ready',
+        transcript: JSON.stringify({ text: live!.text, segments: live!.segments, language: live!.language ?? 'en', error }),
+      }
+    : {
+        status: 'error',
+        transcript: JSON.stringify({ text: '', segments: [], language: 'en', error }),
+      }
+  return { data, keepLive }
 }
 
 export interface TranscribeMeetingOptions {
@@ -748,10 +749,58 @@ export async function sweepStaleRecordingDrafts(now = new Date()): Promise<numbe
   return swept
 }
 
+/**
+ * Transcription and enhancement run in the process that accepted the request.
+ * Past these ages that process went away (restart, deploy) and the row would
+ * otherwise spin forever. A pass that was only slow still lands afterwards.
+ */
+export const STUCK_TRANSCRIBING_MS = 30 * 60 * 1000
+export const STUCK_ENHANCING_MS = 10 * 60 * 1000
+
+/** Fail meetings whose transcription or enhancement was interrupted, so the user can retry. */
+export async function sweepStuckMeetings(now = new Date()): Promise<number> {
+  let swept = 0
+  const transcribing = await db.meeting.findMany({
+    where: { status: 'transcribing', updatedAt: { lt: new Date(now.getTime() - STUCK_TRANSCRIBING_MS) } },
+    select: { id: true, transcript: true, updatedAt: true },
+    take: 100,
+  })
+  for (const row of transcribing) {
+    const { data, keepLive } = transcriptErrorUpdate(
+      row.transcript,
+      'Transcription was interrupted. Retry it from the meeting.',
+    )
+    const { count } = await db.meeting.updateMany({
+      where: { id: row.id, status: 'transcribing', updatedAt: row.updatedAt },
+      data,
+    })
+    swept += count
+    if (count && keepLive) void enhanceMeeting(row.id).catch(() => {})
+  }
+
+  const enhancing = await db.meeting.findMany({
+    where: { enhanceStatus: 'running', updatedAt: { lt: new Date(now.getTime() - STUCK_ENHANCING_MS) } },
+    select: { id: true, updatedAt: true },
+    take: 100,
+  })
+  for (const row of enhancing) {
+    const { count } = await db.meeting.updateMany({
+      where: { id: row.id, enhanceStatus: 'running', updatedAt: row.updatedAt },
+      data: { enhanceStatus: 'error', enhanceError: 'Writing notes was interrupted. Try again.' },
+    })
+    swept += count
+  }
+  if (swept) console.log(`[Meetings] Failed ${swept} interrupted transcription/notes run(s)`)
+  return swept
+}
+
 let sweeper: ReturnType<typeof setInterval> | null = null
 export function startRecordingDraftSweeper(): void {
   if (sweeper) return
-  const run = () => void sweepStaleRecordingDrafts().catch((err) => console.warn('[Meetings] Draft sweep failed:', err?.message ?? err))
+  const run = () => {
+    void sweepStaleRecordingDrafts().catch((err) => console.warn('[Meetings] Draft sweep failed:', err?.message ?? err))
+    void sweepStuckMeetings().catch((err) => console.warn('[Meetings] Stuck meeting sweep failed:', err?.message ?? err))
+  }
   run()
   sweeper = setInterval(run, 5 * 60 * 1000)
   sweeper.unref?.()

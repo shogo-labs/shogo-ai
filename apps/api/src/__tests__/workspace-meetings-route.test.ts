@@ -510,6 +510,36 @@ describe('abandoned recording drafts', () => {
   })
 })
 
+describe('interrupted transcription and notes', () => {
+  const minutesAgo = (n: number) => new Date(Date.now() - n * 60_000)
+
+  test('stale runs fail so the user can retry; fresh runs are untouched', async () => {
+    generated = '## Summary\n- From the live transcript'
+    const stuckWithLive = seed({ status: 'transcribing', transcript: TRANSCRIPT, updatedAt: minutesAgo(31) })
+    const stuckEmpty = seed({ status: 'transcribing', updatedAt: minutesAgo(45) })
+    const transcribing = seed({ status: 'transcribing', updatedAt: minutesAgo(5) })
+    const stuckNotes = seed({ enhanceStatus: 'running', updatedAt: minutesAgo(11) })
+    const writingNotes = seed({ enhanceStatus: 'running', updatedAt: minutesAgo(2) })
+
+    expect(await service.sweepStuckMeetings()).toBe(3)
+    await new Promise((r) => setTimeout(r, 10))
+
+    expect(meetings.get(stuckWithLive.id).status).toBe('ready')
+    const kept = JSON.parse(meetings.get(stuckWithLive.id).transcript)
+    expect(kept.segments).toHaveLength(1)
+    expect(kept.error).toContain('interrupted')
+    expect(meetings.get(stuckWithLive.id).enhancedNotes).toContain('live transcript')
+
+    expect(meetings.get(stuckEmpty.id).status).toBe('error')
+    expect(JSON.parse(meetings.get(stuckEmpty.id).transcript).error).toContain('interrupted')
+    expect(meetings.get(transcribing.id).status).toBe('transcribing')
+
+    expect(meetings.get(stuckNotes.id).enhanceStatus).toBe('error')
+    expect(meetings.get(stuckNotes.id).enhanceError).toContain('interrupted')
+    expect(meetings.get(writingNotes.id).enhanceStatus).toBe('running')
+  })
+})
+
 describe('friendly errors', () => {
   test('hide provider details behind actionable sentences', () => {
     expect(service.friendlyMeetingError('notes', new Error("Model 'hoshi-2-0' is not supported. Use GET /ai/v1/models"))).toBe(
