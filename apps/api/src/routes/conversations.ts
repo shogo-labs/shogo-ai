@@ -52,6 +52,7 @@ import { catchUp } from '../services/conversation-activity'
 import { stopAgentReply } from '../services/conversation-agent-dispatcher'
 import { getPresence } from '../services/conversation-presence'
 import { getChannelMetrics } from '../services/conversation-metrics'
+import { registerConversationNotifications } from '../services/conversation-notifications'
 import type { ConversationSocketData } from '../realtime/conversation-socket'
 
 const db = prisma as any
@@ -86,6 +87,7 @@ function numberParam(value: string | undefined): number | undefined {
 
 export function conversationRoutes(config: ConversationRoutesConfig): Hono {
   const router = new Hono()
+  registerConversationNotifications()
 
   async function requireUser(c: any): Promise<string | Response> {
     const userId = await config.resolveUserId(c)

@@ -122,6 +122,15 @@ export type TeamChatEvent =
   | { type: 'read'; conversationId: string; userId: string; seq: number }
   | { type: 'typing'; conversationId: string; threadRootId: string | null; userId: string; name: string }
   | { type: 'presence'; userId: string; status: 'active' | 'away' | 'offline' }
+  | {
+      type: 'notification'
+      conversationId: string
+      messageId: string
+      threadRootId: string | null
+      reason: 'dm' | 'mention' | 'broadcast' | 'thread'
+      title: string
+      body: string
+    }
 
 export const mentionToken = {
   user: (id: string) => `<@u:${id}>`,

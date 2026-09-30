@@ -47,6 +47,7 @@ import {
 } from "../../lib/switch-workspace";
 import { useResolvedTheme } from "../../contexts/theme";
 import { AppSidebar } from "../../components/layout/AppSidebar";
+import { TeamChatNotifier } from "../../components/team-chat/TeamChatNotifier";
 import { AppHeader } from "../../components/layout/AppHeader";
 import { RecordingIndicator } from "../../components/meetings/RecordingIndicator";
 import { NativeRecorderProvider } from "../../lib/native-recorder";
@@ -467,6 +468,7 @@ function AppLayoutInner() {
       drawer={drawer}
     >
       {(localMode || Platform.OS !== "web") && !isIdeEmbed ? <RecordingIndicator /> : null}
+      {!isIdeEmbed ? <TeamChatNotifier /> : null}
       {useMobileWorkspaceShell ? (
         <MobileWorkspaceShell key={activeWorkspace?.id ?? "workspace-loading"}>
           <Slot />

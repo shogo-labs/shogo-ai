@@ -17,6 +17,7 @@ import {
   type TeamChatEvent,
 } from '../lib/team-chat-api'
 import { useTeamChatEvents } from '../lib/team-chat-connection'
+import { setActiveChannelNotificationContext } from '../lib/notifications/chat-notifier'
 import {
   addOptimistic,
   applyListEvent,
@@ -42,6 +43,7 @@ const activeListeners = new Set<() => void>()
 export function setActiveConversation(id: string | null): void {
   if (activeConversationId === id) return
   activeConversationId = id
+  setActiveChannelNotificationContext(id)
   activeListeners.forEach((l) => l())
 }
 
