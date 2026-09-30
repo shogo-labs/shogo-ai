@@ -138,6 +138,11 @@ import {
 } from "../../lib/native-phone-layout"
 import { canvasViewerPayload } from "../../lib/canvas-viewer"
 import {
+  buildChatSendBody,
+  generateClientTurnId,
+  normalizePlanData,
+} from "../../lib/chat-send-body"
+import {
   CHAT_TRANSCRIPT_MAX_WIDTH,
   NATIVE_COMPOSER_KEYBOARD_GAP,
 } from "../../lib/native-composer-keyboard"
@@ -385,17 +390,6 @@ export type QueuedMessage = {
     }
     bodyExtra: Record<string, unknown>
   }
-}
-
-/**
- * Client-generated turn idempotency id, forwarded as `X-Client-Turn-Id`
- * (see `useChatTransport.ts`). Not a real UUID — `crypto.randomUUID` isn't
- * reliably available across every Hermes/web/native runtime this file ships
- * on — just unique enough to de-dupe retries of one logical send against
- * `apps/api/src/lib/chat-turn-idempotency.ts`.
- */
-function generateClientTurnId(): string {
-  return `ctid-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
 }
 
 function buildOptimisticUserMessage(
@@ -902,25 +896,6 @@ const sessionQueueCache = new Map<string, QueuedMessage[]>()
 /** Clear the in-memory per-session queued-message cache (e.g. on logout). */
 export function clearChatPanelQueueCache(): void {
   sessionQueueCache.clear()
-}
-
-function normalizePlanFilepath(filepath?: string | null): string | undefined {
-  if (!filepath) return undefined
-  const normalized = filepath.replace(/^\/+/, "").replace(/\\/g, "/")
-  const filename = normalized.split("/").pop()
-  if (!filename || !/^[a-zA-Z0-9._-]+\.plan\.md$/.test(filename))
-    return undefined
-  return `.shogo/plans/${filename}`
-}
-
-function normalizePlanData(plan: PlanData): PlanData {
-  return {
-    ...plan,
-    todos: plan.todos ?? [],
-    filepath: normalizePlanFilepath(plan.filepath),
-    summary: plan.summary,
-    summaryStatus: plan.summaryStatus,
-  }
 }
 
 async function ensureAiConsentForMessage(): Promise<boolean> {
@@ -5089,12 +5064,13 @@ const ChatPanelContent = observer(function ChatPanelContent({
         const liveSession = studioChat.chatSessionCollection.get(
           currentSessionId,
         ) as { name?: string; inferredName?: string } | undefined
-        const bodyExtra: Record<string, unknown> = {
+        const planToSend = confirmedPlanRef.current
+        confirmedPlanRef.current = null
+        const bodyExtra = buildChatSendBody({
           featureId,
           phase,
           chatSessionId: currentSessionId,
-          chatSessionName:
-            liveSession?.name || liveSession?.inferredName || undefined,
+          chatSessionName: liveSession?.name || liveSession?.inferredName,
           workspaceId,
           userId,
           projectId,
@@ -5102,7 +5078,6 @@ const ChatPanelContent = observer(function ChatPanelContent({
           agentMode: perMsgModel || selectedModel,
           interactionMode: interactionModeRef.current,
           dualPlan: dualPlanRef.current,
-          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
           clientTurnId,
           // Live canvas preview size (phone vs desktop). The runtime
           // injects this as a layout hint; canvases stay responsive either way.
@@ -5111,29 +5086,19 @@ const ChatPanelContent = observer(function ChatPanelContent({
             platform: Platform.OS,
             width: windowWidth,
           }),
-        }
-        const planToSend = confirmedPlanRef.current
-        if (planToSend) {
-          bodyExtra.confirmedPlan = normalizePlanData(planToSend)
-          bodyExtra.interactionMode = "agent"
-          confirmedPlanRef.current = null
-        }
-        if (
-          ideMode &&
-          (ideBridge.context.activeFile ||
-            ideBridge.context.workspaceFolders.length > 0)
-        ) {
-          bodyExtra.ideContext = ideBridge.context
-        }
-        if (references && references.length > 0) {
+          confirmedPlan: planToSend,
+          ideContext:
+            ideMode &&
+            (ideBridge.context.activeFile ||
+              ideBridge.context.workspaceFolders.length > 0)
+              ? ideBridge.context
+              : undefined,
           // The runtime resolves these into real context (file contents +
           // workspace summaries) before the model runs. Passed through the
           // API proxy untouched, so it also works in direct-to-runtime mode.
-          bodyExtra.references = references
-        }
-        if (extraBody) {
-          Object.assign(bodyExtra, extraBody)
-        }
+          references,
+          extra: extraBody,
+        })
         console.log(
           "[ChatPanel][send] bodyExtra — interactionMode:",
           bodyExtra.interactionMode,
@@ -5685,14 +5650,14 @@ const ChatPanelContent = observer(function ChatPanelContent({
         }
       }
 
-      const body: Record<string, unknown> = {
+      const planToSend = confirmedPlanRef.current
+      confirmedPlanRef.current = null
+      const body = buildChatSendBody({
         featureId,
         phase,
         chatSessionId: currentSessionId,
         chatSessionName:
-          (currentSession as any)?.name ||
-          (currentSession as any)?.inferredName ||
-          undefined,
+          (currentSession as any)?.name || (currentSession as any)?.inferredName,
         workspaceId,
         userId,
         projectId,
@@ -5700,28 +5665,21 @@ const ChatPanelContent = observer(function ChatPanelContent({
         agentMode: perMsgModel || selectedModel,
         interactionMode: interactionModeRef.current,
         dualPlan: dualPlanRef.current,
-        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-        text: wireText,
         viewer: canvasViewerPayload({
           isPhoneViewport,
           platform: Platform.OS,
           width: windowWidth,
         }),
-      }
-      const planToSend = confirmedPlanRef.current
-      if (planToSend) {
-        body.confirmedPlan = normalizePlanData(planToSend)
-        body.interactionMode = "agent"
-        confirmedPlanRef.current = null
-      }
-      if (
-        ideMode &&
-        (ideBridge.context.activeFile ||
-          ideBridge.context.workspaceFolders.length > 0)
-      ) {
-        body.ideContext = ideBridge.context
-      }
-      if (references && references.length > 0) body.references = references
+        confirmedPlan: planToSend,
+        ideContext:
+          ideMode &&
+          (ideBridge.context.activeFile ||
+            ideBridge.context.workspaceFolders.length > 0)
+            ? ideBridge.context
+            : undefined,
+        references,
+        extra: { text: wireText },
+      })
 
       await serverQueue.enqueue({
         content: trimmedContent,
@@ -6817,6 +6775,20 @@ const ChatPanelContent = observer(function ChatPanelContent({
     return ""
   }, [messages])
 
+  // `pendingPlan` changes identity on every streamed token; the island only
+  // needs the settled plan.
+  const islandPlan = useMemo(() => {
+    if (isStreaming || !pendingPlan) return undefined
+    return {
+      name: pendingPlan.name,
+      overview: pendingPlan.overview,
+      plan: pendingPlan.plan,
+      todos: pendingPlan.todos ?? [],
+      ...(pendingPlan.filepath ? { filepath: pendingPlan.filepath } : {}),
+      ...(pendingPlan.toolCallId ? { toolCallId: pendingPlan.toolCallId } : {}),
+    }
+  }, [isStreaming, pendingPlan])
+
   const islandState = useMemo<DesktopIslandSessionState>(
     () => ({
       projectName: featureName ?? "Project",
@@ -6824,8 +6796,18 @@ const ChatPanelContent = observer(function ChatPanelContent({
       status: isStreaming ? "running" : "idle",
       replyPreview: islandReplyPreview,
       pending: islandPending,
+      pendingPlan: islandPlan,
+      focused: isActivePanel,
     }),
-    [currentSession?.name, featureName, isStreaming, islandReplyPreview, islandPending],
+    [
+      currentSession?.name,
+      featureName,
+      isStreaming,
+      islandReplyPreview,
+      islandPending,
+      islandPlan,
+      isActivePanel,
+    ],
   )
   const islandStateRef = useRef(islandState)
   islandStateRef.current = islandState
@@ -6843,6 +6825,17 @@ const ChatPanelContent = observer(function ChatPanelContent({
   const islandQuestionRef = useRef<
     (requestId: string, response: string) => void | Promise<void>
   >(() => {})
+  const islandStopRef = useRef<() => void>(() => {})
+  const islandBuildPlanRef = useRef<(modelId?: string) => void>(() => {})
+  const islandPlanFeedbackRef = useRef<(text: string) => void>(() => {})
+  islandStopRef.current = handleStop
+  islandBuildPlanRef.current = (modelId) => {
+    if (pendingPlanRef.current) handleConfirmPlan(pendingPlanRef.current, modelId)
+  }
+  islandPlanFeedbackRef.current = (text) => {
+    handleInteractionModeChange("plan")
+    handleSendMessage(text)
+  }
   islandSendRef.current = (text, files) => handleSendMessage(text, files)
   islandPermissionRef.current = (requestId, decision, pattern) =>
     respondToPermission({ id: requestId, decision, pattern })
@@ -6866,6 +6859,9 @@ const ChatPanelContent = observer(function ChatPanelContent({
         islandPermissionRef.current(requestId, decision, pattern),
       respondQuestion: (requestId, response) =>
         islandQuestionRef.current(requestId, response),
+      stop: () => islandStopRef.current(),
+      buildPlan: (modelId) => islandBuildPlanRef.current(modelId),
+      sendPlanFeedback: (text) => islandPlanFeedbackRef.current(text),
     })
   }, [currentSessionId, projectId])
 

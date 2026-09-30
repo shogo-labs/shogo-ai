@@ -13,6 +13,7 @@ import { cn } from '@shogo/shared-ui/primitives'
 import { useTheme } from '../../contexts/theme'
 import { useAppearance } from '../../contexts/appearance'
 import { THEME_CHOICES } from '../../lib/theme-choices'
+import { playIslandSound } from '../island/island-sounds'
 import {
   Text,
   useAccountSheetIcons,
@@ -56,6 +57,20 @@ interface IslandConfig {
   enabled: boolean
   autoHide: boolean
   shortcut: string
+  sounds: boolean
+  soundVolume: number
+}
+
+const ISLAND_VOLUME_STEPS = [
+  { label: 'Low', value: 0.3 },
+  { label: 'Medium', value: 0.6 },
+  { label: 'High', value: 1 },
+] as const
+
+function nearestVolumeStep(volume: number): number {
+  return ISLAND_VOLUME_STEPS.reduce((best, step) =>
+    Math.abs(step.value - volume) < Math.abs(best.value - volume) ? step : best,
+  ).value
 }
 
 interface IslandDesktopBridge {
@@ -219,6 +234,46 @@ export function AppearanceTab() {
               placeholderTextColor="#888"
             />
           </AppearanceRow>
+          <AppearanceRow
+            label="Island sounds"
+            description="Chime when an agent needs you or finishes, unless you're already looking at that chat"
+          >
+            <Switch
+              value={islandConfig.sounds}
+              onValueChange={(sounds) => void updateIsland({ sounds })}
+            />
+          </AppearanceRow>
+          {islandConfig.sounds ? (
+            <AppearanceRow label="Sound volume">
+              <View className="flex-row gap-1">
+                {ISLAND_VOLUME_STEPS.map((step) => {
+                  const selected = nearestVolumeStep(islandConfig.soundVolume) === step.value
+                  return (
+                    <Pressable
+                      key={step.label}
+                      onPress={() => {
+                        playIslandSound('needs-you', step.value)
+                        void updateIsland({ soundVolume: step.value })
+                      }}
+                      className={cn(
+                        'px-2.5 py-1 rounded border',
+                        selected ? 'border-primary bg-primary/10' : 'border-border',
+                      )}
+                    >
+                      <Text
+                        className={cn(
+                          'text-xs font-medium',
+                          selected ? 'text-primary' : 'text-muted-foreground',
+                        )}
+                      >
+                        {step.label}
+                      </Text>
+                    </Pressable>
+                  )
+                })}
+              </View>
+            </AppearanceRow>
+          ) : null}
           {islandError ? (
             <Text className="text-xs text-destructive mb-2 px-1">{islandError}</Text>
           ) : null}
