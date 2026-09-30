@@ -229,8 +229,8 @@ export function metalE2eRoutes(): Hono {
     }
     const projectId = body.projectId?.trim()
     if (!projectId) return c.json({ ok: false, error: 'projectId_required' }, 400)
-    if (body.action !== 'crash' && body.action !== 'drop-snapshot') {
-      return c.json({ ok: false, error: 'action must be crash or drop-snapshot' }, 400)
+    if (body.action !== 'crash' && body.action !== 'drop-snapshot' && body.action !== 'evict-local') {
+      return c.json({ ok: false, error: 'action must be crash, drop-snapshot or evict-local' }, 400)
     }
 
     try {

@@ -19,10 +19,10 @@
  */
 
 import { spawn, type Subprocess } from 'bun'
-import { existsSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync } from 'fs'
+import { existsSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync } from 'fs'
 import { join } from 'path'
 import { classConfig, config, type VmClass } from './config'
-import { DataDriveProvisioner } from './data-drive'
+import { DataDriveProvisioner, WORKSPACE_DRIVE_SUFFIX, WORKSPACE_DRIVE_WORKSPACE_REL } from './data-drive'
 import { allocatedBytes } from './disk'
 import { FcApi, computeReclaimMiB } from './fc-api'
 import { pidAlive } from './live-registry'
@@ -75,6 +75,8 @@ export interface FcVmHandle {
   vmClass: VmClass
   /** Second virtio-blk drive backing path (docker class only). */
   dataDrive?: string
+  /** Workspace drive backing path (/app/workspace in the guest), when enabled. */
+  workspaceDrive?: string
 }
 
 export interface FcSnapshot {
@@ -94,6 +96,8 @@ export interface FcSnapshot {
   vmClass?: VmClass
   /** Second data-drive backing path (docker class), carried through suspend/resume. */
   dataDrive?: string
+  /** Workspace drive backing path, carried through suspend/resume. */
+  workspaceDrive?: string
 }
 
 /**
@@ -411,6 +415,7 @@ export class FirecrackerVMManager {
     // mode regardless of what's passed.
     const rootfs = this.rootfs.provision(id, cc.baseRootfs)
     let dataDrive: string | undefined
+    let workspaceDrive: string | undefined
     // From here on any throw must NOT leak the FC process / tap / rootfs: a
     // partial boot (socket never appears, an FC API call fails, guest never
     // starts) otherwise leaves a live `firecracker` child untracked by the pool
@@ -427,6 +432,12 @@ export class FirecrackerVMManager {
       if (cc.dataDriveMiB > 0) {
         dataDrive = this.dataDrives.provision(id, cc.dataDriveMiB)
         await api.dataDrive(dataDrive)
+      }
+      // After the docker drive so that one stays /dev/vdb for the docker
+      // rootfs; fc-init finds this one by label, not by device name.
+      if (this.cfg.workspaceDriveMiB > 0) {
+        workspaceDrive = this.dataDrives.provision(id, this.cfg.workspaceDriveMiB, 'workspace')
+        await api.dataDrive(workspaceDrive, 'workspace')
       }
       // Enable balloon statistics pre-boot when reclaim is on — they can't be
       // turned on after InstanceStart, and snapshotVM() polls them to size the
@@ -450,6 +461,7 @@ export class FirecrackerVMManager {
         memoryMB,
         vmClass,
         dataDrive,
+        workspaceDrive,
       }
     } catch (err) {
       this.killProc(id)
@@ -457,14 +469,16 @@ export class FirecrackerVMManager {
       try { rmSync(socketPath, { force: true }) } catch { /* ignore */ }
       try { this.rootfs.release(rootfs) } catch { /* ignore */ }
       try { if (dataDrive) this.dataDrives.release(dataDrive) } catch { /* ignore */ }
+      try { if (workspaceDrive) this.dataDrives.release(workspaceDrive) } catch { /* ignore */ }
       throw err
     }
   }
 
   /**
-   * `keepRootfs` stops the VM but leaves its disk in place so the host can
-   * still read the workspace off it (see pool.rescueWorkspace); the caller
-   * then owns calling {@link releaseRootfs} or {@link quarantineRootfs}.
+   * `keepRootfs` stops the VM but leaves its disks (rootfs AND workspace drive)
+   * in place so the host can still read the workspace off them (see
+   * pool.rescueWorkspace); the caller then owns calling {@link releaseRootfs} /
+   * {@link releaseDataDrive} or {@link quarantineRootfs}.
    */
   async stopVM(handle: FcVmHandle, opts: { keepRootfs?: boolean } = {}): Promise<void> {
     this.killProc(handle.id)
@@ -472,19 +486,52 @@ export class FirecrackerVMManager {
     rmSync(handle.socketPath, { force: true })
     if (!opts.keepRootfs) this.rootfs.release(handle.rootfs)
     if (handle.dataDrive) this.dataDrives.release(handle.dataDrive)
+    if (handle.workspaceDrive && !opts.keepRootfs) this.dataDrives.release(handle.workspaceDrive)
   }
 
-  /** Pack `/app/workspace` (source + `.git`) off a stopped VM's rootfs. */
-  async extractWorkspaceFromRootfs(rootfsPath: string, outDir: string): Promise<RescuedArchives> {
-    const { device, loop } = this.rootfs.readOnlySource(rootfsPath)
-    return withReadOnlyMount(device, join(this.cfg.runDir, 'rescue'), { loop }, (root) =>
-      packRescuedWorkspace(root, outDir),
-    )
+  /**
+   * Pack `/app/workspace` (source + `.git`) off a stopped VM's disks: its
+   * workspace drive when it had one, else the rootfs.
+   */
+  async extractWorkspace(
+    disks: { rootfs: string; workspaceDrive?: string },
+    outDir: string,
+  ): Promise<RescuedArchives> {
+    const scratch = join(this.cfg.runDir, 'rescue')
+    if (disks.workspaceDrive) {
+      if (!this.dataDrives.exists(disks.workspaceDrive)) {
+        throw new Error(`workspace drive missing: ${disks.workspaceDrive}`)
+      }
+      return withReadOnlyMount(disks.workspaceDrive, scratch, { loop: true }, (root) =>
+        packRescuedWorkspace(root, outDir, undefined, WORKSPACE_DRIVE_WORKSPACE_REL),
+      )
+    }
+    const { device, loop } = this.rootfs.readOnlySource(disks.rootfs)
+    return withReadOnlyMount(device, scratch, { loop }, (root) => packRescuedWorkspace(root, outDir))
   }
 
   /** Keep a stopped VM's disk out of GC's reach. Returns the kept path or null. */
   quarantineRootfs(rootfsPath: string, label: string): string | null {
     return this.rootfs.quarantine(rootfsPath, label)
+  }
+
+  /**
+   * Keep a stopped VM's workspace drive out of GC's reach, under
+   * `<runDir>/quarantine/` (the orphan sweep only lists runDir's top level).
+   * Returns the kept path or null.
+   */
+  quarantineWorkspaceDrive(drivePath: string, label: string): string | null {
+    const safe = label.replace(/[^A-Za-z0-9._-]/g, '_')
+    try {
+      const dir = join(this.cfg.runDir, 'quarantine')
+      mkdirSync(dir, { recursive: true })
+      const dest = join(dir, `${safe}${WORKSPACE_DRIVE_SUFFIX}`)
+      renameSync(drivePath, dest)
+      return dest
+    } catch (err: any) {
+      console.error(`[fc] could not quarantine workspace drive ${drivePath}:`, err?.message ?? err)
+      return null
+    }
   }
 
   /** Tear down an orphaned/evicted data-drive file directly by path (GC path). */
@@ -769,12 +816,16 @@ export class FirecrackerVMManager {
       // real per-VM footprint is the CoW store file, which durableArtifact()
       // resolves to. full/reflink resolve to the image file itself, so this is
       // correct for every mode and keeps GC cache accounting honest.
-      bytesRootfs: allocatedBytes(this.rootfs.durableArtifact(handle.rootfs).path),
+      // The workspace drive is part of the same per-VM disk footprint.
+      bytesRootfs:
+        allocatedBytes(this.rootfs.durableArtifact(handle.rootfs).path) +
+        (handle.workspaceDrive ? this.dataDrives.allocatedBytes(handle.workspaceDrive) : 0),
       vmClass: handle.vmClass,
       // The data-drive file is left in place (same "suspend keeps everything
       // but the FC process" contract as the rootfs/tap) — just carry its path
       // forward so restoreVM() can rebuild the same handle shape.
       dataDrive: handle.dataDrive,
+      workspaceDrive: handle.workspaceDrive,
     }
   }
 
@@ -805,6 +856,11 @@ export class FirecrackerVMManager {
     // block-device path into a "successfully" restored guest.
     if (snap.dataDrive && !this.dataDrives.exists(snap.dataDrive)) {
       throw new Error(`data-drive backing file missing on restore: ${snap.dataDrive}`)
+    }
+    // The vmstate bakes this path in and the guest has it mounted, so
+    // restoring without it would hand the guest a dangling /app/workspace.
+    if (snap.workspaceDrive && !this.dataDrives.exists(snap.workspaceDrive)) {
+      throw new Error(`workspace drive missing on restore: ${snap.workspaceDrive}`)
     }
 
     // A partial restore (bad socket / LoadSnapshot failure) must not leak the
@@ -842,6 +898,7 @@ export class FirecrackerVMManager {
         memoryMB: snap.memoryMB,
         vmClass: snap.vmClass ?? 'standard',
         dataDrive: snap.dataDrive,
+        workspaceDrive: snap.workspaceDrive,
       }
     } catch (err) {
       this.killProc(id)

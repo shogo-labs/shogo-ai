@@ -414,13 +414,14 @@ const SUSPEND_REQUEST_TIMEOUT_MS = 120_000
  * Inject a metal runtime fault through the e2e backdoor
  * (`/api/internal/e2e/runtime-fault`): `crash` kills the VM and leaves its
  * disk, `drop-snapshot` removes a suspended runtime's snapshot so the next
- * open cold-boots from backups. Returns null when faults are unavailable (no
+ * open cold-boots from backups, `evict-local` removes only the host's local
+ * copy so the next open restores the durable (S3) snapshot. Returns null when faults are unavailable (no
  * backdoor secret, the host lacks METAL_E2E_FAULTS=1, or not on metal).
  */
 export async function runtimeFaultViaApi(
   page: Page,
   projectId: string,
-  action: "crash" | "drop-snapshot",
+  action: "crash" | "drop-snapshot" | "evict-local",
 ): Promise<{ ok: boolean; body: any } | null> {
   const secret = process.env.SHOGO_E2E_BOOTSTRAP_SECRET
   if (!secret) return null

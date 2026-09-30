@@ -22,6 +22,12 @@
  * with a fresh, empty drive. Cross-host/durable persistence for this drive is
  * explicitly tracked as a follow-up ("Phase 1: per-project data volume
  * durability + GC treatment") and is NOT implemented here.
+ *
+ * The same provisioner also makes the per-VM WORKSPACE drive (every class,
+ * `config.workspaceDriveMiB`). That one is labelled {@link WORKSPACE_DRIVE_LABEL}
+ * so the guest's fc-init can find it without depending on attach order, and
+ * unlike the docker drive it IS durable: suspend pushes it alongside the rootfs
+ * diff (snapshot-store.ts), because it holds the project itself.
  */
 
 import { closeSync, existsSync, ftruncateSync, openSync, rmSync, statSync } from 'fs'
@@ -30,33 +36,47 @@ import { join } from 'path'
 import type { MetalConfig } from './config'
 import { allocatedBytes } from './disk'
 
+/** ext4 label fc-init mounts at /data (build-runtime-rootfs.sh). */
+export const WORKSPACE_DRIVE_LABEL = 'shogo-ws'
+
+/** File suffix of a workspace drive under runDir (the GC sweeps by it). */
+export const WORKSPACE_DRIVE_SUFFIX = '.ws.ext4'
+
+/** Where the guest workspace lives relative to the workspace drive's root. */
+export const WORKSPACE_DRIVE_WORKSPACE_REL = 'workspace'
+
+export type DataDriveKind = 'docker' | 'workspace'
+
 export class DataDriveProvisioner {
   constructor(private cfg: MetalConfig) {}
 
-  private path(vmId: string): string {
-    return join(this.cfg.runDir, `${vmId}.data.ext4`)
+  path(vmId: string, kind: DataDriveKind = 'docker'): string {
+    return join(this.cfg.runDir, kind === 'workspace' ? `${vmId}${WORKSPACE_DRIVE_SUFFIX}` : `${vmId}.data.ext4`)
   }
 
   /**
    * Create a fresh, formatted, empty data drive for a new VM. Sparse — logical
    * size is `sizeMiB`, but only blocks the guest actually writes consume NVMe.
    */
-  provision(vmId: string, sizeMiB: number): string {
-    const dst = this.path(vmId)
+  provision(vmId: string, sizeMiB: number, kind: DataDriveKind = 'docker'): string {
+    const dst = this.path(vmId, kind)
     const fd = openSync(dst, 'w')
     try {
       ftruncateSync(fd, sizeMiB * 1024 * 1024)
     } finally {
       closeSync(fd)
     }
-    this.runMkfs(dst)
+    this.runMkfs(dst, kind === 'workspace' ? WORKSPACE_DRIVE_LABEL : undefined)
     return dst
   }
 
   /** Overridable seam for tests — the real host always has mkfs.ext4. */
-  protected runMkfs(path: string): void {
+  protected runMkfs(path: string, label?: string): void {
     // -q quiet, -F force (operating on a plain file, not a block device).
-    execFileSync('mkfs.ext4', ['-q', '-F', path])
+    // A labelled (workspace) drive also drops the 5% root reservation: the
+    // guest runtime is root, so reserved blocks would only hide free space.
+    const args = label ? ['-q', '-F', '-L', label, '-m', '0', path] : ['-q', '-F', path]
+    execFileSync('mkfs.ext4', args)
   }
 
   /** True if a data-drive backing file exists at this path (restore check). */

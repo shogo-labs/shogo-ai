@@ -96,6 +96,15 @@ export const config = {
   kernel: env('METAL_KERNEL', `${WORK}/img/vmlinux`),
   /** Read-only golden rootfs. Each VM gets a writable per-VM copy. */
   baseRootfs: env('METAL_ROOTFS', `${WORK}/img/rootfs.ext4`),
+  /**
+   * Size (MiB) of the per-VM workspace drive (see data-drive.ts), attached to
+   * every VM regardless of class. The guest's fc-init mounts it by label and
+   * puts /app/workspace and the package caches on it, so project data no longer
+   * competes with the golden image for the rootfs's few GiB of headroom.
+   * Sparse, so the logical size costs nothing until written. 0 = no drive: the
+   * workspace stays on the rootfs, exactly as before this existed.
+   */
+  workspaceDriveMiB: parseInt(env('METAL_WORKSPACE_DRIVE_MIB', '0'), 10),
   /** Scratch dir for per-VM sockets, rootfs copies, serial logs. */
   runDir: env('METAL_RUN', `${WORK}/run`),
   /** Where snapshots (vmstate + mem) are written. */

@@ -15,6 +15,17 @@ describe('build-runtime-rootfs.sh contract', () => {
     expect(source).toContain("printf '127.0.0.1\\tlocalhost")
     expect(source).toContain('> /etc/resolv.conf')
     expect(source).toContain('^exec /entrypoint.sh')
+    expect(source).toContain("grep -q 'blkid -L shogo-ws'")
+    expect(source).toContain('blkid missing')
+  })
+
+  it('mounts the workspace drive before handing off to the entrypoint', () => {
+    const init = source.slice(source.indexOf('cat > "$MNT/usr/local/bin/fc-init" <<INIT'), source.indexOf('\nINIT\n'))
+    const mountAt = init.indexOf('WS_DEV=\\$(blkid -L shogo-ws')
+    expect(mountAt).toBeGreaterThan(-1)
+    expect(mountAt).toBeLessThan(init.indexOf('exec /entrypoint.sh'))
+    expect(init).toContain('mount --bind /data/workspace /app/workspace')
+    for (const d of ['.bun/cache', '.npm', '.cache']) expect(init).toContain(d)
   })
 
   it('reports contract failures and treats the revision stamp as advisory', () => {

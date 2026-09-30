@@ -22,9 +22,9 @@
  */
 
 import { statSync } from 'fs'
-import { mkdir, copyFile, readFile, writeFile, rm, stat, open } from 'fs/promises'
+import { mkdir, copyFile, readFile, writeFile, rm, stat, open, rename, readdir } from 'fs/promises'
 import { existsSync } from 'fs'
-import { dirname, join } from 'path'
+import { basename, dirname, join } from 'path'
 import type { MetalConfig } from './config'
 import type { VmNet } from './net'
 
@@ -33,7 +33,12 @@ export interface SnapshotFiles {
   vmstate: string
   mem: string
   rootfs: string
+  /** The VM's workspace drive, when it had one (see data-drive.ts). */
+  workspaceDrive?: string
 }
+
+/** Durable object name of a snapshot's workspace drive. */
+export const WORKSPACE_DRIVE_ARTIFACT = 'workspace.tar.gz'
 
 export interface SnapshotMeta {
   projectId: string
@@ -66,6 +71,14 @@ export interface SnapshotMeta {
    * than fail outright or silently boot without one.
    */
   dataDriveMiB?: number
+  /**
+   * The workspace drive this VM was booted with, stored as
+   * {@link WORKSPACE_DRIVE_ARTIFACT}. `path` is where the vmstate expects the
+   * backing file, so a pull must materialize it there and nowhere else.
+   * Absent = the workspace lived on the rootfs (older snapshots, or a host with
+   * the drive disabled) and is already inside the rootfs artifact.
+   */
+  workspaceDrive?: { path: string; bytes: number }
   /**
    * ETag of the durable source backup (`{projectId}/project-src.tar.gz`) that
    * was current when this snapshot was taken — the workspace frozen inside it
@@ -192,11 +205,14 @@ class NoneStore implements SnapshotStore {
 
 // --- streaming (de)compression helpers -------------------------------------
 
-/** Stream a local file → gzip → a local dest path, no full buffering. */
+/**
+ * Gzip a local file to a local dest path via pigz (or gzip). Bun's
+ * CompressionStream piped into Bun.write stalls on multi-GiB inputs the same
+ * way DecompressionStream does (see gunzipToFile).
+ */
 async function writeGzip(srcPath: string, destPath: string): Promise<void> {
   await mkdir(dirname(destPath), { recursive: true })
-  const gz = Bun.file(srcPath).stream().pipeThrough(new CompressionStream('gzip'))
-  await Bun.write(destPath, new Response(gz))
+  await bash('if command -v pigz >/dev/null 2>&1; then Z=pigz; else Z=gzip; fi; $Z -c "$0" > "$1"', [srcPath, destPath])
 }
 /**
  * Inflate a local .gz file to a local dest path.
@@ -223,6 +239,59 @@ async function gunzipFile(srcGzPath: string, destPath: string): Promise<void> {
   if (code !== 0) {
     const err = await new Response(proc.stderr).text().catch(() => '')
     throw new Error(`inflate ${srcGzPath} → ${destPath} failed (exit ${code}): ${err.slice(0, 200)}`)
+  }
+}
+
+/**
+ * Pack a sparse file into a gzipped tar that stores only its data regions.
+ *
+ * A workspace drive is a 20 GiB-ish sparse ext4 holding a few GiB at most.
+ * Gzipping the raw file (as the rootfs diff does) would read and compress the
+ * whole logical size, and inflating it would write it back DENSE, costing the
+ * full size in host NVMe on every cross-host wake. GNU tar's `-S` finds the
+ * holes with SEEK_HOLE on the way in and recreates them on the way out.
+ */
+export async function packSparseFile(srcPath: string, destTgz: string): Promise<void> {
+  await mkdir(dirname(destTgz), { recursive: true })
+  await bash(
+    'if command -v pigz >/dev/null 2>&1; then Z=pigz; else Z=gzip; fi; ' +
+      'tar -C "$(dirname "$0")" -cSf - "$(basename "$0")" | $Z -c > "$1"',
+    [srcPath, destTgz],
+  )
+}
+
+/**
+ * Inverse of {@link packSparseFile}: extract to `destPath` (sparse). Lands in a
+ * sibling temp dir first and renames into place, so a failed extract never
+ * leaves a truncated drive at the path a restore would attach. `-m` stamps the
+ * current time rather than the archived mtime, so the orphan sweep's age gate
+ * sees the file as new while the restore is still in flight.
+ */
+export async function unpackSparseFile(srcTgz: string, destPath: string): Promise<void> {
+  const tmp = `${destPath}.unpack.${process.pid}.${Date.now().toString(36)}`
+  await mkdir(tmp, { recursive: true })
+  try {
+    await bash(
+      'if command -v pigz >/dev/null 2>&1; then Z=pigz; else Z=gzip; fi; $Z -dc "$0" | tar -C "$1" -xSmf -',
+      [srcTgz, tmp],
+    )
+    const names = await readdir(tmp)
+    if (names.length !== 1) throw new Error(`expected one file in ${srcTgz}, found ${names.length}`)
+    await rename(join(tmp, names[0]), destPath)
+  } finally {
+    await rm(tmp, { recursive: true, force: true }).catch(() => {})
+  }
+}
+
+async function bash(script: string, args: string[]): Promise<void> {
+  const proc = Bun.spawn(['bash', '-c', `set -o pipefail; ${script}`, ...args], {
+    stdout: 'ignore',
+    stderr: 'pipe',
+  })
+  const code = await proc.exited
+  if (code !== 0) {
+    const err = await new Response(proc.stderr).text().catch(() => '')
+    throw new Error(`${script.slice(0, 60)}… failed (exit ${code}): ${err.slice(0, 300)}`)
   }
 }
 
@@ -319,8 +388,19 @@ class FsStore implements SnapshotStore {
     } else {
       await copyFile(files.mem, join(dir, 'mem'))
     }
+    if (files.workspaceDrive) {
+      await packSparseFile(files.workspaceDrive, join(dir, WORKSPACE_DRIVE_ARTIFACT))
+    } else {
+      await rm(join(dir, WORKSPACE_DRIVE_ARTIFACT), { force: true })
+    }
     // Metadata written last so a reader never sees a torn set.
-    const full: SnapshotMeta = { ...meta, memCodec: this.slim ? 'gzip' : 'none', rootfsMode, rootfsCodec }
+    const full: SnapshotMeta = {
+      ...meta,
+      memCodec: this.slim ? 'gzip' : 'none',
+      rootfsMode,
+      rootfsCodec,
+      workspaceDrive: workspaceDriveMeta(files),
+    }
     await writeFile(join(dir, 'meta.json'), JSON.stringify(full))
   }
 
@@ -360,7 +440,11 @@ class FsStore implements SnapshotStore {
       meta.rootfsCodec === 'gzip'
         ? gunzipFile(join(dir, `${baseName}.gz`), files.rootfs)
         : copyFile(join(dir, baseName), files.rootfs),
+      meta.workspaceDrive
+        ? unpackSparseFile(join(dir, WORKSPACE_DRIVE_ARTIFACT), meta.workspaceDrive.path)
+        : Promise.resolve(),
     ])
+    if (meta.workspaceDrive) files.workspaceDrive = meta.workspaceDrive.path
     return { files, meta }
   }
 
@@ -439,8 +523,23 @@ class S3Store implements SnapshotStore {
       await this.client.write(this.key(pid, rootfsName), Bun.file(files.rootfs))
     }
     await this.client.write(this.key(pid, 'vmstate'), Bun.file(files.vmstate))
+    if (files.workspaceDrive) {
+      const tgz = `${files.workspaceDrive}.push.tgz`
+      try {
+        await packSparseFile(files.workspaceDrive, tgz)
+        await this.client.write(this.key(pid, WORKSPACE_DRIVE_ARTIFACT), Bun.file(tgz))
+      } finally {
+        await rm(tgz, { force: true }).catch(() => {})
+      }
+    }
     // Metadata last: presence of meta.json = a complete, restorable set.
-    const full: SnapshotMeta = { ...meta, memCodec: this.slim ? 'gzip' : 'none', rootfsMode, rootfsCodec }
+    const full: SnapshotMeta = {
+      ...meta,
+      memCodec: this.slim ? 'gzip' : 'none',
+      rootfsMode,
+      rootfsCodec,
+      workspaceDrive: workspaceDriveMeta(files),
+    }
     await this.client.write(this.key(pid, 'meta.json'), JSON.stringify(full))
   }
 
@@ -480,8 +579,20 @@ class S3Store implements SnapshotStore {
       meta.rootfsCodec === 'gzip'
         ? this.downloadGunzip(this.key(projectId, `${baseName}.gz`), files.rootfs)
         : this.download(this.key(projectId, baseName), files.rootfs),
+      meta.workspaceDrive ? this.downloadWorkspaceDrive(projectId, meta.workspaceDrive.path) : Promise.resolve(),
     ])
+    if (meta.workspaceDrive) files.workspaceDrive = meta.workspaceDrive.path
     return { files, meta }
+  }
+
+  private async downloadWorkspaceDrive(projectId: string, dest: string): Promise<void> {
+    const tmp = `${dest}.pull.tgz`
+    try {
+      await this.download(this.key(projectId, WORKSPACE_DRIVE_ARTIFACT), tmp)
+      await unpackSparseFile(tmp, dest)
+    } finally {
+      await rm(tmp, { force: true }).catch(() => {})
+    }
   }
 
   private async download(key: string, dest: string): Promise<void> {
@@ -537,7 +648,7 @@ class S3Store implements SnapshotStore {
     // (empty reply) even though the teardown itself succeeds and the agent keeps
     // heartbeating. Fanning out keeps the whole delete to ~one round-trip, and a
     // per-object timeout means one stuck object can't stall the rest.
-    const names = ['meta.json', 'vmstate', 'mem', 'mem.gz', 'rootfs.ext4', 'rootfs.diff', 'rootfs.diff.gz']
+    const names = ['meta.json', 'vmstate', 'mem', 'mem.gz', 'rootfs.ext4', 'rootfs.diff', 'rootfs.diff.gz', WORKSPACE_DRIVE_ARTIFACT]
     await Promise.all(
       names.map((name) => {
         const del = this.client.delete(this.key(projectId, name)).catch(() => {})
@@ -570,6 +681,11 @@ class S3Store implements SnapshotStore {
   }
 }
 
+function workspaceDriveMeta(files: SnapshotFiles): SnapshotMeta['workspaceDrive'] {
+  if (!files.workspaceDrive) return undefined
+  return { path: files.workspaceDrive, bytes: statSync(files.workspaceDrive).size }
+}
+
 export function createSnapshotStore(cfg: MetalConfig): SnapshotStore {
   switch (cfg.snapStore) {
     case 'fs':
@@ -588,6 +704,7 @@ export function createSnapshotStore(cfg: MetalConfig): SnapshotStore {
 /** Await a file to exist + be non-empty (used to sanity-check pulled artifacts). */
 export async function assertArtifacts(files: SnapshotFiles): Promise<void> {
   for (const [k, p] of Object.entries(files)) {
+    if (p === undefined) continue
     const s = await stat(p).catch(() => null)
     if (!s || s.size === 0) throw new Error(`snapshot artifact ${k} missing/empty: ${p}`)
   }

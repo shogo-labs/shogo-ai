@@ -277,6 +277,27 @@ hundred percent of control traffic, so the order below is not optional.
    rootfs rebuild left every local snapshot stale, so no guest ever reached
    `/hydrate-stream` there to exercise the guest-subnet rule end-to-end.
 
+## Workspace drive (`METAL_WORKSPACE_DRIVE_MIB`)
+
+The golden rootfs leaves each VM only about 2 GiB free, so a project with a
+large `node_modules` used to fill it ("disk is full, 14 GB used of 14 GB").
+With `METAL_WORKSPACE_DRIVE_MIB` > 0, each VM also gets a sparse ext4 drive
+(`$METAL_WORK/run/<vm>.ws.ext4`, label `shogo-ws`). `fc-init` mounts it at
+`/data`, bind-mounts `/data/workspace` onto `/app/workspace`, and overlays
+`/app/.bun/cache`, `/app/.npm` and `/app/.cache` onto it, keeping the image's
+prewarmed contents as the read-only lower layer. Suspend pushes it to the
+durable store as `workspace.tar.gz` (sparse tar), a wake from the store
+restores it at the same path, and crash rescue reads the workspace off it.
+
+- Needs a rootfs built with the matching `fc-init`. On an older rootfs the
+  drive is attached but never mounted, and the workspace stays on the rootfs.
+- Changing the size only affects VMs booted afterwards; existing snapshots
+  keep the drive they were suspended with.
+- Setting it to 0 stops new VMs getting a drive. Snapshots that already have
+  one still restore with it.
+- Host e2e: `SSH_TARGET=root@<host> bash scripts/metal-agent/run-workspace-drive-e2e.sh`.
+  Staging e2e: `e2e/staging/metal-workspace-disk.test.ts`.
+
 ## Fault injection for the staging durability e2e (`METAL_E2E_FAULTS`)
 
 `e2e/staging/metal-durability.test.ts` crashes a VM and drops a suspended

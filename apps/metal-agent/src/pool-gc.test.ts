@@ -253,6 +253,39 @@ describe('pool GC', () => {
     expect(existsSync(orphanCow)).toBe(false) // device gone → reclaimed
   })
 
+  test('reclaimOrphans keeps a suspended snapshot\'s workspace drive and reaps an orphaned one', () => {
+    const { pool, cfg } = makePool(dir, new FakeStore('test-id'), {}, { releaseDataDrive: (p: string) => rmSync(p, { force: true }) })
+    seed(cfg, 'live', 100)
+    const liveDrive = join(cfg.runDir, 'vm-live.ws.ext4')
+    const orphanDrive = join(cfg.runDir, 'fcvm-99.ws.ext4')
+    const old = new Date(Date.now() - 10 * 60_000)
+    for (const p of [liveDrive, orphanDrive]) {
+      writeFileSync(p, 'x')
+      utimesSync(p, old, old)
+    }
+    const idx = new CacheIndex(cfg.snapDir)
+    idx.put({ ...(idx.get('live') as CacheEntry), workspaceDrive: liveDrive })
+    pool.rehydrate()
+
+    expect(pool.reclaimOrphans()).toBe(1)
+    expect(existsSync(liveDrive)).toBe(true)
+    expect(existsSync(orphanDrive)).toBe(false)
+  })
+
+  test('evictForGc releases the workspace drive with the rest of the local snapshot', async () => {
+    const released: string[] = []
+    const { pool, cfg } = makePool(dir, new FakeStore('test-id'), {}, { releaseDataDrive: (p: string) => { released.push(p) } })
+    seed(cfg, 'p1', 100)
+    const drive = join(cfg.runDir, 'vm-p1.ws.ext4')
+    writeFileSync(drive, 'x')
+    const idx = new CacheIndex(cfg.snapDir)
+    idx.put({ ...(idx.get('p1') as CacheEntry), workspaceDrive: drive })
+    pool.rehydrate()
+
+    expect(await pool.evictForGc('p1')).toBe(true)
+    expect(released).toEqual([drive])
+  })
+
   test('reconcileOrphanDevices forwards owned rootfs vmIds and returns the count (dm)', () => {
     // Wiring for the dm device/loop/CoW leak net: the pool must hand the manager
     // the vmIds it still owns (so live/suspended devices are spared) and surface

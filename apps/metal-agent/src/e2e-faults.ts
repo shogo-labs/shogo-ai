@@ -8,11 +8,13 @@
  *     workspace from that disk (`rescueWorkspace`) before booting a new VM.
  *   - `drop-snapshot`: remove a suspended runtime's local AND durable snapshot,
  *     so the next open has to cold-boot from the source / repo backups.
+ *   - `evict-local`: remove only the local snapshot, so the next open has to
+ *     pull the durable one — what a wake on a different host does.
  */
 
 import type { MetalWarmPool } from './pool'
 
-export type E2eFault = 'crash' | 'drop-snapshot'
+export type E2eFault = 'crash' | 'drop-snapshot' | 'evict-local'
 
 export interface E2eFaultResult {
   ok: boolean
@@ -43,7 +45,16 @@ export async function injectE2eFault(
       console.warn(`[e2e-fault] dropped local and durable snapshot for ${projectId}`)
       return { ok: true, action }
     }
+    case 'evict-local': {
+      if (pool.getAssigned(projectId)) return { ok: false, error: `${projectId} is still running; suspend it first` }
+      // Refuses unless a current durable snapshot exists, so this never loses work.
+      if (!(await pool.evictForGc(projectId))) {
+        return { ok: false, error: `no local snapshot for ${projectId} with a current durable copy` }
+      }
+      console.warn(`[e2e-fault] dropped the local snapshot for ${projectId}; the next open pulls the durable one`)
+      return { ok: true, action }
+    }
     default:
-      return { ok: false, error: `unknown fault ${JSON.stringify(action)} (crash | drop-snapshot)` }
+      return { ok: false, error: `unknown fault ${JSON.stringify(action)} (crash | drop-snapshot | evict-local)` }
   }
 }

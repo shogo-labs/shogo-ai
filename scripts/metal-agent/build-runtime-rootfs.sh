@@ -31,6 +31,7 @@ verify_rootfs() {
   [ -x "$root/entrypoint.sh" ] || fail "/entrypoint.sh missing or not executable"
   [ -x "$root/usr/local/bin/bun" ] || fail "/usr/local/bin/bun missing"
   [ -x "$root/usr/bin/git" ] || fail "/usr/bin/git missing"
+  [ -x "$root/sbin/blkid" ] || [ -x "$root/usr/sbin/blkid" ] || fail "blkid missing (fc-init finds the workspace drive by label)"
   grep -Eq '^[[:space:]]*directory[[:space:]]*=[[:space:]]*\*' "$root/etc/gitconfig" 2>/dev/null ||
     fail "/etc/gitconfig lacks safe.directory = * (git refuses workspaces owned by another uid)"
   local init="$root/usr/local/bin/fc-init"
@@ -39,6 +40,7 @@ verify_rootfs() {
     grep -q '127.0.0.1\\tlocalhost' "$init" || fail "fc-init no longer writes /etc/hosts (in-guest localhost is refused)"
     grep -q '> /etc/resolv.conf' "$init" || fail "fc-init no longer writes /etc/resolv.conf"
     grep -q '^exec /entrypoint.sh' "$init" || fail "fc-init does not exec /entrypoint.sh"
+    grep -q 'blkid -L shogo-ws' "$init" || fail "fc-init no longer mounts the workspace drive (projects fill the rootfs)"
   else
     fail "/usr/local/bin/fc-init missing or not executable"
   fi
@@ -201,6 +203,32 @@ export PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
 export PROJECT_ID=__POOL__
 export WARM_POOL_MODE=true
 ${POOL_ENV_EXTRA}
+
+# Per-VM workspace drive (apps/metal-agent/src/data-drive.ts). The rootfs is
+# sized to the image plus a couple of GiB, so a project's workspace and package
+# caches get their own disk when the host attaches one. Found by label because
+# a docker-class VM carries its docker drive first. Without the drive (or if it
+# fails to mount) everything stays on the rootfs, as before.
+WS_DEV=\$(blkid -L shogo-ws 2>/dev/null || true)
+if [ -n "\$WS_DEV" ]; then
+  mkdir -p /data
+  if mount -t ext4 -o noatime "\$WS_DEV" /data; then
+    mkdir -p /data/workspace
+    mount --bind /data/workspace /app/workspace
+    # Caches keep the image's prewarmed content (bun's Expo tarballs) as a
+    # read-only lower layer and write everything new to the drive.
+    for d in .bun/cache .npm .cache; do
+      n=\$(echo "\$d" | tr ./ __)
+      mkdir -p "/app/\$d" "/data/overlay/\$n/upper" "/data/overlay/\$n/work"
+      mount -t overlay overlay -o "lowerdir=/app/\$d,upperdir=/data/overlay/\$n/upper,workdir=/data/overlay/\$n/work" "/app/\$d" \\
+        || echo "[fc-init] WARNING: overlay for /app/\$d failed; it stays on the rootfs" >&2
+    done
+    chown 1001:1001 /data/workspace /data/overlay/*/upper 2>/dev/null || true
+    echo "[fc-init] workspace drive \$WS_DEV mounted at /data"
+  else
+    echo "[fc-init] WARNING: workspace drive \$WS_DEV failed to mount; workspace stays on the rootfs" >&2
+  fi
+fi
 
 exec /entrypoint.sh
 INIT

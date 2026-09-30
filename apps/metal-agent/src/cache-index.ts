@@ -45,6 +45,8 @@ export interface CacheEntry {
   vmClass?: 'standard' | 'docker'
   /** Absolute path of the second data-drive file (docker class), if any. */
   dataDrive?: string
+  /** Workspace drive backing path (see data-drive.ts). */
+  workspaceDrive?: string
   /**
    * ETag of the durable source backup this snapshot's workspace descends from,
    * persisted so a local resume across a node-agent restart keeps the lineage

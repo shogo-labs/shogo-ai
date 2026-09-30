@@ -76,6 +76,27 @@ describe('injectE2eFault', () => {
     expect(calls).toEqual([['p1', { alsoDurable: true }]])
   })
 
+  test('evict-local drops only the local copy, and refuses a running project', async () => {
+    const calls: unknown[] = []
+    let running = true
+    const pool = {
+      getAssigned: () => (running ? ({} as any) : undefined),
+      evictForGc: async (id: string, opts?: { alsoDurable?: boolean }) => {
+        calls.push([id, opts])
+        return true
+      },
+    }
+    expect(await injectE2eFault(pool as any, 'p1', 'evict-local')).toMatchObject({ ok: false })
+    running = false
+    expect(await injectE2eFault(pool as any, 'p1', 'evict-local')).toEqual({ ok: true, action: 'evict-local' })
+    expect(calls).toEqual([['p1', undefined]])
+  })
+
+  test('evict-local reports when there is no durable copy to fall back on', async () => {
+    const pool = { getAssigned: () => undefined, evictForGc: async () => false }
+    expect(await injectE2eFault(pool as any, 'p1', 'evict-local')).toMatchObject({ ok: false, error: expect.stringMatching(/durable/) })
+  })
+
   test('unknown actions are rejected', async () => {
     const { pool } = rig()
     expect(await injectE2eFault(pool, 'p1', 'reboot')).toMatchObject({ ok: false, error: expect.stringMatching(/unknown fault/) })

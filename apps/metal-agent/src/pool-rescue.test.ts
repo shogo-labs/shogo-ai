@@ -40,7 +40,7 @@ function fakeMgr(alive: Set<string>, calls: Calls, extract: (outDir: string) => 
       alive.delete(h.id)
       calls.stops.push({ id: h.id, keepRootfs: !!opts.keepRootfs })
     },
-    extractWorkspaceFromRootfs: async (rootfs: string, outDir: string) => {
+    extractWorkspace: async ({ rootfs }: { rootfs: string }, outDir: string) => {
       calls.extracted.push(rootfs)
       return extract(outDir)
     },
