@@ -27,6 +27,7 @@ import {
   type MeetingEndedEvent,
   type MicUser,
   type UpcomingMeetingEvent,
+  type WindowTitle,
 } from './detection/meeting-detector'
 import {
   startRecordingBridge,
@@ -100,20 +101,28 @@ function getSysAudioBinaryPath(): string | null {
   return fs.existsSync(packed) ? packed : null
 }
 
-function listMicUsers(): Promise<MicUser[] | null> {
+function runSysAudioQuery(command: 'mic-users' | 'window-titles'): Promise<unknown[] | null> {
   const binary = getSysAudioBinaryPath()
   if (!binary) return Promise.resolve(null)
   return new Promise((resolve, reject) => {
-    execFile(binary, ['mic-users'], { timeout: 3_000 }, (err, stdout) => {
+    execFile(binary, [command], { timeout: 3_000, maxBuffer: 4 * 1024 * 1024 }, (err, stdout) => {
       if (err) return reject(err)
       try {
         const parsed: unknown = JSON.parse(stdout)
-        resolve(Array.isArray(parsed) ? (parsed as MicUser[]) : null)
+        resolve(Array.isArray(parsed) ? parsed : null)
       } catch (parseErr) {
         reject(parseErr)
       }
     })
   })
+}
+
+async function listMicUsers(): Promise<MicUser[] | null> {
+  return (await runSysAudioQuery('mic-users')) as MicUser[] | null
+}
+
+async function listWindowTitles(): Promise<WindowTitle[]> {
+  return ((await runSysAudioQuery('window-titles')) as WindowTitle[] | null) ?? []
 }
 
 function sendToRenderer(channel: string, data?: unknown): void {
@@ -340,6 +349,7 @@ export function startMeetingMonitor(): void {
   detector = new MeetingDetector({
     platform: process.platform,
     listMicUsers: process.platform === 'darwin' ? listMicUsers : undefined,
+    listWindowTitles: process.platform === 'darwin' ? listWindowTitles : undefined,
   })
   detector.on('meeting-detected', (evt: MeetingDetectedEvent) => {
     console.log(`[Recording] Meeting detected via ${evt.app} (pid ${evt.pid})`)

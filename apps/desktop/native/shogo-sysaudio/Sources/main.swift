@@ -368,7 +368,30 @@ func listMicUsers() -> [[String: Any]]? {
     return users
 }
 
+/// Titles of on-screen app windows. Other apps' titles are only visible with
+/// the Screen Recording permission; without it the list is simply empty.
+func listWindowTitles() -> [[String: Any]] {
+    guard let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)
+        as? [[String: Any]] else { return [] }
+    return windows.compactMap { window in
+        guard (window[kCGWindowLayer as String] as? Int) == 0,
+              let title = window[kCGWindowName as String] as? String, !title.isEmpty else { return nil }
+        return [
+            "pid": (window[kCGWindowOwnerPID as String] as? Int) ?? 0,
+            "owner": (window[kCGWindowOwnerName as String] as? String) ?? "",
+            "title": title,
+        ]
+    }
+}
+
 // MARK: - Main
+
+if CommandLine.arguments.dropFirst().first == "window-titles" {
+    let data = (try? JSONSerialization.data(withJSONObject: listWindowTitles())) ?? Data("[]".utf8)
+    FileHandle.standardOutput.write(data)
+    FileHandle.standardOutput.write(Data("\n".utf8))
+    exit(0)
+}
 
 if CommandLine.arguments.dropFirst().first == "mic-users" {
     let payload: Any = listMicUsers() ?? NSNull()
