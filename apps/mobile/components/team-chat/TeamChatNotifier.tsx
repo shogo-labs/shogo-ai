@@ -35,8 +35,9 @@ export function TeamChatNotifier() {
       const onScreen = activeRef.current === event.conversationId && foreground.current && !(await isUserInactive())
       if (onScreen) return
       await notifyChannelMessage({
-        conversationId: event.conversationId,
-        messageId: event.messageId,
+        // Reminders without a message have no conversation; `/c/inbox` is the inbox screen.
+        conversationId: event.conversationId ?? 'inbox',
+        messageId: event.messageId ?? `reminder-${Date.now()}`,
         threadRootId: event.threadRootId,
         title: event.title,
         body: event.body,

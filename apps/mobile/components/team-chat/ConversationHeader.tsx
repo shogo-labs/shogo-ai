@@ -2,13 +2,14 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { useState } from 'react'
 import { ActivityIndicator, Alert, Modal, Platform, Pressable, ScrollView, Text, TextInput, View } from 'react-native'
-import { Archive, Bell, BellOff, Bot, Check, Hash, Lock, LogOut, Radio, Sparkles, Star, UserPlus, Users, X } from 'lucide-react-native'
+import { Archive, Bell, BellOff, Bot, Check, Hash, Lock, LogOut, Pin, Radio, Sparkles, Star, UserPlus, Users, X } from 'lucide-react-native'
 import { MarkdownText } from '../chat/MarkdownText'
 import {
   conversationTitle,
   isAgentDm,
   teamChatApi,
   type CatchUpResult,
+  type ChatMessage,
   type ConversationDetail,
   type Mentionables,
   type MembershipNotifyLevel,
@@ -42,6 +43,7 @@ export function ConversationHeader({ conversation, mentionables, me, onChanged, 
   const [catchingUp, setCatchingUp] = useState(false)
   const [membersOpen, setMembersOpen] = useState(false)
   const [notifyOpen, setNotifyOpen] = useState(false)
+  const [pins, setPins] = useState<ChatMessage[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   const isChannel = conversation.kind === 'public' || conversation.kind === 'private' || conversation.kind === 'activity'
   const participants: Participant[] = conversation.members
@@ -107,6 +109,14 @@ export function ConversationHeader({ conversation, mentionables, me, onChanged, 
             <Star size={16} className={conversation.starred ? 'text-amber-500' : 'text-muted-foreground'} fill={conversation.starred ? '#f59e0b' : 'none'} />
           </HeaderButton>
         )}
+        {conversation.kind !== 'activity' && (
+          <HeaderButton
+            label="Pinned messages"
+            onPress={() => void api.pins(conversation.id).then(setPins).catch((err) => setError(err?.message ?? 'Could not load pins'))}
+          >
+            <Pin size={16} className="text-muted-foreground" />
+          </HeaderButton>
+        )}
         <HeaderButton label="Catch me up" onPress={doCatchUp}>
           {catchingUp ? <ActivityIndicator size="small" /> : <Sparkles size={16} className="text-muted-foreground" />}
         </HeaderButton>
@@ -167,6 +177,43 @@ export function ConversationHeader({ conversation, mentionables, me, onChanged, 
             {catchUp && catchUp.messageCount > 0 && (
               <Text className="mt-3 text-xs text-muted-foreground">Summarized {catchUp.messageCount} messages.</Text>
             )}
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      <Modal visible={!!pins} transparent animationType="fade" onRequestClose={() => setPins(null)}>
+        <Pressable className="flex-1 items-center justify-center bg-black/40 p-6" onPress={() => setPins(null)}>
+          <Pressable className="max-h-[80%] w-full max-w-lg rounded-xl bg-card p-5" onPress={() => {}}>
+            <View className="mb-3 flex-row items-center gap-2">
+              <Pin size={16} className="text-amber-600" />
+              <Text className="flex-1 text-base font-semibold text-foreground">Pinned in {title}</Text>
+              <Pressable onPress={() => setPins(null)} accessibilityLabel="Close">
+                <X size={16} className="text-muted-foreground" />
+              </Pressable>
+            </View>
+            <ScrollView>
+              {pins?.length ? pins.map((m) => (
+                <View key={m.id} className="mb-2 rounded-md border border-border px-3 py-2">
+                  <View className="flex-row items-center gap-2">
+                    <Text className="flex-1 text-xs font-semibold text-foreground">
+                      {m.authorType === 'agent' ? m.authorAgent?.name ?? 'Agent' : m.author?.name ?? 'Someone'}
+                    </Text>
+                    <Text className="text-[11px] text-muted-foreground">{new Date(m.createdAt).toLocaleDateString()}</Text>
+                    {conversation.canReply ? (
+                      <Pressable
+                        accessibilityLabel="Unpin"
+                        onPress={() => void api.pin(m.id, false).then(() => setPins((list) => (list ?? []).filter((x) => x.id !== m.id)))}
+                      >
+                        <Text className="text-[11px] text-muted-foreground">Unpin</Text>
+                      </Pressable>
+                    ) : null}
+                  </View>
+                  <MarkdownText>{renderMentions(m.text, mentionNames(mentionables))}</MarkdownText>
+                </View>
+              )) : (
+                <Text className="text-sm text-muted-foreground">Nothing pinned yet. Hover a message and use the pin button to keep it here.</Text>
+              )}
+            </ScrollView>
           </Pressable>
         </Pressable>
       </Modal>

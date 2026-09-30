@@ -7,12 +7,21 @@
 
 import { withGlobalJobLock } from '../lib/global-job-lock'
 import { runDigestPass } from '../services/chat-digest'
+import { fireDueReminders, sendDueScheduledMessages } from '../services/chat-items'
 
 const DIGEST_INTERVAL_MS = 10 * 60 * 1000
+const SCHEDULER_INTERVAL_MS = 15_000
 
 export async function runChannelEmailDigest(): Promise<void> {
   await withGlobalJobLock('channels-email-digest', async () => {
     await runDigestPass()
+  })
+}
+
+export async function runChannelScheduler(): Promise<void> {
+  await withGlobalJobLock('channels-scheduler', async () => {
+    await sendDueScheduledMessages()
+    await fireDueReminders()
   })
 }
 
@@ -30,6 +39,7 @@ function every(ms: number, label: string, fn: () => Promise<void>) {
 export function startChannelWorkers(): () => void {
   if (timers.length) return stopChannelWorkers
   every(DIGEST_INTERVAL_MS, 'Email digest', runChannelEmailDigest)
+  every(SCHEDULER_INTERVAL_MS, 'Scheduler', runChannelScheduler)
   return stopChannelWorkers
 }
 

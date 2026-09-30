@@ -8,13 +8,14 @@
 import { useState } from 'react'
 import { Pressable, Text, View } from 'react-native'
 import { usePathname, useRouter } from 'expo-router'
-import { Bell, Bot, ChevronDown, ChevronRight, Hash, Inbox, Lock, MessagesSquare, Plus, Radio, Search, Users } from 'lucide-react-native'
+import { Bell, Bookmark, Bot, ChevronDown, ChevronRight, Hash, Inbox, Lock, MessagesSquare, Pencil, Plus, Radio, Search, Users } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { densityFor } from '../../lib/phone-density'
 import { usePhoneLayout } from '../../lib/native-phone-layout'
 import { conversationTitle, type ConversationSummary } from '../../lib/team-chat-api'
 import { useConversationList, useMentionables, useMyUserId, invalidateConversationList } from '../../hooks/useTeamChat'
 import { useInboxFeed, useInboxUnread, useStatusFeed } from '../../hooks/useChatPrefs'
+import { useDraftsFeed, useHasDraft, useSavedFeed } from '../../hooks/useChatItems'
 import { NewConversationModal, type NewConversationMode } from './NewConversationModal'
 import { NavItem } from '../layout/sidebar/NavItem'
 
@@ -51,6 +52,8 @@ export function TeamChatSidebarSection({ workspaceId, collapsed, onNavPress }: T
   const [creating, setCreating] = useState<NewConversationMode | null>(null)
   useStatusFeed(workspaceId)
   useInboxFeed(workspaceId)
+  useSavedFeed(workspaceId)
+  useDraftsFeed(workspaceId)
   const inboxUnread = useInboxUnread(workspaceId)
   const comfortable = usePhoneLayout()
   const density = densityFor(comfortable)
@@ -100,6 +103,7 @@ export function TeamChatSidebarSection({ workspaceId, collapsed, onNavPress }: T
         >
           {title}
         </Text>
+        {!active && <DraftMark conversationId={c.id} />}
         {c.mentionCount > 0 && !active && (
           <View className="min-w-[18px] items-center rounded-full bg-destructive px-1.5">
             <Text className="text-[10px] font-semibold text-white">{c.mentionCount > 99 ? '99+' : c.mentionCount}</Text>
@@ -126,6 +130,7 @@ export function TeamChatSidebarSection({ workspaceId, collapsed, onNavPress }: T
         <View>
           {([
             { label: 'Inbox', icon: Inbox, href: '/(app)/c/inbox', count: inboxUnread },
+            { label: 'Later', icon: Bookmark, href: '/(app)/c/later', count: 0 },
             { label: 'Browse channels', icon: Plus, href: '/(app)/c', count: 0 },
             { label: 'Search messages', icon: Search, href: '/(app)/c/search', count: 0 },
             { label: 'Preferences', icon: Bell, href: '/(app)/c/settings', count: 0 },
@@ -196,4 +201,9 @@ function Section({ label, addLabel, onAdd, labelClass, children }: { label: stri
       {expanded && children}
     </View>
   )
+}
+
+function DraftMark({ conversationId }: { conversationId: string }) {
+  const hasDraft = useHasDraft(conversationId)
+  return hasDraft ? <Pencil size={11} className="text-muted-foreground" accessibilityLabel="Draft" /> : null
 }

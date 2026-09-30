@@ -4,6 +4,8 @@
 import { describe, expect, test } from 'bun:test'
 import type { ChatMessage, ConversationSummary, Mentionables } from '../team-chat-api'
 import {
+  decodeMentions,
+  scheduleOptions,
   expiryFrom,
   searchSnippet,
   activeMentionQuery,
@@ -244,5 +246,26 @@ describe('expiryFrom', () => {
     expect(expiryFrom('today', now)).toBe(new Date(2026, 5, 10, 23, 59, 59).toISOString())
     expect(expiryFrom('tomorrow', now)).toBe(new Date(2026, 5, 11, 9, 0, 0).toISOString())
     expect(expiryFrom(null, now)).toBeNull()
+  })
+})
+
+describe('decodeMentions', () => {
+  test('round-trips with encodeMentions and leaves unknown tokens alone', () => {
+    const ada = { kind: 'user' as const, display: 'Ada Lovelace', token: '<@u:ada>' }
+    const here = { kind: 'special' as const, display: 'here', token: '<!here>' }
+    const wire = '<@u:ada> and <!here>: see <@u:ghost>'
+    const { text, picked } = decodeMentions(wire, [ada, here])
+    expect(text).toBe('@Ada Lovelace and @here: see <@u:ghost>')
+    expect(encodeMentions(text, picked)).toBe(wire)
+  })
+})
+
+describe('scheduleOptions', () => {
+  test('offers Monday only when it is not tomorrow', () => {
+    const wed = new Date(2026, 0, 14, 15, 0)
+    expect(scheduleOptions(wed).map((o) => o.label)).toEqual(['In 30 minutes', 'In 1 hour', 'Tomorrow at 9:00 AM', 'Monday at 9:00 AM'])
+    expect(scheduleOptions(wed)[3].at.getTime()).toBe(new Date(2026, 0, 19, 9, 0).getTime())
+    const sun = new Date(2026, 0, 18, 15, 0)
+    expect(scheduleOptions(sun).map((o) => o.label)).toHaveLength(3)
   })
 })

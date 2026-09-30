@@ -85,6 +85,7 @@ export interface ChatMessage {
   agentStatus: AgentStatus | null
   reactions: ReactionSummary[]
   attachments: MessageAttachment[]
+  pinned?: { byId: string; at: string } | null
   editedAt: string | null
   deletedAt: string | null
   createdAt: string
@@ -145,6 +146,46 @@ export interface InboxItem {
   conversation: { id: string; kind: ConversationKind; name: string | null; slug: string | null } | null
 }
 
+export type ConversationRef = { id: string; kind: ConversationKind; name: string | null; slug: string | null }
+
+export interface SavedItem {
+  savedAt: string
+  message: ChatMessage
+  conversation: ConversationRef
+}
+
+export interface Draft {
+  conversationId: string
+  threadRootId: string | null
+  text: string
+  updatedAt: string
+  conversation?: ConversationRef
+}
+
+export interface ScheduledMessage {
+  id: string
+  conversationId: string
+  threadRootId: string | null
+  alsoSentToChannel: boolean
+  text: string
+  sendAt: string
+  status: 'pending' | 'sent' | 'cancelled' | 'failed'
+  sentMessageId: string | null
+  error: string | null
+  conversation: ConversationRef | null
+}
+
+export interface Reminder {
+  id: string
+  text: string
+  remindAt: string
+  status: 'pending' | 'fired' | 'done' | 'cancelled'
+  messageId: string | null
+  conversationId: string | null
+  firedAt: string | null
+  createdAt: string
+}
+
 export interface InboxPage {
   items: InboxItem[]
   unread: number
@@ -178,16 +219,19 @@ export type TeamChatEvent =
   | { type: 'presence'; userId: string; status: 'active' | 'away' | 'offline' }
   | {
       type: 'notification'
-      conversationId: string
-      messageId: string
+      conversationId: string | null
+      messageId: string | null
       threadRootId: string | null
-      reason: 'dm' | 'mention' | 'keyword' | 'broadcast' | 'thread' | 'message'
+      reason: 'dm' | 'mention' | 'keyword' | 'broadcast' | 'thread' | 'message' | 'reminder'
       title: string
       body: string
     }
   | { type: 'status.changed'; userId: string; status: UserStatus | null }
   | { type: 'inbox.created'; item: InboxItem }
   | { type: 'inbox.read'; unread: number }
+  | { type: 'saved.changed'; messageId: string; saved: boolean }
+  | { type: 'draft.changed'; draft: Draft }
+  | { type: 'scheduled.failed'; id: string; error: string | null }
 
 export const mentionToken = {
   user: (id: string) => `<@u:${id}>`,
@@ -254,6 +298,51 @@ export function teamChatApi() {
       input: { ids?: string[]; all?: boolean; conversationId?: string; threadRootId?: string; unread?: boolean },
     ): Promise<number> {
       return (await http.post<{ updated: number }>(`${ws(workspaceId)}/inbox/read`, input)).data.updated
+    },
+    async pin(messageId: string, on: boolean): Promise<ChatMessage> {
+      return (await http.post<{ message: ChatMessage }>(`${msg(messageId)}/pin`, { on })).data.message
+    },
+    async pins(conversationId: string): Promise<ChatMessage[]> {
+      return (await http.get<{ messages: ChatMessage[] }>(`${conv(conversationId)}/pins`)).data.messages ?? []
+    },
+    async save(messageId: string, on: boolean) {
+      await http.post(`${msg(messageId)}/save`, { on })
+    },
+    async saved(workspaceId: string): Promise<SavedItem[]> {
+      return (await http.get<{ items: SavedItem[] }>(`${ws(workspaceId)}/saved`)).data.items ?? []
+    },
+    async drafts(workspaceId: string): Promise<Draft[]> {
+      return (await http.get<{ drafts: Draft[] }>(`${ws(workspaceId)}/drafts`)).data.drafts ?? []
+    },
+    async putDraft(conversationId: string, text: string, threadRootId?: string | null): Promise<Draft> {
+      return (await http.post<{ draft: Draft }>(`${conv(conversationId)}/draft`, { text, threadRootId: threadRootId ?? null })).data.draft
+    },
+    async scheduled(workspaceId: string): Promise<ScheduledMessage[]> {
+      return (await http.get<{ scheduled: ScheduledMessage[] }>(`${ws(workspaceId)}/scheduled`)).data.scheduled ?? []
+    },
+    async schedule(
+      conversationId: string,
+      input: { text: string; sendAt: string; threadRootId?: string | null; alsoSentToChannel?: boolean },
+    ): Promise<ScheduledMessage> {
+      return (await http.post<{ scheduled: ScheduledMessage }>(`${conv(conversationId)}/scheduled`, input)).data.scheduled
+    },
+    async updateScheduled(id: string, patch: { text?: string; sendAt?: string }): Promise<ScheduledMessage> {
+      return (await http.patch<{ scheduled: ScheduledMessage }>(`/api/scheduled-messages/${encodeURIComponent(id)}`, patch)).data.scheduled
+    },
+    async cancelScheduled(id: string) {
+      await http.delete(`/api/scheduled-messages/${encodeURIComponent(id)}`)
+    },
+    async reminders(workspaceId: string): Promise<Reminder[]> {
+      return (await http.get<{ reminders: Reminder[] }>(`${ws(workspaceId)}/reminders`)).data.reminders ?? []
+    },
+    async createReminder(
+      workspaceId: string,
+      input: { command?: string; text?: string; remindAt?: string; messageId?: string },
+    ): Promise<Reminder> {
+      return (await http.post<{ reminder: Reminder }>(`${ws(workspaceId)}/reminders`, input)).data.reminder
+    },
+    async updateReminder(id: string, patch: { status?: 'done' | 'cancelled'; remindAt?: string }): Promise<Reminder> {
+      return (await http.patch<{ reminder: Reminder }>(`/api/reminders/${encodeURIComponent(id)}`, patch)).data.reminder
     },
     async mentionables(workspaceId: string): Promise<Mentionables> {
       return (await http.get<Mentionables>(`${ws(workspaceId)}/mentionables`)).data

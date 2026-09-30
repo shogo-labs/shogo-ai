@@ -7,14 +7,32 @@
  */
 import { memo, useState } from 'react'
 import { ActionSheetIOS, Alert, Image, Linking, Platform, Pressable, Text, TextInput, View } from 'react-native'
-import { AlertCircle, Bot, CornerDownRight, FileText, Loader2, MessageSquare, Pencil, SmilePlus, Square, Trash2 } from 'lucide-react-native'
+import { AlarmClock, AlertCircle, Bookmark, Bot, CornerDownRight, FileText, Loader2, MessageSquare, Pencil, Pin, SmilePlus, Square, Trash2 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { MarkdownText } from '../chat/MarkdownText'
-import type { ChatMessage } from '../../lib/team-chat-api'
+import { teamChatApi, type ChatMessage } from '../../lib/team-chat-api'
 import { renderMentions, type MentionNames } from '../../lib/team-chat-state'
 import { useUserStatus } from '../../hooks/useChatPrefs'
+import { toggleSaved, useIsSaved } from '../../hooks/useChatItems'
 
 export const QUICK_REACTIONS = ['👍', '✅', '👀', '🎉', '❤️', '😂']
+
+const api = teamChatApi()
+
+export const REMIND_OPTIONS: Array<{ label: string; at: () => Date }> = [
+  { label: 'In 20 minutes', at: () => new Date(Date.now() + 20 * 60_000) },
+  { label: 'In 1 hour', at: () => new Date(Date.now() + 60 * 60_000) },
+  { label: 'In 3 hours', at: () => new Date(Date.now() + 3 * 60 * 60_000) },
+  {
+    label: 'Tomorrow',
+    at: () => {
+      const d = new Date()
+      d.setDate(d.getDate() + 1)
+      d.setHours(9, 0, 0, 0)
+      return d
+    },
+  },
+]
 
 export interface MessageRowProps {
   message: ChatMessage
@@ -23,6 +41,9 @@ export interface MessageRowProps {
   names: MentionNames
   streaming?: { text: string; tool: string | null }
   canManage: boolean
+  /** Can pin (anyone who can post or reply here). */
+  canPin?: boolean
+  workspaceId?: string
   inThread?: boolean
   onReply?: (message: ChatMessage) => void
   onReact: (message: ChatMessage, emoji: string) => void
@@ -93,7 +114,9 @@ function MessageRowImpl(props: MessageRowProps) {
   const { message, grouped, me, names, streaming, canManage, inThread } = props
   const [hovered, setHovered] = useState(false)
   const [pickerOpen, setPickerOpen] = useState(false)
+  const [remindOpen, setRemindOpen] = useState(false)
   const [editing, setEditing] = useState(false)
+  const saved = useIsSaved(message.id)
   const [draft, setDraft] = useState(message.text)
   const mine = !!me && message.authorUserId === me
   const deleted = !!message.deletedAt
@@ -101,12 +124,24 @@ function MessageRowImpl(props: MessageRowProps) {
   const body = running ? streaming?.text ?? '' : message.text
   const isWeb = Platform.OS === 'web'
 
+  const pin = () => void api.pin(message.id, !message.pinned).catch(() => {})
+  const save = () => void toggleSaved(message.id, !saved).catch(() => {})
+  const remind = (at: Date) => {
+    setRemindOpen(false)
+    if (!props.workspaceId) return
+    void api.createReminder(props.workspaceId, { messageId: message.id, remindAt: at.toISOString() }).catch(() => {})
+  }
+  const canAct = !deleted && !message.pending && message.authorType !== 'system'
+
   const openActions = () => {
     if (deleted || message.pending) return
     const options: Array<{ label: string; run: () => void; destructive?: boolean }> = [
       ...QUICK_REACTIONS.slice(0, 4).map((emoji) => ({ label: emoji, run: () => props.onReact(message, emoji) })),
     ]
     if (props.onReply && !inThread) options.push({ label: 'Reply in thread', run: () => props.onReply!(message) })
+    options.push({ label: saved ? 'Remove from saved' : 'Save for later', run: save })
+    if (props.workspaceId) options.push({ label: 'Remind me in 1 hour', run: () => remind(REMIND_OPTIONS[1].at()) })
+    if (props.canPin) options.push({ label: message.pinned ? 'Unpin' : 'Pin to conversation', run: pin })
     if (mine && message.authorType === 'user') options.push({ label: 'Edit', run: () => { setDraft(message.text); setEditing(true) } })
     if (mine || canManage) options.push({ label: 'Delete', run: () => props.onDelete(message), destructive: true })
     if (Platform.OS === 'ios') {
@@ -172,8 +207,14 @@ function MessageRowImpl(props: MessageRowProps) {
       onHoverOut={() => {
         setHovered(false)
         setPickerOpen(false)
+        setRemindOpen(false)
       }}
-      className={cn('relative flex-row gap-3 px-4', grouped ? 'py-0.5' : 'pt-2.5 pb-0.5', hovered && 'bg-muted/40')}
+      className={cn(
+        'relative flex-row gap-3 px-4',
+        grouped ? 'py-0.5' : 'pt-2.5 pb-0.5',
+        message.pinned && !deleted ? 'bg-amber-500/5' : null,
+        hovered && 'bg-muted/40',
+      )}
       accessibilityLabel={`${authorName(message)}: ${message.text}`}
     >
       <View className="w-8">
@@ -194,6 +235,19 @@ function MessageRowImpl(props: MessageRowProps) {
               </View>
             )}
             <Text className="text-[11px] text-muted-foreground">{formatTime(message.createdAt)}</Text>
+          </View>
+        )}
+
+        {message.pinned && !deleted && (
+          <View className="flex-row items-center gap-1">
+            <Pin size={10} className="text-amber-600" />
+            <Text className="text-[11px] text-amber-700 dark:text-amber-400">Pinned</Text>
+          </View>
+        )}
+        {saved && !deleted && (
+          <View className="flex-row items-center gap-1">
+            <Bookmark size={10} className="text-primary" />
+            <Text className="text-[11px] text-primary">Saved for later</Text>
           </View>
         )}
 
@@ -354,12 +408,27 @@ function MessageRowImpl(props: MessageRowProps) {
               <Text className="text-sm">{emoji}</Text>
             </Pressable>
           ))}
-          <Pressable onPress={() => setPickerOpen((open) => !open)} accessibilityLabel="More reactions" className="rounded px-1.5 py-1 hover:bg-muted">
+          <Pressable onPress={() => { setRemindOpen(false); setPickerOpen((open) => !open) }} accessibilityLabel="More reactions" className="rounded px-1.5 py-1 hover:bg-muted">
             <SmilePlus size={14} className="text-muted-foreground" />
           </Pressable>
           {props.onReply && !inThread && (
             <Pressable onPress={() => props.onReply!(message)} accessibilityLabel="Reply in thread" className="rounded px-1.5 py-1 hover:bg-muted">
               <MessageSquare size={14} className="text-muted-foreground" />
+            </Pressable>
+          )}
+          {canAct && (
+            <Pressable onPress={save} accessibilityLabel={saved ? 'Remove from saved' : 'Save for later'} className="rounded px-1.5 py-1 hover:bg-muted">
+              <Bookmark size={14} className={saved ? 'text-primary' : 'text-muted-foreground'} fill={saved ? 'currentColor' : 'none'} />
+            </Pressable>
+          )}
+          {canAct && props.workspaceId && (
+            <Pressable onPress={() => { setPickerOpen(false); setRemindOpen((v) => !v) }} accessibilityLabel="Remind me about this" className="rounded px-1.5 py-1 hover:bg-muted">
+              <AlarmClock size={14} className="text-muted-foreground" />
+            </Pressable>
+          )}
+          {canAct && props.canPin && (
+            <Pressable onPress={pin} accessibilityLabel={message.pinned ? 'Unpin' : 'Pin to conversation'} className="rounded px-1.5 py-1 hover:bg-muted">
+              <Pin size={14} className={message.pinned ? 'text-amber-600' : 'text-muted-foreground'} />
             </Pressable>
           )}
           {mine && message.authorType === 'user' && (
@@ -372,6 +441,16 @@ function MessageRowImpl(props: MessageRowProps) {
               <Trash2 size={14} className="text-muted-foreground" />
             </Pressable>
           )}
+        </View>
+      )}
+      {isWeb && hovered && remindOpen && (
+        <View className="absolute right-3 top-6 z-10 w-44 rounded-lg border border-border bg-card py-1 shadow-md">
+          <Text className="px-3 pb-1 pt-1 text-[11px] font-semibold uppercase text-muted-foreground">Remind me</Text>
+          {REMIND_OPTIONS.map((o) => (
+            <Pressable key={o.label} onPress={() => remind(o.at())} className="px-3 py-1.5 hover:bg-muted">
+              <Text className="text-sm text-foreground">{o.label}</Text>
+            </Pressable>
+          ))}
         </View>
       )}
       {isWeb && hovered && pickerOpen && (

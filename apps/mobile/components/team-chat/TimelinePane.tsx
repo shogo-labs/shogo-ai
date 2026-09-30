@@ -104,6 +104,8 @@ export function TimelinePane(props: TimelinePaneProps) {
           me={me}
           names={names}
           canManage={conversation.canManage}
+          canPin={conversation.canReply}
+          workspaceId={workspaceId}
           inThread={!!threadRootId}
           header={props.header}
           emptyText={threadRootId ? 'No replies yet.' : isChannel ? `This is the very beginning of #${conversation.name}.` : 'Say hello.'}

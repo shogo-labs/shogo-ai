@@ -3,24 +3,29 @@
 /**
  * Team chat composer: Enter to send (Shift+Enter for a newline on web),
  * @-autocomplete for teammates and agents, file attachments, typing
- * signals, and "also send to channel" for thread replies.
+ * signals, "also send to channel" for thread replies, drafts synced across
+ * devices, send later, and `/remind`.
  */
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Platform, Pressable, ScrollView, Text, TextInput, View } from 'react-native'
-import { Bot, Paperclip, SendHorizontal, User, Users, X } from 'lucide-react-native'
+import { AlarmClock, Bot, Clock, Paperclip, SendHorizontal, User, Users, X } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import type { Mentionables, MessageAttachment } from '../../lib/team-chat-api'
 import { teamChatApi } from '../../lib/team-chat-api'
 import { sendTyping } from '../../lib/team-chat-connection'
 import {
   activeMentionQuery,
+  decodeMentions,
   encodeMentions,
+  isRemindCommand,
+  scheduleOptions,
   filterCandidates,
   insertMention,
   mentionCandidates,
   type MentionCandidate,
 } from '../../lib/team-chat-state'
 import type { SendInput } from '../../hooks/useTeamChat'
+import { useDraft } from '../../hooks/useChatItems'
 
 const api = teamChatApi()
 const MAX_ATTACHMENTS = 10
@@ -48,6 +53,8 @@ export function Composer(props: ComposerProps) {
   const [attachments, setAttachments] = useState<MessageAttachment[]>([])
   const [uploading, setUploading] = useState(0)
   const [error, setError] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
+  const [laterOpen, setLaterOpen] = useState(false)
   const inputRef = useRef<TextInput>(null)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const isWeb = Platform.OS === 'web'
@@ -57,8 +64,25 @@ export function Composer(props: ComposerProps) {
   const query = activeMentionQuery(text, selection.start)
   const suggestions = query && query.start !== dismissedAt ? filterCandidates(candidates, query.query) : []
 
+  const draft = useDraft(conversationId, threadRootId)
+  const restoredFor = useRef<string | null>(null)
+  const draftKey = `${conversationId}:${threadRootId ?? ''}`
+  // Load the draft when switching conversations, or when a synced draft arrives into an empty box.
+  useEffect(() => {
+    const switched = restoredFor.current !== draftKey
+    restoredFor.current = draftKey
+    if (!switched && text) return
+    const { text: restored, picked: restoredPicks } = decodeMentions(draft.stored, candidates)
+    if (!switched && restored === text) return
+    setText(restored)
+    setPicked(restoredPicks)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draftKey, draft.stored, candidates.length])
+
   const onChange = (next: string) => {
     setText(next)
+    draft.save(next.trim() ? encodeMentions(next, picked) : '')
+    setNotice(null)
     setHighlight(0)
     if (!next.includes('@')) setDismissedAt(null)
     if (next.trim()) sendTyping(workspaceId, conversationId, threadRootId)
@@ -73,17 +97,52 @@ export function Composer(props: ComposerProps) {
     inputRef.current?.focus()
   }
 
-  const submit = async () => {
-    const trimmed = text.trim()
-    if ((!trimmed && !attachments.length) || uploading || props.disabled) return
-    const wire = encodeMentions(trimmed, picked)
-    const attachmentIds = attachments.map((a) => a.id)
+  const reset = () => {
     setText('')
     setPicked([])
     setAttachments([])
     setAlsoToChannel(false)
     setError(null)
+    draft.save('', { immediate: true })
+  }
+
+  const remind = async (command: string) => {
+    try {
+      const r = await api.createReminder(workspaceId, { command })
+      reset()
+      setNotice(`Okay, I'll remind you “${r.text}” ${formatWhen(r.remindAt)}.`)
+    } catch (err: any) {
+      setError(err?.message ?? 'Could not set that reminder')
+    }
+  }
+
+  const submit = async () => {
+    const trimmed = text.trim()
+    if ((!trimmed && !attachments.length) || uploading || props.disabled) return
+    if (isRemindCommand(trimmed) && !attachments.length) return remind(trimmed)
+    const wire = encodeMentions(trimmed, picked)
+    const attachmentIds = attachments.map((a) => a.id)
+    reset()
+    setNotice(null)
     await props.onSend({ text: wire, attachmentIds, alsoSentToChannel: threadRootId ? alsoToChannel : undefined })
+  }
+
+  const sendLater = async (at: Date) => {
+    setLaterOpen(false)
+    const trimmed = text.trim()
+    if (!trimmed) return
+    try {
+      await api.schedule(conversationId, {
+        text: encodeMentions(trimmed, picked),
+        sendAt: at.toISOString(),
+        threadRootId,
+        alsoSentToChannel: threadRootId ? alsoToChannel : undefined,
+      })
+      reset()
+      setNotice(`Scheduled for ${formatWhen(at.toISOString())}. Manage it in Later.`)
+    } catch (err: any) {
+      setError(err?.message ?? 'Could not schedule')
+    }
   }
 
   const upload = async (file: File | { uri: string; name: string; type: string }) => {
@@ -204,6 +263,15 @@ export function Composer(props: ComposerProps) {
             </Pressable>
           )}
           <View className="flex-1" />
+          {text.trim() && !attachments.length && !isRemindCommand(text) ? (
+            <Pressable
+              onPress={() => setLaterOpen((v) => !v)}
+              accessibilityLabel="Send later"
+              className="rounded-md p-1.5 active:bg-muted hover:bg-muted"
+            >
+              <Clock size={16} className="text-muted-foreground" />
+            </Pressable>
+          ) : null}
           <Pressable
             onPress={submit}
             disabled={(!text.trim() && !attachments.length) || uploading > 0}
@@ -214,6 +282,23 @@ export function Composer(props: ComposerProps) {
           </Pressable>
         </View>
       </View>
+      {laterOpen && (
+        <View className="mt-1 self-end overflow-hidden rounded-lg border border-border bg-card shadow-sm">
+          <Text className="px-3 pb-1 pt-2 text-[11px] font-semibold uppercase text-muted-foreground">Send later</Text>
+          {scheduleOptions().map((o) => (
+            <Pressable key={o.label} onPress={() => void sendLater(o.at)} className="px-3 py-2 active:bg-muted hover:bg-muted">
+              <Text className="text-sm text-foreground">{o.label}</Text>
+            </Pressable>
+          ))}
+        </View>
+      )}
+      {isRemindCommand(text) && !error ? (
+        <View className="mt-1 flex-row items-center gap-1.5">
+          <AlarmClock size={12} className="text-muted-foreground" />
+          <Text className="text-xs text-muted-foreground">Try “/remind me to review the PR in 2 hours” or “… tomorrow at 9am”. Only you will see this.</Text>
+        </View>
+      ) : null}
+      {notice && !error ? <Text className="mt-1 text-xs text-muted-foreground">{notice}</Text> : null}
       {error && <Text className="mt-1 text-xs text-destructive">{error}</Text>}
       {isWeb && (
         <input
@@ -233,4 +318,15 @@ export function Composer(props: ComposerProps) {
       )}
     </View>
   )
+}
+
+function formatWhen(iso: string): string {
+  const d = new Date(iso)
+  const now = new Date()
+  const tomorrow = new Date(now)
+  tomorrow.setDate(now.getDate() + 1)
+  const time = d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })
+  if (d.toDateString() === now.toDateString()) return `today at ${time}`
+  if (d.toDateString() === tomorrow.toDateString()) return `tomorrow at ${time}`
+  return `${d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })} at ${time}`
 }

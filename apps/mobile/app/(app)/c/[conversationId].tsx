@@ -18,6 +18,7 @@ import {
   useMyUserId,
 } from '../../../hooks/useTeamChat'
 import { useStatusFeed } from '../../../hooks/useChatPrefs'
+import { useDraftsFeed, useSavedFeed } from '../../../hooks/useChatItems'
 import { ConversationHeader } from '../../../components/team-chat/ConversationHeader'
 import { TimelinePane } from '../../../components/team-chat/TimelinePane'
 
@@ -45,6 +46,8 @@ export default function ConversationScreen() {
   const mentionables = useMentionables(workspaceId)
   const sidePane = width >= THREAD_SIDE_PANE_MIN_WIDTH
   useStatusFeed(workspaceId)
+  useSavedFeed(workspaceId)
+  useDraftsFeed(workspaceId)
 
   useEffect(() => {
     if (workspaceId && threadRootId) void api.markInboxRead(workspaceId, { threadRootId }).catch(() => {})

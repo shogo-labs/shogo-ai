@@ -368,3 +368,37 @@ export function expiryFrom(choice: ClearAfter, now = new Date()): string | null 
   }
   return new Date(now.getTime() + choice * 60_000).toISOString()
 }
+
+/** Turn a stored draft's mention tokens back into `@Name` text plus the picks that re-encode it. */
+export function decodeMentions(wire: string, candidates: MentionCandidate[]): { text: string; picked: MentionCandidate[] } {
+  const byToken = new Map(candidates.map((c) => [c.token, c]))
+  const picked: MentionCandidate[] = []
+  const text = wire.replace(/<[@!][^>]+>/g, (token) => {
+    const c = byToken.get(token)
+    if (!c) return token
+    picked.push(c)
+    return `@${c.display}`
+  })
+  return { text, picked }
+}
+
+/** Quick "send later" choices, in local time. */
+export function scheduleOptions(now = new Date()): Array<{ label: string; at: Date }> {
+  const tomorrow = new Date(now)
+  tomorrow.setDate(tomorrow.getDate() + 1)
+  tomorrow.setHours(9, 0, 0, 0)
+  const monday = new Date(now)
+  monday.setDate(monday.getDate() + (((8 - monday.getDay()) % 7) || 7))
+  monday.setHours(9, 0, 0, 0)
+  const options = [
+    { label: 'In 30 minutes', at: new Date(now.getTime() + 30 * 60_000) },
+    { label: 'In 1 hour', at: new Date(now.getTime() + 60 * 60_000) },
+    { label: 'Tomorrow at 9:00 AM', at: tomorrow },
+  ]
+  if (monday.getTime() - tomorrow.getTime() > 86_400_000 / 2) options.push({ label: 'Monday at 9:00 AM', at: monday })
+  return options
+}
+
+export function isRemindCommand(text: string): boolean {
+  return /^\/remind\b/i.test(text.trim())
+}

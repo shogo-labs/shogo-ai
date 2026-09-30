@@ -124,6 +124,7 @@ export const MESSAGE_INCLUDE = {
   attachments: {
     select: { id: true, name: true, mimeType: true, size: true, width: true, height: true, storageKey: true },
   },
+  pin: { select: { pinnedById: true, createdAt: true } },
 }
 
 export type AttachmentUrlBuilder = (attachment: { id: string; storageKey: string }) => string
@@ -171,6 +172,7 @@ export function serializeMessage(row: any) {
           id: a.id, name: a.name, mimeType: a.mimeType, size: a.size,
           width: a.width ?? null, height: a.height ?? null, url: attachmentUrl(a),
         })),
+    pinned: !deleted && row.pin ? { byId: row.pin.pinnedById, at: row.pin.createdAt } : null,
     editedAt: row.editedAt ?? null,
     deletedAt: row.deletedAt ?? null,
     createdAt: row.createdAt,
