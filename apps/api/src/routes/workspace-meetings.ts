@@ -14,11 +14,14 @@ import { tmpdir } from 'os'
 import { prisma } from '../lib/prisma'
 import { getWorkspaceKind } from '../services/workspace.service'
 import {
+  LIVE_CHUNK_MAX_BYTES,
   MAX_MEETING_NOTES_CHARS,
   MEETING_LIST_SELECT,
+  appendLiveTranscript,
   cleanMeetingNotes,
   defaultMeetingTitle,
   enhanceMeeting,
+  friendlyMeetingError,
   listMeetingTemplates,
   meetingToMarkdown,
   newShareToken,
@@ -192,6 +195,13 @@ export function workspaceMeetingRoutes(config: WorkspaceMeetingRoutesConfig): Ho
   router.put(`${base}/recordings/:recordingId`, saveRecordingDraft)
   router.patch(`${base}/recordings/:recordingId`, saveRecordingDraft)
 
+  /** A few seconds of audio from a recording in progress, for the live transcript. */
+  router.post(`${base}/recordings/:recordingId/live`, async (c) => {
+    const auth = await scope(c)
+    if (auth instanceof Response) return auth
+    return handleLiveChunk(c, { workspaceId: auth.workspaceId, userId: auth.userId ?? null }, c.req.param('recordingId'))
+  })
+
   // ── Create ─────────────────────────────────────────────────────────────
   /** A meeting with typed notes only (no audio), e.g. a quick note after a hallway chat. */
   router.post(base, async (c) => {
@@ -248,18 +258,35 @@ export function workspaceMeetingRoutes(config: WorkspaceMeetingRoutesConfig): Ho
     const source = form.get('source') === 'mobile' ? 'mobile' : 'upload'
     const title = String(form.get('title') || '').trim()
     const duration = Number.parseInt(String(form.get('duration') || '0'), 10) || null
-    const meeting = await db.meeting.create({
-      data: {
-        workspaceId: auth.workspaceId,
-        userId: auth.userId ?? null,
-        title: title ? title.slice(0, 200) : defaultMeetingTitle(new Date()),
-        notes: cleanMeetingNotes(String(form.get('notes') || '')) || null,
-        audioPath,
-        duration,
-        status: 'transcribing',
-        source,
-      },
-    })
+    const notes = cleanMeetingNotes(String(form.get('notes') || '')) || null
+    const recordingId = String(form.get('recordingId') || '').trim()
+    // Finish the draft the live transcript was written into, if there is one.
+    const draft = recordingId ? await db.meeting.findUnique({ where: { recordingId } }) : null
+    const meeting =
+      draft && draft.workspaceId === auth.workspaceId && draft.status === 'recording'
+        ? await db.meeting.update({
+            where: { id: draft.id },
+            data: {
+              audioPath,
+              duration,
+              status: 'transcribing',
+              source,
+              ...(title ? { title: title.slice(0, 200) } : {}),
+              ...(notes ? { notes } : {}),
+            },
+          })
+        : await db.meeting.create({
+            data: {
+              workspaceId: auth.workspaceId,
+              userId: auth.userId ?? null,
+              title: title ? title.slice(0, 200) : defaultMeetingTitle(new Date()),
+              notes,
+              audioPath,
+              duration,
+              status: 'transcribing',
+              source,
+            },
+          })
     void transcribeMeeting(meeting.id, audioPath, { deleteAudioAfter: !isLocalMode() })
     return c.json({ meeting: serializeMeeting(meeting) }, 201)
   })
@@ -367,6 +394,55 @@ export function workspaceMeetingRoutes(config: WorkspaceMeetingRoutesConfig): Ho
   })
 
   return router
+}
+
+/**
+ * Shared by the workspace route (app sessions) and the local route (the
+ * desktop recorder, which has no session). Accepts multipart `audio` + `start`
+ * + `seq`, or a raw WAV body with `x-live-start` / `x-live-seq` headers.
+ */
+export async function handleLiveChunk(
+  c: any,
+  owner: { workspaceId: string; userId: string | null },
+  recordingId: string,
+): Promise<Response> {
+  const declared = Number(c.req.header('content-length') || 0)
+  if (declared > LIVE_CHUNK_MAX_BYTES + 64 * 1024) return error(c, 413, 'too_large', 'Live audio chunk is too large')
+  let audio: Buffer
+  let start: number
+  let seq: number
+  const contentType = c.req.header('content-type') || ''
+  try {
+    if (contentType.includes('multipart/form-data')) {
+      const form = await c.req.formData()
+      const file = form.get('audio')
+      if (!file || typeof file === 'string') return error(c, 400, 'invalid_chunk', 'No audio in live chunk')
+      audio = Buffer.from(await (file as File).arrayBuffer())
+      start = Number(form.get('start'))
+      seq = Number(form.get('seq'))
+    } else {
+      audio = Buffer.from(await c.req.arrayBuffer())
+      start = Number(c.req.header('x-live-start'))
+      seq = Number(c.req.header('x-live-seq'))
+    }
+  } catch {
+    return error(c, 400, 'invalid_chunk', 'Could not read the live audio chunk')
+  }
+
+  const draft = await upsertRecordingDraft(owner, recordingId, {})
+  if (!draft) return error(c, 404, 'not_found', 'Meeting not found')
+  try {
+    const result = await appendLiveTranscript(draft.id, { audio, start, seq })
+    if (!result.ok) {
+      return result.reason === 'invalid'
+        ? error(c, 400, 'invalid_chunk', 'Live audio chunk must be a WAV with a start offset and sequence number')
+        : error(c, 409, 'not_recording', 'This recording has already finished')
+    }
+    return c.json({ meetingId: draft.id, segment: result.segment, transcript: result.transcript })
+  } catch (err: any) {
+    console.warn(`[Meetings] Live transcription failed for ${draft.id}:`, err?.message ?? err)
+    return error(c, 503, 'transcription_unavailable', friendlyMeetingError('transcript', err))
+  }
 }
 
 /** Public, unauthenticated read of a shared meeting's notes. */

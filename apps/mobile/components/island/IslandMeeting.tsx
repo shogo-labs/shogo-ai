@@ -118,6 +118,11 @@ export function IslandMeetingBanner({
           style={{ outlineStyle: "none" } as any}
         />
       ) : null}
+      {recording && notes?.caption ? (
+        <Text className="text-[11px] leading-[15px] text-zinc-400" numberOfLines={2} accessibilityLabel="Live transcript">
+          {notes.caption}
+        </Text>
+      ) : null}
       {!recording && prompt ? (
         <>
           <View className="flex-row items-center gap-2">

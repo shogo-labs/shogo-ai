@@ -71,20 +71,32 @@ function SpeakerTranscriptView({ segments }: { segments: TranscriptSegment[] }) 
   )
 }
 
-export function MeetingTranscript({ transcript }: { transcript: ParsedTranscript | null }) {
+export function MeetingTranscript({ transcript, live = false }: { transcript: ParsedTranscript | null; live?: boolean }) {
   if (!transcript || (!transcript.text && transcript.segments.length === 0)) {
     return (
       <View className="items-center justify-center py-16">
-        <Text className="text-sm text-muted-foreground">{transcript?.error || 'No transcript available'}</Text>
+        <Text className="text-sm text-muted-foreground text-center px-6">
+          {transcript?.error || (live ? 'Listening… the live transcript shows up here as people talk.' : 'No transcript available')}
+        </Text>
       </View>
     )
   }
   const hasSpeakers = transcript.segments.some((s) => s.speaker)
   return (
     <View>
-      {transcript.error && transcript.segments.length === 0 && (
+      {live && (
+        <View className="mb-4 flex-row items-center gap-2">
+          <View className="h-1.5 w-1.5 rounded-full bg-red-500" />
+          <Text className="text-xs text-muted-foreground">Live transcript. The full transcript replaces it when the recording stops.</Text>
+        </View>
+      )}
+      {!!transcript.error && (
         <View className="bg-amber-500/10 rounded-lg p-3 mb-4 flex-row items-center gap-2">
-          <Text className="text-xs text-amber-700">{transcript.error}</Text>
+          <Text className="flex-1 text-xs leading-5 text-amber-700 dark:text-amber-300">
+            {transcript.segments.length > 0 || transcript.text
+              ? `The latest transcription failed, so this is the transcript captured earlier. ${transcript.error}`
+              : transcript.error}
+          </Text>
         </View>
       )}
       {hasSpeakers ? (

@@ -524,7 +524,7 @@ export const IslandApp = observer(function IslandApp({
             pickerOpen ? "bg-white/10" : "hover:bg-white/5",
           )}
           accessibilityLabel="Switch project"
-          accessibilityState={{ expanded: pickerOpen }}
+          aria-expanded={pickerOpen}
         >
           <View className="min-w-0">
             <Text className="text-[12px] font-semibold text-zinc-50" numberOfLines={1}>

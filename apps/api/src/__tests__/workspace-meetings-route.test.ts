@@ -54,8 +54,13 @@ const prismaMock = {
     update: async ({ where, data }: any) => {
       const row = meetings.get(where.id)
       if (!row) throw new Error('not found')
-      Object.assign(row, data)
+      Object.assign(row, data, { updatedAt: new Date() })
       return row
+    },
+    updateMany: async ({ where, data }: any) => {
+      const rows = Array.from(meetings.values()).filter((row) => matches(row, where))
+      for (const row of rows) Object.assign(row, data, { updatedAt: new Date() })
+      return { count: rows.length }
     },
     delete: async ({ where }: any) => {
       const row = meetings.get(where.id)
@@ -88,9 +93,14 @@ mock.module('../lib/resolve-language-model', () => ({
 mock.module('../lib/ai-proxy-token', () => ({ generateProxyToken: async () => 'proxy-token' }))
 mock.module('ai', () => ({ generateText: async () => ({ text: generated }) }))
 const transcription = await import('../services/transcription.service')
+let transcribedText = ''
+let transcribeError: Error | null = null
 mock.module('../services/transcription.service', () => ({
   ...transcription,
-  transcribe: async () => ({ text: '', segments: [], language: 'en', provider: 'test' }),
+  transcribe: async () => {
+    if (transcribeError) throw transcribeError
+    return { text: transcribedText, segments: [], language: 'en', provider: 'test' }
+  },
 }))
 
 const { workspaceMeetingRoutes, sharedMeetingRoutes, audioExtension } = await import('../routes/workspace-meetings')
@@ -131,6 +141,8 @@ beforeEach(() => {
   meetings = new Map()
   templates = new Map()
   generated = ''
+  transcribedText = ''
+  transcribeError = null
   delete process.env.SHOGO_LOCAL_MODE
 })
 
@@ -316,6 +328,104 @@ describe('share links', () => {
   })
 })
 
+function wav(seconds: number, sampleRate = 16000): Uint8Array {
+  const dataBytes = Math.round(seconds * sampleRate) * 2
+  const buf = Buffer.alloc(44 + dataBytes)
+  buf.write('RIFF', 0, 'ascii')
+  buf.writeUInt32LE(36 + dataBytes, 4)
+  buf.write('WAVEfmt ', 8, 'ascii')
+  buf.writeUInt32LE(16, 16)
+  buf.writeUInt16LE(1, 20)
+  buf.writeUInt16LE(1, 22)
+  buf.writeUInt32LE(sampleRate, 24)
+  buf.writeUInt32LE(sampleRate * 2, 28)
+  buf.writeUInt16LE(2, 32)
+  buf.writeUInt16LE(16, 34)
+  buf.write('data', 36, 'ascii')
+  buf.writeUInt32LE(dataBytes, 40)
+  return new Uint8Array(buf)
+}
+
+function liveChunk(recordingId: string, start: number, seq: number, seconds = 2) {
+  const form = new FormData()
+  form.append('audio', new File([wav(seconds)], 'chunk.wav', { type: 'audio/wav' }))
+  form.append('start', String(start))
+  form.append('seq', String(seq))
+  return app.request(`/api/workspaces/ws-me/meetings/recordings/${recordingId}/live`, { method: 'POST', body: form })
+}
+
+describe('live transcription', () => {
+  test('chunks append in time order onto the recording draft', async () => {
+    transcribedText = 'and then pricing'
+    const later = await (await liveChunk('rec-live', 8, 1)).json()
+    expect(later.segment).toEqual({ start: 8, end: 10, text: 'and then pricing' })
+    transcribedText = 'We started with'
+    const body = await (await liveChunk('rec-live', 0, 0)).json()
+    expect(body.transcript.segments.map((s: any) => s.start)).toEqual([0, 8])
+    expect(body.transcript.text).toBe('We started with and then pricing')
+    const row = findBy(meetings, { recordingId: 'rec-live' })
+    expect(row.status).toBe('recording')
+    expect(JSON.parse(row.transcript).liveSeqs).toEqual([1, 0])
+  })
+
+  test('a retried chunk is not appended twice', async () => {
+    transcribedText = 'hello'
+    await liveChunk('rec-retry', 0, 0)
+    const again = await (await liveChunk('rec-retry', 0, 0)).json()
+    expect(again.segment).toBeNull()
+    expect(again.transcript.segments).toHaveLength(1)
+  })
+
+  test('silence adds nothing, and finished recordings reject late chunks', async () => {
+    const silent = await (await liveChunk('rec-done', 0, 0)).json()
+    expect(silent.segment).toBeNull()
+    findBy(meetings, { recordingId: 'rec-done' }).status = 'transcribing'
+    expect((await liveChunk('rec-done', 4, 1)).status).toBe(409)
+  })
+
+  test('rejects malformed chunks and explains missing transcription', async () => {
+    const form = new FormData()
+    form.append('audio', new File([new Uint8Array(10)], 'x.wav', { type: 'audio/wav' }))
+    form.append('start', '0')
+    form.append('seq', '0')
+    expect(
+      (await app.request('/api/workspaces/ws-me/meetings/recordings/rec-bad/live', { method: 'POST', body: form })).status,
+    ).toBe(400)
+    transcribeError = new Error('No OpenAI API key or proxy configured for cloud transcription')
+    const res = await liveChunk('rec-bad', 0, 1)
+    expect(res.status).toBe(503)
+    expect((await res.json()).error.message).toContain('Settings')
+  })
+
+  test('a failed final pass keeps the live transcript and still writes notes', async () => {
+    generated = '## Summary\n- From the live transcript'
+    const m = seed({ status: 'transcribing', transcript: TRANSCRIPT })
+    transcribeError = new Error('OpenAI Whisper API error: 500 upstream')
+    const audioPath = `${require('os').tmpdir()}/shogo-live-test-${Date.now()}.wav`
+    require('fs').writeFileSync(audioPath, Buffer.from(wav(1)))
+    await service.transcribeMeeting(m.id, audioPath)
+    await new Promise((r) => setTimeout(r, 10))
+    const row = meetings.get(m.id)
+    expect(row.status).toBe('ready')
+    const transcript = JSON.parse(row.transcript)
+    expect(transcript.segments).toHaveLength(1)
+    expect(transcript.error).toBe('Something went wrong transcribing this recording. Try again.')
+    expect(row.enhancedNotes).toContain('live transcript')
+    require('fs').unlinkSync(audioPath)
+  })
+})
+
+describe('friendly errors', () => {
+  test('hide provider details behind actionable sentences', () => {
+    expect(service.friendlyMeetingError('notes', new Error("Model 'hoshi-2-0' is not supported. Use GET /ai/v1/models"))).toBe(
+      "The AI model for notes isn't available on this machine. Sign in to Shogo Cloud or pick another model in Settings.",
+    )
+    expect(service.friendlyMeetingError('notes', new Error('429 Too Many Requests'))).toContain('usage limit')
+    expect(service.friendlyMeetingError('transcript', new Error('fetch failed'))).toContain('connection')
+    expect(service.friendlyMeetingError('notes', new Error('boom'))).toBe('Something went wrong writing notes. Try again.')
+  })
+})
+
 describe('meeting.service helpers', () => {
   test('transcriptToText keeps the opening and the ending when truncating', () => {
     const segments = Array.from({ length: 200 }, (_, i) => ({ start: i * 5, end: i * 5 + 5, text: `line ${i}`, speaker: 'A' }))
@@ -362,6 +472,18 @@ describe('upload', () => {
     expect(meeting.duration).toBe(42)
     expect(meeting.notes).toBe('follow up with legal')
     expect(meetings.get(meeting.id).audioPath).toEndWith('.m4a')
+  })
+
+  test('an upload finishes the live draft for the same recording', async () => {
+    const draft = seed({ recordingId: 'wrec-1', status: 'recording', notes: 'typed live', transcript: TRANSCRIPT })
+    const form = new FormData()
+    form.append('audio', new File([new Uint8Array(64)], 'rec.webm', { type: 'audio/webm' }))
+    form.append('recordingId', 'wrec-1')
+    const res = await app.request('/api/workspaces/ws-me/meetings/upload', { method: 'POST', body: form })
+    const { meeting } = await res.json()
+    expect(meeting.id).toBe(draft.id)
+    expect(meeting.notes).toBe('typed live')
+    expect(meetings.size).toBe(1)
   })
 
   test('audioExtension maps mime types and file names', () => {

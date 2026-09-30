@@ -21,6 +21,8 @@ import fs from 'fs'
 import { execFile } from 'child_process'
 import { readConfig, writeConfig } from './config'
 import { RecordingManager, type RecordingEvent } from './recording/manager'
+import { LiveTranscriber, LIVE_SOURCE_RATE } from './recording/live-transcriber'
+import { getApiUrl } from './local-server'
 import {
   MeetingDetector,
   type MeetingDetectedEvent,
@@ -50,6 +52,7 @@ const IS_DEV = !app.isPackaged
 // ---------------------------------------------------------------------------
 
 let manager: RecordingManager | null = null
+let liveTranscriber: { sessionId: string; live: LiveTranscriber } | null = null
 let detector: MeetingDetector | null = null
 let durationTimer: ReturnType<typeof setInterval> | null = null
 let recordingWindowResolver: (() => BrowserWindow | null) | null = null
@@ -147,18 +150,61 @@ function getManager(): RecordingManager {
     recordingsDir: getRecordingsDir(),
     sysAudioBinary: sysBinary,
     onEvent: handleRecordingEvent,
+    onPcm: feedLiveTranscript,
   })
   return manager
+}
+
+function feedLiveTranscript(
+  sessionId: string,
+  source: 'mic' | 'system',
+  bytes: Uint8Array,
+  meta: { sampleRate: number; channels: number },
+): void {
+  if (!liveTranscriber || liveTranscriber.sessionId !== sessionId) return
+  if (meta.sampleRate !== LIVE_SOURCE_RATE) return
+  if (source === 'mic' && meta.channels === 1) liveTranscriber.live.feedMic(bytes)
+  else if (source === 'system') liveTranscriber.live.feedSystem(bytes, meta.channels)
+}
+
+function startLiveTranscript(sessionId: string): void {
+  liveTranscriber?.live.stop({ discard: true })
+  const url = `${getApiUrl()}/api/local/meetings/recordings/${encodeURIComponent(sessionId)}/live`
+  liveTranscriber = {
+    sessionId,
+    live: new LiveTranscriber(async (chunk) => {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'content-type': 'audio/wav',
+          'x-live-start': String(chunk.start),
+          'x-live-seq': String(chunk.seq),
+        },
+        body: new Uint8Array(chunk.wav),
+      })
+      if (!res.ok && res.status !== 409) {
+        console.warn(`[Recording] live transcript chunk ${chunk.seq} failed (${res.status})`)
+      }
+      return { ok: res.ok, status: res.status }
+    }),
+  }
+}
+
+function stopLiveTranscript(): void {
+  liveTranscriber?.live.stop({ discard: true })
+  liveTranscriber = null
 }
 
 function handleRecordingEvent(evt: RecordingEvent): void {
   switch (evt.type) {
     case 'session-started':
       console.log(`[Recording] Session ${evt.session.id} started (primary: ${evt.session.primaryPath})`)
+      startLiveTranscript(evt.session.id)
       sendToRenderer('recording-started', { id: evt.session.id, path: evt.session.primaryPath })
       dispatchMeeting({ type: 'recording-started', id: evt.session.id, now: Date.now() })
       break
     case 'session-stopped':
+      stopLiveTranscript()
       console.log(
         `[Recording] Session ${evt.session.id} stopped after ${evt.duration}s ` +
         `(mic=${evt.micBytes} bytes, system=${evt.systemBytes} bytes, mixed=${evt.mixedCreated})`,
@@ -171,6 +217,7 @@ function handleRecordingEvent(evt: RecordingEvent): void {
       dispatchMeeting({ type: 'recording-stopped' })
       break
     case 'session-aborted':
+      stopLiveTranscript()
       console.warn(`[Recording] Session ${evt.id} aborted: ${evt.reason}`)
       dispatchMeeting({ type: 'recording-stopped' })
       break

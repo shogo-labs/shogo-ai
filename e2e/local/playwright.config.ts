@@ -45,6 +45,8 @@ const localEnv = {
   // Every spec shares one local user and IP, so the suite trips the default
   // 600/min global limit partway through.
   RATE_LIMIT_GLOBAL_MAX: "100000",
+  // Keep recordings in the browser instead of a running desktop app's mic.
+  SHOGO_RECORDING_BRIDGE: "off",
   BROWSER: "none",
   ...(process.env.CI ? { CI: "true" } : {}),
 }

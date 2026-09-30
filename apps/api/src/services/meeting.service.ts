@@ -9,6 +9,7 @@
 
 import { existsSync, mkdirSync, statSync, unlinkSync, writeFileSync, readFileSync } from 'fs'
 import { join } from 'path'
+import { tmpdir } from 'os'
 import { randomBytes } from 'crypto'
 import { generateText } from 'ai'
 import { prisma } from '../lib/prisma'
@@ -272,16 +273,58 @@ async function workspaceProxyAuth(workspaceId: string, userId: string | null): P
   }
 }
 
-async function markTranscriptError(meetingId: string, error: string): Promise<void> {
+/**
+ * A sentence the meetings UI can show as-is. Provider errors carry status
+ * codes, model ids and API paths that mean nothing to the person recording.
+ */
+export function friendlyMeetingError(kind: 'notes' | 'transcript', err: unknown): string {
+  const raw = String((err as any)?.message ?? err ?? '')
+  const noun = kind === 'notes' ? 'notes' : 'transcription'
+  if (/No OpenAI API key or proxy configured|No model is configured/i.test(raw)) {
+    return kind === 'notes'
+      ? 'Writing notes needs Shogo Cloud or an AI provider key. Sign in or add a key in Settings, then try again.'
+      : 'Transcription needs on-device transcription or Shogo Cloud. Set one up in Settings, then try again.'
+  }
+  if (/not supported|model.{0,40}not found|unknown model|does not exist/i.test(raw)) {
+    return `The AI model for ${noun} isn't available on this machine. Sign in to Shogo Cloud or pick another model in Settings.`
+  }
+  if (/\b(401|403)\b|unauthori[sz]ed|forbidden|invalid.{0,20}(token|key)/i.test(raw)) {
+    return `Shogo couldn't authorize the ${noun} request. Sign in again, then retry.`
+  }
+  if (/\b(402|429)\b|rate.?limit|quota|insufficient|credits?/i.test(raw)) {
+    return `You've hit your AI usage limit for now. Try again later or check your plan.`
+  }
+  if (/fetch failed|ECONN|ENOTFOUND|ETIMEDOUT|timed? ?out|network|socket/i.test(raw)) {
+    return `Couldn't reach the AI service for ${noun}. Check your connection and try again.`
+  }
+  if (/empty or too short|Audio file not found/i.test(raw)) return raw
+  if (/returned empty notes/i.test(raw)) return 'The AI returned empty notes. Try again.'
+  return kind === 'notes' ? 'Something went wrong writing notes. Try again.' : 'Something went wrong transcribing this recording. Try again.'
+}
+
+/**
+ * Record a failed transcription. A live transcript captured while recording
+ * is kept (with the error attached) so the meeting stays usable.
+ */
+async function markTranscriptError(meetingId: string, error: string): Promise<boolean> {
+  const existing = await db.meeting.findUnique({ where: { id: meetingId }, select: { transcript: true } }).catch(() => null)
+  const live = parseTranscript(existing?.transcript)
+  const keepLive = !!live && (live.segments.length > 0 || !!live.text.trim())
   await db.meeting
     .update({
       where: { id: meetingId },
-      data: {
-        status: 'error',
-        transcript: JSON.stringify({ text: '', segments: [], language: 'en', error }),
-      },
+      data: keepLive
+        ? {
+            status: 'ready',
+            transcript: JSON.stringify({ text: live!.text, segments: live!.segments, language: live!.language ?? 'en', error }),
+          }
+        : {
+            status: 'error',
+            transcript: JSON.stringify({ text: '', segments: [], language: 'en', error }),
+          },
     })
     .catch(() => {})
+  return keepLive
 }
 
 export interface TranscribeMeetingOptions {
@@ -394,9 +437,118 @@ export async function transcribeMeeting(
     }
   } catch (err: any) {
     console.error(`[Meetings] Transcription error for ${meetingId}:`, err)
-    await markTranscriptError(meetingId, err?.message || 'Transcription failed')
+    const keptLive = await markTranscriptError(meetingId, friendlyMeetingError('transcript', err))
     if (options.deleteAudioAfter) removeAudioFiles(audioPath)
+    if (keptLive && options.enhance !== false) void enhanceMeeting(meetingId).catch(() => {})
   }
+}
+
+// ---------------------------------------------------------------------------
+// Live transcription: short chunks transcribed while the meeting records.
+// The full-file pass after stop replaces this preview.
+// ---------------------------------------------------------------------------
+
+export const LIVE_CHUNK_MAX_BYTES = 4 * 1024 * 1024
+const LIVE_MAX_START_SECONDS = 8 * 60 * 60
+
+export interface LiveChunkInput {
+  audio: Buffer
+  /** Offset of the chunk from the start of the recording, in seconds. */
+  start: number
+  /** Monotonic chunk number, so a retried upload isn't appended twice. */
+  seq: number
+}
+
+export type LiveChunkResult =
+  | { ok: true; segment: TranscriptSegment | null; transcript: ParsedTranscript }
+  | { ok: false; reason: 'not_recording' | 'invalid' }
+
+export async function appendLiveTranscript(meetingId: string, input: LiveChunkInput): Promise<LiveChunkResult> {
+  if (
+    input.audio.length <= WAV_HEADER_SIZE ||
+    input.audio.length > LIVE_CHUNK_MAX_BYTES ||
+    !Number.isFinite(input.start) ||
+    input.start < 0 ||
+    input.start > LIVE_MAX_START_SECONDS ||
+    !Number.isInteger(input.seq) ||
+    input.seq < 0
+  ) {
+    return { ok: false, reason: 'invalid' }
+  }
+  const meeting = await db.meeting.findUnique({
+    where: { id: meetingId },
+    select: { status: true, workspaceId: true, userId: true },
+  })
+  if (!meeting || meeting.status !== 'recording') return { ok: false, reason: 'not_recording' }
+
+  const local = isLocalMode()
+  const config = local ? await getLocalMeetingConfig() : { diarizationEnabled: false, whisperModel: 'base.en' }
+  const cloudAuth = local ? undefined : (await workspaceProxyAuth(meeting.workspaceId, meeting.userId)) ?? undefined
+  const dir = join(tmpdir(), 'shogo-live-chunks')
+  mkdirSync(dir, { recursive: true })
+  const chunkPath = join(dir, `${meetingId}-${input.seq}-${randomBytes(4).toString('hex')}.wav`)
+  writeFileSync(chunkPath, input.audio)
+  let result: Awaited<ReturnType<typeof transcribe>>
+  try {
+    result = await transcribe(chunkPath, { model: config.whisperModel, preferLocal: local, cloudAuth })
+  } finally {
+    removeAudioFiles(chunkPath)
+  }
+
+  const text = result.text.trim()
+  const chunkDuration = Math.max(0, getWavDurationFromBuffer(input.audio))
+  const segment: TranscriptSegment | null = text
+    ? { start: input.start, end: input.start + chunkDuration, text }
+    : null
+
+  // Chunks can land out of order (or on different API pods): merge with an
+  // optimistic check on updatedAt instead of a blind overwrite.
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const row = await db.meeting.findUnique({
+      where: { id: meetingId },
+      select: { status: true, transcript: true, updatedAt: true },
+    })
+    if (!row || row.status !== 'recording') return { ok: false, reason: 'not_recording' }
+    const raw = safeJson(row.transcript)
+    const seqs: number[] = Array.isArray(raw?.liveSeqs) ? raw.liveSeqs.filter(Number.isInteger) : []
+    const current = parseTranscript(row.transcript) ?? { text: '', segments: [] }
+    if (seqs.includes(input.seq)) return { ok: true, segment: null, transcript: current }
+    const segments = segment
+      ? [...current.segments, segment].sort((a, b) => a.start - b.start)
+      : current.segments
+    const next = {
+      text: segments.map((s) => s.text).join(' '),
+      segments,
+      language: result.language || current.language || 'en',
+      live: true,
+      liveSeqs: [...seqs, input.seq],
+    }
+    const updated = await db.meeting.updateMany({
+      where: { id: meetingId, status: 'recording', updatedAt: row.updatedAt },
+      data: { transcript: JSON.stringify(next) },
+    })
+    if (updated.count === 1) return { ok: true, segment, transcript: { text: next.text, segments, language: next.language } }
+  }
+  return { ok: false, reason: 'not_recording' }
+}
+
+function safeJson(raw: string | null | undefined): any {
+  if (!raw) return null
+  try {
+    return JSON.parse(raw)
+  } catch {
+    return null
+  }
+}
+
+function getWavDurationFromBuffer(buffer: Buffer): number {
+  if (buffer.length <= WAV_HEADER_SIZE || buffer.toString('ascii', 0, 4) !== 'RIFF') return 0
+  const channels = buffer.readUInt16LE(22)
+  const sampleRate = buffer.readUInt32LE(24)
+  const bitsPerSample = buffer.readUInt16LE(34)
+  const bytesPerFrame = (bitsPerSample / 8) * channels
+  if (!bytesPerFrame || !sampleRate) return 0
+  return (buffer.length - WAV_HEADER_SIZE) / (sampleRate * bytesPerFrame)
 }
 
 export function removeAudioFiles(audioPath: string | null | undefined): void {
@@ -673,7 +825,7 @@ export async function enhanceMeeting(
     await db.meeting
       .update({
         where: { id: meetingId },
-        data: { enhanceStatus: 'error', enhanceError: err?.message || 'Enhancement failed' },
+        data: { enhanceStatus: 'error', enhanceError: friendlyMeetingError('notes', err) },
       })
       .catch(() => {})
   }

@@ -152,6 +152,61 @@ export function meetingsApi(workspaceId: string) {
   }
 }
 
+const meetingsChangedListeners = new Set<() => void>()
+
+/** Tell open meeting lists to refetch (a recording finished, a meeting was created). */
+export function notifyMeetingsChanged(): void {
+  meetingsChangedListeners.forEach((listener) => listener())
+}
+
+export function onMeetingsChanged(listener: () => void): () => void {
+  meetingsChangedListeners.add(listener)
+  return () => {
+    meetingsChangedListeners.delete(listener)
+  }
+}
+
+export interface LiveChunkResponse {
+  meetingId: string
+  segment: TranscriptSegmentView | null
+  transcript: { text: string; segments: TranscriptSegmentView[] }
+}
+
+export interface TranscriptSegmentView {
+  start: number
+  end: number
+  text: string
+  speaker?: string
+}
+
+export class LiveTranscriptionError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message)
+  }
+}
+
+/** A few seconds of a recording in progress, transcribed into the draft meeting. */
+export async function postLiveChunk(
+  workspaceId: string,
+  recordingId: string,
+  chunk: { wav: Blob; start: number; seq: number },
+): Promise<LiveChunkResponse> {
+  const form = new FormData()
+  form.append('audio', chunk.wav, `live-${chunk.seq}.wav`)
+  form.append('start', String(chunk.start))
+  form.append('seq', String(chunk.seq))
+  const res = await fetch(
+    `${API_URL}/api/workspaces/${encodeURIComponent(workspaceId)}/meetings/recordings/${encodeURIComponent(recordingId)}/live`,
+    { method: 'POST', body: form, credentials: Platform.OS === 'web' ? 'include' : 'omit' },
+  )
+  const body = await res.json().catch(() => ({}))
+  if (!res.ok) throw new LiveTranscriptionError(body?.error?.message || `Live transcription failed (${res.status})`, res.status)
+  return body
+}
+
 export type MeetingAudio =
   | { kind: 'blob'; blob: Blob; filename: string }
   | { kind: 'uri'; uri: string; filename: string; type: string }
@@ -164,7 +219,7 @@ export type MeetingAudio =
 export async function uploadMeetingAudio(
   workspaceId: string,
   audio: MeetingAudio,
-  fields: { source: 'mobile' | 'upload'; duration?: number; notes?: string; title?: string },
+  fields: { source: 'mobile' | 'upload'; duration?: number; notes?: string; title?: string; recordingId?: string },
 ): Promise<MeetingDetail> {
   const form = new FormData()
   if (audio.kind === 'blob') form.append('audio', audio.blob, audio.filename)
@@ -173,6 +228,7 @@ export async function uploadMeetingAudio(
   if (fields.duration) form.append('duration', String(fields.duration))
   if (fields.notes?.trim()) form.append('notes', fields.notes)
   if (fields.title?.trim()) form.append('title', fields.title)
+  if (fields.recordingId) form.append('recordingId', fields.recordingId)
 
   const headers: Record<string, string> = {}
   const cookie = Platform.OS === 'web' ? null : nativeAuthCookie()

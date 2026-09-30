@@ -14,6 +14,8 @@ type Recording = IslandMeetingState["recording"]
 export interface IslandMeetingNotes {
   notes: string
   setNotes: (next: string) => void
+  /** The last few words of the live transcript, while recording. */
+  caption: string | null
   saving: boolean
   /** Set once the last recording's notes are written (or failed). */
   finished: { meetingId: string; title: string | null; ok: boolean } | null
@@ -50,6 +52,23 @@ async function loadDraft(recordingId: string) {
     notes: string | null
     status: string
     enhanceStatus: string
+    transcript: string | null
+  }
+}
+
+const CAPTION_CHARS = 140
+
+export function liveCaption(transcript: string | null | undefined): string | null {
+  if (!transcript) return null
+  try {
+    const text = String(JSON.parse(transcript).text ?? "").trim()
+    if (!text) return null
+    if (text.length <= CAPTION_CHARS) return text
+    const tail = text.slice(-CAPTION_CHARS)
+    const firstSpace = tail.indexOf(" ")
+    return `…${firstSpace > 0 ? tail.slice(firstSpace + 1) : tail}`
+  } catch {
+    return null
   }
 }
 
@@ -58,6 +77,7 @@ export function useIslandMeetingNotes(recording: Recording): IslandMeetingNotes 
   const [saving, setSaving] = useState(false)
   const [watching, setWatching] = useState<{ recordingId: string; since: number } | null>(null)
   const [finished, setFinished] = useState<IslandMeetingNotes["finished"]>(null)
+  const [caption, setCaption] = useState<string | null>(null)
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pending = useRef<string | null>(null)
   const activeId = useRef<string | null>(null)
@@ -132,6 +152,24 @@ export function useIslandMeetingNotes(recording: Recording): IslandMeetingNotes 
     }
   }, [watching])
 
+  // While recording, the main process writes live transcript chunks into the draft.
+  useEffect(() => {
+    if (!recordingId) {
+      setCaption(null)
+      return
+    }
+    let cancelled = false
+    const tick = async () => {
+      const meeting = await loadDraft(recordingId).catch(() => null)
+      if (!cancelled && meeting) setCaption(liveCaption(meeting.transcript))
+    }
+    const timer = setInterval(tick, POLL_MS)
+    return () => {
+      cancelled = true
+      clearInterval(timer)
+    }
+  }, [recordingId])
+
   const setNotes = useCallback(
     (next: string) => {
       setNotesState(next)
@@ -147,6 +185,7 @@ export function useIslandMeetingNotes(recording: Recording): IslandMeetingNotes 
   return {
     notes,
     setNotes,
+    caption,
     saving,
     finished,
     processing: !!watching,

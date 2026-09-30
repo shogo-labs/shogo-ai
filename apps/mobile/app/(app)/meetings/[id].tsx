@@ -28,6 +28,7 @@ import {
   isMeetingInFlight,
   meetingShareUrl,
   meetingsApi,
+  notifyMeetingsChanged,
   usePersonalMeetingsWorkspaceId,
   type MeetingActionItem,
   type MeetingDetail,
@@ -208,7 +209,15 @@ export default function MeetingDetailScreen() {
     setShowDeleteConfirm(false)
     if (!api || !meeting) return
     await api.remove(meeting.id).catch((err) => console.error('Failed to delete meeting:', err))
-    router.back()
+    setMeeting(null)
+    notifyMeetingsChanged()
+    backToMeetings()
+  }
+
+  // Opened from a link or after a reload there is no in-app history to pop.
+  const backToMeetings = () => {
+    if (router.canGoBack()) router.back()
+    else router.replace('/(app)/meetings' as any)
   }
 
   if (loading || !workspaceId) {
@@ -238,7 +247,7 @@ export default function MeetingDetailScreen() {
       <View className="border-b border-border/70 bg-card/70 px-4 pb-3 pt-3">
         <View className="flex-row items-center gap-3 mb-2">
           <Pressable
-            onPress={() => router.back()}
+            onPress={backToMeetings}
             accessibilityLabel="Back to meetings"
             className="-ml-1.5 rounded-xl p-2 active:bg-muted"
           >
@@ -345,7 +354,7 @@ export default function MeetingDetailScreen() {
               key={key}
               onPress={() => setTab(key)}
               accessibilityRole="tab"
-              accessibilityState={{ selected: tab === key }}
+              aria-selected={tab === key}
               className={cn('rounded-lg border px-3 py-1.5', tab === key ? 'border-border/70 bg-card' : 'border-transparent')}
             >
               <Text className={cn('text-xs font-medium', tab === key ? 'text-foreground' : 'text-muted-foreground')}>
@@ -362,7 +371,7 @@ export default function MeetingDetailScreen() {
             {meeting.enhanceStatus === 'error' && meeting.enhancedNotes && (
               <View className="rounded-xl border border-red-500/30 bg-red-500/5 px-3 py-2.5">
                 <Text className="text-xs leading-5 text-red-700 dark:text-red-300">
-                  Couldn&apos;t regenerate notes: {meeting.enhanceError || 'unknown error'}. Your previous notes are still shown.
+                  Couldn&apos;t regenerate notes. {meeting.enhanceError || 'Try again.'} Your previous notes are still shown.
                 </Text>
               </View>
             )}
@@ -394,7 +403,7 @@ export default function MeetingDetailScreen() {
                         key={index}
                         onPress={() => toggleActionItem(index)}
                         accessibilityRole="checkbox"
-                        accessibilityState={{ checked: item.done }}
+                        aria-checked={item.done}
                         className="mb-2 flex-row items-start gap-2.5"
                       >
                         {item.done ? (
@@ -420,7 +429,7 @@ export default function MeetingDetailScreen() {
               <View className="items-center justify-center rounded-2xl border border-border/70 bg-card px-6 py-16">
                 <Text className="text-sm text-muted-foreground text-center">
                   {meeting.enhanceStatus === 'error'
-                    ? `Couldn't write notes: ${meeting.enhanceError || 'unknown error'}`
+                    ? `Couldn't write notes. ${meeting.enhanceError || 'Try again.'}`
                     : meeting.enhanceStatus === 'skipped'
                       ? 'Nothing to write up yet. Add notes or a transcript.'
                       : 'No notes yet.'}
@@ -476,7 +485,7 @@ export default function MeetingDetailScreen() {
                 )}
               </View>
             ) : (
-              <MeetingTranscript transcript={transcript} />
+              <MeetingTranscript transcript={transcript} live={meeting.status === 'recording'} />
             )}
           </View>
         )}

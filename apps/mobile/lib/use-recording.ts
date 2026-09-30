@@ -6,7 +6,16 @@ import { Platform } from 'react-native'
 import { createHttpClient, API_URL } from './api'
 import { usePlatformConfig } from './platform-config'
 import { useNativeRecorder } from './native-recorder'
-import { meetingsApi, uploadMeetingAudio, usePersonalMeetingsWorkspaceId } from './meetings-api'
+import {
+  LiveTranscriptionError,
+  meetingsApi,
+  notifyMeetingsChanged,
+  postLiveChunk,
+  uploadMeetingAudio,
+  usePersonalMeetingsWorkspaceId,
+  type TranscriptSegmentView,
+} from './meetings-api'
+import { startLiveCapture, type LiveCapture } from './live-audio'
 
 export { formatDuration } from './format-duration'
 
@@ -26,6 +35,29 @@ function subscribeRecordingNotes(listener: () => void) {
   return () => notesListeners.delete(listener)
 }
 const getRecordingNotes = () => recordingNotes
+
+export interface LiveTranscriptState {
+  segments: TranscriptSegmentView[]
+  /** Why live transcription stopped, shown instead of the transcript. */
+  unavailable: string | null
+}
+
+const EMPTY_LIVE: LiveTranscriptState = { segments: [], unavailable: null }
+let liveTranscript: LiveTranscriptState = EMPTY_LIVE
+const liveListeners = new Set<() => void>()
+function setLiveTranscript(next: Partial<LiveTranscriptState> | null) {
+  liveTranscript = next ? { ...liveTranscript, ...next } : EMPTY_LIVE
+  liveListeners.forEach((l) => l())
+}
+function subscribeLive(listener: () => void) {
+  liveListeners.add(listener)
+  return () => liveListeners.delete(listener)
+}
+const getLiveTranscript = () => liveTranscript
+
+function newRecordingId(): string {
+  return `wrec-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+}
 
 function getDesktop(): any | null {
   if (Platform.OS !== 'web' || typeof window === 'undefined') return null
@@ -65,8 +97,40 @@ export function useRecording() {
   const workspaceIdRef = useRef(workspaceId)
   workspaceIdRef.current = workspaceId
   const notes = useSyncExternalStore(subscribeRecordingNotes, getRecordingNotes, getRecordingNotes)
+  const live = useSyncExternalStore(subscribeLive, getLiveTranscript, getLiveTranscript)
   const [error, setError] = useState<string | null>(null)
   const draftTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const liveCaptureRef = useRef<LiveCapture | null>(null)
+
+  /** Chunk the browser's mic stream into the draft meeting's live transcript. */
+  const startLive = useCallback((stream: MediaStream, liveRecordingId: string) => {
+    setLiveTranscript(null)
+    let announced = false
+    const capture = startLiveCapture(stream, async (chunk) => {
+      // Read at send time: recording can start before the workspace id loads.
+      const wsId = workspaceIdRef.current
+      if (!wsId) return
+      try {
+        const res = await postLiveChunk(wsId, liveRecordingId, chunk)
+        setLiveTranscript({ segments: res.transcript.segments, unavailable: null })
+        if (!announced) {
+          announced = true
+          notifyMeetingsChanged()
+        }
+      } catch (err) {
+        if (err instanceof LiveTranscriptionError && (err.status === 503 || err.status === 409 || err.status === 404)) {
+          if (err.status === 503) setLiveTranscript({ unavailable: err.message })
+          capture?.stop({ discard: true })
+        }
+      }
+    })
+    liveCaptureRef.current = capture
+  }, [])
+
+  const stopLive = useCallback(() => {
+    liveCaptureRef.current?.stop()
+    liveCaptureRef.current = null
+  }, [])
 
   // Electron IPC mode
   useEffect(() => {
@@ -84,6 +148,7 @@ export function useRecording() {
       setRecordingId(data.id)
       setDuration(0)
       setRecordingNotes('')
+      setLiveTranscript(null)
     }
 
     const onDuration = (data: { id: string; duration: number }) => {
@@ -103,8 +168,11 @@ export function useRecording() {
         audioPath: data.audioPath,
         duration: data.duration,
         recordingId: data.id,
-      }).catch((err: any) => console.error('Failed to create meeting record:', err))
+      })
+        .catch((err: any) => console.error('Failed to create meeting record:', err))
+        .finally(notifyMeetingsChanged)
       setRecordingNotes('')
+      setLiveTranscript(null)
     }
 
     d.onRecordingStarted(onStarted)
@@ -115,6 +183,26 @@ export function useRecording() {
       d.removeRecordingListeners?.()
     }
   }, [])
+
+  // Desktop: the main process transcribes chunks into the draft; read them back.
+  useEffect(() => {
+    if (!desktop.current || !isRecording || !recordingId || !workspaceId) return
+    let cancelled = false
+    const api = meetingsApi(workspaceId)
+    const poll = async () => {
+      const draft = await api.getRecordingDraft(recordingId)
+      if (cancelled || !draft?.transcript) return
+      try {
+        const parsed = JSON.parse(draft.transcript)
+        if (Array.isArray(parsed.segments)) setLiveTranscript({ segments: parsed.segments })
+      } catch {}
+    }
+    const interval = setInterval(poll, 3000)
+    return () => {
+      cancelled = true
+      clearInterval(interval)
+    }
+  }, [isRecording, recordingId, workspaceId])
 
   // API polling mode (non-Electron, local only): poll frequently while recording, slowly when idle
   useEffect(() => {
@@ -153,6 +241,7 @@ export function useRecording() {
   useEffect(() => {
     return () => {
       if (durationRef.current) clearInterval(durationRef.current)
+      liveCaptureRef.current?.stop({ discard: true })
       if (streamRef.current) {
         streamRef.current.getTracks().forEach((t) => t.stop())
       }
@@ -199,6 +288,7 @@ export function useRecording() {
       console.error('Failed to upload recording:', err)
     } finally {
       setIsUploading(false)
+      notifyMeetingsChanged()
     }
   }, [])
 
@@ -211,7 +301,7 @@ export function useRecording() {
     (next: string) => {
       setRecordingNotes(next)
       const wsId = workspaceIdRef.current
-      if (!wsId || !recordingId || !(isDesktop || localMode)) return
+      if (!wsId || !recordingId || !(isDesktop || localMode || cloudBrowser)) return
       if (draftTimer.current) clearTimeout(draftTimer.current)
       draftTimer.current = setTimeout(() => {
         meetingsApi(wsId)
@@ -219,11 +309,16 @@ export function useRecording() {
           .catch((err: any) => console.warn('[Recording] Could not save notes:', err?.message ?? err))
       }, 600)
     },
-    [recordingId, isDesktop, localMode],
+    [recordingId, isDesktop, localMode, cloudBrowser],
   )
 
   const uploadToWorkspace = useCallback(
-    async (audio: Parameters<typeof uploadMeetingAudio>[1], recDuration: number, source: 'mobile' | 'upload') => {
+    async (
+      audio: Parameters<typeof uploadMeetingAudio>[1],
+      recDuration: number,
+      source: 'mobile' | 'upload',
+      liveRecordingId?: string | null,
+    ) => {
       const wsId = workspaceIdRef.current
       if (!wsId) {
         setError('Your personal workspace is still loading. Try again in a moment.')
@@ -231,7 +326,12 @@ export function useRecording() {
       }
       setIsUploading(true)
       try {
-        const meeting = await uploadMeetingAudio(wsId, audio, { source, duration: recDuration, notes: getRecordingNotes() })
+        const meeting = await uploadMeetingAudio(wsId, audio, {
+          source,
+          duration: recDuration,
+          notes: getRecordingNotes(),
+          recordingId: liveRecordingId ?? undefined,
+        })
         setRecordingNotes('')
         return meeting
       } catch (err: any) {
@@ -240,6 +340,7 @@ export function useRecording() {
         return null
       } finally {
         setIsUploading(false)
+        notifyMeetingsChanged()
       }
     },
     [],
@@ -254,6 +355,8 @@ export function useRecording() {
     clearError: useCallback(() => setError(null), []),
     notes,
     setNotes: updateNotes,
+    /** Transcript of the recording so far (browser and desktop; not native phone yet). */
+    liveTranscript: live,
     startRecording: useCallback(async () => {
       setError(null)
       const d = desktop.current
@@ -299,6 +402,7 @@ export function useRecording() {
           setRecordingNotes('')
 
           // Notify the local API about recording start (for status polling by other clients)
+          let liveRecordingId = newRecordingId()
           if (localMode) {
             try {
               const http = createHttpClient()
@@ -306,11 +410,11 @@ export function useRecording() {
                 '/api/local/meetings/recording/start',
                 {},
               )
-              if (data && 'id' in data) {
-                setRecordingId(data.id)
-              }
+              if (data && 'id' in data) liveRecordingId = data.id
             } catch {}
           }
+          setRecordingId(liveRecordingId)
+          startLive(stream, liveRecordingId)
 
           setIsRecording(true)
           setDuration(0)
@@ -351,7 +455,7 @@ export function useRecording() {
       } catch (err: any) {
         console.error('Failed to start recording:', err)
       }
-    }, [nativeMode, native, localMode]),
+    }, [nativeMode, native, localMode, startLive]),
     stopRecording: useCallback(async () => {
       const d = desktop.current
       if (d) {
@@ -384,6 +488,7 @@ export function useRecording() {
           durationRef.current = null
         }
 
+        stopLive()
         return new Promise<void>((resolve) => {
           recorder.onstop = async () => {
             const blob = new Blob(chunksRef.current, { type: recorder.mimeType || 'audio/webm' })
@@ -400,7 +505,8 @@ export function useRecording() {
             setDuration(0)
 
             if (!localMode) {
-              await uploadToWorkspace({ kind: 'blob', blob, filename: 'meeting.webm' }, recDuration, 'upload')
+              await uploadToWorkspace({ kind: 'blob', blob, filename: 'meeting.webm' }, recDuration, 'upload', localRecordingId)
+              setLiveTranscript(null)
               resolve()
               return
             }
@@ -418,6 +524,7 @@ export function useRecording() {
               await uploadAudio(blob, recDuration, localRecordingId)
             }
             setRecordingNotes('')
+            setLiveTranscript(null)
             resolve()
           }
           recorder.stop()
@@ -436,7 +543,7 @@ export function useRecording() {
       } catch (err: any) {
         console.error('Failed to stop recording:', err)
       }
-    }, [uploadAudio, uploadToWorkspace, nativeMode, native, localMode, recordingId]),
+    }, [uploadAudio, uploadToWorkspace, nativeMode, native, localMode, recordingId, stopLive]),
     isDesktop,
     isLocal: localMode,
     isNative: nativeMode,

@@ -26,6 +26,7 @@ import {
   upsertRecordingDraft,
   writeTranscriptToProject,
 } from '../services/meeting.service'
+import { handleLiveChunk } from './workspace-meetings'
 import { existsSync, mkdirSync, writeFileSync } from 'fs'
 import { join, resolve, dirname } from 'path'
 import { fileURLToPath } from 'url'
@@ -157,6 +158,13 @@ meetingRoutes.put('/api/local/meetings/recordings/:recordingId', async (c) => {
   const meeting = await upsertRecordingDraft(owner, c.req.param('recordingId'), body)
   if (!meeting) return c.json({ error: 'Meeting not found' }, 404)
   return c.json({ meeting: serializeMeeting(meeting) })
+})
+
+// Live transcript chunks from the desktop recorder (main process, no session).
+meetingRoutes.post('/api/local/meetings/recordings/:recordingId/live', async (c) => {
+  const owner = await resolveOwner(c)
+  if (!owner) return c.json({ error: 'No personal workspace found' }, 404)
+  return handleLiveChunk(c, owner, c.req.param('recordingId'))
 })
 
 // List meetings in the personal workspace
@@ -550,7 +558,8 @@ meetingRoutes.post('/api/local/meetings/:id/transcribe', async (c) => {
 
     await db.meeting.update({
       where: { id: meeting.id },
-      data: { status: 'transcribing', transcript: null, summary: null },
+      // Keep the old transcript until the new one lands, so a failed retry doesn't lose it.
+      data: { status: 'transcribing', summary: null },
     })
 
     transcribeMeeting(meeting.id, meeting.audioPath, {

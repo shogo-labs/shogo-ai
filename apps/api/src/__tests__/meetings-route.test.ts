@@ -1171,7 +1171,8 @@ describe('transcribeMeeting full happy path (getAudioDuration WAV branch)', () =
     await new Promise(r => setTimeout(r, 120))
     const m = meetings.get('m-throw')!
     expect(m.status).toBe('error')
-    expect(m.transcript).toContain('whisper kaboom')
+    expect(m.transcript).toContain('Something went wrong transcribing this recording')
+    expect(m.transcript).not.toContain('whisper kaboom')
   })
 
   test('diarization merges speaker labels into transcript when timed segments present', async () => {

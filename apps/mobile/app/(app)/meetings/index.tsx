@@ -19,9 +19,11 @@ import { useRecording, formatDuration } from '../../../lib/use-recording'
 import {
   isMeetingInFlight,
   meetingsApi,
+  onMeetingsChanged,
   type MeetingSearchHit,
   type MeetingSummary,
 } from '../../../lib/meetings-api'
+import { LiveTranscript } from '../../../components/meetings/LiveTranscript'
 
 function StatusBadge({ meeting }: { meeting: MeetingSummary }) {
   if (meeting.status === 'ready' && meeting.enhanceStatus === 'running') {
@@ -84,6 +86,8 @@ export default function MeetingsScreen() {
     isUploading,
     notes,
     setNotes,
+    liveTranscript,
+    isNative,
     error,
     clearError,
     workspaceId,
@@ -110,13 +114,7 @@ export default function MeetingsScreen() {
     fetchMeetings()
   }, [fetchMeetings])
 
-  // Refresh list when recording stops or upload finishes
-  useEffect(() => {
-    if (!isRecording && !isUploading) {
-      const timer = setTimeout(fetchMeetings, 1500)
-      return () => clearTimeout(timer)
-    }
-  }, [isRecording, isUploading, fetchMeetings])
+  useEffect(() => onMeetingsChanged(fetchMeetings), [fetchMeetings])
 
   const anyInFlight = meetings.some(isMeetingInFlight)
   useEffect(() => {
@@ -260,6 +258,7 @@ export default function MeetingsScreen() {
               textAlignVertical="top"
               accessibilityLabel="Meeting notes"
             />
+            {!isNative && <LiveTranscript state={liveTranscript} />}
           </View>
         )}
 
