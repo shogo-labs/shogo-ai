@@ -1488,7 +1488,7 @@ export const AppSidebar = observer(function AppSidebar({
         {mobileProjectPanel && (
           <Animated.View
             style={[
-              StyleSheet.absoluteFillObject,
+              StyleSheet.absoluteFill,
               {
                 backgroundColor: nativeDrawerCanvas,
                 opacity: mobileProjectTransition.interpolate({
