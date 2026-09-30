@@ -26,6 +26,7 @@ import { projectChatRoutes, trackUsageFromStream } from './routes/project-chat'
 import { pinChatToHomeRegion } from './lib/chat-region-pin'
 import { workspaceChatRoutes } from './routes/workspace-chat'
 import { workspaceAgentRoutes, sessionAuthorize } from './routes/workspace-agent'
+import { workspaceMeetingRoutes, sharedMeetingRoutes } from './routes/workspace-meetings'
 import { createAgentTaskRoutes } from './routes/agent-tasks'
 import { startAgentTaskWorker, stopAgentTaskWorker } from './jobs/run-agent-task-dispatch'
 import { startAgentScheduleWorker, stopAgentScheduleWorker } from './jobs/run-agent-schedule-dispatch'
@@ -1554,6 +1555,8 @@ app.route('/api', workspaceAgentRoutes({
   authorize: sessionAuthorize(getAuthUserId),
   saveAgentAvatar: cloud.saveAgentAvatar,
 }))
+app.route('/api', workspaceMeetingRoutes({ authorize: sessionAuthorize(getAuthUserId) }))
+app.route('/api', sharedMeetingRoutes())
 app.route('/api', createAgentTaskRoutes({ runtimeManager: getRuntimeManager() }))
 // Resume queued agent tasks after API restarts and keep dueAt-backed work
 // moving without relying on a request that happens to remain open.

@@ -1,221 +1,217 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
-import { useState, useEffect, useCallback } from 'react'
-import {
-  View,
-  Text,
-  Pressable,
-  ScrollView,
-  TextInput,
-  ActivityIndicator,
-  Modal,
-} from 'react-native'
+import { useState, useEffect, useCallback, useRef } from 'react'
+import { View, Text, Pressable, ScrollView, TextInput, ActivityIndicator, Modal } from 'react-native'
 import { useLocalSearchParams, useRouter } from 'expo-router'
 import { SafeAreaView } from 'react-native-safe-area-context'
+import * as Clipboard from 'expo-clipboard'
 import {
   ArrowLeft,
   Clock,
   Trash2,
   RefreshCw,
-  FolderPlus,
-  ChevronDown,
   Copy,
   Check,
   Users,
+  Sparkles,
+  Link2,
+  LayoutTemplate,
+  Square,
+  CheckSquare,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { createHttpClient } from '../../../lib/api'
-import { formatDuration } from '../../../lib/use-recording'
+import { formatDuration } from '../../../lib/format-duration'
+import { usePlatformConfig } from '../../../lib/platform-config'
+import {
+  isMeetingInFlight,
+  meetingShareUrl,
+  meetingsApi,
+  usePersonalMeetingsWorkspaceId,
+  type MeetingActionItem,
+  type MeetingDetail,
+  type MeetingTemplate,
+} from '../../../lib/meetings-api'
+import { notesForClipboard, parseTranscript, stripActionItemsSection } from '../../../lib/meeting-notes'
+import { MarkdownText } from '../../../components/chat/MarkdownText'
+import { MeetingTranscript } from '../../../components/meetings/MeetingTranscript'
 
-interface TranscriptSegment {
-  start: number
-  end: number
-  text: string
-  speaker?: string
-}
+type Tab = 'notes' | 'mine' | 'transcript'
 
-interface MeetingDetail {
-  id: string
-  title: string | null
-  audioPath: string
-  transcript: string | object | null
-  summary: string | null
-  duration: number | null
-  status: string
-  projectId: string | null
-  workspaceId: string
-  createdAt: string
-  updatedAt: string
-  project: { id: string; name: string } | null
-}
-
-const SPEAKER_COLORS = [
-  { bg: 'bg-blue-500/10', border: 'border-l-blue-500', text: 'text-blue-600', label: 'bg-blue-500/15' },
-  { bg: 'bg-emerald-500/10', border: 'border-l-emerald-500', text: 'text-emerald-600', label: 'bg-emerald-500/15' },
-  { bg: 'bg-purple-500/10', border: 'border-l-purple-500', text: 'text-purple-600', label: 'bg-purple-500/15' },
-  { bg: 'bg-orange-500/10', border: 'border-l-orange-500', text: 'text-orange-600', label: 'bg-orange-500/15' },
-  { bg: 'bg-pink-500/10', border: 'border-l-pink-500', text: 'text-pink-600', label: 'bg-pink-500/15' },
-  { bg: 'bg-cyan-500/10', border: 'border-l-cyan-500', text: 'text-cyan-600', label: 'bg-cyan-500/15' },
-  { bg: 'bg-amber-500/10', border: 'border-l-amber-500', text: 'text-amber-600', label: 'bg-amber-500/15' },
-  { bg: 'bg-rose-500/10', border: 'border-l-rose-500', text: 'text-rose-600', label: 'bg-rose-500/15' },
-]
-
-function getSpeakerColor(speaker: string, speakerMap: Map<string, number>) {
-  if (!speakerMap.has(speaker)) {
-    speakerMap.set(speaker, speakerMap.size)
-  }
-  return SPEAKER_COLORS[speakerMap.get(speaker)! % SPEAKER_COLORS.length]
-}
-
-function parseTranscript(raw: string | object | null): { text: string; segments: TranscriptSegment[]; numSpeakers?: number; error?: string } | null {
-  if (!raw) return null
-  if (typeof raw === 'object') {
-    const obj = raw as any
-    return {
-      text: typeof obj.text === 'string' ? obj.text : '',
-      segments: Array.isArray(obj.segments) ? obj.segments : [],
-      numSpeakers: obj.numSpeakers,
-      error: typeof obj.error === 'string' ? obj.error : undefined,
-    }
-  }
-  try {
-    return JSON.parse(raw)
-  } catch {
-    return { text: String(raw), segments: [] }
-  }
-}
-
-function formatTimestamp(seconds: number): string {
-  const h = Math.floor(seconds / 3600)
-  const m = Math.floor((seconds % 3600) / 60)
-  const s = Math.floor(seconds % 60)
-  if (h > 0) return `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`
-  return `${m}:${s.toString().padStart(2, '0')}`
-}
-
-/**
- * Groups consecutive segments by the same speaker for a cleaner display.
- */
-function groupSegmentsBySpeaker(segments: TranscriptSegment[]): {
-  speaker: string | undefined
-  start: number
-  end: number
-  lines: string[]
-}[] {
-  const groups: { speaker: string | undefined; start: number; end: number; lines: string[] }[] = []
-
-  for (const seg of segments) {
-    const lastGroup = groups[groups.length - 1]
-    if (lastGroup && lastGroup.speaker === seg.speaker && seg.speaker) {
-      lastGroup.end = seg.end
-      lastGroup.lines.push(seg.text)
-    } else {
-      groups.push({
-        speaker: seg.speaker,
-        start: seg.start,
-        end: seg.end,
-        lines: [seg.text],
-      })
-    }
-  }
-
-  return groups
+function ActionButton({
+  icon: Icon,
+  label,
+  onPress,
+  disabled,
+  tone = 'default',
+}: {
+  icon: typeof Copy
+  label: string
+  onPress: () => void
+  disabled?: boolean
+  tone?: 'default' | 'danger' | 'primary'
+}) {
+  return (
+    <Pressable
+      onPress={onPress}
+      disabled={disabled}
+      accessibilityLabel={label}
+      className={cn(
+        'min-h-10 flex-row items-center gap-1.5 rounded-xl border px-3',
+        tone === 'danger' ? 'border-red-200 active:bg-red-50' : 'border-border/70 active:bg-muted/70',
+        tone === 'primary' && 'border-orange-500/40 bg-orange-500/10',
+        disabled && 'opacity-40',
+      )}
+    >
+      <Icon
+        size={14}
+        className={tone === 'danger' ? 'text-red-500' : tone === 'primary' ? 'text-orange-600' : 'text-muted-foreground'}
+      />
+      <Text
+        className={cn(
+          'text-xs',
+          tone === 'danger' ? 'text-red-500' : tone === 'primary' ? 'text-orange-700 dark:text-orange-300' : 'text-muted-foreground',
+        )}
+      >
+        {label}
+      </Text>
+    </Pressable>
+  )
 }
 
 export default function MeetingDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>()
   const router = useRouter()
+  const workspaceId = usePersonalMeetingsWorkspaceId()
+  const { localMode } = usePlatformConfig()
   const [meeting, setMeeting] = useState<MeetingDetail | null>(null)
   const [loading, setLoading] = useState(true)
+  const [tab, setTab] = useState<Tab>('notes')
   const [editingTitle, setEditingTitle] = useState(false)
   const [titleDraft, setTitleDraft] = useState('')
-  const [copied, setCopied] = useState(false)
-  const [retranscribing, setRetranscribing] = useState(false)
+  const [notesDraft, setNotesDraft] = useState<string | null>(null)
+  const [copied, setCopied] = useState<'notes' | 'link' | null>(null)
+  const [templates, setTemplates] = useState<MeetingTemplate[]>([])
+  const [showTemplates, setShowTemplates] = useState(false)
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
+  const [actionError, setActionError] = useState<string | null>(null)
+  const initialTabChosen = useRef(false)
+
+  const api = workspaceId ? meetingsApi(workspaceId) : null
 
   const fetchMeeting = useCallback(async () => {
+    if (!workspaceId) return
     try {
-      const http = createHttpClient()
-      const res = await http.get<{ meeting: any }>(`/api/local/meetings/${id}`)
-      setMeeting(res.data.meeting)
+      const next = await meetingsApi(workspaceId).get(id)
+      setMeeting(next)
+      if (!initialTabChosen.current) {
+        initialTabChosen.current = true
+        if (!next.enhancedNotes && next.enhanceStatus !== 'running') setTab(next.notes ? 'mine' : 'transcript')
+      }
     } catch (err) {
       console.error('Failed to fetch meeting:', err)
     } finally {
       setLoading(false)
     }
-  }, [id])
+  }, [id, workspaceId])
 
   useEffect(() => {
     fetchMeeting()
   }, [fetchMeeting])
 
   useEffect(() => {
-    if (meeting?.status !== 'transcribing') return
+    if (!workspaceId) return
+    meetingsApi(workspaceId).templates().then(setTemplates).catch(() => {})
+  }, [workspaceId])
+
+  const inFlight = isMeetingInFlight(meeting)
+  useEffect(() => {
+    if (!inFlight) return
     const interval = setInterval(fetchMeeting, 3000)
     return () => clearInterval(interval)
-  }, [meeting?.status, fetchMeeting])
+  }, [inFlight, fetchMeeting])
+
+  const flashCopied = (what: 'notes' | 'link') => {
+    setCopied(what)
+    setTimeout(() => setCopied(null), 2000)
+  }
 
   const handleSaveTitle = async () => {
-    if (!meeting || !titleDraft.trim()) return
+    if (!api || !meeting || !titleDraft.trim()) return setEditingTitle(false)
+    const updated = await api.update(meeting.id, { title: titleDraft.trim() }).catch(() => null)
+    if (updated) setMeeting(updated)
+    setEditingTitle(false)
+  }
+
+  const saveNotes = async () => {
+    if (!api || !meeting || notesDraft === null || notesDraft === (meeting.notes ?? '')) return
+    const updated = await api.update(meeting.id, { notes: notesDraft }).catch(() => null)
+    if (updated) setMeeting(updated)
+  }
+
+  const enhance = async (templateId?: string) => {
+    if (!api || !meeting) return
+    setShowTemplates(false)
+    setActionError(null)
+    await saveNotes()
     try {
-      const http = createHttpClient()
-      await http.put(`/api/local/meetings/${id}`, { title: titleDraft.trim() })
-      setMeeting({ ...meeting, title: titleDraft.trim() })
-      setEditingTitle(false)
-    } catch (err) {
-      console.error('Failed to update title:', err)
+      await api.enhance(meeting.id, templateId)
+      setMeeting({ ...meeting, enhanceStatus: 'running', templateId: templateId ?? meeting.templateId })
+      setTab('notes')
+    } catch (err: any) {
+      setActionError(err?.message || 'Could not regenerate notes')
     }
   }
 
-  const handleDelete = () => setShowDeleteConfirm(true)
+  const toggleActionItem = async (index: number) => {
+    if (!api || !meeting) return
+    const actionItems: MeetingActionItem[] = meeting.actionItems.map((item, i) =>
+      i === index ? { ...item, done: !item.done } : item,
+    )
+    setMeeting({ ...meeting, actionItems })
+    await api.update(meeting.id, { actionItems }).catch(() => fetchMeeting())
+  }
+
+  const copyNotes = async () => {
+    if (!meeting) return
+    await Clipboard.setStringAsync(notesForClipboard(meeting))
+    flashCopied('notes')
+  }
+
+  const share = async () => {
+    if (!api || !meeting) return
+    setActionError(null)
+    try {
+      const token = meeting.shareToken ?? (await api.share(meeting.id))
+      setMeeting({ ...meeting, shareToken: token })
+      await Clipboard.setStringAsync(meetingShareUrl(token))
+      flashCopied('link')
+    } catch (err: any) {
+      setActionError(err?.message || 'Could not create a share link')
+    }
+  }
+
+  const stopSharing = async () => {
+    if (!api || !meeting) return
+    await api.unshare(meeting.id).catch(() => {})
+    setMeeting({ ...meeting, shareToken: null })
+  }
+
+  const retranscribe = async () => {
+    if (!meeting) return
+    await createHttpClient().post(`/api/local/meetings/${meeting.id}/transcribe`, {}).catch(() => {})
+    setMeeting({ ...meeting, status: 'transcribing' })
+  }
 
   const confirmDelete = async () => {
     setShowDeleteConfirm(false)
-    try {
-      const http = createHttpClient()
-      await http.delete(`/api/local/meetings/${id}`)
-      router.back()
-    } catch (err) {
-      console.error('Failed to delete meeting:', err)
-    }
+    if (!api || !meeting) return
+    await api.remove(meeting.id).catch((err) => console.error('Failed to delete meeting:', err))
+    router.back()
   }
 
-  const handleRetranscribe = async () => {
-    setRetranscribing(true)
-    try {
-      const http = createHttpClient()
-      await http.post(`/api/local/meetings/${id}/transcribe`, {})
-      setMeeting((prev) => prev ? { ...prev, status: 'transcribing' } : null)
-    } catch (err) {
-      console.error('Failed to retranscribe:', err)
-    } finally {
-      setRetranscribing(false)
-    }
-  }
-
-  const handleCopyTranscript = () => {
-    const transcript = parseTranscript(meeting?.transcript ?? null)
-    if (!transcript) return
-    if (typeof navigator !== 'undefined' && navigator.clipboard) {
-      navigator.clipboard.writeText(transcript.text)
-      setCopied(true)
-      setTimeout(() => setCopied(false), 2000)
-    }
-  }
-
-  const handleAttachToProject = async (projectId: string) => {
-    if (!meeting) return
-    try {
-      const http = createHttpClient()
-      await http.post(`/api/local/meetings/${id}/attach`, { projectId })
-      fetchMeeting()
-    } catch (err) {
-      console.error('Failed to attach to project:', err)
-    }
-  }
-
-  if (loading) {
+  if (loading || !workspaceId) {
     return (
       <SafeAreaView className="flex-1 items-center justify-center bg-background">
         <ActivityIndicator color="#f97316" />
@@ -233,11 +229,13 @@ export default function MeetingDetailScreen() {
 
   const transcript = parseTranscript(meeting.transcript)
   const meetingDate = new Date(meeting.createdAt)
-  const hasSpeakers = transcript?.segments.some((s) => s.speaker)
+  const templateName = templates.find((t) => t.id === (meeting.templateId ?? 'builtin:general'))?.name ?? 'General'
+  const notesBody = meeting.enhancedNotes ? stripActionItemsSection(meeting.enhancedNotes) : ''
+  const busy = meeting.status === 'recording' || meeting.status === 'transcribing'
 
   return (
     <SafeAreaView className="flex-1 bg-background" edges={['top', 'left', 'right']}>
-      <View className="border-b border-border/70 bg-card/70 px-4 pb-4 pt-3">
+      <View className="border-b border-border/70 bg-card/70 px-4 pb-3 pt-3">
         <View className="flex-row items-center gap-3 mb-2">
           <Pressable
             onPress={() => router.back()}
@@ -246,7 +244,6 @@ export default function MeetingDetailScreen() {
           >
             <ArrowLeft size={20} className="text-foreground" />
           </Pressable>
-
           {editingTitle ? (
             <TextInput
               value={titleDraft}
@@ -271,7 +268,7 @@ export default function MeetingDetailScreen() {
           )}
         </View>
 
-        <View className="flex-row items-center gap-3 ml-8">
+        <View className="flex-row flex-wrap items-center gap-3 ml-8">
           <View className="flex-row items-center gap-1">
             <Clock size={12} className="text-muted-foreground" />
             <Text className="text-xs text-muted-foreground">
@@ -287,12 +284,7 @@ export default function MeetingDetailScreen() {
               minute: '2-digit',
             })}
           </Text>
-          {meeting.project && (
-            <View className="flex-row items-center gap-1 rounded-md bg-orange-500/10 px-1.5 py-0.5">
-              <Text className="text-xs font-medium text-orange-700 dark:text-orange-300">{meeting.project.name}</Text>
-            </View>
-          )}
-          {hasSpeakers && transcript?.numSpeakers && (
+          {!!transcript?.numSpeakers && (
             <View className="flex-row items-center gap-1 bg-purple-500/10 rounded px-1.5 py-0.5">
               <Users size={10} className="text-purple-600" />
               <Text className="text-xs text-purple-600 font-medium">
@@ -302,106 +294,221 @@ export default function MeetingDetailScreen() {
           )}
         </View>
 
-        {/* Actions */}
-        <View className="ml-8 mt-4 flex-row flex-wrap items-center gap-2">
-          <Pressable
-            onPress={handleCopyTranscript}
-            disabled={!transcript}
-            className={cn(
-              'min-h-10 flex-row items-center gap-1.5 rounded-xl border border-border/70 px-3',
-              !transcript ? 'opacity-40' : 'active:bg-muted/70'
-            )}
-          >
-            {copied ? <Check size={14} className="text-green-600" /> : <Copy size={14} className="text-muted-foreground" />}
-            <Text className="text-xs text-muted-foreground">{copied ? 'Copied' : 'Copy'}</Text>
-          </Pressable>
+        <View className="ml-8 mt-3 flex-row flex-wrap items-center gap-2">
+          <ActionButton
+            icon={LayoutTemplate}
+            label={templateName}
+            onPress={() => setShowTemplates(true)}
+            disabled={busy}
+          />
+          <ActionButton
+            icon={Sparkles}
+            label={meeting.enhanceStatus === 'running' ? 'Writing…' : meeting.enhancedNotes ? 'Regenerate' : 'Write notes'}
+            onPress={() => enhance()}
+            disabled={busy || meeting.enhanceStatus === 'running'}
+            tone="primary"
+          />
+          <ActionButton
+            icon={copied === 'notes' ? Check : Copy}
+            label={copied === 'notes' ? 'Copied' : 'Copy notes'}
+            onPress={copyNotes}
+            disabled={!meeting.enhancedNotes && !meeting.notes}
+          />
+          {!localMode && (
+            <ActionButton
+              icon={copied === 'link' ? Check : Link2}
+              label={copied === 'link' ? 'Link copied' : meeting.shareToken ? 'Copy link' : 'Share'}
+              onPress={share}
+              disabled={!meeting.enhancedNotes}
+            />
+          )}
+          {!localMode && meeting.shareToken && (
+            <ActionButton icon={Link2} label="Stop sharing" onPress={stopSharing} />
+          )}
+          {localMode && meeting.hasAudio && (
+            <ActionButton icon={RefreshCw} label="Re-transcribe" onPress={retranscribe} disabled={busy} />
+          )}
+          <ActionButton icon={Trash2} label="Delete" onPress={() => setShowDeleteConfirm(true)} tone="danger" />
+        </View>
 
-          <Pressable
-            onPress={handleRetranscribe}
-            disabled={retranscribing || meeting.status === 'transcribing'}
-            className="min-h-10 flex-row items-center gap-1.5 rounded-xl border border-border/70 px-3 active:bg-muted/70"
-          >
-            <RefreshCw size={14} className={cn('text-muted-foreground', retranscribing && 'animate-spin')} />
-            <Text className="text-xs text-muted-foreground">Re-transcribe</Text>
-          </Pressable>
+        {!!actionError && <Text className="ml-8 mt-2 text-xs text-red-600">{actionError}</Text>}
 
-          <Pressable
-            onPress={handleDelete}
-            className="min-h-10 flex-row items-center gap-1.5 rounded-xl border border-red-200 px-3 active:bg-red-50"
-          >
-            <Trash2 size={14} className="text-red-500" />
-            <Text className="text-xs text-red-500">Delete</Text>
-          </Pressable>
+        <View className="ml-8 mt-4 flex-row gap-1 self-start rounded-xl bg-muted/60 p-1">
+          {(
+            [
+              ['notes', 'Notes'],
+              ['mine', 'My notes'],
+              ['transcript', 'Transcript'],
+            ] as const
+          ).map(([key, label]) => (
+            <Pressable
+              key={key}
+              onPress={() => setTab(key)}
+              accessibilityRole="tab"
+              accessibilityState={{ selected: tab === key }}
+              className={cn('rounded-lg px-3 py-1.5', tab === key && 'bg-card shadow-sm')}
+            >
+              <Text className={cn('text-xs font-medium', tab === key ? 'text-foreground' : 'text-muted-foreground')}>
+                {label}
+              </Text>
+            </Pressable>
+          ))}
         </View>
       </View>
 
-      <ScrollView
-        className="flex-1"
-        contentContainerClassName="px-4 pb-8 pt-4"
-        showsVerticalScrollIndicator={false}
-      >
-        <View className="min-h-[180px] rounded-2xl border border-border/70 bg-card p-4">
-          <Text className="mb-4 text-[11px] font-semibold uppercase tracking-[1.2px] text-orange-600 dark:text-orange-300">
-            Transcript
-          </Text>
-        {meeting.status === 'transcribing' ? (
-          <View className="items-center justify-center py-16">
-            <ActivityIndicator size="large" color="#f97316" className="mb-4" />
-            <Text className="text-sm text-muted-foreground">Transcribing...</Text>
-            <Text className="text-xs text-muted-foreground mt-1">This may take a few minutes</Text>
-          </View>
-        ) : meeting.status === 'error' ? (
-          <View className="items-center justify-center py-16">
-            <Text className="text-sm text-red-500 mb-2">Transcription failed</Text>
-            {transcript?.error && (
-              <Text className="text-xs text-muted-foreground mb-4 text-center px-8">{transcript.error}</Text>
-            )}
-            <Pressable
-              onPress={handleRetranscribe}
-              className="rounded-xl bg-orange-500 px-4 py-2.5 active:bg-orange-600"
-            >
-              <Text className="text-sm text-white font-medium">Try Again</Text>
-            </Pressable>
-          </View>
-        ) : transcript ? (
-          <View>
-            {transcript.error && transcript.segments.length === 0 && (
-              <View className="bg-amber-500/10 rounded-lg p-3 mb-4 flex-row items-center gap-2">
-                <Text className="text-xs text-amber-700">{transcript.error}</Text>
+      <ScrollView className="flex-1" contentContainerClassName="px-4 pb-8 pt-4" keyboardShouldPersistTaps="handled">
+        {tab === 'notes' && (
+          <View className="gap-4">
+            {busy ? (
+              <View className="items-center justify-center rounded-2xl border border-border/70 bg-card py-16">
+                <ActivityIndicator size="large" color="#f97316" className="mb-4" />
+                <Text className="text-sm text-muted-foreground">
+                  {meeting.status === 'recording' ? 'Recording in progress' : 'Transcribing…'}
+                </Text>
+                <Text className="text-xs text-muted-foreground mt-1">Notes are written once the transcript is ready</Text>
               </View>
-            )}
-            {hasSpeakers ? (
-              <SpeakerTranscriptView segments={transcript.segments} />
-            ) : transcript.segments.length > 0 ? (
-              transcript.segments.map((segment, index) => (
-                <View key={index} className="flex-row gap-3 mb-3">
-                  <Text className="text-xs text-muted-foreground font-mono w-12 pt-0.5 text-right">
-                    {formatTimestamp(segment.start)}
-                  </Text>
-                  <Text className="flex-1 text-sm text-foreground leading-relaxed">
-                    {segment.text}
-                  </Text>
+            ) : meeting.enhanceStatus === 'running' && !meeting.enhancedNotes ? (
+              <View className="items-center justify-center rounded-2xl border border-border/70 bg-card py-16">
+                <ActivityIndicator size="large" color="#f97316" className="mb-4" />
+                <Text className="text-sm text-muted-foreground">Writing your notes…</Text>
+              </View>
+            ) : meeting.enhancedNotes ? (
+              <>
+                <View className="rounded-2xl border border-border/70 bg-card p-4">
+                  <MarkdownText>{notesBody}</MarkdownText>
                 </View>
-              ))
-            ) : transcript.text ? (
-              <Text className="text-sm text-foreground leading-relaxed">
-                {transcript.text}
-              </Text>
+                {meeting.actionItems.length > 0 && (
+                  <View className="rounded-2xl border border-border/70 bg-card p-4">
+                    <Text className="mb-3 text-[11px] font-semibold uppercase tracking-[1.2px] text-orange-600 dark:text-orange-300">
+                      Action items
+                    </Text>
+                    {meeting.actionItems.map((item, index) => (
+                      <Pressable
+                        key={index}
+                        onPress={() => toggleActionItem(index)}
+                        accessibilityRole="checkbox"
+                        accessibilityState={{ checked: item.done }}
+                        className="mb-2 flex-row items-start gap-2.5"
+                      >
+                        {item.done ? (
+                          <CheckSquare size={16} className="mt-0.5 text-green-600" />
+                        ) : (
+                          <Square size={16} className="mt-0.5 text-muted-foreground" />
+                        )}
+                        <Text
+                          className={cn(
+                            'flex-1 text-sm leading-5',
+                            item.done ? 'text-muted-foreground line-through' : 'text-foreground',
+                          )}
+                        >
+                          {item.text}
+                          {item.owner ? <Text className="text-muted-foreground"> — {item.owner}</Text> : null}
+                        </Text>
+                      </Pressable>
+                    ))}
+                  </View>
+                )}
+              </>
             ) : (
-              <View className="items-center justify-center py-16">
-                <Text className="text-sm text-muted-foreground">No transcript available</Text>
+              <View className="items-center justify-center rounded-2xl border border-border/70 bg-card px-6 py-16">
+                <Text className="text-sm text-muted-foreground text-center">
+                  {meeting.enhanceStatus === 'error'
+                    ? `Couldn't write notes: ${meeting.enhanceError || 'unknown error'}`
+                    : meeting.enhanceStatus === 'skipped'
+                      ? 'Nothing to write up yet. Add notes or a transcript.'
+                      : 'No notes yet.'}
+                </Text>
+                <Pressable
+                  onPress={() => enhance()}
+                  className="mt-4 rounded-xl bg-orange-500 px-4 py-2.5 active:bg-orange-600"
+                >
+                  <Text className="text-sm text-white font-medium">Write notes</Text>
+                </Pressable>
               </View>
             )}
-          </View>
-        ) : (
-          <View className="items-center justify-center py-16">
-            <Text className="text-sm text-muted-foreground">No transcript available</Text>
           </View>
         )}
-        </View>
+
+        {tab === 'mine' && (
+          <View className="rounded-2xl border border-border/70 bg-card p-4">
+            <Text className="mb-2 text-xs text-muted-foreground">
+              Your rough notes steer the write-up. Edit them, then regenerate.
+            </Text>
+            <TextInput
+              value={notesDraft ?? meeting.notes ?? ''}
+              onChangeText={setNotesDraft}
+              onBlur={saveNotes}
+              multiline
+              placeholder="Nothing typed during this meeting."
+              placeholderTextColor="#9ca3af"
+              textAlignVertical="top"
+              className="min-h-[200px] text-sm leading-6 text-foreground"
+              accessibilityLabel="My notes"
+            />
+          </View>
+        )}
+
+        {tab === 'transcript' && (
+          <View className="min-h-[180px] rounded-2xl border border-border/70 bg-card p-4">
+            {meeting.status === 'transcribing' ? (
+              <View className="items-center justify-center py-16">
+                <ActivityIndicator size="large" color="#f97316" className="mb-4" />
+                <Text className="text-sm text-muted-foreground">Transcribing...</Text>
+                <Text className="text-xs text-muted-foreground mt-1">This may take a few minutes</Text>
+              </View>
+            ) : meeting.status === 'error' ? (
+              <View className="items-center justify-center py-16">
+                <Text className="text-sm text-red-500 mb-2">Transcription failed</Text>
+                {transcript?.error && (
+                  <Text className="text-xs text-muted-foreground mb-4 text-center px-8">{transcript.error}</Text>
+                )}
+                {localMode && meeting.hasAudio && (
+                  <Pressable onPress={retranscribe} className="rounded-xl bg-orange-500 px-4 py-2.5 active:bg-orange-600">
+                    <Text className="text-sm text-white font-medium">Try Again</Text>
+                  </Pressable>
+                )}
+              </View>
+            ) : (
+              <MeetingTranscript transcript={transcript} />
+            )}
+          </View>
+        )}
       </ScrollView>
 
-      {/* Delete Confirmation Modal */}
+      <Modal visible={showTemplates} transparent animationType="fade" onRequestClose={() => setShowTemplates(false)}>
+        <Pressable className="flex-1 bg-black/50 items-center justify-center" onPress={() => setShowTemplates(false)}>
+          <Pressable
+            className="bg-card rounded-xl p-4 w-[340px] max-w-[92%] border border-border"
+            onPress={(e) => e.stopPropagation()}
+          >
+            <Text className="mb-1 text-base font-semibold text-foreground">Note template</Text>
+            <Text className="mb-3 text-xs text-muted-foreground">Rewrites the notes with this structure.</Text>
+            <ScrollView style={{ maxHeight: 380 }}>
+              {templates.map((template) => {
+                const selected = template.id === (meeting.templateId ?? 'builtin:general')
+                return (
+                  <Pressable
+                    key={template.id}
+                    onPress={() => enhance(template.id)}
+                    className={cn(
+                      'mb-1.5 rounded-lg border px-3 py-2.5 active:bg-muted',
+                      selected ? 'border-orange-500/60 bg-orange-500/5' : 'border-border/70',
+                    )}
+                  >
+                    <Text className="text-sm font-medium text-foreground">{template.name}</Text>
+                    {!!template.description && (
+                      <Text className="mt-0.5 text-xs text-muted-foreground" numberOfLines={2}>
+                        {template.description}
+                      </Text>
+                    )}
+                  </Pressable>
+                )
+              })}
+            </ScrollView>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
       <Modal
         visible={showDeleteConfirm}
         transparent
@@ -412,10 +519,7 @@ export default function MeetingDetailScreen() {
           className="flex-1 bg-black/50 items-center justify-center"
           onPress={() => setShowDeleteConfirm(false)}
         >
-          <Pressable
-            className="bg-card rounded-xl p-6 w-80 border border-border"
-            onPress={(e) => e.stopPropagation()}
-          >
+          <Pressable className="bg-card rounded-xl p-6 w-80 border border-border" onPress={(e) => e.stopPropagation()}>
             <View className="flex-row items-center gap-3 mb-3">
               <View className="w-10 h-10 rounded-full bg-destructive/10 items-center justify-center">
                 <Trash2 size={20} className="text-destructive" />
@@ -423,7 +527,7 @@ export default function MeetingDetailScreen() {
               <Text className="text-base font-semibold text-foreground">Delete meeting</Text>
             </View>
             <Text className="text-sm text-muted-foreground mb-5">
-              This will permanently delete the recording and transcript. This action cannot be undone.
+              This permanently deletes the recording, transcript and notes, and turns off any share link.
             </Text>
             <View className="flex-row gap-2 justify-end">
               <Pressable
@@ -432,10 +536,7 @@ export default function MeetingDetailScreen() {
               >
                 <Text className="text-sm text-foreground">Cancel</Text>
               </Pressable>
-              <Pressable
-                onPress={confirmDelete}
-                className="px-4 py-2 rounded-md bg-destructive active:bg-destructive/80"
-              >
+              <Pressable onPress={confirmDelete} className="px-4 py-2 rounded-md bg-destructive active:bg-destructive/80">
                 <Text className="text-sm text-white font-medium">Delete</Text>
               </Pressable>
             </View>
@@ -443,54 +544,5 @@ export default function MeetingDetailScreen() {
         </Pressable>
       </Modal>
     </SafeAreaView>
-  )
-}
-
-function SpeakerTranscriptView({ segments }: { segments: TranscriptSegment[] }) {
-  const groups = groupSegmentsBySpeaker(segments)
-  const speakerMap = new Map<string, number>()
-
-  return (
-    <View className="gap-4">
-      {groups.map((group, index) => {
-        const color = group.speaker
-          ? getSpeakerColor(group.speaker, speakerMap)
-          : null
-
-        if (!color) {
-          return (
-            <View key={index} className="flex-row gap-3">
-              <Text className="text-xs text-muted-foreground font-mono w-12 pt-0.5 text-right">
-                {formatTimestamp(group.start)}
-              </Text>
-              <Text className="flex-1 text-sm text-foreground leading-relaxed">
-                {group.lines.join(' ')}
-              </Text>
-            </View>
-          )
-        }
-
-        return (
-          <View
-            key={index}
-            className={cn('rounded-lg border-l-[3px] pl-3 py-2 pr-2', color.bg, color.border)}
-          >
-            <View className="flex-row items-center gap-2 mb-1">
-              <View className={cn('rounded px-1.5 py-0.5', color.label)}>
-                <Text className={cn('text-[10px] font-semibold uppercase', color.text)}>
-                  {group.speaker}
-                </Text>
-              </View>
-              <Text className="text-[10px] text-muted-foreground font-mono">
-                {formatTimestamp(group.start)}
-              </Text>
-            </View>
-            <Text className="text-sm text-foreground leading-relaxed">
-              {group.lines.join(' ')}
-            </Text>
-          </View>
-        )
-      })}
-    </View>
   )
 }

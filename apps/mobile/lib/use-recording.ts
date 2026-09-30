@@ -1,10 +1,31 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef, useSyncExternalStore } from 'react'
 import { Platform } from 'react-native'
 import { createHttpClient, API_URL } from './api'
 import { usePlatformConfig } from './platform-config'
+import { useNativeRecorder } from './native-recorder'
+import { meetingsApi, uploadMeetingAudio, usePersonalMeetingsWorkspaceId } from './meetings-api'
+
+export { formatDuration } from './format-duration'
+
+/**
+ * Rough notes typed while recording, shared by every `useRecording()` caller
+ * so stopping from the floating indicator still sends what the meetings
+ * screen captured.
+ */
+let recordingNotes = ''
+const notesListeners = new Set<() => void>()
+function setRecordingNotes(next: string) {
+  recordingNotes = next
+  notesListeners.forEach((l) => l())
+}
+function subscribeRecordingNotes(listener: () => void) {
+  notesListeners.add(listener)
+  return () => notesListeners.delete(listener)
+}
+const getRecordingNotes = () => recordingNotes
 
 function getDesktop(): any | null {
   if (Platform.OS !== 'web' || typeof window === 'undefined') return null
@@ -15,10 +36,16 @@ function getDesktop(): any | null {
 /**
  * Hook for managing meeting recording state.
  *
- * Works in three modes:
+ * Works in four modes:
  *  - Electron desktop: communicates via window.shogoDesktop IPC bridge
  *  - Browser/local mode: captures audio via MediaRecorder, uploads to API
+ *  - Browser/cloud and native phone: records locally, uploads to the
+ *    personal workspace for server-side transcription
  *  - API polling fallback: polls status for external recording sources
+ *
+ * Notes typed while recording are saved to the recording's draft meeting
+ * when the server knows the recording id (desktop + local), and sent with
+ * the upload otherwise.
  */
 export function useRecording() {
   const [isRecording, setIsRecording] = useState(false)
@@ -33,6 +60,13 @@ export function useRecording() {
   const streamRef = useRef<MediaStream | null>(null)
   const recordingStartTime = useRef<number>(0)
   const { localMode, configLoaded } = usePlatformConfig()
+  const native = useNativeRecorder()
+  const workspaceId = usePersonalMeetingsWorkspaceId()
+  const workspaceIdRef = useRef(workspaceId)
+  workspaceIdRef.current = workspaceId
+  const notes = useSyncExternalStore(subscribeRecordingNotes, getRecordingNotes, getRecordingNotes)
+  const [error, setError] = useState<string | null>(null)
+  const draftTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // Electron IPC mode
   useEffect(() => {
@@ -49,6 +83,7 @@ export function useRecording() {
       setIsRecording(true)
       setRecordingId(data.id)
       setDuration(0)
+      setRecordingNotes('')
     }
 
     const onDuration = (data: { id: string; duration: number }) => {
@@ -62,11 +97,14 @@ export function useRecording() {
 
       // In the Electron IPC flow, we create the meeting here because the API's
       // /recording/stop endpoint is not called (only IPC is used).
+      // `recordingId` finishes the draft the island's notepad wrote into.
       const http = createHttpClient()
       http.post('/api/local/meetings', {
         audioPath: data.audioPath,
         duration: data.duration,
+        recordingId: data.id,
       }).catch((err: any) => console.error('Failed to create meeting record:', err))
+      setRecordingNotes('')
     }
 
     d.onRecordingStarted(onStarted)
@@ -121,7 +159,7 @@ export function useRecording() {
     }
   }, [])
 
-  const uploadAudio = useCallback(async (blob: Blob, recDuration: number) => {
+  const uploadAudio = useCallback(async (blob: Blob, recDuration: number, localRecordingId: string | null) => {
     setIsUploading(true)
     try {
       let uploadBlob = blob
@@ -145,6 +183,7 @@ export function useRecording() {
       const formData = new FormData()
       formData.append('audio', uploadBlob, filename)
       formData.append('duration', String(recDuration))
+      if (localRecordingId) formData.append('recordingId', localRecordingId)
 
       const res = await fetch(`${API_URL}/api/local/meetings/recording/upload`, {
         method: 'POST',
@@ -163,18 +202,74 @@ export function useRecording() {
     }
   }, [])
 
+  const isDesktop = !!desktop.current
+  const nativeMode = Platform.OS !== 'web' && native.available
+  // Cloud web has no local recording bridge: record in the page, upload to the workspace.
+  const cloudBrowser = Platform.OS === 'web' && !isDesktop && configLoaded && !localMode
+
+  const updateNotes = useCallback(
+    (next: string) => {
+      setRecordingNotes(next)
+      const wsId = workspaceIdRef.current
+      if (!wsId || !recordingId || !(isDesktop || localMode)) return
+      if (draftTimer.current) clearTimeout(draftTimer.current)
+      draftTimer.current = setTimeout(() => {
+        meetingsApi(wsId)
+          .saveRecordingDraft(recordingId, { notes: next })
+          .catch((err: any) => console.warn('[Recording] Could not save notes:', err?.message ?? err))
+      }, 600)
+    },
+    [recordingId, isDesktop, localMode],
+  )
+
+  const uploadToWorkspace = useCallback(
+    async (audio: Parameters<typeof uploadMeetingAudio>[1], recDuration: number, source: 'mobile' | 'upload') => {
+      const wsId = workspaceIdRef.current
+      if (!wsId) {
+        setError('Your personal workspace is still loading. Try again in a moment.')
+        return null
+      }
+      setIsUploading(true)
+      try {
+        const meeting = await uploadMeetingAudio(wsId, audio, { source, duration: recDuration, notes: getRecordingNotes() })
+        setRecordingNotes('')
+        return meeting
+      } catch (err: any) {
+        console.error('Failed to upload recording:', err)
+        setError(err?.message || 'Upload failed')
+        return null
+      } finally {
+        setIsUploading(false)
+      }
+    },
+    [],
+  )
+
   return {
-    isRecording,
-    duration,
+    isRecording: nativeMode ? native.isRecording : isRecording,
+    duration: nativeMode ? native.duration : duration,
     recordingId,
     isUploading,
+    error,
+    clearError: useCallback(() => setError(null), []),
+    notes,
+    setNotes: updateNotes,
     startRecording: useCallback(async () => {
+      setError(null)
       const d = desktop.current
       if (d) {
         const result = await d.startRecording()
         if (result && 'error' in result) {
           console.error('Failed to start recording:', result.error)
+          setError(String(result.error))
         }
+        return
+      }
+
+      if (nativeMode) {
+        setRecordingNotes('')
+        const result = await native.start().catch((err: any) => ({ error: err?.message || 'Could not start recording' }))
+        if ('error' in result) setError(result.error)
         return
       }
 
@@ -201,18 +296,21 @@ export function useRecording() {
           recorder.start(1000)
           mediaRecorderRef.current = recorder
           recordingStartTime.current = Date.now()
+          setRecordingNotes('')
 
-          // Notify API about recording start (for status polling by other clients)
-          try {
-            const http = createHttpClient()
-            const { data } = await http.post<{ id: string } | { error: string }>(
-              '/api/local/meetings/recording/start',
-              {},
-            )
-            if (data && 'id' in data) {
-              setRecordingId(data.id)
-            }
-          } catch {}
+          // Notify the local API about recording start (for status polling by other clients)
+          if (localMode) {
+            try {
+              const http = createHttpClient()
+              const { data } = await http.post<{ id: string } | { error: string }>(
+                '/api/local/meetings/recording/start',
+                {},
+              )
+              if (data && 'id' in data) {
+                setRecordingId(data.id)
+              }
+            } catch {}
+          }
 
           setIsRecording(true)
           setDuration(0)
@@ -225,9 +323,15 @@ export function useRecording() {
           return
         } catch (err: any) {
           console.error('Failed to access microphone:', err)
+          if (!localMode) {
+            setError('Microphone access was blocked. Allow it in your browser to record.')
+            return
+          }
           // Fall through to API-only mode
         }
       }
+
+      if (!localMode) return
 
       // Fallback: API-only start (will fail if no bridge, but shows the error)
       try {
@@ -238,6 +342,7 @@ export function useRecording() {
         )
         if ('error' in data) {
           console.error('Failed to start recording:', data.error)
+          setError(data.error)
         } else {
           setIsRecording(true)
           setRecordingId(data.id)
@@ -246,7 +351,7 @@ export function useRecording() {
       } catch (err: any) {
         console.error('Failed to start recording:', err)
       }
-    }, []),
+    }, [nativeMode, native, localMode]),
     stopRecording: useCallback(async () => {
       const d = desktop.current
       if (d) {
@@ -254,10 +359,25 @@ export function useRecording() {
         return
       }
 
+      if (nativeMode) {
+        const recording = await native.stop().catch(() => null)
+        if (!recording) {
+          setError('The recording could not be saved.')
+          return
+        }
+        await uploadToWorkspace(
+          { kind: 'uri', uri: recording.uri, filename: 'meeting.m4a', type: 'audio/mp4' },
+          recording.duration,
+          'mobile',
+        )
+        return
+      }
+
       // Stop browser MediaRecorder and upload
       const recorder = mediaRecorderRef.current
       if (recorder && recorder.state !== 'inactive') {
         const recDuration = Math.round((Date.now() - recordingStartTime.current) / 1000)
+        const localRecordingId = recordingId
 
         if (durationRef.current) {
           clearInterval(durationRef.current)
@@ -279,6 +399,12 @@ export function useRecording() {
             setRecordingId(null)
             setDuration(0)
 
+            if (!localMode) {
+              await uploadToWorkspace({ kind: 'blob', blob, filename: 'meeting.webm' }, recDuration, 'upload')
+              resolve()
+              return
+            }
+
             // Notify API of stop — if the bridge handled it, audio is already
             // on disk and a meeting record was created server-side; skip upload.
             let bridgeHandled = false
@@ -289,13 +415,16 @@ export function useRecording() {
             } catch {}
 
             if (!bridgeHandled) {
-              await uploadAudio(blob, recDuration)
+              await uploadAudio(blob, recDuration, localRecordingId)
             }
+            setRecordingNotes('')
             resolve()
           }
           recorder.stop()
         })
       }
+
+      if (!localMode) return
 
       // Fallback: API-only stop
       try {
@@ -307,16 +436,14 @@ export function useRecording() {
       } catch (err: any) {
         console.error('Failed to stop recording:', err)
       }
-    }, [uploadAudio]),
-    isDesktop: !!desktop.current,
+    }, [uploadAudio, uploadToWorkspace, nativeMode, native, localMode, recordingId]),
+    isDesktop,
     isLocal: localMode,
+    isNative: nativeMode,
+    /** Any capture path is available on this surface. */
+    canRecord: isDesktop || localMode || nativeMode || cloudBrowser,
+    workspaceId,
   }
-}
-
-export function formatDuration(seconds: number): string {
-  const m = Math.floor(seconds / 60)
-  const s = seconds % 60
-  return `${m}:${s.toString().padStart(2, '0')}`
 }
 
 async function convertToWav(blob: Blob): Promise<Blob> {

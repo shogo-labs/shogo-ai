@@ -712,6 +712,102 @@ export async function logGoalEvent(
   )
 }
 
+// ─── Meetings (personal workspace) ─────────────────────────────────────────
+
+export interface MeetingSearchHit {
+  id: string
+  title: string | null
+  createdAt: string
+  duration: number | null
+  snippet: string
+  score: number
+}
+
+export interface MeetingListItem {
+  id: string
+  title: string | null
+  createdAt: string
+  duration: number | null
+  status: string
+  enhanceStatus: string
+  source: string
+  app: string | null
+}
+
+function meetingsPath(workspaceId: string, suffix = ''): string {
+  return `/api/internal/workspaces/${encodeURIComponent(workspaceId)}/meetings${suffix}`
+}
+
+export async function searchMeetings(
+  workspaceId: string,
+  query: string,
+  options: { sinceDays?: number; limit?: number } = {},
+): Promise<CheckpointCallResult<MeetingSearchHit[]>> {
+  const params = new URLSearchParams({ q: query })
+  if (options.sinceDays) params.set('sinceDays', String(options.sinceDays))
+  if (options.limit) params.set('limit', String(options.limit))
+  return personalFetch(meetingsPath(workspaceId, `/search?${params}`), {
+    method: 'GET',
+    parse: (j) => (j?.results ?? []) as MeetingSearchHit[],
+  })
+}
+
+export async function listMeetings(workspaceId: string, limit = 20): Promise<CheckpointCallResult<MeetingListItem[]>> {
+  return personalFetch(meetingsPath(workspaceId, `?limit=${limit}`), {
+    method: 'GET',
+    parse: (j) => (j?.meetings ?? []) as MeetingListItem[],
+  })
+}
+
+export async function readMeetingMarkdown(
+  workspaceId: string,
+  meetingId: string,
+  includeTranscript: boolean,
+): Promise<CheckpointCallResult<string>> {
+  return personalFetch(
+    meetingsPath(workspaceId, `/${encodeURIComponent(meetingId)}/markdown?transcript=${includeTranscript}`),
+    { method: 'GET', parse: (j) => String(j?.markdown ?? '') },
+  )
+}
+
+export async function enhanceMeeting(
+  workspaceId: string,
+  meetingId: string,
+  templateId?: string,
+): Promise<CheckpointCallResult<{ enhanceStatus: string }>> {
+  return personalFetch(meetingsPath(workspaceId, `/${encodeURIComponent(meetingId)}/enhance`), {
+    method: 'POST',
+    body: JSON.stringify(templateId ? { templateId } : {}),
+    parse: (j) => ({ enhanceStatus: String(j?.enhanceStatus ?? 'running') }),
+  })
+}
+
+export async function listMeetingTemplates(
+  workspaceId: string,
+): Promise<CheckpointCallResult<Array<{ id: string; name: string; description: string | null; builtIn: boolean }>>> {
+  return personalFetch(meetingsPath(workspaceId, '/templates'), {
+    method: 'GET',
+    parse: (j) =>
+      ((j?.templates ?? []) as any[]).map((t) => ({
+        id: t.id,
+        name: t.name,
+        description: t.description ?? null,
+        builtIn: !!t.builtIn,
+      })),
+  })
+}
+
+export async function createMeetingNote(
+  workspaceId: string,
+  input: { notes: string; title?: string },
+): Promise<CheckpointCallResult<MeetingListItem>> {
+  return personalFetch(meetingsPath(workspaceId), {
+    method: 'POST',
+    body: JSON.stringify(input),
+    parse: (j) => j?.meeting as MeetingListItem,
+  })
+}
+
 export async function listSchedules(
   workspaceId: string,
   goalId?: string,

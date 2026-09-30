@@ -19,6 +19,7 @@ import { IslandComposer, fileRefsFromFileList, type IslandComposerHandle } from 
 import { IslandConversation } from "./IslandConversation"
 import { IslandDropSheet } from "./IslandDropSheet"
 import { IslandMeetingBanner } from "./IslandMeeting"
+import { useIslandMeetingNotes } from "./useIslandMeetingNotes"
 import { IslandPlanReview } from "./IslandPlanReview"
 import { IslandUsageChip, IslandUsagePanel, useIslandUsage } from "./IslandUsageChip"
 import { PermissionCard, QuestionCard } from "./PendingCard"
@@ -384,6 +385,15 @@ export const IslandApp = observer(function IslandApp({
     void bridge?.sendAction({ type: "navigate", path: "/meetings" })
     collapse()
   }, [bridge, collapse])
+
+  const meetingNotes = useIslandMeetingNotes(meeting.recording)
+  const openMeeting = useCallback(
+    (meetingId: string) => {
+      void bridge?.sendAction({ type: "navigate", path: `/meetings/${meetingId}` })
+      collapse()
+    },
+    [bridge, collapse],
+  )
 
   const openBilling = useCallback(() => {
     void bridge?.sendAction({ type: "navigate", path: "/billing" })
@@ -764,7 +774,13 @@ export const IslandApp = observer(function IslandApp({
             {message ? (
               <Text className="px-4 pb-1 text-[11px] text-amber-300">{message}</Text>
             ) : null}
-            <IslandMeetingBanner meeting={meeting} onDecision={respondToMeeting} onOpenMeetings={openMeetings} />
+            <IslandMeetingBanner
+              meeting={meeting}
+              notes={meetingNotes}
+              onDecision={respondToMeeting}
+              onOpenMeetings={openMeetings}
+              onOpenMeeting={openMeeting}
+            />
             <View style={{ flexShrink: 1, minHeight: 0 }}>{body}</View>
           </Motion.View>
           {pickerOpen ? (
