@@ -191,7 +191,8 @@ describe('filters and file text', () => {
     expect(text).toContain('Quarterly churn fell to two percent')
   })
 
-  test('uploads are searchable by their file text once extraction finishes', async () => {
+  // Postgres mode runs outside local mode, where uploads go to S3.
+  test.skipIf(!!process.env.CHANNELS_TEST_PG_URL)('uploads are searchable by their file text once extraction finishes', async () => {
     const form = new FormData()
     form.append('file', new File([minimalPdf('Vendor onboarding checklist')], 'onboarding.pdf', { type: 'application/pdf' }))
     const res = await app.request(`/api/conversations/${generalId}/attachments`, { method: 'POST', headers: { 'x-user': seed.owner }, body: form })

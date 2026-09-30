@@ -210,7 +210,9 @@ async function resolveFilters(
   return { conversationIds, authorUserIds, agentOnly, agentNames, has: q.has, since, until }
 }
 
-const ATTACHMENT_TEXT_SQL = `COALESCE((SELECT string_agg(a.name || ' ' || COALESCE(a."extractedText", ''), ' ')
+// Postgres parses `q3-notes.txt` as a single file token, so the name is also
+// indexed with separators spaced out to make its parts searchable.
+const ATTACHMENT_TEXT_SQL = `COALESCE((SELECT string_agg(a.name || ' ' || translate(a.name, '._/', '   ') || ' ' || COALESCE(a."extractedText", ''), ' ')
   FROM conversation_attachments a WHERE a."messageId" = m.id), '')`
 
 async function pgMatchIds(

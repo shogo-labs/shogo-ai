@@ -1,21 +1,48 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * Real SQLite database for workspace-channel tests: replays the desktop
- * migration history into a temp file and points the API's Prisma client at
- * it. Must run before anything imports `lib/prisma`.
+ * Real database for workspace-channel tests: replays the desktop migration
+ * history into a temp SQLite file and points the API's Prisma client at it.
+ * Must run before anything imports `lib/prisma`.
+ *
+ * Set CHANNELS_TEST_PG_URL (a Postgres server URL whose user can create
+ * databases) to run against a throwaway Postgres database with the cloud
+ * migrations instead, e.g. to exercise the full-text search SQL:
+ *   CHANNELS_TEST_PG_URL=postgresql://shogo:shogo_dev@localhost:55432/shogo bun test ./src/__tests__/conversation-search.integration.test.ts
  */
 
 import { Database } from 'bun:sqlite'
+import { afterAll } from 'bun:test'
+import { spawnSync } from 'child_process'
 import { mkdtempSync, readdirSync, readFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join, resolve } from 'path'
 
 const MIGRATIONS_DIR = resolve(import.meta.dir, '../../../../desktop/prisma/migrations')
 
+const PG_SETUP_SCRIPT = resolve(import.meta.dir, 'pg-test-db.ts')
+
+function setupPostgres(serverUrl: string, dir: string): void {
+  const dbName = `shogo_channels_test_${crypto.randomUUID().replace(/-/g, '').slice(0, 12)}`
+  const run = (action: 'create' | 'drop') => spawnSync(process.execPath, [PG_SETUP_SCRIPT, action, serverUrl, dbName], { encoding: 'utf-8' })
+  const created = run('create')
+  if (created.status !== 0) throw new Error(`Postgres test database setup failed: ${created.stderr || created.stdout}`)
+  afterAll(() => { run('drop') })
+  const url = new URL(serverUrl)
+  url.pathname = `/${dbName}`
+  delete process.env.SHOGO_LOCAL_MODE
+  process.env.SHOGO_APP_DATABASE_URL = url.toString()
+  process.env.SHOGO_DATA_DIR = dir
+}
+
 export function setupChannelsTestDb(): { dir: string; dbPath: string } {
   const dir = mkdtempSync(join(tmpdir(), 'shogo-channels-'))
   const dbPath = join(dir, 'test.db')
+  const pgUrl = process.env.CHANNELS_TEST_PG_URL
+  if (pgUrl) {
+    setupPostgres(pgUrl, dir)
+    return { dir, dbPath }
+  }
   const sqlite = new Database(dbPath)
   const migrations = readdirSync(MIGRATIONS_DIR, { withFileTypes: true })
     .filter((d) => d.isDirectory())
