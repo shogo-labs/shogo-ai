@@ -359,6 +359,13 @@ export default function MeetingDetailScreen() {
       <ScrollView className="flex-1" contentContainerClassName="px-4 pb-8 pt-4" keyboardShouldPersistTaps="handled">
         {tab === 'notes' && (
           <View className="gap-4">
+            {meeting.enhanceStatus === 'error' && meeting.enhancedNotes && (
+              <View className="rounded-xl border border-red-500/30 bg-red-500/5 px-3 py-2.5">
+                <Text className="text-xs leading-5 text-red-700 dark:text-red-300">
+                  Couldn&apos;t regenerate notes: {meeting.enhanceError || 'unknown error'}. Your previous notes are still shown.
+                </Text>
+              </View>
+            )}
             {busy ? (
               <View className="items-center justify-center rounded-2xl border border-border/70 bg-card py-16">
                 <ActivityIndicator size="large" color="#f97316" className="mb-4" />
