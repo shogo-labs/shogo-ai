@@ -13,6 +13,7 @@ import { DomainProvider, useWorkspaceCollection } from "../contexts/domain"
 import { useActiveWorkspace } from "../hooks/useActiveWorkspace"
 import { usePlatformConfig } from "../lib/platform-config"
 import { API_URL } from "../lib/api"
+import { PhoneLayoutOverrideProvider } from "../lib/native-phone-layout"
 import { IslandApp } from "../components/island/IslandApp"
 import { useIslandBridge } from "../components/island/useIslandBridge"
 import { useIslandPointer } from "../components/island/useIslandPointer"
@@ -116,7 +117,9 @@ export default function IslandRoute() {
   }
   return (
     <View ref={root} style={{ flex: 1, backgroundColor: "transparent" }}>
-      <IslandContent />
+      <PhoneLayoutOverrideProvider value={false}>
+        <IslandContent />
+      </PhoneLayoutOverrideProvider>
     </View>
   )
 }

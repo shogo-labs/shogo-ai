@@ -146,7 +146,7 @@ export const IslandComposer = forwardRef<
           }}
           placeholder={placeholder}
           placeholderTextColor="#71717a"
-          className="flex-1 text-[13px] leading-[18px] text-zinc-100"
+          className="flex-1 text-[12px] leading-[18px] text-zinc-100"
           style={[{ height, outlineStyle: "none" } as object]}
         />
         {isStreaming && onStop && !canSend ? (
