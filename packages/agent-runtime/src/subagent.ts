@@ -433,7 +433,7 @@ export function getBuiltinSubagentConfig(
         systemPrompt: BROWSER_QA_SUBAGENT_PROMPT,
         toolNames: ['browser', 'web', 'read_file', 'write_file', 'edit_file'],
         disallowedTools: ['task', 'skill'],
-        model: 'gpt-5.4-nano',
+        model: 'gpt-6-luna',
         provider: 'openai',
         maxTurns: 200,
       }
