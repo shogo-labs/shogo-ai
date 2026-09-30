@@ -39,7 +39,7 @@ import {
 import { isBuiltinTemplateId } from '../services/meeting-templates'
 import type { WorkspaceAgentAuthorize, WorkspaceAgentAuthContext } from './workspace-agent'
 
-const db = prisma as any
+const db = prisma
 
 /** Whisper's upload limit. Mobile records small mono AAC to stay under it. */
 export const MAX_MEETING_UPLOAD_BYTES = 25 * 1024 * 1024
@@ -359,6 +359,7 @@ export function workspaceMeetingRoutes(config: WorkspaceMeetingRoutesConfig): Ho
     if (wait) {
       await run
       const updated = await db.meeting.findUnique({ where: { id: meeting.id } })
+      if (!updated) return error(c, 404, 'not_found', 'Meeting not found')
       return c.json({ meeting: serializeMeeting(updated) })
     }
     void run.catch(() => {})

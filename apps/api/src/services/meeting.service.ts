@@ -12,7 +12,7 @@ import { join } from 'path'
 import { tmpdir } from 'os'
 import { randomBytes } from 'crypto'
 import { generateText } from 'ai'
-import { prisma } from '../lib/prisma'
+import { prisma, type Meeting, type MeetingTemplate, type Prisma } from '../lib/prisma'
 import { transcribe, isLocalTranscriptionAvailable, type CloudTranscriptionAuth } from './transcription.service'
 import {
   isDiarizationAvailable,
@@ -31,7 +31,9 @@ import { resolveLanguageModel, DEFAULT_ASSISTANT_MODEL } from '../lib/resolve-la
 import { generateProxyToken } from '../lib/ai-proxy-token'
 import { resolveApiBaseUrl } from '../lib/internal-proxy-config'
 
-const db = prisma as any
+const db = prisma
+// LocalConfig exists only in the desktop (SQLite) schema.
+const localDb = prisma as any
 
 const isLocalMode = () => process.env.SHOGO_LOCAL_MODE === 'true'
 
@@ -98,20 +100,41 @@ export interface MeetingActionItem {
   done?: boolean
 }
 
-export function parseTranscript(raw: string | null | undefined): ParsedTranscript | null {
+/** Everything the `transcript` column holds: the transcript plus live-capture bookkeeping. */
+export interface StoredTranscript extends ParsedTranscript {
+  /** Written by live chunks while recording; the final transcript drops it. */
+  live?: boolean
+  /** Live chunk numbers already appended, so a retried upload isn't added twice. */
+  liveSeqs?: number[]
+  /** The sweeper closed this draft after its recorder went away. */
+  interrupted?: boolean
+}
+
+/** The only reader of the `transcript` column. Legacy plain-text values become `text`. */
+export function readTranscript(raw: string | null | undefined): StoredTranscript | null {
   if (!raw) return null
+  let parsed: any
   try {
-    const parsed = JSON.parse(raw)
-    return {
-      text: typeof parsed.text === 'string' ? parsed.text : '',
-      segments: Array.isArray(parsed.segments) ? parsed.segments : [],
-      language: parsed.language,
-      numSpeakers: parsed.numSpeakers,
-      error: typeof parsed.error === 'string' ? parsed.error : undefined,
-    }
+    parsed = JSON.parse(raw)
   } catch {
     return { text: String(raw), segments: [] }
   }
+  if (!parsed || typeof parsed !== 'object') return { text: String(raw), segments: [] }
+  return {
+    text: typeof parsed.text === 'string' ? parsed.text : '',
+    segments: Array.isArray(parsed.segments) ? parsed.segments : [],
+    language: typeof parsed.language === 'string' ? parsed.language : undefined,
+    numSpeakers: typeof parsed.numSpeakers === 'number' ? parsed.numSpeakers : undefined,
+    error: typeof parsed.error === 'string' ? parsed.error : undefined,
+    live: parsed.live === true ? true : undefined,
+    liveSeqs: Array.isArray(parsed.liveSeqs) ? parsed.liveSeqs.filter(Number.isInteger) : undefined,
+    interrupted: parsed.interrupted === true ? true : undefined,
+  }
+}
+
+/** The only writer of the `transcript` column. */
+export function writeTranscript(transcript: StoredTranscript): string {
+  return JSON.stringify(transcript)
 }
 
 export function parseActionItems(raw: string | null | undefined): MeetingActionItem[] {
@@ -140,7 +163,7 @@ export const MEETING_LIST_SELECT = {
   updatedAt: true,
 } as const
 
-export function serializeMeeting(meeting: any) {
+export function serializeMeeting(meeting: Meeting) {
   const { actionItems, audioPath: _audioPath, ...rest } = meeting
   return {
     ...rest,
@@ -189,7 +212,10 @@ function meetingDate(value: unknown): Date {
   return Number.isNaN(date.getTime()) ? new Date() : date
 }
 
-export function meetingToMarkdown(meeting: any, options: { includeTranscript?: boolean } = {}): string {
+export function meetingToMarkdown(
+  meeting: Pick<Meeting, 'title' | 'createdAt' | 'duration' | 'app' | 'enhancedNotes' | 'notes' | 'transcript'>,
+  options: { includeTranscript?: boolean } = {},
+): string {
   const date = meetingDate(meeting.createdAt)
   let md = `# ${meeting.title || 'Meeting'}\n\n`
   md += `**Date:** ${date.toISOString()}\n`
@@ -199,7 +225,7 @@ export function meetingToMarkdown(meeting: any, options: { includeTranscript?: b
   if (meeting.enhancedNotes) md += `${meeting.enhancedNotes.trim()}\n\n`
   if (meeting.notes?.trim()) md += `## My notes\n\n${meeting.notes.trim()}\n\n`
   if (options.includeTranscript) {
-    const transcript = transcriptToText(parseTranscript(meeting.transcript))
+    const transcript = transcriptToText(readTranscript(meeting.transcript))
     if (transcript) md += `## Transcript\n\n${transcript}\n`
   }
   return md
@@ -248,7 +274,7 @@ function getWavDuration(audioPath: string): number {
 
 async function getLocalMeetingConfig(): Promise<{ diarizationEnabled: boolean; whisperModel: string }> {
   try {
-    const rows = await db.localConfig.findMany({
+    const rows = await localDb.localConfig.findMany({
       where: { key: { in: ['MEETING_DIARIZATION_ENABLED', 'MEETING_WHISPER_MODEL'] } },
     })
     const map: Record<string, string> = {}
@@ -314,16 +340,16 @@ async function markTranscriptError(meetingId: string, error: string): Promise<bo
 }
 
 function transcriptErrorUpdate(raw: string | null | undefined, error: string) {
-  const live = parseTranscript(raw)
+  const live = readTranscript(raw)
   const keepLive = !!live && (live.segments.length > 0 || !!live.text.trim())
   const data = keepLive
     ? {
         status: 'ready',
-        transcript: JSON.stringify({ text: live!.text, segments: live!.segments, language: live!.language ?? 'en', error }),
+        transcript: writeTranscript({ text: live!.text, segments: live!.segments, language: live!.language ?? 'en', error }),
       }
     : {
         status: 'error',
-        transcript: JSON.stringify({ text: '', segments: [], language: 'en', error }),
+        transcript: writeTranscript({ text: '', segments: [], language: 'en', error }),
       }
   return { data, keepLive }
 }
@@ -360,16 +386,14 @@ async function finalPassUsesCloud(options: TranscribeMeetingOptions): Promise<bo
 /** Promote the live transcript to the final one. False when it doesn't cover every acknowledged chunk. */
 async function finishFromLiveTranscript(meetingId: string, liveChunks: number): Promise<boolean> {
   const row = await db.meeting.findUnique({ where: { id: meetingId }, select: { transcript: true } })
-  const raw = safeJson(row?.transcript)
-  if (!raw?.live) return false
-  const seqs = Array.isArray(raw.liveSeqs) ? raw.liveSeqs.filter(Number.isInteger) : []
-  if (seqs.length < liveChunks) return false
-  const live = parseTranscript(row.transcript)!
+  const live = readTranscript(row?.transcript)
+  if (!live?.live) return false
+  if ((live.liveSeqs?.length ?? 0) < liveChunks) return false
   const updated = await db.meeting.update({
     where: { id: meetingId },
     data: {
       status: 'ready',
-      transcript: JSON.stringify({ text: live.text, segments: live.segments, language: live.language ?? 'en', numSpeakers: 0 }),
+      transcript: writeTranscript({ text: live.text, segments: live.segments, language: live.language ?? 'en', numSpeakers: 0 }),
     },
   })
   if (updated.projectId) writeTranscriptToProject(updated.projectId, updated)
@@ -402,7 +426,7 @@ export async function transcribeMeeting(
           where: { id: meetingId },
           data: {
             status: 'ready',
-            transcript: JSON.stringify({ text: '', segments: [], language: 'en', error: 'Audio file not found' }),
+            transcript: writeTranscript({ text: '', segments: [], language: 'en', error: 'Audio file not found' }),
           },
         })
         .catch(() => {})
@@ -419,7 +443,7 @@ export async function transcribeMeeting(
           where: { id: meetingId },
           data: {
             status: 'ready',
-            transcript: JSON.stringify({
+            transcript: writeTranscript({
               text: '',
               segments: [],
               language: 'en',
@@ -466,7 +490,7 @@ export async function transcribeMeeting(
     const updated = await db.meeting.update({
       where: { id: meetingId },
       data: {
-        transcript: JSON.stringify({
+        transcript: writeTranscript({
           text: transcriptionResult.text,
           segments,
           language: transcriptionResult.language,
@@ -563,14 +587,15 @@ export async function appendLiveTranscript(meetingId: string, input: LiveChunkIn
       select: { status: true, transcript: true, updatedAt: true },
     })
     if (!row || row.status !== 'recording') return { ok: false, reason: 'not_recording' }
-    const raw = safeJson(row.transcript)
-    const seqs: number[] = Array.isArray(raw?.liveSeqs) ? raw.liveSeqs.filter(Number.isInteger) : []
-    const current = parseTranscript(row.transcript) ?? { text: '', segments: [] }
-    if (seqs.includes(input.seq)) return { ok: true, segment: null, transcript: current }
+    const current = readTranscript(row.transcript) ?? { text: '', segments: [] }
+    const seqs = current.liveSeqs ?? []
+    if (seqs.includes(input.seq)) {
+      return { ok: true, segment: null, transcript: { text: current.text, segments: current.segments, language: current.language } }
+    }
     const segments = segment
       ? [...current.segments, segment].sort((a, b) => a.start - b.start)
       : current.segments
-    const next = {
+    const next: StoredTranscript = {
       text: segments.map((s) => s.text).join(' '),
       segments,
       language: result.language || current.language || 'en',
@@ -579,20 +604,11 @@ export async function appendLiveTranscript(meetingId: string, input: LiveChunkIn
     }
     const updated = await db.meeting.updateMany({
       where: { id: meetingId, status: 'recording', updatedAt: row.updatedAt },
-      data: { transcript: JSON.stringify(next) },
+      data: { transcript: writeTranscript(next) },
     })
     if (updated.count === 1) return { ok: true, segment, transcript: { text: next.text, segments, language: next.language } }
   }
   return { ok: false, reason: 'not_recording' }
-}
-
-function safeJson(raw: string | null | undefined): any {
-  if (!raw) return null
-  try {
-    return JSON.parse(raw)
-  } catch {
-    return null
-  }
 }
 
 function getWavDurationFromBuffer(buffer: Buffer): number {
@@ -623,7 +639,7 @@ export function removeAudioFiles(audioPath: string | null | undefined): void {
   }
 }
 
-export function writeTranscriptToProject(projectId: string, meeting: any): void {
+export function writeTranscriptToProject(projectId: string, meeting: Meeting): void {
   const workspacesDir = process.env.WORKSPACES_DIR
   if (!workspacesDir) return
   const projectDir = join(workspacesDir, projectId)
@@ -668,7 +684,7 @@ export async function upsertRecordingDraft(
   const notes = cleanMeetingNotes(input.notes)
   const app = typeof input.app === 'string' && input.app.trim() ? input.app.trim().slice(0, 80) : undefined
   const title = typeof input.title === 'string' && input.title.trim() ? input.title.trim().slice(0, 200) : undefined
-  const update = (existing: any) => {
+  const update = (existing: Meeting) => {
     const data: Record<string, unknown> = {}
     if (notes !== undefined) data.notes = notes
     if (app && !existing.app) {
@@ -712,7 +728,7 @@ export const RECORDING_DRAFT_STALE_MS = 10 * 60 * 1000
 
 /** A draft the sweeper closed. Its recorder may still upload, which finishes it normally. */
 export function isInterruptedDraft(meeting: { recordingId?: string | null; transcript?: string | null } | null): boolean {
-  return !!meeting?.recordingId && safeJson(meeting.transcript)?.interrupted === true
+  return !!meeting?.recordingId && readTranscript(meeting.transcript)?.interrupted === true
 }
 
 /**
@@ -729,7 +745,7 @@ export async function sweepStaleRecordingDrafts(now = new Date()): Promise<numbe
   })
   let swept = 0
   for (const row of stale) {
-    const live = parseTranscript(row.transcript)
+    const live = readTranscript(row.transcript)
     const segments = live?.segments ?? []
     // Scoped to the row we read, so a recorder that just checked in wins.
     const where = { id: row.id, status: 'recording', updatedAt: row.updatedAt }
@@ -742,7 +758,7 @@ export async function sweepStaleRecordingDrafts(now = new Date()): Promise<numbe
       data: {
         status: 'ready',
         ...(segments.length ? { duration: Math.round(segments[segments.length - 1].end) || null } : {}),
-        transcript: JSON.stringify({
+        transcript: writeTranscript({
           text: live?.text ?? '',
           segments,
           language: live?.language ?? 'en',
@@ -823,7 +839,7 @@ export function startRecordingDraftSweeper(): void {
 // Templates
 // ---------------------------------------------------------------------------
 
-function toTemplateView(row: any): MeetingTemplateView {
+function toTemplateView(row: MeetingTemplate): MeetingTemplateView {
   return {
     id: row.id,
     name: row.name,
@@ -860,10 +876,17 @@ export interface MeetingTemplateInput {
   instructions?: string
 }
 
+type TemplateValidation<T> = { ok: true; data: T } | { ok: false; error: string }
+
+export function validateTemplateInput(
+  input: MeetingTemplateInput,
+  partial: false,
+): TemplateValidation<MeetingTemplateInput & { name: string; instructions: string }>
+export function validateTemplateInput(input: MeetingTemplateInput, partial: true): TemplateValidation<MeetingTemplateInput>
 export function validateTemplateInput(
   input: MeetingTemplateInput,
   partial: boolean,
-): { ok: true; data: MeetingTemplateInput } | { ok: false; error: string } {
+): TemplateValidation<MeetingTemplateInput> {
   const data: MeetingTemplateInput = {}
   if (input.name !== undefined || !partial) {
     const name = typeof input.name === 'string' ? input.name.trim() : ''
@@ -902,9 +925,9 @@ Rules:
 - Only include facts supported by the notes or transcript. If the transcript is empty or garbled, work from the notes alone.
 - Under "## Action items", write each as "- [ ] <task> — <owner>" (omit " — <owner>" when unknown). Write "- None" if there are none.`
 
-function buildEnhancePrompt(meeting: any, template: MeetingTemplateView): string {
+function buildEnhancePrompt(meeting: Meeting, template: MeetingTemplateView): string {
   const notes = (meeting.notes || '').trim()
-  const transcript = transcriptToText(parseTranscript(meeting.transcript), TRANSCRIPT_PROMPT_CHARS)
+  const transcript = transcriptToText(readTranscript(meeting.transcript), TRANSCRIPT_PROMPT_CHARS)
   const when = meetingDate(meeting.createdAt).toISOString()
   return [
     `Template: ${template.name}`,
@@ -962,7 +985,7 @@ export async function enhanceMeeting(
   const meeting = await db.meeting.findUnique({ where: { id: meetingId } })
   if (!meeting) return
   const templateId = options.templateId ?? meeting.templateId ?? DEFAULT_TEMPLATE_ID
-  const hasTranscript = !!transcriptToText(parseTranscript(meeting.transcript))
+  const hasTranscript = !!transcriptToText(readTranscript(meeting.transcript))
   if (!hasTranscript && !meeting.notes?.trim()) {
     await db.meeting.update({
       where: { id: meetingId },
@@ -1067,7 +1090,7 @@ export function scoreMeeting(meeting: Record<string, any>, terms: string[]): { s
   let bestField: string | null = null
   let bestFieldScore = 0
   for (const field of SEARCH_FIELDS) {
-    const raw = field === 'transcript' ? transcriptToText(parseTranscript(meeting.transcript)) : meeting[field]
+    const raw = field === 'transcript' ? transcriptToText(readTranscript(meeting.transcript)) : meeting[field]
     if (!raw) continue
     const lower = String(raw).toLowerCase()
     let fieldScore = 0
@@ -1089,12 +1112,13 @@ export async function searchMeetings(
 ): Promise<MeetingSearchHit[]> {
   const limit = Math.min(Math.max(options.limit ?? 10, 1), 50)
   const terms = searchTerms(query)
-  const where: any = { workspaceId }
+  const where: Prisma.MeetingWhereInput = { workspaceId }
   if (options.since) where.createdAt = { gte: options.since }
   if (terms.length > 0) {
-    const insensitive = isLocalMode() ? {} : { mode: 'insensitive' }
+    // SQLite has no `mode`; its LIKE is already case-insensitive for ASCII.
+    const insensitive = isLocalMode() ? {} : { mode: 'insensitive' as const }
     where.OR = terms.flatMap((term) =>
-      SEARCH_FIELDS.map((field) => ({ [field]: { contains: term, ...insensitive } })),
+      SEARCH_FIELDS.map((field): Prisma.MeetingWhereInput => ({ [field]: { contains: term, ...insensitive } })),
     )
   }
   const candidates = await db.meeting.findMany({
@@ -1103,7 +1127,7 @@ export async function searchMeetings(
     take: terms.length > 0 ? 200 : limit,
     select: { id: true, title: true, createdAt: true, duration: true, notes: true, enhancedNotes: true, transcript: true },
   })
-  const hits = candidates.map((m: any) => {
+  const hits = candidates.map((m) => {
     const { score, snippet } = terms.length > 0 ? scoreMeeting(m, terms) : { score: 0, snippet: snippetAround(m.enhancedNotes || m.notes || '', []) }
     return { id: m.id, title: m.title, createdAt: m.createdAt, duration: m.duration, snippet, score }
   })
@@ -1120,7 +1144,7 @@ export function newShareToken(): string {
 }
 
 /** What a share link exposes: the notes, never the transcript or audio. */
-export function serializeSharedMeeting(meeting: any) {
+export function serializeSharedMeeting(meeting: Meeting) {
   return {
     title: meeting.title,
     createdAt: meeting.createdAt,

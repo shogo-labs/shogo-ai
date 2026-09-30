@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { Hono } from 'hono'
-import { prisma } from '../lib/prisma'
+import { prisma, type Meeting } from '../lib/prisma'
 import {
   isLocalTranscriptionAvailable,
   getSherpaOfflinePath,
@@ -61,7 +61,9 @@ function getScriptInterpreter(): string {
   return process.env.SHOGO_BUN_PATH || 'bun'
 }
 
-const db = prisma as any
+const db = prisma
+// LocalConfig exists only in the desktop (SQLite) schema.
+const localDb = prisma as any
 
 export const meetingRoutes = new Hono()
 
@@ -90,7 +92,7 @@ async function finishRecordedMeeting(
   owner: MeetingOwner,
   input: { audioPath: string; duration?: number | null; recordingId?: string | null; title?: string | null; projectId?: string | null },
   options: { preferLocal?: boolean; liveChunks?: number } = {},
-): Promise<{ meeting: any; created: boolean }> {
+): Promise<{ meeting: Meeting; created: boolean }> {
   const draft = input.recordingId ? await findRecordingDraft(owner.workspaceId, input.recordingId) : null
   const existing =
     draft ??
@@ -230,7 +232,7 @@ function configToMeetingResponse(rows: { key: string; value: string }[]) {
 
 meetingRoutes.get('/api/local/meetings/config', async (c) => {
   try {
-    const rows = await db.localConfig.findMany({
+    const rows = await localDb.localConfig.findMany({
       where: { key: { in: [...MEETING_CONFIG_KEYS] } },
     })
     return c.json(configToMeetingResponse(rows))
@@ -259,7 +261,7 @@ meetingRoutes.put('/api/local/meetings/config', async (c) => {
       if (!(field in body)) continue
       const value = String(body[field])
       ops.push(
-        db.localConfig.upsert({
+        localDb.localConfig.upsert({
           where: { key: dbKey },
           update: { value },
           create: { key: dbKey, value },
@@ -269,7 +271,7 @@ meetingRoutes.put('/api/local/meetings/config', async (c) => {
 
     await Promise.all(ops)
 
-    const rows = await db.localConfig.findMany({
+    const rows = await localDb.localConfig.findMany({
       where: { key: { in: [...MEETING_CONFIG_KEYS] } },
     })
     return c.json(configToMeetingResponse(rows))
