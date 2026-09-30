@@ -248,7 +248,7 @@ const COMPOSER_WRAPPER_WEB_DARK = {
 
 const styles = StyleSheet.create({
   gradientLayer: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     overflow: 'hidden',
   },
 })

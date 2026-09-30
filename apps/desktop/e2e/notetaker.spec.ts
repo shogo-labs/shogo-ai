@@ -17,6 +17,7 @@ import { test, expect, _electron as electron, type ElectronApplication, type Pag
 import path from 'path'
 import fs from 'fs'
 import os from 'os'
+import { E2E_API_PORT, mainAppWindow } from './electron-helpers'
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..')
 const DESKTOP_DIR = path.resolve(__dirname, '..')
@@ -30,11 +31,11 @@ const FIXTURE_ANCHORS = ['quick', 'fox', 'lazy']
 function ensureDesktopBuild(): void {
   const mainJs = path.join(DESKTOP_DIR, 'dist', 'main.js')
   if (fs.existsSync(mainJs)) return
-  // Best-effort: invoke tsc. The command surfaces compile errors to the
-  // caller rather than silently moving on to a broken launch.
+  // Plain `tsc` leaves workspace-source requires (fs-tree-walker) unresolved;
+  // `build` runs tsc plus the bun bundling steps that inline them.
   const { spawnSync } = require('child_process') as typeof import('child_process')
-  const result = spawnSync('npx', ['tsc'], { cwd: DESKTOP_DIR, stdio: 'inherit' })
-  if (result.status !== 0) throw new Error('apps/desktop tsc build failed')
+  const result = spawnSync('npm', ['run', 'build'], { cwd: DESKTOP_DIR, stdio: 'inherit' })
+  if (result.status !== 0) throw new Error('apps/desktop build failed')
 }
 
 // --- WAV parsing / RMS (kept inline so the e2e has no deps outside Playwright).
@@ -127,13 +128,14 @@ test.beforeAll(async () => {
       // Skip heavy startup paths we don't need for recording: the local
       // Bun API server, etc.
       SHOGO_SKIP_LOCAL_SERVER: 'true',
+      SHOGO_E2E_API_PORT: E2E_API_PORT,
       SHOGO_E2E: 'true',
       ELECTRON_DISABLE_SECURITY_WARNINGS: 'true',
     },
     timeout: 60_000,
   })
 
-  mainWindow = await app.firstWindow({ timeout: 60_000 })
+  mainWindow = await mainAppWindow(app)
 
   // Surface renderer + electron process logs so CI failures are debuggable
   // without round-tripping through the trace viewer.

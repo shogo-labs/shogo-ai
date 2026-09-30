@@ -12,6 +12,7 @@ import { _electron as electron, expect, test, type ElectronApplication, type Pag
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { E2E_API_PORT, mainAppWindow } from './electron-helpers'
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..')
 const DESKTOP_DIR = path.resolve(__dirname, '..')
@@ -20,12 +21,13 @@ function ensureDesktopBuild(): void {
   const mainJs = path.join(DESKTOP_DIR, 'dist', 'main.js')
   if (fs.existsSync(mainJs)) return
   const { spawnSync } = require('child_process') as typeof import('child_process')
-  const result = spawnSync('npx', ['tsc'], { cwd: DESKTOP_DIR, stdio: 'inherit' })
-  if (result.status !== 0) throw new Error('apps/desktop tsc build failed')
+  const result = spawnSync('npm', ['run', 'build'], { cwd: DESKTOP_DIR, stdio: 'inherit' })
+  if (result.status !== 0) throw new Error('apps/desktop build failed')
 }
 
 async function installMockLocalApi(page: Page): Promise<{ getProviderCalls: () => number }> {
   let providerModelCalls = 0
+  let signedIn = false
 
   await page.route('**/api/**', async (route) => {
     const url = new URL(route.request().url())
@@ -55,11 +57,24 @@ async function installMockLocalApi(page: Page): Promise<{ getProviderCalls: () =
       })
     }
 
+    // Onboarding signs the local user in before it renders.
+    if (pathname === '/api/auth/get-session') {
+      if (!signedIn) return json(null)
+      const now = new Date().toISOString()
+      return json({
+        session: { id: 'e2e-session', userId: 'e2e-user', token: 'e2e', expiresAt: '2099-01-01T00:00:00.000Z', createdAt: now, updatedAt: now },
+        user: { id: 'e2e-user', email: 'e2e@localhost', name: '', emailVerified: true, createdAt: now, updatedAt: now },
+      })
+    }
+
     if (pathname.startsWith('/api/auth/')) {
       return json({ data: null, ok: true })
     }
 
-    if (pathname === '/api/local/auto-sign-in') return json({ ok: true })
+    if (pathname === '/api/local/auto-sign-in') {
+      signedIn = true
+      return json({ ok: true })
+    }
     if (pathname === '/api/local/cloud-login/status') return json({ signedIn: false })
     if (pathname === '/api/local/api-keys') return json({ keys: { openai: 'sk-***' } })
 
@@ -95,18 +110,19 @@ test('desktop onboarding stops provider model auto-discovery after a failed requ
 
     app = await electron.launch({
       executablePath,
-      args: ['.', `--user-data-dir=${tmpUserData}`, '--api-port=39100', '--no-sandbox'],
+      args: ['.', `--user-data-dir=${tmpUserData}`, '--no-sandbox'],
       cwd: DESKTOP_DIR,
       env: {
         ...process.env,
         SHOGO_SKIP_LOCAL_SERVER: 'true',
+        SHOGO_E2E_API_PORT: E2E_API_PORT,
         SHOGO_E2E: 'true',
         ELECTRON_DISABLE_SECURITY_WARNINGS: 'true',
       },
       timeout: 60_000,
     })
 
-    const page = await app.firstWindow({ timeout: 60_000 })
+    const page = await mainAppWindow(app)
     page.on('pageerror', (err) => rendererErrors.push(err.message))
     page.on('console', (msg) => {
       if (msg.type() === 'error') consoleErrors.push(msg.text())
@@ -115,9 +131,10 @@ test('desktop onboarding stops provider model auto-discovery after a failed requ
     const api = await installMockLocalApi(page)
     await page.reload({ waitUntil: 'domcontentloaded' })
 
-    await expect(page.getByPlaceholder('Your name')).toBeVisible({ timeout: 30_000 })
-    await page.getByPlaceholder('Your name').fill('E2E User')
-    await page.getByPlaceholder('Your name').press('Enter')
+    const name = page.getByPlaceholder('e.g. Alex Kim')
+    await expect(name).toBeVisible({ timeout: 30_000 })
+    await name.fill('E2E User')
+    await page.getByText('Continue', { exact: true }).click()
 
     await expect(page.getByText('Your Own API Keys')).toBeVisible({ timeout: 30_000 })
     await page.getByText('Your Own API Keys').click()

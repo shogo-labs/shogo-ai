@@ -7,11 +7,6 @@
     "icon": "./assets/shogo-icon.png",
     "scheme": "shogo",
     "userInterfaceStyle": "automatic",
-    "splash": {
-      "image": "./assets/splash-icon.png",
-      "resizeMode": "contain",
-      "backgroundColor": "#121212"
-    },
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "ai.shogo.app",
@@ -26,7 +21,7 @@
         "backgroundColor": "#FB8C00"
       },
       "package": "ai.shogo.mobile",
-      "softInputMode": "adjustResize"
+      "softwareKeyboardLayoutMode": "resize"
     },
     "web": {
       "bundler": "metro",
@@ -85,7 +80,18 @@
           "icon": "./assets/adaptive-icon.png",
           "color": "#FB8C00"
         }
-      ]
+      ],
+      [
+        "expo-audio",
+        {
+          "microphonePermission": "Shogo records meetings you start so it can transcribe them and write your notes.",
+          "enableBackgroundRecording": true
+        }
+      ],
+      "expo-sharing",
+      "expo-status-bar",
+      "expo-font",
+      "expo-asset"
     ],
     "extra": {
       "router": {},
@@ -98,7 +104,6 @@
     },
     "updates": {
       "url": "https://u.expo.dev/1523dfce-1689-48f6-b921-68d992ff05c5"
-    },
-    "newArchEnabled": false
+    }
   }
 }

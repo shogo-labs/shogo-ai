@@ -45,6 +45,7 @@ export function deriveWorkspaceExperience(
     showMarketplace: false,
     showNewChat: false,
     showGoalsNav: false,
+    showMeetingsNav: false,
     showSideChatsNav: false,
   }
 }

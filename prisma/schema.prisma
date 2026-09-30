@@ -205,6 +205,7 @@ model Workspace {
   apiKeys                ApiKey[]
   instances              Instance[]
   meetings               Meeting[]
+  meetingTemplates       MeetingTemplate[]
   voiceProjectConfigs    VoiceProjectConfig[]
   projectAgents          ProjectAgent[]
   agentCostMetrics       AgentCostMetric[]
@@ -2875,24 +2876,63 @@ model EvalRunResult {
 // =============================================================================
 
 model Meeting {
-  id          String   @id @default(cuid())
-  title       String?
-  audioPath   String
-  transcript  String?  @db.Text
-  summary     String?  @db.Text
-  duration    Int?
-  status      String   @default("recording")
-  projectId   String?
-  workspaceId String
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id            String    @id @default(cuid())
+  title         String?
+  audioPath     String    @default("")
+  transcript    String?   @db.Text
+  summary       String?   @db.Text
+  /// The user's own rough notes, typed during or after the meeting.
+  notes         String?   @db.Text
+  /// Notes and transcript merged by the model, rendered with `templateId`.
+  enhancedNotes String?   @db.Text
+  /// JSON array of { text, owner?, due? }.
+  actionItems   String?   @db.Text
+  enhanceStatus String?
+  enhanceError  String?
+  templateId    String?
+  duration      Int?
+  status        String    @default("recording")
+  /// "desktop" | "mobile" | "upload"
+  source        String    @default("desktop")
+  /// Meeting app the call was detected in (Zoom, Teams, ...).
+  app           String?
+  /// Desktop recording session id, so notes typed while recording attach to the row.
+  recordingId   String?
+  userId        String?
+  shareToken    String?   @unique
+  sharedAt      DateTime?
+  projectId     String?
+  workspaceId   String
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
 
   project   Project?  @relation(fields: [projectId], references: [id], onDelete: SetNull)
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
+  @@unique([workspaceId, recordingId])
   @@index([workspaceId])
+  @@index([workspaceId, createdAt])
   @@index([projectId])
+  @@index([userId])
   @@map("meetings")
+}
+
+/// A user-authored recipe for turning notes + transcript into enhanced notes.
+/// Built-in templates live in code (apps/api/src/services/meeting-templates.ts).
+model MeetingTemplate {
+  id           String   @id @default(cuid())
+  workspaceId  String
+  name         String
+  description  String?
+  instructions String   @db.Text
+  createdBy    String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
+  @@map("meeting_templates")
 }
 
 // =============================================================================
