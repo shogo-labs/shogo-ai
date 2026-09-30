@@ -1872,6 +1872,8 @@ model MobilePushSubscription {
   userId    String
   pushToken String   @unique
   platform  String
+  /// Also deliver agent turn and task completion pushes (team chat pushes always go).
+  agentTurns Boolean @default(true)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 

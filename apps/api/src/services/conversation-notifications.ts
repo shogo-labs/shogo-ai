@@ -211,7 +211,7 @@ export async function notifyForMessage(result: PostMessageResult): Promise<Notif
       for (const [k, t] of lastPush) if (now - t >= PUSH_COALESCE_MS) lastPush.delete(k)
     }
     lastPush.set(key, now)
-    void sendPush(userId, { title, body, type: 'channel-message', channelId: 'messages', data: { ...data, reason } })
+    void sendPush(userId, { title, body, type: 'channel-message', channelId: 'messages', audience: 'chat', data: { ...data, reason } })
   }
   return recipients
 }

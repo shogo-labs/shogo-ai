@@ -416,7 +416,7 @@ export async function fireDueReminders(now = new Date()): Promise<number> {
     if (presence[row.userId] === 'active') {
       publishConversationEvent(row.workspaceId, { type: 'notification', ...data, reason: 'reminder', title, body: row.text }, [row.userId])
     } else {
-      void pushReminder(row.userId, { title, body: row.text, type: 'channel-message', channelId: 'messages', data: { ...data, reason: 'reminder' } })
+      void pushReminder(row.userId, { title, body: row.text, type: 'channel-message', channelId: 'messages', audience: 'chat', data: { ...data, reason: 'reminder' } })
     }
   }
   return fired

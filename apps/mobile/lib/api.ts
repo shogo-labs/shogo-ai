@@ -629,7 +629,7 @@ export const api = {
     return res.data?.count ?? 0
   },
 
-  async registerMobilePushSubscription(http: HttpClient, body: { pushToken: string; platform: 'ios' | 'android' }) {
+  async registerMobilePushSubscription(http: HttpClient, body: { pushToken: string; platform: 'ios' | 'android'; agentTurns?: boolean }) {
     const res = await http.post<{ ok?: boolean; id?: string }>('/api/mobile-push-subscriptions', body)
     return res.data
   },

@@ -28,11 +28,12 @@ export function mobilePushRoutes() {
     const userId = authUserId(c)
     if (!userId) return unauthorized(c)
 
-    const body = await c.req.json<{ pushToken?: string; platform?: string }>().catch(
-      () => ({} as { pushToken?: string; platform?: string }),
+    const body = await c.req.json<{ pushToken?: string; platform?: string; agentTurns?: boolean }>().catch(
+      () => ({} as { pushToken?: string; platform?: string; agentTurns?: boolean }),
     )
     const pushToken = typeof body.pushToken === 'string' ? body.pushToken.trim() : ''
     const platform = typeof body.platform === 'string' ? body.platform.trim().toLowerCase() : ''
+    const agentTurns = body.agentTurns !== false
     if (!pushToken || pushToken.length > 512 || !['ios', 'android'].includes(platform)) {
       return c.json({ error: { code: 'invalid_request', message: 'pushToken and a valid platform are required' } }, 400)
     }
@@ -45,7 +46,7 @@ export function mobilePushRoutes() {
     if (existing) {
       const subscription = await prisma.mobilePushSubscription.update({
         where: { id: existing.id },
-        data: { userId, platform },
+        data: { userId, platform, agentTurns },
         select: { id: true },
       })
       return c.json({ ok: true, id: subscription.id })
@@ -54,7 +55,7 @@ export function mobilePushRoutes() {
     let subscription
     try {
       subscription = await prisma.mobilePushSubscription.create({
-        data: { userId, pushToken, platform },
+        data: { userId, pushToken, platform, agentTurns },
         select: { id: true },
       })
     } catch (error) {
@@ -69,7 +70,7 @@ export function mobilePushRoutes() {
       if (!raced) throw error
       subscription = await prisma.mobilePushSubscription.update({
         where: { id: raced.id },
-        data: { userId, platform },
+        data: { userId, platform, agentTurns },
         select: { id: true },
       })
     }
