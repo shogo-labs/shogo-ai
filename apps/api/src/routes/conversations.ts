@@ -54,7 +54,7 @@ import { getPresence } from '../services/conversation-presence'
 import { getChannelMetrics } from '../services/conversation-metrics'
 import { searchMessages } from '../services/conversation-search'
 import { askWorkspace, semanticSearch } from '../services/conversation-semantic'
-import { extractAttachmentText } from '../services/conversation-file-text'
+import { canExtract, extractAndStoreAttachmentText } from '../services/conversation-file-text'
 import { registerConversationNotifications } from '../services/conversation-notifications'
 import { registerConversationUnfurls } from '../services/conversation-unfurl'
 import { listStatuses } from '../services/chat-settings'
@@ -471,9 +471,11 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
           size: file.size,
           width: width ?? null,
           height: height ?? null,
-          extractedText: extractAttachmentText(bytes, mimeType, name),
         },
       })
+      if (canExtract(mimeType, name, file.size)) {
+        void extractAndStoreAttachmentText(row.id, bytes, mimeType, name).catch(() => {})
+      }
       return c.json({
         attachment: {
           id: row.id, name: row.name, mimeType: row.mimeType, size: row.size,
