@@ -75,6 +75,8 @@ export interface LiveVmEntry {
   vmClass?: 'standard' | 'docker'
   /** Second data-drive backing path (docker class), if any. */
   dataDrive?: string
+  /** Workspace drive backing path (see data-drive.ts). */
+  workspaceDrive?: string
   assignedAt: number
   lastTouchedAt: number
   /** Snapshot files this VM was restored from (protected from orphan reclaim). */

@@ -1,0 +1,35 @@
+{
+  "project": "e2e-wsdrive-munw4f0m",
+  "driveMiB": 20480,
+  "rootfs": "/opt/fc-wsdrive-e2e/img/runtime.ext4",
+  "steps": {
+    "bootMs": 2072,
+    "workspaceDf": {
+      "source": "/dev/vdb",
+      "size": 20957446144,
+      "used": 202969088,
+      "avail": 20737699840
+    },
+    "rootDf": {
+      "source": "/dev/root",
+      "size": 14825578496,
+      "used": 10606088192,
+      "avail": 3444068352
+    },
+    "bigWrite": {
+      "mib": 6144,
+      "ms": 13458
+    },
+    "push": {
+      "ms": 71015,
+      "driveAllocatedBytes": 7797739520
+    },
+    "pull": {
+      "ms": 31881,
+      "logicalBytes": 21474836480,
+      "allocatedBytes": 7717445632
+    },
+    "restoreMs": 256
+  },
+  "ok": true
+}
