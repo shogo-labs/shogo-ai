@@ -20,9 +20,12 @@ const SIZES: Record<IslandMode, Size> = {
 /** Smallest card the expanded views can render without clipping the header. */
 export const ISLAND_MIN_CONTENT_HEIGHT = 120
 
-/** Wide enough that the label and chevron clear the camera housing on
- * either side; the renderer reserves the middle via `--notch-width`. */
-const NOTCHED_COLLAPSED_WIDTH = 380
+/** Camera housing on 14"/16" MacBook Pros. */
+const NOTCH_WIDTH = 200
+/** Collapsed wings are lopsided: a narrow left wing for the status icon and
+ * a wide right wing for text. Must match `IslandCollapsed`. */
+export const NOTCHED_COLLAPSED_LEFT_WING = 40
+export const NOTCHED_COLLAPSED_RIGHT_WING = 170
 /** Camera housing (~200pt on 14"/16" MacBook Pros) plus room for the idle
  * wings to grow on hover. */
 const NOTCHED_IDLE_WIDTH = 272
@@ -62,7 +65,14 @@ export function getIslandBounds(
     // wings can be the hover target without covering menu items.
     size = { width: NOTCHED_IDLE_WIDTH, height: display.workArea.y - display.bounds.y }
   } else if (notched && mode === 'collapsed') {
-    size = { width: NOTCHED_COLLAPSED_WIDTH, height: display.workArea.y - display.bounds.y }
+    const width = NOTCHED_COLLAPSED_LEFT_WING + NOTCH_WIDTH + NOTCHED_COLLAPSED_RIGHT_WING
+    const notchLeft = display.bounds.x + (display.bounds.width - NOTCH_WIDTH) / 2
+    return {
+      x: Math.round(notchLeft - NOTCHED_COLLAPSED_LEFT_WING),
+      y: display.bounds.y,
+      width,
+      height: display.workArea.y - display.bounds.y,
+    }
   } else if (isCardMode(mode)) {
     const max = Math.min(SIZES[mode].height, Math.floor(display.workArea.height * 0.85))
     const height = contentHeight

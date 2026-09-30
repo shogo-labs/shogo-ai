@@ -9,6 +9,9 @@ export const NOTCH_WIDTH = 200
 export const IDLE_WING = 22
 export const IDLE_WING_HOVER = 36
 export const IDLE_NOTCHED_WIDTH = NOTCH_WIDTH + IDLE_WING * 2
+/** Collapsed left wing (status icon only); the right wing takes the rest.
+ * Must match `NOTCHED_COLLAPSED_LEFT_WING` in desktop `island-placement.ts`. */
+export const COLLAPSED_LEFT_WING = 40
 
 const easeOutQuart = (t: number) => 1 - (1 - t) ** 4
 const easeInCubic = (t: number) => t ** 3

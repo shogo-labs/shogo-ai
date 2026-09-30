@@ -26,11 +26,11 @@ describe('Shogo island placement', () => {
     expect(isNotchedDisplay(notchedMac, 'win32')).toBe(false)
   })
 
-  test('straddles the notch at menu-bar height on a notched Mac', () => {
+  test('straddles the notch with a narrow left wing and a wide right wing', () => {
     expect(getIslandBounds(notchedMac, 'collapsed', 'darwin')).toEqual({
-      x: 566,
+      x: 616,
       y: 0,
-      width: 380,
+      width: 410,
       height: 37,
     })
   })
