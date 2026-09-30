@@ -7,6 +7,7 @@ import { join } from 'path'
 import {
   BUILD_OUTPUT_MANIFEST,
   buildOutputManifestPluginSource,
+  consumeBuildOutputChange,
   pruneStaleBuildOutput,
 } from '../build-output-prune'
 
@@ -116,5 +117,41 @@ describe('buildOutputManifestPluginSource', () => {
     const src = buildOutputManifestPluginSource('/w/.shogo/build-output.json')
     expect(src).toContain('"/w/.shogo/build-output.json"')
     expect(src).toContain('writeBundle(options, bundle)')
+    expect(src).toContain("createHash('sha1')")
+    expect(src).toContain('fingerprint')
+  })
+})
+
+describe('consumeBuildOutputChange', () => {
+  function writeManifest(fingerprint?: string) {
+    writeFileSync(
+      join(shogoDir, BUILD_OUTPUT_MANIFEST),
+      JSON.stringify({
+        outDir,
+        files: ['index.html'],
+        ...(fingerprint === undefined ? {} : { fingerprint }),
+      }),
+    )
+  }
+
+  it('reports the first build and changed fingerprints, but not repeats', () => {
+    writeManifest('first')
+    expect(consumeBuildOutputChange(shogoDir)).toBe(true)
+    expect(consumeBuildOutputChange(shogoDir)).toBe(false)
+
+    writeManifest('second')
+    expect(consumeBuildOutputChange(shogoDir)).toBe(true)
+    expect(consumeBuildOutputChange(shogoDir)).toBe(false)
+  })
+
+  it('reports a missing manifest or fingerprint as changed', () => {
+    expect(consumeBuildOutputChange(shogoDir)).toBe(true)
+
+    writeManifest()
+    expect(consumeBuildOutputChange(shogoDir)).toBe(true)
+
+    writeManifest('valid')
+    expect(consumeBuildOutputChange(shogoDir)).toBe(true)
+    expect(consumeBuildOutputChange(shogoDir)).toBe(false)
   })
 })
