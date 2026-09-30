@@ -24,6 +24,13 @@ export { ToolCallGroup, type ToolCallGroupProps } from "./ToolCallGroup"
 export { WorkGroup, type WorkGroupProps } from "./WorkGroup"
 export { WorkedForGroup, type WorkedForGroupProps } from "./WorkedForGroup"
 export { PlanningStatusLine } from "./PlanningStatusLine"
+export { RetryStatusLine } from "./RetryStatusLine"
+export { TurnActivityStatus } from "./TurnActivityStatus"
+export {
+  TurnRetryStatusProvider,
+  useTurnRetryStatus,
+  type TurnRetryStatusContextValue,
+} from "./TurnRetryStatusContext"
 export {
   CollapsibleToolGroup,
   type CollapsibleToolGroupProps,

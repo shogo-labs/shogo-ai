@@ -10,7 +10,7 @@
  */
 
 import { describe, test, expect } from 'bun:test'
-import { buildStopRequest, buildSubagentStopRequest } from '../chat-stop'
+import { buildRetryNowRequest, buildStopRequest, buildSubagentStopRequest } from '../chat-stop'
 
 const API_BASE = 'https://api.example.com'
 
@@ -229,5 +229,28 @@ describe('buildStopRequest', () => {
       expect(result).not.toBeNull()
       expect(JSON.parse(result!.init.body as string)).toEqual({})
     })
+  })
+})
+
+describe('buildRetryNowRequest', () => {
+  test('targets the runtime directly in local mode', () => {
+    const result = buildRetryNowRequest({
+      localAgentUrl: 'http://localhost:8080',
+      apiBaseUrl: API_BASE,
+      platform: 'web',
+      chatSessionId: 'sess-1',
+    })
+    expect(result!.url).toBe('http://localhost:8080/agent/retry-now')
+    expect(JSON.parse(String(result!.init.body))).toEqual({ chatSessionId: 'sess-1' })
+  })
+
+  test('routes through the project and workspace chat APIs with credentials', () => {
+    const project = buildRetryNowRequest({ projectId: 'p1', apiBaseUrl: API_BASE, platform: 'web' })
+    expect(project!.url).toBe(`${API_BASE}/api/projects/p1/chat/retry-now`)
+    expect(project!.init.credentials).toBe('include')
+
+    const workspace = buildRetryNowRequest({ projectId: 'p1', workspaceId: 'w1', apiBaseUrl: API_BASE, platform: 'ios', getCookie: () => 'c=1' })
+    expect(workspace!.url).toBe(`${API_BASE}/api/workspaces/w1/chat/retry-now`)
+    expect((workspace!.init.headers as Record<string, string>).Cookie).toBe('c=1')
   })
 })

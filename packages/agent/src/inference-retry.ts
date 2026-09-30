@@ -48,12 +48,105 @@ export interface InferenceRetryOptions {
    * behavior). Defaults to enabled when a probe URL resolves.
    */
   connectivityWait?: ConnectivityParkOptions | false
+  /**
+   * Provider backoff tier. When the fast budget above is exhausted on a
+   * transient provider-side failure (overloaded / 429 / 5xx / connection
+   * dropped / timeout) and the network itself is fine, keep re-issuing the
+   * call with capped exponential backoff instead of failing the turn. By
+   * default this never gives up: it runs until the call succeeds or the
+   * turn is aborted (user Stop). Pass `false` to disable.
+   */
+  providerBackoff?: ProviderBackoffOptions | false
+  /**
+   * Cuts the current backoff/park sleep short (e.g. the user tapped
+   * "Retry now", or the client came back online). Aborting still wins.
+   */
+  waker?: RetryWaker
 }
+
+export interface ProviderBackoffOptions {
+  /**
+   * Overall budget in ms, measured from the first backoff. `0` (the default,
+   * overridable via `SHOGO_PROVIDER_RETRY_MAX_WAIT_MS`) means unlimited.
+   */
+  maxWaitMs?: number
+  /** Hard cap on backoff re-issues per failure episode. Default unlimited. */
+  maxAttempts?: number
+  /** Injectable delay computer. Default 2s doubling, capped at 30s, half-jitter. */
+  computeDelayMs?: (attempt: number) => number
+  /** Injectable sleep; receives the turn's abort signal and waker. */
+  sleep?: (ms: number, signal?: AbortSignal, waker?: RetryWaker) => Promise<void>
+  /** Injectable clock. */
+  now?: () => number
+}
+
+export interface ResolvedProviderBackoff {
+  /** `Infinity` when unlimited. */
+  maxWaitMs: number
+  /** `Infinity` when unlimited. */
+  maxAttempts: number
+  computeDelayMs: (attempt: number) => number
+  sleep: (ms: number, signal?: AbortSignal, waker?: RetryWaker) => Promise<void>
+  now: () => number
+}
+
+export interface ProviderBackoffInfo {
+  /** 1-based backoff attempt index. */
+  attempt: number
+  reason: RetryReason
+  /** Delay before this re-issue. */
+  delayMs: number
+  /** Time spent in the backoff tier so far. */
+  elapsedMs: number
+  /** `Infinity` when unlimited. */
+  maxWaitMs: number
+  /** The (cleaned) error text that triggered the retry. */
+  error: string
+  /**
+   * Set once the same failure has repeated `NO_PROGRESS_THRESHOLD` times in a
+   * row with nothing new in the transcript. Retrying continues; this flags a
+   * likely misclassified deterministic failure for telemetry and the UI.
+   */
+  suspectedDeterministic: boolean
+}
+
+/** Consecutive identical backoff failures before flagging `suspectedDeterministic`. */
+export const NO_PROGRESS_THRESHOLD = 6
+
+/**
+ * Lets something outside the loop (a "Retry now" request, a reconnect
+ * signal) end the current backoff sleep early.
+ */
+export class RetryWaker {
+  private listeners = new Set<() => void>()
+
+  wake(): void {
+    for (const fn of [...this.listeners]) fn()
+  }
+
+  onWake(fn: () => void): () => void {
+    this.listeners.add(fn)
+    return () => this.listeners.delete(fn)
+  }
+}
+
+/**
+ * Failure reasons the provider backoff tier keeps retrying. `truncated` is
+ * excluded: it includes model-side cut-offs (e.g. repetition truncation)
+ * that a longer wait won't fix.
+ */
+export const PROVIDER_BACKOFF_REASONS: ReadonlySet<RetryReason> = new Set<RetryReason>([
+  'overloaded',
+  'server_5xx',
+  'network',
+  'timeout',
+  'idle_timeout',
+])
 
 export interface ConnectivityParkOptions {
   /** Health-check URL to poll. Defaults to env `AI_UPSTREAM_HEALTH_URL`. */
   probeUrl?: string
-  /** Overall park budget in ms. `0` = unlimited. Defaults to `SHOGO_OFFLINE_MAX_WAIT_MS` (30 min). */
+  /** Overall park budget in ms. `0` = unlimited. Defaults to `SHOGO_OFFLINE_MAX_WAIT_MS`, else unlimited. */
   maxWaitMs?: number
   /** Injectable probe (tests script a reachable/unreachable sequence). */
   probe?: (url: string) => Promise<boolean>
@@ -69,6 +162,9 @@ export interface ResolvedInferenceRetry {
   sleep: (ms: number) => Promise<void>
   /** `null` when parking is disabled or no probe URL is configured anywhere. */
   connectivityWait: (ConnectivityParkOptions & { probeUrl: string }) | null
+  /** `null` when the provider backoff tier is disabled. */
+  providerBackoff: ResolvedProviderBackoff | null
+  waker?: RetryWaker
 }
 
 export interface InferenceRetryInfo {
@@ -85,6 +181,48 @@ const DEFAULT_MAX_ATTEMPTS = 2
 const DEFAULT_BASE_DELAY_MS = 500
 const DEFAULT_MAX_DELAY_MS = 8_000
 
+const PROVIDER_BACKOFF_BASE_MS = 2_000
+const PROVIDER_BACKOFF_CAP_MS = 30_000
+
+/** Sleep that ends early on abort or on `waker.wake()`. */
+export function abortableSleep(ms: number, signal?: AbortSignal, waker?: RetryWaker): Promise<void> {
+  if (signal?.aborted) return Promise.resolve()
+  return new Promise<void>((resolve) => {
+    const timer = setTimeout(done, ms)
+    const offWake = waker?.onWake(done)
+    function done() {
+      clearTimeout(timer)
+      signal?.removeEventListener('abort', done)
+      offWake?.()
+      resolve()
+    }
+    signal?.addEventListener('abort', done, { once: true })
+  })
+}
+
+function resolveProviderBackoff(explicit: ProviderBackoffOptions | false | undefined): ResolvedProviderBackoff | null {
+  if (explicit === false) return null
+  const envFlag = (process.env.SHOGO_PROVIDER_RETRY ?? '').trim().toLowerCase()
+  if (explicit === undefined && (envFlag === '0' || envFlag === 'false' || envFlag === 'off')) return null
+  const o = explicit ?? {}
+  const rawWait = o.maxWaitMs ?? envInt('SHOGO_PROVIDER_RETRY_MAX_WAIT_MS') ?? 0
+  const maxWaitMs = rawWait > 0 ? rawWait : Infinity
+  const rawAttempts = o.maxAttempts ?? 0
+  const maxAttempts = rawAttempts > 0 ? Math.floor(rawAttempts) : Infinity
+  return {
+    maxWaitMs,
+    maxAttempts,
+    computeDelayMs:
+      o.computeDelayMs ??
+      ((attempt: number) => {
+        const raw = Math.min(PROVIDER_BACKOFF_CAP_MS, PROVIDER_BACKOFF_BASE_MS * Math.pow(2, Math.max(0, attempt - 1)))
+        return Math.round(raw * (0.5 + Math.random() * 0.5))
+      }),
+    sleep: o.sleep ?? abortableSleep,
+    now: o.now ?? (() => Date.now()),
+  }
+}
+
 function envInt(name: string): number | undefined {
   const raw = process.env[name]
   if (raw == null || raw === '') return undefined
@@ -100,6 +238,8 @@ function envInt(name: string): number | undefined {
  * - `SHOGO_INFERENCE_RETRY=0|false|off` disables it entirely.
  * - `SHOGO_INFERENCE_RETRY_MAX_ATTEMPTS=<n>` overrides the retry cap.
  * - `SHOGO_INFERENCE_RETRY_BASE_MS=<n>` overrides the base backoff.
+ * - `SHOGO_PROVIDER_RETRY=0|false|off` disables the provider backoff tier.
+ * - `SHOGO_PROVIDER_RETRY_MAX_WAIT_MS=<n>` bounds the provider backoff budget (`0`/unset = unlimited).
  */
 export function resolveInferenceRetryOptions(
   explicit?: InferenceRetryOptions | false,
@@ -136,7 +276,14 @@ export function resolveInferenceRetryOptions(
     }
   }
 
-  return { maxAttempts, computeDelayMs, sleep, connectivityWait }
+  return {
+    maxAttempts,
+    computeDelayMs,
+    sleep,
+    connectivityWait,
+    providerBackoff: resolveProviderBackoff(o.providerBackoff),
+    waker: o.waker,
+  }
 }
 
 export interface InferenceFailure {

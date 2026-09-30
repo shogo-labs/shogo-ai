@@ -19,6 +19,7 @@ import { MessageContent, extractTextContent } from "./MessageContent";
 import { AssistantContent } from "./AssistantContent";
 import { EditableUserMessage } from "./EditableUserMessage";
 import { TurnFooter } from "./TurnFooter";
+import { TurnActivityStatus } from "./TurnActivityStatus";
 import { extractTurnTiming } from "./turnShaping";
 import { ToolTimeline } from "../tools";
 import { useIsNativePhoneLayout } from "../../../lib/native-phone-layout";
@@ -195,7 +196,13 @@ export const TurnGroup = memo(
         )}
 
         {/* Loading indicator when streaming but no assistant message yet */}
-        {turn.isStreaming && !turn.assistantMessage && <LoadingDots />}
+        {turn.isStreaming && !turn.assistantMessage && (
+          <TurnActivityStatus
+            isStreaming
+            showPlanning={false}
+            fallback={<LoadingDots />}
+          />
+        )}
       </Motion.View>
     );
   },

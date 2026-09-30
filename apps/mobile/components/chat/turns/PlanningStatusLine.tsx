@@ -21,12 +21,13 @@ const LABEL = "Planning next moves"
 const TEXT_CLASS = "text-xs text-muted-foreground"
 const SHIMMER_TEXT_STYLE = { color: "#a3a3a3", fontSize: 12 } as const
 
-const SHIMMER_CHARS = LABEL.split("")
 // Width of the bright band, as a fraction of the label length.
 const SHIMMER_BAND = 0.18
 const SHIMMER_DIM = 0.25
 
-function ShimmerLabel() {
+/** Muted label with a highlight sweeping left → right across the letters. */
+export function ShimmerLabel({ label = LABEL }: { label?: string }) {
+  const chars = useMemo(() => label.split(""), [label])
   const progress = useRef(new Animated.Value(0)).current
 
   useEffect(() => {
@@ -49,12 +50,12 @@ function ShimmerLabel() {
   }, [progress])
 
   const opacities = useMemo(() => {
-    const n = SHIMMER_CHARS.length
+    const n = Math.max(2, chars.length)
     const travel = 1 + 2 * SHIMMER_BAND
     // Convert each character's position into the animation progress at which
     // the moving band reaches it. The band starts before the first character
     // and finishes after the last one, producing a complete left-to-right pass.
-    return SHIMMER_CHARS.map((_, i) => {
+    return chars.map((_, i) => {
       const pos = i / (n - 1)
       const peak = (pos + SHIMMER_BAND) / travel
       const halfWidth = SHIMMER_BAND / travel
@@ -64,11 +65,11 @@ function ShimmerLabel() {
         extrapolate: "clamp",
       })
     })
-  }, [progress])
+  }, [progress, chars])
 
   return (
-    <View className="flex-row" accessible accessibilityLabel={LABEL}>
-      {SHIMMER_CHARS.map((char, i) => (
+    <View className="flex-row" accessible accessibilityLabel={label}>
+      {chars.map((char, i) => (
         <Animated.Text
           key={i}
           className={TEXT_CLASS}

@@ -105,15 +105,25 @@ describe("probeChatTurnStatus", () => {
     expect(status).toBe("unknown")
   })
 
-  test("5xx upstream → 'unknown' (probe failure must never block the UI)", async () => {
+  test("5xx upstream → 'unreachable' (the turn may still be running)", async () => {
     const fetch = makeFetch({ status: 502 })
     const status = await probeChatTurnStatus({ url: "http://x/turn", fetch })
-    expect(status).toBe("unknown")
+    expect(status).toBe("unreachable")
   })
 
-  test("network error → 'unknown' (no rethrow, never crashes the caller)", async () => {
+  test("network error → 'unreachable' (no rethrow, never crashes the caller)", async () => {
     const fetch = makeFetch({ fetchThrows: new Error("ECONNREFUSED") })
     const status = await probeChatTurnStatus({ url: "http://x/turn", fetch })
+    expect(status).toBe("unreachable")
+  })
+
+  test("abort → 'unknown' (the caller cancelled, not a network failure)", async () => {
+    const controller = new AbortController()
+    controller.abort()
+    const abortErr = new Error("aborted")
+    abortErr.name = "AbortError"
+    const fetch = makeFetch({ fetchThrows: abortErr })
+    const status = await probeChatTurnStatus({ url: "http://x/turn", fetch, signal: controller.signal })
     expect(status).toBe("unknown")
   })
 

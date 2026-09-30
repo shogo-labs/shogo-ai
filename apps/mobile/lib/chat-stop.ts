@@ -26,14 +26,26 @@ export interface StopRequestResult {
  * including the correct auth credentials for the target.
  */
 export function buildStopRequest(config: StopRequestConfig): StopRequestResult | null {
+  return buildChatControlRequest(config, 'stop')
+}
+
+/**
+ * Builds the request that cuts the runtime's current retry backoff short
+ * (the inline "Retry now" action). Same routing and auth as stop.
+ */
+export function buildRetryNowRequest(config: StopRequestConfig): StopRequestResult | null {
+  return buildChatControlRequest(config, 'retry-now')
+}
+
+function buildChatControlRequest(config: StopRequestConfig, action: 'stop' | 'retry-now'): StopRequestResult | null {
   const { localAgentUrl, projectId, workspaceId, apiBaseUrl, platform, getCookie, chatSessionId } = config
 
   const url = localAgentUrl
-    ? `${localAgentUrl}/agent/stop`
+    ? `${localAgentUrl}/agent/${action}`
     : workspaceId
-      ? `${apiBaseUrl}/api/workspaces/${workspaceId}/chat/stop`
+      ? `${apiBaseUrl}/api/workspaces/${workspaceId}/chat/${action}`
       : projectId
-        ? `${apiBaseUrl}/api/projects/${projectId}/chat/stop`
+        ? `${apiBaseUrl}/api/projects/${projectId}/chat/${action}`
         : null
 
   if (!url) return null

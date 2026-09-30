@@ -48,6 +48,7 @@ import {
   ActivityIndicator,
   KeyboardAvoidingView,
   Keyboard,
+  AppState,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
 } from "react-native"
@@ -68,6 +69,9 @@ import {
   ERROR_CODE_MESSAGES,
   buildChatStreamErrorReport,
   isReactUpdateDepthError,
+  ChatRetryWaker,
+  waitForRetry,
+  type AutoResumeRetryState,
 } from "@shogo/shared-app/chat"
 import {
   useChatTransportConfig,
@@ -201,7 +205,10 @@ import {
   loadModelPreference,
   saveModelPreference,
 } from "../../lib/agent-mode-preference"
-import { useReconcileStaleModelSelection } from "../../lib/visible-models"
+import {
+  useModelPickerList,
+  useReconcileStaleModelSelection,
+} from "../../lib/visible-models"
 import { CompactChatInput } from "./CompactChatInput"
 import { ExecutionBadge } from "./ExecutionBadge"
 import { ExpandTab } from "./ExpandTab"
@@ -244,7 +251,6 @@ import * as ExpoLinking from "expo-linking"
 import {
   AlertCircle,
   RefreshCw,
-  WifiOff,
   X,
   ChevronDown,
   Shield,
@@ -256,7 +262,21 @@ import { AgentClient } from "@shogo-ai/sdk/agent"
 import { agentFetch } from "../../lib/agent-fetch"
 import { openAuthFlow, preCreateAuthWindow } from "@shogo/ui-kit/platform"
 import { PermissionApprovalDialog } from "../security/PermissionApprovalDialog"
-import { buildStopRequest } from "../../lib/chat-stop"
+import { buildRetryNowRequest, buildStopRequest } from "../../lib/chat-stop"
+import { pickSimilarModel } from "../../lib/similar-model"
+import { TurnRetryStatusProvider } from "./turns/TurnRetryStatusContext"
+import {
+  resolveTurnRetryStatus,
+  RETRY_STAGE_LONG_MS,
+  type ClientRetryInput,
+  type TurnRetryStatus,
+} from "./turns/turnRetryStatus"
+import {
+  recordClientRetryLong,
+  recordClientRetryState,
+  recordRetryUserAction,
+  type RetryTelemetryContext,
+} from "./retry-telemetry"
 import {
   planToPublishToStream,
   shouldPublishPlanToStream,
@@ -301,6 +321,11 @@ const DELEGATED_TASK_PROMPT_PREFIX =
   "This is a delegated task from the user's task list:"
 const DELEGATED_TASK_POLL_INTERVAL_MS = 1_000
 const DELEGATED_TASK_MAX_WAIT_MS = 5 * 60 * 1_000
+
+function isDeviceOffline(): boolean {
+  const nav = (globalThis as any).navigator
+  return !!nav && nav.onLine === false
+}
 
 function messageTimestamp(value: unknown): number {
   if (value instanceof Date) return value.getTime()
@@ -1945,6 +1970,34 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // render instead of only when one of the other transport inputs changes.
   const getClientTurnId = useCallback(() => pendingClientTurnIdRef.current, [])
 
+  // One waker per panel: "Retry now", the app returning to the foreground and
+  // the browser's `online` event all cut the current retry wait short.
+  const [chatRetryWaker] = useState(() => new ChatRetryWaker())
+  // The client can't reach the server: the chat request / stream re-attach
+  // is retrying (auto-resuming-fetch), or the stall probe gets no answer.
+  const [fetchRetry, setFetchRetry] = useState<ClientRetryInput | null>(null)
+  const [stallRetry, setStallRetry] = useState<ClientRetryInput | null>(null)
+  const retryTelemetryCtxRef = useRef<RetryTelemetryContext>({})
+  retryTelemetryCtxRef.current = {
+    projectId,
+    chatSessionId: currentSessionId,
+    model: selectedModel,
+  }
+  const handleFetchRetryState = useCallback((state: AutoResumeRetryState) => {
+    recordClientRetryState(retryTelemetryCtxRef.current, state)
+    if (!state.active) {
+      setFetchRetry(null)
+      return
+    }
+    setFetchRetry((prev) =>
+      prev &&
+      prev.startedAt === state.startedAt &&
+      prev.offline === state.offline
+        ? prev
+        : { startedAt: state.startedAt, offline: state.offline },
+    )
+  }, [])
+
   const transportConfig = useChatTransportConfig({
     apiBaseUrl: API_URL!,
     projectId,
@@ -1961,6 +2014,8 @@ const ChatPanelContent = observer(function ChatPanelContent({
     // POST by tens of seconds on a cold turn (system-prompt build +
     // Anthropic TTFB).
     onChunk: bumpChatProgress,
+    retryWake: chatRetryWaker,
+    onRetryState: handleFetchRetryState,
     getClientTurnId,
   })
   // Set once `useChat` has returned `setMessages`; see resume-replay-transport.ts.
@@ -2075,16 +2130,23 @@ const ChatPanelContent = observer(function ChatPanelContent({
         const d = (dataPart as any).data ?? {}
         if (d.state === "reconnected") {
           setConnectivityWait(null)
-          setJustReconnected(true)
-          setTimeout(() => setJustReconnected(false), 3000)
         } else {
-          setJustReconnected(false)
-          setConnectivityWait({
+          const cause: "offline" | "provider" =
+            d.cause === "provider" ? "provider" : "offline"
+          const elapsedMs = typeof d.elapsedMs === "number" ? d.elapsedMs : 0
+          setConnectivityWait((prev) => ({
+            cause,
+            reason: typeof d.reason === "string" ? d.reason : undefined,
             attempt: typeof d.attempt === "number" ? d.attempt : 0,
-            elapsedMs: typeof d.elapsedMs === "number" ? d.elapsedMs : 0,
+            elapsedMs,
             nextProbeInMs:
               typeof d.nextProbeInMs === "number" ? d.nextProbeInMs : 0,
-          })
+            startedAt:
+              prev && prev.cause === cause
+                ? prev.startedAt
+                : Date.now() - elapsedMs,
+            suspectedDeterministic: d.suspectedDeterministic === true,
+          }))
         }
         return
       }
@@ -3370,13 +3432,24 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // but they're tracked separately since they have different causes and
   // different user-facing copy.
   const [connectivityWait, setConnectivityWait] = useState<{
+    // "provider": the network is fine but the model provider is overloaded
+    // or failing, and the runtime is backing off before re-issuing.
+    cause: "offline" | "provider"
+    reason?: string
     attempt: number
     elapsedMs: number
     nextProbeInMs: number
+    /** Epoch ms the runtime's retry episode began (client clock). */
+    startedAt: number
+    suspectedDeterministic: boolean
   } | null>(null)
-  // Briefly true right after a park ends, to show "Back online, resuming…"
-  // instead of just silently clearing the banner.
-  const [justReconnected, setJustReconnected] = useState(false)
+  // What the inline status line shows; see `turns/turnRetryStatus.ts`.
+  const turnRetryStatus = useMemo<TurnRetryStatus | null>(
+    () => resolveTurnRetryStatus(connectivityWait, fetchRetry ?? stallRetry),
+    [connectivityWait, fetchRetry, stallRetry],
+  )
+  const turnRetryStatusRef = useRef(turnRetryStatus)
+  turnRetryStatusRef.current = turnRetryStatus
   // Set when the runtime ended a turn early because the workspace hit its
   // usage limit (`data-usage-limit`). Scoped to the session it came from.
   const [usageLimitNotice, setUsageLimitNotice] = useState<{
@@ -3397,8 +3470,6 @@ const ChatPanelContent = observer(function ChatPanelContent({
       return "Connection to desktop instance lost. Reconnecting\u2026"
     if (isTunnelError)
       return "Connection to desktop instance lost. Tap Reconnect to retry."
-    if (streamAutoRecovering)
-      return "Connection interrupted. Reconnecting\u2026"
     return (
       (error ? formatErrorMessage(error.message) : emptyResponseError) ?? ""
     )
@@ -3460,14 +3531,6 @@ const ChatPanelContent = observer(function ChatPanelContent({
 
   const errorBannerNeedsReadMore =
     errorBannerText.split(/\n/).length > 2 || errorBannerText.length > 140
-
-  const connectivityWaitElapsedLabel = useMemo(() => {
-    if (!connectivityWait) return ""
-    const totalSec = Math.max(0, Math.floor(connectivityWait.elapsedMs / 1000))
-    const mins = Math.floor(totalSec / 60)
-    const secs = totalSec % 60
-    return mins > 0 ? `${mins}m ${secs}s` : `${secs}s`
-  }, [connectivityWait])
 
   const [pendingInitialMessage, setPendingInitialMessage] = useState<
     string | null
@@ -3788,8 +3851,16 @@ const ChatPanelContent = observer(function ChatPanelContent({
     // stale banner from an earlier turn dismisses the moment the user taps
     // Stop — they shouldn't have to send a new message to get rid of it.
     setEmptyResponseError(null)
+    const retrying = turnRetryStatusRef.current
+    if (retrying) {
+      recordRetryUserAction(retryTelemetryCtxRef.current, "cancelled_during_retry", {
+        cause: retrying.cause,
+        elapsedMs: Date.now() - retrying.startedAt,
+      })
+    }
     setConnectivityWait(null)
-    setJustReconnected(false)
+    setFetchRetry(null)
+    setStallRetry(null)
     setStoppedMessages([...messagesRef.current])
     stop()
 
@@ -4984,6 +5055,12 @@ const ChatPanelContent = observer(function ChatPanelContent({
       })
 
       isSendingMessageRef.current = true
+      // A send that the API rejects before `data-turn-start` (e.g. 402
+      // usage_limit_reached) must not be mistaken for a stall of the
+      // previous turn, so forget that turn now.
+      currentTurnIdRef.current = null
+      turnCompletedRef.current = true
+      turnLastSeqRef.current = 0
 
       // Let EZ Mode know a new turn is starting. This is what
       // triggers the overlay to arm its heartbeat / activity buffer.
@@ -6128,24 +6205,74 @@ const ChatPanelContent = observer(function ChatPanelContent({
   const handleRetryRef = useRef<(() => void) | null>(null)
   handleRetryRef.current = handleRetry
 
+  // Replace the rendered session with the persisted history. Used when a turn
+  // ended server-side while the client was disconnected: the saved messages
+  // are the truth, so show them instead of an error.
+  const reloadPersistedHistory = useCallback(
+    async (sessionId: string) => {
+      if (!sessionMessages) return
+      await sessionMessages.loadPage(
+        { sessionId, agent: "technical" },
+        { limit: MESSAGE_PAGE_SIZE, offset: 0 },
+      )
+      if (
+        currentSessionIdRef.current !== sessionId ||
+        isTransportStreamingRef.current
+      )
+        return
+      const loaded = [...sessionMessages.all].sort(
+        (a: any, b: any) =>
+          messageTimestamp(a.createdAt) - messageTimestamp(b.createdAt),
+      )
+      if (loaded.length === 0) return
+      const aiMessages = loaded.map((message: any) => {
+        const next: any = {
+          id: message.id,
+          role: message.role as "user" | "assistant",
+          content: message.content ?? extractTextContent(message),
+          createdAt: message.createdAt,
+        }
+        if (message.parts) {
+          try {
+            next.parts = JSON.parse(message.parts)
+          } catch {
+            // Keep the text content when an older message has malformed parts.
+          }
+        }
+        return next
+      })
+      cachedMessagesRef.current = aiMessages
+      sessionMessageCache.set(sessionId, aiMessages)
+      setMessages(aiMessages)
+    },
+    [sessionMessages, setMessages],
+  )
+
   // Automatic stall recovery — invoked by the falling-edge effect the instant
   // a turn ends without `data-turn-complete`. This is the non-interactive twin
   // of `handleRetry`'s `reconnect` branch: it ONLY reattaches to a still-active
   // server turn (never re-sends or continues, which would surprise the user by
-  // restarting work behind their back). A bounded poll absorbs the brief window
-  // where the runtime hasn't re-published the buffer yet (warm-pool / pod
-  // transition), and any session switch / new turn / user-stop cancels it.
+  // restarting work behind their back). While the server can't be reached it
+  // keeps probing (the turn may still be running); once the turn is known to
+  // have ended it reloads the persisted history. Any session switch / new
+  // turn / user-stop cancels it.
   const attemptStallRecovery = useCallback(() => {
     if (!currentSessionId || !API_URL) return
     const recoverySessionId = currentSessionId
     const recoveryTurnId = currentTurnIdRef.current
     const fromSeqAtStall = turnLastSeqRef.current
-    const MAX_ATTEMPTS = 4
+    // Probes allowed for an `unknown` answer (buffer not yet re-published
+    // during a warm-pool / pod transition) before trusting it.
+    const MAX_UNKNOWN_PROBES = 4
+    const startedAt = Date.now()
 
     setStreamAutoRecovering(true)
+    setStallRetry({ startedAt, offline: false })
     void (async () => {
+      let unknownProbes = 0
+      let unreachableProbes = 0
       try {
-        for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+        for (let attempt = 1; ; attempt++) {
           // Bail if the user moved on (switched session), stopped, or a fresh
           // turn started — reconnecting now would graft onto the wrong panel.
           if (
@@ -6156,7 +6283,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
             return
           }
 
-          let turnStatus: ChatTurnStatus = "unknown"
+          let turnStatus: ChatTurnStatus = "unreachable"
           try {
             const turnUrl = buildChatTurnUrl(
               API_URL,
@@ -6172,21 +6299,23 @@ const ChatPanelContent = observer(function ChatPanelContent({
               credentials: Platform.OS === "web" ? "include" : undefined,
             })
           } catch {
-            turnStatus = "unknown"
+            turnStatus = "unreachable"
           }
 
           // Re-check liveness after the await — the world may have changed.
           if (
+            userInitiatedStopRef.current ||
             currentSessionIdRef.current !== recoverySessionId ||
             isTransportStreamingRef.current
           ) {
             return
           }
 
+          if (turnStatus === "unknown") unknownProbes++
           const effects = getStallRecoveryEffects({
             turnStatus,
-            attempt,
-            maxAttempts: MAX_ATTEMPTS,
+            attempt: turnStatus === "unknown" ? unknownProbes : 1,
+            maxAttempts: MAX_UNKNOWN_PROBES,
           })
           if (effects.action === "reconnect") {
             console.log(
@@ -6195,49 +6324,64 @@ const ChatPanelContent = observer(function ChatPanelContent({
             guardedAutoResumeStream("stall-recovery")
             return
           }
-          if (effects.interruptStuckTools) {
-            // Terminal or persistently-unknown: close the UI-side tool
-            // invocations as interrupted. Previously the stream status fell
-            // back to "ready" while these parts stayed input-available,
-            // leaving permanent spinners with no Stop button.
-            setMessages((prev) =>
-              markStuckToolsInterrupted(prev, "Connection interrupted"),
-            )
-            // The stall watchdog reports its own trips; this give-up path
-            // (stream ended without turn-complete and could not be
-            // reattached) shows the same banner, so report it separately.
-            try {
-              Sentry.captureMessage("chat_stall_recovery_gave_up", {
-                level: "warning",
-                tags: {
-                  projectId: projectId ?? "(none)",
-                  chatSessionId: recoverySessionId,
-                  turnStatus,
-                },
-                extra: {
-                  attempt,
-                  maxAttempts: MAX_ATTEMPTS,
-                  turnId: recoveryTurnId,
-                  fromSeq: fromSeqAtStall,
-                  isLocalAgent: !!localAgentUrl,
-                },
-              })
-            } catch (err) {
-              console.warn("[ChatPanel] Sentry.captureMessage threw:", err)
+          if (effects.action === "reload-history") {
+            if (effects.interruptStuckTools) {
+              // Closes UI-side tool invocations in case the reload fails;
+              // a successful reload replaces them with the persisted state.
+              setMessages((prev) =>
+                markStuckToolsInterrupted(prev, "Connection interrupted"),
+              )
             }
-            if (effects.showRetryBanner) {
-              setErrorDismissed(false)
-              setEmptyResponseError(STALL_TIMEOUT_USER_MESSAGE)
+            Sentry.addBreadcrumb({
+              category: "chat.retry",
+              level: "info",
+              message: `stall recovery: turn ${recoveryTurnId} ended (${turnStatus}); reloading history`,
+            })
+            if (turnStatus === "unknown") {
+              // No buffer for a turn we were streaming: worth knowing how often.
+              try {
+                Sentry.captureMessage("chat_stall_recovery_gave_up", {
+                  level: "warning",
+                  tags: {
+                    projectId: projectId ?? "(none)",
+                    chatSessionId: recoverySessionId,
+                    turnStatus,
+                    resolution: "reloaded_history",
+                  },
+                  extra: {
+                    attempt,
+                    unknownProbes,
+                    turnId: recoveryTurnId,
+                    fromSeq: fromSeqAtStall,
+                    isLocalAgent: !!localAgentUrl,
+                  },
+                })
+              } catch (err) {
+                console.warn("[ChatPanel] Sentry.captureMessage threw:", err)
+              }
+            }
+            if (effects.reloadHistory) {
+              await reloadPersistedHistory(recoverySessionId).catch((err) =>
+                console.warn("[ChatPanel] stall recovery history reload failed:", err),
+              )
             }
             return
           }
-          // retry-later: brief backoff, then probe again.
-          await new Promise<void>((r) =>
-            setTimeout(r, computeRecoveryBackoff(attempt)),
+          // retry-later: back off (cut short by "Retry now", foregrounding or
+          // the network coming back), then probe again.
+          const offline = turnStatus === "unreachable" && isDeviceOffline()
+          setStallRetry((prev) =>
+            prev && prev.offline === offline ? prev : { startedAt, offline },
           )
+          const backoff =
+            turnStatus === "unreachable"
+              ? computeRecoveryBackoff(++unreachableProbes)
+              : computeRecoveryBackoff(unknownProbes, { maxMs: 5_000 })
+          await waitForRetry(backoff, chatRetryWaker)
         }
       } finally {
         setStreamAutoRecovering(false)
+        setStallRetry(null)
       }
     })()
   }, [
@@ -6248,8 +6392,168 @@ const ChatPanelContent = observer(function ChatPanelContent({
     expoFetch,
     nativeHeaders,
     guardedAutoResumeStream,
+    reloadPersistedHistory,
+    chatRetryWaker,
+    setMessages,
   ])
   stallRecoveryRef.current = attemptStallRecovery
+
+  // ─── Inline retry status actions ─────────────────────────────────────────
+
+  // A runtime retry heartbeat can't outlive the stream that carried it.
+  useEffect(() => {
+    if (!isStreaming) setConnectivityWait(null)
+  }, [isStreaming])
+
+  // Coming back to the app is a good moment to retry right away.
+  useEffect(() => {
+    const sub = AppState.addEventListener("change", (next) => {
+      if (next === "active") chatRetryWaker.wake()
+    })
+    return () => sub.remove()
+  }, [chatRetryWaker])
+
+  const handleRetryNow = useCallback(() => {
+    const retrying = turnRetryStatusRef.current
+    if (retrying) {
+      recordRetryUserAction(retryTelemetryCtxRef.current, "retry_now_clicked", {
+        cause: retrying.cause,
+        elapsedMs: Date.now() - retrying.startedAt,
+      })
+    }
+    // Client-side waits (network retry, stall probe) …
+    chatRetryWaker.wake()
+    // … and the runtime's provider backoff / connectivity park.
+    const req = buildRetryNowRequest({
+      localAgentUrl,
+      projectId,
+      workspaceId: chatWorkspaceId,
+      apiBaseUrl: API_URL!,
+      platform: Platform.OS,
+      getCookie: () => authClient.getCookie(),
+      chatSessionId: currentSessionId,
+    })
+    if (req) {
+      const fetchFn = expoFetch || fetch
+      fetchFn(req.url, req.init).catch((err) => {
+        console.warn("[ChatPanel] Failed to send retry-now to backend:", err)
+      })
+    }
+  }, [
+    chatRetryWaker,
+    localAgentUrl,
+    projectId,
+    chatWorkspaceId,
+    currentSessionId,
+    expoFetch,
+  ])
+
+  // One-tap alternative when the provider is overloaded. Never automatic:
+  // the user picked their model, so we only suggest.
+  const pickerModels = useModelPickerList()
+  const similarModel = useMemo(
+    () => pickSimilarModel(selectedModel, pickerModels),
+    [selectedModel, pickerModels],
+  )
+  const handleSwitchToSimilarModel = useCallback(() => {
+    if (!similarModel || !currentSessionId) return
+    const retrying = turnRetryStatusRef.current
+    if (retrying) {
+      recordRetryUserAction(
+        retryTelemetryCtxRef.current,
+        "switched_model_during_overload",
+        {
+          cause: retrying.cause,
+          elapsedMs: Date.now() - retrying.startedAt,
+          toModel: similarModel.id,
+        },
+      )
+    }
+    handleModelChange(similarModel.id)
+    const sessionId = currentSessionId
+    // Stop the retrying turn, wait for the runtime to let go of it, then pick
+    // up from the preserved context on the new model.
+    handleStop()
+    void (async () => {
+      const deadline = Date.now() + 10_000
+      while (Date.now() < deadline) {
+        if (currentSessionIdRef.current !== sessionId) return
+        let status: ChatTurnStatus = "unknown"
+        if (API_URL) {
+          status = await probeChatTurnStatus({
+            url: buildChatTurnUrl(
+              API_URL,
+              projectId,
+              localAgentUrl,
+              sessionId,
+              chatWorkspaceId,
+            ),
+            fetch: expoFetch,
+            headers: nativeHeaders ? nativeHeaders() : undefined,
+            credentials: Platform.OS === "web" ? "include" : undefined,
+          })
+        }
+        if (status !== "active" && !isTransportStreamingRef.current) break
+        await new Promise<void>((r) => setTimeout(r, 300))
+      }
+      if (currentSessionIdRef.current !== sessionId) return
+      sendMessageInternal("Continue", undefined, similarModel.id, {
+        continue: true,
+      }).catch((err) =>
+        console.error("[ChatPanel] Continue on switched model failed:", err),
+      )
+    })()
+  }, [
+    similarModel,
+    currentSessionId,
+    handleModelChange,
+    handleStop,
+    projectId,
+    localAgentUrl,
+    chatWorkspaceId,
+    expoFetch,
+    nativeHeaders,
+    sendMessageInternal,
+  ])
+
+  // How often do users actually sit through a long retry? Once per episode.
+  const longRetryReportedRef = useRef<number | null>(null)
+  useEffect(() => {
+    if (!turnRetryStatus) return
+    const { startedAt, cause, reason, suspectedDeterministic } = turnRetryStatus
+    if (longRetryReportedRef.current === startedAt) return
+    const fire = () => {
+      longRetryReportedRef.current = startedAt
+      recordClientRetryLong(retryTelemetryCtxRef.current, {
+        cause,
+        reason,
+        elapsedMs: Date.now() - startedAt,
+        suspectedDeterministic,
+      })
+    }
+    const remaining = startedAt + RETRY_STAGE_LONG_MS - Date.now()
+    if (remaining <= 0) {
+      fire()
+      return
+    }
+    const timer = setTimeout(fire, remaining)
+    return () => clearTimeout(timer)
+  }, [turnRetryStatus])
+
+  const turnRetryContextValue = useMemo(
+    () => ({
+      status: turnRetryStatus,
+      onRetryNow: handleRetryNow,
+      switchModel:
+        similarModel && turnRetryStatus?.cause === "provider"
+          ? {
+              label: similarModel.shortDisplayName ?? similarModel.displayName,
+              onSwitch: handleSwitchToSimilarModel,
+            }
+          : null,
+    }),
+    [turnRetryStatus, handleRetryNow, similarModel, handleSwitchToSimilarModel],
+  )
 
   // ─── Edit / Retry from arbitrary user message ────────────────────────────
   //
@@ -7062,61 +7366,6 @@ const ChatPanelContent = observer(function ChatPanelContent({
   }, [handleSubmitQuestionResponse, pendingQuestion, questionPresentation])
   useDockPanel(questionDockDescriptor, chatDockStore)
 
-  const connectivityDockDescriptor = useMemo<DockPanelDescriptor | null>(() => {
-    if (!((connectivityWait || justReconnected) && !errorDismissed)) return null
-    return {
-      id: "connectivity",
-      kind: "blocking",
-      order: 2,
-      title: justReconnected ? "Back online" : "Waiting for connection",
-      icon: WifiOff,
-      accent: "warning",
-      headerActions: !justReconnected ? (
-        <Pressable
-          onPress={handleStop}
-          accessibilityRole="button"
-          accessibilityLabel="Cancel and stop waiting for connection"
-          className="shrink-0 rounded-md border border-orange-400/30 px-2 py-1"
-        >
-          <Text className="text-xs font-medium text-orange-700 dark:text-orange-300">
-            Cancel
-          </Text>
-        </Pressable>
-      ) : undefined,
-      render: () => (
-        <View className="flex-row items-start gap-1.5">
-          {justReconnected ? (
-            <RefreshCw
-              size={14}
-              className="h-3.5 w-3.5 shrink-0 mt-0.5 text-orange-600 dark:text-orange-400"
-            />
-          ) : (
-            <WifiOff
-              size={14}
-              className="h-3.5 w-3.5 shrink-0 mt-0.5 text-orange-600 dark:text-orange-400"
-            />
-          )}
-          <Text className="flex-1 text-xs text-orange-700 dark:text-orange-300">
-            {justReconnected
-              ? "Back online — resuming\u2026"
-              : `No internet connection. Waiting to resume${
-                  connectivityWaitElapsedLabel
-                    ? ` (${connectivityWaitElapsedLabel})`
-                    : ""
-                }\u2026`}
-          </Text>
-        </View>
-      ),
-    }
-  }, [
-    connectivityWait,
-    justReconnected,
-    errorDismissed,
-    connectivityWaitElapsedLabel,
-    handleStop,
-  ])
-  useDockPanel(connectivityDockDescriptor, chatDockStore)
-
   const usageLimitDockDescriptor = useMemo<DockPanelDescriptor | null>(() => {
     if (!usageLimitNotice || usageLimitNotice.sessionId !== currentSessionId) {
       return null
@@ -7277,10 +7526,12 @@ const ChatPanelContent = observer(function ChatPanelContent({
   useDockPanel(toolErrorDockDescriptor, chatDockStore)
 
   const errorDockDescriptor = useMemo<DockPanelDescriptor | null>(() => {
-    if (!(
-      ((error || emptyResponseError) && !errorDismissed) ||
+    // While auto-recovering, the turn shows an inline "Reconnecting…" status
+    // instead of an error.
+    if (
+      !((error || emptyResponseError) && !errorDismissed) ||
       streamAutoRecovering
-    ))
+    )
       return null
     return {
       id: "error",
@@ -7295,7 +7546,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
         setErrorDismissed(true)
       },
       headerActions:
-        tunnelReconnecting || streamAutoRecovering ? (
+        tunnelReconnecting ? (
           <Text
             className={cn(
               "text-xs font-medium",
@@ -7664,12 +7915,14 @@ const ChatPanelContent = observer(function ChatPanelContent({
                       }
                     >
                       <TurnFooterProvider {...turnFooterValue}>
-                        <TurnList
-                          messages={displayMessages}
-                          isStreaming={isStreaming}
-                          phase={phase}
-                          subagentToolCalls={accumulatedSubagentTools}
-                        />
+                        <TurnRetryStatusProvider value={turnRetryContextValue}>
+                          <TurnList
+                            messages={displayMessages}
+                            isStreaming={isStreaming}
+                            phase={phase}
+                            subagentToolCalls={accumulatedSubagentTools}
+                          />
+                        </TurnRetryStatusProvider>
                       </TurnFooterProvider>
                     </MessageEditProvider>
                   ) : !isStreaming &&

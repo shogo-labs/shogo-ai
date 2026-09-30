@@ -31,10 +31,20 @@
  *
  * `unknown` is returned when the runtime has no buffer for this session at
  * all — either it never started a turn, or the buffer was evicted past the
- * grace window. Network failures, JSON parse errors, and 5xx upstreams all
- * also collapse to `unknown` so the client never blocks on a probe failure.
+ * grace window — and for malformed responses.
+ *
+ * `unreachable` means the probe never got an answer from the runtime: a
+ * network failure or a 5xx from the API/gateway. The turn may well still be
+ * running, so callers that recover stalls should keep probing rather than
+ * treat it as "no live turn".
  */
-export type ChatTurnStatus = "active" | "completed" | "failed" | "aborted" | "unknown"
+export type ChatTurnStatus =
+  | "active"
+  | "completed"
+  | "failed"
+  | "aborted"
+  | "unknown"
+  | "unreachable"
 
 export interface ProbeTurnStatusOptions {
   /** Resolved chat-turn URL — typically built via `buildChatTurnUrl`. */
@@ -76,9 +86,8 @@ export function normalizeTurnStatus(raw: unknown): ChatTurnStatus {
 }
 
 /**
- * Fetch the durable-turn snapshot and return its status. Never throws —
- * a probe failure is treated as "no live turn" so a flaky network can't
- * permanently strand the user on a half-rendered chat.
+ * Fetch the durable-turn snapshot and return its status. Never throws.
+ * Aborts resolve to `unknown`; network failures and 5xx to `unreachable`.
  */
 export async function probeChatTurnStatus(
   opts: ProbeTurnStatusOptions,
@@ -94,12 +103,15 @@ export async function probeChatTurnStatus(
 
     // 404 ⇒ runtime has no buffer for this session — treat as unknown.
     if (res.status === 404 || res.status === 204) return "unknown"
+    if (res.status >= 500) return "unreachable"
     if (!res.ok) return "unknown"
 
     const body = (await res.json().catch(() => null)) as { status?: unknown } | null
     return normalizeTurnStatus(body?.status)
-  } catch {
-    // Network error, abort, or otherwise — fall back to "no live turn".
-    return "unknown"
+  } catch (error) {
+    if (opts.signal?.aborted || (error instanceof Error && error.name === "AbortError")) {
+      return "unknown"
+    }
+    return "unreachable"
   }
 }

@@ -33,7 +33,11 @@ export {
 export {
   createAutoResumingFetch,
   defaultBuildResumeUrl,
+  ChatRetryWaker,
+  waitForRetry,
   type AutoResumingFetchOptions,
+  type AutoResumeRetryState,
+  type RetryWakeSource,
 } from './auto-resuming-fetch'
 
 export {

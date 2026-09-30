@@ -15,8 +15,9 @@
  * so the auto-recovery layer cannot reattach and the UI falls through to the
  * static "tap Retry" banner even though the agent may still be running.
  *
- * This test drives the REAL probe against a 404 and confirms the full chain
- * lands on "give-up".
+ * FIXED: a persistently-unknown turn now reloads the persisted history instead
+ * of showing the banner, and a network failure on the probe is `unreachable`
+ * (keep probing), not `unknown`.
  *
  * Run: bun test apps/mobile/components/chat/__tests__/stall-recovery.repro.test.ts
  */
@@ -26,14 +27,14 @@ import { decideStallRecovery } from '../stall-recovery'
 
 const TURN_URL = 'https://api.example.com/api/projects/d9d1f5a6/chat/98731fc1/turn'
 
-describe('REPRODUCTION: /turn 404 (lost session affinity) → auto-recovery gives up', () => {
+describe('REPRODUCTION: /turn 404 (lost session affinity) → auto-recovery', () => {
   test('a 404 turn probe normalizes to "unknown"', async () => {
     const fetch404: any = async () => new Response('404 Not Found', { status: 404 })
     const status = await probeChatTurnStatus({ url: TURN_URL, fetch: fetch404 })
     expect(status).toBe('unknown')
   })
 
-  test('bounded poll on a persistently-404 turn exhausts and gives up', async () => {
+  test('bounded poll on a persistently-404 turn ends by reloading history', async () => {
     const MAX_ATTEMPTS = 5
     const fetch404: any = async () => new Response('404 Not Found', { status: 404 })
 
@@ -44,18 +45,18 @@ describe('REPRODUCTION: /turn 404 (lost session affinity) → auto-recovery give
     }
 
     // Every intermediate attempt only buys "retry-later"; the final attempt
-    // gives up → falls through to the manual banner. Never "reconnect".
+    // reloads the persisted history. Never "reconnect".
     expect(actions).not.toContain('reconnect')
-    expect(actions[actions.length - 1]).toBe('give-up')
+    expect(actions[actions.length - 1]).toBe('reload-history')
     expect(actions.slice(0, -1).every((a) => a === 'retry-later')).toBe(true)
   })
 
-  test('a raw network throw on the probe also collapses to unknown → give-up', async () => {
+  test('a raw network throw on the probe is unreachable → keep retrying', async () => {
     const fetchThrows: any = async () => {
       throw new TypeError('network error')
     }
     const turnStatus = await probeChatTurnStatus({ url: TURN_URL, fetch: fetchThrows })
-    expect(turnStatus).toBe('unknown')
-    expect(decideStallRecovery({ turnStatus, attempt: 5, maxAttempts: 5 })).toBe('give-up')
+    expect(turnStatus).toBe('unreachable')
+    expect(decideStallRecovery({ turnStatus, attempt: 5, maxAttempts: 5 })).toBe('retry-later')
   })
 })

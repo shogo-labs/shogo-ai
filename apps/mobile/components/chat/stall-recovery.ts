@@ -23,11 +23,13 @@
 
 import type { ChatTurnStatus } from "./probe-turn-status"
 
-export type StallRecoveryAction = "reconnect" | "retry-later" | "give-up"
+export type StallRecoveryAction = "reconnect" | "retry-later" | "reload-history"
 
 export interface StallRecoveryEffects {
   action: StallRecoveryAction
   interruptStuckTools: boolean
+  /** Replace the rendered turn with the persisted history (the turn ended server-side). */
+  reloadHistory: boolean
   showRetryBanner: boolean
 }
 
@@ -36,7 +38,7 @@ export interface StallRecoveryInput {
   turnStatus: ChatTurnStatus
   /** 1-based index of the probe attempt that produced `turnStatus`. */
   attempt: number
-  /** Total probe attempts allowed before giving up. */
+  /** Probe attempts allowed for an `unknown` answer before reloading history. */
   maxAttempts: number
 }
 
@@ -69,17 +71,19 @@ export function shouldAutoRecoverStalledTurn({
  *
  *  - `active`                          -> reconnect (agent still running; reattach
  *                                         to the live buffer via `resumeStream()`).
+ *  - `unreachable`                     -> retry-later, without limit (we couldn't
+ *                                         reach the server; the turn may still be
+ *                                         running — keep trying until the network
+ *                                         is back or the user stops).
  *  - `unknown` and attempts remain     -> retry-later (the buffer may not be
  *                                         published yet, or the probe raced a
- *                                         warm-pool/pod transition — back off and
- *                                         probe again).
- *  - terminal (`completed`/`failed`/`aborted`) -> give-up (the turn really ended;
- *                                         loaded history already reflects it).
- *  - `unknown` with no attempts left   -> give-up (fall through to the manual
- *                                         Retry banner).
+ *                                         warm-pool/pod transition).
+ *  - terminal (`completed`/`failed`/`aborted`), or `unknown` with no attempts
+ *    left                              -> reload-history (the turn ended
+ *                                         server-side; the persisted messages are
+ *                                         the truth, so show them — not an error).
  *
- * Critically this NEVER returns an action that re-sends or truncates — the only
- * "active" branch reattaches to existing work, exactly like manual Retry.
+ * Critically this NEVER returns an action that re-sends or truncates.
  */
 export function decideStallRecovery({
   turnStatus,
@@ -87,8 +91,9 @@ export function decideStallRecovery({
   maxAttempts,
 }: StallRecoveryInput): StallRecoveryAction {
   if (turnStatus === "active") return "reconnect"
+  if (turnStatus === "unreachable") return "retry-later"
   if (turnStatus === "unknown" && attempt < maxAttempts) return "retry-later"
-  return "give-up"
+  return "reload-history"
 }
 
 /** UI side effects for a recovery decision, kept pure for component tests. */
@@ -96,10 +101,12 @@ export function getStallRecoveryEffects(
   input: StallRecoveryInput,
 ): StallRecoveryEffects {
   const action = decideStallRecovery(input)
+  const ended = action === "reload-history"
   return {
     action,
-    interruptStuckTools: action === "give-up",
-    showRetryBanner: action === "give-up",
+    interruptStuckTools: ended,
+    reloadHistory: ended,
+    showRetryBanner: false,
   }
 }
 
@@ -130,12 +137,12 @@ export function markStuckToolsInterrupted<
 export interface RecoveryBackoffOptions {
   /** Initial delay in ms. Default 600. */
   initialMs?: number
-  /** Max delay in ms. Default 5000. */
+  /** Max delay in ms. Default 30000. */
   maxMs?: number
 }
 
 /**
- * Exponential backoff (capped) for the bounded recovery poll. Matches the
+ * Exponential backoff (capped) for the recovery poll. Matches the
  * shape used by `auto-resuming-fetch` so the two recovery layers feel
  * consistent. `attempt` is 1-based; attempt 1 returns `initialMs`.
  */
@@ -144,7 +151,7 @@ export function computeRecoveryBackoff(
   opts: RecoveryBackoffOptions = {},
 ): number {
   const initialMs = opts.initialMs ?? 600
-  const maxMs = opts.maxMs ?? 5_000
+  const maxMs = opts.maxMs ?? 30_000
   const n = Math.max(1, attempt)
   return Math.min(initialMs * Math.pow(2, n - 1), maxMs)
 }
