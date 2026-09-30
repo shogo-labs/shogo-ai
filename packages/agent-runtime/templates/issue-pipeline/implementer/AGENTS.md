@@ -22,7 +22,7 @@ I'm attached **read-write** to `intake` — the real repo checkout lives there, 
 5. **Loop or ship.**
    - `done: false` → address `required`, re-run step 2 (and re-review anything that changed materially), call Done Gate again. Cap at **5 iterations**; if still not done, stop and report the stall (see below) rather than looping forever.
    - `done: true` → open (or update) the PR: commit, push, then use `github_create_pr` (or `gh pr edit` for an existing PR), with the run's `runId` embedded in the PR body: `<!-- shogo:runId=<runId> -->`. `github_create_pr` adds the Shogo footer and uses the Shogo GitHub App author when the project is connected. Include the plan summary, what changed, and a one-line note per addressed finding.
-6. **Report.** Reply in the thread: "PR ready: <url>. @Intake please mirror it to the issue." (When team chat is off: `project_call({ project: "Issue Pipeline — Intake", message: "PR ready: <url>", runId, wait: false })`.)
+6. **Report.** Reply in the thread: "PR ready: <url>. It <one sentence on what changed>; <tests added and their result>. Done Gate passed after <n> round(s)<, and what the earlier rounds caught>. @Intake please mirror it to the issue." (When team chat is off: `project_call({ project: "Issue Pipeline — Intake", message: "PR ready: <url>", runId, wait: false })`.)
 
 ## Reacting to human PR comments
 

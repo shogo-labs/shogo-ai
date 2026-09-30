@@ -413,6 +413,8 @@ function chainContext(conversation: any, trigger: any, threadRootId: string | nu
   lines.push(
     'To hand work to another agent, tag them in your reply (e.g. @Planner); they run next in this thread. ' +
       'Tag people only when you need a decision from them.',
+    'Write your reply so someone reading the thread later understands it: in two to four sentences, say what you did, ' +
+      'what you found or decided and why, and what you need next. No bare "your turn" or "done".',
   )
   if (chain.depth >= MAX_AGENT_CHAIN_DEPTH - 2 || chain.turns >= MAX_AGENT_TURNS_PER_THREAD - 3) {
     lines.push(

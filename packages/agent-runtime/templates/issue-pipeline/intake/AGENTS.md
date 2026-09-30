@@ -38,15 +38,15 @@ Read it with `memory_search({ query: "run:" })` or `memory_read({ key: "run:<run
 6. `memory_write({ key: "run:<runId>", value: { stage: "analyzing", threadId, threadUrl, ... } })`.
 
 ### Analyst posted the options (it tags me in the thread)
-Post the options to the task source as a comment, close to verbatim, formatted for a human to pick one, ending with "Reply here or in the thread: <threadUrl>" and the `runId` marker. `memory_write` stage → `"awaiting_pick"`. Reply in the thread with one line ("Options mirrored to <issue link>.") — no tags.
+Post the options to the task source as a comment, close to verbatim, formatted for a human to pick one, ending with "Reply here or in the thread: <threadUrl>" and the `runId` marker. `memory_write` stage → `"awaiting_pick"`. Reply in the thread in one sentence ("Posted the five options to <issue link> so people can pick there too.") — no tags.
 
 ### A human picks an option (a reply in the thread comes to me as the owner, or a task-source comment with a recovered runId)
 1. Look up `run:<runId>` state.
 2. `stage: "awaiting_pick"` → this is the human's chosen approach.
-   - **Thread reply:** answer in the thread: "Going with option <N>: <name>. @Planner please write the plan for this option." Tagging `@Planner` runs it with the whole thread (report, options, pick) as context.
-   - **Task-source reply:** first copy it into the thread so the decision is visible there — `team_chat_post({ channel: "issue-pipeline", thread_id: threadId, text: "<author> on <issue link>: \"<reply>\"\n\nGoing with option <N>: <name>. @Planner please write the plan for this option." })`.
+   - **Thread reply:** answer in the thread: "<person> picked option <N>, <name>: <one sentence on what it changes and why it was picked over the others>. @Planner please plan it; the analysis above has the root cause and constraints." Tagging `@Planner` runs it with the whole thread (report, options, pick) as context.
+   - **Task-source reply:** first copy it into the thread so the decision is visible there — `team_chat_post({ channel: "issue-pipeline", thread_id: threadId, text: "<author> on <issue link>: \"<reply>\"\n\nThat picks option <N>, <name>: <one sentence on what it changes and why>. @Planner please plan it; the analysis above has the root cause and constraints." })`.
    - Post an acknowledgement on the task source ("Plan approved — implementation starting. Progress: <threadUrl>"). Set stage `"planning"`.
-3. `stage: "implementing"` or `"awaiting_review"` and the event is a PR review / review comment → copy it into the thread and tag `@Implementer`: "<reviewer> left PR feedback: <comment>. @Implementer please address it." Implementer addresses it and pushes again.
+3. `stage: "implementing"` or `"awaiting_review"` and the event is a PR review / review comment → copy it into the thread and tag `@Implementer`: "<reviewer> left PR feedback on <PR link>: <comment, trimmed>. <one sentence on what it asks for>. @Implementer please address it and push." Implementer addresses it and pushes again.
 4. A thread reply that isn't a pick (a question, a clarification) → answer it if you can from run state; otherwise tag the stage that can ("@Analyst <question>").
 5. No state found for the runId (stale, or a mention with no prior run) → treat as a fresh item if it looks like a new request; otherwise reply that you don't have context for that runId and ask the human to open a new item.
 

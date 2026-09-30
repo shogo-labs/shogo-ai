@@ -168,6 +168,7 @@ describe('team chat prompt section', () => {
   test('covers hand-offs, tagging people, and thread ownership', () => {
     expect(TEAM_CHAT_GUIDE).toContain('## Team Chat')
     expect(TEAM_CHAT_GUIDE).toContain('Hand work to another agent by tagging it')
+    expect(TEAM_CHAT_GUIDE).toContain('what you did, what you found or decided and why, and what you need next')
     expect(TEAM_CHAT_GUIDE).toContain('Tag people only when you need a decision')
     expect(TEAM_CHAT_GUIDE).toContain('team_chat_dm')
     expect(TEAM_CHAT_GUIDE).toContain('you own that thread')

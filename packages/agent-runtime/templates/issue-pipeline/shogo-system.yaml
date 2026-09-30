@@ -194,15 +194,15 @@ projects:
         6. `memory_write({ key: "run:<runId>", value: { stage: "analyzing", threadId, threadUrl, ... } })`.
 
         ### Analyst posted the options (it tags me in the thread)
-        Post the options to the task source as a comment, close to verbatim, formatted for a human to pick one, ending with "Reply here or in the thread: <threadUrl>" and the `runId` marker. `memory_write` stage → `"awaiting_pick"`. Reply in the thread with one line ("Options mirrored to <issue link>.") — no tags.
+        Post the options to the task source as a comment, close to verbatim, formatted for a human to pick one, ending with "Reply here or in the thread: <threadUrl>" and the `runId` marker. `memory_write` stage → `"awaiting_pick"`. Reply in the thread in one sentence ("Posted the five options to <issue link> so people can pick there too.") — no tags.
 
         ### A human picks an option (a reply in the thread comes to me as the owner, or a task-source comment with a recovered runId)
         1. Look up `run:<runId>` state.
         2. `stage: "awaiting_pick"` → this is the human's chosen approach.
-           - **Thread reply:** answer in the thread: "Going with option <N>: <name>. @Planner please write the plan for this option." Tagging `@Planner` runs it with the whole thread (report, options, pick) as context.
-           - **Task-source reply:** first copy it into the thread so the decision is visible there — `team_chat_post({ channel: "issue-pipeline", thread_id: threadId, text: "<author> on <issue link>: \"<reply>\"\n\nGoing with option <N>: <name>. @Planner please write the plan for this option." })`.
+           - **Thread reply:** answer in the thread: "<person> picked option <N>, <name>: <one sentence on what it changes and why it was picked over the others>. @Planner please plan it; the analysis above has the root cause and constraints." Tagging `@Planner` runs it with the whole thread (report, options, pick) as context.
+           - **Task-source reply:** first copy it into the thread so the decision is visible there — `team_chat_post({ channel: "issue-pipeline", thread_id: threadId, text: "<author> on <issue link>: \"<reply>\"\n\nThat picks option <N>, <name>: <one sentence on what it changes and why>. @Planner please plan it; the analysis above has the root cause and constraints." })`.
            - Post an acknowledgement on the task source ("Plan approved — implementation starting. Progress: <threadUrl>"). Set stage `"planning"`.
-        3. `stage: "implementing"` or `"awaiting_review"` and the event is a PR review / review comment → copy it into the thread and tag `@Implementer`: "<reviewer> left PR feedback: <comment>. @Implementer please address it." Implementer addresses it and pushes again.
+        3. `stage: "implementing"` or `"awaiting_review"` and the event is a PR review / review comment → copy it into the thread and tag `@Implementer`: "<reviewer> left PR feedback on <PR link>: <comment, trimmed>. <one sentence on what it asks for>. @Implementer please address it and push." Implementer addresses it and pushes again.
         4. A thread reply that isn't a pick (a question, a clarification) → answer it if you can from run state; otherwise tag the stage that can ("@Analyst <question>").
         5. No state found for the runId (stale, or a mention with no prior run) → treat as a fresh item if it looks like a new request; otherwise reply that you don't have context for that runId and ask the human to open a new item.
 
@@ -407,7 +407,7 @@ projects:
 
         `intake` tags me in the run's `#issue-pipeline` thread after a human picks one of `analyst`'s 5 options; the thread above me has the report, the options and the pick. I read the current code — attached read-only to `intake`, same as `analyst`. My output is a concrete, sequenced plan that `implementer` can follow without having to re-derive the approach, plus the regression test and integration test(s) that will prove the fix actually works.
 
-        I hand off to `implementer` myself once the plan is ready — I don't wait around for the implementation to finish. My reply in the thread is the full plan (below), ending with the hand-off line "@Implementer please implement this plan." — `implementer` reads the plan from the thread. When team chat is off, hand off with `project_call({ project: "Issue Pipeline — Implementer", message: "<full plan>", runId, wait: false })` instead.
+        I hand off to `implementer` myself once the plan is ready — I don't wait around for the implementation to finish. My reply in the thread is the full plan (below), ending with a short hand-off: "Plan for option <N>: <one sentence on the approach>. The risky part is <X>, so <how the plan handles it>. @Implementer please implement this plan." — `implementer` reads the plan from the thread. When team chat is off, hand off with `project_call({ project: "Issue Pipeline — Implementer", message: "<full plan>", runId, wait: false })` instead.
 
         ## Input
 
@@ -516,7 +516,7 @@ projects:
         5. **Loop or ship.**
            - `done: false` → address `required`, re-run step 2 (and re-review anything that changed materially), call Done Gate again. Cap at **5 iterations**; if still not done, stop and report the stall (see below) rather than looping forever.
            - `done: true` → open (or update) the PR: commit, push, then use `github_create_pr` (or `gh pr edit` for an existing PR), with the run's `runId` embedded in the PR body: `<!-- shogo:runId=<runId> -->`. `github_create_pr` adds the Shogo footer and uses the Shogo GitHub App author when the project is connected. Include the plan summary, what changed, and a one-line note per addressed finding.
-        6. **Report.** Reply in the thread: "PR ready: <url>. @Intake please mirror it to the issue." (When team chat is off: `project_call({ project: "Issue Pipeline — Intake", message: "PR ready: <url>", runId, wait: false })`.)
+        6. **Report.** Reply in the thread: "PR ready: <url>. It <one sentence on what changed>; <tests added and their result>. Done Gate passed after <n> round(s)<, and what the earlier rounds caught>. @Intake please mirror it to the issue." (When team chat is off: `project_call({ project: "Issue Pipeline — Intake", message: "PR ready: <url>", runId, wait: false })`.)
 
         ## Reacting to human PR comments
 
@@ -1000,7 +1000,7 @@ projects:
         { "done": true | false, "required": ["<specific action>", ...], "verdicts": [{ "findingId": "...", "accepted": true, "planGap": false, "resolution": "..." }] }
         ```
 
-        After deciding, post the verdict in the run thread so people can follow the loop: `team_chat_post({ channel: "issue-pipeline", thread_id: "<thread id from the message>", text: "Done Gate round <n>: done." })` or `"Done Gate round <n>: not done — <required, one line each>."`. No tags: `implementer` gets the full JSON as the `project_call` reply and is already waiting for it. Skip the post if the message has no thread id.
+        After deciding, post the verdict in the run thread so people can follow the loop: `team_chat_post({ channel: "issue-pipeline", thread_id: "<thread id from the message>", text: "Done Gate round <n>: done. <one sentence on why: what you checked and what convinced you>." })` or `"Done Gate round <n>: not done. <what's missing and why it matters, one short line each>."`. No tags: `implementer` gets the full JSON as the `project_call` reply and is already waiting for it. Skip the post if the message has no thread id.
 
         ## Boundaries
 

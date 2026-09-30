@@ -23,8 +23,8 @@ const NAMES = {
   scout: `ChainScout${suffix}`,
   planner: `ChainPlanner${suffix}`,
   builder: `ChainBuilder${suffix}`,
-  ping: `LoopPing${suffix}`,
-  pong: `LoopPong${suffix}`,
+  writer: `NotesWriter${suffix}`,
+  reviewer: `NotesReviewer${suffix}`,
 }
 
 function writeScript() {
@@ -34,14 +34,42 @@ function writeScript() {
     JSON.stringify({
       delayMs: 150,
       agents: {
-        [NAMES.scout]: [{ reply: `Found the root cause. @${NAMES.planner} please plan the fix.` }],
+        [NAMES.scout]: [{
+          reply:
+            "Reproduced issue 12: slugify() leaves a trailing dash when a title ends in punctuation, because it strips " +
+            "punctuation after collapsing dashes. The existing tests never cover trailing punctuation, which is how it " +
+            `slipped through. @${NAMES.planner} can you plan a fix?`,
+        }],
         [NAMES.planner]: [
-          { when: "option B", reply: `Plan for option B is ready. @${NAMES.builder} please implement it.` },
-          { reply: "Two options: A (patch) or B (refactor). {{origin}}, which one?" },
+          {
+            when: "option B",
+            reply:
+              "Going with option B since it also fixes the double-dash bug from issue 9. The plan is to replace the two " +
+              "passes with one regex that turns runs of non-alphanumerics into a dash, then trim dashes from both ends, " +
+              `with tests for trailing punctuation and repeated separators. @${NAMES.builder} please implement this.`,
+          },
+          {
+            reply:
+              "There are two ways to fix this. Option A swaps the order of the two replace calls: one line and low risk, " +
+              "but issue 9 stays open. Option B rewrites slugify() as a single regex pass, which fixes both. " +
+              "{{origin}}, A or B?",
+          },
         ],
-        [NAMES.builder]: [{ reply: "PR ready: https://example.com/pr/1" }],
-        [NAMES.ping]: [{ reply: `Your turn @${NAMES.pong}` }],
-        [NAMES.pong]: [{ reply: `Back to you @${NAMES.ping}` }],
+        [NAMES.builder]: [{
+          reply:
+            "PR ready: https://example.com/pr/1. slugify() now does a single regex pass and trims dashes from both ends. " +
+            "I added four tests for trailing punctuation and repeated separators, and the full suite passes.",
+        }],
+        [NAMES.writer]: [{
+          reply:
+            "I drafted the release note for the slugify fix, covering only user-visible behavior. It says titles ending in " +
+            `punctuation no longer get a trailing dash. @${NAMES.reviewer} can you check it's accurate before I post it?`,
+        }],
+        [NAMES.reviewer]: [{
+          reply:
+            "The draft also claims the double-dash bug from issue 9 is fixed, but that's only true if option B shipped. " +
+            `@${NAMES.writer} please check which option merged and update the note.`,
+        }],
       },
     }),
   )
@@ -142,13 +170,13 @@ test.describe("Team chat: agents hand off to each other", () => {
 
     const rootId = await openThread(page, channelId, "triage issue 12")
 
-    await expect(page.getByText("Found the root cause.", { exact: false })).toBeVisible({ timeout: 30_000 })
-    await expect(page.getByText("Two options: A (patch) or B (refactor).", { exact: false })).toBeVisible({ timeout: 30_000 })
-    await expect(page.getByText("Plan for option B", { exact: false })).toHaveCount(0)
+    await expect(page.getByText("Reproduced issue 12", { exact: false })).toBeVisible({ timeout: 30_000 })
+    await expect(page.getByText("There are two ways to fix this.", { exact: false })).toBeVisible({ timeout: 30_000 })
+    await expect(page.getByText("Going with option B", { exact: false })).toHaveCount(0)
 
     // No mention: the answer goes to the agent that asked.
     await compose(page, page.getByLabel("Message", { exact: true }).last(), ["go with option B"])
-    await expect(page.getByText("Plan for option B is ready.", { exact: false })).toBeVisible({ timeout: 30_000 })
+    await expect(page.getByText("Going with option B", { exact: false })).toBeVisible({ timeout: 30_000 })
     await expect(page.getByText("PR ready: https://example.com/pr/1", { exact: false })).toBeVisible({ timeout: 30_000 })
 
     const thread = await apiJson(page, "GET", `/api/conversations/${channelId}/messages?threadRootId=${rootId}`)
@@ -156,15 +184,15 @@ test.describe("Team chat: agents hand off to each other", () => {
     expect(authors).toEqual([NAMES.scout, NAMES.planner, "user", NAMES.planner, NAMES.builder])
   })
 
-  test("two agents tagging each other forever get paused, and the person is asked to continue", async () => {
+  test("two agents handing work back and forth get paused, and the person is asked to continue", async () => {
     await page.goto(`/c/${channelId}`)
     const channelComposer = page.getByLabel("Message", { exact: true }).first()
     await channelComposer.waitFor({ state: "visible", timeout: 30_000 })
-    await compose(page, channelComposer, [{ mention: NAMES.ping }, " start the loop"])
+    await compose(page, channelComposer, [{ mention: NAMES.writer }, " write the release note for the slugify fix"])
 
-    await openThread(page, channelId, "start the loop")
+    await openThread(page, channelId, "write the release note")
     await expect(page.getByText("reply here to continue", { exact: false })).toBeVisible({ timeout: 60_000 })
-    const pings = await page.getByText(`Back to you`, { exact: false }).count()
-    expect(pings).toBeLessThanOrEqual(4)
+    const reviews = await page.getByText("The draft also claims", { exact: false }).count()
+    expect(reviews).toBeLessThanOrEqual(2)
   })
 })

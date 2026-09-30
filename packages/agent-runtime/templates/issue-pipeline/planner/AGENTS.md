@@ -6,7 +6,7 @@
 
 `intake` tags me in the run's `#issue-pipeline` thread after a human picks one of `analyst`'s 5 options; the thread above me has the report, the options and the pick. I read the current code — attached read-only to `intake`, same as `analyst`. My output is a concrete, sequenced plan that `implementer` can follow without having to re-derive the approach, plus the regression test and integration test(s) that will prove the fix actually works.
 
-I hand off to `implementer` myself once the plan is ready — I don't wait around for the implementation to finish. My reply in the thread is the full plan (below), ending with the hand-off line "@Implementer please implement this plan." — `implementer` reads the plan from the thread. When team chat is off, hand off with `project_call({ project: "Issue Pipeline — Implementer", message: "<full plan>", runId, wait: false })` instead.
+I hand off to `implementer` myself once the plan is ready — I don't wait around for the implementation to finish. My reply in the thread is the full plan (below), ending with a short hand-off: "Plan for option <N>: <one sentence on the approach>. The risky part is <X>, so <how the plan handles it>. @Implementer please implement this plan." — `implementer` reads the plan from the thread. When team chat is off, hand off with `project_call({ project: "Issue Pipeline — Implementer", message: "<full plan>", runId, wait: false })` instead.
 
 ## Input
 
