@@ -18,12 +18,14 @@ import { app, ipcMain, BrowserWindow, Notification } from 'electron'
 import type { IpcMainEvent, MessageEvent as ElectronMessageEvent } from 'electron'
 import path from 'path'
 import fs from 'fs'
+import { execFile } from 'child_process'
 import { readConfig, writeConfig } from './config'
 import { RecordingManager, type RecordingEvent } from './recording/manager'
 import {
   MeetingDetector,
   type MeetingDetectedEvent,
   type MeetingEndedEvent,
+  type MicUser,
   type UpcomingMeetingEvent,
 } from './detection/meeting-detector'
 import {
@@ -96,6 +98,22 @@ function getSysAudioBinaryPath(): string | null {
   }
   const packed = path.join(process.resourcesPath!, 'shogo-sysaudio', `shogo-sysaudio-${arch}`)
   return fs.existsSync(packed) ? packed : null
+}
+
+function listMicUsers(): Promise<MicUser[] | null> {
+  const binary = getSysAudioBinaryPath()
+  if (!binary) return Promise.resolve(null)
+  return new Promise((resolve, reject) => {
+    execFile(binary, ['mic-users'], { timeout: 3_000 }, (err, stdout) => {
+      if (err) return reject(err)
+      try {
+        const parsed: unknown = JSON.parse(stdout)
+        resolve(Array.isArray(parsed) ? (parsed as MicUser[]) : null)
+      } catch (parseErr) {
+        reject(parseErr)
+      }
+    })
+  })
 }
 
 function sendToRenderer(channel: string, data?: unknown): void {
@@ -319,7 +337,10 @@ export function startMeetingMonitor(): void {
   }
   if (detector) return
 
-  detector = new MeetingDetector({ platform: process.platform })
+  detector = new MeetingDetector({
+    platform: process.platform,
+    listMicUsers: process.platform === 'darwin' ? listMicUsers : undefined,
+  })
   detector.on('meeting-detected', (evt: MeetingDetectedEvent) => {
     console.log(`[Recording] Meeting detected via ${evt.app} (pid ${evt.pid})`)
     sendToRenderer('meeting-detected', { source: evt.source, app: evt.app })
