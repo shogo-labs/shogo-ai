@@ -1,14 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * Link previews for channel messages. After a message is posted, up to
- * three links are fetched through the SSRF-safe fetcher and their title,
- * description, and image are stored on the message as `blocks.unfurls`.
+ * Link previews for channel messages. After a message is posted, edited,
+ * or (for agent replies) finished, up to three links are fetched through
+ * the SSRF-safe fetcher and their title, description, and image are stored
+ * on the message as `blocks.unfurls`.
  */
 
 import { safeFetchText } from '../lib/safe-fetch'
 import { registerAfterPostHook } from './conversation-pipeline'
-import { updateMessageInternal, type PostMessageResult } from './conversation.service'
+import { onMessageTextSettled, updateMessageInternal, type PostMessageResult } from './conversation.service'
 
 export interface Unfurl {
   url: string
@@ -101,18 +102,35 @@ export async function unfurlUrl(url: string): Promise<Unfurl | null> {
   return value
 }
 
-export async function unfurlMessage(result: PostMessageResult): Promise<Unfurl[]> {
-  const { row } = result
-  if (result.duplicate || row.authorType === 'system' || !row.text) return []
+function blocksOf(row: any): Record<string, unknown> {
+  const raw = typeof row.blocks === 'string' ? (() => { try { return JSON.parse(row.blocks) } catch { return null } })() : row.blocks
+  return raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {}
+}
+
+/**
+ * Bring a message's previews in line with the links in its text. Previews
+ * that are already stored for the same links are kept; links that were
+ * removed lose their cards.
+ */
+export async function refreshUnfurls(row: any): Promise<Unfurl[]> {
+  if (row.authorType === 'system' || row.deletedAt) return []
   if (row.authorType === 'agent' && row.agentStatus === 'running') return []
-  const blocks = (row.blocks && typeof row.blocks === 'object' ? row.blocks : {}) as Record<string, unknown>
-  if (Array.isArray(blocks.unfurls)) return []
-  const links = extractLinks(row.text)
-  if (!links.length) return []
+  const blocks = blocksOf(row)
+  const stored = Array.isArray(blocks.unfurls) ? (blocks.unfurls as Unfurl[]) : null
+  const links = extractLinks(row.text ?? '')
+  if (stored && stored.every((u) => links.includes(u.url)) && links.every((l) => stored.some((u) => u.url === l) || cache.has(l))) {
+    return stored
+  }
   const unfurls = (await Promise.all(links.map(unfurlUrl))).filter(Boolean) as Unfurl[]
-  if (!unfurls.length) return []
-  await updateMessageInternal(row.id, { blocks: { ...blocks, unfurls } })
+  if (!unfurls.length && !stored) return []
+  const { unfurls: _old, ...rest } = blocks
+  await updateMessageInternal(row.id, { blocks: unfurls.length ? { ...rest, unfurls } : rest })
   return unfurls
+}
+
+export async function unfurlMessage(result: PostMessageResult): Promise<Unfurl[]> {
+  if (result.duplicate) return []
+  return refreshUnfurls(result.row)
 }
 
 let registered = false
@@ -122,6 +140,9 @@ export function registerConversationUnfurls(): void {
   registered = true
   registerAfterPostHook((result) => {
     void unfurlMessage(result).catch((err) => console.warn('[Channels] unfurl failed:', err?.message))
+  })
+  onMessageTextSettled((row) => {
+    void refreshUnfurls(row).catch((err) => console.warn('[Channels] unfurl failed:', err?.message))
   })
 }
 

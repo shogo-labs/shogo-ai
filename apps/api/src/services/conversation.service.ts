@@ -874,11 +874,26 @@ export async function postMessage(input: PostMessageInput): Promise<PostMessageR
   return { message, row: full, conversation, mentions, duplicate: false }
 }
 
+type TextSettledHook = (row: any) => void
+const textSettledHooks: TextSettledHook[] = []
+
+/**
+ * Run `hook` when a message's final text changes after posting: a person
+ * edits it, or an agent reply finishes. Not called for the initial post
+ * (see `registerAfterPostHook`) or while an agent reply is streaming.
+ */
+export function onMessageTextSettled(hook: TextSettledHook): void {
+  textSettledHooks.push(hook)
+}
+
 export async function updateMessageInternal(messageId: string, data: Record<string, unknown>) {
   const row = await db.conversationMessage.update({ where: { id: messageId }, data, include: MESSAGE_INCLUDE })
   const conversation = await db.conversation.findUnique({ where: { id: row.conversationId } })
   const message = serializeMessage(row)
   if (conversation) await publish(conversation, { type: 'message.updated', message })
+  if ('text' in data && !row.deletedAt && row.agentStatus !== 'running') {
+    for (const hook of textSettledHooks) hook(row)
+  }
   return message
 }
 

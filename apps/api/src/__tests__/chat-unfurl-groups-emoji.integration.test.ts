@@ -158,6 +158,39 @@ describe('link previews', () => {
     } as any))
     expect(fetched.sort()).toEqual(['https://broken.dev/2', 'https://x.dev/1'])
   })
+
+  test('edits and finished agent replies get previews; removed links lose their cards', async () => {
+    unfurl._setUnfurlFetcherForTests(async (url) => ({ url, status: 200, contentType: 'text/html', body: `<title>Page ${url.slice(-1)}</title>` }))
+    const settled: string[] = []
+    service.onMessageTextSettled((row) => {
+      settled.push(row.id)
+      void unfurl.refreshUnfurls(row)
+    })
+    const stored = async (id: string) => {
+      const row = await db.conversationMessage.findUnique({ where: { id } })
+      const blocks = typeof row.blocks === 'string' ? JSON.parse(row.blocks) : row.blocks
+      return (blocks?.unfurls ?? []).map((u: any) => u.url)
+    }
+    const waitForUrls = async (id: string, urls: string[]) => {
+      for (let i = 0; i < 50 && JSON.stringify(await stored(id)) !== JSON.stringify(urls); i++) await Bun.sleep(10)
+      expect(await stored(id)).toEqual(urls)
+    }
+
+    const posted = await service.postMessage({ conversationId: generalId, authorType: 'user', authorUserId: seed.owner, text: 'draft https://e.dev/1' } as any)
+    await unfurl.unfurlMessage(posted)
+    await service.editMessage(posted.row.id, seed.owner, 'final https://e.dev/2')
+    await waitForUrls(posted.row.id, ['https://e.dev/2'])
+    await service.editMessage(posted.row.id, seed.owner, 'no links now')
+    await waitForUrls(posted.row.id, [])
+
+    const agent = await service.postMessage({
+      conversationId: generalId, authorType: 'agent', authorAgentRef: { projectId: null, name: 'Shogo' }, text: '', agentStatus: 'running',
+    } as any)
+    await service.updateMessageInternal(agent.row.id, { text: 'working on https://a.dev/3' })
+    expect(settled).not.toContain(agent.row.id)
+    await service.updateMessageInternal(agent.row.id, { text: 'Done: https://a.dev/3', agentStatus: 'done' })
+    await waitForUrls(agent.row.id, ['https://a.dev/3'])
+  })
 })
 
 describe('user groups', () => {
