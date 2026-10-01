@@ -303,7 +303,7 @@ jobs:
           SDK=$(has_match '^packages/sdk/')
           SHARED_RUNTIME=$(has_match '^packages/shared-runtime/')
           RUNTIME_PKG=$(has_match '^packages/agent-runtime/')
-          API_APP=$(has_match '^(apps/api/|prisma/|prisma\.config\.ts|templates/runtime-template/)')
+          API_APP=$(has_match '^(apps/api/|packages/shared-app/src/buddy-look\.ts|prisma/|prisma\.config\.ts|templates/runtime-template/)')
           WEB_APP=$(has_match '^(apps/mobile/|packages/domain-stores/|packages/shared-app/|packages/shared-ui/|packages/ui-kit/)')
           DOCS_APP=$(has_match '^apps/docs/')
 
