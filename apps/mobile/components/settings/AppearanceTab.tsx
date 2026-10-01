@@ -284,9 +284,6 @@ export function AppearanceTab() {
           ) : null}
 
           <AppearanceSection title="Your Shogo" />
-          <Text className="text-xs text-muted-foreground mb-3">
-            Dress up the Shogo that lives in your island. Saved to your account.
-          </Text>
           <View className="px-4 py-4 rounded-lg bg-muted/30 border border-border mb-2">
             <BuddyCustomizer look={buddy.look} onChange={buddy.setLook} color={accent} />
           </View>
