@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { useEffect, useRef, type ReactNode } from "react"
-import { Pressable, Text, View } from "react-native"
+import { Platform, Pressable, Text, View } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import type { BuddyState } from "./engine"
 import {
@@ -172,6 +172,16 @@ export function BuddyCustomizer({
       <Row label="Presets">
         {BUDDY_PRESETS.map((preset) => {
           const active = sameLook(look, preset.look)
+          if (Platform.OS !== "web") {
+            return (
+              <Chip
+                key={preset.id}
+                label={preset.label}
+                active={active}
+                onPress={() => onChange(preset.look)}
+              />
+            )
+          }
           return (
             <Pressable
               key={preset.id}

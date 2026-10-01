@@ -10,9 +10,11 @@
  * them and must not overlap either.
  */
 import { useState } from "react"
-import { Image, Pressable, Text, View } from "react-native"
+import { Pressable, Text, View } from "react-native"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
 import type { PersonalAgentProfile } from "../../lib/api"
+import type { BuddyState } from "../island/buddy/engine"
+import { WorkspaceAgentAvatar } from "./WorkspaceAgentAvatar"
 import {
   ProfileActionMenu,
   type ProfileActionSheetAction,
@@ -20,17 +22,18 @@ import {
 
 interface PersonalAgentMobileHeaderProps {
   profile: PersonalAgentProfile
-  /** Change avatar / rename / personality / memory / activity / side-chats. */
+  /** Dress up Shogo / rename / personality / memory / activity / side-chats. */
   actions: ProfileActionSheetAction[]
+  avatarState?: BuddyState
 }
 
 export function PersonalAgentMobileHeader({
   profile,
   actions,
+  avatarState = "idle",
 }: PersonalAgentMobileHeaderProps) {
   const [menuOpen, setMenuOpen] = useState(false)
   const insets = useSafeAreaInsets()
-  const initial = profile.name.trim().charAt(0).toUpperCase() || "S"
 
   return (
     <View
@@ -50,7 +53,7 @@ export function PersonalAgentMobileHeader({
             accessibilityRole="button"
             accessibilityLabel={`${profile.name} profile and settings`}
             accessibilityState={{ expanded: menuOpen }}
-            className="h-12 w-12 overflow-hidden rounded-full border border-border bg-muted active:opacity-80"
+            className="h-12 w-12 items-center justify-end active:opacity-80"
             style={{
               shadowColor: "#000",
               shadowOffset: { width: 0, height: 2 },
@@ -59,18 +62,7 @@ export function PersonalAgentMobileHeader({
               elevation: 4,
             }}
           >
-            {profile.avatarUrl ? (
-              <Image
-                source={{ uri: profile.avatarUrl }}
-                className="h-full w-full"
-              />
-            ) : (
-              <View className="h-full w-full items-center justify-center bg-primary/10">
-                <Text className="text-lg font-semibold text-primary">
-                  {initial}
-                </Text>
-              </View>
-            )}
+            <WorkspaceAgentAvatar size={48} state={avatarState} />
           </Pressable>
         )}
       />
