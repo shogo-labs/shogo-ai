@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test'
 
 // Run the handler's k8s branch so setPublishedMinScale is exercised.
 process.env.KUBERNETES_SERVICE_HOST = '10.0.0.1'
+process.env.PUBLISH_BUCKET = 'test-publish-bucket'
 delete process.env.SHOGO_LOCAL_MODE
 
 type Project = {
@@ -43,6 +44,8 @@ const prismaApi = {
 // Configurable entitlement gate result + spies.
 let gateResult = { allowed: true, planAllows: true, allowance: 1, used: 0 }
 const minScaleCalls: Array<{ projectId: string; minScale: number }> = []
+let publishSubstrateError: Error | null = null
+const publishSubstrateCalls: any[] = []
 
 mock.module('../../lib/prisma', () => ({
   prisma: prismaApi,
@@ -60,6 +63,7 @@ mock.module('../../lib/knative-project-manager', () => ({
       minScaleCalls.push({ projectId, minScale })
     },
   }),
+  mergePatchKnativeService: async () => {},
   // Used by the route's internal detectServerBacked() in k8s mode.
   getProjectPodUrl: async () => 'http://pod.local',
 }))
@@ -72,14 +76,67 @@ mock.module('../../lib/cloudflare-server-backed-kv', () => ({
   clearServerBackedFlag: async () => true,
   getServerBackedKvConfig: () => null,
 }))
+mock.module('../../lib/substrate/router', () => ({
+  getPublishSubstrate: async () => ({
+    publish: async (projectId: string, opts: any) => {
+      publishSubstrateCalls.push({ projectId, opts })
+      if (publishSubstrateError) throw publishSubstrateError
+      return { substrate: 'metal', serverBacked: opts.serverBacked, url: 'http://published.local' }
+    },
+    setPublishedAlwaysOn: async (projectId: string, _subdomain: string, on: boolean) => {
+      minScaleCalls.push({ projectId, minScale: on ? 1 : 0 })
+    },
+  }),
+}))
+mock.module('@aws-sdk/client-s3', () => ({
+  S3Client: class {
+    async send() {
+      return {}
+    }
+  },
+  PutObjectCommand: class {
+    constructor(public input: any) {}
+  },
+  GetObjectCommand: class {
+    constructor(public input: any) {}
+  },
+  HeadObjectCommand: class {
+    constructor(public input: any) {}
+  },
+  CopyObjectCommand: class {
+    constructor(public input: any) {}
+  },
+  ListObjectsV2Command: class {
+    constructor(public input: any) {}
+  },
+  DeleteObjectsCommand: class {
+    constructor(public input: any) {}
+  },
+  DeleteObjectCommand: class {
+    constructor(public input: any) {}
+  },
+}))
 
 // detectServerBacked() fetches `${podUrl}/agent/server-info`. Make it report
 // server-backed so the always-on path is allowed.
 const realFetch = globalThis.fetch
 beforeEach(() => {
   globalThis.fetch = (async (url: any) => {
-    if (String(url).includes('/agent/server-info')) {
+    const href = String(url)
+    if (href.includes('/agent/server-info')) {
       return new Response(JSON.stringify({ serverBacked: true }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    }
+    if (href.includes('/agent/publish-build')) {
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    }
+    if (href.includes('/agent/dist-files')) {
+      return new Response(JSON.stringify([{ path: 'index.html', content: Buffer.from('<html></html>').toString('base64') }]), {
         status: 200,
         headers: { 'content-type': 'application/json' },
       })
@@ -99,6 +156,8 @@ beforeEach(() => {
   }
   updateCalls.length = 0
   minScaleCalls.length = 0
+  publishSubstrateCalls.length = 0
+  publishSubstrateError = null
   gateResult = { allowed: true, planAllows: true, allowance: 1, used: 0 }
 })
 afterEach(() => {
@@ -197,5 +256,20 @@ describe('republish always-on clamp', () => {
     const res = await republish()
     expect(res.status).toBe(200)
     expect(projectRow?.publishedAlwaysOn).toBe(true)
+  })
+
+  it('fails republish instead of marking live when published service configuration fails', async () => {
+    process.env.KUBERNETES_SERVICE_HOST = '10.0.0.1'
+    publishSubstrateError = new Error('assign timeout')
+
+    const res = await republish()
+
+    expect(res.status).toBe(500)
+    const body = await res.json()
+    expect(body.error.code).toBe('configure_failed')
+    expect(projectRow?.publishStatus).toBe('failed')
+    expect(projectRow?.publishError).toBe('configure_failed')
+    expect(updateCalls.some((c) => c.data.publishStatus === 'live')).toBe(false)
+    expect(publishSubstrateCalls).toHaveLength(1)
   })
 })

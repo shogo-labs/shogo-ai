@@ -1739,6 +1739,10 @@ export function publishRoutes() {
             )
           } catch (err: any) {
             console.warn("[Publish] Failed to reconfigure published service:", err.message)
+            const isTimeout = err?.name === 'TimeoutError' || err?.name === 'AbortError'
+            const code = isTimeout ? 'configure_timeout' : 'configure_failed'
+            await setPublishStatus(projectId, 'failed', code)
+            return c.json({ error: { code, message: err.message || 'Failed to configure published service' } }, 500)
           }
         } finally {
           await releasePublishLock(projectId)
