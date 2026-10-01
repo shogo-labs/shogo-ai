@@ -74,8 +74,15 @@ async function api<T>(method: string, path: string, body?: unknown): Promise<T> 
   return res.json() as Promise<T>
 }
 
-async function channelMessages(): Promise<RunMessage[]> {
-  return (await api<{ messages: RunMessage[] }>('GET', `/conversations/${channelId}/messages?limit=200`)).messages
+/**
+ * The channel timeline lists top-level posts only (thread replies stay in their thread), so the run is the
+ * channel plus the bug post's thread. Top-level agent posts are kept: they are the noise being measured.
+ */
+async function channelMessages(rootId?: string): Promise<RunMessage[]> {
+  const channel = (await api<{ messages: RunMessage[] }>('GET', `/conversations/${channelId}/messages?limit=200`)).messages
+  if (!rootId) return channel
+  const thread = (await api<{ messages: RunMessage[] }>('GET', `/conversations/${channelId}/messages?threadRootId=${rootId}&limit=200`)).messages
+  return [...new Map([...channel, ...thread].map((m) => [m.id, m])).values()]
 }
 
 const inRun = (rootId: string) => (m: RunMessage) => m.id === rootId || m.threadRootId === rootId
@@ -111,7 +118,7 @@ describe('eng-pod: a bug in #eng ends in a merged PR with one human decision', (
 
       // 1. The coordinator owns the thread and pins a task card to it.
       const card = await waitUntil(
-        async () => (await channelMessages()).find((m) => inRun(rootId)(m) && isAgent('Coordinator')(m) && m.blocks?.type === 'status_card'),
+        async () => (await channelMessages(rootId)).find((m) => inRun(rootId)(m) && isAgent('Coordinator')(m) && m.blocks?.type === 'status_card'),
         wait("the coordinator's task card in the thread"),
       )
       expect(card.blocks?.card).toBeDefined()
@@ -126,14 +133,14 @@ describe('eng-pod: a bug in #eng ends in a merged PR with one human decision', (
       // 3. The preview link, on the card or in a reply.
       if (!SKIP_PREVIEW) {
         await waitUntil(
-          async () => (await channelMessages()).find((m) => inRun(rootId)(m) && m.authorType === 'agent' && linksPreview(m)),
+          async () => (await channelMessages(rootId)).find((m) => inRun(rootId)(m) && m.authorType === 'agent' && linksPreview(m)),
           wait('a preview link in the thread'),
         )
       }
 
       // 4. The isolated reviewer passes it.
       const verdict = await waitUntil(
-        async () => (await channelMessages()).find((m) => inRun(rootId)(m) && isAgent('Reviewer')(m) && /^\W*(verdict\W*)?PASS\b/im.test(m.text)),
+        async () => (await channelMessages(rootId)).find((m) => inRun(rootId)(m) && isAgent('Reviewer')(m) && /^\W*(verdict\W*)?PASS\b/im.test(m.text)),
         wait("the reviewer's PASS"),
       )
       expect(verdict).toBeDefined()
@@ -141,7 +148,7 @@ describe('eng-pod: a bug in #eng ends in a merged PR with one human decision', (
       // 5. The merge waits for a person: the single intervention.
       const approval = await waitUntil(
         async () =>
-          (await channelMessages()).find(
+          (await channelMessages(rootId)).find(
             (m) => inRun(rootId)(m) && m.authorType === 'agent' && m.blocks?.approval?.status === 'pending',
           ),
         wait('a merge approval card'),
@@ -158,7 +165,7 @@ describe('eng-pod: a bug in #eng ends in a merged PR with one human decision', (
       expect((await runAllTests(await checkoutBaseBranch(env, merged))).passed).toBe(false)
       expect((await runAllTests(await checkoutPullRequest(env, merged))).passed).toBe(true)
 
-      const messages = await channelMessages()
+      const messages = await channelMessages(rootId)
       const metrics = computeMetrics({ messages, rootId, prCreatedAt: pr.createdAt })
       const missed = missedTargets(metrics)
       const report = formatMetrics(metrics)

@@ -81,6 +81,16 @@ describe('timeline and narration', () => {
     expect(missedTargets(m).join()).toContain('listed before')
   })
 
+  test('a reply moved to the end is judged by when it finished, not when it started', () => {
+    // The reviewer started at minute 2 (createdAt) but finished last, so it is listed last: in order.
+    const run = [
+      { ...root, seq: 1 },
+      finished(5, 2),
+      msg({ who: 'Reviewer', min: 2, seq: 3, blocks: { messageKind: 'result', work: { startedAt: T0, completedAt: T0 + 7 * 60000 } }, text: 'PASS' }),
+    ]
+    expect(computeMetrics({ messages: run, rootId: 'root' }).timelineViolations).toBe(0)
+  })
+
   test('replies that open like a progress update are counted', () => {
     const run = [root, finished(4, 2, { text: "I'll start by checking the repo." }), finished(8, 3, { text: 'The PR is merged.' })]
     expect(computeMetrics({ messages: run, rootId: 'root' }).narrationLeaked).toBe(1)

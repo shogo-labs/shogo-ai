@@ -130,8 +130,10 @@ export function timelineViolationsOf(replies: RunMessage[]): number {
   for (const reply of replies) {
     const completedAt = reply.blocks?.work?.completedAt
     if (reply.seq === undefined || !completedAt) continue
+    // A reply that was moved to the end keeps its start time as `createdAt`; what counts is when it finished.
+    const landedAt = (m: RunMessage) => m.blocks?.work?.completedAt ?? time(m)
     const outOfOrder = replies.some(
-      (other) => other.id !== reply.id && other.seq !== undefined && other.seq > reply.seq! && time(other) < completedAt,
+      (other) => other.id !== reply.id && other.seq !== undefined && other.seq > reply.seq! && landedAt(other) < completedAt,
     )
     if (outOfOrder) count++
   }
