@@ -110,6 +110,14 @@ async function main(): Promise<void> {
   }
   check(runtime.json?.status === 'running', 'project runtime spawns under the launch PATH', runtime)
 
+  // Bun.spawn's `terminal` option is POSIX-only before Bun 1.4, so the
+  // bundled Bun cannot open a PTY on Windows yet.
+  if (process.platform === 'win32') {
+    console.log('  skip terminal session spawns (no PTY support in the bundled Bun on Windows)')
+    console.log('Desktop packaged smoke PASSED')
+    return
+  }
+
   const term = await s.call('POST', `/api/projects/${project.id}/terminal/sessions`, { cols: 80, rows: 24 })
   check(term.status === 200 && term.json?.id, 'terminal session spawns', term)
   // The runtime's merged root mounts the folder at `<root>/<projectId>`.
