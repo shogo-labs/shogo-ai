@@ -16,6 +16,8 @@ import { conversationTitle, nativeChatVisible, type ConversationSummary } from '
 import { useWorkspaceChatMode } from '../../hooks/useWorkspaceChatMode'
 import { useConversationList, useMentionables, useMyUserId, invalidateConversationList } from '../../hooks/useTeamChat'
 import { useInboxFeed, useInboxUnread, useStatusFeed } from '../../hooks/useChatPrefs'
+import { usePresenceFeed } from '../../hooks/usePresence'
+import { PresenceDot } from './PresenceDot'
 import { useDraftsFeed, useHasDraft, useSavedFeed } from '../../hooks/useChatItems'
 import { useCustomEmojiFeed } from '../../hooks/useCustomEmoji'
 import { ShortcutsHelp, useChatShortcuts } from '../../hooks/useChatShortcuts'
@@ -61,6 +63,7 @@ function TeamChatSidebarContent({ workspaceId, collapsed, onNavPress }: TeamChat
   const { groups, list } = useConversationList(workspaceId)
   const [creating, setCreating] = useState<NewConversationMode | null>(null)
   useStatusFeed(workspaceId)
+  usePresenceFeed(workspaceId)
   useInboxFeed(workspaceId)
   useSavedFeed(workspaceId)
   useDraftsFeed(workspaceId)
@@ -100,6 +103,8 @@ function TeamChatSidebarContent({ workspaceId, collapsed, onNavPress }: TeamChat
     const active = activeId === c.id
     const unread = !active && c.unreadCount > 0 && !c.muted && c.joined
     const title = c.kind === 'public' || c.kind === 'private' || c.kind === 'activity' ? c.name ?? 'channel' : conversationTitle(c)
+    const peers = c.kind === 'dm' ? (c.participants ?? []) : []
+    const dmPeer = peers.length === 1 && peers[0]!.type === 'user' ? peers[0]!.id : null
     return (
       <Pressable
         key={c.id}
@@ -112,7 +117,13 @@ function TeamChatSidebarContent({ workspaceId, collapsed, onNavPress }: TeamChat
           active ? 'bg-accent' : 'active:bg-accent/50',
         )}
       >
-        <Icon size={comfortable ? density.icon.nav : 12} className={active || unread ? 'text-foreground' : 'text-muted-foreground'} />
+        {dmPeer ? (
+          <View style={{ width: comfortable ? density.icon.nav : 12 }} className="items-center">
+            <PresenceDot userId={dmPeer} workspaceId={workspaceId} />
+          </View>
+        ) : (
+          <Icon size={comfortable ? density.icon.nav : 12} className={active || unread ? 'text-foreground' : 'text-muted-foreground'} />
+        )}
         <Text
           className={cn(
             'flex-1',

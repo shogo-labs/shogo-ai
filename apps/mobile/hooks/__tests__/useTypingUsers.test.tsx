@@ -9,13 +9,19 @@ import { act, cleanup, renderHook } from '@testing-library/react'
 
 let emit: (event: any) => void = () => {}
 
+// Spread the real modules: mocks are process-wide and other suites need the rest.
+const realConnection = await import('../../lib/team-chat-connection')
+const realWorkspaceUser = await import('../useWorkspaceUser')
+
 mock.module('../../lib/team-chat-connection', () => ({
+  ...realConnection,
   useTeamChatEvents: (_workspaceId: string, onEvent: (event: any) => void) => {
     emit = onEvent
     return 'open'
   },
 }))
 mock.module('../useWorkspaceUser', () => ({
+  ...realWorkspaceUser,
   useWorkspaceUser: () => ({ id: 'me', name: 'Me', email: null, source: 'local' }),
 }))
 

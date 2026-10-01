@@ -17,6 +17,8 @@ import {
 } from '../../lib/team-chat-api'
 import { mentionNames, renderMentions } from '../../lib/team-chat-state'
 import { useUserStatus } from '../../hooks/useChatPrefs'
+import { usePresence } from '../../hooks/usePresence'
+import { PresenceDot, presenceLabel } from './PresenceDot'
 
 const api = teamChatApi()
 
@@ -51,7 +53,9 @@ export function ConversationHeader({ conversation, mentionables, me, onChanged, 
     .map((m) => (m.type === 'agent' ? { type: 'agent', projectId: m.projectId, name: m.name } : { type: 'user', id: m.userId, name: m.name, image: m.image }))
   const title = isChannel ? conversation.name ?? 'channel' : conversationTitle({ kind: conversation.kind, name: conversation.name, participants })
   const dmPeer = conversation.kind === 'dm' ? participants.find((p) => p.type === 'user') : undefined
-  const peerStatus = useUserStatus(conversation.workspaceId, dmPeer?.type === 'user' ? dmPeer.id : null)
+  const peerId = dmPeer?.type === 'user' ? dmPeer.id : null
+  const peerStatus = useUserStatus(conversation.workspaceId, peerId)
+  const peerPresence = usePresence(conversation.workspaceId, peerId)
   const Icon = conversation.kind === 'activity' ? Radio : conversation.kind === 'private' ? Lock : isChannel ? Hash : isAgentDm({ kind: conversation.kind, participants }) ? Bot : Users
 
   const run = async (fn: () => Promise<unknown>) => {
@@ -79,10 +83,17 @@ export function ConversationHeader({ conversation, mentionables, me, onChanged, 
   return (
     <View className="border-b border-border px-4 py-2.5">
       <View className="flex-row items-center gap-2">
-        <Icon size={16} className="text-muted-foreground" />
+        {peerId ? (
+          <View className="w-4 items-center">
+            <PresenceDot userId={peerId} workspaceId={conversation.workspaceId} size={9} />
+          </View>
+        ) : (
+          <Icon size={16} className="text-muted-foreground" />
+        )}
         <Text className="flex-shrink text-base font-semibold text-foreground" numberOfLines={1}>
           {title}
         </Text>
+        {peerId && peerPresence ? <Text className="text-xs text-muted-foreground">{presenceLabel(peerPresence)}</Text> : null}
         {conversation.archivedAt && (
           <View className="rounded bg-muted px-1.5 py-0.5">
             <Text className="text-[10px] font-medium uppercase text-muted-foreground">Archived</Text>
@@ -351,7 +362,13 @@ function MembersModal({
           <ScrollView>
             {conversation.members.map((m) => (
               <View key={m.id} className="flex-row items-center gap-2 py-1.5">
-                {m.type === 'agent' ? <Bot size={14} className="text-primary" /> : <Users size={14} className="text-muted-foreground" />}
+                {m.type === 'agent' ? (
+                  <Bot size={14} className="text-primary" />
+                ) : (
+                  <View className="w-3.5 items-center">
+                    <PresenceDot userId={m.userId} workspaceId={conversation.workspaceId} />
+                  </View>
+                )}
                 <Text className="flex-1 text-sm text-foreground" numberOfLines={1}>
                   {m.name ?? 'Agent'}
                   {m.type === 'agent' ? <Text className="text-xs text-muted-foreground">{`  replies on ${m.agentTrigger}`}</Text> : null}

@@ -240,6 +240,10 @@ test.describe("Desktop + Shogo Cloud workspaces", () => {
         expect(res.body?.presence?.[owner.id]).toBe("active")
       }).toPass({ timeout: 15_000 })
 
+      // Both authors in #general (the desktop user and the teammate) show as online.
+      const online = page.getByTestId("presence-active")
+      await expect(online).toHaveCount(2, { timeout: 15_000 })
+
       // Desktop typing reaches the teammate.
       await composer.click()
       await composer.pressSequentially("thinking about it")
@@ -253,6 +257,10 @@ test.describe("Desktop + Shogo Cloud workspaces", () => {
         await mate.send({ type: "typing", conversationId: generalId })
         await expect(page.getByText("Teammate is typing", { exact: false })).toBeVisible({ timeout: 2_500 })
       }).toPass({ timeout: 15_000 })
+
+      // The teammate going offline clears their dot live.
+      await mate.close()
+      await expect(online).toHaveCount(1, { timeout: 15_000 })
     } finally {
       await mate.close()
     }

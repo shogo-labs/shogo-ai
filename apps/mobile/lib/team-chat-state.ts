@@ -254,6 +254,7 @@ export interface MentionCandidate {
   display: string
   token: string
   subtitle?: string | null
+  userId?: string
 }
 
 export function mentionCandidates(mentionables: Mentionables | null, meId: string | null): MentionCandidate[] {
@@ -266,7 +267,7 @@ export function mentionCandidates(mentionables: Mentionables | null, meId: strin
   }))
   const people = mentionables.people
     .filter((p) => p.id !== meId)
-    .map<MentionCandidate>((p) => ({ kind: 'user', display: p.name, token: `<@u:${p.id}>`, subtitle: p.email }))
+    .map<MentionCandidate>((p) => ({ kind: 'user', display: p.name, token: `<@u:${p.id}>`, subtitle: p.email, userId: p.id }))
   const groups = (mentionables.groups ?? []).map<MentionCandidate>((g) => ({
     kind: 'group',
     display: g.handle,

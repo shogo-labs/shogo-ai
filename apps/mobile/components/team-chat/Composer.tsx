@@ -8,7 +8,7 @@
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Image, Platform, Pressable, ScrollView, Text, TextInput, View } from 'react-native'
-import { AlarmClock, Bot, Clock, Paperclip, SendHorizontal, Smile, User, Users, X } from 'lucide-react-native'
+import { AlarmClock, Bot, Clock, Paperclip, SendHorizontal, Smile, Users, X } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import type { Mentionables, MessageAttachment } from '../../lib/team-chat-api'
 import { teamChatApi } from '../../lib/team-chat-api'
@@ -27,6 +27,7 @@ import {
 import type { SendInput } from '../../hooks/useTeamChat'
 import { useDraft } from '../../hooks/useChatItems'
 import { useCustomEmoji } from '../../hooks/useCustomEmoji'
+import { PresenceDot } from './PresenceDot'
 
 const api = teamChatApi()
 const COMMON_EMOJI = ['😀', '😂', '🙂', '😉', '😍', '🤔', '😅', '😭', '👍', '👎', '👏', '🙏', '🙌', '💪', '👀', '🎉', '🔥', '🚀', '✅', '❌', '⚠️', '💯', '❤️', '✨']
@@ -230,7 +231,15 @@ export function Composer(props: ComposerProps) {
               onPress={() => choose(c)}
               className={cn('flex-row items-center gap-2 px-3 py-2', i === highlight ? 'bg-muted' : 'active:bg-muted')}
             >
-              {c.kind === 'agent' ? <Bot size={14} className="text-primary" /> : c.kind === 'user' ? <User size={14} className="text-muted-foreground" /> : <Users size={14} className="text-muted-foreground" />}
+              {c.kind === 'agent' ? (
+                <Bot size={14} className="text-primary" />
+              ) : c.kind === 'user' ? (
+                <View className="w-3.5 items-center">
+                  <PresenceDot userId={c.userId} />
+                </View>
+              ) : (
+                <Users size={14} className="text-muted-foreground" />
+              )}
               <Text className="text-sm text-foreground">{c.display}</Text>
               {c.subtitle ? <Text className="text-xs text-muted-foreground" numberOfLines={1}>{c.subtitle}</Text> : null}
             </Pressable>

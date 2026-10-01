@@ -149,6 +149,8 @@ export interface UserStatus {
   dnd: boolean
 }
 
+export type PresenceStatus = 'active' | 'away' | 'offline'
+
 export interface Mentionables {
   people: Array<{ id: string; name: string; email: string; image: string | null; role: string }>
   agents: Array<{ key: string; projectId: string | null; name: string; description: string | null; image: string | null }>
@@ -281,7 +283,7 @@ export type TeamChatEvent =
   | { type: 'member.joined' | 'member.left'; conversationId: string; userId?: string; userIds?: string[] }
   | { type: 'read'; conversationId: string; userId: string; seq: number }
   | { type: 'typing'; conversationId: string; threadRootId: string | null; userId: string; name: string }
-  | { type: 'presence'; userId: string; status: 'active' | 'away' | 'offline' }
+  | { type: 'presence'; userId: string; status: PresenceStatus }
   | {
       type: 'notification'
       conversationId: string | null
@@ -466,6 +468,15 @@ export function teamChatApi() {
     },
     async mentionables(workspaceId: string): Promise<Mentionables> {
       return (await http.get<Mentionables>(`${ws(workspaceId)}/mentionables`)).data
+    },
+    /** Batched: ~400 ids would push the URL past the server's header limit. */
+    async presence(workspaceId: string, userIds: string[]): Promise<Record<string, PresenceStatus>> {
+      const out: Record<string, PresenceStatus> = {}
+      for (let i = 0; i < userIds.length; i += 200) {
+        const ids = userIds.slice(i, i + 200).map(encodeURIComponent).join(',')
+        Object.assign(out, (await http.get<{ presence: Record<string, PresenceStatus> }>(`${ws(workspaceId)}/presence?userIds=${ids}`)).data.presence)
+      }
+      return out
     },
     async get(id: string): Promise<ConversationDetail> {
       return (await http.get<{ conversation: ConversationDetail }>(conv(id))).data.conversation

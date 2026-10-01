@@ -13,6 +13,7 @@ import { MarkdownText } from '../chat/MarkdownText'
 import { absoluteApiUrl, teamChatApi, type ChatMessage, type LinkUnfurl } from '../../lib/team-chat-api'
 import { renderMentions, type MentionNames } from '../../lib/team-chat-state'
 import { useUserStatus } from '../../hooks/useChatPrefs'
+import { PresenceDot } from './PresenceDot'
 import { toggleSaved, useIsSaved } from '../../hooks/useChatItems'
 import { customEmojiFor, jumboEmojiCodes, useCustomEmoji } from '../../hooks/useCustomEmoji'
 import { useEditRequest } from '../../hooks/useChatShortcuts'
@@ -83,12 +84,16 @@ function Avatar({ message }: { message: ChatMessage }) {
     return <View className="h-8 w-8 items-center justify-center rounded-lg bg-muted" />
   }
   const name = message.author?.name ?? 'Someone'
-  if (message.author?.image) {
-    return <Image source={{ uri: message.author.image }} className="h-8 w-8 rounded-lg" accessibilityIgnoresInvertColors />
-  }
   return (
-    <View className="h-8 w-8 items-center justify-center rounded-lg bg-secondary">
-      <Text className="text-xs font-semibold text-secondary-foreground">{initials(name)}</Text>
+    <View className="relative">
+      {message.author?.image ? (
+        <Image source={{ uri: message.author.image }} className="h-8 w-8 rounded-lg" accessibilityIgnoresInvertColors />
+      ) : (
+        <View className="h-8 w-8 items-center justify-center rounded-lg bg-secondary">
+          <Text className="text-xs font-semibold text-secondary-foreground">{initials(name)}</Text>
+        </View>
+      )}
+      <PresenceDot userId={message.authorUserId} size={10} badge />
     </View>
   )
 }

@@ -18,6 +18,7 @@ import {
   useMyUserId,
 } from '../../../hooks/useTeamChat'
 import { useStatusFeed } from '../../../hooks/useChatPrefs'
+import { usePresenceFeed } from '../../../hooks/usePresence'
 import { useDraftsFeed, useSavedFeed } from '../../../hooks/useChatItems'
 import { useCustomEmojiFeed } from '../../../hooks/useCustomEmoji'
 import { ConversationHeader } from '../../../components/team-chat/ConversationHeader'
@@ -47,6 +48,7 @@ export default function ConversationScreen() {
   const mentionables = useMentionables(workspaceId)
   const sidePane = width >= THREAD_SIDE_PANE_MIN_WIDTH
   useStatusFeed(workspaceId)
+  usePresenceFeed(workspaceId)
   useSavedFeed(workspaceId)
   useDraftsFeed(workspaceId)
   useCustomEmojiFeed(workspaceId)
