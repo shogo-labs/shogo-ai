@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * In a cloud team workspace on desktop, "me" is the Shogo Cloud account, so
- * own-message, reaction and presence checks match cloud author ids.
+ * In a cloud workspace on desktop, "me" shows as the Shogo Cloud account but
+ * keeps the local id (the desktop API maps ids both ways).
  */
 import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
 import { act, cleanup, renderHook } from '@testing-library/react'

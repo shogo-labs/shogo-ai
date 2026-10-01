@@ -291,6 +291,7 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
       userId: auth.userId,
       userName: user?.name || user?.email || 'Someone',
       workspaceId: auth.workspaceId,
+      server: typeof server.publish === 'function' ? server : undefined,
     }
     if (server.upgrade(c.req.raw, { data })) return new Response(null)
     return c.json({ error: { code: 'upgrade_failed', message: 'WebSocket upgrade failed' } }, 500)

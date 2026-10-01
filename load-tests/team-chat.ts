@@ -215,7 +215,7 @@ async function runStage(people: Person[], workspaceId: string, conversationId: s
             stage.deliveriesReceived++
             stage.fanoutMs.push(now - at)
           }
-        } else if (frame.type === 'typing' && frame.conversationId === conversationId) {
+        } else if (frame.type === 'typing' && frame.conversationId === conversationId && frame.userId !== p.id) {
           const at = typingAt.get(frame.userId)
           if (at !== undefined) {
             stage.typingReceived++

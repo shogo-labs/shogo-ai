@@ -18,12 +18,17 @@ import {
 import { conversationAudience, loadAccess } from '../services/conversation.service'
 import { recordPresence, registerPresenceSocket } from '../services/conversation-presence'
 
+/** The Bun server, for native topic broadcast. */
+export interface SocketBroadcaster {
+  publish(topic: string, data: string): number
+}
+
 export interface ConversationSocketData {
   kind: 'conversation-rt'
   userId: string
   userName: string
   workspaceId: string
-  unsubscribe?: () => void
+  server?: SocketBroadcaster
   readable?: Map<string, { ok: boolean; at: number; audience: string[] | null }>
   lastTyping?: Map<string, number>
   presenceTimer?: ReturnType<typeof setInterval>
@@ -37,16 +42,70 @@ export function isConversationSocketData(data: unknown): data is ConversationSoc
   return !!data && typeof data === 'object' && (data as any).kind === 'conversation-rt'
 }
 
-// Every socket in the workspace gets the same envelope; serialize it once.
-const serialized = new WeakMap<ConversationEnvelope, string>()
-
 export function serializeEnvelope(envelope: ConversationEnvelope): string {
-  let text = serialized.get(envelope)
-  if (text === undefined) {
-    text = JSON.stringify(envelope.event)
-    serialized.set(envelope, text)
+  return JSON.stringify(envelope.event)
+}
+
+/**
+ * One bus listener per workspace per pod. Events every member may see go out
+ * as a single native topic publish (clients drop their own typing);
+ * audience-limited events are sent socket by socket.
+ */
+interface WorkspaceHub {
+  sockets: Set<any>
+  unsubscribe: () => void
+  server: SocketBroadcaster | null
+}
+
+const hubs = new Map<string, WorkspaceHub>()
+
+export const workspaceTopic = (workspaceId: string) => `conversation-rt:${workspaceId}`
+
+function deliver(hub: WorkspaceHub, workspaceId: string, envelope: ConversationEnvelope): void {
+  const text = serializeEnvelope(envelope)
+  const typist = envelope.event.type === 'typing' ? envelope.event.userId : null
+  if (envelope.audience === null && hub.server) {
+    hub.server.publish(workspaceTopic(workspaceId), text)
+    return
   }
-  return text
+  for (const ws of hub.sockets) {
+    const data = ws.data as ConversationSocketData
+    if (!canReceive(envelope, data.userId) || data.userId === typist) continue
+    try {
+      ws.send(text)
+    } catch {
+      // Socket closing; the close handler removes it.
+    }
+  }
+}
+
+function joinHub(ws: any): void {
+  const data = ws.data as ConversationSocketData
+  let hub = hubs.get(data.workspaceId)
+  if (!hub) {
+    const created: WorkspaceHub = { sockets: new Set(), server: null, unsubscribe: () => {} }
+    created.unsubscribe = subscribeWorkspaceEvents(data.workspaceId, (envelope) => deliver(created, data.workspaceId, envelope))
+    hubs.set(data.workspaceId, created)
+    hub = created
+  }
+  hub.server ??= data.server ?? null
+  hub.sockets.add(ws)
+  ws.subscribe?.(workspaceTopic(data.workspaceId))
+}
+
+function leaveHub(ws: any): void {
+  const data = ws.data as ConversationSocketData
+  const hub = hubs.get(data.workspaceId)
+  if (!hub?.sockets.delete(ws)) return
+  if (hub.sockets.size === 0) {
+    hub.unsubscribe()
+    hubs.delete(data.workspaceId)
+  }
+}
+
+/** Test hook. */
+export function _conversationSocketHubs(): Map<string, { sockets: number }> {
+  return new Map([...hubs].map(([id, hub]) => [id, { sockets: hub.sockets.size }]))
 }
 
 async function cachedAccess(data: ConversationSocketData, conversationId: string) {
@@ -71,15 +130,7 @@ async function cachedAccess(data: ConversationSocketData, conversationId: string
 export const conversationSocketHandlers = {
   open(ws: any) {
     const data = ws.data as ConversationSocketData
-    data.unsubscribe = subscribeWorkspaceEvents(data.workspaceId, (envelope) => {
-      if (!canReceive(envelope, data.userId)) return
-      if (envelope.event.type === 'typing' && envelope.event.userId === data.userId) return
-      try {
-        ws.send(serializeEnvelope(envelope))
-      } catch {
-        // Socket closing; the close handler unsubscribes.
-      }
-    })
+    joinHub(ws)
     registerPresenceSocket(data.workspaceId, data.userId)
     void recordPresence(data.workspaceId, data.userId, 'active')
     data.presenceTimer = setInterval(() => {
@@ -126,8 +177,7 @@ export const conversationSocketHandlers = {
 
   close(ws: any) {
     const data = ws.data as ConversationSocketData
-    data.unsubscribe?.()
-    data.unsubscribe = undefined
+    leaveHub(ws)
     if (data.presenceTimer) clearInterval(data.presenceTimer)
     void recordPresence(data.workspaceId, data.userId, 'offline')
   },

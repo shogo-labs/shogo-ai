@@ -413,7 +413,10 @@ export function useTypingUsers(
   threadRootId: string | null = null,
 ): string[] {
   const [typing, setTyping] = useState<Record<string, { name: string; at: number }>>({})
+  // The server broadcasts typing to the whole workspace, typist included.
+  const me = useWorkspaceUser(workspaceId)?.id ?? null
   useTeamChatEvents(workspaceId, (event) => {
+    if (event.type === 'typing' && event.userId === me) return
     if (event.type === 'typing' && event.conversationId === conversationId && (event.threadRootId ?? null) === threadRootId) {
       setTyping((t) => ({ ...t, [event.userId]: { name: event.name, at: Date.now() } }))
     } else if (event.type === 'message.created' && event.message.conversationId === conversationId && event.message.authorUserId) {
