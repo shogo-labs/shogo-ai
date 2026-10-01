@@ -19,7 +19,7 @@ export interface TimelineState {
   messages: ChatMessage[]
   hasMoreOlder: boolean
   /** Live text for agent replies that are still running, by message id. */
-  streaming: Record<string, { text: string; tool: string | null }>
+  streaming: Record<string, { text: string; tool: string | null; tools?: Array<{ name: string; done: boolean }> }>
 }
 
 export const emptyTimeline: TimelineState = { messages: [], hasMoreOlder: false, streaming: {} }
@@ -105,7 +105,7 @@ export function applyTimelineEvent(state: TimelineState, event: TeamChatEvent, s
     }
     case 'agent.delta': {
       if (!state.messages.some((m) => m.id === event.messageId)) return state
-      return { ...state, streaming: { ...state.streaming, [event.messageId]: { text: event.text, tool: event.tool } } }
+      return { ...state, streaming: { ...state.streaming, [event.messageId]: { text: event.text, tool: event.tool, tools: event.tools } } }
     }
     default:
       return state
@@ -186,7 +186,9 @@ export function applyListEvent(
       }
       const copy = [...list]
       copy[idx] = next
-      return { list: copy, refetch: false }
+      // A reply moved to the end was already counted when it started; the server knows the real count.
+      if (event.moved && !caughtUp) copy[idx] = { ...next, unreadCount: c.unreadCount }
+      return { list: copy, refetch: event.moved === true && !caughtUp }
     }
     case 'read': {
       if (event.userId !== me) return { list, refetch: false }

@@ -5,7 +5,9 @@ import { ActivityIndicator, FlatList, Platform, Pressable, Text, View, type Nati
 import { ArrowDown, ArrowUp, X } from 'lucide-react-native'
 import type { ChatMessage } from '../../lib/team-chat-api'
 import { firstUnreadIndex, startsGroup, type MentionNames, type TimelineState } from '../../lib/team-chat-state'
+import { foldStatusRuns, type TimelineItem } from '../../lib/team-chat-kinds'
 import { MessageRow, type MessageRowProps } from './MessageRow'
+import { StatusRunRow } from './AgentStatus'
 
 type RowHandlers = Omit<MessageRowProps, 'message' | 'grouped' | 'me' | 'names' | 'streaming' | 'canManage' | 'inThread' | 'highlighted'>
 
@@ -34,7 +36,7 @@ export interface MessageListProps extends RowHandlers {
   highlightId?: string | null
 }
 
-type Row = { message: ChatMessage; grouped: boolean }
+type Row = TimelineItem & { grouped: boolean }
 
 const JUMP_OFFSET = 800
 const AT_LATEST_OFFSET = 40
@@ -47,16 +49,20 @@ export function MessageList({
   unreadAfterSeq = null, unreadUpToSeq = Infinity, unreadNotLoaded = false, onRevealUnread, highlightId = null, ...handlers
 }: MessageListProps) {
   const rows = useMemo(() => {
-    const out: Row[] = []
-    state.messages.forEach((m, i) => out.push({ message: m, grouped: !startsGroup(state.messages[i - 1], m) }))
+    const items = foldStatusRuns(state.messages)
+    const out: Row[] = items.map((item, i) => ({ ...item, grouped: !startsGroup(items[i - 1]?.message, item.message) }))
     return out.reverse()
   }, [state.messages])
   const unreadIdx = useMemo(
     () => (unreadAfterSeq === null ? -1 : firstUnreadIndex(state.messages, unreadAfterSeq, me, unreadUpToSeq)),
     [state.messages, unreadAfterSeq, unreadUpToSeq, me],
   )
-  const firstUnreadId = unreadIdx >= 0 ? state.messages[unreadIdx]!.id : null
-  const unreadRow = firstUnreadId ? rows.length - 1 - unreadIdx : -1
+  const unreadMessageId = unreadIdx >= 0 ? state.messages[unreadIdx]!.id : null
+  // The "New" line sits on the row showing that message, which may be a folded run.
+  const unreadRow = unreadMessageId
+    ? rows.findIndex((r) => r.message.id === unreadMessageId || r.folded.some((m) => m.id === unreadMessageId))
+    : -1
+  const firstUnreadId = unreadRow >= 0 ? rows[unreadRow]!.message.id : null
   const unreadCount = unreadIdx >= 0
     ? state.messages.slice(unreadIdx).filter((m) => !m.pending && m.authorUserId !== me).length
     : 0
@@ -78,7 +84,7 @@ export function MessageList({
     if (!highlightId && unreadRow >= OPEN_AT_UNREAD_ROWS) requestAnimationFrame(() => scrollToRow(unreadRow, 0.9))
   }, [loading, rows.length, highlightId, unreadRow, scrollToRow])
 
-  const highlightRow = highlightId ? rows.findIndex((r) => r.message.id === highlightId) : -1
+  const highlightRow = highlightId ? rows.findIndex((r) => r.message.id === highlightId || r.folded.some((m) => m.id === highlightId)) : -1
   const scrolledToHighlight = useRef<string | null>(null)
   useEffect(() => {
     if (!highlightId || highlightRow < 0 || scrolledToHighlight.current === highlightId) return
@@ -125,7 +131,9 @@ export function MessageList({
     return out as RowHandlers
   }, [shape])
   const renderItem = useCallback(({ item }: { item: Row }) => {
-    const row = (
+    const row = item.folded.length ? (
+      <StatusRunRow latest={item.message} folded={item.folded} onOpenThread={inThread ? undefined : rowProps.onReply} />
+    ) : (
       <MessageRow
         message={item.message}
         grouped={item.grouped && item.message.id !== firstUnreadId}

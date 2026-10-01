@@ -10,7 +10,8 @@ import { useCallback, useEffect, useState } from 'react'
 import { ActivityIndicator, AppState, KeyboardAvoidingView, Platform, Pressable, Text, View, useWindowDimensions } from 'react-native'
 import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router'
 import { useActiveWorkspace } from '../../../hooks/useActiveWorkspace'
-import { teamChatApi, type ChatMessage, type ConversationDetail } from '../../../lib/team-chat-api'
+import { conversationTitle, teamChatApi, type ChatMessage, type ConversationDetail } from '../../../lib/team-chat-api'
+import { sessionRoute } from '../../../lib/team-chat-nav'
 import { useTeamChatEvents } from '../../../lib/team-chat-connection'
 import {
   invalidateConversationList,
@@ -112,9 +113,22 @@ export default function ConversationScreen() {
     (message: ChatMessage) => {
       const projectId = message.authorAgent?.projectId
       if (!projectId || !message.agentSessionId) return
-      router.push({ pathname: '/(app)/project-chat/[id]', params: { id: projectId, chatSessionId: message.agentSessionId } } as any)
+      if (!conversation) return
+      router.push(
+        sessionRoute({
+          projectId,
+          sessionId: message.agentSessionId,
+          origin: {
+            conversationId: conversation.id,
+            conversationLabel: conversationTitle(conversation),
+            conversationKind: conversation.kind,
+            threadRootId: message.threadRootId ?? threadRootId,
+            agentName: message.authorAgent?.name ?? 'Agent',
+          },
+        }) as any,
+      )
     },
-    [router],
+    [router, conversation, threadRootId],
   )
   const onChanged = useCallback(() => {
     void load()

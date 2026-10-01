@@ -88,6 +88,28 @@ describe('timeline', () => {
     expect(state.messages[0].lastReplyAt).toBe('2026-09-30T10:00:00.000Z')
   })
 
+  test('a reply that finishes after other messages moves below them, not in place', () => {
+    let state = mergePage(emptyTimeline, {
+      messages: [msg({ id: 'a1', seq: 2, authorType: 'agent', agentStatus: 'running', text: '' }), msg({ id: 'card', seq: 3, authorType: 'agent' })], hasMore: false,
+    }, 'initial')
+    expect(state.messages.map((m) => m.id)).toEqual(['a1', 'card'])
+    state = applyTimelineEvent(state, {
+      type: 'message.created', conversationId: 'c1', moved: true,
+      message: msg({ id: 'a1', seq: 4, authorType: 'agent', agentStatus: 'done', text: 'Merged.' }),
+    }, channel)
+    expect(state.messages.map((m) => [m.id, m.seq])).toEqual([['card', 3], ['a1', 4]])
+    expect(state.messages).toHaveLength(2)
+  })
+
+  test('streamed tools replace each other by name and are dropped when the reply settles', () => {
+    let state = mergePage(emptyTimeline, { messages: [msg({ id: 'a1', seq: 2, authorType: 'agent', agentStatus: 'running', text: '' })], hasMore: false }, 'initial')
+    const tools = [{ name: 'exec', done: true }, { name: 'write_file', done: false }]
+    state = applyTimelineEvent(state, { type: 'agent.delta', conversationId: 'c1', messageId: 'a1', text: '', tool: 'write_file', tools }, channel)
+    expect(state.streaming.a1.tools).toEqual(tools)
+    state = applyTimelineEvent(state, { type: 'message.updated', conversationId: 'c1', message: msg({ id: 'a1', seq: 2, authorType: 'agent', agentStatus: 'done', text: 'ok' }) }, channel)
+    expect(state.streaming.a1).toBeUndefined()
+  })
+
   test('thread view keeps the root and its replies', () => {
     const scope = { conversationId: 'c1', threadRootId: 'm1' }
     let state = mergePage(emptyTimeline, { root: msg({ id: 'm1', seq: 1 }), messages: [], hasMore: false }, 'initial')
@@ -144,6 +166,16 @@ describe('conversation list', () => {
       type: 'message.created', conversationId: 'c1', message: msg({ id: 'p', seq: 8, authorUserId: 'u2', threadRootId: 'o' }),
     }, 'me', null)
     expect(update.list[0]).toMatchObject({ unreadCount: 0, lastSeq: 8 })
+  })
+
+  test('a reply moved to the end is not counted twice and asks the server for the real count', () => {
+    const list = [conv({ id: 'c1', unreadCount: 1, lastSeq: 5 })]
+    const moved = applyListEvent(list, { type: 'message.created', conversationId: 'c1', moved: true, message: msg({ id: 'a1', seq: 9, authorType: 'agent', authorUserId: null }) }, 'me', null)
+    expect(moved.list[0]).toMatchObject({ unreadCount: 1, lastSeq: 9 })
+    expect(moved.refetch).toBe(true)
+    const viewing = applyListEvent(list, { type: 'message.created', conversationId: 'c1', moved: true, message: msg({ id: 'a1', seq: 9, authorType: 'agent', authorUserId: null }) }, 'me', 'c1')
+    expect(viewing.list[0]).toMatchObject({ unreadCount: 0, lastReadSeq: 9 })
+    expect(viewing.refetch).toBe(false)
   })
 
   test('read events for me clear badges; membership changes ask for a refetch', () => {

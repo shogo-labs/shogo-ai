@@ -7,10 +7,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Alert, Platform, Pressable, Text, View } from 'react-native'
 import { Upload, X } from 'lucide-react-native'
-import { teamChatApi, type ChatMessage, type ConversationDetail, type Mentionables } from '../../lib/team-chat-api'
+import { conversationTitle, teamChatApi, type ChatMessage, type ConversationDetail, type Mentionables } from '../../lib/team-chat-api'
 import { mentionNames } from '../../lib/team-chat-state'
 import { TIMELINE_SOFT_LIMIT, useConversationTimeline, useMarkReadWhileVisible, useTypingUsers } from '../../hooks/useTeamChat'
 import { requestEditMessage } from '../../hooks/useChatShortcuts'
+import { threadCrumbs } from '../../lib/team-chat-nav'
+import { Breadcrumb } from './SessionBreadcrumb'
 import { MessageList } from './MessageList'
 import { Composer, type ComposerHandle } from './Composer'
 
@@ -212,7 +214,14 @@ export function TimelinePane(props: TimelinePaneProps) {
     <View className="flex-1" ref={rootRef}>
       {threadRootId && (
         <View className="flex-row items-center border-b border-border px-4 py-2.5">
-          <Text className="flex-1 text-base font-semibold text-foreground">Thread</Text>
+          <Breadcrumb
+            className="flex-1 flex-row flex-wrap items-center gap-x-1"
+            items={threadCrumbs({ kind: conversation.kind, label: conversationTitle(conversation) }).map((c) => ({
+              key: c.key,
+              label: c.label,
+              onPress: c.up ? props.onClose : undefined,
+            }))}
+          />
           {props.onClose && (
             <Pressable onPress={props.onClose} accessibilityLabel="Close thread" className="rounded-md p-1.5 active:bg-muted hover:bg-muted">
               <X size={16} className="text-muted-foreground" />

@@ -5,15 +5,19 @@
  * body with mentions, attachments, reactions, thread summary, and live agent
  * replies (streaming text, the tool in use, Stop).
  */
-import { memo, useEffect, useState } from 'react'
+import { memo, useCallback, useEffect, useRef, useState } from 'react'
 import { ActionSheetIOS, Alert, Image, Linking, Modal, Platform, Pressable, Text, TextInput, View } from 'react-native'
 import * as Clipboard from 'expo-clipboard'
-import { AlarmClock, AlertCircle, Bookmark, Bot, Check, CircleDot, CornerDownRight, FileText, Link2, Loader2, MessageSquare, Pencil, Pin, SmilePlus, Square, Trash2 } from 'lucide-react-native'
+import { AlarmClock, AlertCircle, Bookmark, Check, CircleDot, CornerDownRight, FileText, Link2, Loader2, MessageSquare, Pencil, Pin, SmilePlus, Square, Trash2 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { MarkdownText } from '../chat/MarkdownText'
 import { absoluteApiUrl, teamChatApi, type ChatMessage, type LinkUnfurl } from '../../lib/team-chat-api'
 import { messageLink, parseMessageLink } from '../../lib/team-chat-links'
 import { EmojiPicker } from './EmojiPicker'
+import { AgentAvatar, AgentProfileCard } from './AgentProfileCard'
+import { ApprovalCardView, StatusCardView } from './AgentStatus'
+import { approvalOf, messageKind, statusCardOf, workOf } from '../../lib/team-chat-kinds'
+import { AgentWorkedFor, AgentWorkingStatus } from './AgentWork'
 import { renderMentions, type MentionNames } from '../../lib/team-chat-state'
 import { useUserStatus } from '../../hooks/useChatPrefs'
 import { PresenceDot } from './PresenceDot'
@@ -92,12 +96,22 @@ function initials(name: string): string {
   return name.split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0]!.toUpperCase()).join('') || '?'
 }
 
-function Avatar({ message }: { message: ChatMessage }) {
+/** Open a channel from an agent's profile card. */
+function openConversationInApp(conversationId: string): void {
+  void import('expo-router').then(({ router }) =>
+    router.push({ pathname: '/(app)/c/[conversationId]', params: { conversationId } } as any),
+  )
+}
+
+function Avatar({ message, onPress }: { message: ChatMessage; onPress?: () => void }) {
   if (message.authorType === 'agent') {
+    const name = message.authorAgent?.name ?? 'Agent'
+    const avatar = <AgentAvatar name={name} iconUrl={message.authorAgent?.iconUrl} />
+    if (!onPress) return avatar
     return (
-      <View className="h-8 w-8 items-center justify-center rounded-lg bg-primary/15">
-        <Bot size={16} className="text-primary" />
-      </View>
+      <Pressable onPress={onPress} accessibilityLabel={`${name} profile`} accessibilityRole="button">
+        {avatar}
+      </Pressable>
     )
   }
   if (message.authorType === 'system') {
@@ -174,12 +188,38 @@ function ReactionGlyph({ emoji, size = 12 }: { emoji: string; size?: number }) {
   return <Text style={{ fontSize: size }}>{emoji}</Text>
 }
 
+/**
+ * Hover state for a row whose action bar floats half outside it. Leaving the row hides the bar
+ * after a short grace period, and entering the bar (or the row again) cancels that, so moving
+ * the pointer from the message onto the emoji buttons never makes them vanish.
+ */
+function useRowHover() {
+  const [hovered, setHovered] = useState(false)
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const hoverIn = useCallback(() => {
+    if (timer.current) clearTimeout(timer.current)
+    timer.current = null
+    setHovered(true)
+  }, [])
+  const hoverOut = useCallback(() => {
+    if (timer.current) clearTimeout(timer.current)
+    timer.current = setTimeout(() => {
+      timer.current = null
+      setHovered(false)
+    }, 180)
+  }, [])
+  useEffect(() => () => { if (timer.current) clearTimeout(timer.current) }, [])
+  return { hovered, hoverIn, hoverOut }
+}
+
 function MessageRowImpl(props: MessageRowProps) {
   const { message, grouped, me, names, streaming, canManage, inThread } = props
-  const [hovered, setHovered] = useState(false)
+  const { hovered, hoverIn, hoverOut } = useRowHover()
   const [pickerOpen, setPickerOpen] = useState(false)
   const [remindOpen, setRemindOpen] = useState(false)
+  useEffect(() => { if (!hovered) setRemindOpen(false) }, [hovered])
   const [editing, setEditing] = useState(false)
+  const [profileOpen, setProfileOpen] = useState(false)
   const saved = useIsSaved(message.id)
   const customEmoji = useCustomEmoji()
   const [draft, setDraft] = useState(message.text)
@@ -187,6 +227,11 @@ function MessageRowImpl(props: MessageRowProps) {
   const deleted = !!message.deletedAt
   const running = message.authorType === 'agent' && message.agentStatus === 'running'
   const body = running ? streaming?.text ?? '' : message.text
+  const card = !running && message.authorType === 'agent' ? statusCardOf(message) : null
+  const approval = !running && message.authorType === 'agent' ? approvalOf(message) : null
+  const kind = message.authorType === 'agent' ? messageKind(message) : null
+  const canOpenSession = message.authorType === 'agent' && !!message.agentSessionId && !!message.authorAgent?.projectId && !!props.onOpenSession
+  const work = !running && message.authorType === 'agent' ? workOf(message) : null
   const isWeb = Platform.OS === 'web'
   useEditRequest(message.id, () => {
     if (!mine || deleted || message.authorType !== 'user') return
@@ -257,8 +302,8 @@ function MessageRowImpl(props: MessageRowProps) {
     return (
       <Pressable
         onPress={canDiscuss && !isWeb ? () => props.onReply!(message) : undefined}
-        onHoverIn={() => setHovered(true)}
-        onHoverOut={() => setHovered(false)}
+        onHoverIn={hoverIn}
+        onHoverOut={hoverOut}
         className={cn('flex-row items-start gap-2 px-4 py-1.5', hovered && 'bg-muted/40')}
       >
         <View className="mt-1.5 h-1.5 w-1.5 rounded-full bg-primary/60" />
@@ -287,16 +332,15 @@ function MessageRowImpl(props: MessageRowProps) {
   return (
     <Pressable
       onLongPress={isWeb ? undefined : openActions}
-      onHoverIn={() => setHovered(true)}
-      onHoverOut={() => {
-        setHovered(false)
-        setRemindOpen(false)
-      }}
+      onHoverIn={hoverIn}
+      onHoverOut={hoverOut}
       className={cn(
         'relative flex-row gap-3 px-4',
         grouped ? 'py-0.5' : 'pt-2.5 pb-0.5',
         message.pinned && !deleted ? 'bg-amber-500/5' : null,
         hovered && 'bg-muted/40',
+        kind === 'decision' && !deleted ? 'border-l-2 border-amber-500 bg-amber-500/10' : null,
+        kind === 'alert' && !deleted ? 'border-l-2 border-destructive bg-destructive/10' : null,
         props.highlighted && 'bg-amber-400/20',
       )}
       testID={props.highlighted ? 'message-highlighted' : undefined}
@@ -306,19 +350,32 @@ function MessageRowImpl(props: MessageRowProps) {
         {grouped ? (
           hovered ? <Text className="pt-1 text-[10px] text-muted-foreground">{formatTime(message.createdAt)}</Text> : null
         ) : (
-          <Avatar message={message} />
+          <Avatar message={message} onPress={message.authorType === 'agent' && !deleted ? () => setProfileOpen(true) : undefined} />
         )}
       </View>
       <View className="min-w-0 flex-1">
         {!grouped && (
           <View className="flex-row items-baseline gap-2">
-            <Text className="text-sm font-semibold text-foreground">{authorName(message)}</Text>
+            {message.authorType === 'agent' && !deleted ? (
+              <Pressable onPress={() => setProfileOpen(true)} accessibilityLabel={`${authorName(message)} profile`}>
+                <Text className="text-sm font-semibold text-foreground">{authorName(message)}</Text>
+              </Pressable>
+            ) : (
+              <Text className="text-sm font-semibold text-foreground">{authorName(message)}</Text>
+            )}
             {message.authorType === 'user' ? <AuthorStatus userId={message.authorUserId} /> : null}
             {message.authorType === 'agent' && (
               <View className="rounded bg-primary/10 px-1.5 py-px">
                 <Text className="text-[10px] font-medium text-primary">AGENT</Text>
               </View>
             )}
+            {(kind === 'decision' && (!approval || approval.status === 'pending')) || kind === 'alert' ? (
+              <View className={cn('rounded px-1.5 py-px', kind === 'alert' ? 'bg-destructive/15' : 'bg-amber-500/20')}>
+                <Text className={cn('text-[10px] font-semibold', kind === 'alert' ? 'text-destructive' : 'text-amber-700 dark:text-amber-400')} testID={`kind-${kind}`}>
+                  {kind === 'alert' ? 'ALERT' : 'NEEDS A DECISION'}
+                </Text>
+              </View>
+            ) : null}
             <Text className="text-[11px] text-muted-foreground">{formatTime(message.createdAt)}</Text>
           </View>
         )}
@@ -373,7 +430,11 @@ function MessageRowImpl(props: MessageRowProps) {
           </View>
         ) : (
           <>
-            {!!body && (() => {
+            {card ? <StatusCardView card={card} onOpenLink={openMessageLinkInApp} /> : null}
+            {approval ? <ApprovalCardView approval={approval} canDecide={!message.pending} onDecide={(decision) => api.decideApproval(message.id, decision)} /> : null}
+            {work ? <AgentWorkedFor messageId={message.id} work={work} /> : null}
+            {/* While an agent works the row shows its status; its closing message appears when it is done. */}
+            {!card && !approval && !!body && !(running && message.authorType === 'agent') && (() => {
               const jumbo = running ? null : jumboEmojiCodes(body, customEmoji)
               return (
                 <View className={cn(message.pending && 'opacity-60')}>
@@ -390,10 +451,15 @@ function MessageRowImpl(props: MessageRowProps) {
             {!running && <UnfurlCards message={message} />}
             {running && (
               <View className="mt-1 flex-row items-center gap-2">
-                <Loader2 size={12} className="text-muted-foreground" />
-                <Text className="text-xs text-muted-foreground">
-                  {streaming?.tool ? `Using ${streaming.tool}…` : body ? 'Writing…' : 'Thinking…'}
-                </Text>
+                {/* The live status opens the session the agent is writing in. */}
+                <Pressable
+                  disabled={!canOpenSession}
+                  onPress={() => props.onOpenSession!(message)}
+                  accessibilityLabel="Open the session this agent is working in"
+                  className="rounded-md active:bg-muted"
+                >
+                  <AgentWorkingStatus tools={streaming?.tools ?? (streaming?.tool ? [{ name: streaming.tool, done: false }] : [])} />
+                </Pressable>
                 <Pressable
                   onPress={() => props.onStopAgent(message)}
                   accessibilityLabel="Stop agent"
@@ -410,7 +476,7 @@ function MessageRowImpl(props: MessageRowProps) {
                 <Text className="text-xs text-destructive">The agent hit an error.</Text>
               </View>
             )}
-            {message.authorType === 'agent' && message.agentSessionId && message.authorAgent?.projectId && !running && props.onOpenSession && (
+            {canOpenSession && !running && (
               <Pressable onPress={() => props.onOpenSession!(message)} className="mt-1 self-start">
                 <Text className="text-[11px] text-primary">Open full session</Text>
               </Pressable>
@@ -497,7 +563,7 @@ function MessageRowImpl(props: MessageRowProps) {
       </View>
 
       {isWeb && hovered && !deleted && !message.pending && !editing && (
-        <View className="absolute right-3 -top-3 flex-row items-center rounded-lg border border-border bg-card px-1 py-0.5 shadow-sm">
+        <Pressable onHoverIn={hoverIn} onHoverOut={hoverOut} className="absolute right-3 -top-3 flex-row items-center rounded-lg border border-border bg-card px-1 py-0.5 shadow-sm">
           {QUICK_REACTIONS.slice(0, 3).map((emoji) => (
             <Pressable key={emoji} onPress={() => props.onReact(message, emoji)} className="rounded px-1.5 py-1 hover:bg-muted">
               <Text className="text-sm">{emoji}</Text>
@@ -546,17 +612,27 @@ function MessageRowImpl(props: MessageRowProps) {
               <Trash2 size={14} className="text-muted-foreground" />
             </Pressable>
           )}
-        </View>
+        </Pressable>
       )}
       {isWeb && hovered && remindOpen && (
-        <View className="absolute right-3 top-6 z-10 w-44 rounded-lg border border-border bg-card py-1 shadow-md">
+        <Pressable onHoverIn={hoverIn} onHoverOut={hoverOut} className="absolute right-3 top-6 z-10 w-44 rounded-lg border border-border bg-card py-1 shadow-md">
           <Text className="px-3 pb-1 pt-1 text-[11px] font-semibold uppercase text-muted-foreground">Remind me</Text>
           {REMIND_OPTIONS.map((o) => (
             <Pressable key={o.label} onPress={() => remind(o.at())} className="px-3 py-1.5 hover:bg-muted">
               <Text className="text-sm text-foreground">{o.label}</Text>
             </Pressable>
           ))}
-        </View>
+        </Pressable>
+      )}
+      {profileOpen && message.authorAgent && (
+        <AgentProfileCard
+          workspaceId={message.workspaceId}
+          projectId={message.authorAgent.projectId}
+          name={message.authorAgent.name}
+          iconUrl={message.authorAgent.iconUrl}
+          onClose={() => setProfileOpen(false)}
+          onOpenChannel={openConversationInApp}
+        />
       )}
       {pickerOpen && (
         <Modal visible transparent animationType="fade" onRequestClose={() => setPickerOpen(false)}>

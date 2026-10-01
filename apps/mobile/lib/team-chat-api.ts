@@ -56,7 +56,7 @@ export interface ConversationSummary {
 
 export type ConversationMember =
   | { id: string; type: 'user'; userId: string; role: string; name: string; image: string | null }
-  | { id: string; type: 'agent'; projectId: string | null; name: string | null; agentTrigger: string; agentKeywords: string | null }
+  | { id: string; type: 'agent'; projectId: string | null; name: string | null; agentTrigger: string; agentKeywords: string | null; agentMuted?: boolean }
 
 export interface ConversationDetail extends Omit<ConversationSummary, 'unreadCount' | 'mentionCount' | 'participants'> {
   canPost: boolean
@@ -94,7 +94,7 @@ export interface ChatMessage {
   authorType: 'user' | 'agent' | 'bot' | 'system'
   author: { id: string; name: string; image: string | null } | null
   authorUserId: string | null
-  authorAgent: { projectId: string | null; name: string } | null
+  authorAgent: { projectId: string | null; name: string; iconUrl?: string | null } | null
   text: string
   blocks: Record<string, unknown> | null
   clientMsgId: string | null
@@ -156,6 +156,15 @@ export interface Mentionables {
   agents: Array<{ key: string; projectId: string | null; name: string; description: string | null; image: string | null }>
   statuses?: Record<string, UserStatus>
   groups?: UserGroup[]
+}
+
+export interface AgentCard {
+  projectId: string | null
+  name: string
+  iconUrl: string | null
+  role: string | null
+  owner: { id: string; name: string } | null
+  channels: Array<{ conversationId: string; kind: string; name: string | null; slug: string | null; agentTrigger: string; muted: boolean }>
 }
 
 export interface UserGroup {
@@ -272,12 +281,20 @@ export interface CatchUpResult {
   toSeq: number
 }
 
+/** The turn behind an agent's final message (see the API's agent-work-log). */
+export interface AgentWorkLog {
+  parts: Array<Record<string, unknown>>
+  startedAt: number
+  completedAt: number
+  toolCalls: number
+}
+
 export type TeamChatEvent =
   | { type: 'ready'; workspaceId: string; userId: string }
-  | { type: 'message.created'; conversationId: string; message: ChatMessage }
+  | { type: 'message.created'; conversationId: string; message: ChatMessage; moved?: boolean }
   | { type: 'message.updated'; conversationId: string; message: ChatMessage }
   | { type: 'reaction.changed'; conversationId: string; messageId: string; reactions: ReactionSummary[] }
-  | { type: 'agent.delta'; conversationId: string; messageId: string; text: string; tool: string | null }
+  | { type: 'agent.delta'; conversationId: string; messageId: string; text: string; tool: string | null; tools?: Array<{ name: string; done: boolean }> }
   | { type: 'conversation.created'; conversationId: string; conversation: ConversationSummary }
   | { type: 'conversation.updated'; conversationId: string; conversation: ConversationSummary }
   | { type: 'member.joined' | 'member.left'; conversationId: string; userId?: string; userIds?: string[] }
@@ -466,6 +483,10 @@ export function teamChatApi() {
     async deleteEmoji(id: string) {
       await http.delete(`/api/custom-emoji/${encodeURIComponent(id)}`)
     },
+    async agentCard(workspaceId: string, projectId: string | null): Promise<AgentCard> {
+      const qs = projectId ? `?projectId=${encodeURIComponent(projectId)}` : ''
+      return (await http.get<{ card: AgentCard }>(`${ws(workspaceId)}/agent-card${qs}`)).data.card
+    },
     async mentionables(workspaceId: string): Promise<Mentionables> {
       return (await http.get<Mentionables>(`${ws(workspaceId)}/mentionables`)).data
     },
@@ -493,8 +514,11 @@ export function teamChatApi() {
     async addMembers(id: string, userIds: string[]) {
       await http.post(`${conv(id)}/members`, { userIds })
     },
-    async addAgent(id: string, input: { projectId: string | null; trigger?: 'mention' | 'all' | 'keyword'; keywords?: string }) {
+    async addAgent(id: string, input: { projectId: string | null; trigger?: 'mention' | 'all' | 'keyword' | 'auto'; keywords?: string }) {
       await http.post(`${conv(id)}/agents`, input)
+    },
+    async setAgentMuted(id: string, projectId: string | null, muted: boolean) {
+      await http.patch(`${conv(id)}/agents`, { projectId, muted })
     },
     async removeMember(id: string, memberId: string) {
       await http.delete(`${conv(id)}/members/${encodeURIComponent(memberId)}`)
@@ -539,6 +563,14 @@ export function teamChatApi() {
     },
     async stopAgent(messageId: string) {
       await http.post(`${msg(messageId)}/stop`, {})
+    },
+    /** What an agent did before its final message: its turn's parts, trimmed for the channel. */
+    async workLog(messageId: string): Promise<AgentWorkLog> {
+      return (await http.get<AgentWorkLog>(`${msg(messageId)}/work`)).data
+    },
+    /** Approve or deny an action an agent is waiting on. The first answer wins; later ones throw. */
+    async decideApproval(messageId: string, decision: 'approve' | 'deny'): Promise<ChatMessage> {
+      return (await http.post<{ message: ChatMessage }>(`${msg(messageId)}/approval`, { decision })).data.message
     },
     async upload(id: string, file: { uri: string; name: string; type: string } | File): Promise<MessageAttachment> {
       const form = new FormData()
