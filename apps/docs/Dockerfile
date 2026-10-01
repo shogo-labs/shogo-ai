@@ -6,7 +6,7 @@
 # 2. Serve static files with Nginx
 # =============================================================================
 
-FROM --platform=$BUILDPLATFORM oven/bun:1.3-alpine AS builder
+FROM --platform=$BUILDPLATFORM oven/bun:1.4.2-alpine AS builder
 
 WORKDIR /app
 

@@ -17,7 +17,7 @@
 # =============================================================================
 # Stage 0: builder — install deps, copy source, fetch skills
 # =============================================================================
-FROM oven/bun:1.3-debian AS builder
+FROM oven/bun:1.4.2-debian AS builder
 
 WORKDIR /app
 
@@ -68,7 +68,7 @@ RUN rm -rf packages/*/node_modules apps/*/node_modules
 # =============================================================================
 # Stage 1: deps — full node_modules with workspace links
 # =============================================================================
-FROM oven/bun:1.3-debian AS deps
+FROM oven/bun:1.4.2-debian AS deps
 
 WORKDIR /app
 
@@ -103,7 +103,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl bash git ca-certificates ripgrep unzip && \
     curl -fsSL https://deb.nodesource.com/setup_24.x | bash - && \
     apt-get install -y --no-install-recommends nodejs && \
-    curl -fsSL https://bun.sh/install | BUN_INSTALL=/usr/local bash -s "bun-v1.3.11" && \
+    curl -fsSL https://bun.sh/install | BUN_INSTALL=/usr/local bash -s "bun-v1.4.2" && \
     apt-get purge -y unzip && apt-get autoremove -y && \
     rm -rf /var/lib/apt/lists/*
 

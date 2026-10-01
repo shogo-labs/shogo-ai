@@ -7,7 +7,7 @@
  *
  *   1. POST /terminal/sessions creates a shell.
  *   2. WS connect to /terminal/sessions/:id/ws (no ?since=).
- *   3. Send a DATA frame with `echo hi-from-e2e\n`.
+ *   3. Send a DATA frame with `echo hi-from-e2e` + Enter (`\r` on ConPTY).
  *   4. Receive DATA frames until we see "hi-from-e2e".
  *   5. Send a SIGNAL frame, observe nothing crashes.
  *   6. Send `exit\n`, observe EXIT frame.
@@ -31,8 +31,7 @@ import {
 } from '../pty-protocol'
 import { runtimeTerminalRoutes } from '../runtime-terminal-routes'
 import { createPtyWsHandlers, type WsData } from '../pty-ws-handler'
-
-const SKIP = process.platform === 'win32'
+import { SHELL_START_MS, TEST_SHELL, line } from './helpers/pty-shell'
 
 let server: ReturnType<typeof Bun.serve> | null = null
 let workspaceDir: string
@@ -44,7 +43,6 @@ let wsHandlers: ReturnType<typeof createPtyWsHandlers> | null = null
 const WS_PATH_RE = /^\/terminal\/sessions\/([^/]+)\/ws$/
 
 beforeAll(() => {
-  if (SKIP) return
   workspaceDir = mkdtempSync(join(tmpdir(), 'pty-ws-e2e-'))
   const built = runtimeTerminalRoutes({ workspaceDir })
   manager = built.manager
@@ -81,19 +79,24 @@ beforeAll(() => {
   baseWsUrl = `ws://127.0.0.1:${server.port}`
 })
 
-afterAll(() => {
+afterAll(async () => {
   wsHandlers?.dispose()
   manager?.shutdown()
   server?.stop(true)
-  if (workspaceDir) rmSync(workspaceDir, { recursive: true, force: true })
+  if (!workspaceDir) return
+  // Windows holds the dir open until the killed shells have fully exited.
+  for (let attempt = 0; ; attempt++) {
+    try {
+      rmSync(workspaceDir, { recursive: true, force: true })
+      return
+    } catch (err) {
+      if (attempt >= 50) throw err
+      await new Promise((r) => setTimeout(r, 100))
+    }
+  }
 })
 
 describe('PTY end-to-end (real Bun.serve + real PTY)', () => {
-  if (SKIP) {
-    test.skip('skipped on win32', () => {})
-    return
-  }
-
   test('happy path: WS → echo → SIGNAL → exit (with REST proof of life)', async () => {
     // Quick REST sanity check — the route's behavior is covered by
     // runtime-terminal-routes.test.ts; here it just proves the HTTP
@@ -101,13 +104,13 @@ describe('PTY end-to-end (real Bun.serve + real PTY)', () => {
     const restRes = await fetch(`${baseHttpUrl}/terminal/sessions`)
     expect(restRes.status).toBe(200)
 
-    // Create a session via the manager directly so we can pin the shell to
-    // /bin/sh. The default shell selection picks $SHELL, which on a
-    // developer machine is often zsh — zsh's bracketed-paste init wraps
-    // every typed line in `\x1b[?2004h ... \x1b[?2004l`, breaking simple
-    // string assertions. /bin/sh is portable and predictable.
+    // Create a session via the manager directly so we can pin the shell
+    // (/bin/sh on POSIX, PowerShell on Windows). The default shell selection
+    // picks $SHELL, which on a developer machine is often zsh — zsh's
+    // bracketed-paste init wraps every typed line in `\x1b[?2004h ... \x1b[?2004l`,
+    // breaking simple string assertions.
     const created = manager.create({
-      cwd: workspaceDir, cols: 80, rows: 24, cmd: ['/bin/sh', '-i'],
+      cwd: workspaceDir, cols: 80, rows: 24, cmd: TEST_SHELL,
     })
     expect(created.id).toMatch(/^t/)
 
@@ -144,17 +147,17 @@ describe('PTY end-to-end (real Bun.serve + real PTY)', () => {
     // the user's shell decides the prompt char (bash → "$ ", zsh → "% ",
     // fish → "> "). Match all of them.
     try {
-      await waitFor(() => /[$%>] $/m.test(combined) || combined.length > 32, 2500)
+      await waitFor(() => /[$%>] $/m.test(combined) || combined.length > 32, SHELL_START_MS)
     } catch (e) {
       throw new Error(`no prompt seen; messages=${messageCount} combined=${JSON.stringify(combined.slice(0, 200))}`)
     }
 
     // 4. Send a command, wait for echo + result
-    ws.send(encodeClientData(new TextEncoder().encode('echo hi-from-e2e\n')))
+    ws.send(encodeClientData(new TextEncoder().encode(line('echo hi-from-e2e'))))
     try {
       await waitFor(
         () => (combined.match(/hi-from-e2e/g) ?? []).length >= 2,
-        3000,
+        SHELL_START_MS,
       )
     } catch {
       throw new Error(`echo never appeared twice; combined=${JSON.stringify(combined.slice(-300))}`)
@@ -173,10 +176,10 @@ describe('PTY end-to-end (real Bun.serve + real PTY)', () => {
     // CI to see `^Cexit 0` glued together and the shell to ignore `exit`.
     ws.send(encodeClientSignal('INT'))
     await new Promise((r) => setTimeout(r, 250))
-    ws.send(encodeClientData(new TextEncoder().encode('exit 0\n')))
+    ws.send(encodeClientData(new TextEncoder().encode(line('exit 0'))))
 
     try {
-      await waitFor(() => exitInfo !== null, 5000)
+      await waitFor(() => exitInfo !== null, SHELL_START_MS)
     } catch {
       throw new Error(`no EXIT frame; combined=${JSON.stringify(combined.slice(-300))}`)
     }
@@ -184,9 +187,9 @@ describe('PTY end-to-end (real Bun.serve + real PTY)', () => {
     expect(exitInfo!.code).toBe(0)
 
     // The reap path should close the WS shortly after exit
-    await waitFor(() => ws.readyState === WebSocket.CLOSED, 2000)
+    await waitFor(() => ws.readyState === WebSocket.CLOSED, 5000)
     expect(ws.readyState).toBe(WebSocket.CLOSED)
-  })
+  }, 30000)
 
   // The internal `waitFor` budgets below sum to >5s in the worst case
   // (3000+3000+3000), so the bun:test default 5000ms timeout would trip
@@ -217,9 +220,9 @@ describe('PTY end-to-end (real Bun.serve + real PTY)', () => {
     // The original budgets were too tight for the test to be reliable
     // under parallel CPU contention (the PTY's initial banner and shell
     // prompt can take 1–2s on a busy mac).
-    await waitFor(() => seenChunks1.join('').length > 32, 3000)
-    ws1.send(encodeClientData(new TextEncoder().encode('echo BEFORE_DROP\n')))
-    await waitFor(() => seenChunks1.join('').includes('BEFORE_DROP'), 3000)
+    await waitFor(() => seenChunks1.join('').length > 32, SHELL_START_MS)
+    ws1.send(encodeClientData(new TextEncoder().encode(line('echo BEFORE_DROP'))))
+    await waitFor(() => seenChunks1.join('').includes('BEFORE_DROP'), SHELL_START_MS)
 
     // Drop ws1 without notifying the server (close path runs when the
     // socket actually closes). Sleep a tick so server processes close.
@@ -229,7 +232,7 @@ describe('PTY end-to-end (real Bun.serve + real PTY)', () => {
     // Type more *into the still-alive PTY* via a side channel: use the
     // manager directly, simulating output that arrived while disconnected.
     const session = manager.get(created.id)!
-    session.write('echo AFTER_DROP\n')
+    session.write(line('echo AFTER_DROP'))
     await new Promise((r) => setTimeout(r, 200))
 
     // Reconnect with since=lastSeq from the FIRST connection
@@ -246,7 +249,7 @@ describe('PTY end-to-end (real Bun.serve + real PTY)', () => {
       }
     })
 
-    await waitFor(() => seenChunks2.join('').includes('AFTER_DROP'), 3000)
+    await waitFor(() => seenChunks2.join('').includes('AFTER_DROP'), SHELL_START_MS)
     const replayed = seenChunks2.join('')
     expect(replayed).toContain('AFTER_DROP')
     // The replay should NOT include bytes the client already saw before

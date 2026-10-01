@@ -3,8 +3,8 @@
 /**
  * PtySession — one persistent shell per IDE terminal tab.
  *
- * Wraps `Bun.spawn({ terminal: { ... } })` (Bun >= 1.3.5; openpty on
- * Linux/macOS, ConPTY on Windows) so the session is a real TTY: `vim`,
+ * Wraps `Bun.spawn({ terminal: { ... } })` (openpty on Linux/macOS since
+ * Bun 1.3.5; ConPTY on Windows only since Bun 1.4.0) so the session is a real TTY: `vim`,
  * `htop`, `less`, tab completion, job control, persistent env / cwd —
  * all the things the previous per-command-spawn model couldn't do.
  *
@@ -129,35 +129,44 @@ export class PtySession {
 
     // Bun.spawn with terminal: connects stdin/stdout/stderr to the PTY;
     // proc.stdin/stdout/stderr are null and we use proc.terminal instead.
-    const proc = Bun.spawn({
-      cmd,
-      cwd: this.cwd,
-      env,
-      terminal: {
-        cols: this.cols,
-        rows: this.rows,
-        // Per Bun docs: `data(terminal, data)` fires for every chunk read
-        // from the PTY master. We stamp it with a seq and fan out.
-        data: (_term, data: Uint8Array) => {
-          if (this.disposed) return
-          this.lastActivityMs = Date.now()
-          // The bytes are owned by Bun's read buffer and may be reused on
-          // the next tick. Copy now so listeners (and the scrollback ring)
-          // can safely retain references.
-          const copy = new Uint8Array(data.byteLength)
-          copy.set(data)
-          const seq = ++this.chunkSeq
-          this.scrollback.append(seq, copy)
-          // Snapshot the listener set: a listener (e.g. the manager's
-          // reap-on-exit handler) may dispose this session, which clears
-          // dataListeners — iterating the live Set would skip later
-          // listeners on that tick.
-          for (const cb of [...this.dataListeners]) {
-            try { cb({ seq, bytes: copy }) } catch {}
-          }
+    let proc: unknown
+    try {
+      proc = Bun.spawn({
+        cmd,
+        cwd: this.cwd,
+        env,
+        terminal: {
+          cols: this.cols,
+          rows: this.rows,
+          // Per Bun docs: `data(terminal, data)` fires for every chunk read
+          // from the PTY master. We stamp it with a seq and fan out.
+          data: (_term, data: Uint8Array) => {
+            if (this.disposed) return
+            this.lastActivityMs = Date.now()
+            // The bytes are owned by Bun's read buffer and may be reused on
+            // the next tick. Copy now so listeners (and the scrollback ring)
+            // can safely retain references.
+            const copy = new Uint8Array(data.byteLength)
+            copy.set(data)
+            const seq = ++this.chunkSeq
+            this.scrollback.append(seq, copy)
+            // Snapshot the listener set: a listener (e.g. the manager's
+            // reap-on-exit handler) may dispose this session, which clears
+            // dataListeners — iterating the live Set would skip later
+            // listeners on that tick.
+            for (const cb of [...this.dataListeners]) {
+              try { cb({ seq, bytes: copy }) } catch {}
+            }
+          },
         },
-      },
-    })
+      })
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      if (/terminal option is not supported/i.test(message)) {
+        throw new Error(`PtySession: ${process.platform} PTY requires bun >= 1.4 (running ${Bun.version})`)
+      }
+      throw err
+    }
     // Bun's spawn type doesn't perfectly capture the `terminal` option mode;
     // double-cast through `unknown` so TS doesn't flag the io-mode mismatch
     // (`pipe` vs `inherit`) and trust the runtime check below to catch the
