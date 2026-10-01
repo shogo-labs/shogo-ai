@@ -38,6 +38,7 @@ export interface ProfileActionSheetAction {
 export function buildDefaultProfileActions(opts: {
   agentName: string
   onPrefill: (content: string) => void
+  onCustomizeAvatar: () => void
   onOpenActivity: () => void
   onOpenSideChats?: () => void
 }): ProfileActionSheetAction[] {
@@ -45,9 +46,9 @@ export function buildDefaultProfileActions(opts: {
     {
       id: 'avatar',
       label: 'Change avatar',
-      hint: `Generate a new look for ${opts.agentName}`,
+      hint: 'Dress up your Shogo',
       Icon: ImageIcon,
-      onPress: () => opts.onPrefill('I want to change your avatar to '),
+      onPress: opts.onCustomizeAvatar,
     },
     {
       id: 'rename',

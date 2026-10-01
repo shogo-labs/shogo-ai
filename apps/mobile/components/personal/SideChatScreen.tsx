@@ -6,7 +6,7 @@
  * at a non-primary `ChatSession`. See `SideChatsScreen` for the list this
  * is opened from.
  */
-import { useEffect, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { Platform, View } from "react-native"
 import { useLocalSearchParams, useRouter } from "expo-router"
 import { observer } from "mobx-react-lite"
@@ -18,8 +18,10 @@ import { api, type PersonalAgentProfile } from "../../lib/api"
 import { ChatPanel } from "../chat/ChatPanel"
 import type { RestoreDraftRequest } from "../chat/ChatInput"
 import { useMobileWorkspaceChrome } from "../layout/MobileWorkspaceChromeContext"
+import { BuddyLookSheet } from "./BuddyLookSheet"
 import { PersonalAgentMobileHeader } from "./PersonalAgentMobileHeader"
 import { buildDefaultProfileActions } from "./ProfileActionMenu"
+import type { BuddyState } from "../island/buddy/engine"
 
 export const SideChatScreen = observer(function SideChatScreen() {
   const { id } = useLocalSearchParams<{ id: string }>()
@@ -38,8 +40,37 @@ export const SideChatScreen = observer(function SideChatScreen() {
   const [profile, setProfile] = useState<PersonalAgentProfile | null>(null)
   const [prefillRequest, setPrefillRequest] =
     useState<RestoreDraftRequest | null>(null)
+  const [buddyLookSheetOpen, setBuddyLookSheetOpen] = useState(false)
+  const [avatarState, setAvatarState] = useState<BuddyState>("idle")
+  const avatarFinishedTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const avatarStreaming = useRef(false)
+
+  const handleStreamingChange = useCallback((isStreaming: boolean) => {
+    if (avatarFinishedTimer.current) clearTimeout(avatarFinishedTimer.current)
+    if (isStreaming) {
+      avatarStreaming.current = true
+      setAvatarState("working")
+      return
+    }
+    if (!avatarStreaming.current) {
+      setAvatarState("idle")
+      return
+    }
+    avatarStreaming.current = false
+    setAvatarState("finished")
+    avatarFinishedTimer.current = setTimeout(() => {
+      avatarFinishedTimer.current = null
+      setAvatarState("idle")
+    }, 1800)
+  }, [])
 
   useEffect(() => {
+    avatarStreaming.current = false
+    setAvatarState("idle")
+    if (avatarFinishedTimer.current) {
+      clearTimeout(avatarFinishedTimer.current)
+      avatarFinishedTimer.current = null
+    }
     if (!workspaceId) {
       setProfile(null)
       return
@@ -59,6 +90,13 @@ export const SideChatScreen = observer(function SideChatScreen() {
     }
   }, [http, workspaceId])
 
+  useEffect(
+    () => () => {
+      if (avatarFinishedTimer.current) clearTimeout(avatarFinishedTimer.current)
+    },
+    [],
+  )
+
   if (!workspaceId || !id) return null
 
   const profileActions = profile
@@ -66,6 +104,7 @@ export const SideChatScreen = observer(function SideChatScreen() {
         agentName: profile.name,
         onPrefill: (content) =>
           setPrefillRequest({ nonce: Date.now(), content }),
+        onCustomizeAvatar: () => setBuddyLookSheetOpen(true),
         onOpenActivity: () => router.push("/(app)/activity" as any),
         onOpenSideChats: () => router.push("/(app)/side-chats" as any),
       })
@@ -74,7 +113,11 @@ export const SideChatScreen = observer(function SideChatScreen() {
   return (
     <View className="flex-1 bg-background">
       {useFloatingAgentChrome && profile ? (
-        <PersonalAgentMobileHeader profile={profile} actions={profileActions} />
+        <PersonalAgentMobileHeader
+          profile={profile}
+          actions={profileActions}
+          avatarState={avatarState}
+        />
       ) : null}
       <View className="min-h-0 flex-1">
         <ChatPanel
@@ -86,6 +129,7 @@ export const SideChatScreen = observer(function SideChatScreen() {
           chatScope="workspace"
           chatSessionId={id}
           onChatSessionChange={() => {}}
+          onStreamingChange={handleStreamingChange}
           composer={experience.composer}
           presentation="agent"
           prefillRequest={prefillRequest}
@@ -102,6 +146,7 @@ export const SideChatScreen = observer(function SideChatScreen() {
           phoneTranscriptTopPadding="chrome"
         />
       </View>
+      <BuddyLookSheet visible={buddyLookSheetOpen} onClose={() => setBuddyLookSheetOpen(false)} />
     </View>
   )
 })

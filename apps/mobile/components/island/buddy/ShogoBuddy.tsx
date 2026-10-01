@@ -1,9 +1,19 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
-import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useRef, type KeyboardEvent } from "react"
-import { Platform, View } from "react-native"
+import {
+  forwardRef,
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  type KeyboardEvent,
+} from "react"
+import { Platform } from "react-native"
 import { BUDDY_ASPECT, BuddyEngine, type BuddyEmote, type BuddyState, type LogoStyle } from "./engine"
+import { BUDDY_WEBVIEW_HTML } from "./buddy-webview.generated"
 import { DEFAULT_BUDDY_LOOK, type BuddyLook } from "./look"
 
 export interface ShogoBuddyHandle {
@@ -39,7 +49,7 @@ export interface ShogoBuddyProps {
   onDizzy?: () => void
 }
 
-/** Canvas-drawn Shogo buddy. Web only; renders an empty box elsewhere. */
+/** Canvas-drawn on web and desktop; native mobile uses the bundled WebView renderer. */
 export const ShogoBuddy = forwardRef<ShogoBuddyHandle, ShogoBuddyProps>(function ShogoBuddy(
   {
     size,
@@ -58,25 +68,12 @@ export const ShogoBuddy = forwardRef<ShogoBuddyHandle, ShogoBuddyProps>(function
   ref,
 ) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
+  const nativeWebViewRef = useRef<any>(null)
+  const nativeReadyRef = useRef(false)
   const engineRef = useRef<BuddyEngine | null>(null)
   if (!engineRef.current) engineRef.current = new BuddyEngine()
   const engine = engineRef.current
   const height = Math.round(size * BUDDY_ASPECT)
-
-  useImperativeHandle(
-    ref,
-    () => ({
-      engine,
-      poke: () => engine.poke(),
-      emote: (emote) => engine.emote(emote),
-      appear: () => engine.appear(),
-      hop: () => engine.hop(),
-      jiggle: (strength = 0.08) => engine.jiggle(strength),
-      fromLogo: () => engine.fromLogo(),
-      toLogo: () => engine.toLogo(),
-    }),
-    [engine],
-  )
 
   const topper = look?.topper ?? DEFAULT_BUDDY_LOOK.topper
   const face = look?.face ?? DEFAULT_BUDDY_LOOK.face
@@ -85,6 +82,64 @@ export const ShogoBuddy = forwardRef<ShogoBuddyHandle, ShogoBuddyProps>(function
   const neck = look?.neck ?? DEFAULT_BUDDY_LOOK.neck
   const bolts = look?.bolts ?? DEFAULT_BUDDY_LOOK.bolts
   const blush = look?.blush ?? DEFAULT_BUDDY_LOOK.blush
+  const nativePropsJson = useMemo(
+    () =>
+      JSON.stringify({
+        size,
+        state,
+        color,
+        look: { topper, face, tail, eyewear, neck, bolts, blush },
+        mini,
+        reducedMotion,
+        still,
+      }),
+    [size, state, color, topper, face, tail, eyewear, neck, bolts, blush, mini, reducedMotion, still],
+  )
+  const injectNative = useCallback((script: string) => {
+    nativeWebViewRef.current?.injectJavaScript(`${script};true;`)
+  }, [])
+  const sendNativeProps = useCallback(() => {
+    if (Platform.OS !== "web" && nativeReadyRef.current) {
+      injectNative(`window.__shogoBuddySetProps && window.__shogoBuddySetProps(${nativePropsJson})`)
+    }
+  }, [injectNative, nativePropsJson])
+  const sendNativeCommand = useCallback(
+    (command: Record<string, unknown>) => {
+      if (Platform.OS !== "web" && nativeReadyRef.current) {
+        injectNative(`window.__shogoBuddyCommand && window.__shogoBuddyCommand(${JSON.stringify(command)})`)
+      }
+    },
+    [injectNative],
+  )
+  const onNativeMessage = useCallback(
+    (event: { nativeEvent?: { data?: string } }) => {
+      try {
+        const message = JSON.parse(event.nativeEvent?.data ?? "")
+        if (message?.type !== "ready") return
+        nativeReadyRef.current = true
+        sendNativeProps()
+      } catch {
+        // Ignore messages that are not JSON bridge messages.
+      }
+    },
+    [sendNativeProps],
+  )
+  useImperativeHandle(
+    ref,
+    () => ({
+      engine,
+      poke: () => (Platform.OS === "web" ? engine.poke() : sendNativeCommand({ type: "poke" })),
+      emote: (emote) =>
+        Platform.OS === "web" ? engine.emote(emote) : sendNativeCommand({ type: "emote", emote }),
+      appear: () => (Platform.OS === "web" ? engine.appear() : sendNativeCommand({ type: "appear" })),
+      hop: () => (Platform.OS === "web" ? engine.hop() : sendNativeCommand({ type: "hop" })),
+      jiggle: (strength = 0.08) =>
+        Platform.OS === "web" ? engine.jiggle(strength) : sendNativeCommand({ type: "jiggle", strength }),
+      fromLogo: () => (Platform.OS === "web" ? engine.fromLogo() : sendNativeCommand({ type: "from-logo" })),
+      toLogo: () => (Platform.OS === "web" ? engine.toLogo() : sendNativeCommand({ type: "to-logo" })),
+    }),
+    [engine, sendNativeCommand],
+  )
   // Layout effects run before the parent's, so an entrance played from
   // IslandBuddy's layout effect already sees these.
   useLayoutEffect(() => {
@@ -96,6 +151,9 @@ export const ShogoBuddy = forwardRef<ShogoBuddyHandle, ShogoBuddyProps>(function
   useLayoutEffect(() => {
     engine.look = { topper, face, tail, eyewear, neck, bolts, blush }
   }, [engine, topper, face, tail, eyewear, neck, bolts, blush])
+  useEffect(() => {
+    sendNativeProps()
+  }, [sendNativeProps])
   useEffect(() => engine.setBodyColor(color), [engine, color])
   useEffect(() => engine.setState(state), [engine, state])
   useEffect(() => {
@@ -170,7 +228,24 @@ export const ShogoBuddy = forwardRef<ShogoBuddyHandle, ShogoBuddyProps>(function
     return () => window.removeEventListener("mousemove", onMove)
   }, [engine, followPointer, interactive, still, size])
 
-  if (Platform.OS !== "web") return <View style={{ width: size, height }} />
+  if (Platform.OS !== "web") {
+    const WebView = require("react-native-webview").default
+    return (
+      <WebView
+        ref={nativeWebViewRef}
+        source={{ html: BUDDY_WEBVIEW_HTML }}
+        style={{ width: size, height, backgroundColor: "transparent" }}
+        containerStyle={{ width: size, height, backgroundColor: "transparent" }}
+        originWhitelist={["*"]}
+        javaScriptEnabled
+        scrollEnabled={false}
+        bounces={false}
+        showsHorizontalScrollIndicator={false}
+        showsVerticalScrollIndicator={false}
+        onMessage={onNativeMessage}
+      />
+    )
+  }
   return (
     <canvas
       ref={canvasRef}
