@@ -53,7 +53,8 @@ function putLook(body: unknown, userId?: string | null) {
   })
 }
 
-const KITTY = { topper: 'ears', face: 'classic', bolts: false, blush: true }
+const KITTY = { topper: 'ears', face: 'classic', tail: 'none', eyewear: 'none', neck: 'none', bolts: false, blush: true }
+const FOX = { topper: 'fox', face: 'classic', tail: 'fox', eyewear: 'sunglasses', neck: 'none', bolts: false, blush: true }
 
 beforeEach(() => {
   s.userUpdates = []
@@ -70,8 +71,27 @@ describe('PUT /api/me/buddy', () => {
     expect(JSON.parse(s.userUpdates[0].data.buddyLook)).toEqual(KITTY)
   })
 
+  test('stores fox ears, a tail and sunglasses', async () => {
+    const res = await putLook(FOX)
+    expect(res.status).toBe(200)
+    expect(JSON.parse(s.userUpdates[0].data.buddyLook)).toEqual(FOX)
+  })
+
+  test('defaults accessories for clients that predate them', async () => {
+    const { tail: _tail, eyewear: _eyewear, neck: _neck, ...older } = KITTY
+    const res = await putLook(older)
+    expect(res.status).toBe(200)
+    expect(JSON.parse(s.userUpdates[0].data.buddyLook)).toEqual(KITTY)
+  })
+
+  test('rejects an unknown tail or eyewear', async () => {
+    expect((await putLook({ ...FOX, tail: 'lion' })).status).toBe(400)
+    expect((await putLook({ ...FOX, eyewear: 'pince-nez' })).status).toBe(400)
+    expect(s.userUpdates).toHaveLength(0)
+  })
+
   test('rejects an unknown topper without writing', async () => {
-    const res = await putLook({ ...KITTY, topper: 'crown' })
+    const res = await putLook({ ...KITTY, topper: 'unicorn' })
     expect(res.status).toBe(400)
     expect(s.userUpdates).toHaveLength(0)
   })
