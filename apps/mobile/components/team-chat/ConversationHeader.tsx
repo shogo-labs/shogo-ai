@@ -2,7 +2,8 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { useState } from 'react'
 import { ActivityIndicator, Alert, Modal, Platform, Pressable, ScrollView, Text, TextInput, View } from 'react-native'
-import { Archive, Bell, BellOff, Bot, Check, Hash, Lock, LogOut, Pin, Radio, Sparkles, Star, UserPlus, Users, X } from 'lucide-react-native'
+import { Archive, Bell, BellOff, Bot, Check, Hash, Lock, LogOut, Pencil, Pin, Radio, Sparkles, Star, UserPlus, Users, X } from 'lucide-react-native'
+import { cn } from '@shogo/shared-ui/primitives'
 import { MarkdownText } from '../chat/MarkdownText'
 import {
   conversationTitle,
@@ -46,8 +47,11 @@ export function ConversationHeader({ conversation, mentionables, me, onChanged, 
   const [membersOpen, setMembersOpen] = useState(false)
   const [notifyOpen, setNotifyOpen] = useState(false)
   const [pins, setPins] = useState<ChatMessage[] | null>(null)
+  const [editOpen, setEditOpen] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const isChannel = conversation.kind === 'public' || conversation.kind === 'private' || conversation.kind === 'activity'
+  const canRename = conversation.canManage && (conversation.kind === 'public' || conversation.kind === 'private') && !conversation.archivedAt
+  const canEditTopic = conversation.kind !== 'activity' && !conversation.archivedAt && (conversation.canPost || conversation.canManage)
   const participants: Participant[] = conversation.members
     .filter((m) => m.type === 'agent' || m.userId !== me)
     .map((m) => (m.type === 'agent' ? { type: 'agent', projectId: m.projectId, name: m.name } : { type: 'user', id: m.userId, name: m.name, image: m.image }))
@@ -105,6 +109,11 @@ export function ConversationHeader({ conversation, mentionables, me, onChanged, 
           </Text>
         ) : null}
         <View className="flex-1" />
+        {canRename && (
+          <HeaderButton label="Edit channel" onPress={() => setEditOpen(true)}>
+            <Pencil size={16} className="text-muted-foreground" />
+          </HeaderButton>
+        )}
         {conversation.joined && conversation.kind !== 'activity' && (
           <HeaderButton label="Notification settings" onPress={() => setNotifyOpen(true)}>
             {conversation.muted || conversation.notifyLevel === 'none'
@@ -162,9 +171,20 @@ export function ConversationHeader({ conversation, mentionables, me, onChanged, 
         )}
       </View>
       {conversation.topic ? (
-        <Text className="mt-0.5 text-xs text-muted-foreground" numberOfLines={1}>
-          {conversation.topic}
-        </Text>
+        <Pressable
+          disabled={!canEditTopic}
+          onPress={() => setEditOpen(true)}
+          accessibilityLabel={canEditTopic ? `Topic: ${conversation.topic}. Edit topic` : `Topic: ${conversation.topic}`}
+          className="mt-0.5 self-start"
+        >
+          <Text className="text-xs text-muted-foreground" numberOfLines={1}>
+            {conversation.topic}
+          </Text>
+        </Pressable>
+      ) : canEditTopic && isChannel ? (
+        <Pressable onPress={() => setEditOpen(true)} accessibilityLabel="Add a topic" className="mt-0.5 self-start">
+          <Text className="text-xs text-muted-foreground/70">Add a topic</Text>
+        </Pressable>
       ) : null}
       {error && <Text className="mt-1 text-xs text-destructive">{error}</Text>}
 
@@ -234,6 +254,18 @@ export function ConversationHeader({ conversation, mentionables, me, onChanged, 
           conversation={conversation}
           onClose={() => setNotifyOpen(false)}
           onPick={(patch) => run(() => api.updateMembership(conversation.id, patch))}
+        />
+      )}
+
+      {editOpen && (
+        <EditChannelModal
+          conversation={conversation}
+          canRename={canRename}
+          onClose={() => setEditOpen(false)}
+          onSaved={() => {
+            setEditOpen(false)
+            onChanged()
+          }}
         />
       )}
 
@@ -314,6 +346,122 @@ function NotifyModal({
             <BellOff size={14} className="text-muted-foreground" />
             <Text className="flex-1 text-sm text-foreground">{conversation.muted ? 'Unmute' : 'Mute'} conversation</Text>
           </Pressable>
+        </Pressable>
+      </Pressable>
+    </Modal>
+  )
+}
+
+/** Channel names are lowercase with dashes, like the server stores them. */
+export function previewChannelName(name: string): string {
+  return name
+    .toLowerCase()
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9_-]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 80)
+}
+
+function EditChannelModal({
+  conversation,
+  canRename,
+  onClose,
+  onSaved,
+}: {
+  conversation: ConversationDetail
+  canRename: boolean
+  onClose: () => void
+  onSaved: () => void
+}) {
+  const [name, setName] = useState(conversation.name ?? '')
+  const [topic, setTopic] = useState(conversation.topic ?? '')
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const preview = previewChannelName(name)
+  const isGeneral = conversation.slug === 'general'
+  const nameChanged = canRename && !isGeneral && preview !== (conversation.slug ?? conversation.name ?? '')
+  const topicChanged = topic.trim() !== (conversation.topic ?? '')
+
+  const save = async () => {
+    if (canRename && !isGeneral && !preview) return setError('Channel name is required')
+    if (!nameChanged && !topicChanged) return onClose()
+    setSaving(true)
+    setError(null)
+    try {
+      await api.update(conversation.id, {
+        ...(nameChanged ? { name: preview } : {}),
+        ...(topicChanged ? { topic: topic.trim() || null } : {}),
+      })
+      onSaved()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not save')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Modal visible transparent animationType="fade" onRequestClose={onClose}>
+      <Pressable className="flex-1 items-center justify-center bg-black/40 p-6" onPress={onClose}>
+        <Pressable className="w-full max-w-md rounded-xl bg-card p-5" onPress={() => {}}>
+          <View className="mb-3 flex-row items-center">
+            <Text className="flex-1 text-base font-semibold text-foreground">{canRename ? 'Edit channel' : 'Edit topic'}</Text>
+            <Pressable onPress={onClose} accessibilityLabel="Close">
+              <X size={16} className="text-muted-foreground" />
+            </Pressable>
+          </View>
+          {canRename && (
+            <>
+              <Text className="mb-1 text-xs font-medium text-muted-foreground">Name</Text>
+              <View className="mb-1 flex-row items-center rounded-md border border-border px-3">
+                <Hash size={14} className="text-muted-foreground" />
+                <TextInput
+                  value={name}
+                  onChangeText={setName}
+                  editable={!isGeneral}
+                  accessibilityLabel="Channel name"
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  maxLength={80}
+                  className="flex-1 py-2 pl-2 text-sm text-foreground"
+                />
+              </View>
+              <Text className="mb-3 text-[11px] text-muted-foreground">
+                {isGeneral
+                  ? '#general can’t be renamed.'
+                  : preview && preview !== name.trim()
+                    ? `Will be saved as #${preview}`
+                    : 'Lowercase, without spaces or periods.'}
+              </Text>
+            </>
+          )}
+          <Text className="mb-1 text-xs font-medium text-muted-foreground">Topic</Text>
+          <TextInput
+            value={topic}
+            onChangeText={setTopic}
+            placeholder="What’s this channel about?"
+            placeholderTextColor="#8a8a8a"
+            accessibilityLabel="Channel topic"
+            maxLength={500}
+            multiline
+            className="min-h-[60px] rounded-md border border-border px-3 py-2 text-sm text-foreground"
+          />
+          {error && <Text className="mt-2 text-xs text-destructive">{error}</Text>}
+          <View className="mt-4 flex-row justify-end gap-2">
+            <Pressable onPress={onClose} className="rounded-md px-3 py-1.5 active:bg-muted hover:bg-muted">
+              <Text className="text-sm text-muted-foreground">Cancel</Text>
+            </Pressable>
+            <Pressable
+              onPress={save}
+              disabled={saving}
+              accessibilityLabel="Save channel"
+              className={cn('rounded-md bg-primary px-3 py-1.5', saving && 'opacity-60')}
+            >
+              <Text className="text-sm font-medium text-primary-foreground">{saving ? 'Saving…' : 'Save'}</Text>
+            </Pressable>
+          </View>
         </Pressable>
       </Pressable>
     </Modal>

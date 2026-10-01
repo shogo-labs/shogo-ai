@@ -291,13 +291,17 @@ export function useConversationTimeline(
     setState((s) => (s.messages.length > TIMELINE_SOFT_LIMIT ? trimToNewest(s, TIMELINE_TRIM_TO) : s))
   }, [threadRootId])
 
-  const loadOlder = useCallback(async () => {
+  const loadOlder = useCallback(async (limit = PAGE_SIZE) => {
     const s = stateRef.current
     if (!conversationId || threadRootId || !s.hasMoreOlder) return
     const oldest = s.messages.find((m) => !m.pending)
     if (!oldest) return
-    const page = await api.messages(conversationId, { beforeSeq: oldest.seq, limit: PAGE_SIZE })
-    setState((cur) => mergePage(cur, page, 'older'))
+    const page = await api.messages(conversationId, { beforeSeq: oldest.seq, limit })
+    setState((cur) => {
+      const next = mergePage(cur, page, 'older')
+      stateRef.current = next
+      return next
+    })
   }, [conversationId, threadRootId])
 
   const sendWithClientId = useCallback(async (clientMsgId: string, input: SendInput) => {
@@ -382,25 +386,27 @@ export function useConversationTimeline(
 
   const stopAgent = useCallback((messageId: string) => api.stopAgent(messageId), [])
 
-  return { state, loading, error, reload: loadInitial, loadOlder, trimOld, send, retry, discard, edit, remove, react, stopAgent }
+  const getState = useCallback(() => stateRef.current, [])
+
+  return { state, getState, loading, error, reload: loadInitial, loadOlder, trimOld, send, retry, discard, edit, remove, react, stopAgent }
 }
 
 // ─── Read state ──────────────────────────────────────────────────────────────
 
-/** Mark the channel read up to its newest message while it's on screen. */
-export function useMarkReadWhileVisible(conversationId: string | null | undefined, newestSeq: number, visible: boolean) {
+/** Mark the channel read up to its newest message while it's on screen (not while `paused`, e.g. after "Mark unread"). */
+export function useMarkReadWhileVisible(conversationId: string | null | undefined, newestSeq: number, visible: boolean, paused = false) {
   const lastSent = useRef(0)
   useEffect(() => {
     lastSent.current = 0
   }, [conversationId])
   useEffect(() => {
-    if (!conversationId || !visible || newestSeq <= lastSent.current) return
+    if (!conversationId || !visible || paused || newestSeq <= lastSent.current) return
     const timer = setTimeout(() => {
       lastSent.current = newestSeq
       api.markRead(conversationId, newestSeq).catch(() => {})
     }, 400)
     return () => clearTimeout(timer)
-  }, [conversationId, newestSeq, visible])
+  }, [conversationId, newestSeq, visible, paused])
 }
 
 // ─── Typing ──────────────────────────────────────────────────────────────────

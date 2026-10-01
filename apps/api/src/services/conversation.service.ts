@@ -1075,8 +1075,19 @@ export async function markRead(conversationId: string, userId: string, seq?: num
     where: { id: access.membership.id },
     data: { lastReadSeq: target, lastReadAt: new Date() },
   })
+  const unreadCount = target >= lastSeq ? 0 : await db.conversationMessage.count({
+    where: {
+      conversationId,
+      seq: { gt: target },
+      deletedAt: null,
+      AND: [
+        { OR: [{ threadRootId: null }, { alsoSentToChannel: true }] },
+        { OR: [{ authorUserId: null }, { authorUserId: { not: userId } }] },
+      ],
+    },
+  })
   publishConversationEvent(access.conversation.workspaceId, {
-    type: 'read', conversationId, userId, seq: updated.lastReadSeq,
+    type: 'read', conversationId, userId, seq: updated.lastReadSeq, unreadCount,
   }, [userId])
   if (target >= lastSeq) {
     const { count } = await db.chatInboxItem.updateMany({
@@ -1088,7 +1099,7 @@ export async function markRead(conversationId: string, userId: string, seq?: num
       publishConversationEvent(access.conversation.workspaceId, { type: 'inbox.read', unread }, [userId])
     }
   }
-  return { lastReadSeq: updated.lastReadSeq }
+  return { lastReadSeq: updated.lastReadSeq, unreadCount }
 }
 
 // ─── Mentionables ────────────────────────────────────────────────────────────

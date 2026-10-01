@@ -5,12 +5,15 @@
  * body with mentions, attachments, reactions, thread summary, and live agent
  * replies (streaming text, the tool in use, Stop).
  */
-import { memo, useState } from 'react'
-import { ActionSheetIOS, Alert, Image, Linking, Platform, Pressable, Text, TextInput, View } from 'react-native'
-import { AlarmClock, AlertCircle, Bookmark, Bot, CornerDownRight, FileText, Loader2, MessageSquare, Pencil, Pin, SmilePlus, Square, Trash2 } from 'lucide-react-native'
+import { memo, useEffect, useState } from 'react'
+import { ActionSheetIOS, Alert, Image, Linking, Modal, Platform, Pressable, Text, TextInput, View } from 'react-native'
+import * as Clipboard from 'expo-clipboard'
+import { AlarmClock, AlertCircle, Bookmark, Bot, Check, CircleDot, CornerDownRight, FileText, Link2, Loader2, MessageSquare, Pencil, Pin, SmilePlus, Square, Trash2 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { MarkdownText } from '../chat/MarkdownText'
 import { absoluteApiUrl, teamChatApi, type ChatMessage, type LinkUnfurl } from '../../lib/team-chat-api'
+import { messageLink, parseMessageLink } from '../../lib/team-chat-links'
+import { EmojiPicker } from './EmojiPicker'
 import { renderMentions, type MentionNames } from '../../lib/team-chat-state'
 import { useUserStatus } from '../../hooks/useChatPrefs'
 import { PresenceDot } from './PresenceDot'
@@ -56,6 +59,23 @@ export interface MessageRowProps {
   onRetry: (message: ChatMessage) => void
   onDiscard: (message: ChatMessage) => void
   onOpenSession?: (message: ChatMessage) => void
+  /** Move the read line back to just before this message. */
+  onMarkUnread?: (message: ChatMessage) => void
+  /** Briefly emphasized after opening a link to it. */
+  highlighted?: boolean
+}
+
+/** Message links open in place; everything else goes to the browser. */
+export function openMessageLinkInApp(href: string): boolean {
+  const target = parseMessageLink(href)
+  if (!target) return false
+  void import('expo-router').then(({ router }) =>
+    router.push({
+      pathname: '/(app)/c/[conversationId]',
+      params: { conversationId: target.conversationId, msg: target.messageId, ...(target.threadRootId ? { thread: target.threadRootId } : {}) },
+    } as any),
+  )
+  return true
 }
 
 function formatTime(iso: string): string {
@@ -174,6 +194,17 @@ function MessageRowImpl(props: MessageRowProps) {
     setEditing(true)
   })
 
+  const [copied, setCopied] = useState(false)
+  useEffect(() => {
+    if (!copied) return
+    const t = setTimeout(() => setCopied(false), 1500)
+    return () => clearTimeout(t)
+  }, [copied])
+  const copyLink = () => {
+    const url = messageLink({ conversationId: message.conversationId, messageId: message.id, threadRootId: message.threadRootId })
+    void Clipboard.setStringAsync(url).then(() => setCopied(true)).catch(() => {})
+  }
+  const markUnread = props.onMarkUnread && !inThread && !message.threadRootId ? () => props.onMarkUnread!(message) : null
   const pin = () => void api.pin(message.id, !message.pinned).catch(() => {})
   const save = () => void toggleSaved(message.id, !saved).catch(() => {})
   const remind = (at: Date) => {
@@ -187,8 +218,11 @@ function MessageRowImpl(props: MessageRowProps) {
     if (deleted || message.pending) return
     const options: Array<{ label: string; run: () => void; destructive?: boolean }> = [
       ...QUICK_REACTIONS.slice(0, 4).map((emoji) => ({ label: emoji, run: () => props.onReact(message, emoji) })),
+      { label: 'Add reaction…', run: () => setPickerOpen(true) },
     ]
     if (props.onReply && !inThread) options.push({ label: 'Reply in thread', run: () => props.onReply!(message) })
+    options.push({ label: 'Copy link', run: copyLink })
+    if (markUnread) options.push({ label: 'Mark unread', run: markUnread })
     options.push({ label: saved ? 'Remove from saved' : 'Save for later', run: save })
     if (props.workspaceId) options.push({ label: 'Remind me in 1 hour', run: () => remind(REMIND_OPTIONS[1].at()) })
     if (props.canPin) options.push({ label: message.pinned ? 'Unpin' : 'Pin to conversation', run: pin })
@@ -256,7 +290,6 @@ function MessageRowImpl(props: MessageRowProps) {
       onHoverIn={() => setHovered(true)}
       onHoverOut={() => {
         setHovered(false)
-        setPickerOpen(false)
         setRemindOpen(false)
       }}
       className={cn(
@@ -264,7 +297,9 @@ function MessageRowImpl(props: MessageRowProps) {
         grouped ? 'py-0.5' : 'pt-2.5 pb-0.5',
         message.pinned && !deleted ? 'bg-amber-500/5' : null,
         hovered && 'bg-muted/40',
+        props.highlighted && 'bg-amber-400/20',
       )}
+      testID={props.highlighted ? 'message-highlighted' : undefined}
       accessibilityLabel={`${authorName(message)}: ${message.text}`}
     >
       <View className="w-8">
@@ -347,7 +382,7 @@ function MessageRowImpl(props: MessageRowProps) {
                       {jumbo.map((code, i) => <ReactionGlyph key={`${code}-${i}`} emoji={code} size={32} />)}
                     </View>
                   ) : (
-                    <MarkdownText isStreaming={running}>{renderMentions(body, names)}</MarkdownText>
+                    <MarkdownText isStreaming={running} onLinkPress={openMessageLinkInApp}>{renderMentions(body, names)}</MarkdownText>
                   )}
                 </View>
               )
@@ -477,6 +512,16 @@ function MessageRowImpl(props: MessageRowProps) {
             </Pressable>
           )}
           {canAct && (
+            <Pressable onPress={copyLink} accessibilityLabel={copied ? 'Link copied' : 'Copy link'} className="rounded px-1.5 py-1 hover:bg-muted">
+              {copied ? <Check size={14} className="text-primary" /> : <Link2 size={14} className="text-muted-foreground" />}
+            </Pressable>
+          )}
+          {canAct && markUnread && (
+            <Pressable onPress={markUnread} accessibilityLabel="Mark unread" className="rounded px-1.5 py-1 hover:bg-muted">
+              <CircleDot size={14} className="text-muted-foreground" />
+            </Pressable>
+          )}
+          {canAct && (
             <Pressable onPress={save} accessibilityLabel={saved ? 'Remove from saved' : 'Save for later'} className="rounded px-1.5 py-1 hover:bg-muted">
               <Bookmark size={14} className={saved ? 'text-primary' : 'text-muted-foreground'} fill={saved ? 'currentColor' : 'none'} />
             </Pressable>
@@ -513,39 +558,23 @@ function MessageRowImpl(props: MessageRowProps) {
           ))}
         </View>
       )}
-      {isWeb && hovered && pickerOpen && (
-        <View className="absolute right-3 top-6 z-10 w-56 flex-row flex-wrap rounded-lg border border-border bg-card p-1 shadow-md">
-          {[...customEmoji.values()].slice(0, 24).map((e) => (
-            <Pressable
-              key={e.id}
-              accessibilityLabel={`:${e.name}:`}
-              onPress={() => {
-                setPickerOpen(false)
-                props.onReact(message, `:${e.name}:`)
-              }}
-              className="rounded px-1.5 py-1 hover:bg-muted"
-            >
-              <Image source={{ uri: e.url }} style={{ width: 20, height: 20 }} />
+      {pickerOpen && (
+        <Modal visible transparent animationType="fade" onRequestClose={() => setPickerOpen(false)}>
+          <Pressable className="flex-1 items-center justify-center bg-black/30 p-6" onPress={() => setPickerOpen(false)} accessibilityLabel="Close emoji picker">
+            <Pressable onPress={() => {}}>
+              <EmojiPicker
+                workspaceId={props.workspaceId}
+                onPick={(code) => {
+                  setPickerOpen(false)
+                  props.onReact(message, code)
+                }}
+              />
             </Pressable>
-          ))}
-          {MORE_REACTIONS.map((emoji) => (
-            <Pressable
-              key={emoji}
-              onPress={() => {
-                setPickerOpen(false)
-                props.onReact(message, emoji)
-              }}
-              className="rounded px-1.5 py-1 hover:bg-muted"
-            >
-              <Text className="text-base">{emoji}</Text>
-            </Pressable>
-          ))}
-        </View>
+          </Pressable>
+        </Modal>
       )}
     </Pressable>
   )
 }
-
-const MORE_REACTIONS = ['👍', '👎', '✅', '❌', '👀', '🎉', '❤️', '😂', '🙌', '🔥', '🚀', '🤔', '💯', '🙏', '⚠️', '📌']
 
 export const MessageRow = memo(MessageRowImpl)

@@ -4,15 +4,21 @@
  * A live timeline plus composer for one scope: a conversation's main view,
  * or a single thread when `threadRootId` is set.
  */
-import { useCallback, useMemo } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Alert, Platform, Pressable, Text, View } from 'react-native'
-import { X } from 'lucide-react-native'
-import type { ChatMessage, ConversationDetail, Mentionables } from '../../lib/team-chat-api'
+import { Upload, X } from 'lucide-react-native'
+import { teamChatApi, type ChatMessage, type ConversationDetail, type Mentionables } from '../../lib/team-chat-api'
 import { mentionNames } from '../../lib/team-chat-state'
 import { TIMELINE_SOFT_LIMIT, useConversationTimeline, useMarkReadWhileVisible, useTypingUsers } from '../../hooks/useTeamChat'
 import { requestEditMessage } from '../../hooks/useChatShortcuts'
 import { MessageList } from './MessageList'
-import { Composer } from './Composer'
+import { Composer, type ComposerHandle } from './Composer'
+
+const api = teamChatApi()
+/** Pages of 200 to load back when jumping to an older message before opening it on its own. */
+const SEEK_PAGES = 6
+const SEEK_PAGE_SIZE = 200
+const HIGHLIGHT_MS = 4000
 
 export interface TimelinePaneProps {
   workspaceId: string
@@ -26,6 +32,54 @@ export interface TimelinePaneProps {
   onOpenSession?: (message: ChatMessage) => void
   onClose?: () => void
   onJoin?: () => void
+  /** Scroll to and emphasize this message (from a message link or search). */
+  highlightMessageId?: string | null
+}
+
+/** Files dropped anywhere on a web pane go to the composer. */
+function useFileDrop(ref: React.RefObject<View | null>, enabled: boolean, onFiles: (files: File[]) => void): boolean {
+  const [dragging, setDragging] = useState(false)
+  const onFilesRef = useRef(onFiles)
+  onFilesRef.current = onFiles
+  useEffect(() => {
+    const node = ref.current as unknown as HTMLElement | null
+    if (Platform.OS !== 'web' || !enabled || !node?.addEventListener) return
+    let depth = 0
+    const hasFiles = (e: DragEvent) => Array.from(e.dataTransfer?.types ?? []).includes('Files')
+    const onEnter = (e: DragEvent) => {
+      if (!hasFiles(e)) return
+      e.preventDefault()
+      depth++
+      setDragging(true)
+    }
+    const onOver = (e: DragEvent) => {
+      if (hasFiles(e)) e.preventDefault()
+    }
+    const onLeave = (e: DragEvent) => {
+      if (!hasFiles(e)) return
+      depth = Math.max(0, depth - 1)
+      if (!depth) setDragging(false)
+    }
+    const onDrop = (e: DragEvent) => {
+      if (!hasFiles(e)) return
+      e.preventDefault()
+      depth = 0
+      setDragging(false)
+      const files = Array.from(e.dataTransfer?.files ?? [])
+      if (files.length) onFilesRef.current(files)
+    }
+    node.addEventListener('dragenter', onEnter as EventListener)
+    node.addEventListener('dragover', onOver as EventListener)
+    node.addEventListener('dragleave', onLeave as EventListener)
+    node.addEventListener('drop', onDrop as EventListener)
+    return () => {
+      node.removeEventListener('dragenter', onEnter as EventListener)
+      node.removeEventListener('dragover', onOver as EventListener)
+      node.removeEventListener('dragleave', onLeave as EventListener)
+      node.removeEventListener('drop', onDrop as EventListener)
+    }
+  }, [ref, enabled])
+  return dragging
 }
 
 function confirmDelete(): Promise<boolean> {
@@ -57,7 +111,69 @@ export function TimelinePane(props: TimelinePaneProps) {
     }
     return 0
   }, [timeline.state.messages])
-  useMarkReadWhileVisible(threadRootId || !conversation.joined ? null : conversation.id, newestSeq, visible)
+  // What was unread when the reader opened this conversation; messages arriving later aren't "new".
+  const [unread, setUnread] = useState<{ afterSeq: number; upToSeq: number } | null>(() =>
+    !threadRootId && conversation.joined && conversation.lastSeq > conversation.lastReadSeq
+      ? { afterSeq: conversation.lastReadSeq, upToSeq: conversation.lastSeq }
+      : null,
+  )
+  const [readPaused, setReadPaused] = useState(false)
+  useMarkReadWhileVisible(threadRootId || !conversation.joined ? null : conversation.id, newestSeq, visible, readPaused)
+
+  const onMarkUnread = useCallback((m: ChatMessage) => {
+    const afterSeq = Math.max(0, m.seq - 1)
+    setReadPaused(true)
+    setUnread({ afterSeq, upToSeq: Number.MAX_SAFE_INTEGER })
+    void api.markRead(conversation.id, afterSeq).catch(() => {})
+  }, [conversation.id])
+
+  const [highlight, setHighlight] = useState<string | null>(props.highlightMessageId ?? null)
+  useEffect(() => {
+    if (props.highlightMessageId) setHighlight(props.highlightMessageId)
+  }, [props.highlightMessageId])
+  const highlightLoaded = !!highlight && timeline.state.messages.some((m) => m.id === highlight)
+  useEffect(() => {
+    if (!highlightLoaded) return
+    const t = setTimeout(() => setHighlight(null), HIGHLIGHT_MS)
+    return () => clearTimeout(t)
+  }, [highlightLoaded, highlight])
+
+  /** Load older pages until `found` holds, up to SEEK_PAGES. */
+  const seekOlder = useCallback(async (found: (messages: ChatMessage[]) => boolean) => {
+    for (let i = 0; i < SEEK_PAGES; i++) {
+      const s = timeline.getState()
+      if (found(s.messages) || !s.hasMoreOlder) break
+      await timeline.loadOlder(SEEK_PAGE_SIZE)
+    }
+    return found(timeline.getState().messages)
+  }, [timeline.getState, timeline.loadOlder])
+
+  const sought = useRef<string | null>(null)
+  useEffect(() => {
+    if (!highlight || highlightLoaded || timeline.loading || threadRootId || sought.current === highlight) return
+    sought.current = highlight
+    const id = highlight
+    void (async () => {
+      if (await seekOlder((messages) => messages.some((m) => m.id === id))) return
+      // Too far back to load into the timeline: show it on its own in the thread view.
+      const message = await api.message(id).catch(() => null)
+      if (message && props.onOpenThread) props.onOpenThread(message)
+    })()
+  }, [highlight, highlightLoaded, timeline.loading, threadRootId, seekOlder, props.onOpenThread])
+
+  const oldestLoaded = timeline.state.messages.find((m) => !m.pending)
+  const unreadNotLoaded = !!unread && timeline.state.hasMoreOlder && !!oldestLoaded &&
+    oldestLoaded.seq > unread.afterSeq + 1 && oldestLoaded.seq <= unread.upToSeq && oldestLoaded.authorUserId !== me
+  const onRevealUnread = useCallback(() => {
+    if (!unread) return
+    void seekOlder((messages) => messages.some((m) => !m.pending && m.seq <= unread.afterSeq + 1)).then(() => {
+      const first = timeline.getState().messages.find((m) => m.seq > unread.afterSeq && !m.pending && m.authorUserId !== me)
+      if (first) setHighlight(first.id)
+    })
+  }, [unread, seekOlder, timeline.getState, me])
+
+  const composerRef = useRef<ComposerHandle>(null)
+  const rootRef = useRef<View>(null)
 
   const onReact = useCallback((m: ChatMessage, emoji: string) => void timeline.react(m.id, emoji).catch(() => {}), [timeline.react])
   const onEdit = useCallback((m: ChatMessage, text: string) => timeline.edit(m.id, text), [timeline.edit])
@@ -89,9 +205,11 @@ export function TimelinePane(props: TimelinePaneProps) {
       ? 'Activity is posted by Shogo. Reply in a thread to discuss.'
       : 'You do not have permission to post here.'
   const canPostHere = threadRootId ? conversation.canReply : conversation.canPost
+  const showComposer = !(!conversation.joined && isChannel && !threadRootId)
+  const dragging = useFileDrop(rootRef, showComposer && canPostHere, (files) => composerRef.current?.addFiles(files))
 
   return (
-    <View className="flex-1">
+    <View className="flex-1" ref={rootRef}>
       {threadRootId && (
         <View className="flex-row items-center border-b border-border px-4 py-2.5">
           <Text className="flex-1 text-base font-semibold text-foreground">Thread</Text>
@@ -132,12 +250,18 @@ export function TimelinePane(props: TimelinePaneProps) {
           onRetry={timeline.retry}
           onDiscard={timeline.discard}
           onOpenSession={props.onOpenSession}
+          onMarkUnread={threadRootId || !conversation.joined ? undefined : onMarkUnread}
+          unreadAfterSeq={unread?.afterSeq ?? null}
+          unreadUpToSeq={unread?.upToSeq}
+          unreadNotLoaded={unreadNotLoaded}
+          onRevealUnread={onRevealUnread}
+          highlightId={highlight}
         />
       )}
       <View className="h-5 justify-center px-4">
         {typingLabel(typing) && <Text className="text-xs text-muted-foreground">{typingLabel(typing)}</Text>}
       </View>
-      {!conversation.joined && isChannel && !threadRootId ? (
+      {!showComposer ? (
         <View className="items-center gap-2 border-t border-border px-4 py-3">
           <Text className="text-sm text-muted-foreground">You are viewing #{conversation.name}.</Text>
           <Pressable onPress={props.onJoin} className="rounded-md bg-primary px-4 py-1.5">
@@ -146,6 +270,7 @@ export function TimelinePane(props: TimelinePaneProps) {
         </View>
       ) : (
         <Composer
+          ref={composerRef}
           workspaceId={workspaceId}
           conversationId={conversation.id}
           threadRootId={threadRootId}
@@ -157,6 +282,16 @@ export function TimelinePane(props: TimelinePaneProps) {
           onSend={timeline.send}
           onEditLast={onEditLast}
         />
+      )}
+      {dragging && (
+        <View
+          pointerEvents="none"
+          className="absolute inset-2 items-center justify-center gap-2 rounded-xl border-2 border-dashed border-primary bg-background/90"
+          testID="file-drop-overlay"
+        >
+          <Upload size={22} className="text-primary" />
+          <Text className="text-sm font-medium text-foreground">Drop files to upload</Text>
+        </View>
       )}
     </View>
   )

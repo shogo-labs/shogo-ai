@@ -143,6 +143,14 @@ export function startsGroup(prev: ChatMessage | undefined, message: ChatMessage)
   return new Date(message.createdAt).getTime() - new Date(prev.createdAt).getTime() > 5 * 60_000
 }
 
+/**
+ * Index of the first message in (afterSeq, upToSeq] that counts as unread
+ * (someone else's, sent, not deleted); -1 if none.
+ */
+export function firstUnreadIndex(messages: ChatMessage[], afterSeq: number, me: string | null, upToSeq = Infinity): number {
+  return messages.findIndex((m) => m.seq > afterSeq && m.seq <= upToSeq && !m.pending && !m.deletedAt && m.authorUserId !== me)
+}
+
 // ─── Conversation list ───────────────────────────────────────────────────────
 
 export interface ListUpdate {
@@ -185,6 +193,7 @@ export function applyListEvent(
       return {
         list: list.map((c) => {
           if (c.id !== event.conversationId) return c
+          if (event.unreadCount) return { ...c, lastReadSeq: event.seq, unreadCount: event.unreadCount }
           return { ...c, lastReadSeq: Math.max(c.lastReadSeq, event.seq), unreadCount: 0, mentionCount: 0 }
         }),
         refetch: false,

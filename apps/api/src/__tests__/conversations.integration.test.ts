@@ -157,6 +157,13 @@ describe('messages', () => {
     const withReplies = (await call(seed.owner, 'GET', `/workspaces/${seed.workspaceId}/conversations`))
       .json.conversations.find((c: any) => c.id === g.id)
     expect(withReplies.unreadCount).toBe(1)
+
+    await call(seed.owner, 'POST', `/conversations/${g.id}/read`, {})
+    const unread = await call(seed.owner, 'POST', `/conversations/${g.id}/read`, { seq: m2.json.message.seq - 1 })
+    expect(unread.json).toEqual({ lastReadSeq: m2.json.message.seq - 1, unreadCount: 2 })
+    const marked = (await call(seed.owner, 'GET', `/workspaces/${seed.workspaceId}/conversations`))
+      .json.conversations.find((c: any) => c.id === g.id)
+    expect(marked.unreadCount).toBe(2)
   })
 
   test('clientMsgId makes sends idempotent', async () => {

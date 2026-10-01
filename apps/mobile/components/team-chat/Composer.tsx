@@ -4,9 +4,10 @@
  * Team chat composer: Enter to send (Shift+Enter for a newline on web),
  * @-autocomplete for teammates and agents, file attachments, typing
  * signals, "also send to channel" for thread replies, drafts synced across
- * devices, send later, and `/remind`.
+ * devices, send later, and `/remind`. On web, pasted files upload, and
+ * `:shortcode` suggests emoji.
  */
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
 import { Image, Platform, Pressable, ScrollView, Text, TextInput, View } from 'react-native'
 import { AlarmClock, Bot, Clock, Paperclip, SendHorizontal, Smile, Users, X } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
@@ -27,10 +28,11 @@ import {
 import type { SendInput } from '../../hooks/useTeamChat'
 import { useDraft } from '../../hooks/useChatItems'
 import { useCustomEmoji } from '../../hooks/useCustomEmoji'
+import { activeEmojiQuery, replaceFinishedShortcode, searchEmoji } from '../../lib/emoji-data'
 import { PresenceDot } from './PresenceDot'
+import { EmojiPicker, rememberEmoji } from './EmojiPicker'
 
 const api = teamChatApi()
-const COMMON_EMOJI = ['😀', '😂', '🙂', '😉', '😍', '🤔', '😅', '😭', '👍', '👎', '👏', '🙏', '🙌', '💪', '👀', '🎉', '🔥', '🚀', '✅', '❌', '⚠️', '💯', '❤️', '✨']
 const MAX_ATTACHMENTS = 10
 const MAX_FILE_BYTES = 50 * 1024 * 1024
 
@@ -48,7 +50,18 @@ export interface ComposerProps {
   onEditLast?: () => boolean
 }
 
-export function Composer(props: ComposerProps) {
+export interface ComposerHandle {
+  /** Upload files dropped elsewhere on the pane. */
+  addFiles: (files: File[]) => void
+}
+
+interface EmojiSuggestion {
+  code: string
+  label: string
+  imageUrl?: string
+}
+
+export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Composer(props, ref) {
   const { workspaceId, conversationId, threadRootId = null, mentionables, me } = props
   const [text, setText] = useState('')
   const [selection, setSelection] = useState({ start: 0, end: 0 })
@@ -70,6 +83,15 @@ export function Composer(props: ComposerProps) {
   const [dismissedAt, setDismissedAt] = useState<number | null>(null)
   const query = activeMentionQuery(text, selection.start)
   const suggestions = query && query.start !== dismissedAt ? filterCandidates(candidates, query.query) : []
+  const emojiQuery = suggestions.length ? null : activeEmojiQuery(text, selection.start)
+  const emojiSuggestions = useMemo<EmojiSuggestion[]>(() => {
+    if (!emojiQuery || emojiQuery.start === dismissedAt) return []
+    const q = emojiQuery.query.toLowerCase()
+    const custom = [...customEmoji.values()]
+      .filter((e) => e.name.toLowerCase().includes(q))
+      .map((e) => ({ code: `:${e.name}:`, label: `:${e.name}:`, imageUrl: e.url }))
+    return [...custom, ...searchEmoji(q, 8).map((e) => ({ code: e.emoji, label: `:${e.slug}:` }))].slice(0, 8)
+  }, [emojiQuery?.start, emojiQuery?.query, dismissedAt, customEmoji])
 
   const draft = useDraft(conversationId, threadRootId)
   const restoredFor = useRef<string | null>(null)
@@ -86,12 +108,13 @@ export function Composer(props: ComposerProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [draftKey, draft.stored, candidates.length])
 
-  const onChange = (next: string) => {
+  const onChange = (raw: string) => {
+    const next = replaceFinishedShortcode(raw)
     setText(next)
     draft.save(next.trim() ? encodeMentions(next, picked) : '')
     setNotice(null)
     setHighlight(0)
-    if (!next.includes('@')) setDismissedAt(null)
+    if (!next.includes('@') && !next.includes(':')) setDismissedAt(null)
     if (next.trim()) sendTyping(workspaceId, conversationId, threadRootId)
   }
 
@@ -101,6 +124,17 @@ export function Composer(props: ComposerProps) {
     setText(result.text)
     setSelection({ start: result.cursor, end: result.cursor })
     setPicked((p) => [...p, candidate])
+    inputRef.current?.focus()
+  }
+
+  const chooseEmoji = (s: EmojiSuggestion) => {
+    if (!emojiQuery) return
+    rememberEmoji(s.code)
+    const caret = emojiQuery.start + emojiQuery.query.length + 1
+    const next = `${text.slice(0, emojiQuery.start)}${s.code} ${text.slice(caret)}`
+    const cursor = emojiQuery.start + s.code.length + 1
+    onChange(next)
+    setSelection({ start: cursor, end: cursor })
     inputRef.current?.focus()
   }
 
@@ -176,6 +210,30 @@ export function Composer(props: ComposerProps) {
     }
   }
 
+  const addFiles = (files: File[]) => {
+    for (const f of files.slice(0, Math.max(0, MAX_ATTACHMENTS - attachments.length))) {
+      if (f.size > MAX_FILE_BYTES) setError(`${f.name} is larger than 50 MB`)
+      else void upload(f)
+    }
+  }
+  const addFilesRef = useRef(addFiles)
+  addFilesRef.current = addFiles
+  useImperativeHandle(ref, () => ({ addFiles: (files) => addFilesRef.current(files) }), [])
+
+  useEffect(() => {
+    if (!isWeb || props.disabled) return
+    const node = inputRef.current as unknown as HTMLElement | null
+    if (!node?.addEventListener) return
+    const onPaste = (e: ClipboardEvent) => {
+      const files = Array.from(e.clipboardData?.files ?? [])
+      if (!files.length) return
+      e.preventDefault()
+      addFilesRef.current(files)
+    }
+    node.addEventListener('paste', onPaste as EventListener)
+    return () => node.removeEventListener('paste', onPaste as EventListener)
+  }, [isWeb, props.disabled])
+
   const pickFiles = () => {
     if (isWeb) {
       fileInputRef.current?.click()
@@ -204,6 +262,12 @@ export function Composer(props: ComposerProps) {
       if (key === 'ArrowUp') { e.preventDefault?.(); setHighlight((h) => (h - 1 + suggestions.length) % suggestions.length); return }
       if (key === 'Enter' || key === 'Tab') { e.preventDefault?.(); choose(suggestions[highlight] ?? suggestions[0]!); return }
       if (key === 'Escape') { setDismissedAt(query?.start ?? null); return }
+    }
+    if (emojiSuggestions.length) {
+      if (key === 'ArrowDown') { e.preventDefault?.(); setHighlight((h) => (h + 1) % emojiSuggestions.length); return }
+      if (key === 'ArrowUp') { e.preventDefault?.(); setHighlight((h) => (h - 1 + emojiSuggestions.length) % emojiSuggestions.length); return }
+      if (key === 'Enter' || key === 'Tab') { e.preventDefault?.(); chooseEmoji(emojiSuggestions[highlight] ?? emojiSuggestions[0]!); return }
+      if (key === 'Escape') { setDismissedAt(emojiQuery?.start ?? null); return }
     }
     if (key === 'Enter' && !e.nativeEvent.shiftKey) {
       e.preventDefault?.()
@@ -242,6 +306,20 @@ export function Composer(props: ComposerProps) {
               )}
               <Text className="text-sm text-foreground">{c.display}</Text>
               {c.subtitle ? <Text className="text-xs text-muted-foreground" numberOfLines={1}>{c.subtitle}</Text> : null}
+            </Pressable>
+          ))}
+        </View>
+      )}
+      {emojiSuggestions.length > 0 && (
+        <View className="mb-1 overflow-hidden rounded-lg border border-border bg-card shadow-sm" testID="emoji-suggestions">
+          {emojiSuggestions.map((s, i) => (
+            <Pressable
+              key={s.code}
+              onPress={() => chooseEmoji(s)}
+              className={cn('flex-row items-center gap-2 px-3 py-1.5', i === highlight ? 'bg-muted' : 'active:bg-muted')}
+            >
+              {s.imageUrl ? <Image source={{ uri: s.imageUrl }} style={{ width: 18, height: 18 }} /> : <Text className="text-base">{s.code}</Text>}
+              <Text className="text-sm text-foreground">{s.label}</Text>
             </Pressable>
           ))}
         </View>
@@ -314,20 +392,7 @@ export function Composer(props: ComposerProps) {
           </Pressable>
         </View>
       </View>
-      {emojiOpen && (
-        <View className="mt-1 max-w-[340px] flex-row flex-wrap rounded-lg border border-border bg-card p-1 shadow-sm">
-          {[...customEmoji.values()].map((e) => (
-            <Pressable key={e.id} accessibilityLabel={`:${e.name}:`} onPress={() => insertAtCursor(`:${e.name}:`)} className="rounded p-1.5 active:bg-muted hover:bg-muted">
-              <Image source={{ uri: e.url }} style={{ width: 20, height: 20 }} />
-            </Pressable>
-          ))}
-          {COMMON_EMOJI.map((e) => (
-            <Pressable key={e} accessibilityLabel={e} onPress={() => insertAtCursor(e)} className="rounded p-1.5 active:bg-muted hover:bg-muted">
-              <Text className="text-lg">{e}</Text>
-            </Pressable>
-          ))}
-        </View>
-      )}
+      {emojiOpen && <EmojiPicker workspaceId={workspaceId} onPick={insertAtCursor} className="mt-1" />}
       {laterOpen && (
         <View className="mt-1 self-end overflow-hidden rounded-lg border border-border bg-card shadow-sm">
           <Text className="px-3 pb-1 pt-2 text-[11px] font-semibold uppercase text-muted-foreground">Send later</Text>
@@ -355,16 +420,13 @@ export function Composer(props: ComposerProps) {
           onChange={(e) => {
             const files = Array.from(e.currentTarget.files ?? [])
             e.currentTarget.value = ''
-            for (const f of files) {
-              if (f.size > MAX_FILE_BYTES) setError(`${f.name} is larger than 50 MB`)
-              else void upload(f)
-            }
+            addFiles(files)
           }}
         />
       )}
     </View>
   )
-}
+})
 
 function formatWhen(iso: string): string {
   const d = new Date(iso)

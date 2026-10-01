@@ -3,7 +3,8 @@
 /**
  * A team chat conversation (channel, DM, or agent DM). Threads open from
  * `?thread=<rootId>`: beside the timeline on wide screens, in its place on
- * narrow ones.
+ * narrow ones. `?msg=<id>` scrolls to and highlights one message (in the
+ * thread when `thread` is set too).
  */
 import { useCallback, useEffect, useState } from 'react'
 import { ActivityIndicator, AppState, KeyboardAvoidingView, Platform, Pressable, Text, View, useWindowDimensions } from 'react-native'
@@ -32,9 +33,10 @@ function first(value: string | string[] | undefined): string | undefined {
 }
 
 export default function ConversationScreen() {
-  const params = useLocalSearchParams<{ conversationId: string; thread?: string }>()
+  const params = useLocalSearchParams<{ conversationId: string; thread?: string; msg?: string }>()
   const conversationId = first(params.conversationId) ?? null
   const threadRootId = first(params.thread) ?? null
+  const linkedMessageId = first(params.msg) ?? null
   const router = useRouter()
   const workspace = useActiveWorkspace()
   const me = useMyUserId()
@@ -167,6 +169,7 @@ export default function ConversationScreen() {
               me={me}
               mentionables={mentionables}
               visible={visible && !(threadRootId && !sidePane)}
+              highlightMessageId={threadRootId ? null : linkedMessageId}
               onOpenThread={openThread}
               onOpenSession={openSession}
               onJoin={onJoin}
@@ -183,6 +186,7 @@ export default function ConversationScreen() {
               me={me}
               mentionables={mentionables}
               visible={visible}
+              highlightMessageId={linkedMessageId}
               onOpenSession={openSession}
               onClose={closeThread}
             />

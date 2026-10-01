@@ -5,6 +5,7 @@ import Markdown, { Renderer } from "react-native-marked";
 import type { MarkedStyles } from "react-native-marked";
 import { useColorScheme } from "nativewind";
 import {
+  Linking,
   ScrollView,
   Text,
   useWindowDimensions,
@@ -33,6 +34,8 @@ export interface MarkdownTextProps {
   variant?: MarkdownVariant;
   /** Opens a workspace file when the text mentions its path. */
   onFilePress?: (path: string) => void;
+  /** Return true to handle a link in the app instead of opening it in a browser. */
+  onLinkPress?: (href: string) => boolean;
 }
 
 const baseStyles: MarkedStyles = {
@@ -140,6 +143,7 @@ class NativePhoneMarkdownRenderer extends Renderer {
   constructor(
     private readonly tableWidth: number,
     private readonly onFilePress?: (path: string) => void,
+    private readonly onLinkPress?: (href: string) => boolean,
   ) {
     super();
   }
@@ -161,6 +165,22 @@ class NativePhoneMarkdownRenderer extends Renderer {
           testID="chat-file-link"
           key={this.getKey()}
           onPress={() => open(path)}
+          style={styles}
+        >
+          {children}
+        </Text>
+      );
+    }
+    const handle = this.onLinkPress;
+    if (handle) {
+      return (
+        <Text
+          selectable
+          accessibilityRole="link"
+          key={this.getKey()}
+          onPress={() => {
+            if (!handle(href)) void Linking.openURL(href).catch(() => {});
+          }}
           style={styles}
         >
           {children}
@@ -247,6 +267,7 @@ function markdownPropsEqual(prev: MarkdownTextProps, next: MarkdownTextProps) {
   if (prev.className !== next.className) return false;
   if (prev.isStreaming !== next.isStreaming) return false;
   if (prev.onFilePress !== next.onFilePress) return false;
+  if (prev.onLinkPress !== next.onLinkPress) return false;
   const a = prev.children || "";
   const b = next.children || "";
   return a.length === b.length && a === b;
@@ -256,6 +277,7 @@ export const MarkdownText = memo(function MarkdownText({
   children,
   variant = "default",
   onFilePress,
+  onLinkPress,
 }: MarkdownTextProps) {
   const { colorScheme } = useColorScheme();
   const { width } = useWindowDimensions();
@@ -282,8 +304,8 @@ export const MarkdownText = memo(function MarkdownText({
     return linkifyBareUrls(fileLinked);
   }, [children, onFilePress]);
   const renderer = useMemo(
-    () => new NativePhoneMarkdownRenderer(width, onFilePress),
-    [width, onFilePress],
+    () => new NativePhoneMarkdownRenderer(width, onFilePress, onLinkPress),
+    [width, onFilePress, onLinkPress],
   );
 
   return (

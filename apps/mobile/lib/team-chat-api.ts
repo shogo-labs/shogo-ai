@@ -281,7 +281,7 @@ export type TeamChatEvent =
   | { type: 'conversation.created'; conversationId: string; conversation: ConversationSummary }
   | { type: 'conversation.updated'; conversationId: string; conversation: ConversationSummary }
   | { type: 'member.joined' | 'member.left'; conversationId: string; userId?: string; userIds?: string[] }
-  | { type: 'read'; conversationId: string; userId: string; seq: number }
+  | { type: 'read'; conversationId: string; userId: string; seq: number; unreadCount?: number }
   | { type: 'typing'; conversationId: string; threadRootId: string | null; userId: string; name: string }
   | { type: 'presence'; userId: string; status: PresenceStatus }
   | {
@@ -519,8 +519,11 @@ export function teamChatApi() {
     ): Promise<ChatMessage> {
       return (await http.post<{ message: ChatMessage }>(`${conv(id)}/messages`, input)).data.message
     },
-    async markRead(id: string, seq?: number) {
-      await http.post(`${conv(id)}/read`, seq === undefined ? {} : { seq })
+    async markRead(id: string, seq?: number): Promise<{ lastReadSeq: number; unreadCount?: number }> {
+      return (await http.post<{ lastReadSeq: number; unreadCount?: number }>(`${conv(id)}/read`, seq === undefined ? {} : { seq })).data
+    },
+    async message(messageId: string): Promise<ChatMessage> {
+      return (await http.get<{ message: ChatMessage }>(msg(messageId))).data.message
     },
     async catchUp(id: string): Promise<CatchUpResult> {
       return (await http.post<CatchUpResult>(`${conv(id)}/catch-up`, {})).data
