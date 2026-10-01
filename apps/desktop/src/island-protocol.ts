@@ -81,12 +81,34 @@ export interface IslandSnapshot {
   updatedAt: number
 }
 
-export const ISLAND_BUDDY_TOPPERS = ['orb', 'stubby', 'ears', 'none'] as const
+export const ISLAND_BUDDY_TOPPERS = [
+  'orb',
+  'stubby',
+  'ears',
+  'fox',
+  'bunny',
+  'bear',
+  'horns',
+  'halo',
+  'sprout',
+  'crown',
+  'party',
+  'beanie',
+  'wizard',
+  'headphones',
+  'none',
+] as const
 export const ISLAND_BUDDY_FACES = ['classic', 'visor', 'screen'] as const
+export const ISLAND_BUDDY_TAILS = ['none', 'fox', 'cat', 'bunny', 'dragon', 'cable'] as const
+export const ISLAND_BUDDY_EYEWEAR = ['none', 'sunglasses', 'nerd', 'monocle', 'stars', '3d', 'goggles'] as const
+export const ISLAND_BUDDY_NECKS = ['none', 'scarf', 'bandana', 'bowtie'] as const
 
 export interface IslandBuddyLook {
   topper: (typeof ISLAND_BUDDY_TOPPERS)[number]
   face: (typeof ISLAND_BUDDY_FACES)[number]
+  tail: (typeof ISLAND_BUDDY_TAILS)[number]
+  eyewear: (typeof ISLAND_BUDDY_EYEWEAR)[number]
+  neck: (typeof ISLAND_BUDDY_NECKS)[number]
   bolts: boolean
   blush: boolean
 }
@@ -470,10 +492,24 @@ export function parseIslandSnapshot(value: unknown): IslandSnapshot {
 export function parseIslandBuddyLook(value: unknown): IslandBuddyLook | undefined {
   if (!isRecord(value)) return undefined
   const { topper, face, bolts, blush } = value
+  const tail = value.tail ?? 'none'
+  const eyewear = value.eyewear ?? 'none'
+  const neck = value.neck ?? 'none'
   if (!ISLAND_BUDDY_TOPPERS.includes(topper as IslandBuddyLook['topper'])) return undefined
   if (!ISLAND_BUDDY_FACES.includes(face as IslandBuddyLook['face'])) return undefined
+  if (!ISLAND_BUDDY_TAILS.includes(tail as IslandBuddyLook['tail'])) return undefined
+  if (!ISLAND_BUDDY_EYEWEAR.includes(eyewear as IslandBuddyLook['eyewear'])) return undefined
+  if (!ISLAND_BUDDY_NECKS.includes(neck as IslandBuddyLook['neck'])) return undefined
   if (typeof bolts !== 'boolean' || typeof blush !== 'boolean') return undefined
-  return { topper: topper as IslandBuddyLook['topper'], face: face as IslandBuddyLook['face'], bolts, blush }
+  return {
+    topper: topper as IslandBuddyLook['topper'],
+    face: face as IslandBuddyLook['face'],
+    tail: tail as IslandBuddyLook['tail'],
+    eyewear: eyewear as IslandBuddyLook['eyewear'],
+    neck: neck as IslandBuddyLook['neck'],
+    bolts,
+    blush,
+  }
 }
 
 /** Merge per-window snapshots, most recently updated window first. Only the

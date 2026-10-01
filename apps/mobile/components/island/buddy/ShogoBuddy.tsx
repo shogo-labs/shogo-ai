@@ -80,6 +80,9 @@ export const ShogoBuddy = forwardRef<ShogoBuddyHandle, ShogoBuddyProps>(function
 
   const topper = look?.topper ?? DEFAULT_BUDDY_LOOK.topper
   const face = look?.face ?? DEFAULT_BUDDY_LOOK.face
+  const tail = look?.tail ?? DEFAULT_BUDDY_LOOK.tail
+  const eyewear = look?.eyewear ?? DEFAULT_BUDDY_LOOK.eyewear
+  const neck = look?.neck ?? DEFAULT_BUDDY_LOOK.neck
   const bolts = look?.bolts ?? DEFAULT_BUDDY_LOOK.bolts
   const blush = look?.blush ?? DEFAULT_BUDDY_LOOK.blush
   // Layout effects run before the parent's, so an entrance played from
@@ -91,8 +94,8 @@ export const ShogoBuddy = forwardRef<ShogoBuddyHandle, ShogoBuddyProps>(function
     engine.wake()
   }, [engine, mini, logoStyle, reducedMotion])
   useLayoutEffect(() => {
-    engine.look = { topper, face, bolts, blush }
-  }, [engine, topper, face, bolts, blush])
+    engine.look = { topper, face, tail, eyewear, neck, bolts, blush }
+  }, [engine, topper, face, tail, eyewear, neck, bolts, blush])
   useEffect(() => engine.setBodyColor(color), [engine, color])
   useEffect(() => engine.setState(state), [engine, state])
   useEffect(() => {
