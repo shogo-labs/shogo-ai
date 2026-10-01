@@ -8,7 +8,15 @@
 
 import { SHOGO_MARK_PATHS, SHOGO_MARK_SIZE } from "../../branding/shogo-mark-paths"
 import { Ease, clamp, lerp, type EaseFn } from "../motion/spring"
-import { DEFAULT_BUDDY_LOOK, sameLook, type BuddyLook } from "./look"
+import {
+  DEFAULT_BUDDY_LOOK,
+  sameLook,
+  type BuddyEyewear,
+  type BuddyLook,
+  type BuddyNeck,
+  type BuddyTail,
+  type BuddyTopper,
+} from "./look"
 
 export type BuddyState =
   | "idle"
@@ -543,6 +551,17 @@ const CONFETTI = [
 ]
 const HEART = "#EF4444"
 const STAR = BUDDY_PALETTE.apricot
+/** Fur highlights: tail tip, ear insides, cheek ruff. */
+const CREAM: RGB = [1, 0.97, 0.93]
+/** Where an eye sits on the face, foreshortened by how far it has turned. */
+interface Lens {
+  x: number
+  y: number
+  sx: number
+  sy: number
+  sd: number
+}
+
 const FONT = `system-ui, -apple-system, "Segoe UI", sans-serif`
 
 /** Canvas height ÷ width: room above the body for the antenna and particles. */
@@ -560,7 +579,15 @@ export interface DesignConfig {
   /** Scales the jelly wobble; boxy bodies read better a little stiffer. */
   jelly: number
   antenna: "orb" | "short" | null
-  ears: boolean
+  ears: "cat" | "fox" | "bunny" | "bear" | null
+  /** Hats and other things worn on (or above) the head. */
+  headgear: Headgear | null
+  tail: Exclude<BuddyTail, "none"> | null
+  /** Worn over the eyes; classic face only. */
+  eyewear: Exclude<BuddyEyewear, "none"> | null
+  neck: Exclude<BuddyNeck, "none"> | null
+  /** White fur tufts on the lower cheeks. */
+  ruff: boolean
   /** Face drawn on a dark inset screen with glowing eyes. */
   screen: boolean
   /** Face behind a dark glass band. */
@@ -583,7 +610,12 @@ const GUMMY_BLOCK: DesignConfig = {
   base: 1,
   jelly: 0.55,
   antenna: null,
-  ears: false,
+  ears: null,
+  headgear: null,
+  tail: null,
+  eyewear: null,
+  neck: null,
+  ruff: false,
   screen: false,
   visor: false,
   bolts: false,
@@ -593,12 +625,40 @@ const GUMMY_BLOCK: DesignConfig = {
   mouthY: 0.34,
 }
 
+type Headgear = "horns" | "halo" | "sprout" | "crown" | "party" | "beanie" | "wizard" | "headphones"
+
+const TOPPER_EARS: Partial<Record<BuddyTopper, DesignConfig["ears"]>> = {
+  ears: "cat",
+  fox: "fox",
+  bunny: "bunny",
+  bear: "bear",
+}
+
+const HEADGEAR: Partial<Record<BuddyTopper, Headgear>> = {
+  horns: "horns",
+  halo: "halo",
+  sprout: "sprout",
+  crown: "crown",
+  party: "party",
+  beanie: "beanie",
+  wizard: "wizard",
+  headphones: "headphones",
+}
+
+/** Eyewear that hides the eyes; emote eyes are drawn on the lenses instead. */
+const OPAQUE_EYEWEAR = new Set<BuddyEyewear>(["sunglasses", "stars", "goggles"])
+
 export function designFor(look: BuddyLook): DesignConfig {
   const d: DesignConfig = { ...GUMMY_BLOCK }
   d.antenna = look.topper === "orb" ? "orb" : look.topper === "stubby" ? "short" : null
-  d.ears = look.topper === "ears"
+  d.ears = TOPPER_EARS[look.topper] ?? null
+  d.headgear = HEADGEAR[look.topper] ?? null
+  d.tail = look.tail === "none" ? null : look.tail
+  d.neck = look.neck === "none" ? null : look.neck
   d.bolts = look.bolts
   d.blush = look.blush && look.face === "classic"
+  d.eyewear = look.eyewear !== "none" && look.face === "classic" ? look.eyewear : null
+  d.ruff = look.topper === "fox" && look.face === "classic"
   if (look.face === "visor") {
     d.visor = true
     d.mouth = false
@@ -647,6 +707,43 @@ function roundRect(x: CanvasRenderingContext2D, X: number, Y: number, W: number,
   x.arcTo(X, Y + H, X, Y, r)
   x.arcTo(X, Y, X + W, Y, r)
   x.closePath()
+}
+
+type Pt = readonly [number, number]
+
+/** Point, unit tangent and unit normal on a quadratic curve. */
+function quadAt(p0: Pt, p1: Pt, p2: Pt, t: number) {
+  const u = 1 - t
+  const tx = 2 * u * (p1[0] - p0[0]) + 2 * t * (p2[0] - p1[0])
+  const ty = 2 * u * (p1[1] - p0[1]) + 2 * t * (p2[1] - p1[1])
+  const len = Math.hypot(tx, ty) || 1
+  return {
+    x: u * u * p0[0] + 2 * u * t * p1[0] + t * t * p2[0],
+    y: u * u * p0[1] + 2 * u * t * p1[1] + t * t * p2[1],
+    tx: tx / len,
+    ty: ty / len,
+    nx: -ty / len,
+    ny: tx / len,
+  }
+}
+
+/** A strip `width(t)` wide along a quadratic curve, with a rounded end. */
+function ribbon(p0: Pt, p1: Pt, p2: Pt, width: (t: number) => number, n = 20): Path2D {
+  const side: Pt[] = []
+  const path = new Path2D()
+  for (let i = 0; i <= n; i++) {
+    const p = quadAt(p0, p1, p2, i / n)
+    const w = width(i / n) / 2
+    if (i === 0) path.moveTo(p.x + p.nx * w, p.y + p.ny * w)
+    else path.lineTo(p.x + p.nx * w, p.y + p.ny * w)
+    side.push([p.x - p.nx * w, p.y - p.ny * w])
+  }
+  const end = quadAt(p0, p1, p2, 1)
+  const a = Math.atan2(end.ny, end.nx)
+  path.arc(end.x, end.y, width(1) / 2, a, a - Math.PI, true)
+  for (let i = n; i >= 0; i--) path.lineTo(side[i][0], side[i][1])
+  path.closePath()
+  return path
 }
 
 function heart(x: CanvasRenderingContext2D, s: number) {
@@ -727,6 +824,9 @@ export class BuddyEngine {
   glow = 0.18
   antennaBend = 0
   private antennaVel = 0
+  /** 0 at rest, toward 1 while hopping; scarves flap with it. */
+  private flutter = 0
+  private prevOy = 0
   private prevOx = 0
   private prevTilt = 0
 
@@ -1334,6 +1434,9 @@ export class BuddyEngine {
     this.antennaVel += (aOmega * aOmega * (bendTarget - this.antennaBend) - 2 * 0.22 * aOmega * this.antennaVel) * dt
     this.antennaBend += this.antennaVel * dt
     this.antennaBend = Math.max(-1.2, Math.min(1.2, this.antennaBend))
+    const vy = (this.oy - this.prevOy) / Math.max(dt, 1e-3)
+    this.prevOy = this.oy
+    this.flutter += (Math.min(1, Math.abs(vy) * 0.5) - this.flutter) * (1 - Math.pow(0.03, dt))
 
     // Blinks, fidgets, ambient particles
     // Idle blinks and fidgets are ambient motion: skip them for the mark and
@@ -1426,12 +1529,19 @@ export class BuddyEngine {
     x.scale(scale * this.sx, scale * this.sy)
     x.translate(0, cy - feet)
     if (this.tilt !== 0) x.rotate(this.tilt)
+    if (d.tail) this.drawTail(x, R, rx, ry, d.tail)
     if (!this.isMini && d.antenna) this.drawAntenna(x, R, ry, d.antenna === "short" ? 0.55 : 1)
-    if (d.ears) this.drawEars(x, R, rx, ry)
+    if (d.ears === "fox") this.drawFoxEars(x, R, rx, ry)
+    else if (d.ears === "bunny") this.drawBunnyEars(x, R, rx, ry)
+    else if (d.ears === "bear") this.drawBearEars(x, R, rx, ry)
+    else if (d.ears) this.drawEars(x, R, rx, ry)
+    if (d.headgear) this.drawHeadgearBack(x, R, rx, ry, d.headgear)
     if (d.bolts) this.drawBolts(x, R, rx)
     const body = this.bodyPath(rx, ry)
     this.drawBody(x, body, R, rx, ry)
     this.drawFace(x, body, R, rx, ry)
+    if (d.neck) this.drawNeck(x, body, R, rx, ry, d.neck)
+    if (d.headgear) this.drawHeadgearFront(x, R, rx, ry, d.headgear)
     x.restore()
   }
 
@@ -1631,6 +1741,853 @@ export class BuddyEngine {
     }
   }
 
+  /** Tall pointed ears with dark tips and cream insides. */
+  private drawFoxEars(x: CanvasRenderingContext2D, R: number, rx: number, ry: number) {
+    const t = nowS() - this.t0
+    const twitch = Math.max(0, Math.sin(t * 0.7) - 0.97) * 14
+    const tip = mix(this.body, [0.12, 0.05, 0.03], 0.7)
+    for (const sd of [-1, 1]) {
+      const sway = this.antennaBend * 0.3 + (sd < 0 ? twitch * 0.2 : 0)
+      x.save()
+      x.translate(sd * rx * 0.58, -ry * 0.7)
+      x.rotate(sd * 0.22 + sway)
+      const w = R * 0.6
+      const h = R * 0.92
+      const ear = new Path2D()
+      ear.moveTo(-w / 2, h * 0.18)
+      ear.quadraticCurveTo(-w * 0.34, -h * 0.5, 0, -h * 0.9)
+      ear.quadraticCurveTo(w * 0.34, -h * 0.5, w / 2, h * 0.18)
+      ear.closePath()
+      x.fillStyle = rgba(sd < 0 ? mix(this.body, [1, 1, 1], 0.2) : this.body)
+      x.fill(ear)
+      x.save()
+      x.clip(ear)
+      x.fillStyle = rgba(tip)
+      x.fillRect(-w, -h, w * 2, h * 0.36)
+      x.restore()
+      x.beginPath()
+      x.moveTo(-w * 0.24, h * 0.12)
+      x.quadraticCurveTo(-w * 0.15, -h * 0.32, 0, -h * 0.54)
+      x.quadraticCurveTo(w * 0.15, -h * 0.32, w * 0.24, h * 0.12)
+      x.closePath()
+      x.fillStyle = rgba(CREAM, 0.9)
+      x.fill()
+      x.restore()
+    }
+  }
+
+  /** Long bunny ears; the right one flops over halfway up. */
+  private drawBunnyEars(x: CanvasRenderingContext2D, R: number, rx: number, ry: number) {
+    const t = nowS() - this.t0
+    const twitch = Math.max(0, Math.sin(t * 0.8) - 0.96) * 12
+    const w = R * 0.3
+    const h = R * 1.05
+    for (const sd of [-1, 1]) {
+      x.save()
+      x.translate(sd * rx * 0.36, -ry * 0.72)
+      x.rotate(sd * 0.14 + this.antennaBend * 0.45 + (sd < 0 ? twitch * 0.15 : 0))
+      const flop = sd > 0
+      const p1: Pt = flop ? [0, -h * 0.8] : [0, -h * 0.55]
+      const p2: Pt = flop ? [w * 1.6, -h * 0.62 + Math.sin(t * 2.2) * R * 0.03] : [sd * w * 0.15, -h]
+      const width = (k: number) => w * (0.62 + 0.5 * Math.sin(Math.PI * k * 0.85))
+      x.fillStyle = rgba(sd < 0 ? mix(this.body, [1, 1, 1], 0.2) : this.body)
+      x.fill(ribbon([0, 0], p1, p2, width))
+      x.fillStyle = "rgba(255,130,160,0.5)"
+      x.fill(ribbon([0, -h * 0.05], p1, p2, (k) => width(k) * 0.42 * Math.min(1, (1 - k) * 4)))
+      x.restore()
+    }
+  }
+
+  /** Small round bear ears. */
+  private drawBearEars(x: CanvasRenderingContext2D, R: number, rx: number, ry: number) {
+    const t = nowS() - this.t0
+    const twitch = 1 + Math.max(0, Math.sin(t * 0.9) - 0.97) * 3
+    for (const sd of [-1, 1]) {
+      const cx = sd * rx * 0.64 + this.antennaBend * R * 0.08
+      const cy = -ry * 0.86
+      const r = R * 0.23 * (sd > 0 ? twitch : 1)
+      x.fillStyle = rgba(sd < 0 ? mix(this.body, [1, 1, 1], 0.2) : this.body)
+      x.beginPath()
+      x.arc(cx, cy, r, 0, Math.PI * 2)
+      x.fill()
+      x.fillStyle = rgba(mix(this.body, [0.35, 0.12, 0.06], 0.45))
+      x.beginPath()
+      x.arc(cx + sd * r * 0.08, cy - r * 0.08, r * 0.55, 0, Math.PI * 2)
+      x.fill()
+    }
+  }
+
+  /** The parts of the headgear that sit behind the body. */
+  private drawHeadgearBack(x: CanvasRenderingContext2D, R: number, rx: number, ry: number, kind: Headgear) {
+    const t = nowS() - this.t0
+    if (kind === "horns") {
+      for (const sd of [-1, 1]) {
+        x.save()
+        x.translate(sd * rx * 0.44, -ry * 0.8)
+        x.rotate(sd * 0.1 + this.antennaBend * 0.15)
+        const horn = ribbon([0, 0], [sd * R * 0.02, -R * 0.34], [sd * R * 0.24, -R * 0.48], (k) => R * 0.22 * (1 - k))
+        const g = x.createLinearGradient(0, 0, 0, -R * 0.48)
+        g.addColorStop(0, "#C9A979")
+        g.addColorStop(1, "#F6ECD6")
+        x.fillStyle = g
+        x.fill(horn)
+        x.strokeStyle = "rgba(120,85,45,0.45)"
+        x.lineWidth = R * 0.02
+        x.lineCap = "round"
+        for (const k of [0.25, 0.45]) {
+          const p = quadAt([0, 0], [sd * R * 0.02, -R * 0.34], [sd * R * 0.24, -R * 0.48], k)
+          const hw = R * 0.11 * (1 - k)
+          x.beginPath()
+          x.moveTo(p.x + p.nx * hw, p.y + p.ny * hw)
+          x.lineTo(p.x - p.nx * hw, p.y - p.ny * hw)
+          x.stroke()
+        }
+        x.restore()
+      }
+    } else if (kind === "sprout") {
+      const sway = this.antennaBend * 0.6 + Math.sin(t * 1.3) * 0.06
+      const baseY = -ry * 0.82
+      const tipX = Math.sin(sway) * R * 0.42
+      const tipY = baseY - Math.cos(sway) * R * 0.42
+      x.save()
+      x.strokeStyle = "#3F8F35"
+      x.lineWidth = R * 0.055
+      x.lineCap = "round"
+      x.beginPath()
+      x.moveTo(0, baseY)
+      x.quadraticCurveTo(tipX * 0.1, baseY - R * 0.25, tipX, tipY)
+      x.stroke()
+      if (this.state === "finished") {
+        x.fillStyle = "#FF8FB1"
+        for (let i = 0; i < 5; i++) {
+          const a = (i / 5) * Math.PI * 2 + t * 0.6
+          x.beginPath()
+          x.arc(tipX + Math.cos(a) * R * 0.1, tipY + Math.sin(a) * R * 0.1, R * 0.08, 0, Math.PI * 2)
+          x.fill()
+        }
+        x.fillStyle = "#FFD23F"
+        x.beginPath()
+        x.arc(tipX, tipY, R * 0.065, 0, Math.PI * 2)
+        x.fill()
+      } else {
+        for (const sd of [-1, 1]) {
+          x.save()
+          x.translate(tipX, tipY)
+          x.rotate(sway + sd * (0.75 + Math.sin(t * 1.7 + sd) * 0.08))
+          const leaf = new Path2D()
+          leaf.moveTo(0, 0)
+          leaf.quadraticCurveTo(sd * R * 0.14, -R * 0.12, sd * R * 0.3, 0)
+          leaf.quadraticCurveTo(sd * R * 0.14, R * 0.1, 0, 0)
+          const g = x.createLinearGradient(0, -R * 0.1, 0, R * 0.1)
+          g.addColorStop(0, "#8BDC5F")
+          g.addColorStop(1, "#3F9C35")
+          x.fillStyle = g
+          x.fill(leaf)
+          x.strokeStyle = "rgba(30,90,30,0.5)"
+          x.lineWidth = R * 0.015
+          x.beginPath()
+          x.moveTo(sd * R * 0.03, 0)
+          x.lineTo(sd * R * 0.24, -R * 0.01)
+          x.stroke()
+          x.restore()
+        }
+      }
+      x.restore()
+    } else if (kind === "headphones") {
+      x.save()
+      x.lineCap = "round"
+      const band = new Path2D()
+      band.moveTo(-rx * 1.02, -ry * 0.1)
+      band.bezierCurveTo(-rx * 1.06, -ry * 1.5, rx * 1.06, -ry * 1.5, rx * 1.02, -ry * 0.1)
+      x.strokeStyle = "#26262C"
+      x.lineWidth = R * 0.11
+      x.stroke(band)
+      x.strokeStyle = "#4A4A55"
+      x.lineWidth = R * 0.035
+      x.stroke(band)
+      x.restore()
+    }
+  }
+
+  /** The parts of the headgear in front of the body. */
+  private drawHeadgearFront(x: CanvasRenderingContext2D, R: number, rx: number, ry: number, kind: Headgear) {
+    const t = nowS() - this.t0
+    const bend = this.antennaBend
+    x.save()
+    x.lineJoin = "round"
+    x.lineCap = "round"
+    if (kind === "halo") {
+      const y = -ry - R * 0.42 + Math.sin(t * 2) * R * 0.04
+      x.translate(0, y)
+      x.rotate(bend * 0.3)
+      x.shadowColor = "rgba(255,214,74,0.9)"
+      x.shadowBlur = R * 0.25
+      x.strokeStyle = "#FFD54A"
+      x.lineWidth = R * 0.075
+      x.beginPath()
+      x.ellipse(0, 0, R * 0.42, R * 0.11, 0, 0, Math.PI * 2)
+      x.stroke()
+      x.shadowBlur = 0
+      x.strokeStyle = "#FFF5C2"
+      x.lineWidth = R * 0.025
+      x.stroke()
+    } else if (kind === "crown") {
+      x.translate(rx * 0.1, -ry * 0.86)
+      x.rotate(-0.12 + bend * 0.3)
+      const w = R * 0.86
+      const h = R * 0.46
+      const crown = new Path2D()
+      crown.moveTo(-w / 2, 0)
+      crown.lineTo(-w / 2, -h * 0.72)
+      crown.lineTo(-w * 0.25, -h * 0.38)
+      crown.lineTo(0, -h)
+      crown.lineTo(w * 0.25, -h * 0.38)
+      crown.lineTo(w / 2, -h * 0.72)
+      crown.lineTo(w / 2, 0)
+      crown.closePath()
+      const gold = x.createLinearGradient(-w / 2, -h, w / 2, 0)
+      gold.addColorStop(0, "#FFE58A")
+      gold.addColorStop(0.55, "#F4B400")
+      gold.addColorStop(1, "#C98A00")
+      x.fillStyle = gold
+      x.fill(crown)
+      x.strokeStyle = "#A86F00"
+      x.lineWidth = R * 0.025
+      x.stroke(crown)
+      x.fillStyle = "rgba(160,100,0,0.35)"
+      x.fillRect(-w / 2, -h * 0.24, w, h * 0.24)
+      for (const [px, py] of [[-w / 2, -h * 0.72], [0, -h], [w / 2, -h * 0.72]] as const) {
+        x.fillStyle = "#FFF1B8"
+        x.beginPath()
+        x.arc(px, py, R * 0.055, 0, Math.PI * 2)
+        x.fill()
+      }
+      x.fillStyle = "#E0245E"
+      x.beginPath()
+      x.arc(0, -h * 0.12, R * 0.065, 0, Math.PI * 2)
+      x.fill()
+      x.fillStyle = "#3FA9F5"
+      for (const sd of [-1, 1]) {
+        x.beginPath()
+        x.arc(sd * w * 0.3, -h * 0.12, R * 0.045, 0, Math.PI * 2)
+        x.fill()
+      }
+    } else if (kind === "party") {
+      x.translate(rx * 0.2, -ry * 0.88)
+      x.rotate(0.28 + bend * 0.4)
+      const w = R * 0.62
+      const h = R * 0.95
+      const cone = new Path2D()
+      cone.moveTo(-w / 2, 0)
+      cone.lineTo(0, -h)
+      cone.lineTo(w / 2, 0)
+      cone.quadraticCurveTo(0, R * 0.08, -w / 2, 0)
+      cone.closePath()
+      x.fillStyle = "#7C5CFF"
+      x.fill(cone)
+      x.save()
+      x.clip(cone)
+      x.strokeStyle = "#FFD23F"
+      x.lineWidth = R * 0.09
+      for (let k = -2; k <= 3; k++) {
+        x.beginPath()
+        x.moveTo(-w, -h * 0.28 * k)
+        x.lineTo(w, -h * 0.28 * k - h * 0.35)
+        x.stroke()
+      }
+      x.fillStyle = "rgba(255,255,255,0.18)"
+      x.fillRect(-w / 2, -h, w * 0.35, h)
+      x.restore()
+      x.fillStyle = "#FF5D8F"
+      for (let i = 0; i < 6; i++) {
+        const a = (i / 6) * Math.PI * 2 + Math.sin(t * 3) * 0.3
+        x.beginPath()
+        x.arc(Math.cos(a) * R * 0.07, -h + Math.sin(a) * R * 0.07, R * 0.07, 0, Math.PI * 2)
+        x.fill()
+      }
+    } else if (kind === "beanie") {
+      const bottom = this.d.screen ? -ry * 0.7 : -ry * 0.5
+      const cuff = ry * 0.3
+      x.translate(0, bottom)
+      x.rotate(bend * 0.12)
+      const dome = new Path2D()
+      dome.moveTo(-rx * 1.03, -cuff * 0.5)
+      dome.bezierCurveTo(-rx * 1.0, -ry * 1.05, rx * 1.0, -ry * 1.05, rx * 1.03, -cuff * 0.5)
+      dome.closePath()
+      const knit = x.createLinearGradient(-rx, -ry, rx, 0)
+      knit.addColorStop(0, "#3E79B5")
+      knit.addColorStop(1, "#22487A")
+      x.fillStyle = knit
+      x.fill(dome)
+      if (!this.isMini) {
+        x.save()
+        x.clip(dome)
+        x.strokeStyle = "rgba(0,0,0,0.14)"
+        x.lineWidth = R * 0.025
+        for (let k = -4; k <= 4; k++) {
+          x.beginPath()
+          x.moveTo(k * rx * 0.2, 0)
+          x.quadraticCurveTo(k * rx * 0.16, -ry * 0.5, k * rx * 0.08, -ry * 0.85)
+          x.stroke()
+        }
+        x.restore()
+      }
+      roundRect(x, -rx * 1.08, -cuff, rx * 2.16, cuff, R * 0.1)
+      x.fillStyle = "#1D3D66"
+      x.fill()
+      if (!this.isMini) {
+        x.strokeStyle = "rgba(255,255,255,0.12)"
+        x.lineWidth = R * 0.03
+        for (let k = -9; k <= 9; k++) {
+          x.beginPath()
+          x.moveTo(k * rx * 0.11, -cuff * 0.82)
+          x.lineTo(k * rx * 0.11, -cuff * 0.18)
+          x.stroke()
+        }
+      }
+      const pomY = -ry * 0.82 + Math.sin(t * 2.4) * R * 0.015
+      x.fillStyle = rgba(CREAM)
+      for (let i = 0; i < 7; i++) {
+        const a = (i / 7) * Math.PI * 2
+        x.beginPath()
+        x.arc(Math.cos(a) * R * 0.09, pomY + Math.sin(a) * R * 0.08, R * 0.1, 0, Math.PI * 2)
+        x.fill()
+      }
+    } else if (kind === "wizard") {
+      const by = -ry * 0.9
+      x.translate(0, by)
+      x.rotate(-0.05 + bend * 0.2)
+      const brimW = rx * 0.98
+      const brimH = R * 0.14
+      x.fillStyle = "#2B1E57"
+      x.beginPath()
+      x.ellipse(0, 0, brimW, brimH, 0, 0, Math.PI * 2)
+      x.fill()
+      const tipX = R * 0.42 + Math.sin(bend * 1.5 + Math.sin(t * 1.2) * 0.2) * R * 0.25
+      const tipY = -R * 1.2
+      const cone = new Path2D()
+      cone.moveTo(-R * 0.44, 0)
+      cone.quadraticCurveTo(-R * 0.18, -R * 0.75, tipX, tipY)
+      cone.quadraticCurveTo(R * 0.12, -R * 0.62, R * 0.44, 0)
+      cone.closePath()
+      const robe = x.createLinearGradient(-R * 0.4, tipY, R * 0.4, 0)
+      robe.addColorStop(0, "#6A4BC4")
+      robe.addColorStop(1, "#33236B")
+      x.fillStyle = robe
+      x.fill(cone)
+      x.save()
+      x.clip(cone)
+      x.fillStyle = "#FFD23F"
+      x.fillRect(-R * 0.5, -R * 0.16, R, R * 0.09)
+      for (const [sx, sy, s] of [[-R * 0.1, -R * 0.45, 0.07], [R * 0.14, -R * 0.75, 0.05], [R * 0.2, -R * 0.33, 0.04]] as const) {
+        x.save()
+        x.translate(sx, sy)
+        x.rotate(t * 0.5)
+        star(x, R * s, R * s * 0.45)
+        x.fill()
+        x.restore()
+      }
+      x.restore()
+      x.fillStyle = "#3A2A73"
+      x.beginPath()
+      x.ellipse(0, 0, brimW, brimH, 0, 0, Math.PI)
+      x.fill()
+    } else if (kind === "headphones") {
+      const beat = this.state === "working" ? 1 + Math.max(0, Math.sin(t * 9)) * 0.06 : 1
+      for (const sd of [-1, 1]) {
+        x.save()
+        x.translate(sd * rx * 1.0, -ry * 0.08)
+        x.scale(beat, beat)
+        const w = R * 0.26
+        const h = R * 0.46
+        const shell = x.createLinearGradient(-w / 2, 0, w / 2, 0)
+        shell.addColorStop(0, "#3A3A44")
+        shell.addColorStop(1, "#18181D")
+        x.fillStyle = shell
+        roundRect(x, -w / 2, -h / 2, w, h, w * 0.45)
+        x.fill()
+        x.fillStyle = rgba(this.state === "idle" || this.state === "sleeping" ? mix(this.body, [1, 1, 1], 0.55) : this.col)
+        roundRect(x, sd * w * 0.08 - w * 0.17, -h * 0.3, w * 0.34, h * 0.6, w * 0.17)
+        x.fill()
+        x.restore()
+      }
+    }
+    x.restore()
+  }
+
+  /** Tails wag faster the busier Shogo is. */
+  private tailSwing(): number {
+    const t = nowS() - this.t0
+    const busy = this.state === "working" || this.state === "finished"
+    const speed = this.state === "sleeping" ? 0.8 : busy ? 7 : 2
+    const amp = this.state === "sleeping" ? 0.04 : busy ? 0.22 : 0.1
+    return Math.sin(t * speed) * amp - this.antennaBend * 0.4
+  }
+
+  private drawTail(x: CanvasRenderingContext2D, R: number, rx: number, ry: number, kind: Exclude<BuddyTail, "none">) {
+    if (kind === "fox") this.drawFoxTail(x, R, rx, ry)
+    else if (kind === "cat") this.drawCatTail(x, R, rx, ry)
+    else if (kind === "bunny") this.drawBunnyTail(x, R, rx, ry)
+    else if (kind === "dragon") this.drawDragonTail(x, R, rx, ry)
+    else this.drawCable(x, R, rx, ry)
+  }
+
+  /** A bushy fox tail with a cream tip. */
+  private drawFoxTail(x: CanvasRenderingContext2D, R: number, rx: number, ry: number) {
+    const L = R * 1.45
+    const w = R * 0.95
+    x.save()
+    x.translate(rx * 0.6, ry * 0.55)
+    x.rotate(-0.95 + this.tailSwing())
+    const tail = new Path2D()
+    tail.moveTo(0, -w * 0.18)
+    tail.bezierCurveTo(L * 0.35, -w * 0.75, L * 0.9, -w * 0.72, L * 1.02, -w * 0.06)
+    tail.bezierCurveTo(L * 1.05, w * 0.32, L * 0.62, w * 0.52, 0, w * 0.22)
+    tail.closePath()
+    const fur = x.createLinearGradient(0, -w / 2, 0, w / 2)
+    fur.addColorStop(0, rgba(mix(this.body, [1, 1, 1], 0.25)))
+    fur.addColorStop(1, rgba(mix(this.body, [0, 0, 0], 0.25)))
+    x.fillStyle = fur
+    x.fill(tail)
+    x.save()
+    x.clip(tail)
+    x.fillStyle = rgba(CREAM)
+    x.beginPath()
+    x.ellipse(L * 1.02, -w * 0.12, L * 0.3, w * 0.62, -0.3, 0, Math.PI * 2)
+    x.fill()
+    if (!this.isMini) {
+      x.strokeStyle = rgba(mix(this.body, [0, 0, 0], 0.35), 0.35)
+      x.lineWidth = R * 0.03
+      x.lineCap = "round"
+      for (const [s, o] of [[0.3, -0.1], [0.5, 0.12], [0.62, -0.2]] as const) {
+        x.beginPath()
+        x.moveTo(L * s, w * o)
+        x.quadraticCurveTo(L * (s + 0.08), w * (o - 0.08), L * (s + 0.16), w * o)
+        x.stroke()
+      }
+    }
+    x.restore()
+    x.restore()
+  }
+
+  /** A thin tail that stands up and hooks over at the tip. */
+  private drawCatTail(x: CanvasRenderingContext2D, R: number, rx: number, ry: number) {
+    const t = nowS() - this.t0
+    const curl = Math.sin(t * 1.3) * R * 0.08
+    x.save()
+    x.translate(rx * 0.7, ry * 0.55)
+    x.rotate(this.tailSwing() * 1.3)
+    const tip: Pt = [R * 0.5, -R * 0.95]
+    const w = R * 0.16
+    x.fillStyle = rgba(mix(this.body, [0, 0, 0], 0.1))
+    x.fill(ribbon([0, 0], [R * 1.0, R * 0.05], tip, () => w))
+    x.fill(ribbon(tip, [R * 0.35, -R * 1.2], [R * 0.12 + curl, -R * 1.08], () => w))
+    x.restore()
+  }
+
+  /** A round cotton puff peeking out behind. */
+  private drawBunnyTail(x: CanvasRenderingContext2D, R: number, rx: number, ry: number) {
+    const t = nowS() - this.t0
+    const wiggle = 1 + Math.sin(t * (this.state === "working" ? 9 : 3)) * 0.04
+    const cx = rx * 0.98
+    const cy = ry * 0.55
+    const r = R * 0.24 * wiggle
+    const fluff = x.createRadialGradient(cx - r * 0.3, cy - r * 0.3, 0, cx, cy, r * 1.3)
+    fluff.addColorStop(0, "#FFFFFF")
+    fluff.addColorStop(1, "#E6DDD3")
+    x.fillStyle = fluff
+    for (let i = 0; i < 8; i++) {
+      const a = (i / 8) * Math.PI * 2
+      x.beginPath()
+      x.arc(cx + Math.cos(a) * r * 0.5, cy + Math.sin(a) * r * 0.5, r * 0.6, 0, Math.PI * 2)
+      x.fill()
+    }
+  }
+
+  /** A tapering tail with spikes along the top and a spade on the end. */
+  private drawDragonTail(x: CanvasRenderingContext2D, R: number, rx: number, ry: number) {
+    x.save()
+    x.translate(rx * 0.6, ry * 0.62)
+    x.rotate(-0.2 + this.tailSwing() * 0.8)
+    const p0: Pt = [0, 0]
+    const p1: Pt = [R * 0.85, R * 0.3]
+    const p2: Pt = [R * 1.2, -R * 0.38]
+    const width = (k: number) => R * 0.4 * (1 - k * 0.8)
+    const spike = rgba(mix(this.body, [0.3, 0.02, 0], 0.6))
+    x.fillStyle = spike
+    for (const k of [0.22, 0.42, 0.6, 0.76]) {
+      const p = quadAt(p0, p1, p2, k)
+      const hw = width(k) / 2
+      const bx = p.x - p.nx * hw * 0.7
+      const by = p.y - p.ny * hw * 0.7
+      const tall = hw * 0.3 + R * 0.13 * (1 - k * 0.5)
+      x.beginPath()
+      x.moveTo(bx - p.tx * R * 0.08, by - p.ty * R * 0.08)
+      x.lineTo(bx - p.nx * tall + p.tx * R * 0.03, by - p.ny * tall + p.ty * R * 0.03)
+      x.lineTo(bx + p.tx * R * 0.08, by + p.ty * R * 0.08)
+      x.fill()
+    }
+    const end = quadAt(p0, p1, p2, 1)
+    x.beginPath()
+    x.moveTo(end.x - end.tx * R * 0.04, end.y - end.ty * R * 0.04)
+    x.lineTo(end.x + end.nx * R * 0.16 + end.tx * R * 0.06, end.y + end.ny * R * 0.16 + end.ty * R * 0.06)
+    x.lineTo(end.x + end.tx * R * 0.3, end.y + end.ty * R * 0.3)
+    x.lineTo(end.x - end.nx * R * 0.16 + end.tx * R * 0.06, end.y - end.ny * R * 0.16 + end.ty * R * 0.06)
+    x.closePath()
+    x.fill()
+    const scales = x.createLinearGradient(0, -R * 0.4, 0, R * 0.3)
+    scales.addColorStop(0, rgba(mix(this.body, [1, 1, 1], 0.12)))
+    scales.addColorStop(1, rgba(mix(this.body, [0, 0, 0], 0.28)))
+    x.fillStyle = scales
+    x.fill(ribbon(p0, p1, p2, width))
+    x.restore()
+  }
+
+  /** A charging cable trailing on the ground, with a pulse running along it
+   * while Shogo works. */
+  private drawCable(x: CanvasRenderingContext2D, R: number, rx: number, ry: number) {
+    const t = nowS() - this.t0
+    const sway = Math.sin(t * 1.4) * R * 0.03 - this.antennaBend * R * 0.1
+    const p0: Pt = [rx * 0.8, ry * 0.45]
+    const c1: Pt = [rx * 1.42 + sway, ry * 0.35]
+    const c2: Pt = [rx * 0.95 + sway, ry * 0.98]
+    const p3: Pt = [rx * 1.18, ry * 0.97]
+    x.save()
+    x.lineCap = "round"
+    const cable = new Path2D()
+    cable.moveTo(p0[0], p0[1])
+    cable.bezierCurveTo(c1[0], c1[1], c2[0], c2[1], p3[0], p3[1])
+    x.strokeStyle = "#2B2B31"
+    x.lineWidth = R * 0.075
+    x.stroke(cable)
+    x.strokeStyle = "rgba(255,255,255,0.18)"
+    x.lineWidth = R * 0.02
+    x.stroke(cable)
+    const busy = this.state === "working" || this.state === "thinking"
+    if (busy && !this.isMini) {
+      const k = 1 - ((t * 0.9) % 1)
+      const u = 1 - k
+      const px = u * u * u * p0[0] + 3 * u * u * k * c1[0] + 3 * u * k * k * c2[0] + k * k * k * p3[0]
+      const py = u * u * u * p0[1] + 3 * u * u * k * c1[1] + 3 * u * k * k * c2[1] + k * k * k * p3[1]
+      const glow = x.createRadialGradient(px, py, 0, px, py, R * 0.12)
+      glow.addColorStop(0, rgba(mix(this.col, [1, 1, 1], 0.5)))
+      glow.addColorStop(1, rgba(this.col, 0))
+      x.fillStyle = glow
+      x.beginPath()
+      x.arc(px, py, R * 0.12, 0, Math.PI * 2)
+      x.fill()
+    }
+    const plugW = R * 0.18
+    const plugH = R * 0.15
+    x.fillStyle = "#3A3A43"
+    roundRect(x, p3[0], p3[1] - plugH / 2, plugW, plugH, R * 0.035)
+    x.fill()
+    x.fillStyle = "#D6D8DE"
+    for (const sd of [-1, 1]) x.fillRect(p3[0] + plugW, p3[1] + sd * R * 0.035 - R * 0.0125, R * 0.07, R * 0.025)
+    x.restore()
+  }
+
+  /** Glasses over the eyes. Opaque lenses show emote eyes (hearts, stars,
+   * spirals) on the glass, so emotes keep working. */
+  private drawEyewear(
+    x: CanvasRenderingContext2D,
+    kind: Exclude<BuddyEyewear, "none">,
+    lenses: Lens[],
+    R: number,
+    rx: number,
+    shape: EyeShape,
+  ) {
+    const mult = this.isMini ? 1.6 : 1
+    const showThrough = shape === "heart" || shape === "star" || shape === "spiral"
+    x.save()
+    x.lineCap = "round"
+    x.lineJoin = "round"
+    if (kind === "monocle") this.drawMonocle(x, lenses, R, mult)
+    else if (kind === "goggles") this.drawGoggles(x, lenses, R, mult, showThrough ? shape : null)
+    else {
+      const spec = {
+        sunglasses: { w: 0.4, h: 0.3, frame: "#0B0B0D", line: 0.05 },
+        nerd: { w: 0.4, h: 0.4, frame: "#3A2418", line: 0.055 },
+        stars: { w: 0.48, h: 0.48, frame: "#FFD23F", line: 0.035 },
+        "3d": { w: 0.4, h: 0.28, frame: "#F4F1EA", line: 0.06 },
+      }[kind]
+      const lw = R * spec.w * mult
+      const lh = R * spec.h * mult
+      x.strokeStyle = spec.frame
+      x.lineWidth = R * spec.line * mult
+      if (lenses.length === 2) {
+        const [a, b] = lenses
+        x.beginPath()
+        x.moveTo(a.x, a.y - lh * 0.15)
+        x.quadraticCurveTo((a.x + b.x) / 2, Math.min(a.y, b.y) - lh * 0.4, b.x, b.y - lh * 0.15)
+        x.stroke()
+      }
+      for (const lens of lenses) {
+        x.save()
+        x.translate(lens.x, lens.y)
+        x.scale(lens.sx, lens.sy)
+        const path = new Path2D()
+        if (kind === "sunglasses") {
+          path.moveTo(-lw / 2, -lh / 2)
+          path.lineTo(lw / 2, -lh / 2)
+          path.quadraticCurveTo(lw / 2, lh * 0.42, lw * 0.08, lh / 2)
+          path.lineTo(-lw * 0.08, lh / 2)
+          path.quadraticCurveTo(-lw / 2, lh * 0.42, -lw / 2, -lh / 2)
+        } else if (kind === "nerd") {
+          path.arc(0, 0, lw / 2, 0, Math.PI * 2)
+        } else if (kind === "stars") {
+          const ro = lw / 2
+          for (let i = 0; i < 10; i++) {
+            const r = i % 2 ? ro * 0.5 : ro
+            const a = -Math.PI / 2 + (i * Math.PI) / 5
+            path.lineTo(Math.cos(a) * r, Math.sin(a) * r)
+          }
+        } else {
+          path.rect(-lw / 2, -lh / 2, lw, lh)
+        }
+        path.closePath()
+        if (kind === "sunglasses") {
+          const glass = x.createLinearGradient(0, -lh / 2, 0, lh / 2)
+          glass.addColorStop(0, "#34343A")
+          glass.addColorStop(1, this.state === "idle" || this.state === "sleeping" ? "#060607" : rgba(mix(this.col, [0, 0, 0], 0.7)))
+          x.fillStyle = glass
+        } else if (kind === "stars") {
+          const glass = x.createLinearGradient(0, -lh / 2, 0, lh / 2)
+          glass.addColorStop(0, "#FF5FA8")
+          glass.addColorStop(1, "#7A1FA2")
+          x.fillStyle = glass
+        } else if (kind === "3d") {
+          x.fillStyle = lens.sd < 0 ? "rgba(235,45,60,0.55)" : "rgba(20,195,235,0.55)"
+        } else {
+          x.fillStyle = "rgba(255,255,255,0.14)"
+        }
+        x.fill(path)
+        x.stroke(path)
+        x.save()
+        x.clip(path)
+        x.fillStyle = kind === "sunglasses" || kind === "stars" ? "rgba(255,255,255,0.28)" : "rgba(255,255,255,0.4)"
+        x.beginPath()
+        x.moveTo(-lw * 0.05, -lh / 2)
+        x.lineTo(lw * 0.12, -lh / 2)
+        x.lineTo(-lw * 0.18, lh / 2)
+        x.lineTo(-lw * 0.35, lh / 2)
+        x.fill()
+        x.restore()
+        if (showThrough && OPAQUE_EYEWEAR.has(kind)) {
+          this.drawEye(x, shape, R * 0.16 * mult, R * 0.18 * mult, lens.sd, "#fff", false, false)
+        }
+        x.restore()
+      }
+    }
+    x.restore()
+  }
+
+  /** A gold-rimmed monocle on one eye, without an outside chain. */
+  private drawMonocle(x: CanvasRenderingContext2D, lenses: Lens[], R: number, mult: number) {
+    const lens = lenses.find((l) => l.sd > 0) ?? lenses[0]
+    const r = R * 0.21 * mult
+    x.strokeStyle = "#C8961A"
+    x.lineWidth = R * 0.018 * mult
+    x.save()
+    x.translate(lens.x, lens.y)
+    x.scale(lens.sx, lens.sy)
+    x.fillStyle = "rgba(255,255,255,0.14)"
+    x.beginPath()
+    x.arc(0, 0, r, 0, Math.PI * 2)
+    x.fill()
+    x.strokeStyle = "#E8B730"
+    x.lineWidth = R * 0.045 * mult
+    x.stroke()
+    x.strokeStyle = "rgba(255,255,255,0.55)"
+    x.lineWidth = R * 0.025 * mult
+    x.beginPath()
+    x.arc(0, 0, r * 0.68, -2.6, -1.9)
+    x.stroke()
+    x.restore()
+  }
+
+  /** One wide mirrored lens across both eyes. */
+  private drawGoggles(
+    x: CanvasRenderingContext2D,
+    lenses: Lens[],
+    R: number,
+    mult: number,
+    emote: EyeShape | null,
+  ) {
+    const a = lenses[0]
+    const b = lenses[lenses.length - 1]
+    const cx = (a.x + b.x) / 2
+    const cy = (a.y + b.y) / 2
+    const gw = Math.abs(b.x - a.x) + R * 0.5 * mult
+    const gh = R * 0.38 * mult
+    x.fillStyle = "#1C1C22"
+    roundRect(x, cx - gw / 2 - R * 0.05, cy - gh / 2 - R * 0.05, gw + R * 0.1, gh + R * 0.1, gh * 0.55)
+    x.fill()
+    roundRect(x, cx - gw / 2, cy - gh / 2, gw, gh, gh * 0.45)
+    const mirror = x.createLinearGradient(cx - gw / 2, cy - gh / 2, cx + gw / 2, cy + gh / 2)
+    mirror.addColorStop(0, "#FFD84A")
+    mirror.addColorStop(0.45, "#FF6A3D")
+    mirror.addColorStop(1, "#7B3FE4")
+    x.fillStyle = mirror
+    x.fill()
+    x.save()
+    x.clip()
+    x.fillStyle = "rgba(255,255,255,0.35)"
+    x.beginPath()
+    x.moveTo(cx - gw * 0.1, cy - gh / 2)
+    x.lineTo(cx + gw * 0.02, cy - gh / 2)
+    x.lineTo(cx - gw * 0.2, cy + gh / 2)
+    x.lineTo(cx - gw * 0.32, cy + gh / 2)
+    x.fill()
+    x.restore()
+    if (emote) {
+      for (const lens of lenses) {
+        x.save()
+        x.translate(lens.x, lens.y)
+        x.scale(lens.sx, lens.sy)
+        this.drawEye(x, emote, R * 0.16 * mult, R * 0.18 * mult, lens.sd, "#fff", false, false)
+        x.restore()
+      }
+    }
+  }
+
+  /** Scarf, bandana or bow tie, low on the body below the mouth. */
+  private drawNeck(
+    x: CanvasRenderingContext2D,
+    body: Path2D,
+    R: number,
+    rx: number,
+    ry: number,
+    kind: Exclude<BuddyNeck, "none">,
+  ) {
+    const t = nowS() - this.t0
+    const cx = Math.sin(this.yaw) * rx * 0.68
+    // Wraps follow the body's jiggle: clip to a slightly widened body.
+    const wrap = (paint: () => void) => {
+      x.save()
+      x.scale(1.04, 1)
+      x.clip(body)
+      x.scale(1 / 1.04, 1)
+      paint()
+      x.restore()
+    }
+    x.save()
+    x.lineCap = "round"
+    x.lineJoin = "round"
+    if (kind === "scarf") {
+      const top = ry * 0.5
+      const bottom = ry * 0.76
+      const wool = x.createLinearGradient(0, top, 0, bottom)
+      wool.addColorStop(0, "#EF5350")
+      wool.addColorStop(1, "#B71C2C")
+      wrap(() => {
+        x.fillStyle = wool
+        x.fillRect(-rx * 1.3, top, rx * 2.6, bottom - top)
+        if (!this.isMini) {
+          x.strokeStyle = "rgba(0,0,0,0.13)"
+          x.lineWidth = R * 0.025
+          for (let k = -10; k <= 10; k++) {
+            x.beginPath()
+            x.moveTo(k * R * 0.12 + cx * 0.3, top + R * 0.03)
+            x.lineTo(k * R * 0.12 + cx * 0.3, bottom - R * 0.03)
+            x.stroke()
+          }
+        }
+        x.fillStyle = "rgba(255,255,255,0.18)"
+        x.fillRect(-rx * 1.3, top, rx * 2.6, R * 0.04)
+      })
+      const knotX = cx - rx * 0.42
+      const knotY = (top + bottom) / 2
+      const lift = this.flutter
+      for (const [i, len] of [[0, R * 0.42], [1, R * 0.34]] as const) {
+        const base = 0.15 + i * 0.3 - lift * (0.9 + i * 0.2)
+        const wave = Math.sin(t * (3 + lift * 14) + i) * (0.04 + lift * 0.28)
+        const dir = Math.PI / 2 + base + wave
+        const p2: Pt = [knotX + Math.cos(dir) * len, knotY + Math.sin(dir) * len]
+        const p1: Pt = [
+          knotX + Math.cos(dir - wave * 2) * len * 0.5,
+          knotY + Math.sin(dir - wave * 2) * len * 0.5,
+        ]
+        x.fillStyle = i === 0 ? "#D32F3C" : "#B71C2C"
+        x.fill(ribbon([knotX, knotY], p1, p2, () => R * 0.19))
+        if (!this.isMini) {
+          const end = quadAt([knotX, knotY], p1, p2, 1)
+          x.strokeStyle = "rgba(255,240,230,0.85)"
+          x.lineWidth = R * 0.025
+          x.beginPath()
+          x.moveTo(end.x + end.nx * R * 0.08, end.y + end.ny * R * 0.08)
+          x.lineTo(end.x - end.nx * R * 0.08, end.y - end.ny * R * 0.08)
+          x.stroke()
+        }
+      }
+      x.fillStyle = "#C62834"
+      x.beginPath()
+      x.ellipse(knotX, knotY, R * 0.13, R * 0.11, 0, 0, Math.PI * 2)
+      x.fill()
+    } else if (kind === "bandana") {
+      const top = ry * 0.5
+      const red = "#D62839"
+      wrap(() => {
+        x.fillStyle = red
+        x.fillRect(-rx * 1.3, top, rx * 2.6, R * 0.12)
+        const flap = new Path2D()
+        flap.moveTo(cx - rx * 0.55, top + R * 0.02)
+        flap.lineTo(cx + rx * 0.55, top + R * 0.02)
+        flap.quadraticCurveTo(cx + R * 0.1, ry * 0.95, cx, ry * 1.0)
+        flap.quadraticCurveTo(cx - R * 0.1, ry * 0.95, cx - rx * 0.55, top + R * 0.02)
+        flap.closePath()
+        x.fill(flap)
+        x.save()
+        x.clip(flap)
+        x.fillStyle = "rgba(0,0,0,0.12)"
+        x.fillRect(-rx * 1.3, top, rx * 2.6, R * 0.06)
+        if (!this.isMini) {
+          x.fillStyle = "rgba(255,255,255,0.85)"
+          x.strokeStyle = "rgba(255,255,255,0.85)"
+          x.lineWidth = R * 0.015
+          for (let row = 0; row < 3; row++) {
+            for (let col = -3; col <= 3; col++) {
+              const px = cx + col * R * 0.2 + (row % 2) * R * 0.1
+              const py = top + R * 0.13 + row * R * 0.13
+              x.beginPath()
+              if ((row + col) % 2) x.arc(px, py, R * 0.022, 0, Math.PI * 2)
+              else x.ellipse(px, py, R * 0.04, R * 0.025, 0.6, 0, Math.PI * 2)
+              if ((row + col) % 2) x.fill()
+              else x.stroke()
+            }
+          }
+        }
+        x.restore()
+      })
+    } else {
+      const y = ry * 0.6
+      const w = R * 0.25
+      const h = R * 0.2
+      x.translate(cx, y)
+      x.rotate(Math.sin(t * 2.5) * 0.04 + this.flutter * Math.sin(t * 12) * 0.2)
+      const silk = x.createLinearGradient(0, -h, 0, h)
+      silk.addColorStop(0, "#3A3A48")
+      silk.addColorStop(1, "#141418")
+      x.fillStyle = silk
+      for (const sd of [-1, 1]) {
+        x.beginPath()
+        x.moveTo(0, 0)
+        x.quadraticCurveTo(sd * w * 0.5, -h * 0.75, sd * w, -h * 0.5)
+        x.quadraticCurveTo(sd * w * 1.12, 0, sd * w, h * 0.5)
+        x.quadraticCurveTo(sd * w * 0.5, h * 0.75, 0, 0)
+        x.fill()
+      }
+      x.fillStyle = "#26262E"
+      roundRect(x, -R * 0.055, -R * 0.065, R * 0.11, R * 0.13, R * 0.03)
+      x.fill()
+      x.fillStyle = "rgba(255,255,255,0.2)"
+      x.beginPath()
+      x.ellipse(-w * 0.55, -h * 0.2, w * 0.25, h * 0.1, -0.3, 0, Math.PI * 2)
+      x.fill()
+    }
+    x.restore()
+  }
+
   private drawBolts(x: CanvasRenderingContext2D, R: number, rx: number) {
     for (const sd of [-1, 1]) {
       const w = R * 0.18
@@ -1751,6 +2708,20 @@ export class BuddyEngine {
     x.clip(body)
 
     const faceShift = Math.sin(this.yaw) * rx * 0.75
+    if (d.ruff) {
+      // Cream lower face with a tuft pointing in from each cheek.
+      x.fillStyle = rgba(CREAM, 0.92)
+      x.beginPath()
+      x.moveTo(-rx * 1.2, ry * 0.08)
+      x.quadraticCurveTo(-rx * 0.72, ry * 0.12, -rx * 0.6, ry * 0.34)
+      x.quadraticCurveTo(-rx * 0.38, ry * 0.16, faceShift * 0.9, ry * 0.14)
+      x.quadraticCurveTo(rx * 0.38, ry * 0.16, rx * 0.6, ry * 0.34)
+      x.quadraticCurveTo(rx * 0.72, ry * 0.12, rx * 1.2, ry * 0.08)
+      x.lineTo(rx * 1.2, ry * 1.3)
+      x.lineTo(-rx * 1.2, ry * 1.3)
+      x.closePath()
+      x.fill()
+    }
     if (d.blush) {
       const blush = Math.max(this.blush, 0.25)
       x.fillStyle = `rgba(255,90,120,${0.4 * blush})`
@@ -1811,6 +2782,7 @@ export class BuddyEngine {
     }
 
     const shape = this.eyeOverride ?? this.cfg.eye
+    const lenses: Lens[] = []
     for (const sd of [-1, 1]) {
       const eyeYaw = sd * 0.36 + this.yaw
       let eyePitch = d.eyeY + this.pitch + this.roll
@@ -1820,6 +2792,10 @@ export class BuddyEngine {
       const ex = Math.sin(eyeYaw) * cp * rx
       const ey = -Math.sin(eyePitch) * ry
       const mult = this.isMini ? 1.7 : 1
+      if (d.eyewear) {
+        lenses.push({ x: ex, y: ey, sx: Math.max(0.2, Math.cos(eyeYaw)), sy: Math.max(0.2, cp), sd })
+        if (OPAQUE_EYEWEAR.has(d.eyewear)) continue
+      }
       const w = R * 0.2 * this.es * mult
       const h = R * 0.27 * this.es * mult
       x.save()
@@ -1828,6 +2804,7 @@ export class BuddyEngine {
       this.drawEye(x, shape, w, h, sd, ink, !panel, d.screen)
       x.restore()
     }
+    if (d.eyewear && lenses.length) this.drawEyewear(x, d.eyewear, lenses, R, rx, shape)
 
     if (!this.isMini && d.mouth) {
       let mouth = this.mouthOverride ?? this.cfg.mouth

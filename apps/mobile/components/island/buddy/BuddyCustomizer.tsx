@@ -2,12 +2,18 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { useEffect, useRef, type ReactNode } from "react"
-import { Pressable, Text, View } from "react-native"
+import { Platform, Pressable, Text, View } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import type { BuddyState } from "./engine"
 import {
+  BUDDY_EYEWEAR,
+  BUDDY_EYEWEAR_NAMES,
   BUDDY_FACES,
   BUDDY_FACE_NAMES,
+  BUDDY_NECKS,
+  BUDDY_NECK_NAMES,
+  BUDDY_TAILS,
+  BUDDY_TAIL_NAMES,
   BUDDY_PRESETS,
   BUDDY_TOPPERS,
   BUDDY_TOPPER_NAMES,
@@ -118,6 +124,40 @@ export function BuddyCustomizer({
               />
             ))}
           </Row>
+          <Row label="Eyewear">
+            {BUDDY_EYEWEAR_NAMES.map((name) => (
+              <Chip
+                key={name}
+                label={
+                  name !== "none" && look.face !== "classic"
+                    ? `${BUDDY_EYEWEAR[name]} (classic face only)`
+                    : BUDDY_EYEWEAR[name]
+                }
+                active={look.eyewear === name}
+                onPress={() => onChange({ ...look, eyewear: name })}
+              />
+            ))}
+          </Row>
+          <Row label="Tail">
+            {BUDDY_TAIL_NAMES.map((name) => (
+              <Chip
+                key={name}
+                label={BUDDY_TAILS[name]}
+                active={look.tail === name}
+                onPress={() => onChange({ ...look, tail: name })}
+              />
+            ))}
+          </Row>
+          <Row label="Neckwear">
+            {BUDDY_NECK_NAMES.map((name) => (
+              <Chip
+                key={name}
+                label={BUDDY_NECKS[name]}
+                active={look.neck === name}
+                onPress={() => onChange({ ...look, neck: name })}
+              />
+            ))}
+          </Row>
           <Row label="Extras">
             <Chip label="Ear bolts" active={look.bolts} onPress={() => onChange({ ...look, bolts: !look.bolts })} />
             <Chip
@@ -132,6 +172,16 @@ export function BuddyCustomizer({
       <Row label="Presets">
         {BUDDY_PRESETS.map((preset) => {
           const active = sameLook(look, preset.look)
+          if (Platform.OS !== "web") {
+            return (
+              <Chip
+                key={preset.id}
+                label={preset.label}
+                active={active}
+                onPress={() => onChange(preset.look)}
+              />
+            )
+          }
           return (
             <Pressable
               key={preset.id}

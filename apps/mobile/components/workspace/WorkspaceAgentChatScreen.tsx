@@ -34,8 +34,10 @@ import type { RestoreDraftRequest } from "../chat/ChatInput"
 import { NativePhoneSheet } from "../phone/NativePhoneSheet"
 import { PersonalAgentHeader } from "../personal/PersonalAgentHeader"
 import { PersonalAgentMobileHeader } from "../personal/PersonalAgentMobileHeader"
+import { BuddyLookSheet } from "../personal/BuddyLookSheet"
 import { useWelcomeMessage } from "../personal/useWelcomeMessage"
 import { buildDefaultProfileActions } from "../personal/ProfileActionMenu"
+import type { BuddyState } from "../island/buddy/engine"
 import { useMobileWorkspaceChrome } from "../layout/MobileWorkspaceChromeContext"
 import {
   publishPrimaryWorkspaceSession,
@@ -57,6 +59,7 @@ export const WorkspaceAgentChatScreen = observer(
     const [sessionId, setSessionId] = useState<string | null>(null)
     const [prefillRequest, setPrefillRequest] =
       useState<RestoreDraftRequest | null>(null)
+    const [avatarState, setAvatarState] = useState<BuddyState>("idle")
     const [error, setError] = useState<string | null>(null)
     const [attachments, setAttachments] = useState<
       Array<{
@@ -69,11 +72,14 @@ export const WorkspaceAgentChatScreen = observer(
       null,
     )
     const [scopeSheetOpen, setScopeSheetOpen] = useState(false)
+    const [buddyLookSheetOpen, setBuddyLookSheetOpen] = useState(false)
     const [scopeBusyProjectId, setScopeBusyProjectId] = useState<string | null>(
       null,
     )
     const [scopeError, setScopeError] = useState<string | null>(null)
     const loadVersion = useRef(0)
+    const avatarFinishedTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+    const avatarStreaming = useRef(false)
     const crossTabPrefill = useChatPrefill()
     const { showWelcome, dismissWelcome } = useWelcomeMessage(workspace?.id)
     const isPersonalWorkspace = experience.kind === "personal"
@@ -87,6 +93,12 @@ export const WorkspaceAgentChatScreen = observer(
     )?.id
 
     const loadWorkspaceChat = useCallback(async () => {
+      avatarStreaming.current = false
+      setAvatarState("idle")
+      if (avatarFinishedTimer.current) {
+        clearTimeout(avatarFinishedTimer.current)
+        avatarFinishedTimer.current = null
+      }
       if (!workspace?.id) {
         loadVersion.current += 1
         setProfile(null)
@@ -186,6 +198,30 @@ export const WorkspaceAgentChatScreen = observer(
         current?.nonce === nonce ? null : current,
       )
     }, [])
+    const handleStreamingChange = useCallback((isStreaming: boolean) => {
+      if (avatarFinishedTimer.current) clearTimeout(avatarFinishedTimer.current)
+      if (isStreaming) {
+        avatarStreaming.current = true
+        setAvatarState("working")
+        return
+      }
+      if (!avatarStreaming.current) {
+        setAvatarState("idle")
+        return
+      }
+      avatarStreaming.current = false
+      setAvatarState("finished")
+      avatarFinishedTimer.current = setTimeout(() => {
+        avatarFinishedTimer.current = null
+        setAvatarState("idle")
+      }, 1800)
+    }, [])
+    useEffect(
+      () => () => {
+        if (avatarFinishedTimer.current) clearTimeout(avatarFinishedTimer.current)
+      },
+      [],
+    )
 
     if (!workspace?.id || !sessionId || !profile) {
       return (
@@ -221,6 +257,7 @@ export const WorkspaceAgentChatScreen = observer(
     const profileActions = buildDefaultProfileActions({
       agentName: profile.name,
       onPrefill: prefill,
+      onCustomizeAvatar: () => setBuddyLookSheetOpen(true),
       onOpenActivity: () => router.push("/(app)/activity" as any),
       onOpenSideChats: () => router.push("/(app)/side-chats" as any),
     })
@@ -360,11 +397,13 @@ export const WorkspaceAgentChatScreen = observer(
           <PersonalAgentMobileHeader
             profile={profile}
             actions={profileActions}
+            avatarState={avatarState}
           />
         ) : (
           <PersonalAgentHeader
             profile={profile}
             actions={profileActions}
+            avatarState={avatarState}
             compact
           />
         )}
@@ -465,6 +504,7 @@ export const WorkspaceAgentChatScreen = observer(
             chatScope="workspace"
             chatSessionId={sessionId}
             onChatSessionChange={setSessionId}
+            onStreamingChange={handleStreamingChange}
             composer={experience.composer}
             presentation="agent"
             prefillRequest={prefillRequest}
@@ -597,6 +637,7 @@ export const WorkspaceAgentChatScreen = observer(
             ) : null}
           </View>
         </NativePhoneSheet>
+        <BuddyLookSheet visible={buddyLookSheetOpen} onClose={() => setBuddyLookSheetOpen(false)} />
       </View>
     )
   },

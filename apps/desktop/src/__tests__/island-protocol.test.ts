@@ -2,9 +2,18 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { describe, expect, test } from 'bun:test'
-import { BUDDY_FACE_IDS, BUDDY_TOPPER_IDS } from '../../../../packages/shared-app/src/buddy-look'
 import {
+  BUDDY_EYEWEAR_IDS,
+  BUDDY_FACE_IDS,
+  BUDDY_NECK_IDS,
+  BUDDY_TAIL_IDS,
+  BUDDY_TOPPER_IDS,
+} from '../../../../packages/shared-app/src/buddy-look'
+import {
+  ISLAND_BUDDY_EYEWEAR,
   ISLAND_BUDDY_FACES,
+  ISLAND_BUDDY_NECKS,
+  ISLAND_BUDDY_TAILS,
   ISLAND_BUDDY_TOPPERS,
   ISLAND_MAX_PARAM_CHARS,
   mergeIslandSnapshots,
@@ -123,17 +132,36 @@ describe('parseIslandSnapshot', () => {
   })
 
   test('keeps a valid buddy look and drops a malformed one', () => {
-    const look = { topper: 'ears', face: 'screen', bolts: false, blush: false }
+    const look = {
+      topper: 'fox',
+      face: 'classic',
+      tail: 'fox',
+      eyewear: 'sunglasses',
+      neck: 'scarf',
+      bolts: false,
+      blush: false,
+    }
     expect(parseIslandSnapshot({ sessions: [], buddyLook: look }).buddyLook).toEqual(look)
-    expect(parseIslandSnapshot({ sessions: [], buddyLook: { ...look, topper: 'crown' } }).buddyLook).toBeUndefined()
+    expect(parseIslandSnapshot({ sessions: [], buddyLook: { ...look, topper: 'unicorn' } }).buddyLook).toBeUndefined()
+    expect(parseIslandSnapshot({ sessions: [], buddyLook: { ...look, tail: 'lion' } }).buddyLook).toBeUndefined()
     expect(parseIslandSnapshot({ sessions: [], buddyLook: { ...look, bolts: 'yes' } }).buddyLook).toBeUndefined()
     expect(parseIslandSnapshot({ sessions: [], buddyLook: 'kitty' }).buddyLook).toBeUndefined()
+  })
+
+  test('defaults newer accessories for looks from older app windows', () => {
+    expect(
+      parseIslandSnapshot({ sessions: [], buddyLook: { topper: 'ears', face: 'screen', bolts: false, blush: false } })
+        .buddyLook,
+    ).toEqual({ topper: 'ears', face: 'screen', tail: 'none', eyewear: 'none', neck: 'none', bolts: false, blush: false })
   })
 
   // The desktop build can't import outside src/, so it keeps its own copy.
   test('buddy accessories match the shared look definition', () => {
     expect([...ISLAND_BUDDY_TOPPERS]).toEqual([...BUDDY_TOPPER_IDS])
     expect([...ISLAND_BUDDY_FACES]).toEqual([...BUDDY_FACE_IDS])
+    expect([...ISLAND_BUDDY_TAILS]).toEqual([...BUDDY_TAIL_IDS])
+    expect([...ISLAND_BUDDY_EYEWEAR]).toEqual([...BUDDY_EYEWEAR_IDS])
+    expect([...ISLAND_BUDDY_NECKS]).toEqual([...BUDDY_NECK_IDS])
   })
 })
 
@@ -156,8 +184,8 @@ describe('mergeIslandSnapshots', () => {
   })
 
   test('takes the buddy look from the most recently updated window that has one', () => {
-    const kitty = { topper: 'ears', face: 'classic', bolts: false, blush: true } as const
-    const visor = { topper: 'stubby', face: 'visor', bolts: true, blush: false } as const
+    const kitty = { topper: 'ears', face: 'classic', tail: 'none', eyewear: 'none', neck: 'none', bolts: false, blush: true } as const
+    const visor = { topper: 'stubby', face: 'visor', tail: 'none', eyewear: 'none', neck: 'none', bolts: true, blush: false } as const
     const older: IslandSnapshot = { sessions: [], recentProjects: [], buddyLook: kitty, updatedAt: 1 }
     const newer: IslandSnapshot = { sessions: [], recentProjects: [], buddyLook: visor, updatedAt: 2 }
     const bare: IslandSnapshot = { sessions: [], recentProjects: [], updatedAt: 3 }

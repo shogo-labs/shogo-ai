@@ -68,7 +68,16 @@ describe("BuddyEngine resting", () => {
     for (const change of [
       () => engine.setState("working"),
       () => engine.setBodyColor("#00ff00"),
-      () => (engine.look = { topper: "ears", face: "classic", bolts: false, blush: true }),
+      () =>
+        (engine.look = {
+          topper: "ears",
+          face: "classic",
+          tail: "none",
+          eyewear: "none",
+          neck: "none",
+          bolts: false,
+          blush: true,
+        }),
       () => engine.logoPeek(),
     ]) {
       const before = wakes
