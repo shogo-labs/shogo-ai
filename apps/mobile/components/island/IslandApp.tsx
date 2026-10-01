@@ -12,7 +12,11 @@ import { API_URL } from "../../lib/api"
 import { loadModelPreference } from "../../lib/agent-mode-preference"
 import type { ChatSendInteractionMode } from "../../lib/chat-send-body"
 import { DEFAULT_MODEL_FREE, DEFAULT_MODEL_PRO } from "../chat/ChatInput"
+import { buddyStateForSnapshot } from "./buddy/buddy-state"
+import { IslandBuddy, type IslandBuddyEntrance } from "./buddy/IslandBuddy"
+import { normalizeBuddyLook } from "./buddy/look"
 import { IslandChatHost, type IslandInitialSend } from "./IslandChatHost"
+import { useIslandAccent } from "./island-accent"
 import { IslandCollapsed, type IslandPeek } from "./IslandCollapsed"
 import { IslandIdle } from "./IslandIdle"
 import { IslandComposer, fileRefsFromFileList, type IslandComposerHandle } from "./IslandComposer"
@@ -174,6 +178,18 @@ export const IslandApp = observer(function IslandApp({
   meetingPromptRef.current = !!meeting.prompt
 
   const cardOpen = layout.mode === "expanded" || layout.mode === "compose"
+
+  // Each mode mounts its own buddy; the mode it replaced picks the entrance.
+  const lastMode = useRef(layout.mode)
+  const arrivedFrom = lastMode.current
+  useEffect(() => {
+    lastMode.current = layout.mode
+  }, [layout.mode])
+  const buddyLook = useMemo(() => normalizeBuddyLook(snapshot.buddyLook), [snapshot.buddyLook])
+  const buddyState = peek ? "finished" : buddyStateForSnapshot(snapshot)
+  const accent = useIslandAccent()
+  const openEntrance: IslandBuddyEntrance =
+    arrivedFrom !== "hidden" ? "character" : layout.notched ? "unfold" : "appear"
 
   // Closing the card plays its fold back into the notch while the window is
   // still card-sized, then asks main to shrink it. Opening needs no delay:
@@ -476,7 +492,14 @@ export const IslandApp = observer(function IslandApp({
   if (layout.mode === "hidden") {
     return (
       <View className="dark" style={{ width: "100%", height: "100%" }}>
-        <IslandIdle layout={layout} reducedMotion={reducedMotion} onExpand={() => requestMode("expanded")} />
+        <IslandIdle
+          layout={layout}
+          reducedMotion={reducedMotion}
+          look={buddyLook}
+          buddyState={buddyState}
+          entrance={arrivedFrom === "hidden" ? "logo" : "fold"}
+          onExpand={() => requestMode("expanded")}
+        />
       </View>
     )
   }
@@ -490,6 +513,9 @@ export const IslandApp = observer(function IslandApp({
           layout={layout}
           peek={peek}
           reducedMotion={reducedMotion}
+          look={buddyLook}
+          buddyState={buddyState}
+          entrance={openEntrance}
           onExpand={() => requestMode("expanded")}
         />
       </View>
@@ -512,6 +538,17 @@ export const IslandApp = observer(function IslandApp({
       style={{ height: layout.notched ? layout.topInset : 40 }}
     >
       <View className="min-w-0 flex-1 flex-row items-center gap-1.5">
+        <IslandBuddy
+          body={16}
+          width={22}
+          height={layout.notched ? layout.topInset : 40}
+          state={buddyState}
+          color={accent}
+          look={buddyLook}
+          entrance={openEntrance}
+          followPointer
+          reducedMotion={reducedMotion}
+        />
         {view.name !== "inbox" ? (
           <Pressable onPress={goBack} accessibilityLabel="Back" hitSlop={6}>
             <ChevronLeft size={15} color="#d4d4d8" />

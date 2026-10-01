@@ -118,6 +118,14 @@ describe('parseIslandSnapshot', () => {
     const parsed = parseIslandSnapshot({ sessions: [session('p1', 's1', { pendingPlan: { name: 'Empty' } })] })
     expect(parsed.sessions[0].pendingPlan).toBeUndefined()
   })
+
+  test('keeps a valid buddy look and drops a malformed one', () => {
+    const look = { topper: 'ears', face: 'screen', bolts: false, blush: false }
+    expect(parseIslandSnapshot({ sessions: [], buddyLook: look }).buddyLook).toEqual(look)
+    expect(parseIslandSnapshot({ sessions: [], buddyLook: { ...look, topper: 'crown' } }).buddyLook).toBeUndefined()
+    expect(parseIslandSnapshot({ sessions: [], buddyLook: { ...look, bolts: 'yes' } }).buddyLook).toBeUndefined()
+    expect(parseIslandSnapshot({ sessions: [], buddyLook: 'kitty' }).buddyLook).toBeUndefined()
+  })
 })
 
 describe('mergeIslandSnapshots', () => {
@@ -136,6 +144,15 @@ describe('mergeIslandSnapshots', () => {
     expect(merged.sessions.map((s) => `${s.sessionId}:${s.title}`)).toEqual(['s1:fresh', 's2:s2'])
     expect(merged.recentProjects.map((p) => p.projectId)).toEqual(['p1', 'p2'])
     expect(merged.updatedAt).toBe(2)
+  })
+
+  test('takes the buddy look from the most recently updated window that has one', () => {
+    const kitty = { topper: 'ears', face: 'classic', bolts: false, blush: true } as const
+    const visor = { topper: 'stubby', face: 'visor', bolts: true, blush: false } as const
+    const older: IslandSnapshot = { sessions: [], recentProjects: [], buddyLook: kitty, updatedAt: 1 }
+    const newer: IslandSnapshot = { sessions: [], recentProjects: [], buddyLook: visor, updatedAt: 2 }
+    const bare: IslandSnapshot = { sessions: [], recentProjects: [], updatedAt: 3 }
+    expect(mergeIslandSnapshots([older, newer, bare]).buddyLook).toEqual(visor)
   })
 
   test("keeps only the focused window's focused session", () => {

@@ -18,6 +18,49 @@ function userIdFrom(c: any): string | null {
 const ONBOARDING_INTENTS = ['personal', 'team'] as const
 type OnboardingIntent = (typeof ONBOARDING_INTENTS)[number]
 
+const BUDDY_TOPPERS = ['orb', 'stubby', 'ears', 'none'] as const
+const BUDDY_FACES = ['classic', 'visor', 'screen'] as const
+
+export interface BuddyLook {
+  topper: (typeof BUDDY_TOPPERS)[number]
+  face: (typeof BUDDY_FACES)[number]
+  bolts: boolean
+  blush: boolean
+}
+
+/** Strict parse of a client-supplied look; every field is required. */
+export function parseBuddyLook(value: unknown): { ok: true; look: BuddyLook } | { ok: false; error: string } {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return { ok: false, error: 'look must be an object' }
+  }
+  const v = value as Record<string, unknown>
+  const extra = Object.keys(v).filter((key) => !['topper', 'face', 'bolts', 'blush'].includes(key))
+  if (extra.length) return { ok: false, error: `unknown field "${extra[0]}"` }
+  if (!BUDDY_TOPPERS.includes(v.topper as BuddyLook['topper'])) {
+    return { ok: false, error: `topper must be one of ${BUDDY_TOPPERS.join(', ')}` }
+  }
+  if (!BUDDY_FACES.includes(v.face as BuddyLook['face'])) {
+    return { ok: false, error: `face must be one of ${BUDDY_FACES.join(', ')}` }
+  }
+  if (typeof v.bolts !== 'boolean' || typeof v.blush !== 'boolean') {
+    return { ok: false, error: 'bolts and blush must be booleans' }
+  }
+  return {
+    ok: true,
+    look: { topper: v.topper as BuddyLook['topper'], face: v.face as BuddyLook['face'], bolts: v.bolts, blush: v.blush },
+  }
+}
+
+function storedBuddyLook(raw: string | null | undefined): BuddyLook | null {
+  if (!raw) return null
+  try {
+    const parsed = parseBuddyLook(JSON.parse(raw))
+    return parsed.ok ? parsed.look : null
+  } catch {
+    return null
+  }
+}
+
 function compareAnnouncementVersions(a: string, b: string): number {
   const [aMajor, aMinor] = a.split('.').map(Number)
   const [bMajor, bMinor] = b.split('.').map(Number)
@@ -53,6 +96,7 @@ export function userProfileRoutes(): Hono {
         onboardingCompleted: true,
         onboardingIntent: true,
         lastSeenAnnouncementVersion: true,
+        buddyLook: true,
         createdAt: true,
         updatedAt: true,
       },
@@ -63,8 +107,37 @@ export function userProfileRoutes(): Hono {
 
     return c.json({
       ok: true,
-      data: { ...user, adminScopes: normalizeAdminScopes(user.adminScopes) },
+      data: {
+        ...user,
+        adminScopes: normalizeAdminScopes(user.adminScopes),
+        buddyLook: storedBuddyLook(user.buddyLook),
+      },
     })
+  })
+
+  router.put('/me/buddy', async (c) => {
+    const userId = userIdFrom(c)
+    if (!userId) {
+      return c.json({ error: { code: 'unauthorized', message: 'Not authenticated' } }, 401)
+    }
+
+    let body: unknown
+    try {
+      body = await c.req.json()
+    } catch {
+      return c.json({ error: { code: 'invalid_request', message: 'Invalid JSON body' } }, 400)
+    }
+
+    const parsed = parseBuddyLook(body)
+    if (!parsed.ok) {
+      return c.json({ error: { code: 'invalid_look', message: parsed.error } }, 400)
+    }
+
+    await prisma.user.update({
+      where: { id: userId },
+      data: { buddyLook: JSON.stringify(parsed.look) },
+    })
+    return c.json({ ok: true, data: parsed.look })
   })
 
   router.post('/me/announcements/seen', async (c) => {
