@@ -458,6 +458,8 @@ export async function handleLiveChunk(
     if (!result.ok) {
       return result.reason === 'invalid'
         ? error(c, 400, 'invalid_chunk', 'Live audio chunk must be a WAV with a start offset and sequence number')
+        : result.reason === 'disabled'
+          ? error(c, 409, 'meetings_disabled', 'Meetings and transcription are disabled')
         : error(c, 409, 'not_recording', 'This recording has already finished')
     }
     return c.json({ meetingId: draft.id, segment: result.segment, transcript: result.transcript })
