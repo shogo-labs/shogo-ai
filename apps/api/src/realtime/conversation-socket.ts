@@ -37,8 +37,16 @@ export function isConversationSocketData(data: unknown): data is ConversationSoc
   return !!data && typeof data === 'object' && (data as any).kind === 'conversation-rt'
 }
 
+// Every socket in the workspace gets the same envelope; serialize it once.
+const serialized = new WeakMap<ConversationEnvelope, string>()
+
 export function serializeEnvelope(envelope: ConversationEnvelope): string {
-  return JSON.stringify(envelope.event)
+  let text = serialized.get(envelope)
+  if (text === undefined) {
+    text = JSON.stringify(envelope.event)
+    serialized.set(envelope, text)
+  }
+  return text
 }
 
 async function cachedAccess(data: ConversationSocketData, conversationId: string) {
