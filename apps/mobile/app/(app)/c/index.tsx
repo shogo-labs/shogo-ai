@@ -12,7 +12,7 @@ import { useWorkspaceExperience } from '../../../hooks/useWorkspaceExperience'
 import { teamChatApi, type ConversationSummary } from '../../../lib/team-chat-api'
 import { invalidateConversationList, useConversationList, useMentionables, useMyUserId } from '../../../hooks/useTeamChat'
 import { NewConversationModal, type NewConversationMode } from '../../../components/team-chat/NewConversationModal'
-import { conversationHref } from '../../../components/team-chat/TeamChatSidebarSection'
+import { conversationHref } from '../../../components/team-chat/ConversationRows'
 
 const api = teamChatApi()
 
