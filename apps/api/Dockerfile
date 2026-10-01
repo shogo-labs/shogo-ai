@@ -86,6 +86,11 @@ COPY --from=workspace /app/packages/db ./packages/db
 COPY --from=workspace /app/packages/email ./packages/email
 COPY --from=workspace /app/packages/voice ./packages/voice
 COPY --from=workspace /app/packages/cli ./packages/cli
+# apps/api/src/routes/local-user.ts imports the buddy-look helpers straight out
+# of shared-app (a React Native package, so only this dependency-free file is
+# shipped). Without it the API exits at boot with `Cannot find module
+# '../../../../packages/shared-app/src/buddy-look'`.
+COPY --from=workspace /app/packages/shared-app/src/buddy-look.ts ./packages/shared-app/src/buddy-look.ts
 COPY --from=workspace /app/apps/api ./apps/api
 COPY --from=workspace /app/package.json /app/bun.lock /app/tsconfig.base.json ./
 
