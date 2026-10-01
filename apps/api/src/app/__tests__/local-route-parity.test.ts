@@ -5,6 +5,7 @@ import { join, relative, resolve } from 'path'
 const REQUIRED_LOCAL_ROUTES = [
   'GET /api/me',
   'POST /api/me/announcements/seen',
+  'PUT /api/me/buddy',
   'GET /api/me/activity',
   'GET /api/me/getting-started',
   'POST /api/onboarding/complete',

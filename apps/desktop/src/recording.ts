@@ -19,8 +19,10 @@ import type { IpcMainEvent, MessageEvent as ElectronMessageEvent } from 'electro
 import path from 'path'
 import fs from 'fs'
 import { execFile } from 'child_process'
-import { readConfig, writeConfig } from './config'
+import { readConfig, writeConfig, type MeetingConfig } from './config'
 import { RecordingManager, type RecordingEvent } from './recording/manager'
+import { LiveTranscriber, LIVE_SOURCE_RATE } from './recording/live-transcriber'
+import { getApiUrl } from './local-server'
 import {
   MeetingDetector,
   type MeetingDetectedEvent,
@@ -42,6 +44,7 @@ import {
   type IslandMeetingState,
 } from './island-protocol'
 import { MEETING_PROMPT_TTL_MS, reduceMeetingState, type MeetingEvent } from './island-meeting'
+import { pickDesktopMeetingFields, shouldStartMeetingMonitor } from './meeting-config'
 
 const IS_DEV = !app.isPackaged
 
@@ -50,6 +53,7 @@ const IS_DEV = !app.isPackaged
 // ---------------------------------------------------------------------------
 
 let manager: RecordingManager | null = null
+let liveTranscriber: { sessionId: string; live: LiveTranscriber; heartbeat: ReturnType<typeof setInterval> } | null = null
 let detector: MeetingDetector | null = null
 let durationTimer: ReturnType<typeof setInterval> | null = null
 let recordingWindowResolver: (() => BrowserWindow | null) | null = null
@@ -147,30 +151,103 @@ function getManager(): RecordingManager {
     recordingsDir: getRecordingsDir(),
     sysAudioBinary: sysBinary,
     onEvent: handleRecordingEvent,
+    onPcm: feedLiveTranscript,
   })
   return manager
+}
+
+function feedLiveTranscript(
+  sessionId: string,
+  source: 'mic' | 'system',
+  bytes: Uint8Array,
+  meta: { sampleRate: number; channels: number },
+): void {
+  if (!liveTranscriber || liveTranscriber.sessionId !== sessionId) return
+  if (meta.sampleRate !== LIVE_SOURCE_RATE) return
+  if (source === 'mic' && meta.channels === 1) liveTranscriber.live.feedMic(bytes)
+  else if (source === 'system') liveTranscriber.live.feedSystem(bytes, meta.channels)
+}
+
+/** Must stay well under the API's stale-draft window (10 minutes). */
+const DRAFT_HEARTBEAT_MS = 60_000
+
+function startLiveTranscript(sessionId: string): void {
+  liveTranscriber?.live.stop({ discard: true })
+  if (liveTranscriber) clearInterval(liveTranscriber.heartbeat)
+  const draftUrl = `${getApiUrl()}/api/local/meetings/recordings/${encodeURIComponent(sessionId)}`
+  const url = `${draftUrl}/live`
+  // Live chunks stop during silence, so check in separately or the API closes the draft.
+  const beat = () =>
+    void fetch(draftUrl, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: '{}' }).catch(() => {})
+  beat()
+  liveTranscriber = {
+    sessionId,
+    heartbeat: setInterval(beat, DRAFT_HEARTBEAT_MS),
+    live: new LiveTranscriber(async (chunk) => {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'content-type': 'audio/wav',
+          'x-live-start': String(chunk.start),
+          'x-live-seq': String(chunk.seq),
+        },
+        body: new Uint8Array(chunk.wav),
+      })
+      if (!res.ok && res.status !== 409) {
+        console.warn(`[Recording] live transcript chunk ${chunk.seq} failed (${res.status})`)
+      }
+      return { ok: res.ok, status: res.status }
+    }),
+  }
+}
+
+function stopLiveTranscript(): void {
+  if (!liveTranscriber) return
+  clearInterval(liveTranscriber.heartbeat)
+  liveTranscriber.live.stop({ discard: true })
+  liveTranscriber = null
+}
+
+/** Chunk count to finish the meeting with when the live transcript covers the whole recording. */
+async function finishLiveTranscript(sessionId: string, durationSeconds: number): Promise<number | undefined> {
+  const current = liveTranscriber
+  if (!current || current.sessionId !== sessionId) return undefined
+  clearInterval(current.heartbeat)
+  liveTranscriber = null
+  const summary = await current.live.finish().catch(() => null)
+  if (!summary?.complete || summary.seconds < durationSeconds - 3) return undefined
+  return summary.chunks
 }
 
 function handleRecordingEvent(evt: RecordingEvent): void {
   switch (evt.type) {
     case 'session-started':
       console.log(`[Recording] Session ${evt.session.id} started (primary: ${evt.session.primaryPath})`)
+      startLiveTranscript(evt.session.id)
       sendToRenderer('recording-started', { id: evt.session.id, path: evt.session.primaryPath })
       dispatchMeeting({ type: 'recording-started', id: evt.session.id, now: Date.now() })
       break
-    case 'session-stopped':
+    case 'session-stopped': {
       console.log(
         `[Recording] Session ${evt.session.id} stopped after ${evt.duration}s ` +
         `(mic=${evt.micBytes} bytes, system=${evt.systemBytes} bytes, mixed=${evt.mixedCreated})`,
       )
-      sendToRenderer('recording-stopped', {
-        id: evt.session.id,
-        audioPath: evt.session.primaryPath,
-        duration: evt.duration,
-      })
       dispatchMeeting({ type: 'recording-stopped' })
+      // The renderer finishes the meeting on this event, so hold it until the
+      // last live chunk lands (bounded by the transcriber's timeout).
+      const { session, duration } = evt
+      void finishLiveTranscript(session.id, duration).then((liveChunks) => {
+        sendToRenderer('recording-stopped', {
+          id: session.id,
+          audioPath: session.primaryPath,
+          duration,
+          ...(liveChunks !== undefined ? { liveChunks } : {}),
+        })
+      })
       break
+    }
     case 'session-aborted':
+      stopLiveTranscript()
       console.warn(`[Recording] Session ${evt.id} aborted: ${evt.reason}`)
       dispatchMeeting({ type: 'recording-stopped' })
       break
@@ -267,6 +344,11 @@ export async function respondToMeeting(
     return { ok: false, error: 'That meeting prompt has expired' }
   }
   const config = readConfig()
+  if (!config.meetings.enabled) {
+    if (detectionState === 'detected') detectionState = 'idle'
+    dispatchMeeting({ type: 'dismissed' })
+    return { ok: false, error: 'Meetings are disabled' }
+  }
   writeConfig({
     meetings: {
       ...config.meetings,
@@ -286,6 +368,8 @@ export function setRecordingWindowResolver(resolveWindow: () => BrowserWindow | 
 }
 
 export async function startRecording(): Promise<{ id: string; audioPath: string }> {
+  // Every start (tray, island, renderer IPC, the API's HTTP bridge) ends up here.
+  if (!readConfig().meetings.enabled) throw new Error('Meetings and transcription are disabled')
   const mgr = getManager()
   if (mgr.isRecording()) throw new Error('Already recording')
 
@@ -340,7 +424,7 @@ export function getRecordingStatus(): {
 
 export function startMeetingMonitor(): void {
   const config = readConfig()
-  if (!config.meetings.autoDetect) {
+  if (!shouldStartMeetingMonitor(config.meetings)) {
     console.log('[Recording] Auto-detect disabled, skipping monitor')
     return
   }
@@ -382,6 +466,7 @@ export function stopMeetingMonitor(): void {
 }
 
 function onMeetingDetected(appLabel: string): void {
+  if (!readConfig().meetings.enabled) return
   const mgr = getManager()
   if (mgr.isRecording()) {
     // Already recording — if we were in the grace window, cancel the auto-stop.
@@ -569,14 +654,45 @@ export function registerRecordingIpcHandlers(): void {
 
   ipcMain.handle('get-meeting-config', () => readConfig().meetings)
   ipcMain.handle('set-meeting-config', (_event, config: Partial<import('./config').MeetingConfig>) => {
-    const current = readConfig()
-    writeConfig({ meetings: { ...current.meetings, ...config } })
-    if ('autoDetect' in config) {
-      if (config.autoDetect) startMeetingMonitor()
-      else stopMeetingMonitor()
-    }
-    return readConfig().meetings
+    return setMeetingConfig(config)
   })
+}
+
+/**
+ * Update the desktop-owned meeting preferences, mirror them to the local API
+ * and keep the detector lifecycle in sync. Transcription settings in `patch`
+ * are ignored; they are saved through the API.
+ */
+export async function setMeetingConfig(patch: Partial<MeetingConfig>): Promise<MeetingConfig> {
+  const fields = pickDesktopMeetingFields(patch)
+  const current = readConfig()
+  const next = writeConfig({ meetings: { ...current.meetings, ...fields } }).meetings
+  if ('enabled' in fields || 'autoDetect' in fields) {
+    if (next.enabled && next.autoDetect) startMeetingMonitor()
+    else stopMeetingMonitor()
+  }
+  await mirrorMeetingConfigToApi(fields)
+  return next
+}
+
+/** Start the detector and bring the API's mirror up to date after launch. */
+export function initMeetingConfig(): void {
+  startMeetingMonitor()
+  void mirrorMeetingConfigToApi(pickDesktopMeetingFields(readConfig().meetings))
+}
+
+async function mirrorMeetingConfigToApi(fields: Partial<MeetingConfig>): Promise<void> {
+  if (Object.keys(fields).length === 0) return
+  try {
+    const res = await fetch(`${getApiUrl()}/api/local/meetings/config`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(fields),
+    })
+    if (!res.ok) console.warn(`[Recording] Meeting config mirror failed: HTTP ${res.status}`)
+  } catch (err) {
+    console.warn('[Recording] Meeting config mirror failed:', err instanceof Error ? err.message : err)
+  }
 }
 
 // ---------------------------------------------------------------------------

@@ -2,8 +2,8 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { Tray, Menu, nativeImage, app } from 'electron'
 import path from 'path'
-import { startRecording, stopRecording, getRecordingStatus } from './recording'
-import { readConfig, writeConfig } from './config'
+import { startRecording, stopRecording, getRecordingStatus, setMeetingConfig } from './recording'
+import { readConfig } from './config'
 
 interface TrayOptions {
   openMeetings?: () => void
@@ -56,6 +56,13 @@ function buildContextMenu(): Menu {
   if (status.isRecording) {
     return Menu.buildFromTemplate([
       {
+        label: 'Meetings & transcription',
+        type: 'checkbox',
+        checked: config.meetings.enabled,
+        click: (item) => void setMeetingConfig({ enabled: item.checked }),
+      },
+      { type: 'separator' },
+      {
         label: `Recording ${formatDuration(status.duration)}`,
         enabled: false,
       },
@@ -76,7 +83,15 @@ function buildContextMenu(): Menu {
 
   return Menu.buildFromTemplate([
     {
+      label: 'Meetings & transcription',
+      type: 'checkbox',
+      checked: config.meetings.enabled,
+      click: (item) => void setMeetingConfig({ enabled: item.checked }),
+    },
+    { type: 'separator' },
+    {
       label: 'Start Recording',
+      enabled: config.meetings.enabled,
       click: () => {
         startRecording().catch((err) => console.error('[Tray] Start failed:', err))
       },
@@ -86,21 +101,18 @@ function buildContextMenu(): Menu {
       label: 'Auto-detect Meetings',
       type: 'checkbox',
       checked: config.meetings.autoDetect,
+      enabled: config.meetings.enabled,
       click: (item) => {
-        writeConfig({
-          meetings: { ...config.meetings, autoDetect: item.checked },
-        })
+        void setMeetingConfig({ autoDetect: item.checked })
       },
     },
     {
       label: 'Auto-record',
       type: 'checkbox',
       checked: config.meetings.autoRecord,
-      enabled: config.meetings.autoDetect,
+      enabled: config.meetings.enabled && config.meetings.autoDetect,
       click: (item) => {
-        writeConfig({
-          meetings: { ...config.meetings, autoRecord: item.checked },
-        })
+        void setMeetingConfig({ autoRecord: item.checked })
       },
     },
     {
@@ -155,7 +167,7 @@ export function createTray(options: TrayOptions = {}): void {
     const status = getRecordingStatus()
     if (status.isRecording) {
       stopRecording().catch((err) => console.error('[Tray] Stop failed:', err))
-    } else {
+    } else if (readConfig().meetings.enabled) {
       startRecording().catch((err) => console.error('[Tray] Start failed:', err))
     }
   })

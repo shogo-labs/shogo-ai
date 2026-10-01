@@ -28,6 +28,7 @@ import { Semaphore, Singleflight } from './concurrency'
 import { HydrateProxy } from './hydrate-proxy'
 import { classConfig, config, isVmClassSupported, VM_CLASSES, type VmClass } from './config'
 import { allocatedBytes, diskUsage, type DiskUsage } from './disk'
+import { WORKSPACE_DRIVE_SUFFIX } from './data-drive'
 import { FirecrackerVMManager, type FcVmHandle, type FcSnapshot } from './firecracker-vm-manager'
 import { planEvictions, type EvictionCandidate } from './gc-policy'
 import { LiveRegistry, pidAlive, type MemberDataState } from './live-registry'
@@ -923,6 +924,7 @@ export class MetalWarmPool {
         memoryMB: e.memoryMB,
         vmClass: e.vmClass ?? 'standard',
         dataDrive: e.dataDrive,
+        workspaceDrive: e.workspaceDrive,
       }
       this.mgr.adoptVM(handle)
       this.assigned.set(e.projectId, {
@@ -993,6 +995,7 @@ export class MetalWarmPool {
       memoryMB: a.handle.memoryMB,
       vmClass: a.handle.vmClass,
       dataDrive: a.handle.dataDrive,
+      workspaceDrive: a.handle.workspaceDrive,
       assignedAt: a.assignedAt,
       lastTouchedAt: a.lastTouchedAt,
       restoredFrom: a.restoredFrom,
@@ -1042,6 +1045,7 @@ export class MetalWarmPool {
         bytesRootfs: e.bytesRootfs,
         vmClass: e.vmClass,
         dataDrive: e.dataDrive,
+        workspaceDrive: e.workspaceDrive,
       }
       this.suspended.set(e.projectId, {
         projectId: e.projectId,
@@ -2942,7 +2946,12 @@ export class MetalWarmPool {
         await this.heavy
           .run(() =>
             this.store.push(
-              { vmstate: snapshot.snapshotPath, mem: snapshot.memFilePath, rootfs: durable.path },
+              {
+                vmstate: snapshot.snapshotPath,
+                mem: snapshot.memFilePath,
+                rootfs: durable.path,
+                workspaceDrive: snapshot.workspaceDrive,
+              },
               meta,
             ),
           )
@@ -2974,6 +2983,7 @@ export class MetalWarmPool {
       rootfsIdentity: s.rootfsIdentity ?? this.classRootfsIdentity(vmClass),
       vmClass,
       dataDrive: s.snapshot.dataDrive,
+      workspaceDrive: s.snapshot.workspaceDrive,
       backupEtag: s.backupEtag,
       dataEtag: s.dataEtag,
       memberDataEtags: s.memberDataEtags,
@@ -3149,9 +3159,12 @@ export class MetalWarmPool {
         createdAt: pulled.meta.createdAt,
         bytesMem: pulled.meta.bytesMem,
         bytesState: pulled.meta.bytesState,
-        bytesRootfs: allocatedBytes(pulled.files.rootfs),
+        bytesRootfs:
+          allocatedBytes(pulled.files.rootfs) +
+          (pulled.files.workspaceDrive ? allocatedBytes(pulled.files.workspaceDrive) : 0),
         vmClass,
         dataDrive,
+        workspaceDrive: pulled.files.workspaceDrive,
       }
       s = {
         projectId,
@@ -3558,8 +3571,11 @@ export class MetalWarmPool {
       try {
         if (await this.rescueFromDisk(a)) {
           metrics.inc(M.rescueDisk)
-          console.log(`[pool] rescued ${a.projectId} from its rootfs before discard (${why})`)
+          console.log(`[pool] rescued ${a.projectId} from its disk before discard (${why})`)
           try { this.mgr.releaseRootfs(a.handle.rootfs) } catch { /* GC reclaims it */ }
+          if (a.handle.workspaceDrive) {
+            try { this.mgr.releaseDataDrive(a.handle.workspaceDrive) } catch { /* GC reclaims it */ }
+          }
           return
         }
       } catch (err: any) {
@@ -3569,7 +3585,14 @@ export class MetalWarmPool {
     metrics.inc(M.rescueFailed)
     const label = `${a.projectId}-${Date.now()}`
     let kept: string | null = null
+    // The workspace lives on the drive when there is one, so that is the disk
+    // worth keeping; the rootfs is still kept for anything written outside it.
+    let keptDrive: string | null = null
+    if (a.handle.workspaceDrive) {
+      try { keptDrive = this.mgr.quarantineWorkspaceDrive(a.handle.workspaceDrive, label) } catch { /* reported below */ }
+    }
     try { kept = this.mgr.quarantineRootfs(a.handle.rootfs, label) } catch { /* reported below */ }
+    if (keptDrive && !kept) kept = keptDrive
     if (kept) {
       try {
         writeFileSync(
@@ -3581,13 +3604,15 @@ export class MetalWarmPool {
             rootfsIdentity: this.bootRootfsIdentity(a),
             backupParentEtag: a.backupParentEtag,
             repoParentEtag: a.repoParentEtag,
+            workspaceDrive: keptDrive ?? undefined,
           }),
         )
       } catch { /* the disk itself is what matters */ }
     }
     console.error(
       `[pool] RESCUE FAILED for ${a.projectId} (${why}) — its unsaved workspace is ONLY on ` +
-        `${kept ?? `${a.handle.rootfs} (quarantine failed; left in place)`}. Recover it before it is lost.`,
+        `${keptDrive ?? kept ?? `${a.handle.workspaceDrive ?? a.handle.rootfs} (quarantine failed; left in place)`}. ` +
+        `Recover it before it is lost.`,
     )
   }
 
@@ -3619,7 +3644,10 @@ export class MetalWarmPool {
   private async rescueFromDisk(a: AssignedVm): Promise<boolean> {
     const outDir = mkdtempSync(join(this.cfg.runDir, 'rescue-out-'))
     try {
-      const { source, repo } = await this.mgr.extractWorkspaceFromRootfs(a.handle.rootfs, outDir)
+      const { source, repo } = await this.mgr.extractWorkspace(
+        { rootfs: a.handle.rootfs, workspaceDrive: a.handle.workspaceDrive },
+        outDir,
+      )
       let ok = true
       if (repo) ok = (await this.storeRepoBytes(a, new Uint8Array(readFileSync(repo)))) !== 'lost' && ok
       if (source) ok = (await this.storeSourceBytes(a, new Uint8Array(readFileSync(source)))) && ok
@@ -3890,9 +3918,10 @@ export class MetalWarmPool {
     } catch {
       /* ignore */
     }
-    if (snap.dataDrive) {
+    for (const drive of [snap.dataDrive, snap.workspaceDrive]) {
+      if (!drive) continue
       try {
-        this.mgr.releaseDataDrive(snap.dataDrive)
+        this.mgr.releaseDataDrive(drive)
       } catch {
         /* ignore */
       }
@@ -3932,10 +3961,12 @@ export class MetalWarmPool {
     for (const vm of this.available) {
       protectedPaths.add(vm.handle.rootfs)
       if (vm.handle.dataDrive) protectedPaths.add(vm.handle.dataDrive)
+      if (vm.handle.workspaceDrive) protectedPaths.add(vm.handle.workspaceDrive)
     }
     for (const a of this.assigned.values()) {
       protectedPaths.add(a.handle.rootfs)
       if (a.handle.dataDrive) protectedPaths.add(a.handle.dataDrive)
+      if (a.handle.workspaceDrive) protectedPaths.add(a.handle.workspaceDrive)
       // A suspend-in-flight writes vmstate/mem to deterministic paths derived
       // from the handle id BEFORE the project lands in `suspended`. Protect
       // those prospective artifacts so a concurrent sweep can't delete a
@@ -3952,6 +3983,7 @@ export class MetalWarmPool {
       protectedPaths.add(s.snapshot.memFilePath)
       protectedPaths.add(s.snapshot.rootfs)
       if (s.snapshot.dataDrive) protectedPaths.add(s.snapshot.dataDrive)
+      if (s.snapshot.workspaceDrive) protectedPaths.add(s.snapshot.workspaceDrive)
     }
 
     // A cold boot creates a VM's rootfs/CoW, then boots + configures it, and
@@ -4015,6 +4047,7 @@ export class MetalWarmPool {
     // Docker-class second data drive — no shared base, so it's always a plain
     // file regardless of rootfsCow mode (see data-drive.ts).
     sweepDir(this.cfg.runDir, (n) => n.endsWith('.data.ext4'), 'dataDrive')
+    sweepDir(this.cfg.runDir, (n) => n.endsWith(WORKSPACE_DRIVE_SUFFIX), 'dataDrive')
     if (this.cfg.rootfsCow === 'dm') sweepDir(this.cfg.dmCowDir, (n) => n.endsWith('.cow'), 'rootfs')
     return removed
   }

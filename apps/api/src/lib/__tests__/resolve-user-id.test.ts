@@ -67,6 +67,9 @@ describe('resolveUserHomeRegionUserId', () => {
       await resolveUserHomeRegionUserId(makeCtx('/api/onboarding/complete', 'sess_u')),
     ).toBe('sess_u')
     expect(
+      await resolveUserHomeRegionUserId(makeCtx('/api/me/buddy', 'sess_u')),
+    ).toBe('sess_u')
+    expect(
       await resolveUserHomeRegionUserId(makeCtx('/api/affiliates/me/enroll', 'sess_u')),
     ).toBe('sess_u')
     expect(

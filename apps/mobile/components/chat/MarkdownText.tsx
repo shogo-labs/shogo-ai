@@ -37,8 +37,8 @@ export interface MarkdownTextProps {
 
 const baseStyles: MarkedStyles = {
   text: { fontSize: 12, lineHeight: 18 },
-  strong: { fontWeight: "bold" },
-  em: { fontStyle: "italic" },
+  strong: { fontSize: 12, lineHeight: 18, fontWeight: "bold" },
+  em: { fontSize: 12, lineHeight: 18, fontStyle: "italic" },
   codespan: {
     fontFamily: "monospace",
     fontSize: 12,
@@ -54,7 +54,8 @@ const baseStyles: MarkedStyles = {
   h4: { fontSize: 16, lineHeight: 22, fontWeight: "500" },
   list: { marginVertical: 2 },
   li: { fontSize: 12, lineHeight: 18 },
-  link: { textDecorationLine: "underline" },
+  link: { fontSize: 12, lineHeight: 18, textDecorationLine: "underline" },
+  strikethrough: { fontSize: 12, lineHeight: 18 },
   hr: { height: 1, marginVertical: 8 },
   image: { borderRadius: 6 },
 };
@@ -63,6 +64,10 @@ const baseStyles: MarkedStyles = {
 const phoneChatStyles: MarkedStyles = {
   ...baseStyles,
   text: { fontSize: 16, lineHeight: 24 },
+  strong: { fontSize: 16, lineHeight: 24, fontWeight: "bold" },
+  em: { fontSize: 16, lineHeight: 24, fontStyle: "italic" },
+  link: { fontSize: 16, lineHeight: 24, textDecorationLine: "underline" },
+  strikethrough: { fontSize: 16, lineHeight: 24 },
   h1: { fontSize: 18, lineHeight: 24, fontWeight: "bold", marginBottom: 6 },
   h2: { fontSize: 18, lineHeight: 24, fontWeight: "bold", marginBottom: 5 },
   h3: { fontSize: 18, lineHeight: 24, fontWeight: "600", marginBottom: 4 },
@@ -72,8 +77,8 @@ const phoneChatStyles: MarkedStyles = {
 
 const thinkingStyles: MarkedStyles = {
   text: { fontSize: 14, lineHeight: 21 },
-  strong: { fontWeight: "bold" },
-  em: { fontStyle: "italic" },
+  strong: { fontSize: 14, lineHeight: 21, fontWeight: "bold" },
+  em: { fontSize: 14, lineHeight: 21, fontStyle: "italic" },
   codespan: {
     fontFamily: "monospace",
     fontSize: 12,
@@ -89,7 +94,8 @@ const thinkingStyles: MarkedStyles = {
   h4: { fontSize: 14, lineHeight: 20, fontWeight: "500" },
   list: { marginVertical: 2 },
   li: { fontSize: 14, lineHeight: 21 },
-  link: { textDecorationLine: "underline" },
+  link: { fontSize: 14, lineHeight: 21, textDecorationLine: "underline" },
+  strikethrough: { fontSize: 14, lineHeight: 21 },
   hr: { height: 1, marginVertical: 6 },
   image: { borderRadius: 6 },
 };

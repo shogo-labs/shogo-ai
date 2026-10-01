@@ -50,7 +50,7 @@ const BUILTIN_SUBAGENTS: readonly BuiltinSubagent[] = [
   {
     agentType: 'browser_qa',
     description: 'Browser automation and visual QA.',
-    defaultModel: 'gpt-5.4-nano',
+    defaultModel: 'gpt-6-luna',
   },
 ] as const
 
@@ -67,6 +67,7 @@ interface ModelChoice {
 }
 
 const MODEL_CATALOG: readonly ModelChoice[] = [
+  { model: 'gpt-6-luna', costPer1M: 0.5, tier: 'fast'     },
   { model: 'gpt-5.4-nano', costPer1M: 1.25, tier: 'fast'     },
   { model: 'claude-haiku-4-5', costPer1M: 5.0, tier: 'fast'     },
   { model: 'gpt-5.4-mini', costPer1M: 4.4,  tier: 'balanced' },

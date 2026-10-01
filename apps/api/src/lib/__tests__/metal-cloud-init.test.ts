@@ -71,10 +71,12 @@ describe('buildBurstUserData', () => {
   })
 
   it('honours tunable overrides', () => {
-    const s = buildBurstUserData({ ...BASE, poolSize: 12, memMiB: 8192, rootfsCow: 'reflink' })
+    const s = buildBurstUserData({ ...BASE, poolSize: 12, memMiB: 8192, rootfsCow: 'reflink', workspaceDriveMiB: 0 })
     expect(s).toContain("METAL_POOL_SIZE='12'")
     expect(s).toContain("METAL_MEM_MIB='8192'")
     expect(s).toContain("METAL_ROOTFS_COW='reflink'")
+    expect(s).toContain("METAL_WORKSPACE_DRIVE_MIB='0'")
+    expect(buildBurstUserData(BASE)).toContain("METAL_WORKSPACE_DRIVE_MIB='20480'")
   })
 
   it('defaults the idle-suspend window to 15 minutes', () => {

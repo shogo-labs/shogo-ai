@@ -21,6 +21,7 @@ export interface HostRuntimeConfig {
 }
 
 export interface MeetingConfig {
+  enabled: boolean
   autoDetect: boolean
   autoRecord: boolean
   autoRecordConfirmCount: number
@@ -81,6 +82,7 @@ function getDefaultHostRuntimeConfig(): HostRuntimeConfig {
 }
 
 const DEFAULT_MEETING_CONFIG: MeetingConfig = {
+  enabled: true,
   autoDetect: true,
   autoRecord: false,
   autoRecordConfirmCount: 0,

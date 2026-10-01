@@ -15,7 +15,7 @@ import { existsSync, mkdtempSync, rmSync, statSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { config } from './config'
-import { DataDriveProvisioner } from './data-drive'
+import { DataDriveProvisioner, WORKSPACE_DRIVE_LABEL, WORKSPACE_DRIVE_SUFFIX } from './data-drive'
 
 const dirs: string[] = []
 afterEach(() => {
@@ -24,8 +24,10 @@ afterEach(() => {
 
 class FakeDataDriveProvisioner extends DataDriveProvisioner {
   mkfsCalls: string[] = []
-  protected override runMkfs(path: string): void {
+  labels: Array<string | undefined> = []
+  protected override runMkfs(path: string, label?: string): void {
     this.mkfsCalls.push(path)
+    this.labels.push(label)
   }
 }
 
@@ -46,6 +48,18 @@ describe('DataDriveProvisioner', () => {
     expect(statSync(path).size).toBe(1024 * 1024 * 1024)
     expect(dd.sizeMiB(path)).toBe(1024)
     expect(dd.mkfsCalls).toEqual([path])
+  })
+
+  test('a workspace drive gets its own file name and the label fc-init mounts', () => {
+    const cfg = makeCfg()
+    const dd = new FakeDataDriveProvisioner(cfg as any)
+    const docker = dd.provision('fcvm-3', 64)
+    const ws = dd.provision('fcvm-3', 64, 'workspace')
+
+    expect(ws).toBe(join(cfg.runDir, `fcvm-3${WORKSPACE_DRIVE_SUFFIX}`))
+    expect(ws).not.toBe(docker)
+    expect(dd.labels).toEqual([undefined, WORKSPACE_DRIVE_LABEL])
+    expect(WORKSPACE_DRIVE_LABEL).toBe('shogo-ws')
   })
 
   test('exists reflects the current filesystem state', () => {

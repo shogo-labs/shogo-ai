@@ -12,7 +12,8 @@
     "./domain": "./src/domain/index.ts",
     "./hooks": "./src/hooks/index.ts",
     "./services": "./src/services/index.ts",
-    "./chat": "./src/chat/index.ts"
+    "./chat": "./src/chat/index.ts",
+    "./buddy-look": "./src/buddy-look.ts"
   },
   "scripts": {
     "test": "bun --no-env-file test",
