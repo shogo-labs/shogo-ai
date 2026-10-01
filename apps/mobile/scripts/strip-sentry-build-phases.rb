@@ -64,12 +64,13 @@ target.build_phases.dup.each do |phase|
   when "Bundle React Native code and images"
     next unless phase.shell_script.to_s.include?("sentry-xcode.sh")
 
-    # The Sentry plugin prepends `/bin/sh `<sentry-path-expression>` ` in
-    # front of the original `react-native-xcode.sh` invocation. Strip exactly
-    # that wrapper, leaving the plain RN bundler invocation untouched.
+    # The Sentry plugin wraps the original `react-native-xcode.sh` line as
+    # `/bin/sh `<sentry>` <line>` (< 8.28) or `/bin/sh "`<sentry>`" "<line>"`
+    # (>= 8.28). Strip exactly that wrapper, leaving the plain RN bundler
+    # invocation untouched.
     cleaned = phase.shell_script.sub(
-      %r{/bin/sh\s+`[^`]*sentry-xcode\.sh[^`]*`\s+},
-      ""
+      %r{^/bin/sh\s+"?`[^`]*sentry-xcode\.sh[^`]*`"?\s+"?(.*?)"?[ \t]*$},
+      '\1'
     )
 
     if cleaned != phase.shell_script
