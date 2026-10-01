@@ -338,7 +338,7 @@ export class FakeHost {
         guest.stop()
         return kept
       },
-      extractWorkspaceFromRootfs: async (rootfs: string, outDir: string) => {
+      extractWorkspace: async ({ rootfs }: { rootfs: string }, outDir: string) => {
         const guest = this.keptDisks.get(rootfs)
         if (!guest) return { source: null, repo: null }
         mkdirSync(outDir, { recursive: true })

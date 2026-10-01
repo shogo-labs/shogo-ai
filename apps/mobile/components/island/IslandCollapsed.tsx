@@ -3,10 +3,12 @@
 
 import { Pressable, Text, View, useWindowDimensions } from "react-native"
 import { Motion } from "@legendapp/motion"
-import { Check, Loader2, Mic } from "lucide-react-native"
+import { Mic } from "lucide-react-native"
 import { cn } from "@shogo/shared-ui/primitives"
-import { formatDuration } from "../../lib/use-recording"
-import { ShogoLogoMark } from "../branding/ShogoLogoMark"
+import { formatDuration } from "../../lib/format-duration"
+import type { BuddyState } from "./buddy/engine"
+import { IslandBuddy, type IslandBuddyEntrance } from "./buddy/IslandBuddy"
+import type { BuddyLook } from "./buddy/look"
 import { useIslandAccent } from "./island-accent"
 import {
   COLLAPSED_LEFT_WING,
@@ -51,6 +53,9 @@ export function IslandCollapsed({
   layout,
   peek,
   reducedMotion,
+  look,
+  buddyState,
+  entrance,
   onExpand,
 }: {
   snapshot: IslandSnapshot
@@ -58,6 +63,9 @@ export function IslandCollapsed({
   layout: IslandLayout
   peek: IslandPeek | null
   reducedMotion: boolean
+  look: BuddyLook
+  buddyState: BuddyState
+  entrance: IslandBuddyEntrance
   onExpand: () => void
 }) {
   const sessions = orderIslandSessions(snapshot.sessions)
@@ -74,18 +82,24 @@ export function IslandCollapsed({
     <Mic size={13} color="#f87171" />
   ) : meeting.recording ? (
     <RecordingDot />
-  ) : peek ? (
-    <Check size={13} color="#38bdf8" />
-  ) : attentionCount > 0 ? (
-    <View className="rounded-full bg-amber-400 px-1.5 min-w-[18px] items-center">
-      <Text className="text-[10px] font-bold text-black">{attentionCount}</Text>
-    </View>
-  ) : running ? (
-    <Loader2 size={13} color={accent} className="animate-spin motion-reduce:animate-none" />
-  ) : top ? (
-    <StatusDot status={top.status} />
   ) : (
-    <ShogoLogoMark className="h-3.5 w-3.5" fill={accent} />
+    <View>
+      <IslandBuddy
+        body={layout.notched ? 19 : 16}
+        width={layout.notched ? COLLAPSED_LEFT_WING : 22}
+        height={layout.notched ? layout.topInset : 24}
+        state={buddyState}
+        color={accent}
+        look={look}
+        entrance={entrance}
+        reducedMotion={reducedMotion}
+      />
+      {attentionCount > 1 ? (
+        <View className="absolute -right-1 bottom-0 rounded-full bg-amber-400 px-1 min-w-[14px] items-center">
+          <Text className="text-[9px] font-bold text-black">{attentionCount}</Text>
+        </View>
+      ) : null}
+    </View>
   )
 
   // Right wing: a primary label that truncates, plus an optional trailing
@@ -113,6 +127,18 @@ export function IslandCollapsed({
   ) : meeting.recording ? (
     <Text className="text-[12px] font-semibold tabular-nums text-red-300">{formatDuration(recordingSeconds)}</Text>
   ) : null
+  // The buddy carries the status visually; say it for screen readers too.
+  const status = meeting.prompt
+    ? `Meeting detected in ${meeting.prompt.app}`
+    : meeting.recording
+      ? "Recording"
+      : attentionCount > 0
+        ? `${attentionCount} ${attentionCount === 1 ? "chat needs" : "chats need"} you`
+        : running
+          ? "Working"
+          : peek
+            ? `${peek.title} finished`
+            : null
   const right = (
     <View className="flex-row items-center gap-1.5 min-w-0">
       <Text className="flex-shrink-0 max-w-[70%] text-[12px] font-semibold text-white" numberOfLines={1}>
@@ -146,7 +172,7 @@ export function IslandCollapsed({
           onPress={onExpand}
           {...ISLAND_TRIGGER_PROPS}
           accessibilityRole="button"
-          accessibilityLabel="Open Shogo island"
+          accessibilityLabel={status ? `Open Shogo island. ${status}` : "Open Shogo island"}
           className={cn(
             "h-full w-full flex-row items-center overflow-hidden bg-black",
             layout.notched ? "rounded-b-[14px]" : "rounded-[18px] border border-white/10 px-3.5 justify-center gap-2",

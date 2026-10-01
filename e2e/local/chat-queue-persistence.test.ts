@@ -4,6 +4,7 @@
 import {
   test,
   expect,
+  type APIRequestContext,
   type Page,
   type Route,
 } from "@playwright/test"
@@ -46,14 +47,13 @@ async function waitForIdle(page: Page) {
   }).catch(() => {})
 }
 
-async function openProject(page: Page) {
+async function openProject(page: Page, api: APIRequestContext) {
   await page.goto("/")
   await page.getByRole("link", { name: "Chat", exact: true }).waitFor({
     state: "visible",
     timeout: 20_000,
   })
-  // Share the browser's local auto-sign-in cookie with API setup requests.
-  const listed = await page.request.get(`${API_BASE_URL}/api/projects?limit=1`)
+  const listed = await api.get(`${API_BASE_URL}/api/projects?limit=1`)
   if (!listed.ok()) throw new Error(`Unable to list local projects: ${listed.status()}`)
   const listedPayload = (await listed.json()) as {
     items?: Array<{ id: string }>
@@ -61,7 +61,7 @@ async function openProject(page: Page) {
   let project = listedPayload.items?.[0]
 
   if (!project) {
-    const workspacesResponse = await page.request.get(
+    const workspacesResponse = await api.get(
       `${API_BASE_URL}/api/workspaces?limit=1`,
     )
     if (!workspacesResponse.ok()) {
@@ -73,7 +73,7 @@ async function openProject(page: Page) {
     const workspace = workspacesPayload.items?.[0]
     if (!workspace) throw new Error("No local workspace is available for the queue E2E")
 
-    const created = await page.request.post(`${API_BASE_URL}/api/projects`, {
+    const created = await api.post(`${API_BASE_URL}/api/projects`, {
       data: {
         name: `Chat queue E2E ${Date.now()}`,
         description: "Chat queue E2E fixture",
@@ -193,7 +193,7 @@ test.describe("server-backed chat queue — local UI", () => {
       await route.continue()
     })
 
-    await openProject(page)
+    await openProject(page, page.request)
 
     mockChatRequests = true
     holdNextChat = true

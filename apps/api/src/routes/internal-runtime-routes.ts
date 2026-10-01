@@ -43,6 +43,7 @@ import {
   type WorkspaceAgentAuthContext,
   type WorkspaceAgentRoutesConfig,
 } from './workspace-agent'
+import { workspaceMeetingRoutes } from './workspace-meetings'
 import {
   createInternalAuthorizers,
   logAuthReject,
@@ -447,6 +448,18 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     '/',
     workspaceAgentRoutes({
       saveAgentAvatar,
+      authorize: async (c): Promise<WorkspaceAgentAuthContext | Response> => {
+        const workspaceId = c.req.param('workspaceId')
+        if (!(await authorizeWorkspaceScope(c, workspaceId))) {
+          return c.json({ error: 'Unauthorized' }, 401)
+        }
+        return { workspaceId }
+      },
+    }),
+  )
+  app.route(
+    '/',
+    workspaceMeetingRoutes({
       authorize: async (c): Promise<WorkspaceAgentAuthContext | Response> => {
         const workspaceId = c.req.param('workspaceId')
         if (!(await authorizeWorkspaceScope(c, workspaceId))) {

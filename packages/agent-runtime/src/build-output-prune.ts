@@ -20,10 +20,12 @@ import { isAbsolute, join, relative, resolve } from 'path'
 
 export const BUILD_OUTPUT_MANIFEST = 'build-output.json'
 const PRUNE_STATE_FILE = 'build-output-history.json'
+const BUILD_OUTPUT_FINGERPRINT_FILE = 'build-output-fingerprint'
 
 interface BuildOutputManifest {
   outDir: string
   files: string[]
+  fingerprint?: string
 }
 
 interface PruneState {
@@ -55,11 +57,51 @@ export function buildOutputManifestPluginSource(manifestPath: string): string {
     "  apply: 'build',",
     '  writeBundle(options, bundle) {',
     '    try {',
-    `      writeFileSync(${JSON.stringify(manifestPath)}, JSON.stringify({ outDir: options.dir, files: Object.keys(bundle) }))`,
+    "      const hash = createHash('sha1')",
+    '      const files = Object.keys(bundle).sort()',
+    '      for (const fileName of files) {',
+    '        const output = bundle[fileName]',
+    "        hash.update(fileName + '\\0')",
+    "        hash.update(output.type === 'asset' ? (typeof output.source === 'string' ? output.source : Buffer.from(output.source)) : output.code)",
+    '        hash.update("\\0")',
+    '      }',
+    '      const fingerprint = hash.digest("hex")',
+    `      writeFileSync(${JSON.stringify(manifestPath)}, JSON.stringify({ outDir: options.dir, files, fingerprint }))`,
     '    } catch {}',
     '  },',
     '}',
   ].join('\n')
+}
+
+/**
+ * Returns whether the latest successful build changed the served output.
+ *
+ * Missing or malformed state is treated as changed so a real update is never
+ * hidden. The fingerprint is persisted separately from the prune history so
+ * it survives runtime restarts without coupling the two concerns.
+ */
+export function consumeBuildOutputChange(shogoDir: string): boolean {
+  const manifest = readJson<BuildOutputManifest>(join(shogoDir, BUILD_OUTPUT_MANIFEST))
+  if (!manifest || typeof manifest.fingerprint !== 'string' || !manifest.fingerprint) {
+    return true
+  }
+
+  const fingerprintPath = join(shogoDir, BUILD_OUTPUT_FINGERPRINT_FILE)
+  let previous: string | null = null
+  try {
+    previous = readFileSync(fingerprintPath, 'utf-8').trim() || null
+  } catch {
+    /* First build, or state is unreadable. */
+  }
+
+  try {
+    writeFileSync(fingerprintPath, manifest.fingerprint)
+  } catch {
+    // If state cannot be persisted, keep notifying rather than hide changes.
+    return true
+  }
+
+  return previous !== manifest.fingerprint
 }
 
 export function pruneStaleBuildOutput(

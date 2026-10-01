@@ -23,7 +23,7 @@ import fs from 'fs'
 import crypto from 'crypto'
 import http, { type Server as HttpServer } from 'http'
 import https from 'https'
-import { startLocalServer, stopLocalServer, getApiUrl } from './local-server'
+import { startLocalServer, stopLocalServer, getApiUrl, setExternalApiPort } from './local-server'
 import { initSignozLogExporter, exportLogLine, shutdownSignozLogExporter, type DesktopLogLevel } from './signoz-log-exporter'
 import { getWebDir, getBunPath, getDbPath } from './paths'
 import {
@@ -41,13 +41,13 @@ import { buildBugReportZip, submitToDiscord, submitToGitHub, collectSystemInfo, 
 import { initAutoUpdater, getIsApplyingUpdate } from './updater'
 import {
   registerRecordingIpcHandlers,
-  startMeetingMonitor,
   cleanupRecording,
   startRecordingHttpBridge,
   setRecordingWindowResolver,
   getMeetingState,
   onMeetingStateChange,
   respondToMeeting,
+  initMeetingConfig,
   setMeetingPromptPresenter,
 } from './recording'
 import { registerFsIpcHandlers } from './fs-ipc'
@@ -937,7 +937,10 @@ async function getEmbeddableAppWindowUrl(pathWithQuery = '/'): Promise<string> {
 
 function loadAppWindow(window: BrowserWindow, pathWithQuery = '/'): void {
   const url = getAppWindowUrl(pathWithQuery)
-  window.loadURL(url).catch(() => {
+  window.loadURL(url).catch((err) => {
+    // A reload or redirect during the first load rejects with ERR_ABORTED
+    // even though the dev server is up; only an unreachable server falls back.
+    if ((err as { code?: string } | null)?.code === 'ERR_ABORTED') return
     if (!isCloudMode && IS_DEV) {
       loadProductionWeb(window, pathWithQuery)
     }
@@ -1768,6 +1771,7 @@ app.whenReady().then(async () => {
     setupSessionHandlers()
   } else if (skipLocalServer) {
     console.log('[Desktop] SHOGO_SKIP_LOCAL_SERVER=true — skipping local API (e2e mode)')
+    if (process.env.SHOGO_E2E_API_PORT) setExternalApiPort(Number(process.env.SHOGO_E2E_API_PORT))
   }
 
   createWindow()
@@ -1792,7 +1796,7 @@ app.whenReady().then(async () => {
       },
       setIslandEnabled: (enabled) => islandWindow?.updateConfig({ enabled }),
     })
-    startMeetingMonitor()
+    initMeetingConfig()
     startCloudLoginHeartbeat()
     void startRecordingHttpBridge()
   }

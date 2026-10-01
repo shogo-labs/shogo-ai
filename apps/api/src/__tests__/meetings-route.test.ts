@@ -11,10 +11,9 @@
  *   - PUT    /api/local/meetings/config                   — only known fields persisted,
  *                                                          response reflects new state
  *   - GET    /api/local/meetings/transcription-status     — env-derived flags
- *   - POST   /api/local/meetings/install-sherpa           — script-not-found error,
- *                                                          execSync failure
+ *   - POST   /api/local/meetings/install-sherpa           — asynchronous setup
  *   - GET    /api/local/meetings/recording/status         — bridge running, browser fallback
- *   - POST   /api/local/meetings/recording/start          — bridge happy, bridge unavail
+ *   - POST   /api/local/meetings/recording/start          — disabled, bridge happy, bridge unavail
  *                                                          → browser, conflict
  *   - POST   /api/local/meetings/recording/stop           — bridge happy, browser stop, error
  *   - GET    /api/local/meetings/:id                      — 404, happy
@@ -26,6 +25,10 @@
  */
 
 import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
+
+// These routes only mount on desktop, where unauthenticated bridge calls
+// resolve to the install's own personal workspace.
+process.env.SHOGO_LOCAL_MODE = 'true'
 
 // ─── Mock service modules BEFORE the route module loads ───────────────
 
@@ -44,6 +47,12 @@ const diarization = {
   splitTextBySpeakers: mock((..._a: any[]) => []),
 }
 mock.module('../services/diarization.service', () => diarization)
+
+const installer = {
+  ensureTranscriptionEngine: mock(async (..._args: any[]) => {}),
+  getTranscriptionInstallStatus: mock(() => ({ state: 'idle' as const })),
+}
+mock.module('../services/transcription-install.service', () => installer)
 
 class BridgeUnavailableError extends Error {
   constructor() { super('bridge unavailable'); this.name = 'BridgeUnavailableError' }
@@ -109,6 +118,8 @@ let lastExecCmd = ''
 
 const prismaMock = {
   workspace: { findFirst: async () => workspaceRow },
+  member: { findFirst: async () => (workspaceRow ? { userId: 'u1', workspaceId: workspaceRow.id } : null) },
+  project: { findUnique: async ({ where }: any) => ({ id: where.id, name: 'P' }) },
   meeting: {
     findMany: async ({ where, orderBy: _orderBy, select: _select }: any) => {
       let rows = Array.from(meetings.values())
@@ -124,6 +135,14 @@ const prismaMock = {
       return null
     },
     findUnique: async ({ where, include }: any) => {
+      const draftKey = where.workspaceId_recordingId
+      if (draftKey) {
+        return (
+          Array.from(meetings.values()).find(
+            (row) => row.workspaceId === draftKey.workspaceId && row.recordingId === draftKey.recordingId,
+          ) ?? null
+        )
+      }
       const m = meetings.get(where.id)
       if (!m) return null
       if (include?.project) return { ...m, project: m.projectId ? { id: m.projectId, name: 'P' } : null }
@@ -196,6 +215,7 @@ beforeEach(() => {
   // Use mockReset to wipe queued mockImplementationOnce entries between tests
   Object.values(transcription).forEach((m: any) => { m.mockReset?.() ?? m.mockClear?.() })
   Object.values(diarization).forEach((m: any) => { m.mockReset?.() ?? m.mockClear?.() })
+  Object.values(installer).forEach((m: any) => { m.mockReset?.() ?? m.mockClear?.() })
   recording.startRecording.mockClear()
   recording.stopRecording.mockClear()
   recording.getRecordingStatusAsync.mockClear()
@@ -205,6 +225,8 @@ beforeEach(() => {
   transcription.getSherpaOfflinePath.mockImplementation(() => '/usr/local/bin/sherpa')
   transcription.getInstalledModels.mockImplementation(() => ['base.en'])
   diarization.isDiarizationAvailable.mockImplementation(() => true)
+  installer.ensureTranscriptionEngine.mockImplementation(async () => {})
+  installer.getTranscriptionInstallStatus.mockImplementation(() => ({ state: 'idle' as const }))
   recording.startRecording.mockImplementation(async () => ({ id: 'rec-1', audioPath: '/tmp/a.wav' }))
   recording.stopRecording.mockImplementation(async () => null)
   recording.getRecordingStatusAsync.mockImplementation(async () => ({ isRecording: false, id: null, duration: 0, audioPath: null }))
@@ -252,6 +274,7 @@ describe('GET /api/local/meetings', () => {
 describe('GET /api/local/meetings/config', () => {
   test('returns defaults when no rows present', async () => {
     const body = await (await meetingRoutes.request('/api/local/meetings/config')).json()
+    expect(body.enabled).toBe(true)
     expect(body.autoDetect).toBe(true)
     expect(body.autoRecord).toBe(false)
     expect(body.whisperModel).toBe('base.en')
@@ -261,10 +284,12 @@ describe('GET /api/local/meetings/config', () => {
 
   test('reflects stored config rows', async () => {
     localConfig.set('MEETING_AUTO_DETECT', 'false')
+    localConfig.set('MEETING_ENABLED', 'false')
     localConfig.set('MEETING_AUTO_RECORD', 'true')
     localConfig.set('MEETING_WHISPER_MODEL', 'small.en')
     localConfig.set('MEETING_GRACE_PERIOD_SECONDS', '30')
     const body = await (await meetingRoutes.request('/api/local/meetings/config')).json()
+    expect(body.enabled).toBe(false)
     expect(body.autoDetect).toBe(false)
     expect(body.autoRecord).toBe(true)
     expect(body.whisperModel).toBe('small.en')
@@ -300,6 +325,14 @@ describe('PUT /api/local/meetings/config', () => {
     expect(localConfig.get('MEETING_WHISPER_MODEL')).toBe('medium.en')
   })
 
+  test('persists the meetings master switch and starts setup when enabled', async () => {
+    const res = await put({ enabled: true, whisperModel: 'base.en' })
+    expect(res.status).toBe(200)
+    expect((await res.json()).enabled).toBe(true)
+    expect(localConfig.get('MEETING_ENABLED')).toBe('true')
+    expect(installer.ensureTranscriptionEngine).toHaveBeenCalledWith('base.en')
+  })
+
   test('ignores unknown fields', async () => {
     const res = await put({ unknownField: 'x', autoDetect: false })
     expect(res.status).toBe(200)
@@ -332,6 +365,7 @@ describe('GET /api/local/meetings/transcription-status', () => {
     expect(body.installedModels).toEqual(['base.en', 'small.en'])
     expect(body.diarizationAvailable).toBe(true)
     expect(body.cloudAvailable).toBe(false)
+    expect(body.install).toEqual({ state: 'idle' })
   })
 
   test('cloudAvailable true when OPENAI_API_KEY set', async () => {
@@ -348,15 +382,27 @@ describe('GET /api/local/meetings/transcription-status', () => {
 })
 
 describe('POST /api/local/meetings/install-sherpa', () => {
-  test('500 with script-not-found message when script missing', async () => {
+  test('starts an asynchronous setup attempt', async () => {
     const res = await meetingRoutes.request('/api/local/meetings/install-sherpa', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ model: 'base.en' }),
     })
-    expect(res.status).toBe(500)
+    expect(res.status).toBe(202)
     const body = await res.json()
-    expect(body.error).toMatch(/download-sherpa\.mjs not found/)
+    expect(body.ok).toBe(true)
+    expect(installer.ensureTranscriptionEngine).toHaveBeenCalledWith('base.en')
+  })
+
+  test('does not start setup when meetings are disabled', async () => {
+    localConfig.set('MEETING_ENABLED', 'false')
+    const res = await meetingRoutes.request('/api/local/meetings/install-sherpa', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'base.en' }),
+    })
+    expect(res.status).toBe(409)
+    expect(installer.ensureTranscriptionEngine).not.toHaveBeenCalled()
   })
 })
 
@@ -384,6 +430,15 @@ describe('Recording endpoints', () => {
     const body = await res.json()
     expect(body.id).toBe('rec-1')
     expect(body.audioPath).toBe('/tmp/a.wav')
+  })
+
+  test('start: refused while meetings are disabled, on the bridge and the browser path', async () => {
+    localConfig.set('MEETING_ENABLED', 'false')
+    const res = await meetingRoutes.request('/api/local/meetings/recording/start', { method: 'POST' })
+    expect(res.status).toBe(409)
+    expect(recording.startRecording).not.toHaveBeenCalled()
+    const status = await (await meetingRoutes.request('/api/local/meetings/recording/status')).json()
+    expect(status.isRecording).toBe(false)
   })
 
   test('start: bridge non-bridge error returns 400', async () => {
@@ -498,6 +553,90 @@ describe('POST /api/local/meetings', () => {
     expect(res.status).toBe(201)
     const body = await res.json()
     expect(body.meeting.title).toBeTruthy()
+  })
+
+  test('new meetings belong to the personal workspace owner', async () => {
+    const res = await post({ audioPath: '/tmp/owned.wav' })
+    const body = await res.json()
+    const row = meetings.get(body.meeting.id)
+    expect(row.workspaceId).toBe('w1')
+    expect(row.userId).toBe('u1')
+    expect(row.source).toBe('desktop')
+  })
+
+  test('finishes the island draft for the same recording instead of creating another', async () => {
+    meetings.set('draft', {
+      id: 'draft', workspaceId: 'w1', recordingId: 'rec-9', status: 'recording',
+      notes: 'pricing concerns', audioPath: '', title: 'Zoom call - Tue',
+    })
+    const res = await post({ audioPath: '/tmp/rec-9.wav', duration: 120, recordingId: 'rec-9' })
+    expect(res.status).toBe(200)
+    expect(meetings.size).toBe(1)
+    const row = meetings.get('draft')
+    expect(row.status).not.toBe('recording')
+    expect(row.audioPath).toBe('/tmp/rec-9.wav')
+    expect(row.duration).toBe(120)
+    expect(row.notes).toBe('pricing concerns')
+  })
+
+  test('ignores a draft from another workspace', async () => {
+    meetings.set('foreign', { id: 'foreign', workspaceId: 'w2', recordingId: 'rec-x', status: 'recording', audioPath: '' })
+    const res = await post({ audioPath: '/tmp/rec-x.wav', recordingId: 'rec-x' })
+    expect(res.status).toBe(201)
+    expect(meetings.get('foreign').status).toBe('recording')
+  })
+})
+
+describe('meeting access is scoped to the personal workspace', () => {
+  test('meetings in other workspaces are not visible or editable', async () => {
+    meetings.set('other', { id: 'other', workspaceId: 'w-team', title: 'Team', audioPath: '/tmp/o.wav' })
+    expect((await meetingRoutes.request('/api/local/meetings/other')).status).toBe(404)
+    const put = await meetingRoutes.request('/api/local/meetings/other', {
+      method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ title: 'x' }),
+    })
+    expect(put.status).toBe(404)
+    expect((await meetingRoutes.request('/api/local/meetings/other', { method: 'DELETE' })).status).toBe(404)
+    expect(meetings.has('other')).toBe(true)
+  })
+
+  test('island notepad writes a draft keyed by recording id', async () => {
+    const put = (body: any) =>
+      meetingRoutes.request('/api/local/meetings/recordings/rec-island', {
+        method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+      })
+    const first = await (await put({ app: 'Zoom' })).json()
+    expect(first.meeting.status).toBe('recording')
+    expect(first.meeting.title).toStartWith('Zoom call - ')
+    await put({ notes: 'budget is fixed' })
+    const got = await (await meetingRoutes.request('/api/local/meetings/recordings/rec-island')).json()
+    expect(got.meeting.id).toBe(first.meeting.id)
+    expect(got.meeting.notes).toBe('budget is fixed')
+    expect(Array.from(meetings.values()).filter((m) => m.recordingId === 'rec-island')).toHaveLength(1)
+  })
+
+  test("island notepad never writes another workspace's draft", async () => {
+    meetings.set('theirs', { id: 'theirs', workspaceId: 'w-team', recordingId: 'rec-t', status: 'recording', notes: 'x' })
+    expect((await meetingRoutes.request('/api/local/meetings/recordings/rec-t')).status).toBe(404)
+    const res = await meetingRoutes.request('/api/local/meetings/recordings/rec-t', {
+      method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ notes: 'y' }),
+    })
+    expect(res.status).toBe(200)
+    expect((await res.json()).meeting.id).not.toBe('theirs')
+    expect(meetings.get('theirs').notes).toBe('x')
+  })
+
+  test('PUT caps notes at the same length as the workspace routes', async () => {
+    meetings.set('mine', { id: 'mine', workspaceId: 'w1', title: 'Mine', audioPath: '' })
+    const res = await meetingRoutes.request('/api/local/meetings/mine', {
+      method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ notes: 'x'.repeat(100_050) }),
+    })
+    expect(res.status).toBe(200)
+    expect(meetings.get('mine').notes).toHaveLength(100_000)
+  })
+
+  test('GET /api/local/meetings/workspace returns the personal workspace id', async () => {
+    const body = await (await meetingRoutes.request('/api/local/meetings/workspace')).json()
+    expect(body.workspaceId).toBe('w1')
   })
 })
 
@@ -631,8 +770,8 @@ describe('POST /api/local/meetings/recording/upload', () => {
       body: wav,
     })
     expect(res.status).toBe(201)
-    const body = await res.json() as { meeting: { audioPath: string; duration: number } }
-    expect(body.meeting.audioPath).toMatch(/audio\.wav$/)
+    const body = await res.json() as { meeting: { id: string; duration: number } }
+    expect(meetings.get(body.meeting.id).audioPath).toMatch(/audio\.wav$/)
     expect(body.meeting.duration).toBe(10)
     // Let fire-and-forget transcribeMeeting settle (no-throw assertion)
     await new Promise(r => setTimeout(r, 30))
@@ -659,8 +798,8 @@ describe('POST /api/local/meetings/recording/upload', () => {
       body: webm,
     })
     expect(res.status).toBe(201)
-    const body = await res.json() as { meeting: { audioPath: string } }
-    expect(body.meeting.audioPath).toMatch(/\.webm$/)
+    const body = await res.json() as { meeting: { id: string } }
+    expect(meetings.get(body.meeting.id).audioPath).toMatch(/\.webm$/)
     await new Promise(r => setTimeout(r, 30))
   })
 
@@ -790,28 +929,18 @@ describe('PUT /api/local/meetings/config — edges', () => {
 
 describe('POST /api/local/meetings/install-sherpa — edges', () => {
   test('defaults to base.en when no body is supplied', async () => {
-    execSyncBehavior = 'throw'
     const res = await meetingRoutes.request('/api/local/meetings/install-sherpa', { method: 'POST' })
-    const body: any = await res.json()
-    expect(body).toBeDefined()
-    if ('error' in body && body.error.includes('download-sherpa.mjs not found')) {
-      expect(res.status).toBe(500)
-    } else if ('error' in body) {
-      expect(lastExecCmd).toContain('--model base.en')
-    }
+    expect(res.status).toBe(202)
+    expect(installer.ensureTranscriptionEngine).toHaveBeenCalledWith('base.en')
   })
 
-  test('returns 500 with the script-not-found message OR forwards custom model', async () => {
+  test('forwards a custom model to the asynchronous installer', async () => {
     const res = await meetingRoutes.request('/api/local/meetings/install-sherpa', {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ model: 'small.en' }),
     })
-    const body: any = await res.json()
-    if (body.error?.includes('download-sherpa.mjs not found')) {
-      expect(res.status).toBe(500)
-    } else {
-      expect(lastExecCmd).toContain('--model small.en')
-    }
+    expect(res.status).toBe(202)
+    expect(installer.ensureTranscriptionEngine).toHaveBeenCalledWith('small.en')
   })
 })
 
@@ -831,7 +960,7 @@ describe('POST /api/local/meetings — extra edges', () => {
     })
     expect(res.status).toBe(201)
     const body: any = await res.json()
-    expect(body.meeting.audioPath).toBe('/tmp/new-default.wav')
+    expect(meetings.get(body.meeting.id).audioPath).toBe('/tmp/new-default.wav')
     expect(typeof body.meeting.title).toBe('string')
     expect(body.meeting.title.length).toBeGreaterThan(0)
   })
@@ -1089,7 +1218,8 @@ describe('transcribeMeeting full happy path (getAudioDuration WAV branch)', () =
     await new Promise(r => setTimeout(r, 120))
     const m = meetings.get('m-throw')!
     expect(m.status).toBe('error')
-    expect(m.transcript).toContain('whisper kaboom')
+    expect(m.transcript).toContain('Something went wrong transcribing this recording')
+    expect(m.transcript).not.toContain('whisper kaboom')
   })
 
   test('diarization merges speaker labels into transcript when timed segments present', async () => {
@@ -1210,9 +1340,9 @@ describe('transcribeMeeting full happy path (getAudioDuration WAV branch)', () =
     expect(wrote).toBe(true)
     const md = writeFileCalls.find(w => w.path.endsWith('-m-proj2.md'))?.data as string
     expect(md).toContain('# My Mtg')
-    expect(md).toContain('**Speakers:** 2')
     expect(md).toContain('**Duration:**')
-    expect(md).toContain('A:**')
+    expect(md).toContain('## Transcript')
+    expect(md).toContain('[0:00] A: hi')
     delete process.env.WORKSPACES_DIR
   })
 
@@ -1287,58 +1417,5 @@ describe('getMeetingConfig fallback (localConfig throws)', () => {
     expect(res.status).toBe(200)
     await new Promise(r => setTimeout(r, 120))
     expect(meetings.get('m-cfg')!.status).toBe('ready')
-  })
-})
-
-describe('POST /install-sherpa happy path (script found + execSync ok)', () => {
-  test('returns ok:true + steps when script exists and exec succeeds', async () => {
-    // Place a candidate at process.cwd() + /scripts/download-sherpa.mjs
-    const path = require('node:path')
-    const scriptPath = path.resolve(process.cwd(), 'scripts', 'download-sherpa.mjs')
-    fsFiles.add(scriptPath)
-    execSyncBehavior = 'ok'
-    const res = await meetingRoutes.request('/api/local/meetings/install-sherpa', {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ model: 'base.en' }),
-    })
-    const body: any = await res.json()
-    expect(res.status).toBe(200)
-    expect(body.ok).toBe(true)
-    expect(Array.isArray(body.steps)).toBe(true)
-    expect(body.steps.some((s: string) => s.includes('base.en'))).toBe(true)
-    expect(lastExecCmd).toContain('--model base.en')
-  })
-
-  test('returns ok:true + Destination step when SHOGO_SHERPA_DIR is set', async () => {
-    const orig = process.env.SHOGO_SHERPA_DIR
-    process.env.SHOGO_SHERPA_DIR = '/custom/sherpa'
-    const path = require('node:path')
-    const scriptPath = path.resolve(process.cwd(), 'scripts', 'download-sherpa.mjs')
-    fsFiles.add(scriptPath)
-    const res = await meetingRoutes.request('/api/local/meetings/install-sherpa', {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ model: 'small.en' }),
-    })
-    const body: any = await res.json()
-    expect(res.status).toBe(200)
-    expect(body.steps.some((s: string) => s.includes('Destination: /custom/sherpa'))).toBe(true)
-    if (orig === undefined) delete process.env.SHOGO_SHERPA_DIR
-    else process.env.SHOGO_SHERPA_DIR = orig
-  })
-
-  test('uses SHOGO_BUN_PATH interpreter when set', async () => {
-    const orig = process.env.SHOGO_BUN_PATH
-    process.env.SHOGO_BUN_PATH = '/usr/local/bin/custombun'
-    const path = require('node:path')
-    const scriptPath = path.resolve(process.cwd(), 'scripts', 'download-sherpa.mjs')
-    fsFiles.add(scriptPath)
-    const res = await meetingRoutes.request('/api/local/meetings/install-sherpa', {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ model: 'base.en' }),
-    })
-    expect(res.status).toBe(200)
-    expect(lastExecCmd).toContain('/usr/local/bin/custombun')
-    if (orig === undefined) delete process.env.SHOGO_BUN_PATH
-    else process.env.SHOGO_BUN_PATH = orig
   })
 })

@@ -60,6 +60,7 @@ const EXEMPT: Record<string, string> = {
   instanceSubscription: 'Mutated via /api/workspaces/:id/... — resolved by path workspaceId.',
   inviteLink: 'Mutated via /api/workspaces/:id/invite-links — resolved by path workspaceId.',
   liveSessionMeter: 'Counter table written from the signed live-session token workspaceId — not URL-resolvable, same shape as voiceCallMeter.',
+  meetingTemplate: 'Mutated only through /api/workspaces/:workspaceId/meetings/templates — resolved by the workspace path.',
   marketplaceInstall: 'Mutated via /api/workspaces/:id/... — resolved by path workspaceId.',
   marketplaceListing: 'Mutated via /api/projects/:projectId/... — resolved by path projectId.',
   modelExperiment: 'Mutated via workspace/project-scoped routes — resolved by path params.',

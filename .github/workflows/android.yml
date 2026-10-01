@@ -460,6 +460,9 @@ jobs:
       - name: Tune Gradle for CI
         working-directory: apps/mobile/android
         run: |
+          # Expo prebuild leaves no trailing newline; without this the first
+          # appended property is glued onto the last generated one.
+          echo >> gradle.properties
           cat >> gradle.properties <<'PROPS'
           org.gradle.parallel=true
           org.gradle.caching=true
