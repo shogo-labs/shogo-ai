@@ -48,28 +48,93 @@ function noKey(c: Context): Response {
   )
 }
 
-/** Local user id/email → the cloud account's, for values the UI sends. */
 export type IdentityMap = Map<string, string>
 
-export async function cloudIdentityMap(localUser: { id: string; email: string | null } | null): Promise<IdentityMap> {
-  const map: IdentityMap = new Map()
+/**
+ * The desktop UI knows the user by their local account everywhere
+ * (`useAuth().user`); cloud knows them by their cloud account. Requests swap
+ * local → cloud (id and email); replies, events and socket frames swap the
+ * cloud id back so the UI only ever sees one id for "me". Emails aren't
+ * swapped back: the local one is often a placeholder.
+ */
+export interface Identity {
+  toCloud: IdentityMap
+  toLocal: IdentityMap
+}
+
+export const NO_IDENTITY: Identity = { toCloud: new Map(), toLocal: new Map() }
+
+export async function cloudIdentity(localUser: { id: string; email: string | null } | null): Promise<Identity> {
   const cloud = await cloudWorkspaceUser()
-  if (!cloud || !localUser) return map
-  if (localUser.id !== cloud.id) map.set(localUser.id, cloud.id)
-  if (localUser.email && cloud.email && localUser.email.toLowerCase() !== cloud.email.toLowerCase()) {
-    map.set(localUser.email, cloud.email)
-    map.set(localUser.email.toLowerCase(), cloud.email)
+  if (!cloud || !localUser) return NO_IDENTITY
+  const toCloud: IdentityMap = new Map()
+  const toLocal: IdentityMap = new Map()
+  if (localUser.id !== cloud.id) {
+    toCloud.set(localUser.id, cloud.id)
+    toLocal.set(cloud.id, localUser.id)
   }
-  return map
+  if (localUser.email && cloud.email && localUser.email.toLowerCase() !== cloud.email.toLowerCase()) {
+    toCloud.set(localUser.email, cloud.email)
+    toCloud.set(localUser.email.toLowerCase(), cloud.email)
+  }
+  return { toCloud, toLocal }
 }
 
 function translate(value: unknown, map: IdentityMap): unknown {
   if (typeof value === 'string') return map.get(value) ?? value
   if (Array.isArray(value)) return value.map((v) => translate(v, map))
   if (value && typeof value === 'object') {
-    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, translate(v, map)]))
+    return Object.fromEntries(Object.entries(value).map(([k, v]) => [map.get(k) ?? k, translate(v, map)]))
   }
   return value
+}
+
+function mentions(text: string, map: IdentityMap): boolean {
+  for (const k of map.keys()) if (text.includes(k)) return true
+  return false
+}
+
+/** Swaps ids inside a JSON text; anything that isn't JSON passes through. */
+export function translateJsonText(text: string, map: IdentityMap): string {
+  if (map.size === 0 || !mentions(text, map)) return text
+  try {
+    return JSON.stringify(translate(JSON.parse(text), map))
+  } catch {
+    return text
+  }
+}
+
+/** Swaps ids in each `data:` line of a server-sent event stream. */
+function translateEventStream(body: ReadableStream<Uint8Array>, map: IdentityMap): ReadableStream<Uint8Array> {
+  const decoder = new TextDecoder()
+  const encoder = new TextEncoder()
+  let buffered = ''
+  const line = (l: string) => {
+    const m = /^data: ?(.*)$/.exec(l)
+    return m ? `data: ${translateJsonText(m[1]!, map)}` : l
+  }
+  return body.pipeThrough(
+    new TransformStream<Uint8Array, Uint8Array>({
+      transform(chunk, controller) {
+        buffered += decoder.decode(chunk, { stream: true })
+        const lines = buffered.split('\n')
+        buffered = lines.pop() ?? ''
+        if (lines.length) controller.enqueue(encoder.encode(lines.map(line).join('\n') + '\n'))
+      },
+      flush(controller) {
+        buffered += decoder.decode()
+        if (buffered) controller.enqueue(encoder.encode(line(buffered)))
+      },
+    }),
+  )
+}
+
+async function translateResponseBody(resp: Response, map: IdentityMap): Promise<BodyInit | null> {
+  if (map.size === 0 || !resp.body) return resp.body
+  const type = resp.headers.get('content-type') ?? ''
+  if (type.includes('text/event-stream')) return translateEventStream(resp.body, map)
+  if (type.includes('application/json')) return translateJsonText(await resp.text(), map)
+  return resp.body
 }
 
 /**
@@ -111,12 +176,12 @@ export async function translateRequest(
   return { path, search, body }
 }
 
-async function relay(c: Context, workspaceId: string, upstreamPath: string, map: IdentityMap = new Map()): Promise<Response> {
+async function relay(c: Context, workspaceId: string, upstreamPath: string, identity: Identity = NO_IDENTITY): Promise<Response> {
   const key = await cloudWorkspaceKey(workspaceId)
   if (!key) return noKey(c)
   let resp: Response
   try {
-    const { path, search, body } = await translateRequest(c, upstreamPath, map)
+    const { path, search, body } = await translateRequest(c, upstreamPath, identity.toCloud)
     resp = await forwardToUpstream(c, { path, search, body, apiKey: key, signal: c.req.raw.signal })
   } catch (err: any) {
     if (c.req.raw.signal.aborted) return new Response(null, { status: 499 })
@@ -129,13 +194,14 @@ async function relay(c: Context, workspaceId: string, upstreamPath: string, map:
   // Cloud's session cookies would land on the desktop origin and clobber the
   // local session.
   headers.delete('set-cookie')
-  return new Response(resp.body, { status: resp.status, headers })
+  return new Response(await translateResponseBody(resp, identity.toLocal), { status: resp.status, headers })
 }
 
 export interface CloudSocketRelayData {
   kind: 'cloud-rt-relay'
   url: string
   key: string
+  identity?: Identity
   upstream?: WebSocket
   pending?: Array<string | BufferSource>
   closed?: boolean
@@ -173,7 +239,7 @@ export const cloudSocketRelayHandlers = {
     }
     upstream.onmessage = (ev) => {
       try {
-        ws.send(ev.data)
+        ws.send(typeof ev.data === 'string' ? translateJsonText(ev.data, data.identity?.toLocal ?? NO_IDENTITY.toLocal) : ev.data)
       } catch {
         // Client closing; its close handler tears the upstream down.
       }
@@ -186,8 +252,9 @@ export const cloudSocketRelayHandlers = {
       } catch {}
     }
   },
-  message(ws: any, message: string | BufferSource) {
+  message(ws: any, raw: string | BufferSource) {
     const data = ws.data as CloudSocketRelayData
+    const message = typeof raw === 'string' ? translateJsonText(raw, data.identity?.toCloud ?? NO_IDENTITY.toCloud) : raw
     if (data.upstream?.readyState === WebSocket.OPEN) data.upstream.send(message)
     else data.pending?.push(message)
   },
@@ -233,11 +300,11 @@ export function localCloudWorkspaceRoutes(opts: {
 }): Hono {
   const router = new Hono()
 
-  const identityFor = async (c: Context): Promise<IdentityMap> => {
+  const identityFor = async (c: Context): Promise<Identity> => {
     const id = await opts.resolveUserId(c)
-    if (!id) return new Map()
+    if (!id) return NO_IDENTITY
     const email = (await opts.resolveUserEmail?.(id).catch(() => null)) ?? null
-    return cloudIdentityMap({ id, email })
+    return cloudIdentity({ id, email })
   }
 
   const requireUser: MiddlewareHandler = async (c, next) => {
@@ -273,7 +340,7 @@ export function localCloudWorkspaceRoutes(opts: {
     if (!(await opts.resolveUserId(c))) {
       return c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401)
     }
-    return relay(c, id, `/api/workspaces/${id}`)
+    return relay(c, id, `/api/workspaces/${id}`, await identityFor(c))
   })
 
   router.get('/cloud/:workspaceId/workspaces/:inner/rt', async (c, next) => {
@@ -287,7 +354,7 @@ export function localCloudWorkspaceRoutes(opts: {
     const server = c.env as any
     if (!server?.upgrade) return c.json({ error: { code: 'upgrade_required', message: 'WebSocket upgrade required' } }, 426)
     const url = `${getShogoCloudUrl().replace(/^http/, 'ws')}/api/workspaces/${encodeURIComponent(workspaceId)}/rt`
-    const data: CloudSocketRelayData = { kind: 'cloud-rt-relay', url, key }
+    const data: CloudSocketRelayData = { kind: 'cloud-rt-relay', url, key, identity: await identityFor(c) }
     if (server.upgrade(c.req.raw, { data })) return new Response(null)
     return c.json({ error: { code: 'upgrade_failed', message: 'WebSocket upgrade failed' } }, 500)
   })

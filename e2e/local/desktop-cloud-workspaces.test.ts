@@ -206,6 +206,16 @@ test.describe("Desktop + Shogo Cloud workspaces", () => {
         expect((res.body?.messages ?? []).find((m: any) => m.text === text)?.authorUserId).toBe(owner.id)
       }).toPass({ timeout: 15_000 })
 
+      // Through the desktop, the same message is authored by the local account.
+      const seen = await page.evaluate(async ({ apiBase, conversationId, text }) => {
+        const session = await (await fetch(`${apiBase}/api/auth/get-session`, { credentials: "include" })).json()
+        const res = await fetch(`${apiBase}/api/conversations/${conversationId}/messages`, { credentials: "include" })
+        const author = ((await res.json()).messages ?? []).find((m: any) => m.text === text)?.authorUserId
+        return { localId: session?.user?.id, author }
+      }, { apiBase: LOCAL_API_BASE, conversationId: generalId, text })
+      expect(seen.localId).toBeTruthy()
+      expect(seen.author).toBe(seen.localId)
+
       const reply = `hello from the cloud ${suffix}`
       const posted = await json(
         await teammate.api.post(`/api/conversations/${generalId}/messages`, { data: { text: reply, clientMsgId: `cloud-${suffix}` } }),

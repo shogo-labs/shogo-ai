@@ -64,15 +64,27 @@ upstream.all('/api/*', async (c) => {
       start(controller) {
         controller.enqueue(new TextEncoder().encode('data: {"type":"ready"}\n\n'))
         controller.enqueue(new TextEncoder().encode('data: {"type":"message.created"}\n\n'))
+        // Split mid-line to check events are reassembled before swapping ids.
+        controller.enqueue(new TextEncoder().encode('data: {"type":"reaction","userId":"clo'))
+        controller.enqueue(new TextEncoder().encode('ud-user"}\n\n'))
         controller.close()
       },
     })
     return new Response(stream, { headers: { 'content-type': 'text/event-stream', 'set-cookie': 'cloud=1' } })
   }
+  if (c.req.path === '/api/messages/m1') {
+    return c.json({
+      createdBy: 'cloud-user',
+      authorEmail: 'russ@example.com',
+      reactions: { 'cloud-user': ['+1'], teammate: ['+1'] },
+      mentions: ['cloud-user', 'teammate'],
+    })
+  }
   return c.json({ ok: true, path: c.req.path })
 })
 
 const socketAuth: string[] = []
+const cloudFrames: any[] = []
 
 let server: ReturnType<typeof Bun.serve>
 let desktop: ReturnType<typeof Bun.serve>
@@ -98,6 +110,10 @@ beforeAll(() => {
         // Echo typing back as another user would see it, so the test can watch it round-trip.
         if (frame.type === 'typing') ws.send(JSON.stringify({ type: 'typing', conversationId: frame.conversationId, userId: 'teammate' }))
         if (frame.type === 'presence') ws.send(JSON.stringify({ type: 'presence', status: frame.status, path: (ws.data as any).path }))
+        if (frame.type === 'echo') {
+          cloudFrames.push(frame)
+          ws.send(JSON.stringify({ type: 'echo', userId: 'cloud-user' }))
+        }
       },
     },
   })
@@ -208,6 +224,18 @@ describe('cloud workspace relay', () => {
     const text = await res.text()
     expect(text).toContain('"ready"')
     expect(text).toContain('"message.created"')
+    expect(text).toContain('data: {"type":"reaction","userId":"local-user"}\n\n')
+    expect(text).not.toContain('cloud-user')
+  })
+
+  test('replies show the cloud account as the local one, but keep its email', async () => {
+    const res = await app.request('/api/cloud/ws-acme/messages/m1')
+    expect(await res.json()).toEqual({
+      createdBy: 'local-user',
+      authorEmail: 'russ@example.com',
+      reactions: { 'local-user': ['+1'], teammate: ['+1'] },
+      mentions: ['local-user', 'teammate'],
+    })
   })
 
   test('a 403 from cloud re-syncs keys', async () => {
@@ -349,6 +377,16 @@ describe('team chat socket relay', () => {
       { type: 'presence', status: 'away', path: '/api/workspaces/ws-acme/rt' },
     ])
     expect(socketAuth).toEqual(['Bearer shogo_sk_acme'])
+    ws.close()
+    await until(() => server.pendingWebSockets === 0)
+  })
+
+  test('swaps the account in socket frames both ways', async () => {
+    const { ws, frames } = await open('/api/cloud/ws-acme/workspaces/ws-acme/rt')
+    ws.send(JSON.stringify({ type: 'echo', userId: 'local-user' }))
+    await until(() => frames.length >= 2)
+    expect(cloudFrames).toEqual([{ type: 'echo', userId: 'cloud-user' }])
+    expect(frames[1]).toEqual({ type: 'echo', userId: 'local-user' })
     ws.close()
     await until(() => server.pendingWebSockets === 0)
   })

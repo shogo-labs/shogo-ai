@@ -44,7 +44,8 @@ describe('useWorkspaceUser', () => {
       setActiveWorkspaceId('ws-acme')
       await Promise.resolve()
     })
-    expect(result.current).toEqual({ id: 'cloud-user', name: 'Russ', email: 'russ@example.com', source: 'cloud' })
+    // The desktop API maps cloud-user <-> local-user, so the id stays local.
+    expect(result.current).toEqual({ id: 'local-user', name: 'Russ', email: 'russ@example.com', source: 'cloud' })
   })
 
   test('an explicit workspace wins over the active one', () => {

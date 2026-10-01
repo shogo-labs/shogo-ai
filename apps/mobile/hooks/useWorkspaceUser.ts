@@ -13,18 +13,20 @@ export interface WorkspaceUser {
 }
 
 /**
- * Who the user is in the active workspace. On desktop, a cloud team workspace
- * knows them by their Shogo Cloud account, not the local desktop user, so
- * "is this my message", reactions and presence must use that id there.
+ * Who the user is in the active workspace. On desktop, a cloud workspace
+ * shows them as their Shogo Cloud account. The id stays the local one: the
+ * desktop API swaps it for the cloud id in both directions.
  */
 export function useWorkspaceUser(workspaceId?: string | null): WorkspaceUser | null {
   const { user } = useAuth()
   const cloud = useCloudWorkspaces()
   const activeId = useSyncExternalStore(subscribeActiveWorkspaceId, getActiveWorkspaceId, getActiveWorkspaceId)
   const id = workspaceId ?? activeId
-  if (isCloudWorkspace(id)) {
-    return cloud.user ? { id: cloud.user.id, name: cloud.user.name, email: cloud.user.email, source: 'cloud' } : null
-  }
   const local = user as { id?: string; name?: string | null; email?: string | null } | null
+  if (isCloudWorkspace(id)) {
+    return cloud.user && local?.id
+      ? { id: local.id, name: cloud.user.name, email: cloud.user.email, source: 'cloud' }
+      : null
+  }
   return local?.id ? { id: local.id, name: local.name ?? null, email: local.email ?? null, source: 'local' } : null
 }
