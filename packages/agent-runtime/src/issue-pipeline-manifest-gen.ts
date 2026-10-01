@@ -198,7 +198,7 @@ const TEAM_CHANNELS = [
 // File collection
 // ---------------------------------------------------------------------------
 
-function collectFiles(dir: string, base = dir): Record<string, string> {
+export function collectFiles(dir: string, base = dir): Record<string, string> {
   const out: Record<string, string> = {}
   if (!existsSync(dir)) return out
   // `readdirSync` order is filesystem-dependent (APFS/ext4/etc. don't agree),

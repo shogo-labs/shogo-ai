@@ -99,6 +99,15 @@ describe('channel tools call the internal agent-channel API', () => {
     process.env.WORKSPACE_ID = 'ws-1'
     await tool('team_chat_post').execute('t', { channel: 'general', text: 'From the workspace agent' })
     expect(JSON.parse(String(calls[1].init?.body)).projectId).toBeNull()
+
+    // A project that has attachments runs in a merged root but is still that project.
+    process.env.WORKSPACE_ANCHOR_PROJECT_ID = 'anchor-1'
+    try {
+      await tool('team_chat_post').execute('t', { channel: 'general', text: 'From the anchor project' })
+      expect(JSON.parse(String(calls[2].init?.body)).projectId).toBe('anchor-1')
+    } finally {
+      delete process.env.WORKSPACE_ANCHOR_PROJECT_ID
+    }
   })
 
   test('team_chat_post sends the chat session, owner flag and run id; a root post returns its own id as thread_id', async () => {
@@ -112,6 +121,30 @@ describe('channel tools call the internal agent-channel API', () => {
     expect(JSON.parse(String(calls[0].init?.body))).toEqual({
       text: 'New issue #12', projectId: 'proj-1', sessionId: 'sess-1', owner: true, runId: 'run-7',
     })
+  })
+
+  test('team_chat_post forwards kind and card; a card alone is enough', async () => {
+    reply = { message: { id: 'card-1', conversationId: 'c1', threadRootId: 'card-1', runId: null } }
+    const card = { title: 'Fix totals', steps: ['Triage', 'Fix'], step: 0, criteria: ['Total is right'] }
+    const posted = payload(await tool('team_chat_post').execute('t', { channel: 'eng', card, kind: 'status' }))
+    expect(posted.id).toBe('card-1')
+    expect(JSON.parse(String(calls[0].init?.body))).toEqual({ projectId: 'proj-1', kind: 'status', card, text: '' })
+    await tool('team_chat_post').execute('t', { channel: 'eng', text: 'Merge the fix?', kind: 'decision', thread_id: 'card-1' })
+    expect(JSON.parse(String(calls[1].init?.body)).kind).toBe('decision')
+  })
+
+  test('team_chat_update edits a message in place as this agent', async () => {
+    reply = { message: { id: 'card-1', conversationId: 'c1' } }
+    const card = { title: 'Fix totals', status: 'done', summary: 'Merged.' }
+    const done = payload(await tool('team_chat_update').execute('t', { message_id: 'card-1', card, kind: 'result' }))
+    expect(done).toEqual({ ok: true, id: 'card-1', conversationId: 'c1' })
+    expect(calls[0].init?.method).toBe('PATCH')
+    expect(new URL(calls[0].url).pathname).toBe('/api/internal/workspaces/ws-1/agent-channels/messages/card-1')
+    expect(JSON.parse(String(calls[0].init?.body))).toEqual({ projectId: 'proj-1', kind: 'result', card })
+
+    const nothing = payload(await tool('team_chat_update').execute('t', { message_id: 'card-1' }))
+    expect(nothing.code).toBe('invalid_input')
+    expect(calls).toHaveLength(1)
   })
 
   test('team_directory returns people, agents and groups with their tags', async () => {
@@ -172,5 +205,11 @@ describe('team chat prompt section', () => {
     expect(TEAM_CHAT_GUIDE).toContain('Tag people only when you need a decision')
     expect(TEAM_CHAT_GUIDE).toContain('team_chat_dm')
     expect(TEAM_CHAT_GUIDE).toContain('you own that thread')
+  })
+
+  test('explains message kinds and the status card', () => {
+    for (const kind of ['status', 'result', 'decision', 'alert']) expect(TEAM_CHAT_GUIDE).toContain(`\`${kind}\``)
+    expect(TEAM_CHAT_GUIDE).toContain('team_chat_update')
+    expect(TEAM_CHAT_GUIDE).toContain('Do not post a new message for each step')
   })
 })

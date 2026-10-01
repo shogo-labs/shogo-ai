@@ -17,15 +17,40 @@ import {
   listAgentChannels,
   postAgentChannelMessage,
   readAgentChannel,
+  updateAgentChannelMessage,
   searchAgentChannels,
   sendAgentDirectMessage,
   type AgentChannelIdentity,
+  type AgentMessageKind,
+  type AgentStatusCard,
 } from './internal-api'
+
+const KIND_SCHEMA = Type.Union(
+  [Type.Literal('status'), Type.Literal('result'), Type.Literal('decision'), Type.Literal('alert')],
+  { description: 'What this message is for. Only decision and alert notify people; status and result stay quiet.' },
+)
+
+const CARD_SCHEMA = Type.Object(
+  {
+    title: Type.String({ description: 'What this work is, e.g. "Fix coupon total on checkout".' }),
+    status: Type.Optional(Type.Union(
+      [Type.Literal('working'), Type.Literal('blocked'), Type.Literal('done'), Type.Literal('failed')],
+      { description: 'Default working. Set done with a summary when finished.' },
+    )),
+    steps: Type.Optional(Type.Array(Type.String(), { description: 'Ordered steps, e.g. ["Triage", "Fix", "Review", "Merge"].' })),
+    step: Type.Optional(Type.Number({ description: 'Index (from 0) of the step in progress.' })),
+    criteria: Type.Optional(Type.Array(Type.String(), { description: 'What has to be true for this to be done. A reviewer works from these.' })),
+    links: Type.Optional(Type.Array(Type.Object({ label: Type.Optional(Type.String()), url: Type.String() }), { description: 'Artifacts: PR, preview URL, ticket.' })),
+    summary: Type.Optional(Type.String({ description: 'The outcome, once finished.' })),
+  },
+  { description: 'A status card: one message you keep up to date with team_chat_update instead of posting every step.' },
+)
 
 export const CHANNEL_TOOL_NAMES = [
   'team_chat_list',
   'team_chat_read',
   'team_chat_post',
+  'team_chat_update',
   'team_chat_search',
   'team_chat_dm',
   'team_directory',
@@ -48,6 +73,14 @@ export const TEAM_CHAT_GUIDE = [
   '- Use `team_chat_dm` to escalate something urgent to one person instead of tagging a whole channel.',
   '- Respect Do Not Disturb: when someone is away, leave the question in the thread rather than pinging them repeatedly.',
   '- Starting a new piece of work? Post a top-level message with `team_chat_post` (pass `run_id` if you track one); you own that thread and unaddressed replies there come to you.',
+  '',
+  '### Keep the channel readable',
+  'Every post you make has a kind. People only get notified for `decision` and `alert`, so choose honestly:',
+  '- `status`: routine progress. Prefer one status card you update in place over many separate posts.',
+  '- `result`: finished work someone will want to open (a PR, a preview link, a report).',
+  '- `decision`: you need a person to choose or approve. Ask one clear question and say what happens on each answer.',
+  '- `alert`: something is broken or blocked and you cannot continue alone.',
+  'For work that takes more than a few steps, post one `card` at the top of your thread (title, steps, the criteria that mean it is done), then change it with `team_chat_update` as you go and finish by setting `status: "done"` with a short `summary`. Do not post a new message for each step.',
 ].join('\n')
 
 function workspaceIdOf(ctx: ToolContext): string | null {
@@ -56,7 +89,9 @@ function workspaceIdOf(ctx: ToolContext): string | null {
 
 export function channelIdentity(ctx: ToolContext): AgentChannelIdentity {
   const identity = resolveRuntimeIdentity()
-  if (identity.mode === 'workspace') return { projectId: null }
+  // A project with attached projects runs in a merged root but is still that project's agent; only a
+  // workspace-wide runtime (no anchor) speaks as the workspace agent.
+  if (identity.mode === 'workspace') return { projectId: process.env.WORKSPACE_ANCHOR_PROJECT_ID || null }
   return { projectId: identity.projectId || ctx.projectId || null }
 }
 
@@ -123,29 +158,67 @@ export function createChannelPostTool(ctx: ToolContext): AgentTool {
       'Returns thread_id (for follow-ups) and url (a link to the thread for people outside Shogo).',
     parameters: Type.Object({
       channel: Type.String({ description: 'Channel name (without #) or conversation id.' }),
-      text: Type.String({ description: 'Markdown message text.' }),
+      text: Type.Optional(Type.String({ description: 'Markdown message text. With a card, a note shown under it.' })),
       thread_id: Type.Optional(Type.String({ description: 'Root message id to reply in a thread.' })),
       owner: Type.Optional(Type.Boolean({ description: 'Take ownership of the thread when replying in one (default: only for new top-level posts).' })),
       run_id: Type.Optional(Type.String({ description: 'Id of the run or work item this thread tracks; stored on the thread and shown to agents woken in it.' })),
+      kind: Type.Optional(KIND_SCHEMA),
+      card: Type.Optional(CARD_SCHEMA),
     }),
     execute: async (_id, params) => {
       const workspaceId = workspaceIdOf(ctx)
       if (!workspaceId) return noWorkspace()
-      const input = params as { channel: string; text: string; thread_id?: string; owner?: boolean; run_id?: string }
-      if (!input.text?.trim()) return textResult({ error: 'text is required', code: 'invalid_input' })
+      const input = params as { channel: string; text?: string; thread_id?: string; owner?: boolean; run_id?: string; kind?: AgentMessageKind; card?: AgentStatusCard }
+      if (!input.text?.trim() && !input.card) return textResult({ error: 'text or card is required', code: 'invalid_input' })
       const result = await postAgentChannelMessage(workspaceId, input.channel.replace(/^#/, ''), {
-        text: input.text,
+        text: input.text ?? '',
         threadRootId: input.thread_id,
         identity: channelIdentity(ctx),
         sessionId: ctx.sessionId,
         owner: input.owner,
         runId: input.run_id,
+        kind: input.kind,
+        card: input.card,
       })
       if (result.ok && result.data) {
         const { threadId, ...rest } = result.data
         return textResult({ ok: true, ...rest, thread_id: threadId })
       }
       return apiError(result, 'Could not post the message')
+    },
+  }
+}
+
+export function createChannelUpdateTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'team_chat_update',
+    label: 'Update a Message',
+    description:
+      'Edit one of your own earlier channel messages in place, or the shared task card of a thread you are working in (a teammate opened it; you move it forward): change its status card (move to the next step, add a PR ' +
+      'or preview link, mark it done with a summary), its text, or its kind. Use this for progress instead of posting ' +
+      'a new message each time. Pass the message_id returned by team_chat_post (its `id`). Sending a card replaces ' +
+      'the whole card, so include every field you want to keep. Editing never tags or wakes anyone, so to hand work ' +
+      'to another agent or ask a person something, post a new message.',
+    parameters: Type.Object({
+      message_id: Type.String({ description: 'Id of your message to edit (the `id` team_chat_post returned).' }),
+      text: Type.Optional(Type.String({ description: 'New Markdown text, or the note under a card.' })),
+      kind: Type.Optional(KIND_SCHEMA),
+      card: Type.Optional(CARD_SCHEMA),
+    }),
+    execute: async (_id, params) => {
+      const workspaceId = workspaceIdOf(ctx)
+      if (!workspaceId) return noWorkspace()
+      const input = params as { message_id: string; text?: string; kind?: AgentMessageKind; card?: AgentStatusCard }
+      if (input.text === undefined && !input.card && !input.kind) {
+        return textResult({ error: 'Pass text, card or kind to change', code: 'invalid_input' })
+      }
+      const result = await updateAgentChannelMessage(workspaceId, input.message_id, {
+        identity: channelIdentity(ctx),
+        text: input.text,
+        kind: input.kind,
+        card: input.card,
+      })
+      return result.ok ? textResult({ ok: true, ...result.data }) : apiError(result, 'Could not update the message')
     },
   }
 }
@@ -218,6 +291,7 @@ export function createChannelTools(ctx: ToolContext): AgentTool[] {
     createChannelListTool(ctx),
     createChannelReadTool(ctx),
     createChannelPostTool(ctx),
+    createChannelUpdateTool(ctx),
     createChannelSearchTool(ctx),
     createDmUserTool(ctx),
     createTeamDirectoryTool(ctx),

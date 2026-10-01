@@ -34,7 +34,7 @@ import { runAgentLoop, classifyRetryability, RetryWaker, type LoopDetectorConfig
 import { LONG_RETRY_MS, recordRetryEpisode, recordRetryLong, recordRetryNoProgress, recordRetryNow } from './retry-telemetry'
 import type { ToolContext } from './gateway-tools'
 import { createTools, textResult, filterDisabledCapabilityTools, filterSubagentOnlyTools, expectedCoreToolsForAgentMode, createModeUnavailableTool, type RestrictedMode } from './gateway-tools'
-import { PermissionEngine, parseSecurityPolicy } from './permission-engine'
+import { DEFAULT_CLOUD_SECURITY_PREFERENCE, PermissionEngine, parseSecurityPolicy } from './permission-engine'
 import { HookEmitter, loadAllHooks } from './hooks'
 import { parseSlashCommand, type SlashCommandContext } from './slash-commands'
 import { SessionManager, type SessionManagerConfig, applyToolResultBudget, snipConsumedResults } from './session-manager'
@@ -731,7 +731,9 @@ export class AgentGateway {
       console.log(`[AgentGateway] Auto tier override active: ${JSON.stringify(this.autoTierOverride)}`)
     }
 
-    // Initialize permission engine in local mode
+    // Initialize permission engine. Local mode enforces the full mode-based
+    // policy; cloud runtimes enforce only per-tool action rules (for example
+    // "ask before merging a pull request"), so nothing else changes for them.
     if (process.env.SHOGO_LOCAL_MODE === 'true') {
       const pref = parseSecurityPolicy(process.env.SECURITY_POLICY)
       this.permissionEngine = new PermissionEngine({
@@ -739,6 +741,12 @@ export class AgentGateway {
         workspaceDir,
       })
       console.log(`[AgentGateway] Permission engine initialized: mode=${pref.mode}`)
+    } else {
+      this.permissionEngine = new PermissionEngine({
+        preference: parseSecurityPolicy(process.env.SECURITY_POLICY, DEFAULT_CLOUD_SECURITY_PREFERENCE),
+        workspaceDir,
+        actionsOnly: true,
+      })
     }
 
   }
@@ -3830,7 +3838,7 @@ export class AgentGateway {
       '### Shell Navigation',
       'Shell state is persistent — `cd` in one exec call carries over to the next.',
     ]
-    if (this.permissionEngine) {
+    if (this.permissionEngine && !this.permissionEngine.isActionsOnly) {
       switch (this.permissionEngine.mode) {
         case 'strict':
           lines.push('You may only run commands within the workspace directory. Do not navigate outside it.')
@@ -4141,7 +4149,7 @@ export class AgentGateway {
     }
 
     // 4. Security permissions guide (stable once mode is set)
-    if (this.permissionEngine) {
+    if (this.permissionEngine && !this.permissionEngine.isActionsOnly) {
       pushStable('security-permissions', [
         '## Security Permissions',
         '',

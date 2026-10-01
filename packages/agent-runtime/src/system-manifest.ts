@@ -78,7 +78,10 @@ export const ProjectSpecSchema = z.object({
 
 const CHANNEL_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,79}$/
 
-export const AgentTriggerSchema = z.enum(['mention', 'all', 'keyword'])
+export const AgentTriggerSchema = z.enum(['mention', 'all', 'keyword', 'auto'])
+
+/** `isolated` agents (e.g. a reviewer) see only the hand-off, the task's criteria and links, never the discussion. */
+export const AgentContextModeSchema = z.enum(['shared', 'isolated'])
 
 /** One member of a team channel: a manifest project's agent, a group (by handle) or a person (by email). */
 export const TeamChannelMemberSchema = z.union([
@@ -86,6 +89,7 @@ export const TeamChannelMemberSchema = z.union([
     project: z.string().regex(KEY_RE),
     agentTrigger: AgentTriggerSchema.default('mention'),
     keywords: z.array(z.string().min(1)).optional(),
+    contextMode: AgentContextModeSchema.default('shared'),
   }).strict(),
   z.object({ group: z.string().min(1).transform((h) => h.replace(/^@/, '')) }).strict(),
   z.object({ user: z.string().email().transform((e) => e.toLowerCase()) }).strict(),
@@ -123,6 +127,7 @@ export type ProjectSpec = z.infer<typeof ProjectSpecSchema>
 export type AttachMode = z.infer<typeof AttachModeSchema>
 export type TeamChannelSpec = z.infer<typeof TeamChannelSpecSchema>
 export type AgentTrigger = z.infer<typeof AgentTriggerSchema>
+export type AgentContextMode = z.infer<typeof AgentContextModeSchema>
 
 export interface ManifestParseResult {
   ok: boolean
@@ -245,7 +250,7 @@ export interface LiveTeamChannel {
   name: string
   topic: string | null
   private: boolean
-  agents: Array<{ projectId: string | null; agentTrigger: string; agentKeywords: string | null }>
+  agents: Array<{ projectId: string | null; agentTrigger: string; agentKeywords: string | null; agentContextMode?: string }>
   userEmails: string[]
 }
 
@@ -261,6 +266,7 @@ export interface TeamChannelAgentOp {
   projectId: string | null
   agentTrigger: AgentTrigger
   agentKeywords: string | null
+  agentContextMode: AgentContextMode
 }
 
 export interface TeamChannelOp {
@@ -522,9 +528,14 @@ export function diffTeamChannels(
         if (projectId) declared.add(projectId)
         const agentKeywords = m.agentTrigger === 'keyword' ? keywordsOf(m) : null
         const existing = projectId ? current?.agents.find((a) => a.projectId === projectId) : undefined
-        if (existing && existing.agentTrigger === m.agentTrigger && sameKeywords(existing.agentKeywords, agentKeywords)) continue
-        agents.push({ key: m.project, projectId, agentTrigger: m.agentTrigger, agentKeywords })
-        changes.push(`${existing ? 'retrigger' : 'add'} agent ${m.project} (${m.agentTrigger})`)
+        if (
+          existing &&
+          existing.agentTrigger === m.agentTrigger &&
+          sameKeywords(existing.agentKeywords, agentKeywords) &&
+          (existing.agentContextMode ?? 'shared') === m.contextMode
+        ) continue
+        agents.push({ key: m.project, projectId, agentTrigger: m.agentTrigger, agentKeywords, agentContextMode: m.contextMode })
+        changes.push(`${existing ? 'retrigger' : 'add'} agent ${m.project} (${m.agentTrigger}${m.contextMode === 'isolated' ? ', isolated' : ''})`)
       } else if ('group' in m) {
         const emails = live.groups[m.group]
         if (!emails) {

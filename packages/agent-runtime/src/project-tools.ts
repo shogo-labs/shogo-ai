@@ -625,11 +625,11 @@ export function createSystemApplyTool(ctx: ToolContext): AgentTool {
 
       // 5. Team chat channels (after creates, so new projects can be members).
       for (const op of diff.teamChannels) {
-        const agents: Array<{ projectId: string | null; agentTrigger: string; agentKeywords: string | null }> = []
+        const agents: Array<{ projectId: string | null; agentTrigger: string; agentKeywords: string | null; agentContextMode: string }> = []
         for (const a of op.agents) {
           const id = a.projectId ?? idOf(a.key)
           if (!id) { report.skipped.push(`channel #${op.name}: agent ${a.key} unresolved`); continue }
-          agents.push({ projectId: id, agentTrigger: a.agentTrigger, agentKeywords: a.agentKeywords })
+          agents.push({ projectId: id, agentTrigger: a.agentTrigger, agentKeywords: a.agentKeywords, agentContextMode: a.agentContextMode })
         }
         const res = await upsertTeamChannel(workspaceId, op.name, {
           ...(op.topic !== undefined ? { topic: op.topic } : {}),

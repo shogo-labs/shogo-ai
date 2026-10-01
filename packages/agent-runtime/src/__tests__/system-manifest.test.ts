@@ -426,12 +426,23 @@ describe('teamChannels', () => {
     const m = channelsManifest()
     expect(m.teamChannels.map((c) => c.name)).toEqual(['issue-pipeline', 'pipeline-alerts'])
     expect(m.teamChannels[0].members).toEqual([
-      { project: 'intake', agentTrigger: 'all' },
-      { project: 'analyst', agentTrigger: 'mention' },
+      { project: 'intake', agentTrigger: 'all', contextMode: 'shared' },
+      { project: 'analyst', agentTrigger: 'mention', contextMode: 'shared' },
       { group: 'maintainers' },
       { user: 'lead@example.com' },
     ])
     expect(m.teamChannels[1].private).toBe(true)
+  })
+
+  test('accepts the auto trigger for agents that watch a channel and answer only when relevant', () => {
+    const m = parseSystemManifest({
+      version: 1,
+      name: 'x',
+      projects: [{ key: 'a', name: 'A' }],
+      teamChannels: [{ name: 'eng', members: [{ project: 'a', agentTrigger: 'auto' }] }],
+    })
+    expect(m.ok).toBe(true)
+    expect(m.manifest!.teamChannels[0].members).toEqual([{ project: 'a', agentTrigger: 'auto', contextMode: 'shared' }])
   })
 
   test('rejects unknown project keys, duplicate channels, and keyword triggers without keywords', () => {
@@ -458,8 +469,8 @@ describe('teamChannels', () => {
     const [pipeline, alerts] = diff.teamChannels
     expect(pipeline.action).toBe('create')
     expect(pipeline.agents).toEqual([
-      { key: 'intake', projectId: 'p-intake', agentTrigger: 'all', agentKeywords: null },
-      { key: 'analyst', projectId: 'p-analyst', agentTrigger: 'mention', agentKeywords: null },
+      { key: 'intake', projectId: 'p-intake', agentTrigger: 'all', agentKeywords: null, agentContextMode: 'shared' },
+      { key: 'analyst', projectId: 'p-analyst', agentTrigger: 'mention', agentKeywords: null, agentContextMode: 'shared' },
     ])
     expect(pipeline.groupHandles).toEqual(['maintainers'])
     expect(pipeline.userEmails).toEqual(['lead@example.com'])
@@ -507,8 +518,36 @@ describe('teamChannels', () => {
     })
     const alerts = diff.teamChannels.find((c) => c.name === 'pipeline-alerts')!
     expect(alerts.action).toBe('update')
-    expect(alerts.agents).toEqual([{ key: 'intake', projectId: 'p-intake', agentTrigger: 'mention', agentKeywords: null }])
+    expect(alerts.agents).toEqual([{ key: 'intake', projectId: 'p-intake', agentTrigger: 'mention', agentKeywords: null, agentContextMode: 'shared' }])
     expect(alerts.removeAgents).toEqual([{ key: 'analyst', projectId: 'p-analyst' }])
+  })
+
+  test('contextMode isolated is parsed, defaults to shared, and changing it re-applies the agent', () => {
+    const parsed = parseSystemManifest({
+      version: 1,
+      name: 'x',
+      projects: [{ key: 'reviewer', name: 'Reviewer' }],
+      teamChannels: [{ name: 'eng', members: [{ project: 'reviewer', agentTrigger: 'mention', contextMode: 'isolated' }] }],
+    })
+    expect(parsed.ok).toBe(true)
+    const manifest = parsed.manifest!
+    expect(manifest.teamChannels[0].members).toEqual([{ project: 'reviewer', agentTrigger: 'mention', contextMode: 'isolated' }])
+    expect(parseSystemManifest({ version: 1, name: 'x', projects: [{ key: 'r', name: 'R' }], teamChannels: [{ name: 'eng', members: [{ project: 'r', contextMode: 'secret' }] }] }).ok).toBe(false)
+
+    const lock: SystemLock = { version: 1, name: 'x', bindings: { reviewer: 'p-rev' } }
+    const liveProjects = [live({ id: 'p-rev', name: 'Reviewer' })]
+    const channel = (agentContextMode?: string) => ({
+      channels: [{ name: 'eng', topic: null, private: false, agents: [{ projectId: 'p-rev', agentTrigger: 'mention', agentKeywords: null, ...(agentContextMode ? { agentContextMode } : {}) }], userEmails: [] }],
+      groups: {},
+    })
+    const diffFor = (agentContextMode?: string) =>
+      computeSystemDiff(manifest, liveProjects, lock, { callerProjectId: 'p-rev', teamChannels: channel(agentContextMode) }).teamChannels
+    expect(diffFor('isolated')).toEqual([])
+    const changed = diffFor('shared')
+    expect(changed).toHaveLength(1)
+    expect(changed[0].agents).toEqual([{ key: 'reviewer', projectId: 'p-rev', agentTrigger: 'mention', agentKeywords: null, agentContextMode: 'isolated' }])
+    expect(changed[0].changes.join(' ')).toContain('isolated')
+    expect(diffFor()).toHaveLength(1)
   })
 
   test('unknown groups and an unreachable team chat become manual steps', () => {

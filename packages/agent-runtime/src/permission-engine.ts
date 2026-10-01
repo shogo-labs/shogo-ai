@@ -10,12 +10,13 @@
  */
 
 import { resolve, join, dirname } from 'path'
-import { existsSync, lstatSync, realpathSync, readFileSync, writeFileSync, mkdirSync } from 'fs'
+import { existsSync, lstatSync, statSync, realpathSync, readFileSync, writeFileSync, mkdirSync } from 'fs'
 import { homedir } from 'os'
 import { dedupeRoots, isWithinAnyRoot, isWithinRoot } from './path-boundary'
 import type { AgentTool, AgentToolResult } from '@mariozechner/pi-agent-core'
 import { createLogger } from '@shogo/shared-runtime'
 import type {
+  ActionRule,
   SecurityMode,
   SecurityPreference,
   PermissionCategory,
@@ -27,7 +28,7 @@ import type {
 const log = createLogger('permission-engine')
 
 // Re-export for convenience
-export type { SecurityPreference, PermissionCategory, PermissionCheckResult }
+export type { ActionRule, SecurityPreference, PermissionCategory, PermissionCheckResult }
 
 // ---------------------------------------------------------------------------
 // Hard-blocked patterns — enforced in ALL modes, never overridable
@@ -149,6 +150,10 @@ function matchesGlobPattern(value: string, pattern: string): boolean {
   if (pattern.startsWith('*.')) {
     return value.endsWith(pattern.slice(1)) || value === pattern.slice(1)
   }
+  // "*text*" → value contains text (e.g. "*gh pr merge*" catches it inside a longer command)
+  if (pattern.length > 2 && pattern.startsWith('*') && pattern.endsWith('*')) {
+    return value.includes(pattern.slice(1, -1))
+  }
   if (pattern.endsWith(' *')) {
     return value.startsWith(pattern.slice(0, -1)) || value === pattern.slice(0, -2)
   }
@@ -165,6 +170,44 @@ function matchesAnyPattern(value: string, patterns: string[]): boolean {
 function mergeUnique(a?: string[], b?: string[]): string[] {
   const set = new Set<string>([...(a ?? []), ...(b ?? [])])
   return [...set]
+}
+
+// ---------------------------------------------------------------------------
+// Per-tool action rules
+// ---------------------------------------------------------------------------
+
+/**
+ * Rules every agent has unless the project says otherwise. Merging a pull
+ * request changes shared code, so it asks first.
+ */
+export const DEFAULT_ACTION_RULES: Readonly<Record<string, ActionRule>> = {
+  github_merge_pr: 'ask',
+}
+
+const ACTION_RANK: Record<ActionRule, number> = { allow: 0, ask: 1, block: 2 }
+
+export function isActionRule(value: unknown): value is ActionRule {
+  return value === 'allow' || value === 'ask' || value === 'block'
+}
+
+/** Keep only well-formed `{ toolName: allow|ask|block }` entries. */
+export function normalizeActionRules(value: unknown): Record<string, ActionRule> {
+  const out: Record<string, ActionRule> = {}
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return out
+  for (const [tool, rule] of Object.entries(value as Record<string, unknown>)) {
+    if (tool && isActionRule(rule)) out[tool] = rule
+  }
+  return out
+}
+
+/** Combine two rule sets; where both name a tool, the stricter rule wins. */
+export function mergeActionRules(a?: Record<string, ActionRule>, b?: Record<string, ActionRule>): Record<string, ActionRule> {
+  const out: Record<string, ActionRule> = { ...normalizeActionRules(a) }
+  for (const [tool, rule] of Object.entries(normalizeActionRules(b))) {
+    const existing = out[tool]
+    out[tool] = existing && ACTION_RANK[existing] >= ACTION_RANK[rule] ? existing : rule
+  }
+  return out
 }
 
 // ---------------------------------------------------------------------------
@@ -199,6 +242,8 @@ export function mergePolicy(
   return {
     mode: effectiveMode,
     overrides: {
+      // A project can tighten a tool's rule but never loosen the user's.
+      actions: mergeActionRules(userPref.overrides?.actions, projectOverride.overrides?.actions),
       shellCommands: {
         deny: [...new Set([...userDeny, ...projDeny])],
         allow: mergedAllow,
@@ -230,14 +275,20 @@ export const DEFAULT_SECURITY_PREFERENCE: SecurityPreference = {
   approvalTimeoutSeconds: 30,
 }
 
-export function parseSecurityPolicy(envValue?: string): SecurityPreference {
-  if (!envValue) return DEFAULT_SECURITY_PREFERENCE
+/** Cloud runtimes only ask about tools with an `ask` rule; people answer in a team channel, so give them time. */
+export const DEFAULT_CLOUD_SECURITY_PREFERENCE: SecurityPreference = {
+  mode: 'full_autonomy',
+  approvalTimeoutSeconds: 900,
+}
+
+export function parseSecurityPolicy(envValue?: string, defaults: SecurityPreference = DEFAULT_SECURITY_PREFERENCE): SecurityPreference {
+  if (!envValue) return defaults
   try {
     const decoded = Buffer.from(envValue, 'base64').toString('utf-8')
-    return { ...DEFAULT_SECURITY_PREFERENCE, ...JSON.parse(decoded) }
+    return { ...defaults, ...JSON.parse(decoded) }
   } catch {
     console.warn('[PermissionEngine] Failed to parse SECURITY_POLICY env, using defaults')
-    return DEFAULT_SECURITY_PREFERENCE
+    return defaults
   }
 }
 
@@ -254,6 +305,11 @@ export interface PermissionEngineOptions {
   workspaceDir: string
   /** Callback to push an SSE event to the connected UI client */
   sendSseEvent?: (event: Record<string, any>) => void
+  /**
+   * Enforce only per-tool action rules; everything else is allowed. For cloud
+   * runtimes, which have never run the mode-based policy.
+   */
+  actionsOnly?: boolean
 }
 
 interface PendingApproval {
@@ -272,8 +328,11 @@ export class PermissionEngine {
   private denialCount = 0
   private readonly MAX_DENIALS_PER_TURN = 5
   private readonly persistPath: string
+  private persistedMtimeMs = 0
+  private readonly actionsOnly: boolean
 
   constructor(opts: PermissionEngineOptions) {
+    this.actionsOnly = opts.actionsOnly === true
     this.pref = opts.preference
     this.workspaceDir = opts.workspaceDir
     this.sendSseEvent = opts.sendSseEvent
@@ -289,6 +348,7 @@ export class PermissionEngine {
   private loadPersistedRules(): void {
     try {
       if (!existsSync(this.persistPath)) return
+      this.persistedMtimeMs = statSync(this.persistPath).mtimeMs
       const raw = readFileSync(this.persistPath, 'utf-8')
       const persisted = JSON.parse(raw) as Partial<SecurityPreference['overrides']>
       if (!persisted || typeof persisted !== 'object') return
@@ -297,6 +357,7 @@ export class PermissionEngine {
         ...this.pref,
         overrides: {
           ...this.pref.overrides,
+          actions: mergeActionRules(this.pref.overrides?.actions, persisted.actions),
           shellCommands: {
             allow: mergeUnique(
               this.pref.overrides?.shellCommands?.allow,
@@ -362,6 +423,11 @@ export class PermissionEngine {
     return this.pref.mode
   }
 
+  /** True for cloud runtimes, where only per-tool action rules are enforced. */
+  get isActionsOnly(): boolean {
+    return this.actionsOnly
+  }
+
   /** Wire (or re-wire) the SSE push callback at runtime */
   setSseCallback(cb: ((event: Record<string, any>) => void) | undefined): void {
     this.sendSseEvent = cb
@@ -369,6 +435,10 @@ export class PermissionEngine {
 
   /** Reset per-turn state (call at the start of each agent turn) */
   resetTurn(): void {
+    // Rules a team writes into the workspace (e.g. a template's `.shogo/permissions.json`) apply on the next turn.
+    try {
+      if (existsSync(this.persistPath) && statSync(this.persistPath).mtimeMs !== this.persistedMtimeMs) this.loadPersistedRules()
+    } catch { /* keep the rules already loaded */ }
     this.sessionApprovalCache.clear()
     this.denialCount = 0
     for (const [, pending] of this.pendingApprovals) {
@@ -387,7 +457,43 @@ export class PermissionEngine {
   // Core policy evaluation
   // -------------------------------------------------------------------------
 
+  /** The rule for a tool: the project's, else the built-in default, else none. */
+  actionRuleFor(toolName: string): ActionRule | undefined {
+    const configured = this.pref.overrides?.actions?.[toolName]
+    if (isActionRule(configured)) return configured
+    return DEFAULT_ACTION_RULES[toolName]
+  }
+
+  /** Result of a tool's action rule, or null when it has none (or `allow`). */
+  checkAction(category: PermissionCategory, toolName: string): PermissionCheckResult | null {
+    const rule = this.actionRuleFor(toolName)
+    if (rule === 'block') {
+      return {
+        action: 'deny',
+        reason: `"${toolName}" is set to never run for this agent`,
+        guidance: 'A person configured this action as blocked. Tell the team it is not available and move on.',
+        category,
+      }
+    }
+    if (rule === 'ask') {
+      return {
+        action: 'ask',
+        reason: `"${toolName}" needs a person's approval before it runs`,
+        guidance: 'Waiting for someone on the team to approve.',
+        category,
+      }
+    }
+    return null
+  }
+
   check(category: PermissionCategory, toolName: string, params: Record<string, any>): PermissionCheckResult {
+    if (this.actionsOnly) {
+      // Only what someone configured: deny lists and per-tool rules. No mode defaults, no built-in blocks.
+      return this.checkDenyOverrides(category, toolName, params)
+        ?? this.checkAction(category, toolName)
+        ?? { action: 'allow', reason: 'No rule for this action', category }
+    }
+
     // 1. Hard-block checks (always deny, all modes)
     const hardBlock = this.checkHardBlocked(category, toolName, params)
     if (hardBlock) return hardBlock
@@ -395,6 +501,12 @@ export class PermissionEngine {
     // 2. User deny overrides
     const denyCheck = this.checkDenyOverrides(category, toolName, params)
     if (denyCheck) return denyCheck
+
+    // 2b. Per-tool action rules
+    const actionRule = this.actionRuleFor(toolName)
+    if (actionRule) {
+      return this.checkAction(category, toolName) ?? { action: 'allow', reason: `"${toolName}" is set to allow`, category }
+    }
 
     // 3. Mode-specific evaluation
     switch (this.pref.mode) {
@@ -637,7 +749,11 @@ export class PermissionEngine {
     }
 
     const DEFAULT_TIMEOUT_SECONDS = 30
-    const timeoutSeconds = this.pref.approvalTimeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS
+    // An ask-first action rule is answered by a person in a chat thread, who may take a while.
+    const configuredSeconds = this.pref.approvalTimeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS
+    const timeoutSeconds = this.actionRuleFor(toolName) === 'ask'
+      ? Math.max(configuredSeconds, DEFAULT_CLOUD_SECURITY_PREFERENCE.approvalTimeoutSeconds ?? 0)
+      : configuredSeconds
     const timeoutMs = timeoutSeconds * 1000
     const requestId = `perm-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
 
@@ -756,16 +872,41 @@ function textResult(data: any): AgentToolResult<any> {
   }
 }
 
+const GATED = Symbol.for('shogo.permissionGated')
+
+export function isPermissionGated(tool: AgentTool): boolean {
+  return (tool as any)[GATED] === true
+}
+
+/**
+ * Gate a tool that has no category of its own: only its per-tool action rule
+ * applies (run, ask first, or refuse). Tools already gated are left alone.
+ */
+export function withActionRules(tool: AgentTool, engine: PermissionEngine): AgentTool {
+  if (isPermissionGated(tool)) return tool
+  return gate(tool, engine, (toolName) => engine.checkAction('project', toolName))
+}
+
 export function withPermissionGate(
   tool: AgentTool,
   category: PermissionCategory,
   engine: PermissionEngine,
 ): AgentTool {
+  return gate(tool, engine, (toolName, params) => engine.check(category, toolName, params), category)
+}
+
+function gate(
+  tool: AgentTool,
+  engine: PermissionEngine,
+  evaluate: (toolName: string, params: Record<string, any>) => PermissionCheckResult | null,
+  category: PermissionCategory = 'project',
+): AgentTool {
   const originalExecute = tool.execute
-  return {
+  const gated: AgentTool = {
     ...tool,
     execute: async (toolCallId: string, params: any) => {
-      const check = engine.check(category, tool.name, params ?? {})
+      const check = evaluate(tool.name, params ?? {})
+      if (!check) return originalExecute(toolCallId, params)
 
       if (check.action === 'deny') {
         return textResult({
@@ -793,6 +934,8 @@ export function withPermissionGate(
       return originalExecute(toolCallId, params)
     },
   }
+  ;(gated as any)[GATED] = true
+  return gated
 }
 
 // ---------------------------------------------------------------------------

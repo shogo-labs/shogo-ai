@@ -452,7 +452,7 @@ describe('system_apply', () => {
     expect(upsert.args).toEqual(['ws-1', 'ops', {
       topic: 'Incidents',
       private: false,
-      agents: [{ projectId: 'proj-intake', agentTrigger: 'all', agentKeywords: null }],
+      agents: [{ projectId: 'proj-intake', agentTrigger: 'all', agentKeywords: null, agentContextMode: 'shared' }],
       removeAgentProjectIds: [],
       userEmails: ['lead@example.com'],
       groupHandles: [],
