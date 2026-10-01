@@ -86,11 +86,6 @@ COPY --from=workspace /app/packages/db ./packages/db
 COPY --from=workspace /app/packages/email ./packages/email
 COPY --from=workspace /app/packages/voice ./packages/voice
 COPY --from=workspace /app/packages/cli ./packages/cli
-# apps/api/src/routes/local-user.ts imports the buddy-look helpers straight out
-# of shared-app (a React Native package, so only this dependency-free file is
-# shipped). Without it the API exits at boot with `Cannot find module
-# '../../../../packages/shared-app/src/buddy-look'`.
-COPY --from=workspace /app/packages/shared-app/src/buddy-look.ts ./packages/shared-app/src/buddy-look.ts
 COPY --from=workspace /app/apps/api ./apps/api
 COPY --from=workspace /app/package.json /app/bun.lock /app/tsconfig.base.json ./
 
@@ -137,6 +132,14 @@ USER appuser
 # under normal operation). Running as appuser so output is correctly owned.
 RUN --mount=type=cache,target=/home/appuser/.bun/install/cache,uid=1001,gid=1001 \
     bun install --ignore-scripts
+
+# apps/api/src/routes/local-user.ts imports the buddy-look helpers straight out
+# of shared-app (a React Native package, so only this dependency-free file is
+# shipped). Without it the API exits at boot with `Cannot find module
+# '../../../../packages/shared-app/src/buddy-look'`. Copied AFTER the install,
+# owned by appuser: the implicit parent dirs of an earlier COPY would be
+# root-owned and `bun install` (running as appuser) could not link into them.
+COPY --from=workspace --chown=appuser:appgroup /app/packages/shared-app/src/buddy-look.ts ./packages/shared-app/src/buddy-look.ts
 
 ARG BUILD_HASH=dev
 ENV BUILD_HASH=$BUILD_HASH
