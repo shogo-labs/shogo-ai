@@ -285,6 +285,7 @@ model AgentSchedule {
   lastError           String?
   chatSessionId       String?
   notifyConversationId String?
+  notifyThreadRootId  String?
   runningAt           DateTime?
   consecutiveFailures Int       @default(0)
   createdAt           DateTime  @default(now())
@@ -2888,6 +2889,8 @@ model ConversationMember {
   starred        Boolean   @default(false)
   agentTrigger   String    @default("mention")
   agentKeywords  String?
+  agentMuted     Boolean   @default(false)
+  agentContextMode String  @default("shared")
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
 

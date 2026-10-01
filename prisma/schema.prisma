@@ -338,6 +338,8 @@ model AgentSchedule {
   chatSessionId       String?
   /// Conversation that receives each run's summary.
   notifyConversationId String?
+  /// Thread in that conversation the summary is posted under; top level when null.
+  notifyThreadRootId  String?
   runningAt           DateTime?
   consecutiveFailures Int       @default(0)
   createdAt           DateTime  @default(now())
@@ -3848,9 +3850,13 @@ model ConversationMember {
   notifyLevel    String                 @default("default")
   muted          Boolean                @default(false)
   starred        Boolean                @default(false)
-  /// When an agent member replies: "mention", "keyword", or "all".
+  /// When an agent member replies: "mention", "keyword", "all", or "auto" (only when relevant).
   agentTrigger   String                 @default("mention")
   agentKeywords  String?
+  /// Silenced with `@agent mute`: its channel triggers stay quiet, but a direct @mention still works.
+  agentMuted     Boolean                @default(false)
+  /// "shared" agents read the thread; "isolated" ones (e.g. a reviewer) get only the hand-off, criteria and links.
+  agentContextMode String               @default("shared")
   createdAt      DateTime               @default(now())
   updatedAt      DateTime               @updatedAt
 
