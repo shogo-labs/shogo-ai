@@ -7,7 +7,7 @@
  * it current and triggers a backfill after every reconnect.
  */
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
-import { useAuth } from '../contexts/auth'
+import { useWorkspaceUser } from './useWorkspaceUser'
 import {
   newClientMsgId,
   teamChatApi,
@@ -64,8 +64,7 @@ export function useActiveConversationId(): string | null {
 }
 
 export function useMyUserId(): string | null {
-  const { user } = useAuth()
-  return (user as { id?: string } | null)?.id ?? null
+  return useWorkspaceUser()?.id ?? null
 }
 
 // ─── Conversation list ───────────────────────────────────────────────────────
@@ -213,8 +212,8 @@ export function useConversationTimeline(
   conversationId: string | null | undefined,
   threadRootId: string | null = null,
 ) {
-  const me = useMyUserId()
-  const { user } = useAuth()
+  const user = useWorkspaceUser(workspaceId)
+  const me = user?.id ?? null
   const [state, setState] = useState<TimelineState>(emptyTimeline)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -330,7 +329,7 @@ export function useConversationTimeline(
       lastReplyAt: null,
       alsoSentToChannel: !!input.alsoSentToChannel,
       authorType: 'user',
-      author: me ? { id: me, name: (user as { name?: string } | null)?.name ?? 'You', image: null } : null,
+      author: me ? { id: me, name: user?.name ?? 'You', image: null } : null,
       authorUserId: me,
       authorAgent: null,
       text: input.text,

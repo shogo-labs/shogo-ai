@@ -17,6 +17,7 @@ import {
   _resetUpstreamCredentialCache,
 } from '../lib/federated-upstream'
 import { resetCloudKeyState } from '../lib/cloud-key-state'
+import { clearCloudWorkspaces, setCloudWorkspaces } from '../services/cloud-workspaces'
 
 const PROVIDER_KEYS = [
   { id: 'anthropic', envKey: 'ANTHROPIC_API_KEY' },
@@ -219,7 +220,7 @@ export function localSystemRoutes(): Hono {
   })
 
   router.put('/local/shogo-key', async (c) => {
-    const body = await c.req.json<{ key: string }>()
+    const body = await c.req.json<{ key: string; workspaces?: unknown }>()
     if (!body.key?.startsWith('shogo_sk_')) {
       return c.json({ ok: false, error: 'Invalid key format. Keys start with shogo_sk_' }, 400)
     }
@@ -248,6 +249,11 @@ export function localSystemRoutes(): Hono {
           create: { key: 'SHOGO_KEY_INFO', value: info },
         }),
       ])
+      if (Array.isArray(body.workspaces)) {
+        await setCloudWorkspaces({ user: data.user ?? null, workspaces: body.workspaces as any })
+      } else {
+        await clearCloudWorkspaces()
+      }
       process.env.SHOGO_API_KEY = body.key
       resetCloudKeyState()
       _resetUpstreamCredentialCache()
@@ -262,6 +268,7 @@ export function localSystemRoutes(): Hono {
     await Promise.all([
       localDb.localConfig.deleteMany({ where: { key: 'SHOGO_API_KEY' } }),
       localDb.localConfig.deleteMany({ where: { key: 'SHOGO_KEY_INFO' } }),
+      clearCloudWorkspaces(),
     ])
     delete process.env.SHOGO_API_KEY
     _resetUpstreamCredentialCache()

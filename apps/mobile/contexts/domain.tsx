@@ -19,6 +19,12 @@ import { useAuth } from './auth'
 import { useActiveInstance } from './active-instance'
 import { API_URL } from '../lib/api'
 import { authClient } from '../lib/auth-client'
+import { isLocalMode } from '../lib/platform-config'
+import { installWorkspaceFetchRouter } from '../lib/workspace-route'
+
+// Before any store fetches: cloud team workspaces on desktop are served
+// through the local API's `/api/cloud/<id>` relay.
+if (isLocalMode()) installWorkspaceFetchRouter(API_URL!)
 
 export {
   useSDKDomain as useDomain,

@@ -50,6 +50,8 @@ const localEnv = {
   // Channel agents reply from a script file that team-chat-agents.test.ts writes.
   SHOGO_CHANNEL_AGENT_SCRIPT: resolve(repoRoot, "test-results/team-chat-agents.script.json"),
   BROWSER: "none",
+  // desktop-cloud-workspaces.test.ts: a cloud-mode API for the desktop to sign in to.
+  ...(process.env.E2E_CLOUD_URL ? { SHOGO_CLOUD_URL: process.env.E2E_CLOUD_URL } : {}),
   ...(process.env.CI ? { CI: "true" } : {}),
 }
 

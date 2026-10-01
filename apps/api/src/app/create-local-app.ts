@@ -50,6 +50,7 @@ import { localLogsRoutes } from '../routes/local-logs'
 import { meetingRoutes } from '../routes/meetings'
 import { historyRoutes } from '../routes/history'
 import { localSystemRoutes } from '../routes/local-system'
+import { cloudWorkspaceListMiddleware, localCloudWorkspaceRoutes } from '../routes/local-cloud-proxy'
 import { localPlatformRoutes } from '../routes/local-platform'
 import { localSharedFileRoutes } from '../routes/local-shared-files'
 import { marketplaceRoutes } from '../routes/marketplace'
@@ -91,6 +92,8 @@ export function createLocalApp(): LocalAppBundle {
 
   app.route('/api', localPlatformRoutes())
   app.route('/api', localSystemRoutes())
+  app.use('/api/workspaces', cloudWorkspaceListMiddleware)
+  app.route('/api', localCloudWorkspaceRoutes({ resolveUserId: getAuthUserId }))
   app.route('/', localSharedFileRoutes({ workspacesDir }))
   app.route('/api/local/projects', localProjectsRoutes())
   // Runtime → API callbacks (trust, checkpoints, plans, workspace agent and

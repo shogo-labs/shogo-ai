@@ -307,6 +307,7 @@ async function performCloudSignIn(
   let mintedKey: string
   let mintedEmail: string | null
   let mintedWorkspace: string | null
+  let mintedWorkspaces: unknown = null
   try {
     const result = await runCloudLogin({
       cloudUrl,
@@ -327,6 +328,7 @@ async function performCloudSignIn(
     mintedKey = result.key
     mintedEmail = result.email
     mintedWorkspace = result.workspace
+    mintedWorkspaces = result.workspaces
   } catch (err) {
     // Superseded by a newer sign-in: stay silent so the user doesn't see
     // a "Cancelled" error for the run they intentionally replaced.
@@ -351,7 +353,7 @@ async function performCloudSignIn(
     const persistRes = await fetch(`${getApiUrl()}/api/local/shogo-key`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ key: mintedKey }),
+      body: JSON.stringify({ key: mintedKey, workspaces: mintedWorkspaces }),
     })
     const persistBody = (await persistRes.json().catch(() => ({}))) as CloudLoginBody
     if (!persistRes.ok || persistBody?.ok === false) {

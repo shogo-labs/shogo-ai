@@ -1,0 +1,85 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
+/**
+ * One device key per cloud team workspace, so a signed-in desktop can act
+ * as a client of every workspace its user belongs to (keys stay
+ * workspace-scoped; see `authorizeProject` in middleware/auth.ts).
+ */
+
+import type { PrismaClient } from '@prisma/client'
+import { mintDeviceApiKey } from './api-keys-mint'
+
+export interface DeviceWorkspaceKey {
+  workspace: { id: string; name: string; slug: string | null }
+  /** Present only when a key was minted by this call. */
+  key?: string
+}
+
+export interface DeviceInfo {
+  deviceId: string
+  deviceName?: string
+  devicePlatform?: string
+  deviceAppVersion?: string
+  defaultDeviceName?: string
+}
+
+async function memberships(prisma: PrismaClient, userId: string) {
+  const members = await (prisma as any).member.findMany({
+    where: { userId, workspaceId: { not: null } },
+    select: { workspace: { select: { id: true, name: true, slug: true, kind: true } } },
+    orderBy: { createdAt: 'asc' },
+  })
+  const all = new Set<string>()
+  const teams: Array<{ id: string; name: string; slug: string | null }> = []
+  for (const m of members) {
+    if (!m.workspace || all.has(m.workspace.id)) continue
+    all.add(m.workspace.id)
+    if (m.workspace.kind === 'team') teams.push({ id: m.workspace.id, name: m.workspace.name, slug: m.workspace.slug ?? null })
+  }
+  return { all, teams }
+}
+
+/**
+ * Mints device keys for the user's team workspaces the device doesn't hold
+ * yet (`have`), and revokes this device's keys for workspaces the user is no
+ * longer a member of. Returns every current team workspace, with `key` on
+ * the new ones.
+ */
+export async function syncDeviceWorkspaceKeys(args: {
+  prisma: PrismaClient
+  userId: string
+  device: DeviceInfo
+  have?: string[]
+}): Promise<{ workspaces: DeviceWorkspaceKey[]; removed: string[] }> {
+  const { prisma, userId, device } = args
+  const have = new Set(args.have ?? [])
+  const { all: memberOf, teams: current } = await memberships(prisma, userId)
+  const currentIds = new Set(current.map((w) => w.id))
+
+  const held = await (prisma as any).apiKey.findMany({
+    where: { userId, deviceId: device.deviceId, kind: 'device', revokedAt: null },
+    select: { id: true, workspaceId: true },
+  })
+  const heldIds = new Set<string>(held.map((k: any) => k.workspaceId))
+  // Only workspaces the user left: the primary key may be for a personal one.
+  const stale = held.filter((k: any) => !memberOf.has(k.workspaceId))
+  if (stale.length) {
+    await (prisma as any).apiKey.updateMany({
+      where: { id: { in: stale.map((k: any) => k.id) } },
+      data: { revokedAt: new Date() },
+    })
+  }
+
+  const workspaces: DeviceWorkspaceKey[] = []
+  for (const workspace of current) {
+    if (have.has(workspace.id) && heldIds.has(workspace.id)) {
+      workspaces.push({ workspace })
+      continue
+    }
+    const { fullKey } = await mintDeviceApiKey({ prisma, workspaceId: workspace.id, userId, ...device })
+    workspaces.push({ workspace, key: fullKey })
+  }
+  const removed = [...new Set<string>(stale.map((k: any) => k.workspaceId))]
+  for (const id of have) if (!memberOf.has(id) && !removed.includes(id)) removed.push(id)
+  return { workspaces, removed }
+}

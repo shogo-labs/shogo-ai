@@ -68,6 +68,7 @@ import { NativeSheetDrawerShell } from "../../components/layout/NativeSheetDrawe
 import { MobileBottomNav } from "../../components/layout/MobileBottomNav";
 import { MobileWorkspaceShell } from "../../components/layout/MobileWorkspaceShell";
 import { projectSidebarEvents } from "../../lib/project-sidebar-events";
+import { refreshCloudWorkspaces } from "../../lib/workspace-route";
 
 csMark("app:layout:module-load");
 
@@ -240,6 +241,27 @@ function AppLayoutInner() {
       console.error("[AppLayout] Failed to load workspaces:", error);
     });
   }, [isAuthenticated, workspaces]);
+
+  // Desktop signed in to Shogo Cloud: keep its cloud team workspaces in the
+  // switcher, re-checking on focus so newly joined ones appear.
+  useEffect(() => {
+    if (!localMode || !isAuthenticated || !workspaces) return;
+    let known = "";
+    const refresh = (sync = false) =>
+      refreshCloudWorkspaces(API_URL!, { sync }).then((next) => {
+        const ids = next.workspaces.map((w) => w.id).sort().join(",");
+        if (known && ids !== known) workspaces.loadAll().catch(() => undefined);
+        known = ids;
+      });
+    void refresh();
+    const timer = setInterval(() => void refresh(), 5 * 60_000);
+    const onFocus = () => void refresh(true);
+    if (typeof window !== "undefined") window.addEventListener("focus", onFocus);
+    return () => {
+      clearInterval(timer);
+      if (typeof window !== "undefined") window.removeEventListener("focus", onFocus);
+    };
+  }, [localMode, isAuthenticated, workspaces]);
 
   useEffect(() => {
     if (!isAuthenticated || !user) return;

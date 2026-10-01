@@ -43,7 +43,7 @@
  */
 
 import { useEffect, useMemo, useRef, useState, useCallback } from 'react'
-import { View, Text, ActivityIndicator, Platform, Pressable } from 'react-native'
+import { View, Text, ActivityIndicator, Platform, Pressable, Switch } from 'react-native'
 import { useLocalSearchParams, useRouter } from 'expo-router'
 import { Button, cn } from '@shogo/shared-ui/primitives'
 import { type WorkspaceSummary, PlatformApi } from '@shogo-ai/sdk'
@@ -97,6 +97,7 @@ function CliLinkBridge() {
   const [pending, setPending] = useState<CliPendingState | null>(null)
   const [workspaces, setWorkspaces] = useState<WorkspaceSummary[]>([])
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | null>(null)
+  const [allWorkspaces, setAllWorkspaces] = useState(true)
   const approvedRef = useRef(false)
   const stateLoadedRef = useRef(false)
   const workspacesLoadedRef = useRef(false)
@@ -117,7 +118,7 @@ function CliLinkBridge() {
       try {
         const res = await http.request<{ ok: boolean; error?: string; workspace?: string | null; email?: string | null }>(
           '/api/cli/login/approve',
-          { method: 'POST', body: { state, workspaceId } },
+          { method: 'POST', body: { state, workspaceId, allWorkspaces: clientHint === 'desktop' && allWorkspaces } },
         )
         if (!res.data?.ok) {
           throw new Error(res.data?.error || `Approve failed (HTTP ${res.status})`)
@@ -131,7 +132,7 @@ function CliLinkBridge() {
         )
       }
     },
-    [http, state],
+    [http, state, clientHint, allWorkspaces],
   )
 
   const deny = useCallback(async () => {
@@ -295,7 +296,7 @@ function CliLinkBridge() {
           <View className="gap-3 w-full">
             <Text className="text-sm text-muted-foreground text-center">
               {clientHint === 'desktop'
-                ? 'Choose which workspace this device should sign into. You can switch later from the desktop app\u2019s General settings.'
+                ? 'Choose the main workspace for this device. AI usage on the desktop is billed to it. You can switch later from the desktop app\u2019s General settings.'
                 : 'Choose which workspace this CLI session should act in. Keys are scoped to a single workspace; rerun `shogo login` to switch.'}
             </Text>
             <View className="gap-2 w-full">
@@ -324,6 +325,14 @@ function CliLinkBridge() {
                 )
               })}
             </View>
+            {clientHint === 'desktop' ? (
+              <View className="flex-row items-center gap-3 w-full rounded-lg border border-border px-4 py-3">
+                <Switch value={allWorkspaces} onValueChange={setAllWorkspaces} accessibilityLabel="Show all my workspaces on this device" />
+                <Text className="flex-1 text-sm text-foreground">
+                  Show all my team workspaces in the desktop app, with their projects, chat, and agents
+                </Text>
+              </View>
+            ) : null}
             <View className="flex-row gap-2 w-full">
               <Button
                 variant="outline"

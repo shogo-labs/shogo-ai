@@ -307,14 +307,15 @@ function buildUpstreamUrl(path: string, search: string): string {
 
 export async function fetchUpstream(
   path: string,
-  init: RequestInit & { search?: string } = {},
+  init: RequestInit & { search?: string; apiKey?: string } = {},
 ): Promise<Response> {
-  const url = buildUpstreamUrl(path, init.search ?? '')
-  const key = await getUpstreamCredential()
-  const headers = new Headers(init.headers ?? undefined)
+  const { apiKey, search, ...rest } = init
+  const url = buildUpstreamUrl(path, search ?? '')
+  const key = apiKey ?? (await getUpstreamCredential())
+  const headers = new Headers(rest.headers ?? undefined)
   if (key) headers.set('Authorization', `Bearer ${key}`)
-  const resp = await fetch(url, { ...init, headers })
-  if (resp.status === 401) {
+  const resp = await fetch(url, { ...rest, headers })
+  if (resp.status === 401 && !apiKey) {
     notifyRejection(`upstream ${path} returned 401`, key)
   }
   return resp
@@ -630,6 +631,10 @@ export interface ForwardOptions {
   /** Override the upstream querystring (including leading `?`). Defaults
    *  to whatever the client sent. */
   search?: string
+  /** Use this cloud key instead of the primary one (per-workspace keys). */
+  apiKey?: string
+  /** Aborts the upstream request, e.g. when the client disconnects. */
+  signal?: AbortSignal
 }
 
 /**
@@ -670,6 +675,8 @@ export async function forwardToUpstream(
     headers: fwdHeaders,
     body,
     search,
+    apiKey: opts.apiKey,
+    signal: opts.signal,
   })
 }
 

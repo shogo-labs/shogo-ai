@@ -11,6 +11,8 @@ import { Button, Card, CardContent, cn } from '@shogo/shared-ui/primitives'
 import { Text } from '../settings/account-sheet-chrome'
 import { useWorkspaceChatMode } from '../../hooks/useWorkspaceChatMode'
 import { teamChatApi, type ChatModeValue, type ExternalChatProvider } from '../../lib/team-chat-api'
+import { isLocalMode } from '../../lib/platform-config'
+import { isCloudWorkspace } from '../../lib/workspace-route'
 
 const api = teamChatApi()
 
@@ -36,6 +38,15 @@ const OPTIONS: Option[] = [
   { id: 'off', mode: 'off', provider: null, label: 'Off', description: 'No team chat. Use agents from project and workspace chat.' },
 ]
 
+/**
+ * A desktop-only workspace has no public webhook endpoint for Slack, Teams or
+ * Google Chat to call, and nobody else can join it.
+ */
+const LOCAL_OPTIONS: Option[] = [
+  { id: 'native', mode: 'native', provider: null, label: 'Shogo chat', description: 'Channels, DMs, and threads on this computer only, with agents as teammates.' },
+  OPTIONS[OPTIONS.length - 1]!,
+]
+
 function selectedId(mode: ChatModeValue | undefined, provider: ExternalChatProvider | null | undefined): string | null {
   if (!mode) return null
   if (mode === 'external' || mode === 'bridged') return provider ?? null
@@ -50,6 +61,8 @@ export function TeamChatModeCard({ workspaceId }: { workspaceId: string }) {
   const [error, setError] = useState<string | null>(null)
   const current = selectedId(config?.mode, config?.provider)
   const canManage = !!config?.canManage
+  const onThisComputer = isLocalMode() && !isCloudWorkspace(workspaceId)
+  const options = onThisComputer ? LOCAL_OPTIONS : OPTIONS
 
   const choose = async (option: Option) => {
     if (!canManage || option.id === current) return
@@ -97,7 +110,7 @@ export function TeamChatModeCard({ workspaceId }: { workspaceId: string }) {
               : 'Only workspace admins can change where team chat lives.'}
         </Text>
         <View className="mt-3 gap-1.5">
-          {OPTIONS.map((option) => {
+          {options.map((option) => {
             const active = option.id === current
             const needsInstall = !!option.provider && installedProviders !== undefined && !installedProviders.includes(option.provider)
             const tenant = option.provider ? config?.installations.find((i) => i.provider === option.provider)?.tenantName : null
@@ -132,7 +145,7 @@ export function TeamChatModeCard({ workspaceId }: { workspaceId: string }) {
             )
           })}
         </View>
-        {canManage ? (
+        {canManage && !onThisComputer ? (
           <View className="mt-3 gap-2">
             {CODE_CONNECT.map(({ provider, label, hint }) => {
               const installed = config?.installations.find((i) => i.provider === provider)

@@ -44,6 +44,8 @@ import { api, API_URL } from '../../lib/api'
 import { openAuthFlow, preCreateAuthWindow } from '@shogo/ui-kit/platform'
 import { SlackProjectsModal, type SlackProjectRow } from './SlackProjectsModal'
 import { TeamChatModeCard } from '../team-chat/TeamChatModeCard'
+import { isLocalMode } from '../../lib/platform-config'
+import { isCloudWorkspace } from '../../lib/workspace-route'
 import {
   Card,
   CardContent,
@@ -149,6 +151,8 @@ export function IntegrationsTab() {
   const searchParams = useLocalSearchParams<{ slackLinked?: string }>()
   const workspace = useActiveWorkspace()
   const workspaceId = workspace?.id
+  // Slack can't reach a workspace that only exists on this desktop.
+  const onThisComputer = isLocalMode() && !isCloudWorkspace(workspaceId)
   const { user } = useAuth()
   const currentUserId = user?.id
 
@@ -194,8 +198,8 @@ export function IntegrationsTab() {
   }, [http, workspaceId])
 
   useEffect(() => {
-    loadSlackAgentConfig()
-  }, [loadSlackAgentConfig])
+    if (!onThisComputer) loadSlackAgentConfig()
+  }, [loadSlackAgentConfig, onThisComputer])
 
   // React to `?slackLinked=1` (see the comment on `searchParams` above).
   // Waits for `slackAgentConfig` to actually load — opening the modal a
@@ -429,6 +433,7 @@ export function IntegrationsTab() {
           separate from the Composio OAuth list below since it's Slack's
           native Agents platform (DM/mention the bot), not a per-tool
           OAuth grant an agent uses to call the Slack API. */}
+      {!onThisComputer && (
       <Card>
         <CardContent className="p-3">
           <View className="flex-row items-center gap-3">
@@ -499,6 +504,7 @@ export function IntegrationsTab() {
           )}
         </CardContent>
       </Card>
+      )}
 
       {slackAgentConfig?.installed && (
         <SlackProjectsModal

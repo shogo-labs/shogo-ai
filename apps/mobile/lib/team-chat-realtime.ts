@@ -29,7 +29,8 @@ interface EventSourceLike {
 }
 
 export interface RealtimeDeps {
-  urls: { ws: string; sse: string }
+  /** `ws: null` goes straight to SSE (no socket, no typing/presence). */
+  urls: { ws: string | null; sse: string }
   createSocket: (url: string) => SocketLike
   createEventSource: (url: string) => EventSourceLike
   setTimeout?: (fn: () => void, ms: number) => unknown
@@ -66,7 +67,8 @@ export class TeamChatConnection {
 
   start(): void {
     this.stopped = false
-    this.connectSocket()
+    if (this.deps.urls.ws) this.connectSocket()
+    else this.startFallback()
   }
 
   stop(): void {
@@ -141,7 +143,7 @@ export class TeamChatConnection {
     this.readyOnSocket = false
     let socket: SocketLike
     try {
-      socket = this.deps.createSocket(this.deps.urls.ws)
+      socket = this.deps.createSocket(this.deps.urls.ws!)
     } catch {
       this.onSocketFailed()
       return

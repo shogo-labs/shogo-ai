@@ -6,8 +6,8 @@
  */
 
 import { useCallback, type ReactNode } from "react";
-import { Platform, Pressable, Text, View } from "react-native";
-import { Check, Plus, Settings, Sparkles, Users, Zap } from "lucide-react-native";
+import { Linking, Platform, Pressable, Text, View } from "react-native";
+import { Check, Cloud, CloudOff, ExternalLink, Plus, Settings, Sparkles, Users, Zap } from "lucide-react-native";
 import { cn } from "@shogo/shared-ui/primitives";
 import { usePostHogSafe } from "../../../contexts/posthog";
 import { getPlanDisplayName } from "../../../lib/billing-config";
@@ -15,6 +15,7 @@ import { EVENTS, trackEvent } from "../../../lib/analytics";
 import { CompactUsageWindows } from "../../billing/UsageWindows";
 import { densityFor } from "../../../lib/phone-density";
 import { AccountSettingsGroup } from "./AccountSettingsGroup";
+import { isCloudWorkspace, useCloudWorkspaces } from "../../../lib/workspace-route";
 
 export interface WorkspaceMenuSectionProps {
   workspaces: any[];
@@ -53,11 +54,15 @@ export interface WorkspaceMenuSectionProps {
  * structural `kind` instead — "Personal" vs "Team" — which is what
  * actually determines the sidebar/shell chrome (`useWorkspaceExperience`).
  */
-export function workspaceKindBadge(ws: { kind?: string }): {
+export function workspaceKindBadge(
+  ws: { kind?: string },
+  opts: { cloud?: boolean } = {},
+): {
   highlighted: boolean;
   label: string;
 } {
   const isPersonal = ws.kind === "personal";
+  if (opts.cloud) return { highlighted: false, label: "Cloud" };
   return { highlighted: isPersonal, label: isPersonal ? "Personal" : "Team" };
 }
 
@@ -82,6 +87,8 @@ export function WorkspaceMenuSection({
 }: WorkspaceMenuSectionProps) {
   const posthog = usePostHogSafe();
   const density = densityFor(isNative);
+  const cloud = useCloudWorkspaces();
+  const currentIsCloud = !!localMode && isCloudWorkspace(currentWorkspace?.id);
 
   const wsInitial = currentWorkspace?.name?.[0]?.toUpperCase() ?? "W";
   const resolvedPlanId =
@@ -97,9 +104,16 @@ export function WorkspaceMenuSection({
     onClose();
   }, [onNavigate, onClose]);
   const openInvite = useCallback(() => {
-    onNavigate("/(app)/settings?tab=people");
     onClose();
-  }, [onNavigate, onClose]);
+    // Desktop has no invite flow of its own; cloud workspaces manage members
+    // in the Shogo Cloud web app.
+    if (currentIsCloud && cloud.cloudUrl) {
+      const id = encodeURIComponent(currentWorkspace.id);
+      void Linking.openURL(`${cloud.cloudUrl.replace(/\/+$/, "")}/settings?tab=people&workspace=${id}`);
+      return;
+    }
+    onNavigate("/(app)/settings?tab=people");
+  }, [onNavigate, onClose, currentIsCloud, cloud.cloudUrl, currentWorkspace?.id]);
 
   const identityHeader = currentWorkspace ? (
     <View className={cn("px-4", isNative ? "py-4" : "py-3")}>
@@ -129,7 +143,26 @@ export function WorkspaceMenuSection({
           >
             {currentWorkspace.name}
           </Text>
-          {showBilling && (
+          {currentIsCloud ? (
+            <View className="mt-0.5 flex-row items-center gap-1">
+              {cloud.reachable ? (
+                <Cloud size={12} className="text-muted-foreground" />
+              ) : (
+                <CloudOff size={12} className="text-destructive" />
+              )}
+              <Text
+                className={cn(
+                  cloud.reachable ? "text-muted-foreground" : "text-destructive",
+                  density.text.label,
+                )}
+                numberOfLines={1}
+              >
+                {cloud.reachable
+                  ? `Shogo Cloud${cloud.user?.email ? ` \u00B7 ${cloud.user.email}` : ""}`
+                  : "Offline \u00B7 can't reach Shogo Cloud"}
+              </Text>
+            </View>
+          ) : showBilling ? (
             <Text
               className={cn(
                 "text-muted-foreground",
@@ -139,7 +172,7 @@ export function WorkspaceMenuSection({
             >
               {planType} Plan {"\u00B7"} 1 member
             </Text>
-          )}
+          ) : null}
         </View>
       </View>
     </View>
@@ -154,13 +187,17 @@ export function WorkspaceMenuSection({
         <Settings size={14} className="text-muted-foreground" />
         <Text className="text-xs text-foreground">Settings</Text>
       </Pressable>
-      {!localMode && (
+      {(!localMode || currentIsCloud) && (
         <Pressable
           onPress={openInvite}
+          accessibilityLabel={currentIsCloud ? "Manage in Shogo Cloud" : "Invite"}
           className="h-8 flex-1 flex-row items-center justify-center gap-1.5 rounded-md border border-border active:bg-muted"
         >
           <Users size={14} className="text-muted-foreground" />
-          <Text className="text-xs text-foreground">Invite</Text>
+          <Text className="text-xs text-foreground">
+            {currentIsCloud ? "Manage in Shogo Cloud" : "Invite"}
+          </Text>
+          {currentIsCloud && <ExternalLink size={12} className="text-muted-foreground" />}
         </Pressable>
       )}
     </View>
@@ -227,7 +264,8 @@ export function WorkspaceMenuSection({
       {workspaces.map((ws: any, index: number) => {
         const isCurrent = ws.id === currentWorkspace?.id;
         const isLast = index === workspaces.length - 1 && localMode;
-        const badge = workspaceKindBadge(ws);
+        const wsIsCloud = !!localMode && isCloudWorkspace(ws.id);
+        const badge = workspaceKindBadge(ws, { cloud: wsIsCloud });
         return (
           <Pressable
             key={ws.id}
@@ -278,6 +316,9 @@ export function WorkspaceMenuSection({
                 {badge.label}
               </Text>
             </View>
+            {wsIsCloud && !cloud.reachable && (
+              <CloudOff size={14} className="text-destructive" accessibilityLabel="Offline" />
+            )}
             {isCurrent && <Check size={16} className="text-primary" />}
           </Pressable>
         );

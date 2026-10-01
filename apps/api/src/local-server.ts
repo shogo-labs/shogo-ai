@@ -21,6 +21,7 @@ import { startAgentScheduleWorker, stopAgentScheduleWorker } from './jobs/run-ag
 import { startChatQueueWorker, stopChatQueueWorker } from './jobs/run-chat-queue-drain'
 import { startChannelWorkers, stopChannelWorkers } from './jobs/run-channel-workers'
 import { resolveLocalApiPort } from './lib/local-api-port'
+import { startCloudWorkspaceSync } from './services/cloud-workspaces'
 import { conversationSocketHandlers, isConversationSocketData } from './realtime/conversation-socket'
 
 const API_PORT = resolveLocalApiPort()
@@ -32,6 +33,8 @@ resetLocalCaches()
 startAgentScheduleWorker(runtimeManager)
 startChatQueueWorker()
 startChannelWorkers()
+// Keep the cloud team workspaces this desktop is signed in to current.
+startCloudWorkspaceSync()
 
 const ptyBridge = createLocalPtyBridgeHandlers()
 const server = Bun.serve({
