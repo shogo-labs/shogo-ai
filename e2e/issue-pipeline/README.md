@@ -10,6 +10,7 @@ that ladder.
 | L0 | Whiteboard prose (baked into `issue-pipeline-solo`) + fixture repo with one planted bug | Single-project pipeline opens a PR fixing the bug | `l0-solo.integration.test.ts` |
 | L1 | `shogo-system.yaml` applied to a workspace | Same outcome as L0 from 10 wired projects; `system_apply` is idempotent | `l1-multi-project.integration.test.ts` |
 | L1 + team chat | Same as L1 | The run happens in one `#issue-pipeline` thread, stages hand off by @mention, GitHub gets a mirror | `l1-channels.integration.test.ts` |
+| Eng pod | `eng-pod` team seeded with `scripts/demo/seed-eng-pod.ts`, plus the `checkout-app` fixture | A bug posted in `#eng` with no mention ends in a merged PR with one human decision (the merge approval); records time to PR, messages to read, interventions and wasted turns | `l1-eng-pod-metrics.integration.test.ts` |
 | L2 | Whiteboard prose only | Writes the manifest itself, then passes L1 | `l2-manifest-from-prose.integration.test.ts` |
 | L3 | Three seeded runs with the same accepted security finding | Planner's `## Learned` section is amended | `l3-prompt-amendment.integration.test.ts` |
 | L4 | `shogo-ai` fork + a real open issue | Mergeable PR | [`L4-RUNBOOK.md`](./L4-RUNBOOK.md) (manual — the plan's own assertion is "Human review") |
@@ -49,12 +50,54 @@ run standalone:
 cd e2e/issue-pipeline/fixtures/target-repo && bun test
 ```
 
+[`fixtures/checkout-app/`](./fixtures/checkout-app/) is the fixture for the
+eng-pod run: a small checkout page whose coupon also discounts shipping
+(`BUG.md`; visible at `/?coupon=SAVE10`). Select it with `FIXTURE_DIR`; the
+eng-pod test and `scripts/demo/seed-eng-pod.ts` default to it.
+
+## Eng pod metrics
+
+`eng-pod-metrics.ts` is the pure scoring logic (unit-tested by
+`eng-pod-metrics.test.ts`, which runs in normal CI); the live test only
+collects the channel's messages and the PR's timestamps. Definitions:
+
+| Metric | Meaning | Target |
+| --- | --- | --- |
+| Bug post → PR | Minutes from the post to the PR being opened | under 15 |
+| Bug post → preview | Minutes to the first message linking a preview | recorded |
+| Messages to read | Agent messages that are top-level, status cards (once each), decisions, alerts or have no kind; routine `status` replies are collapsed | 5 or fewer |
+| Human interventions | Messages a person wrote in the thread plus approval cards someone decided | exactly 1 (the merge) |
+| Wasted agent turns | Agents other than the coordinator that answered the untagged post, "Paused" chain-limit notices, reviewer rounds above 2 | 0 |
+
+Each run prints a report and writes `results/eng-pod-<timestamp>.json` (git
+ignored; change the folder with `RESULTS_DIR`). Missing a target fails the test
+unless `ENG_POD_ENFORCE_TARGETS=0`. A top-level agent post during the run, such
+as the 9am briefing, counts as a message to read, so rehearse away from 9am or
+run with the briefing disabled.
+
+```bash
+# Seed (idempotent): coordinator project, team, GitHub, briefing routine
+SHOGO_API_URL=http://localhost:8002 SHOGO_API_KEY=shogo_sk_... WORKSPACE_ID=<id> \
+  GITHUB_TEST_REPO=<owner>/<repo> GITHUB_INSTALLATION_ID=<n> AGENT_URL=http://localhost:6200 \
+  bun run scripts/demo/seed-eng-pod.ts --reset-repo
+
+# Measure
+GITHUB_TEST_REPO=<owner>/<repo> SHOGO_API_URL=http://localhost:8002 \
+  SHOGO_API_KEY=shogo_sk_... WORKSPACE_ID=<id> \
+  bun test ./e2e/issue-pipeline/l1-eng-pod-metrics.integration.test.ts
+```
+
 ## Environment variables
 
 | Variable | Required by | Description |
 | --- | --- | --- |
 | `GITHUB_TEST_REPO` | L0, L1 | `<owner>/<repo>` of a disposable repo connected via the Shogo GitHub App. Force-pushed to — must be disposable. |
 | `FIXTURE_DIR` | L0, L1 (optional) | Overrides which fixture directory gets pushed. Defaults to `fixtures/target-repo`. |
+| `SHOGO_API_URL`, `SHOGO_API_KEY`, `WORKSPACE_ID` | L1 + team chat, eng pod | API base URL (default `http://localhost:8002`), an API key, and the workspace holding the team channel. |
+| `ENG_POD_CHANNEL` | Eng pod (optional) | Channel name the bug is posted in. Defaults to `eng`. |
+| `ENG_POD_ENFORCE_TARGETS` | Eng pod (optional) | `0` records metrics without failing when a target is missed. |
+| `SKIP_PREVIEW` | Eng pod (optional) | `1` when the pod has no preview URL configured; the preview wait is skipped. |
+| `RESULTS_DIR` | Eng pod (optional) | Where the metrics JSON is written. Defaults to `e2e/issue-pipeline/results/`. |
 | `AGENT_URL` | L1 (verification step), L2, L3 | Base URL of the relevant project's agent runtime — the harness/anchor project for L1/L2, the `retrospective` project for L3. Same shape as `e2e/channels/helpers.ts`. |
 | `PLANNER_PROJECT_ID` | L3 | Id of the `planner` project, so the test can inspect its on-disk git history. |
 | `WORKSPACES_ROOT` | L3 (optional) | Overrides the root `workspaces/` dir the harness reads project git history from. Defaults to the repo's own `workspaces/`. |
