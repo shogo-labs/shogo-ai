@@ -94,7 +94,12 @@ jobs:
         id: ts-cache
         uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
-          path: '**/*.tsbuildinfo'
+          # Never cache node_modules: some packages ship a .tsbuildinfo, and
+          # restoring it before install recreates the package's store dir with
+          # only that file, which Bun then treats as already installed.
+          path: |
+            **/*.tsbuildinfo
+            !**/node_modules/**
           key: tsbuild-typecheck-${{ hashFiles('bun.lock', 'tsconfig*.json', 'apps/*/tsconfig*.json', 'packages/*/tsconfig*.json', 'packages/sdk/examples/*/tsconfig*.json', 'scripts/tsconfig*.json') }}
           restore-keys: tsbuild-typecheck-
 
@@ -194,7 +199,12 @@ jobs:
         if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.ts-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
-          path: '**/*.tsbuildinfo'
+          # Never cache node_modules: some packages ship a .tsbuildinfo, and
+          # restoring it before install recreates the package's store dir with
+          # only that file, which Bun then treats as already installed.
+          path: |
+            **/*.tsbuildinfo
+            !**/node_modules/**
           key: tsbuild-typecheck-${{ hashFiles('bun.lock', 'tsconfig*.json', 'apps/*/tsconfig*.json', 'packages/*/tsconfig*.json', 'packages/sdk/examples/*/tsconfig*.json', 'scripts/tsconfig*.json') }}
 
       - name: Lint
@@ -316,7 +326,12 @@ jobs:
         id: ts-mobile-cache
         uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
-          path: '**/*.tsbuildinfo'
+          # Never cache node_modules: some packages ship a .tsbuildinfo, and
+          # restoring it before install recreates the package's store dir with
+          # only that file, which Bun then treats as already installed.
+          path: |
+            **/*.tsbuildinfo
+            !**/node_modules/**
           key: tsbuild-mobile-${{ hashFiles('bun.lock', 'tsconfig*.json', 'apps/*/tsconfig*.json', 'packages/*/tsconfig*.json', 'packages/sdk/examples/*/tsconfig*.json', 'scripts/tsconfig*.json') }}
           restore-keys: tsbuild-mobile-
 
@@ -352,7 +367,12 @@ jobs:
         if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.ts-mobile-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
-          path: '**/*.tsbuildinfo'
+          # Never cache node_modules: some packages ship a .tsbuildinfo, and
+          # restoring it before install recreates the package's store dir with
+          # only that file, which Bun then treats as already installed.
+          path: |
+            **/*.tsbuildinfo
+            !**/node_modules/**
           key: tsbuild-mobile-${{ hashFiles('bun.lock', 'tsconfig*.json', 'apps/*/tsconfig*.json', 'packages/*/tsconfig*.json', 'packages/sdk/examples/*/tsconfig*.json', 'scripts/tsconfig*.json') }}
 
   e2e-local:
