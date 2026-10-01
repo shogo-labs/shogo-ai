@@ -6,8 +6,9 @@
  * We spawn an actual shell because (a) the whole point of the class is
  * the PTY-vs-pipe distinction and (b) Bun's terminal API is hard to
  * mock without re-implementing it. Tests are fast (a shell starts in a
- * few ms) and only run on POSIX — we skip on win32 because /bin/sh
- * isn't there and the existing CI matrix is POSIX-only.
+ * few ms). The /bin/sh suite is POSIX-only because it relies on sh syntax;
+ * the shell-neutral suites run on every platform through TEST_SHELL, and
+ * the ConPTY suite at the bottom covers Windows with PowerShell.
  */
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
@@ -15,8 +16,9 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import { mkdtempSync, rmSync, statSync } from 'fs'
 import { PtySession } from '../pty-session'
+import { IS_WIN, SHELL_START_MS, TEST_SHELL, line, waitUntil, disposeAndRemove } from './helpers/pty-shell'
 
-const SKIP = process.platform === 'win32'
+const SKIP = IS_WIN
 
 describe('PtySession (real /bin/sh)', () => {
   if (SKIP) {
@@ -291,11 +293,6 @@ describe('_defaultShellCmdForTests — shell detection branches', () => {
 })
 
 describe('PtySession getters (v3 gap-close)', () => {
-  if (process.platform === 'win32') {
-    test.skip('skipped on win32', () => {})
-    return
-  }
-
   let session: PtySession
 
   beforeEach(async () => {
@@ -303,7 +300,7 @@ describe('PtySession getters (v3 gap-close)', () => {
     const { tmpdir } = await import('os')
     const { mkdtempSync } = await import('fs')
     const dir = mkdtempSync(join(tmpdir(), 'pty-getter-test-'))
-    session = new PtySession({ cmd: ['/bin/sh', '-i'], cwd: dir, cols: 80, rows: 24 })
+    session = new PtySession({ cmd: TEST_SHELL, cwd: dir, cols: 80, rows: 24 })
   })
   afterEach(() => { session.dispose() })
 
@@ -328,69 +325,57 @@ describe('PtySession getters (v3 gap-close)', () => {
 })
 
 describe('PtySession error-swallowing in listeners (v3 gap-close)', () => {
-  if (process.platform === 'win32') {
-    test.skip('skipped on win32', () => {})
-    return
-  }
-
   test('onData throwing listener is swallowed — other listeners still fire', async () => {
     const { join } = await import('path')
     const { tmpdir } = await import('os')
     const { mkdtempSync, rmSync } = await import('fs')
     const dir = mkdtempSync(join(tmpdir(), 'pty-catch-test-'))
-    const session = new PtySession({ cmd: ['/bin/sh', '-i'], cwd: dir, cols: 80, rows: 24 })
+    const session = new PtySession({ cmd: TEST_SHELL, cwd: dir, cols: 80, rows: 24 })
     try {
       let goodFired = false
       const unsub1 = session.onData(() => { throw new Error('listener boom') })
       const unsub2 = session.onData(() => { goodFired = true })
-      session.write('echo hello\n')
-      await new Promise((r) => setTimeout(r, 500))
+      session.write(line('echo hello'))
+      await waitUntil(() => goodFired, SHELL_START_MS)
       expect(goodFired).toBe(true)
       unsub1()
       unsub2()
     } finally {
-      session.dispose()
-      rmSync(dir, { recursive: true, force: true })
+      await disposeAndRemove(session, dir)
     }
-  })
+  }, 30_000)
 
   test('onExit throwing listener is swallowed — other listeners still fire', async () => {
     const { join } = await import('path')
     const { tmpdir } = await import('os')
     const { mkdtempSync, rmSync } = await import('fs')
     const dir = mkdtempSync(join(tmpdir(), 'pty-exit-catch-test-'))
-    const session = new PtySession({ cmd: ['/bin/sh', '-i'], cwd: dir, cols: 80, rows: 24 })
+    const session = new PtySession({ cmd: TEST_SHELL, cwd: dir, cols: 80, rows: 24 })
     try {
       let goodFired = false
       session.onExit(() => { throw new Error('exit listener boom') })
       session.onExit(() => { goodFired = true })
-      session.write('exit 0\n')
-      await new Promise((r) => setTimeout(r, 1000))
+      session.write(line('exit 0'))
+      await waitUntil(() => goodFired, SHELL_START_MS)
       expect(goodFired).toBe(true)
     } finally {
-      session.dispose()
-      rmSync(dir, { recursive: true, force: true })
+      await disposeAndRemove(session, dir)
     }
-  })
+  }, 30_000)
 })
 
 describe('PtySession late-onExit and unsubscribe lambdas (v3 gap-close)', () => {
-  if (process.platform === 'win32') {
-    test.skip('skipped on win32', () => {})
-    return
-  }
-
   test('onExit called after exit fires callback via queueMicrotask and returns no-op unsub', async () => {
     const { join } = await import('path')
     const { tmpdir } = await import('os')
     const { mkdtempSync, rmSync } = await import('fs')
     const dir = mkdtempSync(join(tmpdir(), 'pty-late-exit-test-'))
-    const session = new PtySession({ cmd: ['/bin/sh', '-i'], cwd: dir, cols: 80, rows: 24 })
+    const session = new PtySession({ cmd: TEST_SHELL, cwd: dir, cols: 80, rows: 24 })
     try {
       // Wait for exit first
       await new Promise<void>((resolve) => {
         session.onExit(() => resolve())
-        session.write('exit 0\n')
+        session.write(line('exit 0'))
       })
       await new Promise((r) => setTimeout(r, 50))
 
@@ -403,17 +388,16 @@ describe('PtySession late-onExit and unsubscribe lambdas (v3 gap-close)', () => 
       // Call the empty unsubscribe — covers the () => {} function body
       expect(() => lateUnsub()).not.toThrow()
     } finally {
-      session.dispose()
-      rmSync(dir, { recursive: true, force: true })
+      await disposeAndRemove(session, dir)
     }
-  })
+  }, 30_000)
 
   test('onExit unsubscribe called before exit removes the listener', async () => {
     const { join } = await import('path')
     const { tmpdir } = await import('os')
     const { mkdtempSync, rmSync } = await import('fs')
     const dir = mkdtempSync(join(tmpdir(), 'pty-unsub-exit-test-'))
-    const session = new PtySession({ cmd: ['/bin/sh', '-i'], cwd: dir, cols: 80, rows: 24 })
+    const session = new PtySession({ cmd: TEST_SHELL, cwd: dir, cols: 80, rows: 24 })
     try {
       let fired = false
       const unsub = session.onExit(() => { fired = true })
@@ -421,14 +405,102 @@ describe('PtySession late-onExit and unsubscribe lambdas (v3 gap-close)', () => 
       unsub()
       await new Promise<void>((resolve) => {
         session.onExit(() => resolve())
-        session.write('exit 0\n')
+        session.write(line('exit 0'))
       })
       await new Promise((r) => setTimeout(r, 50))
       // The unsubscribed listener should NOT have fired
       expect(fired).toBe(false)
     } finally {
-      session.dispose()
-      rmSync(dir, { recursive: true, force: true })
+      await disposeAndRemove(session, dir)
     }
+  }, 30_000)
+})
+
+describe('PtySession on Windows (real ConPTY + PowerShell)', () => {
+  if (!IS_WIN) {
+    test.skip('Windows-only; POSIX is covered by the /bin/sh suite above', () => {})
+    return
+  }
+
+  let session: PtySession
+  let workDir: string
+  let output = ''
+
+  beforeEach(() => {
+    workDir = mkdtempSync(join(tmpdir(), 'pty-conpty-test-'))
+    output = ''
+    session = new PtySession({ cmd: TEST_SHELL, cwd: workDir, cols: 80, rows: 24 })
+    session.onData(({ bytes }) => { output += new TextDecoder().decode(bytes) })
   })
+
+  afterEach(async () => {
+    await disposeAndRemove(session, workDir)
+  })
+
+  async function until(predicate: () => boolean, timeoutMs = SHELL_START_MS): Promise<void> {
+    const t0 = Date.now()
+    while (!predicate()) {
+      if (Date.now() - t0 > timeoutMs) {
+        throw new Error(`timed out after ${timeoutMs}ms; output=${JSON.stringify(output.slice(-400))}`)
+      }
+      await new Promise((r) => setTimeout(r, 50))
+    }
+  }
+
+  const occurrences = (marker: string) => output.split(marker).length - 1
+
+  test('spawns a shell and round-trips a command through ConPTY', async () => {
+    expect(session.pid).toBeGreaterThan(0)
+    session.write(line('echo conpty-hello'))
+    // Once as the echoed command line, once as the command's output.
+    await until(() => occurrences('conpty-hello') >= 2)
+  }, 30_000)
+
+  test('starts in the requested cwd and keeps state between commands', async () => {
+    session.write(line('$env:SHOGO_PTY_TEST = "kept-" + (Get-Location).Path.Length'))
+    session.write(line('echo "STATE=$env:SHOGO_PTY_TEST"'))
+    await until(() => /STATE=kept-\d+/.test(output))
+    session.write(line('(Get-Location).Path'))
+    const leaf = workDir.split(/[\\/]/).pop()!
+    await until(() => occurrences(leaf) >= 1)
+  }, 30_000)
+
+  test('resize() is accepted by the pseudoconsole', async () => {
+    session.resize(132, 50)
+    expect(session.cols).toBe(132)
+    expect(session.rows).toBe(50)
+    session.write(line('echo after-resize'))
+    await until(() => occurrences('after-resize') >= 2)
+  }, 30_000)
+
+  test('scrollback replay returns output emitted before the reader attached', async () => {
+    session.write(line('echo replay-marker'))
+    await until(() => occurrences('replay-marker') >= 2)
+    const replay = session.replaySince(0)
+    expect(replay.truncated).toBe(false)
+    expect(new TextDecoder().decode(replay.bytes)).toContain('replay-marker')
+    expect(replay.latestSeq).toBe(session.latestSeq)
+  }, 30_000)
+
+  test('exit code propagates via onExit', async () => {
+    const exited = new Promise<{ code: number | null }>((resolve) => session.onExit(resolve))
+    session.write(line('exit 7'))
+    const info = await Promise.race([
+      exited,
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('no exit')), SHELL_START_MS)),
+    ])
+    expect(info.code).toBe(7)
+    expect(session.isExited).toBe(true)
+  }, 30_000)
+
+  test('dispose() reaps a running shell promptly', async () => {
+    session.write(line('echo ready-to-kill'))
+    await until(() => occurrences('ready-to-kill') >= 2)
+    const pid = session.pid!
+    session.dispose()
+    const alive = () => { try { process.kill(pid, 0); return true } catch { return false } }
+    const t0 = Date.now()
+    while (alive() && Date.now() - t0 < 10_000) await new Promise((r) => setTimeout(r, 100))
+    expect(alive()).toBe(false)
+  }, 30_000)
 })
