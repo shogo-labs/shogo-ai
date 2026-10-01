@@ -126,6 +126,9 @@ const RAY_SHADE: RGB = [0.3, 0.08, 0.02]
 /** Stretches every timing in the logo-to-character unfold. */
 const UNFOLD_TIME = 4
 
+/** Long enough for the state colour and glow to finish easing. */
+const WAKE_SETTLE_S = 1.5
+
 const bump = (d: number, width: number) => Math.exp(-(d * d) / (width * width))
 
 /** Ways the mark's rays can turn into the character (and back). */
@@ -667,7 +670,7 @@ function star(x: CanvasRenderingContext2D, ro: number, ri: number) {
 export class BuddyEngine {
   isMini = false
   /** Swap between the mark and the character instantly and skip decorative
-   * effects (sheen, peek ripple, confetti). */
+   * effects (sheen, peek ripple, particles). */
   reducedMotion = false
   private lookValue: BuddyLook = DEFAULT_BUDDY_LOOK
   private d: DesignConfig = designFor(DEFAULT_BUDDY_LOOK)
@@ -677,6 +680,10 @@ export class BuddyEngine {
   lookX = 0
   lookY = 0
   onDizzy: (() => void) | null = null
+  /** Called when something starts moving, so a sleeping render loop resumes. */
+  onWake: (() => void) | null = null
+  /** Colour and glow keep easing for a moment after a change. */
+  private awakeUntil = 0
 
   // Animated values
   sx = 1
@@ -755,10 +762,33 @@ export class BuddyEngine {
     if (sameLook(this.lookValue, next)) return
     this.lookValue = next
     this.d = designFor(next)
+    this.wake()
   }
 
   setBodyColor(color: string) {
     this.body = parseColor(color)
+    this.wake()
+  }
+
+  /** Nothing will change on screen until the next `onWake` or `msUntilWake`.
+   * Only the resting mark and a reduced-motion character ever get here; the
+   * full character always breathes and blinks. */
+  get resting(): boolean {
+    const n = nowS()
+    if (n < this.awakeUntil || n < this.logoCoreUntil) return false
+    if (this.tweens.size || this.particles.length || this.timers.size) return false
+    return this.reducedMotion || (this.logo >= 0.999 && this.scale <= 0.001)
+  }
+
+  /** While resting, how long until the mark's next sheen. */
+  msUntilWake(): number | null {
+    if (this.reducedMotion || this.logo < 0.999) return null
+    return Math.max(0, (this.nextSheen - nowS()) * 1000)
+  }
+
+  wake() {
+    this.awakeUntil = nowS() + WAKE_SETTLE_S
+    this.onWake?.()
   }
 
   setState(next: BuddyState, force = false) {
@@ -769,6 +799,7 @@ export class BuddyEngine {
     if (this.state === next && !force) return
     const prev = this.state
     this.state = next
+    this.wake()
     this.cfg = BUDDY_STATES[next]
     this.setBadge(this.cfg.badge)
 
@@ -887,6 +918,7 @@ export class BuddyEngine {
     this.logoWave = 0
     this.logoSheen = 0
     this.scale = on ? 0 : 1
+    this.wake()
   }
 
   /** The mark's rays gather (how depends on `logoStyle`) and the character
@@ -1153,10 +1185,13 @@ export class BuddyEngine {
 
   private anim(prop: Tweenable, keys: readonly Keyframe[], onComplete?: () => void) {
     this.tweens.set(prop, { keys, index: 0, from: this[prop], startMs: performance.now(), onComplete })
+    this.wake()
   }
 
   private emit(kind: ParticleKind, count: number) {
-    if (this.reducedMotion && kind === "confetti") return
+    // Reduced motion steps with dt = 0, so particles would never age out.
+    if (this.reducedMotion) return
+    this.wake()
     for (let i = 0; i < count; i++) {
       if (kind === "confetti") {
         const a = -Math.PI / 2 + (Math.random() - 0.5) * 2.2
@@ -1301,15 +1336,18 @@ export class BuddyEngine {
     this.antennaBend = Math.max(-1.2, Math.min(1.2, this.antennaBend))
 
     // Blinks, fidgets, ambient particles
+    // Idle blinks and fidgets are ambient motion: skip them for the mark and
+    // under reduced motion.
+    const ambientMotion = this.scale > 0.001 && !this.reducedMotion
     if (n > this.nextBlink) {
-      if (this.state !== "sleeping" && this.state !== "dizzy") {
+      if (ambientMotion && this.state !== "sleeping" && this.state !== "dizzy") {
         this.blink()
         if (Math.random() < 0.22) this.later(230, () => this.blink())
       }
       this.nextBlink = n + 2.2 + Math.random() * 3.2
     }
     if (n > this.nextFidget) {
-      if (this.state === "idle" && !this.isMini) {
+      if (ambientMotion && this.state === "idle" && !this.isMini) {
         const roll = Math.random()
         if (roll < 0.35) this.hop(0.12)
         else if (roll < 0.7)

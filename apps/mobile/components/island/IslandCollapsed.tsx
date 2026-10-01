@@ -127,6 +127,18 @@ export function IslandCollapsed({
   ) : meeting.recording ? (
     <Text className="text-[12px] font-semibold tabular-nums text-red-300">{formatDuration(recordingSeconds)}</Text>
   ) : null
+  // The buddy carries the status visually; say it for screen readers too.
+  const status = meeting.prompt
+    ? `Meeting detected in ${meeting.prompt.app}`
+    : meeting.recording
+      ? "Recording"
+      : attentionCount > 0
+        ? `${attentionCount} ${attentionCount === 1 ? "chat needs" : "chats need"} you`
+        : running
+          ? "Working"
+          : peek
+            ? `${peek.title} finished`
+            : null
   const right = (
     <View className="flex-row items-center gap-1.5 min-w-0">
       <Text className="flex-shrink-0 max-w-[70%] text-[12px] font-semibold text-white" numberOfLines={1}>
@@ -160,7 +172,7 @@ export function IslandCollapsed({
           onPress={onExpand}
           {...ISLAND_TRIGGER_PROPS}
           accessibilityRole="button"
-          accessibilityLabel="Open Shogo island"
+          accessibilityLabel={status ? `Open Shogo island. ${status}` : "Open Shogo island"}
           className={cn(
             "h-full w-full flex-row items-center overflow-hidden bg-black",
             layout.notched ? "rounded-b-[14px]" : "rounded-[18px] border border-white/10 px-3.5 justify-center gap-2",

@@ -9,11 +9,12 @@ import {
   normalizeBuddyLook,
   presetForLook,
   sameLook,
+  type BuddyLook,
 } from "../buddy/look"
 
 describe("normalizeBuddyLook", () => {
   test("keeps a valid look", () => {
-    const look = { topper: "ears", face: "screen", bolts: true, blush: false }
+    const look: BuddyLook = { topper: "ears", face: "screen", bolts: true, blush: false }
     expect(normalizeBuddyLook(look)).toEqual(look)
   })
 

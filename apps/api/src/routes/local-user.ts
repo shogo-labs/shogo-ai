@@ -4,6 +4,7 @@
 import { Hono } from 'hono'
 import { prisma } from '../lib/prisma'
 import { normalizeAdminScopes } from '../lib/admin-scopes'
+import { parseBuddyLook, type BuddyLook } from '../../../../packages/shared-app/src/buddy-look'
 
 type AuthContext = {
   userId?: string
@@ -17,39 +18,6 @@ function userIdFrom(c: any): string | null {
 
 const ONBOARDING_INTENTS = ['personal', 'team'] as const
 type OnboardingIntent = (typeof ONBOARDING_INTENTS)[number]
-
-const BUDDY_TOPPERS = ['orb', 'stubby', 'ears', 'none'] as const
-const BUDDY_FACES = ['classic', 'visor', 'screen'] as const
-
-export interface BuddyLook {
-  topper: (typeof BUDDY_TOPPERS)[number]
-  face: (typeof BUDDY_FACES)[number]
-  bolts: boolean
-  blush: boolean
-}
-
-/** Strict parse of a client-supplied look; every field is required. */
-export function parseBuddyLook(value: unknown): { ok: true; look: BuddyLook } | { ok: false; error: string } {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    return { ok: false, error: 'look must be an object' }
-  }
-  const v = value as Record<string, unknown>
-  const extra = Object.keys(v).filter((key) => !['topper', 'face', 'bolts', 'blush'].includes(key))
-  if (extra.length) return { ok: false, error: `unknown field "${extra[0]}"` }
-  if (!BUDDY_TOPPERS.includes(v.topper as BuddyLook['topper'])) {
-    return { ok: false, error: `topper must be one of ${BUDDY_TOPPERS.join(', ')}` }
-  }
-  if (!BUDDY_FACES.includes(v.face as BuddyLook['face'])) {
-    return { ok: false, error: `face must be one of ${BUDDY_FACES.join(', ')}` }
-  }
-  if (typeof v.bolts !== 'boolean' || typeof v.blush !== 'boolean') {
-    return { ok: false, error: 'bolts and blush must be booleans' }
-  }
-  return {
-    ok: true,
-    look: { topper: v.topper as BuddyLook['topper'], face: v.face as BuddyLook['face'], bolts: v.bolts, blush: v.blush },
-  }
-}
 
 function storedBuddyLook(raw: string | null | undefined): BuddyLook | null {
   if (!raw) return null

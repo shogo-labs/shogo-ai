@@ -28,6 +28,8 @@ import { BuddyCustomizer } from "@/components/island/buddy/BuddyCustomizer"
 import { DEFAULT_BUDDY_LOOK, type BuddyLook } from "@/components/island/buddy/look"
 import { Tracked } from "@/components/island/motion/spring"
 
+declare const __DEV__: boolean
+
 type Mode = "hidden" | "collapsed" | "expanded"
 type CardView = "inbox" | "chat"
 type MotionStyle = "spring" | "tween"
@@ -514,7 +516,19 @@ function Row({ label, children }: { label: string; children: ReactNode }) {
   )
 }
 
-export default function IslandDemo() {
+export default function IslandDemoRoute() {
+  if (!__DEV__) {
+    return (
+      <SafeAreaView className="flex-1 bg-background items-center justify-center">
+        <Text className="text-foreground text-base">The island motion lab is only available in development builds.</Text>
+      </SafeAreaView>
+    )
+  }
+
+  return <IslandDemo />
+}
+
+function IslandDemo() {
   const accent = useIslandAccent()
   const [mode, setMode] = useState<Mode>("hidden")
   const [view, setView] = useState<CardView>("inbox")

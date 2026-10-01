@@ -2,7 +2,10 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { describe, expect, test } from 'bun:test'
+import { BUDDY_FACE_IDS, BUDDY_TOPPER_IDS } from '../../../../packages/shared-app/src/buddy-look'
 import {
+  ISLAND_BUDDY_FACES,
+  ISLAND_BUDDY_TOPPERS,
   ISLAND_MAX_PARAM_CHARS,
   mergeIslandSnapshots,
   parseIslandAction,
@@ -125,6 +128,12 @@ describe('parseIslandSnapshot', () => {
     expect(parseIslandSnapshot({ sessions: [], buddyLook: { ...look, topper: 'crown' } }).buddyLook).toBeUndefined()
     expect(parseIslandSnapshot({ sessions: [], buddyLook: { ...look, bolts: 'yes' } }).buddyLook).toBeUndefined()
     expect(parseIslandSnapshot({ sessions: [], buddyLook: 'kitty' }).buddyLook).toBeUndefined()
+  })
+
+  // The desktop build can't import outside src/, so it keeps its own copy.
+  test('buddy accessories match the shared look definition', () => {
+    expect([...ISLAND_BUDDY_TOPPERS]).toEqual([...BUDDY_TOPPER_IDS])
+    expect([...ISLAND_BUDDY_FACES]).toEqual([...BUDDY_FACE_IDS])
   })
 })
 

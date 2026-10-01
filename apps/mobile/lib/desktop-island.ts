@@ -5,6 +5,7 @@
 // apps/desktop/src/island-protocol.ts, which re-validates everything sent
 // from here.
 
+import type { BuddyLook } from "@shogo/shared-app/buddy-look"
 import { chatActivityEvents, chatSessionEvents } from "./chat-session-events"
 
 export interface IslandFileAttachment {
@@ -95,12 +96,7 @@ export interface DesktopIslandSnapshot {
   updatedAt: number
 }
 
-export interface DesktopIslandBuddyLook {
-  topper: string
-  face: string
-  bolts: boolean
-  blush: boolean
-}
+export type DesktopIslandBuddyLook = BuddyLook
 
 export type DesktopIslandTarget =
   | { kind: "session"; projectId: string; sessionId: string }

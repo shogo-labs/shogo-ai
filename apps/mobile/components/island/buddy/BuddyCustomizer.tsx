@@ -16,15 +16,27 @@ import {
 } from "./look"
 import { ShogoBuddy, type ShogoBuddyHandle } from "./ShogoBuddy"
 
-function Chip({ label, active, onPress }: { label: string; active: boolean; onPress: () => void }) {
+function Chip({
+  label,
+  active,
+  disabled = false,
+  onPress,
+}: {
+  label: string
+  active: boolean
+  disabled?: boolean
+  onPress: () => void
+}) {
   return (
     <Pressable
       onPress={onPress}
+      disabled={disabled}
       accessibilityRole="button"
-      accessibilityState={{ selected: active }}
+      accessibilityState={{ selected: active, disabled }}
       className={cn(
         "rounded-full border px-3 py-1.5",
-        active ? "border-primary bg-primary/15" : "border-border bg-card hover:bg-muted",
+        active ? "border-primary bg-primary/15" : "border-border bg-card",
+        disabled ? "opacity-50" : !active && "hover:bg-muted",
       )}
     >
       <Text className={cn("text-xs", active ? "font-semibold text-primary" : "text-foreground")}>{label}</Text>
@@ -75,7 +87,15 @@ export function BuddyCustomizer({
           className="items-center justify-end rounded-2xl border border-white/5 bg-zinc-950 pb-2"
           style={{ width: previewSize + 40 }}
         >
-          <ShogoBuddy ref={preview} size={previewSize} state={state} color={color} look={look} interactive />
+          <ShogoBuddy
+            ref={preview}
+            size={previewSize}
+            state={state}
+            color={color}
+            look={look}
+            interactive
+            accessibilityLabel="Your Shogo preview"
+          />
         </View>
         <View className="min-w-[240px] flex-1 gap-4">
           <Row label="On top">
@@ -103,6 +123,7 @@ export function BuddyCustomizer({
             <Chip
               label={look.face === "classic" ? "Blush" : "Blush (classic face only)"}
               active={look.blush && look.face === "classic"}
+              disabled={look.face !== "classic"}
               onPress={() => onChange({ ...look, blush: !look.blush })}
             />
           </Row>
@@ -123,7 +144,7 @@ export function BuddyCustomizer({
                 active ? "border-primary" : "border-white/5 hover:border-white/20",
               )}
             >
-              <ShogoBuddy size={64} state={state} color={color} look={preset.look} followPointer={false} />
+              <ShogoBuddy size={64} state={state} color={color} look={preset.look} followPointer={false} still />
               <Text className={cn("text-[11px] font-semibold", active ? "text-zinc-50" : "text-zinc-400")}>
                 {preset.label}
               </Text>

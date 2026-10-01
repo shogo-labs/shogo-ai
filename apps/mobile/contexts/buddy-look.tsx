@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
-import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react'
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useAuth } from './auth'
 import { api, createHttpClient } from '../lib/api'
 import { setIslandBuddyLook } from '../lib/desktop-island'
@@ -57,18 +57,28 @@ export function BuddyLookProvider({ enabled = true, children }: { enabled?: bool
   const [error, setError] = useState('')
   /** Set once the user picks a look, so a slow `/api/me` can't overwrite it. */
   const touched = useRef(false)
-  const inflight = useRef(0)
   const lookRef = useRef(look)
   lookRef.current = look
+  const userIdRef = useRef(userId)
+  userIdRef.current = userId
+  /** The look the server last acknowledged; a failed save rolls back to it. */
+  const confirmed = useRef<BuddyLook>(DEFAULT_BUDDY_LOOK)
+  /** Only one save is in flight; picks made meanwhile collapse into the newest. */
+  const sending = useRef(false)
+  const queued = useRef<BuddyLook | null>(null)
 
   useEffect(() => {
     touched.current = false
+    queued.current = null
     setError('')
     if (!userId) {
+      confirmed.current = DEFAULT_BUDDY_LOOK
       setLookState(DEFAULT_BUDDY_LOOK)
       return
     }
-    setLookState(readCache(userId) ?? DEFAULT_BUDDY_LOOK)
+    const cached = readCache(userId) ?? DEFAULT_BUDDY_LOOK
+    confirmed.current = cached
+    setLookState(cached)
 
     let cancelled = false
     void api
@@ -76,6 +86,7 @@ export function BuddyLookProvider({ enabled = true, children }: { enabled?: bool
       .then((res) => {
         if (cancelled || touched.current) return
         const next = normalizeBuddyLook(res?.data?.buddyLook)
+        confirmed.current = next
         setLookState((prev) => (sameLook(prev, next) ? prev : next))
         writeCache(userId, next)
       })
@@ -103,37 +114,46 @@ export function BuddyLookProvider({ enabled = true, children }: { enabled?: bool
     if (enabled) setIslandBuddyLook(look)
   }, [enabled, look])
 
+  const flush = useCallback((owner: string) => {
+    const next = queued.current
+    if (!next || sending.current) return
+    queued.current = null
+    sending.current = true
+    setSaving(true)
+    api
+      .setBuddyLook(createHttpClient(), next)
+      .then(() => {
+        if (userIdRef.current === owner) confirmed.current = next
+      })
+      .catch(() => {
+        if (userIdRef.current !== owner || queued.current || !sameLook(lookRef.current, next)) return
+        const fallback = confirmed.current
+        setLookState(fallback)
+        writeCache(owner, fallback)
+        setError('Could not save your Shogo. Try again.')
+      })
+      .finally(() => {
+        sending.current = false
+        if (queued.current && userIdRef.current === owner) flush(owner)
+        else setSaving(false)
+      })
+  }, [])
+
   const setLook = useCallback(
     (next: BuddyLook) => {
-      if (!userId) return
-      const prev = lookRef.current
-      if (sameLook(prev, next)) return
+      if (!userId || sameLook(lookRef.current, next)) return
       touched.current = true
       setLookState(next)
       writeCache(userId, next)
-      inflight.current += 1
-      setSaving(true)
       setError('')
-      api
-        .setBuddyLook(createHttpClient(), next)
-        .catch(() => {
-          // Only roll back if nothing newer was picked meanwhile.
-          if (!sameLook(lookRef.current, next)) return
-          setLookState(prev)
-          writeCache(userId, prev)
-          setError('Could not save your Shogo. Try again.')
-        })
-        .finally(() => {
-          inflight.current -= 1
-          setSaving(inflight.current > 0)
-        })
+      queued.current = next
+      flush(userId)
     },
-    [userId],
+    [userId, flush],
   )
 
-  return (
-    <BuddyLookContext.Provider value={{ look, setLook, saving, error }}>{children}</BuddyLookContext.Provider>
-  )
+  const value = useMemo(() => ({ look, setLook, saving, error }), [look, setLook, saving, error])
+  return <BuddyLookContext.Provider value={value}>{children}</BuddyLookContext.Provider>
 }
 
 export function useBuddyLook() {
