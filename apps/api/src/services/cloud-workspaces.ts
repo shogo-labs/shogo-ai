@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * Cloud team workspaces a signed-in desktop is a live client of. Each one has
+ * Cloud workspaces a signed-in desktop is a live client of: the user's team
+ * workspaces and their own Personal one (which then stands in for the
+ * desktop's local Personal, so desktop and mobile share it). Each one has
  * its own device key (keys are workspace-scoped on the cloud), stored in
  * localConfig `SHOGO_CLOUD_WORKSPACES`. Nothing from those workspaces is
  * copied into SQLite; the local API relays requests with the matching key.
@@ -17,6 +19,7 @@ export interface CloudWorkspaceEntry {
   id: string
   name: string
   slug: string | null
+  kind: 'personal' | 'team'
   key: string
 }
 
@@ -47,6 +50,7 @@ async function load(): Promise<Stored> {
   try {
     if (row?.value) parsed = { ...parsed, ...JSON.parse(row.value) }
   } catch {}
+  parsed.workspaces = parsed.workspaces.map((w) => ({ ...w, kind: w.kind === 'personal' ? 'personal' : 'team' }))
   cache = parsed
   return parsed
 }
@@ -74,14 +78,20 @@ export async function cloudWorkspaceUser(): Promise<CloudUser | null> {
 /** Stores the keys handed over at sign-in; replaces any previous set. */
 export async function setCloudWorkspaces(input: {
   user: CloudUser | null
-  workspaces: Array<{ workspace: { id: string; name: string; slug?: string | null }; key: string }>
+  workspaces: Array<{ workspace: { id: string; name: string; slug?: string | null; kind?: string }; key: string }>
 }): Promise<void> {
   await save({
     enabled: true,
     user: input.user,
     workspaces: input.workspaces
       .filter((w) => w?.workspace?.id && typeof w.key === 'string' && w.key.startsWith('shogo_sk_'))
-      .map((w) => ({ id: w.workspace.id, name: w.workspace.name, slug: w.workspace.slug ?? null, key: w.key })),
+      .map((w) => ({
+        id: w.workspace.id,
+        name: w.workspace.name,
+        slug: w.workspace.slug ?? null,
+        kind: w.workspace.kind === 'personal' ? ('personal' as const) : ('team' as const),
+        key: w.key,
+      })),
     syncedAt: new Date().toISOString(),
   })
   reachable = true
@@ -120,13 +130,14 @@ export function syncCloudWorkspaces(): Promise<void> {
         return
       }
       const data = (await res.json()) as {
-        workspaces?: Array<{ workspace: { id: string; name: string; slug: string | null }; key?: string }>
+        workspaces?: Array<{ workspace: { id: string; name: string; slug: string | null; kind?: string }; key?: string }>
       }
       const byId = new Map(stored.workspaces.map((w) => [w.id, w]))
       const next: CloudWorkspaceEntry[] = []
       for (const { workspace, key } of data.workspaces ?? []) {
         const resolved = key ?? byId.get(workspace.id)?.key
-        if (resolved) next.push({ id: workspace.id, name: workspace.name, slug: workspace.slug ?? null, key: resolved })
+        const kind = workspace.kind === 'personal' ? 'personal' : 'team'
+        if (resolved) next.push({ id: workspace.id, name: workspace.name, slug: workspace.slug ?? null, kind, key: resolved })
       }
       await save({ ...stored, workspaces: next, syncedAt: new Date().toISOString() })
       reachable = true

@@ -8,7 +8,7 @@
 import { Platform } from 'react-native'
 import { API_URL, createHttpClient } from './api'
 import { authClient } from './auth-client'
-import { isCloudWorkspace } from './workspace-route'
+import { routeUrl } from './workspace-route'
 
 export type ConversationKind = 'public' | 'private' | 'dm' | 'group_dm' | 'activity'
 
@@ -555,11 +555,11 @@ export function nativeCookieHeader(): Record<string, string> {
   return cookie ? { Cookie: cookie } : {}
 }
 
-/** Cloud workspaces on desktop are relayed over HTTP only, so they use SSE. */
-export function realtimeUrls(workspaceId: string): { ws: string | null; sse: string } {
+export function realtimeUrls(workspaceId: string): { ws: string; sse: string } {
   const base = `${API_URL}/api/workspaces/${encodeURIComponent(workspaceId)}`
   return {
-    ws: isCloudWorkspace(workspaceId) ? null : `${base.replace(/^http/, 'ws')}/rt`,
+    // WebSockets bypass the fetch router; the desktop API relays this one.
+    ws: routeUrl(`${base}/rt`, API_URL!).replace(/^http/, 'ws'),
     sse: `${base}/conversations/events`,
   }
 }

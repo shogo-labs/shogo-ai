@@ -53,7 +53,7 @@ export interface CloudLoginResult {
 }
 
 export interface CloudWorkspaceKey {
-  workspace: { id: string; name: string; slug: string | null };
+  workspace: { id: string; name: string; slug: string | null; kind?: "personal" | "team" };
   key: string;
 }
 

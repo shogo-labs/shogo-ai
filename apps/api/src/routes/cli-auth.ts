@@ -315,12 +315,9 @@ export function cliAuthRoutes() {
         prisma,
         userId: auth.userId,
         device: deviceInfo(record),
-        have: [workspaceId!],
+        callerKey: { workspaceId: workspaceId!, key: fullKey },
       })
-      record.workspaces = workspaces.map((w) => ({
-        workspace: w.workspace,
-        key: w.workspace.id === workspaceId ? fullKey : w.key!,
-      }))
+      record.workspaces = workspaces.map((w) => ({ workspace: w.workspace, key: w.key! }))
     }
     record.approvedAt = Date.now()
     // Keep the record around just long enough for the CLI's next poll
@@ -355,7 +352,7 @@ export function cliAuthRoutes() {
     }
     const caller = await (prisma as any).apiKey.findUnique({
       where: { keyHash: await hashApiKey(bearer) },
-      select: { kind: true, deviceId: true, deviceName: true, devicePlatform: true, deviceAppVersion: true },
+      select: { kind: true, workspaceId: true, deviceId: true, deviceName: true, devicePlatform: true, deviceAppVersion: true },
     })
     if (!caller || caller.kind !== 'device' || !caller.deviceId) {
       return c.json({ ok: false, error: 'Only device keys can sync workspaces' }, 403)
@@ -372,6 +369,7 @@ export function cliAuthRoutes() {
         deviceAppVersion: caller.deviceAppVersion ?? undefined,
       },
       have,
+      callerKey: { workspaceId: caller.workspaceId, key: bearer },
     })
     return c.json({ ok: true, ...result })
   })

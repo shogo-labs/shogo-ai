@@ -23,6 +23,7 @@ import { startChannelWorkers, stopChannelWorkers } from './jobs/run-channel-work
 import { resolveLocalApiPort } from './lib/local-api-port'
 import { startCloudWorkspaceSync } from './services/cloud-workspaces'
 import { conversationSocketHandlers, isConversationSocketData } from './realtime/conversation-socket'
+import { cloudSocketRelayHandlers, isCloudSocketRelayData } from './routes/local-cloud-proxy'
 
 const API_PORT = resolveLocalApiPort()
 const { app, runtimeManager, resetCaches: resetLocalCaches } = createLocalApp()
@@ -47,14 +48,17 @@ const server = Bun.serve({
   websocket: {
     open(ws: any) {
       if (isConversationSocketData(ws.data)) conversationSocketHandlers.open(ws)
+      else if (isCloudSocketRelayData(ws.data)) cloudSocketRelayHandlers.open(ws)
       else if (isLocalPtyBridgeData(ws.data)) ptyBridge.open(ws)
     },
     message(ws: any, message: any) {
       if (isConversationSocketData(ws.data)) void conversationSocketHandlers.message(ws, message)
+      else if (isCloudSocketRelayData(ws.data)) cloudSocketRelayHandlers.message(ws, message)
       else if (isLocalPtyBridgeData(ws.data)) ptyBridge.message(ws, message)
     },
     close(ws: any, code?: number, reason?: string) {
       if (isConversationSocketData(ws.data)) conversationSocketHandlers.close(ws)
+      else if (isCloudSocketRelayData(ws.data)) cloudSocketRelayHandlers.close(ws)
       else if (isLocalPtyBridgeData(ws.data)) ptyBridge.close(ws, code, reason)
     },
   },

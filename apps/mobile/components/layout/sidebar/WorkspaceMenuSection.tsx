@@ -62,7 +62,7 @@ export function workspaceKindBadge(
   label: string;
 } {
   const isPersonal = ws.kind === "personal";
-  if (opts.cloud) return { highlighted: false, label: "Cloud" };
+  if (opts.cloud && !isPersonal) return { highlighted: false, label: "Cloud" };
   return { highlighted: isPersonal, label: isPersonal ? "Personal" : "Team" };
 }
 
@@ -187,7 +187,7 @@ export function WorkspaceMenuSection({
         <Settings size={14} className="text-muted-foreground" />
         <Text className="text-xs text-foreground">Settings</Text>
       </Pressable>
-      {(!localMode || currentIsCloud) && (
+      {(!localMode || (currentIsCloud && currentWorkspace?.kind !== "personal")) && (
         <Pressable
           onPress={openInvite}
           accessibilityLabel={currentIsCloud ? "Manage in Shogo Cloud" : "Invite"}
@@ -299,6 +299,9 @@ export function WorkspaceMenuSection({
             >
               {ws.name}
             </Text>
+            {wsIsCloud && ws.kind === "personal" && (
+              <Cloud size={12} className="text-muted-foreground" accessibilityLabel="Synced with Shogo Cloud" />
+            )}
             <View
               className={cn(
                 "rounded px-1.5 py-0.5",

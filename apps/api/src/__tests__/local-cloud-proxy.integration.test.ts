@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * The desktop relay for cloud team workspaces, against a stub cloud:
- * per-workspace keys, prefix stripping, cookie dropping, SSE pass-through,
- * key re-sync on 403, the merged workspace list, and signed-out behavior.
+ * The desktop relay for cloud workspaces, against a stub cloud: per-workspace
+ * keys, prefix stripping, cookie dropping, SSE pass-through, the team chat
+ * WebSocket (typing/presence), key re-sync on 403, the merged workspace list
+ * (cloud Personal replacing the local one), and signed-out behavior.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, mock, test } from 'bun:test'
 import { Hono } from 'hono'
@@ -25,7 +26,9 @@ const prisma = {
 mock.module('../lib/prisma', () => ({ prisma }))
 
 const cloudWorkspaces = await import('../services/cloud-workspaces')
-const { cloudWorkspaceListMiddleware, localCloudWorkspaceRoutes } = await import('../routes/local-cloud-proxy')
+const { cloudSocketRelayHandlers, cloudWorkspaceListMiddleware, isCloudSocketRelayData, localCloudWorkspaceRoutes } = await import(
+  '../routes/local-cloud-proxy'
+)
 
 interface Seen {
   path: string
@@ -69,21 +72,66 @@ upstream.all('/api/*', async (c) => {
   return c.json({ ok: true, path: c.req.path })
 })
 
+const socketAuth: string[] = []
+
 let server: ReturnType<typeof Bun.serve>
+let desktop: ReturnType<typeof Bun.serve>
 let app: Hono
 let signedInUser: string | null = 'local-user'
 
 beforeAll(() => {
-  server = Bun.serve({ port: 0, fetch: upstream.fetch })
+  server = Bun.serve({
+    port: 0,
+    fetch(req, srv) {
+      if (new URL(req.url).pathname.endsWith('/rt')) {
+        socketAuth.push(req.headers.get('authorization') ?? '')
+        if (srv.upgrade(req, { data: { path: new URL(req.url).pathname } })) return undefined as any
+      }
+      return upstream.fetch(req)
+    },
+    websocket: {
+      open(ws) {
+        ws.send(JSON.stringify({ type: 'ready' }))
+      },
+      message(ws, message) {
+        const frame = JSON.parse(String(message))
+        // Echo typing back as another user would see it, so the test can watch it round-trip.
+        if (frame.type === 'typing') ws.send(JSON.stringify({ type: 'typing', conversationId: frame.conversationId, userId: 'teammate' }))
+        if (frame.type === 'presence') ws.send(JSON.stringify({ type: 'presence', status: frame.status, path: (ws.data as any).path }))
+      },
+    },
+  })
   process.env.SHOGO_CLOUD_URL = `http://localhost:${server.port}`
   app = new Hono()
   app.use('/api/workspaces', cloudWorkspaceListMiddleware)
-  app.route('/api', localCloudWorkspaceRoutes({ resolveUserId: async () => signedInUser }))
-  app.get('/api/workspaces', (c) => c.json({ ok: true, items: [{ id: 'local-ws', name: 'My Workspace' }], total: 1 }))
+  app.route(
+    '/api',
+    localCloudWorkspaceRoutes({ resolveUserId: async () => signedInUser, resolveUserEmail: async () => 'Local@Desktop.dev' }),
+  )
+  app.get('/api/workspaces', (c) =>
+    c.json({
+      ok: true,
+      items: [
+        { id: 'local-personal', name: 'Personal', kind: 'personal' },
+        { id: 'local-ws', name: 'My Workspace', kind: 'team' },
+      ],
+      total: 2,
+    }),
+  )
   app.get('/api/workspaces/:id', (c) => c.json({ ok: true, data: { id: c.req.param('id'), source: 'local' } }))
+  desktop = Bun.serve({
+    port: 0,
+    fetch: (req, srv) => app.fetch(req, srv),
+    websocket: {
+      open: (ws) => isCloudSocketRelayData(ws.data) && cloudSocketRelayHandlers.open(ws),
+      message: (ws, m) => isCloudSocketRelayData(ws.data) && cloudSocketRelayHandlers.message(ws, m as any),
+      close: (ws) => isCloudSocketRelayData(ws.data) && cloudSocketRelayHandlers.close(ws),
+    },
+  })
 })
 
 afterAll(() => {
+  desktop.stop(true)
   server.stop(true)
   delete process.env.SHOGO_CLOUD_URL
   delete process.env.SHOGO_API_KEY
@@ -91,6 +139,7 @@ afterAll(() => {
 
 beforeEach(async () => {
   seen.length = 0
+  socketAuth.length = 0
   syncCalls = 0
   forbidNext = false
   signedInUser = 'local-user'
@@ -131,6 +180,25 @@ describe('cloud workspace relay', () => {
     })
     expect(res.status).toBe(200)
     expect(seen[0]).toMatchObject({ method: 'POST', body: '{"text":"hello from the desktop"}' })
+  })
+
+  test('swaps the local account for the cloud one in paths, queries and JSON bodies', async () => {
+    await app.request('/api/cloud/ws-acme/invitations?email=Local%40Desktop.dev')
+    await app.request('/api/cloud/ws-acme/starred-projects?userId=local-user&projectId=local-user-ish')
+    await app.request('/api/cloud/ws-acme/users/local-user/profile')
+    await app.request('/api/cloud/ws-acme/projects', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'local-user', createdBy: 'local-user', members: [{ userId: 'local-user' }] }),
+    })
+
+    expect(seen.map((s) => s.path)).toEqual([
+      '/api/invitations?email=russ%40example.com',
+      '/api/starred-projects?userId=cloud-user&projectId=local-user-ish',
+      '/api/users/cloud-user/profile',
+      '/api/projects',
+    ])
+    expect(JSON.parse(seen[3]!.body)).toEqual({ name: 'cloud-user', createdBy: 'cloud-user', members: [{ userId: 'cloud-user' }] })
   })
 
   test('streams server-sent events through and drops upstream cookies', async () => {
@@ -186,11 +254,31 @@ describe('workspace list and status', () => {
   test('cloud workspaces are appended to the local list', async () => {
     const body = await (await app.request('/api/workspaces')).json()
     expect(body.items.map((w: any) => [w.id, w.source ?? 'local'])).toEqual([
+      ['local-personal', 'local'],
       ['local-ws', 'local'],
       ['ws-acme', 'cloud'],
       ['ws-beta', 'cloud'],
     ])
+    expect(body.total).toBe(4)
+  })
+
+  test('a cloud Personal workspace takes the local one\'s place', async () => {
+    await cloudWorkspaces.setCloudWorkspaces({
+      user: { id: 'cloud-user', name: 'Russ', email: null },
+      workspaces: [
+        { workspace: { id: 'ws-acme', name: 'Acme', slug: 'acme', kind: 'team' }, key: 'shogo_sk_acme' },
+        { workspace: { id: 'cloud-personal', name: 'Russ Personal', slug: 'p', kind: 'personal' }, key: 'shogo_sk_primary' },
+      ],
+    })
+    const body = await (await app.request('/api/workspaces')).json()
+    expect(body.items.map((w: any) => [w.id, w.kind, w.source ?? 'local'])).toEqual([
+      ['cloud-personal', 'personal', 'cloud'],
+      ['local-ws', 'team', 'local'],
+      ['ws-acme', 'team', 'cloud'],
+    ])
     expect(body.total).toBe(3)
+    const status = await (await app.request('/api/local/cloud-workspaces')).json()
+    expect(status.workspaces.map((w: any) => w.kind)).toEqual(['team', 'personal'])
   })
 
   test('reading one cloud workspace goes to cloud, local ones stay local', async () => {
@@ -205,8 +293,8 @@ describe('workspace list and status', () => {
     expect(body.signedIn).toBe(true)
     expect(body.user).toEqual({ id: 'cloud-user', name: 'Russ', email: 'russ@example.com' })
     expect(body.workspaces).toEqual([
-      { id: 'ws-acme', name: 'Acme', slug: 'acme' },
-      { id: 'ws-beta', name: 'Beta', slug: 'beta' },
+      { id: 'ws-acme', name: 'Acme', slug: 'acme', kind: 'team' },
+      { id: 'ws-beta', name: 'Beta', slug: 'beta', kind: 'team' },
     ])
     expect(JSON.stringify(body)).not.toContain('shogo_sk_')
   })
@@ -230,6 +318,63 @@ describe('workspace list and status', () => {
   test('signing out clears them from the list', async () => {
     await cloudWorkspaces.clearCloudWorkspaces()
     const body = await (await app.request('/api/workspaces')).json()
-    expect(body.items.map((w: any) => w.id)).toEqual(['local-ws'])
+    expect(body.items.map((w: any) => w.id)).toEqual(['local-personal', 'local-ws'])
+  })
+})
+
+describe('team chat socket relay', () => {
+  function open(path: string): Promise<{ ws: WebSocket; frames: any[] }> {
+    return new Promise((resolve, reject) => {
+      const ws = new WebSocket(`ws://localhost:${desktop.port}${path}`)
+      const frames: any[] = []
+      ws.onmessage = (ev) => frames.push(JSON.parse(String(ev.data)))
+      ws.onopen = () => resolve({ ws, frames })
+      ws.onerror = () => reject(new Error('socket failed'))
+    })
+  }
+  const until = async (fn: () => boolean) => {
+    for (let i = 0; i < 100 && !fn(); i++) await Bun.sleep(10)
+    expect(fn()).toBe(true)
+  }
+
+  test('pipes typing and presence both ways with the workspace key', async () => {
+    const { ws, frames } = await open('/api/cloud/ws-acme/workspaces/ws-acme/rt')
+    // Sent before cloud answered: queued, then delivered.
+    ws.send(JSON.stringify({ type: 'typing', conversationId: 'c1' }))
+    ws.send(JSON.stringify({ type: 'presence', status: 'away' }))
+    await until(() => frames.length >= 3)
+    expect(frames).toEqual([
+      { type: 'ready' },
+      { type: 'typing', conversationId: 'c1', userId: 'teammate' },
+      { type: 'presence', status: 'away', path: '/api/workspaces/ws-acme/rt' },
+    ])
+    expect(socketAuth).toEqual(['Bearer shogo_sk_acme'])
+    ws.close()
+    await until(() => server.pendingWebSockets === 0)
+  })
+
+  test('closing the client closes the cloud socket, and cloud closing closes the client', async () => {
+    const first = await open('/api/cloud/ws-acme/workspaces/ws-acme/rt')
+    await until(() => server.pendingWebSockets === 1)
+    first.ws.close()
+    await until(() => server.pendingWebSockets === 0)
+
+    const { ws } = await open('/api/cloud/ws-beta/workspaces/ws-beta/rt')
+    const closed = new Promise<number>((r) => (ws.onclose = (ev) => r(ev.code)))
+    await until(() => server.pendingWebSockets === 1)
+    server.stop(true)
+    expect(await closed).toBe(1011)
+    server = Bun.serve({ port: server.port, fetch: upstream.fetch })
+  })
+
+  test('refuses unknown workspaces and mismatched paths', async () => {
+    const res = await fetch(`http://localhost:${desktop.port}/api/cloud/ws-nope/workspaces/ws-nope/rt`, {
+      headers: { upgrade: 'websocket', connection: 'upgrade', 'sec-websocket-key': 'dGhlIHNhbXBsZSBub25jZQ==', 'sec-websocket-version': '13' },
+    })
+    expect(res.status).toBe(404)
+    const mismatch = await fetch(`http://localhost:${desktop.port}/api/cloud/ws-acme/workspaces/ws-beta/rt`, {
+      headers: { upgrade: 'websocket', connection: 'upgrade', 'sec-websocket-key': 'dGhlIHNhbXBsZSBub25jZQ==', 'sec-websocket-version': '13' },
+    })
+    expect(mismatch.status).toBe(400)
   })
 })

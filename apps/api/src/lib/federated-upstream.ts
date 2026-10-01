@@ -635,6 +635,8 @@ export interface ForwardOptions {
   apiKey?: string
   /** Aborts the upstream request, e.g. when the client disconnects. */
   signal?: AbortSignal
+  /** Send this body instead of the client's. */
+  body?: BodyInit
 }
 
 /**
@@ -667,7 +669,7 @@ export async function forwardToUpstream(
   if (hasBody) {
     // Read raw bytes so JSON and binary streams both round-trip; cloud
     // will reparse using `content-type`.
-    body = await c.req.raw.arrayBuffer()
+    body = opts.body ?? (await c.req.raw.arrayBuffer())
   }
 
   return fetchUpstream(path, {

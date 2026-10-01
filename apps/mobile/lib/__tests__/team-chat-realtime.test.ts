@@ -25,12 +25,12 @@ class FakeSource {
   receive(frame: unknown) { this.onmessage?.({ data: JSON.stringify(frame) }) }
 }
 
-function harness(urls: { ws: string | null; sse: string } = { ws: 'ws://api/rt', sse: 'http://api/events' }) {
+function harness() {
   const sockets: FakeSocket[] = []
   const sources: FakeSource[] = []
   const timers: Array<{ fn: () => void; ms: number; cleared: boolean }> = []
   const connection = new TeamChatConnection({
-    urls,
+    urls: { ws: 'ws://api/rt', sse: 'http://api/events' },
     createSocket: () => { const s = new FakeSocket(); sockets.push(s); return s },
     createEventSource: () => { const s = new FakeSource(); sources.push(s); return s },
     setTimeout: (fn, ms) => { const t = { fn, ms, cleared: false }; timers.push(t); return t },
@@ -113,20 +113,5 @@ describe('TeamChatConnection', () => {
     connection.stop()
     expect(connection.state).toBe('closed')
     expect(timers.every((t) => t.cleared)).toBe(true)
-  })
-
-  test('without a socket URL (cloud workspace on desktop) it goes straight to SSE', () => {
-    const { connection, sockets, sources, timers } = harness({ ws: null, sse: 'http://api/cloud/ws/events' })
-    const events: string[] = []
-    connection.on((e) => events.push(e.type))
-    connection.start()
-    expect(sockets).toHaveLength(0)
-    expect(sources).toHaveLength(1)
-    expect(connection.state).toBe('fallback')
-    sources[0].receive({ type: 'message.created' })
-    expect(events).toEqual(['message.created'])
-    expect(timers.filter((t) => !t.cleared)).toHaveLength(0)
-    connection.stop()
-    expect(sources[0].closed).toBe(true)
   })
 })

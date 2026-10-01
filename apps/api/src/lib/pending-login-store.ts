@@ -73,7 +73,7 @@ export interface PendingState {
   email?: string | null
   workspace?: string | null
   /** Keys for every team workspace, when the sign-in asked for all of them. */
-  workspaces?: Array<{ workspace: { id: string; name: string; slug: string | null }; key: string }>
+  workspaces?: Array<{ workspace: { id: string; name: string; slug: string | null; kind?: 'personal' | 'team' }; key: string }>
   approvedAt?: number
 }
 

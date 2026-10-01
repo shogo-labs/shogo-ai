@@ -2,10 +2,10 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * Per-workspace device keys for desktop cloud workspaces:
- *   - approve with `allWorkspaces` mints one key per team workspace and the
- *     poll hands them all to the desktop
+ *   - approve with `allWorkspaces` mints one key per workspace (team ones and
+ *     the user's Personal) and the poll hands them all to the desktop
  *   - POST /api/cli/device-keys/sync adds keys for new memberships, revokes
- *     keys for workspaces the user left, and never touches the primary key
+ *     keys for workspaces the user left, and never replaces the caller's key
  */
 import { beforeEach, describe, expect, it, mock } from 'bun:test'
 import { Hono } from 'hono'
@@ -123,12 +123,18 @@ beforeEach(() => {
 })
 
 describe('approve with allWorkspaces', () => {
-  it('mints one key per team workspace and returns them from poll', async () => {
+  it('mints one key per workspace, Personal included, and returns them from poll', async () => {
     const poll = await signIn(true)
     expect(poll.status).toBe('approved')
     expect(poll.key).toStartWith('shogo_sk_')
-    expect(poll.workspaces.map((w: any) => w.workspace.id)).toEqual(['ws-acme', 'ws-beta'])
+    expect(poll.workspaces.map((w: any) => [w.workspace.id, w.workspace.kind])).toEqual([
+      ['ws-personal', 'personal'],
+      ['ws-acme', 'team'],
+      ['ws-beta', 'team'],
+    ])
     for (const w of poll.workspaces) expect(w.key).toStartWith('shogo_sk_')
+    // The primary key doubles as the Personal workspace's key.
+    expect(poll.workspaces[0].key).toBe(poll.key)
 
     expect(live().map((k) => k.workspaceId).sort()).toEqual(['ws-acme', 'ws-beta', 'ws-personal'])
     for (const k of live()) expect(k).toMatchObject({ kind: 'device', deviceId: device.deviceId })
@@ -147,10 +153,11 @@ describe('POST /api/cli/device-keys/sync', () => {
     members = members.filter((m) => m.workspaceId !== 'ws-beta')
     members.push({ id: 'm4', userId: 'user-1', workspaceId: 'ws-new', createdAt: new Date('2026-04-01') })
 
-    const res = await sync(poll.key, ['ws-acme', 'ws-beta'])
+    const res = await sync(poll.key, ['ws-personal', 'ws-acme', 'ws-beta'])
     expect(res.status).toBe(200)
     const body = await res.json()
     expect(body.workspaces.map((w: any) => [w.workspace.id, !!w.key])).toEqual([
+      ['ws-personal', true],
       ['ws-acme', false],
       ['ws-new', true],
     ])
@@ -158,18 +165,20 @@ describe('POST /api/cli/device-keys/sync', () => {
     expect(live().map((k) => k.workspaceId).sort()).toEqual(['ws-acme', 'ws-new', 'ws-personal'])
   })
 
-  it('keeps the primary key for a personal workspace', async () => {
-    const poll = await signIn(true)
-    await sync(poll.key, ['ws-acme', 'ws-beta'])
-    const primary = [...keys.values()].find((k) => k.workspaceId === 'ws-personal')!
-    expect(primary.revokedAt).toBeNull()
-    expect(await sync(poll.key, [])).toHaveProperty('status', 200)
+  it('a desktop that never stored a Personal key gets its own key back instead of a new one', async () => {
+    const poll = await signIn(false)
+    const body = await (await sync(poll.key, [])).json()
+    const personal = body.workspaces.find((w: any) => w.workspace.id === 'ws-personal')
+    expect(personal.key).toBe(poll.key)
+    const primaries = [...keys.values()].filter((k) => k.workspaceId === 'ws-personal')
+    expect(primaries).toHaveLength(1)
+    expect(primaries[0]!.revokedAt).toBeNull()
   })
 
   it('re-mints a key the desktop claims but the cloud revoked', async () => {
     const poll = await signIn(true)
     for (const k of keys.values()) if (k.workspaceId === 'ws-acme') k.revokedAt = new Date()
-    const body = await (await sync(poll.key, ['ws-acme', 'ws-beta'])).json()
+    const body = await (await sync(poll.key, ['ws-personal', 'ws-acme', 'ws-beta'])).json()
     expect(body.workspaces.find((w: any) => w.workspace.id === 'ws-acme').key).toStartWith('shogo_sk_')
   })
 

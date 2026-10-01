@@ -93,7 +93,14 @@ export function createLocalApp(): LocalAppBundle {
   app.route('/api', localPlatformRoutes())
   app.route('/api', localSystemRoutes())
   app.use('/api/workspaces', cloudWorkspaceListMiddleware)
-  app.route('/api', localCloudWorkspaceRoutes({ resolveUserId: getAuthUserId }))
+  app.route(
+    '/api',
+    localCloudWorkspaceRoutes({
+      resolveUserId: getAuthUserId,
+      resolveUserEmail: async (id) =>
+        (await prisma.user.findUnique({ where: { id }, select: { email: true } }))?.email ?? null,
+    }),
+  )
   app.route('/', localSharedFileRoutes({ workspacesDir }))
   app.route('/api/local/projects', localProjectsRoutes())
   // Runtime → API callbacks (trust, checkpoints, plans, workspace agent and

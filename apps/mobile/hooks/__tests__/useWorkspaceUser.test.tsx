@@ -24,7 +24,7 @@ beforeEach(() => {
     cloudUrl: null,
     reachable: true,
     user: { id: 'cloud-user', name: 'Russ', email: 'russ@example.com' },
-    workspaces: [{ id: 'ws-acme', name: 'Acme', slug: 'acme' }],
+    workspaces: [{ id: 'ws-acme', name: 'Acme', slug: 'acme', kind: 'team' }],
   })
 })
 

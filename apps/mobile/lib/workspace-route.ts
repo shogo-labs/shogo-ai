@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * Desktop routing for cloud team workspaces.
+ * Desktop routing for the user's cloud workspaces: their team workspaces and,
+ * while signed in, their cloud Personal workspace in place of the local one.
  *
  * The desktop's local API relays `/api/cloud/<workspaceId>/<path>` to Shogo
  * Cloud with that workspace's key. While a cloud workspace is active, API
@@ -11,13 +12,20 @@
  * `?workspaceId=<id>`) follows that workspace, whichever one is active.
  */
 import { useSyncExternalStore } from 'react'
-import { getActiveWorkspaceId } from './workspace-store'
+import {
+  clearActiveWorkspaceId,
+  getActiveWorkspaceId,
+  getCachedWorkspaceKind,
+  rememberWorkspaceKind,
+  setActiveWorkspaceId,
+} from './workspace-store'
 import { safeGetItem, safeSetItem, safeRemoveItem } from './safe-storage'
 
 export interface CloudWorkspaceInfo {
   id: string
   name: string
   slug: string | null
+  kind: 'personal' | 'team'
 }
 
 export interface CloudUser {
@@ -154,6 +162,25 @@ export function installWorkspaceFetchRouter(apiBase: string): void {
   }) as typeof fetch
 }
 
+/**
+ * The cloud Personal workspace stands in for the local one while signed in,
+ * so someone sitting in Personal stays in Personal across the swap.
+ */
+function followCloudPersonal(previous: CloudWorkspacesState): void {
+  const personal = state.workspaces.find((w) => w.kind === 'personal')
+  const activeId = getActiveWorkspaceId()
+  const wasPersonal = previous.workspaces.find((w) => w.kind === 'personal')
+  // Signed out of cloud: fall back to the local workspaces (local Personal first).
+  if (!personal && wasPersonal && activeId === wasPersonal.id) {
+    clearActiveWorkspaceId()
+    return
+  }
+  if (!personal || !activeId || activeId === personal.id || cloudIds.has(activeId)) return
+  if (getCachedWorkspaceKind(activeId) !== 'personal') return
+  rememberWorkspaceKind(personal.id, 'personal')
+  setActiveWorkspaceId(personal.id)
+}
+
 /** Load which cloud workspaces this desktop can open from the local API. */
 export async function refreshCloudWorkspaces(apiBase: string, opts: { sync?: boolean } = {}): Promise<CloudWorkspacesState> {
   try {
@@ -167,13 +194,19 @@ export async function refreshCloudWorkspaces(apiBase: string, opts: { sync?: boo
       return state
     }
     const body = (await res.json()) as Partial<CloudWorkspacesState>
+    const workspaces = (Array.isArray(body.workspaces) ? body.workspaces : []).map((w) => ({
+      ...w,
+      kind: w.kind === 'personal' ? ('personal' as const) : ('team' as const),
+    }))
+    const previous = state
     setCloudWorkspacesState({
       signedIn: !!body.signedIn,
       cloudUrl: body.cloudUrl ?? null,
       reachable: body.reachable !== false,
       user: body.user ?? null,
-      workspaces: Array.isArray(body.workspaces) ? body.workspaces : [],
+      workspaces,
     })
+    followCloudPersonal(previous)
   } catch {
     // Keep the last known list; the relay reports cloud outages per request.
   }

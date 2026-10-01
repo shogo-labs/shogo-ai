@@ -329,7 +329,7 @@ function CliLinkBridge() {
               <View className="flex-row items-center gap-3 w-full rounded-lg border border-border px-4 py-3">
                 <Switch value={allWorkspaces} onValueChange={setAllWorkspaces} accessibilityLabel="Show all my workspaces on this device" />
                 <Text className="flex-1 text-sm text-foreground">
-                  Show all my team workspaces in the desktop app, with their projects, chat, and agents
+                  Use my Shogo Cloud workspaces on this desktop, including Personal, so they stay in sync with the web and mobile apps
                 </Text>
               </View>
             ) : null}

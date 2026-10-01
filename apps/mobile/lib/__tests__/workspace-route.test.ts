@@ -15,7 +15,7 @@ import {
   routeUrl,
   setCloudWorkspacesState,
 } from '../workspace-route'
-import { clearActiveWorkspaceId, setActiveWorkspaceId } from '../workspace-store'
+import { clearActiveWorkspaceId, getActiveWorkspaceId, rememberWorkspaceKind, setActiveWorkspaceId } from '../workspace-store'
 
 const API = 'http://localhost:8002'
 
@@ -25,7 +25,7 @@ function signedIn() {
     cloudUrl: 'https://studio.shogo.ai',
     reachable: true,
     user: { id: 'cloud-user', name: 'Russ', email: 'russ@example.com' },
-    workspaces: [{ id: 'ws-acme', name: 'Acme', slug: 'acme' }],
+    workspaces: [{ id: 'ws-acme', name: 'Acme', slug: 'acme', kind: 'team' }],
   })
 }
 
@@ -121,7 +121,7 @@ describe('installWorkspaceFetchRouter + refreshCloudWorkspaces', () => {
           cloudUrl: 'https://studio.shogo.ai',
           reachable: false,
           user: { id: 'cloud-user', name: 'Russ', email: null },
-          workspaces: [{ id: 'ws-acme', name: 'Acme', slug: 'acme' }],
+          workspaces: [{ id: 'ws-acme', name: 'Acme', slug: 'acme', kind: 'team' }],
         }), { headers: { 'content-type': 'application/json' } })
       }
       return new Response('{}')
@@ -142,5 +142,59 @@ describe('installWorkspaceFetchRouter + refreshCloudWorkspaces', () => {
     } finally {
       globalThis.fetch = realFetch
     }
+  })
+})
+
+describe('cloud Personal workspace', () => {
+  function stubLocalApi(workspaces: unknown[], signedIn = true) {
+    const realFetch = globalThis.fetch
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ signedIn, cloudUrl: null, reachable: true, user: null, workspaces }), {
+        headers: { 'content-type': 'application/json' },
+      })) as unknown as typeof fetch
+    return () => {
+      globalThis.fetch = realFetch
+    }
+  }
+
+  test('someone in the local Personal moves to the cloud Personal when signed in, and back on sign-out', async () => {
+    await activate('local-personal')
+    rememberWorkspaceKind('local-personal', 'personal')
+
+    let restore = stubLocalApi([
+      { id: 'cloud-personal', name: 'Russ Personal', slug: 'p', kind: 'personal' },
+      { id: 'ws-acme', name: 'Acme', slug: 'acme', kind: 'team' },
+    ])
+    try {
+      await refreshCloudWorkspaces(API)
+    } finally {
+      restore()
+    }
+    await Promise.resolve()
+    expect(getActiveWorkspaceId()).toBe('cloud-personal')
+    expect(routePath('/api/projects')).toBe('/api/cloud/cloud-personal/projects')
+
+    restore = stubLocalApi([], false)
+    try {
+      await refreshCloudWorkspaces(API)
+    } finally {
+      restore()
+    }
+    await Promise.resolve()
+    expect(getActiveWorkspaceId()).toBeNull()
+    expect(routePath('/api/projects')).toBe('/api/projects')
+  })
+
+  test('a local team workspace stays active', async () => {
+    await activate('local-team')
+    rememberWorkspaceKind('local-team', 'team')
+    const restore = stubLocalApi([{ id: 'cloud-personal', name: 'Russ Personal', slug: 'p', kind: 'personal' }])
+    try {
+      await refreshCloudWorkspaces(API)
+    } finally {
+      restore()
+    }
+    await Promise.resolve()
+    expect(getActiveWorkspaceId()).toBe('local-team')
   })
 })
