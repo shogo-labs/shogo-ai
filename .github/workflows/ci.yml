@@ -103,8 +103,8 @@ jobs:
         uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
           path: ~/.bun/install/cache
-          key: bun-ci-${{ hashFiles('bun.lock') }}
-          restore-keys: bun-ci-
+          key: bun-ci-bun${{ steps.setup-bun.outputs.bun-version }}-${{ hashFiles('bun.lock') }}
+          restore-keys: bun-ci-bun${{ steps.setup-bun.outputs.bun-version }}-
 
       - name: Install dependencies
         # `bun install --frozen-lockfile` triggers `scripts/postinstall.ts`
@@ -144,7 +144,7 @@ jobs:
         uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
           path: ~/.bun/install/cache
-          key: bun-ci-${{ hashFiles('bun.lock') }}
+          key: bun-ci-bun${{ steps.setup-bun.outputs.bun-version }}-${{ hashFiles('bun.lock') }}
 
       - name: Build workspace packages
         # Required before typecheck so cross-package imports of
@@ -325,8 +325,8 @@ jobs:
         uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
           path: ~/.bun/install/cache
-          key: bun-ci-${{ hashFiles('bun.lock') }}
-          restore-keys: bun-ci-
+          key: bun-ci-bun${{ steps.setup-bun.outputs.bun-version }}-${{ hashFiles('bun.lock') }}
+          restore-keys: bun-ci-bun${{ steps.setup-bun.outputs.bun-version }}-
 
       - name: Install dependencies
         # Runs even on a node_modules cache hit — see the `typecheck` job.
@@ -399,8 +399,8 @@ jobs:
         uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
           path: ~/.bun/install/cache
-          key: bun-ci-${{ hashFiles('bun.lock') }}
-          restore-keys: bun-ci-
+          key: bun-ci-bun${{ steps.setup-bun.outputs.bun-version }}-${{ hashFiles('bun.lock') }}
+          restore-keys: bun-ci-bun${{ steps.setup-bun.outputs.bun-version }}-
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
@@ -476,8 +476,8 @@ jobs:
         uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
           path: ~/.bun/install/cache
-          key: bun-ci-${{ hashFiles('bun.lock') }}
-          restore-keys: bun-ci-
+          key: bun-ci-bun${{ steps.setup-bun.outputs.bun-version }}-${{ hashFiles('bun.lock') }}
+          restore-keys: bun-ci-bun${{ steps.setup-bun.outputs.bun-version }}-
 
       - name: Install dependencies
         # Runs even on a node_modules cache hit — see the `typecheck` job.
@@ -572,8 +572,8 @@ jobs:
         uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
           path: ~/.bun/install/cache
-          key: bun-ci-${{ hashFiles('bun.lock') }}
-          restore-keys: bun-ci-
+          key: bun-ci-bun${{ steps.setup-bun.outputs.bun-version }}-${{ hashFiles('bun.lock') }}
+          restore-keys: bun-ci-bun${{ steps.setup-bun.outputs.bun-version }}-
 
       - name: Install dependencies
         # See the "Install dependencies" comment in the `typecheck` job —
@@ -784,7 +784,7 @@ jobs:
         uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
           path: ${{ github.workspace }}\.bun-install-cache
-          key: bun-ci-windows-v3-${{ hashFiles('bun.lock') }}
+          key: bun-ci-windows-bun${{ steps.setup-bun.outputs.bun-version }}-${{ hashFiles('bun.lock') }}
 
       - name: Install dependencies
         # Keep lifecycle scripts enabled: Bun hit an ENOENT while linking
@@ -802,7 +802,7 @@ jobs:
         uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
           path: ${{ github.workspace }}\.bun-install-cache
-          key: bun-ci-windows-v3-${{ hashFiles('bun.lock') }}
+          key: bun-ci-windows-bun${{ steps.setup-bun.outputs.bun-version }}-${{ hashFiles('bun.lock') }}
 
       - name: Build workspace packages
         # The API suites and the desktop-bundle build below resolve some

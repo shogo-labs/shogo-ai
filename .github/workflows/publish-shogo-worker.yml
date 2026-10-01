@@ -112,8 +112,8 @@ jobs:
         uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
           path: ~/.bun/install/cache
-          key: bun-worker-${{ hashFiles('bun.lock') }}
-          restore-keys: bun-worker-
+          key: bun-worker-bun${{ env.BUN_VERSION }}-${{ hashFiles('bun.lock') }}
+          restore-keys: bun-worker-bun${{ env.BUN_VERSION }}-
 
       - name: Install dependencies
         # `GITHUB_TOKEN` is required so `@vscode/ripgrep`'s postinstall

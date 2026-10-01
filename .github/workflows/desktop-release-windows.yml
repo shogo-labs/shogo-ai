@@ -170,8 +170,8 @@ jobs:
         uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
           path: ~/.bun/install/cache
-          key: bun-web-${{ hashFiles('bun.lock') }}
-          restore-keys: bun-web-
+          key: bun-web-bun${{ env.BUN_VERSION }}-${{ hashFiles('bun.lock') }}
+          restore-keys: bun-web-bun${{ env.BUN_VERSION }}-
 
       - name: Install dependencies
         # `GITHUB_TOKEN` is required so that `@vscode/ripgrep`'s postinstall
@@ -299,8 +299,8 @@ jobs:
         uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
           path: ~/.bun/install/cache
-          key: bun-desktop-win32-x64-${{ hashFiles('bun.lock') }}
-          restore-keys: bun-desktop-win32-x64-
+          key: bun-desktop-win32-x64-bun${{ env.BUN_VERSION }}-${{ hashFiles('bun.lock') }}
+          restore-keys: bun-desktop-win32-x64-bun${{ env.BUN_VERSION }}-
 
       - name: Download web build
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1

@@ -89,7 +89,8 @@ jobs:
 
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+      - id: setup-bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: '1.4.2'
 
@@ -101,8 +102,8 @@ jobs:
         uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
           path: ~/.bun/install/cache
-          key: bun-e2e-${{ hashFiles('bun.lock') }}
-          restore-keys: bun-e2e-
+          key: bun-e2e-bun${{ steps.setup-bun.outputs.bun-version }}-${{ hashFiles('bun.lock') }}
+          restore-keys: bun-e2e-bun${{ steps.setup-bun.outputs.bun-version }}-
 
       - name: Install dependencies
         # `GITHUB_TOKEN` is required so `@vscode/ripgrep`'s postinstall
