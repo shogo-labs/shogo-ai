@@ -613,8 +613,10 @@ jobs:
           # Expo Updates resolves this monorepo as the project root during
           # archive. Make the root/entry explicit so the generated resource
           # script does not fall back to /index.js at the repository root.
+          # ENTRY_FILE must be absolute: the RN bundle phase re-exports
+          # PROJECT_ROOT as apps/mobile and resolves a relative entry from there.
           PROJECT_ROOT: ${{ github.workspace }}
-          ENTRY_FILE: apps/mobile/index.js
+          ENTRY_FILE: ${{ github.workspace }}/apps/mobile/index.js
         run: |
           set -o pipefail
           xcodebuild archive \
