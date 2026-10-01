@@ -258,7 +258,7 @@ exec /usr/sbin/sshd -D -e
           "host.docker.internal:host-gateway",
           "--env",
           `SSH_AUTHORIZED_KEY_B64=${authorizedKeyB64}`,
-          "oven/bun:1.3.11",
+          "oven/bun:1.4.2",
           "sh",
           "-lc",
           startupScript,

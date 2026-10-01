@@ -26,7 +26,7 @@ concurrency:
   cancel-in-progress: ${{ github.ref == 'refs/heads/main' }}
 
 env:
-  BUN_VERSION: '1.3.11'
+  BUN_VERSION: '1.4.2'
   # PINNED, do not float to '24'. Node 24.16.0 silently breaks
   # @electron/packager 18.4.4: packaging runs through "Copying files /
   # Finalizing package" and exits 0 without producing Shogo.app, bricking the

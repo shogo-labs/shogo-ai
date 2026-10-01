@@ -41,15 +41,18 @@ function buildPackage(name: string): Promise<void> {
 }
 
 for (const wave of buildWaves) {
-  const results = await Promise.allSettled(wave.map(buildPackage))
-  const failures = results.filter(
-    (result): result is PromiseRejectedResult => result.status === 'rejected',
-  )
-  if (failures.length > 0) {
-    for (const failure of failures) {
-      console.error(failure.reason instanceof Error ? failure.reason.message : failure.reason)
+  // Keep the wave boundaries for dependency ordering, but build members one
+  // at a time. Bun 1.4's concurrent tsup declaration workers can otherwise
+  // make the next wave observe a workspace package before its dist/*.d.ts
+  // files are visible, producing intermittent "Cannot find module" failures
+  // for @shogo-ai/agent and @shogo-ai/voice in the SDK declaration build.
+  for (const packageName of wave) {
+    try {
+      await buildPackage(packageName)
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : error)
+      process.exit(1)
     }
-    process.exit(1)
   }
 }
 

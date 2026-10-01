@@ -30,6 +30,7 @@
     "@ai-sdk/react": "^3.0.299",
     "@better-auth/expo": "^1.4.19",
     "@elevenlabs/react": "^1.1.1",
+    "@elevenlabs/react-native": "^1.1.4",
     "@expo/html-elements": "^0.10.1",
     "@expo/vector-icons": "^15.0.3",
     "@gluestack-ui/core": "^3.0.10",
