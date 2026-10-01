@@ -235,7 +235,7 @@ jobs:
         working-directory: apps/mobile
         run: ruby scripts/strip-sentry-build-phases.rb
 
-      - name: Build for simulator (Release, unsigned)
+      - name: Build for simulator (Release, ad-hoc signed)
         working-directory: apps/mobile/ios
         env:
           EXPO_PUBLIC_API_URL: ${{ env.STAGING_API_URL }}
