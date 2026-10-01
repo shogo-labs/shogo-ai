@@ -10,6 +10,10 @@ import {
 } from '../services/transcription.service'
 import { isDiarizationAvailable } from '../services/diarization.service'
 import {
+  ensureTranscriptionEngine,
+  getTranscriptionInstallStatus,
+} from '../services/transcription-install.service'
+import {
   startRecording as startRec,
   stopRecording as stopRec,
   getRecordingStatusAsync as getRecStatus,
@@ -31,36 +35,9 @@ import {
   writeTranscriptToProject,
 } from '../services/meeting.service'
 import { handleLiveChunk } from './workspace-meetings'
-import { existsSync, mkdirSync, writeFileSync } from 'fs'
-import { join, resolve, dirname } from 'path'
-import { fileURLToPath } from 'url'
+import { mkdirSync, writeFileSync } from 'fs'
+import { join } from 'path'
 import { execSync } from 'child_process'
-
-const MODULE_DIR = dirname(fileURLToPath(import.meta.url))
-
-// Locates apps/desktop/scripts/download-sherpa.mjs in both dev and packaged builds.
-// Dev: apps/api/src/routes/meetings.ts -> ../../../desktop/scripts/download-sherpa.mjs
-// Packaged: bundle-api.mjs copies the script to resources/scripts/download-sherpa.mjs,
-// and local-server sets cwd to resourcesPath, so cwd/scripts/download-sherpa.mjs resolves it.
-function findDownloadSherpaScript(): string | null {
-  const candidates = [
-    resolve(MODULE_DIR, '..', '..', '..', 'desktop', 'scripts', 'download-sherpa.mjs'),
-    resolve(process.cwd(), 'scripts', 'download-sherpa.mjs'),
-    resolve(process.cwd(), 'apps', 'desktop', 'scripts', 'download-sherpa.mjs'),
-    resolve(process.cwd(), '..', '..', 'apps', 'desktop', 'scripts', 'download-sherpa.mjs'),
-    resolve((process as any).resourcesPath || '', 'scripts', 'download-sherpa.mjs'),
-  ]
-  for (const candidate of candidates) {
-    if (candidate && existsSync(candidate)) return candidate
-  }
-  return null
-}
-
-// Prefer the bun binary the desktop shell spawned us with (packaged users likely
-// don't have `node` on PATH). Falls back to `bun` then `node`.
-function getScriptInterpreter(): string {
-  return process.env.SHOGO_BUN_PATH || 'bun'
-}
 
 const db = prisma
 // LocalConfig exists only in the desktop (SQLite) schema.
@@ -195,6 +172,7 @@ meetingRoutes.get('/api/local/meetings', async (c) => {
 // =============================================================================
 
 const MEETING_CONFIG_KEYS = [
+  'MEETING_ENABLED',
   'MEETING_AUTO_DETECT',
   'MEETING_AUTO_RECORD',
   'MEETING_AUTO_RECORD_CONFIRM_COUNT',
@@ -206,6 +184,7 @@ const MEETING_CONFIG_KEYS = [
 ] as const
 
 const MEETING_CONFIG_DEFAULTS: Record<string, string> = {
+  MEETING_ENABLED: 'true',
   MEETING_AUTO_DETECT: 'true',
   MEETING_AUTO_RECORD: 'false',
   MEETING_AUTO_RECORD_CONFIRM_COUNT: '0',
@@ -220,6 +199,7 @@ function configToMeetingResponse(rows: { key: string; value: string }[]) {
   const map: Record<string, string> = {}
   for (const row of rows) map[row.key] = row.value
   return {
+    enabled: (map.MEETING_ENABLED ?? MEETING_CONFIG_DEFAULTS.MEETING_ENABLED) === 'true',
     autoDetect: (map.MEETING_AUTO_DETECT ?? MEETING_CONFIG_DEFAULTS.MEETING_AUTO_DETECT) === 'true',
     autoRecord: (map.MEETING_AUTO_RECORD ?? MEETING_CONFIG_DEFAULTS.MEETING_AUTO_RECORD) === 'true',
     autoRecordConfirmCount: parseInt(map.MEETING_AUTO_RECORD_CONFIRM_COUNT ?? MEETING_CONFIG_DEFAULTS.MEETING_AUTO_RECORD_CONFIRM_COUNT, 10),
@@ -248,6 +228,7 @@ meetingRoutes.put('/api/local/meetings/config', async (c) => {
     const ops: Promise<any>[] = []
 
     const fieldToKey: Record<string, string> = {
+      enabled: 'MEETING_ENABLED',
       autoDetect: 'MEETING_AUTO_DETECT',
       autoRecord: 'MEETING_AUTO_RECORD',
       autoRecordConfirmCount: 'MEETING_AUTO_RECORD_CONFIRM_COUNT',
@@ -275,7 +256,16 @@ meetingRoutes.put('/api/local/meetings/config', async (c) => {
     const rows = await localDb.localConfig.findMany({
       where: { key: { in: [...MEETING_CONFIG_KEYS] } },
     })
-    return c.json(configToMeetingResponse(rows))
+    const config = configToMeetingResponse(rows)
+    if (
+      config.enabled &&
+      (body.enabled === true || 'whisperModel' in body)
+    ) {
+      void ensureTranscriptionEngine(config.whisperModel).catch((err) => {
+        console.warn('[Meetings] Background transcription setup failed:', err?.message ?? err)
+      })
+    }
+    return c.json(config)
   } catch (err: any) {
     return c.json({ error: err.message }, 500)
   }
@@ -286,59 +276,35 @@ meetingRoutes.get('/api/local/meetings/transcription-status', async (c) => {
   const binaryInstalled = !!getSherpaOfflinePath()
   const installedModels = getInstalledModels()
   const diarizationAvailable = isDiarizationAvailable()
+  const model = c.req.query('model') || 'base.en'
 
   return c.json({
-    localAvailable: isLocalTranscriptionAvailable(),
+    localAvailable: isLocalTranscriptionAvailable(model),
     cloudAvailable: !!(process.env.OPENAI_API_KEY || process.env.AI_PROXY_URL),
     binaryInstalled,
     installedModels,
     diarizationAvailable,
+    install: getTranscriptionInstallStatus(),
   })
 })
 
 // Install sherpa-onnx binaries + models
 meetingRoutes.post('/api/local/meetings/install-sherpa', async (c) => {
   const { model = 'base.en' } = await c.req.json<{ model?: string }>().catch(() => ({ model: 'base.en' }))
-
-  const steps: string[] = []
-
-  try {
-    const scriptPath = findDownloadSherpaScript()
-    if (!scriptPath) {
-      return c.json(
-        {
-          error:
-            'download-sherpa.mjs not found. Expected at apps/desktop/scripts/download-sherpa.mjs relative to the API source or repo root.',
-        },
-        500,
-      )
-    }
-
-    const interpreter = getScriptInterpreter()
-    // In packaged mode SHOGO_SHERPA_DIR points into the user data dir (writable);
-    // in dev it's unset and the script falls back to apps/desktop/resources/sherpa-onnx.
-    const destDir = process.env.SHOGO_SHERPA_DIR || ''
-
-    steps.push(`Installing sherpa-onnx with model ${model}...`)
-    steps.push(`Running: ${interpreter} ${scriptPath} --model ${model}`)
-    if (destDir) steps.push(`Destination: ${destDir}`)
-
-    execSync(`"${interpreter}" "${scriptPath}" --model ${model}`, {
-      timeout: 600_000,
-      encoding: 'utf-8',
-      stdio: 'pipe',
-      env: {
-        ...process.env,
-        ...(destDir ? { SHERPA_DEST_DIR: destDir } : {}),
-      },
-    })
-    steps.push('sherpa-onnx installed successfully')
-
-    return c.json({ ok: true, steps })
-  } catch (err: any) {
-    steps.push(`Error: ${err.message}`)
-    return c.json({ error: err.message, steps }, 500)
+  const configRows = await localDb.localConfig.findMany({
+    where: { key: { in: [...MEETING_CONFIG_KEYS] } },
+  }).catch(() => [])
+  const config = configToMeetingResponse(configRows)
+  if (!config.enabled) {
+    return c.json(
+      { ok: false, error: 'Meetings and transcription are disabled', install: getTranscriptionInstallStatus() },
+      409,
+    )
   }
+  void ensureTranscriptionEngine(model).catch((err) => {
+    console.warn('[Meetings] Transcription setup failed:', err?.message ?? err)
+  })
+  return c.json({ ok: true, install: getTranscriptionInstallStatus() }, 202)
 })
 
 // =============================================================================

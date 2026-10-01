@@ -272,19 +272,20 @@ function getWavDuration(audioPath: string): number {
   }
 }
 
-async function getLocalMeetingConfig(): Promise<{ diarizationEnabled: boolean; whisperModel: string }> {
+async function getLocalMeetingConfig(): Promise<{ enabled: boolean; diarizationEnabled: boolean; whisperModel: string }> {
   try {
     const rows = await localDb.localConfig.findMany({
-      where: { key: { in: ['MEETING_DIARIZATION_ENABLED', 'MEETING_WHISPER_MODEL'] } },
+      where: { key: { in: ['MEETING_ENABLED', 'MEETING_DIARIZATION_ENABLED', 'MEETING_WHISPER_MODEL'] } },
     })
     const map: Record<string, string> = {}
     for (const r of rows) map[r.key] = r.value
     return {
+      enabled: (map.MEETING_ENABLED ?? 'true') === 'true',
       diarizationEnabled: (map.MEETING_DIARIZATION_ENABLED ?? 'true') === 'true',
       whisperModel: map.MEETING_WHISPER_MODEL ?? 'base.en',
     }
   } catch {
-    return { diarizationEnabled: true, whisperModel: 'base.en' }
+    return { enabled: true, diarizationEnabled: true, whisperModel: 'base.en' }
   }
 }
 
@@ -463,7 +464,24 @@ export async function transcribeMeeting(
     if (!meeting) return
 
     const local = isLocalMode()
-    const config = local ? await getLocalMeetingConfig() : { diarizationEnabled: false, whisperModel: 'base.en' }
+    const config = local
+      ? await getLocalMeetingConfig()
+      : { enabled: true, diarizationEnabled: false, whisperModel: 'base.en' }
+    if (local && !config.enabled) {
+      await db.meeting.update({
+        where: { id: meetingId },
+        data: {
+          status: 'ready',
+          transcript: JSON.stringify({
+            text: '',
+            segments: [],
+            language: 'en',
+            error: 'Transcription is disabled in Meetings settings',
+          }),
+        },
+      }).catch(() => {})
+      return
+    }
     const model = options.model || config.whisperModel
     const preferLocal = local && (options.preferLocal ?? true)
     const cloudAuth = local ? undefined : (await workspaceProxyAuth(meeting.workspaceId, meeting.userId)) ?? undefined
@@ -539,7 +557,7 @@ export interface LiveChunkInput {
 
 export type LiveChunkResult =
   | { ok: true; segment: TranscriptSegment | null; transcript: ParsedTranscript }
-  | { ok: false; reason: 'not_recording' | 'invalid' }
+  | { ok: false; reason: 'not_recording' | 'invalid' | 'disabled' }
 
 export async function appendLiveTranscript(meetingId: string, input: LiveChunkInput): Promise<LiveChunkResult> {
   if (
@@ -560,7 +578,10 @@ export async function appendLiveTranscript(meetingId: string, input: LiveChunkIn
   if (!meeting || meeting.status !== 'recording') return { ok: false, reason: 'not_recording' }
 
   const local = isLocalMode()
-  const config = local ? await getLocalMeetingConfig() : { diarizationEnabled: false, whisperModel: 'base.en' }
+  const config = local
+    ? await getLocalMeetingConfig()
+    : { enabled: true, diarizationEnabled: false, whisperModel: 'base.en' }
+  if (local && !config.enabled) return { ok: false, reason: 'disabled' }
   const cloudAuth = local ? undefined : (await workspaceProxyAuth(meeting.workspaceId, meeting.userId)) ?? undefined
   const dir = join(tmpdir(), 'shogo-live-chunks')
   mkdirSync(dir, { recursive: true })

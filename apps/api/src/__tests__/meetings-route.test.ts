@@ -11,8 +11,7 @@
  *   - PUT    /api/local/meetings/config                   — only known fields persisted,
  *                                                          response reflects new state
  *   - GET    /api/local/meetings/transcription-status     — env-derived flags
- *   - POST   /api/local/meetings/install-sherpa           — script-not-found error,
- *                                                          execSync failure
+ *   - POST   /api/local/meetings/install-sherpa           — asynchronous setup
  *   - GET    /api/local/meetings/recording/status         — bridge running, browser fallback
  *   - POST   /api/local/meetings/recording/start          — bridge happy, bridge unavail
  *                                                          → browser, conflict
@@ -48,6 +47,12 @@ const diarization = {
   splitTextBySpeakers: mock((..._a: any[]) => []),
 }
 mock.module('../services/diarization.service', () => diarization)
+
+const installer = {
+  ensureTranscriptionEngine: mock(async (..._args: any[]) => {}),
+  getTranscriptionInstallStatus: mock(() => ({ state: 'idle' as const })),
+}
+mock.module('../services/transcription-install.service', () => installer)
 
 class BridgeUnavailableError extends Error {
   constructor() { super('bridge unavailable'); this.name = 'BridgeUnavailableError' }
@@ -210,6 +215,7 @@ beforeEach(() => {
   // Use mockReset to wipe queued mockImplementationOnce entries between tests
   Object.values(transcription).forEach((m: any) => { m.mockReset?.() ?? m.mockClear?.() })
   Object.values(diarization).forEach((m: any) => { m.mockReset?.() ?? m.mockClear?.() })
+  Object.values(installer).forEach((m: any) => { m.mockReset?.() ?? m.mockClear?.() })
   recording.startRecording.mockClear()
   recording.stopRecording.mockClear()
   recording.getRecordingStatusAsync.mockClear()
@@ -219,6 +225,8 @@ beforeEach(() => {
   transcription.getSherpaOfflinePath.mockImplementation(() => '/usr/local/bin/sherpa')
   transcription.getInstalledModels.mockImplementation(() => ['base.en'])
   diarization.isDiarizationAvailable.mockImplementation(() => true)
+  installer.ensureTranscriptionEngine.mockImplementation(async () => {})
+  installer.getTranscriptionInstallStatus.mockImplementation(() => ({ state: 'idle' as const }))
   recording.startRecording.mockImplementation(async () => ({ id: 'rec-1', audioPath: '/tmp/a.wav' }))
   recording.stopRecording.mockImplementation(async () => null)
   recording.getRecordingStatusAsync.mockImplementation(async () => ({ isRecording: false, id: null, duration: 0, audioPath: null }))
@@ -266,6 +274,7 @@ describe('GET /api/local/meetings', () => {
 describe('GET /api/local/meetings/config', () => {
   test('returns defaults when no rows present', async () => {
     const body = await (await meetingRoutes.request('/api/local/meetings/config')).json()
+    expect(body.enabled).toBe(true)
     expect(body.autoDetect).toBe(true)
     expect(body.autoRecord).toBe(false)
     expect(body.whisperModel).toBe('base.en')
@@ -275,10 +284,12 @@ describe('GET /api/local/meetings/config', () => {
 
   test('reflects stored config rows', async () => {
     localConfig.set('MEETING_AUTO_DETECT', 'false')
+    localConfig.set('MEETING_ENABLED', 'false')
     localConfig.set('MEETING_AUTO_RECORD', 'true')
     localConfig.set('MEETING_WHISPER_MODEL', 'small.en')
     localConfig.set('MEETING_GRACE_PERIOD_SECONDS', '30')
     const body = await (await meetingRoutes.request('/api/local/meetings/config')).json()
+    expect(body.enabled).toBe(false)
     expect(body.autoDetect).toBe(false)
     expect(body.autoRecord).toBe(true)
     expect(body.whisperModel).toBe('small.en')
@@ -314,6 +325,14 @@ describe('PUT /api/local/meetings/config', () => {
     expect(localConfig.get('MEETING_WHISPER_MODEL')).toBe('medium.en')
   })
 
+  test('persists the meetings master switch and starts setup when enabled', async () => {
+    const res = await put({ enabled: true, whisperModel: 'base.en' })
+    expect(res.status).toBe(200)
+    expect((await res.json()).enabled).toBe(true)
+    expect(localConfig.get('MEETING_ENABLED')).toBe('true')
+    expect(installer.ensureTranscriptionEngine).toHaveBeenCalledWith('base.en')
+  })
+
   test('ignores unknown fields', async () => {
     const res = await put({ unknownField: 'x', autoDetect: false })
     expect(res.status).toBe(200)
@@ -346,6 +365,7 @@ describe('GET /api/local/meetings/transcription-status', () => {
     expect(body.installedModels).toEqual(['base.en', 'small.en'])
     expect(body.diarizationAvailable).toBe(true)
     expect(body.cloudAvailable).toBe(false)
+    expect(body.install).toEqual({ state: 'idle' })
   })
 
   test('cloudAvailable true when OPENAI_API_KEY set', async () => {
@@ -362,15 +382,27 @@ describe('GET /api/local/meetings/transcription-status', () => {
 })
 
 describe('POST /api/local/meetings/install-sherpa', () => {
-  test('500 with script-not-found message when script missing', async () => {
+  test('starts an asynchronous setup attempt', async () => {
     const res = await meetingRoutes.request('/api/local/meetings/install-sherpa', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ model: 'base.en' }),
     })
-    expect(res.status).toBe(500)
+    expect(res.status).toBe(202)
     const body = await res.json()
-    expect(body.error).toMatch(/download-sherpa\.mjs not found/)
+    expect(body.ok).toBe(true)
+    expect(installer.ensureTranscriptionEngine).toHaveBeenCalledWith('base.en')
+  })
+
+  test('does not start setup when meetings are disabled', async () => {
+    localConfig.set('MEETING_ENABLED', 'false')
+    const res = await meetingRoutes.request('/api/local/meetings/install-sherpa', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'base.en' }),
+    })
+    expect(res.status).toBe(409)
+    expect(installer.ensureTranscriptionEngine).not.toHaveBeenCalled()
   })
 })
 
@@ -888,28 +920,18 @@ describe('PUT /api/local/meetings/config — edges', () => {
 
 describe('POST /api/local/meetings/install-sherpa — edges', () => {
   test('defaults to base.en when no body is supplied', async () => {
-    execSyncBehavior = 'throw'
     const res = await meetingRoutes.request('/api/local/meetings/install-sherpa', { method: 'POST' })
-    const body: any = await res.json()
-    expect(body).toBeDefined()
-    if ('error' in body && body.error.includes('download-sherpa.mjs not found')) {
-      expect(res.status).toBe(500)
-    } else if ('error' in body) {
-      expect(lastExecCmd).toContain('--model base.en')
-    }
+    expect(res.status).toBe(202)
+    expect(installer.ensureTranscriptionEngine).toHaveBeenCalledWith('base.en')
   })
 
-  test('returns 500 with the script-not-found message OR forwards custom model', async () => {
+  test('forwards a custom model to the asynchronous installer', async () => {
     const res = await meetingRoutes.request('/api/local/meetings/install-sherpa', {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ model: 'small.en' }),
     })
-    const body: any = await res.json()
-    if (body.error?.includes('download-sherpa.mjs not found')) {
-      expect(res.status).toBe(500)
-    } else {
-      expect(lastExecCmd).toContain('--model small.en')
-    }
+    expect(res.status).toBe(202)
+    expect(installer.ensureTranscriptionEngine).toHaveBeenCalledWith('small.en')
   })
 })
 
@@ -1386,58 +1408,5 @@ describe('getMeetingConfig fallback (localConfig throws)', () => {
     expect(res.status).toBe(200)
     await new Promise(r => setTimeout(r, 120))
     expect(meetings.get('m-cfg')!.status).toBe('ready')
-  })
-})
-
-describe('POST /install-sherpa happy path (script found + execSync ok)', () => {
-  test('returns ok:true + steps when script exists and exec succeeds', async () => {
-    // Place a candidate at process.cwd() + /scripts/download-sherpa.mjs
-    const path = require('node:path')
-    const scriptPath = path.resolve(process.cwd(), 'scripts', 'download-sherpa.mjs')
-    fsFiles.add(scriptPath)
-    execSyncBehavior = 'ok'
-    const res = await meetingRoutes.request('/api/local/meetings/install-sherpa', {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ model: 'base.en' }),
-    })
-    const body: any = await res.json()
-    expect(res.status).toBe(200)
-    expect(body.ok).toBe(true)
-    expect(Array.isArray(body.steps)).toBe(true)
-    expect(body.steps.some((s: string) => s.includes('base.en'))).toBe(true)
-    expect(lastExecCmd).toContain('--model base.en')
-  })
-
-  test('returns ok:true + Destination step when SHOGO_SHERPA_DIR is set', async () => {
-    const orig = process.env.SHOGO_SHERPA_DIR
-    process.env.SHOGO_SHERPA_DIR = '/custom/sherpa'
-    const path = require('node:path')
-    const scriptPath = path.resolve(process.cwd(), 'scripts', 'download-sherpa.mjs')
-    fsFiles.add(scriptPath)
-    const res = await meetingRoutes.request('/api/local/meetings/install-sherpa', {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ model: 'small.en' }),
-    })
-    const body: any = await res.json()
-    expect(res.status).toBe(200)
-    expect(body.steps.some((s: string) => s.includes('Destination: /custom/sherpa'))).toBe(true)
-    if (orig === undefined) delete process.env.SHOGO_SHERPA_DIR
-    else process.env.SHOGO_SHERPA_DIR = orig
-  })
-
-  test('uses SHOGO_BUN_PATH interpreter when set', async () => {
-    const orig = process.env.SHOGO_BUN_PATH
-    process.env.SHOGO_BUN_PATH = '/usr/local/bin/custombun'
-    const path = require('node:path')
-    const scriptPath = path.resolve(process.cwd(), 'scripts', 'download-sherpa.mjs')
-    fsFiles.add(scriptPath)
-    const res = await meetingRoutes.request('/api/local/meetings/install-sherpa', {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ model: 'base.en' }),
-    })
-    expect(res.status).toBe(200)
-    expect(lastExecCmd).toContain('/usr/local/bin/custombun')
-    if (orig === undefined) delete process.env.SHOGO_BUN_PATH
-    else process.env.SHOGO_BUN_PATH = orig
   })
 })

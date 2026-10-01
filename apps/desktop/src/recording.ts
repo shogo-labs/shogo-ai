@@ -19,7 +19,7 @@ import type { IpcMainEvent, MessageEvent as ElectronMessageEvent } from 'electro
 import path from 'path'
 import fs from 'fs'
 import { execFile } from 'child_process'
-import { readConfig, writeConfig } from './config'
+import { readConfig, writeConfig, type MeetingConfig } from './config'
 import { RecordingManager, type RecordingEvent } from './recording/manager'
 import { LiveTranscriber, LIVE_SOURCE_RATE } from './recording/live-transcriber'
 import { getApiUrl } from './local-server'
@@ -44,6 +44,7 @@ import {
   type IslandMeetingState,
 } from './island-protocol'
 import { MEETING_PROMPT_TTL_MS, reduceMeetingState, type MeetingEvent } from './island-meeting'
+import { shouldStartMeetingMonitor } from './meeting-config'
 
 const IS_DEV = !app.isPackaged
 
@@ -343,6 +344,11 @@ export async function respondToMeeting(
     return { ok: false, error: 'That meeting prompt has expired' }
   }
   const config = readConfig()
+  if (!config.meetings.enabled) {
+    if (detectionState === 'detected') detectionState = 'idle'
+    dispatchMeeting({ type: 'dismissed' })
+    return { ok: false, error: 'Meetings are disabled' }
+  }
   writeConfig({
     meetings: {
       ...config.meetings,
@@ -416,7 +422,7 @@ export function getRecordingStatus(): {
 
 export function startMeetingMonitor(): void {
   const config = readConfig()
-  if (!config.meetings.autoDetect) {
+  if (!shouldStartMeetingMonitor(config.meetings)) {
     console.log('[Recording] Auto-detect disabled, skipping monitor')
     return
   }
@@ -458,6 +464,7 @@ export function stopMeetingMonitor(): void {
 }
 
 function onMeetingDetected(appLabel: string): void {
+  if (!readConfig().meetings.enabled) return
   const mgr = getManager()
   if (mgr.isRecording()) {
     // Already recording — if we were in the grace window, cancel the auto-stop.
@@ -645,14 +652,24 @@ export function registerRecordingIpcHandlers(): void {
 
   ipcMain.handle('get-meeting-config', () => readConfig().meetings)
   ipcMain.handle('set-meeting-config', (_event, config: Partial<import('./config').MeetingConfig>) => {
-    const current = readConfig()
-    writeConfig({ meetings: { ...current.meetings, ...config } })
-    if ('autoDetect' in config) {
-      if (config.autoDetect) startMeetingMonitor()
-      else stopMeetingMonitor()
-    }
-    return readConfig().meetings
+    return setMeetingConfig(config)
   })
+}
+
+/** Update meeting preferences and keep the detector lifecycle in sync. */
+export function setMeetingConfig(patch: Partial<MeetingConfig>): MeetingConfig {
+  const current = readConfig()
+  const next = writeConfig({ meetings: { ...current.meetings, ...patch } }).meetings
+  void fetch(`${getApiUrl()}/api/local/meetings/config`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(patch),
+  }).catch(() => {})
+  if ('enabled' in patch || 'autoDetect' in patch) {
+    if (next.enabled && next.autoDetect) startMeetingMonitor()
+    else stopMeetingMonitor()
+  }
+  return next
 }
 
 // ---------------------------------------------------------------------------

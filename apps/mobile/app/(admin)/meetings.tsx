@@ -21,7 +21,6 @@ import {
   Check,
   CheckCircle,
   AlertTriangle,
-  Download,
   Users,
   SlidersHorizontal,
 } from 'lucide-react-native'
@@ -29,6 +28,7 @@ import { cn } from '@shogo/shared-ui/primitives'
 import { createHttpClient } from '../../lib/api'
 
 interface MeetingConfig {
+  enabled: boolean
   autoDetect: boolean
   autoRecord: boolean
   autoRecordConfirmCount: number
@@ -45,6 +45,11 @@ interface TranscriptionStatus {
   binaryInstalled: boolean
   installedModels: string[]
   diarizationAvailable: boolean
+  install?: {
+    state: 'idle' | 'installing' | 'ready' | 'failed'
+    error?: string
+    startedAt?: number
+  }
 }
 
 const WHISPER_MODELS = [
@@ -72,10 +77,12 @@ export default function AdminMeetingsPage() {
 
   const fetchStatus = useCallback(async () => {
     try {
-      const { data } = await http.get<TranscriptionStatus>('/api/local/meetings/transcription-status')
+      const { data } = await http.get<TranscriptionStatus>(
+        `/api/local/meetings/transcription-status?model=${encodeURIComponent(config?.whisperModel || 'base.en')}`,
+      )
       setTranscriptionStatus(data)
     } catch {}
-  }, [http])
+  }, [http, config?.whisperModel])
 
   useEffect(() => {
     Promise.all([
@@ -92,11 +99,21 @@ export default function AdminMeetingsPage() {
     })
   }, [http])
 
+  useEffect(() => {
+    if (transcriptionStatus?.install?.state !== 'installing') return
+    const timer = setInterval(() => { void fetchStatus() }, 1_500)
+    return () => clearInterval(timer)
+  }, [fetchStatus, transcriptionStatus?.install?.state])
+
+  useEffect(() => {
+    if (config?.whisperModel) void fetchStatus()
+  }, [config?.whisperModel, fetchStatus])
+
   const installSherpa = useCallback(async () => {
     setInstalling(true)
     setInstallError(null)
     try {
-      const res = await http.request<{ ok?: boolean; error?: string; steps?: string[] }>(
+      const res = await http.request<{ ok?: boolean; error?: string }>(
         '/api/local/meetings/install-sherpa',
         { method: 'POST', body: { model: config?.whisperModel || 'base.en' } },
       )
@@ -116,9 +133,16 @@ export default function AdminMeetingsPage() {
     setConfig(updated)
     setSaving(true)
     try {
-      await http.request('/api/local/meetings/config', { method: 'PUT', body: patch })
+      const response = await http.request<MeetingConfig>('/api/local/meetings/config', { method: 'PUT', body: patch })
+      if (response.data) setConfig(response.data)
+      const desktop = typeof window !== 'undefined' ? (window as any).shogoDesktop : null
+      if (desktop?.setMeetingConfig && ('enabled' in patch || 'autoDetect' in patch || 'autoRecord' in patch)) {
+        await desktop.setMeetingConfig(patch)
+      }
     } catch {}
-    setSaving(false)
+    finally {
+      setSaving(false)
+    }
   }, [http, config])
 
   if (loading) {
@@ -183,6 +207,19 @@ export default function AdminMeetingsPage() {
         {/* Header */}
         <ContextHeader isWide={isWide} saving={saving} />
 
+        <SectionCard
+          icon={SlidersHorizontal}
+          title="Meetings & transcription"
+          description="Meeting detection and on-device transcripts are enabled by default."
+        >
+          <ToggleRow
+            label="Enable meetings & transcription"
+            description="Turn this off to stop meeting detection, recording prompts, and transcription."
+            value={config.enabled}
+            onToggle={(v) => updateConfig({ enabled: v })}
+          />
+        </SectionCard>
+
         {/* Status */}
         {transcriptionStatus && (
           <View className="gap-3">
@@ -237,48 +274,49 @@ export default function AdminMeetingsPage() {
               </View>
             </View>
 
-            {(!transcriptionStatus.binaryInstalled || !transcriptionStatus.localAvailable || !transcriptionStatus.diarizationAvailable) && (
-              <Pressable
-                onPress={installSherpa}
-                disabled={installing}
-                className={cn(
-                  'flex-row items-center justify-center gap-2 rounded-lg px-4 py-2.5',
-                  installing ? 'bg-primary/50' : 'bg-primary'
-                )}
-              >
-                {installing ? (
-                  <>
-                    <ActivityIndicator size="small" color="white" />
-                    <Text className="text-sm font-medium text-primary-foreground">
-                      Installing sherpa-onnx...
-                    </Text>
-                  </>
-                ) : (
-                  <>
-                    <Download size={14} color="white" />
-                    <Text className="text-sm font-medium text-primary-foreground">
-                      Install sherpa-onnx + models (~160 MB)
-                    </Text>
-                  </>
-                )}
-              </Pressable>
+            {(installing || transcriptionStatus.install?.state === 'installing') && (
+              <View className="rounded-lg bg-primary/10 p-3 flex-row items-center gap-2">
+                <ActivityIndicator size="small" />
+                <Text className="text-xs text-foreground flex-1">
+                  Setting up on-device transcription in the background...
+                </Text>
+              </View>
             )}
 
-            {installError && (
+            {transcriptionStatus.install?.state === 'ready' && transcriptionStatus.localAvailable && (
+              <View className="rounded-lg bg-green-500/10 p-3 flex-row items-center gap-2">
+                <CheckCircle size={14} className="text-green-500" />
+                <Text className="text-xs text-foreground flex-1">
+                  On-device transcription is ready.
+                </Text>
+              </View>
+            )}
+
+            {transcriptionStatus.install?.state === 'failed' && (
               <View className="bg-destructive/10 rounded-lg p-3 flex-row items-center gap-2">
                 <AlertTriangle size={14} className="text-destructive" />
-                <Text className="text-xs text-destructive flex-1">{installError}</Text>
+                <Text className="text-xs text-destructive flex-1">
+                  {transcriptionStatus.install.error || installError || 'Automatic setup failed.'}
+                </Text>
+                <Pressable onPress={installSherpa} disabled={installing || !config.enabled}>
+                  <Text className="text-xs font-semibold text-destructive">Retry</Text>
+                </Pressable>
               </View>
+            )}
+
+            {installError && transcriptionStatus.install?.state !== 'failed' && (
+              <Text className="text-xs text-destructive">{installError}</Text>
             )}
           </View>
         )}
 
         {/* Recording */}
-        <SectionCard
-          icon={Radio}
-          title="Recording"
-          description="Control how meeting recording starts and stops"
-        >
+        <View pointerEvents={config.enabled ? 'auto' : 'none'} className={cn(!config.enabled && 'opacity-50')}>
+          <SectionCard
+            icon={Radio}
+            title="Recording"
+            description="Control how meeting recording starts and stops"
+          >
           <View className="gap-5">
             <ToggleRow
               label="Auto-detect meetings"
@@ -291,14 +329,14 @@ export default function AdminMeetingsPage() {
 
             <ToggleRow
               label="Auto-record"
-              description="Start recording automatically when a meeting is detected (no confirmation prompt)"
+              description="Optional: start recording automatically when a meeting is detected (no confirmation prompt)"
               value={config.autoRecord}
               onToggle={(v) => updateConfig({ autoRecord: v })}
               disabled={!config.autoDetect}
             />
 
           </View>
-        </SectionCard>
+          </SectionCard>
 
         {/* Transcription */}
         <SectionCard
@@ -310,7 +348,7 @@ export default function AdminMeetingsPage() {
             <View className="gap-1.5">
               <Text className="text-sm font-medium text-foreground">Whisper model</Text>
               <Text className="text-xs text-muted-foreground">
-                Larger models are more accurate but slower. Select a model, then install sherpa-onnx above to download everything.
+                Larger models are more accurate but slower. The selected model is downloaded automatically when needed.
               </Text>
               <View className="gap-1.5 mt-1.5">
                 {WHISPER_MODELS.map((model) => {
@@ -379,7 +417,7 @@ export default function AdminMeetingsPage() {
               <View className="bg-amber-500/10 rounded-lg p-3 flex-row items-center gap-2">
                 <AlertTriangle size={14} className="text-amber-500" />
                 <Text className="text-xs text-foreground flex-1">
-                  Diarization models not installed. Click "Install sherpa-onnx" above to download all required models.
+                  Diarization models are still being set up. They will download automatically in the background.
                 </Text>
               </View>
             )}
@@ -393,6 +431,7 @@ export default function AdminMeetingsPage() {
             )}
           </View>
         </SectionCard>
+        </View>
       </View>
     </ScrollView>
   )
