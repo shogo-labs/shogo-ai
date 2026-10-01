@@ -19,6 +19,7 @@ import {
 import { getPresence } from './conversation-presence'
 import { getSettingsRows, isSilenced, parseKeywords } from './chat-settings'
 import { createInboxItems } from './chat-inbox'
+import { interrupts } from './conversation-message-kind'
 
 const db = prisma as any
 
@@ -140,8 +141,13 @@ export async function resolveRecipients(result: PostMessageResult): Promise<Noti
     for (const [userId, m] of byUser) if (!quiet(userId) && m.level === 'all') add(userId, 'message')
   }
 
+  // Routine agent updates (status, result) only reach people who asked for every message.
+  // Decisions and alerts keep the reasons above, so thread followers hear about them.
+  const quietKind = row.authorType === 'agent' && !interrupts(row.blocks)
   const now = new Date()
-  return [...reasons].map(([userId, reason]) => ({ userId, reason, silenced: isSilenced(settings.get(userId), now) }))
+  return [...reasons]
+    .filter(([userId]) => !quietKind || (byUser.get(userId)?.level === 'all' && !byUser.get(userId)?.muted))
+    .map(([userId, reason]) => ({ userId, reason, silenced: isSilenced(settings.get(userId), now) }))
 }
 
 async function describe(result: PostMessageResult) {

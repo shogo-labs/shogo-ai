@@ -13,12 +13,14 @@ import { conversationAudience, serializeConversation, slugify, DEFAULT_CHANNEL_S
 
 const db = prisma as any
 
-const TRIGGERS = new Set(['mention', 'all', 'keyword'])
+const TRIGGERS = new Set(['mention', 'all', 'keyword', 'auto'])
+const CONTEXT_MODES = new Set(['shared', 'isolated'])
 
 export interface TeamChannelAgent {
   projectId: string | null
   agentTrigger: string
   agentKeywords: string | null
+  agentContextMode: string
 }
 
 export interface TeamChannelSnapshot {
@@ -40,7 +42,7 @@ export interface TeamChannelUpsert {
   name: string
   topic?: string | null
   private?: boolean
-  agents?: Array<{ projectId: string | null; agentTrigger?: string; agentKeywords?: string | null }>
+  agents?: Array<{ projectId: string | null; agentTrigger?: string; agentKeywords?: string | null; agentContextMode?: string }>
   removeAgentProjectIds?: Array<string | null>
   userEmails?: string[]
   groupHandles?: string[]
@@ -55,7 +57,7 @@ export class TeamChannelError extends Error {
 async function snapshot(conversation: any): Promise<TeamChannelSnapshot> {
   const members = await db.conversationMember.findMany({
     where: { conversationId: conversation.id },
-    select: { memberType: true, projectId: true, agentTrigger: true, agentKeywords: true, user: { select: { email: true } } },
+    select: { memberType: true, projectId: true, agentTrigger: true, agentKeywords: true, agentContextMode: true, user: { select: { email: true } } },
   })
   return {
     id: conversation.id,
@@ -64,7 +66,7 @@ async function snapshot(conversation: any): Promise<TeamChannelSnapshot> {
     private: conversation.kind === 'private',
     agents: members
       .filter((m: any) => m.memberType === 'agent')
-      .map((m: any) => ({ projectId: m.projectId ?? null, agentTrigger: m.agentTrigger ?? 'mention', agentKeywords: m.agentKeywords ?? null })),
+      .map((m: any) => ({ projectId: m.projectId ?? null, agentTrigger: m.agentTrigger ?? 'mention', agentKeywords: m.agentKeywords ?? null, agentContextMode: m.agentContextMode ?? 'shared' })),
     userEmails: members
       .filter((m: any) => m.memberType === 'user' && m.user?.email)
       .map((m: any) => m.user.email.toLowerCase()),
@@ -152,16 +154,21 @@ export async function upsertTeamChannel(
   for (const agent of input.agents ?? []) {
     const agentTrigger = TRIGGERS.has(agent.agentTrigger ?? '') ? agent.agentTrigger! : 'mention'
     const agentKeywords = agent.agentKeywords?.trim() || null
+    const agentContextMode = CONTEXT_MODES.has(agent.agentContextMode ?? '') ? agent.agentContextMode! : 'shared'
     const existing = await db.conversationMember.findFirst({
       where: { conversationId: conversation.id, memberType: 'agent', projectId: agent.projectId ?? null },
     })
     if (!existing) {
       await db.conversationMember.create({
-        data: { conversationId: conversation.id, memberType: 'agent', projectId: agent.projectId ?? null, agentTrigger, agentKeywords },
+        data: { conversationId: conversation.id, memberType: 'agent', projectId: agent.projectId ?? null, agentTrigger, agentKeywords, agentContextMode },
       })
       changes.push(`agent+${agent.projectId ?? 'ws'}`)
-    } else if (existing.agentTrigger !== agentTrigger || (existing.agentKeywords ?? null) !== agentKeywords) {
-      await db.conversationMember.update({ where: { id: existing.id }, data: { agentTrigger, agentKeywords } })
+    } else if (
+      existing.agentTrigger !== agentTrigger ||
+      (existing.agentKeywords ?? null) !== agentKeywords ||
+      (existing.agentContextMode ?? 'shared') !== agentContextMode
+    ) {
+      await db.conversationMember.update({ where: { id: existing.id }, data: { agentTrigger, agentKeywords, agentContextMode } })
       changes.push(`agent~${agent.projectId ?? 'ws'}`)
     }
   }

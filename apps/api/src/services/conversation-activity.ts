@@ -26,6 +26,7 @@ import {
 import { renderTranscript, runWorkspaceAgentPrompt } from './conversation-agent-dispatcher'
 import { agentChatEnabled, getWorkspaceChatConfig, nativeChatEnabled } from './chat-mode'
 import { postAgentMessage } from './chat-providers/outbound'
+import { blocksForKind } from './conversation-message-kind'
 
 const db = prisma as any
 
@@ -107,6 +108,8 @@ export async function deliverAgentResult(input: {
   failed: boolean
   ref: string
   sessionId?: string | null
+  /** Post under this thread; falls back to the channel if the thread is gone. */
+  threadRootId?: string | null
 }) {
   const conversation = await db.conversation.findUnique({ where: { id: input.conversationId } })
   if (!conversation || conversation.workspaceId !== input.workspaceId) return null
@@ -114,14 +117,29 @@ export async function deliverAgentResult(input: {
   if (!agentChatEnabled(await getWorkspaceChatConfig(input.workspaceId))) return null
   if (!(await isHomeRegionFor(input.workspaceId))) return null
   const name = await agentDisplayName(input.workspaceId, input.projectId)
-  return postAgentMessage({
+  const root = input.threadRootId
+    ? await db.conversationMessage.findFirst({
+        where: { id: input.threadRootId, conversationId: conversation.id, threadRootId: null, deletedAt: null },
+        select: { id: true },
+      })
+    : null
+  const posted = await postAgentMessage({
     conversationId: conversation.id,
     text: clip(input.text, MAX_RESULT_CHARS),
     agent: { projectId: input.projectId, name },
+    threadRootId: root?.id ?? null,
     agentStatus: input.failed ? 'error' : 'done',
     agentSessionId: input.sessionId ?? null,
     externalRef: input.ref,
+    // A finished run is a result and stays quiet; a failed one is an alert.
+    blocks: blocksForKind({ kind: input.failed ? 'alert' : 'result' }),
   })
+  if (!posted.duplicate) {
+    void import('./conversation-pipeline')
+      .then(({ afterMessagePosted }) => afterMessagePosted(posted, { actorUserId: null, origin: 'agent' }))
+      .catch(() => {})
+  }
+  return posted
 }
 
 // ─── Producer hooks ──────────────────────────────────────────────────────────
@@ -178,6 +196,7 @@ export async function recordScheduleOutcome(schedule: {
   name: string
   chatSessionId?: string | null
   notifyConversationId?: string | null
+  notifyThreadRootId?: string | null
 }, outcome: { status: string; summary?: string | null; error?: string | null; runKey: string }): Promise<void> {
   if (outcome.status === 'skipped') return
   const failed = outcome.status !== 'ok'
@@ -204,6 +223,7 @@ export async function recordScheduleOutcome(schedule: {
         failed,
         ref,
         sessionId: schedule.chatSessionId ?? null,
+        threadRootId: schedule.notifyThreadRootId ?? null,
       })
     }
   } catch (err) {

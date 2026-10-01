@@ -7,6 +7,7 @@
  */
 
 import { prisma } from '../lib/prisma'
+import { agentIconUrl } from './conversation.service'
 import {
   agentMentionToken,
   buildMentionLookup,
@@ -76,4 +77,75 @@ export async function resolveFriendlyMentions(workspaceId: string, text: string)
   if (!text.includes('@')) return text
   const directory = await loadTeamDirectory(workspaceId)
   return resolveFriendlyMentionsWith(text, buildMentionLookup(directoryEntries(directory)))
+}
+
+
+export interface AgentCard {
+  projectId: string | null
+  name: string
+  iconUrl: string | null
+  /** What the agent is for: a project's description, or the workspace agent's tagline. */
+  role: string | null
+  owner: { id: string; name: string } | null
+  /** Channels the viewer can see this agent in. */
+  channels: Array<{
+    conversationId: string
+    kind: string
+    name: string | null
+    slug: string | null
+    agentTrigger: string
+    muted: boolean
+  }>
+}
+
+/** Profile card for an agent: who it is, who owns it, and where it works. */
+export async function loadAgentCard(workspaceId: string, projectId: string | null, viewerId: string): Promise<AgentCard | null> {
+  let name: string
+  let role: string | null
+  let owner: AgentCard['owner'] = null
+  if (projectId) {
+    const project = await db.project.findFirst({
+      where: { id: projectId, workspaceId },
+      select: { name: true, description: true, createdBy: true },
+    })
+    if (!project) return null
+    name = project.name
+    role = project.description ?? null
+    if (project.createdBy) {
+      const user = await db.user.findUnique({ where: { id: project.createdBy }, select: { id: true, name: true, email: true } }).catch(() => null)
+      if (user) owner = { id: user.id, name: user.name || user.email }
+    }
+  } else {
+    const profile = await db.workspaceAgentProfile.findUnique({ where: { workspaceId }, select: { name: true, tagline: true } }).catch(() => null)
+    name = profile?.name || 'Shogo'
+    role = profile?.tagline || 'Workspace agent'
+  }
+  const rows = await db.conversationMember.findMany({
+    where: {
+      memberType: 'agent',
+      projectId,
+      conversation: { workspaceId, archivedAt: null, kind: { in: ['public', 'private'] } },
+    },
+    select: {
+      agentTrigger: true,
+      agentMuted: true,
+      conversation: {
+        select: {
+          id: true, kind: true, name: true, slug: true,
+          members: { where: { userId: viewerId }, select: { id: true } },
+        },
+      },
+    },
+  })
+  const channels = rows
+    .filter((r: any) => r.conversation.kind === 'public' || r.conversation.members.length > 0)
+    .map((r: any) => ({
+      conversationId: r.conversation.id,
+      kind: r.conversation.kind,
+      name: r.conversation.name,
+      slug: r.conversation.slug,
+      agentTrigger: r.agentTrigger,
+      muted: !!r.agentMuted,
+    }))
+  return { projectId, name, iconUrl: await agentIconUrl(workspaceId, projectId), role, owner, channels }
 }

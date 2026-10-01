@@ -190,7 +190,27 @@ async function ensureScheduleChatSession(schedule: {
   return session.id
 }
 
-async function latestAssistantSummary(sessionId: string, after: Date): Promise<string | null> {
+/**
+ * What the agent said after its last tool call: the answer, without the "let me check…" it said along
+ * the way. A report posted to a channel should read as one message. Falls back to the whole text.
+ */
+export function finalAnswerOf(parts: unknown, content: string | null | undefined): string | null {
+  try {
+    const list = typeof parts === 'string' ? JSON.parse(parts) : parts
+    if (Array.isArray(list)) {
+      let lastTool = -1
+      list.forEach((part: any, i: number) => { if (typeof part?.type === 'string' && /^(tool-|dynamic-tool)/.test(part.type)) lastTool = i })
+      const after = list
+        .slice(lastTool + 1)
+        .filter((part: any) => part?.type === 'text' && typeof part.text === 'string' && part.text.trim())
+        .map((part: any) => part.text.trim())
+      if (after.length) return after.join('\n\n')
+    }
+  } catch {}
+  return content?.trim() || null
+}
+
+async function latestAssistantSummary(sessionId: string, after: Date, finalOnly = false): Promise<string | null> {
   const message = await prisma.chatMessage.findFirst({
     where: {
       sessionId,
@@ -198,8 +218,9 @@ async function latestAssistantSummary(sessionId: string, after: Date): Promise<s
       createdAt: { gt: after },
     },
     orderBy: { createdAt: 'desc' },
-    select: { content: true },
+    select: { content: true, parts: true },
   })
+  if (finalOnly) return finalAnswerOf(message?.parts, message?.content)
   return message?.content?.trim() || null
 }
 
@@ -318,7 +339,8 @@ async function runAgentSchedule(scheduleId: string, runtimeManager?: RuntimeMana
       )
     }
 
-    const summary = await latestAssistantSummary(sessionId, startedAt)
+    // A schedule that reports into a channel posts one clean message, not its running commentary.
+    const summary = await latestAssistantSummary(sessionId, startedAt, !!schedule.notifyConversationId)
     outcome = {
       lastRunStatus: 'ok',
       lastRunSummary: summary?.slice(0, 8_000) || 'The scheduled run completed.',

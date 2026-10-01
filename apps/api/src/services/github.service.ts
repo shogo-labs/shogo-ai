@@ -425,6 +425,45 @@ export async function createPullRequest(
   return body as CreatedPullRequest;
 }
 
+export interface MergedPullRequest {
+  merged: boolean;
+  sha?: string;
+  message?: string;
+}
+
+/** Merge a pull request with the GitHub App installation token. */
+export async function mergePullRequest(options: {
+  installationId: number;
+  repoOwner: string;
+  repoName: string;
+  number: number;
+  method?: 'merge' | 'squash' | 'rebase';
+  commitTitle?: string;
+}): Promise<MergedPullRequest> {
+  const token = await getInstallationToken(options.installationId);
+  const response = await fetch(
+    `${GITHUB_API_URL}/repos/${encodeURIComponent(options.repoOwner)}/${encodeURIComponent(options.repoName)}/pulls/${options.number}/merge`,
+    {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: 'application/vnd.github+json',
+        'X-GitHub-Api-Version': '2022-11-28',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        merge_method: options.method ?? 'squash',
+        ...(options.commitTitle ? { commit_title: options.commitTitle } : {}),
+      }),
+    },
+  );
+  const body = await response.json().catch(() => null) as Partial<MergedPullRequest> | null;
+  if (!response.ok || body?.merged === false) {
+    throw new Error(`Failed to merge pull request: ${body?.message || `HTTP ${response.status}`}`);
+  }
+  return { merged: true, sha: body?.sha, message: body?.message };
+}
+
 // =============================================================================
 // Project Connection
 // =============================================================================

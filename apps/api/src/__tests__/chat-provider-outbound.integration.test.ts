@@ -153,13 +153,27 @@ describe('streamed replies', () => {
     expect(calls).toHaveLength(1)
     handle.lastExternalUpdate -= outbound.EXTERNAL_STREAM_THROTTLE_MS
     await outbound.streamAgentReply(handle, { text: 'Looking up', tool: 'search' })
-    expect(calls[1]).toMatchObject({ op: 'update', text: 'Looking up\n\n_Using search…_' })
+    expect(calls[1]).toMatchObject({ op: 'update', text: '_Using search…_' })
 
     await outbound.finishAgentReply(handle, { text: 'Done: 3 invoices', agentStatus: 'done' })
     expect(calls[2]).toMatchObject({ op: 'update', text: 'Done: 3 invoices' })
     expect(calls[2].ref.id).toBe(calls[1].ref.id)
     const row = await db.conversationMessage.findUnique({ where: { id: handle.messageId } })
     expect(row).toMatchObject({ text: 'Done: 3 invoices', agentStatus: 'done' })
+  })
+
+  test('the final edit ends with how long the agent worked, in the same words as the app', async () => {
+    const conv = await mkConversation(true)
+    const handle = await outbound.startAgentReply({ conversation: conv, agent: agent(), threadRootId: null, agentSessionId: 's3' })
+    await outbound.finishAgentReply(handle, {
+      text: 'Merged.',
+      agentStatus: 'done',
+      work: { chatMessageId: 'cm1', startedAt: 0, completedAt: 65_000, toolCalls: 4 },
+    })
+    expect(calls.at(-1)).toMatchObject({ op: 'update', text: 'Merged.\n\n_Worked for 1m 05s_' })
+    const row = await db.conversationMessage.findUnique({ where: { id: handle.messageId } })
+    expect(row.text).toBe('Merged.')
+    expect(row.blocks.work.toolCalls).toBe(4)
   })
 
   test('providers without edits get the final text as a new message', async () => {

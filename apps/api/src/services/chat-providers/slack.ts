@@ -143,21 +143,68 @@ function toRef(conv: ConversationRef, ts: string, channel?: string): ExternalMes
   return { provider: 'slack', channelId: channel ?? conv.externalId!, id: ts, threadId: conv.threadExternalId }
 }
 
+/** Slack fetches `icon_url` itself, so it must be a public https URL. */
+export function slackIconUrl(url: string | null | undefined): string | null {
+  if (!url) return null
+  const absolute = url.startsWith('/') ? `${getFrontendUrl()}${url}` : url
+  try {
+    const parsed = new URL(absolute)
+    if (parsed.protocol !== 'https:') return null
+    if (/^(localhost|127\.|10\.|192\.168\.|0\.0\.0\.0)/.test(parsed.hostname)) return null
+    return parsed.toString()
+  } catch {
+    return null
+  }
+}
+
+/** Slack action ids for approval buttons; the interactions route matches on this prefix. */
+export const APPROVAL_ACTION_PREFIX = 'shogo_approval_'
+
+/**
+ * Block Kit for a message with buttons. A message edited to have no buttons
+ * still sends its text block, because Slack keeps the old blocks otherwise.
+ */
+export function slackBlocks(text: string, actions: OutboundMessage['actions']): Record<string, unknown>[] | undefined {
+  if (!actions) return undefined
+  const section = { type: 'section', text: { type: 'mrkdwn', text: (markdownToSlack(text) || ' ').slice(0, 2900) } }
+  if (!actions.length) return [section]
+  return [
+    section,
+    {
+      type: 'actions',
+      elements: actions.map((a) => ({
+        type: 'button',
+        text: { type: 'plain_text', text: a.label },
+        action_id: `${APPROVAL_ACTION_PREFIX}${a.id}`,
+        value: a.value,
+        ...(a.style ? { style: a.style } : {}),
+      })),
+    },
+  ]
+}
+
 async function post(conv: ConversationRef, msg: OutboundMessage): Promise<ExternalMessageRef> {
+  const blocks = slackBlocks(msg.text, msg.actions)
   const body: Record<string, unknown> = {
     channel: conv.externalId,
     text: markdownToSlack(msg.text) || ' ',
+    ...(blocks ? { blocks } : {}),
     unfurl_links: false,
     ...(conv.threadExternalId ? { thread_ts: conv.threadExternalId } : {}),
   }
   // Per-agent names need chat:write.customize; older installs fall back to the app's name.
-  if (msg.author.type === 'agent') body.username = msg.author.name
+  if (msg.author.type === 'agent') {
+    body.username = msg.author.name
+    const icon = slackIconUrl(msg.author.iconUrl)
+    if (icon) body.icon_url = icon
+  }
   try {
     const res = await api(conv.installation, 'chat.postMessage', body)
     return toRef(conv, String(res.ts), res.channel)
   } catch (err: any) {
     if (!body.username || err?.slackError !== 'missing_scope') throw err
     delete body.username
+    delete body.icon_url
     const res = await api(conv.installation, 'chat.postMessage', body)
     return toRef(conv, String(res.ts), res.channel)
   }
@@ -191,7 +238,13 @@ export const slackProvider: ChatProvider = {
   postMessage: post,
 
   async updateMessage(conv, ref, msg) {
-    await api(conv.installation, 'chat.update', { channel: ref.channelId, ts: ref.id, text: markdownToSlack(msg.text) || ' ' })
+    const blocks = slackBlocks(msg.text, msg.actions)
+    await api(conv.installation, 'chat.update', {
+      channel: ref.channelId,
+      ts: ref.id,
+      text: markdownToSlack(msg.text) || ' ',
+      ...(blocks ? { blocks } : {}),
+    })
   },
 
   async addReaction(conv, ref, emoji) {

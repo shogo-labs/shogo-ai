@@ -291,6 +291,29 @@ export async function resolveNotifyConversation(
   return conversation.id
 }
 
+/**
+ * Validates `notifyThreadRootId`: a top-level message in the notify channel.
+ * `undefined` means "unchanged", null/'' clears it.
+ */
+export async function resolveNotifyThread(
+  conversationId: string | null | undefined,
+  value: unknown,
+): Promise<string | null | undefined> {
+  if (value === undefined) return undefined
+  if (value === null || value === '') return null
+  if (typeof value !== 'string') throw new ConversationError(400, 'invalid_field', 'notifyThreadRootId must be a string or null')
+  const root = conversationId
+    ? await db.conversationMessage.findFirst({
+        where: { id: value, conversationId, threadRootId: null, deletedAt: null },
+        select: { id: true },
+      })
+    : null
+  if (!root) {
+    throw new ConversationError(400, 'invalid_notify_thread', 'Choose the first message of a thread in the channel that receives results')
+  }
+  return root.id
+}
+
 /** Display name for an agent: the project's name, or the workspace agent's profile name. */
 export async function agentDisplayName(workspaceId: string, projectId: string | null): Promise<string> {
   if (projectId) {
@@ -299,6 +322,16 @@ export async function agentDisplayName(workspaceId: string, projectId: string | 
   }
   const profile = await db.workspaceAgentProfile.findUnique({ where: { workspaceId }, select: { name: true } }).catch(() => null)
   return profile?.name || 'Shogo'
+}
+
+/** Avatar for an agent: the workspace agent's profile image, or the project's thumbnail. */
+export async function agentIconUrl(workspaceId: string, projectId: string | null): Promise<string | null> {
+  if (projectId) {
+    const project = await db.project.findUnique({ where: { id: projectId }, select: { thumbnailUrl: true } }).catch(() => null)
+    return project?.thumbnailUrl ?? null
+  }
+  const profile = await db.workspaceAgentProfile.findUnique({ where: { workspaceId }, select: { avatarUrl: true } }).catch(() => null)
+  return profile?.avatarUrl ?? null
 }
 
 async function uniqueSlug(workspaceId: string, base: string): Promise<string> {
@@ -461,7 +494,7 @@ async function listMembers(workspaceId: string, conversationId: string) {
     ? {
         id: r.id, type: 'agent' as const, projectId: r.projectId ?? null,
         name: r.projectId ? names.get(r.projectId) ?? 'Agent' : workspaceAgentName,
-        agentTrigger: r.agentTrigger, agentKeywords: r.agentKeywords ?? null,
+        agentTrigger: r.agentTrigger, agentKeywords: r.agentKeywords ?? null, agentMuted: !!r.agentMuted,
       }
     : {
         id: r.id, type: 'user' as const, userId: r.userId, role: r.role,
@@ -697,6 +730,22 @@ export async function assertAgentInWorkspace(workspaceId: string, target: AgentT
   }
 }
 
+export const AGENT_TRIGGERS = ['mention', 'keyword', 'all', 'auto']
+
+/** Silence (or restore) an agent's channel triggers; a direct @mention still reaches it. */
+export async function setAgentMuted(conversationId: string, actorId: string, target: AgentTarget, muted: boolean): Promise<void> {
+  const access = await loadAccess(conversationId, actorId)
+  if (!canPost(access)) throw new ConversationError(403, 'forbidden', 'You cannot change agents here')
+  const member = await db.conversationMember.findFirst({
+    where: { conversationId, memberType: 'agent', projectId: target.projectId },
+  })
+  if (!member) throw new ConversationError(404, 'not_found', 'That agent is not in this channel')
+  if (member.agentMuted !== muted) {
+    await db.conversationMember.update({ where: { id: member.id }, data: { agentMuted: muted } })
+    await publish(access.conversation, { type: 'member.joined', agent: { projectId: target.projectId } })
+  }
+}
+
 export async function addAgentMember(
   conversationId: string,
   actorId: string,
@@ -705,7 +754,7 @@ export async function addAgentMember(
   const access = await loadAccess(conversationId, actorId)
   if (!canPost(access)) throw new ConversationError(403, 'forbidden', 'You cannot add agents here')
   await assertAgentInWorkspace(access.conversation.workspaceId, { projectId: input.projectId })
-  const trigger = ['mention', 'keyword', 'all'].includes(input.trigger ?? '') ? input.trigger! : 'mention'
+  const trigger = AGENT_TRIGGERS.includes(input.trigger ?? '') ? input.trigger! : 'mention'
   const existing = await db.conversationMember.findFirst({
     where: { conversationId, memberType: 'agent', projectId: input.projectId },
   })
@@ -730,7 +779,7 @@ export interface PostMessageInput {
   text: string
   authorType?: 'user' | 'agent' | 'bot' | 'system'
   authorUserId?: string | null
-  authorAgentRef?: { projectId: string | null; name: string } | null
+  authorAgentRef?: { projectId: string | null; name: string; iconUrl?: string | null } | null
   botId?: string | null
   threadRootId?: string | null
   alsoSentToChannel?: boolean
@@ -906,11 +955,36 @@ export function onMessageTextSettled(hook: TextSettledHook): void {
   textSettledHooks.push(hook)
 }
 
-export async function updateMessageInternal(messageId: string, data: Record<string, unknown>) {
+export async function updateMessageInternal(
+  messageId: string,
+  data: Record<string, unknown>,
+  opts: { moveToEnd?: boolean } = {},
+) {
+  // A reply that finished after other messages landed belongs after them, since the client
+  // orders by seq. It is announced as a new message so unread counts and badges follow it.
+  let moved = false
+  if (opts.moveToEnd) {
+    const current = await db.conversationMessage.findUnique({ where: { id: messageId }, select: { conversationId: true, seq: true } })
+    const later = current
+      ? await db.conversationMessage.findFirst({
+          where: { conversationId: current.conversationId, seq: { gt: current.seq }, deletedAt: null },
+          select: { id: true },
+        })
+      : null
+    if (current && later) {
+      const bumped = await db.conversation.update({
+        where: { id: current.conversationId },
+        data: { lastSeq: { increment: 1 }, lastMessageAt: new Date() },
+        select: { lastSeq: true },
+      })
+      data = { ...data, seq: bumped.lastSeq }
+      moved = true
+    }
+  }
   const row = await db.conversationMessage.update({ where: { id: messageId }, data, include: MESSAGE_INCLUDE })
   const conversation = await db.conversation.findUnique({ where: { id: row.conversationId } })
   const message = serializeMessage(row)
-  if (conversation) await publish(conversation, { type: 'message.updated', message })
+  if (conversation) await publish(conversation, moved ? { type: 'message.created', message, moved: true } : { type: 'message.updated', message })
   if ('text' in data && !row.deletedAt && row.agentStatus !== 'running') {
     for (const hook of textSettledHooks) hook(row)
   }

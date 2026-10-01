@@ -95,6 +95,8 @@ mock.module('../services/agent-schedule.service', () => ({
   createSchedule: async (input: any) => ({ ...schedule, ...input, id: 'schedule-1' }),
   updateSchedule: async (_workspaceId: string, _scheduleId: string, changes: any) => ({ ...schedule, ...changes }),
   deleteSchedule: async () => true,
+  runScheduleNow: async (_workspaceId: string, scheduleId: string) =>
+    scheduleId === 'schedule-1' ? { ...schedule, nextRunAt: new Date() } : null,
 }))
 
 const { workspaceAgentRoutes, sessionAuthorize } = await import('../routes/workspace-agent')

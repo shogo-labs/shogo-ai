@@ -34,20 +34,20 @@ export const shogoProvider = {
     return postMessage(input)
   },
 
-  updateMessage(messageId: string, data: Record<string, unknown>) {
-    return updateMessageInternal(messageId, data)
+  updateMessage(messageId: string, data: Record<string, unknown>, opts?: { moveToEnd?: boolean }) {
+    return updateMessageInternal(messageId, data, opts)
   },
 
   /** Live progress for a streaming agent reply; not persisted. */
   async streamUpdate(
     conversation: { id: string; workspaceId: string; kind: string },
     messageId: string,
-    state: { text: string; tool: string | null },
+    state: { text: string; tool: string | null; tools?: Array<{ name: string; done: boolean }> },
     audience?: string[] | null,
   ): Promise<void> {
     const to = audience === undefined ? await conversationAudience(conversation) : audience
     publishConversationEvent(conversation.workspaceId, {
-      type: 'agent.delta', conversationId: conversation.id, messageId, text: state.text, tool: state.tool,
+      type: 'agent.delta', conversationId: conversation.id, messageId, text: state.text, tool: state.tool, tools: state.tools,
     }, to)
   },
 }

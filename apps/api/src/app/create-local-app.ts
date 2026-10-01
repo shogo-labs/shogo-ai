@@ -21,7 +21,7 @@ import { workspaceChatRoutes } from '../routes/workspace-chat'
 import { workspaceAgentRoutes, sessionAuthorize } from '../routes/workspace-agent'
 import { workspaceMeetingRoutes, sharedMeetingRoutes } from '../routes/workspace-meetings'
 import { conversationRoutes } from '../routes/conversations'
-import { configureConversationAgentDispatcher } from '../services/conversation-agent-dispatcher'
+import { configureConversationAgentDispatcher, settleOrphanedAgentReplies } from '../services/conversation-agent-dispatcher'
 import { scriptedAgentInvokeFromEnv } from '../services/conversation-agent-script'
 import { createAgentTaskRoutes } from '../routes/agent-tasks'
 import { diagnosticsRoutes } from '../../../../packages/shared-runtime/src/diagnostics'
@@ -57,6 +57,7 @@ import { marketplaceRoutes } from '../routes/marketplace'
 import { _resetAgentModelDefaultsCache, _resetUpstreamCredentialCache } from '../lib/federated-upstream'
 import { createLocalGeneratedRoutes } from '../generated/local-routes'
 import { runtimeInternalRoutes } from '../routes/internal-runtime-routes'
+import { githubRoutes } from '../routes/github'
 import { authenticateRuntimeToken } from '../routes/internal-runtime-auth'
 
 const VITE_PORT = Number(process.env.VITE_PORT || 8081)
@@ -112,6 +113,8 @@ export function createLocalApp(): LocalAppBundle {
       authenticate: authenticateRuntimeToken,
       loadProjectLifecycle: () => import('../services/project-lifecycle.service'),
       loadAgentCall: () => import('../services/agent-call.service'),
+      // Bot-authored PRs and merges for projects connected through the GitHub App.
+      loadGitHub: () => import('../services/github.service'),
     }),
   )
   app.route('/api/local', localLogsRoutes())
@@ -138,6 +141,8 @@ export function createLocalApp(): LocalAppBundle {
   app.route('/api', sharedMeetingRoutes())
   const scriptedChannelAgents = scriptedAgentInvokeFromEnv()
   configureConversationAgentDispatcher({ runtimeManager, ...(scriptedChannelAgents ? { invoke: scriptedChannelAgents } : {}) })
+  // One process writes every reply here, so any placeholder still marked running was cut off by a restart.
+  void settleOrphanedAgentReplies().catch((err) => console.warn('[Channels] could not settle interrupted replies:', err?.message ?? err))
   app.route('/api', conversationRoutes({ resolveUserId: getAuthUserId }))
   app.route('/api', createAgentTaskRoutes({ runtimeManager }))
   app.route('/api', historyRoutes({ resolveUserId: getAuthUserId }))
@@ -146,6 +151,7 @@ export function createLocalApp(): LocalAppBundle {
   app.route('/api', securityRoutes({ workspacesDir }))
   app.route('/api', databaseRoutes({ workspacesDir }))
   app.route('/api', checkpointRoutes({ workspacesDir }))
+  app.route('/api', githubRoutes({ workspacesDir }))
   app.route('/api', projectAuthConfigRoutes())
   app.route('/api', aiProxyRoutes())
   app.route('/api', aiLiveRoutes())

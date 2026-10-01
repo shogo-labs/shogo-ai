@@ -49,12 +49,22 @@ export interface ConversationRef {
 }
 
 export type OutboundAuthor =
-  | { type: 'agent'; projectId: string | null; name: string }
+  | { type: 'agent'; projectId: string | null; name: string; /** Avatar shown beside the agent's posts where the platform supports it. */ iconUrl?: string | null }
   | { type: 'system' }
+
+/** A button under a message (approval cards). `value` comes back verbatim when someone presses it. */
+export interface OutboundAction {
+  id: string
+  label: string
+  style?: 'primary' | 'danger'
+  value: string
+}
 
 export interface OutboundMessage {
   text: string
   author: OutboundAuthor
+  /** Buttons for platforms that have them; an edit with none removes them. */
+  actions?: OutboundAction[]
 }
 
 /** A message the provider accepted; `id` is the provider's own message id. */

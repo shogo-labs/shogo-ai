@@ -1627,7 +1627,6 @@ export class ShogoErrorBoundary extends Component<Props, State> {
       const { prisma } = await import('../prisma')
       const localDb = prisma as any
 
-      const TIER_RANK: Record<string, number> = { strict: 0, balanced: 1, full_autonomy: 2 }
       const DEFAULT_PREF = { mode: 'full_autonomy', approvalTimeoutSeconds: 60 }
 
       // Read user-level preference
@@ -1652,31 +1651,9 @@ export class ShogoErrorBoundary extends Component<Props, State> {
         }
       } catch { /* no override */ }
 
-      // Merge with escalation protection
-      let effective = userPref
-      if (projectOverride?.mode) {
-        const projRank = TIER_RANK[projectOverride.mode] ?? 1
-        const userRank = TIER_RANK[userPref.mode] ?? 1
-        const effectiveMode = projRank <= userRank ? projectOverride.mode : userPref.mode
-        effective = { ...userPref, mode: effectiveMode }
-
-        if (projectOverride.overrides) {
-          const userDeny = (userPref as any).overrides?.shellCommands?.deny ?? []
-          const projDeny = projectOverride.overrides?.shellCommands?.deny ?? []
-          effective = {
-            ...effective,
-            overrides: {
-              ...(userPref as any).overrides,
-              shellCommands: {
-                ...(userPref as any).overrides?.shellCommands,
-                deny: [...new Set([...userDeny, ...projDeny])],
-              },
-            },
-          } as any
-        }
-      }
-
-      return Buffer.from(JSON.stringify(effective)).toString('base64')
+      // Merge with escalation protection; per-tool action rules always combine.
+      const { composeLocalPolicy, encodePolicy } = await import('../security-policy')
+      return encodePolicy(composeLocalPolicy(userPref, projectOverride))
     } catch (err) {
       console.warn('[RuntimeManager] buildSecurityPolicy error:', err)
       return null
