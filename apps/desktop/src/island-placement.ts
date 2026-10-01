@@ -11,7 +11,7 @@ export interface IslandBoundsDisplay {
 type Size = { width: number; height: number }
 
 const SIZES: Record<IslandMode, Size> = {
-  hidden: { width: 220, height: 8 },
+  hidden: { width: 140, height: 28 },
   collapsed: { width: 210, height: 36 },
   expanded: { width: 480, height: 640 },
   compose: { width: 480, height: 640 },
@@ -30,10 +30,7 @@ export const NOTCHED_COLLAPSED_RIGHT_WING = 170
  * wings to grow on hover. */
 const NOTCHED_IDLE_WIDTH = 272
 
-export function isNotchedDisplay(
-  display: IslandBoundsDisplay,
-  platform: NodeJS.Platform = process.platform,
-): boolean {
+export function isNotchedDisplay(display: IslandBoundsDisplay, platform: NodeJS.Platform = process.platform): boolean {
   if (platform !== 'darwin') return false
   // Electron doesn't expose the safe-area inset. Notched MacBooks report a
   // ~37pt menu bar vs 24pt on other displays.
@@ -41,15 +38,16 @@ export function isNotchedDisplay(
 }
 
 /** Menu-bar strip the island overlaps on a notched display, 0 elsewhere. */
-export function getIslandTopInset(
-  display: IslandBoundsDisplay,
-  platform: NodeJS.Platform = process.platform,
-): number {
+export function getIslandTopInset(display: IslandBoundsDisplay, platform: NodeJS.Platform = process.platform): number {
   return isNotchedDisplay(display, platform) ? display.workArea.y - display.bounds.y : 0
 }
 
 function isCardMode(mode: IslandMode): boolean {
   return mode === 'expanded' || mode === 'compose'
+}
+
+export function isIslandFocusable(mode: IslandMode, platform: NodeJS.Platform = process.platform): boolean {
+  return mode === 'compose' || (mode === 'expanded' && platform !== 'darwin')
 }
 
 export function getIslandBounds(
@@ -63,7 +61,10 @@ export function getIslandBounds(
   if (notched && mode === 'hidden') {
     // The camera housing is dead menu-bar space, so the notch plus slim
     // wings can be the hover target without covering menu items.
-    size = { width: NOTCHED_IDLE_WIDTH, height: display.workArea.y - display.bounds.y }
+    size = {
+      width: NOTCHED_IDLE_WIDTH,
+      height: display.workArea.y - display.bounds.y,
+    }
   } else if (notched && mode === 'collapsed') {
     const width = NOTCHED_COLLAPSED_LEFT_WING + NOTCH_WIDTH + NOTCHED_COLLAPSED_RIGHT_WING
     const notchLeft = display.bounds.x + (display.bounds.width - NOTCH_WIDTH) / 2
@@ -75,9 +76,7 @@ export function getIslandBounds(
     }
   } else if (isCardMode(mode)) {
     const max = Math.min(SIZES[mode].height, Math.floor(display.workArea.height * 0.85))
-    const height = contentHeight
-      ? Math.max(ISLAND_MIN_CONTENT_HEIGHT, Math.min(max, Math.ceil(contentHeight)))
-      : max
+    const height = contentHeight ? Math.max(ISLAND_MIN_CONTENT_HEIGHT, Math.min(max, Math.ceil(contentHeight))) : max
     size = { width: SIZES[mode].width, height }
   } else {
     size = SIZES[mode]

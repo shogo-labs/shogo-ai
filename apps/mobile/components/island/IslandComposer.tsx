@@ -130,9 +130,7 @@ export const IslandComposer = forwardRef<
           }}
           onFocus={onFocus}
           onContentSizeChange={(event) =>
-            setHeight(
-              Math.min(MAX_INPUT_HEIGHT, Math.max(MIN_INPUT_HEIGHT, event.nativeEvent.contentSize.height)),
-            )
+            setHeight(Math.min(MAX_INPUT_HEIGHT, Math.max(MIN_INPUT_HEIGHT, event.nativeEvent.contentSize.height)))
           }
           onKeyPress={(event) => {
             const native = event.nativeEvent as unknown as KeyboardEvent
@@ -143,6 +141,7 @@ export const IslandComposer = forwardRef<
           }}
           placeholder={placeholder}
           placeholderTextColor="#71717a"
+          onPressIn={onFocus}
           className="flex-1 text-[12px] leading-[18px] text-zinc-100"
           style={[{ height, outlineStyle: "none" } as object]}
         />
@@ -159,10 +158,7 @@ export const IslandComposer = forwardRef<
             onPress={() => void submit()}
             disabled={!canSend}
             accessibilityLabel={isStreaming ? "Queue message" : "Send"}
-            className={cn(
-              "h-7 w-7 items-center justify-center rounded-full",
-              canSend ? "bg-primary" : "bg-white/10",
-            )}
+            className={cn("h-7 w-7 items-center justify-center rounded-full", canSend ? "bg-primary" : "bg-white/10")}
           >
             <ArrowUp size={14} color={canSend ? "#fff" : "#71717a"} />
           </Pressable>

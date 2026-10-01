@@ -12,6 +12,8 @@ import type { BuddyLook } from "./buddy/look"
 import { useIslandAccent } from "./island-accent"
 import {
   COLLAPSED_LEFT_WING,
+  IDLE_TAB_HEIGHT,
+  IDLE_TAB_WIDTH,
   IDLE_NOTCHED_WIDTH,
   IDLE_WING,
   ISLAND_CONTENT_IN,
@@ -20,7 +22,7 @@ import {
   islandMotion,
 } from "./island-motion"
 import { RecordingDot, useElapsedSeconds } from "./IslandMeeting"
-import { needsAttention, orderIslandSessions } from "./island-inbox"
+import { inboxSessions, needsAttention, orderIslandSessions } from "./island-inbox"
 import { ISLAND_TRIGGER_PROPS, type IslandLayout, type IslandMeetingState, type IslandSnapshot } from "./types"
 
 export interface IslandPeek {
@@ -68,7 +70,7 @@ export function IslandCollapsed({
   entrance: IslandBuddyEntrance
   onExpand: () => void
 }) {
-  const sessions = orderIslandSessions(snapshot.sessions)
+  const sessions = orderIslandSessions(inboxSessions(snapshot.sessions, snapshot.focusedSessionKey))
   const top = sessions[0]
   const attentionCount = sessions.filter((s) => needsAttention(s.status)).length
   const running = sessions.some((s) => s.status === "running")
@@ -111,15 +113,16 @@ export function IslandCollapsed({
       : peek
         ? peek.title
         : (top?.projectName ?? "Shogo")
-  const secondary = meeting.recording || meeting.prompt
-    ? null
-    : peek
-      ? peek.detail
-      : running && top?.step
-        ? top.step
-        : sessions.length > 1
-          ? `+${sessions.length - 1} more`
-          : null
+  const secondary =
+    meeting.recording || meeting.prompt
+      ? null
+      : peek
+        ? peek.detail
+        : running && top?.step
+          ? top.step
+          : sessions.length > 1
+            ? `+${sessions.length - 1} more`
+            : null
   const trailing = meeting.prompt ? (
     <View className="rounded-full bg-red-500 px-2 py-0.5">
       <Text className="text-[10px] font-bold text-white">Record?</Text>
@@ -155,18 +158,26 @@ export function IslandCollapsed({
     <View className={cn("h-full w-full", layout.notched ? "items-start" : "items-center")}>
       <Motion.View
         // Notched: grow sideways out of the idle wings, which sit centered on
-        // the notch (offset inside this lopsided window). Elsewhere there are
-        // no wings to grow from, so the pill scales in.
+        // the notch (offset inside this lopsided window). Elsewhere grow the
+        // pill out of the virtual-notch tab.
         initial={
           reducedMotion
             ? undefined
             : layout.notched
-              ? { width: Math.min(IDLE_NOTCHED_WIDTH, windowWidth), marginLeft: COLLAPSED_LEFT_WING - IDLE_WING }
-              : { opacity: 0, scale: 0.92 }
+              ? {
+                  width: Math.min(IDLE_NOTCHED_WIDTH, windowWidth),
+                  marginLeft: COLLAPSED_LEFT_WING - IDLE_WING,
+                }
+              : {
+                  width: IDLE_TAB_WIDTH,
+                  opacity: 1,
+                  scaleY: IDLE_TAB_HEIGHT / 36,
+                }
         }
-        animate={layout.notched ? { width: windowWidth, marginLeft: 0 } : { opacity: 1, scale: 1 }}
+        animate={layout.notched ? { width: windowWidth, marginLeft: 0 } : { width: windowWidth, opacity: 1, scaleY: 1 }}
         transition={islandMotion(reducedMotion, ISLAND_OPEN)}
-        style={{ height: "100%", width: layout.notched ? undefined : "100%" }}
+        transformOrigin={{ x: "50%", y: 0 }}
+        style={{ height: "100%" }}
       >
         <Pressable
           onPress={onExpand}
@@ -182,7 +193,14 @@ export function IslandCollapsed({
             initial={reducedMotion ? undefined : { opacity: 0 }}
             animate={{ opacity: 1 }}
             transition={islandMotion(reducedMotion, ISLAND_CONTENT_IN)}
-            style={{ flexDirection: "row", alignItems: "center", flex: 1, minWidth: 0, gap: layout.notched ? 0 : 8, justifyContent: "center" }}
+            style={{
+              flexDirection: "row",
+              alignItems: "center",
+              flex: 1,
+              minWidth: 0,
+              gap: layout.notched ? 0 : 8,
+              justifyContent: "center",
+            }}
           >
             {layout.notched ? (
               <>
