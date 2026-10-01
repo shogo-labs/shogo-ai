@@ -20,6 +20,8 @@ import { stopAllPrismaStudios } from './routes/database'
 import { startAgentScheduleWorker, stopAgentScheduleWorker } from './jobs/run-agent-schedule-dispatch'
 import { startChatQueueWorker, stopChatQueueWorker } from './jobs/run-chat-queue-drain'
 import { resolveLocalApiPort } from './lib/local-api-port'
+import { prisma } from './lib/prisma'
+import { ensureTranscriptionEngine } from './services/transcription-install.service'
 
 const API_PORT = resolveLocalApiPort()
 const { app, runtimeManager, resetCaches: resetLocalCaches } = createLocalApp()
@@ -54,6 +56,26 @@ const server = Bun.serve({
 
 console.log(`🚀 Local API server running on http://localhost:${server.port}`)
 console.log(`   Workspace runtime: ws:proj:<anchor>`)
+
+async function startBackgroundTranscriptionSetup(): Promise<void> {
+  try {
+    const rows = await (prisma as any).localConfig.findMany({
+      where: { key: { in: ['MEETING_ENABLED', 'MEETING_WHISPER_MODEL'] } },
+    })
+    const config = Object.fromEntries(rows.map((row: { key: string; value: string }) => [row.key, row.value]))
+    if (config.MEETING_ENABLED === 'false') return
+    const model = config.MEETING_WHISPER_MODEL || 'base.en'
+    setTimeout(() => {
+      void ensureTranscriptionEngine(model).catch((err) => {
+        console.warn('[LocalAPI] Background transcription setup failed:', err?.message ?? err)
+      })
+    }, 1_000)
+  } catch (err: any) {
+    console.warn('[LocalAPI] Could not schedule transcription setup:', err?.message ?? err)
+  }
+}
+
+void startBackgroundTranscriptionSetup()
 
 async function shutdown(signal: string): Promise<void> {
   console.log(`[LocalAPI] Received ${signal}, stopping runtimes...`)

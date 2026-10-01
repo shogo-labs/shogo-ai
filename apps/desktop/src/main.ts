@@ -41,13 +41,13 @@ import { buildBugReportZip, submitToDiscord, submitToGitHub, collectSystemInfo, 
 import { initAutoUpdater, getIsApplyingUpdate } from './updater'
 import {
   registerRecordingIpcHandlers,
-  startMeetingMonitor,
   cleanupRecording,
   startRecordingHttpBridge,
   setRecordingWindowResolver,
   getMeetingState,
   onMeetingStateChange,
   respondToMeeting,
+  initMeetingConfig,
   setMeetingPromptPresenter,
 } from './recording'
 import { registerFsIpcHandlers } from './fs-ipc'
@@ -1796,7 +1796,7 @@ app.whenReady().then(async () => {
       },
       setIslandEnabled: (enabled) => islandWindow?.updateConfig({ enabled }),
     })
-    startMeetingMonitor()
+    initMeetingConfig()
     startCloudLoginHeartbeat()
     void startRecordingHttpBridge()
   }

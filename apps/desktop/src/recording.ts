@@ -19,7 +19,7 @@ import type { IpcMainEvent, MessageEvent as ElectronMessageEvent } from 'electro
 import path from 'path'
 import fs from 'fs'
 import { execFile } from 'child_process'
-import { readConfig, writeConfig } from './config'
+import { readConfig, writeConfig, type MeetingConfig } from './config'
 import { RecordingManager, type RecordingEvent } from './recording/manager'
 import { LiveTranscriber, LIVE_SOURCE_RATE } from './recording/live-transcriber'
 import { getApiUrl } from './local-server'
@@ -44,6 +44,7 @@ import {
   type IslandMeetingState,
 } from './island-protocol'
 import { MEETING_PROMPT_TTL_MS, reduceMeetingState, type MeetingEvent } from './island-meeting'
+import { pickDesktopMeetingFields, shouldStartMeetingMonitor } from './meeting-config'
 
 const IS_DEV = !app.isPackaged
 
@@ -343,6 +344,11 @@ export async function respondToMeeting(
     return { ok: false, error: 'That meeting prompt has expired' }
   }
   const config = readConfig()
+  if (!config.meetings.enabled) {
+    if (detectionState === 'detected') detectionState = 'idle'
+    dispatchMeeting({ type: 'dismissed' })
+    return { ok: false, error: 'Meetings are disabled' }
+  }
   writeConfig({
     meetings: {
       ...config.meetings,
@@ -362,6 +368,8 @@ export function setRecordingWindowResolver(resolveWindow: () => BrowserWindow | 
 }
 
 export async function startRecording(): Promise<{ id: string; audioPath: string }> {
+  // Every start (tray, island, renderer IPC, the API's HTTP bridge) ends up here.
+  if (!readConfig().meetings.enabled) throw new Error('Meetings and transcription are disabled')
   const mgr = getManager()
   if (mgr.isRecording()) throw new Error('Already recording')
 
@@ -416,7 +424,7 @@ export function getRecordingStatus(): {
 
 export function startMeetingMonitor(): void {
   const config = readConfig()
-  if (!config.meetings.autoDetect) {
+  if (!shouldStartMeetingMonitor(config.meetings)) {
     console.log('[Recording] Auto-detect disabled, skipping monitor')
     return
   }
@@ -458,6 +466,7 @@ export function stopMeetingMonitor(): void {
 }
 
 function onMeetingDetected(appLabel: string): void {
+  if (!readConfig().meetings.enabled) return
   const mgr = getManager()
   if (mgr.isRecording()) {
     // Already recording — if we were in the grace window, cancel the auto-stop.
@@ -645,14 +654,45 @@ export function registerRecordingIpcHandlers(): void {
 
   ipcMain.handle('get-meeting-config', () => readConfig().meetings)
   ipcMain.handle('set-meeting-config', (_event, config: Partial<import('./config').MeetingConfig>) => {
-    const current = readConfig()
-    writeConfig({ meetings: { ...current.meetings, ...config } })
-    if ('autoDetect' in config) {
-      if (config.autoDetect) startMeetingMonitor()
-      else stopMeetingMonitor()
-    }
-    return readConfig().meetings
+    return setMeetingConfig(config)
   })
+}
+
+/**
+ * Update the desktop-owned meeting preferences, mirror them to the local API
+ * and keep the detector lifecycle in sync. Transcription settings in `patch`
+ * are ignored; they are saved through the API.
+ */
+export async function setMeetingConfig(patch: Partial<MeetingConfig>): Promise<MeetingConfig> {
+  const fields = pickDesktopMeetingFields(patch)
+  const current = readConfig()
+  const next = writeConfig({ meetings: { ...current.meetings, ...fields } }).meetings
+  if ('enabled' in fields || 'autoDetect' in fields) {
+    if (next.enabled && next.autoDetect) startMeetingMonitor()
+    else stopMeetingMonitor()
+  }
+  await mirrorMeetingConfigToApi(fields)
+  return next
+}
+
+/** Start the detector and bring the API's mirror up to date after launch. */
+export function initMeetingConfig(): void {
+  startMeetingMonitor()
+  void mirrorMeetingConfigToApi(pickDesktopMeetingFields(readConfig().meetings))
+}
+
+async function mirrorMeetingConfigToApi(fields: Partial<MeetingConfig>): Promise<void> {
+  if (Object.keys(fields).length === 0) return
+  try {
+    const res = await fetch(`${getApiUrl()}/api/local/meetings/config`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(fields),
+    })
+    if (!res.ok) console.warn(`[Recording] Meeting config mirror failed: HTTP ${res.status}`)
+  } catch (err) {
+    console.warn('[Recording] Meeting config mirror failed:', err instanceof Error ? err.message : err)
+  }
 }
 
 // ---------------------------------------------------------------------------
