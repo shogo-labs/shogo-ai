@@ -510,11 +510,9 @@ jobs:
               xcconfig = File.read(xcconfig_path)
               xcconfig = xcconfig.gsub(/^CLANG_CXX_LANGUAGE_STANDARD = .*$/, 'CLANG_CXX_LANGUAGE_STANDARD = c++17')
               File.write(xcconfig_path, xcconfig)
+              puts "#{xcconfig_path}: #{xcconfig[/^CLANG_CXX_LANGUAGE_STANDARD = .*$/]}"
             end
           RUBY
-
-          echo 'fmt target C++ language settings:'
-          grep -n "CLANG_CXX_LANGUAGE_STANDARD" ios/Pods/Target\ Support\ Files/fmt/fmt.*.xcconfig
 
       - name: Strip Sentry build phases from Xcode project
         # The @sentry/react-native/expo plugin injects two build phases into
