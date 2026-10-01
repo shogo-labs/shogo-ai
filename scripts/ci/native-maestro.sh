@@ -25,13 +25,23 @@ for mode in light dark; do
   appearance "$mode"
   echo "::group::maestro ($PLATFORM, $mode)"
   # takeScreenshot writes relative to the working directory.
-  (cd "$OUT" && maestro test \
+  if ! (cd "$OUT" && maestro test \
     --format junit --output "$OUT/$PLATFORM-$mode.xml" \
+    --debug-output "$OUT/debug-$PLATFORM-$mode" \
     -e APP_ID="$APP_ID" \
     -e EMAIL="${EMAIL:-}" \
     -e PASSWORD="${PASSWORD:-}" \
     -e SHOT_PREFIX="$PLATFORM-$mode" \
-    "$FLOW") || status=1
+    "$FLOW"); then
+    status=1
+    if [ "$PLATFORM" = ios ]; then
+      xcrun simctl io booted screenshot "$OUT/$PLATFORM-$mode-failure.png" || true
+      find "$HOME/Library/Logs/DiagnosticReports" -name 'Shogo*' -newer "$FLOW" \
+        -exec cp {} "$OUT/" \; 2>/dev/null || true
+    else
+      adb exec-out screencap -p > "$OUT/$PLATFORM-$mode-failure.png" || true
+    fi
+  fi
   echo "::endgroup::"
 done
 exit "$status"
