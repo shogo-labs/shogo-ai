@@ -47,6 +47,7 @@ interface TranscriptionStatus {
   diarizationAvailable: boolean
   install?: {
     state: 'idle' | 'installing' | 'ready' | 'failed'
+    model?: string
     error?: string
     startedAt?: number
   }
@@ -61,6 +62,41 @@ const WHISPER_MODELS = [
   { value: 'small', label: 'Small (Multilingual)', desc: '~244 MB' },
 ]
 
+/** Mirrors DESKTOP_MEETING_KEYS in apps/desktop/src/meeting-config.ts. */
+const DESKTOP_MEETING_KEYS = [
+  'enabled',
+  'autoDetect',
+  'autoRecord',
+  'autoRecordConfirmCount',
+  'gracePeriodSeconds',
+  'autoStopSeconds',
+] as const satisfies readonly (keyof MeetingConfig)[]
+
+interface MeetingDesktopBridge {
+  getMeetingConfig?: () => Promise<unknown>
+  setMeetingConfig?: (patch: Partial<MeetingConfig>) => Promise<unknown>
+}
+
+function getMeetingDesktopBridge(): MeetingDesktopBridge | null {
+  if (typeof window === 'undefined') return null
+  return (window as unknown as { shogoDesktop?: MeetingDesktopBridge }).shogoDesktop ?? null
+}
+
+function pickMeetingFields(source: object, keep: (key: string) => boolean): Partial<MeetingConfig> {
+  return Object.fromEntries(Object.entries(source).filter(([key]) => keep(key))) as Partial<MeetingConfig>
+}
+
+const isDesktopKey = (key: string) => (DESKTOP_MEETING_KEYS as readonly string[]).includes(key)
+
+/**
+ * The desktop's copy of the fields it owns, or null when the bridge doesn't
+ * own them (plain web, or the IDE embed's stub bridge).
+ */
+function desktopOwnedFields(value: unknown): Partial<MeetingConfig> | null {
+  if (!value || typeof value !== 'object' || typeof (value as { enabled?: unknown }).enabled !== 'boolean') return null
+  return pickMeetingFields(value, isDesktopKey)
+}
+
 export default function AdminMeetingsPage() {
   const { width } = useWindowDimensions()
   const insets = useSafeAreaInsets()
@@ -69,6 +105,7 @@ export default function AdminMeetingsPage() {
   const [config, setConfig] = useState<MeetingConfig | null>(null)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+  const [saveError, setSaveError] = useState<string | null>(null)
   const [transcriptionStatus, setTranscriptionStatus] = useState<TranscriptionStatus | null>(null)
   const [installing, setInstalling] = useState(false)
   const [installError, setInstallError] = useState<string | null>(null)
@@ -84,19 +121,25 @@ export default function AdminMeetingsPage() {
     } catch {}
   }, [http, config?.whisperModel])
 
+  // Transcription status loads once the config says which model to check.
   useEffect(() => {
-    Promise.all([
-      http.get<MeetingConfig>('/api/local/meetings/config').then((r) => r.data),
-      http.get<TranscriptionStatus>('/api/local/meetings/transcription-status')
-        .then((r) => r.data)
-        .catch(() => null),
-    ]).then(([cfg, status]) => {
-      setConfig(cfg)
-      if (status) setTranscriptionStatus(status)
-      setLoading(false)
-    }).catch(() => {
-      setLoading(false)
-    })
+    let cancelled = false
+    void (async () => {
+      try {
+        const { data } = await http.get<MeetingConfig>('/api/local/meetings/config')
+        const owned = desktopOwnedFields(
+          await getMeetingDesktopBridge()?.getMeetingConfig?.().catch(() => null),
+        )
+        if (!cancelled) setConfig(owned ? { ...data, ...owned } : data)
+      } catch {
+        // Leaves `config` null, which renders the unavailable state.
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
   }, [http])
 
   useEffect(() => {
@@ -127,20 +170,32 @@ export default function AdminMeetingsPage() {
     setInstalling(false)
   }, [http, fetchStatus, config?.whisperModel])
 
+  // On desktop the app owns the detection fields: it saves them and mirrors
+  // them to the API. Everything else goes to the API directly.
   const updateConfig = useCallback(async (patch: Partial<MeetingConfig>) => {
     if (!config) return
-    const updated = { ...config, ...patch }
-    setConfig(updated)
+    const previous = config
+    setConfig({ ...config, ...patch })
     setSaving(true)
+    setSaveError(null)
     try {
-      const response = await http.request<MeetingConfig>('/api/local/meetings/config', { method: 'PUT', body: patch })
-      if (response.data) setConfig(response.data)
-      const desktop = typeof window !== 'undefined' ? (window as any).shogoDesktop : null
-      if (desktop?.setMeetingConfig && ('enabled' in patch || 'autoDetect' in patch || 'autoRecord' in patch)) {
-        await desktop.setMeetingConfig(patch)
+      const desktop = getMeetingDesktopBridge()
+      const desktopPatch = pickMeetingFields(patch, isDesktopKey)
+      let owned: Partial<MeetingConfig> | null = null
+      if (desktop?.setMeetingConfig && Object.keys(desktopPatch).length > 0) {
+        owned = desktopOwnedFields(await desktop.setMeetingConfig(desktopPatch))
       }
-    } catch {}
-    finally {
+      const apiPatch = owned ? pickMeetingFields(patch, (key) => !isDesktopKey(key)) : patch
+      let next: MeetingConfig = { ...previous, ...patch }
+      if (Object.keys(apiPatch).length > 0) {
+        const response = await http.request<MeetingConfig>('/api/local/meetings/config', { method: 'PUT', body: apiPatch })
+        if (response.data) next = response.data
+      }
+      setConfig(owned ? { ...next, ...owned } : next)
+    } catch (err: any) {
+      setConfig(previous)
+      setSaveError(err?.message ? `Couldn't save meeting settings: ${err.message}` : "Couldn't save meeting settings.")
+    } finally {
       setSaving(false)
     }
   }, [http, config])
@@ -206,6 +261,13 @@ export default function AdminMeetingsPage() {
       <View className="max-w-2xl w-full self-center gap-6">
         {/* Header */}
         <ContextHeader isWide={isWide} saving={saving} />
+
+        {saveError && (
+          <View className="bg-destructive/10 rounded-lg p-3 flex-row items-center gap-2">
+            <AlertTriangle size={14} className="text-destructive" />
+            <Text className="text-xs text-destructive flex-1">{saveError}</Text>
+          </View>
+        )}
 
         <SectionCard
           icon={SlidersHorizontal}
@@ -311,126 +373,129 @@ export default function AdminMeetingsPage() {
         )}
 
         {/* Recording */}
-        <View pointerEvents={config.enabled ? 'auto' : 'none'} className={cn(!config.enabled && 'opacity-50')}>
+        <View
+          style={{ pointerEvents: config.enabled ? 'auto' : 'none' }}
+          className={cn('gap-6', !config.enabled && 'opacity-50')}
+        >
           <SectionCard
             icon={Radio}
             title="Recording"
             description="Control how meeting recording starts and stops"
           >
-          <View className="gap-5">
-            <ToggleRow
-              label="Auto-detect meetings"
-              description="Monitor activity to detect when you join a meeting"
-              value={config.autoDetect}
-              onToggle={(v) => updateConfig({ autoDetect: v })}
-            />
+            <View className="gap-5">
+              <ToggleRow
+                label="Auto-detect meetings"
+                description="Monitor activity to detect when you join a meeting"
+                value={config.autoDetect}
+                onToggle={(v) => updateConfig({ autoDetect: v })}
+              />
 
-            <View className="border-t border-border" />
+              <View className="border-t border-border" />
 
-            <ToggleRow
-              label="Auto-record"
-              description="Optional: start recording automatically when a meeting is detected (no confirmation prompt)"
-              value={config.autoRecord}
-              onToggle={(v) => updateConfig({ autoRecord: v })}
-              disabled={!config.autoDetect}
-            />
+              <ToggleRow
+                label="Auto-record"
+                description="Optional: start recording automatically when a meeting is detected (no confirmation prompt)"
+                value={config.autoRecord}
+                onToggle={(v) => updateConfig({ autoRecord: v })}
+                disabled={!config.autoDetect}
+              />
 
-          </View>
+            </View>
           </SectionCard>
 
-        {/* Transcription */}
-        <SectionCard
-          icon={Languages}
-          title="Transcription"
-          description="Choose how audio is transcribed to text"
-        >
-          <View className="gap-5">
-            <View className="gap-1.5">
-              <Text className="text-sm font-medium text-foreground">Whisper model</Text>
-              <Text className="text-xs text-muted-foreground">
-                Larger models are more accurate but slower. The selected model is downloaded automatically when needed.
-              </Text>
-              <View className="gap-1.5 mt-1.5">
-                {WHISPER_MODELS.map((model) => {
-                  const isSelected = config.whisperModel === model.value
-                  const isInstalled = transcriptionStatus?.installedModels?.includes(model.value)
-                  return (
-                    <Pressable
-                      key={model.value}
-                      onPress={() => updateConfig({ whisperModel: model.value })}
-                      className={cn(
-                        'flex-row items-center px-4 py-3 rounded-lg border',
-                        isSelected
-                          ? 'border-primary bg-primary/5'
-                          : 'border-border bg-background'
-                      )}
-                    >
-                      <View className="flex-1">
-                        <View className="flex-row items-center gap-2">
-                          <Text className={cn(
-                            'text-sm',
-                            isSelected ? 'text-primary font-medium' : 'text-foreground'
-                          )}>
-                            {model.label}
-                          </Text>
-                          {isInstalled && (
-                            <View className="bg-green-500/10 rounded px-1.5 py-0.5">
-                              <Text className="text-[10px] text-green-600 font-medium">installed</Text>
-                            </View>
-                          )}
+          {/* Transcription */}
+          <SectionCard
+            icon={Languages}
+            title="Transcription"
+            description="Choose how audio is transcribed to text"
+          >
+            <View className="gap-5">
+              <View className="gap-1.5">
+                <Text className="text-sm font-medium text-foreground">Whisper model</Text>
+                <Text className="text-xs text-muted-foreground">
+                  Larger models are more accurate but slower. The selected model is downloaded automatically when needed.
+                </Text>
+                <View className="gap-1.5 mt-1.5">
+                  {WHISPER_MODELS.map((model) => {
+                    const isSelected = config.whisperModel === model.value
+                    const isInstalled = transcriptionStatus?.installedModels?.includes(model.value)
+                    return (
+                      <Pressable
+                        key={model.value}
+                        onPress={() => updateConfig({ whisperModel: model.value })}
+                        className={cn(
+                          'flex-row items-center px-4 py-3 rounded-lg border',
+                          isSelected
+                            ? 'border-primary bg-primary/5'
+                            : 'border-border bg-background'
+                        )}
+                      >
+                        <View className="flex-1">
+                          <View className="flex-row items-center gap-2">
+                            <Text className={cn(
+                              'text-sm',
+                              isSelected ? 'text-primary font-medium' : 'text-foreground'
+                            )}>
+                              {model.label}
+                            </Text>
+                            {isInstalled && (
+                              <View className="bg-green-500/10 rounded px-1.5 py-0.5">
+                                <Text className="text-[10px] text-green-600 font-medium">installed</Text>
+                              </View>
+                            )}
+                          </View>
+                          <Text className="text-xs text-muted-foreground">{model.desc}</Text>
                         </View>
-                        <Text className="text-xs text-muted-foreground">{model.desc}</Text>
-                      </View>
-                      {isSelected && <Check size={16} className="text-primary" />}
-                    </Pressable>
-                  )
-                })}
+                        {isSelected && <Check size={16} className="text-primary" />}
+                      </Pressable>
+                    )
+                  })}
+                </View>
               </View>
+
+              <View className="border-t border-border" />
+
+              <ToggleRow
+                label="Cloud transcription fallback"
+                description="Use OpenAI Whisper API if local transcription fails (requires API key)"
+                value={config.useCloudTranscription}
+                onToggle={(v) => updateConfig({ useCloudTranscription: v })}
+              />
             </View>
+          </SectionCard>
 
-            <View className="border-t border-border" />
+          {/* Diarization */}
+          <SectionCard
+            icon={Users}
+            title="Speaker Diarization"
+            description="Identify who is speaking in the meeting"
+          >
+            <View className="gap-5">
+              <ToggleRow
+                label="Enable speaker diarization"
+                description="Identify and label different speakers in the transcript. Uses Pyannote segmentation + NeMo embedding models."
+                value={config.diarizationEnabled}
+                onToggle={(v) => updateConfig({ diarizationEnabled: v })}
+              />
 
-            <ToggleRow
-              label="Cloud transcription fallback"
-              description="Use OpenAI Whisper API if local transcription fails (requires API key)"
-              value={config.useCloudTranscription}
-              onToggle={(v) => updateConfig({ useCloudTranscription: v })}
-            />
-          </View>
-        </SectionCard>
+              {config.diarizationEnabled && transcriptionStatus && !transcriptionStatus.diarizationAvailable && (
+                <View className="bg-amber-500/10 rounded-lg p-3 flex-row items-center gap-2">
+                  <AlertTriangle size={14} className="text-amber-500" />
+                  <Text className="text-xs text-foreground flex-1">
+                    Diarization models are still being set up. They will download automatically in the background.
+                  </Text>
+                </View>
+              )}
 
-        {/* Diarization */}
-        <SectionCard
-          icon={Users}
-          title="Speaker Diarization"
-          description="Identify who is speaking in the meeting"
-        >
-          <View className="gap-5">
-            <ToggleRow
-              label="Enable speaker diarization"
-              description="Identify and label different speakers in the transcript. Uses Pyannote segmentation + NeMo embedding models."
-              value={config.diarizationEnabled}
-              onToggle={(v) => updateConfig({ diarizationEnabled: v })}
-            />
-
-            {config.diarizationEnabled && transcriptionStatus && !transcriptionStatus.diarizationAvailable && (
-              <View className="bg-amber-500/10 rounded-lg p-3 flex-row items-center gap-2">
-                <AlertTriangle size={14} className="text-amber-500" />
-                <Text className="text-xs text-foreground flex-1">
-                  Diarization models are still being set up. They will download automatically in the background.
-                </Text>
-              </View>
-            )}
-
-            {config.diarizationEnabled && transcriptionStatus?.diarizationAvailable && (
-              <View className="bg-green-500/10 rounded-lg p-3">
-                <Text className="text-xs text-foreground">
-                  Speakers will be identified after each meeting recording. Diarization runs in parallel with transcription for minimal additional processing time.
-                </Text>
-              </View>
-            )}
-          </View>
-        </SectionCard>
+              {config.diarizationEnabled && transcriptionStatus?.diarizationAvailable && (
+                <View className="bg-green-500/10 rounded-lg p-3">
+                  <Text className="text-xs text-foreground">
+                    Speakers will be identified after each meeting recording. Diarization runs in parallel with transcription for minimal additional processing time.
+                  </Text>
+                </View>
+              )}
+            </View>
+          </SectionCard>
         </View>
       </View>
     </ScrollView>

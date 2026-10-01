@@ -7,6 +7,7 @@ import { EventEmitter } from 'node:events'
 let localAvailable = false
 let diarizationAvailable = false
 let shouldFail = false
+let scriptExists = true
 let spawnCalls: Array<{ command: string; args: string[] }> = []
 
 class FakeProcess extends EventEmitter {
@@ -20,6 +21,11 @@ mock.module('../transcription.service', () => ({
 }))
 mock.module('../diarization.service', () => ({
   isDiarizationAvailable: mock(() => diarizationAvailable),
+}))
+const realFs = await import('fs')
+mock.module('fs', () => ({
+  ...realFs,
+  existsSync: (path: string) => (path.endsWith('download-sherpa.mjs') ? scriptExists : realFs.existsSync(path)),
 }))
 mock.module('child_process', () => ({
   spawn: (command: string, args: string[]) => {
@@ -37,6 +43,7 @@ beforeEach(() => {
   localAvailable = false
   diarizationAvailable = false
   shouldFail = false
+  scriptExists = true
   spawnCalls = []
   installer.resetTranscriptionInstallState()
 })
@@ -55,6 +62,24 @@ describe('transcription installer', () => {
     expect(spawnCalls).toHaveLength(1)
     expect(spawnCalls[0]?.args).toContain('base.en')
     expect(installer.getTranscriptionInstallStatus().state).toBe('ready')
+  })
+
+  test('queues a different model behind the running install instead of sharing it', async () => {
+    const base = installer.ensureTranscriptionEngine('base.en')
+    const small = installer.ensureTranscriptionEngine('small.en')
+
+    expect(small).not.toBe(base)
+    expect(installer.getTranscriptionInstallStatus().state).toBe('installing')
+    await Promise.all([base, small])
+    expect(spawnCalls.map((call) => call.args[call.args.indexOf('--model') + 1])).toEqual(['base.en', 'small.en'])
+    expect(installer.getTranscriptionInstallStatus()).toMatchObject({ state: 'ready', model: 'small.en' })
+  })
+
+  test('fails without spawning when the installer script is missing', async () => {
+    scriptExists = false
+    await expect(installer.ensureTranscriptionEngine('base.en')).rejects.toThrow(/download-sherpa\.mjs not found/)
+    expect(spawnCalls).toHaveLength(0)
+    expect(installer.getTranscriptionInstallStatus().state).toBe('failed')
   })
 
   test('records failures and retries after the backoff', async () => {

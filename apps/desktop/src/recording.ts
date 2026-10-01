@@ -44,7 +44,7 @@ import {
   type IslandMeetingState,
 } from './island-protocol'
 import { MEETING_PROMPT_TTL_MS, reduceMeetingState, type MeetingEvent } from './island-meeting'
-import { shouldStartMeetingMonitor } from './meeting-config'
+import { pickDesktopMeetingFields, shouldStartMeetingMonitor } from './meeting-config'
 
 const IS_DEV = !app.isPackaged
 
@@ -368,6 +368,8 @@ export function setRecordingWindowResolver(resolveWindow: () => BrowserWindow | 
 }
 
 export async function startRecording(): Promise<{ id: string; audioPath: string }> {
+  // Every start (tray, island, renderer IPC, the API's HTTP bridge) ends up here.
+  if (!readConfig().meetings.enabled) throw new Error('Meetings and transcription are disabled')
   const mgr = getManager()
   if (mgr.isRecording()) throw new Error('Already recording')
 
@@ -656,20 +658,41 @@ export function registerRecordingIpcHandlers(): void {
   })
 }
 
-/** Update meeting preferences and keep the detector lifecycle in sync. */
-export function setMeetingConfig(patch: Partial<MeetingConfig>): MeetingConfig {
+/**
+ * Update the desktop-owned meeting preferences, mirror them to the local API
+ * and keep the detector lifecycle in sync. Transcription settings in `patch`
+ * are ignored; they are saved through the API.
+ */
+export async function setMeetingConfig(patch: Partial<MeetingConfig>): Promise<MeetingConfig> {
+  const fields = pickDesktopMeetingFields(patch)
   const current = readConfig()
-  const next = writeConfig({ meetings: { ...current.meetings, ...patch } }).meetings
-  void fetch(`${getApiUrl()}/api/local/meetings/config`, {
-    method: 'PUT',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(patch),
-  }).catch(() => {})
-  if ('enabled' in patch || 'autoDetect' in patch) {
+  const next = writeConfig({ meetings: { ...current.meetings, ...fields } }).meetings
+  if ('enabled' in fields || 'autoDetect' in fields) {
     if (next.enabled && next.autoDetect) startMeetingMonitor()
     else stopMeetingMonitor()
   }
+  await mirrorMeetingConfigToApi(fields)
   return next
+}
+
+/** Start the detector and bring the API's mirror up to date after launch. */
+export function initMeetingConfig(): void {
+  startMeetingMonitor()
+  void mirrorMeetingConfigToApi(pickDesktopMeetingFields(readConfig().meetings))
+}
+
+async function mirrorMeetingConfigToApi(fields: Partial<MeetingConfig>): Promise<void> {
+  if (Object.keys(fields).length === 0) return
+  try {
+    const res = await fetch(`${getApiUrl()}/api/local/meetings/config`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(fields),
+    })
+    if (!res.ok) console.warn(`[Recording] Meeting config mirror failed: HTTP ${res.status}`)
+  } catch (err) {
+    console.warn('[Recording] Meeting config mirror failed:', err instanceof Error ? err.message : err)
+  }
 }
 
 // ---------------------------------------------------------------------------

@@ -13,7 +13,7 @@
  *   - GET    /api/local/meetings/transcription-status     — env-derived flags
  *   - POST   /api/local/meetings/install-sherpa           — asynchronous setup
  *   - GET    /api/local/meetings/recording/status         — bridge running, browser fallback
- *   - POST   /api/local/meetings/recording/start          — bridge happy, bridge unavail
+ *   - POST   /api/local/meetings/recording/start          — disabled, bridge happy, bridge unavail
  *                                                          → browser, conflict
  *   - POST   /api/local/meetings/recording/stop           — bridge happy, browser stop, error
  *   - GET    /api/local/meetings/:id                      — 404, happy
@@ -430,6 +430,15 @@ describe('Recording endpoints', () => {
     const body = await res.json()
     expect(body.id).toBe('rec-1')
     expect(body.audioPath).toBe('/tmp/a.wav')
+  })
+
+  test('start: refused while meetings are disabled, on the bridge and the browser path', async () => {
+    localConfig.set('MEETING_ENABLED', 'false')
+    const res = await meetingRoutes.request('/api/local/meetings/recording/start', { method: 'POST' })
+    expect(res.status).toBe(409)
+    expect(recording.startRecording).not.toHaveBeenCalled()
+    const status = await (await meetingRoutes.request('/api/local/meetings/recording/status')).json()
+    expect(status.isRecording).toBe(false)
   })
 
   test('start: bridge non-bridge error returns 400', async () => {

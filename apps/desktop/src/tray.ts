@@ -59,7 +59,7 @@ function buildContextMenu(): Menu {
         label: 'Meetings & transcription',
         type: 'checkbox',
         checked: config.meetings.enabled,
-        click: (item) => setMeetingConfig({ enabled: item.checked }),
+        click: (item) => void setMeetingConfig({ enabled: item.checked }),
       },
       { type: 'separator' },
       {
@@ -86,7 +86,7 @@ function buildContextMenu(): Menu {
       label: 'Meetings & transcription',
       type: 'checkbox',
       checked: config.meetings.enabled,
-      click: (item) => setMeetingConfig({ enabled: item.checked }),
+      click: (item) => void setMeetingConfig({ enabled: item.checked }),
     },
     { type: 'separator' },
     {
@@ -103,7 +103,7 @@ function buildContextMenu(): Menu {
       checked: config.meetings.autoDetect,
       enabled: config.meetings.enabled,
       click: (item) => {
-        setMeetingConfig({ autoDetect: item.checked })
+        void setMeetingConfig({ autoDetect: item.checked })
       },
     },
     {
@@ -112,7 +112,7 @@ function buildContextMenu(): Menu {
       checked: config.meetings.autoRecord,
       enabled: config.meetings.enabled && config.meetings.autoDetect,
       click: (item) => {
-        setMeetingConfig({ autoRecord: item.checked })
+        void setMeetingConfig({ autoRecord: item.checked })
       },
     },
     {

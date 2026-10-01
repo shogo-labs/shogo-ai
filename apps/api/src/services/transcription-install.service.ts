@@ -12,6 +12,8 @@ export type TranscriptionInstallState = 'idle' | 'installing' | 'ready' | 'faile
 
 export interface TranscriptionInstallStatus {
   state: TranscriptionInstallState
+  /** The model the latest attempt installed (or is installing). */
+  model?: string
   error?: string
   startedAt?: number
 }
@@ -20,8 +22,11 @@ const MODULE_DIR = dirname(fileURLToPath(import.meta.url))
 const RETRY_DELAY_MS = 5_000
 
 let status: TranscriptionInstallStatus = { state: 'idle' }
-let installation: Promise<void> | null = null
-let lastAttemptAt = 0
+/** In-flight or queued installs, by model. */
+const installations = new Map<string, Promise<void>>()
+/** Installs share the sherpa directory, so they run one after another. */
+let queueTail: Promise<unknown> = Promise.resolve()
+const failures = new Map<string, { at: number; error: string }>()
 
 /**
  * Locates the runtime installer in dev and packaged desktop builds.
@@ -79,54 +84,72 @@ export function getTranscriptionInstallStatus(): TranscriptionInstallStatus {
 }
 
 /**
- * Ensure local transcription and diarization assets exist.
+ * Ensure local transcription and diarization assets exist for `model`.
  *
- * The first caller starts the download and all concurrent callers share its
+ * Concurrent callers asking for the same model share one promise. A different
+ * model queues behind the current install rather than being handed its
  * promise. A failed attempt is retryable, but not in a tight loop while a
  * desktop client is polling the status endpoint.
  */
 export function ensureTranscriptionEngine(model = 'base.en'): Promise<void> {
+  const existing = installations.get(model)
+  if (existing) return existing
+
   if (isLocalTranscriptionAvailable(model) && isDiarizationAvailable()) {
-    status = { ...status, state: 'ready', error: undefined }
+    if (installations.size === 0) status = { state: 'ready', model }
     return Promise.resolve()
   }
 
-  if (installation) return installation
-
-  const now = Date.now()
-  if (status.state === 'failed' && now - lastAttemptAt < RETRY_DELAY_MS) {
-    return Promise.reject(new Error(status.error || 'Transcription setup is waiting before retry'))
+  const failure = failures.get(model)
+  if (failure && Date.now() - failure.at < RETRY_DELAY_MS) {
+    return Promise.reject(new Error(failure.error))
   }
 
+  status = { state: 'installing', model, startedAt: Date.now() }
+  const installation = queueTail
+    .catch(() => {})
+    .then(() => installModel(model))
+    .finally(() => {
+      installations.delete(model)
+    })
+  installations.set(model, installation)
+  queueTail = installation
+  return installation
+}
+
+async function installModel(model: string): Promise<void> {
+  // An earlier install in the queue may have fetched everything already.
+  if (isLocalTranscriptionAvailable(model) && isDiarizationAvailable()) {
+    status = { state: 'ready', model }
+    return
+  }
+
+  const startedAt = Date.now()
   const scriptPath = findDownloadSherpaScript()
   if (!scriptPath) {
     const error = 'download-sherpa.mjs not found. Expected it in the desktop scripts or packaged resources directory.'
-    status = { state: 'failed', error, startedAt: now }
-    lastAttemptAt = now
-    return Promise.reject(new Error(error))
+    status = { state: 'failed', model, error, startedAt }
+    failures.set(model, { at: startedAt, error })
+    throw new Error(error)
   }
 
-  lastAttemptAt = now
-  status = { state: 'installing', startedAt: now }
-  installation = runInstaller(scriptPath, model)
-    .then(() => {
-      status = { state: 'ready', startedAt: now }
-    })
-    .catch((err) => {
-      const error = err instanceof Error ? err.message : String(err)
-      status = { state: 'failed', error, startedAt: now }
-      throw err
-    })
-    .finally(() => {
-      installation = null
-    })
-
-  return installation
+  status = { state: 'installing', model, startedAt }
+  try {
+    await runInstaller(scriptPath, model)
+    failures.delete(model)
+    status = { state: 'ready', model, startedAt }
+  } catch (err) {
+    const error = err instanceof Error ? err.message : String(err)
+    failures.set(model, { at: Date.now(), error })
+    status = { state: 'failed', model, error, startedAt }
+    throw err
+  }
 }
 
 /** Test-only reset for the process-local installer state. */
 export function resetTranscriptionInstallState(): void {
   status = { state: 'idle' }
-  installation = null
-  lastAttemptAt = 0
+  installations.clear()
+  queueTail = Promise.resolve()
+  failures.clear()
 }

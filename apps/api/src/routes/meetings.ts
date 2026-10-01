@@ -211,15 +211,17 @@ function configToMeetingResponse(rows: { key: string; value: string }[]) {
   }
 }
 
+async function loadMeetingConfig() {
+  const rows = await localDb.localConfig
+    .findMany({ where: { key: { in: [...MEETING_CONFIG_KEYS] } } })
+    .catch(() => [])
+  return configToMeetingResponse(rows)
+}
+
+const MEETINGS_DISABLED_ERROR = 'Meetings and transcription are disabled'
+
 meetingRoutes.get('/api/local/meetings/config', async (c) => {
-  try {
-    const rows = await localDb.localConfig.findMany({
-      where: { key: { in: [...MEETING_CONFIG_KEYS] } },
-    })
-    return c.json(configToMeetingResponse(rows))
-  } catch {
-    return c.json(configToMeetingResponse([]))
-  }
+  return c.json(await loadMeetingConfig())
 })
 
 meetingRoutes.put('/api/local/meetings/config', async (c) => {
@@ -253,10 +255,7 @@ meetingRoutes.put('/api/local/meetings/config', async (c) => {
 
     await Promise.all(ops)
 
-    const rows = await localDb.localConfig.findMany({
-      where: { key: { in: [...MEETING_CONFIG_KEYS] } },
-    })
-    const config = configToMeetingResponse(rows)
+    const config = await loadMeetingConfig()
     if (
       config.enabled &&
       (body.enabled === true || 'whisperModel' in body)
@@ -291,15 +290,8 @@ meetingRoutes.get('/api/local/meetings/transcription-status', async (c) => {
 // Install sherpa-onnx binaries + models
 meetingRoutes.post('/api/local/meetings/install-sherpa', async (c) => {
   const { model = 'base.en' } = await c.req.json<{ model?: string }>().catch(() => ({ model: 'base.en' }))
-  const configRows = await localDb.localConfig.findMany({
-    where: { key: { in: [...MEETING_CONFIG_KEYS] } },
-  }).catch(() => [])
-  const config = configToMeetingResponse(configRows)
-  if (!config.enabled) {
-    return c.json(
-      { ok: false, error: 'Meetings and transcription are disabled', install: getTranscriptionInstallStatus() },
-      409,
-    )
+  if (!(await loadMeetingConfig()).enabled) {
+    return c.json({ ok: false, error: MEETINGS_DISABLED_ERROR, install: getTranscriptionInstallStatus() }, 409)
   }
   void ensureTranscriptionEngine(model).catch((err) => {
     console.warn('[Meetings] Transcription setup failed:', err?.message ?? err)
@@ -346,6 +338,8 @@ meetingRoutes.get('/api/local/meetings/recording/status', async (c) => {
 })
 
 meetingRoutes.post('/api/local/meetings/recording/start', async (c) => {
+  if (!(await loadMeetingConfig()).enabled) return c.json({ error: MEETINGS_DISABLED_ERROR }, 409)
+
   // Try Electron bridge first
   try {
     const result = await startRec()

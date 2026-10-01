@@ -47,7 +47,7 @@ import {
   getMeetingState,
   onMeetingStateChange,
   respondToMeeting,
-  setMeetingConfig,
+  initMeetingConfig,
   setMeetingPromptPresenter,
 } from './recording'
 import { registerFsIpcHandlers } from './fs-ipc'
@@ -1796,7 +1796,7 @@ app.whenReady().then(async () => {
       },
       setIslandEnabled: (enabled) => islandWindow?.updateConfig({ enabled }),
     })
-    setMeetingConfig(readConfig().meetings)
+    initMeetingConfig()
     startCloudLoginHeartbeat()
     void startRecordingHttpBridge()
   }
