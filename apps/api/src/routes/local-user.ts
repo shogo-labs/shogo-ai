@@ -4,6 +4,7 @@
 import { Hono } from 'hono'
 import { prisma } from '../lib/prisma'
 import { normalizeAdminScopes } from '../lib/admin-scopes'
+import { parseBuddyLook, type BuddyLook } from '../../../../packages/shared-app/src/buddy-look'
 
 type AuthContext = {
   userId?: string
@@ -17,6 +18,16 @@ function userIdFrom(c: any): string | null {
 
 const ONBOARDING_INTENTS = ['personal', 'team'] as const
 type OnboardingIntent = (typeof ONBOARDING_INTENTS)[number]
+
+function storedBuddyLook(raw: string | null | undefined): BuddyLook | null {
+  if (!raw) return null
+  try {
+    const parsed = parseBuddyLook(JSON.parse(raw))
+    return parsed.ok ? parsed.look : null
+  } catch {
+    return null
+  }
+}
 
 function compareAnnouncementVersions(a: string, b: string): number {
   const [aMajor, aMinor] = a.split('.').map(Number)
@@ -53,6 +64,7 @@ export function userProfileRoutes(): Hono {
         onboardingCompleted: true,
         onboardingIntent: true,
         lastSeenAnnouncementVersion: true,
+        buddyLook: true,
         createdAt: true,
         updatedAt: true,
       },
@@ -63,8 +75,37 @@ export function userProfileRoutes(): Hono {
 
     return c.json({
       ok: true,
-      data: { ...user, adminScopes: normalizeAdminScopes(user.adminScopes) },
+      data: {
+        ...user,
+        adminScopes: normalizeAdminScopes(user.adminScopes),
+        buddyLook: storedBuddyLook(user.buddyLook),
+      },
     })
+  })
+
+  router.put('/me/buddy', async (c) => {
+    const userId = userIdFrom(c)
+    if (!userId) {
+      return c.json({ error: { code: 'unauthorized', message: 'Not authenticated' } }, 401)
+    }
+
+    let body: unknown
+    try {
+      body = await c.req.json()
+    } catch {
+      return c.json({ error: { code: 'invalid_request', message: 'Invalid JSON body' } }, 400)
+    }
+
+    const parsed = parseBuddyLook(body)
+    if (!parsed.ok) {
+      return c.json({ error: { code: 'invalid_look', message: parsed.error } }, 400)
+    }
+
+    await prisma.user.update({
+      where: { id: userId },
+      data: { buddyLook: JSON.stringify(parsed.look) },
+    })
+    return c.json({ ok: true, data: parsed.look })
   })
 
   router.post('/me/announcements/seen', async (c) => {

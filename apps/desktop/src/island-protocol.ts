@@ -76,7 +76,19 @@ export interface IslandSnapshot {
   /** `${projectId}:${sessionId}` of the chat visible in a focused app window. */
   focusedSessionKey?: string
   notice?: string
+  /** The signed-in user's Shogo buddy accessories. */
+  buddyLook?: IslandBuddyLook
   updatedAt: number
+}
+
+export const ISLAND_BUDDY_TOPPERS = ['orb', 'stubby', 'ears', 'none'] as const
+export const ISLAND_BUDDY_FACES = ['classic', 'visor', 'screen'] as const
+
+export interface IslandBuddyLook {
+  topper: (typeof ISLAND_BUDDY_TOPPERS)[number]
+  face: (typeof ISLAND_BUDDY_FACES)[number]
+  bolts: boolean
+  blush: boolean
 }
 
 export const EMPTY_ISLAND_SNAPSHOT: IslandSnapshot = { sessions: [], recentProjects: [], updatedAt: 0 }
@@ -444,13 +456,24 @@ export function parseIslandSnapshot(value: unknown): IslandSnapshot {
     : []
   const notice = nonEmpty(value.notice)
   const focusedSessionKey = nonEmpty(value.focusedSessionKey)
+  const buddyLook = parseIslandBuddyLook(value.buddyLook)
   return {
     sessions,
     recentProjects,
     ...(focusedSessionKey ? { focusedSessionKey } : {}),
     ...(notice ? { notice } : {}),
+    ...(buddyLook ? { buddyLook } : {}),
     updatedAt: typeof value.updatedAt === 'number' ? value.updatedAt : Date.now(),
   }
+}
+
+export function parseIslandBuddyLook(value: unknown): IslandBuddyLook | undefined {
+  if (!isRecord(value)) return undefined
+  const { topper, face, bolts, blush } = value
+  if (!ISLAND_BUDDY_TOPPERS.includes(topper as IslandBuddyLook['topper'])) return undefined
+  if (!ISLAND_BUDDY_FACES.includes(face as IslandBuddyLook['face'])) return undefined
+  if (typeof bolts !== 'boolean' || typeof blush !== 'boolean') return undefined
+  return { topper: topper as IslandBuddyLook['topper'], face: face as IslandBuddyLook['face'], bolts, blush }
 }
 
 /** Merge per-window snapshots, most recently updated window first. Only the
@@ -466,6 +489,7 @@ export function mergeIslandSnapshots(
   for (const snapshot of ordered) {
     merged.updatedAt = Math.max(merged.updatedAt, snapshot.updatedAt)
     if (!merged.notice && snapshot.notice) merged.notice = snapshot.notice
+    if (!merged.buddyLook && snapshot.buddyLook) merged.buddyLook = snapshot.buddyLook
     for (const session of snapshot.sessions) {
       const key = islandSessionKey(session.projectId, session.sessionId)
       if (seenSessions.has(key)) continue

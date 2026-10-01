@@ -2261,7 +2261,16 @@ export const api = {
   // ─── Admin ───────────────────────────────────────────────
 
   async getMe(http: HttpClient) {
-    const res = await http.get<{ ok: boolean; data?: { role?: string; adminScopes?: string[]; onboardingCompleted?: boolean; onboardingIntent?: OnboardingIntent | null } }>('/api/me')
+    const res = await http.get<{ ok: boolean; data?: { role?: string; adminScopes?: string[]; onboardingCompleted?: boolean; onboardingIntent?: OnboardingIntent | null; buddyLook?: unknown } }>('/api/me')
+    return res.data
+  },
+
+  /** Saves the Shogo buddy look; the server rejects unknown toppers or faces. */
+  async setBuddyLook(
+    http: HttpClient,
+    look: { topper: string; face: string; bolts: boolean; blush: boolean },
+  ) {
+    const res = await http.request<{ ok: boolean; data?: unknown }>('/api/me/buddy', { method: 'PUT', body: look })
     return res.data
   },
 

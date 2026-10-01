@@ -139,6 +139,36 @@
   padding: 1px 4px !important;
 }
 
+/* The desktop island uses the compact 12px composer typography even though
+   its narrow BrowserWindow would otherwise select the mobile 16px styles. */
+.chat-md.chat-md-compact p,
+.chat-md.chat-md-compact [data-streamdown="list-item"],
+.chat-md.chat-md-compact td,
+.chat-md.chat-md-compact th,
+.chat-md.chat-md-compact p strong,
+.chat-md.chat-md-compact p em,
+.chat-md.chat-md-compact p a,
+.chat-md.chat-md-compact p del,
+.chat-md.chat-md-compact p s,
+.chat-md.chat-md-compact [data-streamdown="list-item"] strong,
+.chat-md.chat-md-compact [data-streamdown="list-item"] em,
+.chat-md.chat-md-compact [data-streamdown="list-item"] a,
+.chat-md.chat-md-compact [data-streamdown="list-item"] del,
+.chat-md.chat-md-compact [data-streamdown="list-item"] s,
+.chat-md.chat-md-compact td strong,
+.chat-md.chat-md-compact td em,
+.chat-md.chat-md-compact td a,
+.chat-md.chat-md-compact td del,
+.chat-md.chat-md-compact td s,
+.chat-md.chat-md-compact th strong,
+.chat-md.chat-md-compact th em,
+.chat-md.chat-md-compact th a,
+.chat-md.chat-md-compact th del,
+.chat-md.chat-md-compact th s {
+  font-size: 12px !important;
+  line-height: 18px !important;
+}
+
 /* The companion chat is presented in a compact desktop window as well as
    narrow viewports. Its primary conversation copy stays at 16px regardless
    of the outer window width. */

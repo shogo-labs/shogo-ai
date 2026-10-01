@@ -73,6 +73,7 @@ import { PostHogProvider } from "../contexts/posthog";
 import { ThemeProvider, useTheme, resolveThemeMode } from "../contexts/theme";
 import { AccentThemeProvider } from "../contexts/accent-theme";
 import { AppearanceProvider } from "../contexts/appearance";
+import { BuddyLookProvider } from "../contexts/buddy-look";
 import { RootErrorBoundary } from "../components/RootErrorBoundary";
 import { UpdateBanner } from "../components/UpdateBanner";
 import { captureAttribution } from "../lib/attribution";
@@ -206,19 +207,22 @@ function AuthenticatedAppShell({
           <StatusBar style={statusBarScheme === "dark" ? "light" : "dark"} />
         </>
       )}
-      <Stack screenOptions={{ headerShown: false, lazy: true }}>
-        <Stack.Screen name="index" />
-        <Stack.Screen name="(auth)" />
-        <Stack.Screen name="invite/[token]" />
-        <Stack.Screen name="m/[token]" />
-        <Stack.Screen name="(onboarding)" />
-        <Stack.Screen name="(app)" />
-        <Stack.Screen name="(admin)" />
-        <Stack.Screen
-          name="island"
-          options={{ contentStyle: { backgroundColor: "transparent" } }}
-        />
-      </Stack>
+      {/* The island reads the look from its snapshot instead. */}
+      <BuddyLookProvider enabled={!island}>
+        <Stack screenOptions={{ headerShown: false, lazy: true }}>
+          <Stack.Screen name="index" />
+          <Stack.Screen name="(auth)" />
+          <Stack.Screen name="invite/[token]" />
+          <Stack.Screen name="m/[token]" />
+          <Stack.Screen name="(onboarding)" />
+          <Stack.Screen name="(app)" />
+          <Stack.Screen name="(admin)" />
+          <Stack.Screen
+            name="island"
+            options={{ contentStyle: { backgroundColor: "transparent" } }}
+          />
+        </Stack>
+      </BuddyLookProvider>
     </ActiveInstanceProvider>
   );
 }

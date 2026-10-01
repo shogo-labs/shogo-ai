@@ -12,7 +12,10 @@ import {
 import { cn } from '@shogo/shared-ui/primitives'
 import { useTheme } from '../../contexts/theme'
 import { useAppearance } from '../../contexts/appearance'
+import { useBuddyLook } from '../../contexts/buddy-look'
 import { THEME_CHOICES } from '../../lib/theme-choices'
+import { BuddyCustomizer } from '../island/buddy/BuddyCustomizer'
+import { useIslandAccent } from '../island/island-accent'
 import { playIslandSound } from '../island/island-sounds'
 import {
   Text,
@@ -95,6 +98,8 @@ export function AppearanceTab() {
   const [islandConfig, setIslandConfig] = useState<IslandConfig | null>(null)
   const [shortcut, setShortcut] = useState('')
   const [islandError, setIslandError] = useState('')
+  const buddy = useBuddyLook()
+  const accent = useIslandAccent()
   const { Sun, Moon, Monitor, RotateCcw } = useAccountSheetIcons({
     Sun: SunIcon,
     Moon: MoonIcon,
@@ -276,6 +281,17 @@ export function AppearanceTab() {
           ) : null}
           {islandError ? (
             <Text className="text-xs text-destructive mb-2 px-1">{islandError}</Text>
+          ) : null}
+
+          <AppearanceSection title="Your Shogo" />
+          <Text className="text-xs text-muted-foreground mb-3">
+            Dress up the Shogo that lives in your island. Saved to your account.
+          </Text>
+          <View className="px-4 py-4 rounded-lg bg-muted/30 border border-border mb-2">
+            <BuddyCustomizer look={buddy.look} onChange={buddy.setLook} color={accent} />
+          </View>
+          {buddy.error ? (
+            <Text className="text-xs text-destructive mb-2 px-1">{buddy.error}</Text>
           ) : null}
         </>
       ) : null}

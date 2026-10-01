@@ -4,7 +4,9 @@
 import { useEffect, useState } from "react"
 import { Pressable, View } from "react-native"
 import { Motion } from "@legendapp/motion"
-import { ShogoLogoMark } from "../branding/ShogoLogoMark"
+import type { BuddyState } from "./buddy/engine"
+import { IslandBuddy, type IslandBuddyEntrance } from "./buddy/IslandBuddy"
+import type { BuddyLook } from "./buddy/look"
 import { useIslandAccent } from "./island-accent"
 import { IDLE_WING, IDLE_WING_HOVER, ISLAND_HOVER, NOTCH_WIDTH, islandMotion } from "./island-motion"
 import { ISLAND_TRIGGER_PROPS, type IslandLayout } from "./types"
@@ -29,18 +31,24 @@ function useWindowHovered(): boolean {
 
 /**
  * Resting island with nothing to report. On a notched Mac it is a pair of
- * black wings just wider than the notch carrying the Shogo mark, so the
- * island is discoverable without covering menu items; elsewhere it is a
- * small accent handle under the menu bar. Both grow on hover to show the
- * island is about to open.
+ * black wings just wider than the notch carrying the Shogo mark (the buddy
+ * folded up), so the island is discoverable without covering menu items;
+ * elsewhere it is a small accent handle under the menu bar. Both grow on
+ * hover to show the island is about to open.
  */
 export function IslandIdle({
   layout,
   reducedMotion,
+  look,
+  buddyState,
+  entrance,
   onExpand,
 }: {
   layout: IslandLayout
   reducedMotion: boolean
+  look: BuddyLook
+  buddyState: BuddyState
+  entrance: Extract<IslandBuddyEntrance, "logo" | "fold">
   onExpand: () => void
 }) {
   const hovered = useWindowHovered()
@@ -91,7 +99,17 @@ export function IslandIdle({
       >
         <View className="items-center justify-center" style={{ width: wing, height }}>
           <Motion.View animate={{ scale: hovered ? 1.15 : 1 }} transition={transition}>
-            <ShogoLogoMark className="h-3.5 w-3.5" fill={accent} />
+            <IslandBuddy
+              body={15}
+              width={IDLE_WING}
+              height={height}
+              state={buddyState}
+              color={accent}
+              look={look}
+              entrance={entrance}
+              peek={hovered}
+              reducedMotion={reducedMotion}
+            />
           </Motion.View>
         </View>
         <View style={{ width: NOTCH_WIDTH }} />

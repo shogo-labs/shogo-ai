@@ -5,6 +5,7 @@ import { useWindowDimensions } from "react-native"
 import { Streamdown, defaultUrlTransform } from "streamdown"
 import "streamdown/styles.css"
 import { useMobileWorkspaceChrome } from "../layout/MobileWorkspaceChromeContext"
+import { usePhoneLayoutOverride } from "../../lib/native-phone-layout"
 import {
   FILE_HREF_PREFIX,
   linkifyBareUrls,
@@ -74,9 +75,14 @@ function FileAwareLink({
 export const MarkdownText = memo(
   function MarkdownText({ children, className, isStreaming, onFilePress }: MarkdownTextProps) {
     const usesMobileWorkspaceChrome = useMobileWorkspaceChrome()
+    const phoneLayoutOverride = usePhoneLayoutOverride()
     const { width } = useWindowDimensions()
-    const usesMobileChatTypography = usesMobileWorkspaceChrome || width < 640
-    const baseClassName = usesMobileChatTypography
+    const usesCompactChatTypography = phoneLayoutOverride === false
+    const usesMobileChatTypography =
+      usesMobileWorkspaceChrome || (phoneLayoutOverride === null && width < 640)
+    const baseClassName = usesCompactChatTypography
+      ? "chat-md chat-md-compact"
+      : usesMobileChatTypography
       ? "chat-md chat-md-mobile"
       : "chat-md"
     const cls = className ? `${baseClassName} ${className}` : baseClassName
