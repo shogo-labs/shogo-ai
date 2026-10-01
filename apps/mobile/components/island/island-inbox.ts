@@ -4,7 +4,7 @@
 import type { UIMessage } from "@ai-sdk/react"
 import type { PlanData } from "../chat/PlanCard"
 import type { ProjectChatListItem } from "../../lib/project-chat-sessions"
-import type { IslandSession } from "./types"
+import { islandSessionKey, type IslandSession } from "./types"
 
 export type IslandSessionStatus = IslandSession["status"]
 
@@ -20,14 +20,20 @@ export function needsAttention(status: IslandSessionStatus): boolean {
   return status === "needs_approval" || status === "needs_answer"
 }
 
+/** Keep active sessions visible, plus the chat currently focused in Shogo. */
+export function inboxSessions(sessions: readonly IslandSession[], focusedSessionKey?: string): IslandSession[] {
+  return sessions.filter(
+    (session) =>
+      session.status !== "idle" || islandSessionKey(session.projectId, session.sessionId) === focusedSessionKey,
+  )
+}
+
 /** Needs-you first, then running, then finished, each most recent first. */
 export function orderIslandSessions<T extends Pick<IslandSession, "status" | "lastActivityAt">>(
   sessions: readonly T[],
 ): T[] {
   return [...sessions].sort(
-    (a, b) =>
-      STATUS_RANK[a.status] - STATUS_RANK[b.status] ||
-      (b.lastActivityAt ?? 0) - (a.lastActivityAt ?? 0),
+    (a, b) => STATUS_RANK[a.status] - STATUS_RANK[b.status] || (b.lastActivityAt ?? 0) - (a.lastActivityAt ?? 0),
   )
 }
 
@@ -51,9 +57,7 @@ export function mergeSessionRows(
   liveSessions: readonly IslandSession[],
   label: (session: ProjectChatListItem) => string,
 ): IslandSessionRow[] {
-  const live = new Map(
-    liveSessions.filter((s) => s.projectId === projectId).map((s) => [s.sessionId, s]),
-  )
+  const live = new Map(liveSessions.filter((s) => s.projectId === projectId).map((s) => [s.sessionId, s]))
   const rows: IslandSessionRow[] = []
   for (const session of apiSessions) {
     if (session.isArchived) continue
@@ -80,9 +84,7 @@ export function mergeSessionRows(
       live: true,
     })
   }
-  return rows.sort(
-    (a, b) => STATUS_RANK[a.status] - STATUS_RANK[b.status] || b.activity - a.activity,
-  )
+  return rows.sort((a, b) => STATUS_RANK[a.status] - STATUS_RANK[b.status] || b.activity - a.activity)
 }
 
 export interface IslandProjectItem {

@@ -6,6 +6,7 @@ import {
   ISLAND_MIN_CONTENT_HEIGHT,
   getIslandBounds,
   getIslandTopInset,
+  isIslandFocusable,
   isNotchedDisplay,
 } from '../island-placement'
 
@@ -36,7 +37,12 @@ describe('Shogo island placement', () => {
   })
 
   test('covers the notch plus idle wings while hidden', () => {
-    expect(getIslandBounds(notchedMac, 'hidden', 'darwin')).toEqual({ x: 620, y: 0, width: 272, height: 37 })
+    expect(getIslandBounds(notchedMac, 'hidden', 'darwin')).toEqual({
+      x: 620,
+      y: 0,
+      width: 272,
+      height: 37,
+    })
   })
 
   test('keeps the standard pill on displays without a notch', () => {
@@ -45,6 +51,15 @@ describe('Shogo island placement', () => {
       y: 0,
       width: 210,
       height: 36,
+    })
+  })
+
+  test('uses a top tab for the hidden state on displays without a notch', () => {
+    expect(getIslandBounds(regularDisplay, 'hidden', 'win32')).toEqual({
+      x: 2810,
+      y: 0,
+      width: 140,
+      height: 28,
     })
   })
 
@@ -78,5 +93,12 @@ describe('Shogo island placement', () => {
     expect(getIslandTopInset(notchedMac, 'darwin')).toBe(37)
     expect(getIslandTopInset(notchedMac, 'win32')).toBe(0)
     expect(getIslandTopInset(regularDisplay, 'darwin')).toBe(0)
+  })
+
+  test('allows expanded Windows islands to receive input without activating on open', () => {
+    expect(isIslandFocusable('expanded', 'win32')).toBe(true)
+    expect(isIslandFocusable('expanded', 'darwin')).toBe(false)
+    expect(isIslandFocusable('compose', 'darwin')).toBe(true)
+    expect(isIslandFocusable('collapsed', 'win32')).toBe(false)
   })
 })

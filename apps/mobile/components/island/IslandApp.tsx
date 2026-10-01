@@ -30,8 +30,10 @@ import { PermissionCard, QuestionCard } from "./PendingCard"
 import { ProjectSwitcher, useWorkspaceProjects } from "./ProjectSwitcher"
 import { SessionList, SessionRow } from "./SessionList"
 import { planAddToProject, saveAttachmentsPrompt, type IslandDropAction } from "./island-drop"
-import { orderIslandSessions, sortIslandProjects, type IslandProjectItem } from "./island-inbox"
+import { inboxSessions, orderIslandSessions, sortIslandProjects, type IslandProjectItem } from "./island-inbox"
 import {
+  IDLE_TAB_HEIGHT,
+  IDLE_TAB_WIDTH,
   IDLE_NOTCHED_WIDTH,
   ISLAND_CLOSE,
   ISLAND_CLOSE_MS,
@@ -67,7 +69,12 @@ const PICKER_HEIGHT = 320
 
 type IslandView =
   | { name: "inbox" }
-  | { name: "project"; projectId: string; projectName: string; initialFiles?: IslandFileRef[] }
+  | {
+      name: "project"
+      projectId: string
+      projectName: string
+      initialFiles?: IslandFileRef[]
+    }
   | {
       name: "chat"
       projectId: string
@@ -88,7 +95,11 @@ function parentView(view: IslandView): IslandView | null {
     case "project":
       return { name: "inbox" }
     case "chat":
-      return { name: "project", projectId: view.projectId, projectName: view.projectName }
+      return {
+        name: "project",
+        projectId: view.projectId,
+        projectName: view.projectName,
+      }
   }
 }
 
@@ -126,7 +137,9 @@ async function writeProjectFile(projectId: string, path: string, content: string
   // Never overwrite: pick the first free "name-n.ext".
   let target = path
   for (let attempt = 1; attempt <= 20; attempt++) {
-    const probe = await fetch(base + encodeURIComponent(target), { credentials: "include" })
+    const probe = await fetch(base + encodeURIComponent(target), {
+      credentials: "include",
+    })
     if (probe.status === 404) break
     target = `${stem}-${attempt}${ext}`
   }
@@ -222,13 +235,19 @@ export const IslandApp = observer(function IslandApp({
       setPickerOpen(false)
     }
   }, [cardOpen])
-  useEffect(() => () => {
-    if (closeTimer.current) clearTimeout(closeTimer.current)
-  }, [])
+  useEffect(
+    () => () => {
+      if (closeTimer.current) clearTimeout(closeTimer.current)
+    },
+    [],
+  )
   const usage = useIslandUsage(workspaceId, cardOpen)
   const projects = useWorkspaceProjects(workspaceId)
   const sortedProjects = useMemo(() => sortIslandProjects(projects, snapshot.sessions), [projects, snapshot.sessions])
-  const orderedSessions = useMemo(() => orderIslandSessions(snapshot.sessions), [snapshot.sessions])
+  const orderedSessions = useMemo(
+    () => orderIslandSessions(inboxSessions(snapshot.sessions, snapshot.focusedSessionKey)),
+    [snapshot.focusedSessionKey, snapshot.sessions],
+  )
 
   const currentProjectId =
     view.name === "chat" || view.name === "project"
@@ -237,9 +256,7 @@ export const IslandApp = observer(function IslandApp({
   const currentProjectName =
     view.name === "chat" || view.name === "project"
       ? view.projectName
-      : (orderedSessions[0]?.projectName ??
-        sortedProjects.find((p) => p.id === currentProjectId)?.name ??
-        "Project")
+      : (orderedSessions[0]?.projectName ?? sortedProjects.find((p) => p.id === currentProjectId)?.name ?? "Project")
   const modelId = useModelId(currentProjectId, usage.hasAdvancedModelAccess)
 
   const canAutoCollapse = useCallback(
@@ -381,7 +398,10 @@ export const IslandApp = observer(function IslandApp({
       if (!bridge) return
       void (sessionId
         ? bridge.sendAction({ type: "open", projectId, sessionId })
-        : bridge.sendAction({ type: "navigate", path: `/projects/${encodeURIComponent(projectId)}` }))
+        : bridge.sendAction({
+            type: "navigate",
+            path: `/projects/${encodeURIComponent(projectId)}`,
+          }))
       collapse()
     },
     [bridge, collapse],
@@ -390,9 +410,15 @@ export const IslandApp = observer(function IslandApp({
   const respondToMeeting = useCallback(
     (decision: IslandMeetingDecision, promptId?: string) => {
       if (!bridge) return
-      void bridge.sendAction({ type: "meeting", decision, ...(promptId ? { promptId } : {}) }).then((result) => {
-        if (!result.ok) setNotice(result.error)
-      })
+      void bridge
+        .sendAction({
+          type: "meeting",
+          decision,
+          ...(promptId ? { promptId } : {}),
+        })
+        .then((result) => {
+          if (!result.ok) setNotice(result.error)
+        })
     },
     [bridge],
   )
@@ -405,7 +431,10 @@ export const IslandApp = observer(function IslandApp({
   const meetingNotes = useIslandMeetingNotes(meeting.recording)
   const openMeeting = useCallback(
     (meetingId: string) => {
-      void bridge?.sendAction({ type: "navigate", path: `/meetings/${meetingId}` })
+      void bridge?.sendAction({
+        type: "navigate",
+        path: `/meetings/${meetingId}`,
+      })
       collapse()
     },
     [bridge, collapse],
@@ -422,8 +451,19 @@ export const IslandApp = observer(function IslandApp({
       projectName: string,
       sessionId: string,
       title: string,
-      extra?: { initialSend?: IslandInitialSend; initialFiles?: IslandFileRef[] },
-    ) => setView({ name: "chat", projectId, projectName, sessionId, title, ...extra }),
+      extra?: {
+        initialSend?: IslandInitialSend
+        initialFiles?: IslandFileRef[]
+      },
+    ) =>
+      setView({
+        name: "chat",
+        projectId,
+        projectName,
+        sessionId,
+        title,
+        ...extra,
+      }),
     [],
   )
 
@@ -436,11 +476,16 @@ export const IslandApp = observer(function IslandApp({
           contextId: projectId,
         })
         if (!session?.id) return { ok: false, error: "Couldn't start a chat" }
-        openChat(projectId, projectName, session.id, "New chat", { initialSend })
+        openChat(projectId, projectName, session.id, "New chat", {
+          initialSend,
+        })
         if (layout.sounds) playIslandSound("sent", layout.soundVolume)
         return { ok: true }
       } catch (err) {
-        return { ok: false, error: err instanceof Error ? err.message : String(err) }
+        return {
+          ok: false,
+          error: err instanceof Error ? err.message : String(err),
+        }
       }
     },
     [actions, layout.soundVolume, layout.sounds, openChat],
@@ -455,7 +500,12 @@ export const IslandApp = observer(function IslandApp({
         return { ok: true } as IslandResult
       }
       if (action === "new-chat") {
-        setView({ name: "project", projectId, projectName, initialFiles: files })
+        setView({
+          name: "project",
+          projectId,
+          projectName,
+          initialFiles: files,
+        })
         return { ok: true } as IslandResult
       }
       const read = await bridge.readFiles(files)
@@ -464,7 +514,10 @@ export const IslandApp = observer(function IslandApp({
       try {
         for (const write of plan.writes) await writeProjectFile(projectId, write.path, write.content)
       } catch (err) {
-        return { ok: false, error: err instanceof Error ? err.message : String(err) } as IslandResult
+        return {
+          ok: false,
+          error: err instanceof Error ? err.message : String(err),
+        } as IslandResult
       }
       if (plan.attach.length > 0) {
         return startNewChat(projectId, projectName, {
@@ -533,10 +586,7 @@ export const IslandApp = observer(function IslandApp({
   const headerSubtitle = view.name === "chat" ? view.projectName : undefined
 
   const header = (
-    <View
-      className="flex-row items-center gap-1.5 px-3"
-      style={{ height: layout.notched ? layout.topInset : 40 }}
-    >
+    <View className="flex-row items-center gap-1.5 px-3" style={{ height: layout.notched ? layout.topInset : 40 }}>
       <View className="min-w-0 flex-1 flex-row items-center gap-1.5">
         <IslandBuddy
           body={16}
@@ -573,7 +623,10 @@ export const IslandApp = observer(function IslandApp({
               </Text>
             ) : null}
           </View>
-          <Motion.View animate={{ rotate: pickerOpen ? "180deg" : "0deg" }} transition={islandMotion(reducedMotion, ISLAND_CONTENT_OUT)}>
+          <Motion.View
+            animate={{ rotate: pickerOpen ? "180deg" : "0deg" }}
+            transition={islandMotion(reducedMotion, ISLAND_CONTENT_OUT)}
+          >
             <ChevronDown size={12} color={pickerOpen ? "#e4e4e7" : "#71717a"} />
           </Motion.View>
         </Pressable>
@@ -616,8 +669,13 @@ export const IslandApp = observer(function IslandApp({
       onStop={session ? () => void session.stop() : undefined}
       onSend={async (text, files) => {
         const result = session
-          ? await session.send(text, files, { interactionMode: ISLAND_INTERACTION_MODE })
-          : await startNewChat(target.projectId, target.projectName, { text, files })
+          ? await session.send(text, files, {
+              interactionMode: ISLAND_INTERACTION_MODE,
+            })
+          : await startNewChat(target.projectId, target.projectName, {
+              text,
+              files,
+            })
         if (result.ok && session && layout.sounds) playIslandSound("sent", layout.soundVolume)
         return result
       }}
@@ -665,9 +723,7 @@ export const IslandApp = observer(function IslandApp({
       </>
     )
   } else if (view.name === "chat") {
-    const live = snapshot.sessions.find(
-      (s) => s.projectId === view.projectId && s.sessionId === view.sessionId,
-    )
+    const live = snapshot.sessions.find((s) => s.projectId === view.projectId && s.sessionId === view.sessionId)
     body = (
       <IslandChatHost
         live={live}
@@ -715,9 +771,7 @@ export const IslandApp = observer(function IslandApp({
                         onInputFocus={focusForTyping}
                       />
                     ) : null}
-                    {session.error ? (
-                      <Text className="text-[11px] text-rose-400">{session.error}</Text>
-                    ) : null}
+                    {session.error ? <Text className="text-[11px] text-rose-400">{session.error}</Text> : null}
                   </>
                 }
               />
@@ -734,9 +788,7 @@ export const IslandApp = observer(function IslandApp({
         <ScrollView style={{ flexGrow: 0, flexShrink: 1 }} contentContainerStyle={{ padding: 8 }}>
           {orderedSessions.length > 0 ? (
             <>
-              <Text className="px-2 pb-1 text-[10px] font-semibold uppercase tracking-wide text-zinc-500">
-                Active
-              </Text>
+              <Text className="px-2 pb-1 text-[10px] font-semibold uppercase tracking-wide text-zinc-500">Active</Text>
               {orderedSessions.map((session) => (
                 <SessionRow
                   key={islandSessionKey(session.projectId, session.sessionId)}
@@ -759,9 +811,7 @@ export const IslandApp = observer(function IslandApp({
             </Text>
           ) : null}
         </ScrollView>
-        {currentProjectId
-          ? composerFor({ projectId: currentProjectId, projectName: currentProjectName }, null)
-          : null}
+        {currentProjectId ? composerFor({ projectId: currentProjectId, projectName: currentProjectName }, null) : null}
       </>
     )
   }
@@ -772,10 +822,18 @@ export const IslandApp = observer(function IslandApp({
   // room rather than being clipped by a short card.
   const pickerMinHeight = pickerOpen ? headerHeight + PICKER_HEIGHT + 12 : undefined
   // Notched: the card starts as the idle wings and unfolds downward, so it
-  // reads as the notch opening. Elsewhere it drops in from the pill.
+  // reads as the notch opening. Elsewhere it unfolds from the virtual-notch tab.
   const folded = layout.notched
-    ? { scaleX: Math.min(1, IDLE_NOTCHED_WIDTH / Math.max(windowWidth, 1)), scaleY: 0.08, opacity: 1 }
-    : { scaleX: 0.94, scaleY: 0.94, opacity: 0 }
+    ? {
+        scaleX: Math.min(1, IDLE_NOTCHED_WIDTH / Math.max(windowWidth, 1)),
+        scaleY: 0.08,
+        opacity: 1,
+      }
+    : {
+        scaleX: IDLE_TAB_WIDTH / Math.max(windowWidth, 1),
+        scaleY: IDLE_TAB_HEIGHT / Math.max(maxCardHeight, 1),
+        opacity: 1,
+      }
   const unfolded = { scaleX: 1, scaleY: 1, opacity: 1 }
   return (
     <View className="dark" style={{ width: "100%", alignItems: "center" }}>
@@ -808,9 +866,7 @@ export const IslandApp = observer(function IslandApp({
                 <IslandUsagePanel usage={usage} onOpenBilling={openBilling} />
               </View>
             ) : null}
-            {message ? (
-              <Text className="px-4 pb-1 text-[11px] text-amber-300">{message}</Text>
-            ) : null}
+            {message ? <Text className="px-4 pb-1 text-[11px] text-amber-300">{message}</Text> : null}
             <IslandMeetingBanner
               meeting={meeting}
               notes={meetingNotes}
@@ -825,7 +881,13 @@ export const IslandApp = observer(function IslandApp({
               <Pressable
                 onPress={() => setPickerOpen(false)}
                 accessibilityLabel="Close project picker"
-                style={{ position: "absolute", top: headerHeight, left: 0, right: 0, bottom: 0 }}
+                style={{
+                  position: "absolute",
+                  top: headerHeight,
+                  left: 0,
+                  right: 0,
+                  bottom: 0,
+                }}
               />
               <Motion.View
                 initial={reducedMotion ? undefined : { opacity: 0, y: -6, scale: 0.98 }}
@@ -851,7 +913,11 @@ export const IslandApp = observer(function IslandApp({
                     onInputFocus={focusForTyping}
                     onSelect={(project: IslandProjectItem) => {
                       setPickerOpen(false)
-                      setView({ name: "project", projectId: project.id, projectName: project.name })
+                      setView({
+                        name: "project",
+                        projectId: project.id,
+                        projectName: project.name,
+                      })
                     }}
                   />
                 </View>

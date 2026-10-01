@@ -5,6 +5,7 @@ import { describe, expect, test } from "bun:test"
 import type { UIMessage } from "@ai-sdk/react"
 import {
   derivePendingPlan,
+  inboxSessions,
   mergeSessionRows,
   orderIslandSessions,
   sortIslandProjects,
@@ -46,21 +47,55 @@ describe("orderIslandSessions", () => {
   })
 })
 
+describe("inboxSessions", () => {
+  test("hides idle background tabs but keeps the focused chat", () => {
+    const visible = inboxSessions(
+      [
+        session({ sessionId: "idle-background", status: "idle" }),
+        session({ sessionId: "running", status: "running" }),
+        session({ sessionId: "focused", status: "idle" }),
+      ],
+      "p:focused",
+    )
+    expect(visible.map((item) => item.sessionId)).toEqual(["running", "focused"])
+  })
+})
+
 describe("mergeSessionRows", () => {
   test("overlays live status, skips archived chats, and keeps live chats the API hasn't returned", () => {
     const rows = mergeSessionRows(
       "p",
       [apiSession("a", 100), apiSession("b", 300), apiSession("gone", 999, { isArchived: true })],
       [
-        session({ sessionId: "a", status: "running", step: "Editing", lastActivityAt: 500 }),
-        session({ sessionId: "fresh", title: "Brand new", status: "running", lastActivityAt: 400 }),
-        session({ sessionId: "other", projectId: "q", status: "needs_approval" }),
+        session({
+          sessionId: "a",
+          status: "running",
+          step: "Editing",
+          lastActivityAt: 500,
+        }),
+        session({
+          sessionId: "fresh",
+          title: "Brand new",
+          status: "running",
+          lastActivityAt: 400,
+        }),
+        session({
+          sessionId: "other",
+          projectId: "q",
+          status: "needs_approval",
+        }),
       ],
       (s) => s.inferredName,
     )
     expect(rows.map((r) => r.sessionId)).toEqual(["a", "fresh", "b"])
     expect(rows[0]).toEqual(
-      expect.objectContaining({ title: "Chat", status: "running", step: "Editing", activity: 500, live: true }),
+      expect.objectContaining({
+        title: "Chat",
+        status: "running",
+        step: "Editing",
+        activity: 500,
+        live: true,
+      }),
     )
     expect(rows[2]).toEqual(expect.objectContaining({ title: "Chat b", status: "idle", live: false }))
   })
@@ -84,8 +119,7 @@ describe("sortIslandProjects", () => {
 })
 
 describe("derivePendingPlan", () => {
-  const assistant = (parts: unknown[]): UIMessage =>
-    ({ id: "m", role: "assistant", parts }) as unknown as UIMessage
+  const assistant = (parts: unknown[]): UIMessage => ({ id: "m", role: "assistant", parts }) as unknown as UIMessage
 
   test("reads a completed dynamic create_plan call", () => {
     const plan = derivePendingPlan([
@@ -96,12 +130,22 @@ describe("derivePendingPlan", () => {
           toolName: "create_plan",
           toolCallId: "call-1",
           state: "output-available",
-          input: { name: "Auth", overview: "Add auth", plan: "1. Login", todos: [{ id: "t", content: "x" }] },
+          input: {
+            name: "Auth",
+            overview: "Add auth",
+            plan: "1. Login",
+            todos: [{ id: "t", content: "x" }],
+          },
         },
       ]),
     ])
     expect(plan).toEqual(
-      expect.objectContaining({ name: "Auth", toolCallId: "call-1", isUpdate: false, todos: [{ id: "t", content: "x" }] }),
+      expect.objectContaining({
+        name: "Auth",
+        toolCallId: "call-1",
+        isUpdate: false,
+        todos: [{ id: "t", content: "x" }],
+      }),
     )
   })
 
@@ -119,7 +163,13 @@ describe("derivePendingPlan", () => {
         },
       ]),
     ])
-    expect(plan).toEqual(expect.objectContaining({ name: "Plan", overview: "Revised", isUpdate: true }))
+    expect(plan).toEqual(
+      expect.objectContaining({
+        name: "Plan",
+        overview: "Revised",
+        isUpdate: true,
+      }),
+    )
   })
 
   test("ignores plans that aren't in the last assistant message or are still streaming", () => {
@@ -133,7 +183,11 @@ describe("derivePendingPlan", () => {
     expect(
       derivePendingPlan([
         assistant([{ ...planPart, state: "output-available" }]),
-        { id: "u", role: "user", parts: [{ type: "text", text: "ok" }] } as unknown as UIMessage,
+        {
+          id: "u",
+          role: "user",
+          parts: [{ type: "text", text: "ok" }],
+        } as unknown as UIMessage,
       ]),
     ).toBeNull()
   })
