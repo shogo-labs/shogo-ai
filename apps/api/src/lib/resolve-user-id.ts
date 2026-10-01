@@ -45,6 +45,7 @@ const RESERVED_RESOURCE_IDS = new Set(['me', 'import', 'validate', 'heartbeat'])
  */
 const SELF_ROUTE_PREFIXES = [
   '/api/onboarding/complete',
+  '/api/me/buddy',
   '/api/users/me/attribution',
   '/api/affiliates/me/',
 ]

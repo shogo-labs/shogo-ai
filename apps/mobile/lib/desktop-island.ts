@@ -5,6 +5,7 @@
 // apps/desktop/src/island-protocol.ts, which re-validates everything sent
 // from here.
 
+import type { BuddyLook } from "@shogo/shared-app/buddy-look"
 import { chatActivityEvents, chatSessionEvents } from "./chat-session-events"
 
 export interface IslandFileAttachment {
@@ -90,8 +91,12 @@ export interface DesktopIslandSnapshot {
   /** `${projectId}:${sessionId}` of the chat visible in this window. */
   focusedSessionKey?: string
   notice?: string
+  /** The signed-in user's Shogo buddy accessories. */
+  buddyLook?: DesktopIslandBuddyLook
   updatedAt: number
 }
+
+export type DesktopIslandBuddyLook = BuddyLook
 
 export type DesktopIslandTarget =
   | { kind: "session"; projectId: string; sessionId: string }
@@ -192,6 +197,7 @@ const permissionSeenAt = new Map<string, number>()
 
 let navigator: ((navigation: DesktopIslandNavigation) => void) | null = null
 let notice: { text: string; expiresAt: number } | null = null
+let buddyLook: DesktopIslandBuddyLook | null = null
 let actionListenerInstalled = false
 let publishTimer: ReturnType<typeof setTimeout> | null = null
 let lastSnapshot: DesktopIslandSnapshot = {
@@ -309,9 +315,25 @@ function publishSnapshot(): void {
     recentProjects: [...recentProjects.values()],
     ...(focused ? { focusedSessionKey: `${focused.projectId}:${focused.sessionId}` } : {}),
     ...(notice ? { notice: notice.text } : {}),
+    ...(buddyLook ? { buddyLook } : {}),
     updatedAt: Date.now(),
   }
   getBridge()?.islandUpdate?.(lastSnapshot)
+}
+
+/** Shows this look on the island; the main process keeps the newest window's. */
+export function setIslandBuddyLook(look: DesktopIslandBuddyLook): void {
+  if (
+    buddyLook &&
+    buddyLook.topper === look.topper &&
+    buddyLook.face === look.face &&
+    buddyLook.bolts === look.bolts &&
+    buddyLook.blush === look.blush
+  ) {
+    return
+  }
+  buddyLook = { ...look }
+  if (getBridge()?.islandUpdate) schedulePublish()
 }
 
 function queueSend(
