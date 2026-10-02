@@ -20,6 +20,7 @@ import {
   parseIslandAction,
   parseIslandConfigPatch,
   parseIslandSnapshot,
+  pendingRequestsToAutoExpand,
   type IslandSnapshot,
 } from '../island-protocol'
 
@@ -197,6 +198,38 @@ describe('mergeIslandSnapshots', () => {
     const focused: IslandSnapshot = { sessions: [], recentProjects: [], focusedSessionKey: 'p2:s2', updatedAt: 1 }
     expect(mergeIslandSnapshots([background, focused]).focusedSessionKey).toBeUndefined()
     expect(mergeIslandSnapshots([background, focused], focused).focusedSessionKey).toBe('p2:s2')
+  })
+})
+
+describe('pendingRequestsToAutoExpand', () => {
+  const pending = (id: string) => ({ pending: { kind: 'question', request: { id } } })
+  const snap = (focusedSessionKey?: string): IslandSnapshot => ({
+    sessions: [session('p1', 's1', pending('r1')), session('p2', 's2', pending('r2'))] as IslandSnapshot['sessions'],
+    recentProjects: [],
+    ...(focusedSessionKey ? { focusedSessionKey } : {}),
+    updatedAt: 1,
+  })
+
+  test('suppresses a request in the focused session', () => {
+    const decision = pendingRequestsToAutoExpand(snap('p1:s1'), new Set())
+    expect(decision.suppressed).toEqual(['r1'])
+    expect(decision.expand).toBe('r2')
+    expect(pendingRequestsToAutoExpand({ ...snap('p1:s1'), sessions: [snap().sessions[0]] }, new Set())).toEqual({
+      expand: null,
+      suppressed: ['r1'],
+    })
+  })
+
+  test('expands for a request in a session that is not focused', () => {
+    expect(pendingRequestsToAutoExpand(snap('p3:s3'), new Set())).toEqual({ expand: 'r1', suppressed: [] })
+  })
+
+  test('expands when nothing is focused', () => {
+    expect(pendingRequestsToAutoExpand(snap(), new Set())).toEqual({ expand: 'r1', suppressed: [] })
+  })
+
+  test('ignores requests that were already seen', () => {
+    expect(pendingRequestsToAutoExpand(snap(), new Set(['r1', 'r2']))).toEqual({ expand: null, suppressed: [] })
   })
 })
 
