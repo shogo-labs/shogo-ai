@@ -5,7 +5,9 @@ import {
   ChevronLeft,
   ChevronRight,
   ChevronDown,
+  File as FileIcon,
 } from "lucide-react-native";
+import { iconFor } from "./file-icon";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { OpenFile } from "./types";
 import { useDragCancel } from "./useDragCancel";
@@ -297,6 +299,9 @@ export function EditorTabs({
             )}
             {f.pinned && <Pin size={11} color="var(--ide-muted)" />}
             {f.language === "extension-detail" && <CodiconExtensions size={14} />}
+            {!f.language.startsWith("extension-") && f.language !== "git-diff" && (
+              <FileIcon size={13} className={`shrink-0 ${iconFor(f.name.split(".").pop()?.toLowerCase() ?? "")}`} />
+            )}
             <span className={`truncate max-w-[120px] sm:max-w-[160px] lg:max-w-[220px] ${f.preview ? "italic" : ""}`}>{f.name}</span>
             {parentHint(f) && (
               <span className="-ml-1 truncate max-w-[80px] text-[11px] text-[color:var(--ide-muted)]">{parentHint(f)}</span>

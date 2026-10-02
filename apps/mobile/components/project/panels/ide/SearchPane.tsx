@@ -1,3 +1,4 @@
+import { loadSearchHistory, pushSearchHistory, saveSearchHistory } from "./search-history";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Search, X, CaseSensitive, Regex, Loader2, ChevronRight, ChevronDown,
@@ -51,6 +52,7 @@ export function SearchPane({
   onPersist?: (state: SearchPersist) => void;
 }) {
   const [query, setQuery] = useState(persisted?.query ?? "");
+  const historyIdxRef = useRef(-1);
   const [replacement, setReplacement] = useState("");
   const [showReplace, setShowReplace] = useState(false);
   const [caseSensitive, setCaseSensitive] = useState(persisted?.caseSensitive ?? false);
@@ -339,8 +341,27 @@ export function SearchPane({
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
                 onKeyDown={(e) => {
-                  if (e.key === "Enter") void runSearch();
+                  if (e.key === "Enter") {
+                    void runSearch();
+                    if (query.trim()) saveSearchHistory(pushSearchHistory(loadSearchHistory(), query.trim()));
+                    historyIdxRef.current = -1;
+                  }
                   if (e.key === "Escape") setQuery("");
+                  // ↑/↓ recall earlier queries (when empty, or already browsing history).
+                  if ((e.key === "ArrowUp" || e.key === "ArrowDown") && (!query || historyIdxRef.current >= 0)) {
+                    const hist = loadSearchHistory();
+                    if (hist.length === 0) return;
+                    e.preventDefault();
+                    const delta = e.key === "ArrowUp" ? 1 : -1;
+                    const next = Math.min(hist.length - 1, historyIdxRef.current + delta);
+                    if (next < 0) {
+                      historyIdxRef.current = -1;
+                      setQuery("");
+                    } else {
+                      historyIdxRef.current = next;
+                      setQuery(hist[next]);
+                    }
+                  }
                 }}
                 placeholder="Search across all workspaces"
                 className="no-focus-ring min-w-0 flex-1 bg-transparent pl-1 pr-2 py-1.5 text-[12px] text-[color:var(--ide-text-strong)] placeholder:text-[color:var(--ide-muted-strong)] outline-none"

@@ -1,3 +1,4 @@
+import { iconFor } from "./file-icon";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ChevronRight,
@@ -109,18 +110,6 @@ function flatten(
 function parentOf(path: string): string {
   const i = path.lastIndexOf("/");
   return i < 0 ? "" : path.slice(0, i);
-}
-
-function iconFor(ext: string) {
-  if (["ts", "tsx"].includes(ext)) return "text-[#3178c6]";
-  if (["js", "jsx", "mjs", "cjs"].includes(ext)) return "text-[#f7df1e]";
-  if (ext === "json") return "text-[#cbcb41]";
-  if (ext === "md") return "text-[#519aba]";
-  if (ext === "css") return "text-[#42a5f5]";
-  if (ext === "html") return "text-[#e44d26]";
-  if (ext === "prisma") return "text-[#a78bfa]";
-  if (ext === "py") return "text-[#3572a5]";
-  return "text-[color:var(--ide-accent-file-icon)]";
 }
 
 /** Stable key used across the selection state (root-aware so folder names
