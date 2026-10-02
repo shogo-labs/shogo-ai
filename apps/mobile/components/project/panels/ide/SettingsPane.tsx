@@ -219,6 +219,13 @@ export function SettingsPane({
             value={settings.fontLigatures}
             onChange={(v) => set("fontLigatures", v)}
           />
+          <ToggleRow
+            k="previewTabs"
+            label="Preview tabs"
+            hint="Single-click in the Explorer opens a replaceable (italic) tab; double-click or edit to keep it"
+            value={settings.previewTabs}
+            onChange={(v) => set("previewTabs", v)}
+          />
           <SelectRow
             k="wordWrap" label="Word wrap"
             value={settings.wordWrap}

@@ -33,6 +33,8 @@ export interface OpenFile {
   savedContent: string;
   dirty: boolean;
   pinned?: boolean;
+  /** Preview tab (italic): replaced by the next single-click open until edited / double-clicked. */
+  preview?: boolean;
   loading?: boolean;
   error?: string;
   /** Markdown files open in preview until the user switches to the editor. */
@@ -63,6 +65,8 @@ export interface EditorSettings {
   fontFamily: string;
   tabSize: number;        // 2 | 4
   wordWrap: "on" | "off";
+  /** Single-click in the Explorer opens a replaceable preview tab. */
+  previewTabs: boolean;
   minimap: boolean;
   minimapSide: "right" | "left";
   minimapSize: "proportional" | "fit" | "fill";
@@ -107,6 +111,7 @@ export const DEFAULT_SETTINGS: EditorSettings = {
     "'JetBrains Mono', 'Fira Code', 'Cascadia Code', Menlo, Consolas, 'Liberation Mono', monospace",
   tabSize: 2,
   wordWrap: "off",
+  previewTabs: true,
   minimap: true,
   minimapSide: "right",
   minimapSize: "proportional",

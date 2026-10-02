@@ -28,7 +28,8 @@ import { useDragAutoScroll } from "./useDragAutoScroll";
 import { renameSelectionEnd, validateEntryName } from "./entry-name";
 
 export interface FileTreeHandlers {
-  onOpen: (node: TreeNode) => void;
+  /** `preview: true` = single-click open (replaceable tab); omitted = keep the tab. */
+  onOpen: (node: TreeNode, opts?: { preview?: boolean }) => void;
   onCreate: (rootId: string, parentPath: string, name: string, kind: "file" | "dir") => Promise<void>;
   onRename: (node: TreeNode, newName: string) => Promise<void>;
   onDelete: (node: TreeNode) => Promise<void>;
@@ -644,7 +645,7 @@ export function FileTree({
       setMultiSelected(new Set([k]));
       setSelected(node.path);
       if (node.kind === "dir") toggleDir(node);
-      else handlers.onOpen(node);
+      else handlers.onOpen(node, { preview: true });
     },
     [visibleNodes, toggleDir, handlers],
   );

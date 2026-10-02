@@ -871,7 +871,7 @@ export function Workbench({
   );
 
   const openFileInGroup = useCallback(
-    async (node: TreeNode, groupIdx: number) => {
+    async (node: TreeNode, groupIdx: number, opts?: { preview?: boolean }) => {
       if (node.kind !== "file") return;
       const previewLang = previewLanguageFor(node.path);
       // Binary files without a dedicated preview can't be rendered by
@@ -886,7 +886,12 @@ export function Workbench({
       const hit = findOpenLocation(id);
       if (hit) {
         setActiveGroupIdx(hit.groupIdx);
-        updateGroup(hit.groupIdx, (g) => ({ ...g, activeId: id }));
+        updateGroup(hit.groupIdx, (g) => ({
+          ...g,
+          activeId: id,
+          // An explicit (non-preview) open keeps a preview tab.
+          files: opts?.preview ? g.files : g.files.map((f) => (f.id === id && f.preview ? { ...f, preview: false } : f)),
+        }));
         return;
       }
       const svc = svcOf(node.rootId);
@@ -904,12 +909,19 @@ export function Workbench({
         savedContent: "",
         dirty: false,
         loading: true,
+        ...(opts?.preview ? { preview: true } : {}),
       };
-      updateGroup(groupIdx, (g) => ({
-        ...g,
-        files: [...g.files, placeholder],
-        activeId: id,
-      }));
+      updateGroup(groupIdx, (g) => {
+        // The new preview replaces the group's previous (untouched) preview tab.
+        const stale = opts?.preview
+          ? g.files.find((f) => f.preview && !f.dirty && !f.pinned)
+          : undefined;
+        if (stale && PREVIEW_LANGUAGES.has(stale.language) && stale.content.startsWith("blob:")) {
+          try { URL.revokeObjectURL(stale.content); } catch { /* ignore */ }
+        }
+        const kept = stale ? g.files.filter((f) => f !== stale) : g.files;
+        return { ...g, files: [...kept, placeholder], activeId: id };
+      });
       setActiveGroupIdx(groupIdx);
       try {
         if (previewLang) {
@@ -980,10 +992,10 @@ export function Workbench({
   );
 
   const handleOpenFile = useCallback(
-    (node: TreeNode) => {
-      void openFileInGroup(node, activeGroupIdx);
+    (node: TreeNode, opts?: { preview?: boolean }) => {
+      void openFileInGroup(node, activeGroupIdx, { preview: !!opts?.preview && settings.previewTabs });
     },
-    [openFileInGroup, activeGroupIdx],
+    [openFileInGroup, activeGroupIdx, settings.previewTabs],
   );
 
   // ─── Session restore ─────────────────────────────────────────────────
@@ -1117,8 +1129,14 @@ export function Workbench({
     setGroups((prev) => {
       let changed = false;
       const next = prev.map((g) => {
-        const ng = applyEditorChange(g, fileId, val);
-        if (ng !== g) changed = true;
+        let ng = applyEditorChange(g, fileId, val);
+        if (ng !== g) {
+          changed = true;
+          // Editing a preview tab keeps it.
+          if (ng.files.some((f) => f.id === fileId && f.preview)) {
+            ng = { ...ng, files: ng.files.map((f) => (f.id === fileId ? { ...f, preview: false } : f)) };
+          }
+        }
         return ng;
       });
       return changed ? next : prev;
@@ -3005,6 +3023,9 @@ export function Workbench({
                       onSelect={(id) => updateGroup(i, (gg) => ({ ...gg, activeId: id }))}
                       onClose={(id) => closeInGroup(i, id)}
                       onTogglePin={(id) => togglePinInGroup(i, id)}
+                      onKeepOpen={(id) =>
+                        updateGroup(i, (gg) => ({ ...gg, files: gg.files.map((f) => (f.id === id ? { ...f, preview: false } : f)) }))
+                      }
                       onReorder={(ids) => reorderInGroup(i, ids)}
                       onChange={handleChangeFor(i)}
                       onRetryOpen={(id) => retryOpen(i, id)}

@@ -23,6 +23,7 @@ export function EditorTabs({
   onSelect,
   onClose,
   onTogglePin,
+  onKeepOpen,
   onReorder,
   onFocus,
   groupFocused,
@@ -36,6 +37,8 @@ export function EditorTabs({
   onSelect: (id: string) => void;
   onClose: (id: string) => void;
   onTogglePin?: (id: string) => void;
+  /** Double-click on a preview tab: keep it. */
+  onKeepOpen?: (id: string) => void;
   onReorder?: (orderedIds: string[]) => void;
   onFocus?: () => void;
   groupFocused?: boolean;
@@ -281,6 +284,7 @@ export function EditorTabs({
                 : undefined
             }
             onClick={() => onSelect(f.id)}
+            onDoubleClick={() => { if (f.preview) onKeepOpen?.(f.id); }}
             onMouseDown={(e) => {
               if (e.button === 1) {
                 e.preventDefault();
@@ -293,7 +297,7 @@ export function EditorTabs({
             )}
             {f.pinned && <Pin size={11} color="var(--ide-muted)" />}
             {f.language === "extension-detail" && <CodiconExtensions size={14} />}
-            <span className="truncate max-w-[120px] sm:max-w-[160px] lg:max-w-[220px]">{f.name}</span>
+            <span className={`truncate max-w-[120px] sm:max-w-[160px] lg:max-w-[220px] ${f.preview ? "italic" : ""}`}>{f.name}</span>
             {parentHint(f) && (
               <span className="-ml-1 truncate max-w-[80px] text-[11px] text-[color:var(--ide-muted)]">{parentHint(f)}</span>
             )}

@@ -26,6 +26,7 @@ export function EditorGroupView({
   onSelect,
   onClose,
   onTogglePin,
+  onKeepOpen,
   onReorder,
   onChange,
   onCursor,
@@ -59,6 +60,7 @@ export function EditorGroupView({
   onSelect: (id: string) => void;
   onClose: (id: string) => void;
   onTogglePin: (id: string) => void;
+  onKeepOpen?: (id: string) => void;
   onReorder?: (orderedIds: string[]) => void;
   onChange: (fileId: string, val: string) => void;
   onCursor: (line: number, col: number) => void;
@@ -107,6 +109,7 @@ export function EditorGroupView({
         onSelect={onSelect}
         onClose={onClose}
         onTogglePin={onTogglePin}
+        onKeepOpen={onKeepOpen}
         onReorder={onReorder}
         onFocus={onFocus}
         groupFocused={focused}
