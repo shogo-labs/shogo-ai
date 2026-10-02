@@ -96,7 +96,8 @@ export interface UseLiveAgentEditsArgs {
   conflicts: LiveConflict[];
   setConflicts: Dispatch<SetStateAction<LiveConflict[]>>;
   /** Called after changes so the sidebar tree reflects new/removed files. */
-  refreshTree: () => void;
+  /** `path` = the file/dir that changed, so the host can refresh just its parent folder. */
+  refreshTree: (path?: string) => void;
   /**
    * Attempt to apply `newContent` to the currently-visible editor with
    * Cursor-style animation (green flash + auto-scroll + optional typewriter).
@@ -339,7 +340,7 @@ export function useLiveAgentEdits({
           })),
         );
         setConflicts((cs) => cs.filter((c) => c.fileId !== id));
-        refreshTree();
+        refreshTree(evt.path);
         return;
       }
 
@@ -384,7 +385,7 @@ export function useLiveAgentEdits({
         // burst hundreds of `readFile`s through agent-proxy on every edit.
         upsertModelFromContent(AGENT_ROOT_ID, path, content);
         const touched = applyIncomingRef.current(path, content, mtime, true);
-        if (touched) refreshTree();
+        if (touched) refreshTree(path);
       })();
     });
 

@@ -52,6 +52,7 @@ import {
 import { broadcastEditorFontChange } from "./useEditorFont";
 import { SearchPane, type SearchPersist, type SearchSeed } from "./SearchPane";
 import { preloadMonaco } from "./CodeEditor";
+import { findDir, mergeDirChildren, nearestLoadedDir, parentDir } from "./workspace/tree-merge";
 import { OPEN_FILE_EVENT, type OpenFileDetail } from "./terminal/file-links";
 import { loadRecents, loadSession, pushRecent, saveRecents, saveSession, sessionHasTabs, snapshotSession } from "./session";
 import { SettingsPane } from "./SettingsPane";
@@ -520,6 +521,9 @@ export function Workbench({
     return () => { ideBottomPanelStore.setGetEditorSelection(null); };
   });
 
+  const rootsRef = useRef(roots);
+  rootsRef.current = roots;
+
   // ─── Virtual tree (wraps each root as an expandable "workspace" entry) ──
   const virtualTree = useMemo<TreeNode[]>(
     () =>
@@ -619,13 +623,42 @@ export function Workbench({
   // the SSE handler in `useLiveAgentEdits` (per-file `upsertModel`), so the
   // tree refresh here is purely for sidebar shape (adds/removes/renames).
   const refreshTreeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const refreshAgentTree = useCallback(() => {
+  // Dirty folders accumulated during the debounce window. `null` = unknown,
+  // re-list everything. Normally we only re-list the touched folders (one
+  // small request each) and merge, instead of re-walking the whole tree and
+  // re-fetching every expanded subfolder one by one.
+  const pendingDirsRef = useRef<Set<string> | null>(new Set());
+  const refreshAgentTree = useCallback((path?: string) => {
+    if (path === undefined) pendingDirsRef.current = null;
+    else pendingDirsRef.current?.add(parentDir(path));
     if (refreshTreeTimerRef.current) clearTimeout(refreshTreeTimerRef.current);
     refreshTreeTimerRef.current = setTimeout(() => {
       refreshTreeTimerRef.current = null;
-      void loadRoot("agent");
+      const dirs = pendingDirsRef.current;
+      pendingDirsRef.current = new Set();
+      const svc = services["agent"];
+      const agentRoot = rootsRef.current.find((r) => r.id === "agent");
+      if (!dirs || dirs.size > 4 || !svc || !agentRoot) {
+        void loadRoot("agent");
+        return;
+      }
+      const targets = new Set<string>();
+      for (const d of dirs) targets.add(nearestLoadedDir(agentRoot.tree, d));
+      void Promise.all(
+        [...targets].map(async (dir) => {
+          const kids = annotateRoot(await svc.listTree(dir), "agent");
+          setRoots((prev) =>
+            prev.map((r) => {
+              if (r.id !== "agent") return r;
+              if (dir === "") return { ...r, tree: mergeDirChildren(r.tree, kids) };
+              const node = findDir(r.tree, dir);
+              return { ...r, tree: spliceSubtree(r.tree, dir, mergeDirChildren(node?.children, kids)) };
+            }),
+          );
+        }),
+      ).catch(() => void loadRoot("agent"));
     }, 250);
-  }, [loadRoot]);
+  }, [loadRoot, services]);
   useEffect(() => {
     return () => {
       if (refreshTreeTimerRef.current) {
@@ -1902,8 +1935,6 @@ export function Workbench({
   }, [requestedFile, roots, revealMatch]);
 
   // Cmd/Ctrl+click on `file.ts:12:5` in terminal output.
-  const rootsRef = useRef(roots);
-  rootsRef.current = roots;
   const revealMatchRef = useRef(revealMatch);
   revealMatchRef.current = revealMatch;
   useEffect(() => {
