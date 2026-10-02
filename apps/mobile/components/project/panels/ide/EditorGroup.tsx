@@ -46,6 +46,7 @@ export function EditorGroupView({
   onRevealPath,
   gitRefreshKey,
   onOpenPlainFile,
+  recentFiles,
   onCloseMany,
   onCopyText,
   onRevealFile,
@@ -81,6 +82,8 @@ export function EditorGroupView({
   gitRefreshKey?: number;
   /** "Open File" from a diff tab. */
   onOpenPlainFile?: (path: string) => void;
+  /** Recently opened workspace paths, newest first (empty-state list). */
+  recentFiles?: string[];
   onCloseMany?: (ids: string[]) => void;
   onCopyText?: (text: string, what: string) => void;
   onRevealFile?: (fileId: string) => void;
@@ -197,7 +200,7 @@ export function EditorGroupView({
             />
           )
         ) : (
-          <EmptyGroup />
+          <EmptyGroup recent={recentFiles} onOpen={onOpenPlainFile} />
         )}
       </div>
     </div>
@@ -290,7 +293,7 @@ const WATERMARK_SHORTCUTS: Array<[string, string]> = [
   ["⌘\\", "Split editor"],
 ];
 
-function EmptyGroup() {
+function EmptyGroup({ recent, onOpen }: { recent?: string[]; onOpen?: (path: string) => void }) {
   return (
     <div className="flex h-full flex-col items-center justify-center gap-4 text-[color:var(--ide-muted)]">
       <Code2 size={56} color="var(--ide-border-strong)" />
@@ -305,6 +308,26 @@ function EmptyGroup() {
           </div>
         ))}
       </div>
+      {recent && recent.length > 0 && onOpen && (
+        <div className="flex w-[360px] max-w-[90%] flex-col gap-0.5 text-[12px]">
+          <div className="mb-1 text-[11px] uppercase tracking-wider">Recent</div>
+          {recent.slice(0, 6).map((p) => {
+            const i = p.lastIndexOf("/");
+            return (
+              <button
+                key={p}
+                type="button"
+                onClick={() => onOpen(p)}
+                title={p}
+                className="flex items-baseline gap-2 truncate rounded px-2 py-1 text-left hover:bg-[color:var(--ide-hover)]"
+              >
+                <span className="text-[color:var(--ide-text)]">{i === -1 ? p : p.slice(i + 1)}</span>
+                <span className="truncate text-[11px]">{i === -1 ? "" : p.slice(0, i)}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

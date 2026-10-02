@@ -80,3 +80,31 @@ export function saveSession(projectId: string | null | undefined, s: IdeSession)
     /* quota / private mode */
   }
 }
+
+// ── Recently opened files (for the empty-editor welcome list) ──────────────
+
+const MAX_RECENT = 10;
+export const recentStorageKey = (projectId: string | null | undefined) =>
+  `shogo.ide.recent.${projectId || "default"}`;
+
+/** Move `path` to the front, de-duplicated and capped. Pure. */
+export function pushRecent(list: string[], path: string): string[] {
+  return [path, ...list.filter((p) => p !== path)].slice(0, MAX_RECENT);
+}
+
+export function loadRecents(projectId: string | null | undefined): string[] {
+  try {
+    const v = JSON.parse(localStorage.getItem(recentStorageKey(projectId)) ?? "[]");
+    return Array.isArray(v) ? v.filter((p) => typeof p === "string").slice(0, MAX_RECENT) : [];
+  } catch {
+    return [];
+  }
+}
+
+export function saveRecents(projectId: string | null | undefined, list: string[]): void {
+  try {
+    localStorage.setItem(recentStorageKey(projectId), JSON.stringify(list));
+  } catch {
+    /* ignore */
+  }
+}

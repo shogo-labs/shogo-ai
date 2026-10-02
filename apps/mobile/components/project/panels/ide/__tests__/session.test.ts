@@ -48,3 +48,13 @@ describe("session snapshot / parse", () => {
     expect(sessionHasTabs(p)).toBe(false);
   });
 });
+
+describe("pushRecent", () => {
+  test("moves to front, dedupes, caps at 10", () => {
+    const { pushRecent } = require("../session");
+    expect(pushRecent(["a", "b", "c"], "b")).toEqual(["b", "a", "c"]);
+    const many = Array.from({ length: 12 }, (_, i) => `f${i}`);
+    expect(pushRecent(many, "new")).toHaveLength(10);
+    expect(pushRecent(many, "new")[0]).toBe("new");
+  });
+});

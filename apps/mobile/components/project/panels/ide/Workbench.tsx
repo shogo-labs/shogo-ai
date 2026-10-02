@@ -52,7 +52,8 @@ import {
 import { broadcastEditorFontChange } from "./useEditorFont";
 import { SearchPane, type SearchPersist, type SearchSeed } from "./SearchPane";
 import { preloadMonaco } from "./CodeEditor";
-import { loadSession, saveSession, sessionHasTabs, snapshotSession } from "./session";
+import { OPEN_FILE_EVENT, type OpenFileDetail } from "./terminal/file-links";
+import { loadRecents, loadSession, pushRecent, saveRecents, saveSession, sessionHasTabs, snapshotSession } from "./session";
 import { SettingsPane } from "./SettingsPane";
 import { ExtensionsViewlet, TrustPublisherDialog } from "./extensions/ExtensionsViewlet";
 import { collectRuntimeContainers, ExtensionRuntimeViewlet } from "./extensions/ExtensionRuntimeViewlet";
@@ -1041,10 +1042,21 @@ export function Workbench({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [roots, projectId, requestedFile, openFileInGroup]);
 
+  const [recentFiles, setRecentFiles] = useState<string[]>(() => loadRecents(projectId));
   useEffect(() => {
     if (!sessionReadyRef.current) return;
     const t = window.setTimeout(() => {
       saveSession(projectId, snapshotSession(groups, activeGroupIdx));
+      const g = groups[activeGroupIdx];
+      const active = g?.files.find((f) => f.id === g.activeId);
+      if (active && active.rootId === "agent" && !active.extensionDetail && !active.gitDiff && !active.error) {
+        setRecentFiles((prev) => {
+          if (prev[0] === active.path) return prev;
+          const next = pushRecent(prev, active.path);
+          saveRecents(projectId, next);
+          return next;
+        });
+      }
     }, 400);
     return () => window.clearTimeout(t);
   }, [groups, activeGroupIdx, projectId]);
@@ -1870,6 +1882,22 @@ export function Workbench({
     appliedRevealNonce.current = requestedFile.nonce;
     void revealMatch(rootId, requestedFile.path, requestedFile.line, requestedFile.column ?? 1);
   }, [requestedFile, roots, revealMatch]);
+
+  // Cmd/Ctrl+click on `file.ts:12:5` in terminal output.
+  const rootsRef = useRef(roots);
+  rootsRef.current = roots;
+  const revealMatchRef = useRef(revealMatch);
+  revealMatchRef.current = revealMatch;
+  useEffect(() => {
+    const onOpen = (e: Event) => {
+      const d = (e as CustomEvent<OpenFileDetail>).detail;
+      if (!d?.path) return;
+      const rootId = rootsRef.current.find((r) => r.kind === "agent")?.id ?? rootsRef.current[0]?.id;
+      if (rootId) void revealMatchRef.current(rootId, d.path, d.line, d.column);
+    };
+    window.addEventListener(OPEN_FILE_EVENT, onOpen);
+    return () => window.removeEventListener(OPEN_FILE_EVENT, onOpen);
+  }, []);
 
   const extensionsSummary = useExtensions({ workspaceRoot: gitWorkspaceRootRef.current });
   const extensionRuntimeContainers = useMemo(
@@ -2983,6 +3011,7 @@ export function Workbench({
                       onRevealPath={revealInExplorer}
                       gitRefreshKey={gitSnapshot?.refreshedAt}
                       onOpenPlainFile={openWorkspaceFile}
+                      recentFiles={recentFiles}
                       onCloseMany={(ids) => void closeManyInGroup(i, ids)}
                       onCopyText={(t, what) => void copyText(t, what)}
                       onRevealFile={(id) => {

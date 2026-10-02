@@ -86,6 +86,9 @@ async function retry429<T>(fn: () => Promise<T>, attempts = 4): Promise<T> {
   throw lastErr ?? new Error('retry429: exhausted')
 }
 
+/** Beyond this Monaco becomes unusable and can freeze the tab. */
+const MAX_EDITABLE_CHARS = 8_000_000
+
 export class SdkFs implements WorkspaceService {
   readonly id = 'agent'
   readonly label: string
@@ -134,6 +137,11 @@ export class SdkFs implements WorkspaceService {
     const p = (async () => {
       try {
         const content = await retry429(() => this.client.readFile(path))
+        if (content.length > MAX_EDITABLE_CHARS) {
+          throw new Error(
+            `File is too large to open in the editor (${(content.length / 1048576).toFixed(1)} MB). Use the terminal to inspect it.`,
+          )
+        }
         return {
           path,
           name: path.split('/').pop() ?? path,

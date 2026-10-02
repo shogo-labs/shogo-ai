@@ -23,6 +23,7 @@
  */
 
 import type { PtyClientLike } from './pty-factory'
+import { findFileLinks, OPEN_FILE_EVENT, type OpenFileDetail } from './file-links'
 import { DARK_PLUS_THEME, TERMINAL_DEFAULTS, type XtermTheme } from './xterm-theme'
 // xterm.js relies on this stylesheet to (a) size the row container and (b)
 // clip-hide the input proxy `<textarea>`. Without it, the textarea renders
@@ -106,6 +107,26 @@ export class XtermSession {
     term.loadAddon(searchAddon)
     this.searchAddon = searchAddon
     // ⌘F (mac) / Ctrl+F: open the find bar instead of sending ^F to the shell.
+    // Click `file.ts:12:5` in output to open the file at that position.
+    term.registerLinkProvider({
+      provideLinks: (y: number, cb: (links: any[] | undefined) => void) => {
+        const buf = term.buffer.active.getLine(y - 1)
+        if (!buf) return cb(undefined)
+        const matches = findFileLinks(buf.translateToString(true))
+        if (matches.length === 0) return cb(undefined)
+        cb(matches.map((m) => ({
+          text: m.text,
+          range: { start: { x: m.index + 1, y }, end: { x: m.index + m.length, y } },
+          decorations: { underline: true, pointerCursor: true },
+          activate: (e: MouseEvent) => {
+            if (!(e.metaKey || e.ctrlKey)) return
+            window.dispatchEvent(new CustomEvent<OpenFileDetail>(OPEN_FILE_EVENT, {
+              detail: { path: m.path, line: m.line, column: m.column },
+            }))
+          },
+        })))
+      },
+    })
     term.attachCustomKeyEventHandler((e: KeyboardEvent) => {
       // ⌘K clears the terminal (macOS convention; also in the tab menu).
       if (e.type === 'keydown' && e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey && (e.key === 'k' || e.key === 'K')) {

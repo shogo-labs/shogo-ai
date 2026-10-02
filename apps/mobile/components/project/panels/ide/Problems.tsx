@@ -176,10 +176,28 @@ export function Problems({ projectId, visible, onReveal }: ProblemsProps) {
     return () => clearInterval(t)
   }, [visible, projectId, load])
 
-  const groups = useMemo(
-    () => result ? groupByFile(result.diagnostics) : [],
-    [result],
-  )
+  const [filter, setFilter] = useState("")
+  const [hidden, setHidden] = useState<Set<Diagnostic["severity"]>>(new Set())
+  const toggleSeverity = (sev: Diagnostic["severity"]) =>
+    setHidden(prev => {
+      const next = new Set(prev)
+      if (next.has(sev)) next.delete(sev); else next.add(sev)
+      return next
+    })
+  const filtered = useMemo(() => {
+    if (!result) return []
+    const q = filter.trim().toLowerCase()
+    return result.diagnostics.filter(d => {
+      if (hidden.has(d.severity)) return false
+      if (!q) return true
+      return (
+        d.message.toLowerCase().includes(q) ||
+        d.file.toLowerCase().includes(q) ||
+        (d.code ? String(d.code).toLowerCase().includes(q) : false)
+      )
+    })
+  }, [result, filter, hidden])
+  const groups = useMemo(() => groupByFile(filtered), [filtered])
   const totals = useMemo(() => {
     let errors = 0, warnings = 0
     for (const d of result?.diagnostics ?? []) {
@@ -260,6 +278,31 @@ export function Problems({ projectId, visible, onReveal }: ProblemsProps) {
             </span>
           )}
         </div>
+        <div className="ml-auto mr-1 flex items-center gap-1">
+          {(["error", "warning", "info"] as const).map(sev => {
+            const off = hidden.has(sev)
+            return (
+              <button
+                key={sev}
+                type="button"
+                onClick={() => toggleSeverity(sev)}
+                aria-pressed={!off}
+                title={`${off ? "Show" : "Hide"} ${sev === "info" ? "info" : sev + "s"}`}
+                className={`flex h-7 w-7 items-center justify-center rounded hover:bg-[color:var(--ide-hover)] ${off ? "opacity-35" : ""}`}
+              >
+                {severityIcon(sev)}
+              </button>
+            )
+          })}
+          <input
+            value={filter}
+            onChange={e => setFilter(e.target.value)}
+            onKeyDown={e => { if (e.key === "Escape") setFilter("") }}
+            placeholder="Filter (text, file, code)"
+            aria-label="Filter problems"
+            className="h-7 w-44 rounded border border-[color:var(--ide-border-strong)] bg-[color:var(--ide-surface)] px-2 text-[11px] text-[color:var(--ide-text)] outline-none focus:border-[color:var(--ide-primary)]"
+          />
+        </div>
         <button
           type="button"
           onClick={() => void load(true)}
@@ -314,7 +357,9 @@ export function Problems({ projectId, visible, onReveal }: ProblemsProps) {
           <SkeletonRows />
         ) : groups.length === 0 ? (
           <div className="p-3 text-[12px] text-[color:var(--ide-muted)]">
-            No problems detected in workspace.
+            {result && result.diagnostics.length > 0
+              ? "No problems match the current filter."
+              : "No problems detected in workspace."}
           </div>
         ) : (
           <ul
