@@ -13,7 +13,7 @@ import { mkdtempSync, mkdirSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { config } from './config'
-import { MetalWarmPool, type AssignedVm } from './pool'
+import { MetalWarmPool, type AssignedVm, type RepoExport } from './pool'
 import type { FirecrackerVMManager, FcVmHandle } from './firecracker-vm-manager'
 import type { SnapshotStore } from './snapshot-store'
 
@@ -31,8 +31,8 @@ class TestPool extends MetalWarmPool {
   protected override async fetchExport(): Promise<Uint8Array | null> {
     return new Uint8Array([1])
   }
-  protected override async fetchRepoExport(): Promise<Uint8Array | null> {
-    return new Uint8Array([2])
+  protected override async fetchRepoExport(): Promise<RepoExport | null> {
+    return { bytes: new Uint8Array([2]), rootCommitAt: null }
   }
   protected override async fetchDataExport(_h: FcVmHandle, _t?: string, known?: string): Promise<any> {
     if (this.dataExport instanceof Error) throw this.dataExport
