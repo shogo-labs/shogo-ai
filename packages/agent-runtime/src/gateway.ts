@@ -205,6 +205,15 @@ function parseAutoTierOverride(raw: string | undefined): AutoTierOverride | unde
 const FALLBACK_SUMMARIZER_MODEL = { id: 'claude-haiku-4-5', provider: 'anthropic' }
 
 /**
+ * True when the agent loop ended because the user pressed Stop. Such a turn
+ * can legitimately have no text (e.g. stopped during a tool call) and must not
+ * get the "unable to generate a response" fallback.
+ */
+export function isUserStoppedTurn(result: { abortReason?: string }): boolean {
+  return result.abortReason === 'external'
+}
+
+/**
  * Parse the admin-injected `AGENT_SUMMARIZER_MODEL` env var (`{ id, provider }`
  * JSON, resolved by the API server from the `summarizer.model` setting).
  * Falls back to Haiku on Anthropic when unset or malformed — e.g. a desktop
@@ -3760,7 +3769,7 @@ export class AgentGateway {
             // logs above. See describeTurnFailure.
             uiWriter.write({ type: 'error', errorText: describeTurnFailure(msg) } as any)
           }
-        } else if (result.outputTokens === 0 && result.toolCalls.length === 0 && !isHeartbeat) {
+        } else if (result.outputTokens === 0 && result.toolCalls.length === 0 && !isHeartbeat && !isUserStoppedTurn(result)) {
           console.error(
             `${this.logPrefix} Agent returned 0 tokens for session ${sessionId} — possible context corruption (${session.compactionCount} compactions, ${session.messages.length} messages, model: ${modelId}, provider: ${provider})`
           )
@@ -3778,6 +3787,9 @@ export class AgentGateway {
 
       if (result.text) return result.text
       if (isHeartbeat) return 'HEARTBEAT_OK'
+      // The user pressed Stop before any text was produced. That is not a
+      // model failure, so don't tell them the model failed to respond.
+      if (isUserStoppedTurn(result)) return ''
       console.warn(`${this.logPrefix} Empty model response for session ${sessionId} (${result.iterations} iterations, ${result.toolCalls.length} tool calls, ${result.outputTokens} output tokens)`)
       const emptyFallback = 'Sorry, I was unable to generate a response. Please try again.'
       // Stream the fallback so clients (and eval bridges) never receive a
