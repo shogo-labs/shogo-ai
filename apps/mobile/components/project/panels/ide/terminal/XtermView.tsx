@@ -85,6 +85,10 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
   const desktopHandleRef = useRef<XtermViewHandle | null>(null)
   const [DesktopSurface, setDesktopSurface] = useState<React.ComponentType<any> | null>(null)
   const [state, setState] = useState<PtyClientState>(client.state)
+  const [findOpen, setFindOpen] = useState(false)
+  const [findQuery, setFindQuery] = useState('')
+  const [findMissed, setFindMissed] = useState(false)
+  const findInputRef = useRef<HTMLInputElement | null>(null)
 
   // BUG-012 — Terminal.tsx doesn't have the EditorSettings prop in scope
   // (it sits outside the Workbench prop tree). Instead of threading
@@ -133,6 +137,11 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
       fontSize,
       fontFamily: effectiveFamily,
       theme: xtermThemeFor(modeRef.current),
+      onFindRequest: () => {
+        setFindOpen(true)
+        // Already open → just pull focus back into the field.
+        window.setTimeout(() => findInputRef.current?.select(), 0)
+      },
     })
     sessionRef.current = session
     let cancelled = false
@@ -202,7 +211,10 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
       clear: () => desktopHandleRef.current?.clear() ?? sessionRef.current?.clear(),
       focus: () => desktopHandleRef.current?.focus() ?? sessionRef.current?.focus(),
       refit: () => desktopHandleRef.current?.refit() ?? sessionRef.current?.fit(),
-      openFind: () => desktopHandleRef.current?.openFind?.(),
+      openFind: () => {
+        if (desktopHandleRef.current?.openFind) desktopHandleRef.current.openFind()
+        else setFindOpen(true)
+      },
       openRecent: () => desktopHandleRef.current?.openRecent?.(),
       scrollToPrevCommand: () => {
         desktopHandleRef.current?.scrollToPrevCommand?.()
@@ -273,6 +285,63 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
         // panel edges).
         style={{ width: '100%', height: '100%', padding: '4px 6px', overflow: 'hidden' }}
       />
+      {findOpen && (
+        <div
+          style={{
+            position: 'absolute', top: 6, right: 16, zIndex: 5, display: 'flex', alignItems: 'center', gap: 4,
+            padding: '3px 6px', borderRadius: 4, background: mode === 'light' ? '#f3f3f3' : '#252526',
+            border: '1px solid ' + (mode === 'light' ? '#c8c8c8' : '#454545'), boxShadow: '0 2px 8px rgba(0,0,0,0.3)',
+          }}
+        >
+          <input
+            ref={findInputRef}
+            autoFocus
+            value={findQuery}
+            placeholder="Find"
+            aria-label="Find in terminal"
+            onChange={(e) => {
+              setFindQuery(e.target.value)
+              setFindMissed(!!e.target.value && !sessionRef.current?.find(e.target.value, 'next'))
+            }}
+            onKeyDown={(e) => {
+              e.stopPropagation()
+              if (e.key === 'Enter') {
+                e.preventDefault()
+                setFindMissed(!!findQuery && !sessionRef.current?.find(findQuery, e.shiftKey ? 'prev' : 'next'))
+              } else if (e.key === 'Escape') {
+                e.preventDefault()
+                setFindOpen(false)
+                sessionRef.current?.clearFind()
+                sessionRef.current?.focus()
+              }
+            }}
+            style={{
+              width: 180, background: 'transparent', outline: 'none', fontSize: 12,
+              border: findMissed ? '1px solid #f14c4c' : '1px solid transparent', borderRadius: 2, padding: '2px 4px',
+              color: mode === 'light' ? '#333' : '#ccc',
+            }}
+          />
+          {(['prev', 'next'] as const).map((dir) => (
+            <button
+              key={dir}
+              type="button"
+              title={dir === 'next' ? 'Next match (Enter)' : 'Previous match (Shift+Enter)'}
+              onClick={() => setFindMissed(!!findQuery && !sessionRef.current?.find(findQuery, dir))}
+              style={{ background: 'transparent', border: 0, cursor: 'pointer', color: mode === 'light' ? '#333' : '#ccc', fontSize: 12, padding: '0 4px' }}
+            >
+              {dir === 'next' ? '↓' : '↑'}
+            </button>
+          ))}
+          <button
+            type="button"
+            title="Close (Esc)"
+            onClick={() => { setFindOpen(false); sessionRef.current?.clearFind(); sessionRef.current?.focus() }}
+            style={{ background: 'transparent', border: 0, cursor: 'pointer', color: mode === 'light' ? '#333' : '#ccc', fontSize: 12, padding: '0 4px' }}
+          >
+            ✕
+          </button>
+        </div>
+      )}
       {state !== 'open' && state !== 'idle' && (
         <ConnectionOverlay state={state} />
       )}

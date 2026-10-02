@@ -42,6 +42,7 @@ export function EditorGroupView({
   onUseExtensionEntryPoint,
   onSetMdMode,
   onRetryOpen,
+  onRevealPath,
   onCloseMany,
   onCopyText,
   onRevealFile,
@@ -71,6 +72,8 @@ export function EditorGroupView({
   onUseExtensionEntryPoint?: (extension: InstalledExtension, entryPoint: ExtensionUsableEntryPoint) => void;
   onSetMdMode?: (fileId: string, mode: "preview" | "edit") => void;
   onRetryOpen?: (fileId: string) => void;
+  /** Breadcrumb click: reveal a workspace-relative path in the Explorer. */
+  onRevealPath?: (path: string) => void;
   onCloseMany?: (ids: string[]) => void;
   onCopyText?: (text: string, what: string) => void;
   onRevealFile?: (fileId: string) => void;
@@ -102,7 +105,7 @@ export function EditorGroupView({
         onRevealFile={onRevealFile}
         onNewFile={onNewFile}
       />}
-      {active && active.language !== "extension-detail" && active.language !== "extension-webview" && <Breadcrumbs path={active.path} />}
+      {active && active.language !== "extension-detail" && active.language !== "extension-webview" && <Breadcrumbs path={active.path} onReveal={onRevealPath} />}
       <div className="flex-1 min-h-0 relative">
         {active ? (
           active.loading ? (

@@ -34,6 +34,7 @@ import '@xterm/xterm/css/xterm.css'
 // at runtime. Web-only — xterm.js bundles a Canvas/WebGL renderer.
 type XTerminal = import('@xterm/xterm').Terminal
 type XFitAddon = import('@xterm/addon-fit').FitAddon
+type XSearchAddon = import('@xterm/addon-search').SearchAddon
 type IMarker  = import('@xterm/xterm').IMarker
 
 export interface XtermSessionOptions {
@@ -41,11 +42,14 @@ export interface XtermSessionOptions {
   fontSize?: number
   fontLigatures?: boolean
   theme?: XtermTheme
+  /** ⌘/Ctrl+F inside the terminal — the host shows its find bar. */
+  onFindRequest?: () => void
 }
 
 export class XtermSession {
   private term: XTerminal | null = null
   private fitAddon: XFitAddon | null = null
+  private searchAddon: XSearchAddon | null = null
   private container: HTMLElement | null = null
   private unsubData: (() => void) | null = null
   private unsubExit: (() => void) | null = null
@@ -74,10 +78,11 @@ export class XtermSession {
     this.container = container
 
     // Lazy-load to keep non-IDE bundles slim.
-    const [xtermMod, fitMod, linksMod] = await Promise.all([
+    const [xtermMod, fitMod, linksMod, searchMod] = await Promise.all([
       import('@xterm/xterm'),
       import('@xterm/addon-fit'),
       import('@xterm/addon-web-links'),
+      import('@xterm/addon-search'),
     ])
     if (this.disposed) return
 
@@ -96,6 +101,24 @@ export class XtermSession {
 
     const linksAddon = new linksMod.WebLinksAddon()
     term.loadAddon(linksAddon)
+
+    const searchAddon: XSearchAddon = new searchMod.SearchAddon()
+    term.loadAddon(searchAddon)
+    this.searchAddon = searchAddon
+    // ⌘F (mac) / Ctrl+F: open the find bar instead of sending ^F to the shell.
+    term.attachCustomKeyEventHandler((e: KeyboardEvent) => {
+      if (
+        e.type === 'keydown' &&
+        (e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey &&
+        (e.key === 'f' || e.key === 'F') &&
+        this.opts.onFindRequest
+      ) {
+        e.preventDefault()
+        this.opts.onFindRequest()
+        return false
+      }
+      return true
+    })
 
     term.open(container)
     try { fitAddon.fit() } catch { /* container may be zero-size at open */ }
@@ -279,6 +302,21 @@ export class XtermSession {
     } catch {
       // Unsupported runtime — takes effect on next remount via this.opts.
     }
+  }
+
+  /** Find in the scrollback. Returns whether anything matched. */
+  find(query: string, direction: 'next' | 'prev' = 'next', opts: { caseSensitive?: boolean; regex?: boolean } = {}): boolean {
+    if (this.disposed || !this.searchAddon || !query) return false
+    const o = { caseSensitive: !!opts.caseSensitive, regex: !!opts.regex, incremental: false }
+    try {
+      return direction === 'next' ? this.searchAddon.findNext(query, o) : this.searchAddon.findPrevious(query, o)
+    } catch {
+      return false
+    }
+  }
+
+  clearFind(): void {
+    try { this.searchAddon?.clearDecorations() } catch { /* ignore */ }
   }
 
   /** Programmatic clear (keeps the shell alive, just blanks the view). */

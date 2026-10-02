@@ -2304,7 +2304,8 @@ export function Workbench({
       name: string;
       path: string;
       rootLabel: string;
-      run: () => void;
+      run: PaletteItem["run"];
+      runSide: () => void;
     };
     const entries: Entry[] = [];
     const qoFiles: QuickOpenFile[] = [];
@@ -2328,7 +2329,11 @@ export function Workbench({
           name: n.name,
           path: n.path,
           rootLabel: r.label,
-          run: () => handleOpenFile(n),
+          run: (o) => {
+            if (o?.line) void revealMatch(n.rootId, n.path, o.line, o.col ?? 1);
+            else handleOpenFile(n);
+          },
+          runSide: () => openToSide(n),
         });
         qoFiles.push({
           id,
@@ -2347,9 +2352,10 @@ export function Workbench({
         sublabel: d?.display ?? undefined,
         searchText: d?.searchText ?? e.path,
         run: e.run,
+        runSide: e.runSide,
       };
     });
-  }, [roots, handleOpenFile, fileIndex]);
+  }, [roots, handleOpenFile, fileIndex, revealMatch, openToSide]);
 
   useEffect(() => {
     if (zen.active) {
@@ -2427,8 +2433,11 @@ export function Workbench({
 
   const zenSettings = useMemo(() => ({ ...settings, lineNumbers: "off" as const }), [settings]);
 
+  // Text carried over when the palette switches mode (`>` in Quick Open).
+  const [paletteSeed, setPaletteSeed] = useState("");
   const closePalette = useCallback(() => {
     setPalette(null);
+    setPaletteSeed("");
     // Give the editor focus back so typing continues where it left off.
     requestAnimationFrame(() => editorRefs.current[activeGroup?.id ?? ""]?.focus());
   }, [activeGroup]);
@@ -2859,6 +2868,7 @@ export function Workbench({
                       onReorder={(ids) => reorderInGroup(i, ids)}
                       onChange={handleChangeFor(i)}
                       onRetryOpen={(id) => retryOpen(i, id)}
+                      onRevealPath={revealInExplorer}
                       onCloseMany={(ids) => void closeManyInGroup(i, ids)}
                       onCopyText={(t, what) => void copyText(t, what)}
                       onRevealFile={(id) => {
@@ -3064,7 +3074,11 @@ export function Workbench({
           sidebarOpen={sidebarOpen}
           terminalOpen={bottomPanelOpen}
           badges={activityBadges}
-          hiddenItemIds={extensionsBridgeAvailable ? [] : ["extensions"]}
+          hiddenItemIds={[
+            ...(extensionsBridgeAvailable ? [] : (["extensions"] as ActivityId[])),
+            // Run & Debug is an Electron-only surface; don't advertise a dead end on web.
+            ...(isDesktopRuntime() ? [] : (["debug"] as ActivityId[])),
+          ]}
           extensionContainers={activityBarExtensionContainers}
           onSelect={(id) => {
             setActivity(id);
@@ -3116,11 +3130,29 @@ export function Workbench({
           placeholder="Type a command…"
           items={commandItems}
           onClose={closePalette}
+          initialQuery={paletteSeed}
           emptyHint="No commands match"
         />
       )}
       {palette === "file" && (
-        <QuickOpen fileItems={fileItems} onClose={closePalette} onLine={gotoLine} />
+        <QuickOpen
+          fileItems={fileItems}
+          onClose={closePalette}
+          onLine={gotoLine}
+          onPrefix={(prefix, rest) => {
+            if (prefix === ">") {
+              setPaletteSeed(rest);
+              setPalette("command");
+              return true;
+            }
+            // `@` → Go to Symbol in File (Monaco's own quick outline).
+            closePalette();
+            window.setTimeout(() => {
+              void editorRefs.current[activeGroup?.id ?? ""]?.getAction("editor.action.quickOutline")?.run();
+            }, 60);
+            return true;
+          }}
+        />
       )}
       {palette === "line" && (
         <QuickOpen lineOnly fileItems={[]} onClose={closePalette} onLine={gotoLine} />
@@ -3169,8 +3201,10 @@ function QuickOpen({
   fileItems,
   onClose,
   onLine,
+  onPrefix,
   lineOnly = false,
 }: {
+  onPrefix?: (prefix: string, rest: string) => boolean;
   fileItems: PaletteItem[];
   onClose: () => void;
   onLine: (line: number) => void;
@@ -3182,11 +3216,17 @@ function QuickOpen({
       placeholder={
         lineOnly
           ? "Go to line…   (type a line number)"
-          : "Go to file…   (type :N to jump to line N in the current editor)"
+          : "Go to file…   (name:42 opens at a line · > commands · @ symbols · ⌘↵ opens to the side)"
       }
       items={fileItems}
       onClose={onClose}
-      emptyHint={lineOnly ? "Type a line number" : "No files match. Tip: type :42 to jump to line 42."}
+      onPrefix={lineOnly ? undefined : onPrefix}
+      parseLineSuffix={!lineOnly}
+      emptyHint={
+        lineOnly
+          ? "Type a line number"
+          : "No files match. Tips: name:42 opens at a line, > runs commands, @ jumps to a symbol."
+      }
       syntheticItem={(q) => {
         const m = q.match(lineOnly ? /^:?(\d+)$/ : /^:(\d+)$/);
         if (!m) return null;

@@ -424,6 +424,17 @@ export function SourceControlViewlet({
     [actions],
   );
 
+  /** Discarding is destructive and not undoable: always ask first (VS Code does). */
+  const discardWithConfirm = useCallback(
+    (paths: string[]) => {
+      if (paths.length === 0) return;
+      const what = paths.length === 1 ? `changes in "${paths[0].split("/").pop()}"` : `${paths.length} changed files`;
+      if (typeof window !== "undefined" && !window.confirm(`Discard ${what}? This cannot be undone.`)) return;
+      void runMutation("Discard", () => actions.discard(paths));
+    },
+    [actions, runMutation],
+  );
+
   const loadHistory = useCallback(async () => {
     const requestId = historyRequestIdRef.current + 1;
     historyRequestIdRef.current = requestId;
@@ -747,7 +758,7 @@ export function SourceControlViewlet({
                 onOpenFile={onOpenFile}
                 onStage={(paths) => { void runMutation("Stage", () => actions.stage(paths)); }}
                 onUnstage={(paths) => { void runMutation("Unstage", () => actions.unstage(paths)); }}
-                onDiscard={(paths) => { void runMutation("Discard", () => actions.discard(paths)); }}
+                onDiscard={discardWithConfirm}
               />
             )}
           </>
@@ -786,7 +797,7 @@ export function SourceControlViewlet({
                 onOpenFile={onOpenFile}
                 onStage={(paths) => { void runMutation("Stage", () => actions.stage(paths)); }}
                 onUnstage={(paths) => { void runMutation("Unstage", () => actions.unstage(paths)); }}
-                onDiscard={(paths) => { void runMutation("Discard", () => actions.discard(paths)); }}
+                onDiscard={discardWithConfirm}
               />
             )}
           </>
@@ -837,7 +848,7 @@ export function SourceControlViewlet({
                 onOpenFile={onOpenFile}
                 onStage={(paths) => { void runMutation("Stage", () => actions.stage(paths)); }}
                 onUnstage={(paths) => { void runMutation("Unstage", () => actions.unstage(paths)); }}
-                onDiscard={(paths) => { void runMutation("Discard", () => actions.discard(paths)); }}
+                onDiscard={discardWithConfirm}
               />
             )}
           </>
