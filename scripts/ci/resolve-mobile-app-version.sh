@@ -16,7 +16,9 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 APP_JSON="$ROOT/apps/mobile/app.json"
 FALLBACK="$(node -p "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8')).expo.version" "$APP_JSON")"
 
-REF="${GITHUB_REF:-}"
+# MOBILE_RELEASE_REF lets a run on main build a release tag (ios.yml
+# `release_tag` input); GITHUB_REF itself cannot be overridden.
+REF="${MOBILE_RELEASE_REF:-${GITHUB_REF:-}}"
 ENV="${MOBILE_RELEASE_ENV:-}"
 
 VERSION=""

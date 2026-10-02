@@ -73,6 +73,60 @@ jobs:
           bun scripts/desktop-next-beta-version.ts
           echo "short_sha=$(git rev-parse --short=7 HEAD)" >> "$GITHUB_OUTPUT"
 
+  trigger-ios-beta:
+    # The iOS build does not depend on any desktop artifact, so start it as
+    # soon as the beta version is known instead of after the ~25min desktop
+    # build. The tag is created here (the later release step reuses it) and
+    # the run is dispatched on main with release_tag, so it builds the tagged
+    # commit while sharing main's ccache. GITHUB_TOKEN-created tags do not
+    # trigger tag-push workflows, hence the explicit dispatch.
+    name: Trigger iOS beta TestFlight build
+    needs: resolve-version
+    if: needs.resolve-version.outputs.channel == 'beta'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      actions: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      BETA_TAG: v${{ needs.resolve-version.outputs.version }}
+    steps:
+      - name: Create beta tag
+        run: |
+          set -euo pipefail
+          EXISTING=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$BETA_TAG" --jq .object.sha 2>/dev/null || true)
+          if [ -z "$EXISTING" ]; then
+            gh api "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/$BETA_TAG" -f sha="$GITHUB_SHA" >/dev/null
+            echo "Created ${BETA_TAG} at ${GITHUB_SHA}."
+          elif [ "$EXISTING" != "$GITHUB_SHA" ]; then
+            echo "::error::${BETA_TAG} already points at ${EXISTING}, not ${GITHUB_SHA}."
+            exit 1
+          else
+            echo "${BETA_TAG} already exists at ${GITHUB_SHA}."
+          fi
+
+      - name: Dispatch iOS workflow
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3 4 5; do
+            if gh workflow run ios.yml \
+              --repo "$GITHUB_REPOSITORY" \
+              --ref main \
+              --field mode=full \
+              --field environment=production \
+              --field submit=true \
+              --field release_tag="$BETA_TAG"; then
+              echo "Queued iOS TestFlight build for ${BETA_TAG}."
+              exit 0
+            fi
+            if [ "$attempt" -eq 5 ]; then
+              echo "::error::Failed to dispatch iOS TestFlight build for ${BETA_TAG}."
+              exit 1
+            fi
+            sleep 5
+          done
+
   preflight:
     # Release-blocking sanity checks that have no platform dependencies.
     # Runs FIRST and gates every downstream job — see the matching
@@ -930,34 +984,6 @@ jobs:
       # main computes `nextPatch(latest stable)-beta.<ts>` and outranks it. The
       # companion doubled build time and signing quota per release, and its
       # runs were mistaken for the stable run by finalize-release.yml.
-
-      - name: Trigger iOS beta TestFlight build
-        # Beta tags are created with GITHUB_TOKEN, so their tag push does not
-        # start tag-triggered workflows. Dispatch the iOS workflow explicitly
-        # after the tag/release exists.
-        if: needs.resolve-version.outputs.channel == 'beta'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          BETA_TAG: v${{ needs.resolve-version.outputs.version }}
-        run: |
-          set -euo pipefail
-          for attempt in 1 2 3 4 5; do
-            if gh workflow run ios.yml \
-              --repo "$GITHUB_REPOSITORY" \
-              --ref "$BETA_TAG" \
-              --field mode=full \
-              --field environment=production \
-              --field submit=true; then
-              echo "Queued iOS TestFlight build from ${BETA_TAG}."
-              exit 0
-            fi
-            if [ "$attempt" -eq 5 ]; then
-              echo "::error::Failed to dispatch iOS TestFlight build from ${BETA_TAG}."
-              exit 1
-            fi
-            echo "Tag ${BETA_TAG} is not visible to the workflow API yet; retrying..."
-            sleep 5
-          done
 
       - name: Write beta release notes
         if: needs.resolve-version.outputs.channel == 'beta'

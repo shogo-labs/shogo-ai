@@ -60,8 +60,14 @@ def app_store_connect_token(key_id, issuer_id, private_key_pem)
 end
 
 class AppStoreConnectClient
-  def initialize(token)
-    @token = token
+  # Tokens live 15 minutes but processing can take longer, so mint a fresh
+  # one shortly before the current token expires.
+  TOKEN_REFRESH_SECONDS = 600
+
+  def initialize(&token_factory)
+    @token_factory = token_factory
+    @token = nil
+    @token_minted_at = nil
   end
 
   def get(path)
@@ -74,10 +80,18 @@ class AppStoreConnectClient
 
   private
 
+  def token
+    if @token.nil? || Time.now - @token_minted_at > TOKEN_REFRESH_SECONDS
+      @token = @token_factory.call
+      @token_minted_at = Time.now
+    end
+    @token
+  end
+
   def request(request_class, path, body = nil)
     uri = URI("#{BASE_URL}#{path}")
     request = request_class.new(uri)
-    request["Authorization"] = "Bearer #{@token}"
+    request["Authorization"] = "Bearer #{token}"
     request["Content-Type"] = "application/json"
     request["Accept"] = "application/json"
     request["User-Agent"] = "shogo-ios-testflight-distributor"
@@ -102,20 +116,18 @@ group_ids = required_env("TESTFLIGHT_GROUP_IDS").split(",").map(&:strip).reject(
 poll_interval = Integer(ENV.fetch("TESTFLIGHT_POLL_INTERVAL_SECONDS", "30"))
 timeout_seconds = Integer(ENV.fetch("TESTFLIGHT_PROCESSING_TIMEOUT_SECONDS", "1800"))
 
-token = app_store_connect_token(key_id, issuer_id, private_key)
-client = AppStoreConnectClient.new(token)
+client = AppStoreConnectClient.new { app_store_connect_token(key_id, issuer_id, private_key) }
 deadline = Time.now + timeout_seconds
 build = nil
 
 puts "Waiting for App Store Connect to finish processing build #{build_number}..."
 loop do
+  # /v1/apps/{id}/builds rejects sort and filter parameters; /v1/builds
+  # supports filtering by app and build number directly.
   query = URI.encode_www_form(
-    [["sort", "-uploadedDate"], ["limit", "50"]],
+    [["filter[app]", app_id], ["filter[version]", build_number], ["limit", "10"]],
   )
-  response = client.get("/v1/apps/#{app_id}/builds?#{query}")
-  build = response.fetch("data", []).find do |candidate|
-    candidate.dig("attributes", "version").to_s == build_number
-  end
+  build = client.get("/v1/builds?#{query}").fetch("data", []).first
 
   if build.nil?
     abort "::error::Build #{build_number} was not found in App Store Connect." if Time.now >= deadline
