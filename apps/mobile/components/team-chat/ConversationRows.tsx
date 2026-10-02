@@ -132,7 +132,7 @@ export function PanelSection({ label, addLabel, onAdd, fixed, children }: PanelS
         <Pressable
           onPress={() => !fixed && setExpanded((v) => !v)}
           accessibilityRole="button"
-          accessibilityState={{ expanded }}
+          aria-expanded={expanded}
           accessibilityLabel={`${expanded ? 'Collapse' : 'Expand'} ${label}`}
           className="flex-1 flex-row items-center gap-1.5 rounded-md px-1 py-1 active:bg-accent/50"
         >

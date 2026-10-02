@@ -17,7 +17,7 @@ mock.module("react-native", () =>
     Pressable: ({ accessibilityLabel, accessibilityRole, accessibilityState, children, onPress, ...props }: any) =>
       createElement(
         "button",
-        { ...props, "aria-label": accessibilityLabel, "aria-selected": accessibilityState?.selected, onClick: onPress, role: accessibilityRole },
+        { ...props, "aria-label": accessibilityLabel, onClick: onPress, role: accessibilityRole },
         children,
       ),
   }),
@@ -26,7 +26,7 @@ mock.module("expo-router", () => ({ usePathname: () => pathname, useRouter: () =
 mock.module("@shogo/shared-ui/primitives", () => ({ cn: (...args: unknown[]) => args.filter(Boolean).join(" ") }))
 mock.module("lucide-react-native", () => {
   const Icon = () => createElement("span")
-  return { Bell: Icon, Bot: Icon, Folder: Icon, Hash: Icon, Home: Icon, MessagesSquare: Icon, Mic: Icon, MoreHorizontal: Icon, Plus: Icon, Settings: Icon, Target: Icon }
+  return { Bell: Icon, Bot: Icon, Folder: Icon, Hash: Icon, Home: Icon, MessagesSquare: Icon, Mic: Icon, MoreHorizontal: Icon, Plus: Icon, Shield: Icon, Target: Icon }
 })
 mock.module(resolve(import.meta.dir, "../../../branding/ShogoLogoMark"), () => ({ ShogoLogoMark: () => createElement("span") }))
 mock.module(resolve(import.meta.dir, "../../CreateMenu"), () => ({ CreateMenu: () => createElement("span") }))

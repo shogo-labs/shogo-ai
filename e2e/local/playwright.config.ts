@@ -55,6 +55,9 @@ const localEnv = {
   ...(process.env.CI ? { CI: "true" } : {}),
 }
 
+// Specs written for a phone viewport; the other projects skip them.
+const PHONE_SPECS = /(mobile-personal-walkthrough|team-nav-tabs-phone)\.test\.ts$/
+
 export default defineConfig({
   ...(startStack
     ? {
@@ -111,12 +114,12 @@ export default defineConfig({
   projects: [
     {
       name: "chromium",
-      testIgnore: /mobile-personal-walkthrough\.test\.ts$/,
+      testIgnore: PHONE_SPECS,
       use: { ...devices["Desktop Chrome"] },
     },
     {
       name: "iphone-15-pro",
-      testMatch: /mobile-personal-walkthrough\.test\.ts$/,
+      testMatch: PHONE_SPECS,
       use: {
         ...devices["iPhone 15 Pro"],
         hasTouch: true,
@@ -125,7 +128,7 @@ export default defineConfig({
     },
     {
       name: "pixel-7",
-      testMatch: /mobile-personal-walkthrough\.test\.ts$/,
+      testMatch: PHONE_SPECS,
       use: {
         ...devices["Pixel 7"],
         hasTouch: true,

@@ -7,7 +7,7 @@
  */
 import { Pressable, Text, View } from 'react-native'
 import { useRouter } from 'expo-router'
-import { Bell, Bot, Folder, Hash, Home, MessagesSquare, Mic, MoreHorizontal, Plus, Settings, Target } from 'lucide-react-native'
+import { Bell, Bot, Folder, Hash, Home, MessagesSquare, Mic, MoreHorizontal, Plus, Shield, Target } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import type { SidebarTabId } from '@shogo/shared-app'
 import { ShogoLogoMark } from '../../branding/ShogoLogoMark'
@@ -65,7 +65,7 @@ export function IconRail({ tabs, active, badges, onSelect, showAdmin }: IconRail
               key={id}
               accessibilityRole="tab"
               accessibilityLabel={count ? `${label}, ${count} unread` : label}
-              accessibilityState={{ selected }}
+              aria-selected={selected}
               onPress={() => onSelect(id)}
               className="w-16 items-center gap-0.5 py-1"
             >
@@ -82,12 +82,12 @@ export function IconRail({ tabs, active, badges, onSelect, showAdmin }: IconRail
       <View className="mt-auto items-center gap-3">
         {showAdmin && (
           <Pressable accessibilityRole="link" accessibilityLabel="Admin" onPress={() => router.push('/(admin)' as any)} className="h-9 w-9 items-center justify-center rounded-xl active:bg-accent">
-            <Settings size={18} className="text-muted-foreground" />
+            <Shield size={18} className="text-muted-foreground" />
           </Pressable>
         )}
         <CreateMenu placement="right bottom">
           {({ open, ...props }) => (
-            <Pressable {...props} accessibilityRole="button" accessibilityLabel="Create" accessibilityState={{ expanded: open }} className="h-9 w-9 items-center justify-center rounded-full bg-primary active:opacity-80">
+            <Pressable {...props} accessibilityRole="button" accessibilityLabel="Create" aria-expanded={open} className="h-9 w-9 items-center justify-center rounded-full bg-primary active:opacity-80">
               <Plus size={18} className="text-primary-foreground" />
             </Pressable>
           )}

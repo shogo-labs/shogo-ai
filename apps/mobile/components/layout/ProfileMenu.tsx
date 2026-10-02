@@ -39,10 +39,26 @@ export interface ProfileMenuProps {
 
 /** The avatar button and the menu it opens. */
 export function ProfileMenu({ placement = 'bottom right', size = 'md', testID = 'profile-avatar' }: ProfileMenuProps) {
+  const router = useRouter()
   const { user } = useAuth()
   const chat = useTeamChatNav()
   const [open, setOpen] = useState(false)
   const status = usePresence(chat.workspaceId, user?.id)
+  // The menu renders in a portal above the app's providers, so everything that
+  // comes from context is read here, where the avatar is, and passed down.
+  const { settings, update } = useChatSettings(chat.enabled ? chat.workspaceId : null)
+  const model: ProfileMenuModel = {
+    user: user ? { id: user.id, name: user.name, email: user.email, image: user.image } : null,
+    chatEnabled: chat.enabled,
+    workspaceId: chat.workspaceId,
+    presence: status,
+    settings,
+    update,
+    go: (href) => {
+      setOpen(false)
+      router.push(href as any)
+    },
+  }
   const dimension = size === 'sm' ? 32 : 40
   return (
     <Popover
@@ -57,7 +73,7 @@ export function ProfileMenu({ placement = 'bottom right', size = 'md', testID = 
           testID={testID}
           accessibilityRole="button"
           accessibilityLabel="Profile and settings"
-          accessibilityState={{ expanded: open }}
+          aria-expanded={open}
           className="active:opacity-80"
           style={{ width: dimension, height: dimension }}
         >
@@ -69,7 +85,7 @@ export function ProfileMenu({ placement = 'bottom right', size = 'md', testID = 
       <PopoverBackdrop />
       <PopoverContent className="w-[280px] p-0">
         <PopoverBody>
-          <ProfileMenuContent onClose={() => setOpen(false)} />
+          <ProfileMenuContent model={model} />
         </PopoverBody>
       </PopoverContent>
     </Popover>
@@ -78,19 +94,26 @@ export function ProfileMenu({ placement = 'bottom right', size = 'md', testID = 
 
 const ROW = 'flex-row items-center gap-3 px-3 py-2.5 active:bg-muted'
 
-/** Mounted only while the menu is open, so settings load on demand. */
-export function ProfileMenuContent({ onClose }: { onClose: () => void }) {
-  const router = useRouter()
-  const { user } = useAuth()
-  const chat = useTeamChatNav()
-  const presence = usePresence(chat.workspaceId, user?.id)
-  const { settings, update } = useChatSettings(chat.enabled ? chat.workspaceId : null)
+export interface ProfileMenuModel {
+  user: { id?: string; name?: string | null; email?: string | null; image?: string | null } | null
+  chatEnabled: boolean
+  workspaceId: string | null
+  presence: ReturnType<typeof usePresence>
+  settings: ReturnType<typeof useChatSettings>['settings']
+  update: ReturnType<typeof useChatSettings>['update']
+  /** Closes the menu and navigates. */
+  go: (href: string) => void
+}
+
+/**
+ * The menu body. Purely presentational: it renders in a portal, outside the
+ * app's context providers, so it must not read any (auth, router, chat) itself.
+ */
+export function ProfileMenuContent({ model }: { model: ProfileMenuModel }) {
+  const { user, presence, settings, update, go } = model
+  const chat = { enabled: model.chatEnabled, workspaceId: model.workspaceId }
   const [pauseOpen, setPauseOpen] = useState(false)
   const pause = pauseState(settings?.dndUntil)
-  const go = (href: string) => {
-    onClose()
-    router.push(href as any)
-  }
 
   return (
     <View role="menu" className="py-1" testID="profile-menu">
@@ -124,7 +147,7 @@ export function ProfileMenuContent({ onClose }: { onClose: () => void }) {
           <Pressable
             role="menuitem"
             accessibilityLabel={pause.paused ? 'Notifications paused' : 'Pause notifications'}
-            accessibilityState={{ expanded: pauseOpen }}
+            aria-expanded={pauseOpen}
             onPress={() => setPauseOpen((v) => !v)}
             className={ROW}
           >

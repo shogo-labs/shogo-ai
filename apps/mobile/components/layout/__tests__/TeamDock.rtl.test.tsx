@@ -19,7 +19,7 @@ mock.module("react-native", () =>
     Pressable: ({ accessibilityLabel, accessibilityRole, accessibilityState, children, onPress, ...props }: any) =>
       createElement(
         "button",
-        { ...props, "aria-label": accessibilityLabel, "aria-selected": accessibilityState?.selected, onClick: onPress, role: accessibilityRole },
+        { ...props, "aria-label": accessibilityLabel, onClick: onPress, role: accessibilityRole },
         children,
       ),
   }),
@@ -28,7 +28,7 @@ mock.module("expo-router", () => ({ usePathname: () => pathname, useRouter: () =
 mock.module("@shogo/shared-ui/primitives", () => ({ cn: (...args: unknown[]) => args.filter(Boolean).join(" ") }))
 mock.module("lucide-react-native", () => {
   const Icon = () => createElement("span")
-  return { Bell: Icon, Home: Icon, MessagesSquare: Icon, MoreHorizontal: Icon, Search: Icon, Bot: Icon, Folder: Icon, Hash: Icon, Mic: Icon, Plus: Icon, Settings: Icon, Target: Icon }
+  return { Bell: Icon, Home: Icon, MessagesSquare: Icon, MoreHorizontal: Icon, Search: Icon, Bot: Icon, Folder: Icon, Hash: Icon, Mic: Icon, Plus: Icon, Shield: Icon, Target: Icon }
 })
 mock.module(resolve(import.meta.dir, "../../../contexts/theme"), () => ({ useResolvedTheme: () => "light" }))
 mock.module(resolve(import.meta.dir, "../../ui/LiquidGlassBackdrop"), () => ({ LiquidGlassBackdrop: () => null, supportsLiquidGlass: () => false }))

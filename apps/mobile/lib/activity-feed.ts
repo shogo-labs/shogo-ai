@@ -16,10 +16,10 @@ export type ActivityFilter = 'all' | 'dms' | 'mentions' | 'threads' | 'agents'
 
 export const ACTIVITY_FILTERS: Array<{ id: ActivityFilter; label: string }> = [
   { id: 'all', label: 'All' },
+  { id: 'agents', label: 'Agents' },
   { id: 'dms', label: 'DMs' },
   { id: 'mentions', label: 'Mentions' },
   { id: 'threads', label: 'Threads' },
-  { id: 'agents', label: 'Agents' },
 ]
 
 export type AgentRunState = 'running' | 'queued' | 'done' | 'failed'

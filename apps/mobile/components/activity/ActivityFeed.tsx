@@ -96,7 +96,7 @@ export function ActivityFeed({ compact = false }: ActivityFeedProps) {
           <Pressable
             key={id}
             accessibilityRole="button"
-            accessibilityState={{ selected: filter === id }}
+            aria-selected={filter === id}
             onPress={() => setFilter(id)}
             className={cn('rounded-full border px-3 py-1', filter === id ? 'border-primary bg-primary/10' : 'border-border active:bg-accent/50')}
           >
@@ -134,11 +134,13 @@ export function ActivityFeed({ compact = false }: ActivityFeedProps) {
 
       <Pressable
         accessibilityRole="button"
-        accessibilityState={{ selected: unreadOnly }}
+        aria-selected={unreadOnly}
         accessibilityLabel="Unreads only"
         onPress={() => setUnreadOnly((v) => !v)}
         className={cn(
-          'absolute bottom-4 right-4 rounded-full border px-4 py-2 shadow-sm',
+          // Phones keep the right corner for the floating "+".
+          compact ? 'absolute bottom-4 right-4' : 'absolute bottom-7 left-4',
+          'rounded-full border px-4 py-2 shadow-sm',
           unreadOnly ? 'border-primary bg-primary' : 'border-border bg-card active:bg-accent/50',
         )}
       >

@@ -24,6 +24,9 @@ export function useSidebarTab(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workspaceId, availableKey])
 
+  // Re-sync when the route's own conversation becomes known (e.g. a DM that was
+  // just created), but not on every unread-count update after that.
+  const routeConversationKind = conversations.find((c) => pathname.includes(c.id))?.kind ?? null
   const hasConversations = conversations.length > 0
   useEffect(() => {
     const fromRoute = tabForPathname(pathname, conversations)
@@ -31,10 +34,8 @@ export function useSidebarTab(
       setTabState(fromRoute)
       setStoredTab(workspaceId, fromRoute)
     }
-    // Conversations only place a /c/<id> route: re-sync once the list first
-    // arrives, but not on every unread-count update after that.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pathname, workspaceId, availableKey, hasConversations])
+  }, [pathname, workspaceId, availableKey, hasConversations, routeConversationKind])
 
   const setTab = useCallback(
     (next: SidebarTabId) => {

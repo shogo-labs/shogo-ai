@@ -55,7 +55,7 @@ export function TeamDock({ maxWidth }: { maxWidth: number }) {
               key={id}
               onPress={() => router.replace(href as any)}
               accessibilityRole="tab"
-              accessibilityState={{ selected }}
+              aria-selected={selected}
               accessibilityLabel={count ? `${label}, ${count} unread` : label}
               className={cn('flex-1 items-center justify-center rounded-full', selected && 'bg-primary/10')}
               style={{ height: SIZE - NATIVE_PHONE_COMPOSER_PILL_ITEM_INSET * 2 }}

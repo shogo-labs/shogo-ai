@@ -45,7 +45,7 @@ export function DmsPanel({ variant = 'panel' }: { variant?: 'panel' | 'screen' }
           <Pressable
             key={id}
             accessibilityRole="button"
-            accessibilityState={{ selected: filter === id }}
+            aria-selected={filter === id}
             onPress={() => setFilter(id)}
             className={cn('rounded-full border px-3 py-1', filter === id ? 'border-primary bg-primary/10' : 'border-border active:bg-accent/50')}
           >
