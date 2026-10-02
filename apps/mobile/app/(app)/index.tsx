@@ -20,12 +20,14 @@ import { observer } from 'mobx-react-lite'
 import { LinearGradient } from 'expo-linear-gradient'
 import Svg, { Defs, RadialGradient, Stop, Ellipse } from 'react-native-svg'
 import { Button } from '@shogo/shared-ui/primitives'
+import { chatSessionEvents } from '../../lib/chat-session-events'
 import { usePostHogSafe } from '../../contexts/posthog'
 import { useAuth } from '../../contexts/auth'
 import {
   useProjectCollection,
   useWorkspaceCollection,
   useMemberCollection,
+  useChatSessionCollection,
   useDomainActions,
   useDomainHttp,
 } from '../../contexts/domain'
@@ -269,6 +271,7 @@ export const HomeScreen = observer(function HomeScreen({
   const membersColl = useMemberCollection()
   const http = useDomainHttp()
   const actions = useDomainActions()
+  const chatSessions = useChatSessionCollection()
   const isDark = useResolvedTheme() === 'dark'
   const { width: screenWidth, height: screenHeight } = useWindowDimensions()
   const insets = useSafeAreaInsets()
@@ -721,17 +724,28 @@ export const HomeScreen = observer(function HomeScreen({
       // Fire-and-forget: replace heuristic name with AI-generated name
       const pid = consumed.projectId
       const sid = consumed.chatSessionId
-      const sidScope = consumed.chatScope
       api.generateProjectName(http, text, currentWorkspace.id, pid).then(({ name, description, source }) => {
         if (source === 'ai' && name && name !== projectName) {
           actions.updateProject(pid, { name, description: description || undefined })
-          // Only project-scoped sessions live in the local MST collection.
-          // Workspace sessions are created server-side (api.createWorkspaceSession)
-          // and aren't in `chatSessionCollection`, so updateChatSession would
-          // throw "Item not found" — skip the local rename for them.
-          if (sidScope === 'project') {
-            actions.updateChatSession(sid, { inferredName: name })
-          }
+          // Workspace sessions are created server-side
+          // (api.createWorkspaceSession), so pull them into the local MST
+          // collection before updateChatSession (which throws "Item not
+          // found" otherwise).
+          void (async () => {
+            try {
+              if (!chatSessions.get(sid)) await chatSessions.loadById(sid)
+              if (!chatSessions.get(sid)) return
+              await actions.updateChatSession(sid, { inferredName: name })
+              chatSessionEvents.emit({
+                projectId: pid,
+                workspaceId: currentWorkspace.id,
+                activeSessionId: sid,
+                refresh: true,
+              })
+            } catch (err) {
+              console.warn('[Home] Failed to save AI chat name:', err)
+            }
+          })()
         }
       }).catch((err) => {
         console.warn('[Home] AI project name generation failed, keeping heuristic name:', err)
@@ -741,6 +755,7 @@ export const HomeScreen = observer(function HomeScreen({
     }
   }, [
     actions,
+    chatSessions,
     createHomeDraftSession,
     currentWorkspace?.id,
     ensureDraftProject,

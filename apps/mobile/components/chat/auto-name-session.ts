@@ -7,12 +7,31 @@ export type AutoNameSessionResult = {
   source?: string;
 };
 
+const PLACEHOLDER_SESSION_NAMES = new Set([
+  "untitled",
+  "untitled chat",
+  "new chat",
+  "workspace chat",
+]);
+
+/** True for an empty name or one of the default names new chats are created with. */
+export function isPlaceholderSessionName(name: string | null | undefined): boolean {
+  const normalized = (name ?? "").trim().toLowerCase();
+  return !normalized || PLACEHOLDER_SESSION_NAMES.has(normalized);
+}
+
 export type AutoNameSessionOptions = {
   sessionId: string;
   userText: string;
   workspaceId?: string;
   projectId?: string;
   getSession: (sessionId: string) => unknown;
+  /**
+   * Load a session into the local collection when it isn't there yet
+   * (workspace sessions are created server-side). Optional; failures are
+   * treated as "session not found".
+   */
+  loadSession?: (sessionId: string) => Promise<unknown>;
   getProjectName: (projectId: string) => string | null | undefined;
   generateName: (
     userText: string,
@@ -46,6 +65,7 @@ export async function autoNameSession({
   workspaceId,
   projectId,
   getSession,
+  loadSession,
   getProjectName,
   generateName,
   updateProject,
@@ -55,10 +75,20 @@ export async function autoNameSession({
   const normalizedText = userText.trim();
   if (!normalizedText) return;
 
+  // Workspace sessions live server-side; pull them into the local collection
+  // so the name check below sees their real name.
+  if (!getSession(sessionId) && loadSession) {
+    try {
+      await loadSession(sessionId);
+    } catch {
+      // Fall through; treated as missing.
+    }
+  }
+
   const session = getSession(sessionId) as
     { inferredName?: string | null; name?: string | null } | undefined;
   const sessionName = session?.inferredName || session?.name;
-  if (sessionName && sessionName !== "Untitled") return;
+  if (!isPlaceholderSessionName(sessionName)) return;
 
   const { name, description, source } = await generateName(
     normalizedText,
@@ -67,6 +97,15 @@ export async function autoNameSession({
   );
   if (source !== "ai" || !name) return;
 
+  // Workspace sessions live server-side; pull them into the local collection
+  // so the update below can find them.
+  if (!getSession(sessionId) && loadSession) {
+    try {
+      await loadSession(sessionId);
+    } catch {
+      // Treated as missing below.
+    }
+  }
   // The session may have been deleted while the naming request was in flight.
   if (!getSession(sessionId)) return;
 
