@@ -26,7 +26,7 @@ mock.module("expo-router", () => ({ usePathname: () => pathname, useRouter: () =
 mock.module("@shogo/shared-ui/primitives", () => ({ cn: (...args: unknown[]) => args.filter(Boolean).join(" ") }))
 mock.module("lucide-react-native", () => {
   const Icon = () => createElement("span")
-  return { Bell: Icon, Bot: Icon, Folder: Icon, Hash: Icon, Home: Icon, MessagesSquare: Icon, Mic: Icon, MoreHorizontal: Icon, Plus: Icon, Shield: Icon, Target: Icon }
+  return { Bell: Icon, Bot: Icon, Folder: Icon, Hash: Icon, Home: Icon, Mail: Icon, MessagesSquare: Icon, Mic: Icon, MoreHorizontal: Icon, Plus: Icon, Search: Icon, Shield: Icon, Target: Icon }
 })
 mock.module(resolve(import.meta.dir, "../../../branding/ShogoLogoMark"), () => ({ ShogoLogoMark: () => createElement("span") }))
 mock.module(resolve(import.meta.dir, "../../CreateMenu"), () => ({ CreateMenu: () => createElement("span") }))
@@ -133,4 +133,74 @@ describe("WideSidebar", () => {
     fireEvent.click(screen.getByRole("tab", { name: "Meetings" }))
     expect(push).toHaveBeenCalledWith("/(app)/meetings")
   })
+
+  test("a personal workspace has no list panel on its page tabs, only on More", () => {
+    chat = { enabled: false, list: [], counts: { channels: 0, dms: 0, inbox: 0 } }
+    renderSidebar({ tabs: [...PERSONAL_TABS], kind: "personal", panelTabs: ["more"] })
+    expect(screen.queryByTestId("panel")).toBeNull()
+    fireEvent.click(screen.getByRole("tab", { name: "More" }))
+    expect(screen.getByTestId("panel").textContent).toContain("more")
+    // Selecting a page tab drops the panel again.
+    fireEvent.click(screen.getByRole("tab", { name: "Goals" }))
+    expect(screen.queryByTestId("panel")).toBeNull()
+    // Tapping the active tab never opens a panel the tab does not have.
+    fireEvent.click(screen.getByRole("tab", { name: "Goals" }))
+    expect(screen.queryByTestId("panel")).toBeNull()
+  })
+
+  test("the workspace switcher takes the top of the rail in place of the logo", () => {
+    renderSidebar({ switcher: <span data-testid="switcher" /> })
+    expect(screen.getByTestId("switcher")).toBeTruthy()
+    expect(screen.queryByRole("link", { name: "Shogo home" })).toBeNull()
+  })
+
+  test("invitations show on the rail only while some are waiting", () => {
+    const onPress = mock(() => {})
+    renderSidebar({ invites: { count: 0, onPress } })
+    expect(screen.queryByRole("button", { name: /Workspace invitations/ })).toBeNull()
+    cleanup()
+    renderSidebar({ invites: { count: 2, onPress } })
+    fireEvent.click(screen.getByRole("button", { name: "Workspace invitations, 2 waiting" }))
+    expect(onPress).toHaveBeenCalledTimes(1)
+  })
+
+  test("a search button appears on the rail when asked for", () => {
+    const onSearch = mock(() => {})
+    renderSidebar({ onSearch })
+    fireEvent.click(screen.getByRole("button", { name: "Search" }))
+    expect(onSearch).toHaveBeenCalledTimes(1)
+  })
+
+  describe("a personal workspace's Home", () => {
+    const personal = (extra: Record<string, unknown> = {}) => {
+      chat = { enabled: false, list: [], counts: { channels: 0, dms: 0, inbox: 0 } }
+      return renderSidebar({ tabs: [...PERSONAL_TABS], kind: "personal", panelTabs: ["home", "more"], ...extra })
+    }
+
+    test("takes you to the main chat from another page, and lists the chats beside it", () => {
+      pathname = "/(app)/meetings"
+      personal()
+      expect(screen.getByRole("tab", { name: "Meetings" }).getAttribute("aria-selected")).toBe("true")
+      fireEvent.click(screen.getByRole("tab", { name: "Home" }))
+      expect(push).toHaveBeenCalledWith("/(app)")
+      expect(screen.getByRole("tab", { name: "Home" }).getAttribute("aria-selected")).toBe("true")
+      expect(screen.getByTestId("panel").textContent).toContain("home")
+    })
+
+    test("takes you back to the main chat from a side chat", () => {
+      pathname = "/(app)/side-chats/s1"
+      personal()
+      fireEvent.click(screen.getByRole("tab", { name: "Home" }))
+      expect(push).toHaveBeenCalledWith("/(app)")
+    })
+
+    test("on the main chat, selecting Home again only hides or shows the panel", () => {
+      pathname = "/(app)"
+      personal()
+      fireEvent.click(screen.getByRole("tab", { name: "Home" }))
+      expect(push).not.toHaveBeenCalled()
+      expect(screen.queryByTestId("panel")).toBeNull()
+    })
+  })
 })
+

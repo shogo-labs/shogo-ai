@@ -11,7 +11,7 @@ import type { SidebarTabId } from '@shogo/shared-app'
 import { useAgentActivity } from '../../../hooks/useAgentActivity'
 import { useSidebarTab } from '../../../hooks/useSidebarTab'
 import { activityBadge } from '../../../lib/activity-feed'
-import { hrefForTab, tabForPathname } from '../../../lib/sidebar-tab'
+import { hrefForTab, isMainChatPath, tabForPathname } from '../../../lib/sidebar-tab'
 import { useTeamChatNav } from '../../team-chat/TeamChatSidebarProvider'
 import { IconRail } from './IconRail'
 
@@ -28,11 +28,20 @@ export interface WideSidebarProps {
   tabs: SidebarTabId[]
   kind: 'personal' | 'team'
   showAdmin: boolean
+  /** The workspace tile at the top of the rail. */
+  switcher?: ReactNode
+  invites?: { count: number; onPress: () => void }
+  onSearch?: () => void
+  /**
+   * The tabs that have a list panel. Tabs outside it are pages (or the rail
+   * says it all), and show no panel. Defaults to every tab.
+   */
+  panelTabs?: SidebarTabId[]
   /** The panel for a tab. `hidePanel` collapses it to the rail. */
   renderPanel: (tab: SidebarTabId, hidePanel: () => void) => ReactNode
 }
 
-export function WideSidebar({ workspaceId, tabs, kind, showAdmin, renderPanel }: WideSidebarProps) {
+export function WideSidebar({ workspaceId, tabs, kind, showAdmin, switcher, invites, onSearch, panelTabs, renderPanel }: WideSidebarProps) {
   const router = useRouter()
   const pathname = usePathname()
   const chat = useTeamChatNav()
@@ -47,22 +56,29 @@ export function WideSidebar({ workspaceId, tabs, kind, showAdmin, renderPanel }:
     activity: activityBadge(chat.counts.inbox, kind === 'team' ? activity.tasks : []),
   }
 
+  const hasPanel = (id: SidebarTabId) => !panelTabs || panelTabs.includes(id)
+
   const select = (next: SidebarTabId) => {
-    // Personal Meetings, Goals and Activity are pages, not panels.
-    const href = hrefForTab(next) ?? (kind === 'personal' && next === 'activity' ? '/(app)/activity' : null)
-    if (next === tab) {
-      setPanelHidden((hidden) => !hidden)
+    // Personal Meetings, Goals and Activity are pages, not panels, and Home is
+    // the main chat (its panel lists the other chats beside it).
+    const personalHref = kind !== 'personal' ? null : next === 'activity' ? '/(app)/activity' : next === 'home' ? '/(app)' : null
+    const href = hrefForTab(next) ?? personalHref
+    // A personal Home is the main chat itself: a side chat is under the Home tab but not "at" it.
+    const atTarget = kind === 'personal' && next === 'home' ? isMainChatPath(pathname) : tabForPathname(pathname) === next
+    const offPage = !!href && !atTarget
+    if (next === tab && !offPage) {
+      if (hasPanel(next)) setPanelHidden((hidden) => !hidden)
       return
     }
     setTab(next)
     setPanelHidden(false)
-    if (href && tabForPathname(pathname) !== next) router.push(href as any)
+    if (offPage) router.push(href as any)
   }
 
   return (
     <View className="h-full flex-row">
-      <IconRail tabs={available} active={tab} badges={badges} onSelect={select} showAdmin={showAdmin} />
-      {!panelHidden && <View className="h-full w-64 border-r border-border bg-card">{renderPanel(tab, () => setPanelHidden(true))}</View>}
+      <IconRail tabs={available} active={tab} badges={badges} onSelect={select} showAdmin={showAdmin} switcher={switcher} invites={invites} onSearch={onSearch} />
+      {!panelHidden && hasPanel(tab) && <View className="h-full w-64 border-r border-border bg-card">{renderPanel(tab, () => setPanelHidden(true))}</View>}
     </View>
   )
 }

@@ -179,6 +179,7 @@ function AppLayoutInner() {
     "/activity",
     "/canvases",
     "/goals",
+    "/meetings",
   ].some((segment) => pathname.includes(segment));
 
   usePostHogIdentify();

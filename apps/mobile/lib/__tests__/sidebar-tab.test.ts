@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { describe, expect, test } from 'bun:test'
-import { dockTabForPathname, hrefForTab, resolveTab, tabForPathname, type TabConversation } from '../sidebar-tab'
+import { dockTabForPathname, hrefForTab, isMainChatPath, resolveTab, tabForPathname, type TabConversation } from '../sidebar-tab'
 
 const conversations: TabConversation[] = [
   { id: 'ch1', kind: 'public' },
@@ -59,6 +59,19 @@ describe('tabForPathname', () => {
     for (const path of ['/tasks', '/canvases', '/marketplace/some-agent', '/files']) {
       expect(tabForPathname(path)).toBe('more')
     }
+  })
+
+  test('the main chat is Home itself, not a side chat or another page', () => {
+    expect(isMainChatPath('/')).toBe(true)
+    expect(isMainChatPath('/(app)')).toBe(true)
+    expect(isMainChatPath('/(app)/')).toBe(true)
+    expect(isMainChatPath('/(app)/side-chats/abc')).toBe(false)
+    expect(isMainChatPath('/(app)/meetings')).toBe(false)
+  })
+
+  test('side chats belong to Home, beside the main chat', () => {
+    expect(tabForPathname('/(app)/side-chats')).toBe('home')
+    expect(tabForPathname('/(app)/side-chats/abc')).toBe('home')
   })
 
   test('routes with no tab leave the current one alone', () => {

@@ -115,6 +115,7 @@ import { DmsPanel } from "../../team-chat/panels/DmsPanel";
 import { AgentsPanel } from "../../team-chat/panels/AgentsPanel";
 import { ActivityFeed } from "../../activity/ActivityFeed";
 import { WideSidebar } from "./WideSidebar";
+import { PersonalChatsPanel } from "./PersonalChatsPanel";
 import { HomePanel, MorePanel } from "./TabPanels";
 import { TAB_META } from "./IconRail";
 import {
@@ -122,7 +123,7 @@ import {
   PROJECT_SCOPE_OPTIONS,
   PROJECT_SORT_OPTIONS,
 } from "./ProjectFilterSheet";
-import { AccountMenu } from "./AccountMenu";
+import { AccountMenu, type AccountMenuProps } from "./AccountMenu";
 import { CreateWorkspaceModal } from "./CreateWorkspaceModal";
 import { InboxPanel } from "./InboxPanel";
 import { useHasAdminAccess } from "../../../hooks/useHasAdminAccess";
@@ -1172,6 +1173,7 @@ export const AppSidebar = observer(function AppSidebar({
         return <MorePanel onNavPress={onNavPress} />;
       case "home":
       default:
+        if (experience.kind === "personal") return <PersonalChatsPanel onNavPress={onNavPress} />;
         return (
           <HomePanel
             onNavPress={onNavPress}
@@ -1181,6 +1183,33 @@ export const AppSidebar = observer(function AppSidebar({
         );
     }
   };
+
+  /** The workspace menu (switch workspace, account, billing, sign out). */
+  const renderAccountMenu = (extra: Partial<AccountMenuProps> = {}) => (
+  <AccountMenu
+    user={user}
+    onSignOut={handleSignOut}
+    onNavigate={(href) => {
+      router.push(href as any);
+      onNavPress();
+    }}
+    isSuperAdmin={hasAdminAccess}
+    isWide={isWide}
+    collapsed={collapsed}
+    workspaces={allWorkspaces}
+    currentWorkspace={currentWorkspace}
+    billingData={billingData}
+    workspacePlan={workspacePlan}
+    allPlans={allPlans}
+    showBilling={features.billing}
+    onSwitchWorkspace={handleSwitchWorkspace}
+    onCreateWorkspace={handleCreateWorkspace}
+    hasPersonalWorkspace={hasPersonalWorkspace}
+    onCreatePersonalWorkspace={handleCreatePersonalWorkspace}
+    localMode={localMode}
+    {...extra}
+  />
+  );
 
   /**
    * The sidebar for one tab. `tab` is null in the narrow drawer, which keeps a
@@ -1316,7 +1345,7 @@ export const AppSidebar = observer(function AppSidebar({
       >
         {!experience.resolved ? (
           <WorkspaceChromeSkeletonRows count={6} testID="sidebar-chrome-skeleton" />
-        ) : tab !== null && experience.kind === "team" ? (
+        ) : tab !== null && (experience.kind === "team" || tab === "more" || tab === "home") ? (
           renderTeamTab(tab)
         ) : (
         <>
@@ -1458,7 +1487,8 @@ export const AppSidebar = observer(function AppSidebar({
           </View>
         )}
 
-        {/* Consolidated workspace + user row */}
+        {/* Workspace menu + invites. The wide layout keeps these in the rail. */}
+        {tab === null && (
         <View
           className={cn(
             "flex-row items-center border-t border-border",
@@ -1467,28 +1497,7 @@ export const AppSidebar = observer(function AppSidebar({
           )}
         >
           <View className={cn("min-w-0", !collapsed && "flex-1")}>
-            <AccountMenu
-              user={user}
-              onSignOut={handleSignOut}
-              onNavigate={(href) => {
-                router.push(href as any);
-                onNavPress();
-              }}
-              isSuperAdmin={hasAdminAccess}
-              isWide={isWide}
-              collapsed={collapsed}
-              workspaces={allWorkspaces}
-              currentWorkspace={currentWorkspace}
-              billingData={billingData}
-              workspacePlan={workspacePlan}
-              allPlans={allPlans}
-              showBilling={features.billing}
-              onSwitchWorkspace={handleSwitchWorkspace}
-              onCreateWorkspace={handleCreateWorkspace}
-              hasPersonalWorkspace={hasPersonalWorkspace}
-              onCreatePersonalWorkspace={handleCreatePersonalWorkspace}
-              localMode={localMode}
-            />
+            {renderAccountMenu()}
           </View>
 
           {!collapsed && (
@@ -1517,6 +1526,7 @@ export const AppSidebar = observer(function AppSidebar({
             </Pressable>
           )}
         </View>
+        )}
       </View>
 
       <InboxPanel
@@ -1558,6 +1568,12 @@ export const AppSidebar = observer(function AppSidebar({
         tabs={experience.sidebarTabs}
         kind={experience.kind}
         showAdmin={hasAdminAccess}
+        switcher={renderAccountMenu({ tile: true, collapsed: true })}
+        invites={{ count: pendingInvites.length, onPress: () => setInboxOpen(true) }}
+        // A personal workspace's other tabs are pages the rail already names, so
+        // only Home (the chats) and More open a list; search then lives on the rail.
+        panelTabs={experience.kind === "personal" ? ["home", "more"] : undefined}
+        onSearch={experience.kind === "personal" ? handleSearchPress : undefined}
         renderPanel={renderSidebar}
       />,
     );

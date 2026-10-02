@@ -97,7 +97,7 @@ export async function cleanupTeamNav(page: Page, seed: TeamNavSeed): Promise<voi
 export async function activateTeamWorkspace(page: Page, workspaceId: string): Promise<void> {
   await page.addInitScript((id) => {
     localStorage.setItem("shogo:active-workspace-id", id)
-    localStorage.setItem("shogo:active-workspace-kind", "team")
+    localStorage.setItem("shogo:active-workspace-kind", JSON.stringify({ id, kind: "team" }))
   }, workspaceId)
 }
 

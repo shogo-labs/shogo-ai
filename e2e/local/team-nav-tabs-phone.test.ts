@@ -130,3 +130,50 @@ test.describe("Team workspace: phone dock and tab screens", () => {
     await expect(page).toHaveURL(/\/agent/)
   })
 })
+
+test.describe("Personal workspace: phone bottom bar and page titles", () => {
+  const bar = (page: Page) => page.getByRole("tab")
+  const selected = (page: Page) => page.locator('[role="tab"][aria-selected="true"]')
+
+  test.beforeEach(async ({ page }) => {
+    await signIn(page)
+    await page.goto("/")
+    await expect(bar(page).first()).toBeVisible({ timeout: 60_000 })
+  })
+
+  for (const [path, tab, title] of [
+    ["/meetings", "Meetings", "Meetings"],
+    ["/goals", "Goals", "Goals"],
+    ["/activity", "Activity", "Activity"],
+  ] as const) {
+    test(`${tab}: the bar follows the page and the title appears once`, async ({ page }) => {
+      await page.goto(path)
+      await expect(selected(page)).toHaveCount(1, { timeout: 30_000 })
+      await expect(selected(page)).toHaveAccessibleName(tab)
+      await expect(page.getByRole("tab", { name: "Chat" })).toHaveAttribute("aria-selected", "false")
+      // The app header would add a second copy of the page's own title. The
+      // closed drawer keeps its links mounted, so leave it out of the count.
+      await expect
+        .poll(() =>
+          page.evaluate((text) => {
+            return Array.from(document.querySelectorAll("*")).filter((el) => {
+              if (el.children.length || el.textContent?.trim() !== text) return false
+              if (el.closest('[aria-label="App sidebar"]')) return false
+              const r = el.getBoundingClientRect()
+              return r.width > 0 && r.right > 0 && r.left < window.innerWidth
+            }).length
+          }, title),
+        )
+        .toBe(1)
+    })
+  }
+
+  test("tapping Meetings in the bar opens it with Meetings selected", async ({ page }) => {
+    await page.getByRole("tab", { name: "Meetings" }).click()
+    await expect(page).toHaveURL(/\/meetings/)
+    await expect(page.getByRole("tab", { name: "Meetings" })).toHaveAttribute("aria-selected", "true")
+    await page.getByRole("tab", { name: "Chat" }).click()
+    await expect(page.getByRole("tab", { name: "Chat" })).toHaveAttribute("aria-selected", "true")
+  })
+})
+

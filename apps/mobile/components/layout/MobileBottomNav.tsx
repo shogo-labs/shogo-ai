@@ -207,6 +207,7 @@ export function MobileBottomNav() {
     }
     if (pathname.includes("/tasks")) return "tasks";
     if (pathname.includes("/goals")) return "goals";
+    if (pathname.includes("/meetings")) return "meetings";
     if (pathname.includes("/activity")) return "activity";
     if (pathname.includes("/canvases")) return "canvases";
     if (pathname.includes("/settings")) return "more";
@@ -479,7 +480,7 @@ export function MobileBottomNav() {
                 key={id}
                 onPress={onPress}
                 accessibilityRole="tab"
-                accessibilityState={{ selected }}
+                aria-selected={selected}
                 accessibilityLabel={label}
                 className={cn(
                   "flex-1 items-center justify-center rounded-full",

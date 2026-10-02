@@ -51,6 +51,93 @@ test.describe("Team workspace: desktop rail and panels", () => {
     await expect(panel(page, "home-panel").getByText("Workspace agent")).toBeVisible()
   })
 
+  test("the rail is icons only, and a label appears beside an icon on hover or focus", async () => {
+    await page.mouse.move(700, 450)
+    // No text labels sit under the icons; the names live in tooltips.
+    await expect(page.getByTestId("rail-tooltip")).toHaveCount(0)
+    await expect(rail(page).getByText("Channels", { exact: true })).toHaveCount(0)
+
+    await tab(page, "Agents").hover()
+    const bubble = page.getByTestId("rail-tooltip")
+    await expect(bubble).toHaveText("Agents")
+    const tabBox = (await tab(page, "Agents").boundingBox())!
+    const bubbleBox = (await bubble.boundingBox())!
+    expect(bubbleBox.x).toBeGreaterThanOrEqual(tabBox.x + tabBox.width) // to the right of the icon
+
+    await page.mouse.move(700, 450)
+    await expect(bubble).toHaveCount(0)
+
+    await tab(page, "DMs").focus()
+    await expect(page.getByTestId("rail-tooltip")).toHaveText("DMs")
+    await tab(page, "DMs").blur()
+    await expect(page.getByTestId("rail-tooltip")).toHaveCount(0)
+
+    await page.getByTestId("profile-avatar").hover()
+    await expect(page.getByTestId("rail-tooltip")).toHaveText("Profile and settings")
+    await page.mouse.move(700, 450)
+
+    // After a click the label must still show on hover, even once the icon loses focus.
+    for (const name of ["DMs", "Home"]) {
+      await tab(page, name).hover()
+      await tab(page, name).click()
+      await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur())
+      await expect(page.getByTestId("rail-tooltip")).toHaveText(name)
+      const box = (await tab(page, name).boundingBox())!
+      await page.mouse.move(box.x + 6, box.y + 6, { steps: 3 })
+      await expect(page.getByTestId("rail-tooltip")).toHaveText(name)
+      await page.mouse.move(700, 450)
+      await expect(page.getByTestId("rail-tooltip")).toHaveCount(0)
+    }
+  })
+
+  test.describe("in the dark theme", () => {
+    test.use({ colorScheme: "dark" })
+    test("the label is a dark bubble with light text", async ({ browser }) => {
+      const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, colorScheme: "dark" })
+      const dark = await context.newPage()
+      try {
+        await signIn(dark)
+        await activateTeamWorkspace(dark, seed.workspaceId)
+        await dark.goto("/")
+        await expect(rail(dark)).toBeVisible({ timeout: 60_000 })
+        await tab(dark, "Agents").hover()
+        const bubble = dark.getByTestId("rail-tooltip")
+        await expect(bubble).toHaveText("Agents")
+        const colors = await bubble.evaluate((el) => {
+          const box = el.firstElementChild as HTMLElement
+          const text = box.querySelector("*") as HTMLElement
+          return { bg: getComputedStyle(box).backgroundColor, fg: getComputedStyle(text).color }
+        })
+        const lum = (rgb: string) => {
+          const [r, g, b] = rgb.match(/\d+/g)!.slice(0, 3).map(Number)
+          return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255
+        }
+        expect(lum(colors.fg), `text ${colors.fg}`).toBeGreaterThan(0.85)
+        expect(lum(colors.bg), `bubble ${colors.bg}`).toBeLessThan(0.4)
+      } finally {
+        await context.close()
+      }
+    })
+  })
+
+  test("there is one profile button and one workspace switcher, both on the rail", async () => {
+    await expect(page.getByTestId("profile-avatar")).toHaveCount(1)
+    await expect(page.getByRole("button", { name: "Profile and settings" })).toHaveCount(1)
+    const switcher = page.getByRole("button", { name: /— open account menu/ })
+    await expect(switcher).toHaveCount(1)
+    await expect(rail(page).getByRole("button", { name: /— open account menu/ })).toBeVisible()
+    // The panel no longer repeats the account row, whichever tab is open.
+    for (const name of ["Home", "Channels", "DMs"]) {
+      await tab(page, name).click()
+      await expect(switcher).toHaveCount(1)
+    }
+    await tab(page, "Home").click()
+
+    await switcher.click()
+    await expect(page.getByText("All workspaces")).toBeVisible()
+    await page.keyboard.press("Escape")
+  })
+
   test("each tab swaps the panel to its own list", async () => {
     await tab(page, "Channels").click()
     await expect(page.getByRole("link", { name: seed.channelName })).toBeVisible()
@@ -189,9 +276,63 @@ test.describe("Personal workspace: its own tab set", () => {
     for (const name of ["Channels", "DMs", "Agents", "Projects"]) {
       await expect(tab(page, name)).toHaveCount(0)
     }
+    // Home's list is the chats. The rail already names every page, so the panel
+    // does not repeat Meetings, Goals or Activity as links.
+    const chats = page.getByTestId("personal-chats-panel")
+    await expect(chats.getByRole("link", { name: "Chat", exact: true })).toBeVisible({ timeout: 30_000 })
+    for (const name of ["Meetings", "Goals", "Activity"]) {
+      await expect(chats.getByRole("link", { name })).toHaveCount(0)
+    }
+    await expect(page.getByTestId("profile-avatar")).toHaveCount(1)
+    await expect(page.getByRole("button", { name: /— open account menu/ })).toHaveCount(1)
+    await expect(rail(page).getByRole("button", { name: "Search" })).toBeVisible()
+
     await tab(page, "Meetings").click()
     await expect(page).toHaveURL(/\/meetings/)
+    await expect(page.getByRole("navigation", { name: "App sidebar" })).toHaveCount(0)
+    await expect(tab(page, "Meetings")).toHaveAttribute("aria-selected", "true")
     await tab(page, "Activity").click()
     await expect(page).toHaveURL(/\/activity/)
+
+    // More is the one tab with a list: what has no tab of its own.
+    await tab(page, "More").click()
+    await expect(page.getByTestId("more-panel")).toBeVisible()
+    await tab(page, "Goals").click()
+    await expect(page.getByTestId("more-panel")).toHaveCount(0)
+  })
+
+  test("Home returns to the main chat, with the other chats on the side", async ({ page }) => {
+    await signIn(page)
+    await page.goto("/")
+    await expect(rail(page)).toBeVisible({ timeout: 60_000 })
+
+    // Start a side chat from the panel: it opens, and is listed under "Other chats".
+    await page.getByRole("button", { name: "New side chat" }).click()
+    await expect(page).toHaveURL(/\/side-chats\/[^/?]+/, { timeout: 30_000 })
+    await expect(tab(page, "Home")).toHaveAttribute("aria-selected", "true")
+    const sideChatUrl = page.url()
+    const chats = page.getByTestId("personal-chats-panel")
+    await expect(chats.getByRole("link", { name: /Workspace chat|^Chat · / }).first()).toBeVisible({ timeout: 30_000 })
+
+    // Home from a side chat goes back to the main chat.
+    await tab(page, "Home").click()
+    await expect(page).not.toHaveURL(sideChatUrl)
+    await expect(page).toHaveURL(/\/(\(app\))?\/?(\?.*)?$/)
+    await expect(chats.getByRole("link", { name: "Chat", exact: true })).toHaveAttribute("aria-current", "page")
+    await expect(chats.getByRole("link", { name: /Workspace chat|^Chat · / }).first()).toBeVisible()
+
+    // Home from another page does too, and keeps the chats beside it.
+    await tab(page, "Meetings").click()
+    await expect(page).toHaveURL(/\/meetings/)
+    await expect(chats).toHaveCount(0)
+    await tab(page, "Home").click()
+    await expect(page).not.toHaveURL(/\/meetings/)
+    await expect(tab(page, "Home")).toHaveAttribute("aria-selected", "true")
+    await expect(chats.getByRole("link", { name: "Chat", exact: true })).toBeVisible()
+    await expect(chats.getByRole("link", { name: /Workspace chat|^Chat · / }).first()).toBeVisible()
+
+    // A listed side chat opens from the panel.
+    await chats.getByRole("link", { name: /Workspace chat|^Chat · / }).first().click()
+    await expect(page).toHaveURL(/\/side-chats\//)
   })
 })
