@@ -14,7 +14,6 @@ import {
   Scissors,
   Copy as CopyIcon,
   ClipboardPaste,
-  CopyPlus,
   Columns2,
   Search as SearchIcon,
   Trash2,
@@ -991,7 +990,7 @@ export function FileTree({
         ? [
             {
               label: "Duplicate",
-              icon: <CopyPlus size={14} />,
+              icon: <CopyIcon size={14} />,
               onClick: () => void duplicateNode(node),
             } as MenuEntry,
           ]
