@@ -62,7 +62,13 @@ import { useLiveAgentEdits, type LiveConflict } from "./useLiveAgentEdits";
 import { AgentEditBanner } from "./AgentEditBanner";
 import { ConfirmDialog, describeFileNames, type ConfirmButton } from "./ConfirmDialog";
 import { applyAgentEdit, type MonacoNs } from "./agentEditAnimation";
-import { FIX_IN_AGENT_EVENT, type FixInAgentPayload } from "./agentFixProvider";
+import {
+  ASK_IN_AGENT_EVENT,
+  FIX_IN_AGENT_EVENT,
+  buildSelectionPrompt,
+  type AskInAgentPayload,
+  type FixInAgentPayload,
+} from "./agentFixProvider";
 import type { WorkspaceService } from "./workspace/types";
 // Workspace services are injected by the parent (WorkspaceService impls per root).
 import { isFsaSupported, pickDirectory, ensurePermission, LocalFs } from "./workspace/localFs";
@@ -2436,6 +2442,12 @@ export function Workbench({
     setEditorInfo((p) => (p.selection === selection && p.indent === indent && p.eol === eol ? p : { selection, indent, eol }));
   }, []);
   const infoAttachedRef = useRef(new WeakSet<object>());
+  // Latest handlers for the long-lived Monaco context-menu actions below.
+  const copyTextRef = useRef(copyText);
+  copyTextRef.current = copyText;
+  const revealInExplorerRef = useRef(revealInExplorer);
+  revealInExplorerRef.current = revealInExplorer;
+
   const attachEditorInfo = useCallback(
     (ed: import("monaco-editor").editor.IStandaloneCodeEditor) => {
       if (infoAttachedRef.current.has(ed)) return;
@@ -2444,8 +2456,78 @@ export function Workbench({
       ed.onDidChangeModel(() => refreshEditorInfo(ed));
       ed.onDidChangeModelOptions(() => refreshEditorInfo(ed));
       refreshEditorInfo(ed);
+
+      // Right-click extras (VS Code: Copy Relative Path, Reveal in Explorer;
+      // Shogo: ask the agent about the selection). Resolved lazily so the
+      // handlers always see the current tab / selection.
+      const fileOf = () => {
+        const entry = Object.entries(editorRefs.current).find(([, e]) => e === ed);
+        const group = entry && groupsRef.current.find((g) => g.id === entry[0]);
+        return group?.files.find((f) => f.id === group.activeId) ?? null;
+      };
+      const ask = (kind: "explain" | "improve" | "tests") => {
+        const f = fileOf();
+        const sel = ed.getSelection();
+        const model = ed.getModel();
+        if (!f || !sel || sel.isEmpty() || !model) return;
+        const prompt = buildSelectionPrompt({
+          kind,
+          path: f.path,
+          startLine: sel.startLineNumber,
+          endLine: sel.endLineNumber,
+          language: f.language,
+          text: model.getValueInRange(sel),
+        });
+        window.dispatchEvent(new CustomEvent<AskInAgentPayload>(ASK_IN_AGENT_EVENT, { detail: { prompt } }));
+        showToast("Sent selection to Shogo", 1800);
+      };
+      const group = "9_shogo";
+      ed.addAction({
+        id: "shogo.copyRelativePath",
+        label: "Copy Relative Path",
+        contextMenuGroupId: "navigation",
+        contextMenuOrder: 9.1,
+        run: () => {
+          const f = fileOf();
+          if (f) void copyTextRef.current(f.path, "relative path");
+        },
+      });
+      ed.addAction({
+        id: "shogo.revealInExplorer",
+        label: "Reveal in Explorer",
+        contextMenuGroupId: "navigation",
+        contextMenuOrder: 9.2,
+        run: () => {
+          const f = fileOf();
+          if (f) revealInExplorerRef.current(f.path);
+        },
+      });
+      ed.addAction({
+        id: "shogo.explainSelection",
+        label: "Shogo: Explain Selection",
+        contextMenuGroupId: group,
+        contextMenuOrder: 1,
+        precondition: "editorHasSelection",
+        run: () => ask("explain"),
+      });
+      ed.addAction({
+        id: "shogo.improveSelection",
+        label: "Shogo: Improve Selection",
+        contextMenuGroupId: group,
+        contextMenuOrder: 2,
+        precondition: "editorHasSelection",
+        run: () => ask("improve"),
+      });
+      ed.addAction({
+        id: "shogo.testSelection",
+        label: "Shogo: Write Tests for Selection",
+        contextMenuGroupId: group,
+        contextMenuOrder: 3,
+        precondition: "editorHasSelection",
+        run: () => ask("tests"),
+      });
     },
-    [refreshEditorInfo],
+    [refreshEditorInfo, showToast],
   );
 
   const toggleEol = useCallback(() => {

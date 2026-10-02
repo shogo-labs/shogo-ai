@@ -280,6 +280,8 @@ import {
 } from "./turns/askUserAnswers"
 import { NativeAskUserQuestionSheet } from "./NativeAskUserQuestionSheet"
 import {
+  ASK_IN_AGENT_EVENT,
+  type AskInAgentPayload,
   FIX_IN_AGENT_EVENT,
   buildFixPrompt,
   type FixInAgentPayload,
@@ -5939,9 +5941,19 @@ const ChatPanelContent = observer(function ChatPanelContent({
       handleSendMessage(prompt)
     }
 
+    // "Shogo: Explain / Improve / Write Tests for Selection" editor actions.
+    const onAsk = (e: Event) => {
+      const detail = (e as CustomEvent<AskInAgentPayload>).detail
+      if (!detail?.prompt) return
+      handleSendMessage(detail.prompt)
+    }
+
     window.addEventListener(FIX_IN_AGENT_EVENT, onFix as EventListener)
-    return () =>
+    window.addEventListener(ASK_IN_AGENT_EVENT, onAsk as EventListener)
+    return () => {
       window.removeEventListener(FIX_IN_AGENT_EVENT, onFix as EventListener)
+      window.removeEventListener(ASK_IN_AGENT_EVENT, onAsk as EventListener)
+    }
   }, [isActive, currentSessionId, handleSendMessage])
 
   // ─── Terminal context → Chat ─────────────────────────────────────────
