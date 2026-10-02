@@ -542,6 +542,34 @@ export function mergeIslandSnapshots(
   return merged
 }
 
+export interface PendingAutoExpandDecision {
+  /** Request id that should pop the island open, if any. */
+  expand: string | null
+  /** Unseen request ids in the chat the user is already looking at; they
+   * should be marked seen without expanding. */
+  suppressed: string[]
+}
+
+/** Decides which unseen pending requests auto-expand the island. A request in
+ * the session visible in a focused app window is suppressed: the user is
+ * already looking at it. */
+export function pendingRequestsToAutoExpand(
+  snapshot: IslandSnapshot,
+  seen: ReadonlySet<string>,
+): PendingAutoExpandDecision {
+  const decision: PendingAutoExpandDecision = { expand: null, suppressed: [] }
+  for (const session of snapshot.sessions) {
+    const id = session.pending?.request.id
+    if (!id || seen.has(id)) continue
+    if (islandSessionKey(session.projectId, session.sessionId) === snapshot.focusedSessionKey) {
+      decision.suppressed.push(id)
+    } else if (decision.expand === null) {
+      decision.expand = id
+    }
+  }
+  return decision
+}
+
 export type IslandConfigPatchResult =
   | { ok: true; patch: Partial<IslandConfig> }
   | { ok: false; error: string }

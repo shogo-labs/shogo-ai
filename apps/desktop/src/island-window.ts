@@ -28,6 +28,7 @@ import {
   parseIslandConfigPatch,
   parseIslandFileRefs,
   parseIslandSnapshot,
+  pendingRequestsToAutoExpand,
   type IslandActionResult,
   type IslandAppAction,
   type IslandConfig,
@@ -303,9 +304,11 @@ export class IslandWindow {
 
   private reconcileMode(): void {
     if (!this.window || this.mode === 'compose') return
-    const newPending = this.snapshot.sessions
-      .map((session) => session.pending?.request.id)
-      .find((id): id is string => !!id && !this.autoExpandedRequestIds.has(id))
+    const { expand: newPending, suppressed } = pendingRequestsToAutoExpand(
+      this.snapshot,
+      this.autoExpandedRequestIds,
+    )
+    for (const id of suppressed) this.autoExpandedRequestIds.add(id)
     const livePendingIds = new Set(
       this.snapshot.sessions.flatMap((session) => (session.pending ? [session.pending.request.id] : [])),
     )
