@@ -108,6 +108,16 @@ export function LocalCloudBillingTab() {
   }
 
   const plan = summary.plan
+  const summaryError = summary.error
+  const errorObj = summaryError as { message?: unknown; error?: unknown } | undefined
+  const loadErrorMessage: string | null =
+    typeof summaryError === 'string'
+      ? summaryError
+      : typeof errorObj?.message === 'string'
+        ? errorObj.message
+        : typeof errorObj?.error === 'string'
+          ? errorObj.error
+          : error || null
   const planId = typeof plan?.planId === 'string' ? plan.planId : 'free'
   const planLabel = getPlanDisplayName(planId)
   const hasPaidTier = plan?.paidTier === true
@@ -156,6 +166,53 @@ export function LocalCloudBillingTab() {
         </Card>
       )}
 
+      {!plan && (
+        <Card>
+          <CardContent className="p-4 gap-3">
+            <View className="flex-row items-center gap-2">
+              <Alert size={17} className="text-muted-foreground" />
+              <Text className="text-sm font-semibold text-foreground">
+                Couldn't load your Shogo Cloud plan
+              </Text>
+            </View>
+            <Text className="text-sm text-muted-foreground">
+              {summary.cloudKeyRejected
+                ? 'Plan and usage are unavailable until you mint a fresh API key.'
+                : loadErrorMessage ||
+                  'Plan and usage details are unavailable right now. You can still manage billing on the web.'}
+            </Text>
+            <Button variant="outline" onPress={() => void refreshBilling()}>
+              <Refresh size={14} className="text-foreground" />
+              <Text className="text-foreground font-medium">Retry</Text>
+            </Button>
+            {(summary.upgradeUrl || summary.manageUrl) && (
+              <>
+                <Separator />
+                <View className="flex-row items-center gap-2">
+                  <Button
+                    className="flex-1"
+                    disabled={!summary.upgradeUrl}
+                    onPress={() => openUrl(summary.upgradeUrl)}
+                  >
+                    <Text className="text-primary-foreground font-medium">Upgrade plan</Text>
+                  </Button>
+                  <Button
+                    variant="outline"
+                    className="flex-1"
+                    disabled={!summary.manageUrl}
+                    onPress={() => openUrl(summary.manageUrl)}
+                  >
+                    <External size={14} className="text-foreground" />
+                    <Text className="text-foreground font-medium">Manage on web</Text>
+                  </Button>
+                </View>
+              </>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      {plan && (
       <Card>
         <CardContent className="p-4 gap-3">
           <View className="flex-row items-center justify-between">
@@ -229,7 +286,9 @@ export function LocalCloudBillingTab() {
           </View>
         </CardContent>
       </Card>
+      )}
 
+      {plan && (
       <Card>
         <CardContent className="p-4 gap-3">
           <View className="flex-row items-center justify-between">
@@ -257,8 +316,9 @@ export function LocalCloudBillingTab() {
           )}
         </CardContent>
       </Card>
+      )}
 
-      {workspace?.id && (
+      {workspace?.id && plan && (
         <SetSpendLimitDialog
           visible={spendLimitOpen}
           onClose={() => setSpendLimitOpen(false)}
