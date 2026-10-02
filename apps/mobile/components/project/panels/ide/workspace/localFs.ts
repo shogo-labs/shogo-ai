@@ -1,4 +1,5 @@
 import { BINARY_FILE_EXTENSIONS } from "@shogo-ai/sdk/file-types";
+import { compareTreeNodes } from "./tree-sort";
 
 import type {
   SearchOptions,
@@ -235,9 +236,7 @@ export class LocalFs implements WorkspaceService {
         nodes.push({ name, path: childRel, kind: "file", language: langOf(name) });
       }
     }
-    nodes.sort((a, b) =>
-      a.kind !== b.kind ? (a.kind === "dir" ? -1 : 1) : a.name.localeCompare(b.name),
-    );
+    nodes.sort(compareTreeNodes);
     return nodes;
   }
 

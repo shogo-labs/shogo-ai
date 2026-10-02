@@ -12,6 +12,8 @@ export interface WsNode {
    * Backends that walk the whole tree up-front (LocalFs) leave this unset.
    */
   lazy?: boolean;
+  /** Matches the workspace .gitignore / .shogoignore — render dimmed (still openable). */
+  ignored?: boolean;
 }
 
 export interface WsFile {

@@ -13,6 +13,7 @@
 
 import { AgentClient, type FileNode, type WorkspaceEvent } from '@shogo-ai/sdk/agent'
 import { isBinaryFilePath } from '@shogo-ai/sdk/file-types'
+import { sortTree } from './tree-sort'
 import type {
   SearchOptions,
   SearchResponse,
@@ -68,9 +69,15 @@ function isTextLikely(path: string): boolean {
 
 function toWsNode(fn: FileNode): WsNode {
   if (fn.type !== 'directory') {
-    return { name: fn.name, path: fn.path, kind: 'file', language: languageFor(fn.path) }
+    return {
+      name: fn.name,
+      path: fn.path,
+      kind: 'file',
+      language: languageFor(fn.path),
+      ...(fn.ignored ? { ignored: true } : {}),
+    }
   }
-  const dir: WsNode = { name: fn.name, path: fn.path, kind: 'dir' }
+  const dir: WsNode = { name: fn.name, path: fn.path, kind: 'dir', ...(fn.ignored ? { ignored: true } : {}) }
   // Heavy dirs come back as `lazy: true` with no children — the IDE will
   // fetch them on expand via `sdkFs.listTree(path)`. Don't set `children`
   // here so the tree UI can distinguish "lazy, not yet loaded" from
@@ -144,7 +151,8 @@ export class SdkFs implements WorkspaceService {
    */
   async listTree(path?: string): Promise<WsNode[]> {
     const tree = await retry429(() => this.client.getWorkspaceTree(path))
-    return tree.map(toWsNode)
+    // The runtime sorts, but an older runtime returns raw readdir order.
+    return sortTree(tree.map(toWsNode))
   }
 
   async readFile(path: string): Promise<WsFile> {

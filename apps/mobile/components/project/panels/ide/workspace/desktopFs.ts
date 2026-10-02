@@ -31,6 +31,7 @@
 
 import type { FileNode } from '@shogo-ai/sdk/agent'
 import { SdkFs } from './sdkFs'
+import { sortTree } from './tree-sort'
 import type {
   SearchOptions,
   SearchResponse,
@@ -63,6 +64,7 @@ export interface DesktopFsBridge {
       size?: number
       children?: unknown
       lazy?: boolean
+      ignored?: boolean
     }>
     error?: string
   }>
@@ -148,9 +150,15 @@ function languageFor(path: string): string {
 
 function toWsNode(fn: NonNullable<Awaited<ReturnType<DesktopFsBridge['listTree']>>['tree']>[number]): WsNode {
   if (fn.type !== 'directory') {
-    return { name: fn.name, path: fn.path, kind: 'file', language: languageFor(fn.path) }
+    return {
+      name: fn.name,
+      path: fn.path,
+      kind: 'file',
+      language: languageFor(fn.path),
+      ...(fn.ignored ? { ignored: true } : {}),
+    }
   }
-  const dir: WsNode = { name: fn.name, path: fn.path, kind: 'dir' }
+  const dir: WsNode = { name: fn.name, path: fn.path, kind: 'dir', ...(fn.ignored ? { ignored: true } : {}) }
   if (fn.lazy) {
     dir.lazy = true
   } else if (Array.isArray(fn.children)) {
@@ -188,7 +196,7 @@ export class DesktopFs implements WorkspaceService {
       // proper error to the FileTree's error UI.
       return this.sdkFs.listTree(path)
     }
-    return (res.tree ?? []).map(toWsNode)
+    return sortTree((res.tree ?? []).map(toWsNode))
   }
 
   async readFile(path: string): Promise<WsFile> {
