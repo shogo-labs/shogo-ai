@@ -13,6 +13,7 @@ import type { ToolContext } from './gateway-tools'
 import { textResult } from './gateway-tools'
 import { resolveRuntimeIdentity } from './workspace-runtime-mode'
 import {
+  getMemberActivity,
   getTeamDirectory,
   listAgentChannels,
   postAgentChannelMessage,
@@ -54,6 +55,7 @@ export const CHANNEL_TOOL_NAMES = [
   'team_chat_search',
   'team_chat_dm',
   'team_directory',
+  'member_activity',
 ] as const
 
 /** True when this runtime registers the team chat tools (non-personal workspace runtimes). */
@@ -71,6 +73,7 @@ export const TEAM_CHAT_GUIDE = [
   '- Tag people only when you need a decision or approval from them, and ask one clear question.',
   '- Keep messages to a few sentences, not paragraphs. Put long content (plans, logs, diffs) in files or links and reference them.',
   '- Use `team_chat_dm` to escalate something urgent to one person instead of tagging a whole channel.',
+  '- Asked what a teammate worked on ("what did Sam do today?")? Use `member_activity`. Only owners and admins may ask; if the API refuses, say so plainly and do not guess from channel history. Answer only the person who asked, in the conversation where they asked. Never post someone\'s activity summary into a channel.',
   '- Respect Do Not Disturb: when someone is away, leave the question in the thread rather than pinging them repeatedly.',
   '- Starting a new piece of work? Post a top-level message with `team_chat_post` (pass `run_id` if you track one); you own that thread and unaddressed replies there come to you.',
   '',
@@ -286,6 +289,50 @@ export function createTeamDirectoryTool(ctx: ToolContext): AgentTool {
   }
 }
 
+export function createMemberActivityTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'member_activity',
+    label: 'Teammate Activity',
+    description:
+      'Summarise what one teammate did: approvals they decided, tasks they started or finished, messages they sent, ' +
+      'meetings, the tools they used and when they were active. Use it to answer "what did Sam work on today?". ' +
+      'Owners and admins only; for anyone else the API refuses. The answer is private to the person asking, so reply ' +
+      'to them directly and never post it to a channel. Default window is today in the given timezone.',
+    parameters: Type.Object({
+      user: Type.String({ description: 'The teammate: their email, or a user id from team_directory.' }),
+      range: Type.Optional(Type.Union(
+        [Type.Literal('today'), Type.Literal('yesterday'), Type.Literal('7d'), Type.Literal('30d')],
+        { description: 'Which window to look at. Default today.' },
+      )),
+      since: Type.Optional(Type.String({ description: 'ISO start time. Overrides range.' })),
+      until: Type.Optional(Type.String({ description: 'ISO end time. Defaults to now.' })),
+      timezone: Type.Optional(Type.String({ description: 'IANA timezone that defines "today", e.g. America/Los_Angeles. Default UTC.' })),
+    }),
+    execute: async (_id, params: any) => {
+      const workspaceId = workspaceIdOf(ctx)
+      if (!workspaceId) return noWorkspace()
+      const user = typeof params?.user === 'string' ? params.user.trim() : ''
+      if (!user) return textResult({ error: 'user is required (an email or user id).', code: 'invalid_input' })
+      // Who is asking comes from the authenticated chat request, so the model can't pose as an admin.
+      if (!ctx.userId) {
+        return textResult({
+          error: 'This run has no signed-in person behind it (for example a scheduled or agent-to-agent run), so teammate activity cannot be looked up.',
+          code: 'no_requesting_user',
+        })
+      }
+      const result = await getMemberActivity(workspaceId, {
+        user,
+        requestedBy: ctx.userId,
+        range: params.range,
+        since: params.since,
+        until: params.until,
+        timezone: params.timezone,
+      })
+      return result.ok ? textResult({ ok: true, activity: result.data }) : apiError(result, 'Could not load teammate activity')
+    },
+  }
+}
+
 export function createChannelTools(ctx: ToolContext): AgentTool[] {
   return [
     createChannelListTool(ctx),
@@ -295,5 +342,6 @@ export function createChannelTools(ctx: ToolContext): AgentTool[] {
     createChannelSearchTool(ctx),
     createDmUserTool(ctx),
     createTeamDirectoryTool(ctx),
+    createMemberActivityTool(ctx),
   ]
 }

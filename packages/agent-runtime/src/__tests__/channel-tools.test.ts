@@ -161,6 +161,43 @@ describe('channel tools call the internal agent-channel API', () => {
     expect(new URL(calls[0].url).pathname).toBe('/api/internal/workspaces/ws-1/agent-channels/directory')
   })
 
+  test('member_activity asks the API as the signed-in user, never as someone the model names', async () => {
+    reply = { activity: { user: { userId: 'u2', name: 'Sam' }, totals: { approvalsDecided: 4 } } }
+    const out = payload(await tool('member_activity', ctx({ userId: 'admin-1' })).execute('t', {
+      user: 'sam@example.com',
+      range: 'yesterday',
+      timezone: 'America/Los_Angeles',
+      requestedBy: 'someone-else', // not part of the schema; must be ignored
+    }))
+    expect(out.activity.totals.approvalsDecided).toBe(4)
+    const url = new URL(calls[0].url)
+    expect(url.pathname).toBe('/api/internal/workspaces/ws-1/member-activity')
+    expect(url.searchParams.get('user')).toBe('sam@example.com')
+    expect(url.searchParams.get('requestedBy')).toBe('admin-1')
+    expect(url.searchParams.get('range')).toBe('yesterday')
+    expect(url.searchParams.get('tz')).toBe('America/Los_Angeles')
+  })
+
+  test('member_activity fails closed without a signed-in user, and passes API refusals through', async () => {
+    const none = payload(await tool('member_activity', ctx()).execute('t', { user: 'sam@example.com' }))
+    expect(none.code).toBe('no_requesting_user')
+    expect(calls).toHaveLength(0)
+
+    const blank = payload(await tool('member_activity', ctx({ userId: 'u1' })).execute('t', { user: '  ' }))
+    expect(blank.code).toBe('invalid_input')
+
+    status = 403
+    reply = { error: { code: 'forbidden', message: 'Only workspace owners and admins can look up what a teammate worked on' } }
+    const refused = payload(await tool('member_activity', ctx({ userId: 'u1' })).execute('t', { user: 'sam@example.com' }))
+    expect(refused.status).toBe(403)
+    expect(refused.error).toContain('owners and admins')
+  })
+
+  test('the guide tells the agent to keep teammate activity private', () => {
+    expect(TEAM_CHAT_GUIDE).toContain('member_activity')
+    expect(TEAM_CHAT_GUIDE).toContain('Never post')
+  })
+
   test('team_chat_dm and team_chat_search', async () => {
     reply = { message: { id: 'm3', conversationId: 'dm1' } }
     await tool('team_chat_dm', ctx({ sessionId: 'sess-2' })).execute('t', { user: 'ana@example.com', text: 'Approve?' })

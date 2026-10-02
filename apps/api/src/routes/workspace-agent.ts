@@ -22,6 +22,7 @@ import { Hono } from 'hono'
 import { hasWorkspaceAccess } from '../services/workspace.service'
 import { ConversationError, resolveNotifyConversation, resolveNotifyThread } from '../services/conversation.service'
 import { listActiveChatTurns } from '../services/chat-turn-state.service'
+import { findWorkspaceMember, getMemberWorkActivity } from '../services/engagement-analytics.service'
 import {
   AgentScheduleError,
   createSchedule,
@@ -29,14 +30,6 @@ import {
   getSchedule,
   listSchedules,
   runScheduleNow,
-  updateSchedule,
-} from '../services/agent-schedule.service'
-import {
-  AgentScheduleError,
-  createSchedule,
-  deleteSchedule,
-  getSchedule,
-  listSchedules,
   updateSchedule,
 } from '../services/agent-schedule.service'
 import {
@@ -453,6 +446,7 @@ export function workspaceAgentRoutes(config: WorkspaceAgentRoutesConfig): Hono {
       c.req.param('goalId'),
       c.req.param('eventId'),
       decision as GoalApprovalDecision,
+      auth.userId,
     )
     if (!event) {
       return c.json({ error: { code: 'not_found', message: 'Pending approval not found' } }, 404)
@@ -466,6 +460,44 @@ export function workspaceAgentRoutes(config: WorkspaceAgentRoutesConfig): Hono {
     const parsedLimit = Number(c.req.query('limit') || 100)
     const limit = Number.isFinite(parsedLimit) ? Math.min(Math.max(Math.trunc(parsedLimit), 1), 200) : 100
     return c.json({ activity: await listWorkspaceActivity(auth.workspaceId, limit) })
+  })
+
+  // "What did PERSON work on today?" Owners and admins only. Backs the
+  // workspace agent's `member_activity` tool. For a signed-in session the actor
+  // is always the session user. Internal (runtime) callers have no session, so
+  // they name the person asking in `requestedBy`; that id comes from the chat
+  // request's authenticated user, never from model-supplied input.
+  router.get('/workspaces/:workspaceId/member-activity', async (c) => {
+    const auth = await authorize(c)
+    if (auth instanceof Response) return auth
+
+    const actor = auth.userId || c.req.query('requestedBy')?.trim() || null
+    if (!actor) {
+      return c.json({
+        error: { code: 'invalid_request', message: 'requestedBy is required for an internal request' },
+      }, 400)
+    }
+    if (!(await hasWorkspaceAccess(auth.workspaceId, actor, ['owner', 'admin']))) {
+      return forbidden(c, 'Only workspace owners and admins can look up what a teammate worked on')
+    }
+
+    const target = c.req.query('user')?.trim()
+    if (!target) {
+      return c.json({ error: { code: 'invalid_request', message: 'user (email or user id) is required' } }, 400)
+    }
+    const member = await findWorkspaceMember(auth.workspaceId, target)
+    if (!member) {
+      return c.json({ error: { code: 'not_found', message: `No workspace member matches "${target}"` } }, 404)
+    }
+
+    console.info(`[MemberActivity] ${actor} viewed ${member.userId} in workspace ${auth.workspaceId}`)
+    const data = await getMemberWorkActivity(auth.workspaceId, member, {
+      range: c.req.query('range'),
+      since: c.req.query('since'),
+      until: c.req.query('until'),
+      tz: c.req.query('tz'),
+    })
+    return c.json({ activity: data })
   })
 
   router.get('/workspaces/:workspaceId/active-chats', async (c) => {

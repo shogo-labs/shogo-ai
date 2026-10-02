@@ -16,6 +16,8 @@ import { authMiddleware, requireAuth } from '../middleware/auth'
 import { isBusinessOrHigherPlan } from '../services/billing.service'
 import * as analytics from '../services/analytics.service'
 import type { AnalyticsPeriod } from '../services/analytics.service'
+import * as engagement from '../services/engagement-analytics.service'
+import type { EngagementPeriod } from '../services/engagement-analytics.service'
 
 // ============================================================================
 // Helpers
@@ -65,6 +67,14 @@ async function checkProjectAccess(userId: string, projectId: string): Promise<st
     where: { userId, workspaceId: project.workspaceId },
   })
   return member ? project.workspaceId : null
+}
+
+const ENGAGEMENT_PERIODS = new Set(['1d', '7d', '30d', '90d', '1y', 'mtd', 'last_month', 'all'])
+
+/** Reads `?period=` for the engagement endpoints, falling back to 30d on anything unknown. */
+function parseEngagementPeriod(url: URL): EngagementPeriod {
+  const raw = url.searchParams.get('period') || '30d'
+  return (ENGAGEMENT_PERIODS.has(raw) ? raw : '30d') as EngagementPeriod
 }
 
 // ============================================================================
@@ -292,6 +302,36 @@ export function scopedAnalyticsRoutes(): Hono {
     }
   })
 
+  // Z Code-style dashboard (streaks, heatmap, peak hour, model share) plus work
+  // activity. Members always see themselves; owners/admins may pick any member,
+  // or omit `userId` for the whole workspace. Available on every plan.
+  router.get('/workspaces/:workspaceId/analytics/engagement', async (c) => {
+    try {
+      const workspaceId = c.req.param('workspaceId')
+      const auth = c.get('auth')
+      const access = await checkWorkspaceAnalyticsAccess(auth.userId!, workspaceId)
+      if (!access) {
+        return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
+      }
+
+      const url = new URL(c.req.url)
+      const requestedUserId = url.searchParams.get('userId') || undefined
+      const isAdmin = isWorkspaceAdminRole(access.role)
+      if (!isAdmin && requestedUserId && requestedUserId !== auth.userId) {
+        return c.json({ error: { code: 'forbidden', message: 'Members can only view their own activity' } }, 403)
+      }
+
+      const data = await engagement.getEngagementStats(
+        { workspaceId, userId: isAdmin ? requestedUserId : auth.userId! },
+        parseEngagementPeriod(url),
+        url.searchParams.get('tz'),
+      )
+      return c.json({ ok: true, data })
+    } catch (error: any) {
+      return c.json({ error: { code: 'analytics_failed', message: error.message } }, 500)
+    }
+  })
+
   // --------------------------------------------------------------------------
   // Workspace Analytics — Advanced (Business plan or higher required)
   // --------------------------------------------------------------------------
@@ -470,6 +510,28 @@ export function scopedAnalyticsRoutes(): Hono {
     }
   })
 
+  // One row per member: approvals, tasks done, lines changed, messages, tokens,
+  // active days, streak. Owners/admins only, and Business plan or higher.
+  router.get('/workspaces/:workspaceId/analytics/team-work', requireBusinessPlan, async (c) => {
+    try {
+      const workspaceId = c.req.param('workspaceId')
+      const auth = c.get('auth')
+      const access = await checkWorkspaceAnalyticsAccess(auth.userId!, workspaceId)
+      if (!access) {
+        return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
+      }
+      if (!isWorkspaceAdminRole(access.role)) {
+        return c.json({ error: { code: 'forbidden', message: 'Only workspace owners and admins can view team activity' } }, 403)
+      }
+
+      const url = new URL(c.req.url)
+      const data = await engagement.getTeamWork(workspaceId, parseEngagementPeriod(url), url.searchParams.get('tz'))
+      return c.json({ ok: true, data })
+    } catch (error: any) {
+      return c.json({ error: { code: 'analytics_failed', message: error.message } }, 500)
+    }
+  })
+
   // --------------------------------------------------------------------------
   // Project Analytics
   // --------------------------------------------------------------------------
@@ -563,6 +625,22 @@ export function scopedAnalyticsRoutes(): Hono {
       const period = (new URL(c.req.url).searchParams.get('period') || '30d') as AnalyticsPeriod
 
       const data = await analytics.getUsageSummary({ userId: auth.userId! }, period, { limit: 500 })
+      return c.json({ ok: true, data })
+    } catch (error: any) {
+      return c.json({ error: { code: 'analytics_failed', message: error.message } }, 500)
+    }
+  })
+
+  router.get('/me/analytics/engagement', async (c) => {
+    try {
+      const auth = c.get('auth')
+      const url = new URL(c.req.url)
+      // Spans every workspace the person belongs to; only ever their own rows.
+      const data = await engagement.getEngagementStats(
+        { userId: auth.userId! },
+        parseEngagementPeriod(url),
+        url.searchParams.get('tz'),
+      )
       return c.json({ ok: true, data })
     } catch (error: any) {
       return c.json({ error: { code: 'analytics_failed', message: error.message } }, 500)

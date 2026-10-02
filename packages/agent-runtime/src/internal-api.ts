@@ -1004,6 +1004,33 @@ export async function getTeamDirectory(workspaceId: string): Promise<CheckpointC
   })
 }
 
+export interface MemberActivityQuery {
+  /** Email or user id of the teammate. */
+  user: string
+  /** The person asking. Taken from the authenticated chat request, never from the model. */
+  requestedBy: string
+  range?: string
+  since?: string
+  until?: string
+  timezone?: string
+}
+
+/** Admin-only summary of what one teammate did in a window; the API enforces who may ask. */
+export async function getMemberActivity(
+  workspaceId: string,
+  query: MemberActivityQuery,
+): Promise<CheckpointCallResult<Record<string, unknown>>> {
+  const params = new URLSearchParams({ user: query.user, requestedBy: query.requestedBy })
+  if (query.range) params.set('range', query.range)
+  if (query.since) params.set('since', query.since)
+  if (query.until) params.set('until', query.until)
+  if (query.timezone) params.set('tz', query.timezone)
+  return personalFetch(`/api/internal/workspaces/${encodeURIComponent(workspaceId)}/member-activity?${params}`, {
+    method: 'GET',
+    parse: (j) => (j?.activity ?? {}) as Record<string, unknown>,
+  })
+}
+
 export async function searchAgentChannels(
   workspaceId: string,
   query: string,
