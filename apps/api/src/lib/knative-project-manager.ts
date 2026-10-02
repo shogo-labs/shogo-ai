@@ -1755,7 +1755,7 @@ export class KnativeProjectManager {
   async createPublishedServerService(
     projectId: string,
     subdomain: string,
-    opts?: { minScale?: number },
+    opts?: { minScale?: number; sourceTag?: string },
   ): Promise<string> {
     const serviceName = `published-${projectId}`
     const api = getCustomApi()
@@ -1773,6 +1773,7 @@ export class KnativeProjectManager {
       // Published-mode switches: run server.tsx, no agent gateway.
       { name: "SHOGO_PUBLISHED_MODE", value: "true" },
       { name: "PUBLISHED_SUBDOMAIN", value: subdomain },
+      ...(opts?.sourceTag ? [{ name: "PUBLISHED_SOURCE_TAG", value: opts.sourceTag }] : []),
       { name: "PUBLISH_DOMAIN", value: publishDomain },
       { name: "PUBLIC_PREVIEW_URL", value: `https://${subdomain}.${publishDomain}` },
       // Source is restored from the durable git repo (carries the published

@@ -40,7 +40,7 @@ export class ProjectNotFoundError extends Error {
  */
 export async function buildProjectEnv(
   projectId: string,
-  opts?: { logPrefix?: string; forMetal?: boolean },
+  opts?: { logPrefix?: string; forMetal?: boolean; includePublishedTag?: boolean },
 ): Promise<Record<string, string>> {
   const prefix = opts?.logPrefix ?? 'buildProjectEnv'
   const startTime = Date.now()
@@ -59,6 +59,7 @@ export async function buildProjectEnv(
         name: true,
         settings: true,
         cloudSyncMode: true,
+        publishedTag: true,
         workspace: { select: { composioScope: true, instanceSize: true } },
       } as any,
     }) as (Record<string, any> & {
@@ -84,6 +85,13 @@ export async function buildProjectEnv(
       // `agent-runtime/src/server.ts`.
       if (project.cloudSyncMode) {
         env.SHOGO_CLOUD_SYNC_MODE = project.cloudSyncMode
+      }
+
+      // A published runtime may be resumed long after the publish request that
+      // created it. Carry the persisted immutable release tag into that wake so
+      // it never falls back to mutable HEAD or a stale stable pointer.
+      if (opts?.includePublishedTag && typeof project.publishedTag === 'string' && project.publishedTag) {
+        env.PUBLISHED_SOURCE_TAG = project.publishedTag
       }
 
       // Metal guests hold no S3 credentials by design. The durable `.git`
@@ -430,13 +438,19 @@ export async function buildProjectEnv(
 export async function buildPublishedProjectEnv(
   projectId: string,
   subdomain: string,
-  opts?: { alwaysOn?: boolean },
+  opts?: { alwaysOn?: boolean; sourceTag?: string },
 ): Promise<Record<string, string>> {
-  const env = await buildProjectEnv(projectId, { logPrefix: 'buildPublishedProjectEnv', forMetal: true })
+  const env = await buildProjectEnv(projectId, {
+    logPrefix: 'buildPublishedProjectEnv',
+    forMetal: true,
+    includePublishedTag: true,
+  })
   const publishDomain = process.env.PUBLISH_DOMAIN || 'shogo.one'
 
   env.SHOGO_PUBLISHED_MODE = 'true'
   env.PUBLISHED_SUBDOMAIN = subdomain
+  if (opts?.sourceTag) env.PUBLISHED_SOURCE_TAG = opts.sourceTag
+  else if (!env.PUBLISHED_SOURCE_TAG) delete env.PUBLISHED_SOURCE_TAG
   env.PUBLISH_DOMAIN = publishDomain
   env.PUBLIC_PREVIEW_URL = `https://${subdomain}.${publishDomain}`
   // Source is restored read-only from the durable git repo (carries the

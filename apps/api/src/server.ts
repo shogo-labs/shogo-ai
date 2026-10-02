@@ -1901,7 +1901,7 @@ app.get('/api/published/:subdomain/wake', async (c) => {
   try {
     const project = await prisma.project.findUnique({
       where: { publishedSubdomain: subdomain },
-      select: { id: true, publishedAlwaysOn: true },
+      select: { id: true, publishedAlwaysOn: true, publishedTag: true },
     })
     if (!project) {
       return c.json({ ready: false, error: 'not_found' }, 404, WAKE_RESPONSE_HEADERS)
@@ -1925,6 +1925,7 @@ app.get('/api/published/:subdomain/wake', async (c) => {
       if (substrate.kind === 'metal') {
         const { ready } = await substrate.wakePublished(project.id, subdomain, {
           alwaysOn: project.publishedAlwaysOn,
+          sourceTag: project.publishedTag ?? undefined,
         })
         return c.json({ ready }, 200, WAKE_RESPONSE_HEADERS)
       }

@@ -432,7 +432,7 @@ type EnvBuilder = (
 type PublishedEnvBuilder = (
   projectId: string,
   subdomain: string,
-  opts?: { alwaysOn?: boolean },
+  opts?: { alwaysOn?: boolean; sourceTag?: string },
 ) => Promise<Record<string, string>>
 type FetchImpl = typeof fetch
 
@@ -1233,7 +1233,7 @@ export class MetalWarmPoolController {
   async getMetalPublishedUrl(
     projectId: string,
     subdomain: string,
-    opts?: { alwaysOn?: boolean },
+    opts?: { alwaysOn?: boolean; sourceTag?: string },
   ): Promise<{ url: string; hostId?: string; region?: string }> {
     const key = publishedRuntimeKey(projectId)
     const url = await this.resolveRuntime(key, () => this.publishedEnvBuilder(projectId, subdomain, opts))
@@ -1472,7 +1472,7 @@ export async function listMetalProjects() {
 export async function getMetalPublishedUrl(
   projectId: string,
   subdomain: string,
-  opts?: { alwaysOn?: boolean },
+  opts?: { alwaysOn?: boolean; sourceTag?: string },
 ) {
   return getMetalWarmPoolController().getMetalPublishedUrl(projectId, subdomain, opts)
 }

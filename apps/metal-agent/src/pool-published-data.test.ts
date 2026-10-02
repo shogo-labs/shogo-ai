@@ -20,7 +20,7 @@ import { mkdtempSync, mkdirSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { config } from './config'
-import { MetalWarmPool, type AssignedVm } from './pool'
+import { durableProjectIdForAssignment, MetalWarmPool, type AssignedVm } from './pool'
 import type { FirecrackerVMManager } from './firecracker-vm-manager'
 import type { SnapshotStore } from './snapshot-store'
 
@@ -135,5 +135,22 @@ describe('pool published-data durability (host-side export)', () => {
     const n = await pool.exportAllPublishedData()
     expect(n).toBe(2)
     expect(pool.uploads.map((u) => u.subdomain).sort()).toEqual(['site-a', 'site-b'])
+  })
+
+  test('keeps the published runtime identity out of durable source keys', () => {
+    expect(durableProjectIdForAssignment('published:project-1', {
+      SHOGO_PUBLISHED_MODE: 'true',
+      PUBLISHED_SUBDOMAIN: 'site-a',
+      PROJECT_ID: 'project-1',
+    })).toBe('project-1')
+
+    // Compatibility with hosts that did not send the real project id in the
+    // assignment env: strip only the runtime marker, never invent a prefix.
+    expect(durableProjectIdForAssignment('published:project-2', {
+      SHOGO_PUBLISHED_MODE: '1',
+      PUBLISHED_SUBDOMAIN: 'site-b',
+    })).toBe('project-2')
+
+    expect(durableProjectIdForAssignment('project-3', {})).toBe('project-3')
   })
 })

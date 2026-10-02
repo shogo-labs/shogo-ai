@@ -261,8 +261,22 @@ const POOL_PRESEED_WAIT_MS = 15_000
  * `PublishedDataSync`. The agent gateway / loop and all editing surfaces stay
  * OFF — published pods never run the agent. See `initializePublished()`.
  */
-const IS_PUBLISHED_MODE = process.env.SHOGO_PUBLISHED_MODE === 'true'
-const PUBLISHED_SUBDOMAIN = process.env.PUBLISHED_SUBDOMAIN || ''
+// Warm-pool guests boot from a generic image and learn whether they are a
+// published runtime during /pool/assign. Keep these mutable for that
+// assignment-time transition; a module-load snapshot leaves published guests
+// on the agent initialization path forever.
+let IS_PUBLISHED_MODE = process.env.SHOGO_PUBLISHED_MODE === 'true'
+let PUBLISHED_SUBDOMAIN = process.env.PUBLISHED_SUBDOMAIN || ''
+let publishedStartupPhase: 'unassigned' | 'awaiting-hydration' | 'starting' | 'ready' | 'failed' =
+  IS_PUBLISHED_MODE ? 'starting' : 'unassigned'
+let publishedStartupError: string | null = null
+let publishedActivationPromise: Promise<void> | null = null
+let publishedReadinessPromise: Promise<void> | null = null
+let publishedAssignmentGeneration = 0
+const PUBLISHED_STARTUP_TIMEOUT_MS = Math.max(
+  5_000,
+  Number.parseInt(process.env.PUBLISHED_STARTUP_TIMEOUT_MS || '55_000', 10) || 55_000,
+)
 
 /**
  * The list of host folders the agent is allowed to read/write inside,
@@ -627,6 +641,45 @@ const { app, state, logTiming } = await createRuntimeApp({
   internalPaths: ['/agent/heartbeat/trigger'],
   authPrefixes: ['/agent', '/pool', '/diagnostics', '/terminal'],
   async onAssign(projectId, envVars) {
+    publishedAssignmentGeneration++
+    // A warm-pool guest is deliberately assigned before the host has copied
+    // the selected project's source and writable state into the workspace.
+    // Published guests must therefore remain inert here: running the normal
+    // essentials path would try to hydrate S3, bootstrap git, and start the
+    // agent gateway before host hydration. In production that used to block
+    // on the AWS credential provider chain because published guests have no
+    // object-store credentials.
+    const publishedAssignment =
+      envVars.SHOGO_PUBLISHED_MODE === 'true' || envVars.SHOGO_PUBLISHED_MODE === '1'
+    if (publishedAssignment) {
+      IS_PUBLISHED_MODE = true
+      PUBLISHED_SUBDOMAIN = envVars.PUBLISHED_SUBDOMAIN || ''
+      if (envVars.PUBLISHED_SOURCE_TAG) process.env.PUBLISHED_SOURCE_TAG = envVars.PUBLISHED_SOURCE_TAG
+      else delete process.env.PUBLISHED_SOURCE_TAG
+      publishedStartupPhase = 'awaiting-hydration'
+      publishedStartupError = null
+      publishedActivationPromise = null
+      publishedReadinessPromise = null
+      publishedDataSyncInstance = null
+      console.log(
+        `[agent-runtime] Published assignment accepted for ${PUBLISHED_SUBDOMAIN || '(unknown subdomain)'}; ` +
+          'deferring storage hydration and application startup to the host',
+      )
+    } else {
+      // A reused warm-pool process can be assigned to a normal project after a
+      // failed published assignment. Restore the mode flags before the normal
+      // initialization path runs.
+      IS_PUBLISHED_MODE = false
+      PUBLISHED_SUBDOMAIN = ''
+      publishedStartupPhase = 'unassigned'
+      publishedStartupError = null
+      publishedActivationPromise = null
+      publishedReadinessPromise = null
+      delete process.env.SHOGO_PUBLISHED_MODE
+      delete process.env.PUBLISHED_SUBDOMAIN
+      delete process.env.PUBLISHED_SOURCE_TAG
+    }
+
     const hostWorkspacesRoot = envVars.SHOGO_HOST_WORKSPACES_ROOT || '/host-workspaces'
     const assignedWorkspaceDir = envVars.WORKSPACE_DIR || envVars.PROJECT_DIR
     const sentinelPath = POOL_SENTINEL_PATH
@@ -833,6 +886,14 @@ const { app, state, logTiming } = await createRuntimeApp({
           mkdirSync(dirPath, { recursive: true })
         }
       }
+    }
+
+    if (publishedAssignment) {
+      // The host owns source, git, and published writable-data hydration for
+      // Metal guests. Keep the guest unready until the host calls
+      // /pool/published-ready after all overlays have been applied.
+      ensureWorkspaceFiles()
+      return
     }
 
     // Run essential initialization (workspace files, S3 sync, config)
@@ -5571,6 +5632,70 @@ app.post('/agent/published-data/suspend', (c) => {
 })
 
 /**
+ * Status for the host while it is assigning a published Metal guest. This is
+ * authenticated after /pool/assign, and intentionally returns only phase and
+ * bounded error text so a failed guest can be diagnosed without shipping
+ * credentials or arbitrary serial output through the control plane.
+ */
+app.get('/pool/startup-status', (c) => {
+  return c.json({
+    published: IS_PUBLISHED_MODE,
+    phase: publishedStartupPhase,
+    error: publishedStartupError,
+    projectId: process.env.PROJECT_ID || state.currentProjectId,
+    subdomain: PUBLISHED_SUBDOMAIN || null,
+    poolAssigned: state.poolAssigned,
+  })
+})
+
+/**
+ * Complete host-managed published startup after the source and writable-data
+ * archives have been applied. The endpoint is runtime-token authenticated by
+ * createRuntimeApp's /pool middleware and is idempotent for retries.
+ */
+app.post('/pool/published-ready', async (c) => {
+  if (!IS_PUBLISHED_MODE) {
+    return c.json({ error: 'not_published_mode' }, 400)
+  }
+
+  let body: { projectId?: unknown; subdomain?: unknown } = {}
+  try {
+    body = await c.req.json()
+  } catch {
+    // An empty body is valid for compatibility with older hosts; the runtime
+    // still validates any identity fields that are present.
+  }
+
+  const expectedProjectId = process.env.PROJECT_ID
+  if (typeof body.projectId === 'string' && expectedProjectId && body.projectId !== expectedProjectId) {
+    return c.json({ error: 'projectId mismatch' }, 409)
+  }
+  if (typeof body.subdomain === 'string' && PUBLISHED_SUBDOMAIN && body.subdomain !== PUBLISHED_SUBDOMAIN) {
+    return c.json({ error: 'subdomain mismatch' }, 409)
+  }
+
+  try {
+    await activatePublishedAfterHostHydrate()
+    return c.json({
+      ok: true,
+      phase: publishedStartupPhase,
+      projectId: expectedProjectId || state.currentProjectId,
+      subdomain: PUBLISHED_SUBDOMAIN || null,
+    })
+  } catch (err: any) {
+    console.error('[agent-runtime] Published activation failed:', err?.message ?? err)
+    return c.json(
+      {
+        ok: false,
+        phase: publishedStartupPhase,
+        error: publishedStartupError || 'published_activation_failed',
+      },
+      500,
+    )
+  }
+})
+
+/**
  * Whitespace-insensitive fingerprint of `prisma/schema.prisma`, used by the
  * publish flow to detect dev<->published schema drift before pushing the dev
  * database onto the live app (pushing a newer-schema DB onto older published
@@ -5650,10 +5775,12 @@ app.post('/agent/git-flush', async (c) => {
   // Legacy single-tag fields (`tag`/`tagMessage`) are still accepted; the
   // publish flow now sends `tags[]` (timestamped history + stable
   // `published/<subdomain>` pointer) and `deleteTags[]` (old pointer cleanup
-  // on subdomain change / unpublish).
+  // on subdomain change / unpublish). A tag may also name an existing `ref`
+  // so the stable pointer can be advanced to the immutable release tag rather
+  // than whatever mutable HEAD happens to be present during provisioning.
   let tag: string | undefined
   let tagMessage: string | undefined
-  let tags: Array<{ name: string; message?: string; force?: boolean }> = []
+  let tags: Array<{ name: string; message?: string; force?: boolean; ref?: string }> = []
   let deleteTags: string[] = []
   try {
     const body = await c.req.json().catch(() => ({}))
@@ -5666,6 +5793,7 @@ app.post('/agent/git-flush', async (c) => {
           name: t.name as string,
           message: typeof t.message === 'string' ? t.message : undefined,
           force: t.force === true,
+          ref: typeof t.ref === 'string' ? t.ref : undefined,
         }))
     }
     if (Array.isArray(body?.deleteTags)) {
@@ -5695,7 +5823,11 @@ app.post('/agent/git-flush', async (c) => {
     }
     let taggedSha: string | null = null
     for (const t of tags) {
-      taggedSha = await createTagLocal(WORKSPACE_DIR, t.name, { message: t.message, force: t.force })
+      taggedSha = await createTagLocal(WORKSPACE_DIR, t.name, {
+        message: t.message,
+        force: t.force,
+        ref: t.ref,
+      })
       didTagOp = true
     }
     if (didTagOp) {
@@ -6008,10 +6140,11 @@ async function initializeEssentials(): Promise<void> {
   }
 
   let workspaceNewProjectIds: string[] = []
-  if (IS_WORKSPACE_RUNTIME && isHostMediatedDurability()) {
+  if (isHostMediatedDurability() && (IS_WORKSPACE_RUNTIME || IS_PUBLISHED_MODE)) {
     // Metal guests hold no object-store credentials; the host hydrates each
-    // member into `<WORKSPACE_DIR>/<id>/` after assign and exports on evict.
-    logTiming('Workspace S3 hydration skipped: host-mediated durability')
+    // member/project after assign and exports on evict. Published guests are
+    // single-project runtimes, so they must take the same host-mediated path.
+    logTiming(`${IS_PUBLISHED_MODE ? 'Published' : 'Workspace'} S3 hydration skipped: host-mediated durability`)
   } else if (!skipInternalSync && IS_WORKSPACE_RUNTIME && (process.env.S3_WORKSPACES_BUCKET || process.env.S3_BUCKET)) {
     // Workspace runtime: each attached project is stored under its own S3
     // prefix and lives in its own `<WORKSPACE_DIR>/<id>/` subfolder. A single
@@ -6629,18 +6762,22 @@ async function initialize(): Promise<void> {
  * Detached-HEAD is fine — published pods never commit. Falls back silently to
  * the restored HEAD when the tag is missing (e.g. legacy repos).
  */
-async function checkoutPublishedTag(subdomain: string): Promise<void> {
-  if (!subdomain) return
+async function checkoutPublishedTag(subdomain: string, sourceTag = ''): Promise<void> {
+  const explicitTag = /^(?:publish|published)\/[0-9A-Za-z._/-]{1,199}$/.test(sourceTag)
+    ? sourceTag
+    : ''
+  const tag = explicitTag || (subdomain ? `published/${subdomain}` : '')
+  if (!tag) return
   const { execFile } = await import('child_process')
   await new Promise<void>((resolve) => {
     execFile(
       'git',
-      ['-C', WORKSPACE_DIR, 'checkout', '--quiet', `published/${subdomain}`],
+      ['-C', WORKSPACE_DIR, 'checkout', '--quiet', tag],
       (err) => {
         if (err) {
-          console.warn(`[agent-runtime] published-mode: could not checkout published/${subdomain} (using HEAD): ${err.message}`)
+          console.warn(`[agent-runtime] published-mode: could not checkout ${tag} (using HEAD): ${err.message}`)
         } else {
-          logTiming(`Published source pinned to tag published/${subdomain}`)
+          logTiming(`Published source pinned to tag ${tag}`)
         }
         resolve()
       },
@@ -6655,6 +6792,8 @@ async function checkoutPublishedTag(subdomain: string): Promise<void> {
  * uploader. The agent gateway is deliberately NOT started.
  */
 async function initializePublished(): Promise<void> {
+  publishedStartupPhase = 'starting'
+  publishedStartupError = null
   logTiming(`Published mode: initializing for subdomain=${PUBLISHED_SUBDOMAIN}`)
 
   // 1. Seed template files (idempotent) so a brand-new emptyDir has the base
@@ -6672,7 +6811,7 @@ async function initializePublished(): Promise<void> {
       const res = await restoreRepoFromStore(WORKSPACE_DIR, repoCfg)
       hydrated = res.restored
       if (hydrated) {
-        await checkoutPublishedTag(PUBLISHED_SUBDOMAIN)
+        await checkoutPublishedTag(PUBLISHED_SUBDOMAIN, process.env.PUBLISHED_SOURCE_TAG)
         logTiming('Published mode: source restored from git repo store')
       }
     } catch (err: any) {
@@ -6699,26 +6838,104 @@ async function initializePublished(): Promise<void> {
     console.error('[agent-runtime] Published mode: NO source hydrated — the published app will not serve correctly')
   }
 
-  // 3. Overlay durable writable state (end-user writes accumulated since the
-  //    last cold start). Absent on first boot — the git seed DB is used then.
-  publishedDataSyncInstance = createPublishedDataSyncFromEnv(WORKSPACE_DIR)
-  if (publishedDataSyncInstance) {
+  // 3–5. Overlay durable writable state, start the backend, and arm the
+  // uploader. Cold-start published pods own this restore; Metal published
+  // guests use the same activation helper after the trusted host has already
+  // applied both source and published data archives.
+  await startPublishedApplication({ restoreData: true })
+}
+
+/**
+ * Start the published application after its source/data inputs are complete.
+ * This is deliberately separate from `/pool/assign`: the host must be able
+ * to hydrate a Metal guest without the guest starting any credential-backed
+ * durability or application process of its own.
+ */
+async function startPublishedApplication(opts: { restoreData: boolean }): Promise<void> {
+  const assignmentGeneration = publishedAssignmentGeneration
+  publishedStartupPhase = 'starting'
+  publishedStartupError = null
+  ensureWorkspaceFiles()
+
+  if (!publishedDataSyncInstance) {
+    publishedDataSyncInstance = createPublishedDataSyncFromEnv(WORKSPACE_DIR)
+  }
+  if (opts.restoreData && publishedDataSyncInstance) {
     await publishedDataSyncInstance.restore()
   }
 
-  // 4. Run the project's backend (deps install + prisma + build + server.tsx).
-  //    The runtime's `/api/*` proxy + static `dist/` serve then front it.
-  try {
-    await getPreviewManager().start()
-    logTiming('Published mode: preview/server pipeline started')
-  } catch (err: any) {
-    console.error('[agent-runtime] Published mode: preview start failed:', err?.message ?? err)
-  }
+  // Host-managed published guests receive the durable repo archive before
+  // activation. Pin that restored checkout to the stable publication pointer
+  // before PreviewManager reads the application. Without this step a later
+  // builder edit can move HEAD and make a republish serve source that was not
+  // part of the release the host just hydrated. The helper is intentionally
+  // best-effort for legacy archives that predate the published tag.
+  await checkoutPublishedTag(PUBLISHED_SUBDOMAIN, process.env.PUBLISHED_SOURCE_TAG)
 
-  // 5. Arm the writable-state uploader (periodic + debounced DB watcher).
+  // PreviewManager starts the project's backend and static serving pipeline.
+  // Its start promise intentionally returns before background setup finishes;
+  // the readiness monitor below is the actual published readiness gate.
+  await getPreviewManager().start()
+  logTiming('Published mode: preview/server pipeline started')
+
   if (publishedDataSyncInstance) {
     publishedDataSyncInstance.startAutoFlush()
   }
+
+  // PreviewManager.start() intentionally returns after scheduling setup. Keep
+  // the lifecycle phase at `starting` until the actual static/API serving
+  // gates are healthy; `/ready` and host diagnostics must never report a
+  // published guest as ready merely because a child process was spawned.
+  if (!publishedReadinessPromise) {
+    publishedReadinessPromise = waitForPublishedReadiness(assignmentGeneration).catch((err: any) => {
+      if (assignmentGeneration !== publishedAssignmentGeneration || !IS_PUBLISHED_MODE) return
+      publishedStartupPhase = 'failed'
+      publishedStartupError = String(err?.message ?? err).slice(0, 500)
+      console.error('[agent-runtime] Published readiness failed:', publishedStartupError)
+    })
+  }
+}
+
+async function waitForPublishedReadiness(assignmentGeneration: number): Promise<void> {
+  const deadline = Date.now() + PUBLISHED_STARTUP_TIMEOUT_MS
+  while (Date.now() < deadline) {
+    if (assignmentGeneration !== publishedAssignmentGeneration || !IS_PUBLISHED_MODE) return
+    const status = getPreviewManager().getStatus()
+    if (status.running && status.apiReady) {
+      publishedStartupPhase = 'ready'
+      publishedStartupError = null
+      return
+    }
+    if (status.phase === 'failed' || status.errors.setup) {
+      throw new Error(status.errors.setup || `published preview failed during ${status.phase}`)
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, 250))
+  }
+  const status = getPreviewManager().getStatus()
+  throw new Error(
+    `published preview did not become ready within ${PUBLISHED_STARTUP_TIMEOUT_MS}ms ` +
+      `(phase=${status.phase}, api=${status.apiServerPhase})`,
+  )
+}
+
+/** Idempotent activation used by the host-managed Metal published path. */
+async function activatePublishedAfterHostHydrate(): Promise<void> {
+  if (!IS_PUBLISHED_MODE) {
+    throw new Error('published runtime is not assigned')
+  }
+  if (publishedStartupPhase === 'failed') {
+    throw new Error(publishedStartupError || 'published runtime failed during startup')
+  }
+  if (publishedStartupPhase === 'ready') return
+  if (!publishedActivationPromise) {
+    publishedActivationPromise = startPublishedApplication({ restoreData: false }).catch((err: any) => {
+      publishedStartupPhase = 'failed'
+      publishedStartupError = String(err?.message ?? err).slice(0, 500)
+      publishedActivationPromise = null
+      throw err
+    })
+  }
+  await publishedActivationPromise
 }
 
 // =============================================================================

@@ -27,7 +27,7 @@ export interface KnativeBackend {
   listAllServices(): Promise<Array<{ projectId: string; name: string; status: { ready: boolean; url: string | null; replicas: number } }>>
   // --- published site (ksvc + DomainMapping) ---
   createPublishedService(projectId: string, subdomain: string, opts?: { minScale?: number }): Promise<string>
-  createPublishedServerService(projectId: string, subdomain: string, opts?: { minScale?: number }): Promise<string>
+  createPublishedServerService(projectId: string, subdomain: string, opts?: { minScale?: number; sourceTag?: string }): Promise<string>
   createPublishedDomainMapping(subdomain: string, projectId: string): Promise<void>
   deletePublishedService(projectId: string): Promise<void>
   deletePublishedDomainMapping(subdomain: string): Promise<void>
@@ -110,12 +110,12 @@ export class KnativeSubstrate implements ProjectSubstrate {
   // --- publishing surface --------------------------------------------------
 
   async publish(projectId: string, opts: PublishOpts): Promise<PublishResult> {
-    const { subdomain, serverBacked, alwaysOn } = opts
+    const { subdomain, serverBacked, alwaysOn, sourceTag } = opts
     const minScale = alwaysOn ? 1 : 0
     const kv = await this.serverBackedKv()
 
     if (serverBacked) {
-      const url = await this.backend.createPublishedServerService(projectId, subdomain, { minScale })
+      const url = await this.backend.createPublishedServerService(projectId, subdomain, { minScale, sourceTag })
       await this.backend.createPublishedDomainMapping(subdomain, projectId)
       await kv.setServerBackedFlag(subdomain, 'knative')
       return { serverBacked: true, substrate: this.kind, url }

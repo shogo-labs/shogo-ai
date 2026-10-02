@@ -342,7 +342,7 @@ describe('MetalSubstrate addresses the anchored workspace runtime key', () => {
 // a passing assertion for this; this locks down the `wakePublished` side too.
 describe('MetalSubstrate.wakePublished forwards alwaysOn (regression)', () => {
   it('passes alwaysOn:true through to getMetalPublishedUrl when the caller says the site is always-on', async () => {
-    const calls: Array<{ id: string; subdomain: string; opts?: { alwaysOn?: boolean } }> = []
+    const calls: Array<{ id: string; subdomain: string; opts?: { alwaysOn?: boolean; sourceTag?: string } }> = []
     const backend: MetalBackend = {
       async getMetalProjectUrl(id) { return `http://metal/${id}` },
       async getProjectStatus() { return { exists: true, ready: true, replicas: 1 } },
@@ -359,8 +359,12 @@ describe('MetalSubstrate.wakePublished forwards alwaysOn (regression)', () => {
     }
     const substrate = new MetalSubstrate(backend, makeKv(new Map()))
 
-    await substrate.wakePublished('p1', 'my-site', { alwaysOn: true })
+    await substrate.wakePublished('p1', 'my-site', {
+      alwaysOn: true,
+      sourceTag: 'publish/my-site/1700000000',
+    })
     expect(calls[0]?.opts?.alwaysOn).toBe(true)
+    expect(calls[0]?.opts?.sourceTag).toBe('publish/my-site/1700000000')
 
     await substrate.wakePublished('p1', 'my-site', { alwaysOn: false })
     expect(calls[1]?.opts?.alwaysOn).toBe(false)

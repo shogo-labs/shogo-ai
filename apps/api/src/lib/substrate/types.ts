@@ -58,6 +58,8 @@ export interface WakeOpts {
    * etc.) would silently lose the perk after the next visitor wakes it.
    */
   alwaysOn?: boolean
+  /** Immutable published release tag to use when a runtime is resumed. */
+  sourceTag?: string
 }
 
 /** Resource overrides for `resize` (mirrors patchProjectResources). */
@@ -90,6 +92,8 @@ export interface PublishOpts {
   subdomain: string
   serverBacked: boolean
   alwaysOn?: boolean
+  /** Immutable source tag prepared before provisioning this release. */
+  sourceTag?: string
 }
 
 /** Outcome of provisioning a published site. */
