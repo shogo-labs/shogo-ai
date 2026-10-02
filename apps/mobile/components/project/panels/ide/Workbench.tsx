@@ -52,6 +52,7 @@ import {
 import { broadcastEditorFontChange } from "./useEditorFont";
 import { SearchPane, type SearchPersist, type SearchSeed } from "./SearchPane";
 import { preloadMonaco } from "./CodeEditor";
+import { applyDirty, loadDirty, saveDirty, snapshotDirty } from "./hotExit";
 import { findDir, mergeDirChildren, nearestLoadedDir, parentDir } from "./workspace/tree-merge";
 import { OPEN_FILE_EVENT, type OpenFileDetail } from "./terminal/file-links";
 import { loadRecents, loadSession, pushRecent, saveRecents, saveSession, sessionHasTabs, snapshotSession } from "./session";
@@ -1071,11 +1072,17 @@ export function Workbench({
       );
       // Drop tabs whose file has since disappeared, then restore which tab /
       // group was focused (openFileInGroup activates whatever opened last).
+      // Hot exit: re-apply unsaved edits whose on-disk base is unchanged.
+      const hotBuffers = loadDirty(projectId);
+      let hotRestored = 0;
       setGroups((prev) =>
         prev.map((g, gi) => {
-          const files = g.files
+          const kept = g.files
             .filter((f) => !f.error)
             .map((f) => (session.groups[gi]?.files.find((x) => x.path === f.path)?.pinned ? { ...f, pinned: true } : f));
+          const applied = applyDirty(kept, hotBuffers);
+          hotRestored += applied.restored;
+          const files = applied.files;
           const want = session.groups[gi]?.activeId;
           const activeId = files.some((f) => f.id === want) ? want! : files[files.length - 1]?.id ?? null;
           return { ...g, files, activeId };
@@ -1083,15 +1090,35 @@ export function Workbench({
       );
       setActiveGroupIdx(Math.min(session.activeGroupIdx, session.groups.length - 1));
       sessionReadyRef.current = true;
+      if (hotBuffers.length > 0) {
+        window.setTimeout(() => {
+          if (hotRestored > 0) showToast(`Restored unsaved changes in ${hotRestored} file${hotRestored === 1 ? "" : "s"}`, 3500);
+        }, 400);
+      }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [roots, projectId, requestedFile, openFileInGroup]);
+
+  // Flush unsaved buffers synchronously when the page is going away (the
+  // debounced save above may not have fired yet).
+  useEffect(() => {
+    const flush = () => {
+      if (sessionReadyRef.current) saveDirty(projectId, snapshotDirty(groupsRef.current));
+    };
+    window.addEventListener("pagehide", flush);
+    window.addEventListener("beforeunload", flush);
+    return () => {
+      window.removeEventListener("pagehide", flush);
+      window.removeEventListener("beforeunload", flush);
+    };
+  }, [projectId]);
 
   const [recentFiles, setRecentFiles] = useState<string[]>(() => loadRecents(projectId));
   useEffect(() => {
     if (!sessionReadyRef.current) return;
     const t = window.setTimeout(() => {
       saveSession(projectId, snapshotSession(groups, activeGroupIdx));
+      saveDirty(projectId, snapshotDirty(groups));
       const g = groups[activeGroupIdx];
       const active = g?.files.find((f) => f.id === g.activeId);
       if (active && active.rootId === "agent" && !active.extensionDetail && !active.gitDiff && !active.error) {
