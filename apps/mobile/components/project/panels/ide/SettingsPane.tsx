@@ -184,6 +184,15 @@ export function SettingsPane({
             onChange={(v) => set("tabSize", parseInt(v, 10))}
           />
           <SliderRow
+            k="terminalFontSize"
+            label="Terminal font size"
+            value={settings.terminalFontSize}
+            min={9}
+            max={24}
+            unit="px"
+            onChange={(v) => set("terminalFontSize", v)}
+          />
+          <SliderRow
             k="lineHeight"
             label="Line height (0 = auto)"
             value={settings.lineHeight}

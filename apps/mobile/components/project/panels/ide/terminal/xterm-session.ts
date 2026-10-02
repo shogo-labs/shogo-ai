@@ -107,6 +107,12 @@ export class XtermSession {
     this.searchAddon = searchAddon
     // ⌘F (mac) / Ctrl+F: open the find bar instead of sending ^F to the shell.
     term.attachCustomKeyEventHandler((e: KeyboardEvent) => {
+      // ⌘K clears the terminal (macOS convention; also in the tab menu).
+      if (e.type === 'keydown' && e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey && (e.key === 'k' || e.key === 'K')) {
+        e.preventDefault()
+        term.clear()
+        return false
+      }
       if (
         e.type === 'keydown' &&
         (e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey &&

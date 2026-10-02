@@ -410,7 +410,7 @@ export function Workbench({
       root.style.setProperty("--ide-mono-font", settings.fontFamily);
     }
     broadcastEditorFontChange(settings.fontFamily);
-  }, [settings.fontFamily]);
+  }, [settings.fontFamily, settings.terminalFontSize]);
 
   const sidebarSplit = useResizable({
     initial: 280,

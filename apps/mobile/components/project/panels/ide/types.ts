@@ -78,6 +78,8 @@ export interface EditorSettings {
   autoSaveDelay: number;
   /** Line height in px; 0 = automatic. */
   lineHeight: number;
+  /** Integrated terminal font size (px). */
+  terminalFontSize: number;
   cursorStyle: "line" | "block" | "underline";
   /** Use spaces for Tab (files with detectable indentation still win). */
   insertSpaces: boolean;
@@ -116,6 +118,7 @@ export const DEFAULT_SETTINGS: EditorSettings = {
   formatOnSave: false,
   autoSaveDelay: 1000,
   lineHeight: 0,
+  terminalFontSize: 13,
   cursorStyle: "line",
   insertSpaces: true,
   fontLigatures: true,

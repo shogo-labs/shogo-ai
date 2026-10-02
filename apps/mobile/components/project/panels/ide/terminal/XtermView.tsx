@@ -23,7 +23,7 @@ import { Platform } from 'react-native'
 import { XtermSession } from './xterm-session'
 import { isDesktopRuntime, type PtyClientLike } from './pty-factory'
 import type { PtyClientState } from './pty-client'
-import { useEditorFont } from '../useEditorFont'
+import { useEditorFont, useTerminalFontSize } from '../useEditorFont'
 import { loadDesktopTerminal } from './desktop-terminal-loader'
 import { xtermThemeFor } from './xterm-theme'
 
@@ -98,6 +98,8 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
   // `fontFamily` PROP still wins — desktop surfaces & tests can override.
   const settingFamily = useEditorFont()
   const effectiveFamily = fontFamily ?? settingFamily
+  const settingSize = useTerminalFontSize()
+  const effectiveSize = fontSize ?? settingSize
 
   // Follow the IDE's light/dark mode (the `.shogo-ide[data-theme]` ancestor
   // is the single source of truth; Workbench flips it on theme change).
@@ -134,7 +136,7 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
     const container = containerRef.current
     if (!container) return
     const session = new XtermSession(client, {
-      fontSize,
+      fontSize: effectiveSize,
       fontFamily: effectiveFamily,
       theme: xtermThemeFor(modeRef.current),
       onFindRequest: () => {
@@ -168,8 +170,8 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
   useEffect(() => {
     if (Platform.OS !== 'web') return
     if (isDesktopRuntime()) return
-    sessionRef.current?.setFont(effectiveFamily, fontSize)
-  }, [effectiveFamily, fontSize])
+    sessionRef.current?.setFont(effectiveFamily, effectiveSize)
+  }, [effectiveFamily, effectiveSize])
 
   useEffect(() => {
     if (Platform.OS !== 'web') return
@@ -239,7 +241,7 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
         ref={desktopHandleRef}
         client={client}
         hidden={hidden}
-        fontSize={fontSize}
+        fontSize={effectiveSize}
         fontFamily={effectiveFamily}
         autoFocus={autoFocus}
         projectId={projectId}
