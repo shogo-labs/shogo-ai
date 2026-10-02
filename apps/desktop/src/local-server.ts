@@ -126,6 +126,15 @@ function cleanupStaleProcesses(): void {
     removePidFile()
   }
 
+  // The two sweeps below are machine-wide: they kill any QEMU and whatever
+  // holds the preferred port, which on a developer machine is their own
+  // running Shogo. An e2e run uses its own data dir and picks a free port, so
+  // it must never reach for either.
+  if (process.env.SHOGO_E2E === '1' || process.env.SHOGO_E2E === 'true') {
+    console.log('[Desktop] SHOGO_E2E set — skipping machine-wide QEMU and port sweeps')
+    return
+  }
+
   // Kill orphaned QEMU processes from a previous session
   try {
     execSync('pkill -f qemu-system 2>/dev/null || true', { stdio: 'pipe' })

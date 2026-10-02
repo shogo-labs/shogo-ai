@@ -97,6 +97,7 @@ import {
   type CloudSyncMode,
   wrapSseStreamWithKeepalive,
 } from '@shogo/shared-runtime'
+import { createStreamTrace, traceStream } from '@shogo/shared-runtime/stream-trace'
 import { getModelTier, resolveModelId, calculateDollarCost } from '@shogo/model-catalog'
 import {
   seedWorkspaceDefaults,
@@ -2069,12 +2070,14 @@ app.post('/agent/chat', async (c) => {
     // the buffer. This reader is NOT tied to the HTTP response — the agent
     // keeps running even if the client disconnects.
     const bgReader = response.body.getReader()
+    const streamTrace = createStreamTrace(`runtime-chat:${chatSessionKey.slice(0, 8)}`, ['buffered', 'replay', 'keepalive'])
     ;(async () => {
       try {
         while (true) {
           const { done, value } = await bgReader.read()
           if (done) break
           bufWriter.append(value)
+          streamTrace.mark('buffered', value.byteLength)
         }
         console.log(`[AgentChat] Background stream completed for session: ${chatSessionKey} (turn ${turnId}, seq=${bufWriter.lastSeq})`)
       } catch (err: any) {
@@ -2113,8 +2116,8 @@ app.post('/agent/chat', async (c) => {
     // The client reads from a replay stream backed by the buffer.
     // If this client disconnects, only the replay subscriber is removed;
     // the background reader + agent keep running.
-    const replayStream = streamBufferStore.createReplayStream(chatSessionKey)!
-    const wrappedStream = wrapSseStreamWithKeepalive(replayStream, 15_000)
+    const replayStream = traceStream(streamTrace, 'replay', streamBufferStore.createReplayStream(chatSessionKey)!)
+    const wrappedStream = traceStream(streamTrace, 'keepalive', wrapSseStreamWithKeepalive(replayStream, 15_000), true)
     const responseHeaders = new Headers(response.headers)
     responseHeaders.set('X-Turn-Id', turnId)
     responseHeaders.set('X-Chat-Session-Id', chatSessionKey)

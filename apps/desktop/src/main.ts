@@ -964,6 +964,12 @@ function openNewWindow(): void {
   loadAppWindow(windowManager.createAppWindow())
 }
 
+// E2E only: lets Playwright open a second app window, which can't be done
+// through the native menu.
+if (process.env.SHOGO_E2E === '1') {
+  ;(globalThis as { __shogoE2E?: { openNewWindow: () => void } }).__shogoE2E = { openNewWindow }
+}
+
 async function openCodeWorkbenchWindow(
   options: { projectId?: string; workspacePath?: string } = {},
   ownerWindow?: BrowserWindow | null,

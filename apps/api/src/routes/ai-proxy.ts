@@ -1236,34 +1236,43 @@ function convertOpenAIResponseToAnthropic(openaiResp: any, model: string): any {
   }
 }
 
-function convertOpenAIStreamToAnthropicStream(body: ReadableStream<Uint8Array>, model: string): ReadableStream<Uint8Array> {
+export function convertOpenAIStreamToAnthropicStream(body: ReadableStream<Uint8Array>, model: string): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder()
   const decoder = new TextDecoder()
   let sseBuffer = ''
   let contentIndex = 0
+  // Block 0 is the text block opened up front. Tool calls open later blocks;
+  // only one block is open at a time (OpenAI streams tool calls sequentially).
+  let nextBlockIndex = 1
+  let openBlock: number | null = 0
+  let sawToolCall = false
+  const toolBlockByOpenAIIndex = new Map<number, number>()
+
+  const event = (name: string, data: unknown) => encoder.encode(`event: ${name}\ndata: ${JSON.stringify(data)}\n\n`)
+  const closeOpenBlock = (controller: ReadableStreamDefaultController<Uint8Array>) => {
+    if (openBlock === null) return
+    controller.enqueue(event('content_block_stop', { type: 'content_block_stop', index: openBlock }))
+    openBlock = null
+  }
 
   return new ReadableStream({
     start(controller) {
-      controller.enqueue(encoder.encode(
-        `event: message_start\ndata: ${JSON.stringify({
-          type: 'message_start',
-          message: {
-            id: `msg_${Date.now()}`,
-            type: 'message',
-            role: 'assistant',
-            content: [],
-            model,
-            usage: { input_tokens: 0, output_tokens: 0 },
-          },
-        })}\n\n`
-      ))
-      controller.enqueue(encoder.encode(
-        `event: content_block_start\ndata: ${JSON.stringify({
-          type: 'content_block_start',
-          index: 0,
-          content_block: { type: 'text', text: '' },
-        })}\n\n`
-      ))
+      controller.enqueue(event('message_start', {
+        type: 'message_start',
+        message: {
+          id: `msg_${Date.now()}`,
+          type: 'message',
+          role: 'assistant',
+          content: [],
+          model,
+          usage: { input_tokens: 0, output_tokens: 0 },
+        },
+      }))
+      controller.enqueue(event('content_block_start', {
+        type: 'content_block_start',
+        index: 0,
+        content_block: { type: 'text', text: '' },
+      }))
     },
     async pull(controller) {
       const reader = body.getReader()
@@ -1278,34 +1287,55 @@ function convertOpenAIStreamToAnthropicStream(body: ReadableStream<Uint8Array>, 
             if (!line.startsWith('data: ')) continue
             const data = line.slice(6).trim()
             if (data === '[DONE]') {
-              controller.enqueue(encoder.encode(
-                `event: content_block_stop\ndata: ${JSON.stringify({ type: 'content_block_stop', index: 0 })}\n\n`
-              ))
-              controller.enqueue(encoder.encode(
-                `event: message_delta\ndata: ${JSON.stringify({
-                  type: 'message_delta',
-                  delta: { stop_reason: 'end_turn' },
-                  usage: { output_tokens: contentIndex },
-                })}\n\n`
-              ))
-              controller.enqueue(encoder.encode(
-                `event: message_stop\ndata: ${JSON.stringify({ type: 'message_stop' })}\n\n`
-              ))
+              closeOpenBlock(controller)
+              controller.enqueue(event('message_delta', {
+                type: 'message_delta',
+                delta: { stop_reason: sawToolCall ? 'tool_use' : 'end_turn' },
+                usage: { output_tokens: contentIndex },
+              }))
+              controller.enqueue(event('message_stop', { type: 'message_stop' }))
               controller.close()
               return
             }
             try {
               const chunk = JSON.parse(data)
               const delta = chunk.choices?.[0]?.delta
-              if (delta?.content) {
+              if (delta?.content && openBlock === 0) {
                 contentIndex += delta.content.length
-                controller.enqueue(encoder.encode(
-                  `event: content_block_delta\ndata: ${JSON.stringify({
+                controller.enqueue(event('content_block_delta', {
+                  type: 'content_block_delta',
+                  index: 0,
+                  delta: { type: 'text_delta', text: delta.content },
+                }))
+              }
+              for (const call of delta?.tool_calls ?? []) {
+                const openAIIndex = typeof call.index === 'number' ? call.index : 0
+                let blockIndex = toolBlockByOpenAIIndex.get(openAIIndex)
+                if (blockIndex === undefined) {
+                  closeOpenBlock(controller)
+                  blockIndex = nextBlockIndex++
+                  toolBlockByOpenAIIndex.set(openAIIndex, blockIndex)
+                  openBlock = blockIndex
+                  sawToolCall = true
+                  controller.enqueue(event('content_block_start', {
+                    type: 'content_block_start',
+                    index: blockIndex,
+                    content_block: {
+                      type: 'tool_use',
+                      id: call.id || `toolu_${Date.now()}_${blockIndex}`,
+                      name: call.function?.name ?? '',
+                      input: {},
+                    },
+                  }))
+                }
+                const args = call.function?.arguments
+                if (args) {
+                  controller.enqueue(event('content_block_delta', {
                     type: 'content_block_delta',
-                    index: 0,
-                    delta: { type: 'text_delta', text: delta.content },
-                  })}\n\n`
-                ))
+                    index: blockIndex,
+                    delta: { type: 'input_json_delta', partial_json: args },
+                  }))
+                }
               }
             } catch { /* ignore malformed chunks */ }
           }

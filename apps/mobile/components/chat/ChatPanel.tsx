@@ -1977,7 +1977,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
     transport: chatTransport,
     id: currentSessionId || undefined,
     resume: false,
-    experimental_throttle: 120,
+    experimental_throttle: 50,
     onError: (err) => {
       // Stream failures are recoverable UI state: the retry affordance below
       // handles them. React Native treats console.error as a development

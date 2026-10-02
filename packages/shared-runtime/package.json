@@ -8,7 +8,8 @@
   "exports": {
     ".": "./src/index.ts",
     "./agent-attribution": "./src/agent-attribution.ts",
-    "./sse-keepalive": "./src/sse-keepalive.ts"
+    "./sse-keepalive": "./src/sse-keepalive.ts",
+    "./stream-trace": "./src/stream-trace.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
