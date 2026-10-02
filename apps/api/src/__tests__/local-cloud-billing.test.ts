@@ -119,6 +119,35 @@ describe('GET /local/cloud-billing/summary', () => {
     expect(markIfConfirmedMock).toHaveBeenCalledWith('billing summary 401', 'shogo_sk_linked')
   })
 
+  test('keeps URLs and returns 200 with an error on non-401 upstream failures', async () => {
+    fetchUpstreamMock.mockImplementation(async () => new Response(
+      JSON.stringify({ error: 'boom' }),
+      { status: 500 },
+    ))
+
+    const response = await mountApp().request('/api/local/cloud-billing/summary')
+    expect(response.status).toBe(200)
+    const body = await response.json() as any
+    expect(body.signedIn).toBe(true)
+    expect(body.error).toEqual({ error: 'boom' })
+    expect(body.upstreamStatus).toBe(500)
+    expect(body.plan).toBeUndefined()
+    expect(body.manageUrl).toBe('https://cloud.test/settings?tab=billing&workspace=cloud-ws-1')
+    expect(body.upgradeUrl).toBe('https://cloud.test/billing?workspace=cloud-ws-1')
+  })
+
+  test('keeps URLs and returns 200 when cloud is unreachable', async () => {
+    fetchUpstreamMock.mockImplementation(async () => {
+      throw new Error('network down')
+    })
+
+    const response = await mountApp().request('/api/local/cloud-billing/summary')
+    expect(response.status).toBe(200)
+    const body = await response.json() as any
+    expect(body.error).toBe('network down')
+    expect(body.upgradeUrl).toBe('https://cloud.test/billing?workspace=cloud-ws-1')
+  })
+
   test('does not report the key rejected when cloud still says it is valid', async () => {
     fetchUpstreamMock.mockImplementation(async () => new Response('{}', { status: 401 }))
     markIfConfirmedMock.mockImplementation(async () => false)

@@ -7,6 +7,7 @@ import {
   type CloudBillingSummary,
 } from '@shogo-ai/sdk'
 import { createHttpClient } from '../lib/api'
+import { buildCloudBillingUrls } from '../lib/billing-config'
 
 export function useCloudBillingSummary(enabled = true) {
   const platform = useMemo(() => new PlatformApi(createHttpClient()), [])
@@ -19,13 +20,26 @@ export function useCloudBillingSummary(enabled = true) {
     setIsLoading(true)
     setError(null)
     try {
-      const next = await platform.cloudBillingSummary()
+      const fetched = await platform.cloudBillingSummary()
+      // Older/partial responses may lack the cloud page URLs; derive them so
+      // the Upgrade / Manage buttons always have somewhere to go.
+      const next: CloudBillingSummary = fetched.signedIn
+        ? {
+            ...fetched,
+            ...buildCloudBillingUrls(fetched.cloudUrl, fetched.workspace?.id),
+            ...(fetched.manageUrl ? { manageUrl: fetched.manageUrl } : {}),
+            ...(fetched.upgradeUrl ? { upgradeUrl: fetched.upgradeUrl } : {}),
+          }
+        : fetched
       setSummary(next)
       return next
     } catch (requestError: any) {
-      // A revoked device key makes the proxied plan request return 401.
-      // The local status endpoint still has the useful account identity and
-      // rejection flag, so preserve that state for the re-sign-in prompt.
+      const message: string =
+        requestError?.message || 'Unable to load Shogo Cloud billing'
+      // A revoked device key makes the proxied plan request return 401, and a
+      // local API that predates the billing bridge returns 404. The local
+      // status endpoint still has the account identity and rejection flag, so
+      // preserve that state (plus working cloud URLs) for the UI.
       try {
         const status = await platform.cloudLoginStatus()
         if (status.signedIn) {
@@ -35,15 +49,18 @@ export function useCloudBillingSummary(enabled = true) {
             email: status.email,
             workspace: status.workspace,
             cloudKeyRejected: status.cloudKeyRejected ?? true,
+            ...buildCloudBillingUrls(status.cloudUrl, status.workspace?.id),
+            error: message,
           }
           setSummary(rejected)
+          setError(message)
           return rejected
         }
       } catch {
         // Report the original billing request below.
       }
       setSummary(null)
-      setError(requestError?.message || 'Unable to load Shogo Cloud billing')
+      setError(message)
       return null
     } finally {
       setIsLoading(false)

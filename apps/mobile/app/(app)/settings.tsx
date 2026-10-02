@@ -4039,8 +4039,13 @@ function WorkspaceAnalyticsTab() {
 
   // ─── Progress card data ──────────────────────────────────
   // Coupled window display: weekly-at-100% forces the 5-hour card to 100% too.
-  const analyticsWindowDisplays = getWindowDisplays(usageWindows);
+  // In local mode usage is metered against the linked Shogo Cloud workspace,
+  // so read windows from the cloud billing summary, not the local plan.
   const cloudPlan = cloudBilling.summary?.plan;
+  const displayWindows = localMode
+    ? (cloudPlan?.usageWindows as typeof usageWindows)
+    : usageWindows;
+  const analyticsWindowDisplays = getWindowDisplays(displayWindows);
   const onDemandUsed = localMode
     ? cloudPlan?.overageAccumulatedUsd ?? 0
     : effectiveBalance?.overageAccumulatedUsd ?? 0;
@@ -4082,7 +4087,7 @@ function WorkspaceAnalyticsTab() {
       {/* Progress cards */}
       <View className="flex-row flex-wrap gap-3">
         {(["fiveHour", "weekly"] as const).map((key) => {
-          const w = usageWindows?.[key];
+          const w = displayWindows?.[key];
           const label = key === "fiveHour" ? "5-hour usage" : "Weekly usage";
           const { pct, uncapped, countdown } = analyticsWindowDisplays[key];
           return (
