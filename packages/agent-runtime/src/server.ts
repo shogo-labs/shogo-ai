@@ -62,6 +62,8 @@ import {
   configureAIProxy,
   StreamBufferStore,
   encodeTurnCompleteFrame,
+  createSseFrameSplitter,
+  SEQ_MODE_FRAME,
   isMacOSJunkName,
   isBinaryBuffer,
   isBinaryFilePath,
@@ -1944,6 +1946,7 @@ app.post('/agent/chat', async (c) => {
             turnId,
             chatSessionId: chatSessionKey,
             startedAt: Date.now(),
+            seqMode: SEQ_MODE_FRAME,
           },
         } as any)
         writer.write({ type: 'start-step' })
@@ -2071,14 +2074,19 @@ app.post('/agent/chat', async (c) => {
     // keeps running even if the client disconnects.
     const bgReader = response.body.getReader()
     const streamTrace = createStreamTrace(`runtime-chat:${chatSessionKey.slice(0, 8)}`, ['buffered', 'replay', 'keepalive'])
+    // `data-turn-start` advertises SEQ_MODE_FRAME, so the buffer must hold
+    // exactly one SSE frame per seq even when a read coalesces several.
+    const frameSplitter = createSseFrameSplitter()
     ;(async () => {
       try {
         while (true) {
           const { done, value } = await bgReader.read()
           if (done) break
-          bufWriter.append(value)
+          for (const frame of frameSplitter.push(value)) bufWriter.append(frame)
           streamTrace.mark('buffered', value.byteLength)
         }
+        const tail = frameSplitter.flush()
+        if (tail) bufWriter.append(tail)
         console.log(`[AgentChat] Background stream completed for session: ${chatSessionKey} (turn ${turnId}, seq=${bufWriter.lastSeq})`)
       } catch (err: any) {
         console.log(`[AgentChat] Background stream error for session: ${chatSessionKey}:`, err?.message || err)
