@@ -26,6 +26,13 @@ export type NativeComposerKeyboardEvent = {
   endCoordinates?: { height?: number; screenY?: number };
 };
 
+export function webViewportKeyboardOverlap(
+  layoutHeight: number,
+  viewport: { height: number; offsetTop: number }
+): number {
+  return Math.max(0, layoutHeight - (viewport.height + viewport.offsetTop));
+}
+
 export function isNativeComposerKeyboardOpen(
   pad: number,
   restPad: number

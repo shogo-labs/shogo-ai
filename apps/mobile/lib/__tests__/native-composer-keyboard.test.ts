@@ -9,6 +9,7 @@ import {
   nativeComposerKeyboardOverlap,
   nativeComposerKeyboardPad,
   nativeComposerShouldIgnoreClosedFrame,
+  webViewportKeyboardOverlap,
   chatComposerDockStyle,
   CHAT_TRANSCRIPT_MAX_WIDTH,
   NATIVE_COMPOSER_KEYBOARD_DEFAULT_DURATION,
@@ -37,6 +38,24 @@ describe('nativeComposerKeyboardOverlap', () => {
   test('returns 0 when the keyboard is closed', () => {
     expect(nativeComposerKeyboardOverlap(undefined, 874)).toBe(0)
     expect(nativeComposerKeyboardOverlap({ height: 0, screenY: 874 }, 874)).toBe(0)
+  })
+})
+
+describe('webViewportKeyboardOverlap', () => {
+  test('returns 0 when the visual viewport fills the layout viewport', () => {
+    expect(webViewportKeyboardOverlap(844, { height: 844, offsetTop: 0 })).toBe(0)
+  })
+
+  test('includes the keyboard and suggestion bar in the visual viewport shrink', () => {
+    expect(webViewportKeyboardOverlap(844, { height: 500, offsetTop: 0 })).toBe(344)
+  })
+
+  test('accounts for a shifted visual viewport without a height change', () => {
+    expect(webViewportKeyboardOverlap(844, { height: 500, offsetTop: 100 })).toBe(244)
+  })
+
+  test('never returns a negative overlap', () => {
+    expect(webViewportKeyboardOverlap(844, { height: 900, offsetTop: 0 })).toBe(0)
   })
 })
 

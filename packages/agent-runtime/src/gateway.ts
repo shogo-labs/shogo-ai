@@ -2037,7 +2037,7 @@ export class AgentGateway {
 
   /** List the background shell processes still running for a chat thread. */
   listSessionProcesses(sessionId: string): import('./command-registry').RunningProcess[] {
-    return this.getOrCreateCommandRegistry(sessionId).listRunning()
+    return this.getOrCreateCommandRegistry(sessionId).listVisible()
   }
 
   /**
@@ -2781,11 +2781,19 @@ export class AgentGateway {
     let unsubscribeProcesses: (() => void) | undefined
     if (uiWriter && sessionId) {
       const reg = this.getOrCreateCommandRegistry(sessionId)
+      const visibleRunIds = (processes: readonly { runId: string }[]) =>
+        processes.map((process) => process.runId).join('\0')
       // Push the current list immediately so a reconnecting client re-syncs.
+      const initialProcesses = reg.listVisible()
+      let lastVisibleRunIds = visibleRunIds(initialProcesses)
       try {
-        uiWriter.write({ type: 'data-process-update', data: { processes: reg.listRunning() }, transient: true } as any)
+        uiWriter.write({ type: 'data-process-update', data: { processes: initialProcesses }, transient: true } as any)
       } catch { /* writer may already be closed */ }
-      unsubscribeProcesses = reg.onChange((processes) => {
+      unsubscribeProcesses = reg.onChange(() => {
+        const processes = reg.listVisible()
+        const nextVisibleRunIds = visibleRunIds(processes)
+        if (nextVisibleRunIds === lastVisibleRunIds) return
+        lastVisibleRunIds = nextVisibleRunIds
         try {
           uiWriter.write({ type: 'data-process-update', data: { processes }, transient: true } as any)
         } catch { /* writer closed — onChange teardown happens in finally */ }
