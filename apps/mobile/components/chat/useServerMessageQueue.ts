@@ -7,6 +7,8 @@ import type { IChatQueuedMessage } from "@shogo/domain-stores"
 import { useSDKDomains } from "@shogo/shared-app/domain"
 import type { ChatReference, FileAttachment } from "./ChatInput"
 import type { QueuedMessage } from "./ChatInput"
+import type { UIMessage } from "ai"
+import { queuedRowToUserMessage } from "./queued-user-message"
 
 type QueueBody = Record<string, unknown> & { text?: string }
 
@@ -14,8 +16,20 @@ type UseServerMessageQueueOptions = {
   sessionId: string | null | undefined
   enabled: boolean
   isStreaming: boolean
-  onTurnAvailable?: () => void
+  /**
+   * Called when the server has taken the head of the queue and started its
+   * turn. `userMessage` is the message it saved, so the window can show it.
+   */
+  onTurnAvailable?: (userMessage?: UIMessage) => void
 }
+
+/**
+ * `collection.create` inserts the new row under a `temp-<uuid>` id and swaps it
+ * for the server's row once the request returns. That swap makes the old id
+ * disappear, which must not be read as the server taking the message off the
+ * queue.
+ */
+const OPTIMISTIC_ID_PREFIX = "temp-"
 
 function parseJson<T>(value: string | undefined, fallback: T): T {
   if (!value) return fallback
@@ -74,6 +88,7 @@ export function useServerMessageQueue({
   const { studioChat } = useSDKDomains()
   const collection = studioChat.chatQueuedMessageCollection
   const previousIdsRef = useRef<string[]>([])
+  const previousRowsRef = useRef(new Map<string, IChatQueuedMessage>())
   const userRemovedIdsRef = useRef(new Set<string>())
 
   // `collection.all` mutates in place, so it must be read on every render for
@@ -93,6 +108,7 @@ export function useServerMessageQueue({
 
   useEffect(() => {
     previousIdsRef.current = []
+    previousRowsRef.current = new Map()
   }, [sessionId])
 
   const load = useCallback(async () => {
@@ -116,17 +132,23 @@ export function useServerMessageQueue({
 
   useEffect(() => {
     const previous = previousIdsRef.current
+    const previousRows = previousRowsRef.current
     const current = rows.map((row) => row.id)
+    previousRowsRef.current = new Map(rows.map((row) => [row.id, row]))
     const removedHead =
       previous.length > 0 &&
       !!previous[0] &&
+      !previous[0].startsWith(OPTIMISTIC_ID_PREFIX) &&
       !current.includes(previous[0])
     previousIdsRef.current = current
     if (removedHead && previous[0] && userRemovedIdsRef.current.has(previous[0])) {
       userRemovedIdsRef.current.delete(previous[0])
       return
     }
-    if (removedHead && onTurnAvailable) onTurnAvailable()
+    if (removedHead && onTurnAvailable) {
+      const removed = previous[0] ? previousRows.get(previous[0]) : undefined
+      onTurnAvailable(removed ? queuedRowToUserMessage(removed) : undefined)
+    }
   }, [rows, onTurnAvailable])
 
   const enqueue = useCallback(

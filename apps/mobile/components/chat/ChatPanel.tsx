@@ -57,6 +57,7 @@ import { useRouter } from "expo-router"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
 import { LinearGradient } from "expo-linear-gradient"
 import { DefaultChatTransport } from "ai"
+import { appendQueuedUserMessage } from "./queued-user-message"
 import AsyncStorage from "@react-native-async-storage/async-storage"
 import {
   extractTextContent,
@@ -3156,11 +3157,19 @@ const ChatPanelContent = observer(function ChatPanelContent({
   const isStreaming =
     (isTransportStreaming || streamAutoRecovering) && stoppedMessages === null
 
-  const resumeQueuedTurn = useCallback(() => {
-    void resumeStreamSingleFlight().catch((error) => {
-      console.warn("[ChatPanel] Failed to attach to queued turn:", error)
-    })
-  }, [resumeStreamSingleFlight])
+  const resumeQueuedTurn = useCallback(
+    (queuedUserMessage?: UIMessage) => {
+      // The server saved the queued message and started its turn; show the
+      // message before attaching to the reply (see queued-user-message.ts).
+      if (queuedUserMessage) {
+        setMessages((prev) => appendQueuedUserMessage(prev, queuedUserMessage))
+      }
+      void resumeStreamSingleFlight().catch((error) => {
+        console.warn("[ChatPanel] Failed to attach to queued turn:", error)
+      })
+    },
+    [resumeStreamSingleFlight, setMessages],
+  )
   const serverQueue = useServerMessageQueue({
     sessionId: currentSessionId,
     enabled: !!currentSessionId && !localAgentUrl,

@@ -17,6 +17,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useChat, type UIMessage } from "@ai-sdk/react"
 import { DefaultChatTransport } from "ai"
+import { appendQueuedUserMessage } from "../chat/queued-user-message"
 import { buildChatTurnUrl, useChatTransportConfig } from "@shogo/shared-app/chat"
 import {
   useChatMessageCollectionForSession,
@@ -297,11 +298,18 @@ export function useOwnedIslandSession(
   const resume = useCallback(() => {
     void resumeStream().catch(() => undefined)
   }, [resumeStream])
+  const resumeQueuedTurn = useCallback(
+    (queuedUserMessage?: UIMessage) => {
+      if (queuedUserMessage) setMessages((prev) => appendQueuedUserMessage(prev, queuedUserMessage))
+      resume()
+    },
+    [resume, setMessages],
+  )
   const serverQueue = useServerMessageQueue({
     sessionId,
     enabled: true,
     isStreaming,
-    onTurnAvailable: resume,
+    onTurnAvailable: resumeQueuedTurn,
   })
 
   useEffect(() => {
