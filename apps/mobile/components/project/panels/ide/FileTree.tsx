@@ -54,6 +54,8 @@ export interface FileTreeHandlers {
   onOpenToSide?: (node: TreeNode) => void;
   /** Open the Search view restricted to a folder ("Find in Folder…"). */
   onFindInFolder?: (node: TreeNode) => void;
+  /** Files dragged in from the OS; `dest` null = workspace root. */
+  onUploadFiles?: (files: File[], dest: TreeNode | null) => void;
   /** Absolute filesystem path for "Copy Path" (null when unknown, e.g. cloud). */
   absolutePath?: (node: TreeNode) => string | null;
 }
@@ -110,6 +112,30 @@ function flatten(
 function parentOf(path: string): string {
   const i = path.lastIndexOf("/");
   return i < 0 ? "" : path.slice(0, i);
+}
+
+/** Real files dragged in from the OS (not in-app tree drags, not folders). */
+function osFilesFrom(dt: DataTransfer): File[] {
+  if (Array.from(dt.types ?? []).includes("application/x-ide-path")) return [];
+  const out: File[] = [];
+  const items = Array.from(dt.items ?? []);
+  if (items.length > 0) {
+    for (const it of items) {
+      if (it.kind !== "file") continue;
+      const entry = (it as DataTransferItem & { webkitGetAsEntry?: () => { isDirectory?: boolean } | null }).webkitGetAsEntry?.();
+      if (entry?.isDirectory) continue;
+      const f = it.getAsFile();
+      if (f) out.push(f);
+    }
+    return out;
+  }
+  return Array.from(dt.files ?? []);
+}
+
+/** Directory node that contains `node` (null = workspace root). */
+function findParentDir(tree: TreeNode[], node: TreeNode): TreeNode | null {
+  const p = parentOf(node.path);
+  return p === "" ? null : findDirNode(tree, node.rootId, p);
 }
 
 /** Stable key used across the selection state (root-aware so folder names
@@ -1189,15 +1215,25 @@ export function FileTree({
               e.dataTransfer.effectAllowed = "move";
             }}
             onDragOver={(e) => {
-              if (node.kind !== "dir") return;
+              const isOs = e.dataTransfer.types.includes("Files") && !!handlers.onUploadFiles;
+              if (node.kind !== "dir") {
+                if (isOs) { e.preventDefault(); e.dataTransfer.dropEffect = "copy"; }
+                return;
+              }
               e.preventDefault();
-              e.dataTransfer.dropEffect = "move";
+              e.dataTransfer.dropEffect = isOs ? "copy" : "move";
               setDropTarget(node.path);
             }}
             onDragLeave={() => setDropTarget((p) => (p === node.path ? null : p))}
             onDrop={(e) => {
               e.preventDefault();
               setDropTarget(null);
+              const external = osFilesFrom(e.dataTransfer);
+              if (external.length > 0 && handlers.onUploadFiles) {
+                e.stopPropagation();
+                handlers.onUploadFiles(external, node.kind === "dir" ? node : (findParentDir(tree, node) ?? null));
+                return;
+              }
               if (node.kind !== "dir") return;
               const src = e.dataTransfer.getData("application/x-ide-path");
               const srcRoot = e.dataTransfer.getData("application/x-ide-root");
@@ -1280,13 +1316,18 @@ export function FileTree({
         className="min-h-[40px]"
         onDragOver={(e) => {
           e.preventDefault();
-          e.dataTransfer.dropEffect = "move";
+          e.dataTransfer.dropEffect = e.dataTransfer.types.includes("Files") ? "copy" : "move";
           setDropTarget("__root__");
         }}
         onDragLeave={() => setDropTarget((p) => (p === "__root__" ? null : p))}
         onDrop={(e) => {
           e.preventDefault();
           setDropTarget(null);
+          const external = osFilesFrom(e.dataTransfer);
+          if (external.length > 0 && handlers.onUploadFiles) {
+            handlers.onUploadFiles(external, null);
+            return;
+          }
           const src = e.dataTransfer.getData("application/x-ide-path");
           if (!src) return;
           const srcNode = findNode(tree, src);

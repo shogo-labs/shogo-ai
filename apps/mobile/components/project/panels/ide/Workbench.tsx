@@ -1395,6 +1395,51 @@ export function Workbench({
     [svcOf, loadRoot, showToast, askConfirm],
   );
 
+  const handleUploadFiles = useCallback(
+    async (files: File[], dest: TreeNode | null) => {
+      const rootId = dest?.rootId ?? roots.find((r) => r.kind === "agent")?.id ?? roots[0]?.id;
+      if (!rootId) return;
+      const svc = svcOf(rootId);
+      if (!svc?.writeFileBytes) {
+        showToast("Uploading files isn't supported for this workspace", 2500);
+        return;
+      }
+      const dir = dest && !dest.isRoot ? dest.path : "";
+      const existing = new Set(flattenFiles(roots.find((r) => r.id === rootId)?.tree ?? []).map((n) => n.path));
+      let done = 0;
+      for (const f of files) {
+        if (f.size > 25 * 1024 * 1024) {
+          showToast(`${f.name} is larger than 25 MB — skipped`, 3000);
+          continue;
+        }
+        const path = dir ? `${dir}/${f.name}` : f.name;
+        if (existing.has(path)) {
+          const choice = await askConfirm({
+            title: `Replace ${f.name}?`,
+            message: `A file named "${f.name}" already exists in this location.`,
+            buttons: [
+              { label: "Cancel", value: "cancel" as const, variant: "primary" },
+              { label: "Replace", value: "replace" as const, variant: "danger" },
+            ],
+            cancelValue: "cancel" as const,
+          });
+          if (choice !== "replace") continue;
+        }
+        try {
+          await svc.writeFileBytes(path, new Uint8Array(await f.arrayBuffer()));
+          done++;
+        } catch (err) {
+          showToast(`Upload failed for ${f.name}: ${err instanceof Error ? err.message : String(err)}`, 3500);
+        }
+      }
+      if (done > 0) {
+        showToast(done === 1 ? `Uploaded ${files[0].name}` : `Uploaded ${done} files`);
+        await loadRoot(rootId);
+      }
+    },
+    [roots, svcOf, showToast, askConfirm, loadRoot],
+  );
+
   const handleMove = useCallback(
     async (from: TreeNode, toDir: TreeNode | null) => {
       if (toDir && from.rootId !== toDir.rootId) {
@@ -1556,6 +1601,7 @@ export function Workbench({
       onDownload: handleDownload,
       onLoadSubtree: loadSubtree,
       onCopy: handleCopy,
+      onUploadFiles: (files, dest) => void handleUploadFiles(files, dest),
       onOpenToSide: openToSide,
       onFindInFolder: (node) =>
         openSearch({ include: node.isRoot ? "" : node.path, query: undefined }),
@@ -1565,7 +1611,7 @@ export function Workbench({
         return node.path ? workspaceFsPath(root, node.path) : root;
       },
     }),
-    [handleOpenFile, handleCreate, handleRenameNode, handleDeleteNode, handleMove, handleDownload, loadSubtree, handleCopy, openToSide, openSearch],
+    [handleOpenFile, handleCreate, handleRenameNode, handleDeleteNode, handleMove, handleDownload, loadSubtree, handleCopy, handleUploadFiles, openToSide, openSearch],
   );
 
   // ─── Save ────────────────────────────────────────────────────────────

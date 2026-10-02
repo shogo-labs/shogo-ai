@@ -215,6 +215,10 @@ export class DesktopFs implements WorkspaceService {
     return this.sdkFs.writeFile(path, content)
   }
 
+  writeFileBytes(path: string, bytes: Uint8Array): Promise<void> {
+    return this.sdkFs.writeFileBytes(path, bytes)
+  }
+
   mkdir(path: string): Promise<void> {
     return this.sdkFs.mkdir(path)
   }

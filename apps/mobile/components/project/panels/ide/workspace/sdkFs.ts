@@ -177,6 +177,10 @@ export class SdkFs implements WorkspaceService {
     return { mtime: Date.now(), size: new Blob([content]).size }
   }
 
+  async writeFileBytes(path: string, bytes: Uint8Array): Promise<void> {
+    await retry429(() => this.client.writeFileBytes(path, bytes))
+  }
+
   async mkdir(path: string): Promise<void> {
     await this.client.mkdirWorkspace(path)
   }

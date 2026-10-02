@@ -72,6 +72,8 @@ export interface WorkspaceService {
   mkdir(path: string): Promise<void>;
   remove(path: string): Promise<void>;
   rename(from: string, to: string): Promise<void>;
+  /** Write raw bytes (OS drag-and-drop upload). Optional: hidden when missing. */
+  writeFileBytes?(path: string, bytes: Uint8Array): Promise<void>;
   /** Copy a file or folder. Optional: backends without it hide Duplicate/Paste. */
   copy?(from: string, to: string): Promise<void>;
   /**
