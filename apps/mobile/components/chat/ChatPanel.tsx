@@ -130,7 +130,7 @@ import {
   AI_PROVIDERS,
 } from "../../lib/ai-consent"
 import { setActiveChatNotificationContext } from "../../lib/notifications/chat-notifier"
-import { autoNameSession } from "./auto-name-session"
+import { autoNameSession, isPlaceholderSessionName } from "./auto-name-session"
 
 import {
   isPhoneLayout,
@@ -1171,7 +1171,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
       const session = studioChat.chatSessionCollection.get(sessionId)
       const sessionName =
         (session as any)?.inferredName || (session as any)?.name
-      if (sessionName && sessionName !== "Untitled") return
+      if (!isPlaceholderSessionName(sessionName)) return
 
       hasTriggeredNamingRef.current = true
       const http = createHttpClient()
@@ -1181,6 +1181,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
         workspaceId,
         projectId,
         getSession: (id) => studioChat.chatSessionCollection.get(id),
+        loadSession: (id) => studioChat.chatSessionCollection.loadById(id),
         getProjectName: (id) =>
           projectCollection.all.find((p: any) => p.id === id)?.name,
         generateName: (text, currentWorkspaceId, currentProjectId) =>
@@ -6804,7 +6805,11 @@ const ChatPanelContent = observer(function ChatPanelContent({
   const islandState = useMemo<DesktopIslandSessionState>(
     () => ({
       projectName: featureName ?? "Project",
-      title: currentSession?.name ?? featureName ?? "Untitled chat",
+      title:
+        currentSession?.name ||
+        currentSession?.inferredName ||
+        featureName ||
+        "Untitled chat",
       status: isStreaming ? "running" : "idle",
       replyPreview: islandReplyPreview,
       pending: islandPending,
@@ -6813,6 +6818,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
     }),
     [
       currentSession?.name,
+      currentSession?.inferredName,
       featureName,
       isStreaming,
       islandReplyPreview,
