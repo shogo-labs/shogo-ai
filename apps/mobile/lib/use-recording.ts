@@ -19,6 +19,10 @@ import { startLiveCapture, type LiveCapture } from './live-audio'
 
 export { formatDuration } from './format-duration'
 
+/** Shown when the desktop recorder reports `mic_permission_denied`. */
+const MIC_BLOCKED_MESSAGE =
+  'Microphone access is blocked. Allow Shogo in System Settings > Privacy & Security > Microphone, then try again.'
+
 /**
  * Rough notes typed while recording, shared by every `useRecording()` caller
  * so stopping from the floating indicator still sends what the meetings
@@ -391,7 +395,7 @@ export function useRecording() {
         const result = await d.startRecording()
         if (result && 'error' in result) {
           console.error('Failed to start recording:', result.error)
-          setError(String(result.error))
+          setError(result.error === 'mic_permission_denied' ? MIC_BLOCKED_MESSAGE : String(result.error))
         }
         return
       }

@@ -1419,3 +1419,62 @@ describe('getMeetingConfig fallback (localConfig throws)', () => {
     expect(meetings.get('m-cfg')!.status).toBe('ready')
   })
 })
+
+describe('POST /api/local/transcribe (chat dictation)', () => {
+  /** A minimal RIFF/WAVE buffer large enough to clear the header check. */
+  const wavClip = (bytes = 2048) => {
+    const buf = Buffer.alloc(bytes)
+    buf.write('RIFF', 0, 'ascii')
+    buf.write('WAVE', 8, 'ascii')
+    return buf
+  }
+  const post = (body: Buffer | string) =>
+    meetingRoutes.request('/api/local/transcribe', {
+      method: 'POST',
+      headers: { 'content-type': 'audio/wav' },
+      body,
+    })
+
+  test('returns trimmed text and cleans up the temp clip', async () => {
+    transcription.transcribe.mockImplementationOnce(async () => ({
+      text: '  hello from the mic  ', segments: [], language: 'en', duration: 1,
+    } as any))
+    const res = await post(wavClip())
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ text: 'hello from the mic' })
+    const clip = writeFileCalls.filter((w) => w.path.includes('shogo-dictation')).pop()
+    expect(clip).toBeDefined()
+    expect(unlinkCalls).toContain(clip!.path)
+  })
+
+  test('rejects a body that is not a WAV', async () => {
+    const res = await post(Buffer.alloc(2048, 1))
+    expect(res.status).toBe(400)
+    expect(transcription.transcribe).not.toHaveBeenCalled()
+  })
+
+  test('rejects an empty or header-only clip', async () => {
+    expect((await post(Buffer.alloc(0))).status).toBe(400)
+    expect((await post(wavClip(44))).status).toBe(400)
+  })
+
+  test('413 when the declared size is over the cap', async () => {
+    const res = await meetingRoutes.request('/api/local/transcribe', {
+      method: 'POST',
+      headers: { 'content-type': 'audio/wav', 'content-length': String(64 * 1024 * 1024) },
+      body: wavClip(),
+    })
+    expect(res.status).toBe(413)
+  })
+
+  test('503 with a friendly message when transcription is unavailable, and still cleans up', async () => {
+    transcription.transcribe.mockImplementationOnce(async () => {
+      throw new Error('No OpenAI API key or proxy configured for cloud transcription')
+    })
+    const res = await post(wavClip())
+    expect(res.status).toBe(503)
+    expect((await res.json()).error).toContain('Transcription needs')
+    const clip = writeFileCalls.filter((w) => w.path.includes('shogo-dictation')).pop()
+    expect(unlinkCalls).toContain(clip!.path)
+  })
+})

@@ -3,10 +3,25 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Platform } from 'react-native'
+import {
+  getDesktopBridge,
+  MicPermissionError,
+  startDesktopDictation,
+  transcribeDesktopClip,
+  type DesktopDictation,
+} from './desktop-dictation'
 
 const MAX_RECORDING_MS = 2 * 60 * 1000
 
-type VoiceStatus = 'idle' | 'recording'
+type VoiceStatus = 'idle' | 'recording' | 'transcribing'
+
+const MIC_BLOCKED_MESSAGE =
+  'Microphone access is blocked. Allow Shogo in System Settings > Privacy & Security > Microphone, then try again.'
+
+/** True inside the Electron app, where Web Speech has no backend. */
+function isDesktopApp(): boolean {
+  return Platform.OS === 'web' && !!getDesktopBridge()
+}
 
 function formatDuration(ms: number): string {
   const totalSeconds = Math.max(0, Math.floor(ms / 1000))
@@ -67,9 +82,12 @@ export function useVoiceInput({ onTranscript }: UseVoiceInputOptions) {
   const finalTranscriptRef = useRef('')
   const liveTranscriptRef = useRef('')
   const stoppingRef = useRef(false)
+  // Desktop (Electron) capture session; see desktop-dictation.ts
+  const desktopRef = useRef<DesktopDictation | null>(null)
 
   const [status, setStatus] = useState<VoiceStatus>('idle')
   const [error, setError] = useState<string | null>(null)
+  const [micBlocked, setMicBlocked] = useState(false)
   const [elapsedMs, setElapsedMs] = useState(0)
   const [liveTranscript, setLiveTranscript] = useState('')
 
@@ -78,6 +96,7 @@ export function useVoiceInput({ onTranscript }: UseVoiceInputOptions) {
   }, [onTranscript])
 
   const isSupported = useMemo(() => {
+    if (isDesktopApp()) return !!(typeof navigator !== 'undefined' && navigator.mediaDevices?.getUserMedia)
     if (Platform.OS === 'web') return !!getSpeechRecognitionCtor()
     const mod = getNativeModule()
     if (!mod) return false
@@ -173,10 +192,37 @@ export function useVoiceInput({ onTranscript }: UseVoiceInputOptions) {
   const startRecording = useCallback(async () => {
     if (!isSupported || status !== 'idle') return
     setError(null)
+    setMicBlocked(false)
     finalTranscriptRef.current = ''
     liveTranscriptRef.current = ''
     setLiveTranscript('')
     stoppingRef.current = false
+
+    if (isDesktopApp()) {
+      // ---- Desktop path: record locally, transcribe via the local API ----
+      try {
+        const session = await startDesktopDictation()
+        if (!isMountedRef.current) {
+          session.cancel()
+          return
+        }
+        desktopRef.current = session
+        setStatus('recording')
+        autoStopTimeoutRef.current = setTimeout(() => {
+          stopRecording().catch(() => {})
+        }, MAX_RECORDING_MS)
+      } catch (err: any) {
+        desktopRef.current = null
+        if (!isMountedRef.current) return
+        if (err instanceof MicPermissionError) {
+          setMicBlocked(true)
+          setError(MIC_BLOCKED_MESSAGE)
+        } else {
+          setError(err?.message || 'Could not start the microphone.')
+        }
+      }
+      return
+    }
 
     if (Platform.OS !== 'web') {
       // ---- Native path ----
@@ -328,6 +374,31 @@ export function useVoiceInput({ onTranscript }: UseVoiceInputOptions) {
   // ---------------------------------------------------------------------------
 
   const stopRecording = useCallback(async () => {
+    const desktopSession = desktopRef.current
+    if (desktopSession) {
+      desktopRef.current = null
+      cleanup()
+      setStatus('transcribing')
+      try {
+        const wav = await desktopSession.stop()
+        const text = wav ? (await transcribeDesktopClip(wav)).trim() : ''
+        if (!isMountedRef.current) return
+        if (text) {
+          transcriptionHandlerRef.current(text)
+        } else {
+          setError('No speech detected. Please try again.')
+        }
+      } catch (err: any) {
+        if (isMountedRef.current) setError(err?.message || 'Transcription failed. Please try again.')
+      } finally {
+        if (isMountedRef.current) {
+          setStatus('idle')
+          setElapsedMs(0)
+        }
+      }
+      return
+    }
+
     if (Platform.OS !== 'web') {
       cleanup()
       const mod = getNativeModule()
@@ -381,6 +452,11 @@ export function useVoiceInput({ onTranscript }: UseVoiceInputOptions) {
     return () => {
       isMountedRef.current = false
 
+      if (desktopRef.current) {
+        desktopRef.current.cancel()
+        desktopRef.current = null
+      }
+
       if (Platform.OS === 'web') {
         const recognition = recognitionRef.current
         if (recognition) {
@@ -403,11 +479,19 @@ export function useVoiceInput({ onTranscript }: UseVoiceInputOptions) {
 
   return {
     canRecord: isSupported,
-    clearError: () => setError(null),
+    clearError: () => {
+      setError(null)
+      setMicBlocked(false)
+    },
     error,
+    /** Set when the OS/Chromium refused the mic; offer {@link openMicSettings}. */
+    micBlocked,
+    openMicSettings: () => {
+      void getDesktopBridge()?.openMicrophoneSettings?.()
+    },
     isBusy: status !== 'idle',
     isRecording: status === 'recording',
-    isTranscribing: false as const,
+    isTranscribing: status === 'transcribing',
     liveTranscript,
     recordingDurationLabel: formatDuration(elapsedMs),
     status,

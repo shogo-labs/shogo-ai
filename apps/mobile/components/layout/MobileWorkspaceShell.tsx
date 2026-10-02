@@ -668,12 +668,14 @@ export function MobileWorkspaceShell({ children }: MobileWorkspaceShellProps) {
             </View>
             <View
               className={cn(
-                "absolute right-3 z-20 h-11 w-11 items-center justify-center overflow-hidden rounded-full",
+                "absolute right-3 z-20 h-11 w-11 items-center justify-center rounded-full",
                 liquidGlass ? "bg-transparent" : "bg-card/70"
               )}
               style={{ top: insets.top + 10 }}
             >
-              <LiquidGlassBackdrop style={{ borderRadius: 999 }} />
+              <View pointerEvents="none" className="absolute inset-0 overflow-hidden rounded-full">
+                <LiquidGlassBackdrop style={{ borderRadius: 999 }} />
+              </View>
               <NotificationBell size={NATIVE_PHONE_HEADER_ICON_SIZE} />
             </View>
           </>

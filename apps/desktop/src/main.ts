@@ -17,7 +17,8 @@ if (handleSquirrelEvent()) {
 import { initSentry, setSentryDeviceTag } from './sentry'
 initSentry()
 
-import { app, BrowserWindow, protocol, net, session, ipcMain, Menu, shell, Notification, dialog, powerMonitor } from 'electron'
+import { app, BrowserWindow, protocol, net, session, ipcMain, Menu, shell, Notification, dialog, powerMonitor, systemPreferences } from 'electron'
+import { ensureMicAccess, MAC_MIC_SETTINGS_URL, type MicAccess } from './media-permissions'
 import path from 'path'
 import fs from 'fs'
 import crypto from 'crypto'
@@ -1173,7 +1174,21 @@ function buildAppMenu(): void {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template))
 }
 
+function checkMicAccess(): Promise<MicAccess> {
+  return ensureMicAccess({
+    platform: process.platform,
+    getMediaAccessStatus: (type) => systemPreferences.getMediaAccessStatus(type),
+    askForMediaAccess: (type) => systemPreferences.askForMediaAccess(type),
+  })
+}
+
 function registerIpcHandlers(): void {
+  ipcMain.handle('media:ensure-mic', () => checkMicAccess())
+  ipcMain.handle('media:open-mic-settings', async () => {
+    if (process.platform !== 'darwin') return { ok: false }
+    await shell.openExternal(MAC_MIC_SETTINGS_URL)
+    return { ok: true }
+  })
   ipcMain.handle('get-app-mode', () => readConfig().mode)
   ipcMain.handle('get-app-config', () => readConfig())
   ipcMain.handle('set-island-config', (_event, patch: unknown) => {
@@ -1561,6 +1576,17 @@ function setupSessionHandlers(): void {
     if (permission === 'media') {
       const requestingUrl = details?.requestingUrl || webContents.getURL()
       if (isTrustedMediaOrigin(requestingUrl)) {
+        const mediaTypes = (details as { mediaTypes?: string[] } | undefined)?.mediaTypes
+        // Audio requests must also clear the macOS TCC gate (prompting once).
+        if (!mediaTypes || mediaTypes.includes('audio')) {
+          void checkMicAccess().then((access) => {
+            if (access !== 'granted') {
+              console.warn(`[Desktop] microphone access ${access}; denying media request`)
+            }
+            callback(access === 'granted')
+          })
+          return
+        }
         callback(true)
         return
       }

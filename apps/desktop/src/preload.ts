@@ -16,6 +16,9 @@ interface ActiveSession {
 
 let activeSession: ActiveSession | null = null
 
+/** Stable error code returned when the OS/Chromium denies microphone access. */
+const MIC_PERMISSION_DENIED = 'mic_permission_denied'
+
 function sendPcmChunk(sessionId: string, source: 'mic' | 'system', chunk: PcmChunkMessage): void {
   // Electron's `ipcRenderer.postMessage` only accepts MessagePort objects in
   // the transfer list — unlike the web MessagePort API, ArrayBuffers are NOT
@@ -46,6 +49,13 @@ async function stopActive(): Promise<void> {
 async function startRecording(): Promise<{ ok: boolean; id?: string; audioPath?: string; error?: string }> {
   if (activeSession) {
     return { ok: false, error: 'already recording' }
+  }
+
+  // Ask macOS for microphone access up front (shows the system prompt the
+  // first time) so a denial surfaces as a specific, actionable error.
+  const micAccess = (await ipcRenderer.invoke('media:ensure-mic')) as 'granted' | 'denied' | 'restricted'
+  if (micAccess !== 'granted') {
+    return { ok: false, error: MIC_PERMISSION_DENIED }
   }
 
   const session = (await ipcRenderer.invoke('recording:start-session')) as
@@ -84,7 +94,7 @@ async function startRecording(): Promise<{ ok: boolean; id?: string; audioPath?:
     if (!result.mic) {
       await manager.stop()
       await ipcRenderer.invoke('recording:abort-session', { sessionId: session.id })
-      return { ok: false, error: 'microphone capture failed (permission denied?)' }
+      return { ok: false, error: MIC_PERMISSION_DENIED }
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
@@ -124,6 +134,10 @@ contextBridge.exposeInMainWorld('shogoDesktop', {
   platform: process.platform,
   isDesktop: true,
   apiUrl: `http://localhost:${apiPort}`,
+  /** Request OS microphone access (prompts on macOS the first time). */
+  ensureMicAccess: (): Promise<'granted' | 'denied' | 'restricted'> => ipcRenderer.invoke('media:ensure-mic'),
+  /** Open System Settings > Privacy & Security > Microphone (macOS). */
+  openMicrophoneSettings: (): Promise<{ ok: boolean }> => ipcRenderer.invoke('media:open-mic-settings'),
   getAppMode: () => ipcRenderer.invoke('get-app-mode'),
   getAppConfig: () => ipcRenderer.invoke('get-app-config'),
   setIslandConfig: (config: Partial<IslandConfig>) => ipcRenderer.invoke('set-island-config', config),

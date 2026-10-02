@@ -7,11 +7,20 @@
  */
 
 import { describe, test, expect } from 'bun:test'
-import { CommandRegistry, type RunningProcessSnapshot } from '../command-registry'
+import {
+  CommandRegistry,
+  UI_VISIBLE_AFTER_MS,
+  type RunningProcessSnapshot,
+} from '../command-registry'
 import type { CommandHandle } from '../sandbox-exec'
 
 /** Build a controllable fake handle whose `done` we resolve manually. */
-function fakeHandle(opts?: { pid?: number; sandboxed?: boolean; containerName?: string }) {
+function fakeHandle(opts?: {
+  pid?: number
+  sandboxed?: boolean
+  containerName?: string
+  startedAt?: number
+}) {
   let exited = false
   let resolveDone!: (r: { exitCode: number; stdout: string; stderr: string; killed: boolean }) => void
   const done = new Promise<{ exitCode: number; stdout: string; stderr: string; killed: boolean }>((res) => {
@@ -28,7 +37,7 @@ function fakeHandle(opts?: { pid?: number; sandboxed?: boolean; containerName?: 
     done,
     kill: (signal = 'SIGTERM') => { killSignal = signal },
     exited: () => exited,
-    startedAt: Date.now(),
+    startedAt: opts?.startedAt ?? Date.now(),
   }
   return {
     handle,
@@ -64,6 +73,26 @@ describe('CommandRegistry.listRunning', () => {
   })
 })
 
+describe('CommandRegistry.listVisible', () => {
+  test('hides fresh commands until they have run for 30 seconds', () => {
+    const reg = new CommandRegistry()
+    reg.register('sleep 99', fakeHandle().handle)
+
+    expect(reg.listRunning()).toHaveLength(1)
+    expect(reg.listVisible()).toHaveLength(0)
+  })
+
+  test('includes commands that have reached the visibility threshold', () => {
+    const reg = new CommandRegistry()
+    reg.register(
+      'sleep 99',
+      fakeHandle({ startedAt: Date.now() - UI_VISIBLE_AFTER_MS - 1 }).handle,
+    )
+
+    expect(reg.listVisible()).toHaveLength(1)
+  })
+})
+
 describe('CommandRegistry.snapshot + restoreStale', () => {
   test('snapshot round-trips into stale entries that listRunning reports', () => {
     const source = new CommandRegistry()
@@ -79,6 +108,7 @@ describe('CommandRegistry.snapshot + restoreStale', () => {
     expect(running[0]!.command).toBe('npm run dev')
     expect(running[0]!.pid).toBe(900)
     expect(running[0]!.stale).toBe(true)
+    expect(restored.listVisible()).toHaveLength(1)
   })
 
   test('restoreStale ignores duplicate run ids', () => {
@@ -133,6 +163,24 @@ describe('CommandRegistry.onChange', () => {
     reg.register('echo hi', fakeHandle().handle)
     // No new event after unsubscribe.
     expect(seen.at(-1)).toBe(0)
+  })
+
+  test('emits when a running command crosses the visibility threshold', async () => {
+    const reg = new CommandRegistry({ uiVisibleAfterMs: 10 })
+    let changes = 0
+    const unsub = reg.onChange(() => {
+      changes++
+    })
+    const f = fakeHandle()
+    reg.register('sleep 99', f.handle)
+
+    expect(changes).toBe(1)
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    expect(changes).toBeGreaterThan(1)
+
+    unsub()
+    f.finish(0)
+    await f.handle.done
   })
 })
 

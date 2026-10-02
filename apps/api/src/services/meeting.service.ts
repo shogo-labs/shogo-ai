@@ -632,6 +632,40 @@ export async function appendLiveTranscript(meetingId: string, input: LiveChunkIn
   return { ok: false, reason: 'not_recording' }
 }
 
+/** Dictation clips are capped at a few minutes of 16 kHz mono 16-bit audio (~32 KB/s). */
+export const DICTATION_MAX_BYTES = 8 * 1024 * 1024
+
+export type DictationResult =
+  | { ok: true; text: string }
+  | { ok: false; reason: 'invalid' }
+
+/**
+ * One-shot transcription of a short WAV clip (chat composer dictation).
+ * Unlike live meeting chunks it isn't tied to a recording or meeting; it
+ * just returns text. Local sherpa/Whisper first, cloud as the fallback.
+ */
+export async function transcribeDictation(audio: Buffer): Promise<DictationResult> {
+  if (
+    audio.length <= WAV_HEADER_SIZE ||
+    audio.length > DICTATION_MAX_BYTES ||
+    audio.toString('ascii', 0, 4) !== 'RIFF'
+  ) {
+    return { ok: false, reason: 'invalid' }
+  }
+  const local = isLocalMode()
+  const config = local ? await getLocalMeetingConfig() : { whisperModel: 'base.en' }
+  const dir = join(tmpdir(), 'shogo-dictation')
+  mkdirSync(dir, { recursive: true })
+  const clipPath = join(dir, `${Date.now()}-${randomBytes(6).toString('hex')}.wav`)
+  writeFileSync(clipPath, audio)
+  try {
+    const result = await transcribe(clipPath, { model: config.whisperModel, preferLocal: local })
+    return { ok: true, text: result.text.trim() }
+  } finally {
+    removeAudioFiles(clipPath)
+  }
+}
+
 function getWavDurationFromBuffer(buffer: Buffer): number {
   if (buffer.length <= WAV_HEADER_SIZE || buffer.toString('ascii', 0, 4) !== 'RIFF') return 0
   const channels = buffer.readUInt16LE(22)

@@ -30,6 +30,9 @@ import {
   resolveLocalOwnerUserId,
   resolvePersonalWorkspaceId,
   serializeMeeting,
+  DICTATION_MAX_BYTES,
+  friendlyMeetingError,
+  transcribeDictation,
   transcribeMeeting,
   upsertRecordingDraft,
   writeTranscriptToProject,
@@ -146,6 +149,27 @@ meetingRoutes.post('/api/local/meetings/recordings/:recordingId/live', async (c)
   const owner = await resolveOwner(c)
   if (!owner) return c.json({ error: 'No personal workspace found' }, 404)
   return handleLiveChunk(c, owner, c.req.param('recordingId'))
+})
+
+// One-shot dictation for the chat composer: a short 16 kHz WAV in, text out.
+// Electron has no Web Speech backend, so the desktop renderer records and posts here.
+meetingRoutes.post('/api/local/transcribe', async (c) => {
+  const declared = Number(c.req.header('content-length') || 0)
+  if (declared > DICTATION_MAX_BYTES + 64 * 1024) return c.json({ error: 'Audio clip is too large' }, 413)
+  let audio: Buffer
+  try {
+    audio = Buffer.from(await c.req.arrayBuffer())
+  } catch {
+    return c.json({ error: 'Could not read the audio clip' }, 400)
+  }
+  try {
+    const result = await transcribeDictation(audio)
+    if (!result.ok) return c.json({ error: 'Send a WAV clip of 8 MB or less' }, 400)
+    return c.json({ text: result.text })
+  } catch (err: any) {
+    console.warn('[Dictation] Transcription failed:', err?.message ?? err)
+    return c.json({ error: friendlyMeetingError('transcript', err) }, 503)
+  }
 })
 
 // List meetings in the personal workspace

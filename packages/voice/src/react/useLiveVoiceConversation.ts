@@ -6,6 +6,7 @@ import type {
   BaseVoiceConversationResult,
   ClientToolFn,
 } from '../shared/index.js'
+import { requestMicStream } from './mic-access.js'
 
 export interface LiveVoiceSessionResponse {
   sessionId: string
@@ -288,7 +289,7 @@ export function useLiveVoiceConversation(
     closingRef.current = false
     setStatus('connecting')
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      const stream = await requestMicStream({ audio: true })
       mediaStreamRef.current = stream
       const pc = new RTCPeerConnection()
       pcRef.current = pc

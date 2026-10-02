@@ -644,6 +644,15 @@ export const CompactChatInput = forwardRef<View, CompactChatInputProps>(
             {voiceInput.error && (
               <Text className="text-sm text-destructive px-4 pb-2">
                 {voiceInput.error}
+                {voiceInput.micBlocked ? (
+                  <Text
+                    className="text-sm text-destructive underline"
+                    onPress={voiceInput.openMicSettings}
+                    accessibilityRole="link"
+                  >
+                    {" Open System Settings"}
+                  </Text>
+                ) : null}
               </Text>
             )}
 

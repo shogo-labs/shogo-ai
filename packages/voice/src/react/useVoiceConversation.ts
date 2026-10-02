@@ -36,6 +36,7 @@ import {
   type BaseVoiceConversationResult,
   type ClientToolFn,
 } from '../shared/index.js'
+import { requestMicStream } from './mic-access.js'
 
 export type UseVoiceConversationOptions = BaseVoiceConversationOptions
 export type UseVoiceConversationResult = BaseVoiceConversationResult
@@ -214,7 +215,9 @@ export function useVoiceConversation(
       }
       // Web-only: ask the browser for mic permission up front so the
       // signed-URL fetch isn't wasted if the user denies it.
-      await navigator.mediaDevices.getUserMedia({ audio: true })
+      const micStream = await requestMicStream({ audio: true })
+      // Permission probe only; the ElevenLabs SDK opens its own capture.
+      micStream.getTracks().forEach((track) => track.stop())
       const data = await fetchSignedUrl({
         path: resolvedSignedUrlPath,
         fetchCredentials,
