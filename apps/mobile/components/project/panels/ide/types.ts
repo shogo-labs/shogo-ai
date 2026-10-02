@@ -15,6 +15,14 @@ export interface TreeNode extends WsNode {
 /** Raw service node helper — we decorate this with rootId when ingesting. */
 export type RawNode = WsNode;
 
+/** A Source Control diff tab (HEAD ↔ index ↔ working tree). */
+export interface GitDiffSpec {
+  workspaceRoot: string;
+  /** Workspace-relative file path. */
+  path: string;
+  group: "staged" | "changes";
+}
+
 export interface OpenFile {
   id: string;           // `${rootId}::${path}` — globally unique
   rootId: string;
@@ -25,11 +33,15 @@ export interface OpenFile {
   savedContent: string;
   dirty: boolean;
   pinned?: boolean;
+  /** Preview tab (italic): replaced by the next single-click open until edited / double-clicked. */
+  preview?: boolean;
   loading?: boolean;
   error?: string;
   /** Markdown files open in preview until the user switches to the editor. */
   mdMode?: "preview" | "edit";
   extensionDetail?: InstalledExtension | ExtensionSearchResult;
+  /** Set on `language: "git-diff"` tabs. */
+  gitDiff?: GitDiffSpec;
 }
 
 export interface EditorGroup {
@@ -53,13 +65,32 @@ export interface EditorSettings {
   fontFamily: string;
   tabSize: number;        // 2 | 4
   wordWrap: "on" | "off";
+  /** Single-click in the Explorer opens a replaceable preview tab. */
+  previewTabs: boolean;
   minimap: boolean;
+  minimapSide: "right" | "left";
+  minimapSize: "proportional" | "fit" | "fill";
+  minimapScale: 1 | 2 | 3;
   lineNumbers: "on" | "off" | "relative";
-  renderWhitespace: "none" | "boundary" | "all";
+  renderWhitespace: "none" | "boundary" | "selection" | "trailing" | "all";
   bracketPairs: boolean;
   /** Persist editor buffers to the workspace after a short pause while typing. */
   autoSave: boolean;
   formatOnSave: boolean;
+  /** Strip trailing spaces/tabs from every line on (manual) save. */
+  /** Pause (ms) before autosave fires. */
+  autoSaveDelay: number;
+  /** Line height in px; 0 = automatic. */
+  lineHeight: number;
+  /** Integrated terminal font size (px). */
+  terminalFontSize: number;
+  cursorStyle: "line" | "block" | "underline";
+  /** Use spaces for Tab (files with detectable indentation still win). */
+  insertSpaces: boolean;
+  fontLigatures: boolean;
+  trimTrailingWhitespace: boolean;
+  /** Ensure the file ends with exactly one newline on (manual) save. */
+  insertFinalNewline: boolean;
   /**
    * Desktop-only: Monaco theme id (built-in from `BUILTIN_DESKTOP_THEMES`
    * or `shogo-user-<slug>` for an imported custom theme). Ignored by the
@@ -80,12 +111,24 @@ export const DEFAULT_SETTINGS: EditorSettings = {
     "'JetBrains Mono', 'Fira Code', 'Cascadia Code', Menlo, Consolas, 'Liberation Mono', monospace",
   tabSize: 2,
   wordWrap: "off",
+  previewTabs: true,
   minimap: true,
+  minimapSide: "right",
+  minimapSize: "proportional",
+  minimapScale: 1,
   lineNumbers: "on",
   renderWhitespace: "none",
   bracketPairs: true,
   autoSave: true,
   formatOnSave: false,
+  autoSaveDelay: 1000,
+  lineHeight: 0,
+  terminalFontSize: 13,
+  cursorStyle: "line",
+  insertSpaces: true,
+  fontLigatures: true,
+  trimTrailingWhitespace: false,
+  insertFinalNewline: false,
 };
 
 export interface Root {

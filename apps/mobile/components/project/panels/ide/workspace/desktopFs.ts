@@ -31,6 +31,8 @@
 
 import type { FileNode } from '@shogo-ai/sdk/agent'
 import { SdkFs } from './sdkFs'
+import { sortTree } from './tree-sort'
+import { languageFor } from './language'
 import type {
   SearchOptions,
   SearchResponse,
@@ -63,6 +65,7 @@ export interface DesktopFsBridge {
       size?: number
       children?: unknown
       lazy?: boolean
+      ignored?: boolean
     }>
     error?: string
   }>
@@ -113,44 +116,19 @@ export function isFolderLinkedProject(project: {
     || (typeof project.folderPath === 'string' && project.folderPath.length > 0)
 }
 
-const LANG_BY_EXT: Record<string, string> = {
-  '.ts': 'typescript', '.tsx': 'typescript', '.js': 'javascript', '.jsx': 'javascript',
-  '.mjs': 'javascript', '.cjs': 'javascript',
-  '.json': 'json', '.jsonc': 'json',
-  '.md': 'markdown', '.mdx': 'markdown',
-  '.css': 'css', '.scss': 'scss', '.less': 'less', '.html': 'html', '.htm': 'html',
-  '.xml': 'xml', '.svg': 'xml',
-  '.yml': 'yaml', '.yaml': 'yaml', '.toml': 'toml', '.ini': 'ini',
-  '.sh': 'shell', '.bash': 'shell', '.zsh': 'shell',
-  '.py': 'python', '.rb': 'ruby', '.go': 'go', '.rs': 'rust',
-  '.java': 'java', '.kt': 'kotlin', '.swift': 'swift',
-  '.c': 'c', '.h': 'c', '.cpp': 'cpp', '.cc': 'cpp', '.hpp': 'cpp',
-  '.cs': 'csharp', '.php': 'php', '.sql': 'sql',
-  '.graphql': 'graphql', '.gql': 'graphql',
-  '.prisma': 'prisma', '.env': 'plaintext',
-  '.dockerfile': 'dockerfile',
-  '.lock': 'yaml',
-}
 
-function extOf(p: string): string {
-  const base = p.split('/').pop() ?? p
-  const dot = base.lastIndexOf('.')
-  return dot >= 0 ? base.slice(dot).toLowerCase() : ''
-}
-function languageFor(path: string): string {
-  const ext = extOf(path)
-  if (ext) return LANG_BY_EXT[ext] ?? 'plaintext'
-  const name = path.split('/').pop() ?? ''
-  if (/^dockerfile/i.test(name)) return 'dockerfile'
-  if (/^makefile/i.test(name)) return 'makefile'
-  return 'plaintext'
-}
 
 function toWsNode(fn: NonNullable<Awaited<ReturnType<DesktopFsBridge['listTree']>>['tree']>[number]): WsNode {
   if (fn.type !== 'directory') {
-    return { name: fn.name, path: fn.path, kind: 'file', language: languageFor(fn.path) }
+    return {
+      name: fn.name,
+      path: fn.path,
+      kind: 'file',
+      language: languageFor(fn.path),
+      ...(fn.ignored ? { ignored: true } : {}),
+    }
   }
-  const dir: WsNode = { name: fn.name, path: fn.path, kind: 'dir' }
+  const dir: WsNode = { name: fn.name, path: fn.path, kind: 'dir', ...(fn.ignored ? { ignored: true } : {}) }
   if (fn.lazy) {
     dir.lazy = true
   } else if (Array.isArray(fn.children)) {
@@ -188,7 +166,7 @@ export class DesktopFs implements WorkspaceService {
       // proper error to the FileTree's error UI.
       return this.sdkFs.listTree(path)
     }
-    return (res.tree ?? []).map(toWsNode)
+    return sortTree((res.tree ?? []).map(toWsNode))
   }
 
   async readFile(path: string): Promise<WsFile> {
@@ -237,12 +215,24 @@ export class DesktopFs implements WorkspaceService {
     return this.sdkFs.writeFile(path, content)
   }
 
+  writeFileBytes(path: string, bytes: Uint8Array): Promise<void> {
+    return this.sdkFs.writeFileBytes(path, bytes)
+  }
+
   mkdir(path: string): Promise<void> {
     return this.sdkFs.mkdir(path)
   }
 
   remove(path: string): Promise<void> {
     return this.sdkFs.remove(path)
+  }
+
+  listFiles(): Promise<string[]> {
+    return this.sdkFs.listFiles()
+  }
+
+  copy(from: string, to: string): Promise<void> {
+    return this.sdkFs.copy(from, to)
   }
 
   rename(from: string, to: string): Promise<void> {

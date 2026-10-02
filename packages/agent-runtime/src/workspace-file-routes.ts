@@ -20,7 +20,17 @@
  */
 
 import { Hono } from 'hono'
-import { existsSync, mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'fs'
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from 'fs'
 import { dirname, extname, join, relative, resolve } from 'path'
 import { isBinaryBuffer, isBinaryFilePath } from '@shogo-ai/sdk/file-types'
 import { isWithinRoot } from './path-boundary'
@@ -31,6 +41,7 @@ import {
   WORKSPACE_TREE_LAZY_DIRS,
 } from './fs-tree-walker'
 import type { CanvasEvent } from './canvas-file-watcher'
+import { grepWorkspace, GrepError, listWorkspaceFiles, type GrepRequest } from './workspace-grep'
 
 /**
  * Resolve `subPath` under `root`, or null if it escapes. `isWithinRoot` is
@@ -266,11 +277,133 @@ export function workspaceFileRoutes(config: WorkspaceFileRoutesConfig) {
     const resolved = resolveWithinRoot(requestRoot(c).root, subPath)
     if (!resolved) return c.json({ error: 'Path outside workspace' }, 400)
     if (!existsSync(resolved)) return c.json({ error: 'File not found' }, 404)
-    if (isDirectoryPath(resolved)) return c.json({ error: 'Path is a directory' }, 400)
+    if (isDirectoryPath(resolved)) {
+      // Directories are only removed on explicit request — the Agent Files
+      // panel relies on the plain DELETE refusing folders.
+      if (c.req.query('recursive') !== 'true') {
+        return c.json({ error: 'Path is a directory' }, 400)
+      }
+      // Never allow deleting the scope root itself.
+      if (resolve(resolved) === resolve(requestRoot(c).root)) {
+        return c.json({ error: 'Cannot delete the workspace root' }, 400)
+      }
+      rmSync(resolved, { recursive: true, force: true })
+      config.onFileDeleted?.(workspaceRelativePath(workspaceDir, resolved))
+      return c.json({ ok: true, deleted: subPath, recursive: true })
+    }
 
     unlinkSync(resolved)
     config.onFileDeleted?.(workspaceRelativePath(workspaceDir, resolved))
     return c.json({ ok: true, deleted: subPath })
+  })
+
+  // Rename / move a file or directory. Uses the filesystem's native rename so
+  // binary files, folders and large trees survive (the old client-side
+  // read + write + delete lost data on case-insensitive filesystems when only
+  // the case of a name changed).
+  app.post('/agent/workspace/rename', async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as { from?: unknown; to?: unknown }
+    if (typeof body.from !== 'string' || typeof body.to !== 'string' || !body.from || !body.to) {
+      return c.json({ error: 'from and to are required' }, 400)
+    }
+    const { root } = requestRoot(c)
+    const src = resolveWithinRoot(root, body.from)
+    const dest = resolveWithinRoot(root, body.to)
+    if (!src || !dest) return c.json({ error: 'Path outside workspace' }, 400)
+    if (resolve(src) === resolve(root) || resolve(dest) === resolve(root)) {
+      return c.json({ error: 'Cannot rename the workspace root' }, 400)
+    }
+    if (!existsSync(src)) return c.json({ error: 'Source not found' }, 404)
+    if (src === dest) return c.json({ ok: true, from: body.from, to: body.to })
+    if (isDirectoryPath(src) && isWithinRoot(src, dest)) {
+      return c.json({ error: 'Cannot move a folder into itself' }, 400)
+    }
+
+    // A destination that "exists" only because the filesystem is
+    // case-insensitive and it is the same entry as the source is a case-only
+    // rename, which is allowed. Anything else is a real collision.
+    const caseOnly = src.toLowerCase() === dest.toLowerCase()
+    if (existsSync(dest) && !caseOnly) {
+      return c.json({ error: 'Destination already exists' }, 409)
+    }
+
+    mkdirSync(dirname(dest), { recursive: true })
+    if (caseOnly) {
+      // Hop through a temp name so case-insensitive filesystems (macOS APFS,
+      // Windows NTFS) actually change the stored case.
+      const tmp = `${src}.shogo-rename-${process.pid}-${Date.now()}`
+      renameSync(src, tmp)
+      renameSync(tmp, dest)
+    } else {
+      renameSync(src, dest)
+    }
+
+    config.onFileDeleted?.(workspaceRelativePath(workspaceDir, src))
+    if (!isDirectoryPath(dest)) {
+      config.onFileWritten?.(workspaceRelativePath(workspaceDir, dest), dest)
+    }
+    return c.json({ ok: true, from: body.from, to: body.to })
+  })
+
+  // Flat list of every file path (⌘P index) — covers directories the lazy
+  // tree hasn't loaded yet.
+  app.get('/agent/workspace/file-list', async (c) => {
+    const { root } = requestRoot(c)
+    try {
+      const limit = Number(c.req.query('limit'))
+      return c.json(await listWorkspaceFiles(root, Number.isFinite(limit) && limit > 0 ? { limit } : {}))
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : 'List failed' }, 500)
+    }
+  })
+
+  // Full-text search (IDE Search view). Runs ripgrep when available, else a
+  // bounded JS walker; honours .gitignore/.shogoignore and include/exclude globs.
+  app.post('/agent/workspace/grep', async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as Partial<GrepRequest>
+    if (typeof body.query !== 'string') return c.json({ error: 'query is required' }, 400)
+    const { root } = requestRoot(c)
+    try {
+      const res = await grepWorkspace(root, {
+        query: body.query,
+        regex: body.regex === true,
+        caseSensitive: body.caseSensitive === true,
+        include: typeof body.include === 'string' ? body.include : undefined,
+        exclude: typeof body.exclude === 'string' ? body.exclude : undefined,
+        limit: typeof body.limit === 'number' ? body.limit : undefined,
+        maxPerFile: typeof body.maxPerFile === 'number' ? body.maxPerFile : undefined,
+      })
+      return c.json(res)
+    } catch (err) {
+      if (err instanceof GrepError) return c.json({ error: err.message }, 400)
+      return c.json({ error: err instanceof Error ? err.message : 'Search failed' }, 500)
+    }
+  })
+
+  // Copy a file or folder (Explorer Duplicate / Paste). `cpSync` is binary-safe
+  // and recursive; an existing destination is a 409 so nothing is overwritten.
+  app.post('/agent/workspace/copy', async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as { from?: unknown; to?: unknown }
+    if (typeof body.from !== 'string' || typeof body.to !== 'string' || !body.from || !body.to) {
+      return c.json({ error: 'from and to are required' }, 400)
+    }
+    const { root } = requestRoot(c)
+    const src = resolveWithinRoot(root, body.from)
+    const dest = resolveWithinRoot(root, body.to)
+    if (!src || !dest) return c.json({ error: 'Path outside workspace' }, 400)
+    if (resolve(src) === resolve(root) || resolve(dest) === resolve(root)) {
+      return c.json({ error: 'Cannot copy the workspace root' }, 400)
+    }
+    if (!existsSync(src)) return c.json({ error: 'Source not found' }, 404)
+    if (existsSync(dest)) return c.json({ error: 'Destination already exists' }, 409)
+    const srcIsDir = isDirectoryPath(src)
+    if (srcIsDir && isWithinRoot(src, dest)) {
+      return c.json({ error: 'Cannot copy a folder into itself' }, 400)
+    }
+    mkdirSync(dirname(dest), { recursive: true })
+    cpSync(src, dest, { recursive: true, errorOnExist: true, force: false })
+    if (!srcIsDir) config.onFileWritten?.(workspaceRelativePath(workspaceDir, dest), dest)
+    return c.json({ ok: true, from: body.from, to: body.to })
   })
 
   // Create a directory. Unscoped, this is the agent-files panel's "New

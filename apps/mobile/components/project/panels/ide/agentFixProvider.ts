@@ -25,6 +25,33 @@ type MonacoNs = typeof import("monaco-editor");
 /** CustomEvent name dispatched when the user clicks "Fix with Shogo". */
 export const FIX_IN_AGENT_EVENT = "shogo:fix-in-agent";
 
+/** Window event: ask the active chat to work on a piece of code ("Explain selection"…). */
+export const ASK_IN_AGENT_EVENT = "shogo:ask-in-agent";
+
+export interface AskInAgentPayload {
+  /** Fully formed prompt to send as the next chat message. */
+  prompt: string;
+}
+
+/** Prompt for an editor-selection action (`kind` picks the instruction). */
+export function buildSelectionPrompt(p: {
+  kind: "explain" | "improve" | "tests";
+  path: string;
+  startLine: number;
+  endLine: number;
+  language: string;
+  text: string;
+}): string {
+  const loc = `\`${p.path}\`:${p.startLine}${p.endLine !== p.startLine ? `-${p.endLine}` : ""}`;
+  const ask =
+    p.kind === "explain"
+      ? "Explain what this code does and call out anything surprising or risky."
+      : p.kind === "tests"
+        ? "Write tests for this code. Match the project's existing test framework and conventions."
+        : "Review this code and improve it (readability, correctness, edge cases). Apply a minimal, focused change.";
+  return [`Selection in ${loc}:`, "", "```" + (p.language || ""), p.text, "```", "", ask].join("\n");
+}
+
 export type FixSeverity = "error" | "warning" | "info" | "hint";
 
 export interface FixInAgentPayload {

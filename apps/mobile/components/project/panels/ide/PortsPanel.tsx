@@ -268,12 +268,12 @@ export function PortsPanel({ visible, bridge: bridgeOverride }: PortsPanelProps)
     <div
       data-testid="bottompanel-pane-ports"
       aria-hidden={!visible}
-      className="relative flex h-full w-full flex-col overflow-hidden bg-[#1e1e1e] text-[#cccccc]"
+      className="relative flex h-full w-full flex-col overflow-hidden bg-[color:var(--ide-bg)] text-[color:var(--ide-text)]"
     >
       <PortsStyles />
       <div className="flex-1 overflow-auto">
         <table className="w-full border-collapse text-[12px]" role="table" aria-label="Forwarded ports">
-          <thead className="sticky top-0 z-10 bg-[#252526] text-[11px] uppercase tracking-wider text-[#858585]">
+          <thead className="sticky top-0 z-10 bg-[color:var(--ide-surface)] text-[11px] uppercase tracking-wider text-[color:var(--ide-muted)]">
             <tr>
               <th className="px-3 py-1.5 text-left font-semibold">Port</th>
               <th className="px-3 py-1.5 text-left font-semibold">Forwarded Address</th>
@@ -303,20 +303,20 @@ export function PortsPanel({ visible, bridge: bridgeOverride }: PortsPanelProps)
                   onFocus={() => setSelectedKey(key)}
                   onKeyDown={(e) => handleRowKeyDown(e, p)}
                   className={[
-                    'cursor-pointer border-b border-[#2d2d2d] hover:bg-[#2a2d2e] focus:bg-[#062f4a] focus:outline-none',
-                    isSelected ? 'bg-[#062f4a]' : '',
+                    'cursor-pointer border-b border-[color:var(--ide-border)] hover:bg-[color:var(--ide-hover)] focus:bg-[color:var(--ide-active-bg)] focus:outline-none',
+                    isSelected ? 'bg-[color:var(--ide-active-bg)]' : '',
                     isNew ? 'port-row-new' : '',
                   ].join(' ').trim()}
                 >
                   <td className="px-3 py-1.5 font-mono">{p.port}</td>
-                  <td className="px-3 py-1.5 font-mono text-[#3794ff] underline-offset-2 hover:underline">
+                  <td className="px-3 py-1.5 font-mono text-[color:var(--ide-primary)] underline-offset-2 hover:underline">
                     {forwardedAddress(p.port, p.address)}
                   </td>
                   <td className="px-3 py-1.5">
                     <span className="font-mono">{p.command}</span>
-                    <span className="ml-2 text-[#858585]">({p.pid})</span>
+                    <span className="ml-2 text-[color:var(--ide-muted)]">({p.pid})</span>
                   </td>
-                  <td className="px-3 py-1.5 font-mono text-[#cccccc]">{p.address}</td>
+                  <td className="px-3 py-1.5 font-mono text-[color:var(--ide-text)]">{p.address}</td>
                   <td className="px-3 py-1.5">{visibilityLabel(p.address)}</td>
                 </tr>
               )
@@ -347,11 +347,11 @@ function EmptyState({ visible, heading, body }: { visible: boolean; heading: str
     <div
       data-testid="bottompanel-pane-ports"
       aria-hidden={!visible}
-      className="flex h-full w-full items-center justify-center bg-[#1e1e1e] text-[#858585]"
+      className="flex h-full w-full items-center justify-center bg-[color:var(--ide-bg)] text-[color:var(--ide-muted)]"
     >
       <div className="flex max-w-md flex-col items-center gap-2 px-6 text-center">
-        <p className="text-xs uppercase tracking-wider text-[#858585]">Ports</p>
-        <p className="text-sm text-[#cccccc]">{heading}</p>
+        <p className="text-xs uppercase tracking-wider text-[color:var(--ide-muted)]">Ports</p>
+        <p className="text-sm text-[color:var(--ide-text)]">{heading}</p>
         <p className="text-[11px] leading-snug">{body}</p>
       </div>
     </div>
@@ -392,13 +392,13 @@ function PortsContextMenu({
       role="menu"
       data-testid="ports-context-menu"
       style={{ left: pos.x, top: pos.y }}
-      className="fixed z-50 min-w-[200px] rounded border border-[#454545] bg-[#252526] py-1 text-[12px] text-[#cccccc] shadow-lg"
+      className="fixed z-50 min-w-[200px] rounded border border-[color:var(--ide-border-muted)] bg-[color:var(--ide-surface)] py-1 text-[12px] text-[color:var(--ide-text)] shadow-lg"
       onMouseDown={(e) => e.stopPropagation()}
     >
       <MenuItem label="Open in Browser" onClick={() => onOpen(entry)} />
       <MenuItem label="Copy Local Address" onClick={() => void onCopyAddress(entry)} />
       <MenuItem label="Copy Command Line" onClick={() => void onCopyCommandLine(entry)} />
-      <div className="my-1 border-t border-[#3c3c3c]" />
+      <div className="my-1 border-t border-[color:var(--ide-border-strong)]" />
       <MenuItem
         label="Stop Forwarding (Kill Process)"
         onClick={() => void onKill(entry)}
@@ -415,8 +415,8 @@ function MenuItem({ label, onClick, destructive }: { label: string; onClick(): v
       role="menuitem"
       onClick={onClick}
       className={[
-        'block w-full px-3 py-1.5 text-left hover:bg-[#094771]',
-        destructive ? 'text-[#f48771]' : '',
+        'block w-full px-3 py-1.5 text-left hover:bg-[color:var(--ide-active-bg)]',
+        destructive ? 'text-[color:var(--ide-error)]' : '',
       ].join(' ').trim()}
     >
       {label}
