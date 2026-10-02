@@ -59,6 +59,35 @@ export const DARK_PLUS_THEME: XtermTheme = {
   brightWhite: '#e5e5e5',
 }
 
+/** VS Code "Light+" terminal palette — used when the IDE is in light mode. */
+export const LIGHT_PLUS_THEME: XtermTheme = {
+  foreground: '#333333',
+  background: '#ffffff',
+  cursor: '#333333',
+  cursorAccent: '#ffffff',
+  selectionBackground: '#add6ff',
+  black: '#000000',
+  red: '#cd3131',
+  green: '#00bc00',
+  yellow: '#949800',
+  blue: '#0451a5',
+  magenta: '#bc05bc',
+  cyan: '#0598bc',
+  white: '#555555',
+  brightBlack: '#666666',
+  brightRed: '#cd3131',
+  brightGreen: '#14ce14',
+  brightYellow: '#b5ba00',
+  brightBlue: '#0451a5',
+  brightMagenta: '#bc05bc',
+  brightCyan: '#0598bc',
+  brightWhite: '#a5a5a5',
+}
+
+export function xtermThemeFor(mode: 'dark' | 'light'): XtermTheme {
+  return mode === 'light' ? LIGHT_PLUS_THEME : DARK_PLUS_THEME
+}
+
 export const TERMINAL_DEFAULTS = {
   fontFamily:
     'Menlo, "DejaVu Sans Mono", "Cascadia Code", Consolas, monospace',

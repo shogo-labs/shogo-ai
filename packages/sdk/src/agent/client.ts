@@ -278,9 +278,68 @@ export class AgentClient {
     }, { scoped: true })
   }
 
-  async deleteFile(path: string): Promise<void> {
-    await this.fetchJson(`/agent/workspace/files/${this.encodePath(path)}`, {
+  /**
+   * Delete a workspace file. Pass `{ recursive: true }` to delete a
+   * directory and everything under it; without it the runtime refuses
+   * directories.
+   */
+  async deleteFile(path: string, opts?: { recursive?: boolean }): Promise<void> {
+    const qs = opts?.recursive ? '?recursive=true' : ''
+    await this.fetchJson(`/agent/workspace/files/${this.encodePath(path)}${qs}`, {
       method: 'DELETE',
+    }, { scoped: true })
+  }
+
+  /**
+   * Rename or move a file or directory with the filesystem's native rename
+   * (atomic, binary-safe, handles folders and case-only renames).
+   */
+  async renameWorkspacePath(from: string, to: string): Promise<void> {
+    await this.fetchJson('/agent/workspace/rename', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ from, to }),
+    }, { scoped: true })
+  }
+
+  /** Every file path in the workspace (⌘P index), including not-yet-loaded folders. */
+  async listWorkspaceFiles(limit?: number): Promise<{ files: string[]; truncated: boolean }> {
+    return this.fetchJson(
+      `/agent/workspace/file-list${limit ? `?limit=${limit}` : ''}`,
+      undefined,
+      { scoped: true },
+    )
+  }
+
+  /** Copy a file or folder (binary-safe, recursive). Rejects on name collision. */
+  async copyWorkspacePath(from: string, to: string): Promise<void> {
+    await this.fetchJson('/agent/workspace/copy', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ from, to }),
+    }, { scoped: true })
+  }
+
+  /**
+   * Line-level full-text search run next to the files (ripgrep when
+   * available). Throws `Agent API 404/405` on runtimes that predate the route.
+   */
+  async grepWorkspace(req: {
+    query: string
+    regex?: boolean
+    caseSensitive?: boolean
+    include?: string
+    exclude?: string
+    limit?: number
+  }): Promise<{
+    results: Array<{ path: string; matches: Array<{ line: number; col: number; preview: string }> }>
+    truncated: boolean
+    engine?: string
+  }> {
+    return this.fetchJson('/agent/workspace/grep', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(req),
     }, { scoped: true })
   }
 

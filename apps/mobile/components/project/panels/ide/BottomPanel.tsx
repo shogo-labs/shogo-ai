@@ -54,12 +54,12 @@ function PanelMenuItem({
       role="menuitem"
       disabled={disabled}
       className={`flex w-full items-center justify-between px-3 py-1.5 text-xs ${
-        disabled ? "cursor-default text-[#585858]" : "text-[#cccccc] hover:bg-[#0078d4]/60"
+        disabled ? "cursor-default text-[color:var(--ide-muted-strong)]" : "text-[color:var(--ide-text)] hover:bg-[color:var(--ide-primary)]/60"
       }`}
       onClick={disabled ? undefined : onClick}
     >
       <span>{label}</span>
-      {shortcut && <span className="ml-6 text-[#858585]">{shortcut}</span>}
+      {shortcut && <span className="ml-6 text-[color:var(--ide-muted)]">{shortcut}</span>}
     </button>
   );
 }
@@ -100,6 +100,8 @@ export function BottomPanel({
   const unseenForThisProject = useBottomPanelState((s) =>
     projectId ? (s.unseenErrorsByProject[projectId] ?? 0) : 0,
   );
+
+  const problemCount = useBottomPanelState((s) => s.problemCount);
 
   // Local nonce incremented by the "New Terminal" panel-header button.
   const [localNewNonce, setLocalNewNonce] = React.useState(0);
@@ -187,11 +189,12 @@ export function BottomPanel({
       { id: "panel.problems",     key: "m", mod: true, shift: true, run: () => handleSelect("Problems") },
       { id: "panel.output",       key: "u", mod: true, shift: true, run: () => handleSelect("Output") },
       { id: "panel.debugConsole", key: "y", mod: true, shift: true, run: () => handleSelect("Debug Console") },
+      // NOTE: ⌘J is NOT bound here either — Workbench owns it as the panel
+      // toggle; binding maximize to the same chord fired both at once.
       // NOTE: Ctrl+` is intentionally NOT bound here — Workbench.tsx owns
       // the panel toggle (⌘J / view.toggleBottomPanel) and Ctrl+` in
       // Electron also maps to "Toggle DevTools", causing a conflict.
-      { id: "panel.maximize",     key: "j", mod: true,              run: handleMaximize },
-    ]), [handleSelect, handleMaximize]),
+    ]), [handleSelect]),
   );
 
   // Per-tab pane wiring. Kept as a small inline table so the JSX below
@@ -249,11 +252,11 @@ export function BottomPanel({
   };
 
   return (
-    <div className="relative flex h-full flex-col bg-[#1e1e1e]">
+    <div className="relative flex h-full flex-col bg-[color:var(--ide-bg)]">
       <PanelTabStrip
         activeTab={tab}
         onSelect={handleSelect}
-        badges={{ Output: unseenForThisProject }}
+        badges={{ Output: unseenForThisProject, Problems: problemCount }}
         extensionTabs={extensionPanelContainers}
         onNewTerminal={() => setLocalNewNonce((n) => n + 1)}
         onMaximize={handleMaximize}
@@ -289,7 +292,7 @@ export function BottomPanel({
             zIndex: 9999,
           }}
           ref={menuRef}
-          className="w-64 min-w-[180px] overflow-y-auto rounded-md border border-[#454545] bg-[#252526] py-1 shadow-xl"
+          className="w-64 min-w-[180px] overflow-y-auto rounded-md border border-[color:var(--ide-border-muted)] bg-[color:var(--ide-surface)] py-1 shadow-xl"
         >
           {tab === "Terminal" && terminalControls && (
             <>
@@ -319,7 +322,7 @@ export function BottomPanel({
                 label="Run Selected Text"
                 onClick={() => { terminalControls.onRunSelectedText(); setPanelActionsOpen(false); }}
               />
-              <div className="my-1 border-t border-[#454545]" />
+              <div className="my-1 border-t border-[color:var(--ide-border-muted)]" />
               <PanelMenuItem
                 label="Go to Recent Directory..."
                 shortcut="⌘G"
@@ -330,7 +333,7 @@ export function BottomPanel({
                 shortcut="⌃⌥R"
                 onClick={() => { terminalControls.onRunRecent(); setPanelActionsOpen(false); }}
               />
-              <div className="my-1 border-t border-[#454545]" />
+              <div className="my-1 border-t border-[color:var(--ide-border-muted)]" />
             </>
           )}
           <PanelMenuItem

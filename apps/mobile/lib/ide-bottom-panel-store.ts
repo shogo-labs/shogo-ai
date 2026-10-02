@@ -77,6 +77,8 @@ export interface BottomPanelState {
   newTerminalNonce: number
   /** Per-projectId red-dot counter for the Output tab. */
   unseenErrorsByProject: Record<string, number>
+  /** Live count of editor errors+warnings (Problems tab badge). Not persisted. */
+  problemCount: number
   /**
    * Tracks the projects we've already auto-opened the drawer for during
    * this tab's lifetime. The auto-open behavior fires once per (project,
@@ -121,6 +123,7 @@ function readPersistedState(): BottomPanelState {
       tabRaw && BOTTOM_PANEL_TABS.includes(tabRaw) ? tabRaw : 'Terminal',
     newTerminalNonce: 0,
     unseenErrorsByProject: {},
+    problemCount: 0,
     autoOpenedByProject: {},
     extensionPanelContainers: [],
   }
@@ -242,6 +245,11 @@ export const ideBottomPanelStore = {
   __resetForTest(): void {
     state = readPersistedState()
     listeners.clear()
+  },
+
+  setProblemCount(n: number): void {
+    if (state.problemCount === n) return
+    set({ problemCount: n })
   },
 
   setActiveEditorPath(path: string | null): void {

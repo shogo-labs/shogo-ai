@@ -6,14 +6,27 @@ export function useResizable({
   max,
   direction,
   invert = false,
+  storageKey,
 }: {
+  /** Persist the size under this localStorage key (drag-end) and restore it on mount. */
+  storageKey?: string;
   initial: number;
   min: number;
   max: number;
   direction: "horizontal" | "vertical";
   invert?: boolean;
 }) {
-  const [size, setSize] = useState(initial);
+  const [size, setSize] = useState(() => {
+    if (!storageKey) return initial;
+    try {
+      const v = parseFloat(localStorage.getItem(storageKey) ?? "");
+      return Number.isFinite(v) ? Math.min(max, Math.max(min, v)) : initial;
+    } catch {
+      return initial;
+    }
+  });
+  const sizeRef = useRef(size);
+  sizeRef.current = size;
   const dragging = useRef(false);
   const start = useRef({ pos: 0, size: 0 });
 
@@ -45,6 +58,9 @@ export function useResizable({
       dragging.current = false;
       document.body.style.cursor = "";
       document.body.style.userSelect = "";
+      if (storageKey) {
+        try { localStorage.setItem(storageKey, String(sizeRef.current)); } catch { /* ignore */ }
+      }
     };
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
@@ -52,17 +68,35 @@ export function useResizable({
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
     };
-  }, [direction, invert, min, max]);
+  }, [direction, invert, min, max, storageKey]);
 
-  return { size, setSize, onMouseDown };
+  /** Double-click on the seam: back to the default size. */
+  const reset = useCallback(() => {
+    setSize(initial);
+    if (storageKey) {
+      try { localStorage.removeItem(storageKey); } catch { /* ignore */ }
+    }
+  }, [initial, storageKey]);
+
+  return { size, setSize, onMouseDown, reset };
 }
 
-export function VerticalSplit({ onMouseDown, className = "" }: { onMouseDown: (e: React.MouseEvent) => void; className?: string }) {
+export function VerticalSplit({
+  onMouseDown,
+  onDoubleClick,
+  className = "",
+}: {
+  onMouseDown: (e: React.MouseEvent) => void;
+  onDoubleClick?: () => void;
+  className?: string;
+}) {
   // Thin visual seam (1px) but a fat invisible hit area (7px) so users can
   // grab it without precision aim. Hover shows the accent colour.
   return (
     <div
       onMouseDown={onMouseDown}
+      onDoubleClick={onDoubleClick}
+      title={onDoubleClick ? "Drag to resize · double-click to reset" : undefined}
       className={`group relative w-[1px] shrink-0 cursor-col-resize bg-[color:var(--ide-border)] ${className}`}
     >
       <div

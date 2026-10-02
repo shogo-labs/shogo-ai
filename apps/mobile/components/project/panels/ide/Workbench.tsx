@@ -17,6 +17,7 @@ import { attachGitDecorations, maybeAutoStageIfConflictResolved } from "./git/ed
 import { MergeEditorModal } from "./git/MergeEditorModal";
 import { getDesktopGitBridge } from "./git/bridge";
 import { getDesktopFsBridge } from "./workspace/desktopFs";
+import { languageFor } from "./workspace/language";
 import { EditorGroupView } from "./EditorGroup";
 import { applyEditorChange } from "./editor-change-apply";
 import { collectDirtyFiles, resolveSaveTarget } from "./save-target";
@@ -49,7 +50,12 @@ import {
   type TreeNode,
 } from "./types";
 import { broadcastEditorFontChange } from "./useEditorFont";
-import { SearchPane } from "./SearchPane";
+import { SearchPane, type SearchPersist, type SearchSeed } from "./SearchPane";
+import { preloadMonaco } from "./CodeEditor";
+import { applyDirty, loadDirty, saveDirty, snapshotDirty } from "./hotExit";
+import { findDir, mergeDirChildren, nearestLoadedDir, parentDir } from "./workspace/tree-merge";
+import { OPEN_FILE_EVENT, type OpenFileDetail } from "./terminal/file-links";
+import { loadRecents, loadSession, pushRecent, saveRecents, saveSession, sessionHasTabs, snapshotSession } from "./session";
 import { SettingsPane } from "./SettingsPane";
 import { ExtensionsViewlet, TrustPublisherDialog } from "./extensions/ExtensionsViewlet";
 import { collectRuntimeContainers, ExtensionRuntimeViewlet } from "./extensions/ExtensionRuntimeViewlet";
@@ -57,8 +63,15 @@ import { getDesktopExtensionsBridge, useExtensions } from "./extensions/useExten
 import type { ExtensionHostEvent, ExtensionRuntimeViewResult, ExtensionRuntimeWebviewPanel, ExtensionSearchResult, ExtensionUiRequest, ExtensionUsableEntryPoint, ExtensionWorkspaceState, InstalledExtension } from "./extensions/types";
 import { useLiveAgentEdits, type LiveConflict } from "./useLiveAgentEdits";
 import { AgentEditBanner } from "./AgentEditBanner";
+import { ConfirmDialog, describeFileNames, type ConfirmButton } from "./ConfirmDialog";
 import { applyAgentEdit, type MonacoNs } from "./agentEditAnimation";
-import { FIX_IN_AGENT_EVENT, type FixInAgentPayload } from "./agentFixProvider";
+import {
+  ASK_IN_AGENT_EVENT,
+  FIX_IN_AGENT_EVENT,
+  buildSelectionPrompt,
+  type AskInAgentPayload,
+  type FixInAgentPayload,
+} from "./agentFixProvider";
 import type { WorkspaceService } from "./workspace/types";
 // Workspace services are injected by the parent (WorkspaceService impls per root).
 import { isFsaSupported, pickDirectory, ensurePermission, LocalFs } from "./workspace/localFs";
@@ -68,6 +81,14 @@ import { setupLspProviders } from "./monaco/lspProviders";
 import { setupLspDocumentSync } from "./monaco/lspDocumentSync";
 import { matchesShortcut, type Command } from "./commands";
 import { resolvePaletteIntent } from "./keybindings";
+import {
+  INITIAL_ZEN_STATE,
+  advanceZenChord,
+  computeChromeVisibility,
+  shouldExitOnEscape,
+  toggleZen,
+  type ZenState,
+} from "./zen-mode";
 import { useTheme } from "../../../../contexts/theme";
 import { isBinaryFilePath } from "@shogo-ai/sdk/file-types";
 import {
@@ -77,7 +98,9 @@ import {
   FilePlus,
   FolderPlus,
   FolderOpen,
+  Folder,
   PanelLeftClose,
+  ChevronsDownUp,
   GitBranch,
   X,
 } from "lucide-react-native";
@@ -249,7 +272,7 @@ export function Workbench({
   remoteHostId?: string | null;
   primarySideBarPosition?: PrimarySideBarPosition;
   /** Open this workspace-relative file once the agent root is loaded. */
-  requestedFile?: { path: string; nonce: number } | null;
+  requestedFile?: { path: string; nonce: number; line?: number; column?: number } | null;
 }) {
   const themeMode = useResolvedTheme();
   const [activity, setActivity] = useState<ActivityId>("files");
@@ -336,7 +359,23 @@ export function Workbench({
   const [newRequest, setNewRequest] = useState<
     { kind: "file" | "dir"; nonce: number; rootId?: string } | null
   >(null);
-  const [palette, setPalette] = useState<"command" | "file" | null>(null);
+  const [palette, setPalette] = useState<"command" | "file" | "line" | "language" | null>(null);
+
+  // Zen mode (⌘K Z, double-Esc to leave). Chrome is *derived* from this state,
+  // so leaving zen restores the exact previous layout with nothing to undo
+  // except the bottom drawer (lives outside Workbench) and browser fullscreen.
+  const [zen, setZen] = useState<ZenState>(INITIAL_ZEN_STATE);
+  const chrome = useMemo(() => computeChromeVisibility(zen), [zen]);
+  const zenPanelRestoreRef = useRef<boolean | null>(null);
+  const zenChordPendingRef = useRef(false);
+  const zenChordTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastEscapeAtRef = useRef<number | null>(null);
+  const [markerCounts, setMarkerCounts] = useState({ errors: 0, warnings: 0 });
+  const [editorInfo, setEditorInfo] = useState<{ selection: string | null; indent: string; eol: "LF" | "CRLF" }>({
+    selection: null,
+    indent: "Spaces: 2",
+    eol: "LF",
+  });
 
   // Editor settings — persisted to localStorage
   const [settings, setSettings] = useState<EditorSettings>(() => {
@@ -374,9 +413,10 @@ export function Workbench({
       root.style.setProperty("--ide-mono-font", settings.fontFamily);
     }
     broadcastEditorFontChange(settings.fontFamily);
-  }, [settings.fontFamily]);
+  }, [settings.fontFamily, settings.terminalFontSize]);
 
   const sidebarSplit = useResizable({
+    storageKey: "shogo.ide.sidebarWidth",
     initial: 280,
     min: 200,
     max: 540,
@@ -386,6 +426,11 @@ export function Workbench({
   const groupSplit = useResizable({ initial: 0.5, min: 0.2, max: 0.8, direction: "horizontal" });
 
   const editorRefs = useRef<Record<string, editor.IStandaloneCodeEditor>>({});
+  const [searchSeed, setSearchSeed] = useState<SearchSeed | undefined>(undefined);
+  const searchPersistRef = useRef<SearchPersist | undefined>(undefined);
+  const persistSearch = useCallback((s: SearchPersist) => {
+    searchPersistRef.current = s;
+  }, []);
   const monacoNsRef = useRef<MonacoNs | null>(null);
   // Bumped each time a Monaco editor mounts so the backend-LSP wiring effect
   // below can run as soon as `monaco` is first available (effects can't read
@@ -394,6 +439,55 @@ export function Workbench({
 
   const groupsRef = useRef(groups);
   groupsRef.current = groups;
+
+  // In-IDE confirm dialog (Save / Don't Save / Cancel etc.). A promise API
+  // keeps call sites linear; never call this from inside a state updater.
+  const [confirmReq, setConfirmReq] = useState<{
+    title: string;
+    message: React.ReactNode;
+    buttons: ConfirmButton<string>[];
+    cancelValue: string;
+  } | null>(null);
+  const confirmResolveRef = useRef<((v: string) => void) | null>(null);
+  const confirmReqCancelRef = useRef<string>("cancel");
+  const resolveConfirm = useCallback((value: string) => {
+    const r = confirmResolveRef.current;
+    confirmResolveRef.current = null;
+    setConfirmReq(null);
+    r?.(value);
+  }, []);
+  const askConfirm = useCallback(
+    <T extends string>(req: {
+      title: string;
+      message: React.ReactNode;
+      buttons: ConfirmButton<T>[];
+      cancelValue: T;
+    }): Promise<T> =>
+      new Promise<T>((resolve) => {
+        // A newer prompt supersedes an unanswered one (treated as cancel).
+        confirmResolveRef.current?.(confirmReqCancelRef.current);
+        confirmReqCancelRef.current = req.cancelValue;
+        confirmResolveRef.current = resolve as (v: string) => void;
+        setConfirmReq(req as unknown as NonNullable<typeof confirmReq>);
+      }),
+    [],
+  );
+
+  // Warn before the page unloads while any buffer has unsaved edits.
+  const hasDirtyFiles = useMemo(
+    () => groups.some((g) => g.files.some((f) => f.dirty)),
+    [groups],
+  );
+  useEffect(() => {
+    if (!hasDirtyFiles || typeof window === "undefined") return;
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, [hasDirtyFiles]);
+
   const autosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const prevActiveIdForAutosaveRef = useRef<string | null>(null);
   // Ref so `persistOpenFile` can reach the latest git root without
@@ -428,6 +522,9 @@ export function Workbench({
     return () => { ideBottomPanelStore.setGetEditorSelection(null); };
   });
 
+  const rootsRef = useRef(roots);
+  rootsRef.current = roots;
+
   // ─── Virtual tree (wraps each root as an expandable "workspace" entry) ──
   const virtualTree = useMemo<TreeNode[]>(
     () =>
@@ -447,6 +544,9 @@ export function Workbench({
     setRoots((prev) => prev.map((r) => (r.id === id ? { ...r, ...patch } : r)));
   }, []);
 
+  /** Lazy dirs (node_modules, dist…) the user has expanded, per root. */
+  const loadedLazyRef = useRef<Record<string, Set<string>>>({});
+
   const loadRoot = useCallback(
     async (id: string) => {
       const svc = services[id];
@@ -455,6 +555,24 @@ export function Workbench({
       try {
         const raw = await svc.listTree("", 4);
         setRoot(id, { tree: annotateRoot(raw, id), loading: false });
+        // A refresh replaces every lazy dir with an unloaded stub, which
+        // would collapse `node_modules`/`dist` the user already expanded
+        // (their rows would turn into "empty"). Re-fetch them, parents first
+        // so nested splices land on already-loaded parents.
+        const loaded = loadedLazyRef.current[id];
+        if (loaded && loaded.size > 0) {
+          const paths = [...loaded].sort((a, b) => a.length - b.length);
+          for (const p of paths) {
+            try {
+              const kids = annotateRoot(await svc.listTree(p), id);
+              setRoots((prev) =>
+                prev.map((r) => (r.id === id ? { ...r, tree: spliceSubtree(r.tree, p, kids) } : r)),
+              );
+            } catch {
+              loaded.delete(p); // gone or unreadable — let the user re-expand
+            }
+          }
+        }
         // Cross-file IntelliSense is served by the backend
         // typescript-language-server (see `setupLspProviders` below); we used
         // to preload up to 1000 TS/JS files into Monaco here to feed the
@@ -487,6 +605,7 @@ export function Workbench({
       if (!svc) throw new Error(`Unknown workspace: ${rootId}`);
       const raw = await svc.listTree(path);
       const children = annotateRoot(raw, rootId);
+      (loadedLazyRef.current[rootId] ??= new Set()).add(path);
       setRoots((prev) =>
         prev.map((r) =>
           r.id === rootId ? { ...r, tree: spliceSubtree(r.tree, path, children) } : r,
@@ -505,13 +624,42 @@ export function Workbench({
   // the SSE handler in `useLiveAgentEdits` (per-file `upsertModel`), so the
   // tree refresh here is purely for sidebar shape (adds/removes/renames).
   const refreshTreeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const refreshAgentTree = useCallback(() => {
+  // Dirty folders accumulated during the debounce window. `null` = unknown,
+  // re-list everything. Normally we only re-list the touched folders (one
+  // small request each) and merge, instead of re-walking the whole tree and
+  // re-fetching every expanded subfolder one by one.
+  const pendingDirsRef = useRef<Set<string> | null>(new Set());
+  const refreshAgentTree = useCallback((path?: string) => {
+    if (path === undefined) pendingDirsRef.current = null;
+    else pendingDirsRef.current?.add(parentDir(path));
     if (refreshTreeTimerRef.current) clearTimeout(refreshTreeTimerRef.current);
     refreshTreeTimerRef.current = setTimeout(() => {
       refreshTreeTimerRef.current = null;
-      void loadRoot("agent");
+      const dirs = pendingDirsRef.current;
+      pendingDirsRef.current = new Set();
+      const svc = services["agent"];
+      const agentRoot = rootsRef.current.find((r) => r.id === "agent");
+      if (!dirs || dirs.size > 4 || !svc || !agentRoot) {
+        void loadRoot("agent");
+        return;
+      }
+      const targets = new Set<string>();
+      for (const d of dirs) targets.add(nearestLoadedDir(agentRoot.tree, d));
+      void Promise.all(
+        [...targets].map(async (dir) => {
+          const kids = annotateRoot(await svc.listTree(dir), "agent");
+          setRoots((prev) =>
+            prev.map((r) => {
+              if (r.id !== "agent") return r;
+              if (dir === "") return { ...r, tree: mergeDirChildren(r.tree, kids) };
+              const node = findDir(r.tree, dir);
+              return { ...r, tree: spliceSubtree(r.tree, dir, mergeDirChildren(node?.children, kids)) };
+            }),
+          );
+        }),
+      ).catch(() => void loadRoot("agent"));
     }, 250);
-  }, [loadRoot]);
+  }, [loadRoot, services]);
   useEffect(() => {
     return () => {
       if (refreshTreeTimerRef.current) {
@@ -585,6 +733,23 @@ export function Workbench({
     void loadRoot("agent");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // `services` is seeded from the first `agentService` prop and was never
+  // updated afterwards. IDEPanel upgrades SdkFs -> DesktopFs (IPC fast path)
+  // asynchronously, and the runtime URL can change on restart, so follow the
+  // prop and re-list the tree against the new backend.
+  const lastAgentServiceRef = useRef(agentService);
+  useEffect(() => {
+    if (lastAgentServiceRef.current === agentService) return;
+    lastAgentServiceRef.current = agentService;
+    setServices((prev) => ({ ...prev, agent: agentService }));
+  }, [agentService]);
+  const loadedAgentServiceRef = useRef(services["agent"]);
+  useEffect(() => {
+    if (loadedAgentServiceRef.current === services["agent"]) return;
+    loadedAgentServiceRef.current = services["agent"];
+    void loadRoot("agent");
+  }, [services, loadRoot]);
 
   // ─── Backend LSP wiring ────────────────────────────────────────────────
   // Once a Monaco editor mounts AND we have an agentUrl, register the
@@ -740,7 +905,7 @@ export function Workbench({
   );
 
   const openFileInGroup = useCallback(
-    async (node: TreeNode, groupIdx: number) => {
+    async (node: TreeNode, groupIdx: number, opts?: { preview?: boolean }) => {
       if (node.kind !== "file") return;
       const previewLang = previewLanguageFor(node.path);
       // Binary files without a dedicated preview can't be rendered by
@@ -755,7 +920,12 @@ export function Workbench({
       const hit = findOpenLocation(id);
       if (hit) {
         setActiveGroupIdx(hit.groupIdx);
-        updateGroup(hit.groupIdx, (g) => ({ ...g, activeId: id }));
+        updateGroup(hit.groupIdx, (g) => ({
+          ...g,
+          activeId: id,
+          // An explicit (non-preview) open keeps a preview tab.
+          files: opts?.preview ? g.files : g.files.map((f) => (f.id === id && f.preview ? { ...f, preview: false } : f)),
+        }));
         return;
       }
       const svc = svcOf(node.rootId);
@@ -773,12 +943,19 @@ export function Workbench({
         savedContent: "",
         dirty: false,
         loading: true,
+        ...(opts?.preview ? { preview: true } : {}),
       };
-      updateGroup(groupIdx, (g) => ({
-        ...g,
-        files: [...g.files, placeholder],
-        activeId: id,
-      }));
+      updateGroup(groupIdx, (g) => {
+        // The new preview replaces the group's previous (untouched) preview tab.
+        const stale = opts?.preview
+          ? g.files.find((f) => f.preview && !f.dirty && !f.pinned)
+          : undefined;
+        if (stale && PREVIEW_LANGUAGES.has(stale.language) && stale.content.startsWith("blob:")) {
+          try { URL.revokeObjectURL(stale.content); } catch { /* ignore */ }
+        }
+        const kept = stale ? g.files.filter((f) => f !== stale) : g.files;
+        return { ...g, files: [...kept, placeholder], activeId: id };
+      });
       setActiveGroupIdx(groupIdx);
       try {
         if (previewLang) {
@@ -849,11 +1026,112 @@ export function Workbench({
   );
 
   const handleOpenFile = useCallback(
-    (node: TreeNode) => {
-      void openFileInGroup(node, activeGroupIdx);
+    (node: TreeNode, opts?: { preview?: boolean }) => {
+      void openFileInGroup(node, activeGroupIdx, { preview: !!opts?.preview && settings.previewTabs });
     },
-    [openFileInGroup, activeGroupIdx],
+    [openFileInGroup, activeGroupIdx, settings.previewTabs],
   );
+
+  // ─── Session restore ─────────────────────────────────────────────────
+  // Reopen the tabs the user had last time (paths only; content is re-read).
+  // Runs once, after the project's own tree has loaded, and only when nothing
+  // else (deep link / requestedFile) has already opened a file.
+  // Warm Monaco (loader + editor.main) as soon as the IDE exists, so the first
+  // file open doesn't wait on the editor bundle.
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof document === "undefined") return;
+    if (process.env.NODE_ENV === "test") return;
+    preloadMonaco();
+  }, []);
+
+  const sessionReadyRef = useRef(false);
+  useEffect(() => {
+    if (sessionReadyRef.current) return;
+    const agent = roots.find((r) => r.id === "agent");
+    if (!agent || agent.loading) return;
+    if (agent.error) {
+      sessionReadyRef.current = true;
+      return;
+    }
+    const session = loadSession(projectId);
+    if (!sessionHasTabs(session) || requestedFile || groupsRef.current.some((g) => g.files.length > 0)) {
+      sessionReadyRef.current = true;
+      return;
+    }
+    void (async () => {
+      setGroups(session.groups.map(() => ({ id: newGroupId(), files: [], activeId: null })));
+      await Promise.all(
+        session.groups.flatMap((g, gi) =>
+          g.files.map((f) =>
+            openFileInGroup(
+              { kind: "file", rootId: f.rootId, path: f.path, name: f.path.split("/").pop() ?? f.path } as TreeNode,
+              gi,
+            ),
+          ),
+        ),
+      );
+      // Drop tabs whose file has since disappeared, then restore which tab /
+      // group was focused (openFileInGroup activates whatever opened last).
+      // Hot exit: re-apply unsaved edits whose on-disk base is unchanged.
+      const hotBuffers = loadDirty(projectId);
+      let hotRestored = 0;
+      setGroups((prev) =>
+        prev.map((g, gi) => {
+          const kept = g.files
+            .filter((f) => !f.error)
+            .map((f) => (session.groups[gi]?.files.find((x) => x.path === f.path)?.pinned ? { ...f, pinned: true } : f));
+          const applied = applyDirty(kept, hotBuffers);
+          hotRestored += applied.restored;
+          const files = applied.files;
+          const want = session.groups[gi]?.activeId;
+          const activeId = files.some((f) => f.id === want) ? want! : files[files.length - 1]?.id ?? null;
+          return { ...g, files, activeId };
+        }),
+      );
+      setActiveGroupIdx(Math.min(session.activeGroupIdx, session.groups.length - 1));
+      sessionReadyRef.current = true;
+      if (hotBuffers.length > 0) {
+        window.setTimeout(() => {
+          if (hotRestored > 0) showToast(`Restored unsaved changes in ${hotRestored} file${hotRestored === 1 ? "" : "s"}`, 3500);
+        }, 400);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [roots, projectId, requestedFile, openFileInGroup]);
+
+  // Flush unsaved buffers synchronously when the page is going away (the
+  // debounced save above may not have fired yet).
+  useEffect(() => {
+    const flush = () => {
+      if (sessionReadyRef.current) saveDirty(projectId, snapshotDirty(groupsRef.current));
+    };
+    window.addEventListener("pagehide", flush);
+    window.addEventListener("beforeunload", flush);
+    return () => {
+      window.removeEventListener("pagehide", flush);
+      window.removeEventListener("beforeunload", flush);
+    };
+  }, [projectId]);
+
+  const [recentFiles, setRecentFiles] = useState<string[]>(() => loadRecents(projectId));
+  useEffect(() => {
+    if (!sessionReadyRef.current) return;
+    const t = window.setTimeout(() => {
+      saveSession(projectId, snapshotSession(groups, activeGroupIdx));
+      saveDirty(projectId, snapshotDirty(groups));
+      const g = groups[activeGroupIdx];
+      const active = g?.files.find((f) => f.id === g.activeId);
+      if (active && active.rootId === "agent" && !active.extensionDetail && !active.gitDiff && !active.error) {
+        setRecentFiles((prev) => {
+          if (prev[0] === active.path) return prev;
+          const next = pushRecent(prev, active.path);
+          saveRecents(projectId, next);
+          return next;
+        });
+      }
+    }, 400);
+    return () => window.clearTimeout(t);
+  }, [groups, activeGroupIdx, projectId]);
 
   // Open a workspace-relative path (used by the commit graph's file list).
   // Synthesizes a minimal file node against the primary (agent) root.
@@ -875,6 +1153,8 @@ export function Workbench({
   const appliedRequestedFileNonce = useRef<number | null>(null);
   useEffect(() => {
     if (!requestedFile) return;
+    // Requests carrying a line are handled by the reveal effect below.
+    if (requestedFile.line != null) return;
     if (appliedRequestedFileNonce.current === requestedFile.nonce) return;
     const rootId = roots.find((r) => r.kind === "agent")?.id ?? roots[0]?.id;
     if (!rootId) return;
@@ -900,11 +1180,40 @@ export function Workbench({
   // outgoing model). `applyEditorChange` is the pure resolver — it ignores
   // activeId entirely, drops no-op flushes, and treats a missing fileId
   // (closed mid-flight) as a no-op without re-rendering.
-  const handleChangeFor = (groupIdx: number) => (fileId: string, val: string) => {
-    updateGroup(groupIdx, (g) => applyEditorChange(g, fileId, val));
+  //
+  // A file open in both split groups shares ONE Monaco model (same path
+  // URI), so a change must land in every group that holds the file. Updating
+  // only the originating group left the other group's `content`/`dirty`
+  // stale, and Save could then write the stale copy.
+  const handleChangeFor = (_groupIdx: number) => (fileId: string, val: string) => {
+    setGroups((prev) => {
+      let changed = false;
+      const next = prev.map((g) => {
+        let ng = applyEditorChange(g, fileId, val);
+        if (ng !== g) {
+          changed = true;
+          // Editing a preview tab keeps it.
+          if (ng.files.some((f) => f.id === fileId && f.preview)) {
+            ng = { ...ng, files: ng.files.map((f) => (f.id === fileId ? { ...f, preview: false } : f)) };
+          }
+        }
+        return ng;
+      });
+      return changed ? next : prev;
+    });
   };
 
-  const closeInGroup = useCallback((groupIdx: number, id: string) => {
+  // Closes a tab without any prompt. Use `closeInGroup` (defined after the
+  // save pipeline) for user-initiated closes — it asks about unsaved changes.
+  const closedStackRef = useRef<Array<{ rootId: string; path: string; name: string }>>([]);
+  const closeNow = useCallback((groupIdx: number, id: string) => {
+    // Remember it for "Reopen Closed Editor" (⌘⇧T).
+    const closing = groupsRef.current[groupIdx]?.files.find((x) => x.id === id);
+    if (closing && !closing.language.startsWith("extension-")) {
+      const stack = closedStackRef.current;
+      stack.push({ rootId: closing.rootId, path: closing.path, name: closing.name });
+      if (stack.length > 20) stack.shift();
+    }
     // Closing a conflicted tab discards the banner for that file.
     setConflicts((cs) => cs.filter((c) => c.fileId !== id));
     setGroups((prev) => {
@@ -913,7 +1222,6 @@ export function Workbench({
       const idx = g.files.findIndex((f) => f.id === id);
       if (idx < 0) return prev;
       const f = g.files[idx];
-      if (f.dirty && !confirm(`Close ${f.name} without saving?`)) return prev;
       // Preview tabs (image/sqlite/pdf/audio/video/font) allocate a blob:
       // URL on open — revoke it on close so long browsing sessions don't
       // leak one per file opened.
@@ -980,11 +1288,18 @@ export function Workbench({
         else await svc.writeFile(full, "");
         showToast(kind === "dir" ? `Created folder ${name}` : `Created ${name}`);
         await loadRoot(rootId);
+        // Like every editor: a freshly created file opens ready to type in.
+        if (kind === "file") {
+          void openFileInGroup(
+            { kind: "file", rootId, path: full, name } as unknown as TreeNode,
+            activeGroupIdx,
+          );
+        }
       } catch (err) {
         showToast(`Create failed: ${err instanceof Error ? err.message : String(err)}`, 3000);
       }
     },
-    [svcOf, loadRoot, showToast],
+    [svcOf, loadRoot, showToast, openFileInGroup, activeGroupIdx],
   );
 
   const rewriteOpenPaths = (rootId: string, from: string, to: string) => {
@@ -1002,7 +1317,13 @@ export function Workbench({
         files: g.files.map((f) => {
           if (f.rootId !== rootId) return f;
           if (f.path === from) {
-            return { ...f, id: fileId(rootId, to), path: to, name: to.split("/").pop() ?? to };
+            // Renaming `a.txt` → `a.ts` must also switch syntax highlighting.
+            // (Preview files hold a blob URL, not text — leave those alone.)
+            const language =
+              f.loading || f.error || previewLanguageFor(from) || previewLanguageFor(to)
+                ? f.language
+                : languageFor(to);
+            return { ...f, id: fileId(rootId, to), path: to, name: to.split("/").pop() ?? to, language };
           }
           if (f.path.startsWith(from + "/")) {
             const np = to + f.path.slice(from.length);
@@ -1058,6 +1379,29 @@ export function Workbench({
     async (node: TreeNode) => {
       const svc = svcOf(node.rootId);
       if (!svc) return;
+      // Deleting something that has unsaved edits open would silently throw
+      // those edits away — the tree's own confirm only mentions the file.
+      const dirtyOpen = groupsRef.current
+        .flatMap((g) => g.files)
+        .filter(
+          (f) =>
+            f.dirty &&
+            f.rootId === node.rootId &&
+            (f.path === node.path || f.path.startsWith(node.path + "/")),
+        );
+      if (dirtyOpen.length > 0) {
+        const names = [...new Set(dirtyOpen.map((f) => f.name))];
+        const choice = await askConfirm({
+          title: "Delete files with unsaved changes?",
+          message: `${describeFileNames(names)} ${names.length === 1 ? "has" : "have"} unsaved changes that will be lost.`,
+          buttons: [
+            { label: "Cancel", value: "cancel" as const, variant: "primary" },
+            { label: "Delete", value: "delete" as const, variant: "danger" },
+          ],
+          cancelValue: "cancel" as const,
+        });
+        if (choice !== "delete") return;
+      }
       try {
         await svc.remove(node.path);
         // Drop the Monaco model(s) so go-to-def / hover don't keep resolving
@@ -1075,7 +1419,52 @@ export function Workbench({
         showToast(`Delete failed: ${err instanceof Error ? err.message : String(err)}`, 3000);
       }
     },
-    [svcOf, loadRoot, showToast],
+    [svcOf, loadRoot, showToast, askConfirm],
+  );
+
+  const handleUploadFiles = useCallback(
+    async (files: File[], dest: TreeNode | null) => {
+      const rootId = dest?.rootId ?? roots.find((r) => r.kind === "agent")?.id ?? roots[0]?.id;
+      if (!rootId) return;
+      const svc = svcOf(rootId);
+      if (!svc?.writeFileBytes) {
+        showToast("Uploading files isn't supported for this workspace", 2500);
+        return;
+      }
+      const dir = dest && !dest.isRoot ? dest.path : "";
+      const existing = new Set(flattenFiles(roots.find((r) => r.id === rootId)?.tree ?? []).map((n) => n.path));
+      let done = 0;
+      for (const f of files) {
+        if (f.size > 25 * 1024 * 1024) {
+          showToast(`${f.name} is larger than 25 MB — skipped`, 3000);
+          continue;
+        }
+        const path = dir ? `${dir}/${f.name}` : f.name;
+        if (existing.has(path)) {
+          const choice = await askConfirm({
+            title: `Replace ${f.name}?`,
+            message: `A file named "${f.name}" already exists in this location.`,
+            buttons: [
+              { label: "Cancel", value: "cancel" as const, variant: "primary" },
+              { label: "Replace", value: "replace" as const, variant: "danger" },
+            ],
+            cancelValue: "cancel" as const,
+          });
+          if (choice !== "replace") continue;
+        }
+        try {
+          await svc.writeFileBytes(path, new Uint8Array(await f.arrayBuffer()));
+          done++;
+        } catch (err) {
+          showToast(`Upload failed for ${f.name}: ${err instanceof Error ? err.message : String(err)}`, 3500);
+        }
+      }
+      if (done > 0) {
+        showToast(done === 1 ? `Uploaded ${files[0].name}` : `Uploaded ${done} files`);
+        await loadRoot(rootId);
+      }
+    },
+    [roots, svcOf, showToast, askConfirm, loadRoot],
   );
 
   const handleMove = useCallback(
@@ -1153,6 +1542,82 @@ export function Workbench({
     [svcOf, showToast],
   );
 
+  /**
+   * Open the Search view. With an editor selection (single line) or a word
+   * under the cursor the query is pre-filled, like VS Code's
+   * `editor.find.seedSearchStringFromSelection`.
+   */
+  const openSearchImpl = (opts: { include?: string; query?: string } = {}) => {
+    let query = opts.query;
+    if (query === undefined) {
+      const ed = editorRefs.current[activeGroup?.id ?? ""];
+      const model = ed?.getModel();
+      const sel = ed?.getSelection();
+      if (ed && model && sel) {
+        if (!sel.isEmpty() && sel.startLineNumber === sel.endLineNumber) {
+          query = model.getValueInRange(sel);
+        } else if (sel.isEmpty()) {
+          const word = model.getWordAtPosition(sel.getPosition());
+          if (word) query = word.word;
+        }
+      }
+    }
+    setSearchSeed({ query, include: opts.include, nonce: Date.now() });
+    setActivity("search");
+    setSidebarOpen(true);
+  };
+  // Stable wrapper: memoised command lists / key handlers always reach the
+  // latest closure (current active group) through the ref.
+  const openSearchRef = useRef(openSearchImpl);
+  openSearchRef.current = openSearchImpl;
+  const openSearch = useCallback(
+    (opts?: { include?: string; query?: string }) => openSearchRef.current(opts),
+    [],
+  );
+
+  const handleCopy = useCallback(
+    async (from: TreeNode, toRootId: string, toDirPath: string, newName: string) => {
+      if (from.rootId !== toRootId) {
+        showToast("Cross-workspace copy not supported", 2500);
+        return;
+      }
+      const svc = svcOf(from.rootId);
+      if (!svc?.copy) {
+        showToast("Copy not supported for this workspace", 2500);
+        return;
+      }
+      if (toDirPath === from.path || toDirPath.startsWith(from.path + "/")) {
+        showToast("Can't copy a folder into itself", 2500);
+        return;
+      }
+      const to = toDirPath ? `${toDirPath}/${newName}` : newName;
+      try {
+        await svc.copy(from.path, to);
+        showToast(`Copied to ${newName}`);
+        await loadRoot(from.rootId);
+      } catch (err) {
+        showToast(`Copy failed: ${err instanceof Error ? err.message : String(err)}`, 3000);
+      }
+    },
+    [svcOf, loadRoot, showToast],
+  );
+
+  /** Explorer "Open to the Side": the other group, creating the split if needed. */
+  const openToSide = useCallback(
+    (node: TreeNode) => {
+      if (node.kind !== "file") return;
+      let target: number;
+      if (groupsRef.current.length < 2) {
+        setGroups((prev) => (prev.length < 2 ? [...prev, { id: newGroupId(), files: [], activeId: null }] : prev));
+        target = 1;
+      } else {
+        target = activeGroupIdx === 0 ? 1 : 0;
+      }
+      void openFileInGroup(node, target);
+    },
+    [activeGroupIdx, openFileInGroup],
+  );
+
   const treeHandlers: FileTreeHandlers = useMemo(
     () => ({
       onOpen: handleOpenFile,
@@ -1162,8 +1627,18 @@ export function Workbench({
       onMove: handleMove,
       onDownload: handleDownload,
       onLoadSubtree: loadSubtree,
+      onCopy: handleCopy,
+      onUploadFiles: (files, dest) => void handleUploadFiles(files, dest),
+      onOpenToSide: openToSide,
+      onFindInFolder: (node) =>
+        openSearch({ include: node.isRoot ? "" : node.path, query: undefined }),
+      absolutePath: (node) => {
+        const root = gitWorkspaceRootRef.current;
+        if (!root || node.rootId !== "agent") return null;
+        return node.path ? workspaceFsPath(root, node.path) : root;
+      },
     }),
-    [handleOpenFile, handleCreate, handleRenameNode, handleDeleteNode, handleMove, handleDownload, loadSubtree],
+    [handleOpenFile, handleCreate, handleRenameNode, handleDeleteNode, handleMove, handleDownload, loadSubtree, handleCopy, handleUploadFiles, openToSide, openSearch],
   );
 
   // ─── Save ────────────────────────────────────────────────────────────
@@ -1180,7 +1655,7 @@ export function Workbench({
   //      against the right JSON-schema fileMatch, fixing the canvas-
   //      reported "schema validation runs against wrong file" symptom).
   const persistByFileId = useCallback(
-    async (id: string, opts?: { silent?: boolean }): Promise<boolean> => {
+    async (id: string, opts?: { silent?: boolean; auto?: boolean }): Promise<boolean> => {
       const f = resolveSaveTarget(groupsRef.current, id);
       if (!f) return false; // closed mid-flight — drop silently
       const svc = svcOf(f.rootId);
@@ -1192,13 +1667,40 @@ export function Workbench({
       // across split groups), then trigger the formatter through it. After
       // the formatter applied edits, read the final content from the model
       // — the React-state `content` is one keystroke stale by then.
-      if (settings.formatOnSave) {
+      // Like VS Code, formatting/whitespace clean-up only runs on explicit
+      // saves — never on the autosave that fires while you pause typing
+      // (it would rewrite the line under your cursor mid-thought).
+      const wantsCleanup =
+        !opts?.auto &&
+        (settings.formatOnSave || settings.trimTrailingWhitespace || settings.insertFinalNewline);
+      if (wantsCleanup) {
         const ed = findEditorForFileId(Object.values(editorRefs.current), id);
         if (ed) {
           try {
-            const action = ed.getAction?.("editor.action.formatDocument");
-            if (action) await action.run();
+            if (settings.formatOnSave) {
+              const action = ed.getAction?.("editor.action.formatDocument");
+              if (action) await action.run();
+            }
+            if (settings.trimTrailingWhitespace) {
+              await ed.getAction?.("editor.action.trimTrailingWhitespace")?.run();
+            }
             const m = ed.getModel();
+            if (m && settings.insertFinalNewline) {
+              const last = m.getLineCount();
+              if (m.getLineContent(last) !== "") {
+                ed.executeEdits("shogo.insertFinalNewline", [
+                  {
+                    range: {
+                      startLineNumber: last,
+                      startColumn: m.getLineMaxColumn(last),
+                      endLineNumber: last,
+                      endColumn: m.getLineMaxColumn(last),
+                    },
+                    text: "\n",
+                  },
+                ]);
+              }
+            }
             if (m) content = m.getValue();
           } catch {
             // Format failures must NEVER block the save — log via toast
@@ -1243,7 +1745,7 @@ export function Workbench({
         return false;
       }
     },
-    [svcOf, showToast, settings.formatOnSave],
+    [svcOf, showToast, settings.formatOnSave, settings.trimTrailingWhitespace, settings.insertFinalNewline],
   );
 
   // Compat shim: a couple of older call sites (autosave timer, merge editor)
@@ -1253,7 +1755,7 @@ export function Workbench({
   // content from groupsRef.
   const persistOpenFile = useCallback(
     (f: OpenFile, silent?: boolean): Promise<boolean> =>
-      persistByFileId(f.id, { silent }),
+      persistByFileId(f.id, { silent, auto: !!silent }),
     [persistByFileId],
   );
 
@@ -1282,10 +1784,104 @@ export function Workbench({
     const results = await Promise.all(
       dirty.map((f) => persistByFileId(f.id, { silent: true })),
     );
-    if (results.every(Boolean)) {
+    const failed = results.filter((ok) => !ok).length;
+    if (failed === 0) {
       showToast(`Saved ${dirty.length} file${dirty.length === 1 ? "" : "s"}`);
+    } else {
+      showToast(`Saved ${dirty.length - failed} of ${dirty.length} files — ${failed} failed`, 3500);
     }
   }, [persistByFileId, showToast]);
+
+  // User-initiated tab close: asks Save / Don't Save / Cancel when the file
+  // has unsaved edits (unless it's still open in another group, where the
+  // shared buffer isn't going away).
+  const closeInGroup = useCallback(
+    async (groupIdx: number, id: string): Promise<boolean> => {
+      const groups = groupsRef.current;
+      const f = groups[groupIdx]?.files.find((x) => x.id === id);
+      if (!f) return true;
+      const openElsewhere = groups.some(
+        (g, i) => i !== groupIdx && g.files.some((x) => x.id === id),
+      );
+      if (f.dirty && !openElsewhere) {
+        const choice = await askConfirm({
+          title: `Do you want to save the changes you made to ${f.name}?`,
+          message: "Your changes will be lost if you don't save them.",
+          buttons: [
+            { label: "Don't Save", value: "discard" as const, variant: "secondary" },
+            { label: "Cancel", value: "cancel" as const, variant: "secondary" },
+            { label: "Save", value: "save" as const, variant: "primary" },
+          ],
+          cancelValue: "cancel" as const,
+        });
+        if (choice === "cancel") return false;
+        if (choice === "save") {
+          const ok = await persistByFileId(id, { silent: true });
+          // A failed save already toasted; keep the tab so nothing is lost.
+          if (!ok) return false;
+        }
+      }
+      closeNow(groupIdx, id);
+      return true;
+    },
+    [askConfirm, persistByFileId, closeNow],
+  );
+
+  /** Close several tabs in order; stops at the first one the user cancels. */
+  const closeManyInGroup = useCallback(
+    async (groupIdx: number, ids: string[]) => {
+      for (const id of ids) {
+        if (!(await closeInGroup(groupIdx, id))) return;
+      }
+    },
+    [closeInGroup],
+  );
+
+  const reopenClosed = useCallback(() => {
+    const entry = closedStackRef.current.pop();
+    if (!entry) {
+      showToast("No recently closed editors", 1500);
+      return;
+    }
+    void openFileInGroup(
+      { kind: "file", rootId: entry.rootId, path: entry.path, name: entry.name } as unknown as TreeNode,
+      activeGroupIdx,
+    );
+  }, [openFileInGroup, activeGroupIdx, showToast]);
+
+  // Explorer reveal: switch to the Files view and ask the tree to select + scroll.
+  const [revealReq, setRevealReq] = useState<{ path: string; nonce: number } | null>(null);
+  const revealInExplorer = useCallback((path: string) => {
+    setActivity("files");
+    setSidebarOpen(true);
+    setRevealReq({ path, nonce: Date.now() });
+  }, []);
+
+  const copyText = useCallback(
+    async (text: string, what: string) => {
+      try {
+        await navigator.clipboard.writeText(text);
+        showToast(`Copied ${what}`, 1500);
+      } catch {
+        showToast("Couldn't access the clipboard", 2500);
+      }
+    },
+    [showToast],
+  );
+
+  // "Retry" on a file that failed to open: drop the broken tab and reopen it.
+  const retryOpen = useCallback(
+    (groupIdx: number, id: string) => {
+      const f = groupsRef.current[groupIdx]?.files.find((x) => x.id === id);
+      if (!f) return;
+      closeNow(groupIdx, id);
+      void openFileInGroup(
+        { kind: "file", rootId: f.rootId, path: f.path, name: f.name } as unknown as TreeNode,
+        groupIdx,
+      );
+    },
+    [closeNow, openFileInGroup],
+  );
 
   // Auto save: debounce while typing; flush when switching away from a tab.
   useEffect(() => {
@@ -1315,19 +1911,19 @@ export function Workbench({
     autosaveTimerRef.current = setTimeout(() => {
       autosaveTimerRef.current = null;
       void persistOpenFile(snapshot, true);
-    }, AUTO_SAVE_DELAY_MS);
+    }, settings.autoSaveDelay ?? AUTO_SAVE_DELAY_MS);
     return () => {
       if (autosaveTimerRef.current) {
         clearTimeout(autosaveTimerRef.current);
         autosaveTimerRef.current = null;
       }
     };
-  }, [active, active?.content, active?.dirty, settings.autoSave, persistOpenFile]);
+  }, [active, active?.content, active?.dirty, settings.autoSave, settings.autoSaveDelay, persistOpenFile]);
 
   // ─── Splits ──────────────────────────────────────────────────────────
   const splitRight = useCallback(() => {
     if (groups.length >= 2) {
-      showToast("Already split (max 2 groups in Phase 4)", 2000);
+      showToast("Already split — close a group first (max 2)", 2000);
       return;
     }
     if (!active) {
@@ -1399,6 +1995,32 @@ export function Workbench({
     [roots, openFileInGroup, activeGroupIdx, activeGroup],
   );
 
+  // "Go to file:line:col" requests from outside the IDE (Problems panel in
+  // the project-level drawer).
+  const appliedRevealNonce = useRef<number | null>(null);
+  useEffect(() => {
+    if (!requestedFile || requestedFile.line == null) return;
+    if (appliedRevealNonce.current === requestedFile.nonce) return;
+    const rootId = roots.find((r) => r.kind === "agent")?.id ?? roots[0]?.id;
+    if (!rootId) return;
+    appliedRevealNonce.current = requestedFile.nonce;
+    void revealMatch(rootId, requestedFile.path, requestedFile.line, requestedFile.column ?? 1);
+  }, [requestedFile, roots, revealMatch]);
+
+  // Cmd/Ctrl+click on `file.ts:12:5` in terminal output.
+  const revealMatchRef = useRef(revealMatch);
+  revealMatchRef.current = revealMatch;
+  useEffect(() => {
+    const onOpen = (e: Event) => {
+      const d = (e as CustomEvent<OpenFileDetail>).detail;
+      if (!d?.path) return;
+      const rootId = rootsRef.current.find((r) => r.kind === "agent")?.id ?? rootsRef.current[0]?.id;
+      if (rootId) void revealMatchRef.current(rootId, d.path, d.line, d.column);
+    };
+    window.addEventListener(OPEN_FILE_EVENT, onOpen);
+    return () => window.removeEventListener(OPEN_FILE_EVENT, onOpen);
+  }, []);
+
   const extensionsSummary = useExtensions({ workspaceRoot: gitWorkspaceRootRef.current });
   const extensionRuntimeContainers = useMemo(
     () => collectRuntimeContainers(extensionsSummary.installed),
@@ -1450,6 +2072,34 @@ export function Workbench({
     updateGroup(activeGroupIdx, (g) => ({ ...g, files: [...g.files, tab], activeId: id }));
     setActiveGroupIdx(activeGroupIdx);
   }, [activeGroupIdx, findOpenLocation, updateGroup]);
+
+  /** Source Control → click a change: open (or focus) a real diff tab. */
+  const openGitDiffTab = useCallback(
+    (path: string, group: "staged" | "changes", workspaceRoot: string) => {
+      const id = `git-diff:${group}:${path}`;
+      const name = `${path.split("/").pop() ?? path} (${group === "staged" ? "Index" : "Working Tree"})`;
+      const existing = findOpenLocation(id);
+      if (existing) {
+        setActiveGroupIdx(existing.groupIdx);
+        updateGroup(existing.groupIdx, (g) => ({ ...g, activeId: id }));
+        return;
+      }
+      const tab: OpenFile = {
+        id,
+        rootId: "__git-diff__",
+        name,
+        path,
+        language: "git-diff",
+        content: "",
+        savedContent: "",
+        dirty: false,
+        gitDiff: { workspaceRoot, path, group },
+      };
+      updateGroup(activeGroupIdx, (g) => ({ ...g, files: [...g.files, tab], activeId: id }));
+      setActiveGroupIdx(activeGroupIdx);
+    },
+    [activeGroupIdx, findOpenLocation, updateGroup],
+  );
 
   const openExtensionWebviewPanel = useCallback((panel: ExtensionRuntimeWebviewPanel) => {
     const id = `extension-webview:${panel.id}`;
@@ -1706,7 +2356,7 @@ export function Workbench({
         id: "search.findInFiles",
         label: "Search: Find in Files…",
         shortcut: "⌘⇧F",
-        run: () => setActivity("search"),
+        run: () => openSearch(),
       },
       {
         id: "view.openSourceControl",
@@ -1717,14 +2367,77 @@ export function Workbench({
           if (!sidebarOpen) setSidebarOpen(true);
         },
       },
+      { id: "goto.line", label: "Go to Line…", shortcut: "⌃G", run: () => setPalette("line") },
       {
-        id: "goto.line",
-        label: "Go to Line…",
-        shortcut: "⌘G",
+        id: "goto.symbol",
+        label: "Go to Symbol in Editor…",
+        shortcut: "⌘⇧O",
+        run: () => void editorRefs.current[activeGroup?.id ?? ""]?.getAction("editor.action.quickOutline")?.run(),
+      },
+      { id: "view.zen", label: "View: Toggle Zen Mode", shortcut: "⌘K Z", run: () => setZen((z) => toggleZen(z)) },
+      {
+        id: "view.toggleWordWrap",
+        label: `View: Toggle Word Wrap (${settings.wordWrap === "on" ? "on" : "off"})`,
+        run: () => setSettings((s) => ({ ...s, wordWrap: s.wordWrap === "on" ? "off" : "on" })),
+      },
+      {
+        id: "view.toggleMinimap",
+        label: "View: Toggle Minimap",
+        run: () => setSettings((s) => ({ ...s, minimap: !s.minimap })),
+      },
+      {
+        id: "editor.format",
+        label: "Format Document",
+        shortcut: "⇧⌥F",
+        run: () => void editorRefs.current[activeGroup?.id ?? ""]?.getAction("editor.action.formatDocument")?.run(),
+      },
+      { id: "editor.changeLanguage", label: "Change Language Mode…", run: () => setPalette("language") },
+      {
+        id: "file.closeAll",
+        label: "File: Close All Editors",
         run: () => {
-          const input = prompt("Go to line:");
-          const n = input && parseInt(input, 10);
-          if (n && n > 0) gotoLine(n);
+          if (activeGroup) void closeManyInGroup(activeGroupIdx, activeGroup.files.map((f) => f.id));
+        },
+      },
+      { id: "file.reopenClosed", label: "File: Reopen Closed Editor", shortcut: "⌘⇧T", run: reopenClosed },
+      {
+        id: "file.revealActive",
+        label: "File: Reveal Active File in Explorer",
+        run: () => {
+          if (active) revealInExplorer(active.path);
+        },
+      },
+      {
+        id: "file.copyPath",
+        label: "File: Copy Path of Active File",
+        run: () => {
+          if (active) void copyText(active.path, "path");
+        },
+      },
+      { id: "view.openSettings", label: "Preferences: Open Settings", run: () => { setActivity("settings"); setSidebarOpen(true); } },
+      {
+        id: "view.reload",
+        label: "Developer: Reload Window",
+        run: () => window.location.reload(),
+      },
+      {
+        id: "file.nextTab",
+        label: "View: Next Editor Tab",
+        shortcut: "⌘⌥→",
+        run: () => {
+          const files = activeGroup?.files ?? [];
+          const idx = files.findIndex((f) => f.id === activeGroup?.activeId);
+          if (files.length > 1) updateGroup(activeGroupIdx, (gg) => ({ ...gg, activeId: files[(idx + 1) % files.length].id }));
+        },
+      },
+      {
+        id: "file.prevTab",
+        label: "View: Previous Editor Tab",
+        shortcut: "⌘⌥←",
+        run: () => {
+          const files = activeGroup?.files ?? [];
+          const idx = files.findIndex((f) => f.id === activeGroup?.activeId);
+          if (files.length > 1) updateGroup(activeGroupIdx, (gg) => ({ ...gg, activeId: files[(idx - 1 + files.length) % files.length].id }));
         },
       },
     );
@@ -1734,12 +2447,34 @@ export function Workbench({
     closeOtherGroup, focusNextGroup, togglePinInGroup, gotoLine, refreshAllRoots,
     openLocalFolder, closeRoot, fsaSupported, roots, sidebarOpen, bottomPanelOpen,
     requestNewTerminal, extensionsSummary.installed, extensionRuntimeContainers, runExtensionCommand,
+    active, settings.wordWrap, closeManyInGroup, reopenClosed, revealInExplorer, copyText, updateGroup,
   ]);
 
   const commandItems: PaletteItem[] = useMemo(
     () => commands.map((c) => ({ id: c.id, label: c.label, hint: c.shortcut, run: c.run })),
     [commands],
   );
+
+  // Complete path index per root (the tree only holds what has been expanded;
+  // ⌘P must find files in folders the user never opened). Refreshed in the
+  // background every time Quick Open opens; the cached list shows instantly.
+  const [fileIndex, setFileIndex] = useState<Record<string, string[]>>({});
+  useEffect(() => {
+    if (palette !== "file") return;
+    let cancelled = false;
+    for (const r of roots) {
+      const svc = services[r.id];
+      if (!svc?.listFiles) continue;
+      void svc
+        .listFiles()
+        .then((files) => {
+          if (!cancelled) setFileIndex((prev) => ({ ...prev, [r.id]: files }));
+        })
+        .catch(() => { /* tree-derived list still works */ });
+    }
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [palette === "file"]);
 
   const fileItems: PaletteItem[] = useMemo(() => {
     // UX-QUICKOPEN-PATH: collapse the sublabel to ONLY the parent-dir
@@ -1754,12 +2489,24 @@ export function Workbench({
       name: string;
       path: string;
       rootLabel: string;
-      run: () => void;
+      run: PaletteItem["run"];
+      runSide: () => void;
     };
     const entries: Entry[] = [];
     const qoFiles: QuickOpenFile[] = [];
     for (const r of roots) {
       const flat = flattenFiles(r.tree);
+      // Paths known to the index but not (yet) in the loaded tree.
+      const known = new Set(flat.map((n) => n.path));
+      for (const path of fileIndex[r.id] ?? []) {
+        if (known.has(path)) continue;
+        flat.push({
+          kind: "file",
+          rootId: r.id,
+          path,
+          name: path.slice(path.lastIndexOf("/") + 1),
+        } as TreeNode);
+      }
       for (const n of flat) {
         const id = fileId(n.rootId, n.path);
         entries.push({
@@ -1767,7 +2514,11 @@ export function Workbench({
           name: n.name,
           path: n.path,
           rootLabel: r.label,
-          run: () => handleOpenFile(n),
+          run: (o) => {
+            if (o?.line) void revealMatch(n.rootId, n.path, o.line, o.col ?? 1);
+            else handleOpenFile(n);
+          },
+          runSide: () => openToSide(n),
         });
         qoFiles.push({
           id,
@@ -1786,13 +2537,266 @@ export function Workbench({
         sublabel: d?.display ?? undefined,
         searchText: d?.searchText ?? e.path,
         run: e.run,
+        runSide: e.runSide,
       };
     });
-  }, [roots, handleOpenFile]);
+  }, [roots, handleOpenFile, fileIndex, revealMatch, openToSide]);
+
+  useEffect(() => {
+    if (zen.active) {
+      zenPanelRestoreRef.current = ideBottomPanelStore.getState().open;
+      if (zenPanelRestoreRef.current) ideBottomPanelStore.setOpen(false);
+      try {
+        void document.documentElement.requestFullscreen?.().catch(() => {});
+      } catch { /* not allowed without a user gesture */ }
+    } else if (zenPanelRestoreRef.current !== null) {
+      if (zenPanelRestoreRef.current) ideBottomPanelStore.setOpen(true);
+      zenPanelRestoreRef.current = null;
+      try {
+        if (document.fullscreenElement) void document.exitFullscreen?.().catch(() => {});
+      } catch { /* ignore */ }
+    }
+  }, [zen.active]);
+
+  // Problem counts for the status bar (all open models).
+  useEffect(() => {
+    const m = monacoNsRef.current;
+    if (!m) return;
+    const recompute = () => {
+      let errors = 0;
+      let warnings = 0;
+      for (const mk of m.editor.getModelMarkers({})) {
+        if (mk.severity === 8) errors++;
+        else if (mk.severity === 4) warnings++;
+      }
+      setMarkerCounts((p) => (p.errors === errors && p.warnings === warnings ? p : { errors, warnings }));
+      ideBottomPanelStore.setProblemCount(errors + warnings);
+    };
+    recompute();
+    const d = m.editor.onDidChangeMarkers(recompute);
+    return () => d.dispose();
+  }, [monacoReadyTick]);
+
+  // Selection size / indentation / EOL for the status bar.
+  const refreshEditorInfo = useCallback((ed: import("monaco-editor").editor.IStandaloneCodeEditor) => {
+    const model = ed.getModel();
+    if (!model || model.isDisposed()) return;
+    const sel = ed.getSelection();
+    let selection: string | null = null;
+    if (sel && !sel.isEmpty()) {
+      const chars = model.getValueInRange(sel).length;
+      const lines = sel.endLineNumber - sel.startLineNumber + 1;
+      selection = lines > 1 ? `${chars} selected, ${lines} lines` : `${chars} selected`;
+    }
+    const o = model.getOptions();
+    const indent = `${o.insertSpaces ? "Spaces" : "Tab Size"}: ${o.tabSize}`;
+    const eol = model.getEOL() === "\r\n" ? "CRLF" : "LF";
+    setEditorInfo((p) => (p.selection === selection && p.indent === indent && p.eol === eol ? p : { selection, indent, eol }));
+  }, []);
+  const infoAttachedRef = useRef(new WeakSet<object>());
+  // Latest handlers for the long-lived Monaco context-menu actions below.
+  const copyTextRef = useRef(copyText);
+  copyTextRef.current = copyText;
+  const revealInExplorerRef = useRef(revealInExplorer);
+  revealInExplorerRef.current = revealInExplorer;
+
+  const attachEditorInfo = useCallback(
+    (ed: import("monaco-editor").editor.IStandaloneCodeEditor) => {
+      if (infoAttachedRef.current.has(ed)) return;
+      infoAttachedRef.current.add(ed);
+      ed.onDidChangeCursorSelection(() => refreshEditorInfo(ed));
+      ed.onDidChangeModel(() => refreshEditorInfo(ed));
+      ed.onDidChangeModelOptions(() => refreshEditorInfo(ed));
+      refreshEditorInfo(ed);
+
+      // Right-click extras (VS Code: Copy Relative Path, Reveal in Explorer;
+      // Shogo: ask the agent about the selection). Resolved lazily so the
+      // handlers always see the current tab / selection.
+      const fileOf = () => {
+        const entry = Object.entries(editorRefs.current).find(([, e]) => e === ed);
+        const group = entry && groupsRef.current.find((g) => g.id === entry[0]);
+        return group?.files.find((f) => f.id === group.activeId) ?? null;
+      };
+      const ask = (kind: "explain" | "improve" | "tests") => {
+        const f = fileOf();
+        const sel = ed.getSelection();
+        const model = ed.getModel();
+        if (!f || !sel || sel.isEmpty() || !model) return;
+        const prompt = buildSelectionPrompt({
+          kind,
+          path: f.path,
+          startLine: sel.startLineNumber,
+          endLine: sel.endLineNumber,
+          language: f.language,
+          text: model.getValueInRange(sel),
+        });
+        window.dispatchEvent(new CustomEvent<AskInAgentPayload>(ASK_IN_AGENT_EVENT, { detail: { prompt } }));
+        showToast("Sent selection to Shogo", 1800);
+      };
+      const group = "9_shogo";
+      ed.addAction({
+        id: "shogo.copyRelativePath",
+        label: "Copy Relative Path",
+        contextMenuGroupId: "navigation",
+        contextMenuOrder: 9.1,
+        run: () => {
+          const f = fileOf();
+          if (f) void copyTextRef.current(f.path, "relative path");
+        },
+      });
+      ed.addAction({
+        id: "shogo.revealInExplorer",
+        label: "Reveal in Explorer",
+        contextMenuGroupId: "navigation",
+        contextMenuOrder: 9.2,
+        run: () => {
+          const f = fileOf();
+          if (f) revealInExplorerRef.current(f.path);
+        },
+      });
+      ed.addAction({
+        id: "shogo.explainSelection",
+        label: "Shogo: Explain Selection",
+        contextMenuGroupId: group,
+        contextMenuOrder: 1,
+        precondition: "editorHasSelection",
+        run: () => ask("explain"),
+      });
+      ed.addAction({
+        id: "shogo.improveSelection",
+        label: "Shogo: Improve Selection",
+        contextMenuGroupId: group,
+        contextMenuOrder: 2,
+        precondition: "editorHasSelection",
+        run: () => ask("improve"),
+      });
+      ed.addAction({
+        id: "shogo.testSelection",
+        label: "Shogo: Write Tests for Selection",
+        contextMenuGroupId: group,
+        contextMenuOrder: 3,
+        precondition: "editorHasSelection",
+        run: () => ask("tests"),
+      });
+    },
+    [refreshEditorInfo, showToast],
+  );
+
+  const toggleEol = useCallback(() => {
+    const ed = editorRefs.current[activeGroup?.id ?? ""];
+    const m = monacoNsRef.current;
+    const model = ed?.getModel();
+    if (!ed || !m || !model) return;
+    model.pushEOL(
+      model.getEOL() === "\r\n" ? m.editor.EndOfLineSequence.LF : m.editor.EndOfLineSequence.CRLF,
+    );
+    refreshEditorInfo(ed);
+  }, [activeGroup, refreshEditorInfo]);
+
+  const zenSettings = useMemo(() => ({ ...settings, lineNumbers: "off" as const }), [settings]);
+
+  // Text carried over when the palette switches mode (`>` in Quick Open).
+  const [paletteSeed, setPaletteSeed] = useState("");
+  const closePalette = useCallback(() => {
+    setPalette(null);
+    setPaletteSeed("");
+    // Give the editor focus back so typing continues where it left off.
+    requestAnimationFrame(() => editorRefs.current[activeGroup?.id ?? ""]?.focus());
+  }, [activeGroup]);
+
+  const setActiveFileLanguage = useCallback(
+    (language: string) => {
+      const id = activeGroup?.activeId;
+      if (!id) return;
+      setGroups((prev) =>
+        prev.map((g) => ({ ...g, files: g.files.map((f) => (f.id === id ? { ...f, language } : f)) })),
+      );
+    },
+    [activeGroup],
+  );
+
+  const languageItems: PaletteItem[] = useMemo(() => {
+    const langs = monacoNsRef.current?.languages.getLanguages() ?? [];
+    return langs
+      .map((l) => ({
+        id: `lang:${l.id}`,
+        label: l.aliases?.[0] ?? l.id,
+        sublabel: l.id,
+        run: () => setActiveFileLanguage(l.id),
+      }))
+      .sort((a, b) => a.label.localeCompare(b.label));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [palette === "language", setActiveFileLanguage]);
 
   // ─── Keyboard ────────────────────────────────────────────────────────
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // Zen: ⌘K Z toggles, double-Esc leaves. The ⌘K prefix is not swallowed
+      // (terminal "clear" etc. keep working); only the completing "z" is.
+      {
+        const isMac = typeof navigator !== "undefined" && /Mac/i.test(navigator.platform);
+        const chord = advanceZenChord(
+          zenChordPendingRef.current,
+          { key: e.key, meta: e.metaKey, ctrl: e.ctrlKey, shift: e.shiftKey, alt: e.altKey },
+          isMac ? "mac" : "linux",
+        );
+        zenChordPendingRef.current = chord.pending;
+        if (zenChordTimerRef.current) clearTimeout(zenChordTimerRef.current);
+        if (chord.pending) {
+          zenChordTimerRef.current = setTimeout(() => {
+            zenChordPendingRef.current = false;
+          }, 1500);
+        }
+        if (chord.status === "complete") {
+          e.preventDefault();
+          e.stopPropagation();
+          setZen((z) => toggleZen(z));
+          return;
+        }
+        if (e.key === "Escape") {
+          const now = Date.now();
+          if (shouldExitOnEscape(zen, lastEscapeAtRef.current, now)) {
+            setZen((z) => (z.active ? toggleZen(z) : z));
+            lastEscapeAtRef.current = null;
+          } else {
+            lastEscapeAtRef.current = now;
+          }
+        }
+      }
+      // Reopen closed editor (⌘⇧T; Ctrl+Shift+T in browsers that reserve ⌘⇧T).
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && !e.altKey && e.key.toLowerCase() === "t") {
+        e.preventDefault();
+        reopenClosed();
+        return;
+      }
+      // Alt+1…9 jumps to the Nth tab (browsers reserve ⌘/Ctrl+digits).
+      if (e.altKey && !e.metaKey && !e.ctrlKey && !e.shiftKey && /^Digit[1-9]$/.test(e.code)) {
+        const n = parseInt(e.code.slice(5), 10);
+        const files = activeGroup?.files ?? [];
+        const target = n === 9 ? files[files.length - 1] : files[n - 1];
+        if (target) {
+          e.preventDefault();
+          updateGroup(activeGroupIdx, (gg) => ({ ...gg, activeId: target.id }));
+        }
+        return;
+      }
+      // Next / previous tab: ⌘⌥→ / ⌘⌥← and Ctrl+(Shift+)Tab where the host allows it.
+      {
+        const next =
+          ((e.metaKey || e.ctrlKey) && e.altKey && e.key === "ArrowRight") ||
+          (e.ctrlKey && !e.shiftKey && e.key === "Tab");
+        const prev =
+          ((e.metaKey || e.ctrlKey) && e.altKey && e.key === "ArrowLeft") ||
+          (e.ctrlKey && e.shiftKey && e.key === "Tab");
+        if ((next || prev) && activeGroup && activeGroup.files.length > 1) {
+          e.preventDefault();
+          const files = activeGroup.files;
+          const idx = files.findIndex((f) => f.id === activeGroup.activeId);
+          const to = files[(idx + (next ? 1 : -1) + files.length) % files.length];
+          updateGroup(activeGroupIdx, (gg) => ({ ...gg, activeId: to.id }));
+          return;
+        }
+      }
       // BUG-005: single dispatcher for both palette shortcuts. Routes
       // through the pure resolvePaletteIntent — "Shift wins → command".
       // stopPropagation prevents any OTHER window-level keydown handler
@@ -1818,20 +2822,26 @@ export function Workbench({
       if (matchesShortcut(e, { meta: true, key: "\\" })) {
         e.preventDefault(); splitRight(); return;
       }
-      if (matchesShortcut(e, { meta: true, key: "g" })) {
+      // VS Code parity: Ctrl+G = Go to Line (Ctrl on every OS). ⌘G is left
+      // alone so Monaco's own "Find Next" keeps working on macOS.
+      if (e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "g") {
         e.preventDefault();
-        const input = prompt("Go to line:");
-        const n = input && parseInt(input, 10);
-        if (n && n > 0) gotoLine(n);
+        e.stopPropagation();
+        setPalette("line");
         return;
       }
+      // VS Code parity: ⌘⇧O = Go to Symbol in File (Monaco's quick outline).
+      // "Open Folder" lives in the Explorer header / command palette.
       if (matchesShortcut(e, { meta: true, shift: true, key: "o" })) {
-        e.preventDefault(); void openLocalFolder(); return;
+        e.preventDefault();
+        e.stopPropagation();
+        const ed = editorRefs.current[activeGroup?.id ?? ""];
+        void ed?.getAction("editor.action.quickOutline")?.run();
+        return;
       }
       if (matchesShortcut(e, { meta: true, shift: true, key: "f" })) {
         e.preventDefault();
-        setActivity("search");
-        if (!sidebarOpen) setSidebarOpen(true);
+        openSearch();
         return;
       }
       // VS Code parity: ⌃⇧G opens the Source Control activity. Uses Ctrl
@@ -1880,7 +2890,7 @@ export function Workbench({
     return () => window.removeEventListener("keydown", onKey, true);
   }, [
     handleSave, handleSaveAll, activeGroup, activeGroupIdx, closeInGroup, splitRight,
-    gotoLine, openLocalFolder, sidebarOpen, requestNewTerminal,
+    gotoLine, openLocalFolder, sidebarOpen, requestNewTerminal, zen, reopenClosed, updateGroup,
   ]);
 
   // --- G1 git wiring ---------------------------------------------------
@@ -2065,7 +3075,10 @@ export function Workbench({
               onKeepMine={handleKeepMine}
             />
             <div className="flex flex-1 min-h-0 flex-col">
-            <div className="flex flex-1 min-h-0 relative">
+            <div
+              className="flex flex-1 min-h-0 relative"
+              style={chrome.centered ? { maxWidth: 1100, margin: "0 auto", width: "100%" } : undefined}
+            >
               {graphOpen && projectId && (
                 <div className="absolute inset-0 z-30 flex flex-col bg-[color:var(--ide-bg)]">
                   <div className="flex items-center gap-2 px-3 h-9 border-b border-[color:var(--ide-border)] bg-[color:var(--ide-surface)]">
@@ -2114,10 +3127,30 @@ export function Workbench({
                       onSelect={(id) => updateGroup(i, (gg) => ({ ...gg, activeId: id }))}
                       onClose={(id) => closeInGroup(i, id)}
                       onTogglePin={(id) => togglePinInGroup(i, id)}
+                      onKeepOpen={(id) =>
+                        updateGroup(i, (gg) => ({ ...gg, files: gg.files.map((f) => (f.id === id ? { ...f, preview: false } : f)) }))
+                      }
                       onReorder={(ids) => reorderInGroup(i, ids)}
                       onChange={handleChangeFor(i)}
+                      onRetryOpen={(id) => retryOpen(i, id)}
+                      onRevealPath={revealInExplorer}
+                      gitRefreshKey={gitSnapshot?.refreshedAt}
+                      onOpenPlainFile={openWorkspaceFile}
+                      recentFiles={recentFiles}
+                      onCloseMany={(ids) => void closeManyInGroup(i, ids)}
+                      onCopyText={(t, what) => void copyText(t, what)}
+                      onRevealFile={(id) => {
+                        const f = g.files.find((x) => x.id === id);
+                        if (f) revealInExplorer(f.path);
+                      }}
+                      onNewFile={() => {
+                        setActivity("files");
+                        setSidebarOpen(true);
+                        setNewRequest({ kind: "file", nonce: Date.now() });
+                      }}
                       onCursor={(line, col) => setCursor({ line, col })}
-                      settings={settings}
+                      settings={chrome.lineNumbers ? settings : zenSettings}
+                      hideTabs={!chrome.tabs}
                       installedExtensions={extensionsSummary.installed}
                       extensionInstallingId={extensionsSummary.installingId}
                       onInstallExtension={requestExtensionInstall}
@@ -2129,6 +3162,7 @@ export function Workbench({
                       onSetMdMode={handleSetMdMode}
                       onEditorMount={(ed, monaco) => {
                         editorRefs.current[g.id] = ed;
+                        attachEditorInfo(ed);
                         if (monaco && monacoNsRef.current !== monaco) {
                           monacoNsRef.current = monaco;
                           setMonacoReadyTick((t) => t + 1);
@@ -2171,6 +3205,15 @@ export function Workbench({
                 }, [])
               )}
 
+              {confirmReq && (
+                <ConfirmDialog
+                  title={confirmReq.title}
+                  message={confirmReq.message}
+                  buttons={confirmReq.buttons}
+                  cancelValue={confirmReq.cancelValue}
+                  onResolve={resolveConfirm}
+                />
+              )}
               {toast && (
                 <div className="pointer-events-none absolute bottom-4 right-4 z-40 rounded bg-[color:var(--ide-primary)] px-3 py-1.5 text-[12px] text-white shadow-lg">
                   {toast}
@@ -2202,11 +3245,12 @@ export function Workbench({
             main-area view (graph columns + a 400px detail panel), so it
             suppresses the narrow sidebar — otherwise the detail panel
             overflows and squeezes the graph to nothing. */}
-        {sidebarOpen && activity !== "checkpoint" && (
+        {sidebarOpen && chrome.sideBar && activity !== "checkpoint" && (
           <>
 
             <VerticalSplit
               onMouseDown={sidebarSplit.onMouseDown}
+              onDoubleClick={sidebarSplit.reset}
               className={primarySideBarPosition === "left" ? "order-3" : "order-2"}
             />
 
@@ -2221,6 +3265,7 @@ export function Workbench({
                   activePath={active?.path ?? null}
                   handlers={treeHandlers}
                   newRequest={newRequest}
+                  revealRequest={revealReq}
                   fsaSupported={fsaSupported}
                   onRefresh={refreshAllRoots}
                   onNew={(kind) => setNewRequest({ kind, nonce: Date.now() })}
@@ -2234,6 +3279,9 @@ export function Workbench({
                 <SearchPane
                   roots={roots}
                   services={services}
+                  seed={searchSeed}
+                  persisted={searchPersistRef.current}
+                  onPersist={persistSearch}
                   onReveal={(rootId, path, line, col) =>
                     void revealMatch(rootId, path, line, col)
                   }
@@ -2254,8 +3302,10 @@ export function Workbench({
                     if (group === "merge" && gitWorkspaceRoot) {
                       // Merge conflicts open the 3-way merge editor
                       setMergePath(path);
-                    } else if (gitWorkspaceRoot) {
-                      // Staged/changes: open Monaco diff tab
+                    } else if (gitWorkspaceRoot && getDesktopGitBridge()) {
+                      // Staged/changes: real diff tab (HEAD ↔ index ↔ working tree)
+                      openGitDiffTab(path, group === "staged" ? "staged" : "changes", gitWorkspaceRoot);
+                    } else {
                       openWorkspaceFile(path);
                     }
                   }}
@@ -2288,13 +3338,18 @@ export function Workbench({
           </>
           )}
 
+        {chrome.activityBar && (
         <ActivityBar
           className={primarySideBarPosition === "left" ? "order-1" : "order-4"}
           active={activity}
           sidebarOpen={sidebarOpen}
           terminalOpen={bottomPanelOpen}
           badges={activityBadges}
-          hiddenItemIds={extensionsBridgeAvailable ? [] : ["extensions"]}
+          hiddenItemIds={[
+            ...(extensionsBridgeAvailable ? [] : (["extensions"] as ActivityId[])),
+            // Run & Debug is an Electron-only surface; don't advertise a dead end on web.
+            ...(isDesktopRuntime() ? [] : (["debug"] as ActivityId[])),
+          ]}
           extensionContainers={activityBarExtensionContainers}
           onSelect={(id) => {
             setActivity(id);
@@ -2303,18 +3358,32 @@ export function Workbench({
           onToggleSidebar={() => setSidebarOpen((v) => !v)}
           onToggleTerminal={() => setBottomPanelOpen((v) => !v)}
         />
+        )}
       </div>
 
+      {chrome.statusBar && (
       <StatusBar
         language={active?.language ?? "—"}
         line={cursor.line}
         col={cursor.col}
+        selection={editorInfo.selection}
+        indent={editorInfo.indent}
+        eol={editorInfo.eol}
+        problems={markerCounts}
+        onGoToLine={() => setPalette("line")}
+        onPickLanguage={() => setPalette("language")}
+        onToggleEol={toggleEol}
+        onShowProblems={() => {
+          ideBottomPanelStore.setActiveTab("Problems");
+          ideBottomPanelStore.setOpen(true);
+        }}
         saved={!active?.dirty}
         git={gitSnapshot}
         workspaceRoot={gitWorkspaceRoot}
         extensionItems={extensionsSummary.statusBarItems}
         onRunExtensionCommand={runExtensionCommand}
       />
+      )}
 
 
       {pendingExtensionInstall && (
@@ -2331,12 +3400,41 @@ export function Workbench({
         <Palette
           placeholder="Type a command…"
           items={commandItems}
-          onClose={() => setPalette(null)}
+          onClose={closePalette}
+          initialQuery={paletteSeed}
           emptyHint="No commands match"
         />
       )}
       {palette === "file" && (
-        <QuickOpen fileItems={fileItems} onClose={() => setPalette(null)} onLine={gotoLine} />
+        <QuickOpen
+          fileItems={fileItems}
+          onClose={closePalette}
+          onLine={gotoLine}
+          onPrefix={(prefix, rest) => {
+            if (prefix === ">") {
+              setPaletteSeed(rest);
+              setPalette("command");
+              return true;
+            }
+            // `@` → Go to Symbol in File (Monaco's own quick outline).
+            closePalette();
+            window.setTimeout(() => {
+              void editorRefs.current[activeGroup?.id ?? ""]?.getAction("editor.action.quickOutline")?.run();
+            }, 60);
+            return true;
+          }}
+        />
+      )}
+      {palette === "line" && (
+        <QuickOpen lineOnly fileItems={[]} onClose={closePalette} onLine={gotoLine} />
+      )}
+      {palette === "language" && (
+        <Palette
+          placeholder="Select language mode"
+          items={languageItems}
+          onClose={closePalette}
+          emptyHint="No languages match"
+        />
       )}
       {mergePath && gitWorkspaceRoot && monacoNsRef.current && (
         <MergeEditorModal
@@ -2374,19 +3472,34 @@ function QuickOpen({
   fileItems,
   onClose,
   onLine,
+  onPrefix,
+  lineOnly = false,
 }: {
+  onPrefix?: (prefix: string, rest: string) => boolean;
   fileItems: PaletteItem[];
   onClose: () => void;
   onLine: (line: number) => void;
+  /** Ctrl+G mode: bare numbers are line numbers, no file list. */
+  lineOnly?: boolean;
 }) {
   return (
     <Palette
-      placeholder="Go to file…   (type :N to jump to line N in the current editor)"
+      placeholder={
+        lineOnly
+          ? "Go to line…   (type a line number)"
+          : "Go to file…   (name:42 opens at a line · > commands · @ symbols · ⌘↵ opens to the side)"
+      }
       items={fileItems}
       onClose={onClose}
-      emptyHint="No files match. Tip: type :42 to jump to line 42."
+      onPrefix={lineOnly ? undefined : onPrefix}
+      parseLineSuffix={!lineOnly}
+      emptyHint={
+        lineOnly
+          ? "Type a line number"
+          : "No files match. Tips: name:42 opens at a line, > runs commands, @ jumps to a symbol."
+      }
       syntheticItem={(q) => {
-        const m = q.match(/^:(\d+)$/);
+        const m = q.match(lineOnly ? /^:?(\d+)$/ : /^:(\d+)$/);
         if (!m) return null;
         const line = parseInt(m[1], 10);
         return {
@@ -2406,6 +3519,7 @@ function FilesPane({
   activePath,
   handlers,
   newRequest,
+  revealRequest,
   fsaSupported,
   onRefresh,
   onNew,
@@ -2419,6 +3533,7 @@ function FilesPane({
   activePath: string | null;
   handlers: FileTreeHandlers;
   newRequest: { kind: "file" | "dir"; nonce: number; rootId?: string } | null;
+  revealRequest?: { path: string; nonce: number } | null;
   fsaSupported: boolean;
   onRefresh: () => void;
   onNew: (kind: "file" | "dir") => void;
@@ -2427,6 +3542,7 @@ function FilesPane({
   onCloseRoot: (id: string) => void;
   onCollapse?: () => void;
 }) {
+  const [collapseReq, setCollapseReq] = useState<{ nonce: number } | null>(null);
   const anyLoading = roots.some((r) => r.loading);
   const anyError = roots.find((r) => r.error);
 
@@ -2469,6 +3585,13 @@ function FilesPane({
             <FolderPlus size={13} />
           </button>
           <button
+            onClick={() => setCollapseReq({ nonce: Date.now() })}
+            title="Collapse Folders in Explorer"
+            className="rounded p-1 text-[color:var(--ide-muted)] hover:bg-[color:var(--ide-hover-subtle)] hover:text-[color:var(--ide-text-strong)]"
+          >
+            <ChevronsDownUp size={13} />
+          </button>
+          <button
             onClick={onRefresh}
             title="Refresh All"
             className="rounded p-1 text-[color:var(--ide-muted)] hover:bg-[color:var(--ide-hover-subtle)] hover:text-[color:var(--ide-text-strong)]"
@@ -2479,7 +3602,7 @@ function FilesPane({
             <button
               onClick={onCollapse}
               title="Hide Sidebar  (⌘B)"
-              className="rounded p-1 text-[#858585] hover:bg-[#ffffff1a] hover:text-white"
+              className="rounded p-1 text-[color:var(--ide-muted)] hover:bg-[color:var(--ide-hover-subtle)] hover:text-white"
             >
               <PanelLeftClose size={13} />
             </button>
@@ -2503,6 +3626,8 @@ function FilesPane({
           activePath={activePath}
           handlers={handlers}
           newRequest={newRequest}
+          revealRequest={revealRequest}
+          collapseRequest={collapseReq}
         />
       </div>
 
@@ -2516,7 +3641,7 @@ function FilesPane({
                 key={r.id}
                 className="flex items-center justify-between gap-2 rounded px-1 py-[2px] text-[11px] text-[color:var(--ide-muted)] hover:bg-[color:var(--ide-hover)]"
               >
-                <span className="truncate">📁 {r.label}</span>
+                <span className="flex min-w-0 items-center gap-1.5 truncate"><Folder size={12} />{r.label}</span>
                 <button
                   onClick={() => onCloseRoot(r.id)}
                   className="rounded p-[2px] hover:bg-[color:var(--ide-hover-subtle)] hover:text-[color:var(--ide-text-strong)]"

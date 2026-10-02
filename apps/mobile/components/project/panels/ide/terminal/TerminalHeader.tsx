@@ -80,7 +80,7 @@ export interface TerminalHeaderProps {
 }
 
 const ICON_BTN =
-  'flex shrink-0 items-center rounded p-[4px] text-[#cccccc] hover:bg-[#ffffff1a] hover:text-white focus:outline focus:outline-1 focus:outline-[#0078d4] transition-colors'
+  'flex shrink-0 items-center rounded p-[4px] text-[color:var(--ide-text)] hover:bg-[color:var(--ide-hover-subtle)] hover:text-white focus:outline focus:outline-1 focus:outline-[color:var(--ide-primary)] transition-colors'
 
 /** Tiny click-outside dismiss helper for the three dropdowns. */
 function useMenu() {
@@ -125,12 +125,12 @@ export function TerminalHeader(props: TerminalHeaderProps) {
           aria-haspopup="menu"
           aria-expanded={profileMenu.open}
           onClick={() => launchMenu.setOpen((v) => !v)}
-          className="flex shrink-0 items-center gap-[4px] rounded px-[6px] py-[3px] text-[12px] text-[#cccccc] hover:bg-[#ffffff1a] hover:text-white transition-colors"
+          className="flex shrink-0 items-center gap-[4px] rounded px-[6px] py-[3px] text-[12px] text-[color:var(--ide-text)] hover:bg-[color:var(--ide-hover-subtle)] hover:text-white transition-colors"
           title="Terminal Actions"
         >
           <TerminalIcon size={12} />
           <span className="font-normal">{props.shellName}</span>
-          <ChevronDown size={10} className="text-[#858585]" />
+          <ChevronDown size={10} className="text-[color:var(--ide-muted)]" />
         </button>
       </div>
 
@@ -192,7 +192,7 @@ export function TerminalHeader(props: TerminalHeaderProps) {
         type="button"
         onClick={askKill}
         aria-label="Kill Terminal"
-        className={`${ICON_BTN} ${props.running ? 'text-[#f48771] hover:text-[#f48771]' : ''}`}
+        className={`${ICON_BTN} ${props.running ? 'text-[color:var(--ide-error)] hover:text-[color:var(--ide-error)]' : ''}`}
         title="Kill Terminal"
       >
         <Trash2 size={14} />
@@ -214,7 +214,7 @@ export function TerminalHeader(props: TerminalHeaderProps) {
         {moreMenu.open && (
           <div
             role="menu"
-            className="absolute right-0 top-full z-50 mt-1 min-w-[220px] rounded border border-[#454545] bg-[#252526] py-1 shadow-lg"
+            className="absolute right-0 top-full z-50 mt-1 min-w-[220px] rounded border border-[color:var(--ide-border-muted)] bg-[color:var(--ide-surface)] py-1 shadow-lg"
           >
             {props.running && (
               <>
@@ -225,13 +225,13 @@ export function TerminalHeader(props: TerminalHeaderProps) {
                     props.onStop()
                     moreMenu.setOpen(false)
                   }}
-                  className="flex w-full items-center px-3 py-1 text-left text-[12px] text-[#f48771] hover:bg-[#04395e]"
+                  className="flex w-full items-center px-3 py-1 text-left text-[12px] text-[color:var(--ide-error)] hover:bg-[color:var(--ide-active-bg)]"
                 >
                   <StopIcon size={11} className="mr-2" />
                   Stop Running Command
-                  <span className="ml-auto text-[10px] text-[#858585]">⌃C</span>
+                  <span className="ml-auto text-[10px] text-[color:var(--ide-muted)]">⌃C</span>
                 </button>
-                <div className="my-1 h-px bg-[#454545]" />
+                <div className="my-1 h-px bg-[color:var(--ide-border-muted)]" />
               </>
             )}
             <MenuItem
@@ -258,7 +258,7 @@ export function TerminalHeader(props: TerminalHeaderProps) {
                 moreMenu.setOpen(false)
               }}
             />
-            <div className="my-1 h-px bg-[#454545]" />
+            <div className="my-1 h-px bg-[color:var(--ide-border-muted)]" />
             <MenuItem
               label="Rename…"
               onClick={() => {
@@ -288,17 +288,17 @@ export function TerminalHeader(props: TerminalHeaderProps) {
             aria-labelledby="kill-title"
             aria-describedby="kill-body"
             onClick={(e) => e.stopPropagation()}
-            className="max-h-[calc(100vh-32px)] w-[min(420px,calc(100vw-32px))] overflow-auto rounded border border-[#454545] bg-[#252526] p-4 text-[#cccccc] shadow-2xl"
+            className="max-h-[calc(100vh-32px)] w-[min(420px,calc(100vw-32px))] overflow-auto rounded border border-[color:var(--ide-border-muted)] bg-[color:var(--ide-surface)] p-4 text-[color:var(--ide-text)] shadow-2xl"
           >
             <h2 id="kill-title" className="mb-2 text-[13px] font-semibold">Kill terminal?</h2>
-            <p id="kill-body" className="mb-4 text-[12px] text-[#bdbdbd]">
+            <p id="kill-body" className="mb-4 text-[12px] text-[color:var(--ide-text)]">
               A process is still running in this terminal. Killing it will end the process and close the tab.
             </p>
             <div className="flex justify-end gap-2">
               <button
                 type="button"
                 onClick={() => setKillOpen(false)}
-                className="rounded border border-[#454545] px-3 py-[3px] text-[11px] text-[#cccccc] hover:bg-[#ffffff1a]"
+                className="rounded border border-[color:var(--ide-border-muted)] px-3 py-[3px] text-[11px] text-[color:var(--ide-text)] hover:bg-[color:var(--ide-hover-subtle)]"
               >
                 Cancel
               </button>
@@ -328,10 +328,10 @@ function MenuItem(props: { label: string; shortcut?: string; disabled?: boolean;
       role="menuitem"
       onClick={props.onClick}
       disabled={props.disabled}
-      className="flex w-full items-center px-3 py-1 text-left text-[12px] text-[#cccccc] hover:bg-[#04395e] disabled:opacity-40 disabled:hover:bg-transparent"
+      className="flex w-full items-center px-3 py-1 text-left text-[12px] text-[color:var(--ide-text)] hover:bg-[color:var(--ide-active-bg)] disabled:opacity-40 disabled:hover:bg-transparent"
     >
       <span className="flex-1">{props.label}</span>
-      {props.shortcut && <span className="ml-2 text-[10px] text-[#858585]">{props.shortcut}</span>}
+      {props.shortcut && <span className="ml-2 text-[10px] text-[color:var(--ide-muted)]">{props.shortcut}</span>}
     </button>
   )
 }
@@ -513,12 +513,12 @@ function TerminalDropdownMenu(props: {
     <div
       ref={ref}
       role="menu"
-      className="fixed z-[2147483647] min-w-[260px] rounded-md border border-[#454545] bg-[#252526] py-1 shadow-xl"
+      className="fixed z-[2147483647] min-w-[260px] rounded-md border border-[color:var(--ide-border-muted)] bg-[color:var(--ide-surface)] py-1 shadow-xl"
       style={{ top: menuPos.top, left: menuPos.left }}
     >
       {items.map((item, i) => {
         if (item.kind === 'separator') {
-          return <div key={`sep-${i}`} className="my-1 h-px bg-[#454545]" />
+          return <div key={`sep-${i}`} className="my-1 h-px bg-[color:var(--ide-border-muted)]" />
         }
         const enabledIdx = enabledItems.indexOf(item)
         const isActive = enabledIdx === activeIdx
@@ -544,16 +544,16 @@ function TerminalDropdownMenu(props: {
             onClick={() => activateItem(item)}
             className={`flex w-full items-center px-3 py-[3px] text-left text-[12px] transition-colors ${
               item.disabled
-                ? 'cursor-default text-[#585858]'
+                ? 'cursor-default text-[color:var(--ide-muted-strong)]'
                 : isActive
-                ? 'bg-[#04395e] text-white'
-                : 'text-[#cccccc] hover:bg-[#04395e]'
+                ? 'bg-[color:var(--ide-active-bg)] text-white'
+                : 'text-[color:var(--ide-text)] hover:bg-[color:var(--ide-active-bg)]'
             }`}
           >
-            {item.checked && <span className="mr-1 text-[#0078d4]">✓</span>}
+            {item.checked && <span className="mr-1 text-[color:var(--ide-primary)]">✓</span>}
             <span className="flex-1">{item.label}</span>
-            {item.kind === 'submenu-trigger' && <span className="ml-2 text-[#858585]">▶</span>}
-            {item.shortcut && <span className="ml-3 text-[10px] text-[#858585]">{item.shortcut}</span>}
+            {item.kind === 'submenu-trigger' && <span className="ml-2 text-[color:var(--ide-muted)]">▶</span>}
+            {item.shortcut && <span className="ml-3 text-[10px] text-[color:var(--ide-muted)]">{item.shortcut}</span>}
           </button>
         )
       })}
@@ -563,7 +563,7 @@ function TerminalDropdownMenu(props: {
   const submenu = submenuOpen && enabledItems[activeIdx]?.kind === 'submenu-trigger' ? (
     <div
       role="menu"
-      className="fixed z-[2147483647] min-w-[220px] rounded-md border border-[#454545] bg-[#252526] py-1 shadow-xl"
+      className="fixed z-[2147483647] min-w-[220px] rounded-md border border-[color:var(--ide-border-muted)] bg-[color:var(--ide-surface)] py-1 shadow-xl"
       style={{ top: subPos.top, left: subPos.left }}
       onMouseEnter={() => {
         if (submenuTimerRef.current) clearTimeout(submenuTimerRef.current)
@@ -576,7 +576,7 @@ function TerminalDropdownMenu(props: {
           type="button"
           role="menuitem"
           onClick={() => activateSubItem(sub)}
-          className="flex w-full items-center px-3 py-[3px] text-left text-[12px] text-[#cccccc] hover:bg-[#04395e]"
+          className="flex w-full items-center px-3 py-[3px] text-left text-[12px] text-[color:var(--ide-text)] hover:bg-[color:var(--ide-active-bg)]"
         >
           <span className="flex-1">{sub.label}</span>
         </button>

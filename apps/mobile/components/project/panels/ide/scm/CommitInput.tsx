@@ -183,7 +183,7 @@ export const CommitInput = forwardRef<CommitInputHandle, {
         <button
           onClick={() => void handleCommit(onCommit)}
           disabled={!canCommit}
-          className="shogo-primary-commit-button flex-1 flex items-center justify-center gap-1.5 rounded-l-[4px] bg-[#0078d4] text-white text-[12px] font-semibold disabled:bg-[#254563] disabled:text-[color:var(--ide-muted)] disabled:opacity-100 disabled:cursor-not-allowed hover:bg-[#1a8ae8] transition-colors"
+          className="shogo-primary-commit-button flex-1 flex items-center justify-center gap-1.5 rounded-l-[4px] bg-[color:var(--ide-primary)] text-white text-[12px] font-semibold disabled:bg-[#254563] disabled:text-[color:var(--ide-muted)] disabled:opacity-100 disabled:cursor-not-allowed hover:bg-[color:var(--ide-btn-primary-hover)] transition-colors"
           style={{ height: 34 }}
         >
           {busy ? <Loader2 className="animate-spin" size={12} /> : <Check size={12} />}
@@ -194,7 +194,7 @@ export const CommitInput = forwardRef<CommitInputHandle, {
           aria-haspopup="menu"
           onClick={() => setMenuOpen((v) => !v)}
           disabled={disabled || busy}
-          className="flex items-center justify-center rounded-r-[4px] bg-[#0078d4] border-l border-white/25 px-2 text-white disabled:bg-[#254563] disabled:text-[color:var(--ide-muted)] disabled:opacity-100 hover:bg-[#1a8ae8] transition-colors"
+          className="flex items-center justify-center rounded-r-[4px] bg-[color:var(--ide-primary)] border-l border-white/25 px-2 text-white disabled:bg-[#254563] disabled:text-[color:var(--ide-muted)] disabled:opacity-100 hover:bg-[color:var(--ide-btn-primary-hover)] transition-colors"
           style={{ height: 34 }}
         >
           <ChevronDown size={12} />

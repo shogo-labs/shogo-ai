@@ -67,6 +67,9 @@ export function filterForFilesBrowser(tree: FileNode[]): FileNode[] {
     // files (.env, .gitignore) and directories (.shogo, .vscode, .git).
     // Users seeding agent content shouldn't be sifting through dotfiles.
     if (node.name.startsWith('.')) continue
+    // The walker now returns gitignored entries flagged `ignored` (the IDE
+    // dims them). This narrow view keeps its prior behavior: not shown.
+    if (node.ignored) continue
     if (node.type === 'directory') {
       if (FILES_PANEL_HIDDEN_DIRS.has(node.name)) continue
       out.push({

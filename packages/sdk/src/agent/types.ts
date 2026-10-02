@@ -56,6 +56,8 @@ export interface FileNode {
   /** Last-modified time as a Unix epoch in milliseconds (mtimeMs). */
   modified?: number
   children?: FileNode[]
+  /** True when the entry matches the workspace `.gitignore` / `.shogoignore`; clients render it dimmed. */
+  ignored?: boolean
   /**
    * True on directories whose children were intentionally not walked
    * server-side (heavy build/dependency dirs like `node_modules`, `dist`).

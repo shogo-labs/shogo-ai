@@ -25,8 +25,9 @@
  *   1. Walk is async (`fs.promises.readdir/stat`) → main thread stays free.
  *   2. `.gitignore` + `.shogoignore` at the workspace root are parsed and
  *      respected — gitignored directories become `lazy: true` (visible in
- *      the tree but children not walked unless the user expands them),
- *      gitignored files are hidden entirely. Same semantic as Cursor.
+ *      the tree but children not walked unless the user expands them) and
+ *      gitignored files are returned flagged `ignored: true` so clients can
+ *      dim them (`.env` must stay reachable).
  *   3. Defensive caps (max entries / max depth / time budget) so a
  *      pathological tree (symlink cycle, 1M-file repo) can't hang the UI
  *      even if the ignore rules are wrong.
@@ -42,8 +43,8 @@
  *                  `canvas-file-watcher.ts` so the invariant "shown in the
  *                  tree, ignored by the watcher" holds by construction.
  *                  Now also covers anything matched by the workspace's
- *                  `.gitignore` / `.shogoignore` (directories only — files
- *                  matched by gitignore are hidden completely).
+ *                  `.gitignore` / `.shogoignore` (directories only; ignored
+ *                  files are returned flagged `ignored: true`).
  *
  *   HIDDEN_FILES — Never returned. OS junk only.
  *
@@ -121,6 +122,30 @@ export interface WorkspaceTreeNode {
    * `walkFilesTree` rooted at the directory's absolute path.
    */
   lazy?: boolean
+  /**
+   * True when the entry is matched by the workspace `.gitignore` /
+   * `.shogoignore`. Ignored entries are still returned (so `.env`,
+   * `.env.local` and build outputs stay reachable, as in VS Code) — clients
+   * are expected to render them dimmed.
+   */
+  ignored?: boolean
+}
+
+/**
+ * Explorer ordering shared by every tree backend: folders first, then names
+ * compared case-insensitively with natural number ordering (`file2` before
+ * `file10`). Ties fall back to a plain comparison so the order is stable.
+ */
+const NAME_COLLATOR = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' })
+
+export function compareWorkspaceTreeNodes(
+  a: Pick<WorkspaceTreeNode, 'name' | 'type'>,
+  b: Pick<WorkspaceTreeNode, 'name' | 'type'>,
+): number {
+  if (a.type !== b.type) return a.type === 'directory' ? -1 : 1
+  const byName = NAME_COLLATOR.compare(a.name, b.name)
+  if (byName !== 0) return byName
+  return a.name < b.name ? -1 : a.name > b.name ? 1 : 0
 }
 
 export interface WalkFilesTreeOptions {
@@ -383,6 +408,7 @@ async function walkInner(
           type: 'directory',
           modified: stat.mtimeMs,
           lazy: true,
+          ...(isGitignored ? { ignored: true } : {}),
         })
         continue
       }
@@ -395,16 +421,22 @@ async function walkInner(
       })
     } else {
       if (state.hiddenFiles.has(entry.name)) continue
-      if (isGitignored) continue
+      // Gitignored files (`.env`, `.env.local`, logs…) are kept and flagged
+      // rather than dropped: hiding them made secrets/config files vanish
+      // from the explorer. Clients dim `ignored` entries.
       results.push({
         name: entry.name,
         path: relPath,
         type: 'file',
         size: stat.size,
         modified: stat.mtimeMs,
+        ...(isGitignored ? { ignored: true } : {}),
       })
     }
   }
+  // `readdir` order is filesystem-dependent; sort here so cloud, desktop and
+  // every lazy subtree agree.
+  results.sort(compareWorkspaceTreeNodes)
   return results
 }
 

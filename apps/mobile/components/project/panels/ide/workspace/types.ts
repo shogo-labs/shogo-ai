@@ -12,6 +12,8 @@ export interface WsNode {
    * Backends that walk the whole tree up-front (LocalFs) leave this unset.
    */
   lazy?: boolean;
+  /** Matches the workspace .gitignore / .shogoignore — render dimmed (still openable). */
+  ignored?: boolean;
 }
 
 export interface WsFile {
@@ -39,6 +41,10 @@ export interface SearchOptions {
   caseSensitive?: boolean;
   regex?: boolean;
   limit?: number;
+  /** Comma-separated globs / folders to restrict the search to ("files to include"). */
+  include?: string;
+  /** Comma-separated globs / folders to skip ("files to exclude"). */
+  exclude?: string;
 }
 
 export interface SearchResponse {
@@ -66,6 +72,15 @@ export interface WorkspaceService {
   mkdir(path: string): Promise<void>;
   remove(path: string): Promise<void>;
   rename(from: string, to: string): Promise<void>;
+  /** Write raw bytes (OS drag-and-drop upload). Optional: hidden when missing. */
+  writeFileBytes?(path: string, bytes: Uint8Array): Promise<void>;
+  /** Copy a file or folder. Optional: backends without it hide Duplicate/Paste. */
+  copy?(from: string, to: string): Promise<void>;
+  /**
+   * Flat list of every file path (not just the loaded part of the lazy tree).
+   * Optional: Quick Open falls back to the tree when missing.
+   */
+  listFiles?(): Promise<string[]>;
   search(query: string, opts?: SearchOptions): Promise<SearchResponse>;
   /**
    * Resolve a path to a URL that can be used by <img>, <video>, etc. Used for

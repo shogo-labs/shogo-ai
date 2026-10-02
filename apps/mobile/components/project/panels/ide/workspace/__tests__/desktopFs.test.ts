@@ -140,16 +140,34 @@ describe('DesktopFs.listTree', () => {
     const svc = new DesktopFs(bridge, ROOT, makeSdkFs(), 'desktop-test')
     const nodes = await svc.listTree()
     expect(bridge.listTree).toHaveBeenCalledWith(ROOT, undefined)
+    // Folders first, then natural order — regardless of IPC order.
     expect(nodes).toEqual([
-      { name: 'package.json', path: 'package.json', kind: 'file', language: 'json' },
+      { name: 'node_modules', path: 'node_modules', kind: 'dir', lazy: true },
       {
         name: 'src',
         path: 'src',
         kind: 'dir',
         children: [{ name: 'index.ts', path: 'src/index.ts', kind: 'file', language: 'typescript' }],
       },
-      { name: 'node_modules', path: 'node_modules', kind: 'dir', lazy: true },
+      { name: 'package.json', path: 'package.json', kind: 'file', language: 'json' },
     ])
+  })
+
+  test('carries the gitignore `ignored` flag through and sorts naturally', async () => {
+    const bridge = makeBridge({
+      listTree: mock(async () => ({
+        ok: true,
+        tree: [
+          { name: 'a10.log', path: 'a10.log', type: 'file' as const, ignored: true },
+          { name: 'a9.log', path: 'a9.log', type: 'file' as const },
+          { name: '.env', path: '.env', type: 'file' as const, ignored: true },
+        ],
+      })),
+    })
+    const svc = new DesktopFs(bridge, ROOT, makeSdkFs(), 'desktop-test')
+    const nodes = await svc.listTree()
+    expect(nodes.map((n) => n.name)).toEqual(['.env', 'a9.log', 'a10.log'])
+    expect(nodes.map((n) => n.ignored ?? false)).toEqual([true, false, true])
   })
 
   test('passes the subPath through for lazy expand', async () => {

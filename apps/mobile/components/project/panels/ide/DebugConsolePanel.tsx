@@ -248,7 +248,7 @@ export function DebugConsolePanel({ visible, emitter: emitterOverride }: DebugCo
     <div
       data-testid="bottompanel-pane-debug-console"
       aria-hidden={!visible}
-      className="flex h-full w-full flex-col overflow-hidden bg-[#1e1e1e] text-[#cccccc]"
+      className="flex h-full w-full flex-col overflow-hidden bg-[color:var(--ide-bg)] text-[color:var(--ide-text)]"
     >
       <div
         ref={logRef}
@@ -257,7 +257,7 @@ export function DebugConsolePanel({ visible, emitter: emitterOverride }: DebugCo
         aria-live="polite"
       >
         {events.length === 0 ? (
-          <div className="text-[#858585] italic">
+          <div className="text-[color:var(--ide-muted)] italic">
             No debug session active. Type an expression below, or run
             <span className="font-mono"> node --inspect script.js </span>
             in the Terminal to attach one.
@@ -267,9 +267,9 @@ export function DebugConsolePanel({ visible, emitter: emitterOverride }: DebugCo
         )}
       </div>
 
-      <div className="flex items-start border-t border-[#3c3c3c] bg-[#1e1e1e] px-3 py-1.5">
+      <div className="flex items-start border-t border-[color:var(--ide-border-strong)] bg-[color:var(--ide-bg)] px-3 py-1.5">
         <span
-          className="select-none pr-2 pt-[1px] font-mono text-[12px] text-[#3794ff]"
+          className="select-none pr-2 pt-[1px] font-mono text-[12px] text-[color:var(--ide-primary)]"
           aria-hidden="true"
         >&gt;</span>
         {multiline ? (
@@ -279,7 +279,7 @@ export function DebugConsolePanel({ visible, emitter: emitterOverride }: DebugCo
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKey}
             rows={Math.min(8, Math.max(2, input.split('\n').length))}
-            className="flex-1 resize-none bg-transparent font-mono text-[12px] text-[#cccccc] outline-none placeholder:text-[#858585]"
+            className="flex-1 resize-none bg-transparent font-mono text-[12px] text-[color:var(--ide-text)] outline-none placeholder:text-[color:var(--ide-muted)]"
             placeholder="multiline · Enter to submit · Shift+Enter for newline"
             spellCheck={false}
             aria-label="Debug Console input"
@@ -291,7 +291,7 @@ export function DebugConsolePanel({ visible, emitter: emitterOverride }: DebugCo
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKey}
-            className="flex-1 bg-transparent font-mono text-[12px] text-[#cccccc] outline-none placeholder:text-[#858585]"
+            className="flex-1 bg-transparent font-mono text-[12px] text-[color:var(--ide-text)] outline-none placeholder:text-[color:var(--ide-muted)]"
             placeholder={emitter.isAttached ? 'evaluate in debug session…' : 'expression…'}
             spellCheck={false}
             aria-label="Debug Console input"
@@ -315,7 +315,7 @@ function DebugLine({ ev }: { ev: DebugEvent }): React.ReactElement {
       >
         {pillLabel(ev.kind)}
       </span>
-      {ev.source && <span className="select-none text-[#858585]">{ev.source}</span>}
+      {ev.source && <span className="select-none text-[color:var(--ide-muted)]">{ev.source}</span>}
       <span className="flex-1 whitespace-pre-wrap break-words">
         {ev.text}
         {ev.data !== undefined && typeof ev.data === 'object' && ev.data !== null && (
@@ -374,7 +374,7 @@ function formatValue(v: unknown): string {
  */
 function CollapsibleObject({ value, depth = 0 }: { value: unknown; depth?: number }): React.ReactElement {
   const [open, setOpen] = React.useState(depth < 1)
-  if (depth > 10) return <span className="text-[#858585]">…</span>
+  if (depth > 10) return <span className="text-[color:var(--ide-muted)]">…</span>
 
   const isArr = Array.isArray(value)
   const isObj = !isArr && typeof value === 'object' && value !== null
@@ -395,13 +395,13 @@ function CollapsibleObject({ value, depth = 0 }: { value: unknown; depth?: numbe
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
-        className="select-none text-[#3794ff] hover:underline"
+        className="select-none text-[color:var(--ide-primary)] hover:underline"
         aria-expanded={open}
       >
         {open ? '▾ ' : '▸ '}{summary}
       </button>
       {open && (
-        <div className="ml-4 border-l border-[#3c3c3c] pl-2">
+        <div className="ml-4 border-l border-[color:var(--ide-border-strong)] pl-2">
           {entries.map(([k, v]) => (
             <div key={k} className="flex gap-1">
               <span className="text-[#9cdcfe]">{k}:</span>

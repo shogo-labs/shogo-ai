@@ -205,12 +205,12 @@ export function OutputTab({
 
   return (
     <div
-      className="flex h-full flex-col bg-[#1e1e1e] text-[12px] text-zinc-200"
+      className="flex h-full flex-col bg-[color:var(--ide-bg)] text-[12px] text-zinc-200"
       data-testid="output-tab"
     >
       {/* ─── Toolbar ─── */}
       <div
-        className="flex items-center gap-2 border-b border-[#2a2a2a] px-3 py-1.5"
+        className="flex items-center gap-2 border-b border-[color:var(--ide-border)] px-3 py-1.5"
         role="toolbar"
         aria-label="Output toolbar"
       >
@@ -242,7 +242,7 @@ export function OutputTab({
             value={activeExtensionChannel?.id ?? ''}
             onChange={(event) => setActiveExtensionChannelId(event.target.value)}
             aria-label="Extension output channel"
-            className="max-w-64 rounded border border-[#2a2a2a] bg-[#252526] px-2 py-0.5 text-[11px] text-zinc-200 outline-none focus:border-[#0078d4]"
+            className="max-w-64 rounded border border-[color:var(--ide-border)] bg-[color:var(--ide-surface)] px-2 py-0.5 text-[11px] text-zinc-200 outline-none focus:border-[color:var(--ide-primary)]"
           >
             {extensionChannels.map((channel) => (
               <option key={channel.id} value={channel.id}>{channel.name} · {channel.extensionId}</option>
@@ -267,7 +267,7 @@ export function OutputTab({
             value={search}
             onChange={(e: ChangeEvent<HTMLInputElement>) => setSearch(e.target.value)}
             aria-label="Search output"
-            className="w-40 rounded border border-[#2a2a2a] bg-[#252526] px-2 py-0.5 text-[11px] text-zinc-200 outline-none focus:border-[#0078d4]"
+            className="w-40 rounded border border-[color:var(--ide-border)] bg-[color:var(--ide-surface)] px-2 py-0.5 text-[11px] text-zinc-200 outline-none focus:border-[color:var(--ide-primary)]"
           />
           <button
             type="button"
@@ -291,7 +291,7 @@ export function OutputTab({
 
       {/* ─── Status row (counts) ─── */}
       <div
-        className="flex items-center gap-3 border-b border-[#2a2a2a] px-3 py-1 text-[10px] text-zinc-500"
+        className="flex items-center gap-3 border-b border-[color:var(--ide-border)] px-3 py-1 text-[10px] text-zinc-500"
         role="status"
         aria-live="polite"
       >

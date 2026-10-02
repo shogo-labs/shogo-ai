@@ -171,6 +171,38 @@ export function broadcastEditorFontChange(family: string): void {
  *
  * No React context, no prop drilling: any panel can call it.
  */
+/** Live terminal font size from the persisted IDE settings (default 13). */
+export function getTerminalFontSize(): number {
+  try {
+    if (typeof localStorage === "undefined") return 13
+    const raw = localStorage.getItem(STORAGE_KEY)
+    if (!raw) return 13
+    const v = (JSON.parse(raw) as { terminalFontSize?: unknown })?.terminalFontSize
+    return typeof v === "number" && v >= 8 && v <= 40 ? v : 13
+  } catch {
+    return 13
+  }
+}
+
+export function useTerminalFontSize(): number {
+  const [size, setSize] = useState<number>(() => getTerminalFontSize())
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    const update = () => setSize(getTerminalFontSize())
+    const onStorage = (e: StorageEvent) => {
+      if (e.key && e.key !== STORAGE_KEY) return
+      update()
+    }
+    window.addEventListener("storage", onStorage)
+    window.addEventListener(SAME_TAB_EVENT, update as EventListener)
+    return () => {
+      window.removeEventListener("storage", onStorage)
+      window.removeEventListener(SAME_TAB_EVENT, update as EventListener)
+    }
+  }, [])
+  return size
+}
+
 export function useEditorFont(): string {
   const [family, setFamily] = useState<string>(() => getEditorFontFamily())
 

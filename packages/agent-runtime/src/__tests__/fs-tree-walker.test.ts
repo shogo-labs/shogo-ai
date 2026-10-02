@@ -19,6 +19,7 @@ import {
   WORKSPACE_TREE_HIDDEN_FILES,
   WORKSPACE_TREE_LAZY_DIRS,
   walkFilesTree,
+  compareWorkspaceTreeNodes,
 } from '../fs-tree-walker'
 import { SYMLINKS_SUPPORTED } from './helpers/symlink-support'
 
@@ -57,6 +58,9 @@ beforeAll(() => {
 afterAll(() => {
   rmSync(ROOT, { recursive: true, force: true })
 })
+
+const ignoredOf = (nodes: ReadonlyArray<{ name: string; ignored?: boolean }>) =>
+  nodes.filter((n) => n.ignored).map((n) => n.name)
 
 describe('fs-tree-walker policy constants', () => {
   test('HIDDEN_DIRS covers VS Code defaults', () => {
@@ -235,7 +239,7 @@ describe('walkFilesTree (gitignore awareness)', () => {
     }
   })
 
-  test('files matched by root .gitignore are hidden', async () => {
+  test('files matched by root .gitignore are kept and flagged ignored (so .env stays visible)', async () => {
     const root = mkdtempSync(join(tmpdir(), 'shogo-fs-tree-walker-gitignore-files-'))
     try {
       writeFileSync(join(root, '.gitignore'), '*.log\n.env.local\n')
@@ -245,9 +249,11 @@ describe('walkFilesTree (gitignore awareness)', () => {
 
       const tree = await walkFilesTree(root, root)
       const names = tree.map((n) => n.name)
-      expect(names).not.toContain('app.log')
-      expect(names).not.toContain('.env.local')
+      expect(names).toContain('app.log')
+      expect(names).toContain('.env.local')
       expect(names).toContain('README.md')
+      expect(ignoredOf(tree).sort()).toEqual(['.env.local', 'app.log'])
+      expect(tree.find((n) => n.name === 'README.md')?.ignored).toBeUndefined()
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
@@ -265,9 +271,10 @@ describe('walkFilesTree (gitignore awareness)', () => {
 
       const tree = await walkFilesTree(root, root)
       const names = tree.map((n) => n.name)
-      expect(names).not.toContain('app.log')           // from .gitignore
+      expect(ignoredOf(tree)).toContain('app.log')     // from .gitignore
       const priv = tree.find((n) => n.name === 'private')
       expect(priv?.lazy).toBe(true)                    // from .shogoignore
+      expect(priv?.ignored).toBe(true)
       expect(names).toContain('public.md')
     } finally {
       rmSync(root, { recursive: true, force: true })
@@ -539,9 +546,10 @@ describe('walkFilesTree (nested per-project ignores)', () => {
     const aChildren = (a?.children ?? []).map((n) => n.name).sort()
     expect(aChildren).toContain('index.ts')
     expect(aChildren).toContain('src')
-    // Gitignored file + log are hidden; custom build dir is lazy-stubbed.
-    expect(aChildren).not.toContain('secret.env')
-    expect(aChildren).not.toContain('debug.log')
+    // Gitignored file + log are flagged; custom build dir is lazy-stubbed.
+    expect(ignoredOf(a?.children ?? [])).toContain('secret.env')
+    expect(ignoredOf(a?.children ?? [])).toContain('debug.log')
+    expect(ignoredOf(a?.children ?? [])).not.toContain('index.ts')
     const buildOut = a?.children?.find((n) => n.name === 'build-out')
     expect(buildOut?.lazy).toBe(true)
     expect(buildOut?.children).toBeUndefined()
@@ -551,18 +559,20 @@ describe('walkFilesTree (nested per-project ignores)', () => {
     const tree = await walkFilesTree(WS, WS)
     const b = tree.find((n) => n.name === 'proj-b')
     const bChildren = (b?.children ?? []).map((n) => n.name).sort()
-    // proj-a hides secret.env; proj-b must still show its own secret.env.
+    // proj-a ignores secret.env; proj-b's own secret.env must NOT be flagged.
     expect(bChildren).toContain('secret.env')
-    expect(bChildren).not.toContain('only-b.tmp')
+    expect(ignoredOf(b?.children ?? [])).not.toContain('secret.env')
+    expect(ignoredOf(b?.children ?? [])).toContain('only-b.tmp')
   })
 
-  test('deeper nested ignore (src/.shogoignore) hides matching files', async () => {
+  test('deeper nested ignore (src/.shogoignore) flags matching files', async () => {
     const tree = await walkFilesTree(WS, WS)
     const a = tree.find((n) => n.name === 'proj-a')
     const src = a?.children?.find((n) => n.name === 'src')
     const srcChildren = (src?.children ?? []).map((n) => n.name).sort()
     expect(srcChildren).toContain('keep.ts')
-    expect(srcChildren).not.toContain('gen.local')
+    expect(ignoredOf(src?.children ?? [])).toContain('gen.local')
+    expect(ignoredOf(src?.children ?? [])).not.toContain('keep.ts')
   })
 
   test('lazy re-fetch rooted inside a project still honours its ancestor .gitignore', async () => {
@@ -572,14 +582,16 @@ describe('walkFilesTree (nested per-project ignores)', () => {
     const subtree = await walkFilesTree(join(WS, 'proj-a'), WS)
     const names = subtree.map((n) => n.name).sort()
     expect(names).toContain('index.ts')
-    expect(names).not.toContain('secret.env')
-    expect(names).not.toContain('debug.log')
+    expect(ignoredOf(subtree)).toContain('secret.env')
+    expect(ignoredOf(subtree)).toContain('debug.log')
+    expect(ignoredOf(subtree)).not.toContain('index.ts')
 
     // And re-rooting at proj-a/src must still apply src/.shogoignore.
     const srcTree = await walkFilesTree(join(WS, 'proj-a', 'src'), WS)
     const srcNames = srcTree.map((n) => n.name).sort()
     expect(srcNames).toContain('keep.ts')
-    expect(srcNames).not.toContain('gen.local')
+    expect(ignoredOf(srcTree)).toContain('gen.local')
+    expect(ignoredOf(srcTree)).not.toContain('keep.ts')
   })
 })
 
@@ -638,5 +650,64 @@ describe('walkFilesTree (linked directories)', () => {
     const loop = agents?.children?.find((n) => n.name === 'loop')
     expect(loop).toEqual(expect.objectContaining({ type: 'directory', lazy: true }))
     expect(loop?.children).toBeUndefined()
+  })
+})
+
+
+// ───────────────────────────────────────────────────────────────────────────
+// Ordering — folders first, case-insensitive natural order, on every backend.
+// ───────────────────────────────────────────────────────────────────────────
+describe('walkFilesTree (sorting)', () => {
+  test('orders folders first, then files, case-insensitively and naturally', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'shogo-fs-tree-walker-sort-'))
+    try {
+      for (const f of ['file10.ts', 'file2.ts', 'Zeta.md', 'alpha.md', 'file1.ts', '.env', 'README.md']) {
+        writeFileSync(join(root, f), '')
+      }
+      for (const d of ['zdir', 'Adir', 'bdir']) mkdirSync(join(root, d))
+
+      const tree = await walkFilesTree(root, root)
+      expect(tree.map((n) => n.name)).toEqual([
+        'Adir',
+        'bdir',
+        'zdir',
+        '.env',
+        'alpha.md',
+        'file1.ts',
+        'file2.ts',
+        'file10.ts',
+        'README.md',
+        'Zeta.md',
+      ])
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test('nested children are sorted too', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'shogo-fs-tree-walker-sort-nested-'))
+    try {
+      mkdirSync(join(root, 'src'))
+      for (const f of ['b.ts', 'a10.ts', 'a9.ts']) writeFileSync(join(root, 'src', f), '')
+      mkdirSync(join(root, 'src', 'lib'))
+
+      const tree = await walkFilesTree(root, root)
+      const src = tree.find((n) => n.name === 'src')
+      expect(src?.children?.map((n) => n.name)).toEqual(['lib', 'a9.ts', 'a10.ts', 'b.ts'])
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('compareWorkspaceTreeNodes', () => {
+  test('is a stable, antisymmetric order', () => {
+    const a = { name: 'a', type: 'file' as const }
+    const b = { name: 'b', type: 'file' as const }
+    const dir = { name: 'z', type: 'directory' as const }
+    expect(compareWorkspaceTreeNodes(a, b)).toBeLessThan(0)
+    expect(compareWorkspaceTreeNodes(b, a)).toBeGreaterThan(0)
+    expect(compareWorkspaceTreeNodes(dir, a)).toBeLessThan(0)
+    expect(compareWorkspaceTreeNodes(a, a)).toBe(0)
   })
 })
