@@ -39,6 +39,28 @@ index f4c13e0581defec0349c406c71a6037cd5168008..c5150264e53e67c072c62b92b5b9897c
  var runtime_1 = require("./runtime");
  Object.defineProperty(exports, "StyleSheet", { enumerable: true, get: function () { return runtime_1.StyleSheet; } });
  Object.defineProperty(exports, "colorScheme", { enumerable: true, get: function () { return runtime_1.colorScheme; } });
+diff --git a/dist/runtime/native/appearance-observables.js b/dist/runtime/native/appearance-observables.js
+index b8603202ea3e43e3a35e940a5bbbc25b50a25869..ca226d80ebe3e77150f669967b160dca383e5ac5 100644
+--- a/dist/runtime/native/appearance-observables.js
++++ b/dist/runtime/native/appearance-observables.js
+@@ -9,12 +9,16 @@ exports.systemColorScheme = (0, observable_1.observable)(react_native_1.Appearan
+ const colorSchemeObservable = (0, observable_1.observable)(undefined);
+ exports.colorScheme = {
+     set(value) {
++        // React Native >= 0.82 forwards the value untouched and caches it, so
++        // `null` would leave `Appearance.getColorScheme()` null. `"unspecified"`
++        // clears the override and re-reads the real system scheme.
+         if (value === "system") {
+-            appearance.setColorScheme(null);
++            appearance.setColorScheme("unspecified");
+         }
+         else {
+             appearance.setColorScheme(value);
+         }
++        exports.systemColorScheme.set(appearance.getColorScheme() ?? "light");
+         if (process.env.NODE_ENV === "test") {
+             colorSchemeObservable.set(value === "system" ? "light" : value);
+         }
 diff --git a/dist/runtime/web/color-scheme.js b/dist/runtime/web/color-scheme.js
 index c8fb1d2d9eb59204349cf80aeb56cbc281e81771..a57ec5eaaeb6544171e020c06b7966b64f87d53c 100644
 --- a/dist/runtime/web/color-scheme.js
@@ -98,14 +120,14 @@ index bf095a5b430d24f791b8478f5b513d703bd1a02a..a422588621d0b9aad86346567c76c433
 +  }
 +  return aspectRatio.ratio.join(" / ");
  }
- 
+
  function parseDimension(
 diff --git a/src/index.ts b/src/index.ts
 index 8cae6336931fa5e23f26fe1892f78f8cb90485b6..7bbc1f5f462f62da197b5a299ce792d88bac63c4 100644
 --- a/src/index.ts
 +++ b/src/index.ts
 @@ -2,7 +2,22 @@ export { createElement } from "react";
- 
+
  export { default as wrapJSX } from "./runtime/wrap-jsx";
  
 -export * from "./doctor";
@@ -128,6 +150,27 @@ index 8cae6336931fa5e23f26fe1892f78f8cb90485b6..7bbc1f5f462f62da197b5a299ce792d8
  
  export {
    StyleSheet,
+diff --git a/src/runtime/native/appearance-observables.ts b/src/runtime/native/appearance-observables.ts
+index c235c2da28266a7dbde1458973c46db664f544f1..6f4986e1e2c508d3ecfb7cba797f44f19a0332f7 100644
+--- a/src/runtime/native/appearance-observables.ts
++++ b/src/runtime/native/appearance-observables.ts
+@@ -21,11 +21,15 @@ const colorSchemeObservable = observable<"light" | "dark" | undefined>(
+ 
+ export const colorScheme = {
+   set(value: "light" | "dark" | "system") {
++    // React Native >= 0.82 forwards the value untouched and caches it, so
++    // `null` would leave `Appearance.getColorScheme()` null. "unspecified"
++    // clears the override and re-reads the real system scheme.
+     if (value === "system") {
+-      appearance.setColorScheme(null);
++      appearance.setColorScheme("unspecified" as any);
+     } else {
+       appearance.setColorScheme(value);
+     }
+ 
++    systemColorScheme.set(appearance.getColorScheme() ?? "light");
+     // Appearance.addChangeListener is not fired in a test environment
+     if (process.env.NODE_ENV === "test") {
 diff --git a/src/runtime/web/color-scheme.ts b/src/runtime/web/color-scheme.ts
 index 3e64d9f147ca76e3c3a2d5fc17191c3dcf983e08..af61ce960eae228c24eab15f65b35a78d760d6b2 100644
 --- a/src/runtime/web/color-scheme.ts
