@@ -1322,7 +1322,7 @@ export function Workbench({
   //      against the right JSON-schema fileMatch, fixing the canvas-
   //      reported "schema validation runs against wrong file" symptom).
   const persistByFileId = useCallback(
-    async (id: string, opts?: { silent?: boolean }): Promise<boolean> => {
+    async (id: string, opts?: { silent?: boolean; auto?: boolean }): Promise<boolean> => {
       const f = resolveSaveTarget(groupsRef.current, id);
       if (!f) return false; // closed mid-flight — drop silently
       const svc = svcOf(f.rootId);
@@ -1334,13 +1334,40 @@ export function Workbench({
       // across split groups), then trigger the formatter through it. After
       // the formatter applied edits, read the final content from the model
       // — the React-state `content` is one keystroke stale by then.
-      if (settings.formatOnSave) {
+      // Like VS Code, formatting/whitespace clean-up only runs on explicit
+      // saves — never on the autosave that fires while you pause typing
+      // (it would rewrite the line under your cursor mid-thought).
+      const wantsCleanup =
+        !opts?.auto &&
+        (settings.formatOnSave || settings.trimTrailingWhitespace || settings.insertFinalNewline);
+      if (wantsCleanup) {
         const ed = findEditorForFileId(Object.values(editorRefs.current), id);
         if (ed) {
           try {
-            const action = ed.getAction?.("editor.action.formatDocument");
-            if (action) await action.run();
+            if (settings.formatOnSave) {
+              const action = ed.getAction?.("editor.action.formatDocument");
+              if (action) await action.run();
+            }
+            if (settings.trimTrailingWhitespace) {
+              await ed.getAction?.("editor.action.trimTrailingWhitespace")?.run();
+            }
             const m = ed.getModel();
+            if (m && settings.insertFinalNewline) {
+              const last = m.getLineCount();
+              if (m.getLineContent(last) !== "") {
+                ed.executeEdits("shogo.insertFinalNewline", [
+                  {
+                    range: {
+                      startLineNumber: last,
+                      startColumn: m.getLineMaxColumn(last),
+                      endLineNumber: last,
+                      endColumn: m.getLineMaxColumn(last),
+                    },
+                    text: "\n",
+                  },
+                ]);
+              }
+            }
             if (m) content = m.getValue();
           } catch {
             // Format failures must NEVER block the save — log via toast
@@ -1385,7 +1412,7 @@ export function Workbench({
         return false;
       }
     },
-    [svcOf, showToast, settings.formatOnSave],
+    [svcOf, showToast, settings.formatOnSave, settings.trimTrailingWhitespace, settings.insertFinalNewline],
   );
 
   // Compat shim: a couple of older call sites (autosave timer, merge editor)
@@ -1395,7 +1422,7 @@ export function Workbench({
   // content from groupsRef.
   const persistOpenFile = useCallback(
     (f: OpenFile, silent?: boolean): Promise<boolean> =>
-      persistByFileId(f.id, { silent }),
+      persistByFileId(f.id, { silent, auto: !!silent }),
     [persistByFileId],
   );
 
@@ -1506,7 +1533,7 @@ export function Workbench({
   // ─── Splits ──────────────────────────────────────────────────────────
   const splitRight = useCallback(() => {
     if (groups.length >= 2) {
-      showToast("Already split (max 2 groups in Phase 4)", 2000);
+      showToast("Already split — close a group first (max 2)", 2000);
       return;
     }
     if (!active) {

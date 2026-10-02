@@ -354,7 +354,19 @@ export function CodeEditor({
         renderWhitespace: settings.renderWhitespace,
         bracketPairColorization: { enabled: settings.bracketPairs },
         tabSize: settings.tabSize,
-        scrollBeyondLastLine: false,
+        // VS Code defaults the standalone editor omits. `fixedOverflowWidgets`
+        // renders hover/suggest/find widgets in a fixed layer so they are not
+        // clipped by the editor's `overflow-hidden` ancestors (split panes,
+        // the bottom panel, the sidebar edge).
+        fixedOverflowWidgets: true,
+        scrollBeyondLastLine: true,
+        mouseWheelZoom: true,
+        fontLigatures: true,
+        linkedEditing: true,
+        detectIndentation: true,
+        guides: { bracketPairs: true, indentation: true, highlightActiveIndentation: true },
+        stickyScroll: { enabled: true },
+        suggest: { preview: true, showStatusBar: false },
         smoothScrolling: true,
         cursorBlinking: "smooth",
         renderLineHighlight: "all",

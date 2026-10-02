@@ -110,6 +110,8 @@ export function SettingsPane({
             options={[
               { label: "None", value: "none" },
               { label: "Boundary", value: "boundary" },
+              { label: "Selection", value: "selection" },
+              { label: "Trailing", value: "trailing" },
               { label: "All", value: "all" },
             ]}
             onChange={(v) =>
@@ -142,9 +144,21 @@ export function SettingsPane({
           />
           <ToggleRow
             label="Format on save"
-            hint="Coming soon — Prettier integration"
+            hint="Run the language formatter (JSON, CSS, HTML, TS/JS) before every save"
             value={settings.formatOnSave}
             onChange={(v) => set("formatOnSave", v)}
+          />
+          <ToggleRow
+            label="Trim trailing whitespace"
+            hint="Remove spaces and tabs at the end of lines when you save (⌘S)"
+            value={settings.trimTrailingWhitespace}
+            onChange={(v) => set("trimTrailingWhitespace", v)}
+          />
+          <ToggleRow
+            label="Insert final newline"
+            hint="End files with a single newline when you save (⌘S)"
+            value={settings.insertFinalNewline}
+            onChange={(v) => set("insertFinalNewline", v)}
           />
         </Section>
 

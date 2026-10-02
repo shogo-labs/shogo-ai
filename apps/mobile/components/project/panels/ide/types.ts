@@ -55,11 +55,15 @@ export interface EditorSettings {
   wordWrap: "on" | "off";
   minimap: boolean;
   lineNumbers: "on" | "off" | "relative";
-  renderWhitespace: "none" | "boundary" | "all";
+  renderWhitespace: "none" | "boundary" | "selection" | "trailing" | "all";
   bracketPairs: boolean;
   /** Persist editor buffers to the workspace after a short pause while typing. */
   autoSave: boolean;
   formatOnSave: boolean;
+  /** Strip trailing spaces/tabs from every line on (manual) save. */
+  trimTrailingWhitespace: boolean;
+  /** Ensure the file ends with exactly one newline on (manual) save. */
+  insertFinalNewline: boolean;
   /**
    * Desktop-only: Monaco theme id (built-in from `BUILTIN_DESKTOP_THEMES`
    * or `shogo-user-<slug>` for an imported custom theme). Ignored by the
@@ -86,6 +90,8 @@ export const DEFAULT_SETTINGS: EditorSettings = {
   bracketPairs: true,
   autoSave: true,
   formatOnSave: false,
+  trimTrailingWhitespace: false,
+  insertFinalNewline: false,
 };
 
 export interface Root {
