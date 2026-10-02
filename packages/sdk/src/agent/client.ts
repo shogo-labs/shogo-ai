@@ -278,9 +278,27 @@ export class AgentClient {
     }, { scoped: true })
   }
 
-  async deleteFile(path: string): Promise<void> {
-    await this.fetchJson(`/agent/workspace/files/${this.encodePath(path)}`, {
+  /**
+   * Delete a workspace file. Pass `{ recursive: true }` to delete a
+   * directory and everything under it; without it the runtime refuses
+   * directories.
+   */
+  async deleteFile(path: string, opts?: { recursive?: boolean }): Promise<void> {
+    const qs = opts?.recursive ? '?recursive=true' : ''
+    await this.fetchJson(`/agent/workspace/files/${this.encodePath(path)}${qs}`, {
       method: 'DELETE',
+    }, { scoped: true })
+  }
+
+  /**
+   * Rename or move a file or directory with the filesystem's native rename
+   * (atomic, binary-safe, handles folders and case-only renames).
+   */
+  async renameWorkspacePath(from: string, to: string): Promise<void> {
+    await this.fetchJson('/agent/workspace/rename', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ from, to }),
     }, { scoped: true })
   }
 

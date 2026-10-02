@@ -195,15 +195,14 @@ export class SdkFs implements WorkspaceService {
     await this.client.mkdirWorkspace(path)
   }
 
+  /** Removes a file or (recursively) a folder. */
   async remove(path: string): Promise<void> {
-    await this.client.deleteFile(path)
+    await this.client.deleteFile(path, { recursive: true })
   }
 
-  /** Rename by copy + delete — the agent runtime has no native rename yet. */
+  /** Native rename/move — works for folders, binaries, and case-only renames. */
   async rename(from: string, to: string): Promise<void> {
-    const content = await this.client.readFile(from)
-    await this.client.writeFile(to, content)
-    await this.client.deleteFile(from)
+    await this.client.renameWorkspacePath(from, to)
   }
 
   /**

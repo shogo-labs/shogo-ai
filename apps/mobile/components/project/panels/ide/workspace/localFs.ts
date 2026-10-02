@@ -322,6 +322,15 @@ export class LocalFs implements WorkspaceService {
 
   async rename(from: string, to: string) {
     // FSA has no native rename; emulate via copy+delete.
+    if (from === to) return;
+    // A case-only rename on a case-insensitive filesystem would copy the file
+    // onto itself and then delete it. Hop through a temporary name instead.
+    if (from.toLowerCase() === to.toLowerCase()) {
+      const tmp = `${from}.shogo-rename-${Date.now()}`;
+      await this.rename(from, tmp);
+      await this.rename(tmp, to);
+      return;
+    }
     const fromInfo = await this.resolve(from);
     if (!fromInfo.name) throw new Error("Invalid source");
     // Detect file vs dir

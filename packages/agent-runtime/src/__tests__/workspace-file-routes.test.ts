@@ -185,6 +185,96 @@ describe('directories are rejected cleanly', () => {
   })
 })
 
+describe('native rename and recursive delete (IDE path space)', () => {
+  const post = (body: unknown) =>
+    request('/agent/workspace/rename?scope=project', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+  const scratch = () => join(user, 'scratch')
+
+  beforeEach(() => {
+    rmSync(scratch(), { recursive: true, force: true })
+    mkdirSync(join(scratch(), 'dir', 'nested'), { recursive: true })
+    writeFileSync(join(scratch(), 'a.txt'), 'A')
+    writeFileSync(join(scratch(), 'dir', 'nested', 'deep.txt'), 'deep')
+    writeFileSync(join(scratch(), 'img.bin'), Buffer.from([0, 255, 1, 254]))
+  })
+
+  test('renames a file', async () => {
+    const res = await post({ from: 'scratch/a.txt', to: 'scratch/b.txt' })
+    expect(res.status).toBe(200)
+    expect(existsSync(join(scratch(), 'a.txt'))).toBe(false)
+    expect(readFileSync(join(scratch(), 'b.txt'), 'utf8')).toBe('A')
+    expect(deleted.length).toBe(1)
+    expect(written.length).toBe(1)
+  })
+
+  test('renames a binary file without corrupting it', async () => {
+    const res = await post({ from: 'scratch/img.bin', to: 'scratch/img2.bin' })
+    expect(res.status).toBe(200)
+    expect([...readFileSync(join(scratch(), 'img2.bin'))]).toEqual([0, 255, 1, 254])
+  })
+
+  test('renames a folder with its contents', async () => {
+    const res = await post({ from: 'scratch/dir', to: 'scratch/renamed' })
+    expect(res.status).toBe(200)
+    expect(existsSync(join(scratch(), 'dir'))).toBe(false)
+    expect(readFileSync(join(scratch(), 'renamed', 'nested', 'deep.txt'), 'utf8')).toBe('deep')
+  })
+
+  test('moves into a not-yet-existing parent', async () => {
+    const res = await post({ from: 'scratch/a.txt', to: 'scratch/new/parent/a.txt' })
+    expect(res.status).toBe(200)
+    expect(readFileSync(join(scratch(), 'new', 'parent', 'a.txt'), 'utf8')).toBe('A')
+  })
+
+  test('case-only rename keeps the file (does not delete it)', async () => {
+    const res = await post({ from: 'scratch/a.txt', to: 'scratch/A.txt' })
+    expect(res.status).toBe(200)
+    expect(readFileSync(join(scratch(), 'A.txt'), 'utf8')).toBe('A')
+    const { readdirSync } = await import('node:fs')
+    expect(readdirSync(scratch())).toContain('A.txt')
+    expect(readdirSync(scratch())).not.toContain('a.txt')
+  })
+
+  test('refuses to overwrite an existing destination', async () => {
+    writeFileSync(join(scratch(), 'b.txt'), 'B')
+    const res = await post({ from: 'scratch/a.txt', to: 'scratch/b.txt' })
+    expect(res.status).toBe(409)
+    expect(readFileSync(join(scratch(), 'a.txt'), 'utf8')).toBe('A')
+    expect(readFileSync(join(scratch(), 'b.txt'), 'utf8')).toBe('B')
+  })
+
+  test('refuses to move a folder into itself', async () => {
+    const res = await post({ from: 'scratch/dir', to: 'scratch/dir/nested/dir' })
+    expect(res.status).toBe(400)
+    expect(existsSync(join(scratch(), 'dir', 'nested', 'deep.txt'))).toBe(true)
+  })
+
+  test('rejects traversal and missing sources', async () => {
+    expect((await post({ from: 'scratch/a.txt', to: '../../etc/x' })).status).toBe(400)
+    expect((await post({ from: 'scratch/nope.txt', to: 'scratch/x.txt' })).status).toBe(404)
+    expect((await post({ from: 'scratch/a.txt' })).status).toBe(400)
+  })
+
+  test('DELETE ?recursive=true removes a folder tree', async () => {
+    const res = await request('/agent/workspace/files/scratch/dir?scope=project&recursive=true', {
+      method: 'DELETE',
+    })
+    expect(res.status).toBe(200)
+    expect(existsSync(join(scratch(), 'dir'))).toBe(false)
+    expect(deleted.length).toBe(1)
+  })
+
+  test('DELETE without recursive still refuses a folder', async () => {
+    const res = await request('/agent/workspace/files/scratch/dir?scope=project', { method: 'DELETE' })
+    expect(res.status).toBe(400)
+    expect(existsSync(join(scratch(), 'dir'))).toBe(true)
+  })
+})
+
 describe('resolveWithinRoot', () => {
   test('rejects a sibling directory whose name extends the root', () => {
     expect(resolveWithinRoot(merged, '../merged-evil/secret.txt')).toBeNull()
