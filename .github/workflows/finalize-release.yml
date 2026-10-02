@@ -66,15 +66,20 @@ jobs:
           # error instead of being killed mid-step.
           deadline=$(( $(date +%s) + 7000 ))
 
-          # Query a workflow's latest run for this commit, retrying transient
+          # Query a workflow's latest run of THIS TAG PUSH, retrying transient
           # GitHub API failures (e.g. HTTP 5xx) with a short backoff. Without
           # this, a single flaky API response would trip `set -e` and abort the
           # whole wait loop, falsely failing the finalizer.
           get_run() {
             local wf="$1" attempt out
             for attempt in 1 2 3 4 5; do
-              if out=$(gh run list --workflow "$wf" --commit "$SHA" \
-                         --json status,conclusion --limit 1 2>/dev/null); then
+              # Only the tag-push run counts. Other runs on the same commit (a
+              # manually dispatched beta build, a re-run from a branch) upload
+              # to a different release and must not block, or be mistaken for,
+              # this one. Emitted as a one-element array: callers read `.[0]`.
+              if out=$(gh run list --workflow "$wf" --commit "$SHA" --event push \
+                         --json status,conclusion,headBranch --limit 30 2>/dev/null |
+                       jq -c --arg tag "$TAG" '[.[] | select(.headBranch == $tag)] | .[0:1]'); then
                 printf '%s' "$out"
                 return 0
               fi
