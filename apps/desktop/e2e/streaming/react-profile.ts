@@ -81,7 +81,15 @@ export async function installReactProfiler(page: Page): Promise<void> {
       const owner = fiber._debugOwner
       const ownerName = owner ? (owner.name ?? (owner.type && (owner.type.displayName || owner.type.name))) : ''
       const src = String((t.type ?? t.render ?? t)).replace(/\s+/g, ' ').slice(0, 70)
-      return `Anonymous<${ownerName || '?'}> ${src}`
+      const chain: string[] = []
+      for (let up = fiber.return; up && chain.length < 4; up = up.return) {
+        if (COMPONENT_TAGS.has(up.tag)) {
+          const ut = up.type
+          const n = (ut && (ut.displayName || ut.name || ut.render?.name || ut.type?.name)) || ''
+          if (n && !/^(View|Text|CssInterop|Pressable|Animated)/.test(n)) chain.push(n)
+        }
+      }
+      return `Anonymous<${ownerName || chain.join('<') || '?'}> ${src.slice(0, 40)}`
     }
 
     const didRender = (next: any, prev: any | null): boolean => {
