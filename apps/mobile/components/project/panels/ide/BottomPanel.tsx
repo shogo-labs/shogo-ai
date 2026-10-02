@@ -101,6 +101,8 @@ export function BottomPanel({
     projectId ? (s.unseenErrorsByProject[projectId] ?? 0) : 0,
   );
 
+  const problemCount = useBottomPanelState((s) => s.problemCount);
+
   // Local nonce incremented by the "New Terminal" panel-header button.
   const [localNewNonce, setLocalNewNonce] = React.useState(0);
   const effectiveNewSessionNonce = (newSessionNonce ?? 0) + localNewNonce;
@@ -254,7 +256,7 @@ export function BottomPanel({
       <PanelTabStrip
         activeTab={tab}
         onSelect={handleSelect}
-        badges={{ Output: unseenForThisProject }}
+        badges={{ Output: unseenForThisProject, Problems: problemCount }}
         extensionTabs={extensionPanelContainers}
         onNewTerminal={() => setLocalNewNonce((n) => n + 1)}
         onMaximize={handleMaximize}

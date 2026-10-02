@@ -140,11 +140,12 @@ export function PanelTabStrip(props: PanelTabStripProps): React.ReactElement {
               aria-controls={`bottompanel-tabpanel-${t}`}
               aria-label={
                 showBadge
-                  ? `${label} (${badge} unseen ${badge === 1 ? 'error' : 'errors'})`
+                  ? `${label} (${badge} ${t === 'Problems' ? (badge === 1 ? 'problem' : 'problems') : `unseen ${badge === 1 ? 'error' : 'errors'}`})`
                   : label
               }
               tabIndex={selected ? 0 : -1}
               onClick={() => props.onSelect(t)}
+              onDoubleClick={() => props.onMaximize?.()}
               className={`relative px-3 py-2 text-[11px] font-semibold uppercase tracking-wider transition-colors ${
                 selected
                   ? 'text-white'

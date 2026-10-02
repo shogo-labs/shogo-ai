@@ -413,6 +413,7 @@ export function Workbench({
   }, [settings.fontFamily, settings.terminalFontSize]);
 
   const sidebarSplit = useResizable({
+    storageKey: "shogo.ide.sidebarWidth",
     initial: 280,
     min: 200,
     max: 540,
@@ -2419,6 +2420,7 @@ export function Workbench({
         else if (mk.severity === 4) warnings++;
       }
       setMarkerCounts((p) => (p.errors === errors && p.warnings === warnings ? p : { errors, warnings }));
+      ideBottomPanelStore.setProblemCount(errors + warnings);
     };
     recompute();
     const d = m.editor.onDidChangeMarkers(recompute);
@@ -3094,6 +3096,7 @@ export function Workbench({
 
             <VerticalSplit
               onMouseDown={sidebarSplit.onMouseDown}
+              onDoubleClick={sidebarSplit.reset}
               className={primarySideBarPosition === "left" ? "order-3" : "order-2"}
             />
 
