@@ -191,7 +191,8 @@ test.describe("Team chat: agents hand off to each other", () => {
     await compose(page, channelComposer, [{ mention: NAMES.writer }, " write the release note for the slugify fix"])
 
     await openThread(page, channelId, "write the release note")
-    await expect(page.getByText("reply here to continue", { exact: false })).toBeVisible({ timeout: 60_000 })
+    // The pause notice shows in the thread and, as a broadcast, in the channel.
+    await expect(page.getByText("reply here to continue", { exact: false }).first()).toBeVisible({ timeout: 60_000 })
     const reviews = await page.getByText("The draft also claims", { exact: false }).count()
     expect(reviews).toBeLessThanOrEqual(2)
   })
