@@ -35,6 +35,7 @@ import {
 } from "./turnShaping"
 import { buildFallbackWorkedLabel } from "./workSummary"
 import { TASK_TOOL_NAMES, extractOrderedParts } from "./messageParts"
+import { reuseGroups, reuseParts } from "./partIdentity"
 import { useChatContextSafe } from "../ChatContext"
 import { resolveChatAttachmentUrl } from "../../../lib/chat-attachment-url"
 import { MarkdownText } from "../MarkdownText"
@@ -475,10 +476,18 @@ export const AssistantContent = memo(
     // flushed immediately so the committed UI is always exact.
     const throttledMessage = useThrottledWhileStreaming(message, isStreaming)
 
-    const orderedParts = useMemo(
-      () => extractOrderedParts(throttledMessage),
-      [throttledMessage],
-    )
+    // The SDK hands back a fresh copy of every part on each chunk. Keep the
+    // previous objects for parts that didn't change so finished tool groups
+    // can skip re-rendering (see partIdentity.ts).
+    const previousPartsRef = useRef<MessagePart[]>([])
+    const orderedParts = useMemo(() => {
+      const next = reuseParts(
+        previousPartsRef.current,
+        extractOrderedParts(throttledMessage),
+      )
+      previousPartsRef.current = next
+      return next
+    }, [throttledMessage])
 
     // Populate subagentStreamStore from agent_spawn tool results for the Agents panel
     useEffect(() => {
@@ -546,10 +555,15 @@ export const AssistantContent = memo(
       }
     }, [orderedParts, todoStateStore, fileChangeStore])
 
-    const groupedParts = useMemo(
-      () => groupWorkParts(orderedParts),
-      [orderedParts],
-    )
+    const previousGroupsRef = useRef<GroupedMessagePart[]>([])
+    const groupedParts = useMemo(() => {
+      const next = reuseGroups(
+        previousGroupsRef.current,
+        groupWorkParts(orderedParts),
+      )
+      previousGroupsRef.current = next
+      return next
+    }, [orderedParts])
 
     const { workLog, finalSegment } = useMemo(
       () => partitionTurn(groupedParts),

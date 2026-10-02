@@ -216,14 +216,21 @@ export function useServerMessageQueue({
     [rows],
   )
 
-  return {
-    queuedMessages,
-    enqueue,
-    remove,
-    update,
-    reorder,
-    sendNow,
-    isServerQueued,
-    reload: load,
-  }
+  // Memoized: ChatPanel lists this object as a dependency of many callbacks
+  // (including `handleSendMessage`, which sits in the chat context). A fresh
+  // object every render rebuilt all of them, and so re-rendered every message
+  // in the history on each streamed token.
+  return useMemo(
+    () => ({
+      queuedMessages,
+      enqueue,
+      remove,
+      update,
+      reorder,
+      sendNow,
+      isServerQueued,
+      reload: load,
+    }),
+    [queuedMessages, enqueue, remove, update, reorder, sendNow, isServerQueued, load],
+  )
 }
