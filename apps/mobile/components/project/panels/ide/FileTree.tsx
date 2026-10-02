@@ -19,6 +19,7 @@ import type { GitShortCode } from "./git/bridge";
 import { computeDropZone } from "./file-tree-drop-zone";
 import { buildCompactFolderChain } from "./explorer-compact-folders";
 import { useDragAutoScroll } from "./useDragAutoScroll";
+import { renameSelectionEnd, validateEntryName } from "./entry-name";
 
 export interface FileTreeHandlers {
   onOpen: (node: TreeNode) => void;
@@ -197,6 +198,15 @@ export function FileTree({
   const visibleNodes = useMemo(
     () => visibleRows.map((r) => r.node),
     [visibleRows],
+  );
+
+  /** Names of the entries inside `parentPath` of `rootId` (for collision checks). */
+  const siblingNames = useCallback(
+    (rootId: string, parentPath: string): string[] =>
+      visibleNodes
+        .filter((n) => n.path !== "" && n.rootId === rootId && parentOf(n.path) === parentPath)
+        .map((n) => n.name),
+    [visibleNodes],
   );
 
   /** Prune selections that are no longer visible (e.g. after a parent was
@@ -733,6 +743,11 @@ export function FileTree({
               onChange={(v) => setCreating((c) => (c ? { ...c, draft: v } : c))}
               onCommit={commitCreate}
               onCancel={() => setCreating(null)}
+              validate={(v) =>
+                validateEntryName(v, {
+                  siblings: siblingNames(creating?.rootId ?? "", creating?.parentPath ?? ""),
+                })
+              }
             />
           );
         }
@@ -810,6 +825,13 @@ export function FileTree({
               onChange={(v) => setRenaming((r) => (r ? { ...r, draft: v } : r))}
               onCommit={commitRename}
               onCancel={() => setRenaming(null)}
+              selectEnd={renameSelectionEnd(node.name, node.kind === "dir")}
+              validate={(v) =>
+                validateEntryName(v, {
+                  siblings: siblingNames(node.rootId, parentOf(node.path)),
+                  currentName: node.name,
+                })
+              }
             />
           );
         }
@@ -866,7 +888,7 @@ export function FileTree({
                       : isSelected
                       ? "bg-[color:var(--ide-hover)] text-[color:var(--ide-text-strong)]"
                       : "text-[color:var(--ide-text)] hover:bg-[color:var(--ide-hover)]"
-                  }`
+                  }${node.ignored ? " opacity-[0.55]" : ""}`
             }
             style={{ paddingLeft: 8 + depth * 12 }}
           >
@@ -891,7 +913,7 @@ export function FileTree({
                 <File size={15} className={iconFor(ext)} />
               </>
             )}
-            <span className="truncate min-w-0 flex-1" title={node.path}>{displayName}</span>
+            <span className="truncate min-w-0 flex-1" title={node.ignored ? `${node.path} (ignored by .gitignore)` : node.path}>{displayName}</span>
             <GitStatusBadge code={node.kind === "dir" ? (git.folderDirty(node.path) ? "·" : null) : git.getStatus(node.path)} isFolderDirty={node.kind === "dir" && git.folderDirty(node.path)} />
           </div>
         );
@@ -936,6 +958,8 @@ function InlineInput({
   onChange,
   onCommit,
   onCancel,
+  validate,
+  selectEnd,
 }: {
   depth: number;
   icon: React.ReactNode;
@@ -943,15 +967,37 @@ function InlineInput({
   onChange: (v: string) => void;
   onCommit: () => void;
   onCancel: () => void;
+  /** Returns an error message for an invalid name, or null. */
+  validate?: (v: string) => string | null;
+  /** Offset to end the initial selection at (rename leaves the extension out). */
+  selectEnd?: number;
 }) {
   const ref = useRef<HTMLInputElement>(null);
+  // Commit/cancel must fire at most once. Escape unmounts the input, and the
+  // resulting blur used to run `onCommit` with the stale draft — so Escape
+  // saved the rename it was meant to abort.
+  const doneRef = useRef(false);
+  const error = validate ? validate(value) : null;
+
   useEffect(() => {
-    ref.current?.focus();
-    ref.current?.select();
+    const el = ref.current;
+    if (!el) return;
+    el.focus();
+    if (selectEnd !== undefined) el.setSelectionRange(0, selectEnd);
+    else el.select();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  const finish = (kind: "commit" | "cancel") => {
+    if (doneRef.current) return;
+    doneRef.current = true;
+    if (kind === "commit") onCommit();
+    else onCancel();
+  };
+
   return (
     <div
-      className="flex items-center gap-1 bg-[color:var(--ide-bg)] px-2 py-[2px]"
+      className="relative flex items-center gap-1 bg-[color:var(--ide-bg)] px-2 py-[2px]"
       style={{ paddingLeft: 8 + depth * 12 }}
     >
       <span className="w-[14px]" />
@@ -959,19 +1005,34 @@ function InlineInput({
       <input
         ref={ref}
         value={value}
+        aria-invalid={error ? true : undefined}
         onChange={(e) => onChange(e.target.value)}
-        onBlur={onCommit}
+        // Losing focus commits a valid name (VS Code behaviour) but never an
+        // invalid one — that is treated as a cancel.
+        onBlur={() => finish(error ? "cancel" : "commit")}
         onKeyDown={(e) => {
           if (e.key === "Enter") {
             e.preventDefault();
-            onCommit();
+            // Keep the input open so the user can fix the name.
+            if (error) return;
+            finish("commit");
           } else if (e.key === "Escape") {
             e.preventDefault();
-            onCancel();
+            finish("cancel");
           }
         }}
-        className="no-focus-ring flex-1 min-w-0 bg-[color:var(--ide-input)] px-1 py-[1px] text-[13px] text-[color:var(--ide-text-strong)] outline outline-1 outline-[color:var(--ide-active-ring)]"
+        className={`no-focus-ring flex-1 min-w-0 bg-[color:var(--ide-input)] px-1 py-[1px] text-[13px] text-[color:var(--ide-text-strong)] outline outline-1 ${
+          error ? "outline-red-500" : "outline-[color:var(--ide-active-ring)]"
+        }`}
       />
+      {error && (
+        <div
+          role="alert"
+          className="absolute left-0 right-0 top-full z-20 mx-2 rounded-sm border border-red-500 bg-[color:var(--ide-panel)] px-2 py-1 text-[11px] text-red-400 shadow-lg"
+        >
+          {error}
+        </div>
+      )}
     </div>
   );
 }

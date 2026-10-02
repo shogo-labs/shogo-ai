@@ -57,6 +57,7 @@ import { getDesktopExtensionsBridge, useExtensions } from "./extensions/useExten
 import type { ExtensionHostEvent, ExtensionRuntimeViewResult, ExtensionRuntimeWebviewPanel, ExtensionSearchResult, ExtensionUiRequest, ExtensionUsableEntryPoint, ExtensionWorkspaceState, InstalledExtension } from "./extensions/types";
 import { useLiveAgentEdits, type LiveConflict } from "./useLiveAgentEdits";
 import { AgentEditBanner } from "./AgentEditBanner";
+import { ConfirmDialog, describeFileNames, type ConfirmButton } from "./ConfirmDialog";
 import { applyAgentEdit, type MonacoNs } from "./agentEditAnimation";
 import { FIX_IN_AGENT_EVENT, type FixInAgentPayload } from "./agentFixProvider";
 import type { WorkspaceService } from "./workspace/types";
@@ -394,6 +395,55 @@ export function Workbench({
 
   const groupsRef = useRef(groups);
   groupsRef.current = groups;
+
+  // In-IDE confirm dialog (Save / Don't Save / Cancel etc.). A promise API
+  // keeps call sites linear; never call this from inside a state updater.
+  const [confirmReq, setConfirmReq] = useState<{
+    title: string;
+    message: React.ReactNode;
+    buttons: ConfirmButton<string>[];
+    cancelValue: string;
+  } | null>(null);
+  const confirmResolveRef = useRef<((v: string) => void) | null>(null);
+  const confirmReqCancelRef = useRef<string>("cancel");
+  const resolveConfirm = useCallback((value: string) => {
+    const r = confirmResolveRef.current;
+    confirmResolveRef.current = null;
+    setConfirmReq(null);
+    r?.(value);
+  }, []);
+  const askConfirm = useCallback(
+    <T extends string>(req: {
+      title: string;
+      message: React.ReactNode;
+      buttons: ConfirmButton<T>[];
+      cancelValue: T;
+    }): Promise<T> =>
+      new Promise<T>((resolve) => {
+        // A newer prompt supersedes an unanswered one (treated as cancel).
+        confirmResolveRef.current?.(confirmReqCancelRef.current);
+        confirmReqCancelRef.current = req.cancelValue;
+        confirmResolveRef.current = resolve as (v: string) => void;
+        setConfirmReq(req as unknown as NonNullable<typeof confirmReq>);
+      }),
+    [],
+  );
+
+  // Warn before the page unloads while any buffer has unsaved edits.
+  const hasDirtyFiles = useMemo(
+    () => groups.some((g) => g.files.some((f) => f.dirty)),
+    [groups],
+  );
+  useEffect(() => {
+    if (!hasDirtyFiles || typeof window === "undefined") return;
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, [hasDirtyFiles]);
+
   const autosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const prevActiveIdForAutosaveRef = useRef<string | null>(null);
   // Ref so `persistOpenFile` can reach the latest git root without
@@ -585,6 +635,23 @@ export function Workbench({
     void loadRoot("agent");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // `services` is seeded from the first `agentService` prop and was never
+  // updated afterwards. IDEPanel upgrades SdkFs -> DesktopFs (IPC fast path)
+  // asynchronously, and the runtime URL can change on restart, so follow the
+  // prop and re-list the tree against the new backend.
+  const lastAgentServiceRef = useRef(agentService);
+  useEffect(() => {
+    if (lastAgentServiceRef.current === agentService) return;
+    lastAgentServiceRef.current = agentService;
+    setServices((prev) => ({ ...prev, agent: agentService }));
+  }, [agentService]);
+  const loadedAgentServiceRef = useRef(services["agent"]);
+  useEffect(() => {
+    if (loadedAgentServiceRef.current === services["agent"]) return;
+    loadedAgentServiceRef.current = services["agent"];
+    void loadRoot("agent");
+  }, [services, loadRoot]);
 
   // ─── Backend LSP wiring ────────────────────────────────────────────────
   // Once a Monaco editor mounts AND we have an agentUrl, register the
@@ -900,11 +967,26 @@ export function Workbench({
   // outgoing model). `applyEditorChange` is the pure resolver — it ignores
   // activeId entirely, drops no-op flushes, and treats a missing fileId
   // (closed mid-flight) as a no-op without re-rendering.
-  const handleChangeFor = (groupIdx: number) => (fileId: string, val: string) => {
-    updateGroup(groupIdx, (g) => applyEditorChange(g, fileId, val));
+  //
+  // A file open in both split groups shares ONE Monaco model (same path
+  // URI), so a change must land in every group that holds the file. Updating
+  // only the originating group left the other group's `content`/`dirty`
+  // stale, and Save could then write the stale copy.
+  const handleChangeFor = (_groupIdx: number) => (fileId: string, val: string) => {
+    setGroups((prev) => {
+      let changed = false;
+      const next = prev.map((g) => {
+        const ng = applyEditorChange(g, fileId, val);
+        if (ng !== g) changed = true;
+        return ng;
+      });
+      return changed ? next : prev;
+    });
   };
 
-  const closeInGroup = useCallback((groupIdx: number, id: string) => {
+  // Closes a tab without any prompt. Use `closeInGroup` (defined after the
+  // save pipeline) for user-initiated closes — it asks about unsaved changes.
+  const closeNow = useCallback((groupIdx: number, id: string) => {
     // Closing a conflicted tab discards the banner for that file.
     setConflicts((cs) => cs.filter((c) => c.fileId !== id));
     setGroups((prev) => {
@@ -913,7 +995,6 @@ export function Workbench({
       const idx = g.files.findIndex((f) => f.id === id);
       if (idx < 0) return prev;
       const f = g.files[idx];
-      if (f.dirty && !confirm(`Close ${f.name} without saving?`)) return prev;
       // Preview tabs (image/sqlite/pdf/audio/video/font) allocate a blob:
       // URL on open — revoke it on close so long browsing sessions don't
       // leak one per file opened.
@@ -1058,6 +1139,29 @@ export function Workbench({
     async (node: TreeNode) => {
       const svc = svcOf(node.rootId);
       if (!svc) return;
+      // Deleting something that has unsaved edits open would silently throw
+      // those edits away — the tree's own confirm only mentions the file.
+      const dirtyOpen = groupsRef.current
+        .flatMap((g) => g.files)
+        .filter(
+          (f) =>
+            f.dirty &&
+            f.rootId === node.rootId &&
+            (f.path === node.path || f.path.startsWith(node.path + "/")),
+        );
+      if (dirtyOpen.length > 0) {
+        const names = [...new Set(dirtyOpen.map((f) => f.name))];
+        const choice = await askConfirm({
+          title: "Delete files with unsaved changes?",
+          message: `${describeFileNames(names)} ${names.length === 1 ? "has" : "have"} unsaved changes that will be lost.`,
+          buttons: [
+            { label: "Cancel", value: "cancel" as const, variant: "primary" },
+            { label: "Delete", value: "delete" as const, variant: "danger" },
+          ],
+          cancelValue: "cancel" as const,
+        });
+        if (choice !== "delete") return;
+      }
       try {
         await svc.remove(node.path);
         // Drop the Monaco model(s) so go-to-def / hover don't keep resolving
@@ -1075,7 +1179,7 @@ export function Workbench({
         showToast(`Delete failed: ${err instanceof Error ? err.message : String(err)}`, 3000);
       }
     },
-    [svcOf, loadRoot, showToast],
+    [svcOf, loadRoot, showToast, askConfirm],
   );
 
   const handleMove = useCallback(
@@ -1282,10 +1386,47 @@ export function Workbench({
     const results = await Promise.all(
       dirty.map((f) => persistByFileId(f.id, { silent: true })),
     );
-    if (results.every(Boolean)) {
+    const failed = results.filter((ok) => !ok).length;
+    if (failed === 0) {
       showToast(`Saved ${dirty.length} file${dirty.length === 1 ? "" : "s"}`);
+    } else {
+      showToast(`Saved ${dirty.length - failed} of ${dirty.length} files — ${failed} failed`, 3500);
     }
   }, [persistByFileId, showToast]);
+
+  // User-initiated tab close: asks Save / Don't Save / Cancel when the file
+  // has unsaved edits (unless it's still open in another group, where the
+  // shared buffer isn't going away).
+  const closeInGroup = useCallback(
+    async (groupIdx: number, id: string) => {
+      const groups = groupsRef.current;
+      const f = groups[groupIdx]?.files.find((x) => x.id === id);
+      if (!f) return;
+      const openElsewhere = groups.some(
+        (g, i) => i !== groupIdx && g.files.some((x) => x.id === id),
+      );
+      if (f.dirty && !openElsewhere) {
+        const choice = await askConfirm({
+          title: `Do you want to save the changes you made to ${f.name}?`,
+          message: "Your changes will be lost if you don't save them.",
+          buttons: [
+            { label: "Don't Save", value: "discard" as const, variant: "secondary" },
+            { label: "Cancel", value: "cancel" as const, variant: "secondary" },
+            { label: "Save", value: "save" as const, variant: "primary" },
+          ],
+          cancelValue: "cancel" as const,
+        });
+        if (choice === "cancel") return;
+        if (choice === "save") {
+          const ok = await persistByFileId(id, { silent: true });
+          // A failed save already toasted; keep the tab so nothing is lost.
+          if (!ok) return;
+        }
+      }
+      closeNow(groupIdx, id);
+    },
+    [askConfirm, persistByFileId, closeNow],
+  );
 
   // Auto save: debounce while typing; flush when switching away from a tab.
   useEffect(() => {
@@ -2171,6 +2312,15 @@ export function Workbench({
                 }, [])
               )}
 
+              {confirmReq && (
+                <ConfirmDialog
+                  title={confirmReq.title}
+                  message={confirmReq.message}
+                  buttons={confirmReq.buttons}
+                  cancelValue={confirmReq.cancelValue}
+                  onResolve={resolveConfirm}
+                />
+              )}
               {toast && (
                 <div className="pointer-events-none absolute bottom-4 right-4 z-40 rounded bg-[color:var(--ide-primary)] px-3 py-1.5 text-[12px] text-white shadow-lg">
                   {toast}

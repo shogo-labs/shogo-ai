@@ -95,6 +95,15 @@ export function IDEPanel({
     return () => { cancelled = true }
   }, [sdkService, projectId, folderLinked, isExternalProject, folderPath, remoteHostId])
 
+  // Once the IDE tab has been opened for this project, keep the Workbench
+  // mounted (just hidden) so switching to Canvas and back doesn't throw away
+  // open tabs, unsaved edits, the expanded tree and Monaco models.
+  const [openedFor, setOpenedFor] = useState<string | null>(visible ? projectId : null)
+  useEffect(() => {
+    if (visible) setOpenedFor(projectId)
+  }, [visible, projectId])
+  const keepMounted = visible || openedFor === projectId
+
   if (Platform.OS !== 'web') {
     if (!visible) return null
     return (
@@ -122,12 +131,13 @@ export function IDEPanel({
 
   // Keep the lightweight service setup alive, but do not mount Monaco or the
   // Workbench until the user actually opens the IDE tab.
-  if (!visible) return null
+  if (!keepMounted) return null
 
   return (
     <View style={{ flex: 1, minHeight: 0, display: visible ? 'flex' : 'none' }}>
       <div style={{ flex: 1, minHeight: 0 }}>
         <Workbench
+          key={projectId}
           agentService={agentService}
           agentLabel={projectName || `project/${projectId}`}
           projectId={projectId}
