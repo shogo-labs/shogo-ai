@@ -13,7 +13,7 @@ interface BuddyLookSheetProps {
   onClose: () => void
 }
 
-function BuddyLookContent({ onClose }: { onClose?: () => void }) {
+function BuddyLookContent({ onClose, layout = "full" }: { onClose?: () => void; layout?: "full" | "compact" }) {
   const buddy = useBuddyLook()
   const color = useIslandAccent()
 
@@ -23,7 +23,8 @@ function BuddyLookContent({ onClose }: { onClose?: () => void }) {
         look={buddy.look}
         onChange={buddy.setLook}
         color={color}
-        previewSize={150}
+        previewSize={layout === "compact" ? 130 : 150}
+        layout={layout}
       />
       {buddy.error ? <Text className="text-xs text-destructive">{buddy.error}</Text> : null}
       {onClose ? (
@@ -49,13 +50,23 @@ export function BuddyLookSheet({ visible, onClose }: BuddyLookSheetProps) {
         visible={visible}
         onClose={onClose}
         title="Dress up your Shogo"
-        scroll
+        headerTitleAlign="left"
+        headerRight={
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Done customizing Shogo"
+            onPress={onClose}
+            hitSlop={8}
+            className="rounded-lg bg-primary px-4 py-2 active:opacity-80"
+          >
+            <Text className="text-sm font-semibold text-primary-foreground">Done</Text>
+          </Pressable>
+        }
         draggable
         maxHeightRatio={0.94}
-        keyboardBehavior="scroll"
       >
-        <View className="p-4">
-          <BuddyLookContent onClose={onClose} />
+        <View className="gap-3 px-4 pb-2">
+          <BuddyLookContent layout="compact" />
         </View>
       </NativePhoneSheet>
     )
