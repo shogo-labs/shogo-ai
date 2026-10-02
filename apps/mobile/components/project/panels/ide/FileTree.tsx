@@ -115,10 +115,13 @@ export function FileTree({
   activePath,
   handlers,
   newRequest,
+  revealRequest,
 }: {
   tree: TreeNode[];
   activePath: string | null;
   handlers: FileTreeHandlers;
+  /** Explicit "Reveal in Explorer" (works even when the file is already active). */
+  revealRequest?: { path: string; nonce: number } | null;
   newRequest?: { kind: "file" | "dir"; nonce: number; rootId?: string } | null;
 }) {
   const [expanded, setExpanded] = useState<Set<string>>(() => {
@@ -372,6 +375,16 @@ export function FileTree({
     setMultiSelected(new Set());
     scrollRowIntoView(activePath);
   }, [activePath, expandAncestors, scrollRowIntoView]);
+
+  const lastRevealNonceRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!revealRequest || lastRevealNonceRef.current === revealRequest.nonce) return;
+    lastRevealNonceRef.current = revealRequest.nonce;
+    expandAncestors(revealRequest.path);
+    setSelected(revealRequest.path);
+    setMultiSelected(new Set());
+    scrollRowIntoView(revealRequest.path);
+  }, [revealRequest, expandAncestors, scrollRowIntoView]);
 
   const commitCreate = async () => {
     if (!creating) return;

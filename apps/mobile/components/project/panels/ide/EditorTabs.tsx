@@ -12,6 +12,8 @@ import { useDragCancel } from "./useDragCancel";
 import { useTabOverflow } from "./useTabOverflow";
 import { TabOverflowDropdown } from "./TabOverflowDropdown";
 import { CodiconExtensions } from "./icons";
+import { ContextMenu, type MenuEntry } from "./ContextMenu";
+import { buildTabContextMenu, tabsToClose, type TabMenuActionId } from "./tab-context-menu";
 
 type DropPos = "before" | "after";
 
@@ -24,6 +26,10 @@ export function EditorTabs({
   onReorder,
   onFocus,
   groupFocused,
+  onCloseMany,
+  onCopyText,
+  onRevealFile,
+  onNewFile,
 }: {
   files: OpenFile[];
   activeId: string | null;
@@ -33,7 +39,16 @@ export function EditorTabs({
   onReorder?: (orderedIds: string[]) => void;
   onFocus?: () => void;
   groupFocused?: boolean;
+  /** Close several tabs at once (context menu: Others / Right / All). */
+  onCloseMany?: (ids: string[]) => void;
+  /** Copy text to the clipboard (Copy Path / Copy Relative Path). */
+  onCopyText?: (text: string, what: string) => void;
+  /** Show the file in the Explorer. */
+  onRevealFile?: (id: string) => void;
+  /** Double-click on empty tab-bar space. */
+  onNewFile?: () => void;
 }) {
+  const [tabMenu, setTabMenu] = useState<{ x: number; y: number; id: string } | null>(null);
   const [dragId, setDragId] = useState<string | null>(null);
   const [dropTarget, setDropTarget] = useState<
     { id: string; pos: DropPos } | null
@@ -127,6 +142,55 @@ export function EditorTabs({
     cancelDrag();
   }, [dragId, dropTarget, files, onReorder, cancelDrag]);
 
+  // Same basename in several tabs → show the parent folder so they can be told apart.
+  const nameCounts = new Map<string, number>();
+  for (const f of files) nameCounts.set(f.name, (nameCounts.get(f.name) ?? 0) + 1);
+  const parentHint = (f: OpenFile): string | null => {
+    if ((nameCounts.get(f.name) ?? 0) < 2) return null;
+    const parts = f.path.split("/");
+    return parts.length > 1 ? parts[parts.length - 2] : null;
+  };
+
+  const tabMenuEntries = (id: string): MenuEntry[] => {
+    const f = files.find((x) => x.id === id);
+    if (!f) return [];
+    const model = files.map((x) => ({ id: x.id, path: x.path, label: x.name, pinned: x.pinned }));
+    const clicked = model.find((t) => t.id === id)!;
+    const items = buildTabContextMenu(clicked, model, null, { platform: "linux", onDisk: true });
+    const run = (action: TabMenuActionId) => {
+      switch (action) {
+        case "copyPath":
+        case "copyRelativePath":
+          onCopyText?.(f.path, action === "copyPath" ? "path" : "relative path");
+          break;
+        case "reveal":
+          onRevealFile?.(id);
+          break;
+        case "close":
+          onClose(id);
+          break;
+        default: {
+          const ids = tabsToClose(action, id, model).map((t) => t.id);
+          if (onCloseMany) onCloseMany(ids);
+          else ids.forEach((x) => onClose(x));
+        }
+      }
+    };
+    const out: MenuEntry[] = [];
+    for (const it of items) {
+      if (it.separatorBefore) out.push({ separator: true });
+      out.push({
+        label: it.id === "reveal" ? "Reveal in Explorer" : it.label,
+        disabled: !it.enabled || (it.id === "reveal" && !onRevealFile) || ((it.id === "copyPath" || it.id === "copyRelativePath") && !onCopyText),
+        onClick: () => run(it.id),
+      });
+    }
+    if (onTogglePin) {
+      out.push({ separator: true }, { label: f.pinned ? "Unpin" : "Pin", onClick: () => onTogglePin(id) });
+    }
+    return out;
+  };
+
   if (files.length === 0) return null;
 
   return (
@@ -140,7 +204,16 @@ export function EditorTabs({
         onDragOver={(e) => {
           if (dragId) e.preventDefault();
         }}
-        className="flex h-full flex-1 items-stretch overflow-x-auto scroll-smooth"
+        onWheel={(e) => {
+          // Vertical wheel scrolls the strip sideways (VS Code behaviour).
+          if (Math.abs(e.deltaY) > Math.abs(e.deltaX) && stripRef.current) {
+            stripRef.current.scrollLeft += e.deltaY;
+          }
+        }}
+        onDoubleClick={(e) => {
+          if (e.target === e.currentTarget) onNewFile?.();
+        }}
+        className="flex h-full flex-1 items-stretch overflow-x-auto"
         // Hide native scrollbar in the strip — chevrons are the affordance.
         // Falls back to a thin one if the browser ignores the property.
         style={{ scrollbarWidth: "thin" }}
@@ -160,6 +233,11 @@ export function EditorTabs({
               else tabRefs.current.delete(f.id);
             }}
             data-testid={`editor-tab-${f.id}`}
+            title={f.path}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              setTabMenu({ x: e.clientX, y: e.clientY, id: f.id });
+            }}
             draggable={!!onReorder}
             onDragStart={(e) => {
               if (!onReorder) return;
@@ -216,9 +294,15 @@ export function EditorTabs({
             {f.pinned && <Pin size={11} color="var(--ide-muted)" />}
             {f.language === "extension-detail" && <CodiconExtensions size={14} />}
             <span className="truncate max-w-[120px] sm:max-w-[160px] lg:max-w-[220px]">{f.name}</span>
+            {parentHint(f) && (
+              <span className="-ml-1 truncate max-w-[80px] text-[11px] text-[color:var(--ide-muted)]">{parentHint(f)}</span>
+            )}
             <button
               title={f.pinned ? "Unpin" : f.dirty ? "Close (unsaved)" : "Close"}
-              className="flex h-4 w-4 items-center justify-center rounded-sm hover:bg-[color:var(--ide-hover-subtle)]"
+              className={`flex h-4 w-4 items-center justify-center rounded-sm hover:bg-[color:var(--ide-hover-subtle)] ${
+                // Close X only on hover/active; dirty + pinned markers stay visible.
+                f.dirty || f.pinned || isActive ? "" : "opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
+              }`}
               onClick={(e) => {
                 e.stopPropagation();
                 if (f.pinned && onTogglePin) onTogglePin(f.id);
@@ -230,7 +314,10 @@ export function EditorTabs({
               {f.pinned ? (
                 <Pin size={11} color="currentColor" />
               ) : f.dirty ? (
-                <Circle size={8} color="currentColor" fill="currentColor" />
+                <>
+                  <Circle size={8} color="currentColor" fill="currentColor" className="group-hover:hidden" />
+                  <X size={12} color="currentColor" className="hidden group-hover:block" />
+                </>
               ) : (
                 <X size={12} color="currentColor" />
               )}
@@ -242,6 +329,14 @@ export function EditorTabs({
         );
       })}
       </div>
+      {tabMenu && (
+        <ContextMenu
+          x={tabMenu.x}
+          y={tabMenu.y}
+          items={tabMenuEntries(tabMenu.id)}
+          onClose={() => setTabMenu(null)}
+        />
+      )}
       {isOverflowing && (
         <div
           className="flex h-full shrink-0 items-stretch border-l border-[color:var(--ide-border)] bg-[color:var(--ide-bg)]"

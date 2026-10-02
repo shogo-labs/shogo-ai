@@ -42,6 +42,11 @@ export function EditorGroupView({
   onUseExtensionEntryPoint,
   onSetMdMode,
   onRetryOpen,
+  onCloseMany,
+  onCopyText,
+  onRevealFile,
+  onNewFile,
+  hideTabs,
 }: {
   group: GroupState;
   focused: boolean;
@@ -66,6 +71,12 @@ export function EditorGroupView({
   onUseExtensionEntryPoint?: (extension: InstalledExtension, entryPoint: ExtensionUsableEntryPoint) => void;
   onSetMdMode?: (fileId: string, mode: "preview" | "edit") => void;
   onRetryOpen?: (fileId: string) => void;
+  onCloseMany?: (ids: string[]) => void;
+  onCopyText?: (text: string, what: string) => void;
+  onRevealFile?: (fileId: string) => void;
+  onNewFile?: () => void;
+  /** Zen mode: hide the tab strip. */
+  hideTabs?: boolean;
 }) {
   const active: OpenFile | null =
     group.files.find((f) => f.id === group.activeId) ?? null;
@@ -77,7 +88,7 @@ export function EditorGroupView({
         focused ? "" : "opacity-95"
       }`}
     >
-      <EditorTabs
+      {!hideTabs && <EditorTabs
         files={group.files}
         activeId={group.activeId}
         onSelect={onSelect}
@@ -86,7 +97,11 @@ export function EditorGroupView({
         onReorder={onReorder}
         onFocus={onFocus}
         groupFocused={focused}
-      />
+        onCloseMany={onCloseMany}
+        onCopyText={onCopyText}
+        onRevealFile={onRevealFile}
+        onNewFile={onNewFile}
+      />}
       {active && active.language !== "extension-detail" && active.language !== "extension-webview" && <Breadcrumbs path={active.path} />}
       <div className="flex-1 min-h-0 relative">
         {active ? (

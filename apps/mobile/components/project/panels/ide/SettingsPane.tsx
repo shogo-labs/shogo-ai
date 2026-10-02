@@ -1,4 +1,13 @@
-import { useRef, useState } from "react";
+import {
+  MINIMAP_SCALE_OPTIONS,
+  MINIMAP_SIDE_OPTIONS,
+  MINIMAP_SIZE_OPTIONS,
+  coerceMinimapScale,
+  coerceMinimapSide,
+  coerceMinimapSize,
+} from "./minimap-settings";
+import { createContext, useContext, useRef, useState } from "react";
+import { settingValuesEqual } from "./settings-form";
 import { RotateCcw, Upload } from "lucide-react-native";
 import { DEFAULT_SETTINGS, type EditorSettings } from "./types";
 import { FONT_FAMILY_OPTIONS } from "./useEditorFont";
@@ -11,6 +20,67 @@ import {
 } from "./monaco/themes";
 import { getMonacoRef } from "./monaco/workspaceModels";
 
+interface SettingsCtxValue {
+  query: string;
+  settings: EditorSettings;
+  reset: (k: keyof EditorSettings) => void;
+}
+const SettingsCtx = createContext<SettingsCtxValue | null>(null);
+
+/** Hides a row that doesn't match the search box (label, hint or key). */
+function RowShell({
+  k,
+  label,
+  hint,
+  children,
+}: {
+  k?: keyof EditorSettings;
+  label: string;
+  hint?: string;
+  children: React.ReactNode;
+}) {
+  const ctx = useContext(SettingsCtx);
+  const q = ctx?.query.trim().toLowerCase() ?? "";
+  if (q) {
+    const hay = `${label} ${hint ?? ""} ${k ?? ""}`.toLowerCase();
+    if (!q.split(/\s+/).every((w) => hay.includes(w))) return null;
+  }
+  return <div data-setting-row>{children}</div>;
+}
+
+/** Label plus a "modified" dot and per-setting reset when it differs from the default. */
+function RowLabel({ k, label }: { k?: keyof EditorSettings; label: string }) {
+  const ctx = useContext(SettingsCtx);
+  const modified =
+    !!k && !!ctx && !settingValuesEqual(ctx.settings[k], (DEFAULT_SETTINGS as unknown as Record<string, unknown>)[k]);
+  return (
+    <div className="flex items-center gap-1.5 text-[12px] text-[color:var(--ide-text)]">
+      {modified && (
+        <span
+          title="Modified from default"
+          className="inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-[color:var(--ide-active-ring)]"
+        />
+      )}
+      <span>{label}</span>
+      {modified && k && (
+        <button
+          type="button"
+          title="Reset to default"
+          aria-label={`Reset ${label}`}
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            ctx?.reset(k);
+          }}
+          className="rounded p-0.5 text-[color:var(--ide-muted)] hover:bg-[color:var(--ide-hover-subtle)] hover:text-[color:var(--ide-text-strong)]"
+        >
+          <RotateCcw size={10} />
+        </button>
+      )}
+    </div>
+  );
+}
+
 export function SettingsPane({
   settings,
   onChange,
@@ -20,9 +90,17 @@ export function SettingsPane({
 }) {
   const set = <K extends keyof EditorSettings>(k: K, v: EditorSettings[K]) =>
     onChange({ ...settings, [k]: v });
+  const [query, setQuery] = useState("");
+  const ctx: SettingsCtxValue = {
+    query,
+    settings,
+    reset: (k) => onChange({ ...settings, [k]: (DEFAULT_SETTINGS as unknown as Record<string, unknown>)[k] }),
+  };
 
   return (
-    <div className="flex h-full flex-col">
+    <SettingsCtx.Provider value={ctx}>
+    <div className={`flex h-full flex-col ${query.trim() ? "settings-searching" : ""}`}>
+      <style>{`.settings-searching .settings-section:not(:has([data-setting-row])) { display: none; }`}</style>
       <div className="flex items-center justify-between px-4 py-2">
         <span className="text-[11px] font-semibold uppercase tracking-wider text-[color:var(--ide-muted)]">
           Settings
@@ -36,10 +114,23 @@ export function SettingsPane({
         </button>
       </div>
 
+      <div className="px-3 pb-2">
+        <input
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Escape") setQuery("");
+          }}
+          placeholder="Search settings"
+          aria-label="Search settings"
+          className="w-full rounded border border-[color:var(--ide-border-strong)] bg-[color:var(--ide-input-bg)] px-2 py-1 text-[12px] text-[color:var(--ide-text)] outline-none placeholder:text-[color:var(--ide-muted)] focus:border-[color:var(--ide-active-ring)]"
+        />
+      </div>
+
       <div className="flex-1 overflow-auto px-3 pb-4 text-[12px]">
         <Section title="Editor">
           <SliderRow
-            label="Font size"
+            k="fontSize" label="Font size"
             value={settings.fontSize}
             min={11}
             max={20}
@@ -57,7 +148,7 @@ export function SettingsPane({
             curated option from there restores standard behaviour.
           */}
           <SelectRow
-            label="Font family"
+            k="fontFamily" label="Font family"
             value={
               FONT_FAMILY_OPTIONS.some((o) => o.value === settings.fontFamily)
                 ? settings.fontFamily
@@ -76,8 +167,15 @@ export function SettingsPane({
               if (v !== "__custom__") set("fontFamily", v);
             }}
           />
+          <ToggleRow
+            k="insertSpaces"
+            label="Insert spaces"
+            hint="Pressing Tab inserts spaces (files with detectable indentation keep theirs)"
+            value={settings.insertSpaces}
+            onChange={(v) => set("insertSpaces", v)}
+          />
           <SelectRow
-            label="Tab size"
+            k="tabSize" label="Tab size"
             value={String(settings.tabSize)}
             options={[
               { label: "2 spaces", value: "2" },
@@ -85,8 +183,35 @@ export function SettingsPane({
             ]}
             onChange={(v) => set("tabSize", parseInt(v, 10))}
           />
+          <SliderRow
+            k="lineHeight"
+            label="Line height (0 = auto)"
+            value={settings.lineHeight}
+            min={0}
+            max={40}
+            unit="px"
+            onChange={(v) => set("lineHeight", v)}
+          />
           <SelectRow
-            label="Word wrap"
+            k="cursorStyle"
+            label="Cursor style"
+            value={settings.cursorStyle}
+            options={[
+              { label: "Line", value: "line" },
+              { label: "Block", value: "block" },
+              { label: "Underline", value: "underline" },
+            ]}
+            onChange={(v) => set("cursorStyle", v as EditorSettings["cursorStyle"])}
+          />
+          <ToggleRow
+            k="fontLigatures"
+            label="Font ligatures"
+            hint="Render => != >= as single glyphs (JetBrains Mono, Fira Code)"
+            value={settings.fontLigatures}
+            onChange={(v) => set("fontLigatures", v)}
+          />
+          <SelectRow
+            k="wordWrap" label="Word wrap"
             value={settings.wordWrap}
             options={[
               { label: "Off", value: "off" },
@@ -95,7 +220,7 @@ export function SettingsPane({
             onChange={(v) => set("wordWrap", v as EditorSettings["wordWrap"])}
           />
           <SelectRow
-            label="Line numbers"
+            k="lineNumbers" label="Line numbers"
             value={settings.lineNumbers}
             options={[
               { label: "On", value: "on" },
@@ -105,7 +230,7 @@ export function SettingsPane({
             onChange={(v) => set("lineNumbers", v as EditorSettings["lineNumbers"])}
           />
           <SelectRow
-            label="Render whitespace"
+            k="renderWhitespace" label="Render whitespace"
             value={settings.renderWhitespace}
             options={[
               { label: "None", value: "none" },
@@ -122,13 +247,35 @@ export function SettingsPane({
 
         <Section title="Display">
           <ToggleRow
-            label="Minimap"
+            k="minimap" label="Minimap"
             hint="Show code overview on the right"
             value={settings.minimap}
             onChange={(v) => set("minimap", v)}
           />
+          {settings.minimap && (
+            <>
+              <SelectRow
+                k="minimapSide" label="Minimap side"
+                value={settings.minimapSide}
+                options={MINIMAP_SIDE_OPTIONS.map((o) => ({ label: o.label, value: o.value }))}
+                onChange={(v) => set("minimapSide", coerceMinimapSide(v, "right"))}
+              />
+              <SelectRow
+                k="minimapSize" label="Minimap size"
+                value={settings.minimapSize}
+                options={MINIMAP_SIZE_OPTIONS.map((o) => ({ label: o.label, value: o.value }))}
+                onChange={(v) => set("minimapSize", coerceMinimapSize(v, "proportional"))}
+              />
+              <SelectRow
+                k="minimapScale" label="Minimap scale"
+                value={String(settings.minimapScale)}
+                options={MINIMAP_SCALE_OPTIONS.map((o) => ({ label: o.label, value: String(o.value) }))}
+                onChange={(v) => set("minimapScale", coerceMinimapScale(Number(v), 1))}
+              />
+            </>
+          )}
           <ToggleRow
-            label="Bracket pair colorization"
+            k="bracketPairs" label="Bracket pair colorization"
             hint="Rainbow matching brackets"
             value={settings.bracketPairs}
             onChange={(v) => set("bracketPairs", v)}
@@ -137,25 +284,37 @@ export function SettingsPane({
 
         <Section title="Save">
           <ToggleRow
-            label="Auto save"
+            k="autoSave" label="Auto save"
             hint="Save the active file after you pause typing (~1s), and when switching tabs"
             value={settings.autoSave}
             onChange={(v) => set("autoSave", v)}
           />
+          <SelectRow
+            k="autoSaveDelay"
+            label="Auto save delay"
+            value={String(settings.autoSaveDelay)}
+            options={[
+              { label: "0.5 s", value: "500" },
+              { label: "1 s", value: "1000" },
+              { label: "2 s", value: "2000" },
+              { label: "5 s", value: "5000" },
+            ]}
+            onChange={(v) => set("autoSaveDelay", parseInt(v, 10))}
+          />
           <ToggleRow
-            label="Format on save"
+            k="formatOnSave" label="Format on save"
             hint="Run the language formatter (JSON, CSS, HTML, TS/JS) before every save"
             value={settings.formatOnSave}
             onChange={(v) => set("formatOnSave", v)}
           />
           <ToggleRow
-            label="Trim trailing whitespace"
+            k="trimTrailingWhitespace" label="Trim trailing whitespace"
             hint="Remove spaces and tabs at the end of lines when you save (⌘S)"
             value={settings.trimTrailingWhitespace}
             onChange={(v) => set("trimTrailingWhitespace", v)}
           />
           <ToggleRow
-            label="Insert final newline"
+            k="insertFinalNewline" label="Insert final newline"
             hint="End files with a single newline when you save (⌘S)"
             value={settings.insertFinalNewline}
             onChange={(v) => set("insertFinalNewline", v)}
@@ -178,6 +337,7 @@ export function SettingsPane({
         </div>
       </div>
     </div>
+    </SettingsCtx.Provider>
   );
 }
 
@@ -274,7 +434,7 @@ function Section({
   children: React.ReactNode;
 }) {
   return (
-    <div className="mb-4">
+    <div className="settings-section mb-4">
       <div className="mb-1 px-1 text-[10px] font-semibold uppercase tracking-wider text-[color:var(--ide-muted)]">
         {title}
       </div>
@@ -286,20 +446,23 @@ function Section({
 }
 
 function ToggleRow({
+  k,
   label,
   hint,
   value,
   onChange,
 }: {
+  k?: keyof EditorSettings;
   label: string;
   hint?: string;
   value: boolean;
   onChange: (v: boolean) => void;
 }) {
   return (
+    <RowShell k={k} label={label} hint={hint}>
     <label className="flex cursor-pointer items-center justify-between gap-3 rounded px-2 py-1.5 hover:bg-[color:var(--ide-hover)]">
       <div className="min-w-0">
-        <div className="text-[12px] text-[color:var(--ide-text)]">{label}</div>
+        <RowLabel k={k} label={label} />
         {hint && <div className="truncate text-[10px] text-[color:var(--ide-muted)]">{hint}</div>}
       </div>
       <button
@@ -319,23 +482,27 @@ function ToggleRow({
         />
       </button>
     </label>
+    </RowShell>
   );
 }
 
 function SelectRow({
+  k,
   label,
   value,
   options,
   onChange,
 }: {
+  k?: keyof EditorSettings;
   label: string;
   value: string;
   options: { label: string; value: string }[];
   onChange: (v: string) => void;
 }) {
   return (
+    <RowShell k={k} label={label}>
     <div className="flex items-center justify-between gap-3 rounded px-2 py-1.5 hover:bg-[color:var(--ide-hover)]">
-      <div className="text-[12px] text-[color:var(--ide-text)]">{label}</div>
+      <RowLabel k={k} label={label} />
       <select
         value={value}
         onChange={(e) => onChange(e.target.value)}
@@ -348,10 +515,12 @@ function SelectRow({
         ))}
       </select>
     </div>
+    </RowShell>
   );
 }
 
 function SliderRow({
+  k,
   label,
   value,
   min,
@@ -359,6 +528,7 @@ function SliderRow({
   unit,
   onChange,
 }: {
+  k?: keyof EditorSettings;
   label: string;
   value: number;
   min: number;
@@ -367,8 +537,9 @@ function SliderRow({
   onChange: (v: number) => void;
 }) {
   return (
+    <RowShell k={k} label={label}>
     <div className="flex items-center justify-between gap-3 rounded px-2 py-1.5 hover:bg-[color:var(--ide-hover)]">
-      <div className="text-[12px] text-[color:var(--ide-text)]">{label}</div>
+      <RowLabel k={k} label={label} />
       <div className="flex items-center gap-2">
         <input
           type="range"
@@ -384,5 +555,6 @@ function SliderRow({
         </span>
       </div>
     </div>
+    </RowShell>
   );
 }

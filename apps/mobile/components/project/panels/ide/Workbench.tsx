@@ -70,6 +70,14 @@ import { setupLspProviders } from "./monaco/lspProviders";
 import { setupLspDocumentSync } from "./monaco/lspDocumentSync";
 import { matchesShortcut, type Command } from "./commands";
 import { resolvePaletteIntent } from "./keybindings";
+import {
+  INITIAL_ZEN_STATE,
+  advanceZenChord,
+  computeChromeVisibility,
+  shouldExitOnEscape,
+  toggleZen,
+  type ZenState,
+} from "./zen-mode";
 import { useTheme } from "../../../../contexts/theme";
 import { isBinaryFilePath } from "@shogo-ai/sdk/file-types";
 import {
@@ -339,7 +347,23 @@ export function Workbench({
   const [newRequest, setNewRequest] = useState<
     { kind: "file" | "dir"; nonce: number; rootId?: string } | null
   >(null);
-  const [palette, setPalette] = useState<"command" | "file" | "line" | null>(null);
+  const [palette, setPalette] = useState<"command" | "file" | "line" | "language" | null>(null);
+
+  // Zen mode (⌘K Z, double-Esc to leave). Chrome is *derived* from this state,
+  // so leaving zen restores the exact previous layout with nothing to undo
+  // except the bottom drawer (lives outside Workbench) and browser fullscreen.
+  const [zen, setZen] = useState<ZenState>(INITIAL_ZEN_STATE);
+  const chrome = useMemo(() => computeChromeVisibility(zen), [zen]);
+  const zenPanelRestoreRef = useRef<boolean | null>(null);
+  const zenChordPendingRef = useRef(false);
+  const zenChordTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastEscapeAtRef = useRef<number | null>(null);
+  const [markerCounts, setMarkerCounts] = useState({ errors: 0, warnings: 0 });
+  const [editorInfo, setEditorInfo] = useState<{ selection: string | null; indent: string; eol: "LF" | "CRLF" }>({
+    selection: null,
+    indent: "Spaces: 2",
+    eol: "LF",
+  });
 
   // Editor settings — persisted to localStorage
   const [settings, setSettings] = useState<EditorSettings>(() => {
@@ -1012,7 +1036,15 @@ export function Workbench({
 
   // Closes a tab without any prompt. Use `closeInGroup` (defined after the
   // save pipeline) for user-initiated closes — it asks about unsaved changes.
+  const closedStackRef = useRef<Array<{ rootId: string; path: string; name: string }>>([]);
   const closeNow = useCallback((groupIdx: number, id: string) => {
+    // Remember it for "Reopen Closed Editor" (⌘⇧T).
+    const closing = groupsRef.current[groupIdx]?.files.find((x) => x.id === id);
+    if (closing && !closing.language.startsWith("extension-")) {
+      const stack = closedStackRef.current;
+      stack.push({ rootId: closing.rootId, path: closing.path, name: closing.name });
+      if (stack.length > 20) stack.shift();
+    }
     // Closing a conflicted tab discards the banner for that file.
     setConflicts((cs) => cs.filter((c) => c.fileId !== id));
     setGroups((prev) => {
@@ -1464,10 +1496,10 @@ export function Workbench({
   // has unsaved edits (unless it's still open in another group, where the
   // shared buffer isn't going away).
   const closeInGroup = useCallback(
-    async (groupIdx: number, id: string) => {
+    async (groupIdx: number, id: string): Promise<boolean> => {
       const groups = groupsRef.current;
       const f = groups[groupIdx]?.files.find((x) => x.id === id);
-      if (!f) return;
+      if (!f) return true;
       const openElsewhere = groups.some(
         (g, i) => i !== groupIdx && g.files.some((x) => x.id === id),
       );
@@ -1482,16 +1514,59 @@ export function Workbench({
           ],
           cancelValue: "cancel" as const,
         });
-        if (choice === "cancel") return;
+        if (choice === "cancel") return false;
         if (choice === "save") {
           const ok = await persistByFileId(id, { silent: true });
           // A failed save already toasted; keep the tab so nothing is lost.
-          if (!ok) return;
+          if (!ok) return false;
         }
       }
       closeNow(groupIdx, id);
+      return true;
     },
     [askConfirm, persistByFileId, closeNow],
+  );
+
+  /** Close several tabs in order; stops at the first one the user cancels. */
+  const closeManyInGroup = useCallback(
+    async (groupIdx: number, ids: string[]) => {
+      for (const id of ids) {
+        if (!(await closeInGroup(groupIdx, id))) return;
+      }
+    },
+    [closeInGroup],
+  );
+
+  const reopenClosed = useCallback(() => {
+    const entry = closedStackRef.current.pop();
+    if (!entry) {
+      showToast("No recently closed editors", 1500);
+      return;
+    }
+    void openFileInGroup(
+      { kind: "file", rootId: entry.rootId, path: entry.path, name: entry.name } as unknown as TreeNode,
+      activeGroupIdx,
+    );
+  }, [openFileInGroup, activeGroupIdx, showToast]);
+
+  // Explorer reveal: switch to the Files view and ask the tree to select + scroll.
+  const [revealReq, setRevealReq] = useState<{ path: string; nonce: number } | null>(null);
+  const revealInExplorer = useCallback((path: string) => {
+    setActivity("files");
+    setSidebarOpen(true);
+    setRevealReq({ path, nonce: Date.now() });
+  }, []);
+
+  const copyText = useCallback(
+    async (text: string, what: string) => {
+      try {
+        await navigator.clipboard.writeText(text);
+        showToast(`Copied ${what}`, 1500);
+      } catch {
+        showToast("Couldn't access the clipboard", 2500);
+      }
+    },
+    [showToast],
   );
 
   // "Retry" on a file that failed to open: drop the broken tab and reopen it.
@@ -1536,14 +1611,14 @@ export function Workbench({
     autosaveTimerRef.current = setTimeout(() => {
       autosaveTimerRef.current = null;
       void persistOpenFile(snapshot, true);
-    }, AUTO_SAVE_DELAY_MS);
+    }, settings.autoSaveDelay ?? AUTO_SAVE_DELAY_MS);
     return () => {
       if (autosaveTimerRef.current) {
         clearTimeout(autosaveTimerRef.current);
         autosaveTimerRef.current = null;
       }
     };
-  }, [active, active?.content, active?.dirty, settings.autoSave, persistOpenFile]);
+  }, [active, active?.content, active?.dirty, settings.autoSave, settings.autoSaveDelay, persistOpenFile]);
 
   // ─── Splits ──────────────────────────────────────────────────────────
   const splitRight = useCallback(() => {
@@ -1950,14 +2025,77 @@ export function Workbench({
           if (!sidebarOpen) setSidebarOpen(true);
         },
       },
+      { id: "goto.line", label: "Go to Line…", shortcut: "⌃G", run: () => setPalette("line") },
       {
-        id: "goto.line",
-        label: "Go to Line…",
-        shortcut: "⌘G",
+        id: "goto.symbol",
+        label: "Go to Symbol in Editor…",
+        shortcut: "⌘⇧O",
+        run: () => void editorRefs.current[activeGroup?.id ?? ""]?.getAction("editor.action.quickOutline")?.run(),
+      },
+      { id: "view.zen", label: "View: Toggle Zen Mode", shortcut: "⌘K Z", run: () => setZen((z) => toggleZen(z)) },
+      {
+        id: "view.toggleWordWrap",
+        label: `View: Toggle Word Wrap (${settings.wordWrap === "on" ? "on" : "off"})`,
+        run: () => setSettings((s) => ({ ...s, wordWrap: s.wordWrap === "on" ? "off" : "on" })),
+      },
+      {
+        id: "view.toggleMinimap",
+        label: "View: Toggle Minimap",
+        run: () => setSettings((s) => ({ ...s, minimap: !s.minimap })),
+      },
+      {
+        id: "editor.format",
+        label: "Format Document",
+        shortcut: "⇧⌥F",
+        run: () => void editorRefs.current[activeGroup?.id ?? ""]?.getAction("editor.action.formatDocument")?.run(),
+      },
+      { id: "editor.changeLanguage", label: "Change Language Mode…", run: () => setPalette("language") },
+      {
+        id: "file.closeAll",
+        label: "File: Close All Editors",
         run: () => {
-          const input = prompt("Go to line:");
-          const n = input && parseInt(input, 10);
-          if (n && n > 0) gotoLine(n);
+          if (activeGroup) void closeManyInGroup(activeGroupIdx, activeGroup.files.map((f) => f.id));
+        },
+      },
+      { id: "file.reopenClosed", label: "File: Reopen Closed Editor", shortcut: "⌘⇧T", run: reopenClosed },
+      {
+        id: "file.revealActive",
+        label: "File: Reveal Active File in Explorer",
+        run: () => {
+          if (active) revealInExplorer(active.path);
+        },
+      },
+      {
+        id: "file.copyPath",
+        label: "File: Copy Path of Active File",
+        run: () => {
+          if (active) void copyText(active.path, "path");
+        },
+      },
+      { id: "view.openSettings", label: "Preferences: Open Settings", run: () => { setActivity("settings"); setSidebarOpen(true); } },
+      {
+        id: "view.reload",
+        label: "Developer: Reload Window",
+        run: () => window.location.reload(),
+      },
+      {
+        id: "file.nextTab",
+        label: "View: Next Editor Tab",
+        shortcut: "⌘⌥→",
+        run: () => {
+          const files = activeGroup?.files ?? [];
+          const idx = files.findIndex((f) => f.id === activeGroup?.activeId);
+          if (files.length > 1) updateGroup(activeGroupIdx, (gg) => ({ ...gg, activeId: files[(idx + 1) % files.length].id }));
+        },
+      },
+      {
+        id: "file.prevTab",
+        label: "View: Previous Editor Tab",
+        shortcut: "⌘⌥←",
+        run: () => {
+          const files = activeGroup?.files ?? [];
+          const idx = files.findIndex((f) => f.id === activeGroup?.activeId);
+          if (files.length > 1) updateGroup(activeGroupIdx, (gg) => ({ ...gg, activeId: files[(idx - 1 + files.length) % files.length].id }));
         },
       },
     );
@@ -1967,6 +2105,7 @@ export function Workbench({
     closeOtherGroup, focusNextGroup, togglePinInGroup, gotoLine, refreshAllRoots,
     openLocalFolder, closeRoot, fsaSupported, roots, sidebarOpen, bottomPanelOpen,
     requestNewTerminal, extensionsSummary.installed, extensionRuntimeContainers, runExtensionCommand,
+    active, settings.wordWrap, closeManyInGroup, reopenClosed, revealInExplorer, copyText, updateGroup,
   ]);
 
   const commandItems: PaletteItem[] = useMemo(
@@ -2023,9 +2162,181 @@ export function Workbench({
     });
   }, [roots, handleOpenFile]);
 
+  useEffect(() => {
+    if (zen.active) {
+      zenPanelRestoreRef.current = ideBottomPanelStore.getState().open;
+      if (zenPanelRestoreRef.current) ideBottomPanelStore.setOpen(false);
+      try {
+        void document.documentElement.requestFullscreen?.().catch(() => {});
+      } catch { /* not allowed without a user gesture */ }
+    } else if (zenPanelRestoreRef.current !== null) {
+      if (zenPanelRestoreRef.current) ideBottomPanelStore.setOpen(true);
+      zenPanelRestoreRef.current = null;
+      try {
+        if (document.fullscreenElement) void document.exitFullscreen?.().catch(() => {});
+      } catch { /* ignore */ }
+    }
+  }, [zen.active]);
+
+  // Problem counts for the status bar (all open models).
+  useEffect(() => {
+    const m = monacoNsRef.current;
+    if (!m) return;
+    const recompute = () => {
+      let errors = 0;
+      let warnings = 0;
+      for (const mk of m.editor.getModelMarkers({})) {
+        if (mk.severity === 8) errors++;
+        else if (mk.severity === 4) warnings++;
+      }
+      setMarkerCounts((p) => (p.errors === errors && p.warnings === warnings ? p : { errors, warnings }));
+    };
+    recompute();
+    const d = m.editor.onDidChangeMarkers(recompute);
+    return () => d.dispose();
+  }, [monacoReadyTick]);
+
+  // Selection size / indentation / EOL for the status bar.
+  const refreshEditorInfo = useCallback((ed: import("monaco-editor").editor.IStandaloneCodeEditor) => {
+    const model = ed.getModel();
+    if (!model || model.isDisposed()) return;
+    const sel = ed.getSelection();
+    let selection: string | null = null;
+    if (sel && !sel.isEmpty()) {
+      const chars = model.getValueInRange(sel).length;
+      const lines = sel.endLineNumber - sel.startLineNumber + 1;
+      selection = lines > 1 ? `${chars} selected, ${lines} lines` : `${chars} selected`;
+    }
+    const o = model.getOptions();
+    const indent = `${o.insertSpaces ? "Spaces" : "Tab Size"}: ${o.tabSize}`;
+    const eol = model.getEOL() === "\r\n" ? "CRLF" : "LF";
+    setEditorInfo((p) => (p.selection === selection && p.indent === indent && p.eol === eol ? p : { selection, indent, eol }));
+  }, []);
+  const infoAttachedRef = useRef(new WeakSet<object>());
+  const attachEditorInfo = useCallback(
+    (ed: import("monaco-editor").editor.IStandaloneCodeEditor) => {
+      if (infoAttachedRef.current.has(ed)) return;
+      infoAttachedRef.current.add(ed);
+      ed.onDidChangeCursorSelection(() => refreshEditorInfo(ed));
+      ed.onDidChangeModel(() => refreshEditorInfo(ed));
+      ed.onDidChangeModelOptions(() => refreshEditorInfo(ed));
+      refreshEditorInfo(ed);
+    },
+    [refreshEditorInfo],
+  );
+
+  const toggleEol = useCallback(() => {
+    const ed = editorRefs.current[activeGroup?.id ?? ""];
+    const m = monacoNsRef.current;
+    const model = ed?.getModel();
+    if (!ed || !m || !model) return;
+    model.pushEOL(
+      model.getEOL() === "\r\n" ? m.editor.EndOfLineSequence.LF : m.editor.EndOfLineSequence.CRLF,
+    );
+    refreshEditorInfo(ed);
+  }, [activeGroup, refreshEditorInfo]);
+
+  const zenSettings = useMemo(() => ({ ...settings, lineNumbers: "off" as const }), [settings]);
+
+  const closePalette = useCallback(() => {
+    setPalette(null);
+    // Give the editor focus back so typing continues where it left off.
+    requestAnimationFrame(() => editorRefs.current[activeGroup?.id ?? ""]?.focus());
+  }, [activeGroup]);
+
+  const setActiveFileLanguage = useCallback(
+    (language: string) => {
+      const id = activeGroup?.activeId;
+      if (!id) return;
+      setGroups((prev) =>
+        prev.map((g) => ({ ...g, files: g.files.map((f) => (f.id === id ? { ...f, language } : f)) })),
+      );
+    },
+    [activeGroup],
+  );
+
+  const languageItems: PaletteItem[] = useMemo(() => {
+    const langs = monacoNsRef.current?.languages.getLanguages() ?? [];
+    return langs
+      .map((l) => ({
+        id: `lang:${l.id}`,
+        label: l.aliases?.[0] ?? l.id,
+        sublabel: l.id,
+        run: () => setActiveFileLanguage(l.id),
+      }))
+      .sort((a, b) => a.label.localeCompare(b.label));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [palette === "language", setActiveFileLanguage]);
+
   // ─── Keyboard ────────────────────────────────────────────────────────
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // Zen: ⌘K Z toggles, double-Esc leaves. The ⌘K prefix is not swallowed
+      // (terminal "clear" etc. keep working); only the completing "z" is.
+      {
+        const isMac = typeof navigator !== "undefined" && /Mac/i.test(navigator.platform);
+        const chord = advanceZenChord(
+          zenChordPendingRef.current,
+          { key: e.key, meta: e.metaKey, ctrl: e.ctrlKey, shift: e.shiftKey, alt: e.altKey },
+          isMac ? "mac" : "linux",
+        );
+        zenChordPendingRef.current = chord.pending;
+        if (zenChordTimerRef.current) clearTimeout(zenChordTimerRef.current);
+        if (chord.pending) {
+          zenChordTimerRef.current = setTimeout(() => {
+            zenChordPendingRef.current = false;
+          }, 1500);
+        }
+        if (chord.status === "complete") {
+          e.preventDefault();
+          e.stopPropagation();
+          setZen((z) => toggleZen(z));
+          return;
+        }
+        if (e.key === "Escape") {
+          const now = Date.now();
+          if (shouldExitOnEscape(zen, lastEscapeAtRef.current, now)) {
+            setZen((z) => (z.active ? toggleZen(z) : z));
+            lastEscapeAtRef.current = null;
+          } else {
+            lastEscapeAtRef.current = now;
+          }
+        }
+      }
+      // Reopen closed editor (⌘⇧T; Ctrl+Shift+T in browsers that reserve ⌘⇧T).
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && !e.altKey && e.key.toLowerCase() === "t") {
+        e.preventDefault();
+        reopenClosed();
+        return;
+      }
+      // Alt+1…9 jumps to the Nth tab (browsers reserve ⌘/Ctrl+digits).
+      if (e.altKey && !e.metaKey && !e.ctrlKey && !e.shiftKey && /^Digit[1-9]$/.test(e.code)) {
+        const n = parseInt(e.code.slice(5), 10);
+        const files = activeGroup?.files ?? [];
+        const target = n === 9 ? files[files.length - 1] : files[n - 1];
+        if (target) {
+          e.preventDefault();
+          updateGroup(activeGroupIdx, (gg) => ({ ...gg, activeId: target.id }));
+        }
+        return;
+      }
+      // Next / previous tab: ⌘⌥→ / ⌘⌥← and Ctrl+(Shift+)Tab where the host allows it.
+      {
+        const next =
+          ((e.metaKey || e.ctrlKey) && e.altKey && e.key === "ArrowRight") ||
+          (e.ctrlKey && !e.shiftKey && e.key === "Tab");
+        const prev =
+          ((e.metaKey || e.ctrlKey) && e.altKey && e.key === "ArrowLeft") ||
+          (e.ctrlKey && e.shiftKey && e.key === "Tab");
+        if ((next || prev) && activeGroup && activeGroup.files.length > 1) {
+          e.preventDefault();
+          const files = activeGroup.files;
+          const idx = files.findIndex((f) => f.id === activeGroup.activeId);
+          const to = files[(idx + (next ? 1 : -1) + files.length) % files.length];
+          updateGroup(activeGroupIdx, (gg) => ({ ...gg, activeId: to.id }));
+          return;
+        }
+      }
       // BUG-005: single dispatcher for both palette shortcuts. Routes
       // through the pure resolvePaletteIntent — "Shift wins → command".
       // stopPropagation prevents any OTHER window-level keydown handler
@@ -2120,7 +2431,7 @@ export function Workbench({
     return () => window.removeEventListener("keydown", onKey, true);
   }, [
     handleSave, handleSaveAll, activeGroup, activeGroupIdx, closeInGroup, splitRight,
-    gotoLine, openLocalFolder, sidebarOpen, requestNewTerminal,
+    gotoLine, openLocalFolder, sidebarOpen, requestNewTerminal, zen, reopenClosed, updateGroup,
   ]);
 
   // --- G1 git wiring ---------------------------------------------------
@@ -2305,7 +2616,10 @@ export function Workbench({
               onKeepMine={handleKeepMine}
             />
             <div className="flex flex-1 min-h-0 flex-col">
-            <div className="flex flex-1 min-h-0 relative">
+            <div
+              className="flex flex-1 min-h-0 relative"
+              style={chrome.centered ? { maxWidth: 1100, margin: "0 auto", width: "100%" } : undefined}
+            >
               {graphOpen && projectId && (
                 <div className="absolute inset-0 z-30 flex flex-col bg-[color:var(--ide-bg)]">
                   <div className="flex items-center gap-2 px-3 h-9 border-b border-[color:var(--ide-border)] bg-[color:var(--ide-surface)]">
@@ -2357,8 +2671,20 @@ export function Workbench({
                       onReorder={(ids) => reorderInGroup(i, ids)}
                       onChange={handleChangeFor(i)}
                       onRetryOpen={(id) => retryOpen(i, id)}
+                      onCloseMany={(ids) => void closeManyInGroup(i, ids)}
+                      onCopyText={(t, what) => void copyText(t, what)}
+                      onRevealFile={(id) => {
+                        const f = g.files.find((x) => x.id === id);
+                        if (f) revealInExplorer(f.path);
+                      }}
+                      onNewFile={() => {
+                        setActivity("files");
+                        setSidebarOpen(true);
+                        setNewRequest({ kind: "file", nonce: Date.now() });
+                      }}
                       onCursor={(line, col) => setCursor({ line, col })}
-                      settings={settings}
+                      settings={chrome.lineNumbers ? settings : zenSettings}
+                      hideTabs={!chrome.tabs}
                       installedExtensions={extensionsSummary.installed}
                       extensionInstallingId={extensionsSummary.installingId}
                       onInstallExtension={requestExtensionInstall}
@@ -2370,6 +2696,7 @@ export function Workbench({
                       onSetMdMode={handleSetMdMode}
                       onEditorMount={(ed, monaco) => {
                         editorRefs.current[g.id] = ed;
+                        attachEditorInfo(ed);
                         if (monaco && monacoNsRef.current !== monaco) {
                           monacoNsRef.current = monaco;
                           setMonacoReadyTick((t) => t + 1);
@@ -2452,7 +2779,7 @@ export function Workbench({
             main-area view (graph columns + a 400px detail panel), so it
             suppresses the narrow sidebar — otherwise the detail panel
             overflows and squeezes the graph to nothing. */}
-        {sidebarOpen && activity !== "checkpoint" && (
+        {sidebarOpen && chrome.sideBar && activity !== "checkpoint" && (
           <>
 
             <VerticalSplit
@@ -2471,6 +2798,7 @@ export function Workbench({
                   activePath={active?.path ?? null}
                   handlers={treeHandlers}
                   newRequest={newRequest}
+                  revealRequest={revealReq}
                   fsaSupported={fsaSupported}
                   onRefresh={refreshAllRoots}
                   onNew={(kind) => setNewRequest({ kind, nonce: Date.now() })}
@@ -2538,6 +2866,7 @@ export function Workbench({
           </>
           )}
 
+        {chrome.activityBar && (
         <ActivityBar
           className={primarySideBarPosition === "left" ? "order-1" : "order-4"}
           active={activity}
@@ -2553,18 +2882,32 @@ export function Workbench({
           onToggleSidebar={() => setSidebarOpen((v) => !v)}
           onToggleTerminal={() => setBottomPanelOpen((v) => !v)}
         />
+        )}
       </div>
 
+      {chrome.statusBar && (
       <StatusBar
         language={active?.language ?? "—"}
         line={cursor.line}
         col={cursor.col}
+        selection={editorInfo.selection}
+        indent={editorInfo.indent}
+        eol={editorInfo.eol}
+        problems={markerCounts}
+        onGoToLine={() => setPalette("line")}
+        onPickLanguage={() => setPalette("language")}
+        onToggleEol={toggleEol}
+        onShowProblems={() => {
+          ideBottomPanelStore.setActiveTab("Problems");
+          ideBottomPanelStore.setOpen(true);
+        }}
         saved={!active?.dirty}
         git={gitSnapshot}
         workspaceRoot={gitWorkspaceRoot}
         extensionItems={extensionsSummary.statusBarItems}
         onRunExtensionCommand={runExtensionCommand}
       />
+      )}
 
 
       {pendingExtensionInstall && (
@@ -2581,15 +2924,23 @@ export function Workbench({
         <Palette
           placeholder="Type a command…"
           items={commandItems}
-          onClose={() => setPalette(null)}
+          onClose={closePalette}
           emptyHint="No commands match"
         />
       )}
       {palette === "file" && (
-        <QuickOpen fileItems={fileItems} onClose={() => setPalette(null)} onLine={gotoLine} />
+        <QuickOpen fileItems={fileItems} onClose={closePalette} onLine={gotoLine} />
       )}
       {palette === "line" && (
-        <QuickOpen lineOnly fileItems={[]} onClose={() => setPalette(null)} onLine={gotoLine} />
+        <QuickOpen lineOnly fileItems={[]} onClose={closePalette} onLine={gotoLine} />
+      )}
+      {palette === "language" && (
+        <Palette
+          placeholder="Select language mode"
+          items={languageItems}
+          onClose={closePalette}
+          emptyHint="No languages match"
+        />
       )}
       {mergePath && gitWorkspaceRoot && monacoNsRef.current && (
         <MergeEditorModal
@@ -2666,6 +3017,7 @@ function FilesPane({
   activePath,
   handlers,
   newRequest,
+  revealRequest,
   fsaSupported,
   onRefresh,
   onNew,
@@ -2679,6 +3031,7 @@ function FilesPane({
   activePath: string | null;
   handlers: FileTreeHandlers;
   newRequest: { kind: "file" | "dir"; nonce: number; rootId?: string } | null;
+  revealRequest?: { path: string; nonce: number } | null;
   fsaSupported: boolean;
   onRefresh: () => void;
   onNew: (kind: "file" | "dir") => void;
@@ -2763,6 +3116,7 @@ function FilesPane({
           activePath={activePath}
           handlers={handlers}
           newRequest={newRequest}
+          revealRequest={revealRequest}
         />
       </div>
 

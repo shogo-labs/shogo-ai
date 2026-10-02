@@ -54,6 +54,9 @@ export interface EditorSettings {
   tabSize: number;        // 2 | 4
   wordWrap: "on" | "off";
   minimap: boolean;
+  minimapSide: "right" | "left";
+  minimapSize: "proportional" | "fit" | "fill";
+  minimapScale: 1 | 2 | 3;
   lineNumbers: "on" | "off" | "relative";
   renderWhitespace: "none" | "boundary" | "selection" | "trailing" | "all";
   bracketPairs: boolean;
@@ -61,6 +64,14 @@ export interface EditorSettings {
   autoSave: boolean;
   formatOnSave: boolean;
   /** Strip trailing spaces/tabs from every line on (manual) save. */
+  /** Pause (ms) before autosave fires. */
+  autoSaveDelay: number;
+  /** Line height in px; 0 = automatic. */
+  lineHeight: number;
+  cursorStyle: "line" | "block" | "underline";
+  /** Use spaces for Tab (files with detectable indentation still win). */
+  insertSpaces: boolean;
+  fontLigatures: boolean;
   trimTrailingWhitespace: boolean;
   /** Ensure the file ends with exactly one newline on (manual) save. */
   insertFinalNewline: boolean;
@@ -85,11 +96,19 @@ export const DEFAULT_SETTINGS: EditorSettings = {
   tabSize: 2,
   wordWrap: "off",
   minimap: true,
+  minimapSide: "right",
+  minimapSize: "proportional",
+  minimapScale: 1,
   lineNumbers: "on",
   renderWhitespace: "none",
   bracketPairs: true,
   autoSave: true,
   formatOnSave: false,
+  autoSaveDelay: 1000,
+  lineHeight: 0,
+  cursorStyle: "line",
+  insertSpaces: true,
+  fontLigatures: true,
   trimTrailingWhitespace: false,
   insertFinalNewline: false,
 };

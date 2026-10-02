@@ -1,3 +1,5 @@
+import { minimapSettingsToMonacoOptions } from "./minimap-settings";
+import { peekPreferencesToMonacoOptions } from "./peek-actions";
 import Editor, { loader, type OnMount } from "@monaco-editor/react";
 import { useEffect, useRef } from "react";
 import type { editor } from "monaco-editor";
@@ -348,7 +350,15 @@ export function CodeEditor({
         // rerenders the glyph cache and the new font lands without a
         // remount.
         fontFamily: settings.fontFamily,
-        minimap: { enabled: settings.minimap, scale: 1 },
+        minimap: minimapSettingsToMonacoOptions({
+          enabled: settings.minimap,
+          size: settings.minimapSize,
+          scale: settings.minimapScale,
+          side: settings.minimapSide,
+        }),
+        // Peek instead of jumping away when there are several definitions /
+        // references (VS Code behaviour; see peek-actions.ts).
+        ...peekPreferencesToMonacoOptions({}),
         wordWrap: settings.wordWrap,
         lineNumbers: settings.lineNumbers,
         renderWhitespace: settings.renderWhitespace,
@@ -361,7 +371,10 @@ export function CodeEditor({
         fixedOverflowWidgets: true,
         scrollBeyondLastLine: true,
         mouseWheelZoom: true,
-        fontLigatures: true,
+        fontLigatures: settings.fontLigatures,
+        lineHeight: settings.lineHeight,
+        cursorStyle: settings.cursorStyle,
+        insertSpaces: settings.insertSpaces,
         linkedEditing: true,
         detectIndentation: true,
         guides: { bracketPairs: true, indentation: true, highlightActiveIndentation: true },
