@@ -339,6 +339,40 @@ export function FileTree({
     beginCreate(rootId, parent, newRequest.kind);
   }, [newRequest, beginCreate, selected, tree]);
 
+  /** Expand every ancestor of `path` so its row is rendered. */
+  const expandAncestors = useCallback((path: string) => {
+    setExpanded((prev) => {
+      let next: Set<string> | null = null;
+      for (let p = parentOf(path); p; p = parentOf(p)) {
+        if (!prev.has(p)) (next ??= new Set(prev)).add(p);
+      }
+      return next ?? prev;
+    });
+  }, []);
+
+  const scrollRowIntoView = useCallback((path: string) => {
+    if (typeof requestAnimationFrame === "undefined") return;
+    requestAnimationFrame(() => {
+      const el = containerRef.current?.querySelector(
+        `[data-tree-path="${path.replace(/["\\]/g, "\\$&")}"]`,
+      ) as HTMLElement | null;
+      el?.scrollIntoView?.({ block: "nearest" });
+    });
+  }, []);
+
+  // VS Code `explorer.autoReveal`: when the active editor changes (new file,
+  // tab switch, Cmd+P, search result, agent opens a file), expand its parents,
+  // select it and scroll it into view so the tree always shows "where am I".
+  const lastRevealedRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!activePath || lastRevealedRef.current === activePath) return;
+    lastRevealedRef.current = activePath;
+    expandAncestors(activePath);
+    setSelected(activePath);
+    setMultiSelected(new Set());
+    scrollRowIntoView(activePath);
+  }, [activePath, expandAncestors, scrollRowIntoView]);
+
   const commitCreate = async () => {
     if (!creating) return;
     const name = creating.draft.trim();
@@ -347,6 +381,14 @@ export function FileTree({
     if (!name) return;
     try {
       await handlers.onCreate(rootId, parentPath, name, kind);
+      // New folders aren't opened in an editor, so reveal/select them here
+      // (new files get revealed through the active-editor effect above).
+      if (kind === "dir") {
+        const full = parentPath ? `${parentPath}/${name}` : name;
+        expandAncestors(full);
+        setSelected(full);
+        scrollRowIntoView(full);
+      }
     } catch {
       /* toast handled by parent */
     }
@@ -871,6 +913,7 @@ export function FileTree({
               if (node.kind === "file") handlers.onOpen(node);
             }}
             onContextMenu={(e) => openContextMenu(e, node)}
+            data-tree-path={node.path}
             className={
               isWorkspaceRoot
                 ? `group flex cursor-pointer items-center gap-1 px-2 py-[4px] text-[11px] font-semibold uppercase tracking-wider min-w-0 ${

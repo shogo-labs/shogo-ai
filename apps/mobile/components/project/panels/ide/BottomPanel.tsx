@@ -187,11 +187,12 @@ export function BottomPanel({
       { id: "panel.problems",     key: "m", mod: true, shift: true, run: () => handleSelect("Problems") },
       { id: "panel.output",       key: "u", mod: true, shift: true, run: () => handleSelect("Output") },
       { id: "panel.debugConsole", key: "y", mod: true, shift: true, run: () => handleSelect("Debug Console") },
+      // NOTE: ⌘J is NOT bound here either — Workbench owns it as the panel
+      // toggle; binding maximize to the same chord fired both at once.
       // NOTE: Ctrl+` is intentionally NOT bound here — Workbench.tsx owns
       // the panel toggle (⌘J / view.toggleBottomPanel) and Ctrl+` in
       // Electron also maps to "Toggle DevTools", causing a conflict.
-      { id: "panel.maximize",     key: "j", mod: true,              run: handleMaximize },
-    ]), [handleSelect, handleMaximize]),
+    ]), [handleSelect]),
   );
 
   // Per-tab pane wiring. Kept as a small inline table so the JSX below

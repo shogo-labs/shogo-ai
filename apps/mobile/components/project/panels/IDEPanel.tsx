@@ -21,7 +21,7 @@ interface IDEPanelProps {
   remoteHostId?: string | null
   primarySideBarPosition?: IdePrimarySideBarPosition
   /** File to open once the Workbench's file tree is ready. `nonce` re-opens the same path. */
-  requestedFile?: { path: string; nonce: number } | null
+  requestedFile?: { path: string; nonce: number; line?: number; column?: number } | null
 }
 
 /**

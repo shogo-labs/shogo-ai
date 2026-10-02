@@ -14,6 +14,7 @@
 import { AgentClient, type FileNode, type WorkspaceEvent } from '@shogo-ai/sdk/agent'
 import { isBinaryFilePath } from '@shogo-ai/sdk/file-types'
 import { sortTree } from './tree-sort'
+import { LANG_BY_EXT, extOf, languageFor } from './language'
 import type {
   SearchOptions,
   SearchResponse,
@@ -23,48 +24,16 @@ import type {
   WsNode,
 } from './types'
 
-const LANG_BY_EXT: Record<string, string> = {
-  '.ts': 'typescript', '.tsx': 'typescript', '.js': 'javascript', '.jsx': 'javascript',
-  '.mjs': 'javascript', '.cjs': 'javascript',
-  '.json': 'json', '.jsonc': 'json',
-  '.md': 'markdown', '.mdx': 'markdown',
-  '.css': 'css', '.scss': 'scss', '.less': 'less', '.html': 'html', '.htm': 'html',
-  '.xml': 'xml', '.svg': 'xml',
-  '.yml': 'yaml', '.yaml': 'yaml', '.toml': 'toml', '.ini': 'ini',
-  '.sh': 'shell', '.bash': 'shell', '.zsh': 'shell',
-  '.py': 'python', '.rb': 'ruby', '.go': 'go', '.rs': 'rust',
-  '.java': 'java', '.kt': 'kotlin', '.swift': 'swift',
-  '.c': 'c', '.h': 'c', '.cpp': 'cpp', '.cc': 'cpp', '.hpp': 'cpp',
-  '.cs': 'csharp', '.php': 'php', '.sql': 'sql',
-  '.graphql': 'graphql', '.gql': 'graphql',
-  '.prisma': 'prisma', '.env': 'plaintext',
-  '.dockerfile': 'dockerfile',
-  '.lock': 'yaml',
-}
-
 const TEXT_EXTS = new Set(
   Object.keys(LANG_BY_EXT).concat(['.txt', '.log', '.gitignore', '.editorconfig']),
 )
 
-function extOf(p: string): string {
-  const base = p.split('/').pop() ?? p
-  const dot = base.lastIndexOf('.')
-  return dot >= 0 ? base.slice(dot).toLowerCase() : ''
-}
-function languageFor(path: string): string {
-  const ext = extOf(path)
-  if (ext) return LANG_BY_EXT[ext] ?? 'plaintext'
-  const name = path.split('/').pop() ?? ''
-  if (/^dockerfile/i.test(name)) return 'dockerfile'
-  if (/^makefile/i.test(name)) return 'makefile'
-  return 'plaintext'
-}
 function isTextLikely(path: string): boolean {
   if (isBinaryFilePath(path)) return false
   const ext = extOf(path)
   if (TEXT_EXTS.has(ext)) return true
   const name = (path.split('/').pop() ?? '').toLowerCase()
-  return /^(dockerfile|makefile|readme|license|changelog)/i.test(name)
+  return /^(dockerfile|makefile|readme|license|changelog)/i.test(name) || /^\.env(\.|$)/.test(name)
 }
 
 function toWsNode(fn: FileNode): WsNode {

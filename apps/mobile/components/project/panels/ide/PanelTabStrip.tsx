@@ -312,7 +312,7 @@ export function PanelTabStrip(props: PanelTabStripProps): React.ReactElement {
           <button
             type="button"
             onClick={onMaximize}
-            title={isMaximized ? "Restore panel size  (⌘J)" : "Maximize panel size  (⌘J)"}
+            title={isMaximized ? "Restore panel size" : "Maximize panel size"}
             aria-label={isMaximized ? "Restore panel size" : "Maximize panel size"}
             aria-pressed={isMaximized}
             className="rounded p-[3px] text-[#858585] hover:bg-[#ffffff1a] hover:text-white"

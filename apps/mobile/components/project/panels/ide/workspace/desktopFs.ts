@@ -32,6 +32,7 @@
 import type { FileNode } from '@shogo-ai/sdk/agent'
 import { SdkFs } from './sdkFs'
 import { sortTree } from './tree-sort'
+import { languageFor } from './language'
 import type {
   SearchOptions,
   SearchResponse,
@@ -115,38 +116,7 @@ export function isFolderLinkedProject(project: {
     || (typeof project.folderPath === 'string' && project.folderPath.length > 0)
 }
 
-const LANG_BY_EXT: Record<string, string> = {
-  '.ts': 'typescript', '.tsx': 'typescript', '.js': 'javascript', '.jsx': 'javascript',
-  '.mjs': 'javascript', '.cjs': 'javascript',
-  '.json': 'json', '.jsonc': 'json',
-  '.md': 'markdown', '.mdx': 'markdown',
-  '.css': 'css', '.scss': 'scss', '.less': 'less', '.html': 'html', '.htm': 'html',
-  '.xml': 'xml', '.svg': 'xml',
-  '.yml': 'yaml', '.yaml': 'yaml', '.toml': 'toml', '.ini': 'ini',
-  '.sh': 'shell', '.bash': 'shell', '.zsh': 'shell',
-  '.py': 'python', '.rb': 'ruby', '.go': 'go', '.rs': 'rust',
-  '.java': 'java', '.kt': 'kotlin', '.swift': 'swift',
-  '.c': 'c', '.h': 'c', '.cpp': 'cpp', '.cc': 'cpp', '.hpp': 'cpp',
-  '.cs': 'csharp', '.php': 'php', '.sql': 'sql',
-  '.graphql': 'graphql', '.gql': 'graphql',
-  '.prisma': 'prisma', '.env': 'plaintext',
-  '.dockerfile': 'dockerfile',
-  '.lock': 'yaml',
-}
 
-function extOf(p: string): string {
-  const base = p.split('/').pop() ?? p
-  const dot = base.lastIndexOf('.')
-  return dot >= 0 ? base.slice(dot).toLowerCase() : ''
-}
-function languageFor(path: string): string {
-  const ext = extOf(path)
-  if (ext) return LANG_BY_EXT[ext] ?? 'plaintext'
-  const name = path.split('/').pop() ?? ''
-  if (/^dockerfile/i.test(name)) return 'dockerfile'
-  if (/^makefile/i.test(name)) return 'makefile'
-  return 'plaintext'
-}
 
 function toWsNode(fn: NonNullable<Awaited<ReturnType<DesktopFsBridge['listTree']>>['tree']>[number]): WsNode {
   if (fn.type !== 'directory') {

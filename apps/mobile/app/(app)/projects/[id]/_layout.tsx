@@ -2479,6 +2479,8 @@ export default observer(function ProjectLayout() {
   const [requestedIdeFile, setRequestedIdeFile] = useState<{
     path: string;
     nonce: number;
+    line?: number;
+    column?: number;
   } | null>(null);
   const openIdeFileNonceRef = useRef(0);
 
@@ -2508,6 +2510,24 @@ export default observer(function ProjectLayout() {
       } as any);
     },
     [chatSessionId, isWide, projectId, router],
+  );
+
+  // Problems panel / bottom-drawer "go to file:line:col" — the drawer is
+  // mounted here (outside the IDE), so route through the IDE tab's
+  // requested-file channel, switching to the IDE if needed.
+  const handleRevealInIde = useCallback(
+    (relPath: string, line: number, column: number) => {
+      openIdeFileNonceRef.current += 1;
+      setRequestedIdeFile({
+        path: relPath,
+        line,
+        column,
+        nonce: openIdeFileNonceRef.current,
+      });
+      setPreviewTab(Platform.OS === "web" ? "ide" : "files");
+      if (!isWide) setActiveTab("canvas");
+    },
+    [isWide],
   );
 
   const handleOpenPlan = useCallback(
@@ -4331,6 +4351,7 @@ export default observer(function ProjectLayout() {
                   agentUrl={agentUrl ?? null}
                   messages={chatMessages}
                   platformIsWeb={Platform.OS === "web"}
+                  onReveal={handleRevealInIde}
                   canvasAreaHidden={canvasAreaHidden}
                   isChatFullscreen={isChatFullscreen}
                   folderPath={localFolderPath ?? undefined}

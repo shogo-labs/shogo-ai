@@ -17,6 +17,7 @@ import { attachGitDecorations, maybeAutoStageIfConflictResolved } from "./git/ed
 import { MergeEditorModal } from "./git/MergeEditorModal";
 import { getDesktopGitBridge } from "./git/bridge";
 import { getDesktopFsBridge } from "./workspace/desktopFs";
+import { languageFor } from "./workspace/language";
 import { EditorGroupView } from "./EditorGroup";
 import { applyEditorChange } from "./editor-change-apply";
 import { collectDirtyFiles, resolveSaveTarget } from "./save-target";
@@ -250,7 +251,7 @@ export function Workbench({
   remoteHostId?: string | null;
   primarySideBarPosition?: PrimarySideBarPosition;
   /** Open this workspace-relative file once the agent root is loaded. */
-  requestedFile?: { path: string; nonce: number } | null;
+  requestedFile?: { path: string; nonce: number; line?: number; column?: number } | null;
 }) {
   const themeMode = useResolvedTheme();
   const [activity, setActivity] = useState<ActivityId>("files");
@@ -337,7 +338,7 @@ export function Workbench({
   const [newRequest, setNewRequest] = useState<
     { kind: "file" | "dir"; nonce: number; rootId?: string } | null
   >(null);
-  const [palette, setPalette] = useState<"command" | "file" | null>(null);
+  const [palette, setPalette] = useState<"command" | "file" | "line" | null>(null);
 
   // Editor settings — persisted to localStorage
   const [settings, setSettings] = useState<EditorSettings>(() => {
@@ -497,6 +498,9 @@ export function Workbench({
     setRoots((prev) => prev.map((r) => (r.id === id ? { ...r, ...patch } : r)));
   }, []);
 
+  /** Lazy dirs (node_modules, dist…) the user has expanded, per root. */
+  const loadedLazyRef = useRef<Record<string, Set<string>>>({});
+
   const loadRoot = useCallback(
     async (id: string) => {
       const svc = services[id];
@@ -505,6 +509,24 @@ export function Workbench({
       try {
         const raw = await svc.listTree("", 4);
         setRoot(id, { tree: annotateRoot(raw, id), loading: false });
+        // A refresh replaces every lazy dir with an unloaded stub, which
+        // would collapse `node_modules`/`dist` the user already expanded
+        // (their rows would turn into "empty"). Re-fetch them, parents first
+        // so nested splices land on already-loaded parents.
+        const loaded = loadedLazyRef.current[id];
+        if (loaded && loaded.size > 0) {
+          const paths = [...loaded].sort((a, b) => a.length - b.length);
+          for (const p of paths) {
+            try {
+              const kids = annotateRoot(await svc.listTree(p), id);
+              setRoots((prev) =>
+                prev.map((r) => (r.id === id ? { ...r, tree: spliceSubtree(r.tree, p, kids) } : r)),
+              );
+            } catch {
+              loaded.delete(p); // gone or unreadable — let the user re-expand
+            }
+          }
+        }
         // Cross-file IntelliSense is served by the backend
         // typescript-language-server (see `setupLspProviders` below); we used
         // to preload up to 1000 TS/JS files into Monaco here to feed the
@@ -537,6 +559,7 @@ export function Workbench({
       if (!svc) throw new Error(`Unknown workspace: ${rootId}`);
       const raw = await svc.listTree(path);
       const children = annotateRoot(raw, rootId);
+      (loadedLazyRef.current[rootId] ??= new Set()).add(path);
       setRoots((prev) =>
         prev.map((r) =>
           r.id === rootId ? { ...r, tree: spliceSubtree(r.tree, path, children) } : r,
@@ -942,6 +965,8 @@ export function Workbench({
   const appliedRequestedFileNonce = useRef<number | null>(null);
   useEffect(() => {
     if (!requestedFile) return;
+    // Requests carrying a line are handled by the reveal effect below.
+    if (requestedFile.line != null) return;
     if (appliedRequestedFileNonce.current === requestedFile.nonce) return;
     const rootId = roots.find((r) => r.kind === "agent")?.id ?? roots[0]?.id;
     if (!rootId) return;
@@ -1061,11 +1086,18 @@ export function Workbench({
         else await svc.writeFile(full, "");
         showToast(kind === "dir" ? `Created folder ${name}` : `Created ${name}`);
         await loadRoot(rootId);
+        // Like every editor: a freshly created file opens ready to type in.
+        if (kind === "file") {
+          void openFileInGroup(
+            { kind: "file", rootId, path: full, name } as unknown as TreeNode,
+            activeGroupIdx,
+          );
+        }
       } catch (err) {
         showToast(`Create failed: ${err instanceof Error ? err.message : String(err)}`, 3000);
       }
     },
-    [svcOf, loadRoot, showToast],
+    [svcOf, loadRoot, showToast, openFileInGroup, activeGroupIdx],
   );
 
   const rewriteOpenPaths = (rootId: string, from: string, to: string) => {
@@ -1083,7 +1115,13 @@ export function Workbench({
         files: g.files.map((f) => {
           if (f.rootId !== rootId) return f;
           if (f.path === from) {
-            return { ...f, id: fileId(rootId, to), path: to, name: to.split("/").pop() ?? to };
+            // Renaming `a.txt` → `a.ts` must also switch syntax highlighting.
+            // (Preview files hold a blob URL, not text — leave those alone.)
+            const language =
+              f.loading || f.error || previewLanguageFor(from) || previewLanguageFor(to)
+                ? f.language
+                : languageFor(to);
+            return { ...f, id: fileId(rootId, to), path: to, name: to.split("/").pop() ?? to, language };
           }
           if (f.path.startsWith(from + "/")) {
             const np = to + f.path.slice(from.length);
@@ -1540,6 +1578,18 @@ export function Workbench({
     [roots, openFileInGroup, activeGroupIdx, activeGroup],
   );
 
+  // "Go to file:line:col" requests from outside the IDE (Problems panel in
+  // the project-level drawer).
+  const appliedRevealNonce = useRef<number | null>(null);
+  useEffect(() => {
+    if (!requestedFile || requestedFile.line == null) return;
+    if (appliedRevealNonce.current === requestedFile.nonce) return;
+    const rootId = roots.find((r) => r.kind === "agent")?.id ?? roots[0]?.id;
+    if (!rootId) return;
+    appliedRevealNonce.current = requestedFile.nonce;
+    void revealMatch(rootId, requestedFile.path, requestedFile.line, requestedFile.column ?? 1);
+  }, [requestedFile, roots, revealMatch]);
+
   const extensionsSummary = useExtensions({ workspaceRoot: gitWorkspaceRootRef.current });
   const extensionRuntimeContainers = useMemo(
     () => collectRuntimeContainers(extensionsSummary.installed),
@@ -1959,15 +2009,22 @@ export function Workbench({
       if (matchesShortcut(e, { meta: true, key: "\\" })) {
         e.preventDefault(); splitRight(); return;
       }
-      if (matchesShortcut(e, { meta: true, key: "g" })) {
+      // VS Code parity: Ctrl+G = Go to Line (Ctrl on every OS). ⌘G is left
+      // alone so Monaco's own "Find Next" keeps working on macOS.
+      if (e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "g") {
         e.preventDefault();
-        const input = prompt("Go to line:");
-        const n = input && parseInt(input, 10);
-        if (n && n > 0) gotoLine(n);
+        e.stopPropagation();
+        setPalette("line");
         return;
       }
+      // VS Code parity: ⌘⇧O = Go to Symbol in File (Monaco's quick outline).
+      // "Open Folder" lives in the Explorer header / command palette.
       if (matchesShortcut(e, { meta: true, shift: true, key: "o" })) {
-        e.preventDefault(); void openLocalFolder(); return;
+        e.preventDefault();
+        e.stopPropagation();
+        const ed = editorRefs.current[activeGroup?.id ?? ""];
+        void ed?.getAction("editor.action.quickOutline")?.run();
+        return;
       }
       if (matchesShortcut(e, { meta: true, shift: true, key: "f" })) {
         e.preventDefault();
@@ -2488,6 +2545,9 @@ export function Workbench({
       {palette === "file" && (
         <QuickOpen fileItems={fileItems} onClose={() => setPalette(null)} onLine={gotoLine} />
       )}
+      {palette === "line" && (
+        <QuickOpen lineOnly fileItems={[]} onClose={() => setPalette(null)} onLine={gotoLine} />
+      )}
       {mergePath && gitWorkspaceRoot && monacoNsRef.current && (
         <MergeEditorModal
           monaco={monacoNsRef.current}
@@ -2524,19 +2584,26 @@ function QuickOpen({
   fileItems,
   onClose,
   onLine,
+  lineOnly = false,
 }: {
   fileItems: PaletteItem[];
   onClose: () => void;
   onLine: (line: number) => void;
+  /** Ctrl+G mode: bare numbers are line numbers, no file list. */
+  lineOnly?: boolean;
 }) {
   return (
     <Palette
-      placeholder="Go to file…   (type :N to jump to line N in the current editor)"
+      placeholder={
+        lineOnly
+          ? "Go to line…   (type a line number)"
+          : "Go to file…   (type :N to jump to line N in the current editor)"
+      }
       items={fileItems}
       onClose={onClose}
-      emptyHint="No files match. Tip: type :42 to jump to line 42."
+      emptyHint={lineOnly ? "Type a line number" : "No files match. Tip: type :42 to jump to line 42."}
       syntheticItem={(q) => {
-        const m = q.match(/^:(\d+)$/);
+        const m = q.match(lineOnly ? /^:?(\d+)$/ : /^:(\d+)$/);
         if (!m) return null;
         const line = parseInt(m[1], 10);
         return {

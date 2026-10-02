@@ -118,6 +118,14 @@ function configureMonaco(monaco: MonacoNs) {
   ts.typescriptDefaults.setDiagnosticsOptions(diagOpts);
   ts.javascriptDefaults.setDiagnosticsOptions(diagOpts);
 
+  // tsconfig.json, .eslintrc, VS Code settings, … are JSON-with-comments in
+  // practice. Without this Monaco paints every `//` comment red.
+  (monaco.languages as any).json?.jsonDefaults?.setDiagnosticsOptions?.({
+    validate: true,
+    allowComments: true,
+    trailingCommas: "ignore",
+  });
+
   // Register the Monaco instance so the live-edit handlers can upsert
   // single-file models on demand (hot path: SSE `file.changed` from the
   // chat agent → upsert into the open editor's model). Cross-file

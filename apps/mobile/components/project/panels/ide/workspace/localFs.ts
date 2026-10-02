@@ -95,6 +95,7 @@ function extOf(name: string) {
 }
 
 function langOf(name: string) {
+  if (/^\.env(\.|$)/i.test(name)) return "ini";
   return LANG[extOf(name)] ?? "plaintext";
 }
 

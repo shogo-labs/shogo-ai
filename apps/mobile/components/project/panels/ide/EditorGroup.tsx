@@ -31,6 +31,7 @@ export function EditorGroupView({
   onEditorMount,
   settings,
   themeMode,
+  editorTheme,
   installedExtensions = [],
   extensionInstallingId,
   onInstallExtension,
@@ -131,6 +132,7 @@ export function EditorGroupView({
               file={active}
               settings={settings}
               themeMode={themeMode}
+              editorTheme={editorTheme}
               onChange={onChange}
               onCursor={onCursor}
               onEditorMount={onEditorMount}
@@ -143,6 +145,7 @@ export function EditorGroupView({
               pathKey={active.id}
               settings={settings}
               themeMode={themeMode}
+              editorTheme={editorTheme}
               onChange={onChange}
               onCursor={onCursor}
               onMount={onEditorMount}
@@ -160,6 +163,7 @@ function MarkdownFileView({
   file,
   settings,
   themeMode,
+  editorTheme,
   onChange,
   onCursor,
   onEditorMount,
@@ -168,6 +172,7 @@ function MarkdownFileView({
   file: OpenFile;
   settings: EditorSettings;
   themeMode: "dark" | "light";
+  editorTheme?: string;
   onChange: (fileId: string, val: string) => void;
   onCursor: (line: number, col: number) => void;
   onEditorMount?: (ed: editor.IStandaloneCodeEditor, monaco: MonacoNs) => void;
@@ -213,6 +218,7 @@ function MarkdownFileView({
             pathKey={file.id}
             settings={settings}
             themeMode={themeMode}
+            editorTheme={editorTheme}
             onChange={onChange}
             onCursor={onCursor}
             onMount={onEditorMount}
