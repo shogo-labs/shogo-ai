@@ -921,47 +921,15 @@ jobs:
             --field environment=production \
             --field submit=true
 
-      - name: Ensure matching beta release exists
-        # Beta versions advance to the next patch after the stable production
-        # tag. If that beta already exists, do not start another pair of
-        # desktop builds; otherwise dispatch both platform workflows. The
-        # macOS workflow will also dispatch the beta TestFlight build.
-        if: needs.resolve-version.outputs.channel != 'beta' && startsWith(github.ref, 'refs/tags/v')
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.ref_name }}
-        run: |
-          set -euo pipefail
-          if [[ ! "$RELEASE_TAG" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
-            echo "Release ${RELEASE_TAG} is not a stable vX.Y.Z tag; skipping beta companion."
-            exit 0
-          fi
-
-          major="${BASH_REMATCH[1]}"
-          minor="${BASH_REMATCH[2]}"
-          patch=$((10#${BASH_REMATCH[3]} + 1))
-          beta_prefix="v${major}.${minor}.${patch}-beta."
-          beta_tag=$(gh release list \
-            --repo "$GITHUB_REPOSITORY" \
-            --limit 200 \
-            --json tagName,isPrerelease |
-            jq -r --arg prefix "$beta_prefix" \
-              '[.[] | select(.isPrerelease and (.tagName | startswith($prefix)))][0].tagName // empty')
-
-          if [ -n "$beta_tag" ]; then
-            echo "Matching beta release ${beta_tag} already exists."
-            exit 0
-          fi
-
-          echo "No beta release matching ${beta_prefix}* exists; dispatching macOS and Windows beta builds."
-          gh workflow run desktop-release-macos.yml \
-            --repo "$GITHUB_REPOSITORY" \
-            --ref "$RELEASE_TAG" \
-            --field channel=beta
-          gh workflow run desktop-release-windows.yml \
-            --repo "$GITHUB_REPOSITORY" \
-            --ref "$RELEASE_TAG" \
-            --field channel=beta
+      # There is deliberately NO "beta companion" build here. A stable tag used
+      # to dispatch a second full macOS + Windows (+ iOS) build of the same
+      # commit as `v<next patch>-beta.<ts>` so the beta feed stayed ahead of
+      # stable. That is unnecessary: the beta feed (releases-worker.js.tftpl)
+      # serves the semver-greatest of stable AND prerelease releases, so beta
+      # installs already receive the new stable, and the next beta built from
+      # main computes `nextPatch(latest stable)-beta.<ts>` and outranks it. The
+      # companion doubled build time and signing quota per release, and its
+      # runs were mistaken for the stable run by finalize-release.yml.
 
       - name: Trigger iOS beta TestFlight build
         # Beta tags are created with GITHUB_TOKEN, so their tag push does not
