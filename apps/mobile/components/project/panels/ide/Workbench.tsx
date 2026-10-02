@@ -51,6 +51,8 @@ import {
 } from "./types";
 import { broadcastEditorFontChange } from "./useEditorFont";
 import { SearchPane, type SearchPersist, type SearchSeed } from "./SearchPane";
+import { preloadMonaco } from "./CodeEditor";
+import { loadSession, saveSession, sessionHasTabs, snapshotSession } from "./session";
 import { SettingsPane } from "./SettingsPane";
 import { ExtensionsViewlet, TrustPublisherDialog } from "./extensions/ExtensionsViewlet";
 import { collectRuntimeContainers, ExtensionRuntimeViewlet } from "./extensions/ExtensionRuntimeViewlet";
@@ -975,6 +977,70 @@ export function Workbench({
     },
     [openFileInGroup, activeGroupIdx],
   );
+
+  // ─── Session restore ─────────────────────────────────────────────────
+  // Reopen the tabs the user had last time (paths only; content is re-read).
+  // Runs once, after the project's own tree has loaded, and only when nothing
+  // else (deep link / requestedFile) has already opened a file.
+  // Warm Monaco (loader + editor.main) as soon as the IDE exists, so the first
+  // file open doesn't wait on the editor bundle.
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof document === "undefined") return;
+    if (process.env.NODE_ENV === "test") return;
+    preloadMonaco();
+  }, []);
+
+  const sessionReadyRef = useRef(false);
+  useEffect(() => {
+    if (sessionReadyRef.current) return;
+    const agent = roots.find((r) => r.id === "agent");
+    if (!agent || agent.loading) return;
+    if (agent.error) {
+      sessionReadyRef.current = true;
+      return;
+    }
+    const session = loadSession(projectId);
+    if (!sessionHasTabs(session) || requestedFile || groupsRef.current.some((g) => g.files.length > 0)) {
+      sessionReadyRef.current = true;
+      return;
+    }
+    void (async () => {
+      setGroups(session.groups.map(() => ({ id: newGroupId(), files: [], activeId: null })));
+      await Promise.all(
+        session.groups.flatMap((g, gi) =>
+          g.files.map((f) =>
+            openFileInGroup(
+              { kind: "file", rootId: f.rootId, path: f.path, name: f.path.split("/").pop() ?? f.path } as TreeNode,
+              gi,
+            ),
+          ),
+        ),
+      );
+      // Drop tabs whose file has since disappeared, then restore which tab /
+      // group was focused (openFileInGroup activates whatever opened last).
+      setGroups((prev) =>
+        prev.map((g, gi) => {
+          const files = g.files
+            .filter((f) => !f.error)
+            .map((f) => (session.groups[gi]?.files.find((x) => x.path === f.path)?.pinned ? { ...f, pinned: true } : f));
+          const want = session.groups[gi]?.activeId;
+          const activeId = files.some((f) => f.id === want) ? want! : files[files.length - 1]?.id ?? null;
+          return { ...g, files, activeId };
+        }),
+      );
+      setActiveGroupIdx(Math.min(session.activeGroupIdx, session.groups.length - 1));
+      sessionReadyRef.current = true;
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [roots, projectId, requestedFile, openFileInGroup]);
+
+  useEffect(() => {
+    if (!sessionReadyRef.current) return;
+    const t = window.setTimeout(() => {
+      saveSession(projectId, snapshotSession(groups, activeGroupIdx));
+    }, 400);
+    return () => window.clearTimeout(t);
+  }, [groups, activeGroupIdx, projectId]);
 
   // Open a workspace-relative path (used by the commit graph's file list).
   // Synthesizes a minimal file node against the primary (agent) root.
@@ -2204,6 +2270,27 @@ export function Workbench({
     [commands],
   );
 
+  // Complete path index per root (the tree only holds what has been expanded;
+  // ⌘P must find files in folders the user never opened). Refreshed in the
+  // background every time Quick Open opens; the cached list shows instantly.
+  const [fileIndex, setFileIndex] = useState<Record<string, string[]>>({});
+  useEffect(() => {
+    if (palette !== "file") return;
+    let cancelled = false;
+    for (const r of roots) {
+      const svc = services[r.id];
+      if (!svc?.listFiles) continue;
+      void svc
+        .listFiles()
+        .then((files) => {
+          if (!cancelled) setFileIndex((prev) => ({ ...prev, [r.id]: files }));
+        })
+        .catch(() => { /* tree-derived list still works */ });
+    }
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [palette === "file"]);
+
   const fileItems: PaletteItem[] = useMemo(() => {
     // UX-QUICKOPEN-PATH: collapse the sublabel to ONLY the parent-dir
     // hint when it's actually disambiguating (or when multi-root is
@@ -2223,6 +2310,17 @@ export function Workbench({
     const qoFiles: QuickOpenFile[] = [];
     for (const r of roots) {
       const flat = flattenFiles(r.tree);
+      // Paths known to the index but not (yet) in the loaded tree.
+      const known = new Set(flat.map((n) => n.path));
+      for (const path of fileIndex[r.id] ?? []) {
+        if (known.has(path)) continue;
+        flat.push({
+          kind: "file",
+          rootId: r.id,
+          path,
+          name: path.slice(path.lastIndexOf("/") + 1),
+        } as TreeNode);
+      }
       for (const n of flat) {
         const id = fileId(n.rootId, n.path);
         entries.push({
@@ -2251,7 +2349,7 @@ export function Workbench({
         run: e.run,
       };
     });
-  }, [roots, handleOpenFile]);
+  }, [roots, handleOpenFile, fileIndex]);
 
   useEffect(() => {
     if (zen.active) {

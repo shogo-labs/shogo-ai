@@ -178,6 +178,11 @@ export class SdkFs implements WorkspaceService {
     await this.client.deleteFile(path, { recursive: true })
   }
 
+  async listFiles(): Promise<string[]> {
+    const res = await this.client.listWorkspaceFiles()
+    return res.files
+  }
+
   /** Native rename/move — works for folders, binaries, and case-only renames. */
   async copy(from: string, to: string): Promise<void> {
     await this.client.copyWorkspacePath(from, to)

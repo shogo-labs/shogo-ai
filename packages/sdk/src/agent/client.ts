@@ -302,6 +302,15 @@ export class AgentClient {
     }, { scoped: true })
   }
 
+  /** Every file path in the workspace (⌘P index), including not-yet-loaded folders. */
+  async listWorkspaceFiles(limit?: number): Promise<{ files: string[]; truncated: boolean }> {
+    return this.fetchJson(
+      `/agent/workspace/file-list${limit ? `?limit=${limit}` : ''}`,
+      undefined,
+      { scoped: true },
+    )
+  }
+
   /** Copy a file or folder (binary-safe, recursive). Rejects on name collision. */
   async copyWorkspacePath(from: string, to: string): Promise<void> {
     await this.fetchJson('/agent/workspace/copy', {

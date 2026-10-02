@@ -45,6 +45,18 @@ import {
 //     — matching `'self'` in CSP.
 loader.config({ paths: { vs: "/vs" } });
 
+/**
+ * Start downloading/initialising Monaco before the first editor mounts. The
+ * Workbench calls this as soon as the IDE pane exists so opening the first
+ * file doesn't pay the loader.js + editor.main round-trips.
+ */
+export function preloadMonaco(): void {
+  if (typeof document === "undefined") return;
+  void loader.init().catch(() => {
+    /* the <Editor> will surface the real error when it mounts */
+  });
+}
+
 /* -------------------------------------------------------------------------- *
  * One-time Monaco setup: TS/JSX compiler defaults so the TS worker gives us
  * hover tooltips, autocomplete, and JSX highlighting for free. Guarded by a
@@ -136,7 +148,7 @@ function configureMonaco(monaco: MonacoNs) {
 
   // Load real @types/react, @types/react-dom, csstype, prop-types
   // declaration files as extraLibs so React autocomplete + hover work.
-  setupExtraLibs(monaco);
+  setupExtraLibs(monaco, { defer: true });
 
   // Register the "Fix with Shogo" hover button + quick-fix code action for
   // every language Monaco knows about. Idempotent across split editors.

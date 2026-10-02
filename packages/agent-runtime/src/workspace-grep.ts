@@ -361,3 +361,96 @@ export async function grepWorkspace(
   }
   return grepWithJs(root, req, limit, maxPerFile, filter)
 }
+
+// ---------------------------------------------------------------------------
+// File index (Quick Open / ⌘P)
+// ---------------------------------------------------------------------------
+
+export interface FileListResponse {
+  files: string[]
+  truncated: boolean
+  engine: 'ripgrep' | 'js'
+}
+
+function runRipgrepFiles(rg: string, root: string, limit: number): Promise<FileListResponse> {
+  const args = ['--files', '--hidden', '--no-require-git']
+  for (const d of WORKSPACE_TREE_HIDDEN_DIRS) args.push('--glob', `!${d}`)
+  for (const d of WORKSPACE_TREE_LAZY_DIRS) args.push('--glob', `!${d}`)
+  if (existsSync(join(root, '.shogoignore'))) args.push('--ignore-file', join(root, '.shogoignore'))
+  args.push('--', '.')
+  return new Promise((resolve, reject) => {
+    const child = spawn(rg, args, { cwd: root, stdio: ['ignore', 'pipe', 'ignore'] })
+    const files: string[] = []
+    let buf = ''
+    let truncated = false
+    let killed = false
+    const push = (line: string) => {
+      if (!line || killed) return
+      files.push(line.replace(/^\.\//, '').replace(/\\/g, '/'))
+      if (files.length >= limit) {
+        truncated = true
+        killed = true
+        child.kill()
+      }
+    }
+    child.stdout.setEncoding('utf8')
+    child.stdout.on('data', (chunk: string) => {
+      buf += chunk
+      let nl: number
+      while ((nl = buf.indexOf('\n')) >= 0) {
+        push(buf.slice(0, nl))
+        buf = buf.slice(nl + 1)
+      }
+    })
+    child.on('error', reject)
+    child.on('close', (code) => {
+      if (buf) push(buf)
+      if (killed || code === 0 || code === 1) resolve({ files, truncated, engine: 'ripgrep' })
+      else reject(new Error(`ripgrep exited with code ${code}`))
+    })
+  })
+}
+
+function flattenFilePaths(nodes: WorkspaceTreeNode[], out: string[], limit: number): void {
+  for (const n of nodes) {
+    if (out.length >= limit) return
+    if (n.ignored) continue
+    if (n.type === 'directory') {
+      if (!n.lazy) flattenFilePaths(n.children ?? [], out, limit)
+    } else out.push(n.path)
+  }
+}
+
+/**
+ * Every file path in the workspace (not just the lazily loaded part of the
+ * tree), for ⌘P. Honours .gitignore, but always adds root-level `.env*` files
+ * so config files stay one keystroke away.
+ */
+export async function listWorkspaceFiles(
+  root: string,
+  opts: { limit?: number; engine?: 'auto' | 'js' } = {},
+): Promise<FileListResponse> {
+  const limit = Math.max(1, Math.min(opts.limit ?? 50_000, 200_000))
+  let res: FileListResponse | null = null
+  const rg = opts.engine === 'js' ? null : resolveRipgrep()
+  if (rg) {
+    try { res = await runRipgrepFiles(rg, root, limit) } catch { res = null }
+  }
+  if (!res) {
+    const tree = await walkFilesTree(root, root, {
+      hiddenDirs: WORKSPACE_TREE_HIDDEN_DIRS,
+      lazyDirs: WORKSPACE_TREE_LAZY_DIRS,
+    })
+    const files: string[] = []
+    flattenFilePaths(tree, files, limit)
+    res = { files, truncated: files.length >= limit, engine: 'js' }
+  }
+  try {
+    const have = new Set(res.files)
+    for (const ent of await fsp.readdir(root, { withFileTypes: true })) {
+      if (ent.isFile() && /^\.env(\.|$)/.test(ent.name) && !have.has(ent.name)) res.files.push(ent.name)
+    }
+  } catch { /* unreadable root */ }
+  res.files.sort((a, b) => a.length - b.length || (a < b ? -1 : a > b ? 1 : 0))
+  return res
+}

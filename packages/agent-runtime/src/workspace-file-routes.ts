@@ -41,7 +41,7 @@ import {
   WORKSPACE_TREE_LAZY_DIRS,
 } from './fs-tree-walker'
 import type { CanvasEvent } from './canvas-file-watcher'
-import { grepWorkspace, GrepError, type GrepRequest } from './workspace-grep'
+import { grepWorkspace, GrepError, listWorkspaceFiles, type GrepRequest } from './workspace-grep'
 
 /**
  * Resolve `subPath` under `root`, or null if it escapes. `isWithinRoot` is
@@ -343,6 +343,18 @@ export function workspaceFileRoutes(config: WorkspaceFileRoutesConfig) {
       config.onFileWritten?.(workspaceRelativePath(workspaceDir, dest), dest)
     }
     return c.json({ ok: true, from: body.from, to: body.to })
+  })
+
+  // Flat list of every file path (⌘P index) — covers directories the lazy
+  // tree hasn't loaded yet.
+  app.get('/agent/workspace/file-list', async (c) => {
+    const { root } = requestRoot(c)
+    try {
+      const limit = Number(c.req.query('limit'))
+      return c.json(await listWorkspaceFiles(root, Number.isFinite(limit) && limit > 0 ? { limit } : {}))
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : 'List failed' }, 500)
+    }
   })
 
   // Full-text search (IDE Search view). Runs ripgrep when available, else a

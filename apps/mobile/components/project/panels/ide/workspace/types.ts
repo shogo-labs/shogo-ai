@@ -74,6 +74,11 @@ export interface WorkspaceService {
   rename(from: string, to: string): Promise<void>;
   /** Copy a file or folder. Optional: backends without it hide Duplicate/Paste. */
   copy?(from: string, to: string): Promise<void>;
+  /**
+   * Flat list of every file path (not just the loaded part of the lazy tree).
+   * Optional: Quick Open falls back to the tree when missing.
+   */
+  listFiles?(): Promise<string[]>;
   search(query: string, opts?: SearchOptions): Promise<SearchResponse>;
   /**
    * Resolve a path to a URL that can be used by <img>, <video>, etc. Used for

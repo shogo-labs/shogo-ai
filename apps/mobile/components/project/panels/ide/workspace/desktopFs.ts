@@ -223,6 +223,10 @@ export class DesktopFs implements WorkspaceService {
     return this.sdkFs.remove(path)
   }
 
+  listFiles(): Promise<string[]> {
+    return this.sdkFs.listFiles()
+  }
+
   copy(from: string, to: string): Promise<void> {
     return this.sdkFs.copy(from, to)
   }

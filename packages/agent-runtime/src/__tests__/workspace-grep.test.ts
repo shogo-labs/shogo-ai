@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { compileGlobList, grepWorkspace, GrepError, resolveRipgrep } from '../workspace-grep'
+import { compileGlobList, grepWorkspace, GrepError, listWorkspaceFiles, resolveRipgrep } from '../workspace-grep'
 
 let root: string
 
@@ -81,4 +81,18 @@ describe('compileGlobList', () => {
     expect(m('docs/x.md')).toBe(true)
     expect(m('a/b.js')).toBe(false)
   })
+})
+
+describe('listWorkspaceFiles', () => {
+  for (const [engine, label] of engines) {
+    test(`${label}: lists nested files, skips ignored/lazy, keeps .env`, async () => {
+      const res = await listWorkspaceFiles(root, { engine })
+      expect(res.files).toContain('src/deep/b.test.ts')
+      expect(res.files).toContain('README.md')
+      expect(res.files).toContain('.env')
+      expect(res.files).not.toContain('logs/out.log')
+      expect(res.files.some((f) => f.startsWith('node_modules/'))).toBe(false)
+      expect(res.files.some((f) => f.startsWith('.git/'))).toBe(false)
+    })
+  }
 })
