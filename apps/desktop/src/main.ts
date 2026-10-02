@@ -1829,6 +1829,10 @@ app.whenReady().then(async () => {
   app.on('activate', () => {
     if (!windowManager.hasWindows()) {
       createWindow()
+    } else {
+      // The always-visible island panel makes macOS think the app already has
+      // a visible window, so it no longer restores a minimized one itself.
+      windowManager.focusPrimaryWindow()
     }
   })
 
