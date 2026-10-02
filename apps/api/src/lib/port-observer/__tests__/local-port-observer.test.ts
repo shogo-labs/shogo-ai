@@ -29,7 +29,6 @@ import {
   parseLsofListening,
   parseLsofCwd,
   pathIsWithin,
-  urlsForListenAddress,
   type FolderResolver,
   type HttpProbe,
   type ListeningSocket,
@@ -114,25 +113,6 @@ describe('pathIsWithin', () => {
   test('empty inputs are false', () => {
     expect(pathIsWithin('', '/Users/a/app')).toBe(false)
     expect(pathIsWithin('/Users/a/app', '')).toBe(false)
-  })
-})
-
-describe('urlsForListenAddress', () => {
-  test('IPv4 and wildcard listeners probe 127.0.0.1', () => {
-    for (const address of ['127.0.0.1', '0.0.0.0', '*']) {
-      expect(urlsForListenAddress(address, 3000)).toEqual({
-        probeUrl: 'http://127.0.0.1:3000',
-        url: 'http://127.0.0.1:3000',
-      })
-    }
-  })
-  test('IPv6 loopback and wildcard probe [::1] and surface localhost', () => {
-    for (const address of ['::1', '::']) {
-      expect(urlsForListenAddress(address, 5175)).toEqual({
-        probeUrl: 'http://[::1]:5175',
-        url: 'http://localhost:5175',
-      })
-    }
   })
 })
 
@@ -324,29 +304,6 @@ describe('LocalPortObserver.attributedPorts', () => {
     const out = await obs.attributedPorts('p1')
     expect(out).toHaveLength(1)
     expect(out[0].port).toBe(5173)
-  })
-
-  test('probes an IPv6-loopback-only server on ::1 and surfaces localhost', async () => {
-    // Astro / Vite on macOS often bind only `[::1]`, which refuses 127.0.0.1.
-    const probed: string[] = []
-    const scanner = makeMockScanner(
-      [{ pid: 1, port: 5175, command: 'bun', address: '::1' }],
-      { 1: { pid: 1, cwd: '/Users/me/site' } },
-    )
-    const obs = new LocalPortObserver({
-      scanner,
-      httpProbe: {
-        async probe(url: string) {
-          probed.push(url)
-          return url === 'http://[::1]:5175'
-        },
-      },
-      folderResolver: folders({ p1: ['/Users/me/site'] }),
-      now: () => NOW,
-    })
-    const out = await obs.attributedPorts('p1')
-    expect(probed).toEqual(['http://[::1]:5175'])
-    expect(out.map((p) => p.url)).toEqual(['http://localhost:5175'])
   })
 
   test('scanner errors degrade to empty result', async () => {

@@ -784,9 +784,8 @@ export default observer(function ProjectLayout() {
         if (typeof body?.savedUrl === "string")
           setExternalSavedUrl(body.savedUrl);
         else setExternalSavedUrl(null);
-        setExternalDetectedUrl(
-          typeof body?.detectedUrl === "string" ? body.detectedUrl : null
-        );
+        if (typeof body?.detectedUrl === "string")
+          setExternalDetectedUrl(body.detectedUrl);
       } catch (err) {
         if (!cancelled) console.warn("[external-preview] fetch failed:", err);
       }
@@ -1982,12 +1981,6 @@ export default observer(function ProjectLayout() {
   // (and thus its `workingMode`) is known. Tracks the project it ran for so a
   // navigation to a different project re-applies.
   const previewTabInitForRef = useRef<string | null>(null);
-  // Set once the initial tab (deep-link intent or the persisted last tab,
-  // which is read asynchronously) has been applied, so later automatic tab
-  // switches can't be clobbered by that read resolving late.
-  const [previewTabRestoredFor, setPreviewTabRestoredFor] = useState<
-    string | null
-  >(null);
 
   // Sidebar "open project" tab intent. Clicking a project name in the sidebar
   // deep-links a `tab` param (canvas / chat-fullscreen / external-preview). It
@@ -2035,7 +2028,6 @@ export default observer(function ProjectLayout() {
     }
     appliedTabIntentRef.current = token;
     previewTabInitForRef.current = projectId;
-    setPreviewTabRestoredFor(projectId);
     const nativePhoneChat = nativePhone;
     const landingTab =
       requested === "canvas" ||
@@ -2092,46 +2084,12 @@ export default observer(function ProjectLayout() {
         }
         if (normalized) setPreviewTab(normalized);
       })
-      .catch(() => {})
-      .finally(() => setPreviewTabRestoredFor(projectId));
+      .catch(() => {});
     // Best-effort cleanup of the pre-fix v1 key so it doesn't linger.
     AsyncStorage.removeItem(`shogo:lastPreviewTab:${projectId}`).catch(
       () => {}
     );
   }, [projectId, project, isExternalProject, phoneLayout, nativePhone, isWide]);
-
-  // Folder-linked projects: when a dev server for the folder starts (seen
-  // by the API's port scan or the agent terminal), bring the Preview tab
-  // forward if it isn't already showing. Fires once per detected URL; the
-  // key resets when the server goes away so a restart re-opens it.
-  const autoOpenedPreviewKeyRef = useRef<string | null>(null);
-  useEffect(() => {
-    if (!projectId || !isExternalProject || !externalDetectedUrl) {
-      autoOpenedPreviewKeyRef.current = null;
-      return;
-    }
-    if (previewTabRestoredFor !== projectId) return;
-    if (phoneLayout || isIdeChatEmbed) return;
-    if (
-      Platform.OS !== "web" ||
-      typeof window === "undefined" ||
-      !(window as any).shogoDesktop?.preview
-    ) {
-      return;
-    }
-    const key = `${projectId}|${externalDetectedUrl}`;
-    if (autoOpenedPreviewKeyRef.current === key) return;
-    autoOpenedPreviewKeyRef.current = key;
-    if (previewTab !== "external-preview") setPreviewTab("external-preview");
-  }, [
-    projectId,
-    isExternalProject,
-    externalDetectedUrl,
-    previewTabRestoredFor,
-    phoneLayout,
-    isIdeChatEmbed,
-    previewTab,
-  ]);
 
   useEffect(() => {
     if (projectId && previewTab && PERSISTABLE_PREVIEW_TABS.has(previewTab)) {

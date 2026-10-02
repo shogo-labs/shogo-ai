@@ -315,25 +315,6 @@ export function pathIsWithin(child: string, parent: string): boolean {
   return child.startsWith(parent + '/')
 }
 
-/**
- * Pick the URL to probe and the URL to surface for a listening socket.
- *
- * A server bound only to `::1` (Node 17+ / Bun resolve `localhost` to IPv6
- * first on macOS, so Vite and Astro dev servers commonly do this) refuses
- * connections on `127.0.0.1`. Probe the family it actually listens on, and
- * surface `localhost` for IPv6 loopback since Chromium tries both families.
- */
-export function urlsForListenAddress(
-  address: string,
-  port: number,
-): { probeUrl: string; url: string } {
-  if (address === '::1' || address === '::') {
-    return { probeUrl: `http://[::1]:${port}`, url: `http://localhost:${port}` }
-  }
-  const url = `http://127.0.0.1:${port}`
-  return { probeUrl: url, url }
-}
-
 /* ────────────────────────────────────────────────────────────────────── *
  * The observer.
  * ────────────────────────────────────────────────────────────────────── */
@@ -417,8 +398,8 @@ export class LocalPortObserver {
 
     const probeResults = await Promise.all(
       Array.from(byPort.values()).map(async (sock) => {
-        const { probeUrl, url } = urlsForListenAddress(sock.address, sock.port)
-        const ok = await this.httpProbe.probe(probeUrl)
+        const url = `http://127.0.0.1:${sock.port}`
+        const ok = await this.httpProbe.probe(url)
         return ok ? { sock, url } : null
       }),
     )
