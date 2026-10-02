@@ -15,6 +15,14 @@ export interface TreeNode extends WsNode {
 /** Raw service node helper — we decorate this with rootId when ingesting. */
 export type RawNode = WsNode;
 
+/** A Source Control diff tab (HEAD ↔ index ↔ working tree). */
+export interface GitDiffSpec {
+  workspaceRoot: string;
+  /** Workspace-relative file path. */
+  path: string;
+  group: "staged" | "changes";
+}
+
 export interface OpenFile {
   id: string;           // `${rootId}::${path}` — globally unique
   rootId: string;
@@ -30,6 +38,8 @@ export interface OpenFile {
   /** Markdown files open in preview until the user switches to the editor. */
   mdMode?: "preview" | "edit";
   extensionDetail?: InstalledExtension | ExtensionSearchResult;
+  /** Set on `language: "git-diff"` tabs. */
+  gitDiff?: GitDiffSpec;
 }
 
 export interface EditorGroup {

@@ -1916,6 +1916,34 @@ export function Workbench({
     setActiveGroupIdx(activeGroupIdx);
   }, [activeGroupIdx, findOpenLocation, updateGroup]);
 
+  /** Source Control → click a change: open (or focus) a real diff tab. */
+  const openGitDiffTab = useCallback(
+    (path: string, group: "staged" | "changes", workspaceRoot: string) => {
+      const id = `git-diff:${group}:${path}`;
+      const name = `${path.split("/").pop() ?? path} (${group === "staged" ? "Index" : "Working Tree"})`;
+      const existing = findOpenLocation(id);
+      if (existing) {
+        setActiveGroupIdx(existing.groupIdx);
+        updateGroup(existing.groupIdx, (g) => ({ ...g, activeId: id }));
+        return;
+      }
+      const tab: OpenFile = {
+        id,
+        rootId: "__git-diff__",
+        name,
+        path,
+        language: "git-diff",
+        content: "",
+        savedContent: "",
+        dirty: false,
+        gitDiff: { workspaceRoot, path, group },
+      };
+      updateGroup(activeGroupIdx, (g) => ({ ...g, files: [...g.files, tab], activeId: id }));
+      setActiveGroupIdx(activeGroupIdx);
+    },
+    [activeGroupIdx, findOpenLocation, updateGroup],
+  );
+
   const openExtensionWebviewPanel = useCallback((panel: ExtensionRuntimeWebviewPanel) => {
     const id = `extension-webview:${panel.id}`;
     const existing = findOpenLocation(id);
@@ -2869,6 +2897,8 @@ export function Workbench({
                       onChange={handleChangeFor(i)}
                       onRetryOpen={(id) => retryOpen(i, id)}
                       onRevealPath={revealInExplorer}
+                      gitRefreshKey={gitSnapshot?.refreshedAt}
+                      onOpenPlainFile={openWorkspaceFile}
                       onCloseMany={(ids) => void closeManyInGroup(i, ids)}
                       onCopyText={(t, what) => void copyText(t, what)}
                       onRevealFile={(id) => {
@@ -3033,8 +3063,10 @@ export function Workbench({
                     if (group === "merge" && gitWorkspaceRoot) {
                       // Merge conflicts open the 3-way merge editor
                       setMergePath(path);
-                    } else if (gitWorkspaceRoot) {
-                      // Staged/changes: open Monaco diff tab
+                    } else if (gitWorkspaceRoot && getDesktopGitBridge()) {
+                      // Staged/changes: real diff tab (HEAD ↔ index ↔ working tree)
+                      openGitDiffTab(path, group === "staged" ? "staged" : "changes", gitWorkspaceRoot);
+                    } else {
                       openWorkspaceFile(path);
                     }
                   }}

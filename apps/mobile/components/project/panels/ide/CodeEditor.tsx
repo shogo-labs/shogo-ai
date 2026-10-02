@@ -66,7 +66,7 @@ let monacoConfigured = false;
 
 type MonacoNs = Parameters<OnMount>[1];
 
-function configureMonaco(monaco: MonacoNs) {
+export function configureMonaco(monaco: MonacoNs) {
   if (monacoConfigured) return;
   monacoConfigured = true;
 

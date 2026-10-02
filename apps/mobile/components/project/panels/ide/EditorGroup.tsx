@@ -1,6 +1,7 @@
 import { AlertTriangle, Code2 } from "lucide-react-native";
 import { EditorTabs } from "./EditorTabs";
 import { Breadcrumbs } from "./Breadcrumbs";
+import { GitDiffView } from "./GitDiffView";
 import { CodeEditor } from "./CodeEditor";
 import { ImagePreview } from "./ImagePreview";
 import { SqlitePreview } from "./SqlitePreview";
@@ -43,6 +44,8 @@ export function EditorGroupView({
   onSetMdMode,
   onRetryOpen,
   onRevealPath,
+  gitRefreshKey,
+  onOpenPlainFile,
   onCloseMany,
   onCopyText,
   onRevealFile,
@@ -74,6 +77,10 @@ export function EditorGroupView({
   onRetryOpen?: (fileId: string) => void;
   /** Breadcrumb click: reveal a workspace-relative path in the Explorer. */
   onRevealPath?: (path: string) => void;
+  /** Bumps when git status changes so open diff tabs re-read their sides. */
+  gitRefreshKey?: number;
+  /** "Open File" from a diff tab. */
+  onOpenPlainFile?: (path: string) => void;
   onCloseMany?: (ids: string[]) => void;
   onCopyText?: (text: string, what: string) => void;
   onRevealFile?: (fileId: string) => void;
@@ -105,7 +112,7 @@ export function EditorGroupView({
         onRevealFile={onRevealFile}
         onNewFile={onNewFile}
       />}
-      {active && active.language !== "extension-detail" && active.language !== "extension-webview" && <Breadcrumbs path={active.path} onReveal={onRevealPath} />}
+      {active && active.language !== "extension-detail" && active.language !== "extension-webview" && active.language !== "git-diff" && <Breadcrumbs path={active.path} onReveal={onRevealPath} />}
       <div className="flex-1 min-h-0 relative">
         {active ? (
           active.loading ? (
@@ -127,6 +134,15 @@ export function EditorGroupView({
                 </button>
               )}
             </div>
+          ) : active.language === "git-diff" && active.gitDiff ? (
+            <GitDiffView
+              spec={active.gitDiff}
+              fileName={active.name}
+              settings={settings}
+              themeMode={themeMode}
+              refreshKey={gitRefreshKey}
+              onOpenFile={onOpenPlainFile}
+            />
           ) : active.language === "extension-webview" ? (
             <ExtensionWebview html={active.content} title={active.name} />
           ) : active.language === "extension-detail" && active.extensionDetail ? (
