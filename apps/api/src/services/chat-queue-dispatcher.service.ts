@@ -3,8 +3,32 @@
 
 import { randomUUID } from 'node:crypto'
 import { prisma } from '../lib/prisma'
+import { homeRegionWorkspaceWhere } from '../lib/region'
 
 const ACTIVE_TURN_STALE_AFTER_MS = 5 * 60 * 1000
+
+/**
+ * `chat_queued_messages` replicates between regions, and the claim below is a
+ * conditional UPDATE that only serializes writers on one database. Every queue
+ * write (claim, user-message persist, turn start, delete, stuck reset) must
+ * therefore happen in the session's home region only; otherwise two regions
+ * claim the same row and insert the same `chat_messages.id`, which stops
+ * logical replication on `insert_exists`. Null in single-region / local mode.
+ */
+function homeSessionWhere() {
+  const home = homeRegionWorkspaceWhere()
+  if (!home) return null
+  return { OR: [{ project: { workspace: home } }, { workspace: home }] }
+}
+
+async function isHomeRegionSession(chatSessionId: string): Promise<boolean> {
+  const home = homeSessionWhere()
+  if (!home) return true
+  const count = await (prisma as any).chatSession.count({
+    where: { id: chatSessionId, ...home },
+  })
+  return count > 0
+}
 
 type QueueBody = {
   text?: string
@@ -221,9 +245,12 @@ async function dispatchRow(row: QueueRow): Promise<void> {
  *
  * The database claim is deliberately conditional. Multiple API instances may
  * observe the same idle session after a turn completes, but only one can move
- * a row from pending to dispatching.
+ * a row from pending to dispatching. In multi-region mode only the session's
+ * home region dispatches; peers return false and the home region's turn-end
+ * hook or drain worker picks the replicated row up.
  */
 export async function dispatchNext(chatSessionId: string): Promise<boolean> {
+  if (!(await isHomeRegionSession(chatSessionId))) return false
   if (!(await isSessionIdle(chatSessionId))) return false
   const row = await claimNext(chatSessionId)
   if (!row) return false
@@ -248,16 +275,22 @@ export async function dispatchNext(chatSessionId: string): Promise<boolean> {
 export async function resetStuckDispatching(
   olderThan: Date = new Date(Date.now() - 2 * 60 * 1000),
 ): Promise<number> {
+  const home = homeSessionWhere()
   const result = await (prisma as any).chatQueuedMessage.updateMany({
-    where: { status: 'dispatching', updatedAt: { lt: olderThan } },
+    where: {
+      status: 'dispatching',
+      updatedAt: { lt: olderThan },
+      ...(home ? { session: home } : {}),
+    },
     data: { status: 'pending', error: 'Recovered after an interrupted dispatch' },
   })
   return result.count
 }
 
 export async function dispatchPendingSessions(): Promise<number> {
+  const home = homeSessionWhere()
   const rows = await (prisma as any).chatQueuedMessage.findMany({
-    where: { status: 'pending' },
+    where: { status: 'pending', ...(home ? { session: home } : {}) },
     distinct: ['sessionId'],
     select: { sessionId: true },
   })
