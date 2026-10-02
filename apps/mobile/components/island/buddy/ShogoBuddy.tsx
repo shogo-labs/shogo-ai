@@ -74,6 +74,18 @@ export const ShogoBuddy = forwardRef<ShogoBuddyHandle, ShogoBuddyProps>(function
   if (!engineRef.current) engineRef.current = new BuddyEngine()
   const engine = engineRef.current
   const height = Math.round(size * BUDDY_ASPECT)
+  const nativeSizeStyle = useMemo(
+    () => ({
+      width: size,
+      height,
+      flex: 0,
+      flexGrow: 0,
+      flexShrink: 0,
+      flexBasis: "auto" as const,
+      backgroundColor: "transparent",
+    }),
+    [size, height],
+  )
 
   const topper = look?.topper ?? DEFAULT_BUDDY_LOOK.topper
   const face = look?.face ?? DEFAULT_BUDDY_LOOK.face
@@ -234,8 +246,12 @@ export const ShogoBuddy = forwardRef<ShogoBuddyHandle, ShogoBuddyProps>(function
       <WebView
         ref={nativeWebViewRef}
         source={{ html: BUDDY_WEBVIEW_HTML }}
-        style={{ width: size, height, backgroundColor: "transparent" }}
-        containerStyle={{ width: size, height, backgroundColor: "transparent" }}
+        // react-native-webview gives both its container and the view `flex: 1`
+        // and `overflow: hidden`. In a parent shorter than the canvas (the 48pt
+        // header slot) that squeezes the view to the parent's height and clips
+        // the bottom of the character, so pin the size.
+        style={nativeSizeStyle}
+        containerStyle={nativeSizeStyle}
         originWhitelist={["*"]}
         javaScriptEnabled
         scrollEnabled={false}
