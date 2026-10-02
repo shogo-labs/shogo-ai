@@ -1658,7 +1658,9 @@ const PeopleTab = observer(function PeopleTab() {
         } catch {}
 
         try {
-          const usage = await api.getMemberUsageStats(http, ws.id);
+          const usage = await api.getMemberUsageStats(http, ws.id, {
+            period: memberUsagePeriod,
+          });
           setMemberUsage(usage);
         } catch {}
 
@@ -1960,8 +1962,7 @@ const PeopleTab = observer(function PeopleTab() {
 
   /** Keeps header/body aligned: name flexes separately so usage columns stay evenly spaced, not shoved to the edge. */
   const peopleNameCol = cn(
-    "flex-1 min-w-0",
-    isMobilePeopleLayout && "min-w-[200px]",
+    "flex-1 min-w-[220px]",
     !isMobilePeopleLayout && "max-w-md"
   );
   const peopleMetricsRow = "flex-row items-center gap-x-5 shrink-0";
@@ -2550,21 +2551,16 @@ const PeopleTab = observer(function PeopleTab() {
                 </Text>
               </View>
             ) : (
-              <>
-                {isMobilePeopleLayout ? (
-                  <ScrollView
-                    horizontal
-                    nestedScrollEnabled
-                    showsHorizontalScrollIndicator={Platform.OS !== "web"}
-                    className="w-full max-w-full"
-                    style={{ flexGrow: 0 }}
-                  >
-                    <View>{memberListTable}</View>
-                  </ScrollView>
-                ) : (
-                  memberListTable
-                )}
-              </>
+              <ScrollView
+                horizontal
+                nestedScrollEnabled
+                showsHorizontalScrollIndicator={Platform.OS !== "web"}
+                className="w-full max-w-full"
+                style={{ flexGrow: 0 }}
+                contentContainerStyle={{ flexGrow: 1 }}
+              >
+                <View className="flex-1">{memberListTable}</View>
+              </ScrollView>
             )}
           </CardContent>
         </Card>

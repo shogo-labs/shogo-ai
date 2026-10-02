@@ -1388,6 +1388,7 @@ export const api = {
   async getMemberUsageStats(
     http: HttpClient,
     workspaceId: string,
+    params: { period?: string } = {},
   ): Promise<{
     monthly: Record<string, number>
     total: Record<string, number>
@@ -1395,6 +1396,7 @@ export const api = {
     free: Record<string, number>
     onDemand: Record<string, number>
   }> {
+    const qs = params.period ? `?period=${encodeURIComponent(params.period)}` : ''
     const res = await http.get<{
       ok: boolean
       data?: {
@@ -1404,7 +1406,7 @@ export const api = {
         free?: Record<string, number>
         onDemand?: Record<string, number>
       }
-    }>(`/api/workspaces/${workspaceId}/analytics/member-usage`)
+    }>(`/api/workspaces/${workspaceId}/analytics/member-usage${qs}`)
     const data = res.data?.data
     return {
       monthly: data?.monthly ?? {},

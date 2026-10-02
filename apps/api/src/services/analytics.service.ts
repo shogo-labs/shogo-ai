@@ -564,7 +564,7 @@ export async function getActivityTimeseries(
 /**
  * Per-member USD usage for the people/settings table.
  *
- * Returns the current-month spend split across the three buckets that show
+ * Returns spend for `period` (default: current calendar month) split across the three buckets that show
  * in the Members UI (Image 3 of the billing UX refresh):
  * - `included`  → seat-bound monthly allocation (UsageEvent.source = 'monthly')
  * - `free`      → daily allowance (UsageEvent.source = 'daily')
@@ -576,7 +576,7 @@ export async function getActivityTimeseries(
  */
 export async function getMemberUsageStats(
   workspaceId: string,
-  options: { userId?: string } = {},
+  options: { userId?: string; period?: AnalyticsPeriod } = {},
 ): Promise<{
   monthly: Record<string, number>
   total: Record<string, number>
@@ -585,14 +585,19 @@ export async function getMemberUsageStats(
   onDemand: Record<string, number>
 }> {
   const now = new Date()
-  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1)
+  const createdAt = options.period
+    ? (() => {
+        const { from, to } = periodToWindow(options.period)
+        return { gte: from, lte: to }
+      })()
+    : { gte: new Date(now.getFullYear(), now.getMonth(), 1) }
 
   const [bucketRows, totalRows] = await Promise.all([
     prisma.usageEvent.groupBy({
       by: ['memberId', 'source'],
       where: {
         workspaceId,
-        createdAt: { gte: monthStart },
+        createdAt,
         ...(options.userId ? { memberId: options.userId } : {}),
       },
       _sum: { billedUsd: true },

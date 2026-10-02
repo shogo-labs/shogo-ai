@@ -108,8 +108,10 @@ export function scopedAnalyticsRoutes(): Hono {
         return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
       }
 
+      const period = (new URL(c.req.url).searchParams.get('period') || undefined) as AnalyticsPeriod | undefined
       const data = await analytics.getMemberUsageStats(workspaceId, {
         userId: isWorkspaceAdminRole(access.role) ? undefined : auth.userId!,
+        ...(period ? { period } : {}),
       })
       return c.json({ ok: true, data })
     } catch (error: any) {
