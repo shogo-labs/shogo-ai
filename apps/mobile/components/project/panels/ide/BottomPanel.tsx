@@ -54,12 +54,12 @@ function PanelMenuItem({
       role="menuitem"
       disabled={disabled}
       className={`flex w-full items-center justify-between px-3 py-1.5 text-xs ${
-        disabled ? "cursor-default text-[#585858]" : "text-[#cccccc] hover:bg-[#0078d4]/60"
+        disabled ? "cursor-default text-[color:var(--ide-muted-strong)]" : "text-[color:var(--ide-text)] hover:bg-[color:var(--ide-primary)]/60"
       }`}
       onClick={disabled ? undefined : onClick}
     >
       <span>{label}</span>
-      {shortcut && <span className="ml-6 text-[#858585]">{shortcut}</span>}
+      {shortcut && <span className="ml-6 text-[color:var(--ide-muted)]">{shortcut}</span>}
     </button>
   );
 }
@@ -250,7 +250,7 @@ export function BottomPanel({
   };
 
   return (
-    <div className="relative flex h-full flex-col bg-[#1e1e1e]">
+    <div className="relative flex h-full flex-col bg-[color:var(--ide-bg)]">
       <PanelTabStrip
         activeTab={tab}
         onSelect={handleSelect}
@@ -290,7 +290,7 @@ export function BottomPanel({
             zIndex: 9999,
           }}
           ref={menuRef}
-          className="w-64 min-w-[180px] overflow-y-auto rounded-md border border-[#454545] bg-[#252526] py-1 shadow-xl"
+          className="w-64 min-w-[180px] overflow-y-auto rounded-md border border-[color:var(--ide-border-muted)] bg-[color:var(--ide-surface)] py-1 shadow-xl"
         >
           {tab === "Terminal" && terminalControls && (
             <>
@@ -320,7 +320,7 @@ export function BottomPanel({
                 label="Run Selected Text"
                 onClick={() => { terminalControls.onRunSelectedText(); setPanelActionsOpen(false); }}
               />
-              <div className="my-1 border-t border-[#454545]" />
+              <div className="my-1 border-t border-[color:var(--ide-border-muted)]" />
               <PanelMenuItem
                 label="Go to Recent Directory..."
                 shortcut="⌘G"
@@ -331,7 +331,7 @@ export function BottomPanel({
                 shortcut="⌃⌥R"
                 onClick={() => { terminalControls.onRunRecent(); setPanelActionsOpen(false); }}
               />
-              <div className="my-1 border-t border-[#454545]" />
+              <div className="my-1 border-t border-[color:var(--ide-border-muted)]" />
             </>
           )}
           <PanelMenuItem

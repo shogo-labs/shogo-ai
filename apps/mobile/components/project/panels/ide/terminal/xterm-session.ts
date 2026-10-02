@@ -23,7 +23,7 @@
  */
 
 import type { PtyClientLike } from './pty-factory'
-import { DARK_PLUS_THEME, TERMINAL_DEFAULTS } from './xterm-theme'
+import { DARK_PLUS_THEME, TERMINAL_DEFAULTS, type XtermTheme } from './xterm-theme'
 // xterm.js relies on this stylesheet to (a) size the row container and (b)
 // clip-hide the input proxy `<textarea>`. Without it, the textarea renders
 // unstyled at 0,0 and the rows have no height — the panel looks blank
@@ -40,6 +40,7 @@ export interface XtermSessionOptions {
   fontFamily?: string
   fontSize?: number
   fontLigatures?: boolean
+  theme?: XtermTheme
 }
 
 export class XtermSession {
@@ -85,7 +86,7 @@ export class XtermSession {
       fontFamily: this.opts.fontFamily ?? TERMINAL_DEFAULTS.fontFamily,
       fontSize: this.opts.fontSize ?? TERMINAL_DEFAULTS.fontSize,
       fontLigatures: this.opts.fontLigatures ?? TERMINAL_DEFAULTS.fontLigatures,
-      theme: DARK_PLUS_THEME,
+      theme: this.opts.theme ?? DARK_PLUS_THEME,
     } as unknown as ConstructorParameters<typeof xtermMod.Terminal>[0])
     this.term = term
 
@@ -230,6 +231,16 @@ export class XtermSession {
    * `attach()` picks up the new value via the existing closure path —
    * the test `setFont before attach is honoured at attach()` pins this.
    */
+  /** Swap the colour palette live (IDE light/dark toggle) — keeps scrollback. */
+  setTheme(theme: XtermTheme): void {
+    if (this.disposed) return
+    this.opts.theme = theme
+    if (!this.term) return
+    try {
+      ;(this.term.options as unknown as { theme: XtermTheme }).theme = { ...theme }
+    } catch { /* terminal mid-dispose */ }
+  }
+
   setFont(fontFamily?: string, fontSize?: number): void {
     if (this.disposed) return
     const opts = this.opts as XtermSessionOptions

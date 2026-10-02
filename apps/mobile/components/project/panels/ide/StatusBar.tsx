@@ -54,7 +54,7 @@ export function StatusBar({
   const rightExtensionItems = extensionItems.filter((item) => item.alignment === "right");
 
   return (
-    <div className="flex h-6 items-center justify-between gap-3 bg-[#1e1e1e] px-3 text-[12px] text-[#cccccc]">
+    <div className="flex h-6 items-center justify-between gap-3 bg-[color:var(--ide-bg)] px-3 text-[12px] text-[color:var(--ide-text)]">
       <div className="flex min-w-0 flex-1 items-center gap-3 overflow-hidden">
         {git?.isRepo && git.branch ? (
           <>

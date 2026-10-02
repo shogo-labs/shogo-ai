@@ -79,6 +79,7 @@ import {
   FilePlus,
   FolderPlus,
   FolderOpen,
+  Folder,
   PanelLeftClose,
   GitBranch,
   X,
@@ -1493,6 +1494,20 @@ export function Workbench({
     [askConfirm, persistByFileId, closeNow],
   );
 
+  // "Retry" on a file that failed to open: drop the broken tab and reopen it.
+  const retryOpen = useCallback(
+    (groupIdx: number, id: string) => {
+      const f = groupsRef.current[groupIdx]?.files.find((x) => x.id === id);
+      if (!f) return;
+      closeNow(groupIdx, id);
+      void openFileInGroup(
+        { kind: "file", rootId: f.rootId, path: f.path, name: f.name } as unknown as TreeNode,
+        groupIdx,
+      );
+    },
+    [closeNow, openFileInGroup],
+  );
+
   // Auto save: debounce while typing; flush when switching away from a tab.
   useEffect(() => {
     const curId = active?.id ?? null;
@@ -2341,6 +2356,7 @@ export function Workbench({
                       onTogglePin={(id) => togglePinInGroup(i, id)}
                       onReorder={(ids) => reorderInGroup(i, ids)}
                       onChange={handleChangeFor(i)}
+                      onRetryOpen={(id) => retryOpen(i, id)}
                       onCursor={(line, col) => setCursor({ line, col })}
                       settings={settings}
                       installedExtensions={extensionsSummary.installed}
@@ -2723,7 +2739,7 @@ function FilesPane({
             <button
               onClick={onCollapse}
               title="Hide Sidebar  (⌘B)"
-              className="rounded p-1 text-[#858585] hover:bg-[#ffffff1a] hover:text-white"
+              className="rounded p-1 text-[color:var(--ide-muted)] hover:bg-[color:var(--ide-hover-subtle)] hover:text-white"
             >
               <PanelLeftClose size={13} />
             </button>
@@ -2760,7 +2776,7 @@ function FilesPane({
                 key={r.id}
                 className="flex items-center justify-between gap-2 rounded px-1 py-[2px] text-[11px] text-[color:var(--ide-muted)] hover:bg-[color:var(--ide-hover)]"
               >
-                <span className="truncate">📁 {r.label}</span>
+                <span className="flex min-w-0 items-center gap-1.5 truncate"><Folder size={12} />{r.label}</span>
                 <button
                   onClick={() => onCloseRoot(r.id)}
                   className="rounded p-[2px] hover:bg-[color:var(--ide-hover-subtle)] hover:text-[color:var(--ide-text-strong)]"

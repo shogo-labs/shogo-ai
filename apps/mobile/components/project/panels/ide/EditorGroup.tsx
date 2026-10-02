@@ -1,4 +1,4 @@
-import { AlertTriangle } from "lucide-react-native";
+import { AlertTriangle, Code2 } from "lucide-react-native";
 import { EditorTabs } from "./EditorTabs";
 import { Breadcrumbs } from "./Breadcrumbs";
 import { CodeEditor } from "./CodeEditor";
@@ -41,6 +41,7 @@ export function EditorGroupView({
   onRunExtensionCommand,
   onUseExtensionEntryPoint,
   onSetMdMode,
+  onRetryOpen,
 }: {
   group: GroupState;
   focused: boolean;
@@ -64,6 +65,7 @@ export function EditorGroupView({
   onRunExtensionCommand?: (commandId: string) => void;
   onUseExtensionEntryPoint?: (extension: InstalledExtension, entryPoint: ExtensionUsableEntryPoint) => void;
   onSetMdMode?: (fileId: string, mode: "preview" | "edit") => void;
+  onRetryOpen?: (fileId: string) => void;
 }) {
   const active: OpenFile | null =
     group.files.find((f) => f.id === group.activeId) ?? null;
@@ -96,7 +98,16 @@ export function EditorGroupView({
             <div className="flex h-full flex-col items-center justify-center gap-2 text-[color:var(--ide-error)]">
               <AlertTriangle size={24} />
               <div className="text-[13px]">Could not open {active.name}</div>
-              <div className="text-[12px] text-[color:var(--ide-muted)]">{active.error}</div>
+              <div className="max-w-[420px] text-center text-[12px] text-[color:var(--ide-muted)]">{active.error}</div>
+              {onRetryOpen && (
+                <button
+                  type="button"
+                  onClick={() => onRetryOpen(active.id)}
+                  className="mt-1 rounded bg-[color:var(--ide-btn-secondary-bg)] px-3 py-1 text-[12px] text-[color:var(--ide-text-strong)] hover:bg-[color:var(--ide-btn-secondary-hover)]"
+                >
+                  Retry
+                </button>
+              )}
             </div>
           ) : active.language === "extension-webview" ? (
             <ExtensionWebview html={active.content} title={active.name} />
@@ -236,18 +247,29 @@ function MarkdownFileView({
   );
 }
 
+const WATERMARK_SHORTCUTS: Array<[string, string]> = [
+  ["⌘P", "Go to file"],
+  ["⌘⇧P", "Show all commands"],
+  ["⌘⇧F", "Search in files"],
+  ["⌘B", "Toggle sidebar"],
+  ["⌘J", "Toggle panel"],
+  ["⌘\\", "Split editor"],
+];
+
 function EmptyGroup() {
   return (
-    <div className="flex h-full flex-col items-center justify-center gap-3 text-[color:var(--ide-muted)]">
-      <div className="text-4xl">⚡</div>
-      <div className="text-[13px]">No editor</div>
-      <div className="flex gap-4 text-[11px]">
-        <span>
-          <kbd className="rounded bg-[color:var(--ide-kbd-bg)] px-1.5 py-0.5">⌘P</kbd> Go to file
-        </span>
-        <span>
-          <kbd className="rounded bg-[color:var(--ide-kbd-bg)] px-1.5 py-0.5">⌘⇧P</kbd> Commands
-        </span>
+    <div className="flex h-full flex-col items-center justify-center gap-4 text-[color:var(--ide-muted)]">
+      <Code2 size={56} color="var(--ide-border-strong)" />
+      <div className="text-[13px]">Open a file from the explorer to start editing</div>
+      <div className="grid grid-cols-[auto_auto] gap-x-4 gap-y-1.5 text-[12px]">
+        {WATERMARK_SHORTCUTS.map(([keys, label]) => (
+          <div key={keys} className="contents">
+            <span className="text-right">{label}</span>
+            <span>
+              <kbd className="rounded bg-[color:var(--ide-kbd-bg)] px-1.5 py-0.5 text-[color:var(--ide-text)]">{keys}</kbd>
+            </span>
+          </div>
+        ))}
       </div>
     </div>
   );

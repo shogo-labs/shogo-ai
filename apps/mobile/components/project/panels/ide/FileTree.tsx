@@ -1118,7 +1118,7 @@ function GitStatusBadge({
       : code === "A" || code === "?"
       ? "text-[#73c991]"
       : code === "D" || code === "U"
-      ? "text-[#f48771]"
+      ? "text-[color:var(--ide-error)]"
       : code === "R" || code === "C"
       ? "text-[#7aa6ff]"
       : "text-[color:var(--ide-muted)]";

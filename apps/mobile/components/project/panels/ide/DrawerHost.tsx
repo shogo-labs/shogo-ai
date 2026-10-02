@@ -230,7 +230,7 @@ export function DrawerHost({
               role="separator"
               aria-orientation="horizontal"
               aria-label="Resize panel"
-              className="h-[3px] shrink-0 cursor-row-resize bg-transparent hover:bg-[#0078d4]/60"
+              className="h-[3px] shrink-0 cursor-row-resize bg-transparent hover:bg-[color:var(--ide-primary)]/60"
               onMouseDown={handleResizeStart}
               onDoubleClick={() => ideBottomPanelStore.setSize(260)}
             />
@@ -265,7 +265,7 @@ export function DrawerHost({
         >
           <div
             aria-hidden
-            className="absolute inset-x-0 -top-[4px] bottom-0 transition-colors group-hover:bg-[#0078d4]/60"
+            className="absolute inset-x-0 -top-[4px] bottom-0 transition-colors group-hover:bg-[color:var(--ide-primary)]/60"
           />
         </div>
       )}

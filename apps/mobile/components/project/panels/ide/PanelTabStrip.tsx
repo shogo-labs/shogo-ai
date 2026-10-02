@@ -115,7 +115,7 @@ export function PanelTabStrip(props: PanelTabStripProps): React.ReactElement {
   ]
 
   return (
-    <div className="flex items-center justify-between border-b border-[#2a2a2a] pr-2">
+    <div className="flex items-center justify-between border-b border-[color:var(--ide-border)] pr-2">
       <div
         ref={stripRef}
         role="tablist"
@@ -148,7 +148,7 @@ export function PanelTabStrip(props: PanelTabStripProps): React.ReactElement {
               className={`relative px-3 py-2 text-[11px] font-semibold uppercase tracking-wider transition-colors ${
                 selected
                   ? 'text-white'
-                  : 'text-[#858585] hover:text-white'
+                  : 'text-[color:var(--ide-muted)] hover:text-white'
               }`}
               style={{ letterSpacing: '0.04em' }}
             >
@@ -158,7 +158,7 @@ export function PanelTabStrip(props: PanelTabStripProps): React.ReactElement {
                   <span
                     data-testid={`tab-badge-${t}`}
                     aria-hidden="true"
-                    className="inline-flex h-[15px] min-w-[15px] items-center justify-center rounded-full bg-[#0078d4] px-[3px] text-[9px] font-semibold leading-none text-white"
+                    className="inline-flex h-[15px] min-w-[15px] items-center justify-center rounded-full bg-[color:var(--ide-primary)] px-[3px] text-[9px] font-semibold leading-none text-white"
                   >
                     {badge > 99 ? '99+' : badge}
                   </span>
@@ -176,7 +176,7 @@ export function PanelTabStrip(props: PanelTabStripProps): React.ReactElement {
         <span
           aria-hidden="true"
           data-testid="bottompanel-tab-underline"
-          className="pointer-events-none absolute bottom-0 h-[1px] bg-[#0e639c]"
+          className="pointer-events-none absolute bottom-0 h-[1px] bg-[color:var(--ide-primary)]"
           style={{
             width: indicator?.width ?? 0,
             transform: `translateX(${indicator?.left ?? 0}px)`,
@@ -194,24 +194,24 @@ export function PanelTabStrip(props: PanelTabStripProps): React.ReactElement {
                 onClick={() => setShellMenuOpen((v) => !v)}
                 title="Select Default Profile"
                 aria-label={`Terminal profile: ${tc.shellName}`}
-                className="flex items-center gap-[4px] rounded px-[6px] py-[3px] text-[11px] text-[#cccccc] hover:bg-[#ffffff1a] hover:text-white"
+                className="flex items-center gap-[4px] rounded px-[6px] py-[3px] text-[11px] text-[color:var(--ide-text)] hover:bg-[color:var(--ide-hover-subtle)] hover:text-white"
               >
                 <TerminalIcon size={11} className="shrink-0" />
                 <span>{tc.shellName}</span>
-                <ChevronDown size={9} className="text-[#858585]" />
+                <ChevronDown size={9} className="text-[color:var(--ide-muted)]" />
               </button>
               {shellMenuOpen && (
                 <div
                   role="menu"
                   aria-label="Select shell profile"
-                  className="absolute right-0 top-full z-50 mt-1 w-32 rounded border border-[#454545] bg-[#252526] py-1 shadow-xl"
+                  className="absolute right-0 top-full z-50 mt-1 w-32 rounded border border-[color:var(--ide-border-muted)] bg-[color:var(--ide-surface)] py-1 shadow-xl"
                   onMouseLeave={() => setShellMenuOpen(false)}
                 >
                   {SHELL_OPTIONS.map((opt) => (
                     <button
                       key={opt}
                       role="menuitem"
-                      className="flex w-full items-center gap-2 px-3 py-1.5 text-[11px] text-[#cccccc] hover:bg-[#0078d4]/60"
+                      className="flex w-full items-center gap-2 px-3 py-1.5 text-[11px] text-[color:var(--ide-text)] hover:bg-[color:var(--ide-primary)]/60"
                       onClick={() => { tc.onPickProfile(opt); setShellMenuOpen(false); }}
                     >
                       <TerminalIcon size={11} />
@@ -226,7 +226,7 @@ export function PanelTabStrip(props: PanelTabStripProps): React.ReactElement {
               onClick={tc.onNew}
               title="New Terminal  (⌘⇧`)"
               aria-label="New Terminal"
-              className="flex items-center rounded p-[4px] text-[#858585] hover:bg-[#ffffff1a] hover:text-white"
+              className="flex items-center rounded p-[4px] text-[color:var(--ide-muted)] hover:bg-[color:var(--ide-hover-subtle)] hover:text-white"
             >
               <Plus size={13} />
             </button>
@@ -236,7 +236,7 @@ export function PanelTabStrip(props: PanelTabStripProps): React.ReactElement {
               onClick={tc.onSplitRight}
               title="Split Terminal Right  (⌘\)"
               aria-label="Split Terminal"
-              className="flex items-center rounded p-[4px] text-[#858585] hover:bg-[#ffffff1a] hover:text-white"
+              className="flex items-center rounded p-[4px] text-[color:var(--ide-muted)] hover:bg-[color:var(--ide-hover-subtle)] hover:text-white"
             >
               <SquareSplitHorizontal size={13} />
             </button>
@@ -245,7 +245,7 @@ export function PanelTabStrip(props: PanelTabStripProps): React.ReactElement {
               onClick={tc.onKillActive}
               title="Kill Terminal"
               aria-label="Kill Terminal"
-              className={`flex items-center rounded p-[4px] hover:bg-[#ffffff1a] ${tc.running ? "text-[#f48771] hover:text-[#f48771]" : "text-[#858585] hover:text-white"}`}
+              className={`flex items-center rounded p-[4px] hover:bg-[color:var(--ide-hover-subtle)] ${tc.running ? "text-[color:var(--ide-error)] hover:text-[color:var(--ide-error)]" : "text-[color:var(--ide-muted)] hover:text-white"}`}
             >
               <Trash2 size={13} />
             </button>
@@ -256,12 +256,12 @@ export function PanelTabStrip(props: PanelTabStripProps): React.ReactElement {
                 onClick={onPanelActions}
                 title="Views and More Actions…"
                 aria-label="More panel actions"
-                className="flex items-center rounded p-[4px] text-[#858585] hover:bg-[#ffffff1a] hover:text-white"
+                className="flex items-center rounded p-[4px] text-[color:var(--ide-muted)] hover:bg-[color:var(--ide-hover-subtle)] hover:text-white"
               >
                 <MoreHorizontal size={14} />
               </button>
             )}
-            <span aria-hidden="true" className="mx-[3px] h-4 w-px bg-[#3c3c3c]" />
+            <span aria-hidden="true" className="mx-[3px] h-4 w-px bg-[color:var(--ide-input)]" />
           </div>
         ) : (
           <div className="flex items-center gap-[1px]">
@@ -271,7 +271,7 @@ export function PanelTabStrip(props: PanelTabStripProps): React.ReactElement {
                 onClick={onNewTerminal}
                 title="New Terminal  (⌘⇧`)"
                 aria-label="New Terminal"
-                className="flex items-center rounded p-[3px] text-[#858585] hover:bg-[#ffffff1a] hover:text-white"
+                className="flex items-center rounded p-[3px] text-[color:var(--ide-muted)] hover:bg-[color:var(--ide-hover-subtle)] hover:text-white"
               >
                 <Plus size={13} />
               </button>
@@ -283,12 +283,12 @@ export function PanelTabStrip(props: PanelTabStripProps): React.ReactElement {
                 onClick={onPanelActions}
                 title="More panel actions"
                 aria-label="More panel actions"
-                className="rounded p-[3px] text-[#858585] hover:bg-[#ffffff1a] hover:text-white"
+                className="rounded p-[3px] text-[color:var(--ide-muted)] hover:bg-[color:var(--ide-hover-subtle)] hover:text-white"
               >
                 <MoreHorizontal size={13} />
               </button>
             )}
-            <span aria-hidden="true" className="mx-[3px] h-4 w-px bg-[#3c3c3c]" />
+            <span aria-hidden="true" className="mx-[3px] h-4 w-px bg-[color:var(--ide-input)]" />
           </div>
         )}
         {/* Hide, maximize and close sit OUTSIDE the terminal-controls ternary:
@@ -303,7 +303,7 @@ export function PanelTabStrip(props: PanelTabStripProps): React.ReactElement {
             onClick={props.onHide}
             title="Hide panel  (⌘J)"
             aria-label="Hide panel"
-            className="rounded p-[3px] text-[#858585] hover:bg-[#ffffff1a] hover:text-white"
+            className="rounded p-[3px] text-[color:var(--ide-muted)] hover:bg-[color:var(--ide-hover-subtle)] hover:text-white"
           >
             <ChevronDown size={13} />
           </button>
@@ -315,7 +315,7 @@ export function PanelTabStrip(props: PanelTabStripProps): React.ReactElement {
             title={isMaximized ? "Restore panel size" : "Maximize panel size"}
             aria-label={isMaximized ? "Restore panel size" : "Maximize panel size"}
             aria-pressed={isMaximized}
-            className="rounded p-[3px] text-[#858585] hover:bg-[#ffffff1a] hover:text-white"
+            className="rounded p-[3px] text-[color:var(--ide-muted)] hover:bg-[color:var(--ide-hover-subtle)] hover:text-white"
           >
             {isMaximized ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
           </button>
@@ -326,7 +326,7 @@ export function PanelTabStrip(props: PanelTabStripProps): React.ReactElement {
             onClick={props.onClose}
             title="Close panel"
             aria-label="Close panel"
-            className="rounded p-[3px] text-[#858585] hover:bg-[#ffffff1a] hover:text-white"
+            className="rounded p-[3px] text-[color:var(--ide-muted)] hover:bg-[color:var(--ide-hover-subtle)] hover:text-white"
           >
             <X size={13} />
           </button>
@@ -337,11 +337,11 @@ export function PanelTabStrip(props: PanelTabStripProps): React.ReactElement {
 }
 
 const DROPDOWN_TRIGGER =
-  "flex items-center rounded p-[4px] text-[#858585] hover:bg-[#ffffff1a] hover:text-white"
+  "flex items-center rounded p-[4px] text-[color:var(--ide-muted)] hover:bg-[color:var(--ide-hover-subtle)] hover:text-white"
 const DROPDOWN_ITEM =
-  "flex w-full items-center px-3 py-[3px] text-left text-[12px] text-[#cccccc] hover:bg-[#04395e] transition-colors"
+  "flex w-full items-center px-3 py-[3px] text-left text-[12px] text-[color:var(--ide-text)] hover:bg-[color:var(--ide-active-bg)] transition-colors"
 const DROPDOWN_ITEM_DISABLED =
-  "flex w-full items-center px-3 py-[3px] text-left text-[12px] text-[#585858] cursor-default"
+  "flex w-full items-center px-3 py-[3px] text-left text-[12px] text-[color:var(--ide-muted-strong)] cursor-default"
 
 function TerminalDropdown({ tc }: { tc: import("./Terminal").TerminalToolbarControls | null }) {
   if (!tc) return null
@@ -502,13 +502,13 @@ function TerminalDropdown({ tc }: { tc: import("./Terminal").TerminalToolbarCont
         role: "menu",
         "aria-activedescendant": activeIdx >= 0 ? `dropdown-item-${activeIdx}` : undefined,
         className:
-          "fixed z-[2147483647] min-w-[260px] overflow-y-auto overflow-x-hidden rounded-md border border-[#454545] bg-[#252526] py-1 shadow-xl",
+          "fixed z-[2147483647] min-w-[260px] overflow-y-auto overflow-x-hidden rounded-md border border-[color:var(--ide-border-muted)] bg-[color:var(--ide-surface)] py-1 shadow-xl",
         style: { top: menuPos.top, left: menuPos.left, maxHeight: menuPos.maxH },
         ref: menuRef,
       },
       ...items.map((item, i) => {
         if (item.kind === "separator") {
-          return React.createElement("div", { key: `s-${i}`, className: "my-1 h-px bg-[#454545]" })
+          return React.createElement("div", { key: `s-${i}`, className: "my-1 h-px bg-[color:var(--ide-border-muted)]" })
         }
         const fi = flatItems.indexOf(item)
         const isActive = fi === activeIdx
@@ -537,17 +537,17 @@ function TerminalDropdown({ tc }: { tc: import("./Terminal").TerminalToolbarCont
             className:
               item.kind === "action" && item.disabled
                 ? DROPDOWN_ITEM_DISABLED
-                : `${DROPDOWN_ITEM} ${isActive || isSubOpen ? "bg-[#04395e]" : ""}`,
+                : `${DROPDOWN_ITEM} ${isActive || isSubOpen ? "bg-[color:var(--ide-active-bg)]" : ""}`,
           },
           item.kind === "profile" && item.checked
-            ? React.createElement("span", { className: "mr-1 text-[#0078d4]" }, "\u2713")
+            ? React.createElement("span", { className: "mr-1 text-[color:var(--ide-primary)]" }, "\u2713")
             : null,
           React.createElement("span", { className: "flex-1" }, item.label),
           item.kind === "submenu"
-            ? React.createElement("span", { className: "ml-2 text-[#858585]" }, "\u25B6")
+            ? React.createElement("span", { className: "ml-2 text-[color:var(--ide-muted)]" }, "\u25B6")
             : null,
           item.kind === "action" && item.shortcut
-            ? React.createElement("span", { className: "ml-3 text-[10px] text-[#858585]" }, item.shortcut)
+            ? React.createElement("span", { className: "ml-3 text-[10px] text-[color:var(--ide-muted)]" }, item.shortcut)
             : null,
         )
       }),
@@ -562,7 +562,7 @@ function TerminalDropdown({ tc }: { tc: import("./Terminal").TerminalToolbarCont
           {
             role: "menu",
             className:
-              "fixed z-[2147483647] min-w-[220px] overflow-y-auto overflow-x-hidden rounded-md border border-[#454545] bg-[#252526] py-1 shadow-xl",
+              "fixed z-[2147483647] min-w-[220px] overflow-y-auto overflow-x-hidden rounded-md border border-[color:var(--ide-border-muted)] bg-[color:var(--ide-surface)] py-1 shadow-xl",
             style: { top: subPos.top, left: subPos.left },
             onMouseEnter: () => { if (timerRef.current) clearTimeout(timerRef.current) },
             onMouseLeave: () => setSubOpen(false),

@@ -25,6 +25,7 @@ import { isDesktopRuntime, type PtyClientLike } from './pty-factory'
 import type { PtyClientState } from './pty-client'
 import { useEditorFont } from '../useEditorFont'
 import { loadDesktopTerminal } from './desktop-terminal-loader'
+import { xtermThemeFor } from './xterm-theme'
 
 interface XtermViewProps {
   client: PtyClientLike
@@ -94,6 +95,23 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
   const settingFamily = useEditorFont()
   const effectiveFamily = fontFamily ?? settingFamily
 
+  // Follow the IDE's light/dark mode (the `.shogo-ide[data-theme]` ancestor
+  // is the single source of truth; Workbench flips it on theme change).
+  const [mode, setMode] = useState<'dark' | 'light'>('dark')
+  useEffect(() => {
+    if (Platform.OS !== 'web') return
+    const root = containerRef.current?.closest('.shogo-ide') as HTMLElement | null
+    if (!root) return
+    const read = () => setMode(root.getAttribute('data-theme') === 'light' ? 'light' : 'dark')
+    read()
+    const mo = new MutationObserver(read)
+    mo.observe(root, { attributes: true, attributeFilter: ['data-theme'] })
+    return () => mo.disconnect()
+  }, [])
+  const modeRef = useRef(mode)
+  modeRef.current = mode
+  const theme = xtermThemeFor(mode)
+
   useEffect(() => {
     if (Platform.OS !== 'web') return
     if (!isDesktopRuntime()) return
@@ -111,7 +129,11 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
     if (isDesktopRuntime()) return
     const container = containerRef.current
     if (!container) return
-    const session = new XtermSession(client, { fontSize, fontFamily: effectiveFamily })
+    const session = new XtermSession(client, {
+      fontSize,
+      fontFamily: effectiveFamily,
+      theme: xtermThemeFor(modeRef.current),
+    })
     sessionRef.current = session
     let cancelled = false
     void session.attach(container).then(() => {
@@ -139,6 +161,12 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
     if (isDesktopRuntime()) return
     sessionRef.current?.setFont(effectiveFamily, fontSize)
   }, [effectiveFamily, fontSize])
+
+  useEffect(() => {
+    if (Platform.OS !== 'web') return
+    if (isDesktopRuntime()) return
+    sessionRef.current?.setTheme(xtermThemeFor(mode))
+  }, [mode])
 
   // Refit on container size changes.
   useEffect(() => {
@@ -216,7 +244,7 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
         width: '100%',
         height: '100%',
         display: hidden ? 'none' : 'block',
-        backgroundColor: '#1e1e1e',
+        backgroundColor: theme.background,
       }}
     >
       <style>{`
@@ -229,12 +257,12 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
           width: 10px;
         }
         [data-shogo-xterm-view] .xterm-viewport::-webkit-scrollbar-thumb {
-          background: #424242;
+          background: ${mode === 'light' ? '#c1c1c1' : '#424242'};
           border-radius: 999px;
-          border: 2px solid #1e1e1e;
+          border: 2px solid ${theme.background};
         }
         [data-shogo-xterm-view] .xterm-viewport::-webkit-scrollbar-track {
-          background: #1e1e1e;
+          background: ${theme.background};
         }
       `}</style>
       <div

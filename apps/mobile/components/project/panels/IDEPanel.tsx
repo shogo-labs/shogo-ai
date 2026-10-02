@@ -124,7 +124,10 @@ export function IDEPanel({
     if (!visible) return null
     return (
       <View className="flex-1 items-center justify-center p-6 bg-background">
-        <Text className="text-muted-foreground text-xs">Agent not ready yet…</Text>
+        <Text className="text-foreground text-sm font-semibold">Starting the project agent…</Text>
+        <Text className="text-muted-foreground text-xs mt-1.5 text-center max-w-[300px]">
+          The editor opens as soon as the agent is reachable. This usually takes a few seconds.
+        </Text>
       </View>
     )
   }
