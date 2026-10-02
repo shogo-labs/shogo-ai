@@ -186,6 +186,13 @@ const HOME_REGION_PARTITIONED: HomeRegionPartitioned[] = [
     partitionKeyColumn: 'Workspace.homeRegion',
   },
   {
+    fn: 'runChatQueueDrain',
+    file: 'apps/api/src/jobs/run-chat-queue-drain.ts',
+    reason:
+      'chat_queued_messages replicates and its pending→dispatching claim is a local conditional UPDATE, so two regions could both claim a row and insert the same chat_messages.id (insert_exists stopped replication on 2026-10-01). The dispatcher (dispatchNext, resetStuckDispatching, dispatchPendingSessions) only acts on sessions whose project or workspace is homed in this region via homeRegionWorkspaceWhere(), so each region drains a disjoint slice and every turn starts in its home region.',
+    partitionKeyColumn: 'Workspace.homeRegion',
+  },
+  {
     fn: 'runGrantMonthlyRefill',
     file: 'apps/api/src/jobs/grant-monthly-refill.ts',
     reason:
