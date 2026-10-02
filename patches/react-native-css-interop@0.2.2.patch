@@ -155,6 +155,7 @@ index c235c2da28266a7dbde1458973c46db664f544f1..6f4986e1e2c508d3ecfb7cba797f44f1
 --- a/src/runtime/native/appearance-observables.ts
 +++ b/src/runtime/native/appearance-observables.ts
 @@ -21,11 +21,15 @@ const colorSchemeObservable = observable<"light" | "dark" | undefined>(
+ 
  export const colorScheme = {
    set(value: "light" | "dark" | "system") {
 +    // React Native >= 0.82 forwards the value untouched and caches it, so
@@ -166,6 +167,7 @@ index c235c2da28266a7dbde1458973c46db664f544f1..6f4986e1e2c508d3ecfb7cba797f44f1
      } else {
        appearance.setColorScheme(value);
      }
+ 
 +    systemColorScheme.set(appearance.getColorScheme() ?? "light");
      // Appearance.addChangeListener is not fired in a test environment
      if (process.env.NODE_ENV === "test") {
