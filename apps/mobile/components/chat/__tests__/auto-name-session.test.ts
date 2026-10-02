@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { describe, expect, mock, test } from "bun:test";
-import { autoNameSession } from "../auto-name-session";
+import { autoNameSession, isPlaceholderSessionName } from "../auto-name-session";
 
 describe("autoNameSession", () => {
   test("persists the generated name and refreshes project chat lists", async () => {
@@ -98,6 +98,92 @@ describe("autoNameSession", () => {
         name: "Should not persist",
         source: "ai",
       }),
+      updateProject: mock(async () => {}),
+      updateSession,
+      emitRefresh: mock(() => {}),
+    });
+    expect(updateSession).not.toHaveBeenCalled();
+  });
+
+  test("treats default chat names as placeholders", () => {
+    for (const name of ["", null, undefined, "Untitled", "Untitled chat", " New chat ", "workspace chat"]) {
+      expect(isPlaceholderSessionName(name)).toBe(true);
+    }
+    for (const name of ["Chat", "Debug with AI", "Launch checklist"]) {
+      expect(isPlaceholderSessionName(name)).toBe(false);
+    }
+  });
+
+  test("renames sessions with default placeholder names", async () => {
+    for (const placeholder of ["New chat", "Untitled chat", "Workspace chat"]) {
+      const updateSession = mock(async () => {});
+      await autoNameSession({
+        sessionId: "session-1",
+        userText: "Plan a trip",
+        projectId: "project-1",
+        getSession: () => ({ inferredName: placeholder, name: "" }),
+        getProjectName: () => "Existing project",
+        generateName: async () => ({ name: "Trip Plan", source: "ai" }),
+        updateProject: mock(async () => {}),
+        updateSession,
+        emitRefresh: mock(() => {}),
+      });
+      expect(updateSession).toHaveBeenCalledWith("session-1", { inferredName: "Trip Plan" });
+    }
+  });
+
+  test("does not rename sessions that already have a real name", async () => {
+    const generateName = mock(async () => ({ name: "Nope", source: "ai" }));
+    const updateSession = mock(async () => {});
+    for (const real of ["Chat", "Debug with AI"]) {
+      await autoNameSession({
+        sessionId: "session-1",
+        userText: "Hello",
+        getSession: () => ({ inferredName: real }),
+        getProjectName: () => null,
+        generateName,
+        updateProject: mock(async () => {}),
+        updateSession,
+        emitRefresh: mock(() => {}),
+      });
+    }
+    expect(generateName).not.toHaveBeenCalled();
+    expect(updateSession).not.toHaveBeenCalled();
+  });
+
+  test("loads a server-side session before persisting the name", async () => {
+    let loaded = false;
+    const loadSession = mock(async () => {
+      loaded = true;
+    });
+    const updateSession = mock(async () => {});
+    await autoNameSession({
+      sessionId: "ws-session",
+      userText: "Plan a trip",
+      workspaceId: "workspace-1",
+      getSession: () => (loaded ? { inferredName: "New chat" } : undefined),
+      loadSession,
+      getProjectName: () => null,
+      generateName: async () => ({ name: "Trip Plan", source: "ai" }),
+      updateProject: mock(async () => {}),
+      updateSession,
+      emitRefresh: mock(() => {}),
+    });
+    expect(loadSession).toHaveBeenCalledWith("ws-session");
+    expect(updateSession).toHaveBeenCalledWith("ws-session", { inferredName: "Trip Plan" });
+  });
+
+  test("does not persist when the session is still missing after loading", async () => {
+    const updateSession = mock(async () => {});
+    await autoNameSession({
+      sessionId: "gone",
+      userText: "Plan a trip",
+      getSession: () => undefined,
+      loadSession: async () => {
+        throw new Error("not found");
+      },
+      getProjectName: () => null,
+      generateName: async () => ({ name: "Trip Plan", source: "ai" }),
       updateProject: mock(async () => {}),
       updateSession,
       emitRefresh: mock(() => {}),

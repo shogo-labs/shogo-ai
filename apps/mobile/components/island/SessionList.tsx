@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState } from "react"
 import { ActivityIndicator, Pressable, ScrollView, Text, View } from "react-native"
 import { MessageSquarePlus } from "lucide-react-native"
 import { useDomainHttp } from "../../contexts/domain"
+import { chatSessionEvents } from "../../lib/chat-session-events"
 import {
   fetchProjectChatSessions,
   projectChatLabel,
@@ -67,6 +68,14 @@ export function SessionList({
   const [apiSessions, setApiSessions] = useState<ProjectChatListItem[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   const liveCount = liveSessions.filter((s) => s.projectId === projectId).length
+  // Bumped when a chat in this project is created/renamed/deleted elsewhere.
+  const [refreshTick, setRefreshTick] = useState(0)
+
+  useEffect(() => {
+    return chatSessionEvents.subscribe(({ projectId: pid, refresh }) => {
+      if (refresh && pid === projectId) setRefreshTick((tick) => tick + 1)
+    })
+  }, [projectId])
 
   useEffect(() => {
     let cancelled = false
@@ -76,7 +85,7 @@ export function SessionList({
     return () => {
       cancelled = true
     }
-  }, [http, projectId, liveCount])
+  }, [http, projectId, liveCount, refreshTick])
 
   const rows = useMemo(
     () => mergeSessionRows(projectId, apiSessions ?? [], liveSessions, projectChatLabel),
