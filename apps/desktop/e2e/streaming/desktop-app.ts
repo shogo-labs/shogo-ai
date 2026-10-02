@@ -50,6 +50,8 @@ export interface Harness {
   workspaceId: string
   /** Renderer console errors and uncaught exceptions from every app window since launch. */
   rendererErrors: string[]
+  /** `[StreamTrace]` summaries the API and runtime printed (set SHOGO_STREAM_TRACE=1). */
+  streamTraces(): Array<Record<string, any>>
   close(): Promise<void>
 }
 
@@ -221,6 +223,15 @@ export async function launchDesktop(): Promise<Harness> {
   })
 
   log('Electron launched')
+  const traceLines: string[] = []
+  const collectTraces = (chunk: Buffer) => {
+    for (const line of chunk.toString().split('\n')) {
+      const at = line.indexOf('[StreamTrace] ')
+      if (at >= 0) traceLines.push(line.slice(at + '[StreamTrace] '.length))
+    }
+  }
+  app.process().stdout?.on('data', collectTraces)
+  app.process().stderr?.on('data', collectTraces)
   const close = async () => {
     try { await app.close() } catch { /* already closed */ }
     if (foreignOnPreferredPort && !(await isListening(PREFERRED_API_PORT))) {
@@ -281,7 +292,7 @@ export async function launchDesktop(): Promise<Harness> {
     const rendererErrors: string[] = []
     watchErrors(page, rendererErrors)
     app.on('window', (w) => watchErrors(w, rendererErrors))
-    return { app, page, llm, devUrl: metro.url, apiUrl, projectId, projectPath, sessionId: opened.sessionId, workspaceId: opened.workspaceId, rendererErrors, close }
+    return { app, page, llm, devUrl: metro.url, apiUrl, projectId, projectPath, sessionId: opened.sessionId, workspaceId: opened.workspaceId, rendererErrors, streamTraces: () => traceLines.flatMap((l) => { try { return [JSON.parse(l)] } catch { return [] } }), close }
   } catch (err) {
     await close()
     throw err

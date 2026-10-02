@@ -172,7 +172,7 @@ test('baseline long stream', async () => {
   const stages = await stageLags(tag, total, probe)
   const lag = checkLag('baseline', tag, probe)
   const seq = checkSequence(sequence)
-  writeReport('baseline', { lag, stages, seq: { ...seq, gaps: seq.gaps.length }, settledAfterMs, longTasks: probe.longTasks, frames: probe.frames, probeCostMs: probe.sampleCostMaxMs })
+  writeReport('baseline', { traces: h.streamTraces(), lag, stages, seq: { ...seq, gaps: seq.gaps.length }, settledAfterMs, longTasks: probe.longTasks, frames: probe.frames, probeCostMs: probe.sampleCostMaxMs })
 
   expect.soft(stages.server.p95Ms, 'p95 lag on the server side (model -> stream)').toBeLessThanOrEqual(BUDGET.serverLagP95Ms)
   expect.soft(stages.transport.p95Ms, "p95 lag until the window's own response stream delivers a token").toBeLessThanOrEqual(BUDGET.serverLagP95Ms)
@@ -493,7 +493,7 @@ test('one turn with many tool calls', async () => {
   const sequence = await visibleTokens(h.page, tag)
   const seq = checkSequence(sequence)
   const toolsCalled = requests.filter((r) => r.toolCalled).length
-  writeReport('many-tool-calls', { rounds, requests: requests.length, toolsCalled, sections, lag, stages, thirds, seq: { ...seq, gaps: seq.gaps.length }, settledAfterIdleMs: settled.settledAfterMs, longTasks: probe.longTasks, frames: probe.frames, probeCostMs: probe.sampleCostMaxMs })
+  writeReport('many-tool-calls', { traces: h.streamTraces(), rounds, requests: requests.length, toolsCalled, sections, lag, stages, thirds, seq: { ...seq, gaps: seq.gaps.length }, settledAfterIdleMs: settled.settledAfterMs, longTasks: probe.longTasks, frames: probe.frames, probeCostMs: probe.sampleCostMaxMs })
 
   expect.soft(toolsCalled, 'tool calls the app made').toBe(rounds)
   expect.soft(isExactRun(sequence, total), `final text: ${JSON.stringify({ ...seq, gaps: seq.gaps.length })}`).toBe(true)
@@ -563,7 +563,7 @@ test('several chats streaming at once', async () => {
     expect.soft(state?.ended, `background chat ${c.tag}: stream ended`).toBe(true)
     expect.soft(exact, `background chat ${c.tag}: its own stream carried every token once, in order (${JSON.stringify({ ...check, gaps: check.gaps.length })})`).toBe(true)
   }
-  writeReport('concurrent-chats', { chats: count, stillStreamingWhenOpenChatStarted: stillStreaming, lagOfOpenChat: lag, stages, thirds, sections, seq: { ...seq, gaps: seq.gaps.length }, others, settledAfterIdleMs: settled.settledAfterMs, longTasks: probe.longTasks, frames: probe.frames, probeCostMs: probe.sampleCostMaxMs })
+  writeReport('concurrent-chats', { traces: h.streamTraces(), chats: count, stillStreamingWhenOpenChatStarted: stillStreaming, lagOfOpenChat: lag, stages, thirds, sections, seq: { ...seq, gaps: seq.gaps.length }, others, settledAfterIdleMs: settled.settledAfterMs, longTasks: probe.longTasks, frames: probe.frames, probeCostMs: probe.sampleCostMaxMs })
 
   expect.soft(stillStreaming, 'other chats still streaming when the open chat started').toBe(background)
   expect.soft(isExactRun(sequence, total), `open chat final text: ${JSON.stringify({ ...seq, gaps: seq.gaps.length })}`).toBe(true)
