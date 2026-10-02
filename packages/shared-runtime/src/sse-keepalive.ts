@@ -19,6 +19,14 @@ function findDelimiterEnd(bytes: Uint8Array, start = 0): number {
   return -1
 }
 
+/** End offset of the LAST complete frame in `bytes`, or -1 if none. */
+function findLastDelimiterEnd(bytes: Uint8Array): number {
+  for (let i = bytes.byteLength - 2; i >= 0; i--) {
+    if (bytes[i] === 10 && bytes[i + 1] === 10) return i + 2
+  }
+  return -1
+}
+
 /**
  * Add SSE keep-alives without ever inserting a comment inside an event.
  *
@@ -71,7 +79,11 @@ export function wrapSseStreamWithKeepalive(
 
   const forwardChunk = (chunk: Uint8Array): boolean => {
     const combined = concatBytes(pending, chunk)
-    const completeEnd = findDelimiterEnd(combined)
+    // Emit every complete frame in the buffer, not just the first: holding
+    // the rest back made multi-frame chunks accumulate a growing backlog
+    // (delivered one frame per upstream chunk), which showed up as seconds of
+    // stream lag on tool-heavy turns.
+    const completeEnd = findLastDelimiterEnd(combined)
     if (completeEnd === -1) {
       pending = combined
       return false
