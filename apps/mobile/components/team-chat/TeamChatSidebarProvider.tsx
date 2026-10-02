@@ -90,7 +90,16 @@ export interface TeamChatSidebarProviderProps {
   children: ReactNode
 }
 
-export function TeamChatSidebarProvider({ workspaceId, onNavPress, children }: TeamChatSidebarProviderProps) {
+/** True below a provider, so a nested one (the sidebar inside the layout) defers to it. */
+const Mounted = createContext(false)
+
+export function TeamChatSidebarProvider(props: TeamChatSidebarProviderProps) {
+  const nested = useContext(Mounted)
+  if (nested) return <>{props.children}</>
+  return <RootProvider {...props} />
+}
+
+function RootProvider({ workspaceId, onNavPress, children }: TeamChatSidebarProviderProps) {
   const { config } = useWorkspaceChatMode(workspaceId)
   const enabled = !!workspaceId && nativeChatVisible(config?.mode)
   const [live, setLive] = useState<TeamChatNav | null>(null)
@@ -100,7 +109,9 @@ export function TeamChatSidebarProvider({ workspaceId, onNavPress, children }: T
   // the navigation rendered as `children`.
   return (
     <>
-      <Context.Provider value={value}>{children}</Context.Provider>
+      <Mounted.Provider value>
+        <Context.Provider value={value}>{children}</Context.Provider>
+      </Mounted.Provider>
       {enabled && workspaceId ? <Feeds workspaceId={workspaceId} onNavPress={onNavPress} publish={setLive} /> : null}
     </>
   )

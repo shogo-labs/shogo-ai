@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { useCallback, useMemo, useState } from 'react'
-import { Pressable, RefreshControl, ScrollView, Text, View } from 'react-native'
+import { Platform, Pressable, RefreshControl, ScrollView, Text, View, useWindowDimensions } from 'react-native'
 import { useFocusEffect, useRouter } from 'expo-router'
 import { observer } from 'mobx-react-lite'
 import { ChevronRight, Clock3, Folder, ListTodo, MessageSquare, XCircle } from 'lucide-react-native'
@@ -18,6 +18,9 @@ import { PhoneListEmpty } from '../../components/phone/PhoneListRow'
 import { readableAgentTaskError, taskStatusLabel } from '../../lib/agent-task-ui'
 import { PersonalActivityScreen } from '../../components/personal/PersonalActivityScreen'
 import { WorkspaceChromeSkeletonRows } from '../../components/layout/WorkspaceChromeSkeleton'
+import { TabScreen } from '../../components/layout/TabScreenHeader'
+import { ActivityFeed } from '../../components/activity/ActivityFeed'
+import { WEB_WIDE_MIN_WIDTH } from '../../lib/native-phone-layout'
 import {
   ActivityCard,
   ActivityEmptyCard,
@@ -353,8 +356,19 @@ const TeamActivityScreen = observer(function TeamActivityScreen() {
   )
 })
 
+/** The Activity tab on phones: large title and avatar over the shared feed. */
+function TeamActivityTab() {
+  return (
+    <TabScreen title="Activity" testID="activity-tab">
+      <ActivityFeed />
+    </TabScreen>
+  )
+}
+
 export default observer(function ActivityScreenRoute() {
   const experience = useWorkspaceExperience()
+  const { width } = useWindowDimensions()
+  const isPhone = Platform.OS !== 'web' || width < WEB_WIDE_MIN_WIDTH
   if (!experience.resolved) {
     return (
       <View className="flex-1 bg-background pt-4" testID="activity-chrome-skeleton">
@@ -362,5 +376,8 @@ export default observer(function ActivityScreenRoute() {
       </View>
     )
   }
-  return experience.homeScreen === 'companion' ? <PersonalActivityScreen /> : <TeamActivityScreen />
+  if (experience.homeScreen === 'companion') return <PersonalActivityScreen />
+  // Phones get the combined people-and-agents feed; wide web keeps the full
+  // agent task page (the same feed is the sidebar's Activity panel).
+  return isPhone ? <TeamActivityTab /> : <TeamActivityScreen />
 })

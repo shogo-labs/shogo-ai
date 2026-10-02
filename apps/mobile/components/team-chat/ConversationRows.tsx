@@ -60,10 +60,12 @@ export interface ConversationRowProps {
   conversation: ConversationSummary
   workspaceId: string
   active?: boolean
+  /** Show the newest message under the name (direct messages carry one). */
+  preview?: boolean
   onPress: (c: ConversationSummary) => void
 }
 
-export function ConversationRow({ conversation: c, workspaceId, active = false, onPress }: ConversationRowProps) {
+export function ConversationRow({ conversation: c, workspaceId, active = false, preview = false, onPress }: ConversationRowProps) {
   const comfortable = usePhoneLayout()
   const density = densityFor(comfortable)
   const Icon = iconFor(c)
@@ -90,12 +92,19 @@ export function ConversationRow({ conversation: c, workspaceId, active = false, 
       ) : (
         <Icon size={comfortable ? density.icon.nav : 12} className={active || unread ? 'text-foreground' : 'text-muted-foreground'} />
       )}
-      <Text
-        className={cn('flex-1', comfortable ? density.text.body : 'text-xs', active || unread ? 'text-foreground' : 'text-muted-foreground', unread && 'font-semibold')}
-        numberOfLines={1}
-      >
-        {title}
-      </Text>
+      <View className="min-w-0 flex-1">
+        <Text
+          className={cn(comfortable ? density.text.body : 'text-xs', active || unread ? 'text-foreground' : 'text-muted-foreground', unread && 'font-semibold')}
+          numberOfLines={1}
+        >
+          {title}
+        </Text>
+        {preview && c.lastMessage?.preview ? (
+          <Text className={cn('text-xs', unread ? 'text-foreground' : 'text-muted-foreground')} numberOfLines={1} testID="conversation-preview">
+            {c.lastMessage.preview}
+          </Text>
+        ) : null}
+      </View>
       {!active && <DraftMark conversationId={c.id} />}
       <CountPill count={mentions} />
     </Pressable>

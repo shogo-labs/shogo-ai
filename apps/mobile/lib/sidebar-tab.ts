@@ -38,7 +38,9 @@ export function tabForPathname(pathname: string, conversations: TabConversation[
     return conversation.kind === 'dm' || conversation.kind === 'group_dm' ? 'dms' : 'channels'
   }
   if (/^\/(projects|project-chat|project-surface|new-project)(\/|$)/.test(path)) return 'projects'
+  if (/^\/agent(\/|$)/.test(path)) return 'home'
   if (/^\/activity(\/|$)/.test(path)) return 'activity'
+  if (/^\/more(\/|$)/.test(path)) return 'more'
   if (/^\/meetings(\/|$)/.test(path)) return 'meetings'
   if (/^\/goals(\/|$)/.test(path)) return 'goals'
   if (/^\/(tasks|canvases|marketplace|files)(\/|$)/.test(path)) return 'more'
@@ -75,4 +77,23 @@ export function setStoredTab(workspaceId: string | null | undefined, tab: Sideba
   if (!workspaceId) return
   if (isWeb) safeSetItem(TAB_KEY + workspaceId, tab)
   else memory.set(workspaceId, tab)
+}
+
+/**
+ * Which phone dock tab a route highlights. Channels, agents and projects are
+ * sections of Home on a phone, and Meetings and Goals live under More.
+ */
+export function dockTabForPathname(pathname: string, conversations: TabConversation[] = []): 'home' | 'dms' | 'activity' | 'more' {
+  switch (tabForPathname(pathname, conversations)) {
+    case 'dms':
+      return 'dms'
+    case 'activity':
+      return 'activity'
+    case 'more':
+    case 'meetings':
+    case 'goals':
+      return 'more'
+    default:
+      return 'home'
+  }
 }

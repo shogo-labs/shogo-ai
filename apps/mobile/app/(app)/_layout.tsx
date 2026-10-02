@@ -66,6 +66,7 @@ import { useNativeSheetDrawer } from "../../lib/use-native-drawer-swipe";
 import { useNativePhoneSheetOpen } from "../../lib/native-phone-sheet-lock";
 import { NativeSheetDrawerShell } from "../../components/layout/NativeSheetDrawerShell";
 import { MobileBottomNav } from "../../components/layout/MobileBottomNav";
+import { TeamChatSidebarProvider } from "../../components/team-chat/TeamChatSidebarProvider";
 import { MobileWorkspaceShell } from "../../components/layout/MobileWorkspaceShell";
 import { projectSidebarEvents } from "../../lib/project-sidebar-events";
 import { refreshCloudWorkspaces } from "../../lib/workspace-route";
@@ -119,15 +120,38 @@ function AppLayoutInner() {
   const mobileAgentShellEnabled = isWorkspaceRuntimeEnabled();
   const isHomePage =
     pathname === "/" || pathname === "/(app)" || pathname === "/(app)/index";
+  // The workspace agent chat has a route of its own (`/agent`); on phones the
+  // team Home is a feed that links into it.
+  const isAgentChatPage = /\/agent\/?$/.test(pathname);
+  const isTeamHomeFeed =
+    isHomePage &&
+    !isWide &&
+    !isIdeEmbed &&
+    mobileAgentShellEnabled &&
+    (experience.kind === "team" || !experience.resolved);
   const isWorkspaceChatRoute =
     isHomePage ||
+    isAgentChatPage ||
     isProjectDetail ||
     pathname.includes("/new-project") ||
     pathname.includes("/side-chats/") ||
     pathname.includes("/project-chat/") ||
     pathname.includes("/project-surface/");
   const useMobileWorkspaceShell =
-    !isWide && !isIdeEmbed && mobileAgentShellEnabled && isWorkspaceChatRoute;
+    !isWide &&
+    !isIdeEmbed &&
+    mobileAgentShellEnabled &&
+    isWorkspaceChatRoute &&
+    !isTeamHomeFeed;
+  // Team phone tab screens draw their own large title and avatar.
+  const isTeamTabScreen =
+    !isWide &&
+    !isIdeEmbed &&
+    experience.kind === "team" &&
+    (isTeamHomeFeed ||
+      /\/c\/dms\/?$/.test(pathname) ||
+      /\/more\/?$/.test(pathname) ||
+      /\/activity\/?$/.test(pathname));
 
   const isSettingsPage =
     pathname === "/settings" ||
@@ -291,7 +315,8 @@ function AppLayoutInner() {
     isSearchPage ||
     isProjectChatsPage ||
     isAIModelsPage ||
-    isNonChatWorkspacePage;
+    isNonChatWorkspacePage ||
+    isTeamTabScreen;
   // The companion mobile shell owns its own drawer and swipe gesture. Keep
   // the legacy sheet drawer inactive there so an edge swipe cannot reveal the
   // old AppSidebar behind the new chat chrome.
@@ -452,12 +477,16 @@ function AppLayoutInner() {
     isNativeApp &&
     !isIdeEmbed &&
     (isHomePage ||
+      isTeamTabScreen ||
       isSearchPage ||
       isAccountPage ||
       isNotificationsPage ||
       useMobileWorkspaceShell);
 
   return (
+    <TeamChatSidebarProvider
+      workspaceId={experience.kind === "team" ? activeWorkspace?.id : null}
+    >
     <NativeSheetDrawerShell
       isWide={isWide}
       nativeSheetDrawer={nativeSheetDrawer}
@@ -499,6 +528,7 @@ function AppLayoutInner() {
         <Slot />
       )}
     </NativeSheetDrawerShell>
+    </TeamChatSidebarProvider>
   );
 }
 

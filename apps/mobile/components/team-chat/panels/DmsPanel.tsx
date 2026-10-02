@@ -56,7 +56,7 @@ export function DmsPanel({ variant = 'panel' }: { variant?: 'panel' | 'screen' }
 
       <Rows className={cn(screen && 'flex-1')} {...(screen ? { contentContainerClassName: 'px-2 pb-28' } : { })}>
         {rows.map((c) => (
-          <ConversationRow key={c.id} conversation={c} workspaceId={workspaceId} active={chat.activeId === c.id} onPress={chat.openConversation} />
+          <ConversationRow key={c.id} conversation={c} workspaceId={workspaceId} active={chat.activeId === c.id} preview={screen} onPress={chat.openConversation} />
         ))}
         {rows.length === 0 && (
           <Text className="px-3 py-4 text-xs text-muted-foreground">{filter === 'unreads' ? "You're all caught up." : 'No conversations yet.'}</Text>

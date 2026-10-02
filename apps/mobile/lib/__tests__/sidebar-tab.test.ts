@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { describe, expect, test } from 'bun:test'
-import { hrefForTab, resolveTab, tabForPathname, type TabConversation } from '../sidebar-tab'
+import { dockTabForPathname, hrefForTab, resolveTab, tabForPathname, type TabConversation } from '../sidebar-tab'
 
 const conversations: TabConversation[] = [
   { id: 'ch1', kind: 'public' },
@@ -12,6 +12,13 @@ const conversations: TabConversation[] = [
 ]
 
 describe('tabForPathname', () => {
+  test('the workspace agent chat belongs to Home, and the phone More screen to More', () => {
+    expect(tabForPathname('/agent')).toBe('home')
+    expect(tabForPathname('/(app)/agent')).toBe('home')
+    expect(tabForPathname('/(app)/more')).toBe('more')
+    expect(tabForPathname('/c/dms')).toBe('dms')
+  })
+
   test('home, with or without the route group', () => {
     expect(tabForPathname('/')).toBe('home')
     expect(tabForPathname('/(app)')).toBe('home')
@@ -83,5 +90,19 @@ describe('resolveTab', () => {
   test('falls back to the first tab for a missing or unavailable one', () => {
     expect(resolveTab(null, [...team])).toBe('home')
     expect(resolveTab('channels', ['home', 'meetings', 'goals', 'activity', 'more'])).toBe('home')
+  })
+})
+
+describe('phone dock', () => {
+  test('channels, agents and projects are Home; DMs, Activity and More are themselves', () => {
+    expect(dockTabForPathname('/(app)')).toBe('home')
+    expect(dockTabForPathname('/c/ch1', conversations)).toBe('home')
+    expect(dockTabForPathname('/projects/p1')).toBe('home')
+    expect(dockTabForPathname('/c/dm1', conversations)).toBe('dms')
+    expect(dockTabForPathname('/c/dms')).toBe('dms')
+    expect(dockTabForPathname('/activity')).toBe('activity')
+    expect(dockTabForPathname('/c/inbox')).toBe('activity')
+    expect(dockTabForPathname('/tasks')).toBe('more')
+    expect(dockTabForPathname('/meetings')).toBe('more')
   })
 })

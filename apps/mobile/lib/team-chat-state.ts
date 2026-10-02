@@ -180,6 +180,9 @@ export function applyListEvent(
         ...c,
         lastSeq: Math.max(c.lastSeq, message.seq),
         lastMessageAt: visibleInChannel ? message.createdAt : c.lastMessageAt,
+        lastMessage: visibleInChannel && (c.kind === 'dm' || c.kind === 'group_dm')
+          ? { preview: plainPreview(message.text, { users: new Map(), agents: new Map() }, 140), authorId: message.authorUserId, authorType: message.authorType, createdAt: message.createdAt }
+          : c.lastMessage,
         lastReadSeq: caughtUp ? Math.max(c.lastReadSeq, message.seq) : c.lastReadSeq,
         unreadCount: caughtUp ? 0 : c.joined && visibleInChannel ? c.unreadCount + 1 : c.unreadCount,
         mentionCount: caughtUp ? 0 : mentioned ? c.mentionCount + 1 : c.mentionCount,

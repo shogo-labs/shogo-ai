@@ -154,6 +154,16 @@ describe('timeline', () => {
 })
 
 describe('conversation list', () => {
+  test('a new message becomes a direct message\'s preview; channels and thread-only replies do not get one', () => {
+    const list = [conv({ id: 'dm', kind: 'dm' }), conv({ id: 'ch', kind: 'public' })]
+    let update = applyListEvent(list, { type: 'message.created', conversationId: 'dm', message: msg({ id: 'a', seq: 6, conversationId: 'dm', authorUserId: 'u2', text: 'ship it\n <@u:me>' }) }, 'me', null)
+    expect(update.list[0]!.lastMessage).toMatchObject({ preview: 'ship it @someone', authorId: 'u2' })
+    update = applyListEvent(update.list, { type: 'message.created', conversationId: 'ch', message: msg({ id: 'b', seq: 6, conversationId: 'ch', authorUserId: 'u2', text: 'hi' }) }, 'me', null)
+    expect(update.list[1]!.lastMessage).toBeUndefined()
+    update = applyListEvent(update.list, { type: 'message.created', conversationId: 'dm', message: msg({ id: 'c', seq: 7, conversationId: 'dm', authorUserId: 'u2', text: 'in thread', threadRootId: 'a' }) }, 'me', null)
+    expect(update.list[0]!.lastMessage?.preview).toBe('ship it @someone')
+  })
+
   test('messages from others bump unread and mentions; my own and the open conversation stay read', () => {
     const list = [conv({ id: 'c1' }), conv({ id: 'c2' })]
     let update = applyListEvent(list, { type: 'message.created', conversationId: 'c1', message: msg({ id: 'm', seq: 6, authorUserId: 'u2', text: 'hey <@u:me>' }) }, 'me', null)

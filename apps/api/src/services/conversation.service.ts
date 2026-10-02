@@ -9,7 +9,7 @@
 
 import { prisma } from '../lib/prisma'
 import { publishConversationEvent } from '../lib/conversation-bus'
-import { parseMentions, type AgentTarget, type ParsedMention } from './conversation-mentions'
+import { parseMentions, renderMentionsAsText, type AgentTarget, type ParsedMention } from './conversation-mentions'
 import { assertNativeChat } from './chat-mode'
 import type { AgentChain } from './conversation-agent-chain'
 
@@ -395,6 +395,7 @@ export async function listConversationsForUser(workspaceId: string, userId: stri
   const participants = await participantNames(workspaceId, directIds, userId)
   const mentionCounts = await unreadMentionCounts(userId, memberships)
   const unread = await unreadCounts(userId, conversations, membershipByConv)
+  const lastMessages = await lastMessagePreviews(directIds)
 
   return conversations.map((c: any) => {
     const m = membershipByConv.get(c.id)
@@ -407,8 +408,43 @@ export async function listConversationsForUser(workspaceId: string, userId: stri
       unreadCount: unread.get(c.id) ?? 0,
       mentionCount: mentionCounts.get(c.id) ?? 0,
       participants: participants.get(c.id) ?? undefined,
+      lastMessage: lastMessages.get(c.id) ?? undefined,
     })
   })
+}
+
+const LAST_MESSAGE_PREVIEW_CHARS = 140
+
+export interface LastMessage {
+  preview: string
+  authorId: string | null
+  authorType: string
+  createdAt: Date
+}
+
+/**
+ * The newest top-level message of each conversation, for the DM list's second
+ * line. One grouped query finds the newest seq per conversation, one more
+ * reads those rows, so cost does not grow with message history.
+ */
+export async function lastMessagePreviews(conversationIds: string[]): Promise<Map<string, LastMessage>> {
+  const out = new Map<string, LastMessage>()
+  if (!conversationIds.length) return out
+  const latest = await db.conversationMessage.groupBy({
+    by: ['conversationId'],
+    where: { conversationId: { in: conversationIds }, deletedAt: null, threadRootId: null },
+    _max: { seq: true },
+  })
+  if (!latest.length) return out
+  const rows = await db.conversationMessage.findMany({
+    where: { OR: latest.map((l: any) => ({ conversationId: l.conversationId, seq: l._max.seq })), deletedAt: null },
+    select: { conversationId: true, text: true, authorUserId: true, authorType: true, createdAt: true },
+  })
+  for (const row of rows as any[]) {
+    const preview = renderMentionsAsText(row.text ?? '').replace(/\s+/g, ' ').trim().slice(0, LAST_MESSAGE_PREVIEW_CHARS)
+    out.set(row.conversationId, { preview, authorId: row.authorUserId ?? null, authorType: row.authorType, createdAt: row.createdAt })
+  }
+  return out
 }
 
 /** Unread messages in the channel view: thread replies only count when also sent to the channel. */

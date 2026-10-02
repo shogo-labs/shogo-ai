@@ -52,13 +52,20 @@ export interface ConversationSummary {
   unreadCount: number
   mentionCount: number
   participants?: Participant[]
+  /** Newest top-level message; sent for direct messages only. */
+  lastMessage?: {
+    preview: string
+    authorId: string | null
+    authorType: 'user' | 'agent' | 'bot' | 'system' | string
+    createdAt: string
+  }
 }
 
 export type ConversationMember =
   | { id: string; type: 'user'; userId: string; role: string; name: string; image: string | null }
   | { id: string; type: 'agent'; projectId: string | null; name: string | null; agentTrigger: string; agentKeywords: string | null; agentMuted?: boolean }
 
-export interface ConversationDetail extends Omit<ConversationSummary, 'unreadCount' | 'mentionCount' | 'participants'> {
+export interface ConversationDetail extends Omit<ConversationSummary, 'unreadCount' | 'mentionCount' | 'participants' | 'lastMessage'> {
   canPost: boolean
   /** Can reply in threads (true in #activity even though top-level posts are system-only). */
   canReply: boolean

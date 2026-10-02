@@ -1175,7 +1175,7 @@ export const AppSidebar = observer(function AppSidebar({
         return (
           <HomePanel
             onNavPress={onNavPress}
-            isHomeRoute={pathname === "/" || pathname === "/(app)"}
+            isHomeRoute={/\/agent\/?$/.test(pathname)}
             pinned={pinnedProjects.length > 0 ? <View className="mt-3 px-2">{pinnedBlock}</View> : null}
           />
         );

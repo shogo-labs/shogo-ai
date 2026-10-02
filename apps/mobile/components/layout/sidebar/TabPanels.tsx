@@ -4,15 +4,14 @@
  * The Home and More panels of the desktop sidebar. Channels, DMs, Agents,
  * Projects and Activity have panels of their own.
  */
-import { useMemo, type ReactNode } from 'react'
+import type { ReactNode } from 'react'
 import { Pressable, Text, View } from 'react-native'
 import { useRouter } from 'expo-router'
 import { Bookmark, ChevronRight, FileText, ListTodo, MessageCircle, MessagesSquare, Store } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
-import { useAgentActivity } from '../../../hooks/useAgentActivity'
+import { useHomeSignals } from '../../../hooks/useHomeSignals'
 import { useWorkspaceExperience } from '../../../hooks/useWorkspaceExperience'
-import { buildFeed, type ActivityEntry } from '../../../lib/activity-feed'
-import { openActiveChat } from '../../../lib/open-active-chat'
+import type { ActivityEntry } from '../../../lib/activity-feed'
 import { moreItems, type MoreIcon } from '../../../lib/more-items'
 import { usePlatformConfig } from '../../../lib/platform-config'
 import { RunningNow } from '../../activity/ActivityFeed'
@@ -40,21 +39,9 @@ export interface HomePanelProps {
  */
 export function HomePanel({ pinned, onNavPress, isHomeRoute }: HomePanelProps) {
   const router = useRouter()
-  const chat = useTeamChatNav()
-  const activity = useAgentActivity({ light: true })
-  const feed = useMemo(() => buildFeed({ inbox: [], tasks: activity.tasks, activeChats: activity.activeChats }), [activity.tasks, activity.activeChats])
-  const failed = useMemo(() => buildFeed({ inbox: [], tasks: activity.tasks, activeChats: [], filter: 'agents', unreadOnly: true }).entries, [activity.tasks])
-  const mentions = useMemo(() => chat.list.filter((c) => !c.archivedAt && !c.muted && c.mentionCount > 0), [chat.list])
-  const starred = useMemo(() => chat.list.filter((c) => c.starred && !c.archivedAt), [chat.list])
-
+  const { chat, running, failed, mentions, starred, openEntry } = useHomeSignals()
   const open = (entry: ActivityEntry) => {
-    if (entry.agent?.chat) return openActiveChat(router, entry.agent.chat)
-    const task = entry.agent?.task
-    if (task?.projectId) {
-      router.push({ pathname: '/(app)/projects/[id]', params: { id: task.projectId, ...(task.chatSessionId ? { chatSessionId: task.chatSessionId } : {}) } } as any)
-    } else {
-      router.push('/(app)' as any)
-    }
+    openEntry(entry)
     onNavPress?.()
   }
   const needsYou = failed.length + mentions.length
@@ -62,11 +49,11 @@ export function HomePanel({ pinned, onNavPress, isHomeRoute }: HomePanelProps) {
   return (
     <View testID="home-panel">
       <View className="px-2">
-        <NavItem icon={MessageCircle} label="Workspace agent" href="/(app)" active={isHomeRoute} onNavPress={onNavPress} />
+        <NavItem icon={MessageCircle} label="Workspace agent" href="/(app)/agent" active={isHomeRoute} onNavPress={onNavPress} />
         <NavItem icon={ListTodo} label="Tasks" href="/(app)/tasks" onNavPress={onNavPress} />
       </View>
 
-      {feed.running.length > 0 && <RunningNow entries={feed.running} compact onOpen={open} />}
+      {running.length > 0 && <RunningNow entries={running} compact onOpen={open} />}
 
       {needsYou > 0 && (
         <View className="mt-3 px-2">
