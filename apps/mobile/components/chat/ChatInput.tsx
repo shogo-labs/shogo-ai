@@ -1652,6 +1652,15 @@ function ChatInputImpl({
       {voiceInput.error && (
         <Text className="text-sm text-destructive mb-2">
           {voiceInput.error}
+          {voiceInput.micBlocked ? (
+            <Text
+              className="text-sm text-destructive underline"
+              onPress={voiceInput.openMicSettings}
+              accessibilityRole="link"
+            >
+              {" Open System Settings"}
+            </Text>
+          ) : null}
         </Text>
       )}
 
