@@ -21,6 +21,7 @@
 
 import { Hono } from 'hono'
 import {
+  cpSync,
   existsSync,
   mkdirSync,
   readFileSync,
@@ -40,6 +41,7 @@ import {
   WORKSPACE_TREE_LAZY_DIRS,
 } from './fs-tree-walker'
 import type { CanvasEvent } from './canvas-file-watcher'
+import { grepWorkspace, GrepError, type GrepRequest } from './workspace-grep'
 
 /**
  * Resolve `subPath` under `root`, or null if it escapes. `isWithinRoot` is
@@ -340,6 +342,55 @@ export function workspaceFileRoutes(config: WorkspaceFileRoutesConfig) {
     if (!isDirectoryPath(dest)) {
       config.onFileWritten?.(workspaceRelativePath(workspaceDir, dest), dest)
     }
+    return c.json({ ok: true, from: body.from, to: body.to })
+  })
+
+  // Full-text search (IDE Search view). Runs ripgrep when available, else a
+  // bounded JS walker; honours .gitignore/.shogoignore and include/exclude globs.
+  app.post('/agent/workspace/grep', async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as Partial<GrepRequest>
+    if (typeof body.query !== 'string') return c.json({ error: 'query is required' }, 400)
+    const { root } = requestRoot(c)
+    try {
+      const res = await grepWorkspace(root, {
+        query: body.query,
+        regex: body.regex === true,
+        caseSensitive: body.caseSensitive === true,
+        include: typeof body.include === 'string' ? body.include : undefined,
+        exclude: typeof body.exclude === 'string' ? body.exclude : undefined,
+        limit: typeof body.limit === 'number' ? body.limit : undefined,
+        maxPerFile: typeof body.maxPerFile === 'number' ? body.maxPerFile : undefined,
+      })
+      return c.json(res)
+    } catch (err) {
+      if (err instanceof GrepError) return c.json({ error: err.message }, 400)
+      return c.json({ error: err instanceof Error ? err.message : 'Search failed' }, 500)
+    }
+  })
+
+  // Copy a file or folder (Explorer Duplicate / Paste). `cpSync` is binary-safe
+  // and recursive; an existing destination is a 409 so nothing is overwritten.
+  app.post('/agent/workspace/copy', async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as { from?: unknown; to?: unknown }
+    if (typeof body.from !== 'string' || typeof body.to !== 'string' || !body.from || !body.to) {
+      return c.json({ error: 'from and to are required' }, 400)
+    }
+    const { root } = requestRoot(c)
+    const src = resolveWithinRoot(root, body.from)
+    const dest = resolveWithinRoot(root, body.to)
+    if (!src || !dest) return c.json({ error: 'Path outside workspace' }, 400)
+    if (resolve(src) === resolve(root) || resolve(dest) === resolve(root)) {
+      return c.json({ error: 'Cannot copy the workspace root' }, 400)
+    }
+    if (!existsSync(src)) return c.json({ error: 'Source not found' }, 404)
+    if (existsSync(dest)) return c.json({ error: 'Destination already exists' }, 409)
+    const srcIsDir = isDirectoryPath(src)
+    if (srcIsDir && isWithinRoot(src, dest)) {
+      return c.json({ error: 'Cannot copy a folder into itself' }, 400)
+    }
+    mkdirSync(dirname(dest), { recursive: true })
+    cpSync(src, dest, { recursive: true, errorOnExist: true, force: false })
+    if (!srcIsDir) config.onFileWritten?.(workspaceRelativePath(workspaceDir, dest), dest)
     return c.json({ ok: true, from: body.from, to: body.to })
   })
 

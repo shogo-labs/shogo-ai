@@ -329,3 +329,47 @@ describe('scopeCanvasEvent', () => {
     expect(scopeCanvasEvent(event, '')).toBe(event)
   })
 })
+
+describe('native copy (IDE path space)', () => {
+  const copy = (body: unknown) =>
+    request('/agent/workspace/copy?scope=project', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+  const scratch = () => join(user, 'scratch-copy')
+
+  beforeEach(() => {
+    rmSync(scratch(), { recursive: true, force: true })
+    mkdirSync(join(scratch(), 'dir', 'nested'), { recursive: true })
+    writeFileSync(join(scratch(), 'a.txt'), 'A')
+    writeFileSync(join(scratch(), 'dir', 'nested', 'deep.txt'), 'deep')
+    writeFileSync(join(scratch(), 'img.bin'), Buffer.from([0, 255, 1, 254]))
+  })
+
+  test('copies a file and leaves the source', async () => {
+    const res = await copy({ from: 'scratch-copy/a.txt', to: 'scratch-copy/b.txt' })
+    expect(res.status).toBe(200)
+    expect(readFileSync(join(scratch(), 'b.txt'), 'utf8')).toBe('A')
+    expect(existsSync(join(scratch(), 'a.txt'))).toBe(true)
+  })
+
+  test('copies binary files byte-for-byte', async () => {
+    await copy({ from: 'scratch-copy/img.bin', to: 'scratch-copy/img2.bin' })
+    expect([...readFileSync(join(scratch(), 'img2.bin'))]).toEqual([0, 255, 1, 254])
+  })
+
+  test('copies folders recursively', async () => {
+    const res = await copy({ from: 'scratch-copy/dir', to: 'scratch-copy/dir-copy' })
+    expect(res.status).toBe(200)
+    expect(readFileSync(join(scratch(), 'dir-copy', 'nested', 'deep.txt'), 'utf8')).toBe('deep')
+  })
+
+  test('refuses to overwrite (409), copy into itself (400), escape the root (400), missing source (404)', async () => {
+    expect((await copy({ from: 'scratch-copy/a.txt', to: 'scratch-copy/img.bin' })).status).toBe(409)
+    expect((await copy({ from: 'scratch-copy/dir', to: 'scratch-copy/dir/nested/x' })).status).toBe(400)
+    expect((await copy({ from: 'scratch-copy/a.txt', to: '../escape.txt' })).status).toBe(400)
+    expect((await copy({ from: 'scratch-copy/nope', to: 'scratch-copy/x' })).status).toBe(404)
+    expect(readFileSync(join(scratch(), 'img.bin')).length).toBe(4)
+  })
+})

@@ -14,6 +14,7 @@
 import { AgentClient, type FileNode, type WorkspaceEvent } from '@shogo-ai/sdk/agent'
 import { isBinaryFilePath } from '@shogo-ai/sdk/file-types'
 import { sortTree } from './tree-sort'
+import { buildPathFilter } from './glob'
 import { LANG_BY_EXT, extOf, languageFor } from './language'
 import type {
   SearchOptions,
@@ -178,6 +179,10 @@ export class SdkFs implements WorkspaceService {
   }
 
   /** Native rename/move — works for folders, binaries, and case-only renames. */
+  async copy(from: string, to: string): Promise<void> {
+    await this.client.copyWorkspacePath(from, to)
+  }
+
   async rename(from: string, to: string): Promise<void> {
     await this.client.renameWorkspacePath(from, to)
   }
@@ -189,6 +194,31 @@ export class SdkFs implements WorkspaceService {
    */
   async search(query: string, opts: SearchOptions = {}): Promise<SearchResponse> {
     if (!query) return { results: [], truncated: false }
+    // Prefer the server-side engine (ripgrep): no per-file HTTP round-trips,
+    // no 600-file cap. Older runtimes answer 404/405 → use the client walker.
+    try {
+      const res = await this.client.grepWorkspace({
+        query,
+        regex: opts.regex,
+        caseSensitive: opts.caseSensitive,
+        include: opts.include,
+        exclude: opts.exclude,
+        limit: opts.limit ?? 500,
+      })
+      return {
+        results: res.results.map((r) => ({ path: r.path, language: languageFor(r.path), matches: r.matches })),
+        truncated: res.truncated,
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      if (/Agent API 400/.test(msg) && /regex/i.test(msg)) throw new Error('Invalid regex')
+      if (!/Agent API (404|405|501)/.test(msg)) throw err
+    }
+    return this.searchClientSide(query, opts)
+  }
+
+  private async searchClientSide(query: string, opts: SearchOptions): Promise<SearchResponse> {
+    const pathFilter = buildPathFilter(opts.include, opts.exclude)
     const limit = opts.limit ?? 200
     const MAX_FILES = 600
     const MAX_PER_FILE = 20
@@ -210,6 +240,7 @@ export class SdkFs implements WorkspaceService {
     const walk = (nodes: FileNode[]) => {
       for (const n of nodes) {
         if (candidates.length >= MAX_FILES) return
+        if (n.ignored) continue
         if (n.type === 'directory') {
           // Skip lazy-loaded heavy dirs (node_modules/dist/etc.) — searching
           // them would require an N-RPC explosion to fetch every subtree, and
@@ -217,7 +248,7 @@ export class SdkFs implements WorkspaceService {
           // set from full-text search by default.
           if (n.lazy) continue
           walk(n.children ?? [])
-        } else if (isTextLikely(n.path)) candidates.push(n.path)
+        } else if (isTextLikely(n.path) && (!pathFilter || pathFilter(n.path))) candidates.push(n.path)
       }
     }
     walk(tree)

@@ -1,5 +1,6 @@
 import { BINARY_FILE_EXTENSIONS } from "@shogo-ai/sdk/file-types";
 import { compareTreeNodes } from "./tree-sort";
+import { buildPathFilter } from "./glob";
 
 import type {
   SearchOptions,
@@ -350,6 +351,29 @@ export class LocalFs implements WorkspaceService {
     await this.remove(from);
   }
 
+  /** Copy a file or folder. Fails (never overwrites) if `to` already exists. */
+  async copy(from: string, to: string) {
+    if (from === to) throw new Error("Source and destination are the same");
+    const dest = await this.resolve(to).catch(() => null);
+    if (dest?.name) {
+      for (const probe of [
+        () => dest.parent.getFileHandle(dest.name as string),
+        () => dest.parent.getDirectoryHandle(dest.name as string),
+      ]) {
+        const exists = await probe().then(() => true, () => false);
+        if (exists) throw new Error("Destination already exists");
+      }
+    }
+    const fromInfo = await this.resolve(from);
+    if (!fromInfo.name) throw new Error("Invalid source");
+    const isDir = await fromInfo.parent.getDirectoryHandle(fromInfo.name).then(() => true, () => false);
+    if (isDir) await this.copyDir(from, to);
+    else {
+      const file = await this.readFile(from);
+      await this.writeFile(to, file.content);
+    }
+  }
+
   async search(query: string, opts: SearchOptions = {}): Promise<SearchResponse> {
     if (!query) return { results: [], truncated: false };
     const limit = opts.limit ?? 200;
@@ -368,6 +392,7 @@ export class LocalFs implements WorkspaceService {
       throw new Error("Invalid regex");
     }
 
+    const pathFilter = buildPathFilter(opts.include, opts.exclude);
     const allFiles: string[] = [];
     const walk = async (dir: FileSystemDirectoryHandle, rel: string) => {
       if (allFiles.length >= MAX_FILES) return;
@@ -379,7 +404,7 @@ export class LocalFs implements WorkspaceService {
         if (kind === "directory") {
           if (DENY_DIRS.has(name)) continue;
           await walk(entry as FileSystemDirectoryHandle, childRel);
-        } else if (isTextFile(name) === true) {
+        } else if (isTextFile(name) === true && (!pathFilter || pathFilter(childRel))) {
           // Only index files we *know* are text. `null` (unknown extension)
           // is intentionally skipped here — the search walker can't pay the
           // per-file byte-sniff cost across an entire workspace, and a

@@ -50,7 +50,7 @@ import {
   type TreeNode,
 } from "./types";
 import { broadcastEditorFontChange } from "./useEditorFont";
-import { SearchPane } from "./SearchPane";
+import { SearchPane, type SearchPersist, type SearchSeed } from "./SearchPane";
 import { SettingsPane } from "./SettingsPane";
 import { ExtensionsViewlet, TrustPublisherDialog } from "./extensions/ExtensionsViewlet";
 import { collectRuntimeContainers, ExtensionRuntimeViewlet } from "./extensions/ExtensionRuntimeViewlet";
@@ -89,6 +89,7 @@ import {
   FolderOpen,
   Folder,
   PanelLeftClose,
+  ChevronsDownUp,
   GitBranch,
   X,
 } from "lucide-react-native";
@@ -413,6 +414,11 @@ export function Workbench({
   const groupSplit = useResizable({ initial: 0.5, min: 0.2, max: 0.8, direction: "horizontal" });
 
   const editorRefs = useRef<Record<string, editor.IStandaloneCodeEditor>>({});
+  const [searchSeed, setSearchSeed] = useState<SearchSeed | undefined>(undefined);
+  const searchPersistRef = useRef<SearchPersist | undefined>(undefined);
+  const persistSearch = useCallback((s: SearchPersist) => {
+    searchPersistRef.current = s;
+  }, []);
   const monacoNsRef = useRef<MonacoNs | null>(null);
   // Bumped each time a Monaco editor mounts so the backend-LSP wiring effect
   // below can run as soon as `monaco` is first available (effects can't read
@@ -1328,6 +1334,82 @@ export function Workbench({
     [svcOf, showToast],
   );
 
+  /**
+   * Open the Search view. With an editor selection (single line) or a word
+   * under the cursor the query is pre-filled, like VS Code's
+   * `editor.find.seedSearchStringFromSelection`.
+   */
+  const openSearchImpl = (opts: { include?: string; query?: string } = {}) => {
+    let query = opts.query;
+    if (query === undefined) {
+      const ed = editorRefs.current[activeGroup?.id ?? ""];
+      const model = ed?.getModel();
+      const sel = ed?.getSelection();
+      if (ed && model && sel) {
+        if (!sel.isEmpty() && sel.startLineNumber === sel.endLineNumber) {
+          query = model.getValueInRange(sel);
+        } else if (sel.isEmpty()) {
+          const word = model.getWordAtPosition(sel.getPosition());
+          if (word) query = word.word;
+        }
+      }
+    }
+    setSearchSeed({ query, include: opts.include, nonce: Date.now() });
+    setActivity("search");
+    setSidebarOpen(true);
+  };
+  // Stable wrapper: memoised command lists / key handlers always reach the
+  // latest closure (current active group) through the ref.
+  const openSearchRef = useRef(openSearchImpl);
+  openSearchRef.current = openSearchImpl;
+  const openSearch = useCallback(
+    (opts?: { include?: string; query?: string }) => openSearchRef.current(opts),
+    [],
+  );
+
+  const handleCopy = useCallback(
+    async (from: TreeNode, toRootId: string, toDirPath: string, newName: string) => {
+      if (from.rootId !== toRootId) {
+        showToast("Cross-workspace copy not supported", 2500);
+        return;
+      }
+      const svc = svcOf(from.rootId);
+      if (!svc?.copy) {
+        showToast("Copy not supported for this workspace", 2500);
+        return;
+      }
+      if (toDirPath === from.path || toDirPath.startsWith(from.path + "/")) {
+        showToast("Can't copy a folder into itself", 2500);
+        return;
+      }
+      const to = toDirPath ? `${toDirPath}/${newName}` : newName;
+      try {
+        await svc.copy(from.path, to);
+        showToast(`Copied to ${newName}`);
+        await loadRoot(from.rootId);
+      } catch (err) {
+        showToast(`Copy failed: ${err instanceof Error ? err.message : String(err)}`, 3000);
+      }
+    },
+    [svcOf, loadRoot, showToast],
+  );
+
+  /** Explorer "Open to the Side": the other group, creating the split if needed. */
+  const openToSide = useCallback(
+    (node: TreeNode) => {
+      if (node.kind !== "file") return;
+      let target: number;
+      if (groupsRef.current.length < 2) {
+        setGroups((prev) => (prev.length < 2 ? [...prev, { id: newGroupId(), files: [], activeId: null }] : prev));
+        target = 1;
+      } else {
+        target = activeGroupIdx === 0 ? 1 : 0;
+      }
+      void openFileInGroup(node, target);
+    },
+    [activeGroupIdx, openFileInGroup],
+  );
+
   const treeHandlers: FileTreeHandlers = useMemo(
     () => ({
       onOpen: handleOpenFile,
@@ -1337,8 +1419,17 @@ export function Workbench({
       onMove: handleMove,
       onDownload: handleDownload,
       onLoadSubtree: loadSubtree,
+      onCopy: handleCopy,
+      onOpenToSide: openToSide,
+      onFindInFolder: (node) =>
+        openSearch({ include: node.isRoot ? "" : node.path, query: undefined }),
+      absolutePath: (node) => {
+        const root = gitWorkspaceRootRef.current;
+        if (!root || node.rootId !== "agent") return null;
+        return node.path ? workspaceFsPath(root, node.path) : root;
+      },
     }),
-    [handleOpenFile, handleCreate, handleRenameNode, handleDeleteNode, handleMove, handleDownload, loadSubtree],
+    [handleOpenFile, handleCreate, handleRenameNode, handleDeleteNode, handleMove, handleDownload, loadSubtree, handleCopy, openToSide, openSearch],
   );
 
   // ─── Save ────────────────────────────────────────────────────────────
@@ -2014,7 +2105,7 @@ export function Workbench({
         id: "search.findInFiles",
         label: "Search: Find in Files…",
         shortcut: "⌘⇧F",
-        run: () => setActivity("search"),
+        run: () => openSearch(),
       },
       {
         id: "view.openSourceControl",
@@ -2381,8 +2472,7 @@ export function Workbench({
       }
       if (matchesShortcut(e, { meta: true, shift: true, key: "f" })) {
         e.preventDefault();
-        setActivity("search");
-        if (!sidebarOpen) setSidebarOpen(true);
+        openSearch();
         return;
       }
       // VS Code parity: ⌃⇧G opens the Source Control activity. Uses Ctrl
@@ -2812,6 +2902,9 @@ export function Workbench({
                 <SearchPane
                   roots={roots}
                   services={services}
+                  seed={searchSeed}
+                  persisted={searchPersistRef.current}
+                  onPersist={persistSearch}
                   onReveal={(rootId, path, line, col) =>
                     void revealMatch(rootId, path, line, col)
                   }
@@ -3040,6 +3133,7 @@ function FilesPane({
   onCloseRoot: (id: string) => void;
   onCollapse?: () => void;
 }) {
+  const [collapseReq, setCollapseReq] = useState<{ nonce: number } | null>(null);
   const anyLoading = roots.some((r) => r.loading);
   const anyError = roots.find((r) => r.error);
 
@@ -3082,6 +3176,13 @@ function FilesPane({
             <FolderPlus size={13} />
           </button>
           <button
+            onClick={() => setCollapseReq({ nonce: Date.now() })}
+            title="Collapse Folders in Explorer"
+            className="rounded p-1 text-[color:var(--ide-muted)] hover:bg-[color:var(--ide-hover-subtle)] hover:text-[color:var(--ide-text-strong)]"
+          >
+            <ChevronsDownUp size={13} />
+          </button>
+          <button
             onClick={onRefresh}
             title="Refresh All"
             className="rounded p-1 text-[color:var(--ide-muted)] hover:bg-[color:var(--ide-hover-subtle)] hover:text-[color:var(--ide-text-strong)]"
@@ -3117,6 +3218,7 @@ function FilesPane({
           handlers={handlers}
           newRequest={newRequest}
           revealRequest={revealRequest}
+          collapseRequest={collapseReq}
         />
       </div>
 

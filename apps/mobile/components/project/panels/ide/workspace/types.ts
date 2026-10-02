@@ -41,6 +41,10 @@ export interface SearchOptions {
   caseSensitive?: boolean;
   regex?: boolean;
   limit?: number;
+  /** Comma-separated globs / folders to restrict the search to ("files to include"). */
+  include?: string;
+  /** Comma-separated globs / folders to skip ("files to exclude"). */
+  exclude?: string;
 }
 
 export interface SearchResponse {
@@ -68,6 +72,8 @@ export interface WorkspaceService {
   mkdir(path: string): Promise<void>;
   remove(path: string): Promise<void>;
   rename(from: string, to: string): Promise<void>;
+  /** Copy a file or folder. Optional: backends without it hide Duplicate/Paste. */
+  copy?(from: string, to: string): Promise<void>;
   search(query: string, opts?: SearchOptions): Promise<SearchResponse>;
   /**
    * Resolve a path to a URL that can be used by <img>, <video>, etc. Used for

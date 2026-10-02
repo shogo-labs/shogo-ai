@@ -302,6 +302,38 @@ export class AgentClient {
     }, { scoped: true })
   }
 
+  /** Copy a file or folder (binary-safe, recursive). Rejects on name collision. */
+  async copyWorkspacePath(from: string, to: string): Promise<void> {
+    await this.fetchJson('/agent/workspace/copy', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ from, to }),
+    }, { scoped: true })
+  }
+
+  /**
+   * Line-level full-text search run next to the files (ripgrep when
+   * available). Throws `Agent API 404/405` on runtimes that predate the route.
+   */
+  async grepWorkspace(req: {
+    query: string
+    regex?: boolean
+    caseSensitive?: boolean
+    include?: string
+    exclude?: string
+    limit?: number
+  }): Promise<{
+    results: Array<{ path: string; matches: Array<{ line: number; col: number; preview: string }> }>
+    truncated: boolean
+    engine?: string
+  }> {
+    return this.fetchJson('/agent/workspace/grep', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(req),
+    }, { scoped: true })
+  }
+
   async searchFiles(
     query: string,
     options?: { limit?: number; pathFilter?: string },

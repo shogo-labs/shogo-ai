@@ -10,6 +10,12 @@ import {
   Loader2,
   Pencil,
   RefreshCw,
+  Scissors,
+  Copy as CopyIcon,
+  ClipboardPaste,
+  CopyPlus,
+  Columns2,
+  Search as SearchIcon,
   Trash2,
 } from "lucide-react-native";
 import type { TreeNode } from "./types";
@@ -40,6 +46,14 @@ export interface FileTreeHandlers {
    * a retry affordance.
    */
   onLoadSubtree?: (rootId: string, path: string) => Promise<void>;
+  /** Copy `from` into `toDirPath` of `toRootId` under `newName` (Paste / Duplicate). */
+  onCopy?: (from: TreeNode, toRootId: string, toDirPath: string, newName: string) => Promise<void>;
+  /** Open a file in a new editor group beside the active one. */
+  onOpenToSide?: (node: TreeNode) => void;
+  /** Open the Search view restricted to a folder ("Find in Folder…"). */
+  onFindInFolder?: (node: TreeNode) => void;
+  /** Absolute filesystem path for "Copy Path" (null when unknown, e.g. cloud). */
+  absolutePath?: (node: TreeNode) => string | null;
 }
 
 type FlatRow =
@@ -82,7 +96,9 @@ function flatten(
         else if (loadingLazy.has(k)) out.push({ kind: "lazy-loading", depth: depth + 1, parent: n });
         else out.push({ kind: "lazy-empty", depth: depth + 1, parent: n });
       } else if (n.children) {
-        flatten(n.children, expanded, loadingLazy, lazyErrors, depth + 1, n.path, out);
+        // A loaded folder with nothing in it: say so instead of showing a
+        // chevron that opens onto nothing.
+        out.push({ kind: "lazy-empty", depth: depth + 1, parent: n });
       }
     }
   }
@@ -110,18 +126,49 @@ function iconFor(ext: string) {
  *  collisions across roots don't stomp each other). */
 const keyOf = (node: TreeNode) => `${node.rootId}::${node.path}`;
 
+/** Folder node for (rootId, path); path "" is the root row itself. */
+function findDirNode(tree: TreeNode[], rootId: string, path: string): TreeNode | null {
+  for (const r of tree) {
+    if (r.rootId !== rootId) continue;
+    if (path === "" && r.isRoot) return r;
+    const hit = findNode(r.children ?? [], path);
+    if (hit && hit.kind === "dir") return hit;
+  }
+  return null;
+}
+
+/**
+ * "name copy.ext", "name copy 2.ext", … — the first name not in `taken`
+ * (case-insensitive). Dotfiles (`.env`) keep their whole name as the stem.
+ */
+export function uniqueCopyName(name: string, kind: "file" | "dir", taken: Set<string>): string {
+  const lower = new Set([...taken].map((n) => n.toLowerCase()));
+  if (!lower.has(name.toLowerCase())) return name;
+  const dot = kind === "file" ? name.lastIndexOf(".") : -1;
+  const stem = dot > 0 ? name.slice(0, dot) : name;
+  const ext = dot > 0 ? name.slice(dot) : "";
+  for (let i = 1; i < 10_000; i++) {
+    const candidate = `${stem} copy${i === 1 ? "" : ` ${i}`}${ext}`;
+    if (!lower.has(candidate.toLowerCase())) return candidate;
+  }
+  return `${stem} copy ${Date.now()}${ext}`;
+}
+
 export function FileTree({
   tree,
   activePath,
   handlers,
   newRequest,
   revealRequest,
+  collapseRequest,
 }: {
   tree: TreeNode[];
   activePath: string | null;
   handlers: FileTreeHandlers;
   /** Explicit "Reveal in Explorer" (works even when the file is already active). */
   revealRequest?: { path: string; nonce: number } | null;
+  /** "Collapse Folders in Explorer" — bump `nonce` to collapse everything. */
+  collapseRequest?: { nonce: number } | null;
   newRequest?: { kind: "file" | "dir"; nonce: number; rootId?: string } | null;
 }) {
   const [expanded, setExpanded] = useState<Set<string>>(() => {
@@ -150,6 +197,13 @@ export function FileTree({
     draft: string;
   } | null>(null);
   const [menu, setMenu] = useState<{ x: number; y: number; node: TreeNode | null } | null>(null);
+  /** Explorer clipboard (Cut / Copy → Paste). Internal to the tree. */
+  const [clipboard, setClipboard] = useState<{ nodes: TreeNode[]; mode: "copy" | "cut" } | null>(null);
+  const cutKeys = useMemo(
+    () => (clipboard?.mode === "cut" ? new Set(clipboard.nodes.map(keyOf)) : null),
+    [clipboard],
+  );
+  const [treeFocused, setTreeFocused] = useState(false);
   const [dropTarget, setDropTarget] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   // BUG-002: edge auto-scroll + scrollTop-correct drop zone math.
@@ -386,6 +440,85 @@ export function FileTree({
     scrollRowIntoView(revealRequest.path);
   }, [revealRequest, expandAncestors, scrollRowIntoView]);
 
+  const lastCollapseNonce = useRef<number | null>(null);
+  useEffect(() => {
+    if (!collapseRequest || lastCollapseNonce.current === collapseRequest.nonce) return;
+    lastCollapseNonce.current = collapseRequest.nonce;
+    // Keep the workspace roots open (they're headers, not folders).
+    const next = new Set<string>();
+    for (const n of tree) if (n.isRoot) next.add(n.path);
+    setExpanded(next);
+  }, [collapseRequest, tree]);
+
+  /** Names already used inside a folder (for collision-free paste/duplicate). */
+  const namesIn = useCallback(
+    (rootId: string, dirPath: string): Set<string> =>
+      new Set((findDirNode(tree, rootId, dirPath)?.children ?? []).map((c) => c.name)),
+    [tree],
+  );
+
+  /** Folder a paste/duplicate should land in for `node` (itself if a folder). */
+  const dropDirFor = useCallback(
+    (node: TreeNode | null): { rootId: string; path: string } => {
+      if (!node) {
+        const r = tree[0];
+        return { rootId: r?.rootId ?? "agent", path: "" };
+      }
+      return { rootId: node.rootId, path: node.kind === "dir" ? node.path : parentOf(node.path) };
+    },
+    [tree],
+  );
+
+  const copyToClipboard = useCallback(
+    (nodes: TreeNode[], mode: "copy" | "cut") => {
+      const usable = nodes.filter((n) => !n.isRoot);
+      if (usable.length === 0) return;
+      setClipboard({ nodes: usable, mode });
+      // Also expose the paths to the OS clipboard so they paste into chat/terminal.
+      void navigator.clipboard?.writeText(usable.map((n) => n.path).join("\n")).catch(() => {});
+    },
+    [],
+  );
+
+  const pasteInto = useCallback(
+    async (target: TreeNode | null) => {
+      if (!clipboard) return;
+      const dest = dropDirFor(target);
+      const taken = namesIn(dest.rootId, dest.path);
+      const destNode = findDirNode(tree, dest.rootId, dest.path);
+      if (dest.path) expand(dest.path);
+      for (const src of clipboard.nodes) {
+        try {
+          if (clipboard.mode === "cut") {
+            if (destNode) await handlers.onMove(src, destNode);
+          } else if (handlers.onCopy) {
+            const name = uniqueCopyName(src.name, src.kind, taken);
+            taken.add(name);
+            await handlers.onCopy(src, dest.rootId, dest.path, name);
+          }
+        } catch {
+          /* toast handled by parent */
+        }
+      }
+      if (clipboard.mode === "cut") setClipboard(null);
+    },
+    [clipboard, dropDirFor, namesIn, tree, expand, handlers],
+  );
+
+  const duplicateNode = useCallback(
+    async (node: TreeNode) => {
+      if (node.isRoot || !handlers.onCopy) return;
+      const parent = parentOf(node.path);
+      const name = uniqueCopyName(node.name, node.kind, namesIn(node.rootId, parent));
+      try {
+        await handlers.onCopy(node, node.rootId, parent, name);
+      } catch {
+        /* toast handled by parent */
+      }
+    },
+    [handlers, namesIn],
+  );
+
   const commitCreate = async () => {
     if (!creating) return;
     const name = creating.draft.trim();
@@ -516,50 +649,62 @@ export function FileTree({
     [visibleNodes, toggleDir, handlers],
   );
 
+  // Type-to-jump buffer (VS Code "type to navigate"): typing letters quickly
+  // jumps to the next visible row whose name starts with what was typed.
+  const typeBufRef = useRef<{ text: string; at: number }>({ text: "", at: 0 });
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (renaming || creating) return;
-      if (!containerRef.current?.contains(document.activeElement) && document.activeElement !== document.body) {
+      const insideTree = !!containerRef.current?.contains(document.activeElement);
+      if (!insideTree && document.activeElement !== document.body) {
         return;
       }
       const nodes = visibleNodes;
       const idx = selected ? nodes.findIndex((n) => n.path === selected) : -1;
+      const mod = e.metaKey || e.ctrlKey;
+
+      /** Select `next` (optionally extending the range) and keep it in view. */
+      const goTo = (next: TreeNode | undefined, extend: boolean) => {
+        if (!next) return;
+        setSelected(next.path);
+        if (extend && anchorRef.current) {
+          const keys = nodes.map(keyOf);
+          const a = keys.indexOf(anchorRef.current);
+          const b = keys.indexOf(keyOf(next));
+          if (a >= 0 && b >= 0) {
+            const [lo, hi] = a < b ? [a, b] : [b, a];
+            setMultiSelected(new Set(keys.slice(lo, hi + 1)));
+          }
+        } else {
+          anchorRef.current = keyOf(next);
+          setMultiSelected(new Set([keyOf(next)]));
+        }
+        scrollRowIntoView(next.path);
+      };
+      const pageSize = Math.max(
+        1,
+        Math.floor((containerRef.current?.clientHeight ?? 400) / 24) - 1,
+      );
+
       if (e.key === "ArrowDown") {
         e.preventDefault();
-        const next = nodes[Math.min(idx + 1, nodes.length - 1)];
-        if (next) {
-          setSelected(next.path);
-          if (e.shiftKey && anchorRef.current) {
-            const keys = nodes.map(keyOf);
-            const a = keys.indexOf(anchorRef.current);
-            const b = keys.indexOf(keyOf(next));
-            if (a >= 0 && b >= 0) {
-              const [lo, hi] = a < b ? [a, b] : [b, a];
-              setMultiSelected(new Set(keys.slice(lo, hi + 1)));
-            }
-          } else {
-            anchorRef.current = keyOf(next);
-            setMultiSelected(new Set([keyOf(next)]));
-          }
-        }
+        goTo(nodes[Math.min(idx + 1, nodes.length - 1)], e.shiftKey);
       } else if (e.key === "ArrowUp") {
         e.preventDefault();
-        const prev = nodes[Math.max(idx - 1, 0)];
-        if (prev) {
-          setSelected(prev.path);
-          if (e.shiftKey && anchorRef.current) {
-            const keys = nodes.map(keyOf);
-            const a = keys.indexOf(anchorRef.current);
-            const b = keys.indexOf(keyOf(prev));
-            if (a >= 0 && b >= 0) {
-              const [lo, hi] = a < b ? [a, b] : [b, a];
-              setMultiSelected(new Set(keys.slice(lo, hi + 1)));
-            }
-          } else {
-            anchorRef.current = keyOf(prev);
-            setMultiSelected(new Set([keyOf(prev)]));
-          }
-        }
+        goTo(nodes[Math.max(idx - 1, 0)], e.shiftKey);
+      } else if (e.key === "Home" && insideTree) {
+        e.preventDefault();
+        goTo(nodes[0], e.shiftKey);
+      } else if (e.key === "End" && insideTree) {
+        e.preventDefault();
+        goTo(nodes[nodes.length - 1], e.shiftKey);
+      } else if (e.key === "PageDown" && insideTree) {
+        e.preventDefault();
+        goTo(nodes[Math.min(Math.max(idx, 0) + pageSize, nodes.length - 1)], e.shiftKey);
+      } else if (e.key === "PageUp" && insideTree) {
+        e.preventDefault();
+        goTo(nodes[Math.max(idx - pageSize, 0)], e.shiftKey);
       } else if (e.key === "ArrowRight") {
         const n = nodes[idx];
         if (n?.kind === "dir") {
@@ -567,8 +712,7 @@ export function FileTree({
             // Expand-via-arrow on a lazy dir triggers the fetch too.
             toggleDir(n);
           } else {
-            const next = nodes[idx + 1];
-            if (next) setSelected(next.path);
+            goTo(nodes[idx + 1], false);
           }
           e.preventDefault();
         }
@@ -576,13 +720,13 @@ export function FileTree({
         const n = nodes[idx];
         const row = visibleRows[idx];
         if (!n || !row) return;
-        if (n.kind === "dir" && expanded.has(n.path)) {
+        if (n.kind === "dir" && expanded.has(n.path) && !n.isRoot) {
           toggle(n.path);
         } else {
           for (let i = idx - 1; i >= 0; i--) {
             const candidate = visibleRows[i];
             if (candidate.depth < row.depth) {
-              setSelected(candidate.node.path);
+              goTo(candidate.node, false);
               break;
             }
           }
@@ -596,28 +740,71 @@ export function FileTree({
         }
         const n = nodes[idx];
         if (!n) return;
+        // ⌘/Ctrl+Enter opens beside (VS Code: Ctrl+Enter).
+        if (mod && n.kind === "file" && handlers.onOpenToSide) {
+          e.preventDefault();
+          handlers.onOpenToSide(n);
+          return;
+        }
         if (n.kind === "dir") toggleDir(n);
         else handlers.onOpen(n);
-      } else if (e.key === "a" && (e.metaKey || e.ctrlKey)) {
+      } else if (e.key === "a" && mod) {
         // Select-all *visible* entries (don't clobber browser find/replace
         // since Monaco owns that when focused — FileTree only reacts when
         // it has focus).
+        if (!insideTree) return;
         e.preventDefault();
         setMultiSelected(new Set(nodes.map(keyOf)));
+      } else if ((e.key === "c" || e.key === "x") && mod && !e.shiftKey && !e.altKey && insideTree) {
+        const targets = multiSelected.size > 0 ? selectedNodes : nodes[idx] ? [nodes[idx]] : [];
+        if (targets.length === 0) return;
+        e.preventDefault();
+        copyToClipboard(targets, e.key === "c" ? "copy" : "cut");
+      } else if (e.key === "v" && mod && !e.shiftKey && !e.altKey && insideTree) {
+        if (!clipboard) return;
+        e.preventDefault();
+        void pasteInto(nodes[idx] ?? null);
       } else if (e.key === "Escape") {
-        setMultiSelected((prev) => (prev.size > 1 ? new Set() : prev));
+        if (!insideTree) return;
+        if (clipboard?.mode === "cut") setClipboard(null);
+        setSelected(null);
+        setMultiSelected((prev) => (prev.size > 0 ? new Set() : prev));
       } else if (e.key === "F2") {
         const n = nodes[idx];
-        if (n) beginRename(n);
-      } else if ((e.key === "Delete" || e.key === "Backspace") && (e.metaKey || !e.metaKey)) {
-        if (e.key === "Backspace" && !e.metaKey) return;
+        if (n && !n.isRoot) beginRename(n);
+      } else if (e.key === "Delete" || (e.key === "Backspace" && e.metaKey)) {
         const n = nodes[idx];
-        if (n) void handleDelete(n);
+        if (n && !n.isRoot) void handleDelete(n);
+      } else if (
+        insideTree &&
+        !mod &&
+        !e.altKey &&
+        e.key.length === 1 &&
+        e.key !== " " &&
+        nodes.length > 0
+      ) {
+        const now = Date.now();
+        const buf = typeBufRef.current;
+        const text = (now - buf.at > 700 ? "" : buf.text) + e.key.toLowerCase();
+        typeBufRef.current = { text, at: now };
+        // Repeating one letter cycles through matches; otherwise search from
+        // the current row (inclusive) so refining the prefix stays put.
+        const cycle = text.length > 1 && text.split("").every((ch) => ch === text[0]);
+        const needle = cycle ? text[0] : text;
+        const startAt = idx < 0 ? 0 : cycle ? idx + 1 : idx;
+        for (let i = 0; i < nodes.length; i++) {
+          const n = nodes[(startAt + i) % nodes.length];
+          if (!n.isRoot && n.name.toLowerCase().startsWith(needle)) {
+            e.preventDefault();
+            goTo(n, false);
+            break;
+          }
+        }
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [visibleNodes, visibleRows, selected, expanded, renaming, creating, handlers, expand, toggle, toggleDir, multiSelected, openSelected]);
+  }, [visibleNodes, visibleRows, selected, expanded, renaming, creating, handlers, expand, toggle, toggleDir, multiSelected, openSelected, selectedNodes, clipboard, copyToClipboard, pasteInto, scrollRowIntoView]);
 
   const menuItems = (node: TreeNode | null): MenuEntry[] => {
     const defaultRootId = tree[0]?.rootId ?? "agent";
@@ -650,7 +837,31 @@ export function FileTree({
             ]
           : []),
         {
-          label: "Copy Paths",
+          label: "Cut",
+          shortcut: "⌘X",
+          icon: <Scissors size={14} />,
+          onClick: () => copyToClipboard(selectedNodes, "cut"),
+        },
+        {
+          label: "Copy",
+          shortcut: "⌘C",
+          icon: <CopyIcon size={14} />,
+          onClick: () => copyToClipboard(selectedNodes, "copy"),
+        },
+        { separator: true },
+        ...(handlers.absolutePath
+          ? [
+              {
+                label: "Copy Paths",
+                onClick: () =>
+                  void navigator.clipboard.writeText(
+                    selectedNodes.map((n) => handlers.absolutePath?.(n) ?? n.path).join("\n"),
+                  ),
+              } as MenuEntry,
+            ]
+          : []),
+        {
+          label: "Copy Relative Paths",
           onClick: () =>
             void navigator.clipboard.writeText(
               selectedNodes.map((n) => n.path).join("\n"),
@@ -672,7 +883,7 @@ export function FileTree({
         { separator: true },
         {
           label: `Delete ${count} items`,
-          shortcut: "⌫",
+          shortcut: "⌘⌫",
           icon: <Trash2 size={14} />,
           danger: true,
           onClick: () => void handleDelete(node),
@@ -680,7 +891,9 @@ export function FileTree({
       ];
     }
     const parent = node.kind === "dir" ? node.path : parentOf(node.path);
-    return [
+    const abs = handlers.absolutePath?.(node) ?? null;
+    const canPaste = !!clipboard && (clipboard.mode === "cut" || !!handlers.onCopy);
+    const creation: MenuEntry[] = [
       {
         label: "New File",
         icon: <FilePlus size={14} />,
@@ -692,20 +905,95 @@ export function FileTree({
         onClick: () => beginCreate(node.rootId, parent, "dir"),
       },
       { separator: true },
+    ];
+    const findInFolder: MenuEntry[] =
+      node.kind === "dir" && handlers.onFindInFolder
+        ? [
+            {
+              label: "Find in Folder…",
+              icon: <SearchIcon size={14} />,
+              onClick: () => handlers.onFindInFolder?.(node),
+            },
+          ]
+        : [];
+    // Workspace roots are headers: no rename / delete / cut / duplicate.
+    if (node.isRoot) {
+      return [
+        ...creation,
+        ...findInFolder,
+        {
+          label: "Paste",
+          shortcut: "⌘V",
+          icon: <ClipboardPaste size={14} />,
+          disabled: !canPaste,
+          onClick: () => void pasteInto(node),
+        },
+        { separator: true },
+        ...(abs
+          ? [{ label: "Copy Path", onClick: () => void navigator.clipboard.writeText(abs) } as MenuEntry]
+          : []),
+      ];
+    }
+    return [
+      ...creation,
       {
         label: node.kind === "file" ? "Open" : expanded.has(node.path) ? "Collapse" : "Expand",
         onClick: () => (node.kind === "file" ? handlers.onOpen(node) : toggleDir(node)),
       },
+      ...(node.kind === "file" && handlers.onOpenToSide
+        ? [
+            {
+              label: "Open to the Side",
+              shortcut: "⌘↵",
+              icon: <Columns2 size={14} />,
+              onClick: () => handlers.onOpenToSide?.(node),
+            } as MenuEntry,
+          ]
+        : []),
+      ...findInFolder,
+      { separator: true },
+      {
+        label: "Cut",
+        shortcut: "⌘X",
+        icon: <Scissors size={14} />,
+        onClick: () => copyToClipboard([node], "cut"),
+      },
+      {
+        label: "Copy",
+        shortcut: "⌘C",
+        icon: <CopyIcon size={14} />,
+        onClick: () => copyToClipboard([node], "copy"),
+      },
+      {
+        label: "Paste",
+        shortcut: "⌘V",
+        icon: <ClipboardPaste size={14} />,
+        disabled: !canPaste,
+        onClick: () => void pasteInto(node),
+      },
+      ...(handlers.onCopy
+        ? [
+            {
+              label: "Duplicate",
+              icon: <CopyPlus size={14} />,
+              onClick: () => void duplicateNode(node),
+            } as MenuEntry,
+          ]
+        : []),
+      { separator: true },
+      ...(abs
+        ? [{ label: "Copy Path", onClick: () => void navigator.clipboard.writeText(abs) } as MenuEntry]
+        : []),
+      {
+        label: abs ? "Copy Relative Path" : "Copy Path",
+        onClick: () => void navigator.clipboard.writeText(node.path),
+      },
+      { separator: true },
       {
         label: "Rename",
         shortcut: "F2",
         icon: <Pencil size={14} />,
         onClick: () => beginRename(node),
-      },
-      { separator: true },
-      {
-        label: "Copy Path",
-        onClick: () => void navigator.clipboard.writeText(node.path),
       },
       ...(node.kind === "file"
         ? [
@@ -718,7 +1006,7 @@ export function FileTree({
         : []),
       {
         label: "Delete",
-        shortcut: "⌫",
+        shortcut: "⌘⌫",
         icon: <Trash2 size={14} />,
         danger: true,
         onClick: () => void handleDelete(node),
@@ -730,6 +1018,13 @@ export function FileTree({
     <div
       ref={containerRef}
       tabIndex={0}
+      role="tree"
+      aria-label="Explorer"
+      aria-multiselectable
+      onFocus={() => setTreeFocused(true)}
+      onBlur={(e) => {
+        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setTreeFocused(false);
+      }}
       className="h-full outline-none overflow-auto"
       onContextMenu={(e) => {
         if (e.target === containerRef.current) openContextMenu(e, null);
@@ -859,8 +1154,9 @@ export function FileTree({
         const displayName = row.compactLabel ?? node.name;
         const isExpanded = node.kind === "dir" && expanded.has(node.path);
         const isActive = node.path === activePath;
-        const isSelected = node.path === selected;
+        const isSelected = node.path === selected && !node.isRoot;
         const isMulti = multiSelected.has(keyOf(node));
+        const isCut = cutKeys?.has(keyOf(node)) ?? false;
         const isDropInto = dropTarget === node.path && node.kind === "dir";
         const ext = node.name.split(".").pop()?.toLowerCase() ?? "";
 
@@ -927,27 +1223,41 @@ export function FileTree({
             }}
             onContextMenu={(e) => openContextMenu(e, node)}
             data-tree-path={node.path}
+            role="treeitem"
+            aria-level={depth + 1}
+            aria-selected={isSelected || isMulti}
+            aria-expanded={node.kind === "dir" ? isExpanded : undefined}
             className={
               isWorkspaceRoot
-                ? `group flex cursor-pointer items-center gap-1 px-2 py-[4px] text-[11px] font-semibold uppercase tracking-wider min-w-0 ${
+                ? `group relative flex cursor-pointer items-center gap-1 px-2 py-[4px] text-[11px] font-semibold uppercase tracking-wider min-w-0 ${
                     isDropInto
                       ? "bg-[color:var(--ide-active-bg)] text-white"
                       : "text-[color:var(--ide-muted)] hover:text-[color:var(--ide-text-strong)] hover:bg-[color:var(--ide-hover)]"
                   }`
-                : `group flex cursor-pointer items-center gap-1 px-2 py-[3px] text-[13px] min-w-0 ${
+                : `group relative flex cursor-pointer items-center gap-1 px-2 py-[3px] text-[13px] min-w-0 ${
                     isDropInto
                       ? "bg-[color:var(--ide-active-bg)] ring-1 ring-inset ring-[color:var(--ide-active-ring)]"
-                      : isMulti
-                      ? "bg-[color:var(--ide-active)] text-[color:var(--ide-text-strong)]"
+                      : (isMulti || isSelected) && treeFocused
+                      ? "bg-[color:var(--ide-active)] text-[color:var(--ide-text-strong)] ring-1 ring-inset ring-[color:var(--ide-active-ring)]"
                       : isActive
                       ? "bg-[color:var(--ide-active)] text-[color:var(--ide-text-strong)]"
-                      : isSelected
+                      : isMulti || isSelected
                       ? "bg-[color:var(--ide-hover)] text-[color:var(--ide-text-strong)]"
                       : "text-[color:var(--ide-text)] hover:bg-[color:var(--ide-hover)]"
-                  }${node.ignored ? " opacity-[0.55]" : ""}`
+                  }${node.ignored ? " opacity-[0.55]" : ""}${isCut ? " opacity-50" : ""}`
             }
             style={{ paddingLeft: 8 + depth * 12 }}
           >
+            {!isWorkspaceRoot &&
+              depth > 1 &&
+              Array.from({ length: depth - 1 }, (_, g) => (
+                <span
+                  key={g}
+                  aria-hidden
+                  className="pointer-events-none absolute bottom-0 top-0 w-px bg-[color:var(--ide-border)] opacity-70"
+                  style={{ left: 8 + (g + 1) * 12 + 7 }}
+                />
+              ))}
             {node.kind === "dir" ? (
               <>
                 <ChevronRight
