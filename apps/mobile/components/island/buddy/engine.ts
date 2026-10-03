@@ -12,6 +12,7 @@ import {
   DEFAULT_BUDDY_LOOK,
   sameLook,
   type BuddyEyewear,
+  type BuddyFinishId,
   type BuddyLook,
   type BuddyNeck,
   type BuddyTail,
@@ -625,6 +626,67 @@ const GUMMY_BLOCK: DesignConfig = {
   mouthY: 0.34,
 }
 
+/** How the gummy block is rendered: the same character, glossier and more
+ * cartoon at one end, flatter and cleaner at the other. Strengths are 0…1
+ * multipliers on the classic look unless noted. */
+export interface BuddyFinish {
+  /** Light-to-dark gradient across the body. */
+  shading: number
+  /** Specular streak and dot on the body. */
+  gloss: number
+  /** Warm core that makes it read as jelly. */
+  core: number
+  /** Darkening toward the silhouette. */
+  rim: number
+  /** Coloured halo behind the body and antenna orb. */
+  glow: number
+  /** Thin top-lit highlight just inside the silhouette. */
+  edge: number
+  /** Superellipse exponent: 2 is an ellipse, higher is boxier. */
+  boxiness: number
+  /** Catch-lights in the eyes. */
+  sparkle: number
+  /** Open eyes as ovals or upright pills. */
+  eyes: "oval" | "pill"
+  /** Eye size; 1 is classic. */
+  eyeSize: number
+  /** Cheek blush, on top of the look's blush toggle. */
+  blush: number
+  /** Mouth stroke weight; 1 is classic. */
+  mouth: number
+}
+
+export const BUDDY_FINISHES = {
+  classic: {
+    shading: 1,
+    gloss: 1,
+    core: 1,
+    rim: 1,
+    glow: 1,
+    edge: 0,
+    boxiness: 4.2,
+    sparkle: 1,
+    eyes: "oval",
+    eyeSize: 1,
+    blush: 1,
+    mouth: 1,
+  },
+  modern: {
+    shading: 0.45,
+    gloss: 0.15,
+    core: 0.25,
+    rim: 0.35,
+    glow: 0.35,
+    edge: 0.6,
+    boxiness: 5.2,
+    sparkle: 0.35,
+    eyes: "pill",
+    eyeSize: 0.9,
+    blush: 0,
+    mouth: 0.8,
+  },
+} as const satisfies Record<BuddyFinishId, BuddyFinish>
+
 type Headgear = "horns" | "halo" | "sprout" | "crown" | "party" | "beanie" | "wizard" | "headphones"
 
 const TOPPER_EARS: Partial<Record<BuddyTopper, DesignConfig["ears"]>> = {
@@ -772,6 +834,7 @@ export class BuddyEngine {
   private lookValue: BuddyLook = DEFAULT_BUDDY_LOOK
   private d: DesignConfig = designFor(DEFAULT_BUDDY_LOOK)
   body: RGB = parseColor("#FF7A3D")
+  private finishValue: BuddyFinish = BUDDY_FINISHES.classic
   state: BuddyState = "idle"
   /** Pointer direction in -1…1, relative to the buddy. */
   lookX = 0
@@ -862,6 +925,16 @@ export class BuddyEngine {
     if (sameLook(this.lookValue, next)) return
     this.lookValue = next
     this.d = designFor(next)
+    this.wake()
+  }
+
+  get finish(): BuddyFinish {
+    return this.finishValue
+  }
+
+  set finish(next: BuddyFinish) {
+    this.finishValue = next
+    this.sprite = null
     this.wake()
   }
 
@@ -1680,7 +1753,7 @@ export class BuddyEngine {
     const path = new Path2D()
     const d = this.d
     const n = 128
-    const exp = 2 / d.exp
+    const exp = 2 / this.finishValue.boxiness
     for (let i = 0; i <= n; i++) {
       const a = (i / n) * Math.PI * 2
       const ca = Math.cos(a)
@@ -1701,11 +1774,12 @@ export class BuddyEngine {
   }
 
   private drawGlow(x: CanvasRenderingContext2D, R: number, cx: number, cy: number) {
-    if (this.glow <= 0.01) return
+    const glow = this.glow * this.finishValue.glow
+    if (glow <= 0.01) return
     const r = R * 2.1 * this.scale
     const g = x.createRadialGradient(cx, cy, 0, cx, cy, r)
-    g.addColorStop(0, rgba(this.col, this.glow * 0.9))
-    g.addColorStop(0.45, rgba(this.col, this.glow * 0.35))
+    g.addColorStop(0, rgba(this.col, glow * 0.9))
+    g.addColorStop(0.45, rgba(this.col, glow * 0.35))
     g.addColorStop(1, rgba(this.col, 0))
     x.fillStyle = g
     x.fillRect(cx - r, cy - r, r * 2, r * 2)
@@ -2627,7 +2701,7 @@ export class BuddyEngine {
     const orbR = R * 0.12 * orbPulse
     const orbColor = this.state === "idle" ? mix(this.body, [1, 1, 1], 0.35) : this.col
     const halo = x.createRadialGradient(tipX, tipY, 0, tipX, tipY, orbR * 3)
-    halo.addColorStop(0, rgba(orbColor, this.state === "sleeping" ? 0.15 : 0.55))
+    halo.addColorStop(0, rgba(orbColor, (this.state === "sleeping" ? 0.15 : 0.55) * this.finishValue.glow))
     halo.addColorStop(1, rgba(orbColor, 0))
     x.fillStyle = halo
     x.beginPath()
@@ -2644,8 +2718,9 @@ export class BuddyEngine {
   }
 
   private drawBody(x: CanvasRenderingContext2D, body: Path2D, R: number, rx: number, ry: number) {
-    const light = mix(this.body, [1, 1, 1], 0.42)
-    const dark = mix(this.body, [0, 0, 0], 0.28)
+    const f = this.finishValue
+    const light = mix(this.body, [1, 1, 1], 0.42 * f.shading)
+    const dark = mix(this.body, [0, 0, 0], 0.28 * f.shading)
     const g = x.createLinearGradient(rx * 0.6, -ry, -rx * 0.7, ry)
     g.addColorStop(0, rgba(light))
     g.addColorStop(0.5, rgba(this.body))
@@ -2664,14 +2739,14 @@ export class BuddyEngine {
 
     // Subsurface: a warm core so it reads as jelly rather than plastic.
     const core = x.createRadialGradient(0, ry * 0.25, 0, 0, ry * 0.25, R * 0.9)
-    core.addColorStop(0, rgba(mix(this.body, [1, 0.95, 0.85], 0.35), 0.45))
+    core.addColorStop(0, rgba(mix(this.body, [1, 0.95, 0.85], 0.35), 0.45 * f.core))
     core.addColorStop(1, rgba(this.body, 0))
     x.fillStyle = core
     x.fill(body)
 
     const rim = x.createRadialGradient(0, 0, R * 0.5, 0, 0, R * 1.3)
     rim.addColorStop(0, "rgba(0,0,0,0)")
-    rim.addColorStop(1, "rgba(0,0,0,0.28)")
+    rim.addColorStop(1, `rgba(0,0,0,${0.28 * f.rim})`)
     x.fillStyle = rim
     x.fill(body)
 
@@ -2690,15 +2765,26 @@ export class BuddyEngine {
 
     x.save()
     x.clip(body)
-    x.fillStyle = "rgba(255,255,255,0.55)"
-    x.beginPath()
-    if (d.exp > 3) x.ellipse(-rx * 0.6, -ry * 0.72, R * 0.22, R * 0.07, -0.25, 0, Math.PI * 2)
-    else x.ellipse(-rx * 0.42, -ry * 0.5, R * 0.26, R * 0.12, -0.55, 0, Math.PI * 2)
-    x.fill()
-    x.fillStyle = "rgba(255,255,255,0.7)"
-    x.beginPath()
-    x.arc(-rx * 0.12, -ry * 0.7, R * 0.045, 0, Math.PI * 2)
-    x.fill()
+    if (f.edge > 0.01) {
+      const edge = x.createLinearGradient(0, -ry, 0, ry)
+      edge.addColorStop(0, `rgba(255,255,255,${0.5 * f.edge})`)
+      edge.addColorStop(0.5, `rgba(255,255,255,${0.12 * f.edge})`)
+      edge.addColorStop(1, "rgba(255,255,255,0)")
+      x.strokeStyle = edge
+      x.lineWidth = R * 0.07
+      x.stroke(body)
+    }
+    if (f.gloss > 0.01) {
+      x.fillStyle = `rgba(255,255,255,${0.55 * f.gloss})`
+      x.beginPath()
+      if (f.boxiness > 3) x.ellipse(-rx * 0.6, -ry * 0.72, R * 0.22, R * 0.07, -0.25, 0, Math.PI * 2)
+      else x.ellipse(-rx * 0.42, -ry * 0.5, R * 0.26, R * 0.12, -0.55, 0, Math.PI * 2)
+      x.fill()
+      x.fillStyle = `rgba(255,255,255,${0.7 * f.gloss})`
+      x.beginPath()
+      x.arc(-rx * 0.12, -ry * 0.7, R * 0.045, 0, Math.PI * 2)
+      x.fill()
+    }
     x.restore()
   }
 
@@ -2722,8 +2808,8 @@ export class BuddyEngine {
       x.closePath()
       x.fill()
     }
-    if (d.blush) {
-      const blush = Math.max(this.blush, 0.25)
+    if (d.blush && this.finishValue.blush > 0.01) {
+      const blush = Math.max(this.blush, 0.25) * this.finishValue.blush
       x.fillStyle = `rgba(255,90,120,${0.4 * blush})`
       for (const sd of [-1, 1]) {
         x.beginPath()
@@ -2796,8 +2882,8 @@ export class BuddyEngine {
         lenses.push({ x: ex, y: ey, sx: Math.max(0.2, Math.cos(eyeYaw)), sy: Math.max(0.2, cp), sd })
         if (OPAQUE_EYEWEAR.has(d.eyewear)) continue
       }
-      const w = R * 0.2 * this.es * mult
-      const h = R * 0.27 * this.es * mult
+      const w = R * 0.2 * this.es * mult * this.finishValue.eyeSize
+      const h = R * 0.27 * this.es * mult * this.finishValue.eyeSize
       x.save()
       x.translate(ex, ey)
       x.scale(Math.max(0.2, Math.cos(eyeYaw)), Math.max(0.2, cp))
@@ -2836,6 +2922,7 @@ export class BuddyEngine {
     x.fillStyle = ink
     x.strokeStyle = ink
     x.lineCap = "round"
+    const { sparkle, eyes } = this.finishValue
     const glossy = (ew: number, eh: number) => {
       const hh = Math.max(eh * this.open, ew * 0.28)
       if (pixel) {
@@ -2843,15 +2930,20 @@ export class BuddyEngine {
         x.fill()
         return
       }
-      x.beginPath()
-      x.ellipse(0, 0, ew / 2, hh / 2, 0, 0, Math.PI * 2)
-      x.fill()
-      if (gloss && this.open > 0.5) {
-        x.fillStyle = "rgba(255,255,255,0.92)"
+      if (eyes === "pill") {
+        const pw = ew * 0.62
+        roundRect(x, -pw / 2, -hh / 2, pw, hh, pw / 2)
+      } else {
         x.beginPath()
-        x.arc(-ew * 0.16 - this.yaw * ew * 0.1, -hh * 0.2, ew * 0.2, 0, Math.PI * 2)
+        x.ellipse(0, 0, ew / 2, hh / 2, 0, 0, Math.PI * 2)
+      }
+      x.fill()
+      if (gloss && sparkle > 0.01 && this.open > 0.5) {
+        x.fillStyle = `rgba(255,255,255,${0.92 * sparkle})`
+        x.beginPath()
+        x.arc(-ew * 0.16 - this.yaw * ew * 0.1, -hh * 0.2, ew * (eyes === "pill" ? 0.13 : 0.2), 0, Math.PI * 2)
         x.fill()
-        x.fillStyle = "rgba(255,255,255,0.6)"
+        x.fillStyle = `rgba(255,255,255,${0.6 * sparkle})`
         x.beginPath()
         x.arc(ew * 0.14, hh * 0.2, ew * 0.08, 0, Math.PI * 2)
         x.fill()
@@ -2930,7 +3022,7 @@ export class BuddyEngine {
     const w = R * 0.22
     x.strokeStyle = ink
     x.fillStyle = ink
-    x.lineWidth = R * 0.05
+    x.lineWidth = R * 0.05 * this.finishValue.mouth
     x.lineCap = "round"
     switch (shape) {
       case "cat":

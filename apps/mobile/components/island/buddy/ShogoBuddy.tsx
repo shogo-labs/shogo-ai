@@ -12,7 +12,15 @@ import {
   type KeyboardEvent,
 } from "react"
 import { Platform } from "react-native"
-import { BUDDY_ASPECT, BuddyEngine, type BuddyEmote, type BuddyState, type LogoStyle } from "./engine"
+import {
+  BUDDY_ASPECT,
+  BUDDY_FINISHES,
+  BuddyEngine,
+  type BuddyEmote,
+  type BuddyFinish,
+  type BuddyState,
+  type LogoStyle,
+} from "./engine"
 import { BUDDY_WEBVIEW_HTML } from "./buddy-webview.generated"
 import { DEFAULT_BUDDY_LOOK, type BuddyLook } from "./look"
 
@@ -32,8 +40,11 @@ export interface ShogoBuddyProps {
   size: number
   state: BuddyState
   color: string
-  /** Accessories on the gummy block; anything left out uses the default. */
+  /** Accessories, colour and finish; anything left out uses the default. A
+   * look colour wins over `color`, which is the fallback (the app accent). */
   look?: Partial<BuddyLook>
+  /** Overrides the look's finish with exact strengths (the motion lab). */
+  finish?: BuddyFinish
   /** How the Shogo mark's rays turn into the character and back. */
   logoStyle?: LogoStyle
   mini?: boolean
@@ -56,6 +67,7 @@ export const ShogoBuddy = forwardRef<ShogoBuddyHandle, ShogoBuddyProps>(function
     state,
     color,
     look,
+    finish: finishOverride,
     logoStyle = "vortex",
     mini = false,
     followPointer = true,
@@ -94,18 +106,21 @@ export const ShogoBuddy = forwardRef<ShogoBuddyHandle, ShogoBuddyProps>(function
   const neck = look?.neck ?? DEFAULT_BUDDY_LOOK.neck
   const bolts = look?.bolts ?? DEFAULT_BUDDY_LOOK.bolts
   const blush = look?.blush ?? DEFAULT_BUDDY_LOOK.blush
+  const bodyColor = look?.color ?? color
+  const finish = finishOverride ?? BUDDY_FINISHES[look?.finish ?? DEFAULT_BUDDY_LOOK.finish]
   const nativePropsJson = useMemo(
     () =>
       JSON.stringify({
         size,
         state,
-        color,
+        color: bodyColor,
         look: { topper, face, tail, eyewear, neck, bolts, blush },
+        finish,
         mini,
         reducedMotion,
         still,
       }),
-    [size, state, color, topper, face, tail, eyewear, neck, bolts, blush, mini, reducedMotion, still],
+    [size, state, bodyColor, topper, face, tail, eyewear, neck, bolts, blush, finish, mini, reducedMotion, still],
   )
   const injectNative = useCallback((script: string) => {
     nativeWebViewRef.current?.injectJavaScript(`${script};true;`)
@@ -161,12 +176,15 @@ export const ShogoBuddy = forwardRef<ShogoBuddyHandle, ShogoBuddyProps>(function
     engine.wake()
   }, [engine, mini, logoStyle, reducedMotion])
   useLayoutEffect(() => {
-    engine.look = { topper, face, tail, eyewear, neck, bolts, blush }
+    engine.look = { ...DEFAULT_BUDDY_LOOK, topper, face, tail, eyewear, neck, bolts, blush }
   }, [engine, topper, face, tail, eyewear, neck, bolts, blush])
+  useLayoutEffect(() => {
+    engine.finish = finish
+  }, [engine, finish])
   useEffect(() => {
     sendNativeProps()
   }, [sendNativeProps])
-  useEffect(() => engine.setBodyColor(color), [engine, color])
+  useEffect(() => engine.setBodyColor(bodyColor), [engine, bodyColor])
   useEffect(() => engine.setState(state), [engine, state])
   useEffect(() => {
     engine.onDizzy = onDizzy ?? null
