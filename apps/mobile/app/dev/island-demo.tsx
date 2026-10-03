@@ -3,30 +3,36 @@
 /**
  * Island motion lab: the island shape and the Shogo buddy on a fake desktop,
  * with every mode, state and emote on a button. Compares the spring motion
- * against the current tween motion, with a slow-motion switch.
+ * against the current tween motion, with a slow-motion switch. Also a
+ * playground for the buddy's colour and finish, and a preview of the buddy as
+ * the app icon, favicon and logo.
  *
  * Usage: `bun run dev:web` in apps/mobile, then open `/dev/island-demo`.
  */
-import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react"
-import { Platform, Pressable, ScrollView, Text, View } from "react-native"
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react"
+import { Platform, ScrollView, Text, View } from "react-native"
 import { SafeAreaView } from "react-native-safe-area-context"
-import { cn } from "@shogo/shared-ui/primitives"
 import { useIslandAccent } from "@/components/island/island-accent"
 import { ShogoBuddy, type ShogoBuddyHandle } from "@/components/island/buddy/ShogoBuddy"
 import {
   BUDDY_ASPECT,
   BUDDY_EMOTE_NAMES,
+  BUDDY_FINISHES,
   BUDDY_PALETTE,
   BUDDY_STATE_NAMES,
   LOGO_STYLES,
   LOGO_STYLE_NAMES,
   type BuddyEmote,
+  type BuddyFinish,
   type BuddyState,
   type LogoStyle,
 } from "@/components/island/buddy/engine"
 import { BuddyCustomizer } from "@/components/island/buddy/BuddyCustomizer"
-import { DEFAULT_BUDDY_LOOK, type BuddyLook } from "@/components/island/buddy/look"
+import { DEFAULT_BUDDY_LOOK, normalizeBuddyColor, type BuddyLook } from "@/components/island/buddy/look"
 import { Tracked } from "@/components/island/motion/spring"
+import { BrandLab } from "@/components/island/lab/BrandLab"
+import { Chip, Row } from "@/components/island/lab/lab-controls"
+import { StyleLab } from "@/components/island/lab/StyleLab"
 
 declare const __DEV__: boolean
 
@@ -154,6 +160,7 @@ function Island({
   speed,
   buddyState,
   look,
+  finish,
   logoUnfold,
   logoStyle,
   accent,
@@ -168,6 +175,7 @@ function Island({
   speed: number
   buddyState: BuddyState
   look: BuddyLook
+  finish: BuddyFinish
   logoUnfold: boolean
   logoStyle: LogoStyle
   accent: string
@@ -304,7 +312,7 @@ function Island({
           <div style={{ display: "flex", marginRight: -4 }}>
             {SESSIONS.slice(1).map((s, i) => (
               <div key={s.title} style={{ marginLeft: -6, ...contentIn(200 + i * 35, speed) }}>
-                <ShogoBuddy size={20} state={s.state} color={s.color} look={look} mini followPointer={false} />
+                <ShogoBuddy size={20} state={s.state} color={s.color} look={{ ...look, color: null }} finish={finish} mini followPointer={false} />
               </div>
             ))}
           </div>
@@ -341,7 +349,7 @@ function Island({
                   ...contentIn(160 + i * 35, speed),
                 }}
               >
-                <ShogoBuddy size={22} state={s.state} color={s.color} look={look} mini followPointer={false} />
+                <ShogoBuddy size={22} state={s.state} color={s.color} look={{ ...look, color: null }} finish={finish} mini followPointer={false} />
                 <div style={{ minWidth: 0, flex: 1 }}>
                   <div style={{ color: "#f4f4f5", fontSize: 12, fontWeight: 600 }}>{s.title}</div>
                   <div style={{ color: "#71717a", fontSize: 10 }}>
@@ -382,25 +390,12 @@ function Island({
           state={buddyState}
           color={accent}
           look={look}
+          finish={finish}
           logoStyle={logoStyle}
           interactive={expanded}
         />
       </div>
     </div>
-  )
-}
-
-function Chip({ label, active, onPress }: { label: string; active?: boolean; onPress: () => void }) {
-  return (
-    <Pressable
-      onPress={onPress}
-      className={cn(
-        "rounded-full border px-3 py-1.5",
-        active ? "border-primary bg-primary/15" : "border-border bg-card hover:bg-muted",
-      )}
-    >
-      <Text className={cn("text-xs", active ? "font-semibold text-primary" : "text-foreground")}>{label}</Text>
-    </Pressable>
   )
 }
 
@@ -411,11 +406,13 @@ const LAB_CYCLE_MS = 7400
 /** Every ray style looping side by side, in sync. Click one to use it. */
 function RayLab({
   look,
+  finish,
   accent,
   selected,
   onSelect,
 }: {
   look: BuddyLook
+  finish: BuddyFinish
   accent: string
   selected: LogoStyle
   onSelect: (style: LogoStyle) => void
@@ -491,6 +488,7 @@ function RayLab({
               state="idle"
               color={accent}
               look={look}
+              finish={finish}
               logoStyle={name}
               followPointer={false}
             />
@@ -503,15 +501,6 @@ function RayLab({
           </div>
         ))}
       </div>
-    </View>
-  )
-}
-
-function Row({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <View className="gap-2">
-      <Text className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">{label}</Text>
-      <View className="flex-row flex-wrap gap-2">{children}</View>
     </View>
   )
 }
@@ -529,13 +518,17 @@ export default function IslandDemoRoute() {
 }
 
 function IslandDemo() {
-  const accent = useIslandAccent()
+  const themeAccent = useIslandAccent()
+  /** Exact strengths from the sliders; null uses the look's finish preset. */
+  const [finishOverride, setFinishOverride] = useState<BuddyFinish | null>(null)
   const [mode, setMode] = useState<Mode>("hidden")
   const [view, setView] = useState<CardView>("inbox")
   const [motion, setMotion] = useState<MotionStyle>("spring")
   const [speed, setSpeed] = useState(1)
   const [state, setState] = useState<BuddyState>("idle")
   const [look, setLook] = useState<BuddyLook>(DEFAULT_BUDDY_LOOK)
+  const accent = look.color ?? themeAccent
+  const finish = finishOverride ?? BUDDY_FINISHES[look.finish]
   const [logoUnfold, setLogoUnfold] = useState(true)
   const [logoStyle, setLogoStyle] = useState<LogoStyle>("mosaic")
   const [hovered, setHovered] = useState(false)
@@ -596,14 +589,53 @@ function IslandDemo() {
           </Text>
         </View>
 
-        <RayLab look={look} accent={accent} selected={logoStyle} onSelect={setLogoStyle} />
+        <View style={{ width: STAGE_W }}>
+          <StyleLab
+            color={accent}
+            accent={themeAccent}
+            onColorChange={(c) => setLook({ ...look, color: c === themeAccent ? null : normalizeBuddyColor(c) })}
+            finish={finish}
+            onFinishChange={setFinishOverride}
+            onPresetChange={(name) => (setFinishOverride(null), setLook({ ...look, finish: name }))}
+          />
+        </View>
 
         <View style={{ width: STAGE_W }} className="gap-3">
           <Text className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
             Customize Shogo (applies everywhere)
           </Text>
-          <BuddyCustomizer look={look} onChange={setLook} color={accent} state={state} previewSize={170} />
+          <BuddyCustomizer
+            look={look}
+            onChange={setLook}
+            color={themeAccent}
+            finish={finishOverride ?? undefined}
+            state={state}
+            previewSize={170}
+          />
         </View>
+
+        <View style={{ width: STAGE_W }} className="gap-3">
+          <Text className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+            Phone layout (the customizer sheet on iOS and Android)
+          </Text>
+          <View style={{ width: 375 }} className="self-center rounded-[28px] border border-border bg-background p-4">
+            <BuddyCustomizer
+              layout="compact"
+              look={look}
+              onChange={setLook}
+              color={themeAccent}
+              finish={finishOverride ?? undefined}
+              state={state}
+              previewSize={130}
+            />
+          </View>
+        </View>
+
+        <View style={{ width: STAGE_W }}>
+          <BrandLab color={accent} look={look} finish={finish} />
+        </View>
+
+        <RayLab look={look} finish={finish} accent={accent} selected={logoStyle} onSelect={setLogoStyle} />
 
         <div
           style={{
@@ -652,6 +684,7 @@ function IslandDemo() {
             speed={speed}
             buddyState={state}
             look={look}
+            finish={finish}
             logoUnfold={logoUnfold}
             logoStyle={logoStyle}
             accent={accent}
@@ -759,13 +792,14 @@ function IslandDemo() {
               state={state}
               color={accent}
               look={look}
+              finish={finish}
               logoStyle={logoStyle}
               interactive
             />
             <div style={{ display: "flex", gap: 18, alignItems: "flex-end", paddingBottom: 20 }}>
               {SESSIONS.map((s) => (
                 <div key={s.title} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 6 }}>
-                  <ShogoBuddy size={44} state={s.state} color={s.color} look={look} mini followPointer={false} />
+                  <ShogoBuddy size={44} state={s.state} color={s.color} look={{ ...look, color: null }} finish={finish} mini followPointer={false} />
                   <span style={{ color: "#71717a", fontSize: 10 }}>{s.state}</span>
                 </div>
               ))}

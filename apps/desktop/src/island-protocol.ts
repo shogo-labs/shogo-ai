@@ -102,6 +102,7 @@ export const ISLAND_BUDDY_FACES = ['classic', 'visor', 'screen'] as const
 export const ISLAND_BUDDY_TAILS = ['none', 'fox', 'cat', 'bunny', 'dragon', 'cable'] as const
 export const ISLAND_BUDDY_EYEWEAR = ['none', 'sunglasses', 'nerd', 'monocle', 'stars', '3d', 'goggles'] as const
 export const ISLAND_BUDDY_NECKS = ['none', 'scarf', 'bandana', 'bowtie'] as const
+export const ISLAND_BUDDY_FINISHES = ['classic', 'modern'] as const
 
 export interface IslandBuddyLook {
   topper: (typeof ISLAND_BUDDY_TOPPERS)[number]
@@ -111,6 +112,9 @@ export interface IslandBuddyLook {
   neck: (typeof ISLAND_BUDDY_NECKS)[number]
   bolts: boolean
   blush: boolean
+  /** `#RRGGBB`, or null to follow the accent colour. */
+  color: string | null
+  finish: (typeof ISLAND_BUDDY_FINISHES)[number]
 }
 
 export const EMPTY_ISLAND_SNAPSHOT: IslandSnapshot = { sessions: [], recentProjects: [], updatedAt: 0 }
@@ -501,6 +505,10 @@ export function parseIslandBuddyLook(value: unknown): IslandBuddyLook | undefine
   if (!ISLAND_BUDDY_EYEWEAR.includes(eyewear as IslandBuddyLook['eyewear'])) return undefined
   if (!ISLAND_BUDDY_NECKS.includes(neck as IslandBuddyLook['neck'])) return undefined
   if (typeof bolts !== 'boolean' || typeof blush !== 'boolean') return undefined
+  const color = typeof value.color === 'string' && /^#[0-9a-f]{6}$/i.test(value.color) ? value.color.toUpperCase() : null
+  const finish = ISLAND_BUDDY_FINISHES.includes(value.finish as IslandBuddyLook['finish'])
+    ? (value.finish as IslandBuddyLook['finish'])
+    : 'classic'
   return {
     topper: topper as IslandBuddyLook['topper'],
     face: face as IslandBuddyLook['face'],
@@ -509,6 +517,8 @@ export function parseIslandBuddyLook(value: unknown): IslandBuddyLook | undefine
     neck: neck as IslandBuddyLook['neck'],
     bolts,
     blush,
+    color,
+    finish,
   }
 }
 

@@ -2271,7 +2271,17 @@ export const api = {
   /** Saves the Shogo buddy look; the server rejects unknown accessories. */
   async setBuddyLook(
     http: HttpClient,
-    look: { topper: string; face: string; tail: string; eyewear: string; neck: string; bolts: boolean; blush: boolean },
+    look: {
+      topper: string
+      face: string
+      tail: string
+      eyewear: string
+      neck: string
+      bolts: boolean
+      blush: boolean
+      color: string | null
+      finish: string
+    },
   ) {
     const res = await http.request<{ ok: boolean; data?: unknown }>('/api/me/buddy', { method: 'PUT', body: look })
     return res.data

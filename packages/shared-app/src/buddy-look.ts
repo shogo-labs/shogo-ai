@@ -4,7 +4,7 @@
 // The customisable parts of the Shogo buddy, shared by the API (strict
 // validation on save), the app (lenient reads) and, via a parity test, the
 // desktop island protocol. Every Shogo shares the gummy block body; a look
-// only picks the accessories.
+// picks the accessories, the body colour and how it is rendered.
 
 export const BUDDY_TOPPER_IDS = [
   'orb',
@@ -27,6 +27,7 @@ export const BUDDY_FACE_IDS = ['classic', 'visor', 'screen'] as const
 export const BUDDY_TAIL_IDS = ['none', 'fox', 'cat', 'bunny', 'dragon', 'cable'] as const
 export const BUDDY_EYEWEAR_IDS = ['none', 'sunglasses', 'nerd', 'monocle', 'stars', '3d', 'goggles'] as const
 export const BUDDY_NECK_IDS = ['none', 'scarf', 'bandana', 'bowtie'] as const
+export const BUDDY_FINISH_IDS = ['classic', 'modern'] as const
 
 /** What sits on top of the head. */
 export type BuddyTopper = (typeof BUDDY_TOPPER_IDS)[number]
@@ -38,6 +39,8 @@ export type BuddyTail = (typeof BUDDY_TAIL_IDS)[number]
 export type BuddyEyewear = (typeof BUDDY_EYEWEAR_IDS)[number]
 /** Worn round the lower body. */
 export type BuddyNeck = (typeof BUDDY_NECK_IDS)[number]
+/** Glossy cartoon (`classic`) or flatter and cleaner (`modern`). */
+export type BuddyFinishId = (typeof BUDDY_FINISH_IDS)[number]
 
 export interface BuddyLook {
   topper: BuddyTopper
@@ -49,9 +52,12 @@ export interface BuddyLook {
   bolts: boolean
   /** Rosy cheeks; only shows on the classic face. */
   blush: boolean
+  /** Body colour as `#RRGGBB`; null follows the app's accent colour. */
+  color: string | null
+  finish: BuddyFinishId
 }
 
-const LOOK_KEYS = ['topper', 'face', 'tail', 'eyewear', 'neck', 'bolts', 'blush'] as const
+const LOOK_KEYS = ['topper', 'face', 'tail', 'eyewear', 'neck', 'bolts', 'blush', 'color', 'finish'] as const
 
 export const DEFAULT_BUDDY_LOOK: BuddyLook = {
   topper: 'orb',
@@ -61,6 +67,8 @@ export const DEFAULT_BUDDY_LOOK: BuddyLook = {
   neck: 'none',
   bolts: false,
   blush: true,
+  color: null,
+  finish: 'classic',
 }
 
 const oneOf =
@@ -73,6 +81,12 @@ export const isBuddyFace = oneOf(BUDDY_FACE_IDS)
 export const isBuddyTail = oneOf(BUDDY_TAIL_IDS)
 export const isBuddyEyewear = oneOf(BUDDY_EYEWEAR_IDS)
 export const isBuddyNeck = oneOf(BUDDY_NECK_IDS)
+export const isBuddyFinish = oneOf(BUDDY_FINISH_IDS)
+
+/** `#RRGGBB` in upper case, or null if `value` isn't a six-digit hex colour. */
+export function normalizeBuddyColor(value: unknown): string | null {
+  return typeof value === 'string' && /^#[0-9a-f]{6}$/i.test(value) ? value.toUpperCase() : null
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object' && !Array.isArray(value)
@@ -85,8 +99,8 @@ export function sameLook(a: BuddyLook, b: BuddyLook): boolean {
 /**
  * Strict parse for writes: unknown fields and values are rejected, so clients
  * that add an accessory need a server that knows it first. Fields added after
- * the first release (`tail`, `eyewear`, `neck`) may be omitted by older clients and
- * default to none.
+ * the first release (`tail`, `eyewear`, `neck`, `color`, `finish`) may be
+ * omitted by older clients and default to none, the accent colour and classic.
  */
 export function parseBuddyLook(value: unknown): { ok: true; look: BuddyLook } | { ok: false; error: string } {
   if (!isRecord(value)) return { ok: false, error: 'look must be an object' }
@@ -109,9 +123,23 @@ export function parseBuddyLook(value: unknown): { ok: true; look: BuddyLook } | 
   if (typeof value.bolts !== 'boolean' || typeof value.blush !== 'boolean') {
     return { ok: false, error: 'bolts and blush must be booleans' }
   }
+  const color = value.color == null ? null : normalizeBuddyColor(value.color)
+  if (value.color != null && !color) return { ok: false, error: 'color must be a #RRGGBB hex colour or null' }
+  const finish = value.finish ?? 'classic'
+  if (!isBuddyFinish(finish)) return { ok: false, error: `finish must be one of ${BUDDY_FINISH_IDS.join(', ')}` }
   return {
     ok: true,
-    look: { topper: value.topper, face: value.face, tail, eyewear, neck, bolts: value.bolts, blush: value.blush },
+    look: {
+      topper: value.topper,
+      face: value.face,
+      tail,
+      eyewear,
+      neck,
+      bolts: value.bolts,
+      blush: value.blush,
+      color,
+      finish,
+    },
   }
 }
 
@@ -131,5 +159,7 @@ export function normalizeBuddyLook(value: unknown): BuddyLook {
     neck: isBuddyNeck(value.neck) ? value.neck : d.neck,
     bolts: typeof value.bolts === 'boolean' ? value.bolts : d.bolts,
     blush: typeof value.blush === 'boolean' ? value.blush : d.blush,
+    color: normalizeBuddyColor(value.color),
+    finish: isBuddyFinish(value.finish) ? value.finish : d.finish,
   }
 }

@@ -17,7 +17,11 @@ const status: Record<string, string> = {
   mic: 'denied',
 }
 
-if (typeof window !== 'undefined' && !(window as any).shogoDesktop) {
+/** Installed when this page renders, not at import: in development every route
+ * module is loaded up front, and a fake bridge there makes every page in a
+ * plain browser think it is the desktop app. */
+function installFakeBridge() {
+  if (typeof window === 'undefined' || (window as any).shogoDesktop) return
   ;(window as any).shogoDesktop = {
     isDesktop: true,
     platform: 'darwin',
@@ -50,6 +54,7 @@ if (typeof window !== 'undefined' && !(window as any).shogoDesktop) {
 const IDS = ['computer-use', 'files-apps', 'dictation']
 
 export default function DevPermissionSteps() {
+  installFakeBridge()
   const initial =
     typeof window !== 'undefined'
       ? Math.max(0, IDS.indexOf(new URLSearchParams(window.location.search).get('step') ?? ''))

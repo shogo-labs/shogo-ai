@@ -4,12 +4,15 @@
 import { useEffect, useRef, useState, type ReactNode } from "react"
 import { FlatList, Platform, Pressable, ScrollView, Text, View } from "react-native"
 import { cn } from "@shogo/shared-ui/primitives"
-import type { BuddyState } from "./engine"
+import type { BuddyFinish, BuddyState } from "./engine"
 import {
+  BUDDY_COLORS,
   BUDDY_EYEWEAR,
   BUDDY_EYEWEAR_NAMES,
   BUDDY_FACES,
   BUDDY_FACE_NAMES,
+  BUDDY_FINISH_LABELS,
+  BUDDY_FINISH_NAMES,
   BUDDY_NECKS,
   BUDDY_NECK_NAMES,
   BUDDY_TAILS,
@@ -17,7 +20,9 @@ import {
   BUDDY_PRESETS,
   BUDDY_TOPPERS,
   BUDDY_TOPPER_NAMES,
+  normalizeBuddyColor,
   sameLook,
+  withPreset,
   type BuddyLook,
 } from "./look"
 import { ShogoBuddy, type ShogoBuddyHandle } from "./ShogoBuddy"
@@ -54,15 +59,129 @@ function Row({ label, children }: { label: string; children: ReactNode }) {
   return (
     <View className="gap-1.5">
       <Text className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">{label}</Text>
-      <View className="flex-row flex-wrap gap-2">{children}</View>
+      <View className="flex-row flex-wrap items-center gap-2">{children}</View>
     </View>
+  )
+}
+
+/** `#RRGGBB` for a hex or `rgb(r, g, b)` colour, for the web colour input. */
+function toHex(color: string): string {
+  const hex = normalizeBuddyColor(color)
+  if (hex) return hex
+  const [r = 255, g = 122, b = 61] = color.match(/\d+/g)?.map(Number) ?? []
+  return `#${[r, g, b].map((v) => Math.min(255, v).toString(16).padStart(2, "0")).join("")}`.toUpperCase()
+}
+
+const SWATCH = Platform.OS === "web" ? 26 : 32
+
+function Swatch({
+  label,
+  active,
+  onPress,
+  children,
+}: {
+  label: string
+  active: boolean
+  onPress?: () => void
+  children: ReactNode
+}) {
+  return (
+    <Pressable
+      onPress={onPress}
+      hitSlop={4}
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      accessibilityState={{ selected: active }}
+      className={cn("items-center justify-center rounded-full border-2", active ? "border-primary" : "border-transparent")}
+      style={{ width: SWATCH + 8, height: SWATCH + 8 }}
+    >
+      {children}
+    </Pressable>
+  )
+}
+
+/** Body colour: follow the app accent, a swatch, or (web) any colour. */
+function ColorOptions({ look, onChange, color }: { look: BuddyLook; onChange: (look: BuddyLook) => void; color: string }) {
+  const custom = look.color !== null && !BUDDY_COLORS.some((c) => c.color === look.color)
+  const dot = (fill: string) => (
+    <View
+      style={{
+        width: SWATCH,
+        height: SWATCH,
+        borderRadius: SWATCH / 2,
+        backgroundColor: fill,
+        borderWidth: 1,
+        borderColor: "rgba(127,127,127,0.35)",
+      }}
+    />
+  )
+  return (
+    <>
+      <Chip label="Match theme" active={look.color === null} onPress={() => onChange({ ...look, color: null })} />
+      {BUDDY_COLORS.map((c) => (
+        <Swatch
+          key={c.color}
+          label={c.label}
+          active={look.color === c.color}
+          onPress={() => onChange({ ...look, color: c.color })}
+        >
+          {dot(c.color)}
+        </Swatch>
+      ))}
+      {Platform.OS === "web" ? (
+        <Swatch label="Custom colour" active={custom}>
+          <label
+            title="Custom colour"
+            style={{
+              position: "relative",
+              width: SWATCH,
+              height: SWATCH,
+              borderRadius: SWATCH / 2,
+              cursor: "pointer",
+              background: custom
+                ? look.color!
+                : "conic-gradient(#f43f5e, #f59e0b, #a3e635, #22d3ee, #6366f1, #d946ef, #f43f5e)",
+            }}
+          >
+            <input
+              type="color"
+              aria-label="Custom colour"
+              value={toHex(look.color ?? color)}
+              onChange={(event) => {
+                const next = normalizeBuddyColor(event.target.value)
+                if (next) onChange({ ...look, color: next })
+              }}
+              style={{ position: "absolute", inset: 0, width: "100%", height: "100%", opacity: 0, cursor: "pointer" }}
+            />
+          </label>
+        </Swatch>
+      ) : null}
+    </>
+  )
+}
+
+function FinishOptions({ look, onChange }: { look: BuddyLook; onChange: (look: BuddyLook) => void }) {
+  return (
+    <>
+      {BUDDY_FINISH_NAMES.map((name) => (
+        <Chip
+          key={name}
+          label={`${BUDDY_FINISH_LABELS[name].label} · ${BUDDY_FINISH_LABELS[name].hint}`}
+          active={look.finish === name}
+          onPress={() => onChange({ ...look, finish: name })}
+        />
+      ))}
+    </>
   )
 }
 
 interface BuddyCustomizerProps {
   look: BuddyLook
   onChange: (look: BuddyLook) => void
+  /** Body colour when the look follows the theme (the app accent). */
   color: string
+  /** Exact finish strengths instead of the look's finish (the motion lab). */
+  finish?: BuddyFinish
   state?: BuddyState
   previewSize?: number
   /**
@@ -86,9 +205,10 @@ function usePreviewHop(look: BuddyLook) {
   return preview
 }
 
-type CompactCategory = "top" | "face" | "eyes" | "tail" | "neck" | "extras"
+type CompactCategory = "color" | "top" | "face" | "eyes" | "tail" | "neck" | "extras"
 
 const COMPACT_CATEGORIES: { id: CompactCategory; label: string }[] = [
+  { id: "color", label: "Color" },
   { id: "top", label: "Top" },
   { id: "face", label: "Face" },
   { id: "eyes", label: "Eyes" },
@@ -102,15 +222,20 @@ const COMPACT_OPTIONS_HEIGHT = 168
 
 function PresetThumb({
   preset,
+  look,
   active,
   state,
   color,
+  finish,
   onPress,
 }: {
   preset: (typeof BUDDY_PRESETS)[number]
+  /** The preset as it would look with the user's colour and finish. */
+  look: BuddyLook
   active: boolean
   state: BuddyState
   color: string
+  finish?: BuddyFinish
   onPress: () => void
 }) {
   return (
@@ -123,7 +248,7 @@ function PresetThumb({
     >
       {/* The buddy is a WebView on native; keep it from swallowing touches. */}
       <View pointerEvents="none">
-        <ShogoBuddy size={52} state={state} color={color} look={preset.look} followPointer={false} still />
+        <ShogoBuddy size={52} state={state} color={color} finish={finish} look={look} followPointer={false} still />
       </View>
       <Text className={cn("text-[11px] font-semibold", active ? "text-primary" : "text-muted-foreground")}>
         {preset.label}
@@ -132,9 +257,16 @@ function PresetThumb({
   )
 }
 
-function CompactBuddyCustomizer({ look, onChange, color, state = "idle", previewSize = 130 }: BuddyCustomizerProps) {
+function CompactBuddyCustomizer({
+  look,
+  onChange,
+  color,
+  finish,
+  state = "idle",
+  previewSize = 130,
+}: BuddyCustomizerProps) {
   const preview = usePreviewHop(look)
-  const [category, setCategory] = useState<CompactCategory>("top")
+  const [category, setCategory] = useState<CompactCategory>("color")
   const classic = look.face === "classic"
 
   return (
@@ -145,6 +277,7 @@ function CompactBuddyCustomizer({ look, onChange, color, state = "idle", preview
           size={previewSize}
           state={state}
           color={color}
+          finish={finish}
           look={look}
           interactive
           accessibilityLabel="Your Shogo preview"
@@ -165,10 +298,12 @@ function CompactBuddyCustomizer({ look, onChange, color, state = "idle", preview
         renderItem={({ item }) => (
           <PresetThumb
             preset={item}
-            active={sameLook(look, item.look)}
+            look={withPreset(look, item)}
+            active={sameLook(look, withPreset(look, item))}
             state={state}
             color={color}
-            onPress={() => onChange(item.look)}
+            finish={finish}
+            onPress={() => onChange(withPreset(look, item))}
           />
         )}
       />
@@ -193,7 +328,14 @@ function CompactBuddyCustomizer({ look, onChange, color, state = "idle", preview
       </View>
 
       <ScrollView style={{ height: COMPACT_OPTIONS_HEIGHT }} keyboardShouldPersistTaps="handled" nestedScrollEnabled>
-        <View className="flex-row flex-wrap gap-2 pb-1">
+        <View className="flex-row flex-wrap items-center gap-2 pb-1">
+          {category === "color" && (
+            <>
+              <FinishOptions look={look} onChange={onChange} />
+              <View className="h-1 w-full" />
+              <ColorOptions look={look} onChange={onChange} color={color} />
+            </>
+          )}
           {category === "top" &&
             BUDDY_TOPPER_NAMES.map((name) => (
               <Chip
@@ -275,6 +417,7 @@ function FullBuddyCustomizer({
   look,
   onChange,
   color,
+  finish,
   state = "idle",
   previewSize = 150,
 }: BuddyCustomizerProps) {
@@ -292,12 +435,19 @@ function FullBuddyCustomizer({
             size={previewSize}
             state={state}
             color={color}
+            finish={finish}
             look={look}
             interactive
             accessibilityLabel="Your Shogo preview"
           />
         </View>
         <View className="min-w-[240px] flex-1 gap-4">
+          <Row label="Style">
+            <FinishOptions look={look} onChange={onChange} />
+          </Row>
+          <Row label="Color">
+            <ColorOptions look={look} onChange={onChange} color={color} />
+          </Row>
           <Row label="On top">
             {BUDDY_TOPPER_NAMES.map((name) => (
               <Chip
@@ -365,21 +515,22 @@ function FullBuddyCustomizer({
       </View>
       <Row label="Presets">
         {BUDDY_PRESETS.map((preset) => {
-          const active = sameLook(look, preset.look)
+          const presetLook = withPreset(look, preset)
+          const active = sameLook(look, presetLook)
           if (Platform.OS !== "web") {
             return (
               <Chip
                 key={preset.id}
                 label={preset.label}
                 active={active}
-                onPress={() => onChange(preset.look)}
+                onPress={() => onChange(presetLook)}
               />
             )
           }
           return (
             <Pressable
               key={preset.id}
-              onPress={() => onChange(preset.look)}
+              onPress={() => onChange(presetLook)}
               accessibilityRole="button"
               accessibilityLabel={`${preset.label} preset`}
               accessibilityState={{ selected: active }}
@@ -388,7 +539,7 @@ function FullBuddyCustomizer({
                 active ? "border-primary" : "border-white/5 hover:border-white/20",
               )}
             >
-              <ShogoBuddy size={64} state={state} color={color} look={preset.look} followPointer={false} still />
+              <ShogoBuddy size={64} state={state} color={color} finish={finish} look={presetLook} followPointer={false} still />
               <Text className={cn("text-[11px] font-semibold", active ? "text-zinc-50" : "text-zinc-400")}>
                 {preset.label}
               </Text>

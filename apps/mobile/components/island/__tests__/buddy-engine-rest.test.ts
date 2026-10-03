@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
-import { BuddyEngine } from "../buddy/engine"
+import { BUDDY_FINISHES, BuddyEngine } from "../buddy/engine"
 
 const realNow = performance.now.bind(performance)
 let clock = 0
@@ -77,7 +77,10 @@ describe("BuddyEngine resting", () => {
           neck: "none",
           bolts: false,
           blush: true,
+          color: null,
+          finish: "classic",
         }),
+      () => (engine.finish = BUDDY_FINISHES.modern),
       () => engine.logoPeek(),
     ]) {
       const before = wakes
