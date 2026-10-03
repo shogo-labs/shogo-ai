@@ -38,6 +38,8 @@ mock.module("lucide-react-native", () => {
     Check: Icon("Check"),
     ChevronDown: Icon("ChevronDown"),
     ChevronRight: Icon("ChevronRight"),
+    Cloud: Icon("Cloud"),
+    CloudOff: Icon("CloudOff"),
     ExternalLink: Icon("ExternalLink"),
     Key: Icon("Key"),
     Laptop: Icon("Laptop"),

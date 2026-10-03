@@ -48,6 +48,13 @@ export interface CloudLoginResult {
   workspace: string | null;
   /** Stable device id we sent up; cloud echoes it back. */
   deviceId: string;
+  /** Keys for every team workspace, when the user chose to show them all. */
+  workspaces: CloudWorkspaceKey[] | null;
+}
+
+export interface CloudWorkspaceKey {
+  workspace: { id: string; name: string; slug: string | null; kind?: "personal" | "team" };
+  key: string;
 }
 
 export interface CloudLoginOptions {
@@ -120,6 +127,7 @@ interface PollResponse {
   key?: string;
   email?: string | null;
   workspace?: string | null;
+  workspaces?: CloudWorkspaceKey[] | null;
   deviceId?: string;
   error?: string;
 }
@@ -252,6 +260,7 @@ export async function runCloudLogin(opts: CloudLoginOptions): Promise<CloudLogin
             email: data.email ?? null,
             workspace: data.workspace ?? null,
             deviceId: data.deviceId ?? opts.deviceId,
+            workspaces: data.workspaces ?? null,
           };
         }
         if (data?.status === 'denied') {

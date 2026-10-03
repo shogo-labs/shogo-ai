@@ -19,7 +19,7 @@ export interface TimelineState {
   messages: ChatMessage[]
   hasMoreOlder: boolean
   /** Live text for agent replies that are still running, by message id. */
-  streaming: Record<string, { text: string; tool: string | null }>
+  streaming: Record<string, { text: string; tool: string | null; tools?: Array<{ name: string; done: boolean }> }>
 }
 
 export const emptyTimeline: TimelineState = { messages: [], hasMoreOlder: false, streaming: {} }
@@ -105,7 +105,7 @@ export function applyTimelineEvent(state: TimelineState, event: TeamChatEvent, s
     }
     case 'agent.delta': {
       if (!state.messages.some((m) => m.id === event.messageId)) return state
-      return { ...state, streaming: { ...state.streaming, [event.messageId]: { text: event.text, tool: event.tool } } }
+      return { ...state, streaming: { ...state.streaming, [event.messageId]: { text: event.text, tool: event.tool, tools: event.tools } } }
     }
     default:
       return state
@@ -143,6 +143,14 @@ export function startsGroup(prev: ChatMessage | undefined, message: ChatMessage)
   return new Date(message.createdAt).getTime() - new Date(prev.createdAt).getTime() > 5 * 60_000
 }
 
+/**
+ * Index of the first message in (afterSeq, upToSeq] that counts as unread
+ * (someone else's, sent, not deleted); -1 if none.
+ */
+export function firstUnreadIndex(messages: ChatMessage[], afterSeq: number, me: string | null, upToSeq = Infinity): number {
+  return messages.findIndex((m) => m.seq > afterSeq && m.seq <= upToSeq && !m.pending && !m.deletedAt && m.authorUserId !== me)
+}
+
 // ─── Conversation list ───────────────────────────────────────────────────────
 
 export interface ListUpdate {
@@ -172,19 +180,25 @@ export function applyListEvent(
         ...c,
         lastSeq: Math.max(c.lastSeq, message.seq),
         lastMessageAt: visibleInChannel ? message.createdAt : c.lastMessageAt,
+        lastMessage: visibleInChannel && (c.kind === 'dm' || c.kind === 'group_dm')
+          ? { preview: plainPreview(message.text, { users: new Map(), agents: new Map() }, 140), authorId: message.authorUserId, authorType: message.authorType, createdAt: message.createdAt }
+          : c.lastMessage,
         lastReadSeq: caughtUp ? Math.max(c.lastReadSeq, message.seq) : c.lastReadSeq,
         unreadCount: caughtUp ? 0 : c.joined && visibleInChannel ? c.unreadCount + 1 : c.unreadCount,
         mentionCount: caughtUp ? 0 : mentioned ? c.mentionCount + 1 : c.mentionCount,
       }
       const copy = [...list]
       copy[idx] = next
-      return { list: copy, refetch: false }
+      // A reply moved to the end was already counted when it started; the server knows the real count.
+      if (event.moved && !caughtUp) copy[idx] = { ...next, unreadCount: c.unreadCount }
+      return { list: copy, refetch: event.moved === true && !caughtUp }
     }
     case 'read': {
       if (event.userId !== me) return { list, refetch: false }
       return {
         list: list.map((c) => {
           if (c.id !== event.conversationId) return c
+          if (event.unreadCount) return { ...c, lastReadSeq: event.seq, unreadCount: event.unreadCount }
           return { ...c, lastReadSeq: Math.max(c.lastReadSeq, event.seq), unreadCount: 0, mentionCount: 0 }
         }),
         refetch: false,
@@ -254,6 +268,7 @@ export interface MentionCandidate {
   display: string
   token: string
   subtitle?: string | null
+  userId?: string
 }
 
 export function mentionCandidates(mentionables: Mentionables | null, meId: string | null): MentionCandidate[] {
@@ -266,7 +281,7 @@ export function mentionCandidates(mentionables: Mentionables | null, meId: strin
   }))
   const people = mentionables.people
     .filter((p) => p.id !== meId)
-    .map<MentionCandidate>((p) => ({ kind: 'user', display: p.name, token: `<@u:${p.id}>`, subtitle: p.email }))
+    .map<MentionCandidate>((p) => ({ kind: 'user', display: p.name, token: `<@u:${p.id}>`, subtitle: p.email, userId: p.id }))
   const groups = (mentionables.groups ?? []).map<MentionCandidate>((g) => ({
     kind: 'group',
     display: g.handle,

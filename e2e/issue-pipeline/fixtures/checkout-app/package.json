@@ -1,0 +1,11 @@
+{
+  "name": "eng-pod-fixture-checkout-app",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Tiny checkout page with one planted bug (a coupon also discounts shipping), used by the eng-pod demo and e2e/issue-pipeline/l1-eng-pod-metrics. Not part of the shogo-ai workspace build.",
+  "type": "module",
+  "scripts": {
+    "start": "bun run server.ts",
+    "test": "bun test"
+  }
+}

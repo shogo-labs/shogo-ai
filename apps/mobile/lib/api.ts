@@ -2814,6 +2814,8 @@ export interface SecurityPrefs {
     fileAccess?: { allow?: string[]; deny?: string[] }
     network?: { allowedDomains?: string[] }
     mcpTools?: { autoApprove?: string[] }
+    /** Per-tool: allow, ask a person first, or block. */
+    actions?: Record<string, 'allow' | 'ask' | 'block'>
   }
   approvalTimeoutSeconds?: number
 }

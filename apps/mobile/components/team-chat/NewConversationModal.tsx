@@ -2,9 +2,10 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { useState } from 'react'
 import { ActivityIndicator, Modal, Pressable, ScrollView, Text, TextInput, View } from 'react-native'
-import { Bot, Check, Hash, Lock, User, X } from 'lucide-react-native'
+import { Bot, Check, Hash, Lock, X } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { teamChatApi, type ConversationSummary, type Mentionables } from '../../lib/team-chat-api'
+import { PresenceDot } from './PresenceDot'
 
 const api = teamChatApi()
 
@@ -147,7 +148,9 @@ export function NewConversationModal({ workspaceId, mode, mentionables, me, onCl
                           <View className={cn('h-4 w-4 items-center justify-center rounded border', on ? 'border-primary bg-primary' : 'border-border')}>
                             {on && <Check size={11} className="text-primary-foreground" />}
                           </View>
-                          <User size={14} className="text-muted-foreground" />
+                          <View className="w-3.5 items-center">
+                            <PresenceDot userId={p.id} workspaceId={workspaceId} />
+                          </View>
                           <View className="min-w-0 flex-1">
                             <Text className="text-sm text-foreground" numberOfLines={1}>{p.name}</Text>
                             <Text className="text-xs text-muted-foreground" numberOfLines={1}>{p.email}</Text>

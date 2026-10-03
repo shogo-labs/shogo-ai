@@ -91,4 +91,14 @@ describe('workspace schedule tools', () => {
       .toMatchObject({ code: 'no_user' })
     expect(calls).toEqual([])
   })
+
+  test('passes the channel and thread a schedule reports into', async () => {
+    calls.length = 0
+    await execute(createScheduleCreateTool(ctx), {
+      name: 'Briefing', prompt: 'Summarize.', cron: '0 9 * * 1-5', notify_channel: 'eng', notify_thread: 'msg-1',
+    })
+    await execute(createScheduleUpdateTool(ctx), { scheduleId: 'schedule-1', notify_thread: null })
+    expect(calls[0]?.args[1]).toMatchObject({ notifyConversationId: 'eng', notifyThreadRootId: 'msg-1' })
+    expect(calls[1]?.args[2]).toMatchObject({ notifyThreadRootId: null })
+  })
 })

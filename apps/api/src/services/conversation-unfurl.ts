@@ -138,7 +138,8 @@ let registered = false
 export function registerConversationUnfurls(): void {
   if (registered) return
   registered = true
-  registerAfterPostHook((result) => {
+  registerAfterPostHook((result, ctx) => {
+    if (ctx.settled) return
     void unfurlMessage(result).catch((err) => console.warn('[Channels] unfurl failed:', err?.message))
   })
   onMessageTextSettled((row) => {

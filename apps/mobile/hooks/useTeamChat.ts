@@ -7,7 +7,7 @@
  * it current and triggers a backfill after every reconnect.
  */
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
-import { useAuth } from '../contexts/auth'
+import { useWorkspaceUser } from './useWorkspaceUser'
 import {
   newClientMsgId,
   teamChatApi,
@@ -64,8 +64,7 @@ export function useActiveConversationId(): string | null {
 }
 
 export function useMyUserId(): string | null {
-  const { user } = useAuth()
-  return (user as { id?: string } | null)?.id ?? null
+  return useWorkspaceUser()?.id ?? null
 }
 
 // ─── Conversation list ───────────────────────────────────────────────────────
@@ -213,8 +212,8 @@ export function useConversationTimeline(
   conversationId: string | null | undefined,
   threadRootId: string | null = null,
 ) {
-  const me = useMyUserId()
-  const { user } = useAuth()
+  const user = useWorkspaceUser(workspaceId)
+  const me = user?.id ?? null
   const [state, setState] = useState<TimelineState>(emptyTimeline)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -292,13 +291,17 @@ export function useConversationTimeline(
     setState((s) => (s.messages.length > TIMELINE_SOFT_LIMIT ? trimToNewest(s, TIMELINE_TRIM_TO) : s))
   }, [threadRootId])
 
-  const loadOlder = useCallback(async () => {
+  const loadOlder = useCallback(async (limit = PAGE_SIZE) => {
     const s = stateRef.current
     if (!conversationId || threadRootId || !s.hasMoreOlder) return
     const oldest = s.messages.find((m) => !m.pending)
     if (!oldest) return
-    const page = await api.messages(conversationId, { beforeSeq: oldest.seq, limit: PAGE_SIZE })
-    setState((cur) => mergePage(cur, page, 'older'))
+    const page = await api.messages(conversationId, { beforeSeq: oldest.seq, limit })
+    setState((cur) => {
+      const next = mergePage(cur, page, 'older')
+      stateRef.current = next
+      return next
+    })
   }, [conversationId, threadRootId])
 
   const sendWithClientId = useCallback(async (clientMsgId: string, input: SendInput) => {
@@ -330,7 +333,7 @@ export function useConversationTimeline(
       lastReplyAt: null,
       alsoSentToChannel: !!input.alsoSentToChannel,
       authorType: 'user',
-      author: me ? { id: me, name: (user as { name?: string } | null)?.name ?? 'You', image: null } : null,
+      author: me ? { id: me, name: user?.name ?? 'You', image: null } : null,
       authorUserId: me,
       authorAgent: null,
       text: input.text,
@@ -383,25 +386,27 @@ export function useConversationTimeline(
 
   const stopAgent = useCallback((messageId: string) => api.stopAgent(messageId), [])
 
-  return { state, loading, error, reload: loadInitial, loadOlder, trimOld, send, retry, discard, edit, remove, react, stopAgent }
+  const getState = useCallback(() => stateRef.current, [])
+
+  return { state, getState, loading, error, reload: loadInitial, loadOlder, trimOld, send, retry, discard, edit, remove, react, stopAgent }
 }
 
 // ─── Read state ──────────────────────────────────────────────────────────────
 
-/** Mark the channel read up to its newest message while it's on screen. */
-export function useMarkReadWhileVisible(conversationId: string | null | undefined, newestSeq: number, visible: boolean) {
+/** Mark the channel read up to its newest message while it's on screen (not while `paused`, e.g. after "Mark unread"). */
+export function useMarkReadWhileVisible(conversationId: string | null | undefined, newestSeq: number, visible: boolean, paused = false) {
   const lastSent = useRef(0)
   useEffect(() => {
     lastSent.current = 0
   }, [conversationId])
   useEffect(() => {
-    if (!conversationId || !visible || newestSeq <= lastSent.current) return
+    if (!conversationId || !visible || paused || newestSeq <= lastSent.current) return
     const timer = setTimeout(() => {
       lastSent.current = newestSeq
       api.markRead(conversationId, newestSeq).catch(() => {})
     }, 400)
     return () => clearTimeout(timer)
-  }, [conversationId, newestSeq, visible])
+  }, [conversationId, newestSeq, visible, paused])
 }
 
 // ─── Typing ──────────────────────────────────────────────────────────────────
@@ -414,7 +419,10 @@ export function useTypingUsers(
   threadRootId: string | null = null,
 ): string[] {
   const [typing, setTyping] = useState<Record<string, { name: string; at: number }>>({})
+  // The server broadcasts typing to the whole workspace, typist included.
+  const me = useWorkspaceUser(workspaceId)?.id ?? null
   useTeamChatEvents(workspaceId, (event) => {
+    if (event.type === 'typing' && event.userId === me) return
     if (event.type === 'typing' && event.conversationId === conversationId && (event.threadRootId ?? null) === threadRootId) {
       setTyping((t) => ({ ...t, [event.userId]: { name: event.name, at: Date.now() } }))
     } else if (event.type === 'message.created' && event.message.conversationId === conversationId && event.message.authorUserId) {

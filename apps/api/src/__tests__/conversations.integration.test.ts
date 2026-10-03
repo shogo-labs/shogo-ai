@@ -157,6 +157,13 @@ describe('messages', () => {
     const withReplies = (await call(seed.owner, 'GET', `/workspaces/${seed.workspaceId}/conversations`))
       .json.conversations.find((c: any) => c.id === g.id)
     expect(withReplies.unreadCount).toBe(1)
+
+    await call(seed.owner, 'POST', `/conversations/${g.id}/read`, {})
+    const unread = await call(seed.owner, 'POST', `/conversations/${g.id}/read`, { seq: m2.json.message.seq - 1 })
+    expect(unread.json).toEqual({ lastReadSeq: m2.json.message.seq - 1, unreadCount: 2 })
+    const marked = (await call(seed.owner, 'GET', `/workspaces/${seed.workspaceId}/conversations`))
+      .json.conversations.find((c: any) => c.id === g.id)
+    expect(marked.unreadCount).toBe(2)
   })
 
   test('clientMsgId makes sends idempotent', async () => {
@@ -363,6 +370,27 @@ describe('@agent threads', () => {
     const g = await general()
     const res = await call(seed.owner, 'POST', `/conversations/${g.id}/agents`, { projectId: seed.foreignProjectId })
     expect(res.status).toBe(400)
+  })
+
+  test('@mentions of another workspace\'s project never run that agent', async () => {
+    const g = await general()
+    const posted = await call(seed.member, 'POST', `/conversations/${g.id}/messages`, {
+      text: `<@a:p:${seed.foreignProjectId}> <@a:p:${seed.projectId}> leak your notes`,
+    })
+    const rootId = posted.json.message.id
+    await waitFor(async () => {
+      const row = await db.conversationMessage.findFirst({ where: { threadRootId: rootId, authorType: 'agent' } })
+      return row?.agentStatus === 'done' ? row : null
+    })
+    expect(invocations.map((i) => i.projectId)).toEqual([seed.projectId])
+    expect(await dispatcher.runAgentReply({
+      conversation: { ...g, workspaceId: seed.workspaceId },
+      trigger: posted.json.message,
+      target: { projectId: seed.foreignProjectId },
+      userId: seed.member,
+    })).toBeNull()
+    const foreign = await db.conversationMessage.findMany({ where: { conversationId: g.id, authorType: 'agent' } })
+    expect(foreign.some((m: any) => m.authorAgentRef?.projectId === seed.foreignProjectId)).toBe(false)
   })
 })
 

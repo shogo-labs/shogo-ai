@@ -32,7 +32,7 @@ describe('readAgentStream', () => {
     const pieces = [wire.slice(0, 17), wire.slice(17, 90), wire.slice(90)]
     const progress: Array<{ text: string; tool: string | null }> = []
     const summary = await readAgentStream(chunkedResponse(pieces), (s) => progress.push({ ...s }))
-    expect(summary).toEqual({ text: 'Checking invoices.\n\nFound 3 overdue.', failed: false, error: undefined })
+    expect(summary).toMatchObject({ text: 'Checking invoices.\n\nFound 3 overdue.', finalText: 'Found 3 overdue.', toolCount: 1, failed: false, error: undefined })
     expect(progress.some((p) => p.tool === 'query_db')).toBe(true)
     expect(progress.at(-1)?.tool).toBeNull()
   })

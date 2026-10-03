@@ -387,6 +387,28 @@ export async function createGitHubPullRequest(
   )
 }
 
+export interface GitHubMergeResult {
+  merged: boolean
+  sha?: string
+  message?: string
+}
+
+/** Merge a pull request with the project's GitHub App installation. */
+export async function mergeGitHubPullRequest(
+  projectId: string,
+  number: number,
+  opts: { method?: 'merge' | 'squash' | 'rebase'; commitTitle?: string } = {},
+): Promise<CheckpointCallResult<GitHubMergeResult>> {
+  return checkpointFetch(
+    `/api/internal/projects/${encodeURIComponent(projectId)}/github/pull-request/${number}/merge`,
+    {
+      method: 'POST',
+      body: JSON.stringify(opts),
+      parse: (j) => j as GitHubMergeResult,
+    },
+  )
+}
+
 // ---------------------------------------------------------------------------
 // Publish wrappers — let the agent's `publish` tool deploy to {subdomain}.shogo.one
 //
@@ -604,6 +626,8 @@ export interface AgentScheduleCreateRequest {
   enabled?: boolean
   userId?: string
   notifyConversationId?: string | null
+  /** Thread under the channel the result is posted in; top level when omitted. */
+  notifyThreadRootId?: string | null
 }
 
 export interface AgentScheduleUpdateRequest {
@@ -615,6 +639,7 @@ export interface AgentScheduleUpdateRequest {
   enabled?: boolean
   userId?: string
   notifyConversationId?: string | null
+  notifyThreadRootId?: string | null
 }
 
 async function personalFetch<T>(
@@ -835,6 +860,19 @@ export interface AgentChannelIdentity {
   projectId: string | null
 }
 
+export type AgentMessageKind = 'status' | 'result' | 'decision' | 'alert'
+
+/** A message an agent edits in place as work moves; see the API's `conversation-message-kind`. */
+export interface AgentStatusCard {
+  title: string
+  status?: 'working' | 'blocked' | 'done' | 'failed'
+  step?: number
+  steps?: string[]
+  links?: Array<{ label?: string; url: string }>
+  criteria?: string[]
+  summary?: string
+}
+
 function channelsPath(workspaceId: string, suffix = ''): string {
   return `/api/internal/workspaces/${encodeURIComponent(workspaceId)}/agent-channels${suffix}`
 }
@@ -863,23 +901,133 @@ export async function readAgentChannel(
 export async function postAgentChannelMessage(
   workspaceId: string,
   channel: string,
-  input: { text: string; threadRootId?: string; identity: AgentChannelIdentity },
-): Promise<CheckpointCallResult<{ id: string; conversationId: string }>> {
+  input: {
+    text: string
+    threadRootId?: string
+    identity: AgentChannelIdentity
+    /** The runtime's chat session, so the post joins the @mention chain it's part of. */
+    sessionId?: string
+    /** Make this agent the thread owner (answers unaddressed replies). Root posts own their thread by default. */
+    owner?: boolean
+    runId?: string
+    kind?: AgentMessageKind
+    card?: AgentStatusCard
+  },
+): Promise<CheckpointCallResult<{ id: string; conversationId: string; threadId: string; runId: string | null; url: string | null }>> {
   return personalFetch(channelsPath(workspaceId, `/${encodeURIComponent(channel)}/messages`), {
     method: 'POST',
-    body: JSON.stringify({ text: input.text, threadRootId: input.threadRootId, projectId: input.identity.projectId }),
+    body: JSON.stringify({
+      text: input.text,
+      threadRootId: input.threadRootId,
+      projectId: input.identity.projectId,
+      sessionId: input.sessionId,
+      owner: input.owner,
+      runId: input.runId,
+      kind: input.kind,
+      card: input.card,
+    }),
+    parse: (j) => ({
+      id: j?.message?.id,
+      conversationId: j?.message?.conversationId,
+      threadId: j?.message?.threadRootId ?? j?.message?.id,
+      runId: j?.message?.runId ?? null,
+      url: j?.message?.url ?? null,
+    }),
+  })
+}
+
+/** Edit one of this agent's own channel messages: its text, kind, or status card. */
+export async function updateAgentChannelMessage(
+  workspaceId: string,
+  messageId: string,
+  input: { identity: AgentChannelIdentity; text?: string; kind?: AgentMessageKind; card?: AgentStatusCard },
+): Promise<CheckpointCallResult<{ id: string; conversationId: string }>> {
+  return personalFetch(channelsPath(workspaceId, `/messages/${encodeURIComponent(messageId)}`), {
+    method: 'PATCH',
+    body: JSON.stringify({ text: input.text, kind: input.kind, card: input.card, projectId: input.identity.projectId }),
     parse: (j) => ({ id: j?.message?.id, conversationId: j?.message?.conversationId }),
   })
 }
 
 export async function sendAgentDirectMessage(
   workspaceId: string,
-  input: { user: string; text: string; identity: AgentChannelIdentity },
+  input: { user: string; text: string; identity: AgentChannelIdentity; sessionId?: string },
 ): Promise<CheckpointCallResult<{ id: string; conversationId: string }>> {
   return personalFetch(channelsPath(workspaceId, '/dm'), {
     method: 'POST',
-    body: JSON.stringify({ user: input.user, text: input.text, projectId: input.identity.projectId }),
+    body: JSON.stringify({ user: input.user, text: input.text, projectId: input.identity.projectId, sessionId: input.sessionId }),
     parse: (j) => ({ id: j?.message?.id, conversationId: j?.message?.conversationId }),
+  })
+}
+
+export interface TeamDirectory {
+  people: Array<{ userId: string; name: string | null; email: string; tag: string }>
+  agents: Array<{ projectId: string | null; name: string; role: string | null; tag: string }>
+  groups: Array<{ groupId: string; handle: string; name: string; tag: string }>
+}
+
+export interface LiveTeamChannelsResponse {
+  channels: Array<{ id: string; name: string; topic: string | null; private: boolean; agents: Array<{ projectId: string | null; agentTrigger: string; agentKeywords: string | null; agentContextMode?: string }>; userEmails: string[] }>
+  groups: Record<string, string[]>
+}
+
+export async function listTeamChannels(workspaceId: string): Promise<CheckpointCallResult<LiveTeamChannelsResponse>> {
+  return personalFetch(channelsPath(workspaceId, '/team-channels'), {
+    method: 'GET',
+    parse: (j) => ({ channels: j?.channels ?? [], groups: j?.groups ?? {} }),
+  })
+}
+
+export async function upsertTeamChannel(
+  workspaceId: string,
+  name: string,
+  input: {
+    topic?: string
+    private?: boolean
+    agents?: Array<{ projectId: string | null; agentTrigger: string; agentKeywords: string | null; agentContextMode?: string }>
+    removeAgentProjectIds?: string[]
+    userEmails?: string[]
+    groupHandles?: string[]
+  },
+): Promise<CheckpointCallResult<{ created: boolean; changes: string[]; channel: { id: string; name: string } }>> {
+  return personalFetch(channelsPath(workspaceId, `/team-channels/${encodeURIComponent(name)}`), {
+    method: 'PUT',
+    body: JSON.stringify(input),
+    parse: (j) => ({ created: !!j?.created, changes: j?.changes ?? [], channel: j?.channel }),
+  })
+}
+
+export async function getTeamDirectory(workspaceId: string): Promise<CheckpointCallResult<TeamDirectory>> {
+  return personalFetch(channelsPath(workspaceId, '/directory'), {
+    method: 'GET',
+    parse: (j) => (j?.directory ?? { people: [], agents: [], groups: [] }) as TeamDirectory,
+  })
+}
+
+export interface MemberActivityQuery {
+  /** Email or user id of the teammate. */
+  user: string
+  /** The person asking. Taken from the authenticated chat request, never from the model. */
+  requestedBy: string
+  range?: string
+  since?: string
+  until?: string
+  timezone?: string
+}
+
+/** Admin-only summary of what one teammate did in a window; the API enforces who may ask. */
+export async function getMemberActivity(
+  workspaceId: string,
+  query: MemberActivityQuery,
+): Promise<CheckpointCallResult<Record<string, unknown>>> {
+  const params = new URLSearchParams({ user: query.user, requestedBy: query.requestedBy })
+  if (query.range) params.set('range', query.range)
+  if (query.since) params.set('since', query.since)
+  if (query.until) params.set('until', query.until)
+  if (query.timezone) params.set('tz', query.timezone)
+  return personalFetch(`/api/internal/workspaces/${encodeURIComponent(workspaceId)}/member-activity?${params}`, {
+    method: 'GET',
+    parse: (j) => (j?.activity ?? {}) as Record<string, unknown>,
   })
 }
 

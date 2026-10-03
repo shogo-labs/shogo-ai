@@ -647,6 +647,30 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
       'DM open (POST /api/workspaces/:workspaceId/dms) is find-then-create on the deterministic participant key, re-reading on conflict; always routed to the workspace home region.',
   },
   {
+    key: 'Conversation.(externalId,provider,workspaceId)',
+    category: 'external_global_id',
+    reason:
+      'Shadow conversation for an external chat channel (Slack/Teams/Google Chat channel id). The inbound bridge upserts on this key per webhook delivery; a raced duplicate delivery re-reads the existing row. No cron writer.',
+  },
+  {
+    key: 'ChatInstallation.(provider,workspaceId)',
+    category: 'request_scoped',
+    reason:
+      'chat-providers/installations.ts upsertInstallation, called from a single user-initiated OAuth callback or connect command; one install per provider per Shogo workspace. Not a cron/leader-election writer.',
+  },
+  {
+    key: 'ChatInstallation.(externalTenantId,provider)',
+    category: 'single_tenant_upsert',
+    reason:
+      'upsertInstallation keys on the provider-assigned tenant id (Slack team, Azure AD tenant, Google Chat space owner) from a single user-initiated install request.',
+  },
+  {
+    key: 'ChatIdentityLink.(externalTenantId,externalUserId,provider)',
+    category: 'single_tenant_upsert',
+    reason:
+      'chat-providers/installations.ts linkIdentity upserts on the provider user id from a single user-initiated account-link callback.',
+  },
+  {
     key: 'ConversationMember.(conversationId,userId)',
     category: 'single_tenant_upsert',
     reason:

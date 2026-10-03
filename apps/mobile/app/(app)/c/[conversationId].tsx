@@ -3,13 +3,15 @@
 /**
  * A team chat conversation (channel, DM, or agent DM). Threads open from
  * `?thread=<rootId>`: beside the timeline on wide screens, in its place on
- * narrow ones.
+ * narrow ones. `?msg=<id>` scrolls to and highlights one message (in the
+ * thread when `thread` is set too).
  */
 import { useCallback, useEffect, useState } from 'react'
 import { ActivityIndicator, AppState, KeyboardAvoidingView, Platform, Pressable, Text, View, useWindowDimensions } from 'react-native'
 import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router'
 import { useActiveWorkspace } from '../../../hooks/useActiveWorkspace'
-import { teamChatApi, type ChatMessage, type ConversationDetail } from '../../../lib/team-chat-api'
+import { conversationTitle, teamChatApi, type ChatMessage, type ConversationDetail } from '../../../lib/team-chat-api'
+import { sessionRoute } from '../../../lib/team-chat-nav'
 import { useTeamChatEvents } from '../../../lib/team-chat-connection'
 import {
   invalidateConversationList,
@@ -18,6 +20,7 @@ import {
   useMyUserId,
 } from '../../../hooks/useTeamChat'
 import { useStatusFeed } from '../../../hooks/useChatPrefs'
+import { usePresenceFeed } from '../../../hooks/usePresence'
 import { useDraftsFeed, useSavedFeed } from '../../../hooks/useChatItems'
 import { useCustomEmojiFeed } from '../../../hooks/useCustomEmoji'
 import { ConversationHeader } from '../../../components/team-chat/ConversationHeader'
@@ -31,9 +34,10 @@ function first(value: string | string[] | undefined): string | undefined {
 }
 
 export default function ConversationScreen() {
-  const params = useLocalSearchParams<{ conversationId: string; thread?: string }>()
+  const params = useLocalSearchParams<{ conversationId: string; thread?: string; msg?: string }>()
   const conversationId = first(params.conversationId) ?? null
   const threadRootId = first(params.thread) ?? null
+  const linkedMessageId = first(params.msg) ?? null
   const router = useRouter()
   const workspace = useActiveWorkspace()
   const me = useMyUserId()
@@ -47,6 +51,7 @@ export default function ConversationScreen() {
   const mentionables = useMentionables(workspaceId)
   const sidePane = width >= THREAD_SIDE_PANE_MIN_WIDTH
   useStatusFeed(workspaceId)
+  usePresenceFeed(workspaceId)
   useSavedFeed(workspaceId)
   useDraftsFeed(workspaceId)
   useCustomEmojiFeed(workspaceId)
@@ -108,9 +113,22 @@ export default function ConversationScreen() {
     (message: ChatMessage) => {
       const projectId = message.authorAgent?.projectId
       if (!projectId || !message.agentSessionId) return
-      router.push({ pathname: '/(app)/project-chat/[id]', params: { id: projectId, chatSessionId: message.agentSessionId } } as any)
+      if (!conversation) return
+      router.push(
+        sessionRoute({
+          projectId,
+          sessionId: message.agentSessionId,
+          origin: {
+            conversationId: conversation.id,
+            conversationLabel: conversationTitle(conversation),
+            conversationKind: conversation.kind,
+            threadRootId: message.threadRootId ?? threadRootId,
+            agentName: message.authorAgent?.name ?? 'Agent',
+          },
+        }) as any,
+      )
     },
-    [router],
+    [router, conversation, threadRootId],
   )
   const onChanged = useCallback(() => {
     void load()
@@ -165,6 +183,7 @@ export default function ConversationScreen() {
               me={me}
               mentionables={mentionables}
               visible={visible && !(threadRootId && !sidePane)}
+              highlightMessageId={threadRootId ? null : linkedMessageId}
               onOpenThread={openThread}
               onOpenSession={openSession}
               onJoin={onJoin}
@@ -181,6 +200,7 @@ export default function ConversationScreen() {
               me={me}
               mentionables={mentionables}
               visible={visible}
+              highlightMessageId={linkedMessageId}
               onOpenSession={openSession}
               onClose={closeThread}
             />

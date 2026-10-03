@@ -127,7 +127,9 @@ export default function TeamChatSearch() {
   const open = (r: Pick<Result, 'message' | 'conversation'>) => {
     router.push({
       pathname: '/(app)/c/[conversationId]',
-      params: { conversationId: r.conversation.id, thread: r.message.threadRootId ?? r.message.id },
+      params: r.message.threadRootId
+        ? { conversationId: r.conversation.id, thread: r.message.threadRootId, msg: r.message.id }
+        : { conversationId: r.conversation.id, msg: r.message.id },
     } as any)
   }
 

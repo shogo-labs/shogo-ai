@@ -113,6 +113,74 @@ export function collectMentionIds(texts: string[]): {
   return { userIds: [...userIds], projectIds: [...projectIds], conversationIds: [...conversationIds], groupIds: [...groupIds] }
 }
 
+export interface MentionDirectoryEntry {
+  token: string
+  /** Names this entry answers to after `@` (display name, email, handle…). */
+  names: string[]
+}
+
+/** Lowercased name → token. Names claimed by more than one token are dropped. */
+export function buildMentionLookup(entries: MentionDirectoryEntry[]): Map<string, string> {
+  const claims = new Map<string, Set<string>>()
+  for (const entry of entries) {
+    for (const raw of entry.names) {
+      const name = raw.trim().toLowerCase()
+      if (!name) continue
+      const tokens = claims.get(name) ?? new Set<string>()
+      tokens.add(entry.token)
+      claims.set(name, tokens)
+    }
+  }
+  const lookup = new Map<string, string>()
+  for (const [name, tokens] of claims) {
+    if (tokens.size === 1) lookup.set(name, [...tokens][0])
+  }
+  return lookup
+}
+
+const CODE_RE = /```[\s\S]*?```|`[^`\n]*`/g
+const NAME_CHAR_RE = /[\p{L}\p{N}_@-]/u
+
+/**
+ * Turn plain `@Name` / `@email` / `@handle` into mention tokens. Longest
+ * unambiguous name wins; code spans and existing tokens are left alone.
+ */
+export function resolveFriendlyMentionsWith(text: string, lookup: Map<string, string>): string {
+  if (!text.includes('@') || !lookup.size) return text
+  const names = [...lookup.keys()].sort((a, b) => b.length - a.length)
+  const resolveSegment = (segment: string): string => {
+    let out = ''
+    let i = 0
+    while (i < segment.length) {
+      const ch = segment[i]
+      const prev = i > 0 ? segment[i - 1] : ''
+      if (ch !== '@' || (prev && (NAME_CHAR_RE.test(prev) || prev === '<' || prev === '.'))) {
+        out += ch
+        i++
+        continue
+      }
+      const rest = segment.slice(i + 1)
+      const lower = rest.toLowerCase()
+      const name = names.find((n) => lower.startsWith(n) && !NAME_CHAR_RE.test(rest.charAt(n.length)))
+      if (!name) {
+        out += ch
+        i++
+        continue
+      }
+      out += lookup.get(name)
+      i += 1 + name.length
+    }
+    return out
+  }
+  let result = ''
+  let last = 0
+  for (const match of text.matchAll(CODE_RE)) {
+    result += resolveSegment(text.slice(last, match.index)) + match[0]
+    last = (match.index ?? 0) + match[0].length
+  }
+  return result + resolveSegment(text.slice(last))
+}
+
 /** `@handle` names for group tokens, scoped to one workspace. */
 export async function groupNames(db: any, workspaceId: string, groupIds: string[]): Promise<Map<string, string>> {
   if (!groupIds.length) return new Map()

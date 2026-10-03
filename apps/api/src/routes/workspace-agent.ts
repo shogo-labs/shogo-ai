@@ -20,22 +20,16 @@
 
 import { Hono } from 'hono'
 import { hasWorkspaceAccess } from '../services/workspace.service'
-import { ConversationError, resolveNotifyConversation } from '../services/conversation.service'
+import { ConversationError, resolveNotifyConversation, resolveNotifyThread } from '../services/conversation.service'
 import { listActiveChatTurns } from '../services/chat-turn-state.service'
+import { findWorkspaceMember, getMemberWorkActivity } from '../services/engagement-analytics.service'
 import {
   AgentScheduleError,
   createSchedule,
   deleteSchedule,
   getSchedule,
   listSchedules,
-  updateSchedule,
-} from '../services/agent-schedule.service'
-import {
-  AgentScheduleError,
-  createSchedule,
-  deleteSchedule,
-  getSchedule,
-  listSchedules,
+  runScheduleNow,
   updateSchedule,
 } from '../services/agent-schedule.service'
 import {
@@ -317,6 +311,7 @@ export function workspaceAgentRoutes(config: WorkspaceAgentRoutesConfig): Hono {
     }
     try {
       const notifyConversationId = await resolveNotifyConversation(auth.workspaceId, body.notifyConversationId, userId)
+      const notifyThreadRootId = await resolveNotifyThread(notifyConversationId, body.notifyThreadRootId)
       const schedule = await createSchedule({
         workspaceId: auth.workspaceId,
         userId,
@@ -327,6 +322,7 @@ export function workspaceAgentRoutes(config: WorkspaceAgentRoutesConfig): Hono {
         timezone: typeof body.timezone === 'string' ? body.timezone : undefined,
         enabled: body.enabled as boolean | undefined,
         notifyConversationId,
+        notifyThreadRootId,
       })
       return c.json({ schedule }, 201)
     } catch (error) {
@@ -360,8 +356,17 @@ export function workspaceAgentRoutes(config: WorkspaceAgentRoutesConfig): Hono {
       const notifyConversationId = actor
         ? await resolveNotifyConversation(auth.workspaceId, body.notifyConversationId, actor)
         : undefined
+      // A thread is checked against the channel it will live in: the new one, else the current one.
+      let notifyThreadRootId: string | null | undefined
+      if (body.notifyThreadRootId !== undefined || notifyConversationId !== undefined) {
+        const current = notifyConversationId !== undefined
+          ? notifyConversationId
+          : (await getSchedule(auth.workspaceId, c.req.param('scheduleId')))?.notifyConversationId
+        notifyThreadRootId = body.notifyThreadRootId === undefined ? undefined : await resolveNotifyThread(current, body.notifyThreadRootId)
+      }
       const schedule = await updateSchedule(auth.workspaceId, c.req.param('scheduleId'), {
         notifyConversationId,
+        notifyThreadRootId,
         goalId: body.goalId as string | null | undefined,
         name: typeof body.name === 'string' ? body.name.trim().slice(0, 200) : undefined,
         prompt: typeof body.prompt === 'string' ? body.prompt.trim().slice(0, 10_000) : undefined,
@@ -371,6 +376,22 @@ export function workspaceAgentRoutes(config: WorkspaceAgentRoutesConfig): Hono {
       })
       if (!schedule) return c.json({ error: { code: 'not_found', message: 'Schedule not found' } }, 404)
       return c.json({ schedule })
+    } catch (error) {
+      return scheduleError(c, error)
+    }
+  })
+
+  // Run now: marks the schedule due; the dispatcher's next tick runs it.
+  router.post('/workspaces/:workspaceId/schedules/:scheduleId/run', async (c) => {
+    const auth = await authorize(c)
+    if (auth instanceof Response) return auth
+    const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null
+    const denied = await authorizeScheduleManagement(c, auth, body)
+    if (denied) return denied
+    try {
+      const schedule = await runScheduleNow(auth.workspaceId, c.req.param('scheduleId'))
+      if (!schedule) return c.json({ error: { code: 'not_found', message: 'Schedule not found' } }, 404)
+      return c.json({ schedule }, 202)
     } catch (error) {
       return scheduleError(c, error)
     }
@@ -425,6 +446,7 @@ export function workspaceAgentRoutes(config: WorkspaceAgentRoutesConfig): Hono {
       c.req.param('goalId'),
       c.req.param('eventId'),
       decision as GoalApprovalDecision,
+      auth.userId,
     )
     if (!event) {
       return c.json({ error: { code: 'not_found', message: 'Pending approval not found' } }, 404)
@@ -438,6 +460,44 @@ export function workspaceAgentRoutes(config: WorkspaceAgentRoutesConfig): Hono {
     const parsedLimit = Number(c.req.query('limit') || 100)
     const limit = Number.isFinite(parsedLimit) ? Math.min(Math.max(Math.trunc(parsedLimit), 1), 200) : 100
     return c.json({ activity: await listWorkspaceActivity(auth.workspaceId, limit) })
+  })
+
+  // "What did PERSON work on today?" Owners and admins only. Backs the
+  // workspace agent's `member_activity` tool. For a signed-in session the actor
+  // is always the session user. Internal (runtime) callers have no session, so
+  // they name the person asking in `requestedBy`; that id comes from the chat
+  // request's authenticated user, never from model-supplied input.
+  router.get('/workspaces/:workspaceId/member-activity', async (c) => {
+    const auth = await authorize(c)
+    if (auth instanceof Response) return auth
+
+    const actor = auth.userId || c.req.query('requestedBy')?.trim() || null
+    if (!actor) {
+      return c.json({
+        error: { code: 'invalid_request', message: 'requestedBy is required for an internal request' },
+      }, 400)
+    }
+    if (!(await hasWorkspaceAccess(auth.workspaceId, actor, ['owner', 'admin']))) {
+      return forbidden(c, 'Only workspace owners and admins can look up what a teammate worked on')
+    }
+
+    const target = c.req.query('user')?.trim()
+    if (!target) {
+      return c.json({ error: { code: 'invalid_request', message: 'user (email or user id) is required' } }, 400)
+    }
+    const member = await findWorkspaceMember(auth.workspaceId, target)
+    if (!member) {
+      return c.json({ error: { code: 'not_found', message: `No workspace member matches "${target}"` } }, 404)
+    }
+
+    console.info(`[MemberActivity] ${actor} viewed ${member.userId} in workspace ${auth.workspaceId}`)
+    const data = await getMemberWorkActivity(auth.workspaceId, member, {
+      range: c.req.query('range'),
+      since: c.req.query('since'),
+      until: c.req.query('until'),
+      tz: c.req.query('tz'),
+    })
+    return c.json({ activity: data })
   })
 
   router.get('/workspaces/:workspaceId/active-chats', async (c) => {

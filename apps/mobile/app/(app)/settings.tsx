@@ -129,6 +129,7 @@ import { BillingProgressCard } from "../../components/billing/BillingProgressCar
 import { SetSpendLimitDialog } from "../../components/billing/SetSpendLimitDialog";
 import { CostAnalyticsTab } from "../../components/analytics/CostAnalyticsTab";
 import { MemberUsageDetail } from "../../components/settings/MemberUsageDetail";
+import { WorkspaceActivitySection } from "../../components/analytics/WorkspaceActivitySection";
 import { useVisibleModels } from "../../lib/visible-models";
 import {
   isNativePhoneIntegrationsLayout,
@@ -4089,6 +4090,14 @@ function WorkspaceAnalyticsTab() {
             : "Usage metrics and spend for this workspace"}
         </Text>
       </View>
+
+      {/* Who is doing what: team table + dashboard for admins, own stats for members */}
+      {workspaceId ? (
+        <WorkspaceActivitySection
+          workspaceId={workspaceId}
+          isBusinessOrHigher={isBusinessOrHigher}
+        />
+      ) : null}
 
       {/* Progress cards */}
       <View className="flex-row flex-wrap gap-3">

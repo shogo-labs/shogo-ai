@@ -9,7 +9,9 @@
 
 import { prisma } from '../lib/prisma'
 import { publishConversationEvent } from '../lib/conversation-bus'
-import { parseMentions, type AgentTarget, type ParsedMention } from './conversation-mentions'
+import { parseMentions, renderMentionsAsText, type AgentTarget, type ParsedMention } from './conversation-mentions'
+import { assertNativeChat } from './chat-mode'
+import type { AgentChain } from './conversation-agent-chain'
 
 const db = prisma as any
 
@@ -71,6 +73,7 @@ export async function loadAccess(conversationId: string, userId: string): Promis
   if (!conversation) throw notFound()
   const role = await getWorkspaceRole(conversation.workspaceId, userId)
   if (!role) throw notFound()
+  await assertNativeChat(conversation.workspaceId)
   const membership = await db.conversationMember.findFirst({
     where: { conversationId, userId },
   })
@@ -157,7 +160,13 @@ export function serializeMessage(row: any) {
     authorType: row.authorType,
     author: row.authorType === 'user' && row.authorUser
       ? { id: row.authorUser.id, name: row.authorUser.name || row.authorUser.email, image: row.authorUser.image ?? null }
-      : null,
+      : row.authorType === 'user' && row.blocks?.externalAuthor
+        ? {
+            id: `ext:${row.blocks.externalAuthor.provider}:${row.blocks.externalAuthor.id}`,
+            name: row.blocks.externalAuthor.name || 'Someone',
+            image: null,
+          }
+        : null,
     authorUserId: row.authorUserId ?? null,
     authorAgent: row.authorAgentRef ?? null,
     text: deleted ? '' : row.text,
@@ -282,6 +291,29 @@ export async function resolveNotifyConversation(
   return conversation.id
 }
 
+/**
+ * Validates `notifyThreadRootId`: a top-level message in the notify channel.
+ * `undefined` means "unchanged", null/'' clears it.
+ */
+export async function resolveNotifyThread(
+  conversationId: string | null | undefined,
+  value: unknown,
+): Promise<string | null | undefined> {
+  if (value === undefined) return undefined
+  if (value === null || value === '') return null
+  if (typeof value !== 'string') throw new ConversationError(400, 'invalid_field', 'notifyThreadRootId must be a string or null')
+  const root = conversationId
+    ? await db.conversationMessage.findFirst({
+        where: { id: value, conversationId, threadRootId: null, deletedAt: null },
+        select: { id: true },
+      })
+    : null
+  if (!root) {
+    throw new ConversationError(400, 'invalid_notify_thread', 'Choose the first message of a thread in the channel that receives results')
+  }
+  return root.id
+}
+
 /** Display name for an agent: the project's name, or the workspace agent's profile name. */
 export async function agentDisplayName(workspaceId: string, projectId: string | null): Promise<string> {
   if (projectId) {
@@ -290,6 +322,16 @@ export async function agentDisplayName(workspaceId: string, projectId: string | 
   }
   const profile = await db.workspaceAgentProfile.findUnique({ where: { workspaceId }, select: { name: true } }).catch(() => null)
   return profile?.name || 'Shogo'
+}
+
+/** Avatar for an agent: the workspace agent's profile image, or the project's thumbnail. */
+export async function agentIconUrl(workspaceId: string, projectId: string | null): Promise<string | null> {
+  if (projectId) {
+    const project = await db.project.findUnique({ where: { id: projectId }, select: { thumbnailUrl: true } }).catch(() => null)
+    return project?.thumbnailUrl ?? null
+  }
+  const profile = await db.workspaceAgentProfile.findUnique({ where: { workspaceId }, select: { avatarUrl: true } }).catch(() => null)
+  return profile?.avatarUrl ?? null
 }
 
 async function uniqueSlug(workspaceId: string, base: string): Promise<string> {
@@ -353,6 +395,7 @@ export async function listConversationsForUser(workspaceId: string, userId: stri
   const participants = await participantNames(workspaceId, directIds, userId)
   const mentionCounts = await unreadMentionCounts(userId, memberships)
   const unread = await unreadCounts(userId, conversations, membershipByConv)
+  const lastMessages = await lastMessagePreviews(directIds)
 
   return conversations.map((c: any) => {
     const m = membershipByConv.get(c.id)
@@ -365,8 +408,43 @@ export async function listConversationsForUser(workspaceId: string, userId: stri
       unreadCount: unread.get(c.id) ?? 0,
       mentionCount: mentionCounts.get(c.id) ?? 0,
       participants: participants.get(c.id) ?? undefined,
+      lastMessage: lastMessages.get(c.id) ?? undefined,
     })
   })
+}
+
+const LAST_MESSAGE_PREVIEW_CHARS = 140
+
+export interface LastMessage {
+  preview: string
+  authorId: string | null
+  authorType: string
+  createdAt: Date
+}
+
+/**
+ * The newest top-level message of each conversation, for the DM list's second
+ * line. One grouped query finds the newest seq per conversation, one more
+ * reads those rows, so cost does not grow with message history.
+ */
+export async function lastMessagePreviews(conversationIds: string[]): Promise<Map<string, LastMessage>> {
+  const out = new Map<string, LastMessage>()
+  if (!conversationIds.length) return out
+  const latest = await db.conversationMessage.groupBy({
+    by: ['conversationId'],
+    where: { conversationId: { in: conversationIds }, deletedAt: null, threadRootId: null },
+    _max: { seq: true },
+  })
+  if (!latest.length) return out
+  const rows = await db.conversationMessage.findMany({
+    where: { OR: latest.map((l: any) => ({ conversationId: l.conversationId, seq: l._max.seq })), deletedAt: null },
+    select: { conversationId: true, text: true, authorUserId: true, authorType: true, createdAt: true },
+  })
+  for (const row of rows as any[]) {
+    const preview = renderMentionsAsText(row.text ?? '').replace(/\s+/g, ' ').trim().slice(0, LAST_MESSAGE_PREVIEW_CHARS)
+    out.set(row.conversationId, { preview, authorId: row.authorUserId ?? null, authorType: row.authorType, createdAt: row.createdAt })
+  }
+  return out
 }
 
 /** Unread messages in the channel view: thread replies only count when also sent to the channel. */
@@ -452,7 +530,7 @@ async function listMembers(workspaceId: string, conversationId: string) {
     ? {
         id: r.id, type: 'agent' as const, projectId: r.projectId ?? null,
         name: r.projectId ? names.get(r.projectId) ?? 'Agent' : workspaceAgentName,
-        agentTrigger: r.agentTrigger, agentKeywords: r.agentKeywords ?? null,
+        agentTrigger: r.agentTrigger, agentKeywords: r.agentKeywords ?? null, agentMuted: !!r.agentMuted,
       }
     : {
         id: r.id, type: 'user' as const, userId: r.userId, role: r.role,
@@ -688,6 +766,22 @@ export async function assertAgentInWorkspace(workspaceId: string, target: AgentT
   }
 }
 
+export const AGENT_TRIGGERS = ['mention', 'keyword', 'all', 'auto']
+
+/** Silence (or restore) an agent's channel triggers; a direct @mention still reaches it. */
+export async function setAgentMuted(conversationId: string, actorId: string, target: AgentTarget, muted: boolean): Promise<void> {
+  const access = await loadAccess(conversationId, actorId)
+  if (!canPost(access)) throw new ConversationError(403, 'forbidden', 'You cannot change agents here')
+  const member = await db.conversationMember.findFirst({
+    where: { conversationId, memberType: 'agent', projectId: target.projectId },
+  })
+  if (!member) throw new ConversationError(404, 'not_found', 'That agent is not in this channel')
+  if (member.agentMuted !== muted) {
+    await db.conversationMember.update({ where: { id: member.id }, data: { agentMuted: muted } })
+    await publish(access.conversation, { type: 'member.joined', agent: { projectId: target.projectId } })
+  }
+}
+
 export async function addAgentMember(
   conversationId: string,
   actorId: string,
@@ -696,7 +790,7 @@ export async function addAgentMember(
   const access = await loadAccess(conversationId, actorId)
   if (!canPost(access)) throw new ConversationError(403, 'forbidden', 'You cannot add agents here')
   await assertAgentInWorkspace(access.conversation.workspaceId, { projectId: input.projectId })
-  const trigger = ['mention', 'keyword', 'all'].includes(input.trigger ?? '') ? input.trigger! : 'mention'
+  const trigger = AGENT_TRIGGERS.includes(input.trigger ?? '') ? input.trigger! : 'mention'
   const existing = await db.conversationMember.findFirst({
     where: { conversationId, memberType: 'agent', projectId: input.projectId },
   })
@@ -721,7 +815,7 @@ export interface PostMessageInput {
   text: string
   authorType?: 'user' | 'agent' | 'bot' | 'system'
   authorUserId?: string | null
-  authorAgentRef?: { projectId: string | null; name: string } | null
+  authorAgentRef?: { projectId: string | null; name: string; iconUrl?: string | null } | null
   botId?: string | null
   threadRootId?: string | null
   alsoSentToChannel?: boolean
@@ -731,6 +825,11 @@ export interface PostMessageInput {
   agentStatus?: string | null
   agentSessionId?: string | null
   externalRef?: string | null
+  externalThreadRef?: string | null
+  /** Agent @mention chain this message belongs to; `rootMessageId` is filled in here. */
+  agentChain?: AgentChain | null
+  /** Record mentions (and notify) on a system message. Off by default so join/leave notices stay quiet. */
+  systemMentions?: boolean
   createdAt?: Date
 }
 
@@ -807,10 +906,14 @@ export async function postMessage(input: PostMessageInput): Promise<PostMessageR
     data: { lastSeq: { increment: 1 }, lastMessageAt: now },
     select: { lastSeq: true },
   })
-  const mentions = input.authorType === 'system' ? [] : await expandGroupMentions(conversation.workspaceId, parseMentions(text))
+  const mentions = input.authorType === 'system' && !input.systemMentions
+    ? []
+    : await expandGroupMentions(conversation.workspaceId, parseMentions(text))
 
+  const id = crypto.randomUUID()
   const row = await db.conversationMessage.create({
     data: {
+      id,
       conversationId: conversation.id,
       workspaceId: conversation.workspaceId,
       seq: bumped.lastSeq,
@@ -826,6 +929,8 @@ export async function postMessage(input: PostMessageInput): Promise<PostMessageR
       agentStatus: input.agentStatus ?? null,
       agentSessionId: input.agentSessionId ?? null,
       externalRef: input.externalRef ?? null,
+      externalThreadRef: input.externalThreadRef ?? null,
+      agentChain: input.agentChain ? { ...input.agentChain, rootMessageId: root?.id ?? id } : undefined,
       createdAt: now,
       mentions: mentions.length
         ? {
@@ -886,15 +991,57 @@ export function onMessageTextSettled(hook: TextSettledHook): void {
   textSettledHooks.push(hook)
 }
 
-export async function updateMessageInternal(messageId: string, data: Record<string, unknown>) {
+export async function updateMessageInternal(
+  messageId: string,
+  data: Record<string, unknown>,
+  opts: { moveToEnd?: boolean } = {},
+) {
+  // A reply that finished after other messages landed belongs after them, since the client
+  // orders by seq. It is announced as a new message so unread counts and badges follow it.
+  let moved = false
+  if (opts.moveToEnd) {
+    const current = await db.conversationMessage.findUnique({ where: { id: messageId }, select: { conversationId: true, seq: true } })
+    const later = current
+      ? await db.conversationMessage.findFirst({
+          where: { conversationId: current.conversationId, seq: { gt: current.seq }, deletedAt: null },
+          select: { id: true },
+        })
+      : null
+    if (current && later) {
+      const bumped = await db.conversation.update({
+        where: { id: current.conversationId },
+        data: { lastSeq: { increment: 1 }, lastMessageAt: new Date() },
+        select: { lastSeq: true },
+      })
+      data = { ...data, seq: bumped.lastSeq }
+      moved = true
+    }
+  }
   const row = await db.conversationMessage.update({ where: { id: messageId }, data, include: MESSAGE_INCLUDE })
   const conversation = await db.conversation.findUnique({ where: { id: row.conversationId } })
   const message = serializeMessage(row)
-  if (conversation) await publish(conversation, { type: 'message.updated', message })
+  if (conversation) await publish(conversation, moved ? { type: 'message.created', message, moved: true } : { type: 'message.updated', message })
   if ('text' in data && !row.deletedAt && row.agentStatus !== 'running') {
     for (const hook of textSettledHooks) hook(row)
   }
   return message
+}
+
+/** Re-derive a message's mention rows from `text` (edits, finished agent replies). */
+export async function replaceMentions(messageId: string, workspaceId: string, text: string): Promise<ParsedMention[]> {
+  await db.conversationMention.deleteMany({ where: { messageId } })
+  const mentions = await expandGroupMentions(workspaceId, parseMentions(text))
+  for (const m of mentions) {
+    await db.conversationMention.create({
+      data: {
+        messageId,
+        targetType: m.targetType,
+        targetUserId: m.targetType === 'user' ? m.userId : null,
+        projectId: m.targetType === 'agent' ? m.projectId : null,
+      },
+    })
+  }
+  return mentions
 }
 
 export async function editMessage(messageId: string, userId: string, text: string) {
@@ -907,20 +1054,7 @@ export async function editMessage(messageId: string, userId: string, text: strin
   const next = (text ?? '').toString()
   if (!next.trim()) throw new ConversationError(400, 'empty', 'Message is empty')
   if (next.length > MAX_MESSAGE_CHARS) throw new ConversationError(400, 'too_long', 'Message is too long')
-  await db.conversationMention.deleteMany({ where: { messageId } })
-  const mentions = await expandGroupMentions(row.workspaceId, parseMentions(next))
-  if (mentions.length) {
-    for (const m of mentions) {
-      await db.conversationMention.create({
-        data: {
-          messageId,
-          targetType: m.targetType,
-          targetUserId: m.targetType === 'user' ? m.userId : null,
-          projectId: m.targetType === 'agent' ? m.projectId : null,
-        },
-      })
-    }
-  }
+  await replaceMentions(messageId, row.workspaceId, next)
   await db.conversationMessageEmbedding.deleteMany({ where: { messageId } })
   return updateMessageInternal(messageId, { text: next, editedAt: new Date() })
 }
@@ -1051,8 +1185,19 @@ export async function markRead(conversationId: string, userId: string, seq?: num
     where: { id: access.membership.id },
     data: { lastReadSeq: target, lastReadAt: new Date() },
   })
+  const unreadCount = target >= lastSeq ? 0 : await db.conversationMessage.count({
+    where: {
+      conversationId,
+      seq: { gt: target },
+      deletedAt: null,
+      AND: [
+        { OR: [{ threadRootId: null }, { alsoSentToChannel: true }] },
+        { OR: [{ authorUserId: null }, { authorUserId: { not: userId } }] },
+      ],
+    },
+  })
   publishConversationEvent(access.conversation.workspaceId, {
-    type: 'read', conversationId, userId, seq: updated.lastReadSeq,
+    type: 'read', conversationId, userId, seq: updated.lastReadSeq, unreadCount,
   }, [userId])
   if (target >= lastSeq) {
     const { count } = await db.chatInboxItem.updateMany({
@@ -1064,7 +1209,7 @@ export async function markRead(conversationId: string, userId: string, seq?: num
       publishConversationEvent(access.conversation.workspaceId, { type: 'inbox.read', unread }, [userId])
     }
   }
-  return { lastReadSeq: updated.lastReadSeq }
+  return { lastReadSeq: updated.lastReadSeq, unreadCount }
 }
 
 // ─── Mentionables ────────────────────────────────────────────────────────────

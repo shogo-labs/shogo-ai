@@ -86,7 +86,7 @@ import {
 } from './composio'
 import { loadAllSkills, loadBundledSkills, searchSkills } from './skills'
 import { addQuickAction, validateQuickActions } from './quick-actions'
-import { withPermissionGate, assertWithinWorkspace as assertWithinWorkspaceSecure, type PermissionEngine } from './permission-engine'
+import { withActionRules, withPermissionGate, assertWithinWorkspace as assertWithinWorkspaceSecure, type PermissionEngine } from './permission-engine'
 import { assertAllowedPath as assertAllowedPathRaw, getRuntimeTrust } from './runtime-trust'
 import { isBinaryFilePath } from '@shogo/shared-runtime'
 import { withShogoPrFooter } from '@shogo/shared-runtime/agent-attribution'
@@ -143,6 +143,7 @@ import {
   publishProject as apiPublishProject,
   createSharedFileLink as apiCreateSharedFileLink,
   createGitHubPullRequest as apiCreateGitHubPullRequest,
+  mergeGitHubPullRequest as apiMergeGitHubPullRequest,
   postPlanMirror,
   type CheckpointCallResult,
 } from './internal-api'
@@ -1087,6 +1088,78 @@ function createGitHubPullRequestTool(ctx: ToolContext): AgentTool {
           number: result.number,
           url: result.html_url,
         })
+      } catch (error: any) {
+        return textResult({ error: error?.message ?? String(error) })
+      }
+    },
+  }
+}
+
+/**
+ * Merge a pull request. Merging changes shared code, so the permission engine
+ * asks a person first unless the project's action rules say otherwise
+ * (`github_merge_pr` defaults to `ask`).
+ */
+export function createGitHubMergePullRequestTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'github_merge_pr',
+    label: 'Merge GitHub Pull Request',
+    description:
+      'Merge a GitHub pull request by number. A person on the team is asked to approve before it runs, so call it only when the work ' +
+      'is reviewed and ready. Use squash unless the project says otherwise. Do not merge with `gh pr merge`; that is blocked.',
+    parameters: Type.Object({
+      number: Type.Number({ description: 'Pull request number' }),
+      method: Type.Optional(
+        Type.Union([Type.Literal('merge'), Type.Literal('squash'), Type.Literal('rebase')], {
+          description: 'Merge method; defaults to squash',
+        }),
+      ),
+      commitTitle: Type.Optional(Type.String({ description: 'Title for the merge or squash commit' })),
+    }),
+    execute: async (_toolCallId, params) => {
+      const input = params as { number: number; method?: 'merge' | 'squash' | 'rebase'; commitTitle?: string }
+      const number = Math.trunc(Number(input.number))
+      if (!Number.isFinite(number) || number <= 0) return textResult({ error: 'A pull request number is required.' })
+      const method = input.method ?? 'squash'
+
+      const botResult = await apiMergeGitHubPullRequest(ctx.projectId, number, { method, commitTitle: input.commitTitle })
+      if (botResult.ok && botResult.data) {
+        return textResult({ ok: true, mode: 'github-app', merged: botResult.data.merged !== false, number, sha: botResult.data.sha })
+      }
+      if (botResult.code !== 'github_app_not_installed' && botResult.status !== 409) {
+        return textResult({
+          error: botResult.error || 'Shogo GitHub App could not merge the pull request.',
+          status: botResult.status,
+        })
+      }
+
+      const repository = currentGitHubRepository(ctx.workspaceDir)
+      if (!repository) {
+        return textResult({ error: 'No GitHub App connection exists and the origin remote is not a GitHub repository.' })
+      }
+      const token = loadWorkspaceEnvForAttribution(ctx.workspaceDir).GITHUB_TOKEN || process.env.GITHUB_TOKEN
+      if (!token) {
+        return textResult({ error: 'No GitHub App connection exists. Save GITHUB_TOKEN in workspace .env to merge with a user token.' })
+      }
+      try {
+        const response = await fetch(
+          `https://api.github.com/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.repo)}/pulls/${number}/merge`,
+          {
+            method: 'PUT',
+            headers: {
+              Authorization: `Bearer ${token}`,
+              Accept: 'application/vnd.github+json',
+              'X-GitHub-Api-Version': '2022-11-28',
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ merge_method: method, ...(input.commitTitle ? { commit_title: input.commitTitle } : {}) }),
+          },
+        )
+        const result = (await response.json().catch(() => null)) as { merged?: boolean; sha?: string; message?: string } | null
+        if (!response.ok || result?.merged === false) {
+          return textResult({ error: result?.message || `GitHub returned HTTP ${response.status}`, status: response.status })
+        }
+        return textResult({ ok: true, mode: 'user-token', merged: true, number, sha: result?.sha })
       } catch (error: any) {
         return textResult({ error: error?.message ?? String(error) })
       }
@@ -7132,6 +7205,7 @@ export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTo
     g(createExecWaitTool(ctx), 'shell'),
     g(createExecListTool(ctx), 'shell'),
     g(createGitHubPullRequestTool(ctx), 'network'),
+    g(createGitHubMergePullRequestTool(ctx), 'network'),
     g(createReadFileTool(ctx), 'file_read'),
     g(createWriteFileTool(ctx), 'file_write'),
     g(createEditFileTool(ctx), 'file_write'),
@@ -7239,6 +7313,13 @@ export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTo
 
   if (extraTools) {
     tools.push(...extraTools)
+  }
+
+  // Every tool honours its per-tool action rule (run, ask first, block), even
+  // those without a permission category. In place, so the subagent tool
+  // getter above sees the gated tools.
+  if (pe) {
+    for (let i = 0; i < tools.length; i++) tools[i] = withActionRules(tools[i], pe)
   }
 
   return tools
@@ -7760,6 +7841,7 @@ export const ALL_TOOL_NAMES = [
   'connect',
   'disconnect',
   'github_create_pr',
+  'github_merge_pr',
   'share_file',
   'transcribe_audio',
   'quick_action',

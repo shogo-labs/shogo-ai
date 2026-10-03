@@ -75,6 +75,7 @@ model User {
   mobilePushSubscriptions MobilePushSubscription[]
   appInstalls          AppInstall[]
   slackUserLinks       SlackUserLink[]
+  chatIdentityLinks    ChatIdentityLink[]
   conversationMemberships ConversationMember[]
   conversationMessages ConversationMessage[]
 
@@ -188,6 +189,11 @@ model Workspace {
   // pools the parent's plan, usage wallet, and seats (no subscription/wallet
   // of its own). Only Business/Enterprise workspaces may have children.
   parentWorkspaceId String?
+  // Team chat surface: "off" | "native" | "external" | "bridged". Null means
+  // the default for the workspace kind (native for team, off for personal).
+  chatMode      String?
+  // External chat provider for "external" / "bridged": "slack" | "teams" | "google_chat".
+  chatProvider  String?
   createdAt     DateTime     @default(now())
   updatedAt     DateTime     @updatedAt
 
@@ -230,6 +236,7 @@ model Workspace {
   goals                  Goal[]
   proxyTurns             ProxyTurn[]
   conversations          Conversation[]
+  chatInstallations      ChatInstallation[]
 
   @@index([createdAt])
   @@index([homeRegion])
@@ -334,6 +341,8 @@ model AgentSchedule {
   chatSessionId       String?
   /// Conversation that receives each run's summary.
   notifyConversationId String?
+  /// Thread in that conversation the summary is posted under; top level when null.
+  notifyThreadRootId  String?
   runningAt           DateTime?
   consecutiveFailures Int       @default(0)
   createdAt           DateTime  @default(now())
@@ -3764,6 +3773,10 @@ model Conversation {
   lastSeq       Int              @default(0)
   lastMessageAt DateTime?
   archivedAt    DateTime?
+  /// "shogo" for native channels, else the external provider this channel mirrors.
+  provider      String           @default("shogo")
+  /// Channel / conversation / space id on the external provider.
+  externalId    String?
   createdAt     DateTime         @default(now())
   updatedAt     DateTime         @updatedAt
 
@@ -3777,8 +3790,53 @@ model Conversation {
 
   @@unique([workspaceId, slug])
   @@unique([workspaceId, dmKey])
+  @@unique([workspaceId, provider, externalId])
   @@index([workspaceId, kind])
   @@map("conversations")
+}
+
+/// A workspace's install of an external chat app (Slack, Teams, Google Chat).
+/// One per workspace and provider; an external tenant maps to one workspace.
+model ChatInstallation {
+  id                String   @id @default(uuid())
+  workspaceId       String
+  /// "slack" | "teams" | "google_chat"
+  provider          String
+  /// Slack team id, Microsoft tenant id, or Google Workspace customer id.
+  externalTenantId  String
+  tenantName        String?
+  botUserId         String?
+  /// Encrypted JSON of provider credentials (or a bare encrypted token for installs backfilled from Slack).
+  tokensEncrypted   String?  @db.Text
+  /// Provider data needed to reply (e.g. Teams serviceUrl).
+  config            Json?
+  installedByUserId String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, provider])
+  @@unique([provider, externalTenantId])
+  @@map("chat_installations")
+}
+
+/// Links an account on an external chat app to a Shogo user.
+model ChatIdentityLink {
+  id               String   @id @default(uuid())
+  provider         String
+  externalTenantId String
+  externalUserId   String
+  userId           String
+  displayName      String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, externalTenantId, externalUserId])
+  @@index([userId])
+  @@map("chat_identity_links")
 }
 
 /// A human or agent participant. Agents are identified by project (the
@@ -3796,9 +3854,13 @@ model ConversationMember {
   notifyLevel    String                 @default("default")
   muted          Boolean                @default(false)
   starred        Boolean                @default(false)
-  /// When an agent member replies: "mention", "keyword", or "all".
+  /// When an agent member replies: "mention", "keyword", "all", or "auto" (only when relevant).
   agentTrigger   String                 @default("mention")
   agentKeywords  String?
+  /// Silenced with `@agent mute`: its channel triggers stay quiet, but a direct @mention still works.
+  agentMuted     Boolean                @default(false)
+  /// "shared" agents read the thread; "isolated" ones (e.g. a reviewer) get only the hand-off, criteria and links.
+  agentContextMode String               @default("shared")
   createdAt      DateTime               @default(now())
   updatedAt      DateTime               @updatedAt
 
@@ -3835,6 +3897,10 @@ model ConversationMessage {
   agentStatus       String?
   /// External id (e.g. Slack "channel:ts") for bridge dedupe and imports.
   externalRef       String?
+  /// Provider thread id for thread roots whose thread id differs from their message id (Google Chat).
+  externalThreadRef String?
+  /// { rootMessageId, originUserId, depth, hops, turns, runId?, owner? } for agent @mention chains.
+  agentChain        Json?
   editedAt          DateTime?
   deletedAt         DateTime?
   createdAt         DateTime               @default(now())
@@ -3856,6 +3922,7 @@ model ConversationMessage {
   @@index([workspaceId, createdAt])
   @@index([agentSessionId])
   @@index([externalRef])
+  @@index([conversationId, externalThreadRef])
   @@map("conversation_messages")
 }
 

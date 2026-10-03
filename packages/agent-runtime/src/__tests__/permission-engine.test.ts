@@ -257,6 +257,18 @@ describe('PermissionEngine — approval flow', () => {
     expect(await promise).toBe(true)
   })
 
+  test('an ask-first action rule waits as long as the cloud does; other prompts keep the short timeout', async () => {
+    const events: any[] = []
+    const eng = newEngine({ preference: { mode: 'strict', approvalTimeoutSeconds: 30 }, sendSseEvent: (e) => events.push(e) })
+    const merge = eng.requestApproval('cid-1', 'github_merge_pr', 'integrations', { number: 1 }, 'r')
+    const write = eng.requestApproval('cid-2', 'write_file', 'file_write', { path: 'foo' }, 'r')
+    expect(events[0].data.timeout).toBe(900)
+    expect(events[1].data.timeout).toBe(30)
+    eng.handleApprovalResponse({ id: events[0].data.id, decision: 'deny' } as any)
+    eng.handleApprovalResponse({ id: events[1].data.id, decision: 'deny' } as any)
+    await Promise.all([merge, write])
+  })
+
   test('deny response resolves to false and increments the per-turn denial count', async () => {
     const events: any[] = []
     const eng = newEngine({ preference: { mode: 'strict' }, sendSseEvent: (e) => events.push(e) })
