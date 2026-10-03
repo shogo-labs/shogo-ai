@@ -111,9 +111,17 @@ function mobileSwitcherRow(page: Page, currentName: string) {
   })
 }
 
+/** The team Home feed's title (`MobileHomeFeed`), which opens the account screen. */
+function homeFeedSwitcher(page: Page, currentName: string) {
+  return page.getByRole("button", { name: `${currentName}, switch workspace`, exact: true })
+}
+
+function chatDrawerOpener(page: Page) {
+  return page.getByRole("button", { name: "Open chat sessions" })
+}
+
 async function openChatDrawerAndExpectWorkspace(page: Page, name: string) {
-  await page.goto("/")
-  const opener = page.getByRole("button", { name: "Open chat sessions" })
+  const opener = chatDrawerOpener(page)
   await opener.waitFor({ state: "visible", timeout: 20_000 })
   // The first press can land before the shell hydrates; retry until the
   // drawer (and the workspace row inside it) is mounted.
@@ -123,17 +131,32 @@ async function openChatDrawerAndExpectWorkspace(page: Page, name: string) {
   }).toPass({ timeout: 25_000 })
 }
 
-/** Narrow web (<768px): switch via the chat drawer's workspace row -> Workspaces sheet. */
-async function switchWorkspaceNarrow(page: Page, fromName: string, toName: string) {
-  await openChatDrawerAndExpectWorkspace(page, fromName)
-  await mobileSwitcherRow(page, fromName).click()
+/**
+ * Narrow web (<768px) Home differs by workspace kind: a team workspace shows
+ * the Home feed, whose title opens the account screen; a personal workspace
+ * shows the agent chat, whose drawer has the workspace row.
+ */
+async function expectNarrowWorkspace(page: Page, name: string): Promise<"feed" | "drawer"> {
+  await page.goto("/")
+  const feed = homeFeedSwitcher(page, name)
+  await expect(feed.or(chatDrawerOpener(page)).first()).toBeVisible({ timeout: 20_000 })
+  if (await feed.isVisible()) return "feed"
+  await openChatDrawerAndExpectWorkspace(page, name)
+  return "drawer"
+}
 
+async function switchWorkspaceNarrow(page: Page, fromName: string, toName: string) {
+  if ((await expectNarrowWorkspace(page, fromName)) === "feed") {
+    await homeFeedSwitcher(page, fromName).click()
+  } else {
+    await mobileSwitcherRow(page, fromName).click()
+  }
   await page.getByText("Workspaces", { exact: true }).first().waitFor({ state: "visible", timeout: 10_000 })
   await page.getByText(toName, { exact: true }).last().click()
   // Switching triggers a full reload; re-derive state from a clean "/".
   await page.waitForLoadState("load")
 
-  await openChatDrawerAndExpectWorkspace(page, toName)
+  await expectNarrowWorkspace(page, toName)
 }
 
 test.describe("Workspace switching", () => {
@@ -167,7 +190,7 @@ test.describe("Workspace switching", () => {
     await switchWorkspaceWide(page, PERSONAL_WORKSPACE, TEAM_WORKSPACE)
   })
 
-  test("narrow web (390×844): switches both directions via the chat drawer's workspace sheet", async () => {
+  test("narrow web (390×844): switches both directions from Home", async () => {
     await page.setViewportSize({ width: 390, height: 844 })
 
     await switchWorkspaceNarrow(page, TEAM_WORKSPACE, PERSONAL_WORKSPACE)

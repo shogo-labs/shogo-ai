@@ -581,12 +581,16 @@ export async function signUpAndUpgradeToPro(page: Page, user: TestUser): Promise
 
   // When the account has several payment methods enabled (Cash App, Klarna,
   // Bank…), hosted Checkout collapses them into an accordion and the card
-  // fields only mount after "Card" is selected.
+  // fields only mount after "Card" is selected. Older Checkout renders the
+  // option as a radio; newer Checkout renders a plain "Card" accordion header.
   const cardNumber = page.getByPlaceholder("1234 1234 1234 1234")
-  const cardOption = page.getByRole("radio", { name: /^Card/ })
+  const cardOption = page
+    .getByRole("radio", { name: /^Card/ })
+    .or(page.getByText("Card", { exact: true }))
+    .first()
   await cardNumber.or(cardOption).first().waitFor({ state: "visible", timeout: 20_000 })
-  if (!(await cardNumber.isVisible()) && (await cardOption.isVisible())) {
-    await cardOption.check({ force: true })
+  if (!(await cardNumber.isVisible())) {
+    await cardOption.click({ force: true })
   }
 
   await cardNumber.pressSequentially(STRIPE_CARDS.success)
