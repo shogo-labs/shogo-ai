@@ -28,8 +28,16 @@ Track every run in memory, keyed `run:<runId>`:
 ```json
 { "stage": "reproducing" | "awaiting_pick" | "planning" | "implementing" | "awaiting_review" | "done",
   "taskSourceRef": "<issue/PR number or key>", "implementerInstanceId": "<agent_spawn instance id, once spawned>",
-  "iterations": 0, "createdAt": "<ISO time>" }
+  "iterations": 0, "threadId": "<#issue-pipeline thread id, if team chat is on>", "createdAt": "<ISO time>" }
 ```
+
+## Team Chat Progress
+
+When this workspace has a `#issue-pipeline` team channel, each run also gets one thread there so people can follow along and decide without leaving Shogo. There is only one agent here, so the thread carries progress and decisions only — no hand-offs by tag.
+- **New item:** after reproducing, `team_chat_post({ channel: "issue-pipeline", run_id: runId, text: "**<title>** (<issue URL>) — reproduced: <yes/no>. Analysing." })`. Save `thread_id` and `url` in run state and add "Follow along: <url>" to the task-source comment. This thread is yours: human replies in it that tag nobody come to you.
+- **Options:** post the analyst's options in the thread too (`thread_id`), tagging `@maintainers` if `team_directory` lists that group, and asking for a pick. A pick in the thread counts exactly like one on the task source (step 2 below); copy whichever arrives first to the other place.
+- **Milestones:** one line each for plan written, each review round (findings counts), each Done Gate verdict, the PR link, and a stall.
+- If `team_chat_post` returns `not_found`, `chat_disabled` or `no_workspace`, skip team chat for the rest of the run; the task source stays the record.
 
 ## Core Workflow
 

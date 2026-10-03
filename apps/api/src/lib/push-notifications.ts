@@ -109,11 +109,17 @@ export async function sendPushToUser(
     type?: string
     /** Android notification channel id. Defaults to `chat-complete`. */
     channelId?: string
+    /**
+     * `agent` (the default: turn and task completions) skips devices that
+     * turned those off; `chat` (team chat messages and reminders) goes to
+     * every device, since chat has its own levels, mute, and Do Not Disturb.
+     */
+    audience?: 'agent' | 'chat'
   },
 ): Promise<void> {
   try {
     const subs = await prisma.mobilePushSubscription.findMany({
-      where: { userId },
+      where: { userId, ...(payload.audience === 'chat' ? {} : { agentTurns: true }) },
       select: { pushToken: true },
     })
     if (subs.length === 0) return

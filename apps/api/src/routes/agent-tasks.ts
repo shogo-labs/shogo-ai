@@ -36,6 +36,7 @@ type TaskWithProject = {
   currentStep: string | null
   resultSummary: string | null
   errorMessage: string | null
+  notifyConversationId?: string | null
   queuedAt: Date | null
   startedAt: Date | null
   completedAt: Date | null
@@ -133,11 +134,23 @@ function taskView(task: TaskWithProject) {
     currentStep: task.currentStep,
     resultSummary: task.resultSummary,
     errorMessage: task.errorMessage,
+    notifyConversationId: task.notifyConversationId ?? null,
     queuedAt: task.queuedAt,
     startedAt: task.startedAt,
     completedAt: task.completedAt,
     createdAt: task.createdAt,
     updatedAt: task.updatedAt,
+  }
+}
+
+async function notifyConversationFor(workspaceId: string, value: unknown, userId: string): Promise<string | null | undefined | Response> {
+  if (value === undefined) return undefined
+  const { ConversationError, resolveNotifyConversation } = await import('../services/conversation.service')
+  try {
+    return await resolveNotifyConversation(workspaceId, value, userId)
+  } catch (err) {
+    if (!(err instanceof ConversationError)) throw err
+    return Response.json({ error: { code: err.code, message: err.message } }, { status: err.status })
   }
 }
 
@@ -465,7 +478,10 @@ async function runAgentTask(
     })
     if (completedUpdate.count === 0) return
     const completed = await prisma.agentTask.findUnique({ where: { id: taskId } })
-    if (completed) await notifyTask(completed, 'agent_task_completed', 'The agent completed this task.')
+    if (completed) {
+      await notifyTask(completed, 'agent_task_completed', 'The agent completed this task.')
+      void import('../services/conversation-activity').then((m) => m.recordAgentTaskOutcome(completed)).catch(() => {})
+    }
   } catch (error: unknown) {
     const message = errorMessage(error, 'The agent could not complete this task.')
     const latest = await prisma.agentTask.findUnique({ where: { id: taskId }, select: { status: true } }).catch(() => null)
@@ -474,7 +490,10 @@ async function runAgentTask(
       where: { id: taskId },
       data: { status: 'failed', currentStep: null, errorMessage: message.slice(0, 2_000) },
     }).catch(() => null)
-    if (failed) await notifyTask(failed, 'agent_task_failed', message.slice(0, 500))
+    if (failed) {
+      await notifyTask(failed, 'agent_task_failed', message.slice(0, 500))
+      void import('../services/conversation-activity').then((m) => m.recordAgentTaskOutcome(failed)).catch(() => {})
+    }
     console.error(`[AgentTask] ${taskId} failed:`, message)
   } finally {
     stopCancellationWatch?.()
@@ -566,6 +585,8 @@ export function createAgentTaskRoutes(config: { runtimeManager?: RuntimeManager 
     }
     const dueAt = typeof body.dueAt === 'string' && body.dueAt ? new Date(body.dueAt) : null
     if (dueAt && Number.isNaN(dueAt.getTime())) return c.json({ error: { code: 'bad_request', message: 'Invalid dueAt' } }, 400)
+    const notify = await notifyConversationFor(workspaceId, body.notifyConversationId, userId)
+    if (notify instanceof Response) return notify
     const task = await prisma.agentTask.create({
       data: {
         userId,
@@ -574,6 +595,7 @@ export function createAgentTaskRoutes(config: { runtimeManager?: RuntimeManager 
         title,
         notes: typeof body.notes === 'string' ? body.notes.trim().slice(0, 10_000) : null,
         dueAt,
+        notifyConversationId: notify ?? null,
       },
       include: { project: { select: { id: true, name: true } } },
     })
@@ -685,6 +707,9 @@ export function createAgentTaskRoutes(config: { runtimeManager?: RuntimeManager 
       if (Number.isNaN(dueAt.getTime())) return c.json({ error: { code: 'bad_request', message: 'Invalid dueAt' } }, 400)
       data.dueAt = dueAt
     }
+    const notify = await notifyConversationFor(task.workspaceId, body.notifyConversationId, userId)
+    if (notify instanceof Response) return notify
+    if (notify !== undefined) data.notifyConversationId = notify
     const updated = await prisma.agentTask.update({
       where: { id: task.id },
       data,

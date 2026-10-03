@@ -28,6 +28,7 @@ export { usageApproachingLimitTemplate } from './billing/usage-approaching-limit
 
 // Workspace
 export { memberJoinedTemplate } from './workspace/member-joined.js'
+export { channelDigestTemplate } from './workspace/channel-digest.js'
 export { memberRemovedTemplate } from './workspace/member-removed.js'
 export { accountDeletedTemplate } from './workspace/account-deleted.js'
 
@@ -67,6 +68,7 @@ import { paymentFailedTemplate } from './billing/payment-failed.js'
 import { usageOverageChargedTemplate } from './billing/usage-overage-charged.js'
 import { usageApproachingLimitTemplate } from './billing/usage-approaching-limit.js'
 import { memberJoinedTemplate } from './workspace/member-joined.js'
+import { channelDigestTemplate } from './workspace/channel-digest.js'
 import { memberRemovedTemplate } from './workspace/member-removed.js'
 import { accountDeletedTemplate } from './workspace/account-deleted.js'
 import {
@@ -99,6 +101,7 @@ export const allTemplates: EmailTemplate[] = [
   usageApproachingLimitTemplate,
   memberJoinedTemplate,
   memberRemovedTemplate,
+  channelDigestTemplate,
   accountDeletedTemplate,
   // Lifecycle — Drip
   dripWelcomeTemplate,

@@ -50,11 +50,20 @@ describe('issue-pipeline (multi-project) manifest', () => {
     expect(new Set(names).size).toBe(names.length)
   })
 
-  test('computeSystemDiff against an empty workspace creates all 10 projects and reports zero manual steps', () => {
+  test('computeSystemDiff against an empty workspace creates all 10 projects and both team channels, with zero manual steps', () => {
     const parsed = parseSystemManifest(readFileSync(join(MULTI_DIR, 'shogo-system.yaml'), 'utf-8'))
-    const diff = computeSystemDiff(parsed.manifest!, [], null, { callerProjectId: 'caller-1' })
+    const diff = computeSystemDiff(parsed.manifest!, [], null, {
+      callerProjectId: 'caller-1',
+      teamChannels: { channels: [], groups: { maintainers: ['lead@example.com'] } },
+    })
     expect(diff.create.map((c) => c.key).sort()).toEqual(MODULE_KEYS.sort())
     expect(diff.manual).toEqual([])
+    expect(diff.teamChannels.map((c) => `${c.action} ${c.name}`)).toEqual(['create issue-pipeline', 'create pipeline-alerts'])
+    const pipeline = diff.teamChannels[0]
+    expect(pipeline.agents.map((a) => a.key)).toEqual(['intake', 'analyst', 'planner', 'implementer', 'done-gate'])
+    expect(pipeline.agents.every((a) => a.agentTrigger === 'mention')).toBe(true)
+    expect(pipeline.groupHandles).toEqual(['maintainers'])
+    expect(diff.teamChannels[1].agents.map((a) => a.key)).toEqual(['intake', 'retrospective', 'harness'])
     expect(diff.empty).toBe(false)
     // Anchor binds to the caller via 'adopt', not 'create'.
     expect(diff.adopt).toEqual([{ kind: 'adopt', key: 'harness', projectId: 'caller-1', reason: 'anchor' }])
@@ -122,7 +131,21 @@ describe('issue-pipeline (multi-project) manifest', () => {
       return fileContents.get(key)?.get(path) ?? null
     }
 
-    const diff = computeSystemDiff(manifest, live, lock, { callerProjectId, readFile })
+    const teamChannels = {
+      channels: manifest.teamChannels.map((ch) => ({
+        name: ch.name,
+        topic: ch.topic ?? null,
+        private: ch.private,
+        agents: ch.members.flatMap((m) => ('project' in m
+          ? [{ projectId: lock.bindings[m.project], agentTrigger: m.agentTrigger, agentKeywords: null }]
+          : [])),
+        userEmails: ['lead@example.com'],
+      })),
+      groups: { maintainers: ['lead@example.com'] },
+    }
+
+    const diff = computeSystemDiff(manifest, live, lock, { callerProjectId, readFile, teamChannels })
+    expect(diff.manual).toEqual([])
     if (!diff.empty) {
       // Helpful failure output if the topology ever drifts from this test's simulation.
       console.log(summarizeDiff(diff).join('\n'))

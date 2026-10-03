@@ -39,6 +39,8 @@ function getTitleFromPathname(pathname: string): string {
   if (pathname.startsWith('/(app)/settings')) return 'Settings'
   const segments = pathname.split('/').filter(Boolean)
   const last = segments[segments.length - 1]
+  // A conversation, project or session id is not a title; the screen shows its own.
+  if (last && /^[0-9a-f-]{20,}$|^c[a-z0-9]{20,}$/i.test(last)) return ''
   if (last) return last.charAt(0).toUpperCase() + last.slice(1)
   return 'Shogo'
 }

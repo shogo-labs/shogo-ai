@@ -446,7 +446,7 @@ describe('gateway-tools', () => {
       // + the 7 project-lifecycle tools (project_list/create/attach/detach/
       // configure/call, system_apply — see project-tools.ts) + github_create_pr.
       // (`notify_user_error` was removed along with the noisy error toast UI.)
-      expect(createTools(createCtx())).toHaveLength(63)
+      expect(createTools(createCtx())).toHaveLength(64)
       expect(createTools(createCtx()).find((t) => t.name === 'heartbeat_configure')).toBeDefined()
       expect(createTools(createCtx()).find((t) => t.name === 'heartbeat_status')).toBeDefined()
       expect(createTools(createCtx()).find((t) => t.name === 'memory_search')).toBeDefined()

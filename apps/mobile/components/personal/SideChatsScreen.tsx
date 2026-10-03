@@ -15,22 +15,7 @@ import { ArrowLeft, ChevronRight, MessageSquare, MessagesSquare, Plus } from 'lu
 import { useDomainHttp } from '../../contexts/domain'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { api } from '../../lib/api'
-
-interface SideChatItem {
-  id: string
-  name?: string | null
-  inferredName?: string | null
-  lastActiveAt?: string
-  createdAt?: string
-}
-
-function sideChatLabel(session: SideChatItem): string {
-  const name = session.name?.trim()
-  if (name) return name
-  if (session.inferredName?.trim()) return session.inferredName.trim()
-  const created = session.createdAt ? new Date(session.createdAt) : new Date()
-  return `Chat · ${created.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`
-}
+import { sideChatLabel, sortSideChats, type SideChatItem } from '../../lib/side-chats'
 
 export const SideChatsScreen = observer(function SideChatsScreen() {
   const http = useDomainHttp()
@@ -56,15 +41,7 @@ export const SideChatsScreen = observer(function SideChatsScreen() {
     void load()
   }, [load]))
 
-  const sorted = useMemo(
-    () =>
-      [...sessions].sort(
-        (a, b) =>
-          new Date(b.lastActiveAt || b.createdAt || 0).getTime() -
-          new Date(a.lastActiveAt || a.createdAt || 0).getTime(),
-      ),
-    [sessions],
-  )
+  const sorted = useMemo(() => sortSideChats(sessions), [sessions])
 
   const openChat = useCallback(
     (sessionId: string) => {

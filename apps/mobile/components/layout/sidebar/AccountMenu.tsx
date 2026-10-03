@@ -7,6 +7,7 @@
 
 import { useCallback, useState } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
+import { ChevronDown } from "lucide-react-native";
 import { Avatar } from "@shogo/shared-ui/primitives";
 import { cn } from "@shogo/shared-ui/primitives";
 import {
@@ -58,6 +59,8 @@ export interface AccountMenuProps extends UserMenuProps {
   localMode?: boolean;
   /** Native Account: open a settings tab in a sheet instead of pushing Settings. */
   onOpenNativeSettingsTab?: (tab: AccountSettingsSheetTab) => void;
+  /** Wide-web rail: just the workspace tile, opening the menu beside the rail. */
+  tile?: boolean;
 }
 
 export function AccountMenu({
@@ -78,6 +81,7 @@ export function AccountMenu({
   hasPersonalWorkspace,
   onCreatePersonalWorkspace,
   localMode,
+  tile,
 }: AccountMenuProps) {
   const [isOpen, setIsOpen] = useState(false);
   const close = useCallback(() => setIsOpen(false), []);
@@ -91,18 +95,25 @@ export function AccountMenu({
     <>
       <View
         className={cn(
-          "rounded-full bg-primary/20 items-center justify-center",
-          isNative ? density.hitSize : "h-7 w-7",
+          tile ? "rounded-lg bg-foreground" : "rounded-full bg-primary/20",
+          "items-center justify-center",
+          isNative ? density.hitSize : tile ? "h-9 w-9" : "h-7 w-7",
         )}
       >
         <Text
           className={cn(
-            "font-bold text-primary",
+            "font-bold",
+            tile ? "text-background" : "text-primary",
             isNative ? density.text.body : "text-[11px]",
           )}
         >
           {currentWorkspace?.name?.[0]?.toUpperCase() || "W"}
         </Text>
+        {tile && (
+          <View className="absolute -bottom-1 -right-1 h-4 w-4 items-center justify-center rounded-full border border-border bg-card">
+            <ChevronDown size={10} className="text-muted-foreground" />
+          </View>
+        )}
       </View>
       {!collapsed && (
         <View className="flex-1 min-w-0">
@@ -158,9 +169,9 @@ export function AccountMenu({
 
   return (
     <Popover
-      placement="top"
+      placement={tile ? "right top" : "top"}
       size="sm"
-      className="flex-1 min-w-0 w-auto h-auto items-stretch"
+      className={tile ? "w-auto h-auto items-stretch" : "flex-1 min-w-0 w-auto h-auto items-stretch"}
       isOpen={isOpen}
       onOpen={() => setIsOpen(true)}
       onClose={close}
@@ -172,7 +183,8 @@ export function AccountMenu({
           accessibilityHint="Opens menu to switch workspace, navigate, and manage your account"
           accessibilityState={{ expanded: isOpen }}
           className={cn(
-            "flex-row items-center gap-2 active:opacity-80 flex-1 min-w-0",
+            "flex-row items-center gap-2 active:opacity-80",
+            !tile && "flex-1 min-w-0",
             collapsed && "justify-center",
           )}
         >

@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react'
 import { Platform } from 'react-native'
 import { PlatformApi } from '@shogo-ai/sdk'
 import { createHttpClient } from './api'
+import { isActiveWorkspaceCloud } from './workspace-route'
 
 export interface PlatformConfig {
   localMode: boolean
@@ -67,7 +68,7 @@ const LOCAL_CONFIG: PlatformConfig = {
   },
 }
 
-function isLocalMode(): boolean {
+export function isLocalMode(): boolean {
   if (process.env.EXPO_PUBLIC_LOCAL_MODE === 'true') return true
   if (Platform.OS !== 'web' || typeof window === 'undefined') return false
   return !!(window as any).shogoDesktop?.isDesktop
@@ -93,7 +94,7 @@ export function isWorkspaceRuntimeEnabled(): boolean {
  * builds keep project-scoped chat for project tabs.
  */
 export function isProjectWorkspaceRuntimeEnabled(): boolean {
-  return isLocalMode()
+  return isLocalMode() && !isActiveWorkspaceCloud()
 }
 
 let cachedConfig: PlatformConfig | null = null

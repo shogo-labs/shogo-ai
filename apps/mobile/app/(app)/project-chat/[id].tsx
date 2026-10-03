@@ -14,6 +14,7 @@ import { ChatPanel } from "../../../components/chat/ChatPanel";
 import type { InteractionMode } from "../../../components/chat/ChatInput";
 import { consumePendingFiles } from "../../../lib/pending-image-store";
 import { resolveChatScope } from "../../../lib/chat-scope";
+import { SessionBreadcrumb } from "../../../components/team-chat/SessionBreadcrumb";
 
 function firstParam(value: string | string[] | undefined): string | undefined {
   return Array.isArray(value) ? value[0] : value;
@@ -36,6 +37,10 @@ export default observer(function ProjectChatScreen() {
     initialMessage?: string | string[];
     initialInteractionMode?: string | string[];
     newChatNonce?: string | string[];
+    fromConversation?: string | string[];
+    fromLabel?: string | string[];
+    fromThread?: string | string[];
+    fromAgent?: string | string[];
   }>();
   const projectId = firstParam(params.id);
   const requestedSessionId = firstParam(params.chatSessionId);
@@ -113,6 +118,8 @@ export default observer(function ProjectChatScreen() {
 
   return (
     <View className="min-h-0 flex-1 bg-background">
+      {/* Opened from a team chat message: show where from, and the way back. */}
+      <SessionBreadcrumb params={params} />
       <ChatPanel
         featureId={projectId}
         featureName="Project chat"

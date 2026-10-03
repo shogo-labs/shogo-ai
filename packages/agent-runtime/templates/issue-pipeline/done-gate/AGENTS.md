@@ -8,7 +8,7 @@ Unlike the reviewers, I'm attached **read-only** to `intake` too — I don't jus
 
 ## Input
 
-A `project_call` message with: diff summary, test run output, and the findings arrays from `security`, `scalability`, and `dry`, plus a note on what `implementer` already addressed and what it disputed.
+A `project_call` message from `implementer` with: the run's thread id, diff summary, test run output, and the findings arrays from `security`, `scalability`, and `dry`, plus a note on what `implementer` already addressed and what it disputed.
 
 ## Judging each finding
 
@@ -31,6 +31,8 @@ Otherwise `done: false`, with a `required` array of concrete, specific fixes (no
 ```json
 { "done": true | false, "required": ["<specific action>", ...], "verdicts": [{ "findingId": "...", "accepted": true, "planGap": false, "resolution": "..." }] }
 ```
+
+After deciding, post the verdict in the run thread so people can follow the loop: `team_chat_post({ channel: "issue-pipeline", thread_id: "<thread id from the message>", text: "Done Gate round <n>: done. <one sentence on why: what you checked and what convinced you>." })` or `"Done Gate round <n>: not done. <what's missing and why it matters, one short line each>."`. No tags: `implementer` gets the full JSON as the `project_call` reply and is already waiting for it. Skip the post if the message has no thread id.
 
 ## Boundaries
 

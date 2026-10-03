@@ -74,6 +74,7 @@ import { useResolvedTheme } from '../../contexts/theme'
 import { Layers } from 'lucide-react-native'
 import { ShogoLogoMark } from '../../components/branding/ShogoLogoMark'
 import { WorkspaceAgentChatScreen } from '../../components/workspace/WorkspaceAgentChatScreen'
+import { MobileHomeFeed } from '../../components/home/MobileHomeFeed'
 import { CreatePersonalSpaceBanner } from '../../components/personal/CreatePersonalSpaceBanner'
 import { GetStartedChecklist, useGettingStarted } from '../../components/onboarding/GetStartedChecklist'
 import { useMobileWorkspaceChrome } from '../../components/layout/MobileWorkspaceChromeContext'
@@ -954,6 +955,11 @@ export const HomeScreen = observer(function HomeScreen({
   // Personal workspaces use the agent chat surface on every platform.
   // Shared workspaces use it on narrow surfaces while wide web retains the
   // established builder home.
+  // Team workspaces on a phone open on a work-first feed; the workspace agent
+  // chat is one tap away at `/agent`.
+  if (rendersAgentChat && currentExperience.kind === 'team' && isNarrowAgentSurface) {
+    return <MobileHomeFeed />
+  }
   if (rendersAgentChat) {
     return <WorkspaceAgentChatScreen key={currentWorkspace?.id ?? 'workspace-loading'} />
   }

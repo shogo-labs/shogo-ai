@@ -11,6 +11,15 @@ import { useDomainHttp } from '../../contexts/domain'
 import { SecurityPreferenceSelector } from './SecurityPreferenceSelector'
 import { api, type SecurityPrefs } from '../../lib/api'
 import {
+  ACTION_RULES,
+  RULE_LABEL,
+  SUGGESTED_TOOLS,
+  actionRules,
+  effectiveRule,
+  withActionRule,
+  type ActionRule,
+} from '../../lib/security-action-rules'
+import {
   Text,
   TextInput,
   useAccountSheetIcons,
@@ -31,6 +40,7 @@ export function SecuritySettingsPanel() {
   const [newAllowCmd, setNewAllowCmd] = useState('')
   const [newDenyCmd, setNewDenyCmd] = useState('')
   const [newProtectedPath, setNewProtectedPath] = useState('')
+  const [newRuleTool, setNewRuleTool] = useState('')
 
   useEffect(() => {
     if (!http) return
@@ -136,6 +146,16 @@ export function SecuritySettingsPanel() {
     })
   }, [prefs, savePrefs])
 
+  const setToolRule = useCallback((tool: string, rule: ActionRule | null) => {
+    if (prefs) savePrefs(withActionRule(prefs, tool, rule))
+  }, [prefs, savePrefs])
+
+  const addToolRule = useCallback(() => {
+    if (!newRuleTool.trim() || !prefs) return
+    savePrefs(withActionRule(prefs, newRuleTool, 'ask'))
+    setNewRuleTool('')
+  }, [newRuleTool, prefs, savePrefs])
+
   const resetToDefaults = useCallback(() => {
     savePrefs({
       mode: 'full_autonomy',
@@ -157,6 +177,9 @@ export function SecuritySettingsPanel() {
   const allowList = prefs.overrides?.shellCommands?.allow ?? []
   const denyList = prefs.overrides?.shellCommands?.deny ?? []
   const protectedPaths = prefs.overrides?.fileAccess?.deny ?? []
+  const setRules = actionRules(prefs)
+  const ruleTools = [...new Set([...SUGGESTED_TOOLS.map((t) => t.tool), ...Object.keys(setRules)])]
+  const toolLabel = (tool: string) => SUGGESTED_TOOLS.find((t) => t.tool === tool)?.label ?? tool
 
   return (
     <View className="gap-8">
@@ -213,6 +236,56 @@ export function SecuritySettingsPanel() {
               </Pressable>
             </View>
           </View>
+        </View>
+      </View>
+
+      {/* Per-tool rules */}
+      <View className="gap-3">
+        <Text className="text-base font-semibold text-foreground">Tool Rules</Text>
+        <Text className="text-xs text-muted-foreground">
+          Choose what an agent may do on its own. “Ask first” waits for a person to approve, in the chat thread or here; “Block” never runs it.
+        </Text>
+        {ruleTools.map((tool) => {
+          const current = effectiveRule(prefs, tool)
+          return (
+            <View key={tool} className="flex-row items-center justify-between gap-2">
+              <View className="min-w-0 flex-1">
+                <Text className="text-sm text-foreground">{toolLabel(tool)}</Text>
+                {toolLabel(tool) !== tool ? <Text className="text-[11px] font-mono text-muted-foreground">{tool}</Text> : null}
+              </View>
+              <View className="flex-row overflow-hidden rounded-lg border border-border">
+                {ACTION_RULES.map((rule) => (
+                  <Pressable
+                    key={rule}
+                    onPress={() => setToolRule(tool, rule)}
+                    accessibilityRole="button"
+                    accessibilityLabel={`${toolLabel(tool)}: ${RULE_LABEL[rule]}`}
+                    accessibilityState={{ selected: current === rule }}
+                    className={cn('px-2.5 py-1.5', current === rule ? (rule === 'block' ? 'bg-destructive/15' : 'bg-primary/15') : 'bg-background')}
+                  >
+                    <Text className={cn('text-xs', current === rule ? 'font-medium text-foreground' : 'text-muted-foreground')}>{RULE_LABEL[rule]}</Text>
+                  </Pressable>
+                ))}
+              </View>
+              {setRules[tool] ? (
+                <Pressable onPress={() => setToolRule(tool, null)} accessibilityLabel={`Reset ${toolLabel(tool)} to default`} className="p-1.5">
+                  <RotateCcw size={12} className="text-muted-foreground" />
+                </Pressable>
+              ) : null}
+            </View>
+          )
+        })}
+        <View className="flex-row items-center gap-1">
+          <TextInput
+            value={newRuleTool}
+            onChangeText={setNewRuleTool}
+            placeholder="Add a tool, e.g. exec"
+            className="bg-background border border-border rounded-lg px-2 py-1.5 text-xs text-foreground placeholder:text-muted-foreground w-44"
+            onSubmitEditing={addToolRule}
+          />
+          <Pressable onPress={addToolRule} className="p-1.5 rounded-md bg-muted">
+            <Plus size={12} className="text-muted-foreground" />
+          </Pressable>
         </View>
       </View>
 

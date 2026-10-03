@@ -48,6 +48,13 @@ const svcSpies = {
 }
 mock.module('../services/analytics.service', () => svcSpies)
 
+// The engagement endpoints have their own suite (scoped-analytics-engagement.test.ts).
+// Stubbing the service here keeps this file from loading its real dependency chain.
+mock.module('../services/engagement-analytics.service', () => ({
+  getEngagementStats: async () => ({}),
+  getTeamWork: async () => ({}),
+}))
+
 const { scopedAnalyticsRoutes } = await import('../routes/scoped-analytics')
 
 const WS = 'ws_1'

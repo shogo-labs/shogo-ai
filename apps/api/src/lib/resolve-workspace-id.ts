@@ -129,6 +129,18 @@ const RESOURCE_LOOKUPS: Record<string, Lookup> = {
   // Agent tasks are mutated through /api/agent-tasks/:id. Resolve the task's
   // workspace before the home-region router decides where the mutation runs.
   'agent-tasks': directWs('agentTask'),
+  // Team chat: /api/conversations/:id/..., /api/conversation-messages/:id/...
+  // and /api/conversation-files/:id. Per-conversation seq allocation must run
+  // in the workspace's home region.
+  conversations: directWs('conversation'),
+  'conversation-messages': directWs('conversationMessage'),
+  'conversation-files': async (id) => {
+    const file = await db.conversationAttachment.findUnique({
+      where: { id },
+      select: { conversation: { select: { workspaceId: true } } },
+    })
+    return file?.conversation?.workspaceId ?? null
+  },
 }
 
 // Custom chain lookups above resolve these models without going through

@@ -7,7 +7,7 @@
  * project-filter state. Leaf UI and tree components live alongside it.
  */
 
-import { useState, useCallback, useEffect, useRef } from "react";
+import { useState, useCallback, useEffect, useRef, type ReactNode } from "react";
 import {
   View,
   Text,
@@ -56,7 +56,7 @@ import {
   Check,
 } from "lucide-react-native";
 import { cn } from "@shogo/shared-ui/primitives";
-import type { PrimaryNavId } from "@shogo/shared-app";
+import type { PrimaryNavId, SidebarTabId } from "@shogo/shared-app";
 import { CommandPalette, useCommandPalette } from "../CommandPalette";
 import { useActiveInstance } from "../../../contexts/active-instance";
 import { ShogoWordmark } from "../../branding/ShogoWordmark";
@@ -109,12 +109,21 @@ import {
 } from "../../../lib/project-prefs-store";
 import { NavItem } from "./NavItem";
 import { ProjectTreeItem } from "./ProjectTreeItem";
+import { TeamChatSidebarProvider } from "../../team-chat/TeamChatSidebarProvider";
+import { ChannelsPanel } from "../../team-chat/panels/ChannelsPanel";
+import { DmsPanel } from "../../team-chat/panels/DmsPanel";
+import { AgentsPanel } from "../../team-chat/panels/AgentsPanel";
+import { ActivityFeed } from "../../activity/ActivityFeed";
+import { WideSidebar } from "./WideSidebar";
+import { PersonalChatsPanel } from "./PersonalChatsPanel";
+import { HomePanel, MorePanel } from "./TabPanels";
+import { TAB_META } from "./IconRail";
 import {
   MENU_ITEM_RADIO_ROLE,
   PROJECT_SCOPE_OPTIONS,
   PROJECT_SORT_OPTIONS,
 } from "./ProjectFilterSheet";
-import { AccountMenu } from "./AccountMenu";
+import { AccountMenu, type AccountMenuProps } from "./AccountMenu";
 import { CreateWorkspaceModal } from "./CreateWorkspaceModal";
 import { InboxPanel } from "./InboxPanel";
 import { useHasAdminAccess } from "../../../hooks/useHasAdminAccess";
@@ -596,7 +605,8 @@ export const AppSidebar = observer(function AppSidebar({
     });
   }, [isOpen, mobileExpandedProjectId, mobileProjectPanelId, mobileProjectTransition]);
 
-  const [collapsed, setCollapsed] = useState(false);
+  // The wide layout hides its panel from `WideSidebar`; the rail never collapses.
+  const collapsed = false;
   const [createWorkspaceOpen, setCreateWorkspaceOpen] = useState(false);
   const { open: commandPaletteOpen, setOpen: setCommandPaletteOpen } =
     useCommandPalette();
@@ -677,11 +687,7 @@ export const AppSidebar = observer(function AppSidebar({
   }, [closeNativeDrawer, isNativeDrawer, isOpen]);
 
   const toggleCollapse = useCallback(() => {
-    if (isNativeDrawer) {
-      closeNativeDrawer();
-      return;
-    }
-    setCollapsed((c) => !c);
+    if (isNativeDrawer) closeNativeDrawer();
   }, [closeNativeDrawer, isNativeDrawer]);
 
   const handleSwitchWorkspace = useCallback(
@@ -875,182 +881,8 @@ export const AppSidebar = observer(function AppSidebar({
     },
   };
 
-  const sidebarContent = (
-    <View
-      role="navigation"
-      accessibilityLabel="App sidebar"
-      className={cn(
-        "flex-1",
-        isNativeDrawer ? undefined : "bg-card border-r border-border",
-        collapsed ? "w-16" : isNativeDrawer ? "w-full" : "w-64",
-      )}
-      style={
-        isNativeDrawer
-          ? {
-              paddingLeft: drawerSideInset,
-              paddingRight: 4,
-              backgroundColor: nativeDrawerCanvas,
-            }
-          : undefined
-      }
-    >
-      {isNativeDrawer && <View style={{ height: drawerTopInset }} />}
-      {/* ── Logo Row ── */}
-      <View
-        className={cn(
-          "flex-row items-center",
-          !isNativeDrawer && "border-b border-border",
-          isNativeDrawer ? "h-16" : "h-12",
-          collapsed ? "justify-center px-2" : "justify-between px-3",
-        )}
-      >
-        {!collapsed && (
-          <>
-            <Pressable
-              onPress={() => {
-                router.push("/(app)" as any);
-                onNavPress();
-              }}
-              role="link"
-              accessibilityLabel="Shogo Home"
-              className="flex-row items-center"
-            >
-              <ShogoWordmark
-                className={
-                  isNativeDrawer ? "h-8 w-[136px]" : "h-[22px] w-[94px]"
-                }
-              />
-            </Pressable>
-            {isNativeDrawer ? (
-              <Pressable
-                onPress={handleSearchPress}
-                accessibilityLabel="Search"
-                className={cn(
-                  "rounded-md active:bg-muted",
-                  drawerDensity.hit,
-                )}
-              >
-                <Search
-                  size={drawerDensity.icon.lg}
-                  color={iconChrome.color}
-                  strokeWidth={iconChrome.strokeWidth}
-                />
-              </Pressable>
-            ) : (
-              <Pressable
-                onPress={toggleCollapse}
-                className="h-8 w-8 items-center justify-center rounded-md active:bg-muted"
-              >
-                <PanelLeftClose size={12} className="text-muted-foreground" />
-              </Pressable>
-            )}
-          </>
-        )}
-        {collapsed && (
-          <Pressable
-            onPress={toggleCollapse}
-            accessibilityLabel="Expand sidebar"
-          >
-            <ShogoWordmark compact className="h-7 w-7" />
-          </Pressable>
-        )}
-      </View>
-
-      {/* ── Remote instance indicator ── */}
-      {activeRemoteInstance && !collapsed && (
-        <View className="px-3 py-1.5 bg-primary/10 border-b border-primary/20">
-          <View className="flex-row items-center gap-2">
-            <Laptop size={isNativeDrawer ? drawerDensity.icon.xs : 12} className="text-primary" />
-            <Text
-              className={cn(
-                drawerDensity.text.caption,
-                "text-primary font-medium flex-1",
-              )}
-              numberOfLines={1}
-            >
-              Controlling: {activeRemoteInstance.name}
-            </Text>
-          </View>
-        </View>
-      )}
-
-      {/* ── Main Navigation (scrollable) ── */}
-      <ScrollView
-        className={cn("flex-1", isNativeDrawer ? "pt-3" : "pt-2")}
-        showsVerticalScrollIndicator={false}
-      >
-        {!experience.resolved ? (
-          <WorkspaceChromeSkeletonRows count={6} testID="sidebar-chrome-skeleton" />
-        ) : (
-        <>
-        {/* Primary nav mirrors the mobile bottom bar. */}
-        <View className="px-2">
-          {experience.primaryNav.map((id) => {
-            const item = primaryNavItems[id];
-            return (
-              <NavItem
-                key={id}
-                icon={item.icon}
-                label={item.label}
-                href={item.href}
-                active={item.active}
-                collapsed={collapsed}
-                onNavPress={onNavPress}
-              />
-            );
-          })}
-        </View>
-
-        {/* Secondary navigation and utilities. */}
-        <View
-          className={cn(
-            "mx-2 mt-2 border-t border-border/50 pt-2",
-            isNativeDrawer && "mt-3 pt-3",
-          )}
-        >
-          {features.marketplace && experience.showMarketplace && (
-            <NavItem
-              icon={Store}
-              label="Marketplace"
-              href="/(app)/marketplace"
-              active={isMarketplacePage}
-              collapsed={collapsed}
-              onNavPress={onNavPress}
-            />
-          )}
-          {isNativeDrawer && experience.showNewChat && (
-            <NavItem
-              icon={MessageSquarePlus}
-              label="New Chat"
-              collapsed={collapsed}
-              onPress={handleNewChat}
-            />
-          )}
-          {!isNativeDrawer && (
-            <NavItem
-              icon={Search}
-              label="Search"
-              collapsed={collapsed}
-              shortcut={formatModKey("k")}
-              onPress={handleSearchPress}
-            />
-          )}
-          {experience.showSideChatsNav && (
-            <NavItem
-              icon={MessagesSquare}
-              label="Side chats"
-              href="/(app)/side-chats"
-              active={pathname.includes("/side-chats")}
-              collapsed={collapsed}
-              onNavPress={onNavPress}
-            />
-          )}
-        </View>
-
-        {/* PROJECTS tree — each project expands to show its chats */}
-        {experience.showProjectsTree && (
-        <View className={cn("px-2", isNativeDrawer ? "mt-5" : "mt-4")}>
-          {!collapsed && pinnedProjects.length > 0 && (
+  // The project tree is shared by the narrow drawer and the wide Projects tab.
+  const pinnedBlock = !collapsed && pinnedProjects.length > 0 && (
             <View className="mb-2">
               <Pressable
                 onPress={() => setPinnedExpanded((expanded) => !expanded)}
@@ -1096,7 +928,9 @@ export const AppSidebar = observer(function AppSidebar({
                   />
                 ))}
             </View>
-          )}
+          );
+  const listBlock = (
+    <>
           {!collapsed &&
             (unpinnedProjects.length > 0 || pinnedProjects.length === 0) && (
               <View
@@ -1315,11 +1149,285 @@ export const AppSidebar = observer(function AppSidebar({
                   )}
               </>
             ))}
+    </>
+  );
+  const projectsBlock = (
+    <View className={cn("px-2", isNativeDrawer ? "mt-5" : "mt-4")}>
+      {pinnedBlock}
+      {listBlock}
+    </View>
+  );
+
+  /** Body for a wide team tab (Activity renders outside the scroll view). */
+  const renderTeamTab = (tab: SidebarTabId) => {
+    switch (tab) {
+      case "channels":
+        return <ChannelsPanel onNavPress={onNavPress} />;
+      case "dms":
+        return <DmsPanel />;
+      case "agents":
+        return <AgentsPanel onNavPress={onNavPress} />;
+      case "projects":
+        return experience.showProjectsTree ? projectsBlock : null;
+      case "more":
+        return <MorePanel onNavPress={onNavPress} />;
+      case "home":
+      default:
+        if (experience.kind === "personal") return <PersonalChatsPanel onNavPress={onNavPress} />;
+        return (
+          <HomePanel
+            onNavPress={onNavPress}
+            isHomeRoute={/\/agent\/?$/.test(pathname)}
+            pinned={pinnedProjects.length > 0 ? <View className="mt-3 px-2">{pinnedBlock}</View> : null}
+          />
+        );
+    }
+  };
+
+  /** The workspace menu (switch workspace, account, billing, sign out). */
+  const renderAccountMenu = (extra: Partial<AccountMenuProps> = {}) => (
+  <AccountMenu
+    user={user}
+    onSignOut={handleSignOut}
+    onNavigate={(href) => {
+      router.push(href as any);
+      onNavPress();
+    }}
+    isSuperAdmin={hasAdminAccess}
+    isWide={isWide}
+    collapsed={collapsed}
+    workspaces={allWorkspaces}
+    currentWorkspace={currentWorkspace}
+    billingData={billingData}
+    workspacePlan={workspacePlan}
+    allPlans={allPlans}
+    showBilling={features.billing}
+    onSwitchWorkspace={handleSwitchWorkspace}
+    onCreateWorkspace={handleCreateWorkspace}
+    hasPersonalWorkspace={hasPersonalWorkspace}
+    onCreatePersonalWorkspace={handleCreatePersonalWorkspace}
+    localMode={localMode}
+    {...extra}
+  />
+  );
+
+  /**
+   * The sidebar for one tab. `tab` is null in the narrow drawer, which keeps a
+   * single scrolling list; the wide layout passes the selected rail tab.
+   */
+  const renderSidebar = (tab: SidebarTabId | null, onHidePanel?: () => void) => (
+    <View
+      role="navigation"
+      accessibilityLabel="App sidebar"
+      className={cn(
+        "flex-1",
+        // The wide layout's frame (width, border, surface) belongs to `WideSidebar`.
+        tab === null && !isNativeDrawer ? "bg-card border-r border-border" : undefined,
+        tab === null && (isNativeDrawer ? "w-full" : "w-64"),
+      )}
+      style={
+        isNativeDrawer
+          ? {
+              paddingLeft: drawerSideInset,
+              paddingRight: 4,
+              backgroundColor: nativeDrawerCanvas,
+            }
+          : undefined
+      }
+    >
+      {isNativeDrawer && <View style={{ height: drawerTopInset }} />}
+      {/* ── Panel header (wide): the tab's name, search, hide panel ── */}
+      {tab !== null && (
+        <View className="h-12 flex-row items-center justify-between border-b border-border px-3">
+          <Text className="text-sm font-semibold text-foreground">{TAB_META[tab].label}</Text>
+          <View className="flex-row items-center gap-1">
+            <Pressable onPress={handleSearchPress} accessibilityLabel="Search" className="h-8 w-8 items-center justify-center rounded-md active:bg-muted">
+              <Search size={14} className="text-muted-foreground" />
+            </Pressable>
+            <Pressable onPress={onHidePanel} accessibilityLabel="Hide panel" className="h-8 w-8 items-center justify-center rounded-md active:bg-muted">
+              <PanelLeftClose size={12} className="text-muted-foreground" />
+            </Pressable>
+          </View>
         </View>
+      )}
+      {/* ── Logo Row ── */}
+      {tab === null && (
+      <View
+        className={cn(
+          "flex-row items-center",
+          !isNativeDrawer && "border-b border-border",
+          isNativeDrawer ? "h-16" : "h-12",
+          collapsed ? "justify-center px-2" : "justify-between px-3",
         )}
+      >
+        {!collapsed && (
+          <>
+            <Pressable
+              onPress={() => {
+                router.push("/(app)" as any);
+                onNavPress();
+              }}
+              role="link"
+              accessibilityLabel="Shogo Home"
+              className="flex-row items-center"
+            >
+              <ShogoWordmark
+                className={
+                  isNativeDrawer ? "h-8 w-[136px]" : "h-[22px] w-[94px]"
+                }
+              />
+            </Pressable>
+            {isNativeDrawer ? (
+              <Pressable
+                onPress={handleSearchPress}
+                accessibilityLabel="Search"
+                className={cn(
+                  "rounded-md active:bg-muted",
+                  drawerDensity.hit,
+                )}
+              >
+                <Search
+                  size={drawerDensity.icon.lg}
+                  color={iconChrome.color}
+                  strokeWidth={iconChrome.strokeWidth}
+                />
+              </Pressable>
+            ) : (
+              <Pressable
+                onPress={toggleCollapse}
+                className="h-8 w-8 items-center justify-center rounded-md active:bg-muted"
+              >
+                <PanelLeftClose size={12} className="text-muted-foreground" />
+              </Pressable>
+            )}
+          </>
+        )}
+        {collapsed && (
+          <Pressable
+            onPress={toggleCollapse}
+            accessibilityLabel="Expand sidebar"
+          >
+            <ShogoWordmark compact className="h-7 w-7" />
+          </Pressable>
+        )}
+      </View>
+
+      )}
+
+      {/* ── Remote instance indicator ── */}
+      {activeRemoteInstance && !collapsed && (
+        <View className="px-3 py-1.5 bg-primary/10 border-b border-primary/20">
+          <View className="flex-row items-center gap-2">
+            <Laptop size={isNativeDrawer ? drawerDensity.icon.xs : 12} className="text-primary" />
+            <Text
+              className={cn(
+                drawerDensity.text.caption,
+                "text-primary font-medium flex-1",
+              )}
+              numberOfLines={1}
+            >
+              Controlling: {activeRemoteInstance.name}
+            </Text>
+          </View>
+        </View>
+      )}
+
+      {/* ── Main Navigation (scrollable) ── */}
+      {tab === "activity" && experience.kind === "team" ? (
+        // The feed owns its scrolling and filters.
+        <View className="flex-1">
+          <ActivityFeed compact />
+        </View>
+      ) : (
+      <ScrollView
+        className={cn("flex-1", isNativeDrawer ? "pt-3" : "pt-2")}
+        showsVerticalScrollIndicator={false}
+      >
+        {!experience.resolved ? (
+          <WorkspaceChromeSkeletonRows count={6} testID="sidebar-chrome-skeleton" />
+        ) : tab !== null && (experience.kind === "team" || tab === "more" || tab === "home") ? (
+          renderTeamTab(tab)
+        ) : (
+        <>
+        {/* Primary nav mirrors the mobile bottom bar. */}
+        <View className="px-2">
+          {experience.primaryNav.map((id) => {
+            const item = primaryNavItems[id];
+            return (
+              <NavItem
+                key={id}
+                icon={item.icon}
+                label={item.label}
+                href={item.href}
+                active={item.active}
+                collapsed={collapsed}
+                onNavPress={onNavPress}
+              />
+            );
+          })}
+        </View>
+
+        {/* Secondary navigation and utilities. */}
+        <View
+          className={cn(
+            "mx-2 mt-2 border-t border-border/50 pt-2",
+            isNativeDrawer && "mt-3 pt-3",
+          )}
+        >
+          {features.marketplace && experience.showMarketplace && (
+            <NavItem
+              icon={Store}
+              label="Marketplace"
+              href="/(app)/marketplace"
+              active={isMarketplacePage}
+              collapsed={collapsed}
+              onNavPress={onNavPress}
+            />
+          )}
+          {isNativeDrawer && experience.showNewChat && (
+            <NavItem
+              icon={MessageSquarePlus}
+              label="New Chat"
+              collapsed={collapsed}
+              onPress={handleNewChat}
+            />
+          )}
+          {!isNativeDrawer && (
+            <NavItem
+              icon={Search}
+              label="Search"
+              collapsed={collapsed}
+              shortcut={formatModKey("k")}
+              onPress={handleSearchPress}
+            />
+          )}
+          {experience.showSideChatsNav && (
+            <NavItem
+              icon={MessagesSquare}
+              label="Side chats"
+              href="/(app)/side-chats"
+              active={pathname.includes("/side-chats")}
+              collapsed={collapsed}
+              onNavPress={onNavPress}
+            />
+          )}
+        </View>
+
+        {/* The drawer keeps one scrolling list: channels, DMs, then agents. */}
+        {tab === null && experience.kind === "team" && activeWorkspaceId && (
+          <>
+            <ChannelsPanel onNavPress={onNavPress} />
+            <DmsPanel />
+            <AgentsPanel onNavPress={onNavPress} />
+          </>
+        )}
+
+        {/* PROJECTS tree — each project expands to show its chats */}
+        {experience.showProjectsTree && projectsBlock}
         </>
         )}
       </ScrollView>
+      )}
 
       {/* ── Bottom Section ── */}
       <View
@@ -1379,7 +1487,8 @@ export const AppSidebar = observer(function AppSidebar({
           </View>
         )}
 
-        {/* Consolidated workspace + user row */}
+        {/* Workspace menu + invites. The wide layout keeps these in the rail. */}
+        {tab === null && (
         <View
           className={cn(
             "flex-row items-center border-t border-border",
@@ -1388,28 +1497,7 @@ export const AppSidebar = observer(function AppSidebar({
           )}
         >
           <View className={cn("min-w-0", !collapsed && "flex-1")}>
-            <AccountMenu
-              user={user}
-              onSignOut={handleSignOut}
-              onNavigate={(href) => {
-                router.push(href as any);
-                onNavPress();
-              }}
-              isSuperAdmin={hasAdminAccess}
-              isWide={isWide}
-              collapsed={collapsed}
-              workspaces={allWorkspaces}
-              currentWorkspace={currentWorkspace}
-              billingData={billingData}
-              workspacePlan={workspacePlan}
-              allPlans={allPlans}
-              showBilling={features.billing}
-              onSwitchWorkspace={handleSwitchWorkspace}
-              onCreateWorkspace={handleCreateWorkspace}
-              hasPersonalWorkspace={hasPersonalWorkspace}
-              onCreatePersonalWorkspace={handleCreatePersonalWorkspace}
-              localMode={localMode}
-            />
+            {renderAccountMenu()}
           </View>
 
           {!collapsed && (
@@ -1438,6 +1526,7 @@ export const AppSidebar = observer(function AppSidebar({
             </Pressable>
           )}
         </View>
+        )}
       </View>
 
       <InboxPanel
@@ -1464,9 +1553,33 @@ export const AppSidebar = observer(function AppSidebar({
     </View>
   );
 
+  // One provider feeds the rail badges and every panel, so counts stay live
+  // while the user moves between tabs.
+  const withTeamChat = (children: ReactNode) => (
+    <TeamChatSidebarProvider workspaceId={experience.kind === "team" ? activeWorkspaceId : null} onNavPress={onNavPress}>
+      {children}
+    </TeamChatSidebarProvider>
+  );
+
   if (isWide) {
-    return <View className="h-full">{sidebarContent}</View>;
+    return withTeamChat(
+      <WideSidebar
+        workspaceId={activeWorkspaceId}
+        tabs={experience.sidebarTabs}
+        kind={experience.kind}
+        showAdmin={hasAdminAccess}
+        switcher={renderAccountMenu({ tile: true, collapsed: true })}
+        invites={{ count: pendingInvites.length, onPress: () => setInboxOpen(true) }}
+        // A personal workspace's other tabs are pages the rail already names, so
+        // only Home (the chats) and More open a list; search then lives on the rail.
+        panelTabs={experience.kind === "personal" ? ["home", "more"] : undefined}
+        onSearch={experience.kind === "personal" ? handleSearchPress : undefined}
+        renderPanel={renderSidebar}
+      />,
+    );
   }
+
+  const sidebarContent = withTeamChat(renderSidebar(null));
 
   if (isNativeDrawer) {
     return (

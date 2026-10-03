@@ -85,6 +85,16 @@ describe('resolveGoalEventApproval', () => {
     expect(typeof (result?.metadata as any).resolvedAt).toBe('string')
   })
 
+  it('records who decided when a user id is supplied, so work analytics can credit them', async () => {
+    const result = await resolveGoalEventApproval('workspace-1', 'goal-1', 'event-approval', 'approved', 'user-7')
+    expect(result?.metadata).toMatchObject({ decision: 'approved', decidedByUserId: 'user-7' })
+  })
+
+  it('leaves the decider unset for internal callers with no signed-in user', async () => {
+    const result = await resolveGoalEventApproval('workspace-1', 'goal-1', 'event-approval', 'approved')
+    expect(result?.metadata).not.toHaveProperty('decidedByUserId')
+  })
+
   it('preserves existing metadata fields when stamping the decision', async () => {
     const result = await resolveGoalEventApproval('workspace-1', 'goal-1', 'event-with-metadata', 'declined')
     expect(result?.metadata).toMatchObject({ note: 'from the agent', decision: 'declined' })

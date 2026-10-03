@@ -11,4 +11,4 @@ For every target project's `## Learned` section, check the cap (10 bullets) and 
 ## Daily
 
 ### 3. Digest
-Summarize the last 24 hours: findings recorded (by reviewer/category), amendments made (target + section), and any group approaching the threshold (2 of 3 needed) so a human can see what's coming before it lands. Keep this in memory/canvas — it's also what `harness`'s daily heartbeat asks me for via `project_call`.
+Summarize the last 24 hours: findings recorded (by reviewer/category), amendments made (target + section), and any group approaching the threshold (2 of 3 needed) so a human can see what's coming before it lands. Post it to `#pipeline-alerts` (`team_chat_post({ channel: "pipeline-alerts", text: "<digest>" })`; skip if team chat is off) and keep it in memory/canvas — it's also what `harness`'s daily heartbeat asks me for via `project_call`.

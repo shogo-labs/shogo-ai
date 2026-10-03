@@ -59,6 +59,7 @@
     "prisma-adapter-bun-sqlite": "^0.7.1",
     "stripe": "^20.2.0",
     "tar": "^7.4.3",
+    "unpdf": "^1.4.0",
     "zod": "^4.3.6"
   },
   "devDependencies": {

@@ -17,6 +17,10 @@ export type AgentScheduleInput = {
   cronExpression: string
   timezone?: string
   enabled?: boolean
+  /** Conversation that receives each run's result (already validated). */
+  notifyConversationId?: string | null
+  /** Thread in that conversation the result is posted under (already validated). */
+  notifyThreadRootId?: string | null
 }
 
 export type AgentScheduleChanges = {
@@ -26,6 +30,8 @@ export type AgentScheduleChanges = {
   cronExpression?: string
   timezone?: string
   enabled?: boolean
+  notifyConversationId?: string | null
+  notifyThreadRootId?: string | null
 }
 
 export class AgentScheduleError extends Error {
@@ -36,6 +42,8 @@ export class AgentScheduleError extends Error {
       | 'invalid_timezone'
       | 'schedule_too_frequent'
       | 'schedule_limit_reached'
+      | 'schedule_disabled'
+      | 'schedule_running'
       | 'goal_not_found',
     public readonly status: 400 | 409 | 404 = 400,
   ) {
@@ -221,6 +229,8 @@ export async function createSchedule(input: AgentScheduleInput) {
       timezone,
       enabled: input.enabled !== false,
       nextRunAt,
+      notifyConversationId: input.notifyConversationId ?? null,
+      notifyThreadRootId: input.notifyConversationId ? input.notifyThreadRootId ?? null : null,
     },
   })
 }
@@ -256,12 +266,38 @@ export async function updateSchedule(
       ...(changes.cronExpression !== undefined ? { cronExpression } : {}),
       ...(changes.timezone !== undefined ? { timezone } : {}),
       ...(changes.enabled !== undefined ? { enabled } : {}),
+      ...(changes.notifyConversationId !== undefined ? { notifyConversationId: changes.notifyConversationId } : {}),
+      // A thread belongs to one channel: clearing or changing the channel drops it unless a new one is given.
+      ...(changes.notifyThreadRootId !== undefined
+        ? { notifyThreadRootId: changes.notifyThreadRootId }
+        : changes.notifyConversationId !== undefined ? { notifyThreadRootId: null } : {}),
       // runningAt is the in-flight run's lease; leave it for that run to
       // release so a re-enable or cadence edit cannot start a duplicate.
       ...(nextRunAt ? { nextRunAt } : {}),
       ...(reenabled ? { consecutiveFailures: 0 } : {}),
     },
   })
+}
+
+/** A run's lease is abandoned after this long (mirrors the dispatcher's staleness window). */
+const RUN_LEASE_MS = 5 * 60_000
+
+/**
+ * Make a schedule due now, so the next dispatcher tick runs it (within about
+ * half a minute) and delivers the result like any scheduled run. The regular
+ * cadence is untouched: the dispatcher advances `nextRunAt` when it claims the
+ * run. Used to rehearse a routine (the demo's morning briefing) on demand.
+ */
+export async function runScheduleNow(workspaceId: string, scheduleId: string, now = new Date()) {
+  const existing = await getSchedule(workspaceId, scheduleId)
+  if (!existing) return null
+  if (!existing.enabled) {
+    throw new AgentScheduleError('Enable the schedule before running it', 'schedule_disabled', 409)
+  }
+  if (existing.runningAt && now.getTime() - existing.runningAt.getTime() < RUN_LEASE_MS) {
+    throw new AgentScheduleError('This schedule is already running', 'schedule_running', 409)
+  }
+  return prisma.agentSchedule.update({ where: { id: scheduleId }, data: { nextRunAt: now } })
 }
 
 export async function deleteSchedule(workspaceId: string, scheduleId: string): Promise<boolean> {

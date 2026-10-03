@@ -55,7 +55,10 @@ spec:
     spec:
       containers:
         - name: postgres
-          image: postgres:16-alpine
+          # postgres:16-alpine plus pgvector, built from docker/postgres/Dockerfile
+          # (scripts/setup-local-k8s.sh builds and imports it for k3d).
+          image: shogo-postgres:16-pgvector
+          imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 5432
           envFrom:

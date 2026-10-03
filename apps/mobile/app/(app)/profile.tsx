@@ -56,6 +56,7 @@ import {
   Skeleton,
   cn,
 } from '@shogo/shared-ui/primitives'
+import { UsageDashboard } from '../../components/analytics/UsageDashboard'
 import { useNativePhoneWindow } from '../../lib/native-phone-layout';
 import { densityFor } from "../../lib/phone-density"
 
@@ -253,6 +254,15 @@ export default observer(function ProfilePage() {
           )}
         </CardContent>
         </Card>
+
+        {/* Personal activity: streaks, heatmap, models, and what you got done. Free on every plan. */}
+        <View className="mb-4">
+          <UsageDashboard
+            source={{ kind: 'me' }}
+            title="Your activity"
+            subtitle="Across all your workspaces"
+          />
+        </View>
 
         {/* Usage & Spend */}
         <UserUsageSection />

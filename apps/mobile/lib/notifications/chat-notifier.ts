@@ -21,8 +21,25 @@ export interface ChatNotificationPayload {
 }
 
 export type ChatNotificationClickData =
-  | { taskId: string; sessionId?: string; projectId?: string }
-  | { sessionId: string; projectId: string; taskId?: string }
+  | { taskId: string; sessionId?: string; projectId?: string; conversationId?: undefined }
+  | { sessionId: string; projectId: string; taskId?: string; conversationId?: undefined }
+  | { conversationId: string; threadRootId?: string | null; taskId?: undefined }
+
+export interface ChannelNotificationPayload {
+  conversationId: string
+  messageId: string
+  threadRootId: string | null
+  title: string
+  body: string
+}
+
+export async function notifyChannelMessage(_p: ChannelNotificationPayload): Promise<void> {
+  // no-op fallback
+}
+
+export function setActiveChannelNotificationContext(_conversationId: string | null): void {
+  // no-op fallback
+}
 
 export async function isUserInactive(): Promise<boolean> {
   return false

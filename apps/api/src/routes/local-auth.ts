@@ -34,6 +34,7 @@ import { toErrorMessage } from '@shogo-ai/sdk'
 import { prisma } from '../lib/prisma'
 import { getShogoCloudUrl } from '../lib/cloud-urls'
 import { onUpstreamRejection } from '../lib/federated-upstream'
+import { clearCloudWorkspaces } from '../services/cloud-workspaces'
 import {
   claimCredentialMismatchLog,
   getHeartbeatStatus,
@@ -79,6 +80,7 @@ export function localAuthRoutes() {
     await Promise.all([
       localDb.localConfig.deleteMany({ where: { key: 'SHOGO_API_KEY' } }),
       localDb.localConfig.deleteMany({ where: { key: 'SHOGO_KEY_INFO' } }),
+      clearCloudWorkspaces(),
     ])
     delete process.env.SHOGO_API_KEY
     resetCloudKeyState()

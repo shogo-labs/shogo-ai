@@ -377,6 +377,34 @@ describe('chat-notifier.web — subscribeNotificationClicks', () => {
   beforeEach(() => uninstallEnv())
   afterEach(() => uninstallEnv())
 
+  test('channel alerts use the Notification API even on desktop and route clicks to the conversation', async () => {
+    installEnv({
+      document: makeFakeDocument(),
+      desktop: { isDesktop: true },
+      withNotification: true,
+      initialPermission: 'default',
+    })
+    const mod = await freshModule()
+    const received: unknown[] = []
+    mod.subscribeNotificationClicks((d) => {
+      received.push(d)
+    })
+
+    await mod.notifyChannelMessage({
+      conversationId: 'c1',
+      messageId: 'm1',
+      threadRootId: 'r1',
+      title: 'ada in #general',
+      body: 'ship it',
+    })
+
+    const Ctor = (globalThis as any).Notification as FakeNotificationCtor
+    expect(Ctor.instances[0].title).toBe('ada in #general')
+    expect(Ctor.instances[0].options.tag).toBe('channel:c1')
+    Ctor.instances[0].onclick!()
+    expect(received).toEqual([{ conversationId: 'c1', threadRootId: 'r1' }])
+  })
+
   test('delivers browser click via the in-page bus', async () => {
     installEnv({
       document: makeFakeDocument(),
@@ -385,7 +413,7 @@ describe('chat-notifier.web — subscribeNotificationClicks', () => {
     })
     const mod = await freshModule()
 
-    const received: Array<{ sessionId: string; projectId: string }> = []
+    const received: unknown[] = []
     const unsubscribe = mod.subscribeNotificationClicks((d) => {
       received.push(d)
     })

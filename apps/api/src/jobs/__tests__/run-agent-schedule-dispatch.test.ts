@@ -64,7 +64,7 @@ const chatFetch = mock(async (_request: Request): Promise<Response> => new Respo
 const workspaceChatRoutes = mock(() => ({ fetch: chatFetch }))
 mock.module('../../routes/workspace-chat', () => ({ workspaceChatRoutes }))
 
-const { dispatchDueSchedules, waitForAgentScheduleRuns } = await import('../run-agent-schedule-dispatch')
+const { dispatchDueSchedules, finalAnswerOf, waitForAgentScheduleRuns } = await import('../run-agent-schedule-dispatch')
 
 function claimCalls() {
   return updateMany.mock.calls.filter((call) => call[0]?.data?.lastRunStatus === 'running')
@@ -298,5 +298,26 @@ describe('agent schedule dispatcher', () => {
 
     release.forEach((resolve) => resolve())
     await waitForAgentScheduleRuns()
+  })
+})
+
+describe('finalAnswerOf', () => {
+  const text = (value: string) => ({ type: 'text', text: value })
+  const tool = { type: 'dynamic-tool', toolName: 'team_chat_read' }
+
+  test('keeps what the agent said after its last tool call, not the narration before it', () => {
+    const parts = [{ type: 'reasoning', text: 'thinking' }, text("I'll check the channel."), tool, text('Looking at the cards.'), tool, text('**Shipped:** nothing')]
+    expect(finalAnswerOf(parts, "I'll check the channel.Looking at the cards.**Shipped:** nothing")).toBe('**Shipped:** nothing')
+    expect(finalAnswerOf(JSON.stringify(parts), 'all')).toBe('**Shipped:** nothing')
+  })
+
+  test('joins several text parts in the final stretch', () => {
+    expect(finalAnswerOf([tool, text('One.'), text('Two.')], 'x')).toBe('One.\n\nTwo.')
+  })
+
+  test('falls back to the whole text when there is nothing after the last tool call', () => {
+    expect(finalAnswerOf([text('Working'), tool], ' whole text ')).toBe('whole text')
+    expect(finalAnswerOf('not json', 'whole')).toBe('whole')
+    expect(finalAnswerOf(null, null)).toBeNull()
   })
 })

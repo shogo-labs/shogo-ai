@@ -70,9 +70,10 @@ test.describe('Activity and Goals workspace surfaces (local mode)', () => {
 
     await page.goto('/goals')
     await expect(page).toHaveURL(/\/(?:\?|$)/, { timeout: 15_000 })
-    await expect(page.getByText('Workspace overview', { exact: true }).or(
-      page.getByText('Chat', { exact: true }).first(),
-    )).toBeVisible({ timeout: 15_000 })
+    // Back on Home: the rail's Home tab is selected.
+    await expect(
+      page.getByRole('navigation', { name: 'Workspace tabs' }).getByRole('tab', { name: /^Home/ }),
+    ).toHaveAttribute('aria-selected', 'true', { timeout: 15_000 })
   })
 
   test('personal workspace shows Activity and Goals', async ({ page }) => {

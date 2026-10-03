@@ -387,3 +387,187 @@ describe('summarizeDiff', () => {
     expect(lines.some((l) => l.includes('(caller) → intake'))).toBe(true)
   })
 })
+
+// ─── teamChannels ────────────────────────────────────────────────────────
+
+const CHANNELS_YAML = `
+version: 1
+name: issue-pipeline
+projects:
+  - key: intake
+    name: Intake
+  - key: analyst
+    name: Analyst
+teamChannels:
+  - name: "#issue-pipeline"
+    topic: One thread per issue
+    members:
+      - { project: intake, agentTrigger: all }
+      - { project: analyst }
+      - { group: "@maintainers" }
+      - { user: Lead@Example.com }
+  - name: pipeline-alerts
+    private: true
+    members:
+      - { project: intake }
+`
+
+function channelsManifest() {
+  const parsed = parseSystemManifest(CHANNELS_YAML)
+  if (!parsed.ok || !parsed.manifest) throw new Error(parsed.errors.join('; '))
+  return parsed.manifest
+}
+
+const boundLock: SystemLock = { version: 1, name: 'issue-pipeline', bindings: { intake: 'p-intake', analyst: 'p-analyst' } }
+const boundLive = [live({ id: 'p-intake', name: 'Intake' }), live({ id: 'p-analyst', name: 'Analyst' })]
+
+describe('teamChannels', () => {
+  test('parses channels, strips # and @, lowercases emails, and defaults agentTrigger to mention', () => {
+    const m = channelsManifest()
+    expect(m.teamChannels.map((c) => c.name)).toEqual(['issue-pipeline', 'pipeline-alerts'])
+    expect(m.teamChannels[0].members).toEqual([
+      { project: 'intake', agentTrigger: 'all', contextMode: 'shared' },
+      { project: 'analyst', agentTrigger: 'mention', contextMode: 'shared' },
+      { group: 'maintainers' },
+      { user: 'lead@example.com' },
+    ])
+    expect(m.teamChannels[1].private).toBe(true)
+  })
+
+  test('accepts the auto trigger for agents that watch a channel and answer only when relevant', () => {
+    const m = parseSystemManifest({
+      version: 1,
+      name: 'x',
+      projects: [{ key: 'a', name: 'A' }],
+      teamChannels: [{ name: 'eng', members: [{ project: 'a', agentTrigger: 'auto' }] }],
+    })
+    expect(m.ok).toBe(true)
+    expect(m.manifest!.teamChannels[0].members).toEqual([{ project: 'a', agentTrigger: 'auto', contextMode: 'shared' }])
+  })
+
+  test('rejects unknown project keys, duplicate channels, and keyword triggers without keywords', () => {
+    const bad = parseSystemManifest({
+      version: 1,
+      name: 'x',
+      projects: [{ key: 'a', name: 'A' }],
+      teamChannels: [
+        { name: 'ops', members: [{ project: 'ghost' }, { project: 'a', agentTrigger: 'keyword' }] },
+        { name: 'ops' },
+      ],
+    })
+    expect(bad.ok).toBe(false)
+    expect(bad.errors.join('\n')).toContain('unknown key "ghost"')
+    expect(bad.errors.join('\n')).toContain('duplicate team channel "ops"')
+    expect(bad.errors.join('\n')).toContain('without keywords')
+  })
+
+  test('creates missing channels with agent, group and person members', () => {
+    const diff = computeSystemDiff(channelsManifest(), boundLive, boundLock, {
+      callerProjectId: 'p-intake',
+      teamChannels: { channels: [], groups: { maintainers: ['ana@example.com'] } },
+    })
+    const [pipeline, alerts] = diff.teamChannels
+    expect(pipeline.action).toBe('create')
+    expect(pipeline.agents).toEqual([
+      { key: 'intake', projectId: 'p-intake', agentTrigger: 'all', agentKeywords: null, agentContextMode: 'shared' },
+      { key: 'analyst', projectId: 'p-analyst', agentTrigger: 'mention', agentKeywords: null, agentContextMode: 'shared' },
+    ])
+    expect(pipeline.groupHandles).toEqual(['maintainers'])
+    expect(pipeline.userEmails).toEqual(['lead@example.com'])
+    expect(alerts.private).toBe(true)
+    expect(diff.empty).toBe(false)
+    expect(summarizeDiff(diff)).toContain('create channel #pipeline-alerts: add agent intake (mention)')
+  })
+
+  test('a second run against the applied state is a no-op', () => {
+    const teamChannels = {
+      channels: [
+        {
+          name: 'issue-pipeline', topic: 'One thread per issue', private: false,
+          agents: [
+            { projectId: 'p-intake', agentTrigger: 'all', agentKeywords: null },
+            { projectId: 'p-analyst', agentTrigger: 'mention', agentKeywords: null },
+          ],
+          userEmails: ['ana@example.com', 'lead@example.com', 'someone-who-joined@example.com'],
+        },
+        { name: 'pipeline-alerts', topic: null, private: true, agents: [{ projectId: 'p-intake', agentTrigger: 'mention', agentKeywords: null }], userEmails: [] },
+      ],
+      groups: { maintainers: ['ana@example.com'] },
+    }
+    const diff = computeSystemDiff(channelsManifest(), boundLive, boundLock, { callerProjectId: 'p-intake', teamChannels })
+    expect(diff.teamChannels).toEqual([])
+  })
+
+  test('retriggers changed agents, removes undeclared manifest agents, and leaves outside agents alone', () => {
+    const diff = computeSystemDiff(channelsManifest(), boundLive, boundLock, {
+      callerProjectId: 'p-intake',
+      teamChannels: {
+        channels: [
+          {
+            name: 'pipeline-alerts', topic: null, private: true,
+            agents: [
+              { projectId: 'p-intake', agentTrigger: 'all', agentKeywords: null },
+              { projectId: 'p-analyst', agentTrigger: 'mention', agentKeywords: null },
+              { projectId: 'p-someone-elses', agentTrigger: 'mention', agentKeywords: null },
+            ],
+            userEmails: [],
+          },
+        ],
+        groups: { maintainers: [] },
+      },
+    })
+    const alerts = diff.teamChannels.find((c) => c.name === 'pipeline-alerts')!
+    expect(alerts.action).toBe('update')
+    expect(alerts.agents).toEqual([{ key: 'intake', projectId: 'p-intake', agentTrigger: 'mention', agentKeywords: null, agentContextMode: 'shared' }])
+    expect(alerts.removeAgents).toEqual([{ key: 'analyst', projectId: 'p-analyst' }])
+  })
+
+  test('contextMode isolated is parsed, defaults to shared, and changing it re-applies the agent', () => {
+    const parsed = parseSystemManifest({
+      version: 1,
+      name: 'x',
+      projects: [{ key: 'reviewer', name: 'Reviewer' }],
+      teamChannels: [{ name: 'eng', members: [{ project: 'reviewer', agentTrigger: 'mention', contextMode: 'isolated' }] }],
+    })
+    expect(parsed.ok).toBe(true)
+    const manifest = parsed.manifest!
+    expect(manifest.teamChannels[0].members).toEqual([{ project: 'reviewer', agentTrigger: 'mention', contextMode: 'isolated' }])
+    expect(parseSystemManifest({ version: 1, name: 'x', projects: [{ key: 'r', name: 'R' }], teamChannels: [{ name: 'eng', members: [{ project: 'r', contextMode: 'secret' }] }] }).ok).toBe(false)
+
+    const lock: SystemLock = { version: 1, name: 'x', bindings: { reviewer: 'p-rev' } }
+    const liveProjects = [live({ id: 'p-rev', name: 'Reviewer' })]
+    const channel = (agentContextMode?: string) => ({
+      channels: [{ name: 'eng', topic: null, private: false, agents: [{ projectId: 'p-rev', agentTrigger: 'mention', agentKeywords: null, ...(agentContextMode ? { agentContextMode } : {}) }], userEmails: [] }],
+      groups: {},
+    })
+    const diffFor = (agentContextMode?: string) =>
+      computeSystemDiff(manifest, liveProjects, lock, { callerProjectId: 'p-rev', teamChannels: channel(agentContextMode) }).teamChannels
+    expect(diffFor('isolated')).toEqual([])
+    const changed = diffFor('shared')
+    expect(changed).toHaveLength(1)
+    expect(changed[0].agents).toEqual([{ key: 'reviewer', projectId: 'p-rev', agentTrigger: 'mention', agentKeywords: null, agentContextMode: 'isolated' }])
+    expect(changed[0].changes.join(' ')).toContain('isolated')
+    expect(diffFor()).toHaveLength(1)
+  })
+
+  test('unknown groups and an unreachable team chat become manual steps', () => {
+    const noGroup = computeSystemDiff(channelsManifest(), boundLive, boundLock, {
+      callerProjectId: 'p-intake',
+      teamChannels: { channels: [], groups: {} },
+    })
+    expect(noGroup.manual.join('\n')).toContain('group @maintainers does not exist yet')
+    expect(noGroup.teamChannels[0].groupHandles).toEqual([])
+
+    const offline = computeSystemDiff(channelsManifest(), boundLive, boundLock, { callerProjectId: 'p-intake' })
+    expect(offline.teamChannels).toEqual([])
+    expect(offline.manual.join('\n')).toContain('create #issue-pipeline, #pipeline-alerts by hand')
+  })
+
+  test('agents of projects created in the same apply carry a null projectId', () => {
+    const diff = computeSystemDiff(channelsManifest(), [], null, {
+      callerProjectId: 'p-caller',
+      teamChannels: { channels: [], groups: { maintainers: [] } },
+    })
+    expect(diff.teamChannels[0].agents.map((a) => a.projectId)).toEqual([null, null])
+  })
+})

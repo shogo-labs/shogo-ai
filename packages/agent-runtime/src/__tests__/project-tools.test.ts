@@ -25,6 +25,8 @@ const api = {
   getConfig: { ok: true, status: 200, data: { id: 'proj-1', name: 'Proj', description: null, settings: null, slackEnabled: false, agent: null } } as any,
   configure: { ok: true, status: 200, data: { id: 'proj-1', name: 'Proj', description: null, settings: null, slackEnabled: false, agent: null } } as any,
   call: { ok: true, status: 200, data: { status: 'completed', reply: 'done', sessionId: 'run:abc' } } as any,
+  teamChannels: { ok: true, status: 200, data: { channels: [], groups: {} } } as any,
+  upsertChannel: { ok: true, status: 201, data: { created: true, changes: ['created'], channel: { id: 'conv-1', name: 'ops' } } } as any,
 }
 
 mock.module('../internal-api', () => ({
@@ -56,6 +58,14 @@ mock.module('../internal-api', () => ({
   callProjectAgent: (targetId: string, req: any) => {
     calls.push({ fn: 'callProjectAgent', args: [targetId, req] })
     return api.call
+  },
+  listTeamChannels: (workspaceId: string) => {
+    calls.push({ fn: 'listTeamChannels', args: [workspaceId] })
+    return api.teamChannels
+  },
+  upsertTeamChannel: (workspaceId: string, name: string, input: any) => {
+    calls.push({ fn: 'upsertTeamChannel', args: [workspaceId, name, input] })
+    return api.upsertChannel
   },
 }))
 
@@ -107,6 +117,8 @@ beforeEach(() => {
   api.getConfig = { ok: true, status: 200, data: { id: 'proj-1', name: 'Proj', description: null, settings: null, slackEnabled: false, agent: null } }
   api.configure = { ok: true, status: 200, data: { id: 'proj-1', name: 'Proj', description: null, settings: null, slackEnabled: false, agent: null } }
   api.call = { ok: true, status: 200, data: { status: 'completed', reply: 'done', sessionId: 'run:abc' } }
+  api.teamChannels = { ok: true, status: 200, data: { channels: [], groups: {} } }
+  api.upsertChannel = { ok: true, status: 201, data: { created: true, changes: ['created'], channel: { id: 'conv-1', name: 'ops' } } }
 })
 
 // ─── project_list ─────────────────────────────────────────────────────────
@@ -417,5 +429,43 @@ describe('system_apply', () => {
     const out = await run(createSystemApplyTool(ctx), { manifest: MANIFEST_YAML })
     expect(out.ok).toBe(false)
     expect(out.errors.some((l: string) => l.includes('create intake'))).toBe(true)
+  })
+
+  test('creates team channels after the projects they list, resolving new project ids', async () => {
+    api.create = { ok: true, status: 201, data: { id: 'proj-intake', name: 'Intake', description: null, workingMode: 'managed', settings: null } }
+    const manifest = `${MANIFEST_YAML}teamChannels:
+  - name: ops
+    topic: Incidents
+    members:
+      - { project: intake, agentTrigger: all }
+      - { user: lead@example.com }
+`
+    const ctx = baseCtx()
+    const dry = await run(createSystemApplyTool(ctx), { manifest, dryRun: true })
+    expect(dry.plan).toContain('create channel #ops: add agent intake (all), add lead@example.com')
+    expect(calls.find((c) => c.fn === 'upsertTeamChannel')).toBeUndefined()
+
+    const out = await run(createSystemApplyTool(ctx), { manifest })
+    expect(out.ok).toBe(true)
+    expect(out.applied).toContain('create channel #ops')
+    const upsert = calls.find((c) => c.fn === 'upsertTeamChannel')!
+    expect(upsert.args).toEqual(['ws-1', 'ops', {
+      topic: 'Incidents',
+      private: false,
+      agents: [{ projectId: 'proj-intake', agentTrigger: 'all', agentKeywords: null, agentContextMode: 'shared' }],
+      removeAgentProjectIds: [],
+      userEmails: ['lead@example.com'],
+      groupHandles: [],
+    }])
+    expect(calls.findIndex((c) => c.fn === 'createProject')).toBeLessThan(calls.findIndex((c) => c.fn === 'upsertTeamChannel'))
+  })
+
+  test('reports channels as manual steps when team chat is unreachable', async () => {
+    api.teamChannels = { ok: false, status: 403, error: 'Team chat is turned off', code: 'chat_disabled' }
+    const manifest = `${MANIFEST_YAML}teamChannels:
+  - name: ops
+`
+    const out = await run(createSystemApplyTool(baseCtx()), { manifest, dryRun: true })
+    expect(out.manual.join('\n')).toContain('create #ops by hand')
   })
 })

@@ -27,10 +27,16 @@ import { pinChatToHomeRegion } from './lib/chat-region-pin'
 import { workspaceChatRoutes } from './routes/workspace-chat'
 import { workspaceAgentRoutes, sessionAuthorize } from './routes/workspace-agent'
 import { workspaceMeetingRoutes, sharedMeetingRoutes } from './routes/workspace-meetings'
+import { conversationRoutes } from './routes/conversations'
+import { AGENT_REPLY_TIMEOUT_MS, configureConversationAgentDispatcher, settleOrphanedAgentReplies } from './services/conversation-agent-dispatcher'
+import { registerBuiltInChatProviders } from './services/chat-providers'
+import { chatProviderRoutes } from './routes/chat-providers'
+import { conversationSocketHandlers, isConversationSocketData } from './realtime/conversation-socket'
 import { createAgentTaskRoutes } from './routes/agent-tasks'
 import { startAgentTaskWorker, stopAgentTaskWorker } from './jobs/run-agent-task-dispatch'
 import { startAgentScheduleWorker, stopAgentScheduleWorker } from './jobs/run-agent-schedule-dispatch'
 import { startChatQueueWorker, stopChatQueueWorker } from './jobs/run-chat-queue-drain'
+import { startChannelWorkers, stopChannelWorkers } from './jobs/run-channel-workers'
 import { projectAuthConfigRoutes } from './routes/project-auth-config'
 import { diagnosticsRoutes } from '@shogo/shared-runtime'
 import { testsRoutes } from './routes/tests'
@@ -1557,6 +1563,13 @@ app.route('/api', workspaceAgentRoutes({
 }))
 app.route('/api', workspaceMeetingRoutes({ authorize: sessionAuthorize(getAuthUserId) }))
 app.route('/api', sharedMeetingRoutes())
+// Workspace channels (team chat with @mentionable agents).
+configureConversationAgentDispatcher({ runtimeManager: getRuntimeManager() })
+// Other pods may still be writing replies; only settle those past the longest a run can take.
+void settleOrphanedAgentReplies(AGENT_REPLY_TIMEOUT_MS + 60_000).catch((err) => console.warn('[Channels] could not settle interrupted replies:', err?.message ?? err))
+registerBuiltInChatProviders()
+app.route('/api', conversationRoutes({ resolveUserId: getAuthUserId }))
+app.route('/api', chatProviderRoutes({ resolveUserId: getAuthUserId }))
 app.route('/api', createAgentTaskRoutes({ runtimeManager: getRuntimeManager() }))
 // Resume queued agent tasks after API restarts and keep dueAt-backed work
 // moving without relying on a request that happens to remain open.
@@ -1564,6 +1577,7 @@ startAgentTaskWorker(getRuntimeManager())
 // Fire due agent-owned recurring schedules in the workspace runtime.
 startAgentScheduleWorker(getRuntimeManager())
 startChatQueueWorker()
+startChannelWorkers()
 app.route('/api', historyRoutes({ resolveUserId: getAuthUserId }))
 // Workspace-level Slack base agent. Slack's Events API must terminate at one
 // stable API URL, then route each request to an enabled project runtime.
@@ -8814,6 +8828,9 @@ app.post('/api/invite-links/:token/accept', async (c) => {
     billingService.syncSeatsFromMembership(memberData.workspaceId).catch((err: any) =>
       console.error('[Billing] invite-link accept seat sync failed:', err.message ?? err),
     )
+    void import('./services/conversation-activity')
+      .then((m) => m.recordMemberJoined(memberData.workspaceId, userId))
+      .catch(() => {})
   }
 
   // Send notification emails (non-blocking — errors are logged internally)
@@ -8997,6 +9014,7 @@ async function gracefulShutdown(signal: string) {
   stopAgentTaskWorker()
   stopAgentScheduleWorker()
   stopChatQueueWorker()
+  stopChannelWorkers()
   console.log(`[Server] Received ${signal}, starting graceful shutdown...`)
 
   // Stop warm pool reconciliation so GC doesn't delete services during drain
@@ -9463,19 +9481,22 @@ export default {
   },
   websocket: {
     open(ws: any) {
-      if (isLiveRelayData(ws.data)) liveRelayOpen(ws)
+      if (isConversationSocketData(ws.data)) conversationSocketHandlers.open(ws)
+      else if (isLiveRelayData(ws.data)) liveRelayOpen(ws)
       else if (isPtyPodBridgeData(ws.data)) ptyPodBridge.open(ws)
       else if (isPortTunnelBridgeData(ws.data)) portTunnelBridge.open(ws)
       else handleInstanceWsOpen(ws)
     },
     message(ws: any, msg: any) {
-      if (isLiveRelayData(ws.data)) liveRelayMessage(ws, msg)
+      if (isConversationSocketData(ws.data)) void conversationSocketHandlers.message(ws, msg)
+      else if (isLiveRelayData(ws.data)) liveRelayMessage(ws, msg)
       else if (isPtyPodBridgeData(ws.data)) ptyPodBridge.message(ws, msg)
       else if (isPortTunnelBridgeData(ws.data)) portTunnelBridge.message(ws, msg)
       else handleInstanceWsMessage(ws, msg)
     },
     close(ws: any, code?: number, reason?: string) {
-      if (isLiveRelayData(ws.data)) liveRelayClose(ws)
+      if (isConversationSocketData(ws.data)) conversationSocketHandlers.close(ws)
+      else if (isLiveRelayData(ws.data)) liveRelayClose(ws)
       else if (isPtyPodBridgeData(ws.data)) ptyPodBridge.close(ws, code, reason)
       else if (isPortTunnelBridgeData(ws.data)) portTunnelBridge.close(ws, code, reason)
       else handleInstanceWsClose(ws, code, reason)

@@ -31,6 +31,8 @@ import {
   detachProject as apiDetachProject,
   getProjectConfig as apiGetProjectConfig,
   getWorkspaceProjectGraph as apiGetWorkspaceProjectGraph,
+  listTeamChannels,
+  upsertTeamChannel,
   type ProjectGraphNode,
 } from './internal-api'
 import {
@@ -40,6 +42,7 @@ import {
   parseSystemManifest,
   summarizeDiff,
   type LiveProject,
+  type LiveTeamChannels,
   type SystemDiff,
   type SystemLock,
 } from './system-manifest'
@@ -443,7 +446,7 @@ export function createSystemApplyTool(ctx: ToolContext): AgentTool {
     name: 'system_apply',
     label: 'Apply System Manifest',
     description: [
-      'Reconcile a `shogo-system.yaml` manifest against the workspace: create missing projects, attach them as declared, set heartbeat/model, and write each project\'s prompt files (AGENTS.md, HEARTBEAT.md, .shogo/agents/*.md).',
+      'Reconcile a `shogo-system.yaml` manifest against the workspace: create missing projects, attach them as declared, set heartbeat/model, write each project\'s prompt files (AGENTS.md, HEARTBEAT.md, .shogo/agents/*.md), and create the `teamChannels` the agents work in with their members.',
       'Idempotent: a second run reports an empty diff. Bindings from manifest key to project id are recorded in .shogo/system.lock.json so renames do not create duplicates.',
       'Run with `dryRun: true` first and show the plan to the user before applying. Channels and integrations are listed under `manual` because they need credentials.',
     ].join(' '),
@@ -491,7 +494,13 @@ export function createSystemApplyTool(ctx: ToolContext): AgentTool {
         }
       }
 
-      const diff = computeSystemDiff(manifest, live, lock, { callerProjectId: ctx.projectId, readFile })
+      let teamChannels: LiveTeamChannels | undefined
+      if (manifest.teamChannels.length) {
+        const res = await listTeamChannels(workspaceId)
+        if (res.ok && res.data) teamChannels = res.data
+      }
+
+      const diff = computeSystemDiff(manifest, live, lock, { callerProjectId: ctx.projectId, readFile, teamChannels })
       const report: ApplyReport = {
         ok: true,
         dryRun: p.dryRun === true,
@@ -614,7 +623,27 @@ export function createSystemApplyTool(ctx: ToolContext): AgentTool {
         }
       }
 
-      // 5. Lock.
+      // 5. Team chat channels (after creates, so new projects can be members).
+      for (const op of diff.teamChannels) {
+        const agents: Array<{ projectId: string | null; agentTrigger: string; agentKeywords: string | null; agentContextMode: string }> = []
+        for (const a of op.agents) {
+          const id = a.projectId ?? idOf(a.key)
+          if (!id) { report.skipped.push(`channel #${op.name}: agent ${a.key} unresolved`); continue }
+          agents.push({ projectId: id, agentTrigger: a.agentTrigger, agentKeywords: a.agentKeywords, agentContextMode: a.agentContextMode })
+        }
+        const res = await upsertTeamChannel(workspaceId, op.name, {
+          ...(op.topic !== undefined ? { topic: op.topic } : {}),
+          private: op.private,
+          agents,
+          removeAgentProjectIds: op.removeAgents.map((r) => r.projectId),
+          userEmails: op.userEmails,
+          groupHandles: op.groupHandles,
+        })
+        if (!res.ok) report.errors.push(`channel #${op.name}: ${res.error ?? 'failed'}${res.code ? ` (${res.code})` : ''}`)
+        else report.applied.push(`${res.data?.created ? 'create' : 'update'} channel #${op.name}`)
+      }
+
+      // 6. Lock.
       const finalBindings: Record<string, string> = {}
       for (const spec of manifest.projects) {
         const id = idOf(spec.key)

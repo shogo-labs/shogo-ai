@@ -22,6 +22,7 @@ import {
 } from "lucide-react-native";
 import { NativePhoneBottomFade } from "../phone/NativePhoneBottomFade";
 import { MobileSettingsSheet } from "./MobileSettingsSheet";
+import { TeamDock } from "./TeamDock";
 import {
   LiquidGlassBackdrop,
   supportsLiquidGlass,
@@ -206,6 +207,7 @@ export function MobileBottomNav() {
     }
     if (pathname.includes("/tasks")) return "tasks";
     if (pathname.includes("/goals")) return "goals";
+    if (pathname.includes("/meetings")) return "meetings";
     if (pathname.includes("/activity")) return "activity";
     if (pathname.includes("/canvases")) return "canvases";
     if (pathname.includes("/settings")) return "more";
@@ -399,6 +401,8 @@ export function MobileBottomNav() {
   const items = projectMode
     ? projectItems
     : experience.bottomTabs.map((id) => tabsById[id]);
+  // Team workspaces outside a project use the Home / DMs / Activity / More dock.
+  const teamDock = !projectMode && experience.resolved && !!experience.dockTabs;
 
   return (
     <>
@@ -432,6 +436,9 @@ export function MobileBottomNav() {
             style={{ position: "absolute", left: 0, right: 0, bottom: 0 }}
           />
         ) : null}
+        {teamDock ? (
+          <TeamDock maxWidth={CHAT_TRANSCRIPT_MAX_WIDTH} />
+        ) : (
         <View
           className={cn(
             "w-full flex-row items-center gap-1 overflow-hidden px-1.5 shadow-sm",
@@ -473,7 +480,7 @@ export function MobileBottomNav() {
                 key={id}
                 onPress={onPress}
                 accessibilityRole="tab"
-                accessibilityState={{ selected }}
+                aria-selected={selected}
                 accessibilityLabel={label}
                 className={cn(
                   "flex-1 items-center justify-center rounded-full",
@@ -502,6 +509,7 @@ export function MobileBottomNav() {
             );
           })}
         </View>
+        )}
       </View>
       <MobileSettingsSheet
         visible={settingsOpen}

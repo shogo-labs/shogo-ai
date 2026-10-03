@@ -9,11 +9,13 @@
  */
 import { Platform } from 'react-native'
 import { authClient } from './auth-client'
+import { API_URL } from './api-url'
+import { routeUrl } from './workspace-route'
 
 export function createAuthedEventSource(url: string): EventSource {
   const isWeb = Platform.OS === 'web'
   if (isWeb) {
-    return new EventSource(url, { withCredentials: true })
+    return new EventSource(routeUrl(url, API_URL!), { withCredentials: true })
   }
   const cookie = (authClient as any).getCookie?.()
   const headers: Record<string, string> = {}

@@ -96,16 +96,16 @@ afterEach(() => {
 // ─── POST /local/cloud-login/signout ───────────────────────────────────────
 
 describe('POST /local/cloud-login/signout', () => {
-  test('deletes both localConfig keys, clears env var, and returns ok:true', async () => {
+  test('deletes the key, key info and cached cloud workspaces, clears env var, and returns ok:true', async () => {
     process.env.SHOGO_API_KEY = 'sk_to_clear'
     const app = mountApp()
     const res = await app.request('/api/local/cloud-login/signout', { method: 'POST' })
 
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({ ok: true })
-    expect(deleteManyMock).toHaveBeenCalledTimes(2)
+    expect(deleteManyMock).toHaveBeenCalledTimes(3)
     const keys = deleteManyMock.mock.calls.map((c) => c[0].where.key).sort()
-    expect(keys).toEqual(['SHOGO_API_KEY', 'SHOGO_KEY_INFO'])
+    expect(keys).toEqual(['SHOGO_API_KEY', 'SHOGO_CLOUD_WORKSPACES', 'SHOGO_KEY_INFO'])
     expect(process.env.SHOGO_API_KEY).toBeUndefined()
   })
 

@@ -63,7 +63,7 @@ function reloadProjects(workspaceId: string, projects: WorkspaceProjectCollectio
 
 /**
  * The active workspace's `kind` decides which sidebar/shell chrome renders
- * (`useWorkspaceExperience`: `WorkspaceAgentShell`/`MobileWorkspaceShell` vs.
+ * (`useWorkspaceExperience`: `MobileWorkspaceShell` vs.
  * the classic `AppSidebar`, plus every collection scoped to the old
  * workspace). Reactively reconciling all of that mounted UI in place after a
  * switch is fragile, so on web/desktop force a clean reload instead — the

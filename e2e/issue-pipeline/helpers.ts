@@ -208,6 +208,8 @@ export interface GhPullRequest {
   headRefName: string
   baseRefName: string
   files: Array<{ path: string }>
+  createdAt?: string
+  mergedAt?: string | null
 }
 
 /** Lists open PRs on the fixture repo, optionally filtered to ones carrying `runId` in their body. */
@@ -216,7 +218,7 @@ export async function listPullRequests(env: PipelineEnv, opts: { runId?: string;
     'pr', 'list',
     '--repo', env.githubTestRepo,
     '--state', opts.state ?? 'open',
-    '--json', 'number,title,body,url,state,headRefName,baseRefName,files',
+    '--json', 'number,title,body,url,state,headRefName,baseRefName,files,createdAt,mergedAt',
   ])
   const prs = JSON.parse(out) as GhPullRequest[]
   return opts.runId ? prs.filter((pr) => extractRunId(pr.body) === opts.runId) : prs
