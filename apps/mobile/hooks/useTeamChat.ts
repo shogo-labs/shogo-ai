@@ -23,6 +23,7 @@ import {
   addOptimistic,
   applyListEvent,
   applyTimelineEvent,
+  belongsToScope,
   emptyTimeline,
   failOptimistic,
   groupForSidebar,
@@ -262,17 +263,19 @@ export function useConversationTimeline(
   }, [state.messages, state.hasMoreOlder, conversationId, threadRootId, me, loading])
 
   const backfill = useCallback(async () => {
-    if (!conversationId) return
+    if (!scope) return
     if (threadRootId) return loadInitial()
     const after = lastConfirmedSeq(stateRef.current)
     if (!after) return loadInitial()
     try {
-      const page = await api.messages(conversationId, { afterSeq: after, limit: 200 })
-      setState((s) => mergePage(s, page, 'newer'))
+      // `afterSeq` returns every message, thread replies included.
+      const page = await api.messages(scope.conversationId, { afterSeq: after, limit: 200 })
+      const messages = page.messages.filter((m) => belongsToScope(m, scope))
+      setState((s) => mergePage(s, { ...page, messages }, 'newer'))
     } catch {
       // The next reconnect retries.
     }
-  }, [conversationId, threadRootId, loadInitial])
+  }, [scope, threadRootId, loadInitial])
 
   useTeamChatEvents(workspaceId, (event: TeamChatEvent) => {
     if (!scope) return
