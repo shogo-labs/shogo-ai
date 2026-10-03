@@ -33,12 +33,8 @@ const Icon = forwardRef(function LucideIcon(
 export {
   Icon as Activity,
   Icon as AudioLines,
-  Icon as MessageCircleHeart,
   Icon as MousePointer2,
   Icon as Table2,
-  Icon as TriangleAlert,
-  Icon as ChevronsUpDown,
-  Icon as MessagesSquare,
   Icon as MousePointerClick,
   Icon as NotebookText,
   Icon as AlarmClock,
