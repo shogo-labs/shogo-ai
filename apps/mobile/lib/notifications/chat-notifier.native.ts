@@ -12,6 +12,7 @@ import { AppState, Platform } from 'react-native'
 import * as Notifications from 'expo-notifications'
 
 import type {
+  ChannelNotificationPayload,
   ChatNotificationClickData,
   ChatNotificationPayload,
 } from './chat-notifier'
@@ -19,6 +20,7 @@ import type {
 let handlerConfigured = false
 let androidChannelConfigured = false
 let activeChatContext: { sessionId: string; projectId: string } | null = null
+let activeChannelConversationId: string | null = null
 
 /**
  * Lets the native notification handler avoid interrupting the user when the
@@ -36,12 +38,14 @@ function ensureHandler() {
   Notifications.setNotificationHandler({
     handleNotification: async (notification) => {
       const data = notification.request.content.data as
-        | { sessionId?: string; projectId?: string }
+        | { sessionId?: string; projectId?: string; conversationId?: string }
         | undefined
       const isAlreadyVisible =
         AppState.currentState === 'active' &&
-        activeChatContext?.sessionId === data?.sessionId &&
-        activeChatContext?.projectId === data?.projectId
+        (data?.conversationId
+          ? activeChannelConversationId === data.conversationId
+          : activeChatContext?.sessionId === data?.sessionId &&
+            activeChatContext?.projectId === data?.projectId)
 
       return {
         shouldShowBanner: !isAlreadyVisible,
@@ -62,6 +66,11 @@ async function ensureAndroidChannel() {
   try {
     await Notifications.setNotificationChannelAsync('chat-complete', {
       name: 'Chat replies',
+      importance: Notifications.AndroidImportance.HIGH,
+      sound: 'default',
+    })
+    await Notifications.setNotificationChannelAsync('messages', {
+      name: 'Team chat',
       importance: Notifications.AndroidImportance.HIGH,
       sound: 'default',
     })
@@ -124,19 +133,52 @@ export async function notifyChatFinished(p: ChatNotificationPayload): Promise<vo
   }
 }
 
+function parseClickData(raw: unknown): ChatNotificationClickData | null {
+  const data = (raw ?? {}) as Record<string, unknown>
+  if (typeof data.taskId === 'string') return { taskId: data.taskId }
+  if (typeof data.conversationId === 'string') {
+    return {
+      conversationId: data.conversationId,
+      threadRootId: typeof data.threadRootId === 'string' ? data.threadRootId : null,
+    }
+  }
+  if (typeof data.sessionId === 'string' && typeof data.projectId === 'string') {
+    return { sessionId: data.sessionId, projectId: data.projectId }
+  }
+  return null
+}
+
+export function setActiveChannelNotificationContext(conversationId: string | null): void {
+  activeChannelConversationId = conversationId
+}
+
+export async function notifyChannelMessage(p: ChannelNotificationPayload): Promise<void> {
+  ensureHandler()
+  await ensureAndroidChannel()
+  try {
+    await Notifications.scheduleNotificationAsync({
+      identifier: `channel-${p.messageId}`,
+      content: {
+        title: p.title,
+        body: p.body,
+        data: { conversationId: p.conversationId, threadRootId: p.threadRootId },
+        sound: 'default',
+        ...(Platform.OS === 'android' ? { channelId: 'messages' } : {}),
+      },
+      trigger: null,
+    })
+  } catch {
+    // Best-effort; don't surface delivery errors to the user.
+  }
+}
+
 export function subscribeNotificationClicks(
   cb: (d: ChatNotificationClickData) => void,
 ): () => void {
   ensureHandler()
   const sub = Notifications.addNotificationResponseReceivedListener((response) => {
-    const data = response.notification.request.content.data as
-      | Partial<ChatNotificationClickData>
-      | undefined
-    if (typeof data?.taskId === 'string') {
-      cb({ taskId: data.taskId })
-    } else if (typeof data?.sessionId === 'string' && typeof data.projectId === 'string') {
-      cb({ sessionId: data.sessionId, projectId: data.projectId })
-    }
+    const data = parseClickData(response.notification.request.content.data)
+    if (data) cb(data)
   })
   return () => {
     try {
@@ -150,15 +192,7 @@ export function subscribeNotificationClicks(
 export async function consumeColdStartNotification(): Promise<ChatNotificationClickData | null> {
   try {
     const resp = await Notifications.getLastNotificationResponseAsync()
-    const data = resp?.notification.request.content.data as
-      | Partial<ChatNotificationClickData>
-      | undefined
-    if (typeof data?.taskId === 'string') {
-      return { taskId: data.taskId }
-    }
-    if (typeof data?.sessionId === 'string' && typeof data.projectId === 'string') {
-      return { sessionId: data.sessionId, projectId: data.projectId }
-    }
+    return parseClickData(resp?.notification.request.content.data)
   } catch {
     // ignore
   }

@@ -117,6 +117,9 @@ export const memberHooks: MemberHooks = {
     syncSeatsFromMembership(record.workspaceId).catch((err) =>
       console.error('[Billing] afterCreate seat sync failed:', err),
     )
+    void import('../services/conversation-activity')
+      .then((m) => m.recordMemberJoined(record.workspaceId, record.userId))
+      .catch(() => {})
 
     try {
       const [user, workspace, owners] = await Promise.all([

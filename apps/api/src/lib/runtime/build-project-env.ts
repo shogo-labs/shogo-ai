@@ -115,6 +115,14 @@ export async function buildProjectEnv(
 
       const settings = parseProjectSettings(project.settings)
 
+      // Per-tool action rules ("ask before merging"). Local runtimes get the
+      // full merged policy from the runtime manager instead.
+      if (process.env.SHOGO_LOCAL_MODE !== 'true') {
+        const { composeCloudPolicy } = await import('../security-policy')
+        const policy = composeCloudPolicy(settings?.security)
+        if (policy) env.SECURITY_POLICY = policy
+      }
+
       // Per-project workspace mount override (default: true = mounted)
       if (settings?.mountWorkspace === false) {
         env.MOUNT_WORKSPACE = 'false'

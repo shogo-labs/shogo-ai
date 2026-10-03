@@ -1,24 +1,26 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
-import { useCallback, useMemo, useRef, useState } from 'react'
-import { AppState, Pressable, RefreshControl, ScrollView, Text, View } from 'react-native'
+import { useCallback, useMemo, useState } from 'react'
+import { Platform, Pressable, RefreshControl, ScrollView, Text, View, useWindowDimensions } from 'react-native'
 import { useFocusEffect, useRouter } from 'expo-router'
 import { observer } from 'mobx-react-lite'
 import { ChevronRight, Clock3, Folder, ListTodo, MessageSquare, XCircle } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
-import { useNotificationCollection, useProjectCollection } from '../../contexts/domain'
+import { useProjectCollection } from '../../contexts/domain'
 import { useIsRemoteSource } from '@shogo/shared-app/domain'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { useWorkspaceExperience } from '../../hooks/useWorkspaceExperience'
-import { api, createHttpClient, type ActiveChatTurn, type AgentTask } from '../../lib/api'
-import { agentTaskEvents } from '../../lib/agent-task-events'
+import type { AgentTask } from '../../lib/api'
+import { useAgentActivity } from '../../hooks/useAgentActivity'
 import { openActiveChat } from '../../lib/open-active-chat'
-import { notificationEvents } from '../../lib/notification-events'
 import { PhoneListEmpty } from '../../components/phone/PhoneListRow'
 import { readableAgentTaskError, taskStatusLabel } from '../../lib/agent-task-ui'
 import { PersonalActivityScreen } from '../../components/personal/PersonalActivityScreen'
 import { WorkspaceChromeSkeletonRows } from '../../components/layout/WorkspaceChromeSkeleton'
+import { TabScreen } from '../../components/layout/TabScreenHeader'
+import { ActivityFeed } from '../../components/activity/ActivityFeed'
+import { WEB_WIDE_MIN_WIDTH } from '../../lib/native-phone-layout'
 import {
   ActivityCard,
   ActivityEmptyCard,
@@ -152,123 +154,34 @@ function ProjectActivityCard({ group, onPress }: { group: ProjectActivityGroup; 
   )
 }
 
-const PROJECT_REFRESH_INTERVAL_MS = 30_000
+/** Focused screens poll for agent changes; unfocused ones stay quiet. */
+function useScreenFocused(): boolean {
+  const [focused, setFocused] = useState(true)
+  useFocusEffect(useCallback(() => {
+    setFocused(true)
+    return () => setFocused(false)
+  }, []))
+  return focused
+}
 
 const TeamActivityScreen = observer(function TeamActivityScreen() {
   const router = useRouter()
-  const http = useMemo(() => createHttpClient(), [])
   const workspace = useActiveWorkspace()
-  const notifications = useNotificationCollection()
   const projects = useProjectCollection()
   const isRemoteSource = useIsRemoteSource()
-  const [tasks, setTasks] = useState<AgentTask[]>([])
-  const [activeChats, setActiveChats] = useState<ActiveChatTurn[]>([])
-  const [loading, setLoading] = useState(true)
-  const [refreshing, setRefreshing] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const loadInFlight = useRef<Promise<void> | null>(null)
-  const projectLoadAt = useRef(0)
-  const projectLoadScope = useRef<string | null>(null)
-
-  const load = useCallback(async (refreshProjects = false) => {
-    if (loadInFlight.current) return loadInFlight.current
-
-    const request = (async () => {
-      try {
-        setError(null)
-        const projectFilter = !isRemoteSource && workspace?.id
-          ? { workspaceId: workspace.id }
-          : undefined
-        const projectScope = isRemoteSource ? 'remote' : workspace?.id || 'local'
-        const shouldLoadProjects = refreshProjects
-          || projectLoadScope.current !== projectScope
-          || Date.now() - projectLoadAt.current >= PROJECT_REFRESH_INTERVAL_MS
-        const projectLoad = shouldLoadProjects
-          ? projects.loadAll(projectFilter).then(() => {
-              projectLoadAt.current = Date.now()
-              projectLoadScope.current = projectScope
-            })
-          : Promise.resolve()
-        const [, , next, chats] = await Promise.all([
-          notifications.loadAll(),
-          projectLoad,
-          api.listAgentTasks(http),
-          // Active chats are supplementary; a failure here must not hide agent tasks.
-          workspace?.id
-            ? api.listWorkspaceActiveChats(http, workspace.id).catch(() => null)
-            : Promise.resolve([]),
-        ])
-        setTasks(next.filter((task) => !workspace?.id || task.workspaceId === workspace.id))
-        if (chats) setActiveChats(chats)
-      } catch (cause) {
-        setError(cause instanceof Error ? cause.message : 'Could not load activity')
-      } finally {
-        setLoading(false)
-        setRefreshing(false)
-      }
-    })()
-
-    loadInFlight.current = request
-    const clearInFlight = () => {
-      if (loadInFlight.current === request) loadInFlight.current = null
-    }
-    void request.then(clearInFlight, clearInFlight)
-    return request
-  }, [http, isRemoteSource, notifications, projects, workspace?.id])
-
-  useFocusEffect(useCallback(() => {
-    let isFocused = true
-    let appState = AppState.currentState
-    let pollTimer: ReturnType<typeof setTimeout> | null = null
-
-    const clearPoll = () => {
-      if (pollTimer) clearTimeout(pollTimer)
-      pollTimer = null
-    }
-    const schedulePoll = () => {
-      clearPoll()
-      // React Native can report null briefly during launch. Treat that as
-      // foreground so the initial Activity load is never skipped.
-      if (!isFocused || (appState !== 'active' && appState !== null)) return
-      pollTimer = setTimeout(async () => {
-        await load()
-        schedulePoll()
-      }, 5_000)
-    }
-    const refreshAndSchedule = async () => {
-      if (!isFocused || (appState !== 'active' && appState !== null)) return
-      await load(true)
-      schedulePoll()
-    }
-
-    void refreshAndSchedule()
-    const unsubscribeTasks = agentTaskEvents.subscribe(() => void refreshAndSchedule())
-    const unsubscribeNotifications = notificationEvents.subscribe(() => {
-      if (!isFocused || (appState !== 'active' && appState !== null)) return
-      void notifications.loadAll()
-    })
-    const appStateSubscription = AppState.addEventListener('change', (nextState) => {
-      appState = nextState
-      if (appState === 'active') void refreshAndSchedule()
-      else clearPoll()
-    })
-    // Agent state changes on the server, so the process-local event bus cannot
-    // update this screen when work finishes in the background. Poll while the
-    // screen is focused so Live Now and project counts converge without a
-    // manual pull-to-refresh.
-    return () => {
-      isFocused = false
-      clearPoll()
-      unsubscribeTasks()
-      unsubscribeNotifications()
-      appStateSubscription.remove()
-    }
-  }, [load]))
-
-  const agentTasks = tasks
-  const active = useMemo(() => agentTasks.filter((task) => task.status === 'queued' || task.status === 'running'), [agentTasks])
+  const focused = useScreenFocused()
+  const {
+    tasks: agentTasks,
+    activeChats,
+    running: active,
+    failed: failedOrCancelled,
+    loading,
+    refreshing,
+    error,
+    clearError,
+    refresh,
+  } = useAgentActivity({ polling: focused })
   const runningCount = active.length + activeChats.length
-  const failedOrCancelled = useMemo(() => agentTasks.filter((task) => task.status === 'failed' || task.status === 'cancelled'), [agentTasks])
   const projectList = projects.all
   const projectActivity = useMemo(() => {
     const groups = new Map<string, ProjectActivityGroup>()
@@ -351,7 +264,7 @@ const TeamActivityScreen = observer(function TeamActivityScreen() {
         <View className="mx-4 mt-3">
           <ActivityErrorBanner
             message={readableAgentTaskError(error, 'We could not refresh activity.')}
-            onRetry={() => { setError(null); setRefreshing(true); void load(true) }}
+            onRetry={() => { clearError(); void refresh({ manual: true }) }}
           />
         </View>
       ) : null}
@@ -360,7 +273,7 @@ const TeamActivityScreen = observer(function TeamActivityScreen() {
           className="flex-1"
           contentContainerClassName="pb-36 pt-2"
           showsVerticalScrollIndicator={false}
-          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); void load(true) }} />}
+          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { void refresh({ manual: true }) }} />}
         >
           <View className="px-4 pb-1 pt-4">
             <Text className="text-[28px] font-semibold tracking-[-0.6px] text-foreground">Activity</Text>
@@ -443,8 +356,19 @@ const TeamActivityScreen = observer(function TeamActivityScreen() {
   )
 })
 
+/** The Activity tab on phones: large title and avatar over the shared feed. */
+function TeamActivityTab() {
+  return (
+    <TabScreen title="Activity" testID="activity-tab">
+      <ActivityFeed />
+    </TabScreen>
+  )
+}
+
 export default observer(function ActivityScreenRoute() {
   const experience = useWorkspaceExperience()
+  const { width } = useWindowDimensions()
+  const isPhone = Platform.OS !== 'web' || width < WEB_WIDE_MIN_WIDTH
   if (!experience.resolved) {
     return (
       <View className="flex-1 bg-background pt-4" testID="activity-chrome-skeleton">
@@ -452,5 +376,8 @@ export default observer(function ActivityScreenRoute() {
       </View>
     )
   }
-  return experience.homeScreen === 'companion' ? <PersonalActivityScreen /> : <TeamActivityScreen />
+  if (experience.homeScreen === 'companion') return <PersonalActivityScreen />
+  // Phones get the combined people-and-agents feed; wide web keeps the full
+  // agent task page (the same feed is the sidebar's Activity panel).
+  return isPhone ? <TeamActivityTab /> : <TeamActivityScreen />
 })

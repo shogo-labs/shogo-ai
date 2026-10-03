@@ -27,7 +27,9 @@ services:
   # Project runtimes should NOT have access to this database.
   # ---------------------------------------------------------------------------
   postgres:
-    image: postgres:16-alpine
+    # postgres:16-alpine plus pgvector (see docker/postgres/Dockerfile).
+    build: docker/postgres
+    image: shogo-postgres:16-pgvector
     environment:
       POSTGRES_USER: shogo
       POSTGRES_PASSWORD: shogo_dev

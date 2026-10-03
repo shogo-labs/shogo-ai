@@ -131,13 +131,13 @@ describe('AgentGateway constructor + loadConfig', () => {
     expect(gw.getAllowedModes()).toEqual(['app', 'none'])
   })
 
-  test('PermissionEngine remains null when SHOGO_LOCAL_MODE is not "true"', () => {
+  test('PermissionEngine enforces only action rules when SHOGO_LOCAL_MODE is not "true"', () => {
     const prev = process.env.SHOGO_LOCAL_MODE
     delete process.env.SHOGO_LOCAL_MODE
     try {
       const ws = makeWorkspace('ctor-no-local')
       const gw = new AgentGateway(ws, 'p-no-local')
-      expect(gw.getPermissionEngine()).toBeNull()
+      expect(gw.getPermissionEngine()?.isActionsOnly).toBe(true)
     } finally {
       if (prev !== undefined) process.env.SHOGO_LOCAL_MODE = prev
     }

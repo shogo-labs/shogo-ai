@@ -172,6 +172,11 @@ export interface AssistantContentProps {
   message: UIMessage
   isStreaming?: boolean
   className?: string
+  /**
+   * Render only the work log, flat, with no "Worked for X" header and no final text. For hosts
+   * that supply their own header and show the final message themselves (team chat).
+   */
+  bare?: boolean
 }
 
 const TEAM_TOOL_NAMES = new Set(["team_create"])
@@ -430,6 +435,7 @@ export const AssistantContent = memo(
     message,
     isStreaming = false,
     className,
+    bare = false,
   }: AssistantContentProps) {
     const chatContext = useChatContextSafe()
     const nativePhone = useIsNativePhoneLayout()
@@ -482,6 +488,8 @@ export const AssistantContent = memo(
 
     // Populate subagentStreamStore from agent_spawn tool results for the Agents panel
     useEffect(() => {
+      // A work log shown inside a channel is read-only history; it must not feed a project's panels.
+      if (bare) return
       for (const part of orderedParts) {
         if (
           part.type === "tool" &&
@@ -544,7 +552,7 @@ export const AssistantContent = memo(
           subagentStreamStore.setModel(tool.id, model)
         }
       }
-    }, [orderedParts, todoStateStore, fileChangeStore])
+    }, [bare, orderedParts, todoStateStore, fileChangeStore])
 
     const groupedParts = useMemo(
       () => groupWorkParts(orderedParts),
@@ -901,6 +909,14 @@ export const AssistantContent = memo(
       isGeneratedImagePart(part) ? [{ part, index }] : [],
     )
 
+    if (bare && !isStreaming) {
+      return (
+        <View className={cn("gap-y-1", className)}>
+          {collapsedWorkLog.map(({ part, index }) => renderPart(part, index))}
+        </View>
+      )
+    }
+
     return (
       <View className={cn("gap-y-1", className)}>
         {!isStreaming && collapsedWorkLog.length > 0 && (
@@ -932,7 +948,8 @@ export const AssistantContent = memo(
   (prev, next) =>
     prev.message === next.message &&
     prev.isStreaming === next.isStreaming &&
-    prev.className === next.className,
+    prev.className === next.className &&
+    prev.bare === next.bare,
 )
 
 export default AssistantContent

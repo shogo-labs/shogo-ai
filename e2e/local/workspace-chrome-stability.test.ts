@@ -113,7 +113,7 @@ test.describe('workspace chrome does not pop between team and personal', () => {
     expect(await page.evaluate(() => (window as unknown as { __chromeFlashes: string[] }).__chromeFlashes)).toEqual([])
 
     release()
-    await expect(page.getByRole('link', { name: 'Goals' })).toBeVisible()
+    await expect(page.getByRole('navigation', { name: 'Workspace tabs' }).getByRole('tab', { name: /^Goals/ })).toBeVisible()
     await expect(page.getByText(TEAM_SUBTITLE)).toHaveCount(0)
     expect(await page.evaluate(() => (window as unknown as { __chromeFlashes: string[] }).__chromeFlashes)).toEqual([])
   })
@@ -129,12 +129,12 @@ test.describe('workspace chrome does not pop between team and personal', () => {
     const release = await holdWorkspaceList(page, personal)
 
     await page.goto('/(app)')
-    await expect(page.getByRole('link', { name: 'Goals' })).toBeVisible()
+    await expect(page.getByRole('navigation', { name: 'Workspace tabs' }).getByRole('tab', { name: /^Goals/ })).toBeVisible()
     await expect(page.getByText(TEAM_SUBTITLE)).toHaveCount(0)
     expect(await page.evaluate(() => (window as unknown as { __chromeFlashes: string[] }).__chromeFlashes)).toEqual([])
 
     release()
-    await expect(page.getByRole('link', { name: 'Goals' })).toBeVisible()
+    await expect(page.getByRole('navigation', { name: 'Workspace tabs' }).getByRole('tab', { name: /^Goals/ })).toBeVisible()
     expect(await page.evaluate(() => (window as unknown as { __chromeFlashes: string[] }).__chromeFlashes)).toEqual([])
   })
 })

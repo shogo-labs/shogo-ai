@@ -320,6 +320,7 @@ async function performCloudSignIn(
   let mintedKey: string
   let mintedEmail: string | null
   let mintedWorkspace: string | null
+  let mintedWorkspaces: unknown = null
   try {
     const result = await runCloudLogin({
       cloudUrl,
@@ -340,6 +341,7 @@ async function performCloudSignIn(
     mintedKey = result.key
     mintedEmail = result.email
     mintedWorkspace = result.workspace
+    mintedWorkspaces = result.workspaces
   } catch (err) {
     // Superseded by a newer sign-in: stay silent so the user doesn't see
     // a "Cancelled" error for the run they intentionally replaced.
@@ -364,7 +366,7 @@ async function performCloudSignIn(
     const persistRes = await fetch(`${getApiUrl()}/api/local/shogo-key`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ key: mintedKey }),
+      body: JSON.stringify({ key: mintedKey, workspaces: mintedWorkspaces }),
     })
     const persistBody = (await persistRes.json().catch(() => ({}))) as CloudLoginBody
     if (!persistRes.ok || persistBody?.ok === false) {
@@ -1352,6 +1354,12 @@ function registerIpcHandlers(): void {
     } catch (err) {
       return { ok: false, error: (err as Error)?.message || 'Sign-out failed' }
     }
+  })
+
+  // Unread team chat count on the dock / taskbar icon.
+  ipcMain.handle('set-badge-count', (_event, count: unknown) => {
+    const n = typeof count === 'number' && Number.isFinite(count) ? Math.max(0, Math.min(Math.floor(count), 9999)) : 0
+    return app.setBadgeCount(n)
   })
 
   // Desktop notification for remote actions

@@ -630,7 +630,7 @@ export const api = {
     return res.data?.count ?? 0
   },
 
-  async registerMobilePushSubscription(http: HttpClient, body: { pushToken: string; platform: 'ios' | 'android' }) {
+  async registerMobilePushSubscription(http: HttpClient, body: { pushToken: string; platform: 'ios' | 'android'; agentTurns?: boolean }) {
     const res = await http.post<{ ok?: boolean; id?: string }>('/api/mobile-push-subscriptions', body)
     return res.data
   },
@@ -2814,6 +2814,8 @@ export interface SecurityPrefs {
     fileAccess?: { allow?: string[]; deny?: string[] }
     network?: { allowedDomains?: string[] }
     mcpTools?: { autoApprove?: string[] }
+    /** Per-tool: allow, ask a person first, or block. */
+    actions?: Record<string, 'allow' | 'ask' | 'block'>
   }
   approvalTimeoutSeconds?: number
 }

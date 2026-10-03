@@ -133,6 +133,22 @@ describe('generateTitleCompletion', () => {
     expect(result.billingModelId).toBe(DEFAULT_TITLE_MODEL_ID)
   })
 
+  test('tries fallback models when neither the configured nor the default model can be reached', async () => {
+    resolvable = { 'claude-haiku': { billingModelId: 'claude-haiku' } }
+    behavior['claude-haiku'] = { text: 'from haiku' }
+
+    const result = await generateTitleCompletion({ system: SYSTEM, prompt: PROMPT, fallbackModelIds: ['claude-haiku'] })
+    expect(result.text).toBe('from haiku')
+    expect(result.billingModelId).toBe('claude-haiku')
+    expect(generateOptions).toHaveLength(1)
+  })
+
+  test('fallbacks do not run when the title model works', async () => {
+    resolvable['claude-haiku'] = { billingModelId: 'claude-haiku' }
+    const result = await generateTitleCompletion({ system: SYSTEM, prompt: PROMPT, fallbackModelIds: ['claude-haiku'] })
+    expect(result.billingModelId).toBe(DEFAULT_TITLE_MODEL_ID)
+  })
+
   test('only tries the default once when it is also the configured id', async () => {
     behavior[DEFAULT_TITLE_MODEL_ID] = { throws: true }
     await expect(

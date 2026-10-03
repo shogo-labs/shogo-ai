@@ -126,6 +126,9 @@ export type PermissionCategory =
   // autonomy) like 'network'/'mcp' do.
   | 'project'
 
+/** What happens when the agent calls a tool: run it, ask a person first, or refuse. */
+export type ActionRule = 'allow' | 'ask' | 'block'
+
 export interface SecurityPreference {
   mode: SecurityMode
   /**
@@ -135,6 +138,11 @@ export interface SecurityPreference {
    */
   localAccess?: import('./local-access').LocalAccessPolicy
   overrides?: {
+    /**
+     * Per-tool rules keyed by tool name (e.g. `github_merge_pr`). Checked before
+     * the mode's defaults, after hard blocks and deny lists.
+     */
+    actions?: Record<string, ActionRule>
     shellCommands?: { allow?: string[]; deny?: string[] }
     fileAccess?: { allow?: string[]; deny?: string[] }
     network?: { allowedDomains?: string[] }

@@ -9,7 +9,7 @@ import { api, createHttpClient } from '../api'
 import { ensureNotificationPermission } from './chat-notifier'
 import { getNotifyOnTurnComplete } from './preferences'
 
-let registeredDevice: { userId: string; pushToken: string } | null = null
+let registeredDevice: { userId: string; pushToken: string; agentTurns: boolean } | null = null
 let registrationInFlight: Promise<void> | null = null
 
 async function unregisterRegisteredDevice(): Promise<void> {
@@ -28,16 +28,16 @@ async function unregisterRegisteredDevice(): Promise<void> {
   }
 }
 
-async function registerCurrentDevice(userId: string, enabled: boolean) {
+/**
+ * Register this device for pushes while signed in. `agentTurns` only
+ * controls agent turn/task completion pushes; team chat pushes always
+ * arrive and are governed by chat preferences on the server.
+ */
+async function registerCurrentDevice(userId: string, agentTurns: boolean) {
   if (Platform.OS !== 'ios' && Platform.OS !== 'android') return
 
   if (registeredDevice?.userId !== userId) {
     await unregisterRegisteredDevice()
-  }
-
-  if (!enabled) {
-    await unregisterRegisteredDevice()
-    return
   }
 
   if (!(await ensureNotificationPermission())) return
@@ -47,21 +47,24 @@ async function registerCurrentDevice(userId: string, enabled: boolean) {
     projectId ? { projectId } : undefined,
   )
   const pushToken = tokenResponse.data
-  if (!pushToken || (registeredDevice?.userId === userId && registeredDevice.pushToken === pushToken)) return
+  if (!pushToken) return
+  if (registeredDevice?.userId === userId && registeredDevice.pushToken === pushToken && registeredDevice.agentTurns === agentTurns) return
 
   const http = createHttpClient()
   await api.registerMobilePushSubscription(http, {
     pushToken,
     platform: Platform.OS,
+    agentTurns,
   })
-  registeredDevice = { userId, pushToken }
+  registeredDevice = { userId, pushToken, agentTurns }
 }
 
+/** True when the server will push agent turn completions to this device. */
 export function hasRegisteredMobilePushSubscription(): boolean {
-  return registeredDevice !== null && getNotifyOnTurnComplete()
+  return registeredDevice !== null && registeredDevice.agentTurns && getNotifyOnTurnComplete()
 }
 
-export function useMobilePushRegistration(userId: string | null, enabled = true) {
+export function useMobilePushRegistration(userId: string | null, agentTurns = true) {
   useEffect(() => {
     let cancelled = false
 
@@ -70,7 +73,7 @@ export function useMobilePushRegistration(userId: string | null, enabled = true)
       if (cancelled) return
 
       const request = userId
-        ? registerCurrentDevice(userId, enabled)
+        ? registerCurrentDevice(userId, agentTurns)
         : unregisterRegisteredDevice()
       registrationInFlight = request.finally(() => {
         registrationInFlight = null
@@ -80,5 +83,5 @@ export function useMobilePushRegistration(userId: string | null, enabled = true)
     void register()
 
     return () => { cancelled = true }
-  }, [enabled, userId])
+  }, [agentTurns, userId])
 }

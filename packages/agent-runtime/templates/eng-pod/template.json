@@ -1,0 +1,28 @@
+{
+  "id": "eng-pod",
+  "name": "Engineering Team in a Channel",
+  "description": "Three agents that work a bug or feature from #eng to a merged PR where the whole team can see it: a coordinator turns reports into tickets, a builder fixes and previews, an isolated reviewer checks the work against the acceptance criteria. One status card tells the story; a person only approves the merge. Run `system_apply` once to create the builder and reviewer and set up #eng.",
+  "category": "development",
+  "icon": "Users",
+  "tags": [
+    "team-chat",
+    "multi-agent",
+    "github",
+    "code-review",
+    "engineering"
+  ],
+  "settings": {
+    "activeMode": "none",
+    "heartbeatInterval": 3600,
+    "heartbeatEnabled": false,
+    "modelProvider": "anthropic",
+    "modelName": "claude-sonnet-4-6",
+    "webEnabled": true,
+    "browserEnabled": false,
+    "shellEnabled": true,
+    "imageGenEnabled": false,
+    "memoryEnabled": true,
+    "quickActionsEnabled": true
+  },
+  "techStack": "none"
+}

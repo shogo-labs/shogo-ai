@@ -175,6 +175,7 @@ contextBridge.exposeInMainWorld('shogoDesktop', {
     }
   },
   setAppMode: (mode: 'local' | 'cloud') => ipcRenderer.invoke('set-app-mode', mode),
+  setBadgeCount: (count: number) => ipcRenderer.invoke('set-badge-count', count),
 
   codeWorkbench: {
     open: (opts?: { projectId?: string; workspacePath?: string }) => ipcRenderer.invoke('code-workbench:open', opts ?? {}),

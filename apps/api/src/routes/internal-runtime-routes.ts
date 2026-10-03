@@ -44,6 +44,7 @@ import {
   type WorkspaceAgentRoutesConfig,
 } from './workspace-agent'
 import { workspaceMeetingRoutes } from './workspace-meetings'
+import { agentChannelRoutes, type AgentChannelAuthContext } from './conversations'
 import {
   createInternalAuthorizers,
   logAuthReject,
@@ -73,7 +74,7 @@ export interface RuntimeInternalRoutesOptions {
   loadProjectLifecycle?: () => Promise<ProjectLifecycleService>
   /** Backs `project_call`. */
   loadAgentCall?: () => Promise<AgentCallService>
-  /** Cloud-only GitHub App operations; omitted from the slim desktop bundle. */
+  /** GitHub App operations; omitted where the API has no GitHub App. */
   loadGitHub?: () => Promise<GitHubService>
 }
 
@@ -466,6 +467,24 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
           return c.json({ error: 'Unauthorized' }, 401)
         }
         return { workspaceId }
+      },
+    }),
+  )
+
+  app.route(
+    '/',
+    agentChannelRoutes({
+      authorize: async (c): Promise<AgentChannelAuthContext | Response> => {
+        const workspaceId = c.req.param('workspaceId')
+        if (!(await authorizeWorkspaceScope(c, workspaceId))) {
+          return c.json({ error: 'Unauthorized' }, 401)
+        }
+        const identity = await authenticate(c)
+        // A project-scoped token pins the author. A workspace runtime may speak as a project of this
+        // workspace it claims to be (a project with attachments runs as a workspace runtime anchored on
+        // itself); with no claim it speaks as the workspace agent.
+        const projectId = identity?.kind === 'project' ? identity.projectId : undefined
+        return { workspaceId, projectId }
       },
     }),
   )
@@ -1007,6 +1026,49 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     } catch (err: any) {
       console.error(`[Internal] GitHub PR creation for ${projectId} failed:`, err?.message ?? err)
       return c.json({ error: 'Failed to create pull request' }, 502)
+    }
+  })
+
+  /**
+   * POST /api/internal/projects/:projectId/github/pull-request/:number/merge
+   *   body: { method?: 'merge' | 'squash' | 'rebase', commitTitle? }
+   *
+   * Merges with the Shogo GitHub App installation token. The agent's
+   * `github_merge_pr` tool calls this after a person approved it.
+   */
+  app.post('/projects/:projectId/github/pull-request/:number/merge', async (c) => {
+    const projectId = c.req.param('projectId')
+    if (!projectId) return c.json({ error: 'Missing projectId' }, 400)
+    if (!(await validateAuth(c, projectId))) return c.json({ error: 'Unauthorized' }, 401)
+
+    const number = Number(c.req.param('number'))
+    if (!Number.isInteger(number) || number <= 0) return c.json({ error: 'A pull request number is required' }, 400)
+    const body = await c.req.json().catch(() => null) as Record<string, unknown> | null
+    const method = body?.method === 'merge' || body?.method === 'rebase' ? body.method : 'squash'
+    const commitTitle = typeof body?.commitTitle === 'string' && body.commitTitle.trim() ? body.commitTitle.trim() : undefined
+
+    try {
+      if (!loadGitHub) {
+        return c.json({ error: { code: 'github_app_not_installed', message: 'GitHub App merging is not available on this runtime.' } }, 409)
+      }
+      const github = await loadGitHub()
+      const connection = await github.getConnection(projectId)
+      const installationId = connection?.installationId
+      if (!connection || typeof installationId !== 'number' || !Number.isInteger(installationId)) {
+        return c.json({ error: { code: 'github_app_not_installed', message: 'This project has no GitHub App connection.' } }, 409)
+      }
+      const result = await github.mergePullRequest({
+        installationId,
+        repoOwner: connection.repoOwner,
+        repoName: connection.repoName,
+        number,
+        method,
+        commitTitle,
+      })
+      return c.json({ ok: true, merged: result.merged, sha: result.sha })
+    } catch (err: any) {
+      console.error(`[Internal] GitHub PR merge for ${projectId} failed:`, err?.message ?? err)
+      return c.json({ error: String(err?.message ?? 'Failed to merge pull request') }, 502)
     }
   })
 

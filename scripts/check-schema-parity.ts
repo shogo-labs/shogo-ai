@@ -60,6 +60,11 @@ const INTENTIONAL_DIFFERENCES: Allow[] = [
       'Stores desktop-app-only preferences (chosen instance size, last-opened workspace, etc.). Never persisted to the cloud DB.',
   },
   // PG-only models — none yet; SignupAttribution etc. should be mirrored.
+  {
+    key: 'ConversationMessageEmbedding.embedding',
+    reason:
+      'Float[] vector on PG; SQLite has no array type, so the desktop mirror stores it as a JSON string (decoded by ARRAY_FIELDS in apps/api/src/lib/prisma.ts).',
+  },
   // Cloud-only fields -------------------------------------------------------
   {
     key: 'Workspace.homeRegion',
