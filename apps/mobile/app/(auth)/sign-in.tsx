@@ -16,8 +16,8 @@ import * as AppleAuthentication from 'expo-apple-authentication'
 import * as Crypto from 'expo-crypto'
 
 /** App-root `require` so Metro web emits valid image URLs (shared-ui `require` can fail on web). */
-const LOGIN_HERO_LIGHT = require('../../assets/login/shogo-login3.jpg')
-const LOGIN_HERO_DARK = require('../../assets/login/shogo-login3.jpg')
+const LOGIN_HERO_LIGHT = require('../../assets/login/shogo-login1.webp')
+const LOGIN_HERO_DARK = require('../../assets/login/shogo-login2.webp')
 
 export default function SignInScreen() {
   const router = useRouter()
