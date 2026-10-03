@@ -26,6 +26,14 @@ export interface MicrocompactConfig {
    * blocks on every call. Undefined = no-op (backward compatible).
    */
   frozenIds?: ReadonlySet<string>
+  /**
+   * The set of tool names whose results are eligible for compression.
+   * Defaults to COMPACTABLE_TOOLS. Pass a custom set to extend or restrict
+   * which tools can be compacted — same optional/default pattern as frozenIds.
+   * toolResults for tools NOT in this set are returned unchanged.
+   * toolResults whose tool name cannot be resolved (null) are also skipped.
+   */
+  compactableTools?: ReadonlySet<string>
 }
 
 const DEFAULT_CONFIG: MicrocompactConfig = {
@@ -78,7 +86,10 @@ export function microcompact(
     const totalChars = textParts.reduce((sum, c) => sum + c.text.length, 0)
 
     const toolName = findToolName(messages, idx)
-    const isFileRead = toolName !== null && FILE_CONTENT_TOOLS.has(toolName)
+    const effectiveTools = cfg.compactableTools ?? COMPACTABLE_TOOLS
+    if (toolName === null || !effectiveTools.has(toolName)) return msg
+
+    const isFileRead = FILE_CONTENT_TOOLS.has(toolName)
 
     if (isFileRead) {
       const lineCount = textParts.reduce((sum, c) => sum + c.text.split('\n').length, 0)
