@@ -19,7 +19,7 @@ import { join } from 'path'
 import type { ArchiveRef } from './archive-ref'
 import { config } from './config'
 import { M, metrics } from './metrics'
-import { MetalWarmPool, type AssignedVm } from './pool'
+import { MetalWarmPool, type AssignedVm, type RepoExport } from './pool'
 import type { RepoLineage, RepoWriteOutcome } from './repo-archive'
 import type { FcVmHandle, FirecrackerVMManager } from './firecracker-vm-manager'
 import type { SnapshotMeta, SnapshotStore } from './snapshot-store'
@@ -67,8 +67,8 @@ class TestPool extends MetalWarmPool {
     if (this.guestHangs) return new Promise(() => {})
     return this.guestOk ? Promise.resolve(v) : Promise.reject(new Error('ECONNRESET'))
   }
-  protected override fetchRepoExport(): Promise<Uint8Array | null> {
-    return this.guest(new Uint8Array([7]))
+  protected override fetchRepoExport(): Promise<RepoExport | null> {
+    return this.guest({ bytes: new Uint8Array([7]), rootCommitAt: null })
   }
   protected override fetchExport(): Promise<Uint8Array | null> {
     return this.guest(new Uint8Array([8]))

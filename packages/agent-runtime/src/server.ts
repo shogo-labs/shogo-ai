@@ -39,6 +39,7 @@ import {
 import { hydrateWorkspaceMembers, type MemberSync } from './workspace-hydration'
 import {
   resolveMemberTechStackId,
+  parseHostConfirmedNewProjectIds,
   seedEmptyWorkspaceMember,
   shouldSeedAnchorMember,
 } from './workspace-member-seed'
@@ -3151,6 +3152,30 @@ app.post('/pool/export', async (c) => {
 // push succeeds.
 //
 // Returns 204 when there is no `.git` yet.
+//
+// The response carries when the repo's history began (its earliest root
+// commit), so the host can tell a `.git` seeded on this boot from one with
+// real history before it lets the export supersede a durable repo.
+const REPO_ROOT_COMMIT_AT_HEADER = 'x-shogo-repo-root-commit-at'
+
+function repoRootCommitAt(dir: string): number | null {
+  try {
+    const out = Bun.spawnSync(['git', '-C', dir, 'log', '--max-parents=0', '--format=%ct', 'HEAD'], {
+      stdout: 'pipe',
+      stderr: 'ignore',
+    })
+    if (out.exitCode !== 0) return null
+    const times = out.stdout
+      .toString()
+      .split('\n')
+      .map((line) => Number(line.trim()))
+      .filter((t) => Number.isFinite(t) && t > 0)
+    return times.length ? Math.min(...times) * 1000 : null
+  } catch {
+    return null
+  }
+}
+
 app.post('/pool/export-repo', async (c) => {
   sweepSpool()
   const tmp = spoolPath('pool-export-repo.tar.gz')
@@ -3168,7 +3193,11 @@ app.post('/pool/export-repo', async (c) => {
     if (!packed) return c.body(null, 204)
     const size = statSync(tmp).size
     console.log(`[pool/export-repo] packed .git for durable backup (${size} bytes)`)
-    const res = await spooledFileResponse(tmp, { 'Content-Type': 'application/gzip' })
+    const rootCommitAt = repoRootCommitAt(destinationDir)
+    const res = await spooledFileResponse(tmp, {
+      'Content-Type': 'application/gzip',
+      ...(rootCommitAt !== null ? { [REPO_ROOT_COMMIT_AT_HEADER]: String(rootCommitAt) } : {}),
+    })
     handedOff = true
     return res
   } catch (err: any) {
@@ -6010,7 +6039,17 @@ async function initializeEssentials(): Promise<void> {
   let workspaceNewProjectIds: string[] = []
   if (IS_WORKSPACE_RUNTIME && isHostMediatedDurability()) {
     // Metal guests hold no object-store credentials; the host hydrates each
-    // member into `<WORKSPACE_DIR>/<id>/` after assign and exports on evict.
+    // member into `<WORKSPACE_DIR>/<id>/` after assign and exports on evict,
+    // and tells us which members it found no backup for.
+    const confirmedNew = parseHostConfirmedNewProjectIds()
+    if (confirmedNew) {
+      workspaceNewProjectIds = confirmedNew
+    } else {
+      // A host that predates WORKSPACE_NEW_PROJECT_IDS. Keep its seeding
+      // behavior so brand-new projects still boot until the host updates.
+      console.warn('[agent-runtime] host did not send WORKSPACE_NEW_PROJECT_IDS — treating every member as new')
+      workspaceNewProjectIds = WORKSPACE_RUNTIME_PROJECT_IDS
+    }
     logTiming('Workspace S3 hydration skipped: host-mediated durability')
   } else if (!skipInternalSync && IS_WORKSPACE_RUNTIME && (process.env.S3_WORKSPACES_BUCKET || process.env.S3_BUCKET)) {
     // Workspace runtime: each attached project is stored under its own S3
@@ -6103,7 +6142,6 @@ async function initializeEssentials(): Promise<void> {
       shouldSeedAnchorMember({
         anchorProjectId: anchorId,
         memberProjectIds: WORKSPACE_RUNTIME_PROJECT_IDS,
-        hostMediatedDurability: isHostMediatedDurability(),
         newProjectIds: workspaceNewProjectIds,
       })
     ) {

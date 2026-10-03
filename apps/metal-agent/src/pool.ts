@@ -92,6 +92,21 @@ export const REPO_STAGING_DIR = '.shogo/local/repo-staging'
  */
 const REPO_HYDRATED_SLACK_MS = 15_000
 
+/** Header on `/pool/export-repo`: epoch ms of the repo's earliest root commit. */
+const REPO_ROOT_COMMIT_AT_HEADER = 'x-shogo-repo-root-commit-at'
+
+/**
+ * A root commit this close to (or after) the VM's state start was made on this
+ * boot. The slack absorbs guest/host clock skew.
+ */
+const REPO_BORN_ON_BOOT_SLACK_MS = 10 * 60_000
+
+/** A guest's packed `.git` and when its history began (null if not reported). */
+export interface RepoExport {
+  bytes: Uint8Array
+  rootCommitAt: number | null
+}
+
 /** The guest answered `/pool/repo-hydrated` with an error, so it did not adopt. */
 export class RepoHydrateRefusedError extends Error {
   constructor(
@@ -1270,6 +1285,7 @@ export class MetalWarmPool {
       )
       vmClass = 'standard'
     }
+    if (projectId.startsWith('ws:')) env = await this.withConfirmedNewMembers(env)
     let vm = this.claim(vmClass)
     if (!vm) vm = await this.heavy.run(() => this.bootOne(false, vmClass))
 
@@ -1827,6 +1843,25 @@ export class MetalWarmPool {
    * written (null when unknown or absent), which the repo hydrate needs to
    * avoid resetting a newer member tree to an older repo HEAD.
    */
+  /**
+   * Add `WORKSPACE_NEW_PROJECT_IDS`: the members the store confirms have no
+   * source backup. The guest seeds the starter only into those, so a lookup
+   * that fails leaves the member out rather than risk seeding over a real
+   * project.
+   */
+  private async withConfirmedNewMembers(env: Record<string, string>): Promise<Record<string, string>> {
+    const memberIds = (env.WORKSPACE_PROJECT_IDS ?? '').split(',').map((id) => id.trim()).filter(Boolean)
+    const confirmed: string[] = []
+    for (const memberId of memberIds) {
+      try {
+        if (!(await this.sourceRef(memberId))) confirmed.push(memberId)
+      } catch (err: any) {
+        console.warn(`[pool] could not confirm workspace member ${memberId} has no backup — not seeding it:`, err?.message ?? err)
+      }
+    }
+    return { ...env, WORKSPACE_NEW_PROJECT_IDS: confirmed.join(',') }
+  }
+
   private async hydrateWorkspaceMembers(
     a: AssignedVm,
     env: Record<string, string>,
@@ -2051,7 +2086,7 @@ export class MetalWarmPool {
     this.writeLive(a)
   }
 
-  protected async fetchRepoExport(handle: FcVmHandle, token?: string): Promise<Uint8Array | null> {
+  protected async fetchRepoExport(handle: FcVmHandle, token?: string): Promise<RepoExport | null> {
     const res = await fetch(`${handle.agentUrl}/pool/export-repo`, {
       method: 'POST',
       headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
@@ -2061,7 +2096,12 @@ export class MetalWarmPool {
     if (res.status === 404) return null
     if (!res.ok) throw new Error(`/pool/export-repo failed (${res.status}): ${await res.text()}`)
     const buf = await res.arrayBuffer()
-    return buf.byteLength ? new Uint8Array(buf) : null
+    if (!buf.byteLength) return null
+    const rootCommitAt = Number(res.headers.get(REPO_ROOT_COMMIT_AT_HEADER))
+    return {
+      bytes: new Uint8Array(buf),
+      rootCommitAt: Number.isFinite(rootCommitAt) && rootCommitAt > 0 ? rootCommitAt : null,
+    }
   }
 
   protected uploadRepoGuarded(
@@ -2083,17 +2123,22 @@ export class MetalWarmPool {
       metrics.inc(M.repoRefused)
       return false
     }
-    const bytes = await this.fetchRepoExport(a.handle, a.runtimeToken)
-    if (!bytes) return false
-    return (await this.storeRepoBytes(a, bytes)) === 'written'
+    const exported = await this.fetchRepoExport(a.handle, a.runtimeToken)
+    if (!exported) return false
+    return (await this.storeRepoBytes(a, exported.bytes, exported.rootCommitAt)) === 'written'
   }
 
   /**
    * Upload `.git` bytes under the lineage guard. `written` = the durable repo
    * now holds them; `quarantined` = diverted to a conflict key (still durable,
-   * needs a human); `lost` = nowhere durable.
+   * needs a human); `lost` = nowhere durable. `rootCommitAt` is when the
+   * exported history began, or null when the guest did not say.
    */
-  private async storeRepoBytes(a: AssignedVm, bytes: Uint8Array): Promise<'written' | 'quarantined' | 'lost'> {
+  private async storeRepoBytes(
+    a: AssignedVm,
+    bytes: Uint8Array,
+    rootCommitAt: number | null,
+  ): Promise<'written' | 'quarantined' | 'lost'> {
     const outcome = await this.uploadRepoGuarded(a.projectId, bytes, {
       lineage: this.repoLineageOf(a),
       preserveOnRefusal: true,
@@ -2108,7 +2153,9 @@ export class MetalWarmPool {
         )
         return 'written'
       case 'conflict':
-        if (!a.repoParentEtag && !a.repoLinked && (await this.promoteUnlinkedRepo(a, bytes))) return 'written'
+        if (!a.repoParentEtag && !a.repoLinked && (await this.promoteUnlinkedRepo(a, bytes, rootCommitAt))) {
+          return 'written'
+        }
         metrics.inc(M.repoConflict)
         console.error(
           `[pool] REFUSED to overwrite repo.git.tar.gz for ${a.projectId} — lineage ` +
@@ -2138,9 +2185,22 @@ export class MetalWarmPool {
    * Then this VM's `.git` supersedes it, with the old archive kept under
    * `conflict/`. Any later write means another VM is live and the conflict
    * stands.
+   *
+   * Never when this VM's history began on this boot (or its start is unknown):
+   * that `.git` was seeded from whatever the workspace held at boot, and
+   * superseding with it discards the durable history it never contained.
    */
-  private async promoteUnlinkedRepo(a: AssignedVm, bytes: Uint8Array): Promise<boolean> {
+  private async promoteUnlinkedRepo(a: AssignedVm, bytes: Uint8Array, rootCommitAt: number | null): Promise<boolean> {
     const since = a.stateSince ?? a.assignedAt
+    if (rootCommitAt === null || rootCommitAt >= since - REPO_BORN_ON_BOOT_SLACK_MS) {
+      console.warn(
+        `[pool] not promoting unlinked repo for ${a.projectId}: its history ` +
+          (rootCommitAt === null
+            ? 'start is unknown'
+            : `began ${new Date(rootCommitAt).toISOString()}, on this VM's boot (${new Date(since).toISOString()})`),
+      )
+      return false
+    }
     let current: { etag: string | null; lastModified: number | null } | null
     try {
       current = await this.statDurableRepo(a.projectId)
@@ -3545,7 +3605,7 @@ export class MetalWarmPool {
         outDir,
       )
       let ok = true
-      if (repo) ok = (await this.storeRepoBytes(a, new Uint8Array(readFileSync(repo)))) !== 'lost' && ok
+      if (repo) ok = (await this.storeRepoBytes(a, new Uint8Array(readFileSync(repo)), null)) !== 'lost' && ok
       if (source) ok = (await this.storeSourceBytes(a, new Uint8Array(readFileSync(source)))) && ok
       return ok
     } finally {
@@ -4303,8 +4363,8 @@ export class MetalWarmPool {
       let out: 'written' | 'quarantined' | 'lost' | 'empty' | undefined
       const exportRepo = () =>
         this.repoFlight.run(a.projectId, async () => {
-          const bytes = await this.fetchRepoExport(a.handle, a.runtimeToken)
-          out = bytes ? await this.storeRepoBytes(a, bytes) : 'empty'
+          const exported = await this.fetchRepoExport(a.handle, a.runtimeToken)
+          out = exported ? await this.storeRepoBytes(a, exported.bytes, exported.rootCommitAt) : 'empty'
           return out === 'written'
         })
       await exportRepo()

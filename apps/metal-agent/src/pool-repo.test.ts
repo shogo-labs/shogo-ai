@@ -13,7 +13,14 @@ import { mkdtempSync, mkdirSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { config } from './config'
-import { MetalWarmPool, REPO_STAGING_DIR, RepoHydrateRefusedError, repoKeepPaths, type AssignedVm } from './pool'
+import {
+  MetalWarmPool,
+  REPO_STAGING_DIR,
+  RepoHydrateRefusedError,
+  repoKeepPaths,
+  type AssignedVm,
+  type RepoExport,
+} from './pool'
 import type { RepoLineage, RepoWriteOutcome } from './repo-archive'
 import type { FirecrackerVMManager } from './firecracker-vm-manager'
 import type { SnapshotStore } from './snapshot-store'
@@ -26,6 +33,7 @@ class TestPool extends MetalWarmPool {
   /** Per-call outcomes, consumed before falling back to `outcome`. */
   outcomes: RepoWriteOutcome[] = []
   exportBytes: Uint8Array | null = new Uint8Array([1, 2, 3])
+  exportRootCommitAt: number | null = null
   durable: { etag: string | null; lastModified: number | null } | null = null
   statCalls = 0
   preserved: string[] = []
@@ -41,8 +49,8 @@ class TestPool extends MetalWarmPool {
     return this.preserveKey
   }
 
-  protected override async fetchRepoExport(): Promise<Uint8Array | null> {
-    return this.exportBytes
+  protected override async fetchRepoExport(): Promise<RepoExport | null> {
+    return this.exportBytes ? { bytes: this.exportBytes, rootCommitAt: this.exportRootCommitAt } : null
   }
 
   protected override async uploadRepoGuarded(
@@ -131,12 +139,16 @@ describe('pool host-mediated repo persist', () => {
 
   describe('an unlinked VM whose export hits an existing durable repo', () => {
     const conflict: RepoWriteOutcome = { status: 'conflict', quarantineKey: 'conflict/p1/q.tar.gz', reason: 'raced-create' }
+    const HOUR = 60 * 60_000
+    const STATE_SINCE = 1_790_000_000_000
+    const OLD_ROOT = STATE_SINCE - 48 * HOUR
 
     test('supersedes a repo nobody wrote since its state began, keeping the old archive', async () => {
       const pool = makePool(dir)
       pool.outcomes = [conflict, { status: 'written', etag: '"promoted"' }]
-      pool.durable = { etag: '"stale"', lastModified: 1_000 }
-      const a = pool.add('ws:proj:p1', { stateSince: 5_000 })
+      pool.durable = { etag: '"stale"', lastModified: STATE_SINCE - HOUR }
+      pool.exportRootCommitAt = OLD_ROOT
+      const a = pool.add('ws:proj:p1', { stateSince: STATE_SINCE })
 
       expect(await pool.saveRepoToStore(a)).toBe(true)
       expect(pool.preserved).toEqual(['ws:proj:p1'])
@@ -148,11 +160,37 @@ describe('pool host-mediated repo persist', () => {
       expect(pool.uploads[2].opts.lineage).toEqual({ kind: 'descends', etag: '"promoted"' })
     })
 
+    test('never supersedes with a repo whose history began on this boot', async () => {
+      const pool = makePool(dir)
+      pool.outcomes = [conflict]
+      pool.durable = { etag: '"real-history"', lastModified: STATE_SINCE - HOUR }
+      pool.exportRootCommitAt = STATE_SINCE + 60_000
+      const a = pool.add('ws:proj:p1', { stateSince: STATE_SINCE })
+
+      expect(await pool.saveRepoToStore(a)).toBe(false)
+      expect(pool.uploads).toHaveLength(1)
+      expect(pool.preserved).toHaveLength(0)
+      expect(pool.statCalls).toBe(0)
+    })
+
+    test('never supersedes when the guest did not report when its history began', async () => {
+      const pool = makePool(dir)
+      pool.outcomes = [conflict]
+      pool.durable = { etag: '"real-history"', lastModified: STATE_SINCE - HOUR }
+      pool.exportRootCommitAt = null
+      const a = pool.add('ws:proj:p1', { stateSince: STATE_SINCE })
+
+      expect(await pool.saveRepoToStore(a)).toBe(false)
+      expect(pool.uploads).toHaveLength(1)
+      expect(pool.preserved).toHaveLength(0)
+    })
+
     test('leaves the conflict when another VM wrote the repo after its state began', async () => {
       const pool = makePool(dir)
       pool.outcomes = [conflict]
-      pool.durable = { etag: '"other-writer"', lastModified: 9_000 }
-      const a = pool.add('ws:proj:p1', { stateSince: 5_000 })
+      pool.durable = { etag: '"other-writer"', lastModified: STATE_SINCE + HOUR }
+      pool.exportRootCommitAt = OLD_ROOT
+      const a = pool.add('ws:proj:p1', { stateSince: STATE_SINCE })
 
       expect(await pool.saveRepoToStore(a)).toBe(false)
       expect(pool.uploads).toHaveLength(1)
@@ -163,8 +201,9 @@ describe('pool host-mediated repo persist', () => {
     test('a linked VM never tries to supersede', async () => {
       const pool = makePool(dir)
       pool.outcomes = [{ ...conflict, reason: 'lineage' }]
-      pool.durable = { etag: '"x"', lastModified: 1_000 }
-      const a = pool.add('ws:proj:p1', { repoParentEtag: '"old"', stateSince: 5_000 })
+      pool.durable = { etag: '"x"', lastModified: STATE_SINCE - HOUR }
+      pool.exportRootCommitAt = OLD_ROOT
+      const a = pool.add('ws:proj:p1', { repoParentEtag: '"old"', stateSince: STATE_SINCE })
 
       expect(await pool.saveRepoToStore(a)).toBe(false)
       expect(pool.statCalls).toBe(0)
@@ -173,12 +212,36 @@ describe('pool host-mediated repo persist', () => {
     test('does not overwrite when the old archive could not be kept', async () => {
       const pool = makePool(dir)
       pool.outcomes = [conflict]
-      pool.durable = { etag: '"stale"', lastModified: 1_000 }
+      pool.durable = { etag: '"stale"', lastModified: STATE_SINCE - HOUR }
+      pool.exportRootCommitAt = OLD_ROOT
       pool.preserveKey = null
-      const a = pool.add('ws:proj:p1', { stateSince: 5_000 })
+      const a = pool.add('ws:proj:p1', { stateSince: STATE_SINCE })
 
       expect(await pool.saveRepoToStore(a)).toBe(false)
       expect(pool.uploads).toHaveLength(1)
+    })
+  })
+
+  describe('WORKSPACE_NEW_PROJECT_IDS at assign', () => {
+    test('lists only members the store confirms have no backup', async () => {
+      const pool = makePool(dir)
+      ;(pool as any).sourceRef = async (id: string) => {
+        if (id === 'broken') throw new Error('store unreachable')
+        return id === 'has-backup' ? ({ etag: '"e"' } as any) : null
+      }
+      const env = await (pool as any).withConfirmedNewMembers({
+        WORKSPACE_PROJECT_IDS: 'fresh, has-backup,broken',
+        OTHER: 'kept',
+      })
+      expect(env.WORKSPACE_NEW_PROJECT_IDS).toBe('fresh')
+      expect(env.OTHER).toBe('kept')
+    })
+
+    test('sends an empty list when no member is new', async () => {
+      const pool = makePool(dir)
+      ;(pool as any).sourceRef = async () => ({ etag: '"e"' }) as any
+      const env = await (pool as any).withConfirmedNewMembers({ WORKSPACE_PROJECT_IDS: 'a' })
+      expect(env.WORKSPACE_NEW_PROJECT_IDS).toBe('')
     })
   })
 
