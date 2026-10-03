@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import React, { memo, useMemo, type AnchorHTMLAttributes, type MouseEvent } from "react"
 import { useWindowDimensions } from "react-native"
-import { Streamdown, defaultUrlTransform } from "streamdown"
+import { Streamdown, defaultUrlTransform, type UrlTransform } from "streamdown"
 import "streamdown/styles.css"
 import { useMobileWorkspaceChrome } from "../layout/MobileWorkspaceChromeContext"
 import { usePhoneLayoutOverride } from "../../lib/native-phone-layout"
@@ -22,6 +22,11 @@ export interface MarkdownTextProps {
 }
 
 const linkSafetyOff = { enabled: false as const }
+
+// Module scope so Streamdown gets the same function on every render; an inline
+// arrow made its props differ each time and defeated its memoization.
+const urlTransform: UrlTransform = (url, key, node) =>
+  url.startsWith(FILE_HREF_PREFIX) ? url : defaultUrlTransform(url, key, node)
 
 // Streamdown re-parses the full markdown body on every render. String
 // comparison in JS is value-equal, so `prev.children === next.children` does
@@ -109,9 +114,7 @@ export const MarkdownText = memo(
         linkSafety={linkSafetyOff}
         controls={false}
         components={components}
-        urlTransform={(url, key, node) =>
-          url.startsWith(FILE_HREF_PREFIX) ? url : defaultUrlTransform(url, key, node)
-        }
+        urlTransform={urlTransform}
       >
         {body}
       </Streamdown>
