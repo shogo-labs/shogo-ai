@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 //
-// Display names and presets for the Shogo buddy's accessories. The look
-// itself (ids, validation, defaults) lives in @shogo/shared-app/buddy-look.
+// Display names, colours and presets for the Shogo buddy. The look itself
+// (ids, validation, defaults) lives in @shogo/shared-app/buddy-look.
 
 import {
   BUDDY_EYEWEAR_IDS,
   BUDDY_FACE_IDS,
+  BUDDY_FINISH_IDS,
   BUDDY_NECK_IDS,
   BUDDY_TAIL_IDS,
   BUDDY_TOPPER_IDS,
@@ -14,6 +15,7 @@ import {
   sameLook,
   type BuddyEyewear,
   type BuddyFace,
+  type BuddyFinishId,
   type BuddyLook,
   type BuddyNeck,
   type BuddyTail,
@@ -22,10 +24,12 @@ import {
 
 export {
   DEFAULT_BUDDY_LOOK,
+  normalizeBuddyColor,
   normalizeBuddyLook,
   sameLook,
   type BuddyEyewear,
   type BuddyFace,
+  type BuddyFinishId,
   type BuddyLook,
   type BuddyNeck,
   type BuddyTail,
@@ -88,6 +92,32 @@ export const BUDDY_TAIL_NAMES: readonly BuddyTail[] = BUDDY_TAIL_IDS
 export const BUDDY_EYEWEAR_NAMES: readonly BuddyEyewear[] = BUDDY_EYEWEAR_IDS
 export const BUDDY_NECK_NAMES: readonly BuddyNeck[] = BUDDY_NECK_IDS
 
+export const BUDDY_FINISH_LABELS: Record<BuddyFinishId, { label: string; hint: string }> = {
+  classic: { label: "Classic", hint: "Glossy jelly" },
+  modern: { label: "Modern", hint: "Flat and clean" },
+}
+export const BUDDY_FINISH_NAMES: readonly BuddyFinishId[] = BUDDY_FINISH_IDS
+
+/** Body colours offered as swatches; any `#RRGGBB` is valid on the look. */
+export const BUDDY_COLORS: { label: string; color: string }[] = [
+  { label: "Cream", color: "#FFF4EA" },
+  { label: "Apricot", color: "#FDBA74" },
+  { label: "Tangerine", color: "#FB923C" },
+  { label: "Shogo orange", color: "#FB8C00" },
+  { label: "Burnt orange", color: "#C2410C" },
+  { label: "Coral", color: "#F87171" },
+  { label: "Red", color: "#DC2626" },
+  { label: "Rose", color: "#E11D48" },
+  { label: "Purple", color: "#7C3AED" },
+  { label: "Blue", color: "#2563EB" },
+  { label: "Sky", color: "#38BDF8" },
+  { label: "Teal", color: "#0D9488" },
+  { label: "Mint", color: "#34D399" },
+  { label: "Lime", color: "#A3E635" },
+  { label: "Slate", color: "#64748B" },
+  { label: "Graphite", color: "#3F3F46" },
+]
+
 export interface BuddyPreset {
   id: string
   label: string
@@ -115,7 +145,12 @@ export const BUDDY_PRESETS: BuddyPreset[] = [
   { id: "robot-pet", label: "Robot pet", look: dressed({ topper: "stubby", face: "screen", tail: "cable", bolts: true, blush: false }) },
 ]
 
-/** The preset this look matches exactly, if any. */
+/** A preset's accessories with this look's colour and finish kept. */
+export function withPreset(look: BuddyLook, preset: BuddyPreset): BuddyLook {
+  return { ...preset.look, color: look.color, finish: look.finish }
+}
+
+/** The preset whose accessories this look wears exactly, if any. */
 export function presetForLook(look: BuddyLook): BuddyPreset | undefined {
-  return BUDDY_PRESETS.find((preset) => sameLook(preset.look, look))
+  return BUDDY_PRESETS.find((preset) => sameLook(withPreset(look, preset), look))
 }

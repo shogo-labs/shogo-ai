@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
-import { BuddyEngine, type BuddyState } from "./engine"
+import { BUDDY_FINISHES, BuddyEngine, type BuddyFinish, type BuddyState } from "./engine"
 import { DEFAULT_BUDDY_LOOK, normalizeBuddyLook, type BuddyLook } from "./look"
 
 interface BuddyWebViewProps {
@@ -9,6 +9,7 @@ interface BuddyWebViewProps {
   state: BuddyState
   color: string
   look: BuddyLook
+  finish?: BuddyFinish
   mini?: boolean
   reducedMotion?: boolean
   still?: boolean
@@ -85,6 +86,7 @@ function setProps(next: Partial<BuddyWebViewProps>) {
   engine.isMini = props.mini ?? false
   engine.reducedMotion = props.reducedMotion ?? false
   engine.look = props.look
+  engine.finish = props.finish ?? BUDDY_FINISHES.classic
   engine.setBodyColor(props.color)
   engine.setState(props.state)
   resize()
