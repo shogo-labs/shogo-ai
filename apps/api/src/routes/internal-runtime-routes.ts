@@ -74,7 +74,7 @@ export interface RuntimeInternalRoutesOptions {
   loadProjectLifecycle?: () => Promise<ProjectLifecycleService>
   /** Backs `project_call`. */
   loadAgentCall?: () => Promise<AgentCallService>
-  /** Cloud-only GitHub App operations; omitted from the slim desktop bundle. */
+  /** GitHub App operations; omitted where the API has no GitHub App. */
   loadGitHub?: () => Promise<GitHubService>
 }
 
