@@ -2859,6 +2859,7 @@ export interface TechStackSummary {
   capabilities?: {
     webEnabled?: boolean
     browserEnabled?: boolean
+    personalBrowserEnabled?: boolean
     shellEnabled?: boolean
     heartbeatEnabled?: boolean
     imageGenEnabled?: boolean

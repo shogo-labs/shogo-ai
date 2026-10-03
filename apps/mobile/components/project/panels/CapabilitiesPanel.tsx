@@ -64,6 +64,7 @@ export interface CapabilitySettings {
   canvasEnabled: boolean
   webEnabled: boolean
   browserEnabled: boolean
+  personalBrowserEnabled: boolean
   shellEnabled: boolean
   heartbeatEnabled: boolean
   imageGenEnabled: boolean
@@ -116,6 +117,16 @@ const CAPABILITIES: CapabilityDef[] = [
     disabledDescription: 'No browser automation',
     icon: Monitor,
     toolNames: ['browser'],
+  },
+  {
+    key: 'personalBrowserEnabled',
+    label: 'Personal Browser',
+    description: 'Let the personal agent drive a browser directly',
+    detail: 'Personal workspaces have no subagents, so the browser tool is normally stripped there. Turn this on to keep `browser` directly callable by the personal agent. Off by default and rolled out gradually: with it on, the personal agent browses without the domain policy, per-turn budget, or confirmation guardrails that are still being built (see issue #1044).',
+    disabledDescription: 'Browser stays unavailable to the personal agent',
+    icon: Monitor,
+    toolNames: ['browser'],
+    badgeLabel: 'Beta',
   },
   {
     key: 'shellEnabled',
