@@ -17,6 +17,8 @@ export type AgentScheduleInput = {
   cronExpression: string
   timezone?: string
   enabled?: boolean
+  /** Conversation that receives each run's result (already validated). */
+  notifyConversationId?: string | null
 }
 
 export type AgentScheduleChanges = {
@@ -26,6 +28,7 @@ export type AgentScheduleChanges = {
   cronExpression?: string
   timezone?: string
   enabled?: boolean
+  notifyConversationId?: string | null
 }
 
 export class AgentScheduleError extends Error {
@@ -221,6 +224,7 @@ export async function createSchedule(input: AgentScheduleInput) {
       timezone,
       enabled: input.enabled !== false,
       nextRunAt,
+      notifyConversationId: input.notifyConversationId ?? null,
     },
   })
 }
@@ -256,6 +260,7 @@ export async function updateSchedule(
       ...(changes.cronExpression !== undefined ? { cronExpression } : {}),
       ...(changes.timezone !== undefined ? { timezone } : {}),
       ...(changes.enabled !== undefined ? { enabled } : {}),
+      ...(changes.notifyConversationId !== undefined ? { notifyConversationId: changes.notifyConversationId } : {}),
       // runningAt is the in-flight run's lease; leave it for that run to
       // release so a re-enable or cadence edit cannot start a duplicate.
       ...(nextRunAt ? { nextRunAt } : {}),

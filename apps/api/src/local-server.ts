@@ -19,9 +19,11 @@ import { createLocalApp } from './app/create-local-app'
 import { stopAllPrismaStudios } from './routes/database'
 import { startAgentScheduleWorker, stopAgentScheduleWorker } from './jobs/run-agent-schedule-dispatch'
 import { startChatQueueWorker, stopChatQueueWorker } from './jobs/run-chat-queue-drain'
+import { startChannelWorkers, stopChannelWorkers } from './jobs/run-channel-workers'
 import { resolveLocalApiPort } from './lib/local-api-port'
 import { prisma } from './lib/prisma'
 import { ensureTranscriptionEngine } from './services/transcription-install.service'
+import { conversationSocketHandlers, isConversationSocketData } from './realtime/conversation-socket'
 
 const API_PORT = resolveLocalApiPort()
 const { app, runtimeManager, resetCaches: resetLocalCaches } = createLocalApp()
@@ -31,6 +33,7 @@ resetLocalCaches()
 // Fire due agent-owned recurring schedules in the local workspace runtime.
 startAgentScheduleWorker(runtimeManager)
 startChatQueueWorker()
+startChannelWorkers()
 
 const ptyBridge = createLocalPtyBridgeHandlers()
 const server = Bun.serve({
@@ -42,13 +45,16 @@ const server = Bun.serve({
   },
   websocket: {
     open(ws: any) {
-      if (isLocalPtyBridgeData(ws.data)) ptyBridge.open(ws)
+      if (isConversationSocketData(ws.data)) conversationSocketHandlers.open(ws)
+      else if (isLocalPtyBridgeData(ws.data)) ptyBridge.open(ws)
     },
     message(ws: any, message: any) {
-      if (isLocalPtyBridgeData(ws.data)) ptyBridge.message(ws, message)
+      if (isConversationSocketData(ws.data)) void conversationSocketHandlers.message(ws, message)
+      else if (isLocalPtyBridgeData(ws.data)) ptyBridge.message(ws, message)
     },
     close(ws: any, code?: number, reason?: string) {
-      if (isLocalPtyBridgeData(ws.data)) ptyBridge.close(ws, code, reason)
+      if (isConversationSocketData(ws.data)) conversationSocketHandlers.close(ws)
+      else if (isLocalPtyBridgeData(ws.data)) ptyBridge.close(ws, code, reason)
     },
   },
   idleTimeout: 255,
@@ -81,6 +87,7 @@ async function shutdown(signal: string): Promise<void> {
   console.log(`[LocalAPI] Received ${signal}, stopping runtimes...`)
   stopAgentScheduleWorker()
   stopChatQueueWorker()
+  stopChannelWorkers()
   try {
     await runtimeManager.stopAll()
     stopAllPrismaStudios()

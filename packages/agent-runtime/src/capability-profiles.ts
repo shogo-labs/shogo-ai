@@ -103,6 +103,8 @@ export const CORE_TOOL_NAMES = [
   'schedule_create', 'schedule_list', 'schedule_update', 'schedule_delete', 'set_status',
   // Registered only for the personal profile (see `createTools()`).
   'meeting_search', 'meeting_list', 'meeting_read', 'meeting_enhance', 'meeting_note_create',
+  // Team chat; registered for non-personal workspace runtimes.
+  'team_chat_list', 'team_chat_read', 'team_chat_post', 'team_chat_search', 'team_chat_dm',
 ]
 
 export interface CapabilityProfile {

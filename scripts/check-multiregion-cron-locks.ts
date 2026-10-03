@@ -634,6 +634,81 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
     reason:
       'The proxy capture path upserts one summary per workspace turn key. proxy_turns is region-local (excluded from shogo_all_pub, see k8s/cnpg/logical-replication/exclude-region-local-tables.sql), so the unique is only ever enforced against rows this region wrote; turnKey still hashes in REGION_ID, so a turn served by two regions yields one row in each.',
   },
+  {
+    key: 'Conversation.(slug,workspaceId)',
+    category: 'request_scoped',
+    reason:
+      'Channel create (POST /api/workspaces/:workspaceId/conversations, path-resolved to the home region) picks a free slug; #general/#activity seeding is find-then-create with a raced-create fallback in the same region.',
+  },
+  {
+    key: 'Conversation.(dmKey,workspaceId)',
+    category: 'single_tenant_upsert',
+    reason:
+      'DM open (POST /api/workspaces/:workspaceId/dms) is find-then-create on the deterministic participant key, re-reading on conflict; always routed to the workspace home region.',
+  },
+  {
+    key: 'ConversationMember.(conversationId,userId)',
+    category: 'single_tenant_upsert',
+    reason:
+      'Join/add-member under /api/conversations/:id (resolved to the home region by resolve-workspace-id) is find-then-create per (conversation,user).',
+  },
+  {
+    key: 'ConversationMessage.(conversationId,seq)',
+    category: 'request_scoped',
+    reason:
+      'seq comes from an atomic Conversation.lastSeq increment; every post path (/api/conversations/:id/messages, agent-channel internal routes, activity producers) runs in the workspace home region.',
+  },
+  {
+    key: 'ChatUserSettings.(userId,workspaceId)',
+    category: 'single_tenant_upsert',
+    reason: 'Per-user settings upsert under /api/workspaces/:workspaceId/chat-settings, routed to the workspace home region.',
+  },
+  {
+    key: 'ConversationDraft.(conversationId,threadRootId,userId)',
+    category: 'single_tenant_upsert',
+    reason: 'The owning user upserts their own draft per composer under /api/conversations/:id (home region).',
+  },
+  {
+    key: 'ConversationMessageEmbedding.messageId',
+    category: 'request_scoped',
+    reason: 'Written once per message by the embedding indexer in the region that posted it; create-or-ignore on conflict.',
+  },
+  {
+    key: 'ConversationPin.messageId',
+    category: 'single_tenant_upsert',
+    reason: 'Pin toggle under /api/conversation-messages/:id/pin (home region); create-or-ignore / delete on the same message.',
+  },
+  {
+    key: 'CustomEmoji.(name,workspaceId)',
+    category: 'request_scoped',
+    reason: 'Emoji upload under /api/workspaces/:workspaceId/emoji (home region) rejects a taken name.',
+  },
+  {
+    key: 'SavedMessage.(messageId,userId)',
+    category: 'single_tenant_upsert',
+    reason: 'Save toggle by the saving user only under /api/conversation-messages/:id/save; create-or-ignore / delete.',
+  },
+  {
+    key: 'UserGroup.(handle,workspaceId)',
+    category: 'request_scoped',
+    reason: 'Group create under /api/workspaces/:workspaceId/user-groups (home region) rejects a taken handle.',
+  },
+  {
+    key: 'UserGroupMember.(groupId,userId)',
+    category: 'single_tenant_upsert',
+    reason: 'Membership replace under /api/user-groups/:id (home region) is delete-then-create per (group,user).',
+  },
+  {
+    key: 'ConversationMessage.(clientMsgId,conversationId)',
+    category: 'random_secret',
+    reason: 'Client-generated UUID idempotency key for sends; postMessage returns the existing row on repeat.',
+  },
+  {
+    key: 'ConversationReaction.(emoji,messageId,userId)',
+    category: 'single_tenant_upsert',
+    reason:
+      'Reaction toggle under /api/conversation-messages/:id/reactions by the reacting user only; create-or-ignore / deleteMany on the same triple.',
+  },
 ]
 
 // ===========================================================================

@@ -1354,6 +1354,12 @@ function registerIpcHandlers(): void {
     }
   })
 
+  // Unread team chat count on the dock / taskbar icon.
+  ipcMain.handle('set-badge-count', (_event, count: unknown) => {
+    const n = typeof count === 'number' && Number.isFinite(count) ? Math.max(0, Math.min(Math.floor(count), 9999)) : 0
+    return app.setBadgeCount(n)
+  })
+
   // Desktop notification for remote actions
   ipcMain.handle('show-remote-action-notification', (_event, title: string, body: string) => {
     if (Notification.isSupported()) {

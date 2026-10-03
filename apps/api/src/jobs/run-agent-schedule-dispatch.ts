@@ -268,8 +268,9 @@ async function runAgentSchedule(scheduleId: string, runtimeManager?: RuntimeMana
   })
 
   let outcome: Record<string, unknown>
+  let sessionId: string | null = null
   try {
-    const sessionId = await ensureScheduleChatSession(schedule)
+    sessionId = await ensureScheduleChatSession(schedule)
     const startedAt = new Date()
     const goalInstruction = schedule.goal
       ? `This schedule is attached to the goal "${schedule.goal.title}" (${schedule.goal.status}). Record meaningful progress or blockers with goal_log for goal ${schedule.goalId}.`
@@ -345,6 +346,16 @@ async function runAgentSchedule(scheduleId: string, runtimeManager?: RuntimeMana
   }).catch((updateError) => {
     console.error(`[AgentSchedule] Failed to persist run result for ${schedule.id}:`, updateError)
   })
+  const runKey = schedule.runningAt.toISOString()
+  void import('../services/conversation-activity').then((m) => m.recordScheduleOutcome(
+    { ...schedule, chatSessionId: sessionId },
+    {
+      status: String(outcome.lastRunStatus),
+      summary: outcome.lastRunSummary as string | null | undefined,
+      error: outcome.lastError as string | null | undefined,
+      runKey,
+    },
+  )).catch(() => {})
 }
 
 function trackRun(run: Promise<void>): void {
