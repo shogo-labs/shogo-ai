@@ -76,6 +76,7 @@ import { AppearanceProvider } from "../contexts/appearance";
 import { BuddyLookProvider } from "../contexts/buddy-look";
 import { RootErrorBoundary } from "../components/RootErrorBoundary";
 import { UpdateBanner } from "../components/UpdateBanner";
+import { GlobalDictationListener } from "../components/dictation/GlobalDictationListener";
 import { captureAttribution } from "../lib/attribution";
 import { safeSetItem } from "../lib/safe-storage";
 import { setPendingLicenseCode } from "../lib/pending-license";
@@ -198,6 +199,7 @@ function AuthenticatedAppShell({
       {island ? null : (
         <>
           <InstanceOfflineWatcher />
+          <GlobalDictationListener />
           <UpdateBanner />
           <WhatsNewModal
             release={whatsNew.release}

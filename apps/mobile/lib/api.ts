@@ -4,6 +4,7 @@ import { Platform } from 'react-native'
 import { HttpClient } from '@shogo-ai/sdk'
 import { API_URL } from './api-url'
 import { authClient } from './auth-client'
+import { defaultLocalAccess, type LocalAccessPrefs } from './local-access'
 
 export { API_URL } from './api-url'
 
@@ -2403,6 +2404,21 @@ export const api = {
 
   async saveSecurityPrefs(http: HttpClient, prefs: SecurityPrefs) {
     const res = await http.post<{ ok: boolean }>('/api/local/security-prefs', prefs)
+    return res.data
+  },
+
+  // ─── Desktop local access (apps, computer use, dictation shortcuts) ───
+
+  async getLocalAccessPrefs(http: HttpClient): Promise<{ configured: boolean; prefs: LocalAccessPrefs }> {
+    const res = await http.get<{ configured: boolean; prefs: LocalAccessPrefs }>('/api/local/access-prefs')
+    return res.data ?? { configured: false, prefs: defaultLocalAccess() }
+  },
+
+  async saveLocalAccessPrefs(http: HttpClient, prefs: Partial<LocalAccessPrefs>) {
+    const res = await http.request<{ ok: boolean; prefs: LocalAccessPrefs }>('/api/local/access-prefs', {
+      method: 'PUT',
+      body: prefs,
+    })
     return res.data
   },
 

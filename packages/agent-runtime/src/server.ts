@@ -3986,6 +3986,29 @@ app.post('/agent/permission-response', async (c) => {
   }
 })
 
+// Local access policy push (per-app data access, blocked folders, computer use).
+// The API calls this when the user changes Settings so running agents pick it up
+// without a restart.
+app.post('/agent/local-access', async (c) => {
+  const engine = agentGateway?.getPermissionEngine()
+  if (!engine) {
+    return c.json({ error: 'Permission engine not active' }, 404)
+  }
+  try {
+    const body = (await c.req.json()) as Record<string, any>
+    engine.setLocalAccess({
+      apps: body.apps && typeof body.apps === 'object' ? body.apps : undefined,
+      computerUse: typeof body.computerUse === 'boolean' ? body.computerUse : undefined,
+      blockedFolders: Array.isArray(body.blockedFolders)
+        ? body.blockedFolders.filter((f: unknown): f is string => typeof f === 'string')
+        : undefined,
+    })
+    return c.json({ ok: true })
+  } catch (error: any) {
+    return c.json({ error: error.message }, 400)
+  }
+})
+
 // Workspace file read/write endpoints
 app.get('/agent/files/:filename', async (c) => {
   const filename = c.req.param('filename')

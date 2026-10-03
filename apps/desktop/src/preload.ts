@@ -138,6 +138,32 @@ contextBridge.exposeInMainWorld('shogoDesktop', {
   ensureMicAccess: (): Promise<'granted' | 'denied' | 'restricted'> => ipcRenderer.invoke('media:ensure-mic'),
   /** Open System Settings > Privacy & Security > Microphone (macOS). */
   openMicrophoneSettings: (): Promise<{ ok: boolean }> => ipcRenderer.invoke('media:open-mic-settings'),
+  /** macOS privacy permissions (Accessibility, Screen Recording, Full Disk Access, mic). */
+  permissions: {
+    getStatus: () => ipcRenderer.invoke('permissions:get-status'),
+    request: (kind: 'accessibility' | 'screen' | 'fullDisk' | 'mic') =>
+      ipcRenderer.invoke('permissions:request', kind),
+    openSettings: (kind: 'accessibility' | 'screen' | 'fullDisk' | 'mic') =>
+      ipcRenderer.invoke('permissions:open-settings', kind),
+    listLocalApps: () => ipcRenderer.invoke('permissions:list-local-apps'),
+    relaunch: () => ipcRenderer.invoke('permissions:relaunch'),
+  },
+  /** Global dictation: shortcuts, native hotkey state, and pasting the transcript. */
+  dictation: {
+    getConfig: () => ipcRenderer.invoke('dictation:get-config'),
+    setConfig: (patch: { pushToTalk?: string | null; handsFree?: string | null }) =>
+      ipcRenderer.invoke('dictation:set-config', patch),
+    getHotkeyState: () => ipcRenderer.invoke('dictation:hotkey-state'),
+    onEvent: (cb: (event: { type: 'start' | 'stop' | 'cancel'; mode: 'push' | 'toggle' }) => void) => {
+      const listener = (_e: Electron.IpcRendererEvent, event: { type: 'start' | 'stop' | 'cancel'; mode: 'push' | 'toggle' }) =>
+        cb(event)
+      ipcRenderer.on('dictation:event', listener)
+      return () => {
+        ipcRenderer.removeListener('dictation:event', listener)
+      }
+    },
+    deliverText: (text: string) => ipcRenderer.invoke('dictation:deliver-text', text),
+  },
   getAppMode: () => ipcRenderer.invoke('get-app-mode'),
   getAppConfig: () => ipcRenderer.invoke('get-app-config'),
   setIslandConfig: (config: Partial<IslandConfig>) => ipcRenderer.invoke('set-island-config', config),

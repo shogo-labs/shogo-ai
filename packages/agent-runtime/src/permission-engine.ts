@@ -13,6 +13,13 @@ import { resolve, join, dirname } from 'path'
 import { existsSync, lstatSync, realpathSync, readFileSync, writeFileSync, mkdirSync } from 'fs'
 import { homedir } from 'os'
 import { dedupeRoots, isWithinAnyRoot, isWithinRoot } from './path-boundary'
+import {
+  checkComputerUse,
+  checkFileAccess,
+  checkShellAccess,
+  type LocalAccessCheck,
+  type LocalAccessPolicy,
+} from './local-access'
 import type { AgentTool, AgentToolResult } from '@mariozechner/pi-agent-core'
 import { createLogger } from '@shogo/shared-runtime'
 import type {
@@ -198,6 +205,8 @@ export function mergePolicy(
 
   return {
     mode: effectiveMode,
+    // Project settings can never loosen or replace the user's local-access policy.
+    localAccess: userPref.localAccess,
     overrides: {
       shellCommands: {
         deny: [...new Set([...userDeny, ...projDeny])],
@@ -466,6 +475,8 @@ export class PermissionEngine {
           category,
         }
       }
+      const access = checkShellAccess(this.pref.localAccess, command, { workspaceDir: this.workspaceDir })
+      if (!access.allowed) return this.localAccessDenial(access, category)
     }
 
     if (category === 'file_read' || category === 'file_write' || category === 'file_delete') {
@@ -478,9 +489,38 @@ export class PermissionEngine {
           category,
         }
       }
+      const op = category === 'file_read' ? 'read' : category === 'file_write' ? 'write' : 'delete'
+      const access = checkFileAccess(this.pref.localAccess, op, filePath, { workspaceDir: this.workspaceDir })
+      if (!access.allowed) return this.localAccessDenial(access, category)
     }
 
     return null
+  }
+
+  private localAccessDenial(access: LocalAccessCheck, category: PermissionCategory): PermissionCheckResult {
+    return {
+      action: 'deny',
+      reason: access.reason ?? 'Blocked by local access settings',
+      guidance: access.guidance,
+      category,
+    }
+  }
+
+  /** Replace the local-access policy at runtime (pushed when Settings change). */
+  setLocalAccess(policy: LocalAccessPolicy | undefined): void {
+    this.pref = { ...this.pref, localAccess: policy }
+  }
+
+  getLocalAccess(): LocalAccessPolicy | undefined {
+    return this.pref.localAccess
+  }
+
+  /**
+   * Gate for tools served by an MCP server. Today only computer-use is
+   * restricted; every other server is unaffected.
+   */
+  checkMcpTool(serverName: string): LocalAccessCheck {
+    return checkComputerUse(this.pref.localAccess, serverName)
   }
 
   private evaluateStrict(

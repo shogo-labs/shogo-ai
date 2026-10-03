@@ -17,9 +17,20 @@ if (handleSquirrelEvent()) {
 import { initSentry, setSentryDeviceTag } from './sentry'
 initSentry()
 
-import { app, BrowserWindow, protocol, net, session, ipcMain, Menu, shell, Notification, dialog, powerMonitor, systemPreferences } from 'electron'
+import { app, BrowserWindow, protocol, net, session, ipcMain, Menu, shell, Notification, dialog, powerMonitor, systemPreferences, desktopCapturer } from 'electron'
 import { ensureMicAccess, MAC_MIC_SETTINGS_URL, type MicAccess } from './media-permissions'
+import { DictationHotkeyService } from './dictation-hotkey'
+import { normalizeDictationConfig } from './dictation-protocol'
+import {
+  getPermissionStatus,
+  isPermissionKind,
+  listLocalApps,
+  openPermissionSettings,
+  requestPermission,
+  type OsPermissionDeps,
+} from './os-permissions'
 import path from 'path'
+import os from 'os'
 import fs from 'fs'
 import crypto from 'crypto'
 import http, { type Server as HttpServer } from 'http'
@@ -220,6 +231,7 @@ const windowManager = new WindowManager({
   },
 })
 setRecordingWindowResolver(() => windowManager.getPrimaryWindow())
+const dictationHotkeys = new DictationHotkeyService(() => windowManager.getPrimaryWindow())
 
 let isCloudMode = false
 
@@ -1182,8 +1194,64 @@ function checkMicAccess(): Promise<MicAccess> {
   })
 }
 
+function osPermissionDeps(): OsPermissionDeps {
+  return {
+    platform: process.platform,
+    homeDir: os.homedir(),
+    isTrustedAccessibilityClient: (prompt) => systemPreferences.isTrustedAccessibilityClient(prompt),
+    getMediaAccessStatus: (type) => systemPreferences.getMediaAccessStatus(type),
+    askForMicrophoneAccess: () => systemPreferences.askForMediaAccess('microphone'),
+    triggerScreenCapturePrompt: async () => {
+      // Requesting a capture source is what makes macOS show the Screen
+      // Recording prompt and list Shogo under that Settings pane.
+      await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 1, height: 1 } })
+    },
+    probeRead: async (p) => {
+      await fs.promises.readdir(p)
+    },
+    openExternal: (url) => shell.openExternal(url),
+  }
+}
+
 function registerIpcHandlers(): void {
   ipcMain.handle('media:ensure-mic', () => checkMicAccess())
+  ipcMain.handle('permissions:get-status', () => getPermissionStatus(osPermissionDeps()))
+  ipcMain.handle('permissions:request', async (_event, kind: unknown) => {
+    if (!isPermissionKind(kind)) return { ok: false as const, error: 'unknown permission' }
+    const deps = osPermissionDeps()
+    const result = await requestPermission(deps, kind)
+    return { ok: true as const, ...result, status: await getPermissionStatus(deps) }
+  })
+  ipcMain.handle('permissions:open-settings', async (_event, kind: unknown) => {
+    if (!isPermissionKind(kind)) return { ok: false }
+    return { ok: await openPermissionSettings(osPermissionDeps(), kind) }
+  })
+  ipcMain.handle('permissions:list-local-apps', () =>
+    listLocalApps({
+      platform: process.platform,
+      homeDir: os.homedir(),
+      exists: (p) => fs.promises.access(p).then(() => true, () => false),
+    }),
+  )
+  ipcMain.handle('dictation:get-config', () => readConfig().dictation)
+  ipcMain.handle('dictation:set-config', (_event, patch: unknown) => {
+    const current = readConfig().dictation
+    const next = normalizeDictationConfig(patch, current)
+    writeConfig({ dictation: next })
+    dictationHotkeys.applyConfig(next)
+    return { ok: true as const, config: next }
+  })
+  ipcMain.handle('dictation:hotkey-state', () => {
+    const { fnAvailable } = dictationHotkeys.getState()
+    return { fnAvailable }
+  })
+  ipcMain.handle('dictation:deliver-text', (_event, text: unknown) =>
+    dictationHotkeys.deliverText(typeof text === 'string' ? text : ''),
+  )
+  ipcMain.handle('permissions:relaunch', () => {
+    app.relaunch()
+    app.exit(0)
+  })
   ipcMain.handle('media:open-mic-settings', async () => {
     if (process.platform !== 'darwin') return { ok: false }
     await shell.openExternal(MAC_MIC_SETTINGS_URL)
@@ -1807,6 +1875,7 @@ app.whenReady().then(async () => {
   }
 
   createWindow()
+  dictationHotkeys.start(readConfig().dictation)
   islandWindow = new IslandWindow(windowManager, {
     loadApp: (window) => loadAppWindow(window, '/island'),
     ...(isCloudMode
@@ -1910,6 +1979,7 @@ app.on('before-quit', (event) => {
   if (getIsApplyingUpdate()) {
     console.log('[Desktop] Update pending — doing fast sync cleanup, letting Squirrel handle restart')
     cleanupRecording()
+    dictationHotkeys.stop()
     destroyTray()
     void disposeTerminalIpc().catch(() => {})
     disposeLlmIpcHandlers()
@@ -1926,6 +1996,7 @@ app.on('before-quit', (event) => {
   event.preventDefault()
   console.log('[Desktop] Waiting for server cleanup before exit...')
   cleanupRecording()
+  dictationHotkeys.stop()
   destroyTray()
   disposeLlmIpcHandlers()
   disposePortsIpcHandlers()
