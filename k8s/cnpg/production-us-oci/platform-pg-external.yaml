@@ -1,18 +1,17 @@
-# Exposes the EU PostgreSQL primary to the US `sub_from_eu` subscription
+# Exposes the US PostgreSQL primary to the EU `sub_from_us` subscription
 # (cross-region logical replication). OCI classic load balancer, public.
 #
-# loadBalancerSourceRanges: only the US production NAT gateway may connect.
+# loadBalancerSourceRanges: only the EU production NAT gateway may connect.
 #   Postgres sees every connection from a 10.x address (the LB proxies TCP),
 #   which matches the `10.0.0.0/8 md5` pg_hba rule for every role, so this
 #   list and the LB subnet security list are the only gate. Until
-#   2026-09-29 both were open to 0.0.0.0/0 and the port was being
-#   password-scanned.
+#   2026-09-29 both were open to 0.0.0.0/0.
 # externalTrafficPolicy: Local: the LB only routes to the node running the
 #   primary. With `Cluster`, the stream ran through an arbitrary node and was
 #   cut whenever the autoscaler removed an "empty" node carrying it
 #   (2026-09-26 sub_from_us disables).
 #
-# The subnet security list (shogo-prod-eu-pub-sl) is not managed by the OCI
+# The subnet security list (shogo-prod-public-sl) is not managed by the OCI
 # CCM for this service; its tcp/5432 rule must match the range below.
 apiVersion: v1
 kind: Service
@@ -20,15 +19,15 @@ metadata:
   name: platform-pg-external
   namespace: shogo-production-system
   labels:
-    app.kubernetes.io/part-of: shogo
     cnpg.io/cluster: platform-pg
 spec:
   type: LoadBalancer
   externalTrafficPolicy: Local
   loadBalancerSourceRanges:
-    - 129.80.99.116/32 # US production NAT gateway (shogo-prod-ngw)
+    - 92.5.64.210/32 # EU production NAT gateway (shogo-prod-eu-ngw)
   ports:
-    - port: 5432
+    - name: postgres
+      port: 5432
       targetPort: 5432
       protocol: TCP
   selector:
