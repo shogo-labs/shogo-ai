@@ -28,6 +28,16 @@ describe("settings tabs", () => {
     expect(ios.map((tab) => tab.id)).not.toContain("compute")
   })
 
+  test("computer-files tab requires both the desktop shell and local mode", () => {
+    const has = (opts: Parameters<typeof visibleSettingsTabs>[0]) =>
+      visibleSettingsTabs(opts).some((tab) => tab.id === "computer-files")
+
+    expect(has({ localMode: true, isDesktop: true })).toBe(true)
+    expect(has({ localMode: false, showBilling: true, isDesktop: true })).toBe(false)
+    expect(has({ localMode: true, isDesktop: false })).toBe(false)
+    expect(has({ localMode: false, showBilling: true, isDesktop: false })).toBe(false)
+  })
+
   test("updates tab is desktop-only regardless of local/cloud mode", () => {
     const desktopLocal = visibleSettingsTabs({ localMode: true, isDesktop: true })
     const desktopCloud = visibleSettingsTabs({ localMode: false, showBilling: true, isDesktop: true })

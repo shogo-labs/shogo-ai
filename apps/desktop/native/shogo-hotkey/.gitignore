@@ -1,0 +1,5 @@
+.build/
+Package.resolved
+shogo-hotkey-arm64
+shogo-hotkey-amd64
+shogo-hotkey-universal

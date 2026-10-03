@@ -128,6 +128,12 @@ export type PermissionCategory =
 
 export interface SecurityPreference {
   mode: SecurityMode
+  /**
+   * Desktop local-access policy (per-app data access, blocked folders, computer
+   * use). See `local-access.ts`. Set by the local API from the user's prefs;
+   * project overrides cannot loosen it.
+   */
+  localAccess?: import('./local-access').LocalAccessPolicy
   overrides?: {
     shellCommands?: { allow?: string[]; deny?: string[] }
     fileAccess?: { allow?: string[]; deny?: string[] }

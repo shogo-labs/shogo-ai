@@ -37,6 +37,17 @@ export interface StepDef {
   hideBack?: boolean
   /** Shows a spinner in the primary button and disables the footer. */
   busy?: boolean
+  /** `centered` stacks hero, heading, body and footer on one centered axis. */
+  layout?: 'default' | 'centered'
+  /** Illustration rendered above the heading. */
+  hero?: ReactNode
+  /** Small print rendered under the body (privacy notes, disclaimers). */
+  footnote?: ReactNode
+  /**
+   * Per-step skip handler. When set it takes precedence over the stepper-wide
+   * `onSkip`, so a step can skip just itself instead of the whole flow.
+   */
+  onSkip?: () => void
 }
 
 interface OnboardingStepperProps {
@@ -89,6 +100,8 @@ export function OnboardingStepper({
 
   const showBack = activeIndex > 0 && !step.hideBack
   const disabled = step.busy || step.canContinue === false
+  const centered = step.layout === 'centered'
+  const skipHandler = step.onSkip ?? onSkip
 
   return (
     <View className="flex-1 bg-background">
@@ -146,24 +159,46 @@ export function OnboardingStepper({
             }}
             className="self-center"
           >
+            {step.hero ? <View className="mb-8 items-center">{step.hero}</View> : null}
             {step.eyebrow ? (
-              <Text className="mb-3 text-xs font-medium uppercase tracking-widest text-muted-foreground">
+              <Text
+                className={cn(
+                  'mb-3 text-xs font-medium uppercase tracking-widest text-muted-foreground',
+                  centered && 'text-center',
+                )}
+              >
                 {step.eyebrow}
               </Text>
             ) : null}
-            <Text className="text-3xl font-semibold tracking-tight text-foreground sm:text-4xl">
+            <Text
+              className={cn(
+                'text-3xl font-semibold tracking-tight text-foreground sm:text-4xl',
+                centered && 'text-center',
+              )}
+            >
               {step.title}
             </Text>
             {step.subtitle ? (
-              <Text className="mt-3 text-base leading-6 text-muted-foreground">{step.subtitle}</Text>
+              <Text
+                className={cn('mt-3 text-base leading-6 text-muted-foreground', centered && 'text-center')}
+              >
+                {step.subtitle}
+              </Text>
             ) : null}
 
-            <View className="mt-8">{step.body}</View>
+            <View className={cn('mt-8', centered && 'mx-auto w-full max-w-xl')}>{step.body}</View>
+            {step.footnote ? (
+              <View className={cn('mt-4', centered && 'mx-auto w-full max-w-xl')}>{step.footnote}</View>
+            ) : null}
 
             <View
               className={cn(
                 'mt-10 gap-3',
-                isPhone ? 'flex-col-reverse' : 'flex-row items-center justify-between',
+                centered
+                  ? 'flex-col-reverse items-center'
+                  : isPhone
+                    ? 'flex-col-reverse'
+                    : 'flex-row items-center justify-between',
               )}
             >
               {showBack ? (
@@ -181,13 +216,23 @@ export function OnboardingStepper({
               ) : (
                 <View />
               )}
-              <View className={cn('gap-3', isPhone ? 'w-full flex-col-reverse' : 'flex-row items-center')}>
-                {step.skipLabel && onSkip ? (
+              <View
+                className={cn(
+                  'gap-3',
+                  centered
+                    ? 'w-full flex-col-reverse items-center'
+                    : isPhone
+                      ? 'w-full flex-col-reverse'
+                      : 'flex-row items-center',
+                )}
+              >
+                {step.skipLabel && skipHandler ? (
                   <Button
                     variant="ghost"
-                    onPress={onSkip}
+                    onPress={skipHandler}
                     disabled={step.busy}
                     className={isPhone ? 'w-full' : undefined}
+                    testID={`onboarding-skip-${step.id}`}
                   >
                     {step.skipLabel}
                   </Button>
@@ -196,7 +241,7 @@ export function OnboardingStepper({
                   size="lg"
                   onPress={onNext}
                   disabled={disabled}
-                  className={cn('rounded-xl px-6', isPhone && 'w-full')}
+                  className={cn(centered ? 'rounded-full px-10' : 'rounded-xl px-6', isPhone && 'w-full')}
                   testID={`onboarding-continue-${step.id}`}
                 >
                   {step.busy ? (

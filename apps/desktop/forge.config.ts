@@ -54,6 +54,7 @@ const OPTIONAL_RESOURCES = [
   './resources/tree-sitter-wasm',
   './resources/sherpa-onnx',
   './resources/shogo-sysaudio',
+  './resources/shogo-hotkey',
   './resources/seed.db',
   // Runtime install scripts (e.g. download-sherpa.mjs) copied by bundle-api.mjs.
   // The install-sherpa route resolves them at process.cwd()/scripts/, where
@@ -228,7 +229,11 @@ const config: ForgeConfig = {
     // packaged .app silently fails getUserMedia({ audio: true }) instead
     // of triggering the system microphone prompt.
     extendInfo: {
-      NSMicrophoneUsageDescription: 'Shogo needs microphone access to record audio for note-taking and transcription.',
+      NSMicrophoneUsageDescription: 'Shogo needs microphone access to record audio for note-taking, transcription and dictation.',
+      NSAppleEventsUsageDescription: 'Shogo uses automation to work with apps like Mail, Messages and Notes when you ask it to.',
+      NSDesktopFolderUsageDescription: 'Shogo can read and edit files on your Desktop when you ask it to.',
+      NSDocumentsFolderUsageDescription: 'Shogo can read and edit files in your Documents folder when you ask it to.',
+      NSDownloadsFolderUsageDescription: 'Shogo can read and edit files in your Downloads folder when you ask it to.',
     },
     // Signing and notarization are handled by explicit workflow steps
     // rather than @electron/osx-sign (which has integration bugs with @electron/packager 18.x).

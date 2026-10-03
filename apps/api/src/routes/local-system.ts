@@ -17,6 +17,13 @@ import {
   _resetUpstreamCredentialCache,
 } from '../lib/federated-upstream'
 import { resetCloudKeyState } from '../lib/cloud-key-state'
+import {
+  DEFAULT_LOCAL_ACCESS_PREFS,
+  normalizeLocalAccessPrefs,
+  toLocalAccessPolicy,
+} from '@shogo/agent-runtime/src/local-access'
+
+const LOCAL_ACCESS_KEY = 'LOCAL_ACCESS_PREFS'
 
 const PROVIDER_KEYS = [
   { id: 'anthropic', envKey: 'ANTHROPIC_API_KEY' },
@@ -199,6 +206,58 @@ export function localSystemRoutes(): Hono {
         create: { key: 'SECURITY_PREFS', value },
       })
       return c.json({ ok: true })
+    } catch (err: any) {
+      return c.json({ error: err?.message ?? String(err) }, 500)
+    }
+  })
+
+  // Desktop local access: per-app data access, blocked folders, computer use
+  // and dictation shortcuts. The enforced subset reaches agent runtimes via
+  // SECURITY_POLICY at spawn and /agent/local-access for running ones.
+  router.get('/local/access-prefs', async (c) => {
+    try {
+      const row = await localDb.localConfig.findUnique({ where: { key: LOCAL_ACCESS_KEY } })
+      let stored: unknown = null
+      try { stored = row?.value ? JSON.parse(row.value) : null } catch { stored = null }
+      return c.json({ configured: !!stored, prefs: normalizeLocalAccessPrefs(stored ?? DEFAULT_LOCAL_ACCESS_PREFS) })
+    } catch (err: any) {
+      return c.json({ error: err?.message ?? String(err) }, 500)
+    }
+  })
+
+  router.put('/local/access-prefs', async (c) => {
+    let body: unknown
+    try {
+      body = await c.req.json()
+    } catch {
+      return c.json({ error: 'Invalid JSON body' }, 400)
+    }
+    try {
+      // Merge into what is stored so partial updates (e.g. only the dictation
+      // shortcuts) do not reset the other sections to defaults.
+      const row = await localDb.localConfig.findUnique({ where: { key: LOCAL_ACCESS_KEY } })
+      let current: any = DEFAULT_LOCAL_ACCESS_PREFS
+      try { if (row?.value) current = normalizeLocalAccessPrefs(JSON.parse(row.value)) } catch { /* keep defaults */ }
+      const incoming = (body && typeof body === 'object' ? body : {}) as Record<string, any>
+      const merged = normalizeLocalAccessPrefs({
+        ...current,
+        ...incoming,
+        apps: { ...current.apps, ...(incoming.apps ?? {}) },
+        dictation: { ...current.dictation, ...(incoming.dictation ?? {}) },
+      })
+      const value = JSON.stringify(merged)
+      await localDb.localConfig.upsert({
+        where: { key: LOCAL_ACCESS_KEY },
+        update: { value },
+        create: { key: LOCAL_ACCESS_KEY, value },
+      })
+      // Apply to running runtimes without waiting for them to restart.
+      // Lazy: the runtime manager drags in the whole runtime graph, which this
+      // router otherwise doesn't need (and which tests of its other routes mock around).
+      void import('../lib/runtime')
+        .then(({ getRuntimeManager }) => getRuntimeManager().pushLocalAccessPolicy(toLocalAccessPolicy(merged)))
+        .catch(() => {})
+      return c.json({ ok: true, configured: true, prefs: merged })
     } catch (err: any) {
       return c.json({ error: err?.message ?? String(err) }, 500)
     }

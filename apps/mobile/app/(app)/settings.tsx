@@ -48,6 +48,7 @@ import {
   Plug as PlugIcon,
   Download as DownloadIcon,
   Monitor as MonitorIcon,
+  Laptop as LaptopIcon,
   Paintbrush as PaintbrushIcon,
   RefreshCw as RefreshCwIcon,
   KeyRound as KeyRoundIcon,
@@ -100,6 +101,7 @@ import { usePostHogSafe } from "../../contexts/posthog";
 import { EVENTS, trackEvent } from "../../lib/analytics";
 import { useCloudBillingSummary } from "../../hooks/useCloudBillingSummary";
 import { SecuritySettingsPanel } from "../../components/security/SecuritySettingsPanel";
+import { ComputerAndFilesPanel } from "../../components/settings/ComputerAndFilesPanel";
 import { ComputeTab } from "../../components/settings/ComputeTab";
 import { LocalCloudBillingTab } from "../../components/settings/LocalCloudBillingTab";
 import { UpdatesTab } from "../../components/settings/UpdatesTab";
@@ -193,6 +195,7 @@ const SETTINGS_ICON_MAP = {
   Plug: PlugIcon,
   Download: DownloadIcon,
   Monitor: MonitorIcon,
+  Laptop: LaptopIcon,
   Paintbrush: PaintbrushIcon,
   RefreshCw: RefreshCwIcon,
 } as const;
@@ -209,6 +212,7 @@ const SETTINGS_TAB_ICON_NAME: Record<TabId, keyof typeof SETTINGS_ICON_MAP> = {
   "remote-control": "Monitor",
   account: "User",
   security: "Shield",
+  "computer-files": "Laptop",
   billing: "CreditCard",
   compute: "Server",
   analytics: "BarChart3",
@@ -264,6 +268,7 @@ const LOCAL_NAV_ITEMS: NavItem[] = settingsNavItems([
   "account",
   "appearance",
   "security",
+  ...(IS_DESKTOP_CLIENT ? ["computer-files" as TabId] : []),
   "billing",
   "analytics",
   "costs",
@@ -388,6 +393,7 @@ function SettingsSidebar({
         },
         tabItem("appearance"),
         ...(!showBilling ? [tabItem("security")] : []),
+        ...(!showBilling && IS_DESKTOP_CLIENT ? [tabItem("computer-files")] : []),
         ...(IS_DESKTOP_CLIENT ? [tabItem("updates")] : []),
       ],
     },
@@ -4630,6 +4636,9 @@ export const SettingsContent = observer(function SettingsContent({
       {activeTab === "account" && <AccountTab />}
       {activeTab === "appearance" && <AppearanceTab />}
       {activeTab === "security" && <SecuritySettingsPanel />}
+      {activeTab === "computer-files" && isLocal && IS_DESKTOP_CLIENT && (
+        <ComputerAndFilesPanel />
+      )}
       {activeTab === "compute" &&
         !isLocal &&
         !HIDE_COMPUTE_PURCHASES_ON_IOS && <ComputeTab />}
@@ -4684,6 +4693,8 @@ export default observer(function SettingsPage({
     if (activeTab === "compute" && (isLocal || HIDE_COMPUTE_PURCHASES_ON_IOS))
       setActiveTab("workspace");
     if (activeTab === "updates" && !IS_DESKTOP_CLIENT)
+      setActiveTab("workspace");
+    if (activeTab === "computer-files" && (!IS_DESKTOP_CLIENT || !isLocal))
       setActiveTab("workspace");
   }, [activeTab, features.billing, localMode]);
 

@@ -747,6 +747,12 @@ export class AgentGateway {
         workspaceDir,
       })
       console.log(`[AgentGateway] Permission engine initialized: mode=${pref.mode}`)
+      // Enforce the user's "computer use" setting on the computer-use MCP server.
+      const engine = this.permissionEngine
+      this.mcpClientManager.setToolGuard((serverName) => {
+        const check = engine.checkMcpTool(serverName)
+        return check.allowed ? null : { reason: check.reason ?? 'Blocked', guidance: check.guidance }
+      })
     }
 
   }

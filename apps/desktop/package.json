@@ -32,6 +32,7 @@
     "download-bun": "node scripts/download-bun.mjs",
     "download-sherpa": "node scripts/download-sherpa.mjs",
     "build-sysaudio": "cd native/shogo-sysaudio && make build",
+    "build-hotkey": "cd native/shogo-hotkey && make build",
     "generate-install-gif": "node scripts/generate-install-gif.mjs",
     "test:db-recovery": "bun test-db-recovery.ts",
     "bundle:pty-host": "node scripts/bundle-pty-host.mjs"
