@@ -332,6 +332,54 @@ export function encodeTurnCompleteFrame(data: TurnCompleteFrameData): Uint8Array
   )
 }
 
+/**
+ * Value of `data-turn-start`'s `seqMode` when the producer appends exactly one
+ * SSE frame per seq (see {@link createSseFrameSplitter}). A client that sees it
+ * can resume from the count of frames it has fully received instead of the
+ * last `data-turn-seq` heartbeat, which trails delivery.
+ */
+export const SEQ_MODE_FRAME = 'frame' as const
+
+/**
+ * Re-chunks a byte stream so every emitted chunk is exactly one complete SSE
+ * frame (terminated by a blank line). Readers may coalesce several frames into
+ * one read or split a frame across reads; appending the splitter's output keeps
+ * the buffer at one frame per seq, which the per-frame resume cursor relies on.
+ */
+export function createSseFrameSplitter(): {
+  push(chunk: Uint8Array): Uint8Array[]
+  flush(): Uint8Array | null
+} {
+  let pending: Uint8Array = new Uint8Array(0)
+  return {
+    push(chunk) {
+      let bytes = chunk
+      if (pending.byteLength > 0) {
+        bytes = new Uint8Array(pending.byteLength + chunk.byteLength)
+        bytes.set(pending, 0)
+        bytes.set(chunk, pending.byteLength)
+      }
+      const frames: Uint8Array[] = []
+      let start = 0
+      for (let i = 0; i + 1 < bytes.byteLength; i++) {
+        if (bytes[i] === 10 && bytes[i + 1] === 10) {
+          frames.push(bytes.slice(start, i + 2))
+          start = i + 2
+          i++
+        }
+      }
+      pending = start === 0 && frames.length === 0 ? bytes : bytes.slice(start)
+      return frames
+    },
+    flush() {
+      if (pending.byteLength === 0) return null
+      const rest = pending
+      pending = new Uint8Array(0)
+      return rest
+    },
+  }
+}
+
 function generateTurnId(): string {
   // Lightweight random id — we don't need cryptographic strength here, just
   // uniqueness within the store's lifetime. Fall back to Math.random in

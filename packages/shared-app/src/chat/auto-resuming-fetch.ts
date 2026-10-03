@@ -6,7 +6,8 @@
  *
  * The runtime emits three out-of-band data events on every chat turn:
  *   - `data-turn-start`    — once at the start with `{ turnId, chatSessionId }`
- *   - `data-turn-seq`      — every ~250ms with `{ seq }` (last buffered chunk)
+ *   - `data-turn-seq`      — every ~250ms with `{ seq }` (last buffered chunk
+ *                            when written; a lower bound on what was delivered)
  *   - `data-turn-complete` — exactly once at clean termination
  *
  * If the response body ends without ever emitting `data-turn-complete` —
@@ -371,6 +372,13 @@ function createDurableBody(opts: DurableBodyOpts): ReadableStream<Uint8Array> {
       // never asks the bridge to close an already-errored stream.
       let streamErrored = false
       let lastSeq = 0
+      // Data frames forwarded so far, offset by the `fromSeq` of the body
+      // currently being pumped. Only a valid cursor once the runtime announces
+      // one frame per seq (`data-turn-start.seqMode === 'frame'`); older
+      // runtimes buffer coalesced reads, where counting would overshoot and
+      // skip frames on resume.
+      let framesDelivered = 0
+      let seqPerFrame = false
       let turnCompleted = false
       let cancelled = false
       let resumeAttempts = 0
@@ -436,9 +444,18 @@ function createDurableBody(opts: DurableBodyOpts): ReadableStream<Uint8Array> {
       }
 
       const parseFrame = (frame: string) => {
-        // AI SDK / SSE frame: lines like `data: {...}` joined by \n. We
-        // only care about `data:` lines whose payload looks like one of
-        // our durable-turn marker events.
+        // In per-frame mode every `data:` frame is one buffered seq, delivered
+        // in order by the initial body and each `?fromSeq=N` replay (proxies
+        // only interleave `:` comment keepalives), so the count is the exact
+        // cursor. The `data-turn-seq` heartbeat reports the buffer's lastSeq
+        // when it was written and trails delivery by up to one interval;
+        // resuming from it re-delivers those frames, and the AI SDK throws
+        // `Received text-delta for missing text part` when the replayed window
+        // spans a `text-end`. It remains a lower bound for older runtimes.
+        if (/^data:/m.test(frame)) {
+          framesDelivered++
+          if (seqPerFrame && framesDelivered > lastSeq) lastSeq = framesDelivered
+        }
         for (const line of frame.split('\n')) {
           if (!line.startsWith('data:')) continue
           const payload = line.slice(5).trim()
@@ -446,13 +463,19 @@ function createDurableBody(opts: DurableBodyOpts): ReadableStream<Uint8Array> {
           // Cheap pre-filter to avoid JSON.parse on every text-delta.
           if (
             !payload.includes('data-turn-seq') &&
-            !payload.includes('data-turn-complete')
+            !payload.includes('data-turn-complete') &&
+            !payload.includes('data-turn-start')
           ) {
             continue
           }
           try {
             const evt = JSON.parse(payload)
-            if (evt?.type === 'data-turn-seq' && typeof evt?.data?.seq === 'number') {
+            if (evt?.type === 'data-turn-start') {
+              if (evt?.data?.seqMode === 'frame' && !seqPerFrame) {
+                seqPerFrame = true
+                if (framesDelivered > lastSeq) lastSeq = framesDelivered
+              }
+            } else if (evt?.type === 'data-turn-seq' && typeof evt?.data?.seq === 'number') {
               if (evt.data.seq > lastSeq) lastSeq = evt.data.seq
             } else if (evt?.type === 'data-turn-complete') {
               turnCompleted = true
@@ -588,6 +611,7 @@ function createDurableBody(opts: DurableBodyOpts): ReadableStream<Uint8Array> {
           // keeping the truncated head would splice it against the replayed
           // copy — the `AI_JSONParseError` this whole wrapper must avoid.
           resetFrameBuffer()
+          framesDelivered = lastSeq
 
           // Snapshot the durable seq cursor BEFORE pumping so we can tell
           // real forward progress (new frames past what we've seen) from a
