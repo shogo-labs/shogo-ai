@@ -184,16 +184,15 @@ describe('desktop API bundle (apps/api/src/entry.ts) integrity', () => {
     expect({
       // `/api/chat` resolves named project agents on desktop too.
       projectAgentService: inlines(bundle, 'apps/api/src/services/projectAgent.service.ts'),
-      // Channel agents open and merge pull requests through the GitHub App on desktop too.
-      githubService: inlines(bundle, 'apps/api/src/services/github.service.ts'),
-      // Warm pools and Redis-backed billing sessions are cloud-only.
+      // Warm pools, the GitHub App client and Redis-backed billing sessions are cloud-only.
       warmPoolController: inlines(bundle, 'apps/api/src/lib/warm-pool-controller.ts'),
+      githubService: inlines(bundle, 'apps/api/src/services/github.service.ts'),
       proxyBillingSession: inlines(bundle, 'apps/api/src/lib/proxy-billing-session.ts'),
       ioredis: bundle.includes('node_modules/ioredis/') || bundle.includes('node_modules/.bun/ioredis@'),
     }).toEqual({
       projectAgentService: true,
-      githubService: true,
       warmPoolController: false,
+      githubService: false,
       proxyBillingSession: false,
       ioredis: false,
     })
