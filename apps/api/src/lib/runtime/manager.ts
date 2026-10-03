@@ -1676,6 +1676,21 @@ export class ShogoErrorBoundary extends Component<Props, State> {
         }
       }
 
+      // Desktop local-access policy (per-app data access, blocked folders,
+      // computer use). Not overridable per project.
+      try {
+        const accessRow = await localDb.localConfig.findUnique({ where: { key: 'LOCAL_ACCESS_PREFS' } })
+        if (accessRow?.value) {
+          const { normalizeLocalAccessPrefs, toLocalAccessPolicy } = await import(
+            '@shogo/agent-runtime/src/local-access'
+          )
+          effective = {
+            ...effective,
+            localAccess: toLocalAccessPolicy(normalizeLocalAccessPrefs(JSON.parse(accessRow.value))),
+          } as any
+        }
+      } catch { /* unconfigured: no local-access restrictions */ }
+
       return Buffer.from(JSON.stringify(effective)).toString('base64')
     } catch (err) {
       console.warn('[RuntimeManager] buildSecurityPolicy error:', err)
@@ -4064,6 +4079,36 @@ export class ShogoErrorBoundary extends Component<Props, State> {
       runtime.lastHealthCheck = healthStatus
       return healthStatus
     }
+  }
+
+  /**
+   * Push a new local-access policy to every running agent runtime so changes
+   * made in Settings apply without restarting projects. Best effort: runtimes
+   * that are down pick the policy up from `SECURITY_POLICY` on next spawn.
+   */
+  async pushLocalAccessPolicy(policy: unknown): Promise<number> {
+    const { deriveProjectRuntimeToken } = await import('../project-runtime-token')
+    let pushed = 0
+    await Promise.all(
+      Array.from(this.runtimes.values()).map(async (runtime) => {
+        if (runtime.status !== 'running' || !runtime.agentPort || runtime.remoteRuntime) return
+        try {
+          const res = await fetch(`http://127.0.0.1:${runtime.agentPort}/agent/local-access`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'x-runtime-token': await deriveProjectRuntimeToken(runtime.id),
+            },
+            body: JSON.stringify(policy ?? {}),
+            signal: AbortSignal.timeout(3_000),
+          })
+          if (res.ok) pushed++
+        } catch (err: any) {
+          console.warn(`[RuntimeManager] Failed to push local access to ${runtime.id}: ${err?.message ?? err}`)
+        }
+      }),
+    )
+    return pushed
   }
 
   async stopAll(): Promise<void> {

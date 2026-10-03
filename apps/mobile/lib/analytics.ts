@@ -11,6 +11,7 @@ export const EVENTS = {
   ONBOARDING_INTENT_SELECTED: 'onboarding_intent_selected',
   ONBOARDING_TEAM_SETUP_COMPLETED: 'onboarding_team_setup_completed',
   ONBOARDING_AGENT_SELECTED: 'onboarding_agent_selected',
+  ONBOARDING_PERMISSION_RESULT: 'onboarding_permission_result',
   GETTING_STARTED_ITEM_CLICKED: 'getting_started_item_clicked',
   GETTING_STARTED_DISMISSED: 'getting_started_dismissed',
   WORKSPACE_CREATED: 'workspace_created',

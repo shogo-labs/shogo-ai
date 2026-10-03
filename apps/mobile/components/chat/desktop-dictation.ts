@@ -11,19 +11,10 @@
 import { API_URL } from '../../lib/api-url'
 import { encodeWav16, resampleTo16k } from '../../lib/live-audio'
 
-export type MicAccessResult = 'granted' | 'denied' | 'restricted'
+import { getDesktopBridge, type MicAccessResult } from '../../lib/desktop-bridge'
 
-interface DesktopBridge {
-  isDesktop?: boolean
-  ensureMicAccess?: () => Promise<MicAccessResult>
-  openMicrophoneSettings?: () => Promise<{ ok: boolean }>
-}
-
-export function getDesktopBridge(): DesktopBridge | null {
-  if (typeof window === 'undefined') return null
-  const d = (window as { shogoDesktop?: DesktopBridge }).shogoDesktop
-  return d?.isDesktop ? d : null
-}
+export { getDesktopBridge }
+export type { MicAccessResult }
 
 /** Raised when the OS or Chromium refuses the microphone. */
 export class MicPermissionError extends Error {

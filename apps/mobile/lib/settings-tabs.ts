@@ -7,6 +7,7 @@ import {
   Building2,
   Coins,
   CreditCard,
+  Laptop,
   Monitor,
   Paintbrush,
   Plug,
@@ -26,6 +27,7 @@ export type SettingsTabId =
   | "remote-control"
   | "account"
   | "security"
+  | "computer-files"
   | "billing"
   | "compute"
   | "analytics"
@@ -78,6 +80,14 @@ export const SETTINGS_TABS: readonly SettingsTabDefinition[] = [
     Icon: Shield,
     group: "settings",
     localOnly: true,
+  },
+  {
+    id: "computer-files",
+    label: "Computer and files",
+    Icon: Laptop,
+    group: "settings",
+    localOnly: true,
+    desktopOnly: true,
   },
   { id: "billing", label: "Billing", Icon: CreditCard, group: "plan" },
   { id: "analytics", label: "Usage", Icon: BarChart3, group: "plan" },
@@ -135,6 +145,8 @@ export function visibleSettingsTabs({
 } = {}): SettingsTabDefinition[] {
   return SETTINGS_TABS.filter((tab) => {
     if (tab.id === "compute") return showBilling && platform !== "ios";
+    // Desktop-only tabs that also need the local API (computer use, local apps).
+    if (tab.desktopOnly && tab.localOnly) return isDesktop && localMode;
     if (tab.desktopOnly) return isDesktop;
     if (tab.localOnly) return localMode;
     if (tab.cloudOnly) return !localMode && showBilling;
