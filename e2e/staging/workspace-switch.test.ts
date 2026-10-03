@@ -148,11 +148,10 @@ async function expectNarrowWorkspace(page: Page, name: string): Promise<"feed" |
 async function switchWorkspaceNarrow(page: Page, fromName: string, toName: string) {
   if ((await expectNarrowWorkspace(page, fromName)) === "feed") {
     await homeFeedSwitcher(page, fromName).click()
-    await expect(page.getByText("All workspaces")).toBeVisible({ timeout: 10_000 })
   } else {
     await mobileSwitcherRow(page, fromName).click()
-    await page.getByText("Workspaces", { exact: true }).first().waitFor({ state: "visible", timeout: 10_000 })
   }
+  await page.getByText("Workspaces", { exact: true }).first().waitFor({ state: "visible", timeout: 10_000 })
   await page.getByText(toName, { exact: true }).last().click()
   // Switching triggers a full reload; re-derive state from a clean "/".
   await page.waitForLoadState("load")
