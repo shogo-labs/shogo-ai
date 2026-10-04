@@ -114,6 +114,21 @@ async function openThread(page: Page, channelId: string, text: string) {
   return rootId!
 }
 
+async function openChannelComposer(page: Page, channelId: string) {
+  await page.goto(`/c/${channelId}`)
+  const composer = page.getByLabel("Message", { exact: true }).first()
+  try {
+    await composer.waitFor({ state: "visible", timeout: 10_000 })
+  } catch {
+    // The local stack can finish the channel route after the initial
+    // navigation response. A reload avoids making this serial E2E depend on
+    // that startup race.
+    await page.reload()
+    await composer.waitFor({ state: "visible", timeout: 30_000 })
+  }
+  return composer
+}
+
 test.describe("Team chat: agents hand off to each other", () => {
   test.describe.configure({ mode: "serial" })
 
@@ -163,9 +178,7 @@ test.describe("Team chat: agents hand off to each other", () => {
   })
 
   test("a tagged agent hands off, asks the person, and the chain continues after they answer", async () => {
-    await page.goto(`/c/${channelId}`)
-    const channelComposer = page.getByLabel("Message", { exact: true }).first()
-    await channelComposer.waitFor({ state: "visible", timeout: 30_000 })
+    const channelComposer = await openChannelComposer(page, channelId)
     await compose(page, channelComposer, [{ mention: NAMES.scout }, " triage issue 12"])
 
     const rootId = await openThread(page, channelId, "triage issue 12")
@@ -185,9 +198,7 @@ test.describe("Team chat: agents hand off to each other", () => {
   })
 
   test("two agents handing work back and forth get paused, and the person is asked to continue", async () => {
-    await page.goto(`/c/${channelId}`)
-    const channelComposer = page.getByLabel("Message", { exact: true }).first()
-    await channelComposer.waitFor({ state: "visible", timeout: 30_000 })
+    const channelComposer = await openChannelComposer(page, channelId)
     await compose(page, channelComposer, [{ mention: NAMES.writer }, " write the release note for the slugify fix"])
 
     await openThread(page, channelId, "write the release note")
