@@ -147,6 +147,17 @@ describe('github_connect', () => {
     expect(requests.length).toBe(1)
   })
 
+  test('in a workspace runtime, defaults to the project the runtime was opened for', async () => {
+    process.env.WORKSPACE_ANCHOR_PROJECT_ID = 'proj-anchor'
+    try {
+      responses.push({ status: 200, json: { ok: true, repoFullName: 'a/b', branch: 'x' } })
+      await createGitHubConnectTool(ctx({ projectId: 'ws:abc' })).execute('c1', { repo: 'a/b', branch: 'x' })
+      expect(requests[0].url).toBe('http://api.test/api/internal/projects/proj-anchor/github/branch')
+    } finally {
+      delete process.env.WORKSPACE_ANCHOR_PROJECT_ID
+    }
+  })
+
   test('is registered in the default tool set', () => {
     expect(createTools(ctx()).some((t) => t.name === 'github_connect')).toBe(true)
   })

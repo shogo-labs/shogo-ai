@@ -1122,7 +1122,8 @@ export function createGitHubConnectTool(ctx: ToolContext): AgentTool {
     name: 'github_connect',
     label: 'Connect GitHub Repository',
     description:
-      'Connect a Shogo project to a GitHub repository so its files, preview, pushes, pulls, and pull requests use that repo. ' +
+      'Clone / import a GitHub repository into a Shogo project, or switch the project to another branch of it. ' +
+      'Connects the project to the repo so its files, preview, pushes, pulls, and pull requests use it. ' +
       'Call it without a token first: it returns a link for the user to authorize the Shogo GitHub App, and you should offer the user ' +
       'both options — open that link, or share a GitHub access token (fine-grained token with Contents and Pull requests read/write ' +
       'on the repo, or a classic token with `repo` scope). When the user shares a token, call this again with it. ' +
@@ -1142,7 +1143,9 @@ export function createGitHubConnectTool(ctx: ToolContext): AgentTool {
       const input = params as { repo: string; token?: string; branch?: string; projectId?: string }
       const parsed = parseGitHubRepoRef(input.repo ?? '')
       if (!parsed) return textResult({ error: 'repo must be owner/name or a github.com repository URL.' })
-      const projectId = projectScopedId(input.projectId?.trim() || ctx.projectId)
+      const projectId =
+        projectScopedId(input.projectId?.trim() || ctx.projectId) ||
+        projectScopedId(process.env.WORKSPACE_ANCHOR_PROJECT_ID)
       if (!projectId) {
         return textResult({ error: 'No project selected. Pass projectId for the project to connect.' })
       }
