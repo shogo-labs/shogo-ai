@@ -164,7 +164,7 @@ test.describe("Team chat: agents hand off to each other", () => {
 
   test("a tagged agent hands off, asks the person, and the chain continues after they answer", async () => {
     await page.goto(`/c/${channelId}`)
-    const channelComposer = page.getByLabel("Message", { exact: true }).first()
+    const channelComposer = page.getByLabel("Chat message input", { exact: true }).first()
     await channelComposer.waitFor({ state: "visible", timeout: 30_000 })
     await compose(page, channelComposer, [{ mention: NAMES.scout }, " triage issue 12"])
 
@@ -175,7 +175,7 @@ test.describe("Team chat: agents hand off to each other", () => {
     await expect(page.getByText("Going with option B", { exact: false })).toHaveCount(0)
 
     // No mention: the answer goes to the agent that asked.
-    await compose(page, page.getByLabel("Message", { exact: true }).last(), ["go with option B"])
+    await compose(page, page.getByLabel("Chat message input", { exact: true }).last(), ["go with option B"])
     await expect(page.getByText("Going with option B", { exact: false })).toBeVisible({ timeout: 30_000 })
     await expect(page.getByText("PR ready: https://example.com/pr/1", { exact: false })).toBeVisible({ timeout: 30_000 })
 
@@ -186,7 +186,7 @@ test.describe("Team chat: agents hand off to each other", () => {
 
   test("two agents handing work back and forth get paused, and the person is asked to continue", async () => {
     await page.goto(`/c/${channelId}`)
-    const channelComposer = page.getByLabel("Message", { exact: true }).first()
+    const channelComposer = page.getByLabel("Chat message input", { exact: true }).first()
     await channelComposer.waitFor({ state: "visible", timeout: 30_000 })
     await compose(page, channelComposer, [{ mention: NAMES.writer }, " write the release note for the slugify fix"])
 
