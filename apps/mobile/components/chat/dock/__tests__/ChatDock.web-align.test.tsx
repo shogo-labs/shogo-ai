@@ -81,7 +81,9 @@ describe("ChatDock web alignment", () => {
     // whenever that shared width is mismeasured.
     expect(columnClass).not.toContain("max-w-2xl")
     expect(columnClass).toContain("w-full")
-    // Matches `ChatInput`'s own outer horizontal padding on web (`px-3`).
-    expect(columnClass).toContain("px-3")
+    // No horizontal padding of its own either: the shared chat column's
+    // gutter (applied by `ProjectComposerDock`) already insets this box, so
+    // a `px-*` here would make the card narrower than the composer.
+    expect(columnClass).not.toMatch(/(^|\s)(p|px|pl|pr)-/)
   })
 })

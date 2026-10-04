@@ -33,10 +33,8 @@ import {
   useLastProjectContext,
 } from "../../hooks/useLastProjectContext";
 import type { BottomTabId } from "@shogo/shared-app";
-import {
-  CHAT_TRANSCRIPT_MAX_WIDTH,
-  nativeComposerKeyboardOpenFromSource,
-} from "../../lib/native-composer-keyboard";
+import { chatColumn } from "../../lib/chat-column";
+import { nativeComposerKeyboardOpenFromSource } from "../../lib/native-composer-keyboard";
 import {
   nativeComposerKeyboardOverlapFromEvent,
   useNativeComposerKeyboard,
@@ -46,7 +44,6 @@ import {
   NATIVE_PHONE_COMPOSER_PILL_ITEM_INSET,
   NATIVE_PHONE_NAV_OVERLAP,
   NATIVE_PHONE_DOCK_FADE,
-  NATIVE_PHONE_GUTTER,
   NATIVE_PHONE_HOME_CANVAS,
   WEB_WIDE_MIN_WIDTH,
 } from "../../lib/native-phone-layout";
@@ -402,6 +399,9 @@ export function MobileBottomNav() {
     : experience.bottomTabs.map((id) => tabsById[id]);
   // Team workspaces outside a project use the Home / DMs / Activity / More dock.
   const teamDock = !projectMode && experience.resolved && !!experience.dockTabs;
+  // The nav pill sits directly under the phone composer, so it shares the
+  // same chat column (gutter + max width) instead of its own numbers.
+  const navColumn = chatColumn({ presentation: "agent", phone: true });
 
   return (
     <>
@@ -418,7 +418,7 @@ export function MobileBottomNav() {
           // capsule move up together and match the project-chat dock position.
           paddingBottom:
             isHomePath(pathname) || chrome.overlay ? insets.bottom + 8 : 8,
-          paddingHorizontal: NATIVE_PHONE_GUTTER,
+          paddingHorizontal: navColumn.gutter,
         }}
         testID="mobile-bottom-nav"
       >
@@ -437,13 +437,13 @@ export function MobileBottomNav() {
           />
         ) : null}
         {teamDock ? (
-          <TeamDock maxWidth={CHAT_TRANSCRIPT_MAX_WIDTH} />
+          <TeamDock maxWidth={navColumn.maxWidth!} />
         ) : (
         <View
           className="w-full flex-row items-center gap-1 overflow-hidden bg-transparent px-1.5 shadow-sm"
           style={{
             height: NATIVE_PHONE_COMPOSER_PILL_HEIGHT,
-            maxWidth: CHAT_TRANSCRIPT_MAX_WIDTH,
+            maxWidth: navColumn.maxWidth,
             alignSelf: "center",
             borderRadius: NATIVE_PHONE_COMPOSER_PILL_HEIGHT / 2,
           }}

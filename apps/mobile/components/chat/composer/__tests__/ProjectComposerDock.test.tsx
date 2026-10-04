@@ -19,7 +19,7 @@ describe("ProjectComposerDock", () => {
   test("matches the native dock to the transcript column without an extra gutter", () => {
     const pad = new Animated.Value(34)
     const { container } = render(
-      <ProjectComposerDock columnWidth={390} keyboardPad={pad} applyKeyboardPad native>
+      <ProjectComposerDock columnWidth={390} phoneViewport keyboardPad={pad} applyKeyboardPad native>
         <div>composer</div>
       </ProjectComposerDock>,
     )
