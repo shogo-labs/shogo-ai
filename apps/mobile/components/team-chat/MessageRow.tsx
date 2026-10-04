@@ -566,7 +566,11 @@ function MessageRowImpl(props: MessageRowProps) {
       </View>
 
       {isWeb && hovered && !deleted && !message.pending && !editing && (
-        <Pressable onHoverIn={hoverIn} onHoverOut={hoverOut} className="absolute right-3 -top-3 flex-row items-center rounded-lg border border-border bg-card px-1 py-0.5 shadow-sm">
+        // Kept inside the row (`top-0`, not half outside): the list is inverted, so every
+        // cell is its own scaleY(-1) stacking context and the older row above paints over
+        // anything hanging out of the top. That swallowed hover on the bar's upper edge,
+        // handed hover to the older row, and made the bar vanish under the pointer.
+        <Pressable onHoverIn={hoverIn} onHoverOut={hoverOut} className="absolute right-3 top-0 flex-row items-center rounded-lg border border-border bg-card px-1 py-0.5 shadow-sm">
           {QUICK_REACTIONS.slice(0, 3).map((emoji) => (
             <Pressable key={emoji} onPress={() => props.onReact(message, emoji)} className="rounded px-1.5 py-1 hover:bg-muted">
               <Text className="text-sm">{emoji}</Text>
