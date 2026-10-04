@@ -121,7 +121,7 @@ describe('PreviewManager with the custom stack', () => {
 
       writeFileSync(join(dir, 'src/page.txt'), 'second')
       await waitFor(() => page() === '<p>second|/p/proj-1/</p>')
-      expect(builds).toBeGreaterThanOrEqual(2)
+      await waitFor(() => builds >= 2, 5_000)
       expect(existsSync(join(dir, 'dist.staging'))).toBe(false)
     } finally {
       pm.stop()
