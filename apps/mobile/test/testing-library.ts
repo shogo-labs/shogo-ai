@@ -81,6 +81,13 @@ mock.module('expo-haptics', () => ({
 // contain the backdrop without pulling in native view managers.
 mock.module('expo-blur', () => ({
   BlurView: reactNativeMockBase.View,
+  BlurTargetView: reactNativeMockBase.View,
+}))
+mock.module('expo-glass-effect', () => ({
+  GlassView: reactNativeMockBase.View,
+  GlassContainer: reactNativeMockBase.View,
+  isLiquidGlassAvailable: () => false,
+  isGlassEffectAPIAvailable: () => false,
 }))
 mock.module('expo-secure-store', () => ({
   getItemAsync: () => Promise.resolve(null),

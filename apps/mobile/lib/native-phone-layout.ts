@@ -187,6 +187,19 @@ export const NATIVE_PHONE_DOCK_COMPOSER_GAP = 12
 export const NATIVE_PHONE_COMPOSER_PILL_HEIGHT = 45
 /** Inner inset matching composer toolbar `py-1`. */
 export const NATIVE_PHONE_COMPOSER_PILL_ITEM_INSET = 4
+/** A docked (not floating) bottom nav pulls up over the screen above it by this much. */
+export const NATIVE_PHONE_NAV_OVERLAP = 12
+/**
+ * Extra space between a resting phone composer and the bottom nav, on top
+ * of the nav's own top padding. Agent chat and team chat both derive their
+ * composer's bottom padding from this.
+ */
+export const NATIVE_PHONE_COMPOSER_NAV_GAP = 0
+
+/** Bottom padding a resting phone composer reserves above the bottom nav. */
+export function nativePhoneComposerRestPad(navFloating: boolean): number {
+  return NATIVE_PHONE_COMPOSER_NAV_GAP + (navFloating ? 0 : NATIVE_PHONE_NAV_OVERLAP)
+}
 /**
  * Native blocking question/permission cards stay in the composer column, so
  * they must leave room for messages above and the pill below. Cap the

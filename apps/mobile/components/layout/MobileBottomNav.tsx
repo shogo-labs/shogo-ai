@@ -23,10 +23,8 @@ import {
 import { NativePhoneBottomFade } from "../phone/NativePhoneBottomFade";
 import { MobileSettingsSheet } from "./MobileSettingsSheet";
 import { TeamDock } from "./TeamDock";
-import {
-  LiquidGlassBackdrop,
-  supportsLiquidGlass,
-} from "../ui/LiquidGlassBackdrop";
+import { usePhoneChromeOverlay } from "./PhoneChromeOverlay";
+import { LiquidGlassBackdrop } from "../ui/LiquidGlassBackdrop";
 import { cn } from "@shogo/shared-ui/primitives";
 import { useResolvedTheme } from "../../contexts/theme";
 import { useWorkspaceExperience } from "../../hooks/useWorkspaceExperience";
@@ -46,6 +44,7 @@ import {
 import {
   NATIVE_PHONE_COMPOSER_PILL_HEIGHT,
   NATIVE_PHONE_COMPOSER_PILL_ITEM_INSET,
+  NATIVE_PHONE_NAV_OVERLAP,
   NATIVE_PHONE_DOCK_FADE,
   NATIVE_PHONE_GUTTER,
   NATIVE_PHONE_HOME_CANVAS,
@@ -122,9 +121,9 @@ export function MobileBottomNav() {
     projectSettings?: string;
   }>();
   const insets = useSafeAreaInsets();
+  const chrome = usePhoneChromeOverlay();
   const { width } = useWindowDimensions();
   const isDark = useResolvedTheme() === "dark";
-  const liquidGlass = supportsLiquidGlass();
   const [keyboardOpen, setKeyboardOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [openProjectSettings, setOpenProjectSettings] = useState(false);
@@ -408,21 +407,22 @@ export function MobileBottomNav() {
     <>
       <View
         className="bg-transparent pt-1"
+        pointerEvents={chrome.overlay ? "box-none" : "auto"}
         style={{
           position: "relative",
-          // The composer already reserves bottom padding. Offset the nav by
-          // that amount so the resulting visible gap is one compact text line.
-          marginTop: -12,
-          // Home is edge-to-edge in the root shell, while project chat is
-          // already inside the shell's bottom safe area. Reserve the home
-          // inset here so the composer and this capsule move up together and
-          // match the project-chat dock position.
-          paddingBottom: isHomePath(pathname) ? insets.bottom + 8 : 8,
+          // A floating dock is placed by the shell instead.
+          marginTop: chrome.overlay ? 0 : -NATIVE_PHONE_NAV_OVERLAP,
+          // Home and floating-chrome screens are edge-to-edge in the root
+          // shell, while project chat is already inside the shell's bottom
+          // safe area. Reserve the inset here so the composer and this
+          // capsule move up together and match the project-chat dock position.
+          paddingBottom:
+            isHomePath(pathname) || chrome.overlay ? insets.bottom + 8 : 8,
           paddingHorizontal: NATIVE_PHONE_GUTTER,
         }}
         testID="mobile-bottom-nav"
       >
-        {!isProjectPath(pathname) ? (
+        {!isProjectPath(pathname) && !chrome.overlay ? (
           <NativePhoneBottomFade
             isDark={isDark}
             canvasHex={
@@ -440,10 +440,7 @@ export function MobileBottomNav() {
           <TeamDock maxWidth={CHAT_TRANSCRIPT_MAX_WIDTH} />
         ) : (
         <View
-          className={cn(
-            "w-full flex-row items-center gap-1 overflow-hidden px-1.5 shadow-sm",
-            liquidGlass ? "bg-transparent" : "bg-card/95"
-          )}
+          className="w-full flex-row items-center gap-1 overflow-hidden bg-transparent px-1.5 shadow-sm"
           style={{
             height: NATIVE_PHONE_COMPOSER_PILL_HEIGHT,
             maxWidth: CHAT_TRANSCRIPT_MAX_WIDTH,
