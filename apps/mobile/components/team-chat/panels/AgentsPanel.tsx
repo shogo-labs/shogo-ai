@@ -6,7 +6,7 @@
  * profile.
  */
 import { useMemo, useState } from 'react'
-import { Pressable, Text, View } from 'react-native'
+import { Pressable, Text, View, useWindowDimensions } from 'react-native'
 import { useRouter } from 'expo-router'
 import { Info, Store } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
@@ -14,7 +14,8 @@ import { useAgentActivity } from '../../../hooks/useAgentActivity'
 import { teamChatApi, type Mentionables } from '../../../lib/team-chat-api'
 import { agentWorkingOn } from '../../../lib/agent-directory'
 import { invalidateConversationList } from '../../../hooks/useTeamChat'
-import { AgentAvatar, AgentProfileCard } from '../AgentProfileCard'
+import { AgentAvatar } from '../AgentAvatar'
+import { AgentProfileCard } from '../AgentProfileCard'
 import { PanelLink, PanelSection } from '../ConversationRows'
 import { useTeamChatNav } from '../TeamChatSidebarProvider'
 import { useWorkspaceExperience } from '../../../hooks/useWorkspaceExperience'
@@ -24,6 +25,7 @@ type Agent = Mentionables['agents'][number]
 
 export function AgentsPanel({ onNavPress }: { onNavPress?: () => void }) {
   const router = useRouter()
+  const { width } = useWindowDimensions()
   const chat = useTeamChatNav()
   const experience = useWorkspaceExperience()
   const activity = useAgentActivity({ light: true })
@@ -45,6 +47,14 @@ export function AgentsPanel({ onNavPress }: { onNavPress?: () => void }) {
     }
   }
 
+  // The project pane sits beside a conversation, so it needs a wide screen.
+  const showInPane = async (projectId: string) => {
+    const conversation = await api.openAgentDm(workspaceId, projectId)
+    invalidateConversationList(workspaceId)
+    router.push(`/(app)/c/${encodeURIComponent(conversation.id)}?project=${encodeURIComponent(projectId)}` as any)
+    onNavPress?.()
+  }
+
   return (
     <View className="px-2" testID="agents-panel">
       <PanelSection label="Agents" addLabel="Message an agent" onAdd={() => chat.startCreate('agent')}>
@@ -60,7 +70,7 @@ export function AgentsPanel({ onNavPress }: { onNavPress?: () => void }) {
                 className={cn('min-w-0 flex-1 flex-row items-center gap-2.5 rounded-md px-2 py-1.5 active:bg-accent/50', opening === agent.key && 'opacity-60')}
               >
                 <View>
-                  <AgentAvatar name={agent.name} iconUrl={agent.image} size={28} />
+                  <AgentAvatar name={agent.name} projectId={agent.projectId} workspaceId={workspaceId} iconUrl={agent.image} size={28} />
                   {doing ? <View testID="agent-working" className="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-background bg-primary" /> : null}
                 </View>
                 <View className="min-w-0 flex-1">
@@ -95,6 +105,7 @@ export function AgentsPanel({ onNavPress }: { onNavPress?: () => void }) {
           name={profile.name}
           iconUrl={profile.image}
           onClose={() => setProfile(null)}
+          onOpenProjectPane={width >= 1024 ? (projectId) => void showInPane(projectId) : undefined}
           onOpenChannel={(id) => {
             setProfile(null)
             router.push(`/(app)/c/${encodeURIComponent(id)}` as any)

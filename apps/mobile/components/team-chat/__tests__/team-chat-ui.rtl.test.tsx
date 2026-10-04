@@ -84,7 +84,7 @@ mock.module('../../../lib/team-chat-api', () => ({
   absoluteApiUrl: (url: string) => url,
   newClientMsgId: () => 'client-msg-1',
   conversationTitle: () => 'DM',
-  isAgentDm: () => false,
+  isAgentDm: (c: any) => c.kind === 'dm' && (c.participants ?? []).some((p: any) => p.type === 'agent'),
   teamChatApi: () => ({
     workLog: (id: string) => { workLogs.push(id); return workLogResult() },
     upload: async (_id: string, file: { name: string }) => {
@@ -130,8 +130,16 @@ mock.module('../../../hooks/useCustomEmoji', () => ({
 mock.module('../../../hooks/useChatShortcuts', () => ({
   useEditRequest: () => {},
 }))
-mock.module('../../../hooks/useTeamChat', () => ({}))
-mock.module('expo-router', () => ({}))
+const { resolveAgentLook } = await import('@shogo/shared-app/buddy-look')
+mock.module('../../../hooks/useTeamChat', () => ({
+  useAgentLook: (_workspaceId: string | null | undefined, projectId: string | null) => resolveAgentLook(null, projectId),
+}))
+const routed: any[] = []
+mock.module('expo-router', () => ({ useRouter: () => ({ push: (r: any) => routed.push(r) }) }))
+// The real buddy draws on a canvas; here it just reports the look it was given.
+mock.module('../../island/buddy/ShogoBuddy', () => ({
+  ShogoBuddy: ({ look }: any) => createElement('div', { 'data-rn-shim': 'buddy', 'data-topper': look.topper, 'data-color': look.color }),
+}))
 // The composer is the shared ChatInput; stub its agent-only dependencies.
 mock.module('@/components/ui/popover', () => ({
   Popover: ({ children, trigger }: any) => createElement(Fragment, null, trigger?.({}), children),
@@ -348,7 +356,9 @@ describe('MessageRow', () => {
       text: 'Invoice sent', agentStatus: 'done',
     })
     const { container } = render(<MessageRow message={agentReply} grouped={false} me="u-me" names={names} canManage={false} {...h} />)
-    expect(container.querySelector('img')).toBeTruthy()
+    // A project agent shows its buddy, not its project's screenshot.
+    expect(container.querySelector('img')).toBeNull()
+    expect(shims('buddy').length).toBeGreaterThan(0)
     expect(screen.queryByTestId('agent-profile-card')).toBeNull()
     fireEvent.click(screen.getAllByLabelText('Billing Bot profile')[0])
     expect(await screen.findByText('Sends invoices')).toBeTruthy()
@@ -769,5 +779,137 @@ describe('agent work', () => {
     expect(shim('planning')).toBeTruthy()
     rerender(<MessageRow message={running} grouped={false} me="u-me" names={names} canManage={false} streaming={{ text: '', tool: 'exec', tools: [{ name: 'exec', done: false }] }} {...handlers()} />)
     expect(shim('group')).toBeTruthy()
+  })
+})
+
+describe('agent avatars', () => {
+  const agentReply = (projectId: string | null, extra: Record<string, unknown> = {}) =>
+    message({
+      id: `a-${projectId}`, authorType: 'agent', author: null, authorUserId: null,
+      authorAgent: { projectId, name: 'Agent', ...extra }, text: 'hi', agentStatus: 'done',
+    })
+
+  test('agents get their own buddy instead of the robot icon, and different agents look different', () => {
+    const h = handlers()
+    const toppers: string[] = []
+    for (const id of ['proj-a', 'proj-b', 'proj-c', 'proj-d', 'proj-e', 'proj-f']) {
+      const { unmount } = render(<MessageRow message={agentReply(id)} grouped={false} me="u-me" names={names} canManage={false} {...h} />)
+      const buddy = shims('buddy')[0]
+      expect(buddy).toBeTruthy()
+      toppers.push(`${buddy.getAttribute('data-topper')}:${buddy.getAttribute('data-color')}`)
+      unmount()
+    }
+    expect(new Set(toppers).size).toBeGreaterThan(3)
+  })
+
+  test("the workspace agent's uploaded picture still wins over its buddy", () => {
+    const { container } = render(
+      <MessageRow message={agentReply(null, { iconUrl: 'https://cdn.example.com/shogo.png' })} grouped={false} me="u-me" names={names} canManage={false} {...handlers()} />,
+    )
+    expect(container.querySelector('img')).toBeTruthy()
+    expect(shims('buddy')).toHaveLength(0)
+  })
+})
+
+describe('agent profile links', () => {
+  const tap = async (projectId: string | null, onOpenProjectPane?: any) => {
+    const h = handlers()
+    const reply = message({
+      id: 'm-link', authorType: 'agent', author: null, authorUserId: null,
+      authorAgent: { projectId, name: 'Billing Bot' }, text: 'hello', agentStatus: 'done',
+    })
+    render(<MessageRow message={reply} grouped={false} me="u-me" names={names} canManage={false} onOpenProjectPane={onOpenProjectPane} {...h} />)
+    fireEvent.click(screen.getAllByLabelText('Billing Bot profile')[0])
+    await screen.findByText('Sends invoices')
+  }
+
+  test('a project agent card links to its profile, project and the side panel', async () => {
+    routed.length = 0
+    const pane = mock(() => {})
+    await tap('proj-1', pane)
+    fireEvent.click(screen.getByLabelText('Open project'))
+    expect(routed).toEqual([{ pathname: '/(app)/projects/[id]', params: { id: 'proj-1' } }])
+    expect(screen.queryByTestId('agent-profile-card')).toBeNull()
+    cleanup()
+
+    routed.length = 0
+    await tap('proj-1', pane)
+    fireEvent.click(screen.getByLabelText('Side panel'))
+    expect(pane).toHaveBeenCalledWith('proj-1', 'Billing Bot')
+    cleanup()
+
+    routed.length = 0
+    await tap('proj-1', pane)
+    fireEvent.click(screen.getByLabelText('View profile'))
+    expect(routed).toEqual([{ pathname: '/(app)/agents/[key]', params: { key: 'proj-1' } }])
+  })
+
+  test('the side panel link is left out where there is no room, and the workspace agent has no project', async () => {
+    await tap('proj-1')
+    expect(screen.getByLabelText('Open project')).toBeTruthy()
+    expect(screen.queryByLabelText('Side panel')).toBeNull()
+    cleanup()
+
+    routed.length = 0
+    await tap(null, mock(() => {}))
+    expect(screen.queryByLabelText('Open project')).toBeNull()
+    expect(screen.queryByLabelText('Side panel')).toBeNull()
+    fireEvent.click(screen.getByLabelText('View profile'))
+    expect(routed).toEqual([{ pathname: '/(app)/agents/[key]', params: { key: 'ws' } }])
+  })
+})
+
+describe('ConversationHeader agent DMs', () => {
+  const dm = (projectId: string | null, overrides: Record<string, unknown> = {}): any => ({
+    id: 'dm1', workspaceId: 'ws', kind: 'dm', name: null, slug: null, topic: null, lastSeq: 0, lastMessageAt: null,
+    archivedAt: null, createdAt: '2026-09-29T10:00:00.000Z', joined: true, starred: false, muted: false, notifyLevel: 'default',
+    lastReadSeq: 0, canPost: true, canReply: true, canManage: false,
+    members: [
+      { id: 'm1', type: 'user', userId: 'u-me', name: 'Me' },
+      { id: 'm2', type: 'agent', projectId, name: 'Billing Bot', agentTrigger: 'mention' },
+    ],
+    ...overrides,
+  })
+  const header = (conversation: any, extra: Record<string, unknown> = {}) =>
+    render(<ConversationHeader conversation={conversation} mentionables={null} me="u-me" onChanged={() => {}} onLeft={() => {}} {...extra} />)
+
+  test('a project agent DM links to the profile and project, and the side panel when there is room', () => {
+    routed.length = 0
+    const pane = mock(() => {})
+    header(dm('proj-1'), { onOpenProjectPane: pane })
+    expect(shims('buddy').length).toBeGreaterThan(0)
+    fireEvent.click(screen.getByLabelText('Open project'))
+    fireEvent.click(screen.getByLabelText('View profile'))
+    fireEvent.click(screen.getByLabelText('Show in side panel'))
+    expect(routed).toEqual([
+      { pathname: '/(app)/projects/[id]', params: { id: 'proj-1' } },
+      { pathname: '/(app)/agents/[key]', params: { key: 'proj-1' } },
+    ])
+    expect(pane).toHaveBeenCalledWith('proj-1', 'Billing Bot')
+  })
+
+  test('no side panel action without a handler', () => {
+    header(dm('proj-1'))
+    expect(screen.getByLabelText('Open project')).toBeTruthy()
+    expect(screen.queryByLabelText('Show in side panel')).toBeNull()
+  })
+
+  test('the workspace agent has a profile but no project; people DMs have neither', () => {
+    header(dm(null), { onOpenProjectPane: mock(() => {}) })
+    expect(screen.getByLabelText('View profile')).toBeTruthy()
+    expect(screen.queryByLabelText('Open project')).toBeNull()
+    expect(screen.queryByLabelText('Show in side panel')).toBeNull()
+    cleanup()
+
+    header(dm('proj-1', { members: [{ id: 'm1', type: 'user', userId: 'u-me', name: 'Me' }, { id: 'm3', type: 'user', userId: 'u-ana', name: 'Ana' }] }), { onOpenProjectPane: mock(() => {}) })
+    expect(screen.queryByLabelText('View profile')).toBeNull()
+    expect(screen.queryByLabelText('Open project')).toBeNull()
+  })
+
+  test('the phone header puts Open project beside Catch me up', () => {
+    routed.length = 0
+    header(dm('proj-1'), { floating: true, onBack: () => {} })
+    fireEvent.click(screen.getAllByLabelText('Open project')[0])
+    expect(routed).toEqual([{ pathname: '/(app)/projects/[id]', params: { id: 'proj-1' } }])
   })
 })

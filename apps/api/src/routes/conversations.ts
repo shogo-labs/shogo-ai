@@ -60,7 +60,7 @@ import { respondToPermission, stopAgentReply } from '../services/conversation-ag
 import { decideApproval } from '../services/conversation-approvals'
 import { loadWorkLog } from '../services/agent-work-log'
 import { chainForAgentPost, rootChain, setThreadOwner } from '../services/conversation-agent-chain'
-import { loadAgentCard, loadTeamDirectory, resolveFriendlyMentions } from '../services/conversation-directory'
+import { loadAgentCard, loadTeamDirectory, resolveFriendlyMentions, setAgentBuddyLook } from '../services/conversation-directory'
 import { listTeamChannels, TeamChannelError, upsertTeamChannel } from '../services/conversation-team-channels'
 import { getPresence } from '../services/conversation-presence'
 import { getChannelMetrics } from '../services/conversation-metrics'
@@ -245,6 +245,22 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
     const card = await loadAgentCard(auth.workspaceId, projectId, auth.userId)
     if (!card) return c.json({ error: { code: 'not_found', message: 'Agent not found' } }, 404)
     return c.json({ card })
+  })
+
+  /**
+   * Change an agent's Shogo buddy look. `:key` is `ws` (the workspace agent) or a project id;
+   * `{ look: null }` goes back to the look generated from the agent's id.
+   */
+  router.put('/workspaces/:workspaceId/agents/:key/buddy', async (c) => {
+    const auth = await requireWorkspace(c)
+    if (auth instanceof Response) return auth
+    const body = await readJson(c)
+    if (!('look' in body)) return c.json({ error: { code: 'invalid_look', message: 'look is required (an object, or null to reset)' } }, 400)
+    try {
+      return c.json(await setAgentBuddyLook(auth.workspaceId, auth.userId, c.req.param('key'), body.look))
+    } catch (err) {
+      return errorResponse(c, err)
+    }
   })
 
   router.get('/workspaces/:workspaceId/presence', async (c) => {

@@ -74,6 +74,7 @@ import { ThemeProvider, useTheme, resolveThemeMode } from "../contexts/theme";
 import { AccentThemeProvider } from "../contexts/accent-theme";
 import { AppearanceProvider } from "../contexts/appearance";
 import { BuddyLookProvider } from "../contexts/buddy-look";
+import { BuddySnapshotHost } from "../components/team-chat/BuddySnapshotHost";
 import { RootErrorBoundary } from "../components/RootErrorBoundary";
 import { UpdateBanner } from "../components/UpdateBanner";
 import { GlobalDictationListener } from "../components/dictation/GlobalDictationListener";
@@ -211,6 +212,8 @@ function AuthenticatedAppShell({
       )}
       {/* The island reads the look from its snapshot instead. */}
       <BuddyLookProvider enabled={!island}>
+        {/* Draws agent avatars on native; renders nothing on web or in the island. */}
+        {!island && <BuddySnapshotHost />}
         <Stack screenOptions={{ headerShown: false, lazy: true }}>
           <Stack.Screen name="index" />
           <Stack.Screen name="(auth)" />

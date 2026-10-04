@@ -288,6 +288,8 @@ model WorkspaceAgentProfile {
   workspaceId     String    @unique
   name            String    @default("Shogo")
   avatarUrl       String?
+  // JSON-encoded Shogo buddy look (see packages/shared-app/src/buddy-look.ts); null = the default look.
+  buddyLook       String?
   tagline         String?
   personality     String?
   statusText      String?
@@ -424,6 +426,8 @@ model Project {
   siteTitle          String?
   siteDescription    String?
   thumbnailUrl       String?
+  // JSON-encoded Shogo buddy look for this project's team-chat agent; null = a look generated from the project id.
+  buddyLook          String?
   templateId         String?
   knativeServiceName String?
   settings           Json?

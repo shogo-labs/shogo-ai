@@ -14,7 +14,8 @@ import { MarkdownText } from '../chat/MarkdownText'
 import { absoluteApiUrl, teamChatApi, type ChatMessage, type LinkUnfurl } from '../../lib/team-chat-api'
 import { messageLink, parseMessageLink } from '../../lib/team-chat-links'
 import { EmojiPicker } from './EmojiPicker'
-import { AgentAvatar, AgentProfileCard } from './AgentProfileCard'
+import { AgentAvatar } from './AgentAvatar'
+import { AgentProfileCard } from './AgentProfileCard'
 import { ApprovalCardView, StatusCardView } from './AgentStatus'
 import { approvalOf, messageKind, statusCardOf, workOf } from '../../lib/team-chat-kinds'
 import { AgentWorkedFor, AgentWorkingStatus } from './AgentWork'
@@ -63,6 +64,8 @@ export interface MessageRowProps {
   onRetry: (message: ChatMessage) => void
   onDiscard: (message: ChatMessage) => void
   onOpenSession?: (message: ChatMessage) => void
+  /** Show an agent's project beside the conversation (wide screens only). */
+  onOpenProjectPane?: (projectId: string, name: string) => void
   /** Move the read line back to just before this message. */
   onMarkUnread?: (message: ChatMessage) => void
   /** Briefly emphasized after opening a link to it. */
@@ -106,7 +109,7 @@ function openConversationInApp(conversationId: string): void {
 function Avatar({ message, onPress }: { message: ChatMessage; onPress?: () => void }) {
   if (message.authorType === 'agent') {
     const name = message.authorAgent?.name ?? 'Agent'
-    const avatar = <AgentAvatar name={name} iconUrl={message.authorAgent?.iconUrl} />
+    const avatar = <AgentAvatar name={name} projectId={message.authorAgent?.projectId ?? null} workspaceId={message.workspaceId} iconUrl={message.authorAgent?.iconUrl} />
     if (!onPress) return avatar
     return (
       <Pressable onPress={onPress} accessibilityLabel={`${name} profile`} accessibilityRole="button">
@@ -632,6 +635,7 @@ function MessageRowImpl(props: MessageRowProps) {
           iconUrl={message.authorAgent.iconUrl}
           onClose={() => setProfileOpen(false)}
           onOpenChannel={openConversationInApp}
+          onOpenProjectPane={props.onOpenProjectPane}
         />
       )}
       {pickerOpen && (
