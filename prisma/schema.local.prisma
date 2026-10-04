@@ -709,6 +709,7 @@ model GitHubConnection {
   authType       String    @default("app")
   encryptedToken String?
   tokenLogin     String?
+  branch         String?
 
   project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
 

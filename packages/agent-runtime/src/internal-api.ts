@@ -403,7 +403,14 @@ export interface GitHubConnectResult {
     branch?: string
     connect?: 'adopted' | 'kept' | 'diverged'
     backupBranch?: string
+    techStackId?: string
   }
+}
+
+export interface GitHubBranchSwitchResult {
+  repoFullName: string
+  branch: string
+  techStackId?: string
 }
 
 /**
@@ -413,7 +420,7 @@ export interface GitHubConnectResult {
  */
 export async function connectGitHubWithToken(
   projectId: string,
-  opts: { repoOwner: string; repoName: string; token: string },
+  opts: { repoOwner: string; repoName: string; token: string; branch?: string },
 ): Promise<CheckpointCallResult<GitHubConnectResult>> {
   return checkpointFetch(
     `/api/internal/projects/${encodeURIComponent(projectId)}/github/connect`,
@@ -422,6 +429,26 @@ export async function connectGitHubWithToken(
       body: JSON.stringify(opts),
       signal: AbortSignal.timeout(7 * 60_000),
       parse: (j) => j as GitHubConnectResult,
+    },
+  )
+}
+
+/**
+ * Switch an already-connected project to another branch of its repository,
+ * using the stored connection. `status: 409` means the project isn't
+ * connected (to that repository).
+ */
+export async function switchGitHubBranch(
+  projectId: string,
+  opts: { repoOwner: string; repoName: string; branch: string },
+): Promise<CheckpointCallResult<GitHubBranchSwitchResult>> {
+  return checkpointFetch(
+    `/api/internal/projects/${encodeURIComponent(projectId)}/github/branch`,
+    {
+      method: 'POST',
+      body: JSON.stringify(opts),
+      signal: AbortSignal.timeout(7 * 60_000),
+      parse: (j) => j as GitHubBranchSwitchResult,
     },
   )
 }

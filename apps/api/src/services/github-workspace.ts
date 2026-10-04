@@ -13,13 +13,15 @@
 import * as gitService from './git.service';
 import { githubGitAuthEnv, githubRemoteUrl } from './github-auth';
 
-export type GitHubWorkspaceOp = 'connect' | 'push' | 'pull';
+export type GitHubWorkspaceOp = 'connect' | 'push' | 'pull' | 'checkout';
 
 export interface GitHubWorkspaceOpInput {
   op: GitHubWorkspaceOp;
   repoOwner: string;
   repoName: string;
   defaultBranch?: string;
+  /** Branch to work on: `checkout` switches to it, `connect` switches to it after adopting the default branch. */
+  branch?: string;
   token: string;
 }
 
@@ -31,6 +33,8 @@ export interface GitHubWorkspaceOpResult {
   connect?: 'adopted' | 'kept' | 'diverged';
   backupBranch?: string;
   commits?: number;
+  /** The project's tech stack after `connect` / `checkout`, detected by the runtime from its files. */
+  techStackId?: string;
 }
 
 export interface GitHubWorkspace {
@@ -60,6 +64,16 @@ export function localGitHubWorkspace(workspacePath: string): GitHubWorkspace {
           return { ok: true, connect: 'adopted', branch };
         }
 
+        if (input.op === 'checkout') {
+          const branch = input.branch!;
+          const fetched = await gitService.fetch(workspacePath, { remote: 'origin', env });
+          if (!fetched.success) return { ok: false, error: fetched.error };
+          const switched = gitService.remoteBranchExists(workspacePath, 'origin', branch)
+            ? await gitService.checkout(workspacePath, branch)
+            : { success: false, error: `Branch ${branch} does not exist on GitHub.` };
+          return switched.success ? { ok: true, branch } : { ok: false, error: switched.error };
+        }
+
         if (input.op === 'push') {
           const branch = await gitService.getCurrentBranch(workspacePath);
           const pushed = await gitService.push(workspacePath, { remote: 'origin', branch, setUpstream: true, env });
@@ -75,7 +89,7 @@ export function localGitHubWorkspace(workspacePath: string): GitHubWorkspace {
         });
         return pulled.success ? { ok: true, branch: input.defaultBranch } : { ok: false, error: pulled.error };
       } catch (err: any) {
-        const label = { connect: 'Connect', push: 'Push', pull: 'Pull' }[input.op];
+        const label = { connect: 'Connect', push: 'Push', pull: 'Pull', checkout: 'Checkout' }[input.op];
         return { ok: false, error: err?.message || `${label} failed` };
       }
     },

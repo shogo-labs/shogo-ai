@@ -806,6 +806,7 @@ model GitHubConnection {
   repoName       String
   repoFullName   String // owner/repo for convenience
   defaultBranch  String    @default("main")
+  branch         String? // Branch the workspace is on, when not the default branch
   authType       GitHubAuthType @default(app)
   installationId Int? // GitHub App installation ID (authType = app)
   encryptedToken String? // secret-crypto blob of a user access token (authType = token)
