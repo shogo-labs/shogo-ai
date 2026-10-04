@@ -57,6 +57,7 @@ export interface LiveTranscriptState {
 }
 
 const EMPTY_LIVE: LiveTranscriptState = { segments: [], partial: null, unavailable: null, notice: null }
+const LIVE_NO_TEXT_NOTICE = 'No live words yet. Check Settings; the full transcript is still made when you stop.'
 let liveTranscript: LiveTranscriptState = EMPTY_LIVE
 const liveListeners = new Set<() => void>()
 function setLiveTranscript(next: Partial<LiveTranscriptState> | null) {
@@ -118,13 +119,28 @@ export function useRecording() {
   const [error, setError] = useState<string | null>(null)
   const draftTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const liveCaptureRef = useRef<LiveCapture | null>(null)
+  const liveNoticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   /**
    * Transcribe the browser's mic stream into the draft meeting: streamed in
    * real time when the server can, in uploaded chunks when it can't.
    */
   const beginLive = useCallback((tap: PcmTap, liveRecordingId: string): LiveCapture => {
+    if (liveNoticeTimerRef.current) clearTimeout(liveNoticeTimerRef.current)
     let announced = false
+    const clearNoTextNotice = () => {
+      if (liveNoticeTimerRef.current) {
+        clearTimeout(liveNoticeTimerRef.current)
+        liveNoticeTimerRef.current = null
+      }
+    }
+    liveNoticeTimerRef.current = setTimeout(() => {
+      liveNoticeTimerRef.current = null
+      const current = getLiveTranscript()
+      if (!current.segments.length && !current.partial && !current.unavailable) {
+        setLiveTranscript({ notice: LIVE_NO_TEXT_NOTICE })
+      }
+    }, 10_000)
     const announce = () => {
       if (announced) return
       announced = true
@@ -142,6 +158,7 @@ export function useRecording() {
       },
       onMode: (mode) => {
         if (mode === 'chunks') {
+          clearNoTextNotice()
           setLiveTranscript({
             notice: 'Live streaming is unavailable. Check Settings; the full transcript is still made when you stop.',
           })
@@ -151,10 +168,12 @@ export function useRecording() {
       },
       handlers: {
         onPartial: (message) => {
+          clearNoTextNotice()
           setLiveTranscript({ partial: message.text, unavailable: null })
           announce()
         },
         onFinal: (message) => {
+          clearNoTextNotice()
           streamed = [...streamed, message.segment]
           setLiveTranscript({ segments: streamed, partial: null, unavailable: null, notice: null })
           announce()
@@ -167,6 +186,7 @@ export function useRecording() {
         if (!wsId) throw new Error('Personal workspace not loaded')
         try {
           const res = await postLiveChunk(wsId, liveRecordingId, chunk)
+          clearNoTextNotice()
           setLiveTranscript({ segments: res.transcript.segments, partial: null, unavailable: null, notice: null })
           announce()
         } catch (err) {
@@ -217,6 +237,10 @@ export function useRecording() {
 
   /** Resolves to the chunk count to send with the upload when the live transcript covers the whole recording. */
   const stopLive = useCallback(async (recordingSeconds: number): Promise<number | undefined> => {
+    if (liveNoticeTimerRef.current) {
+      clearTimeout(liveNoticeTimerRef.current)
+      liveNoticeTimerRef.current = null
+    }
     const capture = liveCaptureRef.current
     liveCaptureRef.current = null
     if (!capture) return undefined
@@ -342,6 +366,7 @@ export function useRecording() {
   useEffect(() => {
     return () => {
       if (durationRef.current) clearInterval(durationRef.current)
+      if (liveNoticeTimerRef.current) clearTimeout(liveNoticeTimerRef.current)
       liveCaptureRef.current?.stop({ discard: true })
       if (streamRef.current) {
         streamRef.current.getTracks().forEach((t) => t.stop())
