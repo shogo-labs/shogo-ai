@@ -1565,14 +1565,17 @@ export const AppSidebar = observer(function AppSidebar({
     return withTeamChat(
       <WideSidebar
         workspaceId={activeWorkspaceId}
-        tabs={experience.sidebarTabs}
+        // Until the workspace kind is known the experience falls back to team,
+        // so showing its tabs would flash the team shell (and the wrong panel)
+        // in a personal workspace. Keep the rail empty until it resolves.
+        tabs={experience.resolved ? experience.sidebarTabs : []}
         kind={experience.kind}
         showAdmin={hasAdminAccess}
         switcher={renderAccountMenu({ tile: true, collapsed: true })}
         invites={{ count: pendingInvites.length, onPress: () => setInboxOpen(true) }}
         // A personal workspace's other tabs are pages the rail already names, so
         // only Home (the chats) and More open a list; search then lives on the rail.
-        panelTabs={experience.kind === "personal" ? ["home", "more"] : undefined}
+        panelTabs={!experience.resolved ? [] : experience.kind === "personal" ? ["home", "more"] : undefined}
         onSearch={experience.kind === "personal" ? handleSearchPress : undefined}
         renderPanel={renderSidebar}
       />,
