@@ -56,6 +56,10 @@ mock.module('expo-clipboard', () => ({
   },
 }))
 mock.module('@shogo/shared-ui/primitives', () => ({ cn: (...a: unknown[]) => a.filter(Boolean).join(' ') }))
+mock.module('react-native-safe-area-context', () => ({
+  useSafeAreaInsets: () => ({ top: 0, right: 0, bottom: 0, left: 0 }),
+  SafeAreaView: ({ children }: any) => createElement('div', null, children),
+}))
 const workLogs: string[] = []
 let workLogResult: () => Promise<any> = async () => ({ parts: [{ type: 'text', text: 'Checking the remote.' }], startedAt: 0, completedAt: 1, toolCalls: 1 })
 mock.module('../../chat/turns/PlanningStatusLine', () => ({ PlanningStatusLine: () => createElement('div', { 'data-rn-shim': 'planning' }, 'Planning') }))
@@ -695,6 +699,35 @@ describe('ConversationHeader channel editing', () => {
       fireEvent.click(screen.getByLabelText('Save channel'))
     })
     expect(updates).toEqual([{ id: 'c9', patch: { topic: null } }])
+  })
+
+  test('the floating phone header goes back and keeps every action in its sheet', async () => {
+    updates.length = 0
+    const onBack = mock(() => {})
+    render(
+      <ConversationHeader
+        conversation={channel({ members: [{ id: 'm1', type: 'user', userId: 'u-ana', name: 'Ana' }, { id: 'm2', type: 'user', userId: 'u-me', name: 'Me' }] })}
+        mentionables={null}
+        me="u-me"
+        onChanged={() => {}}
+        onLeft={() => {}}
+        floating
+        onBack={onBack}
+      />,
+    )
+    expect(screen.getByText('2 members')).toBeTruthy()
+    fireEvent.click(screen.getByLabelText('Back'))
+    expect(onBack).toHaveBeenCalled()
+    for (const label of ['Edit channel', 'Notification settings', 'Star', 'Pinned messages', 'Members', 'Leave channel', 'Archive']) {
+      expect(screen.getByLabelText(label)).toBeTruthy()
+    }
+    expect(screen.getByLabelText('Catch me up')).toBeTruthy()
+    fireEvent.click(screen.getByLabelText('Edit channel'))
+    fireEvent.change(screen.getByLabelText('Channel topic'), { target: { value: 'Ship it' } })
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText('Save channel'))
+    })
+    expect(updates).toEqual([{ id: 'c9', patch: { topic: 'Ship it' } }])
   })
 })
 

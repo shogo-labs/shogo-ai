@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
-import { useState } from 'react'
-import { ActivityIndicator, Alert, Modal, Platform, Pressable, ScrollView, Text, TextInput, View } from 'react-native'
-import { Archive, Bell, BellOff, Bot, Check, Hash, Lock, LogOut, Pencil, Pin, Radio, Sparkles, Star, UserPlus, Users, X } from 'lucide-react-native'
+import { useRef, useState } from 'react'
+import { ActivityIndicator, Alert, Modal, Platform, Pressable, ScrollView, Text, TextInput, View, type LayoutChangeEvent } from 'react-native'
+import { useSafeAreaInsets } from 'react-native-safe-area-context'
+import { Archive, Bell, BellOff, Bot, Check, ChevronLeft, Hash, Lock, LogOut, MoreHorizontal, Pencil, Pin, Radio, Sparkles, Star, UserPlus, Users, X } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
+import { LiquidGlassBackdrop } from '../ui/LiquidGlassBackdrop'
+import { CHROME_SIZE, GlassButton, GlassChip } from './FloatingChrome'
 import { MarkdownText } from '../chat/MarkdownText'
 import {
   conversationTitle,
@@ -29,6 +32,10 @@ export interface ConversationHeaderProps {
   me: string | null
   onChanged: () => void
   onLeft: () => void
+  /** Phone presentation: glass back button, title pill and actions sheet over the messages. */
+  floating?: boolean
+  onBack?: () => void
+  onLayout?: (event: LayoutChangeEvent) => void
 }
 
 function confirm(title: string, message: string): Promise<boolean> {
@@ -41,7 +48,16 @@ function confirm(title: string, message: string): Promise<boolean> {
   )
 }
 
-export function ConversationHeader({ conversation, mentionables, me, onChanged, onLeft }: ConversationHeaderProps) {
+export function ConversationHeader({ conversation, mentionables, me, onChanged, onLeft, floating, onBack, onLayout }: ConversationHeaderProps) {
+  const insets = useSafeAreaInsets()
+  const [detailsOpen, setDetailsOpen] = useState(false)
+  // iOS can't present a modal while the sheet's modal is dismissing.
+  const afterDetails = useRef<(() => unknown) | null>(null)
+  const fromDetails = (fn: () => unknown) => {
+    setDetailsOpen(false)
+    if (Platform.OS === 'ios') afterDetails.current = fn
+    else void fn()
+  }
   const [catchUp, setCatchUp] = useState<CatchUpResult | null>(null)
   const [catchingUp, setCatchingUp] = useState(false)
   const [membersOpen, setMembersOpen] = useState(false)
@@ -84,109 +100,84 @@ export function ConversationHeader({ conversation, mentionables, me, onChanged, 
     }
   }
 
-  return (
-    <View className="border-b border-border px-4 py-2.5">
-      <View className="flex-row items-center gap-2">
-        {peerId ? (
-          <View className="w-4 items-center">
-            <PresenceDot userId={peerId} workspaceId={conversation.workspaceId} size={9} />
-          </View>
-        ) : (
-          <Icon size={16} className="text-muted-foreground" />
-        )}
-        <Text className="flex-shrink text-base font-semibold text-foreground" numberOfLines={1}>
-          {title}
-        </Text>
-        {peerId && peerPresence ? <Text className="text-xs text-muted-foreground">{presenceLabel(peerPresence)}</Text> : null}
-        {conversation.archivedAt && (
-          <View className="rounded bg-muted px-1.5 py-0.5">
-            <Text className="text-[10px] font-medium uppercase text-muted-foreground">Archived</Text>
-          </View>
-        )}
-        {peerStatus ? (
-          <Text className="flex-shrink text-xs text-muted-foreground" numberOfLines={1}>
-            {[peerStatus.emoji, peerStatus.text, peerStatus.dnd ? '· Do not disturb' : null].filter(Boolean).join(' ')}
-          </Text>
-        ) : null}
-        <View className="flex-1" />
-        {canRename && (
-          <HeaderButton label="Edit channel" onPress={() => setEditOpen(true)}>
-            <Pencil size={16} className="text-muted-foreground" />
-          </HeaderButton>
-        )}
-        {conversation.joined && conversation.kind !== 'activity' && (
-          <HeaderButton label="Notification settings" onPress={() => setNotifyOpen(true)}>
-            {conversation.muted || conversation.notifyLevel === 'none'
-              ? <BellOff size={16} className="text-muted-foreground" />
-              : <Bell size={16} className={conversation.notifyLevel === 'all' ? 'text-primary' : 'text-muted-foreground'} />}
-          </HeaderButton>
-        )}
-        {conversation.joined && (
-          <HeaderButton
-            label={conversation.starred ? 'Unstar' : 'Star'}
-            onPress={() => run(() => api.updateMembership(conversation.id, { starred: !conversation.starred }))}
-          >
-            <Star size={16} className={conversation.starred ? 'text-amber-500' : 'text-muted-foreground'} fill={conversation.starred ? '#f59e0b' : 'none'} />
-          </HeaderButton>
-        )}
-        {conversation.kind !== 'activity' && (
-          <HeaderButton
-            label="Pinned messages"
-            onPress={() => void api.pins(conversation.id).then(setPins).catch((err) => setError(err?.message ?? 'Could not load pins'))}
-          >
-            <Pin size={16} className="text-muted-foreground" />
-          </HeaderButton>
-        )}
-        <HeaderButton label="Catch me up" onPress={doCatchUp}>
-          {catchingUp ? <ActivityIndicator size="small" /> : <Sparkles size={16} className="text-muted-foreground" />}
-        </HeaderButton>
-        {conversation.kind !== 'dm' && conversation.kind !== 'activity' && (
-          <HeaderButton label="Members" onPress={() => setMembersOpen(true)}>
-            <UserPlus size={16} className="text-muted-foreground" />
-          </HeaderButton>
-        )}
-        {isChannel && conversation.kind !== 'activity' && conversation.joined && conversation.slug !== 'general' && (
-          <HeaderButton
-            label="Leave channel"
-            onPress={async () => {
-              if (!(await confirm(`Leave #${conversation.name}?`, 'You can rejoin public channels any time.'))) return
-              await run(() => api.leave(conversation.id))
-              onLeft()
-            }}
-          >
-            <LogOut size={16} className="text-muted-foreground" />
-          </HeaderButton>
-        )}
-        {conversation.canManage && isChannel && conversation.kind !== 'activity' && conversation.slug !== 'general' && (
-          <HeaderButton
-            label={conversation.archivedAt ? 'Unarchive' : 'Archive'}
-            onPress={async () => {
-              const archiving = !conversation.archivedAt
-              if (archiving && !(await confirm(`Archive #${conversation.name}?`, 'Nobody will be able to post until it is unarchived.'))) return
-              await run(() => api.update(conversation.id, { archived: archiving }))
-            }}
-          >
-            <Archive size={16} className="text-muted-foreground" />
-          </HeaderButton>
-        )}
-      </View>
-      {conversation.topic ? (
-        <Pressable
-          disabled={!canEditTopic}
-          onPress={() => setEditOpen(true)}
-          accessibilityLabel={canEditTopic ? `Topic: ${conversation.topic}. Edit topic` : `Topic: ${conversation.topic}`}
-          className="mt-0.5 self-start"
-        >
-          <Text className="text-xs text-muted-foreground" numberOfLines={1}>
-            {conversation.topic}
-          </Text>
-        </Pressable>
-      ) : canEditTopic && isChannel ? (
-        <Pressable onPress={() => setEditOpen(true)} accessibilityLabel="Add a topic" className="mt-0.5 self-start">
-          <Text className="text-xs text-muted-foreground/70">Add a topic</Text>
-        </Pressable>
-      ) : null}
-      {error && <Text className="mt-1 text-xs text-destructive">{error}</Text>}
+  const actions: HeaderAction[] = []
+  if (canRename) actions.push({ key: 'edit', label: 'Edit channel', icon: (s) => <Pencil size={s} className="text-muted-foreground" />, onPress: () => setEditOpen(true) })
+  if (conversation.joined && conversation.kind !== 'activity') {
+    actions.push({
+      key: 'notify',
+      label: 'Notification settings',
+      icon: (s) =>
+        conversation.muted || conversation.notifyLevel === 'none'
+          ? <BellOff size={s} className="text-muted-foreground" />
+          : <Bell size={s} className={conversation.notifyLevel === 'all' ? 'text-primary' : 'text-muted-foreground'} />,
+      onPress: () => setNotifyOpen(true),
+    })
+  }
+  if (conversation.joined) {
+    actions.push({
+      key: 'star',
+      label: conversation.starred ? 'Unstar' : 'Star',
+      icon: (s) => <Star size={s} className={conversation.starred ? 'text-amber-500' : 'text-muted-foreground'} fill={conversation.starred ? '#f59e0b' : 'none'} />,
+      onPress: () => run(() => api.updateMembership(conversation.id, { starred: !conversation.starred })),
+    })
+  }
+  if (conversation.kind !== 'activity') {
+    actions.push({
+      key: 'pins',
+      label: 'Pinned messages',
+      icon: (s) => <Pin size={s} className="text-muted-foreground" />,
+      onPress: () => void api.pins(conversation.id).then(setPins).catch((err) => setError(err?.message ?? 'Could not load pins')),
+    })
+  }
+  actions.push({
+    key: 'catchup',
+    label: 'Catch me up',
+    icon: (s) => (catchingUp ? <ActivityIndicator size="small" /> : <Sparkles size={s} className="text-muted-foreground" />),
+    onPress: doCatchUp,
+  })
+  if (conversation.kind !== 'dm' && conversation.kind !== 'activity') {
+    actions.push({ key: 'members', label: 'Members', icon: (s) => <UserPlus size={s} className="text-muted-foreground" />, onPress: () => setMembersOpen(true) })
+  }
+  if (isChannel && conversation.kind !== 'activity' && conversation.joined && conversation.slug !== 'general') {
+    actions.push({
+      key: 'leave',
+      label: 'Leave channel',
+      danger: true,
+      icon: (s) => <LogOut size={s} className="text-muted-foreground" />,
+      onPress: async () => {
+        if (!(await confirm(`Leave #${conversation.name}?`, 'You can rejoin public channels any time.'))) return
+        await run(() => api.leave(conversation.id))
+        onLeft()
+      },
+    })
+  }
+  if (conversation.canManage && isChannel && conversation.kind !== 'activity' && conversation.slug !== 'general') {
+    actions.push({
+      key: 'archive',
+      label: conversation.archivedAt ? 'Unarchive' : 'Archive',
+      danger: !conversation.archivedAt,
+      icon: (s) => <Archive size={s} className="text-muted-foreground" />,
+      onPress: async () => {
+        const archiving = !conversation.archivedAt
+        if (archiving && !(await confirm(`Archive #${conversation.name}?`, 'Nobody will be able to post until it is unarchived.'))) return
+        await run(() => api.update(conversation.id, { archived: archiving }))
+      },
+    })
+  }
+
+  const leading = peerId ? (
+    <View className="w-4 items-center">
+      <PresenceDot userId={peerId} workspaceId={conversation.workspaceId} size={9} />
+    </View>
+  ) : (
+    <Icon size={16} className="text-muted-foreground" />
+  )
+  const statusLine = peerStatus
+    ? [peerStatus.emoji, peerStatus.text, peerStatus.dnd ? '· Do not disturb' : null].filter(Boolean).join(' ')
+    : null
+
+  const modals = (
+    <>
 
       <Modal visible={!!catchUp} transparent animationType="fade" onRequestClose={() => setCatchUp(null)}>
         <Pressable className="flex-1 items-center justify-center bg-black/40 p-6" onPress={() => setCatchUp(null)}>
@@ -277,8 +268,179 @@ export function ConversationHeader({ conversation, mentionables, me, onChanged, 
           onChanged={onChanged}
         />
       )}
+    </>
+  )
+
+  if (floating) {
+    const subtitle = peerId
+      ? statusLine ?? (peerPresence ? presenceLabel(peerPresence) : null)
+      : isChannel && conversation.kind !== 'activity'
+        ? `${conversation.members.length} ${conversation.members.length === 1 ? 'member' : 'members'}`
+        : null
+    const catchUpAction = actions.find((a) => a.key === 'catchup')!
+    return (
+      <View
+        pointerEvents="box-none"
+        onLayout={onLayout}
+        className="absolute left-0 right-0 top-0 z-30 px-3"
+        style={{ paddingTop: insets.top + 6 }}
+        testID="floating-conversation-header"
+      >
+        <View pointerEvents="box-none" className="flex-row items-center gap-2">
+          <GlassButton label="Back" onPress={onBack}>
+            <ChevronLeft size={22} className="text-foreground" />
+          </GlassButton>
+          <Pressable
+            onPress={() => setDetailsOpen(true)}
+            accessibilityRole="button"
+            accessibilityLabel={`${title} details`}
+            className="min-w-0 flex-shrink justify-center overflow-hidden rounded-full bg-transparent px-4 shadow-sm"
+            style={{ height: CHROME_SIZE }}
+          >
+            <LiquidGlassBackdrop style={{ borderRadius: CHROME_SIZE / 2 }} />
+            <View className="flex-row items-center gap-1.5">
+              {leading}
+              <Text className="flex-shrink text-[15px] font-semibold text-foreground" numberOfLines={1}>
+                {title}
+              </Text>
+            </View>
+            {subtitle ? (
+              <Text className="text-[11px] text-muted-foreground" numberOfLines={1}>
+                {subtitle}
+              </Text>
+            ) : null}
+          </Pressable>
+          <View className="flex-1" pointerEvents="none" />
+          <GlassButton label={catchUpAction.label} onPress={catchUpAction.onPress}>
+            {catchUpAction.icon(18)}
+          </GlassButton>
+          <GlassButton label="More actions" onPress={() => setDetailsOpen(true)}>
+            <MoreHorizontal size={20} className="text-foreground" />
+          </GlassButton>
+        </View>
+        {error ? (
+          <GlassChip className="mt-2 self-center px-3 py-1.5">
+            <Text className="text-xs text-destructive">{error}</Text>
+          </GlassChip>
+        ) : null}
+
+        <Modal
+          visible={detailsOpen}
+          transparent
+          animationType="slide"
+          onRequestClose={() => setDetailsOpen(false)}
+          onDismiss={() => {
+            const fn = afterDetails.current
+            afterDetails.current = null
+            if (fn) void fn()
+          }}
+        >
+          <Pressable className="flex-1 justify-end bg-black/30" onPress={() => setDetailsOpen(false)}>
+            <Pressable
+              className="rounded-t-3xl bg-card px-2 pt-3"
+              style={{ paddingBottom: insets.bottom + 12 }}
+              onPress={() => {}}
+              testID="conversation-actions-sheet"
+            >
+              <View className="mb-2 h-1 w-10 self-center rounded-full bg-muted-foreground/30" />
+              <View className="flex-row items-center gap-2 px-3 py-2">
+                {leading}
+                <Text className="flex-1 text-base font-semibold text-foreground" numberOfLines={1}>
+                  {title}
+                </Text>
+                {conversation.archivedAt ? (
+                  <View className="rounded bg-muted px-1.5 py-0.5">
+                    <Text className="text-[10px] font-medium uppercase text-muted-foreground">Archived</Text>
+                  </View>
+                ) : null}
+              </View>
+              {conversation.topic || (canEditTopic && isChannel) ? (
+                <Pressable
+                  disabled={!canEditTopic}
+                  onPress={() => fromDetails(() => setEditOpen(true))}
+                  accessibilityLabel={conversation.topic ? `Topic: ${conversation.topic}` : 'Add a topic'}
+                  className="px-3 pb-2"
+                >
+                  <Text className={cn('text-sm', conversation.topic ? 'text-muted-foreground' : 'text-muted-foreground/70')}>
+                    {conversation.topic || 'Add a topic'}
+                  </Text>
+                </Pressable>
+              ) : null}
+              {actions
+                .filter((a) => a.key !== 'catchup')
+                .map((a) => (
+                  <Pressable
+                    key={a.key}
+                    onPress={() => fromDetails(a.onPress)}
+                    accessibilityRole="button"
+                    accessibilityLabel={a.label}
+                    className="min-h-12 flex-row items-center gap-3 rounded-xl px-3 py-3 active:bg-muted"
+                  >
+                    {a.icon(18)}
+                    <Text className={cn('flex-1 text-base', a.danger ? 'text-destructive' : 'text-foreground')}>{a.label}</Text>
+                  </Pressable>
+                ))}
+            </Pressable>
+          </Pressable>
+        </Modal>
+        {modals}
+      </View>
+    )
+  }
+
+  return (
+    <View className="border-b border-border px-4 py-2.5">
+      <View className="flex-row items-center gap-2">
+        {leading}
+        <Text className="flex-shrink text-base font-semibold text-foreground" numberOfLines={1}>
+          {title}
+        </Text>
+        {peerId && peerPresence ? <Text className="text-xs text-muted-foreground">{presenceLabel(peerPresence)}</Text> : null}
+        {conversation.archivedAt && (
+          <View className="rounded bg-muted px-1.5 py-0.5">
+            <Text className="text-[10px] font-medium uppercase text-muted-foreground">Archived</Text>
+          </View>
+        )}
+        {statusLine ? (
+          <Text className="flex-shrink text-xs text-muted-foreground" numberOfLines={1}>
+            {statusLine}
+          </Text>
+        ) : null}
+        <View className="flex-1" />
+        {actions.map((a) => (
+          <HeaderButton key={a.key} label={a.label} onPress={() => void a.onPress()}>
+            {a.icon(16)}
+          </HeaderButton>
+        ))}
+      </View>
+      {conversation.topic ? (
+        <Pressable
+          disabled={!canEditTopic}
+          onPress={() => setEditOpen(true)}
+          accessibilityLabel={canEditTopic ? `Topic: ${conversation.topic}. Edit topic` : `Topic: ${conversation.topic}`}
+          className="mt-0.5 self-start"
+        >
+          <Text className="text-xs text-muted-foreground" numberOfLines={1}>
+            {conversation.topic}
+          </Text>
+        </Pressable>
+      ) : canEditTopic && isChannel ? (
+        <Pressable onPress={() => setEditOpen(true)} accessibilityLabel="Add a topic" className="mt-0.5 self-start">
+          <Text className="text-xs text-muted-foreground/70">Add a topic</Text>
+        </Pressable>
+      ) : null}
+      {error && <Text className="mt-1 text-xs text-destructive">{error}</Text>}
+      {modals}
     </View>
   )
+}
+
+interface HeaderAction {
+  key: string
+  label: string
+  icon: (size: number) => React.ReactNode
+  onPress: () => unknown
+  danger?: boolean
 }
 
 function HeaderButton({ label, onPress, children }: { label: string; onPress: () => void; children: React.ReactNode }) {

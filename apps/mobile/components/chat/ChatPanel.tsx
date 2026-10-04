@@ -135,6 +135,7 @@ import { autoNameSession, isPlaceholderSessionName } from "./auto-name-session"
 
 import {
   isPhoneLayout,
+  nativePhoneComposerRestPad,
   useNativePhoneWindow,
 } from "../../lib/native-phone-layout"
 import { canvasViewerPayload } from "../../lib/canvas-viewer"
@@ -1263,7 +1264,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // nav owns the home-indicator inset. Reserving it here too created an extra
   // blank row between the composer and nav on native, unlike mobile web.
   const restComposerPad = isPhoneViewport
-    ? NATIVE_COMPOSER_KEYBOARD_GAP
+    ? nativePhoneComposerRestPad(false)
     : Math.max(insets.bottom, NATIVE_COMPOSER_KEYBOARD_GAP)
   // Native phone chat uses the measured keyboard overlap below. Keeping the
   // KAV lift enabled here makes the composer depend on two independent layout

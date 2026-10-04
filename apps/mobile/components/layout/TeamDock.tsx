@@ -15,7 +15,7 @@ import { useAgentActivity } from '../../hooks/useAgentActivity'
 import { activityBadge } from '../../lib/activity-feed'
 import { NATIVE_PHONE_COMPOSER_PILL_HEIGHT, NATIVE_PHONE_COMPOSER_PILL_ITEM_INSET, NATIVE_PHONE_GUTTER } from '../../lib/native-phone-layout'
 import { dockTabForPathname } from '../../lib/sidebar-tab'
-import { LiquidGlassBackdrop, supportsLiquidGlass } from '../ui/LiquidGlassBackdrop'
+import { LiquidGlassBackdrop } from '../ui/LiquidGlassBackdrop'
 import { badgeText } from './sidebar/IconRail'
 import { useTeamChatNav } from '../team-chat/TeamChatSidebarProvider'
 
@@ -32,7 +32,6 @@ export function TeamDock({ maxWidth }: { maxWidth: number }) {
   const router = useRouter()
   const pathname = usePathname()
   const isDark = useResolvedTheme() === 'dark'
-  const liquidGlass = supportsLiquidGlass()
   const chat = useTeamChatNav()
   const agents = useAgentActivity({ light: true })
   const active = dockTabForPathname(pathname, chat.list)
@@ -40,7 +39,7 @@ export function TeamDock({ maxWidth }: { maxWidth: number }) {
     dms: chat.counts.dms,
     activity: activityBadge(chat.counts.inbox, agents.tasks),
   }
-  const surface = cn('shadow-sm overflow-hidden', liquidGlass ? 'bg-transparent' : 'bg-card/95')
+  const surface = 'shadow-sm overflow-hidden bg-transparent'
   const tint = isDark ? 'rgba(28,28,30,0.42)' : 'rgba(255,255,255,0.42)'
 
   return (
@@ -79,7 +78,9 @@ export function TeamDock({ maxWidth }: { maxWidth: number }) {
         style={{ width: SIZE, height: SIZE, borderRadius: SIZE / 2 }}
       >
         <LiquidGlassBackdrop tintColor={tint} style={{ borderRadius: SIZE / 2 }} />
-        <Search size={20} color={isDark ? '#a1a1aa' : '#6b7280'} />
+        <View>
+          <Search size={20} color={isDark ? '#a1a1aa' : '#6b7280'} />
+        </View>
       </Pressable>
 
     </View>

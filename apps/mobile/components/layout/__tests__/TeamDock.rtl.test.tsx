@@ -31,7 +31,7 @@ mock.module("lucide-react-native", () => {
   return { Bell: Icon, Home: Icon, Mail: Icon, MessagesSquare: Icon, MoreHorizontal: Icon, Search: Icon, Bot: Icon, Folder: Icon, Hash: Icon, Mic: Icon, Plus: Icon, Shield: Icon, Target: Icon }
 })
 mock.module(resolve(import.meta.dir, "../../../contexts/theme"), () => ({ useResolvedTheme: () => "light" }))
-mock.module(resolve(import.meta.dir, "../../ui/LiquidGlassBackdrop"), () => ({ LiquidGlassBackdrop: () => null, supportsLiquidGlass: () => false }))
+mock.module(resolve(import.meta.dir, "../../ui/LiquidGlassBackdrop"), () => ({ LiquidGlassBackdrop: () => null }))
 mock.module(resolve(import.meta.dir, "../../branding/ShogoLogoMark"), () => ({ ShogoLogoMark: () => null }))
 mock.module(resolve(import.meta.dir, "../CreateMenu"), () => ({ CreateMenu: () => null }))
 mock.module(resolve(import.meta.dir, "../ProfileMenu"), () => ({ ProfileMenu: () => null }))

@@ -104,10 +104,7 @@ import { FileViewerModal } from "./FileViewerModal";
 import { ImagePreviewModal } from "./ImagePreviewModal";
 import { VideoPreviewModal } from "./VideoPreviewModal";
 import { PastedTextChip } from "./PastedTextChip";
-import {
-  LiquidGlassBackdrop,
-  supportsLiquidGlass,
-} from "../ui/LiquidGlassBackdrop";
+import { LiquidGlassBackdrop } from "../ui/LiquidGlassBackdrop";
 import {
   PROMINENT_COMPOSER_CHROME_Z_INDEX,
   PROMINENT_COMPOSER_HEIGHT_EASING,
@@ -661,7 +658,6 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
     prominent: true,
     flush,
   });
-  const liquidGlass = useProminentComposer && supportsLiquidGlass();
   const sendChrome = composerSendChrome(isNative || useProminentComposer);
   const mobileChatText = usesMobileWorkspaceChrome || useProminentComposer;
   const isPersonalWorkspace = useWorkspaceExperience().kind === "personal";
@@ -2221,9 +2217,7 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
                   minHeight: isNative
                     ? NATIVE_PHONE_COMPOSER_PILL_HEIGHT
                     : undefined,
-                  backgroundColor: liquidGlass
-                    ? "transparent"
-                    : chatgptComposer.fill,
+                  backgroundColor: "transparent",
                 }
               : undefined
           }

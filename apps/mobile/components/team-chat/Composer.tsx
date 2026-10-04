@@ -20,7 +20,8 @@ import {
 } from '../chat/ChatInput'
 import { ComposerPlusSection } from '../chat/ComposerPlusMenu'
 import { useComposerLayoutMode } from '../chat/composer'
-import { NATIVE_COMPOSER_KEYBOARD_GAP } from '../../lib/native-composer-keyboard'
+import { nativePhoneComposerRestPad } from '../../lib/native-phone-layout'
+import { usePhoneChromeOverlay } from '../layout/PhoneChromeOverlay'
 import { PHONE_DENSITY } from '../../lib/phone-density'
 import type { Mentionables } from '../../lib/team-chat-api'
 import { teamChatApi } from '../../lib/team-chat-api'
@@ -78,6 +79,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   const { workspaceId, conversationId, threadRootId = null, mentionables, me, onSend, onEditLast } = props
   const inputRef = useRef<ChatInputHandle>(null)
   const phoneLayout = useComposerLayoutMode({ prominent: true }).useProminentComposer
+  const chrome = usePhoneChromeOverlay()
   const [text, setText] = useState('')
   const textRef = useRef('')
   const [alsoToChannel, setAlsoToChannel] = useState(false)
@@ -321,9 +323,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   )
 
   return (
-    // The phone dock overlaps the screen by the same rest pad the agent chat
-    // dock reserves, so reserve it here too or the pill sits on the dock.
-    <View style={phoneLayout ? { paddingBottom: NATIVE_COMPOSER_KEYBOARD_GAP } : undefined}>
+    <View style={phoneLayout ? { paddingBottom: nativePhoneComposerRestPad(chrome.overlay) } : undefined}>
       <ChatInput
         key={draftKey}
         ref={inputRef}
