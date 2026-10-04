@@ -8,7 +8,7 @@
 import { useMemo, useState } from 'react'
 import { Pressable, Text, View } from 'react-native'
 import { useRouter } from 'expo-router'
-import { Info, Store } from 'lucide-react-native'
+import { Info, Plus, Store } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { useAgentActivity } from '../../../hooks/useAgentActivity'
 import { teamChatApi, type Mentionables } from '../../../lib/team-chat-api'
@@ -77,10 +77,19 @@ export function AgentsPanel({ onNavPress }: { onNavPress?: () => void }) {
           )
         })}
         {agents.length === 0 && <Text className="px-2 py-3 text-xs text-muted-foreground">No agents in this workspace yet.</Text>}
+        {/* Create: describe a new agent in the new-project chat home. Add: install an existing one. */}
+        <PanelLink
+          icon={Plus}
+          label="Create agent"
+          onPress={() => {
+            router.push('/(app)/new-project' as any)
+            onNavPress?.()
+          }}
+        />
         {experience.showMarketplace && (
           <PanelLink
             icon={Store}
-            label="Add agents"
+            label="Add agent"
             onPress={() => {
               router.push('/(app)/marketplace' as any)
               onNavPress?.()
