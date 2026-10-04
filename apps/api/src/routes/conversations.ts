@@ -1033,19 +1033,44 @@ export function agentChannelRoutes(routeConfig: AgentChannelRoutesConfig): Hono 
     if (!who) return c.json({ error: { code: 'invalid_input', message: 'user is required' } }, 400)
     const member = await db.member.findFirst({
       where: { workspaceId: auth.workspaceId, OR: [{ userId: who }, { user: { email: who.toLowerCase() } }] },
-      select: { userId: true },
+      select: { userId: true, user: { select: { name: true, email: true } } },
     })
     if (!member) return c.json({ error: { code: 'not_found', message: 'No workspace member matches that user' } }, 404)
     try {
-      const conversation = await openAgentConversation(auth.workspaceId, member.userId, { projectId })
+      const onBehalfOfUserId = typeof body.onBehalfOfUserId === 'string' ? body.onBehalfOfUserId.trim() : ''
+      let conversation
+      let onBehalfOf: { userId: string; name: string } | undefined
+      if (onBehalfOfUserId && onBehalfOfUserId !== member.userId) {
+        const requester = await db.member.findFirst({
+          where: { workspaceId: auth.workspaceId, userId: onBehalfOfUserId },
+          select: { userId: true, user: { select: { name: true, email: true } } },
+        })
+        if (!requester) {
+          return c.json({ error: { code: 'not_found', message: 'The requester is not a member of this workspace' } }, 404)
+        }
+        conversation = await openDirectConversation(auth.workspaceId, requester.userId, [member.userId])
+        onBehalfOf = {
+          userId: requester.userId,
+          name: requester.user.name || requester.user.email,
+        }
+      } else {
+        conversation = await openAgentConversation(auth.workspaceId, member.userId, { projectId })
+      }
       const result = await postAgentMessage({
         conversationId: conversation.id,
         text: await resolveFriendlyMentions(auth.workspaceId, String(body.text ?? '')),
         agent: { projectId, name: await agentDisplayName(auth.workspaceId, projectId) },
         agentChain: await postChain(auth.workspaceId, projectId, body, null),
+        ...(onBehalfOf ? { blocks: { onBehalfOf } } : {}),
       })
       void afterMessagePosted(result, { actorUserId: null, origin: 'agent' })
-      return c.json({ message: { id: result.message.id, conversationId: conversation.id } }, 201)
+      return c.json({
+        message: {
+          id: result.message.id,
+          conversationId: conversation.id,
+          url: `${getFrontendUrl()}/c/${encodeURIComponent(conversation.id)}`,
+        },
+      }, 201)
     } catch (err) {
       return errorResponse(c, err)
     }

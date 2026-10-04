@@ -16,14 +16,17 @@
  */
 
 import { spawnSync } from "node:child_process";
+import { createRequire } from "node:module";
 import { resolve } from "node:path";
 
 const mobileDir = resolve(import.meta.dir, "../apps/mobile");
+const require = createRequire(import.meta.url);
+const tscPath = require.resolve("typescript/bin/tsc", { paths: [mobileDir] });
 const result = spawnSync(
-  "bun",
+  "node",
   [
-    "x",
-    "tsc",
+    "--stack-size=8192",
+    tscPath,
     "--noEmit",
     "--incremental",
     "--tsBuildInfoFile",

@@ -142,6 +142,13 @@ function authorName(message: ChatMessage): string {
   return message.author?.name ?? 'Someone'
 }
 
+function onBehalfOfName(message: ChatMessage): string | null {
+  const value = message.blocks?.onBehalfOf
+  if (!value || typeof value !== 'object') return null
+  const name = (value as { name?: unknown }).name
+  return typeof name === 'string' && name.trim() ? name : null
+}
+
 function AuthorStatus({ userId }: { userId: string | null | undefined }) {
   const status = useUserStatus(undefined, userId)
   if (!status?.emoji && !status?.dnd) return null
@@ -233,6 +240,7 @@ function MessageRowImpl(props: MessageRowProps) {
   const card = !running && message.authorType === 'agent' ? statusCardOf(message) : null
   const approval = !running && message.authorType === 'agent' ? approvalOf(message) : null
   const kind = message.authorType === 'agent' ? messageKind(message) : null
+  const onBehalfOf = message.authorType === 'agent' ? onBehalfOfName(message) : null
   const canOpenSession = message.authorType === 'agent' && !!message.agentSessionId && !!message.authorAgent?.projectId && !!props.onOpenSession
   const work = !running && message.authorType === 'agent' ? workOf(message) : null
   const isWeb = Platform.OS === 'web'
@@ -371,6 +379,9 @@ function MessageRowImpl(props: MessageRowProps) {
               <View className="rounded bg-primary/10 px-1.5 py-px">
                 <Text className="text-[10px] font-medium text-primary">AGENT</Text>
               </View>
+            )}
+            {onBehalfOf && (
+              <Text className="text-[11px] text-muted-foreground">on behalf of {onBehalfOf}</Text>
             )}
             {(kind === 'decision' && (!approval || approval.status === 'pending')) || kind === 'alert' ? (
               <View className={cn('rounded px-1.5 py-px', kind === 'alert' ? 'bg-destructive/15' : 'bg-amber-500/20')}>
