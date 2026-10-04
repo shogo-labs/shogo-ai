@@ -12,14 +12,16 @@ import { execFile } from 'node:child_process'
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
-export type GitHubWorkspaceOp = 'connect' | 'push' | 'pull'
+export type GitHubWorkspaceOp = 'connect' | 'push' | 'pull' | 'checkout'
 
 export interface GitHubWorkspaceOpInput {
   op: GitHubWorkspaceOp
   repoOwner: string
   repoName: string
-  /** Remote default branch; `connect` adopts it, `pull` rebases onto it. */
+  /** Remote default branch; `connect` adopts it, `pull` falls back to it when HEAD is detached. */
   defaultBranch?: string
+  /** Branch to work on: `checkout` switches to it, `connect` switches to it after adopting the default branch. */
+  branch?: string
   token: string
 }
 
@@ -39,6 +41,8 @@ export interface GitHubWorkspaceOpResult {
   backupBranch?: string
   /** Commits sent (`push`) or received (`pull`). */
   commits?: number
+  /** The project's tech stack after `connect` / `checkout`, as detected from its files. */
+  techStackId?: string
 }
 
 /**
@@ -179,6 +183,11 @@ async function connect(cwd: string, input: GitHubWorkspaceOpInput, env: Record<s
   await gitOk(cwd, ['fetch', '--prune', 'origin'], env)
   await commitPendingWork(cwd, 'Save workspace before connecting GitHub')
 
+  const onBranch = await currentBranch(cwd)
+  if (onBranch && onBranch !== remoteBranch && (await revParse(cwd, `refs/remotes/origin/${onBranch}`))) {
+    return { ok: true, connect: 'kept', branch: onBranch, sha: await revParse(cwd, 'HEAD') }
+  }
+
   const remoteRef = `refs/remotes/origin/${remoteBranch}`
   const remoteSha = await revParse(cwd, remoteRef)
   const localSha = await revParse(cwd, 'HEAD')
@@ -228,8 +237,28 @@ async function push(cwd: string, env: Record<string, string>): Promise<GitHubWor
   return { ok: true, branch, sha: await revParse(cwd, 'HEAD'), commits }
 }
 
+/** Save pending edits on the current branch, then switch to `branch`, tracking it on GitHub. */
+async function checkout(cwd: string, branch: string, env: Record<string, string>): Promise<GitHubWorkspaceOpResult> {
+  ensureRuntimeExcludes(cwd)
+  await gitOk(cwd, ['fetch', '--prune', 'origin'], env)
+  const from = await currentBranch(cwd)
+  if (from === branch) return { ok: true, branch, sha: await revParse(cwd, 'HEAD') }
+  const remoteRef = `refs/remotes/origin/${branch}`
+  const hasLocal = !!(await revParse(cwd, `refs/heads/${branch}`))
+  if (!hasLocal && !(await revParse(cwd, remoteRef))) {
+    return { ok: false, error: `Branch ${branch} does not exist on GitHub.` }
+  }
+  await commitPendingWork(cwd, `Save work on ${from || 'detached HEAD'} before switching to ${branch}`)
+  if (hasLocal) {
+    await gitOk(cwd, ['checkout', branch])
+  } else {
+    await gitOk(cwd, ['checkout', '-b', branch, '--track', `origin/${branch}`])
+  }
+  return { ok: true, branch, sha: await revParse(cwd, 'HEAD') }
+}
+
 async function pull(cwd: string, input: GitHubWorkspaceOpInput, env: Record<string, string>): Promise<GitHubWorkspaceOpResult> {
-  const branch = input.defaultBranch || (await currentBranch(cwd)) || 'main'
+  const branch = (await currentBranch(cwd)) || input.defaultBranch || 'main'
   ensureRuntimeExcludes(cwd)
   const before = await revParse(cwd, 'HEAD')
   await gitOk(cwd, ['pull', '--rebase', '--autostash', 'origin', branch], env)
@@ -239,10 +268,14 @@ async function pull(cwd: string, input: GitHubWorkspaceOpInput, env: Record<stri
 }
 
 export function validateGitHubWorkspaceOpInput(input: Partial<GitHubWorkspaceOpInput>): string | null {
-  if (input.op !== 'connect' && input.op !== 'push' && input.op !== 'pull') return 'op must be connect, push, or pull'
+  if (input.op !== 'connect' && input.op !== 'push' && input.op !== 'pull' && input.op !== 'checkout') {
+    return 'op must be connect, push, pull, or checkout'
+  }
   if (!input.repoOwner || !OWNER_RE.test(input.repoOwner)) return 'invalid repoOwner'
   if (!input.repoName || !REPO_RE.test(input.repoName) || input.repoName.startsWith('.')) return 'invalid repoName'
   if (input.defaultBranch && !BRANCH_RE.test(input.defaultBranch)) return 'invalid defaultBranch'
+  if (input.branch && !BRANCH_RE.test(input.branch)) return 'invalid branch'
+  if (input.op === 'checkout' && !input.branch) return 'branch is required to check out'
   if (!input.token || typeof input.token !== 'string') return 'token is required'
   return null
 }
@@ -257,7 +290,13 @@ export async function runGitHubWorkspaceOp(
   if (!existsSync(cwd)) return { ok: false, error: `Workspace directory ${cwd} does not exist` }
   const env = githubGitAuthEnv(input.token)
   try {
-    if (input.op === 'connect') return await connect(cwd, input, env)
+    if (input.op === 'connect') {
+      const connected = await connect(cwd, input, env)
+      if (!connected.ok || connected.connect === 'diverged' || !input.branch || input.branch === connected.branch) return connected
+      const switched = await checkout(cwd, input.branch, env)
+      return switched.ok ? { ...connected, branch: switched.branch, sha: switched.sha } : { ...connected, ok: false, error: switched.error }
+    }
+    if (input.op === 'checkout') return await checkout(cwd, input.branch!, env)
     if (input.op === 'push') return await push(cwd, env)
     return await pull(cwd, input, env)
   } catch (err: any) {

@@ -847,6 +847,38 @@ describe('resolveWorkspaceTechStackId + applyEnvTechStackMarker', () => {
     expect(wd.applyEnvTechStackMarker(dir)).toBe(true)
     expect(readFileSync(join(dir, '.tech-stack'), 'utf-8')).toBe('expo-app')
   })
+
+  test('Astro, Eleventy, and shogo.preview.json projects resolve to the custom stack', () => {
+    for (const setup of [
+      (d: string) => writeFileSync(join(d, 'package.json'), JSON.stringify({ dependencies: { astro: '5' } })),
+      (d: string) => writeFileSync(join(d, 'package.json'), JSON.stringify({ devDependencies: { '@11ty/eleventy': '3' } })),
+      (d: string) => writeFileSync(join(d, 'shogo.preview.json'), '{}'),
+    ]) {
+      const dir = makeTmp()
+      writeFileSync(join(dir, '.tech-stack'), 'react-app')
+      setup(dir)
+      expect(wd.resolveWorkspaceTechStackId(dir)).toBe('custom')
+    }
+  })
+
+  test('refreshTechStackMarker rewrites a starter marker to the detected stack once', () => {
+    const dir = makeTmp()
+    writeFileSync(join(dir, '.tech-stack'), 'react-app')
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({ dependencies: { astro: '5' } }))
+    expect(wd.refreshTechStackMarker(dir)).toEqual({ techStackId: 'custom', changed: true })
+    expect(readFileSync(join(dir, '.tech-stack'), 'utf-8')).toBe('custom')
+    expect(wd.refreshTechStackMarker(dir)).toEqual({ techStackId: 'custom', changed: false })
+  })
+
+  test('refreshTechStackMarker lets the files override a Vite-family TECH_STACK_ID, but not a specific one', () => {
+    const dir = makeTmp()
+    writeFileSync(join(dir, '.tech-stack'), 'react-app')
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({ dependencies: { astro: '5' } }))
+    process.env.TECH_STACK_ID = 'react-app'
+    expect(wd.refreshTechStackMarker(dir).techStackId).toBe('custom')
+    process.env.TECH_STACK_ID = 'expo-app'
+    expect(wd.refreshTechStackMarker(dir)).toEqual({ techStackId: 'expo-app', changed: true })
+  })
 })
 
 describe('install-marker helpers', () => {

@@ -115,6 +115,7 @@ import {
   workspaceUsesVite,
   resolveWorkspaceTechStackId,
   applyEnvTechStackMarker,
+  refreshTechStackMarker,
 } from './workspace-defaults'
 import {
   archiveNeedsSidecarClear,
@@ -5814,6 +5815,11 @@ app.post('/agent/github/git', async (c) => {
       // merged-root repo as an embedded-repo gitlink, dropping its files.
       await detachMemberFromRootRepo(WORKSPACE_DIR, projectDir)
     }
+    if (result.ok && (body.op === 'connect' || body.op === 'checkout')) {
+      const stack = refreshTechStackMarker(projectDir)
+      result.techStackId = stack.techStackId
+      if (stack.changed) restartPreviewForStack(projectDir, stack.techStackId)
+    }
     return c.json(result, result.ok ? 200 : 422)
   } finally {
     if (rootSync) {
@@ -5822,6 +5828,34 @@ app.post('/agent/github/git', async (c) => {
     }
   }
 })
+
+/**
+ * Restart a project's preview on its newly detected stack. A workspace
+ * member's preview manager is rebuilt from scratch (its dev server kind is
+ * fixed at creation), and the member's entry in WORKSPACE_TECH_STACKS is
+ * updated so re-stamping doesn't put the old stack back.
+ */
+function restartPreviewForStack(projectDir: string, techStackId: string): void {
+  console.log(`[github] ${projectDir} is a ${techStackId} project now; restarting its preview`)
+  if (!IS_WORKSPACE_RUNTIME || projectDir === WORKSPACE_DIR) {
+    if (process.env.TECH_STACK_ID) process.env.TECH_STACK_ID = techStackId
+    getRootPreviewManager().restart().catch((e: any) => console.error('[github] preview restart failed:', e?.message ?? e))
+    return
+  }
+  const projectId = basename(projectDir)
+  try {
+    const stacks = JSON.parse(process.env.WORKSPACE_TECH_STACKS || '{}') as Record<string, string>
+    process.env.WORKSPACE_TECH_STACKS = JSON.stringify({ ...stacks, [projectId]: techStackId })
+  } catch {
+    process.env.WORKSPACE_TECH_STACKS = JSON.stringify({ [projectId]: techStackId })
+  }
+  const previous = workspacePreviewManagers.get(projectId)
+  if (previous) {
+    previous.stop()
+    workspacePreviewManagers.delete(projectId)
+  }
+  getWorkspacePreviewManager(projectId)?.start().catch((e: any) => console.error('[github] preview start failed:', e?.message ?? e))
+}
 
 /**
  * Phases during which a build is plausibly in flight and `dist/` may

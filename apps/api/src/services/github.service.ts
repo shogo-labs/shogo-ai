@@ -26,6 +26,7 @@ import { sign } from 'jsonwebtoken';
 import type { Context } from 'hono';
 import { prisma } from '../lib/prisma';
 import { encryptSecret } from '../lib/secret-crypto';
+import { encodeProjectSettingsForWrite, parseProjectSettings } from '../lib/project-settings';
 import { resolveConnectionAuth, type GitHubConnectionAuthFields } from './github-auth';
 import {
   localGitHubWorkspace,
@@ -103,6 +104,8 @@ export interface ConnectRepoOptions {
   token?: string;
   repoOwner: string;
   repoName: string;
+  /** Existing branch to check out instead of the repository's default branch. */
+  branch?: string;
 }
 
 export interface SyncResult {
@@ -575,6 +578,8 @@ export async function connectRepository(options: ConnectRepoOptions): Promise<{
   if (!!userToken === (typeof installationId === 'number')) {
     throw new Error('Connect with exactly one of a GitHub App installation or an access token');
   }
+  const branch = options.branch?.trim() || undefined;
+  if (branch && !isValidBranchName(branch)) throw new Error(`Invalid branch name: ${branch}`);
 
   // Validate the token before storing it: it must belong to a user and see the repo.
   const tokenUser = userToken ? await getTokenUser(userToken) : null;
@@ -624,6 +629,7 @@ export async function connectRepository(options: ConnectRepoOptions): Promise<{
     repoOwner,
     repoName,
     defaultBranch: repo.default_branch,
+    ...(branch ? { branch } : {}),
     token: await accessTokenFor(auth),
   });
   const workspaceError = !workspace.ok ? workspace.error : workspace.connect === 'diverged' ? workspace.error : undefined;
@@ -633,9 +639,100 @@ export async function connectRepository(options: ConnectRepoOptions): Promise<{
       where: { projectId },
       data: { lastSyncError: workspaceError },
     });
+  } else if (workspace.ok) {
+    const workingBranch = workspace.branch && workspace.branch !== repo.default_branch ? workspace.branch : null;
+    if (workingBranch !== (connection.branch ?? null)) {
+      await prisma.gitHubConnection.update({ where: { projectId }, data: { branch: workingBranch } });
+      connection.branch = workingBranch;
+    }
+    await saveDetectedTechStack(projectId, workspace.techStackId);
   }
 
   return { connection, repo, workspace };
+}
+
+const BRANCH_NAME_RE = /^[A-Za-z0-9._/-]{1,200}$/;
+
+export function isValidBranchName(branch: string): boolean {
+  return BRANCH_NAME_RE.test(branch) && !branch.startsWith('-') && !branch.includes('..') && !branch.endsWith('/');
+}
+
+/** Keep the project's settings on the stack the runtime detected from its files. */
+async function saveDetectedTechStack(projectId: string, techStackId: string | undefined): Promise<void> {
+  if (!techStackId) return;
+  const project = await prisma.project.findUnique({ where: { id: projectId }, select: { settings: true } });
+  if (!project) return;
+  const settings = parseProjectSettings(project.settings) ?? {};
+  if (settings.techStackId === techStackId) return;
+  await prisma.project.update({
+    where: { id: projectId },
+    data: { settings: encodeProjectSettingsForWrite({ ...settings, techStackId }) as any },
+  });
+}
+
+export class GitHubNotConnectedError extends Error {
+  constructor(message = 'Project is not connected to GitHub') {
+    super(message);
+    this.name = 'GitHubNotConnectedError';
+  }
+}
+
+/**
+ * Switch a connected project's workspace to another existing branch of its
+ * repository. Uncommitted work is committed on the current branch first.
+ */
+export async function switchBranch(
+  projectId: string,
+  branch: string,
+  workspace: GitHubWorkspace | string,
+): Promise<{ repoFullName: string; branch: string; techStackId?: string }> {
+  const target = branch.trim();
+  if (!isValidBranchName(target)) throw new Error(`Invalid branch name: ${branch}`);
+  const connection = await getConnection(projectId);
+  if (!connection) throw new GitHubNotConnectedError();
+
+  const result = await toWorkspace(workspace).run({
+    op: 'checkout',
+    repoOwner: connection.repoOwner,
+    repoName: connection.repoName,
+    defaultBranch: connection.defaultBranch,
+    branch: target,
+    token: await operationToken(connection),
+  });
+  if (!result.ok) throw new Error(result.error || `Could not switch to ${target}`);
+
+  const current = result.branch || target;
+  await prisma.gitHubConnection.update({
+    where: { projectId },
+    data: { branch: current === connection.defaultBranch ? null : current, lastSyncError: null },
+  });
+  await saveDetectedTechStack(projectId, result.techStackId);
+  return { repoFullName: connection.repoFullName, branch: current, techStackId: result.techStackId };
+}
+
+/** Branch names of a connected project's repository (first 1,000). */
+export async function listBranches(projectId: string): Promise<string[]> {
+  const connection = await getConnection(projectId);
+  if (!connection) throw new GitHubNotConnectedError();
+  const token = await operationToken(connection);
+  const names: string[] = [];
+  for (let page = 1; page <= 10; page++) {
+    const response = await fetch(
+      `${GITHUB_API_URL}/repos/${encodeURIComponent(connection.repoOwner)}/${encodeURIComponent(connection.repoName)}/branches?per_page=100&page=${page}`,
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: 'application/vnd.github+json',
+          'X-GitHub-Api-Version': '2022-11-28',
+        },
+      },
+    );
+    if (!response.ok) throw new Error(`Failed to list branches: HTTP ${response.status}`);
+    const batch = (await response.json()) as Array<{ name: string }>;
+    names.push(...batch.map((b) => b.name));
+    if (batch.length < 100) break;
+  }
+  return names;
 }
 
 /**
@@ -668,6 +765,15 @@ async function operationToken(connection: GitHubConnectionAuthFields): Promise<s
   const auth = connectionAuth(connection);
   if (!auth) throw new Error('GitHub connection has no usable credentials; reconnect the repository');
   return accessTokenFor(auth);
+}
+
+/** The workspace may have changed branch outside Shogo (e.g. `git checkout` in a shell). */
+function workingBranchUpdate(
+  connection: { defaultBranch: string },
+  branch: string | undefined,
+): { branch?: string | null } {
+  if (!branch) return {};
+  return { branch: branch === connection.defaultBranch ? null : branch };
 }
 
 /**
@@ -705,7 +811,7 @@ export async function pushToGitHub(
     // Update last push time
     await prisma.gitHubConnection.update({
       where: { projectId },
-      data: { lastPushAt: new Date(), lastSyncError: null },
+      data: { lastPushAt: new Date(), lastSyncError: null, ...workingBranchUpdate(connection, result.branch) },
     });
 
     return { success: true, pushed: true, pulled: false, commits: result.commits ?? 0 };
@@ -751,7 +857,7 @@ export async function pullFromGitHub(
     // Update last pull time
     await prisma.gitHubConnection.update({
       where: { projectId },
-      data: { lastPullAt: new Date(), lastSyncError: null },
+      data: { lastPullAt: new Date(), lastSyncError: null, ...workingBranchUpdate(connection, result.branch) },
     });
 
     return { success: true, pushed: false, pulled: true, commits: result.commits ?? 0 };
