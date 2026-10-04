@@ -129,7 +129,7 @@ import { extractTarFromUrl, extractTarStream, redactUrls } from './tar-stream'
 import { runtimeDiagnosticsRoutes } from './runtime-diagnostics-routes'
 import { runtimeLspRoutes } from './runtime-lsp-routes'
 import { computePublishedReadiness } from './published-readiness'
-import { staticAssetCacheControl, shouldServeSpaFallback } from './static-asset-cache'
+import { resolveDistFile, staticAssetCacheControl, shouldServeSpaFallback } from './static-asset-cache'
 import { SkillServerManager } from './skill-server-manager'
 import { runtimeTerminalRoutes } from './runtime-terminal-routes'
 import { createPtyWsHandlers, type WsData } from './pty-ws-handler'
@@ -2959,6 +2959,13 @@ function finishHydrate(entries: string[], destinationDir = WORKSPACE_DIR): void 
   // the subsequent PreviewManager.restart() drives Expo, not vite.
   if (destinationDir === WORKSPACE_DIR && applyEnvTechStackMarker(WORKSPACE_DIR)) {
     console.log(`[pool/hydrate] re-applied TECH_STACK_ID=${process.env.TECH_STACK_ID} to .tech-stack`)
+  }
+  // Same for a workspace member, whose stack comes from WORKSPACE_TECH_STACKS.
+  if (IS_WORKSPACE_RUNTIME && dirname(destinationDir) === WORKSPACE_DIR) {
+    const memberId = basename(destinationDir)
+    if (applyMemberTechStackMarker(destinationDir, memberId)) {
+      console.log(`[pool/hydrate] re-applied project settings stack to ${memberId}/.tech-stack`)
+    }
   }
   // Rebuild so the served dist reflects everything that was hydrated —
   // debounced, because more overlays are usually still arriving.
@@ -5930,11 +5937,12 @@ function serveDistResponse(
     return null
   }
 
-  if (existsSync(filePath) && statSync(filePath).isFile()) {
-    const ext = extname(filePath).toLowerCase()
+  const resolvedFile = resolveDistFile(filePath)
+  if (resolvedFile) {
+    const ext = extname(resolvedFile).toLowerCase()
     const mime = STATIC_MIME[ext] || 'application/octet-stream'
     if (ext === '.html') {
-      const html = injectCanvasBridge(readFileSync(filePath, 'utf-8'))
+      const html = injectCanvasBridge(readFileSync(resolvedFile, 'utf-8'))
       return new Response(html, {
         headers: {
           'Content-Type': mime,
@@ -5948,7 +5956,7 @@ function serveDistResponse(
         },
       })
     }
-    return new Response(readFileSync(filePath), {
+    return new Response(readFileSync(resolvedFile), {
       headers: {
         'Content-Type': mime,
         'Cache-Control': staticAssetCacheControl(safePath),
