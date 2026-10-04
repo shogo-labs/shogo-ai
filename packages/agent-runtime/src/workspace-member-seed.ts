@@ -15,7 +15,7 @@
  * runtime would have had — but only when the folder has no project source,
  * so they can never clobber real content.
  */
-import { existsSync, mkdirSync, readdirSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { seedRuntimeTemplate, seedTechStack } from './workspace-defaults'
 
@@ -46,6 +46,30 @@ export function resolveMemberTechStackId(
     return typeof id === 'string' && id.trim() ? id.trim() : undefined
   } catch {
     return undefined
+  }
+}
+
+/**
+ * Stamp a member folder's `.tech-stack` from the project's settings, the
+ * workspace counterpart of `applyEnvTechStackMarker`. Settings are the source
+ * of truth, so a project switched to another stack (or restored with a stale
+ * marker) previews with the stack it is set to. Returns true when it wrote.
+ */
+export function applyMemberTechStackMarker(
+  dir: string,
+  projectId: string,
+  raw: string | undefined = process.env.WORKSPACE_TECH_STACKS,
+): boolean {
+  const techStackId = resolveMemberTechStackId(projectId, raw)
+  if (!techStackId || !existsSync(dir)) return false
+  const markerPath = join(dir, '.tech-stack')
+  try {
+    if (existsSync(markerPath) && readFileSync(markerPath, 'utf-8').trim() === techStackId) return false
+    writeFileSync(markerPath, techStackId, 'utf-8')
+    return true
+  } catch (err: any) {
+    console.warn(`[workspace-member-seed] Failed to stamp .tech-stack for ${projectId}: ${err?.message ?? err}`)
+    return false
   }
 }
 

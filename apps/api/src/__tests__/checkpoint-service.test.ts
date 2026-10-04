@@ -71,6 +71,10 @@ mock.module('../services/github.service', () => ({
   },
 }))
 
+mock.module('../services/github-workspace', () => ({
+  runtimeGitHubWorkspace: (projectId: string) => ({ runtimeFor: projectId }),
+}))
+
 // Must import after mocking
 import * as checkpointService from '../services/checkpoint.service'
 import * as gitService from '../services/git.service'
@@ -578,16 +582,16 @@ describe('pruneCheckpoints', () => {
 
 describe('syncAfterCheckpoint', () => {
   test('skips when no GitHub connection, sync disabled, or app not configured', async () => {
-    await checkpointService.syncAfterCheckpoint('proj-1', workspacePath)
+    await checkpointService.syncAfterCheckpoint('proj-1')
     expect(pushToGitHubCalls).toHaveLength(0)
 
     gitHubConnectionResult = { projectId: 'proj-1', syncEnabled: false }
-    await checkpointService.syncAfterCheckpoint('proj-1', workspacePath)
+    await checkpointService.syncAfterCheckpoint('proj-1')
     expect(pushToGitHubCalls).toHaveLength(0)
 
     gitHubConnectionResult = { projectId: 'proj-1', syncEnabled: true }
     githubConfigured = false
-    await checkpointService.syncAfterCheckpoint('proj-1', workspacePath)
+    await checkpointService.syncAfterCheckpoint('proj-1')
     expect(pushToGitHubCalls).toHaveLength(0)
   })
 
@@ -595,8 +599,8 @@ describe('syncAfterCheckpoint', () => {
     gitHubConnectionResult = { projectId: 'proj-1', syncEnabled: true }
     githubConfigured = true
 
-    await checkpointService.syncAfterCheckpoint('proj-1', workspacePath)
+    await checkpointService.syncAfterCheckpoint('proj-1')
 
-    expect(pushToGitHubCalls).toEqual([['proj-1', workspacePath]])
+    expect(pushToGitHubCalls).toEqual([['proj-1', { runtimeFor: 'proj-1' }]])
   })
 })

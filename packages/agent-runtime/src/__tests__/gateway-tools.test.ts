@@ -444,9 +444,10 @@ describe('gateway-tools', () => {
       // (notably SHOGO_SEARCH_ENABLED unset, so `search` is not registered).
       // 63 = 52 + `search_history` + `read_history` (chat/plan history search)
       // + the 7 project-lifecycle tools (project_list/create/attach/detach/
-      // configure/call, system_apply — see project-tools.ts) + github_create_pr.
+      // configure/call, system_apply — see project-tools.ts) + github_create_pr
+      // + github_merge_pr + github_connect.
       // (`notify_user_error` was removed along with the noisy error toast UI.)
-      expect(createTools(createCtx())).toHaveLength(64)
+      expect(createTools(createCtx())).toHaveLength(65)
       expect(createTools(createCtx()).find((t) => t.name === 'heartbeat_configure')).toBeDefined()
       expect(createTools(createCtx()).find((t) => t.name === 'heartbeat_status')).toBeDefined()
       expect(createTools(createCtx()).find((t) => t.name === 'memory_search')).toBeDefined()

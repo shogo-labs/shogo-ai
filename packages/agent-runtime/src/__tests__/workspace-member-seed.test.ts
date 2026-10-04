@@ -15,6 +15,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
+  applyMemberTechStackMarker,
   memberHasProjectSource,
   parseHostConfirmedNewProjectIds,
   resolveMemberTechStackId,
@@ -132,6 +133,34 @@ describe('resolveMemberTechStackId', () => {
     expect(resolveMemberTechStackId('a', JSON.stringify({ a: 7 }))).toBeUndefined()
     expect(resolveMemberTechStackId('a', JSON.stringify({ b: 'react-app' }))).toBeUndefined()
     expect(resolveMemberTechStackId('a', 'null')).toBeUndefined()
+  })
+})
+
+describe('applyMemberTechStackMarker', () => {
+  const raw = JSON.stringify({ a: 'custom' })
+
+  test('stamps the settings stack over a stale or missing marker, once', () => {
+    const dir = join(root, 'a')
+    mkdirSync(dir)
+    writeFileSync(join(dir, '.tech-stack'), 'react-app')
+    expect(applyMemberTechStackMarker(dir, 'a', raw)).toBe(true)
+    expect(readFileSync(join(dir, '.tech-stack'), 'utf-8')).toBe('custom')
+    expect(applyMemberTechStackMarker(dir, 'a', raw)).toBe(false)
+
+    const fresh = join(root, 'fresh')
+    mkdirSync(fresh)
+    expect(applyMemberTechStackMarker(fresh, 'a', raw)).toBe(true)
+    expect(readFileSync(join(fresh, '.tech-stack'), 'utf-8')).toBe('custom')
+  })
+
+  test('leaves the folder alone without a settings entry or a folder', () => {
+    const dir = join(root, 'b')
+    mkdirSync(dir)
+    writeFileSync(join(dir, '.tech-stack'), 'expo-app')
+    expect(applyMemberTechStackMarker(dir, 'b', raw)).toBe(false)
+    expect(readFileSync(join(dir, '.tech-stack'), 'utf-8')).toBe('expo-app')
+    expect(applyMemberTechStackMarker(join(root, 'missing'), 'a', raw)).toBe(false)
+    expect(existsSync(join(root, 'missing'))).toBe(false)
   })
 })
 
