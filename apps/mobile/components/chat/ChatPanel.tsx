@@ -144,10 +144,8 @@ import {
   generateClientTurnId,
   normalizePlanData,
 } from "../../lib/chat-send-body"
-import {
-  CHAT_TRANSCRIPT_MAX_WIDTH,
-  NATIVE_COMPOSER_KEYBOARD_GAP,
-} from "../../lib/native-composer-keyboard"
+import { chatColumnStyle } from "../../lib/chat-column"
+import { NATIVE_COMPOSER_KEYBOARD_GAP } from "../../lib/native-composer-keyboard"
 import { ProjectComposerDock } from "./composer/ProjectComposerDock"
 import { useNativeComposerDockPad } from "../../lib/use-native-composer-keyboard"
 import { authClient } from "../../lib/auth-client"
@@ -7548,33 +7546,23 @@ const ChatPanelContent = observer(function ChatPanelContent({
                   ref={scrollViewRef}
                   className="flex-1"
                   style={chatMessagesScrollStyles.scroll}
-                  contentContainerClassName={cn(
+                  // Vertical padding only: width and side gutters come from
+                  // the shared chat column (`chatColumnStyle`), the same
+                  // source the header, dock and composer use.
+                  contentContainerClassName={
                     isPhoneViewport
                       ? phoneTranscriptTopPadding === "floating-agent"
-                        ? "px-4 pt-32 pb-36"
-                        : "px-4 pt-16 pb-36"
+                        ? "pt-32 pb-36"
+                        : "pt-16 pb-36"
                       : presentation === "agent"
-                        ? "px-6 pt-8 pb-[48px]"
-                        : "p-2 pb-[40px]",
-                    presentation === "agent"
-                      ? "max-w-[760px] w-full self-center"
-                      : "max-w-2xl w-full self-center",
-                  )}
-                  contentContainerStyle={
-                    nativePhoneColumnWidth
-                      ? { width: nativePhoneColumnWidth }
-                      : // Same belt-and-suspenders cap as the composer below —
-                        // pins the `max-w-2xl` width even if the className
-                        // doesn't resolve on this content container.
-                        {
-                          maxWidth:
-                            presentation === "agent"
-                              ? 760
-                              : CHAT_TRANSCRIPT_MAX_WIDTH,
-                          width: "100%",
-                          alignSelf: "center" as const,
-                        }
+                        ? "pt-8 pb-[48px]"
+                        : "pt-2 pb-[40px]"
                   }
+                  contentContainerStyle={chatColumnStyle({
+                    presentation,
+                    phone: isPhoneViewport,
+                    measuredWidth: nativePhoneColumnWidth,
+                  })}
                   keyboardShouldPersistTaps={
                     isNative && nativeInlineEditing ? "always" : "handled"
                   }
@@ -7793,8 +7781,8 @@ const ChatPanelContent = observer(function ChatPanelContent({
               second composer, matching ChatGPT. Web keeps both. */}
               {!(isNative && nativeInlineEditing) ? (
                 <ProjectComposerDock
+                  presentation={presentation}
                   columnWidth={nativePhoneColumnWidth}
-                  maxWidth={presentation === "agent" ? 760 : undefined}
                   keyboardPad={composerKeyboardPad}
                   keyboardOpen={nativeKeyboardOpen}
                   restPad={restComposerPad}

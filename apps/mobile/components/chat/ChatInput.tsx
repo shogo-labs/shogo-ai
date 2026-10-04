@@ -35,15 +35,16 @@ import {
   ScrollView,
   Platform,
   Animated,
+  type ViewStyle,
 } from "react-native";
 import { cn } from "@shogo/shared-ui/primitives";
 import {
   NATIVE_PHONE_COMPOSER_PILL_HEIGHT,
-  NATIVE_PHONE_GUTTER,
   NATIVE_PHONE_ICON_STROKE,
   NATIVE_PHONE_SHEET_COMPACT_RATIO,
 } from "../../lib/native-phone-layout";
-import { CHAT_TRANSCRIPT_MAX_WIDTH } from "../../lib/native-composer-keyboard";
+import { chatColumn, chatColumnStyle } from "../../lib/chat-column";
+import { useIsInsideChatColumn } from "./ChatColumn";
 import {
   Popover,
   PopoverBackdrop,
@@ -1765,29 +1766,35 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
   const removeReference = useCallback((key: string) => {
     setReferences((prev) => prev.filter((ref) => referenceKey(ref) !== key));
   }, []);
+  const insideChatColumn = useIsInsideChatColumn();
+  const outerColumnStyle: ViewStyle | undefined =
+    flush || insideChatColumn
+      ? undefined
+      : useProminentComposer
+      ? chatColumnStyle({ presentation, phone: true })
+      : {
+          paddingHorizontal: chatColumn({
+            presentation,
+            phone: isPhoneChrome,
+          }).gutter,
+        };
   return (
     <View
+      // Vertical padding only. Horizontal placement comes from the shared
+      // chat column (lib/chat-column): either an ancestor already applied it
+      // (ProjectComposerDock) or, when rendered standalone, `outerColumnStyle`.
       className={cn(
         flush
           ? "pb-3"
           : useProminentComposer
           ? "w-full self-center pb-2 pt-0"
           : presentation === "agent"
-          ? "w-full self-center px-6 pb-4 pt-0"
+          ? "w-full self-center pb-4 pt-0"
           : isNative
-          ? "px-2 pb-4 pt-0"
-          : "p-3 pt-0"
+          ? "pb-4 pt-0"
+          : "pb-3 pt-0"
       )}
-      style={
-        useProminentComposer && !flush
-          ? {
-              width: "100%",
-              maxWidth: CHAT_TRANSCRIPT_MAX_WIDTH,
-              alignSelf: "center",
-              paddingHorizontal: NATIVE_PHONE_GUTTER,
-            }
-          : undefined
-      }
+      style={outerColumnStyle}
     >
       {ideMode && (ideContext?.activeFile || references.length > 0) && (
         <View className="mb-2 gap-1.5">
