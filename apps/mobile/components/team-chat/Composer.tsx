@@ -18,7 +18,9 @@ import {
   type FileAttachment,
   type RestoreDraftRequest,
 } from '../chat/ChatInput'
+import { ChatColumn } from '../chat/ChatColumn'
 import { ComposerPlusSection } from '../chat/ComposerPlusMenu'
+import { CHANNEL_GUTTER_STYLE } from '../../lib/chat-column'
 import { useComposerLayoutMode } from '../chat/composer'
 import { nativePhoneComposerRestPad } from '../../lib/native-phone-layout'
 import { usePhoneChromeOverlay } from '../layout/PhoneChromeOverlay'
@@ -254,7 +256,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
 
   if (props.disabled) {
     return (
-      <View className="border-t border-border px-4 py-3">
+      <View className="border-t border-border py-3" style={CHANNEL_GUTTER_STYLE}>
         <Text className="text-center text-xs text-muted-foreground">{props.disabledReason ?? 'You cannot post here.'}</Text>
       </View>
     )
@@ -323,7 +325,10 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   )
 
   return (
-    <View style={phoneLayout ? { paddingBottom: nativePhoneComposerRestPad(chrome.overlay) } : undefined}>
+    <ChatColumn
+      presentation="channel"
+      style={phoneLayout ? { paddingBottom: nativePhoneComposerRestPad(chrome.overlay) } : undefined}
+    >
       <ChatInput
         key={draftKey}
         ref={inputRef}
@@ -343,7 +348,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         plusMenuExtras={plusMenuExtras}
         inputTestID="team-composer-input"
       />
-      <View className="px-4">
+      <View>
         {emojiOpen && <EmojiPicker workspaceId={workspaceId} onPick={insertEmoji} className="mb-2" />}
         {laterOpen && canSendLater && (
           <View className="mb-2 self-end overflow-hidden rounded-lg border border-border bg-card shadow-sm">
@@ -366,7 +371,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         {notice && !error ? <Text className="mb-2 text-xs text-muted-foreground">{notice}</Text> : null}
         {error ? <Text className="mb-2 text-xs text-destructive">{error}</Text> : null}
       </View>
-    </View>
+    </ChatColumn>
   )
 })
 

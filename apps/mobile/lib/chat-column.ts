@@ -16,12 +16,20 @@
 import { CHAT_TRANSCRIPT_MAX_WIDTH } from "./native-composer-keyboard"
 import { NATIVE_PHONE_GUTTER } from "./native-phone-layout"
 
-export type ChatColumnPresentation = "agent" | "studio"
+/**
+ * `agent` / `studio`: centered, width-capped column (project + agent chat).
+ * `channel`: full-bleed Slack-style team chat (DMs, channels, threads) —
+ * no max-width, one fixed gutter shared by message rows, the typing line
+ * and the composer.
+ */
+export type ChatColumnPresentation = "agent" | "studio" | "channel"
 
 /** Max outer width (gutters included) of the agent chat column. */
 export const AGENT_CHAT_COLUMN_MAX_WIDTH = 760
 /** Side gutter of the agent chat column on wide viewports. */
 export const AGENT_CHAT_COLUMN_GUTTER = 24
+/** Side gutter of full-bleed team chat (every viewport). */
+export const CHANNEL_CHAT_COLUMN_GUTTER = 16
 /** Side gutter of the studio chat column on wide viewports. */
 export const STUDIO_CHAT_COLUMN_GUTTER = 12
 
@@ -54,16 +62,20 @@ export function chatColumn({
   measuredWidth,
 }: ChatColumnOptions = {}): ChatColumnSpec {
   const agent = presentation === "agent"
-  const gutter = phone
-    ? NATIVE_PHONE_GUTTER
-    : agent
-      ? AGENT_CHAT_COLUMN_GUTTER
-      : STUDIO_CHAT_COLUMN_GUTTER
-  const maxWidth = measuredWidth
-    ? undefined
-    : agent
-      ? AGENT_CHAT_COLUMN_MAX_WIDTH
-      : CHAT_TRANSCRIPT_MAX_WIDTH
+  const channel = presentation === "channel"
+  const gutter = channel
+    ? CHANNEL_CHAT_COLUMN_GUTTER
+    : phone
+      ? NATIVE_PHONE_GUTTER
+      : agent
+        ? AGENT_CHAT_COLUMN_GUTTER
+        : STUDIO_CHAT_COLUMN_GUTTER
+  const maxWidth =
+    measuredWidth || channel
+      ? undefined
+      : agent
+        ? AGENT_CHAT_COLUMN_MAX_WIDTH
+        : CHAT_TRANSCRIPT_MAX_WIDTH
   return {
     maxWidth,
     gutter,
@@ -97,3 +109,11 @@ export function chatColumnStyle(options: ChatColumnOptions = {}): {
         paddingHorizontal: column.gutter,
       }
 }
+
+/**
+ * Side padding for team-chat rows (messages, typing line, system banners)
+ * that must sit on the same left/right edges as the channel composer.
+ */
+export const CHANNEL_GUTTER_STYLE = {
+  paddingHorizontal: CHANNEL_CHAT_COLUMN_GUTTER,
+} as const

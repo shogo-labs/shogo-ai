@@ -19,6 +19,7 @@ import { Composer, type ComposerHandle } from './Composer'
 import { CHROME_SIZE, GlassButton, GlassChip } from './FloatingChrome'
 import { usePhoneChromeOverlay } from '../layout/PhoneChromeOverlay'
 import { GlassBlurTarget } from '../ui/LiquidGlassBackdrop'
+import { CHANNEL_CHAT_COLUMN_GUTTER, CHANNEL_GUTTER_STYLE } from '../../lib/chat-column'
 
 const api = teamChatApi()
 /** Pages of 200 to load back when jumping to an older message before opening it on its own. */
@@ -321,12 +322,12 @@ export function TimelinePane(props: TimelinePaneProps) {
           testID="floating-composer"
         >
           {typingText ? (
-            <GlassChip className="mb-2 ml-4 self-start px-3 py-1">
+            <GlassChip className="mb-2 self-start px-3 py-1" style={{ marginLeft: CHANNEL_CHAT_COLUMN_GUTTER }}>
               <Text className="text-xs text-muted-foreground">{typingText}</Text>
             </GlassChip>
           ) : null}
           {!showComposer ? (
-            <GlassChip className="mx-4 mb-3 flex-row items-center justify-between gap-2 py-1.5 pl-4 pr-1.5">
+            <GlassChip className="mb-3 flex-row items-center justify-between gap-2 py-1.5 pl-4 pr-1.5" style={{ marginHorizontal: CHANNEL_CHAT_COLUMN_GUTTER }}>
               <Text className="flex-shrink text-sm text-foreground" numberOfLines={1}>
                 You are viewing #{conversation.name}.
               </Text>
@@ -345,7 +346,7 @@ export function TimelinePane(props: TimelinePaneProps) {
   return (
     <View className="flex-1" ref={rootRef}>
       {threadRootId && (
-        <View className="flex-row items-center border-b border-border px-4 py-2.5">
+        <View className="flex-row items-center border-b border-border py-2.5" style={CHANNEL_GUTTER_STYLE}>
           <Breadcrumb
             className="flex-1 flex-row flex-wrap items-center gap-x-1"
             items={crumbs.map((c) => ({
@@ -371,11 +372,11 @@ export function TimelinePane(props: TimelinePaneProps) {
       ) : (
         list
       )}
-      <View className="h-5 justify-center px-4">
+      <View className="h-5 justify-center" style={CHANNEL_GUTTER_STYLE}>
         {typingText && <Text className="text-xs text-muted-foreground">{typingText}</Text>}
       </View>
       {!showComposer ? (
-        <View className="items-center gap-2 border-t border-border px-4 py-3">
+        <View className="items-center gap-2 border-t border-border py-3" style={CHANNEL_GUTTER_STYLE}>
           <Text className="text-sm text-muted-foreground">You are viewing #{conversation.name}.</Text>
           <Pressable onPress={props.onJoin} className="rounded-md bg-primary px-4 py-1.5">
             <Text className="text-sm font-medium text-primary-foreground">Join channel</Text>

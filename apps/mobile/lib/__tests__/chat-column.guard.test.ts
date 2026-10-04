@@ -22,6 +22,14 @@ const GUARDED_FILES = [
   'components/layout/MobileBottomNav.tsx',
 ]
 
+/** Team chat surfaces must share the channel gutter instead of a private `px-*`. */
+const CHANNEL_FILES: Array<[string, RegExp]> = [
+  ['components/team-chat/Composer.tsx', /<ChatColumn\s+presentation="channel"/],
+  ['components/team-chat/MessageRow.tsx', /CHANNEL_GUTTER_STYLE/],
+  ['components/team-chat/MessageList.tsx', /CHANNEL_GUTTER_STYLE/],
+  ['components/team-chat/TimelinePane.tsx', /CHANNEL_GUTTER_STYLE/],
+]
+
 const FORBIDDEN: Array<[RegExp, string]> = [
   [/max-w-2xl/, 'max-w-2xl'],
   [/max-w-\[760px\]/, 'max-w-[760px]'],
@@ -49,6 +57,13 @@ describe('chat column guard', () => {
           )
         }
       }
+    })
+  }
+
+  for (const [file, required] of CHANNEL_FILES) {
+    test(`${file} uses the shared channel column`, () => {
+      const source = stripComments(readFileSync(resolve(root, file), 'utf8'))
+      expect(required.test(source)).toBe(true)
     })
   }
 })

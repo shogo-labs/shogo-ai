@@ -5,6 +5,8 @@ import { describe, expect, test } from 'bun:test'
 import {
   AGENT_CHAT_COLUMN_GUTTER,
   AGENT_CHAT_COLUMN_MAX_WIDTH,
+  CHANNEL_CHAT_COLUMN_GUTTER,
+  CHANNEL_GUTTER_STYLE,
   STUDIO_CHAT_COLUMN_GUTTER,
   chatColumn,
   chatColumnStyle,
@@ -31,6 +33,16 @@ describe('chatColumn', () => {
   test('phone uses the phone gutter for both presentations', () => {
     expect(chatColumn({ presentation: 'agent', phone: true }).gutter).toBe(NATIVE_PHONE_GUTTER)
     expect(chatColumn({ presentation: 'studio', phone: true }).gutter).toBe(NATIVE_PHONE_GUTTER)
+  })
+
+  test('channel (team chat) is full-bleed with one gutter on every viewport', () => {
+    for (const phone of [false, true]) {
+      const column = chatColumn({ presentation: 'channel', phone })
+      expect(column.maxWidth).toBeUndefined()
+      expect(column.gutter).toBe(CHANNEL_CHAT_COLUMN_GUTTER)
+    }
+    expect(CHANNEL_GUTTER_STYLE.paddingHorizontal).toBe(CHANNEL_CHAT_COLUMN_GUTTER)
+    expect(chatColumnStyle({ presentation: 'channel' }).paddingHorizontal).toBe(CHANNEL_CHAT_COLUMN_GUTTER)
   })
 
   test('content width is outer width minus both gutters', () => {

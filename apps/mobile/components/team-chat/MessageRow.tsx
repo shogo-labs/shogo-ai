@@ -12,6 +12,7 @@ import { AlarmClock, AlertCircle, Bookmark, Check, CircleDot, CornerDownRight, F
 import { cn } from '@shogo/shared-ui/primitives'
 import { MarkdownText } from '../chat/MarkdownText'
 import { absoluteApiUrl, teamChatApi, type ChatMessage, type LinkUnfurl } from '../../lib/team-chat-api'
+import { CHANNEL_GUTTER_STYLE } from '../../lib/chat-column'
 import { messageLink, parseMessageLink } from '../../lib/team-chat-links'
 import { EmojiPicker } from './EmojiPicker'
 import { AgentAvatar, AgentProfileCard } from './AgentProfileCard'
@@ -304,7 +305,8 @@ function MessageRowImpl(props: MessageRowProps) {
         onPress={canDiscuss && !isWeb ? () => props.onReply!(message) : undefined}
         onHoverIn={hoverIn}
         onHoverOut={hoverOut}
-        className={cn('flex-row items-start gap-2 px-4 py-1.5', hovered && 'bg-muted/40')}
+        className={cn('flex-row items-start gap-2 py-1.5', hovered && 'bg-muted/40')}
+        style={CHANNEL_GUTTER_STYLE}
       >
         <View className="mt-1.5 h-1.5 w-1.5 rounded-full bg-primary/60" />
         <View className="min-w-0 flex-1">
@@ -335,7 +337,7 @@ function MessageRowImpl(props: MessageRowProps) {
       onHoverIn={hoverIn}
       onHoverOut={hoverOut}
       className={cn(
-        'relative flex-row gap-3 px-4',
+        'relative flex-row gap-3',
         grouped ? 'py-0.5' : 'pt-2.5 pb-0.5',
         message.pinned && !deleted ? 'bg-amber-500/5' : null,
         hovered && 'bg-muted/40',
@@ -343,6 +345,7 @@ function MessageRowImpl(props: MessageRowProps) {
         kind === 'alert' && !deleted ? 'border-l-2 border-destructive bg-destructive/10' : null,
         props.highlighted && 'bg-amber-400/20',
       )}
+      style={CHANNEL_GUTTER_STYLE}
       testID={props.highlighted ? 'message-highlighted' : undefined}
       accessibilityLabel={`${authorName(message)}: ${message.text}`}
     >
