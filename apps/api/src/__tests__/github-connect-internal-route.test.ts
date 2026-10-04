@@ -15,8 +15,16 @@ process.env.BETTER_AUTH_SECRET = 'test-secret'
 
 const { runtimeInternalRoutes } = await import('../routes/internal-runtime-routes')
 
-function app(opts: { authorized?: boolean; github?: boolean; oauth?: boolean; connect?: (args: any) => Promise<any> } = {}) {
+function app(opts: {
+  authorized?: boolean
+  github?: boolean
+  oauth?: boolean
+  connect?: (args: any) => Promise<any>
+  connection?: { repoOwner: string; repoName: string } | null
+  switchBranch?: (...args: any[]) => Promise<any>
+} = {}) {
   const connects: any[] = []
+  const switches: any[] = []
   const routes = runtimeInternalRoutes({
     authenticate: async () => (opts.authorized === false ? null : ({ kind: 'sa' } as any)),
     saveAgentAvatar: async () => ({}) as any,
@@ -28,6 +36,12 @@ function app(opts: { authorized?: boolean; github?: boolean; oauth?: boolean; co
             isOAuthConfigured: () => opts.oauth !== false,
             getAuthorizeLinkUrl: (projectId: string, owner: string, repo: string) =>
               `https://studio.test/api/projects/${projectId}/github/authorize?repo=${encodeURIComponent(`${owner}/${repo}`)}`,
+            getConnection: async () => (opts.connection === undefined ? { repoOwner: 'acme', repoName: 'site' } : opts.connection),
+            switchBranch: async (...args: any[]) => {
+              switches.push(args)
+              if (opts.switchBranch) return opts.switchBranch(...args)
+              return { repoFullName: 'acme/site', branch: args[1], techStackId: 'custom' }
+            },
             connectRepository: async (args: any) => {
               connects.push(args)
               if (opts.connect) return opts.connect(args)
@@ -48,7 +62,7 @@ function app(opts: { authorized?: boolean; github?: boolean; oauth?: boolean; co
       headers: { 'Content-Type': 'application/json' },
       body: body === undefined ? undefined : JSON.stringify(body),
     })
-  return { post, connects }
+  return { post, connects, switches }
 }
 
 describe('POST /projects/:id/github/connect', () => {
@@ -69,6 +83,12 @@ describe('POST /projects/:id/github/connect', () => {
     ])
   })
 
+  test('passes a requested branch through to the connect', async () => {
+    const t = app()
+    await t.post('connect', { repoOwner: 'acme', repoName: 'site', token: 'ghp_x', branch: 'feature/x' })
+    expect(t.connects[0].branch).toBe('feature/x')
+  })
+
   test('requires repo and token, authentication, and the cloud GitHub client', async () => {
     expect((await app().post('connect', { repoOwner: 'acme', repoName: 'site' })).status).toBe(400)
     expect((await app({ authorized: false }).post('connect', { repoOwner: 'a', repoName: 'b', token: 't' })).status).toBe(401)
@@ -80,6 +100,35 @@ describe('POST /projects/:id/github/connect', () => {
     const res = await t.post('connect', { repoOwner: 'acme', repoName: 'site', token: 'ghp_bad' })
     expect(res.status).toBe(400)
     expect((await res.json()).error).toContain('Bad credentials')
+  })
+})
+
+describe('POST /projects/:id/github/branch', () => {
+  test('switches a project connected to that repository, in its runtime', async () => {
+    const t = app()
+    const res = await t.post('branch', { repoOwner: 'Acme', repoName: 'site', branch: 'feature/x' })
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ ok: true, repoFullName: 'acme/site', branch: 'feature/x', techStackId: 'custom' })
+    expect(t.switches).toEqual([['p1', 'feature/x', { runtimeFor: 'p1' }]])
+  })
+
+  test('409 not_connected when the project has no connection or a different repository', async () => {
+    for (const connection of [null, { repoOwner: 'acme', repoName: 'other' }]) {
+      const t = app({ connection })
+      const res = await t.post('branch', { repoOwner: 'acme', repoName: 'site', branch: 'x' })
+      expect(res.status).toBe(409)
+      expect((await res.json()).error.code).toBe('not_connected')
+      expect(t.switches).toEqual([])
+    }
+  })
+
+  test('requires repo and branch and authentication; surfaces a failed switch as 400', async () => {
+    expect((await app().post('branch', { repoOwner: 'acme', repoName: 'site' })).status).toBe(400)
+    expect((await app({ authorized: false }).post('branch', { repoOwner: 'a', repoName: 'b', branch: 'x' })).status).toBe(401)
+    const t = app({ switchBranch: async () => { throw new Error('Branch x does not exist on GitHub.') } })
+    const res = await t.post('branch', { repoOwner: 'acme', repoName: 'site', branch: 'x' })
+    expect(res.status).toBe(400)
+    expect((await res.json()).error).toContain('does not exist')
   })
 })
 

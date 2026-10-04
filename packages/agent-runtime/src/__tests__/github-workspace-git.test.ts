@@ -51,7 +51,7 @@ function makeRemote(): { seed: string; head: string } {
   return { seed, head }
 }
 
-const op = (o: 'connect' | 'push' | 'pull') => ({ op: o, repoOwner: 'octo', repoName: 'site', defaultBranch: 'main', token: TOKEN })
+const op = (o: 'connect' | 'push' | 'pull' | 'checkout') => ({ op: o, repoOwner: 'octo', repoName: 'site', defaultBranch: 'main', token: TOKEN })
 
 beforeEach(() => {
   rmSync(ROOT, { recursive: true, force: true })
@@ -187,7 +187,68 @@ describe('push and pull', () => {
   })
 })
 
+describe('branches', () => {
+  function pushFeatureBranch(seed: string, name = 'feature/x'): string {
+    git(seed, 'checkout', '-q', '-b', name)
+    const sha = commitFile(seed, 'feature.txt', 'f\n', 'feature work')
+    git(seed, 'push', '-q', 'origin', name)
+    git(seed, 'checkout', '-q', 'main')
+    return sha
+  }
+
+  test('connect with a branch adopts the default branch, then checks out the requested one', async () => {
+    const { seed } = makeRemote()
+    const feature = pushFeatureBranch(seed)
+    const result = await runGitHubWorkspaceOp(WS, { ...op('connect'), branch: 'feature/x' })
+    expect(result).toMatchObject({ ok: true, connect: 'adopted', branch: 'feature/x', sha: feature })
+    expect(git(WS, 'rev-parse', '--abbrev-ref', 'HEAD')).toBe('feature/x')
+    expect(git(WS, 'rev-parse', '--abbrev-ref', 'feature/x@{upstream}')).toBe('origin/feature/x')
+  })
+
+  test('checkout saves pending work on the current branch before switching', async () => {
+    const { seed } = makeRemote()
+    const feature = pushFeatureBranch(seed)
+    await runGitHubWorkspaceOp(WS, op('connect'))
+    writeFileSync(join(WS, 'draft.md'), 'unsaved\n')
+
+    const result = await runGitHubWorkspaceOp(WS, { ...op('checkout'), branch: 'feature/x' })
+
+    expect(result).toMatchObject({ ok: true, branch: 'feature/x', sha: feature })
+    expect(existsSync(join(WS, 'draft.md'))).toBe(false)
+    expect(git(WS, 'show', 'main:draft.md')).toBe('unsaved')
+    expect(await runGitHubWorkspaceOp(WS, { ...op('checkout'), branch: 'main' })).toMatchObject({ ok: true, branch: 'main' })
+    expect(readFileSync(join(WS, 'draft.md'), 'utf8')).toBe('unsaved\n')
+  })
+
+  test('checkout refuses a branch GitHub does not have', async () => {
+    makeRemote()
+    await runGitHubWorkspaceOp(WS, op('connect'))
+    const result = await runGitHubWorkspaceOp(WS, { ...op('checkout'), branch: 'nope' })
+    expect(result).toMatchObject({ ok: false, error: 'Branch nope does not exist on GitHub.' })
+    expect(git(WS, 'rev-parse', '--abbrev-ref', 'HEAD')).toBe('main')
+  })
+
+  test('pull follows the current branch, and reconnecting keeps it', async () => {
+    const { seed } = makeRemote()
+    pushFeatureBranch(seed)
+    await runGitHubWorkspaceOp(WS, { ...op('connect'), branch: 'feature/x' })
+    git(seed, 'checkout', '-q', 'feature/x')
+    const remote = commitFile(seed, 'more.txt', 'm\n', 'more feature work')
+    git(seed, 'push', '-q', 'origin', 'feature/x')
+
+    expect(await runGitHubWorkspaceOp(WS, op('pull'))).toMatchObject({ ok: true, branch: 'feature/x', sha: remote, commits: 1 })
+    expect(await runGitHubWorkspaceOp(WS, op('connect'))).toMatchObject({ ok: true, connect: 'kept', branch: 'feature/x' })
+    expect(git(WS, 'rev-parse', '--abbrev-ref', 'HEAD')).toBe('feature/x')
+  })
+})
+
 describe('validation', () => {
+  test('checkout needs a valid branch', () => {
+    expect(validateGitHubWorkspaceOpInput({ ...op('push'), op: 'checkout' as any })).toContain('branch')
+    expect(validateGitHubWorkspaceOpInput({ ...op('push'), op: 'checkout' as any, branch: '--upload-pack=x' })).toContain('branch')
+    expect(validateGitHubWorkspaceOpInput({ ...op('push'), op: 'checkout' as any, branch: 'feature/x' })).toBeNull()
+  })
+
   test('rejects unknown ops, malformed names, and a missing token', () => {
     expect(validateGitHubWorkspaceOpInput({ ...op('push'), op: 'clone' as any })).toContain('op')
     expect(validateGitHubWorkspaceOpInput({ ...op('push'), repoOwner: '-x' })).toContain('repoOwner')

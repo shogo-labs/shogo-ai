@@ -954,7 +954,7 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
 
   /**
    * POST /api/internal/projects/:projectId/github/connect
-   *   body: { repoOwner, repoName, token }
+   *   body: { repoOwner, repoName, token, branch? }
    *
    * Connects the project with an access token the user shared with the agent.
    * The token is validated, stored encrypted on the connection, and used to
@@ -970,6 +970,7 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     const repoOwner = typeof body?.repoOwner === 'string' ? body.repoOwner.trim() : ''
     const repoName = typeof body?.repoName === 'string' ? body.repoName.trim() : ''
     const token = typeof body?.token === 'string' ? body.token.trim() : ''
+    const branch = typeof body?.branch === 'string' ? body.branch.trim() : ''
     if (!repoOwner || !repoName || !token) {
       return c.json({ error: 'repoOwner, repoName, and token are required' }, 400)
     }
@@ -985,6 +986,7 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
         token,
         repoOwner,
         repoName,
+        ...(branch ? { branch } : {}),
         workspace: runtimeGitHubWorkspace(projectId),
       })
       return c.json({
@@ -999,6 +1001,48 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     } catch (err: any) {
       console.error(`[Internal] GitHub token connect for ${projectId} failed:`, err?.message ?? err)
       return c.json({ error: String(err?.message ?? 'Failed to connect the repository') }, 400)
+    }
+  })
+
+  /**
+   * POST /api/internal/projects/:projectId/github/branch
+   *   body: { repoOwner, repoName, branch }
+   *
+   * Switches a project that is already connected to that repository onto
+   * another of its branches, with the stored connection's credentials.
+   * 409 `not_connected` when it isn't, so the agent asks how to connect.
+   */
+  app.post('/projects/:projectId/github/branch', async (c) => {
+    const projectId = c.req.param('projectId')
+    if (!projectId) return c.json({ error: 'Missing projectId' }, 400)
+    if (!(await validateAuth(c, projectId))) return c.json({ error: 'Unauthorized' }, 401)
+
+    const body = await c.req.json().catch(() => null) as Record<string, unknown> | null
+    const repoOwner = typeof body?.repoOwner === 'string' ? body.repoOwner.trim() : ''
+    const repoName = typeof body?.repoName === 'string' ? body.repoName.trim() : ''
+    const branch = typeof body?.branch === 'string' ? body.branch.trim() : ''
+    if (!repoOwner || !repoName || !branch) {
+      return c.json({ error: 'repoOwner, repoName, and branch are required' }, 400)
+    }
+    if (!loadGitHub) {
+      return c.json({ error: { code: 'github_unavailable', message: 'GitHub connections are not available on this runtime.' } }, 409)
+    }
+
+    try {
+      const github = await loadGitHub()
+      const connection = await github.getConnection(projectId)
+      const sameRepo = connection
+        && connection.repoOwner.toLowerCase() === repoOwner.toLowerCase()
+        && connection.repoName.toLowerCase() === repoName.toLowerCase()
+      if (!sameRepo) {
+        return c.json({ error: { code: 'not_connected', message: `This project is not connected to ${repoOwner}/${repoName}.` } }, 409)
+      }
+      const { runtimeGitHubWorkspace } = await import('../services/github-workspace')
+      const result = await github.switchBranch(projectId, branch, runtimeGitHubWorkspace(projectId))
+      return c.json({ ok: true, ...result })
+    } catch (err: any) {
+      console.error(`[Internal] GitHub branch switch for ${projectId} failed:`, err?.message ?? err)
+      return c.json({ error: String(err?.message ?? 'Failed to switch branch') }, 400)
     }
   })
 
