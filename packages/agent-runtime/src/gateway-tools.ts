@@ -146,6 +146,7 @@ import {
   mergeGitHubPullRequest as apiMergeGitHubPullRequest,
   connectGitHubWithToken as apiConnectGitHubWithToken,
   getGitHubAuthorizeUrl as apiGetGitHubAuthorizeUrl,
+  switchGitHubBranch as apiSwitchGitHubBranch,
   projectScopedId,
   postPlanMirror,
   type CheckpointCallResult,
@@ -1125,16 +1126,20 @@ export function createGitHubConnectTool(ctx: ToolContext): AgentTool {
       'Call it without a token first: it returns a link for the user to authorize the Shogo GitHub App, and you should offer the user ' +
       'both options — open that link, or share a GitHub access token (fine-grained token with Contents and Pull requests read/write ' +
       'on the repo, or a classic token with `repo` scope). When the user shares a token, call this again with it. ' +
+      'Pass `branch` to work on a branch other than the default ("clone X and switch to branch Y" is one call); on a project ' +
+      'that is already connected, calling it with `branch` and no token just switches branches. ' +
+      'The project\'s tech stack is detected from the repository and its preview restarts on it. ' +
       'This replaces cloning by hand: do not `git clone` a repository into a project or write the token to `.env`.',
     parameters: Type.Object({
       repo: Type.String({ description: 'Repository as owner/name or a github.com URL' }),
       token: Type.Optional(Type.String({ description: 'GitHub access token the user shared, to connect with it' })),
+      branch: Type.Optional(Type.String({ description: 'Existing branch to check out; defaults to the repository\'s default branch' })),
       projectId: Type.Optional(
         Type.String({ description: 'Project to connect; defaults to the current project' }),
       ),
     }),
     execute: async (_toolCallId, params) => {
-      const input = params as { repo: string; token?: string; projectId?: string }
+      const input = params as { repo: string; token?: string; branch?: string; projectId?: string }
       const parsed = parseGitHubRepoRef(input.repo ?? '')
       if (!parsed) return textResult({ error: 'repo must be owner/name or a github.com repository URL.' })
       const projectId = projectScopedId(input.projectId?.trim() || ctx.projectId)
@@ -1142,13 +1147,30 @@ export function createGitHubConnectTool(ctx: ToolContext): AgentTool {
         return textResult({ error: 'No project selected. Pass projectId for the project to connect.' })
       }
       const repoFullName = `${parsed.owner}/${parsed.repo}`
+      const branch = input.branch?.trim() || undefined
 
       const token = input.token?.trim()
+      if (!token && branch) {
+        const switched = await apiSwitchGitHubBranch(projectId, { repoOwner: parsed.owner, repoName: parsed.repo, branch })
+        if (switched.ok && switched.data) {
+          return textResult({
+            ok: true,
+            connected: switched.data.repoFullName,
+            branch: switched.data.branch,
+            techStack: switched.data.techStackId,
+            files: `checked out ${switched.data.branch}`,
+          })
+        }
+        if (switched.status !== 409) {
+          return textResult({ error: switched.error || `Could not switch to ${branch}.`, status: switched.status })
+        }
+      }
       if (token) {
         const result = await apiConnectGitHubWithToken(projectId, {
           repoOwner: parsed.owner,
           repoName: parsed.repo,
           token,
+          ...(branch ? { branch } : {}),
         })
         if (!result.ok || !result.data) {
           return textResult({ error: result.error || 'GitHub rejected the connection.', status: result.status })
@@ -1159,7 +1181,8 @@ export function createGitHubConnectTool(ctx: ToolContext): AgentTool {
           ok: true,
           connected: result.data.repoFullName,
           as: result.data.login ?? undefined,
-          defaultBranch: result.data.defaultBranch,
+          branch: workspace?.ok ? workspace.branch ?? result.data.defaultBranch : result.data.defaultBranch,
+          techStack: workspace?.techStackId,
           files: workspace?.ok === false
             ? `not updated: ${workspace.error}`
             : workspace?.connect === 'diverged'
@@ -1186,7 +1209,8 @@ export function createGitHubConnectTool(ctx: ToolContext): AgentTool {
           ],
           next:
             'Offer the user both options, and put the authorize_app url in your reply exactly as given (the user cannot see this tool result). ' +
-            'After they authorize, the connection completes on its own; if they share a token, call github_connect again with it.',
+            'After they authorize, the connection completes on its own; if they share a token, call github_connect again with it.' +
+            (branch ? ` The App connects the default branch: once they have authorized, call github_connect again with branch "${branch}".` : ''),
         })
       }
       return textResult({

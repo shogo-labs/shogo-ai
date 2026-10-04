@@ -22,6 +22,7 @@ type Connection = {
   repoName: string
   repoFullName: string
   defaultBranch: string
+  branch?: string | null
   authType?: 'app' | 'token'
   installationId: number | null
   encryptedToken?: string | null
@@ -39,9 +40,18 @@ type Connection = {
 const connections = new Map<string, Connection>() // keyed by projectId
 const updateCalls: any[] = []
 const updateManyCalls: any[] = []
+const projectSettings = new Map<string, Record<string, unknown> | null>()
 
 mock.module('../../lib/prisma', () => ({
   prisma: {
+    project: {
+      findUnique: async ({ where }: any) =>
+        projectSettings.has(where.id) ? { settings: projectSettings.get(where.id) } : null,
+      update: async ({ where, data }: any) => {
+        projectSettings.set(where.id, data.settings)
+        return { id: where.id }
+      },
+    },
     gitHubConnection: {
       upsert: async ({ where, create, update }: any) => {
         const existing = connections.get(where.projectId)
@@ -231,6 +241,7 @@ const TOKEN_RESPONSE = (token = 'ghs_token_abc') =>
 beforeEach(() => {
   svc.clearGitHubBotIdentityCache()
   connections.clear()
+  projectSettings.clear()
   updateCalls.length = 0
   updateManyCalls.length = 0
   fetchCalls.length = 0
@@ -1314,5 +1325,106 @@ describe('getProjectGitHubCliCredentials', () => {
 
   it('returns null when the project has no GitHub connection', async () => {
     expect(await svc.getProjectGitHubCliCredentials('missing')).toBeNull()
+  })
+})
+
+describe('branches', () => {
+  const branchWorkspace = (result: any, seen: any[] = []) => ({
+    run: async (input: any) => {
+      seen.push(input)
+      return result
+    },
+  })
+
+  it('connect checks out a requested branch, records it, and saves the detected stack', async () => {
+    fetchHandler = async (url) => (url.endsWith('/user') ? USER_RESPONSE() : REPO_RESPONSE())
+    projectSettings.set('proj_b', { techStackId: 'react-app', exposedPorts: [] })
+    const seen: any[] = []
+    const { connection } = await svc.connectRepository({
+      projectId: 'proj_b',
+      workspace: branchWorkspace({ ok: true, connect: 'adopted', branch: 'feature/x', techStackId: 'custom' }, seen),
+      token: 'ghp_b', repoOwner: 'octo', repoName: 'r', branch: 'feature/x',
+    })
+    expect(seen[0]).toMatchObject({ op: 'connect', defaultBranch: 'dev', branch: 'feature/x' })
+    expect(connection.defaultBranch).toBe('dev')
+    expect(connections.get('proj_b')!.branch).toBe('feature/x')
+    expect(projectSettings.get('proj_b')).toEqual({ techStackId: 'custom', exposedPorts: [] })
+  })
+
+  it('connect on the default branch leaves branch unset and an unchanged stack untouched', async () => {
+    fetchHandler = async (url) => (url.endsWith('/user') ? USER_RESPONSE() : REPO_RESPONSE())
+    projectSettings.set('proj_d', { techStackId: 'custom' })
+    await svc.connectRepository({
+      projectId: 'proj_d',
+      workspace: branchWorkspace({ ok: true, connect: 'adopted', branch: 'dev', techStackId: 'custom' }),
+      token: 'ghp_d', repoOwner: 'octo', repoName: 'r',
+    })
+    expect(connections.get('proj_d')!.branch ?? null).toBeNull()
+    expect(updateCalls.some((c) => c.where.projectId === 'proj_d' && 'branch' in c.data)).toBe(false)
+  })
+
+  it('connect rejects an invalid branch before touching GitHub', async () => {
+    await expect(
+      svc.connectRepository({ projectId: 'p', workspace: '/ws', token: 't', repoOwner: 'o', repoName: 'r', branch: '--upload-pack=x' }),
+    ).rejects.toThrow(/Invalid branch/)
+    expect(fetchCalls.length).toBe(0)
+  })
+
+  it('switchBranch runs a checkout with the connection credentials and records the branch', async () => {
+    seedConnection({ projectId: 'proj_s', installationId: 9999 })
+    projectSettings.set('proj_s', {})
+    fetchHandler = async () => TOKEN_RESPONSE('tok-s')
+    const seen: any[] = []
+    const result = await svc.switchBranch(
+      'proj_s', ' feature/y ',
+      branchWorkspace({ ok: true, branch: 'feature/y', techStackId: 'custom' }, seen),
+    )
+    expect(seen).toEqual([{
+      op: 'checkout', repoOwner: 'octocat', repoName: 'hello-world',
+      defaultBranch: 'main', branch: 'feature/y', token: 'tok-s',
+    }])
+    expect(result).toEqual({ repoFullName: 'octocat/hello-world', branch: 'feature/y', techStackId: 'custom' })
+    expect(connections.get('proj_s')!.branch).toBe('feature/y')
+    expect(projectSettings.get('proj_s')).toEqual({ techStackId: 'custom' })
+
+    await svc.switchBranch('proj_s', 'main', branchWorkspace({ ok: true, branch: 'main' }))
+    expect(connections.get('proj_s')!.branch).toBeNull()
+  })
+
+  it('switchBranch reports not-connected, invalid names, and workspace failures', async () => {
+    await expect(svc.switchBranch('nope', 'x', '/ws')).rejects.toBeInstanceOf(svc.GitHubNotConnectedError)
+    seedConnection({ projectId: 'proj_f' })
+    await expect(svc.switchBranch('proj_f', 'a..b', '/ws')).rejects.toThrow(/Invalid branch/)
+    fetchHandler = async () => TOKEN_RESPONSE()
+    await expect(
+      svc.switchBranch('proj_f', 'gone', branchWorkspace({ ok: false, error: 'Branch gone does not exist on GitHub.' })),
+    ).rejects.toThrow(/does not exist/)
+    expect(connections.get('proj_f')!.branch ?? null).toBeNull()
+  })
+
+  it('listBranches pages through the repository branches', async () => {
+    seedConnection({ projectId: 'proj_l' })
+    const pages: string[] = []
+    fetchHandler = async (url) => {
+      if (url.endsWith('/access_tokens')) return TOKEN_RESPONSE()
+      pages.push(new URL(url).searchParams.get('page')!)
+      const page = Number(new URL(url).searchParams.get('page'))
+      const count = page === 1 ? 100 : 3
+      return new Response(JSON.stringify(Array.from({ length: count }, (_, i) => ({ name: `b${page}-${i}` }))), { status: 200 })
+    }
+    const names = await svc.listBranches('proj_l')
+    expect(pages).toEqual(['1', '2'])
+    expect(names.length).toBe(103)
+    expect(names[0]).toBe('b1-0')
+    await expect(svc.listBranches('nope')).rejects.toBeInstanceOf(svc.GitHubNotConnectedError)
+  })
+
+  it('push and pull keep the recorded branch in step with the workspace', async () => {
+    seedConnection({ projectId: 'proj_p' })
+    fetchHandler = async () => TOKEN_RESPONSE()
+    await svc.pushToGitHub('proj_p', branchWorkspace({ ok: true, branch: 'feature/z', commits: 1 }))
+    expect(connections.get('proj_p')!.branch).toBe('feature/z')
+    await svc.pullFromGitHub('proj_p', branchWorkspace({ ok: true, branch: 'main' }))
+    expect(connections.get('proj_p')!.branch).toBeNull()
   })
 })

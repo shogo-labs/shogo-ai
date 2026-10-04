@@ -22,6 +22,8 @@ import { afterAll, beforeEach, describe, expect, mock, test } from 'bun:test'
 
 // ─── Mock github.service ──────────────────────────────────────────────
 
+class NotConnected extends Error {}
+
 const githubSvc = {
   isConfigured: mock(() => true),
   getInstallationUrl: mock((_state?: string) => 'https://github.com/apps/shogo/installations/new'),
@@ -49,6 +51,10 @@ const githubSvc = {
   verifyWebhookSignature: mock((_p: string, _s: string) => true),
   handleInstallationWebhook: mock(async (_action: string, _inst: any) => undefined),
   handlePushWebhook: mock(async (_iid: number, _full: string, _commits: any[]) => undefined),
+  isValidBranchName: (b: string) => /^[A-Za-z0-9._/-]+$/.test(b) && !b.includes('..'),
+  GitHubNotConnectedError: NotConnected,
+  listBranches: mock(async (_pid: string) => ['main', 'feature/x'] as string[]),
+  switchBranch: mock(async (_pid: string, branch: string, _ws: any) => ({ repoFullName: 'org/r', branch, techStackId: 'custom' } as any)),
 }
 mock.module('../services/github.service', () => githubSvc)
 
@@ -359,6 +365,74 @@ describe('POST /projects/:id/github/connect', () => {
     githubSvc.connectRepository.mockImplementation(async () => { throw new Error('boom') })
     const res = await connect({ installation_id: 1, repo_owner: 'org', repo_name: 'r' })
     expect(res.status).toBe(500)
+  })
+})
+
+describe('branches', () => {
+  function switchTo(body: any, pid = 'p1') {
+    return router.request(`/projects/${pid}/github/branch`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+  }
+
+  test('connect forwards a requested branch', async () => {
+    seedProject('p1')
+    githubSvc.connectRepository.mockClear()
+    await router.request('/projects/p1/github/connect', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ token: 'ghp_x', repo_owner: 'org', repo_name: 'r', branch: ' feature/x ' }),
+    })
+    expect(githubSvc.connectRepository.mock.calls[0][0].branch).toBe('feature/x')
+  })
+
+  test('GET /branches lists the repository branches and the current one', async () => {
+    seedProject('p1')
+    githubSvc.getConnection.mockImplementation(async () => ({ defaultBranch: 'main', branch: 'feature/x' }))
+    const res = await router.request('/projects/p1/github/branches')
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ ok: true, branches: ['main', 'feature/x'], current: 'feature/x', defaultBranch: 'main' })
+  })
+
+  test('GET /branches is 409 not_connected without a connection', async () => {
+    seedProject('p1')
+    githubSvc.listBranches.mockImplementationOnce(async () => { throw new NotConnected('nope') })
+    const res = await router.request('/projects/p1/github/branches')
+    expect(res.status).toBe(409)
+    expect((await res.json()).error.code).toBe('not_connected')
+  })
+
+  test('POST /branch switches the workspace through the service', async () => {
+    seedProject('p1')
+    githubSvc.switchBranch.mockClear()
+    const res = await switchTo({ branch: 'feature/x' })
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ ok: true, repoFullName: 'org/r', branch: 'feature/x', techStackId: 'custom' })
+    const [pid, branch, ws] = githubSvc.switchBranch.mock.calls[0]
+    expect([pid, branch, ws.projectId]).toEqual(['p1', 'feature/x', 'p1'])
+  })
+
+  test('POST /branch rejects missing or invalid branch names', async () => {
+    seedProject('p1')
+    expect((await switchTo({})).status).toBe(400)
+    expect((await switchTo({ branch: '../etc' })).status).toBe(400)
+  })
+
+  test('POST /branch is 409 when not connected and 400 when the switch fails', async () => {
+    seedProject('p1')
+    githubSvc.switchBranch.mockImplementationOnce(async () => { throw new NotConnected('nope') })
+    expect((await switchTo({ branch: 'x' })).status).toBe(409)
+    githubSvc.switchBranch.mockImplementationOnce(async () => { throw new Error('Branch x does not exist on GitHub.') })
+    const res = await switchTo({ branch: 'x' })
+    expect(res.status).toBe(400)
+    expect((await res.json()).error.message).toContain('does not exist')
+  })
+
+  test('404 when the project is missing', async () => {
+    expect((await router.request('/projects/nope/github/branches')).status).toBe(404)
+    expect((await switchTo({ branch: 'x' }, 'nope')).status).toBe(404)
   })
 })
 

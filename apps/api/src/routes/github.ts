@@ -242,6 +242,7 @@ export function githubRoutes(config: GitHubRoutesConfig = {}) {
           repoName: connection.repoName,
           repoFullName: connection.repoFullName,
           defaultBranch: connection.defaultBranch,
+          branch: connection.branch ?? connection.defaultBranch,
           authType: connection.authType,
           tokenLogin: connection.tokenLogin,
           isPrivate: connection.isPrivate,
@@ -284,6 +285,7 @@ export function githubRoutes(config: GitHubRoutesConfig = {}) {
         token?: string;
         repo_owner: string;
         repo_name: string;
+        branch?: string;
       }>();
 
       const token = typeof body.token === 'string' ? body.token.trim() : '';
@@ -306,6 +308,7 @@ export function githubRoutes(config: GitHubRoutesConfig = {}) {
         ...(token ? { token } : { installationId: body.installation_id }),
         repoOwner: body.repo_owner,
         repoName: body.repo_name,
+        ...(typeof body.branch === 'string' && body.branch.trim() ? { branch: body.branch.trim() } : {}),
       });
 
       return c.json({
@@ -316,6 +319,7 @@ export function githubRoutes(config: GitHubRoutesConfig = {}) {
           repoName: connection.repoName,
           repoFullName: connection.repoFullName,
           defaultBranch: connection.defaultBranch,
+          branch: connection.branch ?? connection.defaultBranch,
           authType: connection.authType,
           tokenLogin: connection.tokenLogin,
           isPrivate: connection.isPrivate,
@@ -465,6 +469,78 @@ export function githubRoutes(config: GitHubRoutesConfig = {}) {
       return c.json(
         { error: { code: 'disconnect_error', message: error.message } },
         500
+      );
+    }
+  });
+
+  /**
+   * GET /projects/:projectId/github/branches - Branches of the connected repository
+   */
+  router.get('/projects/:projectId/github/branches', async (c) => {
+    const projectId = c.req.param('projectId');
+
+    try {
+      const project = await validateProject(projectId);
+      if (!project) {
+        return c.json(
+          { error: { code: 'project_not_found', message: 'Project not found' } },
+          404
+        );
+      }
+
+      const connection = await githubService.getConnection(projectId);
+      const branches = await githubService.listBranches(projectId);
+      return c.json({
+        ok: true,
+        branches,
+        current: connection?.branch ?? connection?.defaultBranch,
+        defaultBranch: connection?.defaultBranch,
+      });
+    } catch (error: any) {
+      if (error instanceof githubService.GitHubNotConnectedError) {
+        return c.json({ error: { code: 'not_connected', message: error.message } }, 409);
+      }
+      console.error('[GitHub] List branches error:', error);
+      return c.json(
+        { error: { code: 'branches_error', message: error.message } },
+        500
+      );
+    }
+  });
+
+  /**
+   * POST /projects/:projectId/github/branch - Switch the workspace to another branch
+   *
+   * Body: `branch`, an existing branch of the connected repository.
+   */
+  router.post('/projects/:projectId/github/branch', async (c) => {
+    const projectId = c.req.param('projectId');
+
+    try {
+      const project = await validateProject(projectId);
+      if (!project) {
+        return c.json(
+          { error: { code: 'project_not_found', message: 'Project not found' } },
+          404
+        );
+      }
+
+      const body = await c.req.json<{ branch?: string }>().catch(() => ({} as { branch?: string }));
+      const branch = typeof body.branch === 'string' ? body.branch.trim() : '';
+      if (!branch || !githubService.isValidBranchName(branch)) {
+        return c.json({ error: { code: 'invalid_request', message: 'A valid branch is required' } }, 400);
+      }
+
+      const result = await githubService.switchBranch(projectId, branch, workspaceFor(projectId));
+      return c.json({ ok: true, ...result });
+    } catch (error: any) {
+      if (error instanceof githubService.GitHubNotConnectedError) {
+        return c.json({ error: { code: 'not_connected', message: error.message } }, 409);
+      }
+      console.error('[GitHub] Switch branch error:', error);
+      return c.json(
+        { error: { code: 'branch_error', message: error.message } },
+        400
       );
     }
   });

@@ -9,10 +9,13 @@ import { Text } from "./account-sheet-chrome";
 interface GitHubConnectionInfo {
   repoFullName: string;
   defaultBranch: string;
+  branch?: string;
   authType: "app" | "token";
   tokenLogin: string | null;
   lastSyncError: string | null;
 }
+
+const MAX_LISTED_BRANCHES = 50;
 
 const inputStyle = { outlineWidth: 0, outlineStyle: "none", boxShadow: "none" } as any;
 const inputClass =
@@ -41,7 +44,9 @@ export function ProjectGitHubSection({ projectId }: { projectId: string }) {
   const [loading, setLoading] = useState(true);
   const [repo, setRepo] = useState("");
   const [token, setToken] = useState("");
-  const [busy, setBusy] = useState<"authorize" | "token" | "disconnect" | null>(null);
+  const [busy, setBusy] = useState<"authorize" | "token" | "disconnect" | "branch" | null>(null);
+  const [branches, setBranches] = useState<string[] | null>(null);
+  const [branchFilter, setBranchFilter] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -115,6 +120,50 @@ export function ProjectGitHubSection({ projectId }: { projectId: string }) {
     }
   };
 
+  const openBranchPicker = async () => {
+    if (!API_URL) return;
+    setBusy("branch");
+    setError(null);
+    try {
+      const res = await fetch(`${API_URL}/api/projects/${projectId}/github/branches`, { credentials: "include" });
+      if (!res.ok) throw new Error(await errorMessage(res, "Could not list branches"));
+      const body = await res.json();
+      setBranchFilter("");
+      setBranches(Array.isArray(body?.branches) ? body.branches : []);
+    } catch (err: any) {
+      setError(err?.message ?? "Could not list branches");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const switchBranch = async (branch: string) => {
+    if (!API_URL) return;
+    setBusy("branch");
+    setError(null);
+    try {
+      const res = await fetch(`${API_URL}/api/projects/${projectId}/github/branch`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ branch }),
+      });
+      if (!res.ok) throw new Error(await errorMessage(res, `Could not switch to ${branch}`));
+      setBranches(null);
+      setNotice(`Switched to ${branch}. Unsaved changes were committed on the previous branch.`);
+      await load();
+    } catch (err: any) {
+      setError(err?.message ?? `Could not switch to ${branch}`);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const currentBranch = connection?.branch ?? connection?.defaultBranch;
+  const filteredBranches = (branches ?? []).filter((b) =>
+    b.toLowerCase().includes(branchFilter.trim().toLowerCase()),
+  );
+
   const disconnect = async () => {
     if (!API_URL) return;
     setBusy("disconnect");
@@ -147,8 +196,75 @@ export function ProjectGitHubSection({ projectId }: { projectId: string }) {
             {connection.authType === "token"
               ? `Connected with ${connection.tokenLogin ?? "a user"}'s access token`
               : "Connected through the Shogo GitHub App"}
-            {` · ${connection.defaultBranch}`}
           </Text>
+          <View className="mt-2 flex-row items-center gap-2">
+            <Text className="text-xs text-muted-foreground">Branch</Text>
+            <Text className="text-xs font-medium text-foreground">{currentBranch}</Text>
+            {branches === null ? (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Change branch"
+                disabled={busy !== null}
+                onPress={() => void openBranchPicker()}
+                className="rounded-md border border-border px-2 py-1 disabled:opacity-50"
+              >
+                <Text className="text-xs text-foreground">{busy === "branch" ? "Loading…" : "Change"}</Text>
+              </Pressable>
+            ) : (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Cancel branch change"
+                disabled={busy !== null}
+                onPress={() => setBranches(null)}
+                className="rounded-md px-2 py-1 disabled:opacity-50"
+              >
+                <Text className="text-xs text-muted-foreground">Cancel</Text>
+              </Pressable>
+            )}
+          </View>
+          {branches !== null ? (
+            <View className="mt-2">
+              <TextInput
+                value={branchFilter}
+                onChangeText={setBranchFilter}
+                placeholder="Filter branches"
+                placeholderTextColor="#8a8a8f"
+                autoCapitalize="none"
+                autoCorrect={false}
+                accessibilityLabel="Filter branches"
+                className={inputClass}
+                style={inputStyle}
+              />
+              <View className="mt-1 max-h-64 overflow-scroll">
+                {filteredBranches.slice(0, MAX_LISTED_BRANCHES).map((b) => (
+                  <Pressable
+                    key={b}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Switch to ${b}`}
+                    disabled={busy !== null || b === currentBranch}
+                    onPress={() => void switchBranch(b)}
+                    className="rounded-md px-2 py-2 web:hover:bg-muted disabled:opacity-50"
+                  >
+                    <Text className="text-sm text-foreground">
+                      {b}
+                      {b === connection.defaultBranch ? " (default)" : ""}
+                      {b === currentBranch ? " · current" : ""}
+                    </Text>
+                  </Pressable>
+                ))}
+                {filteredBranches.length === 0 ? (
+                  <Text className="px-2 py-2 text-xs text-muted-foreground">No matching branches</Text>
+                ) : filteredBranches.length > MAX_LISTED_BRANCHES ? (
+                  <Text className="px-2 py-2 text-xs text-muted-foreground">
+                    {`${filteredBranches.length - MAX_LISTED_BRANCHES} more; type to filter`}
+                  </Text>
+                ) : null}
+              </View>
+              {busy === "branch" ? (
+                <Text className="mt-1 text-xs text-muted-foreground">Switching branch…</Text>
+              ) : null}
+            </View>
+          ) : null}
           {connection.lastSyncError ? (
             <Text className="mt-2 text-xs text-destructive">{connection.lastSyncError}</Text>
           ) : null}

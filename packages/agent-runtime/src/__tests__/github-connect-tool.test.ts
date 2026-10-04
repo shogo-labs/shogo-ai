@@ -105,6 +105,48 @@ describe('github_connect', () => {
     expect(((await createGitHubConnectTool(ctx()).execute('c1', { repo: 'not a repo' })).details as any).error).toContain('owner/name')
   })
 
+  test('connecting with a token and a branch checks the branch out in the same call', async () => {
+    responses.push({
+      status: 200,
+      json: {
+        ok: true,
+        repoFullName: 'CodeGlo/shogo-website',
+        defaultBranch: 'main',
+        authType: 'token',
+        workspace: { ok: true, connect: 'adopted', branch: 'fix-404', techStackId: 'custom' },
+      },
+    })
+    const res = await createGitHubConnectTool(ctx()).execute('c1', { repo: 'CodeGlo/shogo-website', token: 'gho_x', branch: ' fix-404 ' })
+    expect(requests.map((r) => r.url)).toEqual(['http://api.test/api/internal/projects/proj-1/github/connect'])
+    expect(requests[0].body).toEqual({ repoOwner: 'CodeGlo', repoName: 'shogo-website', token: 'gho_x', branch: 'fix-404' })
+    expect(res.details).toMatchObject({ ok: true, branch: 'fix-404', techStack: 'custom', files: expect.stringContaining('checked out fix-404') })
+  })
+
+  test('with a branch and no token, switches an already-connected project without asking for credentials', async () => {
+    responses.push({ status: 200, json: { ok: true, repoFullName: 'CodeGlo/shogo-website', branch: 'fix-404', techStackId: 'custom' } })
+    const res = await createGitHubConnectTool(ctx()).execute('c1', { repo: 'CodeGlo/shogo-website', branch: 'fix-404' })
+    expect(requests.map((r) => r.url)).toEqual(['http://api.test/api/internal/projects/proj-1/github/branch'])
+    expect(requests[0].body).toEqual({ repoOwner: 'CodeGlo', repoName: 'shogo-website', branch: 'fix-404' })
+    expect(res.details).toMatchObject({ ok: true, connected: 'CodeGlo/shogo-website', branch: 'fix-404', techStack: 'custom' })
+  })
+
+  test('with a branch on a project that is not connected, offers the ways to connect', async () => {
+    responses.push({ status: 409, json: { error: { code: 'not_connected', message: 'not connected' } } })
+    responses.push({ status: 200, json: { ok: true, available: true, url: 'https://studio.test/authorize' } })
+    const res = await createGitHubConnectTool(ctx()).execute('c1', { repo: 'CodeGlo/shogo-website', branch: 'fix-404' })
+    const details = res.details as any
+    expect(details.connected).toBe(false)
+    expect(details.options.map((o: any) => o.option)).toEqual(['authorize_app', 'share_token'])
+    expect(details.next).toContain('branch "fix-404"')
+  })
+
+  test('reports a failed branch switch instead of asking to connect again', async () => {
+    responses.push({ status: 400, json: { error: 'Branch nope does not exist on GitHub.' } })
+    const res = await createGitHubConnectTool(ctx()).execute('c1', { repo: 'CodeGlo/shogo-website', branch: 'nope' })
+    expect((res.details as any).error).toContain('does not exist')
+    expect(requests.length).toBe(1)
+  })
+
   test('is registered in the default tool set', () => {
     expect(createTools(ctx()).some((t) => t.name === 'github_connect')).toBe(true)
   })
