@@ -197,14 +197,14 @@ export function interactionModeOption(page: Page, mode: "Agent" | "Plan" | "Ask"
  * The home composer uses an animated typewriter placeholder
  * (`"Ask Shogo to " + rotating suggestion`), so the old
  * `getByPlaceholder("Ask Shogo to ...")` selector never matches.
- * `CompactChatInput` exposes a stable `testID="home-composer-input"` we
+ * The home `ChatInput` exposes a stable `testID="home-composer-input"` we
  * can target regardless of interaction mode and placeholder churn.
  *
  * Falls back to `accessibilityLabel` matching for revisions that predate
  * the testID (e.g. long-lived staging sessions) so this helper works on
  * any prod/staging tag.
  *
- * See apps/mobile/components/chat/CompactChatInput.tsx.
+ * See `inputTestID` in apps/mobile/app/(app)/index.tsx.
  */
 export function homeComposerInput(page: Page) {
   return page.getByTestId("home-composer-input").or(

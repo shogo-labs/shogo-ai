@@ -6,7 +6,8 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Alert, Platform, Pressable, Text, View } from 'react-native'
-import { Upload, X } from 'lucide-react-native'
+import { useSafeAreaInsets } from 'react-native-safe-area-context'
+import { ChevronLeft, Upload, X } from 'lucide-react-native'
 import { conversationTitle, teamChatApi, type ChatMessage, type ConversationDetail, type Mentionables } from '../../lib/team-chat-api'
 import { mentionNames } from '../../lib/team-chat-state'
 import { TIMELINE_SOFT_LIMIT, useConversationTimeline, useMarkReadWhileVisible, useTypingUsers } from '../../hooks/useTeamChat'
@@ -15,6 +16,9 @@ import { threadCrumbs } from '../../lib/team-chat-nav'
 import { Breadcrumb } from './SessionBreadcrumb'
 import { MessageList } from './MessageList'
 import { Composer, type ComposerHandle } from './Composer'
+import { CHROME_SIZE, GlassButton, GlassChip } from './FloatingChrome'
+import { usePhoneChromeOverlay } from '../layout/PhoneChromeOverlay'
+import { GlassBlurTarget } from '../ui/LiquidGlassBackdrop'
 
 const api = teamChatApi()
 /** Pages of 200 to load back when jumping to an older message before opening it on its own. */
@@ -36,6 +40,10 @@ export interface TimelinePaneProps {
   onJoin?: () => void
   /** Scroll to and emphasize this message (from a message link or search). */
   highlightMessageId?: string | null
+  /** Phone presentation: messages run full-bleed under floating chrome. */
+  floating?: boolean
+  /** Height of the floating header drawn over this pane. */
+  topInset?: number
 }
 
 /** Files dropped anywhere on a web pane go to the composer. */
@@ -102,7 +110,11 @@ function typingLabel(names: string[]): string | null {
 }
 
 export function TimelinePane(props: TimelinePaneProps) {
-  const { workspaceId, conversation, threadRootId = null, me, mentionables, visible } = props
+  const { workspaceId, conversation, threadRootId = null, me, mentionables, visible, floating = false, topInset = 0 } = props
+  const chrome = usePhoneChromeOverlay()
+  const insets = useSafeAreaInsets()
+  const [threadHeaderHeight, setThreadHeaderHeight] = useState(0)
+  const [footerHeight, setFooterHeight] = useState(0)
   const timeline = useConversationTimeline(workspaceId, conversation.id, threadRootId)
   const typing = useTypingUsers(workspaceId, conversation.id, threadRootId)
   const names = useMemo(() => mentionNames(mentionables), [mentionables])
@@ -210,13 +222,133 @@ export function TimelinePane(props: TimelinePaneProps) {
   const showComposer = !(!conversation.joined && isChannel && !threadRootId)
   const dragging = useFileDrop(rootRef, showComposer && canPostHere, (files) => composerRef.current?.addFiles(files))
 
+  const crumbs = threadCrumbs({ kind: conversation.kind, label: conversationTitle(conversation) })
+  const typingText = typingLabel(typing)
+  const listInsets = floating
+    ? { top: topInset + threadHeaderHeight, bottom: footerHeight }
+    : undefined
+  const list = (
+    <MessageList
+      state={timeline.state}
+      loading={timeline.loading}
+      me={me}
+      names={names}
+      canManage={conversation.canManage}
+      canPin={conversation.canReply}
+      workspaceId={workspaceId}
+      inThread={!!threadRootId}
+      header={props.header}
+      emptyText={threadRootId ? 'No replies yet.' : isChannel ? `This is the very beginning of #${conversation.name}.` : 'Say hello.'}
+      onLoadOlder={threadRootId ? undefined : onLoadOlder}
+      onTrim={timeline.trimOld}
+      trimThreshold={TIMELINE_SOFT_LIMIT}
+      onReply={props.onOpenThread}
+      onReact={onReact}
+      onEdit={onEdit}
+      onDelete={onDelete}
+      onStopAgent={onStop}
+      onRetry={timeline.retry}
+      onDiscard={timeline.discard}
+      onOpenSession={props.onOpenSession}
+      onMarkUnread={threadRootId || !conversation.joined ? undefined : onMarkUnread}
+      unreadAfterSeq={unread?.afterSeq ?? null}
+      unreadUpToSeq={unread?.upToSeq}
+      unreadNotLoaded={unreadNotLoaded}
+      onRevealUnread={onRevealUnread}
+      highlightId={highlight}
+      insets={listInsets}
+    />
+  )
+  const composer = (
+    <Composer
+      ref={composerRef}
+      workspaceId={workspaceId}
+      conversationId={conversation.id}
+      threadRootId={threadRootId}
+      placeholder={placeholder}
+      mentionables={mentionables}
+      me={me}
+      disabled={!canPostHere}
+      disabledReason={disabledReason}
+      onSend={timeline.send}
+      onEditLast={onEditLast}
+    />
+  )
+
+  if (floating) {
+    return (
+      <View className="flex-1" ref={rootRef}>
+        <GlassBlurTarget>
+          {timeline.error && !timeline.state.messages.length ? (
+            <View className="flex-1 items-center justify-center gap-2 px-8">
+              <Text className="text-center text-sm text-muted-foreground">{timeline.error}</Text>
+              <Pressable onPress={() => void timeline.reload()} className="rounded-md bg-muted px-3 py-1.5">
+                <Text className="text-sm text-foreground">Try again</Text>
+              </Pressable>
+            </View>
+          ) : (
+            list
+          )}
+        </GlassBlurTarget>
+        {threadRootId ? (
+          <View
+            pointerEvents="box-none"
+            onLayout={(e) => setThreadHeaderHeight(Math.round(e.nativeEvent.layout.height))}
+            className="absolute left-0 right-0 z-30 flex-row items-center gap-2 px-3 pb-2"
+            style={{ top: topInset, paddingTop: topInset ? 0 : insets.top + 6 }}
+            testID="floating-thread-header"
+          >
+            <GlassButton label="Back to conversation" onPress={props.onClose}>
+              <ChevronLeft size={22} className="text-foreground" />
+            </GlassButton>
+            <GlassChip className="min-w-0 flex-shrink justify-center px-4" style={{ height: CHROME_SIZE }}>
+              <Text className="text-[15px] font-semibold text-foreground" numberOfLines={1}>
+                {crumbs[crumbs.length - 1]?.label ?? 'Thread'}
+              </Text>
+              <Text className="text-[11px] text-muted-foreground" numberOfLines={1}>
+                {crumbs[0]?.label}
+              </Text>
+            </GlassChip>
+          </View>
+        ) : null}
+        <View
+          pointerEvents="box-none"
+          onLayout={(e) => {
+            const next = Math.round(e.nativeEvent.layout.height)
+            setFooterHeight((prev) => (prev === next ? prev : next))
+          }}
+          style={{ marginTop: -footerHeight, paddingBottom: chrome.bottom }}
+          testID="floating-composer"
+        >
+          {typingText ? (
+            <GlassChip className="mb-2 ml-4 self-start px-3 py-1">
+              <Text className="text-xs text-muted-foreground">{typingText}</Text>
+            </GlassChip>
+          ) : null}
+          {!showComposer ? (
+            <GlassChip className="mx-4 mb-3 flex-row items-center justify-between gap-2 py-1.5 pl-4 pr-1.5">
+              <Text className="flex-shrink text-sm text-foreground" numberOfLines={1}>
+                You are viewing #{conversation.name}.
+              </Text>
+              <Pressable onPress={props.onJoin} className="rounded-full bg-primary px-4 py-2">
+                <Text className="text-sm font-medium text-primary-foreground">Join channel</Text>
+              </Pressable>
+            </GlassChip>
+          ) : (
+            composer
+          )}
+        </View>
+      </View>
+    )
+  }
+
   return (
     <View className="flex-1" ref={rootRef}>
       {threadRootId && (
         <View className="flex-row items-center border-b border-border px-4 py-2.5">
           <Breadcrumb
             className="flex-1 flex-row flex-wrap items-center gap-x-1"
-            items={threadCrumbs({ kind: conversation.kind, label: conversationTitle(conversation) }).map((c) => ({
+            items={crumbs.map((c) => ({
               key: c.key,
               label: c.label,
               onPress: c.up ? props.onClose : undefined,
@@ -237,38 +369,10 @@ export function TimelinePane(props: TimelinePaneProps) {
           </Pressable>
         </View>
       ) : (
-        <MessageList
-          state={timeline.state}
-          loading={timeline.loading}
-          me={me}
-          names={names}
-          canManage={conversation.canManage}
-          canPin={conversation.canReply}
-          workspaceId={workspaceId}
-          inThread={!!threadRootId}
-          header={props.header}
-          emptyText={threadRootId ? 'No replies yet.' : isChannel ? `This is the very beginning of #${conversation.name}.` : 'Say hello.'}
-          onLoadOlder={threadRootId ? undefined : onLoadOlder}
-          onTrim={timeline.trimOld}
-          trimThreshold={TIMELINE_SOFT_LIMIT}
-          onReply={props.onOpenThread}
-          onReact={onReact}
-          onEdit={onEdit}
-          onDelete={onDelete}
-          onStopAgent={onStop}
-          onRetry={timeline.retry}
-          onDiscard={timeline.discard}
-          onOpenSession={props.onOpenSession}
-          onMarkUnread={threadRootId || !conversation.joined ? undefined : onMarkUnread}
-          unreadAfterSeq={unread?.afterSeq ?? null}
-          unreadUpToSeq={unread?.upToSeq}
-          unreadNotLoaded={unreadNotLoaded}
-          onRevealUnread={onRevealUnread}
-          highlightId={highlight}
-        />
+        list
       )}
       <View className="h-5 justify-center px-4">
-        {typingLabel(typing) && <Text className="text-xs text-muted-foreground">{typingLabel(typing)}</Text>}
+        {typingText && <Text className="text-xs text-muted-foreground">{typingText}</Text>}
       </View>
       {!showComposer ? (
         <View className="items-center gap-2 border-t border-border px-4 py-3">
@@ -278,19 +382,7 @@ export function TimelinePane(props: TimelinePaneProps) {
           </Pressable>
         </View>
       ) : (
-        <Composer
-          ref={composerRef}
-          workspaceId={workspaceId}
-          conversationId={conversation.id}
-          threadRootId={threadRootId}
-          placeholder={placeholder}
-          mentionables={mentionables}
-          me={me}
-          disabled={!canPostHere}
-          disabledReason={disabledReason}
-          onSend={timeline.send}
-          onEditLast={onEditLast}
-        />
+        composer
       )}
       {dragging && (
         <View

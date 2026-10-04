@@ -171,7 +171,7 @@ export function AccountMenu({
     <Popover
       placement={tile ? "right top" : "top"}
       size="sm"
-      className={tile ? "w-auto h-auto items-stretch" : "flex-1 min-w-0 w-auto h-auto items-stretch"}
+      className={tile ? "flex-1 w-auto h-auto items-stretch" : "flex-1 min-w-0 w-auto h-auto items-stretch"}
       isOpen={isOpen}
       onOpen={() => setIsOpen(true)}
       onClose={close}

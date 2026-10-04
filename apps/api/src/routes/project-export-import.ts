@@ -26,6 +26,7 @@ import {
   decryptZip,
   ZipPasswordError,
 } from '../lib/zip-encryption'
+import { importCloudModule } from '../lib/cloud-import'
 import { deriveProjectRuntimeToken } from '../lib/project-runtime-token'
 import { normalizeProjectSettings, parseProjectSettings } from '../lib/project-settings'
 import { inferTechStackId, isKnownTechStackId } from '../lib/infer-tech-stack'
@@ -282,7 +283,12 @@ async function collectExportWorkspaceFiles(
   if (isKubernetes()) {
     sourceMode = 'k8s'
     try {
-      const { getProjectPodUrl } = await import('../lib/knative-project-manager')
+      // Kubernetes-only: load through importCloudModule so the desktop bundle
+      // (which mounts this router) doesn't pull in the Knative/warm-pool graph.
+      const { getProjectPodUrl } =
+        await importCloudModule<typeof import('../lib/knative-project-manager')>(
+          './knative-project-manager',
+        )
       const podUrl = await getProjectPodUrl(projectId)
       // Pod-side workspace endpoints require the per-project runtime token —
       // without it the pod returns 401, we flip to `k8s-fallback-empty`, and

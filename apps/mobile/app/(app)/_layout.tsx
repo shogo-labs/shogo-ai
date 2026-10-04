@@ -70,6 +70,7 @@ import { TeamChatSidebarProvider } from "../../components/team-chat/TeamChatSide
 import { MobileWorkspaceShell } from "../../components/layout/MobileWorkspaceShell";
 import { projectSidebarEvents } from "../../lib/project-sidebar-events";
 import { refreshCloudWorkspaces } from "../../lib/workspace-route";
+import { isConversationPath } from "../../lib/sidebar-tab";
 
 csMark("app:layout:module-load");
 
@@ -152,6 +153,11 @@ function AppLayoutInner() {
       /\/c\/dms\/?$/.test(pathname) ||
       /\/more\/?$/.test(pathname) ||
       /\/activity\/?$/.test(pathname));
+
+  // Phone channel/DM screens are full-bleed: their own floating header, with
+  // the dock drawn over the messages.
+  const isFloatingConversation =
+    !isWide && !isIdeEmbed && isConversationPath(pathname);
 
   const isSettingsPage =
     pathname === "/settings" ||
@@ -317,7 +323,8 @@ function AppLayoutInner() {
     isProjectChatsPage ||
     isAIModelsPage ||
     isNonChatWorkspacePage ||
-    isTeamTabScreen;
+    isTeamTabScreen ||
+    isFloatingConversation;
   // The companion mobile shell owns its own drawer and swipe gesture. Keep
   // the legacy sheet drawer inactive there so an edge swipe cannot reveal the
   // old AppSidebar behind the new chat chrome.
@@ -475,14 +482,15 @@ function AppLayoutInner() {
     !isSettingsPage &&
     !isBillingPage;
   const nativeEdgeToEdgeChrome =
-    isNativeApp &&
-    !isIdeEmbed &&
-    (isHomePage ||
-      isTeamTabScreen ||
-      isSearchPage ||
-      isAccountPage ||
-      isNotificationsPage ||
-      useMobileWorkspaceShell);
+    isFloatingConversation ||
+    (isNativeApp &&
+      !isIdeEmbed &&
+      (isHomePage ||
+        isTeamTabScreen ||
+        isSearchPage ||
+        isAccountPage ||
+        isNotificationsPage ||
+        useMobileWorkspaceShell));
 
   return (
     <TeamChatSidebarProvider
@@ -517,6 +525,7 @@ function AppLayoutInner() {
           <MobileBottomNav key={activeWorkspace?.id ?? "workspace-loading"} />
         ) : null
       }
+      overlayBottomNav={isFloatingConversation}
       drawer={drawer}
     >
       {(localMode || Platform.OS !== "web") && !isIdeEmbed ? <RecordingIndicator /> : null}

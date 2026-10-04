@@ -6,6 +6,7 @@ import { useResolvedTheme } from "../../../contexts/theme";
 import {
   isPhoneLayout,
   NATIVE_PHONE_SECTION_INSET,
+  usePhoneLayoutOverride,
 } from "../../../lib/native-phone-layout";
 import { CHATGPT_COMPOSER } from "../../../lib/composer-phone";
 import { prominentModelTriggerMaxWidth } from "../useProminentComposerExpansion";
@@ -53,21 +54,23 @@ type ComposerLayoutOptions = {
   prominent?: boolean;
   /** Inline edit mode intentionally stays in the regular composer layout. */
   flush?: boolean;
-  /** Home's compact composer has different non-prominent bounds. */
-  compact?: boolean;
-  colorScheme?: "light" | "dark";
 };
 
+/**
+ * The one place the chat composer (`ChatInput`, used by agent chats, Home,
+ * and team chat) decides between phone and desktop layout, so a screen can't
+ * end up with the desktop input on a phone. `PhoneLayoutOverrideProvider`
+ * forces the answer for a subtree.
+ */
 export function useComposerLayoutMode({
   prominent = false,
   flush = false,
-  compact = false,
-  colorScheme,
 }: ComposerLayoutOptions = {}) {
   const { width, height } = useWindowDimensions();
   const resolvedTheme = useResolvedTheme();
+  const phoneOverride = usePhoneLayoutOverride();
   const isNative = Platform.OS !== "web";
-  const isPhoneChrome = isPhoneLayout(width, height);
+  const isPhoneChrome = phoneOverride ?? isPhoneLayout(width, height);
   const useProminentComposer = isPhoneChrome && prominent && !flush;
   const variant: ComposerVariant = useProminentComposer
     ? "prominent"
@@ -75,34 +78,13 @@ export function useComposerLayoutMode({
     ? "native"
     : "web";
 
-  const sizes =
-    compact && variant === "web"
-      ? {
-          ...COMPOSER_SIZES.web,
-          inputMinHeight: 80,
-          inputMaxHeight: 200,
-          minHeight: 80,
-          maxHeight: 200,
-        }
-      : compact && variant === "native"
-      ? {
-          ...COMPOSER_SIZES.native,
-          inputMinHeight: 48,
-          inputMaxHeight: 144,
-          minHeight: 48,
-          maxHeight: 144,
-        }
-      : COMPOSER_SIZES[variant];
+  const sizes = COMPOSER_SIZES[variant];
 
   const chatgptComposer =
-    (colorScheme ?? resolvedTheme) === "light"
-      ? CHATGPT_COMPOSER.light
-      : CHATGPT_COMPOSER.dark;
+    resolvedTheme === "light" ? CHATGPT_COMPOSER.light : CHATGPT_COMPOSER.dark;
 
   const modelTriggerMaxWidth = useProminentComposer
     ? prominentModelTriggerMaxWidth(width)
-    : compact
-    ? Math.max(50, Math.min(62, Math.floor(width * 0.16)))
     : Math.max(64, Math.min(96, Math.floor(width * 0.22)));
 
   return {

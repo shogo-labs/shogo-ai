@@ -54,6 +54,14 @@ export function isMainChatPath(pathname: string): boolean {
   return path === '/' || path === '/index'
 }
 
+const CHAT_PAGES = new Set(['inbox', 'later', 'dms', 'search', 'settings'])
+
+/** A single team chat conversation (channel or DM), not one of the chat pages. */
+export function isConversationPath(pathname: string): boolean {
+  const segment = strip(pathname).match(/^\/c\/([^/?]+)$/)?.[1]
+  return !!segment && !CHAT_PAGES.has(decodeURIComponent(segment))
+}
+
 /** Where a tab goes when tapped, for tabs that are a page rather than a panel. */
 export function hrefForTab(tab: SidebarTabId): string | null {
   switch (tab) {

@@ -3,7 +3,7 @@
 /**
  * EnvironmentPicker
  *
- * Popover-based selector (drop-in twin of the model picker in CompactChatInput)
+ * Popover-based selector (drop-in twin of the model picker in ChatInput)
  * that lets the user choose where an agent session runs:
  *
  *   ☁️ Shogo Cloud         — default. agent runs in a cloud pod.

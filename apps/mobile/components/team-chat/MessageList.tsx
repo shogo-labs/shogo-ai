@@ -34,6 +34,8 @@ export interface MessageListProps extends RowHandlers {
   onRevealUnread?: () => void
   /** Scroll to and emphasize this message once it's loaded. */
   highlightId?: string | null
+  /** Space taken by chrome floating over the list (header above, composer below). */
+  insets?: { top: number; bottom: number }
 }
 
 type Row = TimelineItem & { grouped: boolean }
@@ -42,11 +44,12 @@ const JUMP_OFFSET = 800
 const AT_LATEST_OFFSET = 40
 /** Open at the "New" line instead of the latest message when more than this many rows are unread. */
 const OPEN_AT_UNREAD_ROWS = 8
+const NO_INSETS = { top: 0, bottom: 0 }
 
 /** Newest-at-bottom list (an inverted FlatList, so it stays pinned to the latest message). */
 export function MessageList({
   state, loading, me, names, canManage, inThread, emptyText, header, onLoadOlder, onTrim, trimThreshold = Infinity,
-  unreadAfterSeq = null, unreadUpToSeq = Infinity, unreadNotLoaded = false, onRevealUnread, highlightId = null, ...handlers
+  unreadAfterSeq = null, unreadUpToSeq = Infinity, unreadNotLoaded = false, onRevealUnread, highlightId = null, insets = NO_INSETS, ...handlers
 }: MessageListProps) {
   const rows = useMemo(() => {
     const items = foldStatusRuns(state.messages)
@@ -186,7 +189,9 @@ export function MessageList({
         extraData={`${firstUnreadId}:${highlightId}`}
         onEndReached={onLoadOlder}
         onEndReachedThreshold={0.4}
-        contentContainerStyle={{ paddingVertical: 8, flexGrow: 1 }}
+        // Inverted: the container's top padding is the visual bottom.
+        contentContainerStyle={{ paddingTop: 8 + insets.bottom, paddingBottom: 8 + insets.top, flexGrow: 1 }}
+        scrollIndicatorInsets={{ top: insets.bottom, bottom: insets.top }}
         ListFooterComponent={
           <View>
             {state.hasMoreOlder && onLoadOlder ? (
@@ -206,7 +211,10 @@ export function MessageList({
         keyboardShouldPersistTaps="handled"
       />
       {showUnreadPill ? (
-        <View className="absolute top-2 self-center flex-row items-center overflow-hidden rounded-full bg-red-500 shadow-sm">
+        <View
+          className="absolute self-center flex-row items-center overflow-hidden rounded-full bg-red-500 shadow-sm"
+          style={{ top: insets.top + 8 }}
+        >
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="Jump to first unread message"
@@ -228,7 +236,8 @@ export function MessageList({
           accessibilityRole="button"
           accessibilityLabel="Jump to latest message"
           onPress={() => listRef.current?.scrollToOffset({ offset: 0, animated: true })}
-          className="absolute bottom-3 self-center flex-row items-center gap-1.5 rounded-full border border-border bg-background px-3 py-1.5 shadow-sm active:bg-muted web:hover:bg-muted"
+          className="absolute self-center flex-row items-center gap-1.5 rounded-full border border-border bg-background px-3 py-1.5 shadow-sm active:bg-muted web:hover:bg-muted"
+          style={{ bottom: insets.bottom + 12 }}
         >
           <ArrowDown size={12} className="text-foreground" />
           <Text className="text-xs font-medium text-foreground">Jump to latest</Text>

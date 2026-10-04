@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 /**
- * Web: ChatInput / CompactChatInput use a hidden <input type="file" />.
+ * Web: ChatInput uses a hidden <input type="file" />.
  * This file keeps expo-document-picker / expo-image-picker out of the web bundle.
  */
 

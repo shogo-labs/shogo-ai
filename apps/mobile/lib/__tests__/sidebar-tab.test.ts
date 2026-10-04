@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { describe, expect, test } from 'bun:test'
-import { dockTabForPathname, hrefForTab, isMainChatPath, resolveTab, tabForPathname, type TabConversation } from '../sidebar-tab'
+import { dockTabForPathname, hrefForTab, isConversationPath, isMainChatPath, resolveTab, tabForPathname, type TabConversation } from '../sidebar-tab'
 
 const conversations: TabConversation[] = [
   { id: 'ch1', kind: 'public' },
@@ -117,5 +117,15 @@ describe('phone dock', () => {
     expect(dockTabForPathname('/c/inbox')).toBe('activity')
     expect(dockTabForPathname('/tasks')).toBe('more')
     expect(dockTabForPathname('/meetings')).toBe('more')
+  })
+})
+
+describe('isConversationPath', () => {
+  test('a channel or DM is a conversation; the chat pages around it are not', () => {
+    expect(isConversationPath('/c/ch1')).toBe(true)
+    expect(isConversationPath('/(app)/c/dm1/')).toBe(true)
+    for (const page of ['/c', '/c/dms', '/c/inbox', '/c/later', '/c/search', '/c/settings', '/', '/projects/p1']) {
+      expect(isConversationPath(page)).toBe(false)
+    }
   })
 })

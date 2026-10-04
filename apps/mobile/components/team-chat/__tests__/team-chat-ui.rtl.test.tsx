@@ -3,7 +3,7 @@
 
 import { describe, expect, mock, test } from 'bun:test'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { Fragment, createElement, forwardRef, useImperativeHandle } from 'react'
+import { Fragment, createElement, createRef, forwardRef, useImperativeHandle } from 'react'
 import { createReactNativeMock } from '../../../test/react-native-mock'
 
 const sentTyping: string[] = []
@@ -56,6 +56,10 @@ mock.module('expo-clipboard', () => ({
   },
 }))
 mock.module('@shogo/shared-ui/primitives', () => ({ cn: (...a: unknown[]) => a.filter(Boolean).join(' ') }))
+mock.module('react-native-safe-area-context', () => ({
+  useSafeAreaInsets: () => ({ top: 0, right: 0, bottom: 0, left: 0 }),
+  SafeAreaView: ({ children }: any) => createElement('div', null, children),
+}))
 const workLogs: string[] = []
 let workLogResult: () => Promise<any> = async () => ({ parts: [{ type: 'text', text: 'Checking the remote.' }], startedAt: 0, completedAt: 1, toolCalls: 1 })
 mock.module('../../chat/turns/PlanningStatusLine', () => ({ PlanningStatusLine: () => createElement('div', { 'data-rn-shim': 'planning' }, 'Planning') }))
@@ -128,8 +132,29 @@ mock.module('../../../hooks/useChatShortcuts', () => ({
 }))
 mock.module('../../../hooks/useTeamChat', () => ({}))
 mock.module('expo-router', () => ({}))
+// The composer is the shared ChatInput; stub its agent-only dependencies.
+mock.module('@/components/ui/popover', () => ({
+  Popover: ({ children, trigger }: any) => createElement(Fragment, null, trigger?.({}), children),
+  PopoverBackdrop: () => null,
+  PopoverContent: ({ children }: any) => createElement(Fragment, null, children),
+}))
+mock.module('../../../lib/platform-config', () => ({ usePlatformConfig: () => ({ features: { billing: false, ezMode: false } }) }))
+mock.module('../../chat/useVoiceInput', () => ({
+  useVoiceInput: () => ({ isBusy: false, isRecording: false, liveTranscript: '', canRecord: false, error: null, clearError() {}, toggleRecording: async () => {} }),
+}))
+mock.module('../../chat/VoiceWaveform', () => ({ VoiceWaveform: () => null }))
+mock.module('../../chat/AttachSourceSheet', () => ({ AttachSourceSheet: () => null }))
+mock.module('../../chat/ContextTracker', () => ({ ContextTracker: () => null, formatTokenCount: (n: number) => String(n) }))
+mock.module('../../chat/ModelPickerMenu', () => ({ ModelPickerMenu: () => null, ComposerModelPicker: () => null, getNativeModelMenuWidth: () => 280 }))
+mock.module('../../chat/FileViewerModal', () => ({ FileViewerModal: () => null }))
+mock.module('../../chat/EnvironmentPicker', () => ({ EnvironmentPicker: () => null }))
+mock.module('../../voice-mode/ChatBridgeContext', () => ({ useChatBridgeOptional: () => null }))
+mock.module('../../chat/ChatContext', () => ({ useChatContextSafe: () => null }))
+mock.module('../../../hooks/useWorkspaceExperience', () => ({ useWorkspaceExperience: () => ({ kind: 'team' }) }))
 
 const { Composer } = await import('../Composer')
+type ComposerHandle = import('../Composer').ComposerHandle
+const { PhoneLayoutOverrideProvider } = await import('../../../lib/native-phone-layout')
 const { MessageRow } = await import('../MessageRow')
 const { MessageList } = await import('../MessageList')
 const { ConversationHeader } = await import('../ConversationHeader')
@@ -155,13 +180,15 @@ function type(input: HTMLElement, value: string) {
   fireEvent.change(input, { target: { value } })
 }
 
+const composerInput = () => screen.getByLabelText('Chat message input') as HTMLTextAreaElement
+
 describe('Composer', () => {
   test('@ autocomplete inserts a mention that is sent as a wire token', async () => {
     const onSend = mock(async () => {})
     render(
       <Composer workspaceId="ws" conversationId="c1" placeholder="Message #general" mentionables={mentionables} me="u-me" onSend={onSend} />,
     )
-    const input = screen.getByLabelText('Message')
+    const input = composerInput()
     type(input, 'ask @bil')
     expect(screen.getByText('Billing Bot')).toBeTruthy()
     expect(screen.queryByText('Me Myself')).toBeNull()
@@ -188,7 +215,7 @@ describe('Composer', () => {
     render(
       <Composer workspaceId="ws" conversationId="c1" threadRootId="root-1" placeholder="Reply" mentionables={mentionables} me="u-me" onSend={onSend} />,
     )
-    const input = screen.getByLabelText('Message')
+    const input = composerInput()
     type(input, '@an')
     expect(screen.getByText('Ana Lopez')).toBeTruthy()
     fireEvent.keyDown(input, { key: 'Escape' })
@@ -209,7 +236,63 @@ describe('Composer', () => {
       <Composer workspaceId="ws" conversationId="c1" placeholder="x" mentionables={null} me="u-me" disabled disabledReason="This channel is archived." onSend={() => {}} />,
     )
     expect(screen.getByText('This channel is archived.')).toBeTruthy()
-    expect(screen.queryByLabelText('Message')).toBeNull()
+    expect(screen.queryByLabelText('Chat message input')).toBeNull()
+  })
+
+  test('agent-only controls stay out of team chat', () => {
+    render(<Composer workspaceId="ws" conversationId="c1" placeholder="x" mentionables={mentionables} me="u-me" onSend={() => {}} />)
+    expect(screen.queryByTestId('interaction-mode-trigger')).toBeNull()
+    expect(screen.queryByLabelText('Advanced controls')).toBeNull()
+  })
+})
+
+describe('Composer on a phone', () => {
+  const renderPhone = (props: Partial<Parameters<typeof Composer>[0]> = {}) =>
+    render(
+      <PhoneLayoutOverrideProvider value>
+        <Composer workspaceId="ws" conversationId="c1" placeholder="Message Ana" mentionables={mentionables} me="u-me" onSend={() => {}} {...props} />
+      </PhoneLayoutOverrideProvider>,
+    )
+
+  test('uses the + menu instead of the desktop toolbar', () => {
+    renderPhone()
+    expect(screen.queryByLabelText('Attach file')).toBeNull()
+    expect(screen.queryByLabelText('Emoji')).toBeNull()
+    expect(screen.getByTestId('project-composer-plus')).toBeTruthy()
+  })
+
+  test('the desktop layout has the toolbar instead of the + menu', () => {
+    render(<Composer workspaceId="ws" conversationId="c1" placeholder="x" mentionables={mentionables} me="u-me" onSend={() => {}} />)
+    expect(screen.queryByTestId('project-composer-plus')).toBeNull()
+    expect(screen.getByLabelText('Attach file')).toBeTruthy()
+    expect(screen.getByLabelText('Emoji')).toBeTruthy()
+  })
+
+  test('Return adds a line; the send button sends', async () => {
+    const onSend = mock(async () => {})
+    renderPhone({ onSend })
+    const input = composerInput()
+    expect(screen.queryByLabelText('Send message')).toBeNull()
+    type(input, 'on my way')
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(onSend).not.toHaveBeenCalled()
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText('Send message'))
+    })
+    expect(onSend).toHaveBeenCalledWith({ text: 'on my way', attachmentIds: [], alsoSentToChannel: undefined })
+  })
+
+  test('thread replies toggle "also send to channel" from the + menu', async () => {
+    const onSend = mock(async () => {})
+    renderPhone({ threadRootId: 'root-1', onSend })
+    type(composerInput(), 'done')
+    fireEvent.click(screen.getByTestId('project-composer-plus'))
+    fireEvent.click(screen.getByLabelText('Also send to channel'))
+    expect(screen.getByText('Also sending to the channel')).toBeTruthy()
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText('Send message'))
+    })
+    expect(onSend).toHaveBeenCalledWith({ text: 'done', attachmentIds: [], alsoSentToChannel: true })
   })
 })
 
@@ -386,9 +469,9 @@ describe('MessageRow', () => {
 describe('Composer emoji and files', () => {
   test(':shortcode suggests emoji, and a finished :code: becomes the emoji', () => {
     render(<Composer workspaceId="ws" conversationId="c1" placeholder="x" mentionables={mentionables} me="u-me" onSend={() => {}} />)
-    const input = screen.getByLabelText('Message') as HTMLTextAreaElement
+    const input = composerInput()
     type(input, 'ship it :tad')
-    expect(shim('emoji-suggestions')).toBeTruthy()
+    expect(shim('composer-completions-emoji')).toBeTruthy()
     fireEvent.keyDown(input, { key: 'Enter' })
     expect(input.value).toBe('ship it 🎉 ')
 
@@ -400,7 +483,7 @@ describe('Composer emoji and files', () => {
 
   test('the emoji button opens a searchable picker that inserts at the cursor', () => {
     render(<Composer workspaceId="ws" conversationId="c1" placeholder="x" mentionables={mentionables} me="u-me" onSend={() => {}} />)
-    const input = screen.getByLabelText('Message') as HTMLTextAreaElement
+    const input = composerInput()
     type(input, 'launch')
     fireEvent.click(screen.getByLabelText('Emoji'))
     fireEvent.change(screen.getByLabelText('Search emoji'), { target: { value: 'rocket' } })
@@ -409,22 +492,24 @@ describe('Composer emoji and files', () => {
     expect(shim('emoji-picker')).toBeNull()
   })
 
-  test('pasting files uploads them as attachments; pasting text does not', async () => {
+  test('dropped files are staged in the composer and uploaded when the message is sent', async () => {
     uploaded.length = 0
-    render(<Composer workspaceId="ws" conversationId="c1" placeholder="x" mentionables={mentionables} me="u-me" onSend={() => {}} />)
-    const input = screen.getByLabelText('Message')
-    const paste = (files: File[]) => {
-      const event = new Event('paste', { bubbles: true, cancelable: true }) as any
-      event.clipboardData = { files }
-      input.dispatchEvent(event)
-      return event
-    }
-    expect(paste([]).defaultPrevented).toBe(false)
+    const onSend = mock(async () => {})
+    const ref = createRef<ComposerHandle>()
+    render(<Composer ref={ref} workspaceId="ws" conversationId="c1" placeholder="x" mentionables={mentionables} me="u-me" onSend={onSend} />)
     await act(async () => {
-      expect(paste([new File(['x'], 'screenshot.png', { type: 'image/png' })]).defaultPrevented).toBe(true)
+      ref.current!.addFiles([new File(['notes'], 'notes.txt', { type: 'text/plain' })])
     })
-    expect(uploaded).toEqual(['screenshot.png'])
-    expect(screen.getByText('screenshot.png')).toBeTruthy()
+    await waitFor(() => expect(screen.getByText('notes.txt')).toBeTruthy())
+    expect(uploaded).toEqual([])
+
+    const input = composerInput()
+    type(input, 'see attached')
+    await act(async () => {
+      fireEvent.keyDown(input, { key: 'Enter' })
+    })
+    await waitFor(() => expect(onSend).toHaveBeenCalledWith({ text: 'see attached', attachmentIds: ['att-notes.txt'], alsoSentToChannel: undefined }))
+    expect(uploaded).toEqual(['notes.txt'])
   })
 })
 
@@ -614,6 +699,35 @@ describe('ConversationHeader channel editing', () => {
       fireEvent.click(screen.getByLabelText('Save channel'))
     })
     expect(updates).toEqual([{ id: 'c9', patch: { topic: null } }])
+  })
+
+  test('the floating phone header goes back and keeps every action in its sheet', async () => {
+    updates.length = 0
+    const onBack = mock(() => {})
+    render(
+      <ConversationHeader
+        conversation={channel({ members: [{ id: 'm1', type: 'user', userId: 'u-ana', name: 'Ana' }, { id: 'm2', type: 'user', userId: 'u-me', name: 'Me' }] })}
+        mentionables={null}
+        me="u-me"
+        onChanged={() => {}}
+        onLeft={() => {}}
+        floating
+        onBack={onBack}
+      />,
+    )
+    expect(screen.getByText('2 members')).toBeTruthy()
+    fireEvent.click(screen.getByLabelText('Back'))
+    expect(onBack).toHaveBeenCalled()
+    for (const label of ['Edit channel', 'Notification settings', 'Star', 'Pinned messages', 'Members', 'Leave channel', 'Archive']) {
+      expect(screen.getByLabelText(label)).toBeTruthy()
+    }
+    expect(screen.getByLabelText('Catch me up')).toBeTruthy()
+    fireEvent.click(screen.getByLabelText('Edit channel'))
+    fireEvent.change(screen.getByLabelText('Channel topic'), { target: { value: 'Ship it' } })
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText('Save channel'))
+    })
+    expect(updates).toEqual([{ id: 'c9', patch: { topic: 'Ship it' } }])
   })
 })
 

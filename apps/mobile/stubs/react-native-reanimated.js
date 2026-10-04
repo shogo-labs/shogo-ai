@@ -221,7 +221,7 @@ function useAnimatedRef() { return { current: null } }
 // (non-existent) worklets runtime. Other hooks, especially
 // `useAnimatedStyle`, are still exported because NativeWind's
 // css-interop requires them for `animate-*` classes such as the loading
-// spinner in CompactChatInput.
+// spinner on the composer send button.
 
 const View = require('react-native').View
 const ScrollView = require('react-native').ScrollView

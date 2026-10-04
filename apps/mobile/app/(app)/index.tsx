@@ -31,7 +31,7 @@ import {
   useDomainActions,
   useDomainHttp,
 } from '../../contexts/domain'
-import { CompactChatInput, ComposerPlusSection } from '../../components/chat/CompactChatInput'
+import { ComposerPlusSection } from '../../components/chat/ComposerPlusMenu'
 import {
   ChatInput,
   DEFAULT_MODEL_PRO,
@@ -224,30 +224,7 @@ const LovableGradient = memo(function LovableGradient({ isDark, phone = false }:
 // (apps/mobile/components/project/useOpenLocalFolder.ts), shared with
 // the `/projects` page's "New project" menu so both surfaces stay in sync.
 
-// Static style fragments. The composer-wrapper variants below are a
-// per-theme ✕ per-platform decision tree, so we precompute the four
-// possibilities once and pick by index instead of building a new object
-// literal on every render.
-const COMPOSER_WRAPPER_NATIVE = { maxWidth: 680 }
-const COMPOSER_WRAPPER_NATIVE_LIGHT = {
-  maxWidth: 680,
-  shadowColor: '#000000',
-  shadowOffset: { width: 0, height: 6 },
-  shadowOpacity: 0.1,
-  shadowRadius: 16,
-  elevation: 5,
-} as const
 const CONTENT_MAX_WIDTH = { maxWidth: 680 } as const
-const COMPOSER_WRAPPER_WEB_LIGHT = {
-  maxWidth: 680,
-  boxShadow:
-    '0 4px 24px rgba(0,0,0,0.08), 0 1px 4px rgba(0,0,0,0.04)',
-} as const
-const COMPOSER_WRAPPER_WEB_DARK = {
-  maxWidth: 680,
-  boxShadow:
-    '0 4px 24px rgba(0,0,0,0.4), 0 1px 4px rgba(0,0,0,0.3)',
-} as const
 
 const styles = StyleSheet.create({
   gradientLayer: {
@@ -297,7 +274,6 @@ export const HomeScreen = observer(function HomeScreen({
     iosKeyboardAvoiding: iosComposerAvoiding,
   })
 
-  const [prompt, setPrompt] = useState('')
   const [interactionMode, setInteractionMode] = useState<InteractionMode>('agent')
   const [selectedModel, setSelectedModel] = useState<string>(DEFAULT_MODEL_FREE)
   // Gate stale-selection reconciliation until the persisted preference has
@@ -332,7 +308,7 @@ export const HomeScreen = observer(function HomeScreen({
   /**
    * Draft project the homepage opens behind the scenes for a creation
    * gesture (pressing Send or tapping the mic for EZ Mode). It is NOT
-   * created while the user is merely typing — see `handlePromptChange`.
+   * created while the user is merely typing.
    * Reused by both submit and the Shogo voice entry point so we never
    * create two projects for one creation gesture.
    */
@@ -616,16 +592,6 @@ export const HomeScreen = observer(function HomeScreen({
   }, [actions, createHomeDraftSession, currentWorkspace?.id, prewarmHomeDraft, user?.id])
 
   /**
-   * Home composer input handler. Updates local state only — project and
-   * chat-session creation is deferred to the actual creation gesture
-   * (Send -> `createProjectFromPrompt`, mic -> `handleStartVoiceProjectCreation`)
-   * so we never open a stray project while the user is still typing.
-   */
-  const handlePromptChange = useCallback((next: string) => {
-    setPrompt(next)
-  }, [])
-
-  /**
    * Composer tech-stack chip handler. Updates local state (consumed at
    * creation time via `techStackIdRef`). A draft is only created on the
    * actual Send/mic gesture, so normally no project exists yet — but if a
@@ -903,15 +869,6 @@ export const HomeScreen = observer(function HomeScreen({
     () => ({ fontSize: isMobile ? 14 : 16 }),
     [isMobile],
   )
-  const composerWrapperStyle =
-    Platform.OS === 'web'
-      ? isDark
-        ? COMPOSER_WRAPPER_WEB_DARK
-        : COMPOSER_WRAPPER_WEB_LIGHT
-      : isNativePhone && !isDark
-        ? COMPOSER_WRAPPER_NATIVE_LIGHT
-        : COMPOSER_WRAPPER_NATIVE
-
   // Unauthenticated local-mode sessions bounce back to the root router — but
   // NEVER navigate during render. Calling `router.replace()` in the render body
   // reschedules a navigation on every render while this screen is still mounted
@@ -1023,60 +980,55 @@ export const HomeScreen = observer(function HomeScreen({
       placeholder="Describe the project you want to build..."
       composer={currentExperience.composer}
       presentation="agent"
+      inputTestID="home-composer-input"
     />
   ) : (
-    <View className={isNativePhone ? 'w-full' : 'w-full rounded-2xl'} style={composerWrapperStyle}>
-      <CompactChatInput
-        onSubmit={handlePromptSubmit}
-        isLoading={isCreating}
+    <View className="w-full" style={CONTENT_MAX_WIDTH}>
+      <ChatInput
+        onSubmit={(text, files) => handlePromptSubmit(text, files)}
+        submitting={isCreating}
         placeholder={homeComposerPlaceholder}
-        agentPlaceholderActive={interactionMode === 'agent'}
-        value={prompt}
-        onChange={handlePromptChange}
+        typingPlaceholder={interactionMode === 'agent'}
+        composer={currentExperience.composer}
         interactionMode={interactionMode}
         onInteractionModeChange={handleHomeInteractionModeChange}
         selectedModel={selectedModel}
         onModelChange={handleHomeModelChange}
         isPro={hasAdvancedModelAccess}
         onUpgradeClick={() => router.push('/billing')}
-        onStartVoiceProjectCreation={
+        onVoiceStart={
           Platform.OS === 'web' && features.ezMode
             ? handleStartVoiceProjectCreation
             : undefined
         }
-        prominentMobile={isNativePhone}
-        prominentColorScheme={isDark ? 'dark' : 'light'}
+        inputTestID="home-composer-input"
         leadingControls={
-          isNativePhone ? undefined : (
-            <View className="flex-row items-center gap-1">
-              <ProjectSourceMenu
-                workspaceId={currentWorkspace?.id}
-                variant="chip"
-              />
-              <TechStackPicker
-                value={techStackId}
-                onChange={handleTechStackChange}
-                disabled={isCreating}
-              />
-            </View>
-          )
+          <View className="flex-row items-center gap-1">
+            <ProjectSourceMenu
+              workspaceId={currentWorkspace?.id}
+              variant="chip"
+            />
+            <TechStackPicker
+              value={techStackId}
+              onChange={handleTechStackChange}
+              disabled={isCreating}
+            />
+          </View>
         }
         plusMenuExtras={
-          isNativePhone ? (
-            <ComposerPlusSection
-              id="stack"
-              label="Tech stack"
-              value={techStackDisplayName(techStackId)}
-              Icon={Layers}
-            >
-              <TechStackPicker
-                value={techStackId}
-                onChange={handleTechStackChange}
-                disabled={isCreating}
-                presentation="list"
-              />
-            </ComposerPlusSection>
-          ) : undefined
+          <ComposerPlusSection
+            id="stack"
+            label="Tech stack"
+            value={techStackDisplayName(techStackId)}
+            Icon={Layers}
+          >
+            <TechStackPicker
+              value={techStackId}
+              onChange={handleTechStackChange}
+              disabled={isCreating}
+              presentation="list"
+            />
+          </ComposerPlusSection>
         }
       />
     </View>

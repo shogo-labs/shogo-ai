@@ -25,6 +25,7 @@ import { useDraftsFeed, useSavedFeed } from '../../../hooks/useChatItems'
 import { useCustomEmojiFeed } from '../../../hooks/useCustomEmoji'
 import { ConversationHeader } from '../../../components/team-chat/ConversationHeader'
 import { TimelinePane } from '../../../components/team-chat/TimelinePane'
+import { usePhoneChromeOverlay } from '../../../components/layout/PhoneChromeOverlay'
 
 const api = teamChatApi()
 const THREAD_SIDE_PANE_MIN_WIDTH = 1024
@@ -46,6 +47,8 @@ export default function ConversationScreen() {
   const [error, setError] = useState<string | null>(null)
   const [focused, setFocused] = useState(true)
   const [foreground, setForeground] = useState(AppState.currentState === 'active')
+  const [headerHeight, setHeaderHeight] = useState(0)
+  const chrome = usePhoneChromeOverlay()
 
   const workspaceId = conversation?.workspaceId ?? workspace?.id ?? null
   const mentionables = useMentionables(workspaceId)
@@ -160,6 +163,11 @@ export default function ConversationScreen() {
 
   const visible = focused && foreground
   const showMain = sidePane || !threadRootId
+  const floating = chrome.overlay && !sidePane
+  const goBack = () => {
+    if (router.canGoBack()) router.back()
+    else router.replace((conversation.kind === 'dm' || conversation.kind === 'group_dm' ? '/(app)/c/dms' : '/(app)') as any)
+  }
   const header = (
     <ConversationHeader
       conversation={conversation}
@@ -167,6 +175,9 @@ export default function ConversationScreen() {
       me={me}
       onChanged={onChanged}
       onLeft={() => router.replace('/(app)/c' as any)}
+      floating={floating}
+      onBack={goBack}
+      onLayout={floating ? (e) => setHeaderHeight(Math.round(e.nativeEvent.layout.height)) : undefined}
     />
   )
 
@@ -187,6 +198,8 @@ export default function ConversationScreen() {
               onOpenThread={openThread}
               onOpenSession={openSession}
               onJoin={onJoin}
+              floating={floating}
+              topInset={headerHeight}
             />
           </View>
         )}
@@ -203,6 +216,7 @@ export default function ConversationScreen() {
               highlightMessageId={linkedMessageId}
               onOpenSession={openSession}
               onClose={closeThread}
+              floating={floating}
             />
           </View>
         )}

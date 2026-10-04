@@ -39,6 +39,10 @@ const REQUIRED_LOCAL_ROUTES = [
   'PATCH /api/workspaces/:workspaceId/schedules/:scheduleId',
   'DELETE /api/workspaces/:workspaceId/schedules/:scheduleId',
   'GET /api/types-proxy',
+  // Project dropdown > Export / Import; these 404'd on desktop once the
+  // route moved into the cloud-only island.
+  'POST /api/projects/:projectId/export',
+  'POST /api/projects/import',
   // Settings > Integrations is in LOCAL_NAV_ITEMS; these 404'd from 2.0.0.
   'GET /api/integrations/providers',
   'GET /api/integrations/connections',

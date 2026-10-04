@@ -18,7 +18,6 @@ export {
   type ChatMessage,
 } from "./ChatContext"
 export { ChatHeader, type ChatHeaderProps } from "./ChatHeader"
-export { CompactChatInput } from "./CompactChatInput"
 export { ExpandTab, type ExpandTabProps } from "./ExpandTab"
 export { ToolCallDisplay, type ToolCallState } from "./ToolCallDisplay"
 export { MessageList } from "./MessageList"
