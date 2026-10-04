@@ -7,12 +7,13 @@ import { moreItems } from '../more-items'
 const ids = (items: ReturnType<typeof moreItems>) => items.map((i) => i.id)
 
 describe('moreItems', () => {
-  test('a team workspace lists Tasks and Marketplace', () => {
-    expect(ids(moreItems({ kind: 'team', marketplace: true, canvasesHidden: true }))).toEqual(['tasks', 'marketplace'])
+  test('a team workspace lists Marketplace, and Tasks only when its navigation is switched on', () => {
+    expect(ids(moreItems({ kind: 'team', marketplace: true, canvasesHidden: true }))).toEqual(['marketplace'])
+    expect(ids(moreItems({ kind: 'team', marketplace: true, canvasesHidden: true, tasksHidden: false }))).toEqual(['tasks', 'marketplace'])
   })
 
   test('Marketplace follows the platform feature flag', () => {
-    expect(ids(moreItems({ kind: 'team', marketplace: false, canvasesHidden: true }))).toEqual(['tasks'])
+    expect(ids(moreItems({ kind: 'team', marketplace: false, canvasesHidden: true }))).toEqual([])
   })
 
   test('a personal workspace has Side chats instead, and no Tasks or Marketplace', () => {
@@ -20,7 +21,7 @@ describe('moreItems', () => {
   })
 
   test('Files appears only when canvas navigation is switched back on', () => {
-    expect(ids(moreItems({ kind: 'team', marketplace: true, canvasesHidden: false }))).toEqual(['tasks', 'marketplace', 'files'])
+    expect(ids(moreItems({ kind: 'team', marketplace: true, canvasesHidden: false }))).toEqual(['marketplace', 'files'])
   })
 
   test('every item has a destination and a one-line description', () => {

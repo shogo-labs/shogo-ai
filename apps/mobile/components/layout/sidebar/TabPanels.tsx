@@ -11,6 +11,8 @@ import { Bookmark, ChevronRight, FileText, ListTodo, MessageCircle, MessagesSqua
 import { cn } from '@shogo/shared-ui/primitives'
 import { useHomeSignals } from '../../../hooks/useHomeSignals'
 import { useWorkspaceExperience } from '../../../hooks/useWorkspaceExperience'
+// Leaf import: the `@shogo/shared-app` barrel also loads the domain SDK.
+import { TASKS_NAV_HIDDEN } from '../../../../../packages/shared-app/src/hooks/useWorkspaceExperience'
 import type { ActivityEntry } from '../../../lib/activity-feed'
 import { moreItems, type MoreIcon } from '../../../lib/more-items'
 import { usePlatformConfig } from '../../../lib/platform-config'
@@ -50,7 +52,7 @@ export function HomePanel({ pinned, onNavPress, isHomeRoute }: HomePanelProps) {
     <View testID="home-panel">
       <View className="px-2">
         <NavItem icon={MessageCircle} label="Workspace agent" href="/(app)/agent" active={isHomeRoute} onNavPress={onNavPress} />
-        <NavItem icon={ListTodo} label="Tasks" href="/(app)/tasks" onNavPress={onNavPress} />
+        {!TASKS_NAV_HIDDEN && <NavItem icon={ListTodo} label="Tasks" href="/(app)/tasks" onNavPress={onNavPress} />}
       </View>
 
       {running.length > 0 && <RunningNow entries={running} compact onOpen={open} />}

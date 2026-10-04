@@ -342,6 +342,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         trailingControls={trailingControls}
         plusMenuExtras={plusMenuExtras}
         inputTestID="team-composer-input"
+        inputAccessibilityLabel="Message"
       />
       <View className="px-4">
         {emojiOpen && <EmojiPicker workspaceId={workspaceId} onPick={insertEmoji} className="mb-2" />}

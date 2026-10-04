@@ -160,7 +160,7 @@ test.describe("Team workspace: desktop rail and panels", () => {
     }
 
     await tab(page, "More").click()
-    await expect(panel(page, "more-panel").getByRole("link", { name: "Tasks" })).toBeVisible()
+    await expect(panel(page, "more-panel").getByRole("link", { name: "Tasks" })).toHaveCount(0)
   })
 
   test("DM filters separate people from agents", async () => {
@@ -245,7 +245,7 @@ test.describe("Team workspace: desktop rail and panels", () => {
     await rail(page).getByRole("button", { name: "Create", exact: true }).click()
     const items = page.getByTestId("create-menu").getByRole("menuitem")
     await expect(items.first()).toHaveAccessibleName("Ask an agent")
-    await expect(items).toHaveText([/Ask an agent/, /Start a task/, /New project/, /New message/, /Create channel/])
+    await expect(items).toHaveText([/Ask an agent/, /New project/, /New message/, /Create channel/])
 
     await page.getByRole("menuitem", { name: "Create channel" }).click()
     await expect(page.getByText("Create a channel")).toBeVisible()

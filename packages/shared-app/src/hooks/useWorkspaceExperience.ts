@@ -29,6 +29,8 @@ export type WorkspaceExperienceKind = 'personal' | 'team'
 export type BottomTabId = 'chat' | 'meetings' | 'goals' | 'activity' | 'tasks' | 'canvases' | 'more'
 /** Temporary UI switch; Canvas routes and runtime behavior remain available. */
 export const CANVAS_NAV_HIDDEN = true
+/** Temporary UI switch; the Tasks route stays available, only its navigation is hidden. */
+export const TASKS_NAV_HIDDEN = true
 export type PrimaryNavId = Exclude<BottomTabId, 'more'>
 
 /**
@@ -143,7 +145,7 @@ export function workspaceExperience(
       ]
     : [
         'chat',
-        'tasks',
+        ...(TASKS_NAV_HIDDEN ? [] : ['tasks' as const]),
         'activity',
         ...(CANVAS_NAV_HIDDEN ? [] : ['canvases' as const]),
         'more',

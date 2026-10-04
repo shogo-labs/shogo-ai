@@ -10,6 +10,8 @@ import { Pressable, Text, View } from 'react-native'
 import { useRouter } from 'expo-router'
 import { FolderPlus, Hash, ListTodo, MessageSquarePlus, Sparkles } from 'lucide-react-native'
 import { Popover, PopoverBackdrop, PopoverBody, PopoverContent } from '@/components/ui/popover'
+// Leaf import: the `@shogo/shared-app` barrel also loads the domain SDK.
+import { TASKS_NAV_HIDDEN } from '../../../../packages/shared-app/src/hooks/useWorkspaceExperience'
 import { useTeamChatNav } from '../team-chat/TeamChatSidebarProvider'
 
 export interface CreateMenuItem {
@@ -25,7 +27,7 @@ export interface CreateMenuItem {
 export function createMenuItems(opts: { teamChat: boolean; startCreate: (mode: 'channel' | 'dm' | 'agent') => void }): CreateMenuItem[] {
   return [
     { id: 'ask-agent', label: 'Ask an agent', icon: Sparkles, href: '/(app)/agent' },
-    { id: 'start-task', label: 'Start a task', icon: ListTodo, href: '/(app)/tasks' },
+    ...(TASKS_NAV_HIDDEN ? [] : [{ id: 'start-task', label: 'Start a task', icon: ListTodo, href: '/(app)/tasks' }]),
     { id: 'new-project', label: 'New project', icon: FolderPlus, href: '/(app)/new-project' },
     ...(opts.teamChat
       ? [
