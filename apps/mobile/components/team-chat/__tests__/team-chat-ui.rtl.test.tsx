@@ -180,7 +180,7 @@ function type(input: HTMLElement, value: string) {
   fireEvent.change(input, { target: { value } })
 }
 
-const composerInput = () => screen.getByLabelText('Chat message input') as HTMLTextAreaElement
+const composerInput = () => screen.getByLabelText('Message') as HTMLTextAreaElement
 
 describe('Composer', () => {
   test('@ autocomplete inserts a mention that is sent as a wire token', async () => {
@@ -236,7 +236,7 @@ describe('Composer', () => {
       <Composer workspaceId="ws" conversationId="c1" placeholder="x" mentionables={null} me="u-me" disabled disabledReason="This channel is archived." onSend={() => {}} />,
     )
     expect(screen.getByText('This channel is archived.')).toBeTruthy()
-    expect(screen.queryByLabelText('Chat message input')).toBeNull()
+    expect(screen.queryByLabelText('Message')).toBeNull()
   })
 
   test('agent-only controls stay out of team chat', () => {
