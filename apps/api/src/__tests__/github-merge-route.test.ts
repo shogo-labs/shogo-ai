@@ -2,12 +2,14 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * Internal route behind the agent's `github_merge_pr` tool: merges with the
- * project's GitHub App connection and says plainly when there isn't one.
+ * project's GitHub connection (App installation or user token) and says
+ * plainly when there isn't one.
  */
 
 import { describe, expect, test } from 'bun:test'
 import { Hono } from 'hono'
 import { runtimeInternalRoutes } from '../routes/internal-runtime-routes'
+import { encryptSecret } from '../lib/secret-crypto'
 
 type Merge = { installationId: number; repoOwner: string; repoName: string; number: number; method?: string; commitTitle?: string }
 
@@ -73,5 +75,30 @@ describe('POST /projects/:id/github/pull-request/:number/merge', () => {
     const refused = await app({ connection, merge: async () => { throw new Error('Failed to merge pull request: Pull Request is not mergeable') } }).post('12/merge', {})
     expect(refused.status).toBe(502)
     expect((await refused.json()).error).toContain('not mergeable')
+  })
+
+  test('merges a token connection with the decrypted user token instead of an installation', async () => {
+    const previousKey = process.env.SECRETS_ENCRYPTION_KEY
+    process.env.SECRETS_ENCRYPTION_KEY = Buffer.alloc(32, 3).toString('base64')
+    try {
+      const tokenConnection = {
+        authType: 'token',
+        installationId: null,
+        encryptedToken: encryptSecret('ghp_merge_user'),
+        tokenLogin: 'octo-user',
+        repoOwner: 'acme',
+        repoName: 'shop',
+        defaultBranch: 'main',
+      }
+      const t = app({ connection: tokenConnection })
+      const res = await t.post('9/merge', {})
+      expect(res.status).toBe(200)
+      expect(t.merges).toEqual([
+        { token: 'ghp_merge_user', repoOwner: 'acme', repoName: 'shop', number: 9, method: 'squash', commitTitle: undefined } as any,
+      ])
+    } finally {
+      if (previousKey === undefined) delete process.env.SECRETS_ENCRYPTION_KEY
+      else process.env.SECRETS_ENCRYPTION_KEY = previousKey
+    }
   })
 })

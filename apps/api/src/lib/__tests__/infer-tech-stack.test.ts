@@ -116,6 +116,21 @@ describe('inferTechStackId', () => {
     ).toBe('unity-game')
   })
 
+  test('Astro, Eleventy, or a preview config → custom', () => {
+    expect(
+      inferTechStackId({
+        files: { 'workspace/package.json': u8(JSON.stringify({ dependencies: { astro: '^6', react: '19' } })) },
+      }),
+    ).toBe('custom')
+    expect(
+      inferTechStackId({
+        files: { 'workspace/package.json': u8(JSON.stringify({ devDependencies: { '@11ty/eleventy': '3' } })) },
+      }),
+    ).toBe('custom')
+    expect(inferTechStackId({ files: { 'workspace/shogo.preview.json': u8('{"build":"make"}') } })).toBe('custom')
+    expect(isKnownTechStackId('custom')).toBe(true)
+  })
+
   test('does not guess react-app for a generic workspace', () => {
     expect(
       inferTechStackId({

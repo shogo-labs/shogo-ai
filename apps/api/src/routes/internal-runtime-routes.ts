@@ -54,6 +54,7 @@ import {
 import { projectTrustRoutes } from './internal-project-trust'
 import { signSharedFileToken } from '../lib/shared-file-token'
 import { withShogoPrFooter } from '@shogo/shared-runtime/agent-attribution'
+import { resolveConnectionAuth } from '../services/github-auth'
 
 type ProjectLifecycleService = typeof import('../services/project-lifecycle.service')
 type AgentCallService = typeof import('../services/agent-call.service')
@@ -909,9 +910,10 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
   /**
    * GET /api/internal/projects/:projectId/github/cli-credentials
    *
-   * Mints a short-lived installation token so the project runtime can run
-   * `gh` and `git commit` as the GitHub App bot. The token is returned to
-   * the runtime only — never written to the workspace or logs.
+   * Credentials so the project runtime can run `gh` and `git commit`: a
+   * short-lived installation token (GitHub App bot) or the connection's user
+   * access token. Returned to the runtime only — never written to the
+   * workspace or logs.
    */
   app.get('/projects/:projectId/github/cli-credentials', async (c) => {
     const projectId = c.req.param('projectId')
@@ -937,7 +939,7 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
           {
             error: {
               code: 'github_app_not_installed',
-              message: 'This project has no GitHub App connection.',
+              message: 'This project has no GitHub connection.',
             },
           },
           409,
@@ -946,7 +948,86 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
       return c.json({ ok: true, ...credentials })
     } catch (err: any) {
       console.error(`[Internal] GitHub CLI credentials for ${projectId} failed:`, err?.message ?? err)
-      return c.json({ error: 'Failed to mint GitHub App credentials' }, 502)
+      return c.json({ error: 'Failed to get GitHub credentials' }, 502)
+    }
+  })
+
+  /**
+   * POST /api/internal/projects/:projectId/github/connect
+   *   body: { repoOwner, repoName, token }
+   *
+   * Connects the project with an access token the user shared with the agent.
+   * The token is validated, stored encrypted on the connection, and used to
+   * point the project's workspace (in its own runtime) at the repository.
+   * It is never echoed back.
+   */
+  app.post('/projects/:projectId/github/connect', async (c) => {
+    const projectId = c.req.param('projectId')
+    if (!projectId) return c.json({ error: 'Missing projectId' }, 400)
+    if (!(await validateAuth(c, projectId))) return c.json({ error: 'Unauthorized' }, 401)
+
+    const body = await c.req.json().catch(() => null) as Record<string, unknown> | null
+    const repoOwner = typeof body?.repoOwner === 'string' ? body.repoOwner.trim() : ''
+    const repoName = typeof body?.repoName === 'string' ? body.repoName.trim() : ''
+    const token = typeof body?.token === 'string' ? body.token.trim() : ''
+    if (!repoOwner || !repoName || !token) {
+      return c.json({ error: 'repoOwner, repoName, and token are required' }, 400)
+    }
+    if (!loadGitHub) {
+      return c.json({ error: { code: 'github_unavailable', message: 'GitHub connections are not available on this runtime.' } }, 409)
+    }
+
+    try {
+      const github = await loadGitHub()
+      const { runtimeGitHubWorkspace } = await import('../services/github-workspace')
+      const { connection, repo, workspace } = await github.connectRepository({
+        projectId,
+        token,
+        repoOwner,
+        repoName,
+        workspace: runtimeGitHubWorkspace(projectId),
+      })
+      return c.json({
+        ok: true,
+        repoFullName: repo.full_name,
+        defaultBranch: connection.defaultBranch,
+        authType: connection.authType,
+        login: connection.tokenLogin,
+        htmlUrl: repo.html_url,
+        workspace,
+      })
+    } catch (err: any) {
+      console.error(`[Internal] GitHub token connect for ${projectId} failed:`, err?.message ?? err)
+      return c.json({ error: String(err?.message ?? 'Failed to connect the repository') }, 400)
+    }
+  })
+
+  /**
+   * POST /api/internal/projects/:projectId/github/authorize-url
+   *   body: { repoOwner, repoName }
+   *
+   * A link the user opens to authorize the Shogo GitHub App for the repo.
+   * `available: false` when this server can't run that flow, so the agent
+   * offers only the token option.
+   */
+  app.post('/projects/:projectId/github/authorize-url', async (c) => {
+    const projectId = c.req.param('projectId')
+    if (!projectId) return c.json({ error: 'Missing projectId' }, 400)
+    if (!(await validateAuth(c, projectId))) return c.json({ error: 'Unauthorized' }, 401)
+
+    const body = await c.req.json().catch(() => null) as Record<string, unknown> | null
+    const repoOwner = typeof body?.repoOwner === 'string' ? body.repoOwner.trim() : ''
+    const repoName = typeof body?.repoName === 'string' ? body.repoName.trim() : ''
+    if (!repoOwner || !repoName) return c.json({ error: 'repoOwner and repoName are required' }, 400)
+    if (!loadGitHub) return c.json({ ok: true, available: false })
+
+    try {
+      const github = await loadGitHub()
+      if (!github.isOAuthConfigured()) return c.json({ ok: true, available: false })
+      return c.json({ ok: true, available: true, url: github.getAuthorizeLinkUrl(projectId, repoOwner, repoName) })
+    } catch (err: any) {
+      console.error(`[Internal] GitHub authorize URL for ${projectId} failed:`, err?.message ?? err)
+      return c.json({ error: 'Failed to create the authorization link' }, 502)
     }
   })
 
@@ -954,9 +1035,10 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
    * POST /api/internal/projects/:projectId/github/pull-request
    *   body: { title, head, base?, body?, draft?, runId? }
    *
-   * Creates a PR with the Shogo GitHub App installation token. GitHub then
-   * attributes the PR to the App's bot account instead of the user's token.
-   * The project connection is used as the authoritative repository target.
+   * Creates a PR with the project's GitHub connection. An App connection
+   * uses the installation token, so GitHub attributes the PR to the App's
+   * bot; a token connection opens it as the token's user. The project
+   * connection is used as the authoritative repository target.
    */
   app.post('/projects/:projectId/github/pull-request', async (c) => {
     const projectId = c.req.param('projectId')
@@ -990,13 +1072,13 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
       }
       const github = await loadGitHub()
       const connection = await github.getConnection(projectId)
-      const installationId = connection?.installationId
-      if (!connection || typeof installationId !== 'number' || !Number.isInteger(installationId)) {
+      const auth = resolveConnectionAuth(connection)
+      if (!connection || !auth) {
         return c.json(
           {
             error: {
               code: 'github_app_not_installed',
-              message: 'This project has no GitHub App connection for bot-authored PRs.',
+              message: 'This project has no GitHub connection for PRs.',
             },
           },
           409,
@@ -1007,7 +1089,7 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
         ? `${withShogoPrFooter(prBody)}\n\n${github.runIdMarker(runId)}`
         : withShogoPrFooter(prBody)
       const result = await github.createPullRequest({
-        installationId,
+        ...(auth.kind === 'token' ? { token: auth.token } : { installationId: auth.installationId }),
         repoOwner: connection.repoOwner,
         repoName: connection.repoName,
         head,
@@ -1021,7 +1103,10 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
         number: result.number,
         url: result.html_url,
         htmlUrl: result.html_url,
-        author: `${process.env.GH_APP_SLUG || 'shogo-ai'}[bot]`,
+        mode: auth.kind === 'token' ? 'user-token' : 'github-app',
+        author: auth.kind === 'token'
+          ? auth.login ?? undefined
+          : `${process.env.GH_APP_SLUG || 'shogo-ai'}[bot]`,
       })
     } catch (err: any) {
       console.error(`[Internal] GitHub PR creation for ${projectId} failed:`, err?.message ?? err)
@@ -1033,8 +1118,9 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
    * POST /api/internal/projects/:projectId/github/pull-request/:number/merge
    *   body: { method?: 'merge' | 'squash' | 'rebase', commitTitle? }
    *
-   * Merges with the Shogo GitHub App installation token. The agent's
-   * `github_merge_pr` tool calls this after a person approved it.
+   * Merges with the project's GitHub connection (App installation token or
+   * user access token). The agent's `github_merge_pr` tool calls this after
+   * a person approved it.
    */
   app.post('/projects/:projectId/github/pull-request/:number/merge', async (c) => {
     const projectId = c.req.param('projectId')
@@ -1053,12 +1139,12 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
       }
       const github = await loadGitHub()
       const connection = await github.getConnection(projectId)
-      const installationId = connection?.installationId
-      if (!connection || typeof installationId !== 'number' || !Number.isInteger(installationId)) {
-        return c.json({ error: { code: 'github_app_not_installed', message: 'This project has no GitHub App connection.' } }, 409)
+      const auth = resolveConnectionAuth(connection)
+      if (!connection || !auth) {
+        return c.json({ error: { code: 'github_app_not_installed', message: 'This project has no GitHub connection.' } }, 409)
       }
       const result = await github.mergePullRequest({
-        installationId,
+        ...(auth.kind === 'token' ? { token: auth.token } : { installationId: auth.installationId }),
         repoOwner: connection.repoOwner,
         repoName: connection.repoName,
         number,

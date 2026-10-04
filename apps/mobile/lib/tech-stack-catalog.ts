@@ -58,6 +58,12 @@ export const FALLBACK_TECH_STACKS: TechStackSummary[] = [
     tags: ['unity'],
   },
   {
+    id: 'custom',
+    name: 'Custom',
+    description: 'Bring your own framework — the preview runs your build (Astro, Eleventy, …)',
+    tags: ['custom', 'static'],
+  },
+  {
     id: 'none',
     name: 'None',
     description: 'No preset — the agent picks tools and frameworks',

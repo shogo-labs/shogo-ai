@@ -10,6 +10,8 @@ process.env.GH_APP_PRIVATE_KEY = 'fake-private-key-with-\\nliteral-escapes'
 process.env.GH_APP_CLIENT_ID = 'client-id'
 process.env.GH_APP_CLIENT_SECRET = 'client-secret'
 process.env.GH_APP_WEBHOOK_SECRET = 'webhook-secret'
+const TEST_SECRETS_KEY = Buffer.alloc(32, 7).toString('base64')
+process.env.SECRETS_ENCRYPTION_KEY = TEST_SECRETS_KEY
 
 // ─── prisma mock ─────────────────────────────────────────────────────────────
 
@@ -20,7 +22,10 @@ type Connection = {
   repoName: string
   repoFullName: string
   defaultBranch: string
+  authType?: 'app' | 'token'
   installationId: number | null
+  encryptedToken?: string | null
+  tokenLogin?: string | null
   repoId: number
   isPrivate: boolean
   syncEnabled: boolean
@@ -116,6 +121,7 @@ const gitCalls = {
   push: [] as { workspacePath: string; opts: any }[],
   pull: [] as { workspacePath: string; opts: any }[],
   fetch: [] as string[],
+  fetchOpts: [] as any[],
 }
 
 let pushResult: { success: boolean; error?: string } = { success: true }
@@ -140,7 +146,11 @@ mock.module('../git.service', () => ({
     gitCalls.pull.push({ workspacePath: path, opts })
     return pullResult
   },
-  fetch: async (path: string) => { gitCalls.fetch.push(path) },
+  fetch: async (path: string, opts?: any) => {
+    gitCalls.fetch.push(path)
+    gitCalls.fetchOpts.push(opts)
+    return { success: true }
+  },
   // Added alongside connectRepository's fetch+reset-onto-non-empty-remote
   // path; default to "remote branch doesn't exist" so existing tests keep
   // exercising the pre-reset behavior unless a test overrides this.
@@ -172,6 +182,24 @@ globalThis.fetch = ((url: any, init?: any) => {
 }) as any
 
 const svc = await import('../github.service')
+const { encryptSecret } = await import('../../lib/secret-crypto')
+
+/** The `http.extraheader` value git gets for a token, as set by githubGitAuthEnv. */
+const authHeader = (token: string) =>
+  `AUTHORIZATION: basic ${Buffer.from(`x-access-token:${token}`).toString('base64')}`
+
+const USER_RESPONSE = (login = 'octo-user', id = 314) =>
+  new Response(JSON.stringify({ id, login, name: 'Octo User' }), { status: 200 })
+
+const REPO_RESPONSE = () =>
+  new Response(
+    JSON.stringify({
+      id: 1, name: 'r', full_name: 'octo/r', private: true,
+      description: null, html_url: '', clone_url: '', ssh_url: '',
+      default_branch: 'dev', owner: { login: 'octo', avatar_url: '' },
+    }),
+    { status: 200 },
+  )
 
 // ─── test fixtures ───────────────────────────────────────────────────────────
 
@@ -450,12 +478,29 @@ describe('createPullRequest', () => {
       html_url: 'https://github.com/acme/app/pull/42',
     })
   })
+
+  it('opens the pull request as the user when given a token, without minting an App token', async () => {
+    fetchHandler = async (url: string, init: any) => {
+      expect(url).toBe('https://api.github.com/repos/acme/app/pulls')
+      expect(init.headers.Authorization).toBe('Bearer ghp_pr_user')
+      return new Response(JSON.stringify({
+        number: 7,
+        url: 'https://api.github.com/repos/acme/app/pulls/7',
+        html_url: 'https://github.com/acme/app/pull/7',
+      }), { status: 201 })
+    }
+    const result = await svc.createPullRequest({
+      token: 'ghp_pr_user', repoOwner: 'acme', repoName: 'app', head: 'f', base: 'main', title: 't', body: '',
+    })
+    expect(result.number).toBe(7)
+    expect(fetchCalls).toHaveLength(1)
+  })
 })
 
 // ─── connectRepository / disconnectRepository / getConnection ───────────────
 
 describe('connectRepository', () => {
-  it('upserts the connection, initializes git, and sets a token-embedded remote URL', async () => {
+  it('upserts the connection, initializes git, and keeps the token out of the remote URL', async () => {
     let call = 0
     fetchHandler = async (url: string) => {
       call++
@@ -477,7 +522,7 @@ describe('connectRepository', () => {
     }
     const { connection, repo } = await svc.connectRepository({
       projectId: 'proj_1',
-      workspacePath: '/ws',
+      workspace: '/ws',
       installationId: 9999,
       repoOwner: 'octo',
       repoName: 'r',
@@ -487,9 +532,71 @@ describe('connectRepository', () => {
     expect(connection.isPrivate).toBe(true)
     expect((repo as any).default_branch).toBe('dev')
     expect(gitCalls.initRepo).toEqual(['/ws'])
-    expect(gitCalls.addRemote[0]!.url).toBe(
-      'https://x-access-token:tok-2@github.com/octo/r.git',
-    )
+    expect(gitCalls.addRemote[0]!.url).toBe('https://github.com/octo/r.git')
+    expect(gitCalls.fetchOpts[0]).toMatchObject({ remote: 'origin', env: { GIT_CONFIG_VALUE_0: authHeader('tok-2') } })
+    expect(connection).toMatchObject({ authType: 'app', installationId: 9999, encryptedToken: null, tokenLogin: null })
+  })
+
+  it('connects with a user access token: validates it, stores it encrypted, mints no App token', async () => {
+    const urls: string[] = []
+    fetchHandler = async (url: string, init: any) => {
+      urls.push(url)
+      expect(init.headers.Authorization).toBe('Bearer ghp_user_token')
+      if (url.endsWith('/user')) return USER_RESPONSE('octo-user')
+      return REPO_RESPONSE()
+    }
+    const { connection } = await svc.connectRepository({
+      projectId: 'proj_tok',
+      workspace: '/ws',
+      token: 'ghp_user_token',
+      repoOwner: 'octo',
+      repoName: 'r',
+    })
+    expect(urls).toEqual(['https://api.github.com/user', 'https://api.github.com/repos/octo/r'])
+    expect(connection).toMatchObject({ authType: 'token', installationId: null, tokenLogin: 'octo-user' })
+    expect(connection.encryptedToken).toMatch(/^v1:/)
+    expect(connection.encryptedToken).not.toContain('ghp_user_token')
+    expect(gitCalls.addRemote[0]!.url).toBe('https://github.com/octo/r.git')
+    expect(gitCalls.fetchOpts[0].env.GIT_CONFIG_VALUE_0).toBe(authHeader('ghp_user_token'))
+  })
+
+  it('switching an App connection to a token clears the installation, and back again clears the token', async () => {
+    seedConnection({ projectId: 'proj_switch', installationId: 9999 })
+    fetchHandler = async (url: string) => (url.endsWith('/user') ? USER_RESPONSE() : REPO_RESPONSE())
+    await svc.connectRepository({ projectId: 'proj_switch', workspace: '/ws', token: 'ghp_x', repoOwner: 'octo', repoName: 'r' })
+    expect(connections.get('proj_switch')).toMatchObject({ authType: 'token', installationId: null })
+
+    fetchHandler = async (url: string) => (url.endsWith('/access_tokens') ? TOKEN_RESPONSE() : REPO_RESPONSE())
+    await svc.connectRepository({ projectId: 'proj_switch', workspace: '/ws', installationId: 9999, repoOwner: 'octo', repoName: 'r' })
+    expect(connections.get('proj_switch')).toMatchObject({ authType: 'app', installationId: 9999, encryptedToken: null, tokenLogin: null })
+  })
+
+  it('rejects a token GitHub refuses, and requires exactly one credential, before writing anything', async () => {
+    fetchHandler = async () => new Response('Bad credentials', { status: 401 })
+    await expect(
+      svc.connectRepository({ projectId: 'proj_bad', workspace: '/ws', token: 'nope', repoOwner: 'o', repoName: 'r' }),
+    ).rejects.toThrow(/GitHub rejected the access token/)
+    await expect(
+      svc.connectRepository({ projectId: 'proj_bad', workspace: '/ws', repoOwner: 'o', repoName: 'r' }),
+    ).rejects.toThrow(/exactly one/)
+    await expect(
+      svc.connectRepository({ projectId: 'proj_bad', workspace: '/ws', installationId: 1, token: 't', repoOwner: 'o', repoName: 'r' }),
+    ).rejects.toThrow(/exactly one/)
+    expect(connections.has('proj_bad')).toBe(false)
+    expect(gitCalls.initRepo).toEqual([])
+  })
+
+  it('refuses to store a token when SECRETS_ENCRYPTION_KEY is not configured', async () => {
+    fetchHandler = async (url: string) => (url.endsWith('/user') ? USER_RESPONSE() : REPO_RESPONSE())
+    delete process.env.SECRETS_ENCRYPTION_KEY
+    try {
+      await expect(
+        svc.connectRepository({ projectId: 'proj_nokey', workspace: '/ws', token: 'ghp_x', repoOwner: 'octo', repoName: 'r' }),
+      ).rejects.toThrow(/SECRETS_ENCRYPTION_KEY/)
+      expect(connections.has('proj_nokey')).toBe(false)
+    } finally {
+      process.env.SECRETS_ENCRYPTION_KEY = TEST_SECRETS_KEY
+    }
   })
 
   it('updates the existing connection on second call (upsert update path)', async () => {
@@ -507,11 +614,43 @@ describe('connectRepository', () => {
       )
     }
     const { connection } = await svc.connectRepository({
-      projectId: 'proj_2', workspacePath: '/ws',
+      projectId: 'proj_2', workspace: '/ws',
       installationId: 9999, repoOwner: 'o', repoName: 'r',
     })
     expect(connection.lastSyncError).toBeNull()
     expect(connection.syncEnabled).toBe(true)
+  })
+
+  it('saves the connection before the workspace step, which gets a fresh token and the default branch', async () => {
+    fetchHandler = async (url) => (url.endsWith('/user') ? USER_RESPONSE() : REPO_RESPONSE())
+    const seen: any[] = []
+    const workspace = {
+      run: async (input: any) => {
+        seen.push({ input, savedFirst: !!(await svc.getConnection('proj_ws')) })
+        return { ok: true, connect: 'adopted' as const, branch: 'main' }
+      },
+    }
+    const result = await svc.connectRepository({
+      projectId: 'proj_ws', workspace, token: 'ghp_ws', repoOwner: 'octo', repoName: 'r',
+    })
+    expect(seen).toEqual([{
+      input: { op: 'connect', repoOwner: 'octo', repoName: 'r', defaultBranch: 'dev', token: 'ghp_ws' },
+      savedFirst: true,
+    }])
+    expect(result.workspace.connect).toBe('adopted')
+    expect(gitCalls.initRepo).toHaveLength(0)
+  })
+
+  it('keeps the connection and records lastSyncError when the workspace step fails', async () => {
+    fetchHandler = async (url) => (url.endsWith('/user') ? USER_RESPONSE() : REPO_RESPONSE())
+    const workspace = { run: async () => ({ ok: false, error: 'Could not reach the project runtime: ECONNREFUSED' }) }
+    const result = await svc.connectRepository({
+      projectId: 'proj_wsfail', workspace, token: 'ghp_ws', repoOwner: 'octo', repoName: 'r',
+    })
+    expect(result.workspace.ok).toBe(false)
+    const saved = await svc.getConnection('proj_wsfail')
+    expect(saved?.authType).toBe('token')
+    expect(saved?.lastSyncError).toContain('ECONNREFUSED')
   })
 })
 
@@ -549,10 +688,37 @@ describe('pushToGitHub', () => {
     seedConnection({ projectId: 'proj_p' })
     fetchHandler = async () => TOKEN_RESPONSE('push-tok')
     const res = await svc.pushToGitHub('proj_p', '/ws')
-    expect(res).toEqual({ success: true, pushed: true, pulled: false, commits: 1 })
-    expect(gitCalls.push[0]!.opts).toEqual({ remote: 'origin', branch: 'main', setUpstream: true })
+    expect(res).toEqual({ success: true, pushed: true, pulled: false, commits: 0 })
+    expect(gitCalls.push[0]!.opts).toMatchObject({ remote: 'origin', branch: 'main', setUpstream: true })
+    expect(gitCalls.push[0]!.opts.env.GIT_CONFIG_VALUE_0).toBe(authHeader('push-tok'))
+    expect(gitCalls.addRemote[0]!.url).toBe('https://github.com/octocat/hello-world.git')
     expect(connections.get('proj_p')!.lastPushAt).not.toBeNull()
     expect(connections.get('proj_p')!.lastSyncError).toBeNull()
+  })
+
+  it('pushes a token connection with its decrypted token and never calls the App API', async () => {
+    seedConnection({
+      projectId: 'proj_tp',
+      authType: 'token',
+      installationId: null,
+      encryptedToken: encryptSecret('ghp_push_user'),
+      tokenLogin: 'octo-user',
+    })
+    fetchHandler = async (url: string) => {
+      throw new Error(`unexpected GitHub API call: ${url}`)
+    }
+    const res = await svc.pushToGitHub('proj_tp', '/ws')
+    expect(res.success).toBe(true)
+    expect(gitCalls.push[0]!.opts.env.GIT_CONFIG_VALUE_0).toBe(authHeader('ghp_push_user'))
+    expect(fetchCalls).toHaveLength(0)
+  })
+
+  it('reports a connection with no usable credentials instead of pushing', async () => {
+    seedConnection({ projectId: 'proj_nocred', installationId: null })
+    const res = await svc.pushToGitHub('proj_nocred', '/ws')
+    expect(res.success).toBe(false)
+    expect(res.error).toMatch(/no usable credentials/)
+    expect(gitCalls.push).toHaveLength(0)
   })
 
   it('writes lastSyncError and returns failure when git.push fails', async () => {
@@ -609,7 +775,9 @@ describe('pullFromGitHub', () => {
     expect(res).toEqual({ success: true, pushed: false, pulled: true, commits: 0 })
     expect(gitCalls.initRepo).toEqual(['/ws'])
     expect(gitCalls.fetch).toEqual(['/ws'])
-    expect(gitCalls.pull[0]!.opts).toEqual({ remote: 'origin', branch: 'main', rebase: true })
+    expect(gitCalls.fetchOpts[0].env.GIT_CONFIG_VALUE_0).toBe(authHeader('ghs_token_abc'))
+    expect(gitCalls.pull[0]!.opts).toMatchObject({ remote: 'origin', branch: 'main', rebase: true })
+    expect(gitCalls.pull[0]!.opts.env.GIT_CONFIG_VALUE_0).toBe(authHeader('ghs_token_abc'))
     expect(connections.get('proj_pl')!.lastPullAt).not.toBeNull()
   })
 
@@ -1116,6 +1284,32 @@ describe('getProjectGitHubCliCredentials', () => {
     expect(again?.email).toBe(creds?.email)
     expect(urls.filter((url) => url.includes('/users/'))).toHaveLength(1)
     delete process.env.GH_APP_SLUG
+  })
+
+  it('returns the user token and the user commit identity for a token connection', async () => {
+    seedConnection({
+      projectId: 'proj_cli_tok',
+      authType: 'token',
+      installationId: null,
+      encryptedToken: encryptSecret('ghp_cli_user'),
+      tokenLogin: 'octo-user',
+    })
+    fetchHandler = async (url: string, init: any) => {
+      expect(url).toBe('https://api.github.com/user')
+      expect(init.headers.Authorization).toBe('Bearer ghp_cli_user')
+      return USER_RESPONSE('octo-user', 314)
+    }
+    const before = Date.now()
+    const creds = await svc.getProjectGitHubCliCredentials('proj_cli_tok')
+    expect(creds).toMatchObject({
+      token: 'ghp_cli_user',
+      login: 'octo-user',
+      name: 'Octo User',
+      email: '314+octo-user@users.noreply.github.com',
+    })
+    const expiresMs = Date.parse(creds!.expiresAt)
+    expect(expiresMs).toBeGreaterThan(before)
+    expect(expiresMs).toBeLessThanOrEqual(Date.now() + 60 * 60 * 1000)
   })
 
   it('returns null when the project has no GitHub connection', async () => {

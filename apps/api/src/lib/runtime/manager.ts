@@ -2632,7 +2632,7 @@ export class ShogoErrorBoundary extends Component<Props, State> {
         // Seed the real project dir (template + deps). Idempotent — the
         // install is sentinel-gated, so repeat starts are cheap.
         try {
-          realProjectDir = await this.ensureProjectDirectory(projectId)
+          realProjectDir = await this.ensureProjectDirectory(projectId, info.techStackId)
         } catch (err: any) {
           console.warn(
             `[RuntimeManager] buildWorkspaceMergedRoot: failed to seed member project ${projectId}: ${err?.message ?? err}`,

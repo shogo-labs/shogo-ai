@@ -31,6 +31,7 @@ import {
   type WorkspaceProjectEntry,
 } from './workspace-runtime-mode'
 import { updateWorkspaceFolders } from './trust-resolver'
+import { isHostMediatedDurability } from './host-durability'
 import { createS3SyncForProject, type S3Sync } from '@shogo/shared-runtime'
 
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9_-]*$/
@@ -249,8 +250,9 @@ export async function mountWorkspaceMember(input: MountWorkspaceMemberInput): Pr
     // Cloud workspace runtimes have real subdirectories rather than host
     // symlinks. Hydrate a newly-added member from its layered archive before
     // exposing it to the agent; the source layer is intentionally small and
-    // dependency restoration remains in the background.
-    if (!realPath && (process.env.S3_WORKSPACES_BUCKET || process.env.S3_BUCKET)) {
+    // dependency restoration remains in the background. On metal the host
+    // applies the archive before this mount and owns its backups.
+    if (!realPath && !isHostMediatedDurability() && (process.env.S3_WORKSPACES_BUCKET || process.env.S3_BUCKET)) {
       const sync = createS3SyncForProject(mountPath, input.id, {
         watchEnabled: true,
         syncInterval: Number(process.env.S3_SYNC_INTERVAL || 30_000),

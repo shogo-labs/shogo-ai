@@ -315,6 +315,22 @@ describe('PreviewManager.prewarm (pool warm-up)', () => {
     expect(pm.getStatus().phase).toBe('idle')
   })
 
+  test('leaves the API sidecar phase idle, not stuck in generating', async () => {
+    const root = makeWorkspace({ prebuiltDist: true, hasPrisma: true })
+    workspaces.push(root)
+
+    const pm = new PreviewManager({ workspaceDir: root, runtimePort: 0 })
+    stubPrewarmWork(pm, 5, [])
+    ;(pm as any).runShogoGenerate = async () => {
+      ;(pm as any).apiPhase = 'generating'
+      return true
+    }
+
+    await pm.prewarm()
+
+    expect(pm.apiServerPhase).toBe('idle')
+  })
+
   test('is memoized — repeated calls join the same run', async () => {
     const root = makeWorkspace({ prebuiltDist: true, hasPrisma: true })
     workspaces.push(root)

@@ -132,6 +132,9 @@ export const TECH_STACK_REGISTRY: Record<string, StackRegistryEntry> = {
   // Native (full game engines)
   'unity-game': { id: 'unity-game', target: 'native', seedsOwnTemplate: true },
 
+  // Bring-your-own framework: the preview runs the project's static build.
+  custom: { id: 'custom', target: 'web', seedsOwnTemplate: true },
+
   // Bare / no-stack
   none: { id: 'none', target: 'none', seedsOwnTemplate: true },
 }

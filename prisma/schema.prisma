@@ -701,6 +701,13 @@ model AgentConfig {
   @@map("agent_configs")
 }
 
+/// How a GitHubConnection authenticates: the Shogo GitHub App installation, or
+/// a user-supplied access token (personal access token / OAuth token).
+enum GitHubAuthType {
+  app
+  token
+}
+
 /// Cloud workspace sync strategy. See Project.cloudSyncMode.
 enum CloudSyncMode {
   s3
@@ -795,7 +802,10 @@ model GitHubConnection {
   repoName       String
   repoFullName   String // owner/repo for convenience
   defaultBranch  String    @default("main")
-  installationId Int? // GitHub App installation ID
+  authType       GitHubAuthType @default(app)
+  installationId Int? // GitHub App installation ID (authType = app)
+  encryptedToken String? // secret-crypto blob of a user access token (authType = token)
+  tokenLogin     String? // GitHub login the token belongs to (authType = token)
   repoId         Int? // GitHub repository ID
   isPrivate      Boolean   @default(true)
   syncEnabled    Boolean   @default(true)

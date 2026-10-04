@@ -5310,7 +5310,7 @@ const gitLfsRouter = gitLfsRoutes({ workspacesDir: workspacesDirResolved })
 app.route('/api', gitLfsRouter)
 
 // Mount GitHub routes
-const githubRouter = githubRoutes({ workspacesDir: workspacesDirResolved })
+const githubRouter = githubRoutes()
 app.route('/api', githubRouter)
 
 // Mount project auth-config routes (Studio Settings -> Auth & Database).

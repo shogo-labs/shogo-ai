@@ -340,6 +340,8 @@ export interface GitHubPullRequestResult {
   url: string
   htmlUrl?: string
   author?: string
+  /** `github-app` (App bot) or `user-token` (the connection's stored user token). */
+  mode?: 'github-app' | 'user-token'
 }
 
 export interface GitHubCliCredentials {
@@ -351,8 +353,9 @@ export interface GitHubCliCredentials {
 }
 
 /**
- * Installation token for the connected GitHub App. The runtime injects this
- * as `GH_TOKEN` so `gh` comments, reviews, and commits are the App bot.
+ * Token for the project's GitHub connection: an App installation token (the
+ * App bot) or the connection's stored user token (that user). The runtime
+ * injects it as `GH_TOKEN` for `gh` and commit attribution.
  * 409 `github_app_not_installed` means the project has no connection.
  */
 export async function getGitHubCliCredentials(
@@ -383,6 +386,57 @@ export async function createGitHubPullRequest(
       method: 'POST',
       body: JSON.stringify(opts),
       parse: (j) => j as GitHubPullRequestResult,
+    },
+  )
+}
+
+export interface GitHubConnectResult {
+  repoFullName: string
+  defaultBranch: string
+  authType: 'app' | 'token'
+  login?: string | null
+  htmlUrl?: string
+  /** What happened to the project's files (see github-workspace-git.ts). */
+  workspace?: {
+    ok: boolean
+    error?: string
+    branch?: string
+    connect?: 'adopted' | 'kept' | 'diverged'
+    backupBranch?: string
+  }
+}
+
+/**
+ * Connect the project to a repository with an access token the user shared.
+ * The API validates and encrypts it, then updates the project's workspace in
+ * its own runtime; cloning a large repository can take minutes.
+ */
+export async function connectGitHubWithToken(
+  projectId: string,
+  opts: { repoOwner: string; repoName: string; token: string },
+): Promise<CheckpointCallResult<GitHubConnectResult>> {
+  return checkpointFetch(
+    `/api/internal/projects/${encodeURIComponent(projectId)}/github/connect`,
+    {
+      method: 'POST',
+      body: JSON.stringify(opts),
+      signal: AbortSignal.timeout(7 * 60_000),
+      parse: (j) => j as GitHubConnectResult,
+    },
+  )
+}
+
+/** Link for the user to authorize the Shogo GitHub App; `available: false` when the server can't. */
+export async function getGitHubAuthorizeUrl(
+  projectId: string,
+  opts: { repoOwner: string; repoName: string },
+): Promise<CheckpointCallResult<{ available: boolean; url?: string }>> {
+  return checkpointFetch(
+    `/api/internal/projects/${encodeURIComponent(projectId)}/github/authorize-url`,
+    {
+      method: 'POST',
+      body: JSON.stringify(opts),
+      parse: (j) => ({ available: j?.available === true, url: typeof j?.url === 'string' ? j.url : undefined }),
     },
   )
 }

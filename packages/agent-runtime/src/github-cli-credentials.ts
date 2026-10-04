@@ -1,15 +1,19 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * Cached GitHub App installation credentials for agent shell commands.
+ * Cached GitHub connection credentials for agent shell commands.
  *
  * `gh` prefers `GH_TOKEN` over a user `GITHUB_TOKEN` and over `gh auth login`,
  * so setting it makes issue comments, reviews, and API calls show up as the
- * App bot (the same identity that opens pull requests). Git author env vars
- * use the bot's noreply address so commits link to that account too.
+ * connection's identity: the App bot (the same identity that opens pull
+ * requests) or, for a token connection, the token's user. Git author env vars
+ * use that account's noreply address so commits link to it too, and git's
+ * HTTPS transport to github.com gets the same token as an auth header, so
+ * `git clone/fetch/push` work without a token in the remote URL.
  *
  * The token is process memory only. It is never written to the workspace.
  */
+import { githubGitAuthEnv } from './github-workspace-git'
 import { getGitHubCliCredentials, projectScopedId } from './internal-api'
 
 const REFRESH_SKEW_MS = 5 * 60 * 1000
@@ -32,7 +36,7 @@ export function githubCliEnvFromCredentials(credentials: {
   email?: string
 }): { env: Record<string, string>; expiresAtMs: number } | null {
   if (!credentials.token) return null
-  const env: Record<string, string> = { GH_TOKEN: credentials.token }
+  const env: Record<string, string> = { GH_TOKEN: credentials.token, ...githubGitAuthEnv(credentials.token) }
   if (credentials.name && credentials.email) {
     env.GIT_AUTHOR_NAME = credentials.name
     env.GIT_AUTHOR_EMAIL = credentials.email
@@ -46,7 +50,7 @@ export function githubCliEnvFromCredentials(credentials: {
 
 /**
  * Env to merge into an agent shell for this project. Empty when the project
- * has no GitHub App connection or the API cannot mint a token — the shell
+ * has no GitHub connection or the API cannot provide a token — the shell
  * then keeps whatever user token is in the workspace `.env`.
  */
 export async function githubCliEnvForProject(

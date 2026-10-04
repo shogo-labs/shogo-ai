@@ -28,6 +28,7 @@ const KNOWN_STACK_IDS = new Set([
   'react-native',
   'python-data',
   'unity-game',
+  'custom',
   'none',
 ])
 
@@ -105,6 +106,8 @@ function inferFromWorkspaceFiles(files: WorkspaceFileMap): string | undefined {
   }
 
   if (fileText(files, 'ProjectSettings/ProjectVersion.txt')) return 'unity-game'
+
+  if (has('astro') || has('@11ty/eleventy') || fileText(files, 'shogo.preview.json')) return 'custom'
 
   return undefined
 }

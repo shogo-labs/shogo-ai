@@ -27,7 +27,7 @@ const { githubCliEnvForProject, githubCliEnvFromCredentials, clearGitHubCliEnvCa
 )
 
 describe('githubCliEnvFromCredentials', () => {
-  test('sets GH_TOKEN and the bot git identity', () => {
+  test('sets GH_TOKEN, a github.com git auth header, and the bot git identity', () => {
     const built = githubCliEnvFromCredentials({
       token: 'ghs_test',
       expiresAt: '2099-01-01T00:00:00Z',
@@ -36,6 +36,10 @@ describe('githubCliEnvFromCredentials', () => {
     })
     expect(built?.env).toEqual({
       GH_TOKEN: 'ghs_test',
+      GIT_CONFIG_COUNT: '1',
+      GIT_CONFIG_KEY_0: 'http.https://github.com/.extraheader',
+      GIT_CONFIG_VALUE_0: `AUTHORIZATION: basic ${Buffer.from('x-access-token:ghs_test').toString('base64')}`,
+      GIT_TERMINAL_PROMPT: '0',
       GIT_AUTHOR_NAME: 'shogo-ai[bot]',
       GIT_AUTHOR_EMAIL: '1+shogo-ai[bot]@users.noreply.github.com',
       GIT_COMMITTER_NAME: 'shogo-ai[bot]',

@@ -83,7 +83,7 @@ export const PROFILE_TOOL_GROUPS: Record<string, string[]> = {
   memory: ['memory_read', 'memory_search'],
   messaging: ['send_message', 'notify_user', 'channel_connect', 'channel_disconnect', 'channel_list'],
   heartbeat: ['heartbeat_configure', 'heartbeat_status'],
-  integrations: ['search_integrations', 'connect', 'disconnect', 'github_create_pr', 'github_merge_pr'],
+  integrations: ['search_integrations', 'connect', 'disconnect', 'github_create_pr', 'github_merge_pr', 'github_connect'],
   audio: ['transcribe_audio'],
   planning: ['todo_write'],
 }

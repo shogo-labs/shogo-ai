@@ -1364,15 +1364,19 @@ export async function addRemote(
   execFileSync('git', ['remote', 'add', name, url], { cwd: workspacePath, stdio: 'pipe' });
 }
 
+function withEnv(env?: NodeJS.ProcessEnv): NodeJS.ProcessEnv | undefined {
+  return env ? { ...process.env, ...env } : undefined;
+}
+
 /**
  * Push to remote.
  */
 export async function push(
   workspacePath: string,
-  options?: { remote?: string; branch?: string; force?: boolean; setUpstream?: boolean }
+  options?: { remote?: string; branch?: string; force?: boolean; setUpstream?: boolean; env?: NodeJS.ProcessEnv }
 ): Promise<{ success: boolean; error?: string }> {
   requireGit();
-  const { remote = 'origin', branch, force, setUpstream } = options || {};
+  const { remote = 'origin', branch, force, setUpstream, env } = options || {};
 
   try {
     const args = ['push'];
@@ -1387,7 +1391,7 @@ export async function push(
       args.push(branch);
     }
 
-    execFileSync('git', args, { cwd: workspacePath, stdio: 'pipe' });
+    execFileSync('git', args, { cwd: workspacePath, stdio: 'pipe', env: withEnv(env) });
     return { success: true };
   } catch (err: any) {
     return { success: false, error: err.message || 'Push failed' };
@@ -1399,10 +1403,10 @@ export async function push(
  */
 export async function fetch(
   workspacePath: string,
-  options?: { remote?: string; prune?: boolean }
+  options?: { remote?: string; prune?: boolean; env?: NodeJS.ProcessEnv }
 ): Promise<{ success: boolean; error?: string }> {
   requireGit();
-  const { remote = 'origin', prune } = options || {};
+  const { remote = 'origin', prune, env } = options || {};
 
   try {
     const args = ['fetch'];
@@ -1411,7 +1415,7 @@ export async function fetch(
     }
     args.push(remote);
 
-    execFileSync('git', args, { cwd: workspacePath, stdio: 'pipe' });
+    execFileSync('git', args, { cwd: workspacePath, stdio: 'pipe', env: withEnv(env) });
     return { success: true };
   } catch (err: any) {
     return { success: false, error: err.message || 'Fetch failed' };
@@ -1470,10 +1474,10 @@ export async function resetHardToRemote(
  */
 export async function pull(
   workspacePath: string,
-  options?: { remote?: string; branch?: string; rebase?: boolean }
+  options?: { remote?: string; branch?: string; rebase?: boolean; env?: NodeJS.ProcessEnv }
 ): Promise<{ success: boolean; error?: string }> {
   requireGit();
-  const { remote = 'origin', branch, rebase } = options || {};
+  const { remote = 'origin', branch, rebase, env } = options || {};
 
   try {
     const args = ['pull'];
@@ -1485,7 +1489,7 @@ export async function pull(
       args.push(branch);
     }
 
-    execFileSync('git', args, { cwd: workspacePath, stdio: 'pipe' });
+    execFileSync('git', args, { cwd: workspacePath, stdio: 'pipe', env: withEnv(env) });
     return { success: true };
   } catch (err: any) {
     return { success: false, error: err.message || 'Pull failed' };
