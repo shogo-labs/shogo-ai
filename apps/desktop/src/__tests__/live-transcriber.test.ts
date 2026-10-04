@@ -127,4 +127,29 @@ describe('LiveTranscriber', () => {
     expect(pickCutIndex(tone(3), false)).toBe(0)
     expect(pickCutIndex(tone(3), true)).toBe(3 * LIVE_SOURCE_RATE)
   })
+
+  test('taking over from a stream continues the timeline at the offset', async () => {
+    const posted: number[] = []
+    const live = new LiveTranscriber(async (chunk) => {
+      posted.push(chunk.start)
+      return { ok: true, status: 200 }
+    }, 30)
+    live.feedMic(bytes(tone(9)))
+    await flush()
+    const summary = await live.finish()
+    expect(posted[0]).toBe(30)
+    expect(summary.seconds).toBeGreaterThanOrEqual(38)
+  })
+
+  test('a busy server (429) is retried instead of losing the chunk', async () => {
+    let calls = 0
+    const live = new LiveTranscriber(async () => {
+      calls++
+      return calls < 2 ? { ok: false, status: 429 } : { ok: true, status: 200 }
+    })
+    live.feedMic(bytes(tone(9)))
+    const summary = await live.finish()
+    expect(calls).toBeGreaterThanOrEqual(2)
+    expect(summary.complete).toBe(true)
+  })
 })

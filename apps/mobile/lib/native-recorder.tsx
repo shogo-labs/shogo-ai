@@ -15,6 +15,7 @@ import {
   useAudioRecorderState,
   type RecordingOptions,
 } from 'expo-audio'
+import { useNativePcmSource, type NativePcmSource } from './native-pcm'
 
 /** Mono 16 kHz AAC at 32 kbps (~14 MB/hour) keeps long meetings under Whisper's 25 MB limit. */
 export const MEETING_RECORDING_OPTIONS: RecordingOptions = {
@@ -36,6 +37,8 @@ export interface NativeRecorderApi {
   available: boolean
   isRecording: boolean
   duration: number
+  /** Raw mic frames for the live transcript (the m4a above is still what gets uploaded). */
+  pcm: NativePcmSource
   start(): Promise<{ ok: true } | { error: string }>
   stop(): Promise<NativeRecording | null>
 }
@@ -44,6 +47,7 @@ const unavailable: NativeRecorderApi = {
   available: false,
   isRecording: false,
   duration: 0,
+  pcm: { available: false, start: async () => false, stop: async () => {} },
   start: async () => ({ error: 'Recording is not available here' }),
   stop: async () => null,
 }
@@ -53,6 +57,7 @@ const NativeRecorderContext = createContext<NativeRecorderApi>(unavailable)
 export function NativeRecorderProvider({ children }: { children: ReactNode }) {
   const recorder = useAudioRecorder(MEETING_RECORDING_OPTIONS)
   const state = useAudioRecorderState(recorder, 1000)
+  const pcm = useNativePcmSource()
 
   const start = useCallback(async (): Promise<{ ok: true } | { error: string }> => {
     const permission = await requestRecordingPermissionsAsync()
@@ -83,10 +88,11 @@ export function NativeRecorderProvider({ children }: { children: ReactNode }) {
       available: true,
       isRecording: state.isRecording,
       duration: Math.round(state.durationMillis / 1000),
+      pcm,
       start,
       stop,
     }),
-    [state.isRecording, state.durationMillis, start, stop],
+    [state.isRecording, state.durationMillis, pcm, start, stop],
   )
 
   return <NativeRecorderContext.Provider value={value}>{children}</NativeRecorderContext.Provider>
