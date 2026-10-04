@@ -187,7 +187,14 @@ export function useRecording() {
     (stream: MediaStream, liveRecordingId: string, audioContext: AudioContext | null) => {
       setLiveTranscript(null)
       const tap = createPcmTap(stream, audioContext)
-      if (tap) beginLive(tap, liveRecordingId)
+      if (!tap) {
+        void audioContext?.close().catch(() => {})
+        setLiveTranscript({
+          unavailable: 'Live streaming is unavailable. Check Settings; the full transcript is still made when you stop.',
+        })
+        return
+      }
+      beginLive(tap, liveRecordingId)
     },
     [beginLive],
   )
