@@ -16,6 +16,7 @@ import { localProjectMetadataRoutes } from '../routes/local-project-metadata'
 import { localHeartbeatRoutes } from '../routes/local-heartbeat'
 import { localFilesRoutes } from '../routes/local-files'
 import { externalPreviewRoutes } from '../routes/external-preview'
+import { projectExportImportRoutes } from '../routes/project-export-import'
 import { projectChatRoutes } from '../routes/project-chat'
 import { workspaceChatRoutes } from '../routes/workspace-chat'
 import { workspaceAgentRoutes, sessionAuthorize } from '../routes/workspace-agent'
@@ -131,6 +132,11 @@ export function createLocalApp(): LocalAppBundle {
   app.route('/api', localHeartbeatRoutes())
   app.route('/api', localFilesRoutes({ workspacesDir }))
   app.route('/api/projects', externalPreviewRoutes())
+  // Project export (.shogo / source .zip) and import. The slim-local refactor
+  // moved this behind the cloud-only lazy island in server.ts, so desktop
+  // answered 404 until it was mounted here. It reads workspace files straight
+  // from disk when not running in Kubernetes.
+  app.route('/api/projects', projectExportImportRoutes())
   app.route('/api', projectChatRoutes({ runtimeManager }))
   app.route('/api', workspaceChatRoutes({ resolveUserId: getAuthUserId, runtimeManager }))
   app.route('/api', workspaceAgentRoutes({ authorize: sessionAuthorize(getAuthUserId) }))

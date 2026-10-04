@@ -4,7 +4,7 @@
  * TechStackPicker
  *
  * Popover-based selector (drop-in twin of the model / environment chips in
- * CompactChatInput) that lets the user choose the tech stack for a project
+ * ChatInput) that lets the user choose the tech stack for a project
  * they're about to create from the home composer.
  *
  * It is a *controlled* chip: the parent owns the selected `value` so the

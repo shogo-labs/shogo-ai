@@ -208,7 +208,6 @@ import {
   saveModelPreference,
 } from "../../lib/agent-mode-preference"
 import { useReconcileStaleModelSelection } from "../../lib/visible-models"
-import { CompactChatInput } from "./CompactChatInput"
 import { ExecutionBadge } from "./ExecutionBadge"
 import { ExpandTab } from "./ExpandTab"
 import { ToolCallDisplay, type ToolCallState } from "./ToolCallDisplay"
@@ -466,7 +465,6 @@ export interface WorkspacePanelData {
 }
 
 export interface ChatPanelProps {
-  mode?: "compact" | "full"
   /**
    * `agent` keeps the existing chat behavior while using the quieter,
    * centred surface intended for the Workspace Agent shell. `studio`
@@ -509,9 +507,6 @@ export interface ChatPanelProps {
   initialFiles?: FileAttachment[]
   /** When set (e.g. from home composer), overrides stored interaction mode for this session and first message */
   initialInteractionMode?: InteractionMode
-  onCompactSubmit?: (prompt: string, files?: FileAttachment[]) => void
-  compactValue?: string
-  onCompactValueChange?: (value: string) => void
   /** Personal-shell composer prefill; stages text without sending it. */
   prefillRequest?: RestoreDraftRequest | null
   /**
@@ -937,7 +932,6 @@ async function ensureAiConsentForMessage(): Promise<boolean> {
 // ============================================================
 
 const ChatPanelContent = observer(function ChatPanelContent({
-  mode = "full",
   presentation = "studio",
   featureId,
   featureName,
@@ -963,9 +957,6 @@ const ChatPanelContent = observer(function ChatPanelContent({
   initialMessage,
   initialFiles,
   initialInteractionMode,
-  onCompactSubmit,
-  compactValue,
-  onCompactValueChange,
   prefillRequest,
   onPrefillConsumed,
   composer: composerProp,
@@ -7009,13 +7000,6 @@ const ChatPanelContent = observer(function ChatPanelContent({
     ],
   )
 
-  const handleCompactSubmit = useCallback(
-    (prompt: string, files?: FileAttachment[]) => {
-      onCompactSubmit?.(prompt, files)
-    },
-    [onCompactSubmit],
-  )
-
   const handleQuickActionClick = useCallback(
     (prompt: string) => handleSendMessage(prompt),
     [handleSendMessage],
@@ -7467,20 +7451,6 @@ const ChatPanelContent = observer(function ChatPanelContent({
     clearActiveInstance,
   ])
   useDockPanel(errorDockDescriptor, chatDockStore)
-
-  // Render compact mode (homepage)
-  if (mode === "compact") {
-    return (
-      <CompactChatInput
-        onSubmit={handleCompactSubmit}
-        isLoading={isStreaming}
-        disabled={false}
-        value={compactValue}
-        onChange={onCompactValueChange}
-        className={className}
-      />
-    )
-  }
 
   // Render collapsed state
   if (isCollapsed) {
