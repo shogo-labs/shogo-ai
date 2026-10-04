@@ -233,6 +233,12 @@ function MessageRowImpl(props: MessageRowProps) {
   const kind = message.authorType === 'agent' ? messageKind(message) : null
   const canOpenSession = message.authorType === 'agent' && !!message.agentSessionId && !!message.authorAgent?.projectId && !!props.onOpenSession
   const work = !running && message.authorType === 'agent' ? workOf(message) : null
+  /** Following a running agent: its session when it has one, otherwise this message's thread. */
+  const openWork = canOpenSession
+    ? () => props.onOpenSession!(message)
+    : props.onReply && !inThread
+    ? () => props.onReply!(message)
+    : undefined
   const isWeb = Platform.OS === 'web'
   useEditRequest(message.id, () => {
     if (!mine || deleted || message.authorType !== 'user') return
@@ -454,14 +460,14 @@ function MessageRowImpl(props: MessageRowProps) {
             {!running && <UnfurlCards message={message} />}
             {running && (
               <View className="mt-1 flex-row items-center gap-2">
-                {/* The live status opens the session the agent is writing in. */}
+                {/* The live status opens the session the agent is writing in, or else this message's thread. */}
                 <Pressable
-                  disabled={!canOpenSession}
-                  onPress={() => props.onOpenSession!(message)}
-                  accessibilityLabel="Open the session this agent is working in"
+                  disabled={!openWork}
+                  onPress={openWork}
+                  accessibilityLabel={canOpenSession ? 'Open the session this agent is working in' : 'Open the thread to follow what this agent is doing'}
                   className="rounded-md active:bg-muted"
                 >
-                  <AgentWorkingStatus tools={streaming?.tools ?? (streaming?.tool ? [{ name: streaming.tool, done: false }] : [])} />
+                  <AgentWorkingStatus tools={streaming?.tools ?? (streaming?.tool ? [{ name: streaming.tool, done: false }] : [])} onOpen={openWork} />
                 </Pressable>
                 <Pressable
                   onPress={() => props.onStopAgent(message)}
@@ -474,10 +480,10 @@ function MessageRowImpl(props: MessageRowProps) {
               </View>
             )}
             {message.authorType === 'agent' && message.agentStatus === 'error' && (
-              <View className="mt-1 flex-row items-center gap-1">
+              <Pressable disabled={!openWork} onPress={openWork} accessibilityLabel="See what the agent did" className="mt-1 flex-row items-center gap-1 self-start rounded-md active:bg-muted">
                 <AlertCircle size={12} className="text-destructive" />
                 <Text className="text-xs text-destructive">The agent hit an error.</Text>
-              </View>
+              </Pressable>
             )}
             {canOpenSession && !running && (
               <Pressable onPress={() => props.onOpenSession!(message)} className="mt-1 self-start">
