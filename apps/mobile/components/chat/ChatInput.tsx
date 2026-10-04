@@ -585,6 +585,8 @@ export interface ChatInputProps {
   onKeyPress?: (event: any, text: string) => boolean | void;
   maxFileSizeBytes?: number;
   inputTestID?: string;
+  /** Accessible name of the text box; surfaces with their own composer (team chat) name it themselves. */
+  inputAccessibilityLabel?: string;
 }
 
 const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInputImpl({
@@ -638,6 +640,7 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
   onKeyPress: onKeyPressProp,
   maxFileSizeBytes,
   inputTestID = "project-composer-input",
+  inputAccessibilityLabel = "Chat message input",
 }: ChatInputProps, ref) {
   const composer = agentControls
     ? composerProp ?? DEFAULT_CHAT_INPUT_COMPOSER
@@ -2576,7 +2579,7 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
                 placeholder={effectivePlaceholder}
                 placeholderTextColor={chatgptComposer.placeholder}
                 testID={inputTestID}
-                accessibilityLabel="Chat message input"
+                accessibilityLabel={inputAccessibilityLabel}
                 editable={!inputLocked && !voiceInput.isRecording}
                 multiline
                 {...COMPOSER_KEYBOARD_PROPS}
@@ -3500,7 +3503,7 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
               onMeasureTextLayout={prominentExpansion.onMeasureTextLayout}
               placeholderOpacity={placeholderOpacity}
               testID={inputTestID}
-              accessibilityLabel="Chat message input"
+              accessibilityLabel={inputAccessibilityLabel}
               selection={selectionOverride}
               onChangeText={handleChangeText}
               onSelectionChange={(e) => {
