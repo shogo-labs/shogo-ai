@@ -151,6 +151,12 @@ import {
   ensureRuntimeLogDir,
 } from './runtime-log-paths'
 import {
+  STATIC_BUILD_CONFIG_FILE,
+  resolveStaticBuildPlan,
+  runStaticBuild,
+  watchStaticSources,
+} from './static-build'
+import {
   loadTechStackMeta,
   computePackageJsonHash,
   readInstallMarker,
@@ -789,7 +795,7 @@ async function pickFreePort(
   return null
 }
 
-export type DevServerKind = 'vite' | 'metro' | 'none' | 'compose'
+export type DevServerKind = 'vite' | 'metro' | 'none' | 'compose' | 'static-build'
 
 /**
  * Where the device-preview Metro tunnel lives.
@@ -1008,6 +1014,12 @@ export class PreviewManager {
   // EADDRINUSE source). Resumed via resumeWatchers(), which flushes any
   // change that landed while paused.
   private watchersPaused = false
+  // `static-build` stacks: stop function for the source watcher, the build in
+  // flight (joined by concurrent triggers), and whether a change landed
+  // during it so it runs once more.
+  private staticWatchStop: (() => void) | null = null
+  private staticBuildInFlight: Promise<boolean> | null = null
+  private staticBuildDirty = false
   // Set by `quiesceApiServer()` so `rehydrateApiServer()` restarts only what
   // quiesce stopped and resumes only watchers quiesce (not `shogo push`) paused.
   private quiescedApi = false
@@ -1271,7 +1283,7 @@ export class PreviewManager {
       if (!stackId) return 'vite'
       const meta = loadTechStackMeta(stackId)
       const decl = meta?.runtime?.devServer
-      if (decl === 'metro' || decl === 'vite' || decl === 'none' || decl === 'compose') return decl
+      if (decl === 'metro' || decl === 'vite' || decl === 'none' || decl === 'compose' || decl === 'static-build') return decl
       return 'vite'
     } catch {
       return 'vite'
@@ -1304,7 +1316,18 @@ export class PreviewManager {
     const legacy = join(this.workspaceDir, 'project')
     if (existsSync(join(legacy, 'package.json'))) return legacy
     if (existsSync(join(this.workspaceDir, 'package.json'))) return this.workspaceDir
+    if (existsSync(join(this.workspaceDir, STATIC_BUILD_CONFIG_FILE))) return this.workspaceDir
     return legacy
+  }
+
+  /**
+   * Static builds watch and build at a folder that exists now: an empty
+   * project (sources arrive later, e.g. a GitHub import) has no legacy
+   * `project/` dir, so it is the workspace root.
+   */
+  private staticBuildCwd(): string {
+    const cwd = this.resolveBundlerCwd()
+    return existsSync(cwd) ? cwd : this.workspaceDir
   }
 
   /**
@@ -2024,6 +2047,19 @@ export class PreviewManager {
   }
 
   private async _buildForPublish(): Promise<PublishBuildResult> {
+    if (this.resolveDevServer() === 'static-build') {
+      const cwd = this.staticBuildCwd()
+      if (existsSync(join(cwd, 'package.json'))) await this.installDepsIfNeeded({}, cwd)
+      const plan = resolveStaticBuildPlan(cwd, { stagingDir: PUBLISH_STAGING_DIR, basePath: '/' })
+      if ('error' in plan) return { ok: false, error: plan.error }
+      cleanupStagingOutput(cwd, PUBLISH_STAGING_DIR)
+      const result = await runStaticBuild(cwd, plan, {
+        stagingDir: PUBLISH_STAGING_DIR,
+        basePath: '/',
+        env: { NODE_ENV: 'production' },
+      })
+      return result.ok ? { ok: true } : { ok: false, error: result.error }
+    }
     const cwd = this.bundlerCwd
     if (!existsSync(join(cwd, 'package.json'))) {
       return { ok: false, error: `No package.json found in ${cwd}` }
@@ -2178,6 +2214,17 @@ export class PreviewManager {
       return { mode: 'compose-unmanaged', port: this.runtimePort, timings }
     }
 
+    if (devServer === 'static-build') {
+      const staticCwd = this.staticBuildCwd()
+      this._phase = existsSync(join(staticCwd, 'dist', 'index.html')) ? 'ready' : 'building'
+      this.started = true
+      this.backgroundSetupStaticBuild(timings, staticCwd).catch((err: any) => {
+        console.error(`[${LOG_PREFIX}] Background static build setup failed:`, err?.message ?? err)
+        this.markSetupFailed(err, { force: true })
+      })
+      return { mode: 'static-build (background)', port: this.runtimePort, timings }
+    }
+
     if (!existsSync(join(bundlerCwd, 'package.json'))) {
       console.log(`[${LOG_PREFIX}] No package.json in ${bundlerCwd} — skipping preview start`)
       return { mode: 'no-project', port: null, timings }
@@ -2287,7 +2334,12 @@ export class PreviewManager {
     } finally {
       // Pre-warm only seeds on-disk artifacts; it must not leave the manager
       // looking like it's mid-build. `start()` owns the real phase machine.
-      if (!this.started) this._phase = 'idle'
+      // A warm VM can later become a workspace runtime that never starts this
+      // manager, and a leftover `generating` reads as a wedged sidecar.
+      if (!this.started) {
+        this._phase = 'idle'
+        this.apiPhase = 'idle'
+      }
     }
   }
 
@@ -2365,6 +2417,86 @@ export class PreviewManager {
     this._phase = 'ready'
 
     console.log(`[${LOG_PREFIX}] Background setup complete:`, JSON.stringify(timings))
+  }
+
+  private async backgroundSetupStaticBuild(timings: Record<string, number>, cwd: string): Promise<void> {
+    await this.runStaticBuildCycle(timings)
+    this.staticWatchStop?.()
+    this.staticWatchStop = watchStaticSources(cwd, { ignore: [DEFAULT_STAGING_DIR] }, () => {
+      if (this.watchersPaused || !this.started) return
+      void this.runStaticBuildCycle()
+    })
+    console.log(`[${LOG_PREFIX}] Static build setup complete:`, JSON.stringify(timings))
+  }
+
+  /** Build now; a trigger during a build joins it and runs one more pass. */
+  private runStaticBuildCycle(timings: Record<string, number> = {}): Promise<boolean> {
+    if (this.staticBuildInFlight) {
+      this.staticBuildDirty = true
+      return this.staticBuildInFlight
+    }
+    this.staticBuildInFlight = (async () => {
+      let ok = false
+      do {
+        this.staticBuildDirty = false
+        ok = await this.staticBuildOnce(timings)
+      } while (this.staticBuildDirty && this.started)
+      return ok
+    })().finally(() => {
+      this.staticBuildInFlight = null
+    })
+    return this.staticBuildInFlight
+  }
+
+  private async staticBuildOnce(timings: Record<string, number>): Promise<boolean> {
+    const cwd = this.staticBuildCwd()
+    ensureRuntimeLogDir(this.workspaceDir)
+    const buildLogPath = previewBuildLogPath(this.workspaceDir)
+    // Sources can arrive after start (a GitHub import into an empty project),
+    // so dependencies are reconciled per build; the install marker makes this
+    // a no-op when package.json is unchanged. Install comes before planning:
+    // the plan prefers framework CLIs found in node_modules.
+    const serving = this._phase === 'ready'
+    if (existsSync(join(cwd, 'package.json'))) {
+      try {
+        if (!serving) this._phase = 'installing'
+        await this.installDepsIfNeeded(timings, cwd)
+      } catch (err: any) {
+        this.markSetupFailed(err, { force: true })
+        return false
+      }
+    }
+    const plan = resolveStaticBuildPlan(cwd, { stagingDir: DEFAULT_STAGING_DIR, basePath: this.basePath })
+    if ('error' in plan) {
+      this.markSetupFailed(new Error(plan.error), { force: true })
+      return false
+    }
+    if (!serving) this._phase = 'building'
+    console.log(`[${LOG_PREFIX}] Static build: ${plan.label}`)
+    cleanupStagingOutput(cwd, DEFAULT_STAGING_DIR)
+    const result = await runStaticBuild(cwd, plan, {
+      stagingDir: DEFAULT_STAGING_DIR,
+      basePath: this.basePath,
+      env: { NODE_ENV: 'production' },
+      onLine: (stream, line) => emitBuildLine(buildLogPath, `[${stream}]`, line, stream),
+    })
+    if (!result.ok) {
+      cleanupStagingOutput(cwd, DEFAULT_STAGING_DIR)
+      this.markSetupFailed(new Error(result.error), { force: true })
+      return false
+    }
+    if (!(await commitBuildOutputAsync(cwd, DEFAULT_STAGING_DIR))) {
+      this.markSetupFailed(new Error('Build succeeded but its output could not be moved into dist/'), { force: true })
+      return false
+    }
+    this.lastSetupError = null
+    this._phase = 'ready'
+    try {
+      this.onBuildComplete?.({ outputChanged: true })
+    } catch (err: any) {
+      console.warn(`[${LOG_PREFIX}] onBuildComplete subscriber threw: ${err?.message ?? err}`)
+    }
+    return true
   }
 
   private async backgroundSetupMetro(
@@ -2758,6 +2890,8 @@ export class PreviewManager {
     this.intentionalStop = true
     this.stopSchemaWatcher()
     this.stopCustomRoutesWatcher()
+    this.staticWatchStop?.()
+    this.staticWatchStop = null
     if (this.schemaTimer) {
       clearTimeout(this.schemaTimer)
       this.schemaTimer = null

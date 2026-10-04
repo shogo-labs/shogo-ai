@@ -24,7 +24,7 @@ import { afterAll, beforeEach, describe, expect, mock, test } from 'bun:test'
 
 const githubSvc = {
   isConfigured: mock(() => true),
-  getInstallationUrl: mock(() => 'https://github.com/apps/shogo/installations/new'),
+  getInstallationUrl: mock((_state?: string) => 'https://github.com/apps/shogo/installations/new'),
   listInstallations: mock(async () => [] as any[]),
   listRepositories: mock(async (_id: number) => [] as any[]),
   createRepository: mock(async (_id: number, _opts: any) => ({ id: 1, full_name: 'org/r' })),
@@ -35,7 +35,13 @@ const githubSvc = {
       defaultBranch: 'main', isPrivate: true,
     },
     repo: { id: 1, name: 'r', full_name: 'org/r', html_url: 'https://github.com/org/r', private: true },
+    workspace: { ok: true, connect: 'adopted', branch: 'main' },
   })),
+  isOAuthConfigured: mock(() => true),
+  getOAuthUrl: mock((state: string, redirect: string) => `https://github.com/login/oauth/authorize?state=${encodeURIComponent(state)}&redirect_uri=${encodeURIComponent(redirect)}`),
+  getAuthorizeCallbackUrl: mock(() => 'https://api.test/api/github/callback'),
+  exchangeOAuthCode: mock(async (_code: string) => ({ access_token: 'ghu_user', token_type: 'bearer', scope: '' })),
+  findUserInstallationForRepo: mock(async (..._args: any[]) => 42 as number | null),
   disconnectRepository: mock(async (_pid: string) => undefined),
   pushToGitHub: mock(async (_pid: string, _ws: string) => ({ success: true, sha: 'abc123' } as any)),
   pullFromGitHub: mock(async (_pid: string, _ws: string) => ({ success: true } as any)),
@@ -59,14 +65,30 @@ mock.module('../lib/prisma', () => ({
 
 // ─── Import after mocks ──────────────────────────────────────────────
 
+process.env.BETTER_AUTH_SECRET ??= 'test-state-secret'
+process.env.APP_URL = 'https://studio.test'
 const { githubRoutes } = await import('../routes/github')
-const router = githubRoutes({ workspacesDir: '/ws' })
+const { createGitHubAuthorizeState, verifyGitHubAuthorizeState } = await import('../lib/github-oauth-state')
+const workspaceFor = (projectId: string) => ({ projectId, run: async () => ({ ok: true }) }) as any
+const router = githubRoutes({ workspaceFor })
 
 beforeEach(() => {
   projects.clear()
   Object.values(githubSvc).forEach((spy: any) => spy.mockClear?.())
   githubSvc.isConfigured.mockImplementation(() => true)
-  githubSvc.getInstallationUrl.mockImplementation(() => 'https://github.com/apps/shogo')
+  githubSvc.getInstallationUrl.mockImplementation((state?: string) =>
+    state ? `https://github.com/apps/shogo/installations/new?state=${encodeURIComponent(state)}` : 'https://github.com/apps/shogo')
+  githubSvc.isOAuthConfigured.mockImplementation(() => true)
+  githubSvc.exchangeOAuthCode.mockImplementation(async () => ({ access_token: 'ghu_user', token_type: 'bearer', scope: '' }))
+  githubSvc.findUserInstallationForRepo.mockImplementation(async () => 42)
+  githubSvc.connectRepository.mockImplementation(async () => ({
+    connection: {
+      id: 'c1', repoOwner: 'org', repoName: 'r', repoFullName: 'org/r',
+      defaultBranch: 'main', isPrivate: true,
+    },
+    repo: { id: 1, name: 'r', full_name: 'org/r', html_url: 'https://github.com/org/r', private: true },
+    workspace: { ok: true, connect: 'adopted', branch: 'main' },
+  }))
   githubSvc.listInstallations.mockImplementation(async () => [])
   githubSvc.listRepositories.mockImplementation(async () => [])
   githubSvc.createRepository.mockImplementation(async () => ({ id: 1, full_name: 'org/r' }))
@@ -258,6 +280,20 @@ describe('GET /projects/:id/github', () => {
     expect(body.connection.syncEnabled).toBe(true)
   })
 
+  test('reports a token connection by login without exposing the stored token', async () => {
+    seedProject('p1')
+    githubSvc.getConnection.mockImplementation(async () => ({
+      id: 'c2', repoOwner: 'org', repoName: 'r', repoFullName: 'org/r',
+      defaultBranch: 'main', isPrivate: true, syncEnabled: true,
+      authType: 'token', tokenLogin: 'octo-user', encryptedToken: 'v1:iv:tag:ciphertext',
+      lastPushAt: null, lastPullAt: null, lastSyncError: null,
+    }))
+    const res = await router.request('/projects/p1/github')
+    const text = await res.text()
+    expect(JSON.parse(text).connection).toMatchObject({ authType: 'token', tokenLogin: 'octo-user' })
+    expect(text).not.toContain('v1:iv:tag:ciphertext')
+  })
+
   test('500 on service throw', async () => {
     seedProject('p1')
     githubSvc.getConnection.mockImplementation(async () => { throw new Error('x') })
@@ -296,7 +332,26 @@ describe('POST /projects/:id/github/connect', () => {
     const body = await res.json()
     expect(body.connection.repoFullName).toBe('org/r')
     expect(body.repository.private).toBe(true)
-    expect(githubSvc.connectRepository.mock.calls[0][0].workspacePath).toContain('p1')
+    expect(githubSvc.connectRepository.mock.calls[0][0].workspace.projectId).toBe('p1')
+    expect(body.workspace).toEqual({ ok: true, connect: 'adopted', branch: 'main' })
+  })
+
+  test('accepts a user access token instead of an installation and never echoes it', async () => {
+    seedProject('p1')
+    githubSvc.connectRepository.mockClear()
+    const res = await connect({ token: '  ghp_secret  ', repo_owner: 'org', repo_name: 'r' })
+    expect(res.status).toBe(201)
+    const args = githubSvc.connectRepository.mock.calls[0][0]
+    expect(args.token).toBe('ghp_secret')
+    expect(args.installationId).toBeUndefined()
+    expect(await res.text()).not.toContain('ghp_secret')
+  })
+
+  test('400 unless exactly one of installation_id or token is given', async () => {
+    seedProject('p1')
+    expect((await connect({ repo_owner: 'org', repo_name: 'r' })).status).toBe(400)
+    expect((await connect({ installation_id: 1, token: 'ghp_x', repo_owner: 'org', repo_name: 'r' })).status).toBe(400)
+    expect((await connect({ token: '   ', repo_owner: 'org', repo_name: 'r' })).status).toBe(400)
   })
 
   test('500 when service throws', async () => {
@@ -310,6 +365,99 @@ describe('POST /projects/:id/github/connect', () => {
 // ═══════════════════════════════════════════════════════════════════════
 // /projects/:id/github (delete)
 // ═══════════════════════════════════════════════════════════════════════
+
+describe('POST /projects/:id/github/authorize', () => {
+  function authorize(body: any, pid = 'p1') {
+    return router.request(`/projects/${pid}/github/authorize`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+  }
+
+  test('returns an App install link whose signed state names the project and repo', async () => {
+    seedProject('p1')
+    const res = await authorize({ repo_owner: 'org', repo_name: 'r' })
+    expect(res.status).toBe(200)
+    const { url } = await res.json()
+    const state = new URL(url).searchParams.get('state')!
+    expect(verifyGitHubAuthorizeState(state)).toMatchObject({ projectId: 'p1', repoOwner: 'org', repoName: 'r' })
+  })
+
+  test('400 without a repo, and 400 when the App OAuth flow is not configured', async () => {
+    seedProject('p1')
+    expect((await authorize({ repo_owner: 'org' })).status).toBe(400)
+    githubSvc.isOAuthConfigured.mockImplementation(() => false)
+    const res = await authorize({ repo_owner: 'org', repo_name: 'r' })
+    expect(res.status).toBe(400)
+    expect((await res.json()).error.code).toBe('not_configured')
+  })
+})
+
+describe('GET /projects/:id/github/authorize (the short link agents hand out)', () => {
+  const open = (query: string, pid = 'p1') => router.request(`/projects/${pid}/github/authorize${query}`)
+
+  test('redirects to GitHub with a freshly signed state for the project and repo', async () => {
+    seedProject('p1')
+    const res = await open('?repo=org%2Fr')
+    expect(res.status).toBe(302)
+    const state = new URL(res.headers.get('location')!).searchParams.get('state')!
+    expect(verifyGitHubAuthorizeState(state)).toMatchObject({ projectId: 'p1', repoOwner: 'org', repoName: 'r' })
+  })
+
+  test('explains a missing project, a malformed repo, and an unconfigured server instead of redirecting', async () => {
+    expect((await open('?repo=org/r', 'nope')).status).toBe(404)
+    seedProject('p1')
+    expect((await open('')).status).toBe(400)
+    expect((await open('?repo=org/r/extra')).status).toBe(400)
+    githubSvc.isOAuthConfigured.mockImplementation(() => false)
+    const res = await open('?repo=org/r')
+    expect(res.status).toBe(400)
+    expect(await res.text()).toContain('share an access token')
+  })
+})
+
+describe('GET /github/callback', () => {
+  const state = () => createGitHubAuthorizeState({ projectId: 'p1', repoOwner: 'org', repoName: 'r' })
+  const callback = (params: Record<string, string>) =>
+    router.request(`/github/callback?${new URLSearchParams(params)}`)
+
+  test('without an OAuth code, bounces through GitHub OAuth carrying the installation id', async () => {
+    const res = await callback({ state: state(), installation_id: '77', setup_action: 'install' })
+    expect(res.status).toBe(302)
+    const location = new URL(res.headers.get('location')!)
+    expect(location.pathname).toBe('/login/oauth/authorize')
+    expect(verifyGitHubAuthorizeState(location.searchParams.get('state')!)?.installationId).toBe(77)
+    expect(githubSvc.connectRepository).not.toHaveBeenCalled()
+  })
+
+  test('with a code, connects through an installation the user can access and returns to the project', async () => {
+    const res = await callback({ state: state(), code: 'abc', installation_id: '77' })
+    expect(res.status).toBe(302)
+    expect(githubSvc.findUserInstallationForRepo.mock.calls[0]).toEqual(['ghu_user', 'org', 'r', 77])
+    const args = githubSvc.connectRepository.mock.calls[0][0]
+    expect(args).toMatchObject({ projectId: 'p1', installationId: 42, repoOwner: 'org', repoName: 'r' })
+    expect(args.workspace.projectId).toBe('p1')
+    const location = new URL(res.headers.get('location')!)
+    expect(location.origin + location.pathname).toBe('https://studio.test/projects/p1')
+    expect(location.searchParams.get('github')).toBe('connected')
+  })
+
+  test('sends the user back to the install page when no accessible installation can see the repo', async () => {
+    githubSvc.findUserInstallationForRepo.mockImplementation(async () => null)
+    const res = await callback({ state: state(), code: 'abc' })
+    expect(res.status).toBe(302)
+    expect(res.headers.get('location')).toContain('/installations/new?state=')
+    expect(githubSvc.connectRepository).not.toHaveBeenCalled()
+  })
+
+  test('rejects a forged or expired state without touching GitHub', async () => {
+    const res = await callback({ state: `${state()}x`, code: 'abc' })
+    expect(res.status).toBe(400)
+    expect(githubSvc.exchangeOAuthCode).not.toHaveBeenCalled()
+    expect(githubSvc.connectRepository).not.toHaveBeenCalled()
+  })
+})
 
 describe('DELETE /projects/:id/github', () => {
   test('404 when project missing', async () => {

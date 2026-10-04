@@ -27,7 +27,11 @@ class TestPool extends MetalWarmPool {
   repo: Outcome<any> = { status: 'written', etag: '"r"' }
   data: Outcome<any> = { status: 'written', etag: '"d"' }
   dataExport: any = { bytes: new Uint8Array([1]), tag: 't1' }
+  guestMembers: string[] | null = null
 
+  protected override async guestMountedMembers(): Promise<string[] | null> {
+    return this.guestMembers
+  }
   protected override async fetchExport(): Promise<Uint8Array | null> {
     return new Uint8Array([1])
   }
@@ -196,6 +200,16 @@ describe('pool.recycle', () => {
     expect(r.aborted).toBe(true)
     expect(r.steps[0]).toMatchObject({ step: 'members', ok: false })
     expect(stopped).toEqual([])
+  })
+
+  test('the guest supplies members the host lost track of', async () => {
+    const pool = makePool()
+    pool.add('ws:team')
+    pool.guestMembers = ['site']
+    const r = await pool.recycle('ws:team')
+    expect(r.aborted).toBe(false)
+    expect(pool.events).toContain('source site')
+    expect(pool.events).toContain('data site')
   })
 
   test('a runtime that is not here and has no snapshot store just reports destroy', async () => {

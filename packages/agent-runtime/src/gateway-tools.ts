@@ -144,10 +144,13 @@ import {
   createSharedFileLink as apiCreateSharedFileLink,
   createGitHubPullRequest as apiCreateGitHubPullRequest,
   mergeGitHubPullRequest as apiMergeGitHubPullRequest,
+  connectGitHubWithToken as apiConnectGitHubWithToken,
+  getGitHubAuthorizeUrl as apiGetGitHubAuthorizeUrl,
+  projectScopedId,
   postPlanMirror,
   type CheckpointCallResult,
 } from './internal-api'
-import { githubCliEnvForProject } from './github-cli-credentials'
+import { clearGitHubCliEnvCache, githubCliEnvForProject } from './github-cli-credentials'
 import { checkServerTsxDrift, healServerTsxDrift } from './server-tsx-drift'
 import { getCanvasRuntimeErrors, clearCanvasRuntimeErrors } from './canvas-runtime-errors'
 import { scanAndFixFile as scanFileForHardcodedPorts, type PortFix, type PortWarning } from './lint-hardcoded-ports'
@@ -957,9 +960,10 @@ function createGitHubPullRequestTool(ctx: ToolContext): AgentTool {
     name: 'github_create_pr',
     label: 'Create GitHub Pull Request',
     description:
-      'Create a GitHub pull request after the current branch has been pushed. It is attributed to the Shogo GitHub App when the project is connected. ' +
+      'Create a GitHub pull request after the current branch has been pushed. With a project GitHub connection it is opened by the ' +
+      'Shogo GitHub App, or by the connected user when the project is connected with an access token. ' +
       'The PR body always includes a Made with Shogo footer and an optional issue-pipeline runId marker. ' +
-      'If the App is not installed, the tool falls back to the user GITHUB_TOKEN from workspace .env.',
+      'If the project has no GitHub connection, the tool falls back to the user GITHUB_TOKEN from workspace .env.',
     parameters: Type.Object({
       title: Type.String({ description: 'Pull request title' }),
       head: Type.Optional(
@@ -1030,7 +1034,7 @@ function createGitHubPullRequestTool(ctx: ToolContext): AgentTool {
       if (botResult.ok && botResult.data) {
         return textResult({
           ok: true,
-          mode: 'github-app',
+          mode: botResult.data.mode ?? 'github-app',
           author: botResult.data.author,
           number: botResult.data.number,
           url: botResult.data.url,
@@ -1091,6 +1095,107 @@ function createGitHubPullRequestTool(ctx: ToolContext): AgentTool {
       } catch (error: any) {
         return textResult({ error: error?.message ?? String(error) })
       }
+    },
+  }
+}
+
+/** `owner/name`, `github.com/owner/name`, or a clone URL → owner and repo. */
+export function parseGitHubRepoRef(ref: string): { owner: string; repo: string } | null {
+  const trimmed = ref.trim().replace(/\/+$/, '')
+  const match =
+    trimmed.match(/^(?:https?:\/\/)?(?:www\.)?github\.com[/:]([^/\s]+)\/([^/\s#?]+?)(?:\.git)?(?:[/#?].*)?$/i) ??
+    trimmed.match(/^git@github\.com:([^/\s]+)\/([^/\s]+?)(?:\.git)?$/i) ??
+    trimmed.match(/^([A-Za-z0-9-]+)\/([A-Za-z0-9._-]+?)(?:\.git)?$/)
+  return match ? { owner: match[1]!, repo: match[2]! } : null
+}
+
+/**
+ * Connect a project to a GitHub repository. The user chooses how: authorize
+ * the Shogo GitHub App (a link they open), or share an access token. Either
+ * way the credential lands on the project's encrypted GitHub connection and
+ * the repository is checked out in the project's own runtime, where the
+ * preview runs — never cloned by hand with a token in the URL or `.env`.
+ */
+export function createGitHubConnectTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'github_connect',
+    label: 'Connect GitHub Repository',
+    description:
+      'Connect a Shogo project to a GitHub repository so its files, preview, pushes, pulls, and pull requests use that repo. ' +
+      'Call it without a token first: it returns a link for the user to authorize the Shogo GitHub App, and you should offer the user ' +
+      'both options — open that link, or share a GitHub access token (fine-grained token with Contents and Pull requests read/write ' +
+      'on the repo, or a classic token with `repo` scope). When the user shares a token, call this again with it. ' +
+      'This replaces cloning by hand: do not `git clone` a repository into a project or write the token to `.env`.',
+    parameters: Type.Object({
+      repo: Type.String({ description: 'Repository as owner/name or a github.com URL' }),
+      token: Type.Optional(Type.String({ description: 'GitHub access token the user shared, to connect with it' })),
+      projectId: Type.Optional(
+        Type.String({ description: 'Project to connect; defaults to the current project' }),
+      ),
+    }),
+    execute: async (_toolCallId, params) => {
+      const input = params as { repo: string; token?: string; projectId?: string }
+      const parsed = parseGitHubRepoRef(input.repo ?? '')
+      if (!parsed) return textResult({ error: 'repo must be owner/name or a github.com repository URL.' })
+      const projectId = projectScopedId(input.projectId?.trim() || ctx.projectId)
+      if (!projectId) {
+        return textResult({ error: 'No project selected. Pass projectId for the project to connect.' })
+      }
+      const repoFullName = `${parsed.owner}/${parsed.repo}`
+
+      const token = input.token?.trim()
+      if (token) {
+        const result = await apiConnectGitHubWithToken(projectId, {
+          repoOwner: parsed.owner,
+          repoName: parsed.repo,
+          token,
+        })
+        if (!result.ok || !result.data) {
+          return textResult({ error: result.error || 'GitHub rejected the connection.', status: result.status })
+        }
+        clearGitHubCliEnvCache()
+        const workspace = result.data.workspace
+        return textResult({
+          ok: true,
+          connected: result.data.repoFullName,
+          as: result.data.login ?? undefined,
+          defaultBranch: result.data.defaultBranch,
+          files: workspace?.ok === false
+            ? `not updated: ${workspace.error}`
+            : workspace?.connect === 'diverged'
+              ? `not updated: ${workspace.error}`
+              : workspace?.connect === 'adopted'
+                ? `checked out ${workspace.branch ?? result.data.defaultBranch}` +
+                  (workspace.backupBranch ? `; previous project files kept on branch ${workspace.backupBranch}` : '')
+                : 'already up to date with the repository',
+        })
+      }
+
+      const link = await apiGetGitHubAuthorizeUrl(projectId, { repoOwner: parsed.owner, repoName: parsed.repo })
+      const tokenOption =
+        `Share a GitHub access token for ${repoFullName} (fine-grained: Contents and Pull requests read/write; ` +
+        'classic: repo scope). It is stored encrypted on the project connection.'
+      if (link.ok && link.data?.available && link.data.url) {
+        return textResult({
+          ok: true,
+          connected: false,
+          repo: repoFullName,
+          options: [
+            { option: 'authorize_app', label: 'Authorize the Shogo GitHub App', url: link.data.url },
+            { option: 'share_token', label: tokenOption },
+          ],
+          next:
+            'Offer the user both options, and put the authorize_app url in your reply exactly as given (the user cannot see this tool result). ' +
+            'After they authorize, the connection completes on its own; if they share a token, call github_connect again with it.',
+        })
+      }
+      return textResult({
+        ok: true,
+        connected: false,
+        repo: repoFullName,
+        options: [{ option: 'share_token', label: tokenOption }],
+        next: 'Authorizing the GitHub App is not available on this server. Ask the user for a token and call github_connect again with it.',
+      })
     },
   }
 }
@@ -5696,7 +5801,7 @@ function createConnectTool(ctx: ToolContext): AgentTool {
     description:
       'Install (connect) an integration so its tools become available. Auto-routes by name: tries Composio managed OAuth first (Google, Slack, GitHub, etc. — no credentials needed), falls back to MCP catalog (postgres, filesystem, etc.), then to a remote URL if provided. Use `source: "mcp"` to skip Composio. Use `skill:<name>` to install a bundled skill. Pair with search_integrations to discover names.\n\n' +
       'When to call connect vs. when not to: only call connect when the user has asked for an ACTION you can\'t perform without that integration (send a calendar invite, post to Slack, query a Postgres database, etc.). Do NOT call connect when the user is asking to "show", "list", "compare", "describe", or "preview" data you can already produce with `web`, `read_file`, or in-context information — installing an integration the user did not ask for forces them through an OAuth dance for no reason and is one of the most disliked agent behaviors. If you\'re unsure whether the user wants the action or just an explanation, ask one clarifying question via `ask_user` before calling connect.\n\n' +
-      'GitHub issues, pull requests, Actions, releases, and repo metadata: do NOT call connect. Use the pre-installed `gh` CLI via exec for listing and issue operations (`gh issue list`, `gh issue create`, `gh pr list`, `gh run list`). Use the `github_create_pr` tool to create a PR so Shogo can add attribution and use the GitHub App when connected. If gh is not authenticated, save a PAT to `.env` as GITHUB_TOKEN and retry. Only connect({ name: "github" }) if the user explicitly asks for the Composio GitHub OAuth integration.',
+      'GitHub issues, pull requests, Actions, releases, and repo metadata: do NOT call connect. Use the pre-installed `gh` CLI via exec for listing and issue operations (`gh issue list`, `gh issue create`, `gh pr list`, `gh run list`). Use the `github_create_pr` tool to create a PR so Shogo can add attribution and use the GitHub App when connected. To bring a repository into a project, use `github_connect`. If gh is not authenticated, save a PAT to `.env` as GITHUB_TOKEN and retry. Only connect({ name: "github" }) if the user explicitly asks for the Composio GitHub OAuth integration.',
     label: 'Connect Integration',
     parameters: Type.Object({
       name: Type.String({
@@ -7206,6 +7311,7 @@ export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTo
     g(createExecListTool(ctx), 'shell'),
     g(createGitHubPullRequestTool(ctx), 'network'),
     g(createGitHubMergePullRequestTool(ctx), 'network'),
+    g(createGitHubConnectTool(ctx), 'network'),
     g(createReadFileTool(ctx), 'file_read'),
     g(createWriteFileTool(ctx), 'file_write'),
     g(createEditFileTool(ctx), 'file_write'),
@@ -7842,6 +7948,7 @@ export const ALL_TOOL_NAMES = [
   'disconnect',
   'github_create_pr',
   'github_merge_pr',
+  'github_connect',
   'share_file',
   'transcribe_audio',
   'quick_action',

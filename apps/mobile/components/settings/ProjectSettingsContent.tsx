@@ -8,6 +8,7 @@ import {
   useProjectCollection,
 } from "@shogo/shared-app/domain";
 import { Text } from "./account-sheet-chrome";
+import { ProjectGitHubSection } from "./ProjectGitHubSection";
 
 export function ProjectSettingsContent({ projectId }: { projectId: string }) {
   const projects = useProjectCollection();
@@ -67,6 +68,8 @@ export function ProjectSettingsContent({ projectId }: { projectId: string }) {
           </Text>
         </Pressable>
       </View>
+
+      <ProjectGitHubSection projectId={projectId} />
     </View>
   );
 }

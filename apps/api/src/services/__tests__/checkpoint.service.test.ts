@@ -150,10 +150,13 @@ let pushSpy: { calls: any[]; impl: (...a: any[]) => Promise<any> } = {
 }
 mock.module('../github.service', () => ({
   isConfigured: () => ghIsConfigured,
-  pushToGitHub: (projectId: string, workspacePath: string) => {
-    pushSpy.calls.push({ projectId, workspacePath })
-    return pushSpy.impl(projectId, workspacePath)
+  pushToGitHub: (projectId: string, workspace: unknown) => {
+    pushSpy.calls.push({ projectId, workspace })
+    return pushSpy.impl(projectId, workspace)
   },
+}))
+mock.module('../github-workspace', () => ({
+  runtimeGitHubWorkspace: (projectId: string) => ({ runtimeFor: projectId }),
 }))
 
 // fs / fs/promises / child_process
@@ -468,29 +471,29 @@ describe('createCheckpoint — no changes to commit', () => {
 
 describe('syncAfterCheckpoint', () => {
   it('is a no-op when no GitHub connection exists', async () => {
-    await svc.syncAfterCheckpoint('p1', '/ws')
+    await svc.syncAfterCheckpoint('p1')
     expect(pushSpy.calls).toHaveLength(0)
   })
 
   it('is a no-op when connection.syncEnabled=false', async () => {
     db.ghConns.set('p2', { projectId: 'p2', syncEnabled: false })
-    await svc.syncAfterCheckpoint('p2', '/ws')
+    await svc.syncAfterCheckpoint('p2')
     expect(pushSpy.calls).toHaveLength(0)
   })
 
   it('is a no-op when github.service.isConfigured() returns false', async () => {
     db.ghConns.set('p3', { projectId: 'p3', syncEnabled: true })
     ghIsConfigured = false
-    await svc.syncAfterCheckpoint('p3', '/ws')
+    await svc.syncAfterCheckpoint('p3')
     expect(pushSpy.calls).toHaveLength(0)
   })
 
   it('fires github.pushToGitHub when connection + isConfigured', async () => {
     db.ghConns.set('p4', { projectId: 'p4', syncEnabled: true })
-    await svc.syncAfterCheckpoint('p4', '/ws')
+    await svc.syncAfterCheckpoint('p4')
     // tick to flush microtask
     await new Promise((r) => setTimeout(r, 0))
-    expect(pushSpy.calls).toEqual([{ projectId: 'p4', workspacePath: '/ws' }])
+    expect(pushSpy.calls).toEqual([{ projectId: 'p4', workspace: { runtimeFor: 'p4' } }])
   })
 
   it('logs but swallows push failure', async () => {
@@ -500,7 +503,7 @@ describe('syncAfterCheckpoint', () => {
     const orig = console.warn
     console.warn = (...a: any[]) => warns.push(a.join(' '))
     try {
-      await svc.syncAfterCheckpoint('p5', '/ws')
+      await svc.syncAfterCheckpoint('p5')
       await new Promise((r) => setTimeout(r, 0))
       expect(warns.some((w) => w.includes('Auto-sync to GitHub failed'))).toBe(true)
     } finally {
@@ -519,7 +522,7 @@ describe('syncAfterCheckpoint', () => {
     const origWarn = console.warn
     console.warn = (...a: any[]) => warns.push(a.join(' '))
     try {
-      await svc.syncAfterCheckpoint('p6', '/ws')
+      await svc.syncAfterCheckpoint('p6')
       expect(warns.some((w) => w.includes('syncAfterCheckpoint error'))).toBe(true)
     } finally {
       console.warn = origWarn

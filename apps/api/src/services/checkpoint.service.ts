@@ -265,7 +265,7 @@ export async function createCheckpoint(
     });
 
     // Auto-sync to GitHub if connected (fire-and-forget)
-    syncAfterCheckpoint(projectId, workspacePath).catch(() => {});
+    syncAfterCheckpoint(projectId).catch(() => {});
 
     return {
       id: checkpoint.id,
@@ -312,7 +312,7 @@ export async function createCheckpoint(
   });
 
   // Auto-sync to GitHub if connected (fire-and-forget)
-  syncAfterCheckpoint(projectId, workspacePath).catch(() => {});
+  syncAfterCheckpoint(projectId).catch(() => {});
 
   return {
     id: checkpoint.id,
@@ -811,11 +811,10 @@ export async function pruneCheckpoints(
  * Only pushes if the project has a GitHub connection with syncEnabled=true.
  * Uses lazy import to avoid hard dependency on github.service / jsonwebtoken.
  * This is fire-and-forget -- errors are logged but do not propagate.
+ *
+ * The push runs in the project's runtime, which owns the branch being pushed.
  */
-export async function syncAfterCheckpoint(
-  projectId: string,
-  workspacePath: string
-): Promise<void> {
+export async function syncAfterCheckpoint(projectId: string): Promise<void> {
   try {
     // Check if project has a GitHub connection with sync enabled
     const connection = await prisma.gitHubConnection.findUnique({
@@ -826,19 +825,21 @@ export async function syncAfterCheckpoint(
       return; // No connection or sync disabled -- nothing to do
     }
 
-    // Pushing needs the server-side GitHub App, which desktop never has
-    // (`isConfigured()` is always false there). The guard lets the desktop
-    // bundle dead-code-eliminate the GitHub client and its Redis-backed
+    // Desktop never pushes from here. The guard lets the desktop bundle
+    // dead-code-eliminate the GitHub client and its Redis-backed
     // dependencies (see local-bundle-integrity.test.ts).
     // Lazy import github service to avoid loading jsonwebtoken when not needed
     const githubService = process.env.SHOGO_LOCAL_MODE !== 'true' ? await import('./github.service') : null;
+    if (!githubService) return;
 
-    if (!githubService?.isConfigured()) {
-      return; // GitHub App not configured on this server
+    // App connections need the server-side GitHub App; token connections don't.
+    if (connection.authType !== 'token' && !githubService.isConfigured()) {
+      return;
     }
 
     // Push in the background (fire-and-forget)
-    githubService.pushToGitHub(projectId, workspacePath).catch((err) => {
+    const { runtimeGitHubWorkspace } = await import('./github-workspace');
+    githubService.pushToGitHub(projectId, runtimeGitHubWorkspace(projectId)).catch((err) => {
       console.warn('[Checkpoint] Auto-sync to GitHub failed:', err.message);
     });
   } catch (err: any) {

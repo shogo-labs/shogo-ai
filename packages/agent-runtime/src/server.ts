@@ -39,6 +39,8 @@ import {
 import { hydrateWorkspaceMembers, type MemberSync } from './workspace-hydration'
 import {
   resolveMemberTechStackId,
+  applyMemberTechStackMarker,
+  memberHasProjectSource,
   parseHostConfirmedNewProjectIds,
   seedEmptyWorkspaceMember,
   shouldSeedAnchorMember,
@@ -140,6 +142,14 @@ import {
   type PortBridgeWsData,
 } from './port-bridge'
 import { deriveApiUrl, getInternalHeaders, postCheckpointRecord, postWorktreeStatus, postPlanMirror } from './internal-api'
+import {
+  detachMemberFromRootRepo,
+  runGitHubWorkspaceOp,
+  validateGitHubWorkspaceOpInput,
+  type GitHubWorkspaceOpInput,
+} from './github-workspace-git'
+import { isHostMediatedDurability } from './host-durability'
+import { clearGitHubCliEnvCache } from './github-cli-credentials'
 import { HistoryIndex } from './history-index'
 import { WORKTREE_BRANCH_PREFIX } from '@shogo/shared-runtime'
 import { initTrustResolver, refreshTrust } from './trust-resolver'
@@ -463,14 +473,6 @@ function isLfsActive(): boolean {
  * uploaded by the host. Returning ok here lets persistAndRecordCheckpoint
  * record the checkpoint row instead of throwing.
  */
-function isHostMediatedDurability(): boolean {
-  const v = process.env.SHOGO_DURABILITY_HOST_MEDIATED
-  return v === '1' || v === 'true'
-}
-
-/** Last `git rev-parse HEAD` the guest reported; refreshed after each commit. */
-let cachedRepoHeadSha: string | null = null
-
 async function persistDurableRepo(): Promise<{ ok: boolean; changed: boolean; reason?: string }> {
   if (isHostMediatedDurability()) {
     if (isLfsActive()) {
@@ -489,6 +491,9 @@ async function persistDurableRepo(): Promise<{ ok: boolean; changed: boolean; re
   }
   return persistRepoToStore(WORKSPACE_DIR, repoCfg, { excludeLfsObjects })
 }
+
+/** Last `git rev-parse HEAD` the guest reported; refreshed after each commit. */
+let cachedRepoHeadSha: string | null = null
 
 /**
  * Offload large/binary assets to S3 and refresh `.git/info/exclude` so the
@@ -2738,6 +2743,9 @@ function getWorkspacePreviewManager(projectId: string): PreviewManager | null {
   if (!isAttachedProjectId(projectId, effectiveWorkspaceProjectIds())) return null
   let pm = workspacePreviewManagers.get(projectId)
   if (!pm) {
+    if (applyMemberTechStackMarker(join(WORKSPACE_DIR, projectId), projectId)) {
+      console.log(`[agent-runtime] Stamped .tech-stack for member ${projectId} from project settings`)
+    }
     const previewUrls = parseWorkspacePreviewUrls()
     pm = new PreviewManager({
       workspaceDir: join(WORKSPACE_DIR, projectId),
@@ -3375,11 +3383,13 @@ app.post('/pool/export-data', async (c) => {
 
 /**
  * Every PreviewManager this runtime has built, keyed by project id. The root
- * manager is included (it runs the sidecar outside workspace mode).
+ * manager is included when it serves something: always outside workspace
+ * mode, and in workspace mode only once started (the merged root is not an
+ * app; warm-pool pre-warm can still have built a manager for it).
  */
 function allPreviewManagers(): Map<string, PreviewManager> {
   const out = new Map<string, PreviewManager>(workspacePreviewManagers)
-  if (previewManager) {
+  if (previewManager && (!IS_WORKSPACE_RUNTIME || previewManager.isStarted)) {
     const id = process.env.PROJECT_ID || 'root'
     out.set(out.has(id) ? `${id}#root` : id, previewManager)
   }
@@ -5765,6 +5775,48 @@ app.post('/agent/git-flush', async (c) => {
 })
 
 /**
+ * Run a GitHub remote operation (connect / push / pull) on a project's
+ * workspace. Called by the API (routes/github.ts, the GitHub App OAuth
+ * callback) because only the runtime has the project's files. The API sends a
+ * short-lived credential for this one call; it is passed to git through env
+ * and never stored.
+ *
+ * Git sync is paused while the operation rewrites HEAD, then triggered so the
+ * new history is persisted to the durable repo.
+ */
+app.post('/agent/github/git', async (c) => {
+  const body = (await c.req.json().catch(() => ({}))) as Partial<GitHubWorkspaceOpInput> & { projectId?: string }
+  const invalid = validateGitHubWorkspaceOpInput(body)
+  if (invalid) return c.json({ ok: false, error: invalid }, 400)
+  const projectDir = getProjectWorkspaceDir(body.projectId)
+  if (!projectDir) {
+    return c.json({ ok: false, error: 'Project is not attached to this runtime' }, 404)
+  }
+
+  const rootSync = gitSyncInstance
+  if (rootSync) {
+    await gitLayerReady
+    await rootSync.flush()
+    await rootSync.pause()
+  }
+  try {
+    const result = await runGitHubWorkspaceOp(projectDir, body as GitHubWorkspaceOpInput)
+    if (body.op === 'connect') clearGitHubCliEnvCache()
+    if (result.ok && body.op === 'connect' && projectDir !== WORKSPACE_DIR) {
+      // A member folder with its own `.git` would be committed to the
+      // merged-root repo as an embedded-repo gitlink, dropping its files.
+      await detachMemberFromRootRepo(WORKSPACE_DIR, projectDir)
+    }
+    return c.json(result, result.ok ? 200 : 422)
+  } finally {
+    if (rootSync) {
+      rootSync.resume()
+      rootSync.triggerSync(true)
+    }
+  }
+})
+
+/**
  * Phases during which a build is plausibly in flight and `dist/` may
  * legitimately be missing. When a navigation request would otherwise
  * 404 we render a small "Building..." placeholder instead so the user
@@ -6109,6 +6161,16 @@ async function initializeEssentials(): Promise<void> {
     } catch (error: any) {
       console.error('[agent-runtime] Workspace S3 hydration failed:', error.message)
     }
+  } else if (IS_WORKSPACE_RUNTIME && !process.env.S3_WORKSPACES_BUCKET && !process.env.S3_BUCKET) {
+    // Host-local runtime (desktop, local dev): the API laid the member folders
+    // down before spawning us and no backup overlays them later, so an empty
+    // member is a new project. Self-seeding stacks (Expo, custom, ...) arrive
+    // empty by design and rely on the anchor seed below.
+    workspaceNewProjectIds = WORKSPACE_RUNTIME_PROJECT_IDS.filter(
+      (id) => !memberHasProjectSource(join(WORKSPACE_DIR, id)),
+    )
+  } else if (isHostMediatedDurability()) {
+    logTiming('S3 sync skipped: host-mediated durability')
   } else if (!skipInternalSync && (process.env.S3_WORKSPACES_BUCKET || process.env.S3_BUCKET)) {
     try {
       const result = await initializeS3Sync(WORKSPACE_DIR, {
