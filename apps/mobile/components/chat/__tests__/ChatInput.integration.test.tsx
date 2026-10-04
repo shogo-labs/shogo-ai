@@ -132,13 +132,19 @@ mock.module("../../../lib/platform-config", () => ({
   usePlatformConfig: () => ({ features: { billing: false, ezMode: false } }),
 }))
 
+const voice = {
+  isBusy: false,
+  isRecording: false,
+  toggleRecording: mock(async () => {}),
+}
 mock.module("../useVoiceInput", () => ({
   useVoiceInput: () => ({
-    isBusy: false,
-    isRecording: false,
+    isBusy: voice.isBusy,
+    isRecording: voice.isRecording,
     liveTranscript: "",
     start: mock(async () => {}),
     stop: mock(async () => {}),
+    toggleRecording: voice.toggleRecording,
   }),
 }))
 
@@ -189,6 +195,9 @@ const { ChatInput } = await import("../ChatInput")
 
 afterEach(() => {
   cleanup()
+  voice.isBusy = false
+  voice.isRecording = false
+  voice.toggleRecording.mockClear()
   mentionHistoryResults = []
   chatContext = null
 })
@@ -326,5 +335,36 @@ describe("ChatInput integration — mobile-web TextInput changes", () => {
 
     expect(input.value).toBe("@ali")
     expect(commits).toBe(commitsAfterTyping)
+  })
+})
+
+describe("ChatInput integration — Enter while dictating", () => {
+  test("stops dictation on Enter, then sends and clears the input", async () => {
+    const onSubmit = mock(() => {})
+    const { rerender } = render(<ChatInput onSubmit={onSubmit} isPro />)
+    const input = screen.getByTestId("project-composer-input") as HTMLTextAreaElement
+    await act(async () => {
+      fireEvent.change(input, { target: { value: "hello there" } })
+    })
+
+    // `ChatInput` is memoized, so a changed prop is needed to re-read the voice mock.
+    voice.isBusy = true
+    voice.isRecording = true
+    rerender(<ChatInput onSubmit={onSubmit} isPro placeholder="recording" />)
+    await act(async () => {
+      fireEvent.keyDown(window, { key: "Enter" })
+    })
+    expect(voice.toggleRecording).toHaveBeenCalledTimes(1)
+    expect(onSubmit).not.toHaveBeenCalled()
+
+    // The recognizer finishes: status returns to idle and the transcript has landed.
+    voice.isBusy = false
+    voice.isRecording = false
+    await act(async () => {
+      rerender(<ChatInput onSubmit={onSubmit} isPro placeholder="done" />)
+    })
+    expect(onSubmit).toHaveBeenCalledTimes(1)
+    expect((onSubmit.mock.calls[0] as unknown[])[0]).toBe("hello there")
+    expect((screen.getByTestId("project-composer-input") as HTMLTextAreaElement).value).toBe("")
   })
 })
