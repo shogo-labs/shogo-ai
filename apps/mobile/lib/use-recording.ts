@@ -140,6 +140,15 @@ export function useRecording() {
         if (!wsId) throw new Error('Personal workspace not loaded')
         return requestStreamTicket(wsId, liveRecordingId)
       },
+      onMode: (mode) => {
+        if (mode === 'chunks') {
+          setLiveTranscript({
+            notice: 'Live streaming is unavailable. Check Settings; the full transcript is still made when you stop.',
+          })
+        } else {
+          setLiveTranscript({ notice: null })
+        }
+      },
       handlers: {
         onPartial: (message) => {
           setLiveTranscript({ partial: message.text, unavailable: null })
