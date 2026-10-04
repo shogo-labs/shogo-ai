@@ -148,6 +148,9 @@ describe('push and pull', () => {
     writeFileSync(join(WS, '.shogo', 'logs', 'build.log'), 'log')
     writeFileSync(join(WS, '.shogo', 'build-output.json'), '{}')
     writeFileSync(join(WS, '.shogo', 'STACK.md'), '# stack docs')
+    mkdirSync(join(WS, 'prisma'), { recursive: true })
+    writeFileSync(join(WS, 'prisma', 'dev.db'), 'sqlite')
+    writeFileSync(join(WS, 'prisma', 'dev.db-journal'), 'journal')
 
     const result = await runGitHubWorkspaceOp(WS, op('push'))
 
@@ -155,7 +158,7 @@ describe('push and pull', () => {
     git(seed, 'pull', '-q', 'origin', 'main')
     expect(readFileSync(join(seed, 'edited.md'), 'utf8')).toBe('agent edit\n')
     expect(existsSync(join(seed, '.shogo', 'STACK.md'))).toBe(true)
-    for (const runtimeFile of ['.tech-stack', '.shogo/logs/build.log', '.shogo/build-output.json']) {
+    for (const runtimeFile of ['.tech-stack', '.shogo/logs/build.log', '.shogo/build-output.json', 'prisma/dev.db', 'prisma/dev.db-journal']) {
       expect(existsSync(join(seed, runtimeFile))).toBe(false)
     }
     expect(await runGitHubWorkspaceOp(WS, op('push'))).toMatchObject({ ok: true, commits: 0 })

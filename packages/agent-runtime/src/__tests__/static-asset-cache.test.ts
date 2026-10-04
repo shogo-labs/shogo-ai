@@ -1,11 +1,43 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { describe, expect, test } from 'bun:test'
+import { mkdirSync, mkdtempSync, writeFileSync } from 'fs'
+import { tmpdir } from 'os'
+import { join } from 'path'
 import {
   isContentHashedFilename,
+  resolveDistFile,
   staticAssetCacheControl,
   shouldServeSpaFallback,
 } from '../static-asset-cache'
+
+describe('resolveDistFile', () => {
+  const dist = mkdtempSync(join(tmpdir(), 'dist-'))
+  writeFileSync(join(dist, 'index.html'), 'home')
+  mkdirSync(join(dist, 'about-us'))
+  writeFileSync(join(dist, 'about-us', 'index.html'), 'about')
+  writeFileSync(join(dist, 'pricing.html'), 'pricing')
+  mkdirSync(join(dist, '_astro'))
+  writeFileSync(join(dist, '_astro', 'index.abc123.css'), 'css')
+
+  test('serves a file that exists as-is', () => {
+    expect(resolveDistFile(join(dist, '_astro', 'index.abc123.css'))).toBe(join(dist, '_astro', 'index.abc123.css'))
+  })
+
+  test("maps a multi-page site's directory routes to their index.html", () => {
+    expect(resolveDistFile(join(dist, 'about-us/'))).toBe(join(dist, 'about-us', 'index.html'))
+    expect(resolveDistFile(join(dist, 'about-us'))).toBe(join(dist, 'about-us', 'index.html'))
+  })
+
+  test('maps an extension-less route to <route>.html', () => {
+    expect(resolveDistFile(join(dist, 'pricing'))).toBe(join(dist, 'pricing.html'))
+  })
+
+  test('returns null for a route with no page, leaving the SPA fallback to the caller', () => {
+    expect(resolveDistFile(join(dist, 'missing'))).toBeNull()
+    expect(resolveDistFile(join(dist, '_astro'))).toBeNull()
+  })
+})
 
 describe('isContentHashedFilename', () => {
   test('matches Expo export hashed JS/CSS', () => {
