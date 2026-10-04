@@ -35,6 +35,7 @@ const k8sAuth = {
 mock.module('../lib/k8s-auth', () => k8sAuth)
 
 const runtimeToken = {
+  getSigningSecret: () => 'test-runtime-secret',
   verifyRuntimeToken: mock((_t: string, _p?: string) =>
     ({ ok: false, reason: 'bad' } as
       | { ok: false; reason: string }

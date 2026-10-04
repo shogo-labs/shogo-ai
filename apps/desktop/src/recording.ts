@@ -22,6 +22,7 @@ import { execFile } from 'child_process'
 import { readConfig, writeConfig, type MeetingConfig } from './config'
 import { RecordingManager, type RecordingEvent } from './recording/manager'
 import { LiveTranscriber, LIVE_SOURCE_RATE } from './recording/live-transcriber'
+import { HttpPcmStreamer, LiveFeed } from './recording/pcm-streamer'
 import { getApiUrl } from './local-server'
 import {
   MeetingDetector,
@@ -53,7 +54,9 @@ const IS_DEV = !app.isPackaged
 // ---------------------------------------------------------------------------
 
 let manager: RecordingManager | null = null
-let liveTranscriber: { sessionId: string; live: LiveTranscriber; heartbeat: ReturnType<typeof setInterval> } | null = null
+let liveTranscriber: { sessionId: string; live: LiveFeed; heartbeat: ReturnType<typeof setInterval> } | null = null
+/** Personal workspace the app reads meetings from; sent with live chunks so they land there. */
+let meetingsWorkspaceId: string | null = null
 let detector: MeetingDetector | null = null
 let durationTimer: ReturnType<typeof setInterval> | null = null
 let recordingWindowResolver: (() => BrowserWindow | null) | null = null
@@ -171,6 +174,11 @@ function feedLiveTranscript(
 /** Must stay well under the API's stale-draft window (10 minutes). */
 const DRAFT_HEARTBEAT_MS = 60_000
 
+/** Headers every live-transcript request carries: the workspace the app reads meetings from. */
+function liveHeaders(): Record<string, string> {
+  return meetingsWorkspaceId ? { 'x-shogo-workspace-id': meetingsWorkspaceId } : {}
+}
+
 function startLiveTranscript(sessionId: string): void {
   liveTranscriber?.live.stop({ discard: true })
   if (liveTranscriber) clearInterval(liveTranscriber.heartbeat)
@@ -178,27 +186,38 @@ function startLiveTranscript(sessionId: string): void {
   const url = `${draftUrl}/live`
   // Live chunks stop during silence, so check in separately or the API closes the draft.
   const beat = () =>
-    void fetch(draftUrl, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: '{}' }).catch(() => {})
+    void fetch(draftUrl, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json', ...liveHeaders() },
+      body: '{}',
+    }).catch(() => {})
   beat()
-  liveTranscriber = {
-    sessionId,
-    heartbeat: setInterval(beat, DRAFT_HEARTBEAT_MS),
-    live: new LiveTranscriber(async (chunk) => {
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'content-type': 'audio/wav',
-          'x-live-start': String(chunk.start),
-          'x-live-seq': String(chunk.seq),
-        },
-        body: new Uint8Array(chunk.wav),
-      })
-      if (!res.ok && res.status !== 409) {
-        console.warn(`[Recording] live transcript chunk ${chunk.seq} failed (${res.status})`)
-      }
-      return { ok: res.ok, status: res.status }
-    }),
-  }
+  // Stream the audio when the API can transcribe in real time; otherwise upload short chunks.
+  const live = new LiveFeed(
+    (onBroken) => new HttpPcmStreamer({ draftUrl, headers: liveHeaders(), onBroken }),
+    (startOffsetSeconds) =>
+      new LiveTranscriber(async (chunk) => {
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'content-type': 'audio/wav',
+            'x-live-start': String(chunk.start),
+            'x-live-seq': String(chunk.seq),
+            ...liveHeaders(),
+          },
+          body: new Uint8Array(chunk.wav),
+        })
+        if (!res.ok && res.status !== 409) {
+          console.warn(`[Recording] live transcript chunk ${chunk.seq} failed (${res.status})`)
+        }
+        return { ok: res.ok, status: res.status }
+      }, startOffsetSeconds),
+  )
+  liveTranscriber = { sessionId, heartbeat: setInterval(beat, DRAFT_HEARTBEAT_MS), live }
+  void live
+    .begin()
+    .then((mode) => console.log(`[Recording] live transcript for ${sessionId} via ${mode}`))
+    .catch((err) => console.warn('[Recording] live transcript failed to start:', err?.message ?? err))
 }
 
 function stopLiveTranscript(): void {
@@ -651,6 +670,10 @@ export function registerRecordingIpcHandlers(): void {
     }
   })
   ipcMain.handle('get-recording-status', () => getRecordingStatus())
+  ipcMain.handle('meetings:get-workspace', () => meetingsWorkspaceId)
+  ipcMain.on('meetings:set-workspace', (_event, workspaceId: unknown) => {
+    meetingsWorkspaceId = typeof workspaceId === 'string' && workspaceId ? workspaceId : null
+  })
 
   ipcMain.handle('get-meeting-config', () => readConfig().meetings)
   ipcMain.handle('set-meeting-config', (_event, config: Partial<import('./config').MeetingConfig>) => {

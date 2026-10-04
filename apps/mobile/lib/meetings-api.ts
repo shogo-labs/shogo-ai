@@ -200,11 +200,38 @@ export async function postLiveChunk(
   form.append('seq', String(chunk.seq))
   const res = await fetch(
     `${API_URL}/api/workspaces/${encodeURIComponent(workspaceId)}/meetings/recordings/${encodeURIComponent(recordingId)}/live`,
-    { method: 'POST', body: form, credentials: Platform.OS === 'web' ? 'include' : 'omit' },
+    { method: 'POST', body: form, headers: liveAuthHeaders(), credentials: Platform.OS === 'web' ? 'include' : 'omit' },
   )
   const body = await res.json().catch(() => ({}))
   if (!res.ok) throw new LiveTranscriptionError(body?.error?.message || `Live transcription failed (${res.status})`, res.status)
   return body
+}
+
+/** Ticket for the live-transcript audio socket. Throws `LiveTranscriptionError` (501 when streaming isn't available). */
+export async function requestStreamTicket(
+  workspaceId: string,
+  recordingId: string,
+): Promise<{ ticket: string; path: string; backend: string }> {
+  const headers: Record<string, string> = {}
+  const cookie = Platform.OS === 'web' ? null : nativeAuthCookie()
+  if (cookie) headers.Cookie = cookie
+  const res = await fetch(
+    `${API_URL}/api/workspaces/${encodeURIComponent(workspaceId)}/meetings/recordings/${encodeURIComponent(recordingId)}/stream-ticket`,
+    { method: 'POST', headers, credentials: Platform.OS === 'web' ? 'include' : 'omit' },
+  )
+  const body = await res.json().catch(() => ({}))
+  if (!res.ok) throw new LiveTranscriptionError(body?.error?.message || `Live stream unavailable (${res.status})`, res.status)
+  return body
+}
+
+export function liveEventsUrl(workspaceId: string, recordingId: string): string {
+  return `${API_URL}/api/workspaces/${encodeURIComponent(workspaceId)}/meetings/recordings/${encodeURIComponent(recordingId)}/live/events`
+}
+
+/** Headers that authenticate a raw fetch on native (web sends its cookie itself). */
+export function liveAuthHeaders(): Record<string, string> {
+  const cookie = Platform.OS === 'web' ? null : nativeAuthCookie()
+  return cookie ? { Cookie: cookie } : {}
 }
 
 export type MeetingAudio =

@@ -8,6 +8,7 @@
  */
 
 import { Hono } from 'hono'
+import { streamSSE } from 'hono/streaming'
 import { mkdirSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
@@ -29,7 +30,9 @@ import {
   meetingToMarkdown,
   newShareToken,
   parseLiveChunks,
+  readTranscript,
   removeAudioFiles,
+  setLiveStatus,
   searchMeetings,
   serializeMeeting,
   serializeSharedMeeting,
@@ -38,6 +41,9 @@ import {
   validateTemplateInput,
 } from '../services/meeting.service'
 import { isBuiltinTemplateId } from '../services/meeting-templates'
+import { describeStreamAvailability } from '../services/meeting-live-stream'
+import { subscribeMeetingLive } from '../lib/meeting-live-bus'
+import { createStreamTicket, STREAM_TICKET_TTL_MS, STREAM_WS_PATH } from '../lib/meeting-stream-ticket'
 import type { WorkspaceAgentAuthorize, WorkspaceAgentAuthContext } from './workspace-agent'
 
 const db = prisma
@@ -213,6 +219,20 @@ export function workspaceMeetingRoutes(config: WorkspaceMeetingRoutesConfig): Ho
     const auth = await scope(c)
     if (auth instanceof Response) return auth
     return handleLiveChunk(c, { workspaceId: auth.workspaceId, userId: auth.userId ?? null }, c.req.param('recordingId'))
+  })
+
+  /** Ticket for the audio WebSocket. 501 tells the recorder to use chunk upload instead. */
+  router.post(`${base}/recordings/:recordingId/stream-ticket`, async (c) => {
+    const auth = await scope(c)
+    if (auth instanceof Response) return auth
+    return handleStreamTicket(c, { workspaceId: auth.workspaceId, userId: auth.userId ?? null }, c.req.param('recordingId'))
+  })
+
+  /** Server-sent events: the live transcript as it forms (snapshot first, then partial/final text). */
+  router.get(`${base}/recordings/:recordingId/live/events`, async (c) => {
+    const auth = await scope(c)
+    if (auth instanceof Response) return auth
+    return handleLiveEvents(c, { workspaceId: auth.workspaceId, userId: auth.userId ?? null }, c.req.param('recordingId'))
   })
 
   // ── Create ─────────────────────────────────────────────────────────────
@@ -460,13 +480,86 @@ export async function handleLiveChunk(
         ? error(c, 400, 'invalid_chunk', 'Live audio chunk must be a WAV with a start offset and sequence number')
         : result.reason === 'disabled'
           ? error(c, 409, 'meetings_disabled', 'Meetings and transcription are disabled')
+        : result.reason === 'busy'
+          ? error(c, 429, 'busy', 'Live transcript is busy. Retrying.')
         : error(c, 409, 'not_recording', 'This recording has already finished')
     }
     return c.json({ meetingId: draft.id, segment: result.segment, transcript: result.transcript })
   } catch (err: any) {
     console.warn(`[Meetings] Live transcription failed for ${draft.id}:`, err?.message ?? err)
-    return error(c, 503, 'transcription_unavailable', friendlyMeetingError('transcript', err))
+    const message = friendlyMeetingError('transcript', err)
+    await setLiveStatus(draft.id, { state: 'error', message })
+    return error(c, 503, 'transcription_unavailable', message)
   }
+}
+
+/** Mint a ticket for the live-transcript audio socket of `recordingId`. */
+export async function handleStreamTicket(
+  c: any,
+  owner: { workspaceId: string; userId: string | null },
+  recordingId: string,
+): Promise<Response> {
+  if (!recordingId || recordingId.length > 128) return error(c, 400, 'invalid_recording', 'Invalid recording id')
+  const availability = await describeStreamAvailability()
+  if (!availability.ok) {
+    return availability.reason === 'disabled'
+      ? error(c, 409, 'meetings_disabled', 'Meetings and transcription are disabled')
+      : error(c, 501, 'stream_unavailable', 'Streaming transcription is not available here')
+  }
+  const ticket = createStreamTicket({ ...owner, recordingId })
+  return c.json({ ticket, path: STREAM_WS_PATH, backend: availability.backend, expiresInMs: STREAM_TICKET_TTL_MS })
+}
+
+const LIVE_EVENTS_POLL_MS = 5000
+
+/** SSE for a recording's live transcript. Viewers can be on any API pod: events come through the bus. */
+export async function handleLiveEvents(
+  c: any,
+  owner: { workspaceId: string; userId: string | null },
+  recordingId: string,
+): Promise<Response> {
+  const first = await findRecordingDraft(owner.workspaceId, recordingId)
+  if (!first) return error(c, 404, 'not_found', 'Meeting not found')
+  const meetingId = first.id
+  return streamSSE(c, async (stream) => {
+    let alive = true
+    stream.onAbort(() => {
+      alive = false
+    })
+    const send = (event: string, data: unknown) => stream.writeSSE({ event, data: JSON.stringify(data) }).catch(() => {})
+    // Subscribe before reading the snapshot so nothing lands in the gap.
+    const unsubscribe = subscribeMeetingLive(meetingId, (event) => {
+      void send(event.type, event)
+    })
+    try {
+      const snapshot = async () => {
+        const row = await db.meeting.findUnique({ where: { id: meetingId }, select: { status: true, transcript: true } })
+        return row
+      }
+      const row = await snapshot()
+      if (!row) return
+      const live = readTranscript(row.transcript)
+      await send('snapshot', {
+        type: 'snapshot',
+        meetingId,
+        status: row.status,
+        segments: live?.segments ?? [],
+        liveStatus: live?.liveStatus ?? null,
+      })
+      while (alive) {
+        await stream.sleep(LIVE_EVENTS_POLL_MS)
+        if (!alive) break
+        const current = await snapshot()
+        if (!current || current.status !== 'recording') {
+          await send('ended', { type: 'ended', status: current?.status ?? 'deleted' })
+          break
+        }
+        await send('ping', { type: 'ping' })
+      }
+    } finally {
+      unsubscribe()
+    }
+  })
 }
 
 /** Public, unauthenticated read of a shared meeting's notes. */

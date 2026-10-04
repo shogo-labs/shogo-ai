@@ -37,6 +37,11 @@ const transcription = {
   isLocalTranscriptionAvailable: mock(() => true),
   getSherpaOfflinePath: mock(() => '/usr/local/bin/sherpa'),
   getInstalledModels: mock(() => ['base.en' as string]),
+  // Live streaming (used by the stream routes; no streaming model in these tests)
+  getSherpaOnlineServerPath: mock(() => null),
+  getStreamingModelFiles: mock(() => null),
+  isStreamingTranscriptionAvailable: mock(() => false),
+  getSherpaProcessEnv: mock(() => ({})),
 }
 mock.module('../services/transcription.service', () => transcription)
 
@@ -106,6 +111,8 @@ mock.module('child_process', () => ({
 // ─── Prisma mock ──────────────────────────────────────────────────────
 
 let workspaceRow: any = null
+// Personal workspaces the desktop app can name with x-shogo-workspace-id.
+const hintableWorkspaces = new Set<string>()
 let meetings: Map<string, any>
 let localConfig: Map<string, string>
 let nextId = 1
@@ -117,7 +124,7 @@ let execSyncBehavior: 'ok' | 'throw' = 'ok'
 let lastExecCmd = ''
 
 const prismaMock = {
-  workspace: { findFirst: async () => workspaceRow },
+  workspace: { findFirst: async (args?: any) => (args?.where?.id ? (hintableWorkspaces.has(args.where.id) ? { id: args.where.id } : null) : workspaceRow) },
   member: { findFirst: async () => (workspaceRow ? { userId: 'u1', workspaceId: workspaceRow.id } : null) },
   project: { findUnique: async ({ where }: any) => ({ id: where.id, name: 'P' }) },
   meeting: {
@@ -197,6 +204,7 @@ const ORIG_AIPROXY = process.env.AI_PROXY_URL
 
 beforeEach(() => {
   workspaceRow = { id: 'w1' }
+  hintableWorkspaces.clear()
   meetings = new Map()
   localConfig = new Map()
   fsFiles.clear()
@@ -623,6 +631,49 @@ describe('meeting access is scoped to the personal workspace', () => {
     expect(res.status).toBe(200)
     expect((await res.json()).meeting.id).not.toBe('theirs')
     expect(meetings.get('theirs').notes).toBe('x')
+  })
+
+  describe('workspace hint from the desktop main process', () => {
+    const put = (rec: string, init: { headers?: Record<string, string>; query?: string } = {}) =>
+      meetingRoutes.request(`/api/local/meetings/recordings/${rec}${init.query ?? ''}`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json', ...init.headers },
+        body: '{}',
+      })
+    const draftWorkspace = (rec: string) => Array.from(meetings.values()).find((m) => m.recordingId === rec)?.workspaceId
+
+    test('a named personal workspace receives the draft', async () => {
+      hintableWorkspaces.add('w-signed-in')
+      await put('rec-h1', { headers: { 'x-shogo-workspace-id': 'w-signed-in' } })
+      expect(draftWorkspace('rec-h1')).toBe('w-signed-in')
+    })
+
+    test('EventSource-style ?workspace= works too', async () => {
+      hintableWorkspaces.add('w-signed-in')
+      await put('rec-h2', { query: '?workspace=w-signed-in' })
+      expect(draftWorkspace('rec-h2')).toBe('w-signed-in')
+    })
+
+    test('an unknown or non-personal workspace is ignored', async () => {
+      await put('rec-h3', { headers: { 'x-shogo-workspace-id': 'w-team' } })
+      expect(draftWorkspace('rec-h3')).toBe('w1')
+    })
+
+    test('the hint is not honored outside local mode', async () => {
+      hintableWorkspaces.add('w-signed-in')
+      const { resolveHintedWorkspaceId } = await import('../routes/meetings')
+      expect(await resolveHintedWorkspaceId('w-signed-in')).toBe('w-signed-in')
+      process.env.SHOGO_LOCAL_MODE = 'false'
+      try {
+        expect(await resolveHintedWorkspaceId('w-signed-in')).toBeNull()
+        const res = await meetingRoutes.request('/api/local/meetings/recordings/rec-x/audio-stream', { method: 'POST', body: new Uint8Array(4) })
+        expect(res.status).toBe(404)
+      } finally {
+        process.env.SHOGO_LOCAL_MODE = 'true'
+      }
+      expect(await resolveHintedWorkspaceId('x'.repeat(200))).toBeNull()
+      expect(await resolveHintedWorkspaceId(undefined)).toBeNull()
+    })
   })
 
   test('PUT caps notes at the same length as the workspace routes', async () => {

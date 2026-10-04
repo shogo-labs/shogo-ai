@@ -87,7 +87,7 @@ export default function MeetingsScreen() {
     notes,
     setNotes,
     liveTranscript,
-    isNative,
+    liveSupported,
     error,
     clearError,
     workspaceId,
@@ -258,7 +258,7 @@ export default function MeetingsScreen() {
               textAlignVertical="top"
               accessibilityLabel="Meeting notes"
             />
-            {!isNative && <LiveTranscript state={liveTranscript} />}
+            {liveSupported && <LiveTranscript state={liveTranscript} />}
           </View>
         )}
 

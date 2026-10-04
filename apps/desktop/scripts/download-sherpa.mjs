@@ -3,13 +3,16 @@
 /**
  * Downloads sherpa-onnx binaries and models for local transcription + diarization.
  *
- * Binaries: sherpa-onnx-offline, sherpa-onnx-offline-speaker-diarization + shared libs
+ * Binaries: sherpa-onnx-offline, sherpa-onnx-offline-speaker-diarization,
+ *           sherpa-onnx-online-websocket-server (live transcript) + shared libs
  * Models:   Whisper ONNX (encoder/decoder/tokens) + Pyannote segmentation + NeMo embedding
+ *           + a streaming zipformer (live transcript as words are spoken)
  *
  * Usage:
  *   node scripts/download-sherpa.mjs                         # All components, base.en model
  *   node scripts/download-sherpa.mjs --model tiny.en         # Smaller model
  *   node scripts/download-sherpa.mjs --skip-diarization      # Transcription only
+ *   node scripts/download-sherpa.mjs --skip-streaming        # No live-transcript model
  */
 
 import { execSync } from 'child_process'
@@ -42,7 +45,8 @@ function getArgs() {
   const modelIdx = args.indexOf('--model')
   const model = modelIdx >= 0 ? args[modelIdx + 1] : 'base.en'
   const skipDiarization = args.includes('--skip-diarization')
-  return { model, skipDiarization }
+  const skipStreaming = args.includes('--skip-streaming')
+  return { model, skipDiarization, skipStreaming }
 }
 
 function getPlatformConfig() {
@@ -100,8 +104,12 @@ function downloadBinaries() {
   const binDir = path.join(RESOURCES_DIR, 'bin')
   const libDir = path.join(RESOURCES_DIR, 'lib')
   const offlineBin = path.join(binDir, `sherpa-onnx-offline${config.binExt}`)
+  const onlineBin = path.join(binDir, `sherpa-onnx-online-websocket-server${config.binExt}`)
+  // Installs from before live transcripts have no online server: fetch the archive once more.
+  // The marker stops a release that doesn't ship it from being re-downloaded every run.
+  const onlineChecked = path.join(binDir, '.online-server-checked')
 
-  if (fs.existsSync(offlineBin)) {
+  if (fs.existsSync(offlineBin) && (fs.existsSync(onlineBin) || fs.existsSync(onlineChecked))) {
     console.log('Binaries already downloaded.')
     return
   }
@@ -122,7 +130,7 @@ function downloadBinaries() {
   const binSrc = path.join(extractedDir, 'bin')
   const libSrc = path.join(extractedDir, 'lib')
 
-  const requiredBins = ['sherpa-onnx-offline', 'sherpa-onnx-offline-speaker-diarization']
+  const requiredBins = ['sherpa-onnx-offline', 'sherpa-onnx-offline-speaker-diarization', 'sherpa-onnx-online-websocket-server']
   for (const bin of requiredBins) {
     const src = path.join(binSrc, `${bin}${config.binExt}`)
     const dest = path.join(binDir, `${bin}${config.binExt}`)
@@ -157,6 +165,9 @@ function downloadBinaries() {
       }
     }
   }
+
+  fs.writeFileSync(onlineChecked, '')
+  if (!fs.existsSync(onlineBin)) console.warn('  sherpa-onnx-online-websocket-server is not in this release; live transcripts will use chunk upload.')
 
   fs.rmSync(extractedDir, { recursive: true, force: true })
   fs.unlinkSync(tmpTar)
@@ -194,6 +205,42 @@ function downloadWhisperModel(model) {
   }
 
   console.log(`Model "${model}" installed.`)
+}
+
+/**
+ * Streaming zipformer for the live transcript: words appear as they are said.
+ * Files are saved under fixed local names (the API looks for those). A failure
+ * here is not fatal: the app falls back to chunked live transcripts.
+ */
+const STREAMING_MODEL = {
+  hf: 'csukuangfj/sherpa-onnx-streaming-zipformer-en-20M-2023-02-17',
+  files: {
+    'encoder.int8.onnx': 'encoder-epoch-99-avg-1.int8.onnx',
+    'decoder.onnx': 'decoder-epoch-99-avg-1.onnx',
+    'joiner.int8.onnx': 'joiner-epoch-99-avg-1.int8.onnx',
+    'tokens.txt': 'tokens.txt',
+  },
+}
+
+function downloadStreamingModel() {
+  const modelDir = path.join(RESOURCES_DIR, 'models', 'streaming-zipformer-en')
+  if (Object.keys(STREAMING_MODEL.files).every((f) => fs.existsSync(path.join(modelDir, f)))) {
+    console.log('Streaming model already downloaded.')
+    return true
+  }
+  console.log('\nDownloading streaming transcription model...')
+  fs.mkdirSync(modelDir, { recursive: true })
+  try {
+    for (const [local, remote] of Object.entries(STREAMING_MODEL.files)) {
+      downloadFile(`https://huggingface.co/${STREAMING_MODEL.hf}/resolve/main/${remote}`, path.join(modelDir, local))
+    }
+    console.log('Streaming model installed.')
+    return true
+  } catch (err) {
+    console.warn(`  Streaming model download failed (${err instanceof Error ? err.message : err}); live transcripts will use chunk upload.`)
+    for (const local of Object.keys(STREAMING_MODEL.files)) fs.rmSync(path.join(modelDir, local), { force: true })
+    return false
+  }
 }
 
 function downloadDiarizationModels() {
@@ -242,10 +289,11 @@ function downloadDiarizationModels() {
 }
 
 function main() {
-  const { model, skipDiarization } = getArgs()
+  const { model, skipDiarization, skipStreaming } = getArgs()
 
   downloadBinaries()
   downloadWhisperModel(model)
+  const streaming = skipStreaming ? false : downloadStreamingModel()
 
   if (!skipDiarization) {
     downloadDiarizationModels()
@@ -256,6 +304,7 @@ function main() {
   console.log(`  Resources: ${RESOURCES_DIR}`)
   console.log(`  Whisper model: ${model}`)
   console.log(`  Diarization: ${skipDiarization ? 'skipped' : 'installed'}`)
+  console.log(`  Streaming model: ${skipStreaming ? 'skipped' : streaming ? 'installed' : 'unavailable'}`)
 
   let totalSize = 0
   function addDirSize(dir) {

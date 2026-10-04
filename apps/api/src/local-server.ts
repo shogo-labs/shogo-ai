@@ -9,6 +9,14 @@
  * architectural boundary that makes the local bundle tree-shakeable instead
  * of merely hiding cloud routes behind runtime `if` statements.
  */
+import { STREAM_WS_PATH } from './lib/meeting-stream-ticket'
+import {
+  isMeetingStreamSocketData,
+  meetingStreamClose,
+  meetingStreamMessage,
+  meetingStreamOpen,
+  meetingStreamSocketData,
+} from './services/meeting-live-stream'
 import { bootstrapLocalDatabase } from './lib/local-bootstrap'
 import {
   createLocalPtyBridgeHandlers,
@@ -43,6 +51,13 @@ const ptyBridge = createLocalPtyBridgeHandlers()
 const server = Bun.serve({
   port: API_PORT,
   fetch: async (req, bunServer) => {
+    // Live meeting transcript audio. Auth is a signed ticket in the URL.
+    if (new URL(req.url).pathname === STREAM_WS_PATH && req.headers.get('upgrade')?.toLowerCase() === 'websocket') {
+      const data = meetingStreamSocketData(new URL(req.url))
+      if (!data) return new Response('Unauthorized', { status: 401 })
+      if ((bunServer as any).upgrade(req, { data })) return undefined
+      return new Response('WebSocket upgrade failed', { status: 500 })
+    }
     const upgrade = await upgradeLocalPtySocket(req, bunServer, runtimeManager)
     if (upgrade !== null) return upgrade
     return app.fetch(req, bunServer)
@@ -51,16 +66,19 @@ const server = Bun.serve({
     open(ws: any) {
       if (isConversationSocketData(ws.data)) conversationSocketHandlers.open(ws)
       else if (isCloudSocketRelayData(ws.data)) cloudSocketRelayHandlers.open(ws)
+      else if (isMeetingStreamSocketData(ws.data)) meetingStreamOpen(ws)
       else if (isLocalPtyBridgeData(ws.data)) ptyBridge.open(ws)
     },
     message(ws: any, message: any) {
       if (isConversationSocketData(ws.data)) void conversationSocketHandlers.message(ws, message)
       else if (isCloudSocketRelayData(ws.data)) cloudSocketRelayHandlers.message(ws, message)
+      else if (isMeetingStreamSocketData(ws.data)) meetingStreamMessage(ws, message)
       else if (isLocalPtyBridgeData(ws.data)) ptyBridge.message(ws, message)
     },
     close(ws: any, code?: number, reason?: string) {
       if (isConversationSocketData(ws.data)) conversationSocketHandlers.close(ws)
       else if (isCloudSocketRelayData(ws.data)) cloudSocketRelayHandlers.close(ws)
+      else if (isMeetingStreamSocketData(ws.data)) meetingStreamClose(ws)
       else if (isLocalPtyBridgeData(ws.data)) ptyBridge.close(ws, code, reason)
     },
   },

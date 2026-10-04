@@ -7,6 +7,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react"
 import { API_URL } from "../../lib/api"
+import { useLiveMeetingTranscript } from "../../lib/use-live-meeting-transcript"
 import type { IslandMeetingState } from "./types"
 
 type Recording = IslandMeetingState["recording"]
@@ -32,11 +33,23 @@ function draftUrl(recordingId: string) {
   return `${API_URL}/api/local/meetings/recordings/${encodeURIComponent(recordingId)}`
 }
 
+/**
+ * The desktop main process files live transcript chunks under the workspace
+ * the app is showing; the island reads and writes the same one.
+ */
+let workspaceHint: string | null = null
+const hintHeaders = (): Record<string, string> => (workspaceHint ? { "x-shogo-workspace-id": workspaceHint } : {})
+
+async function loadWorkspaceHint() {
+  const desktop = (window as unknown as { shogoDesktop?: { getMeetingsWorkspace?: () => Promise<string | null> } }).shogoDesktop
+  workspaceHint = (await desktop?.getMeetingsWorkspace?.().catch(() => null)) ?? null
+}
+
 async function saveDraft(recordingId: string, body: { notes?: string; app?: string }) {
   const res = await fetch(draftUrl(recordingId), {
     method: "PUT",
     credentials: "include",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...hintHeaders() },
     body: JSON.stringify(body),
   })
   if (!res.ok) throw new Error(`Saving notes failed (${res.status})`)
@@ -44,7 +57,7 @@ async function saveDraft(recordingId: string, body: { notes?: string; app?: stri
 }
 
 async function loadDraft(recordingId: string) {
-  const res = await fetch(draftUrl(recordingId), { credentials: "include" })
+  const res = await fetch(draftUrl(recordingId), { credentials: "include", headers: hintHeaders() })
   if (!res.ok) return null
   return (await res.json()).meeting as {
     id: string
@@ -58,15 +71,19 @@ async function loadDraft(recordingId: string) {
 
 const CAPTION_CHARS = 140
 
+export function captionFromText(raw: string): string | null {
+  const text = raw.trim()
+  if (!text) return null
+  if (text.length <= CAPTION_CHARS) return text
+  const tail = text.slice(-CAPTION_CHARS)
+  const firstSpace = tail.indexOf(" ")
+  return `…${firstSpace > 0 ? tail.slice(firstSpace + 1) : tail}`
+}
+
 export function liveCaption(transcript: string | null | undefined): string | null {
   if (!transcript) return null
   try {
-    const text = String(JSON.parse(transcript).text ?? "").trim()
-    if (!text) return null
-    if (text.length <= CAPTION_CHARS) return text
-    const tail = text.slice(-CAPTION_CHARS)
-    const firstSpace = tail.indexOf(" ")
-    return `…${firstSpace > 0 ? tail.slice(firstSpace + 1) : tail}`
+    return captionFromText(String(JSON.parse(transcript).text ?? ""))
   } catch {
     return null
   }
@@ -77,7 +94,7 @@ export function useIslandMeetingNotes(recording: Recording): IslandMeetingNotes 
   const [saving, setSaving] = useState(false)
   const [watching, setWatching] = useState<{ recordingId: string; since: number } | null>(null)
   const [finished, setFinished] = useState<IslandMeetingNotes["finished"]>(null)
-  const [caption, setCaption] = useState<string | null>(null)
+  const [hintLoaded, setHintLoaded] = useState(false)
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pending = useRef<string | null>(null)
   const activeId = useRef<string | null>(null)
@@ -105,7 +122,13 @@ export function useIslandMeetingNotes(recording: Recording): IslandMeetingNotes 
     setWatching(null)
     setNotesState("")
     let cancelled = false
-    void saveDraft(recordingId, recording?.app ? { app: recording.app } : {})
+    setHintLoaded(false)
+    // The workspace hint must be known before the first draft write, or the draft lands in the wrong workspace.
+    void loadWorkspaceHint()
+      .then(() => {
+        setHintLoaded(true)
+        return saveDraft(recordingId, recording?.app ? { app: recording.app } : {})
+      })
       .then((draft) => {
         if (!cancelled && draft.notes && pending.current === null) setNotesState(draft.notes)
       })
@@ -152,23 +175,24 @@ export function useIslandMeetingNotes(recording: Recording): IslandMeetingNotes 
     }
   }, [watching])
 
-  // While recording, the main process writes live transcript chunks into the draft.
-  useEffect(() => {
-    if (!recordingId) {
-      setCaption(null)
-      return
-    }
-    let cancelled = false
-    const tick = async () => {
-      const meeting = await loadDraft(recordingId).catch(() => null)
-      if (!cancelled && meeting) setCaption(liveCaption(meeting.transcript))
-    }
-    const timer = setInterval(tick, POLL_MS)
-    return () => {
-      cancelled = true
-      clearInterval(timer)
-    }
+  // While recording, the main process streams audio to the API and the words
+  // arrive here as they are said (polling the draft where SSE isn't available).
+  const pollDraft = useCallback(async () => {
+    if (!recordingId) return null
+    const meeting = await loadDraft(recordingId).catch(() => null)
+    return meeting ? { transcript: meeting.transcript, status: meeting.status } : null
   }, [recordingId])
+  const live = useLiveMeetingTranscript({
+    url: recordingId && hintLoaded
+      ? `${draftUrl(recordingId)}/live/events${workspaceHint ? `?workspace=${encodeURIComponent(workspaceHint)}` : ""}`
+      : null,
+    poll: pollDraft,
+    pollMs: POLL_MS,
+  })
+  const caption = recordingId
+    ? captionFromText([...live.segments.map((s) => s.text), live.partial ?? ""].filter(Boolean).join(" ")) ??
+      live.notice
+    : null
 
   const setNotes = useCallback(
     (next: string) => {

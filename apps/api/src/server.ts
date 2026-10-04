@@ -52,6 +52,14 @@ import { githubRoutes } from './routes/github'
 import { aiProxyRoutes } from './routes/ai-proxy'
 import { aiLiveRoutes } from './routes/ai-live'
 import { authenticateLiveHeaders } from './lib/live-auth'
+import { STREAM_WS_PATH } from './lib/meeting-stream-ticket'
+import {
+  isMeetingStreamSocketData,
+  meetingStreamClose,
+  meetingStreamMessage,
+  meetingStreamOpen,
+  meetingStreamSocketData,
+} from './services/meeting-live-stream'
 import {
   isLiveRelayData,
   liveRelayClose,
@@ -9372,6 +9380,13 @@ export default {
   fetch: async (req: Request, server: any) => {
     const url = new URL(req.url)
     if (req.headers.get('upgrade')?.toLowerCase() === 'websocket') {
+      // Live meeting transcript: a recorder streams PCM audio; auth is a signed ticket in the URL.
+      if (url.pathname === STREAM_WS_PATH) {
+        const data = meetingStreamSocketData(url)
+        if (!data) return new Response('Unauthorized', { status: 401 })
+        if (server.upgrade(req, { data })) return undefined
+        return new Response('WebSocket upgrade failed', { status: 500 })
+      }
       const livePrimary = url.pathname === '/api/ai/v1/live/sessions'
       const liveAttach = /^\/api\/ai\/v1\/live\/sessions\/([^/]+)\/attach$/.exec(url.pathname)
       if (livePrimary || liveAttach) {
@@ -9483,6 +9498,7 @@ export default {
     open(ws: any) {
       if (isConversationSocketData(ws.data)) conversationSocketHandlers.open(ws)
       else if (isLiveRelayData(ws.data)) liveRelayOpen(ws)
+      else if (isMeetingStreamSocketData(ws.data)) meetingStreamOpen(ws)
       else if (isPtyPodBridgeData(ws.data)) ptyPodBridge.open(ws)
       else if (isPortTunnelBridgeData(ws.data)) portTunnelBridge.open(ws)
       else handleInstanceWsOpen(ws)
@@ -9490,6 +9506,7 @@ export default {
     message(ws: any, msg: any) {
       if (isConversationSocketData(ws.data)) void conversationSocketHandlers.message(ws, msg)
       else if (isLiveRelayData(ws.data)) liveRelayMessage(ws, msg)
+      else if (isMeetingStreamSocketData(ws.data)) meetingStreamMessage(ws, msg)
       else if (isPtyPodBridgeData(ws.data)) ptyPodBridge.message(ws, msg)
       else if (isPortTunnelBridgeData(ws.data)) portTunnelBridge.message(ws, msg)
       else handleInstanceWsMessage(ws, msg)
@@ -9497,6 +9514,7 @@ export default {
     close(ws: any, code?: number, reason?: string) {
       if (isConversationSocketData(ws.data)) conversationSocketHandlers.close(ws)
       else if (isLiveRelayData(ws.data)) liveRelayClose(ws)
+      else if (isMeetingStreamSocketData(ws.data)) meetingStreamClose(ws)
       else if (isPtyPodBridgeData(ws.data)) ptyPodBridge.close(ws, code, reason)
       else if (isPortTunnelBridgeData(ws.data)) portTunnelBridge.close(ws, code, reason)
       else handleInstanceWsClose(ws, code, reason)

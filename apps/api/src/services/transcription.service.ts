@@ -64,6 +64,48 @@ export function getWhisperModelDir(model: string = 'base.en'): string | null {
   return null
 }
 
+/** Streaming recognizer server (sherpa-onnx online websocket server), or null when not installed. */
+export function getSherpaOnlineServerPath(): string | null {
+  const binPath = join(getSherpaDir(), 'bin', `sherpa-onnx-online-websocket-server${SHERPA_BIN_EXT}`)
+  return existsSync(binPath) ? binPath : null
+}
+
+export interface StreamingModelFiles {
+  encoder: string
+  decoder: string
+  joiner: string
+  tokens: string
+}
+
+/** Files of the streaming zipformer model installed by `download-sherpa --streaming`, or null. */
+export function getStreamingModelFiles(): StreamingModelFiles | null {
+  const dir = join(getSherpaDir(), 'models', 'streaming-zipformer-en')
+  const pick = (names: string[]) => names.map((n) => join(dir, n)).find((p) => existsSync(p)) ?? null
+  const encoder = pick(['encoder.int8.onnx', 'encoder.onnx'])
+  const decoder = pick(['decoder.onnx', 'decoder.int8.onnx'])
+  const joiner = pick(['joiner.int8.onnx', 'joiner.onnx'])
+  const tokens = pick(['tokens.txt'])
+  return encoder && decoder && joiner && tokens ? { encoder, decoder, joiner, tokens } : null
+}
+
+export function isStreamingTranscriptionAvailable(): boolean {
+  return !!getSherpaOnlineServerPath() && !!getStreamingModelFiles()
+}
+
+/** Environment that lets a sherpa binary find its shared libraries. */
+export function getSherpaProcessEnv(): NodeJS.ProcessEnv {
+  const libDir = getSherpaLibDir()
+  const env = { ...process.env }
+  if (process.platform === 'darwin') {
+    env.DYLD_LIBRARY_PATH = [libDir, env.DYLD_LIBRARY_PATH].filter(Boolean).join(':')
+  } else if (process.platform === 'win32') {
+    env.PATH = [join(getSherpaDir(), 'bin'), libDir, env.PATH].filter(Boolean).join(';')
+  } else {
+    env.LD_LIBRARY_PATH = [libDir, env.LD_LIBRARY_PATH].filter(Boolean).join(':')
+  }
+  return env
+}
+
 export function getInstalledModels(): string[] {
   const dir = getSherpaDir()
   const modelsDir = join(dir, 'models')

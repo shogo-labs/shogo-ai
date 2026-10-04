@@ -670,3 +670,167 @@ describe('upload', () => {
     expect(audioExtension({ type: 'video/quicktime', name: 'x.mov' })).toBeNull()
   })
 })
+
+describe('real-time transcript regressions', () => {
+  const bus = require('../lib/meeting-live-bus') as typeof import('../lib/meeting-live-bus')
+  const { verifyStreamTicket } = require('../lib/meeting-stream-ticket') as typeof import('../lib/meeting-stream-ticket')
+  beforeEach(async () => {
+    // In-process fan-out only: no Redis in unit tests.
+    await bus._resetMeetingLiveBusForTests(null)
+  })
+
+  test('a transcription failure is recorded on the draft so the UI can say why', async () => {
+    transcribeError = new Error('No OpenAI API key or proxy configured for cloud transcription')
+    const res = await liveChunk('rec-status', 0, 0)
+    expect(res.status).toBe(503)
+    const stored = JSON.parse(findBy(meetings, { recordingId: 'rec-status' }).transcript)
+    expect(stored.liveStatus.state).toBe('error')
+    expect(stored.liveStatus.message).toContain('Settings')
+
+    // The next good chunk clears it.
+    transcribeError = null
+    transcribedText = 'recovered'
+    await liveChunk('rec-status', 4, 1)
+    const after = JSON.parse(findBy(meetings, { recordingId: 'rec-status' }).transcript)
+    expect(after.liveStatus.state).toBe('ok')
+    expect(after.segments.map((s: any) => s.text)).toEqual(['recovered'])
+  })
+
+  test('losing the write race is a retryable 429, not "recording finished"', async () => {
+    transcribedText = 'contended'
+    await liveChunk('rec-busy', 0, 0)
+    const original = prismaMock.meeting.updateMany
+    ;(prismaMock.meeting as any).updateMany = async () => ({ count: 0 })
+    try {
+      const res = await liveChunk('rec-busy', 4, 1)
+      expect(res.status).toBe(429)
+      expect((await res.json()).error.code).toBe('busy')
+    } finally {
+      ;(prismaMock.meeting as any).updateMany = original
+    }
+    expect(findBy(meetings, { recordingId: 'rec-busy' }).status).toBe('recording')
+  })
+
+  test('reads a transcript the SQLite client already parsed into an object', () => {
+    // Desktop (SQLite) returns Json columns as objects; treating them as text used to wipe the transcript on every live write.
+    const parsed = service.readTranscript({ text: 'a b', segments: [{ start: 0, end: 1, text: 'a b' }], live: true, liveItems: ['x'], liveSeqs: [1000000] })
+    expect(parsed?.segments).toHaveLength(1)
+    expect(parsed?.liveItems).toEqual(['x'])
+    expect(service.readTranscript(JSON.stringify({ text: 'z', segments: [] }))?.text).toBe('z')
+    expect(service.readTranscript('plain words')?.text).toBe('plain words')
+  })
+
+  test('streamed finals are stored once per item and cover the recording for the finish pass', async () => {
+    const draft = seed({ recordingId: 'rec-stream', status: 'recording' })
+    const first = await service.appendStreamFinal(draft.id, { itemId: 'a', segment: { start: 0, end: 2, text: 'hello there' } })
+    const again = await service.appendStreamFinal(draft.id, { itemId: 'a', segment: { start: 0, end: 2, text: 'hello there' } })
+    const second = await service.appendStreamFinal(draft.id, { itemId: 'b', segment: { start: 2, end: 4, text: 'general kenobi' } })
+    expect(first).toEqual({ ok: true, stored: true, finals: 1 })
+    expect(again).toEqual({ ok: true, stored: false, finals: 1 })
+    expect(second).toEqual({ ok: true, stored: true, finals: 2 })
+    const stored = JSON.parse(meetings.get(draft.id).transcript)
+    expect(stored.text).toBe('hello there general kenobi')
+    expect(stored.liveItems).toEqual(['a', 'b'])
+    expect(stored.liveSeqs).toHaveLength(2)
+
+    meetings.get(draft.id).status = 'transcribing'
+    expect(await service.appendStreamFinal(draft.id, { itemId: 'c', segment: { start: 4, end: 5, text: 'late' } })).toEqual({
+      ok: false,
+      reason: 'not_recording',
+    })
+  })
+
+  describe('stream ticket route', () => {
+    const post = (id = 'rec-ticket') => req('POST', `/workspaces/ws-me/meetings/recordings/${id}/stream-ticket`)
+
+    test('501 when nothing can transcribe in real time', async () => {
+      const saved = process.env.OPENAI_API_KEY
+      delete process.env.OPENAI_API_KEY
+      try {
+        const res = await post()
+        expect(res.status).toBe(501)
+        expect((await res.json()).error.code).toBe('stream_unavailable')
+      } finally {
+        if (saved !== undefined) process.env.OPENAI_API_KEY = saved
+      }
+    })
+
+    test('mints a ticket bound to the caller, workspace and recording', async () => {
+      const saved = process.env.OPENAI_API_KEY
+      process.env.OPENAI_API_KEY = 'sk-test'
+      try {
+        const res = await post('rec-mine')
+        expect(res.status).toBe(200)
+        const body = await res.json()
+        expect(body.path).toBe('/api/meetings/live-stream')
+        expect(verifyStreamTicket(body.ticket)).toMatchObject({ workspaceId: 'ws-me', userId: 'user-1', recordingId: 'rec-mine' })
+        expect((await post('x'.repeat(200))).status).toBe(400)
+      } finally {
+        if (saved === undefined) delete process.env.OPENAI_API_KEY
+        else process.env.OPENAI_API_KEY = saved
+      }
+    })
+  })
+
+  describe('live events (SSE)', () => {
+    async function readEvents(res: Response, until: (events: any[]) => boolean, timeoutMs = 2000) {
+      const reader = res.body!.getReader()
+      const decoder = new TextDecoder()
+      const events: any[] = []
+      let buffer = ''
+      const deadline = Date.now() + timeoutMs
+      while (Date.now() < deadline && !until(events)) {
+        const chunk = await Promise.race([reader.read(), new Promise<null>((r) => setTimeout(() => r(null), 50))])
+        if (!chunk) continue
+        if (chunk.done) break
+        buffer += decoder.decode(chunk.value, { stream: true })
+        let split: number
+        while ((split = buffer.indexOf('\n\n')) >= 0) {
+          const frame = buffer.slice(0, split)
+          buffer = buffer.slice(split + 2)
+          const data = frame.split('\n').find((l) => l.startsWith('data:'))
+          if (data) events.push(JSON.parse(data.slice(5).trim()))
+        }
+      }
+      await reader.cancel().catch(() => {})
+      return events
+    }
+
+    test('404 until the recording has a draft', async () => {
+      expect((await req('GET', '/workspaces/ws-me/meetings/recordings/nope/live/events')).status).toBe(404)
+    })
+
+    test('other workspaces cannot watch a recording', async () => {
+      seed({ workspaceId: 'ws-other', recordingId: 'rec-theirs', status: 'recording' })
+      expect((await req('GET', '/workspaces/ws-me/meetings/recordings/rec-theirs/live/events')).status).toBe(404)
+    })
+
+    test('sends what was said so far, then live partials and finals as they happen', async () => {
+      const draft = seed({
+        recordingId: 'rec-sse',
+        status: 'recording',
+        transcript: JSON.stringify({ text: 'earlier', segments: [{ start: 0, end: 2, text: 'earlier' }], live: true }),
+      })
+      const res = await req('GET', '/workspaces/ws-me/meetings/recordings/rec-sse/live/events')
+      expect(res.status).toBe(200)
+      expect(res.headers.get('content-type')).toContain('text/event-stream')
+      setTimeout(() => {
+        bus.publishMeetingLive(draft.id, { type: 'partial', itemId: 'x', text: 'right now', start: 2 } as any)
+        bus.publishMeetingLive(draft.id, { type: 'final', itemId: 'x', segment: { start: 2, end: 3, text: 'right now' } } as any)
+      }, 30)
+      const events = await readEvents(res, (all) => all.some((e) => e.type === 'final'))
+      expect(events[0]).toMatchObject({ type: 'snapshot', meetingId: draft.id, status: 'recording' })
+      expect(events[0].segments.map((s: any) => s.text)).toEqual(['earlier'])
+      expect(events.map((e) => e.type)).toEqual(['snapshot', 'partial', 'final'])
+      expect(events[1].text).toBe('right now')
+    })
+
+    test('does not hear events for another meeting', async () => {
+      seed({ recordingId: 'rec-quiet', status: 'recording' })
+      const res = await req('GET', '/workspaces/ws-me/meetings/recordings/rec-quiet/live/events')
+      setTimeout(() => bus.publishMeetingLive('some-other-meeting', { type: 'partial', itemId: 'z', text: 'nope', start: 0 } as any), 20)
+      const events = await readEvents(res, (all) => all.length > 1, 300)
+      expect(events.map((e) => e.type)).toEqual(['snapshot'])
+    })
+  })
+})

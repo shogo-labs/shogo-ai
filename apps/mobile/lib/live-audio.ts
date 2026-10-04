@@ -115,23 +115,156 @@ export interface LiveCapture {
   stop(options?: { discard?: boolean; timeoutMs?: number }): Promise<LiveSummary>
 }
 
+// ---------------------------------------------------------------------------
+// Audio tap: raw mic samples out of Web Audio
+// ---------------------------------------------------------------------------
+
+/** Frames wait this long for a consumer to attach (e.g. while a stream connects). */
+const TAP_BUFFER_SECONDS = 30
+
 /**
- * Start chunking `stream`. `onChunk` calls are serialized; if the server is
- * slower than real time, chunks queue (bounded) rather than overlap. A
- * rejected `onChunk` marks the capture incomplete.
+ * Create the audio context synchronously inside the click that starts
+ * recording. Created after `await getUserMedia` it can start suspended and
+ * never deliver audio; created here it is allowed to run.
  */
-export function startLiveCapture(stream: MediaStream, onChunk: (chunk: LiveChunk) => Promise<void>): LiveCapture | null {
+export function createLiveAudioContext(): AudioContext | null {
   const Ctx = (globalThis as any).AudioContext || (globalThis as any).webkitAudioContext
   if (!Ctx) return null
-  const ctx: AudioContext = new Ctx()
+  try {
+    const ctx: AudioContext = new Ctx()
+    if (ctx.state === 'suspended') void ctx.resume().catch(() => {})
+    return ctx
+  } catch {
+    return null
+  }
+}
+
+export interface PcmTap {
+  sampleRate: number
+  /** Start delivering mono Float32 frames. Anything captured before this call is replayed first. */
+  attach(consumer: (frame: Float32Array) => void): void
+  /** Stop capturing audio (the context stays open). */
+  disconnect(): void
+  /** Release the audio context. */
+  close(): void
+}
+
+export function createPcmTap(stream: MediaStream, existing?: AudioContext | null): PcmTap | null {
+  const Ctx = (globalThis as any).AudioContext || (globalThis as any).webkitAudioContext
+  if (!existing && !Ctx) return null
+  const ctx: AudioContext = existing ?? new Ctx()
   const source = ctx.createMediaStreamSource(stream)
   // ScriptProcessor is deprecated but needs no separate worklet module, which
   // Metro can't serve as a standalone file.
   const processor = ctx.createScriptProcessor(4096, 1, 1)
   const sampleRate = ctx.sampleRate
+  let consumer: ((frame: Float32Array) => void) | null = null
+  let buffered: Float32Array[] = []
+  let bufferedLength = 0
+  let stopped = false
+
+  processor.onaudioprocess = (event) => {
+    if (stopped) return
+    const frame = new Float32Array(event.inputBuffer.getChannelData(0))
+    if (consumer) return consumer(frame)
+    buffered.push(frame)
+    bufferedLength += frame.length
+    while (bufferedLength > TAP_BUFFER_SECONDS * sampleRate && buffered.length > 1) {
+      bufferedLength -= buffered.shift()!.length
+    }
+  }
+  source.connect(processor)
+  processor.connect(ctx.destination)
+  if (ctx.state === 'suspended') void ctx.resume().catch(() => {})
+
+  return {
+    sampleRate,
+    attach(next) {
+      consumer = next
+      const replay = buffered
+      buffered = []
+      bufferedLength = 0
+      for (const frame of replay) next(frame)
+    },
+    disconnect() {
+      stopped = true
+      try {
+        processor.disconnect()
+        source.disconnect()
+      } catch {}
+    },
+    close() {
+      void ctx.close().catch(() => {})
+    },
+  }
+}
+
+/**
+ * A tap fed by code instead of a Web Audio graph (native PCM from the phone's
+ * recorder). Same contract as `createPcmTap`: frames pushed before `attach`
+ * are held (up to TAP_BUFFER_SECONDS) and replayed.
+ */
+export interface PushTap extends PcmTap {
+  push(frame: Float32Array): void
+}
+
+export function createPushTap(sampleRate: number): PushTap {
+  let consumer: ((frame: Float32Array) => void) | null = null
+  let buffered: Float32Array[] = []
+  let bufferedLength = 0
+  let stopped = false
+  return {
+    sampleRate,
+    push(frame) {
+      if (stopped) return
+      if (consumer) return consumer(frame)
+      buffered.push(frame)
+      bufferedLength += frame.length
+      while (bufferedLength > TAP_BUFFER_SECONDS * sampleRate && buffered.length > 1) {
+        bufferedLength -= buffered.shift()!.length
+      }
+    },
+    attach(next) {
+      consumer = next
+      const replay = buffered
+      buffered = []
+      bufferedLength = 0
+      for (const frame of replay) next(frame)
+    },
+    disconnect() {
+      stopped = true
+    },
+    close() {
+      stopped = true
+      consumer = null
+    },
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Chunked upload (fallback when streaming isn't available)
+// ---------------------------------------------------------------------------
+
+export interface Chunker {
+  push(input: Float32Array): void
+  /** Send the tail (unless `discard`) and wait for every queued chunk. */
+  finish(options?: { discard?: boolean; timeoutMs?: number }): Promise<LiveSummary>
+}
+
+/**
+ * Cuts `push`ed audio into chunks and hands each to `onChunk` one at a time.
+ * If the server is slower than real time, chunks queue (bounded) rather than
+ * overlap. A rejected `onChunk` marks the capture incomplete.
+ * `startOffset` is where this audio sits on the recording's timeline.
+ */
+export function createChunker(
+  sampleRate: number,
+  onChunk: (chunk: LiveChunk) => Promise<void>,
+  startOffset = 0,
+): Chunker {
   let pending: Float32Array[] = []
   let pendingLength = 0
-  let consumed = 0
+  let consumed = startOffset * sampleRate
   let seq = 0
   let stopped = false
   const queue: LiveChunk[] = []
@@ -194,34 +327,23 @@ export function startLiveCapture(stream: MediaStream, onChunk: (chunk: LiveChunk
     void drain()
   }
 
-  processor.onaudioprocess = (event) => {
-    if (stopped) return
-    const input = event.inputBuffer.getChannelData(0)
-    pending.push(new Float32Array(input))
-    pendingLength += input.length
-    if (pendingLength >= LIVE_TARGET_CHUNK_SECONDS * sampleRate) emit(false)
-  }
-  source.connect(processor)
-  processor.connect(ctx.destination)
-  // Created after an await (getUserMedia), so it can start suspended.
-  if (ctx.state === 'suspended') void ctx.resume().catch(() => {})
-
   let finished: Promise<LiveSummary> | null = null
   return {
-    stop(options) {
+    push(input) {
+      if (stopped) return
+      pending.push(input)
+      pendingLength += input.length
+      if (pendingLength >= LIVE_TARGET_CHUNK_SECONDS * sampleRate) emit(false)
+    },
+    finish(options) {
       if (finished) return finished
       stopped = true
-      try {
-        processor.disconnect()
-        source.disconnect()
-      } catch {}
       if (options?.discard) {
         queue.length = 0
         lost = true
       } else {
         while (pendingLength > 0) emit(true)
       }
-      void ctx.close().catch(() => {})
       const timeout = new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), options?.timeoutMs ?? 10_000))
       finished = Promise.race([settle().then(() => 'done' as const), timeout]).then((outcome) => ({
         complete: outcome === 'done' && !lost,
@@ -229,6 +351,70 @@ export function startLiveCapture(stream: MediaStream, onChunk: (chunk: LiveChunk
         seconds: consumed / sampleRate,
       }))
       return finished
+    },
+  }
+}
+
+/**
+ * Start chunking `stream`. `onChunk` calls are serialized; see `createChunker`.
+ * Pass `ctx` when it was created inside the click that started recording.
+ */
+export function startLiveCapture(
+  stream: MediaStream,
+  onChunk: (chunk: LiveChunk) => Promise<void>,
+  ctx?: AudioContext | null,
+): LiveCapture | null {
+  const tap = createPcmTap(stream, ctx)
+  if (!tap) return null
+  const chunker = createChunker(tap.sampleRate, onChunk)
+  tap.attach((frame) => chunker.push(frame))
+  return {
+    stop(options) {
+      tap.disconnect()
+      const summary = chunker.finish(options)
+      tap.close()
+      return summary
+    },
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Streaming (PCM frames over a socket)
+// ---------------------------------------------------------------------------
+
+/** About 100 ms at 16 kHz. */
+export const STREAM_FRAME_SAMPLES = 1600
+
+export function floatToInt16(samples: Float32Array): Int16Array {
+  const out = new Int16Array(samples.length)
+  for (let i = 0; i < samples.length; i++) {
+    const s = Math.max(-1, Math.min(1, samples[i]))
+    out[i] = s < 0 ? s * 0x8000 : s * 0x7fff
+  }
+  return out
+}
+
+/** Resamples mic frames to 16 kHz and regroups them into ~100 ms Int16 frames. */
+export function createStreamSink(sampleRate: number, send: (frame: Int16Array) => void) {
+  let carry = new Int16Array(0)
+  const emitFull = (flushRest: boolean) => {
+    while (carry.length >= STREAM_FRAME_SAMPLES || (flushRest && carry.length > 0)) {
+      const n = Math.min(STREAM_FRAME_SAMPLES, carry.length)
+      send(carry.slice(0, n))
+      carry = carry.slice(n)
+    }
+  }
+  return {
+    push(frame: Float32Array) {
+      const pcm = floatToInt16(resampleTo16k(frame, sampleRate))
+      const merged = new Int16Array(carry.length + pcm.length)
+      merged.set(carry, 0)
+      merged.set(pcm, carry.length)
+      carry = merged
+      emitFull(false)
+    },
+    flush() {
+      emitFull(true)
     },
   }
 }
