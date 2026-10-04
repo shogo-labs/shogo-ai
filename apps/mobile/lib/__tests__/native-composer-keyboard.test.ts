@@ -102,7 +102,7 @@ describe('chatComposerDockStyle', () => {
   test('puts the keyboard pad on paddingBottom so Animated.View can lift the pill', () => {
     const pad = { __animated: true }
     expect(chatComposerDockStyle({
-      measuredWidth: 390,
+      column: { width: 390 },
       keyboardPad: pad,
     })).toEqual([
       { width: 390 },
@@ -110,14 +110,14 @@ describe('chatComposerDockStyle', () => {
     ])
   })
 
-  test('matches the transcript max-w-2xl column when width is not measured', () => {
-    expect(chatComposerDockStyle({})).toEqual([
-      { width: '100%', maxWidth: CHAT_TRANSCRIPT_MAX_WIDTH },
-    ])
+  test('uses the column style it is given without deciding any width itself', () => {
+    const column = { width: '100%', maxWidth: CHAT_TRANSCRIPT_MAX_WIDTH }
+    expect(chatComposerDockStyle({ column })).toEqual([column])
   })
 
   test('keeps web overflow visible so dock cards can float above the pill', () => {
     expect(chatComposerDockStyle({
+      column: { width: '100%', maxWidth: CHAT_TRANSCRIPT_MAX_WIDTH },
       keyboardPad: 12,
       webOverflowVisible: true,
     })).toEqual([
