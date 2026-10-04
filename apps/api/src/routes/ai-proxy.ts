@@ -2782,7 +2782,7 @@ async function recordImageUsage(
  * call (`transcribe_audio`) or attachment-processing step, not part of the
  * per-message LLM cost accumulator used by `recordUsage`/`accumulateImageUsage`.
  */
-async function recordTranscriptionUsage(
+export async function recordTranscriptionUsage(
   tokenPayload: ProxyTokenPayload,
   model: string,
   durationSeconds: number | undefined,

@@ -52,7 +52,7 @@
 import { createHmac } from 'crypto'
 import { safeTokenEqual } from './crypto-util'
 
-function getSigningSecret(): string {
+export function getSigningSecret(): string {
   const secret =
     process.env.AI_PROXY_SECRET ||
     process.env.BETTER_AUTH_SECRET ||

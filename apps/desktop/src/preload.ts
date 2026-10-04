@@ -195,6 +195,9 @@ contextBridge.exposeInMainWorld('shogoDesktop', {
   startRecording: () => startRecording(),
   stopRecording: () => stopRecording(),
   getRecordingStatus: () => ipcRenderer.invoke('get-recording-status'),
+  /** Tell the main process which personal workspace the app reads meetings from, so live transcript chunks land there. */
+  setMeetingsWorkspace: (workspaceId: string | null) => ipcRenderer.send('meetings:set-workspace', workspaceId),
+  getMeetingsWorkspace: (): Promise<string | null> => ipcRenderer.invoke('meetings:get-workspace'),
   getMeetingConfig: () => ipcRenderer.invoke('get-meeting-config'),
   setMeetingConfig: (config: Record<string, unknown>) => ipcRenderer.invoke('set-meeting-config', config),
   onRecordingStarted: (callback: (data: { id: string; path: string }) => void) => {
