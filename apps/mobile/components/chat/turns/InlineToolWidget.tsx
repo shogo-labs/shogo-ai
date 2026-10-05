@@ -19,6 +19,7 @@ import {
 } from "../tools/types"
 import { getToolSummary, sepLabel } from "../tools/summary"
 import { useChatContextSafe } from "../ChatContext"
+import { CredentialChip } from "./CredentialChip"
 
 const MD_IMAGE_RE = /\[([^\]]*)\]\(([^)]+\.(png|jpg|jpeg|gif|webp))\)/gi
 
@@ -248,6 +249,7 @@ function InlineToolWidgetImpl({
             </Fragment>
           ))}
         </Text>
+        <CredentialChip credential={tool.credential} />
       </Pressable>
 
       {isExpanded && (

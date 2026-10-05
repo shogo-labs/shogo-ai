@@ -1071,6 +1071,7 @@ function createGitHubPullRequestTool(ctx: ToolContext): AgentTool {
           author: botResult.data.author,
           number: botResult.data.number,
           url: botResult.data.url,
+          ...(botResult.data.credential ? { credential: botResult.data.credential } : {}),
         })
       }
       if (isRequesterCredentialBlock(botResult)) return requesterCredentialBlockResult(botResult)
@@ -1304,7 +1305,14 @@ export function createGitHubMergePullRequestTool(ctx: ToolContext): AgentTool {
         botResult = await withCredentialApproval(approvalId, merge)
       }
       if (botResult.ok && botResult.data) {
-        return textResult({ ok: true, mode: 'github-app', merged: botResult.data.merged !== false, number, sha: botResult.data.sha })
+        return textResult({
+          ok: true,
+          mode: 'github-app',
+          merged: botResult.data.merged !== false,
+          number,
+          sha: botResult.data.sha,
+          ...(botResult.data.credential ? { credential: botResult.data.credential } : {}),
+        })
       }
       if (isRequesterCredentialBlock(botResult)) return requesterCredentialBlockResult(botResult)
       if (botResult.code !== 'github_app_not_installed' && botResult.status !== 409) {

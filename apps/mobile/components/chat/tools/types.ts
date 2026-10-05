@@ -47,6 +47,14 @@ export interface AskUserQuestionArgs {
 
 export type ToolExecutionState = "streaming" | "success" | "error"
 
+/** Which integration account a tool call acted as (see the runtime's credential wrapper). */
+export interface CredentialUse {
+  source: "shared" | "personal" | "delegate" | "approved"
+  actingAs: string
+  /** The person a shared-account call was made for. */
+  onBehalfOf?: string
+}
+
 export interface ToolCallData {
   id: string
   toolName: string
@@ -57,6 +65,24 @@ export interface ToolCallData {
   error?: string
   duration?: number
   timestamp: number
+  credential?: CredentialUse
+}
+
+const CREDENTIAL_SOURCES = new Set(["shared", "personal", "delegate", "approved"])
+
+/** The `credential` a tool part or its output carries, if it's well formed. */
+export function credentialUseOf(...candidates: unknown[]): CredentialUse | undefined {
+  for (const candidate of candidates) {
+    const raw = candidate as Partial<CredentialUse> | null | undefined
+    if (raw && typeof raw === "object" && CREDENTIAL_SOURCES.has(raw.source as string) && typeof raw.actingAs === "string") {
+      return {
+        source: raw.source as CredentialUse["source"],
+        actingAs: raw.actingAs,
+        ...(typeof raw.onBehalfOf === "string" && raw.onBehalfOf ? { onBehalfOf: raw.onBehalfOf } : {}),
+      }
+    }
+  }
+  return undefined
 }
 
 export function getToolCategory(name: string): ToolCategory {
