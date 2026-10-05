@@ -21,8 +21,35 @@ export const MAX_TICKET_HOPS = 8
 
 export const REQUESTER_TICKET_HEADER = 'X-Requester-Ticket'
 
-/** Where the turn started. Hops keep the original origin and add to `via`. */
-export type TicketOrigin = { kind: 'chat'; chatSessionId?: string }
+/**
+ * Where the turn started. Hops keep the original origin and add to `via`.
+ * `match` on an event origin says how the person was chosen: the
+ * subscription's owner, or the event's actor matched by a platform account
+ * id or by email.
+ */
+export type TicketOrigin =
+  | { kind: 'chat'; chatSessionId?: string }
+  | { kind: 'event'; eventId: string; subscriptionId?: string; source: string; match: EventPersonMatch }
+
+export type EventPersonMatch = 'subscriber' | 'platform_id' | 'platform_email'
+
+const EVENT_MATCHES = new Set<EventPersonMatch>(['subscriber', 'platform_id', 'platform_email'])
+
+function readOrigin(raw: any): TicketOrigin {
+  if (raw?.kind === 'event' && typeof raw.eventId === 'string' && typeof raw.source === 'string' && EVENT_MATCHES.has(raw.match)) {
+    return {
+      kind: 'event',
+      eventId: raw.eventId,
+      ...(typeof raw.subscriptionId === 'string' ? { subscriptionId: raw.subscriptionId } : {}),
+      source: raw.source,
+      match: raw.match,
+    }
+  }
+  if (raw?.kind === 'chat') {
+    return typeof raw.chatSessionId === 'string' ? { kind: 'chat', chatSessionId: raw.chatSessionId } : { kind: 'chat' }
+  }
+  return { kind: 'chat' }
+}
 
 export interface RequesterTicket {
   projectId: string
@@ -87,7 +114,7 @@ export function verifyRequesterTicket(
     return {
       projectId: payload.projectId,
       userId: payload.userId,
-      origin: payload.origin?.kind === 'chat' ? payload.origin : { kind: 'chat' },
+      origin: readOrigin(payload.origin),
       via: Array.isArray(payload.via) ? payload.via.filter((p): p is string => typeof p === 'string') : [],
       exp: payload.exp,
       nonce: typeof payload.nonce === 'string' ? payload.nonce : '',

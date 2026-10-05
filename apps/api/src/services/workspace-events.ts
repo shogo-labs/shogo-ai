@@ -9,6 +9,7 @@
 
 import { eventTypeMatches, getEventDefinition, validateEventPayload } from '@shogo-ai/sdk/events'
 import { prisma } from '../lib/prisma'
+import type { EventActor } from './event-identity'
 
 const db = prisma as any
 
@@ -23,6 +24,8 @@ export interface EmitWorkspaceEventInput {
   occurredAt?: Date
   /** Only fan out to these subscriptions (Composio events belong to one). */
   subscriptionIds?: string[]
+  /** Who did it. Kept off the delivered envelope; used to pick who a turn acts as. */
+  actor?: EventActor | null
 }
 
 export interface EmitResult {
@@ -85,6 +88,7 @@ export async function emitWorkspaceEvent(input: EmitWorkspaceEventInput): Promis
         payload: input.payload ?? {},
         dedupeKey: input.dedupeKey,
         occurredAt: input.occurredAt ?? new Date(),
+        ...(input.actor ? { actor: input.actor } : {}),
       },
       select: { id: true },
     })
@@ -159,6 +163,7 @@ export async function onWorkspaceMemberJoined(input: {
         source: input.source,
       },
       dedupeKey: `member.joined:${input.memberId}`,
+      actor: { source: 'shogo', externalId: input.userId, trust: 'platform' },
     })
   } catch (error) {
     console.error('[WorkspaceEvents] member.joined emit failed:', error instanceof Error ? error.message : error)

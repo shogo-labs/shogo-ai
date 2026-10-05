@@ -6,11 +6,12 @@
  * Everything that reacts to workspace events: triggers grouped by where the
  * event comes from (Shogo or a connected Composio app), each with its recent
  * deliveries and a redeliver button, plus the marketplace apps that hold a
- * grant on this workspace and can be revoked here.
+ * grant on this workspace and can be revoked here. Triggers that run a
+ * project agent also choose whose accounts that agent may use.
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Alert, Platform, Pressable, View } from 'react-native'
+import { Alert, Platform, Pressable, TextInput, View } from 'react-native'
 import { useRouter } from 'expo-router'
 import {
   AlertCircle as AlertCircleIcon,
@@ -72,6 +73,143 @@ function confirmAction(title: string, message: string, onConfirm: () => void) {
     { text: 'Cancel', style: 'cancel' },
     { text: 'Revoke', style: 'destructive', onPress: onConfirm },
   ])
+}
+
+const ACTS_AS_CHOICES: Array<{ id: 'subscriber' | 'actor' | 'nobody'; label: string; hint: string }> = [
+  { id: 'subscriber', label: 'Whoever set it up', hint: "The project's integrations act as the trigger's creator." },
+  { id: 'actor', label: 'Who triggered it', hint: 'Acts as the person behind the event when Shogo knows their account; otherwise falls back like any run with no person.' },
+  { id: 'nobody', label: 'No one', hint: "Always uses the project's shared accounts." },
+]
+
+export function runsProjectAgent(trigger: WorkspaceTrigger): boolean {
+  return trigger.target === 'project' && trigger.targetMode !== 'hook'
+}
+
+/** Whose accounts a project agent may use when this trigger fires. */
+export function TriggerActsAs({
+  trigger,
+  workspaceId,
+  onChanged,
+}: {
+  trigger: WorkspaceTrigger
+  workspaceId: string
+  onChanged: (trigger: WorkspaceTrigger) => void
+}) {
+  const http = useDomainHttp()
+  const actsAs = (trigger.actsAs ?? 'subscriber') as 'subscriber' | 'actor' | 'nobody'
+  const composio = trigger.source === 'composio'
+  const [pending, setPending] = useState<'subscriber' | 'actor' | 'nobody' | null>(null)
+  const [suggestions, setSuggestions] = useState<{ idPaths: string[]; emailPaths: string[] } | null>(null)
+  const [idPath, setIdPath] = useState(trigger.actorIdPath ?? '')
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const choosing = pending ?? actsAs
+  const needsField = composio && choosing === 'actor'
+
+  useEffect(() => {
+    if (!needsField || suggestions) return
+    api.getTriggerActorFields(http, workspaceId, trigger.eventType)
+      .then(setSuggestions)
+      .catch(() => setSuggestions({ idPaths: [], emailPaths: [] }))
+  }, [needsField, suggestions, http, workspaceId, trigger.eventType])
+
+  const save = useCallback(async (patch: Parameters<typeof api.updateWorkspaceTrigger>[3]) => {
+    setSaving(true)
+    setError(null)
+    try {
+      onChanged(await api.updateWorkspaceTrigger(http, workspaceId, trigger.id, patch))
+      setPending(null)
+    } catch (err: any) {
+      setError(err?.message ?? String(err))
+    } finally {
+      setSaving(false)
+    }
+  }, [http, workspaceId, trigger.id, onChanged])
+
+  const choose = (id: 'subscriber' | 'actor' | 'nobody') => {
+    if (id === actsAs && !pending) return
+    if (id === 'actor' && composio && !trigger.actorIdPath && !trigger.actorEmailPath) {
+      setPending('actor')
+      return
+    }
+    save({ actsAs: id })
+  }
+
+  const emailPath = trigger.actorEmailPath ?? suggestions?.emailPaths[0] ?? null
+  const hint = ACTS_AS_CHOICES.find((c) => c.id === choosing)?.hint
+
+  return (
+    <View className="gap-1.5 pb-2" testID={`automation-acts-as-${trigger.id}`}>
+      <Text className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Integrations act as</Text>
+      <View className="flex-row flex-wrap gap-1.5">
+        {ACTS_AS_CHOICES.map((choice) => (
+          <Pressable
+            key={choice.id}
+            onPress={() => choose(choice.id)}
+            disabled={saving}
+            accessibilityLabel={choice.label}
+            className={cn(
+              'px-2.5 py-1 rounded-md border',
+              choosing === choice.id ? 'border-primary bg-primary/10' : 'border-border active:bg-muted',
+            )}
+            testID={`automation-acts-as-${trigger.id}-${choice.id}`}
+          >
+            <Text className={cn('text-xs', choosing === choice.id ? 'text-primary' : 'text-foreground')}>{choice.label}</Text>
+          </Pressable>
+        ))}
+      </View>
+      {hint && <Text className="text-[11px] text-muted-foreground">{hint}</Text>}
+      {needsField && (
+        <View className="gap-1.5 mt-1">
+          <Text className="text-[11px] text-foreground">Which field in the event says who did it?</Text>
+          {suggestions && suggestions.idPaths.length > 0 && (
+            <View className="flex-row flex-wrap gap-1.5">
+              {suggestions.idPaths.map((path) => (
+                <Pressable
+                  key={path}
+                  onPress={() => setIdPath(path)}
+                  accessibilityLabel={path}
+                  className={cn('px-2 py-0.5 rounded border', idPath === path ? 'border-primary' : 'border-border')}
+                  testID={`automation-actor-field-${path}`}
+                >
+                  <Text className="text-[11px] font-mono text-foreground">{path}</Text>
+                </Pressable>
+              ))}
+            </View>
+          )}
+          <TextInput
+            value={idPath}
+            onChangeText={setIdPath}
+            placeholder="e.g. sender.id"
+            autoCapitalize="none"
+            className="border border-border rounded-md px-2 py-1 text-xs font-mono text-foreground"
+            testID={`automation-actor-path-${trigger.id}`}
+          />
+          <Pressable
+            onPress={() => save({ actsAs: 'actor', actorIdPath: idPath.trim() || null })}
+            disabled={saving || !idPath.trim()}
+            className="self-start px-2.5 py-1 rounded-md bg-primary"
+            testID={`automation-actor-save-${trigger.id}`}
+          >
+            <Text className="text-xs text-primary-foreground">{saving ? 'Saving…' : 'Save'}</Text>
+          </Pressable>
+        </View>
+      )}
+      {composio && actsAs === 'actor' && !pending && emailPath && (
+        <View className="flex-row items-center gap-2 mt-1" testID={`automation-trust-email-${trigger.id}`}>
+          <Switch
+            checked={!!trigger.trustActorEmail}
+            disabled={saving}
+            onCheckedChange={(on: boolean) => save(on ? { trustActorEmail: true, actorEmailPath: emailPath } : { trustActorEmail: false })}
+          />
+          <Text className="text-[11px] text-muted-foreground flex-1">
+            Also match people by the email in <Text className="font-mono">{emailPath}</Text>. Only turn this on if that app verifies emails.
+          </Text>
+        </View>
+      )}
+      {error && <Text className="text-xs text-destructive">{error}</Text>}
+    </View>
+  )
 }
 
 function TriggerRow({
@@ -161,6 +299,9 @@ function TriggerRow({
       </View>
       {open && (
         <View className="px-3 pb-3 pl-9 gap-1.5">
+          {runsProjectAgent(trigger) && trigger.ownerKind !== 'app' && (
+            <TriggerActsAs trigger={trigger} workspaceId={workspaceId} onChanged={onChanged} />
+          )}
           {error && <Text className="text-xs text-destructive">{error}</Text>}
           {deliveries === null ? (
             <Skeleton className="h-8 w-full rounded-md" />

@@ -30,6 +30,7 @@ import {
   type RuntimeManager,
 } from '../jobs/agent-turn-runner'
 import { hasWorkspaceAccess } from './workspace.service'
+import { eventRequesterTicket, resolveEventPerson, type EventActor, type EventPerson } from './event-identity'
 
 const db = prisma as any
 
@@ -64,12 +65,16 @@ export interface DeliverySubscription {
   webhookUrl: string | null
   webhookSecret: string | null
   chatSessionId: string | null
+  actsAs?: string | null
+  trustActorEmail?: boolean | null
 }
 
 export interface DeliveryContext {
   deliveryId: string
   subscription: DeliverySubscription
   envelope: WorkspaceEventEnvelope
+  /** Who triggered the event, as recorded at emit time. */
+  actor?: EventActor | null
   signal: AbortSignal
   runtimeManager?: RuntimeManager
 }
@@ -90,6 +95,9 @@ export interface EventAgentTurnInput {
   deliveryId: string
   signal: AbortSignal
   runtimeManager?: RuntimeManager
+  /** Project turns only: whose accounts the turn may use, signed for `projectId`. */
+  requesterTicket?: string
+  actingAs?: EventPerson | null
 }
 
 export type EventAgentRunner = (input: EventAgentTurnInput) => Promise<{ summary: string | null }>
@@ -155,6 +163,7 @@ const defaultAgentRunner: EventAgentRunner = async (input) => {
       sessionId: `event:${input.subscription.id}`,
       wait: true,
       timeoutMs: PROJECT_AGENT_TIMEOUT_MS,
+      ...(input.requesterTicket ? { requesterTicket: input.requesterTicket } : {}),
     })
     if (outcome.status === 401 || outcome.status === 403) {
       throw new DeliveryError(outcome.body?.error?.message ?? 'The project agent refused the call', 'forbidden', outcome.status)
@@ -199,6 +208,19 @@ const defaultAgentRunner: EventAgentRunner = async (input) => {
 
 async function deliverToAgent(ctx: DeliveryContext, projectId: string | null): Promise<DeliveryResult> {
   const userId = await requireOwner(ctx.subscription)
+  const sub = ctx.subscription
+  const actingAs = projectId
+    ? await resolveEventPerson({
+        workspaceId: sub.workspaceId,
+        actsAs: sub.actsAs,
+        ownerUserId: sub.ownerUserId,
+        trustActorEmail: sub.trustActorEmail,
+        actor: ctx.actor,
+      })
+    : null
+  const requesterTicket = projectId
+    ? eventRequesterTicket(projectId, actingAs, { id: ctx.envelope.id, subscriptionId: sub.id, source: ctx.actor?.source ?? sub.source })
+    : undefined
   const runner = agentRunnerOverride ?? defaultAgentRunner
   const result = await runner({
     workspaceId: ctx.subscription.workspaceId,
@@ -210,6 +232,7 @@ async function deliverToAgent(ctx: DeliveryContext, projectId: string | null): P
     deliveryId: ctx.deliveryId,
     signal: ctx.signal,
     runtimeManager: ctx.runtimeManager,
+    ...(projectId ? { requesterTicket, actingAs } : {}),
   })
   return { summary: result.summary }
 }

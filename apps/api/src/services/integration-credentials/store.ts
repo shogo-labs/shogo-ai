@@ -6,6 +6,7 @@
 
 import { prisma } from '../../lib/prisma'
 import { decryptSecret, encryptSecret } from '../../lib/secret-crypto'
+import { linkIdentity, unlinkIdentity } from '../identity-links'
 import {
   ACTOR_FALLBACKS,
   ACTOR_MODES,
@@ -200,10 +201,16 @@ export async function savePersonalConnection(
     create: { userId, provider, ...data },
     update: data,
   })
+  if (result.externalId) {
+    await linkIdentity({ userId, source: provider, externalId: result.externalId, email: result.email })
+  } else {
+    await unlinkIdentity(userId, provider)
+  }
 }
 
 export async function deletePersonalConnection(userId: string, provider: string): Promise<void> {
   await db.userIntegrationConnection.deleteMany({ where: { userId, provider } })
+  await unlinkIdentity(userId, provider)
   await db.userIntegrationGrant.updateMany({
     where: { userId, provider, revokedAt: null },
     data: { revokedAt: new Date() },

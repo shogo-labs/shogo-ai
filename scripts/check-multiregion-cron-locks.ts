@@ -325,6 +325,11 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
     reason: 'integration-credentials/store.ts savePersonalConnection upserts the user\'s own row from their OAuth callback or a token refresh.',
   },
   {
+    key: 'UserIdentityLink.(externalId,source,userId)',
+    category: 'single_tenant_upsert',
+    reason: 'identity-links.ts linkIdentity upserts the user\'s own link when they connect an account or the status route runs a Composio who-am-I for them.',
+  },
+  {
     key: 'UserIntegrationGrant.(projectId,provider,userId)',
     category: 'single_tenant_upsert',
     reason: 'integration-credentials/store.ts grantAccess upserts the user\'s own consent row from their consent POST or OAuth callback.',

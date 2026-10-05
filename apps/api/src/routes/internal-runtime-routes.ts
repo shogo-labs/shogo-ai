@@ -60,7 +60,7 @@ import { signResumeToken } from '../services/integration-credentials/resume'
 
 /** Where a connect link handed out in this turn should pick the conversation back up. */
 function resumeTokenFor(ticket: RequesterTicket | null): string | undefined {
-  const chatSessionId = ticket?.origin.chatSessionId
+  const chatSessionId = ticket?.origin.kind === 'chat' ? ticket.origin.chatSessionId : undefined
   return ticket && chatSessionId ? signResumeToken({ userId: ticket.userId, chatSessionId }) : undefined
 }
 
@@ -162,6 +162,7 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
       op: 'write',
       requesterUserId: ticket?.userId ?? null,
       resume: resumeTokenFor(ticket),
+      canAsk: ticket?.origin.kind !== 'event',
     })
     if (!result.ok) {
       return {
@@ -1040,6 +1041,7 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
         op,
         requesterUserId: ticket?.userId ?? null,
         resume: resumeTokenFor(ticket),
+        canAsk: ticket?.origin.kind !== 'event',
       })
       return c.json(result)
     } catch (err: any) {

@@ -504,6 +504,11 @@ export interface WorkspaceTrigger {
   ownerUserId?: string | null
   ownerKind: 'user' | 'app' | string
   installId?: string | null
+  /** Whose accounts a project agent may use when this fires. */
+  actsAs?: 'subscriber' | 'actor' | 'nobody' | string
+  actorIdPath?: string | null
+  actorEmailPath?: string | null
+  trustActorEmail?: boolean
   consecutiveFailures: number
   lastDeliveredAt?: string | null
   lastError?: string | null
@@ -1316,6 +1321,27 @@ export const api = {
   async setWorkspaceTriggerEnabled(http: HttpClient, workspaceId: string, triggerId: string, enabled: boolean) {
     const res = await http.patch<{ trigger: WorkspaceTrigger }>(`/api/workspaces/${workspaceId}/triggers/${triggerId}`, { enabled })
     return res.data.trigger
+  },
+
+  async updateWorkspaceTrigger(
+    http: HttpClient,
+    workspaceId: string,
+    triggerId: string,
+    patch: Partial<Pick<WorkspaceTrigger, 'actsAs' | 'actorIdPath' | 'actorEmailPath' | 'trustActorEmail'>>,
+  ) {
+    const res = await http.patch<{ trigger: WorkspaceTrigger }>(`/api/workspaces/${workspaceId}/triggers/${triggerId}`, patch)
+    return res.data.trigger
+  },
+
+  /** Suggested "who did it" payload fields for a Composio trigger, from its payload schema. */
+  async getTriggerActorFields(http: HttpClient, workspaceId: string, eventType: string) {
+    const toolkit = eventType.split('.')[1] ?? ''
+    const res = await http.get<{ composio?: { types?: Array<{ type: string; actorFields?: { idPaths: string[]; emailPaths: string[] } }> } }>(
+      `/api/workspaces/${workspaceId}/trigger-types`,
+      { toolkit },
+    )
+    const match = res.data?.composio?.types?.find((t) => t.type === eventType)
+    return match?.actorFields ?? { idPaths: [], emailPaths: [] }
   },
 
   async listTriggerDeliveries(http: HttpClient, workspaceId: string, triggerId: string, limit = 10) {

@@ -82,6 +82,8 @@ export interface PersonalConnection {
 export interface ConnectResult {
   externalId?: string | null
   externalLogin?: string | null
+  /** Email the provider reported for the account; stored on the identity link only. */
+  email?: string | null
   accessToken?: string | null
   refreshToken?: string | null
   accessTokenExpiresAt?: Date | null
