@@ -10,6 +10,8 @@
  * no project mounted; the meta-agent mounts only the projects it needs.
  */
 
+import { APPROVAL_ACTION_PREFIX } from '../services/chat-providers/slack'
+import { handleApprovalPress } from '../services/chat-providers/approval-actions'
 import { createHash, randomUUID } from 'node:crypto'
 import { Hono } from 'hono'
 import { prisma } from '../lib/prisma'
@@ -32,6 +34,15 @@ import {
   verifySlackSignature,
 } from '../lib/slack-agent/security'
 import { SlackUiWriter, type SlackApiClient } from '../lib/slack-agent/stream'
+import {
+  InstallationConflictError,
+  installationForWorkspace,
+  linkIdentity,
+  mergeInstallationConfig,
+  upsertInstallation,
+} from '../services/chat-providers/installations'
+import { bridgeActive, handleInboundEvents, resumeAfterLinkInHomeRegion, routeInboundEvents } from '../services/chat-providers/inbound'
+import { slackEventsFromPayload, slackProvider } from '../services/chat-providers/slack'
 
 const SLACK_API = 'https://slack.com/api'
 const EVENT_TTL_MS = 10 * 60 * 1000
@@ -179,6 +190,20 @@ export function slackAgentRoutes(config: SlackAgentRoutesConfig): Hono {
         installerUserId: oauth.authed_user?.id || parsedState.userId,
       },
     })
+    try {
+      await upsertInstallation({
+        workspaceId: parsedState.workspaceId,
+        provider: 'slack',
+        externalTenantId: oauth.team.id,
+        tenantName: oauth.team.name || null,
+        botUserId: oauth.bot_user_id || null,
+        credentials: { botToken: oauth.access_token },
+        installedByUserId: parsedState.userId,
+      })
+    } catch (err) {
+      if (err instanceof InstallationConflictError) return c.json({ error: err.message }, 409)
+      throw err
+    }
 
     return c.html(`
       <!doctype html><html><head><title>Shogo connected</title></head>
@@ -232,6 +257,28 @@ export function slackAgentRoutes(config: SlackAgentRoutesConfig): Hono {
       },
       update: { shogoUserId: userId },
     })
+    await linkIdentity({
+      provider: 'slack',
+      externalTenantId: parsedState.slackTeamId,
+      externalUserId: parsedState.slackUserId,
+      userId,
+    })
+
+    if (parsedState.pendingChannel && parsedState.pendingTs && (await bridgeActive('slack', installation.workspaceId))) {
+      const resumed = await resumeAfterLinkInHomeRegion(slackProvider, {
+        tenantId: parsedState.slackTeamId,
+        channelId: parsedState.pendingChannel,
+        messageId: parsedState.pendingTs,
+      }, userId)
+      void slackClient(installation).call('chat.postMessage', {
+        channel: parsedState.pendingChannel,
+        ...(parsedState.pendingThreadTs ? { thread_ts: parsedState.pendingThreadTs } : {}),
+        text: resumed
+          ? '✅ Your Shogo account is linked. Picking up your message…'
+          : '✅ Your Shogo account is linked. Send your message again.',
+      }).catch((error) => console.error('[SlackAgent] Failed to post link confirmation:', error))
+      return c.json({ ok: true, resumed })
+    }
 
     // Confirm the link in Slack and resume whatever request triggered it,
     // instead of making the user notice the DM and repeat themselves. Both
@@ -298,6 +345,23 @@ export function slackAgentRoutes(config: SlackAgentRoutesConfig): Hono {
       where: { slackTeamId: payload.team_id },
     })
     if (!installation) return c.json({ error: 'Slack workspace is not installed in Shogo' }, 404)
+
+    if (await bridgeActive('slack', installation.workspaceId)) {
+      // Forward to the workspace's home region when it isn't this one; a 5xx
+      // makes Slack redeliver if that region is unreachable.
+      const routed = await routeInboundEvents(slackProvider, slackEventsFromPayload(payload, installation.botUserId))
+      if (routed.unavailable) return c.json({ error: 'Home region unavailable, retry' }, 503)
+      void handleInboundEvents(slackProvider, routed.local).catch((error) => {
+        console.error('[SlackAgent] Team chat bridge failed:', error)
+      })
+      return c.json({ ok: true })
+    }
+
+    // The single-agent flow answers DMs and @mentions only; channel message
+    // events are subscribed for the team chat bridge above.
+    if (payload.event.type === 'message' && !isSlackDirectMessageChannel(String(payload.event.channel ?? ''))) {
+      return c.json({ ok: true })
+    }
 
     // Slack requires a quick acknowledgement. The project runtime can cold
     // start and an agent turn can run for hours, so all work happens after the
@@ -389,6 +453,8 @@ export function slackAgentRoutes(config: SlackAgentRoutesConfig): Hono {
         where: { workspaceId },
         data: { defaultProjectId: body.defaultProjectId },
       })
+      const chatInstall = await installationForWorkspace(workspaceId, 'slack')
+      if (chatInstall) await mergeInstallationConfig(chatInstall.id, { defaultProjectId: body.defaultProjectId })
     }
     return c.json({ ok: true })
   })
@@ -548,6 +614,25 @@ export function slackAgentRoutes(config: SlackAgentRoutesConfig): Hono {
     const userId = payload.user?.id
     const channelId = payload.channel?.id || payload.container?.channel_id
     if (!action || !userId) return
+
+    if (action.action_id?.startsWith(APPROVAL_ACTION_PREFIX)) {
+      const result = await handleApprovalPress(
+        { provider: 'slack', tenantId: installation.slackTeamId, externalUserId: userId, value: String(action.value ?? '') },
+        undefined,
+        async () => (await prisma.slackUserLink.findUnique({
+          where: { slackTeamId_slackUserId: { slackTeamId: installation.slackTeamId, slackUserId: userId } },
+        }))?.shogoUserId ?? null,
+      )
+      // Success edits the card itself; only the person who pressed hears about problems.
+      if (!result.ok && typeof payload.response_url === 'string') {
+        await fetch(payload.response_url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ response_type: 'ephemeral', replace_original: false, text: result.message }),
+        }).catch(() => {})
+      }
+      return
+    }
 
     if (action.action_id?.startsWith('slack_project_picker')) {
       const link = await prisma.slackUserLink.findUnique({
@@ -1336,6 +1421,7 @@ function slackBotScopes(): string[] {
     'channels:history',
     'channels:read',
     'chat:write',
+    'chat:write.customize',
     'files:read',
     'files:write',
     'groups:history',

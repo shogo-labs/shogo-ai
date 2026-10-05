@@ -23,6 +23,8 @@ import type { CommandHandle } from './sandbox-exec'
 
 /** How long to keep finished entries around so post-hoc `exec_wait` works. */
 const COMPLETED_RETENTION_MS = 10 * 60 * 1000
+/** How long a command must run before it is shown in the chat dock. */
+export const UI_VISIBLE_AFTER_MS = 30_000
 
 export interface CommandEntry {
   runId: string
@@ -32,6 +34,7 @@ export interface CommandEntry {
   backgrounded?: boolean
   finishedAt?: number
   finalResult?: { exitCode: number; stdout: string; stderr: string; killed: boolean }
+  visibilityTimer?: ReturnType<typeof setTimeout>
   /**
    * True for entries restored from a persisted snapshot after a runtime
    * restart. The OS child belonged to the dead gateway and cannot be
@@ -70,6 +73,11 @@ export class CommandRegistry {
   private listeners = new Set<ChangeListener>()
   private pendingWaits = new Set<string>()
   private completionNotes = new Map<string, string>()
+  private readonly uiVisibleAfterMs: number
+
+  constructor(options: { uiVisibleAfterMs?: number } = {}) {
+    this.uiVisibleAfterMs = options.uiVisibleAfterMs ?? UI_VISIBLE_AFTER_MS
+  }
 
   /** Register a freshly spawned handle and return its run id. */
   register(command: string, handle: CommandHandle): CommandEntry {
@@ -77,7 +85,18 @@ export class CommandRegistry {
     const entry: CommandEntry = { runId, command, handle }
     this.entries.set(runId, entry)
 
+    const visibilityTimer = setTimeout(() => {
+      entry.visibilityTimer = undefined
+      if (!handle.exited()) this.emitChange()
+    }, this.uiVisibleAfterMs)
+    entry.visibilityTimer = visibilityTimer
+    ;(visibilityTimer as any)?.unref?.()
+
     handle.done.then((result) => {
+      if (entry.visibilityTimer) {
+        clearTimeout(entry.visibilityTimer)
+        entry.visibilityTimer = undefined
+      }
       entry.finishedAt = Date.now()
       entry.finalResult = result
       if (entry.backgrounded && !this.pendingWaits.has(runId)) {
@@ -92,6 +111,10 @@ export class CommandRegistry {
       }, COMPLETED_RETENTION_MS)
       ;(cleanupTimer as any)?.unref?.()
     }).catch(() => {
+      if (entry.visibilityTimer) {
+        clearTimeout(entry.visibilityTimer)
+        entry.visibilityTimer = undefined
+      }
       entry.finishedAt = Date.now()
       this.emitChange()
     })
@@ -180,6 +203,13 @@ export class CommandRegistry {
     return out
   }
 
+  /** Commands eligible for display in the chat dock. */
+  listVisible(): RunningProcess[] {
+    return this.listRunning().filter(
+      (process) => process.stale || process.elapsedMs >= this.uiVisibleAfterMs,
+    )
+  }
+
   /** Serializable snapshot of the running list for persistence. */
   snapshot(): RunningProcessSnapshot[] {
     return this.listRunning().map((p) => ({
@@ -236,6 +266,10 @@ export class CommandRegistry {
   /** Forcefully terminate every still-running command. Used on session shutdown. */
   killAll(): void {
     for (const entry of this.entries.values()) {
+      if (entry.visibilityTimer) {
+        clearTimeout(entry.visibilityTimer)
+        entry.visibilityTimer = undefined
+      }
       if (!entry.stale && !entry.handle.exited()) {
         try { entry.handle.kill('SIGKILL') } catch { /* already gone */ }
       }

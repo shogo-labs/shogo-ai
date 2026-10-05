@@ -5,7 +5,7 @@
 // apps/desktop/src/island-protocol.ts, which re-validates everything sent
 // from here.
 
-import type { BuddyLook } from "@shogo/shared-app/buddy-look"
+import { sameLook, type BuddyLook } from "@shogo/shared-app/buddy-look"
 import { chatActivityEvents, chatSessionEvents } from "./chat-session-events"
 
 export interface IslandFileAttachment {
@@ -323,15 +323,7 @@ function publishSnapshot(): void {
 
 /** Shows this look on the island; the main process keeps the newest window's. */
 export function setIslandBuddyLook(look: DesktopIslandBuddyLook): void {
-  if (
-    buddyLook &&
-    buddyLook.topper === look.topper &&
-    buddyLook.face === look.face &&
-    buddyLook.bolts === look.bolts &&
-    buddyLook.blush === look.blush
-  ) {
-    return
-  }
+  if (buddyLook && sameLook(buddyLook, look)) return
   buddyLook = { ...look }
   if (getBridge()?.islandUpdate) schedulePublish()
 }

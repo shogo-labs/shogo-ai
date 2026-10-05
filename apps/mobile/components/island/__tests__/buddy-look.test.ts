@@ -9,13 +9,25 @@ import {
   normalizeBuddyLook,
   presetForLook,
   sameLook,
+  withPreset,
   type BuddyLook,
 } from "../buddy/look"
 
 describe("normalizeBuddyLook", () => {
   test("keeps a valid look", () => {
-    const look: BuddyLook = { topper: "ears", face: "screen", bolts: true, blush: false }
+    const look: BuddyLook = {
+      topper: "fox",
+      face: "screen",
+      tail: "fox",
+      eyewear: "sunglasses",
+      neck: "scarf",
+      bolts: true,
+      blush: false,
+      color: "#0D9488",
+      finish: "modern",
+    }
     expect(normalizeBuddyLook(look)).toEqual(look)
+    expect(normalizeBuddyLook({ ...look, color: "#0d9488" }).color).toBe("#0D9488")
   })
 
   test("falls back to the default for missing or garbage input", () => {
@@ -26,11 +38,28 @@ describe("normalizeBuddyLook", () => {
   })
 
   test("replaces only the fields this build doesn't understand", () => {
-    expect(normalizeBuddyLook({ topper: "crown", face: "visor", bolts: true, blush: "yes" })).toEqual({
+    expect(
+      normalizeBuddyLook({
+        topper: "unicorn",
+        face: "visor",
+        tail: "lion",
+        eyewear: "sunglasses",
+        neck: "bowtie",
+        bolts: true,
+        blush: "yes",
+        color: "teal",
+        finish: "matte",
+      }),
+    ).toEqual({
       topper: DEFAULT_BUDDY_LOOK.topper,
       face: "visor",
+      tail: DEFAULT_BUDDY_LOOK.tail,
+      eyewear: "sunglasses",
+      neck: "bowtie",
       bolts: true,
       blush: DEFAULT_BUDDY_LOOK.blush,
+      color: null,
+      finish: "classic",
     })
   })
 
@@ -53,6 +82,15 @@ describe("presets", () => {
     expect(presetForLook({ ...DEFAULT_BUDDY_LOOK, bolts: true })).toBeUndefined()
   })
 
+  test("presets swap accessories but keep the colour and finish", () => {
+    const mine: BuddyLook = { ...DEFAULT_BUDDY_LOOK, color: "#7C3AED", finish: "modern" }
+    const fox = BUDDY_PRESETS.find((p) => p.id === "fox")!
+    const next = withPreset(mine, fox)
+    expect(next).toEqual({ ...fox.look, color: "#7C3AED", finish: "modern" })
+    expect(presetForLook(next)?.id).toBe("fox")
+    expect(presetForLook(mine)?.id).toBe("classic")
+  })
+
   test("every preset survives a normalize round trip", () => {
     for (const preset of BUDDY_PRESETS) {
       expect(normalizeBuddyLook(JSON.parse(JSON.stringify(preset.look)))).toEqual(preset.look)
@@ -67,21 +105,36 @@ describe("designFor", () => {
   })
 
   test("maps accessories onto the design", () => {
-    const kitty = designFor({ topper: "ears", face: "classic", bolts: false, blush: true })
-    expect(kitty.ears).toBe(true)
+    const kitty = designFor({ ...DEFAULT_BUDDY_LOOK, topper: "ears" })
+    expect(kitty.ears).toBe("cat")
     expect(kitty.antenna).toBeNull()
     expect(kitty.blush).toBe(true)
 
-    const visor = designFor({ topper: "stubby", face: "visor", bolts: true, blush: true })
+    const visor = designFor({ ...DEFAULT_BUDDY_LOOK, topper: "stubby", face: "visor", bolts: true })
     expect(visor.antenna).toBe("short")
     expect(visor.visor).toBe(true)
     expect(visor.mouth).toBe(false)
     expect(visor.bolts).toBe(true)
     expect(visor.blush).toBe(false)
 
-    const terminal = designFor({ topper: "none", face: "screen", bolts: false, blush: false })
+    const terminal = designFor({ ...DEFAULT_BUDDY_LOOK, topper: "none", face: "screen" })
     expect(terminal.antenna).toBeNull()
-    expect(terminal.ears).toBe(false)
+    expect(terminal.ears).toBeNull()
     expect(terminal.screen).toBe(true)
+  })
+
+  test("fox ears, tail and ruff", () => {
+    const fox = designFor({ ...DEFAULT_BUDDY_LOOK, topper: "fox", tail: "fox" })
+    expect(fox.ears).toBe("fox")
+    expect(fox.tail).toBe("fox")
+    expect(fox.ruff).toBe(true)
+    expect(fox.antenna).toBeNull()
+    expect(designFor({ ...DEFAULT_BUDDY_LOOK, topper: "fox", face: "visor" }).ruff).toBe(false)
+    expect(designFor({ ...DEFAULT_BUDDY_LOOK, tail: "fox" }).tail).toBe("fox")
+  })
+
+  test("sunglasses only on the classic face", () => {
+    expect(designFor({ ...DEFAULT_BUDDY_LOOK, eyewear: "sunglasses" }).eyewear).toBe("sunglasses")
+    expect(designFor({ ...DEFAULT_BUDDY_LOOK, eyewear: "sunglasses", face: "screen" }).eyewear).toBeNull()
   })
 })

@@ -8,16 +8,26 @@ import { usePlatformConfig } from './platform-config'
 import { useNativeRecorder } from './native-recorder'
 import {
   LiveTranscriptionError,
+  liveEventsUrl,
   meetingsApi,
   notifyMeetingsChanged,
   postLiveChunk,
+  requestStreamTicket,
   uploadMeetingAudio,
   usePersonalMeetingsWorkspaceId,
   type TranscriptSegmentView,
 } from './meetings-api'
-import { startLiveCapture, type LiveCapture } from './live-audio'
+import { createLiveAudioContext, createPcmTap, createPushTap, type LiveCapture, type PcmTap } from './live-audio'
+import { NATIVE_PCM_SAMPLE_RATE } from './native-pcm'
+import { toWsBase } from './live-stream'
+import { startAdaptiveLive } from './live-transcription'
+import { useLiveMeetingTranscript } from './use-live-meeting-transcript'
 
 export { formatDuration } from './format-duration'
+
+/** Shown when the desktop recorder reports `mic_permission_denied`. */
+const MIC_BLOCKED_MESSAGE =
+  'Microphone access is blocked. Allow Shogo in System Settings > Privacy & Security > Microphone, then try again.'
 
 /**
  * Rough notes typed while recording, shared by every `useRecording()` caller
@@ -38,11 +48,16 @@ const getRecordingNotes = () => recordingNotes
 
 export interface LiveTranscriptState {
   segments: TranscriptSegmentView[]
+  /** Words still being said; the next settled segment replaces it. */
+  partial: string | null
   /** Why live transcription stopped, shown instead of the transcript. */
   unavailable: string | null
+  /** A problem that doesn't stop the transcript (some audio was skipped), shown beneath it. */
+  notice: string | null
 }
 
-const EMPTY_LIVE: LiveTranscriptState = { segments: [], unavailable: null }
+const EMPTY_LIVE: LiveTranscriptState = { segments: [], partial: null, unavailable: null, notice: null }
+const LIVE_NO_TEXT_NOTICE = 'No live words yet. Check Settings; the full transcript is still made when you stop.'
 let liveTranscript: LiveTranscriptState = EMPTY_LIVE
 const liveListeners = new Set<() => void>()
 function setLiveTranscript(next: Partial<LiveTranscriptState> | null) {
@@ -104,35 +119,128 @@ export function useRecording() {
   const [error, setError] = useState<string | null>(null)
   const draftTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const liveCaptureRef = useRef<LiveCapture | null>(null)
+  const liveNoticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  /** Chunk the browser's mic stream into the draft meeting's live transcript. */
-  const startLive = useCallback((stream: MediaStream, liveRecordingId: string) => {
-    setLiveTranscript(null)
+  /**
+   * Transcribe the browser's mic stream into the draft meeting: streamed in
+   * real time when the server can, in uploaded chunks when it can't.
+   */
+  const beginLive = useCallback((tap: PcmTap, liveRecordingId: string): LiveCapture => {
+    if (liveNoticeTimerRef.current) clearTimeout(liveNoticeTimerRef.current)
     let announced = false
-    const capture = startLiveCapture(stream, async (chunk) => {
-      // Read at send time: recording can start before the workspace id loads.
-      const wsId = workspaceIdRef.current
-      if (!wsId) throw new Error('Personal workspace not loaded')
-      try {
-        const res = await postLiveChunk(wsId, liveRecordingId, chunk)
-        setLiveTranscript({ segments: res.transcript.segments, unavailable: null })
-        if (!announced) {
-          announced = true
-          notifyMeetingsChanged()
-        }
-      } catch (err) {
-        if (err instanceof LiveTranscriptionError && (err.status === 503 || err.status === 409 || err.status === 404)) {
-          if (err.status === 503) setLiveTranscript({ unavailable: err.message })
-          void capture?.stop({ discard: true })
-        }
-        throw err
+    const clearNoTextNotice = () => {
+      if (liveNoticeTimerRef.current) {
+        clearTimeout(liveNoticeTimerRef.current)
+        liveNoticeTimerRef.current = null
       }
+    }
+    liveNoticeTimerRef.current = setTimeout(() => {
+      liveNoticeTimerRef.current = null
+      const current = getLiveTranscript()
+      if (!current.segments.length && !current.partial && !current.unavailable) {
+        setLiveTranscript({ notice: LIVE_NO_TEXT_NOTICE })
+      }
+    }, 10_000)
+    const announce = () => {
+      if (announced) return
+      announced = true
+      notifyMeetingsChanged()
+    }
+    let streamed: TranscriptSegmentView[] = []
+    const capture: LiveCapture = startAdaptiveLive({
+      tap,
+      wsBase: toWsBase(API_URL),
+      getTicket: async () => {
+        // Read at connect time: recording can start before the workspace id loads.
+        const wsId = workspaceIdRef.current
+        if (!wsId) throw new Error('Personal workspace not loaded')
+        return requestStreamTicket(wsId, liveRecordingId)
+      },
+      onMode: (mode) => {
+        if (mode === 'chunks') {
+          clearNoTextNotice()
+          setLiveTranscript({
+            notice: 'Live streaming is unavailable. Check Settings; the full transcript is still made when you stop.',
+          })
+        } else {
+          setLiveTranscript({ notice: null })
+        }
+      },
+      handlers: {
+        onPartial: (message) => {
+          clearNoTextNotice()
+          setLiveTranscript({ partial: message.text, unavailable: null })
+          announce()
+        },
+        onFinal: (message) => {
+          clearNoTextNotice()
+          streamed = [...streamed, message.segment]
+          setLiveTranscript({ segments: streamed, partial: null, unavailable: null, notice: null })
+          announce()
+        },
+        onStatus: (message) => setLiveTranscript({ notice: message.state === 'error' ? (message.message ?? null) : null }),
+      },
+      postChunk: async (chunk) => {
+        // Read at send time: recording can start before the workspace id loads.
+        const wsId = workspaceIdRef.current
+        if (!wsId) throw new Error('Personal workspace not loaded')
+        try {
+          const res = await postLiveChunk(wsId, liveRecordingId, chunk)
+          clearNoTextNotice()
+          setLiveTranscript({ segments: res.transcript.segments, partial: null, unavailable: null, notice: null })
+          announce()
+        } catch (err) {
+          // 409/404: the recording finished or isn't ours. 503: no transcription backend, so every chunk would fail.
+          if (err instanceof LiveTranscriptionError && (err.status === 503 || err.status === 409 || err.status === 404)) {
+            if (err.status === 503) setLiveTranscript({ unavailable: err.message })
+            void liveCaptureRef.current?.stop({ discard: true })
+          }
+          throw err
+        }
+      },
     })
     liveCaptureRef.current = capture
+    return capture
   }, [])
+
+  const startLive = useCallback(
+    (stream: MediaStream, liveRecordingId: string, audioContext: AudioContext | null) => {
+      setLiveTranscript(null)
+      const tap = createPcmTap(stream, audioContext)
+      if (!tap) {
+        void audioContext?.close().catch(() => {})
+        setLiveTranscript({
+          unavailable: 'Live streaming is unavailable. Check Settings; the full transcript is still made when you stop.',
+        })
+        return
+      }
+      beginLive(tap, liveRecordingId)
+    },
+    [beginLive],
+  )
+
+  /** Phone: live transcript from the native PCM tap, alongside the m4a that expo-audio records. */
+  const startNativeLive = useCallback(
+    async (liveRecordingId: string) => {
+      setLiveTranscript(null)
+      if (!native.pcm.available) return
+      const tap = createPushTap(NATIVE_PCM_SAMPLE_RATE)
+      const capture = beginLive(tap, liveRecordingId)
+      const started = await native.pcm.start((frame) => tap.push(frame))
+      if (!started && liveCaptureRef.current === capture) {
+        liveCaptureRef.current = null
+        void capture.stop({ discard: true })
+      }
+    },
+    [beginLive, native],
+  )
 
   /** Resolves to the chunk count to send with the upload when the live transcript covers the whole recording. */
   const stopLive = useCallback(async (recordingSeconds: number): Promise<number | undefined> => {
+    if (liveNoticeTimerRef.current) {
+      clearTimeout(liveNoticeTimerRef.current)
+      liveNoticeTimerRef.current = null
+    }
     const capture = liveCaptureRef.current
     liveCaptureRef.current = null
     if (!capture) return undefined
@@ -194,25 +302,32 @@ export function useRecording() {
     }
   }, [])
 
-  // Desktop: the main process transcribes chunks into the draft; read them back.
+  // Desktop: the main process sends live chunks without a session, so tell it
+  // which workspace this app reads meetings from.
   useEffect(() => {
-    if (!desktop.current || !isRecording || !recordingId || !workspaceId) return
-    let cancelled = false
-    const api = meetingsApi(workspaceId)
-    const poll = async () => {
-      const draft = await api.getRecordingDraft(recordingId)
-      if (cancelled || !draft?.transcript) return
-      try {
-        const parsed = JSON.parse(draft.transcript)
-        if (Array.isArray(parsed.segments)) setLiveTranscript({ segments: parsed.segments })
-      } catch {}
-    }
-    const interval = setInterval(poll, 3000)
-    return () => {
-      cancelled = true
-      clearInterval(interval)
-    }
-  }, [isRecording, recordingId, workspaceId])
+    if (workspaceId) desktop.current?.setMeetingsWorkspace?.(workspaceId)
+  }, [workspaceId])
+
+  // Desktop: the main process streams audio to the API; watch the transcript form.
+  const watchDesktopLive = !!desktop.current && isRecording && !!recordingId && !!workspaceId
+  const pollDraft = useCallback(async () => {
+    if (!workspaceId || !recordingId) return null
+    const draft = await meetingsApi(workspaceId).getRecordingDraft(recordingId)
+    return draft ? { transcript: draft.transcript, status: draft.status } : null
+  }, [workspaceId, recordingId])
+  const desktopLive = useLiveMeetingTranscript({
+    url: watchDesktopLive && workspaceId && recordingId ? liveEventsUrl(workspaceId, recordingId) : null,
+    poll: pollDraft,
+  })
+  useEffect(() => {
+    if (!watchDesktopLive) return
+    setLiveTranscript({
+      segments: desktopLive.segments,
+      partial: desktopLive.partial,
+      notice: desktopLive.notice,
+      unavailable: null,
+    })
+  }, [watchDesktopLive, desktopLive])
 
   // API polling mode (non-Electron, local only): poll frequently while recording, slowly when idle
   useEffect(() => {
@@ -251,6 +366,7 @@ export function useRecording() {
   useEffect(() => {
     return () => {
       if (durationRef.current) clearInterval(durationRef.current)
+      if (liveNoticeTimerRef.current) clearTimeout(liveNoticeTimerRef.current)
       liveCaptureRef.current?.stop({ discard: true })
       if (streamRef.current) {
         streamRef.current.getTracks().forEach((t) => t.stop())
@@ -310,7 +426,7 @@ export function useRecording() {
 
   // Keep the draft alive: the server closes drafts that stop checking in.
   // Desktop's main process heartbeats for itself.
-  const browserRecording = isRecording && !isDesktop && (localMode || cloudBrowser)
+  const browserRecording = (nativeMode ? native.isRecording : isRecording) && !isDesktop && (localMode || cloudBrowser || nativeMode)
   useEffect(() => {
     if (!browserRecording || !recordingId) return
     const beat = () => {
@@ -326,7 +442,7 @@ export function useRecording() {
     (next: string) => {
       setRecordingNotes(next)
       const wsId = workspaceIdRef.current
-      if (!wsId || !recordingId || !(isDesktop || localMode || cloudBrowser)) return
+      if (!wsId || !recordingId || !(isDesktop || localMode || cloudBrowser || nativeMode)) return
       if (draftTimer.current) clearTimeout(draftTimer.current)
       draftTimer.current = setTimeout(() => {
         meetingsApi(wsId)
@@ -334,7 +450,7 @@ export function useRecording() {
           .catch((err: any) => console.warn('[Recording] Could not save notes:', err?.message ?? err))
       }, 600)
     },
-    [recordingId, isDesktop, localMode, cloudBrowser],
+    [recordingId, isDesktop, localMode, cloudBrowser, nativeMode],
   )
 
   const uploadToWorkspace = useCallback(
@@ -382,7 +498,7 @@ export function useRecording() {
     clearError: useCallback(() => setError(null), []),
     notes,
     setNotes: updateNotes,
-    /** Transcript of the recording so far (browser and desktop; not native phone yet). */
+    /** Transcript of the recording so far. */
     liveTranscript: live,
     startRecording: useCallback(async () => {
       setError(null)
@@ -391,7 +507,7 @@ export function useRecording() {
         const result = await d.startRecording()
         if (result && 'error' in result) {
           console.error('Failed to start recording:', result.error)
-          setError(String(result.error))
+          setError(result.error === 'mic_permission_denied' ? MIC_BLOCKED_MESSAGE : String(result.error))
         }
         return
       }
@@ -399,12 +515,22 @@ export function useRecording() {
       if (nativeMode) {
         setRecordingNotes('')
         const result = await native.start().catch((err: any) => ({ error: err?.message || 'Could not start recording' }))
-        if ('error' in result) setError(result.error)
+        if ('error' in result) {
+          setError(result.error)
+          return
+        }
+        const liveRecordingId = newRecordingId()
+        setRecordingId(liveRecordingId)
+        void startNativeLive(liveRecordingId)
         return
       }
 
       // Browser-based recording via MediaRecorder
       if (Platform.OS === 'web' && typeof navigator !== 'undefined' && navigator.mediaDevices) {
+        // Created before the first await, while the click's user activation is
+        // still valid; made after getUserMedia the context can stay suspended
+        // and the live transcript never hears anything.
+        const liveContext = createLiveAudioContext()
         try {
           const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
           streamRef.current = stream
@@ -441,7 +567,7 @@ export function useRecording() {
             } catch {}
           }
           setRecordingId(liveRecordingId)
-          startLive(stream, liveRecordingId)
+          startLive(stream, liveRecordingId, liveContext)
 
           setIsRecording(true)
           setDuration(0)
@@ -453,6 +579,7 @@ export function useRecording() {
 
           return
         } catch (err: any) {
+          void liveContext?.close().catch(() => {})
           console.error('Failed to access microphone:', err)
           if (!localMode) {
             setError('Microphone access was blocked. Allow it in your browser to record.')
@@ -482,7 +609,7 @@ export function useRecording() {
       } catch (err: any) {
         console.error('Failed to start recording:', err)
       }
-    }, [nativeMode, native, localMode, startLive]),
+    }, [nativeMode, native, localMode, startLive, startNativeLive]),
     stopRecording: useCallback(async () => {
       const d = desktop.current
       if (d) {
@@ -497,15 +624,27 @@ export function useRecording() {
 
       if (nativeMode) {
         const recording = await native.stop().catch(() => null)
+        const liveRecordingId = recordingId
+        await native.pcm.stop().catch(() => {})
         if (!recording) {
+          void liveCaptureRef.current?.stop({ discard: true })
+          liveCaptureRef.current = null
+          setRecordingId(null)
+          setLiveTranscript(null)
           setError('The recording could not be saved.')
           return
         }
+        setIsUploading(true)
+        const coveredChunks = await stopLive(recording.duration).finally(() => setIsUploading(false))
         await uploadToWorkspace(
           { kind: 'uri', uri: recording.uri, filename: 'meeting.m4a', type: 'audio/mp4' },
           recording.duration,
           'mobile',
+          liveRecordingId,
+          coveredChunks,
         )
+        setRecordingId(null)
+        setLiveTranscript(null)
         return
       }
 
@@ -589,6 +728,8 @@ export function useRecording() {
     isDesktop,
     isLocal: localMode,
     isNative: nativeMode,
+    /** This surface can show a live transcript (phones need the native audio tap). */
+    liveSupported: !nativeMode || native.pcm.available,
     /** Any capture path is available on this surface. */
     canRecord: isDesktop || localMode || nativeMode || cloudBrowser,
     workspaceId,

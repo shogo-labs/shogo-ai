@@ -17,8 +17,20 @@ if (handleSquirrelEvent()) {
 import { initSentry, setSentryDeviceTag } from './sentry'
 initSentry()
 
-import { app, BrowserWindow, protocol, net, session, ipcMain, Menu, shell, Notification, dialog, powerMonitor } from 'electron'
+import { app, BrowserWindow, protocol, net, session, ipcMain, Menu, shell, Notification, dialog, powerMonitor, systemPreferences, desktopCapturer } from 'electron'
+import { ensureMicAccess, MAC_MIC_SETTINGS_URL, type MicAccess } from './media-permissions'
+import { DictationHotkeyService } from './dictation-hotkey'
+import { normalizeDictationConfig } from './dictation-protocol'
+import {
+  getPermissionStatus,
+  isPermissionKind,
+  listLocalApps,
+  openPermissionSettings,
+  requestPermission,
+  type OsPermissionDeps,
+} from './os-permissions'
 import path from 'path'
+import os from 'os'
 import fs from 'fs'
 import crypto from 'crypto'
 import http, { type Server as HttpServer } from 'http'
@@ -219,6 +231,7 @@ const windowManager = new WindowManager({
   },
 })
 setRecordingWindowResolver(() => windowManager.getPrimaryWindow())
+const dictationHotkeys = new DictationHotkeyService(() => windowManager.getPrimaryWindow())
 
 let isCloudMode = false
 
@@ -307,6 +320,7 @@ async function performCloudSignIn(
   let mintedKey: string
   let mintedEmail: string | null
   let mintedWorkspace: string | null
+  let mintedWorkspaces: unknown = null
   try {
     const result = await runCloudLogin({
       cloudUrl,
@@ -327,6 +341,7 @@ async function performCloudSignIn(
     mintedKey = result.key
     mintedEmail = result.email
     mintedWorkspace = result.workspace
+    mintedWorkspaces = result.workspaces
   } catch (err) {
     // Superseded by a newer sign-in: stay silent so the user doesn't see
     // a "Cancelled" error for the run they intentionally replaced.
@@ -351,7 +366,7 @@ async function performCloudSignIn(
     const persistRes = await fetch(`${getApiUrl()}/api/local/shogo-key`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ key: mintedKey }),
+      body: JSON.stringify({ key: mintedKey, workspaces: mintedWorkspaces }),
     })
     const persistBody = (await persistRes.json().catch(() => ({}))) as CloudLoginBody
     if (!persistRes.ok || persistBody?.ok === false) {
@@ -964,6 +979,12 @@ function openNewWindow(): void {
   loadAppWindow(windowManager.createAppWindow())
 }
 
+// E2E only: lets Playwright open a second app window, which can't be done
+// through the native menu.
+if (process.env.SHOGO_E2E === '1') {
+  ;(globalThis as { __shogoE2E?: { openNewWindow: () => void } }).__shogoE2E = { openNewWindow }
+}
+
 async function openCodeWorkbenchWindow(
   options: { projectId?: string; workspacePath?: string } = {},
   ownerWindow?: BrowserWindow | null,
@@ -1167,7 +1188,77 @@ function buildAppMenu(): void {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template))
 }
 
+function checkMicAccess(): Promise<MicAccess> {
+  return ensureMicAccess({
+    platform: process.platform,
+    getMediaAccessStatus: (type) => systemPreferences.getMediaAccessStatus(type),
+    askForMediaAccess: (type) => systemPreferences.askForMediaAccess(type),
+  })
+}
+
+function osPermissionDeps(): OsPermissionDeps {
+  return {
+    platform: process.platform,
+    homeDir: os.homedir(),
+    isTrustedAccessibilityClient: (prompt) => systemPreferences.isTrustedAccessibilityClient(prompt),
+    getMediaAccessStatus: (type) => systemPreferences.getMediaAccessStatus(type),
+    askForMicrophoneAccess: () => systemPreferences.askForMediaAccess('microphone'),
+    triggerScreenCapturePrompt: async () => {
+      // Requesting a capture source is what makes macOS show the Screen
+      // Recording prompt and list Shogo under that Settings pane.
+      await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 1, height: 1 } })
+    },
+    probeRead: async (p) => {
+      await fs.promises.readdir(p)
+    },
+    openExternal: (url) => shell.openExternal(url),
+  }
+}
+
 function registerIpcHandlers(): void {
+  ipcMain.handle('media:ensure-mic', () => checkMicAccess())
+  ipcMain.handle('permissions:get-status', () => getPermissionStatus(osPermissionDeps()))
+  ipcMain.handle('permissions:request', async (_event, kind: unknown) => {
+    if (!isPermissionKind(kind)) return { ok: false as const, error: 'unknown permission' }
+    const deps = osPermissionDeps()
+    const result = await requestPermission(deps, kind)
+    return { ok: true as const, ...result, status: await getPermissionStatus(deps) }
+  })
+  ipcMain.handle('permissions:open-settings', async (_event, kind: unknown) => {
+    if (!isPermissionKind(kind)) return { ok: false }
+    return { ok: await openPermissionSettings(osPermissionDeps(), kind) }
+  })
+  ipcMain.handle('permissions:list-local-apps', () =>
+    listLocalApps({
+      platform: process.platform,
+      homeDir: os.homedir(),
+      exists: (p) => fs.promises.access(p).then(() => true, () => false),
+    }),
+  )
+  ipcMain.handle('dictation:get-config', () => readConfig().dictation)
+  ipcMain.handle('dictation:set-config', (_event, patch: unknown) => {
+    const current = readConfig().dictation
+    const next = normalizeDictationConfig(patch, current)
+    writeConfig({ dictation: next })
+    dictationHotkeys.applyConfig(next)
+    return { ok: true as const, config: next }
+  })
+  ipcMain.handle('dictation:hotkey-state', () => {
+    const { fnAvailable } = dictationHotkeys.getState()
+    return { fnAvailable }
+  })
+  ipcMain.handle('dictation:deliver-text', (_event, text: unknown) =>
+    dictationHotkeys.deliverText(typeof text === 'string' ? text : ''),
+  )
+  ipcMain.handle('permissions:relaunch', () => {
+    app.relaunch()
+    app.exit(0)
+  })
+  ipcMain.handle('media:open-mic-settings', async () => {
+    if (process.platform !== 'darwin') return { ok: false }
+    await shell.openExternal(MAC_MIC_SETTINGS_URL)
+    return { ok: true }
+  })
   ipcMain.handle('get-app-mode', () => readConfig().mode)
   ipcMain.handle('get-app-config', () => readConfig())
   ipcMain.handle('set-island-config', (_event, patch: unknown) => {
@@ -1263,6 +1354,12 @@ function registerIpcHandlers(): void {
     } catch (err) {
       return { ok: false, error: (err as Error)?.message || 'Sign-out failed' }
     }
+  })
+
+  // Unread team chat count on the dock / taskbar icon.
+  ipcMain.handle('set-badge-count', (_event, count: unknown) => {
+    const n = typeof count === 'number' && Number.isFinite(count) ? Math.max(0, Math.min(Math.floor(count), 9999)) : 0
+    return app.setBadgeCount(n)
   })
 
   // Desktop notification for remote actions
@@ -1555,6 +1652,17 @@ function setupSessionHandlers(): void {
     if (permission === 'media') {
       const requestingUrl = details?.requestingUrl || webContents.getURL()
       if (isTrustedMediaOrigin(requestingUrl)) {
+        const mediaTypes = (details as { mediaTypes?: string[] } | undefined)?.mediaTypes
+        // Audio requests must also clear the macOS TCC gate (prompting once).
+        if (!mediaTypes || mediaTypes.includes('audio')) {
+          void checkMicAccess().then((access) => {
+            if (access !== 'granted') {
+              console.warn(`[Desktop] microphone access ${access}; denying media request`)
+            }
+            callback(access === 'granted')
+          })
+          return
+        }
         callback(true)
         return
       }
@@ -1775,6 +1883,7 @@ app.whenReady().then(async () => {
   }
 
   createWindow()
+  dictationHotkeys.start(readConfig().dictation)
   islandWindow = new IslandWindow(windowManager, {
     loadApp: (window) => loadAppWindow(window, '/island'),
     ...(isCloudMode
@@ -1823,6 +1932,10 @@ app.whenReady().then(async () => {
   app.on('activate', () => {
     if (!windowManager.hasWindows()) {
       createWindow()
+    } else {
+      // The always-visible island panel makes macOS think the app already has
+      // a visible window, so it no longer restores a minimized one itself.
+      windowManager.focusPrimaryWindow()
     }
   })
 
@@ -1874,6 +1987,7 @@ app.on('before-quit', (event) => {
   if (getIsApplyingUpdate()) {
     console.log('[Desktop] Update pending — doing fast sync cleanup, letting Squirrel handle restart')
     cleanupRecording()
+    dictationHotkeys.stop()
     destroyTray()
     void disposeTerminalIpc().catch(() => {})
     disposeLlmIpcHandlers()
@@ -1890,6 +2004,7 @@ app.on('before-quit', (event) => {
   event.preventDefault()
   console.log('[Desktop] Waiting for server cleanup before exit...')
   cleanupRecording()
+  dictationHotkeys.stop()
   destroyTray()
   disposeLlmIpcHandlers()
   disposePortsIpcHandlers()

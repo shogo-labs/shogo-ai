@@ -54,6 +54,12 @@ export interface TitleCompletionOptions {
   system: string
   prompt: string
   maxTokens?: number
+  /**
+   * Tried after the title model and the default when those can't be resolved,
+   * e.g. a deployment with only provider API keys has no transport for the
+   * default (custom, proxy-served) model.
+   */
+  fallbackModelIds?: string[]
 }
 
 /**
@@ -108,8 +114,9 @@ export async function generateTitleCompletion(
   opts: TitleCompletionOptions,
 ): Promise<TitleCompletionResult> {
   const configured = getTitleGenerationModelId()
-  const candidates =
-    configured === DEFAULT_TITLE_MODEL_ID ? [configured] : [configured, DEFAULT_TITLE_MODEL_ID]
+  const candidates = [
+    ...new Set([configured, DEFAULT_TITLE_MODEL_ID, ...(opts.fallbackModelIds ?? [])]),
+  ]
 
   let lastErr: unknown
   for (const id of candidates) {

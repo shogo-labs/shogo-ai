@@ -362,3 +362,23 @@ export async function sendAccountDeletedEmail(params: {
   })
 }
 
+
+/**
+ * Send the daily channels digest (unread mentions, thread replies, and DMs)
+ */
+export async function sendChannelDigestEmail(params: {
+  to: string
+  workspaceName: string
+  countLabel: string
+  summary: string
+  channelsUrl: string
+  settingsUrl: string
+}): Promise<{ success: boolean; error?: string }> {
+  return sendTemplateEmail('channel-digest', params.to, {
+    workspaceName: params.workspaceName,
+    countLabel: params.countLabel,
+    summary: params.summary,
+    channelsUrl: params.channelsUrl,
+    settingsUrl: params.settingsUrl,
+  })
+}

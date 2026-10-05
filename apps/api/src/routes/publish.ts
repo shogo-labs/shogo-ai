@@ -1410,6 +1410,10 @@ export async function publishProject(
       }
     }
 
+    void import("../services/conversation-activity")
+      .then((m) => m.recordProjectPublished(project, `https://${subdomain}.${PUBLISH_DOMAIN}`, publishedAt))
+      .catch(() => {})
+
     // Auto-capture thumbnail after publish (fire-and-forget, delayed to let CDN propagate)
     setTimeout(() => {
       captureThumbnail(projectId, `https://${subdomain}.${PUBLISH_DOMAIN}`).catch((err) => {

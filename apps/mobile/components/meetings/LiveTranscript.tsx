@@ -6,7 +6,7 @@ import { ScrollView, Text, View } from 'react-native'
 import { formatDuration } from '../../lib/format-duration'
 import type { LiveTranscriptState } from '../../lib/use-recording'
 
-/** What's been said so far, a few seconds behind the room. */
+/** What's been said so far, with the words still being said shown muted at the end. */
 export function LiveTranscript({ state, maxHeight = 168 }: { state: LiveTranscriptState; maxHeight?: number }) {
   const scrollRef = useRef<ScrollView>(null)
   return (
@@ -19,8 +19,10 @@ export function LiveTranscript({ state, maxHeight = 168 }: { state: LiveTranscri
         <Text className="text-xs leading-5 text-muted-foreground">
           {state.unavailable} The full transcript is still made when you stop.
         </Text>
-      ) : state.segments.length === 0 ? (
-        <Text className="text-xs leading-5 text-muted-foreground">Listening… words show up here a few seconds after they're said.</Text>
+      ) : state.segments.length === 0 && !state.partial ? (
+        <Text className="text-xs leading-5 text-muted-foreground">
+          {state.notice ?? 'Listening… words show up here as they\'re said.'}
+        </Text>
       ) : (
         <ScrollView
           ref={scrollRef}
@@ -35,6 +37,15 @@ export function LiveTranscript({ state, maxHeight = 168 }: { state: LiveTranscri
               <Text className="flex-1 text-sm leading-5 text-foreground">{segment.text}</Text>
             </View>
           ))}
+          {!!state.partial && (
+            <View className="mb-1.5 flex-row gap-2">
+              <Text className="w-10 pt-0.5 text-right font-mono text-[10px] text-muted-foreground">…</Text>
+              <Text accessibilityLabel="Words being said" className="flex-1 text-sm leading-5 text-muted-foreground">
+                {state.partial}
+              </Text>
+            </View>
+          )}
+          {!!state.notice && <Text className="mt-1 text-xs leading-5 text-amber-700 dark:text-amber-300">{state.notice}</Text>}
         </ScrollView>
       )}
     </View>

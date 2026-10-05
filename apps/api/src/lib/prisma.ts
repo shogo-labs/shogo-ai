@@ -41,6 +41,10 @@ const ARRAY_FIELDS = new Set([
   'aliases',
   // User granular admin permission scopes (String[] on PG, JSON String on SQLite)
   'adminScopes',
+  // ConversationMessageEmbedding vector (Float[] on PG, JSON String on SQLite)
+  'embedding',
+  // AppInstallGrant / ApiKey app scopes
+  'grantedScopes', 'grantedToolkits', 'pendingScopes',
 ])
 
 // Fields that are Json? in PostgreSQL but stored as String? in SQLite.
@@ -55,6 +59,12 @@ const JSON_OBJECT_FIELDS = new Set([
   'baselineManifest', 'auditFindings',
   // ModelDefinition capability ratings (Json? on PG, String? JSON on SQLite)
   'capabilities',
+  // ConversationMessage structured content and agent author reference
+  'blocks', 'authorAgentRef', 'agentChain',
+  // Workspace event platform
+  'payload', 'filter', 'triggerConfig', 'appManifest', 'actor',
+  // Integration credential approvals and audit
+  'origin',
 ])
 
 // In SQLite mode, String[] fields are stored as JSON strings, and

@@ -23,8 +23,9 @@ import { Platform } from 'react-native'
 import { XtermSession } from './xterm-session'
 import { isDesktopRuntime, type PtyClientLike } from './pty-factory'
 import type { PtyClientState } from './pty-client'
-import { useEditorFont } from '../useEditorFont'
+import { useEditorFont, useTerminalFontSize } from '../useEditorFont'
 import { loadDesktopTerminal } from './desktop-terminal-loader'
+import { xtermThemeFor } from './xterm-theme'
 
 interface XtermViewProps {
   client: PtyClientLike
@@ -84,6 +85,10 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
   const desktopHandleRef = useRef<XtermViewHandle | null>(null)
   const [DesktopSurface, setDesktopSurface] = useState<React.ComponentType<any> | null>(null)
   const [state, setState] = useState<PtyClientState>(client.state)
+  const [findOpen, setFindOpen] = useState(false)
+  const [findQuery, setFindQuery] = useState('')
+  const [findMissed, setFindMissed] = useState(false)
+  const findInputRef = useRef<HTMLInputElement | null>(null)
 
   // BUG-012 — Terminal.tsx doesn't have the EditorSettings prop in scope
   // (it sits outside the Workbench prop tree). Instead of threading
@@ -93,6 +98,25 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
   // `fontFamily` PROP still wins — desktop surfaces & tests can override.
   const settingFamily = useEditorFont()
   const effectiveFamily = fontFamily ?? settingFamily
+  const settingSize = useTerminalFontSize()
+  const effectiveSize = fontSize ?? settingSize
+
+  // Follow the IDE's light/dark mode (the `.shogo-ide[data-theme]` ancestor
+  // is the single source of truth; Workbench flips it on theme change).
+  const [mode, setMode] = useState<'dark' | 'light'>('dark')
+  useEffect(() => {
+    if (Platform.OS !== 'web') return
+    const root = containerRef.current?.closest('.shogo-ide') as HTMLElement | null
+    if (!root) return
+    const read = () => setMode(root.getAttribute('data-theme') === 'light' ? 'light' : 'dark')
+    read()
+    const mo = new MutationObserver(read)
+    mo.observe(root, { attributes: true, attributeFilter: ['data-theme'] })
+    return () => mo.disconnect()
+  }, [])
+  const modeRef = useRef(mode)
+  modeRef.current = mode
+  const theme = xtermThemeFor(mode)
 
   useEffect(() => {
     if (Platform.OS !== 'web') return
@@ -111,7 +135,16 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
     if (isDesktopRuntime()) return
     const container = containerRef.current
     if (!container) return
-    const session = new XtermSession(client, { fontSize, fontFamily: effectiveFamily })
+    const session = new XtermSession(client, {
+      fontSize: effectiveSize,
+      fontFamily: effectiveFamily,
+      theme: xtermThemeFor(modeRef.current),
+      onFindRequest: () => {
+        setFindOpen(true)
+        // Already open → just pull focus back into the field.
+        window.setTimeout(() => findInputRef.current?.select(), 0)
+      },
+    })
     sessionRef.current = session
     let cancelled = false
     void session.attach(container).then(() => {
@@ -137,8 +170,14 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
   useEffect(() => {
     if (Platform.OS !== 'web') return
     if (isDesktopRuntime()) return
-    sessionRef.current?.setFont(effectiveFamily, fontSize)
-  }, [effectiveFamily, fontSize])
+    sessionRef.current?.setFont(effectiveFamily, effectiveSize)
+  }, [effectiveFamily, effectiveSize])
+
+  useEffect(() => {
+    if (Platform.OS !== 'web') return
+    if (isDesktopRuntime()) return
+    sessionRef.current?.setTheme(xtermThemeFor(mode))
+  }, [mode])
 
   // Refit on container size changes.
   useEffect(() => {
@@ -174,7 +213,10 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
       clear: () => desktopHandleRef.current?.clear() ?? sessionRef.current?.clear(),
       focus: () => desktopHandleRef.current?.focus() ?? sessionRef.current?.focus(),
       refit: () => desktopHandleRef.current?.refit() ?? sessionRef.current?.fit(),
-      openFind: () => desktopHandleRef.current?.openFind?.(),
+      openFind: () => {
+        if (desktopHandleRef.current?.openFind) desktopHandleRef.current.openFind()
+        else setFindOpen(true)
+      },
       openRecent: () => desktopHandleRef.current?.openRecent?.(),
       scrollToPrevCommand: () => {
         desktopHandleRef.current?.scrollToPrevCommand?.()
@@ -199,7 +241,7 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
         ref={desktopHandleRef}
         client={client}
         hidden={hidden}
-        fontSize={fontSize}
+        fontSize={effectiveSize}
         fontFamily={effectiveFamily}
         autoFocus={autoFocus}
         projectId={projectId}
@@ -216,7 +258,7 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
         width: '100%',
         height: '100%',
         display: hidden ? 'none' : 'block',
-        backgroundColor: '#1e1e1e',
+        backgroundColor: theme.background,
       }}
     >
       <style>{`
@@ -229,12 +271,12 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
           width: 10px;
         }
         [data-shogo-xterm-view] .xterm-viewport::-webkit-scrollbar-thumb {
-          background: #424242;
+          background: ${mode === 'light' ? '#c1c1c1' : '#424242'};
           border-radius: 999px;
-          border: 2px solid #1e1e1e;
+          border: 2px solid ${theme.background};
         }
         [data-shogo-xterm-view] .xterm-viewport::-webkit-scrollbar-track {
-          background: #1e1e1e;
+          background: ${theme.background};
         }
       `}</style>
       <div
@@ -245,6 +287,63 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
         // panel edges).
         style={{ width: '100%', height: '100%', padding: '4px 6px', overflow: 'hidden' }}
       />
+      {findOpen && (
+        <div
+          style={{
+            position: 'absolute', top: 6, right: 16, zIndex: 5, display: 'flex', alignItems: 'center', gap: 4,
+            padding: '3px 6px', borderRadius: 4, background: mode === 'light' ? '#f3f3f3' : '#252526',
+            border: '1px solid ' + (mode === 'light' ? '#c8c8c8' : '#454545'), boxShadow: '0 2px 8px rgba(0,0,0,0.3)',
+          }}
+        >
+          <input
+            ref={findInputRef}
+            autoFocus
+            value={findQuery}
+            placeholder="Find"
+            aria-label="Find in terminal"
+            onChange={(e) => {
+              setFindQuery(e.target.value)
+              setFindMissed(!!e.target.value && !sessionRef.current?.find(e.target.value, 'next'))
+            }}
+            onKeyDown={(e) => {
+              e.stopPropagation()
+              if (e.key === 'Enter') {
+                e.preventDefault()
+                setFindMissed(!!findQuery && !sessionRef.current?.find(findQuery, e.shiftKey ? 'prev' : 'next'))
+              } else if (e.key === 'Escape') {
+                e.preventDefault()
+                setFindOpen(false)
+                sessionRef.current?.clearFind()
+                sessionRef.current?.focus()
+              }
+            }}
+            style={{
+              width: 180, background: 'transparent', outline: 'none', fontSize: 12,
+              border: findMissed ? '1px solid #f14c4c' : '1px solid transparent', borderRadius: 2, padding: '2px 4px',
+              color: mode === 'light' ? '#333' : '#ccc',
+            }}
+          />
+          {(['prev', 'next'] as const).map((dir) => (
+            <button
+              key={dir}
+              type="button"
+              title={dir === 'next' ? 'Next match (Enter)' : 'Previous match (Shift+Enter)'}
+              onClick={() => setFindMissed(!!findQuery && !sessionRef.current?.find(findQuery, dir))}
+              style={{ background: 'transparent', border: 0, cursor: 'pointer', color: mode === 'light' ? '#333' : '#ccc', fontSize: 12, padding: '0 4px' }}
+            >
+              {dir === 'next' ? '↓' : '↑'}
+            </button>
+          ))}
+          <button
+            type="button"
+            title="Close (Esc)"
+            onClick={() => { setFindOpen(false); sessionRef.current?.clearFind(); sessionRef.current?.focus() }}
+            style={{ background: 'transparent', border: 0, cursor: 'pointer', color: mode === 'light' ? '#333' : '#ccc', fontSize: 12, padding: '0 4px' }}
+          >
+            ✕
+          </button>
+        </div>
+      )}
       {state !== 'open' && state !== 'idle' && (
         <ConnectionOverlay state={state} />
       )}

@@ -9,6 +9,14 @@
  * architectural boundary that makes the local bundle tree-shakeable instead
  * of merely hiding cloud routes behind runtime `if` statements.
  */
+import { STREAM_WS_PATH } from './lib/meeting-stream-ticket'
+import {
+  isMeetingStreamSocketData,
+  meetingStreamClose,
+  meetingStreamMessage,
+  meetingStreamOpen,
+  meetingStreamSocketData,
+} from './services/meeting-live-stream'
 import { bootstrapLocalDatabase } from './lib/local-bootstrap'
 import {
   createLocalPtyBridgeHandlers,
@@ -18,10 +26,15 @@ import {
 import { createLocalApp } from './app/create-local-app'
 import { stopAllPrismaStudios } from './routes/database'
 import { startAgentScheduleWorker, stopAgentScheduleWorker } from './jobs/run-agent-schedule-dispatch'
+import { startEventDeliveryWorker, stopEventDeliveryWorker } from './jobs/run-event-delivery-dispatch'
 import { startChatQueueWorker, stopChatQueueWorker } from './jobs/run-chat-queue-drain'
+import { startChannelWorkers, stopChannelWorkers } from './jobs/run-channel-workers'
 import { resolveLocalApiPort } from './lib/local-api-port'
 import { prisma } from './lib/prisma'
 import { ensureTranscriptionEngine } from './services/transcription-install.service'
+import { startCloudWorkspaceSync } from './services/cloud-workspaces'
+import { conversationSocketHandlers, isConversationSocketData } from './realtime/conversation-socket'
+import { cloudSocketRelayHandlers, isCloudSocketRelayData } from './routes/local-cloud-proxy'
 
 const API_PORT = resolveLocalApiPort()
 const { app, runtimeManager, resetCaches: resetLocalCaches } = createLocalApp()
@@ -30,25 +43,54 @@ await bootstrapLocalDatabase()
 resetLocalCaches()
 // Fire due agent-owned recurring schedules in the local workspace runtime.
 startAgentScheduleWorker(runtimeManager)
+// Deliver workspace events to their subscriptions. The desktop has no public URL
+// for Composio webhooks, so it receives trigger events over Composio's realtime channel.
+startEventDeliveryWorker(runtimeManager)
+let stopComposioListener: (() => Promise<void>) | null = null
+void import('./services/composio-triggers.service').then(async (m) => {
+  const { installScriptedEventAgentFromEnv } = await import('./services/event-agent-script')
+  installScriptedEventAgentFromEnv()
+  m.startComposioTriggerReconciler()
+  stopComposioListener = await m.startComposioTriggerListener()
+}).catch((err) => console.warn('[LocalAPI] Composio trigger listener unavailable:', err?.message ?? err))
 startChatQueueWorker()
+startChannelWorkers()
+// Keep the cloud team workspaces this desktop is signed in to current.
+startCloudWorkspaceSync()
 
 const ptyBridge = createLocalPtyBridgeHandlers()
 const server = Bun.serve({
   port: API_PORT,
   fetch: async (req, bunServer) => {
+    // Live meeting transcript audio. Auth is a signed ticket in the URL.
+    if (new URL(req.url).pathname === STREAM_WS_PATH && req.headers.get('upgrade')?.toLowerCase() === 'websocket') {
+      const data = meetingStreamSocketData(new URL(req.url))
+      if (!data) return new Response('Unauthorized', { status: 401 })
+      if ((bunServer as any).upgrade(req, { data })) return undefined
+      return new Response('WebSocket upgrade failed', { status: 500 })
+    }
     const upgrade = await upgradeLocalPtySocket(req, bunServer, runtimeManager)
     if (upgrade !== null) return upgrade
     return app.fetch(req, bunServer)
   },
   websocket: {
     open(ws: any) {
-      if (isLocalPtyBridgeData(ws.data)) ptyBridge.open(ws)
+      if (isConversationSocketData(ws.data)) conversationSocketHandlers.open(ws)
+      else if (isCloudSocketRelayData(ws.data)) cloudSocketRelayHandlers.open(ws)
+      else if (isMeetingStreamSocketData(ws.data)) meetingStreamOpen(ws)
+      else if (isLocalPtyBridgeData(ws.data)) ptyBridge.open(ws)
     },
     message(ws: any, message: any) {
-      if (isLocalPtyBridgeData(ws.data)) ptyBridge.message(ws, message)
+      if (isConversationSocketData(ws.data)) void conversationSocketHandlers.message(ws, message)
+      else if (isCloudSocketRelayData(ws.data)) cloudSocketRelayHandlers.message(ws, message)
+      else if (isMeetingStreamSocketData(ws.data)) meetingStreamMessage(ws, message)
+      else if (isLocalPtyBridgeData(ws.data)) ptyBridge.message(ws, message)
     },
     close(ws: any, code?: number, reason?: string) {
-      if (isLocalPtyBridgeData(ws.data)) ptyBridge.close(ws, code, reason)
+      if (isConversationSocketData(ws.data)) conversationSocketHandlers.close(ws)
+      else if (isCloudSocketRelayData(ws.data)) cloudSocketRelayHandlers.close(ws)
+      else if (isMeetingStreamSocketData(ws.data)) meetingStreamClose(ws)
+      else if (isLocalPtyBridgeData(ws.data)) ptyBridge.close(ws, code, reason)
     },
   },
   idleTimeout: 255,
@@ -80,7 +122,10 @@ void startBackgroundTranscriptionSetup()
 async function shutdown(signal: string): Promise<void> {
   console.log(`[LocalAPI] Received ${signal}, stopping runtimes...`)
   stopAgentScheduleWorker()
+  stopEventDeliveryWorker()
+  void stopComposioListener?.()
   stopChatQueueWorker()
+  stopChannelWorkers()
   try {
     await runtimeManager.stopAll()
     stopAllPrismaStudios()

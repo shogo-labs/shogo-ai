@@ -47,9 +47,18 @@ const localEnv = {
   RATE_LIMIT_GLOBAL_MAX: "100000",
   // Keep recordings in the browser instead of a running desktop app's mic.
   SHOGO_RECORDING_BRIDGE: "off",
+  // Channel agents reply from a script file that team-chat-agents.test.ts writes.
+  SHOGO_CHANNEL_AGENT_SCRIPT: resolve(repoRoot, "test-results/team-chat-agents.script.json"),
+  // Trigger (event subscription) agents run from a script that automations-agent.test.ts writes.
+  SHOGO_EVENT_AGENT_SCRIPT: resolve(repoRoot, "test-results/event-agents.script.json"),
   BROWSER: "none",
+  // desktop-cloud-workspaces.test.ts: a cloud-mode API for the desktop to sign in to.
+  ...(process.env.E2E_CLOUD_URL ? { SHOGO_CLOUD_URL: process.env.E2E_CLOUD_URL } : {}),
   ...(process.env.CI ? { CI: "true" } : {}),
 }
+
+// Specs written for a phone viewport; the other projects skip them.
+const PHONE_SPECS = /(mobile-personal-walkthrough|team-nav-tabs-phone)\.test\.ts$/
 
 export default defineConfig({
   ...(startStack
@@ -107,12 +116,12 @@ export default defineConfig({
   projects: [
     {
       name: "chromium",
-      testIgnore: /mobile-personal-walkthrough\.test\.ts$/,
+      testIgnore: PHONE_SPECS,
       use: { ...devices["Desktop Chrome"] },
     },
     {
       name: "iphone-15-pro",
-      testMatch: /mobile-personal-walkthrough\.test\.ts$/,
+      testMatch: PHONE_SPECS,
       use: {
         ...devices["iPhone 15 Pro"],
         hasTouch: true,
@@ -121,7 +130,7 @@ export default defineConfig({
     },
     {
       name: "pixel-7",
-      testMatch: /mobile-personal-walkthrough\.test\.ts$/,
+      testMatch: PHONE_SPECS,
       use: {
         ...devices["Pixel 7"],
         hasTouch: true,

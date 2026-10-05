@@ -29,12 +29,14 @@ import { loadAllSkills, migrateFromLegacySkills, matchSkill, buildSkillsPromptSe
 import { loadQuickActions, buildQuickActionsPromptSection, type QuickAction } from './quick-actions'
 import { SkillServerManager } from './skill-server-manager'
 import { setLoadedSkills } from './gateway-tools'
+import { TEAM_CHAT_GUIDE, teamChatToolsAvailable } from './channel-tools'
+import { TRIGGERS_GUIDE, triggerToolsAvailable } from './trigger-tools'
 import { runAgentLoop, classifyRetryability, RetryWaker, type LoopDetectorConfig } from './agent-loop'
 import { LONG_RETRY_MS, recordRetryEpisode, recordRetryLong, recordRetryNoProgress, recordRetryNow } from './retry-telemetry'
 import type { ToolContext } from './gateway-tools'
 import { createTools, textResult, filterDisabledCapabilityTools, filterSubagentOnlyTools, expectedCoreToolsForAgentMode, createModeUnavailableTool, type RestrictedMode } from './gateway-tools'
-import { PermissionEngine, parseSecurityPolicy } from './permission-engine'
-import { HookEmitter, loadAllHooks } from './hooks'
+import { DEFAULT_CLOUD_SECURITY_PREFERENCE, PermissionEngine, parseSecurityPolicy } from './permission-engine'
+import { HookEmitter, loadAllHooks, workspaceHooksSignature } from './hooks'
 import { parseSlashCommand, type SlashCommandContext } from './slash-commands'
 import { SessionManager, type SessionManagerConfig, applyToolResultBudget, snipConsumedResults } from './session-manager'
 import { microcompact } from './microcompact'
@@ -88,6 +90,7 @@ import {
   workspaceProjectsManifest,
 } from './workspace-runtime-mode'
 import { initComposioSession, resetComposioSession, isComposioEnabled, isComposioInitialized } from './composio'
+import { createIntegrationCredentialWrapper } from './integration-credentials'
 import { deriveApiUrl, getInternalHeaders, postCostMetric, projectScopedId } from './internal-api'
 import { getRuntimeTrust } from './runtime-trust'
 import { refreshTrust } from './trust-resolver'
@@ -203,6 +206,15 @@ function parseAutoTierOverride(raw: string | undefined): AutoTierOverride | unde
 }
 
 const FALLBACK_SUMMARIZER_MODEL = { id: 'claude-haiku-4-5', provider: 'anthropic' }
+
+/**
+ * True when the agent loop ended because the user pressed Stop. Such a turn
+ * can legitimately have no text (e.g. stopped during a tool call) and must not
+ * get the "unable to generate a response" fallback.
+ */
+export function isUserStoppedTurn(result: { abortReason?: string }): boolean {
+  return result.abortReason === 'external'
+}
 
 /**
  * Parse the admin-injected `AGENT_SUMMARIZER_MODEL` env var (`{ id, provider }`
@@ -730,14 +742,32 @@ export class AgentGateway {
       console.log(`[AgentGateway] Auto tier override active: ${JSON.stringify(this.autoTierOverride)}`)
     }
 
-    // Initialize permission engine in local mode
+    // Initialize permission engine. Local mode enforces the full mode-based
+    // policy; cloud runtimes enforce only per-tool action rules (for example
+    // "ask before merging a pull request"), so nothing else changes for them.
     if (process.env.SHOGO_LOCAL_MODE === 'true') {
-      const pref = parseSecurityPolicy(process.env.SECURITY_POLICY)
+      // A `shogo worker` hosts cloud workspace projects on someone's machine; the people
+      // chatting are teammates in the cloud, so nothing prompts unless a rule was configured.
+      const cloudScope = process.env.SHOGO_PERMISSION_SCOPE === 'cloud'
+      const pref = parseSecurityPolicy(process.env.SECURITY_POLICY, cloudScope ? DEFAULT_CLOUD_SECURITY_PREFERENCE : undefined)
       this.permissionEngine = new PermissionEngine({
         preference: pref,
         workspaceDir,
+        noDefaultActionRules: cloudScope,
       })
       console.log(`[AgentGateway] Permission engine initialized: mode=${pref.mode}`)
+      // Enforce the user's "computer use" setting on the computer-use MCP server.
+      const engine = this.permissionEngine
+      this.mcpClientManager.setToolGuard((serverName) => {
+        const check = engine.checkMcpTool(serverName)
+        return check.allowed ? null : { reason: check.reason ?? 'Blocked', guidance: check.guidance }
+      })
+    } else {
+      this.permissionEngine = new PermissionEngine({
+        preference: parseSecurityPolicy(process.env.SECURITY_POLICY, DEFAULT_CLOUD_SECURITY_PREFERENCE),
+        workspaceDir,
+        actionsOnly: true,
+      })
     }
 
   }
@@ -1006,14 +1036,7 @@ export class AgentGateway {
     setLoadedSkills(this.skills)
     console.log(`[AgentGateway] Loaded ${this.skills.length} skills, ${this.configSkills.length} config skills, ${this.quickActions.length} quick actions`)
 
-    // Load hooks
-    try {
-      const hooks = await loadAllHooks(this.workspaceDir)
-      this.hookEmitter.register(hooks)
-      console.log(`[AgentGateway] Loaded ${hooks.length} hooks`)
-    } catch (error: any) {
-      console.error('[AgentGateway] Failed to load hooks:', error.message)
-    }
+    await this.refreshHooks(true)
 
     // Connect channels
     for (const channelConfig of this.config.channels) {
@@ -1804,6 +1827,8 @@ export class AgentGateway {
       modelProvider?: string
       fileParts?: FilePart[]
       userId?: string
+      /** API-signed proof of who sent this message (see integration-credentials.ts). */
+      requesterTicket?: string
       interactionMode?: 'agent' | 'plan' | 'ask'
       confirmedPlan?: { name: string; overview: string; plan: string; todos?: Array<{ id: string; content: string }>; filepath?: string }
       dualPlan?: boolean
@@ -1906,7 +1931,7 @@ export class AgentGateway {
     const interactionMode = options?.confirmedPlan ? 'agent' : (options?.interactionMode || 'agent')
     const dualPlan = options?.dualPlan === true
     console.log(`[Gateway][processChatMessageStream] resolved interactionMode: ${interactionMode} (options had: ${options?.interactionMode ?? '(undefined)'}), dualPlan: ${dualPlan}, sessionId: ${sessionId}, activeSkill: ${activeSkill ?? '(none)'}`)
-    const response = await this.agentTurn(prompt, sessionId, false, undefined, writer, activeSkill, images, interactionMode, dualPlan)
+    const response = await this.agentTurn(prompt, sessionId, false, undefined, writer, activeSkill, images, interactionMode, dualPlan, options?.requesterTicket)
     this.emitLog(`Chat response (stream): "${response.substring(0, 100)}"`)
 
     this.appendDailyMemory(`chat: "${text.substring(0, 100)}" -> "${response.substring(0, 100)}"`)
@@ -1944,6 +1969,8 @@ export class AgentGateway {
     runId?: string
     sessionId?: string
     callerProjectId?: string
+    /** The calling turn's person, handed off by the API for this project. */
+    requesterTicket?: string
   }): Promise<{ reply: string; sessionId: string; runId?: string }> {
     const runId = opts.runId?.trim() || undefined
     const sessionId = opts.sessionId?.trim() || (runId ? `run:${runId}` : 'pipeline')
@@ -1955,7 +1982,9 @@ export class AgentGateway {
 
     if (runId) this.activePipelineRuns.set(sessionId, runId)
     try {
-      const reply = await this.agentTurn(prompt, sessionId)
+      const reply = await this.agentTurn(
+        prompt, sessionId, false, undefined, undefined, undefined, undefined, 'agent', false, opts.requesterTicket,
+      )
       return { reply, sessionId, runId }
     } finally {
       this.activePipelineRuns.delete(sessionId)
@@ -2028,7 +2057,7 @@ export class AgentGateway {
 
   /** List the background shell processes still running for a chat thread. */
   listSessionProcesses(sessionId: string): import('./command-registry').RunningProcess[] {
-    return this.getOrCreateCommandRegistry(sessionId).listRunning()
+    return this.getOrCreateCommandRegistry(sessionId).listVisible()
   }
 
   /**
@@ -2063,6 +2092,8 @@ export class AgentGateway {
     images?: ImageContent[],
     interactionMode: 'agent' | 'plan' | 'ask' = 'agent',
     dualPlan: boolean = false,
+    /** Only chat turns a person started carry one; see integration-credentials.ts. */
+    requesterTicket?: string,
   ): Promise<string> {
     // Wait for any in-flight turn on this session to finish so the new turn
     // reads a fully-updated session history (important for "continue" after a
@@ -2075,7 +2106,7 @@ export class AgentGateway {
     }
 
     this._currentTask = isHeartbeat ? 'heartbeat' : prompt.slice(0, 120)
-    const turnPromise = this._agentTurnInner(prompt, sessionId, isHeartbeat, streamTarget, uiWriter, activeSkill, images, interactionMode, dualPlan)
+    const turnPromise = this._agentTurnInner(prompt, sessionId, isHeartbeat, streamTarget, uiWriter, activeSkill, images, interactionMode, dualPlan, requesterTicket)
     this.turnLocks.set(sessionId, turnPromise)
     try {
       return await turnPromise
@@ -2098,6 +2129,7 @@ export class AgentGateway {
     images?: ImageContent[],
     interactionMode: 'agent' | 'plan' | 'ask' = 'agent',
     dualPlan: boolean = false,
+    requesterTicket?: string,
   ): Promise<string> {
     // Reload skills and quick actions from disk so any files created/edited/deleted by file tools are picked up
     this.skills = loadAllSkills(this.workspaceDir)
@@ -2264,6 +2296,7 @@ export class AgentGateway {
       disconnectChannel: (type) => this.disconnectChannel(type),
       permissionEngine: this.permissionEngine ?? undefined,
       userId: this.currentUserId,
+      requesterTicket,
       aiProxyUrl: process.env.AI_PROXY_URL,
       aiProxyToken: process.env.AI_PROXY_TOKEN,
       uiWriter,
@@ -2553,7 +2586,14 @@ export class AgentGateway {
     const mcpMgr = this.mcpClientManager
     const promoted = this.promotedMockTools
     const staticNames = new Set(staticTools.map(t => t.name))
-    const tools = new Proxy(staticTools, {
+    // Every call runs in a credential scope: whose integration account it uses.
+    const withCredentials = createIntegrationCredentialWrapper({
+      projectId: this.projectId,
+      requesterTicket,
+      uiWriter,
+    })
+    const credentialedStatic = staticTools.map(withCredentials)
+    const tools = new Proxy(credentialedStatic, {
       get(target, prop, receiver) {
         if (prop === 'find' || prop === 'filter' || prop === 'map' ||
             prop === 'forEach' || prop === 'some' || prop === 'every' ||
@@ -2561,7 +2601,7 @@ export class AgentGateway {
             prop === 'slice' || prop === 'concat' || prop === 'includes') {
           const liveMcpTools = mcpMgr.getTools().filter(t => !staticNames.has(t.name))
           const promotedNew = promoted.filter(t => !staticNames.has(t.name))
-          const extras = [...liveMcpTools, ...promotedNew]
+          const extras = [...liveMcpTools, ...promotedNew].map(withCredentials)
           const merged = extras.length > 0 ? [...target, ...extras] : target
           if (prop === 'length') return merged.length
           if (prop === Symbol.iterator) return merged[Symbol.iterator].bind(merged)
@@ -2772,11 +2812,19 @@ export class AgentGateway {
     let unsubscribeProcesses: (() => void) | undefined
     if (uiWriter && sessionId) {
       const reg = this.getOrCreateCommandRegistry(sessionId)
+      const visibleRunIds = (processes: readonly { runId: string }[]) =>
+        processes.map((process) => process.runId).join('\0')
       // Push the current list immediately so a reconnecting client re-syncs.
+      const initialProcesses = reg.listVisible()
+      let lastVisibleRunIds = visibleRunIds(initialProcesses)
       try {
-        uiWriter.write({ type: 'data-process-update', data: { processes: reg.listRunning() }, transient: true } as any)
+        uiWriter.write({ type: 'data-process-update', data: { processes: initialProcesses }, transient: true } as any)
       } catch { /* writer may already be closed */ }
-      unsubscribeProcesses = reg.onChange((processes) => {
+      unsubscribeProcesses = reg.onChange(() => {
+        const processes = reg.listVisible()
+        const nextVisibleRunIds = visibleRunIds(processes)
+        if (nextVisibleRunIds === lastVisibleRunIds) return
+        lastVisibleRunIds = nextVisibleRunIds
         try {
           uiWriter.write({ type: 'data-process-update', data: { processes }, transient: true } as any)
         } catch { /* writer closed — onChange teardown happens in finally */ }
@@ -3760,7 +3808,7 @@ export class AgentGateway {
             // logs above. See describeTurnFailure.
             uiWriter.write({ type: 'error', errorText: describeTurnFailure(msg) } as any)
           }
-        } else if (result.outputTokens === 0 && result.toolCalls.length === 0 && !isHeartbeat) {
+        } else if (result.outputTokens === 0 && result.toolCalls.length === 0 && !isHeartbeat && !isUserStoppedTurn(result)) {
           console.error(
             `${this.logPrefix} Agent returned 0 tokens for session ${sessionId} — possible context corruption (${session.compactionCount} compactions, ${session.messages.length} messages, model: ${modelId}, provider: ${provider})`
           )
@@ -3778,6 +3826,9 @@ export class AgentGateway {
 
       if (result.text) return result.text
       if (isHeartbeat) return 'HEARTBEAT_OK'
+      // The user pressed Stop before any text was produced. That is not a
+      // model failure, so don't tell them the model failed to respond.
+      if (isUserStoppedTurn(result)) return ''
       console.warn(`${this.logPrefix} Empty model response for session ${sessionId} (${result.iterations} iterations, ${result.toolCalls.length} tool calls, ${result.outputTokens} output tokens)`)
       const emptyFallback = 'Sorry, I was unable to generate a response. Please try again.'
       // Stream the fallback so clients (and eval bridges) never receive a
@@ -3829,7 +3880,7 @@ export class AgentGateway {
       '### Shell Navigation',
       'Shell state is persistent — `cd` in one exec call carries over to the next.',
     ]
-    if (this.permissionEngine) {
+    if (this.permissionEngine && !this.permissionEngine.isActionsOnly) {
       switch (this.permissionEngine.mode) {
         case 'strict':
           lines.push('You may only run commands within the workspace directory. Do not navigate outside it.')
@@ -4135,8 +4186,16 @@ export class AgentGateway {
       pushStable('quick-action-guide', QUICK_ACTION_GUIDE)
     }
 
+    if (teamChatToolsAvailable(this.config.capabilityProfile)) {
+      pushStable('team-chat-guide', TEAM_CHAT_GUIDE)
+    }
+
+    if (triggerToolsAvailable()) {
+      pushStable('triggers-guide', TRIGGERS_GUIDE)
+    }
+
     // 4. Security permissions guide (stable once mode is set)
-    if (this.permissionEngine) {
+    if (this.permissionEngine && !this.permissionEngine.isActionsOnly) {
       pushStable('security-permissions', [
         '## Security Permissions',
         '',
@@ -5372,6 +5431,22 @@ export class AgentGateway {
 
   getHookEmitter(): HookEmitter {
     return this.hookEmitter
+  }
+
+  private hooksSignature: string | null = null
+
+  /** (Re)load hooks when `hooks/` changed since the last load, e.g. the agent just wrote one. */
+  async refreshHooks(force = false): Promise<void> {
+    const signature = workspaceHooksSignature(this.workspaceDir)
+    if (!force && signature === this.hooksSignature) return
+    try {
+      const hooks = await loadAllHooks(this.workspaceDir)
+      this.hookEmitter.register(hooks)
+      this.hooksSignature = signature
+      console.log(`[AgentGateway] Loaded ${hooks.length} hooks`)
+    } catch (error: any) {
+      console.error('[AgentGateway] Failed to load hooks:', error.message)
+    }
   }
 
   getSessionManager(): SessionManager {

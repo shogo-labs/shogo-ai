@@ -1267,6 +1267,7 @@ function inferStackFromWorkspaceFiles(dir: string): string | null {
   const threeish =
     has('three') || has('@react-three/fiber') || has('expo-gl') || has('expo-three')
   if (expoish) return threeish ? 'expo-three' : 'expo-app'
+  if (has('astro') || has('@11ty/eleventy') || existsSync(join(dir, 'shogo.preview.json'))) return 'custom'
   return null
 }
 
@@ -1322,6 +1323,25 @@ export function applyEnvTechStackMarker(dir: string): boolean {
     )
     return false
   }
+}
+
+/**
+ * Re-resolve the stack from the workspace's files and write it to
+ * `.tech-stack` when it differs — after a repository replaces a starter, the
+ * starter's marker no longer describes the project.
+ */
+export function refreshTechStackMarker(dir: string): { techStackId: string; changed: boolean } {
+  const fromEnv = (process.env.TECH_STACK_ID || '').trim()
+  const inferred = fromEnv && VITE_STACK_IDS.has(fromEnv) ? inferStackFromWorkspaceFiles(dir) : null
+  const techStackId = inferred || resolveWorkspaceTechStackId(dir)
+  if (readTechStackMarker(dir) === techStackId) return { techStackId, changed: false }
+  try {
+    writeFileSync(join(dir, '.tech-stack'), techStackId, 'utf-8')
+  } catch (err: any) {
+    console.warn(`[workspace-defaults] Failed to write .tech-stack (${err?.message ?? err})`)
+    return { techStackId, changed: false }
+  }
+  return { techStackId, changed: true }
 }
 
 // ---------------------------------------------------------------------------

@@ -13,6 +13,9 @@
 
 import { AgentClient, type FileNode, type WorkspaceEvent } from '@shogo-ai/sdk/agent'
 import { isBinaryFilePath } from '@shogo-ai/sdk/file-types'
+import { sortTree } from './tree-sort'
+import { buildPathFilter } from './glob'
+import { LANG_BY_EXT, extOf, languageFor } from './language'
 import type {
   SearchOptions,
   SearchResponse,
@@ -22,55 +25,29 @@ import type {
   WsNode,
 } from './types'
 
-const LANG_BY_EXT: Record<string, string> = {
-  '.ts': 'typescript', '.tsx': 'typescript', '.js': 'javascript', '.jsx': 'javascript',
-  '.mjs': 'javascript', '.cjs': 'javascript',
-  '.json': 'json', '.jsonc': 'json',
-  '.md': 'markdown', '.mdx': 'markdown',
-  '.css': 'css', '.scss': 'scss', '.less': 'less', '.html': 'html', '.htm': 'html',
-  '.xml': 'xml', '.svg': 'xml',
-  '.yml': 'yaml', '.yaml': 'yaml', '.toml': 'toml', '.ini': 'ini',
-  '.sh': 'shell', '.bash': 'shell', '.zsh': 'shell',
-  '.py': 'python', '.rb': 'ruby', '.go': 'go', '.rs': 'rust',
-  '.java': 'java', '.kt': 'kotlin', '.swift': 'swift',
-  '.c': 'c', '.h': 'c', '.cpp': 'cpp', '.cc': 'cpp', '.hpp': 'cpp',
-  '.cs': 'csharp', '.php': 'php', '.sql': 'sql',
-  '.graphql': 'graphql', '.gql': 'graphql',
-  '.prisma': 'prisma', '.env': 'plaintext',
-  '.dockerfile': 'dockerfile',
-  '.lock': 'yaml',
-}
-
 const TEXT_EXTS = new Set(
   Object.keys(LANG_BY_EXT).concat(['.txt', '.log', '.gitignore', '.editorconfig']),
 )
 
-function extOf(p: string): string {
-  const base = p.split('/').pop() ?? p
-  const dot = base.lastIndexOf('.')
-  return dot >= 0 ? base.slice(dot).toLowerCase() : ''
-}
-function languageFor(path: string): string {
-  const ext = extOf(path)
-  if (ext) return LANG_BY_EXT[ext] ?? 'plaintext'
-  const name = path.split('/').pop() ?? ''
-  if (/^dockerfile/i.test(name)) return 'dockerfile'
-  if (/^makefile/i.test(name)) return 'makefile'
-  return 'plaintext'
-}
 function isTextLikely(path: string): boolean {
   if (isBinaryFilePath(path)) return false
   const ext = extOf(path)
   if (TEXT_EXTS.has(ext)) return true
   const name = (path.split('/').pop() ?? '').toLowerCase()
-  return /^(dockerfile|makefile|readme|license|changelog)/i.test(name)
+  return /^(dockerfile|makefile|readme|license|changelog)/i.test(name) || /^\.env(\.|$)/.test(name)
 }
 
 function toWsNode(fn: FileNode): WsNode {
   if (fn.type !== 'directory') {
-    return { name: fn.name, path: fn.path, kind: 'file', language: languageFor(fn.path) }
+    return {
+      name: fn.name,
+      path: fn.path,
+      kind: 'file',
+      language: languageFor(fn.path),
+      ...(fn.ignored ? { ignored: true } : {}),
+    }
   }
-  const dir: WsNode = { name: fn.name, path: fn.path, kind: 'dir' }
+  const dir: WsNode = { name: fn.name, path: fn.path, kind: 'dir', ...(fn.ignored ? { ignored: true } : {}) }
   // Heavy dirs come back as `lazy: true` with no children — the IDE will
   // fetch them on expand via `sdkFs.listTree(path)`. Don't set `children`
   // here so the tree UI can distinguish "lazy, not yet loaded" from
@@ -109,6 +86,9 @@ async function retry429<T>(fn: () => Promise<T>, attempts = 4): Promise<T> {
   throw lastErr ?? new Error('retry429: exhausted')
 }
 
+/** Beyond this Monaco becomes unusable and can freeze the tab. */
+const MAX_EDITABLE_CHARS = 8_000_000
+
 export class SdkFs implements WorkspaceService {
   readonly id = 'agent'
   readonly label: string
@@ -144,7 +124,8 @@ export class SdkFs implements WorkspaceService {
    */
   async listTree(path?: string): Promise<WsNode[]> {
     const tree = await retry429(() => this.client.getWorkspaceTree(path))
-    return tree.map(toWsNode)
+    // The runtime sorts, but an older runtime returns raw readdir order.
+    return sortTree(tree.map(toWsNode))
   }
 
   async readFile(path: string): Promise<WsFile> {
@@ -156,6 +137,11 @@ export class SdkFs implements WorkspaceService {
     const p = (async () => {
       try {
         const content = await retry429(() => this.client.readFile(path))
+        if (content.length > MAX_EDITABLE_CHARS) {
+          throw new Error(
+            `File is too large to open in the editor (${(content.length / 1048576).toFixed(1)} MB). Use the terminal to inspect it.`,
+          )
+        }
         return {
           path,
           name: path.split('/').pop() ?? path,
@@ -191,19 +177,31 @@ export class SdkFs implements WorkspaceService {
     return { mtime: Date.now(), size: new Blob([content]).size }
   }
 
+  async writeFileBytes(path: string, bytes: Uint8Array): Promise<void> {
+    await retry429(() => this.client.writeFileBytes(path, bytes))
+  }
+
   async mkdir(path: string): Promise<void> {
     await this.client.mkdirWorkspace(path)
   }
 
+  /** Removes a file or (recursively) a folder. */
   async remove(path: string): Promise<void> {
-    await this.client.deleteFile(path)
+    await this.client.deleteFile(path, { recursive: true })
   }
 
-  /** Rename by copy + delete — the agent runtime has no native rename yet. */
+  async listFiles(): Promise<string[]> {
+    const res = await this.client.listWorkspaceFiles()
+    return res.files
+  }
+
+  /** Native rename/move — works for folders, binaries, and case-only renames. */
+  async copy(from: string, to: string): Promise<void> {
+    await this.client.copyWorkspacePath(from, to)
+  }
+
   async rename(from: string, to: string): Promise<void> {
-    const content = await this.client.readFile(from)
-    await this.client.writeFile(to, content)
-    await this.client.deleteFile(from)
+    await this.client.renameWorkspacePath(from, to)
   }
 
   /**
@@ -213,6 +211,31 @@ export class SdkFs implements WorkspaceService {
    */
   async search(query: string, opts: SearchOptions = {}): Promise<SearchResponse> {
     if (!query) return { results: [], truncated: false }
+    // Prefer the server-side engine (ripgrep): no per-file HTTP round-trips,
+    // no 600-file cap. Older runtimes answer 404/405 → use the client walker.
+    try {
+      const res = await this.client.grepWorkspace({
+        query,
+        regex: opts.regex,
+        caseSensitive: opts.caseSensitive,
+        include: opts.include,
+        exclude: opts.exclude,
+        limit: opts.limit ?? 500,
+      })
+      return {
+        results: res.results.map((r) => ({ path: r.path, language: languageFor(r.path), matches: r.matches })),
+        truncated: res.truncated,
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      if (/Agent API 400/.test(msg) && /regex/i.test(msg)) throw new Error('Invalid regex')
+      if (!/Agent API (404|405|501)/.test(msg)) throw err
+    }
+    return this.searchClientSide(query, opts)
+  }
+
+  private async searchClientSide(query: string, opts: SearchOptions): Promise<SearchResponse> {
+    const pathFilter = buildPathFilter(opts.include, opts.exclude)
     const limit = opts.limit ?? 200
     const MAX_FILES = 600
     const MAX_PER_FILE = 20
@@ -234,6 +257,7 @@ export class SdkFs implements WorkspaceService {
     const walk = (nodes: FileNode[]) => {
       for (const n of nodes) {
         if (candidates.length >= MAX_FILES) return
+        if (n.ignored) continue
         if (n.type === 'directory') {
           // Skip lazy-loaded heavy dirs (node_modules/dist/etc.) — searching
           // them would require an N-RPC explosion to fetch every subtree, and
@@ -241,7 +265,7 @@ export class SdkFs implements WorkspaceService {
           // set from full-text search by default.
           if (n.lazy) continue
           walk(n.children ?? [])
-        } else if (isTextLikely(n.path)) candidates.push(n.path)
+        } else if (isTextLikely(n.path) && (!pathFilter || pathFilter(n.path))) candidates.push(n.path)
       }
     }
     walk(tree)

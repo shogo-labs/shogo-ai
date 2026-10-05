@@ -14,20 +14,43 @@
  *   3. The folder project starts restricted and "Trust folder" flips it.
  *   4. Its runtime spawns from the bundled toolchain under the app's launch
  *      PATH (Finder's /usr/bin:/bin:/usr/sbin:/sbin, not a dev shell's).
- *   5. A terminal session spawns where the project folder is reachable.
+ *   5. A terminal session spawns where the project folder is reachable, and
+ *      a command typed over its WebSocket echoes back (a real PTY, which on
+ *      Windows needs the bundled Bun to be >= 1.4 for ConPTY).
  *
- * Usage: bun scripts/ci/desktop-packaged-smoke.ts --log <main.log> [--folder <dir>]
+ * Usage: bun scripts/ci/desktop-packaged-smoke.ts --log <main.log> [--folder <dir>] [--bundled-bun <path>]
  *   The API port is read from the app's "[Desktop] Ports: API=<port>" line.
  *   `--base http://localhost:8002` targets a local-mode dev API instead.
+ *   `--bundled-bun` checks the app's shipped Bun meets MIN_BUNDLED_BUN.
  */
 
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'
+import {
+  ServerFrameType,
+  decodeServerFrame,
+  encodeClientData,
+} from '../../packages/pty-core/src/pty-protocol'
+
+/** Bun.spawn({ terminal }) has a Windows (ConPTY) backend only from 1.4.0. */
+export const MIN_BUNDLED_BUN = '1.4.0'
 
 export function apiPortFromLog(log: string): number | null {
   const m = [...log.matchAll(/\[Desktop\] Ports: API=(\d+)/g)].at(-1)
   return m ? Number(m[1]) : null
+}
+
+/** True when dotted version `actual` (e.g. "1.4.2", "1.4.0-canary.1") >= `min`. */
+export function versionAtLeast(actual: string, min: string): boolean {
+  const parse = (v: string) => v.trim().replace(/^v/, '').split(/[-+]/)[0].split('.').map((n) => Number(n) || 0)
+  const a = parse(actual)
+  const b = parse(min)
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    const d = (a[i] ?? 0) - (b[i] ?? 0)
+    if (d !== 0) return d > 0
+  }
+  return true
 }
 
 function arg(name: string): string | undefined {
@@ -36,7 +59,7 @@ function arg(name: string): string | undefined {
 }
 
 class Session {
-  private cookie = ''
+  cookie = ''
   constructor(readonly base: string) {}
 
   async call(method: string, path: string, body?: unknown): Promise<{ status: number; json: any }> {
@@ -68,7 +91,60 @@ function check(ok: unknown, step: string, detail: unknown): void {
   process.exit(1)
 }
 
+/**
+ * Type a command into the session's WebSocket and resolve with everything
+ * the PTY sent back once `marker` has appeared twice (the echoed command
+ * line, then its output), or reject after `timeoutMs`.
+ */
+function terminalEcho(s: Session, path: string, marker: string, timeoutMs: number): Promise<string> {
+  const url = s.base.replace(/^http/, 'ws') + path
+  // Bun's WebSocket client accepts headers; the API authenticates by cookie.
+  const ws = new WebSocket(url, { headers: { cookie: s.cookie, origin: s.base } } as any)
+  ws.binaryType = 'arraybuffer'
+  let out = ''
+  return new Promise<string>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      ws.close()
+      reject(new Error(`no "${marker}" echo within ${timeoutMs}ms; received ${JSON.stringify(out.slice(-400))}`))
+    }, timeoutMs)
+    ws.addEventListener('open', () => {
+      // ConPTY treats CR as Enter; a POSIX line discipline maps it to LF.
+      const enter = process.platform === 'win32' ? '\r' : '\n'
+      ws.send(encodeClientData(new TextEncoder().encode(`echo ${marker}${enter}`)))
+    })
+    ws.addEventListener('message', (ev) => {
+      const frame = decodeServerFrame(new Uint8Array(ev.data as ArrayBuffer))
+      if (frame?.type !== ServerFrameType.DATA) return
+      out += new TextDecoder().decode(frame.bytes)
+      if (out.split(marker).length - 1 >= 2) {
+        clearTimeout(timer)
+        ws.close()
+        resolve(out)
+      }
+    })
+    ws.addEventListener('error', () => {
+      clearTimeout(timer)
+      reject(new Error(`WebSocket error on ${url}`))
+    })
+    ws.addEventListener('close', (ev) => {
+      clearTimeout(timer)
+      reject(new Error(`WebSocket closed (${ev.code} ${ev.reason}) before "${marker}" echoed; received ${JSON.stringify(out.slice(-400))}`))
+    })
+  })
+}
+
 async function main(): Promise<void> {
+  const bundledBun = arg('--bundled-bun')
+  if (bundledBun) {
+    const proc = Bun.spawnSync([bundledBun, '--version'])
+    const version = proc.stdout.toString().trim()
+    check(
+      proc.exitCode === 0 && versionAtLeast(version, MIN_BUNDLED_BUN),
+      `bundled Bun is >= ${MIN_BUNDLED_BUN} (terminal PTY support)`,
+      { path: bundledBun, exitCode: proc.exitCode, version, stderr: proc.stderr.toString().trim() },
+    )
+  }
+
   let base = arg('--base')
   if (!base) {
     const logPath = arg('--log')
@@ -117,6 +193,13 @@ async function main(): Promise<void> {
   const cwd = term.json.cwd ?? ''
   const reachesFolder = real(cwd) === real(folder) || real(join(cwd, project.id)) === real(folder)
   check(reachesFolder, 'terminal opens where the project folder is reachable', { cwd, folder })
+
+  const wsPath = `/api/projects/${project.id}/terminal/sessions/${term.json.id}/ws`
+  const echoed = await terminalEcho(s, wsPath, 'shogo-smoke-echo', 30_000).then(
+    () => true,
+    (err: Error) => err.message,
+  )
+  check(echoed === true, 'a command typed over the terminal WebSocket echoes back', echoed)
   await s.call('DELETE', `/api/projects/${project.id}/terminal/sessions/${term.json.id}`)
 
   console.log('Desktop packaged smoke PASSED')

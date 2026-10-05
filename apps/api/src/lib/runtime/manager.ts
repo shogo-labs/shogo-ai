@@ -1627,7 +1627,6 @@ export class ShogoErrorBoundary extends Component<Props, State> {
       const { prisma } = await import('../prisma')
       const localDb = prisma as any
 
-      const TIER_RANK: Record<string, number> = { strict: 0, balanced: 1, full_autonomy: 2 }
       const DEFAULT_PREF = { mode: 'full_autonomy', approvalTimeoutSeconds: 60 }
 
       // Read user-level preference
@@ -1652,31 +1651,26 @@ export class ShogoErrorBoundary extends Component<Props, State> {
         }
       } catch { /* no override */ }
 
-      // Merge with escalation protection
-      let effective = userPref
-      if (projectOverride?.mode) {
-        const projRank = TIER_RANK[projectOverride.mode] ?? 1
-        const userRank = TIER_RANK[userPref.mode] ?? 1
-        const effectiveMode = projRank <= userRank ? projectOverride.mode : userPref.mode
-        effective = { ...userPref, mode: effectiveMode }
+      // Merge with escalation protection; per-tool action rules always combine.
+      const { composeLocalPolicy, encodePolicy } = await import('../security-policy')
+      let effective = composeLocalPolicy(userPref, projectOverride)
 
-        if (projectOverride.overrides) {
-          const userDeny = (userPref as any).overrides?.shellCommands?.deny ?? []
-          const projDeny = projectOverride.overrides?.shellCommands?.deny ?? []
+      // Desktop local-access policy (per-app data access, blocked folders,
+      // computer use). Not overridable per project.
+      try {
+        const accessRow = await localDb.localConfig.findUnique({ where: { key: 'LOCAL_ACCESS_PREFS' } })
+        if (accessRow?.value) {
+          const { normalizeLocalAccessPrefs, toLocalAccessPolicy } = await import(
+            '@shogo/agent-runtime/src/local-access'
+          )
           effective = {
             ...effective,
-            overrides: {
-              ...(userPref as any).overrides,
-              shellCommands: {
-                ...(userPref as any).overrides?.shellCommands,
-                deny: [...new Set([...userDeny, ...projDeny])],
-              },
-            },
+            localAccess: toLocalAccessPolicy(normalizeLocalAccessPrefs(JSON.parse(accessRow.value))),
           } as any
         }
-      }
+      } catch { /* unconfigured: no local-access restrictions */ }
 
-      return Buffer.from(JSON.stringify(effective)).toString('base64')
+      return encodePolicy(effective)
     } catch (err) {
       console.warn('[RuntimeManager] buildSecurityPolicy error:', err)
       return null
@@ -2109,7 +2103,10 @@ export class ShogoErrorBoundary extends Component<Props, State> {
   private askpassBroker(remoteHostId: string): SSHAskpassBroker {
     const existing = this.remoteAskpassBrokers.get(remoteHostId)
     if (existing) return existing
-    const broker = new SSHAskpassBroker()
+    // Windows has no ControlMaster, so every ssh process authenticates on
+    // its own; remember password/passphrase answers for this host's session
+    // instead of re-prompting for each command.
+    const broker = new SSHAskpassBroker({ cacheSecrets: process.platform === 'win32' })
     this.remoteAskpassBrokers.set(remoteHostId, broker)
     return broker
   }
@@ -2638,7 +2635,7 @@ export class ShogoErrorBoundary extends Component<Props, State> {
         // Seed the real project dir (template + deps). Idempotent — the
         // install is sentinel-gated, so repeat starts are cheap.
         try {
-          realProjectDir = await this.ensureProjectDirectory(projectId)
+          realProjectDir = await this.ensureProjectDirectory(projectId, info.techStackId)
         } catch (err: any) {
           console.warn(
             `[RuntimeManager] buildWorkspaceMergedRoot: failed to seed member project ${projectId}: ${err?.message ?? err}`,
@@ -4064,6 +4061,36 @@ export class ShogoErrorBoundary extends Component<Props, State> {
       runtime.lastHealthCheck = healthStatus
       return healthStatus
     }
+  }
+
+  /**
+   * Push a new local-access policy to every running agent runtime so changes
+   * made in Settings apply without restarting projects. Best effort: runtimes
+   * that are down pick the policy up from `SECURITY_POLICY` on next spawn.
+   */
+  async pushLocalAccessPolicy(policy: unknown): Promise<number> {
+    const { deriveProjectRuntimeToken } = await import('../project-runtime-token')
+    let pushed = 0
+    await Promise.all(
+      Array.from(this.runtimes.values()).map(async (runtime) => {
+        if (runtime.status !== 'running' || !runtime.agentPort || runtime.remoteRuntime) return
+        try {
+          const res = await fetch(`http://127.0.0.1:${runtime.agentPort}/agent/local-access`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'x-runtime-token': await deriveProjectRuntimeToken(runtime.id),
+            },
+            body: JSON.stringify(policy ?? {}),
+            signal: AbortSignal.timeout(3_000),
+          })
+          if (res.ok) pushed++
+        } catch (err: any) {
+          console.warn(`[RuntimeManager] Failed to push local access to ${runtime.id}: ${err?.message ?? err}`)
+        }
+      }),
+    )
+    return pushed
   }
 
   async stopAll(): Promise<void> {

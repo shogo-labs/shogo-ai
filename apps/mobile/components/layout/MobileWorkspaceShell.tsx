@@ -45,7 +45,6 @@ import {
   Trash2,
 } from "lucide-react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { cn } from "@shogo/shared-ui/primitives";
 import {
   useChatSessionCollection,
   useDomainActions,
@@ -80,10 +79,7 @@ import {
   useNativePhoneIconChrome,
 } from "../../lib/native-phone-layout";
 import { WorkspaceSidebarSection } from "./WorkspaceSidebarSection";
-import {
-  LiquidGlassBackdrop,
-  supportsLiquidGlass,
-} from "../ui/LiquidGlassBackdrop";
+import { LiquidGlassBackdrop } from "../ui/LiquidGlassBackdrop";
 import { MobileWorkspaceChromeProvider } from "./MobileWorkspaceChromeContext";
 import { ShogoLogoMark } from "../branding/ShogoLogoMark";
 import {
@@ -117,7 +113,6 @@ export function MobileWorkspaceShell({ children }: MobileWorkspaceShellProps) {
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
   const icon = useNativePhoneIconChrome();
-  const liquidGlass = supportsLiquidGlass();
   const http = useDomainHttp();
   const actions = useDomainActions();
   const chatSessions = useChatSessionCollection();
@@ -653,27 +648,25 @@ export function MobileWorkspaceShell({ children }: MobileWorkspaceShellProps) {
                 onPress={() =>
                   sessionsOpen ? closeSessions() : openSessions()
                 }
-                className={cn(
-                  "h-11 w-11 items-center justify-center overflow-hidden rounded-full active:bg-muted",
-                  liquidGlass ? "bg-transparent" : "bg-card/70"
-                )}
+                className="h-11 w-11 items-center justify-center overflow-hidden rounded-full bg-transparent active:bg-muted"
               >
                 <LiquidGlassBackdrop style={{ borderRadius: 999 }} />
-                <Menu
-                  size={20}
-                  color={icon.color}
-                  strokeWidth={icon.strokeWidth}
-                />
+                <View>
+                  <Menu
+                    size={20}
+                    color={icon.color}
+                    strokeWidth={icon.strokeWidth}
+                  />
+                </View>
               </Pressable>
             </View>
             <View
-              className={cn(
-                "absolute right-3 z-20 h-11 w-11 items-center justify-center overflow-hidden rounded-full",
-                liquidGlass ? "bg-transparent" : "bg-card/70"
-              )}
+              className="absolute right-3 z-20 h-11 w-11 items-center justify-center rounded-full bg-transparent"
               style={{ top: insets.top + 10 }}
             >
-              <LiquidGlassBackdrop style={{ borderRadius: 999 }} />
+              <View pointerEvents="none" className="absolute inset-0 overflow-hidden rounded-full">
+                <LiquidGlassBackdrop style={{ borderRadius: 999 }} />
+              </View>
               <NotificationBell size={NATIVE_PHONE_HEADER_ICON_SIZE} />
             </View>
           </>

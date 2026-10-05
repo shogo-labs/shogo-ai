@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * Redesigned model picker menu (shared by ChatInput and CompactChatInput).
+ * Redesigned model picker menu (used by ChatInput).
  *
  * Layout matches the product spec: a single flat, admin-ordered list with the
  * "Auto" option pinned on top. Each row shows the model name and its reasoning

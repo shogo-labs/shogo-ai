@@ -1,7 +1,8 @@
+import { loadSearchHistory, pushSearchHistory, saveSearchHistory } from "./search-history";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Search, X, CaseSensitive, Regex, Loader2, ChevronRight, ChevronDown,
-  Replace, ArrowRight, AlertTriangle,
+  Replace, ArrowRight, AlertTriangle, Ellipsis, ChevronsDownUp,
 } from "lucide-react-native";
 import type { Root } from "./types";
 import type { SearchFileResult, WorkspaceService } from "./workspace/types";
@@ -15,12 +16,30 @@ interface RootResult {
   error?: string;
 }
 
+/** Search-box state that survives the pane unmounting (switching activities). */
+export interface SearchPersist {
+  query: string;
+  include: string;
+  exclude: string;
+  caseSensitive: boolean;
+  useRegex: boolean;
+}
+
+/** One-shot request to (re)seed the pane: ⌘⇧F with a selection, Find in Folder. */
+export interface SearchSeed {
+  query?: string;
+  include?: string;
+  nonce: number;
+}
+
 export function SearchPane({
   roots,
   services,
   onReveal,
   onReplaced,
-  initialQuery,
+  seed,
+  persisted,
+  onPersist,
 }: {
   roots: Root[];
   services: Record<string, WorkspaceService>;
@@ -28,13 +47,19 @@ export function SearchPane({
   onReveal: (rootId: string, path: string, line: number, col: number) => void;
   /** Optional toast hook fired after replacements complete. */
   onReplaced?: (matchCount: number, fileCount: number) => void;
-  initialQuery?: string;
+  seed?: SearchSeed;
+  persisted?: SearchPersist;
+  onPersist?: (state: SearchPersist) => void;
 }) {
-  const [query, setQuery] = useState(initialQuery ?? "");
+  const [query, setQuery] = useState(persisted?.query ?? "");
+  const historyIdxRef = useRef(-1);
   const [replacement, setReplacement] = useState("");
   const [showReplace, setShowReplace] = useState(false);
-  const [caseSensitive, setCaseSensitive] = useState(false);
-  const [useRegex, setUseRegex] = useState(false);
+  const [caseSensitive, setCaseSensitive] = useState(persisted?.caseSensitive ?? false);
+  const [useRegex, setUseRegex] = useState(persisted?.useRegex ?? false);
+  const [include, setInclude] = useState(persisted?.include ?? "");
+  const [exclude, setExclude] = useState(persisted?.exclude ?? "");
+  const [showFilters, setShowFilters] = useState(!!(persisted?.include || persisted?.exclude));
   const [running, setRunning] = useState(false);
   const [replacing, setReplacing] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -46,6 +71,24 @@ export function SearchPane({
   useEffect(() => {
     inputRef.current?.focus();
   }, []);
+
+  // Seed from ⌘⇧F (selection) / Find in Folder, including while already open.
+  const lastSeed = useRef<number | null>(null);
+  useEffect(() => {
+    if (!seed || lastSeed.current === seed.nonce) return;
+    lastSeed.current = seed.nonce;
+    if (seed.query !== undefined) setQuery(seed.query);
+    if (seed.include !== undefined) {
+      setInclude(seed.include);
+      if (seed.include) setShowFilters(true);
+    }
+    inputRef.current?.focus();
+    inputRef.current?.select();
+  }, [seed]);
+
+  useEffect(() => {
+    onPersist?.({ query, include, exclude, caseSensitive, useRegex });
+  }, [query, include, exclude, caseSensitive, useRegex, onPersist]);
 
   const runSearch = useCallback(async () => {
     const q = query.trim();
@@ -61,7 +104,7 @@ export function SearchPane({
       const svc = services[r.id];
       if (!svc) continue;
       try {
-        const res = await svc.search(q, { caseSensitive, regex: useRegex, limit: 200 });
+        const res = await svc.search(q, { caseSensitive, regex: useRegex, limit: 500, include, exclude });
         if (reqIdRef.current !== myReq) return;
         out.push({ rootId: r.id, rootLabel: r.label, ...res });
       } catch (err) {
@@ -77,7 +120,7 @@ export function SearchPane({
     if (reqIdRef.current !== myReq) return;
     setRootResults(out);
     setRunning(false);
-  }, [query, roots, services, caseSensitive, useRegex]);
+  }, [query, roots, services, caseSensitive, useRegex, include, exclude]);
 
   // Debounce 250ms
   useEffect(() => {
@@ -268,6 +311,10 @@ export function SearchPane({
     }
   };
 
+  const allCollapsed =
+    totalFiles > 0 &&
+    rootResults.every((rr) => rr.results.every((f) => collapsed[`${rr.rootId}::${f.path}`]));
+
   const canReplace = query.length > 0 && totalMatches > 0 && !replacing && !regexError;
 
   return (
@@ -294,8 +341,27 @@ export function SearchPane({
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
                 onKeyDown={(e) => {
-                  if (e.key === "Enter") void runSearch();
+                  if (e.key === "Enter") {
+                    void runSearch();
+                    if (query.trim()) saveSearchHistory(pushSearchHistory(loadSearchHistory(), query.trim()));
+                    historyIdxRef.current = -1;
+                  }
                   if (e.key === "Escape") setQuery("");
+                  // ↑/↓ recall earlier queries (when empty, or already browsing history).
+                  if ((e.key === "ArrowUp" || e.key === "ArrowDown") && (!query || historyIdxRef.current >= 0)) {
+                    const hist = loadSearchHistory();
+                    if (hist.length === 0) return;
+                    e.preventDefault();
+                    const delta = e.key === "ArrowUp" ? 1 : -1;
+                    const next = Math.min(hist.length - 1, historyIdxRef.current + delta);
+                    if (next < 0) {
+                      historyIdxRef.current = -1;
+                      setQuery("");
+                    } else {
+                      historyIdxRef.current = next;
+                      setQuery(hist[next]);
+                    }
+                  }
                 }}
                 placeholder="Search across all workspaces"
                 className="no-focus-ring min-w-0 flex-1 bg-transparent pl-1 pr-2 py-1.5 text-[12px] text-[color:var(--ide-text-strong)] placeholder:text-[color:var(--ide-muted-strong)] outline-none"
@@ -344,6 +410,13 @@ export function SearchPane({
           </div>
         </div>
 
+        {(showFilters || !!include || !!exclude) && (
+          <div className="mt-1.5 space-y-1 pl-5">
+            <FilterInput label="files to include" value={include} onChange={setInclude} placeholder="e.g. *.ts, src/**/include" />
+            <FilterInput label="files to exclude" value={exclude} onChange={setExclude} placeholder="e.g. *.test.ts, dist" />
+          </div>
+        )}
+
         <div className="mt-1.5 flex items-center gap-1 pl-5">
           <ToggleBtn on={caseSensitive} onClick={() => setCaseSensitive((v) => !v)} title="Match Case">
             <CaseSensitive size={12} />
@@ -351,6 +424,29 @@ export function SearchPane({
           <ToggleBtn on={useRegex} onClick={() => setUseRegex((v) => !v)} title="Use Regular Expression">
             <Regex size={12} />
           </ToggleBtn>
+          <ToggleBtn
+            on={showFilters || !!include || !!exclude}
+            onClick={() => setShowFilters((v) => !v)}
+            title="Toggle Search Details (files to include / exclude)"
+          >
+            <Ellipsis size={12} />
+          </ToggleBtn>
+          <button
+            onClick={() =>
+              setCollapsed(
+                allCollapsed
+                  ? {}
+                  : Object.fromEntries(
+                      rootResults.flatMap((rr) => rr.results.map((f) => [`${rr.rootId}::${f.path}`, true])),
+                    ),
+              )
+            }
+            disabled={totalFiles === 0}
+            title={allCollapsed ? "Expand All" : "Collapse All"}
+            className="rounded border border-[color:var(--ide-border-strong)] px-1.5 py-0.5 text-[color:var(--ide-muted)] enabled:hover:bg-[color:var(--ide-hover)] enabled:hover:text-[color:var(--ide-text-strong)] disabled:opacity-40"
+          >
+            <ChevronsDownUp size={12} />
+          </button>
           <div className="ml-auto flex items-center gap-2 text-[10px] text-[color:var(--ide-muted)]">
             {running && <Loader2 size={11} className="animate-spin" />}
             {query && !running && (
@@ -529,5 +625,34 @@ function ToggleBtn({
     >
       {children}
     </button>
+  );
+}
+
+function FilterInput({
+  label,
+  value,
+  onChange,
+  placeholder,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  placeholder: string;
+}) {
+  return (
+    <div>
+      <div className="mb-0.5 text-[10px] text-[color:var(--ide-muted)]">{label}</div>
+      <input
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Escape") onChange("");
+        }}
+        placeholder={placeholder}
+        spellCheck={false}
+        aria-label={label}
+        className="no-focus-ring w-full rounded border border-[color:var(--ide-border-strong)] bg-[color:var(--ide-input-bg)] px-2 py-1 text-[12px] text-[color:var(--ide-text-strong)] placeholder:text-[color:var(--ide-muted-strong)] outline-none focus:border-[color:var(--ide-active-ring)]"
+      />
+    </div>
   );
 }

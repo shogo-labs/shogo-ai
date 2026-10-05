@@ -69,6 +69,7 @@ mock.module('../../lib/k8s-auth', () => ({
 }))
 
 mock.module('../../lib/runtime-token', () => ({
+  getSigningSecret: () => 'test-runtime-secret',
   verifyRuntimeToken: (_t: string, _p?: string) => store.runtimeVerify ?? { ok: false, reason: 'bad' },
 }))
 

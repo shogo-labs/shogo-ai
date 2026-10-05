@@ -27,6 +27,13 @@ import { cleanup } from '@testing-library/react'
 import { reactNativeMockBase } from './react-native-mock'
 
 mock.module('react-native', () => reactNativeMockBase)
+mock.module(require.resolve('react-native'), () => reactNativeMockBase)
+mock.module('react-native/Libraries/Utilities/codegenNativeComponent', () => ({
+  default: () => reactNativeMockBase.View,
+}))
+mock.module('react-native/Libraries/Utilities/codegenNativeCommands', () => ({
+  default: () => ({}),
+}))
 // The gesture-handler package imports React Native's native renderer at module
 // load time. These tests run under happy-dom, so passthrough host views cover
 // the gesture wrapper surface without evaluating native code.
@@ -74,6 +81,13 @@ mock.module('expo-haptics', () => ({
 // contain the backdrop without pulling in native view managers.
 mock.module('expo-blur', () => ({
   BlurView: reactNativeMockBase.View,
+  BlurTargetView: reactNativeMockBase.View,
+}))
+mock.module('expo-glass-effect', () => ({
+  GlassView: reactNativeMockBase.View,
+  GlassContainer: reactNativeMockBase.View,
+  isLiquidGlassAvailable: () => false,
+  isGlassEffectAPIAvailable: () => false,
 }))
 mock.module('expo-secure-store', () => ({
   getItemAsync: () => Promise.resolve(null),

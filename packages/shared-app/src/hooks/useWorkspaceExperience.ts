@@ -29,7 +29,30 @@ export type WorkspaceExperienceKind = 'personal' | 'team'
 export type BottomTabId = 'chat' | 'meetings' | 'goals' | 'activity' | 'tasks' | 'canvases' | 'more'
 /** Temporary UI switch; Canvas routes and runtime behavior remain available. */
 export const CANVAS_NAV_HIDDEN = true
+/** Temporary UI switch; the Tasks route stays available, only its navigation is hidden. */
+export const TASKS_NAV_HIDDEN = true
 export type PrimaryNavId = Exclude<BottomTabId, 'more'>
+
+/**
+ * Desktop icon-rail tabs. Each one drives the list panel beside the rail.
+ * `meetings` and `goals` are personal-workspace tabs that route to their page.
+ */
+export type SidebarTabId =
+  | 'home'
+  | 'channels'
+  | 'dms'
+  | 'agents'
+  | 'projects'
+  | 'meetings'
+  | 'goals'
+  | 'activity'
+  | 'more'
+
+/** Tabs that need native team chat (channels, DMs, agent DMs) to be on. */
+export const TEAM_CHAT_TABS: readonly SidebarTabId[] = ['channels', 'dms', 'agents']
+
+/** Mobile bottom-bar tabs for the team shell. Search is a separate button. */
+export type DockTabId = 'home' | 'dms' | 'activity' | 'more'
 
 export interface WorkspaceExperienceComposer {
   /** Show the model picker control in ChatInput. */
@@ -80,6 +103,13 @@ export interface WorkspaceExperience {
   showSideChatsNav: boolean
   /** Bottom tab bar item ids, in display order. */
   bottomTabs: BottomTabId[]
+  /** Desktop icon-rail tab ids, in display order. */
+  sidebarTabs: SidebarTabId[]
+  /**
+   * Mobile bottom bar for the team shell (Home, DMs, Activity, More). Null
+   * means the shell keeps the classic `bottomTabs` bar (personal workspaces).
+   */
+  dockTabs: DockTabId[] | null
   /** Desktop primary navigation ids, matching bottom tabs without More. */
   primaryNav: PrimaryNavId[]
   /**
@@ -115,11 +145,15 @@ export function workspaceExperience(
       ]
     : [
         'chat',
-        'tasks',
+        ...(TASKS_NAV_HIDDEN ? [] : ['tasks' as const]),
         'activity',
         ...(CANVAS_NAV_HIDDEN ? [] : ['canvases' as const]),
         'more',
       ]
+  const sidebarTabs: SidebarTabId[] = isPersonal
+    ? ['home', 'meetings', 'goals', 'activity', 'more']
+    : ['home', 'channels', 'dms', 'agents', 'projects', 'activity', 'more']
+  const dockTabs: DockTabId[] | null = isPersonal ? null : ['home', 'dms', 'activity', 'more']
   const primaryNav = bottomTabs.filter(
     (id): id is PrimaryNavId => id !== 'more',
   )
@@ -133,6 +167,8 @@ export function workspaceExperience(
     showMeetingsNav: isPersonal,
     showSideChatsNav: isPersonal,
     bottomTabs,
+    sidebarTabs,
+    dockTabs,
     primaryNav,
     chatReturnsToProjectContext: !isPersonal,
     composer: {

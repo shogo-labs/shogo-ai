@@ -6,6 +6,7 @@ export { CreatorChip, TIER_COLORS, TIER_BG, TIER_LABEL, type CreatorTier } from 
 export { FollowCreatorButton } from './FollowCreatorButton'
 export { HorizontalRail } from './HorizontalRail'
 export { IntegrationStrip } from './IntegrationStrip'
+export { AppConsentSheet, type AppConsent } from './AppConsentSheet'
 export { MarketplaceHero } from './MarketplaceHero'
 export {
   PriceTag,

@@ -56,6 +56,12 @@ model User {
   mobilePushSubscriptions MobilePushSubscription[]
   appInstalls          AppInstall[]
   slackUserLinks       SlackUserLink[]
+  chatIdentityLinks    ChatIdentityLink[]
+  conversationMemberships ConversationMember[]
+  conversationMessages ConversationMessage[]
+  integrationConnections UserIntegrationConnection[]
+  integrationGrants    UserIntegrationGrant[]
+  identityLinks           UserIdentityLink[]
 
   @@map("users")
 }
@@ -135,6 +141,11 @@ model Workspace {
   // pools the parent's plan, usage wallet, and seats (no subscription/wallet
   // of its own). Only Business/Enterprise workspaces may have children.
   parentWorkspaceId String?
+  // Team chat surface: "off" | "native" | "external" | "bridged". Null means
+  // the default for the workspace kind (native for team, off for personal).
+  chatMode          String?
+  // External chat provider for "external" / "bridged": "slack" | "teams" | "google_chat".
+  chatProvider      String?
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
 
@@ -155,6 +166,8 @@ model Workspace {
   starredProjects        StarredProject[]
   agentTasks             AgentTask[]
   agentSchedules         AgentSchedule[]
+  workspaceEvents        WorkspaceEvent[]
+  eventSubscriptions     EventSubscription[]
   instances              Instance[]
   apiKeys                ApiKey[]
   meetings               Meeting[]
@@ -170,6 +183,8 @@ model Workspace {
   grants                 WorkspaceGrant[]
   chatSessions           ChatSession[]
   proxyTurns             ProxyTurn[]
+  conversations          Conversation[]
+  chatInstallations      ChatInstallation[]
   plans                  Plan[]
   modelVisibility        WorkspaceModelVisibility[]
   slackInstallation      SlackWorkspaceInstallation?
@@ -224,6 +239,8 @@ model WorkspaceAgentProfile {
   workspaceId     String   @unique
   name            String   @default("Shogo")
   avatarUrl       String?
+  // JSON-encoded Shogo buddy look (see packages/shared-app/src/buddy-look.ts); null = the default look.
+  buddyLook       String?
   tagline         String?
   personality     String?
   statusText      String?
@@ -275,6 +292,8 @@ model AgentSchedule {
   lastRunSummary      String?
   lastError           String?
   chatSessionId       String?
+  notifyConversationId String?
+  notifyThreadRootId  String?
   runningAt           DateTime?
   consecutiveFailures Int       @default(0)
   createdAt           DateTime  @default(now())
@@ -289,6 +308,124 @@ model AgentSchedule {
   @@index([goalId])
   @@index([userId])
   @@map("agent_schedules")
+}
+
+// SQLite: Json → String (JSON-encoded via wrapForSqlite).
+model WorkspaceEvent {
+  id          String   @id @default(uuid())
+  workspaceId String
+  type        String
+  version     Int      @default(1)
+  source      String   @default("shogo")
+  payload     String
+  dedupeKey   String
+  actor       String?
+  occurredAt  DateTime @default(now())
+
+  workspace  Workspace       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  deliveries EventDelivery[]
+
+  @@unique([workspaceId, dedupeKey])
+  @@index([workspaceId, occurredAt])
+  @@map("workspace_events")
+}
+
+model EventSubscription {
+  id           String  @id @default(uuid())
+  workspaceId  String
+  name         String
+  enabled      Boolean @default(true)
+  eventType    String
+  eventVersion Int     @default(1)
+  filter       String?
+  ownerUserId  String?
+  /// "user", or "app" for subscriptions an app install owns (see AppInstallGrant).
+  ownerKind    String  @default("user")
+  installId    String?
+
+  source                     String  @default("shogo")
+  composioTriggerSlug        String?
+  composioTriggerId          String? @unique
+  composioConnectedAccountId String?
+  composioEntityId           String?
+  triggerConfig              String?
+
+  actsAs          String  @default("subscriber")
+  actorIdPath     String?
+  actorEmailPath  String?
+  trustActorEmail Boolean @default(false)
+
+  target               String  @default("agent")
+  targetProjectId      String?
+  targetMode           String?
+  prompt               String?
+  notifyConversationId String?
+  notifyThreadRootId   String?
+  webhookUrl           String?
+  webhookSecret        String?
+
+  chatSessionId       String?
+  consecutiveFailures Int       @default(0)
+  lastDeliveredAt     DateTime?
+  lastError           String?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  workspace  Workspace       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  deliveries EventDelivery[]
+
+  @@index([workspaceId, enabled, eventType])
+  @@index([ownerUserId])
+  @@index([installId])
+  @@map("event_subscriptions")
+}
+
+/// What a marketplace app install may access, consented by the installer.
+model AppInstallGrant {
+  id              String    @id @default(cuid())
+  installId       String    @unique
+  workspaceId     String
+  listingId       String
+  grantedByUserId String
+  version         String
+  grantedScopes   String    @default("[]")
+  grantedToolkits String    @default("[]")
+  /// Scopes a newer version asks for that the installer hasn't approved yet.
+  pendingScopes   String    @default("[]")
+  pendingVersion  String?
+  /// The install token (`SHOGO_APP_TOKEN`), secret-crypto encrypted; the ApiKey row holds its hash.
+  encryptedToken  String?
+  status          String    @default("active")
+  revokedAt       DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([workspaceId])
+  @@map("app_install_grants")
+}
+
+model EventDelivery {
+  id             String    @id @default(uuid())
+  subscriptionId String
+  eventId        String
+  workspaceId    String
+  status         String    @default("pending")
+  attempts       Int       @default(0)
+  nextAttemptAt  DateTime  @default(now())
+  runningAt      DateTime?
+  responseStatus Int?
+  error          String?
+  summary        String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  subscription EventSubscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  event        WorkspaceEvent    @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  @@unique([subscriptionId, eventId])
+  @@index([status, nextAttemptAt])
+  @@index([workspaceId])
+  @@map("event_deliveries")
 }
 
 model GoalEvent {
@@ -345,6 +482,8 @@ model Project {
   siteTitle          String?
   siteDescription    String?
   thumbnailUrl       String?
+  // JSON-encoded Shogo buddy look for this project's team-chat agent; null = a look generated from the project id.
+  buddyLook          String?
   templateId         String?
   knativeServiceName String?
   settings           String?
@@ -384,6 +523,10 @@ model Project {
   liveSessionMeters      LiveSessionMeter[]
   checkpoints            ProjectCheckpoint[]
   githubConnection       GitHubConnection?
+  integrationPolicies    IntegrationCredentialPolicy[]
+  integrationGrants      UserIntegrationGrant[]
+  integrationApprovals   IntegrationCredentialApproval[]
+  integrationAudit       IntegrationCredentialAudit[]
   starredBy              StarredProject[]
   agentConfig            AgentConfig?
   agentTasks             AgentTask[]
@@ -690,12 +833,135 @@ model GitHubConnection {
   lastSyncError  String?
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
+  authType       String    @default("app")
+  encryptedToken String?
+  tokenLogin     String?
+  branch         String?
 
   project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
 
   @@index([installationId])
   @@index([repoFullName])
   @@map("github_connections")
+}
+
+model IntegrationCredentialPolicy {
+  id           String   @id @default(uuid())
+  projectId    String
+  provider     String
+  writeMode    String   @default("shared")
+  readMode     String   @default("shared")
+  fallback     String   @default("ask")
+  writeChain   String?
+  readChain    String?
+  sharedUserId String?
+  delegateUserId String?
+  delegatedAt    DateTime?
+  updatedBy    String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, provider])
+  @@map("integration_credential_policies")
+}
+
+model UserIntegrationConnection {
+  id                    String    @id @default(uuid())
+  userId                String
+  provider              String
+  externalId            String?
+  externalLogin         String?
+  encryptedAccessToken  String?
+  encryptedRefreshToken String?
+  accessTokenExpiresAt  DateTime?
+  refreshTokenExpiresAt DateTime?
+  scopes                String?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, provider])
+  @@map("user_integration_connections")
+}
+
+model UserIdentityLink {
+  id         String   @id @default(uuid())
+  userId     String
+  source     String
+  externalId String
+  email      String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, source, externalId])
+  @@index([source, externalId])
+  @@map("user_identity_links")
+}
+
+model IntegrationCredentialApproval {
+  id              String    @id @default(uuid())
+  projectId       String
+  provider        String
+  op              String
+  toolName        String?
+  summary         String?
+  /// pending | approved | denied | expired | used
+  status          String    @default("pending")
+  requesterUserId String?
+  origin          String?
+  conversationId  String?
+  messageId       String?
+  decidedByUserId String?
+  decidedAt       DateTime?
+  expiresAt       DateTime
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId, status])
+  @@map("integration_credential_approvals")
+}
+
+model IntegrationCredentialAudit {
+  id              String   @id @default(uuid())
+  projectId       String
+  provider        String
+  op              String
+  /// shared | personal | delegate | approved
+  source          String
+  actingAs        String
+  actingUserId    String?
+  requesterUserId String?
+  origin          String?
+  approvalId      String?
+  createdAt       DateTime @default(now())
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId, createdAt])
+  @@map("integration_credential_audit")
+}
+
+model UserIntegrationGrant {
+  id        String    @id @default(uuid())
+  userId    String
+  projectId String
+  provider  String
+  createdAt DateTime  @default(now())
+  revokedAt DateTime?
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, projectId, provider])
+  @@index([projectId])
+  @@map("user_integration_grants")
 }
 
 model StarredProject {
@@ -844,6 +1110,7 @@ model AgentTask {
   currentStep   String?
   resultSummary String?
   errorMessage  String?
+  notifyConversationId String?
   queuedAt      DateTime?
   startedAt     DateTime?
   completedAt   DateTime?
@@ -865,7 +1132,6 @@ model AgentTask {
   @@index([status, updatedAt])
   @@map("agent_tasks")
 }
-
 
 /// Captures UTM parameters and referrer info at signup time. One row
 /// per user. Mirrors prisma/schema.prisma SignupAttribution.
@@ -1781,6 +2047,9 @@ model ApiKey {
   devicePlatform   String?
   deviceAppVersion String?
   lastSeenAt       DateTime?
+  /// Empty = full user access. Install tokens carry the app's granted scopes.
+  grantedScopes    String    @default("[]")
+  installId        String?
 
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -1788,6 +2057,7 @@ model ApiKey {
   @@index([workspaceId])
   @@index([userId])
   @@index([workspaceId, deviceId])
+  @@index([installId])
   @@map("api_keys")
 }
 
@@ -1868,6 +2138,8 @@ model MobilePushSubscription {
   userId    String
   pushToken String   @unique
   platform  String
+  /// Also deliver agent turn and task completion pushes (team chat pushes always go).
+  agentTurns Boolean @default(true)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -2204,6 +2476,9 @@ model MarketplaceListingVersion {
   auditedBy     String?
   auditFindings String?
   auditModel    String?
+
+  /// Parsed `shogo.app.json` (events, scopes, required toolkits) for this version.
+  appManifest String?
 
   // S3-backed workspace snapshot — see prisma/schema.prisma for the
   // narrative. Local SQLite stores the JSON snapshot as a String column
@@ -2777,4 +3052,405 @@ model AffiliatePostSnapshot {
 
   @@index([postId, capturedAt])
   @@map("affiliate_post_snapshots")
+}
+
+// =============================================================================
+// WORKSPACE CHANNELS (team chat with @mentionable agents)
+// =============================================================================
+
+model Conversation {
+  id            String    @id @default(uuid())
+  workspaceId   String
+  kind          String    @default("public")
+  name          String?
+  slug          String?
+  topic         String?
+  dmKey         String?
+  createdById   String?
+  lastSeq       Int       @default(0)
+  lastMessageAt DateTime?
+  archivedAt    DateTime?
+  /// "shogo" for native channels, else the external provider this channel mirrors.
+  provider      String    @default("shogo")
+  /// Channel / conversation / space id on the external provider.
+  externalId    String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  workspace   Workspace                @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  members     ConversationMember[]
+  messages    ConversationMessage[]
+  attachments ConversationAttachment[]
+  pins              ConversationPin[]
+  drafts            ConversationDraft[]
+  scheduledMessages ScheduledMessage[]
+
+  @@unique([workspaceId, slug])
+  @@unique([workspaceId, dmKey])
+  @@unique([workspaceId, provider, externalId])
+  @@index([workspaceId, kind])
+  @@map("conversations")
+}
+
+/// A workspace's install of an external chat app (Slack, Teams, Google Chat).
+/// One per workspace and provider; an external tenant maps to one workspace.
+model ChatInstallation {
+  id                String   @id @default(uuid())
+  workspaceId       String
+  /// "slack" | "teams" | "google_chat"
+  provider          String
+  /// Slack team id, Microsoft tenant id, or Google Workspace customer id.
+  externalTenantId  String
+  tenantName        String?
+  botUserId         String?
+  /// Encrypted JSON of provider credentials (or a bare encrypted token for installs backfilled from Slack).
+  tokensEncrypted   String?
+  /// Provider data needed to reply (e.g. Teams serviceUrl).
+  config            String?
+  installedByUserId String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, provider])
+  @@unique([provider, externalTenantId])
+  @@map("chat_installations")
+}
+
+/// Links an account on an external chat app to a Shogo user.
+model ChatIdentityLink {
+  id               String   @id @default(uuid())
+  provider         String
+  externalTenantId String
+  externalUserId   String
+  userId           String
+  displayName      String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, externalTenantId, externalUserId])
+  @@index([userId])
+  @@map("chat_identity_links")
+}
+
+model ConversationMember {
+  id             String    @id @default(uuid())
+  conversationId String
+  memberType     String    @default("user")
+  userId         String?
+  projectId      String?
+  projectAgentId String?
+  role           String    @default("member")
+  lastReadSeq    Int       @default(0)
+  lastReadAt     DateTime?
+  notifyLevel    String    @default("default")
+  muted          Boolean   @default(false)
+  starred        Boolean   @default(false)
+  agentTrigger   String    @default("mention")
+  agentKeywords  String?
+  agentMuted     Boolean   @default(false)
+  agentContextMode String  @default("shared")
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  user         User?        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([conversationId, userId])
+  @@index([userId])
+  @@index([conversationId, memberType])
+  @@map("conversation_members")
+}
+
+model ConversationMessage {
+  id                String    @id @default(uuid())
+  conversationId    String
+  workspaceId       String
+  seq               Int
+  threadRootId      String?
+  replyCount        Int       @default(0)
+  lastReplyAt       DateTime?
+  alsoSentToChannel Boolean   @default(false)
+  authorType        String    @default("user")
+  authorUserId      String?
+  authorAgentRef    String?
+  botId             String?
+  text              String
+  blocks            String?
+  clientMsgId       String?
+  agentSessionId    String?
+  agentStatus       String?
+  externalRef       String?
+  /// Provider thread id for thread roots whose thread id differs from their message id (Google Chat).
+  externalThreadRef String?
+  /// { rootMessageId, originUserId, depth, hops, turns, runId?, owner? } for agent @mention chains.
+  agentChain        String?
+  editedAt          DateTime?
+  deletedAt         DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  conversation Conversation             @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  authorUser   User?                    @relation(fields: [authorUserId], references: [id], onDelete: SetNull)
+  mentions     ConversationMention[]
+  reactions    ConversationReaction[]
+  attachments  ConversationAttachment[]
+  pin          ConversationPin?
+  savedBy      SavedMessage[]
+  embedding    ConversationMessageEmbedding?
+
+  @@unique([conversationId, seq])
+  @@unique([conversationId, clientMsgId])
+  @@index([conversationId, threadRootId, createdAt])
+  @@index([threadRootId, createdAt])
+  @@index([workspaceId, createdAt])
+  @@index([agentSessionId])
+  @@index([externalRef])
+  @@index([conversationId, externalThreadRef])
+  @@map("conversation_messages")
+}
+
+model ConversationMention {
+  id             String   @id @default(uuid())
+  messageId      String
+  targetType     String
+  targetUserId   String?
+  projectId      String?
+  projectAgentId String?
+  createdAt      DateTime @default(now())
+
+  message ConversationMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@index([messageId])
+  @@index([targetUserId, createdAt])
+  @@map("conversation_mentions")
+}
+
+model ConversationReaction {
+  id        String   @id @default(uuid())
+  messageId String
+  userId    String
+  emoji     String
+  createdAt DateTime @default(now())
+
+  message ConversationMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@unique([messageId, userId, emoji])
+  @@index([messageId])
+  @@map("conversation_reactions")
+}
+
+model ConversationAttachment {
+  id             String   @id @default(uuid())
+  conversationId String
+  messageId      String?
+  uploaderUserId String
+  storageKey     String
+  name           String
+  mimeType       String
+  size           Int
+  width          Int?
+  height         Int?
+  extractedText  String?
+  createdAt      DateTime @default(now())
+
+  conversation Conversation         @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  message      ConversationMessage? @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId])
+  @@index([messageId])
+  @@map("conversation_attachments")
+}
+
+/// Per-workspace chat settings: custom status, Do Not Disturb, and notification defaults.
+model ChatUserSettings {
+  id              String    @id @default(uuid())
+  workspaceId     String
+  userId          String
+  statusEmoji     String?
+  statusText      String?
+  statusExpiresAt DateTime?
+  dndUntil        DateTime?
+  /// Daily quiet hours in `timezone`, as "HH:MM-HH:MM".
+  quietHours      String?
+  timezone        String?
+  /// Channel default when a membership's notifyLevel is "default": "all", "mentions", or "none".
+  notifyDefault   String    @default("mentions")
+  /// Comma-separated words that notify like a mention.
+  keywords        String?
+  /// "off" or "daily": email a digest of unread mentions and DMs.
+  emailDigest     String    @default("off")
+  lastDigestAt    DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@unique([workspaceId, userId])
+  @@index([emailDigest])
+  @@map("chat_user_settings")
+}
+
+model ConversationPin {
+  id             String   @id @default(uuid())
+  conversationId String
+  messageId      String   @unique
+  pinnedById     String
+  createdAt      DateTime @default(now())
+
+  conversation Conversation        @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  message      ConversationMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId, createdAt])
+  @@map("conversation_pins")
+}
+
+model SavedMessage {
+  id        String   @id @default(uuid())
+  userId    String
+  messageId String
+  createdAt DateTime @default(now())
+
+  message ConversationMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, messageId])
+  @@index([userId, createdAt])
+  @@map("saved_messages")
+}
+
+/// Unsent composer text, synced across devices. `threadRootId` is "" for the channel composer.
+model ConversationDraft {
+  id             String   @id @default(uuid())
+  userId         String
+  conversationId String
+  threadRootId   String   @default("")
+  text           String
+  updatedAt      DateTime @updatedAt
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, conversationId, threadRootId])
+  @@index([userId, updatedAt])
+  @@map("conversation_drafts")
+}
+
+model ScheduledMessage {
+  id                String    @id @default(uuid())
+  workspaceId       String
+  conversationId    String
+  userId            String
+  threadRootId      String?
+  alsoSentToChannel Boolean   @default(false)
+  text              String
+  sendAt            DateTime
+  /// pending | sent | cancelled | failed
+  status            String    @default("pending")
+  sentMessageId     String?
+  error             String?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([status, sendAt])
+  @@index([userId, status])
+  @@map("scheduled_messages")
+}
+
+model ChatReminder {
+  id             String    @id @default(uuid())
+  workspaceId    String
+  userId         String
+  text           String
+  remindAt       DateTime
+  messageId      String?
+  conversationId String?
+  /// pending | fired | done | cancelled
+  status         String    @default("pending")
+  firedAt        DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@index([status, remindAt])
+  @@index([userId, status])
+  @@map("chat_reminders")
+}
+
+/// Activity addressed to one person: mentions, thread replies, reactions, reminders.
+model ChatInboxItem {
+  id             String    @id @default(uuid())
+  workspaceId    String
+  userId         String
+  /// mention | dm | thread | reaction | reminder | keyword | broadcast | message
+  kind           String
+  conversationId String?
+  messageId      String?
+  actorUserId    String?
+  title          String
+  preview        String
+  readAt         DateTime?
+  createdAt      DateTime  @default(now())
+
+  @@index([userId, workspaceId, createdAt])
+  @@index([userId, readAt])
+  @@index([messageId])
+  @@map("chat_inbox_items")
+}
+
+model CustomEmoji {
+  id          String   @id @default(uuid())
+  workspaceId String
+  name        String
+  storageKey  String
+  mimeType    String
+  createdById String
+  createdAt   DateTime @default(now())
+
+  @@unique([workspaceId, name])
+  @@map("custom_emoji")
+}
+
+/// A mentionable set of people, e.g. @design.
+model UserGroup {
+  id          String   @id @default(uuid())
+  workspaceId String
+  handle      String
+  name        String
+  description String?
+  createdById String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  members UserGroupMember[]
+
+  @@unique([workspaceId, handle])
+  @@map("user_groups")
+}
+
+model UserGroupMember {
+  id        String   @id @default(uuid())
+  groupId   String
+  userId    String
+  createdAt DateTime @default(now())
+
+  group UserGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  @@unique([groupId, userId])
+  @@index([userId])
+  @@map("user_group_members")
+}
+
+model ConversationMessageEmbedding {
+  id          String   @id @default(uuid())
+  messageId   String   @unique
+  workspaceId String
+  model       String
+  embedding   String
+  createdAt   DateTime @default(now())
+
+  message ConversationMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, createdAt])
+  @@map("conversation_message_embeddings")
 }

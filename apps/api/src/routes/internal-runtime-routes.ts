@@ -44,6 +44,7 @@ import {
   type WorkspaceAgentRoutesConfig,
 } from './workspace-agent'
 import { workspaceMeetingRoutes } from './workspace-meetings'
+import { agentChannelRoutes, type AgentChannelAuthContext } from './conversations'
 import {
   createInternalAuthorizers,
   logAuthReject,
@@ -53,6 +54,38 @@ import {
 import { projectTrustRoutes } from './internal-project-trust'
 import { signSharedFileToken } from '../lib/shared-file-token'
 import { withShogoPrFooter } from '@shogo/shared-runtime/agent-attribution'
+import { resolveConnectionAuth } from '../services/github-auth'
+import { CREDENTIAL_APPROVAL_HEADER } from '../services/integration-credentials/approvals'
+import { handOffRequesterTicket, REQUESTER_TICKET_HEADER, verifyRequesterTicket, type RequesterTicket } from '../lib/requester-ticket'
+import { signResumeToken } from '../services/integration-credentials/resume'
+
+/** Where a connect link handed out in this turn should pick the conversation back up. */
+type CredentialUseSource = 'shared' | 'personal' | 'delegate' | 'approved'
+
+/** Which account a GitHub write used, for the tool call's "as …" label. */
+function credentialUse(
+  actor: { kind: 'connection'; onBehalfOf?: string } | { kind: 'personal'; login?: string; source: CredentialUseSource },
+  author: string | undefined,
+) {
+  if (actor.kind === 'personal') {
+    return { source: actor.source, actingAs: actor.login ? `@${actor.login}` : 'the requester' }
+  }
+  return {
+    source: 'shared' as const,
+    actingAs: author ? `project account (@${author})` : 'project account',
+    ...(actor.onBehalfOf ? { onBehalfOf: actor.onBehalfOf } : {}),
+  }
+}
+
+/** A person's name as plain text in a GitHub body: no mentions, links or markup. */
+function attributionName(name: string): string {
+  return name.replace(/[^\p{L}\p{N} .'_-]/gu, '').replace(/\s+/g, ' ').trim().slice(0, 80) || 'a Shogo user'
+}
+
+function resumeTokenFor(ticket: RequesterTicket | null): string | undefined {
+  const chatSessionId = ticket?.origin.kind === 'chat' ? ticket.origin.chatSessionId : undefined
+  return ticket && chatSessionId ? signResumeToken({ userId: ticket.userId, chatSessionId }) : undefined
+}
 
 type ProjectLifecycleService = typeof import('../services/project-lifecycle.service')
 type AgentCallService = typeof import('../services/agent-call.service')
@@ -130,6 +163,103 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
   const { validateAuth, authorizeWorkspaceScope, authorizeWorkspaceRuntimeRequest } =
     createInternalAuthorizers(authenticate)
   const app = new Hono()
+
+  /**
+   * Resolve the credential for one tool call from the runtime. The person
+   * comes from the signed requester ticket. `X-Credential-Approval` names an
+   * approval someone granted from a card for this call; it is spent here,
+   * once, on success.
+   */
+  async function resolveForCall(
+    c: Context,
+    projectId: string,
+    provider: string,
+    op: 'read' | 'write',
+    toolName: string | null,
+  ) {
+    const credentials = await import('../services/integration-credentials')
+    const approvals = await import('../services/integration-credentials/approvals')
+    const ticket = verifyRequesterTicket(c.req.header(REQUESTER_TICKET_HEADER), projectId)
+    const approvalId = c.req.header(CREDENTIAL_APPROVAL_HEADER)?.trim()
+    let approval: { approvalId: string; approverUserId: string; requesterUserId: string | null } | undefined
+    if (approvalId) {
+      const state = await approvals.approvalState(projectId, approvalId)
+      if (state.state !== 'approved' || state.provider !== provider || state.op !== op) {
+        return {
+          ok: false as const,
+          code: state.state === 'denied' ? 'approval_denied' as const : 'approval_expired' as const,
+          message: state.state === 'denied' ? 'The request to use a personal account was denied.' : 'That approval is no longer valid.',
+        }
+      }
+      approval = { approvalId, approverUserId: state.approverUserId, requesterUserId: state.requesterUserId }
+    }
+    const result = await credentials.resolveIntegrationCredential({
+      projectId,
+      provider,
+      op,
+      requesterUserId: ticket?.userId ?? null,
+      resume: resumeTokenFor(ticket),
+      canAsk: approval ? true : ticket?.origin.kind !== 'event',
+      origin: ticket?.origin,
+      approval,
+      approve: async () => {
+        const place = await approvals.approvalPlaceFor(projectId, ticket)
+        if (!place) return null
+        const adapter = credentials.getCredentialProvider(provider)
+        return approvals.requestCredentialApproval({
+          projectId,
+          provider,
+          providerLabel: adapter?.label(provider) ?? provider,
+          op,
+          toolName,
+          ticket,
+          place,
+        })
+      },
+    })
+    if (approval && result.ok && !(await approvals.markApprovalUsed(approval.approvalId))) {
+      return { ok: false as const, code: 'approval_expired' as const, message: 'That approval was already used.' }
+    }
+    return result
+  }
+
+  /**
+   * Who a GitHub write runs as. `connection` keeps the project's own
+   * connection; `personal` is a person's own token (the requester, an
+   * approver, or the project's delegate); `blocked` is the 409 to return
+   * instead.
+   */
+  async function githubWriteActor(
+    c: Context,
+    projectId: string,
+    toolName: string,
+  ): Promise<
+    | { kind: 'connection'; onBehalfOf?: string }
+    | { kind: 'personal'; token: string; login?: string; source: CredentialUseSource }
+    | { kind: 'blocked'; response: Response }
+  > {
+    const credentials = await import('../services/integration-credentials')
+    const policy = await credentials.getPolicy(projectId, 'github')
+    if (policy.writeChain[0] === 'shared') {
+      const ticket = verifyRequesterTicket(c.req.header(REQUESTER_TICKET_HEADER), projectId)
+      const onBehalfOf = ticket ? await credentials.requesterDisplayName(ticket.userId) : null
+      return onBehalfOf ? { kind: 'connection', onBehalfOf } : { kind: 'connection' }
+    }
+    const { ensureDefaultCredentialProviders } = await import('../services/integration-credentials/defaults')
+    ensureDefaultCredentialProviders({ loadGitHub })
+    const result = await resolveForCall(c, projectId, 'github', 'write', toolName)
+    if (!result.ok) {
+      const extra = {
+        ...('connectUrl' in result && result.connectUrl ? { connectUrl: result.connectUrl } : {}),
+        ...(result.code === 'approval_pending' ? { approvalId: result.approvalId, expiresAt: result.expiresAt } : {}),
+      }
+      return { kind: 'blocked', response: c.json({ error: { code: result.code, message: result.message, ...extra } }, 409) }
+    }
+    if (result.userId && result.credential.token) {
+      return { kind: 'personal', token: result.credential.token, login: result.credential.login, source: result.source }
+    }
+    return { kind: 'connection', ...(result.onBehalfOf ? { onBehalfOf: result.onBehalfOf } : {}) }
+  }
 
   /**
    * POST /api/internal/heartbeat/complete
@@ -466,6 +596,24 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
           return c.json({ error: 'Unauthorized' }, 401)
         }
         return { workspaceId }
+      },
+    }),
+  )
+
+  app.route(
+    '/',
+    agentChannelRoutes({
+      authorize: async (c): Promise<AgentChannelAuthContext | Response> => {
+        const workspaceId = c.req.param('workspaceId')
+        if (!(await authorizeWorkspaceScope(c, workspaceId))) {
+          return c.json({ error: 'Unauthorized' }, 401)
+        }
+        const identity = await authenticate(c)
+        // A project-scoped token pins the author. A workspace runtime may speak as a project of this
+        // workspace it claims to be (a project with attachments runs as a workspace runtime anchored on
+        // itself); with no claim it speaks as the workspace agent.
+        const projectId = identity?.kind === 'project' ? identity.projectId : undefined
+        return { workspaceId, projectId }
       },
     }),
   )
@@ -890,9 +1038,10 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
   /**
    * GET /api/internal/projects/:projectId/github/cli-credentials
    *
-   * Mints a short-lived installation token so the project runtime can run
-   * `gh` and `git commit` as the GitHub App bot. The token is returned to
-   * the runtime only — never written to the workspace or logs.
+   * Credentials so the project runtime can run `gh` and `git commit`: a
+   * short-lived installation token (GitHub App bot) or the connection's user
+   * access token. Returned to the runtime only — never written to the
+   * workspace or logs.
    */
   app.get('/projects/:projectId/github/cli-credentials', async (c) => {
     const projectId = c.req.param('projectId')
@@ -918,7 +1067,7 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
           {
             error: {
               code: 'github_app_not_installed',
-              message: 'This project has no GitHub App connection.',
+              message: 'This project has no GitHub connection.',
             },
           },
           409,
@@ -927,7 +1076,194 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
       return c.json({ ok: true, ...credentials })
     } catch (err: any) {
       console.error(`[Internal] GitHub CLI credentials for ${projectId} failed:`, err?.message ?? err)
-      return c.json({ error: 'Failed to mint GitHub App credentials' }, 502)
+      return c.json({ error: 'Failed to get GitHub credentials' }, 502)
+    }
+  })
+
+  /**
+   * GET /api/internal/projects/:projectId/integrations/policies
+   *
+   * The project's saved "acts as" policies. The runtime only consults the
+   * resolver for providers listed here; everything else keeps its default
+   * behavior.
+   */
+  app.get('/projects/:projectId/integrations/policies', async (c) => {
+    const projectId = c.req.param('projectId')
+    if (!projectId) return c.json({ error: 'Missing projectId' }, 400)
+    if (!(await validateAuth(c, projectId))) return c.json({ error: 'Unauthorized' }, 401)
+    const { listPolicies } = await import('../services/integration-credentials')
+    return c.json({ ok: true, policies: await listPolicies(projectId) })
+  })
+
+  /**
+   * POST /api/internal/projects/:projectId/integrations/resolve
+   *   header: X-Requester-Ticket (from the turn's chat request)
+   *   body: { provider, op: 'read' | 'write' }
+   *
+   *   body: { provider, op, toolName? }
+   *
+   * The credential one tool call should use. Always 200; `ok: false` carries
+   * `code` (`requester_auth_required` with `connectUrl`, `approval_pending`
+   * with `approvalId`, `denied`, `requester_unknown`, `not_connected`, ...)
+   * for the tool to relay. See `resolveForCall` for approvals.
+   */
+  app.post('/projects/:projectId/integrations/resolve', async (c) => {
+    const projectId = c.req.param('projectId')
+    if (!projectId) return c.json({ error: 'Missing projectId' }, 400)
+    if (!(await validateAuth(c, projectId))) return c.json({ error: 'Unauthorized' }, 401)
+    const body = await c.req.json().catch(() => null) as Record<string, unknown> | null
+    const provider = typeof body?.provider === 'string' ? body.provider.trim() : ''
+    const op = body?.op === 'read' ? 'read' : 'write'
+    const credentials = await import('../services/integration-credentials')
+    if (!provider || !credentials.isValidProviderId(provider)) return c.json({ error: 'provider is required' }, 400)
+    const { ensureDefaultCredentialProviders } = await import('../services/integration-credentials/defaults')
+    ensureDefaultCredentialProviders({ loadGitHub })
+    const toolName = typeof body?.toolName === 'string' ? body.toolName.trim().slice(0, 200) || null : null
+    try {
+      const result = await resolveForCall(c, projectId, provider, op, toolName)
+      return c.json(result)
+    } catch (err: any) {
+      console.error(`[Internal] Credential resolve for ${projectId}/${provider} failed:`, err?.message ?? err)
+      return c.json({ error: 'Failed to resolve integration credentials' }, 502)
+    }
+  })
+
+  /**
+   * GET /api/internal/projects/:projectId/integrations/approvals/:approvalId
+   *
+   * Where an approval card stands: `pending` (with `expiresAt`), `approved`,
+   * `denied`, `expired`, `used`, or `unknown`. The runtime polls this while a
+   * tool call waits, then repeats the call with `X-Credential-Approval`.
+   */
+  app.get('/projects/:projectId/integrations/approvals/:approvalId', async (c) => {
+    const projectId = c.req.param('projectId')
+    if (!projectId) return c.json({ error: 'Missing projectId' }, 400)
+    if (!(await validateAuth(c, projectId))) return c.json({ error: 'Unauthorized' }, 401)
+    const { approvalState } = await import('../services/integration-credentials/approvals')
+    const state = await approvalState(projectId, c.req.param('approvalId'))
+    return c.json(state.state === 'pending' ? state : { state: state.state })
+  })
+
+  /**
+   * POST /api/internal/projects/:projectId/github/connect
+   *   body: { repoOwner, repoName, token, branch? }
+   *
+   * Connects the project with an access token the user shared with the agent.
+   * The token is validated, stored encrypted on the connection, and used to
+   * point the project's workspace (in its own runtime) at the repository.
+   * It is never echoed back.
+   */
+  app.post('/projects/:projectId/github/connect', async (c) => {
+    const projectId = c.req.param('projectId')
+    if (!projectId) return c.json({ error: 'Missing projectId' }, 400)
+    if (!(await validateAuth(c, projectId))) return c.json({ error: 'Unauthorized' }, 401)
+
+    const body = await c.req.json().catch(() => null) as Record<string, unknown> | null
+    const repoOwner = typeof body?.repoOwner === 'string' ? body.repoOwner.trim() : ''
+    const repoName = typeof body?.repoName === 'string' ? body.repoName.trim() : ''
+    const token = typeof body?.token === 'string' ? body.token.trim() : ''
+    const branch = typeof body?.branch === 'string' ? body.branch.trim() : ''
+    if (!repoOwner || !repoName || !token) {
+      return c.json({ error: 'repoOwner, repoName, and token are required' }, 400)
+    }
+    if (!loadGitHub) {
+      return c.json({ error: { code: 'github_unavailable', message: 'GitHub connections are not available on this runtime.' } }, 409)
+    }
+
+    try {
+      const github = await loadGitHub()
+      const { runtimeGitHubWorkspace } = await import('../services/github-workspace')
+      const { connection, repo, workspace } = await github.connectRepository({
+        projectId,
+        token,
+        repoOwner,
+        repoName,
+        ...(branch ? { branch } : {}),
+        workspace: runtimeGitHubWorkspace(projectId),
+      })
+      return c.json({
+        ok: true,
+        repoFullName: repo.full_name,
+        defaultBranch: connection.defaultBranch,
+        authType: connection.authType,
+        login: connection.tokenLogin,
+        htmlUrl: repo.html_url,
+        workspace,
+      })
+    } catch (err: any) {
+      console.error(`[Internal] GitHub token connect for ${projectId} failed:`, err?.message ?? err)
+      return c.json({ error: String(err?.message ?? 'Failed to connect the repository') }, 400)
+    }
+  })
+
+  /**
+   * POST /api/internal/projects/:projectId/github/branch
+   *   body: { repoOwner, repoName, branch }
+   *
+   * Switches a project that is already connected to that repository onto
+   * another of its branches, with the stored connection's credentials.
+   * 409 `not_connected` when it isn't, so the agent asks how to connect.
+   */
+  app.post('/projects/:projectId/github/branch', async (c) => {
+    const projectId = c.req.param('projectId')
+    if (!projectId) return c.json({ error: 'Missing projectId' }, 400)
+    if (!(await validateAuth(c, projectId))) return c.json({ error: 'Unauthorized' }, 401)
+
+    const body = await c.req.json().catch(() => null) as Record<string, unknown> | null
+    const repoOwner = typeof body?.repoOwner === 'string' ? body.repoOwner.trim() : ''
+    const repoName = typeof body?.repoName === 'string' ? body.repoName.trim() : ''
+    const branch = typeof body?.branch === 'string' ? body.branch.trim() : ''
+    if (!repoOwner || !repoName || !branch) {
+      return c.json({ error: 'repoOwner, repoName, and branch are required' }, 400)
+    }
+    if (!loadGitHub) {
+      return c.json({ error: { code: 'github_unavailable', message: 'GitHub connections are not available on this runtime.' } }, 409)
+    }
+
+    try {
+      const github = await loadGitHub()
+      const connection = await github.getConnection(projectId)
+      const sameRepo = connection
+        && connection.repoOwner.toLowerCase() === repoOwner.toLowerCase()
+        && connection.repoName.toLowerCase() === repoName.toLowerCase()
+      if (!sameRepo) {
+        return c.json({ error: { code: 'not_connected', message: `This project is not connected to ${repoOwner}/${repoName}.` } }, 409)
+      }
+      const { runtimeGitHubWorkspace } = await import('../services/github-workspace')
+      const result = await github.switchBranch(projectId, branch, runtimeGitHubWorkspace(projectId))
+      return c.json({ ok: true, ...result })
+    } catch (err: any) {
+      console.error(`[Internal] GitHub branch switch for ${projectId} failed:`, err?.message ?? err)
+      return c.json({ error: String(err?.message ?? 'Failed to switch branch') }, 400)
+    }
+  })
+
+  /**
+   * POST /api/internal/projects/:projectId/github/authorize-url
+   *   body: { repoOwner, repoName }
+   *
+   * A link the user opens to authorize the Shogo GitHub App for the repo.
+   * `available: false` when this server can't run that flow, so the agent
+   * offers only the token option.
+   */
+  app.post('/projects/:projectId/github/authorize-url', async (c) => {
+    const projectId = c.req.param('projectId')
+    if (!projectId) return c.json({ error: 'Missing projectId' }, 400)
+    if (!(await validateAuth(c, projectId))) return c.json({ error: 'Unauthorized' }, 401)
+
+    const body = await c.req.json().catch(() => null) as Record<string, unknown> | null
+    const repoOwner = typeof body?.repoOwner === 'string' ? body.repoOwner.trim() : ''
+    const repoName = typeof body?.repoName === 'string' ? body.repoName.trim() : ''
+    if (!repoOwner || !repoName) return c.json({ error: 'repoOwner and repoName are required' }, 400)
+    if (!loadGitHub) return c.json({ ok: true, available: false })
+
+    try {
+      const github = await loadGitHub()
+      if (!github.isOAuthConfigured()) return c.json({ ok: true, available: false })
+      return c.json({ ok: true, available: true, url: github.getAuthorizeLinkUrl(projectId, repoOwner, repoName) })
+    } catch (err: any) {
+      console.error(`[Internal] GitHub authorize URL for ${projectId} failed:`, err?.message ?? err)
+      return c.json({ error: 'Failed to create the authorization link' }, 502)
     }
   })
 
@@ -935,9 +1271,10 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
    * POST /api/internal/projects/:projectId/github/pull-request
    *   body: { title, head, base?, body?, draft?, runId? }
    *
-   * Creates a PR with the Shogo GitHub App installation token. GitHub then
-   * attributes the PR to the App's bot account instead of the user's token.
-   * The project connection is used as the authoritative repository target.
+   * Creates a PR with the project's GitHub connection. An App connection
+   * uses the installation token, so GitHub attributes the PR to the App's
+   * bot; a token connection opens it as the token's user. The project
+   * connection is used as the authoritative repository target.
    */
   app.post('/projects/:projectId/github/pull-request', async (c) => {
     const projectId = c.req.param('projectId')
@@ -971,24 +1308,32 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
       }
       const github = await loadGitHub()
       const connection = await github.getConnection(projectId)
-      const installationId = connection?.installationId
-      if (!connection || typeof installationId !== 'number' || !Number.isInteger(installationId)) {
+      const auth = resolveConnectionAuth(connection)
+      if (!connection || !auth) {
         return c.json(
           {
             error: {
               code: 'github_app_not_installed',
-              message: 'This project has no GitHub App connection for bot-authored PRs.',
+              message: 'This project has no GitHub connection for PRs.',
             },
           },
           409,
         )
       }
 
+      const actor = await githubWriteActor(c, projectId, 'github_create_pr')
+      if (actor.kind === 'blocked') return actor.response
+
+      const requestedBody = actor.kind === 'connection' && actor.onBehalfOf
+        ? `${prBody.trimEnd()}${prBody.trim() ? '\n\n' : ''}Requested by ${attributionName(actor.onBehalfOf)}`
+        : prBody
       const markedBody = runId && !github.extractRunId(prBody)
-        ? `${withShogoPrFooter(prBody)}\n\n${github.runIdMarker(runId)}`
-        : withShogoPrFooter(prBody)
+        ? `${withShogoPrFooter(requestedBody)}\n\n${github.runIdMarker(runId)}`
+        : withShogoPrFooter(requestedBody)
       const result = await github.createPullRequest({
-        installationId,
+        ...(actor.kind === 'personal'
+          ? { token: actor.token }
+          : auth.kind === 'token' ? { token: auth.token } : { installationId: auth.installationId }),
         repoOwner: connection.repoOwner,
         repoName: connection.repoName,
         head,
@@ -997,16 +1342,72 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
         body: markedBody,
         draft: body?.draft === true,
       })
+      const author = actor.kind === 'personal'
+        ? actor.login
+        : auth.kind === 'token'
+          ? auth.login ?? undefined
+          : `${process.env.GH_APP_SLUG || 'shogo-ai'}[bot]`
       return c.json({
         ok: true,
         number: result.number,
         url: result.html_url,
         htmlUrl: result.html_url,
-        author: `${process.env.GH_APP_SLUG || 'shogo-ai'}[bot]`,
+        mode: actor.kind === 'personal' ? 'requester' : auth.kind === 'token' ? 'user-token' : 'github-app',
+        author,
+        credential: credentialUse(actor, author),
       })
     } catch (err: any) {
       console.error(`[Internal] GitHub PR creation for ${projectId} failed:`, err?.message ?? err)
       return c.json({ error: 'Failed to create pull request' }, 502)
+    }
+  })
+
+  /**
+   * POST /api/internal/projects/:projectId/github/pull-request/:number/merge
+   *   body: { method?: 'merge' | 'squash' | 'rebase', commitTitle? }
+   *
+   * Merges with the project's GitHub connection (App installation token or
+   * user access token). The agent's `github_merge_pr` tool calls this after
+   * a person approved it.
+   */
+  app.post('/projects/:projectId/github/pull-request/:number/merge', async (c) => {
+    const projectId = c.req.param('projectId')
+    if (!projectId) return c.json({ error: 'Missing projectId' }, 400)
+    if (!(await validateAuth(c, projectId))) return c.json({ error: 'Unauthorized' }, 401)
+
+    const number = Number(c.req.param('number'))
+    if (!Number.isInteger(number) || number <= 0) return c.json({ error: 'A pull request number is required' }, 400)
+    const body = await c.req.json().catch(() => null) as Record<string, unknown> | null
+    const method = body?.method === 'merge' || body?.method === 'rebase' ? body.method : 'squash'
+    const commitTitle = typeof body?.commitTitle === 'string' && body.commitTitle.trim() ? body.commitTitle.trim() : undefined
+
+    try {
+      if (!loadGitHub) {
+        return c.json({ error: { code: 'github_app_not_installed', message: 'GitHub App merging is not available on this runtime.' } }, 409)
+      }
+      const github = await loadGitHub()
+      const connection = await github.getConnection(projectId)
+      const auth = resolveConnectionAuth(connection)
+      if (!connection || !auth) {
+        return c.json({ error: { code: 'github_app_not_installed', message: 'This project has no GitHub connection.' } }, 409)
+      }
+      const actor = await githubWriteActor(c, projectId, 'github_merge_pr')
+      if (actor.kind === 'blocked') return actor.response
+      const result = await github.mergePullRequest({
+        ...(actor.kind === 'personal'
+          ? { token: actor.token }
+          : auth.kind === 'token' ? { token: auth.token } : { installationId: auth.installationId }),
+        repoOwner: connection.repoOwner,
+        repoName: connection.repoName,
+        number,
+        method,
+        commitTitle,
+      })
+      const author = actor.kind === 'personal' ? actor.login : auth.kind === 'token' ? auth.login ?? undefined : undefined
+      return c.json({ ok: true, merged: result.merged, sha: result.sha, credential: credentialUse(actor, author) })
+    } catch (err: any) {
+      console.error(`[Internal] GitHub PR merge for ${projectId} failed:`, err?.message ?? err)
+      return c.json({ error: String(err?.message ?? 'Failed to merge pull request') }, 502)
     }
   })
 
@@ -1488,6 +1889,21 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
         ? body.callerProjectId
         : authz.identity.kind === 'project' ? authz.identity.projectId : undefined
 
+    // The person behind the caller's turn carries over to the callee, as long
+    // as they belong to the callee's workspace. The ticket must have been
+    // issued to the calling project.
+    let requesterTicket: string | undefined
+    const callerTicket = callerProjectId
+      ? verifyRequesterTicket(c.req.header(REQUESTER_TICKET_HEADER), callerProjectId)
+      : null
+    if (callerTicket && callerProjectId !== projectId) {
+      const member = await prisma.member.findFirst({
+        where: { userId: callerTicket.userId, workspaceId: authz.workspaceId },
+        select: { id: true },
+      })
+      if (member) requesterTicket = handOffRequesterTicket(callerTicket, projectId) ?? undefined
+    }
+
     const agentCallSvc = await loadAgentCall?.()
     if (!agentCallSvc) return unavailable(c, 'Cross-project agent calls')
     const { callProjectAgent } = agentCallSvc
@@ -1498,6 +1914,7 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
       wait: body.wait !== false,
       timeoutMs: typeof body.timeoutMs === 'number' ? body.timeoutMs : undefined,
       callerProjectId,
+      ...(requesterTicket ? { requesterTicket } : {}),
     })
     return c.json(outcome.body, outcome.status as any)
   })

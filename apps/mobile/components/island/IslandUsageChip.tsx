@@ -7,6 +7,7 @@ import { Gauge } from "lucide-react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import { useBillingData } from "@shogo/shared-app/hooks"
 import { CompactUsageWindows } from "../billing/UsageWindows"
+import { useLocalAwareUsageWindows } from "../../hooks/useLocalAwareUsageWindows"
 import { getWindowDisplays, type UsageOverageContext } from "../../lib/billing-config"
 
 const USAGE_POLL_MS = 60_000
@@ -23,31 +24,26 @@ export interface IslandUsage {
 }
 
 export function useIslandUsage(workspaceId: string | undefined, active: boolean): IslandUsage {
-  const billing = useBillingData(workspaceId)
+  const { billing, usageWindows, overage, refreshCloud } = useLocalAwareUsageWindows(workspaceId)
   const { refetchUsageWallet, refetchSubscription } = billing
 
   useEffect(() => {
     if (!active || !workspaceId) return
     refetchUsageWallet()
+    void refreshCloud()
     const timer = setInterval(() => {
       refetchUsageWallet()
       refetchSubscription()
+      void refreshCloud()
     }, USAGE_POLL_MS)
     return () => clearInterval(timer)
-  }, [active, workspaceId, refetchUsageWallet, refetchSubscription])
+  }, [active, workspaceId, refetchUsageWallet, refetchSubscription, refreshCloud])
 
-  const { fiveHour, weekly } = getWindowDisplays(billing.usageWindows)
+  const { fiveHour, weekly } = getWindowDisplays(usageWindows)
   const pct = Math.max(fiveHour.pct, weekly.pct)
-  const balance = billing.effectiveBalance
   return {
-    windows: billing.usageWindows,
-    overage: balance
-      ? {
-          enabled: balance.overageEnabled,
-          active: balance.overageActive,
-          accumulatedUsd: balance.overageAccumulatedUsd,
-        }
-      : undefined,
+    windows: usageWindows,
+    overage,
     pct,
     uncapped: fiveHour.uncapped && weekly.uncapped,
     tone: fiveHour.atLimit || weekly.atLimit ? "limit" : pct >= WARN_PCT ? "warn" : "ok",

@@ -174,6 +174,16 @@ export const UserCollection = types
                   self.items.delete(id)
                 }
               }
+            } else if (typeof filter?.sessionId === "string") {
+              // A session-filtered load is authoritative for that session
+              // while remaining isolated from other consumers of this
+              // shared collection.
+              for (const id of self.items.keys()) {
+                const item = self.items.get(id)
+                if (item?.sessionId === filter.sessionId && !newIds.has(id)) {
+                  self.items.delete(id)
+                }
+              }
             }
           }
 
@@ -434,7 +444,7 @@ export const UserCollection = types
 // ============================================================================
 
 // Relation fields that expect IDs (safeReference)
-const relationFields = ["sessions","accounts","members","notifications","agentTasks","agentSchedules","starredProjects","signupAttribution","apiKeys","creatorProfile","creatorFollows","affiliate","affiliateAttribution","projectAuthSignIns","mobilePushSubscriptions","appInstalls","slackUserLinks"]
+const relationFields = ["sessions","accounts","members","notifications","agentTasks","agentSchedules","starredProjects","signupAttribution","apiKeys","creatorProfile","creatorFollows","affiliate","affiliateAttribution","projectAuthSignIns","mobilePushSubscriptions","appInstalls","slackUserLinks","chatIdentityLinks","conversationMemberships","conversationMessages","integrationConnections","integrationGrants","identityLinks"]
 
 /**
  * Transform API response for MST compatibility:

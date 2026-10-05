@@ -45,6 +45,7 @@ export interface ProjectType {
   siteTitle?: string
   siteDescription?: string
   thumbnailUrl?: string
+  buddyLook?: string
   templateId?: string
   knativeServiceName?: string
   settings?: Record<string, unknown>
@@ -82,6 +83,7 @@ export interface ProjectCreateInput {
   siteTitle?: string
   siteDescription?: string
   thumbnailUrl?: string
+  buddyLook?: string
   templateId?: string
   knativeServiceName?: string
   settings?: Record<string, unknown>
@@ -119,6 +121,7 @@ export interface ProjectUpdateInput {
   siteTitle?: string
   siteDescription?: string
   thumbnailUrl?: string
+  buddyLook?: string
   templateId?: string
   knativeServiceName?: string
   settings?: Record<string, unknown>

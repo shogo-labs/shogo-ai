@@ -14,6 +14,7 @@ import { cn } from "@shogo/shared-ui/primitives"
 import { Terminal, Loader2, CheckCircle2, XCircle, ChevronRight, ChevronDown } from "lucide-react-native"
 import type { ToolCallData } from "../tools/types"
 import { parseShellCommand, sepLabel } from "../tools/summary"
+import { CredentialChip } from "./CredentialChip"
 
 const MAX_OUTPUT_LINES = 30
 const MAX_OUTPUT_CHARS = 3000
@@ -169,6 +170,7 @@ function ExecWidgetImpl({
             </Fragment>
           ))}
         </Text>
+        <CredentialChip credential={tool.credential} />
         {durationMs != null && tool.state !== "streaming" && (
           <Text className="hidden group-hover:flex font-mono text-[9px] text-muted-foreground mr-1">
             {formatDuration(durationMs)}

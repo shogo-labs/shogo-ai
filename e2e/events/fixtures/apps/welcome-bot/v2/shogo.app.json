@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "scopes": ["members:read", "chat:write"],
+  "optionalScopes": ["members:read.email"],
+  "requiredToolkits": ["github"],
+  "events": [
+    { "type": "member.joined", "target": "hook", "name": "Welcome" },
+    {
+      "type": "composio.github.GITHUB_ISSUE_ADDED_EVENT",
+      "target": "agent",
+      "name": "Issue triage",
+      "prompt": "Triage the new GitHub issue and post a summary.",
+      "config": { "owner": "acme", "repo": "app" }
+    },
+    { "type": "member.joined", "target": "agent", "name": "Greeter", "prompt": "Say hi to the new member in #general." }
+  ]
+}

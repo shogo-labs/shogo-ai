@@ -121,12 +121,13 @@ echo -e "${YELLOW}Pre-pulling required images...${NC}"
 
 # Pull images if not present
 docker pull postgres:16-alpine 2>/dev/null || true
+docker build -q -t shogo-postgres:16-pgvector "$PROJECT_ROOT/docker/postgres"
 docker pull redis:7-alpine 2>/dev/null || true
 docker pull minio/minio:latest 2>/dev/null || true
 docker pull minio/mc:latest 2>/dev/null || true
 
 # Import images into k3d
-k3d image import postgres:16-alpine redis:7-alpine minio/minio:latest minio/mc:latest -c $CLUSTER_NAME 2>/dev/null || true
+k3d image import postgres:16-alpine shogo-postgres:16-pgvector redis:7-alpine minio/minio:latest minio/mc:latest -c $CLUSTER_NAME 2>/dev/null || true
 
 echo -e "${GREEN}✓${NC} Images pre-pulled"
 echo ""

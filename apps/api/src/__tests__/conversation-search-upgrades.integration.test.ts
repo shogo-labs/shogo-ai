@@ -1,0 +1,315 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
+/**
+ * Search upgrades: has:/date filters, attachment text, the embedding
+ * indexer, semantic search, and "ask the workspace" with citations.
+ */
+
+import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
+import { rmSync } from 'fs'
+import { Hono } from 'hono'
+import { zipSync } from 'fflate'
+import { seedWorkspace, setupChannelsTestDb, type SeededWorkspace } from './helpers/channels-test-db'
+
+const { dir } = setupChannelsTestDb()
+process.env.SHOGO_DATA_DIR = dir
+
+const { prisma } = await import('../lib/prisma')
+const { conversationRoutes } = await import('../routes/conversations')
+const bus = await import('../lib/conversation-bus')
+const service = await import('../services/conversation.service')
+const search = await import('../services/conversation-search')
+const semantic = await import('../services/conversation-semantic')
+const fileText = await import('../services/conversation-file-text')
+
+const db = prisma as any
+let seed: SeededWorkspace
+let generalId: string
+let privateId: string
+
+const app = new Hono()
+app.route('/api', conversationRoutes({ resolveUserId: async (c) => c.req.header('x-user') ?? null }))
+
+/** Toy embedding: one dimension per concept, with synonyms sharing a dimension. */
+const CONCEPTS = [
+  ['revenue', 'sales', 'income', 'arr'],
+  ['launch', 'ship', 'release'],
+  ['bug', 'crash', 'outage', 'incident'],
+  ['hiring', 'recruit', 'candidate'],
+]
+const toyProvider = {
+  model: 'toy-1',
+  calls: 0,
+  async embed(texts: string[]) {
+    this.calls++
+    return texts.map((t) => {
+      const words = t.toLowerCase().split(/[^a-z]+/)
+      return CONCEPTS.map((group) => words.filter((w) => group.includes(w)).length)
+    })
+  },
+}
+
+async function find(user: string, q: string, extra = '') {
+  const res = await app.request(`/api/workspaces/${seed.workspaceId}/conversations/search?q=${encodeURIComponent(q)}${extra}`, {
+    headers: { 'x-user': user },
+  })
+  const json: any = await res.json()
+  return { status: res.status, texts: (json.results ?? []).map((r: any) => r.message.text).sort(), json }
+}
+
+/** A one-page PDF with a single line of text. */
+function minimalPdf(text: string): Uint8Array {
+  const objects = [
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>',
+    (() => {
+      const stream = `BT /F1 12 Tf 72 720 Td (${text}) Tj ET`
+      return `<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`
+    })(),
+    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
+  ]
+  let out = '%PDF-1.4\n'
+  const offsets: number[] = []
+  objects.forEach((body, i) => {
+    offsets.push(out.length)
+    out += `${i + 1} 0 obj\n${body}\nendobj\n`
+  })
+  const xref = out.length
+  out += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`
+  for (const o of offsets) out += `${String(o).padStart(10, '0')} 00000 n \n`
+  out += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`
+  return new TextEncoder().encode(out)
+}
+
+const post = (conversationId: string, authorUserId: string, text: string, extra: Record<string, unknown> = {}) =>
+  service.postMessage({ conversationId, authorType: 'user', authorUserId, text, ...extra } as any)
+
+beforeAll(async () => {
+  await bus._resetConversationBusForTests(null)
+  seed = await seedWorkspace(db)
+  for (const user of [seed.owner, seed.member, seed.viewer]) await service.listConversationsForUser(seed.workspaceId, user)
+  const list = await service.listConversationsForUser(seed.workspaceId, seed.owner)
+  generalId = list.find((c: any) => c.slug === 'general')!.id
+  privateId = (await service.createChannel({ workspaceId: seed.workspaceId, userId: seed.owner, name: 'money', kind: 'private' })).id
+
+  const report = await db.conversationAttachment.create({
+    data: {
+      conversationId: generalId, uploaderUserId: seed.owner, storageKey: 'k1', name: 'q3-notes.md', mimeType: 'text/markdown', size: 40,
+      extractedText: await fileText.extractAttachmentText(new TextEncoder().encode('# Q3\nChurn dropped to 2%'), 'text/markdown', 'q3-notes.md'),
+    },
+  })
+  const photo = await db.conversationAttachment.create({
+    data: { conversationId: generalId, uploaderUserId: seed.owner, storageKey: 'k2', name: 'team.png', mimeType: 'image/png', size: 10 },
+  })
+  await post(generalId, seed.owner, 'Here are the notes', { attachmentIds: [report.id] })
+  await post(generalId, seed.owner, 'Offsite photo', { attachmentIds: [photo.id] })
+  await post(generalId, seed.member, 'Docs are at https://example.com/docs')
+  const pinned = await post(generalId, seed.member, 'Release checklist lives here')
+  await db.conversationPin.create({ data: { conversationId: generalId, messageId: pinned.row.id, pinnedById: seed.owner } })
+  await post(generalId, seed.member, 'We will ship the release on Friday')
+  await post(generalId, seed.owner, 'The crash on login is fixed')
+  await post(privateId, seed.owner, 'Sales numbers beat the plan this quarter')
+  const old = await post(generalId, seed.member, 'Old kickoff from the summer')
+  await db.conversationMessage.update({ where: { id: old.row.id }, data: { createdAt: new Date('2026-07-15T12:00:00Z') } })
+})
+
+afterAll(async () => {
+  semantic._setEmbeddingProviderForTests(undefined)
+  semantic._setAskRunnerForTests(null)
+  await (prisma as any).$disconnect?.()
+  rmSync(dir, { recursive: true, force: true })
+})
+
+describe('query parsing', () => {
+  test('has: and date filters are pulled out; unknown values stay as words', () => {
+    const q = search.parseSearchQuery('plan has:files has:link before:2026-09-01 after:yesterday during:today has:nonsense')
+    expect(q.has).toEqual(['file', 'link'])
+    expect(q).toMatchObject({ before: '2026-09-01', after: 'yesterday', on: 'today', text: 'plan has:nonsense' })
+  })
+
+  test('local day boundaries follow the time zone', () => {
+    expect(search.localDayStart('2026-09-01', 'UTC').toISOString()).toBe('2026-09-01T00:00:00.000Z')
+    expect(search.localDayStart('2026-09-01', 'America/New_York').toISOString()).toBe('2026-09-01T04:00:00.000Z')
+    const now = new Date('2026-09-30T02:00:00Z')
+    expect(search.localDayStart('today', 'America/Los_Angeles', now).toISOString()).toBe('2026-09-29T07:00:00.000Z')
+    expect(search.localDayStart('yesterday', 'UTC', now).toISOString()).toBe('2026-09-29T00:00:00.000Z')
+  })
+})
+
+describe('filters and file text', () => {
+  test('has:file, has:image, has:link, has:pin', async () => {
+    expect((await find(seed.owner, 'has:file')).texts).toEqual(['Here are the notes', 'Offsite photo'])
+    expect((await find(seed.owner, 'has:image')).texts).toEqual(['Offsite photo'])
+    expect((await find(seed.owner, 'has:link')).texts).toEqual(['Docs are at https://example.com/docs'])
+    expect((await find(seed.owner, 'has:pin')).texts).toEqual(['Release checklist lives here'])
+    expect((await find(seed.owner, 'release has:pin')).texts).toEqual(['Release checklist lives here'])
+  })
+
+  test('before:, after:, and on: bound by day', async () => {
+    expect((await find(seed.owner, 'kickoff before:2026-08-01')).texts).toEqual(['Old kickoff from the summer'])
+    expect((await find(seed.owner, 'kickoff after:2026-08-01')).texts).toEqual([])
+    expect((await find(seed.owner, 'on:2026-07-15')).texts).toEqual(['Old kickoff from the summer'])
+    expect((await find(seed.owner, 'on:2026-07-14')).texts).toEqual([])
+    expect((await find(seed.owner, 'after:2026-09-01 before:2026-08-01')).texts).toEqual([])
+  })
+
+  test('attachment names and extracted text are searchable', async () => {
+    expect((await find(seed.owner, 'churn')).texts).toEqual(['Here are the notes'])
+    expect((await find(seed.owner, 'q3-notes')).texts).toEqual(['Here are the notes'])
+  })
+
+  test('text extraction skips binary files and caps length', async () => {
+    const enc = (t: string) => new TextEncoder().encode(t)
+    expect(await fileText.extractAttachmentText(new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0, 0, 1]), 'image/png', 'a.png')).toBeNull()
+    expect(await fileText.extractAttachmentText(new Uint8Array([104, 0, 105]), 'text/plain', 'a.txt')).toBeNull()
+    expect(await fileText.extractAttachmentText(enc('<p>Hello   <b>there</b></p>'), 'text/html', 'a.html')).toBe('Hello there')
+    expect(await fileText.extractAttachmentText(enc('const a = 1'), 'application/octet-stream', 'x.ts')).toBe('const a = 1')
+    const long = await fileText.extractAttachmentText(enc('a'.repeat(200_000)), 'text/plain', 'big.txt')
+    expect(long!.length).toBe(fileText.MAX_EXTRACTED_CHARS)
+  })
+
+  test('Word, PowerPoint, and Excel files are read from their XML', async () => {
+    const enc = (t: string) => new TextEncoder().encode(t)
+    const docx = zipSync({
+      'word/document.xml': enc('<w:document><w:body><w:p><w:r><w:t>Renewal terms</w:t></w:r><w:tab/><w:r><w:t>net 30 &amp; auto-renew</w:t></w:r></w:p><w:p><w:r><w:t>Second para</w:t></w:r></w:p></w:body></w:document>'),
+      'word/styles.xml': enc('<w:styles><w:t>IGNORED STYLE TEXT</w:t></w:styles>'),
+    })
+    expect(await fileText.extractAttachmentText(docx, 'application/octet-stream', 'contract.docx')).toBe('Renewal terms net 30 & auto-renew\nSecond para')
+    const pptx = zipSync({
+      'ppt/slides/slide2.xml': enc('<p:sld><a:p><a:r><a:t>Roadmap</a:t></a:r></a:p></p:sld>'),
+      'ppt/slides/slide1.xml': enc('<p:sld><a:p><a:r><a:t>Kickoff</a:t></a:r></a:p></p:sld>'),
+    })
+    expect(await fileText.extractAttachmentText(pptx, 'application/vnd.openxmlformats-officedocument.presentationml.presentation', 'deck')).toBe('Kickoff\nRoadmap')
+    const xlsx = zipSync({ 'xl/sharedStrings.xml': enc('<sst><si><t>Region</t></si><si><t>EMEA</t></si></sst>') })
+    expect(await fileText.extractAttachmentText(xlsx, 'application/octet-stream', 'numbers.xlsx')).toBe('Region\nEMEA')
+    expect(await fileText.extractAttachmentText(enc('not a zip'), 'application/octet-stream', 'broken.docx')).toBeNull()
+  })
+
+  test('PDF text is extracted', async () => {
+    const text = await fileText.extractAttachmentText(minimalPdf('Quarterly churn fell to two percent'), 'application/pdf', 'report.pdf')
+    expect(text).toContain('Quarterly churn fell to two percent')
+  })
+
+  // Postgres mode runs outside local mode, where uploads go to S3.
+  test.skipIf(!!process.env.CHANNELS_TEST_PG_URL)('uploads are searchable by their file text once extraction finishes', async () => {
+    const form = new FormData()
+    form.append('file', new File([minimalPdf('Vendor onboarding checklist')], 'onboarding.pdf', { type: 'application/pdf' }))
+    const res = await app.request(`/api/conversations/${generalId}/attachments`, { method: 'POST', headers: { 'x-user': seed.owner }, body: form })
+    expect(res.status).toBe(201)
+    const { attachment } = (await res.json()) as any
+    await post(generalId, seed.owner, 'Sharing the doc', { attachmentIds: [attachment.id] })
+    for (let i = 0; i < 50; i++) {
+      const row = await db.conversationAttachment.findUnique({ where: { id: attachment.id } })
+      if (row?.extractedText) break
+      await new Promise((r) => setTimeout(r, 50))
+    }
+    expect((await find(seed.owner, 'onboarding checklist')).texts).toEqual(['Sharing the doc'])
+  })
+})
+
+describe('semantic search', () => {
+  test('is unavailable without an embedding provider', async () => {
+    semantic._setEmbeddingProviderForTests(null)
+    expect(await semantic.indexPendingMessages()).toBe(0)
+    const res = await find(seed.owner, 'revenue', '&mode=semantic')
+    expect(res.json.semantic).toBe(false)
+  })
+
+  test('the indexer embeds every recent message once and re-embeds after edits', async () => {
+    semantic._setEmbeddingProviderForTests(toyProvider)
+    const now = new Date()
+    let total = 0
+    for (let n = await semantic.indexPendingMessages(now, 3); n; n = await semantic.indexPendingMessages(now, 3)) total += n
+    const recent = await db.conversationMessage.count({
+      where: { workspaceId: seed.workspaceId, deletedAt: null, authorType: { not: 'system' }, createdAt: { gte: new Date(Date.now() - 90 * 86_400_000) } },
+    })
+    expect(total).toBe(recent)
+    expect(await semantic.indexPendingMessages(now)).toBe(0)
+
+    const crash = await db.conversationMessage.findFirst({ where: { text: 'The crash on login is fixed' } })
+    await service.editMessage(crash.id, seed.owner, 'The outage on login is fixed')
+    expect(await semantic.indexPendingMessages(now)).toBe(1)
+  })
+
+  test('finds messages by meaning, only where the viewer can read', async () => {
+    const owner = await find(seed.owner, 'what was our revenue?', '&mode=semantic')
+    expect(owner.json.semantic).toBe(true)
+    expect(owner.texts).toEqual(['Sales numbers beat the plan this quarter'])
+    expect((await find(seed.viewer, 'what was our revenue?', '&mode=semantic')).texts).toEqual([])
+    expect((await find(seed.owner, 'was there an incident?', '&mode=semantic')).texts).toEqual(['The outage on login is fixed'])
+  })
+
+  test('1536-dimension vectors (the indexed size) rank the same way', async () => {
+    const reindex = async () => {
+      await db.conversationMessageEmbedding.deleteMany({ where: { workspaceId: seed.workspaceId } })
+      while (await semantic.indexPendingMessages(new Date())) {}
+    }
+    semantic._setEmbeddingProviderForTests({
+      model: 'toy-1536',
+      embed: async (texts: string[]) => (await toyProvider.embed(texts)).map((v) => [...v, ...new Array(1536 - v.length).fill(0)]),
+    })
+    try {
+      await reindex()
+      expect((await find(seed.owner, 'what was our revenue?', '&mode=semantic')).texts).toEqual(['Sales numbers beat the plan this quarter'])
+      expect((await find(seed.viewer, 'what was our revenue?', '&mode=semantic')).texts).toEqual([])
+      if (!process.env.CHANNELS_TEST_PG_URL) return
+      const q = `[${[1, ...new Array(1535).fill(0)].join(',')}]`
+      const plan: any[] = await db.$transaction(async (tx: any) => {
+        await tx.$executeRawUnsafe('SET LOCAL enable_seqscan = off')
+        return tx.$queryRawUnsafe(
+          `EXPLAIN SELECT e."messageId" FROM conversation_message_embeddings e
+           WHERE vector_dims(e.embedding) = 1536 ORDER BY e.embedding::vector(1536) <=> $1::vector(1536) LIMIT 5`, q,
+        )
+      })
+      expect(plan.map((r) => Object.values(r)[0]).join('\n')).toContain('conversation_message_embeddings_hnsw_1536')
+    } finally {
+      semantic._setEmbeddingProviderForTests(toyProvider)
+      await reindex()
+    }
+  })
+})
+
+describe('ask the workspace', () => {
+  async function ask(user: string, question: string) {
+    const res = await app.request(`/api/workspaces/${seed.workspaceId}/conversations/ask`, {
+      method: 'POST',
+      headers: { 'x-user': user, 'content-type': 'application/json' },
+      body: JSON.stringify({ question }),
+    })
+    return { status: res.status, json: (await res.json()) as any }
+  }
+
+  test('answers from readable sources and marks which ones were cited', async () => {
+    let prompt = ''
+    semantic._setAskRunnerForTests(async (args) => {
+      prompt = args.prompt
+      return { text: 'Sales beat the plan [1].', failed: false }
+    })
+    const { status, json } = await ask(seed.owner, 'How did revenue do?')
+    expect(status).toBe(200)
+    expect(json.answer).toBe('Sales beat the plan [1].')
+    expect(json.citations[0]).toMatchObject({ n: 1, cited: true, message: { text: 'Sales numbers beat the plan this quarter' } })
+    expect(json.citations[0].conversation.name).toBe('money')
+    expect(prompt).toContain('[1] ')
+    expect(prompt).toContain('#money')
+
+    const viewer = await ask(seed.viewer, 'How did revenue do?')
+    expect(viewer.json.citations.map((c: any) => c.message.text)).not.toContain('Sales numbers beat the plan this quarter')
+  })
+
+  test('falls back to keyword sources without embeddings', async () => {
+    semantic._setEmbeddingProviderForTests(null)
+    semantic._setAskRunnerForTests(async () => ({ text: 'It ships Friday [1].', failed: false }))
+    const { json } = await ask(seed.owner, 'When is the release happening?')
+    expect(json.semantic).toBe(false)
+    expect(json.citations.map((c: any) => c.message.text)).toContain('We will ship the release on Friday')
+  })
+
+  test('rejects empty questions and reports agent failures', async () => {
+    expect((await ask(seed.owner, '  ')).status).toBe(400)
+    semantic._setAskRunnerForTests(async () => ({ text: '', failed: true, error: 'down' }))
+    expect((await ask(seed.owner, 'When is the release happening?')).status).toBe(502)
+    expect((await ask(seed.outsider, 'anything')).status).toBe(403)
+  })
+})

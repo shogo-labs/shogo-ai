@@ -26,7 +26,7 @@ concurrency:
   cancel-in-progress: ${{ github.ref == 'refs/heads/main' }}
 
 env:
-  BUN_VERSION: '1.3.11'
+  BUN_VERSION: '1.4.2'
   # PINNED, do not float to '24'. Node 24.16.0 silently breaks
   # @electron/packager 18.4.4: packaging runs through "Copying files /
   # Finalizing package" and exits 0 without producing Shogo.app, bricking the
@@ -72,6 +72,86 @@ jobs:
         run: |
           bun scripts/desktop-next-beta-version.ts
           echo "short_sha=$(git rev-parse --short=7 HEAD)" >> "$GITHUB_OUTPUT"
+
+  trigger-ios-beta:
+    # The iOS build does not depend on any desktop artifact, so start it as
+    # soon as the beta version is known instead of after the ~25min desktop
+    # build. The tag is created here (the later release step reuses it) and
+    # the run is dispatched on main with release_tag, so it builds the tagged
+    # commit while sharing main's ccache. GITHUB_TOKEN-created tags do not
+    # trigger tag-push workflows, hence the explicit dispatch.
+    name: Trigger iOS beta TestFlight build
+    needs: resolve-version
+    if: needs.resolve-version.outputs.channel == 'beta'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      actions: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      BETA_TAG: v${{ needs.resolve-version.outputs.version }}
+    steps:
+      - name: Create beta tag
+        run: |
+          set -euo pipefail
+          EXISTING=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$BETA_TAG" --jq .object.sha 2>/dev/null || true)
+          if [ -z "$EXISTING" ]; then
+            gh api "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/$BETA_TAG" -f sha="$GITHUB_SHA" >/dev/null
+            echo "Created ${BETA_TAG} at ${GITHUB_SHA}."
+          elif [ "$EXISTING" != "$GITHUB_SHA" ]; then
+            echo "::error::${BETA_TAG} already points at ${EXISTING}, not ${GITHUB_SHA}."
+            exit 1
+          else
+            echo "${BETA_TAG} already exists at ${GITHUB_SHA}."
+          fi
+
+      - name: Dispatch agent-runtime publish
+        # Remote-SSH bootstraps shogo-agent-runtime-<target>.tar.gz from the
+        # release matching the desktop version. The tag above is minted with
+        # GITHUB_TOKEN, so publish-agent-runtime.yml's `push: tags` trigger
+        # never fires for it and beta installs would 404. Dispatch it
+        # explicitly; for a dispatched beta it uploads to the (already public)
+        # prerelease instead of a draft, since finalize-release.yml does not
+        # coordinate beta tags.
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3 4 5; do
+            if gh workflow run publish-agent-runtime.yml \
+              --repo "$GITHUB_REPOSITORY" \
+              --ref main \
+              --field tag="$BETA_TAG" \
+              --field channel=beta; then
+              echo "Queued agent-runtime publish for ${BETA_TAG}."
+              exit 0
+            fi
+            if [ "$attempt" -eq 5 ]; then
+              echo "::error::Failed to dispatch agent-runtime publish for ${BETA_TAG}."
+              exit 1
+            fi
+            sleep 5
+          done
+
+      - name: Dispatch iOS workflow
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3 4 5; do
+            if gh workflow run ios.yml \
+              --repo "$GITHUB_REPOSITORY" \
+              --ref main \
+              --field mode=full \
+              --field environment=production \
+              --field submit=true \
+              --field release_tag="$BETA_TAG"; then
+              echo "Queued iOS TestFlight build for ${BETA_TAG}."
+              exit 0
+            fi
+            if [ "$attempt" -eq 5 ]; then
+              echo "::error::Failed to dispatch iOS TestFlight build for ${BETA_TAG}."
+              exit 1
+            fi
+            sleep 5
+          done
 
   preflight:
     # Release-blocking sanity checks that have no platform dependencies.
@@ -156,8 +236,8 @@ jobs:
         uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
           path: ~/.bun/install/cache
-          key: bun-web-${{ hashFiles('bun.lock') }}
-          restore-keys: bun-web-
+          key: bun-web-bun${{ env.BUN_VERSION }}-${{ hashFiles('bun.lock') }}
+          restore-keys: bun-web-bun${{ env.BUN_VERSION }}-
 
       - name: Install dependencies
         # See desktop-release-windows.yml for why GITHUB_TOKEN is required:
@@ -263,8 +343,8 @@ jobs:
         uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
           path: ~/.bun/install/cache
-          key: bun-desktop-darwin-${{ matrix.arch }}-${{ hashFiles('bun.lock') }}
-          restore-keys: bun-desktop-darwin-${{ matrix.arch }}-
+          key: bun-desktop-darwin-${{ matrix.arch }}-bun${{ env.BUN_VERSION }}-${{ hashFiles('bun.lock') }}
+          restore-keys: bun-desktop-darwin-${{ matrix.arch }}-bun${{ env.BUN_VERSION }}-
 
       - name: Download web build
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -704,7 +784,10 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          sparse-checkout: scripts/ci
+          # The smoke imports the dependency-free PTY frame codec from pty-core.
+          sparse-checkout: |
+            scripts/ci
+            packages/pty-core/src
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: ${{ env.BUN_VERSION }}
@@ -801,7 +884,7 @@ jobs:
           # folder, trust it, spawn its runtime and a terminal.
           SMOKE=skipped
           if [ "$RESULT" = "pass" ]; then
-            if bun scripts/ci/desktop-packaged-smoke.ts --log "$LOG"; then SMOKE=pass; else SMOKE=fail; fi
+            if bun scripts/ci/desktop-packaged-smoke.ts --log "$LOG" --bundled-bun "$APP/Contents/Resources/bun/bun"; then SMOKE=pass; else SMOKE=fail; fi
           fi
 
           echo "=== main.log ==="
@@ -876,11 +959,13 @@ jobs:
           # published only once all four runs for this commit succeed.
           #
           # Beta: publish immediately (not draft, prerelease, not "latest").
-          # Only this workflow + desktop-release-windows target a beta tag
-          # (the tag is minted via GITHUB_TOKEN, which doesn't re-trigger
-          # `push: tags` workflows — see scripts/desktop-next-beta-version.ts),
-          # so there's no finalize-release.yml coordinator to wait for and
-          # no reason to hide a beta build from opted-in users.
+          # Only this workflow, desktop-release-windows, and a dispatched
+          # publish-agent-runtime target a beta tag (the tag is minted via
+          # GITHUB_TOKEN, which doesn't re-trigger `push: tags` workflows —
+          # see scripts/desktop-next-beta-version.ts; trigger-ios-beta
+          # dispatches the runtime publish explicitly), so there's no
+          # finalize-release.yml coordinator to wait for and no reason to hide
+          # a beta build from opted-in users.
           draft: ${{ needs.resolve-version.outputs.channel != 'beta' }}
           prerelease: ${{ needs.resolve-version.outputs.channel == 'beta' }}
           make_latest: ${{ needs.resolve-version.outputs.channel != 'beta' }}
@@ -918,75 +1003,15 @@ jobs:
             --field environment=production \
             --field submit=true
 
-      - name: Ensure matching beta release exists
-        # Beta versions advance to the next patch after the stable production
-        # tag. If that beta already exists, do not start another pair of
-        # desktop builds; otherwise dispatch both platform workflows. The
-        # macOS workflow will also dispatch the beta TestFlight build.
-        if: needs.resolve-version.outputs.channel != 'beta' && startsWith(github.ref, 'refs/tags/v')
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.ref_name }}
-        run: |
-          set -euo pipefail
-          if [[ ! "$RELEASE_TAG" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
-            echo "Release ${RELEASE_TAG} is not a stable vX.Y.Z tag; skipping beta companion."
-            exit 0
-          fi
-
-          major="${BASH_REMATCH[1]}"
-          minor="${BASH_REMATCH[2]}"
-          patch=$((10#${BASH_REMATCH[3]} + 1))
-          beta_prefix="v${major}.${minor}.${patch}-beta."
-          beta_tag=$(gh release list \
-            --repo "$GITHUB_REPOSITORY" \
-            --limit 200 \
-            --json tagName,isPrerelease |
-            jq -r --arg prefix "$beta_prefix" \
-              '[.[] | select(.isPrerelease and (.tagName | startswith($prefix)))][0].tagName // empty')
-
-          if [ -n "$beta_tag" ]; then
-            echo "Matching beta release ${beta_tag} already exists."
-            exit 0
-          fi
-
-          echo "No beta release matching ${beta_prefix}* exists; dispatching macOS and Windows beta builds."
-          gh workflow run desktop-release-macos.yml \
-            --repo "$GITHUB_REPOSITORY" \
-            --ref "$RELEASE_TAG" \
-            --field channel=beta
-          gh workflow run desktop-release-windows.yml \
-            --repo "$GITHUB_REPOSITORY" \
-            --ref "$RELEASE_TAG" \
-            --field channel=beta
-
-      - name: Trigger iOS beta TestFlight build
-        # Beta tags are created with GITHUB_TOKEN, so their tag push does not
-        # start tag-triggered workflows. Dispatch the iOS workflow explicitly
-        # after the tag/release exists.
-        if: needs.resolve-version.outputs.channel == 'beta'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          BETA_TAG: v${{ needs.resolve-version.outputs.version }}
-        run: |
-          set -euo pipefail
-          for attempt in 1 2 3 4 5; do
-            if gh workflow run ios.yml \
-              --repo "$GITHUB_REPOSITORY" \
-              --ref "$BETA_TAG" \
-              --field mode=full \
-              --field environment=production \
-              --field submit=true; then
-              echo "Queued iOS TestFlight build from ${BETA_TAG}."
-              exit 0
-            fi
-            if [ "$attempt" -eq 5 ]; then
-              echo "::error::Failed to dispatch iOS TestFlight build from ${BETA_TAG}."
-              exit 1
-            fi
-            echo "Tag ${BETA_TAG} is not visible to the workflow API yet; retrying..."
-            sleep 5
-          done
+      # There is deliberately NO "beta companion" build here. A stable tag used
+      # to dispatch a second full macOS + Windows (+ iOS) build of the same
+      # commit as `v<next patch>-beta.<ts>` so the beta feed stayed ahead of
+      # stable. That is unnecessary: the beta feed (releases-worker.js.tftpl)
+      # serves the semver-greatest of stable AND prerelease releases, so beta
+      # installs already receive the new stable, and the next beta built from
+      # main computes `nextPatch(latest stable)-beta.<ts>` and outranks it. The
+      # companion doubled build time and signing quota per release, and its
+      # runs were mistaken for the stable run by finalize-release.yml.
 
       - name: Write beta release notes
         if: needs.resolve-version.outputs.channel == 'beta'
@@ -1037,8 +1062,9 @@ jobs:
         # installers up top and everything else (CLI / runtime / auto-update
         # feeds) tucked into a collapsed section. `gh release edit` overwrites
         # the body regardless of which workflow created the release first.
-        # Beta releases get their own short notes above instead (no CLI /
-        # runtime assets ever land on a beta tag to explain away).
+        # Beta releases get their own short notes above instead (only the
+        # desktop installers and the agent-runtime tarballs land on a beta
+        # tag, so there is no CLI listing to tuck away).
         if: needs.resolve-version.outputs.channel != 'beta'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

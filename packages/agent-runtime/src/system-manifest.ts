@@ -76,6 +76,32 @@ export const ProjectSpecSchema = z.object({
   integrations: z.array(z.string()).default([]),
 })
 
+const CHANNEL_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,79}$/
+
+export const AgentTriggerSchema = z.enum(['mention', 'all', 'keyword', 'auto'])
+
+/** `isolated` agents (e.g. a reviewer) see only the hand-off, the task's criteria and links, never the discussion. */
+export const AgentContextModeSchema = z.enum(['shared', 'isolated'])
+
+/** One member of a team channel: a manifest project's agent, a group (by handle) or a person (by email). */
+export const TeamChannelMemberSchema = z.union([
+  z.object({
+    project: z.string().regex(KEY_RE),
+    agentTrigger: AgentTriggerSchema.default('mention'),
+    keywords: z.array(z.string().min(1)).optional(),
+    contextMode: AgentContextModeSchema.default('shared'),
+  }).strict(),
+  z.object({ group: z.string().min(1).transform((h) => h.replace(/^@/, '')) }).strict(),
+  z.object({ user: z.string().email().transform((e) => e.toLowerCase()) }).strict(),
+])
+
+export const TeamChannelSpecSchema = z.object({
+  name: z.string().transform((n) => n.replace(/^#/, '')).pipe(z.string().regex(CHANNEL_NAME_RE, 'lowercase letters, digits, - and _')),
+  topic: z.string().max(500).optional(),
+  private: z.boolean().default(false),
+  members: z.array(TeamChannelMemberSchema).default([]),
+})
+
 export const SystemManifestSchema = z.object({
   version: z.literal(1),
   name: z.string().min(1).max(120),
@@ -89,11 +115,19 @@ export const SystemManifestSchema = z.object({
    */
   anchor: z.string().regex(KEY_RE).optional(),
   projects: z.array(ProjectSpecSchema).min(1),
+  /**
+   * Workspace team chat channels the system works in, with their members.
+   * Distinct from a project's `channels` (Slack/Telegram/... connections).
+   */
+  teamChannels: z.array(TeamChannelSpecSchema).default([]),
 })
 
 export type SystemManifest = z.infer<typeof SystemManifestSchema>
 export type ProjectSpec = z.infer<typeof ProjectSpecSchema>
 export type AttachMode = z.infer<typeof AttachModeSchema>
+export type TeamChannelSpec = z.infer<typeof TeamChannelSpecSchema>
+export type AgentTrigger = z.infer<typeof AgentTriggerSchema>
+export type AgentContextMode = z.infer<typeof AgentContextModeSchema>
 
 export interface ManifestParseResult {
   ok: boolean
@@ -139,6 +173,19 @@ export function parseSystemManifest(source: string | unknown): ManifestParseResu
     }
     for (const path of Object.keys(p.files)) {
       if (!isSafeRelativePath(path)) errors.push(`${p.key}: unsafe file path "${path}"`)
+    }
+  }
+  const channelNames = new Set<string>()
+  for (const ch of manifest.teamChannels) {
+    if (channelNames.has(ch.name)) errors.push(`duplicate team channel "${ch.name}"`)
+    channelNames.add(ch.name)
+    const agents = new Set<string>()
+    for (const m of ch.members) {
+      if (!('project' in m)) continue
+      if (!keys.has(m.project)) errors.push(`teamChannels.${ch.name}: member references unknown key "${m.project}"`)
+      if (agents.has(m.project)) errors.push(`teamChannels.${ch.name}: "${m.project}" is listed twice`)
+      agents.add(m.project)
+      if (m.agentTrigger === 'keyword' && !m.keywords?.length) errors.push(`teamChannels.${ch.name}: "${m.project}" uses agentTrigger keyword without keywords`)
     }
   }
   if (manifest.anchor && !keys.has(manifest.anchor)) {
@@ -198,6 +245,46 @@ export interface AttachOp {
 export interface DetachOp { kind: 'detach'; anchorKey: string; anchorId: string; targetKey: string; targetId: string }
 export interface FileOp { kind: 'file'; key: string; projectId: string | null; path: string; action: 'create' | 'update' | 'unchanged' }
 
+/** Live team chat channel, as returned by the agent-channels `team-channels` route. */
+export interface LiveTeamChannel {
+  name: string
+  topic: string | null
+  private: boolean
+  agents: Array<{ projectId: string | null; agentTrigger: string; agentKeywords: string | null; agentContextMode?: string }>
+  userEmails: string[]
+}
+
+export interface LiveTeamChannels {
+  channels: LiveTeamChannel[]
+  /** Group handle → member emails. */
+  groups: Record<string, string[]>
+}
+
+export interface TeamChannelAgentOp {
+  key: string
+  /** null until the project is created earlier in the same apply. */
+  projectId: string | null
+  agentTrigger: AgentTrigger
+  agentKeywords: string | null
+  agentContextMode: AgentContextMode
+}
+
+export interface TeamChannelOp {
+  kind: 'team_channel'
+  name: string
+  action: 'create' | 'update'
+  topic?: string
+  private: boolean
+  /** Agent members to add or re-trigger. */
+  agents: TeamChannelAgentOp[]
+  /** Manifest-managed agents that are members but no longer declared. */
+  removeAgents: Array<{ key: string; projectId: string }>
+  userEmails: string[]
+  groupHandles: string[]
+  /** One-line descriptions of each change, for summaries. */
+  changes: string[]
+}
+
 export interface SystemDiff {
   adopt: AdoptOp[]
   create: CreateOp[]
@@ -205,6 +292,7 @@ export interface SystemDiff {
   attach: AttachOp[]
   detach: DetachOp[]
   files: FileOp[]
+  teamChannels: TeamChannelOp[]
   /** Things `system_apply` cannot do without credentials — surfaced for the user. */
   manual: string[]
   /** True when nothing needs to change. */
@@ -216,6 +304,8 @@ export interface DiffOptions {
   callerProjectId: string
   /** Reader for current file contents inside a bound project; `null` = missing / unreadable. */
   readFile?: (projectId: string, path: string) => string | null
+  /** Current team chat channels; when omitted, `teamChannels` are reported as manual steps. */
+  teamChannels?: LiveTeamChannels
 }
 
 const IMPLICIT_ANCHOR_KEY = '__caller__'
@@ -386,14 +476,110 @@ export function computeSystemDiff(
     }
   }
 
+  const teamChannels = opts.teamChannels
+    ? diffTeamChannels(manifest, bindings, opts.teamChannels, manual)
+    : []
+  if (!opts.teamChannels && manifest.teamChannels.length) {
+    manual.push(`teamChannels: team chat is not reachable from this runtime; create ${manifest.teamChannels.map((c) => `#${c.name}`).join(', ')} by hand`)
+  }
+
   const empty =
+    teamChannels.length === 0 &&
     create.length === 0 &&
     configure.length === 0 &&
     attach.length === 0 &&
     detach.length === 0 &&
     files.every((f) => f.action === 'unchanged')
 
-  return { adopt, create, configure, attach, detach, files, manual, empty }
+  return { adopt, create, configure, attach, detach, files, teamChannels, manual, empty }
+}
+
+function keywordsOf(member: { keywords?: string[] }): string | null {
+  return member.keywords?.length ? member.keywords.map((k) => k.trim()).filter(Boolean).join(', ') : null
+}
+
+function sameKeywords(a: string | null, b: string | null): boolean {
+  const norm = (v: string | null) => (v ?? '').split(',').map((k) => k.trim().toLowerCase()).filter(Boolean).sort().join(',')
+  return norm(a) === norm(b)
+}
+
+/** Channel create/update ops. People are only added; agent members of manifest projects are fully managed. */
+export function diffTeamChannels(
+  manifest: SystemManifest,
+  bindings: Record<string, string>,
+  live: LiveTeamChannels,
+  manual: string[] = [],
+): TeamChannelOp[] {
+  const ops: TeamChannelOp[] = []
+  const byName = new Map(live.channels.map((c) => [c.name, c]))
+  const managedKeys = new Map(Object.entries(bindings).map(([k, v]) => [v, k]))
+  for (const spec of manifest.teamChannels) {
+    const current = byName.get(spec.name) ?? null
+    const changes: string[] = []
+    const agents: TeamChannelAgentOp[] = []
+    const userEmails: string[] = []
+    const groupHandles: string[] = []
+    const members = new Set((current?.userEmails ?? []).map((e) => e.toLowerCase()))
+    const declared = new Set<string>()
+
+    for (const m of spec.members) {
+      if ('project' in m) {
+        const projectId = bindings[m.project] ?? null
+        if (projectId) declared.add(projectId)
+        const agentKeywords = m.agentTrigger === 'keyword' ? keywordsOf(m) : null
+        const existing = projectId ? current?.agents.find((a) => a.projectId === projectId) : undefined
+        if (
+          existing &&
+          existing.agentTrigger === m.agentTrigger &&
+          sameKeywords(existing.agentKeywords, agentKeywords) &&
+          (existing.agentContextMode ?? 'shared') === m.contextMode
+        ) continue
+        agents.push({ key: m.project, projectId, agentTrigger: m.agentTrigger, agentKeywords, agentContextMode: m.contextMode })
+        changes.push(`${existing ? 'retrigger' : 'add'} agent ${m.project} (${m.agentTrigger}${m.contextMode === 'isolated' ? ', isolated' : ''})`)
+      } else if ('group' in m) {
+        const emails = live.groups[m.group]
+        if (!emails) {
+          manual.push(`teamChannels.${spec.name}: group @${m.group} does not exist yet; create it, then re-run system_apply`)
+          continue
+        }
+        if (emails.some((e) => !members.has(e.toLowerCase()))) {
+          groupHandles.push(m.group)
+          changes.push(`add group @${m.group}`)
+        }
+      } else if (!members.has(m.user)) {
+        userEmails.push(m.user)
+        changes.push(`add ${m.user}`)
+      }
+    }
+
+    const removeAgents: TeamChannelOp['removeAgents'] = []
+    for (const a of current?.agents ?? []) {
+      const key = a.projectId ? managedKeys.get(a.projectId) : undefined
+      if (key && !declared.has(a.projectId!)) {
+        removeAgents.push({ key, projectId: a.projectId! })
+        changes.push(`remove agent ${key}`)
+      }
+    }
+
+    const topicChanged = spec.topic !== undefined && (current?.topic ?? null) !== spec.topic
+    if (current && topicChanged) changes.push('topic')
+    const privacyChanged = !!current && current.private !== spec.private
+    if (privacyChanged) changes.push(spec.private ? 'make private' : 'make public')
+    if (current && !changes.length) continue
+    ops.push({
+      kind: 'team_channel',
+      name: spec.name,
+      action: current ? 'update' : 'create',
+      ...(spec.topic !== undefined ? { topic: spec.topic } : {}),
+      private: spec.private,
+      agents,
+      removeAgents,
+      userEmails,
+      groupHandles,
+      changes,
+    })
+  }
+  return ops
 }
 
 export const IMPLICIT_ANCHOR = IMPLICIT_ANCHOR_KEY
@@ -407,5 +593,10 @@ export function summarizeDiff(diff: SystemDiff): string[] {
   for (const a of diff.attach) lines.push(`${a.changeMode ? 'remode' : 'attach'} ${a.anchorKey === IMPLICIT_ANCHOR_KEY ? '(caller)' : a.anchorKey} → ${a.targetKey} [${a.mode}]`)
   for (const d of diff.detach) lines.push(`detach ${d.anchorKey} → ${d.targetKey}`)
   for (const f of diff.files) if (f.action !== 'unchanged') lines.push(`${f.action} ${f.key}/${f.path}`)
+  for (const ch of diff.teamChannels ?? []) {
+    lines.push(ch.action === 'create'
+      ? `create channel #${ch.name}${ch.changes.length ? `: ${ch.changes.join(', ')}` : ''}`
+      : `update channel #${ch.name}: ${ch.changes.join(', ')}`)
+  }
   return lines
 }

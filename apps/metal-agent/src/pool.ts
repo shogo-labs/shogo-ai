@@ -92,6 +92,21 @@ export const REPO_STAGING_DIR = '.shogo/local/repo-staging'
  */
 const REPO_HYDRATED_SLACK_MS = 15_000
 
+/** Header on `/pool/export-repo`: epoch ms of the repo's earliest root commit. */
+const REPO_ROOT_COMMIT_AT_HEADER = 'x-shogo-repo-root-commit-at'
+
+/**
+ * A root commit this close to (or after) the VM's state start was made on this
+ * boot. The slack absorbs guest/host clock skew.
+ */
+const REPO_BORN_ON_BOOT_SLACK_MS = 10 * 60_000
+
+/** A guest's packed `.git` and when its history began (null if not reported). */
+export interface RepoExport {
+  bytes: Uint8Array
+  rootCommitAt: number | null
+}
+
 /** The guest answered `/pool/repo-hydrated` with an error, so it did not adopt. */
 export class RepoHydrateRefusedError extends Error {
   constructor(
@@ -535,6 +550,13 @@ function publishedSubdomainFromEnv(env: Record<string, string>): string | undefi
   const published = env.SHOGO_PUBLISHED_MODE === 'true' || env.SHOGO_PUBLISHED_MODE === '1'
   const subdomain = env.PUBLISHED_SUBDOMAIN
   return published && subdomain ? subdomain : undefined
+}
+
+/** A workspace runtime's member project ids from its assign env; undefined when not given. */
+function workspaceMemberIdsFromEnv(env: Record<string, string>): string[] | undefined {
+  return typeof env.WORKSPACE_PROJECT_IDS === 'string'
+    ? env.WORKSPACE_PROJECT_IDS.split(',').map((id) => id.trim()).filter(Boolean)
+    : undefined
 }
 
 /**
@@ -1145,6 +1167,7 @@ export class MetalWarmPool {
     const assigned = this.assigned.get(runtimeKey)
     if (!assigned) throw new Error(`workspace runtime ${runtimeKey} is not assigned`)
     const env: Record<string, string> = assigned.runtimeToken ? { RUNTIME_AUTH_SECRET: assigned.runtimeToken } : {}
+    await this.flushMembersHeldElsewhere(runtimeKey, [projectId])
     const ref = await this.sourceRef(projectId)
     if (ref) {
       await this.applyArchive(assigned.handle, env, ref, `${projectId} workspace member`, destDir)
@@ -1239,7 +1262,10 @@ export class MetalWarmPool {
           live.lastTouchedAt = Date.now()
           live.lastHealthOk = true
           if (bind?.attachedProjectIds) {
-            live.workspaceMemberIds = [...bind.attachedProjectIds]
+            // Merge, never replace: the caller's attachments omit projects
+            // mounted live into this VM, and dropping them here meant their
+            // work was never backed up.
+            live.workspaceMemberIds = [...new Set([...(live.workspaceMemberIds ?? []), ...bind.attachedProjectIds])]
             this.writeLive(live)
           }
           // `reused`: re-attached an already-running VM (no boot, no resume).
@@ -1328,6 +1354,10 @@ export class MetalWarmPool {
       )
       vmClass = 'standard'
     }
+    if (projectId.startsWith('ws:')) {
+      await this.flushMembersHeldElsewhere(projectId, workspaceMemberIdsFromEnv(env) ?? [])
+      env = await this.withConfirmedNewMembers(env)
+    }
     let vm = this.claim(vmClass)
     if (!vm) vm = await this.heavy.run(() => this.bootOne(false, vmClass))
 
@@ -1372,10 +1402,7 @@ export class MetalWarmPool {
       // them), so this one booted from the image this process was started on.
       bootRootfsIdentity: this.classRootfsIdentity(vm.handle.vmClass),
       runtimeToken: env.RUNTIME_AUTH_SECRET,
-      workspaceMemberIds:
-        typeof env.WORKSPACE_PROJECT_IDS === 'string'
-          ? env.WORKSPACE_PROJECT_IDS.split(',').map((id) => id.trim()).filter(Boolean)
-          : undefined,
+      workspaceMemberIds: workspaceMemberIdsFromEnv(env),
       publishedSubdomain,
       // Provisional: a warm VM boots from the template. Promoted to 'backup'
       // below iff hydrate applies real source; a hydrate that CAN'T confirm the
@@ -1851,17 +1878,107 @@ export class MetalWarmPool {
     return 'lost'
   }
 
+  /** Project ids the guest reports mounted; null when it can't say. */
+  protected async guestMountedMembers(a: AssignedVm, timeoutMs = 10_000): Promise<string[] | null> {
+    try {
+      const res = await fetch(`${a.handle.agentUrl}/internal/workspace/members`, {
+        headers: a.runtimeToken ? { 'x-runtime-token': a.runtimeToken } : {},
+        signal: AbortSignal.timeout(timeoutMs),
+      })
+      if (!res.ok) return null
+      const body = (await res.json()) as { mounted?: Array<{ id?: unknown }> }
+      if (!Array.isArray(body?.mounted)) return null
+      return body.mounted.map((m) => m?.id).filter((id): id is string => typeof id === 'string' && id.length > 0)
+    } catch {
+      return null
+    }
+  }
+
+  /**
+   * The members to back up: the host's list plus anything the guest has
+   * mounted that the host lost track of. A resume or a reused open rebuilds the
+   * host's list from the caller's env, which never includes projects mounted
+   * live, so the guest is the authority on what is on its disk.
+   */
+  private async workspaceMembersForBackup(
+    a: AssignedVm,
+    timeoutMs?: number,
+  ): Promise<{ ids: string[]; guestConfirmed: boolean }> {
+    const known = a.workspaceMemberIds ?? []
+    const mounted = await this.guestMountedMembers(a, timeoutMs)
+    if (!mounted) return { ids: known, guestConfirmed: false }
+    const untracked = mounted.filter((id) => !known.includes(id))
+    const notMounted = known.filter((id) => !mounted.includes(id))
+    if (untracked.length || notMounted.length) {
+      metrics.inc(M.workspaceMemberDrift)
+      console.warn(
+        `[pool] workspace member list for ${a.projectId} disagrees with the guest: ` +
+          `host [${known.join(',')}], guest mounted [${mounted.join(',')}]` +
+          (untracked.length ? ` — now tracking ${untracked.join(',')}` : ''),
+      )
+    }
+    if (untracked.length) {
+      a.workspaceMemberIds = [...known, ...untracked]
+      this.writeLive(a)
+    }
+    return { ids: [...known, ...untracked], guestConfirmed: true }
+  }
+
+  /**
+   * Before `runtimeKey` hydrates `memberIds` from the store, export each one
+   * from any other live VM on this host that holds it, so the new runtime
+   * starts from those files rather than an older backup or, for a project
+   * with no backup yet, the starter. Without this, opening a project in Studio
+   * while a team-chat VM had it mounted gave Studio a fresh starter while the
+   * real work stayed in the other VM. Best effort: never fails the open, and
+   * later writes from either VM stay under the lineage guard.
+   */
+  private async flushMembersHeldElsewhere(runtimeKey: string, memberIds: string[]): Promise<void> {
+    if (!memberIds.length) return
+    const others = [...this.assigned.values()].filter(
+      (o) => o.projectId !== runtimeKey && o.projectId.startsWith('ws:') && this.mgr.isRunning(o.handle),
+    )
+    await Promise.all(
+      others.map(async (other) => {
+        const { ids } = await this.workspaceMembersForBackup(other, 3_000)
+        for (const memberId of memberIds.filter((id) => ids.includes(id))) {
+          try {
+            const bytes = await this.fetchExport(other.handle, other.runtimeToken, `/app/workspace/${memberId}`)
+            if (!bytes) continue
+            const { ok, outcome } = await this.storeMemberSource(other, memberId, bytes)
+            if (ok) metrics.inc(M.memberFlushedForOpen)
+            console.log(
+              `[pool] ${ok ? 'flushed' : `could not flush (${outcome.status})`} ${memberId} from ${other.projectId} ` +
+                `before ${runtimeKey} hydrates it (${bytes.byteLength} bytes)`,
+            )
+          } catch (err: any) {
+            console.warn(
+              `[pool] could not flush ${memberId} from ${other.projectId} before ${runtimeKey} hydrates it:`,
+              err?.message ?? err,
+            )
+          }
+        }
+      }),
+    )
+  }
+
   /** Back up each member's source. Returns the members whose latest source is NOT the durable backup. */
   private async saveWorkspaceMembersToStore(a: AssignedVm): Promise<Array<{ projectId: string; reason: string }>> {
     const failed: Array<{ projectId: string; reason: string }> = []
-    for (const projectId of a.workspaceMemberIds ?? []) {
+    const { ids } = await this.workspaceMembersForBackup(a)
+    for (const projectId of ids) {
       try {
         const bytes = await this.fetchExport(
           a.handle,
           a.runtimeToken,
           `/app/workspace/${projectId}`,
         )
-        if (!bytes) continue
+        if (!bytes) {
+          console.warn(
+            `[pool] workspace member ${projectId} in ${a.projectId} exported nothing (empty or not on disk) — no source backup written`,
+          )
+          continue
+        }
         const { ok, outcome } = await this.storeMemberSource(a, projectId, bytes)
         if (ok) {
           console.log(`[pool] saved workspace member backup for ${projectId} (${bytes.byteLength} bytes)`)
@@ -1931,6 +2048,25 @@ export class MetalWarmPool {
    * written (null when unknown or absent), which the repo hydrate needs to
    * avoid resetting a newer member tree to an older repo HEAD.
    */
+  /**
+   * Add `WORKSPACE_NEW_PROJECT_IDS`: the members the store confirms have no
+   * source backup. The guest seeds the starter only into those, so a lookup
+   * that fails leaves the member out rather than risk seeding over a real
+   * project.
+   */
+  private async withConfirmedNewMembers(env: Record<string, string>): Promise<Record<string, string>> {
+    const memberIds = (env.WORKSPACE_PROJECT_IDS ?? '').split(',').map((id) => id.trim()).filter(Boolean)
+    const confirmed: string[] = []
+    for (const memberId of memberIds) {
+      try {
+        if (!(await this.sourceRef(memberId))) confirmed.push(memberId)
+      } catch (err: any) {
+        console.warn(`[pool] could not confirm workspace member ${memberId} has no backup — not seeding it:`, err?.message ?? err)
+      }
+    }
+    return { ...env, WORKSPACE_NEW_PROJECT_IDS: confirmed.join(',') }
+  }
+
   private async hydrateWorkspaceMembers(
     a: AssignedVm,
     env: Record<string, string>,
@@ -2155,7 +2291,7 @@ export class MetalWarmPool {
     this.writeLive(a)
   }
 
-  protected async fetchRepoExport(handle: FcVmHandle, token?: string): Promise<Uint8Array | null> {
+  protected async fetchRepoExport(handle: FcVmHandle, token?: string): Promise<RepoExport | null> {
     const res = await fetch(`${handle.agentUrl}/pool/export-repo`, {
       method: 'POST',
       headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
@@ -2165,7 +2301,12 @@ export class MetalWarmPool {
     if (res.status === 404) return null
     if (!res.ok) throw new Error(`/pool/export-repo failed (${res.status}): ${await res.text()}`)
     const buf = await res.arrayBuffer()
-    return buf.byteLength ? new Uint8Array(buf) : null
+    if (!buf.byteLength) return null
+    const rootCommitAt = Number(res.headers.get(REPO_ROOT_COMMIT_AT_HEADER))
+    return {
+      bytes: new Uint8Array(buf),
+      rootCommitAt: Number.isFinite(rootCommitAt) && rootCommitAt > 0 ? rootCommitAt : null,
+    }
   }
 
   protected uploadRepoGuarded(
@@ -2187,17 +2328,22 @@ export class MetalWarmPool {
       metrics.inc(M.repoRefused)
       return false
     }
-    const bytes = await this.fetchRepoExport(a.handle, a.runtimeToken)
-    if (!bytes) return false
-    return (await this.storeRepoBytes(a, bytes)) === 'written'
+    const exported = await this.fetchRepoExport(a.handle, a.runtimeToken)
+    if (!exported) return false
+    return (await this.storeRepoBytes(a, exported.bytes, exported.rootCommitAt)) === 'written'
   }
 
   /**
    * Upload `.git` bytes under the lineage guard. `written` = the durable repo
    * now holds them; `quarantined` = diverted to a conflict key (still durable,
-   * needs a human); `lost` = nowhere durable.
+   * needs a human); `lost` = nowhere durable. `rootCommitAt` is when the
+   * exported history began, or null when the guest did not say.
    */
-  private async storeRepoBytes(a: AssignedVm, bytes: Uint8Array): Promise<'written' | 'quarantined' | 'lost'> {
+  private async storeRepoBytes(
+    a: AssignedVm,
+    bytes: Uint8Array,
+    rootCommitAt: number | null,
+  ): Promise<'written' | 'quarantined' | 'lost'> {
     const outcome = await this.uploadRepoGuarded(a.projectId, bytes, {
       lineage: this.repoLineageOf(a),
       preserveOnRefusal: true,
@@ -2212,7 +2358,9 @@ export class MetalWarmPool {
         )
         return 'written'
       case 'conflict':
-        if (!a.repoParentEtag && !a.repoLinked && (await this.promoteUnlinkedRepo(a, bytes))) return 'written'
+        if (!a.repoParentEtag && !a.repoLinked && (await this.promoteUnlinkedRepo(a, bytes, rootCommitAt))) {
+          return 'written'
+        }
         metrics.inc(M.repoConflict)
         console.error(
           `[pool] REFUSED to overwrite repo.git.tar.gz for ${a.projectId} — lineage ` +
@@ -2242,9 +2390,22 @@ export class MetalWarmPool {
    * Then this VM's `.git` supersedes it, with the old archive kept under
    * `conflict/`. Any later write means another VM is live and the conflict
    * stands.
+   *
+   * Never when this VM's history began on this boot (or its start is unknown):
+   * that `.git` was seeded from whatever the workspace held at boot, and
+   * superseding with it discards the durable history it never contained.
    */
-  private async promoteUnlinkedRepo(a: AssignedVm, bytes: Uint8Array): Promise<boolean> {
+  private async promoteUnlinkedRepo(a: AssignedVm, bytes: Uint8Array, rootCommitAt: number | null): Promise<boolean> {
     const since = a.stateSince ?? a.assignedAt
+    if (rootCommitAt === null || rootCommitAt >= since - REPO_BORN_ON_BOOT_SLACK_MS) {
+      console.warn(
+        `[pool] not promoting unlinked repo for ${a.projectId}: its history ` +
+          (rootCommitAt === null
+            ? 'start is unknown'
+            : `began ${new Date(rootCommitAt).toISOString()}, on this VM's boot (${new Date(since).toISOString()})`),
+      )
+      return false
+    }
     let current: { etag: string | null; lastModified: number | null } | null
     try {
       current = await this.statDurableRepo(a.projectId)
@@ -3215,10 +3376,7 @@ export class MetalWarmPool {
       // Carry the runtime token so /pool/export (source backup on suspend) and
       // adopt-on-restart keep working after a resume, not just after an assign.
       runtimeToken: env.RUNTIME_AUTH_SECRET || undefined,
-      workspaceMemberIds:
-        typeof env.WORKSPACE_PROJECT_IDS === 'string'
-          ? env.WORKSPACE_PROJECT_IDS.split(',').map((id) => id.trim()).filter(Boolean)
-          : undefined,
+      workspaceMemberIds: workspaceMemberIdsFromEnv(env),
       // Carry the published marker so a resumed server-backed site keeps
       // exporting its writable state (the resume env re-asserts it).
       publishedSubdomain: publishedSubdomainFromEnv(env),
@@ -3649,7 +3807,7 @@ export class MetalWarmPool {
         outDir,
       )
       let ok = true
-      if (repo) ok = (await this.storeRepoBytes(a, new Uint8Array(readFileSync(repo)))) !== 'lost' && ok
+      if (repo) ok = (await this.storeRepoBytes(a, new Uint8Array(readFileSync(repo)), null)) !== 'lost' && ok
       if (source) ok = (await this.storeSourceBytes(a, new Uint8Array(readFileSync(source)))) && ok
       return ok
     } finally {
@@ -4391,10 +4549,14 @@ export class MetalWarmPool {
     }
     const isWorkspace = a.projectId.startsWith('ws:')
 
-    if (isWorkspace && !a.workspaceMemberIds?.length) {
-      // A resume learns the members from the caller's env; without them every
-      // member backup below would silently cover nothing.
-      steps.push({ step: 'members', ok: false, detail: 'workspace member list unknown; member backups would be skipped' })
+    if (isWorkspace) {
+      // A resume learns the members from the caller's env; unless the guest can
+      // confirm what it has mounted, an empty list means every member backup
+      // below would silently cover nothing.
+      const members = await this.workspaceMembersForBackup(a)
+      if (!members.guestConfirmed && !members.ids.length) {
+        steps.push({ step: 'members', ok: false, detail: 'workspace member list unknown; member backups would be skipped' })
+      }
     }
 
     await run('repo', async () => {
@@ -4407,8 +4569,8 @@ export class MetalWarmPool {
       let out: 'written' | 'quarantined' | 'lost' | 'empty' | undefined
       const exportRepo = () =>
         this.repoFlight.run(a.projectId, async () => {
-          const bytes = await this.fetchRepoExport(a.handle, a.runtimeToken)
-          out = bytes ? await this.storeRepoBytes(a, bytes) : 'empty'
+          const exported = await this.fetchRepoExport(a.handle, a.runtimeToken)
+          out = exported ? await this.storeRepoBytes(a, exported.bytes, exported.rootCommitAt) : 'empty'
           return out === 'written'
         })
       await exportRepo()

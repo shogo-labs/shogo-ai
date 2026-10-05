@@ -51,6 +51,7 @@ export const ProjectModel = types
     siteTitle: types.optional(types.string, ""),
     siteDescription: types.optional(types.string, ""),
     thumbnailUrl: types.optional(types.string, ""),
+    buddyLook: types.optional(types.string, ""),
     templateId: types.optional(types.string, ""),
     knativeServiceName: types.optional(types.string, ""),
     settings: types.optional(types.frozen(), {}),

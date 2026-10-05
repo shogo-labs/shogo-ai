@@ -74,6 +74,10 @@ export {
 export {
   workspaceExperience,
   CANVAS_NAV_HIDDEN,
+  TASKS_NAV_HIDDEN,
+  TEAM_CHAT_TABS,
+  type SidebarTabId,
+  type DockTabId,
   type WorkspaceExperience,
   type WorkspaceExperienceKind,
   type WorkspaceExperienceComposer,

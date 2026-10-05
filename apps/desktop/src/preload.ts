@@ -16,6 +16,9 @@ interface ActiveSession {
 
 let activeSession: ActiveSession | null = null
 
+/** Stable error code returned when the OS/Chromium denies microphone access. */
+const MIC_PERMISSION_DENIED = 'mic_permission_denied'
+
 function sendPcmChunk(sessionId: string, source: 'mic' | 'system', chunk: PcmChunkMessage): void {
   // Electron's `ipcRenderer.postMessage` only accepts MessagePort objects in
   // the transfer list — unlike the web MessagePort API, ArrayBuffers are NOT
@@ -46,6 +49,13 @@ async function stopActive(): Promise<void> {
 async function startRecording(): Promise<{ ok: boolean; id?: string; audioPath?: string; error?: string }> {
   if (activeSession) {
     return { ok: false, error: 'already recording' }
+  }
+
+  // Ask macOS for microphone access up front (shows the system prompt the
+  // first time) so a denial surfaces as a specific, actionable error.
+  const micAccess = (await ipcRenderer.invoke('media:ensure-mic')) as 'granted' | 'denied' | 'restricted'
+  if (micAccess !== 'granted') {
+    return { ok: false, error: MIC_PERMISSION_DENIED }
   }
 
   const session = (await ipcRenderer.invoke('recording:start-session')) as
@@ -84,7 +94,7 @@ async function startRecording(): Promise<{ ok: boolean; id?: string; audioPath?:
     if (!result.mic) {
       await manager.stop()
       await ipcRenderer.invoke('recording:abort-session', { sessionId: session.id })
-      return { ok: false, error: 'microphone capture failed (permission denied?)' }
+      return { ok: false, error: MIC_PERMISSION_DENIED }
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
@@ -124,6 +134,36 @@ contextBridge.exposeInMainWorld('shogoDesktop', {
   platform: process.platform,
   isDesktop: true,
   apiUrl: `http://localhost:${apiPort}`,
+  /** Request OS microphone access (prompts on macOS the first time). */
+  ensureMicAccess: (): Promise<'granted' | 'denied' | 'restricted'> => ipcRenderer.invoke('media:ensure-mic'),
+  /** Open System Settings > Privacy & Security > Microphone (macOS). */
+  openMicrophoneSettings: (): Promise<{ ok: boolean }> => ipcRenderer.invoke('media:open-mic-settings'),
+  /** macOS privacy permissions (Accessibility, Screen Recording, Full Disk Access, mic). */
+  permissions: {
+    getStatus: () => ipcRenderer.invoke('permissions:get-status'),
+    request: (kind: 'accessibility' | 'screen' | 'fullDisk' | 'mic') =>
+      ipcRenderer.invoke('permissions:request', kind),
+    openSettings: (kind: 'accessibility' | 'screen' | 'fullDisk' | 'mic') =>
+      ipcRenderer.invoke('permissions:open-settings', kind),
+    listLocalApps: () => ipcRenderer.invoke('permissions:list-local-apps'),
+    relaunch: () => ipcRenderer.invoke('permissions:relaunch'),
+  },
+  /** Global dictation: shortcuts, native hotkey state, and pasting the transcript. */
+  dictation: {
+    getConfig: () => ipcRenderer.invoke('dictation:get-config'),
+    setConfig: (patch: { pushToTalk?: string | null; handsFree?: string | null }) =>
+      ipcRenderer.invoke('dictation:set-config', patch),
+    getHotkeyState: () => ipcRenderer.invoke('dictation:hotkey-state'),
+    onEvent: (cb: (event: { type: 'start' | 'stop' | 'cancel'; mode: 'push' | 'toggle' }) => void) => {
+      const listener = (_e: Electron.IpcRendererEvent, event: { type: 'start' | 'stop' | 'cancel'; mode: 'push' | 'toggle' }) =>
+        cb(event)
+      ipcRenderer.on('dictation:event', listener)
+      return () => {
+        ipcRenderer.removeListener('dictation:event', listener)
+      }
+    },
+    deliverText: (text: string) => ipcRenderer.invoke('dictation:deliver-text', text),
+  },
   getAppMode: () => ipcRenderer.invoke('get-app-mode'),
   getAppConfig: () => ipcRenderer.invoke('get-app-config'),
   setIslandConfig: (config: Partial<IslandConfig>) => ipcRenderer.invoke('set-island-config', config),
@@ -135,6 +175,7 @@ contextBridge.exposeInMainWorld('shogoDesktop', {
     }
   },
   setAppMode: (mode: 'local' | 'cloud') => ipcRenderer.invoke('set-app-mode', mode),
+  setBadgeCount: (count: number) => ipcRenderer.invoke('set-badge-count', count),
 
   codeWorkbench: {
     open: (opts?: { projectId?: string; workspacePath?: string }) => ipcRenderer.invoke('code-workbench:open', opts ?? {}),
@@ -154,6 +195,9 @@ contextBridge.exposeInMainWorld('shogoDesktop', {
   startRecording: () => startRecording(),
   stopRecording: () => stopRecording(),
   getRecordingStatus: () => ipcRenderer.invoke('get-recording-status'),
+  /** Tell the main process which personal workspace the app reads meetings from, so live transcript chunks land there. */
+  setMeetingsWorkspace: (workspaceId: string | null) => ipcRenderer.send('meetings:set-workspace', workspaceId),
+  getMeetingsWorkspace: (): Promise<string | null> => ipcRenderer.invoke('meetings:get-workspace'),
   getMeetingConfig: () => ipcRenderer.invoke('get-meeting-config'),
   setMeetingConfig: (config: Record<string, unknown>) => ipcRenderer.invoke('set-meeting-config', config),
   onRecordingStarted: (callback: (data: { id: string; path: string }) => void) => {

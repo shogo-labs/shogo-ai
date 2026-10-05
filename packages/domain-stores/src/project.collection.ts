@@ -174,6 +174,16 @@ export const ProjectCollection = types
                   self.items.delete(id)
                 }
               }
+            } else if (typeof filter?.sessionId === "string") {
+              // A session-filtered load is authoritative for that session
+              // while remaining isolated from other consumers of this
+              // shared collection.
+              for (const id of self.items.keys()) {
+                const item = self.items.get(id)
+                if (item?.sessionId === filter.sessionId && !newIds.has(id)) {
+                  self.items.delete(id)
+                }
+              }
             }
           }
 
@@ -434,7 +444,7 @@ export const ProjectCollection = types
 // ============================================================================
 
 // Relation fields that expect IDs (safeReference)
-const relationFields = ["workspace","folder","members","inviteLinks","featureSessions","chatSessions","plans","usageEvents","liveSessionMeters","checkpoints","githubConnection","starredBy","agentConfig","meetings","marketplaceListing","agentCostMetrics","modelExperiments","subagentModelOverrides","agentEvalSets","voiceConfig","agents","projectFolders","preferredInstance","authConfig","authSignIns","attachedSessions","slackWorkspaceDefaults","slackUserDefaults","slackUserRecent","slackChannelDefaults","slackRoutingRules","attachments","attachedTo","customDomains","agentTasks"]
+const relationFields = ["workspace","folder","members","inviteLinks","featureSessions","chatSessions","plans","usageEvents","liveSessionMeters","checkpoints","githubConnection","integrationPolicies","integrationGrants","integrationApprovals","integrationAudit","starredBy","agentConfig","meetings","marketplaceListing","agentCostMetrics","modelExperiments","subagentModelOverrides","agentEvalSets","voiceConfig","agents","projectFolders","preferredInstance","authConfig","authSignIns","attachedSessions","slackWorkspaceDefaults","slackUserDefaults","slackUserRecent","slackChannelDefaults","slackRoutingRules","attachments","attachedTo","customDomains","agentTasks"]
 
 /**
  * Transform API response for MST compatibility:

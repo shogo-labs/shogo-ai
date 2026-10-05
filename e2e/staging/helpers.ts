@@ -197,14 +197,14 @@ export function interactionModeOption(page: Page, mode: "Agent" | "Plan" | "Ask"
  * The home composer uses an animated typewriter placeholder
  * (`"Ask Shogo to " + rotating suggestion`), so the old
  * `getByPlaceholder("Ask Shogo to ...")` selector never matches.
- * `CompactChatInput` exposes a stable `testID="home-composer-input"` we
+ * The home `ChatInput` exposes a stable `testID="home-composer-input"` we
  * can target regardless of interaction mode and placeholder churn.
  *
  * Falls back to `accessibilityLabel` matching for revisions that predate
  * the testID (e.g. long-lived staging sessions) so this helper works on
  * any prod/staging tag.
  *
- * See apps/mobile/components/chat/CompactChatInput.tsx.
+ * See `inputTestID` in apps/mobile/app/(app)/index.tsx.
  */
 export function homeComposerInput(page: Page) {
   return page.getByTestId("home-composer-input").or(
@@ -581,12 +581,16 @@ export async function signUpAndUpgradeToPro(page: Page, user: TestUser): Promise
 
   // When the account has several payment methods enabled (Cash App, Klarna,
   // Bank…), hosted Checkout collapses them into an accordion and the card
-  // fields only mount after "Card" is selected.
+  // fields only mount after "Card" is selected. Older Checkout renders the
+  // option as a radio; newer Checkout renders a plain "Card" accordion header.
   const cardNumber = page.getByPlaceholder("1234 1234 1234 1234")
-  const cardOption = page.getByRole("radio", { name: /^Card/ })
+  const cardOption = page
+    .getByRole("radio", { name: /^Card/ })
+    .or(page.getByText("Card", { exact: true }))
+    .first()
   await cardNumber.or(cardOption).first().waitFor({ state: "visible", timeout: 20_000 })
-  if (!(await cardNumber.isVisible()) && (await cardOption.isVisible())) {
-    await cardOption.check({ force: true })
+  if (!(await cardNumber.isVisible())) {
+    await cardOption.click({ force: true })
   }
 
   await cardNumber.pressSequentially(STRIPE_CARDS.success)

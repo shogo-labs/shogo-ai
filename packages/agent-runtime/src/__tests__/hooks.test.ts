@@ -30,6 +30,22 @@ describe('HookEmitter', () => {
     expect(received).toEqual(['message:received'])
   })
 
+  test('workspace events match exact types and prefix wildcards, and report counts', async () => {
+    const emitter = new HookEmitter()
+    const received: string[] = []
+    emitter.register([
+      { name: 'welcome', description: '', events: ['workspace:member.joined'], handler: async (e) => { received.push(`welcome:${e.action}`) } },
+      { name: 'github', description: '', events: ['workspace:composio.github.*'], handler: async (e) => { received.push(`github:${e.action}`) } },
+      { name: 'broken', description: '', events: ['workspace:composio.github.GITHUB_STAR_ADDED_EVENT'], handler: async () => { throw new Error('boom') } },
+    ])
+    expect(await emitter.emit(HookEmitter.createEvent('workspace', 'member.joined', 's'))).toEqual({ matched: 1, failed: 0, errors: [] })
+    expect(await emitter.emit(HookEmitter.createEvent('workspace', 'composio.github.GITHUB_STAR_ADDED_EVENT', 's')))
+      .toEqual({ matched: 2, failed: 1, errors: ['boom'] })
+    expect(await emitter.emit(HookEmitter.createEvent('workspace', 'composio.slack.SLACK_RECEIVE_MESSAGE', 's')))
+      .toEqual({ matched: 0, failed: 0, errors: [] })
+    expect(received).toEqual(['welcome:member.joined', 'github:composio.github.GITHUB_STAR_ADDED_EVENT'])
+  })
+
   test('does not call handlers for non-matching events', async () => {
     const emitter = new HookEmitter()
     let called = false

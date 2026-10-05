@@ -1,9 +1,27 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
-import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useRef, type KeyboardEvent } from "react"
-import { Platform, View } from "react-native"
-import { BUDDY_ASPECT, BuddyEngine, type BuddyEmote, type BuddyState, type LogoStyle } from "./engine"
+import {
+  forwardRef,
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  type KeyboardEvent,
+} from "react"
+import { Platform } from "react-native"
+import {
+  BUDDY_ASPECT,
+  BUDDY_FINISHES,
+  BuddyEngine,
+  type BuddyEmote,
+  type BuddyFinish,
+  type BuddyState,
+  type LogoStyle,
+} from "./engine"
+import { BUDDY_WEBVIEW_HTML } from "./buddy-webview.generated"
 import { DEFAULT_BUDDY_LOOK, type BuddyLook } from "./look"
 
 export interface ShogoBuddyHandle {
@@ -22,8 +40,11 @@ export interface ShogoBuddyProps {
   size: number
   state: BuddyState
   color: string
-  /** Accessories on the gummy block; anything left out uses the default. */
+  /** Accessories, colour and finish; anything left out uses the default. A
+   * look colour wins over `color`, which is the fallback (the app accent). */
   look?: Partial<BuddyLook>
+  /** Overrides the look's finish with exact strengths (the motion lab). */
+  finish?: BuddyFinish
   /** How the Shogo mark's rays turn into the character and back. */
   logoStyle?: LogoStyle
   mini?: boolean
@@ -39,13 +60,14 @@ export interface ShogoBuddyProps {
   onDizzy?: () => void
 }
 
-/** Canvas-drawn Shogo buddy. Web only; renders an empty box elsewhere. */
+/** Canvas-drawn on web and desktop; native mobile uses the bundled WebView renderer. */
 export const ShogoBuddy = forwardRef<ShogoBuddyHandle, ShogoBuddyProps>(function ShogoBuddy(
   {
     size,
     state,
     color,
     look,
+    finish: finishOverride,
     logoStyle = "vortex",
     mini = false,
     followPointer = true,
@@ -58,30 +80,93 @@ export const ShogoBuddy = forwardRef<ShogoBuddyHandle, ShogoBuddyProps>(function
   ref,
 ) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
+  const nativeWebViewRef = useRef<any>(null)
+  const nativeReadyRef = useRef(false)
   const engineRef = useRef<BuddyEngine | null>(null)
   if (!engineRef.current) engineRef.current = new BuddyEngine()
   const engine = engineRef.current
   const height = Math.round(size * BUDDY_ASPECT)
-
-  useImperativeHandle(
-    ref,
+  const nativeSizeStyle = useMemo(
     () => ({
-      engine,
-      poke: () => engine.poke(),
-      emote: (emote) => engine.emote(emote),
-      appear: () => engine.appear(),
-      hop: () => engine.hop(),
-      jiggle: (strength = 0.08) => engine.jiggle(strength),
-      fromLogo: () => engine.fromLogo(),
-      toLogo: () => engine.toLogo(),
+      width: size,
+      height,
+      flex: 0,
+      flexGrow: 0,
+      flexShrink: 0,
+      flexBasis: "auto" as const,
+      backgroundColor: "transparent",
     }),
-    [engine],
+    [size, height],
   )
 
   const topper = look?.topper ?? DEFAULT_BUDDY_LOOK.topper
   const face = look?.face ?? DEFAULT_BUDDY_LOOK.face
+  const tail = look?.tail ?? DEFAULT_BUDDY_LOOK.tail
+  const eyewear = look?.eyewear ?? DEFAULT_BUDDY_LOOK.eyewear
+  const neck = look?.neck ?? DEFAULT_BUDDY_LOOK.neck
   const bolts = look?.bolts ?? DEFAULT_BUDDY_LOOK.bolts
   const blush = look?.blush ?? DEFAULT_BUDDY_LOOK.blush
+  const bodyColor = look?.color ?? color
+  const finish = finishOverride ?? BUDDY_FINISHES[look?.finish ?? DEFAULT_BUDDY_LOOK.finish]
+  const nativePropsJson = useMemo(
+    () =>
+      JSON.stringify({
+        size,
+        state,
+        color: bodyColor,
+        look: { topper, face, tail, eyewear, neck, bolts, blush },
+        finish,
+        mini,
+        reducedMotion,
+        still,
+      }),
+    [size, state, bodyColor, topper, face, tail, eyewear, neck, bolts, blush, finish, mini, reducedMotion, still],
+  )
+  const injectNative = useCallback((script: string) => {
+    nativeWebViewRef.current?.injectJavaScript(`${script};true;`)
+  }, [])
+  const sendNativeProps = useCallback(() => {
+    if (Platform.OS !== "web" && nativeReadyRef.current) {
+      injectNative(`window.__shogoBuddySetProps && window.__shogoBuddySetProps(${nativePropsJson})`)
+    }
+  }, [injectNative, nativePropsJson])
+  const sendNativeCommand = useCallback(
+    (command: Record<string, unknown>) => {
+      if (Platform.OS !== "web" && nativeReadyRef.current) {
+        injectNative(`window.__shogoBuddyCommand && window.__shogoBuddyCommand(${JSON.stringify(command)})`)
+      }
+    },
+    [injectNative],
+  )
+  const onNativeMessage = useCallback(
+    (event: { nativeEvent?: { data?: string } }) => {
+      try {
+        const message = JSON.parse(event.nativeEvent?.data ?? "")
+        if (message?.type !== "ready") return
+        nativeReadyRef.current = true
+        sendNativeProps()
+      } catch {
+        // Ignore messages that are not JSON bridge messages.
+      }
+    },
+    [sendNativeProps],
+  )
+  useImperativeHandle(
+    ref,
+    () => ({
+      engine,
+      poke: () => (Platform.OS === "web" ? engine.poke() : sendNativeCommand({ type: "poke" })),
+      emote: (emote) =>
+        Platform.OS === "web" ? engine.emote(emote) : sendNativeCommand({ type: "emote", emote }),
+      appear: () => (Platform.OS === "web" ? engine.appear() : sendNativeCommand({ type: "appear" })),
+      hop: () => (Platform.OS === "web" ? engine.hop() : sendNativeCommand({ type: "hop" })),
+      jiggle: (strength = 0.08) =>
+        Platform.OS === "web" ? engine.jiggle(strength) : sendNativeCommand({ type: "jiggle", strength }),
+      fromLogo: () => (Platform.OS === "web" ? engine.fromLogo() : sendNativeCommand({ type: "from-logo" })),
+      toLogo: () => (Platform.OS === "web" ? engine.toLogo() : sendNativeCommand({ type: "to-logo" })),
+    }),
+    [engine, sendNativeCommand],
+  )
   // Layout effects run before the parent's, so an entrance played from
   // IslandBuddy's layout effect already sees these.
   useLayoutEffect(() => {
@@ -91,9 +176,15 @@ export const ShogoBuddy = forwardRef<ShogoBuddyHandle, ShogoBuddyProps>(function
     engine.wake()
   }, [engine, mini, logoStyle, reducedMotion])
   useLayoutEffect(() => {
-    engine.look = { topper, face, bolts, blush }
-  }, [engine, topper, face, bolts, blush])
-  useEffect(() => engine.setBodyColor(color), [engine, color])
+    engine.look = { ...DEFAULT_BUDDY_LOOK, topper, face, tail, eyewear, neck, bolts, blush }
+  }, [engine, topper, face, tail, eyewear, neck, bolts, blush])
+  useLayoutEffect(() => {
+    engine.finish = finish
+  }, [engine, finish])
+  useEffect(() => {
+    sendNativeProps()
+  }, [sendNativeProps])
+  useEffect(() => engine.setBodyColor(bodyColor), [engine, bodyColor])
   useEffect(() => engine.setState(state), [engine, state])
   useEffect(() => {
     engine.onDizzy = onDizzy ?? null
@@ -167,7 +258,28 @@ export const ShogoBuddy = forwardRef<ShogoBuddyHandle, ShogoBuddyProps>(function
     return () => window.removeEventListener("mousemove", onMove)
   }, [engine, followPointer, interactive, still, size])
 
-  if (Platform.OS !== "web") return <View style={{ width: size, height }} />
+  if (Platform.OS !== "web") {
+    const WebView = require("react-native-webview").default
+    return (
+      <WebView
+        ref={nativeWebViewRef}
+        source={{ html: BUDDY_WEBVIEW_HTML }}
+        // react-native-webview gives both its container and the view `flex: 1`
+        // and `overflow: hidden`. In a parent shorter than the canvas (the 48pt
+        // header slot) that squeezes the view to the parent's height and clips
+        // the bottom of the character, so pin the size.
+        style={nativeSizeStyle}
+        containerStyle={nativeSizeStyle}
+        originWhitelist={["*"]}
+        javaScriptEnabled
+        scrollEnabled={false}
+        bounces={false}
+        showsHorizontalScrollIndicator={false}
+        showsVerticalScrollIndicator={false}
+        onMessage={onNativeMessage}
+      />
+    )
+  }
   return (
     <canvas
       ref={canvasRef}

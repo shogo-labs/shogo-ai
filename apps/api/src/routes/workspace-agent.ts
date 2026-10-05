@@ -20,21 +20,28 @@
 
 import { Hono } from 'hono'
 import { hasWorkspaceAccess } from '../services/workspace.service'
+import { ConversationError, resolveNotifyConversation, resolveNotifyThread } from '../services/conversation.service'
 import { listActiveChatTurns } from '../services/chat-turn-state.service'
 import {
-  AgentScheduleError,
-  createSchedule,
-  deleteSchedule,
-  getSchedule,
-  listSchedules,
-  updateSchedule,
-} from '../services/agent-schedule.service'
+  EventSubscriptionError,
+  createSubscription,
+  deleteSubscription,
+  getSubscription,
+  listDeliveries,
+  listSubscriptions,
+  listTriggerTypes,
+  redeliver,
+  testSubscription,
+  updateSubscription,
+} from '../services/event-subscription.service'
+import { findWorkspaceMember, getMemberWorkActivity } from '../services/engagement-analytics.service'
 import {
   AgentScheduleError,
   createSchedule,
   deleteSchedule,
   getSchedule,
   listSchedules,
+  runScheduleNow,
   updateSchedule,
 } from '../services/agent-schedule.service'
 import {
@@ -101,6 +108,9 @@ export function workspaceAgentRoutes(config: WorkspaceAgentRoutesConfig): Hono {
   const saveAvatar = config.saveAgentAvatar ?? saveLocalAgentAvatar
 
   function scheduleError(c: any, error: unknown) {
+    if (error instanceof ConversationError) {
+      return c.json({ error: { code: error.code, message: error.message } }, error.status as any)
+    }
     if (!(error instanceof AgentScheduleError)) throw error
     return c.json({ error: { code: error.code, message: error.message } }, error.status)
   }
@@ -312,6 +322,8 @@ export function workspaceAgentRoutes(config: WorkspaceAgentRoutesConfig): Hono {
       return c.json({ error: { code: 'invalid_field', message: 'enabled must be a boolean' } }, 400)
     }
     try {
+      const notifyConversationId = await resolveNotifyConversation(auth.workspaceId, body.notifyConversationId, userId)
+      const notifyThreadRootId = await resolveNotifyThread(notifyConversationId, body.notifyThreadRootId)
       const schedule = await createSchedule({
         workspaceId: auth.workspaceId,
         userId,
@@ -321,6 +333,8 @@ export function workspaceAgentRoutes(config: WorkspaceAgentRoutesConfig): Hono {
         cronExpression: body.cronExpression.trim(),
         timezone: typeof body.timezone === 'string' ? body.timezone : undefined,
         enabled: body.enabled as boolean | undefined,
+        notifyConversationId,
+        notifyThreadRootId,
       })
       return c.json({ schedule }, 201)
     } catch (error) {
@@ -349,7 +363,22 @@ export function workspaceAgentRoutes(config: WorkspaceAgentRoutesConfig): Hono {
       return c.json({ error: { code: 'invalid_field', message: 'enabled must be a boolean' } }, 400)
     }
     try {
+      const actor = body.notifyConversationId === undefined ? null : await resolveScheduleActor(c, auth, body)
+      if (actor instanceof Response) return actor
+      const notifyConversationId = actor
+        ? await resolveNotifyConversation(auth.workspaceId, body.notifyConversationId, actor)
+        : undefined
+      // A thread is checked against the channel it will live in: the new one, else the current one.
+      let notifyThreadRootId: string | null | undefined
+      if (body.notifyThreadRootId !== undefined || notifyConversationId !== undefined) {
+        const current = notifyConversationId !== undefined
+          ? notifyConversationId
+          : (await getSchedule(auth.workspaceId, c.req.param('scheduleId')))?.notifyConversationId
+        notifyThreadRootId = body.notifyThreadRootId === undefined ? undefined : await resolveNotifyThread(current, body.notifyThreadRootId)
+      }
       const schedule = await updateSchedule(auth.workspaceId, c.req.param('scheduleId'), {
+        notifyConversationId,
+        notifyThreadRootId,
         goalId: body.goalId as string | null | undefined,
         name: typeof body.name === 'string' ? body.name.trim().slice(0, 200) : undefined,
         prompt: typeof body.prompt === 'string' ? body.prompt.trim().slice(0, 10_000) : undefined,
@@ -364,6 +393,22 @@ export function workspaceAgentRoutes(config: WorkspaceAgentRoutesConfig): Hono {
     }
   })
 
+  // Run now: marks the schedule due; the dispatcher's next tick runs it.
+  router.post('/workspaces/:workspaceId/schedules/:scheduleId/run', async (c) => {
+    const auth = await authorize(c)
+    if (auth instanceof Response) return auth
+    const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null
+    const denied = await authorizeScheduleManagement(c, auth, body)
+    if (denied) return denied
+    try {
+      const schedule = await runScheduleNow(auth.workspaceId, c.req.param('scheduleId'))
+      if (!schedule) return c.json({ error: { code: 'not_found', message: 'Schedule not found' } }, 404)
+      return c.json({ schedule }, 202)
+    } catch (error) {
+      return scheduleError(c, error)
+    }
+  })
+
   router.delete('/workspaces/:workspaceId/schedules/:scheduleId', async (c) => {
     const auth = await authorize(c)
     if (auth instanceof Response) return auth
@@ -373,6 +418,197 @@ export function workspaceAgentRoutes(config: WorkspaceAgentRoutesConfig): Hono {
     const deleted = await deleteSchedule(auth.workspaceId, c.req.param('scheduleId'))
     if (!deleted) return c.json({ error: { code: 'not_found', message: 'Schedule not found' } }, 404)
     return c.json({ ok: true })
+  })
+
+  // ── Triggers (event subscriptions) ────────────────────────────────────
+  // Agent and project triggers run as their owner, so like schedules every
+  // mutation is attributed to a member; only the owner or an admin may change one.
+
+  function triggerError(c: any, error: unknown) {
+    if (error instanceof EventSubscriptionError || error instanceof ConversationError) {
+      const details = error instanceof EventSubscriptionError ? error.details : undefined
+      return c.json({ error: { code: error.code, message: error.message, ...(details ?? {}) } }, error.status as any)
+    }
+    throw error
+  }
+
+  async function authorizeTriggerManagement(
+    c: any,
+    auth: WorkspaceAgentAuthContext,
+    body: Record<string, unknown> | null,
+  ): Promise<{ actor: string; trigger: any } | Response> {
+    const actor = await resolveScheduleActor(c, auth, body)
+    if (actor instanceof Response) return actor
+    const trigger = await getSubscription(auth.workspaceId, c.req.param('triggerId'))
+    if (!trigger) return c.json({ error: { code: 'not_found', message: 'Trigger not found' } }, 404)
+    if (trigger.ownerUserId !== actor && !(await hasWorkspaceAccess(auth.workspaceId, actor, SCHEDULE_ADMIN_ROLES))) {
+      return forbidden(c, 'Only the trigger creator or a workspace admin can change this trigger')
+    }
+    return { actor, trigger }
+  }
+
+  router.get('/workspaces/:workspaceId/trigger-types', async (c) => {
+    const auth = await authorize(c)
+    if (auth instanceof Response) return auth
+    const userId = auth.userId || c.req.query('userId')
+    if (!userId) return c.json({ error: { code: 'invalid_body', message: 'userId is required for an internal request' } }, 400)
+    if (!auth.userId && !(await hasWorkspaceAccess(auth.workspaceId, userId))) return forbidden(c)
+    return c.json(await listTriggerTypes(auth.workspaceId, userId, {
+      toolkit: c.req.query('toolkit') || null,
+      projectId: c.req.query('projectId') || null,
+    }))
+  })
+
+  router.get('/workspaces/:workspaceId/triggers', async (c) => {
+    const auth = await authorize(c)
+    if (auth instanceof Response) return auth
+    return c.json({ triggers: await listSubscriptions(auth.workspaceId) })
+  })
+
+  router.post('/workspaces/:workspaceId/triggers', async (c) => {
+    const auth = await authorize(c)
+    if (auth instanceof Response) return auth
+    const body = (await c.req.json().catch(() => null)) as Record<string, any> | null
+    if (!body || typeof body !== 'object') {
+      return c.json({ error: { code: 'invalid_body', message: 'Request body must be an object' } }, 400)
+    }
+    const userId = await resolveScheduleActor(c, auth, body)
+    if (userId instanceof Response) return userId
+    if (!(await hasWorkspaceAccess(auth.workspaceId, userId, SCHEDULE_CREATOR_ROLES))) {
+      return forbidden(c, 'Viewers cannot create triggers')
+    }
+    try {
+      const notifyConversationId = await resolveNotifyConversation(auth.workspaceId, body.notifyConversationId, userId)
+      const notifyThreadRootId = await resolveNotifyThread(notifyConversationId, body.notifyThreadRootId)
+      const created = await createSubscription({
+        workspaceId: auth.workspaceId,
+        ownerUserId: userId,
+        name: body.name,
+        eventType: body.eventType,
+        filter: body.filter,
+        target: body.target,
+        targetProjectId: body.targetProjectId,
+        targetMode: body.targetMode,
+        prompt: body.prompt,
+        notifyConversationId,
+        notifyThreadRootId,
+        webhookUrl: body.webhookUrl,
+        triggerConfig: body.triggerConfig && typeof body.triggerConfig === 'object' ? body.triggerConfig : null,
+        enabled: typeof body.enabled === 'boolean' ? body.enabled : undefined,
+        actsAs: body.actsAs,
+        actorIdPath: body.actorIdPath,
+        actorEmailPath: body.actorEmailPath,
+        trustActorEmail: body.trustActorEmail,
+        policyEditor: auth.userId ?? null,
+      })
+      return c.json({ trigger: created.subscription, ...(created.webhookSecret ? { webhookSecret: created.webhookSecret } : {}) }, 201)
+    } catch (error) {
+      return triggerError(c, error)
+    }
+  })
+
+  router.patch('/workspaces/:workspaceId/triggers/:triggerId', async (c) => {
+    const auth = await authorize(c)
+    if (auth instanceof Response) return auth
+    const body = (await c.req.json().catch(() => null)) as Record<string, any> | null
+    if (!body || typeof body !== 'object') {
+      return c.json({ error: { code: 'invalid_body', message: 'Request body must be an object' } }, 400)
+    }
+    const allowed = await authorizeTriggerManagement(c, auth, body)
+    if (allowed instanceof Response) return allowed
+    try {
+      const notifyConversationId = body.notifyConversationId === undefined
+        ? undefined
+        : await resolveNotifyConversation(auth.workspaceId, body.notifyConversationId, allowed.actor)
+      let notifyThreadRootId: string | null | undefined
+      if (body.notifyThreadRootId !== undefined) {
+        const channel = notifyConversationId !== undefined ? notifyConversationId : allowed.trigger.notifyConversationId
+        notifyThreadRootId = await resolveNotifyThread(channel, body.notifyThreadRootId)
+      } else if (notifyConversationId !== undefined) {
+        notifyThreadRootId = null
+      }
+      const updated = await updateSubscription(auth.workspaceId, allowed.trigger.id, {
+        name: body.name,
+        enabled: body.enabled,
+        filter: body.filter,
+        prompt: body.prompt,
+        targetMode: body.targetMode,
+        notifyConversationId,
+        notifyThreadRootId,
+        webhookUrl: body.webhookUrl,
+        rotateWebhookSecret: body.rotateWebhookSecret === true,
+        actsAs: body.actsAs,
+        actorIdPath: body.actorIdPath,
+        actorEmailPath: body.actorEmailPath,
+        trustActorEmail: body.trustActorEmail,
+      }, { policyEditor: auth.userId ?? null })
+      if (!updated) return c.json({ error: { code: 'not_found', message: 'Trigger not found' } }, 404)
+      return c.json({ trigger: updated.subscription, ...(updated.webhookSecret ? { webhookSecret: updated.webhookSecret } : {}) })
+    } catch (error) {
+      return triggerError(c, error)
+    }
+  })
+
+  router.delete('/workspaces/:workspaceId/triggers/:triggerId', async (c) => {
+    const auth = await authorize(c)
+    if (auth instanceof Response) return auth
+    const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null
+    const allowed = await authorizeTriggerManagement(c, auth, body)
+    if (allowed instanceof Response) return allowed
+    try {
+      await deleteSubscription(auth.workspaceId, allowed.trigger.id)
+    } catch (error) {
+      return triggerError(c, error)
+    }
+    return c.json({ ok: true })
+  })
+
+  // Fires a synthetic event at this trigger only; the worker delivers it like a real one.
+  router.post('/workspaces/:workspaceId/triggers/:triggerId/test', async (c) => {
+    const auth = await authorize(c)
+    if (auth instanceof Response) return auth
+    const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null
+    const allowed = await authorizeTriggerManagement(c, auth, body)
+    if (allowed instanceof Response) return allowed
+    try {
+      const result = await testSubscription(auth.workspaceId, allowed.trigger.id, body?.payload)
+      if (!result) return c.json({ error: { code: 'not_found', message: 'Trigger not found' } }, 404)
+      return c.json(result, 202)
+    } catch (error) {
+      return triggerError(c, error)
+    }
+  })
+
+  router.get('/workspaces/:workspaceId/triggers/:triggerId/deliveries', async (c) => {
+    const auth = await authorize(c)
+    if (auth instanceof Response) return auth
+    const limit = Number(c.req.query('limit') ?? 20)
+    const deliveries = await listDeliveries(auth.workspaceId, c.req.param('triggerId'), Number.isFinite(limit) ? limit : 20)
+    if (!deliveries) return c.json({ error: { code: 'not_found', message: 'Trigger not found' } }, 404)
+    return c.json({ deliveries })
+  })
+
+  router.post('/workspaces/:workspaceId/triggers/:triggerId/deliveries/:deliveryId/redeliver', async (c) => {
+    const auth = await authorize(c)
+    if (auth instanceof Response) return auth
+    const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null
+    const allowed = await authorizeTriggerManagement(c, auth, body)
+    if (allowed instanceof Response) return allowed
+    try {
+      const delivery = await redeliver(auth.workspaceId, allowed.trigger.id, c.req.param('deliveryId'))
+      if (!delivery) return c.json({ error: { code: 'not_found', message: 'Delivery not found' } }, 404)
+      void import('../jobs/run-event-delivery-dispatch').then((m) => m.kickEventDeliveryWorker?.()).catch(() => {})
+      return c.json({ delivery }, 202)
+    } catch (error) {
+      return triggerError(c, error)
+    }
+  })
+
+  router.get('/workspaces/:workspaceId/app-grants', async (c) => {
+    const auth = await authorize(c)
+    if (auth instanceof Response) return auth
+    const { listWorkspaceGrants } = await import('../services/app-install-grants.service')
+    return c.json({ grants: await listWorkspaceGrants(auth.workspaceId) })
   })
 
   router.post('/workspaces/:workspaceId/goals/:goalId/events', async (c) => {
@@ -413,6 +649,7 @@ export function workspaceAgentRoutes(config: WorkspaceAgentRoutesConfig): Hono {
       c.req.param('goalId'),
       c.req.param('eventId'),
       decision as GoalApprovalDecision,
+      auth.userId,
     )
     if (!event) {
       return c.json({ error: { code: 'not_found', message: 'Pending approval not found' } }, 404)
@@ -426,6 +663,44 @@ export function workspaceAgentRoutes(config: WorkspaceAgentRoutesConfig): Hono {
     const parsedLimit = Number(c.req.query('limit') || 100)
     const limit = Number.isFinite(parsedLimit) ? Math.min(Math.max(Math.trunc(parsedLimit), 1), 200) : 100
     return c.json({ activity: await listWorkspaceActivity(auth.workspaceId, limit) })
+  })
+
+  // "What did PERSON work on today?" Owners and admins only. Backs the
+  // workspace agent's `member_activity` tool. For a signed-in session the actor
+  // is always the session user. Internal (runtime) callers have no session, so
+  // they name the person asking in `requestedBy`; that id comes from the chat
+  // request's authenticated user, never from model-supplied input.
+  router.get('/workspaces/:workspaceId/member-activity', async (c) => {
+    const auth = await authorize(c)
+    if (auth instanceof Response) return auth
+
+    const actor = auth.userId || c.req.query('requestedBy')?.trim() || null
+    if (!actor) {
+      return c.json({
+        error: { code: 'invalid_request', message: 'requestedBy is required for an internal request' },
+      }, 400)
+    }
+    if (!(await hasWorkspaceAccess(auth.workspaceId, actor, ['owner', 'admin']))) {
+      return forbidden(c, 'Only workspace owners and admins can look up what a teammate worked on')
+    }
+
+    const target = c.req.query('user')?.trim()
+    if (!target) {
+      return c.json({ error: { code: 'invalid_request', message: 'user (email or user id) is required' } }, 400)
+    }
+    const member = await findWorkspaceMember(auth.workspaceId, target)
+    if (!member) {
+      return c.json({ error: { code: 'not_found', message: `No workspace member matches "${target}"` } }, 404)
+    }
+
+    console.info(`[MemberActivity] ${actor} viewed ${member.userId} in workspace ${auth.workspaceId}`)
+    const data = await getMemberWorkActivity(auth.workspaceId, member, {
+      range: c.req.query('range'),
+      since: c.req.query('since'),
+      until: c.req.query('until'),
+      tz: c.req.query('tz'),
+    })
+    return c.json({ activity: data })
   })
 
   router.get('/workspaces/:workspaceId/active-chats', async (c) => {

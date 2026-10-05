@@ -345,6 +345,12 @@ spec:
                   key: DATABASE_DIRECT_URL
             - name: PRISMA_POOL_SIZE
               value: "25"
+            # Better Auth opens its OWN pg pool (apps/api/src/auth.ts), separate
+            # from Prisma, defaulting to 60 conns/pod. Capped so max-scale (20)
+            # x (PRISMA_POOL_SIZE + AUTH_POOL_SIZE) = 700 stays well under the
+            # pooler's max_client_conn (1000 per instance).
+            - name: AUTH_POOL_SIZE
+              value: "10"
             - name: ADVISORY_LOCK_POOL_SIZE
               value: "4"
             - name: BETTER_AUTH_SECRET

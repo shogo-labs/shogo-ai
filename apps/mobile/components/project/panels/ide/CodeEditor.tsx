@@ -1,3 +1,5 @@
+import { minimapSettingsToMonacoOptions } from "./minimap-settings";
+import { peekPreferencesToMonacoOptions } from "./peek-actions";
 import Editor, { loader, type OnMount } from "@monaco-editor/react";
 import { useEffect, useRef } from "react";
 import type { editor } from "monaco-editor";
@@ -43,6 +45,18 @@ import {
 //     — matching `'self'` in CSP.
 loader.config({ paths: { vs: "/vs" } });
 
+/**
+ * Start downloading/initialising Monaco before the first editor mounts. The
+ * Workbench calls this as soon as the IDE pane exists so opening the first
+ * file doesn't pay the loader.js + editor.main round-trips.
+ */
+export function preloadMonaco(): void {
+  if (typeof document === "undefined") return;
+  void loader.init().catch(() => {
+    /* the <Editor> will surface the real error when it mounts */
+  });
+}
+
 /* -------------------------------------------------------------------------- *
  * One-time Monaco setup: TS/JSX compiler defaults so the TS worker gives us
  * hover tooltips, autocomplete, and JSX highlighting for free. Guarded by a
@@ -52,7 +66,7 @@ let monacoConfigured = false;
 
 type MonacoNs = Parameters<OnMount>[1];
 
-function configureMonaco(monaco: MonacoNs) {
+export function configureMonaco(monaco: MonacoNs) {
   if (monacoConfigured) return;
   monacoConfigured = true;
 
@@ -118,6 +132,14 @@ function configureMonaco(monaco: MonacoNs) {
   ts.typescriptDefaults.setDiagnosticsOptions(diagOpts);
   ts.javascriptDefaults.setDiagnosticsOptions(diagOpts);
 
+  // tsconfig.json, .eslintrc, VS Code settings, … are JSON-with-comments in
+  // practice. Without this Monaco paints every `//` comment red.
+  (monaco.languages as any).json?.jsonDefaults?.setDiagnosticsOptions?.({
+    validate: true,
+    allowComments: true,
+    trailingCommas: "ignore",
+  });
+
   // Register the Monaco instance so the live-edit handlers can upsert
   // single-file models on demand (hot path: SSE `file.changed` from the
   // chat agent → upsert into the open editor's model). Cross-file
@@ -126,7 +148,7 @@ function configureMonaco(monaco: MonacoNs) {
 
   // Load real @types/react, @types/react-dom, csstype, prop-types
   // declaration files as extraLibs so React autocomplete + hover work.
-  setupExtraLibs(monaco);
+  setupExtraLibs(monaco, { defer: true });
 
   // Register the "Fix with Shogo" hover button + quick-fix code action for
   // every language Monaco knows about. Idempotent across split editors.
@@ -340,13 +362,36 @@ export function CodeEditor({
         // rerenders the glyph cache and the new font lands without a
         // remount.
         fontFamily: settings.fontFamily,
-        minimap: { enabled: settings.minimap, scale: 1 },
+        minimap: minimapSettingsToMonacoOptions({
+          enabled: settings.minimap,
+          size: settings.minimapSize,
+          scale: settings.minimapScale,
+          side: settings.minimapSide,
+        }),
+        // Peek instead of jumping away when there are several definitions /
+        // references (VS Code behaviour; see peek-actions.ts).
+        ...peekPreferencesToMonacoOptions({}),
         wordWrap: settings.wordWrap,
         lineNumbers: settings.lineNumbers,
         renderWhitespace: settings.renderWhitespace,
         bracketPairColorization: { enabled: settings.bracketPairs },
         tabSize: settings.tabSize,
-        scrollBeyondLastLine: false,
+        // VS Code defaults the standalone editor omits. `fixedOverflowWidgets`
+        // renders hover/suggest/find widgets in a fixed layer so they are not
+        // clipped by the editor's `overflow-hidden` ancestors (split panes,
+        // the bottom panel, the sidebar edge).
+        fixedOverflowWidgets: true,
+        scrollBeyondLastLine: true,
+        mouseWheelZoom: true,
+        fontLigatures: settings.fontLigatures,
+        lineHeight: settings.lineHeight,
+        cursorStyle: settings.cursorStyle,
+        insertSpaces: settings.insertSpaces,
+        linkedEditing: true,
+        detectIndentation: true,
+        guides: { bracketPairs: true, indentation: true, highlightActiveIndentation: true },
+        stickyScroll: { enabled: true },
+        suggest: { preview: true, showStatusBar: false },
         smoothScrolling: true,
         cursorBlinking: "smooth",
         renderLineHighlight: "all",

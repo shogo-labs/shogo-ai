@@ -2,15 +2,27 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { describe, expect, test } from 'bun:test'
-import { BUDDY_FACE_IDS, BUDDY_TOPPER_IDS } from '../../../../packages/shared-app/src/buddy-look'
 import {
+  BUDDY_EYEWEAR_IDS,
+  BUDDY_FACE_IDS,
+  BUDDY_FINISH_IDS,
+  BUDDY_NECK_IDS,
+  BUDDY_TAIL_IDS,
+  BUDDY_TOPPER_IDS,
+} from '../../../../packages/shared-app/src/buddy-look'
+import {
+  ISLAND_BUDDY_EYEWEAR,
   ISLAND_BUDDY_FACES,
+  ISLAND_BUDDY_FINISHES,
+  ISLAND_BUDDY_NECKS,
+  ISLAND_BUDDY_TAILS,
   ISLAND_BUDDY_TOPPERS,
   ISLAND_MAX_PARAM_CHARS,
   mergeIslandSnapshots,
   parseIslandAction,
   parseIslandConfigPatch,
   parseIslandSnapshot,
+  pendingRequestsToAutoExpand,
   type IslandSnapshot,
 } from '../island-protocol'
 
@@ -123,17 +135,51 @@ describe('parseIslandSnapshot', () => {
   })
 
   test('keeps a valid buddy look and drops a malformed one', () => {
-    const look = { topper: 'ears', face: 'screen', bolts: false, blush: false }
+    const look = {
+      topper: 'fox',
+      face: 'classic',
+      tail: 'fox',
+      eyewear: 'sunglasses',
+      neck: 'scarf',
+      bolts: false,
+      blush: false,
+      color: '#0D9488',
+      finish: 'modern',
+    }
     expect(parseIslandSnapshot({ sessions: [], buddyLook: look }).buddyLook).toEqual(look)
-    expect(parseIslandSnapshot({ sessions: [], buddyLook: { ...look, topper: 'crown' } }).buddyLook).toBeUndefined()
+    expect(parseIslandSnapshot({ sessions: [], buddyLook: { ...look, color: '#0d9488' } }).buddyLook?.color).toBe('#0D9488')
+    expect(parseIslandSnapshot({ sessions: [], buddyLook: { ...look, color: 'teal' } }).buddyLook?.color).toBeNull()
+    expect(parseIslandSnapshot({ sessions: [], buddyLook: { ...look, topper: 'unicorn' } }).buddyLook).toBeUndefined()
+    expect(parseIslandSnapshot({ sessions: [], buddyLook: { ...look, tail: 'lion' } }).buddyLook).toBeUndefined()
     expect(parseIslandSnapshot({ sessions: [], buddyLook: { ...look, bolts: 'yes' } }).buddyLook).toBeUndefined()
     expect(parseIslandSnapshot({ sessions: [], buddyLook: 'kitty' }).buddyLook).toBeUndefined()
+  })
+
+  test('defaults newer accessories for looks from older app windows', () => {
+    expect(
+      parseIslandSnapshot({ sessions: [], buddyLook: { topper: 'ears', face: 'screen', bolts: false, blush: false } })
+        .buddyLook,
+    ).toEqual({
+      topper: 'ears',
+      face: 'screen',
+      tail: 'none',
+      eyewear: 'none',
+      neck: 'none',
+      bolts: false,
+      blush: false,
+      color: null,
+      finish: 'classic',
+    })
   })
 
   // The desktop build can't import outside src/, so it keeps its own copy.
   test('buddy accessories match the shared look definition', () => {
     expect([...ISLAND_BUDDY_TOPPERS]).toEqual([...BUDDY_TOPPER_IDS])
     expect([...ISLAND_BUDDY_FACES]).toEqual([...BUDDY_FACE_IDS])
+    expect([...ISLAND_BUDDY_TAILS]).toEqual([...BUDDY_TAIL_IDS])
+    expect([...ISLAND_BUDDY_EYEWEAR]).toEqual([...BUDDY_EYEWEAR_IDS])
+    expect([...ISLAND_BUDDY_NECKS]).toEqual([...BUDDY_NECK_IDS])
+    expect([...ISLAND_BUDDY_FINISHES]).toEqual([...BUDDY_FINISH_IDS])
   })
 })
 
@@ -156,8 +202,9 @@ describe('mergeIslandSnapshots', () => {
   })
 
   test('takes the buddy look from the most recently updated window that has one', () => {
-    const kitty = { topper: 'ears', face: 'classic', bolts: false, blush: true } as const
-    const visor = { topper: 'stubby', face: 'visor', bolts: true, blush: false } as const
+    const base = { tail: 'none', eyewear: 'none', neck: 'none', color: null, finish: 'classic' } as const
+    const kitty = { ...base, topper: 'ears', face: 'classic', bolts: false, blush: true } as const
+    const visor = { ...base, topper: 'stubby', face: 'visor', bolts: true, blush: false } as const
     const older: IslandSnapshot = { sessions: [], recentProjects: [], buddyLook: kitty, updatedAt: 1 }
     const newer: IslandSnapshot = { sessions: [], recentProjects: [], buddyLook: visor, updatedAt: 2 }
     const bare: IslandSnapshot = { sessions: [], recentProjects: [], updatedAt: 3 }
@@ -169,6 +216,38 @@ describe('mergeIslandSnapshots', () => {
     const focused: IslandSnapshot = { sessions: [], recentProjects: [], focusedSessionKey: 'p2:s2', updatedAt: 1 }
     expect(mergeIslandSnapshots([background, focused]).focusedSessionKey).toBeUndefined()
     expect(mergeIslandSnapshots([background, focused], focused).focusedSessionKey).toBe('p2:s2')
+  })
+})
+
+describe('pendingRequestsToAutoExpand', () => {
+  const pending = (id: string) => ({ pending: { kind: 'question', request: { id } } })
+  const snap = (focusedSessionKey?: string): IslandSnapshot => ({
+    sessions: [session('p1', 's1', pending('r1')), session('p2', 's2', pending('r2'))] as IslandSnapshot['sessions'],
+    recentProjects: [],
+    ...(focusedSessionKey ? { focusedSessionKey } : {}),
+    updatedAt: 1,
+  })
+
+  test('suppresses a request in the focused session', () => {
+    const decision = pendingRequestsToAutoExpand(snap('p1:s1'), new Set())
+    expect(decision.suppressed).toEqual(['r1'])
+    expect(decision.expand).toBe('r2')
+    expect(pendingRequestsToAutoExpand({ ...snap('p1:s1'), sessions: [snap().sessions[0]] }, new Set())).toEqual({
+      expand: null,
+      suppressed: ['r1'],
+    })
+  })
+
+  test('expands for a request in a session that is not focused', () => {
+    expect(pendingRequestsToAutoExpand(snap('p3:s3'), new Set())).toEqual({ expand: 'r1', suppressed: [] })
+  })
+
+  test('expands when nothing is focused', () => {
+    expect(pendingRequestsToAutoExpand(snap(), new Set())).toEqual({ expand: 'r1', suppressed: [] })
+  })
+
+  test('ignores requests that were already seen', () => {
+    expect(pendingRequestsToAutoExpand(snap(), new Set(['r1', 'r2']))).toEqual({ expand: null, suppressed: [] })
   })
 })
 

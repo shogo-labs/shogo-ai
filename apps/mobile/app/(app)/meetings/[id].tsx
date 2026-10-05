@@ -26,6 +26,7 @@ import { formatDuration } from '../../../lib/format-duration'
 import { usePlatformConfig } from '../../../lib/platform-config'
 import {
   isMeetingInFlight,
+  liveEventsUrl,
   meetingShareUrl,
   meetingsApi,
   notifyMeetingsChanged,
@@ -35,6 +36,7 @@ import {
   type MeetingTemplate,
 } from '../../../lib/meetings-api'
 import { notesForClipboard, parseTranscript, stripActionItemsSection } from '../../../lib/meeting-notes'
+import { useLiveMeetingTranscript } from '../../../lib/use-live-meeting-transcript'
 import { MarkdownText } from '../../../components/chat/MarkdownText'
 import { MeetingTranscript } from '../../../components/meetings/MeetingTranscript'
 
@@ -132,6 +134,18 @@ export default function MeetingDetailScreen() {
     const interval = setInterval(fetchMeeting, 3000)
     return () => clearInterval(interval)
   }, [inFlight, fetchMeeting])
+
+  // While recording, text arrives as it is said instead of on the 3 s poll.
+  const liveRecordingId = meeting?.status === 'recording' ? meeting.recordingId : null
+  const pollLive = useCallback(async () => {
+    if (!workspaceId) return null
+    const next = await meetingsApi(workspaceId).get(id)
+    return { transcript: next.transcript, status: next.status }
+  }, [id, workspaceId])
+  const liveMeeting = useLiveMeetingTranscript({
+    url: liveRecordingId && workspaceId ? liveEventsUrl(workspaceId, liveRecordingId) : null,
+    poll: pollLive,
+  })
 
   const flashCopied = (what: 'notes' | 'link') => {
     setCopied(what)
@@ -236,7 +250,11 @@ export default function MeetingDetailScreen() {
     )
   }
 
-  const transcript = parseTranscript(meeting.transcript)
+  const parsedTranscript = parseTranscript(meeting.transcript)
+  const transcript =
+    meeting.status === 'recording' && liveMeeting.segments.length > 0
+      ? { ...(parsedTranscript ?? { text: '' }), text: liveMeeting.segments.map((s) => s.text).join(' '), segments: liveMeeting.segments }
+      : parsedTranscript
   const meetingDate = new Date(meeting.createdAt)
   const templateName = templates.find((t) => t.id === (meeting.templateId ?? 'builtin:general'))?.name ?? 'General'
   const notesBody = meeting.enhancedNotes ? stripActionItemsSection(meeting.enhancedNotes) : ''
@@ -485,7 +503,12 @@ export default function MeetingDetailScreen() {
                 )}
               </View>
             ) : (
-              <MeetingTranscript transcript={transcript} live={meeting.status === 'recording'} />
+              <MeetingTranscript
+                transcript={transcript}
+                live={meeting.status === 'recording'}
+                partial={liveMeeting.partial}
+                notice={liveMeeting.notice ?? parsedTranscript?.liveStatus?.message ?? null}
+              />
             )}
           </View>
         )}

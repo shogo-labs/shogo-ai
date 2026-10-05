@@ -37,8 +37,11 @@ import {
 import { useDomainHttp } from '../../../contexts/domain'
 import { useAuth } from '../../../contexts/auth'
 import { useActiveWorkspace } from '../../../hooks/useActiveWorkspace'
+import { api, type AppConsentRequest } from '../../../lib/api'
 import {
   AgentTile,
+  AppConsentSheet,
+  type AppConsent,
   type AgentTileListing,
   CreatorChip,
   FollowCreatorButton,
@@ -239,6 +242,10 @@ export default observer(function MarketplaceDetailScreen() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [installing, setInstalling] = useState(false)
+  const [consentRequest, setConsentRequest] = useState<AppConsentRequest | null>(null)
+  const [consentOpen, setConsentOpen] = useState(false)
+  const [consentError, setConsentError] = useState<string | null>(null)
+  const [missingToolkits, setMissingToolkits] = useState<string[]>([])
 
   const [userInstall, setUserInstall] = useState<UserInstall | null>(null)
   const [showReviewForm, setShowReviewForm] = useState(false)
@@ -335,17 +342,18 @@ export default observer(function MarketplaceDetailScreen() {
     }
   }, [listing, loadUserInstall, loadRelated])
 
-  const handleInstall = useCallback(async () => {
-    if (!listing || !user?.id || !activeWorkspace?.id) {
-      Alert.alert('Sign In Required', 'You need to be signed in to install agents.')
-      return
-    }
+  const install = useCallback(async (consent?: AppConsent) => {
+    if (!activeWorkspace?.id) return
     try {
       setInstalling(true)
+      setConsentError(null)
+      setMissingToolkits([])
       const res = await http.post<InstallResponse>(`/api/marketplace/${slug}/install`, {
         workspaceId: activeWorkspace.id,
+        ...(consent ? { consent } : {}),
       })
       const data = res.data
+      setConsentOpen(false)
       if (data.checkoutUrl) {
         await Linking.openURL(data.checkoutUrl)
       } else if (data.projectId) {
@@ -354,12 +362,39 @@ export default observer(function MarketplaceDetailScreen() {
         Alert.alert('Install Failed', data.error)
       }
     } catch (err: any) {
-      console.error('[MarketplaceDetail] Install failed:', err)
-      Alert.alert('Install Failed', err?.message || 'Something went wrong')
+      const details = err?.details as { error?: string; toolkits?: string[]; consent?: AppConsentRequest } | undefined
+      if (details?.error === 'consent_required' && details.consent) {
+        setConsentRequest(details.consent)
+        setConsentOpen(true)
+      } else if (details?.error === 'needs_connection') {
+        setMissingToolkits(details.toolkits ?? [])
+        setConsentOpen(true)
+      } else if (consent) {
+        setConsentError(err?.message || 'Something went wrong')
+      } else {
+        console.error('[MarketplaceDetail] Install failed:', err)
+        Alert.alert('Install Failed', err?.message || 'Something went wrong')
+      }
     } finally {
       setInstalling(false)
     }
-  }, [listing, user?.id, activeWorkspace?.id, http, slug, router])
+  }, [activeWorkspace?.id, http, slug, router])
+
+  const handleInstall = useCallback(async () => {
+    if (!listing || !user?.id || !activeWorkspace?.id) {
+      Alert.alert('Sign In Required', 'You need to be signed in to install agents.')
+      return
+    }
+    const consent = slug ? await api.getMarketplaceConsent(http, slug).catch(() => null) : null
+    if (consent) {
+      setConsentRequest(consent)
+      setConsentError(null)
+      setMissingToolkits([])
+      setConsentOpen(true)
+      return
+    }
+    await install()
+  }, [listing, user?.id, activeWorkspace?.id, http, slug, install])
 
   const handleSubmitReview = useCallback(async () => {
     if (!listing || !userInstall) return
@@ -1134,6 +1169,20 @@ export default observer(function MarketplaceDetailScreen() {
       )}
 
       {/* Lightbox */}
+      <AppConsentSheet
+        visible={consentOpen}
+        appName={listing?.title ?? 'this app'}
+        request={consentRequest}
+        installing={installing}
+        error={consentError}
+        missingToolkits={missingToolkits}
+        onConnect={() => {
+          setConsentOpen(false)
+          router.push('/(app)/settings?tab=integrations' as any)
+        }}
+        onAccept={(consent) => install(consent)}
+        onCancel={() => setConsentOpen(false)}
+      />
       <Modal
         visible={lightboxIndex != null}
         transparent

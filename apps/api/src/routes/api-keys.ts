@@ -213,7 +213,8 @@ export function apiKeyRoutes() {
       ],
     })
 
-    return c.json({ keys })
+    // App install tokens are managed through their install (Settings → Automations).
+    return c.json({ keys: keys.filter((k: { kind: string }) => k.kind !== 'app') })
   })
 
   // DELETE /api-keys/:id — Revoke an API key
@@ -333,17 +334,23 @@ export function apiKeyRoutes() {
  */
 export async function resolveApiKey(
   key: string,
-  opts?: { deviceAppVersion?: string },
+  opts?: {
+    deviceAppVersion?: string
+    /** App install tokens (`kind: 'app'`) only authenticate where their scopes are enforced. */
+    allowAppTokens?: boolean
+  },
 ): Promise<{
   workspaceId: string
   userId: string
   kind: string
   deviceId: string | null
+  /** Set for app install tokens only. */
+  installId?: string | null
 } | null> {
   if (!key.startsWith(SHOGO_API_KEY_PREFIX)) return null
 
   const keyHash = await hashApiKey(key)
-  const apiKey = await prisma.apiKey.findUnique({
+  const apiKey = await (prisma as any).apiKey.findUnique({
     where: { keyHash },
     select: {
       id: true,
@@ -353,11 +360,13 @@ export async function resolveApiKey(
       expiresAt: true,
       kind: true,
       deviceId: true,
+      installId: true,
     },
   })
 
   if (!apiKey || apiKey.revokedAt) return null
   if (apiKey.expiresAt && apiKey.expiresAt < new Date()) return null
+  if (apiKey.kind === 'app' && !opts?.allowAppTokens) return null
 
   const now = new Date()
   const data: Record<string, unknown> = { lastUsedAt: now }
@@ -378,5 +387,6 @@ export async function resolveApiKey(
     userId: apiKey.userId,
     kind: apiKey.kind,
     deviceId: apiKey.deviceId,
+    ...(apiKey.kind === 'app' ? { installId: apiKey.installId ?? null } : {}),
   }
 }

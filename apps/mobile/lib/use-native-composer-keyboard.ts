@@ -9,6 +9,7 @@ import {
   nativeComposerKeyboardOpenFromSource,
   nativeComposerKeyboardOverlap,
   NATIVE_COMPOSER_KEYBOARD_EASING,
+  webViewportKeyboardOverlap,
   type NativeComposerKeyboardEvent,
   type NativeComposerKeyboardSource,
 } from './native-composer-keyboard'
@@ -76,17 +77,22 @@ function subscribeWebViewportKeyboard(
   const viewport = window.visualViewport
 
   const handle = () => {
-    // How much of the full layout viewport is now covered by the keyboard
-    // (or address-bar chrome resize) — the visible area's bottom edge,
-    // reported as `screenY`, so `nativeComposerKeyboardOverlap` computes the
-    // same "viewportHeight - screenY" overlap it does from native coordinates.
-    const visibleBottom = viewport.height + viewport.offsetTop
+    // `Dimensions.get('window').height` follows visualViewport on RN-Web, so
+    // comparing against it would subtract two values from the same shrinking
+    // viewport and always produce zero. The document height remains the
+    // layout viewport height while the keyboard reduces the visual viewport.
+    const layoutHeight =
+      document.documentElement.clientHeight || window.innerHeight
+    const overlap = webViewportKeyboardOverlap(layoutHeight, viewport)
     listener(
       {
         duration: 200,
-        endCoordinates: { screenY: visibleBottom },
+        endCoordinates: { height: overlap },
       },
-      'change',
+      // Web has no separate keyboard hide event. A closed visual viewport
+      // must be sent as hide rather than change because native change-frame
+      // handling intentionally ignores zero-height intermediate frames.
+      overlap > 0 ? 'change' : 'hide',
     )
   }
 

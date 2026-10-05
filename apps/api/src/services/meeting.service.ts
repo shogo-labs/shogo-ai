@@ -13,6 +13,7 @@ import { tmpdir } from 'os'
 import { randomBytes } from 'crypto'
 import { generateText } from 'ai'
 import { prisma, type Meeting, type MeetingTemplate, type Prisma } from '../lib/prisma'
+import { publishMeetingLive } from '../lib/meeting-live-bus'
 import { transcribe, isLocalTranscriptionAvailable, type CloudTranscriptionAuth } from './transcription.service'
 import {
   isDiarizationAvailable,
@@ -108,18 +109,33 @@ export interface StoredTranscript extends ParsedTranscript {
   liveSeqs?: number[]
   /** The sweeper closed this draft after its recorder went away. */
   interrupted?: boolean
+  /** Why the live transcript is or isn't updating, so the UI can say so instead of waiting silently. */
+  liveStatus?: LiveStatus
+  /** Streamed final segments already stored (provider item ids), so a replay isn't appended twice. */
+  liveItems?: string[]
+}
+
+export interface LiveStatus {
+  state: 'ok' | 'error'
+  message?: string
+  at: string
 }
 
 /** The only reader of the `transcript` column. Legacy plain-text values become `text`. */
-export function readTranscript(raw: string | null | undefined): StoredTranscript | null {
+export function readTranscript(raw: unknown): StoredTranscript | null {
   if (!raw) return null
   let parsed: any
-  try {
-    parsed = JSON.parse(raw)
-  } catch {
-    return { text: String(raw), segments: [] }
+  if (typeof raw === 'object') {
+    // The SQLite client parses Json columns on read (see lib/prisma.ts), so desktop hands us the object itself.
+    parsed = raw
+  } else {
+    try {
+      parsed = JSON.parse(String(raw))
+    } catch {
+      return { text: String(raw), segments: [] }
+    }
+    if (!parsed || typeof parsed !== 'object') return { text: String(raw), segments: [] }
   }
-  if (!parsed || typeof parsed !== 'object') return { text: String(raw), segments: [] }
   return {
     text: typeof parsed.text === 'string' ? parsed.text : '',
     segments: Array.isArray(parsed.segments) ? parsed.segments : [],
@@ -129,6 +145,17 @@ export function readTranscript(raw: string | null | undefined): StoredTranscript
     live: parsed.live === true ? true : undefined,
     liveSeqs: Array.isArray(parsed.liveSeqs) ? parsed.liveSeqs.filter(Number.isInteger) : undefined,
     interrupted: parsed.interrupted === true ? true : undefined,
+    liveStatus: readLiveStatus(parsed.liveStatus),
+    liveItems: Array.isArray(parsed.liveItems) ? parsed.liveItems.filter((id: unknown) => typeof id === 'string') : undefined,
+  }
+}
+
+function readLiveStatus(value: any): LiveStatus | undefined {
+  if (!value || typeof value !== 'object' || (value.state !== 'ok' && value.state !== 'error')) return undefined
+  return {
+    state: value.state,
+    ...(typeof value.message === 'string' ? { message: value.message } : {}),
+    at: typeof value.at === 'string' ? value.at : new Date(0).toISOString(),
   }
 }
 
@@ -272,7 +299,7 @@ function getWavDuration(audioPath: string): number {
   }
 }
 
-async function getLocalMeetingConfig(): Promise<{ enabled: boolean; diarizationEnabled: boolean; whisperModel: string }> {
+export async function getLocalMeetingConfig(): Promise<{ enabled: boolean; diarizationEnabled: boolean; whisperModel: string }> {
   try {
     const rows = await localDb.localConfig.findMany({
       where: { key: { in: ['MEETING_ENABLED', 'MEETING_DIARIZATION_ENABLED', 'MEETING_WHISPER_MODEL'] } },
@@ -557,7 +584,36 @@ export interface LiveChunkInput {
 
 export type LiveChunkResult =
   | { ok: true; segment: TranscriptSegment | null; transcript: ParsedTranscript }
-  | { ok: false; reason: 'not_recording' | 'invalid' | 'disabled' }
+  | { ok: false; reason: 'not_recording' | 'invalid' | 'disabled' | 'busy' }
+
+/**
+ * Record why the live transcript isn't updating on the draft (or that it is
+ * again). Best effort: a failure here must not hide the original error.
+ */
+export async function setLiveStatus(meetingId: string, status: { state: 'ok' | 'error'; message?: string }): Promise<void> {
+  try {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const row = await db.meeting.findUnique({
+        where: { id: meetingId },
+        select: { status: true, transcript: true, updatedAt: true },
+      })
+      if (!row || row.status !== 'recording') return
+      const current = readTranscript(row.transcript) ?? { text: '', segments: [] }
+      if (current.liveStatus?.state === status.state && current.liveStatus.message === status.message) return
+      const next: StoredTranscript = { ...current, live: true, liveStatus: { ...status, at: new Date().toISOString() } }
+      const updated = await db.meeting.updateMany({
+        where: { id: meetingId, status: 'recording', updatedAt: row.updatedAt },
+        data: { transcript: writeTranscript(next) },
+      })
+      if (updated.count === 1) {
+        publishMeetingLive(meetingId, { type: 'status', ...status })
+        return
+      }
+    }
+  } catch (err: any) {
+    console.warn(`[Meetings] Could not record live status for ${meetingId}:`, err?.message ?? err)
+  }
+}
 
 export async function appendLiveTranscript(meetingId: string, input: LiveChunkInput): Promise<LiveChunkResult> {
   if (
@@ -602,7 +658,7 @@ export async function appendLiveTranscript(meetingId: string, input: LiveChunkIn
 
   // Chunks can land out of order (or on different API pods): merge with an
   // optimistic check on updatedAt instead of a blind overwrite.
-  for (let attempt = 0; attempt < 5; attempt++) {
+  for (let attempt = 0; attempt < 8; attempt++) {
     const row = await db.meeting.findUnique({
       where: { id: meetingId },
       select: { status: true, transcript: true, updatedAt: true },
@@ -622,14 +678,99 @@ export async function appendLiveTranscript(meetingId: string, input: LiveChunkIn
       language: result.language || current.language || 'en',
       live: true,
       liveSeqs: [...seqs, input.seq],
+      liveItems: current.liveItems,
+      liveStatus: { state: 'ok', at: new Date().toISOString() },
     }
     const updated = await db.meeting.updateMany({
       where: { id: meetingId, status: 'recording', updatedAt: row.updatedAt },
       data: { transcript: writeTranscript(next) },
     })
-    if (updated.count === 1) return { ok: true, segment, transcript: { text: next.text, segments, language: next.language } }
+    if (updated.count === 1) {
+      if (segment) publishMeetingLive(meetingId, { type: 'final', itemId: `chunk-${input.seq}`, segment })
+      if (current.liveStatus?.state === 'error') publishMeetingLive(meetingId, { type: 'status', state: 'ok' })
+      return { ok: true, segment, transcript: { text: next.text, segments, language: next.language } }
+    }
+    // Heartbeats and note saves touch the row too: back off briefly, then merge again.
+    await new Promise((resolve) => setTimeout(resolve, 20 + Math.random() * 60 * (attempt + 1)))
   }
-  return { ok: false, reason: 'not_recording' }
+  // Lost every race. The recording is still going, so the client should keep capturing.
+  return { ok: false, reason: 'busy' }
+}
+
+/** Sequence numbers for streamed finals start here so they never collide with chunk numbers. */
+const STREAM_SEQ_BASE = 1_000_000
+
+export type StreamFinalResult = { ok: true; stored: boolean; finals: number } | { ok: false; reason: 'not_recording' | 'busy' }
+
+/**
+ * Store one finished segment from the streaming transcriber in the draft.
+ * Idempotent per `itemId`, so a replayed or duplicated final isn't added twice.
+ */
+export async function appendStreamFinal(
+  meetingId: string,
+  input: { itemId: string; segment: TranscriptSegment; language?: string },
+): Promise<StreamFinalResult> {
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const row = await db.meeting.findUnique({
+      where: { id: meetingId },
+      select: { status: true, transcript: true, updatedAt: true },
+    })
+    if (!row || row.status !== 'recording') return { ok: false, reason: 'not_recording' }
+    const current = readTranscript(row.transcript) ?? { text: '', segments: [] }
+    const items = current.liveItems ?? []
+    if (items.includes(input.itemId)) return { ok: true, stored: false, finals: items.length }
+    const segments = [...current.segments, input.segment].sort((a, b) => a.start - b.start)
+    const next: StoredTranscript = {
+      text: segments.map((s) => s.text).join(' '),
+      segments,
+      language: input.language || current.language || 'en',
+      live: true,
+      liveSeqs: [...(current.liveSeqs ?? []), STREAM_SEQ_BASE + items.length],
+      liveItems: [...items, input.itemId],
+      liveStatus: { state: 'ok', at: new Date().toISOString() },
+    }
+    const updated = await db.meeting.updateMany({
+      where: { id: meetingId, status: 'recording', updatedAt: row.updatedAt },
+      data: { transcript: writeTranscript(next) },
+    })
+    if (updated.count === 1) return { ok: true, stored: true, finals: next.liveItems!.length }
+    await new Promise((resolve) => setTimeout(resolve, 20 + Math.random() * 60 * (attempt + 1)))
+  }
+  return { ok: false, reason: 'busy' }
+}
+
+/** Dictation clips are capped at a few minutes of 16 kHz mono 16-bit audio (~32 KB/s). */
+export const DICTATION_MAX_BYTES = 8 * 1024 * 1024
+
+export type DictationResult =
+  | { ok: true; text: string }
+  | { ok: false; reason: 'invalid' }
+
+/**
+ * One-shot transcription of a short WAV clip (chat composer dictation).
+ * Unlike live meeting chunks it isn't tied to a recording or meeting; it
+ * just returns text. Local sherpa/Whisper first, cloud as the fallback.
+ */
+export async function transcribeDictation(audio: Buffer): Promise<DictationResult> {
+  if (
+    audio.length <= WAV_HEADER_SIZE ||
+    audio.length > DICTATION_MAX_BYTES ||
+    audio.toString('ascii', 0, 4) !== 'RIFF'
+  ) {
+    return { ok: false, reason: 'invalid' }
+  }
+  const local = isLocalMode()
+  const config = local ? await getLocalMeetingConfig() : { whisperModel: 'base.en' }
+  const dir = join(tmpdir(), 'shogo-dictation')
+  mkdirSync(dir, { recursive: true })
+  const clipPath = join(dir, `${Date.now()}-${randomBytes(6).toString('hex')}.wav`)
+  writeFileSync(clipPath, audio)
+  try {
+    const result = await transcribe(clipPath, { model: config.whisperModel, preferLocal: local })
+    return { ok: true, text: result.text.trim() }
+  } finally {
+    removeAudioFiles(clipPath)
+  }
 }
 
 function getWavDurationFromBuffer(buffer: Buffer): number {

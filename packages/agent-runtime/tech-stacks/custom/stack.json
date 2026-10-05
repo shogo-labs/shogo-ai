@@ -1,0 +1,20 @@
+{
+  "id": "custom",
+  "name": "Custom",
+  "description": "Bring your own framework. The preview runs the project's own static build (Astro, Eleventy, SvelteKit static, Hugo, …) and serves its output.",
+  "tags": ["custom", "static", "astro", "import"],
+  "target": "web",
+  "seedsOwnTemplate": true,
+  "runtime": {
+    "devServer": "static-build"
+  },
+  "capabilities": {
+    "webEnabled": true,
+    "browserEnabled": true,
+    "shellEnabled": true,
+    "heartbeatEnabled": false,
+    "imageGenEnabled": true,
+    "memoryEnabled": true,
+    "quickActionsEnabled": true
+  }
+}

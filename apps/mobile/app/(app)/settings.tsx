@@ -48,6 +48,7 @@ import {
   Plug as PlugIcon,
   Download as DownloadIcon,
   Monitor as MonitorIcon,
+  Laptop as LaptopIcon,
   Paintbrush as PaintbrushIcon,
   RefreshCw as RefreshCwIcon,
   KeyRound as KeyRoundIcon,
@@ -100,10 +101,12 @@ import { usePostHogSafe } from "../../contexts/posthog";
 import { EVENTS, trackEvent } from "../../lib/analytics";
 import { useCloudBillingSummary } from "../../hooks/useCloudBillingSummary";
 import { SecuritySettingsPanel } from "../../components/security/SecuritySettingsPanel";
+import { ComputerAndFilesPanel } from "../../components/settings/ComputerAndFilesPanel";
 import { ComputeTab } from "../../components/settings/ComputeTab";
 import { LocalCloudBillingTab } from "../../components/settings/LocalCloudBillingTab";
 import { UpdatesTab } from "../../components/settings/UpdatesTab";
 import { IntegrationsTab } from "../../components/settings/IntegrationsTab";
+import { AutomationsTab } from "../../components/settings/AutomationsTab";
 import { WorkspaceModelsTab } from "../../components/settings/WorkspaceModelsTab";
 import { RemoteControlTab } from "../../components/settings/RemoteControlTab";
 import {
@@ -127,6 +130,7 @@ import { BillingProgressCard } from "../../components/billing/BillingProgressCar
 import { SetSpendLimitDialog } from "../../components/billing/SetSpendLimitDialog";
 import { CostAnalyticsTab } from "../../components/analytics/CostAnalyticsTab";
 import { MemberUsageDetail } from "../../components/settings/MemberUsageDetail";
+import { WorkspaceActivitySection } from "../../components/analytics/WorkspaceActivitySection";
 import { useVisibleModels } from "../../lib/visible-models";
 import {
   isNativePhoneIntegrationsLayout,
@@ -193,6 +197,7 @@ const SETTINGS_ICON_MAP = {
   Plug: PlugIcon,
   Download: DownloadIcon,
   Monitor: MonitorIcon,
+  Laptop: LaptopIcon,
   Paintbrush: PaintbrushIcon,
   RefreshCw: RefreshCwIcon,
 } as const;
@@ -206,9 +211,11 @@ const SETTINGS_TAB_ICON_NAME: Record<TabId, keyof typeof SETTINGS_ICON_MAP> = {
   people: "Users",
   models: "Boxes",
   integrations: "Plug",
+  automations: "Zap",
   "remote-control": "Monitor",
   account: "User",
   security: "Shield",
+  "computer-files": "Laptop",
   billing: "CreditCard",
   compute: "Server",
   analytics: "BarChart3",
@@ -247,6 +254,7 @@ const MOBILE_NAV_ITEMS: NavItem[] = settingsNavItems([
   "people",
   "models",
   "integrations",
+  "automations",
   "remote-control",
   "account",
   "appearance",
@@ -260,10 +268,12 @@ const MOBILE_NAV_ITEMS: NavItem[] = settingsNavItems([
 const LOCAL_NAV_ITEMS: NavItem[] = settingsNavItems([
   "workspace",
   "integrations",
+  "automations",
   "remote-control",
   "account",
   "appearance",
   "security",
+  ...(IS_DESKTOP_CLIENT ? ["computer-files" as TabId] : []),
   "billing",
   "analytics",
   "costs",
@@ -362,6 +372,7 @@ function SettingsSidebar({
       ? [tabItem("people"), tabItem("models")]
       : []),
     tabItem("integrations"),
+    tabItem("automations"),
     tabItem("remote-control"),
     ...(showBilling
       ? [
@@ -388,6 +399,7 @@ function SettingsSidebar({
         },
         tabItem("appearance"),
         ...(!showBilling ? [tabItem("security")] : []),
+        ...(!showBilling && IS_DESKTOP_CLIENT ? [tabItem("computer-files")] : []),
         ...(IS_DESKTOP_CLIENT ? [tabItem("updates")] : []),
       ],
     },
@@ -1658,7 +1670,9 @@ const PeopleTab = observer(function PeopleTab() {
         } catch {}
 
         try {
-          const usage = await api.getMemberUsageStats(http, ws.id);
+          const usage = await api.getMemberUsageStats(http, ws.id, {
+            period: memberUsagePeriod,
+          });
           setMemberUsage(usage);
         } catch {}
 
@@ -1960,8 +1974,7 @@ const PeopleTab = observer(function PeopleTab() {
 
   /** Keeps header/body aligned: name flexes separately so usage columns stay evenly spaced, not shoved to the edge. */
   const peopleNameCol = cn(
-    "flex-1 min-w-0",
-    isMobilePeopleLayout && "min-w-[200px]",
+    "flex-1 min-w-[220px]",
     !isMobilePeopleLayout && "max-w-md"
   );
   const peopleMetricsRow = "flex-row items-center gap-x-5 shrink-0";
@@ -2550,21 +2563,16 @@ const PeopleTab = observer(function PeopleTab() {
                 </Text>
               </View>
             ) : (
-              <>
-                {isMobilePeopleLayout ? (
-                  <ScrollView
-                    horizontal
-                    nestedScrollEnabled
-                    showsHorizontalScrollIndicator={Platform.OS !== "web"}
-                    className="w-full max-w-full"
-                    style={{ flexGrow: 0 }}
-                  >
-                    <View>{memberListTable}</View>
-                  </ScrollView>
-                ) : (
-                  memberListTable
-                )}
-              </>
+              <ScrollView
+                horizontal
+                nestedScrollEnabled
+                showsHorizontalScrollIndicator={Platform.OS !== "web"}
+                className="w-full max-w-full"
+                style={{ flexGrow: 0 }}
+                contentContainerStyle={{ flexGrow: 1 }}
+              >
+                <View className="flex-1">{memberListTable}</View>
+              </ScrollView>
             )}
           </CardContent>
         </Card>
@@ -4043,8 +4051,13 @@ function WorkspaceAnalyticsTab() {
 
   // ─── Progress card data ──────────────────────────────────
   // Coupled window display: weekly-at-100% forces the 5-hour card to 100% too.
-  const analyticsWindowDisplays = getWindowDisplays(usageWindows);
+  // In local mode usage is metered against the linked Shogo Cloud workspace,
+  // so read windows from the cloud billing summary, not the local plan.
   const cloudPlan = cloudBilling.summary?.plan;
+  const displayWindows = localMode
+    ? (cloudPlan?.usageWindows as typeof usageWindows)
+    : usageWindows;
+  const analyticsWindowDisplays = getWindowDisplays(displayWindows);
   const onDemandUsed = localMode
     ? cloudPlan?.overageAccumulatedUsd ?? 0
     : effectiveBalance?.overageAccumulatedUsd ?? 0;
@@ -4083,10 +4096,18 @@ function WorkspaceAnalyticsTab() {
         </Text>
       </View>
 
+      {/* Who is doing what: team table + dashboard for admins, own stats for members */}
+      {workspaceId ? (
+        <WorkspaceActivitySection
+          workspaceId={workspaceId}
+          isBusinessOrHigher={isBusinessOrHigher}
+        />
+      ) : null}
+
       {/* Progress cards */}
       <View className="flex-row flex-wrap gap-3">
         {(["fiveHour", "weekly"] as const).map((key) => {
-          const w = usageWindows?.[key];
+          const w = displayWindows?.[key];
           const label = key === "fiveHour" ? "5-hour usage" : "Weekly usage";
           const { pct, uncapped, countdown } = analyticsWindowDisplays[key];
           return (
@@ -4613,10 +4634,13 @@ export const SettingsContent = observer(function SettingsContent({
   activeTab,
   localMode = false,
   onSelectTab,
+  onClose,
 }: {
   activeTab: TabId;
   localMode?: boolean;
   onSelectTab?: (tab: TabId) => void;
+  /** Set when Settings is shown in a sheet that must close before navigating away. */
+  onClose?: () => void;
 }) {
   const isLocal = localMode;
   return (
@@ -4625,10 +4649,19 @@ export const SettingsContent = observer(function SettingsContent({
       {activeTab === "people" && !isLocal && <PeopleTab />}
       {activeTab === "models" && !isLocal && <WorkspaceModelsTab />}
       {activeTab === "integrations" && <IntegrationsTab />}
+      {activeTab === "automations" && (
+        <AutomationsTab
+          onOpenIntegrations={onSelectTab ? () => onSelectTab("integrations") : undefined}
+          onLeaveSettings={onClose}
+        />
+      )}
       {activeTab === "remote-control" && <RemoteControlTab />}
       {activeTab === "account" && <AccountTab />}
       {activeTab === "appearance" && <AppearanceTab />}
       {activeTab === "security" && <SecuritySettingsPanel />}
+      {activeTab === "computer-files" && isLocal && IS_DESKTOP_CLIENT && (
+        <ComputerAndFilesPanel />
+      )}
       {activeTab === "compute" &&
         !isLocal &&
         !HIDE_COMPUTE_PURCHASES_ON_IOS && <ComputeTab />}
@@ -4683,6 +4716,8 @@ export default observer(function SettingsPage({
     if (activeTab === "compute" && (isLocal || HIDE_COMPUTE_PURCHASES_ON_IOS))
       setActiveTab("workspace");
     if (activeTab === "updates" && !IS_DESKTOP_CLIENT)
+      setActiveTab("workspace");
+    if (activeTab === "computer-files" && (!IS_DESKTOP_CLIENT || !isLocal))
       setActiveTab("workspace");
   }, [activeTab, features.billing, localMode]);
 

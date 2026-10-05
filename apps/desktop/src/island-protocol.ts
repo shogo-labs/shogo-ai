@@ -81,14 +81,40 @@ export interface IslandSnapshot {
   updatedAt: number
 }
 
-export const ISLAND_BUDDY_TOPPERS = ['orb', 'stubby', 'ears', 'none'] as const
+export const ISLAND_BUDDY_TOPPERS = [
+  'orb',
+  'stubby',
+  'ears',
+  'fox',
+  'bunny',
+  'bear',
+  'horns',
+  'halo',
+  'sprout',
+  'crown',
+  'party',
+  'beanie',
+  'wizard',
+  'headphones',
+  'none',
+] as const
 export const ISLAND_BUDDY_FACES = ['classic', 'visor', 'screen'] as const
+export const ISLAND_BUDDY_TAILS = ['none', 'fox', 'cat', 'bunny', 'dragon', 'cable'] as const
+export const ISLAND_BUDDY_EYEWEAR = ['none', 'sunglasses', 'nerd', 'monocle', 'stars', '3d', 'goggles'] as const
+export const ISLAND_BUDDY_NECKS = ['none', 'scarf', 'bandana', 'bowtie'] as const
+export const ISLAND_BUDDY_FINISHES = ['classic', 'modern'] as const
 
 export interface IslandBuddyLook {
   topper: (typeof ISLAND_BUDDY_TOPPERS)[number]
   face: (typeof ISLAND_BUDDY_FACES)[number]
+  tail: (typeof ISLAND_BUDDY_TAILS)[number]
+  eyewear: (typeof ISLAND_BUDDY_EYEWEAR)[number]
+  neck: (typeof ISLAND_BUDDY_NECKS)[number]
   bolts: boolean
   blush: boolean
+  /** `#RRGGBB`, or null to follow the accent colour. */
+  color: string | null
+  finish: (typeof ISLAND_BUDDY_FINISHES)[number]
 }
 
 export const EMPTY_ISLAND_SNAPSHOT: IslandSnapshot = { sessions: [], recentProjects: [], updatedAt: 0 }
@@ -470,10 +496,30 @@ export function parseIslandSnapshot(value: unknown): IslandSnapshot {
 export function parseIslandBuddyLook(value: unknown): IslandBuddyLook | undefined {
   if (!isRecord(value)) return undefined
   const { topper, face, bolts, blush } = value
+  const tail = value.tail ?? 'none'
+  const eyewear = value.eyewear ?? 'none'
+  const neck = value.neck ?? 'none'
   if (!ISLAND_BUDDY_TOPPERS.includes(topper as IslandBuddyLook['topper'])) return undefined
   if (!ISLAND_BUDDY_FACES.includes(face as IslandBuddyLook['face'])) return undefined
+  if (!ISLAND_BUDDY_TAILS.includes(tail as IslandBuddyLook['tail'])) return undefined
+  if (!ISLAND_BUDDY_EYEWEAR.includes(eyewear as IslandBuddyLook['eyewear'])) return undefined
+  if (!ISLAND_BUDDY_NECKS.includes(neck as IslandBuddyLook['neck'])) return undefined
   if (typeof bolts !== 'boolean' || typeof blush !== 'boolean') return undefined
-  return { topper: topper as IslandBuddyLook['topper'], face: face as IslandBuddyLook['face'], bolts, blush }
+  const color = typeof value.color === 'string' && /^#[0-9a-f]{6}$/i.test(value.color) ? value.color.toUpperCase() : null
+  const finish = ISLAND_BUDDY_FINISHES.includes(value.finish as IslandBuddyLook['finish'])
+    ? (value.finish as IslandBuddyLook['finish'])
+    : 'classic'
+  return {
+    topper: topper as IslandBuddyLook['topper'],
+    face: face as IslandBuddyLook['face'],
+    tail: tail as IslandBuddyLook['tail'],
+    eyewear: eyewear as IslandBuddyLook['eyewear'],
+    neck: neck as IslandBuddyLook['neck'],
+    bolts,
+    blush,
+    color,
+    finish,
+  }
 }
 
 /** Merge per-window snapshots, most recently updated window first. Only the
@@ -504,6 +550,34 @@ export function mergeIslandSnapshots(
   }
   if (focusedWindowSnapshot?.focusedSessionKey) merged.focusedSessionKey = focusedWindowSnapshot.focusedSessionKey
   return merged
+}
+
+export interface PendingAutoExpandDecision {
+  /** Request id that should pop the island open, if any. */
+  expand: string | null
+  /** Unseen request ids in the chat the user is already looking at; they
+   * should be marked seen without expanding. */
+  suppressed: string[]
+}
+
+/** Decides which unseen pending requests auto-expand the island. A request in
+ * the session visible in a focused app window is suppressed: the user is
+ * already looking at it. */
+export function pendingRequestsToAutoExpand(
+  snapshot: IslandSnapshot,
+  seen: ReadonlySet<string>,
+): PendingAutoExpandDecision {
+  const decision: PendingAutoExpandDecision = { expand: null, suppressed: [] }
+  for (const session of snapshot.sessions) {
+    const id = session.pending?.request.id
+    if (!id || seen.has(id)) continue
+    if (islandSessionKey(session.projectId, session.sessionId) === snapshot.focusedSessionKey) {
+      decision.suppressed.push(id)
+    } else if (decision.expand === null) {
+      decision.expand = id
+    }
+  }
+  return decision
 }
 
 export type IslandConfigPatchResult =

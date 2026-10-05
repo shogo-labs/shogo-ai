@@ -48,6 +48,6 @@ describe('IDE primary sidebar alignment wiring', () => {
 
     expect(source).toContain('invert: primarySideBarPosition === "right"')
     expect(splitter).toContain('start.current.size + (invert ? -delta : delta)')
-    expect(splitter).toContain('[direction, invert, min, max]')
+    expect(splitter).toContain('[direction, invert, min, max, storageKey]')
   })
 })

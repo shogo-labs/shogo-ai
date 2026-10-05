@@ -235,13 +235,13 @@ jobs:
         working-directory: apps/mobile
         run: ruby scripts/strip-sentry-build-phases.rb
 
-      - name: Build for simulator (Release, unsigned)
+      - name: Build for simulator (Release, ad-hoc signed)
         working-directory: apps/mobile/ios
         env:
           EXPO_PUBLIC_API_URL: ${{ env.STAGING_API_URL }}
           EXPO_PUBLIC_APP_ENV: staging_app
           PROJECT_ROOT: ${{ github.workspace }}
-          ENTRY_FILE: apps/mobile/index.js
+          ENTRY_FILE: ${{ github.workspace }}/apps/mobile/index.js
         run: |
           set -o pipefail
           xcodebuild build \
@@ -251,7 +251,10 @@ jobs:
             -sdk iphonesimulator \
             -destination 'generic/platform=iOS Simulator' \
             -derivedDataPath "$RUNNER_TEMP/dd" \
-            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGN_IDENTITY=- \
+            CODE_SIGN_STYLE=Manual \
+            DEVELOPMENT_TEAM= \
+            PROVISIONING_PROFILE_SPECIFIER= \
             | xcbeautify || exit "${PIPESTATUS[0]}"
 
       - name: Boot simulator and install

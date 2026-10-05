@@ -23,7 +23,8 @@
  */
 
 import type { PtyClientLike } from './pty-factory'
-import { DARK_PLUS_THEME, TERMINAL_DEFAULTS } from './xterm-theme'
+import { findFileLinks, OPEN_FILE_EVENT, type OpenFileDetail } from './file-links'
+import { DARK_PLUS_THEME, TERMINAL_DEFAULTS, type XtermTheme } from './xterm-theme'
 // xterm.js relies on this stylesheet to (a) size the row container and (b)
 // clip-hide the input proxy `<textarea>`. Without it, the textarea renders
 // unstyled at 0,0 and the rows have no height — the panel looks blank
@@ -34,17 +35,22 @@ import '@xterm/xterm/css/xterm.css'
 // at runtime. Web-only — xterm.js bundles a Canvas/WebGL renderer.
 type XTerminal = import('@xterm/xterm').Terminal
 type XFitAddon = import('@xterm/addon-fit').FitAddon
+type XSearchAddon = import('@xterm/addon-search').SearchAddon
 type IMarker  = import('@xterm/xterm').IMarker
 
 export interface XtermSessionOptions {
   fontFamily?: string
   fontSize?: number
   fontLigatures?: boolean
+  theme?: XtermTheme
+  /** ⌘/Ctrl+F inside the terminal — the host shows its find bar. */
+  onFindRequest?: () => void
 }
 
 export class XtermSession {
   private term: XTerminal | null = null
   private fitAddon: XFitAddon | null = null
+  private searchAddon: XSearchAddon | null = null
   private container: HTMLElement | null = null
   private unsubData: (() => void) | null = null
   private unsubExit: (() => void) | null = null
@@ -73,10 +79,11 @@ export class XtermSession {
     this.container = container
 
     // Lazy-load to keep non-IDE bundles slim.
-    const [xtermMod, fitMod, linksMod] = await Promise.all([
+    const [xtermMod, fitMod, linksMod, searchMod] = await Promise.all([
       import('@xterm/xterm'),
       import('@xterm/addon-fit'),
       import('@xterm/addon-web-links'),
+      import('@xterm/addon-search'),
     ])
     if (this.disposed) return
 
@@ -85,7 +92,7 @@ export class XtermSession {
       fontFamily: this.opts.fontFamily ?? TERMINAL_DEFAULTS.fontFamily,
       fontSize: this.opts.fontSize ?? TERMINAL_DEFAULTS.fontSize,
       fontLigatures: this.opts.fontLigatures ?? TERMINAL_DEFAULTS.fontLigatures,
-      theme: DARK_PLUS_THEME,
+      theme: this.opts.theme ?? DARK_PLUS_THEME,
     } as unknown as ConstructorParameters<typeof xtermMod.Terminal>[0])
     this.term = term
 
@@ -95,6 +102,50 @@ export class XtermSession {
 
     const linksAddon = new linksMod.WebLinksAddon()
     term.loadAddon(linksAddon)
+
+    const searchAddon: XSearchAddon = new searchMod.SearchAddon()
+    term.loadAddon(searchAddon)
+    this.searchAddon = searchAddon
+    // ⌘F (mac) / Ctrl+F: open the find bar instead of sending ^F to the shell.
+    // Click `file.ts:12:5` in output to open the file at that position.
+    term.registerLinkProvider({
+      provideLinks: (y: number, cb: (links: any[] | undefined) => void) => {
+        const buf = term.buffer.active.getLine(y - 1)
+        if (!buf) return cb(undefined)
+        const matches = findFileLinks(buf.translateToString(true))
+        if (matches.length === 0) return cb(undefined)
+        cb(matches.map((m) => ({
+          text: m.text,
+          range: { start: { x: m.index + 1, y }, end: { x: m.index + m.length, y } },
+          decorations: { underline: true, pointerCursor: true },
+          activate: (e: MouseEvent) => {
+            if (!(e.metaKey || e.ctrlKey)) return
+            window.dispatchEvent(new CustomEvent<OpenFileDetail>(OPEN_FILE_EVENT, {
+              detail: { path: m.path, line: m.line, column: m.column },
+            }))
+          },
+        })))
+      },
+    })
+    term.attachCustomKeyEventHandler((e: KeyboardEvent) => {
+      // ⌘K clears the terminal (macOS convention; also in the tab menu).
+      if (e.type === 'keydown' && e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey && (e.key === 'k' || e.key === 'K')) {
+        e.preventDefault()
+        term.clear()
+        return false
+      }
+      if (
+        e.type === 'keydown' &&
+        (e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey &&
+        (e.key === 'f' || e.key === 'F') &&
+        this.opts.onFindRequest
+      ) {
+        e.preventDefault()
+        this.opts.onFindRequest()
+        return false
+      }
+      return true
+    })
 
     term.open(container)
     try { fitAddon.fit() } catch { /* container may be zero-size at open */ }
@@ -230,6 +281,16 @@ export class XtermSession {
    * `attach()` picks up the new value via the existing closure path —
    * the test `setFont before attach is honoured at attach()` pins this.
    */
+  /** Swap the colour palette live (IDE light/dark toggle) — keeps scrollback. */
+  setTheme(theme: XtermTheme): void {
+    if (this.disposed) return
+    this.opts.theme = theme
+    if (!this.term) return
+    try {
+      ;(this.term.options as unknown as { theme: XtermTheme }).theme = { ...theme }
+    } catch { /* terminal mid-dispose */ }
+  }
+
   setFont(fontFamily?: string, fontSize?: number): void {
     if (this.disposed) return
     const opts = this.opts as XtermSessionOptions
@@ -268,6 +329,21 @@ export class XtermSession {
     } catch {
       // Unsupported runtime — takes effect on next remount via this.opts.
     }
+  }
+
+  /** Find in the scrollback. Returns whether anything matched. */
+  find(query: string, direction: 'next' | 'prev' = 'next', opts: { caseSensitive?: boolean; regex?: boolean } = {}): boolean {
+    if (this.disposed || !this.searchAddon || !query) return false
+    const o = { caseSensitive: !!opts.caseSensitive, regex: !!opts.regex, incremental: false }
+    try {
+      return direction === 'next' ? this.searchAddon.findNext(query, o) : this.searchAddon.findPrevious(query, o)
+    } catch {
+      return false
+    }
+  }
+
+  clearFind(): void {
+    try { this.searchAddon?.clearDecorations() } catch { /* ignore */ }
   }
 
   /** Programmatic clear (keeps the shell alive, just blanks the view). */

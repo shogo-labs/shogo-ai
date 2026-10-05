@@ -303,7 +303,7 @@ jobs:
           SDK=$(has_match '^packages/sdk/')
           SHARED_RUNTIME=$(has_match '^packages/shared-runtime/')
           RUNTIME_PKG=$(has_match '^packages/agent-runtime/')
-          API_APP=$(has_match '^(apps/api/|prisma/|prisma\.config\.ts|templates/runtime-template/)')
+          API_APP=$(has_match '^(apps/api/|packages/shared-app/src/buddy-look\.ts|prisma/|prisma\.config\.ts|templates/runtime-template/)')
           WEB_APP=$(has_match '^(apps/mobile/|packages/domain-stores/|packages/shared-app/|packages/shared-ui/|packages/ui-kit/)')
           DOCS_APP=$(has_match '^apps/docs/')
 
@@ -938,6 +938,25 @@ jobs:
       - name: Check node disk headroom (pre-rollout gate)
         run: .github/scripts/check-node-disk-headroom.sh 80
 
+      # pgvector must exist before the api pods start: their entrypoint runs
+      # `prisma migrate deploy` as `shogo`, which can't create untrusted
+      # extensions. This has to precede `Apply Kubernetes manifests`, whose
+      # ksvc points at the mutable `:<env>-latest` tag and so can start the
+      # new image right away. See k8s/cnpg/ensure-extensions.sql.
+      - name: Ensure Postgres extensions
+        run: |
+          set -euo pipefail
+          PRIMARY=$(kubectl get pods -n ${{ env.NS_SYSTEM }} \
+            -l "cnpg.io/cluster=platform-pg,cnpg.io/instanceRole=primary" \
+            -o jsonpath='{.items[0].metadata.name}')
+          if [ -z "$PRIMARY" ]; then
+            echo "::error::No primary pod found for platform-pg cluster in ${{ env.NS_SYSTEM }}"
+            exit 1
+          fi
+          kubectl exec -i -n ${{ env.NS_SYSTEM }} "$PRIMARY" -c postgres -- \
+            psql -U postgres -d shogo -v ON_ERROR_STOP=1 < k8s/cnpg/ensure-extensions.sql \
+            || { echo "::error::Could not install Postgres extensions on staging"; exit 1; }
+
       - name: Apply Kubernetes manifests
         run: |
           # Render RUNTIME_IMAGE into the api ksvc at apply time, mirroring the
@@ -1362,7 +1381,7 @@ jobs:
           sparse-checkout: scripts/ci
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: '1.3.11'
+          bun-version: '1.4.2'
       - name: Wait for e2e/staging-critical to pass for this commit
         env:
           GH_TOKEN: ${{ github.token }}
@@ -1523,6 +1542,25 @@ jobs:
       # actionable message instead.
       - name: Check node disk headroom (pre-rollout gate)
         run: .github/scripts/check-node-disk-headroom.sh 80
+
+      # pgvector must exist before the api pods start: their entrypoint runs
+      # `prisma migrate deploy` as `shogo`, which can't create untrusted
+      # extensions. This has to precede `Apply Kubernetes manifests`, whose
+      # ksvc points at the mutable `:<env>-latest` tag and so can start the
+      # new image right away. See k8s/cnpg/ensure-extensions.sql.
+      - name: Ensure Postgres extensions
+        run: |
+          set -euo pipefail
+          PRIMARY=$(kubectl get pods -n ${{ env.NS_SYSTEM }} \
+            -l "cnpg.io/cluster=platform-pg,cnpg.io/instanceRole=primary" \
+            -o jsonpath='{.items[0].metadata.name}')
+          if [ -z "$PRIMARY" ]; then
+            echo "::error::No primary pod found for platform-pg cluster in ${{ env.NS_SYSTEM }}"
+            exit 1
+          fi
+          kubectl exec -i -n ${{ env.NS_SYSTEM }} "$PRIMARY" -c postgres -- \
+            psql -U postgres -d shogo -v ON_ERROR_STOP=1 < k8s/cnpg/ensure-extensions.sql \
+            || { echo "::error::Could not install Postgres extensions on US"; exit 1; }
 
       - name: Apply Kubernetes manifests
         run: |
@@ -2190,6 +2228,26 @@ jobs:
       # actionable message instead.
       - name: Check node disk headroom (pre-rollout gate)
         run: .github/scripts/check-node-disk-headroom.sh 80
+
+      # pgvector must exist before any migration runs: migrations run as
+      # `shogo`, which can't create untrusted extensions, and
+      # `Apply Kubernetes manifests` can start the new api image (mutable
+      # `:<env>-latest` tag) before `Run Prisma migrations`. See
+      # k8s/cnpg/ensure-extensions.sql.
+      - name: Ensure Postgres extensions
+        if: needs.detect-changes.outputs.api_changed == 'true'
+        run: |
+          set -euo pipefail
+          PRIMARY=$(kubectl get pods -n ${{ env.NS_SYSTEM }} \
+            -l "cnpg.io/cluster=platform-pg,cnpg.io/instanceRole=primary" \
+            -o jsonpath='{.items[0].metadata.name}')
+          if [ -z "$PRIMARY" ]; then
+            echo "::error::No primary pod found for platform-pg cluster in ${{ env.NS_SYSTEM }}"
+            exit 1
+          fi
+          kubectl exec -i -n ${{ env.NS_SYSTEM }} "$PRIMARY" -c postgres -- \
+            psql -U postgres -d shogo -v ON_ERROR_STOP=1 < k8s/cnpg/ensure-extensions.sql \
+            || { echo "::error::Could not install Postgres extensions on EU"; exit 1; }
 
       - name: Apply Kubernetes manifests
         run: |

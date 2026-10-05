@@ -79,6 +79,15 @@ on:
         required: false
         default: true
         type: boolean
+      release_tag:
+        description: 'Build this v* tag (dispatch with --ref main so the run can reuse main''s compile cache)'
+        required: false
+        default: ''
+        type: string
+
+env:
+  # Ref being released: the release_tag input when given, else the run's ref.
+  RELEASE_REF: ${{ inputs.release_tag && format('refs/tags/{0}', inputs.release_tag) || github.ref }}
 
 jobs:
   # ===========================================================================
@@ -115,6 +124,7 @@ jobs:
       runtime_version: ${{ steps.fingerprint.outputs.runtime_version }}
       environment: ${{ steps.resolve-env.outputs.environment }}
       app_version: ${{ steps.resolve-version.outputs.version }}
+      sha: ${{ steps.resolve-sha.outputs.sha }}
 
     steps:
       - name: Resolve environment
@@ -122,7 +132,7 @@ jobs:
         run: |
           if [ -n "${{ github.event.inputs.environment }}" ]; then
             ENV="${{ github.event.inputs.environment }}"
-          elif [[ "${{ github.ref }}" =~ ^refs/tags/(ios-v|v[0-9]) ]]; then
+          elif [[ "$RELEASE_REF" =~ ^refs/tags/(ios-v|v[0-9]) ]]; then
             ENV="production"
           else
             ENV="staging"
@@ -133,12 +143,18 @@ jobs:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          ref: ${{ inputs.release_tag }}
           fetch-tags: true
+
+      - name: Resolve release commit
+        id: resolve-sha
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Resolve app version from current production tag
         id: resolve-version
         env:
           MOBILE_RELEASE_ENV: ${{ steps.resolve-env.outputs.environment }}
+          MOBILE_RELEASE_REF: ${{ env.RELEASE_REF }}
         run: bash scripts/ci/resolve-mobile-app-version.sh
 
       - name: Setup Bun
@@ -178,8 +194,8 @@ jobs:
       - name: Determine if build is needed
         id: decide
         run: |
-          if [[ "${{ github.ref }}" =~ ^refs/tags/(ios-v|v[0-9]) ]]; then
-            echo "Tag push (${{ github.ref_name }}) → release event, forcing full build + submit"
+          if [[ "$RELEASE_REF" =~ ^refs/tags/(ios-v|v[0-9]) ]]; then
+            echo "Release tag (${RELEASE_REF#refs/tags/}) → forcing full build + submit"
             echo "needs_build=true" >> $GITHUB_OUTPUT
           elif [ "${{ steps.fingerprint.outputs.runtime_version }}" = "unknown" ]; then
             echo "Could not resolve fingerprint → forcing full build"
@@ -209,6 +225,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.check-fingerprint.outputs.sha }}
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
@@ -259,7 +277,7 @@ jobs:
       - name: Publish OTA update
         working-directory: apps/mobile
         env:
-          COMMIT_MSG: ${{ github.event.head_commit.message || format('Manual OTA from {0}', github.sha) }}
+          COMMIT_MSG: ${{ github.event.head_commit.message || format('Manual OTA from {0}', needs.check-fingerprint.outputs.sha) }}
           EXPO_PUBLIC_API_URL: ${{ steps.api-url.outputs.url }}
           EXPO_PUBLIC_APP_ENV: ${{ needs.check-fingerprint.outputs.environment }}_app
           EXPO_PUBLIC_APP_VERSION: ${{ needs.check-fingerprint.outputs.app_version }}
@@ -268,7 +286,7 @@ jobs:
           # in apps/mobile/app/_layout.tsx reads this at bundle time. Without it
           # every OTA bundle reports as `dev` in Sentry, which collapses every
           # release into one bucket and makes sourcemap matching impossible.
-          EXPO_PUBLIC_BUILD_HASH: ${{ github.sha }}
+          EXPO_PUBLIC_BUILD_HASH: ${{ needs.check-fingerprint.outputs.sha }}
         run: |
           SUBJECT=$(printf '%s' "$COMMIT_MSG" | head -n1)
           eas update \
@@ -296,7 +314,7 @@ jobs:
           EXPO_PUBLIC_APP_ENV: ${{ needs.check-fingerprint.outputs.environment }}_app
           EXPO_PUBLIC_APP_VERSION: ${{ needs.check-fingerprint.outputs.app_version }}
           EXPO_PUBLIC_SENTRY_DSN_IOS: ${{ secrets.EXPO_PUBLIC_SENTRY_DSN_IOS }}
-          EXPO_PUBLIC_BUILD_HASH: ${{ github.sha }}
+          EXPO_PUBLIC_BUILD_HASH: ${{ needs.check-fingerprint.outputs.sha }}
         run: |
           set +e
           if [ -z "$SENTRY_AUTH_TOKEN" ]; then
@@ -346,8 +364,8 @@ jobs:
           echo "- **Version:** ${{ needs.check-fingerprint.outputs.app_version }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Branch:** ${{ needs.check-fingerprint.outputs.environment }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Runtime Version:** ${{ needs.check-fingerprint.outputs.runtime_version }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Commit:** \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "- **Sentry release:** \`${{ github.sha }}\` (dist=\`ios\`)" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commit:** \`${{ needs.check-fingerprint.outputs.sha }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Sentry release:** \`${{ needs.check-fingerprint.outputs.sha }}\` (dist=\`ios\`)" >> $GITHUB_STEP_SUMMARY
 
   # ===========================================================================
   # Full Native Build — macOS runner with xcodebuild
@@ -362,6 +380,8 @@ jobs:
 
     env:
       APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      CCACHE_DIR: /Users/runner/Library/Caches/ccache
+      CCACHE_MAXSIZE: 2G
 
     outputs:
       should_submit: ${{ steps.submit-decision.outputs.should_submit }}
@@ -370,6 +390,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.check-fingerprint.outputs.sha }}
 
       - name: Resolve API URL for environment
         # Mirrors the OTA job + the android.yml build job. Without this the
@@ -424,6 +446,26 @@ jobs:
             exit 1
           fi
 
+      - name: Install ccache
+        # Most of the archive is compiling third-party pods (RNSVG, RNScreens,
+        # codegen, ...) from Objective-C++/C++, which ccache can reuse
+        # between builds. React Native's Podfile hook wires it into CC/CXX
+        # when USE_CCACHE=1 is set during pod install.
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: '1'
+          HOMEBREW_NO_INSTALL_CLEANUP: '1'
+        run: command -v ccache || brew install ccache
+
+      - name: Restore ccache
+        # Caches saved by tag runs are invisible to other tags, so only main
+        # runs save (desktop beta dispatches iOS with --ref main); every run
+        # can restore main's cache.
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ios-ccache-${{ github.run_id }}
+          restore-keys: ios-ccache-
+
       - name: Setup Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
@@ -471,12 +513,14 @@ jobs:
           EXPO_PUBLIC_APP_ENV: ${{ needs.check-fingerprint.outputs.environment }}_app
           EXPO_PUBLIC_APP_VERSION: ${{ needs.check-fingerprint.outputs.app_version }}
           EXPO_PUBLIC_SENTRY_DSN_IOS: ${{ secrets.EXPO_PUBLIC_SENTRY_DSN_IOS }}
-          EXPO_PUBLIC_BUILD_HASH: ${{ github.sha }}
+          EXPO_PUBLIC_BUILD_HASH: ${{ needs.check-fingerprint.outputs.sha }}
           EXPO_UPDATES_CHANNEL: ${{ needs.check-fingerprint.outputs.environment }}
         run: bunx expo prebuild --platform ios --clean
 
       - name: Install CocoaPods
         working-directory: apps/mobile/ios
+        env:
+          USE_CCACHE: '1'
         run: pod install --repo-update
 
       - name: Force fmt CocoaPod to C++17 for Xcode 26
@@ -510,11 +554,9 @@ jobs:
               xcconfig = File.read(xcconfig_path)
               xcconfig = xcconfig.gsub(/^CLANG_CXX_LANGUAGE_STANDARD = .*$/, 'CLANG_CXX_LANGUAGE_STANDARD = c++17')
               File.write(xcconfig_path, xcconfig)
+              puts "#{xcconfig_path}: #{xcconfig[/^CLANG_CXX_LANGUAGE_STANDARD = .*$/]}"
             end
           RUBY
-
-          echo 'fmt target C++ language settings:'
-          grep -n "CLANG_CXX_LANGUAGE_STANDARD" ios/Pods/Target\ Support\ Files/fmt/fmt.*.xcconfig
 
       - name: Strip Sentry build phases from Xcode project
         # The @sentry/react-native/expo plugin injects two build phases into
@@ -611,12 +653,14 @@ jobs:
           # Becomes the Sentry `release` tag on every event captured from
           # this IPA — keep in sync with the post-archive sourcemap upload
           # below so events are matchable to bundles.
-          EXPO_PUBLIC_BUILD_HASH: ${{ github.sha }}
+          EXPO_PUBLIC_BUILD_HASH: ${{ needs.check-fingerprint.outputs.sha }}
           # Expo Updates resolves this monorepo as the project root during
           # archive. Make the root/entry explicit so the generated resource
           # script does not fall back to /index.js at the repository root.
+          # ENTRY_FILE must be absolute: the RN bundle phase re-exports
+          # PROJECT_ROOT as apps/mobile and resolves a relative entry from there.
           PROJECT_ROOT: ${{ github.workspace }}
-          ENTRY_FILE: apps/mobile/index.js
+          ENTRY_FILE: ${{ github.workspace }}/apps/mobile/index.js
         run: |
           set -o pipefail
           xcodebuild archive \
@@ -631,6 +675,23 @@ jobs:
             PROVISIONING_PROFILE_SPECIFIER="$PROFILE_NAME" \
             OTHER_CODE_SIGN_FLAGS="--keychain $KEYCHAIN_PATH" \
             | xcbeautify || exit ${PIPESTATUS[0]}
+
+      - name: ccache stats
+        if: always()
+        run: ccache --show-stats || true
+
+      - name: Trim ccache
+        # Hits refresh an entry's mtime, so anything older than this build
+        # belongs to stale pod versions and only bloats the saved cache.
+        if: github.ref == 'refs/heads/main'
+        run: ccache --evict-older-than 2h
+
+      - name: Save ccache
+        if: github.ref == 'refs/heads/main'
+        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ios-ccache-${{ github.run_id }}
 
       - name: Upload dSYMs to Sentry (optional, non-fatal)
         # Best-effort symbolication. This step is intentionally non-fatal: a
@@ -724,7 +785,7 @@ jobs:
           EXPO_PUBLIC_API_URL: ${{ steps.api-url.outputs.url }}
           EXPO_PUBLIC_APP_ENV: ${{ needs.check-fingerprint.outputs.environment }}_app
           EXPO_PUBLIC_SENTRY_DSN_IOS: ${{ secrets.EXPO_PUBLIC_SENTRY_DSN_IOS }}
-          EXPO_PUBLIC_BUILD_HASH: ${{ github.sha }}
+          EXPO_PUBLIC_BUILD_HASH: ${{ needs.check-fingerprint.outputs.sha }}
         run: |
           set +e
           if [ -z "$SENTRY_AUTH_TOKEN" ]; then
@@ -881,7 +942,7 @@ jobs:
           echo "- **buildNumber:** $((${{ github.run_number }} + 100))" >> $GITHUB_STEP_SUMMARY
           echo "- **Profile:** $PROFILE_NAME" >> $GITHUB_STEP_SUMMARY
           echo "- **IPA artifact:** Shogo-${{ needs.check-fingerprint.outputs.environment }}-${{ github.run_number }}.ipa" >> $GITHUB_STEP_SUMMARY
-          echo "- **Commit:** \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commit:** \`${{ needs.check-fingerprint.outputs.sha }}\`" >> $GITHUB_STEP_SUMMARY
           echo "- **Submit:** ${{ steps.submit-decision.outputs.should_submit == 'true' && 'Queued (separate job)' || 'Skipped' }}" >> $GITHUB_STEP_SUMMARY
 
   # ===========================================================================
@@ -959,7 +1020,7 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "- **IPA:** \`${{ needs.build.outputs.ipa_artifact }}\`" >> $GITHUB_STEP_SUMMARY
           echo "- **Version:** ${{ needs.check-fingerprint.outputs.app_version }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Commit:** \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commit:** \`${{ needs.check-fingerprint.outputs.sha }}\`" >> $GITHUB_STEP_SUMMARY
 
 
 # Manual triggers:

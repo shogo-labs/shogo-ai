@@ -104,6 +104,29 @@ export function homeRegionWorkspaceWhere(): WorkspaceHomeWhere | null {
 }
 
 /**
+ * The subset of `workspaceIds` this region is the home writer for.
+ *
+ * For workers over tables that carry a bare `workspaceId` (no Prisma relation
+ * to `Workspace`) and so can't spread `homeRegionWorkspaceWhere()` into a
+ * relation filter. Returns `null` in single-region / local mode, meaning "no
+ * filtering - every workspace is ours".
+ */
+export async function homeWorkspaceIds(workspaceIds: string[]): Promise<Set<string> | null> {
+  const home = homeRegionWorkspaceWhere()
+  if (!home) return null
+  const unique = Array.from(new Set(workspaceIds))
+  if (!unique.length) return new Set()
+  // Lazy import: this module is otherwise pure config and is imported by code
+  // that must not pull in the database client.
+  const { prisma } = await import('./prisma')
+  const rows: Array<{ id: string }> = await (prisma as any).workspace.findMany({
+    where: { id: { in: unique }, ...home },
+    select: { id: true },
+  })
+  return new Set(rows.map((r) => r.id))
+}
+
+/**
  * The homeRegion value to stamp on a workspace created in this region. Null in
  * single-region/local mode, where the router treats null as "primary / local".
  */

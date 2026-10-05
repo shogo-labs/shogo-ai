@@ -27,10 +27,20 @@ import { pinChatToHomeRegion } from './lib/chat-region-pin'
 import { workspaceChatRoutes } from './routes/workspace-chat'
 import { workspaceAgentRoutes, sessionAuthorize } from './routes/workspace-agent'
 import { workspaceMeetingRoutes, sharedMeetingRoutes } from './routes/workspace-meetings'
+import { conversationRoutes } from './routes/conversations'
+import { AGENT_REPLY_TIMEOUT_MS, configureConversationAgentDispatcher, settleOrphanedAgentReplies } from './services/conversation-agent-dispatcher'
+import { registerBuiltInChatProviders } from './services/chat-providers'
+import { chatProviderRoutes } from './routes/chat-providers'
+import { conversationSocketHandlers, isConversationSocketData } from './realtime/conversation-socket'
 import { createAgentTaskRoutes } from './routes/agent-tasks'
 import { startAgentTaskWorker, stopAgentTaskWorker } from './jobs/run-agent-task-dispatch'
 import { startAgentScheduleWorker, stopAgentScheduleWorker } from './jobs/run-agent-schedule-dispatch'
+import { startEventDeliveryWorker, stopEventDeliveryWorker } from './jobs/run-event-delivery-dispatch'
+import { inviteLinkAcceptRoutes } from './routes/invite-link-accept'
+import { appActionsRoutes } from './routes/app-actions'
 import { startChatQueueWorker, stopChatQueueWorker } from './jobs/run-chat-queue-drain'
+import { startChannelWorkers, stopChannelWorkers } from './jobs/run-channel-workers'
+import { startConversationRelay, stopConversationRelay } from './lib/conversation-relay'
 import { projectAuthConfigRoutes } from './routes/project-auth-config'
 import { diagnosticsRoutes } from '@shogo/shared-runtime'
 import { testsRoutes } from './routes/tests'
@@ -43,9 +53,18 @@ import { thumbnailRoutes, rewriteInlineThumbnails } from './routes/thumbnail'
 import { chatAttachmentRoutes } from './routes/chat-attachments'
 import { sharedFileRoutes } from './routes/shared-files'
 import { githubRoutes } from './routes/github'
+import { integrationCredentialRoutes } from './routes/integration-credentials'
 import { aiProxyRoutes } from './routes/ai-proxy'
 import { aiLiveRoutes } from './routes/ai-live'
 import { authenticateLiveHeaders } from './lib/live-auth'
+import { STREAM_WS_PATH } from './lib/meeting-stream-ticket'
+import {
+  isMeetingStreamSocketData,
+  meetingStreamClose,
+  meetingStreamMessage,
+  meetingStreamOpen,
+  meetingStreamSocketData,
+} from './services/meeting-live-stream'
 import {
   isLiveRelayData,
   liveRelayClose,
@@ -1557,13 +1576,26 @@ app.route('/api', workspaceAgentRoutes({
 }))
 app.route('/api', workspaceMeetingRoutes({ authorize: sessionAuthorize(getAuthUserId) }))
 app.route('/api', sharedMeetingRoutes())
+// Workspace channels (team chat with @mentionable agents).
+configureConversationAgentDispatcher({ runtimeManager: getRuntimeManager() })
+// Other pods may still be writing replies; only settle those past the longest a run can take.
+void settleOrphanedAgentReplies(AGENT_REPLY_TIMEOUT_MS + 60_000).catch((err) => console.warn('[Channels] could not settle interrupted replies:', err?.message ?? err))
+registerBuiltInChatProviders()
+app.route('/api', conversationRoutes({ resolveUserId: getAuthUserId }))
+app.route('/api', chatProviderRoutes({ resolveUserId: getAuthUserId }))
 app.route('/api', createAgentTaskRoutes({ runtimeManager: getRuntimeManager() }))
 // Resume queued agent tasks after API restarts and keep dueAt-backed work
 // moving without relying on a request that happens to remain open.
 startAgentTaskWorker(getRuntimeManager())
 // Fire due agent-owned recurring schedules in the workspace runtime.
 startAgentScheduleWorker(getRuntimeManager())
+// Deliver workspace events (member.joined, Composio triggers) to their subscriptions.
+startEventDeliveryWorker(getRuntimeManager())
+void import('./services/composio-triggers.service').then((m) => m.startComposioTriggerReconciler()).catch(() => {})
 startChatQueueWorker()
+startChannelWorkers()
+// Forward chat realtime events and presence to sibling regions (no-op in single-region mode).
+startConversationRelay()
 app.route('/api', historyRoutes({ resolveUserId: getAuthUserId }))
 // Workspace-level Slack base agent. Slack's Events API must terminate at one
 // stable API URL, then route each request to an enabled project runtime.
@@ -5289,8 +5321,11 @@ const gitLfsRouter = gitLfsRoutes({ workspacesDir: workspacesDirResolved })
 app.route('/api', gitLfsRouter)
 
 // Mount GitHub routes
-const githubRouter = githubRoutes({ workspacesDir: workspacesDirResolved })
+const githubRouter = githubRoutes()
 app.route('/api', githubRouter)
+
+// "Acts as" policies for agent integrations, and personal connections.
+app.route('/api', integrationCredentialRoutes({ loadGitHub: () => import('./services/github.service') }))
 
 // Mount project auth-config routes (Studio Settings -> Auth & Database).
 app.route('/api', projectAuthConfigRoutes())
@@ -7807,6 +7842,20 @@ app.get('/api/workspaces/:id/storage', async (c) => {
   }
 })
 
+// Composio trigger firings → workspace events (see services/composio-triggers.service.ts)
+app.post('/api/webhooks/composio', async (c) => {
+  const { handleComposioWebhook } = await import('./services/composio-triggers.service')
+  const result = await handleComposioWebhook({
+    rawBody: await c.req.text(),
+    headers: {
+      id: c.req.header('webhook-id'),
+      timestamp: c.req.header('webhook-timestamp'),
+      signature: c.req.header('webhook-signature'),
+    },
+  })
+  return c.json(result.body, result.status)
+})
+
 // Stripe webhook endpoint
 app.post('/api/webhooks/stripe', async (c) => {
   try {
@@ -8264,6 +8313,8 @@ app.route('/api', aiLiveRoutes())
 //     process, no ingress) and once an ingress rule routes `/v1` → this
 //     service. Kept so the public URL can move to `/v1` without an app change.
 const publicApi = publicApiRoutes()
+// Workspace actions for apps and API keys (members.list, chat.postMessage, …).
+const appActions = appActionsRoutes()
 app.use(
   '/v1/*',
   rateLimiter('public-api', {
@@ -8272,6 +8323,7 @@ app.use(
     skipPrefixes: ['/v1/health'],
   }),
 )
+app.route('/v1', appActions)
 app.route('/v1', publicApi)
 app.use(
   '/api/v1/*',
@@ -8281,6 +8333,7 @@ app.use(
     skipPrefixes: ['/api/v1/health'],
   }),
 )
+app.route('/api/v1', appActions)
 app.route('/api/v1', publicApi)
 
 // Tools passthrough proxy (Composio, Serper, OpenAI embeddings).
@@ -8767,105 +8820,64 @@ app.delete('/api/invite-links/:id', async (c) => {
 })
 
 // Accept invite link (public-ish - requires auth but not membership)
-app.post('/api/invite-links/:token/accept', async (c) => {
-  const auth = c.get('auth') as any
-  const userId = auth?.userId
-  if (!userId) return c.json({ error: 'Unauthorized' }, 401)
-
-  const token = c.req.param('token')
-  const link = await prisma.inviteLink.findUnique({ where: { token } })
-
-  if (!link || !link.enabled) {
-    return c.json({ error: 'Invite link not found or disabled' }, 404)
-  }
-  if (link.expiresAt && new Date(link.expiresAt) < new Date()) {
-    return c.json({ error: 'Invite link has expired' }, 410)
-  }
-
-  // Check if already a member
-  const existingMember = await prisma.member.findFirst({
-    where: {
-      userId,
-      ...(link.projectId ? { projectId: link.projectId } : { workspaceId: link.workspaceId }),
-    },
-  })
-  if (existingMember) {
-    return c.json({ ok: true, data: existingMember, alreadyMember: true })
-  }
-
-  // Create membership
-  const memberData: any = { userId, role: link.role }
-  if (link.projectId) {
-    memberData.projectId = link.projectId
-    // Also resolve workspace for the member record
-    const project = await prisma.project.findUnique({ where: { id: link.projectId }, select: { workspaceId: true } })
-    if (project) memberData.workspaceId = project.workspaceId
-  } else {
-    memberData.workspaceId = link.workspaceId
-  }
-
-  const member = await prisma.member.create({ data: memberData })
-
-  // Increment use count
-  await prisma.inviteLink.update({ where: { id: link.id }, data: { useCount: { increment: 1 } } })
-
-  // Active-seat billing: workspace-level invite-link acceptance must bump
-  // the Stripe seat quantity (project-only memberships don't bill seats).
-  if (memberData.workspaceId && !memberData.projectId) {
-    billingService.syncSeatsFromMembership(memberData.workspaceId).catch((err: any) =>
-      console.error('[Billing] invite-link accept seat sync failed:', err.message ?? err),
-    )
-  }
-
-  // Send notification emails (non-blocking — errors are logged internally)
-  const baseUrl = getFrontendUrl()
-  const resolvedWorkspaceId = memberData.workspaceId
-  const [acceptingUser, workspace, project] = await Promise.all([
-    prisma.user.findUnique({ where: { id: userId }, select: { name: true, email: true } }),
-    resolvedWorkspaceId ? prisma.workspace.findUnique({ where: { id: resolvedWorkspaceId }, select: { name: true } }) : null,
-    link.projectId ? prisma.project.findUnique({ where: { id: link.projectId }, select: { name: true } }) : null,
-  ])
-  const acceptingName = acceptingUser?.name || acceptingUser?.email || 'Someone'
-  const acceptingEmail = acceptingUser?.email || ''
-  const resourceName = project?.name || workspace?.name || 'your workspace'
-  const resourceType = link.projectId ? 'project' : 'workspace'
-  const workspaceName = workspace?.name || 'your workspace'
-
-  if (link.createdBy) {
-    const creator = await prisma.user.findUnique({ where: { id: link.createdBy }, select: { email: true } })
-    if (creator?.email) {
-      await sendInviteAcceptedEmail({
-        to: creator.email,
-        inviteeName: acceptingName,
-        inviteeEmail: acceptingEmail,
-        resourceName,
-        resourceType,
-        dashboardUrl: baseUrl,
-      })
+app.route('/api', inviteLinkAcceptRoutes({
+  resolveUserId: (c) => (c.get('auth') as any)?.userId ?? null,
+  afterAccept: async ({ link, userId, workspaceId: resolvedWorkspaceId, member }) => {
+    // Active-seat billing: workspace-level invite-link acceptance must bump
+    // the Stripe seat quantity (project-only memberships don't bill seats).
+    if (resolvedWorkspaceId && !member.projectId) {
+      billingService.syncSeatsFromMembership(resolvedWorkspaceId).catch((err: any) =>
+        console.error('[Billing] invite-link accept seat sync failed:', err.message ?? err),
+      )
     }
-  }
 
-  if (resolvedWorkspaceId) {
-    const owners = await prisma.member.findMany({
-      where: { workspaceId: resolvedWorkspaceId, role: 'owner', userId: { not: userId } },
-      include: { user: { select: { email: true } } },
-    })
-    for (const owner of owners) {
-      if (owner.user?.email) {
-        await sendMemberJoinedEmail({
-          to: owner.user.email,
-          memberName: acceptingName,
-          memberEmail: acceptingEmail,
-          workspaceName,
-          role: link.role,
+    // Send notification emails (non-blocking — errors are logged internally)
+    const baseUrl = getFrontendUrl()
+    const [acceptingUser, workspace, project] = await Promise.all([
+      prisma.user.findUnique({ where: { id: userId }, select: { name: true, email: true } }),
+      resolvedWorkspaceId ? prisma.workspace.findUnique({ where: { id: resolvedWorkspaceId }, select: { name: true } }) : null,
+      link.projectId ? prisma.project.findUnique({ where: { id: link.projectId }, select: { name: true } }) : null,
+    ])
+    const acceptingName = acceptingUser?.name || acceptingUser?.email || 'Someone'
+    const acceptingEmail = acceptingUser?.email || ''
+    const resourceName = project?.name || workspace?.name || 'your workspace'
+    const resourceType = link.projectId ? 'project' : 'workspace'
+    const workspaceName = workspace?.name || 'your workspace'
+
+    if (link.createdBy) {
+      const creator = await prisma.user.findUnique({ where: { id: link.createdBy }, select: { email: true } })
+      if (creator?.email) {
+        await sendInviteAcceptedEmail({
+          to: creator.email,
+          inviteeName: acceptingName,
+          inviteeEmail: acceptingEmail,
+          resourceName,
+          resourceType,
           dashboardUrl: baseUrl,
         })
       }
     }
-  }
 
-  return c.json({ ok: true, data: member })
-})
+    if (resolvedWorkspaceId) {
+      const owners = await prisma.member.findMany({
+        where: { workspaceId: resolvedWorkspaceId, role: 'owner', userId: { not: userId } },
+        include: { user: { select: { email: true } } },
+      })
+      for (const owner of owners) {
+        if (owner.user?.email) {
+          await sendMemberJoinedEmail({
+            to: owner.user.email,
+            memberName: acceptingName,
+            memberEmail: acceptingEmail,
+            workspaceName,
+            role: link.role,
+            dashboardUrl: baseUrl,
+          })
+        }
+      }
+    }
+  },
+}))
 
 // Get invite link info (for accept page - minimal auth)
 app.get('/api/invite-links/:token/info', async (c) => {
@@ -8997,7 +9009,10 @@ async function gracefulShutdown(signal: string) {
   isShuttingDown = true
   stopAgentTaskWorker()
   stopAgentScheduleWorker()
+  stopEventDeliveryWorker()
   stopChatQueueWorker()
+  stopChannelWorkers()
+  stopConversationRelay()
   console.log(`[Server] Received ${signal}, starting graceful shutdown...`)
 
   // Stop warm pool reconciliation so GC doesn't delete services during drain
@@ -9355,6 +9370,13 @@ export default {
   fetch: async (req: Request, server: any) => {
     const url = new URL(req.url)
     if (req.headers.get('upgrade')?.toLowerCase() === 'websocket') {
+      // Live meeting transcript: a recorder streams PCM audio; auth is a signed ticket in the URL.
+      if (url.pathname === STREAM_WS_PATH) {
+        const data = meetingStreamSocketData(url)
+        if (!data) return new Response('Unauthorized', { status: 401 })
+        if (server.upgrade(req, { data })) return undefined
+        return new Response('WebSocket upgrade failed', { status: 500 })
+      }
       const livePrimary = url.pathname === '/api/ai/v1/live/sessions'
       const liveAttach = /^\/api\/ai\/v1\/live\/sessions\/([^/]+)\/attach$/.exec(url.pathname)
       if (livePrimary || liveAttach) {
@@ -9464,19 +9486,25 @@ export default {
   },
   websocket: {
     open(ws: any) {
-      if (isLiveRelayData(ws.data)) liveRelayOpen(ws)
+      if (isConversationSocketData(ws.data)) conversationSocketHandlers.open(ws)
+      else if (isLiveRelayData(ws.data)) liveRelayOpen(ws)
+      else if (isMeetingStreamSocketData(ws.data)) meetingStreamOpen(ws)
       else if (isPtyPodBridgeData(ws.data)) ptyPodBridge.open(ws)
       else if (isPortTunnelBridgeData(ws.data)) portTunnelBridge.open(ws)
       else handleInstanceWsOpen(ws)
     },
     message(ws: any, msg: any) {
-      if (isLiveRelayData(ws.data)) liveRelayMessage(ws, msg)
+      if (isConversationSocketData(ws.data)) void conversationSocketHandlers.message(ws, msg)
+      else if (isLiveRelayData(ws.data)) liveRelayMessage(ws, msg)
+      else if (isMeetingStreamSocketData(ws.data)) meetingStreamMessage(ws, msg)
       else if (isPtyPodBridgeData(ws.data)) ptyPodBridge.message(ws, msg)
       else if (isPortTunnelBridgeData(ws.data)) portTunnelBridge.message(ws, msg)
       else handleInstanceWsMessage(ws, msg)
     },
     close(ws: any, code?: number, reason?: string) {
-      if (isLiveRelayData(ws.data)) liveRelayClose(ws)
+      if (isConversationSocketData(ws.data)) conversationSocketHandlers.close(ws)
+      else if (isLiveRelayData(ws.data)) liveRelayClose(ws)
+      else if (isMeetingStreamSocketData(ws.data)) meetingStreamClose(ws)
       else if (isPtyPodBridgeData(ws.data)) ptyPodBridge.close(ws, code, reason)
       else if (isPortTunnelBridgeData(ws.data)) portTunnelBridge.close(ws, code, reason)
       else handleInstanceWsClose(ws, code, reason)

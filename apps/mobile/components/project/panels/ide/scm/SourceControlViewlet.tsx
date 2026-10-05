@@ -304,7 +304,7 @@ function SyncChangesButton({
       <button
         onClick={onClick}
         disabled={disabled || busy}
-        className="flex h-[34px] w-full items-center justify-center gap-2 rounded-[4px] bg-[#0078d4] text-[12px] font-semibold text-white shadow-sm transition-colors hover:bg-[#1a8ae8] disabled:cursor-not-allowed disabled:bg-[#254563] disabled:text-[color:var(--ide-muted)]"
+        className="flex h-[34px] w-full items-center justify-center gap-2 rounded-[4px] bg-[color:var(--ide-primary)] text-[12px] font-semibold text-white shadow-sm transition-colors hover:bg-[color:var(--ide-btn-primary-hover)] disabled:cursor-not-allowed disabled:bg-[#254563] disabled:text-[color:var(--ide-muted)]"
       >
         <RefreshCw size={14} className={busy ? "animate-spin" : ""} />
         Sync Changes {countLabel}
@@ -326,7 +326,7 @@ function SyncConfirmationModal({
 }) {
   return (
     <div className="fixed inset-0 z-[2000] flex items-center justify-center bg-black/55 backdrop-blur-[1px]">
-      <div className="w-[280px] rounded-[28px] border border-white/20 bg-[#1f1f1f]/95 px-7 py-6 text-center shadow-2xl">
+      <div className="w-[280px] rounded-[28px] border border-white/20 bg-[color:var(--ide-bg)]/95 px-7 py-6 text-center shadow-2xl">
         <div className="mx-auto mb-5 flex h-[58px] w-[58px] items-center justify-center rounded-[18px] text-amber-300">
           <AlertTriangle size={54} strokeWidth={1.8} />
         </div>
@@ -422,6 +422,17 @@ export function SourceControlViewlet({
       return res;
     },
     [actions],
+  );
+
+  /** Discarding is destructive and not undoable: always ask first (VS Code does). */
+  const discardWithConfirm = useCallback(
+    (paths: string[]) => {
+      if (paths.length === 0) return;
+      const what = paths.length === 1 ? `changes in "${paths[0].split("/").pop()}"` : `${paths.length} changed files`;
+      if (typeof window !== "undefined" && !window.confirm(`Discard ${what}? This cannot be undone.`)) return;
+      void runMutation("Discard", () => actions.discard(paths));
+    },
+    [actions, runMutation],
   );
 
   const loadHistory = useCallback(async () => {
@@ -747,7 +758,7 @@ export function SourceControlViewlet({
                 onOpenFile={onOpenFile}
                 onStage={(paths) => { void runMutation("Stage", () => actions.stage(paths)); }}
                 onUnstage={(paths) => { void runMutation("Unstage", () => actions.unstage(paths)); }}
-                onDiscard={(paths) => { void runMutation("Discard", () => actions.discard(paths)); }}
+                onDiscard={discardWithConfirm}
               />
             )}
           </>
@@ -786,7 +797,7 @@ export function SourceControlViewlet({
                 onOpenFile={onOpenFile}
                 onStage={(paths) => { void runMutation("Stage", () => actions.stage(paths)); }}
                 onUnstage={(paths) => { void runMutation("Unstage", () => actions.unstage(paths)); }}
-                onDiscard={(paths) => { void runMutation("Discard", () => actions.discard(paths)); }}
+                onDiscard={discardWithConfirm}
               />
             )}
           </>
@@ -837,7 +848,7 @@ export function SourceControlViewlet({
                 onOpenFile={onOpenFile}
                 onStage={(paths) => { void runMutation("Stage", () => actions.stage(paths)); }}
                 onUnstage={(paths) => { void runMutation("Unstage", () => actions.unstage(paths)); }}
-                onDiscard={(paths) => { void runMutation("Discard", () => actions.discard(paths)); }}
+                onDiscard={discardWithConfirm}
               />
             )}
           </>

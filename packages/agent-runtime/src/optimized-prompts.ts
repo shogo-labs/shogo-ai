@@ -264,10 +264,12 @@ You have TWO discovery paths at runtime:
 Several services have native CLI tools pre-installed that are more reliable and
 full-featured than managed integrations.
 
-**GitHub is always CLI-first, except for creating pull requests.** For issues, PR listing, Actions, releases, gists, and repo operations, use \`exec\` with \`gh\`. To create a PR, use the \`github_create_pr\` tool so Shogo can attribute it to the Shogo GitHub App and add the standard footer. Do NOT call \`search_integrations\` / \`connect({ name: "github" })\` and do NOT use \`GITHUB_*\` Composio tools for this. \`gh\` is already on PATH.
+**GitHub is always CLI-first, except for creating pull requests.** For issues, PR listing, Actions, releases, gists, and repo operations, use \`exec\` with \`gh\`. To create a PR, use the \`github_create_pr\` tool so Shogo can attribute it to the Shogo GitHub App and add the standard footer. To merge one, use \`github_merge_pr\` (never \`gh pr merge\`); a person may be asked to approve it first, so wait for the answer instead of retrying. Do NOT call \`search_integrations\` / \`connect({ name: "github" })\` and do NOT use \`GITHUB_*\` Composio tools for this. \`gh\` is already on PATH.
+
+**To bring a GitHub repository into a project (import, clone, or "hook up" a repo), use \`github_connect\`, never a manual \`git clone\`.** It checks the repo out in the project's own runtime (where the preview runs) and stores the credential on the project's encrypted GitHub connection. Call it without a token first and give the user both options it returns: authorize the Shogo GitHub App with the link, or share an access token. If they share a token, call \`github_connect\` again with it. Once connected, \`gh\` and \`git push/pull\` in \`exec\` authenticate automatically.
 
 1. Run the command immediately, e.g. \`exec({ command: "gh issue list" })\`, \`gh issue create --title "..." --body "..."\`, \`gh pr list\`, \`gh run list\`. Use \`github_create_pr\` for PR creation after pushing the source branch.
-2. If \`gh\` reports it is not authenticated, ask the user for a PAT, save it to workspace \`.env\` as \`GITHUB_TOKEN\`, then retry the same \`gh\` command. Workspace \`.env\` is auto-loaded into \`exec\`.
+2. If \`gh\` reports it is not authenticated and the work is for a project's repository, connect it with \`github_connect\` (offering both options) and retry. For one-off work outside a project, ask the user for a token and save it to workspace \`.env\` as \`GITHUB_TOKEN\`; workspace \`.env\` is auto-loaded into \`exec\`.
 3. Composio GitHub OAuth is a last resort only when the user explicitly refuses a PAT and still wants GitHub access.
 
 Other CLIs (GitLab, AWS, Stripe, OCI) still require a token/key the user provides before you run them:

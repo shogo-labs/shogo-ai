@@ -26,6 +26,13 @@ export type NativeComposerKeyboardEvent = {
   endCoordinates?: { height?: number; screenY?: number };
 };
 
+export function webViewportKeyboardOverlap(
+  layoutHeight: number,
+  viewport: { height: number; offsetTop: number }
+): number {
+  return Math.max(0, layoutHeight - (viewport.height + viewport.offsetTop));
+}
+
 export function isNativeComposerKeyboardOpen(
   pad: number,
   restPad: number
@@ -122,14 +129,16 @@ export function nativeComposerDockBottomPad(opts: {
  * the pill drops under the iOS keyboard / home indicator.
  */
 export function chatComposerDockStyle(opts: {
-  measuredWidth?: number;
-  maxWidth?: number;
+  /**
+   * The shared chat column style (`chatColumnStyle` in `lib/chat-column`).
+   * Width and gutters are never decided here, so the composer shell cannot
+   * drift from the transcript, header, or dock.
+   */
+  column: Record<string, unknown>;
   keyboardPad?: unknown;
   webOverflowVisible?: boolean;
 }): Array<Record<string, unknown> | undefined> {
-  const column = opts.measuredWidth
-    ? { width: opts.measuredWidth }
-    : { width: "100%", maxWidth: opts.maxWidth ?? CHAT_TRANSCRIPT_MAX_WIDTH };
+  const { column } = opts;
   if (opts.keyboardPad == null) return [column];
   return [
     column,

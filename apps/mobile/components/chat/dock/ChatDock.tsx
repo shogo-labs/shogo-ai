@@ -34,10 +34,11 @@
  * so NativeWind cannot replace `marginBottom` / `flexShrink`. Native
  * reports height 0 so `ChatPanel` does not also pad the transcript.
  *
- * Horizontal padding matches `ChatInput`'s own outer padding (`px-3` web /
- * `px-4` native, the phone gutter) so the dock's edges line up with the composer's visible
- * bordered box below it, rather than the wider positioning wrapper both
- * sit in.
+ * No horizontal padding here: the shared chat column (`chatColumnStyle`,
+ * applied by `ProjectComposerDock`) already insets its content box by the
+ * column gutter, and this overlay fills that content box exactly like
+ * `ChatInput`. The dock's edges therefore equal the composer's visible
+ * bordered box by construction.
  *
  * Each zone (status, blocking) renders as exactly ONE rounded card —
  * `rounded-xl` on all four corners, always, regardless of how many panels
@@ -56,7 +57,6 @@ import {
   View,
   StyleSheet,
   ScrollView,
-  Platform,
   useColorScheme,
   useWindowDimensions,
   type LayoutChangeEvent,
@@ -115,9 +115,6 @@ const styles = StyleSheet.create({
   scrollContent: { paddingTop: 2, paddingBottom: 2 },
 })
 
-// Matches ChatInput's own outer horizontal padding (`px-3` web / `px-4`
-// native phone gutter) — see the file header comment.
-const HORIZONTAL_PADDING_CLASS = Platform.OS !== "web" ? "px-4" : "px-3"
 // `rounded-xl` matches ChatInput's own bordered box directly below, so each
 // dock zone reads as the same card language stacked on top of the composer.
 // Status panels remain subtly translucent, while blocking panels must fully
@@ -268,13 +265,7 @@ export function ChatDock({
         pointerEvents="box-none"
         onLayout={handleLayout}
       >
-        <View
-          className={cn(
-            "w-full self-center gap-1.5",
-            HORIZONTAL_PADDING_CLASS,
-            className,
-          )}
-        >
+        <View className={cn("w-full self-center gap-1.5", className)}>
           {body}
         </View>
       </View>
@@ -288,9 +279,7 @@ export function ChatDock({
       pointerEvents="box-none"
       onLayout={handleLayout}
     >
-      <View
-        className={cn("w-full gap-1.5", HORIZONTAL_PADDING_CLASS, className)}
-      >
+      <View className={cn("w-full gap-1.5", className)}>
         {body}
       </View>
     </View>
