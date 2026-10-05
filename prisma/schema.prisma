@@ -80,9 +80,10 @@ model User {
   conversationMessages ConversationMessage[]
   integrationConnections UserIntegrationConnection[]
   integrationGrants    UserIntegrationGrant[]
+  identityLinks        UserIdentityLink[]
 
   @@index([createdAt])
-  @@index([homeRegion])  identityLinks           UserIdentityLink[]
+  @@index([homeRegion])
 
   @@map("users")
 }
