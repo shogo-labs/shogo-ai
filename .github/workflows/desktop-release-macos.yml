@@ -391,6 +391,8 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build workspace packages
+        env:
+          NODE_OPTIONS: --max-old-space-size=8192
         run: bun run build:packages
 
       # `apps/api/src/generated/admin-routes.ts` is git-ignored and produced

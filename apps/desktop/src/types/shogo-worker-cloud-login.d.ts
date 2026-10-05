@@ -22,6 +22,12 @@ declare module '@shogo-ai/worker/cloud-login' {
     email: string | null;
     workspace: string | null;
     deviceId: string;
+    workspaces: CloudWorkspaceKey[] | null;
+  }
+
+  export interface CloudWorkspaceKey {
+    workspace: { id: string; name: string; slug: string | null; kind?: 'personal' | 'team' };
+    key: string;
   }
 
   export interface CloudLoginOptions {
