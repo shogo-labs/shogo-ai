@@ -10,8 +10,11 @@ export const EMAIL_CONSTANTS = {
   APP_NAME: 'Shogo',
   APP_URL: 'https://shogo.ai',
   SUPPORT_EMAIL: 'support@shogo.ai',
-  LOGO_URL: 'https://shogo.ai/assets/images/shogo-logo-email.png',
-  LOGO_DARK_URL: 'https://shogo.ai/assets/images/shogo-logo-dark-email.png',
+  // Rendered from the current brand lockup (logo/shogo-logo-full{,-alt}.svg on
+  // shogo-website). Versioned filenames so the CDN's cached copy of the
+  // previous logo is never picked up by new sends.
+  LOGO_URL: 'https://shogo.ai/assets/images/logo/shogo-logo-email-v2.png',
+  LOGO_DARK_URL: 'https://shogo.ai/assets/images/logo/shogo-logo-dark-email-v2.png',
   FOOTER_TEXT: '&copy; {{currentYear}} Shogo. All rights reserved',
 } as const
 
@@ -181,8 +184,8 @@ export function wrapInLayout(content: string): string {
     <div class="email-container">
       <div class="email-header">
         <a href="${EMAIL_CONSTANTS.APP_URL}" style="display:inline-block;text-decoration:none;">
-          <img class="email-logo-light" src="${EMAIL_CONSTANTS.LOGO_URL}" alt="${EMAIL_CONSTANTS.APP_NAME}" width="169" height="58" style="display:block;height:40px;width:auto;" />
-          <img class="email-logo-dark" src="${EMAIL_CONSTANTS.LOGO_DARK_URL}" alt="${EMAIL_CONSTANTS.APP_NAME}" width="169" height="58" style="display:none;height:40px;width:auto;" />
+          <img class="email-logo-light" src="${EMAIL_CONSTANTS.LOGO_URL}" alt="${EMAIL_CONSTANTS.APP_NAME}" width="168" height="40" style="display:block;height:40px;width:auto;" />
+          <img class="email-logo-dark" src="${EMAIL_CONSTANTS.LOGO_DARK_URL}" alt="${EMAIL_CONSTANTS.APP_NAME}" width="168" height="40" style="display:none;height:40px;width:auto;" />
         </a>
       </div>
       <div class="email-content">
