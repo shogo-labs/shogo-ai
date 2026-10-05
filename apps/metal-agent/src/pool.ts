@@ -1292,7 +1292,7 @@ export class MetalWarmPool {
       // debug than a log line here.
       console.error(
         `[pool] project ${projectId} requested vmClass=${vmClass} but this host does not support it ` +
-          `(METAL_DOCKER_ROOTFS unset or rootfsCow=dm) — falling back to a standard VM`,
+          `(METAL_DOCKER_ROOTFS unset) — falling back to a standard VM`,
       )
       vmClass = 'standard'
     }
