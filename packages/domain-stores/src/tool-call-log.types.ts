@@ -17,6 +17,9 @@ export interface ToolCallLogType {
   args?: Record<string, unknown>
   result?: Record<string, unknown>
   duration?: number
+  userId?: string
+  linesAdded: number
+  linesRemoved: number
   createdAt: Date
 }
 
@@ -28,6 +31,9 @@ export interface ToolCallLogCreateInput {
   args?: Record<string, unknown>
   result?: Record<string, unknown>
   duration?: number
+  userId?: string
+  linesAdded?: number
+  linesRemoved?: number
 }
 
 export interface ToolCallLogUpdateInput {
@@ -38,4 +44,7 @@ export interface ToolCallLogUpdateInput {
   args?: Record<string, unknown>
   result?: Record<string, unknown>
   duration?: number
+  userId?: string
+  linesAdded?: number
+  linesRemoved?: number
 }

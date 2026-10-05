@@ -142,6 +142,7 @@ import {
 import { FoldersPanel } from "../../../../components/project/panels/FoldersPanel";
 import { CustomDomainsSection } from "../../../../components/project/CustomDomainsSection";
 import { AlwaysOnSection } from "../../../../components/project/AlwaysOnSection";
+import { ProjectAgentLookSection } from "../../../../components/settings/ProjectAgentLookSection";
 import { CheckpointGraphNative } from "../../../../components/project/panels/ide/graph/CheckpointGraphNative";
 import {
   TrustPrompt,
@@ -158,6 +159,7 @@ import {
   FolderTree,
   GitCommit,
   Sliders,
+  Palette,
   Plug,
   Radio,
   Bot,
@@ -4549,6 +4551,27 @@ export default observer(function ProjectLayout() {
                                       selectedModel={selectedModel}
                                       onModelChange={handleModelChange}
                                     />
+                                  </PanelErrorBoundary>
+                                ),
+                              },
+                              {
+                                id: "agent-look",
+                                label: "Look",
+                                icon: Palette,
+                                render: () => (
+                                  <PanelErrorBoundary panelName="Look">
+                                    <ScrollView
+                                      contentContainerStyle={{ padding: 20 }}
+                                    >
+                                      {project?.workspaceId ? (
+                                        <ProjectAgentLookSection
+                                          flush
+                                          workspaceId={project.workspaceId}
+                                          projectId={projectId!}
+                                          projectName={project.name}
+                                        />
+                                      ) : null}
+                                    </ScrollView>
                                   </PanelErrorBoundary>
                                 ),
                               },

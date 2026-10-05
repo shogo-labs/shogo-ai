@@ -269,6 +269,8 @@ export interface MentionCandidate {
   token: string
   subtitle?: string | null
   userId?: string
+  /** For an agent: its project (null for the workspace agent). */
+  projectId?: string | null
 }
 
 export function mentionCandidates(mentionables: Mentionables | null, meId: string | null): MentionCandidate[] {
@@ -278,6 +280,7 @@ export function mentionCandidates(mentionables: Mentionables | null, meId: strin
     display: a.name,
     token: a.projectId ? `<@a:p:${a.projectId}>` : '<@a:ws>',
     subtitle: a.projectId ? 'Project agent' : 'Workspace agent',
+    projectId: a.projectId,
   }))
   const people = mentionables.people
     .filter((p) => p.id !== meId)

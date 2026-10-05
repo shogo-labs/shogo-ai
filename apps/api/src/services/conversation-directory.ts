@@ -7,7 +7,9 @@
  */
 
 import { prisma } from '../lib/prisma'
-import { agentIconUrl } from './conversation.service'
+import { agentIconUrl, ConversationError, getWorkspaceRole, storedAgentBuddyLook } from './conversation.service'
+import { publishConversationEvent } from '../lib/conversation-bus'
+import { parseBuddyLook, type BuddyLook } from '../../../../packages/shared-app/src/buddy-look'
 import {
   agentMentionToken,
   buildMentionLookup,
@@ -84,6 +86,10 @@ export interface AgentCard {
   projectId: string | null
   name: string
   iconUrl: string | null
+  /** The look saved on the agent; null means it shows the one generated from its id. */
+  buddyLook: BuddyLook | null
+  /** The viewer may change this agent's look: its project's creator or a workspace owner/admin. */
+  canEdit: boolean
   /** What the agent is for: a project's description, or the workspace agent's tagline. */
   role: string | null
   owner: { id: string; name: string } | null
@@ -103,12 +109,17 @@ export async function loadAgentCard(workspaceId: string, projectId: string | nul
   let name: string
   let role: string | null
   let owner: AgentCard['owner'] = null
+  let buddyLook: BuddyLook | null = null
+  const role_ = await getWorkspaceRole(workspaceId, viewerId)
+  let canEdit = role_ === 'owner' || role_ === 'admin'
   if (projectId) {
     const project = await db.project.findFirst({
       where: { id: projectId, workspaceId },
-      select: { name: true, description: true, createdBy: true },
+      select: { name: true, description: true, createdBy: true, buddyLook: true },
     })
     if (!project) return null
+    buddyLook = storedAgentBuddyLook(project.buddyLook)
+    if (project.createdBy && project.createdBy === viewerId) canEdit = true
     name = project.name
     role = project.description ?? null
     if (project.createdBy) {
@@ -116,7 +127,8 @@ export async function loadAgentCard(workspaceId: string, projectId: string | nul
       if (user) owner = { id: user.id, name: user.name || user.email }
     }
   } else {
-    const profile = await db.workspaceAgentProfile.findUnique({ where: { workspaceId }, select: { name: true, tagline: true } }).catch(() => null)
+    const profile = await db.workspaceAgentProfile.findUnique({ where: { workspaceId }, select: { name: true, tagline: true, buddyLook: true } }).catch(() => null)
+    buddyLook = storedAgentBuddyLook(profile?.buddyLook)
     name = profile?.name || 'Shogo'
     role = profile?.tagline || 'Workspace agent'
   }
@@ -147,5 +159,52 @@ export async function loadAgentCard(workspaceId: string, projectId: string | nul
       agentTrigger: r.agentTrigger,
       muted: !!r.agentMuted,
     }))
-  return { projectId, name, iconUrl: await agentIconUrl(workspaceId, projectId), role, owner, channels }
+  return { projectId, name, iconUrl: await agentIconUrl(workspaceId, projectId), buddyLook, canEdit, role, owner, channels }
+}
+
+/** `ws` for the workspace agent; a project id, optionally written as the mention key `p:<id>`. */
+export function agentKeyToProjectId(key: string): string | null {
+  const trimmed = key.trim()
+  if (trimmed === 'ws') return null
+  return trimmed.startsWith('p:') ? trimmed.slice(2) : trimmed
+}
+
+/**
+ * Save an agent's buddy look (`null` goes back to the look generated from its
+ * id). Project agents are editable by the project's creator and workspace
+ * owners/admins; the workspace agent only by owners/admins.
+ */
+export async function setAgentBuddyLook(
+  workspaceId: string,
+  userId: string,
+  key: string,
+  look: unknown,
+): Promise<{ projectId: string | null; buddyLook: BuddyLook | null }> {
+  const projectId = agentKeyToProjectId(key)
+  let next: BuddyLook | null = null
+  if (look !== null && look !== undefined) {
+    const parsed = parseBuddyLook(look)
+    if (!parsed.ok) throw new ConversationError(400, 'invalid_look', parsed.error)
+    next = parsed.look
+  }
+  const role = await getWorkspaceRole(workspaceId, userId)
+  const isAdmin = role === 'owner' || role === 'admin'
+  const data = { buddyLook: next ? JSON.stringify(next) : null }
+  if (projectId) {
+    const project = await db.project.findFirst({ where: { id: projectId, workspaceId }, select: { createdBy: true } })
+    if (!project) throw new ConversationError(404, 'not_found', 'Agent not found')
+    if (!isAdmin && !(project.createdBy && project.createdBy === userId)) {
+      throw new ConversationError(403, 'forbidden', 'Only the project owner and workspace admins can change an agent\'s look')
+    }
+    await db.project.update({ where: { id: projectId }, data })
+  } else {
+    if (!isAdmin) throw new ConversationError(403, 'forbidden', 'Only workspace admins can change the workspace agent\'s look')
+    await db.workspaceAgentProfile.upsert({
+      where: { workspaceId },
+      create: { workspaceId, ...data },
+      update: data,
+    })
+  }
+  publishConversationEvent(workspaceId, { type: 'agent.updated', projectId } as any)
+  return { projectId, buddyLook: next }
 }

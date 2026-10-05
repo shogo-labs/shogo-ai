@@ -4,7 +4,9 @@
  * A team chat conversation (channel, DM, or agent DM). Threads open from
  * `?thread=<rootId>`: beside the timeline on wide screens, in its place on
  * narrow ones. `?msg=<id>` scrolls to and highlights one message (in the
- * thread when `thread` is set too).
+ * thread when `thread` is set too). `?project=<id>` shows an agent's project
+ * (canvas, files, plans, chat) beside the timeline on wide screens, where it
+ * replaces the thread pane.
  */
 import { useCallback, useEffect, useState } from 'react'
 import { ActivityIndicator, AppState, KeyboardAvoidingView, Platform, Pressable, Text, View, useWindowDimensions } from 'react-native'
@@ -25,6 +27,7 @@ import { useDraftsFeed, useSavedFeed } from '../../../hooks/useChatItems'
 import { useCustomEmojiFeed } from '../../../hooks/useCustomEmoji'
 import { ConversationHeader } from '../../../components/team-chat/ConversationHeader'
 import { TimelinePane } from '../../../components/team-chat/TimelinePane'
+import { ProjectSidePane } from '../../../components/team-chat/ProjectSidePane'
 import { usePhoneChromeOverlay } from '../../../components/layout/PhoneChromeOverlay'
 
 const api = teamChatApi()
@@ -35,10 +38,11 @@ function first(value: string | string[] | undefined): string | undefined {
 }
 
 export default function ConversationScreen() {
-  const params = useLocalSearchParams<{ conversationId: string; thread?: string; msg?: string }>()
+  const params = useLocalSearchParams<{ conversationId: string; thread?: string; msg?: string; project?: string }>()
   const conversationId = first(params.conversationId) ?? null
   const threadRootId = first(params.thread) ?? null
   const linkedMessageId = first(params.msg) ?? null
+  const projectPaneId = first(params.project) ?? null
   const router = useRouter()
   const workspace = useActiveWorkspace()
   const me = useMyUserId()
@@ -107,11 +111,16 @@ export default function ConversationScreen() {
 
   const openThread = useCallback(
     (message: ChatMessage) => {
-      router.setParams({ thread: message.threadRootId ?? message.id } as any)
+      router.setParams({ thread: message.threadRootId ?? message.id, project: undefined } as any)
     },
     [router],
   )
   const closeThread = useCallback(() => router.setParams({ thread: undefined } as any), [router])
+  const openProjectPane = useCallback(
+    (projectId: string) => router.setParams({ project: projectId, thread: undefined } as any),
+    [router],
+  )
+  const closeProjectPane = useCallback(() => router.setParams({ project: undefined } as any), [router])
   const openSession = useCallback(
     (message: ChatMessage) => {
       const projectId = message.authorAgent?.projectId
@@ -162,7 +171,15 @@ export default function ConversationScreen() {
   }
 
   const visible = focused && foreground
+  const showProjectPane = sidePane && !!projectPaneId
+  const showThreadPane = !!threadRootId && !showProjectPane
   const showMain = sidePane || !threadRootId
+  const projectPaneName =
+    (projectPaneId &&
+      (conversation.members.find((m) => m.type === 'agent' && m.projectId === projectPaneId)?.name ??
+        mentionables?.agents.find((a) => a.projectId === projectPaneId)?.name)) ||
+    'Project'
+  const openProjectPaneCb = sidePane ? openProjectPane : undefined
   const floating = chrome.overlay && !sidePane
   const goBack = () => {
     if (router.canGoBack()) router.back()
@@ -177,6 +194,7 @@ export default function ConversationScreen() {
       onLeft={() => router.replace('/(app)/c' as any)}
       floating={floating}
       onBack={goBack}
+      onOpenProjectPane={openProjectPaneCb}
       onLayout={floating ? (e) => setHeaderHeight(Math.round(e.nativeEvent.layout.height)) : undefined}
     />
   )
@@ -197,13 +215,14 @@ export default function ConversationScreen() {
               highlightMessageId={threadRootId ? null : linkedMessageId}
               onOpenThread={openThread}
               onOpenSession={openSession}
+              onOpenProjectPane={openProjectPaneCb}
               onJoin={onJoin}
               floating={floating}
               topInset={headerHeight}
             />
           </View>
         )}
-        {threadRootId && (
+        {showThreadPane && (
           <View className={sidePane ? 'w-[420px] border-l border-border' : 'flex-1'}>
             <TimelinePane
               key={`${conversation.id}:${threadRootId}`}
@@ -218,6 +237,11 @@ export default function ConversationScreen() {
               onClose={closeThread}
               floating={floating}
             />
+          </View>
+        )}
+        {showProjectPane && projectPaneId && (
+          <View className="w-[45%] min-w-[420px] border-l border-border">
+            <ProjectSidePane key={projectPaneId} projectId={projectPaneId} workspaceId={workspaceId} name={projectPaneName} onClose={closeProjectPane} />
           </View>
         )}
       </View>

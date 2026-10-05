@@ -163,3 +163,92 @@ export function normalizeBuddyLook(value: unknown): BuddyLook {
     finish: isBuddyFinish(value.finish) ? value.finish : d.finish,
   }
 }
+
+/** Body colours a generated look picks from; each reads well on both finishes. */
+export const SEEDED_BUDDY_COLORS = [
+  '#FB8C00',
+  '#FB923C',
+  '#F87171',
+  '#E11D48',
+  '#7C3AED',
+  '#2563EB',
+  '#38BDF8',
+  '#0D9488',
+  '#34D399',
+  '#A3E635',
+  '#64748B',
+  '#C2410C',
+] as const
+
+/** 32-bit FNV-1a. */
+function fnv1a(text: string): number {
+  let hash = 0x811c9dc5
+  for (let i = 0; i < text.length; i++) {
+    hash ^= text.charCodeAt(i)
+    hash = Math.imul(hash, 0x01000193) >>> 0
+  }
+  return hash >>> 0
+}
+
+/** Small deterministic PRNG (mulberry32), so one hash yields many independent picks. */
+function seededRandom(seed: number): () => number {
+  let a = seed >>> 0
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0
+    let t = a
+    t = Math.imul(t ^ (t >>> 15), t | 1)
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61)
+    return (((t ^ (t >>> 14)) >>> 0) % 1_000_000) / 1_000_000
+  }
+}
+
+function pick<T>(random: () => number, items: readonly T[]): T {
+  return items[Math.floor(random() * items.length)]
+}
+
+/** Picks `none` with probability `noneWeight`, otherwise one of `items`. */
+function pickOrNone<T extends string>(random: () => number, items: readonly T[], noneWeight: number): T | 'none' {
+  const roll = random()
+  const choice = pick(random, items)
+  return roll < noneWeight ? 'none' : choice
+}
+
+/**
+ * A stable look generated from `seed` (an agent's project id), so agents that
+ * nobody has customised still look different from each other. The same seed
+ * always gives the same look; tails, eyewear and neckwear are left off most of
+ * the time so the result stays clean.
+ */
+export function seededBuddyLook(seed: string): BuddyLook {
+  const random = seededRandom(fnv1a(seed))
+  const topper = pick(random, BUDDY_TOPPER_IDS.filter((id) => id !== 'none'))
+  const faceRoll = random()
+  const face: BuddyFace = faceRoll < 0.6 ? 'classic' : faceRoll < 0.8 ? 'visor' : 'screen'
+  const tail = pickOrNone(random, BUDDY_TAIL_IDS.filter((id) => id !== 'none'), 0.6)
+  const eyewear = pickOrNone(random, BUDDY_EYEWEAR_IDS.filter((id) => id !== 'none'), 0.55)
+  const neck = pickOrNone(random, BUDDY_NECK_IDS.filter((id) => id !== 'none'), 0.6)
+  const bolts = random() < 0.3
+  const blush = random() < 0.6
+  const color = pick(random, SEEDED_BUDDY_COLORS)
+  return {
+    topper,
+    face,
+    tail,
+    // Eyewear and blush only show on the classic face.
+    eyewear: face === 'classic' ? eyewear : 'none',
+    neck,
+    bolts,
+    blush: face === 'classic' ? blush : false,
+    color,
+    finish: 'classic',
+  }
+}
+
+/**
+ * The look an agent shows: the one saved on it, else a look generated from its
+ * project id. The workspace agent (no project) keeps the classic Shogo.
+ */
+export function resolveAgentLook(stored: unknown, projectId: string | null): BuddyLook {
+  if (isRecord(stored)) return normalizeBuddyLook(stored)
+  return projectId ? seededBuddyLook(projectId) : DEFAULT_BUDDY_LOOK
+}

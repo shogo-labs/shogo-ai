@@ -12,8 +12,20 @@ import { publishConversationEvent } from '../lib/conversation-bus'
 import { parseMentions, renderMentionsAsText, type AgentTarget, type ParsedMention } from './conversation-mentions'
 import { assertNativeChat } from './chat-mode'
 import type { AgentChain } from './conversation-agent-chain'
+import { normalizeBuddyLook, type BuddyLook } from '../../../../packages/shared-app/src/buddy-look'
 
 const db = prisma as any
+
+/** A stored look (JSON text) read leniently; null when nothing usable is saved. */
+export function storedAgentBuddyLook(raw: string | null | undefined): BuddyLook | null {
+  if (!raw) return null
+  try {
+    const value = JSON.parse(raw)
+    return value && typeof value === 'object' && !Array.isArray(value) ? normalizeBuddyLook(value) : null
+  } catch {
+    return null
+  }
+}
 
 export const MAX_MESSAGE_CHARS = 40_000
 export const MAX_GROUP_DM_PARTICIPANTS = 9
@@ -1222,11 +1234,11 @@ export async function listMentionables(workspaceId: string) {
     }),
     db.project.findMany({
       where: { workspaceId },
-      select: { id: true, name: true, description: true },
+      select: { id: true, name: true, description: true, buddyLook: true },
       orderBy: { updatedAt: 'desc' },
       take: 200,
     }),
-    db.workspaceAgentProfile.findUnique({ where: { workspaceId }, select: { name: true, avatarUrl: true } }).catch(() => null),
+    db.workspaceAgentProfile.findUnique({ where: { workspaceId }, select: { name: true, avatarUrl: true, buddyLook: true } }).catch(() => null),
   ])
   const seen = new Set<string>()
   const people = []
@@ -1238,9 +1250,9 @@ export async function listMentionables(workspaceId: string) {
   return {
     people,
     agents: [
-      { key: 'ws', projectId: null, name: profile?.name || 'Shogo', description: 'Workspace agent', image: profile?.avatarUrl ?? null },
+      { key: 'ws', projectId: null, name: profile?.name || 'Shogo', description: 'Workspace agent', image: profile?.avatarUrl ?? null, buddyLook: storedAgentBuddyLook(profile?.buddyLook) },
       ...projects.map((p: any) => ({
-        key: `p:${p.id}`, projectId: p.id, name: p.name, description: p.description ?? null, image: null,
+        key: `p:${p.id}`, projectId: p.id, name: p.name, description: p.description ?? null, image: null, buddyLook: storedAgentBuddyLook(p.buddyLook),
       })),
     ],
   }

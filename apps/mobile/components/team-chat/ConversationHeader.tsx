@@ -3,7 +3,8 @@
 import { useRef, useState } from 'react'
 import { ActivityIndicator, Alert, Modal, Platform, Pressable, ScrollView, Text, TextInput, View, type LayoutChangeEvent } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
-import { Archive, Bell, BellOff, Bot, Check, ChevronLeft, Hash, Lock, LogOut, MoreHorizontal, Pencil, Pin, Radio, Sparkles, Star, UserPlus, Users, X } from 'lucide-react-native'
+import { useRouter } from 'expo-router'
+import { Archive, Bell, BellOff, Bot, Check, ChevronLeft, FolderOpen, Hash, Lock, LogOut, MoreHorizontal, Pencil, PanelRight, Pin, Radio, Sparkles, Star, UserCircle, UserPlus, Users, X } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { LiquidGlassBackdrop } from '../ui/LiquidGlassBackdrop'
 import { CHROME_SIZE, GlassButton, GlassChip } from './FloatingChrome'
@@ -23,6 +24,7 @@ import { mentionNames, renderMentions } from '../../lib/team-chat-state'
 import { useUserStatus } from '../../hooks/useChatPrefs'
 import { usePresence } from '../../hooks/usePresence'
 import { PresenceDot, presenceLabel } from './PresenceDot'
+import { AgentAvatar } from './AgentAvatar'
 
 const api = teamChatApi()
 
@@ -35,6 +37,8 @@ export interface ConversationHeaderProps {
   /** Phone presentation: glass back button, title pill and actions sheet over the messages. */
   floating?: boolean
   onBack?: () => void
+  /** Show the agent's project beside the conversation. Only passed on wide screens. */
+  onOpenProjectPane?: (projectId: string, name: string) => void
   onLayout?: (event: LayoutChangeEvent) => void
 }
 
@@ -48,8 +52,9 @@ function confirm(title: string, message: string): Promise<boolean> {
   )
 }
 
-export function ConversationHeader({ conversation, mentionables, me, onChanged, onLeft, floating, onBack, onLayout }: ConversationHeaderProps) {
+export function ConversationHeader({ conversation, mentionables, me, onChanged, onLeft, floating, onBack, onOpenProjectPane, onLayout }: ConversationHeaderProps) {
   const insets = useSafeAreaInsets()
+  const router = useRouter()
   const [detailsOpen, setDetailsOpen] = useState(false)
   // iOS can't present a modal while the sheet's modal is dismissing.
   const afterDetails = useRef<(() => unknown) | null>(null)
@@ -100,7 +105,32 @@ export function ConversationHeader({ conversation, mentionables, me, onChanged, 
     }
   }
 
+  const agentDm = isAgentDm({ kind: conversation.kind, participants })
+  const agentPeer = agentDm ? participants.find((p) => p.type === 'agent') : undefined
+  const agentProjectId = agentPeer?.type === 'agent' ? agentPeer.projectId : null
+  const agentName = agentPeer?.type === 'agent' ? agentPeer.name ?? 'Agent' : 'Agent'
+  const openProject = () => router.push({ pathname: '/(app)/projects/[id]', params: { id: agentProjectId! } } as any)
+
   const actions: HeaderAction[] = []
+  if (agentPeer) {
+    actions.push({
+      key: 'agent-profile',
+      label: 'View profile',
+      icon: (s) => <UserCircle size={s} className="text-muted-foreground" />,
+      onPress: () => router.push({ pathname: '/(app)/agents/[key]', params: { key: agentProjectId ?? 'ws' } } as any),
+    })
+  }
+  if (agentProjectId) {
+    actions.push({ key: 'open-project', label: 'Open project', icon: (s) => <FolderOpen size={s} className="text-muted-foreground" />, onPress: openProject })
+    if (onOpenProjectPane) {
+      actions.push({
+        key: 'project-pane',
+        label: 'Show in side panel',
+        icon: (s) => <PanelRight size={s} className="text-muted-foreground" />,
+        onPress: () => onOpenProjectPane(agentProjectId, agentName),
+      })
+    }
+  }
   if (canRename) actions.push({ key: 'edit', label: 'Edit channel', icon: (s) => <Pencil size={s} className="text-muted-foreground" />, onPress: () => setEditOpen(true) })
   if (conversation.joined && conversation.kind !== 'activity') {
     actions.push({
@@ -169,6 +199,8 @@ export function ConversationHeader({ conversation, mentionables, me, onChanged, 
     <View className="w-4 items-center">
       <PresenceDot userId={peerId} workspaceId={conversation.workspaceId} size={9} />
     </View>
+  ) : agentPeer?.type === 'agent' ? (
+    <AgentAvatar name={agentName} projectId={agentProjectId} workspaceId={conversation.workspaceId} size={20} />
   ) : (
     <Icon size={16} className="text-muted-foreground" />
   )
@@ -311,6 +343,11 @@ export function ConversationHeader({ conversation, mentionables, me, onChanged, 
             ) : null}
           </Pressable>
           <View className="flex-1" pointerEvents="none" />
+          {agentProjectId ? (
+            <GlassButton label="Open project" onPress={openProject}>
+              <FolderOpen size={18} className="text-foreground" />
+            </GlassButton>
+          ) : null}
           <GlassButton label={catchUpAction.label} onPress={catchUpAction.onPress}>
             {catchUpAction.icon(18)}
           </GlassButton>
@@ -673,7 +710,7 @@ function MembersModal({
             {conversation.members.map((m) => (
               <View key={m.id} className="flex-row items-center gap-2 py-1.5">
                 {m.type === 'agent' ? (
-                  <Bot size={14} className="text-primary" />
+                  <AgentAvatar name={m.name ?? 'Agent'} projectId={m.projectId} workspaceId={conversation.workspaceId} size={20} />
                 ) : (
                   <View className="w-3.5 items-center">
                     <PresenceDot userId={m.userId} workspaceId={conversation.workspaceId} />
@@ -706,7 +743,7 @@ function MembersModal({
                     onPress={() => act(() => api.addAgent(conversation.id, { projectId: a.projectId }))}
                     className="flex-row items-center gap-2 rounded-md px-1 py-1.5 active:bg-muted hover:bg-muted"
                   >
-                    <Bot size={14} className="text-primary" />
+                    <AgentAvatar name={a.name} projectId={a.projectId} workspaceId={conversation.workspaceId} size={20} />
                     <Text className="flex-1 text-sm text-foreground">{a.name}</Text>
                     <Text className="text-xs text-primary">Add agent</Text>
                   </Pressable>

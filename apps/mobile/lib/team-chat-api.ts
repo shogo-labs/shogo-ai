@@ -5,6 +5,7 @@
  * (`/api/workspaces/:workspaceId/conversations`, `/api/conversations/:id`,
  * `/api/conversation-messages/:id`).
  */
+import type { BuddyLook } from '@shogo/shared-app/buddy-look'
 import { Platform } from 'react-native'
 import { API_URL, createHttpClient } from './api'
 import { authClient } from './auth-client'
@@ -160,7 +161,7 @@ export type PresenceStatus = 'active' | 'away' | 'offline'
 
 export interface Mentionables {
   people: Array<{ id: string; name: string; email: string; image: string | null; role: string }>
-  agents: Array<{ key: string; projectId: string | null; name: string; description: string | null; image: string | null }>
+  agents: Array<{ key: string; projectId: string | null; name: string; description: string | null; image: string | null; buddyLook?: BuddyLook | null }>
   statuses?: Record<string, UserStatus>
   groups?: UserGroup[]
 }
@@ -169,6 +170,10 @@ export interface AgentCard {
   projectId: string | null
   name: string
   iconUrl: string | null
+  /** The look saved on the agent; null means the one generated from its id. */
+  buddyLook?: BuddyLook | null
+  /** The viewer may change the agent's look. */
+  canEdit?: boolean
   role: string | null
   owner: { id: string; name: string } | null
   channels: Array<{ conversationId: string; kind: string; name: string | null; slug: string | null; agentTrigger: string; muted: boolean }>
@@ -324,6 +329,7 @@ export type TeamChatEvent =
   | { type: 'draft.changed'; draft: Draft }
   | { type: 'scheduled.failed'; id: string; error: string | null }
   | { type: 'groups.changed' }
+  | { type: 'agent.updated'; projectId: string | null }
   | { type: 'emoji.changed' }
 
 export const mentionToken = {
@@ -493,6 +499,12 @@ export function teamChatApi() {
     async agentCard(workspaceId: string, projectId: string | null): Promise<AgentCard> {
       const qs = projectId ? `?projectId=${encodeURIComponent(projectId)}` : ''
       return (await http.get<{ card: AgentCard }>(`${ws(workspaceId)}/agent-card${qs}`)).data.card
+    },
+    /** Save an agent's buddy look; `null` goes back to the look generated from its id. */
+    async setAgentBuddyLook(workspaceId: string, projectId: string | null, look: BuddyLook | null): Promise<BuddyLook | null> {
+      const key = projectId ?? 'ws'
+      const res = await http.request<{ buddyLook: BuddyLook | null }>(`${ws(workspaceId)}/agents/${encodeURIComponent(key)}/buddy`, { method: 'PUT', body: { look } })
+      return res.data.buddyLook
     },
     async mentionables(workspaceId: string): Promise<Mentionables> {
       return (await http.get<Mentionables>(`${ws(workspaceId)}/mentionables`)).data
