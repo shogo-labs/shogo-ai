@@ -12,6 +12,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Alert, Platform, Pressable, TextInput, View } from 'react-native'
+import { observer } from 'mobx-react-lite'
 import { useRouter } from 'expo-router'
 import {
   AlertCircle as AlertCircleIcon,
@@ -341,7 +342,7 @@ function TriggerRow({
   )
 }
 
-export function AutomationsTab({
+export const AutomationsTab = observer(function AutomationsTab({
   onOpenIntegrations,
   onLeaveSettings,
 }: { onOpenIntegrations?: () => void; onLeaveSettings?: () => void } = {}) {
@@ -562,4 +563,4 @@ export function AutomationsTab({
       </View>
     </View>
   )
-}
+})
