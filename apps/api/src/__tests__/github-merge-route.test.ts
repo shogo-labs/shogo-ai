@@ -6,10 +6,16 @@
  * plainly when there isn't one.
  */
 
-import { describe, expect, test } from 'bun:test'
+import { describe, expect, mock, test } from 'bun:test'
 import { Hono } from 'hono'
-import { runtimeInternalRoutes } from '../routes/internal-runtime-routes'
-import { encryptSecret } from '../lib/secret-crypto'
+
+// No saved "acts as" policy: merges use the project's connection.
+mock.module('../services/integration-credentials', () => ({
+  getPolicy: async () => ({ writeMode: 'shared', readMode: 'shared', fallback: 'ask', sharedUserId: null }),
+}))
+
+const { runtimeInternalRoutes } = await import('../routes/internal-runtime-routes')
+const { encryptSecret } = await import('../lib/secret-crypto')
 
 type Merge = { installationId: number; repoOwner: string; repoName: string; number: number; method?: string; commitTitle?: string }
 

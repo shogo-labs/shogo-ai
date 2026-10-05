@@ -284,6 +284,21 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
     reason: 'github.service.ts:309 upserts on projectId from a user request.',
   },
   {
+    key: 'IntegrationCredentialPolicy.(projectId,provider)',
+    category: 'single_tenant_upsert',
+    reason: 'integration-credentials/store.ts savePolicy upserts one per-project row from a user PUT request.',
+  },
+  {
+    key: 'UserIntegrationConnection.(provider,userId)',
+    category: 'single_tenant_upsert',
+    reason: 'integration-credentials/store.ts savePersonalConnection upserts the user\'s own row from their OAuth callback or a token refresh.',
+  },
+  {
+    key: 'UserIntegrationGrant.(projectId,provider,userId)',
+    category: 'single_tenant_upsert',
+    reason: 'integration-credentials/store.ts grantAccess upserts the user\'s own consent row from their consent POST or OAuth callback.',
+  },
+  {
     key: 'StarredProject.(projectId,userId)',
     category: 'request_scoped',
     reason:

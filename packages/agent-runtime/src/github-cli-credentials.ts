@@ -13,6 +13,7 @@
  *
  * The token is process memory only. It is never written to the workspace.
  */
+import { currentCredentialScope } from './credential-scope'
 import { githubGitAuthEnv } from './github-workspace-git'
 import { getGitHubCliCredentials, projectScopedId } from './internal-api'
 
@@ -56,6 +57,9 @@ export function githubCliEnvFromCredentials(credentials: {
 export async function githubCliEnvForProject(
   projectId: string | null | undefined,
 ): Promise<Record<string, string>> {
+  // A call acting as the requester carries that person's credentials instead.
+  const scoped = currentCredentialScope()?.githubEnv
+  if (scoped) return scoped
   const id = projectScopedId(projectId)
   if (!id) return {}
 

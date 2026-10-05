@@ -181,6 +181,8 @@ export interface ToolContext {
   workspaceGraph?: import('./workspace-graph').WorkspaceGraph
   /** Authenticated user ID from the chat request (for per-user integrations like Composio) */
   userId?: string
+  /** API-signed proof of who started this turn; forwarded when a tool acts as the requester. */
+  requesterTicket?: string
   /** File watcher — notified when src/ files are written/edited/deleted to trigger rebuilds */
   canvasFileWatcher?: import('./canvas-file-watcher').CanvasFileWatcher
   /** Permission engine for local-mode security guardrails */
@@ -956,6 +958,28 @@ function githubRunIdMarker(runId: string): string {
   return `<!-- shogo:runId=${runId} -->`
 }
 
+const REQUESTER_CREDENTIAL_CODES = new Set(['requester_auth_required', 'requester_unknown', 'denied'])
+
+/** The project acts as the requester and they can't be acted as: no other account may be used instead. */
+function isRequesterCredentialBlock(result: CheckpointCallResult<unknown>): boolean {
+  return !!result.code && REQUESTER_CREDENTIAL_CODES.has(result.code)
+}
+
+function requesterCredentialBlockResult(result: CheckpointCallResult<unknown>) {
+  return textResult({
+    error: result.error,
+    code: result.code,
+    ...(result.connectUrl
+      ? {
+          connectUrl: result.connectUrl,
+          next:
+            'Do not retry with another account. Tell the person they need to connect their own GitHub account, and put the ' +
+            'connectUrl in your reply exactly as given (they cannot see this tool result). Once they have, run this again.',
+        }
+      : { next: 'Do not retry with another account. Tell the person why it could not be done.' }),
+  })
+}
+
 function createGitHubPullRequestTool(ctx: ToolContext): AgentTool {
   return {
     name: 'github_create_pr',
@@ -1041,6 +1065,7 @@ function createGitHubPullRequestTool(ctx: ToolContext): AgentTool {
           url: botResult.data.url,
         })
       }
+      if (isRequesterCredentialBlock(botResult)) return requesterCredentialBlockResult(botResult)
       if (botResult.code !== 'github_app_not_installed' && botResult.status !== 409) {
         return textResult({
           error: botResult.error || 'Shogo GitHub App could not create the pull request.',
@@ -1258,6 +1283,7 @@ export function createGitHubMergePullRequestTool(ctx: ToolContext): AgentTool {
       if (botResult.ok && botResult.data) {
         return textResult({ ok: true, mode: 'github-app', merged: botResult.data.merged !== false, number, sha: botResult.data.sha })
       }
+      if (isRequesterCredentialBlock(botResult)) return requesterCredentialBlockResult(botResult)
       if (botResult.code !== 'github_app_not_installed' && botResult.status !== 409) {
         return textResult({
           error: botResult.error || 'Shogo GitHub App could not merge the pull request.',

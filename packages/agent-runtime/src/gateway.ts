@@ -89,6 +89,7 @@ import {
   workspaceProjectsManifest,
 } from './workspace-runtime-mode'
 import { initComposioSession, resetComposioSession, isComposioEnabled, isComposioInitialized } from './composio'
+import { createIntegrationCredentialWrapper } from './integration-credentials'
 import { deriveApiUrl, getInternalHeaders, postCostMetric, projectScopedId } from './internal-api'
 import { getRuntimeTrust } from './runtime-trust'
 import { refreshTrust } from './trust-resolver'
@@ -1828,6 +1829,8 @@ export class AgentGateway {
       modelProvider?: string
       fileParts?: FilePart[]
       userId?: string
+      /** API-signed proof of who sent this message (see integration-credentials.ts). */
+      requesterTicket?: string
       interactionMode?: 'agent' | 'plan' | 'ask'
       confirmedPlan?: { name: string; overview: string; plan: string; todos?: Array<{ id: string; content: string }>; filepath?: string }
       dualPlan?: boolean
@@ -1930,7 +1933,7 @@ export class AgentGateway {
     const interactionMode = options?.confirmedPlan ? 'agent' : (options?.interactionMode || 'agent')
     const dualPlan = options?.dualPlan === true
     console.log(`[Gateway][processChatMessageStream] resolved interactionMode: ${interactionMode} (options had: ${options?.interactionMode ?? '(undefined)'}), dualPlan: ${dualPlan}, sessionId: ${sessionId}, activeSkill: ${activeSkill ?? '(none)'}`)
-    const response = await this.agentTurn(prompt, sessionId, false, undefined, writer, activeSkill, images, interactionMode, dualPlan)
+    const response = await this.agentTurn(prompt, sessionId, false, undefined, writer, activeSkill, images, interactionMode, dualPlan, options?.requesterTicket)
     this.emitLog(`Chat response (stream): "${response.substring(0, 100)}"`)
 
     this.appendDailyMemory(`chat: "${text.substring(0, 100)}" -> "${response.substring(0, 100)}"`)
@@ -2087,6 +2090,8 @@ export class AgentGateway {
     images?: ImageContent[],
     interactionMode: 'agent' | 'plan' | 'ask' = 'agent',
     dualPlan: boolean = false,
+    /** Only chat turns a person started carry one; see integration-credentials.ts. */
+    requesterTicket?: string,
   ): Promise<string> {
     // Wait for any in-flight turn on this session to finish so the new turn
     // reads a fully-updated session history (important for "continue" after a
@@ -2099,7 +2104,7 @@ export class AgentGateway {
     }
 
     this._currentTask = isHeartbeat ? 'heartbeat' : prompt.slice(0, 120)
-    const turnPromise = this._agentTurnInner(prompt, sessionId, isHeartbeat, streamTarget, uiWriter, activeSkill, images, interactionMode, dualPlan)
+    const turnPromise = this._agentTurnInner(prompt, sessionId, isHeartbeat, streamTarget, uiWriter, activeSkill, images, interactionMode, dualPlan, requesterTicket)
     this.turnLocks.set(sessionId, turnPromise)
     try {
       return await turnPromise
@@ -2122,6 +2127,7 @@ export class AgentGateway {
     images?: ImageContent[],
     interactionMode: 'agent' | 'plan' | 'ask' = 'agent',
     dualPlan: boolean = false,
+    requesterTicket?: string,
   ): Promise<string> {
     // Reload skills and quick actions from disk so any files created/edited/deleted by file tools are picked up
     this.skills = loadAllSkills(this.workspaceDir)
@@ -2288,6 +2294,7 @@ export class AgentGateway {
       disconnectChannel: (type) => this.disconnectChannel(type),
       permissionEngine: this.permissionEngine ?? undefined,
       userId: this.currentUserId,
+      requesterTicket,
       aiProxyUrl: process.env.AI_PROXY_URL,
       aiProxyToken: process.env.AI_PROXY_TOKEN,
       uiWriter,
@@ -2577,7 +2584,14 @@ export class AgentGateway {
     const mcpMgr = this.mcpClientManager
     const promoted = this.promotedMockTools
     const staticNames = new Set(staticTools.map(t => t.name))
-    const tools = new Proxy(staticTools, {
+    // Every call runs in a credential scope: whose integration account it uses.
+    const withCredentials = createIntegrationCredentialWrapper({
+      projectId: this.projectId,
+      requesterTicket,
+      uiWriter,
+    })
+    const credentialedStatic = staticTools.map(withCredentials)
+    const tools = new Proxy(credentialedStatic, {
       get(target, prop, receiver) {
         if (prop === 'find' || prop === 'filter' || prop === 'map' ||
             prop === 'forEach' || prop === 'some' || prop === 'every' ||
@@ -2585,7 +2599,7 @@ export class AgentGateway {
             prop === 'slice' || prop === 'concat' || prop === 'includes') {
           const liveMcpTools = mcpMgr.getTools().filter(t => !staticNames.has(t.name))
           const promotedNew = promoted.filter(t => !staticNames.has(t.name))
-          const extras = [...liveMcpTools, ...promotedNew]
+          const extras = [...liveMcpTools, ...promotedNew].map(withCredentials)
           const merged = extras.length > 0 ? [...target, ...extras] : target
           if (prop === 'length') return merged.length
           if (prop === Symbol.iterator) return merged[Symbol.iterator].bind(merged)

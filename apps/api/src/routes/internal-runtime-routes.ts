@@ -55,6 +55,7 @@ import { projectTrustRoutes } from './internal-project-trust'
 import { signSharedFileToken } from '../lib/shared-file-token'
 import { withShogoPrFooter } from '@shogo/shared-runtime/agent-attribution'
 import { resolveConnectionAuth } from '../services/github-auth'
+import { REQUESTER_TICKET_HEADER, verifyRequesterTicket } from '../lib/requester-ticket'
 
 type ProjectLifecycleService = typeof import('../services/project-lifecycle.service')
 type AgentCallService = typeof import('../services/agent-call.service')
@@ -132,6 +133,42 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
   const { validateAuth, authorizeWorkspaceScope, authorizeWorkspaceRuntimeRequest } =
     createInternalAuthorizers(authenticate)
   const app = new Hono()
+
+  /**
+   * Who a GitHub write runs as. `connection` keeps the project's own
+   * connection; `personal` is the requester's token under an "act as the
+   * requester" policy; `blocked` is the 409 to return instead.
+   */
+  async function githubWriteActor(
+    c: Context,
+    projectId: string,
+  ): Promise<{ kind: 'connection' } | { kind: 'personal'; token: string; login?: string } | { kind: 'blocked'; response: Response }> {
+    const credentials = await import('../services/integration-credentials')
+    const policy = await credentials.getPolicy(projectId, 'github')
+    if (policy.writeMode !== 'requester') return { kind: 'connection' }
+    const { ensureDefaultCredentialProviders } = await import('../services/integration-credentials/defaults')
+    ensureDefaultCredentialProviders({ loadGitHub })
+    const ticket = verifyRequesterTicket(c.req.header(REQUESTER_TICKET_HEADER), projectId)
+    const result = await credentials.resolveIntegrationCredential({
+      projectId,
+      provider: 'github',
+      op: 'write',
+      requesterUserId: ticket?.userId ?? null,
+    })
+    if (!result.ok) {
+      return {
+        kind: 'blocked',
+        response: c.json(
+          { error: { code: result.code, message: result.message, ...(result.connectUrl ? { connectUrl: result.connectUrl } : {}) } },
+          409,
+        ),
+      }
+    }
+    if (result.source === 'personal' && result.credential.token) {
+      return { kind: 'personal', token: result.credential.token, login: result.credential.login }
+    }
+    return { kind: 'connection' }
+  }
 
   /**
    * POST /api/internal/heartbeat/complete
@@ -953,6 +990,56 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
   })
 
   /**
+   * GET /api/internal/projects/:projectId/integrations/policies
+   *
+   * The project's saved "acts as" policies. The runtime only consults the
+   * resolver for providers listed here; everything else keeps its default
+   * behavior.
+   */
+  app.get('/projects/:projectId/integrations/policies', async (c) => {
+    const projectId = c.req.param('projectId')
+    if (!projectId) return c.json({ error: 'Missing projectId' }, 400)
+    if (!(await validateAuth(c, projectId))) return c.json({ error: 'Unauthorized' }, 401)
+    const { listPolicies } = await import('../services/integration-credentials')
+    return c.json({ ok: true, policies: await listPolicies(projectId) })
+  })
+
+  /**
+   * POST /api/internal/projects/:projectId/integrations/resolve
+   *   header: X-Requester-Ticket (from the turn's chat request)
+   *   body: { provider, op: 'read' | 'write' }
+   *
+   * The credential one tool call should use. Always 200; `ok: false` carries
+   * `code` (`requester_auth_required` with `connectUrl`, `denied`,
+   * `requester_unknown`, `not_connected`) for the tool to relay.
+   */
+  app.post('/projects/:projectId/integrations/resolve', async (c) => {
+    const projectId = c.req.param('projectId')
+    if (!projectId) return c.json({ error: 'Missing projectId' }, 400)
+    if (!(await validateAuth(c, projectId))) return c.json({ error: 'Unauthorized' }, 401)
+    const body = await c.req.json().catch(() => null) as Record<string, unknown> | null
+    const provider = typeof body?.provider === 'string' ? body.provider.trim() : ''
+    const op = body?.op === 'read' ? 'read' : 'write'
+    const credentials = await import('../services/integration-credentials')
+    if (!provider || !credentials.isValidProviderId(provider)) return c.json({ error: 'provider is required' }, 400)
+    const { ensureDefaultCredentialProviders } = await import('../services/integration-credentials/defaults')
+    ensureDefaultCredentialProviders({ loadGitHub })
+    const ticket = verifyRequesterTicket(c.req.header(REQUESTER_TICKET_HEADER), projectId)
+    try {
+      const result = await credentials.resolveIntegrationCredential({
+        projectId,
+        provider,
+        op,
+        requesterUserId: ticket?.userId ?? null,
+      })
+      return c.json(result)
+    } catch (err: any) {
+      console.error(`[Internal] Credential resolve for ${projectId}/${provider} failed:`, err?.message ?? err)
+      return c.json({ error: 'Failed to resolve integration credentials' }, 502)
+    }
+  })
+
+  /**
    * POST /api/internal/projects/:projectId/github/connect
    *   body: { repoOwner, repoName, token, branch? }
    *
@@ -1129,11 +1216,16 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
         )
       }
 
+      const actor = await githubWriteActor(c, projectId)
+      if (actor.kind === 'blocked') return actor.response
+
       const markedBody = runId && !github.extractRunId(prBody)
         ? `${withShogoPrFooter(prBody)}\n\n${github.runIdMarker(runId)}`
         : withShogoPrFooter(prBody)
       const result = await github.createPullRequest({
-        ...(auth.kind === 'token' ? { token: auth.token } : { installationId: auth.installationId }),
+        ...(actor.kind === 'personal'
+          ? { token: actor.token }
+          : auth.kind === 'token' ? { token: auth.token } : { installationId: auth.installationId }),
         repoOwner: connection.repoOwner,
         repoName: connection.repoName,
         head,
@@ -1147,10 +1239,12 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
         number: result.number,
         url: result.html_url,
         htmlUrl: result.html_url,
-        mode: auth.kind === 'token' ? 'user-token' : 'github-app',
-        author: auth.kind === 'token'
-          ? auth.login ?? undefined
-          : `${process.env.GH_APP_SLUG || 'shogo-ai'}[bot]`,
+        mode: actor.kind === 'personal' ? 'requester' : auth.kind === 'token' ? 'user-token' : 'github-app',
+        author: actor.kind === 'personal'
+          ? actor.login
+          : auth.kind === 'token'
+            ? auth.login ?? undefined
+            : `${process.env.GH_APP_SLUG || 'shogo-ai'}[bot]`,
       })
     } catch (err: any) {
       console.error(`[Internal] GitHub PR creation for ${projectId} failed:`, err?.message ?? err)
@@ -1187,8 +1281,12 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
       if (!connection || !auth) {
         return c.json({ error: { code: 'github_app_not_installed', message: 'This project has no GitHub connection.' } }, 409)
       }
+      const actor = await githubWriteActor(c, projectId)
+      if (actor.kind === 'blocked') return actor.response
       const result = await github.mergePullRequest({
-        ...(auth.kind === 'token' ? { token: auth.token } : { installationId: auth.installationId }),
+        ...(actor.kind === 'personal'
+          ? { token: actor.token }
+          : auth.kind === 'token' ? { token: auth.token } : { installationId: auth.installationId }),
         repoOwner: connection.repoOwner,
         repoName: connection.repoName,
         number,

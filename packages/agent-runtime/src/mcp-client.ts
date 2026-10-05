@@ -391,6 +391,7 @@ export class MCPClientManager {
         description: mcpTool.description || `MCP tool: ${mcpTool.name} (from ${name})`,
         label: `${name}: ${mcpTool.name}`,
         parameters,
+        credential: { provider: `mcp:${name}`, op: mcpTool.annotations?.readOnlyHint ? 'read' : 'write' },
         execute: async (_toolCallId: string, params: unknown) => {
           const args = (params && typeof params === 'object') ? params as Record<string, any> : {}
           try {
@@ -561,6 +562,7 @@ export class MCPClientManager {
         description,
         label: `${name}: ${mcpTool.name}`,
         parameters,
+        credential: { provider: `mcp:${name}`, op: mcpTool.annotations?.readOnlyHint ? 'read' : 'write' },
         execute: async (_toolCallId: string, params: unknown) => {
           const args = (params && typeof params === 'object') ? params as Record<string, any> : {}
           try {

@@ -18,6 +18,8 @@ import { isAbsolute, resolve, sep } from 'node:path'
 import type { MCPClientManager } from './mcp-client'
 import { fetchComposioToolSchemas, type ComposioToolSchema } from './composio-auto-bind'
 import { smartTruncateJson } from './response-transforms'
+import { currentCredentialScope } from './credential-scope'
+import { composioToolOp } from './integration-credentials'
 
 /**
  * Whether Composio OAuth connections are scoped to the workspace
@@ -772,7 +774,7 @@ export async function registerToolkitProxyTools(
     return { toolNames: [], toolCount: 0 }
   }
 
-  const proxyTools: AgentTool[] = nonDeprecated.map(schema => createProxyTool(schema))
+  const proxyTools: AgentTool[] = nonDeprecated.map(schema => createProxyTool(schema, toolkitSlug))
   mcpClientManager.addProxyTools(toolkitSlug.toLowerCase(), proxyTools)
 
   const toolNames = proxyTools.map(t => t.name)
@@ -785,7 +787,7 @@ export async function registerToolkitProxyTools(
   return { toolNames, toolCount: toolNames.length }
 }
 
-function createProxyTool(schema: ComposioToolSchema): AgentTool {
+function createProxyTool(schema: ComposioToolSchema, toolkitSlug: string): AgentTool {
   const { Type } = require('@sinclair/typebox')
 
   let parameters: any = Type.Object({})
@@ -815,9 +817,14 @@ function createProxyTool(schema: ComposioToolSchema): AgentTool {
       : baseDescription,
     label: `composio: ${schema.slug}`,
     parameters,
+    credential: {
+      provider: `composio:${toolkitSlug.toLowerCase()}`,
+      op: composioToolOp(schema.slug, schema.tags),
+    },
     execute: async (_toolCallId: string, params: unknown) => {
       const client = getComposioClient()
-      if (!client || !storedComposioUserId) {
+      const entityId = currentCredentialScope()?.composioEntityId ?? storedComposioUserId
+      if (!client || !entityId) {
         return textResult({ error: 'Composio not initialized. Call connect first.' })
       }
       let args = (params && typeof params === 'object') ? { ...(params as Record<string, any>) } : {}
@@ -843,7 +850,7 @@ function createProxyTool(schema: ComposioToolSchema): AgentTool {
         try {
           const t0 = performance.now()
           const result = await client.tools.execute(schema.slug, {
-            userId: storedComposioUserId!,
+            userId: entityId,
             arguments: args,
             dangerouslySkipVersionCheck: true,
           })
