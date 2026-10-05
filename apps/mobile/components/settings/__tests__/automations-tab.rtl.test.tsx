@@ -4,6 +4,7 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { createElement } from 'react'
+import { observable, runInAction } from 'mobx'
 import { createReactNativeMock } from '../../../test/react-native-mock'
 
 mock.module('react-native', () =>
@@ -36,7 +37,8 @@ const pushed: string[] = []
 const prefills: string[] = []
 mock.module('expo-router', () => ({ useRouter: () => ({ push: (href: string) => pushed.push(href) }) }))
 mock.module('../../../hooks/useChatPrefill', () => ({ setChatPrefill: (text: string) => prefills.push(text) }))
-mock.module('../../../hooks/useActiveWorkspace', () => ({ useActiveWorkspace: () => ({ id: 'ws-1' }) }))
+const activeWorkspace = observable.box<{ id: string } | null>({ id: 'ws-1' })
+mock.module('../../../hooks/useActiveWorkspace', () => ({ useActiveWorkspace: () => activeWorkspace.get() }))
 const http = {}
 mock.module('../../../contexts/domain', () => ({ useDomainHttp: () => http }))
 
@@ -99,6 +101,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  runInAction(() => activeWorkspace.set({ id: 'ws-1' }))
   updateError = null
   calls.length = 0
   pushed.length = 0
@@ -190,6 +193,15 @@ describe('AutomationsTab', () => {
     const email = await within(row).findByTestId('automation-trust-email-t5')
     fireEvent.click(within(email).getByRole('checkbox'))
     await waitFor(() => expect(calls).toContainEqual(['update', 't5', { trustActorEmail: true, actorEmailPath: 'issue.fields.reporter.emailAddress' }]))
+  })
+
+  test('loads triggers once the workspace list arrives after the first render', async () => {
+    runInAction(() => activeWorkspace.set(null))
+    render(<AutomationsTab />)
+    expect(screen.getByText('0 triggers')).toBeTruthy()
+
+    runInAction(() => activeWorkspace.set({ id: 'ws-1' }))
+    expect(await screen.findByTestId('automation-trigger-t1')).toBeTruthy()
   })
 
   test('shows why a change was refused', async () => {
