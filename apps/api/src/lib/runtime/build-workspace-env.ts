@@ -42,6 +42,7 @@ import { deriveWorkspaceRuntimeToken } from '../workspace-runtime-token'
 import { buildToolsProxyUrl } from '../cloud-urls'
 import { getSandboxExecOverride } from '../sandbox-exec-setting'
 import { parseProjectSettings } from '../project-settings'
+import { resolveExposedPorts } from '../project-ports'
 import { importCloudModule } from '../cloud-import'
 
 export interface BuildWorkspaceEnvOpts {
@@ -238,6 +239,19 @@ export async function buildWorkspaceEnv(
       } else {
         env.SHOGO_RUNTIME_CLASS = 'docker'
       }
+    }
+
+    // Guest-side port allowlist for the shared VM: the union of every
+    // member's exposed ports. Without it the runtime's port bridge refuses
+    // the per-port preview and tunnel even though the API allows them.
+    const exposedPorts = new Set<number>()
+    for (const row of rows) {
+      const settings = parseProjectSettings(row.settings)
+      const stackId = settings?.techStackId as string | undefined
+      for (const p of resolveExposedPorts(stackId, settings)) exposedPorts.add(p.port)
+    }
+    if (exposedPorts.size > 0) {
+      env.SHOGO_EXPOSED_PORTS = [...exposedPorts].sort((a, b) => a - b).join(',')
     }
 
     const loadAvailable =
