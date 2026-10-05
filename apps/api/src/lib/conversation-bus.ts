@@ -100,6 +100,27 @@ function release(workspaceId: string): void {
   subscriber?.unsubscribe(channelFor(workspaceId)).catch(() => {})
 }
 
+/**
+ * Receives every locally published envelope so it can be forwarded to sibling
+ * regions (each region has its own Redis, so the Redis fanout above never
+ * crosses regions). Installed by `lib/conversation-relay` in multi-region
+ * deployments; unset in single-region / local mode.
+ */
+export type ConversationRelaySink = (envelope: ConversationEnvelope) => void
+let relaySink: ConversationRelaySink | null = null
+
+export function setConversationRelaySink(sink: ConversationRelaySink | null): void {
+  relaySink = sink
+}
+
+function publishToRedis(envelope: ConversationEnvelope): void {
+  const pub = publisher()
+  if (!pub) return
+  pub.publish(channelFor(envelope.workspaceId), JSON.stringify(envelope)).catch((err: Error) => {
+    console.error('[ConversationBus] publish failed:', err.message)
+  })
+}
+
 export function publishConversationEvent(
   workspaceId: string,
   event: ConversationEvent,
@@ -107,11 +128,28 @@ export function publishConversationEvent(
 ): void {
   const envelope: ConversationEnvelope = { workspaceId, event, audience, origin: getPodId() }
   local.emit(workspaceId, envelope)
-  const pub = publisher()
-  if (!pub) return
-  pub.publish(channelFor(workspaceId), JSON.stringify(envelope)).catch((err: Error) => {
-    console.error('[ConversationBus] publish failed:', err.message)
-  })
+  publishToRedis(envelope)
+  if (relaySink) {
+    try {
+      relaySink(envelope)
+    } catch (err) {
+      console.error('[ConversationBus] relay enqueue failed:', (err as Error).message)
+    }
+  }
+}
+
+/**
+ * Deliver envelopes that arrived from a sibling region to this region's
+ * sockets (this pod and, through Redis, the others). Deliberately does NOT hand
+ * them to the relay sink: they already crossed regions once, and relaying again
+ * would bounce them between regions forever.
+ */
+export function publishRelayed(envelopes: ConversationEnvelope[]): void {
+  for (const incoming of envelopes) {
+    const envelope: ConversationEnvelope = { ...incoming, origin: getPodId() }
+    local.emit(envelope.workspaceId, envelope)
+    publishToRedis(envelope)
+  }
 }
 
 export function subscribeWorkspaceEvents(workspaceId: string, listener: ConversationListener): () => void {
@@ -138,6 +176,7 @@ export async function _resetConversationBusForTests(pub?: Pick<Redis, 'publish'>
   subscriber = null
   subscriberPromise = null
   publisherOverride = pub
+  relaySink = null
 }
 
 export function _conversationBusSubscribedWorkspaces(): string[] {

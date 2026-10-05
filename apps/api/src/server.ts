@@ -40,6 +40,7 @@ import { inviteLinkAcceptRoutes } from './routes/invite-link-accept'
 import { appActionsRoutes } from './routes/app-actions'
 import { startChatQueueWorker, stopChatQueueWorker } from './jobs/run-chat-queue-drain'
 import { startChannelWorkers, stopChannelWorkers } from './jobs/run-channel-workers'
+import { startConversationRelay, stopConversationRelay } from './lib/conversation-relay'
 import { projectAuthConfigRoutes } from './routes/project-auth-config'
 import { diagnosticsRoutes } from '@shogo/shared-runtime'
 import { testsRoutes } from './routes/tests'
@@ -1593,6 +1594,8 @@ startEventDeliveryWorker(getRuntimeManager())
 void import('./services/composio-triggers.service').then((m) => m.startComposioTriggerReconciler()).catch(() => {})
 startChatQueueWorker()
 startChannelWorkers()
+// Forward chat realtime events and presence to sibling regions (no-op in single-region mode).
+startConversationRelay()
 app.route('/api', historyRoutes({ resolveUserId: getAuthUserId }))
 // Workspace-level Slack base agent. Slack's Events API must terminate at one
 // stable API URL, then route each request to an enabled project runtime.
@@ -9008,6 +9011,7 @@ async function gracefulShutdown(signal: string) {
   stopEventDeliveryWorker()
   stopChatQueueWorker()
   stopChannelWorkers()
+  stopConversationRelay()
   console.log(`[Server] Received ${signal}, starting graceful shutdown...`)
 
   // Stop warm pool reconciliation so GC doesn't delete services during drain

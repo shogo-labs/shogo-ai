@@ -444,7 +444,7 @@ export const WorkspaceCollection = types
 // ============================================================================
 
 // Relation fields that expect IDs (safeReference)
-const relationFields = ["parent","children","projects","members","billingAccounts","invitations","inviteLinks","folders","subscriptions","instanceSubscription","usageWallets","usageEvents","liveSessionMeters","storageUsage","starredProjects","agentTasks","agentSchedules","apiKeys","instances","meetings","meetingTemplates","voiceProjectConfigs","projectAgents","agentCostMetrics","budgetAlerts","modelExperiments","subagentModelOverrides","agentEvalResults","agentEvalSets","slackInstallation","grants","chatSessions","plans","modelVisibility","agentProfile","goals","proxyTurns","conversations","chatInstallations"]
+const relationFields = ["parent","children","projects","members","billingAccounts","invitations","inviteLinks","folders","subscriptions","instanceSubscription","usageWallets","usageEvents","liveSessionMeters","storageUsage","starredProjects","agentTasks","agentSchedules","workspaceEvents","eventSubscriptions","apiKeys","instances","meetings","meetingTemplates","voiceProjectConfigs","projectAgents","agentCostMetrics","budgetAlerts","modelExperiments","subagentModelOverrides","agentEvalResults","agentEvalSets","slackInstallation","grants","chatSessions","plans","modelVisibility","agentProfile","goals","proxyTurns","conversations","chatInstallations"]
 
 /**
  * Transform API response for MST compatibility:

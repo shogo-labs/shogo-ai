@@ -123,6 +123,23 @@ kubectl get pods -A --field-selector=status.phase!=Running,status.phase!=Succeed
 curl -X POST https://studio.shogo.ai/api/projects/<id>/publish ...
 ```
 
+### One-time: workspace chat Slack backfill (first release with workspace chat)
+
+Existing Slack installs and account links are copied into `chat_installations`
+/ `chat_identity_links` by a script, not by the migration (the INSERTs would
+replicate and conflict between regions). Run it once, in the **US** region,
+after both regions have rolled; the rows replicate to EU:
+
+```bash
+bun scripts/backfill-chat-installations.ts           # dry run
+bun scripts/backfill-chat-installations.ts --apply   # refuses outside us-ashburn-1
+```
+
+Until it runs, pre-existing Slack workspaces can't be switched to
+Slack-backed team chat. For the first day, also watch for `WATCHDOG_SKIP`
+lines and disabled subscriptions on `conversation_*` / `chat_*` tables in both
+regions.
+
 ## Scale back
 
 Only needed if you temporarily raised the floor above its declared value.

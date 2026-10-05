@@ -54,16 +54,9 @@ ALTER TABLE "chat_installations" ADD CONSTRAINT "chat_installations_workspaceId_
 -- AddForeignKey
 ALTER TABLE "chat_identity_links" ADD CONSTRAINT "chat_identity_links_userId_fkey" FOREIGN KEY ("userId") REFERENCES "users"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
--- Backfill existing Slack installs and account links into the provider-generic tables.
--- The Slack bot token is already encrypted; it is carried over as-is and read
--- as a bare token by the installation loader.
-INSERT INTO "chat_installations" ("id", "workspaceId", "provider", "externalTenantId", "tenantName", "botUserId", "tokensEncrypted", "config", "createdAt", "updatedAt")
-SELECT 'slack-' || s."id", s."workspaceId", 'slack', s."slackTeamId", s."slackTeamName", s."botUserId", s."botAccessTokenEncrypted",
-       jsonb_build_object('defaultProjectId', s."defaultProjectId"), s."createdAt", s."updatedAt"
-FROM "slack_workspace_installations" s
-ON CONFLICT DO NOTHING;
-
-INSERT INTO "chat_identity_links" ("id", "provider", "externalTenantId", "externalUserId", "userId", "createdAt", "updatedAt")
-SELECT 'slack-' || l."id", 'slack', l."slackTeamId", l."slackUserId", l."shogoUserId", l."createdAt", l."updatedAt"
-FROM "slack_user_links" l
-ON CONFLICT DO NOTHING;
+-- Existing Slack installs and account links are copied into these tables by
+-- scripts/backfill-chat-installations.ts, run once on the primary region after
+-- the release. It is deliberately not part of this migration: DDL is applied by
+-- `migrate deploy` in every region, but INSERTs are replicated, so a backfill
+-- here would insert the same 'slack-<id>' rows in both regions and stop
+-- logical replication on insert_exists.
