@@ -18,14 +18,14 @@ export interface SessionOrigin {
 }
 
 export interface SessionRoute {
-  pathname: '/(app)/project-chat/[id]'
+  pathname: '/(app)/project-chat/[id]' | '/(app)/projects/[id]'
   params: Record<string, string>
 }
 
-export function sessionRoute(input: { projectId: string; sessionId: string; origin: SessionOrigin }): SessionRoute {
-  const { projectId, sessionId, origin } = input
+export function sessionRoute(input: { projectId: string; sessionId: string; origin: SessionOrigin; wide: boolean }): SessionRoute {
+  const { projectId, sessionId, origin, wide } = input
   return {
-    pathname: '/(app)/project-chat/[id]',
+    pathname: wide ? '/(app)/projects/[id]' : '/(app)/project-chat/[id]',
     params: {
       id: projectId,
       chatSessionId: sessionId,
