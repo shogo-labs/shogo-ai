@@ -2211,6 +2211,10 @@ export class PreviewManager {
       console.log(`[${LOG_PREFIX}] Stack declares devServer=compose — PreviewManager does not manage it; the agent runs \`docker compose\` directly`)
       this._phase = 'ready'
       this.started = true
+      // No `server.tsx` sidecar is ever spawned on this path — tell clients
+      // there's nothing to wait on (`getStatus().apiReady`), otherwise the
+      // canvas gate sits on "Starting API server..." until its fallback timer.
+      this.hasApiServer = false
       return { mode: 'compose-unmanaged', port: this.runtimePort, timings }
     }
 
@@ -2218,6 +2222,8 @@ export class PreviewManager {
       const staticCwd = this.staticBuildCwd()
       this._phase = existsSync(join(staticCwd, 'dist', 'index.html')) ? 'ready' : 'building'
       this.started = true
+      // Static-build stacks never spawn the API sidecar (see compose note above).
+      this.hasApiServer = false
       this.backgroundSetupStaticBuild(timings, staticCwd).catch((err: any) => {
         console.error(`[${LOG_PREFIX}] Background static build setup failed:`, err?.message ?? err)
         this.markSetupFailed(err, { force: true })
@@ -2234,6 +2240,8 @@ export class PreviewManager {
       console.log(`[${LOG_PREFIX}] Stack declares devServer=none — skipping bundler`)
       this._phase = 'ready'
       this.started = true
+      // No sidecar on this path either (see compose note above).
+      this.hasApiServer = false
       return { mode: 'no-bundler', port: this.runtimePort, timings }
     }
 

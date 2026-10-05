@@ -114,6 +114,32 @@ export function shouldShowCanvas(input: {
 }
 
 /**
+ * Per-tab memory of which previews already cleared the API gate.
+ *
+ * The gate's latch used to live in component state only, so every fresh mount
+ * of the canvas panel (navigating away and back, switching tabs, re-opening the
+ * project) started closed and re-showed "Starting API server..." until the
+ * status poll — or the 20s fallback — opened it again, even though the same
+ * preview had already been healthy moments earlier. Keyed by the status poll
+ * base so different projects (and workspace-runtime `/p/<id>` mounts) don't
+ * share a latch.
+ */
+const latchedApiBases = new Set<string>()
+
+export function isApiGateLatched(key: string | null | undefined): boolean {
+  return !!key && latchedApiBases.has(key)
+}
+
+export function latchApiGate(key: string | null | undefined): void {
+  if (key) latchedApiBases.add(key)
+}
+
+/** Test hook. */
+export function resetApiGateLatches(): void {
+  latchedApiBases.clear()
+}
+
+/**
  * Where to poll `/preview/status`.
  *
  * Always prefer the authenticated agent-proxy (`agentUrl`). Native `fetch`

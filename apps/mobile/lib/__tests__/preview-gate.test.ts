@@ -22,7 +22,33 @@ import {
   nativeCanvasBaseReady,
   projectIdFromAgentProxyUrl,
   previewWakeUrl,
+  isApiGateLatched,
+  latchApiGate,
+  resetApiGateLatches,
 } from '../preview-gate'
+
+describe('API gate latch (survives canvas remounts)', () => {
+  test('a preview that cleared the gate stays open for a fresh mount', () => {
+    resetApiGateLatches()
+    const key = 'https://studio.shogo.ai/api/projects/abc/agent-proxy'
+    expect(isApiGateLatched(key)).toBe(false)
+    latchApiGate(key)
+    expect(isApiGateLatched(key)).toBe(true)
+    // ...and, via shouldShowCanvas, a remount no longer waits on the sidecar.
+    expect(
+      shouldShowCanvas({ baseReady: true, apiLatched: isApiGateLatched(key), timedOut: false }),
+    ).toBe(true)
+  })
+
+  test('is scoped per preview', () => {
+    resetApiGateLatches()
+    latchApiGate('https://studio.shogo.ai/api/projects/a/agent-proxy')
+    expect(isApiGateLatched('https://studio.shogo.ai/api/projects/b/agent-proxy')).toBe(false)
+    expect(isApiGateLatched(null)).toBe(false)
+    latchApiGate(null) // no-op
+    expect(isApiGateLatched(null)).toBe(false)
+  })
+})
 
 describe('resolveApiReady', () => {
   test('passes through an explicit boolean', () => {
