@@ -548,18 +548,12 @@ export function homeExpand(p: string): string {
  * host with no docker rootfs configured must never advertise or boot the
  * class, however `SHOGO_RUNTIME_CLASS=docker` shows up in an assign env.
  *
- * Also refuses the class under `rootfsCow=dm`: dm-snapshot mode shares one
- * loop-mounted golden base across every VM (see rootfs.ts), and making that
- * per-class-safe (a base loop + CoW sizing per golden image, not just per VM)
- * is deferred — see "Phase 1: per-project data volume durability" in the
- * docker project class plan. Booting a differently-sized docker image
- * against the standard-class dm base would either fail outright or, worse,
- * quietly attach the wrong content; refusing is the fail-safe choice until dm
- * mode is made class-aware.
+ * A dm host keeps the standard class on the shared snapshot base. A docker
+ * VM does not join that base: rootfs.ts copies the docker golden image into
+ * its own file, so the live pool's dm devices stay on the standard rootfs.
  */
 export function isVmClassSupported(cfg: MetalConfig, vmClass: VmClass): boolean {
   if (vmClass === 'standard') return true
-  if (cfg.rootfsCow === 'dm') return false
   return cfg.dockerClass.baseRootfs.length > 0 && cfg.dockerClass.poolSize >= 0
 }
 

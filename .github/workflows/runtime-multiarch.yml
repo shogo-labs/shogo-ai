@@ -227,6 +227,48 @@ jobs:
           docker buildx imagetools inspect "${REGISTRY}/shogo/shogo-runtime:${PREFIX}-multiarch-latest"
 
   # ---------------------------------------------------------------------------
+  # Docker-class image: the multi-arch runtime plus dockerd and the starter
+  # fc-init runs. Hosts with METAL_DOCKER_ROOTFS rebuild their docker rootfs
+  # from `<env>-docker-multiarch-<sha>` (see dockerRuntimeImage).
+  # ---------------------------------------------------------------------------
+  docker-class:
+    name: Publish docker-class runtime image
+    needs: [merge]
+    environment: ${{ (inputs.environment || 'staging') == 'production' && 'production-us' || 'staging' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Login to OCIR
+        run: |
+          echo "${{ secrets.OCI_AUTH_TOKEN }}" | docker login \
+            ${{ vars.OCI_REGION }}.ocir.io \
+            -u "${{ vars.OCI_TENANCY_NAMESPACE }}/${{ secrets.OCI_USERNAME }}" \
+            --password-stdin
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
+
+      - name: Build and push docker-class image
+        env:
+          REGISTRY: ${{ vars.OCI_REGION }}.ocir.io/${{ vars.OCI_TENANCY_NAMESPACE }}
+          PREFIX: ${{ inputs.environment || 'staging' }}
+          SHA: ${{ github.sha }}
+          BASE_IMAGE: ${{ needs.merge.outputs.image }}
+        run: |
+          set -euo pipefail
+          REPO="${REGISTRY}/shogo/shogo-runtime"
+          docker buildx build \
+            --platform linux/amd64,linux/arm64 \
+            --build-arg "BASE_IMAGE=${BASE_IMAGE}" \
+            -f packages/agent-runtime/Dockerfile.docker \
+            -t "${REPO}:${PREFIX}-docker-multiarch-${SHA}" \
+            -t "${REPO}:${PREFIX}-docker-multiarch-latest" \
+            --push \
+            .
+
+  # ---------------------------------------------------------------------------
   # Converge the metal fleet on the image we just published.
   #
   # The guest (in-VM) code lives in THIS runtime image, baked into each host's

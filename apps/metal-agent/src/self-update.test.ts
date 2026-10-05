@@ -10,7 +10,7 @@
  */
 
 import { describe, expect, test } from 'bun:test'
-import { shouldRebuildRootfs, shouldUpdate, type DesiredAgent } from './self-update'
+import { dockerRuntimeImage, shouldRebuildRootfs, shouldUpdate, type DesiredAgent } from './self-update'
 
 const rel = (over: Partial<DesiredAgent> = {}): DesiredAgent => ({
   version: 'v2',
@@ -86,5 +86,17 @@ describe('shouldRebuildRootfs', () => {
     expect(shouldRebuildRootfs(null, 'v1', true)).toBe(false)
     expect(shouldRebuildRootfs(undefined, 'v1', true)).toBe(false)
     expect(shouldRebuildRootfs(rebuildRel({ version: '' }), 'v1', true)).toBe(false)
+  })
+})
+
+describe('dockerRuntimeImage', () => {
+  test('rewrites a multiarch tag to the docker-class tag', () => {
+    expect(dockerRuntimeImage('ocir.io/ns/shogo/shogo-runtime:staging-multiarch-abc')).toBe(
+      'ocir.io/ns/shogo/shogo-runtime:staging-docker-multiarch-abc',
+    )
+  })
+
+  test('appends -docker when the tag has no multiarch segment', () => {
+    expect(dockerRuntimeImage('example.com/runtime:latest')).toBe('example.com/runtime:latest-docker')
   })
 })

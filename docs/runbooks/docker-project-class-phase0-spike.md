@@ -12,8 +12,11 @@ Copyright (C) 2026 Shogo Technologies, Inc.
 > kernel changes**, plus suspend/resume with live containers. See
 > [`packages/agent-runtime/tech-stacks/docker-compose/stack.json`](../../packages/agent-runtime/tech-stacks/docker-compose/stack.json)
 > and [`packages/agent-runtime/Dockerfile.docker`](../../packages/agent-runtime/Dockerfile.docker)
-> for the artifacts this produced. Phase 1 (metal-agent per-class pool/placement)
-> is still not started — see that section below.
+> for the artifacts this produced. The metal-agent class, data drive, port
+> preview, and rootfs `DOCKER_CLASS=1` mode have since landed in the repo.
+> What is still open is fleet configuration (`METAL_DOCKER_ROOTFS`,
+> `METAL_DOCKER_POOL_SIZE`) and flipping `runtime.docker_class_enabled` —
+> not the Phase 0 hardware question.
 
 ## What was tested, and where
 
@@ -155,26 +158,21 @@ higher-fidelity check, went through the **actual production artifacts**:
 This is strong evidence that adding dockerd to the guest is additive and
 doesn't disturb the existing agent-runtime boot path at all.
 
-## What Phase 0 does NOT cover (still Phase 1)
+## What landed after the spike
 
-Phase 0 was scoped to "can this work at all, on this kernel" — it deliberately
-used a hand-spawned, standalone `firecracker` process to stay isolated from
-the live pool. None of the following were touched, and are still open:
+Phase 0 used a hand-spawned Firecracker process so it never touched the live
+pool. The product path is now in the repo:
 
-- **metal-agent internals**: `apps/metal-agent/{pool,firecracker-vm-manager,
-  fc-api,server}.ts` have no concept of VM classes yet. Wiring `vmClass:
-  'docker'` through placement/capacity/warm-pool-per-class is real,
-  unstarted engineering — not a hardware-access problem, a correctness one
-  (see the reasoning already in PR #903's description for why that wasn't
-  rushed even once bare-metal access was available for this spike).
-- **A second virtio-blk data drive** for docker's `/var/lib/docker` — this
-  spike put everything on the single root drive, which is fine for a spike
-  but not for the eventual per-project storage isolation/GC story.
-- **`build-runtime-rootfs.sh` doesn't have a `--docker-class` mode yet** — the
-  fc-init dockerd-startup patch here was applied by hand, post-build, for the
-  spike. Turning it into a real flag on the script (or a documented second
-  script) is a small, low-risk follow-up now that the recipe is proven.
-- Registry publishing of the actual `shogo-runtime:*-docker` image tag, and
-  wiring it into the fleet's rootfs-selection logic by `vmClass`.
-- Everything in Phase 3 (exposed ports / tunnel / public preview) and Phase 4
-  (rollout) — unchanged from PR #903's scoping.
+- metal-agent places `vmClass: 'docker'` and provisions a second virtio drive
+  labelled `shogo-docker`, mounted at `/var/lib/docker` by `start-dockerd.sh`.
+- `build-runtime-rootfs.sh` installs that starter when `DOCKER_CLASS=1`.
+  `self-update.ts` rebuilds the docker rootfs when `METAL_DOCKER_ROOTFS` is set,
+  from the `*-docker-multiarch-*` image published by `runtime-multiarch.yml`.
+- Declared and project-added ports, the public preview proxy (including
+  cookies and WebSocket upgrades), and the `expose_port` agent tool are in
+  the API and the runtime.
+
+Still operator work, not code: set `METAL_DOCKER_ROOTFS` and a non-zero
+`METAL_DOCKER_POOL_SIZE` on the docker-class host, then turn on
+`runtime.docker_class_enabled`. A docker-class guest's `/var/lib/docker` does
+not survive a move to a different host.

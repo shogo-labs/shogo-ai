@@ -364,6 +364,30 @@ async function rebuildRootfs(baseDir: string, desired: DesiredAgent): Promise<vo
     runtimeImage: desired.runtimeImage,
     runtimeRevision: desired.runtimeRevision,
   })
+  // A host that opted into the docker class (METAL_DOCKER_ROOTFS) also rebuilds
+  // that rootfs from the docker-tagged image, with dockerd's starter installed.
+  if (config.dockerClass.baseRootfs) {
+    await buildRootfsImage({
+      script,
+      out: config.dockerClass.baseRootfs,
+      runtimeImage: dockerRuntimeImage(desired.runtimeImage),
+      runtimeRevision: desired.runtimeRevision,
+      extraEnv: { DOCKER_CLASS: '1' },
+    })
+  }
+}
+
+/** `repo:env-multiarch-sha` -> `repo:env-docker-multiarch-sha`. */
+export function dockerRuntimeImage(image: string | undefined): string | undefined {
+  const override = process.env.METAL_DOCKER_RUNTIME_IMAGE?.trim()
+  if (override) return override
+  if (!image) return undefined
+  const idx = image.lastIndexOf(':')
+  if (idx < 0) return `${image}-docker`
+  const tag = image.slice(idx + 1)
+  const prefix = image.slice(0, idx + 1)
+  if (tag.includes('multiarch')) return `${prefix}${tag.replace('multiarch', 'docker-multiarch')}`
+  return `${image}-docker`
 }
 
 export interface BuildRootfsOptions {
@@ -371,6 +395,7 @@ export interface BuildRootfsOptions {
   out: string
   runtimeImage?: string
   runtimeRevision?: string
+  extraEnv?: Record<string, string>
 }
 
 export interface BuildRootfsDeps {
@@ -390,7 +415,7 @@ export async function buildRootfsImage(
   deps: BuildRootfsDeps = { run, readRevision: readImageRevision },
 ): Promise<void> {
   const tmp = `${opts.out}.new`
-  const env: Record<string, string> = { OUT: tmp }
+  const env: Record<string, string> = { OUT: tmp, ...(opts.extraEnv ?? {}) }
   if (opts.runtimeImage) env.RUNTIME_IMAGE = opts.runtimeImage
   try {
     await deps.run('bash', [opts.script], undefined, env)

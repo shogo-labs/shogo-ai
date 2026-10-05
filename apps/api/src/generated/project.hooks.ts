@@ -10,6 +10,7 @@ import { getAgentTemplateById } from '../../../../packages/agent-runtime/src/age
 import * as billingService from '../services/billing-runtime'
 import { getModelTier } from '@shogo/model-catalog'
 import { getMinimumInstanceSize } from '@shogo/shared-runtime'
+import { dockerClassBlockedMessage } from '../lib/runtime-class-setting'
 import { getRuntimeManager } from '../lib/runtime/manager'
 import { normalizeProjectSettings, parseProjectSettings } from '../lib/project-settings'
 import { deleteChatAttachmentPrefix } from '../lib/chat-attachments'
@@ -279,6 +280,10 @@ export const projectHooks: ProjectHooks = {
     const techStackId = (input.settings as Record<string, unknown> | null)?.techStackId as
       | string
       | undefined
+    const dockerBlocked = dockerClassBlockedMessage(techStackId)
+    if (dockerBlocked) {
+      return { ok: false, error: { code: 'docker_class_disabled', message: dockerBlocked } }
+    }
     if (getMinimumInstanceSize(techStackId)) {
       const { allowed, currentSize, requiredSize } = await billingService.canRunTechStackOnInstanceSize(
         workspaceId,
@@ -423,7 +428,10 @@ export const projectHooks: ProjectHooks = {
     const incomingTechStackId = (input?.settings as Record<string, unknown> | null)?.techStackId as
       | string
       | undefined
-    if (incomingTechStackId && getMinimumInstanceSize(incomingTechStackId)) {
+    if (
+      incomingTechStackId &&
+      (getMinimumInstanceSize(incomingTechStackId) || dockerClassBlockedMessage(incomingTechStackId))
+    ) {
       const existing =
         project ??
         (await ctx.prisma.project.findUnique({
@@ -435,17 +443,23 @@ export const projectHooks: ProjectHooks = {
           | string
           | undefined
         if (currentTechStackId !== incomingTechStackId) {
-          const { allowed, currentSize, requiredSize } = await billingService.canRunTechStackOnInstanceSize(
-            existing.workspaceId,
-            incomingTechStackId,
-          )
-          if (!allowed) {
-            return {
-              ok: false,
-              error: {
-                code: "instance_too_small",
-                message: `Switching to this stack requires the ${requiredSize} compute tier or higher (workspace is currently on ${currentSize}). Upgrade compute in Settings > Billing to continue.`,
-              },
+          const dockerBlocked = dockerClassBlockedMessage(incomingTechStackId)
+          if (dockerBlocked) {
+            return { ok: false, error: { code: 'docker_class_disabled', message: dockerBlocked } }
+          }
+          if (getMinimumInstanceSize(incomingTechStackId)) {
+            const { allowed, currentSize, requiredSize } = await billingService.canRunTechStackOnInstanceSize(
+              existing.workspaceId,
+              incomingTechStackId,
+            )
+            if (!allowed) {
+              return {
+                ok: false,
+                error: {
+                  code: "instance_too_small",
+                  message: `Switching to this stack requires the ${requiredSize} compute tier or higher (workspace is currently on ${currentSize}). Upgrade compute in Settings > Billing to continue.`,
+                },
+              }
             }
           }
         }

@@ -121,6 +121,7 @@ import {
   type ChatSession,
 } from "../../../../components/chat/ChatSessionPicker";
 import { CanvasWebView } from "../../../../components/canvas/CanvasWebView";
+import { ComposePortPreview } from "../../../../components/project/ComposePortPreview";
 import { ExternalPreviewWebView } from "../../../../components/canvas/ExternalPreviewWebView";
 import { ProjectTopBar } from "../../../../components/project/ProjectTopBar";
 import { SessionBreadcrumb } from "../../../../components/team-chat/SessionBreadcrumb";
@@ -3697,6 +3698,8 @@ export default observer(function ProjectLayout() {
       agentUrl={agentUrl}
       canvasBaseUrl={canvasBaseUrl}
       previewUrl={previewUrl}
+      projectId={projectId}
+      techStackId={techStackId}
       onRefresh={reconnect}
       // True whenever the canvas owns the entire viewport (chat fullscreen
       // / collapsed in wide split, or narrow with the canvas tab active).
@@ -5182,6 +5185,8 @@ function CanvasPanel({
   agentUrl,
   canvasBaseUrl,
   previewUrl,
+  projectId,
+  techStackId,
   onRefresh,
   fullBleed = false,
   iframeRefreshKey = 0,
@@ -5191,6 +5196,8 @@ function CanvasPanel({
   agentUrl: string | null;
   canvasBaseUrl?: string | null;
   previewUrl?: string | null;
+  projectId?: string;
+  techStackId?: string;
   onRefresh?: () => void;
   fullBleed?: boolean;
   iframeRefreshKey?: number;
@@ -5237,6 +5244,14 @@ function CanvasPanel({
     previewUrl,
     canvasBaseUrl,
   });
+
+  if (techStackId === "docker-compose" && projectId) {
+    return (
+      <View className="flex-1 overflow-hidden bg-background">
+        <ComposePortPreview projectId={projectId} />
+      </View>
+    );
+  }
 
   // Don't load the app UI until the project's API sidecar is responding —
   // otherwise the SPA renders and fires `/api/*` calls into a server that

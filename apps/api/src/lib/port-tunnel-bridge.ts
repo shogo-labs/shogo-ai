@@ -29,6 +29,8 @@ export interface PortTunnelBridgeData {
   port: number
   /** `deriveProjectRuntimeToken(projectId)` — sent as `x-runtime-token` on outbound dial. */
   runtimeToken: string
+  /** When set, dial this URL instead of the raw TCP bridge. Used for HTTP websocket preview. */
+  targetUrl?: string
 
   outbound: WebSocket | null
   outboundReady: boolean
@@ -44,12 +46,14 @@ export function buildPortTunnelBridgeData(input: {
   podUrl: string
   port: number
   runtimeToken: string
+  targetUrl?: string
 }): PortTunnelBridgeData {
   return {
     __kind: PORT_TUNNEL_BRIDGE_KIND,
     podUrl: input.podUrl,
     port: input.port,
     runtimeToken: input.runtimeToken,
+    targetUrl: input.targetUrl,
     outbound: null,
     outboundReady: false,
     outboundQueue: [],
@@ -75,8 +79,8 @@ export function createPortTunnelBridgeHandlers(opts: CreateBridgeOptions = {}): 
 
   return {
     open(ws) {
-      const { podUrl, port, runtimeToken } = ws.data
-      const target = buildRuntimePortWsUrl(podUrl, port)
+      const { podUrl, port, runtimeToken, targetUrl } = ws.data
+      const target = targetUrl || buildRuntimePortWsUrl(podUrl, port)
 
       let outbound: WebSocket
       try {
@@ -162,11 +166,15 @@ export function createPortTunnelBridgeHandlers(opts: CreateBridgeOptions = {}): 
 }
 
 /** Scheme is flipped http(s)→ws(s); path targets the runtime's port-bridge upgrade route. */
-export function buildRuntimePortWsUrl(podUrl: string, port: number): string {
+export function buildRuntimePortWsUrl(podUrl: string, port: number, httpPath?: string): string {
   const base = podUrl.endsWith('/') ? podUrl.slice(0, -1) : podUrl
   const wsBase = base.startsWith('https://') ? 'wss://' + base.slice('https://'.length)
     : base.startsWith('http://') ? 'ws://' + base.slice('http://'.length)
     : base
+  if (httpPath != null) {
+    const path = httpPath.startsWith('/') ? httpPath : `/${httpPath}`
+    return `${wsBase}/agent/ports/${port}/http${path}`
+  }
   return `${wsBase}/agent/ports/${port}/ws`
 }
 

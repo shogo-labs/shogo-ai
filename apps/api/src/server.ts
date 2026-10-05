@@ -100,13 +100,13 @@ import { teeChatStreamForBilling } from './lib/chat-usage-tracker'
 import { techStackRoutes } from './routes/tech-stacks'
 import { apiKeyRoutes, resolveApiKey } from './routes/api-keys'
 import { parseProjectSettings, encodeProjectSettingsForWrite } from './lib/project-settings'
+import { resolveExposedPorts, isExposedPort, type PortVisibility } from './lib/project-ports'
 import {
-  resolveExposedPorts,
-  isDeclaredPort,
-  getDeclaredPort,
-  withPortVisibility,
-  type PortVisibility,
-} from './lib/project-ports'
+  createProjectPort,
+  deleteProjectPort,
+  setProjectPortVisibility,
+} from './lib/project-port-mutations'
+import { filterUpstreamResponseHeaders, forwardClientHeaders } from './lib/preview-proxy-headers'
 import { getFrontendUrl, getShogoCloudUrl } from './lib/cloud-urls'
 import {
   fetchCloudVisibleModels,
@@ -2210,7 +2210,6 @@ const previewPortRenderHandler = async (c: any) => {
       select: { id: true, workspaceId: true, settings: true },
     })
     if (!project) return c.json({ error: { code: 'not_found' } }, 404)
-    if (!isKubernetes()) return c.json({ error: { code: 'not_supported_locally' } }, 404)
 
     const settings = parseProjectSettings(project.settings)
     const techStackId = settings?.techStackId as string | undefined
@@ -2242,36 +2241,18 @@ const previewPortRenderHandler = async (c: any) => {
     const search = new URL(c.req.url).search
     const targetUrl = `${target.replace(/\/+$/, '')}/agent/ports/${port}/http${path}${search}`
 
-    const headers = new Headers()
-    for (const h of [
-      'content-type', 'accept', 'accept-encoding', 'accept-language',
-      'user-agent', 'range', 'if-none-match', 'if-modified-since', 'cache-control',
-    ]) {
-      const v = c.req.header(h)
-      if (v) headers.set(h, v)
-    }
+    // Forward the visitor's own headers (Authorization, apikey, Cookie, Origin)
+    // so the app behind the port can authenticate the browser. The response
+    // body is passed through unbuffered so Server-Sent Events stream.
+    const headers = forwardClientHeaders(c.req.raw.headers)
     headers.set('x-runtime-token', await deriveProjectRuntimeToken(projectId, { workspaceId: project.workspaceId }))
     const init: RequestInit = { method: c.req.method, headers, redirect: 'manual' }
-    if (c.req.method !== 'GET' && c.req.method !== 'HEAD') init.body = await c.req.arrayBuffer()
-
+    if (c.req.method !== 'GET' && c.req.method !== 'HEAD') {
+      init.body = c.req.raw.body
+      ;(init as RequestInit & { duplex?: string }).duplex = 'half'
+    }
     const resp = await fetch(targetUrl, init)
-
-    // Same hop-by-hop/framing stripping as `previewRenderHandler`, PLUS: this
-    // route (unlike the root proxy) sends a real `x-runtime-token` upstream on
-    // the OUTBOUND leg above. Defense-in-depth against a guest app that echoes
-    // request headers back (e.g. a debug/reflection endpoint) leaking that
-    // token to the anonymous public visitor — strip it (and `authorization`,
-    // just in case) from the response on the way out. Neither header should
-    // ever legitimately appear in a normal HTTP response.
-    const outHeaders = new Headers()
-    resp.headers.forEach((value, key) => {
-      const k = key.toLowerCase()
-      if (k === 'transfer-encoding' || k === 'connection' || k === 'set-cookie') return
-      if (k === 'x-frame-options' || k === 'content-security-policy') return
-      if (k === 'x-runtime-token' || k === 'authorization') return
-      outHeaders.set(key, value)
-    })
-    outHeaders.set('access-control-allow-origin', '*')
+    const outHeaders = filterUpstreamResponseHeaders(resp.headers, { passSetCookie: true })
     return new Response(resp.body, { status: resp.status, headers: outHeaders })
   } catch (err: any) {
     console.error('[preview/port-render]', err?.message || err)
@@ -3725,13 +3706,10 @@ app.delete('/api/projects/:projectId/preferred-instance', async (c) => {
 // =============================================================================
 // Exposed ports (Phase 3, Tier 2 docker project class plan)
 //
-// A project's tech stack declares a fixed set of ports (see
-// `lib/project-ports.ts`'s module doc for the full trust-model writeup); this
-// surface only lets the caller toggle a declared port's `visibility` between
-// 'tunnel' (default — reachable only via the authenticated client-side WS
-// tunnel below) and 'preview' (also reachable via the public per-port preview
-// URL, http-protocol ports only). It can never add a port the stack doesn't
-// list.
+// Stack defaults plus ports the project added (`lib/project-ports.ts`).
+// POST adds a port as tunnel-only. PATCH toggles visibility; `preview` is
+// the step that makes an http port public. DELETE removes a project-added
+// port. Stack defaults cannot be deleted.
 // =============================================================================
 
 app.get('/api/projects/:projectId/ports', async (c) => {
@@ -3793,30 +3771,80 @@ app.patch('/api/projects/:projectId/ports/:port', async (c) => {
     return c.json({ error: { code: 'not_found', message: 'Project not found' } }, 404)
   }
 
-  const settings = parseProjectSettings(project.settings)
-  const techStackId = settings?.techStackId as string | undefined
-  const declared = getDeclaredPort(techStackId, port)
-  if (!declared) {
-    return c.json({ error: { code: 'not_found', message: 'Port is not declared by this project\'s tech stack' } }, 404)
+  const result = await setProjectPortVisibility(projectId, port, visibility)
+  if (!result.ok) {
+    return c.json({ error: { code: result.status === 404 ? 'not_found' : 'invalid_request', message: result.message } }, result.status as any)
   }
-  // Public preview only makes sense for a full HTTP surface — a raw TCP port
-  // (e.g. postgres) has no HTTP semantics to serve at a preview URL, and
-  // exposing it unauthenticated would defeat whatever auth that protocol has.
-  if (visibility === 'preview' && declared.protocol !== 'http') {
-    return c.json(
-      { error: { code: 'invalid_request', message: 'Only http ports can be made publicly previewable' } },
-      400,
-    )
-  }
+  return c.json({ ports: await withPreviewUrls(projectId, result.ports) })
+})
 
-  const nextExposedPorts = withPortVisibility(settings, port, visibility)
-  const nextSettings = { ...(settings ?? {}), exposedPorts: nextExposedPorts }
-  await prisma.project.update({
-    where: { id: projectId },
-    data: { settings: encodeProjectSettingsForWrite(nextSettings) as any },
+app.post('/api/projects/:projectId/ports', async (c) => {
+  const projectId = c.req.param('projectId')
+  const userId = await getAuthUserId(c)
+  if (!userId) {
+    return c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401)
+  }
+  const workspaceId = await verifyProjectAccess(userId, projectId)
+  if (!workspaceId) {
+    return c.json({ error: { code: 'forbidden', message: 'No access to this project' } }, 403)
+  }
+  const body = await c.req.json<{ port?: number; protocol?: string; label?: string }>().catch(() => ({} as { port?: number; protocol?: string; label?: string }))
+  if (body.protocol !== 'http' && body.protocol !== 'tcp') {
+    return c.json({ error: { code: 'invalid_request', message: "protocol must be 'http' or 'tcp'" } }, 400)
+  }
+  const result = await createProjectPort(projectId, {
+    port: Number(body.port),
+    protocol: body.protocol,
+    label: body.label,
   })
+  if (!result.ok) {
+    return c.json({ error: { code: 'invalid_request', message: result.message } }, result.status as any)
+  }
+  return c.json({ ports: await withPreviewUrls(projectId, result.ports) }, 201)
+})
 
-  return c.json({ ports: await withPreviewUrls(projectId, resolveExposedPorts(techStackId, nextSettings)) })
+app.delete('/api/projects/:projectId/ports/:port', async (c) => {
+  const projectId = c.req.param('projectId')
+  const userId = await getAuthUserId(c)
+  if (!userId) {
+    return c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401)
+  }
+  const workspaceId = await verifyProjectAccess(userId, projectId)
+  if (!workspaceId) {
+    return c.json({ error: { code: 'forbidden', message: 'No access to this project' } }, 403)
+  }
+  const port = Number(c.req.param('port'))
+  const result = await deleteProjectPort(projectId, port)
+  if (!result.ok) {
+    return c.json({ error: { code: result.status === 404 ? 'not_found' : 'invalid_request', message: result.message } }, result.status as any)
+  }
+  return c.json({ ports: await withPreviewUrls(projectId, result.ports) })
+})
+
+app.get('/api/projects/:projectId/ports/listening', async (c) => {
+  const projectId = c.req.param('projectId')
+  const userId = await getAuthUserId(c)
+  if (!userId) {
+    return c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401)
+  }
+  const workspaceId = await verifyProjectAccess(userId, projectId)
+  if (!workspaceId) {
+    return c.json({ error: { code: 'forbidden', message: 'No access to this project' } }, 403)
+  }
+  try {
+    const { resolveProjectPodUrl } = await import('./lib/resolve-pod-url')
+    const { deriveProjectRuntimeToken } = await import('./lib/project-runtime-token')
+    const resolved = await resolveProjectPodUrl(projectId, { logTag: 'ports/listening', metalWaitMs: 1500 })
+    const token = await deriveProjectRuntimeToken(projectId, { workspaceId })
+    const resp = await fetch(`${resolved.url.replace(/\/+$/, '')}/agent/ports/listening`, {
+      headers: { 'x-runtime-token': token },
+      signal: AbortSignal.timeout(4000),
+    })
+    if (!resp.ok) return c.json({ ports: [] })
+    return c.json(await resp.json())
+  } catch {
+    return c.json({ ports: [] })
+  }
 })
 
 /** Annotate each `preview`-visibility http port with its public preview URL. */
@@ -9328,11 +9356,13 @@ const ptyPodBridge = createPtyPodBridgeHandlers()
 // sync by hand rather than a cross-package import since apps/api doesn't
 // otherwise depend on agent-runtime.
 const PORT_TUNNEL_WS_PATH_RE = /^\/api\/projects\/([^/]+)\/ports\/([1-9][0-9]{0,4})\/tunnel$/
+const PREVIEW_PORT_WS_PATH_RE = /^\/api\/preview\/([^/]+)\/ports\/([1-9][0-9]{0,4})\/render(\/.*)?$/
 
 // Client-side TCP port tunnel (Phase 3, Tier 2 plan): desktop/CLI ↔ this API
 // ↔ the project's runtime's raw TCP port bridge. See lib/port-tunnel-bridge.ts.
 import {
   buildPortTunnelBridgeData,
+  buildRuntimePortWsUrl,
   createPortTunnelBridgeHandlers,
   isPortTunnelBridgeData,
   type PortTunnelBridgeData,
@@ -9470,8 +9500,8 @@ export default {
 
           const settings = parseProjectSettings(project.settings)
           const techStackId = settings?.techStackId as string | undefined
-          if (!isDeclaredPort(techStackId, port)) {
-            return new Response('Port is not declared by this project\'s tech stack', { status: 404 })
+          if (!isExposedPort(techStackId, settings, port)) {
+            return new Response('Port is not exposed by this project', { status: 404 })
           }
 
           const { resolveProjectPodUrl } = await import('./lib/resolve-pod-url')
@@ -9487,6 +9517,46 @@ export default {
           return new Response('Port tunnel WebSocket upgrade failed', { status: 500 })
         } catch (err: any) {
           console.error('[PortTunnel] WS runtime-resolve failed:', err?.message ?? err)
+          return new Response('Runtime unavailable', { status: 503 })
+        }
+      }
+      // Public preview WebSocket (Vite HMR). Same visibility gate as the HTTP
+      // port-render handler: only an http port marked preview is reachable,
+      // and the frames are relayed to the runtime's HTTP websocket bridge.
+      const previewPortWsMatch = PREVIEW_PORT_WS_PATH_RE.exec(url.pathname)
+      if (previewPortWsMatch) {
+        const [, projectId, portStr, rest] = previewPortWsMatch
+        const port = Number(portStr)
+        if (!isSafeProjectId(projectId) || !Number.isInteger(port) || port < 1 || port > 65535) {
+          return new Response('Invalid id', { status: 400 })
+        }
+        try {
+          const project = await prisma.project.findUnique({
+            where: { id: projectId },
+            select: { workspaceId: true, settings: true },
+          })
+          if (!project) return new Response('Project not found', { status: 404 })
+          const settings = parseProjectSettings(project.settings)
+          const techStackId = settings?.techStackId as string | undefined
+          const exposed = resolveExposedPorts(techStackId, settings).find((p) => p.port === port)
+          if (!exposed || exposed.protocol !== 'http' || exposed.visibility !== 'preview') {
+            return new Response('Port is not publicly previewable', { status: 404 })
+          }
+          const { resolveProjectPodUrl } = await import('./lib/resolve-pod-url')
+          const { deriveProjectRuntimeToken } = await import('./lib/project-runtime-token')
+          const resolved = await resolveProjectPodUrl(projectId, { logTag: 'preview/port-ws' })
+          const httpPath = `${rest || '/'}${url.search}`
+          const data: PortTunnelBridgeData = buildPortTunnelBridgeData({
+            podUrl: resolved.url,
+            port,
+            runtimeToken: await deriveProjectRuntimeToken(projectId, { workspaceId: project.workspaceId }),
+            targetUrl: buildRuntimePortWsUrl(resolved.url, port, httpPath),
+          })
+          const upgraded = server.upgrade(req, { data })
+          if (upgraded) return undefined
+          return new Response('Preview WebSocket upgrade failed', { status: 500 })
+        } catch (err: any) {
+          console.error('[preview/port-ws] runtime-resolve failed:', err?.message ?? err)
           return new Response('Runtime unavailable', { status: 503 })
         }
       }

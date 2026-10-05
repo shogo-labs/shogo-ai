@@ -29,6 +29,7 @@
  */
 
 import { describe, test, expect, beforeEach, mock } from 'bun:test'
+import { setDockerClassOverride } from '../lib/runtime-class-setting'
 import { Hono } from 'hono'
 import { zipSync, unzipSync, strToU8 } from 'fflate'
 import { encryptZipCrypto } from '../lib/zip-encryption'
@@ -225,6 +226,7 @@ beforeEach(() => {
   s3UploadResult = { errors: [], archiveSize: 0 }
   s3SyncReturnsNull = false
   workspaceInstanceSize = undefined
+  setDockerClassOverride(null)
 })
 
 // Imports AFTER mocks.
@@ -449,6 +451,7 @@ describe('runImport', () => {
 
   test('Docker-class tier gate: blocks importing a docker-compose bundle when the workspace is below the required tier', async () => {
     members.set('m-1', { id: 'm-1', userId: 'u-1', workspaceId: 'w-1' })
+    setDockerClassOverride(true)
     workspaceInstanceSize = 'micro'
     const bundle = JSON.parse(makeProjectJson())
     bundle.project.settings = { activeMode: 'canvas', techStackId: 'docker-compose' }
@@ -464,6 +467,7 @@ describe('runImport', () => {
 
   test('Docker-class tier gate: allows importing a docker-compose bundle when the workspace meets the tier floor', async () => {
     members.set('m-1', { id: 'm-1', userId: 'u-1', workspaceId: 'w-1' })
+    setDockerClassOverride(true)
     workspaceInstanceSize = 'large'
     const bundle = JSON.parse(makeProjectJson())
     bundle.project.settings = { activeMode: 'canvas', techStackId: 'docker-compose' }

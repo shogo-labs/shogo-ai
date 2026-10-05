@@ -1081,6 +1081,60 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
   })
 
   /**
+   * Project exposed ports, for the agent's `expose_port` tool. Same rules as
+   * the Studio routes: a new port starts tunnel-only; `visibility: preview`
+   * is what makes it public, and the tool asks the user before requesting it.
+   */
+  app.get('/projects/:projectId/ports', async (c) => {
+    const projectId = c.req.param('projectId')
+    if (!projectId) return c.json({ error: 'Missing projectId' }, 400)
+    if (!(await validateAuth(c, projectId))) return c.json({ error: 'Unauthorized' }, 401)
+    const { readProjectPorts } = await import('../lib/project-port-mutations')
+    const { getPortPreviewUrl } = await import('../lib/knative-project-manager')
+    const ports = await readProjectPorts(projectId)
+    if (!ports) return c.json({ error: 'Project not found' }, 404)
+    return c.json({
+      ports: ports.map((p) =>
+        p.visibility === 'preview' && p.protocol === 'http'
+          ? { ...p, previewUrl: getPortPreviewUrl(projectId, p.port) }
+          : p,
+      ),
+    })
+  })
+
+  app.post('/projects/:projectId/ports', async (c) => {
+    const projectId = c.req.param('projectId')
+    if (!projectId) return c.json({ error: 'Missing projectId' }, 400)
+    if (!(await validateAuth(c, projectId))) return c.json({ error: 'Unauthorized' }, 401)
+    const body = await c.req.json<{ port?: number; protocol?: string; label?: string; visibility?: string }>().catch(() => ({} as any))
+    const { createProjectPort, setProjectPortVisibility } = await import('../lib/project-port-mutations')
+    const { getPortPreviewUrl } = await import('../lib/knative-project-manager')
+    if (body.protocol !== 'http' && body.protocol !== 'tcp') {
+      return c.json({ error: "protocol must be 'http' or 'tcp'" }, 400)
+    }
+    const created = await createProjectPort(projectId, {
+      port: Number(body.port),
+      protocol: body.protocol,
+      label: typeof body.label === 'string' ? body.label : undefined,
+    })
+    if (!created.ok) return c.json({ error: created.message }, created.status as any)
+    let ports = created.ports
+    if (body.visibility === 'preview') {
+      const updated = await setProjectPortVisibility(projectId, Number(body.port), 'preview')
+      if (!updated.ok) return c.json({ error: updated.message }, updated.status as any)
+      ports = updated.ports
+    }
+    return c.json({
+      ok: true,
+      ports: ports.map((p) =>
+        p.visibility === 'preview' && p.protocol === 'http'
+          ? { ...p, previewUrl: getPortPreviewUrl(projectId, p.port) }
+          : p,
+      ),
+    })
+  })
+
+  /**
    * GET /api/internal/projects/:projectId/integrations/policies
    *
    * The project's saved "acts as" policies. The runtime only consults the

@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, mock } from 'bun:test'
+import { setDockerClassOverride } from '../../lib/runtime-class-setting'
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -316,6 +317,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  setDockerClassOverride(null)
   for (const k of Object.keys(process.env)) {
     if (!(k in SAVED_ENV)) delete process.env[k]
   }
@@ -480,6 +482,7 @@ describe('installAgent — Docker-class minimum compute tier', () => {
   })
 
   it('blocks installing a docker-compose listing when the workspace instance size is too small', async () => {
+    setDockerClassOverride(true)
     const L = seedListing({ id: 'lst_dockersmall' })
     L.project.settings = { activeMode: 'canvas', techStackId: 'docker-compose' }
     db.versions.push({ listingId: L.id, version: '1.0.0', workspaceSnapshot: { a: 'x' } })
@@ -493,6 +496,7 @@ describe('installAgent — Docker-class minimum compute tier', () => {
   })
 
   it('allows installing a docker-compose listing when the workspace meets the tier floor', async () => {
+    setDockerClassOverride(true)
     const L = seedListing({ id: 'lst_dockerok' })
     L.project.settings = { activeMode: 'canvas', techStackId: 'docker-compose' }
     db.versions.push({ listingId: L.id, version: '1.0.0', workspaceSnapshot: { a: 'x' } })
@@ -503,6 +507,7 @@ describe('installAgent — Docker-class minimum compute tier', () => {
   })
 
   it('honors a string-encoded settings blob when reading techStackId for the gate', async () => {
+    setDockerClassOverride(true)
     const L = seedListing({ id: 'lst_dockerstr' })
     L.project.settings = JSON.stringify({ activeMode: 'canvas', techStackId: 'docker-compose' })
     db.versions.push({ listingId: L.id, version: '1.0.0', workspaceSnapshot: { a: 'x' } })

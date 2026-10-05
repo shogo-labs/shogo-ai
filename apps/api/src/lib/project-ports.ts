@@ -1,55 +1,78 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * Exposed-ports data model (Phase 3 of the Tier 2 docker project class plan).
+ * Exposed-ports data model (Phase 3 of the Tier 2 docker project class plan,
+ * plus project-declared ports).
  *
- * A project's tech stack DECLARES a fixed set of ports (see
- * `TechStackMeta.runtime.ports` / the mirrored `StackRegistryEntry.ports` in
- * `@shogo/shared-runtime`'s tech-stack registry) — e.g. the `docker-compose`
- * stack declares `8000` (http, the app) and `5432` (tcp, postgres). That list
- * is the ONLY allowlist: a project can change how a declared port is exposed,
- * but can never add a port its stack doesn't list. Two independent surfaces
- * consume a declared port:
+ * A project's tech stack DECLARES a default set of ports (see
+ * `TechStackMeta.runtime.ports` / `getDeclaredPorts`). The `docker-compose`
+ * stack defaults to `8000` (http, the app) and `5432` (tcp, postgres). A
+ * project can add more ports of its own. Two surfaces consume an exposed port:
  *
  *   - the client-side TCP tunnel (`apps/api/src/lib/port-tunnel-bridge.ts`) —
- *     reachable by anyone with full, authenticated access to the project
- *     (same bar as the IDE/terminal), for ANY declared port regardless of
- *     protocol or visibility.
- *   - the public per-port preview (an unauthenticated HTTP surface, same
- *     trust model as the existing root preview) — reachable ONLY for a
- *     declared `protocol: 'http'` port whose current visibility is
- *     `'preview'`.
+ *     reachable by anyone with full, authenticated access to the project,
+ *     for ANY exposed port regardless of protocol or visibility.
+ *   - the public per-port preview — reachable ONLY for an `http` port whose
+ *     visibility is `'preview'`.
  *
- * `visibility` therefore only distinguishes "tunnel-only" from "also public
- * preview" — there is no third "fully closed" state for a declared port,
- * because the tunnel path always requires full project auth regardless.
- * Nothing this project doesn't already trust (a project collaborator) gets
- * new access; the only NEW capability toggled by 'preview' is anonymous
- * public HTTP access, which is why toggling it on is the only thing that
- * needs its own explicit user action.
+ * A newly added port starts as `tunnel`. Switching it to `preview` is the
+ * only step that makes the port reachable with no login, so that step needs
+ * an explicit user action (Studio toggle, or an agent request the user
+ * approves).
  *
- * Overrides live in `Project.settings.exposedPorts`, keyed by port number
- * (as a string, since JSON object keys are always strings), holding only the
- * `visibility` override — port/label/protocol always come from the stack's
- * declaration and can't be spoofed by a settings write.
+ * Settings live at `Project.settings.exposedPorts`, keyed by port number.
+ * Stack ports store a visibility override only. Project-added ports also
+ * store `source: 'project'`, `protocol`, and an optional `label`.
  */
 
 import { getDeclaredPorts } from '@shogo/shared-runtime'
 
 export type PortVisibility = 'tunnel' | 'preview'
+export type PortProtocol = 'http' | 'tcp'
+
+export const MAX_EXPOSED_PORTS = 8
+
+/**
+ * Ports the platform itself listens on. A project must not publish these,
+ * or the preview proxy becomes a way to reach the runtime and the host agent.
+ */
+export const DENIED_PORTS = new Set<number>([
+  22, // ssh
+  8002, // local API
+  8012, // Knative queue-proxy
+  8080, // agent runtime
+  9900, // metal-agent
+])
 
 export interface ExposedPort {
   port: number
   label?: string
-  protocol: 'http' | 'tcp'
+  protocol: PortProtocol
   visibility: PortVisibility
+  /** `'project'` when the project added this port; omitted for stack defaults. */
+  source?: 'project'
+}
+
+export interface ExposedPortSetting {
+  visibility?: PortVisibility
+  label?: string
+  protocol?: PortProtocol
+  source?: 'project'
 }
 
 /** The raw shape stored at `Project.settings.exposedPorts`. */
-export type ExposedPortsSettings = Record<string, { visibility?: PortVisibility }>
+export type ExposedPortsSettings = Record<string, ExposedPortSetting>
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function isProtocol(value: unknown): value is PortProtocol {
+  return value === 'http' || value === 'tcp'
+}
+
+function isVisibility(value: unknown): value is PortVisibility {
+  return value === 'tunnel' || value === 'preview'
 }
 
 /** Pull `settings.exposedPorts` out defensively — never throws on a malformed value. */
@@ -58,19 +81,36 @@ export function readExposedPortsSettings(settings: Record<string, unknown> | nul
   if (!isPlainObject(raw)) return {}
   const out: ExposedPortsSettings = {}
   for (const [key, value] of Object.entries(raw)) {
-    if (isPlainObject(value) && (value.visibility === 'tunnel' || value.visibility === 'preview')) {
-      out[key] = { visibility: value.visibility }
-    }
+    if (!isPlainObject(value)) continue
+    const entry: ExposedPortSetting = {}
+    if (isVisibility(value.visibility)) entry.visibility = value.visibility
+    if (isProtocol(value.protocol)) entry.protocol = value.protocol
+    if (typeof value.label === 'string' && value.label.trim()) entry.label = value.label.trim().slice(0, 40)
+    if (value.source === 'project') entry.source = 'project'
+    if (!entry.visibility && !(entry.source === 'project' && entry.protocol)) continue
+    out[key] = entry
   }
   return out
 }
 
 /**
- * The project's exposed ports: every port its tech stack declares, with
- * visibility resolved from the settings override (falling back to the
- * stack's `defaultVisibility`). Ports the project's settings mention but the
- * CURRENT tech stack no longer declares are dropped — an override can only
- * ever narrow/widen visibility on a port that still exists.
+ * Why a project-added port is rejected, or null when it is allowed.
+ * Stack-declared ports are not passed through this check.
+ */
+export function projectPortError(port: number): string | null {
+  if (!Number.isInteger(port) || port < 1024 || port > 65535) {
+    return 'Port must be an integer between 1024 and 65535'
+  }
+  if (DENIED_PORTS.has(port)) {
+    return `Port ${port} is reserved by the Shogo runtime`
+  }
+  return null
+}
+
+/**
+ * The project's exposed ports: every port its tech stack declares, plus
+ * project-added ports (`source: 'project'`). Visibility falls back to the
+ * stack default, or `tunnel` for a port the project added.
  */
 export function resolveExposedPorts(
   techStackId: string | null | undefined,
@@ -78,12 +118,28 @@ export function resolveExposedPorts(
 ): ExposedPort[] {
   const declared = getDeclaredPorts(techStackId) ?? []
   const overrides = readExposedPortsSettings(settings)
-  return declared.map((p) => ({
+  const ports: ExposedPort[] = declared.map((p) => ({
     port: p.port,
-    label: p.label,
+    label: overrides[String(p.port)]?.label ?? p.label,
     protocol: p.protocol,
     visibility: overrides[String(p.port)]?.visibility ?? p.defaultVisibility,
   }))
+  const seen = new Set(ports.map((p) => p.port))
+  for (const [key, entry] of Object.entries(overrides)) {
+    if (entry.source !== 'project' || !entry.protocol) continue
+    const port = Number(key)
+    if (!Number.isInteger(port) || seen.has(port) || projectPortError(port)) continue
+    if (entry.visibility === 'preview' && entry.protocol !== 'http') continue
+    ports.push({
+      port,
+      label: entry.label,
+      protocol: entry.protocol,
+      visibility: entry.visibility ?? 'tunnel',
+      source: 'project',
+    })
+    seen.add(port)
+  }
+  return ports.slice(0, MAX_EXPOSED_PORTS)
 }
 
 /** True if `port` is one this project's CURRENT tech stack actually declares. */
@@ -91,18 +147,27 @@ export function isDeclaredPort(techStackId: string | null | undefined, port: num
   return (getDeclaredPorts(techStackId) ?? []).some((p) => p.port === port)
 }
 
+/** True if the port is exposed: a stack default or a port this project added. */
+export function isExposedPort(
+  techStackId: string | null | undefined,
+  settings: Record<string, unknown> | null | undefined,
+  port: number,
+): boolean {
+  return resolveExposedPorts(techStackId, settings).some((p) => p.port === port)
+}
+
 /** The declared entry for `port` (protocol + label), or null if undeclared. */
 export function getDeclaredPort(
   techStackId: string | null | undefined,
   port: number,
-): { port: number; label?: string; protocol: 'http' | 'tcp'; defaultVisibility: PortVisibility } | null {
+): { port: number; label?: string; protocol: PortProtocol; defaultVisibility: PortVisibility } | null {
   return (getDeclaredPorts(techStackId) ?? []).find((p) => p.port === port) ?? null
 }
 
 /**
  * Build the new `settings.exposedPorts` object after toggling one port's
- * visibility. Merges into (rather than replaces) any existing overrides so
- * toggling port A never clobbers a prior toggle on port B.
+ * visibility. Preserves label/protocol/source on that port and does not
+ * clobber overrides for other ports.
  */
 export function withPortVisibility(
   settings: Record<string, unknown> | null | undefined,
@@ -110,5 +175,63 @@ export function withPortVisibility(
   visibility: PortVisibility,
 ): ExposedPortsSettings {
   const overrides = readExposedPortsSettings(settings)
-  return { ...overrides, [String(port)]: { visibility } }
+  const key = String(port)
+  return { ...overrides, [key]: { ...overrides[key], visibility } }
+}
+
+export interface AddProjectPortInput {
+  port: number
+  protocol: PortProtocol
+  label?: string
+}
+
+export function addProjectPort(
+  techStackId: string | null | undefined,
+  settings: Record<string, unknown> | null | undefined,
+  input: AddProjectPortInput,
+): { ok: true; exposedPorts: ExposedPortsSettings } | { ok: false; error: string } {
+  const reason = projectPortError(input.port)
+  if (reason) return { ok: false, error: reason }
+  if (input.protocol !== 'http' && input.protocol !== 'tcp') {
+    return { ok: false, error: "protocol must be 'http' or 'tcp'" }
+  }
+  const current = resolveExposedPorts(techStackId, settings)
+  if (current.some((p) => p.port === input.port)) {
+    return { ok: false, error: `Port ${input.port} is already exposed` }
+  }
+  if (current.length >= MAX_EXPOSED_PORTS) {
+    return { ok: false, error: `A project can expose at most ${MAX_EXPOSED_PORTS} ports` }
+  }
+  const overrides = readExposedPortsSettings(settings)
+  return {
+    ok: true,
+    exposedPorts: {
+      ...overrides,
+      [String(input.port)]: {
+        visibility: 'tunnel',
+        protocol: input.protocol,
+        source: 'project',
+        ...(input.label?.trim() ? { label: input.label.trim().slice(0, 40) } : {}),
+      },
+    },
+  }
+}
+
+/** Remove a project-added port. Stack defaults cannot be removed. */
+export function removeProjectPort(
+  techStackId: string | null | undefined,
+  settings: Record<string, unknown> | null | undefined,
+  port: number,
+): { ok: true; exposedPorts: ExposedPortsSettings } | { ok: false; error: string } {
+  if (isDeclaredPort(techStackId, port)) {
+    return { ok: false, error: 'Stack default ports cannot be removed. Set visibility to tunnel instead.' }
+  }
+  const overrides = readExposedPortsSettings(settings)
+  const entry = overrides[String(port)]
+  if (!entry || entry.source !== 'project') {
+    return { ok: false, error: 'Port is not a project-added port' }
+  }
+  const next = { ...overrides }
+  delete next[String(port)]
+  return { ok: true, exposedPorts: next }
 }

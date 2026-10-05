@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
-import { beforeEach, describe, expect, it, mock } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test'
+import { setDockerClassOverride } from '../../lib/runtime-class-setting'
 
 // ─── @shogo/shared-runtime mock ────────────────────────────────────────
 // Only `docker-compose` declares a floor; everything else is unrestricted.
@@ -140,6 +141,11 @@ beforeEach(() => {
   paidCalls.length = 0
   beforeCreateAnswer = { ok: true }
   beforeCreateCalls.length = 0
+  setDockerClassOverride(null)
+})
+
+afterEach(() => {
+  setDockerClassOverride(null)
 })
 
 describe('createProjectInWorkspace', () => {
@@ -229,7 +235,18 @@ describe('configureProject — Docker-class minimum compute tier', () => {
     expect(tierGateCalls).toHaveLength(0)
   })
 
+  it('blocks switching to docker-compose while the platform gate is off', async () => {
+    setDockerClassOverride(false)
+    const p = seedProject({ workspaceId: 'ws_large', settings: { techStackId: 'nextjs' } })
+    await expect(configureProject(p.id, { settings: { techStackId: 'docker-compose' } })).rejects.toMatchObject({
+      name: 'ProjectLifecycleError',
+      code: 'docker_class_disabled',
+    })
+    expect(tierGateCalls).toHaveLength(0)
+  })
+
   it('blocks switching to docker-compose when the workspace instance size is too small', async () => {
+    setDockerClassOverride(true)
     tierGateAnswer = { allowed: false, currentSize: 'micro', requiredSize: 'large' }
     const p = seedProject({ workspaceId: 'ws_small', settings: { techStackId: 'nextjs' } })
     await expect(configureProject(p.id, { settings: { techStackId: 'docker-compose' } })).rejects.toMatchObject({
@@ -242,6 +259,7 @@ describe('configureProject — Docker-class minimum compute tier', () => {
   })
 
   it('allows switching to docker-compose when the workspace meets the tier floor', async () => {
+    setDockerClassOverride(true)
     tierGateAnswer = { allowed: true, currentSize: 'large', requiredSize: 'large' }
     const p = seedProject({ workspaceId: 'ws_large', settings: { techStackId: 'nextjs' } })
     const result = await configureProject(p.id, { settings: { techStackId: 'docker-compose' } })

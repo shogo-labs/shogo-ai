@@ -230,9 +230,27 @@ if [ -n "\$WS_DEV" ]; then
   fi
 fi
 
+# Docker-class guests (flag written by this script's DOCKER_CLASS=1 mode).
+# start-dockerd mounts the shogo-docker drive, fixes iptables-legacy, and
+# opens the socket for uid 1001. A standard rootfs has no flag and skips this.
+if [ -f /etc/shogo-docker-class ] && [ -x /usr/local/bin/start-dockerd ]; then
+  /usr/local/bin/start-dockerd || echo "[fc-init] WARNING: dockerd did not start" >&2
+fi
+
 exec /entrypoint.sh
 INIT
 chmod 0755 "$MNT/usr/local/bin/fc-init"
+
+# DOCKER_CLASS=1 (set by the host rebuild when METAL_DOCKER_ROOTFS is configured)
+# installs the dockerd starter and the flag fc-init looks for. The starter is
+# copied from alongside this script so a docker-class rootfs works even when
+# the runtime image was built before the script was added to the image.
+if [ "${DOCKER_CLASS:-0}" = 1 ]; then
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  install -m 0755 "$SCRIPT_DIR/start-dockerd.sh" "$MNT/usr/local/bin/start-dockerd"
+  touch "$MNT/etc/shogo-docker-class"
+  log "docker-class: start-dockerd installed, shogo-docker drive will mount at /var/lib/docker"
+fi
 
 # Some minimal images lack these dirs pre-created; entrypoint/bun expect them.
 mkdir -p "$MNT/app/workspace" "$MNT/proc" "$MNT/sys" "$MNT/dev" "$MNT/tmp"

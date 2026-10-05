@@ -5,9 +5,13 @@ import { describe, expect, test } from 'bun:test'
 import {
   resolveExposedPorts,
   isDeclaredPort,
+  isExposedPort,
   getDeclaredPort,
   withPortVisibility,
   readExposedPortsSettings,
+  addProjectPort,
+  removeProjectPort,
+  projectPortError,
 } from '../project-ports'
 
 describe('resolveExposedPorts', () => {
@@ -92,5 +96,60 @@ describe('withPortVisibility', () => {
   test('overwrites a prior override for the same port', () => {
     const settings = { exposedPorts: { '8000': { visibility: 'preview' } } }
     expect(withPortVisibility(settings, 8000, 'tunnel')).toEqual({ '8000': { visibility: 'tunnel' } })
+  })
+
+  test('keeps protocol and source when toggling a project-added port', () => {
+    const settings = {
+      exposedPorts: { '3000': { visibility: 'tunnel', protocol: 'http', source: 'project', label: 'vite' } },
+    }
+    expect(withPortVisibility(settings, 3000, 'preview')).toEqual({
+      '3000': { visibility: 'preview', protocol: 'http', source: 'project', label: 'vite' },
+    })
+  })
+})
+
+describe('project-added ports', () => {
+  test('a project can add an http port, which starts as tunnel-only', () => {
+    const added = addProjectPort('docker-compose', {}, { port: 3000, protocol: 'http', label: 'vite' })
+    expect(added.ok).toBe(true)
+    if (!added.ok) return
+    const ports = resolveExposedPorts('docker-compose', { exposedPorts: added.exposedPorts })
+    expect(ports.find((p) => p.port === 3000)).toMatchObject({
+      protocol: 'http',
+      visibility: 'tunnel',
+      source: 'project',
+      label: 'vite',
+    })
+    expect(isExposedPort('docker-compose', { exposedPorts: added.exposedPorts }, 3000)).toBe(true)
+    expect(isDeclaredPort('docker-compose', 3000)).toBe(false)
+  })
+
+  test('rejects reserved, privileged, and duplicate ports, and caps the list', () => {
+    expect(projectPortError(80)).toMatch(/1024/)
+    expect(projectPortError(8080)).toMatch(/reserved/)
+    expect(addProjectPort('docker-compose', {}, { port: 8000, protocol: 'http' })).toMatchObject({
+      ok: false,
+    })
+    let settings: Record<string, unknown> = {}
+    for (const port of [3000, 3001, 4000, 4001, 5000, 5001]) {
+      const added = addProjectPort('docker-compose', settings, { port, protocol: 'http' })
+      expect(added.ok).toBe(true)
+      if (added.ok) settings = { exposedPorts: added.exposedPorts }
+    }
+    expect(addProjectPort('docker-compose', settings, { port: 6000, protocol: 'http' })).toMatchObject({
+      ok: false,
+    })
+  })
+
+  test('remove drops a project port and refuses a stack default', () => {
+    const added = addProjectPort('docker-compose', {}, { port: 3001, protocol: 'http' })
+    expect(added.ok).toBe(true)
+    if (!added.ok) return
+    const settings = { exposedPorts: added.exposedPorts }
+    expect(removeProjectPort('docker-compose', settings, 8000)).toMatchObject({ ok: false })
+    const removed = removeProjectPort('docker-compose', settings, 3001)
+    expect(removed.ok).toBe(true)
+    if (!removed.ok) return
+    expect(resolveExposedPorts('docker-compose', { exposedPorts: removed.exposedPorts })).toHaveLength(2)
   })
 })
