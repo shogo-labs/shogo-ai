@@ -1392,6 +1392,7 @@ describe('someone in the conversation approves, or the project has a delegate', 
     expect(approved.json.approval).toMatchObject({ status: 'approved', decidedBy: { name: 'Frank' } })
     await waitFor(async () => (results.length ? true : null), 5000)
     expect(results[0]).toMatchObject({ ok: true, mode: 'requester', author: 'frank-gh' })
+    expect(results[0].credential).toEqual({ source: 'approved', actingAs: '@frank-gh' })
     expect(fPrCalls().map((c) => c.token)).toEqual(['gho_frank'])
 
     // Spent: replaying it gets nothing, even from the runtime that held it.
@@ -1598,7 +1599,11 @@ describe('someone in the conversation approves, or the project has a delegate', 
     const listed = await api(alice, 'GET', `/projects/${projectF}/integrations/policies`)
     expect(listed.json.policies.find((p: any) => p.provider === 'github')).toMatchObject({ delegateName: 'Frank', delegateIsMe: false })
 
-    expect(await fTools(null).createPr('Nightly')).toMatchObject({ ok: true, author: 'frank-gh' })
+    expect(await fTools(null).createPr('Nightly')).toMatchObject({
+      ok: true,
+      author: 'frank-gh',
+      credential: { source: 'delegate', actingAs: '@frank-gh' },
+    })
     expect(fPrCalls().map((c) => c.token)).toEqual(['gho_frank'])
     // Saving the chains again keeps the delegate.
     await putPolicy(alice, { writeChain: ['requester', 'delegate', 'deny'] }, 'github', projectF)
@@ -1607,7 +1612,11 @@ describe('someone in the conversation approves, or the project has a delegate', 
     await savePersonalConnection(gina, 'github', { externalId: '505', externalLogin: 'gina-gh', accessToken: 'gho_gina' })
     expect(await fTools(gina).createPr('Mine')).toMatchObject({ ok: true, author: 'frank-gh' })
     await db.userIntegrationGrant.create({ data: { userId: gina, projectId: projectF, provider: 'github' } })
-    expect(await fTools(gina).createPr('Mine')).toMatchObject({ ok: true, author: 'gina-gh' })
+    expect(await fTools(gina).createPr('Mine')).toMatchObject({
+      ok: true,
+      author: 'gina-gh',
+      credential: { source: 'personal', actingAs: '@gina-gh' },
+    })
     await browser(gina, '/api/me/integrations/github', { method: 'DELETE' })
 
     // Someone else can't stop it for Frank; Frank or an admin can.
@@ -1638,10 +1647,17 @@ describe('someone in the conversation approves, or the project has a delegate', 
 
   test('on the shared account, the person who asked is credited', async () => {
     await putPolicy(alice, { writeChain: ['shared'], readChain: ['shared'] }, 'github', projectF)
-    expect(await fTools(gina).createPr('Credited')).toMatchObject({ ok: true, author: 'acme-approvals-shared' })
+    expect(await fTools(gina).createPr('Credited')).toMatchObject({
+      ok: true,
+      author: 'acme-approvals-shared',
+      credential: { source: 'shared', actingAs: 'project account (@acme-approvals-shared)', onBehalfOf: 'Gina' },
+    })
     expect(fPrCalls().at(-1)!.body.body).toContain('Requested by Gina')
     // Unattended: no credit line.
-    await fTools(null).createPr('Uncredited')
+    expect((await fTools(null).createPr('Uncredited')).credential).toEqual({
+      source: 'shared',
+      actingAs: 'project account (@acme-approvals-shared)',
+    })
     expect(fPrCalls().at(-1)!.body.body).not.toContain('Requested by')
 
     // Generic tools get it as a note and in the result details.

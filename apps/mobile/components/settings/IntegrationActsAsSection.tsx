@@ -49,6 +49,34 @@ export function chainsFromChoices(c: Choices): Pick<Policy, "writeChain" | "read
   return { writeChain, readChain };
 }
 
+interface AuditEntry {
+  id: string;
+  op: "read" | "write";
+  source: "shared" | "personal" | "delegate" | "approved";
+  actingAs: string;
+  requesterName: string | null;
+  origin: string | null;
+  createdAt: string;
+}
+
+/** One line of recent activity: whose account, for whom, how long ago. */
+export function auditLine(entry: AuditEntry, now = Date.now()): string {
+  const account =
+    entry.source === "shared"
+      ? "Project account"
+      : `${entry.actingAs}${entry.source === "approved" ? " (approved)" : entry.source === "delegate" ? " (delegate)" : ""}`;
+  const forWhom = entry.requesterName ? ` for ${entry.requesterName}` : entry.origin === "event" ? " for a trigger" : " · unattended";
+  return `${account}${forWhom} · ${entry.op} · ${timeAgo(entry.createdAt, now)}`;
+}
+
+function timeAgo(iso: string, now: number): string {
+  const seconds = Math.max(0, Math.round((now - Date.parse(iso)) / 1000));
+  if (seconds < 60) return "just now";
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+  if (seconds < 86_400) return `${Math.floor(seconds / 3600)}h ago`;
+  return `${Math.floor(seconds / 86_400)}d ago`;
+}
+
 interface MyConnection {
   provider: string;
   externalLogin: string | null;
@@ -91,6 +119,7 @@ export function IntegrationActsAsSection({ projectId, provider = "github" }: { p
   const [policy, setPolicy] = useState<Policy | null>(null);
   const [canEdit, setCanEdit] = useState(false);
   const [mine, setMine] = useState<MyConnection | null>(null);
+  const [activity, setActivity] = useState<AuditEntry[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const base = `${API_URL}/api/projects/${projectId}/integrations`;
@@ -104,6 +133,13 @@ export function IntegrationActsAsSection({ projectId, provider = "github" }: { p
       setPolicy((body?.policies ?? []).find((p: Policy) => p.provider === provider) ?? null);
       setCanEdit(body?.canEdit === true);
       setMine((body?.me?.connections ?? []).find((c: MyConnection) => c.provider === provider) ?? null);
+      if (body?.canEdit === true) {
+        const audit = await fetch(`${base}/audit?provider=${encodeURIComponent(provider)}&limit=8`, { credentials: "include" });
+        const entries = audit.ok ? (await audit.json())?.entries : null;
+        setActivity(Array.isArray(entries) ? entries : []);
+      } else {
+        setActivity([]);
+      }
     } catch {
       // No setting to show.
     }
@@ -319,6 +355,17 @@ export function IntegrationActsAsSection({ projectId, provider = "github" }: { p
             )}
           </View>
         </>
+      ) : null}
+
+      {activity.length > 0 ? (
+        <View className="mt-3">
+          <Text className="text-xs font-medium text-foreground">Recent activity</Text>
+          {activity.map((entry) => (
+            <Text key={entry.id} className="mt-1 text-xs text-muted-foreground" numberOfLines={1}>
+              {auditLine(entry)}
+            </Text>
+          ))}
+        </View>
       ) : null}
 
       {error ? <Text className="mt-2 text-xs text-destructive">{error}</Text> : null}

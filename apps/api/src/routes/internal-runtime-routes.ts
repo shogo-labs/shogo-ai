@@ -60,6 +60,23 @@ import { handOffRequesterTicket, REQUESTER_TICKET_HEADER, verifyRequesterTicket,
 import { signResumeToken } from '../services/integration-credentials/resume'
 
 /** Where a connect link handed out in this turn should pick the conversation back up. */
+type CredentialUseSource = 'shared' | 'personal' | 'delegate' | 'approved'
+
+/** Which account a GitHub write used, for the tool call's "as …" label. */
+function credentialUse(
+  actor: { kind: 'connection'; onBehalfOf?: string } | { kind: 'personal'; login?: string; source: CredentialUseSource },
+  author: string | undefined,
+) {
+  if (actor.kind === 'personal') {
+    return { source: actor.source, actingAs: actor.login ? `@${actor.login}` : 'the requester' }
+  }
+  return {
+    source: 'shared' as const,
+    actingAs: author ? `project account (@${author})` : 'project account',
+    ...(actor.onBehalfOf ? { onBehalfOf: actor.onBehalfOf } : {}),
+  }
+}
+
 /** A person's name as plain text in a GitHub body: no mentions, links or markup. */
 function attributionName(name: string): string {
   return name.replace(/[^\p{L}\p{N} .'_-]/gu, '').replace(/\s+/g, ' ').trim().slice(0, 80) || 'a Shogo user'
@@ -218,7 +235,7 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     toolName: string,
   ): Promise<
     | { kind: 'connection'; onBehalfOf?: string }
-    | { kind: 'personal'; token: string; login?: string }
+    | { kind: 'personal'; token: string; login?: string; source: CredentialUseSource }
     | { kind: 'blocked'; response: Response }
   > {
     const credentials = await import('../services/integration-credentials')
@@ -239,7 +256,7 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
       return { kind: 'blocked', response: c.json({ error: { code: result.code, message: result.message, ...extra } }, 409) }
     }
     if (result.userId && result.credential.token) {
-      return { kind: 'personal', token: result.credential.token, login: result.credential.login }
+      return { kind: 'personal', token: result.credential.token, login: result.credential.login, source: result.source }
     }
     return { kind: 'connection', ...(result.onBehalfOf ? { onBehalfOf: result.onBehalfOf } : {}) }
   }
@@ -1325,17 +1342,19 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
         body: markedBody,
         draft: body?.draft === true,
       })
+      const author = actor.kind === 'personal'
+        ? actor.login
+        : auth.kind === 'token'
+          ? auth.login ?? undefined
+          : `${process.env.GH_APP_SLUG || 'shogo-ai'}[bot]`
       return c.json({
         ok: true,
         number: result.number,
         url: result.html_url,
         htmlUrl: result.html_url,
         mode: actor.kind === 'personal' ? 'requester' : auth.kind === 'token' ? 'user-token' : 'github-app',
-        author: actor.kind === 'personal'
-          ? actor.login
-          : auth.kind === 'token'
-            ? auth.login ?? undefined
-            : `${process.env.GH_APP_SLUG || 'shogo-ai'}[bot]`,
+        author,
+        credential: credentialUse(actor, author),
       })
     } catch (err: any) {
       console.error(`[Internal] GitHub PR creation for ${projectId} failed:`, err?.message ?? err)
@@ -1384,7 +1403,8 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
         method,
         commitTitle,
       })
-      return c.json({ ok: true, merged: result.merged, sha: result.sha })
+      const author = actor.kind === 'personal' ? actor.login : auth.kind === 'token' ? auth.login ?? undefined : undefined
+      return c.json({ ok: true, merged: result.merged, sha: result.sha, credential: credentialUse(actor, author) })
     } catch (err: any) {
       console.error(`[Internal] GitHub PR merge for ${projectId} failed:`, err?.message ?? err)
       return c.json({ error: String(err?.message ?? 'Failed to merge pull request') }, 502)

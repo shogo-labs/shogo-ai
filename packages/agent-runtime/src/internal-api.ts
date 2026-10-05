@@ -356,6 +356,14 @@ export interface GitHubPullRequestResult {
   author?: string
   /** `github-app` (App bot), `user-token` (the connection's stored user token), or `requester` (the person who asked). */
   mode?: 'github-app' | 'user-token' | 'requester'
+  /** Which account the write used, for the tool call's "as …" label. */
+  credential?: CredentialUse
+}
+
+export interface CredentialUse {
+  source: 'shared' | 'personal' | 'delegate' | 'approved'
+  actingAs: string
+  onBehalfOf?: string
 }
 
 export interface GitHubCliCredentials {
@@ -486,6 +494,7 @@ export interface GitHubMergeResult {
   merged: boolean
   sha?: string
   message?: string
+  credential?: CredentialUse
 }
 
 /** Merge a pull request with the project's GitHub App installation. */
