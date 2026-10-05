@@ -34,6 +34,7 @@ process.env.GH_APP_CLIENT_ID = 'Iv1.client'
 process.env.GH_APP_CLIENT_SECRET = 'client-secret'
 process.env.SHOGO_PUBLIC_API_URL = 'https://studio.test'
 process.env.GH_APP_WEBHOOK_SECRET = 'gh-webhook-secret'
+process.env.SHOGO_CREDENTIAL_APPROVAL_POLL_MS = '25'
 delete process.env.RUNTIME_AUTH_SECRET
 
 // Where `project_call` finds the callee's runtime: a fake one per project (see the hop tests).
@@ -87,6 +88,9 @@ const GITHUB_USERS: Record<string, { id: number; login: string; name: string }> 
   ghs_shared_b: { id: 2, login: 'acme-b-shared', name: 'Acme B Shared' },
   ghs_shared_e: { id: 3, login: 'acme-events-shared', name: 'Acme Events Shared' },
   gho_carol: { id: 303, login: 'carol-gh', name: 'Carol' },
+  ghs_shared_f: { id: 4, login: 'acme-approvals-shared', name: 'Acme Approvals Shared' },
+  gho_frank: { id: 404, login: 'frank-gh', name: 'Frank' },
+  gho_gina: { id: 505, login: 'gina-gh', name: 'Gina' },
 }
 
 interface GitHubCall { method: string; path: string; token: string | null; body: any }
@@ -1259,6 +1263,404 @@ describe('event-triggered turns act as a person', () => {
       turns = []
       await issueOpened({ id: 999, login: 'stranger', type: 'User' })
       expect(turns.map((t) => t.ticket)).toEqual([null])
+    })
+  })
+})
+
+describe('someone in the conversation approves, or the project has a delegate', () => {
+  let projectF: string
+  let channelId: string
+  let frank: string // member with GitHub connected and allowed for F
+  let gina: string // member with no GitHub; asks the agent
+  let agentTurn: (inv: { sessionId: string; userId: string }) => Promise<string>
+  let results: any[] = []
+
+  const fPrCalls = () => githubCalls.filter((c) => c.method === 'POST' && c.path === 'api.github.com/repos/acme/approvals/pulls')
+  const fTools = (userId: string | null, opts: { chatSessionId?: string; ticket?: string; ui?: any[] } = {}) =>
+    turnTools(userId, { runtimeProjectId: projectF, ...opts })
+
+  async function api(user: string | null, method: string, path: string, body?: unknown) {
+    const res = await realFetch(`${API}/api${path}`, {
+      method,
+      headers: { ...(user ? { 'x-test-user': user } : {}), ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}) },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    })
+    return { status: res.status, json: (await res.json().catch(() => null)) as any }
+  }
+
+  async function ask(userId: string, text: string) {
+    const res = await browser(userId, `/api/conversations/${channelId}/messages`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: `<@a:p:${projectF}> ${text}` }),
+    })
+    expect(res.status).toBeLessThan(300)
+    return (await res.json()).message.id as string
+  }
+
+  /** The credential card the agent posted in `threadRootId`. */
+  async function card(threadRootId: string) {
+    return waitFor(async () => {
+      const rows = await db.conversationMessage.findMany({ where: { conversationId: channelId, threadRootId, authorType: 'agent' } })
+      return rows.find((r: any) => r.blocks?.type === 'approval_request' && r.blocks.approval.kind === 'credential') ?? null
+    }, 5000)
+  }
+
+  const decide = (userId: string, messageId: string, decision: 'approve' | 'deny') =>
+    api(userId, 'POST', `/conversation-messages/${messageId}/approval`, { decision })
+
+  async function resolveF(headers: Record<string, string>, op: 'read' | 'write' = 'write') {
+    const res = await realFetch(`${API}/api/internal/projects/${projectF}/integrations/resolve`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...headers },
+      body: JSON.stringify({ provider: 'github', op, toolName: 'github_create_pr' }),
+    })
+    return res.json()
+  }
+
+  beforeAll(async () => {
+    const f = await db.project.create({ data: { name: 'Approval Bot', workspaceId: seeded.workspaceId } })
+    projectF = f.id
+    await db.gitHubConnection.create({
+      data: {
+        projectId: projectF,
+        repoOwner: 'acme',
+        repoName: 'approvals',
+        repoFullName: 'acme/approvals',
+        authType: 'token',
+        encryptedToken: encryptSecret('ghs_shared_f'),
+        tokenLogin: 'acme-approvals-shared',
+      },
+    })
+    const mk = async (name: string) => {
+      const user = await db.user.create({ data: { name, email: `${name.toLowerCase()}-${Date.now()}@acme.test` } })
+      await db.member.create({ data: { userId: user.id, workspaceId: seeded.workspaceId, role: 'member' } })
+      return user.id as string
+    }
+    frank = await mk('Frank')
+    gina = await mk('Gina')
+    await savePersonalConnection(frank, 'github', { externalId: '404', externalLogin: 'frank-gh', accessToken: 'gho_frank' })
+    await db.userIntegrationGrant.create({ data: { userId: frank, projectId: projectF, provider: 'github' } })
+
+    const { channel } = await teamChannels.upsertTeamChannel(seeded.workspaceId, {
+      name: 'eng-approvals',
+      agents: [{ projectId: projectF, agentTrigger: 'mention' }],
+      userEmails: [],
+    })
+    channelId = channel.id
+    dispatcher._resetDispatcherForTests()
+    dispatcher.configureConversationAgentDispatcher({
+      invoke: async (args: any) => {
+        const text = await agentTurn({ sessionId: args.sessionId, userId: args.userId })
+        return sseResponse([
+          { type: 'text-start', id: 't1' },
+          { type: 'text-delta', id: 't1', delta: text },
+          { type: 'text-end', id: 't1' },
+          { type: 'finish' },
+        ])
+      },
+    })
+    agentTurn = async ({ sessionId, userId }) => {
+      const pr = await fTools(userId, { chatSessionId: sessionId }).createPr('Fix the flaky test')
+      results.push(pr)
+      return pr.ok ? `Opened as @${pr.author}` : `Not done: ${pr.code}`
+    }
+  })
+
+  beforeEach(() => {
+    results = []
+  })
+
+  test('nobody to act as: a card goes up in the thread, and whoever approves opens the PR with their own account', async () => {
+    expect((await putPolicy(alice, { writeChain: ['requester', 'approve', 'deny'], readChain: ['shared'] }, 'github', projectF)).status).toBe(200)
+
+    const root = await ask(gina, 'please open a PR for the flaky test fix')
+    const pending = await card(root)
+    expect(pending.blocks.approval).toMatchObject({ kind: 'credential', status: 'pending', projectId: projectF, toolName: 'github_create_pr' })
+    expect(pending.blocks.approval.summary).toContain('Use your own GitHub account for `github_create_pr`')
+    const approval = await db.integrationCredentialApproval.findUnique({ where: { id: pending.blocks.approval.requestId } })
+    expect(approval).toMatchObject({ projectId: projectF, provider: 'github', op: 'write', status: 'pending', requesterUserId: gina })
+    expect(fPrCalls()).toEqual([])
+
+    // A viewer, and someone from another workspace, can't answer it; the card keeps waiting.
+    expect((await decide(seeded.viewer, pending.id, 'approve')).status).toBe(403)
+    expect([403, 404]).toContain((await decide(seeded.outsider, pending.id, 'approve')).status)
+    expect((await db.integrationCredentialApproval.findUnique({ where: { id: approval.id } })).status).toBe('pending')
+
+    const approved = await decide(frank, pending.id, 'approve')
+    expect(approved.status).toBe(200)
+    expect(approved.json.approval).toMatchObject({ status: 'approved', decidedBy: { name: 'Frank' } })
+    await waitFor(async () => (results.length ? true : null), 5000)
+    expect(results[0]).toMatchObject({ ok: true, mode: 'requester', author: 'frank-gh' })
+    expect(fPrCalls().map((c) => c.token)).toEqual(['gho_frank'])
+
+    // Spent: replaying it gets nothing, even from the runtime that held it.
+    expect((await db.integrationCredentialApproval.findUnique({ where: { id: approval.id } })).status).toBe('used')
+    const ticket = signRequesterTicket({ projectId: projectF, userId: gina, origin: { kind: 'chat' } })
+    expect(await resolveF({ 'X-Requester-Ticket': ticket, 'X-Credential-Approval': approval.id })).toMatchObject({
+      ok: false,
+      code: 'approval_expired',
+    })
+
+    // The log says who asked and whose account did it.
+    const audit = await db.integrationCredentialAudit.findFirst({ where: { projectId: projectF, approvalId: approval.id } })
+    expect(audit).toMatchObject({ source: 'approved', actingAs: '@frank-gh', actingUserId: frank, requesterUserId: gina })
+    expect(audit.origin).toMatchObject({ kind: 'chat' })
+  })
+
+  test('a denied card stops the call; nothing runs on anyone\'s account', async () => {
+    const root = await ask(gina, 'open another PR')
+    const pending = await card(root)
+    expect((await decide(frank, pending.id, 'deny')).status).toBe(200)
+    await waitFor(async () => (results.length ? true : null), 5000)
+    expect(results[0]).toMatchObject({ code: 'approval_denied' })
+    expect(fPrCalls()).toEqual([])
+    expect((await db.integrationCredentialApproval.findUnique({ where: { id: pending.blocks.approval.requestId } })).status).toBe('denied')
+  })
+
+  test('an unanswered card expires: the tool gives up and the card says so', async () => {
+    const root = await ask(gina, 'and one more')
+    const pending = await card(root)
+    await db.integrationCredentialApproval.update({
+      where: { id: pending.blocks.approval.requestId },
+      data: { expiresAt: new Date(Date.now() - 1000) },
+    })
+    await waitFor(async () => (results.length ? true : null), 5000)
+    expect(results[0]).toMatchObject({ code: 'approval_expired' })
+    const settled = await db.conversationMessage.findUnique({ where: { id: pending.id } })
+    expect(settled.blocks.approval.status).toBe('expired')
+    expect((await decide(frank, pending.id, 'approve')).status).toBe(409)
+    expect(fPrCalls()).toEqual([])
+  })
+
+  test('an approver without the account gets the connect link; the approval is not spent', async () => {
+    const root = await ask(gina, 'try once more')
+    const pending = await card(root)
+    // Gina approves her own request, but she has no GitHub.
+    expect((await decide(gina, pending.id, 'approve')).status).toBe(200)
+    await waitFor(async () => (results.length ? true : null), 5000)
+    expect(results[0]).toMatchObject({ code: 'requester_auth_required' })
+    expect(results[0].connectUrl).toContain(`/api/projects/${projectF}/integrations/github/connect`)
+    expect((await db.integrationCredentialApproval.findUnique({ where: { id: pending.blocks.approval.requestId } })).status).toBe('approved')
+  })
+
+  test('a press from a mirrored card (Slack, Teams) is answered the same way, without asking the runtime', async () => {
+    const { decideApproval } = await import('../../../../apps/api/src/services/conversation-approvals')
+    const root = await ask(gina, 'from slack')
+    const pending = await card(root)
+    await decideApproval({
+      messageId: pending.id,
+      decision: 'approve',
+      by: { userId: frank, name: 'Frank' },
+      respond: async () => {
+        throw new Error('the runtime is not waiting on credential cards')
+      },
+    })
+    await waitFor(async () => (results.length ? true : null), 5000)
+    expect(results[0]).toMatchObject({ ok: true, author: 'frank-gh' })
+  })
+
+  test('with nowhere to post (an app chat, a turn without a thread), the step is skipped', async () => {
+    const before = await db.integrationCredentialApproval.count()
+    const pr = await fTools(gina, { chatSessionId: 'no-thread-here' }).createPr('From the app')
+    expect(pr).toMatchObject({ code: 'denied' })
+    expect(await db.integrationCredentialApproval.count()).toBe(before)
+  })
+
+  test('approvals belong to their project and their integration', async () => {
+    const root = await ask(gina, 'scope check')
+    const pending = await card(root)
+    const id = pending.blocks.approval.requestId
+    expect((await decide(frank, pending.id, 'approve')).status).toBe(200)
+    await waitFor(async () => (results.length ? true : null), 5000)
+    // Seen from another project's runtime, it doesn't exist.
+    const other = await realFetch(`${API}/api/internal/projects/${seeded.projectId}/integrations/approvals/${id}`)
+    expect(await other.json()).toEqual({ state: 'unknown' })
+    // An approval for GitHub writes doesn't unlock GitHub reads.
+    const asRead = await resolveF({ 'X-Credential-Approval': id }, 'read')
+    expect(asRead).toMatchObject({ ok: false, code: 'approval_expired' })
+  })
+
+  test('any tool, not just PRs: a shell `gh` write waits on the card and runs with the approver\'s token', async () => {
+    const ui: any[] = []
+    let shell: { details: any; text: string } | null = null
+    agentTurn = async ({ sessionId, userId }) => {
+      shell = await fTools(userId, { chatSessionId: sessionId, ui }).exec('gh issue create --title flaky')
+      return 'done'
+    }
+    const root = await ask(gina, 'file an issue for the flake')
+    const pending = await card(root)
+    expect(pending.blocks.approval.toolName).toBe('exec')
+    expect(ui.find((c) => c.type === 'data-integration-approval-pending')?.data).toMatchObject({
+      provider: 'github',
+      approvalId: pending.blocks.approval.requestId,
+    })
+    expect((await decide(frank, pending.id, 'approve')).status).toBe(200)
+    await waitFor(async () => shell, 5000)
+    expect(shell!.text).toContain('token=gho_frank')
+    expect(shell!.details.credential).toMatchObject({ source: 'approved', actingAs: '@frank-gh' })
+    expect(shell!.text).toContain('who approved it')
+
+    shell = null
+    const second = await card(await ask(gina, 'and another issue'))
+    expect((await decide(frank, second.id, 'deny')).status).toBe(200)
+    await waitFor(async () => shell, 5000)
+    expect(shell!.details).toMatchObject({ code: 'approval_denied' })
+    expect(shell!.text).not.toContain('token=')
+    agentTurn = async ({ sessionId, userId }) => {
+      const pr = await fTools(userId, { chatSessionId: sessionId }).createPr('Fix the flaky test')
+      results.push(pr)
+      return pr.ok ? `Opened as @${pr.author}` : `Not done: ${pr.code}`
+    }
+  })
+
+  test('an event turn posts its card in the channel the trigger reports to', async () => {
+    const sub = await db.eventSubscription.create({
+      data: {
+        workspaceId: seeded.workspaceId,
+        name: 'Nightly',
+        eventType: 'member.joined',
+        target: 'project',
+        targetProjectId: projectF,
+        targetMode: 'agent',
+        notifyConversationId: channelId,
+      },
+    })
+    const origin = { kind: 'event' as const, eventId: 'evt-1', subscriptionId: sub.id, source: 'shogo', match: 'subscriber' as const }
+    const ticket = signRequesterTicket({ projectId: projectF, userId: gina, origin })
+    const pending = await resolveF({ 'X-Requester-Ticket': ticket })
+    expect(pending).toMatchObject({ ok: false, code: 'approval_pending' })
+    const posted = await db.integrationCredentialApproval.findUnique({ where: { id: pending.approvalId } })
+    const cardRow = await db.conversationMessage.findUnique({ where: { id: posted.messageId } })
+    expect(cardRow).toMatchObject({ conversationId: channelId, agentSessionId: `event:${sub.id}` })
+
+    // A subscription from another workspace is nowhere to post for this project.
+    const foreign = await db.eventSubscription.create({
+      data: { workspaceId: seeded.otherWorkspaceId, name: 'x', eventType: 'member.joined', notifyConversationId: channelId },
+    })
+    const elsewhere = signRequesterTicket({ projectId: projectF, userId: gina, origin: { ...origin, subscriptionId: foreign.id } })
+    expect(await resolveF({ 'X-Requester-Ticket': elsewhere })).toMatchObject({ ok: false, code: 'denied' })
+    await db.eventSubscription.deleteMany({ where: { id: { in: [sub.id, foreign.id] } } })
+  })
+
+  test('a chat session whose reply lives in another workspace is nowhere to post', async () => {
+    const elsewhere = await db.conversation.create({ data: { workspaceId: seeded.otherWorkspaceId, kind: 'channel', name: 'theirs' } })
+    await db.conversationMessage.create({
+      data: { conversationId: elsewhere.id, workspaceId: seeded.otherWorkspaceId, seq: 1, text: '', authorType: 'agent', agentSessionId: 'their-session' },
+    })
+    const ticket = signRequesterTicket({ projectId: projectF, userId: gina, origin: { kind: 'chat', chatSessionId: 'their-session' } })
+    await putPolicy(alice, { writeChain: ['requester', 'approve', 'deny'], readChain: ['shared'] }, 'github', projectF)
+    const before = await db.integrationCredentialApproval.count()
+    expect(await resolveF({ 'X-Requester-Ticket': ticket })).toMatchObject({ ok: false, code: 'denied' })
+    expect(await db.integrationCredentialApproval.count()).toBe(before)
+    expect(await db.conversationMessage.count({ where: { conversationId: elsewhere.id } })).toBe(1)
+  })
+
+  test('deciding and spending an approval: members only, once, before it expires', async () => {
+    const approvals = await import('../../../../apps/api/src/services/integration-credentials/approvals')
+    const make = (data: Record<string, unknown> = {}) =>
+      db.integrationCredentialApproval.create({
+        data: { projectId: projectF, provider: 'github', op: 'write', expiresAt: new Date(Date.now() + 60_000), ...data },
+      })
+    const a = await make()
+    expect(await approvals.decideCredentialApproval({ approvalId: a.id, decision: 'allow_once', userId: seeded.viewer })).toBe(false)
+    expect(await approvals.decideCredentialApproval({ approvalId: a.id, decision: 'allow_once', userId: seeded.outsider })).toBe(false)
+    expect(await approvals.decideCredentialApproval({ approvalId: a.id, decision: 'allow_once', userId: frank })).toBe(true)
+    expect(await approvals.decideCredentialApproval({ approvalId: a.id, decision: 'deny', userId: alice })).toBe(false)
+    expect((await db.integrationCredentialApproval.findUnique({ where: { id: a.id } })).decidedByUserId).toBe(frank)
+
+    const late = await make({ expiresAt: new Date(Date.now() - 1000) })
+    expect(await approvals.decideCredentialApproval({ approvalId: late.id, decision: 'allow_once', userId: frank })).toBe(false)
+
+    // An approval for GitHub writes doesn't unlock GitHub reads.
+    expect(await resolveF({ 'X-Credential-Approval': a.id }, 'read')).toMatchObject({ ok: false, code: 'approval_expired' })
+    expect(await approvals.markApprovalUsed(a.id)).toBe(true)
+    expect(await approvals.markApprovalUsed(a.id)).toBe(false)
+  })
+
+  test('the delegate: unattended runs act as a person who opted in, until they stop', async () => {
+    await putPolicy(alice, { writeChain: ['requester', 'delegate', 'deny'], readChain: ['shared'] }, 'github', projectF)
+    const path = `/projects/${projectF}/integrations/policies/github/delegate`
+
+    // Nobody opted in: an unattended run is refused.
+    expect(await fTools(null).createPr('Nightly')).toMatchObject({ code: 'requester_unknown' })
+
+    // Only you can make yourself the delegate, and only with an account connected.
+    expect((await api(seeded.viewer, 'POST', path)).status).toBe(403)
+    const unconnected = await api(gina, 'POST', path)
+    expect(unconnected.status).toBe(409)
+    expect(unconnected.json.error.connectUrl).toContain(`/api/projects/${projectF}/integrations/github/connect`)
+    expect(await db.userIntegrationGrant.count({ where: { userId: gina, projectId: projectF } })).toBe(0)
+
+    const optIn = await api(frank, 'POST', path)
+    expect(optIn.status).toBe(200)
+    expect(optIn.json).toMatchObject({ actingAs: '@frank-gh', policy: { delegateUserId: frank, delegateIsMe: true } })
+    const listed = await api(alice, 'GET', `/projects/${projectF}/integrations/policies`)
+    expect(listed.json.policies.find((p: any) => p.provider === 'github')).toMatchObject({ delegateName: 'Frank', delegateIsMe: false })
+
+    expect(await fTools(null).createPr('Nightly')).toMatchObject({ ok: true, author: 'frank-gh' })
+    expect(fPrCalls().map((c) => c.token)).toEqual(['gho_frank'])
+    // Saving the chains again keeps the delegate.
+    await putPolicy(alice, { writeChain: ['requester', 'delegate', 'deny'] }, 'github', projectF)
+    expect(await fTools(null).createPr('Nightly 2')).toMatchObject({ ok: true, author: 'frank-gh' })
+    // The person who asked still comes first, once they've allowed the project to use their account.
+    await savePersonalConnection(gina, 'github', { externalId: '505', externalLogin: 'gina-gh', accessToken: 'gho_gina' })
+    expect(await fTools(gina).createPr('Mine')).toMatchObject({ ok: true, author: 'frank-gh' })
+    await db.userIntegrationGrant.create({ data: { userId: gina, projectId: projectF, provider: 'github' } })
+    expect(await fTools(gina).createPr('Mine')).toMatchObject({ ok: true, author: 'gina-gh' })
+    await browser(gina, '/api/me/integrations/github', { method: 'DELETE' })
+
+    // Someone else can't stop it for Frank; Frank or an admin can.
+    expect((await api(gina, 'DELETE', path)).status).toBe(403)
+    expect((await api(frank, 'DELETE', path)).status).toBe(200)
+    expect(await fTools(null).createPr('Nightly 3')).toMatchObject({ code: 'requester_unknown' })
+    expect((await api(frank, 'POST', path)).status).toBe(200)
+    expect((await api(alice, 'DELETE', path)).status).toBe(200)
+    expect(await fTools(null).createPr('Nightly 4')).toMatchObject({ code: 'requester_unknown' })
+
+    // Revoking the project's access, or leaving the workspace, ends it too.
+    expect((await api(frank, 'POST', path)).status).toBe(200)
+    const grant = await db.userIntegrationGrant.findFirst({ where: { userId: frank, projectId: projectF, provider: 'github' } })
+    expect((await browser(frank, `/api/me/integrations/grants/${grant.id}`, { method: 'DELETE' })).status).toBe(200)
+    expect(await fTools(null).createPr('Nightly 5')).toMatchObject({ code: 'requester_unknown' })
+    expect((await api(frank, 'POST', path)).status).toBe(200)
+    await db.member.deleteMany({ where: { userId: frank, workspaceId: seeded.workspaceId } })
+    expect(await fTools(null).createPr('Nightly 6')).toMatchObject({ code: 'requester_unknown' })
+    await db.member.create({ data: { userId: frank, workspaceId: seeded.workspaceId, role: 'member' } })
+
+    const audit = await db.integrationCredentialAudit.findMany({ where: { projectId: projectF, source: 'delegate' } })
+    expect(audit.map((a: any) => [a.actingUserId, a.requesterUserId, a.actingAs])).toEqual([
+      [frank, null, '@frank-gh'],
+      [frank, null, '@frank-gh'],
+      [frank, gina, '@frank-gh'],
+    ])
+  })
+
+  test('on the shared account, the person who asked is credited', async () => {
+    await putPolicy(alice, { writeChain: ['shared'], readChain: ['shared'] }, 'github', projectF)
+    expect(await fTools(gina).createPr('Credited')).toMatchObject({ ok: true, author: 'acme-approvals-shared' })
+    expect(fPrCalls().at(-1)!.body.body).toContain('Requested by Gina')
+    // Unattended: no credit line.
+    await fTools(null).createPr('Uncredited')
+    expect(fPrCalls().at(-1)!.body.body).not.toContain('Requested by')
+
+    // Generic tools get it as a note and in the result details.
+    await putPolicy(alice, { writeChain: ['requester', 'shared'], readChain: ['shared'] }, 'github', projectF)
+    const { details, text } = await fTools(gina).exec('gh issue create --title x')
+    expect(details.credential).toMatchObject({ source: 'shared', onBehalfOf: 'Gina' })
+    expect(text).toContain('on behalf of Gina')
+  })
+
+  test('only admins read the audit log', async () => {
+    expect((await api(gina, 'GET', `/projects/${projectF}/integrations/audit`)).status).toBe(403)
+    const log = await api(alice, 'GET', `/projects/${projectF}/integrations/audit?provider=github`)
+    expect(log.status).toBe(200)
+    const sources = new Set(log.json.entries.map((e: any) => e.source))
+    expect([...sources].sort()).toEqual(['approved', 'delegate', 'personal', 'shared'])
+    expect(log.json.entries.find((e: any) => e.source === 'approved')).toMatchObject({
+      actingUserName: 'Frank',
+      requesterName: 'Gina',
+      origin: 'chat',
     })
   })
 })

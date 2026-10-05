@@ -11,6 +11,8 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
 
 export const REQUESTER_TICKET_HEADER = 'X-Requester-Ticket'
+/** Names an approval granted from a card; the API spends it on the repeated call. */
+export const CREDENTIAL_APPROVAL_HEADER = 'X-Credential-Approval'
 
 export interface CredentialScope {
   requesterTicket?: string
@@ -20,6 +22,8 @@ export interface CredentialScope {
   composioEntityId?: string
   /** Who the call acts as. */
   actingAs?: string
+  /** An approval to spend on internal API calls made while repeating a call someone approved. */
+  approvalId?: string
 }
 
 const scopeStorage = new AsyncLocalStorage<CredentialScope>()
@@ -32,8 +36,11 @@ export function runInCredentialScope<T>(scope: CredentialScope, fn: () => T): T 
   return scopeStorage.run(scope, fn)
 }
 
-/** The running call's requester ticket as a header, for internal API calls. */
+/** The running call's requester ticket (and approval, if any) as headers, for internal API calls. */
 export function requesterTicketHeaders(): Record<string, string> {
-  const ticket = scopeStorage.getStore()?.requesterTicket
-  return ticket ? { [REQUESTER_TICKET_HEADER]: ticket } : {}
+  const scope = scopeStorage.getStore()
+  return {
+    ...(scope?.requesterTicket ? { [REQUESTER_TICKET_HEADER]: scope.requesterTicket } : {}),
+    ...(scope?.approvalId ? { [CREDENTIAL_APPROVAL_HEADER]: scope.approvalId } : {}),
+  }
 }

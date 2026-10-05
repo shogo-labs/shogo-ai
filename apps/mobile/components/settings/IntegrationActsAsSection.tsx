@@ -6,15 +6,17 @@ import { Linking, Pressable, View } from "react-native";
 import { API_URL } from "../../lib/api";
 import { Text } from "./account-sheet-chrome";
 
-type ChainStep = "requester" | "ask" | "shared" | "deny";
+type ChainStep = "requester" | "ask" | "approve" | "delegate" | "shared" | "deny";
 type Unconnected = "ask" | "shared" | "deny";
-type Nobody = "shared" | "deny";
+type Nobody = "approve" | "delegate" | "shared" | "deny";
 
 interface Policy {
   provider: string;
   writeChain: ChainStep[];
   readChain: ChainStep[];
   label: string;
+  delegateName?: string | null;
+  delegateIsMe?: boolean;
 }
 
 interface Choices {
@@ -29,14 +31,17 @@ export function choicesFromChains(writeChain: ChainStep[], readChain: ChainStep[
   const asRequester = writeChain[0] !== "shared";
   const second = writeChain[1];
   const unconnected: Unconnected = second === "ask" || second === "shared" ? second : "deny";
-  const nobody: Nobody = unconnected === "ask" && writeChain[2] === "shared" ? "shared" : "deny";
+  const third = writeChain[2];
+  const nobody: Nobody =
+    unconnected === "ask" && (third === "approve" || third === "delegate" || third === "shared") ? third : "deny";
   return { asRequester, unconnected, nobody, readToo: asRequester && readChain[0] === "requester" };
 }
 
 export function chainsFromChoices(c: Choices): Pick<Policy, "writeChain" | "readChain"> {
   if (!c.asRequester) return { writeChain: ["shared"], readChain: ["shared"] };
+  const nobody: ChainStep[] = c.nobody === "approve" || c.nobody === "delegate" ? [c.nobody, "deny"] : [c.nobody];
   const writeChain: ChainStep[] =
-    c.unconnected === "ask" ? ["requester", "ask", c.nobody] : ["requester", c.unconnected];
+    c.unconnected === "ask" ? ["requester", "ask", ...nobody] : ["requester", c.unconnected];
   // Reads never stop to ask; they fall back to the project account unless writes are refused outright.
   const readChain: ChainStep[] = !c.readToo
     ? ["shared"]
@@ -56,6 +61,8 @@ const UNCONNECTED: Array<{ value: Unconnected; label: string }> = [
 ];
 
 const NOBODY: Array<{ value: Nobody; label: string }> = [
+  { value: "approve", label: "Ask someone in the conversation to approve" },
+  { value: "delegate", label: "Act as a teammate who opted in" },
   { value: "shared", label: "Use the project account" },
   { value: "deny", label: "Don't do it" },
 ];
@@ -150,6 +157,28 @@ export function IntegrationActsAsSection({ projectId, provider = "github" }: { p
     }
   };
 
+  const setDelegate = async (on: boolean) => {
+    if (!policy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await fetch(`${base}/policies/${encodeURIComponent(provider)}/delegate`, {
+        method: on ? "POST" : "DELETE",
+        credentials: "include",
+      });
+      const body = await res.json().catch(() => null);
+      if (!res.ok) {
+        if (body?.error?.connectUrl) void Linking.openURL(body.error.connectUrl);
+        throw new Error(body?.error?.message ?? "Could not save");
+      }
+      await load();
+    } catch (err: any) {
+      setError(err?.message ?? "Could not save");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   if (!policy) return null;
   const label = policy.label || provider;
   const { asRequester, unconnected, nobody, readToo } = choicesFromChains(policy.writeChain, policy.readChain);
@@ -211,6 +240,42 @@ export function IntegrationActsAsSection({ projectId, provider = "github" }: { p
                   />
                 ))}
               </View>
+              {nobody === "approve" ? (
+                <Text className="mt-2 text-xs text-muted-foreground">
+                  {`The agent posts a card where it's working. Whoever approves lends their own ${label} account for that one action.`}
+                </Text>
+              ) : null}
+              {nobody === "delegate" ? (
+                <View className="mt-2 flex-row flex-wrap items-center gap-2">
+                  <Text className="text-xs text-muted-foreground">
+                    {policy.delegateName
+                      ? `Unattended runs act as ${policy.delegateIsMe ? "you" : policy.delegateName}.`
+                      : "No one has opted in yet, so unattended runs are refused."}
+                  </Text>
+                  {policy.delegateIsMe || (canEdit && policy.delegateName) ? (
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel={policy.delegateIsMe ? "Stop acting as me" : `Stop acting as ${policy.delegateName}`}
+                      disabled={busy}
+                      onPress={() => void setDelegate(false)}
+                      className="rounded-md px-2 py-1 disabled:opacity-50"
+                    >
+                      <Text className="text-xs text-muted-foreground underline">Stop</Text>
+                    </Pressable>
+                  ) : null}
+                  {!policy.delegateIsMe ? (
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel="Act as me when no one asked"
+                      disabled={busy}
+                      onPress={() => void setDelegate(true)}
+                      className="rounded-lg border border-border px-3 py-1.5 disabled:opacity-50"
+                    >
+                      <Text className="text-xs text-foreground">{`Use my ${label} account`}</Text>
+                    </Pressable>
+                  ) : null}
+                </View>
+              ) : null}
             </>
           ) : null}
           <Pressable

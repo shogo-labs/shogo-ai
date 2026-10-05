@@ -6,6 +6,9 @@
  * Project-scoped (behind requireProjectAccess):
  * - GET  /projects/:projectId/integrations/policies            - policies + what the caller has connected
  * - PUT  /projects/:projectId/integrations/policies/:provider  - save one policy
+ * - POST /projects/:projectId/integrations/policies/:provider/delegate - unattended runs act as me
+ * - DELETE same                                                 - stop (the delegate, or an admin)
+ * - GET  /projects/:projectId/integrations/audit               - which account recent calls used (admins)
  * - GET  /projects/:projectId/integrations/:provider/connect   - consent page (the link agents hand out)
  * - POST /projects/:projectId/integrations/:provider/connect   - allow: grant, then connect if needed
  *
@@ -20,6 +23,7 @@ import type { Context } from 'hono'
 import { getFrontendUrl } from '../lib/cloud-urls'
 import { prisma } from '../lib/prisma'
 import {
+  canActForProject,
   canEditCredentialPolicies,
   deletePersonalConnection,
   getCredentialProvider,
@@ -28,9 +32,12 @@ import {
   isValidProviderId,
   listPolicies,
   listUserIntegrations,
+  personalAccountFor,
+  personalConnectUrl,
   PolicyValidationError,
   revokeGrant,
   savePolicy,
+  setDelegate,
   CHAIN_STEPS,
   type ActorFallback,
   type ActorMode,
@@ -81,6 +88,14 @@ export function integrationCredentialRoutes(config: IntegrationCredentialRoutesC
     const github = await getPolicy(projectId, 'github')
     const all = policies.some((p) => p.provider === 'github') ? policies : [github, ...policies]
     const me = userId ? await listUserIntegrations(userId) : { connections: [], grants: [] }
+    const delegateIds = [...new Set(all.map((p) => p.delegateUserId).filter((id): id is string => !!id))]
+    const delegates = delegateIds.length
+      ? await prisma.user.findMany({ where: { id: { in: delegateIds } }, select: { id: true, name: true, email: true } })
+      : []
+    const delegateName = (id: string | null) => {
+      const user = id ? delegates.find((u: { id: string }) => u.id === id) : null
+      return user ? user.name || user.email || 'Someone' : null
+    }
     return c.json({
       ok: true,
       canEdit: !!userId && (await canEditCredentialPolicies(userId, projectId)),
@@ -91,6 +106,8 @@ export function integrationCredentialRoutes(config: IntegrationCredentialRoutesC
         supportsPersonal: getCredentialProvider(p.provider)?.supportsPersonal ?? false,
         supportsShared: getCredentialProvider(p.provider)?.supportsShared !== false,
         sharedIsMe: !!userId && p.sharedUserId === userId,
+        delegateName: delegateName(p.delegateUserId),
+        delegateIsMe: !!userId && p.delegateUserId === userId,
       })),
       me: {
         connections: me.connections,
@@ -142,6 +159,99 @@ export function integrationCredentialRoutes(config: IntegrationCredentialRoutesC
       }
       throw err
     }
+  })
+
+  // Unattended runs (no person, or a person who can't be acted as) act as the
+  // delegate when the chain has a `delegate` step. Only you can make yourself
+  // the delegate, and only with an account you've connected and allowed.
+  router.post('/projects/:projectId/integrations/policies/:provider/delegate', async (c) => {
+    const projectId = c.req.param('projectId')
+    const provider = c.req.param('provider')
+    const userId = authUserId(c)
+    if (!userId) return c.json({ error: { code: 'unauthorized', message: 'Sign in to change this setting' } }, 401)
+    const adapter = isValidProviderId(provider) ? getCredentialProvider(provider) : null
+    if (!adapter?.supportsPersonal) {
+      return c.json({ error: { code: 'invalid_request', message: 'This integration only uses the project account' } }, 400)
+    }
+    if (!(await canActForProject(userId, projectId))) {
+      return c.json({ error: { code: 'forbidden', message: 'Viewers cannot act for this agent' } }, 403)
+    }
+    const connected = adapter.personal ? !!(await getPersonalConnection(userId, provider)) : true
+    if (connected) await grantAccess(userId, projectId, provider)
+    const account = connected ? await personalAccountFor(projectId, provider, userId) : null
+    if (!account) {
+      return c.json(
+        {
+          error: {
+            code: 'requester_auth_required',
+            message: `Connect your ${adapter.label(provider)} account first`,
+            connectUrl: personalConnectUrl(projectId, provider),
+          },
+        },
+        409,
+      )
+    }
+    const policy = await setDelegate(projectId, provider, userId)
+    return c.json({
+      ok: true,
+      policy: { ...policy, delegateIsMe: true },
+      actingAs: account.login ? `@${account.login}` : null,
+    })
+  })
+
+  router.delete('/projects/:projectId/integrations/policies/:provider/delegate', async (c) => {
+    const projectId = c.req.param('projectId')
+    const provider = c.req.param('provider')
+    const userId = authUserId(c)
+    if (!userId) return c.json({ error: { code: 'unauthorized', message: 'Sign in to change this setting' } }, 401)
+    if (!isValidProviderId(provider)) {
+      return c.json({ error: { code: 'invalid_request', message: `Unknown integration: ${provider}` } }, 400)
+    }
+    const current = await getPolicy(projectId, provider)
+    if (current.delegateUserId !== userId && !(await canEditCredentialPolicies(userId, projectId))) {
+      return c.json({ error: { code: 'forbidden', message: 'Only the delegate and admins can stop this' } }, 403)
+    }
+    const policy = current.delegateUserId ? await setDelegate(projectId, provider, null) : current
+    return c.json({ ok: true, policy: { ...policy, delegateIsMe: false } })
+  })
+
+  router.get('/projects/:projectId/integrations/audit', async (c) => {
+    const projectId = c.req.param('projectId')
+    const userId = authUserId(c)
+    if (!userId) return c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401)
+    if (!(await canEditCredentialPolicies(userId, projectId))) {
+      return c.json({ error: { code: 'forbidden', message: 'Only the project owner and workspace admins can see this' } }, 403)
+    }
+    const provider = c.req.query('provider')
+    const limit = Math.min(Math.max(Number(c.req.query('limit')) || 50, 1), 200)
+    const rows = await (prisma as any).integrationCredentialAudit.findMany({
+      where: { projectId, ...(provider ? { provider } : {}) },
+      orderBy: { createdAt: 'desc' },
+      take: limit,
+    })
+    const people = [...new Set(rows.flatMap((r: any) => [r.actingUserId, r.requesterUserId]).filter(Boolean))] as string[]
+    const users = people.length
+      ? await prisma.user.findMany({ where: { id: { in: people } }, select: { id: true, name: true, email: true } })
+      : []
+    const nameOf = (id: string | null) => {
+      const user = id ? users.find((u: { id: string }) => u.id === id) : null
+      return user ? user.name || user.email || null : null
+    }
+    return c.json({
+      ok: true,
+      entries: rows.map((r: any) => ({
+        id: r.id,
+        provider: r.provider,
+        op: r.op,
+        source: r.source,
+        actingAs: r.actingAs,
+        actingUserName: nameOf(r.actingUserId),
+        requesterName: nameOf(r.requesterUserId),
+        origin: typeof r.origin?.kind === 'string' ? r.origin.kind : null,
+        approvalId: r.approvalId ?? null,
+        createdAt: r.createdAt instanceof Date ? r.createdAt.toISOString() : r.createdAt,
+      })),
+    })
   })
 
   router.get('/projects/:projectId/integrations/:provider/connect', async (c) => {

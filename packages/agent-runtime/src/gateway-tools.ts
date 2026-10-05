@@ -153,6 +153,7 @@ import {
   type CheckpointCallResult,
 } from './internal-api'
 import { clearGitHubCliEnvCache, githubCliEnvForProject } from './github-cli-credentials'
+import { approvalOutcomeResult, waitForCredentialApproval, withCredentialApproval } from './integration-credentials'
 import { checkServerTsxDrift, healServerTsxDrift } from './server-tsx-drift'
 import { getCanvasRuntimeErrors, clearCanvasRuntimeErrors } from './canvas-runtime-errors'
 import { scanAndFixFile as scanFileForHardcodedPorts, type PortFix, type PortWarning } from './lint-hardcoded-ports'
@@ -1006,7 +1007,7 @@ function createGitHubPullRequestTool(ctx: ToolContext): AgentTool {
         }),
       ),
     }),
-    execute: async (_toolCallId, params) => {
+    execute: async (_toolCallId, params, signal) => {
       const input = params as {
         title: string
         head?: string
@@ -1056,7 +1057,13 @@ function createGitHubPullRequestTool(ctx: ToolContext): AgentTool {
         draft: options.draft,
       }
 
-      const botResult = await apiCreateGitHubPullRequest(ctx.projectId, options)
+      let botResult = await apiCreateGitHubPullRequest(ctx.projectId, options)
+      if (botResult.code === 'approval_pending' && botResult.approvalId) {
+        const approvalId = botResult.approvalId
+        const outcome = await waitForCredentialApproval(ctx.projectId, approvalId, botResult.expiresAt, signal)
+        if (outcome !== 'approved') return approvalOutcomeResult('github', outcome)
+        botResult = await withCredentialApproval(approvalId, () => apiCreateGitHubPullRequest(ctx.projectId, options))
+      }
       if (botResult.ok && botResult.data) {
         return textResult({
           ok: true,
@@ -1282,13 +1289,20 @@ export function createGitHubMergePullRequestTool(ctx: ToolContext): AgentTool {
       ),
       commitTitle: Type.Optional(Type.String({ description: 'Title for the merge or squash commit' })),
     }),
-    execute: async (_toolCallId, params) => {
+    execute: async (_toolCallId, params, signal) => {
       const input = params as { number: number; method?: 'merge' | 'squash' | 'rebase'; commitTitle?: string }
       const number = Math.trunc(Number(input.number))
       if (!Number.isFinite(number) || number <= 0) return textResult({ error: 'A pull request number is required.' })
       const method = input.method ?? 'squash'
 
-      const botResult = await apiMergeGitHubPullRequest(ctx.projectId, number, { method, commitTitle: input.commitTitle })
+      const merge = () => apiMergeGitHubPullRequest(ctx.projectId, number, { method, commitTitle: input.commitTitle })
+      let botResult = await merge()
+      if (botResult.code === 'approval_pending' && botResult.approvalId) {
+        const approvalId = botResult.approvalId
+        const outcome = await waitForCredentialApproval(ctx.projectId, approvalId, botResult.expiresAt, signal)
+        if (outcome !== 'approved') return approvalOutcomeResult('github', outcome)
+        botResult = await withCredentialApproval(approvalId, merge)
+      }
       if (botResult.ok && botResult.data) {
         return textResult({ ok: true, mode: 'github-app', merged: botResult.data.merged !== false, number, sha: botResult.data.sha })
       }

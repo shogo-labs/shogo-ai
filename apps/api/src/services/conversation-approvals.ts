@@ -21,7 +21,14 @@ export type ApprovalDecision = 'approve' | 'deny'
 
 export interface ApprovalRequest {
   id: string
+  /**
+   * `tool` (default): the runtime's permission engine is waiting on it.
+   * `credential`: an integration `approve` step; the approver's own account is used.
+   */
+  kind?: 'tool' | 'credential'
   toolName: string
+  /** Overrides the line derived from the tool and parameters. */
+  summary?: string
   category?: string
   params?: Record<string, unknown>
   reason?: string
@@ -31,6 +38,7 @@ export interface ApprovalRequest {
 
 export interface ApprovalBlock {
   requestId: string
+  kind?: 'tool' | 'credential'
   projectId: string
   toolName: string
   summary: string
@@ -111,9 +119,10 @@ export async function postApprovalCard(input: {
 }): Promise<string | null> {
   const approval: ApprovalBlock = {
     requestId: input.request.id,
+    ...(input.request.kind === 'credential' ? { kind: 'credential' as const } : {}),
     projectId: input.agent.projectId,
     toolName: input.request.toolName,
-    summary: approvalSummary(input.request),
+    summary: input.request.summary ? clip(input.request.summary, MAX_SUMMARY) : approvalSummary(input.request),
     ...(input.request.reason ? { reason: clip(input.request.reason, 400) } : {}),
     status: 'pending',
     ...(input.request.timeout ? { expiresAt: new Date(Date.now() + input.request.timeout * 1000).toISOString() } : {}),
@@ -180,11 +189,16 @@ export async function decideApproval(input: {
 
   deciding.add(row.id)
   try {
-    const delivered = await input.respond({
-      projectId: approval.projectId,
-      requestId: approval.requestId,
-      decision: input.decision === 'approve' ? 'allow_once' : 'deny',
-    })
+    const decision = input.decision === 'approve' ? 'allow_once' : 'deny'
+    // Credential cards are answered in the API, wherever the press came from; the runtime polls for them.
+    const delivered = approval.kind === 'credential'
+      ? await (await import('./integration-credentials/approvals')).decideCredentialApproval({
+          approvalId: approval.requestId,
+          decision,
+          userId: input.by.userId,
+          now,
+        })
+      : await input.respond({ projectId: approval.projectId, requestId: approval.requestId, decision })
     if (!delivered) {
       await settle(row, { status: 'expired' })
       throw new AgentMessageError(409, 'expired', 'The agent is no longer waiting on this')

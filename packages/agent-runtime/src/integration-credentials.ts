@@ -14,13 +14,21 @@
  *     use and puts it in the scope (`GH_TOKEN` env for shells, a Composio
  *     entity for Composio tools);
  *   - when the requester has to connect first, returns the connect link
- *     instead of running the tool.
+ *     instead of running the tool;
+ *   - when the chain posts an approval card, waits for someone to answer it
+ *     and runs the call with the approver's account.
  *
  * No saved policy for a provider means no lookup and today's behavior.
  */
 
 import type { AgentTool } from '@mariozechner/pi-agent-core'
-import { REQUESTER_TICKET_HEADER, runInCredentialScope, type CredentialScope } from './credential-scope'
+import {
+  CREDENTIAL_APPROVAL_HEADER,
+  currentCredentialScope,
+  REQUESTER_TICKET_HEADER,
+  runInCredentialScope,
+  type CredentialScope,
+} from './credential-scope'
 import { githubCliEnvFromCredentials } from './github-cli-credentials'
 import { deriveApiUrl, getInternalHeaders, projectScopedId } from './internal-api'
 
@@ -91,17 +99,20 @@ function needsResolve(policy: CredentialPolicySummary | undefined, provider: str
 export type ResolvedCredential =
   | {
       ok: true
-      source: 'shared' | 'personal'
+      source: 'shared' | 'personal' | 'delegate' | 'approved'
       actingAs: string
+      /** Who the shared account acted for, when a person asked. */
+      onBehalfOf?: string
       credential: { token?: string; expiresAt?: string; login?: string; name?: string; email?: string; entityId?: string }
     }
-  | { ok: false; code: string; message: string; connectUrl?: string }
+  | { ok: false; code: string; message: string; connectUrl?: string; approvalId?: string; expiresAt?: string }
 
 export async function resolveIntegrationCredential(
   projectId: string,
   provider: string,
   op: CredentialOp,
   requesterTicket: string | undefined,
+  opts: { toolName?: string; approvalId?: string } = {},
 ): Promise<ResolvedCredential> {
   const apiUrl = deriveApiUrl()
   if (!apiUrl) return { ok: false, code: 'unavailable', message: 'No API URL configured' }
@@ -111,8 +122,9 @@ export async function resolveIntegrationCredential(
       headers: {
         ...getInternalHeaders(),
         ...(requesterTicket ? { [REQUESTER_TICKET_HEADER]: requesterTicket } : {}),
+        ...(opts.approvalId ? { [CREDENTIAL_APPROVAL_HEADER]: opts.approvalId } : {}),
       },
-      body: JSON.stringify({ provider, op }),
+      body: JSON.stringify({ provider, op, ...(opts.toolName ? { toolName: opts.toolName } : {}) }),
       signal: AbortSignal.timeout(15_000),
     })
     const body = (await res.json().catch(() => null)) as ResolvedCredential | null
@@ -121,6 +133,79 @@ export async function resolveIntegrationCredential(
   } catch (err: any) {
     return { ok: false, code: 'unavailable', message: err?.message ?? String(err) }
   }
+}
+
+// ---------------------------------------------------------------------------
+// Approval cards
+// ---------------------------------------------------------------------------
+
+export type ApprovalOutcome = 'approved' | 'denied' | 'expired' | 'aborted'
+
+function approvalPollMs(): number {
+  const fromEnv = Number(process.env.SHOGO_CREDENTIAL_APPROVAL_POLL_MS)
+  return Number.isFinite(fromEnv) && fromEnv > 0 ? fromEnv : 2_000
+}
+
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal?.aborted) return resolve()
+    const timer = setTimeout(done, ms)
+    function done() {
+      clearTimeout(timer)
+      signal?.removeEventListener('abort', done)
+      resolve()
+    }
+    signal?.addEventListener('abort', done, { once: true })
+  })
+}
+
+/** Wait until someone answers the approval card, it expires, or the call is aborted. */
+export async function waitForCredentialApproval(
+  projectId: string,
+  approvalId: string,
+  expiresAt: string | undefined,
+  signal?: AbortSignal,
+): Promise<ApprovalOutcome> {
+  const apiUrl = deriveApiUrl()
+  if (!apiUrl) return 'expired'
+  const deadline = (expiresAt ? Date.parse(expiresAt) : NaN) || Date.now() + 10 * 60_000
+  const url = `${apiUrl}/api/internal/projects/${encodeURIComponent(projectId)}/integrations/approvals/${encodeURIComponent(approvalId)}`
+  while (!signal?.aborted) {
+    try {
+      const res = await fetch(url, { headers: getInternalHeaders(), signal: AbortSignal.timeout(10_000) })
+      const body = (await res.json().catch(() => null)) as { state?: string } | null
+      if (res.ok && body?.state && body.state !== 'pending') {
+        return body.state === 'approved' || body.state === 'denied' ? body.state : 'expired'
+      }
+    } catch (err: any) {
+      console.warn(`[IntegrationCredentials] Approval ${approvalId} poll failed:`, err?.message ?? err)
+    }
+    // A little past the deadline so the API is the one to call it expired.
+    if (Date.now() > deadline + 5_000) return 'expired'
+    await sleep(approvalPollMs(), signal)
+  }
+  return 'aborted'
+}
+
+/** Run `fn` with an approval attached to its internal API calls. */
+export function withCredentialApproval<T>(approvalId: string, fn: () => T): T {
+  return runInCredentialScope({ ...currentCredentialScope(), approvalId }, fn)
+}
+
+/** What a tool returns when an approval didn't come through. */
+export function approvalOutcomeResult(provider: string, outcome: Exclude<ApprovalOutcome, 'approved'>) {
+  const payload = {
+    error:
+      outcome === 'denied'
+        ? 'Nobody approved using their own account for this; the request was denied.'
+        : outcome === 'aborted'
+          ? 'Stopped while waiting for approval.'
+          : 'Nobody approved this in time.',
+    code: `approval_${outcome}`,
+    provider,
+    next: 'Do not retry this with another account. Tell the person it was not done and why.',
+  }
+  return { content: [{ type: 'text' as const, text: JSON.stringify(payload) }], details: payload }
 }
 
 // ---------------------------------------------------------------------------
@@ -218,10 +303,26 @@ export function withIntegrationCredentials(tool: AgentTool, ctx: CredentialWrapp
     const scope: CredentialScope = { requesterTicket: ctx.requesterTicket }
     const meta = toolCredentialMeta(tool, params)
     const projectId = projectScopedId(ctx.projectId)
+    let used: Extract<ResolvedCredential, { ok: true }> | null = null
     if (meta && projectId) {
       const policy = (await policiesFor(projectId)).get(meta.provider)
       if (needsResolve(policy, meta.provider, meta.op)) {
-        const resolved = await resolveIntegrationCredential(projectId, meta.provider, meta.op, ctx.requesterTicket)
+        let resolved = await resolveIntegrationCredential(projectId, meta.provider, meta.op, ctx.requesterTicket, {
+          toolName: tool.name,
+        })
+        if (!resolved.ok && resolved.code === 'approval_pending' && resolved.approvalId) {
+          const approvalId = resolved.approvalId
+          ctx.uiWriter?.write({
+            type: 'data-integration-approval-pending',
+            data: { provider: meta.provider, approvalId, expiresAt: resolved.expiresAt, message: resolved.message },
+          })
+          const outcome = await waitForCredentialApproval(projectId, approvalId, resolved.expiresAt, signal)
+          if (outcome !== 'approved') return approvalOutcomeResult(meta.provider, outcome) as any
+          resolved = await resolveIntegrationCredential(projectId, meta.provider, meta.op, ctx.requesterTicket, {
+            toolName: tool.name,
+            approvalId,
+          })
+        }
         if (!resolved.ok) {
           if (resolved.code === 'requester_auth_required') {
             ctx.uiWriter?.write({
@@ -231,6 +332,7 @@ export function withIntegrationCredentials(tool: AgentTool, ctx: CredentialWrapp
           }
           return blockedResult(meta.provider, resolved) as any
         }
+        used = resolved
         scope.actingAs = resolved.actingAs
         if (meta.provider === 'github' && resolved.credential.token) {
           scope.githubEnv = githubCliEnvFromCredentials(resolved.credential)?.env
@@ -238,7 +340,28 @@ export function withIntegrationCredentials(tool: AgentTool, ctx: CredentialWrapp
         if (resolved.credential.entityId) scope.composioEntityId = resolved.credential.entityId
       }
     }
-    return runInCredentialScope(scope, () => tool.execute(toolCallId, params, signal, onUpdate))
+    const result = await runInCredentialScope(scope, () => tool.execute(toolCallId, params, signal, onUpdate))
+    return used ? withCredentialNote(result, used) : result
   }
   return { ...tool, execute } as AgentTool
+}
+
+/**
+ * Tell the model whose account the call used. On the shared account, it's
+ * asked to credit the person it acted for in what it writes.
+ */
+function withCredentialNote(result: any, used: Extract<ResolvedCredential, { ok: true }>) {
+  if (!result || typeof result !== 'object') return result
+  const credential = { actingAs: used.actingAs, source: used.source, ...(used.onBehalfOf ? { onBehalfOf: used.onBehalfOf } : {}) }
+  const note = used.onBehalfOf
+    ? `[Ran with the shared project account on behalf of ${used.onBehalfOf}. When this creates something people will read ` +
+      `(an issue, comment, message), mention it was requested by ${used.onBehalfOf}.]`
+    : used.source === 'approved'
+      ? `[Ran as ${used.actingAs}, who approved it.]`
+      : used.source === 'delegate'
+        ? `[Ran as ${used.actingAs}, who this agent acts as when nobody else can be.]`
+        : null
+  const content = note && Array.isArray(result.content) ? [...result.content, { type: 'text', text: note }] : result.content
+  const details = result.details && typeof result.details === 'object' ? { ...result.details, credential } : { credential }
+  return { ...result, content, details }
 }
