@@ -12,6 +12,7 @@ import { getStoredAttribution, clearStoredAttribution } from '../../lib/attribut
 import { api, createHttpClient, API_URL } from '../../lib/api'
 import { getPasswordResetRedirectUrl } from '../../lib/password-reset-redirect'
 import { LoginScreen } from '@shogo/shared-ui/screens'
+import { LoginShowcase } from '../../components/auth/LoginShowcase'
 import * as AppleAuthentication from 'expo-apple-authentication'
 import * as Crypto from 'expo-crypto'
 
@@ -211,6 +212,9 @@ export default function SignInScreen() {
         error={error}
         onClearError={clearError}
         colorScheme={resolvedColorScheme}
+        desktopShowcase={
+          Platform.OS === 'web' ? <LoginShowcase colorScheme={resolvedColorScheme} /> : undefined
+        }
       />
     </SafeAreaView>
   )
