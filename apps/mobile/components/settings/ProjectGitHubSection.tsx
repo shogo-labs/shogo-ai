@@ -5,6 +5,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Linking, Pressable, TextInput, View } from "react-native";
 import { API_URL } from "../../lib/api";
 import { Text } from "./account-sheet-chrome";
+import { IntegrationActsAsSection } from "./IntegrationActsAsSection";
 
 interface GitHubConnectionInfo {
   repoFullName: string;
@@ -277,6 +278,7 @@ export function ProjectGitHubSection({ projectId }: { projectId: string }) {
           >
             <Text className="text-sm text-foreground">{busy === "disconnect" ? "Disconnecting…" : "Disconnect"}</Text>
           </Pressable>
+          <IntegrationActsAsSection projectId={projectId} />
         </View>
       ) : (
         <View>

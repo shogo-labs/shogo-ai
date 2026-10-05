@@ -49,6 +49,7 @@ import { thumbnailRoutes, rewriteInlineThumbnails } from './routes/thumbnail'
 import { chatAttachmentRoutes } from './routes/chat-attachments'
 import { sharedFileRoutes } from './routes/shared-files'
 import { githubRoutes } from './routes/github'
+import { integrationCredentialRoutes } from './routes/integration-credentials'
 import { aiProxyRoutes } from './routes/ai-proxy'
 import { aiLiveRoutes } from './routes/ai-live'
 import { authenticateLiveHeaders } from './lib/live-auth'
@@ -5312,6 +5313,9 @@ app.route('/api', gitLfsRouter)
 // Mount GitHub routes
 const githubRouter = githubRoutes()
 app.route('/api', githubRouter)
+
+// "Acts as" policies for agent integrations, and personal connections.
+app.route('/api', integrationCredentialRoutes({ loadGitHub: () => import('./services/github.service') }))
 
 // Mount project auth-config routes (Studio Settings -> Auth & Database).
 app.route('/api', projectAuthConfigRoutes())
