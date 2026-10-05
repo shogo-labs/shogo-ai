@@ -7855,6 +7855,16 @@ app.post('/api/webhooks/composio', async (c) => {
   return c.json(result.body, result.status)
 })
 
+// LiveKit room/participant events → huddle rosters (see services/huddle.service.ts)
+app.post('/api/webhooks/livekit', async (c) => {
+  const { handleLiveKitWebhook } = await import('./services/huddle.service')
+  const result = await handleLiveKitWebhook({
+    rawBody: await c.req.text(),
+    authorization: c.req.header('authorization'),
+  })
+  return c.json(result.body, result.status)
+})
+
 // Stripe webhook endpoint
 app.post('/api/webhooks/stripe', async (c) => {
   try {

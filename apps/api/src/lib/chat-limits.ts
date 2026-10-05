@@ -72,6 +72,8 @@ export const CHAT_RATE_LIMITS = {
   dmOpen: { max: 30, windowMs: 60_000 },
   /** Channel and DM posts from one agent's tools. */
   agentPost: { max: 30, windowMs: 60_000 },
+  /** Huddle joins per user, so reconnect loops can't flood LiveKit or the roster. */
+  huddleJoin: { max: 20, windowMs: 60_000 },
 } as const
 
 // ─── Semaphore ───────────────────────────────────────────────────────────────

@@ -869,6 +869,9 @@ jobs:
           if [ -n "${{ secrets.ELEVENLABS_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=ELEVENLABS_API_KEY="${{ secrets.ELEVENLABS_API_KEY }}"); fi
           if [ -n "${{ secrets.ELEVENLABS_VOICE_MODE_AGENT_ID }}" ]; then SECRET_ARGS+=(--from-literal=ELEVENLABS_VOICE_MODE_AGENT_ID="${{ secrets.ELEVENLABS_VOICE_MODE_AGENT_ID }}"); fi
           if [ -n "${{ secrets.ELEVENLABS_WEBHOOK_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=ELEVENLABS_WEBHOOK_SECRET="${{ secrets.ELEVENLABS_WEBHOOK_SECRET }}"); fi
+          if [ -n "${{ secrets.LIVEKIT_URL }}" ]; then SECRET_ARGS+=(--from-literal=LIVEKIT_URL="${{ secrets.LIVEKIT_URL }}"); fi
+          if [ -n "${{ secrets.LIVEKIT_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=LIVEKIT_API_KEY="${{ secrets.LIVEKIT_API_KEY }}"); fi
+          if [ -n "${{ secrets.LIVEKIT_API_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=LIVEKIT_API_SECRET="${{ secrets.LIVEKIT_API_SECRET }}"); fi
           if [ -n "${{ secrets.TWILIO_ACCOUNT_SID }}" ]; then SECRET_ARGS+=(--from-literal=TWILIO_ACCOUNT_SID="${{ secrets.TWILIO_ACCOUNT_SID }}"); fi
           if [ -n "${{ secrets.TWILIO_AUTH_TOKEN }}" ]; then SECRET_ARGS+=(--from-literal=TWILIO_AUTH_TOKEN="${{ secrets.TWILIO_AUTH_TOKEN }}"); fi
           # Shared secret with shogo-website/functions/r/[code].ts for
@@ -1476,6 +1479,9 @@ jobs:
           if [ -n "${{ secrets.ELEVENLABS_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=ELEVENLABS_API_KEY="${{ secrets.ELEVENLABS_API_KEY }}"); fi
           if [ -n "${{ secrets.ELEVENLABS_VOICE_MODE_AGENT_ID }}" ]; then SECRET_ARGS+=(--from-literal=ELEVENLABS_VOICE_MODE_AGENT_ID="${{ secrets.ELEVENLABS_VOICE_MODE_AGENT_ID }}"); fi
           if [ -n "${{ secrets.ELEVENLABS_WEBHOOK_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=ELEVENLABS_WEBHOOK_SECRET="${{ secrets.ELEVENLABS_WEBHOOK_SECRET }}"); fi
+          if [ -n "${{ secrets.LIVEKIT_URL }}" ]; then SECRET_ARGS+=(--from-literal=LIVEKIT_URL="${{ secrets.LIVEKIT_URL }}"); fi
+          if [ -n "${{ secrets.LIVEKIT_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=LIVEKIT_API_KEY="${{ secrets.LIVEKIT_API_KEY }}"); fi
+          if [ -n "${{ secrets.LIVEKIT_API_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=LIVEKIT_API_SECRET="${{ secrets.LIVEKIT_API_SECRET }}"); fi
           if [ -n "${{ secrets.TWILIO_ACCOUNT_SID }}" ]; then SECRET_ARGS+=(--from-literal=TWILIO_ACCOUNT_SID="${{ secrets.TWILIO_ACCOUNT_SID }}"); fi
           if [ -n "${{ secrets.TWILIO_AUTH_TOKEN }}" ]; then SECRET_ARGS+=(--from-literal=TWILIO_AUTH_TOKEN="${{ secrets.TWILIO_AUTH_TOKEN }}"); fi
           # Shared secret with shogo-website/functions/r/[code].ts for
@@ -2162,6 +2168,9 @@ jobs:
           if [ -n "${{ secrets.ELEVENLABS_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=ELEVENLABS_API_KEY="${{ secrets.ELEVENLABS_API_KEY }}"); fi
           if [ -n "${{ secrets.ELEVENLABS_VOICE_MODE_AGENT_ID }}" ]; then SECRET_ARGS+=(--from-literal=ELEVENLABS_VOICE_MODE_AGENT_ID="${{ secrets.ELEVENLABS_VOICE_MODE_AGENT_ID }}"); fi
           if [ -n "${{ secrets.ELEVENLABS_WEBHOOK_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=ELEVENLABS_WEBHOOK_SECRET="${{ secrets.ELEVENLABS_WEBHOOK_SECRET }}"); fi
+          if [ -n "${{ secrets.LIVEKIT_URL }}" ]; then SECRET_ARGS+=(--from-literal=LIVEKIT_URL="${{ secrets.LIVEKIT_URL }}"); fi
+          if [ -n "${{ secrets.LIVEKIT_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=LIVEKIT_API_KEY="${{ secrets.LIVEKIT_API_KEY }}"); fi
+          if [ -n "${{ secrets.LIVEKIT_API_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=LIVEKIT_API_SECRET="${{ secrets.LIVEKIT_API_SECRET }}"); fi
           if [ -n "${{ secrets.TWILIO_ACCOUNT_SID }}" ]; then SECRET_ARGS+=(--from-literal=TWILIO_ACCOUNT_SID="${{ secrets.TWILIO_ACCOUNT_SID }}"); fi
           if [ -n "${{ secrets.TWILIO_AUTH_TOKEN }}" ]; then SECRET_ARGS+=(--from-literal=TWILIO_AUTH_TOKEN="${{ secrets.TWILIO_AUTH_TOKEN }}"); fi
           # Shared secret with shogo-website/functions/r/[code].ts for

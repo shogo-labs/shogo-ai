@@ -66,7 +66,10 @@ export function createApp(options: CreateAppOptions): Hono {
     }, 500)
   })
 
-  app.use('/api/auth/*', rateLimiter('auth', { max: 60, windowMs: 60_000 }))
+  app.use('/api/auth/*', rateLimiter('auth', {
+    max: Number(process.env.RATE_LIMIT_AUTH_MAX) || 60,
+    windowMs: Number(process.env.RATE_LIMIT_AUTH_WINDOW_MS) || 60_000,
+  }))
   app.use('/api/*', rateLimiter('global', {
     max: Number(process.env.RATE_LIMIT_GLOBAL_MAX) || 600,
     windowMs: Number(process.env.RATE_LIMIT_GLOBAL_WINDOW_MS) || 60_000,

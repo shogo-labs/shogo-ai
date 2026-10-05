@@ -26,6 +26,7 @@ import { usePresenceFeed } from '../../../hooks/usePresence'
 import { useDraftsFeed, useSavedFeed } from '../../../hooks/useChatItems'
 import { useCustomEmojiFeed } from '../../../hooks/useCustomEmoji'
 import { ConversationHeader } from '../../../components/team-chat/ConversationHeader'
+import { HuddleBanner } from '../../../components/team-chat/Huddle'
 import { TimelinePane } from '../../../components/team-chat/TimelinePane'
 import { ProjectSidePane } from '../../../components/team-chat/ProjectSidePane'
 import { usePhoneChromeOverlay } from '../../../components/layout/PhoneChromeOverlay'
@@ -200,12 +201,25 @@ export default function ConversationScreen() {
     />
   )
 
+  const huddleLabel =
+    conversation.kind === 'dm' || conversation.kind === 'group_dm'
+      ? conversation.members.filter((m) => m.type === 'user' && m.userId !== me).map((m) => m.name).join(', ') || 'Direct message'
+      : `#${conversation.name ?? 'channel'}`
+  const huddleBanner = floating ? (
+    <View pointerEvents="box-none" className="absolute left-0 right-0 z-20" style={{ top: headerHeight }}>
+      <HuddleBanner conversation={conversation} me={me} label={huddleLabel} />
+    </View>
+  ) : (
+    <HuddleBanner conversation={conversation} me={me} label={huddleLabel} />
+  )
+
   return (
     <KeyboardAvoidingView className="flex-1 bg-background" behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
       <View className="flex-1 flex-row">
         {showMain && (
           <View className="flex-1">
             {header}
+            {huddleBanner}
             <TimelinePane
               key={conversation.id}
               workspaceId={workspaceId}

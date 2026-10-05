@@ -53,6 +53,7 @@
     "fflate": "^0.8.2",
     "hono": "^4.7.10",
     "ioredis": "^5.10.1",
+    "livekit-server-sdk": "^2.19.1",
     "nanoid": "^5.0.9",
     "nodemailer": "^8.0.3",
     "pg": "^8.13.1",

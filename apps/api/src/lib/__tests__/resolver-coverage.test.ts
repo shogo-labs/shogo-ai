@@ -57,6 +57,7 @@ const EXEMPT: Record<string, string> = {
   eventDelivery: 'Created by the event emitter alongside its workspaceEvent and advanced only by the delivery worker (a job, not REST); redeliver is /api/workspaces/:workspaceId/triggers/... — resolved by path workspaceId.',
   eventSubscription: 'Mutated via /api/workspaces/:workspaceId/triggers (routes/workspace-agent.ts, mounted publicly and internally) — resolved by path workspaceId; app-owned rows are written with their appInstallGrant.',
   workspaceEvent: 'Append-only outbox written as a side effect of the workspace mutation that raised it (same request, same region) or by the signed Composio webhook; never mutated via REST.',
+  huddle: 'Mutated via /api/conversations/:conversationId/huddle/{join,leave} — resolved by the conversation lookup; LiveKit webhooks forward to the home region parsed from the room name (services/huddle.service.ts).',
   budgetAlert: 'Mutated via /api/workspaces/:id/... budget routes — resolved by path workspaceId.',
   chatInboxItem: 'Mutated via workspace-scoped chat inbox routes — resolved by path workspaceId.',
   chatInstallation: 'Mutated via /api/workspaces/:workspaceId/chat-installations routes (path workspaceId, admin-gated), the Slack OAuth callback (workspaceId from signed OAuth state), and the `connect <code>` chat command (workspaceId from a signed connect code).',

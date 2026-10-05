@@ -72,6 +72,7 @@ import { registerConversationUnfurls } from '../services/conversation-unfurl'
 import { listStatuses } from '../services/chat-settings'
 import { listGroups } from '../services/chat-customization'
 import { mountConversationExtras } from './conversation-extras'
+import { mountHuddleRoutes } from './huddles'
 import { agentChatEnabled, assertNativeChat, getWorkspaceChatConfig, setWorkspaceChatConfig } from '../services/chat-mode'
 import type { ConversationSocketData } from '../realtime/conversation-socket'
 
@@ -180,6 +181,7 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
   })
 
   mountConversationExtras(router, { requireUser, requireWorkspace, errorResponse, readJson })
+  mountHuddleRoutes(router, { requireUser, requireWorkspace, errorResponse })
 
   // ─── Workspace-level ─────────────────────────────────────────────────────
 
