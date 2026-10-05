@@ -143,11 +143,26 @@ describe('cloud (actions only)', () => {
     expect(e.isActionsOnly).toBe(true)
     expect(e.check('shell', 'exec', { command: 'sudo ls' }).action).toBe('allow')
     expect(e.check('system', 'anything', {}).action).toBe('allow')
-    expect(e.check('project', 'github_merge_pr', {}).action).toBe('ask')
+    // Built-in defaults (merge asks) are local-only: cloud asks only for rules a person set.
+    expect(e.actionRuleFor('github_merge_pr')).toBeUndefined()
+    expect(e.check('project', 'github_merge_pr', {}).action).toBe('allow')
+    expect(cloud({ actions: { github_merge_pr: 'ask' } }).check('project', 'github_merge_pr', {}).action).toBe('ask')
     expect(e.check('project', 'send_message', {}).action).toBe('deny')
     const withDeny = cloud({ shellCommands: { deny: ['*gh pr merge*'] } })
     expect(withDeny.check('shell', 'exec', { command: 'gh pr merge 4' }).action).toBe('deny')
     expect(withDeny.check('shell', 'exec', { command: 'git push' }).action).toBe('allow')
+  })
+})
+
+describe('cloud workspace on a worker machine (no default rules)', () => {
+  test('no built-in ask rule, but hard blocks and configured rules still apply', () => {
+    const e = engine({ ...DEFAULT_CLOUD_SECURITY_PREFERENCE }, { noDefaultActionRules: true })
+    expect(e.isActionsOnly).toBe(false)
+    expect(e.actionRuleFor('github_merge_pr')).toBeUndefined()
+    expect(e.check('project', 'github_merge_pr', {}).action).toBe('allow')
+    expect(e.check('shell', 'exec', { command: 'sudo ls' }).action).toBe('deny')
+    const asked = engine({ ...DEFAULT_CLOUD_SECURITY_PREFERENCE, overrides: { actions: { github_merge_pr: 'ask' } } }, { noDefaultActionRules: true })
+    expect(asked.check('project', 'github_merge_pr', {}).action).toBe('ask')
   })
 })
 
@@ -163,7 +178,7 @@ describe('gating tools', () => {
 
   test('an ask rule waits for a person: approval runs the tool once, a denial does not', async () => {
     const events: any[] = []
-    const e = engine({ mode: 'full_autonomy', approvalTimeoutSeconds: 5 }, { actionsOnly: true, sendSseEvent: (ev: any) => events.push(ev) })
+    const e = engine({ mode: 'full_autonomy', approvalTimeoutSeconds: 5, overrides: { actions: { github_merge_pr: 'ask' } } }, { actionsOnly: true, sendSseEvent: (ev: any) => events.push(ev) })
     const t = tool('github_merge_pr')
     const gated = withActionRules(t.tool, e)
 
@@ -188,7 +203,7 @@ describe('gating tools', () => {
 
   test('the first answer wins; a late second answer is ignored', async () => {
     const events: any[] = []
-    const e = engine({ mode: 'full_autonomy', approvalTimeoutSeconds: 5 }, { actionsOnly: true, sendSseEvent: (ev: any) => events.push(ev) })
+    const e = engine({ mode: 'full_autonomy', approvalTimeoutSeconds: 5, overrides: { actions: { github_merge_pr: 'ask' } } }, { actionsOnly: true, sendSseEvent: (ev: any) => events.push(ev) })
     const t = tool('github_merge_pr')
     const run = withActionRules(t.tool, e).execute('c1', { number: 1 })
     await Promise.resolve()
@@ -200,7 +215,7 @@ describe('gating tools', () => {
   })
 
   test('with nobody to ask (no connected client) an ask rule fails closed', async () => {
-    const e = engine({ mode: 'full_autonomy' }, { actionsOnly: true })
+    const e = engine({ mode: 'full_autonomy', overrides: { actions: { github_merge_pr: 'ask' } } }, { actionsOnly: true })
     const t = tool('github_merge_pr')
     const res = await withActionRules(t.tool, e).execute('c1', { number: 1 })
     expect(t.calls).toHaveLength(0)

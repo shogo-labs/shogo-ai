@@ -746,10 +746,14 @@ export class AgentGateway {
     // policy; cloud runtimes enforce only per-tool action rules (for example
     // "ask before merging a pull request"), so nothing else changes for them.
     if (process.env.SHOGO_LOCAL_MODE === 'true') {
-      const pref = parseSecurityPolicy(process.env.SECURITY_POLICY)
+      // A `shogo worker` hosts cloud workspace projects on someone's machine; the people
+      // chatting are teammates in the cloud, so nothing prompts unless a rule was configured.
+      const cloudScope = process.env.SHOGO_PERMISSION_SCOPE === 'cloud'
+      const pref = parseSecurityPolicy(process.env.SECURITY_POLICY, cloudScope ? DEFAULT_CLOUD_SECURITY_PREFERENCE : undefined)
       this.permissionEngine = new PermissionEngine({
         preference: pref,
         workspaceDir,
+        noDefaultActionRules: cloudScope,
       })
       console.log(`[AgentGateway] Permission engine initialized: mode=${pref.mode}`)
       // Enforce the user's "computer use" setting on the computer-use MCP server.
