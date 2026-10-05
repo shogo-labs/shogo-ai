@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * Desktop routing for the user's cloud workspaces: their team workspaces and,
- * while signed in, their cloud Personal workspace in place of the local one.
+ * Desktop routing for the user's cloud workspaces (team and Personal), which
+ * are listed alongside the local ones while signed in.
  *
  * The desktop's local API relays `/api/cloud/<workspaceId>/<path>` to Shogo
  * Cloud with that workspace's key. While a cloud workspace is active, API
@@ -12,13 +12,7 @@
  * `?workspaceId=<id>`) follows that workspace, whichever one is active.
  */
 import { useSyncExternalStore } from 'react'
-import {
-  clearActiveWorkspaceId,
-  getActiveWorkspaceId,
-  getCachedWorkspaceKind,
-  rememberWorkspaceKind,
-  setActiveWorkspaceId,
-} from './workspace-store'
+import { clearActiveWorkspaceId, getActiveWorkspaceId } from './workspace-store'
 import { safeGetItem, safeSetItem, safeRemoveItem } from './safe-storage'
 
 export interface CloudWorkspaceInfo {
@@ -163,22 +157,13 @@ export function installWorkspaceFetchRouter(apiBase: string): void {
 }
 
 /**
- * The cloud Personal workspace stands in for the local one while signed in,
- * so someone sitting in Personal stays in Personal across the swap.
+ * The active cloud workspace went away (signed out, or the user left it):
+ * fall back to the local workspaces.
  */
-function followCloudPersonal(previous: CloudWorkspacesState): void {
-  const personal = state.workspaces.find((w) => w.kind === 'personal')
+function leaveRemovedCloudWorkspace(previous: CloudWorkspacesState): void {
   const activeId = getActiveWorkspaceId()
-  const wasPersonal = previous.workspaces.find((w) => w.kind === 'personal')
-  // Signed out of cloud: fall back to the local workspaces (local Personal first).
-  if (!personal && wasPersonal && activeId === wasPersonal.id) {
-    clearActiveWorkspaceId()
-    return
-  }
-  if (!personal || !activeId || activeId === personal.id || cloudIds.has(activeId)) return
-  if (getCachedWorkspaceKind(activeId) !== 'personal') return
-  rememberWorkspaceKind(personal.id, 'personal')
-  setActiveWorkspaceId(personal.id)
+  if (!activeId || cloudIds.has(activeId)) return
+  if (previous.workspaces.some((w) => w.id === activeId)) clearActiveWorkspaceId()
 }
 
 /** Load which cloud workspaces this desktop can open from the local API. */
@@ -206,7 +191,7 @@ export async function refreshCloudWorkspaces(apiBase: string, opts: { sync?: boo
       user: body.user ?? null,
       workspaces,
     })
-    followCloudPersonal(previous)
+    leaveRemovedCloudWorkspace(previous)
   } catch {
     // Keep the last known list; the relay reports cloud outages per request.
   }

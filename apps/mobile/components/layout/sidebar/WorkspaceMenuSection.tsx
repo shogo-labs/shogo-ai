@@ -7,7 +7,7 @@
 
 import { useCallback, type ReactNode } from "react";
 import { Linking, Platform, Pressable, Text, View } from "react-native";
-import { Check, Cloud, CloudOff, ExternalLink, Plus, Settings, Sparkles, Users, Zap } from "lucide-react-native";
+import { Check, Cloud, CloudOff, ExternalLink, LogIn, LogOut, Plus, Settings, Sparkles, Users, Zap } from "lucide-react-native";
 import { cn } from "@shogo/shared-ui/primitives";
 import { usePostHogSafe } from "../../../contexts/posthog";
 import { getPlanDisplayName } from "../../../lib/billing-config";
@@ -16,6 +16,7 @@ import { CompactUsageWindows } from "../../billing/UsageWindows";
 import { densityFor } from "../../../lib/phone-density";
 import { AccountSettingsGroup } from "./AccountSettingsGroup";
 import { isCloudWorkspace, useCloudWorkspaces } from "../../../lib/workspace-route";
+import { useCloudSession } from "../../../hooks/useCloudSession";
 
 export interface WorkspaceMenuSectionProps {
   workspaces: any[];
@@ -53,16 +54,20 @@ export interface WorkspaceMenuSectionProps {
  * and settings, and doesn't help users tell workspaces apart. Show the
  * structural `kind` instead — "Personal" vs "Team" — which is what
  * actually determines the sidebar/shell chrome (`useWorkspaceExperience`).
+ * On desktop, where local and cloud workspaces share the list, show where
+ * the workspace lives instead: "Local" or "Cloud".
  */
 export function workspaceKindBadge(
   ws: { kind?: string },
-  opts: { cloud?: boolean } = {},
+  opts: { localMode?: boolean; cloud?: boolean } = {},
 ): {
   highlighted: boolean;
   label: string;
 } {
+  if (opts.localMode) {
+    return opts.cloud ? { highlighted: true, label: "Cloud" } : { highlighted: false, label: "Local" };
+  }
   const isPersonal = ws.kind === "personal";
-  if (opts.cloud && !isPersonal) return { highlighted: false, label: "Cloud" };
   return { highlighted: isPersonal, label: isPersonal ? "Personal" : "Team" };
 }
 
@@ -261,11 +266,10 @@ export function WorkspaceMenuSection({
 
   const workspaceRows = (
     <>
-      {workspaces.map((ws: any, index: number) => {
+      {workspaces.map((ws: any) => {
         const isCurrent = ws.id === currentWorkspace?.id;
-        const isLast = index === workspaces.length - 1 && localMode;
         const wsIsCloud = !!localMode && isCloudWorkspace(ws.id);
-        const badge = workspaceKindBadge(ws, { cloud: wsIsCloud });
+        const badge = workspaceKindBadge(ws, { localMode: !!localMode, cloud: wsIsCloud });
         return (
           <Pressable
             key={ws.id}
@@ -278,7 +282,7 @@ export function WorkspaceMenuSection({
             className={cn(
               "flex-row items-center gap-2 px-4 active:bg-muted",
               isNative ? "py-3.5" : "py-2",
-              isNative && !isLast && "border-b border-border",
+              isNative && "border-b border-border",
             )}
           >
             <View
@@ -299,9 +303,6 @@ export function WorkspaceMenuSection({
             >
               {ws.name}
             </Text>
-            {wsIsCloud && ws.kind === "personal" && (
-              <Cloud size={12} className="text-muted-foreground" accessibilityLabel="Synced with Shogo Cloud" />
-            )}
             <View
               className={cn(
                 "rounded px-1.5 py-0.5",
@@ -350,6 +351,9 @@ export function WorkspaceMenuSection({
             </Text>
           </View>
         </Pressable>
+      )}
+      {localMode && (
+        <CloudSessionRow isNative={isNative} />
       )}
       {!localMode && (
         <Pressable
@@ -409,6 +413,76 @@ export function WorkspaceMenuSection({
         </Text>
         {workspaceRows}
       </View>
+    </>
+  );
+}
+
+/** Desktop: sign in to Shogo Cloud, or show the account with Sign out. */
+function CloudSessionRow({ isNative }: { isNative: boolean }) {
+  const density = densityFor(isNative);
+  const { cloud, pending, error, signIn, signOut } = useCloudSession();
+  const rowClass = cn(
+    "flex-row items-center gap-2 px-4",
+    isNative ? "py-3.5" : "py-2",
+    !isNative && "rounded-md",
+  );
+  const iconSize = isNative ? 18 : 16;
+
+  const errorText = error ? (
+    <Text className={cn("px-4 pb-2 text-destructive", density.text.caption)}>{error}</Text>
+  ) : null;
+
+  if (!cloud.signedIn) {
+    return (
+      <>
+        <Pressable
+          onPress={() => void signIn()}
+          disabled={pending !== null}
+          accessibilityLabel="Sign in to Shogo Cloud"
+          className={cn(rowClass, "active:bg-muted", pending && "opacity-60")}
+        >
+          <LogIn size={iconSize} className="text-muted-foreground" />
+          <Text className={cn("text-foreground flex-1", density.text.body)} numberOfLines={1}>
+            {pending === "signin" ? "Waiting for browser\u2026" : "Sign in to Shogo Cloud"}
+          </Text>
+        </Pressable>
+        {errorText}
+      </>
+    );
+  }
+
+  return (
+    <>
+      <View className={rowClass}>
+        {cloud.reachable ? (
+          <Cloud size={iconSize} className="text-muted-foreground" />
+        ) : (
+          <CloudOff size={iconSize} className="text-destructive" />
+        )}
+        <Text
+          className={cn("flex-1", cloud.reachable ? "text-muted-foreground" : "text-destructive", density.text.label)}
+          numberOfLines={1}
+        >
+          {cloud.reachable
+            ? cloud.user?.email ?? "Shogo Cloud"
+            : "Offline \u00B7 can't reach Shogo Cloud"}
+        </Text>
+        <Pressable
+          onPress={() => void signOut()}
+          disabled={pending !== null}
+          accessibilityLabel="Sign out of Shogo Cloud"
+          className={cn(
+            "flex-row items-center gap-1 rounded-md px-2 py-1 active:bg-muted",
+            pending && "opacity-60",
+          )}
+        >
+          <LogOut size={14} className="text-muted-foreground" />
+          <Text className={cn("text-foreground", density.text.caption)}>
+            {pending === "signout" ? "Signing out\u2026" : "Sign out"}
+          </Text>
+        </Pressable>
+      </View>
+      {errorText}
     </>
   );
 }

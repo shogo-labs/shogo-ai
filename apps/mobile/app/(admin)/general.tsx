@@ -30,7 +30,6 @@ import {
   LogIn,
   Flag,
   RotateCcw,
-  RefreshCw,
   KeyRound,
   ExternalLink,
   ShieldCheck,
@@ -47,6 +46,7 @@ import { API_URL, createHttpClient } from '../../lib/api'
 import { useAccentTheme } from '../../contexts/accent-theme'
 import { ACCENT_PRESETS, ACCENT_NAMES } from '../../lib/accent-themes'
 import { usePlatformConfig, invalidatePlatformConfigCache } from '../../lib/platform-config'
+import { refreshCloudWorkspaces } from '../../lib/workspace-route'
 
 /** True when this window is the Electron desktop shell — only then can we
  * use the native system-browser handshake. Metro dev or a plain browser
@@ -155,6 +155,7 @@ export default function AdminGeneralPage() {
         setLoginStatus('idle')
         setLoginError('')
         void loadStatus()
+        void refreshCloudWorkspaces(API_URL)
       } else {
         setLoginStatus('error')
         setLoginError(toErrorMessage(result.error, 'Sign-in was cancelled'))
@@ -258,46 +259,12 @@ export default function AdminGeneralPage() {
       setApiKeyDraft('')
       setLoginStatus('idle')
       await loadStatus()
+      void refreshCloudWorkspaces(API_URL)
     } catch (err: any) {
       setLoginStatus('error')
       setLoginError(err?.message || 'Could not reach the local API.')
     } finally {
       setIsSubmittingKey(false)
-    }
-  }
-
-  /**
-   * Re-run the cloud-login flow without disconnecting first, so the user
-   * can switch the device key to a different workspace they belong to.
-   * We deliberately don't pass `{ workspaceId }` so the bridge always
-   * shows its picker (even when only one workspace exists, in which case
-   * the picker auto-skips and just refreshes the key).
-   *
-   * TODO: cloud's per-workspace dedup at apps/api/src/routes/api-keys.ts
-   * lines 162-171 only revokes prior device keys within the *new*
-   * workspace, so the previously-bound workspace will keep a dangling
-   * `apiKey` row for this device. Cleaning that up needs a cross-workspace
-   * dedup pass on the cloud side; out of scope for the picker landing.
-   */
-  const handleSwitchWorkspace = async () => {
-    setLoginStatus('connecting')
-    setLoginError('')
-    try {
-      if (hasDesktopBridge()) {
-        const result = await (window as any).shogoDesktop.startCloudLogin()
-        if (!result?.ok) {
-          setLoginStatus('error')
-          setLoginError(toErrorMessage(result?.error, 'Could not start workspace switch'))
-        }
-        return
-      }
-      setLoginStatus('error')
-      setLoginError(
-        'Browser preview can\u2019t switch workspaces. Use the Shogo Desktop app, or rerun `shogo login` in your terminal.',
-      )
-    } catch (err: any) {
-      setLoginStatus('error')
-      setLoginError(err?.message || 'Workspace switch failed')
     }
   }
 
@@ -318,6 +285,7 @@ export default function AdminGeneralPage() {
       setLastHeartbeatError(null)
       setLoginStatus('idle')
       setInstanceInfo(null)
+      void refreshCloudWorkspaces(API_URL)
     } catch (err) {
       console.error('[AdminGeneral] Failed to sign out of Shogo Cloud:', err)
     } finally {
@@ -438,28 +406,6 @@ export default function AdminGeneralPage() {
                   </Text>
                 ) : (
                   <View className="flex-1" />
-                )}
-                {hasDesktopBridge() && (
-                  // Switch-workspace re-runs the device flow, which only the
-                  // Electron shell can drive. Browser-preview users get the
-                  // same outcome via Sign out → paste a different key.
-                  <Pressable
-                    onPress={handleSwitchWorkspace}
-                    disabled={loginStatus === 'connecting' || isDisconnecting}
-                    className={cn(
-                      'flex-row items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border',
-                      (loginStatus === 'connecting' || isDisconnecting) && 'opacity-50',
-                    )}
-                  >
-                    {loginStatus === 'connecting' ? (
-                      <ActivityIndicator size="small" />
-                    ) : (
-                      <RefreshCw size={14} className="text-foreground" />
-                    )}
-                    <Text className="text-sm text-foreground">
-                      {loginStatus === 'connecting' ? 'Minting…' : 'Mint key for another workspace'}
-                    </Text>
-                  </Pressable>
                 )}
                 <Pressable
                   onPress={handleDisconnectShogoKey}
