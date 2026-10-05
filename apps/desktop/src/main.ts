@@ -222,8 +222,9 @@ const windowManager = new WindowManager({
   onWindowClosed: (window) => {
     closeAllForWindow(window)
     // The island is itself a BrowserWindow, so `window-all-closed` never
-    // fires while it's alive; quit here once the last app window goes.
-    if (!windowManager.hasWindows() && process.platform !== 'darwin') {
+    // fires while it's alive; quit here once the last app window goes, on
+    // every platform (otherwise the island and process outlive the app).
+    if (!windowManager.hasWindows()) {
       islandWindow?.destroy()
       islandWindow = null
       app.quit()
@@ -2012,9 +2013,7 @@ app.whenReady().then(async () => {
 })
 
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
-    app.quit()
-  }
+  app.quit()
 })
 
 let isQuitting = false

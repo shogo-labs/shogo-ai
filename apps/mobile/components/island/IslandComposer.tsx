@@ -49,6 +49,8 @@ export const IslandComposer = forwardRef<
   const [height, setHeight] = useState(MIN_INPUT_HEIGHT)
   const [sending, setSending] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const draftRef = useRef({ text, files })
+  draftRef.current = { text, files }
 
   const updateDraft = (nextText: string, nextFiles: IslandFileRef[]) => {
     onDraftChange?.(!!nextText.trim() || nextFiles.length > 0)
@@ -80,18 +82,27 @@ export const IslandComposer = forwardRef<
 
   const submit = async () => {
     if (!canSend) return
+    const sentText = text
+    const sentFiles = files
     setSending(true)
     setError(null)
-    const result = await onSend(text, files)
-    setSending(false)
-    if (!result.ok) {
-      setError(result.error)
-      return
-    }
+    // Clear right away: an island-owned chat's send only resolves once the
+    // whole reply has streamed, so waiting would leave the message in the box.
     setText("")
     setFiles([])
     setHeight(MIN_INPUT_HEIGHT)
     updateDraft("", [])
+    const result = await onSend(sentText, sentFiles)
+    setSending(false)
+    if (!result.ok) {
+      setError(result.error)
+      // Put the draft back, unless the user has already started a new one.
+      if (!draftRef.current.text && draftRef.current.files.length === 0) {
+        setText(sentText)
+        setFiles(sentFiles)
+        updateDraft(sentText, sentFiles)
+      }
+    }
   }
 
   return (

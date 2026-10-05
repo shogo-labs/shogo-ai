@@ -160,6 +160,8 @@ type IslandActionBase =
     }
   /** Focus the primary window and navigate it to an in-app path. */
   | { type: 'navigate'; path: string }
+  /** Bring the primary window to the front without navigating it. */
+  | { type: 'show-app' }
 
 export const ISLAND_MEETING_DECISIONS = ['record', 'always', 'dismiss', 'stop'] as const
 export type IslandMeetingDecision = (typeof ISLAND_MEETING_DECISIONS)[number]
@@ -335,6 +337,8 @@ export function parseIslandAction(value: unknown): IslandAction | null {
       const path = parseAppPath(value.path)
       return path ? { type: 'navigate', path } : null
     }
+    case 'show-app':
+      return { type: 'show-app' }
     case 'meeting': {
       const decision = value.decision as IslandMeetingDecision
       if (!ISLAND_MEETING_DECISIONS.includes(decision)) return null
