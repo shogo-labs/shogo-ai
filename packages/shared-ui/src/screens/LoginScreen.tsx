@@ -1224,7 +1224,6 @@ const logoDark = require('../../../../apps/mobile/assets/shogo-logo-words-white.
 const shogoRadialCursor = require('../../../../apps/mobile/assets/ic_playstore_legacy.png')
 const loginHeroLight = require('../../../../apps/mobile/assets/login/shogo-login3.jpg')
 const loginHeroDark = require('../../../../apps/mobile/assets/login/shogo-login3.jpg')
-const loginHeroWordmarkWhite = require('../../../../apps/mobile/assets/login/shogo-logo-white.svg')
 
 function DesktopFormPanel({ onSignIn, onSignUp, onGoogleSignIn, onAppleSignIn, onForgotPassword, isLoading, error, onClearError, colorScheme }: LoginScreenProps) {
   const [activeTab, setActiveTab] = useState<Tab>('signin')
@@ -1365,77 +1364,8 @@ export function LoginScreen(props: LoginScreenProps) {
   }
 
   return (
-    <View className="flex-1 flex-row bg-background">
-      <View style={{ width: '50%' }}>
-        <DesktopFormPanel {...props} />
-      </View>
-      <View style={{ width: '50%', position: 'relative', overflow: 'hidden' }}>
-        <Image
-          source={heroArtwork}
-          style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, width: '100%', height: '100%' }}
-          resizeMode="cover"
-        />
-        <View
-          style={{
-            position: 'absolute',
-            top: 0,
-            left: 0,
-            right: 0,
-            bottom: 0,
-            justifyContent: 'center',
-            alignItems: 'center',
-            paddingHorizontal: 32,
-          }}
-        >
-          <Text
-            style={{
-              color: '#FFFFFF',
-              fontSize: 40,
-              fontWeight: '300',
-              letterSpacing: 0.4,
-              textAlign: 'center',
-              marginBottom: 22,
-              ...(Platform.OS === 'web'
-                ? {
-                  fontFamily:
-                    '"Skema Pro Display", Georgia, "Times New Roman", "Liberation Serif", serif' as const,
-                }
-                : {}),
-              textShadowColor: 'rgba(0,0,0,0.45)',
-              textShadowOffset: { width: 0, height: 2 },
-              textShadowRadius: 14,
-            }}
-          >
-            A Visual AI for{' '}
-            <Text
-              style={{
-                fontStyle: 'italic',
-                fontWeight: '300',
-                ...(Platform.OS === 'web'
-                  ? {
-                    fontFamily:
-                      '"Skema Pro Display", Georgia, "Times New Roman", "Liberation Serif", serif' as const,
-                  }
-                  : {}),
-              }}
-            >
-              life
-            </Text>
-          </Text>
-          <Image
-            source={loginHeroWordmarkWhite}
-            style={{
-              width: 122,
-              height: 36,
-              shadowColor: '#000',
-              shadowOffset: { width: 0, height: 2 },
-              shadowOpacity: 0.35,
-              shadowRadius: 6,
-            }}
-            resizeMode="contain"
-          />
-        </View>
-      </View>
+    <View className="flex-1 bg-background">
+      <DesktopFormPanel {...props} />
     </View>
   )
 }
