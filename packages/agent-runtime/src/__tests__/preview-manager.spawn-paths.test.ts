@@ -347,6 +347,31 @@ describe('PreviewManager.getStatus (apiReady gate)', () => {
     // No sidecar to wait on → the UI gate opens immediately.
     expect(s.apiReady).toBe(true)
   })
+
+  // Regression: stacks whose lifecycle never calls startApiServer() used to
+  // leave hasApiServer=null forever, so apiReady was permanently false and the
+  // Studio canvas showed "Starting API server..." for its full 20s fallback on
+  // every mount.
+  for (const [techStack, devServer] of [
+    ['custom', 'static-build'],
+    ['docker-compose', 'compose'],
+  ] as const) {
+    test(`apiReady is true after start() for devServer=${devServer} (${techStack}) — no sidecar is ever spawned`, async () => {
+      const root = makeWorkspace({ techStack, withPackageJsonAtRoot: true })
+      const pm = new PreviewManager({ workspaceDir: root, runtimePort: 0 })
+      expect((pm as any).resolveDevServer()).toBe(devServer)
+      expect(pm.getStatus().apiReady).toBe(false) // before start: undecided
+
+      try {
+        await pm.start()
+        const s = pm.getStatus()
+        expect(s.apiServerPhase).toBe('idle')
+        expect(s.apiReady).toBe(true)
+      } finally {
+        pm.stop()
+      }
+    })
+  }
 })
 
 // ---------------------------------------------------------------------------
