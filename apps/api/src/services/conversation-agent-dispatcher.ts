@@ -11,6 +11,7 @@
  */
 
 import { prisma } from '../lib/prisma'
+import { homeRegionWorkspaceWhere } from '../lib/region'
 import { finishAgentReply, startAgentReply, streamAgentReply } from './chat-providers/outbound'
 import {
   agentKey,
@@ -86,8 +87,17 @@ export function configureConversationAgentDispatcher(next: DispatcherConfig): vo
  */
 export async function settleOrphanedAgentReplies(minAgeMs = 0): Promise<number> {
   const cutoff = new Date(Date.now() - minAgeMs)
+  // Only settle replies in workspaces homed here: a peer region's running
+  // replies live in that region's memory, not ours.
+  const home = homeRegionWorkspaceWhere()
   const stale = await db.conversationMessage.findMany({
-    where: { authorType: 'agent', agentStatus: 'running', createdAt: { lt: cutoff }, deletedAt: null },
+    where: {
+      authorType: 'agent',
+      agentStatus: 'running',
+      createdAt: { lt: cutoff },
+      deletedAt: null,
+      ...(home ? { conversation: { workspace: home } } : {}),
+    },
     select: { id: true },
     take: 500,
   })

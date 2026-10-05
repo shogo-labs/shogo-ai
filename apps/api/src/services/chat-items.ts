@@ -6,6 +6,7 @@
 
 import { prisma } from '../lib/prisma'
 import { publishConversationEvent } from '../lib/conversation-bus'
+import { homeRegionWorkspaceWhere, homeWorkspaceIds } from '../lib/region'
 import { sendPushToUser } from '../lib/push-notifications'
 import {
   ConversationError,
@@ -254,8 +255,12 @@ export async function cancelScheduled(id: string, userId: string) {
 
 /** Send everything that's due. Each row is claimed before posting so it goes out once. */
 export async function sendDueScheduledMessages(now = new Date()): Promise<number> {
+  // Messages post (seq, clientMsgId) in the conversation's home region only; the
+  // rows replicate, so a peer region sending the same one would collide on both
+  // unique keys. Null in single-region / local mode (no filtering).
+  const home = homeRegionWorkspaceWhere()
   const due = await db.scheduledMessage.findMany({
-    where: { status: 'pending', sendAt: { lte: now } },
+    where: { status: 'pending', sendAt: { lte: now }, ...(home ? { conversation: { workspace: home } } : {}) },
     orderBy: { sendAt: 'asc' },
     take: 100,
   })
@@ -381,8 +386,15 @@ type Pusher = typeof sendPushToUser
 let pushReminder: Pusher = sendPushToUser
 
 export async function fireDueReminders(now = new Date()): Promise<number> {
+  // Reminders fire (inbox rows, pushes) in the workspace's home region only.
+  const dueWhere: Record<string, unknown> = { status: 'pending', remindAt: { lte: now } }
+  if (homeRegionWorkspaceWhere()) {
+    const candidates = await db.chatReminder.findMany({ where: dueWhere, distinct: ['workspaceId'], select: { workspaceId: true } })
+    const homeIds = await homeWorkspaceIds(candidates.map((c: { workspaceId: string }) => c.workspaceId))
+    if (homeIds) dueWhere.workspaceId = { in: Array.from(homeIds) }
+  }
   const due = await db.chatReminder.findMany({
-    where: { status: 'pending', remindAt: { lte: now } },
+    where: dueWhere,
     orderBy: { remindAt: 'asc' },
     take: 200,
   })

@@ -9,7 +9,7 @@
 import { Hono } from 'hono'
 import { EXTERNAL_CHAT_PROVIDERS, getWorkspaceChatConfig, setWorkspaceChatConfig, type ExternalChatProvider } from '../services/chat-mode'
 import { getWorkspaceRole } from '../services/conversation.service'
-import { handleInboundEvents, resumeAfterLink } from '../services/chat-providers/inbound'
+import { handleInboundEvents, resumeAfterLinkInHomeRegion, routeInboundEvents } from '../services/chat-providers/inbound'
 import { installationForTenant, linkIdentity, removeInstallation } from '../services/chat-providers/installations'
 import { createConnectCode, verifyLinkState } from '../services/chat-providers/link'
 import { getChatProvider } from '../services/chat-providers/registry'
@@ -34,8 +34,12 @@ export function chatProviderRoutes(config: ChatProviderRoutesConfig): Hono {
     const rawBody = await c.req.text()
     const parsed = await provider.verifyAndParse(c.req.raw, rawBody)
     if (parsed.response) return parsed.response
+    // Events for a workspace homed in a peer region are forwarded there; if that
+    // region is unreachable, answer 503 so the platform redelivers.
+    const routed = await routeInboundEvents(provider, parsed.events)
+    if (routed.unavailable) return c.json({ error: 'Home region unavailable, retry' }, 503)
     // Both platforms expect a fast acknowledgement; agent turns can run long.
-    void handleInboundEvents(provider, parsed.events).catch((err) => {
+    void handleInboundEvents(provider, routed.local).catch((err) => {
       console.error(`[ChatProviders] ${kind} events failed:`, err)
     })
     return c.json({})
@@ -62,7 +66,7 @@ export function chatProviderRoutes(config: ChatProviderRoutesConfig): Hono {
     })
     const provider = getChatProvider(state.provider)
     const resumed = provider && state.channelId && state.messageId
-      ? await resumeAfterLink(provider, { tenantId: state.tenantId, channelId: state.channelId, messageId: state.messageId }, userId)
+      ? await resumeAfterLinkInHomeRegion(provider, { tenantId: state.tenantId, channelId: state.channelId, messageId: state.messageId }, userId)
       : false
     return c.json({ ok: true, provider: state.provider, resumed })
   })

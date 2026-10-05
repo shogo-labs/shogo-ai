@@ -7,6 +7,7 @@
 
 import { prisma } from '../lib/prisma'
 import { getFrontendUrl } from '../lib/cloud-urls'
+import { homeRegionWorkspaceWhere, homeWorkspaceIds } from '../lib/region'
 import { sendChannelDigestEmail } from './email.service'
 import { getWorkspaceChatConfig, nativeChatEnabled } from './chat-mode'
 
@@ -87,14 +88,27 @@ function countLabel(n: number): string {
 
 /** One pass over opted-in people. Returns how many emails were sent. */
 export async function runDigestPass(now = new Date()): Promise<number> {
-  const rows = await db.chatUserSettings.findMany({ where: { emailDigest: 'daily' }, take: 5000 })
+  // Only digest people in workspaces homed in this region: chat_user_settings
+  // replicates, and a peer region sending too would email everyone twice.
+  const where: Record<string, unknown> = { emailDigest: 'daily' }
+  if (homeRegionWorkspaceWhere()) {
+    const candidates = await db.chatUserSettings.findMany({ where, distinct: ['workspaceId'], select: { workspaceId: true } })
+    const homeIds = await homeWorkspaceIds(candidates.map((c: { workspaceId: string }) => c.workspaceId))
+    if (homeIds) where.workspaceId = { in: Array.from(homeIds) }
+  }
+  const rows = await db.chatUserSettings.findMany({ where, take: 5000 })
   let sent = 0
   for (const row of rows) {
     if (!isDigestDue(row, now)) continue
     if (!nativeChatEnabled(await getWorkspaceChatConfig(row.workspaceId))) continue
     try {
       const digest = await buildDigest(row, now)
-      await db.chatUserSettings.update({ where: { id: row.id }, data: { lastDigestAt: now } })
+      // Claim this row: another pod in the region may be running the same pass.
+      const { count } = await db.chatUserSettings.updateMany({
+        where: { id: row.id, lastDigestAt: row.lastDigestAt ?? null },
+        data: { lastDigestAt: now },
+      })
+      if (!count) continue
       if (!digest.total) continue
       const [user, workspace] = await Promise.all([
         db.user.findUnique({ where: { id: row.userId }, select: { email: true } }),

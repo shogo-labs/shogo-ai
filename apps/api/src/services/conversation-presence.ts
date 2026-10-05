@@ -18,6 +18,27 @@ const lastPublished = new Map<string, PresenceStatus>()
 
 const key = (workspaceId: string, userId: string) => `presence:${workspaceId}:${userId}`
 
+/** Pod marker for presence that was relayed from a sibling region, not held on any local socket. */
+const RELAYED_POD = 'relay'
+
+/**
+ * Forwards this region's presence writes (including heartbeat refreshes, which
+ * do not publish an event) to sibling regions, so `getPresence` there sees
+ * people connected here. Installed by `lib/conversation-relay`; unset in
+ * single-region / local mode.
+ */
+export type PresenceRelaySink = (entry: RelayedPresence) => void
+export interface RelayedPresence {
+  workspaceId: string
+  userId: string
+  status: PresenceStatus
+}
+let relaySink: PresenceRelaySink | null = null
+
+export function setPresenceRelaySink(sink: PresenceRelaySink | null): void {
+  relaySink = sink
+}
+
 function localKey(workspaceId: string, userId: string) {
   return `${workspaceId}:${userId}`
 }
@@ -53,6 +74,7 @@ export async function recordPresence(workspaceId: string, userId: string, status
     localSockets.delete(lk)
   }
   await write(workspaceId, userId, status)
+  relaySink?.({ workspaceId, userId, status })
   if (lastPublished.get(lk) !== status) {
     lastPublished.set(lk, status)
     publishConversationEvent(workspaceId, { type: 'presence', userId, status })
@@ -64,6 +86,35 @@ export async function recordPresence(workspaceId: string, userId: string, status
 export function registerPresenceSocket(workspaceId: string, userId: string): void {
   const lk = localKey(workspaceId, userId)
   localSockets.set(lk, (localSockets.get(lk) ?? 0) + 1)
+}
+
+/**
+ * Apply presence reported by a sibling region. Written with a `relay` pod
+ * marker so a local socket close never clears it, and it expires on its own if
+ * the sibling stops refreshing it. Not re-relayed.
+ */
+export async function applyRelayedPresence(entries: RelayedPresence[]): Promise<void> {
+  const redis = getSharedRedis()
+  for (const { workspaceId, userId, status } of entries) {
+    const k = key(workspaceId, userId)
+    if (status === 'offline') {
+      if (redis) {
+        const current = await redis.get(k).catch(() => null)
+        if (current && current.split('|')[1] === RELAYED_POD) await redis.del(k).catch(() => {})
+      }
+      if (memory.get(k)?.pod === RELAYED_POD) memory.delete(k)
+      continue
+    }
+    // Never overwrite a live local entry: this region's own sockets are authoritative for it.
+    const local = memory.get(k)
+    if (local && local.pod !== RELAYED_POD && local.expiresAt > Date.now()) continue
+    if (redis) {
+      const current = await redis.get(k).catch(() => null)
+      if (current && current.split('|')[1] !== RELAYED_POD) continue
+      await redis.set(k, `${status}|${RELAYED_POD}`, 'EX', TTL_SECONDS).catch(() => {})
+    }
+    memory.set(k, { status, expiresAt: Date.now() + TTL_SECONDS * 1000, pod: RELAYED_POD })
+  }
 }
 
 export async function getPresence(workspaceId: string, userIds: string[]): Promise<Record<string, PresenceStatus>> {
@@ -89,4 +140,5 @@ export function _resetPresenceForTests(): void {
   localSockets.clear()
   memory.clear()
   lastPublished.clear()
+  relaySink = null
 }

@@ -17,6 +17,7 @@
  */
 
 import { prisma } from '../lib/prisma'
+import { homeRegionWorkspaceWhere } from '../lib/region'
 import { MESSAGE_INCLUDE, serializeMessage, ConversationError } from './conversation.service'
 import { searchMessages, type SearchResult } from './conversation-search'
 import { loadMentionNames, runWorkspaceAgentPrompt } from './conversation-agent-dispatcher'
@@ -101,8 +102,12 @@ function documentFor(row: any, names: MentionNames): string {
 export async function indexPendingMessages(now = new Date(), batch = INDEX_BATCH): Promise<number> {
   const provider = embeddingProvider()
   if (!provider) return 0
+  // Embeddings are written in the message's home region only (the embeddings
+  // table replicates; a peer region indexing the same message would conflict).
+  const home = homeRegionWorkspaceWhere()
   const rows = await db.conversationMessage.findMany({
     where: {
+      ...(home ? { conversation: { workspace: home } } : {}),
       deletedAt: null,
       authorType: { not: 'system' },
       embedding: { is: null },
