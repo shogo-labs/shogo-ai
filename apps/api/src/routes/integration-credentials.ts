@@ -20,6 +20,7 @@ import type { Context } from 'hono'
 import { getFrontendUrl } from '../lib/cloud-urls'
 import { prisma } from '../lib/prisma'
 import {
+  canEditCredentialPolicies,
   deletePersonalConnection,
   getCredentialProvider,
   getPolicy,
@@ -57,19 +58,6 @@ function authUserId(c: Context): string | null {
 }
 
 /** Who may change what an agent acts as: workspace owners and admins, and the project's creator. */
-async function canEditPolicies(userId: string, projectId: string): Promise<boolean> {
-  const project = (await prisma.project.findUnique({
-    where: { id: projectId },
-    select: { workspaceId: true, createdBy: true },
-  })) as { workspaceId: string; createdBy: string | null } | null
-  if (!project) return false
-  if (project.createdBy === userId) return true
-  const member = (await prisma.member.findFirst({
-    where: { userId, workspaceId: project.workspaceId },
-    select: { role: true },
-  })) as { role: string } | null
-  return member?.role === 'owner' || member?.role === 'admin'
-}
 
 function page(title: string, body: string): string {
   return (
@@ -95,7 +83,7 @@ export function integrationCredentialRoutes(config: IntegrationCredentialRoutesC
     const me = userId ? await listUserIntegrations(userId) : { connections: [], grants: [] }
     return c.json({
       ok: true,
-      canEdit: !!userId && (await canEditPolicies(userId, projectId)),
+      canEdit: !!userId && (await canEditCredentialPolicies(userId, projectId)),
       steps: CHAIN_STEPS,
       policies: all.map((p) => ({
         ...p,
@@ -119,7 +107,7 @@ export function integrationCredentialRoutes(config: IntegrationCredentialRoutesC
     if (!isValidProviderId(provider)) {
       return c.json({ error: { code: 'invalid_request', message: `Unknown integration: ${provider}` } }, 400)
     }
-    if (!(await canEditPolicies(userId, projectId))) {
+    if (!(await canEditCredentialPolicies(userId, projectId))) {
       return c.json(
         { error: { code: 'forbidden', message: 'Only the project owner and workspace admins can change what this agent acts as' } },
         403,

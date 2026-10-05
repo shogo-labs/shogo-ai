@@ -19,6 +19,7 @@ import { composioEventType, parseComposioEventType } from '@shogo-ai/sdk/events'
 import { prisma } from '../lib/prisma'
 import { homeRegionWorkspaceWhere } from '../lib/region'
 import { emitWorkspaceEvent } from './workspace-events'
+import { actorFromPayload, suggestActorFields } from './event-identity'
 
 const db = prisma as any
 
@@ -135,6 +136,8 @@ export interface TriggerTypeSummary {
   instructions?: string
   config: Record<string, unknown>
   payload: Record<string, unknown>
+  /** Payload fields that likely name who did it, for the "acts as" picker. */
+  actorFields: { idPaths: string[]; emailPaths: string[] }
 }
 
 function summarize(t: ComposioTriggerType): TriggerTypeSummary {
@@ -148,6 +151,7 @@ function summarize(t: ComposioTriggerType): TriggerTypeSummary {
     ...(t.instructions ? { instructions: t.instructions } : {}),
     config: t.config ?? {},
     payload: t.payload ?? {},
+    actorFields: suggestActorFields(t.payload ?? {}),
   }
 }
 
@@ -235,13 +239,21 @@ export async function handleIncomingComposioTrigger(
   if (!triggerId) return { delivered: false, reason: 'missing_trigger_id' }
   const sub = await db.eventSubscription.findUnique({
     where: { composioTriggerId: triggerId },
-    select: { id: true, workspaceId: true, eventType: true, enabled: true, composioTriggerSlug: true },
+    select: {
+      id: true, workspaceId: true, eventType: true, enabled: true, composioTriggerSlug: true,
+      actorIdPath: true, actorEmailPath: true,
+    },
   })
   if (!sub) return { delivered: false, reason: 'unknown_trigger' }
   if (!sub.enabled) return { delivered: false, reason: 'disabled' }
   const parsed = parseComposioEventType(sub.eventType)
   const toolkit = parsed?.toolkit ?? (trigger.toolkitSlug ?? '').toLowerCase()
   const slug = sub.composioTriggerSlug ?? trigger.triggerSlug
+  const actor = actorFromPayload(trigger.payload ?? {}, {
+    source: `composio:${toolkit}`,
+    idPath: sub.actorIdPath,
+    emailPath: sub.actorEmailPath,
+  })
   const result = await emitWorkspaceEvent({
     workspaceId: sub.workspaceId,
     type: composioEventType(toolkit, slug),
@@ -254,6 +266,7 @@ export async function handleIncomingComposioTrigger(
     },
     dedupeKey: `composio:${eventKey}`,
     subscriptionIds: [sub.id],
+    actor,
   })
   return { delivered: !!result && result.deliveries > 0, reason: result?.duplicate ? 'duplicate' : undefined }
 }

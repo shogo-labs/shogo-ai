@@ -495,6 +495,11 @@ export function workspaceAgentRoutes(config: WorkspaceAgentRoutesConfig): Hono {
         webhookUrl: body.webhookUrl,
         triggerConfig: body.triggerConfig && typeof body.triggerConfig === 'object' ? body.triggerConfig : null,
         enabled: typeof body.enabled === 'boolean' ? body.enabled : undefined,
+        actsAs: body.actsAs,
+        actorIdPath: body.actorIdPath,
+        actorEmailPath: body.actorEmailPath,
+        trustActorEmail: body.trustActorEmail,
+        policyEditor: auth.userId ?? null,
       })
       return c.json({ trigger: created.subscription, ...(created.webhookSecret ? { webhookSecret: created.webhookSecret } : {}) }, 201)
     } catch (error) {
@@ -532,7 +537,11 @@ export function workspaceAgentRoutes(config: WorkspaceAgentRoutesConfig): Hono {
         notifyThreadRootId,
         webhookUrl: body.webhookUrl,
         rotateWebhookSecret: body.rotateWebhookSecret === true,
-      })
+        actsAs: body.actsAs,
+        actorIdPath: body.actorIdPath,
+        actorEmailPath: body.actorEmailPath,
+        trustActorEmail: body.trustActorEmail,
+      }, { policyEditor: auth.userId ?? null })
       if (!updated) return c.json({ error: { code: 'not_found', message: 'Trigger not found' } }, 404)
       return c.json({ trigger: updated.subscription, ...(updated.webhookSecret ? { webhookSecret: updated.webhookSecret } : {}) })
     } catch (error) {

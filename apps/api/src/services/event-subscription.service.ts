@@ -30,6 +30,7 @@ import {
   setComposioTriggerEnabled,
 } from './composio-triggers.service'
 import { emitWorkspaceEvent } from './workspace-events'
+import { isActsAs, isValidActorPath, type ActsAs } from './event-identity'
 
 const db = prisma as any
 
@@ -125,6 +126,83 @@ function asComposioError(error: unknown): never {
   throw error
 }
 
+interface IdentityFieldsInput {
+  actsAs?: unknown
+  actorIdPath?: unknown
+  actorEmailPath?: unknown
+  trustActorEmail?: unknown
+}
+
+interface IdentityState {
+  actsAs: ActsAs
+  actorIdPath: string | null
+  actorEmailPath: string | null
+  trustActorEmail: boolean
+}
+
+function optionalPath(value: unknown, field: string): string | null | undefined {
+  if (value === undefined) return undefined
+  if (value === null || value === '') return null
+  if (!isValidActorPath(value)) invalid(`${field} must be a payload path like sender.id or user.accountId`)
+  return value
+}
+
+/**
+ * The subscription's "acts as" settings after applying `input` to `current`.
+ * Using the event's actor lets someone else's event run on their own
+ * accounts, so turning it on (or pointing it at different fields) needs a
+ * signed-in user who may edit the target project's integration policies.
+ */
+async function resolveIdentityFields(
+  input: IdentityFieldsInput,
+  ctx: {
+    source: string
+    runsProjectAgent: boolean
+    targetProjectId: string | null
+    policyEditor: string | null | undefined
+    current?: IdentityState
+  },
+): Promise<IdentityState> {
+  const before: IdentityState = ctx.current ?? { actsAs: 'subscriber', actorIdPath: null, actorEmailPath: null, trustActorEmail: false }
+  if (input.actsAs !== undefined && !isActsAs(input.actsAs)) invalid('actsAs must be subscriber, actor or nobody')
+  if (input.trustActorEmail !== undefined && typeof input.trustActorEmail !== 'boolean') invalid('trustActorEmail must be a boolean')
+  const idPath = optionalPath(input.actorIdPath, 'actorIdPath')
+  const emailPath = optionalPath(input.actorEmailPath, 'actorEmailPath')
+  const next: IdentityState = {
+    actsAs: (input.actsAs as ActsAs | undefined) ?? before.actsAs,
+    actorIdPath: idPath !== undefined ? idPath : before.actorIdPath,
+    actorEmailPath: emailPath !== undefined ? emailPath : before.actorEmailPath,
+    trustActorEmail: (input.trustActorEmail as boolean | undefined) ?? before.trustActorEmail,
+  }
+  if (next.actsAs !== 'subscriber' && !ctx.runsProjectAgent) {
+    invalid('actsAs only applies to triggers that run a project agent')
+  }
+  if ((next.actorIdPath || next.actorEmailPath) && ctx.source !== 'composio') {
+    invalid('Shogo events name their actor themselves; actor fields only apply to Composio triggers')
+  }
+  if (next.actsAs === 'actor' && ctx.source === 'composio' && !next.actorIdPath && !next.actorEmailPath) {
+    invalid('Pick the payload field that says who did it (actorIdPath or actorEmailPath)')
+  }
+  if (next.trustActorEmail && next.actsAs === 'actor' && ctx.source === 'composio' && !next.actorEmailPath) {
+    invalid('trustActorEmail needs actorEmailPath')
+  }
+  const widens = next.actsAs === 'actor' && (
+    before.actsAs !== 'actor' ||
+    next.actorIdPath !== before.actorIdPath ||
+    next.actorEmailPath !== before.actorEmailPath ||
+    (next.trustActorEmail && !before.trustActorEmail)
+  )
+  if (widens) {
+    const { canEditCredentialPolicies } = await import('./integration-credentials')
+    const allowed = !!ctx.policyEditor && !!ctx.targetProjectId &&
+      (await canEditCredentialPolicies(ctx.policyEditor, ctx.targetProjectId))
+    if (!allowed) {
+      throw new EventSubscriptionError(403, 'forbidden', "Only a workspace admin or the project's creator can make a trigger act as the person who triggered it")
+    }
+  }
+  return next
+}
+
 export interface CreateSubscriptionInput {
   workspaceId: string
   ownerUserId: string
@@ -142,6 +220,12 @@ export interface CreateSubscriptionInput {
   enabled?: boolean
   /** Set by app installs; such subscriptions follow the install's lifecycle. */
   installId?: string | null
+  actsAs?: unknown
+  actorIdPath?: unknown
+  actorEmailPath?: unknown
+  trustActorEmail?: unknown
+  /** The signed-in user making the change; runtime callers have none. */
+  policyEditor?: string | null
 }
 
 export async function createSubscription(input: CreateSubscriptionInput): Promise<{ subscription: any; webhookSecret?: string }> {
@@ -168,6 +252,12 @@ export async function createSubscription(input: CreateSubscriptionInput): Promis
   }
   const runsAgent = target === 'agent' || (target === 'project' && targetMode === 'agent')
   if (runsAgent && !prompt) invalid('prompt is required: say what the agent should do when the event fires', 'invalid_body')
+  const identity = await resolveIdentityFields(input, {
+    source,
+    runsProjectAgent: target === 'project' && targetMode === 'agent',
+    targetProjectId,
+    policyEditor: input.policyEditor,
+  })
 
   const count = await db.eventSubscription.count({ where: { workspaceId: input.workspaceId } })
   if (count >= MAX_SUBSCRIPTIONS_PER_WORKSPACE) {
@@ -210,6 +300,7 @@ export async function createSubscription(input: CreateSubscriptionInput): Promis
         notifyThreadRootId: input.notifyThreadRootId ?? null,
         webhookUrl,
         webhookSecret: webhookSecret ? encryptSecret(webhookSecret) : null,
+        ...identity,
       },
     })
     if (composio && input.enabled === false) await setComposioTriggerEnabled(composio.triggerId, false)
@@ -243,12 +334,17 @@ export interface UpdateSubscriptionInput {
   notifyThreadRootId?: string | null
   webhookUrl?: string
   rotateWebhookSecret?: boolean
+  actsAs?: unknown
+  actorIdPath?: unknown
+  actorEmailPath?: unknown
+  trustActorEmail?: unknown
 }
 
 export async function updateSubscription(
   workspaceId: string,
   id: string,
   patch: UpdateSubscriptionInput,
+  opts: { policyEditor?: string | null } = {},
 ): Promise<{ subscription: any; webhookSecret?: string } | null> {
   const current = await getSubscription(workspaceId, id)
   if (!current) return null
@@ -280,6 +376,21 @@ export async function updateSubscription(
       webhookSecret = newWebhookSecret()
       data.webhookSecret = encryptSecret(webhookSecret)
     }
+  }
+  const identityTouched = [patch.actsAs, patch.actorIdPath, patch.actorEmailPath, patch.trustActorEmail].some((v) => v !== undefined)
+  if (identityTouched || 'targetMode' in data) {
+    Object.assign(data, await resolveIdentityFields(identityTouched ? patch : {}, {
+      source: current.source,
+      runsProjectAgent: current.target === 'project' && (data.targetMode ?? current.targetMode) === 'agent',
+      targetProjectId: current.targetProjectId,
+      policyEditor: opts.policyEditor,
+      current: {
+        actsAs: isActsAs(current.actsAs) ? current.actsAs : 'subscriber',
+        actorIdPath: current.actorIdPath ?? null,
+        actorEmailPath: current.actorEmailPath ?? null,
+        trustActorEmail: !!current.trustActorEmail,
+      },
+    }))
   }
   if (patch.enabled !== undefined) {
     if (typeof patch.enabled !== 'boolean') invalid('enabled must be a boolean')

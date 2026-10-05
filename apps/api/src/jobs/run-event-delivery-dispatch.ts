@@ -150,6 +150,7 @@ async function runDelivery(deliveryId: string, runningAt: Date): Promise<void> {
       deliveryId,
       subscription: sub,
       envelope,
+      actor: event.actor ?? null,
       signal: controller.signal,
       runtimeManager: workerRuntimeManager,
     })
