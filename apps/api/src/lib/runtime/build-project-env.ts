@@ -309,6 +309,15 @@ export async function buildProjectEnv(
   // URLs, so it uses the public URL on metal and in-cluster DNS on k8s.
   env.TOOLS_PROXY_URL = buildToolsProxyUrl(apiBase)
 
+  // Marketplace apps with a granted install call `/api/v1` as themselves.
+  try {
+    const { appTokenForProject } = await import('../../services/app-install-grants.service')
+    const appToken = await appTokenForProject(projectId)
+    if (appToken) env.SHOGO_APP_TOKEN = appToken
+  } catch (err: any) {
+    console.warn(`[${prefix}] app token lookup failed for ${projectId}: ${err?.message ?? err}`)
+  }
+
   // PUBLIC_PREVIEW_URL — the externally-reachable, deterministic preview URL
   // ({projectId}.preview.{env}.shogo.ai). Pods created directly by the Knative
   // manager get this baked into the Service spec, but pooled/warm pods are

@@ -79,6 +79,7 @@
       "@shogo-ai/agent/microcompact": ["packages/agent/src/microcompact.ts"],
       "@shogo-ai/agent/prefix-fingerprint": ["packages/agent/src/prefix-fingerprint.ts"],
       "@shogo-ai/agent/hooks": ["packages/agent/src/hooks/index.ts"],
+      "@shogo-ai/agent/events": ["packages/agent/src/events/index.ts"],
       "@shogo-ai/db": ["packages/db/src/index.ts"],
       "@shogo-ai/email": ["packages/email/src/index.ts"],
       "@shogo-ai/email/server": ["packages/email/src/server.ts"],
@@ -100,6 +101,7 @@
       "@shogo-ai/sdk/prefix-fingerprint": ["packages/sdk/src/prefix-fingerprint.ts"],
       "@shogo-ai/sdk/tool-orchestration": ["packages/sdk/src/tool-orchestration.ts"],
       "@shogo-ai/sdk/hooks": ["packages/sdk/src/hooks/index.ts"],
+      "@shogo-ai/sdk/events": ["packages/sdk/src/events/index.ts"],
       "@shogo-ai/sdk/model-router": ["packages/sdk/src/model-router/index.ts"],
       "@shogo-ai/sdk/pi-adapter": ["packages/sdk/src/pi-adapter.ts"],
       "@shogo-ai/sdk/agent-loop": ["packages/sdk/src/agent-loop.ts"]

@@ -227,6 +227,13 @@ const prismaStub: any = {
 }
 
 mock.module('../lib/prisma', () => withPrismaExports({ prisma: prismaStub }))
+// Listings in this file ship no shogo.app.json.
+mock.module('../services/app-install-grants.service', () => ({
+  loadVersionManifest: async () => null,
+  manifestNeedsConsent: () => false,
+  onInstallUpdated: async () => null,
+  revokeInstallGrant: async () => ({ subscriptions: 0, tokens: 0 }),
+}))
 mock.module('../services/workspace.service', () => ({
   hasWorkspaceAccess: async () => true,
 }))

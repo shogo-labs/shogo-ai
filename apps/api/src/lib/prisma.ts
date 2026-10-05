@@ -43,6 +43,8 @@ const ARRAY_FIELDS = new Set([
   'adminScopes',
   // ConversationMessageEmbedding vector (Float[] on PG, JSON String on SQLite)
   'embedding',
+  // AppInstallGrant / ApiKey app scopes
+  'grantedScopes', 'grantedToolkits', 'pendingScopes',
 ])
 
 // Fields that are Json? in PostgreSQL but stored as String? in SQLite.
@@ -59,6 +61,8 @@ const JSON_OBJECT_FIELDS = new Set([
   'capabilities',
   // ConversationMessage structured content and agent author reference
   'blocks', 'authorAgentRef', 'agentChain',
+  // Workspace event platform
+  'payload', 'filter', 'triggerConfig', 'appManifest',
 ])
 
 // In SQLite mode, String[] fields are stored as JSON strings, and

@@ -118,6 +118,28 @@ export async function loadHooksFromDir(dir: string): Promise<Hook[]> {
 }
 
 /**
+ * Cheap fingerprint of `<workspaceDir>/hooks/` (hook dirs and their file
+ * mtimes), so a runtime can reload hooks the agent added since startup.
+ */
+export function workspaceHooksSignature(workspaceDir: string): string {
+  const dir = join(workspaceDir, 'hooks')
+  if (!existsSync(dir)) return ''
+  const parts: string[] = []
+  for (const entry of readdirSync(dir).sort()) {
+    const hookDir = join(dir, entry)
+    try {
+      if (!statSync(hookDir).isDirectory()) continue
+      for (const file of readdirSync(hookDir).sort()) {
+        parts.push(`${entry}/${file}:${statSync(join(hookDir, file)).mtimeMs}`)
+      }
+    } catch {
+      // Removed while scanning.
+    }
+  }
+  return parts.join('|')
+}
+
+/**
  * Load all hooks: bundled (shipped with the SDK) + workspace
  * (`<workspaceDir>/hooks/`). Workspace hooks take precedence — they're
  * loaded second so duplicate-named entries override the bundled

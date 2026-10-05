@@ -7,6 +7,8 @@ import type { AuthContext } from '../middleware/auth'
 import { requireMarketplaceFeature } from '../middleware/marketplace-feature'
 import * as marketplaceService from '../services/marketplace.service'
 import * as installService from '../services/marketplace-install.service'
+import * as grantsService from '../services/app-install-grants.service'
+import { AppConsentError } from '../services/app-install-grants.service'
 import { snapshotProjectWorkspace } from '../services/marketplace-manifest.service'
 import * as snapshotStorage from '../services/marketplace-snapshot-storage.service'
 import * as auditService from '../services/marketplace-audit.service'
@@ -22,6 +24,10 @@ import {
 
 const PRICING_MODELS = new Set<string>(['free', 'one_time', 'subscription'])
 const LISTING_SORTS = new Set<string>(['popular', 'rating', 'newest', 'featured'])
+
+function appConsentErrorResponse(c: any, err: AppConsentError) {
+  return c.json({ error: err.code, message: err.message, ...(err.details ?? {}) }, err.status)
+}
 
 function parseIntParam(v: string | undefined, fallback: number): number {
   if (v == null || v === '') return fallback
@@ -172,6 +178,11 @@ export function marketplaceRoutes() {
 
     // Uninstall works locally (cancel DB record + remove workspace files).
     if (path.includes('/installs/') && method === 'DELETE') {
+      return next()
+    }
+
+    // App access consent / revoke are local DB operations.
+    if (path.includes('/installs/') && (path.endsWith('/consent') || path.endsWith('/revoke')) && method === 'POST') {
       return next()
     }
 
@@ -850,6 +861,14 @@ export function marketplaceRoutes() {
       if (!owned) {
         return c.json({ error: 'Listing not found' }, 404)
       }
+      let appManifest: Prisma.InputJsonValue | undefined
+      try {
+        const manifest = grantsService.readAppManifestForPublish(owned.projectId, body.workspaceSnapshot)
+        if (manifest) appManifest = manifest as unknown as Prisma.InputJsonValue
+      } catch (manifestErr) {
+        if (manifestErr instanceof AppConsentError) return appConsentErrorResponse(c, manifestErr)
+        throw manifestErr
+      }
       // Phase 6 — capture a snapshot of the source workspace.
       //
       // Phase "S3 backing": we now upload a tarball to S3 and persist
@@ -893,6 +912,7 @@ export function marketplaceRoutes() {
           workspaceSnapshotKey: snapshotKey,
           workspaceSnapshotBytes: snapshotBytes,
           workspaceSnapshotChecksum: snapshotChecksum,
+          appManifest,
         },
       })
       await prisma.marketplaceListing.update({
@@ -1050,7 +1070,7 @@ export function marketplaceRoutes() {
       if (!listing) {
         return c.json({ error: 'Listing not found' }, 404)
       }
-      const body = (await c.req.json()) as { workspaceId?: string }
+      const body = (await c.req.json()) as { workspaceId?: string; consent?: { accept: boolean; optionalScopes?: string[] } }
       if (!body.workspaceId || typeof body.workspaceId !== 'string') {
         return c.json({ error: 'workspaceId is required' }, 400)
       }
@@ -1064,6 +1084,7 @@ export function marketplaceRoutes() {
           listingId: listing.id,
           userId: authCtx.userId,
           workspaceId: body.workspaceId,
+          consent: body.consent ?? null,
         })
         await gamification.recalculateCreatorStats(listing.creatorId)
         return c.json({ installed: true, ...result })
@@ -1129,9 +1150,71 @@ export function marketplaceRoutes() {
       if (msg.startsWith('instance_too_small')) {
         return c.json({ error: { code: 'instance_too_small', message: msg.replace(/^instance_too_small:\s*/, '') } }, 402)
       }
+      if (err instanceof AppConsentError) return appConsentErrorResponse(c, err)
       console.error('[marketplace] install', err)
       return c.json({ error: 'Install failed' }, 500)
     }
+  })
+
+  /** What installing the listing's current version would ask the user to approve. */
+  app.get('/:slug/consent', async (c) => {
+    const listing = await marketplaceService.getListingBySlug(c.req.param('slug'))
+    if (!listing) return c.json({ error: 'Listing not found' }, 404)
+    const manifest = await grantsService.loadVersionManifest(listing.id, listing.currentVersion)
+    if (!grantsService.manifestNeedsConsent(manifest)) return c.json({ consent: null })
+    return c.json({ consent: grantsService.consentRequestFor(manifest, listing.currentVersion) })
+  })
+
+  /** The installer, or with `allowAdmins` also an owner/admin of the install's workspace. */
+  async function ownedInstall(c: any, opts: { allowAdmins?: boolean } = {}): Promise<{ installId: string; userId: string } | Response> {
+    const authCtx = c.get('auth') as AuthContext | undefined
+    if (!authCtx?.isAuthenticated || !authCtx.userId) return c.json({ error: 'Unauthorized' }, 401)
+    const installId = c.req.param('installId')
+    const install = await prisma.marketplaceInstall.findUnique({ where: { id: installId }, select: { userId: true, workspaceId: true } })
+    if (!install) return c.json({ error: 'install_not_found' }, 404)
+    if (install.userId !== authCtx.userId) {
+      const admin = opts.allowAdmins
+        ? await prisma.member.findFirst({ where: { workspaceId: install.workspaceId, userId: authCtx.userId, role: { in: ['owner', 'admin'] } }, select: { id: true } })
+        : null
+      if (!admin) return c.json({ error: 'Forbidden' }, 403)
+    }
+    return { installId, userId: authCtx.userId }
+  }
+
+  app.get('/installs/:installId/grant', async (c) => {
+    const owned = await ownedInstall(c)
+    if (owned instanceof Response) return owned
+    const grant = await grantsService.getInstallGrant(owned.installId)
+    const install = await prisma.marketplaceInstall.findUnique({ where: { id: owned.installId }, select: { listingId: true, installedVersion: true } })
+    const manifest = install ? await grantsService.loadVersionManifest(install.listingId, install.installedVersion) : null
+    return c.json({
+      grant: grant ? grantsService.serializeGrant(grant) : null,
+      consent: grantsService.manifestNeedsConsent(manifest) ? grantsService.consentRequestFor(manifest, install!.installedVersion) : null,
+    })
+  })
+
+  app.post('/installs/:installId/consent', async (c) => {
+    const owned = await ownedInstall(c)
+    if (owned instanceof Response) return owned
+    const body = (await c.req.json().catch(() => null)) as { accept?: boolean; optionalScopes?: string[] } | null
+    try {
+      const grant = await grantsService.consentToInstall({
+        installId: owned.installId,
+        userId: owned.userId,
+        consent: { accept: body?.accept === true, optionalScopes: body?.optionalScopes },
+      })
+      return c.json({ grant: grantsService.serializeGrant(grant) })
+    } catch (err) {
+      if (err instanceof AppConsentError) return appConsentErrorResponse(c, err)
+      throw err
+    }
+  })
+
+  app.post('/installs/:installId/revoke', async (c) => {
+    const owned = await ownedInstall(c, { allowAdmins: true })
+    if (owned instanceof Response) return owned
+    const result = await grantsService.revokeInstallGrant(owned.installId)
+    return c.json({ ok: true, ...result, grant: grantsService.serializeGrant(await grantsService.getInstallGrant(owned.installId)) })
   })
 
   app.post('/:slug/reviews', async (c) => {

@@ -1,0 +1,5 @@
+{
+  "schemaVersion": 1,
+  "scopes": ["members:read", "chat:write", "channels:manage"],
+  "events": [{ "type": "member.joined", "target": "hook", "name": "Greet" }]
+}
