@@ -10,7 +10,8 @@
  *
  * Channel members see this log, and tool output can hold secrets, so it is trimmed here rather
  * than in the app: reasoning is dropped, tool inputs keep short values, tool output keeps its
- * first lines, and anything that looks like a credential is masked.
+ * first lines, and anything that looks like a credential is masked. Which account a call acted
+ * as is kept whole, as `credential` on the part.
  */
 
 import { prisma } from '../lib/prisma'
@@ -75,6 +76,21 @@ function redactOutput(output: unknown): string | undefined {
 
 type Part = { type?: string; [key: string]: unknown }
 
+const CREDENTIAL_SOURCES = new Set(['shared', 'personal', 'delegate', 'approved'])
+
+/** Which account a tool call used ("as @bob"). Kept apart from the clipped output so channels still see it. */
+function credentialUseOf(output: unknown): { source: string; actingAs: string; onBehalfOf?: string } | undefined {
+  const raw = (output as { credential?: Record<string, unknown> } | null)?.credential
+  if (!raw || typeof raw !== 'object') return undefined
+  const { source, actingAs, onBehalfOf } = raw
+  if (typeof source !== 'string' || !CREDENTIAL_SOURCES.has(source) || typeof actingAs !== 'string') return undefined
+  return {
+    source,
+    actingAs: clip(actingAs, 80),
+    ...(typeof onBehalfOf === 'string' && onBehalfOf ? { onBehalfOf: clip(onBehalfOf, 80) } : {}),
+  }
+}
+
 const isToolPart = (part: Part) => part.type === 'dynamic-tool' || (typeof part.type === 'string' && part.type.startsWith('tool-'))
 
 /** The parts before the turn's last text: what folds under "Worked for X". */
@@ -91,7 +107,14 @@ export function redactWorkLog(parts: Part[]): Part[] {
     if (part.type === 'text' && typeof part.text === 'string') {
       if (part.text.trim()) out.push({ ...part, text: clip(redactSecrets(part.text), TEXT_LIMIT) })
     } else if (isToolPart(part)) {
-      out.push({ ...part, input: redactInput(part.input), output: redactOutput(part.output), errorText: typeof part.errorText === 'string' ? clip(redactSecrets(part.errorText), OUTPUT_LIMIT) : undefined })
+      const credential = credentialUseOf(part.output)
+      out.push({
+        ...part,
+        input: redactInput(part.input),
+        output: redactOutput(part.output),
+        errorText: typeof part.errorText === 'string' ? clip(redactSecrets(part.errorText), OUTPUT_LIMIT) : undefined,
+        ...(credential ? { credential } : {}),
+      })
     }
   }
   return out

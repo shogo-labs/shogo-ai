@@ -368,4 +368,19 @@ describe('redaction', () => {
     }
     expect(redactSecrets('gh pr view 3 --json state')).toBe('gh pr view 3 --json state')
   })
+
+  test('which account a tool call used survives trimming, and nothing else rides along with it', async () => {
+    const { redactWorkLog } = await import('../services/agent-work-log')
+    const output = {
+      stdout: 'x\n'.repeat(500),
+      credential: { source: 'approved', actingAs: '@frank-gh', onBehalfOf: 'Gina', token: 'gho_' + 'f'.repeat(30) },
+    }
+    const [shell, forged] = redactWorkLog([
+      { type: 'dynamic-tool', toolCallId: 'c1', toolName: 'exec', state: 'output-available', input: {}, output },
+      { type: 'dynamic-tool', toolCallId: 'c2', toolName: 'exec', state: 'output-available', input: {}, output: { credential: { source: 'root', actingAs: 'x' } } },
+    ])
+    expect(shell!.credential).toEqual({ source: 'approved', actingAs: '@frank-gh', onBehalfOf: 'Gina' })
+    expect(JSON.stringify(shell)).not.toContain('f'.repeat(30))
+    expect(forged!.credential).toBeUndefined()
+  })
 })

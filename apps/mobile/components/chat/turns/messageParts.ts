@@ -14,7 +14,12 @@
 
 import type { UIMessage } from "@ai-sdk/react"
 import type { MessagePart } from "./types"
-import { type ToolCallData, getToolCategory } from "../tools/types"
+import { type ToolCallData, credentialUseOf, getToolCategory } from "../tools/types"
+
+function withCredential(...candidates: unknown[]): Pick<ToolCallData, "credential"> {
+  const credential = credentialUseOf(...candidates)
+  return credential ? { credential } : {}
+}
 
 export const TASK_TOOL_NAMES = new Set(["task", "Task", "agent_spawn"])
 
@@ -185,6 +190,7 @@ export function extractOrderedParts(message: UIMessage): MessagePart[] {
           result: part.output,
           error: safeErrorString(rawError),
           timestamp: 0,
+          ...withCredential((part as { credential?: unknown }).credential, (part.output as { credential?: unknown } | null)?.credential),
         },
       })
     } else if (part.type === "file" && part.url) {
