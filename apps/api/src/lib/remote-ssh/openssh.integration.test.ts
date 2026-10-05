@@ -199,7 +199,10 @@ const DOCKER_AVAILABLE = RUN_INTEGRATION && (await dockerAvailable());
 describe.skipIf(!RUN_INTEGRATION || !DOCKER_AVAILABLE)(
   "Remote-SSH OpenSSH integration",
   () => {
-    test("connects, bootstraps, launches, forwards, writes a file, and stops", async () => {
+    // `multiplex: false` is the Windows transport (one ssh per exec plus
+    // supervised -L/-R children); running it here keeps it honest on
+    // POSIX CI where a real sshd is available.
+    for (const multiplex of [true, false]) test(`connects, bootstraps, launches, forwards, writes a file, and stops (multiplex=${multiplex})`, async () => {
       const tempRoot = await mkdtemp(
         join(tmpdir(), "shogo-remote-ssh-integration-"),
       );
@@ -271,6 +274,7 @@ exec /usr/sbin/sshd -D -e
           username: "remote-test",
           port: sshPort,
           identityFile: privateKeyPath,
+          multiplex,
           controlPath: join(tempRoot, "control.sock"),
           connectTimeoutMs: 1_000,
         });
