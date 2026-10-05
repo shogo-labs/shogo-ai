@@ -214,6 +214,7 @@ function AppleContinueButton({
 const LOGIN_HERO_BREAKPOINT = 768
 /** Responsive web viewports at or below this width use the native phone surface. */
 const LOGIN_PHONE_WEB_MAX_WIDTH = LOGIN_HERO_BREAKPOINT - 1
+const LOGIN_SHOWCASE_MIN_WIDTH = 1024
 
 /** Native-landing typewriter lines. The hero text scales down to stay on one line. */
 const NATIVE_LANDING_HERO_PHRASES = [
@@ -320,6 +321,8 @@ export interface LoginScreenProps {
   loginHeroImage?: ImageSourcePropType
   /** When `colorScheme` is dark, this image is used instead of `loginHeroImage` (optional — defaults to `loginHeroImage`). */
   loginHeroImageDark?: ImageSourcePropType
+  /** Right-hand panel for wide desktop web windows; without it the form is centered. */
+  desktopShowcase?: React.ReactNode
 }
 
 function isValidEmail(email: string): boolean {
@@ -1361,6 +1364,19 @@ export function LoginScreen(props: LoginScreenProps) {
 
   if (!isDesktopWeb) {
     return <CompactWebLoginPanel {...props} heroSource={heroArtwork} />
+  }
+
+  if (props.desktopShowcase && width >= LOGIN_SHOWCASE_MIN_WIDTH) {
+    return (
+      <View className="flex-1 flex-row bg-background">
+        <View style={{ width: '46%', maxWidth: 680 }}>
+          <DesktopFormPanel {...props} />
+        </View>
+        <View style={{ flex: 1, padding: 12, paddingLeft: 0 }}>
+          {props.desktopShowcase}
+        </View>
+      </View>
+    )
   }
 
   return (
