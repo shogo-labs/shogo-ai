@@ -157,11 +157,10 @@ describe('cloud Personal workspace', () => {
     }
   }
 
-  test('someone in the local Personal moves to the cloud Personal when signed in, and back on sign-out', async () => {
+  test('someone in the local Personal stays there when signing in', async () => {
     await activate('local-personal')
     rememberWorkspaceKind('local-personal', 'personal')
-
-    let restore = stubLocalApi([
+    const restore = stubLocalApi([
       { id: 'cloud-personal', name: 'Russ Personal', slug: 'p', kind: 'personal' },
       { id: 'ws-acme', name: 'Acme', slug: 'acme', kind: 'team' },
     ])
@@ -171,8 +170,22 @@ describe('cloud Personal workspace', () => {
       restore()
     }
     await Promise.resolve()
-    expect(getActiveWorkspaceId()).toBe('cloud-personal')
-    expect(routePath('/api/projects')).toBe('/api/cloud/cloud-personal/projects')
+    expect(getActiveWorkspaceId()).toBe('local-personal')
+    expect(routePath('/api/projects')).toBe('/api/projects')
+  })
+
+  test('someone in a cloud workspace falls back to local on sign-out', async () => {
+    let restore = stubLocalApi([
+      { id: 'cloud-personal', name: 'Russ Personal', slug: 'p', kind: 'personal' },
+      { id: 'ws-acme', name: 'Acme', slug: 'acme', kind: 'team' },
+    ])
+    try {
+      await refreshCloudWorkspaces(API)
+    } finally {
+      restore()
+    }
+    await activate('ws-acme')
+    expect(routePath('/api/projects')).toBe('/api/cloud/ws-acme/projects')
 
     restore = stubLocalApi([], false)
     try {

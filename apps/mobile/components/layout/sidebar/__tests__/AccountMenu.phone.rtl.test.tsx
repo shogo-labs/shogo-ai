@@ -43,6 +43,7 @@ mock.module("lucide-react-native", () => {
     ExternalLink: Icon("ExternalLink"),
     Key: Icon("Key"),
     Laptop: Icon("Laptop"),
+    LogIn: Icon("LogIn"),
     LogOut: Icon("LogOut"),
     Mail: Icon("Mail"),
     Monitor: Icon("Monitor"),

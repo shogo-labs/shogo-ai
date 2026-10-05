@@ -21,25 +21,27 @@ import { defineConfig, devices } from "@playwright/test"
  *
  * `E2E_LOCAL_START_STACK=1` (PR CI) makes Playwright boot the stack itself:
  * a throwaway SQLite DB, the local-mode API on :8002 and Expo web on :8081
- * (override with E2E_LOCAL_WEB_PORT).
+ * (override with E2E_LOCAL_API_PORT / E2E_LOCAL_WEB_PORT).
  */
 const startStack = process.env.E2E_LOCAL_START_STACK === "1"
+const apiPort = process.env.E2E_LOCAL_API_PORT || "8002"
+const apiUrl = `http://localhost:${apiPort}`
 const webPort = process.env.E2E_LOCAL_WEB_PORT || "8081"
 const webUrl = `http://localhost:${webPort}`
 // Some specs default to a developer's API port; point them at the stack's.
-if (startStack) process.env.E2E_API_URL = "http://localhost:8002"
+if (startStack) process.env.E2E_API_URL = apiUrl
 const repoRoot = resolve(__dirname, "../..")
 const localDbPath = resolve(repoRoot, "test-results/e2e-local.db")
 const localEnv = {
   SHOGO_LOCAL_MODE: "true",
   DATABASE_URL: `file:${localDbPath}`,
   BETTER_AUTH_SECRET: "e2e-local-secret",
-  BETTER_AUTH_URL: "http://localhost:8002",
+  BETTER_AUTH_URL: apiUrl,
   NODE_ENV: "development",
   EXPO_PUBLIC_LOCAL_MODE: "true",
-  API_PORT: "8002",
-  EXPO_PUBLIC_API_PORT: "8002",
-  EXPO_PUBLIC_API_URL: "http://localhost:8002",
+  API_PORT: apiPort,
+  EXPO_PUBLIC_API_PORT: apiPort,
+  EXPO_PUBLIC_API_URL: apiUrl,
   // A developer's apps/mobile/.env.local otherwise wins over the values above.
   EXPO_NO_DOTENV: "1",
   // Every spec shares one local user and IP, so the suite trips the default
@@ -72,7 +74,7 @@ export default defineConfig({
               "bun --no-env-file apps/api/src/entry.ts",
             cwd: repoRoot,
             env: localEnv,
-            url: "http://localhost:8002/api/health",
+            url: `${apiUrl}/api/health`,
             timeout: 180_000,
             reuseExistingServer: !process.env.CI,
             stdout: "pipe",

@@ -43,7 +43,7 @@
  */
 
 import { useEffect, useMemo, useRef, useState, useCallback } from 'react'
-import { View, Text, ActivityIndicator, Platform, Pressable, Switch } from 'react-native'
+import { View, Text, ActivityIndicator, Platform, Pressable } from 'react-native'
 import { useLocalSearchParams, useRouter } from 'expo-router'
 import { Button, cn } from '@shogo/shared-ui/primitives'
 import { type WorkspaceSummary, PlatformApi } from '@shogo-ai/sdk'
@@ -88,7 +88,7 @@ interface CliPendingState {
 function CliLinkBridge() {
   const router = useRouter()
   const params = useLocalSearchParams<CliLinkParams>()
-  const { isLoading: isAuthLoading, isAuthenticated } = useAuth()
+  const { isLoading: isAuthLoading, isAuthenticated, user, signOut } = useAuth()
   const http = useDomainHttp()
   const platform = useMemo(() => new PlatformApi(http), [http])
 
@@ -97,7 +97,6 @@ function CliLinkBridge() {
   const [pending, setPending] = useState<CliPendingState | null>(null)
   const [workspaces, setWorkspaces] = useState<WorkspaceSummary[]>([])
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | null>(null)
-  const [allWorkspaces, setAllWorkspaces] = useState(true)
   const approvedRef = useRef(false)
   const stateLoadedRef = useRef(false)
   const workspacesLoadedRef = useRef(false)
@@ -118,7 +117,7 @@ function CliLinkBridge() {
       try {
         const res = await http.request<{ ok: boolean; error?: string; workspace?: string | null; email?: string | null }>(
           '/api/cli/login/approve',
-          { method: 'POST', body: { state, workspaceId, allWorkspaces: clientHint === 'desktop' && allWorkspaces } },
+          { method: 'POST', body: { state, workspaceId, allWorkspaces: clientHint === 'desktop' } },
         )
         if (!res.data?.ok) {
           throw new Error(res.data?.error || `Approve failed (HTTP ${res.status})`)
@@ -132,7 +131,7 @@ function CliLinkBridge() {
         )
       }
     },
-    [http, state, clientHint, allWorkspaces],
+    [http, state, clientHint],
   )
 
   const deny = useCallback(async () => {
@@ -143,6 +142,17 @@ function CliLinkBridge() {
     }
     setStatus('denied')
   }, [http, state])
+
+  // Signing out sends the auth effect below to /sign-in with this page as
+  // `next`, so the pending `state` survives the account switch.
+  const switchAccount = useCallback(async () => {
+    stateLoadedRef.current = false
+    workspacesLoadedRef.current = false
+    setPending(null)
+    setWorkspaces([])
+    setSelectedWorkspaceId(null)
+    await signOut()
+  }, [signOut])
 
   // Phase 1: auth + state lookup
   useEffect(() => {
@@ -296,9 +306,17 @@ function CliLinkBridge() {
           <View className="gap-3 w-full">
             <Text className="text-sm text-muted-foreground text-center">
               {clientHint === 'desktop'
-                ? 'Choose the main workspace for this device. AI usage on the desktop is billed to it. You can switch later from the desktop app\u2019s General settings.'
+                ? 'All your Shogo Cloud workspaces will appear on this desktop next to its local ones. Choose the main one: AI usage on the desktop is billed to it.'
                 : 'Choose which workspace this CLI session should act in. Keys are scoped to a single workspace; rerun `shogo login` to switch.'}
             </Text>
+            {user?.email ? (
+              <View className="flex-row items-center justify-center gap-2 flex-wrap">
+                <Text className="text-xs text-muted-foreground">Signed in as {user.email}</Text>
+                <Pressable onPress={() => void switchAccount()} accessibilityRole="button">
+                  <Text className="text-xs font-medium text-primary">Use a different account</Text>
+                </Pressable>
+              </View>
+            ) : null}
             <View className="gap-2 w-full">
               {workspaces.map((ws) => {
                 const isSelected = selectedWorkspaceId === ws.id
@@ -325,14 +343,6 @@ function CliLinkBridge() {
                 )
               })}
             </View>
-            {clientHint === 'desktop' ? (
-              <View className="flex-row items-center gap-3 w-full rounded-lg border border-border px-4 py-3">
-                <Switch value={allWorkspaces} onValueChange={setAllWorkspaces} accessibilityLabel="Show all my workspaces on this device" />
-                <Text className="flex-1 text-sm text-foreground">
-                  Use my Shogo Cloud workspaces on this desktop, including Personal, so they stay in sync with the web and mobile apps
-                </Text>
-              </View>
-            ) : null}
             <View className="flex-row gap-2 w-full">
               <Button
                 variant="outline"

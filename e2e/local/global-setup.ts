@@ -9,7 +9,7 @@ import { chromium, request } from "@playwright/test"
  */
 export default async function globalSetup(): Promise<void> {
   if (process.env.E2E_LOCAL_START_STACK !== "1") return
-  const api = await request.newContext({ baseURL: "http://localhost:8002" })
+  const api = await request.newContext({ baseURL: process.env.E2E_API_URL || "http://localhost:8002" })
   try {
     const signIn = await api.post("/api/local/auto-sign-in")
     if (!signIn.ok()) throw new Error(`local auto-sign-in failed (${signIn.status()}): ${await signIn.text()}`)
