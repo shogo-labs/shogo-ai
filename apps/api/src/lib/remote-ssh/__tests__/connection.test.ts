@@ -249,3 +249,218 @@ describe('SSHConnection', () => {
     expect(calls.filter((call) => call.args.includes('cancel')).length).toBe(cancelsBefore)
   })
 })
+
+type ForwardBehavior = 'ready' | 'silent' | { exitCode: number; stderr: string }
+
+/**
+ * Runner for `multiplex: false`: plain ssh invocations exit 0, while the
+ * long-lived `-N` forward children stay up until killed or told to exit.
+ */
+function makeSupervisedRunner(forward: (args: string[]) => ForwardBehavior = () => 'ready') {
+  const calls: SpawnCall[] = []
+  const forwardChildren: FakeChild[] = []
+  const runner: SSHProcessRunner = (command, args) => {
+    const child = new FakeChild()
+    calls.push({ command, args: [...args], stdin: '' })
+    if (args.includes('-N')) {
+      forwardChildren.push(child)
+      child.kill = (signal = 'SIGTERM') => {
+        child.signals.push(signal)
+        queueMicrotask(() => child.emit('close', null))
+        return true
+      }
+      const behavior = forward(args)
+      queueMicrotask(() => {
+        if (behavior === 'silent') return
+        if (behavior === 'ready') {
+          const marker = args.includes('-R')
+            ? 'debug1: remote forward success for: listen 9000, connect 127.0.0.1:4000\n'
+            : 'debug1: Local forwarding listening on 127.0.0.1 port 8123.\n'
+          child.stderr.emit('data', Buffer.from(`debug1: Authenticated to host.\n${marker}`))
+          return
+        }
+        child.stderr.emit('data', Buffer.from(behavior.stderr))
+        child.emit('close', behavior.exitCode)
+      })
+    } else {
+      queueMicrotask(() => child.emit('close', 0))
+    }
+    return child as unknown as ChildProcess
+  }
+  return { calls, forwardChildren, runner }
+}
+
+const noMux = (extra: Record<string, unknown> = {}) => configFor({ multiplex: false, ...extra })
+
+describe('SSHConnection without multiplexing (Windows)', () => {
+  test('multiplexing defaults on except for win32', () => {
+    const connection = createSSHConnection(configFor(), { processRunner: makeRunner().runner })
+    expect(connection.multiplex).toBe(process.platform !== 'win32')
+  })
+
+  test('disables ControlMaster explicitly and never uses control commands', async () => {
+    const { calls, runner } = makeSupervisedRunner()
+    const connection = createSSHConnection(noMux(), { processRunner: runner })
+
+    await connection.exec('echo hi')
+
+    expect(calls.length).toBeGreaterThan(0)
+    for (const call of calls) {
+      expect(call.args).toContain('ControlMaster=no')
+      expect(call.args).toContain('ControlPath=none')
+      expect(call.args.some((arg) => arg.startsWith('ControlPersist'))).toBe(false)
+      expect(call.args).not.toContain('-M')
+      expect(call.args).not.toContain('-O')
+    }
+    await connection.close()
+  })
+
+  test('connect verifies credentials with a single `true` probe', async () => {
+    const { calls, runner } = makeSupervisedRunner()
+    const connection = createSSHConnection(noMux(), { processRunner: runner })
+
+    await connection.connect()
+    await connection.connect()
+
+    expect(calls).toHaveLength(1)
+    expect(calls[0].args.slice(-3)).toEqual(['--', 'alice@example.com', 'true'])
+    await connection.close()
+  })
+
+  test('reports connect failures with ssh stderr', async () => {
+    const { runner } = makeRunner(() => ({ exitCode: 255, stderr: 'Permission denied (publickey).\n' }))
+    const connection = createSSHConnection(noMux(), { processRunner: runner })
+
+    await expect(connection.connect()).rejects.toThrow('connect failed: Permission denied (publickey).')
+  })
+
+  test('exec runs one ssh process per command after the connect probe', async () => {
+    const { calls, runner } = makeSupervisedRunner()
+    const connection = createSSHConnection(noMux(), { processRunner: runner })
+
+    await connection.exec('first')
+    await connection.exec('second')
+
+    expect(calls).toHaveLength(3)
+    expect(calls[1].args[calls[1].args.length - 1]).toBe('first')
+    expect(calls[2].args[calls[2].args.length - 1]).toBe('second')
+    await connection.close()
+  })
+
+  test('opens supervised -L and -R children and resolves on their readiness lines', async () => {
+    const { calls, forwardChildren, runner } = makeSupervisedRunner()
+    const connection = createSSHConnection(noMux(), { processRunner: runner })
+
+    const local = await connection.forward(8123, '127.0.0.1:3000')
+    const reverse = await connection.reverseForward(9000, 4000)
+
+    expect(local.direction).toBe('local')
+    expect(local.spec).toBe('8123:127.0.0.1:3000')
+    expect(reverse.direction).toBe('reverse')
+    expect(reverse.spec).toBe('9000:127.0.0.1:4000')
+    expect(forwardChildren).toHaveLength(2)
+
+    const [localCall, reverseCall] = calls.filter((call) => call.args.includes('-N'))
+    expect(localCall.args).toEqual(expect.arrayContaining(['-v', '-N', 'ExitOnForwardFailure=yes']))
+    expect(localCall.args).toContain('-L')
+    expect(localCall.args).toContain('8123:127.0.0.1:3000')
+    expect(reverseCall.args).toContain('-R')
+    expect(reverseCall.args).toContain('9000:127.0.0.1:4000')
+    expect(calls.some((call) => call.args.includes('-O'))).toBe(false)
+
+    await connection.close()
+  })
+
+  test('rejects a forward whose ssh exits before it is established', async () => {
+    const { runner } = makeSupervisedRunner(() => ({
+      exitCode: 255,
+      stderr:
+        'debug1: connecting\nbind [127.0.0.1]:8123: Address already in use\n' +
+        'Could not request local forwarding.\ndebug1: exit\n',
+    }))
+    const connection = createSSHConnection(noMux(), { processRunner: runner })
+
+    const failure = await connection.forward(8123, '127.0.0.1:3000').catch((error: Error) => error)
+
+    expect(failure).toBeInstanceOf(Error)
+    expect((failure as Error).message).toContain('-L 8123:127.0.0.1:3000 failed')
+    expect((failure as Error).message).toContain('Address already in use')
+    expect((failure as Error).message).not.toContain('debug1')
+    await connection.close()
+  })
+
+  test('kills the child of a forward that never reports ready', async () => {
+    const { forwardChildren, runner } = makeSupervisedRunner(() => 'silent')
+    const connection = createSSHConnection(noMux(), { processRunner: runner })
+    await connection.connect()
+
+    const realSetTimeout = globalThis.setTimeout
+    // Make the 150s start timeout fire immediately.
+    globalThis.setTimeout = ((fn: () => void, ms?: number, ...rest: unknown[]) =>
+      realSetTimeout(fn, ms === 150_000 ? 0 : ms, ...rest)) as typeof setTimeout
+    try {
+      await expect(connection.forward(8123, '127.0.0.1:3000')).rejects.toThrow('not established')
+    } finally {
+      globalThis.setTimeout = realSetTimeout
+    }
+    expect(forwardChildren[0].signals).toContain('SIGTERM')
+  })
+
+  test('closing a handle kills its child; close() kills the rest', async () => {
+    const { forwardChildren, runner } = makeSupervisedRunner()
+    const connection = createSSHConnection(noMux(), { processRunner: runner })
+
+    const local = await connection.forward(8123, '127.0.0.1:3000')
+    await connection.reverseForward(9000, 4000)
+
+    await local.close()
+    await local.close()
+    expect(forwardChildren[0].signals).toEqual(['SIGTERM'])
+    expect(forwardChildren[1].signals).toEqual([])
+
+    await connection.close()
+    expect(forwardChildren[1].signals).toEqual(['SIGTERM'])
+    // A deliberate kill is not a dead link.
+    expect((await connection.status()).connected).toBe(false)
+  })
+
+  test('status needs no probe while forwards are alive and flags a dead forward', async () => {
+    const { calls, forwardChildren, runner } = makeSupervisedRunner()
+    const connection = createSSHConnection(noMux(), { processRunner: runner })
+
+    expect((await connection.status()).connected).toBe(false)
+    expect(calls).toHaveLength(0)
+
+    const local = await connection.forward(8123, '127.0.0.1:3000')
+    const spawned = calls.length
+    expect(await connection.status()).toMatchObject({ connected: true, state: 'connected' })
+    expect(calls).toHaveLength(spawned)
+
+    // The ssh child dies on its own (network drop).
+    forwardChildren[0].emit('close', 255)
+    const dead = await connection.status()
+    expect(dead.connected).toBe(false)
+    expect(dead.state).toBe('disconnected')
+
+    // The owner closes the dead handle (as RemoteRuntimeManager.recover does)
+    // and the next command reconnects.
+    await local.close()
+    expect((await connection.status()).connected).toBe(false)
+    await connection.exec('true')
+    expect((await connection.status()).connected).toBe(true)
+    await connection.close()
+  })
+
+  test('re-requesting a forward replaces the previous child', async () => {
+    const { forwardChildren, runner } = makeSupervisedRunner()
+    const connection = createSSHConnection(noMux(), { processRunner: runner })
+
+    await connection.forward(8123, '127.0.0.1:3000')
+    await connection.forward(8123, '127.0.0.1:3000')
+
+    expect(forwardChildren).toHaveLength(2)
+    expect(forwardChildren[0].signals).toContain('SIGTERM')
+    expect(forwardChildren[1].signals).toEqual([])
+    await connection.close()
+  })
+})
