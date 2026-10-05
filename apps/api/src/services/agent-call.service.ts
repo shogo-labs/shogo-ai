@@ -35,6 +35,8 @@ export interface AgentCallRequest {
   /** Reply timeout in ms when waiting (default 5 min, max 20 min). */
   timeoutMs?: number
   callerProjectId?: string
+  /** Signed requester ticket for the callee, so it can act as the person behind the call. */
+  requesterTicket?: string
 }
 
 export interface AgentCallOutcome {
@@ -68,6 +70,7 @@ export async function callProjectAgent(
     wait,
     callerProjectId: req.callerProjectId,
   })
+  const ticketHeader: Record<string, string> = req.requesterTicket ? { 'X-Requester-Ticket': req.requesterTicket } : {}
 
   return forwardToProjectRuntime(c, projectId, workspaceId, '/agent/pipeline/call', forwardBody, {
     timeoutMs: wait ? timeoutMs + 5_000 : 15_000,
@@ -125,7 +128,7 @@ export async function forwardToProjectRuntime(
           cleanPath: agentPath,
           method: 'POST',
           body: forwardBody,
-          headers: { 'content-type': 'application/json', 'x-runtime-token': runtimeToken },
+          headers: { 'content-type': 'application/json', 'x-runtime-token': runtimeToken, ...ticketHeader },
         })
         const json = await res.json().catch(() => ({}))
         return { status: res.status, body: json }
@@ -135,7 +138,7 @@ export async function forwardToProjectRuntime(
 
     const res = await fetch(`${runtimeUrl}${agentPath}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-runtime-token': runtimeToken },
+      headers: { 'Content-Type': 'application/json', 'x-runtime-token': runtimeToken, ...ticketHeader },
       body: forwardBody,
       signal: AbortSignal.timeout(opts.timeoutMs),
     })

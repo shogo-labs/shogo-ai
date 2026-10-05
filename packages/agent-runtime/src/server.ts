@@ -3767,6 +3767,7 @@ app.post('/agent/pipeline/call', async (c) => {
     runId: typeof body.runId === 'string' ? body.runId : undefined,
     sessionId: typeof body.sessionId === 'string' ? body.sessionId : undefined,
     callerProjectId: typeof body.callerProjectId === 'string' ? body.callerProjectId : undefined,
+    requesterTicket: c.req.header('x-requester-ticket') || undefined,
   }
 
   if (body.wait === false) {

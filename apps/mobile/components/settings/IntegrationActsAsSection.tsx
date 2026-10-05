@@ -6,15 +6,42 @@ import { Linking, Pressable, View } from "react-native";
 import { API_URL } from "../../lib/api";
 import { Text } from "./account-sheet-chrome";
 
-type ActorMode = "shared" | "requester";
-type ActorFallback = "ask" | "shared" | "deny";
+type ChainStep = "requester" | "ask" | "shared" | "deny";
+type Unconnected = "ask" | "shared" | "deny";
+type Nobody = "shared" | "deny";
 
 interface Policy {
   provider: string;
-  writeMode: ActorMode;
-  readMode: ActorMode;
-  fallback: ActorFallback;
+  writeChain: ChainStep[];
+  readChain: ChainStep[];
   label: string;
+}
+
+interface Choices {
+  asRequester: boolean;
+  unconnected: Unconnected;
+  nobody: Nobody;
+  readToo: boolean;
+}
+
+/** The settings below, read off the stored lists of steps the agent tries in order. */
+export function choicesFromChains(writeChain: ChainStep[], readChain: ChainStep[]): Choices {
+  const asRequester = writeChain[0] !== "shared";
+  const second = writeChain[1];
+  const unconnected: Unconnected = second === "ask" || second === "shared" ? second : "deny";
+  const nobody: Nobody = unconnected === "ask" && writeChain[2] === "shared" ? "shared" : "deny";
+  return { asRequester, unconnected, nobody, readToo: asRequester && readChain[0] === "requester" };
+}
+
+export function chainsFromChoices(c: Choices): Pick<Policy, "writeChain" | "readChain"> {
+  if (!c.asRequester) return { writeChain: ["shared"], readChain: ["shared"] };
+  const writeChain: ChainStep[] =
+    c.unconnected === "ask" ? ["requester", "ask", c.nobody] : ["requester", c.unconnected];
+  // Reads never stop to ask; they fall back to the project account unless writes are refused outright.
+  const readChain: ChainStep[] = !c.readToo
+    ? ["shared"]
+    : c.unconnected === "deny" ? ["requester", "deny"] : ["requester", "shared"];
+  return { writeChain, readChain };
 }
 
 interface MyConnection {
@@ -22,8 +49,13 @@ interface MyConnection {
   externalLogin: string | null;
 }
 
-const FALLBACKS: Array<{ value: ActorFallback; label: string }> = [
+const UNCONNECTED: Array<{ value: Unconnected; label: string }> = [
   { value: "ask", label: "Ask them to connect" },
+  { value: "shared", label: "Use the project account" },
+  { value: "deny", label: "Don't do it" },
+];
+
+const NOBODY: Array<{ value: Nobody; label: string }> = [
   { value: "shared", label: "Use the project account" },
   { value: "deny", label: "Don't do it" },
 ];
@@ -50,6 +82,7 @@ function Choice({ label, selected, disabled, onPress }: { label: string; selecte
  */
 export function IntegrationActsAsSection({ projectId, provider = "github" }: { projectId: string; provider?: string }) {
   const [policy, setPolicy] = useState<Policy | null>(null);
+  const [canEdit, setCanEdit] = useState(false);
   const [mine, setMine] = useState<MyConnection | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -62,6 +95,7 @@ export function IntegrationActsAsSection({ projectId, provider = "github" }: { p
       if (!res.ok) return;
       const body = await res.json();
       setPolicy((body?.policies ?? []).find((p: Policy) => p.provider === provider) ?? null);
+      setCanEdit(body?.canEdit === true);
       setMine((body?.me?.connections ?? []).find((c: MyConnection) => c.provider === provider) ?? null);
     } catch {
       // No setting to show.
@@ -72,9 +106,10 @@ export function IntegrationActsAsSection({ projectId, provider = "github" }: { p
     void load();
   }, [load]);
 
-  const save = async (patch: Partial<Pick<Policy, "writeMode" | "readMode" | "fallback">>) => {
+  const save = async (change: Partial<Choices>) => {
     if (!policy) return;
     const previous = policy;
+    const patch = chainsFromChoices({ ...choicesFromChains(policy.writeChain, policy.readChain), ...change });
     setPolicy({ ...policy, ...patch });
     setBusy(true);
     setError(null);
@@ -117,7 +152,8 @@ export function IntegrationActsAsSection({ projectId, provider = "github" }: { p
 
   if (!policy) return null;
   const label = policy.label || provider;
-  const asRequester = policy.writeMode === "requester";
+  const { asRequester, unconnected, nobody, readToo } = choicesFromChains(policy.writeChain, policy.readChain);
+  const locked = busy || !canEdit;
 
   return (
     <View className="mt-3 border-t border-border pt-3">
@@ -126,14 +162,16 @@ export function IntegrationActsAsSection({ projectId, provider = "github" }: { p
         <Choice
           label="Project account"
           selected={!asRequester}
-          disabled={busy}
-          onPress={() => void save({ writeMode: "shared", readMode: "shared" })}
+          disabled={locked}
+          onPress={() => void save({ asRequester: false })}
         />
         <Choice
           label="Person who asked"
           selected={asRequester}
-          disabled={busy}
-          onPress={() => void save({ writeMode: "requester" })}
+          disabled={locked}
+          onPress={() => {
+            if (!asRequester) void save({ asRequester: true, unconnected: "ask", nobody: "deny", readToo: false });
+          }}
         />
       </View>
       <Text className="mt-2 text-xs text-muted-foreground">
@@ -141,30 +179,49 @@ export function IntegrationActsAsSection({ projectId, provider = "github" }: { p
           ? `Issues, comments, and pull requests are created with the ${label} account of whoever asked the agent, so they show up as the author.`
           : `Everything the agent does on ${label} uses this project's connection.`}
       </Text>
+      {!canEdit ? (
+        <Text className="mt-1 text-xs text-muted-foreground">Only the project owner and workspace admins can change this.</Text>
+      ) : null}
 
       {asRequester ? (
         <>
           <Text className="mt-3 text-xs text-muted-foreground">{`If they haven't connected ${label}:`}</Text>
           <View className="mt-1 flex-row flex-wrap gap-2">
-            {FALLBACKS.map((f) => (
+            {UNCONNECTED.map((f) => (
               <Choice
                 key={f.value}
                 label={f.label}
-                selected={policy.fallback === f.value}
-                disabled={busy}
-                onPress={() => void save({ fallback: f.value })}
+                selected={unconnected === f.value}
+                disabled={locked}
+                onPress={() => void save({ unconnected: f.value })}
               />
             ))}
           </View>
+          {unconnected === "ask" ? (
+            <>
+              <Text className="mt-3 text-xs text-muted-foreground">When no one asked (schedules, webhooks, other automations):</Text>
+              <View className="mt-1 flex-row flex-wrap gap-2">
+                {NOBODY.map((f) => (
+                  <Choice
+                    key={f.value}
+                    label={f.label}
+                    selected={nobody === f.value}
+                    disabled={locked}
+                    onPress={() => void save({ nobody: f.value })}
+                  />
+                ))}
+              </View>
+            </>
+          ) : null}
           <Pressable
             accessibilityRole="checkbox"
             accessibilityLabel="Use their account for reading too"
-            accessibilityState={{ checked: policy.readMode === "requester", disabled: busy }}
-            disabled={busy}
-            onPress={() => void save({ readMode: policy.readMode === "requester" ? "shared" : "requester" })}
+            accessibilityState={{ checked: readToo, disabled: locked }}
+            disabled={locked}
+            onPress={() => void save({ readToo: !readToo })}
             className="mt-3 flex-row items-center gap-2 disabled:opacity-50"
           >
-            <View className={`h-4 w-4 rounded border ${policy.readMode === "requester" ? "border-primary bg-primary" : "border-border"}`} />
+            <View className={`h-4 w-4 rounded border ${readToo ? "border-primary bg-primary" : "border-border"}`} />
             <Text className="text-xs text-foreground">Use their account for reading too (private repos they can see)</Text>
           </Pressable>
 

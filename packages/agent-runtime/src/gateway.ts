@@ -1965,6 +1965,8 @@ export class AgentGateway {
     runId?: string
     sessionId?: string
     callerProjectId?: string
+    /** The calling turn's person, handed off by the API for this project. */
+    requesterTicket?: string
   }): Promise<{ reply: string; sessionId: string; runId?: string }> {
     const runId = opts.runId?.trim() || undefined
     const sessionId = opts.sessionId?.trim() || (runId ? `run:${runId}` : 'pipeline')
@@ -1976,7 +1978,9 @@ export class AgentGateway {
 
     if (runId) this.activePipelineRuns.set(sessionId, runId)
     try {
-      const reply = await this.agentTurn(prompt, sessionId)
+      const reply = await this.agentTurn(
+        prompt, sessionId, false, undefined, undefined, undefined, undefined, 'agent', false, opts.requesterTicket,
+      )
       return { reply, sessionId, runId }
     } finally {
       this.activePipelineRuns.delete(sessionId)

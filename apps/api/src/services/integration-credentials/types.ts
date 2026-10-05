@@ -15,15 +15,50 @@ export type CredentialOp = 'read' | 'write'
 export const ACTOR_MODES: readonly ActorMode[] = ['shared', 'requester']
 export const ACTOR_FALLBACKS: readonly ActorFallback[] = ['ask', 'shared', 'deny']
 
+/**
+ * One step of a fallback chain. The resolver walks a chain in order and
+ * skips steps that don't apply:
+ *   requester - the person's own account, when they've connected and allowed this project
+ *   ask       - a known person who hasn't connected yet gets a connect link
+ *   shared    - the project's account, when it has one
+ *   deny      - refuse
+ */
+export type ChainStep = 'requester' | 'ask' | 'shared' | 'deny'
+export const CHAIN_STEPS: readonly ChainStep[] = ['requester', 'ask', 'shared', 'deny']
+
 export interface CredentialPolicy {
   provider: string
+  writeChain: ChainStep[]
+  readChain: ChainStep[]
+  /** Summaries of the chains, for older runtimes and simple UIs. */
   writeMode: ActorMode
   readMode: ActorMode
   fallback: ActorFallback
   sharedUserId: string | null
 }
 
+/** The chain a v1 policy (mode + single fallback) behaves as. */
+export function legacyChain(mode: ActorMode, fallback: ActorFallback, op: CredentialOp): ChainStep[] {
+  if (mode === 'shared') return ['shared']
+  if (fallback === 'shared') return ['requester', 'shared']
+  if (fallback === 'deny') return ['requester', 'deny']
+  // Reads never stopped for a connect prompt.
+  return op === 'read' ? ['requester', 'shared'] : ['requester', 'ask', 'deny']
+}
+
+export function chainMode(chain: readonly ChainStep[]): ActorMode {
+  return chain[0] === 'shared' ? 'shared' : 'requester'
+}
+
+export function chainFallback(chain: readonly ChainStep[]): ActorFallback {
+  if (chain.includes('ask')) return 'ask'
+  if (chain.slice(1).includes('shared')) return 'shared'
+  return 'deny'
+}
+
 export const DEFAULT_POLICY: Omit<CredentialPolicy, 'provider'> = {
+  writeChain: ['shared'],
+  readChain: ['shared'],
   writeMode: 'shared',
   readMode: 'shared',
   fallback: 'ask',
@@ -80,6 +115,8 @@ export interface CredentialProvider {
   label(provider: string): string
   /** False for shared-only integrations (a Slack bot token, a pasted API key). */
   supportsPersonal: boolean
+  /** False when the integration has no project-wide account (default true). */
+  supportsShared?: boolean
   /** The project's own credential. Null when the project has none. */
   shared(ctx: ResolveContext): Promise<CredentialMaterial | null>
   /** Usable credentials from a person's stored connection (refreshed when needed). */
@@ -91,7 +128,7 @@ export interface CredentialProvider {
    */
   personalForUser?(ctx: ResolveContext, userId: string): Promise<CredentialMaterial | null>
   /** Where to send the person to connect their own account. */
-  beginConnect?(args: { userId: string; projectId: string; provider: string; returnUrl: string }): Promise<{ url: string }>
+  beginConnect?(args: { userId: string; projectId: string; provider: string; returnUrl: string; resume?: string }): Promise<{ url: string }>
 }
 
 export type ResolveResult =

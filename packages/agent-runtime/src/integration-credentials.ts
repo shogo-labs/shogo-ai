@@ -40,6 +40,9 @@ export interface CredentialPolicySummary {
   writeMode: 'shared' | 'requester'
   readMode: 'shared' | 'requester'
   fallback: 'ask' | 'shared' | 'deny'
+  /** Ordered steps to try; older APIs only send the mode fields above. */
+  writeChain?: string[]
+  readChain?: string[]
   sharedUserId: string | null
 }
 
@@ -77,10 +80,12 @@ async function policiesFor(projectId: string): Promise<Map<string, CredentialPol
 /** True when a policy changes who `op` runs as on `provider`, so a lookup is needed. */
 function needsResolve(policy: CredentialPolicySummary | undefined, provider: string, op: CredentialOp): boolean {
   if (!policy) return false
-  const mode = op === 'write' ? policy.writeMode : policy.readMode
-  if (mode === 'requester') return true
+  const chain = op === 'write' ? policy.writeChain : policy.readChain
+  const projectAccountOnly = chain?.length
+    ? chain.length === 1 && chain[0] === 'shared'
+    : (op === 'write' ? policy.writeMode : policy.readMode) === 'shared'
   // Composio's default is already the requester's own entity; "shared" is the change.
-  return provider.startsWith('composio:') && mode === 'shared'
+  return projectAccountOnly ? provider.startsWith('composio:') : true
 }
 
 export type ResolvedCredential =

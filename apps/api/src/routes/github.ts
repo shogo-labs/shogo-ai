@@ -32,6 +32,7 @@ import { getFrontendUrl } from '../lib/cloud-urls';
 import { grantAccess } from '../services/integration-credentials';
 import { isPersonalConnectState, verifyPersonalConnectState } from '../services/integration-credentials/connect-state';
 import { ensureDefaultCredentialProviders, githubAdapter } from '../services/integration-credentials/defaults';
+import { resumeAfterConnect } from '../services/integration-credentials/resume';
 import { connectedPage, connectFailedPage } from './integration-credentials';
 
 function escapeHtml(text: string): string {
@@ -441,7 +442,12 @@ export function githubRoutes(config: GitHubRoutesConfig = {}) {
         if (!adapter) throw new Error('GitHub is not available on this server');
         const { login } = await adapter.completeConnect({ userId: personal.userId, code });
         if (personal.projectId) await grantAccess(personal.userId, personal.projectId, 'github');
-        return c.html(connectedPage('GitHub', login));
+        const resumed = await resumeAfterConnect({ userId: personal.userId, resume: personal.resume, label: 'GitHub', login })
+          .catch((err) => {
+            console.error('[GitHub] Resume after connect failed:', err?.message ?? err);
+            return { resumed: false } as const;
+          });
+        return c.html(connectedPage('GitHub', login, resumed));
       } catch (err: any) {
         console.error('[GitHub] Personal connect failed:', err?.message ?? err);
         return c.html(connectFailedPage(err?.message ?? 'Could not connect GitHub'), 400);

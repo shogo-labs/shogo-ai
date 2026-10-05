@@ -55,9 +55,13 @@ function publicApiBaseUrl(): string {
   return (process.env.SHOGO_PUBLIC_API_URL || process.env.BETTER_AUTH_URL || 'http://localhost:8002').replace(/\/+$/, '')
 }
 
-/** The link a requester opens to connect their account and consent for this project. */
-export function personalConnectUrl(projectId: string, provider: string): string {
-  return `${publicApiBaseUrl()}/api/projects/${encodeURIComponent(projectId)}/integrations/${encodeURIComponent(provider)}/connect`
+/**
+ * The link a requester opens to connect their account and consent for this
+ * project. `resume` (signed) says where to pick the conversation back up.
+ */
+export function personalConnectUrl(projectId: string, provider: string, resume?: string): string {
+  const url = `${publicApiBaseUrl()}/api/projects/${encodeURIComponent(projectId)}/integrations/${encodeURIComponent(provider)}/connect`
+  return resume ? `${url}?resume=${encodeURIComponent(resume)}` : url
 }
 
 export interface ResolveArgs {
@@ -66,6 +70,8 @@ export interface ResolveArgs {
   op: CredentialOp
   /** From a verified requester ticket; null when the turn has no known person. */
   requesterUserId: string | null
+  /** Signed resume token for the connect link (see resume.ts). */
+  resume?: string
 }
 
 async function sharedResult(adapter: CredentialProvider, ctx: ResolveContext): Promise<ResolveResult> {
@@ -90,14 +96,16 @@ export async function resolveIntegrationCredential(args: ResolveArgs): Promise<R
 
   const policy = await getPolicy(args.projectId, args.provider)
   const ctx: ResolveContext = { projectId: args.projectId, workspaceId: project.workspaceId, provider: args.provider, policy }
-  const mode = args.op === 'write' ? policy.writeMode : policy.readMode
-  if (mode === 'shared' || !adapter.supportsPersonal) return sharedResult(adapter, ctx)
-
+  const chain = args.op === 'write' ? policy.writeChain : policy.readChain
   const label = adapter.label(args.provider)
   const requester = args.requesterUserId
-  if (requester) {
-    const personal = await personalCredential(adapter, ctx, requester)
-    if (personal) {
+  let sharedMissing: ResolveResult | null = null
+
+  for (const step of chain) {
+    if (step === 'requester') {
+      if (!requester || !adapter.supportsPersonal) continue
+      const personal = await personalCredential(adapter, ctx, requester)
+      if (!personal) continue
       return {
         ok: true,
         source: 'personal',
@@ -106,21 +114,28 @@ export async function resolveIntegrationCredential(args: ResolveArgs): Promise<R
         credential: personal,
       }
     }
+    if (step === 'ask') {
+      if (!requester || !adapter.supportsPersonal) continue
+      return {
+        ok: false,
+        code: 'requester_auth_required',
+        message:
+          `This agent acts as the person who asked on ${label}. ` +
+          `They need to connect their ${label} account and allow this agent to use it.`,
+        connectUrl: personalConnectUrl(args.projectId, args.provider, args.resume),
+      }
+    }
+    if (step === 'shared') {
+      if (adapter.supportsShared === false) continue
+      const shared = await sharedResult(adapter, ctx)
+      if (shared.ok) return shared
+      sharedMissing = shared
+      continue
+    }
+    if (step === 'deny') break
   }
 
-  // Reads never stop for a connect prompt; they fall back to the shared account unless denied.
-  const fallback = args.op === 'read' && policy.fallback === 'ask' ? 'shared' : policy.fallback
-  if (fallback === 'shared') return sharedResult(adapter, ctx)
-  if (fallback === 'ask' && requester) {
-    return {
-      ok: false,
-      code: 'requester_auth_required',
-      message:
-        `This agent acts as the person who asked on ${label}. ` +
-        `They need to connect their ${label} account and allow this agent to use it.`,
-      connectUrl: personalConnectUrl(args.projectId, args.provider),
-    }
-  }
+  if (sharedMissing && !chain.includes('deny')) return sharedMissing
   return {
     ok: false,
     code: requester ? 'denied' : 'requester_unknown',
