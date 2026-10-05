@@ -34,6 +34,9 @@
  */
 
 import { generateProxyToken } from '../ai-proxy-token'
+import { meetsMinimumInstanceSize, type InstanceSizeName } from '../../config/instance-sizes'
+import { isDockerClassEnabled } from '../runtime-class-setting'
+import { isDockerTechStack } from '../../../../../packages/core/src/tech-stack-registry'
 import { resolveAgentModelEnv } from './agent-model-defaults'
 import { deriveWorkspaceRuntimeToken } from '../workspace-runtime-token'
 import { buildToolsProxyUrl } from '../cloud-urls'
@@ -146,6 +149,7 @@ export async function buildWorkspaceEnv(
 
   // Workspace identity carries the base agent persona; per-project
   // AGENTS.md/MEMORY.md layering happens runtime-side (Phase 2b).
+  let workspaceInstanceSize: InstanceSizeName = 'micro'
   try {
     const loadWorkspace =
       opts._loadWorkspace ??
@@ -157,16 +161,19 @@ export async function buildWorkspaceEnv(
             name: true,
             kind: true,
             composioScope: true,
+            instanceSize: true,
             agentProfile: { select: { name: true } },
           } as any,
         })) as {
           name?: string | null
           kind?: string | null
           composioScope?: string | null
+          instanceSize?: string | null
           agentProfile?: { name?: string | null } | null
         } | null
       })
     const ws = await loadWorkspace(workspaceId)
+    if (ws?.instanceSize) workspaceInstanceSize = ws.instanceSize as InstanceSizeName
     const { normalizeWorkspaceKind } = await import('../../services/workspace.service')
     env.WORKSPACE_KIND = normalizeWorkspaceKind(ws?.kind)
     const profileName = ws?.profileName || ws?.agentProfile?.name
@@ -210,6 +217,27 @@ export async function buildWorkspaceEnv(
     }
     if (Object.keys(techStacks).length > 0) {
       env.WORKSPACE_TECH_STACKS = JSON.stringify(techStacks)
+    }
+
+    // Studio opens a project as a workspace runtime (`ws:proj:<id>`), not a
+    // single-project pod. That path uses this builder, so a docker-compose
+    // member has to request the docker VM here or it lands on a standard
+    // guest with no dockerd. One member that needs docker lifts the whole
+    // VM: a standard project can run there, a compose project cannot run
+    // on a standard one.
+    const dockerStackId = Object.values(techStacks).find((id) => isDockerTechStack(id))
+    if (dockerStackId) {
+      if (!isDockerClassEnabled()) {
+        console.error(
+          `[${prefix}] workspace ${workspaceId} has a docker-class project (${dockerStackId}) but the platform gate is off — assigning a standard VM`,
+        )
+      } else if (!meetsMinimumInstanceSize(workspaceInstanceSize, dockerStackId)) {
+        console.error(
+          `[${prefix}] workspace ${workspaceId} has a docker-class project (${dockerStackId}) but instance size '${workspaceInstanceSize}' is below the stack minimum — assigning a standard VM`,
+        )
+      } else {
+        env.SHOGO_RUNTIME_CLASS = 'docker'
+      }
     }
 
     const loadAvailable =

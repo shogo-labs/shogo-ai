@@ -16,6 +16,7 @@ mock.module('../../../services/billing.service', () => ({
   hasAdvancedModelAccess: async () => true,
 }))
 
+import { setDockerClassOverride } from '../../runtime-class-setting'
 import { buildWorkspaceEnv } from '../build-workspace-env'
 
 const seams = {
@@ -88,6 +89,36 @@ describe('buildWorkspaceEnv', () => {
     } as any)
     expect(JSON.parse(env.WORKSPACE_TECH_STACKS)).toEqual({ p1: 'expo-app', p2: 'react-app' })
     expect(env.TECH_STACK_ID).toBeUndefined()
+  })
+
+  it('requests a docker VM when a member is docker-compose, the gate is on, and the workspace is large enough', async () => {
+    setDockerClassOverride(true)
+    try {
+      const env = await buildWorkspaceEnv('ws-1', ['p1'], {
+        ...seams,
+        _loadWorkspace: async () => ({ name: 'My WS', composioScope: 'workspace', instanceSize: 'large' }),
+        _loadProjects: async (ids: string[]) =>
+          ids.map((id) => ({ id, name: id, settings: { techStackId: 'docker-compose' } })),
+      } as any)
+      expect(env.SHOGO_RUNTIME_CLASS).toBe('docker')
+    } finally {
+      setDockerClassOverride(null)
+    }
+  })
+
+  it('keeps a docker-compose workspace on a standard VM when the compute tier is too small', async () => {
+    setDockerClassOverride(true)
+    try {
+      const env = await buildWorkspaceEnv('ws-1', ['p1'], {
+        ...seams,
+        _loadWorkspace: async () => ({ name: 'My WS', composioScope: 'workspace', instanceSize: 'micro' }),
+        _loadProjects: async (ids: string[]) =>
+          ids.map((id) => ({ id, name: id, settings: { techStackId: 'docker-compose' } })),
+      } as any)
+      expect(env.SHOGO_RUNTIME_CLASS).toBeUndefined()
+    } finally {
+      setDockerClassOverride(null)
+    }
   })
 
   it('omits WORKSPACE_TECH_STACKS when no member has a tech stack', async () => {
