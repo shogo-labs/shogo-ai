@@ -15,10 +15,8 @@ import { getSandboxExecOverride } from '../sandbox-exec-setting'
 import { isDockerClassEnabled } from '../runtime-class-setting'
 import { parseProjectSettings } from '../project-settings'
 import { importCloudModule } from '../cloud-import'
-import {
-  isDockerTechStack,
-  getDeclaredPorts,
-} from '../../../../../packages/core/src/tech-stack-registry'
+import { isDockerTechStack } from '../../../../../packages/core/src/tech-stack-registry'
+import { resolveExposedPorts } from '../project-ports'
 
 /**
  * Thrown when the project row is gone (typically deleted while a session was
@@ -211,7 +209,7 @@ export async function buildProjectEnv(
       // an attacker got listening via a shell tool). Comma-separated, empty
       // when the stack declares no ports (the default for every non-Docker
       // stack today).
-      const declaredPorts = getDeclaredPorts(techStackFromSettings)
+      const declaredPorts = resolveExposedPorts(techStackFromSettings, settings)
       if (declaredPorts.length > 0) {
         env.SHOGO_EXPOSED_PORTS = declaredPorts.map((p) => p.port).join(',')
       }

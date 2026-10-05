@@ -308,6 +308,8 @@ interface RemoteHostInfo {
 interface ProjectInfo {
   name?: string
   techStackId?: string
+  /** Comma-separated exposed ports, from the project's stack plus added ports. */
+  exposedPorts?: string
   workingMode?: 'managed' | 'external'
   runtimeEnabled?: boolean
   trustLevel?: 'trusted' | 'restricted'
@@ -1553,9 +1555,12 @@ export class ShogoErrorBoundary extends Component<Props, State> {
       const folders: { path: string; isPrimary: boolean }[] = Array.isArray(project?.projectFolders)
         ? project.projectFolders.map((f: any) => ({ path: String(f.path), isPrimary: !!f.isPrimary }))
         : []
+      const { resolveExposedPorts } = await import('../project-ports')
+      const exposed = resolveExposedPorts(techStackId, settings)
       const info: ProjectInfo = {
         name: project?.name ?? undefined,
         techStackId,
+        ...(exposed.length > 0 ? { exposedPorts: exposed.map((p) => p.port).join(',') } : {}),
         workingMode,
         runtimeEnabled,
         trustLevel,
@@ -3148,6 +3153,7 @@ export class ShogoErrorBoundary extends Component<Props, State> {
             : {}),
           ...(projectInfo.name ? { AGENT_NAME: projectInfo.name } : {}),
           ...(projectInfo.techStackId ? { TECH_STACK_ID: projectInfo.techStackId } : {}),
+          ...(projectInfo.exposedPorts ? { SHOGO_EXPOSED_PORTS: projectInfo.exposedPorts } : {}),
           // PORT / API_SERVER_PORT / SKILL_SERVER_PORT are injected by
           // WorkerRuntimeManager.buildEnv() based on its own per-project
           // port allocation. Setting them here would override and

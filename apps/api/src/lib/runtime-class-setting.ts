@@ -40,6 +40,23 @@ export function isDockerClassEnabled(): boolean {
   return process.env.DOCKER_CLASS_ENABLED === 'true'
 }
 
+/**
+ * Stacks that need a docker-class VM. Kept as an id list (not a registry
+ * import) so callers whose tests mock `@shogo/shared-runtime` still load.
+ * `docker-compose` is the only such stack.
+ */
+const DOCKER_STACK_IDS = new Set(['docker-compose'])
+
+/**
+ * Message to show when someone tries to create or switch to a Docker stack
+ * while the platform gate is off. Null when the stack is fine to use.
+ */
+export function dockerClassBlockedMessage(techStackId: string | null | undefined): string | null {
+  if (!techStackId || !DOCKER_STACK_IDS.has(techStackId)) return null
+  if (isDockerClassEnabled()) return null
+  return 'Docker projects are not available on this server yet.'
+}
+
 /** Load the persisted override from `platform_settings` into memory. Call once at boot. */
 export async function loadDockerClassOverride(): Promise<void> {
   try {

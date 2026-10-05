@@ -35,8 +35,28 @@
 
 import type { ServerWebSocket, Socket } from 'bun'
 
-/** Ports this project's tech stack declares, from `SHOGO_EXPOSED_PORTS` (comma-separated). Empty set = no ports exposed (every non-Docker stack today). */
+/**
+ * Live override pushed by the API (`PUT /agent/ports/allowlist`) when the
+ * project adds or removes a port, so the guest doesn't need a restart.
+ * `null` means "use SHOGO_EXPOSED_PORTS".
+ */
+let allowedPortsOverride: Set<number> | null = null
+
+export function setAllowedPorts(ports: number[]): void {
+  const out = new Set<number>()
+  for (const n of ports) {
+    if (Number.isInteger(n) && n > 0 && n <= 65535) out.add(n)
+  }
+  allowedPortsOverride = out
+}
+
+export function resetAllowedPorts(): void {
+  allowedPortsOverride = null
+}
+
+/** Ports this project exposes. Live override wins; otherwise `SHOGO_EXPOSED_PORTS`. */
 export function allowedPorts(env: Record<string, string | undefined> = process.env): Set<number> {
+  if (allowedPortsOverride && env === process.env) return allowedPortsOverride
   const raw = env.SHOGO_EXPOSED_PORTS
   if (!raw) return new Set()
   const out = new Set<number>()
@@ -49,6 +69,30 @@ export function allowedPorts(env: Record<string, string | undefined> = process.e
 
 export function isPortAllowed(port: number, env: Record<string, string | undefined> = process.env): boolean {
   return allowedPorts(env).has(port)
+}
+
+/** TCP ports something is listening on inside this guest. Best-effort. */
+export async function listListeningPorts(): Promise<number[]> {
+  const found = new Set<number>()
+  const collect = (text: string) => {
+    for (const match of text.matchAll(/:(\d{2,5})\b/g)) {
+      const n = Number(match[1])
+      if (n >= 1024 && n <= 65535 && !found.has(n)) found.add(n)
+    }
+  }
+  const run = async (cmd: string[], args: string[]) => {
+    try {
+      const proc = Bun.spawn([cmd, ...args], { stdout: 'pipe', stderr: 'ignore' })
+      const text = await new Response(proc.stdout).text()
+      await proc.exited
+      collect(text)
+    } catch {
+      /* tool missing */
+    }
+  }
+  await run('ss', ['-ltnH'])
+  if (found.size === 0) await run('lsof', ['-nP', '-iTCP', '-sTCP:LISTEN'])
+  return [...found].sort((a, b) => a - b)
 }
 
 /** Parse `:port` from a Hono/route param — rejects anything that isn't a bare positive integer (no leading zeros games, no floats, no `Infinity`). */
@@ -265,4 +309,113 @@ function safeClose(ws: ServerWebSocket<PortBridgeWsData>, code: number, reason: 
 function describeErr(err: unknown): string {
   if (err instanceof Error) return err.message
   return String(err)
+}
+
+// ── HTTP WebSocket relay (`/agent/ports/:port/http/*`) ──────────────────────
+//
+// The raw TCP bridge above is for the authenticated desktop tunnel. Public
+// preview (Vite hot reload) speaks WebSocket end to end, so this relay
+// forwards frames to `ws://127.0.0.1:<port><path>` instead of a bare socket.
+
+export const PORT_HTTP_WS_KIND = '__port_http_ws__'
+
+export interface PortHttpWsData {
+  readonly __kind: typeof PORT_HTTP_WS_KIND
+  port: number
+  path: string
+  upstream: WebSocket | null
+  queue: Array<string | ArrayBuffer>
+  closed: boolean
+}
+
+export function isPortHttpWsData(data: unknown): data is PortHttpWsData {
+  return !!data && typeof data === 'object' && (data as { __kind?: string }).__kind === PORT_HTTP_WS_KIND
+}
+
+export function buildPortHttpWsData(port: number, path: string): PortHttpWsData {
+  return {
+    __kind: PORT_HTTP_WS_KIND,
+    port,
+    path,
+    upstream: null,
+    queue: [],
+    closed: false,
+  }
+}
+
+export function createPortHttpWsHandlers(opts: {
+  env?: Record<string, string | undefined>
+  logger?: { error(...args: unknown[]): void }
+} = {}) {
+  const log = opts.logger ?? console
+  return {
+    open(ws: ServerWebSocket<PortHttpWsData>) {
+      const { port, path } = ws.data
+      if (!isPortAllowed(port, opts.env)) {
+        try { ws.close(4403, `port ${port} is not exposed by this project`) } catch {}
+        return
+      }
+      const target = `ws://127.0.0.1:${port}${path.startsWith('/') ? path : `/${path}`}`
+      let upstream: WebSocket
+      try {
+        upstream = new WebSocket(target)
+      } catch (err) {
+        log.error(`[PortHttpWs] dial ${target} failed:`, describeErr(err))
+        try { ws.close(1011, 'port-unreachable') } catch {}
+        return
+      }
+      upstream.binaryType = 'arraybuffer'
+      ws.data.upstream = upstream
+      upstream.addEventListener('open', () => {
+        if (ws.data.closed) {
+          try { upstream.close() } catch {}
+          return
+        }
+        for (const frame of ws.data.queue) {
+          try { upstream.send(frame) } catch (err) {
+            log.error('[PortHttpWs] flush queued frame failed:', describeErr(err))
+          }
+        }
+        ws.data.queue.length = 0
+      })
+      upstream.addEventListener('message', (ev) => {
+        if (ws.data.closed) return
+        try { ws.send(ev.data) } catch (err) {
+          log.error('[PortHttpWs] forward guest→client failed:', describeErr(err))
+        }
+      })
+      upstream.addEventListener('close', () => {
+        if (ws.data.closed) return
+        ws.data.closed = true
+        try { ws.close(1000, 'upstream-closed') } catch {}
+      })
+      upstream.addEventListener('error', () => {
+        if (ws.data.closed) return
+        ws.data.closed = true
+        try { ws.close(1011, 'upstream-error') } catch {}
+      })
+    },
+    message(ws: ServerWebSocket<PortHttpWsData>, msg: ArrayBuffer | string | Uint8Array) {
+      let payload: string | ArrayBuffer | null = null
+      if (typeof msg === 'string' || msg instanceof ArrayBuffer) payload = msg
+      else if (msg instanceof Uint8Array) {
+        const copy = new Uint8Array(msg.byteLength)
+        copy.set(msg)
+        payload = copy.buffer
+      }
+      if (payload == null) return
+      const upstream = ws.data.upstream
+      if (upstream && upstream.readyState === WebSocket.OPEN) {
+        try { upstream.send(payload) } catch (err) {
+          log.error('[PortHttpWs] forward client→guest failed:', describeErr(err))
+        }
+        return
+      }
+      ws.data.queue.push(payload)
+    },
+    close(ws: ServerWebSocket<PortHttpWsData>) {
+      ws.data.closed = true
+      try { ws.data.upstream?.close() } catch {}
+    },
+  }
 }
