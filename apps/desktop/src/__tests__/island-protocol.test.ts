@@ -80,6 +80,10 @@ describe('parseIslandAction', () => {
     expect(parseIslandAction({ type: 'navigate', path: '//evil.example' })).toBeNull()
     expect(parseIslandAction({ type: 'navigate', path: 'https://evil.example' })).toBeNull()
   })
+
+  test('accepts show-app', () => {
+    expect(parseIslandAction({ type: 'show-app' })).toEqual({ type: 'show-app' })
+  })
 })
 
 describe('parseIslandSnapshot', () => {

@@ -413,6 +413,13 @@ export class IslandWindow {
         return this.windowManager.focusAndNavigatePrimaryWindow(action.path)
           ? { ok: true }
           : { ok: false, error: 'Open a Shogo window to continue' }
+      case 'show-app': {
+        if (!this.windowManager.focusPrimaryWindow()) return { ok: false, error: 'Open a Shogo window to continue' }
+        // The island is a non-activating panel, so macOS won't make Shogo the
+        // active app on its own.
+        if (process.platform === 'darwin') app.focus({ steal: true })
+        return { ok: true }
+      }
       case 'meeting':
         return this.options.meeting
           ? this.options.meeting.respond(action.decision, action.promptId)
