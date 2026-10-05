@@ -22,6 +22,8 @@ export interface WorkspaceType {
   trainingDataMode: string
   homeRegion?: string
   parentWorkspaceId?: string
+  chatMode?: string
+  chatProvider?: string
   createdAt: Date
   updatedAt: Date
 }
@@ -37,6 +39,8 @@ export interface WorkspaceCreateInput {
   trainingDataMode?: string
   homeRegion?: string
   parentWorkspaceId?: string
+  chatMode?: string
+  chatProvider?: string
 }
 
 export interface WorkspaceUpdateInput {
@@ -50,4 +54,6 @@ export interface WorkspaceUpdateInput {
   trainingDataMode?: string
   homeRegion?: string
   parentWorkspaceId?: string
+  chatMode?: string
+  chatProvider?: string
 }

@@ -423,6 +423,42 @@ describe('agent channel tools', () => {
     expect(convo.status).toBe(200)
     expect(convo.json.conversation.members.some((m: any) => m.type === 'agent' && m.projectId === seed.projectId)).toBe(true)
 
+    const delegated = await call(null, 'POST', `/internal/workspaces/${seed.workspaceId}/agent-channels/dm`, {
+      user: member.email,
+      text: 'The release is delayed.',
+      onBehalfOfUserId: seed.owner,
+    })
+    expect(delegated.status).toBe(201)
+    expect(delegated.json.message.conversationId).not.toBe(dm.json.message.conversationId)
+    expect(delegated.json.message.url).toContain(`/c/${delegated.json.message.conversationId}`)
+
+    const delegatedConvo = await call(seed.member, 'GET', `/conversations/${delegated.json.message.conversationId}`)
+    expect(delegatedConvo.status).toBe(200)
+    expect(delegatedConvo.json.conversation.members).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: 'user', userId: seed.owner }),
+        expect.objectContaining({ type: 'user', userId: seed.member }),
+      ]),
+    )
+    expect(delegatedConvo.json.conversation.members.some((m: any) => m.type === 'agent')).toBe(false)
+
+    const ownerMessages = await call(seed.owner, 'GET', `/conversations/${delegated.json.message.conversationId}/messages`)
+    const memberMessages = await call(seed.member, 'GET', `/conversations/${delegated.json.message.conversationId}/messages`)
+    expect(ownerMessages.status).toBe(200)
+    expect(memberMessages.status).toBe(200)
+    expect(ownerMessages.json.messages.at(-1).text).toBe('The release is delayed.')
+    expect(memberMessages.json.messages.at(-1).blocks.onBehalfOf).toEqual({
+      userId: seed.owner,
+      name: 'owner',
+    })
+
+    const outsiderRequester = await call(null, 'POST', `/internal/workspaces/${seed.workspaceId}/agent-channels/dm`, {
+      user: member.email,
+      text: 'This must not be attributed to an outsider.',
+      onBehalfOfUserId: seed.outsider,
+    })
+    expect(outsiderRequester.status).toBe(404)
+
     const priv = await call(seed.owner, 'POST', `/workspaces/${seed.workspaceId}/conversations`, { name: 'hidden', kind: 'private' })
     const blocked = await call(null, 'GET', `/internal/workspaces/${seed.workspaceId}/agent-channels/${priv.json.conversation.id}/messages`)
     expect(blocked.status).toBe(404)

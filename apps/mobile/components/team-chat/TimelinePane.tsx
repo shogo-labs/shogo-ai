@@ -36,6 +36,7 @@ export interface TimelinePaneProps {
   header?: React.ReactElement | null
   onOpenThread?: (message: ChatMessage) => void
   onOpenSession?: (message: ChatMessage) => void
+  onOpenProjectPane?: (projectId: string, name: string) => void
   onClose?: () => void
   onJoin?: () => void
   /** Scroll to and emphasize this message (from a message link or search). */
@@ -250,6 +251,7 @@ export function TimelinePane(props: TimelinePaneProps) {
       onRetry={timeline.retry}
       onDiscard={timeline.discard}
       onOpenSession={props.onOpenSession}
+      onOpenProjectPane={props.onOpenProjectPane}
       onMarkUnread={threadRootId || !conversation.joined ? undefined : onMarkUnread}
       unreadAfterSeq={unread?.afterSeq ?? null}
       unreadUpToSeq={unread?.upToSeq}

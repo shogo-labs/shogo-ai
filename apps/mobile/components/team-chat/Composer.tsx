@@ -8,7 +8,7 @@
  */
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
 import { Image, Platform, Pressable, Text, View } from 'react-native'
-import { AlarmClock, Bot, Check, Clock, Smile, Users } from 'lucide-react-native'
+import { AlarmClock, Check, Clock, Smile, Users } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import {
   ChatInput,
@@ -40,6 +40,7 @@ import type { SendInput } from '../../hooks/useTeamChat'
 import { useDraft } from '../../hooks/useChatItems'
 import { useCustomEmoji } from '../../hooks/useCustomEmoji'
 import { activeEmojiQuery, replaceFinishedShortcode, searchEmoji } from '../../lib/emoji-data'
+import { AgentAvatar } from './AgentAvatar'
 import { PresenceDot } from './PresenceDot'
 import { EmojiPicker, rememberEmoji } from './EmojiPicker'
 
@@ -69,8 +70,8 @@ function mentionReference(c: MentionCandidate): ChatReference {
   return { type: 'mention', id: c.token, name: c.display, label: `@${c.display}` }
 }
 
-function MentionIcon({ candidate }: { candidate: MentionCandidate }) {
-  if (candidate.kind === 'agent') return <Bot size={14} className="text-primary" />
+function MentionIcon({ candidate, workspaceId }: { candidate: MentionCandidate; workspaceId: string }) {
+  if (candidate.kind === 'agent') return <AgentAvatar name={candidate.display} projectId={candidate.projectId ?? null} workspaceId={workspaceId} size={20} />
   if (candidate.kind === 'user') return <PresenceDot userId={candidate.userId} />
   return <Users size={14} className="text-muted-foreground" />
 }
@@ -110,7 +111,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
             key: c.token,
             label: c.display,
             subtitle: c.subtitle,
-            icon: <MentionIcon candidate={c} />,
+            icon: <MentionIcon candidate={c} workspaceId={workspaceId} />,
             insert: `@${c.display}`,
             reference: mentionReference(c),
           })),

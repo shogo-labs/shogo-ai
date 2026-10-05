@@ -11,7 +11,7 @@ import { cn } from '@shogo/shared-ui/primitives'
 import { MarkdownText } from '../chat/MarkdownText'
 import type { ChatMessage } from '../../lib/team-chat-api'
 import { cardProgress, stepStates, type ApprovalCard, type CardStatus, type StatusCard } from '../../lib/team-chat-kinds'
-import { AgentAvatar } from './AgentProfileCard'
+import { AgentAvatar } from './AgentAvatar'
 
 const STATUS_LABEL: Record<CardStatus, string> = { working: 'In progress', blocked: 'Blocked', done: 'Done', failed: 'Failed' }
 const STATUS_STYLE: Record<CardStatus, { bg: string; text: string }> = {
@@ -190,7 +190,7 @@ export function StatusRunRow({ latest, folded, onOpenThread }: { latest: ChatMes
         accessibilityLabel={`${name}: ${all.length} updates`}
         className="flex-row items-center gap-2 rounded-md py-1 active:bg-muted"
       >
-        <AgentAvatar name={name} iconUrl={latest.authorAgent?.iconUrl} size={20} />
+        <AgentAvatar name={name} projectId={latest.authorAgent?.projectId ?? null} workspaceId={latest.workspaceId} iconUrl={latest.authorAgent?.iconUrl} size={20} />
         <Chevron size={12} className="text-muted-foreground" />
         <Text className="text-xs font-medium text-muted-foreground">{`${name} · ${all.length} updates`}</Text>
         {!open ? <Text className="min-w-0 flex-1 text-xs text-muted-foreground" numberOfLines={1}>{latest.text}</Text> : null}

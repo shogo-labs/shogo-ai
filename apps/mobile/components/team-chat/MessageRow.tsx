@@ -14,7 +14,8 @@ import { MarkdownText } from '../chat/MarkdownText'
 import { absoluteApiUrl, teamChatApi, type ChatMessage, type LinkUnfurl } from '../../lib/team-chat-api'
 import { messageLink, parseMessageLink } from '../../lib/team-chat-links'
 import { EmojiPicker } from './EmojiPicker'
-import { AgentAvatar, AgentProfileCard } from './AgentProfileCard'
+import { AgentAvatar } from './AgentAvatar'
+import { AgentProfileCard } from './AgentProfileCard'
 import { ApprovalCardView, StatusCardView } from './AgentStatus'
 import { approvalOf, messageKind, statusCardOf, workOf } from '../../lib/team-chat-kinds'
 import { AgentWorkedFor, AgentWorkingStatus } from './AgentWork'
@@ -63,6 +64,8 @@ export interface MessageRowProps {
   onRetry: (message: ChatMessage) => void
   onDiscard: (message: ChatMessage) => void
   onOpenSession?: (message: ChatMessage) => void
+  /** Show an agent's project beside the conversation (wide screens only). */
+  onOpenProjectPane?: (projectId: string, name: string) => void
   /** Move the read line back to just before this message. */
   onMarkUnread?: (message: ChatMessage) => void
   /** Briefly emphasized after opening a link to it. */
@@ -106,7 +109,7 @@ function openConversationInApp(conversationId: string): void {
 function Avatar({ message, onPress }: { message: ChatMessage; onPress?: () => void }) {
   if (message.authorType === 'agent') {
     const name = message.authorAgent?.name ?? 'Agent'
-    const avatar = <AgentAvatar name={name} iconUrl={message.authorAgent?.iconUrl} />
+    const avatar = <AgentAvatar name={name} projectId={message.authorAgent?.projectId ?? null} workspaceId={message.workspaceId} iconUrl={message.authorAgent?.iconUrl} />
     if (!onPress) return avatar
     return (
       <Pressable onPress={onPress} accessibilityLabel={`${name} profile`} accessibilityRole="button">
@@ -137,6 +140,13 @@ function authorName(message: ChatMessage): string {
   if (message.authorType === 'system') return 'Shogo'
   if (message.authorType === 'bot') return 'Bot'
   return message.author?.name ?? 'Someone'
+}
+
+function onBehalfOfName(message: ChatMessage): string | null {
+  const value = message.blocks?.onBehalfOf
+  if (!value || typeof value !== 'object') return null
+  const name = (value as { name?: unknown }).name
+  return typeof name === 'string' && name.trim() ? name : null
 }
 
 function AuthorStatus({ userId }: { userId: string | null | undefined }) {
@@ -230,6 +240,7 @@ function MessageRowImpl(props: MessageRowProps) {
   const card = !running && message.authorType === 'agent' ? statusCardOf(message) : null
   const approval = !running && message.authorType === 'agent' ? approvalOf(message) : null
   const kind = message.authorType === 'agent' ? messageKind(message) : null
+  const onBehalfOf = message.authorType === 'agent' ? onBehalfOfName(message) : null
   const canOpenSession = message.authorType === 'agent' && !!message.agentSessionId && !!message.authorAgent?.projectId && !!props.onOpenSession
   const work = !running && message.authorType === 'agent' ? workOf(message) : null
   const isWeb = Platform.OS === 'web'
@@ -368,6 +379,9 @@ function MessageRowImpl(props: MessageRowProps) {
               <View className="rounded bg-primary/10 px-1.5 py-px">
                 <Text className="text-[10px] font-medium text-primary">AGENT</Text>
               </View>
+            )}
+            {onBehalfOf && (
+              <Text className="text-[11px] text-muted-foreground">on behalf of {onBehalfOf}</Text>
             )}
             {(kind === 'decision' && (!approval || approval.status === 'pending')) || kind === 'alert' ? (
               <View className={cn('rounded px-1.5 py-px', kind === 'alert' ? 'bg-destructive/15' : 'bg-amber-500/20')}>
@@ -632,6 +646,7 @@ function MessageRowImpl(props: MessageRowProps) {
           iconUrl={message.authorAgent.iconUrl}
           onClose={() => setProfileOpen(false)}
           onOpenChannel={openConversationInApp}
+          onOpenProjectPane={props.onOpenProjectPane}
         />
       )}
       {pickerOpen && (

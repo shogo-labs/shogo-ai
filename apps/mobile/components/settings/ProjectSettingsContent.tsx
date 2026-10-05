@@ -8,6 +8,7 @@ import {
   useProjectCollection,
 } from "@shogo/shared-app/domain";
 import { Text } from "./account-sheet-chrome";
+import { ProjectAgentLookSection } from "./ProjectAgentLookSection";
 import { ProjectGitHubSection } from "./ProjectGitHubSection";
 
 export function ProjectSettingsContent({ projectId }: { projectId: string }) {
@@ -68,6 +69,14 @@ export function ProjectSettingsContent({ projectId }: { projectId: string }) {
           </Text>
         </Pressable>
       </View>
+
+      {project?.workspaceId ? (
+        <ProjectAgentLookSection
+          workspaceId={project.workspaceId}
+          projectId={projectId}
+          projectName={project.name}
+        />
+      ) : null}
 
       <ProjectGitHubSection projectId={projectId} />
     </View>

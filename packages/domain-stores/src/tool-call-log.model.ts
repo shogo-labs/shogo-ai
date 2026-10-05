@@ -25,6 +25,9 @@ export const ToolCallLogModel = types
     args: types.optional(types.frozen(), {}),
     result: types.optional(types.frozen(), {}),
     duration: types.optional(types.number, 0),
+    userId: types.optional(types.string, ""),
+    linesAdded: types.optional(types.number, 0),
+    linesRemoved: types.optional(types.number, 0),
     createdAt: types.optional(types.number, 0),
     chatSession: types.safeReference(types.late(() => ChatSessionModel)),
   })

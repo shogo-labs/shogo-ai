@@ -8,6 +8,9 @@
 
 import { types, Instance, SnapshotIn, SnapshotOut } from "mobx-state-tree"
 
+// Referenced models (use types.late() to avoid circular imports)
+import { ChatSessionModel } from "./chat-session.model"
+
 // ============================================================================
 // ChatQueuedMessage Model
 // ============================================================================
@@ -25,6 +28,7 @@ export const ChatQueuedMessageModel = types
     error: types.optional(types.string, ""),
     createdAt: types.optional(types.number, 0),
     updatedAt: types.optional(types.number, 0),
+    session: types.safeReference(types.late(() => ChatSessionModel)),
   })
   .views(self => ({
     /** Check if this is a new/unsaved entity */

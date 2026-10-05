@@ -2,7 +2,8 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { useState } from 'react'
 import { ActivityIndicator, Modal, Pressable, ScrollView, Text, TextInput, View } from 'react-native'
-import { Bot, Check, Hash, Lock, X } from 'lucide-react-native'
+import { Check, Hash, Lock, X } from 'lucide-react-native'
+import { AgentAvatar } from './AgentAvatar'
 import { cn } from '@shogo/shared-ui/primitives'
 import { teamChatApi, type ConversationSummary, type Mentionables } from '../../lib/team-chat-api'
 import { PresenceDot } from './PresenceDot'
@@ -130,7 +131,7 @@ export function NewConversationModal({ workspaceId, mode, mentionables, me, onCl
                         onPress={() => submit(() => api.openAgentDm(workspaceId, a.projectId))}
                         className="flex-row items-center gap-2 rounded-md px-2 py-2 active:bg-muted hover:bg-muted"
                       >
-                        <Bot size={16} className="text-primary" />
+                        <AgentAvatar name={a.name} projectId={a.projectId} workspaceId={workspaceId} size={22} />
                         <View className="min-w-0 flex-1">
                           <Text className="text-sm text-foreground">{a.name}</Text>
                           {a.description ? <Text className="text-xs text-muted-foreground" numberOfLines={1}>{a.description}</Text> : null}

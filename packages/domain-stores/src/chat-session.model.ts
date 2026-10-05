@@ -13,6 +13,7 @@ import { ProjectModel } from "./project.model"
 import { WorkspaceModel } from "./workspace.model"
 import { ChatSessionProjectModel } from "./chat-session-project.model"
 import { ChatMessageModel } from "./chat-message.model"
+import { ChatQueuedMessageModel } from "./chat-queued-message.model"
 import { ToolCallLogModel } from "./tool-call-log.model"
 
 // ============================================================================
@@ -48,6 +49,7 @@ export const ChatSessionModel = types
     workspace: types.safeReference(types.late(() => WorkspaceModel)),
     attachedProjects: types.optional(types.array(types.safeReference(types.late(() => ChatSessionProjectModel))), []),
     messages: types.optional(types.array(types.safeReference(types.late(() => ChatMessageModel))), []),
+    queuedMessages: types.optional(types.array(types.safeReference(types.late(() => ChatQueuedMessageModel))), []),
     toolCallLogs: types.optional(types.array(types.safeReference(types.late(() => ToolCallLogModel))), []),
   })
   .views(self => ({

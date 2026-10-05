@@ -73,6 +73,7 @@ export const TEAM_CHAT_GUIDE = [
   '- Tag people only when you need a decision or approval from them, and ask one clear question.',
   '- Keep messages to a few sentences, not paragraphs. Put long content (plans, logs, diffs) in files or links and reference them.',
   '- Use `team_chat_dm` to escalate something urgent to one person instead of tagging a whole channel.',
+  '- If someone asks you to message a teammate for them, use `team_chat_dm` with `for_requester: true`; then reply to the requester with the returned link.',
   '- Asked what a teammate worked on ("what did Sam do today?")? Use `member_activity`. Only owners and admins may ask; if the API refuses, say so plainly and do not guess from channel history. Answer only the person who asked, in the conversation where they asked. Never post someone\'s activity summary into a channel.',
   '- Respect Do Not Disturb: when someone is away, leave the question in the thread rather than pinging them repeatedly.',
   '- Starting a new piece of work? Post a top-level message with `team_chat_post` (pass `run_id` if you track one); you own that thread and unaddressed replies there come to you.',
@@ -251,21 +252,33 @@ export function createDmUserTool(ctx: ToolContext): AgentTool {
     label: 'Message a Teammate',
     description:
       'Send a direct message to a workspace member (by email or user id) as yourself. Use to ask someone a ' +
-      'question, escalate, hand off work, or deliver a result to a specific person.',
+      'question, escalate, hand off work, or deliver a result to a specific person. If the person who asked ' +
+      'you wants the message sent for them, set for_requester to true; that posts in the requester and ' +
+      'recipient\'s shared DM and labels it as sent on their behalf.',
     parameters: Type.Object({
       user: Type.String({ description: 'Email address or user id of the teammate.' }),
       text: Type.String({ description: 'Markdown message text.' }),
+      for_requester: Type.Optional(Type.Boolean({
+        description: 'Send in the signed-in requester and recipient\'s shared DM, labeled on behalf of the requester.',
+      })),
     }),
     execute: async (_id, params) => {
       const workspaceId = workspaceIdOf(ctx)
       if (!workspaceId) return noWorkspace()
-      const input = params as { user: string; text: string }
+      const input = params as { user: string; text: string; for_requester?: boolean }
       if (!input.text?.trim()) return textResult({ error: 'text is required', code: 'invalid_input' })
+      if (input.for_requester && !ctx.userId) {
+        return textResult({
+          error: 'This run has no signed-in person behind it, so it cannot send a message on someone\'s behalf.',
+          code: 'no_requesting_user',
+        })
+      }
       const result = await sendAgentDirectMessage(workspaceId, {
         user: input.user,
         text: input.text,
         identity: channelIdentity(ctx),
         sessionId: ctx.sessionId,
+        onBehalfOfUserId: input.for_requester ? ctx.userId : undefined,
       })
       return result.ok ? textResult({ ok: true, ...result.data }) : apiError(result, 'Could not send the message')
     },

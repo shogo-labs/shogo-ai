@@ -60,7 +60,7 @@ import { respondToPermission, stopAgentReply } from '../services/conversation-ag
 import { decideApproval } from '../services/conversation-approvals'
 import { loadWorkLog } from '../services/agent-work-log'
 import { chainForAgentPost, rootChain, setThreadOwner } from '../services/conversation-agent-chain'
-import { loadAgentCard, loadTeamDirectory, resolveFriendlyMentions } from '../services/conversation-directory'
+import { loadAgentCard, loadTeamDirectory, resolveFriendlyMentions, setAgentBuddyLook } from '../services/conversation-directory'
 import { listTeamChannels, TeamChannelError, upsertTeamChannel } from '../services/conversation-team-channels'
 import { getPresence } from '../services/conversation-presence'
 import { getChannelMetrics } from '../services/conversation-metrics'
@@ -245,6 +245,22 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
     const card = await loadAgentCard(auth.workspaceId, projectId, auth.userId)
     if (!card) return c.json({ error: { code: 'not_found', message: 'Agent not found' } }, 404)
     return c.json({ card })
+  })
+
+  /**
+   * Change an agent's Shogo buddy look. `:key` is `ws` (the workspace agent) or a project id;
+   * `{ look: null }` goes back to the look generated from the agent's id.
+   */
+  router.put('/workspaces/:workspaceId/agents/:key/buddy', async (c) => {
+    const auth = await requireWorkspace(c)
+    if (auth instanceof Response) return auth
+    const body = await readJson(c)
+    if (!('look' in body)) return c.json({ error: { code: 'invalid_look', message: 'look is required (an object, or null to reset)' } }, 400)
+    try {
+      return c.json(await setAgentBuddyLook(auth.workspaceId, auth.userId, c.req.param('key'), body.look))
+    } catch (err) {
+      return errorResponse(c, err)
+    }
   })
 
   router.get('/workspaces/:workspaceId/presence', async (c) => {
@@ -1017,19 +1033,44 @@ export function agentChannelRoutes(routeConfig: AgentChannelRoutesConfig): Hono 
     if (!who) return c.json({ error: { code: 'invalid_input', message: 'user is required' } }, 400)
     const member = await db.member.findFirst({
       where: { workspaceId: auth.workspaceId, OR: [{ userId: who }, { user: { email: who.toLowerCase() } }] },
-      select: { userId: true },
+      select: { userId: true, user: { select: { name: true, email: true } } },
     })
     if (!member) return c.json({ error: { code: 'not_found', message: 'No workspace member matches that user' } }, 404)
     try {
-      const conversation = await openAgentConversation(auth.workspaceId, member.userId, { projectId })
+      const onBehalfOfUserId = typeof body.onBehalfOfUserId === 'string' ? body.onBehalfOfUserId.trim() : ''
+      let conversation
+      let onBehalfOf: { userId: string; name: string } | undefined
+      if (onBehalfOfUserId && onBehalfOfUserId !== member.userId) {
+        const requester = await db.member.findFirst({
+          where: { workspaceId: auth.workspaceId, userId: onBehalfOfUserId },
+          select: { userId: true, user: { select: { name: true, email: true } } },
+        })
+        if (!requester) {
+          return c.json({ error: { code: 'not_found', message: 'The requester is not a member of this workspace' } }, 404)
+        }
+        conversation = await openDirectConversation(auth.workspaceId, requester.userId, [member.userId])
+        onBehalfOf = {
+          userId: requester.userId,
+          name: requester.user.name || requester.user.email,
+        }
+      } else {
+        conversation = await openAgentConversation(auth.workspaceId, member.userId, { projectId })
+      }
       const result = await postAgentMessage({
         conversationId: conversation.id,
         text: await resolveFriendlyMentions(auth.workspaceId, String(body.text ?? '')),
         agent: { projectId, name: await agentDisplayName(auth.workspaceId, projectId) },
         agentChain: await postChain(auth.workspaceId, projectId, body, null),
+        ...(onBehalfOf ? { blocks: { onBehalfOf } } : {}),
       })
       void afterMessagePosted(result, { actorUserId: null, origin: 'agent' })
-      return c.json({ message: { id: result.message.id, conversationId: conversation.id } }, 201)
+      return c.json({
+        message: {
+          id: result.message.id,
+          conversationId: conversation.id,
+          url: `${getFrontendUrl()}/c/${encodeURIComponent(conversation.id)}`,
+        },
+      }, 201)
     } catch (err) {
       return errorResponse(c, err)
     }

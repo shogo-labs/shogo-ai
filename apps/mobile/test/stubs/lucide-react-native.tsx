@@ -230,6 +230,7 @@ export {
   Icon as Palette,
   Icon as PanelLeft,
   Icon as PanelLeftClose,
+  Icon as PanelRight,
   Icon as Paperclip,
   Icon as Pause,
   Icon as PauseCircle,

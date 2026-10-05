@@ -1032,12 +1032,28 @@ export async function updateAgentChannelMessage(
 
 export async function sendAgentDirectMessage(
   workspaceId: string,
-  input: { user: string; text: string; identity: AgentChannelIdentity; sessionId?: string },
-): Promise<CheckpointCallResult<{ id: string; conversationId: string }>> {
+  input: {
+    user: string
+    text: string
+    identity: AgentChannelIdentity
+    sessionId?: string
+    onBehalfOfUserId?: string
+  },
+): Promise<CheckpointCallResult<{ id: string; conversationId: string; url: string | null }>> {
   return personalFetch(channelsPath(workspaceId, '/dm'), {
     method: 'POST',
-    body: JSON.stringify({ user: input.user, text: input.text, projectId: input.identity.projectId, sessionId: input.sessionId }),
-    parse: (j) => ({ id: j?.message?.id, conversationId: j?.message?.conversationId }),
+    body: JSON.stringify({
+      user: input.user,
+      text: input.text,
+      projectId: input.identity.projectId,
+      sessionId: input.sessionId,
+      onBehalfOfUserId: input.onBehalfOfUserId,
+    }),
+    parse: (j) => ({
+      id: j?.message?.id,
+      conversationId: j?.message?.conversationId,
+      url: j?.message?.url ?? null,
+    }),
   })
 }
 

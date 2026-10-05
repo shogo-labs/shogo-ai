@@ -7,6 +7,7 @@
  * it current and triggers a backfill after every reconnect.
  */
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { resolveAgentLook, type BuddyLook } from '@shogo/shared-app/buddy-look'
 import { useWorkspaceUser } from './useWorkspaceUser'
 import {
   newClientMsgId,
@@ -162,12 +163,67 @@ export function useConversationList(workspaceId: string | null | undefined) {
 const mentionablesCache = new Map<string, { at: number; data: Mentionables }>()
 const mentionablesInflight = new Map<string, Promise<Mentionables>>()
 
+// Each agent's saved buddy look, by workspace then agent key (`ws` or project id).
+// Message rows read this without each holding their own mentionables fetch.
+const agentLooks = new Map<string, Map<string, BuddyLook | null>>()
+const agentLookListeners = new Set<() => void>()
+
+function agentLookKey(projectId: string | null): string {
+  return projectId ?? 'ws'
+}
+
+function notifyAgentLooks() {
+  for (const listener of [...agentLookListeners]) listener()
+}
+
+function publishAgentLooks(workspaceId: string, data: Mentionables) {
+  const next = new Map<string, BuddyLook | null>()
+  for (const agent of data.agents) next.set(agentLookKey(agent.projectId), agent.buddyLook ?? null)
+  agentLooks.set(workspaceId, next)
+  notifyAgentLooks()
+}
+
+/** Reflect a look change straight away (before the next mentionables fetch). */
+export function setAgentLookLocal(workspaceId: string, projectId: string | null, look: BuddyLook | null) {
+  const forWorkspace = new Map(agentLooks.get(workspaceId) ?? [])
+  forWorkspace.set(agentLookKey(projectId), look)
+  agentLooks.set(workspaceId, forWorkspace)
+  notifyAgentLooks()
+}
+
+function subscribeAgentLooks(listener: () => void) {
+  agentLookListeners.add(listener)
+  return () => {
+    agentLookListeners.delete(listener)
+  }
+}
+
+/**
+ * The Shogo buddy look an agent shows: the one saved on it, else one generated
+ * from its project id, so every agent looks different. `projectId` is null for
+ * the workspace agent, which stays the classic Shogo.
+ */
+export function useAgentLook(workspaceId: string | null | undefined, projectId: string | null): BuddyLook {
+  const key = agentLookKey(projectId)
+  const stored = useSyncExternalStore(
+    subscribeAgentLooks,
+    () => (workspaceId ? agentLooks.get(workspaceId)?.get(key) : undefined),
+    () => undefined,
+  )
+  useEffect(() => {
+    if (!workspaceId || agentLooks.has(workspaceId)) return
+    fetchMentionables(workspaceId).catch(() => {})
+  }, [workspaceId])
+  return useMemo(() => resolveAgentLook(stored, projectId), [stored, projectId])
+}
+
 function fetchMentionables(workspaceId: string): Promise<Mentionables> {
   const running = mentionablesInflight.get(workspaceId)
   if (running) return running
   const p = api.mentionables(workspaceId)
     .then((next) => {
       mentionablesCache.set(workspaceId, { at: Date.now(), data: next })
+      publishAgentLooks(workspaceId, next)
       return next
     })
     .finally(() => mentionablesInflight.delete(workspaceId))
@@ -193,7 +249,7 @@ export function useMentionables(workspaceId: string | null | undefined): Mention
     }
   }, [workspaceId, version])
   useTeamChatEvents(workspaceId, (event) => {
-    if (!workspaceId || event.type !== 'groups.changed') return
+    if (!workspaceId || (event.type !== 'groups.changed' && event.type !== 'agent.updated')) return
     mentionablesCache.delete(workspaceId)
     setVersion((v) => v + 1)
   })
