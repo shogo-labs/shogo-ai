@@ -43,8 +43,9 @@ const localEnv = {
   // A developer's apps/mobile/.env.local otherwise wins over the values above.
   EXPO_NO_DOTENV: "1",
   // Every spec shares one local user and IP, so the suite trips the default
-  // 600/min global limit partway through.
+  // 600/min global and 60/min auth limits partway through.
   RATE_LIMIT_GLOBAL_MAX: "100000",
+  RATE_LIMIT_AUTH_MAX: "100000",
   // Keep recordings in the browser instead of a running desktop app's mic.
   SHOGO_RECORDING_BRIDGE: "off",
   // Channel agents reply from a script file that team-chat-agents.test.ts writes.

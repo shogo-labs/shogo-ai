@@ -488,6 +488,24 @@ spec:
                   name: api-secrets
                   key: ELEVENLABS_API_KEY
                   optional: true
+            - name: LIVEKIT_URL
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: LIVEKIT_URL
+                  optional: true
+            - name: LIVEKIT_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: LIVEKIT_API_KEY
+                  optional: true
+            - name: LIVEKIT_API_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: LIVEKIT_API_SECRET
+                  optional: true
             - name: ELEVENLABS_VOICE_MODE_AGENT_ID
               valueFrom:
                 secretKeyRef:

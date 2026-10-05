@@ -148,6 +148,11 @@ export function createLocalApp(): LocalAppBundle {
   // One process writes every reply here, so any placeholder still marked running was cut off by a restart.
   void settleOrphanedAgentReplies().catch((err) => console.warn('[Channels] could not settle interrupted replies:', err?.message ?? err))
   app.route('/api', conversationRoutes({ resolveUserId: getAuthUserId }))
+  app.post('/api/webhooks/livekit', async (c) => {
+    const { handleLiveKitWebhook } = await import('../services/huddle.service')
+    const result = await handleLiveKitWebhook({ rawBody: await c.req.text(), authorization: c.req.header('authorization') })
+    return c.json(result.body, result.status)
+  })
   app.route('/api', createAgentTaskRoutes({ runtimeManager }))
   app.route('/api', historyRoutes({ resolveUserId: getAuthUserId }))
   app.route('/api', diagnosticsRoutes({ workspacesDir }))

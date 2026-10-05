@@ -25,6 +25,7 @@ import { useUserStatus } from '../../hooks/useChatPrefs'
 import { usePresence } from '../../hooks/usePresence'
 import { PresenceDot, presenceLabel } from './PresenceDot'
 import { AgentAvatar } from './AgentAvatar'
+import { HuddleButton } from './Huddle'
 
 const api = teamChatApi()
 
@@ -348,6 +349,7 @@ export function ConversationHeader({ conversation, mentionables, me, onChanged, 
               <FolderOpen size={18} className="text-foreground" />
             </GlassButton>
           ) : null}
+          <HuddleButton conversation={conversation} me={me} label={title} floating />
           <GlassButton label={catchUpAction.label} onPress={catchUpAction.onPress}>
             {catchUpAction.icon(18)}
           </GlassButton>
@@ -444,6 +446,7 @@ export function ConversationHeader({ conversation, mentionables, me, onChanged, 
           </Text>
         ) : null}
         <View className="flex-1" />
+        <HuddleButton conversation={conversation} me={me} label={title} />
         {actions.map((a) => (
           <HeaderButton key={a.key} label={a.label} onPress={() => void a.onPress()}>
             {a.icon(16)}
