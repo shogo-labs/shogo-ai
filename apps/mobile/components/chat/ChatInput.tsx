@@ -1543,6 +1543,7 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
     [cancelPendingTextChangeFlush]
   );
 
+  const submitAfterVoiceRef = useRef(false);
   const handleSubmit = useCallback(() => {
     // Submit exactly what the composer is painting: same precedence as
     // `composerDisplayValue`, minus the live voice transcript (voice has its own
@@ -1553,14 +1554,21 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
     const trimmedContent = (
       pendingTextChangeRef.current?.text ?? inputValueRef.current
     ).trim();
+    if (inputLocked) return;
+    if (voiceInput.isBusy) {
+      // Enter while dictating: finish the dictation, then send what was said
+      // (see the effect after `handleSubmitRef`). Previously this bailed out
+      // silently, so the text stayed in the box and nothing was sent.
+      submitAfterVoiceRef.current = true;
+      if (voiceInput.isRecording) voiceInput.toggleRecording().catch(() => {});
+      return;
+    }
     if (
       (!trimmedContent &&
         pendingFiles.length === 0 &&
         pastedTexts.length === 0 &&
         references.length === 0) ||
-      inputLocked ||
-      isProcessingFiles ||
-      voiceInput.isBusy
+      isProcessingFiles
     ) {
       return;
     }
@@ -1603,6 +1611,8 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
     pastedTexts,
     references,
     voiceInput.isBusy,
+    voiceInput.isRecording,
+    voiceInput.toggleRecording,
     closeMentionMenu,
     cancelPendingTextChangeFlush,
     inputMinHeight,
@@ -1755,6 +1765,27 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
 
   const handleSubmitRef = useRef(handleSubmit);
   handleSubmitRef.current = handleSubmit;
+
+  // Enter pressed while dictating: send once the transcript has landed.
+  useEffect(() => {
+    if (voiceInput.isBusy || !submitAfterVoiceRef.current) return;
+    submitAfterVoiceRef.current = false;
+    handleSubmitRef.current();
+  }, [voiceInput.isBusy]);
+
+  // While recording the textarea is read-only and focus is usually on the mic
+  // button, so Enter would only re-click it. Catch Enter at the window instead.
+  useEffect(() => {
+    if (Platform.OS !== "web" || !voiceInput.isRecording) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== "Enter" || e.shiftKey || e.isComposing) return;
+      e.preventDefault();
+      e.stopPropagation();
+      handleSubmitRef.current();
+    };
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, [voiceInput.isRecording]);
   useImperativeHandle(
     ref,
     () => ({

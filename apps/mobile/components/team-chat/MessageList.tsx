@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ActivityIndicator, FlatList, Platform, Pressable, Text, View, type NativeScrollEvent, type NativeSyntheticEvent, type ViewToken } from 'react-native'
 import { ArrowDown, ArrowUp, X } from 'lucide-react-native'
+import { CHANNEL_GUTTER_STYLE } from '../../lib/chat-column'
 import type { ChatMessage } from '../../lib/team-chat-api'
 import { firstUnreadIndex, startsGroup, type MentionNames, type TimelineState } from '../../lib/team-chat-state'
 import { foldStatusRuns, type TimelineItem } from '../../lib/team-chat-kinds'
@@ -152,7 +153,7 @@ export function MessageList({
     if (item.message.id !== firstUnreadId) return row
     return (
       <View>
-        <View className="flex-row items-center gap-2 px-4 pt-2" testID="new-messages-line" accessibilityLabel="New messages">
+        <View className="flex-row items-center gap-2 pt-2" style={CHANNEL_GUTTER_STYLE} testID="new-messages-line" accessibilityLabel="New messages">
           <View className="h-px flex-1 bg-red-500/60" />
           <Text className="text-[11px] font-semibold text-red-500">New</Text>
         </View>

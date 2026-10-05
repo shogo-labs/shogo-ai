@@ -12,6 +12,7 @@ import { AlarmClock, AlertCircle, Bookmark, Check, CircleDot, CornerDownRight, F
 import { cn } from '@shogo/shared-ui/primitives'
 import { MarkdownText } from '../chat/MarkdownText'
 import { absoluteApiUrl, teamChatApi, type ChatMessage, type LinkUnfurl } from '../../lib/team-chat-api'
+import { CHANNEL_GUTTER_STYLE } from '../../lib/chat-column'
 import { messageLink, parseMessageLink } from '../../lib/team-chat-links'
 import { EmojiPicker } from './EmojiPicker'
 import { AgentAvatar } from './AgentAvatar'
@@ -243,6 +244,12 @@ function MessageRowImpl(props: MessageRowProps) {
   const onBehalfOf = message.authorType === 'agent' ? onBehalfOfName(message) : null
   const canOpenSession = message.authorType === 'agent' && !!message.agentSessionId && !!message.authorAgent?.projectId && !!props.onOpenSession
   const work = !running && message.authorType === 'agent' ? workOf(message) : null
+  /** Following a running agent: its session when it has one, otherwise this message's thread. */
+  const openWork = canOpenSession
+    ? () => props.onOpenSession!(message)
+    : props.onReply && !inThread
+    ? () => props.onReply!(message)
+    : undefined
   const isWeb = Platform.OS === 'web'
   useEditRequest(message.id, () => {
     if (!mine || deleted || message.authorType !== 'user') return
@@ -315,7 +322,8 @@ function MessageRowImpl(props: MessageRowProps) {
         onPress={canDiscuss && !isWeb ? () => props.onReply!(message) : undefined}
         onHoverIn={hoverIn}
         onHoverOut={hoverOut}
-        className={cn('flex-row items-start gap-2 px-4 py-1.5', hovered && 'bg-muted/40')}
+        className={cn('flex-row items-start gap-2 py-1.5', hovered && 'bg-muted/40')}
+        style={CHANNEL_GUTTER_STYLE}
       >
         <View className="mt-1.5 h-1.5 w-1.5 rounded-full bg-primary/60" />
         <View className="min-w-0 flex-1">
@@ -346,7 +354,7 @@ function MessageRowImpl(props: MessageRowProps) {
       onHoverIn={hoverIn}
       onHoverOut={hoverOut}
       className={cn(
-        'relative flex-row gap-3 px-4',
+        'relative flex-row gap-3',
         grouped ? 'py-0.5' : 'pt-2.5 pb-0.5',
         message.pinned && !deleted ? 'bg-amber-500/5' : null,
         hovered && 'bg-muted/40',
@@ -354,6 +362,7 @@ function MessageRowImpl(props: MessageRowProps) {
         kind === 'alert' && !deleted ? 'border-l-2 border-destructive bg-destructive/10' : null,
         props.highlighted && 'bg-amber-400/20',
       )}
+      style={CHANNEL_GUTTER_STYLE}
       testID={props.highlighted ? 'message-highlighted' : undefined}
       accessibilityLabel={`${authorName(message)}: ${message.text}`}
     >
@@ -465,14 +474,14 @@ function MessageRowImpl(props: MessageRowProps) {
             {!running && <UnfurlCards message={message} />}
             {running && (
               <View className="mt-1 flex-row items-center gap-2">
-                {/* The live status opens the session the agent is writing in. */}
+                {/* The live status opens the session the agent is writing in, or else this message's thread. */}
                 <Pressable
-                  disabled={!canOpenSession}
-                  onPress={() => props.onOpenSession!(message)}
-                  accessibilityLabel="Open the session this agent is working in"
+                  disabled={!openWork}
+                  onPress={openWork}
+                  accessibilityLabel={canOpenSession ? 'Open the session this agent is working in' : 'Open the thread to follow what this agent is doing'}
                   className="rounded-md active:bg-muted"
                 >
-                  <AgentWorkingStatus tools={streaming?.tools ?? (streaming?.tool ? [{ name: streaming.tool, done: false }] : [])} />
+                  <AgentWorkingStatus tools={streaming?.tools ?? (streaming?.tool ? [{ name: streaming.tool, done: false }] : [])} onOpen={openWork} />
                 </Pressable>
                 <Pressable
                   onPress={() => props.onStopAgent(message)}
@@ -485,10 +494,10 @@ function MessageRowImpl(props: MessageRowProps) {
               </View>
             )}
             {message.authorType === 'agent' && message.agentStatus === 'error' && (
-              <View className="mt-1 flex-row items-center gap-1">
+              <Pressable disabled={!openWork} onPress={openWork} accessibilityLabel="See what the agent did" className="mt-1 flex-row items-center gap-1 self-start rounded-md active:bg-muted">
                 <AlertCircle size={12} className="text-destructive" />
                 <Text className="text-xs text-destructive">The agent hit an error.</Text>
-              </View>
+              </Pressable>
             )}
             {canOpenSession && !running && (
               <Pressable onPress={() => props.onOpenSession!(message)} className="mt-1 self-start">
@@ -577,7 +586,11 @@ function MessageRowImpl(props: MessageRowProps) {
       </View>
 
       {isWeb && hovered && !deleted && !message.pending && !editing && (
-        <Pressable onHoverIn={hoverIn} onHoverOut={hoverOut} className="absolute right-3 -top-3 flex-row items-center rounded-lg border border-border bg-card px-1 py-0.5 shadow-sm">
+        // Kept inside the row (`top-0`, not half outside): the list is inverted, so every
+        // cell is its own scaleY(-1) stacking context and the older row above paints over
+        // anything hanging out of the top. That swallowed hover on the bar's upper edge,
+        // handed hover to the older row, and made the bar vanish under the pointer.
+        <Pressable onHoverIn={hoverIn} onHoverOut={hoverOut} className="absolute right-3 top-0 flex-row items-center rounded-lg border border-border bg-card px-1 py-0.5 shadow-sm">
           {QUICK_REACTIONS.slice(0, 3).map((emoji) => (
             <Pressable key={emoji} onPress={() => props.onReact(message, emoji)} className="rounded px-1.5 py-1 hover:bg-muted">
               <Text className="text-sm">{emoji}</Text>

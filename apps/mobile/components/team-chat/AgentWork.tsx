@@ -40,8 +40,17 @@ export function livePartsOf(tools: Array<{ name: string; done: boolean }>): Mess
   }))
 }
 
-/** The live status of a running reply. */
-export function AgentWorkingStatus({ tools }: { tools: Array<{ name: string; done: boolean }> }) {
+/**
+ * The live status of a running reply. `onOpen` is what pressing the status line does (open the
+ * session or the thread); without it the line is inert.
+ */
+export function AgentWorkingStatus({
+  tools,
+  onOpen,
+}: {
+  tools: Array<{ name: string; done: boolean }>
+  onOpen?: () => void
+}) {
   const parts = useMemo(() => livePartsOf(tools), [tools])
   const groups = useMemo(() => groupWorkParts(parts), [parts])
   const lastGroup = groups[groups.length - 1]
@@ -54,7 +63,8 @@ export function AgentWorkingStatus({ tools }: { tools: Array<{ name: string; don
             items={group.items}
             isStreaming={group.id === lastGroup?.id}
             isExpanded={false}
-            onToggle={() => {}}
+            // The group's own header press would otherwise swallow the tap as a no-op toggle.
+            onToggle={onOpen ?? (() => {})}
           />
         ) : null,
       )}

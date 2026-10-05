@@ -64,7 +64,8 @@ const workLogs: string[] = []
 let workLogResult: () => Promise<any> = async () => ({ parts: [{ type: 'text', text: 'Checking the remote.' }], startedAt: 0, completedAt: 1, toolCalls: 1 })
 mock.module('../../chat/turns/PlanningStatusLine', () => ({ PlanningStatusLine: () => createElement('div', { 'data-rn-shim': 'planning' }, 'Planning') }))
 mock.module('../../chat/turns/WorkGroup', () => ({
-  WorkGroup: ({ items, isStreaming }: any) => createElement('div', { 'data-rn-shim': 'group' }, `${items.length}:${isStreaming}`),
+  WorkGroup: ({ items, isStreaming, onToggle }: any) =>
+    createElement('div', { 'data-rn-shim': 'group', onClick: onToggle }, `${items.length}:${isStreaming}`),
 }))
 mock.module('../../chat/turns/WorkedForGroup', () => ({
   WorkedForGroup: ({ startedAt, completedAt, onToggle, isExpanded, children }: any) =>
@@ -771,6 +772,16 @@ describe('agent work', () => {
     render(<MessageRow message={running} grouped={false} me="u-me" names={names} canManage={false} {...h} />)
     fireEvent.click(screen.getByLabelText('Open the session this agent is working in'))
     expect(h.onOpenSession).toHaveBeenCalledWith(expect.objectContaining({ id: 'm1', agentSessionId: 's1' }))
+  })
+
+  test('with no session to open, the running status opens the message thread', () => {
+    const h = handlers()
+    const running = { ...reply(), agentStatus: 'running', text: '', agentSessionId: null }
+    render(<MessageRow message={running} grouped={false} me="u-me" names={names} canManage={false} streaming={{ text: '', tool: 'exec', tools: [{ name: 'exec', done: false }] }} {...h} />)
+    // Clicking the work group itself (not just the row around it) must follow the agent.
+    fireEvent.click(shim('group')!)
+    expect(h.onReply).toHaveBeenCalledWith(expect.objectContaining({ id: 'm1' }))
+    expect(h.onOpenSession).not.toHaveBeenCalled()
   })
 
   test('before any tool runs the row says the agent is planning; once tools run it shows them', () => {
