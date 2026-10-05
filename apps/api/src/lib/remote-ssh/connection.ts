@@ -32,6 +32,14 @@ export interface SSHConnectionConfig {
   username?: string
   port?: number
   identityFile?: string
+  /**
+   * Share one OpenSSH ControlMaster between exec calls and forwards. Defaults
+   * to `process.platform !== 'win32'`: Windows OpenSSH has no usable control
+   * socket (`getsockname failed: Not a socket`, or no fd-passing for the
+   * Git-for-Windows build). Without multiplexing every exec is its own ssh
+   * process and each forward is a supervised `ssh -N -L/-R` child.
+   */
+  multiplex?: boolean
   /** Override the generated shared ControlMaster socket path. */
   controlPath?: string
   /** OpenSSH `ControlPersist` value. Defaults to five minutes. */
@@ -88,6 +96,13 @@ const KILL_GRACE_MS = 5_000
 /** Detect a dead network path in ~45s instead of waiting for TCP to give up. */
 const SERVER_ALIVE_INTERVAL_SECONDS = 15
 const SERVER_ALIVE_COUNT_MAX = 3
+/** Cap on retained ssh stderr for a supervised forward child. */
+const FORWARD_STDERR_TAIL_BYTES = 16 * 1024
+/** `ssh -v` lines proving a forward is established. */
+const FORWARD_READY_MARKERS: Record<'-L' | '-R', RegExp> = {
+  '-L': /Local forwarding listening on/,
+  '-R': /remote forward success for: listen/,
+}
 
 export const systemProcessRunner: SSHProcessRunner = (command, args, options) =>
   spawn(command, args, options)
@@ -119,6 +134,14 @@ export function getSharedControlPath(
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+/** Drop `ssh -v` debug chatter so a failure message shows the real cause. */
+function userFacingSshError(stderr: string): string {
+  const lines = stderr
+    .split(/\r?\n/)
+    .filter((line) => line.trim() && !/^debug\d:/.test(line) && !/^OpenSSH_/.test(line))
+  return lines.length > 0 ? lines.join('\n') : stderr
 }
 
 function appendError(stderr: string, error: unknown): string {
@@ -229,12 +252,37 @@ interface ActiveForward {
   key: string
   option: '-L' | '-R'
   spec: string
+  /** Supervised `ssh -N` child; only used when multiplexing is off. */
+  child?: ChildProcess
+  /** The supervised child exited without close() asking it to. */
+  dead?: boolean
+  /** close() is killing the child; its exit is expected. */
+  closing?: boolean
+}
+
+function killChild(child: ChildProcess): void {
+  try {
+    child.kill('SIGTERM')
+  } catch {
+    // The process may already have exited.
+  }
+  const timer = setTimeout(() => {
+    try {
+      child.kill('SIGKILL')
+    } catch {
+      // Already gone.
+    }
+  }, KILL_GRACE_MS)
+  ;(timer as unknown as { unref?: () => void }).unref?.()
+  child.once('close', () => clearTimeout(timer))
 }
 
 export class SSHConnection {
   readonly config: Readonly<SSHConnectionConfig>
   readonly target: string
   readonly controlPath: string
+  /** True when exec and forwards share an OpenSSH ControlMaster. */
+  readonly multiplex: boolean
 
   private readonly runner: SSHProcessRunner
   private connected = false
@@ -242,6 +290,8 @@ export class SSHConnection {
   private connectPromise: Promise<void> | undefined
   private closePromise: Promise<void> | undefined
   private readonly activeForwards = new Map<string, ActiveForward>()
+  /** A supervised forward died; the next status must report the transport dead. */
+  private forwardFailure = false
 
   constructor(config: SSHConnectionConfig, dependencies: SSHConnectionDependencies = {}) {
     if (!config.host?.trim()) throw new TypeError('SSH host is required')
@@ -253,6 +303,7 @@ export class SSHConnection {
     this.config = { ...config }
     this.target = getSSHConnectionTarget(config)
     this.controlPath = getSharedControlPath(config)
+    this.multiplex = config.multiplex ?? process.platform !== 'win32'
     this.runner = dependencies.processRunner ?? systemProcessRunner
   }
 
@@ -281,6 +332,8 @@ export class SSHConnection {
         // The check below provides the authoritative status.
       }
     }
+
+    if (!this.multiplex) return this.statusWithoutMux()
 
     const result = await this.control(['-O', 'check'])
     this.connected = result.exitCode === 0
@@ -313,6 +366,11 @@ export class SSHConnection {
         await this.cancelForward(forward, true)
       }
       this.activeForwards.clear()
+
+      if (!this.multiplex) {
+        this.connected = false
+        return
+      }
 
       if (this.ownsMaster) {
         const lastOwner = (sharedMasterOwners.get(this.controlPath) ?? 1) <= 1
@@ -392,6 +450,17 @@ export class SSHConnection {
   }
 
   private async startMaster(): Promise<void> {
+    if (!this.multiplex) {
+      // No master to start: authenticate once to verify credentials and
+      // reachability (this is where askpass prompts surface). Later execs
+      // and forwards each authenticate on their own.
+      const probe = await this.probe(MASTER_START_TIMEOUT_MS)
+      if (probe.exitCode !== 0) throw new RemoteCommandError('connect', probe)
+      this.connected = true
+      this.forwardFailure = false
+      return
+    }
+
     await mkdir(dirname(this.controlPath), { recursive: true, mode: 0o700 })
 
     // Another connection object (or an earlier run) may already own a live
@@ -440,6 +509,10 @@ export class SSHConnection {
   }
 
   private async openForward(active: ActiveForward): Promise<void> {
+    if (!this.multiplex) {
+      await this.openSupervisedForward(active)
+      return
+    }
     const result = await this.control(['-O', 'forward', active.option, active.spec])
     if (result.exitCode !== 0) {
       throw new RemoteCommandError(`${active.option} ${active.spec}`, result)
@@ -447,7 +520,151 @@ export class SSHConnection {
     this.activeForwards.set(active.key, active)
   }
 
+  /**
+   * Start `ssh -N -L|-R` as a child owned by this connection and resolve once
+   * ssh reports the forward as established. `-v` is what makes ssh print the
+   * readiness line; `ExitOnForwardFailure` turns a bind failure into an exit
+   * instead of a silently useless connection.
+   */
+  private openSupervisedForward(active: ActiveForward): Promise<void> {
+    // Re-requesting the same forward replaces the old child instead of
+    // leaking it (and colliding with its listener).
+    const previous = this.activeForwards.get(active.key)
+    if (previous) {
+      this.activeForwards.delete(active.key)
+      this.killForwardChild(previous)
+    }
+
+    const operation = `${active.option} ${active.spec}`
+    const args = this.sshArgs([
+      '-v',
+      '-N',
+      '-o', 'ExitOnForwardFailure=yes',
+      active.option,
+      active.spec,
+    ])
+
+    return new Promise<void>((resolve, reject) => {
+      let child: ChildProcess
+      try {
+        child = this.runner(this.config.sshCommand ?? 'ssh', args, {
+          env: this.processEnv(),
+          stdio: ['ignore', 'ignore', 'pipe'],
+        })
+      } catch (error) {
+        reject(new RemoteCommandError(operation, { stdout: '', stderr: errorMessage(error), exitCode: null }))
+        return
+      }
+
+      let stderrTail = ''
+      let ready = false
+      let settled = false
+      let startTimer: ReturnType<typeof setTimeout> | undefined
+      const marker = FORWARD_READY_MARKERS[active.option]
+
+      const fail = (exitCode: number | null, extra?: string) => {
+        if (settled) return
+        settled = true
+        if (startTimer) clearTimeout(startTimer)
+        if (exitCode === null) killChild(child)
+        reject(
+          new RemoteCommandError(operation, {
+            stdout: '',
+            stderr: extra ? appendError(stderrTail, extra) : stderrTail,
+            exitCode,
+          }),
+        )
+      }
+
+      child.stderr?.on('data', (chunk: Buffer | string) => {
+        stderrTail += typeof chunk === 'string' ? chunk : chunk.toString('utf8')
+        if (!ready && marker.test(stderrTail)) {
+          ready = true
+          settled = true
+          if (startTimer) clearTimeout(startTimer)
+          active.child = child
+          this.activeForwards.set(active.key, active)
+          resolve()
+        }
+        // Once established the log is only useful as a short diagnostic tail.
+        if (stderrTail.length > FORWARD_STDERR_TAIL_BYTES) {
+          stderrTail = stderrTail.slice(-FORWARD_STDERR_TAIL_BYTES)
+        }
+      })
+      child.once('error', (error) => {
+        if (!ready) fail(null, errorMessage(error))
+        else this.markForwardDead(active)
+      })
+      child.once('close', (code) => {
+        if (!ready) {
+          // Strip -v chatter from the user-facing message when possible.
+          stderrTail = userFacingSshError(stderrTail)
+          fail(code)
+        } else {
+          this.markForwardDead(active)
+        }
+      })
+
+      startTimer = setTimeout(() => {
+        fail(null, `forward was not established after ${MASTER_START_TIMEOUT_MS}ms`)
+      }, MASTER_START_TIMEOUT_MS)
+    })
+  }
+
+  /** A supervised child exited on its own: the link is no longer trustworthy. */
+  private markForwardDead(active: ActiveForward): void {
+    if (active.closing) return
+    if (this.activeForwards.get(active.key) === active) {
+      this.activeForwards.delete(active.key)
+    }
+    this.forwardFailure = true
+    active.dead = true
+    this.connected = false
+  }
+
+  private killForwardChild(active: ActiveForward): void {
+    active.closing = true
+    if (active.child) killChild(active.child)
+  }
+
+  private async statusWithoutMux(): Promise<SSHConnectionStatus> {
+    const forwards = [...this.activeForwards.values()]
+    if (this.forwardFailure || forwards.some((forward) => forward.dead)) {
+      // The dead forward's owner (RemoteRuntimeManager) closes and re-opens
+      // all of its forwards when it sees a disconnected status.
+      this.connected = false
+    } else if (this.connected && forwards.length === 0) {
+      // Nothing is holding a connection open, so verify with a fresh login.
+      this.connected = (await this.probe(CONTROL_TIMEOUT_MS)).exitCode === 0
+    }
+    // With live forwards the supervised children are the liveness signal
+    // (ServerAlive* makes ssh exit on a dead path). A never-connected
+    // instance stays disconnected without probing, so status polls cannot
+    // surface surprise askpass prompts.
+    return {
+      connected: this.connected,
+      state: this.connectPromise ? 'connecting' : this.connected ? 'connected' : 'disconnected',
+      host: this.target,
+      controlPath: this.controlPath,
+    }
+  }
+
+  private probe(timeoutMs: number): Promise<RemoteCommandResult> {
+    return runProcess(this.runner, this.config.sshCommand ?? 'ssh', this.sshArgs([], 'true'), {
+      timeoutMs,
+      env: this.processEnv(),
+    })
+  }
+
   private async cancelForward(active: ActiveForward, ignoreFailure: boolean): Promise<void> {
+    if (!this.multiplex) {
+      // Dead forwards stay in the map (so status() can see them) until the
+      // owner closes them.
+      if (this.activeForwards.get(active.key) !== active) return
+      this.killForwardChild(active)
+      this.activeForwards.delete(active.key)
+      return
+    }
     if (!this.activeForwards.has(active.key)) return
     const result = await this.control(['-O', 'cancel', active.option, active.spec])
     if (!ignoreFailure && result.exitCode !== 0) {
@@ -472,9 +689,15 @@ export class SSHConnection {
   private sshOptions(): string[] {
     const args = [
       '-o', `BatchMode=${this.config.batchMode === false ? 'no' : 'yes'}`,
-      '-o', 'ControlMaster=auto',
-      '-o', `ControlPath=${this.controlPath}`,
-      '-o', `ControlPersist=${this.config.controlPersist ?? 300}`,
+      // Explicitly disable multiplexing when it is off so a user's
+      // ~/.ssh/config cannot re-enable the sockets Windows cannot serve.
+      ...(this.multiplex
+        ? [
+            '-o', 'ControlMaster=auto',
+            '-o', `ControlPath=${this.controlPath}`,
+            '-o', `ControlPersist=${this.config.controlPersist ?? 300}`,
+          ]
+        : ['-o', 'ControlMaster=no', '-o', 'ControlPath=none']),
       '-o', `ServerAliveInterval=${SERVER_ALIVE_INTERVAL_SECONDS}`,
       '-o', `ServerAliveCountMax=${SERVER_ALIVE_COUNT_MAX}`,
     ]

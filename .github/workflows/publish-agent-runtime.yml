@@ -220,7 +220,14 @@ jobs:
           # the same tag. finalize-release.yml publishes (draft -> false) only
           # after all four runs for this commit succeed, so the release never
           # goes public missing assets.
-          draft: true
+          #
+          # Exception: a *dispatched* beta. Beta tags are minted by
+          # desktop-release-macos with GITHUB_TOKEN (no tag-push triggers) and
+          # finalize-release.yml never runs for them; the desktop workflows
+          # publish the beta prerelease immediately. Uploading as draft here
+          # would be a no-op for an existing public prerelease and would
+          # create a never-published draft if this job wins the race.
+          draft: ${{ !(github.event_name == 'workflow_dispatch' && steps.version.outputs.channel == 'beta') }}
           # `body` is appended only on first creation; on subsequent
           # workflow runs against the same tag softprops leaves the
           # release notes untouched. The desktop workflow currently

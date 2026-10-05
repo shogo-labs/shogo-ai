@@ -2103,7 +2103,10 @@ export class ShogoErrorBoundary extends Component<Props, State> {
   private askpassBroker(remoteHostId: string): SSHAskpassBroker {
     const existing = this.remoteAskpassBrokers.get(remoteHostId)
     if (existing) return existing
-    const broker = new SSHAskpassBroker()
+    // Windows has no ControlMaster, so every ssh process authenticates on
+    // its own; remember password/passphrase answers for this host's session
+    // instead of re-prompting for each command.
+    const broker = new SSHAskpassBroker({ cacheSecrets: process.platform === 'win32' })
     this.remoteAskpassBrokers.set(remoteHostId, broker)
     return broker
   }
