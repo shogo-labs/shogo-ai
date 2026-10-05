@@ -123,6 +123,7 @@ import {
 import { CanvasWebView } from "../../../../components/canvas/CanvasWebView";
 import { ExternalPreviewWebView } from "../../../../components/canvas/ExternalPreviewWebView";
 import { ProjectTopBar } from "../../../../components/project/ProjectTopBar";
+import { SessionBreadcrumb } from "../../../../components/team-chat/SessionBreadcrumb";
 import { PanelErrorBoundary } from "../../../../components/project/panels/PanelErrorBoundary";
 import {
   ChannelsPanel,
@@ -331,6 +332,11 @@ export default observer(function ProjectLayout() {
   const params = useLocalSearchParams<{
     id: string;
     chatSessionId?: string;
+    fromConversation?: string;
+    fromLabel?: string;
+    fromKind?: string;
+    fromThread?: string;
+    fromAgent?: string;
     /**
      * Routing scope for the initial chat session: 'workspace' means
      * `chatSessionId` is a workspace-scoped session (the project is attached)
@@ -4094,10 +4100,13 @@ export default observer(function ProjectLayout() {
         >
           <View className="flex-1 bg-background">
             {isWide ? (
-              <ProjectTopBar
-                {...topBarSharedProps}
-                onTabChange={handlePreviewTabChange}
-              />
+              <View>
+                <SessionBreadcrumb params={params} />
+                <ProjectTopBar
+                  {...topBarSharedProps}
+                  onTabChange={handlePreviewTabChange}
+                />
+              </View>
             ) : (
               <ProjectTopBar
                 {...topBarSharedProps}

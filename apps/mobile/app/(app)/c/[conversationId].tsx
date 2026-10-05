@@ -130,6 +130,7 @@ export default function ConversationScreen() {
         sessionRoute({
           projectId,
           sessionId: message.agentSessionId,
+          wide: sidePane,
           origin: {
             conversationId: conversation.id,
             conversationLabel: conversationTitle(conversation),
