@@ -181,6 +181,8 @@ export interface ToolContext {
   workspaceGraph?: import('./workspace-graph').WorkspaceGraph
   /** Authenticated user ID from the chat request (for per-user integrations like Composio) */
   userId?: string
+  /** API-signed proof of who started this turn; forwarded when a tool acts as the requester. */
+  requesterTicket?: string
   /** File watcher — notified when src/ files are written/edited/deleted to trigger rebuilds */
   canvasFileWatcher?: import('./canvas-file-watcher').CanvasFileWatcher
   /** Permission engine for local-mode security guardrails */
@@ -956,6 +958,28 @@ function githubRunIdMarker(runId: string): string {
   return `<!-- shogo:runId=${runId} -->`
 }
 
+const REQUESTER_CREDENTIAL_CODES = new Set(['requester_auth_required', 'requester_unknown', 'denied'])
+
+/** The project acts as the requester and they can't be acted as: no other account may be used instead. */
+function isRequesterCredentialBlock(result: CheckpointCallResult<unknown>): boolean {
+  return !!result.code && REQUESTER_CREDENTIAL_CODES.has(result.code)
+}
+
+function requesterCredentialBlockResult(result: CheckpointCallResult<unknown>) {
+  return textResult({
+    error: result.error,
+    code: result.code,
+    ...(result.connectUrl
+      ? {
+          connectUrl: result.connectUrl,
+          next:
+            'Do not retry with another account. Tell the person they need to connect their own GitHub account, and put the ' +
+            'connectUrl in your reply exactly as given (they cannot see this tool result). Once they have, run this again.',
+        }
+      : { next: 'Do not retry with another account. Tell the person why it could not be done.' }),
+  })
+}
+
 function createGitHubPullRequestTool(ctx: ToolContext): AgentTool {
   return {
     name: 'github_create_pr',
@@ -1041,6 +1065,7 @@ function createGitHubPullRequestTool(ctx: ToolContext): AgentTool {
           url: botResult.data.url,
         })
       }
+      if (isRequesterCredentialBlock(botResult)) return requesterCredentialBlockResult(botResult)
       if (botResult.code !== 'github_app_not_installed' && botResult.status !== 409) {
         return textResult({
           error: botResult.error || 'Shogo GitHub App could not create the pull request.',
@@ -1122,7 +1147,8 @@ export function createGitHubConnectTool(ctx: ToolContext): AgentTool {
     name: 'github_connect',
     label: 'Connect GitHub Repository',
     description:
-      'Connect a Shogo project to a GitHub repository so its files, preview, pushes, pulls, and pull requests use that repo. ' +
+      'Clone / import a GitHub repository into a Shogo project, or switch the project to another branch of it. ' +
+      'Connects the project to the repo so its files, preview, pushes, pulls, and pull requests use it. ' +
       'Call it without a token first: it returns a link for the user to authorize the Shogo GitHub App, and you should offer the user ' +
       'both options — open that link, or share a GitHub access token (fine-grained token with Contents and Pull requests read/write ' +
       'on the repo, or a classic token with `repo` scope). When the user shares a token, call this again with it. ' +
@@ -1142,7 +1168,9 @@ export function createGitHubConnectTool(ctx: ToolContext): AgentTool {
       const input = params as { repo: string; token?: string; branch?: string; projectId?: string }
       const parsed = parseGitHubRepoRef(input.repo ?? '')
       if (!parsed) return textResult({ error: 'repo must be owner/name or a github.com repository URL.' })
-      const projectId = projectScopedId(input.projectId?.trim() || ctx.projectId)
+      const projectId =
+        projectScopedId(input.projectId?.trim() || ctx.projectId) ||
+        projectScopedId(process.env.WORKSPACE_ANCHOR_PROJECT_ID)
       if (!projectId) {
         return textResult({ error: 'No project selected. Pass projectId for the project to connect.' })
       }
@@ -1191,6 +1219,14 @@ export function createGitHubConnectTool(ctx: ToolContext): AgentTool {
                 ? `checked out ${workspace.branch ?? result.data.defaultBranch}` +
                   (workspace.backupBranch ? `; previous project files kept on branch ${workspace.backupBranch}` : '')
                 : 'already up to date with the repository',
+          ...(workspace?.ok === false
+            ? {
+                next:
+                  'The token was accepted and the repository is connected; only copying its files into the project failed. ' +
+                  'This is not a token problem, so don\'t ask for a new one. Call github_connect again with the same arguments; ' +
+                  'if it fails again, tell the user the project runtime was unavailable and to retry in a minute.',
+              }
+            : {}),
         })
       }
 
@@ -1255,6 +1291,7 @@ export function createGitHubMergePullRequestTool(ctx: ToolContext): AgentTool {
       if (botResult.ok && botResult.data) {
         return textResult({ ok: true, mode: 'github-app', merged: botResult.data.merged !== false, number, sha: botResult.data.sha })
       }
+      if (isRequesterCredentialBlock(botResult)) return requesterCredentialBlockResult(botResult)
       if (botResult.code !== 'github_app_not_installed' && botResult.status !== 409) {
         return textResult({
           error: botResult.error || 'Shogo GitHub App could not merge the pull request.',

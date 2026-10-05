@@ -1451,6 +1451,19 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
         headers["X-User-Id"] = verifiedUserId
       }
 
+      // Proof of who started this turn, for integrations that act as the
+      // requester. A signed-in caller can only ever get a ticket for
+      // themselves; in-process channel dispatch has no session and passes
+      // the member it already verified. Runtime-token callers are the
+      // project's own runtime standing in for its owner, never a requester.
+      const callerAuth = c.get("auth") as { userId?: string; via?: string } | undefined
+      const sessionUserId = callerAuth?.userId
+      const requesterUserId = callerAuth?.via === "runtimeToken" ? undefined : sessionUserId ?? verifiedUserId
+      if (requesterUserId) {
+        const { requesterTicketHeader } = await import('../lib/requester-ticket')
+        Object.assign(headers, requesterTicketHeader(projectId, requesterUserId))
+      }
+
       // Forward the chat-session id so the runtime can stamp it on its
       // outbound ai-proxy calls. Without this, accumulateUsage on the AI
       // proxy side falls back to the legacy projectId-only key and

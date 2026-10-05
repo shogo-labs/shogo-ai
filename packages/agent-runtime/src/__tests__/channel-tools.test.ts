@@ -211,6 +211,33 @@ describe('channel tools call the internal agent-channel API', () => {
     expect(new URL(calls[1].url).searchParams.get('q')).toBe('refund')
   })
 
+  test('team_chat_dm can send on behalf of the signed-in requester', async () => {
+    reply = { message: { id: 'm5', conversationId: 'dm2', url: 'https://app.test/c/dm2' } }
+    const delegated = payload(await tool('team_chat_dm', ctx({ userId: 'requester-1', sessionId: 'sess-3' })).execute('t', {
+      user: 'sam@example.com',
+      text: 'The release is delayed.',
+      for_requester: true,
+    }))
+    expect(delegated).toEqual({ ok: true, id: 'm5', conversationId: 'dm2', url: 'https://app.test/c/dm2' })
+    expect(JSON.parse(String(calls[0].init?.body))).toEqual({
+      user: 'sam@example.com',
+      text: 'The release is delayed.',
+      projectId: 'proj-1',
+      sessionId: 'sess-3',
+      onBehalfOfUserId: 'requester-1',
+    })
+  })
+
+  test('team_chat_dm refuses on-behalf sends without a signed-in requester', async () => {
+    const result = payload(await tool('team_chat_dm').execute('t', {
+      user: 'sam@example.com',
+      text: 'The release is delayed.',
+      for_requester: true,
+    }))
+    expect(result.code).toBe('no_requesting_user')
+    expect(calls).toHaveLength(0)
+  })
+
   test('validation and API errors are returned to the model', async () => {
     const empty = payload(await tool('team_chat_post').execute('t', { channel: 'general', text: '  ' }))
     expect(empty.code).toBe('invalid_input')
@@ -241,6 +268,7 @@ describe('team chat prompt section', () => {
     expect(TEAM_CHAT_GUIDE).toContain('what you did, what you found or decided and why, and what you need next')
     expect(TEAM_CHAT_GUIDE).toContain('Tag people only when you need a decision')
     expect(TEAM_CHAT_GUIDE).toContain('team_chat_dm')
+    expect(TEAM_CHAT_GUIDE).toContain('for_requester')
     expect(TEAM_CHAT_GUIDE).toContain('you own that thread')
   })
 

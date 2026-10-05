@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { existsSync, readFileSync } from 'fs'
+import { requesterTicketHeaders } from './credential-scope'
 
 const SA_TOKEN_PATH = '/var/run/secrets/kubernetes.io/serviceaccount/token'
 
@@ -53,7 +54,7 @@ export function getInternalHeaders(): Record<string, string> {
     headers['x-runtime-token'] = process.env.RUNTIME_AUTH_SECRET
   }
 
-  return headers
+  return { ...headers, ...requesterTicketHeaders() }
 }
 
 /**
@@ -253,6 +254,8 @@ export interface CheckpointCallResult<T> {
   data?: T
   error?: string
   code?: string
+  /** Where the requester connects their account, when `code` is `requester_auth_required`. */
+  connectUrl?: string
 }
 
 async function checkpointFetch<T>(
@@ -271,7 +274,13 @@ async function checkpointFetch<T>(
     if (!res.ok) {
       const err = json?.error
       const message = typeof err === 'string' ? err : err?.message
-      return { ok: false, status: res.status, error: message ?? `HTTP ${res.status}`, code: err?.code }
+      return {
+        ok: false,
+        status: res.status,
+        error: message ?? `HTTP ${res.status}`,
+        code: err?.code,
+        ...(typeof err?.connectUrl === 'string' ? { connectUrl: err.connectUrl } : {}),
+      }
     }
     return { ok: true, status: res.status, data: init.parse ? init.parse(json) : (json as T) }
   } catch (err: any) {
@@ -340,8 +349,8 @@ export interface GitHubPullRequestResult {
   url: string
   htmlUrl?: string
   author?: string
-  /** `github-app` (App bot) or `user-token` (the connection's stored user token). */
-  mode?: 'github-app' | 'user-token'
+  /** `github-app` (App bot), `user-token` (the connection's stored user token), or `requester` (the person who asked). */
+  mode?: 'github-app' | 'user-token' | 'requester'
 }
 
 export interface GitHubCliCredentials {
@@ -1032,12 +1041,28 @@ export async function updateAgentChannelMessage(
 
 export async function sendAgentDirectMessage(
   workspaceId: string,
-  input: { user: string; text: string; identity: AgentChannelIdentity; sessionId?: string },
-): Promise<CheckpointCallResult<{ id: string; conversationId: string }>> {
+  input: {
+    user: string
+    text: string
+    identity: AgentChannelIdentity
+    sessionId?: string
+    onBehalfOfUserId?: string
+  },
+): Promise<CheckpointCallResult<{ id: string; conversationId: string; url: string | null }>> {
   return personalFetch(channelsPath(workspaceId, '/dm'), {
     method: 'POST',
-    body: JSON.stringify({ user: input.user, text: input.text, projectId: input.identity.projectId, sessionId: input.sessionId }),
-    parse: (j) => ({ id: j?.message?.id, conversationId: j?.message?.conversationId }),
+    body: JSON.stringify({
+      user: input.user,
+      text: input.text,
+      projectId: input.identity.projectId,
+      sessionId: input.sessionId,
+      onBehalfOfUserId: input.onBehalfOfUserId,
+    }),
+    parse: (j) => ({
+      id: j?.message?.id,
+      conversationId: j?.message?.conversationId,
+      url: j?.message?.url ?? null,
+    }),
   })
 }
 
