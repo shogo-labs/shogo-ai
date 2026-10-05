@@ -664,6 +664,12 @@ async function saveDetectedTechStack(projectId: string, techStackId: string | un
   if (!project) return;
   const settings = parseProjectSettings(project.settings) ?? {};
   if (settings.techStackId === techStackId) return;
+  const { dockerClassBlockedMessage } = await import('../lib/runtime-class-setting');
+  const dockerBlocked = dockerClassBlockedMessage(techStackId);
+  if (dockerBlocked) {
+    console.warn(`[github] not switching project ${projectId} to ${techStackId}: ${dockerBlocked}`);
+    return;
+  }
   await prisma.project.update({
     where: { id: projectId },
     data: { settings: encodeProjectSettingsForWrite({ ...settings, techStackId }) as any },

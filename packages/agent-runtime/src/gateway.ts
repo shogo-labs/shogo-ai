@@ -36,6 +36,7 @@ import { LONG_RETRY_MS, recordRetryEpisode, recordRetryLong, recordRetryNoProgre
 import type { ToolContext } from './gateway-tools'
 import { createTools, textResult, filterDisabledCapabilityTools, filterSubagentOnlyTools, expectedCoreToolsForAgentMode, createModeUnavailableTool, type RestrictedMode } from './gateway-tools'
 import { DEFAULT_CLOUD_SECURITY_PREFERENCE, PermissionEngine, parseSecurityPolicy } from './permission-engine'
+import { buildExposedPortsPrompt } from './exposed-ports-prompt'
 import { HookEmitter, loadAllHooks, workspaceHooksSignature } from './hooks'
 import { parseSlashCommand, type SlashCommandContext } from './slash-commands'
 import { SessionManager, type SessionManagerConfig, applyToolResultBudget, snipConsumedResults } from './session-manager'
@@ -4299,6 +4300,11 @@ export class AgentGateway {
       if (previewUrl) {
         pushDynamic('preview-url', previewUrl)
       }
+    }
+
+    if (process.env.SHOGO_EXPOSED_PORTS) {
+      const exposed = buildExposedPortsPrompt(process.env)
+      if (exposed) pushDynamic('exposed-ports', exposed)
     }
 
     // Runtime build + console log tails (canvas mode only — Vite preview pipeline)

@@ -27,6 +27,7 @@ const KNOWN_STACK_IDS = new Set([
   'expo-three',
   'react-native',
   'python-data',
+  'docker-compose',
   'unity-game',
   'custom',
   'none',
@@ -86,6 +87,14 @@ function hasExpoAppConfig(files: WorkspaceFileMap): boolean {
 }
 
 function inferFromWorkspaceFiles(files: WorkspaceFileMap): string | undefined {
+  if (
+    fileText(files, 'docker-compose.yml') ||
+    fileText(files, 'docker-compose.yaml') ||
+    fileText(files, 'compose.yml') ||
+    fileText(files, 'compose.yaml')
+  ) {
+    return 'docker-compose'
+  }
   const deps = packageDeps(files)
   const has = (name: string) => deps.has(name)
   const expoish = has('expo') || has('expo-router') || hasExpoAppConfig(files)

@@ -107,6 +107,12 @@ describe('buildRuntimePortWsUrl', () => {
   test('https origin → wss scheme', () => {
     expect(buildRuntimePortWsUrl('https://x.svc', 8000)).toBe('wss://x.svc/agent/ports/8000/ws')
   })
+  test('http path targets the preview websocket relay', () => {
+    expect(buildRuntimePortWsUrl('http://127.0.0.1:8080', 3001, '/@vite/client?token=1')).toBe(
+      'ws://127.0.0.1:8080/agent/ports/3001/http/@vite/client?token=1',
+    )
+  })
+
   test('trims trailing slash', () => {
     expect(buildRuntimePortWsUrl('http://x.svc/', 8000)).toBe('ws://x.svc/agent/ports/8000/ws')
   })
