@@ -305,6 +305,30 @@ export function setPreviewVisible(windowId: number, projectId: string, visible: 
   }
 }
 
+/**
+ * Grab a still image of the preview as a data URL so the renderer can paint
+ * it in the placeholder while the native view is hidden (e.g. a React modal
+ * is open above it). Returns null when there is nothing meaningful to
+ * capture: no view, hidden/detached, or zero-sized bounds.
+ */
+export async function capturePreview(
+  windowId: number,
+  projectId: string,
+): Promise<string | null> {
+  const rec = getRecord(windowId, projectId)
+  if (!rec || !rec.attached || !rec.visible) return null
+  const bounds = rec.view.getBounds()
+  if (bounds.width <= 0 || bounds.height <= 0) return null
+  try {
+    const image = await rec.view.webContents.capturePage()
+    if (image.isEmpty()) return null
+    return `data:image/jpeg;base64,${image.toJPEG(80).toString('base64')}`
+  } catch (err) {
+    console.warn('[preview] capturePage failed:', err)
+    return null
+  }
+}
+
 export function reloadPreview(windowId: number, projectId: string): void {
   getRecord(windowId, projectId)?.view.webContents.reload()
 }
