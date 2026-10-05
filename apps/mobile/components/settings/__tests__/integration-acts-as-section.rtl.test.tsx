@@ -39,6 +39,8 @@ let policyStatus = 200
 let canEdit = true
 const puts: any[] = []
 const deletes: string[] = []
+const posts: string[] = []
+let delegateStatus = 200
 const realFetch = globalThis.fetch
 
 beforeEach(() => {
@@ -46,6 +48,7 @@ beforeEach(() => {
   connections = []
   policyStatus = 200
   canEdit = true
+  delegateStatus = 200
   globalThis.fetch = (async (url: string, init: any = {}) => {
     if (init.method === 'PUT') {
       const patch = JSON.parse(init.body)
@@ -53,8 +56,20 @@ beforeEach(() => {
       policy = { ...policy, ...patch }
       return new Response(JSON.stringify({ ok: true, policy }), { status: 200 })
     }
+    if (init.method === 'POST') {
+      posts.push(url)
+      if (delegateStatus !== 200) {
+        return new Response(
+          JSON.stringify({ error: { code: 'requester_auth_required', message: 'Connect your GitHub account first', connectUrl: 'https://api.test/connect-me' } }),
+          { status: delegateStatus },
+        )
+      }
+      policy = { ...policy, delegateName: 'Bob', delegateIsMe: true }
+      return new Response(JSON.stringify({ ok: true }), { status: 200 })
+    }
     if (init.method === 'DELETE') {
       deletes.push(url)
+      if (url.endsWith('/delegate')) policy = { ...policy, delegateName: null, delegateIsMe: false }
       return new Response(JSON.stringify({ ok: true }), { status: 200 })
     }
     if (policyStatus !== 200) return new Response('not found', { status: policyStatus })
@@ -67,6 +82,7 @@ afterEach(() => {
   globalThis.fetch = realFetch
   puts.length = 0
   deletes.length = 0
+  posts.length = 0
   opened.length = 0
 })
 
@@ -124,6 +140,8 @@ describe('IntegrationActsAsSection', () => {
       [['requester', 'ask', 'deny'], ['requester', 'shared']],
       [['requester', 'shared'], ['requester', 'shared']],
       [['requester', 'deny'], ['requester', 'deny']],
+      [['requester', 'ask', 'approve', 'deny'], ['shared']],
+      [['requester', 'ask', 'delegate', 'deny'], ['requester', 'shared']],
     ]
     for (const [writeChain, readChain] of lists) {
       expect(chainsFromChoices(choicesFromChains(writeChain as any, readChain as any))).toEqual({ writeChain, readChain } as any)
@@ -143,6 +161,41 @@ describe('IntegrationActsAsSection', () => {
     fireEvent.click(screen.getByLabelText('Disconnect my GitHub account'))
     await waitFor(() => expect(deletes).toEqual(['https://api.test/api/me/integrations/github']))
     expect(await screen.findByLabelText('Connect my GitHub account')).toBeTruthy()
+  })
+
+  test('when no one asked: a card in the conversation, or a teammate who opted in', async () => {
+    policy.writeChain = ['requester', 'ask', 'deny']
+    render(<IntegrationActsAsSection projectId="proj-1" />)
+    fireEvent.click(await screen.findByLabelText('Ask someone in the conversation to approve'))
+    await waitFor(() => expect(puts.at(-1)?.patch.writeChain).toEqual(['requester', 'ask', 'approve', 'deny']))
+    expect(await screen.findByText(/Whoever approves lends their own GitHub account/)).toBeTruthy()
+
+    fireEvent.click(screen.getByLabelText('Act as a teammate who opted in'))
+    await waitFor(() => expect(puts.at(-1)?.patch.writeChain).toEqual(['requester', 'ask', 'delegate', 'deny']))
+    expect(await screen.findByText('No one has opted in yet, so unattended runs are refused.')).toBeTruthy()
+
+    // Not connected yet: the connect link opens instead.
+    delegateStatus = 409
+    fireEvent.click(screen.getByLabelText('Act as me when no one asked'))
+    await waitFor(() => expect(opened).toEqual(['https://api.test/connect-me']))
+    expect(await screen.findByText('Connect your GitHub account first')).toBeTruthy()
+
+    delegateStatus = 200
+    fireEvent.click(screen.getByLabelText('Act as me when no one asked'))
+    expect(await screen.findByText('Unattended runs act as you.')).toBeTruthy()
+    expect(posts.at(-1)).toBe('https://api.test/api/projects/proj-1/integrations/policies/github/delegate')
+    fireEvent.click(screen.getByLabelText('Stop acting as me'))
+    expect(await screen.findByText('No one has opted in yet, so unattended runs are refused.')).toBeTruthy()
+    expect(deletes.at(-1)).toBe('https://api.test/api/projects/proj-1/integrations/policies/github/delegate')
+  })
+
+  test('someone who can\'t edit the policy can still opt themselves in, but not stop someone else', async () => {
+    canEdit = false
+    policy = { ...policy, writeChain: ['requester', 'ask', 'delegate', 'deny'], delegateName: 'Frank', delegateIsMe: false }
+    render(<IntegrationActsAsSection projectId="proj-1" />)
+    expect(await screen.findByText('Unattended runs act as Frank.')).toBeTruthy()
+    expect(screen.queryByLabelText('Stop acting as Frank')).toBeNull()
+    expect(screen.getByLabelText('Act as me when no one asked').getAttribute('aria-disabled')).toBeNull()
   })
 
   test('renders nothing where the server has no such setting (desktop)', async () => {
