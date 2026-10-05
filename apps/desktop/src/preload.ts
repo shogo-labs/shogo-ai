@@ -578,6 +578,9 @@ contextBridge.exposeInMainWorld('shogoDesktop', {
       ipcRenderer.invoke('preview:set-bounds', { projectId, bounds }),
     setVisible: (projectId: string, visible: boolean): Promise<{ ok: boolean }> =>
       ipcRenderer.invoke('preview:set-visible', { projectId, visible }),
+    /** Still image (data URL) of the live preview, or null if unavailable. */
+    capture: (projectId: string): Promise<string | null> =>
+      ipcRenderer.invoke('preview:capture', { projectId }),
     reload: (projectId: string): Promise<{ ok: boolean }> =>
       ipcRenderer.invoke('preview:reload', { projectId }),
     goBack: (projectId: string): Promise<{ ok: boolean }> =>

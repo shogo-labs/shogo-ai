@@ -315,6 +315,8 @@ const ActionsheetContent = React.forwardRef<
         class: className,
       })}
       ref={ref}
+      // Marks the sheet so the native desktop preview hides while it is open.
+      {...({ dataSet: { suppressNativePreview: true } } as object)}
       {...props}
     />
   );

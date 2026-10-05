@@ -80,6 +80,7 @@ import {
   closePreview,
   setPreviewBounds,
   setPreviewVisible,
+  capturePreview,
   reloadPreview,
   goBackPreview,
   goForwardPreview,
@@ -1557,6 +1558,13 @@ function registerIpcHandlers(): void {
     if (!win) return { ok: false, error: 'no-window' }
     setPreviewVisible(win.id, args.projectId, !!args.visible)
     return { ok: true }
+  })
+
+  ipcMain.handle('preview:capture', async (event, args: { projectId: string }) => {
+    if (!args?.projectId) return null
+    const win = windowManager.getWindowForWebContentsOrFocused(event.sender)
+    if (!win) return null
+    return capturePreview(win.id, args.projectId)
   })
 
   ipcMain.handle('preview:reload', (event, args: { projectId: string }) => {
