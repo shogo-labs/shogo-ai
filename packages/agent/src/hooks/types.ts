@@ -8,7 +8,12 @@
  */
 
 export interface HookEvent {
-  type: 'message' | 'heartbeat' | 'gateway' | 'command' | 'tool' | 'agent' | 'compaction'
+  /**
+   * `workspace` events come from the workspace event platform: `action` is
+   * the event type (`member.joined`, `composio.github.GITHUB_ISSUE_ADDED_EVENT`)
+   * and `context.envelope` is the `WorkspaceEventEnvelope`.
+   */
+  type: 'message' | 'heartbeat' | 'gateway' | 'command' | 'tool' | 'agent' | 'compaction' | 'workspace'
   action: string
   sessionKey: string
   timestamp: Date

@@ -179,6 +179,13 @@ const HOME_REGION_PARTITIONED: HomeRegionPartitioned[] = [
     partitionKeyColumn: 'Workspace.homeRegion',
   },
   {
+    fn: 'runEventDeliveryDispatch',
+    file: 'apps/api/src/jobs/run-event-delivery-dispatch.ts',
+    reason:
+      'Each region dispatches only EventDelivery rows whose subscription workspace is owned by that region via homeRegionWorkspaceWhere(); this keeps delivery claims, retries, and target-side writes in the workspace home region.',
+    partitionKeyColumn: 'Workspace.homeRegion',
+  },
+  {
     fn: 'runAgentTaskDispatch',
     file: 'apps/api/src/jobs/run-agent-task-dispatch.ts',
     reason:
@@ -253,6 +260,30 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
     category: 'single_tenant_upsert',
     reason:
       'One profile belongs to one workspace; personal signup creation and runtime profile updates are scoped to that workspace and use an upsert.',
+  },
+  {
+    key: 'WorkspaceEvent.(dedupeKey,workspaceId)',
+    category: 'single_tenant_upsert',
+    reason:
+      'workspace-events.ts deduplicates one emitted event key per workspace before creating the append-only event row and its deliveries.',
+  },
+  {
+    key: 'EventSubscription.composioTriggerId',
+    category: 'external_global_id',
+    reason:
+      'The Composio provider assigns this globally unique trigger id; subscription creation and webhook reconciliation reuse that external id.',
+  },
+  {
+    key: 'AppInstallGrant.installId',
+    category: 'single_tenant_upsert',
+    reason:
+      'One marketplace install has one grant; consent, version updates, and revocation address the grant by its install id.',
+  },
+  {
+    key: 'EventDelivery.(eventId,subscriptionId)',
+    category: 'request_scoped',
+    reason:
+      'workspace-events.ts creates at most one delivery for each emitted event/subscription pair and treats a concurrent duplicate as an idempotent race.',
   },
   {
     key: 'Project.publishedSubdomain',

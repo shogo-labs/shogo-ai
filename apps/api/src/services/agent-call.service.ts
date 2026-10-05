@@ -69,12 +69,42 @@ export async function callProjectAgent(
     callerProjectId: req.callerProjectId,
   })
 
+  return forwardToProjectRuntime(c, projectId, workspaceId, '/agent/pipeline/call', forwardBody, {
+    timeoutMs: wait ? timeoutMs + 5_000 : 15_000,
+    timeoutMessage: `The target agent did not reply within ${Math.round(timeoutMs / 1000)}s. Re-issue with wait=false and poll, or raise timeoutMs.`,
+  })
+}
+
+let runtimeUrlOverride: ((projectId: string) => Promise<string | null> | string | null) | null = null
+
+/** Test seam: resolve project runtime URLs directly (null falls through to the real resolver). */
+export function setProjectRuntimeUrlResolver(
+  resolver: ((projectId: string) => Promise<string | null> | string | null) | null,
+): void {
+  runtimeUrlOverride = resolver
+}
+
+/**
+ * POST `body` to a runtime-token-guarded path on the project's runtime
+ * (pinned Instance tunnel first, then cloud pod / host runtime).
+ */
+export async function forwardToProjectRuntime(
+  c: Context,
+  projectId: string,
+  workspaceId: string,
+  agentPath: string,
+  forwardBody: string,
+  opts: { timeoutMs: number; timeoutMessage?: string },
+): Promise<AgentCallOutcome> {
   try {
     const { deriveProjectRuntimeToken } = await import('../lib/project-runtime-token')
     const runtimeToken = await deriveProjectRuntimeToken(projectId, { workspaceId })
 
     let runtimeUrl: string
-    if (process.env.SHOGO_LOCAL_MODE === 'true') {
+    const overridden = runtimeUrlOverride ? await runtimeUrlOverride(projectId) : null
+    if (overridden) {
+      runtimeUrl = overridden
+    } else if (process.env.SHOGO_LOCAL_MODE === 'true') {
       // Desktop: every project runs on the host RuntimeManager. The tunnel /
       // Redis resolver below is cloud-only and stays out of the local bundle.
       const { resolveProjectPodUrl } = await import('../lib/resolve-pod-url')
@@ -91,8 +121,8 @@ export async function callProjectAgent(
           instanceId: resolution.instanceId,
           workspaceId: resolution.workspaceId,
           projectId,
-          agentPath: '/agent/pipeline/call',
-          cleanPath: '/agent/pipeline/call',
+          agentPath,
+          cleanPath: agentPath,
           method: 'POST',
           body: forwardBody,
           headers: { 'content-type': 'application/json', 'x-runtime-token': runtimeToken },
@@ -103,11 +133,11 @@ export async function callProjectAgent(
       runtimeUrl = resolution.url
     }
 
-    const res = await fetch(`${runtimeUrl}/agent/pipeline/call`, {
+    const res = await fetch(`${runtimeUrl}${agentPath}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-runtime-token': runtimeToken },
       body: forwardBody,
-      signal: AbortSignal.timeout(wait ? timeoutMs + 5_000 : 15_000),
+      signal: AbortSignal.timeout(opts.timeoutMs),
     })
     const json = await res.json().catch(() => ({}))
     return { status: res.status, body: json }
@@ -119,7 +149,7 @@ export async function callProjectAgent(
         error: {
           code: timedOut ? 'agent_call_timeout' : 'agent_call_failed',
           message: timedOut
-            ? `The target agent did not reply within ${Math.round(timeoutMs / 1000)}s. Re-issue with wait=false and poll, or raise timeoutMs.`
+            ? (opts.timeoutMessage ?? `The target runtime did not reply within ${Math.round(opts.timeoutMs / 1000)}s.`)
             : (err?.message ?? 'Failed to reach the target runtime'),
         },
       },

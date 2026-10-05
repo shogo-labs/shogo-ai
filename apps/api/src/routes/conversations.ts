@@ -761,7 +761,7 @@ export function textContains(q: string) {
   return isLocalMode() ? { contains: q } : { contains: q, mode: 'insensitive' as const }
 }
 
-async function resolveAgentConversation(workspaceId: string, channel: string, projectId: string | null) {
+export async function resolveAgentConversation(workspaceId: string, channel: string, projectId: string | null) {
   const byId = await db.conversation.findUnique({ where: { id: channel } }).catch(() => null)
   const conversation = byId && byId.workspaceId === workspaceId
     ? byId
@@ -1017,6 +1017,24 @@ export function agentChannelRoutes(routeConfig: AgentChannelRoutesConfig): Hono 
       return c.json({ message: { id: message.id, conversationId: message.conversationId } })
     } catch (err) {
       if (err instanceof AgentMessageError) return c.json({ error: { code: err.code, message: err.message } }, err.status)
+      return errorResponse(c, err)
+    }
+  })
+
+  router.post(`${base}/:channel/members`, async (c) => {
+    const auth = await config.authorize(c)
+    if (auth instanceof Response) return auth
+    const body = await readJson(c)
+    const projectId = await agentIdentity(auth, body.projectId)
+    const users = Array.isArray(body.users) ? body.users.map(String) : typeof body.user === 'string' ? [body.user] : []
+    if (!users.length) return c.json({ error: { code: 'invalid_input', message: 'users (emails or user ids) is required' } }, 400)
+    const conversation = await resolveAgentConversation(auth.workspaceId, c.req.param('channel'), projectId)
+    if (!conversation) return c.json({ error: { code: 'not_found', message: 'Channel not found or not visible to this agent' } }, 404)
+    try {
+      const { addUserMembersAsAgent } = await import('../services/conversation.service')
+      const added = await addUserMembersAsAgent(conversation, users.slice(0, 50))
+      return c.json({ added, channel: { id: conversation.id, name: conversation.name } })
+    } catch (err) {
       return errorResponse(c, err)
     }
   })

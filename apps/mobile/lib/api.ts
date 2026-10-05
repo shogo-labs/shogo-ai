@@ -491,6 +491,63 @@ export interface RemoteAskpassPrompt {
   createdAt?: number
 }
 
+export interface WorkspaceTrigger {
+  id: string
+  name: string
+  enabled: boolean
+  eventType: string
+  source: 'shogo' | 'composio' | string
+  target: 'agent' | 'project' | 'webhook' | string
+  targetProjectId?: string | null
+  targetMode?: string | null
+  webhookUrl?: string | null
+  ownerUserId?: string | null
+  ownerKind: 'user' | 'app' | string
+  installId?: string | null
+  consecutiveFailures: number
+  lastDeliveredAt?: string | null
+  lastError?: string | null
+  createdAt: string
+}
+
+export interface TriggerDelivery {
+  id: string
+  status: 'pending' | 'running' | 'ok' | 'failed' | 'dead' | 'skipped' | string
+  attempts: number
+  responseStatus?: number | null
+  error?: string | null
+  summary?: string | null
+  createdAt: string
+  updatedAt: string
+  event?: { id: string; type: string; occurredAt: string; source: string }
+}
+
+export interface WorkspaceAppGrant {
+  id: string
+  installId: string
+  status: 'active' | 'revoked' | string
+  version: string
+  grantedScopes: string[]
+  grantedToolkits: string[]
+  pendingScopes: string[]
+  pendingVersion?: string | null
+  hasToken: boolean
+  createdAt: string
+  revokedAt?: string | null
+  app: { slug: string; title: string; iconUrl: string | null } | null
+  projectId: string | null
+  installStatus: string | null
+  grantedBy: { id: string; name: string } | null
+}
+
+export interface AppConsentRequest {
+  version: string
+  scopes: Array<{ scope: string; description: string }>
+  optionalScopes: Array<{ scope: string; description: string }>
+  requiredToolkits: string[]
+  events: Array<{ type: string; target: string; name?: string }>
+}
+
 function throwIfBetterAuthErrorPayload(data: unknown): void {
   if (!data || typeof data !== 'object') return
   const err = (data as { error?: { message?: unknown } | null }).error
@@ -1249,6 +1306,46 @@ export const api = {
           ? { workspaceId: scope.workspaceId }
           : undefined,
     )
+  },
+
+  async listWorkspaceTriggers(http: HttpClient, workspaceId: string) {
+    const res = await http.get<{ triggers: WorkspaceTrigger[] }>(`/api/workspaces/${workspaceId}/triggers`)
+    return res.data?.triggers ?? []
+  },
+
+  async setWorkspaceTriggerEnabled(http: HttpClient, workspaceId: string, triggerId: string, enabled: boolean) {
+    const res = await http.patch<{ trigger: WorkspaceTrigger }>(`/api/workspaces/${workspaceId}/triggers/${triggerId}`, { enabled })
+    return res.data.trigger
+  },
+
+  async listTriggerDeliveries(http: HttpClient, workspaceId: string, triggerId: string, limit = 10) {
+    const res = await http.get<{ deliveries: TriggerDelivery[] }>(
+      `/api/workspaces/${workspaceId}/triggers/${triggerId}/deliveries`,
+      { limit: String(limit) },
+    )
+    return res.data?.deliveries ?? []
+  },
+
+  async redeliverTriggerDelivery(http: HttpClient, workspaceId: string, triggerId: string, deliveryId: string) {
+    const res = await http.post<{ delivery: TriggerDelivery }>(
+      `/api/workspaces/${workspaceId}/triggers/${triggerId}/deliveries/${deliveryId}/redeliver`,
+      {},
+    )
+    return res.data.delivery
+  },
+
+  async listWorkspaceAppGrants(http: HttpClient, workspaceId: string) {
+    const res = await http.get<{ grants: WorkspaceAppGrant[] }>(`/api/workspaces/${workspaceId}/app-grants`)
+    return res.data?.grants ?? []
+  },
+
+  async revokeAppInstall(http: HttpClient, installId: string) {
+    await http.post(`/api/marketplace/installs/${installId}/revoke`, {})
+  },
+
+  async getMarketplaceConsent(http: HttpClient, slug: string) {
+    const res = await http.get<{ consent: AppConsentRequest | null }>(`/api/marketplace/${encodeURIComponent(slug)}/consent`)
+    return res.data?.consent ?? null
   },
 
   /**

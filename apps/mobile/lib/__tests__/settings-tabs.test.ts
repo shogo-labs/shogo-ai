@@ -26,6 +26,8 @@ describe("settings tabs", () => {
     expect(local.map((tab) => tab.id)).toContain("billing")
     expect(local.map((tab) => tab.id)).not.toContain("people")
     expect(ios.map((tab) => tab.id)).not.toContain("compute")
+    expect(cloud.map((tab) => tab.id)).toContain("automations")
+    expect(local.map((tab) => tab.id)).toContain("automations")
   })
 
   test("computer-files tab requires both the desktop shell and local mode", () => {

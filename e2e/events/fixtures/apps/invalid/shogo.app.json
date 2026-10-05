@@ -1,0 +1,8 @@
+{
+  "scopes": ["members:read", "files:delete"],
+  "events": [
+    { "type": "member.joined", "target": "agent" },
+    { "type": "composio.github.*" },
+    { "type": "composio.slack.SLACK_RECEIVE_MESSAGE" }
+  ]
+}

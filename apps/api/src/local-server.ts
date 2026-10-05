@@ -26,6 +26,7 @@ import {
 import { createLocalApp } from './app/create-local-app'
 import { stopAllPrismaStudios } from './routes/database'
 import { startAgentScheduleWorker, stopAgentScheduleWorker } from './jobs/run-agent-schedule-dispatch'
+import { startEventDeliveryWorker, stopEventDeliveryWorker } from './jobs/run-event-delivery-dispatch'
 import { startChatQueueWorker, stopChatQueueWorker } from './jobs/run-chat-queue-drain'
 import { startChannelWorkers, stopChannelWorkers } from './jobs/run-channel-workers'
 import { resolveLocalApiPort } from './lib/local-api-port'
@@ -42,6 +43,16 @@ await bootstrapLocalDatabase()
 resetLocalCaches()
 // Fire due agent-owned recurring schedules in the local workspace runtime.
 startAgentScheduleWorker(runtimeManager)
+// Deliver workspace events to their subscriptions. The desktop has no public URL
+// for Composio webhooks, so it receives trigger events over Composio's realtime channel.
+startEventDeliveryWorker(runtimeManager)
+let stopComposioListener: (() => Promise<void>) | null = null
+void import('./services/composio-triggers.service').then(async (m) => {
+  const { installScriptedEventAgentFromEnv } = await import('./services/event-agent-script')
+  installScriptedEventAgentFromEnv()
+  m.startComposioTriggerReconciler()
+  stopComposioListener = await m.startComposioTriggerListener()
+}).catch((err) => console.warn('[LocalAPI] Composio trigger listener unavailable:', err?.message ?? err))
 startChatQueueWorker()
 startChannelWorkers()
 // Keep the cloud team workspaces this desktop is signed in to current.
@@ -111,6 +122,8 @@ void startBackgroundTranscriptionSetup()
 async function shutdown(signal: string): Promise<void> {
   console.log(`[LocalAPI] Received ${signal}, stopping runtimes...`)
   stopAgentScheduleWorker()
+  stopEventDeliveryWorker()
+  void stopComposioListener?.()
   stopChatQueueWorker()
   stopChannelWorkers()
   try {

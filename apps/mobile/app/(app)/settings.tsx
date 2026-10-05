@@ -106,6 +106,7 @@ import { ComputeTab } from "../../components/settings/ComputeTab";
 import { LocalCloudBillingTab } from "../../components/settings/LocalCloudBillingTab";
 import { UpdatesTab } from "../../components/settings/UpdatesTab";
 import { IntegrationsTab } from "../../components/settings/IntegrationsTab";
+import { AutomationsTab } from "../../components/settings/AutomationsTab";
 import { WorkspaceModelsTab } from "../../components/settings/WorkspaceModelsTab";
 import { RemoteControlTab } from "../../components/settings/RemoteControlTab";
 import {
@@ -210,6 +211,7 @@ const SETTINGS_TAB_ICON_NAME: Record<TabId, keyof typeof SETTINGS_ICON_MAP> = {
   people: "Users",
   models: "Boxes",
   integrations: "Plug",
+  automations: "Zap",
   "remote-control": "Monitor",
   account: "User",
   security: "Shield",
@@ -252,6 +254,7 @@ const MOBILE_NAV_ITEMS: NavItem[] = settingsNavItems([
   "people",
   "models",
   "integrations",
+  "automations",
   "remote-control",
   "account",
   "appearance",
@@ -265,6 +268,7 @@ const MOBILE_NAV_ITEMS: NavItem[] = settingsNavItems([
 const LOCAL_NAV_ITEMS: NavItem[] = settingsNavItems([
   "workspace",
   "integrations",
+  "automations",
   "remote-control",
   "account",
   "appearance",
@@ -368,6 +372,7 @@ function SettingsSidebar({
       ? [tabItem("people"), tabItem("models")]
       : []),
     tabItem("integrations"),
+    tabItem("automations"),
     tabItem("remote-control"),
     ...(showBilling
       ? [
@@ -4629,10 +4634,13 @@ export const SettingsContent = observer(function SettingsContent({
   activeTab,
   localMode = false,
   onSelectTab,
+  onClose,
 }: {
   activeTab: TabId;
   localMode?: boolean;
   onSelectTab?: (tab: TabId) => void;
+  /** Set when Settings is shown in a sheet that must close before navigating away. */
+  onClose?: () => void;
 }) {
   const isLocal = localMode;
   return (
@@ -4641,6 +4649,12 @@ export const SettingsContent = observer(function SettingsContent({
       {activeTab === "people" && !isLocal && <PeopleTab />}
       {activeTab === "models" && !isLocal && <WorkspaceModelsTab />}
       {activeTab === "integrations" && <IntegrationsTab />}
+      {activeTab === "automations" && (
+        <AutomationsTab
+          onOpenIntegrations={onSelectTab ? () => onSelectTab("integrations") : undefined}
+          onLeaveSettings={onClose}
+        />
+      )}
       {activeTab === "remote-control" && <RemoteControlTab />}
       {activeTab === "account" && <AccountTab />}
       {activeTab === "appearance" && <AppearanceTab />}

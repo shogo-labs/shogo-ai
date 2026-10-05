@@ -14,6 +14,7 @@ export default defineConfig({
     'src/microcompact.ts',
     'src/prefix-fingerprint.ts',
     'src/hooks/index.ts',
+    'src/events/index.ts',
     'src/hooks/bundled/command-logger/handler.ts',
     'src/hooks/bundled/session-memory/handler.ts',
     'src/ai-client.ts',

@@ -25,6 +25,8 @@ export const CRITICAL_PATH_SPECS: readonly string[] = [
   "runtime-recycle.test.ts",
   // Personal <-> team switching on wide and narrow layouts.
   "workspace-switch.test.ts",
+  // Event triggers run, Settings → Automations shows them, /api/v1 answers.
+  "apps-critical.test.ts",
 ]
 
 export function criticalPathTestMatch(): string[] {

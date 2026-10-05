@@ -3786,6 +3786,44 @@ app.post('/agent/pipeline/call', async (c) => {
   }
 })
 
+/**
+ * POST /agent/events
+ *   body: { envelope: WorkspaceEventEnvelope, subscriptionId?, deliveryId? }
+ *
+ * Workspace events for this project's code hooks (`events: [workspace:member.joined]`
+ * in a HOOK.md). Sent by the API's event delivery worker for subscriptions
+ * targeting this project in `hook` mode. Runtime-token guarded like the
+ * other `/agent/*` routes. Answers `handled` = hooks that ran; a hook that
+ * throws makes the delivery fail so the API retries it. For marketplace app
+ * installs the API sends the install token, which hooks get as
+ * `event.context.appToken` (with `event.context.apiUrl`) to call `/api/v1`.
+ */
+app.post('/agent/events', async (c) => {
+  if (!agentGateway) {
+    return c.json({ error: 'Agent gateway not running' }, 503)
+  }
+  const body = await c.req.json().catch(() => null)
+  const envelope = body?.envelope
+  if (!envelope || typeof envelope.type !== 'string' || typeof envelope.id !== 'string') {
+    return c.json({ error: { code: 'invalid_body', message: 'envelope with id and type is required' } }, 400)
+  }
+  await agentGateway.refreshHooks()
+  const { HookEmitter } = await import('./hooks')
+  const event = HookEmitter.createEvent('workspace', envelope.type, `event:${body.subscriptionId ?? envelope.id}`, {
+    envelope,
+    payload: envelope.payload,
+    subscriptionId: body.subscriptionId,
+    deliveryId: body.deliveryId,
+    appToken: typeof body.appToken === 'string' ? body.appToken : process.env.SHOGO_APP_TOKEN,
+    apiUrl: process.env.SHOGO_API_URL,
+  })
+  const result = await agentGateway.getHookEmitter().emit(event)
+  if (result.failed > 0) {
+    return c.json({ error: { code: 'hook_failed', message: result.errors.join('; ').slice(0, 2_000) }, handled: result.matched - result.failed }, 500)
+  }
+  return c.json({ ok: true, handled: result.matched, messages: event.messages })
+})
+
 app.post('/agent/hooks/agent', async (c) => {
   if (!verifyWebhookAuth(c)) {
     return c.json({ error: 'Unauthorized' }, 401)

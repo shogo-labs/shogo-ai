@@ -164,6 +164,7 @@ export function MobileSettingsSheet({
                   activeTab={activeTab}
                   localMode={isLocal}
                   onSelectTab={setActiveTab}
+                  onClose={onClose}
                 />
               ) : null}
             </ScrollView>

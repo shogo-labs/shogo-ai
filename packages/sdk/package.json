@@ -235,6 +235,12 @@
       "import": "./dist/hooks/index.js",
       "require": "./dist/hooks/index.cjs"
     },
+    "./events": {
+      "types": "./dist/events/index.d.ts",
+      "development": "./src/events/index.ts",
+      "import": "./dist/events/index.js",
+      "require": "./dist/events/index.cjs"
+    },
     "./model-router": {
       "types": "./dist/model-router/index.d.ts",
       "development": "./src/model-router/index.ts",

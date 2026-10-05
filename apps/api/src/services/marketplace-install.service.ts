@@ -16,6 +16,7 @@ import {
 import { createS3SyncForProject, getMinimumInstanceSize } from '@shogo/shared-runtime'
 import { trackEvent } from './loops.service'
 import { canRunTechStackOnInstanceSize } from './billing.service'
+import type { AppConsentInput } from './app-install-grants.service'
 
 const isKubernetes = () => !!process.env.KUBERNETES_SERVICE_HOST
 
@@ -164,7 +165,9 @@ export async function installAgent(params: {
   listingId: string
   userId: string
   workspaceId: string
-}): Promise<{ projectId: string; installId: string }> {
+  /** Required when the version's `shogo.app.json` requests access (else `consent_required`). */
+  consent?: AppConsentInput | null
+}): Promise<{ projectId: string; installId: string; grantedScopes?: string[] }> {
   const { listingId, userId, workspaceId } = params
 
   const canInstall = await hasWorkspaceAccess(workspaceId, userId)
@@ -186,6 +189,14 @@ export async function installAgent(params: {
   }
   if (listing.status !== 'published') {
     throw new Error('listing_not_published')
+  }
+
+  const grants = await import('./app-install-grants.service')
+  const appManifest = await grants.loadVersionManifest(listing.id, listing.currentVersion)
+  let grantedScopes: string[] | null = null
+  if (grants.manifestNeedsConsent(appManifest)) {
+    grantedScopes = grants.resolveConsent(appManifest, listing.currentVersion, params.consent)
+    await grants.assertToolkitsConnected(workspaceId, userId, appManifest.requiredToolkits)
   }
 
   const srcProject = listing.project
@@ -361,10 +372,33 @@ export async function installAgent(params: {
     return row
   })
 
+  if (grantedScopes && appManifest) {
+    try {
+      await grants.provisionInstallGrant({
+        installId: install.id,
+        workspaceId,
+        listingId: listing.id,
+        userId,
+        projectId: newProject.id,
+        version: listing.currentVersion,
+        appName: listing.title,
+        manifest: appManifest,
+        grantedScopes,
+      })
+    } catch (err) {
+      await prisma.$transaction([
+        prisma.marketplaceInstall.update({ where: { id: install.id }, data: { status: 'cancelled' } }),
+        prisma.marketplaceListing.update({ where: { id: listing.id }, data: { installCount: { decrement: 1 } } }),
+        prisma.project.update({ where: { id: newProject.id }, data: { status: 'archived' } }),
+      ]).catch(() => {})
+      throw err
+    }
+  }
+
   // FIRE-AND-FORGET: track project creation for lifecycle campaigns
   _trackProjectCreated(userId, newProject.id, listing.title)
 
-  return { projectId: newProject.id, installId: install.id }
+  return { projectId: newProject.id, installId: install.id, ...(grantedScopes ? { grantedScopes } : {}) }
 }
 
 // FIRE-AND-FORGET helper — defined outside installAgent so it is hoisted
@@ -433,7 +467,7 @@ export async function checkForUpdates(installId: string): Promise<CheckForUpdate
 }
 
 export type ApplyUpdateResult =
-  | { ok: true; alreadyOnLatest?: boolean; installedVersion: string }
+  | { ok: true; alreadyOnLatest?: boolean; installedVersion: string; pendingScopes?: string[] }
   | {
       ok: false
       error:
@@ -559,10 +593,12 @@ export async function applyUpdate(
         baselineManifest: refreshed as object,
       },
     })
-    return { ok: true, installedVersion: targetVersion }
   } catch {
     return { ok: false, error: 'apply_failed' }
   }
+  const { onInstallUpdated } = await import('./app-install-grants.service')
+  const grant = await onInstallUpdated({ installId, version: targetVersion })
+  return { ok: true, installedVersion: targetVersion, ...(grant?.pendingScopes.length ? { pendingScopes: grant.pendingScopes } : {}) }
 }
 
 export async function uninstallAgent(params: {
@@ -603,6 +639,9 @@ export async function uninstallAgent(params: {
       data: { installCount: { decrement: 1 } },
     })
   })
+
+  const { revokeInstallGrant } = await import('./app-install-grants.service')
+  await revokeInstallGrant(installId)
 
   if (install.projectId) {
     const projectDir = join(getWorkspacesDir(), install.projectId)

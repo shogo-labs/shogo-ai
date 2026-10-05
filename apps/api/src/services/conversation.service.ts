@@ -686,6 +686,42 @@ export async function addUserMembers(conversationId: string, actorId: string, us
   return added
 }
 
+/**
+ * An agent adds workspace members to a channel it can see (public, or private
+ * with the agent as a member; the caller resolves visibility). Accepts user
+ * ids or emails. Returns the user ids that were newly added.
+ */
+export async function addUserMembersAsAgent(conversation: { id: string; kind: string; workspaceId: string; archivedAt?: Date | null }, users: string[]) {
+  if (conversation.kind !== 'public' && conversation.kind !== 'private') {
+    throw new ConversationError(400, 'invalid', 'People can only be added to channels')
+  }
+  if (conversation.archivedAt) throw new ConversationError(400, 'archived', 'This channel is archived')
+  const wanted = users.map((u) => String(u).trim()).filter(Boolean)
+  if (!wanted.length) return []
+  const members = await db.member.findMany({
+    where: {
+      workspaceId: conversation.workspaceId,
+      projectId: null,
+      OR: [{ userId: { in: wanted } }, { user: { email: { in: [...new Set([...wanted, ...wanted.map((w) => w.toLowerCase())])] } } }],
+    },
+    select: { userId: true },
+  })
+  const valid: string[] = [...new Set<string>(members.map((m: any) => m.userId as string))]
+  const existing = await db.conversationMember.findMany({
+    where: { conversationId: conversation.id, userId: { in: valid } },
+    select: { userId: true },
+  })
+  const have = new Set(existing.map((e: any) => e.userId))
+  const added: string[] = []
+  for (const uid of valid) {
+    if (have.has(uid)) continue
+    await db.conversationMember.create({ data: { conversationId: conversation.id, memberType: 'user', userId: uid } })
+    added.push(uid)
+  }
+  if (added.length) await publish(conversation, { type: 'member.joined', userIds: added })
+  return added
+}
+
 export async function removeMember(conversationId: string, actorId: string, memberId: string) {
   const access = await requireManage(conversationId, actorId)
   const row = await db.conversationMember.findFirst({ where: { id: memberId, conversationId } })

@@ -22,22 +22,26 @@ export class HookEmitter {
     return [...this.hooks]
   }
 
+  /** Hooks subscribed to `event`: `type:action`, `type`, `*`, or a `type:prefix.*` wildcard. */
+  matching(event: Pick<HookEvent, 'type' | 'action'>): Hook[] {
+    const eventKey = `${event.type}:${event.action}`
+    return this.hooks.filter((h) =>
+      h.events.some((pattern) =>
+        pattern === eventKey ||
+        pattern === event.type ||
+        pattern === '*' ||
+        (pattern.endsWith('.*') && eventKey.startsWith(pattern.slice(0, -1)))))
+  }
+
   /**
    * Emit an event to all matching hooks. Handlers run concurrently.
    * One handler failure does not block others.
    */
-  async emit(event: HookEvent): Promise<void> {
+  async emit(event: HookEvent): Promise<{ matched: number; failed: number; errors: string[] }> {
     const eventKey = `${event.type}:${event.action}`
-    const generalKey = event.type
+    const matching = this.matching(event)
 
-    const matching = this.hooks.filter(
-      (h) =>
-        h.events.includes(eventKey) ||
-        h.events.includes(generalKey) ||
-        h.events.includes('*')
-    )
-
-    if (matching.length === 0) return
+    if (matching.length === 0) return { matched: 0, failed: 0, errors: [] }
 
     const results = await Promise.allSettled(
       matching.map(async (hook) => {
@@ -50,11 +54,16 @@ export class HookEmitter {
       })
     )
 
-    const failures = results.filter((r) => r.status === 'rejected')
+    const failures = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected')
     if (failures.length > 0) {
       console.warn(
         `[Hooks] ${failures.length}/${matching.length} handlers failed for ${eventKey}`
       )
+    }
+    return {
+      matched: matching.length,
+      failed: failures.length,
+      errors: failures.map((f) => String(f.reason?.message ?? f.reason)),
     }
   }
 

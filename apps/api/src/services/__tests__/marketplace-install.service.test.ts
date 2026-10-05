@@ -63,6 +63,9 @@ let s3SyncFactoryMock: ((projectDir: string, projectId: string) => any | null) |
 
 mock.module('../../lib/prisma', () => ({
   prisma: {
+    eventSubscription: { findMany: async () => [] },
+    appInstallGrant: { findUnique: async () => null, updateMany: async () => ({ count: 0 }) },
+    apiKey: { updateMany: async () => ({ count: 0 }) },
     marketplaceListing: {
       findUnique: async ({ where, include }: any) => {
         const L = db.listings.get(where.id)

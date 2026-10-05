@@ -22,6 +22,15 @@ import { Composio } from '@composio/core'
 import { getShogoCloudUrl } from '../lib/cloud-urls'
 import { shouldSkipForwardedHeader } from '../lib/proxy-headers'
 
+async function disableTriggersForConnections(input: { connectedAccountIds?: string[]; entityIds?: string[]; toolkit?: string }) {
+  try {
+    const { disableSubscriptionsForConnections } = await import('../services/composio-triggers.service')
+    await disableSubscriptionsForConnections(input)
+  } catch (err: any) {
+    console.error('[Integrations] Disabling triggers for removed connection failed:', err?.message ?? err)
+  }
+}
+
 // =============================================================================
 // Cloud forwarding for local mode with SHOGO_API_KEY
 // =============================================================================
@@ -158,6 +167,11 @@ function loadAuthConfigs() {
 }
 
 let composioClient: Composio | null = null
+
+/** Test seam: route Composio calls to a fake (null restores the real client). */
+export function setIntegrationsComposioClient(client: unknown): void {
+  composioClient = client as Composio | null
+}
 
 function getComposio(): Composio | null {
   if (composioClient) return composioClient
@@ -579,6 +593,7 @@ export function integrationRoutes() {
           const toolkit = target?.toolkit?.slug ?? target?.appName ?? target?.app_name
           if (toolkit) {
             await pruneToolkitConnections(composio, candidates, toolkit)
+            await disableTriggersForConnections({ entityIds: candidates, toolkit, connectedAccountIds: [connectionId] })
             return c.json({ ok: true })
           }
         } catch (err: any) {
@@ -590,6 +605,7 @@ export function integrationRoutes() {
 
     try {
       await composio.connectedAccounts.delete(connectionId)
+      await disableTriggersForConnections({ connectedAccountIds: [connectionId] })
       return c.json({ ok: true })
     } catch (err: any) {
       console.error(`[Integrations] Disconnect error:`, err.message)

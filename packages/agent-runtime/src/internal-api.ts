@@ -1066,6 +1066,18 @@ export async function sendAgentDirectMessage(
   })
 }
 
+export async function addAgentChannelMembers(
+  workspaceId: string,
+  channel: string,
+  input: { users: string[]; identity: AgentChannelIdentity },
+): Promise<CheckpointCallResult<{ added: string[]; channel: { id: string; name: string | null } }>> {
+  return personalFetch(channelsPath(workspaceId, `/${encodeURIComponent(channel)}/members`), {
+    method: 'POST',
+    body: JSON.stringify({ users: input.users, projectId: input.identity.projectId }),
+    parse: (j) => ({ added: (j?.added ?? []) as string[], channel: j?.channel }),
+  })
+}
+
 export interface TeamDirectory {
   people: Array<{ userId: string; name: string | null; email: string; tag: string }>
   agents: Array<{ projectId: string | null; name: string; role: string | null; tag: string }>
@@ -1191,6 +1203,116 @@ export async function deleteSchedule(
     `/api/internal/workspaces/${encodeURIComponent(workspaceId)}/schedules/${encodeURIComponent(scheduleId)}`,
     { method: 'DELETE', body: JSON.stringify({ userId }), parse: (j) => j as { ok: true } },
   )
+}
+
+export interface EventTrigger {
+  id: string
+  name: string
+  enabled: boolean
+  eventType: string
+  filter: Record<string, unknown> | null
+  ownerUserId: string | null
+  source: string
+  target: 'agent' | 'project' | 'webhook'
+  targetProjectId: string | null
+  targetMode: string | null
+  prompt: string | null
+  notifyConversationId: string | null
+  webhookUrl: string | null
+  consecutiveFailures: number
+  lastDeliveredAt: string | null
+  lastError: string | null
+}
+
+export interface EventTriggerCreateRequest {
+  userId: string
+  name: string
+  eventType: string
+  filter?: Record<string, unknown> | null
+  target?: 'agent' | 'project' | 'webhook'
+  targetProjectId?: string
+  targetMode?: 'agent' | 'hook'
+  prompt?: string
+  notifyConversationId?: string | null
+  notifyThreadRootId?: string | null
+  webhookUrl?: string
+  triggerConfig?: Record<string, unknown>
+  enabled?: boolean
+}
+
+export interface EventTriggerUpdateRequest {
+  userId: string
+  name?: string
+  enabled?: boolean
+  filter?: Record<string, unknown> | null
+  prompt?: string | null
+  targetMode?: 'agent' | 'hook'
+  notifyConversationId?: string | null
+  notifyThreadRootId?: string | null
+  webhookUrl?: string
+  rotateWebhookSecret?: boolean
+}
+
+function triggersPath(workspaceId: string, suffix = ''): string {
+  return `/api/internal/workspaces/${encodeURIComponent(workspaceId)}/triggers${suffix}`
+}
+
+export async function listTriggerTypes(
+  workspaceId: string,
+  input: { userId: string; toolkit?: string; projectId?: string },
+): Promise<CheckpointCallResult<{ native: any[]; composio: { available: boolean; connectedToolkits: string[]; types: any[]; error?: string } }>> {
+  const params = new URLSearchParams({ userId: input.userId })
+  if (input.toolkit) params.set('toolkit', input.toolkit)
+  if (input.projectId) params.set('projectId', input.projectId)
+  return personalFetch(`/api/internal/workspaces/${encodeURIComponent(workspaceId)}/trigger-types?${params}`, { method: 'GET' })
+}
+
+export async function listTriggers(workspaceId: string): Promise<CheckpointCallResult<EventTrigger[]>> {
+  return personalFetch(triggersPath(workspaceId), { method: 'GET', parse: (j) => (j?.triggers ?? []) as EventTrigger[] })
+}
+
+export async function createTrigger(
+  workspaceId: string,
+  input: EventTriggerCreateRequest,
+): Promise<CheckpointCallResult<{ trigger: EventTrigger; webhookSecret?: string }>> {
+  return personalFetch(triggersPath(workspaceId), { method: 'POST', body: JSON.stringify(input) })
+}
+
+export async function updateTrigger(
+  workspaceId: string,
+  triggerId: string,
+  input: EventTriggerUpdateRequest,
+): Promise<CheckpointCallResult<{ trigger: EventTrigger; webhookSecret?: string }>> {
+  return personalFetch(triggersPath(workspaceId, `/${encodeURIComponent(triggerId)}`), { method: 'PATCH', body: JSON.stringify(input) })
+}
+
+export async function deleteTrigger(workspaceId: string, triggerId: string, userId: string): Promise<CheckpointCallResult<{ ok: true }>> {
+  return personalFetch(triggersPath(workspaceId, `/${encodeURIComponent(triggerId)}`), {
+    method: 'DELETE',
+    body: JSON.stringify({ userId }),
+  })
+}
+
+export async function testTrigger(
+  workspaceId: string,
+  triggerId: string,
+  input: { userId: string; payload?: unknown },
+): Promise<CheckpointCallResult<{ eventId: string; type: string; delivery: { id: string; status: string } | null }>> {
+  return personalFetch(triggersPath(workspaceId, `/${encodeURIComponent(triggerId)}/test`), {
+    method: 'POST',
+    body: JSON.stringify(input),
+  })
+}
+
+export async function listTriggerDeliveries(
+  workspaceId: string,
+  triggerId: string,
+  limit = 10,
+): Promise<CheckpointCallResult<any[]>> {
+  return personalFetch(triggersPath(workspaceId, `/${encodeURIComponent(triggerId)}/deliveries?limit=${limit}`), {
+    method: 'GET',
+    parse: (j) => j?.deliveries ?? [],
+  })
 }
 
 /**

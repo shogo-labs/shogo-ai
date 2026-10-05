@@ -217,6 +217,8 @@ model Workspace {
   starredProjects        StarredProject[]
   agentTasks             AgentTask[]
   agentSchedules         AgentSchedule[]
+  workspaceEvents        WorkspaceEvent[]
+  eventSubscriptions     EventSubscription[]
   apiKeys                ApiKey[]
   instances              Instance[]
   meetings               Meeting[]
@@ -361,6 +363,131 @@ model AgentSchedule {
   @@index([goalId])
   @@index([userId])
   @@map("agent_schedules")
+}
+
+/// Append-only log of workspace events: native (`member.joined`) and
+/// Composio triggers (`composio.<toolkit>.<SLUG>`). See `services/workspace-events.ts`.
+model WorkspaceEvent {
+  id          String   @id @default(uuid())
+  workspaceId String
+  type        String
+  version     Int      @default(1)
+  /// shogo | composio
+  source      String   @default("shogo")
+  payload     Json
+  dedupeKey   String
+  occurredAt  DateTime @default(now())
+
+  workspace  Workspace       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  deliveries EventDelivery[]
+
+  @@unique([workspaceId, dedupeKey])
+  @@index([workspaceId, occurredAt])
+  @@map("workspace_events")
+}
+
+/// Who gets told about which events, and how. Created by the workspace agent
+/// (`trigger_create`), by people in settings, or by an installed app.
+model EventSubscription {
+  id           String  @id @default(uuid())
+  workspaceId  String
+  name         String
+  enabled      Boolean @default(true)
+  /// Exact type or a `prefix.*` wildcard.
+  eventType    String
+  eventVersion Int     @default(1)
+  /// Shallow equality match against payload paths, e.g. { "member.role": "member" }.
+  filter       Json?
+  /// The user deliveries run as. Null only for app-owned subscriptions.
+  ownerUserId  String?
+  /// "user", or "app" for subscriptions an app install owns (see AppInstallGrant).
+  ownerKind    String  @default("user")
+  installId    String?
+
+  /// shogo | composio
+  source                     String  @default("shogo")
+  composioTriggerSlug        String?
+  composioTriggerId          String? @unique
+  composioConnectedAccountId String?
+  composioEntityId           String?
+  triggerConfig              Json?
+
+  /// agent | project | webhook
+  target               String  @default("agent")
+  targetProjectId      String?
+  /// For `project`: agent | hook
+  targetMode           String?
+  /// Instruction for agent targets.
+  prompt               String?
+  notifyConversationId String?
+  notifyThreadRootId   String?
+  webhookUrl           String?
+  /// AES-GCM encrypted HMAC secret for `webhook` targets.
+  webhookSecret        String?
+
+  chatSessionId       String?
+  consecutiveFailures Int       @default(0)
+  lastDeliveredAt     DateTime?
+  lastError           String?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  workspace  Workspace       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  deliveries EventDelivery[]
+
+  @@index([workspaceId, enabled, eventType])
+  @@index([ownerUserId])
+  @@index([installId])
+  @@map("event_subscriptions")
+}
+
+/// What a marketplace app install may access, consented by the installer.
+model AppInstallGrant {
+  id              String    @id @default(cuid())
+  installId       String    @unique
+  workspaceId     String
+  listingId       String
+  grantedByUserId String
+  version         String
+  grantedScopes   String[]  @default([])
+  grantedToolkits String[]  @default([])
+  /// Scopes a newer version asks for that the installer hasn't approved yet.
+  pendingScopes   String[]  @default([])
+  pendingVersion  String?
+  /// The install token (`SHOGO_APP_TOKEN`), secret-crypto encrypted; the ApiKey row holds its hash.
+  encryptedToken  String?
+  status          String    @default("active")
+  revokedAt       DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([workspaceId])
+  @@map("app_install_grants")
+}
+
+model EventDelivery {
+  id             String    @id @default(uuid())
+  subscriptionId String
+  eventId        String
+  workspaceId    String
+  /// pending | running | ok | failed | dead
+  status         String    @default("pending")
+  attempts       Int       @default(0)
+  nextAttemptAt  DateTime  @default(now())
+  runningAt      DateTime?
+  responseStatus Int?
+  error          String?
+  summary        String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  subscription EventSubscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  event        WorkspaceEvent    @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  @@unique([subscriptionId, eventId])
+  @@index([status, nextAttemptAt])
+  @@index([workspaceId])
+  @@map("event_deliveries")
 }
 
 model GoalEvent {
@@ -2448,6 +2575,9 @@ model ApiKey {
   devicePlatform   String?
   deviceAppVersion String?
   lastSeenAt       DateTime?
+  /// Empty = full user access. Install tokens carry the app's granted scopes.
+  grantedScopes    String[]  @default([])
+  installId        String?
 
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -2455,6 +2585,7 @@ model ApiKey {
   @@index([workspaceId])
   @@index([userId])
   @@index([workspaceId, deviceId])
+  @@index([installId])
   @@map("api_keys")
 }
 
@@ -2861,6 +2992,9 @@ model MarketplaceListingVersion {
   auditedBy     String?
   auditFindings Json?
   auditModel    String?
+
+  /// Parsed `shogo.app.json` (events, scopes, required toolkits) for this version.
+  appManifest Json?
 
   createdAt DateTime @default(now())
 
