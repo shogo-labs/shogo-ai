@@ -256,6 +256,9 @@ export interface CheckpointCallResult<T> {
   code?: string
   /** Where the requester connects their account, when `code` is `requester_auth_required`. */
   connectUrl?: string
+  /** The card someone has to approve, when `code` is `approval_pending`. */
+  approvalId?: string
+  expiresAt?: string
 }
 
 async function checkpointFetch<T>(
@@ -280,6 +283,8 @@ async function checkpointFetch<T>(
         error: message ?? `HTTP ${res.status}`,
         code: err?.code,
         ...(typeof err?.connectUrl === 'string' ? { connectUrl: err.connectUrl } : {}),
+        ...(typeof err?.approvalId === 'string' ? { approvalId: err.approvalId } : {}),
+        ...(typeof err?.expiresAt === 'string' ? { expiresAt: err.expiresAt } : {}),
       }
     }
     return { ok: true, status: res.status, data: init.parse ? init.parse(json) : (json as T) }

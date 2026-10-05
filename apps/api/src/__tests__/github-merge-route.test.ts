@@ -11,7 +11,15 @@ import { Hono } from 'hono'
 
 // No saved "acts as" policy: merges use the project's connection.
 mock.module('../services/integration-credentials', () => ({
-  getPolicy: async () => ({ writeMode: 'shared', readMode: 'shared', fallback: 'ask', sharedUserId: null }),
+  getPolicy: async () => ({
+    writeChain: ['shared'],
+    readChain: ['shared'],
+    writeMode: 'shared',
+    readMode: 'shared',
+    fallback: 'ask',
+    sharedUserId: null,
+    delegateUserId: null,
+  }),
 }))
 
 const { runtimeInternalRoutes } = await import('../routes/internal-runtime-routes')

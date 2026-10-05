@@ -71,6 +71,8 @@ const EXEMPT: Record<string, string> = {
   goal: 'Mutated via /api/workspaces/:workspaceId/goals — resolved by path workspaceId (routes/workspace-agent.ts, mounted publicly and internally with the same handler).',
   instanceSubscription: 'Mutated via /api/workspaces/:id/... — resolved by path workspaceId.',
   integrationCredentialPolicy: 'Mutated via /api/projects/:projectId/integrations/policies — resolved by path projectId.',
+  integrationCredentialApproval: 'Created and consumed by the internal credential-approval flow for a project; never exposed through a standalone row mutation route.',
+  integrationCredentialAudit: 'Written by the internal credential-resolution flow and read only through the project-scoped admin audit route.',
   inviteLink: 'Mutated via /api/workspaces/:id/invite-links — resolved by path workspaceId.',
   liveSessionMeter: 'Counter table written from the signed live-session token workspaceId — not URL-resolvable, same shape as voiceCallMeter.',
   meetingTemplate: 'Mutated only through /api/workspaces/:workspaceId/meetings/templates — resolved by the workspace path.',
