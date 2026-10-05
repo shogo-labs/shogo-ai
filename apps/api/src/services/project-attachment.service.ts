@@ -126,8 +126,19 @@ export async function detachProjectFromProject(
   return res.count > 0
 }
 
-/** Linked local host folders on the anchor (reused `ProjectFolder` rows). */
+/**
+ * Linked local host folders on the anchor (reused `ProjectFolder` rows).
+ *
+ * A Remote-SSH project's own `ProjectFolder` row is a path on the remote
+ * host, not a local folder, so it is never reported here.
+ */
 export async function getAnchorLocalFolders(anchorProjectId: string): Promise<string[]> {
+  const anchor = (await prisma.project.findUnique({
+    where: { id: anchorProjectId },
+    select: { remoteHostId: true },
+  })) as { remoteHostId?: string | null } | null
+  if (anchor?.remoteHostId) return []
+
   const rows = (await prisma.projectFolder.findMany({
     where: { projectId: anchorProjectId },
     select: { path: true },
