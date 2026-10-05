@@ -27,6 +27,7 @@ import {
   scheduleWorkspaceSwitch,
 } from "../../lib/switch-workspace";
 import { setActiveWorkspaceId } from "../../lib/workspace-store";
+import { isCloudWorkspace, useCloudWorkspaces } from "../../lib/workspace-route";
 import { NativePhoneSheet } from "../phone/NativePhoneSheet";
 import { CreateWorkspaceModal } from "./sidebar/CreateWorkspaceModal";
 import {
@@ -42,7 +43,12 @@ export function MobileWorkspaceSwitcherRow({
   onPress: () => void;
 }) {
   const workspace = useActiveWorkspace();
-  const badge = workspaceKindBadge(workspace ?? {});
+  const { localMode } = usePlatformConfig();
+  useCloudWorkspaces();
+  const badge = workspaceKindBadge(workspace ?? {}, {
+    localMode: !!localMode,
+    cloud: !!localMode && isCloudWorkspace(workspace?.id),
+  });
   const initial = workspace?.name?.[0]?.toUpperCase() ?? "W";
 
   return (

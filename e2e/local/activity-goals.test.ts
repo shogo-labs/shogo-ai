@@ -46,12 +46,20 @@ async function openWorkspaceMenu(page: Page): Promise<boolean> {
 
 async function selectWorkspaceKind(page: Page, kind: 'Personal' | 'Team'): Promise<boolean> {
   if (!(await openWorkspaceMenu(page))) return false
-  const badge = page.getByText(kind, { exact: true }).last()
-  if (!(await badge.isVisible().catch(() => false))) return false
+  // Desktop rows are tagged Local/Cloud rather than by kind, so find the
+  // local workspace of that kind by name.
+  const name = await page.evaluate(async ({ apiBase, kind }) => {
+    const res = await fetch(`${apiBase}/api/workspaces`, { credentials: 'include' }).catch(() => null)
+    const body = res ? await res.json().catch(() => null) : null
+    const items = (body?.items ?? body?.data?.items ?? []) as Array<{ name: string; kind: string; source?: string }>
+    return items.find((w) => w.kind === kind.toLowerCase() && w.source !== 'cloud')?.name ?? null
+  }, { apiBase: API_BASE, kind })
+  if (!name) return false
+  const label = page.getByText(name, { exact: true }).last()
+  if (!(await label.isVisible().catch(() => false))) return false
 
-  // The badge is inside the workspace row's Pressable. Clicking the row is
-  // more reliable across react-native-web than clicking the small badge text.
-  await badge.locator('..').locator('..').click()
+  // Clicking the row is more reliable across react-native-web than the text.
+  await label.locator('..').click()
   await page.waitForTimeout(500)
   return true
 }
