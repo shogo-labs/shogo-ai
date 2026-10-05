@@ -35,6 +35,9 @@ import { conversationSocketHandlers, isConversationSocketData } from './realtime
 import { createAgentTaskRoutes } from './routes/agent-tasks'
 import { startAgentTaskWorker, stopAgentTaskWorker } from './jobs/run-agent-task-dispatch'
 import { startAgentScheduleWorker, stopAgentScheduleWorker } from './jobs/run-agent-schedule-dispatch'
+import { startEventDeliveryWorker, stopEventDeliveryWorker } from './jobs/run-event-delivery-dispatch'
+import { inviteLinkAcceptRoutes } from './routes/invite-link-accept'
+import { appActionsRoutes } from './routes/app-actions'
 import { startChatQueueWorker, stopChatQueueWorker } from './jobs/run-chat-queue-drain'
 import { startChannelWorkers, stopChannelWorkers } from './jobs/run-channel-workers'
 import { projectAuthConfigRoutes } from './routes/project-auth-config'
@@ -1585,6 +1588,9 @@ app.route('/api', createAgentTaskRoutes({ runtimeManager: getRuntimeManager() })
 startAgentTaskWorker(getRuntimeManager())
 // Fire due agent-owned recurring schedules in the workspace runtime.
 startAgentScheduleWorker(getRuntimeManager())
+// Deliver workspace events (member.joined, Composio triggers) to their subscriptions.
+startEventDeliveryWorker(getRuntimeManager())
+void import('./services/composio-triggers.service').then((m) => m.startComposioTriggerReconciler()).catch(() => {})
 startChatQueueWorker()
 startChannelWorkers()
 app.route('/api', historyRoutes({ resolveUserId: getAuthUserId }))
@@ -7832,6 +7838,20 @@ app.get('/api/workspaces/:id/storage', async (c) => {
   }
 })
 
+// Composio trigger firings → workspace events (see services/composio-triggers.service.ts)
+app.post('/api/webhooks/composio', async (c) => {
+  const { handleComposioWebhook } = await import('./services/composio-triggers.service')
+  const result = await handleComposioWebhook({
+    rawBody: await c.req.text(),
+    headers: {
+      id: c.req.header('webhook-id'),
+      timestamp: c.req.header('webhook-timestamp'),
+      signature: c.req.header('webhook-signature'),
+    },
+  })
+  return c.json(result.body, result.status)
+})
+
 // Stripe webhook endpoint
 app.post('/api/webhooks/stripe', async (c) => {
   try {
@@ -8289,6 +8309,8 @@ app.route('/api', aiLiveRoutes())
 //     process, no ingress) and once an ingress rule routes `/v1` → this
 //     service. Kept so the public URL can move to `/v1` without an app change.
 const publicApi = publicApiRoutes()
+// Workspace actions for apps and API keys (members.list, chat.postMessage, …).
+const appActions = appActionsRoutes()
 app.use(
   '/v1/*',
   rateLimiter('public-api', {
@@ -8297,6 +8319,7 @@ app.use(
     skipPrefixes: ['/v1/health'],
   }),
 )
+app.route('/v1', appActions)
 app.route('/v1', publicApi)
 app.use(
   '/api/v1/*',
@@ -8306,6 +8329,7 @@ app.use(
     skipPrefixes: ['/api/v1/health'],
   }),
 )
+app.route('/api/v1', appActions)
 app.route('/api/v1', publicApi)
 
 // Tools passthrough proxy (Composio, Serper, OpenAI embeddings).
@@ -8792,108 +8816,64 @@ app.delete('/api/invite-links/:id', async (c) => {
 })
 
 // Accept invite link (public-ish - requires auth but not membership)
-app.post('/api/invite-links/:token/accept', async (c) => {
-  const auth = c.get('auth') as any
-  const userId = auth?.userId
-  if (!userId) return c.json({ error: 'Unauthorized' }, 401)
-
-  const token = c.req.param('token')
-  const link = await prisma.inviteLink.findUnique({ where: { token } })
-
-  if (!link || !link.enabled) {
-    return c.json({ error: 'Invite link not found or disabled' }, 404)
-  }
-  if (link.expiresAt && new Date(link.expiresAt) < new Date()) {
-    return c.json({ error: 'Invite link has expired' }, 410)
-  }
-
-  // Check if already a member
-  const existingMember = await prisma.member.findFirst({
-    where: {
-      userId,
-      ...(link.projectId ? { projectId: link.projectId } : { workspaceId: link.workspaceId }),
-    },
-  })
-  if (existingMember) {
-    return c.json({ ok: true, data: existingMember, alreadyMember: true })
-  }
-
-  // Create membership
-  const memberData: any = { userId, role: link.role }
-  if (link.projectId) {
-    memberData.projectId = link.projectId
-    // Also resolve workspace for the member record
-    const project = await prisma.project.findUnique({ where: { id: link.projectId }, select: { workspaceId: true } })
-    if (project) memberData.workspaceId = project.workspaceId
-  } else {
-    memberData.workspaceId = link.workspaceId
-  }
-
-  const member = await prisma.member.create({ data: memberData })
-
-  // Increment use count
-  await prisma.inviteLink.update({ where: { id: link.id }, data: { useCount: { increment: 1 } } })
-
-  // Active-seat billing: workspace-level invite-link acceptance must bump
-  // the Stripe seat quantity (project-only memberships don't bill seats).
-  if (memberData.workspaceId && !memberData.projectId) {
-    billingService.syncSeatsFromMembership(memberData.workspaceId).catch((err: any) =>
-      console.error('[Billing] invite-link accept seat sync failed:', err.message ?? err),
-    )
-    void import('./services/conversation-activity')
-      .then((m) => m.recordMemberJoined(memberData.workspaceId, userId))
-      .catch(() => {})
-  }
-
-  // Send notification emails (non-blocking — errors are logged internally)
-  const baseUrl = getFrontendUrl()
-  const resolvedWorkspaceId = memberData.workspaceId
-  const [acceptingUser, workspace, project] = await Promise.all([
-    prisma.user.findUnique({ where: { id: userId }, select: { name: true, email: true } }),
-    resolvedWorkspaceId ? prisma.workspace.findUnique({ where: { id: resolvedWorkspaceId }, select: { name: true } }) : null,
-    link.projectId ? prisma.project.findUnique({ where: { id: link.projectId }, select: { name: true } }) : null,
-  ])
-  const acceptingName = acceptingUser?.name || acceptingUser?.email || 'Someone'
-  const acceptingEmail = acceptingUser?.email || ''
-  const resourceName = project?.name || workspace?.name || 'your workspace'
-  const resourceType = link.projectId ? 'project' : 'workspace'
-  const workspaceName = workspace?.name || 'your workspace'
-
-  if (link.createdBy) {
-    const creator = await prisma.user.findUnique({ where: { id: link.createdBy }, select: { email: true } })
-    if (creator?.email) {
-      await sendInviteAcceptedEmail({
-        to: creator.email,
-        inviteeName: acceptingName,
-        inviteeEmail: acceptingEmail,
-        resourceName,
-        resourceType,
-        dashboardUrl: baseUrl,
-      })
+app.route('/api', inviteLinkAcceptRoutes({
+  resolveUserId: (c) => (c.get('auth') as any)?.userId ?? null,
+  afterAccept: async ({ link, userId, workspaceId: resolvedWorkspaceId, member }) => {
+    // Active-seat billing: workspace-level invite-link acceptance must bump
+    // the Stripe seat quantity (project-only memberships don't bill seats).
+    if (resolvedWorkspaceId && !member.projectId) {
+      billingService.syncSeatsFromMembership(resolvedWorkspaceId).catch((err: any) =>
+        console.error('[Billing] invite-link accept seat sync failed:', err.message ?? err),
+      )
     }
-  }
 
-  if (resolvedWorkspaceId) {
-    const owners = await prisma.member.findMany({
-      where: { workspaceId: resolvedWorkspaceId, role: 'owner', userId: { not: userId } },
-      include: { user: { select: { email: true } } },
-    })
-    for (const owner of owners) {
-      if (owner.user?.email) {
-        await sendMemberJoinedEmail({
-          to: owner.user.email,
-          memberName: acceptingName,
-          memberEmail: acceptingEmail,
-          workspaceName,
-          role: link.role,
+    // Send notification emails (non-blocking — errors are logged internally)
+    const baseUrl = getFrontendUrl()
+    const [acceptingUser, workspace, project] = await Promise.all([
+      prisma.user.findUnique({ where: { id: userId }, select: { name: true, email: true } }),
+      resolvedWorkspaceId ? prisma.workspace.findUnique({ where: { id: resolvedWorkspaceId }, select: { name: true } }) : null,
+      link.projectId ? prisma.project.findUnique({ where: { id: link.projectId }, select: { name: true } }) : null,
+    ])
+    const acceptingName = acceptingUser?.name || acceptingUser?.email || 'Someone'
+    const acceptingEmail = acceptingUser?.email || ''
+    const resourceName = project?.name || workspace?.name || 'your workspace'
+    const resourceType = link.projectId ? 'project' : 'workspace'
+    const workspaceName = workspace?.name || 'your workspace'
+
+    if (link.createdBy) {
+      const creator = await prisma.user.findUnique({ where: { id: link.createdBy }, select: { email: true } })
+      if (creator?.email) {
+        await sendInviteAcceptedEmail({
+          to: creator.email,
+          inviteeName: acceptingName,
+          inviteeEmail: acceptingEmail,
+          resourceName,
+          resourceType,
           dashboardUrl: baseUrl,
         })
       }
     }
-  }
 
-  return c.json({ ok: true, data: member })
-})
+    if (resolvedWorkspaceId) {
+      const owners = await prisma.member.findMany({
+        where: { workspaceId: resolvedWorkspaceId, role: 'owner', userId: { not: userId } },
+        include: { user: { select: { email: true } } },
+      })
+      for (const owner of owners) {
+        if (owner.user?.email) {
+          await sendMemberJoinedEmail({
+            to: owner.user.email,
+            memberName: acceptingName,
+            memberEmail: acceptingEmail,
+            workspaceName,
+            role: link.role,
+            dashboardUrl: baseUrl,
+          })
+        }
+      }
+    }
+  },
+}))
 
 // Get invite link info (for accept page - minimal auth)
 app.get('/api/invite-links/:token/info', async (c) => {
@@ -9025,6 +9005,7 @@ async function gracefulShutdown(signal: string) {
   isShuttingDown = true
   stopAgentTaskWorker()
   stopAgentScheduleWorker()
+  stopEventDeliveryWorker()
   stopChatQueueWorker()
   stopChannelWorkers()
   console.log(`[Server] Received ${signal}, starting graceful shutdown...`)

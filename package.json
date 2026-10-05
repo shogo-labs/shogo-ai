@@ -119,6 +119,8 @@
     "test:e2e:personal-shell-goal-flow": "SHOGO_LOCAL_MODE=true DATABASE_URL=file:./shogo.db bun test e2e/personal-shell-goal-flow.test.ts",
     "test:e2e:personal-shell-hidden-project": "SHOGO_LOCAL_MODE=true DATABASE_URL=file:./shogo.db bun test e2e/personal-shell-hidden-project.test.ts",
     "test:e2e:chat-queue": "SHOGO_LOCAL_MODE=true DATABASE_URL=file:./shogo.db bun test e2e/chat-queue-server.test.ts",
+    "test:e2e:events": "cd e2e/events && for f in *.integration.test.ts; do bun --no-env-file test \"./$f\" || exit 1; done",
+    "test:e2e:staging:composio-triggers": "npx playwright test --config e2e/playwright.config.ts composio-triggers",
     "test:notetaker:e2e": "npx playwright test --config apps/desktop/e2e/playwright.config.ts",
     "postinstall": "bun scripts/postinstall.ts"
   },

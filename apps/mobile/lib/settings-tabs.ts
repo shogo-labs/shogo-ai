@@ -16,6 +16,7 @@ import {
   Shield,
   User,
   Users,
+  Zap,
   type LucideIcon,
 } from "lucide-react-native";
 
@@ -24,6 +25,7 @@ export type SettingsTabId =
   | "people"
   | "models"
   | "integrations"
+  | "automations"
   | "remote-control"
   | "account"
   | "security"
@@ -68,6 +70,7 @@ export const SETTINGS_TABS: readonly SettingsTabDefinition[] = [
     cloudOnly: true,
   },
   { id: "integrations", label: "Integrations", Icon: Plug, group: "settings" },
+  { id: "automations", label: "Automations", Icon: Zap, group: "settings" },
   {
     id: "remote-control",
     label: "Remote Control",

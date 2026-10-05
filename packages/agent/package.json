@@ -69,6 +69,12 @@
       "import": "./dist/hooks/index.js",
       "require": "./dist/hooks/index.cjs"
     },
+    "./events": {
+      "types": "./dist/events/index.d.ts",
+      "development": "./src/events/index.ts",
+      "import": "./dist/events/index.js",
+      "require": "./dist/events/index.cjs"
+    },
     "./ai-client": {
       "types": "./dist/ai-client.d.ts",
       "development": "./src/ai-client.ts",

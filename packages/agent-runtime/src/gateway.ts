@@ -30,12 +30,13 @@ import { loadQuickActions, buildQuickActionsPromptSection, type QuickAction } fr
 import { SkillServerManager } from './skill-server-manager'
 import { setLoadedSkills } from './gateway-tools'
 import { TEAM_CHAT_GUIDE, teamChatToolsAvailable } from './channel-tools'
+import { TRIGGERS_GUIDE, triggerToolsAvailable } from './trigger-tools'
 import { runAgentLoop, classifyRetryability, RetryWaker, type LoopDetectorConfig } from './agent-loop'
 import { LONG_RETRY_MS, recordRetryEpisode, recordRetryLong, recordRetryNoProgress, recordRetryNow } from './retry-telemetry'
 import type { ToolContext } from './gateway-tools'
 import { createTools, textResult, filterDisabledCapabilityTools, filterSubagentOnlyTools, expectedCoreToolsForAgentMode, createModeUnavailableTool, type RestrictedMode } from './gateway-tools'
 import { DEFAULT_CLOUD_SECURITY_PREFERENCE, PermissionEngine, parseSecurityPolicy } from './permission-engine'
-import { HookEmitter, loadAllHooks } from './hooks'
+import { HookEmitter, loadAllHooks, workspaceHooksSignature } from './hooks'
 import { parseSlashCommand, type SlashCommandContext } from './slash-commands'
 import { SessionManager, type SessionManagerConfig, applyToolResultBudget, snipConsumedResults } from './session-manager'
 import { microcompact } from './microcompact'
@@ -1031,14 +1032,7 @@ export class AgentGateway {
     setLoadedSkills(this.skills)
     console.log(`[AgentGateway] Loaded ${this.skills.length} skills, ${this.configSkills.length} config skills, ${this.quickActions.length} quick actions`)
 
-    // Load hooks
-    try {
-      const hooks = await loadAllHooks(this.workspaceDir)
-      this.hookEmitter.register(hooks)
-      console.log(`[AgentGateway] Loaded ${hooks.length} hooks`)
-    } catch (error: any) {
-      console.error('[AgentGateway] Failed to load hooks:', error.message)
-    }
+    await this.refreshHooks(true)
 
     // Connect channels
     for (const channelConfig of this.config.channels) {
@@ -4188,6 +4182,10 @@ export class AgentGateway {
       pushStable('team-chat-guide', TEAM_CHAT_GUIDE)
     }
 
+    if (triggerToolsAvailable()) {
+      pushStable('triggers-guide', TRIGGERS_GUIDE)
+    }
+
     // 4. Security permissions guide (stable once mode is set)
     if (this.permissionEngine && !this.permissionEngine.isActionsOnly) {
       pushStable('security-permissions', [
@@ -5425,6 +5423,22 @@ export class AgentGateway {
 
   getHookEmitter(): HookEmitter {
     return this.hookEmitter
+  }
+
+  private hooksSignature: string | null = null
+
+  /** (Re)load hooks when `hooks/` changed since the last load, e.g. the agent just wrote one. */
+  async refreshHooks(force = false): Promise<void> {
+    const signature = workspaceHooksSignature(this.workspaceDir)
+    if (!force && signature === this.hooksSignature) return
+    try {
+      const hooks = await loadAllHooks(this.workspaceDir)
+      this.hookEmitter.register(hooks)
+      this.hooksSignature = signature
+      console.log(`[AgentGateway] Loaded ${hooks.length} hooks`)
+    } catch (error: any) {
+      console.error('[AgentGateway] Failed to load hooks:', error.message)
+    }
   }
 
   getSessionManager(): SessionManager {

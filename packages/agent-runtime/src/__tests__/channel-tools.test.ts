@@ -236,6 +236,15 @@ describe('channel tools call the internal agent-channel API', () => {
     }))
     expect(result.code).toBe('no_requesting_user')
     expect(calls).toHaveLength(0)
+  test('team_chat_add_member posts the people to the channel as this agent', async () => {
+    reply = { added: ['u-2'], channel: { id: 'c-1', name: 'onboarding' } }
+    const result = payload(await tool('team_chat_add_member').execute('t', { channel: '#onboarding', users: ['sam@example.com'] }))
+    expect(result).toMatchObject({ ok: true, added: ['u-2'] })
+    expect(new URL(calls[0].url).pathname).toBe('/api/internal/workspaces/ws-1/agent-channels/onboarding/members')
+    expect(JSON.parse(String(calls[0].init?.body))).toEqual({ users: ['sam@example.com'], projectId: 'proj-1' })
+
+    const empty = payload(await tool('team_chat_add_member').execute('t', { channel: 'onboarding', users: [] }))
+    expect(empty.code).toBe('invalid_input')
   })
 
   test('validation and API errors are returned to the model', async () => {

@@ -55,6 +55,7 @@ import { cloudWorkspaceListMiddleware, localCloudWorkspaceRoutes } from '../rout
 import { localPlatformRoutes } from '../routes/local-platform'
 import { localSharedFileRoutes } from '../routes/local-shared-files'
 import { marketplaceRoutes } from '../routes/marketplace'
+import { appActionsRoutes } from '../routes/app-actions'
 import { _resetAgentModelDefaultsCache, _resetUpstreamCredentialCache } from '../lib/federated-upstream'
 import { createLocalGeneratedRoutes } from '../generated/local-routes'
 import { runtimeInternalRoutes } from '../routes/internal-runtime-routes'
@@ -171,6 +172,7 @@ export function createLocalApp(): LocalAppBundle {
   // `/api/marketplace/*` call 404'd in local/desktop mode even though the
   // sidebar always shows the Marketplace nav item.
   app.route('/api/marketplace', marketplaceRoutes())
+  app.route('/api/v1', appActionsRoutes())
   app.route('/api/chat-messages', createChatMessageEditRoutes())
   app.route('/api/chat-queued-messages', chatQueuedMessageActionsRoutes())
   app.route('/api/chat-messages', createChatMessageFeedbackRoutes())

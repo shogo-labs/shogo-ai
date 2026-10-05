@@ -49,6 +49,8 @@ const localEnv = {
   SHOGO_RECORDING_BRIDGE: "off",
   // Channel agents reply from a script file that team-chat-agents.test.ts writes.
   SHOGO_CHANNEL_AGENT_SCRIPT: resolve(repoRoot, "test-results/team-chat-agents.script.json"),
+  // Trigger (event subscription) agents run from a script that automations-agent.test.ts writes.
+  SHOGO_EVENT_AGENT_SCRIPT: resolve(repoRoot, "test-results/event-agents.script.json"),
   BROWSER: "none",
   // desktop-cloud-workspaces.test.ts: a cloud-mode API for the desktop to sign in to.
   ...(process.env.E2E_CLOUD_URL ? { SHOGO_CLOUD_URL: process.env.E2E_CLOUD_URL } : {}),

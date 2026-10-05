@@ -101,10 +101,11 @@ export const CORE_TOOL_NAMES = [
   'project_list', 'project_create', 'project_call', 'project_configure',
   'agent_profile_get', 'agent_profile_set', 'goal_create', 'goal_update', 'goal_log', 'goal_list',
   'schedule_create', 'schedule_list', 'schedule_update', 'schedule_delete', 'set_status',
+  'trigger_types_list', 'trigger_create', 'trigger_list', 'trigger_update', 'trigger_delete', 'trigger_test',
   // Registered only for the personal profile (see `createTools()`).
   'meeting_search', 'meeting_list', 'meeting_read', 'meeting_enhance', 'meeting_note_create',
   // Team chat; registered for non-personal workspace runtimes.
-  'team_chat_list', 'team_chat_read', 'team_chat_post', 'team_chat_update', 'team_chat_search', 'team_chat_dm', 'team_directory', 'member_activity',
+  'team_chat_list', 'team_chat_read', 'team_chat_post', 'team_chat_update', 'team_chat_search', 'team_chat_dm', 'team_chat_add_member', 'team_directory', 'member_activity',
 ]
 
 export interface CapabilityProfile {

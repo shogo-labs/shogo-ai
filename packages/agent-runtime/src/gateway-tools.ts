@@ -18,6 +18,7 @@ import { fileURLToPath } from 'node:url'
 import { isProtectedFile, PROTECTED_FILE_REJECTION } from './protected-files'
 import { createProjectTools } from './project-tools'
 import { createWorkspaceAgentTools } from './workspace-agent-tools'
+import { createTriggerTools } from './trigger-tools'
 import { createMeetingTools } from './meeting-tools'
 import { createChannelTools } from './channel-tools'
 import { resolveRuntimeIdentity } from './workspace-runtime-mode'
@@ -7459,6 +7460,7 @@ export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTo
   // runtimes omit them so the existing builder tool contract is unchanged.
   if (resolveWorkspaceId(ctx)) {
     tools.push(...createWorkspaceAgentTools(ctx))
+    tools.push(...createTriggerTools(ctx))
     // Meetings are private to the personal workspace; the API rejects team workspaces.
     if (ctx.config.capabilityProfile === 'personal') tools.push(...createMeetingTools(ctx))
     else tools.push(...createChannelTools(ctx))

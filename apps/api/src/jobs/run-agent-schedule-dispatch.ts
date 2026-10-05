@@ -12,10 +12,17 @@
 
 import { prisma } from '../lib/prisma'
 import { homeRegionWorkspaceWhere } from '../lib/region'
-import { workspaceChatRoutes } from '../routes/workspace-chat'
 import { nextAgentScheduleRun } from '../services/agent-schedule.service'
+import {
+  AgentTurnError,
+  ensureWorkspaceChatSession,
+  latestAssistantSummary,
+  runWorkspaceAgentTurn,
+  startLease,
+  type RuntimeManager,
+} from './agent-turn-runner'
 
-type RuntimeManager = Parameters<typeof workspaceChatRoutes>[0]['runtimeManager']
+export { finalAnswerOf } from './agent-turn-runner'
 
 const SCHEDULE_DISPATCH_INTERVAL_MS = 30_000
 const SCHEDULE_DISPATCH_JITTER_MS = 5_000
@@ -31,197 +38,36 @@ const MAX_CONCURRENT_SCHEDULE_RUNS = 10
 
 const inFlightRuns = new Set<Promise<void>>()
 
-class ScheduleRunError extends Error {
-  constructor(
-    message: string,
-    public readonly kind: 'failed' | 'forbidden' | 'timed_out',
-    public readonly status?: number,
-  ) {
-    super(message)
-    this.name = 'ScheduleRunError'
-  }
-}
+const ScheduleRunError = AgentTurnError
 
-function abortError(signal: AbortSignal): ScheduleRunError {
-  return signal.reason instanceof ScheduleRunError
-    ? signal.reason
-    : new ScheduleRunError('The scheduled run was aborted', 'failed')
-}
-
-function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
-  if (signal.aborted) return Promise.reject(abortError(signal))
-  return new Promise<T>((resolve, reject) => {
-    const onAbort = () => reject(abortError(signal))
-    signal.addEventListener('abort', onAbort, { once: true })
-    promise.then(resolve, reject).finally(() => signal.removeEventListener('abort', onAbort))
-  })
-}
-
-type TurnOutcome = { loopPattern: string | null }
-
-/** Reads the runtime's `data-usage` frame, which reports a loop-detector abort. */
-function readUsageFrame(line: string, outcome: TurnOutcome): void {
-  if (!line.startsWith('data:')) return
-  const payload = line.slice(5).trim()
-  if (!payload.includes('"data-usage"')) return
-  try {
-    const frame = JSON.parse(payload)
-    if (frame?.type === 'data-usage' && frame.data?.loopDetected === true) {
-      outcome.loopPattern = typeof frame.data.loopPattern === 'string'
-        ? frame.data.loopPattern
-        : 'repeated tool calls without progress'
-    }
-  } catch {
-    // Ignore frames that are not JSON.
-  }
-}
-
-async function consumeResponse(response: Response, signal: AbortSignal): Promise<TurnOutcome> {
-  if (!response.ok) {
-    const body = await response.text().catch(() => '')
-    let message = body || `Scheduled agent request failed with HTTP ${response.status}`
-    try {
-      const payload = JSON.parse(body)
-      message = payload?.error?.message || payload?.message || message
-    } catch {
-      // Keep the raw response when it is not JSON.
-    }
-    const forbidden = response.status === 401 || response.status === 403
-    throw new ScheduleRunError(message, forbidden ? 'forbidden' : 'failed', response.status)
-  }
-  const outcome: TurnOutcome = { loopPattern: null }
-  if (!response.body) return outcome
-  const reader = response.body.getReader()
-  const decoder = new TextDecoder()
-  let buffered = ''
-  const cancel = () => void reader.cancel(signal.reason).catch(() => {})
-  signal.addEventListener('abort', cancel, { once: true })
-  try {
-    while (true) {
-      const next = await untilAborted(reader.read(), signal)
-      if (next.done) break
-      buffered += decoder.decode(next.value, { stream: true })
-      const lines = buffered.split('\n')
-      buffered = lines.pop() ?? ''
-      for (const line of lines) readUsageFrame(line, outcome)
-    }
-    buffered += decoder.decode()
-    if (buffered) readUsageFrame(buffered, outcome)
-  } finally {
-    signal.removeEventListener('abort', cancel)
-    reader.releaseLock()
-  }
-  return outcome
-}
-
-/**
- * Hold the claim on a schedule while its run is in flight. `runningAt` is
- * the lease token: every heartbeat swaps it for a fresh timestamp only if it
- * still matches the value this run holds, so a reclaimed or deleted schedule
- * is detected instead of overwritten. `release` returns the current token for
- * the final conditional write.
- */
 function startScheduleLease(scheduleId: string, runningAt: Date, onLost: () => void) {
-  let current = runningAt
-  let lost = false
-  let pending: Promise<void> = Promise.resolve()
-  const timer = setInterval(() => {
-    pending = pending
-      .then(async () => {
-        if (lost) return
-        const next = new Date()
-        const renewed = await prisma.agentSchedule.updateMany({
-          where: { id: scheduleId, runningAt: current },
-          data: { runningAt: next },
-        })
-        if (renewed.count > 0) {
-          current = next
-        } else {
-          lost = true
-          onLost()
-        }
+  return startLease(
+    runningAt,
+    async (current, next) => {
+      const renewed = await prisma.agentSchedule.updateMany({
+        where: { id: scheduleId, runningAt: current },
+        data: { runningAt: next },
       })
-      .catch((error) => {
-        console.error(`[AgentSchedule] Failed to heartbeat ${scheduleId}:`, error)
-      })
-  }, SCHEDULE_HEARTBEAT_INTERVAL_MS)
-  ;(timer as ReturnType<typeof setInterval> & { unref?: () => void }).unref?.()
-
-  return {
-    get lost() {
-      return lost
+      return renewed.count > 0
     },
-    async release(): Promise<Date> {
-      clearInterval(timer)
-      await pending
-      return current
-    },
-  }
+    onLost,
+    SCHEDULE_HEARTBEAT_INTERVAL_MS,
+    `schedule ${scheduleId}`,
+  )
 }
 
-async function ensureScheduleChatSession(schedule: {
+function ensureScheduleChatSession(schedule: {
   id: string
   workspaceId: string
   name: string
   chatSessionId: string | null
 }): Promise<string> {
-  if (schedule.chatSessionId) {
-    const existing = await prisma.chatSession.findUnique({
-      where: { id: schedule.chatSessionId },
-      select: { contextType: true, workspaceId: true },
-    })
-    if (existing?.contextType === 'workspace' && existing.workspaceId === schedule.workspaceId) {
-      return schedule.chatSessionId
-    }
-  }
-
-  const session = await prisma.chatSession.create({
-    data: {
-      inferredName: `Schedule: ${schedule.name}`.slice(0, 120),
-      contextType: 'workspace',
-      workspaceId: schedule.workspaceId,
-    },
-    select: { id: true },
+  return ensureWorkspaceChatSession({
+    workspaceId: schedule.workspaceId,
+    existingSessionId: schedule.chatSessionId,
+    name: `Schedule: ${schedule.name}`,
+    persist: (sessionId) => prisma.agentSchedule.update({ where: { id: schedule.id }, data: { chatSessionId: sessionId } }),
   })
-  await prisma.agentSchedule.update({
-    where: { id: schedule.id },
-    data: { chatSessionId: session.id },
-  })
-  return session.id
-}
-
-/**
- * What the agent said after its last tool call: the answer, without the "let me check…" it said along
- * the way. A report posted to a channel should read as one message. Falls back to the whole text.
- */
-export function finalAnswerOf(parts: unknown, content: string | null | undefined): string | null {
-  try {
-    const list = typeof parts === 'string' ? JSON.parse(parts) : parts
-    if (Array.isArray(list)) {
-      let lastTool = -1
-      list.forEach((part: any, i: number) => { if (typeof part?.type === 'string' && /^(tool-|dynamic-tool)/.test(part.type)) lastTool = i })
-      const after = list
-        .slice(lastTool + 1)
-        .filter((part: any) => part?.type === 'text' && typeof part.text === 'string' && part.text.trim())
-        .map((part: any) => part.text.trim())
-      if (after.length) return after.join('\n\n')
-    }
-  } catch {}
-  return content?.trim() || null
-}
-
-async function latestAssistantSummary(sessionId: string, after: Date, finalOnly = false): Promise<string | null> {
-  const message = await prisma.chatMessage.findFirst({
-    where: {
-      sessionId,
-      role: 'assistant',
-      createdAt: { gt: after },
-    },
-    orderBy: { createdAt: 'desc' },
-    select: { content: true, parts: true },
-  })
-  if (finalOnly) return finalAnswerOf(message?.parts, message?.content)
-  return message?.content?.trim() || null
 }
 
 function failureUpdate(
@@ -306,32 +152,16 @@ async function runAgentSchedule(scheduleId: string, runtimeManager?: RuntimeMana
       'Return a concise summary of what you checked or changed.',
     ].join('\n')
 
-    const router = workspaceChatRoutes({
+    const turn = await runWorkspaceAgentTurn({
       runtimeManager,
-      alwaysEnabled: true,
-      resolveUserId: async (c) => c.req.header('X-Schedule-User-Id') || null,
+      workspaceId: schedule.workspaceId,
+      userId: schedule.userId,
+      sessionId,
+      prompt,
+      clientTurnId: `agent-schedule-${schedule.id}-${crypto.randomUUID()}`,
+      signal: controller.signal,
+      label: 'Scheduled agent',
     })
-    const response = await untilAborted(Promise.resolve(router.fetch(
-      new Request(`http://internal/workspaces/${encodeURIComponent(schedule.workspaceId)}/chat`, {
-        method: 'POST',
-        signal: controller.signal,
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Schedule-User-Id': schedule.userId,
-          'X-Billing-User-Id': schedule.userId,
-          'X-Chat-Session-Id': sessionId,
-        },
-        body: JSON.stringify({
-          messages: [{ role: 'user', parts: [{ type: 'text', text: prompt }] }],
-          chatSessionId: sessionId,
-          userId: schedule.userId,
-          agentMode: 'auto',
-          interactionMode: 'agent',
-          clientTurnId: `agent-schedule-${schedule.id}-${crypto.randomUUID()}`,
-        }),
-      }),
-    )), controller.signal)
-    const turn = await consumeResponse(response, controller.signal)
     if (turn.loopPattern) {
       throw new ScheduleRunError(
         `The run was stopped early by the loop detector and may be incomplete: ${turn.loopPattern}`,
