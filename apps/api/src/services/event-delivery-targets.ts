@@ -26,7 +26,7 @@ import {
   AgentTurnError,
   ensureWorkspaceChatSession,
   latestAssistantSummary,
-  runWorkspaceAgentTurn,
+  executeWorkspaceAgentTurn,
   type RuntimeManager,
 } from '../jobs/agent-turn-runner'
 import { hasWorkspaceAccess } from './workspace.service'
@@ -175,7 +175,7 @@ const defaultAgentRunner: EventAgentRunner = async (input) => {
   })
   const startedAt = new Date()
   try {
-    const turn = await runWorkspaceAgentTurn({
+    const turn = await executeWorkspaceAgentTurn({
       runtimeManager: input.runtimeManager,
       workspaceId: input.workspaceId,
       userId: input.userId,

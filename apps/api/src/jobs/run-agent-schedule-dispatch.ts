@@ -17,7 +17,7 @@ import {
   AgentTurnError,
   ensureWorkspaceChatSession,
   latestAssistantSummary,
-  runWorkspaceAgentTurn,
+  executeWorkspaceAgentTurn,
   startLease,
   type RuntimeManager,
 } from './agent-turn-runner'
@@ -152,7 +152,7 @@ async function runAgentSchedule(scheduleId: string, runtimeManager?: RuntimeMana
       'Return a concise summary of what you checked or changed.',
     ].join('\n')
 
-    const turn = await runWorkspaceAgentTurn({
+    const turn = await executeWorkspaceAgentTurn({
       runtimeManager,
       workspaceId: schedule.workspaceId,
       userId: schedule.userId,

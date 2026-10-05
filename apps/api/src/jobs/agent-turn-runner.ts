@@ -203,7 +203,7 @@ export async function latestAssistantSummary(sessionId: string, after: Date, fin
 }
 
 /** Run one workspace-agent turn as `userId` and wait for it to finish streaming. */
-export async function runWorkspaceAgentTurn(input: {
+export async function executeWorkspaceAgentTurn(input: {
   runtimeManager?: RuntimeManager
   workspaceId: string
   userId: string
