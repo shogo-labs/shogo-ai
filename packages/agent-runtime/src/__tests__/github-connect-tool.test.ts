@@ -147,6 +147,17 @@ describe('github_connect', () => {
     expect(requests.length).toBe(1)
   })
 
+  test('when only the file checkout fails, says the token is fine and to retry', async () => {
+    responses.push({
+      status: 200,
+      json: { ok: true, repoFullName: 'a/b', defaultBranch: 'main', workspace: { ok: false, error: 'runtime HTTP 401' } },
+    })
+    const res = await createGitHubConnectTool(ctx()).execute('c1', { repo: 'a/b', token: 'gho_x' })
+    const details = res.details as any
+    expect(details.files).toContain('not updated')
+    expect(details.next).toContain('not a token problem')
+  })
+
   test('in a workspace runtime, defaults to the project the runtime was opened for', async () => {
     process.env.WORKSPACE_ANCHOR_PROJECT_ID = 'proj-anchor'
     try {

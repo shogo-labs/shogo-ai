@@ -96,26 +96,68 @@ export function localGitHubWorkspace(workspacePath: string): GitHubWorkspace {
   };
 }
 
-/** Forward to the runtime that owns the project's files. */
-export function runtimeGitHubWorkspace(projectId: string): GitHubWorkspace {
+export interface RuntimeGitHubWorkspaceDeps {
+  resolveUrl: (projectId: string) => Promise<string>;
+  runtimeToken: (projectId: string) => Promise<string>;
+  /** Forget the cached route to the project's runtime so the next resolve asks the host again. */
+  dropCachedUrl: (projectId: string) => Promise<void>;
+}
+
+const defaultRuntimeDeps: RuntimeGitHubWorkspaceDeps = {
+  async resolveUrl(projectId) {
+    const { resolveProjectPodUrl } = await import('../lib/resolve-pod-url');
+    return (await resolveProjectPodUrl(projectId, { logTag: 'GitHubWorkspace' })).url;
+  },
+  async runtimeToken(projectId) {
+    const { deriveProjectRuntimeToken } = await import('../lib/project-runtime-token');
+    return deriveProjectRuntimeToken(projectId);
+  },
+  async dropCachedUrl(projectId) {
+    if (process.env.SHOGO_LOCAL_MODE === 'true') return;
+    try {
+      const { getMetalWarmPoolController, workspaceRuntimeKey } = await import('../lib/metal-warm-pool-controller');
+      getMetalWarmPoolController().invalidateUrlCache(workspaceRuntimeKey('', projectId));
+    } catch {
+      // Not a metal deployment: nothing cached to drop.
+    }
+  },
+};
+
+/**
+ * Forward to the runtime that owns the project's files. A 401 means the
+ * request reached a runtime that isn't this project's (a stale route), so
+ * the route is re-resolved and the request retried once.
+ */
+export function runtimeGitHubWorkspace(
+  projectId: string,
+  deps: RuntimeGitHubWorkspaceDeps = defaultRuntimeDeps,
+): GitHubWorkspace {
+  const send = async (input: GitHubWorkspaceOpInput) => {
+    const podUrl = await deps.resolveUrl(projectId);
+    const response = await fetch(`${podUrl}/agent/github/git`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-runtime-token': await deps.runtimeToken(projectId),
+      },
+      body: JSON.stringify({ projectId, ...input }),
+      signal: AbortSignal.timeout(RUNTIME_GIT_TIMEOUT_MS),
+    });
+    const body = (await response.json().catch(() => null)) as GitHubWorkspaceOpResult | null;
+    return { status: response.status, body };
+  };
+
   return {
     async run(input) {
       try {
-        const { resolveProjectPodUrl } = await import('../lib/resolve-pod-url');
-        const { deriveProjectRuntimeToken } = await import('../lib/project-runtime-token');
-        const podUrl = (await resolveProjectPodUrl(projectId, { logTag: 'GitHubWorkspace' })).url;
-        const response = await fetch(`${podUrl}/agent/github/git`, {
-          method: 'POST',
-          headers: {
-            'content-type': 'application/json',
-            'x-runtime-token': await deriveProjectRuntimeToken(projectId),
-          },
-          body: JSON.stringify({ projectId, ...input }),
-          signal: AbortSignal.timeout(RUNTIME_GIT_TIMEOUT_MS),
-        });
-        const body = (await response.json().catch(() => null)) as GitHubWorkspaceOpResult | null;
+        let { status, body } = await send(input);
+        if (status === 401) {
+          console.warn(`[GitHubWorkspace] runtime for ${projectId} rejected the request (401); re-resolving and retrying`);
+          await deps.dropCachedUrl(projectId);
+          ({ status, body } = await send(input));
+        }
         if (!body || typeof body.ok !== 'boolean') {
-          return { ok: false, error: `Project runtime returned HTTP ${response.status}` };
+          return { ok: false, error: `The project runtime didn't accept the request (HTTP ${status}); it may still be starting. Try again shortly.` };
         }
         return body;
       } catch (err: any) {
