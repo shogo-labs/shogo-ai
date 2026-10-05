@@ -236,6 +236,8 @@ describe('channel tools call the internal agent-channel API', () => {
     }))
     expect(result.code).toBe('no_requesting_user')
     expect(calls).toHaveLength(0)
+  })
+
   test('team_chat_add_member posts the people to the channel as this agent', async () => {
     reply = { added: ['u-2'], channel: { id: 'c-1', name: 'onboarding' } }
     const result = payload(await tool('team_chat_add_member').execute('t', { channel: '#onboarding', users: ['sam@example.com'] }))
