@@ -407,6 +407,14 @@ export const IslandApp = observer(function IslandApp({
     [bridge, collapse],
   )
 
+  const showApp = useCallback(() => {
+    if (!bridge) return
+    void bridge.sendAction({ type: "show-app" }).then((result) => {
+      if (result.ok) collapse()
+      else setNotice(result.error)
+    })
+  }, [bridge, collapse])
+
   const respondToMeeting = useCallback(
     (decision: IslandMeetingDecision, promptId?: string) => {
       if (!bridge) return
@@ -634,15 +642,17 @@ export const IslandApp = observer(function IslandApp({
       {layout.notched ? <View style={{ width: NOTCH_WIDTH }} /> : null}
       <View className="flex-1 flex-row items-center justify-end gap-2">
         <IslandUsageChip usage={usage} onPress={() => setUsageOpen((open) => !open)} />
-        {view.name === "chat" || view.name === "project" ? (
-          <Pressable
-            onPress={() => openInShogo(view.projectId, view.name === "chat" ? view.sessionId : undefined)}
-            accessibilityLabel="Open in Shogo"
-            hitSlop={6}
-          >
-            <ExternalLink size={13} color="#a1a1aa" />
-          </Pressable>
-        ) : null}
+        <Pressable
+          onPress={() =>
+            view.name === "chat" || view.name === "project"
+              ? openInShogo(view.projectId, view.name === "chat" ? view.sessionId : undefined)
+              : showApp()
+          }
+          accessibilityLabel="Open Shogo"
+          hitSlop={6}
+        >
+          <ExternalLink size={13} color="#a1a1aa" />
+        </Pressable>
         <Pressable onPress={collapse} accessibilityLabel="Collapse" hitSlop={6}>
           <Minus size={14} color="#a1a1aa" />
         </Pressable>
