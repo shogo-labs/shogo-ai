@@ -9,6 +9,7 @@ import { Image, Platform, Pressable, Text, TextInput, View } from 'react-native'
 import { Trash2, Users, X } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { teamChatApi, type Mentionables, type UserGroup } from '../../lib/team-chat-api'
+import { localFilePart, type UploadPart } from '../../lib/upload-part'
 import { useCustomEmoji } from '../../hooks/useCustomEmoji'
 
 const api = teamChatApi()
@@ -183,7 +184,7 @@ export function CustomEmojiCard({ workspaceId }: { workspaceId: string }) {
   const fileRef = useRef<HTMLInputElement | null>(null)
   const isWeb = Platform.OS === 'web'
 
-  const upload = async (file: File | { uri: string; name: string; type: string }) => {
+  const upload = async (file: File | UploadPart) => {
     const clean = name.trim().replace(/^:|:$/g, '').toLowerCase()
     if (!clean) {
       setError('Name the emoji first')
@@ -211,7 +212,7 @@ export function CustomEmojiCard({ workspaceId }: { workspaceId: string }) {
       const result = await getDocumentAsync({ type: ['image/png', 'image/gif', 'image/jpeg', 'image/webp'], copyToCacheDirectory: true })
       if (result.canceled || !result.assets[0]) return
       const doc = result.assets[0]
-      await upload({ uri: doc.uri, name: doc.name, type: doc.mimeType || 'image/png' })
+      await upload(localFilePart(doc.uri, doc.name, doc.mimeType || 'image/png'))
     })()
   }
 

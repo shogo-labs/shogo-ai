@@ -26,6 +26,7 @@ import { PHONE_DENSITY } from '../../lib/phone-density'
 import type { Mentionables } from '../../lib/team-chat-api'
 import { teamChatApi } from '../../lib/team-chat-api'
 import { sendTyping } from '../../lib/team-chat-connection'
+import { bytesPart, type UploadPart } from '../../lib/upload-part'
 import {
   activeMentionQuery,
   decodeMentions,
@@ -373,17 +374,13 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
 })
 
 /** Composer attachments are data URLs; the upload endpoint takes a file. */
-async function uploadable(file: FileAttachment): Promise<File | { uri: string; name: string; type: string }> {
+async function uploadable(file: FileAttachment): Promise<File | UploadPart> {
   const type = file.type || 'application/octet-stream'
   const base64 = file.dataUrl.slice(file.dataUrl.indexOf(',') + 1)
-  if (Platform.OS === 'web') {
-    const bytes = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0))
-    return new File([bytes], file.name, { type })
-  }
-  const { cacheDirectory, writeAsStringAsync, EncodingType } = await import('expo-file-system/legacy')
-  const uri = `${cacheDirectory}upload-${Date.now()}-${file.name.replace(/[^\w.-]/g, '_')}`
-  await writeAsStringAsync(uri, base64, { encoding: EncodingType.Base64 })
-  return { uri, name: file.name, type }
+  const bytes = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0))
+  if (Platform.OS === 'web') return new File([bytes], file.name, { type })
+  // Native fetch (expo/fetch) can't encode RN's `{ uri }` parts; hand it the bytes.
+  return bytesPart(bytes, file.name, type)
 }
 
 function formatWhen(iso: string): string {
