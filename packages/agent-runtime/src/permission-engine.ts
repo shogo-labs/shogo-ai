@@ -319,6 +319,12 @@ export interface PermissionEngineOptions {
    * runtimes, which have never run the mode-based policy.
    */
   actionsOnly?: boolean
+  /**
+   * Skip built-in action-rule defaults (e.g. "merging a PR asks") so only rules a
+   * person configured apply. For runtimes serving cloud workspaces from a user's
+   * own machine (`shogo worker`): hard blocks stay, nobody gets prompted by default.
+   */
+  noDefaultActionRules?: boolean
 }
 
 interface PendingApproval {
@@ -339,9 +345,11 @@ export class PermissionEngine {
   private readonly persistPath: string
   private persistedMtimeMs = 0
   private readonly actionsOnly: boolean
+  private readonly noDefaultActionRules: boolean
 
   constructor(opts: PermissionEngineOptions) {
     this.actionsOnly = opts.actionsOnly === true
+    this.noDefaultActionRules = opts.noDefaultActionRules === true
     this.pref = opts.preference
     this.workspaceDir = opts.workspaceDir
     this.sendSseEvent = opts.sendSseEvent
@@ -470,6 +478,8 @@ export class PermissionEngine {
   actionRuleFor(toolName: string): ActionRule | undefined {
     const configured = this.pref.overrides?.actions?.[toolName]
     if (isActionRule(configured)) return configured
+    // Cloud runtimes ask only when a person configured an `ask` rule; built-in defaults are local-only.
+    if (this.actionsOnly || this.noDefaultActionRules) return undefined
     return DEFAULT_ACTION_RULES[toolName]
   }
 
