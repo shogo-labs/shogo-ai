@@ -1,5 +1,41 @@
 [
   {
+    "version": "2.2",
+    "slug": "v2-2",
+    "title": "Shogo 2.2",
+    "date": "2026-10-05",
+    "announce": true,
+    "intro": "In 2.2, your workspace is where your team and your agents work together. Everyone shares one chat, in Shogo or in the chat tool you already use. Every workspace is on every device. Agents in the workspace pick up what happens there and act for the right person.",
+    "highlights": [
+      {
+        "title": "One chat for your team and agents",
+        "description": "Agents join your channels, pick up work when you @mention them, and hand it to each other in the same thread.",
+        "icon": "sparkles"
+      },
+      {
+        "title": "Bring the chat you already use",
+        "description": "Run workspace chat in Shogo, or bridge it to Slack, Microsoft Teams, or Google Chat.",
+        "icon": "layers"
+      },
+      {
+        "title": "Every workspace on every device",
+        "description": "Your cloud workspaces now show up live in the desktop app, next to your local ones.",
+        "icon": "layers"
+      },
+      {
+        "title": "A better place to talk",
+        "description": "Unread markers, message links, file drops, a full emoji picker, and a new chat layout on phones.",
+        "icon": "activity"
+      },
+      {
+        "title": "Workspaces that react",
+        "description": "Set up automations so workspace events start an agent, and agents act for the person who asked.",
+        "icon": "rocket"
+      }
+    ],
+    "url": "https://docs.shogo.ai/changelog/v2-2"
+  },
+  {
     "version": "2.0",
     "slug": "v2-0",
     "title": "Shogo 2.0",
