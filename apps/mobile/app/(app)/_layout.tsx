@@ -48,6 +48,8 @@ import {
 import { useResolvedTheme } from "../../contexts/theme";
 import { AppSidebar } from "../../components/layout/AppSidebar";
 import { TeamChatNotifier } from "../../components/team-chat/TeamChatNotifier";
+import { HuddleDock } from "../../components/team-chat/HuddleDock";
+import { HuddleRinger } from "../../components/team-chat/HuddleRinger";
 import { AppHeader } from "../../components/layout/AppHeader";
 import { RecordingIndicator } from "../../components/meetings/RecordingIndicator";
 import { NativeRecorderProvider } from "../../lib/native-recorder";
@@ -530,6 +532,8 @@ function AppLayoutInner() {
     >
       {(localMode || Platform.OS !== "web") && !isIdeEmbed ? <RecordingIndicator /> : null}
       {!isIdeEmbed ? <TeamChatNotifier /> : null}
+      {!isIdeEmbed ? <HuddleDock /> : null}
+      {!isIdeEmbed ? <HuddleRinger /> : null}
       {useMobileWorkspaceShell ? (
         <MobileWorkspaceShell key={activeWorkspace?.id ?? "workspace-loading"}>
           <Slot />

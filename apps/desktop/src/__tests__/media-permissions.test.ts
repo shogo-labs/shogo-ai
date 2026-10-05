@@ -2,11 +2,11 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { describe, expect, mock, test } from 'bun:test'
-import { ensureMicAccess, type MicAccessDeps } from '../media-permissions'
+import { ensureMediaAccess, ensureMicAccess, type MediaDevice, type MicAccessDeps } from '../media-permissions'
 
 function deps(overrides: Partial<MicAccessDeps> & { status?: string; ask?: boolean | Error } = {}) {
-  const getMediaAccessStatus = mock((_type: 'microphone') => overrides.status ?? 'not-determined')
-  const askForMediaAccess = mock(async (_type: 'microphone') => {
+  const getMediaAccessStatus = mock((_type: MediaDevice) => overrides.status ?? 'not-determined')
+  const askForMediaAccess = mock(async (_type: MediaDevice) => {
     if (overrides.ask instanceof Error) throw overrides.ask
     return overrides.ask ?? true
   })
@@ -72,6 +72,21 @@ describe('ensureMicAccess', () => {
       },
     })
     expect(await ensureMicAccess(d.deps)).toBe('denied')
+    expect(d.askForMediaAccess).not.toHaveBeenCalled()
+  })
+})
+
+describe('ensureMediaAccess', () => {
+  test('asks the OS about the camera for video', async () => {
+    const d = deps({ status: 'not-determined', ask: true })
+    expect(await ensureMediaAccess(d.deps, 'camera')).toBe('granted')
+    expect(d.getMediaAccessStatus).toHaveBeenCalledWith('camera')
+    expect(d.askForMediaAccess).toHaveBeenCalledWith('camera')
+  })
+
+  test('a denied camera stays denied', async () => {
+    const d = deps({ status: 'denied' })
+    expect(await ensureMediaAccess(d.deps, 'camera')).toBe('denied')
     expect(d.askForMediaAccess).not.toHaveBeenCalled()
   })
 })

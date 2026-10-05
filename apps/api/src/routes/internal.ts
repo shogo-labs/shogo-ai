@@ -629,6 +629,28 @@ app.post('/chat-providers/:provider/inbound', async (c) => {
 })
 
 /**
+ * POST /api/internal/huddles/livekit
+ *
+ * A LiveKit webhook forwarded from a sibling region because the huddle's
+ * workspace is homed here (see `handleLiveKitWebhook`). The sender verified
+ * LiveKit's signature; this checks the region secret and applies it locally.
+ */
+app.post('/huddles/livekit', async (c) => {
+  if (!hasInternalSecret(c)) return c.json({ error: 'Unauthorized' }, 401)
+  const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null
+  if (!body || typeof body.event !== 'string' || typeof body.roomName !== 'string') {
+    return c.json({ error: 'Invalid huddle event' }, 400)
+  }
+  const { applyLiveKitEvent } = await import('../services/huddle.service')
+  await applyLiveKitEvent({
+    event: body.event as any,
+    roomName: body.roomName,
+    identity: typeof body.identity === 'string' ? body.identity : null,
+  })
+  return c.json({ ok: true })
+})
+
+/**
  * POST /api/internal/chat-providers/:provider/resume
  *
  * Resume a message held for an unlinked person, in the workspace's home region

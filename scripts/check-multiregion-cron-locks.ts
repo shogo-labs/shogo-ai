@@ -265,6 +265,17 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
     reason: 'Random session token; collision astronomically improbable.',
   },
   {
+    key: 'Huddle.roomName',
+    category: 'random_secret',
+    reason: 'LiveKit room name embeds the huddle row\'s random UUID (hd_<workspaceId>_<huddleId>); collision astronomically improbable.',
+  },
+  {
+    key: 'Huddle.activeKey',
+    category: 'request_scoped',
+    reason:
+      'One live huddle per conversation, written by the join/leave request in the workspace\'s home region (LiveKit webhooks forward there via routeToHomeRegion); a cross-region race needs a failover mid-join.',
+  },
+  {
     key: 'Account.(accountId,providerId)',
     category: 'request_scoped',
     reason:
