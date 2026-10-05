@@ -29,6 +29,10 @@ import * as githubService from '../services/github.service';
 import { runtimeGitHubWorkspace, type GitHubWorkspace } from '../services/github-workspace';
 import { createAuthorizeUrl, handleAuthorizeCallback } from '../services/github-authorize';
 import { getFrontendUrl } from '../lib/cloud-urls';
+import { grantAccess } from '../services/integration-credentials';
+import { isPersonalConnectState, verifyPersonalConnectState } from '../services/integration-credentials/connect-state';
+import { ensureDefaultCredentialProviders, githubAdapter } from '../services/integration-credentials/defaults';
+import { connectedPage, connectFailedPage } from './integration-credentials';
 
 function escapeHtml(text: string): string {
   return text.replace(/[&<>"']/g, (ch) => `&#${ch.charCodeAt(0)};`);
@@ -423,6 +427,26 @@ export function githubRoutes(config: GitHubRoutesConfig = {}) {
    * signed `state` names the project and the OAuth code proves the GitHub user.
    */
   router.get('/github/callback', async (c) => {
+    const state = c.req.query('state');
+    if (isPersonalConnectState(state)) {
+      const personal = verifyPersonalConnectState(state);
+      const code = c.req.query('code');
+      if (!personal || !code) {
+        const reason = c.req.query('error_description') || 'This GitHub link is invalid or has expired. Ask for a new one.';
+        return c.html(connectFailedPage(reason), 400);
+      }
+      try {
+        ensureDefaultCredentialProviders({ loadGitHub: async () => githubService });
+        const adapter = githubAdapter();
+        if (!adapter) throw new Error('GitHub is not available on this server');
+        const { login } = await adapter.completeConnect({ userId: personal.userId, code });
+        if (personal.projectId) await grantAccess(personal.userId, personal.projectId, 'github');
+        return c.html(connectedPage('GitHub', login));
+      } catch (err: any) {
+        console.error('[GitHub] Personal connect failed:', err?.message ?? err);
+        return c.html(connectFailedPage(err?.message ?? 'Could not connect GitHub'), 400);
+      }
+    }
     const result = await handleAuthorizeCallback(
       {
         state: c.req.query('state'),

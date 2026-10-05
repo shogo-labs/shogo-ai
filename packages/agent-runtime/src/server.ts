@@ -1903,6 +1903,7 @@ app.post('/agent/chat', async (c) => {
   agentGateway!.setAccountContext(parseAccountContext(body))
 
   const chatUserId = c.req.header('X-User-Id') || body.userId || undefined
+  const requesterTicket = c.req.header('X-Requester-Ticket') || undefined
 
   // Create a buffer that lives independently of the HTTP connection.
   // The agent writes into this buffer via a background consumer so that
@@ -1959,6 +1960,7 @@ app.post('/agent/chat', async (c) => {
           modelProvider,
           fileParts: userFileParts.length > 0 ? userFileParts : undefined,
           userId: chatUserId,
+          requesterTicket,
           interactionMode,
           confirmedPlan,
           dualPlan,
