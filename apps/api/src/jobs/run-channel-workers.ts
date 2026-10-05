@@ -1,8 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * Background work for workspace channels. Each body runs under its own
- * global job lock so only one region does it per tick.
+ * Background work for workspace channels.
+ *
+ * Multi-region: the tables these workers write (conversation_messages,
+ * scheduled_messages, chat_reminders, chat_user_settings, embeddings)
+ * replicate between regions, and `withGlobalJobLock` is a Postgres advisory
+ * lock on THIS region's database - it does not coordinate across regions. So
+ * each worker is home-partitioned instead: it only touches workspaces homed
+ * in this region (`homeRegionWorkspaceWhere()`), which keeps every region's
+ * write set disjoint. The lock stays, but only to serialize pods within one
+ * region so they don't repeat the same work (duplicate emails, embeddings).
  */
 
 import { withGlobalJobLock } from '../lib/global-job-lock'

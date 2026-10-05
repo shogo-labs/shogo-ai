@@ -41,7 +41,7 @@ import {
   mergeInstallationConfig,
   upsertInstallation,
 } from '../services/chat-providers/installations'
-import { bridgeActive, handleInboundEvents, resumeAfterLink } from '../services/chat-providers/inbound'
+import { bridgeActive, handleInboundEvents, resumeAfterLinkInHomeRegion, routeInboundEvents } from '../services/chat-providers/inbound'
 import { slackEventsFromPayload, slackProvider } from '../services/chat-providers/slack'
 
 const SLACK_API = 'https://slack.com/api'
@@ -265,7 +265,7 @@ export function slackAgentRoutes(config: SlackAgentRoutesConfig): Hono {
     })
 
     if (parsedState.pendingChannel && parsedState.pendingTs && (await bridgeActive('slack', installation.workspaceId))) {
-      const resumed = await resumeAfterLink(slackProvider, {
+      const resumed = await resumeAfterLinkInHomeRegion(slackProvider, {
         tenantId: parsedState.slackTeamId,
         channelId: parsedState.pendingChannel,
         messageId: parsedState.pendingTs,
@@ -347,7 +347,11 @@ export function slackAgentRoutes(config: SlackAgentRoutesConfig): Hono {
     if (!installation) return c.json({ error: 'Slack workspace is not installed in Shogo' }, 404)
 
     if (await bridgeActive('slack', installation.workspaceId)) {
-      void handleInboundEvents(slackProvider, slackEventsFromPayload(payload, installation.botUserId)).catch((error) => {
+      // Forward to the workspace's home region when it isn't this one; a 5xx
+      // makes Slack redeliver if that region is unreachable.
+      const routed = await routeInboundEvents(slackProvider, slackEventsFromPayload(payload, installation.botUserId))
+      if (routed.unavailable) return c.json({ error: 'Home region unavailable, retry' }, 503)
+      void handleInboundEvents(slackProvider, routed.local).catch((error) => {
         console.error('[SlackAgent] Team chat bridge failed:', error)
       })
       return c.json({ ok: true })

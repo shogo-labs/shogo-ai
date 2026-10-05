@@ -17,6 +17,7 @@ import { agentMentionToken } from '../conversation-mentions'
 import { postMessage, updateMessageInternal, type PostMessageResult } from '../conversation.service'
 import { afterMessagePosted, type MessageOrigin } from '../conversation-pipeline'
 import { CHAT_RATE_LIMITS, takeRateLimit } from '../../lib/chat-limits'
+import { routeToHomeRegion } from '../../lib/home-region-route'
 import {
   InstallationConflictError,
   installationForTenant,
@@ -49,6 +50,53 @@ export interface KeywordRule {
 export async function bridgeActive(provider: ExternalChatProvider, workspaceId: string): Promise<boolean> {
   const config = await getWorkspaceChatConfig(workspaceId)
   return (config.mode === 'external' || config.mode === 'bridged') && config.provider === provider
+}
+
+/** Internal peer-call paths served by `routes/internal.ts`. */
+export const inboundForwardPath = (kind: string) => `/api/internal/chat-providers/${kind}/inbound`
+export const resumeForwardPath = (kind: string) => `/api/internal/chat-providers/${kind}/resume`
+
+/** The Shogo workspace an inbound event belongs to, or null when none claims it. */
+async function workspaceForEvent(provider: ChatProvider, event: InboundEvent): Promise<string | null> {
+  if (event.type === 'message') {
+    const code = parseConnectCommand(event.text)
+    // A connect command arrives before any install exists; its signed code names the workspace.
+    if (code) return verifyConnectCode(code)?.workspaceId ?? null
+  }
+  return (await installationForTenant(provider.kind, event.tenantId))?.workspaceId ?? null
+}
+
+/**
+ * Split verified inbound events into those this region handles and those that
+ * belong to a workspace homed in a peer region (which are forwarded there).
+ *
+ * Provider webhooks land in whichever region the sender's DNS picks, but the
+ * bridge writes conversation rows (`seq`, shadow conversations) that replicate,
+ * so the write has to happen in the workspace's home region. `unavailable`
+ * means a peer-homed event could not be delivered: reply 5xx so the provider
+ * retries rather than writing it here.
+ */
+export async function routeInboundEvents(
+  provider: ChatProvider,
+  events: InboundEvent[],
+): Promise<{ local: InboundEvent[]; unavailable: boolean }> {
+  const local: InboundEvent[] = []
+  const byWorkspace = new Map<string, InboundEvent[]>()
+  for (const event of events) {
+    const workspaceId = await workspaceForEvent(provider, event).catch(() => null)
+    if (!workspaceId) {
+      local.push(event)
+      continue
+    }
+    byWorkspace.set(workspaceId, [...(byWorkspace.get(workspaceId) ?? []), event])
+  }
+  let unavailable = false
+  for (const [workspaceId, batch] of byWorkspace) {
+    const { outcome } = await routeToHomeRegion(workspaceId, inboundForwardPath(provider.kind), { events: batch })
+    if (outcome === 'local') local.push(...batch)
+    else if (outcome === 'unavailable') unavailable = true
+  }
+  return { local, unavailable }
 }
 
 export async function handleInboundEvents(provider: ChatProvider, events: InboundEvent[]): Promise<void> {
@@ -399,4 +447,26 @@ export async function resumeAfterLink(
     { actorUserId: userId, origin: provider.kind as MessageOrigin },
   )
   return true
+}
+
+/**
+ * `resumeAfterLink`, run in the workspace's home region. The link callback is
+ * a signed-in browser request that can land in any region, but resuming posts
+ * the held message. Falls back to `false` (the user is told to resend) when the
+ * home region is unreachable.
+ */
+export async function resumeAfterLinkInHomeRegion(
+  provider: ChatProvider,
+  pending: { tenantId: string; channelId: string; messageId: string },
+  userId: string,
+): Promise<boolean> {
+  const installation = await installationForTenant(provider.kind, pending.tenantId)
+  if (!installation) return false
+  const routed = await routeToHomeRegion<{ resumed?: boolean }>(
+    installation.workspaceId,
+    resumeForwardPath(provider.kind),
+    { ...pending, userId },
+  )
+  if (routed.outcome === 'local') return resumeAfterLink(provider, pending, userId)
+  return routed.outcome === 'forwarded' && routed.data?.resumed === true
 }
