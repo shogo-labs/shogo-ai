@@ -90,6 +90,10 @@ export function isGatePublicPath(path: string): boolean {
   // `GH_APP_WEBHOOK_SECRET` inside the handler via `verifyWebhookSignature`.
   // GitHub's delivery carries no Shogo session or API key.
   if (path === '/api/github/webhook') return true
+  // GitHub App Setup URL / OAuth callback (routes/github.ts). The browser
+  // returning from GitHub has no Shogo session; the HMAC-signed `state` and
+  // the OAuth code are verified in services/github-authorize.ts.
+  if (path === '/api/github/callback') return true
   return false
 }
 

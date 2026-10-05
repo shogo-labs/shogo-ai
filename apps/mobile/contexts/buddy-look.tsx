@@ -98,7 +98,9 @@ export function BuddyLookProvider({ enabled = true, children }: { enabled?: bool
 
   // Another app window changed the look.
   useEffect(() => {
-    if (!userId || typeof window === 'undefined') return
+    // React Native defines `window` (it aliases `global`) but not its DOM
+    // event methods, so feature-check the listener API itself.
+    if (!userId || typeof window === 'undefined' || typeof window.addEventListener !== 'function') return
     const onStorage = (event: StorageEvent) => {
       if (event.key !== CACHE_PREFIX + userId || !event.newValue) return
       try {

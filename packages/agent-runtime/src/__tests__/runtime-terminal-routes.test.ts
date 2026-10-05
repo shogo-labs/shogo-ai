@@ -7,12 +7,24 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import { runtimeTerminalRoutes } from '../runtime-terminal-routes'
 import { buildQuickCommands } from '../quick-commands'
+import { IS_WIN, SHELL_START_MS, line, waitUntil } from './helpers/pty-shell'
 
-function withWorkspace<T>(fn: (workspaceDir: string) => Promise<T>): Promise<T> {
+async function withWorkspace<T>(fn: (workspaceDir: string) => Promise<T>): Promise<T> {
   const workspaceDir = mkdtempSync(join(tmpdir(), 'shogo-runtime-terminal-test-'))
-  return fn(workspaceDir).finally(() => {
-    rmSync(workspaceDir, { recursive: true, force: true })
-  })
+  try {
+    return await fn(workspaceDir)
+  } finally {
+    // Windows keeps the dir locked until the killed shells have fully exited.
+    for (let attempt = 0; ; attempt++) {
+      try {
+        rmSync(workspaceDir, { recursive: true, force: true })
+        break
+      } catch (err) {
+        if (attempt >= 50) throw err
+        await new Promise((r) => setTimeout(r, 100))
+      }
+    }
+  }
 }
 
 function writePackageJson(workspaceDir: string, pkg: Record<string, unknown>): void {
@@ -131,6 +143,31 @@ describe('runtimeTerminalRoutes — PTY session lifecycle (REST)', () => {
       manager.shutdown()
     })
   })
+
+  test.if(IS_WIN)('Windows: default-shell session runs PowerShell through ConPTY, then DELETE reaps it', async () => {
+    await withWorkspace(async (workspaceDir) => {
+      const { router: app, manager } = runtimeTerminalRoutes({ workspaceDir })
+      try {
+        const res = await app.request('/terminal/sessions', { method: 'POST', body: '{}' })
+        expect(res.status).toBe(200)
+        const { id } = await res.json() as { id: string }
+        const session = manager.get(id)!
+        expect(session.pid).toBeGreaterThan(0)
+
+        let output = ''
+        session.onData(({ bytes }) => { output += new TextDecoder().decode(bytes) })
+        session.write(line('echo "PS=$($PSVersionTable.PSVersion.Major)"'))
+        await waitUntil(() => /PS=\d+/.test(output), SHELL_START_MS)
+        expect(output).toMatch(/PS=\d+/)
+
+        const del = await app.request(`/terminal/sessions/${id}`, { method: 'DELETE' })
+        expect(del.status).toBe(200)
+        expect(manager.list()).toHaveLength(0)
+      } finally {
+        manager.shutdown()
+      }
+    })
+  }, 30_000)
 })
 
 describe('buildQuickCommands (dynamic per-workspace presets)', () => {

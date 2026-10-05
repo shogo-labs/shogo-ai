@@ -5,9 +5,14 @@
  */
 import { expect, test, type Locator, type Page } from "@playwright/test"
 
+// Personal Activity and Goals are pages with no list panel, so "ready" is the
+// rail with the route's own tab selected.
+const railTab = (page: Page, name: string) =>
+  page.getByRole("navigation", { name: "Workspace tabs" }).getByRole("tab", { name, selected: true })
+
 const CASES: Array<{ path: string; ready: (page: Page) => Locator }> = [
-  { path: "/activity", ready: (page) => page.getByRole("navigation", { name: "App sidebar" }) },
-  { path: "/goals", ready: (page) => page.getByRole("navigation", { name: "App sidebar" }) },
+  { path: "/activity", ready: (page) => railTab(page, "Activity") },
+  { path: "/goals", ready: (page) => railTab(page, "Goals") },
 ]
 
 for (const { path, ready } of CASES) {

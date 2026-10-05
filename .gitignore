@@ -254,3 +254,9 @@ load-tests/.venv*
 # be committed — only the sha-256 hash is meant to leave the minting machine.
 shogo-pro-*-codes*.csv
 license-keys-*.csv
+
+# eng-pod metrics runs
+e2e/issue-pipeline/results/
+
+# the eng-pod seed lives here, under the generic `demo/` rule above
+!scripts/demo/

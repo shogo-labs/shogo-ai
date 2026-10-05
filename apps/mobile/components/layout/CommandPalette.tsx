@@ -5,6 +5,8 @@
  *
  * Opens with ⌘+K (Mac) or Ctrl+K (Windows/Linux).
  * Provides quick navigation to features, projects, pages, and actions.
+ * In team workspaces it also jumps to channels, DMs, and people, and hands
+ * the typed text to message search or "ask the workspace".
  *
  * React Native port of the web CommandPalette from staging.
  */
@@ -34,15 +36,26 @@ import {
   BarChart3,
   Key,
   Store,
+  Hash,
+  Lock,
+  MessageSquare,
+  Bot,
+  Inbox,
+  Sparkles,
+  Radio,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { useProjectCollection } from '../../contexts/domain'
 import { usePlatformConfig } from '../../lib/platform-config'
 import { useIsNativePhoneLayout } from '../../lib/native-phone-layout'
+import { useWorkspaceExperience } from '../../hooks/useWorkspaceExperience'
+import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
+import { useConversationList, useMentionables, useMyUserId } from '../../hooks/useTeamChat'
+import { conversationTitle, teamChatApi, type ConversationSummary } from '../../lib/team-chat-api'
 
 // ─── Types ────────────────────────────────────────────────
 
-type CommandCategory = 'navigation' | 'projects' | 'settings'
+type CommandCategory = 'chat' | 'navigation' | 'projects' | 'settings'
 
 interface CommandItem {
   id: string
@@ -52,9 +65,90 @@ interface CommandItem {
   href: string
   category: CommandCategory
   keywords?: string[]
+  /** Runs instead of navigating to `href`. */
+  run?: () => void | Promise<void>
 }
 
-const CATEGORY_ORDER: CommandCategory[] = ['navigation', 'projects', 'settings']
+const CATEGORY_ORDER: CommandCategory[] = ['chat', 'navigation', 'projects', 'settings']
+const MAX_CHAT_ITEMS = 8
+
+function chatIcon(c: ConversationSummary): React.ElementType {
+  if (c.kind === 'activity') return Radio
+  if (c.kind === 'private') return Lock
+  if (c.kind === 'public') return Hash
+  if ((c.participants ?? []).some((p) => p.type === 'agent')) return Bot
+  return MessageSquare
+}
+
+/** Chat entries for the palette: conversations, people, and search/ask for the typed text. */
+function useChatCommands(query: string, visible: boolean): CommandItem[] {
+  const router = useRouter()
+  const workspace = useActiveWorkspace()
+  const experience = useWorkspaceExperience()
+  const workspaceId = visible && experience.kind === 'team' ? workspace?.id ?? null : null
+  const { list } = useConversationList(workspaceId)
+  const mentionables = useMentionables(workspaceId)
+  const me = useMyUserId()
+
+  return useMemo(() => {
+    if (!workspaceId) return []
+    const q = query.trim().toLowerCase()
+    const conversations = list
+      .filter((c) => !c.archivedAt && (c.joined || c.kind === 'dm' || c.kind === 'group_dm'))
+      .map((c): CommandItem & { at: number } => {
+        const channel = c.kind === 'public' || c.kind === 'private' || c.kind === 'activity'
+        const label = channel ? `#${c.name ?? c.slug ?? 'channel'}` : conversationTitle(c)
+        return {
+          id: `chat-${c.id}`,
+          label,
+          description: channel ? (c.topic || 'Channel') : 'Direct message',
+          icon: chatIcon(c),
+          href: `/(app)/c/${encodeURIComponent(c.id)}`,
+          category: 'chat',
+          keywords: [c.name, c.slug, ...(c.participants ?? []).map((p) => p.name)].filter(Boolean).map((k) => String(k).toLowerCase()),
+          at: c.lastMessageAt ? Date.parse(c.lastMessageAt) : 0,
+        }
+      })
+      .sort((a, b) => b.at - a.at)
+    const dmPeers = new Set(
+      list.filter((c) => c.kind === 'dm').flatMap((c) => (c.participants ?? []).map((p) => (p.type === 'user' ? p.id : ''))),
+    )
+    const people: CommandItem[] = (mentionables?.people ?? [])
+      .filter((p) => p.id !== me && !dmPeers.has(p.id))
+      .map((p) => ({
+        id: `chat-person-${p.id}`,
+        label: p.name,
+        description: `Message ${p.email}`,
+        icon: User,
+        href: '/(app)/c',
+        category: 'chat',
+        keywords: [p.name.toLowerCase(), p.email.toLowerCase()],
+        run: async () => {
+          const c = await teamChatApi().openDm(workspaceId, [p.id])
+          router.push(`/(app)/c/${encodeURIComponent(c.id)}` as any)
+        },
+      }))
+    const matches = (cmd: CommandItem) =>
+      !q || cmd.label.toLowerCase().includes(q) || cmd.keywords?.some((k) => k.includes(q))
+    const items: CommandItem[] = [...conversations, ...(q ? people : [])].filter(matches).slice(0, MAX_CHAT_ITEMS)
+    if (!q) {
+      items.push({ id: 'chat-inbox', label: 'Inbox', description: 'Mentions, replies, and reminders', icon: Inbox, href: '/(app)/c/inbox', category: 'chat' })
+    } else {
+      const raw = query.trim()
+      items.push(
+        {
+          id: 'chat-search', label: `Search messages for “${raw}”`, icon: Search, category: 'chat',
+          href: `/(app)/c/search?q=${encodeURIComponent(raw)}`,
+        },
+        {
+          id: 'chat-ask', label: `Ask the workspace: “${raw}”`, icon: Sparkles, category: 'chat',
+          href: `/(app)/c/search?mode=ask&q=${encodeURIComponent(raw)}`,
+        },
+      )
+    }
+    return items
+  }, [workspaceId, list, mentionables, me, query, router])
+}
 
 // ─── Props ────────────────────────────────────────────────
 
@@ -189,19 +283,24 @@ export const CommandPalette = observer(function CommandPalette({
     return items
   }, [projects?.all, localMode, features.marketplace, isNativePhone])
 
+  const chatCommands = useChatCommands(query, visible)
+
   const filteredCommands = useMemo(() => {
-    if (!query.trim()) return commands
-    const lowerQuery = query.toLowerCase()
-    return commands.filter((cmd) => {
-      const labelMatch = cmd.label.toLowerCase().includes(lowerQuery)
-      const descMatch = cmd.description?.toLowerCase().includes(lowerQuery)
-      const keywordMatch = cmd.keywords?.some((k) => k.includes(lowerQuery))
-      return labelMatch || descMatch || keywordMatch
-    })
-  }, [commands, query])
+    const matched = !query.trim() ? commands : (() => {
+      const lowerQuery = query.toLowerCase()
+      return commands.filter((cmd) => {
+        const labelMatch = cmd.label.toLowerCase().includes(lowerQuery)
+        const descMatch = cmd.description?.toLowerCase().includes(lowerQuery)
+        const keywordMatch = cmd.keywords?.some((k) => k.includes(lowerQuery))
+        return labelMatch || descMatch || keywordMatch
+      })
+    })()
+    return [...chatCommands, ...matched]
+  }, [commands, chatCommands, query])
 
   const groupedCommands = useMemo(() => {
     const groups: Record<CommandCategory, CommandItem[]> = {
+      chat: [],
       navigation: [],
       projects: [],
       settings: [],
@@ -231,9 +330,10 @@ export const CommandPalette = observer(function CommandPalette({
   }, [visible])
 
   const navigateTo = useCallback(
-    (href: string) => {
+    (cmd: CommandItem) => {
       onClose()
-      router.push(href as any)
+      if (cmd.run) void Promise.resolve(cmd.run()).catch(() => undefined)
+      else router.push(cmd.href as any)
     },
     [router, onClose],
   )
@@ -279,7 +379,7 @@ export const CommandPalette = observer(function CommandPalette({
           break
         case 'Enter':
           e.preventDefault()
-          if (cmds[idx]) nav(cmds[idx].href)
+          if (cmds[idx]) nav(cmds[idx])
           break
         case 'Escape':
           e.preventDefault()
@@ -318,7 +418,7 @@ export const CommandPalette = observer(function CommandPalette({
               ref={inputRef}
               value={query}
               onChangeText={setQuery}
-              placeholder="Search for pages, projects, features..."
+              placeholder="Jump to a channel, person, page, or project…"
               placeholderTextColor="#9ca3af"
               autoCapitalize="none"
               autoCorrect={false}
@@ -326,7 +426,7 @@ export const CommandPalette = observer(function CommandPalette({
               returnKeyType="go"
               onSubmitEditing={() => {
                 if (filteredCommands[selectedIndex]) {
-                  navigateTo(filteredCommands[selectedIndex].href)
+                  navigateTo(filteredCommands[selectedIndex])
                 }
               }}
             />
@@ -368,7 +468,7 @@ export const CommandPalette = observer(function CommandPalette({
                         return (
                           <Pressable
                             key={cmd.id}
-                            onPress={() => navigateTo(cmd.href)}
+                            onPress={() => navigateTo(cmd)}
                             onHoverIn={() => setSelectedIndex(flatIndex)}
                             className={cn(
                               'flex-row items-center w-full',

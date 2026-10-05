@@ -1041,8 +1041,8 @@ export function Terminal({
   // ─── Early exits ────────────────────────────────────────────────────
   if (!projectId) {
     return (
-      <div className="flex h-full items-center justify-center bg-[#1e1e1e] p-6 text-center">
-        <div className="max-w-md text-[12px] text-[#858585]">
+      <div className="flex h-full items-center justify-center bg-[color:var(--ide-bg)] p-6 text-center">
+        <div className="max-w-md text-[12px] text-[color:var(--ide-muted)]">
           Open a project to use the terminal.
         </div>
       </div>
@@ -1051,8 +1051,8 @@ export function Terminal({
 
   if (Platform.OS !== "web") {
     return (
-      <div className="flex h-full items-center justify-center bg-[#1e1e1e] p-6 text-center">
-        <div className="max-w-md text-[12px] text-[#858585]">
+      <div className="flex h-full items-center justify-center bg-[color:var(--ide-bg)] p-6 text-center">
+        <div className="max-w-md text-[12px] text-[color:var(--ide-muted)]">
           Terminal requires a desktop browser.
         </div>
       </div>
@@ -1113,7 +1113,7 @@ export function Terminal({
   }, []);
 
   return (
-    <div className="relative flex h-full min-h-0 flex-col bg-[#1e1e1e]">
+    <div className="relative flex h-full min-h-0 flex-col bg-[color:var(--ide-bg)]">
       <SessionTabs
         sessions={sessions}
         groupIds={groupIds}
@@ -1156,7 +1156,7 @@ export function Terminal({
         ref={panelRef}
         role="region"
         aria-label="Terminal output"
-        className="relative min-h-0 flex-1 bg-[#1e1e1e]"
+        className="relative min-h-0 flex-1 bg-[color:var(--ide-bg)]"
       >
         {/*
          * Render one container per *group* (tab). Only the active group is
@@ -1179,7 +1179,7 @@ export function Terminal({
                 inset: 0,
                 display: isActiveGroup ? "flex" : "none",
               }}
-              className="h-full min-h-0 w-full bg-[#1e1e1e]"
+              className="h-full min-h-0 w-full bg-[color:var(--ide-bg)]"
             >
               <div className="flex min-w-0 flex-1">
                 <SplitNodeView
@@ -1341,7 +1341,7 @@ function TerminalAllInstanceList({
 
   return (
     <aside
-      className="flex w-[160px] shrink-0 flex-col border-l border-[#2d2d2d] bg-[#1e1e1e]"
+      className="flex w-[160px] shrink-0 flex-col border-l border-[color:var(--ide-border)] bg-[color:var(--ide-bg)]"
       aria-label="Terminal instances"
     >
       {rows.map((row, i) => {
@@ -1349,8 +1349,8 @@ function TerminalAllInstanceList({
         const baseClass = [
           "group flex h-[22px] w-full cursor-pointer select-none items-center text-left text-[11px]",
           isActive
-            ? "bg-[#37373d] text-[#cccccc]"
-            : "text-[#858585] hover:bg-[#2a2d2e] hover:text-[#cccccc]",
+            ? "bg-[color:var(--ide-active)] text-[color:var(--ide-text)]"
+            : "text-[color:var(--ide-muted)] hover:bg-[color:var(--ide-hover)] hover:text-[color:var(--ide-text-strong)]",
         ].join(" ");
 
         if (row.kind === "group") {
@@ -1375,7 +1375,7 @@ function TerminalAllInstanceList({
                     title="Split Terminal"
                     aria-label="Split Terminal"
                     onClick={(e) => { e.stopPropagation(); onSplitSession(); }}
-                    className="flex items-center justify-center rounded p-[2px] hover:bg-[#3c3c3c]"
+                    className="flex items-center justify-center rounded p-[2px] hover:bg-[color:var(--ide-hover)]"
                   >
                     <SquareSplitHorizontal size={11} />
                   </button>
@@ -1388,7 +1388,7 @@ function TerminalAllInstanceList({
                       const s = sessions.find((x) => x.groupId === row.groupId);
                       if (s) onCloseSession(s.id);
                     }}
-                    className="flex items-center justify-center rounded p-[2px] text-[#858585] hover:bg-[#3c3c3c] hover:text-[#f48771]"
+                    className="flex items-center justify-center rounded p-[2px] text-[color:var(--ide-muted)] hover:bg-[color:var(--ide-hover)] hover:text-[color:var(--ide-error)]"
                   >
                     <Trash2 size={11} />
                   </button>
@@ -1409,7 +1409,7 @@ function TerminalAllInstanceList({
             title={row.label}
           >
             <span className="flex min-w-0 flex-1 items-center gap-[5px] pl-3">
-              <span className="shrink-0 text-[#555555]">{row.isLast ? "└" : "├"}</span>
+              <span className="shrink-0 text-[color:var(--ide-muted-strong)]">{row.isLast ? "└" : "├"}</span>
               <TerminalIcon size={12} className="shrink-0" />
               <span className="truncate">{row.label}</span>
             </span>
@@ -1419,7 +1419,7 @@ function TerminalAllInstanceList({
                 title="Kill Split"
                 aria-label="Kill Split"
                 onClick={(e) => { e.stopPropagation(); onCloseSession(row.sessionId); }}
-                className="flex items-center justify-center rounded p-[2px] text-[#858585] hover:bg-[#3c3c3c] hover:text-[#f48771]"
+                className="flex items-center justify-center rounded p-[2px] text-[color:var(--ide-muted)] hover:bg-[color:var(--ide-hover)] hover:text-[color:var(--ide-error)]"
               >
                 <Trash2 size={11} />
               </button>
@@ -1566,7 +1566,7 @@ function SessionTabs({
   if (hideTabStrip) return null;
 
   return (
-    <div className="relative flex shrink-0 items-center justify-between border-b border-[#2d2d2d] bg-[#252526] pr-1">
+    <div className="relative flex shrink-0 items-center justify-between border-b border-[color:var(--ide-border)] bg-[color:var(--ide-surface)] pr-1">
       <div role="tablist" aria-label="Terminals" className="flex min-w-0 flex-1 items-center overflow-x-auto [scrollbar-width:thin]">
         {groupIds.map((gid) => {
           const groupSessions = sessions.filter((s) => s.groupId === gid);
@@ -1640,27 +1640,27 @@ function SessionTabs({
                   ? { borderTop: '1px solid #1e90ff' }
                   : { borderTop: '1px solid transparent' }
               }
-              className={`group relative flex h-[35px] shrink-0 cursor-pointer items-center gap-[5px] border-r border-[#2d2d2d] px-3 text-[12px] ${
+              className={`group relative flex h-[35px] shrink-0 cursor-pointer items-center gap-[5px] border-r border-[color:var(--ide-border)] px-3 text-[12px] ${
                 active
-                  ? "bg-[#1e1e1e] text-[#cccccc]"
-                  : "bg-[#252526] text-[#858585] hover:bg-[#2d2d2d] hover:text-[#cccccc]"
+                  ? "bg-[color:var(--ide-bg)] text-[color:var(--ide-text)]"
+                  : "bg-[color:var(--ide-surface)] text-[color:var(--ide-muted)] hover:bg-[color:var(--ide-hover)] hover:text-[color:var(--ide-text-strong)]"
               } ${dragGroupId === gid ? "opacity-50" : ""}`}
             >
               {dropTarget?.gid === gid && (
                 <span
                   aria-hidden="true"
                   data-testid={`drop-indicator-${gid}-${dropTarget.edge}`}
-                  className={`pointer-events-none absolute top-0 h-full w-[2px] bg-[#0078d4] ${
+                  className={`pointer-events-none absolute top-0 h-full w-[2px] bg-[color:var(--ide-primary)] ${
                     dropTarget.edge === "before" ? "left-0" : "right-0"
                   }`}
                 />
               )}
               {rep.status === "creating" ? (
-                <Loader2 size={10} className="animate-spin text-[#0078d4]" />
+                <Loader2 size={10} className="animate-spin text-[color:var(--ide-primary)]" />
               ) : rep.status === "error" ? (
-                <AlertTriangle size={10} className="text-[#f48771]" />
+                <AlertTriangle size={10} className="text-[color:var(--ide-error)]" />
               ) : rep.status === "closed" ? (
-                <span className="inline-block h-[8px] w-[8px] shrink-0 rounded-full bg-[#858585]" />
+                <span className="inline-block h-[8px] w-[8px] shrink-0 rounded-full bg-[color:var(--ide-muted)]" />
               ) : (
                 <span className="inline-block h-[8px] w-[8px] shrink-0 rounded-full bg-[#4ec9b0]" />
               )}
@@ -1686,7 +1686,7 @@ function SessionTabs({
                     aria-label={`Rename ${label}`}
                     placeholder="Terminal"
                     maxLength={64}
-                    className="w-[120px] truncate rounded-sm border border-[#0078d4] bg-[#1e1e1e] px-1 text-[12px] text-white outline-none"
+                    className="w-[120px] truncate rounded-sm border border-[color:var(--ide-primary)] bg-[color:var(--ide-bg)] px-1 text-[12px] text-white outline-none"
                   />
                 ) : (
                   <span className="truncate text-[12px]" title="Double-click or F2 to rename">
@@ -1705,7 +1705,7 @@ function SessionTabs({
                     e.stopPropagation();
                     setPickerForGroupId((prev) => (prev === gid ? null : gid));
                   }}
-                  className="rounded p-[1px] text-[#858585] hover:bg-[#ffffff1a] hover:text-white"
+                  className="rounded p-[1px] text-[color:var(--ide-muted)] hover:bg-[color:var(--ide-hover-subtle)] hover:text-white"
                 >
                   <span
                     className="inline-block h-[7px] w-[7px] rounded-full"
@@ -1722,9 +1722,9 @@ function SessionTabs({
                     e.stopPropagation();
                     setPickerForGroupId((prev) => (prev === gid ? null : gid));
                   }}
-                  className="rounded p-[1px] text-[#858585] opacity-0 hover:bg-[#ffffff1a] hover:text-white group-hover:opacity-60"
+                  className="rounded p-[1px] text-[color:var(--ide-muted)] opacity-0 hover:bg-[color:var(--ide-hover-subtle)] hover:text-white group-hover:opacity-60"
                 >
-                  <span className="inline-block h-[7px] w-[7px] rounded-full border border-[#858585]" />
+                  <span className="inline-block h-[7px] w-[7px] rounded-full border border-[color:var(--ide-muted)]" />
                 </button>
               )}
               {pickerForGroupId === gid && (
@@ -1745,7 +1745,7 @@ function SessionTabs({
                   e.stopPropagation();
                   onCloseGroup(gid);
                 }}
-                className={`ml-[2px] rounded p-[2px] text-[#858585] hover:bg-[#ffffff1a] hover:text-[#cccccc] ${
+                className={`ml-[2px] rounded p-[2px] text-[color:var(--ide-muted)] hover:bg-[color:var(--ide-hover-subtle)] hover:text-[color:var(--ide-text-strong)] ${
                   active ? "opacity-100" : "opacity-0 group-hover:opacity-80"
                 }`}
               >
@@ -1766,12 +1766,12 @@ function SessionTabs({
           aria-label="Preset commands"
           aria-expanded={menuOpen}
           aria-haspopup="menu"
-          className="flex h-[35px] shrink-0 items-center gap-1 px-2 text-[#858585] hover:bg-[#2d2d2d] hover:text-[#cccccc]"
+          className="flex h-[35px] shrink-0 items-center gap-1 px-2 text-[color:var(--ide-muted)] hover:bg-[color:var(--ide-hover)] hover:text-[color:var(--ide-text-strong)]"
         >
           <ChevronDown size={11} />
         </button>
       </div>
-      <div className="flex shrink-0 items-center gap-[2px] border-l border-[#2d2d2d] pl-1 pr-1">
+      <div className="flex shrink-0 items-center gap-[2px] border-l border-[color:var(--ide-border)] pl-1 pr-1">
         <PhasedTerminalHeader
           activeId={activeId}
           onNew={onAdd}
@@ -1807,7 +1807,7 @@ function SessionTabs({
            * visual gap.
            */}
           <div
-            className="absolute bottom-full left-0 z-50 mb-1 max-h-[min(60vh,420px)] w-60 overflow-auto rounded-md border border-[#2a2a2a] bg-[#252526] py-1 text-[12px] shadow-lg"
+            className="absolute bottom-full left-0 z-50 mb-1 max-h-[min(60vh,420px)] w-60 overflow-auto rounded-md border border-[color:var(--ide-border)] bg-[color:var(--ide-surface)] py-1 text-[12px] shadow-lg"
             role="menu"
           >
             <MenuItem
@@ -1817,7 +1817,7 @@ function SessionTabs({
               }}
             >
               New Terminal
-              <span className="ml-auto text-[10px] text-[#6a6a6a]">⌘⇧`</span>
+              <span className="ml-auto text-[10px] text-[color:var(--ide-muted-strong)]">⌘⇧`</span>
             </MenuItem>
             <MenuItem
               onClick={() => {
@@ -1828,7 +1828,7 @@ function SessionTabs({
             >
               Clear
             </MenuItem>
-            <div className="my-1 h-px bg-[#2a2a2a]" />
+            <div className="my-1 h-px bg-[color:var(--ide-border)]" />
             <MenuItem
               onClick={() => {
                 setMenuOpen(false);
@@ -1846,16 +1846,16 @@ function SessionTabs({
               Close All Terminals
             </MenuItem>
 
-            <div className="my-1 h-px bg-[#2a2a2a]" />
-            <div className="px-3 py-1 text-[10px] font-semibold uppercase tracking-wider text-[#6a6a6a]">
+            <div className="my-1 h-px bg-[color:var(--ide-border)]" />
+            <div className="px-3 py-1 text-[10px] font-semibold uppercase tracking-wider text-[color:var(--ide-muted-strong)]">
               Run Preset
             </div>
             {presetsLoading ? (
-              <div className="flex items-center gap-2 px-3 py-1 text-[11px] text-[#858585]">
+              <div className="flex items-center gap-2 px-3 py-1 text-[11px] text-[color:var(--ide-muted)]">
                 <Loader2 size={11} className="animate-spin" /> Loading…
               </div>
             ) : presetsError ? (
-              <div className="px-3 py-1 text-[11px] text-[#f48771]">
+              <div className="px-3 py-1 text-[11px] text-[color:var(--ide-error)]">
                 <div className="mb-1 flex items-center gap-1">
                   <AlertTriangle size={11} /> {presetsError}
                 </div>
@@ -1863,17 +1863,17 @@ function SessionTabs({
                   onClick={() => {
                     onRetryPresets();
                   }}
-                  className="mt-1 rounded bg-[#0078d4] px-2 py-[2px] text-[11px] text-white hover:bg-[#1184de]"
+                  className="mt-1 rounded bg-[color:var(--ide-primary)] px-2 py-[2px] text-[11px] text-white hover:bg-[color:var(--ide-btn-primary-hover)]"
                 >
                   Retry
                 </button>
               </div>
             ) : presetGroups.length === 0 ? (
-              <div className="px-3 py-1 text-[11px] text-[#858585]">No presets available.</div>
+              <div className="px-3 py-1 text-[11px] text-[color:var(--ide-muted)]">No presets available.</div>
             ) : (
               presetGroups.map((group) => (
                 <div key={group.category}>
-                  <div className="px-3 pb-[2px] pt-2 text-[10px] uppercase tracking-wider text-[#6a6a6a]">
+                  <div className="px-3 pb-[2px] pt-2 text-[10px] uppercase tracking-wider text-[color:var(--ide-muted-strong)]">
                     {group.label}
                   </div>
                   {group.commands.map((cmd) => (
@@ -1887,7 +1887,7 @@ function SessionTabs({
                     >
                       <span className="truncate">{cmd.label}</span>
                       {cmd.dangerous && (
-                        <AlertTriangle size={11} className="ml-auto shrink-0 text-[#dcdcaa]" />
+                        <AlertTriangle size={11} className="ml-auto shrink-0 text-[color:var(--ide-warning)]" />
                       )}
                     </MenuItem>
                   ))}
@@ -1925,7 +1925,7 @@ function MenuItem({
       disabled={disabled}
       title={title}
       role="menuitem"
-      className="flex w-full items-center gap-2 px-3 py-1 text-left text-[#cccccc] hover:bg-[#2a2a2a] disabled:opacity-40 disabled:hover:bg-transparent"
+      className="flex w-full items-center gap-2 px-3 py-1 text-left text-[color:var(--ide-text)] hover:bg-[color:var(--ide-hover)] disabled:opacity-40 disabled:hover:bg-transparent"
     >
       {children}
     </button>
@@ -1934,8 +1934,8 @@ function MenuItem({
 
 function SessionStartingPane(): React.ReactElement {
   return (
-    <div className="flex h-full items-center justify-center bg-[#1e1e1e]">
-      <div className="flex items-center gap-2 text-[12px] text-[#858585]">
+    <div className="flex h-full items-center justify-center bg-[color:var(--ide-bg)]">
+      <div className="flex items-center gap-2 text-[12px] text-[color:var(--ide-muted)]">
         <Loader2 size={12} className="animate-spin" /> Starting shell…
       </div>
     </div>
@@ -1950,19 +1950,19 @@ function SessionErrorPane({
   onRetry: () => void;
 }): React.ReactElement {
   return (
-    <div className="flex h-full items-center justify-center bg-[#1e1e1e] p-4">
+    <div className="flex h-full items-center justify-center bg-[color:var(--ide-bg)] p-4">
       <div className="max-w-md text-center">
-        <div className="mb-2 flex items-center justify-center gap-2 text-[#f48771]">
+        <div className="mb-2 flex items-center justify-center gap-2 text-[color:var(--ide-error)]">
           <AlertTriangle size={14} />
           <span className="text-[13px] font-semibold">Couldn't start terminal</span>
         </div>
-        <div className="mb-3 break-words font-mono text-[11px] text-[#858585]">
+        <div className="mb-3 break-words font-mono text-[11px] text-[color:var(--ide-muted)]">
           {message}
         </div>
         <button
           type="button"
           onClick={onRetry}
-          className="rounded bg-[#0078d4] px-3 py-1 text-[12px] text-white hover:bg-[#1184de]"
+          className="rounded bg-[color:var(--ide-primary)] px-3 py-1 text-[12px] text-white hover:bg-[color:var(--ide-btn-primary-hover)]"
         >
           Try again
         </button>
@@ -1987,21 +1987,21 @@ function ConfirmDangerous({
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
-        className="w-[360px] rounded-lg border border-[#2a2a2a] bg-[#252526] p-4 shadow-2xl"
+        className="w-[360px] rounded-lg border border-[color:var(--ide-border)] bg-[color:var(--ide-surface)] p-4 shadow-2xl"
       >
-        <div className="mb-2 flex items-center gap-2 text-[#dcdcaa]">
+        <div className="mb-2 flex items-center gap-2 text-[color:var(--ide-warning)]">
           <AlertTriangle size={14} />
           <span id={titleId} className="text-[13px] font-semibold">This is a destructive command</span>
         </div>
-        <div className="mb-1 text-[13px] text-[#cccccc]">{command.label}</div>
-        <div className="mb-4 text-[12px] leading-relaxed text-[#858585]">
+        <div className="mb-1 text-[13px] text-[color:var(--ide-text)]">{command.label}</div>
+        <div className="mb-4 text-[12px] leading-relaxed text-[color:var(--ide-muted)]">
           {command.description}
         </div>
         <div className="flex justify-end gap-2">
           <button
             type="button"
             onClick={onCancel}
-            className="rounded px-3 py-1 text-[12px] text-[#cccccc] hover:bg-[#ffffff1a]"
+            className="rounded px-3 py-1 text-[12px] text-[color:var(--ide-text)] hover:bg-[color:var(--ide-hover-subtle)]"
           >
             Cancel
           </button>
@@ -2072,22 +2072,22 @@ function RecentCommandPickerModal({
       onClick={onClose}
     >
       <div
-        className="w-[560px] max-w-[90vw] rounded-md border border-[#454545] bg-[#252526] shadow-xl"
+        className="w-[560px] max-w-[90vw] rounded-md border border-[color:var(--ide-border-muted)] bg-[color:var(--ide-surface)] shadow-xl"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex items-center border-b border-[#454545] px-3 py-2 gap-2">
-          <span className="text-[11px] text-[#858585] shrink-0">Run Recent Command</span>
+        <div className="flex items-center border-b border-[color:var(--ide-border-muted)] px-3 py-2 gap-2">
+          <span className="text-[11px] text-[color:var(--ide-muted)] shrink-0">Run Recent Command</span>
           <input
             autoFocus
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Type to filter commands..."
-            className="flex-1 bg-transparent text-[12px] text-[#cccccc] outline-none placeholder:text-[#585858]"
+            className="flex-1 bg-transparent text-[12px] text-[color:var(--ide-text)] outline-none placeholder:text-[color:var(--ide-muted-strong)]"
           />
         </div>
         <div className="max-h-72 overflow-y-auto py-1">
           {filtered.length === 0 ? (
-            <div className="px-3 py-2 text-[11px] text-[#585858]">
+            <div className="px-3 py-2 text-[11px] text-[color:var(--ide-muted-strong)]">
               {commands.length === 0
                 ? "No command history yet — run some commands first"
                 : "No matching commands"}
@@ -2097,7 +2097,7 @@ function RecentCommandPickerModal({
               <button
                 key={i}
                 type="button"
-                className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[12px] text-[#cccccc] hover:bg-[#0078d4]/60"
+                className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[12px] text-[color:var(--ide-text)] hover:bg-[color:var(--ide-primary)]/60"
                 onClick={() => onSelect(cmd)}
               >
                 <span className="font-mono truncate">{cmd}</span>
@@ -2136,28 +2136,28 @@ function RecentDirectoryPicker({
       onClick={onClose}
     >
       <div
-        className="w-[480px] max-w-[90vw] rounded-md border border-[#454545] bg-[#252526] shadow-xl"
+        className="w-[480px] max-w-[90vw] rounded-md border border-[color:var(--ide-border-muted)] bg-[color:var(--ide-surface)] shadow-xl"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex items-center border-b border-[#454545] px-3 py-2 gap-2">
-          <span className="text-[11px] text-[#858585] shrink-0">Go to Directory</span>
+        <div className="flex items-center border-b border-[color:var(--ide-border-muted)] px-3 py-2 gap-2">
+          <span className="text-[11px] text-[color:var(--ide-muted)] shrink-0">Go to Directory</span>
           <input
             autoFocus
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Filter directories..."
-            className="flex-1 bg-transparent text-[12px] text-[#cccccc] outline-none placeholder:text-[#585858]"
+            className="flex-1 bg-transparent text-[12px] text-[color:var(--ide-text)] outline-none placeholder:text-[color:var(--ide-muted-strong)]"
           />
         </div>
         <div className="max-h-64 overflow-y-auto py-1">
           {filtered.length === 0 ? (
-            <div className="px-3 py-2 text-[11px] text-[#585858]">No matching directories</div>
+            <div className="px-3 py-2 text-[11px] text-[color:var(--ide-muted-strong)]">No matching directories</div>
           ) : (
             filtered.map((dir) => (
               <button
                 key={dir}
                 type="button"
-                className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[12px] text-[#cccccc] hover:bg-[#0078d4]/60"
+                className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[12px] text-[color:var(--ide-text)] hover:bg-[color:var(--ide-primary)]/60"
                 onClick={() => onSelect(dir)}
               >
                 <span className="font-mono">{dir}</span>
@@ -2190,25 +2190,25 @@ function TerminalSettingsModal({
         aria-modal="true"
         aria-labelledby="terminal-settings-title"
         onClick={(e) => e.stopPropagation()}
-        className="max-h-[calc(100vh-32px)] w-[min(520px,calc(100vw-32px))] overflow-auto rounded-lg border border-[#3c3c3c] bg-[#252526] p-4 text-[#cccccc] shadow-2xl"
+        className="max-h-[calc(100vh-32px)] w-[min(520px,calc(100vw-32px))] overflow-auto rounded-lg border border-[color:var(--ide-border-strong)] bg-[color:var(--ide-surface)] p-4 text-[color:var(--ide-text)] shadow-2xl"
       >
         <div className="mb-3 flex items-center justify-between gap-3">
           <div>
             <h2 id="terminal-settings-title" className="text-[13px] font-semibold text-white">Terminal settings</h2>
-            <p className="mt-1 text-[11px] text-[#858585]">Quick controls for the active terminal panel.</p>
+            <p className="mt-1 text-[11px] text-[color:var(--ide-muted)]">Quick controls for the active terminal panel.</p>
           </div>
           <button
             type="button"
             onClick={onClose}
             aria-label="Close terminal settings"
-            className="rounded p-1 text-[#858585] hover:bg-[#ffffff1a] hover:text-white"
+            className="rounded p-1 text-[color:var(--ide-muted)] hover:bg-[color:var(--ide-hover-subtle)] hover:text-white"
           >
             <X size={14} />
           </button>
         </div>
         <div className="space-y-3 text-[12px]">
-          <div className="rounded border border-[#3c3c3c] bg-[#1e1e1e]">
-            <div className="border-b border-[#3c3c3c] px-3 py-2">
+          <div className="rounded border border-[color:var(--ide-border-strong)] bg-[color:var(--ide-bg)]">
+            <div className="border-b border-[color:var(--ide-border-strong)] px-3 py-2">
               <div className="font-medium text-white">Appearance</div>
             </div>
             <SettingsToggle
@@ -2225,8 +2225,8 @@ function TerminalSettingsModal({
             />
           </div>
 
-          <div className="rounded border border-[#3c3c3c] bg-[#1e1e1e]">
-            <div className="border-b border-[#3c3c3c] px-3 py-2">
+          <div className="rounded border border-[color:var(--ide-border-strong)] bg-[color:var(--ide-bg)]">
+            <div className="border-b border-[color:var(--ide-border-strong)] px-3 py-2">
               <div className="font-medium text-white">Shell</div>
             </div>
             <SettingsToggle
@@ -2240,20 +2240,20 @@ function TerminalSettingsModal({
           <button
             type="button"
             onClick={onOpenAutoReplies}
-            className="flex w-full items-center justify-between rounded border border-[#3c3c3c] bg-[#1e1e1e] px-3 py-2 text-left hover:bg-[#2a2a2a]"
+            className="flex w-full items-center justify-between rounded border border-[color:var(--ide-border-strong)] bg-[color:var(--ide-bg)] px-3 py-2 text-left hover:bg-[color:var(--ide-hover)]"
           >
             <span>
               <span className="block font-medium text-white">Auto-replies</span>
-              <span className="text-[11px] text-[#9d9d9d]">Configure y/n prompt rules and confirmations.</span>
+              <span className="text-[11px] text-[color:var(--ide-muted)]">Configure y/n prompt rules and confirmations.</span>
             </span>
-            <ChevronDown size={14} className="-rotate-90 text-[#858585]" />
+            <ChevronDown size={14} className="-rotate-90 text-[color:var(--ide-muted)]" />
           </button>
 
-          <div className="rounded border border-[#3c3c3c] bg-[#1e1e1e] p-3 text-[11px] text-[#9d9d9d]">
-            <span className="font-medium text-[#cccccc]">Find & recent commands</span>
+          <div className="rounded border border-[color:var(--ide-border-strong)] bg-[color:var(--ide-bg)] p-3 text-[11px] text-[color:var(--ide-muted)]">
+            <span className="font-medium text-[color:var(--ide-text)]">Find & recent commands</span>
             <span className="ml-1">— use the terminal ⋯ menu or ⌘F / Ctrl+Alt+R.</span>
           </div>
-          <div className="rounded border border-[#3c3c3c] bg-[#1e1e1e] p-3 text-[11px] text-[#9d9d9d]">
+          <div className="rounded border border-[color:var(--ide-border-strong)] bg-[color:var(--ide-bg)] p-3 text-[11px] text-[color:var(--ide-muted)]">
             Changes to GPU renderer and shell integration take effect on the next terminal spawn.
           </div>
         </div>
@@ -2275,10 +2275,10 @@ function SettingsToggle({
   onChange: (v: boolean) => void;
 }): React.ReactElement {
   return (
-    <label className="flex cursor-pointer items-start justify-between gap-3 px-3 py-2 hover:bg-[#2a2a2a]">
+    <label className="flex cursor-pointer items-start justify-between gap-3 px-3 py-2 hover:bg-[color:var(--ide-hover)]">
       <div>
-        <div className="text-[12px] text-[#cccccc]">{label}</div>
-        <div className="mt-[2px] text-[10px] text-[#858585]">{description}</div>
+        <div className="text-[12px] text-[color:var(--ide-text)]">{label}</div>
+        <div className="mt-[2px] text-[10px] text-[color:var(--ide-muted)]">{description}</div>
       </div>
       <button
         type="button"
@@ -2286,7 +2286,7 @@ function SettingsToggle({
         aria-checked={value}
         onClick={(e) => { e.preventDefault(); onChange(!value); }}
         className={`relative mt-[2px] inline-block h-4 w-7 shrink-0 rounded-full transition-colors ${
-          value ? "bg-[#0078d4]" : "bg-[#3c3c3c]"
+          value ? "bg-[color:var(--ide-primary)]" : "bg-[color:var(--ide-input)]"
         }`}
       >
         <span
@@ -2491,8 +2491,8 @@ function SplitDivider(props: {
       onDoubleClick={props.onReset}
       className={
         isRow
-          ? "z-10 w-1 shrink-0 cursor-col-resize self-stretch bg-transparent hover:bg-[#0078d4]/50"
-          : "z-10 h-1 shrink-0 cursor-row-resize bg-transparent hover:bg-[#0078d4]/50"
+          ? "z-10 w-1 shrink-0 cursor-col-resize self-stretch bg-transparent hover:bg-[color:var(--ide-primary)]/50"
+          : "z-10 h-1 shrink-0 cursor-row-resize bg-transparent hover:bg-[color:var(--ide-primary)]/50"
       }
       data-testid={`split-divider-${props.direction}`}
     />
@@ -2524,7 +2524,7 @@ function SplitLeafView(
   const isActive = s.id === props.activeId;
   return (
     <div
-      className="relative h-full min-h-0 min-w-0 flex-1 bg-[#1e1e1e]"
+      className="relative h-full min-h-0 min-w-0 flex-1 bg-[color:var(--ide-bg)]"
       onMouseDown={() => props.onSelect(s.id)}
       data-testid={`pane-${s.id}`}
       draggable={true}
@@ -2633,7 +2633,7 @@ function PaneDropOverlay(props: {
     <div
       aria-hidden="true"
       data-testid={`pane-drop-overlay-${props.edge}`}
-      className={`pointer-events-none absolute z-20 border-2 border-[#0078d4] bg-[#0078d4]/20 ${cls[props.edge]}`}
+      className={`pointer-events-none absolute z-20 border-2 border-[color:var(--ide-primary)] bg-[color:var(--ide-primary)]/20 ${cls[props.edge]}`}
     />
   );
 }
@@ -2706,7 +2706,7 @@ function TabColorPicker(props: {
       aria-label="Tab color"
       onClick={(e) => e.stopPropagation()}
       onMouseDown={(e) => e.stopPropagation()}
-      className="absolute left-0 top-full z-30 mt-1 flex w-[200px] flex-col gap-2 rounded-md border border-[#3c3c3c] bg-[#252526] p-2 text-[11px] text-white shadow-lg"
+      className="absolute left-0 top-full z-30 mt-1 flex w-[200px] flex-col gap-2 rounded-md border border-[color:var(--ide-border-strong)] bg-[color:var(--ide-surface)] p-2 text-[11px] text-white shadow-lg"
     >
       <div className="grid grid-cols-4 gap-1">
         {TAB_COLOR_PALETTE.map((c) => (
@@ -2718,7 +2718,7 @@ function TabColorPicker(props: {
             data-testid={`tab-color-${c.name.toLowerCase()}`}
             onClick={() => props.onPick(c.value)}
             className={`h-6 w-full rounded border ${
-              props.current === c.value ? "border-white" : "border-[#3c3c3c]"
+              props.current === c.value ? "border-white" : "border-[color:var(--ide-border-strong)]"
             }`}
             style={{ backgroundColor: c.value }}
           />
@@ -2728,7 +2728,7 @@ function TabColorPicker(props: {
         type="button"
         onClick={() => props.onPick(null)}
         className={`rounded border px-2 py-1 text-left text-[10px] ${
-          props.current === null ? "border-white" : "border-[#3c3c3c] hover:bg-[#2a2a2a]"
+          props.current === null ? "border-white" : "border-[color:var(--ide-border-strong)] hover:bg-[color:var(--ide-hover)]"
         }`}
       >
         Default (no color)
@@ -2751,14 +2751,14 @@ function TabColorPicker(props: {
           maxLength={7}
           aria-invalid={hexError}
           aria-label="Custom hex color"
-          className={`flex-1 rounded-sm border bg-[#1e1e1e] px-1 py-[2px] text-[10px] outline-none ${
-            hexError ? "border-[#f48771]" : "border-[#3c3c3c]"
+          className={`flex-1 rounded-sm border bg-[color:var(--ide-bg)] px-1 py-[2px] text-[10px] outline-none ${
+            hexError ? "border-[color:var(--ide-error)]" : "border-[color:var(--ide-border-strong)]"
           }`}
         />
         <button
           type="button"
           onClick={submitHex}
-          className="rounded border border-[#3c3c3c] px-2 py-[2px] text-[10px] hover:bg-[#2a2a2a]"
+          className="rounded border border-[color:var(--ide-border-strong)] px-2 py-[2px] text-[10px] hover:bg-[color:var(--ide-hover)]"
         >
           Apply
         </button>
@@ -2843,23 +2843,23 @@ function AutoRepliesModal(props: {
       onClick={props.onClose}
     >
       <div
-        className="flex max-h-[calc(100vh-32px)] w-[min(640px,calc(100vw-32px))] flex-col overflow-hidden rounded-md border border-[#3c3c3c] bg-[#252526] text-[12px] text-white shadow-2xl"
+        className="flex max-h-[calc(100vh-32px)] w-[min(640px,calc(100vw-32px))] flex-col overflow-hidden rounded-md border border-[color:var(--ide-border-strong)] bg-[color:var(--ide-surface)] text-[12px] text-white shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex items-center justify-between border-b border-[#3c3c3c] px-3 py-2">
+        <div className="flex items-center justify-between border-b border-[color:var(--ide-border-strong)] px-3 py-2">
           <div className="font-semibold">Terminal auto-replies</div>
           <button
             type="button"
             onClick={props.onClose}
             aria-label="Close"
-            className="rounded p-1 text-[#858585] hover:bg-[#2a2a2a] hover:text-white"
+            className="rounded p-1 text-[color:var(--ide-muted)] hover:bg-[color:var(--ide-hover)] hover:text-white"
           >
             <X size={12} />
           </button>
         </div>
         <div className="flex-1 overflow-auto px-3 py-2">
           {draft.length === 0 ? (
-            <div className="py-6 text-center text-[#858585]">
+            <div className="py-6 text-center text-[color:var(--ide-muted)]">
               No rules configured. Click "Add rule" below.
             </div>
           ) : (
@@ -2867,7 +2867,7 @@ function AutoRepliesModal(props: {
               {draft.map((r) => (
                 <li
                   key={r.id}
-                  className="flex flex-col gap-2 rounded border border-[#3c3c3c] bg-[#1e1e1e] p-2"
+                  className="flex flex-col gap-2 rounded border border-[color:var(--ide-border-strong)] bg-[color:var(--ide-bg)] p-2"
                   data-testid={`auto-reply-rule-${r.id}`}
                 >
                   <div className="flex items-center gap-2">
@@ -2882,19 +2882,19 @@ function AutoRepliesModal(props: {
                       value={r.label}
                       onChange={(e) => updateRule(r.id, { label: e.target.value })}
                       placeholder="Rule name"
-                      className="flex-1 rounded-sm border border-[#3c3c3c] bg-[#252526] px-1 py-[2px] text-[11px] outline-none"
+                      className="flex-1 rounded-sm border border-[color:var(--ide-border-strong)] bg-[color:var(--ide-surface)] px-1 py-[2px] text-[11px] outline-none"
                     />
                     <button
                       type="button"
                       onClick={() => deleteRule(r.id)}
                       aria-label={`Delete ${r.label}`}
-                      className="rounded p-1 text-[#858585] hover:bg-[#2a2a2a] hover:text-[#f48771]"
+                      className="rounded p-1 text-[color:var(--ide-muted)] hover:bg-[color:var(--ide-hover)] hover:text-[color:var(--ide-error)]"
                     >
                       <Trash2 size={12} />
                     </button>
                   </div>
                   <div className="flex items-center gap-2">
-                    <label className="text-[10px] text-[#858585]">When stdout matches</label>
+                    <label className="text-[10px] text-[color:var(--ide-muted)]">When stdout matches</label>
                     <select
                       value={r.match.kind}
                       onChange={(e) =>
@@ -2902,7 +2902,7 @@ function AutoRepliesModal(props: {
                           match: { ...r.match, kind: e.target.value as "substring" | "regex" },
                         })
                       }
-                      className="rounded-sm border border-[#3c3c3c] bg-[#252526] px-1 py-[2px] text-[10px] outline-none"
+                      className="rounded-sm border border-[color:var(--ide-border-strong)] bg-[color:var(--ide-surface)] px-1 py-[2px] text-[10px] outline-none"
                     >
                       <option value="substring">substring</option>
                       <option value="regex">regex</option>
@@ -2914,11 +2914,11 @@ function AutoRepliesModal(props: {
                         updateRule(r.id, { match: { ...r.match, pattern: e.target.value } })
                       }
                       placeholder={r.match.kind === "regex" ? "/pattern/" : "y/N"}
-                      className="flex-1 rounded-sm border border-[#3c3c3c] bg-[#252526] px-1 py-[2px] font-mono text-[11px] outline-none"
+                      className="flex-1 rounded-sm border border-[color:var(--ide-border-strong)] bg-[color:var(--ide-surface)] px-1 py-[2px] font-mono text-[11px] outline-none"
                     />
                   </div>
                   <div className="flex items-center gap-2">
-                    <label className="text-[10px] text-[#858585]">Send</label>
+                    <label className="text-[10px] text-[color:var(--ide-muted)]">Send</label>
                     <input
                       type="text"
                       value={r.send.text}
@@ -2926,7 +2926,7 @@ function AutoRepliesModal(props: {
                         updateRule(r.id, { send: { ...r.send, text: e.target.value } })
                       }
                       placeholder="y"
-                      className="flex-1 rounded-sm border border-[#3c3c3c] bg-[#252526] px-1 py-[2px] font-mono text-[11px] outline-none"
+                      className="flex-1 rounded-sm border border-[color:var(--ide-border-strong)] bg-[color:var(--ide-surface)] px-1 py-[2px] font-mono text-[11px] outline-none"
                     />
                     <label className="flex items-center gap-1 text-[10px]">
                       <input
@@ -2942,7 +2942,7 @@ function AutoRepliesModal(props: {
                     </label>
                   </div>
                   {errors[r.id] && (
-                    <div className="rounded bg-[#3c1a1a] px-2 py-1 text-[10px] text-[#f48771]">
+                    <div className="rounded bg-[#3c1a1a] px-2 py-1 text-[10px] text-[color:var(--ide-error)]">
                       {errors[r.id]}
                     </div>
                   )}
@@ -2951,11 +2951,11 @@ function AutoRepliesModal(props: {
             </ul>
           )}
         </div>
-        <div className="flex items-center justify-between border-t border-[#3c3c3c] px-3 py-2">
+        <div className="flex items-center justify-between border-t border-[color:var(--ide-border-strong)] px-3 py-2">
           <button
             type="button"
             onClick={addRule}
-            className="rounded border border-[#3c3c3c] px-2 py-1 text-[11px] hover:bg-[#2a2a2a]"
+            className="rounded border border-[color:var(--ide-border-strong)] px-2 py-1 text-[11px] hover:bg-[color:var(--ide-hover)]"
           >
             + Add rule
           </button>
@@ -2963,7 +2963,7 @@ function AutoRepliesModal(props: {
             <button
               type="button"
               onClick={props.onClose}
-              className="rounded border border-[#3c3c3c] px-3 py-1 text-[11px] hover:bg-[#2a2a2a]"
+              className="rounded border border-[color:var(--ide-border-strong)] px-3 py-1 text-[11px] hover:bg-[color:var(--ide-hover)]"
             >
               Cancel
             </button>
@@ -2971,7 +2971,7 @@ function AutoRepliesModal(props: {
               type="button"
               onClick={commit}
               disabled={Object.keys(errors).length > 0}
-              className="rounded bg-[#0078d4] px-3 py-1 text-[11px] hover:bg-[#0066b3] disabled:opacity-50"
+              className="rounded bg-[color:var(--ide-primary)] px-3 py-1 text-[11px] hover:bg-[color:var(--ide-btn-primary-hover)] disabled:opacity-50"
             >
               Save
             </button>

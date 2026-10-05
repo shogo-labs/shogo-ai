@@ -45,7 +45,8 @@ import { Hono } from 'hono'
 import crypto from 'crypto'
 import { prisma } from '../lib/prisma'
 import { getFrontendUrl } from '../lib/cloud-urls'
-import { mintDeviceApiKey } from '../lib/api-keys-mint'
+import { hashApiKey, mintDeviceApiKey } from '../lib/api-keys-mint'
+import { syncDeviceWorkspaceKeys } from '../lib/device-workspace-keys'
 import {
   type PendingState,
   type PendingStatus,
@@ -66,6 +67,16 @@ function generateState(): string {
 
 function userCodeFor(state: string): string {
   return state.slice(-6).toUpperCase()
+}
+
+function deviceInfo(record: PendingState) {
+  return {
+    deviceId: record.deviceId,
+    deviceName: record.deviceName,
+    devicePlatform: record.devicePlatform,
+    deviceAppVersion: record.deviceAppVersion,
+    defaultDeviceName: record.client === 'desktop' ? 'Shogo Desktop' : 'Shogo CLI',
+  }
 }
 
 export function cliAuthRoutes() {
@@ -173,6 +184,7 @@ export function cliAuthRoutes() {
         key: record.mintedKey,
         email: record.email ?? null,
         workspace: record.workspace ?? null,
+        ...(record.workspaces ? { workspaces: record.workspaces } : {}),
         deviceId: record.deviceId,
       })
     }
@@ -216,7 +228,7 @@ export function cliAuthRoutes() {
     }
 
     const body = await c.req
-      .json<{ state?: string; workspaceId?: string }>()
+      .json<{ state?: string; workspaceId?: string; allWorkspaces?: boolean }>()
       .catch(() => ({} as any))
 
     const state = typeof body?.state === 'string' ? body.state : ''
@@ -298,6 +310,15 @@ export function cliAuthRoutes() {
     record.mintedKey = fullKey
     record.email = user?.email ?? null
     record.workspace = workspace?.name ?? null
+    if (body.allWorkspaces === true) {
+      const { workspaces } = await syncDeviceWorkspaceKeys({
+        prisma,
+        userId: auth.userId,
+        device: deviceInfo(record),
+        callerKey: { workspaceId: workspaceId!, key: fullKey },
+      })
+      record.workspaces = workspaces.map((w) => ({ workspace: w.workspace, key: w.key! }))
+    }
     record.approvedAt = Date.now()
     // Keep the record around just long enough for the CLI's next poll
     // to grab the key; the poll handler deletes it on success.
@@ -318,6 +339,39 @@ export function cliAuthRoutes() {
       workspace: workspace?.name ?? null,
       email: user?.email ?? null,
     })
+  })
+
+  // POST /api/cli/device-keys/sync — a signed-in device picks up keys for
+  // team workspaces its user joined since sign-in and learns which ones it
+  // lost. Authenticated with any of that device's keys.
+  router.post('/cli/device-keys/sync', async (c) => {
+    const auth = c.get('auth') as any
+    const bearer = c.req.header('authorization')?.slice(7) ?? ''
+    if (auth?.via !== 'apiKey' || !auth.userId || !bearer) {
+      return c.json({ ok: false, error: 'Device API key required' }, 401)
+    }
+    const caller = await (prisma as any).apiKey.findUnique({
+      where: { keyHash: await hashApiKey(bearer) },
+      select: { kind: true, workspaceId: true, deviceId: true, deviceName: true, devicePlatform: true, deviceAppVersion: true },
+    })
+    if (!caller || caller.kind !== 'device' || !caller.deviceId) {
+      return c.json({ ok: false, error: 'Only device keys can sync workspaces' }, 403)
+    }
+    const body = await c.req.json<{ have?: unknown }>().catch(() => ({} as any))
+    const have = Array.isArray(body?.have) ? body.have.filter((v: unknown): v is string => typeof v === 'string') : []
+    const result = await syncDeviceWorkspaceKeys({
+      prisma,
+      userId: auth.userId,
+      device: {
+        deviceId: caller.deviceId,
+        deviceName: caller.deviceName ?? undefined,
+        devicePlatform: caller.devicePlatform ?? undefined,
+        deviceAppVersion: caller.deviceAppVersion ?? undefined,
+      },
+      have,
+      callerKey: { workspaceId: caller.workspaceId, key: bearer },
+    })
+    return c.json({ ok: true, ...result })
   })
 
   // POST /api/cli/login/deny — user clicked "Cancel" on the bridge page.

@@ -21,7 +21,20 @@ export interface PaletteItem {
    */
   searchText?: string;
   hint?: string;
-  run: () => void | Promise<void>;
+  /**
+   * `opts.line` / `opts.col` are set when the query ended in `:line[:col]`
+   * (e.g. `app.tsx:42`), so file items can jump straight to the spot.
+   */
+  run: (opts?: { line?: number; col?: number }) => void | Promise<void>;
+  /** ⌘/Ctrl+Enter — open in a side editor group (Quick Open). */
+  runSide?: () => void | Promise<void>;
+}
+
+/** `foo.ts:42` / `foo.ts:42:7` → { text: "foo.ts", line: 42, col: 7 }. */
+export function splitLineSuffix(q: string): { text: string; line?: number; col?: number } {
+  const m = q.match(/^(.*?\S):(\d+)(?::(\d+))?$/);
+  if (!m) return { text: q };
+  return { text: m[1], line: parseInt(m[2], 10), col: m[3] ? parseInt(m[3], 10) : undefined };
 }
 
 export function Palette({
@@ -30,14 +43,26 @@ export function Palette({
   onClose,
   emptyHint,
   syntheticItem,
+  initialQuery = "",
+  onPrefix,
+  parseLineSuffix = false,
 }: {
   placeholder: string;
   items: PaletteItem[];
   onClose: () => void;
   emptyHint?: string;
   syntheticItem?: (query: string) => PaletteItem | null;
+  initialQuery?: string;
+  /**
+   * Called when the query starts with a mode prefix typed by the user
+   * (`>` for commands, `@` for symbols). Return true to claim it; the palette
+   * is expected to be replaced by the caller.
+   */
+  onPrefix?: (prefix: string, rest: string) => boolean;
+  /** Treat a trailing `:line[:col]` as a jump target instead of search text. */
+  parseLineSuffix?: boolean;
 }) {
-  const [query, setQuery] = useState("");
+  const [query, setQuery] = useState(initialQuery);
   const [active, setActive] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
@@ -54,8 +79,11 @@ export function Palette({
     // a small payload but we still don't want to do it once per item.
     const mru = readMRU();
     const now = Date.now();
+    // `file.ts:42` → search "file.ts" and remember the line for run().
+    const suffix = parseLineSuffix ? splitLineSuffix(query) : { text: query };
+    const query_ = suffix.text;
 
-    if (!query) {
+    if (!query_) {
       // Empty query — surface most-recently-used items at the top,
       // then fall back to insertion order for everything else. The
       // 60-row cap matches the previous behaviour. This is the VS Code
@@ -71,7 +99,7 @@ export function Palette({
 
     const scored: { item: PaletteItem; score: number; indices: number[] }[] = [];
     for (const item of items) {
-      const m = fzfScore(query, item.label);
+      const m = fzfScore(query_, item.label);
       if (m) {
         // MRU bonus stacks on top of the fuzzy score — capped at +12
         // (palette-mru.MAX_BONUS), small enough that it only bubbles
@@ -87,7 +115,7 @@ export function Palette({
       // tier. We DON'T pass positions because they'd be wrong for the
       // label text we render.
       if (item.sublabel) {
-        const sm = fzfScore(query, item.sublabel);
+        const sm = fzfScore(query_, item.sublabel);
         if (sm) {
           const bonus = getMRUBonusFrom(mru, item.id, now);
           scored.push({ item, score: sm.score - 8 + bonus, indices: [] });
@@ -100,7 +128,7 @@ export function Palette({
       // penalty as sublabel — both are non-label-text matches and
       // should rank equally against each other; only label wins.
       if (item.searchText) {
-        const sm = fzfScore(query, item.searchText);
+        const sm = fzfScore(query_, item.searchText);
         if (sm) {
           const bonus = getMRUBonusFrom(mru, item.id, now);
           scored.push({ item, score: sm.score - 8 + bonus, indices: [] });
@@ -109,7 +137,7 @@ export function Palette({
     }
     scored.sort((a, b) => b.score - a.score);
     return scored.slice(0, 60);
-  }, [items, query, syntheticItem]);
+  }, [items, query, syntheticItem, parseLineSuffix]);
 
   useEffect(() => {
     setActive(0);
@@ -120,7 +148,7 @@ export function Palette({
     row?.scrollIntoView({ block: "nearest" });
   }, [active]);
 
-  const pick = (i: number) => {
+  const pick = (i: number, side = false) => {
     const r = results[i];
     if (!r) return;
     onClose();
@@ -130,7 +158,12 @@ export function Palette({
     // `{ synthetic: true }` so palette-mru drops them on the floor —
     // see palette-mru.ts:recordPick.
     recordPick(r.item.id, { synthetic: syntheticItem?.(query)?.id === r.item.id });
-    void r.item.run();
+    if (side && r.item.runSide) {
+      void r.item.runSide();
+      return;
+    }
+    const { line, col } = parseLineSuffix ? splitLineSuffix(query) : ({} as { line?: number; col?: number });
+    void r.item.run(line ? { line, col } : undefined);
   };
 
   return (
@@ -145,7 +178,12 @@ export function Palette({
         <input
           ref={inputRef}
           value={query}
-          onChange={(e) => setQuery(e.target.value)}
+          onChange={(e) => {
+            const v = e.target.value;
+            const first = v[0];
+            if (onPrefix && (first === ">" || first === "@") && onPrefix(first, v.slice(1))) return;
+            setQuery(v);
+          }}
           placeholder={placeholder}
           onKeyDown={(e) => {
             if (e.key === "ArrowDown") {
@@ -156,7 +194,7 @@ export function Palette({
               setActive((i) => Math.max(0, i - 1));
             } else if (e.key === "Enter") {
               e.preventDefault();
-              pick(active);
+              pick(active, e.metaKey || e.ctrlKey || e.altKey);
             } else if (e.key === "Escape") {
               e.preventDefault();
               onClose();
@@ -184,7 +222,7 @@ export function Palette({
                 >
                   <div className="min-w-0 flex-1">
                     <div className="truncate">
-                      {query ? highlightMatch(item.label, indices) : item.label}
+                      {query && indices.length ? highlightMatch(item.label, indices) : item.label}
                     </div>
                     {item.sublabel && (
                       <div className="truncate text-[11px] text-[color:var(--ide-muted)]">

@@ -115,6 +115,14 @@ export async function buildProjectEnv(
 
       const settings = parseProjectSettings(project.settings)
 
+      // Per-tool action rules ("ask before merging"). Local runtimes get the
+      // full merged policy from the runtime manager instead.
+      if (process.env.SHOGO_LOCAL_MODE !== 'true') {
+        const { composeCloudPolicy } = await import('../security-policy')
+        const policy = composeCloudPolicy(settings?.security)
+        if (policy) env.SECURITY_POLICY = policy
+      }
+
       // Per-project workspace mount override (default: true = mounted)
       if (settings?.mountWorkspace === false) {
         env.MOUNT_WORKSPACE = 'false'
@@ -300,6 +308,15 @@ export async function buildProjectEnv(
   // with "fetch() URL is invalid". Derived from the same apiBase as the AI proxy
   // URLs, so it uses the public URL on metal and in-cluster DNS on k8s.
   env.TOOLS_PROXY_URL = buildToolsProxyUrl(apiBase)
+
+  // Marketplace apps with a granted install call `/api/v1` as themselves.
+  try {
+    const { appTokenForProject } = await import('../../services/app-install-grants.service')
+    const appToken = await appTokenForProject(projectId)
+    if (appToken) env.SHOGO_APP_TOKEN = appToken
+  } catch (err: any) {
+    console.warn(`[${prefix}] app token lookup failed for ${projectId}: ${err?.message ?? err}`)
+  }
 
   // PUBLIC_PREVIEW_URL — the externally-reachable, deterministic preview URL
   // ({projectId}.preview.{env}.shogo.ai). Pods created directly by the Knative

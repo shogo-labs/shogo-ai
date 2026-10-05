@@ -30,7 +30,7 @@ Best for fully local, offline-first use. See `apps/desktop/README.md`.
 - Bun
 - Node.js
 - Docker for local development
-- PostgreSQL
+- PostgreSQL with the [pgvector](https://github.com/pgvector/pgvector) extension available. Migrations run `CREATE EXTENSION IF NOT EXISTS vector`, so either connect as a superuser or have one run it once beforehand. The bundled `docker-compose.yml` builds a Postgres image that includes it.
 - Redis
 - S3-compatible object storage such as MinIO or AWS S3
 - At least one AI provider key such as `ANTHROPIC_API_KEY`

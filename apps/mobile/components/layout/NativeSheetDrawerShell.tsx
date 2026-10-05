@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
-import type { ReactNode } from 'react'
+import { useMemo, useState, type ReactNode } from 'react'
 import { Animated, Platform, View } from 'react-native'
 import { SafeAreaView, type Edge, useSafeAreaInsets } from 'react-native-safe-area-context'
 import type { useNativeSheetDrawer } from '../../lib/use-native-drawer-swipe'
+import { PhoneChromeOverlayContext } from './PhoneChromeOverlay'
 
 export interface NativeSheetDrawerShellProps {
   isWide: boolean
@@ -16,6 +17,8 @@ export interface NativeSheetDrawerShellProps {
   sidebarOverlay?: ReactNode
   header: ReactNode | null
   bottomNav?: ReactNode | null
+  /** Float `bottomNav` over the content instead of stacking it below. */
+  overlayBottomNav?: boolean
   children: ReactNode
   drawer: ReturnType<typeof useNativeSheetDrawer>
 }
@@ -34,9 +37,13 @@ export function NativeSheetDrawerShell({
   sidebarOverlay,
   header,
   bottomNav = null,
+  overlayBottomNav = false,
   children,
   drawer,
 }: NativeSheetDrawerShellProps) {
+  const [navHeight, setNavHeight] = useState(0)
+  const overlay = overlayBottomNav && !!bottomNav
+  const chrome = useMemo(() => ({ overlay, bottom: overlay ? navHeight : 0 }), [overlay, navHeight])
   const { drawerOpen, sheetSwipeHandlers, sheetStyle, sheetClipStyle, sheetFill, sheetCompositing, underlayStyle } =
     drawer
   const insets = useSafeAreaInsets()
@@ -94,9 +101,24 @@ export function NativeSheetDrawerShell({
                 shouldRasterizeIOS={flattenSheet}
                 renderToHardwareTextureAndroid={flattenSheet}
               >
-                {header}
-                <View className="flex-1">{children}</View>
-                {bottomNav}
+                <PhoneChromeOverlayContext.Provider value={chrome}>
+                  {header}
+                  <View className="flex-1">{children}</View>
+                  {overlay ? (
+                    <View
+                      pointerEvents="box-none"
+                      onLayout={(e) => {
+                        const next = Math.round(e.nativeEvent.layout.height)
+                        setNavHeight((prev) => (prev === next ? prev : next))
+                      }}
+                      style={{ marginTop: -navHeight, zIndex: 20 }}
+                    >
+                      {bottomNav}
+                    </View>
+                  ) : (
+                    bottomNav
+                  )}
+                </PhoneChromeOverlayContext.Provider>
               </View>
             </Animated.View>
           </Animated.View>

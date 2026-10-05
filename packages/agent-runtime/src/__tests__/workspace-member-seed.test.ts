@@ -15,7 +15,9 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
+  applyMemberTechStackMarker,
   memberHasProjectSource,
+  parseHostConfirmedNewProjectIds,
   resolveMemberTechStackId,
   seedEmptyWorkspaceMember,
   shouldSeedAnchorMember,
@@ -134,11 +136,38 @@ describe('resolveMemberTechStackId', () => {
   })
 })
 
+describe('applyMemberTechStackMarker', () => {
+  const raw = JSON.stringify({ a: 'custom' })
+
+  test('stamps the settings stack over a stale or missing marker, once', () => {
+    const dir = join(root, 'a')
+    mkdirSync(dir)
+    writeFileSync(join(dir, '.tech-stack'), 'react-app')
+    expect(applyMemberTechStackMarker(dir, 'a', raw)).toBe(true)
+    expect(readFileSync(join(dir, '.tech-stack'), 'utf-8')).toBe('custom')
+    expect(applyMemberTechStackMarker(dir, 'a', raw)).toBe(false)
+
+    const fresh = join(root, 'fresh')
+    mkdirSync(fresh)
+    expect(applyMemberTechStackMarker(fresh, 'a', raw)).toBe(true)
+    expect(readFileSync(join(fresh, '.tech-stack'), 'utf-8')).toBe('custom')
+  })
+
+  test('leaves the folder alone without a settings entry or a folder', () => {
+    const dir = join(root, 'b')
+    mkdirSync(dir)
+    writeFileSync(join(dir, '.tech-stack'), 'expo-app')
+    expect(applyMemberTechStackMarker(dir, 'b', raw)).toBe(false)
+    expect(readFileSync(join(dir, '.tech-stack'), 'utf-8')).toBe('expo-app')
+    expect(applyMemberTechStackMarker(join(root, 'missing'), 'a', raw)).toBe(false)
+    expect(existsSync(join(root, 'missing'))).toBe(false)
+  })
+})
+
 describe('shouldSeedAnchorMember', () => {
   const base = {
     anchorProjectId: 'anchor',
     memberProjectIds: ['anchor', 'other'],
-    hostMediatedDurability: false,
     newProjectIds: [] as string[],
   }
 
@@ -146,20 +175,28 @@ describe('shouldSeedAnchorMember', () => {
     expect(shouldSeedAnchorMember({ ...base, newProjectIds: ['anchor'] })).toBe(true)
   })
 
-  test('seeds under host-mediated durability (host overlays any backup afterwards)', () => {
-    expect(shouldSeedAnchorMember({ ...base, hostMediatedDurability: true })).toBe(true)
-  })
-
-  test('does not seed when the anchor download failed, was skipped, or found content', () => {
+  test('does not seed an anchor whose backup was not confirmed absent', () => {
     expect(shouldSeedAnchorMember(base)).toBe(false)
     expect(shouldSeedAnchorMember({ ...base, newProjectIds: ['other'] })).toBe(false)
   })
 
   test('requires an explicit anchor that is one of the members', () => {
-    expect(shouldSeedAnchorMember({ ...base, anchorProjectId: undefined, hostMediatedDurability: true })).toBe(false)
-    expect(shouldSeedAnchorMember({ ...base, anchorProjectId: '  ', hostMediatedDurability: true })).toBe(false)
-    expect(
-      shouldSeedAnchorMember({ ...base, anchorProjectId: 'stranger', hostMediatedDurability: true, newProjectIds: ['stranger'] }),
-    ).toBe(false)
+    expect(shouldSeedAnchorMember({ ...base, anchorProjectId: undefined, newProjectIds: ['anchor'] })).toBe(false)
+    expect(shouldSeedAnchorMember({ ...base, anchorProjectId: '  ', newProjectIds: ['anchor'] })).toBe(false)
+    expect(shouldSeedAnchorMember({ ...base, anchorProjectId: 'stranger', newProjectIds: ['stranger'] })).toBe(false)
+  })
+})
+
+describe('parseHostConfirmedNewProjectIds', () => {
+  test('absent means a host that predates the variable', () => {
+    expect(parseHostConfirmedNewProjectIds(undefined)).toBeNull()
+  })
+
+  test('empty means the host confirmed no member is new', () => {
+    expect(parseHostConfirmedNewProjectIds('')).toEqual([])
+  })
+
+  test('parses a comma-separated list', () => {
+    expect(parseHostConfirmedNewProjectIds(' a, b ,,c ')).toEqual(['a', 'b', 'c'])
   })
 })

@@ -13,7 +13,7 @@ export default function Root({ children }: PropsWithChildren) {
         <meta name="google" content="notranslate" />
         <meta
           name="viewport"
-          content="width=device-width, initial-scale=1, shrink-to-fit=no"
+          content="width=device-width, initial-scale=1, shrink-to-fit=no, viewport-fit=cover"
         />
         <link rel="icon" href={`/favicon.ico?v=${encodeURIComponent(buildHash)}`} />
         <script
@@ -56,7 +56,7 @@ export default function Root({ children }: PropsWithChildren) {
         <style
           id="shogo-html-overflow-fix"
           dangerouslySetInnerHTML={{
-            __html: `html{overflow-x:hidden;max-width:100vw}`,
+            __html: `html{overflow-x:hidden;max-width:100vw;background-color:#FFFFFF}html.dark{background-color:#121212}`,
           }}
         />
       </head>

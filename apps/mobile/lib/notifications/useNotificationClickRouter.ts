@@ -18,12 +18,21 @@ import {
 } from './chat-notifier'
 
 function buildChatHref(data: ChatNotificationClickData) {
+  if (data.conversationId) {
+    return {
+      pathname: '/(app)/c/[conversationId]' as const,
+      params: data.threadRootId
+        ? { conversationId: data.conversationId, thread: data.threadRootId }
+        : { conversationId: data.conversationId },
+    }
+  }
   if (data.taskId) {
     return {
       pathname: '/(app)/tasks' as const,
       params: { taskId: data.taskId },
     }
   }
+  if (!('sessionId' in data) || !data.sessionId) return null
   return {
     pathname: '/(app)/projects/[id]' as const,
     params: { id: data.projectId, chatSessionId: data.sessionId },
@@ -35,8 +44,10 @@ export function useNotificationClickRouter(): void {
 
   useEffect(() => {
     const unsubscribe = subscribeNotificationClicks((data) => {
+      const href = buildChatHref(data)
+      if (!href) return
       try {
-        router.push(buildChatHref(data) as any)
+        router.push(href as any)
       } catch {
         // ignore routing errors
       }
@@ -46,8 +57,10 @@ export function useNotificationClickRouter(): void {
     // while killed, pick up that initial response and route accordingly.
     void consumeColdStartNotification().then((data) => {
       if (!data) return
+      const href = buildChatHref(data)
+      if (!href) return
       try {
-        router.push(buildChatHref(data) as any)
+        router.push(href as any)
       } catch {
         // ignore routing errors
       }

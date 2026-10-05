@@ -15,13 +15,16 @@
  */
 
 import React, {
+  forwardRef,
   memo,
   useCallback,
   useEffect,
+  useImperativeHandle,
   useMemo,
   useRef,
   useState,
   type ComponentType,
+  type ReactNode,
 } from "react";
 import {
   View,
@@ -32,15 +35,16 @@ import {
   ScrollView,
   Platform,
   Animated,
+  type ViewStyle,
 } from "react-native";
 import { cn } from "@shogo/shared-ui/primitives";
 import {
   NATIVE_PHONE_COMPOSER_PILL_HEIGHT,
-  NATIVE_PHONE_GUTTER,
   NATIVE_PHONE_ICON_STROKE,
   NATIVE_PHONE_SHEET_COMPACT_RATIO,
 } from "../../lib/native-phone-layout";
-import { CHAT_TRANSCRIPT_MAX_WIDTH } from "../../lib/native-composer-keyboard";
+import { chatColumn, chatColumnStyle } from "../../lib/chat-column";
+import { useIsInsideChatColumn } from "./ChatColumn";
 import {
   Popover,
   PopoverBackdrop,
@@ -66,6 +70,10 @@ import {
 /** Full composer (model picker + interaction modes, no forced mode) — the default for any caller that doesn't pass `composer`. */
 const DEFAULT_CHAT_INPUT_COMPOSER: WorkspaceExperienceComposer =
   workspaceExperience("team").composer;
+const MESSAGING_COMPOSER: WorkspaceExperienceComposer = {
+  showModelPicker: false,
+  showInteractionModes: false,
+};
 import {
   Plus,
   Square,
@@ -97,10 +105,7 @@ import { FileViewerModal } from "./FileViewerModal";
 import { ImagePreviewModal } from "./ImagePreviewModal";
 import { VideoPreviewModal } from "./VideoPreviewModal";
 import { PastedTextChip } from "./PastedTextChip";
-import {
-  LiquidGlassBackdrop,
-  supportsLiquidGlass,
-} from "../ui/LiquidGlassBackdrop";
+import { LiquidGlassBackdrop } from "../ui/LiquidGlassBackdrop";
 import {
   PROMINENT_COMPOSER_CHROME_Z_INDEX,
   PROMINENT_COMPOSER_HEIGHT_EASING,
@@ -119,6 +124,10 @@ import { AgentClient, type AgentHistoryResult } from "@shogo-ai/sdk/agent";
 import { agentFetch } from "../../lib/agent-fetch";
 import { useChatContextSafe } from "./ChatContext";
 import type { IdeContextState, IdeFileResult } from "./ideBridge";
+import {
+  AGENT_PLACEHOLDER_PREFIX,
+  useTypingPlaceholder,
+} from "../../hooks/useTypingPlaceholder";
 
 export const DEFAULT_MODEL_PRO = "claude-sonnet-4-6";
 export const DEFAULT_MODEL_FREE = "claude-haiku-4-5-20251001";
@@ -235,7 +244,43 @@ export type ChatReference =
       slug: string;
       summary?: string;
       label?: string;
-    };
+    }
+  /** Picked from a host-supplied completion source (e.g. a teammate). */
+  | { type: "mention"; id: string; name: string; label?: string };
+
+/** One row in a host-supplied completion menu. */
+export interface ComposerCompletionItem {
+  key: string;
+  label: string;
+  subtitle?: string | null;
+  icon?: ReactNode;
+  /** Replaces the typed trigger + query; a space is added after it. */
+  insert: string;
+  /** Tracked like an "@" reference: drawn as a pill and sent with the message. */
+  reference?: ChatReference;
+  onSelect?: () => void;
+}
+
+/**
+ * A trigger-driven suggestion menu (e.g. "@" for teammates, ":" for emoji).
+ * Passing any sources to `ChatInput` replaces its built-in "@" menu.
+ */
+export interface ComposerCompletionSource {
+  id: string;
+  /** The trigger token ending at `caret`, if one is being typed. */
+  detect: (text: string, caret: number) => { start: number; query: string } | null;
+  items: (query: string) => ComposerCompletionItem[];
+}
+
+export interface ChatInputHandle {
+  focus: () => void;
+  /** Insert text at the caret, padded with spaces. */
+  insertText: (text: string) => void;
+  /** Same as pressing send. */
+  submit: () => void;
+  /** Stage files (web `File`s, e.g. dropped elsewhere on the screen). */
+  addFiles: (files: File[]) => void;
+}
 
 /** Lightweight sibling-project shape the composer needs for the "@" menu. */
 export interface ProjectMentionOption {
@@ -274,6 +319,7 @@ function referenceKey(ref: ChatReference): string {
   if (ref.type === "project") return `project:${ref.id}`;
   if (ref.type === "chat") return `chat:${ref.id}`;
   if (ref.type === "plan") return `plan:${ref.planId}`;
+  if (ref.type === "mention") return `mention:${ref.id}`;
   return `workspace:${ref.id}`;
 }
 
@@ -381,6 +427,9 @@ export type RestoreDraftRequest = {
   nonce: number;
   content: string;
   files?: FileAttachment[];
+  references?: ChatReference[];
+  /** Defaults to true. */
+  focus?: boolean;
 };
 
 interface SkillOption {
@@ -509,9 +558,38 @@ export interface ChatInputProps {
   flush?: boolean;
   /** The workspace-agent shell uses a quieter, focused composer. */
   presentation?: "agent" | "studio";
+  /**
+   * False for person-to-person messaging: hides the model, mode,
+   * environment, and quick-action controls.
+   */
+  agentControls?: boolean;
+  /** Rendered at the start of the desktop toolbar. */
+  leadingControls?: ReactNode;
+  /** Rendered in the desktop toolbar just before the send button. */
+  trailingControls?: ReactNode;
+  /** Extra `ComposerPlusSection`s at the top of the phone + menu. */
+  plusMenuExtras?: ReactNode;
+  /** Replaces dictation on the empty-composer mic button. */
+  onVoiceStart?: () => void | Promise<void>;
+  /** Rotating "Ask Shogo to …" placeholder while the input is empty. */
+  typingPlaceholder?: boolean;
+  /** Shows a spinner on send and locks the input. */
+  submitting?: boolean;
+  /** Replaces the built-in "@" menu (files, projects, chats, plans). */
+  completions?: ComposerCompletionSource[];
+  /** Applied to every typed change, e.g. swapping finished `:shortcode:`s. */
+  transformText?: (text: string) => string;
+  /** Called when the user changes the text (not on restore or submit). */
+  onTextChange?: (text: string, references: ChatReference[]) => void;
+  /** Web keydown hook; return true to swallow the key. */
+  onKeyPress?: (event: any, text: string) => boolean | void;
+  maxFileSizeBytes?: number;
+  inputTestID?: string;
+  /** Accessible name of the text box; surfaces with their own composer (team chat) name it themselves. */
+  inputAccessibilityLabel?: string;
 }
 
-function ChatInputImpl({
+const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInputImpl({
   onSubmit,
   disabled = false,
   placeholder = "Ask Shogo...",
@@ -549,8 +627,25 @@ function ChatInputImpl({
   highlighted = false,
   flush = false,
   presentation = "studio",
-}: ChatInputProps) {
-  const composer = composerProp ?? DEFAULT_CHAT_INPUT_COMPOSER;
+  agentControls = true,
+  leadingControls,
+  trailingControls,
+  plusMenuExtras,
+  onVoiceStart,
+  typingPlaceholder = false,
+  submitting = false,
+  completions,
+  transformText,
+  onTextChange,
+  onKeyPress: onKeyPressProp,
+  maxFileSizeBytes,
+  inputTestID = "project-composer-input",
+  inputAccessibilityLabel = "Chat message input",
+}: ChatInputProps, ref) {
+  const composer = agentControls
+    ? composerProp ?? DEFAULT_CHAT_INPUT_COMPOSER
+    : MESSAGING_COMPOSER;
+  const inputLocked = disabled || submitting;
   const { features } = usePlatformConfig();
   const usesMobileWorkspaceChrome = useMobileWorkspaceChrome();
   const effectiveIsPro = features.billing ? isPro : true;
@@ -567,7 +662,6 @@ function ChatInputImpl({
     prominent: true,
     flush,
   });
-  const liquidGlass = useProminentComposer && supportsLiquidGlass();
   const sendChrome = composerSendChrome(isNative || useProminentComposer);
   const mobileChatText = usesMobileWorkspaceChrome || useProminentComposer;
   const isPersonalWorkspace = useWorkspaceExperience().kind === "personal";
@@ -613,8 +707,10 @@ function ChatInputImpl({
     addPastedText,
     handleRemovePastedText,
     handleUpdatePastedText,
+    processFiles,
     resetAttachments,
-  } = useComposerAttachments();
+  } = useComposerAttachments({ maxFileSizeBytes });
+  const fileSizeLimit = maxFileSizeBytes ?? MAX_FILE_SIZE;
   // Coalesced-flush scaffolding for `handleChangeText` (declared here, ahead
   // of `composerDisplayValue` below, so the rendered TextInput can always
   // show the freshest typed text even on a render that fires BEFORE the
@@ -750,7 +846,9 @@ function ChatInputImpl({
     setPastedTexts([]);
     setViewingPastedId(null);
     setFileError(null);
-    setTimeout(() => textInputRef.current?.focus(), 0);
+    setReferences(restoreDraftRequest.references ?? []);
+    if (restoreDraftRequest.focus !== false)
+      setTimeout(() => textInputRef.current?.focus(), 0);
     onDraftRestored?.(restoreDraftRequest.nonce);
   }, [restoreDraftRequest, cancelPendingTextChangeFlush, onDraftRestored]);
 
@@ -813,16 +911,70 @@ function ChatInputImpl({
   // once the composer grows past its max height and starts scrolling.
   const [overlayScrollY, setOverlayScrollY] = useState(0);
 
+  const [completion, setCompletion] = useState<{
+    source: ComposerCompletionSource;
+    start: number;
+    end: number;
+    query: string;
+  } | null>(null);
+  const [completionIndex, setCompletionIndex] = useState(0);
+  // Escape hides a completion menu until its trigger token is gone.
+  const dismissedCompletionStartRef = useRef<number | null>(null);
+  const completionRef = useRef(completion);
+  completionRef.current = completion;
+  const caretRef = useRef<number | null>(null);
+  const completionItems = useMemo(
+    () => (completion ? completion.source.items(completion.query) : []),
+    [completion]
+  );
+
+  const updateCompletion = useCallback(
+    (text: string, caret: number) => {
+      let next: typeof completion = null;
+      let anyToken = false;
+      for (const source of completions ?? []) {
+        const token = source.detect(text, caret);
+        if (!token) continue;
+        anyToken = true;
+        if (token.start === dismissedCompletionStartRef.current) continue;
+        next = { source, start: token.start, end: caret, query: token.query };
+        break;
+      }
+      if (!anyToken) dismissedCompletionStartRef.current = null;
+      const prev = completionRef.current;
+      if (!prev && !next) return;
+      if (
+        prev &&
+        next &&
+        prev.source === next.source &&
+        prev.start === next.start &&
+        prev.end === next.end &&
+        prev.query === next.query
+      )
+        return;
+      completionRef.current = next;
+      setCompletion(next);
+      setCompletionIndex(0);
+    },
+    [completions]
+  );
+
   const closeMentionMenu = useCallback(() => {
     setShowMentionMenu(false);
     setMentionQuery("");
     setMentionIndex(0);
     mentionTokenRef.current = null;
     activeMentionStateRef.current = null;
+    setCompletion(null);
   }, []);
 
   // Re-evaluate the active "@" token whenever the text or caret changes.
   const updateMentionState = useCallback((text: string, caret: number) => {
+    caretRef.current = caret;
+    if (completions) {
+      updateCompletion(text, caret);
+      return;
+    }
     const token = detectMentionToken(text, caret);
     if (!token) {
       if (mentionTokenRef.current) {
@@ -851,7 +1003,7 @@ function ChatInputImpl({
     setShowMentionMenu(true);
     setMentionIndex(0);
     setMentionQuery((prev) => (prev === token.query ? prev : token.query));
-  }, []);
+  }, [completions, updateCompletion]);
 
   // Debounced file search against the project's agent workspace, matched by
   // FILE NAME (the composer "@" menu is a name picker, not a content search).
@@ -1177,6 +1329,63 @@ function ChatInputImpl({
     [addReference, closeMentionMenu, cancelPendingTextChangeFlush]
   );
 
+  const referencesRef = useRef(references);
+  referencesRef.current = references;
+
+  const placeCaret = useCallback((caret: number) => {
+    caretRef.current = caret;
+    setSelectionOverride({ start: caret, end: caret });
+    setTimeout(() => {
+      textInputRef.current?.focus();
+      setSelectionOverride(undefined);
+    }, 0);
+  }, []);
+
+  const selectCompletion = useCallback(
+    (item: ComposerCompletionItem) => {
+      const active = completionRef.current;
+      if (!active) return;
+      cancelPendingTextChangeFlush();
+      const base = inputValueRef.current;
+      const start = Math.max(0, Math.min(active.start, base.length));
+      const end = Math.max(start, Math.min(active.end, base.length));
+      const insert = `${item.insert} `;
+      const next = base.slice(0, start) + insert + base.slice(end);
+      inputValueRef.current = next;
+      setInputValue(next);
+      let nextRefs = referencesRef.current;
+      if (
+        item.reference &&
+        !nextRefs.some((r) => referenceKey(r) === referenceKey(item.reference!))
+      ) {
+        nextRefs = [...nextRefs, item.reference];
+        setReferences(nextRefs);
+      }
+      item.onSelect?.();
+      completionRef.current = null;
+      setCompletion(null);
+      placeCaret(start + insert.length);
+      onTextChange?.(next, nextRefs);
+    },
+    [cancelPendingTextChangeFlush, onTextChange, placeCaret]
+  );
+
+  const insertText = useCallback(
+    (insert: string) => {
+      cancelPendingTextChangeFlush();
+      const base = inputValueRef.current;
+      const at = Math.min(caretRef.current ?? base.length, base.length);
+      const before = base.slice(0, at);
+      const pad = before && !/\s$/.test(before) ? " " : "";
+      const next = `${before}${pad}${insert} ${base.slice(at)}`;
+      inputValueRef.current = next;
+      setInputValue(next);
+      placeCaret(at + pad.length + insert.length + 1);
+      onTextChange?.(next, referencesRef.current);
+    },
+    [cancelPendingTextChangeFlush, onTextChange, placeCaret]
+  );
+
   // Keep references in sync with what's actually visible: if the user edits or
   // deletes a mention's inline "@token", drop the matching reference so we
   // don't ship context the composer no longer shows.
@@ -1212,12 +1421,12 @@ function ChatInputImpl({
       executeNativeAttachAction(action, {
         currentCount: pendingFiles.length,
         maxFiles: MAX_FILES,
-        maxFileSizeBytes: MAX_FILE_SIZE,
+        maxFileSizeBytes: fileSizeLimit,
         onFiles: applyPickedFiles,
         onError: (message) => setFileError(message),
       });
     },
-    [applyPickedFiles, closePlusMenu, pendingFiles.length]
+    [applyPickedFiles, closePlusMenu, pendingFiles.length, fileSizeLimit]
   );
 
   const appendTranscriptToInput = useCallback(
@@ -1255,6 +1464,12 @@ function ChatInputImpl({
       ? voiceInput.liveTranscript
       : pendingTextChangeRef.current?.text ?? inputValue;
   const composerEmpty = !composerDisplayValue.trim();
+  const typedPlaceholder = useTypingPlaceholder(undefined, {
+    enabled: typingPlaceholder && composerEmpty,
+  });
+  const effectivePlaceholder = typingPlaceholder
+    ? `${AGENT_PLACEHOLDER_PREFIX}${typedPlaceholder}`
+    : placeholder;
   useEffect(() => {
     if (!useProminentComposer) return;
 
@@ -1343,7 +1558,7 @@ function ChatInputImpl({
         pendingFiles.length === 0 &&
         pastedTexts.length === 0 &&
         references.length === 0) ||
-      disabled ||
+      inputLocked ||
       isProcessingFiles ||
       voiceInput.isBusy
     ) {
@@ -1380,7 +1595,7 @@ function ChatInputImpl({
 
     textInputRef.current?.focus();
   }, [
-    disabled,
+    inputLocked,
     onSubmit,
     pendingFiles,
     isProcessingFiles,
@@ -1478,7 +1693,8 @@ function ChatInputImpl({
   const SYNC_BURST_LIMIT = 20;
 
   const handleChangeText = useCallback(
-    (text: string) => {
+    (raw: string) => {
+      const text = transformText ? transformText(raw) : raw;
       const change = resolveChatInputTextChange(
         inputValueRef.current,
         text,
@@ -1504,6 +1720,7 @@ function ChatInputImpl({
       }
 
       inputValueRef.current = change.text;
+      onTextChange?.(change.text, referencesRef.current);
 
       if (
         pendingTextChangeRef.current == null &&
@@ -1531,35 +1748,56 @@ function ChatInputImpl({
       closeMentionMenu,
       settleTextChangeFrame,
       cancelPendingTextChangeFlush,
+      transformText,
+      onTextChange,
     ]
+  );
+
+  const handleSubmitRef = useRef(handleSubmit);
+  handleSubmitRef.current = handleSubmit;
+  useImperativeHandle(
+    ref,
+    () => ({
+      focus: () => textInputRef.current?.focus(),
+      insertText,
+      submit: () => handleSubmitRef.current(),
+      addFiles: (files: File[]) => processFiles(files),
+    }),
+    [insertText, processFiles]
   );
 
   const removeReference = useCallback((key: string) => {
     setReferences((prev) => prev.filter((ref) => referenceKey(ref) !== key));
   }, []);
+  const insideChatColumn = useIsInsideChatColumn();
+  const outerColumnStyle: ViewStyle | undefined =
+    flush || insideChatColumn
+      ? undefined
+      : useProminentComposer
+      ? chatColumnStyle({ presentation, phone: true })
+      : {
+          paddingHorizontal: chatColumn({
+            presentation,
+            phone: isPhoneChrome,
+          }).gutter,
+        };
   return (
     <View
+      // Vertical padding only. Horizontal placement comes from the shared
+      // chat column (lib/chat-column): either an ancestor already applied it
+      // (ProjectComposerDock) or, when rendered standalone, `outerColumnStyle`.
       className={cn(
         flush
           ? "pb-3"
           : useProminentComposer
           ? "w-full self-center pb-2 pt-0"
           : presentation === "agent"
-          ? "w-full self-center px-6 pb-4 pt-0"
+          ? "w-full self-center pb-4 pt-0"
           : isNative
-          ? "px-2 pb-4 pt-0"
-          : "p-3 pt-0"
+          ? "pb-4 pt-0"
+          : "pb-3 pt-0"
       )}
-      style={
-        useProminentComposer && !flush
-          ? {
-              width: "100%",
-              maxWidth: CHAT_TRANSCRIPT_MAX_WIDTH,
-              alignSelf: "center",
-              paddingHorizontal: NATIVE_PHONE_GUTTER,
-            }
-          : undefined
-      }
+      style={outerColumnStyle}
     >
       {ideMode && (ideContext?.activeFile || references.length > 0) && (
         <View className="mb-2 gap-1.5">
@@ -1652,6 +1890,15 @@ function ChatInputImpl({
       {voiceInput.error && (
         <Text className="text-sm text-destructive mb-2">
           {voiceInput.error}
+          {voiceInput.micBlocked ? (
+            <Text
+              className="text-sm text-destructive underline"
+              onPress={voiceInput.openMicSettings}
+              accessibilityRole="link"
+            >
+              {" Open System Settings"}
+            </Text>
+          ) : null}
         </Text>
       )}
 
@@ -1915,6 +2162,41 @@ function ChatInputImpl({
           </View>
         )}
 
+        {completion && completionItems.length > 0 && (
+          <View
+            testID={`composer-completions-${completion.source.id}`}
+            className="absolute bottom-full left-0 right-0 mb-1 max-h-[280px] rounded-md border border-border bg-popover shadow-md z-50"
+          >
+            <ScrollView keyboardShouldPersistTaps="handled">
+              {completionItems.map((item, i) => (
+                <Pressable
+                  key={item.key}
+                  onPress={() => selectCompletion(item)}
+                  className={cn(
+                    "w-full flex-row items-center gap-2 px-3 py-1.5",
+                    i === completionIndex ? "bg-accent" : "active:bg-accent"
+                  )}
+                >
+                  {item.icon ? (
+                    <View className="w-4 items-center">{item.icon}</View>
+                  ) : null}
+                  <Text className="text-xs text-foreground" numberOfLines={1}>
+                    {item.label}
+                  </Text>
+                  {item.subtitle ? (
+                    <Text
+                      className="flex-1 text-[10px] text-muted-foreground"
+                      numberOfLines={1}
+                    >
+                      {item.subtitle}
+                    </Text>
+                  ) : null}
+                </Pressable>
+              ))}
+            </ScrollView>
+          </View>
+        )}
+
         {/* Main input container */}
         <View
           ref={dropZoneRef as any}
@@ -1945,9 +2227,7 @@ function ChatInputImpl({
                   minHeight: isNative
                     ? NATIVE_PHONE_COMPOSER_PILL_HEIGHT
                     : undefined,
-                  backgroundColor: liquidGlass
-                    ? "transparent"
-                    : chatgptComposer.fill,
+                  backgroundColor: "transparent",
                 }
               : undefined
           }
@@ -2205,6 +2485,38 @@ function ChatInputImpl({
                 }}
                 onSubmitEditing={handleSubmitEditing}
                 onKeyPress={(e: any) => {
+                  if (
+                    Platform.OS === "web" &&
+                    completion &&
+                    completionItems.length > 0
+                  ) {
+                    const key = e.nativeEvent.key;
+                    const count = completionItems.length;
+                    if (key === "ArrowDown") {
+                      e.preventDefault();
+                      setCompletionIndex((i) => (i + 1) % count);
+                      return;
+                    }
+                    if (key === "ArrowUp") {
+                      e.preventDefault();
+                      setCompletionIndex((i) => (i - 1 + count) % count);
+                      return;
+                    }
+                    if (key === "Enter" || key === "Tab") {
+                      e.preventDefault();
+                      const item =
+                        completionItems[Math.min(completionIndex, count - 1)];
+                      if (item) selectCompletion(item);
+                      return;
+                    }
+                    if (key === "Escape") {
+                      e.preventDefault();
+                      dismissedCompletionStartRef.current = completion.start;
+                      completionRef.current = null;
+                      setCompletion(null);
+                      return;
+                    }
+                  }
                   // While the "@" menu is open, intercept navigation keys so they
                   // drive the menu instead of the textarea / message submit.
                   if (
@@ -2241,6 +2553,10 @@ function ChatInputImpl({
                       return;
                     }
                   }
+                  if (onKeyPressProp?.(e, inputValueRef.current)) {
+                    e.preventDefault?.();
+                    return;
+                  }
                   if (
                     composer.showInteractionModes &&
                     Platform.OS === "web" &&
@@ -2260,11 +2576,11 @@ function ChatInputImpl({
                     handleSubmit();
                   }
                 }}
-                placeholder={placeholder}
+                placeholder={effectivePlaceholder}
                 placeholderTextColor={chatgptComposer.placeholder}
-                testID="project-composer-input"
-                accessibilityLabel="Chat message input"
-                editable={!disabled && !voiceInput.isRecording}
+                testID={inputTestID}
+                accessibilityLabel={inputAccessibilityLabel}
+                editable={!inputLocked && !voiceInput.isRecording}
                 multiline
                 {...COMPOSER_KEYBOARD_PROPS}
                 onContentSizeChange={(e) => {
@@ -2373,6 +2689,7 @@ function ChatInputImpl({
                     onAttach={handlePlusAttach}
                     attachDisabled={pendingFiles.length >= MAX_FILES}
                   >
+                    {plusMenuExtras}
                     {showModelPicker ? (
                       <ComposerPlusSection
                         id="model"
@@ -2410,17 +2727,19 @@ function ChatInputImpl({
                         />
                       </ComposerPlusSection>
                     ) : null}
-                    <ComposerPlusSection
-                      id="environment"
-                      label="Environment"
-                      Icon={Cloud}
-                    >
-                      <EnvironmentPicker
-                        disabled={disabled}
-                        presentation="list"
-                        listActive={plusExpandedId === "environment"}
-                      />
-                    </ComposerPlusSection>
+                    {agentControls ? (
+                      <ComposerPlusSection
+                        id="environment"
+                        label="Environment"
+                        Icon={Cloud}
+                      >
+                        <EnvironmentPicker
+                          disabled={inputLocked}
+                          presentation="list"
+                          listActive={plusExpandedId === "environment"}
+                        />
+                      </ComposerPlusSection>
+                    ) : null}
                     {quickActions.length > 0 ? (
                       <ComposerPlusSection
                         id="quick-actions"
@@ -2463,6 +2782,7 @@ function ChatInputImpl({
                 </>
               ) : (
                 <>
+                  {leadingControls}
                   {presentation === "agent" &&
                   (composer.showInteractionModes ||
                     showModelPicker ||
@@ -2736,7 +3056,9 @@ function ChatInputImpl({
                   {/* Dual Plan toggle — surfaces only while in Plan mode. Persistent
                 per-device preference: once on, every plan generated in Plan
                 mode also produces a stakeholder summary. */}
-                  {interactionMode === "plan" && presentation !== "agent" && (
+                  {interactionMode === "plan" &&
+                    presentation !== "agent" &&
+                    agentControls && (
                     <WebTooltip label="Also generate a stakeholder summary">
                       <Pressable
                         testID="dual-plan-toggle"
@@ -2838,9 +3160,9 @@ function ChatInputImpl({
                   )}
 
                   {/* Environment selector — pick Cloud or a paired machine */}
-                  {presentation !== "agent" ? (
+                  {presentation !== "agent" && agentControls ? (
                     <EnvironmentPicker
-                      disabled={disabled}
+                      disabled={inputLocked}
                       prominentMobile={isNative}
                     />
                   ) : null}
@@ -3011,10 +3333,35 @@ function ChatInputImpl({
                         size={isNative ? 18 : 12}
                       />
                     </Pressable>
+                    {trailingControls}
                   </>
                 )}
 
-                {isStreaming ? (
+                {submitting ? (
+                  <ComposerSendButton
+                    canSend={false}
+                    loading
+                    onPress={handleSubmit}
+                    disabled
+                    prominent={useProminentComposer}
+                    sizeClassName={sendChrome.sizeClassName}
+                    iconSize={sendChrome.iconSize}
+                    fillClassName={useProminentComposer ? "" : "bg-primary"}
+                    iconClassName={
+                      useProminentComposer ? "" : "text-primary-foreground"
+                    }
+                    fillColor={
+                      useProminentComposer
+                        ? chatgptComposer.sendFill
+                        : undefined
+                    }
+                    iconColor={
+                      useProminentComposer
+                        ? chatgptComposer.sendIcon
+                        : undefined
+                    }
+                  />
+                ) : isStreaming ? (
                   <>
                     <Pressable
                       onPress={onStop}
@@ -3085,16 +3432,24 @@ function ChatInputImpl({
                         : undefined
                     }
                   />
-                ) : voiceInput.canRecord ? (
+                ) : voiceInput.canRecord || onVoiceStart ? (
                   <Pressable
                     onPress={() => {
                       voiceInput.clearError();
+                      if (onVoiceStart) {
+                        void Promise.resolve(onVoiceStart()).catch(() => {});
+                        return;
+                      }
                       voiceInput.toggleRecording().catch(() => {});
                     }}
                     hitSlop={isNative ? 4 : undefined}
                     disabled={disabled || isProcessingFiles}
                     role="button"
-                    accessibilityLabel="Start voice recording"
+                    accessibilityLabel={
+                      onVoiceStart
+                        ? "Start voice project creation"
+                        : "Start voice recording"
+                    }
                     className={cn(
                       "rounded-full items-center justify-center active:opacity-70",
                       isNative && !useProminentComposer
@@ -3134,10 +3489,10 @@ function ChatInputImpl({
             <ProminentComposerField
               ref={textInputRef}
               value={composerDisplayValue}
-              placeholder={placeholder}
+              placeholder={effectivePlaceholder}
               empty={composerEmpty}
               stacked={prominentExpansion.stacked}
-              disabled={disabled || voiceInput.isRecording}
+              disabled={inputLocked || voiceInput.isRecording}
               dimWhenDisabled={dimWhenDisabled}
               inputHeight={inputHeight}
               inputHeightAnimation={inputHeightAnimation}
@@ -3147,8 +3502,8 @@ function ChatInputImpl({
               placeholderColor={chatgptComposer.placeholder}
               onMeasureTextLayout={prominentExpansion.onMeasureTextLayout}
               placeholderOpacity={placeholderOpacity}
-              testID="project-composer-input"
-              accessibilityLabel="Chat message input"
+              testID={inputTestID}
+              accessibilityLabel={inputAccessibilityLabel}
               selection={selectionOverride}
               onChangeText={handleChangeText}
               onSelectionChange={(e) => {
@@ -3203,14 +3558,14 @@ function ChatInputImpl({
           onOpenChange={setAttachSheetOpen}
           currentCount={pendingFiles.length}
           maxFiles={MAX_FILES}
-          maxFileSizeBytes={MAX_FILE_SIZE}
+          maxFileSizeBytes={fileSizeLimit}
           onFiles={applyPickedFiles}
           onError={(message) => setFileError(message)}
         />
       )}
     </View>
   );
-}
+});
 
 /**
  * Memoized so ChatPanel re-renders driven by streaming-token state

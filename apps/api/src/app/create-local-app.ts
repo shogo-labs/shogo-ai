@@ -16,10 +16,14 @@ import { localProjectMetadataRoutes } from '../routes/local-project-metadata'
 import { localHeartbeatRoutes } from '../routes/local-heartbeat'
 import { localFilesRoutes } from '../routes/local-files'
 import { externalPreviewRoutes } from '../routes/external-preview'
+import { projectExportImportRoutes } from '../routes/project-export-import'
 import { projectChatRoutes } from '../routes/project-chat'
 import { workspaceChatRoutes } from '../routes/workspace-chat'
 import { workspaceAgentRoutes, sessionAuthorize } from '../routes/workspace-agent'
 import { workspaceMeetingRoutes, sharedMeetingRoutes } from '../routes/workspace-meetings'
+import { conversationRoutes } from '../routes/conversations'
+import { configureConversationAgentDispatcher, settleOrphanedAgentReplies } from '../services/conversation-agent-dispatcher'
+import { scriptedAgentInvokeFromEnv } from '../services/conversation-agent-script'
 import { createAgentTaskRoutes } from '../routes/agent-tasks'
 import { diagnosticsRoutes } from '../../../../packages/shared-runtime/src/diagnostics'
 import { testsRoutes } from '../routes/tests'
@@ -47,9 +51,11 @@ import { localLogsRoutes } from '../routes/local-logs'
 import { meetingRoutes } from '../routes/meetings'
 import { historyRoutes } from '../routes/history'
 import { localSystemRoutes } from '../routes/local-system'
+import { cloudWorkspaceListMiddleware, localCloudWorkspaceRoutes } from '../routes/local-cloud-proxy'
 import { localPlatformRoutes } from '../routes/local-platform'
 import { localSharedFileRoutes } from '../routes/local-shared-files'
 import { marketplaceRoutes } from '../routes/marketplace'
+import { appActionsRoutes } from '../routes/app-actions'
 import { _resetAgentModelDefaultsCache, _resetUpstreamCredentialCache } from '../lib/federated-upstream'
 import { createLocalGeneratedRoutes } from '../generated/local-routes'
 import { runtimeInternalRoutes } from '../routes/internal-runtime-routes'
@@ -88,6 +94,15 @@ export function createLocalApp(): LocalAppBundle {
 
   app.route('/api', localPlatformRoutes())
   app.route('/api', localSystemRoutes())
+  app.use('/api/workspaces', cloudWorkspaceListMiddleware)
+  app.route(
+    '/api',
+    localCloudWorkspaceRoutes({
+      resolveUserId: getAuthUserId,
+      resolveUserEmail: async (id) =>
+        (await prisma.user.findUnique({ where: { id }, select: { email: true } }))?.email ?? null,
+    }),
+  )
   app.route('/', localSharedFileRoutes({ workspacesDir }))
   app.route('/api/local/projects', localProjectsRoutes())
   // Runtime → API callbacks (trust, checkpoints, plans, workspace agent and
@@ -118,11 +133,21 @@ export function createLocalApp(): LocalAppBundle {
   app.route('/api', localHeartbeatRoutes())
   app.route('/api', localFilesRoutes({ workspacesDir }))
   app.route('/api/projects', externalPreviewRoutes())
+  // Project export (.shogo / source .zip) and import. The slim-local refactor
+  // moved this behind the cloud-only lazy island in server.ts, so desktop
+  // answered 404 until it was mounted here. It reads workspace files straight
+  // from disk when not running in Kubernetes.
+  app.route('/api/projects', projectExportImportRoutes())
   app.route('/api', projectChatRoutes({ runtimeManager }))
   app.route('/api', workspaceChatRoutes({ resolveUserId: getAuthUserId, runtimeManager }))
   app.route('/api', workspaceAgentRoutes({ authorize: sessionAuthorize(getAuthUserId) }))
   app.route('/api', workspaceMeetingRoutes({ authorize: sessionAuthorize(getAuthUserId) }))
   app.route('/api', sharedMeetingRoutes())
+  const scriptedChannelAgents = scriptedAgentInvokeFromEnv()
+  configureConversationAgentDispatcher({ runtimeManager, ...(scriptedChannelAgents ? { invoke: scriptedChannelAgents } : {}) })
+  // One process writes every reply here, so any placeholder still marked running was cut off by a restart.
+  void settleOrphanedAgentReplies().catch((err) => console.warn('[Channels] could not settle interrupted replies:', err?.message ?? err))
+  app.route('/api', conversationRoutes({ resolveUserId: getAuthUserId }))
   app.route('/api', createAgentTaskRoutes({ runtimeManager }))
   app.route('/api', historyRoutes({ resolveUserId: getAuthUserId }))
   app.route('/api', diagnosticsRoutes({ workspacesDir }))
@@ -147,6 +172,7 @@ export function createLocalApp(): LocalAppBundle {
   // `/api/marketplace/*` call 404'd in local/desktop mode even though the
   // sidebar always shows the Marketplace nav item.
   app.route('/api/marketplace', marketplaceRoutes())
+  app.route('/api/v1', appActionsRoutes())
   app.route('/api/chat-messages', createChatMessageEditRoutes())
   app.route('/api/chat-queued-messages', chatQueuedMessageActionsRoutes())
   app.route('/api/chat-messages', createChatMessageFeedbackRoutes())

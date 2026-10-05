@@ -582,6 +582,23 @@ export const EditableUserMessage = memo(function EditableUserMessage({
     )
   }
 
+  // Plain text rows need their own padded, tinted box. The answered-question
+  // card already draws its own border, padding and background, so it must not
+  // get a second set.
+  const isNative = Platform.OS !== "web"
+  const isWeb = Platform.OS === "web"
+
+  // Resting fill is intentionally subtler than the previous chat-bubble
+  // bg-secondary so a long thread of historical user messages doesn't read
+  // as a row of stacked CTAs.
+  const textRowBoxStyle = cn(
+    "rounded-md bg-secondary/60",
+    isNative ? "min-h-12 px-4 py-3" : "px-3 py-2",
+    isWeb && interactive && "cursor-text hover:bg-secondary",
+  )
+
+  const rowBoxStyle = answeredQuestion ? undefined : textRowBoxStyle
+
   return (
     <Pressable
       onPress={answeredQuestion ? undefined : handleStartEdit}
@@ -598,15 +615,8 @@ export const EditableUserMessage = memo(function EditableUserMessage({
           : undefined
       }
       className={cn(
-        "w-full rounded-md flex-row items-start gap-2",
-        Platform.OS !== "web" ? "min-h-12 px-4 py-3" : "px-3 py-2",
-        // Resting fill is intentionally subtler than the previous
-        // chat-bubble bg-secondary so a long thread of historical
-        // user messages doesn't read as a row of stacked CTAs.
-        "bg-secondary/60",
-        Platform.OS === "web" &&
-          interactive &&
-          "hover:bg-secondary cursor-text",
+        "w-full flex-row items-start gap-2",
+        rowBoxStyle,
         busy && "opacity-60",
         className,
       )}

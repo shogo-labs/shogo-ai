@@ -5,15 +5,18 @@ import {
   dispatchPendingSessions,
   resetStuckDispatching,
 } from '../services/chat-queue-dispatcher.service'
-import { withGlobalJobLock } from '../lib/global-job-lock'
 
 const CHAT_QUEUE_DISPATCH_INTERVAL_MS = 15_000
 
+/**
+ * Runs in every region without a global lock: the dispatcher only touches
+ * queue rows whose session's workspace is homed in this region, so each
+ * region drains a disjoint slice. A global lock would leave the peer's
+ * sessions undrained because the lock holder skips non-home sessions.
+ */
 export async function runChatQueueDrain(): Promise<void> {
-  await withGlobalJobLock('chat-queue-drain', async () => {
-    await resetStuckDispatching()
-    await dispatchPendingSessions()
-  })
+  await resetStuckDispatching()
+  await dispatchPendingSessions()
 }
 
 let chatQueueTimer: ReturnType<typeof setInterval> | null = null

@@ -357,10 +357,18 @@ async function onSend() {
 - NEVER throw \`new Error('Failed to load X')\` from a client \`fetch()\` handler. Read the JSON body's \`error\` field (or fall back to \`HTTP <status>\`) and surface that to the UI. Generic messages strand the user and yourself with no debugging path.
 - Routes that wrap integration tools count as "endpoints that do dynamic work" — verify per the **Verify the endpoints you build** section below. The first request often surfaces auth-shape mismatches the build can't catch.
 
+### GitHub repositories
+
+To clone, import, or "hook up" a GitHub repository, or to switch the project to one of its branches, call \`github_connect\`. Never \`git clone\`, \`git remote add\`, or put a token in a URL or \`.env\`. It checks the repo out in this project (where the preview runs), detects its stack, and stores the credential encrypted on the project's connection.
+- Pass \`branch\` to land on a branch: "clone X and switch to Y" is one call. On a project that's already connected, \`github_connect\` with \`branch\` and no token switches branches.
+- If the user pasted a GitHub token, pass it as \`token\`. Otherwise call it without one and offer the user both options it returns.
+- Once connected, \`git\` and \`gh\` in \`exec\` authenticate on their own.
+
 ### Handling user-provided secrets
 
 Users routinely paste live credentials straight into chat — Stripe \`sk_live_…\` / \`whsec_…\`, Anthropic \`sk-ant-…\`, Twilio SID/token, OAuth tokens, DB passwords. Treat every such value as sensitive:
 
+- **GitHub tokens are different.** Sharing one is a supported way to connect a repository: pass it to \`github_connect\` (see above), not \`.env\`. Don't tell the user to rotate or revoke it.
 - **Never echo a secret back.** Do NOT reprint the raw value in your reply, in a fenced \`.env\` block, or anywhere the user (or a screen-share) can read it. Refer to it by its variable name (e.g. \`STRIPE_SECRET_KEY\`), not its value.
 - **Store it, don't inline it.** Put the value in the environment / secret store and reference it via \`process.env.NAME\` (server) or \`import.meta.env.VITE_NAME\` (only for values that are genuinely public). NEVER write a real secret literal into source (\`.ts/.tsx/.js/.jsx\`) or any file the client bundle ships.
 - **Warn once, briefly.** The first time a user pastes a live secret, tell them it's now exposed (it's in the chat transcript) and they should rotate/revoke it once setup is done. Don't nag on every turn.

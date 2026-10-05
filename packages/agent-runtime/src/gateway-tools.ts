@@ -18,7 +18,9 @@ import { fileURLToPath } from 'node:url'
 import { isProtectedFile, PROTECTED_FILE_REJECTION } from './protected-files'
 import { createProjectTools } from './project-tools'
 import { createWorkspaceAgentTools } from './workspace-agent-tools'
+import { createTriggerTools } from './trigger-tools'
 import { createMeetingTools } from './meeting-tools'
+import { createChannelTools } from './channel-tools'
 import { resolveRuntimeIdentity } from './workspace-runtime-mode'
 import { isSearchEnabled } from './search-flag'
 import { isInQuietHours } from './quiet-hours'
@@ -85,7 +87,7 @@ import {
 } from './composio'
 import { loadAllSkills, loadBundledSkills, searchSkills } from './skills'
 import { addQuickAction, validateQuickActions } from './quick-actions'
-import { withPermissionGate, assertWithinWorkspace as assertWithinWorkspaceSecure, type PermissionEngine } from './permission-engine'
+import { withActionRules, withPermissionGate, assertWithinWorkspace as assertWithinWorkspaceSecure, type PermissionEngine } from './permission-engine'
 import { assertAllowedPath as assertAllowedPathRaw, getRuntimeTrust } from './runtime-trust'
 import { isBinaryFilePath } from '@shogo/shared-runtime'
 import { withShogoPrFooter } from '@shogo/shared-runtime/agent-attribution'
@@ -142,10 +144,15 @@ import {
   publishProject as apiPublishProject,
   createSharedFileLink as apiCreateSharedFileLink,
   createGitHubPullRequest as apiCreateGitHubPullRequest,
+  mergeGitHubPullRequest as apiMergeGitHubPullRequest,
+  connectGitHubWithToken as apiConnectGitHubWithToken,
+  getGitHubAuthorizeUrl as apiGetGitHubAuthorizeUrl,
+  switchGitHubBranch as apiSwitchGitHubBranch,
+  projectScopedId,
   postPlanMirror,
   type CheckpointCallResult,
 } from './internal-api'
-import { githubCliEnvForProject } from './github-cli-credentials'
+import { clearGitHubCliEnvCache, githubCliEnvForProject } from './github-cli-credentials'
 import { checkServerTsxDrift, healServerTsxDrift } from './server-tsx-drift'
 import { getCanvasRuntimeErrors, clearCanvasRuntimeErrors } from './canvas-runtime-errors'
 import { scanAndFixFile as scanFileForHardcodedPorts, type PortFix, type PortWarning } from './lint-hardcoded-ports'
@@ -175,6 +182,8 @@ export interface ToolContext {
   workspaceGraph?: import('./workspace-graph').WorkspaceGraph
   /** Authenticated user ID from the chat request (for per-user integrations like Composio) */
   userId?: string
+  /** API-signed proof of who started this turn; forwarded when a tool acts as the requester. */
+  requesterTicket?: string
   /** File watcher — notified when src/ files are written/edited/deleted to trigger rebuilds */
   canvasFileWatcher?: import('./canvas-file-watcher').CanvasFileWatcher
   /** Permission engine for local-mode security guardrails */
@@ -950,14 +959,37 @@ function githubRunIdMarker(runId: string): string {
   return `<!-- shogo:runId=${runId} -->`
 }
 
+const REQUESTER_CREDENTIAL_CODES = new Set(['requester_auth_required', 'requester_unknown', 'denied'])
+
+/** The project acts as the requester and they can't be acted as: no other account may be used instead. */
+function isRequesterCredentialBlock(result: CheckpointCallResult<unknown>): boolean {
+  return !!result.code && REQUESTER_CREDENTIAL_CODES.has(result.code)
+}
+
+function requesterCredentialBlockResult(result: CheckpointCallResult<unknown>) {
+  return textResult({
+    error: result.error,
+    code: result.code,
+    ...(result.connectUrl
+      ? {
+          connectUrl: result.connectUrl,
+          next:
+            'Do not retry with another account. Tell the person they need to connect their own GitHub account, and put the ' +
+            'connectUrl in your reply exactly as given (they cannot see this tool result). Once they have, run this again.',
+        }
+      : { next: 'Do not retry with another account. Tell the person why it could not be done.' }),
+  })
+}
+
 function createGitHubPullRequestTool(ctx: ToolContext): AgentTool {
   return {
     name: 'github_create_pr',
     label: 'Create GitHub Pull Request',
     description:
-      'Create a GitHub pull request after the current branch has been pushed. It is attributed to the Shogo GitHub App when the project is connected. ' +
+      'Create a GitHub pull request after the current branch has been pushed. With a project GitHub connection it is opened by the ' +
+      'Shogo GitHub App, or by the connected user when the project is connected with an access token. ' +
       'The PR body always includes a Made with Shogo footer and an optional issue-pipeline runId marker. ' +
-      'If the App is not installed, the tool falls back to the user GITHUB_TOKEN from workspace .env.',
+      'If the project has no GitHub connection, the tool falls back to the user GITHUB_TOKEN from workspace .env.',
     parameters: Type.Object({
       title: Type.String({ description: 'Pull request title' }),
       head: Type.Optional(
@@ -1028,12 +1060,13 @@ function createGitHubPullRequestTool(ctx: ToolContext): AgentTool {
       if (botResult.ok && botResult.data) {
         return textResult({
           ok: true,
-          mode: 'github-app',
+          mode: botResult.data.mode ?? 'github-app',
           author: botResult.data.author,
           number: botResult.data.number,
           url: botResult.data.url,
         })
       }
+      if (isRequesterCredentialBlock(botResult)) return requesterCredentialBlockResult(botResult)
       if (botResult.code !== 'github_app_not_installed' && botResult.status !== 409) {
         return textResult({
           error: botResult.error || 'Shogo GitHub App could not create the pull request.',
@@ -1086,6 +1119,214 @@ function createGitHubPullRequestTool(ctx: ToolContext): AgentTool {
           number: result.number,
           url: result.html_url,
         })
+      } catch (error: any) {
+        return textResult({ error: error?.message ?? String(error) })
+      }
+    },
+  }
+}
+
+/** `owner/name`, `github.com/owner/name`, or a clone URL → owner and repo. */
+export function parseGitHubRepoRef(ref: string): { owner: string; repo: string } | null {
+  const trimmed = ref.trim().replace(/\/+$/, '')
+  const match =
+    trimmed.match(/^(?:https?:\/\/)?(?:www\.)?github\.com[/:]([^/\s]+)\/([^/\s#?]+?)(?:\.git)?(?:[/#?].*)?$/i) ??
+    trimmed.match(/^git@github\.com:([^/\s]+)\/([^/\s]+?)(?:\.git)?$/i) ??
+    trimmed.match(/^([A-Za-z0-9-]+)\/([A-Za-z0-9._-]+?)(?:\.git)?$/)
+  return match ? { owner: match[1]!, repo: match[2]! } : null
+}
+
+/**
+ * Connect a project to a GitHub repository. The user chooses how: authorize
+ * the Shogo GitHub App (a link they open), or share an access token. Either
+ * way the credential lands on the project's encrypted GitHub connection and
+ * the repository is checked out in the project's own runtime, where the
+ * preview runs — never cloned by hand with a token in the URL or `.env`.
+ */
+export function createGitHubConnectTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'github_connect',
+    label: 'Connect GitHub Repository',
+    description:
+      'Clone / import a GitHub repository into a Shogo project, or switch the project to another branch of it. ' +
+      'Connects the project to the repo so its files, preview, pushes, pulls, and pull requests use it. ' +
+      'Call it without a token first: it returns a link for the user to authorize the Shogo GitHub App, and you should offer the user ' +
+      'both options — open that link, or share a GitHub access token (fine-grained token with Contents and Pull requests read/write ' +
+      'on the repo, or a classic token with `repo` scope). When the user shares a token, call this again with it. ' +
+      'Pass `branch` to work on a branch other than the default ("clone X and switch to branch Y" is one call); on a project ' +
+      'that is already connected, calling it with `branch` and no token just switches branches. ' +
+      'The project\'s tech stack is detected from the repository and its preview restarts on it. ' +
+      'This replaces cloning by hand: do not `git clone` a repository into a project or write the token to `.env`.',
+    parameters: Type.Object({
+      repo: Type.String({ description: 'Repository as owner/name or a github.com URL' }),
+      token: Type.Optional(Type.String({ description: 'GitHub access token the user shared, to connect with it' })),
+      branch: Type.Optional(Type.String({ description: 'Existing branch to check out; defaults to the repository\'s default branch' })),
+      projectId: Type.Optional(
+        Type.String({ description: 'Project to connect; defaults to the current project' }),
+      ),
+    }),
+    execute: async (_toolCallId, params) => {
+      const input = params as { repo: string; token?: string; branch?: string; projectId?: string }
+      const parsed = parseGitHubRepoRef(input.repo ?? '')
+      if (!parsed) return textResult({ error: 'repo must be owner/name or a github.com repository URL.' })
+      const projectId =
+        projectScopedId(input.projectId?.trim() || ctx.projectId) ||
+        projectScopedId(process.env.WORKSPACE_ANCHOR_PROJECT_ID)
+      if (!projectId) {
+        return textResult({ error: 'No project selected. Pass projectId for the project to connect.' })
+      }
+      const repoFullName = `${parsed.owner}/${parsed.repo}`
+      const branch = input.branch?.trim() || undefined
+
+      const token = input.token?.trim()
+      if (!token && branch) {
+        const switched = await apiSwitchGitHubBranch(projectId, { repoOwner: parsed.owner, repoName: parsed.repo, branch })
+        if (switched.ok && switched.data) {
+          return textResult({
+            ok: true,
+            connected: switched.data.repoFullName,
+            branch: switched.data.branch,
+            techStack: switched.data.techStackId,
+            files: `checked out ${switched.data.branch}`,
+          })
+        }
+        if (switched.status !== 409) {
+          return textResult({ error: switched.error || `Could not switch to ${branch}.`, status: switched.status })
+        }
+      }
+      if (token) {
+        const result = await apiConnectGitHubWithToken(projectId, {
+          repoOwner: parsed.owner,
+          repoName: parsed.repo,
+          token,
+          ...(branch ? { branch } : {}),
+        })
+        if (!result.ok || !result.data) {
+          return textResult({ error: result.error || 'GitHub rejected the connection.', status: result.status })
+        }
+        clearGitHubCliEnvCache()
+        const workspace = result.data.workspace
+        return textResult({
+          ok: true,
+          connected: result.data.repoFullName,
+          as: result.data.login ?? undefined,
+          branch: workspace?.ok ? workspace.branch ?? result.data.defaultBranch : result.data.defaultBranch,
+          techStack: workspace?.techStackId,
+          files: workspace?.ok === false
+            ? `not updated: ${workspace.error}`
+            : workspace?.connect === 'diverged'
+              ? `not updated: ${workspace.error}`
+              : workspace?.connect === 'adopted'
+                ? `checked out ${workspace.branch ?? result.data.defaultBranch}` +
+                  (workspace.backupBranch ? `; previous project files kept on branch ${workspace.backupBranch}` : '')
+                : 'already up to date with the repository',
+          ...(workspace?.ok === false
+            ? {
+                next:
+                  'The token was accepted and the repository is connected; only copying its files into the project failed. ' +
+                  'This is not a token problem, so don\'t ask for a new one. Call github_connect again with the same arguments; ' +
+                  'if it fails again, tell the user the project runtime was unavailable and to retry in a minute.',
+              }
+            : {}),
+        })
+      }
+
+      const link = await apiGetGitHubAuthorizeUrl(projectId, { repoOwner: parsed.owner, repoName: parsed.repo })
+      const tokenOption =
+        `Share a GitHub access token for ${repoFullName} (fine-grained: Contents and Pull requests read/write; ` +
+        'classic: repo scope). It is stored encrypted on the project connection.'
+      if (link.ok && link.data?.available && link.data.url) {
+        return textResult({
+          ok: true,
+          connected: false,
+          repo: repoFullName,
+          options: [
+            { option: 'authorize_app', label: 'Authorize the Shogo GitHub App', url: link.data.url },
+            { option: 'share_token', label: tokenOption },
+          ],
+          next:
+            'Offer the user both options, and put the authorize_app url in your reply exactly as given (the user cannot see this tool result). ' +
+            'After they authorize, the connection completes on its own; if they share a token, call github_connect again with it.' +
+            (branch ? ` The App connects the default branch: once they have authorized, call github_connect again with branch "${branch}".` : ''),
+        })
+      }
+      return textResult({
+        ok: true,
+        connected: false,
+        repo: repoFullName,
+        options: [{ option: 'share_token', label: tokenOption }],
+        next: 'Authorizing the GitHub App is not available on this server. Ask the user for a token and call github_connect again with it.',
+      })
+    },
+  }
+}
+
+/**
+ * Merge a pull request. Merging changes shared code, so the permission engine
+ * asks a person first unless the project's action rules say otherwise
+ * (`github_merge_pr` defaults to `ask`).
+ */
+export function createGitHubMergePullRequestTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'github_merge_pr',
+    label: 'Merge GitHub Pull Request',
+    description:
+      'Merge a GitHub pull request by number. A person on the team is asked to approve before it runs, so call it only when the work ' +
+      'is reviewed and ready. Use squash unless the project says otherwise. Do not merge with `gh pr merge`; that is blocked.',
+    parameters: Type.Object({
+      number: Type.Number({ description: 'Pull request number' }),
+      method: Type.Optional(
+        Type.Union([Type.Literal('merge'), Type.Literal('squash'), Type.Literal('rebase')], {
+          description: 'Merge method; defaults to squash',
+        }),
+      ),
+      commitTitle: Type.Optional(Type.String({ description: 'Title for the merge or squash commit' })),
+    }),
+    execute: async (_toolCallId, params) => {
+      const input = params as { number: number; method?: 'merge' | 'squash' | 'rebase'; commitTitle?: string }
+      const number = Math.trunc(Number(input.number))
+      if (!Number.isFinite(number) || number <= 0) return textResult({ error: 'A pull request number is required.' })
+      const method = input.method ?? 'squash'
+
+      const botResult = await apiMergeGitHubPullRequest(ctx.projectId, number, { method, commitTitle: input.commitTitle })
+      if (botResult.ok && botResult.data) {
+        return textResult({ ok: true, mode: 'github-app', merged: botResult.data.merged !== false, number, sha: botResult.data.sha })
+      }
+      if (isRequesterCredentialBlock(botResult)) return requesterCredentialBlockResult(botResult)
+      if (botResult.code !== 'github_app_not_installed' && botResult.status !== 409) {
+        return textResult({
+          error: botResult.error || 'Shogo GitHub App could not merge the pull request.',
+          status: botResult.status,
+        })
+      }
+
+      const repository = currentGitHubRepository(ctx.workspaceDir)
+      if (!repository) {
+        return textResult({ error: 'No GitHub App connection exists and the origin remote is not a GitHub repository.' })
+      }
+      const token = loadWorkspaceEnvForAttribution(ctx.workspaceDir).GITHUB_TOKEN || process.env.GITHUB_TOKEN
+      if (!token) {
+        return textResult({ error: 'No GitHub App connection exists. Save GITHUB_TOKEN in workspace .env to merge with a user token.' })
+      }
+      try {
+        const response = await fetch(
+          `https://api.github.com/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.repo)}/pulls/${number}/merge`,
+          {
+            method: 'PUT',
+            headers: {
+              Authorization: `Bearer ${token}`,
+              Accept: 'application/vnd.github+json',
+              'X-GitHub-Api-Version': '2022-11-28',
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ merge_method: method, ...(input.commitTitle ? { commit_title: input.commitTitle } : {}) }),
+          },
+        )
+        const result = (await response.json().catch(() => null)) as { merged?: boolean; sha?: string; message?: string } | null
+        if (!response.ok || result?.merged === false) {
+          return textResult({ error: result?.message || `GitHub returned HTTP ${response.status}`, status: response.status })
+        }
+        return textResult({ ok: true, mode: 'user-token', merged: true, number, sha: result?.sha })
       } catch (error: any) {
         return textResult({ error: error?.message ?? String(error) })
       }
@@ -5622,7 +5863,7 @@ function createConnectTool(ctx: ToolContext): AgentTool {
     description:
       'Install (connect) an integration so its tools become available. Auto-routes by name: tries Composio managed OAuth first (Google, Slack, GitHub, etc. — no credentials needed), falls back to MCP catalog (postgres, filesystem, etc.), then to a remote URL if provided. Use `source: "mcp"` to skip Composio. Use `skill:<name>` to install a bundled skill. Pair with search_integrations to discover names.\n\n' +
       'When to call connect vs. when not to: only call connect when the user has asked for an ACTION you can\'t perform without that integration (send a calendar invite, post to Slack, query a Postgres database, etc.). Do NOT call connect when the user is asking to "show", "list", "compare", "describe", or "preview" data you can already produce with `web`, `read_file`, or in-context information — installing an integration the user did not ask for forces them through an OAuth dance for no reason and is one of the most disliked agent behaviors. If you\'re unsure whether the user wants the action or just an explanation, ask one clarifying question via `ask_user` before calling connect.\n\n' +
-      'GitHub issues, pull requests, Actions, releases, and repo metadata: do NOT call connect. Use the pre-installed `gh` CLI via exec for listing and issue operations (`gh issue list`, `gh issue create`, `gh pr list`, `gh run list`). Use the `github_create_pr` tool to create a PR so Shogo can add attribution and use the GitHub App when connected. If gh is not authenticated, save a PAT to `.env` as GITHUB_TOKEN and retry. Only connect({ name: "github" }) if the user explicitly asks for the Composio GitHub OAuth integration.',
+      'GitHub issues, pull requests, Actions, releases, and repo metadata: do NOT call connect. Use the pre-installed `gh` CLI via exec for listing and issue operations (`gh issue list`, `gh issue create`, `gh pr list`, `gh run list`). Use the `github_create_pr` tool to create a PR so Shogo can add attribution and use the GitHub App when connected. To bring a repository into a project, use `github_connect`. If gh is not authenticated, save a PAT to `.env` as GITHUB_TOKEN and retry. Only connect({ name: "github" }) if the user explicitly asks for the Composio GitHub OAuth integration.',
     label: 'Connect Integration',
     parameters: Type.Object({
       name: Type.String({
@@ -7131,6 +7372,8 @@ export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTo
     g(createExecWaitTool(ctx), 'shell'),
     g(createExecListTool(ctx), 'shell'),
     g(createGitHubPullRequestTool(ctx), 'network'),
+    g(createGitHubMergePullRequestTool(ctx), 'network'),
+    g(createGitHubConnectTool(ctx), 'network'),
     g(createReadFileTool(ctx), 'file_read'),
     g(createWriteFileTool(ctx), 'file_write'),
     g(createEditFileTool(ctx), 'file_write'),
@@ -7217,8 +7460,10 @@ export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTo
   // runtimes omit them so the existing builder tool contract is unchanged.
   if (resolveWorkspaceId(ctx)) {
     tools.push(...createWorkspaceAgentTools(ctx))
+    tools.push(...createTriggerTools(ctx))
     // Meetings are private to the personal workspace; the API rejects team workspaces.
     if (ctx.config.capabilityProfile === 'personal') tools.push(...createMeetingTools(ctx))
+    else tools.push(...createChannelTools(ctx))
   }
 
   if (process.env.WORKSPACE_RUNTIME === 'true') {
@@ -7237,6 +7482,13 @@ export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTo
 
   if (extraTools) {
     tools.push(...extraTools)
+  }
+
+  // Every tool honours its per-tool action rule (run, ask first, block), even
+  // those without a permission category. In place, so the subagent tool
+  // getter above sees the gated tools.
+  if (pe) {
+    for (let i = 0; i < tools.length; i++) tools[i] = withActionRules(tools[i], pe)
   }
 
   return tools
@@ -7758,6 +8010,8 @@ export const ALL_TOOL_NAMES = [
   'connect',
   'disconnect',
   'github_create_pr',
+  'github_merge_pr',
+  'github_connect',
   'share_file',
   'transcribe_audio',
   'quick_action',

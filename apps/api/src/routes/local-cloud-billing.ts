@@ -94,12 +94,17 @@ export function localCloudBillingRoutes() {
         }, 401)
       }
       if (!response.ok) {
+        // Return 200 (not the upstream status) so the client still receives
+        // the workspace + cloud URLs and can keep Upgrade / Manage working
+        // while it shows the plan-load error. Only a confirmed 401 above is
+        // surfaced as an HTTP error, since that drives the re-auth prompt.
         return c.json({
           signedIn: true,
           workspace,
           ...cloudBillingUrls(workspace.id),
           error: plan,
-        }, response.status as any)
+          upstreamStatus: response.status,
+        })
       }
 
       const info = await readKeyInfo()
@@ -117,7 +122,7 @@ export function localCloudBillingRoutes() {
         workspace,
         ...cloudBillingUrls(workspace.id),
         error: error?.message || 'Unable to reach Shogo Cloud',
-      }, 502)
+      })
     }
   })
 

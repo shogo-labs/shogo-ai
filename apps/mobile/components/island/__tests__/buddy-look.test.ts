@@ -9,6 +9,7 @@ import {
   normalizeBuddyLook,
   presetForLook,
   sameLook,
+  withPreset,
   type BuddyLook,
 } from "../buddy/look"
 
@@ -22,8 +23,11 @@ describe("normalizeBuddyLook", () => {
       neck: "scarf",
       bolts: true,
       blush: false,
+      color: "#0D9488",
+      finish: "modern",
     }
     expect(normalizeBuddyLook(look)).toEqual(look)
+    expect(normalizeBuddyLook({ ...look, color: "#0d9488" }).color).toBe("#0D9488")
   })
 
   test("falls back to the default for missing or garbage input", () => {
@@ -43,6 +47,8 @@ describe("normalizeBuddyLook", () => {
         neck: "bowtie",
         bolts: true,
         blush: "yes",
+        color: "teal",
+        finish: "matte",
       }),
     ).toEqual({
       topper: DEFAULT_BUDDY_LOOK.topper,
@@ -52,6 +58,8 @@ describe("normalizeBuddyLook", () => {
       neck: "bowtie",
       bolts: true,
       blush: DEFAULT_BUDDY_LOOK.blush,
+      color: null,
+      finish: "classic",
     })
   })
 
@@ -72,6 +80,15 @@ describe("presets", () => {
     expect(presetForLook(DEFAULT_BUDDY_LOOK)?.id).toBe("classic")
     for (const preset of BUDDY_PRESETS) expect(presetForLook(preset.look)?.id).toBe(preset.id)
     expect(presetForLook({ ...DEFAULT_BUDDY_LOOK, bolts: true })).toBeUndefined()
+  })
+
+  test("presets swap accessories but keep the colour and finish", () => {
+    const mine: BuddyLook = { ...DEFAULT_BUDDY_LOOK, color: "#7C3AED", finish: "modern" }
+    const fox = BUDDY_PRESETS.find((p) => p.id === "fox")!
+    const next = withPreset(mine, fox)
+    expect(next).toEqual({ ...fox.look, color: "#7C3AED", finish: "modern" })
+    expect(presetForLook(next)?.id).toBe("fox")
+    expect(presetForLook(mine)?.id).toBe("classic")
   })
 
   test("every preset survives a normalize round trip", () => {

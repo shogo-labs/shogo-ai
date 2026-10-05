@@ -9,6 +9,7 @@
  */
 
 import type {
+  ChannelNotificationPayload,
   ChatNotificationClickData,
   ChatNotificationPayload,
 } from './chat-notifier'
@@ -122,6 +123,34 @@ export async function notifyChatFinished(p: ChatNotificationPayload): Promise<vo
         // ignore
       }
       fireClick({ sessionId: p.sessionId, projectId: p.projectId })
+      try {
+        n.close()
+      } catch {
+        // ignore
+      }
+    }
+  } catch {
+    // e.g. Notification constructor forbidden on mobile Safari
+  }
+}
+
+export function setActiveChannelNotificationContext(_conversationId: string | null): void {
+  // The caller already skips the conversation on screen.
+}
+
+/** Channel alerts use the Web Notification API, which Electron's renderer also provides. */
+export async function notifyChannelMessage(p: ChannelNotificationPayload): Promise<void> {
+  if (typeof window === 'undefined' || typeof Notification === 'undefined') return
+  if (!getDesktop() && Notification.permission !== 'granted') return
+  try {
+    const n = new Notification(p.title, { body: p.body, tag: `channel:${p.conversationId}` })
+    n.onclick = () => {
+      try {
+        window.focus()
+      } catch {
+        // ignore
+      }
+      fireClick({ conversationId: p.conversationId, threadRootId: p.threadRootId })
       try {
         n.close()
       } catch {

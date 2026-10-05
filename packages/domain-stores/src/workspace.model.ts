@@ -38,6 +38,8 @@ export const WorkspaceModel = types
     trainingDataMode: types.optional(types.string, "default"),
     homeRegion: types.optional(types.string, ""),
     parentWorkspaceId: types.optional(types.string, ""),
+    chatMode: types.optional(types.string, ""),
+    chatProvider: types.optional(types.string, ""),
     createdAt: types.optional(types.number, 0),
     updatedAt: types.number,
     projects: types.optional(types.array(types.safeReference(types.late(() => ProjectModel))), []),

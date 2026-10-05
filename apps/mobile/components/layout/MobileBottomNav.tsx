@@ -22,10 +22,9 @@ import {
 } from "lucide-react-native";
 import { NativePhoneBottomFade } from "../phone/NativePhoneBottomFade";
 import { MobileSettingsSheet } from "./MobileSettingsSheet";
-import {
-  LiquidGlassBackdrop,
-  supportsLiquidGlass,
-} from "../ui/LiquidGlassBackdrop";
+import { TeamDock } from "./TeamDock";
+import { usePhoneChromeOverlay } from "./PhoneChromeOverlay";
+import { LiquidGlassBackdrop } from "../ui/LiquidGlassBackdrop";
 import { cn } from "@shogo/shared-ui/primitives";
 import { useResolvedTheme } from "../../contexts/theme";
 import { useWorkspaceExperience } from "../../hooks/useWorkspaceExperience";
@@ -34,10 +33,8 @@ import {
   useLastProjectContext,
 } from "../../hooks/useLastProjectContext";
 import type { BottomTabId } from "@shogo/shared-app";
-import {
-  CHAT_TRANSCRIPT_MAX_WIDTH,
-  nativeComposerKeyboardOpenFromSource,
-} from "../../lib/native-composer-keyboard";
+import { chatColumn } from "../../lib/chat-column";
+import { nativeComposerKeyboardOpenFromSource } from "../../lib/native-composer-keyboard";
 import {
   nativeComposerKeyboardOverlapFromEvent,
   useNativeComposerKeyboard,
@@ -45,8 +42,8 @@ import {
 import {
   NATIVE_PHONE_COMPOSER_PILL_HEIGHT,
   NATIVE_PHONE_COMPOSER_PILL_ITEM_INSET,
+  NATIVE_PHONE_NAV_OVERLAP,
   NATIVE_PHONE_DOCK_FADE,
-  NATIVE_PHONE_GUTTER,
   NATIVE_PHONE_HOME_CANVAS,
   WEB_WIDE_MIN_WIDTH,
 } from "../../lib/native-phone-layout";
@@ -121,9 +118,9 @@ export function MobileBottomNav() {
     projectSettings?: string;
   }>();
   const insets = useSafeAreaInsets();
+  const chrome = usePhoneChromeOverlay();
   const { width } = useWindowDimensions();
   const isDark = useResolvedTheme() === "dark";
-  const liquidGlass = supportsLiquidGlass();
   const [keyboardOpen, setKeyboardOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [openProjectSettings, setOpenProjectSettings] = useState(false);
@@ -206,6 +203,7 @@ export function MobileBottomNav() {
     }
     if (pathname.includes("/tasks")) return "tasks";
     if (pathname.includes("/goals")) return "goals";
+    if (pathname.includes("/meetings")) return "meetings";
     if (pathname.includes("/activity")) return "activity";
     if (pathname.includes("/canvases")) return "canvases";
     if (pathname.includes("/settings")) return "more";
@@ -399,26 +397,32 @@ export function MobileBottomNav() {
   const items = projectMode
     ? projectItems
     : experience.bottomTabs.map((id) => tabsById[id]);
+  // Team workspaces outside a project use the Home / DMs / Activity / More dock.
+  const teamDock = !projectMode && experience.resolved && !!experience.dockTabs;
+  // The nav pill sits directly under the phone composer, so it shares the
+  // same chat column (gutter + max width) instead of its own numbers.
+  const navColumn = chatColumn({ presentation: "agent", phone: true });
 
   return (
     <>
       <View
         className="bg-transparent pt-1"
+        pointerEvents={chrome.overlay ? "box-none" : "auto"}
         style={{
           position: "relative",
-          // The composer already reserves bottom padding. Offset the nav by
-          // that amount so the resulting visible gap is one compact text line.
-          marginTop: -12,
-          // Home is edge-to-edge in the root shell, while project chat is
-          // already inside the shell's bottom safe area. Reserve the home
-          // inset here so the composer and this capsule move up together and
-          // match the project-chat dock position.
-          paddingBottom: isHomePath(pathname) ? insets.bottom + 8 : 8,
-          paddingHorizontal: NATIVE_PHONE_GUTTER,
+          // A floating dock is placed by the shell instead.
+          marginTop: chrome.overlay ? 0 : -NATIVE_PHONE_NAV_OVERLAP,
+          // Home and floating-chrome screens are edge-to-edge in the root
+          // shell, while project chat is already inside the shell's bottom
+          // safe area. Reserve the inset here so the composer and this
+          // capsule move up together and match the project-chat dock position.
+          paddingBottom:
+            isHomePath(pathname) || chrome.overlay ? insets.bottom + 8 : 8,
+          paddingHorizontal: navColumn.gutter,
         }}
         testID="mobile-bottom-nav"
       >
-        {!isProjectPath(pathname) ? (
+        {!isProjectPath(pathname) && !chrome.overlay ? (
           <NativePhoneBottomFade
             isDark={isDark}
             canvasHex={
@@ -432,14 +436,14 @@ export function MobileBottomNav() {
             style={{ position: "absolute", left: 0, right: 0, bottom: 0 }}
           />
         ) : null}
+        {teamDock ? (
+          <TeamDock maxWidth={navColumn.maxWidth!} />
+        ) : (
         <View
-          className={cn(
-            "w-full flex-row items-center gap-1 overflow-hidden px-1.5 shadow-sm",
-            liquidGlass ? "bg-transparent" : "bg-card/95"
-          )}
+          className="w-full flex-row items-center gap-1 overflow-hidden bg-transparent px-1.5 shadow-sm"
           style={{
             height: NATIVE_PHONE_COMPOSER_PILL_HEIGHT,
-            maxWidth: CHAT_TRANSCRIPT_MAX_WIDTH,
+            maxWidth: navColumn.maxWidth,
             alignSelf: "center",
             borderRadius: NATIVE_PHONE_COMPOSER_PILL_HEIGHT / 2,
           }}
@@ -473,7 +477,7 @@ export function MobileBottomNav() {
                 key={id}
                 onPress={onPress}
                 accessibilityRole="tab"
-                accessibilityState={{ selected }}
+                aria-selected={selected}
                 accessibilityLabel={label}
                 className={cn(
                   "flex-1 items-center justify-center rounded-full",
@@ -502,6 +506,7 @@ export function MobileBottomNav() {
             );
           })}
         </View>
+        )}
       </View>
       <MobileSettingsSheet
         visible={settingsOpen}

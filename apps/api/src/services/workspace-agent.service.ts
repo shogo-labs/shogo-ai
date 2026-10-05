@@ -194,6 +194,8 @@ export async function createGoalEvent(
     })
   }
 
+  void import('./conversation-activity').then((m) => m.recordGoalEvent(workspaceId, event)).catch(() => {})
+
   return event
 }
 
@@ -216,6 +218,7 @@ export async function resolveGoalEventApproval(
   goalId: string,
   eventId: string,
   decision: GoalApprovalDecision,
+  decidedByUserId?: string,
 ) {
   const event = await prisma.goalEvent.findFirst({
     where: { id: eventId, goalId, goal: { workspaceId } },
@@ -234,6 +237,9 @@ export async function resolveGoalEventApproval(
         ...existingMetadata,
         decision,
         resolvedAt: new Date().toISOString(),
+        // Who decided, so per-person work analytics can credit the approval.
+        // Left unset for internal callers that have no signed-in user.
+        ...(decidedByUserId ? { decidedByUserId } : {}),
       } as any,
     },
   })

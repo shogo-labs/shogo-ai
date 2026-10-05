@@ -19,6 +19,7 @@ export interface UserType {
   onboardingCompleted: boolean
   lastSeenAnnouncementVersion?: string
   onboardingIntent?: string
+  buddyLook?: string
   homeRegion?: string
   createdAt: Date
   updatedAt: Date
@@ -34,6 +35,7 @@ export interface UserCreateInput {
   onboardingCompleted?: boolean
   lastSeenAnnouncementVersion?: string
   onboardingIntent?: string
+  buddyLook?: string
   homeRegion?: string
 }
 
@@ -47,5 +49,6 @@ export interface UserUpdateInput {
   onboardingCompleted?: boolean
   lastSeenAnnouncementVersion?: string
   onboardingIntent?: string
+  buddyLook?: string
   homeRegion?: string
 }

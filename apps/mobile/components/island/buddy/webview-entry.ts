@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
-import { BuddyEngine, type BuddyState } from "./engine"
+import { BUDDY_FINISHES, BuddyEngine, type BuddyFinish, type BuddyState } from "./engine"
 import { DEFAULT_BUDDY_LOOK, normalizeBuddyLook, type BuddyLook } from "./look"
 
 interface BuddyWebViewProps {
@@ -9,6 +9,7 @@ interface BuddyWebViewProps {
   state: BuddyState
   color: string
   look: BuddyLook
+  finish?: BuddyFinish
   mini?: boolean
   reducedMotion?: boolean
   still?: boolean
@@ -85,6 +86,7 @@ function setProps(next: Partial<BuddyWebViewProps>) {
   engine.isMini = props.mini ?? false
   engine.reducedMotion = props.reducedMotion ?? false
   engine.look = props.look
+  engine.finish = props.finish ?? BUDDY_FINISHES.classic
   engine.setBodyColor(props.color)
   engine.setState(props.state)
   resize()
@@ -113,12 +115,33 @@ function handleMessage(event: MessageEvent) {
   }
 }
 
+/**
+ * Draw one settled frame for `props` and send it to the host as a PNG data URL
+ * (`{ type: "snapshot", id, dataUrl }`). Lets a list of agents show their look
+ * as plain images instead of a WebView each.
+ */
+function snapshot(id: string, next: Partial<BuddyWebViewProps>) {
+  setProps({ ...next, state: "idle", still: true, reducedMotion: true })
+  stop()
+  for (let i = 0; i < 24; i++) engine.update(0.05)
+  const ctx = canvas.getContext("2d")
+  if (!ctx) return
+  const height = props.size * 1.4
+  const dpr = canvas.width / props.size
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+  ctx.clearRect(0, 0, props.size, height)
+  engine.draw(ctx, props.size, height)
+  post({ type: "snapshot", id, dataUrl: canvas.toDataURL("image/png") })
+}
+
 const bridgeWindow = window as Window & {
   __shogoBuddySetProps?: typeof setProps
   __shogoBuddyCommand?: typeof runCommand
+  __shogoBuddySnapshot?: typeof snapshot
 }
 bridgeWindow.__shogoBuddySetProps = setProps
 bridgeWindow.__shogoBuddyCommand = runCommand
+bridgeWindow.__shogoBuddySnapshot = snapshot
 
 window.addEventListener("message", handleMessage)
 document.addEventListener("message", handleMessage as EventListener)

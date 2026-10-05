@@ -14,6 +14,8 @@ export interface ParsedTranscript {
   segments: TranscriptSegment[]
   numSpeakers?: number
   error?: string
+  /** Set on a recording's draft when live transcription has a problem. */
+  liveStatus?: { state: 'ok' | 'error'; message?: string }
 }
 
 export function parseTranscript(raw: string | object | null | undefined): ParsedTranscript | null {
@@ -25,6 +27,7 @@ export function parseTranscript(raw: string | object | null | undefined): Parsed
       segments: Array.isArray(obj.segments) ? obj.segments : [],
       numSpeakers: obj.numSpeakers,
       error: typeof obj.error === 'string' ? obj.error : undefined,
+      liveStatus: obj.liveStatus?.state === 'error' ? obj.liveStatus : undefined,
     }
   }
   try {

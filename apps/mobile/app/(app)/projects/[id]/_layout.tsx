@@ -89,6 +89,8 @@ import {
   nativeCanvasBaseReady,
   projectIdFromAgentProxyUrl,
   previewWakeUrl,
+  isApiGateLatched,
+  latchApiGate,
 } from "../../../../lib/preview-gate";
 import { ChatPanel } from "../../../../components/chat/ChatPanel";
 import { PlanStreamProvider } from "../../../../components/chat/PlanStreamContext";
@@ -142,6 +144,7 @@ import {
 import { FoldersPanel } from "../../../../components/project/panels/FoldersPanel";
 import { CustomDomainsSection } from "../../../../components/project/CustomDomainsSection";
 import { AlwaysOnSection } from "../../../../components/project/AlwaysOnSection";
+import { ProjectAgentLookSection } from "../../../../components/settings/ProjectAgentLookSection";
 import { CheckpointGraphNative } from "../../../../components/project/panels/ide/graph/CheckpointGraphNative";
 import {
   TrustPrompt,
@@ -158,6 +161,7 @@ import {
   FolderTree,
   GitCommit,
   Sliders,
+  Palette,
   Plug,
   Radio,
   Bot,
@@ -784,8 +788,9 @@ export default observer(function ProjectLayout() {
         if (typeof body?.savedUrl === "string")
           setExternalSavedUrl(body.savedUrl);
         else setExternalSavedUrl(null);
-        if (typeof body?.detectedUrl === "string")
-          setExternalDetectedUrl(body.detectedUrl);
+        setExternalDetectedUrl(
+          typeof body?.detectedUrl === "string" ? body.detectedUrl : null
+        );
       } catch (err) {
         if (!cancelled) console.warn("[external-preview] fetch failed:", err);
       }
@@ -1981,6 +1986,12 @@ export default observer(function ProjectLayout() {
   // (and thus its `workingMode`) is known. Tracks the project it ran for so a
   // navigation to a different project re-applies.
   const previewTabInitForRef = useRef<string | null>(null);
+  // Set once the initial tab (deep-link intent or the persisted last tab,
+  // which is read asynchronously) has been applied, so later automatic tab
+  // switches can't be clobbered by that read resolving late.
+  const [previewTabRestoredFor, setPreviewTabRestoredFor] = useState<
+    string | null
+  >(null);
 
   // Sidebar "open project" tab intent. Clicking a project name in the sidebar
   // deep-links a `tab` param (canvas / chat-fullscreen / external-preview). It
@@ -2028,6 +2039,7 @@ export default observer(function ProjectLayout() {
     }
     appliedTabIntentRef.current = token;
     previewTabInitForRef.current = projectId;
+    setPreviewTabRestoredFor(projectId);
     const nativePhoneChat = nativePhone;
     const landingTab =
       requested === "canvas" ||
@@ -2084,12 +2096,46 @@ export default observer(function ProjectLayout() {
         }
         if (normalized) setPreviewTab(normalized);
       })
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => setPreviewTabRestoredFor(projectId));
     // Best-effort cleanup of the pre-fix v1 key so it doesn't linger.
     AsyncStorage.removeItem(`shogo:lastPreviewTab:${projectId}`).catch(
       () => {}
     );
   }, [projectId, project, isExternalProject, phoneLayout, nativePhone, isWide]);
+
+  // Folder-linked projects: when a dev server for the folder starts (seen
+  // by the API's port scan or the agent terminal), bring the Preview tab
+  // forward if it isn't already showing. Fires once per detected URL; the
+  // key resets when the server goes away so a restart re-opens it.
+  const autoOpenedPreviewKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!projectId || !isExternalProject || !externalDetectedUrl) {
+      autoOpenedPreviewKeyRef.current = null;
+      return;
+    }
+    if (previewTabRestoredFor !== projectId) return;
+    if (phoneLayout || isIdeChatEmbed) return;
+    if (
+      Platform.OS !== "web" ||
+      typeof window === "undefined" ||
+      !(window as any).shogoDesktop?.preview
+    ) {
+      return;
+    }
+    const key = `${projectId}|${externalDetectedUrl}`;
+    if (autoOpenedPreviewKeyRef.current === key) return;
+    autoOpenedPreviewKeyRef.current = key;
+    if (previewTab !== "external-preview") setPreviewTab("external-preview");
+  }, [
+    projectId,
+    isExternalProject,
+    externalDetectedUrl,
+    previewTabRestoredFor,
+    phoneLayout,
+    isIdeChatEmbed,
+    previewTab,
+  ]);
 
   useEffect(() => {
     if (projectId && previewTab && PERSISTABLE_PREVIEW_TABS.has(previewTab)) {
@@ -2479,6 +2525,8 @@ export default observer(function ProjectLayout() {
   const [requestedIdeFile, setRequestedIdeFile] = useState<{
     path: string;
     nonce: number;
+    line?: number;
+    column?: number;
   } | null>(null);
   const openIdeFileNonceRef = useRef(0);
 
@@ -2508,6 +2556,24 @@ export default observer(function ProjectLayout() {
       } as any);
     },
     [chatSessionId, isWide, projectId, router],
+  );
+
+  // Problems panel / bottom-drawer "go to file:line:col" — the drawer is
+  // mounted here (outside the IDE), so route through the IDE tab's
+  // requested-file channel, switching to the IDE if needed.
+  const handleRevealInIde = useCallback(
+    (relPath: string, line: number, column: number) => {
+      openIdeFileNonceRef.current += 1;
+      setRequestedIdeFile({
+        path: relPath,
+        line,
+        column,
+        nonce: openIdeFileNonceRef.current,
+      });
+      setPreviewTab(Platform.OS === "web" ? "ide" : "files");
+      if (!isWide) setActiveTab("canvas");
+    },
+    [isWide],
   );
 
   const handleOpenPlan = useCallback(
@@ -4331,6 +4397,7 @@ export default observer(function ProjectLayout() {
                   agentUrl={agentUrl ?? null}
                   messages={chatMessages}
                   platformIsWeb={Platform.OS === "web"}
+                  onReveal={handleRevealInIde}
                   canvasAreaHidden={canvasAreaHidden}
                   isChatFullscreen={isChatFullscreen}
                   folderPath={localFolderPath ?? undefined}
@@ -4486,6 +4553,27 @@ export default observer(function ProjectLayout() {
                                       selectedModel={selectedModel}
                                       onModelChange={handleModelChange}
                                     />
+                                  </PanelErrorBoundary>
+                                ),
+                              },
+                              {
+                                id: "agent-look",
+                                label: "Look",
+                                icon: Palette,
+                                render: () => (
+                                  <PanelErrorBoundary panelName="Look">
+                                    <ScrollView
+                                      contentContainerStyle={{ padding: 20 }}
+                                    >
+                                      {project?.workspaceId ? (
+                                        <ProjectAgentLookSection
+                                          flush
+                                          workspaceId={project.workspaceId}
+                                          projectId={projectId!}
+                                          projectName={project.name}
+                                        />
+                                      ) : null}
+                                    </ScrollView>
                                   </PanelErrorBoundary>
                                 ),
                               },
@@ -5149,10 +5237,22 @@ function CanvasPanel({
   // Latch it: a healthy sidecar that later restarts (schema / custom-routes
   // edits trigger `restartApiServerOnly`) briefly flips `apiReady` false, and
   // we don't want a live preview to flash back to a spinner on every save.
-  const [apiLatched, setApiLatched] = useState(false);
+  //
+  // The latch is also remembered per preview (module-level, see
+  // `isApiGateLatched`) so a fresh mount of this panel — navigating away and
+  // back to the canvas, switching tabs — doesn't re-gate a preview whose API
+  // already came up (or whose fallback already fired) in this tab.
+  const apiGateKey = previewStatusPollBase(agentUrl, canvasBaseUrl);
+  const [apiLatchedState, setApiLatched] = useState(() =>
+    isApiGateLatched(apiGateKey)
+  );
+  const apiLatched = apiLatchedState || isApiGateLatched(apiGateKey);
   useEffect(() => {
-    if (apiReady || nativeBaseReady) setApiLatched(true);
-  }, [apiReady, nativeBaseReady]);
+    if (apiReady || nativeBaseReady) {
+      latchApiGate(apiGateKey);
+      setApiLatched(true);
+    }
+  }, [apiReady, nativeBaseReady, apiGateKey]);
 
   // Resume a sleeping metal/Knative preview the same way a browser tab does.
   // `/preview/start` is kicked from usePreviewPhase when status is not running —
@@ -5204,11 +5304,13 @@ function CanvasPanel({
     if (!baseReady) return;
     // Start exactly once; do NOT restart on baseReady / phase oscillation.
     if (apiWaitTimerRef.current) return;
-    apiWaitTimerRef.current = setTimeout(
-      () => setApiWaitElapsed(true),
-      API_WAIT_TIMEOUT_MS
-    );
-  }, [baseReady, apiLatched]);
+    apiWaitTimerRef.current = setTimeout(() => {
+      // Remember the fallback too, so remounting the panel doesn't make the
+      // user sit through the same wait again for this preview.
+      latchApiGate(apiGateKey);
+      setApiWaitElapsed(true);
+    }, API_WAIT_TIMEOUT_MS);
+  }, [baseReady, apiLatched, apiGateKey]);
   useEffect(
     () => () => {
       if (apiWaitTimerRef.current) {

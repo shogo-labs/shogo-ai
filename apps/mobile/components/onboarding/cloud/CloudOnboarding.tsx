@@ -13,7 +13,8 @@
  *
  * Local mode prepends two machine-specific steps: `name` (only while the
  * seeded user still has the placeholder name) and `ai-config` (Shogo Cloud
- * key vs own provider keys).
+ * key vs own provider keys). On the macOS desktop app, three optional
+ * permission steps follow: `computer-use`, `files-apps` and `dictation`.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ActivityIndicator, Platform, Text, View } from 'react-native'
@@ -42,6 +43,11 @@ import { parseEmailDraft } from './email-draft'
 import { JoinedStep } from './JoinedStep'
 import { AgentPickerStep, type OnboardingListing } from './AgentPickerStep'
 import { SettingUp } from './SettingUp'
+import {
+  isDesktopPermissionStep,
+  shouldShowDesktopPermissionSteps,
+  useDesktopPermissionSteps,
+} from '../desktop/useDesktopPermissionSteps'
 
 const PERSONAL_SEED_PROMPT = 'Help me plan my week.'
 
@@ -126,6 +132,7 @@ export const CloudOnboarding = observer(function CloudOnboarding({ localMode = f
   const installedProjectId = useRef<string | null>(null)
   const savedTeamName = useRef<string | null>(null)
   const handleNextRef = useRef<() => void>(() => {})
+  const advanceRef = useRef<() => void>(() => {})
 
   const knownName = isPlaceholder(PLACEHOLDER_USER_NAMES, user?.name) ? nameDraft : user?.name
   const firstName = (knownName ?? '').trim().split(/\s+/)[0] || 'there'
@@ -208,6 +215,14 @@ export const CloudOnboarding = observer(function CloudOnboarding({ localMode = f
     () => ({ mode: localMode ? 'local' : 'cloud', destination, intent }),
     [localMode, destination, intent],
   )
+  const [showPermissionSteps] = useState(() => shouldShowDesktopPermissionSteps(localMode))
+  const permissionSteps = useDesktopPermissionSteps({
+    enabled: showPermissionSteps,
+    http,
+    advanceRef,
+    posthog,
+    analyticsContext,
+  })
   const displayTeamName = teamName.trim() || ownTeamWorkspace?.name || 'your workspace'
   const draftInvalid = parseEmailDraft(emailDraft).invalid
 
@@ -440,6 +455,7 @@ export const CloudOnboarding = observer(function CloudOnboarding({ localMode = f
         body: <AIConfigForm onReadyChange={setAiReady} />,
       })
     }
+    list.push(...permissionSteps.steps)
     list.push({
       id: 'destination',
       title: `Welcome, ${firstName}. Where do you want to start?`,
@@ -534,6 +550,7 @@ export const CloudOnboarding = observer(function CloudOnboarding({ localMode = f
     nameDraft,
     nameError,
     ownTeamWorkspace?.id,
+    permissionSteps.steps,
     retryingLoad,
     retryLoad,
     savingName,
@@ -550,6 +567,7 @@ export const CloudOnboarding = observer(function CloudOnboarding({ localMode = f
     }
     setActiveIndex((i) => i + 1)
   }, [activeIndex, finish, steps.length])
+  advanceRef.current = advance
 
   const handleNext = useCallback(async () => {
     const step = steps[activeIndex]
@@ -559,6 +577,7 @@ export const CloudOnboarding = observer(function CloudOnboarding({ localMode = f
       trackEvent(posthog, EVENTS.ONBOARDING_INTENT_SELECTED, analyticsContext)
     }
     if (step.id === 'team-setup' && !(await saveTeamSetup())) return
+    if (isDesktopPermissionStep(step.id)) await permissionSteps.onLeave(step.id, 'continued')
     if (step.id === 'agent-picker' && selectedListing) {
       trackEvent(posthog, EVENTS.ONBOARDING_AGENT_SELECTED, {
         ...analyticsContext,
@@ -566,12 +585,14 @@ export const CloudOnboarding = observer(function CloudOnboarding({ localMode = f
       })
     }
     advance()
-  }, [activeIndex, advance, analyticsContext, selectedListing, posthog, saveName, saveTeamSetup, steps])
+  }, [activeIndex, advance, analyticsContext, permissionSteps, selectedListing, posthog, saveName, saveTeamSetup, steps])
 
   handleNextRef.current = () => void handleNext()
 
   const handleSkip = useCallback(() => {
-    if (steps[activeIndex]?.id === 'ai-config') {
+    // Permission steps skip themselves (see `StepDef.onSkip`); this is only a
+    // safety net so a skip there can never complete onboarding.
+    if (steps[activeIndex]?.id === 'ai-config' || isDesktopPermissionStep(steps[activeIndex]?.id)) {
       advance()
       return
     }

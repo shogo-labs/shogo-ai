@@ -12,7 +12,7 @@
  * 3. Stores activeViewers and activeControllers in Redis for cross-pod visibility
  */
 
-import Redis from 'ioredis'
+import type Redis from 'ioredis'
 
 const isLocalMode = process.env.SHOGO_LOCAL_MODE === 'true'
 const REDIS_URL = process.env.REDIS_URL || 'redis://redis-master:6379'
@@ -57,6 +57,8 @@ const REDIS_OPTS = {
 
 let pub: Redis | null = null
 let sub: Redis | null = null
+type RedisConstructor = new (url: string, options: typeof REDIS_OPTS) => Redis
+let redisConstructor: RedisConstructor | null = null
 let initialized = false
 // `degraded` is true when init completed but the Redis client could not
 // be established (non-local mode only). /health uses this to fail the
@@ -98,6 +100,16 @@ export async function initTunnelRedis(): Promise<void> {
     initPromise = null
     throw err
   }
+}
+
+async function loadRedisConstructor(): Promise<RedisConstructor> {
+  if (redisConstructor) return redisConstructor
+  // Keep the Redis client out of the desktop bundle. Local mode never calls
+  // this path, while cloud builds resolve the package at runtime.
+  const moduleName = ['iore', 'dis'].join('')
+  const module = await import(moduleName)
+  redisConstructor = module.default as unknown as RedisConstructor
+  return redisConstructor
 }
 
 /**
@@ -187,6 +199,7 @@ async function _doInit(): Promise<void> {
  */
 async function connectClients(): Promise<void> {
   try {
+    const Redis = await loadRedisConstructor()
     pub = new Redis(REDIS_URL, REDIS_OPTS)
     attachLifecycleListeners(pub, 'publisher')
 

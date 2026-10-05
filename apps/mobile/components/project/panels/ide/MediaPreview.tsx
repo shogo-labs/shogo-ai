@@ -73,7 +73,7 @@ export function VideoPreview({ url, name }: { url: string; name: string; path: s
     <div className="flex h-full flex-col">
       <ChromeBar icon={<Video size={13} className="shrink-0 text-[color:var(--ide-accent-file-icon)]" />}
                  name={name} url={url} extra="video" />
-      <div className="flex flex-1 items-center justify-center overflow-hidden bg-black">
+      <div className="flex flex-1 items-center justify-center overflow-hidden bg-[color:var(--ide-panel)]">
         <video
           src={url}
           controls

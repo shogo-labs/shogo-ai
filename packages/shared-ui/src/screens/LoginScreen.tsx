@@ -214,6 +214,7 @@ function AppleContinueButton({
 const LOGIN_HERO_BREAKPOINT = 768
 /** Responsive web viewports at or below this width use the native phone surface. */
 const LOGIN_PHONE_WEB_MAX_WIDTH = LOGIN_HERO_BREAKPOINT - 1
+const LOGIN_SHOWCASE_MIN_WIDTH = 1024
 
 /** Native-landing typewriter lines. The hero text scales down to stay on one line. */
 const NATIVE_LANDING_HERO_PHRASES = [
@@ -320,6 +321,8 @@ export interface LoginScreenProps {
   loginHeroImage?: ImageSourcePropType
   /** When `colorScheme` is dark, this image is used instead of `loginHeroImage` (optional — defaults to `loginHeroImage`). */
   loginHeroImageDark?: ImageSourcePropType
+  /** Right-hand panel for wide desktop web windows; without it the form is centered. */
+  desktopShowcase?: React.ReactNode
 }
 
 function isValidEmail(email: string): boolean {
@@ -1224,7 +1227,6 @@ const logoDark = require('../../../../apps/mobile/assets/shogo-logo-words-white.
 const shogoRadialCursor = require('../../../../apps/mobile/assets/ic_playstore_legacy.png')
 const loginHeroLight = require('../../../../apps/mobile/assets/login/shogo-login3.jpg')
 const loginHeroDark = require('../../../../apps/mobile/assets/login/shogo-login3.jpg')
-const loginHeroWordmarkWhite = require('../../../../apps/mobile/assets/login/shogo-logo-white.svg')
 
 function DesktopFormPanel({ onSignIn, onSignUp, onGoogleSignIn, onAppleSignIn, onForgotPassword, isLoading, error, onClearError, colorScheme }: LoginScreenProps) {
   const [activeTab, setActiveTab] = useState<Tab>('signin')
@@ -1364,78 +1366,22 @@ export function LoginScreen(props: LoginScreenProps) {
     return <CompactWebLoginPanel {...props} heroSource={heroArtwork} />
   }
 
-  return (
-    <View className="flex-1 flex-row bg-background">
-      <View style={{ width: '50%' }}>
-        <DesktopFormPanel {...props} />
-      </View>
-      <View style={{ width: '50%', position: 'relative', overflow: 'hidden' }}>
-        <Image
-          source={heroArtwork}
-          style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, width: '100%', height: '100%' }}
-          resizeMode="cover"
-        />
-        <View
-          style={{
-            position: 'absolute',
-            top: 0,
-            left: 0,
-            right: 0,
-            bottom: 0,
-            justifyContent: 'center',
-            alignItems: 'center',
-            paddingHorizontal: 32,
-          }}
-        >
-          <Text
-            style={{
-              color: '#FFFFFF',
-              fontSize: 40,
-              fontWeight: '300',
-              letterSpacing: 0.4,
-              textAlign: 'center',
-              marginBottom: 22,
-              ...(Platform.OS === 'web'
-                ? {
-                  fontFamily:
-                    '"Skema Pro Display", Georgia, "Times New Roman", "Liberation Serif", serif' as const,
-                }
-                : {}),
-              textShadowColor: 'rgba(0,0,0,0.45)',
-              textShadowOffset: { width: 0, height: 2 },
-              textShadowRadius: 14,
-            }}
-          >
-            A Visual AI for{' '}
-            <Text
-              style={{
-                fontStyle: 'italic',
-                fontWeight: '300',
-                ...(Platform.OS === 'web'
-                  ? {
-                    fontFamily:
-                      '"Skema Pro Display", Georgia, "Times New Roman", "Liberation Serif", serif' as const,
-                  }
-                  : {}),
-              }}
-            >
-              life
-            </Text>
-          </Text>
-          <Image
-            source={loginHeroWordmarkWhite}
-            style={{
-              width: 122,
-              height: 36,
-              shadowColor: '#000',
-              shadowOffset: { width: 0, height: 2 },
-              shadowOpacity: 0.35,
-              shadowRadius: 6,
-            }}
-            resizeMode="contain"
-          />
+  if (props.desktopShowcase && width >= LOGIN_SHOWCASE_MIN_WIDTH) {
+    return (
+      <View className="flex-1 flex-row bg-background">
+        <View style={{ width: '46%', maxWidth: 680 }}>
+          <DesktopFormPanel {...props} />
+        </View>
+        <View style={{ flex: 1, padding: 12, paddingLeft: 0 }}>
+          {props.desktopShowcase}
         </View>
       </View>
+    )
+  }
+
+  return (
+    <View className="flex-1 bg-background">
+      <DesktopFormPanel {...props} />
     </View>
   )
 }

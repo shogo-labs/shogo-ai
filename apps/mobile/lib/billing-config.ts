@@ -181,6 +181,25 @@ export function getWindowDisplays(windows: UsageWindows | undefined): {
   }
 }
 
+/**
+ * Build the Shogo Cloud billing page URLs for a linked cloud workspace.
+ * Mirrors `cloudBillingUrls()` in `apps/api/src/routes/local-cloud-billing.ts`
+ * so the client can still open the right pages when the local API is older
+ * than the UI and doesn't serve `/api/local/cloud-billing/summary`.
+ */
+export function buildCloudBillingUrls(
+  cloudUrl: string | undefined | null,
+  workspaceId: string | undefined | null,
+): { manageUrl?: string; upgradeUrl?: string } {
+  if (!cloudUrl || !workspaceId) return {}
+  const base = cloudUrl.replace(/\/$/, '')
+  const workspace = encodeURIComponent(workspaceId)
+  return {
+    manageUrl: `${base}/settings?tab=billing&workspace=${workspace}`,
+    upgradeUrl: `${base}/billing?workspace=${workspace}`,
+  }
+}
+
 /** Overage context needed to phrase the at-limit notice. */
 export interface UsageOverageContext {
   enabled: boolean

@@ -391,6 +391,7 @@ export class MCPClientManager {
         description: mcpTool.description || `MCP tool: ${mcpTool.name} (from ${name})`,
         label: `${name}: ${mcpTool.name}`,
         parameters,
+        credential: { provider: `mcp:${name}`, op: mcpTool.annotations?.readOnlyHint ? 'read' : 'write' },
         execute: async (_toolCallId: string, params: unknown) => {
           const args = (params && typeof params === 'object') ? params as Record<string, any> : {}
           try {
@@ -561,6 +562,7 @@ export class MCPClientManager {
         description,
         label: `${name}: ${mcpTool.name}`,
         parameters,
+        credential: { provider: `mcp:${name}`, op: mcpTool.annotations?.readOnlyHint ? 'read' : 'write' },
         execute: async (_toolCallId: string, params: unknown) => {
           const args = (params && typeof params === 'object') ? params as Record<string, any> : {}
           try {
@@ -649,13 +651,50 @@ export class MCPClientManager {
     ])
   }
 
+  /**
+   * Optional gate evaluated before any tool of a stdio/remote MCP server runs.
+   * Returns a denial message to block the call, or null to allow it. Used to
+   * enforce the user's "computer use" setting on the computer-use server.
+   */
+  private toolGuard: ((serverName: string) => { reason: string; guidance?: string } | null) | null = null
+  private guardedTools = new WeakMap<AgentTool, AgentTool>()
+
+  setToolGuard(guard: ((serverName: string) => { reason: string; guidance?: string } | null) | null): void {
+    this.toolGuard = guard
+  }
+
+  private guardTools(serverName: string, tools: AgentTool[]): AgentTool[] {
+    if (!this.toolGuard) return tools
+    return tools.map((tool) => {
+      const cached = this.guardedTools.get(tool)
+      if (cached) return cached
+      const original = tool.execute
+      const wrapped: AgentTool = {
+        ...tool,
+        execute: async (toolCallId: string, params: any, ...rest: any[]) => {
+          const denial = this.toolGuard?.(serverName)
+          if (denial) {
+            const error = `Permission denied: ${denial.reason}`
+            return {
+              content: [{ type: 'text', text: JSON.stringify({ error, instruction: denial.guidance ?? '' }, null, 2) }],
+              details: { error, instruction: denial.guidance ?? '' },
+            } as any
+          }
+          return (original as any)(toolCallId, params, ...rest)
+        },
+      }
+      this.guardedTools.set(tool, wrapped)
+      return wrapped
+    })
+  }
+
   getTools(): AgentTool[] {
     const tools: AgentTool[] = []
-    for (const server of this.servers.values()) {
-      tools.push(...server.tools)
+    for (const [name, server] of this.servers) {
+      tools.push(...this.guardTools(name, server.tools))
     }
-    for (const server of this.remoteServers.values()) {
-      tools.push(...server.tools)
+    for (const [name, server] of this.remoteServers) {
+      tools.push(...this.guardTools(name, server.tools))
     }
     for (const group of this.proxyToolGroups.values()) {
       tools.push(...group)

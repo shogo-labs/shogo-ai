@@ -37,6 +37,11 @@ const transcription = {
   isLocalTranscriptionAvailable: mock(() => true),
   getSherpaOfflinePath: mock(() => '/usr/local/bin/sherpa'),
   getInstalledModels: mock(() => ['base.en' as string]),
+  // Live streaming (used by the stream routes; no streaming model in these tests)
+  getSherpaOnlineServerPath: mock(() => null),
+  getStreamingModelFiles: mock(() => null),
+  isStreamingTranscriptionAvailable: mock(() => false),
+  getSherpaProcessEnv: mock(() => ({})),
 }
 mock.module('../services/transcription.service', () => transcription)
 
@@ -106,6 +111,8 @@ mock.module('child_process', () => ({
 // ─── Prisma mock ──────────────────────────────────────────────────────
 
 let workspaceRow: any = null
+// Personal workspaces the desktop app can name with x-shogo-workspace-id.
+const hintableWorkspaces = new Set<string>()
 let meetings: Map<string, any>
 let localConfig: Map<string, string>
 let nextId = 1
@@ -117,7 +124,7 @@ let execSyncBehavior: 'ok' | 'throw' = 'ok'
 let lastExecCmd = ''
 
 const prismaMock = {
-  workspace: { findFirst: async () => workspaceRow },
+  workspace: { findFirst: async (args?: any) => (args?.where?.id ? (hintableWorkspaces.has(args.where.id) ? { id: args.where.id } : null) : workspaceRow) },
   member: { findFirst: async () => (workspaceRow ? { userId: 'u1', workspaceId: workspaceRow.id } : null) },
   project: { findUnique: async ({ where }: any) => ({ id: where.id, name: 'P' }) },
   meeting: {
@@ -197,6 +204,7 @@ const ORIG_AIPROXY = process.env.AI_PROXY_URL
 
 beforeEach(() => {
   workspaceRow = { id: 'w1' }
+  hintableWorkspaces.clear()
   meetings = new Map()
   localConfig = new Map()
   fsFiles.clear()
@@ -623,6 +631,49 @@ describe('meeting access is scoped to the personal workspace', () => {
     expect(res.status).toBe(200)
     expect((await res.json()).meeting.id).not.toBe('theirs')
     expect(meetings.get('theirs').notes).toBe('x')
+  })
+
+  describe('workspace hint from the desktop main process', () => {
+    const put = (rec: string, init: { headers?: Record<string, string>; query?: string } = {}) =>
+      meetingRoutes.request(`/api/local/meetings/recordings/${rec}${init.query ?? ''}`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json', ...init.headers },
+        body: '{}',
+      })
+    const draftWorkspace = (rec: string) => Array.from(meetings.values()).find((m) => m.recordingId === rec)?.workspaceId
+
+    test('a named personal workspace receives the draft', async () => {
+      hintableWorkspaces.add('w-signed-in')
+      await put('rec-h1', { headers: { 'x-shogo-workspace-id': 'w-signed-in' } })
+      expect(draftWorkspace('rec-h1')).toBe('w-signed-in')
+    })
+
+    test('EventSource-style ?workspace= works too', async () => {
+      hintableWorkspaces.add('w-signed-in')
+      await put('rec-h2', { query: '?workspace=w-signed-in' })
+      expect(draftWorkspace('rec-h2')).toBe('w-signed-in')
+    })
+
+    test('an unknown or non-personal workspace is ignored', async () => {
+      await put('rec-h3', { headers: { 'x-shogo-workspace-id': 'w-team' } })
+      expect(draftWorkspace('rec-h3')).toBe('w1')
+    })
+
+    test('the hint is not honored outside local mode', async () => {
+      hintableWorkspaces.add('w-signed-in')
+      const { resolveHintedWorkspaceId } = await import('../routes/meetings')
+      expect(await resolveHintedWorkspaceId('w-signed-in')).toBe('w-signed-in')
+      process.env.SHOGO_LOCAL_MODE = 'false'
+      try {
+        expect(await resolveHintedWorkspaceId('w-signed-in')).toBeNull()
+        const res = await meetingRoutes.request('/api/local/meetings/recordings/rec-x/audio-stream', { method: 'POST', body: new Uint8Array(4) })
+        expect(res.status).toBe(404)
+      } finally {
+        process.env.SHOGO_LOCAL_MODE = 'true'
+      }
+      expect(await resolveHintedWorkspaceId('x'.repeat(200))).toBeNull()
+      expect(await resolveHintedWorkspaceId(undefined)).toBeNull()
+    })
   })
 
   test('PUT caps notes at the same length as the workspace routes', async () => {
@@ -1417,5 +1468,64 @@ describe('getMeetingConfig fallback (localConfig throws)', () => {
     expect(res.status).toBe(200)
     await new Promise(r => setTimeout(r, 120))
     expect(meetings.get('m-cfg')!.status).toBe('ready')
+  })
+})
+
+describe('POST /api/local/transcribe (chat dictation)', () => {
+  /** A minimal RIFF/WAVE buffer large enough to clear the header check. */
+  const wavClip = (bytes = 2048) => {
+    const buf = Buffer.alloc(bytes)
+    buf.write('RIFF', 0, 'ascii')
+    buf.write('WAVE', 8, 'ascii')
+    return buf
+  }
+  const post = (body: Buffer | string) =>
+    meetingRoutes.request('/api/local/transcribe', {
+      method: 'POST',
+      headers: { 'content-type': 'audio/wav' },
+      body,
+    })
+
+  test('returns trimmed text and cleans up the temp clip', async () => {
+    transcription.transcribe.mockImplementationOnce(async () => ({
+      text: '  hello from the mic  ', segments: [], language: 'en', duration: 1,
+    } as any))
+    const res = await post(wavClip())
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ text: 'hello from the mic' })
+    const clip = writeFileCalls.filter((w) => w.path.includes('shogo-dictation')).pop()
+    expect(clip).toBeDefined()
+    expect(unlinkCalls).toContain(clip!.path)
+  })
+
+  test('rejects a body that is not a WAV', async () => {
+    const res = await post(Buffer.alloc(2048, 1))
+    expect(res.status).toBe(400)
+    expect(transcription.transcribe).not.toHaveBeenCalled()
+  })
+
+  test('rejects an empty or header-only clip', async () => {
+    expect((await post(Buffer.alloc(0))).status).toBe(400)
+    expect((await post(wavClip(44))).status).toBe(400)
+  })
+
+  test('413 when the declared size is over the cap', async () => {
+    const res = await meetingRoutes.request('/api/local/transcribe', {
+      method: 'POST',
+      headers: { 'content-type': 'audio/wav', 'content-length': String(64 * 1024 * 1024) },
+      body: wavClip(),
+    })
+    expect(res.status).toBe(413)
+  })
+
+  test('503 with a friendly message when transcription is unavailable, and still cleans up', async () => {
+    transcription.transcribe.mockImplementationOnce(async () => {
+      throw new Error('No OpenAI API key or proxy configured for cloud transcription')
+    })
+    const res = await post(wavClip())
+    expect(res.status).toBe(503)
+    expect((await res.json()).error).toContain('Transcription needs')
+    const clip = writeFileCalls.filter((w) => w.path.includes('shogo-dictation')).pop()
+    expect(unlinkCalls).toContain(clip!.path)
   })
 })

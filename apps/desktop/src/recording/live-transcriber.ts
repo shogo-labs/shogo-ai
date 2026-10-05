@@ -39,7 +39,10 @@ export class LiveTranscriber {
   /** A chunk with speech was dropped or failed, so the live transcript has a gap. */
   private lost = false
 
-  constructor(private readonly post: LiveChunkPost) {}
+  /** `startOffsetSeconds`: where this audio sits on the recording's timeline (non-zero when it takes over from a stream). */
+  constructor(private readonly post: LiveChunkPost, startOffsetSeconds = 0) {
+    this.consumed = Math.round(startOffsetSeconds * LIVE_SOURCE_RATE)
+  }
 
   /** Mono 48 kHz Int16 from the microphone. The mic is the timeline's clock. */
   feedMic(bytes: Uint8Array): void {
@@ -140,7 +143,12 @@ export class LiveTranscriber {
   private async sendQueued(): Promise<void> {
     while (this.queue.length > 0) {
       const next = this.queue.shift()!
-      const result = await this.post(next).catch(() => ({ ok: false, status: 0 }))
+      let result = await this.post(next).catch(() => ({ ok: false, status: 0 }))
+      // 429: the API was busy saving another write. The chunk is still good.
+      for (let retry = 0; retry < 2 && result.status === 429; retry++) {
+        await new Promise((resolve) => setTimeout(resolve, 250 * (retry + 1)))
+        result = await this.post(next).catch(() => ({ ok: false, status: 0 }))
+      }
       if (result.ok) {
         this.acked++
         continue

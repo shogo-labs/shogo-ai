@@ -248,6 +248,7 @@ export default observer(function AccountPage() {
           <SettingsContent
             activeTab={settingsTab}
             localMode={localMode || !features.billing}
+            onClose={closeSettingsSheet}
           />
         ) : null}
       </NativeAccountSettingsSheet>

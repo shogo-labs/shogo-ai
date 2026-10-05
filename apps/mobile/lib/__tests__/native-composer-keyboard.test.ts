@@ -9,6 +9,7 @@ import {
   nativeComposerKeyboardOverlap,
   nativeComposerKeyboardPad,
   nativeComposerShouldIgnoreClosedFrame,
+  webViewportKeyboardOverlap,
   chatComposerDockStyle,
   CHAT_TRANSCRIPT_MAX_WIDTH,
   NATIVE_COMPOSER_KEYBOARD_DEFAULT_DURATION,
@@ -37,6 +38,24 @@ describe('nativeComposerKeyboardOverlap', () => {
   test('returns 0 when the keyboard is closed', () => {
     expect(nativeComposerKeyboardOverlap(undefined, 874)).toBe(0)
     expect(nativeComposerKeyboardOverlap({ height: 0, screenY: 874 }, 874)).toBe(0)
+  })
+})
+
+describe('webViewportKeyboardOverlap', () => {
+  test('returns 0 when the visual viewport fills the layout viewport', () => {
+    expect(webViewportKeyboardOverlap(844, { height: 844, offsetTop: 0 })).toBe(0)
+  })
+
+  test('includes the keyboard and suggestion bar in the visual viewport shrink', () => {
+    expect(webViewportKeyboardOverlap(844, { height: 500, offsetTop: 0 })).toBe(344)
+  })
+
+  test('accounts for a shifted visual viewport without a height change', () => {
+    expect(webViewportKeyboardOverlap(844, { height: 500, offsetTop: 100 })).toBe(244)
+  })
+
+  test('never returns a negative overlap', () => {
+    expect(webViewportKeyboardOverlap(844, { height: 900, offsetTop: 0 })).toBe(0)
   })
 })
 
@@ -83,7 +102,7 @@ describe('chatComposerDockStyle', () => {
   test('puts the keyboard pad on paddingBottom so Animated.View can lift the pill', () => {
     const pad = { __animated: true }
     expect(chatComposerDockStyle({
-      measuredWidth: 390,
+      column: { width: 390 },
       keyboardPad: pad,
     })).toEqual([
       { width: 390 },
@@ -91,14 +110,14 @@ describe('chatComposerDockStyle', () => {
     ])
   })
 
-  test('matches the transcript max-w-2xl column when width is not measured', () => {
-    expect(chatComposerDockStyle({})).toEqual([
-      { width: '100%', maxWidth: CHAT_TRANSCRIPT_MAX_WIDTH },
-    ])
+  test('uses the column style it is given without deciding any width itself', () => {
+    const column = { width: '100%', maxWidth: CHAT_TRANSCRIPT_MAX_WIDTH }
+    expect(chatComposerDockStyle({ column })).toEqual([column])
   })
 
   test('keeps web overflow visible so dock cards can float above the pill', () => {
     expect(chatComposerDockStyle({
+      column: { width: '100%', maxWidth: CHAT_TRANSCRIPT_MAX_WIDTH },
       keyboardPad: 12,
       webOverflowVisible: true,
     })).toEqual([

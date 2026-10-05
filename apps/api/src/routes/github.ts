@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * GitHub Routes - GitHub App integration for project sync
+ * GitHub Routes - GitHub integration for project sync (GitHub App or user access token)
  *
  * Endpoints:
  * - GET    /github/status           - Check if GitHub App is configured
@@ -13,6 +13,8 @@
  * Project-specific:
  * - GET    /projects/:projectId/github           - Get GitHub connection status
  * - POST   /projects/:projectId/github/connect   - Connect project to GitHub repo
+ * - POST   /projects/:projectId/github/authorize - Link to authorize the GitHub App for a repo
+ * - GET    /github/callback                      - App Setup URL / OAuth callback (public)
  * - DELETE /projects/:projectId/github           - Disconnect from GitHub
  * - POST   /projects/:projectId/github/push      - Push to GitHub
  * - POST   /projects/:projectId/github/pull      - Pull from GitHub
@@ -23,8 +25,19 @@
  */
 
 import { Hono } from 'hono';
-import { join } from 'path';
 import * as githubService from '../services/github.service';
+import { runtimeGitHubWorkspace, type GitHubWorkspace } from '../services/github-workspace';
+import { createAuthorizeUrl, handleAuthorizeCallback } from '../services/github-authorize';
+import { getFrontendUrl } from '../lib/cloud-urls';
+import { grantAccess } from '../services/integration-credentials';
+import { isPersonalConnectState, verifyPersonalConnectState } from '../services/integration-credentials/connect-state';
+import { ensureDefaultCredentialProviders, githubAdapter } from '../services/integration-credentials/defaults';
+import { resumeAfterConnect } from '../services/integration-credentials/resume';
+import { connectedPage, connectFailedPage } from './integration-credentials';
+
+function escapeHtml(text: string): string {
+  return text.replace(/[&<>"']/g, (ch) => `&#${ch.charCodeAt(0)};`);
+}
 import { prisma } from '../lib/prisma';
 
 // =============================================================================
@@ -32,24 +45,20 @@ import { prisma } from '../lib/prisma';
 // =============================================================================
 
 export interface GitHubRoutesConfig {
-  /** Directory containing project workspaces */
-  workspacesDir: string;
+  /**
+   * Where a project's git operations run. Defaults to the project's runtime,
+   * which owns its files; the API has no authoritative copy.
+   */
+  workspaceFor?: (projectId: string) => GitHubWorkspace;
 }
 
 // =============================================================================
 // Routes
 // =============================================================================
 
-export function githubRoutes(config: GitHubRoutesConfig) {
-  const { workspacesDir } = config;
+export function githubRoutes(config: GitHubRoutesConfig = {}) {
+  const workspaceFor = config.workspaceFor ?? runtimeGitHubWorkspace;
   const router = new Hono();
-
-  /**
-   * Get workspace path for a project.
-   */
-  function getWorkspacePath(projectId: string): string {
-    return join(workspacesDir, projectId);
-  }
 
   /**
    * Validate project exists.
@@ -238,6 +247,9 @@ export function githubRoutes(config: GitHubRoutesConfig) {
           repoName: connection.repoName,
           repoFullName: connection.repoFullName,
           defaultBranch: connection.defaultBranch,
+          branch: connection.branch ?? connection.defaultBranch,
+          authType: connection.authType,
+          tokenLogin: connection.tokenLogin,
           isPrivate: connection.isPrivate,
           syncEnabled: connection.syncEnabled,
           lastPushAt: connection.lastPushAt,
@@ -256,6 +268,10 @@ export function githubRoutes(config: GitHubRoutesConfig) {
 
   /**
    * POST /projects/:projectId/github/connect - Connect project to GitHub
+   *
+   * Body: `repo_owner`, `repo_name`, and exactly one of `installation_id`
+   * (Shogo GitHub App) or `token` (personal access / OAuth token, stored
+   * encrypted and never returned).
    */
   router.post('/projects/:projectId/github/connect', async (c) => {
     const projectId = c.req.param('projectId');
@@ -270,24 +286,34 @@ export function githubRoutes(config: GitHubRoutesConfig) {
       }
 
       const body = await c.req.json<{
-        installation_id: number;
+        installation_id?: number;
+        token?: string;
         repo_owner: string;
         repo_name: string;
+        branch?: string;
       }>();
 
-      if (!body.installation_id || !body.repo_owner || !body.repo_name) {
+      const token = typeof body.token === 'string' ? body.token.trim() : '';
+      const hasInstallation = typeof body.installation_id === 'number' && body.installation_id > 0;
+      if (!body.repo_owner || !body.repo_name || hasInstallation === !!token) {
         return c.json(
-          { error: { code: 'invalid_request', message: 'installation_id, repo_owner, and repo_name are required' } },
+          {
+            error: {
+              code: 'invalid_request',
+              message: 'repo_owner, repo_name, and exactly one of installation_id or token are required',
+            },
+          },
           400
         );
       }
 
-      const { connection, repo } = await githubService.connectRepository({
+      const { connection, repo, workspace } = await githubService.connectRepository({
         projectId,
-        workspacePath: getWorkspacePath(projectId),
-        installationId: body.installation_id,
+        workspace: workspaceFor(projectId),
+        ...(token ? { token } : { installationId: body.installation_id }),
         repoOwner: body.repo_owner,
         repoName: body.repo_name,
+        ...(typeof body.branch === 'string' && body.branch.trim() ? { branch: body.branch.trim() } : {}),
       });
 
       return c.json({
@@ -298,6 +324,9 @@ export function githubRoutes(config: GitHubRoutesConfig) {
           repoName: connection.repoName,
           repoFullName: connection.repoFullName,
           defaultBranch: connection.defaultBranch,
+          branch: connection.branch ?? connection.defaultBranch,
+          authType: connection.authType,
+          tokenLogin: connection.tokenLogin,
           isPrivate: connection.isPrivate,
         },
         repository: {
@@ -307,6 +336,7 @@ export function githubRoutes(config: GitHubRoutesConfig) {
           html_url: repo.html_url,
           private: repo.private,
         },
+        workspace,
       }, 201);
     } catch (error: any) {
       console.error('[GitHub] Connect error:', error);
@@ -315,6 +345,136 @@ export function githubRoutes(config: GitHubRoutesConfig) {
         500
       );
     }
+  });
+
+  /**
+   * POST /projects/:projectId/github/authorize - Link to authorize the Shogo
+   * GitHub App for a repository (the alternative to sharing a token).
+   *
+   * Body: `repo_owner`, `repo_name`. Returns `{ url }`; open it in a browser.
+   * GitHub returns to `GET /github/callback`, which saves the connection.
+   */
+  router.post('/projects/:projectId/github/authorize', async (c) => {
+    const projectId = c.req.param('projectId');
+    try {
+      const project = await validateProject(projectId);
+      if (!project) {
+        return c.json({ error: { code: 'project_not_found', message: 'Project not found' } }, 404);
+      }
+      const body = await c.req.json<{ repo_owner?: string; repo_name?: string }>().catch(() => ({} as any));
+      const repoOwner = typeof body.repo_owner === 'string' ? body.repo_owner.trim() : '';
+      const repoName = typeof body.repo_name === 'string' ? body.repo_name.trim() : '';
+      if (!repoOwner || !repoName) {
+        return c.json({ error: { code: 'invalid_request', message: 'repo_owner and repo_name are required' } }, 400);
+      }
+      if (!githubService.isOAuthConfigured()) {
+        return c.json(
+          {
+            error: {
+              code: 'not_configured',
+              message: 'Authorizing the Shogo GitHub App is not configured on this server; share an access token instead.',
+            },
+          },
+          400
+        );
+      }
+      const userId = (c.get('auth') as { userId?: string } | undefined)?.userId;
+      const url = createAuthorizeUrl({ projectId, repoOwner, repoName, userId });
+      return c.json({ ok: true, url });
+    } catch (error: any) {
+      console.error('[GitHub] Authorize URL error:', error);
+      return c.json({ error: { code: 'authorize_error', message: error.message } }, 500);
+    }
+  });
+
+  /**
+   * GET /projects/:projectId/github/authorize?repo=owner/name - The short link
+   * agents hand out. Opened in a signed-in browser, it redirects to GitHub
+   * with a freshly signed state.
+   */
+  router.get('/projects/:projectId/github/authorize', async (c) => {
+    const projectId = c.req.param('projectId');
+    const page = (title: string, message: string, status: 400 | 404 | 500) =>
+      c.html(
+        `<!doctype html><html><head><title>${escapeHtml(title)}</title></head><body>` +
+          `<h1>${escapeHtml(title)}</h1><p>${escapeHtml(message)}</p></body></html>`,
+        status
+      );
+    try {
+      const project = await validateProject(projectId);
+      if (!project) return page('Project not found', 'This project does not exist or you cannot access it.', 404);
+      const [repoOwner, repoName, ...rest] = (c.req.query('repo') ?? '').trim().split('/');
+      if (!repoOwner || !repoName || rest.length) {
+        return page('GitHub authorization', 'The link is missing the repository (expected ?repo=owner/name).', 400);
+      }
+      if (!githubService.isOAuthConfigured()) {
+        return page(
+          'GitHub authorization',
+          'Authorizing the Shogo GitHub App is not configured on this server; share an access token instead.',
+          400
+        );
+      }
+      const userId = (c.get('auth') as { userId?: string } | undefined)?.userId;
+      return c.redirect(createAuthorizeUrl({ projectId, repoOwner, repoName, userId }));
+    } catch (error: any) {
+      console.error('[GitHub] Authorize link error:', error);
+      return page('GitHub authorization failed', error.message, 500);
+    }
+  });
+
+  /**
+   * GET /github/callback - GitHub App Setup URL and OAuth callback for the
+   * authorize flow. Public: the browser carries no Shogo session here; the
+   * signed `state` names the project and the OAuth code proves the GitHub user.
+   */
+  router.get('/github/callback', async (c) => {
+    const state = c.req.query('state');
+    if (isPersonalConnectState(state)) {
+      const personal = verifyPersonalConnectState(state);
+      const code = c.req.query('code');
+      if (!personal || !code) {
+        const reason = c.req.query('error_description') || 'This GitHub link is invalid or has expired. Ask for a new one.';
+        return c.html(connectFailedPage(reason), 400);
+      }
+      try {
+        ensureDefaultCredentialProviders({ loadGitHub: async () => githubService });
+        const adapter = githubAdapter();
+        if (!adapter) throw new Error('GitHub is not available on this server');
+        const { login } = await adapter.completeConnect({ userId: personal.userId, code });
+        if (personal.projectId) await grantAccess(personal.userId, personal.projectId, 'github');
+        const resumed = await resumeAfterConnect({ userId: personal.userId, resume: personal.resume, label: 'GitHub', login })
+          .catch((err) => {
+            console.error('[GitHub] Resume after connect failed:', err?.message ?? err);
+            return { resumed: false } as const;
+          });
+        return c.html(connectedPage('GitHub', login, resumed));
+      } catch (err: any) {
+        console.error('[GitHub] Personal connect failed:', err?.message ?? err);
+        return c.html(connectFailedPage(err?.message ?? 'Could not connect GitHub'), 400);
+      }
+    }
+    const result = await handleAuthorizeCallback(
+      {
+        state: c.req.query('state'),
+        code: c.req.query('code'),
+        installationId: c.req.query('installation_id'),
+        error: c.req.query('error'),
+        errorDescription: c.req.query('error_description'),
+      },
+      { workspaceFor }
+    );
+    if (result.kind === 'redirect') return c.redirect(result.url);
+    if (result.projectId) {
+      const target = new URL(`${getFrontendUrl().replace(/\/+$/, '')}/projects/${encodeURIComponent(result.projectId)}`);
+      target.searchParams.set('github', result.ok ? 'connected' : 'error');
+      target.searchParams.set('github_message', result.message);
+      return c.redirect(target.toString());
+    }
+    return c.html(
+      `<!doctype html><html><head><title>GitHub authorization</title></head><body>` +
+        `<h1>GitHub authorization failed</h1><p>${escapeHtml(result.message)}</p></body></html>`,
+      400
+    );
   });
 
   /**
@@ -344,6 +504,78 @@ export function githubRoutes(config: GitHubRoutesConfig) {
   });
 
   /**
+   * GET /projects/:projectId/github/branches - Branches of the connected repository
+   */
+  router.get('/projects/:projectId/github/branches', async (c) => {
+    const projectId = c.req.param('projectId');
+
+    try {
+      const project = await validateProject(projectId);
+      if (!project) {
+        return c.json(
+          { error: { code: 'project_not_found', message: 'Project not found' } },
+          404
+        );
+      }
+
+      const connection = await githubService.getConnection(projectId);
+      const branches = await githubService.listBranches(projectId);
+      return c.json({
+        ok: true,
+        branches,
+        current: connection?.branch ?? connection?.defaultBranch,
+        defaultBranch: connection?.defaultBranch,
+      });
+    } catch (error: any) {
+      if (error instanceof githubService.GitHubNotConnectedError) {
+        return c.json({ error: { code: 'not_connected', message: error.message } }, 409);
+      }
+      console.error('[GitHub] List branches error:', error);
+      return c.json(
+        { error: { code: 'branches_error', message: error.message } },
+        500
+      );
+    }
+  });
+
+  /**
+   * POST /projects/:projectId/github/branch - Switch the workspace to another branch
+   *
+   * Body: `branch`, an existing branch of the connected repository.
+   */
+  router.post('/projects/:projectId/github/branch', async (c) => {
+    const projectId = c.req.param('projectId');
+
+    try {
+      const project = await validateProject(projectId);
+      if (!project) {
+        return c.json(
+          { error: { code: 'project_not_found', message: 'Project not found' } },
+          404
+        );
+      }
+
+      const body = await c.req.json<{ branch?: string }>().catch(() => ({} as { branch?: string }));
+      const branch = typeof body.branch === 'string' ? body.branch.trim() : '';
+      if (!branch || !githubService.isValidBranchName(branch)) {
+        return c.json({ error: { code: 'invalid_request', message: 'A valid branch is required' } }, 400);
+      }
+
+      const result = await githubService.switchBranch(projectId, branch, workspaceFor(projectId));
+      return c.json({ ok: true, ...result });
+    } catch (error: any) {
+      if (error instanceof githubService.GitHubNotConnectedError) {
+        return c.json({ error: { code: 'not_connected', message: error.message } }, 409);
+      }
+      console.error('[GitHub] Switch branch error:', error);
+      return c.json(
+        { error: { code: 'branch_error', message: error.message } },
+        400
+      );
+    }
+  });
+
+  /**
    * POST /projects/:projectId/github/push - Push to GitHub
    */
   router.post('/projects/:projectId/github/push', async (c) => {
@@ -360,7 +592,7 @@ export function githubRoutes(config: GitHubRoutesConfig) {
 
       const result = await githubService.pushToGitHub(
         projectId,
-        getWorkspacePath(projectId)
+        workspaceFor(projectId)
       );
 
       if (!result.success) {
@@ -397,7 +629,7 @@ export function githubRoutes(config: GitHubRoutesConfig) {
 
       const result = await githubService.pullFromGitHub(
         projectId,
-        getWorkspacePath(projectId)
+        workspaceFor(projectId)
       );
 
       if (!result.success) {
@@ -434,7 +666,7 @@ export function githubRoutes(config: GitHubRoutesConfig) {
 
       const result = await githubService.syncWithGitHub(
         projectId,
-        getWorkspacePath(projectId)
+        workspaceFor(projectId)
       );
 
       if (!result.success) {

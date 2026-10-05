@@ -57,6 +57,7 @@ import { useRouter } from "expo-router"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
 import { LinearGradient } from "expo-linear-gradient"
 import { DefaultChatTransport } from "ai"
+import { appendQueuedUserMessage } from "./queued-user-message"
 import AsyncStorage from "@react-native-async-storage/async-storage"
 import {
   extractTextContent,
@@ -130,10 +131,11 @@ import {
   AI_PROVIDERS,
 } from "../../lib/ai-consent"
 import { setActiveChatNotificationContext } from "../../lib/notifications/chat-notifier"
-import { autoNameSession } from "./auto-name-session"
+import { autoNameSession, isPlaceholderSessionName } from "./auto-name-session"
 
 import {
   isPhoneLayout,
+  nativePhoneComposerRestPad,
   useNativePhoneWindow,
 } from "../../lib/native-phone-layout"
 import { canvasViewerPayload } from "../../lib/canvas-viewer"
@@ -142,10 +144,8 @@ import {
   generateClientTurnId,
   normalizePlanData,
 } from "../../lib/chat-send-body"
-import {
-  CHAT_TRANSCRIPT_MAX_WIDTH,
-  NATIVE_COMPOSER_KEYBOARD_GAP,
-} from "../../lib/native-composer-keyboard"
+import { chatColumnStyle } from "../../lib/chat-column"
+import { NATIVE_COMPOSER_KEYBOARD_GAP } from "../../lib/native-composer-keyboard"
 import { ProjectComposerDock } from "./composer/ProjectComposerDock"
 import { useNativeComposerDockPad } from "../../lib/use-native-composer-keyboard"
 import { authClient } from "../../lib/auth-client"
@@ -207,7 +207,6 @@ import {
   saveModelPreference,
 } from "../../lib/agent-mode-preference"
 import { useReconcileStaleModelSelection } from "../../lib/visible-models"
-import { CompactChatInput } from "./CompactChatInput"
 import { ExecutionBadge } from "./ExecutionBadge"
 import { ExpandTab } from "./ExpandTab"
 import { ToolCallDisplay, type ToolCallState } from "./ToolCallDisplay"
@@ -253,6 +252,7 @@ import {
   X,
   ChevronDown,
   Shield,
+  KeyRound,
   MessageCircleQuestion,
 } from "lucide-react-native"
 import { type PlanData } from "./PlanCard"
@@ -261,6 +261,7 @@ import { AgentClient } from "@shogo-ai/sdk/agent"
 import { agentFetch } from "../../lib/agent-fetch"
 import { openAuthFlow, preCreateAuthWindow } from "@shogo/ui-kit/platform"
 import { PermissionApprovalDialog } from "../security/PermissionApprovalDialog"
+import { IntegrationConnectCard, type IntegrationAuthRequest } from "./IntegrationConnectCard"
 import { buildStopRequest } from "../../lib/chat-stop"
 import {
   planToPublishToStream,
@@ -280,6 +281,8 @@ import {
 } from "./turns/askUserAnswers"
 import { NativeAskUserQuestionSheet } from "./NativeAskUserQuestionSheet"
 import {
+  ASK_IN_AGENT_EVENT,
+  type AskInAgentPayload,
   FIX_IN_AGENT_EVENT,
   buildFixPrompt,
   type FixInAgentPayload,
@@ -463,7 +466,6 @@ export interface WorkspacePanelData {
 }
 
 export interface ChatPanelProps {
-  mode?: "compact" | "full"
   /**
    * `agent` keeps the existing chat behavior while using the quieter,
    * centred surface intended for the Workspace Agent shell. `studio`
@@ -506,9 +508,6 @@ export interface ChatPanelProps {
   initialFiles?: FileAttachment[]
   /** When set (e.g. from home composer), overrides stored interaction mode for this session and first message */
   initialInteractionMode?: InteractionMode
-  onCompactSubmit?: (prompt: string, files?: FileAttachment[]) => void
-  compactValue?: string
-  onCompactValueChange?: (value: string) => void
   /** Personal-shell composer prefill; stages text without sending it. */
   prefillRequest?: RestoreDraftRequest | null
   /**
@@ -934,7 +933,6 @@ async function ensureAiConsentForMessage(): Promise<boolean> {
 // ============================================================
 
 const ChatPanelContent = observer(function ChatPanelContent({
-  mode = "full",
   presentation = "studio",
   featureId,
   featureName,
@@ -960,9 +958,6 @@ const ChatPanelContent = observer(function ChatPanelContent({
   initialMessage,
   initialFiles,
   initialInteractionMode,
-  onCompactSubmit,
-  compactValue,
-  onCompactValueChange,
   prefillRequest,
   onPrefillConsumed,
   composer: composerProp,
@@ -1169,7 +1164,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
       const session = studioChat.chatSessionCollection.get(sessionId)
       const sessionName =
         (session as any)?.inferredName || (session as any)?.name
-      if (sessionName && sessionName !== "Untitled") return
+      if (!isPlaceholderSessionName(sessionName)) return
 
       hasTriggeredNamingRef.current = true
       const http = createHttpClient()
@@ -1179,6 +1174,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
         workspaceId,
         projectId,
         getSession: (id) => studioChat.chatSessionCollection.get(id),
+        loadSession: (id) => studioChat.chatSessionCollection.loadById(id),
         getProjectName: (id) =>
           projectCollection.all.find((p: any) => p.id === id)?.name,
         generateName: (text, currentWorkspaceId, currentProjectId) =>
@@ -1268,7 +1264,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // nav owns the home-indicator inset. Reserving it here too created an extra
   // blank row between the composer and nav on native, unlike mobile web.
   const restComposerPad = isPhoneViewport
-    ? NATIVE_COMPOSER_KEYBOARD_GAP
+    ? nativePhoneComposerRestPad(false)
     : Math.max(insets.bottom, NATIVE_COMPOSER_KEYBOARD_GAP)
   // Native phone chat uses the measured keyboard overlap below. Keeping the
   // KAV lift enabled here makes the composer depend on two independent layout
@@ -1977,7 +1973,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
     transport: chatTransport,
     id: currentSessionId || undefined,
     resume: false,
-    experimental_throttle: 120,
+    experimental_throttle: 50,
     onError: (err) => {
       // Stream failures are recoverable UI state: the retry affordance below
       // handles them. React Native treats console.error as a development
@@ -2744,6 +2740,13 @@ const ChatPanelContent = observer(function ChatPanelContent({
         }
       }
 
+      if ((dataPart as any).type === "data-integration-auth-required") {
+        const d = (dataPart as any).data
+        if (d && typeof d.provider === "string" && typeof d.connectUrl === "string") {
+          setPendingIntegrationAuth({ provider: d.provider, connectUrl: d.connectUrl, message: d.message })
+        }
+      }
+
       // Handle permission approval requests from the agent runtime
       if ((dataPart as any).type === "data-permission-request") {
         const req = (dataPart as any).data
@@ -3153,11 +3156,19 @@ const ChatPanelContent = observer(function ChatPanelContent({
   const isStreaming =
     (isTransportStreaming || streamAutoRecovering) && stoppedMessages === null
 
-  const resumeQueuedTurn = useCallback(() => {
-    void resumeStreamSingleFlight().catch((error) => {
-      console.warn("[ChatPanel] Failed to attach to queued turn:", error)
-    })
-  }, [resumeStreamSingleFlight])
+  const resumeQueuedTurn = useCallback(
+    (queuedUserMessage?: UIMessage) => {
+      // The server saved the queued message and started its turn; show the
+      // message before attaching to the reply (see queued-user-message.ts).
+      if (queuedUserMessage) {
+        setMessages((prev) => appendQueuedUserMessage(prev, queuedUserMessage))
+      }
+      void resumeStreamSingleFlight().catch((error) => {
+        console.warn("[ChatPanel] Failed to attach to queued turn:", error)
+      })
+    },
+    [resumeStreamSingleFlight, setMessages],
+  )
   const serverQueue = useServerMessageQueue({
     sessionId: currentSessionId,
     enabled: !!currentSessionId && !localAgentUrl,
@@ -3459,6 +3470,9 @@ const ChatPanelContent = observer(function ChatPanelContent({
   >(null)
   const [optimisticUserInput, setOptimisticUserInput] =
     useState<OptimisticUserInput | null>(null)
+
+  // The agent needs the person's own account on an integration.
+  const [pendingIntegrationAuth, setPendingIntegrationAuth] = useState<IntegrationAuthRequest | null>(null)
 
   // Permission approval state (local mode security)
   const [pendingPermissionRequest, setPendingPermissionRequest] = useState<{
@@ -5939,9 +5953,19 @@ const ChatPanelContent = observer(function ChatPanelContent({
       handleSendMessage(prompt)
     }
 
+    // "Shogo: Explain / Improve / Write Tests for Selection" editor actions.
+    const onAsk = (e: Event) => {
+      const detail = (e as CustomEvent<AskInAgentPayload>).detail
+      if (!detail?.prompt) return
+      handleSendMessage(detail.prompt)
+    }
+
     window.addEventListener(FIX_IN_AGENT_EVENT, onFix as EventListener)
-    return () =>
+    window.addEventListener(ASK_IN_AGENT_EVENT, onAsk as EventListener)
+    return () => {
       window.removeEventListener(FIX_IN_AGENT_EVENT, onFix as EventListener)
+      window.removeEventListener(ASK_IN_AGENT_EVENT, onAsk as EventListener)
+    }
   }, [isActive, currentSessionId, handleSendMessage])
 
   // ─── Terminal context → Chat ─────────────────────────────────────────
@@ -6792,7 +6816,11 @@ const ChatPanelContent = observer(function ChatPanelContent({
   const islandState = useMemo<DesktopIslandSessionState>(
     () => ({
       projectName: featureName ?? "Project",
-      title: currentSession?.name ?? featureName ?? "Untitled chat",
+      title:
+        currentSession?.name ||
+        currentSession?.inferredName ||
+        featureName ||
+        "Untitled chat",
       status: isStreaming ? "running" : "idle",
       replyPreview: islandReplyPreview,
       pending: islandPending,
@@ -6801,6 +6829,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
     }),
     [
       currentSession?.name,
+      currentSession?.inferredName,
       featureName,
       isStreaming,
       islandReplyPreview,
@@ -6982,13 +7011,6 @@ const ChatPanelContent = observer(function ChatPanelContent({
     ],
   )
 
-  const handleCompactSubmit = useCallback(
-    (prompt: string, files?: FileAttachment[]) => {
-      onCompactSubmit?.(prompt, files)
-    },
-    [onCompactSubmit],
-  )
-
   const handleQuickActionClick = useCallback(
     (prompt: string) => handleSendMessage(prompt),
     [handleSendMessage],
@@ -7042,6 +7064,28 @@ const ChatPanelContent = observer(function ChatPanelContent({
     }
   }, [pendingPermissionRequest, respondToPermission])
   useDockPanel(permissionDockDescriptor, chatDockStore)
+
+  const integrationAuthDockDescriptor = useMemo<DockPanelDescriptor | null>(() => {
+    if (!pendingIntegrationAuth) return null
+    return {
+      id: `integration-auth:${pendingIntegrationAuth.provider}`,
+      kind: "blocking",
+      order: 0,
+      title: "Connect your account",
+      icon: KeyRound,
+      onDismiss: () => setPendingIntegrationAuth(null),
+      render: () => (
+        <IntegrationConnectCard
+          request={pendingIntegrationAuth}
+          onContinue={(label) => {
+            setPendingIntegrationAuth(null)
+            void sendMessageInternal(`I connected ${label}. Please go ahead.`)
+          }}
+        />
+      ),
+    }
+  }, [pendingIntegrationAuth, sendMessageInternal])
+  useDockPanel(integrationAuthDockDescriptor, chatDockStore)
 
   const questionDockDescriptor = useMemo<DockPanelDescriptor | null>(() => {
     if (!pendingQuestion) return null
@@ -7441,20 +7485,6 @@ const ChatPanelContent = observer(function ChatPanelContent({
   ])
   useDockPanel(errorDockDescriptor, chatDockStore)
 
-  // Render compact mode (homepage)
-  if (mode === "compact") {
-    return (
-      <CompactChatInput
-        onSubmit={handleCompactSubmit}
-        isLoading={isStreaming}
-        disabled={false}
-        value={compactValue}
-        onChange={onCompactValueChange}
-        className={className}
-      />
-    )
-  }
-
   // Render collapsed state
   if (isCollapsed) {
     return (
@@ -7550,33 +7580,23 @@ const ChatPanelContent = observer(function ChatPanelContent({
                   ref={scrollViewRef}
                   className="flex-1"
                   style={chatMessagesScrollStyles.scroll}
-                  contentContainerClassName={cn(
+                  // Vertical padding only: width and side gutters come from
+                  // the shared chat column (`chatColumnStyle`), the same
+                  // source the header, dock and composer use.
+                  contentContainerClassName={
                     isPhoneViewport
                       ? phoneTranscriptTopPadding === "floating-agent"
-                        ? "px-4 pt-32 pb-36"
-                        : "px-4 pt-16 pb-36"
+                        ? "pt-32 pb-36"
+                        : "pt-16 pb-36"
                       : presentation === "agent"
-                        ? "px-6 pt-8 pb-[48px]"
-                        : "p-2 pb-[40px]",
-                    presentation === "agent"
-                      ? "max-w-[760px] w-full self-center"
-                      : "max-w-2xl w-full self-center",
-                  )}
-                  contentContainerStyle={
-                    nativePhoneColumnWidth
-                      ? { width: nativePhoneColumnWidth }
-                      : // Same belt-and-suspenders cap as the composer below —
-                        // pins the `max-w-2xl` width even if the className
-                        // doesn't resolve on this content container.
-                        {
-                          maxWidth:
-                            presentation === "agent"
-                              ? 760
-                              : CHAT_TRANSCRIPT_MAX_WIDTH,
-                          width: "100%",
-                          alignSelf: "center" as const,
-                        }
+                        ? "pt-8 pb-[48px]"
+                        : "pt-2 pb-[40px]"
                   }
+                  contentContainerStyle={chatColumnStyle({
+                    presentation,
+                    phone: isPhoneViewport,
+                    measuredWidth: nativePhoneColumnWidth,
+                  })}
                   keyboardShouldPersistTaps={
                     isNative && nativeInlineEditing ? "always" : "handled"
                   }
@@ -7795,8 +7815,8 @@ const ChatPanelContent = observer(function ChatPanelContent({
               second composer, matching ChatGPT. Web keeps both. */}
               {!(isNative && nativeInlineEditing) ? (
                 <ProjectComposerDock
+                  presentation={presentation}
                   columnWidth={nativePhoneColumnWidth}
-                  maxWidth={presentation === "agent" ? 760 : undefined}
                   keyboardPad={composerKeyboardPad}
                   keyboardOpen={nativeKeyboardOpen}
                   restPad={restComposerPad}

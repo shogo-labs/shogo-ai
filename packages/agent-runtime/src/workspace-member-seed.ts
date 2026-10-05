@@ -15,7 +15,7 @@
  * runtime would have had — but only when the folder has no project source,
  * so they can never clobber real content.
  */
-import { existsSync, mkdirSync, readdirSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { seedRuntimeTemplate, seedTechStack } from './workspace-defaults'
 
@@ -49,6 +49,30 @@ export function resolveMemberTechStackId(
   }
 }
 
+/**
+ * Stamp a member folder's `.tech-stack` from the project's settings, the
+ * workspace counterpart of `applyEnvTechStackMarker`. Settings are the source
+ * of truth, so a project switched to another stack (or restored with a stale
+ * marker) previews with the stack it is set to. Returns true when it wrote.
+ */
+export function applyMemberTechStackMarker(
+  dir: string,
+  projectId: string,
+  raw: string | undefined = process.env.WORKSPACE_TECH_STACKS,
+): boolean {
+  const techStackId = resolveMemberTechStackId(projectId, raw)
+  if (!techStackId || !existsSync(dir)) return false
+  const markerPath = join(dir, '.tech-stack')
+  try {
+    if (existsSync(markerPath) && readFileSync(markerPath, 'utf-8').trim() === techStackId) return false
+    writeFileSync(markerPath, techStackId, 'utf-8')
+    return true
+  } catch (err: any) {
+    console.warn(`[workspace-member-seed] Failed to stamp .tech-stack for ${projectId}: ${err?.message ?? err}`)
+    return false
+  }
+}
+
 export interface SeedMemberResult {
   seeded: boolean
   techStackId?: string
@@ -74,22 +98,37 @@ export interface AnchorSeedDecisionInput {
   /** Projects this runtime serves. */
   memberProjectIds: string[]
   /**
-   * The host (metal agent) owns durability: it overlays any backup after
-   * boot, exactly as it does over the template in a single-project VM.
+   * Members confirmed to have no durable source: by a clean in-guest download,
+   * or, under host-mediated durability, by the host's own lookup
+   * (`WORKSPACE_NEW_PROJECT_IDS`).
    */
-  hostMediatedDurability: boolean
-  /** Members whose in-guest download completed cleanly and found no archive. */
   newProjectIds: string[]
 }
 
 /**
- * Whether the anchor folder may be seeded. Seeding is only safe when either
- * no durable source exists (a clean "no archive" result) or the host will
- * overlay the durable source afterwards. A failed or skipped download never
- * qualifies: the real project may exist and just not be reachable yet.
+ * Whether the anchor folder may be seeded. Only when its durable source is
+ * confirmed absent. A failed or skipped lookup never qualifies, and neither
+ * does "the host will overlay the backup afterwards": projects seeded ahead of
+ * that overlay have come back with every file they share with the starter
+ * (`app/index.tsx`, `package.json`, `prisma/dev.db`, ...) reverted to it.
  */
 export function shouldSeedAnchorMember(input: AnchorSeedDecisionInput): boolean {
   const anchor = input.anchorProjectId?.trim()
   if (!anchor || !input.memberProjectIds.includes(anchor)) return false
-  return input.hostMediatedDurability || input.newProjectIds.includes(anchor)
+  return input.newProjectIds.includes(anchor)
+}
+
+/**
+ * Parse the host's `WORKSPACE_NEW_PROJECT_IDS` (comma-separated). Returns null
+ * when the variable is absent, i.e. a host that predates it; an empty string
+ * means the host confirmed that no member is new.
+ */
+export function parseHostConfirmedNewProjectIds(
+  raw: string | undefined = process.env.WORKSPACE_NEW_PROJECT_IDS,
+): string[] | null {
+  if (raw === undefined) return null
+  return raw
+    .split(',')
+    .map((id) => id.trim())
+    .filter(Boolean)
 }

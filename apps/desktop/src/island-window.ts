@@ -15,7 +15,7 @@ import path from 'path'
 import { readConfig, writeConfig } from './config'
 import { getApiPort } from './local-server'
 import { installAppNavigationGuards, type WindowManager } from './window-manager'
-import { getIslandBounds, getIslandTopInset, isNotchedDisplay } from './island-placement'
+import { getIslandBounds, getIslandTopInset, isIslandFocusable, isNotchedDisplay } from './island-placement'
 import { readIslandFiles } from './island-files'
 import { ISLAND_WINDOW_ARG } from './preload-island'
 import { hasMeetingActivity } from './island-meeting'
@@ -28,6 +28,7 @@ import {
   parseIslandConfigPatch,
   parseIslandFileRefs,
   parseIslandSnapshot,
+  pendingRequestsToAutoExpand,
   type IslandActionResult,
   type IslandAppAction,
   type IslandConfig,
@@ -40,8 +41,7 @@ import {
 } from './island-protocol'
 
 export type IslandConfigUpdateResult =
-  | { ok: true; config: IslandConfig }
-  | { ok: false; error: string; config: IslandConfig }
+  { ok: true; config: IslandConfig } | { ok: false; error: string; config: IslandConfig }
 
 export interface IslandMeetingSource {
   getState(): IslandMeetingState
@@ -127,9 +127,7 @@ export class IslandWindow {
     }
     this.windowManager.sendToAllWindows('island-config-changed', this.config)
 
-    return shortcutError
-      ? { ok: false, error: shortcutError, config: this.config }
-      : { ok: true, config: this.config }
+    return shortcutError ? { ok: false, error: shortcutError, config: this.config } : { ok: true, config: this.config }
   }
 
   showCompose(): void {
@@ -244,13 +242,12 @@ export class IslandWindow {
   private applyMode(): void {
     const window = this.window
     if (!window || window.isDestroyed()) return
+    window.setFocusable(isIslandFocusable(this.mode))
     if (this.mode === 'compose') {
-      window.setFocusable(true)
       window.setIgnoreMouseEvents(false)
       window.show()
       window.focus()
     } else {
-      window.setFocusable(false)
       // Keep the hot zone hit-testable. The window is only the small
       // top-center island bounds, and file drops also require hit testing.
       window.setIgnoreMouseEvents(false)
@@ -307,9 +304,11 @@ export class IslandWindow {
 
   private reconcileMode(): void {
     if (!this.window || this.mode === 'compose') return
-    const newPending = this.snapshot.sessions
-      .map((session) => session.pending?.request.id)
-      .find((id): id is string => !!id && !this.autoExpandedRequestIds.has(id))
+    const { expand: newPending, suppressed } = pendingRequestsToAutoExpand(
+      this.snapshot,
+      this.autoExpandedRequestIds,
+    )
+    for (const id of suppressed) this.autoExpandedRequestIds.add(id)
     const livePendingIds = new Set(
       this.snapshot.sessions.flatMap((session) => (session.pending ? [session.pending.request.id] : [])),
     )
@@ -355,9 +354,7 @@ export class IslandWindow {
   }
 
   private findPendingWindow(requestId: string): number | null {
-    return this.findWindowFor((snapshot) =>
-      snapshot.sessions.some((s) => s.pending?.request.id === requestId),
-    )
+    return this.findWindowFor((snapshot) => snapshot.sessions.some((s) => s.pending?.request.id === requestId))
   }
 
   /** Sends to `windowId`, or to the primary window (focused, so it can
@@ -381,7 +378,10 @@ export class IslandWindow {
         this.publish()
       })
     }
-    this.snapshots.set(window.id, { ...parseIslandSnapshot(raw), updatedAt: Date.now() })
+    this.snapshots.set(window.id, {
+      ...parseIslandSnapshot(raw),
+      updatedAt: Date.now(),
+    })
     this.publish()
   }
 
@@ -416,7 +416,10 @@ export class IslandWindow {
       case 'meeting':
         return this.options.meeting
           ? this.options.meeting.respond(action.decision, action.promptId)
-          : { ok: false, error: 'Meeting recording is only available in local mode' }
+          : {
+              ok: false,
+              error: 'Meeting recording is only available in local mode',
+            }
       case 'permission':
       case 'question': {
         const windowId = this.findPendingWindow(action.requestId)

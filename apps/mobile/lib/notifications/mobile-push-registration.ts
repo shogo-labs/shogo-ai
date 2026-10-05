@@ -6,6 +6,6 @@ export function hasRegisteredMobilePushSubscription(): boolean {
   return false
 }
 
-export function useMobilePushRegistration(_userId: string | null, _enabled = true) {
+export function useMobilePushRegistration(_userId: string | null, _agentTurns = true) {
   void _userId
 }

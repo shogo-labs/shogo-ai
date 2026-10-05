@@ -3,7 +3,7 @@
 /**
  * PastedTextChip — compact file-style chip for a pasted long-text block.
  *
- * Used by ChatInput and CompactChatInput. Visually mirrors the non-image
+ * Used by ChatInput. Visually mirrors the non-image
  * file chip (ChatGPT-style): small card with icon, kind label, size/line
  * count, and a close button. Tapping the chip opens a FileViewerModal
  * showing the full contents.

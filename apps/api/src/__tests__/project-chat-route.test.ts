@@ -420,6 +420,45 @@ describe('POST /projects/:projectId/chat', () => {
     const headers = new Headers(lastFetchInit?.headers)
     expect(headers.get('X-Billing-User-Id')).toBe('outsider')
     expect(headers.get('X-User-Id')).toBeNull()
+    expect(headers.get('X-Requester-Ticket')).toBeNull()
+  })
+
+  describe('requester ticket (who started the turn, for "acts as the requester" integrations)', () => {
+    const chat = async (auth?: { userId: string; via?: string }) => {
+      nextFetchResponse = () => new Response('data: ok\n\n', { status: 200, headers: { 'Content-Type': 'text/event-stream' } })
+      const app = new Hono()
+      if (auth) app.use('*', async (c, next) => { c.set('auth' as never, auth as never); await next() })
+      app.route('/api', projectChatRoutes({ runtimeManager }))
+      const res = await app.fetch(new Request('http://x/api/projects/p-1/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chatSessionId: 'chat-1', userId: 'user-1', messages: [] }),
+      }))
+      await res.text()
+      return new Headers(lastFetchInit?.headers).get('X-Requester-Ticket')
+    }
+
+    test('is issued for the verified sender and bound to the project', async () => {
+      process.env.BETTER_AUTH_SECRET = 'ticket-secret'
+      const { verifyRequesterTicket } = await import('../lib/requester-ticket')
+      expect(verifyRequesterTicket(await chat({ userId: 'user-1' }), 'p-1')?.userId).toBe('user-1')
+      expect(verifyRequesterTicket(await chat(), 'p-1')?.userId).toBe('user-1')
+      expect(verifyRequesterTicket(await chat({ userId: 'user-1' }), 'p-2')).toBeNull()
+    })
+
+    test('names the chat session, so a connect link can pick the conversation back up', async () => {
+      process.env.BETTER_AUTH_SECRET = 'ticket-secret'
+      const { verifyRequesterTicket } = await import('../lib/requester-ticket')
+      expect(verifyRequesterTicket(await chat({ userId: 'user-1' }), 'p-1')).toMatchObject({
+        origin: { kind: 'chat', chatSessionId: 'chat-1' },
+        via: [],
+      })
+    })
+
+    test('is not issued to runtime-token callers, which authenticate as the project owner', async () => {
+      process.env.BETTER_AUTH_SECRET = 'ticket-secret'
+      expect(await chat({ userId: 'owner-1', via: 'runtimeToken' })).toBeNull()
+    })
   })
 })
 

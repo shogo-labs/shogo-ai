@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { existsSync, readFileSync } from 'fs'
+import { requesterTicketHeaders } from './credential-scope'
 
 const SA_TOKEN_PATH = '/var/run/secrets/kubernetes.io/serviceaccount/token'
 
@@ -53,7 +54,7 @@ export function getInternalHeaders(): Record<string, string> {
     headers['x-runtime-token'] = process.env.RUNTIME_AUTH_SECRET
   }
 
-  return headers
+  return { ...headers, ...requesterTicketHeaders() }
 }
 
 /**
@@ -253,6 +254,8 @@ export interface CheckpointCallResult<T> {
   data?: T
   error?: string
   code?: string
+  /** Where the requester connects their account, when `code` is `requester_auth_required`. */
+  connectUrl?: string
 }
 
 async function checkpointFetch<T>(
@@ -271,7 +274,13 @@ async function checkpointFetch<T>(
     if (!res.ok) {
       const err = json?.error
       const message = typeof err === 'string' ? err : err?.message
-      return { ok: false, status: res.status, error: message ?? `HTTP ${res.status}`, code: err?.code }
+      return {
+        ok: false,
+        status: res.status,
+        error: message ?? `HTTP ${res.status}`,
+        code: err?.code,
+        ...(typeof err?.connectUrl === 'string' ? { connectUrl: err.connectUrl } : {}),
+      }
     }
     return { ok: true, status: res.status, data: init.parse ? init.parse(json) : (json as T) }
   } catch (err: any) {
@@ -340,6 +349,8 @@ export interface GitHubPullRequestResult {
   url: string
   htmlUrl?: string
   author?: string
+  /** `github-app` (App bot), `user-token` (the connection's stored user token), or `requester` (the person who asked). */
+  mode?: 'github-app' | 'user-token' | 'requester'
 }
 
 export interface GitHubCliCredentials {
@@ -351,8 +362,9 @@ export interface GitHubCliCredentials {
 }
 
 /**
- * Installation token for the connected GitHub App. The runtime injects this
- * as `GH_TOKEN` so `gh` comments, reviews, and commits are the App bot.
+ * Token for the project's GitHub connection: an App installation token (the
+ * App bot) or the connection's stored user token (that user). The runtime
+ * injects it as `GH_TOKEN` for `gh` and commit attribution.
  * 409 `github_app_not_installed` means the project has no connection.
  */
 export async function getGitHubCliCredentials(
@@ -383,6 +395,106 @@ export async function createGitHubPullRequest(
       method: 'POST',
       body: JSON.stringify(opts),
       parse: (j) => j as GitHubPullRequestResult,
+    },
+  )
+}
+
+export interface GitHubConnectResult {
+  repoFullName: string
+  defaultBranch: string
+  authType: 'app' | 'token'
+  login?: string | null
+  htmlUrl?: string
+  /** What happened to the project's files (see github-workspace-git.ts). */
+  workspace?: {
+    ok: boolean
+    error?: string
+    branch?: string
+    connect?: 'adopted' | 'kept' | 'diverged'
+    backupBranch?: string
+    techStackId?: string
+  }
+}
+
+export interface GitHubBranchSwitchResult {
+  repoFullName: string
+  branch: string
+  techStackId?: string
+}
+
+/**
+ * Connect the project to a repository with an access token the user shared.
+ * The API validates and encrypts it, then updates the project's workspace in
+ * its own runtime; cloning a large repository can take minutes.
+ */
+export async function connectGitHubWithToken(
+  projectId: string,
+  opts: { repoOwner: string; repoName: string; token: string; branch?: string },
+): Promise<CheckpointCallResult<GitHubConnectResult>> {
+  return checkpointFetch(
+    `/api/internal/projects/${encodeURIComponent(projectId)}/github/connect`,
+    {
+      method: 'POST',
+      body: JSON.stringify(opts),
+      signal: AbortSignal.timeout(7 * 60_000),
+      parse: (j) => j as GitHubConnectResult,
+    },
+  )
+}
+
+/**
+ * Switch an already-connected project to another branch of its repository,
+ * using the stored connection. `status: 409` means the project isn't
+ * connected (to that repository).
+ */
+export async function switchGitHubBranch(
+  projectId: string,
+  opts: { repoOwner: string; repoName: string; branch: string },
+): Promise<CheckpointCallResult<GitHubBranchSwitchResult>> {
+  return checkpointFetch(
+    `/api/internal/projects/${encodeURIComponent(projectId)}/github/branch`,
+    {
+      method: 'POST',
+      body: JSON.stringify(opts),
+      signal: AbortSignal.timeout(7 * 60_000),
+      parse: (j) => j as GitHubBranchSwitchResult,
+    },
+  )
+}
+
+/** Link for the user to authorize the Shogo GitHub App; `available: false` when the server can't. */
+export async function getGitHubAuthorizeUrl(
+  projectId: string,
+  opts: { repoOwner: string; repoName: string },
+): Promise<CheckpointCallResult<{ available: boolean; url?: string }>> {
+  return checkpointFetch(
+    `/api/internal/projects/${encodeURIComponent(projectId)}/github/authorize-url`,
+    {
+      method: 'POST',
+      body: JSON.stringify(opts),
+      parse: (j) => ({ available: j?.available === true, url: typeof j?.url === 'string' ? j.url : undefined }),
+    },
+  )
+}
+
+export interface GitHubMergeResult {
+  merged: boolean
+  sha?: string
+  message?: string
+}
+
+/** Merge a pull request with the project's GitHub App installation. */
+export async function mergeGitHubPullRequest(
+  projectId: string,
+  number: number,
+  opts: { method?: 'merge' | 'squash' | 'rebase'; commitTitle?: string } = {},
+): Promise<CheckpointCallResult<GitHubMergeResult>> {
+  return checkpointFetch(
+    `/api/internal/projects/${encodeURIComponent(projectId)}/github/pull-request/${number}/merge`,
+    {
+      method: 'POST',
+      body: JSON.stringify(opts),
+      parse: (j) => j as GitHubMergeResult,
     },
   )
 }
@@ -603,6 +715,9 @@ export interface AgentScheduleCreateRequest {
   goalId?: string | null
   enabled?: boolean
   userId?: string
+  notifyConversationId?: string | null
+  /** Thread under the channel the result is posted in; top level when omitted. */
+  notifyThreadRootId?: string | null
 }
 
 export interface AgentScheduleUpdateRequest {
@@ -613,6 +728,8 @@ export interface AgentScheduleUpdateRequest {
   goalId?: string | null
   enabled?: boolean
   userId?: string
+  notifyConversationId?: string | null
+  notifyThreadRootId?: string | null
 }
 
 async function personalFetch<T>(
@@ -808,6 +925,242 @@ export async function createMeetingNote(
   })
 }
 
+// ─── Workspace channels ────────────────────────────────────────────────────
+
+export interface AgentChannelSummary {
+  id: string
+  kind: string
+  name: string | null
+  topic: string | null
+  lastMessageAt: string | null
+}
+
+export interface AgentChannelMessage {
+  id: string
+  seq: number
+  author: string
+  authorType: string
+  text: string
+  threadRootId: string | null
+  replyCount: number
+  createdAt: string
+}
+
+export interface AgentChannelIdentity {
+  projectId: string | null
+}
+
+export type AgentMessageKind = 'status' | 'result' | 'decision' | 'alert'
+
+/** A message an agent edits in place as work moves; see the API's `conversation-message-kind`. */
+export interface AgentStatusCard {
+  title: string
+  status?: 'working' | 'blocked' | 'done' | 'failed'
+  step?: number
+  steps?: string[]
+  links?: Array<{ label?: string; url: string }>
+  criteria?: string[]
+  summary?: string
+}
+
+function channelsPath(workspaceId: string, suffix = ''): string {
+  return `/api/internal/workspaces/${encodeURIComponent(workspaceId)}/agent-channels${suffix}`
+}
+
+export async function listAgentChannels(workspaceId: string): Promise<CheckpointCallResult<AgentChannelSummary[]>> {
+  return personalFetch(channelsPath(workspaceId), {
+    method: 'GET',
+    parse: (j) => (j?.channels ?? []) as AgentChannelSummary[],
+  })
+}
+
+export async function readAgentChannel(
+  workspaceId: string,
+  channel: string,
+  options: { limit?: number; threadRootId?: string } = {},
+): Promise<CheckpointCallResult<{ channel: AgentChannelSummary; messages: AgentChannelMessage[] }>> {
+  const params = new URLSearchParams()
+  if (options.limit) params.set('limit', String(options.limit))
+  if (options.threadRootId) params.set('threadRootId', options.threadRootId)
+  return personalFetch(channelsPath(workspaceId, `/${encodeURIComponent(channel)}/messages?${params}`), {
+    method: 'GET',
+    parse: (j) => ({ channel: j?.channel, messages: j?.messages ?? [] }),
+  })
+}
+
+export async function postAgentChannelMessage(
+  workspaceId: string,
+  channel: string,
+  input: {
+    text: string
+    threadRootId?: string
+    identity: AgentChannelIdentity
+    /** The runtime's chat session, so the post joins the @mention chain it's part of. */
+    sessionId?: string
+    /** Make this agent the thread owner (answers unaddressed replies). Root posts own their thread by default. */
+    owner?: boolean
+    runId?: string
+    kind?: AgentMessageKind
+    card?: AgentStatusCard
+  },
+): Promise<CheckpointCallResult<{ id: string; conversationId: string; threadId: string; runId: string | null; url: string | null }>> {
+  return personalFetch(channelsPath(workspaceId, `/${encodeURIComponent(channel)}/messages`), {
+    method: 'POST',
+    body: JSON.stringify({
+      text: input.text,
+      threadRootId: input.threadRootId,
+      projectId: input.identity.projectId,
+      sessionId: input.sessionId,
+      owner: input.owner,
+      runId: input.runId,
+      kind: input.kind,
+      card: input.card,
+    }),
+    parse: (j) => ({
+      id: j?.message?.id,
+      conversationId: j?.message?.conversationId,
+      threadId: j?.message?.threadRootId ?? j?.message?.id,
+      runId: j?.message?.runId ?? null,
+      url: j?.message?.url ?? null,
+    }),
+  })
+}
+
+/** Edit one of this agent's own channel messages: its text, kind, or status card. */
+export async function updateAgentChannelMessage(
+  workspaceId: string,
+  messageId: string,
+  input: { identity: AgentChannelIdentity; text?: string; kind?: AgentMessageKind; card?: AgentStatusCard },
+): Promise<CheckpointCallResult<{ id: string; conversationId: string }>> {
+  return personalFetch(channelsPath(workspaceId, `/messages/${encodeURIComponent(messageId)}`), {
+    method: 'PATCH',
+    body: JSON.stringify({ text: input.text, kind: input.kind, card: input.card, projectId: input.identity.projectId }),
+    parse: (j) => ({ id: j?.message?.id, conversationId: j?.message?.conversationId }),
+  })
+}
+
+export async function sendAgentDirectMessage(
+  workspaceId: string,
+  input: {
+    user: string
+    text: string
+    identity: AgentChannelIdentity
+    sessionId?: string
+    onBehalfOfUserId?: string
+  },
+): Promise<CheckpointCallResult<{ id: string; conversationId: string; url: string | null }>> {
+  return personalFetch(channelsPath(workspaceId, '/dm'), {
+    method: 'POST',
+    body: JSON.stringify({
+      user: input.user,
+      text: input.text,
+      projectId: input.identity.projectId,
+      sessionId: input.sessionId,
+      onBehalfOfUserId: input.onBehalfOfUserId,
+    }),
+    parse: (j) => ({
+      id: j?.message?.id,
+      conversationId: j?.message?.conversationId,
+      url: j?.message?.url ?? null,
+    }),
+  })
+}
+
+export async function addAgentChannelMembers(
+  workspaceId: string,
+  channel: string,
+  input: { users: string[]; identity: AgentChannelIdentity },
+): Promise<CheckpointCallResult<{ added: string[]; channel: { id: string; name: string | null } }>> {
+  return personalFetch(channelsPath(workspaceId, `/${encodeURIComponent(channel)}/members`), {
+    method: 'POST',
+    body: JSON.stringify({ users: input.users, projectId: input.identity.projectId }),
+    parse: (j) => ({ added: (j?.added ?? []) as string[], channel: j?.channel }),
+  })
+}
+
+export interface TeamDirectory {
+  people: Array<{ userId: string; name: string | null; email: string; tag: string }>
+  agents: Array<{ projectId: string | null; name: string; role: string | null; tag: string }>
+  groups: Array<{ groupId: string; handle: string; name: string; tag: string }>
+}
+
+export interface LiveTeamChannelsResponse {
+  channels: Array<{ id: string; name: string; topic: string | null; private: boolean; agents: Array<{ projectId: string | null; agentTrigger: string; agentKeywords: string | null; agentContextMode?: string }>; userEmails: string[] }>
+  groups: Record<string, string[]>
+}
+
+export async function listTeamChannels(workspaceId: string): Promise<CheckpointCallResult<LiveTeamChannelsResponse>> {
+  return personalFetch(channelsPath(workspaceId, '/team-channels'), {
+    method: 'GET',
+    parse: (j) => ({ channels: j?.channels ?? [], groups: j?.groups ?? {} }),
+  })
+}
+
+export async function upsertTeamChannel(
+  workspaceId: string,
+  name: string,
+  input: {
+    topic?: string
+    private?: boolean
+    agents?: Array<{ projectId: string | null; agentTrigger: string; agentKeywords: string | null; agentContextMode?: string }>
+    removeAgentProjectIds?: string[]
+    userEmails?: string[]
+    groupHandles?: string[]
+  },
+): Promise<CheckpointCallResult<{ created: boolean; changes: string[]; channel: { id: string; name: string } }>> {
+  return personalFetch(channelsPath(workspaceId, `/team-channels/${encodeURIComponent(name)}`), {
+    method: 'PUT',
+    body: JSON.stringify(input),
+    parse: (j) => ({ created: !!j?.created, changes: j?.changes ?? [], channel: j?.channel }),
+  })
+}
+
+export async function getTeamDirectory(workspaceId: string): Promise<CheckpointCallResult<TeamDirectory>> {
+  return personalFetch(channelsPath(workspaceId, '/directory'), {
+    method: 'GET',
+    parse: (j) => (j?.directory ?? { people: [], agents: [], groups: [] }) as TeamDirectory,
+  })
+}
+
+export interface MemberActivityQuery {
+  /** Email or user id of the teammate. */
+  user: string
+  /** The person asking. Taken from the authenticated chat request, never from the model. */
+  requestedBy: string
+  range?: string
+  since?: string
+  until?: string
+  timezone?: string
+}
+
+/** Admin-only summary of what one teammate did in a window; the API enforces who may ask. */
+export async function getMemberActivity(
+  workspaceId: string,
+  query: MemberActivityQuery,
+): Promise<CheckpointCallResult<Record<string, unknown>>> {
+  const params = new URLSearchParams({ user: query.user, requestedBy: query.requestedBy })
+  if (query.range) params.set('range', query.range)
+  if (query.since) params.set('since', query.since)
+  if (query.until) params.set('until', query.until)
+  if (query.timezone) params.set('tz', query.timezone)
+  return personalFetch(`/api/internal/workspaces/${encodeURIComponent(workspaceId)}/member-activity?${params}`, {
+    method: 'GET',
+    parse: (j) => (j?.activity ?? {}) as Record<string, unknown>,
+  })
+}
+
+export async function searchAgentChannels(
+  workspaceId: string,
+  query: string,
+  limit = 20,
+): Promise<CheckpointCallResult<Array<AgentChannelMessage & { channel: string | null }>>> {
+  const params = new URLSearchParams({ q: query, limit: String(limit) })
+  return personalFetch(channelsPath(workspaceId, `/search?${params}`), {
+    method: 'GET',
+    parse: (j) => j?.results ?? [],
+  })
+}
+
 export async function listSchedules(
   workspaceId: string,
   goalId?: string,
@@ -850,6 +1203,116 @@ export async function deleteSchedule(
     `/api/internal/workspaces/${encodeURIComponent(workspaceId)}/schedules/${encodeURIComponent(scheduleId)}`,
     { method: 'DELETE', body: JSON.stringify({ userId }), parse: (j) => j as { ok: true } },
   )
+}
+
+export interface EventTrigger {
+  id: string
+  name: string
+  enabled: boolean
+  eventType: string
+  filter: Record<string, unknown> | null
+  ownerUserId: string | null
+  source: string
+  target: 'agent' | 'project' | 'webhook'
+  targetProjectId: string | null
+  targetMode: string | null
+  prompt: string | null
+  notifyConversationId: string | null
+  webhookUrl: string | null
+  consecutiveFailures: number
+  lastDeliveredAt: string | null
+  lastError: string | null
+}
+
+export interface EventTriggerCreateRequest {
+  userId: string
+  name: string
+  eventType: string
+  filter?: Record<string, unknown> | null
+  target?: 'agent' | 'project' | 'webhook'
+  targetProjectId?: string
+  targetMode?: 'agent' | 'hook'
+  prompt?: string
+  notifyConversationId?: string | null
+  notifyThreadRootId?: string | null
+  webhookUrl?: string
+  triggerConfig?: Record<string, unknown>
+  enabled?: boolean
+}
+
+export interface EventTriggerUpdateRequest {
+  userId: string
+  name?: string
+  enabled?: boolean
+  filter?: Record<string, unknown> | null
+  prompt?: string | null
+  targetMode?: 'agent' | 'hook'
+  notifyConversationId?: string | null
+  notifyThreadRootId?: string | null
+  webhookUrl?: string
+  rotateWebhookSecret?: boolean
+}
+
+function triggersPath(workspaceId: string, suffix = ''): string {
+  return `/api/internal/workspaces/${encodeURIComponent(workspaceId)}/triggers${suffix}`
+}
+
+export async function listTriggerTypes(
+  workspaceId: string,
+  input: { userId: string; toolkit?: string; projectId?: string },
+): Promise<CheckpointCallResult<{ native: any[]; composio: { available: boolean; connectedToolkits: string[]; types: any[]; error?: string } }>> {
+  const params = new URLSearchParams({ userId: input.userId })
+  if (input.toolkit) params.set('toolkit', input.toolkit)
+  if (input.projectId) params.set('projectId', input.projectId)
+  return personalFetch(`/api/internal/workspaces/${encodeURIComponent(workspaceId)}/trigger-types?${params}`, { method: 'GET' })
+}
+
+export async function listTriggers(workspaceId: string): Promise<CheckpointCallResult<EventTrigger[]>> {
+  return personalFetch(triggersPath(workspaceId), { method: 'GET', parse: (j) => (j?.triggers ?? []) as EventTrigger[] })
+}
+
+export async function createTrigger(
+  workspaceId: string,
+  input: EventTriggerCreateRequest,
+): Promise<CheckpointCallResult<{ trigger: EventTrigger; webhookSecret?: string }>> {
+  return personalFetch(triggersPath(workspaceId), { method: 'POST', body: JSON.stringify(input) })
+}
+
+export async function updateTrigger(
+  workspaceId: string,
+  triggerId: string,
+  input: EventTriggerUpdateRequest,
+): Promise<CheckpointCallResult<{ trigger: EventTrigger; webhookSecret?: string }>> {
+  return personalFetch(triggersPath(workspaceId, `/${encodeURIComponent(triggerId)}`), { method: 'PATCH', body: JSON.stringify(input) })
+}
+
+export async function deleteTrigger(workspaceId: string, triggerId: string, userId: string): Promise<CheckpointCallResult<{ ok: true }>> {
+  return personalFetch(triggersPath(workspaceId, `/${encodeURIComponent(triggerId)}`), {
+    method: 'DELETE',
+    body: JSON.stringify({ userId }),
+  })
+}
+
+export async function testTrigger(
+  workspaceId: string,
+  triggerId: string,
+  input: { userId: string; payload?: unknown },
+): Promise<CheckpointCallResult<{ eventId: string; type: string; delivery: { id: string; status: string } | null }>> {
+  return personalFetch(triggersPath(workspaceId, `/${encodeURIComponent(triggerId)}/test`), {
+    method: 'POST',
+    body: JSON.stringify(input),
+  })
+}
+
+export async function listTriggerDeliveries(
+  workspaceId: string,
+  triggerId: string,
+  limit = 10,
+): Promise<CheckpointCallResult<any[]>> {
+  return personalFetch(triggersPath(workspaceId, `/${encodeURIComponent(triggerId)}/deliveries?limit=${limit}`), {
+    method: 'GET',
+    parse: (j) => j?.deliveries ?? [],
+  })
 }
 
 /**

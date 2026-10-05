@@ -1,0 +1,8 @@
+{
+  "actions": {
+    "github_merge_pr": "block"
+  },
+  "shellCommands": {
+    "deny": ["*gh pr merge*"]
+  }
+}

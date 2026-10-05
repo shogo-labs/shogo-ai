@@ -193,6 +193,12 @@ export function createScheduleCreateTool(ctx: ToolContext): AgentTool {
       timezone: Type.Optional(Type.String()),
       goalId: Type.Optional(Type.Union([Type.String(), Type.Null()])),
       enabled: Type.Optional(Type.Boolean()),
+      notify_channel: Type.Optional(Type.Union([Type.String(), Type.Null()], {
+        description: 'Team chat channel name (e.g. "support") or conversation id that receives each run\'s result.',
+      })),
+      notify_thread: Type.Optional(Type.Union([Type.String(), Type.Null()], {
+        description: 'Message id of a thread in that channel to post each result under (the thread\'s first message). Omit to post in the channel itself.',
+      })),
     }),
     execute: async (_id, params) => {
       const workspaceId = workspaceIdOf(ctx)
@@ -205,6 +211,8 @@ export function createScheduleCreateTool(ctx: ToolContext): AgentTool {
         timezone?: string
         goalId?: string | null
         enabled?: boolean
+        notify_channel?: string | null
+        notify_thread?: string | null
       }
       const result = await apiCreateSchedule(workspaceId, {
         name: input.name,
@@ -214,6 +222,8 @@ export function createScheduleCreateTool(ctx: ToolContext): AgentTool {
         goalId: input.goalId,
         enabled: input.enabled,
         userId: ctx.userId,
+        notifyConversationId: input.notify_channel,
+        notifyThreadRootId: input.notify_thread,
       })
       return result.ok && result.data
         ? textResult({ ok: true, schedule: result.data })
@@ -253,6 +263,12 @@ export function createScheduleUpdateTool(ctx: ToolContext): AgentTool {
       timezone: Type.Optional(Type.String()),
       goalId: Type.Optional(Type.Union([Type.String(), Type.Null()])),
       enabled: Type.Optional(Type.Boolean()),
+      notify_channel: Type.Optional(Type.Union([Type.String(), Type.Null()], {
+        description: 'Team chat channel name or conversation id for run results; null stops posting.',
+      })),
+      notify_thread: Type.Optional(Type.Union([Type.String(), Type.Null()], {
+        description: 'Message id of a thread in that channel to post each result under (the thread\'s first message). Omit to post in the channel itself.',
+      })),
     }),
     execute: async (_id, params) => {
       const workspaceId = workspaceIdOf(ctx)
@@ -266,6 +282,8 @@ export function createScheduleUpdateTool(ctx: ToolContext): AgentTool {
         timezone?: string
         goalId?: string | null
         enabled?: boolean
+        notify_channel?: string | null
+        notify_thread?: string | null
       }
       const result = await apiUpdateSchedule(workspaceId, input.scheduleId, {
         name: input.name,
@@ -275,6 +293,8 @@ export function createScheduleUpdateTool(ctx: ToolContext): AgentTool {
         goalId: input.goalId,
         enabled: input.enabled,
         userId: ctx.userId,
+        notifyConversationId: input.notify_channel,
+        notifyThreadRootId: input.notify_thread,
       })
       return result.ok && result.data
         ? textResult({ ok: true, schedule: result.data })

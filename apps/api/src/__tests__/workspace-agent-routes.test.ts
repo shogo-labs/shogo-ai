@@ -65,9 +65,10 @@ mock.module('../services/workspace-agent.service', () => ({
     goalId: string,
     eventId: string,
     decision: 'approved' | 'declined',
+    decidedByUserId?: string,
   ) =>
     goalId === 'goal-1' && eventId === 'event-approval-1'
-      ? { id: eventId, kind: 'approval', metadata: { decision, resolvedAt: '2026-01-01T00:00:00.000Z' } }
+      ? { id: eventId, kind: 'approval', metadata: { decision, resolvedAt: '2026-01-01T00:00:00.000Z', decidedByUserId } }
       : null,
 }))
 
@@ -95,7 +96,21 @@ mock.module('../services/agent-schedule.service', () => ({
   createSchedule: async (input: any) => ({ ...schedule, ...input, id: 'schedule-1' }),
   updateSchedule: async (_workspaceId: string, _scheduleId: string, changes: any) => ({ ...schedule, ...changes }),
   deleteSchedule: async () => true,
+  runScheduleNow: async (_workspaceId: string, scheduleId: string) =>
+    scheduleId === 'schedule-1' ? { ...schedule, nextRunAt: new Date() } : null,
 }))
+
+const memberDirectory: Record<string, { userId: string; name: string; email: string; role: string }> = {
+  'alice@example.com': { userId: 'user-1', name: 'Alice', email: 'alice@example.com', role: 'member' },
+  'user-1': { userId: 'user-1', name: 'Alice', email: 'alice@example.com', role: 'member' },
+}
+const findWorkspaceMember = mock(async (_ws: string, idOrEmail: string) => memberDirectory[idOrEmail] ?? null)
+const getMemberWorkActivity = mock(async (_ws: string, member: any, input: any) => ({
+  user: member,
+  window: { from: 'f', to: 't', tz: input.tz ?? 'UTC', label: input.range ?? 'today' },
+  totals: { approvalsDecided: 3 },
+}))
+mock.module('../services/engagement-analytics.service', () => ({ findWorkspaceMember, getMemberWorkActivity }))
 
 const { workspaceAgentRoutes, sessionAuthorize } = await import('../routes/workspace-agent')
 
@@ -224,6 +239,20 @@ describe('workspace agent routes (session-authorized mount)', () => {
     )
     expect(resolved.status).toBe(200)
     expect(await resolved.json()).toMatchObject({ event: { metadata: { decision: 'approved' } } })
+  })
+
+  test('passes the signed-in user through as the decider', async () => {
+    const resolved = await appFor('user-1').request(
+      '/api/workspaces/workspace-1/goals/goal-1/events/event-approval-1/resolve',
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ decision: 'declined', decidedByUserId: 'spoofed-user' }),
+      },
+    )
+    expect(resolved.status).toBe(200)
+    // The id comes from the session, never from the request body.
+    expect(await resolved.json()).toMatchObject({ event: { metadata: { decidedByUserId: 'user-1' } } })
   })
 
   test('rejects an invalid decision value', async () => {
@@ -385,5 +414,74 @@ describe('workspace agent routes (authorize-strategy agnostic)', () => {
       expect((await send('PATCH', '/schedule-1', { enabled: false, userId: 'user-1' })).status).toBe(200)
       expect((await send('DELETE', '/schedule-1', { userId: 'user-admin' })).status).toBe(200)
     })
+  })
+})
+
+
+describe('GET /workspaces/:id/member-activity (admin-only "what did PERSON work on")', () => {
+  const url = (qs: string) => `/api/workspaces/workspace-1/member-activity?${qs}`
+
+  // Internal mount: runtime-pod auth carries no user, so the caller names who is asking.
+  function internalApp() {
+    const app = new Hono()
+    app.route('/api', workspaceAgentRoutes({
+      authorize: async (c: any) => ({ workspaceId: c.req.param('workspaceId') }),
+    }))
+    return app
+  }
+
+  test('a regular member is refused and nothing is looked up', async () => {
+    findWorkspaceMember.mockClear()
+    const res = await appFor('user-1').request(url('user=alice@example.com'))
+    expect(res.status).toBe(403)
+    expect(findWorkspaceMember).not.toHaveBeenCalled()
+  })
+
+  test('a member cannot borrow an admin through requestedBy on a signed-in session', async () => {
+    const res = await appFor('user-1').request(url('user=alice@example.com&requestedBy=user-admin'))
+    expect(res.status).toBe(403)
+  })
+
+  test('viewers are refused too', async () => {
+    expect((await appFor('user-viewer').request(url('user=alice@example.com'))).status).toBe(403)
+  })
+
+  test('an admin gets the person summary, with range and timezone passed through', async () => {
+    getMemberWorkActivity.mockClear()
+    const res = await appFor('user-admin').request(url('user=alice@example.com&range=yesterday&tz=Europe/London'))
+    expect(res.status).toBe(200)
+    expect(await res.json()).toMatchObject({
+      activity: { user: { userId: 'user-1', name: 'Alice' }, totals: { approvalsDecided: 3 } },
+    })
+    const [workspaceId, member, input] = getMemberWorkActivity.mock.calls[0]
+    expect(workspaceId).toBe('workspace-1')
+    expect(member.userId).toBe('user-1')
+    expect(input).toMatchObject({ range: 'yesterday', tz: 'Europe/London' })
+  })
+
+  test('an admin session ignores requestedBy rather than acting as someone else', async () => {
+    const res = await appFor('user-admin').request(url('user=alice@example.com&requestedBy=user-1'))
+    expect(res.status).toBe(200)
+  })
+
+  test('requires a user, and 404s for someone who is not in the workspace', async () => {
+    expect((await appFor('user-admin').request(url('range=today'))).status).toBe(400)
+    const missing = await appFor('user-admin').request(url('user=nobody@example.com'))
+    expect(missing.status).toBe(404)
+    expect(await missing.json()).toMatchObject({ error: { code: 'not_found' } })
+  })
+
+  test('internal callers must say who is asking, and that person must be an admin', async () => {
+    const none = await internalApp().request(url('user=alice@example.com'))
+    expect(none.status).toBe(400)
+
+    const asMember = await internalApp().request(url('user=alice@example.com&requestedBy=user-other'))
+    expect(asMember.status).toBe(403)
+
+    const asStranger = await internalApp().request(url('user=alice@example.com&requestedBy=user-nope'))
+    expect(asStranger.status).toBe(403)
+
+    const asAdmin = await internalApp().request(url('user=alice@example.com&requestedBy=user-admin'))
+    expect(asAdmin.status).toBe(200)
   })
 })

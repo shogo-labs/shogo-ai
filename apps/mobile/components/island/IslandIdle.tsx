@@ -8,7 +8,16 @@ import type { BuddyState } from "./buddy/engine"
 import { IslandBuddy, type IslandBuddyEntrance } from "./buddy/IslandBuddy"
 import type { BuddyLook } from "./buddy/look"
 import { useIslandAccent } from "./island-accent"
-import { IDLE_WING, IDLE_WING_HOVER, ISLAND_HOVER, NOTCH_WIDTH, islandMotion } from "./island-motion"
+import {
+  IDLE_TAB_HEIGHT,
+  IDLE_TAB_HOVER_WIDTH,
+  IDLE_TAB_WIDTH,
+  IDLE_WING,
+  IDLE_WING_HOVER,
+  ISLAND_HOVER,
+  NOTCH_WIDTH,
+  islandMotion,
+} from "./island-motion"
 import { ISLAND_TRIGGER_PROPS, type IslandLayout } from "./types"
 
 /** The whole overlay window is the hover target, so "hovered" is simply
@@ -33,8 +42,8 @@ function useWindowHovered(): boolean {
  * Resting island with nothing to report. On a notched Mac it is a pair of
  * black wings just wider than the notch carrying the Shogo mark (the buddy
  * folded up), so the island is discoverable without covering menu items;
- * elsewhere it is a small accent handle under the menu bar. Both grow on
- * hover to show the island is about to open.
+ * elsewhere it is a black virtual-notch tab carrying the same mark. Both
+ * grow on hover to show the island is about to open.
  */
 export function IslandIdle({
   layout,
@@ -62,13 +71,46 @@ export function IslandIdle({
         {...ISLAND_TRIGGER_PROPS}
         accessibilityRole="button"
         accessibilityLabel="Open Shogo island"
-        className="h-full w-full items-center justify-start pt-0.5"
+        className="h-full w-full items-center"
       >
         <Motion.View
-          animate={{ width: hovered ? 72 : 44, opacity: hovered ? 1 : 0.75 }}
+          animate={{ width: hovered ? IDLE_TAB_HOVER_WIDTH : IDLE_TAB_WIDTH }}
           transition={transition}
-          style={{ height: 4, borderRadius: 2, backgroundColor: accent }}
-        />
+          style={{
+            height: IDLE_TAB_HEIGHT,
+            flexDirection: "row",
+            alignItems: "center",
+            justifyContent: "space-between",
+            paddingHorizontal: 16,
+            backgroundColor: "#000",
+            borderBottomLeftRadius: 12,
+            borderBottomRightRadius: 12,
+          }}
+        >
+          <Motion.View animate={{ scale: hovered ? 1.15 : 1 }} transition={transition}>
+            <IslandBuddy
+              body={16}
+              width={28}
+              height={IDLE_TAB_HEIGHT}
+              state={buddyState}
+              color={accent}
+              look={look}
+              entrance={entrance}
+              peek={hovered}
+              reducedMotion={reducedMotion}
+            />
+          </Motion.View>
+          <Motion.View
+            animate={{ opacity: hovered ? 1 : 0, scale: hovered ? 1 : 0.4 }}
+            transition={transition}
+            style={{
+              width: 6,
+              height: 6,
+              borderRadius: 3,
+              backgroundColor: accent,
+            }}
+          />
+        </Motion.View>
       </Pressable>
     )
   }
@@ -117,7 +159,12 @@ export function IslandIdle({
           <Motion.View
             animate={{ opacity: hovered ? 1 : 0, scale: hovered ? 1 : 0.4 }}
             transition={transition}
-            style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: accent }}
+            style={{
+              width: 6,
+              height: 6,
+              borderRadius: 3,
+              backgroundColor: accent,
+            }}
           />
         </View>
       </Motion.View>

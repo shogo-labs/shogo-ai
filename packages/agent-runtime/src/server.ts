@@ -39,6 +39,9 @@ import {
 import { hydrateWorkspaceMembers, type MemberSync } from './workspace-hydration'
 import {
   resolveMemberTechStackId,
+  applyMemberTechStackMarker,
+  memberHasProjectSource,
+  parseHostConfirmedNewProjectIds,
   seedEmptyWorkspaceMember,
   shouldSeedAnchorMember,
 } from './workspace-member-seed'
@@ -97,6 +100,7 @@ import {
   type CloudSyncMode,
   wrapSseStreamWithKeepalive,
 } from '@shogo/shared-runtime'
+import { createStreamTrace, traceStream } from '@shogo/shared-runtime/stream-trace'
 import { getModelTier, resolveModelId, calculateDollarCost } from '@shogo/model-catalog'
 import {
   seedWorkspaceDefaults,
@@ -111,6 +115,7 @@ import {
   workspaceUsesVite,
   resolveWorkspaceTechStackId,
   applyEnvTechStackMarker,
+  refreshTechStackMarker,
 } from './workspace-defaults'
 import {
   archiveNeedsSidecarClear,
@@ -125,7 +130,7 @@ import { extractTarFromUrl, extractTarStream, redactUrls } from './tar-stream'
 import { runtimeDiagnosticsRoutes } from './runtime-diagnostics-routes'
 import { runtimeLspRoutes } from './runtime-lsp-routes'
 import { computePublishedReadiness } from './published-readiness'
-import { staticAssetCacheControl, shouldServeSpaFallback } from './static-asset-cache'
+import { resolveDistFile, staticAssetCacheControl, shouldServeSpaFallback } from './static-asset-cache'
 import { SkillServerManager } from './skill-server-manager'
 import { runtimeTerminalRoutes } from './runtime-terminal-routes'
 import { createPtyWsHandlers, type WsData } from './pty-ws-handler'
@@ -138,6 +143,14 @@ import {
   type PortBridgeWsData,
 } from './port-bridge'
 import { deriveApiUrl, getInternalHeaders, postCheckpointRecord, postWorktreeStatus, postPlanMirror } from './internal-api'
+import {
+  detachMemberFromRootRepo,
+  runGitHubWorkspaceOp,
+  validateGitHubWorkspaceOpInput,
+  type GitHubWorkspaceOpInput,
+} from './github-workspace-git'
+import { isHostMediatedDurability } from './host-durability'
+import { clearGitHubCliEnvCache } from './github-cli-credentials'
 import { HistoryIndex } from './history-index'
 import { WORKTREE_BRANCH_PREFIX } from '@shogo/shared-runtime'
 import { initTrustResolver, refreshTrust } from './trust-resolver'
@@ -461,14 +474,6 @@ function isLfsActive(): boolean {
  * uploaded by the host. Returning ok here lets persistAndRecordCheckpoint
  * record the checkpoint row instead of throwing.
  */
-function isHostMediatedDurability(): boolean {
-  const v = process.env.SHOGO_DURABILITY_HOST_MEDIATED
-  return v === '1' || v === 'true'
-}
-
-/** Last `git rev-parse HEAD` the guest reported; refreshed after each commit. */
-let cachedRepoHeadSha: string | null = null
-
 async function persistDurableRepo(): Promise<{ ok: boolean; changed: boolean; reason?: string }> {
   if (isHostMediatedDurability()) {
     if (isLfsActive()) {
@@ -487,6 +492,9 @@ async function persistDurableRepo(): Promise<{ ok: boolean; changed: boolean; re
   }
   return persistRepoToStore(WORKSPACE_DIR, repoCfg, { excludeLfsObjects })
 }
+
+/** Last `git rev-parse HEAD` the guest reported; refreshed after each commit. */
+let cachedRepoHeadSha: string | null = null
 
 /**
  * Offload large/binary assets to S3 and refresh `.git/info/exclude` so the
@@ -1895,6 +1903,7 @@ app.post('/agent/chat', async (c) => {
   agentGateway!.setAccountContext(parseAccountContext(body))
 
   const chatUserId = c.req.header('X-User-Id') || body.userId || undefined
+  const requesterTicket = c.req.header('X-Requester-Ticket') || undefined
 
   // Create a buffer that lives independently of the HTTP connection.
   // The agent writes into this buffer via a background consumer so that
@@ -1951,6 +1960,7 @@ app.post('/agent/chat', async (c) => {
           modelProvider,
           fileParts: userFileParts.length > 0 ? userFileParts : undefined,
           userId: chatUserId,
+          requesterTicket,
           interactionMode,
           confirmedPlan,
           dualPlan,
@@ -2069,12 +2079,14 @@ app.post('/agent/chat', async (c) => {
     // the buffer. This reader is NOT tied to the HTTP response — the agent
     // keeps running even if the client disconnects.
     const bgReader = response.body.getReader()
+    const streamTrace = createStreamTrace(`runtime-chat:${chatSessionKey.slice(0, 8)}`, ['buffered', 'replay', 'keepalive'])
     ;(async () => {
       try {
         while (true) {
           const { done, value } = await bgReader.read()
           if (done) break
           bufWriter.append(value)
+          streamTrace.mark('buffered', value.byteLength)
         }
         console.log(`[AgentChat] Background stream completed for session: ${chatSessionKey} (turn ${turnId}, seq=${bufWriter.lastSeq})`)
       } catch (err: any) {
@@ -2113,8 +2125,8 @@ app.post('/agent/chat', async (c) => {
     // The client reads from a replay stream backed by the buffer.
     // If this client disconnects, only the replay subscriber is removed;
     // the background reader + agent keep running.
-    const replayStream = streamBufferStore.createReplayStream(chatSessionKey)!
-    const wrappedStream = wrapSseStreamWithKeepalive(replayStream, 15_000)
+    const replayStream = traceStream(streamTrace, 'replay', streamBufferStore.createReplayStream(chatSessionKey)!)
+    const wrappedStream = traceStream(streamTrace, 'keepalive', wrapSseStreamWithKeepalive(replayStream, 15_000), true)
     const responseHeaders = new Headers(response.headers)
     responseHeaders.set('X-Turn-Id', turnId)
     responseHeaders.set('X-Chat-Session-Id', chatSessionKey)
@@ -2734,6 +2746,9 @@ function getWorkspacePreviewManager(projectId: string): PreviewManager | null {
   if (!isAttachedProjectId(projectId, effectiveWorkspaceProjectIds())) return null
   let pm = workspacePreviewManagers.get(projectId)
   if (!pm) {
+    if (applyMemberTechStackMarker(join(WORKSPACE_DIR, projectId), projectId)) {
+      console.log(`[agent-runtime] Stamped .tech-stack for member ${projectId} from project settings`)
+    }
     const previewUrls = parseWorkspacePreviewUrls()
     pm = new PreviewManager({
       workspaceDir: join(WORKSPACE_DIR, projectId),
@@ -2948,6 +2963,13 @@ function finishHydrate(entries: string[], destinationDir = WORKSPACE_DIR): void 
   if (destinationDir === WORKSPACE_DIR && applyEnvTechStackMarker(WORKSPACE_DIR)) {
     console.log(`[pool/hydrate] re-applied TECH_STACK_ID=${process.env.TECH_STACK_ID} to .tech-stack`)
   }
+  // Same for a workspace member, whose stack comes from WORKSPACE_TECH_STACKS.
+  if (IS_WORKSPACE_RUNTIME && dirname(destinationDir) === WORKSPACE_DIR) {
+    const memberId = basename(destinationDir)
+    if (applyMemberTechStackMarker(destinationDir, memberId)) {
+      console.log(`[pool/hydrate] re-applied project settings stack to ${memberId}/.tech-stack`)
+    }
+  }
   // Rebuild so the served dist reflects everything that was hydrated —
   // debounced, because more overlays are usually still arriving.
   //
@@ -3148,6 +3170,30 @@ app.post('/pool/export', async (c) => {
 // push succeeds.
 //
 // Returns 204 when there is no `.git` yet.
+//
+// The response carries when the repo's history began (its earliest root
+// commit), so the host can tell a `.git` seeded on this boot from one with
+// real history before it lets the export supersede a durable repo.
+const REPO_ROOT_COMMIT_AT_HEADER = 'x-shogo-repo-root-commit-at'
+
+function repoRootCommitAt(dir: string): number | null {
+  try {
+    const out = Bun.spawnSync(['git', '-C', dir, 'log', '--max-parents=0', '--format=%ct', 'HEAD'], {
+      stdout: 'pipe',
+      stderr: 'ignore',
+    })
+    if (out.exitCode !== 0) return null
+    const times = out.stdout
+      .toString()
+      .split('\n')
+      .map((line) => Number(line.trim()))
+      .filter((t) => Number.isFinite(t) && t > 0)
+    return times.length ? Math.min(...times) * 1000 : null
+  } catch {
+    return null
+  }
+}
+
 app.post('/pool/export-repo', async (c) => {
   sweepSpool()
   const tmp = spoolPath('pool-export-repo.tar.gz')
@@ -3165,7 +3211,11 @@ app.post('/pool/export-repo', async (c) => {
     if (!packed) return c.body(null, 204)
     const size = statSync(tmp).size
     console.log(`[pool/export-repo] packed .git for durable backup (${size} bytes)`)
-    const res = await spooledFileResponse(tmp, { 'Content-Type': 'application/gzip' })
+    const rootCommitAt = repoRootCommitAt(destinationDir)
+    const res = await spooledFileResponse(tmp, {
+      'Content-Type': 'application/gzip',
+      ...(rootCommitAt !== null ? { [REPO_ROOT_COMMIT_AT_HEADER]: String(rootCommitAt) } : {}),
+    })
     handedOff = true
     return res
   } catch (err: any) {
@@ -3343,11 +3393,13 @@ app.post('/pool/export-data', async (c) => {
 
 /**
  * Every PreviewManager this runtime has built, keyed by project id. The root
- * manager is included (it runs the sidecar outside workspace mode).
+ * manager is included when it serves something: always outside workspace
+ * mode, and in workspace mode only once started (the merged root is not an
+ * app; warm-pool pre-warm can still have built a manager for it).
  */
 function allPreviewManagers(): Map<string, PreviewManager> {
   const out = new Map<string, PreviewManager>(workspacePreviewManagers)
-  if (previewManager) {
+  if (previewManager && (!IS_WORKSPACE_RUNTIME || previewManager.isStarted)) {
     const id = process.env.PROJECT_ID || 'root'
     out.set(out.has(id) ? `${id}#root` : id, previewManager)
   }
@@ -3715,6 +3767,7 @@ app.post('/agent/pipeline/call', async (c) => {
     runId: typeof body.runId === 'string' ? body.runId : undefined,
     sessionId: typeof body.sessionId === 'string' ? body.sessionId : undefined,
     callerProjectId: typeof body.callerProjectId === 'string' ? body.callerProjectId : undefined,
+    requesterTicket: c.req.header('x-requester-ticket') || undefined,
   }
 
   if (body.wait === false) {
@@ -3732,6 +3785,44 @@ app.post('/agent/pipeline/call', async (c) => {
   } catch (err: any) {
     return c.json({ error: { code: 'agent_turn_failed', message: err?.message ?? String(err) } }, 500)
   }
+})
+
+/**
+ * POST /agent/events
+ *   body: { envelope: WorkspaceEventEnvelope, subscriptionId?, deliveryId? }
+ *
+ * Workspace events for this project's code hooks (`events: [workspace:member.joined]`
+ * in a HOOK.md). Sent by the API's event delivery worker for subscriptions
+ * targeting this project in `hook` mode. Runtime-token guarded like the
+ * other `/agent/*` routes. Answers `handled` = hooks that ran; a hook that
+ * throws makes the delivery fail so the API retries it. For marketplace app
+ * installs the API sends the install token, which hooks get as
+ * `event.context.appToken` (with `event.context.apiUrl`) to call `/api/v1`.
+ */
+app.post('/agent/events', async (c) => {
+  if (!agentGateway) {
+    return c.json({ error: 'Agent gateway not running' }, 503)
+  }
+  const body = await c.req.json().catch(() => null)
+  const envelope = body?.envelope
+  if (!envelope || typeof envelope.type !== 'string' || typeof envelope.id !== 'string') {
+    return c.json({ error: { code: 'invalid_body', message: 'envelope with id and type is required' } }, 400)
+  }
+  await agentGateway.refreshHooks()
+  const { HookEmitter } = await import('./hooks')
+  const event = HookEmitter.createEvent('workspace', envelope.type, `event:${body.subscriptionId ?? envelope.id}`, {
+    envelope,
+    payload: envelope.payload,
+    subscriptionId: body.subscriptionId,
+    deliveryId: body.deliveryId,
+    appToken: typeof body.appToken === 'string' ? body.appToken : process.env.SHOGO_APP_TOKEN,
+    apiUrl: process.env.SHOGO_API_URL,
+  })
+  const result = await agentGateway.getHookEmitter().emit(event)
+  if (result.failed > 0) {
+    return c.json({ error: { code: 'hook_failed', message: result.errors.join('; ').slice(0, 2_000) }, handled: result.matched - result.failed }, 500)
+  }
+  return c.json({ ok: true, handled: result.matched, messages: event.messages })
 })
 
 app.post('/agent/hooks/agent', async (c) => {
@@ -3951,6 +4042,29 @@ app.post('/agent/permission-response', async (c) => {
     return c.json({ ok: true })
   } catch (error: any) {
     return c.json({ error: error.message }, 500)
+  }
+})
+
+// Local access policy push (per-app data access, blocked folders, computer use).
+// The API calls this when the user changes Settings so running agents pick it up
+// without a restart.
+app.post('/agent/local-access', async (c) => {
+  const engine = agentGateway?.getPermissionEngine()
+  if (!engine) {
+    return c.json({ error: 'Permission engine not active' }, 404)
+  }
+  try {
+    const body = (await c.req.json()) as Record<string, any>
+    engine.setLocalAccess({
+      apps: body.apps && typeof body.apps === 'object' ? body.apps : undefined,
+      computerUse: typeof body.computerUse === 'boolean' ? body.computerUse : undefined,
+      blockedFolders: Array.isArray(body.blockedFolders)
+        ? body.blockedFolders.filter((f: unknown): f is string => typeof f === 'string')
+        : undefined,
+    })
+    return c.json({ ok: true })
+  } catch (error: any) {
+    return c.json({ error: error.message }, 400)
   }
 })
 
@@ -5710,6 +5824,81 @@ app.post('/agent/git-flush', async (c) => {
 })
 
 /**
+ * Run a GitHub remote operation (connect / push / pull) on a project's
+ * workspace. Called by the API (routes/github.ts, the GitHub App OAuth
+ * callback) because only the runtime has the project's files. The API sends a
+ * short-lived credential for this one call; it is passed to git through env
+ * and never stored.
+ *
+ * Git sync is paused while the operation rewrites HEAD, then triggered so the
+ * new history is persisted to the durable repo.
+ */
+app.post('/agent/github/git', async (c) => {
+  const body = (await c.req.json().catch(() => ({}))) as Partial<GitHubWorkspaceOpInput> & { projectId?: string }
+  const invalid = validateGitHubWorkspaceOpInput(body)
+  if (invalid) return c.json({ ok: false, error: invalid }, 400)
+  const projectDir = getProjectWorkspaceDir(body.projectId)
+  if (!projectDir) {
+    return c.json({ ok: false, error: 'Project is not attached to this runtime' }, 404)
+  }
+
+  const rootSync = gitSyncInstance
+  if (rootSync) {
+    await gitLayerReady
+    await rootSync.flush()
+    await rootSync.pause()
+  }
+  try {
+    const result = await runGitHubWorkspaceOp(projectDir, body as GitHubWorkspaceOpInput)
+    if (body.op === 'connect') clearGitHubCliEnvCache()
+    if (result.ok && body.op === 'connect' && projectDir !== WORKSPACE_DIR) {
+      // A member folder with its own `.git` would be committed to the
+      // merged-root repo as an embedded-repo gitlink, dropping its files.
+      await detachMemberFromRootRepo(WORKSPACE_DIR, projectDir)
+    }
+    if (result.ok && (body.op === 'connect' || body.op === 'checkout')) {
+      const stack = refreshTechStackMarker(projectDir)
+      result.techStackId = stack.techStackId
+      if (stack.changed) restartPreviewForStack(projectDir, stack.techStackId)
+    }
+    return c.json(result, result.ok ? 200 : 422)
+  } finally {
+    if (rootSync) {
+      rootSync.resume()
+      rootSync.triggerSync(true)
+    }
+  }
+})
+
+/**
+ * Restart a project's preview on its newly detected stack. A workspace
+ * member's preview manager is rebuilt from scratch (its dev server kind is
+ * fixed at creation), and the member's entry in WORKSPACE_TECH_STACKS is
+ * updated so re-stamping doesn't put the old stack back.
+ */
+function restartPreviewForStack(projectDir: string, techStackId: string): void {
+  console.log(`[github] ${projectDir} is a ${techStackId} project now; restarting its preview`)
+  if (!IS_WORKSPACE_RUNTIME || projectDir === WORKSPACE_DIR) {
+    if (process.env.TECH_STACK_ID) process.env.TECH_STACK_ID = techStackId
+    getRootPreviewManager().restart().catch((e: any) => console.error('[github] preview restart failed:', e?.message ?? e))
+    return
+  }
+  const projectId = basename(projectDir)
+  try {
+    const stacks = JSON.parse(process.env.WORKSPACE_TECH_STACKS || '{}') as Record<string, string>
+    process.env.WORKSPACE_TECH_STACKS = JSON.stringify({ ...stacks, [projectId]: techStackId })
+  } catch {
+    process.env.WORKSPACE_TECH_STACKS = JSON.stringify({ [projectId]: techStackId })
+  }
+  const previous = workspacePreviewManagers.get(projectId)
+  if (previous) {
+    previous.stop()
+    workspacePreviewManagers.delete(projectId)
+  }
+  getWorkspacePreviewManager(projectId)?.start().catch((e: any) => console.error('[github] preview start failed:', e?.message ?? e))
+}
+
+/**
  * Phases during which a build is plausibly in flight and `dist/` may
  * legitimately be missing. When a navigation request would otherwise
  * 404 we render a small "Building..." placeholder instead so the user
@@ -5823,11 +6012,12 @@ function serveDistResponse(
     return null
   }
 
-  if (existsSync(filePath) && statSync(filePath).isFile()) {
-    const ext = extname(filePath).toLowerCase()
+  const resolvedFile = resolveDistFile(filePath)
+  if (resolvedFile) {
+    const ext = extname(resolvedFile).toLowerCase()
     const mime = STATIC_MIME[ext] || 'application/octet-stream'
     if (ext === '.html') {
-      const html = injectCanvasBridge(readFileSync(filePath, 'utf-8'))
+      const html = injectCanvasBridge(readFileSync(resolvedFile, 'utf-8'))
       return new Response(html, {
         headers: {
           'Content-Type': mime,
@@ -5841,7 +6031,7 @@ function serveDistResponse(
         },
       })
     }
-    return new Response(readFileSync(filePath), {
+    return new Response(readFileSync(resolvedFile), {
       headers: {
         'Content-Type': mime,
         'Cache-Control': staticAssetCacheControl(safePath),
@@ -6007,7 +6197,17 @@ async function initializeEssentials(): Promise<void> {
   let workspaceNewProjectIds: string[] = []
   if (IS_WORKSPACE_RUNTIME && isHostMediatedDurability()) {
     // Metal guests hold no object-store credentials; the host hydrates each
-    // member into `<WORKSPACE_DIR>/<id>/` after assign and exports on evict.
+    // member into `<WORKSPACE_DIR>/<id>/` after assign and exports on evict,
+    // and tells us which members it found no backup for.
+    const confirmedNew = parseHostConfirmedNewProjectIds()
+    if (confirmedNew) {
+      workspaceNewProjectIds = confirmedNew
+    } else {
+      // A host that predates WORKSPACE_NEW_PROJECT_IDS. Keep its seeding
+      // behavior so brand-new projects still boot until the host updates.
+      console.warn('[agent-runtime] host did not send WORKSPACE_NEW_PROJECT_IDS — treating every member as new')
+      workspaceNewProjectIds = WORKSPACE_RUNTIME_PROJECT_IDS
+    }
     logTiming('Workspace S3 hydration skipped: host-mediated durability')
   } else if (!skipInternalSync && IS_WORKSPACE_RUNTIME && (process.env.S3_WORKSPACES_BUCKET || process.env.S3_BUCKET)) {
     // Workspace runtime: each attached project is stored under its own S3
@@ -6044,6 +6244,16 @@ async function initializeEssentials(): Promise<void> {
     } catch (error: any) {
       console.error('[agent-runtime] Workspace S3 hydration failed:', error.message)
     }
+  } else if (IS_WORKSPACE_RUNTIME && !process.env.S3_WORKSPACES_BUCKET && !process.env.S3_BUCKET) {
+    // Host-local runtime (desktop, local dev): the API laid the member folders
+    // down before spawning us and no backup overlays them later, so an empty
+    // member is a new project. Self-seeding stacks (Expo, custom, ...) arrive
+    // empty by design and rely on the anchor seed below.
+    workspaceNewProjectIds = WORKSPACE_RUNTIME_PROJECT_IDS.filter(
+      (id) => !memberHasProjectSource(join(WORKSPACE_DIR, id)),
+    )
+  } else if (isHostMediatedDurability()) {
+    logTiming('S3 sync skipped: host-mediated durability')
   } else if (!skipInternalSync && (process.env.S3_WORKSPACES_BUCKET || process.env.S3_BUCKET)) {
     try {
       const result = await initializeS3Sync(WORKSPACE_DIR, {
@@ -6100,7 +6310,6 @@ async function initializeEssentials(): Promise<void> {
       shouldSeedAnchorMember({
         anchorProjectId: anchorId,
         memberProjectIds: WORKSPACE_RUNTIME_PROJECT_IDS,
-        hostMediatedDurability: isHostMediatedDurability(),
         newProjectIds: workspaceNewProjectIds,
       })
     ) {

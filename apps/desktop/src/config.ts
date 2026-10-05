@@ -8,7 +8,9 @@ import os from 'os'
 import { computeDefaultRuntimeMemoryMB } from './runtime-memory'
 import { DEFAULT_ISLAND_SHORTCUT, DEFAULT_ISLAND_SOUND_VOLUME, type IslandConfig } from './island-protocol'
 
-export type { IslandConfig }
+import { DEFAULT_DICTATION_CONFIG, normalizeDictationConfig, type DictationConfig } from './dictation-protocol'
+
+export type { IslandConfig, DictationConfig }
 
 export interface HostRuntimeConfig {
   /** Per-project RAM ceiling in MB for the host-spawned agent-runtime process
@@ -49,6 +51,8 @@ export interface DesktopConfig {
   meetings: MeetingConfig
   bugReport?: BugReportConfig
   island: IslandConfig
+  /** Global dictation shortcuts (push-to-talk and hands-free). */
+  dictation: DictationConfig
   /** Stable per-machine identifier. Generated on first launch and used so
    * Shogo Cloud can dedupe device-session API keys when the same desktop
    * install signs in multiple times. Treated as non-secret metadata — the
@@ -105,6 +109,7 @@ const DEFAULT_CONFIG: Omit<DesktopConfig, 'deviceId'> = {
   hostRuntime: getDefaultHostRuntimeConfig(),
   meetings: { ...DEFAULT_MEETING_CONFIG },
   island: { ...DEFAULT_ISLAND_CONFIG },
+  dictation: { ...DEFAULT_DICTATION_CONFIG },
   updateChannel: 'stable',
 }
 
@@ -168,6 +173,7 @@ export function readConfig(): DesktopConfig {
           ? parsed.island.soundVolume
           : DEFAULT_ISLAND_CONFIG.soundVolume,
     },
+    dictation: normalizeDictationConfig(parsed.dictation),
     deviceId: existingDeviceId || generateDeviceId(),
     updateChannel: parsed.updateChannel === 'beta' ? 'beta' : 'stable',
   }

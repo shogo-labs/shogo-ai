@@ -33,7 +33,7 @@ function statusCodeColor(code: GitShortCode | "·"): string {
   switch (code) {
     case "M": case "T": return "text-[#e2c08d]";
     case "A": case "U": case "?": return "text-[#73c991]";
-    case "D": return "text-[#f48771]";
+    case "D": return "text-[color:var(--ide-error)]";
     case "R": case "C": return "text-[#7aa6ff]";
     default: return "text-[color:var(--ide-muted)]";
   }

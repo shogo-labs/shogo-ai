@@ -24,6 +24,7 @@ import { prisma } from '../lib/prisma'
 import * as billingService from '../services/billing-runtime'
 import { getModelTier, resolveModelId } from '@shogo/model-catalog'
 import { wrapSseStreamWithKeepalive } from '@shogo/shared-runtime/sse-keepalive'
+import { createStreamTrace, traceStream } from '@shogo/shared-runtime/stream-trace'
 import { stampModelProvider } from '../lib/stamp-model-provider'
 import { stampWorkspacePlan } from '../lib/stamp-workspace-plan'
 import { getPersonalCompanionModelId } from '../lib/personal-companion-model'
@@ -879,6 +880,7 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
           // to both the client stream and a tracking queue, so billing +
           // persistence always see the full stream even if the client drops.
           const bgReader = upstream.body.getReader()
+          const streamTrace = createStreamTrace(`workspace-chat:${sessionId.slice(0, 8)}`, ['upstream', 'keepalive', 'response'])
           const trackingChunks: Uint8Array[] = []
           let trackingDone = false
           let trackingNotify: (() => void) | null = null
@@ -914,6 +916,7 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
                     trackingChunks.push(value)
                     trackingNotify?.()
                     trackingNotify = null
+                    streamTrace.mark('upstream', value.byteLength)
                     try {
                       controller.enqueue(value)
                     } catch {
@@ -993,7 +996,7 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
           // (the anchor is checkpointed by trackUsageFromStream). Best-effort,
           // fires on clean client-stream close.
           const checkpointTargets = attachedProjectIds.filter((id) => id !== billingProjectId)
-          let outBody: ReadableStream<Uint8Array> = wrapSseStreamWithKeepalive(clientStream)
+          let outBody: ReadableStream<Uint8Array> = traceStream(streamTrace, 'keepalive', wrapSseStreamWithKeepalive(clientStream))
           if (checkpointTargets.length > 0) {
             const checkpointWatcher = new TransformStream<Uint8Array, Uint8Array>({
               flush() {
@@ -1011,6 +1014,7 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
             outBody = outBody.pipeThrough(checkpointWatcher)
           }
 
+          outBody = traceStream(streamTrace, 'response', outBody, true)
           return new Response(outBody, { status: upstream.status, headers: responseHeaders })
         } catch (fetchError: any) {
           lastError = fetchError

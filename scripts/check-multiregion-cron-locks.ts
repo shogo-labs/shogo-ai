@@ -179,10 +179,24 @@ const HOME_REGION_PARTITIONED: HomeRegionPartitioned[] = [
     partitionKeyColumn: 'Workspace.homeRegion',
   },
   {
+    fn: 'runEventDeliveryDispatch',
+    file: 'apps/api/src/jobs/run-event-delivery-dispatch.ts',
+    reason:
+      'Each region dispatches only EventDelivery rows whose subscription workspace is owned by that region via homeRegionWorkspaceWhere(); this keeps delivery claims, retries, and target-side writes in the workspace home region.',
+    partitionKeyColumn: 'Workspace.homeRegion',
+  },
+  {
     fn: 'runAgentTaskDispatch',
     file: 'apps/api/src/jobs/run-agent-task-dispatch.ts',
     reason:
       'Each region dispatches only AgentTask rows whose workspace is owned by that region via homeRegionWorkspaceWhere(); this keeps queued claims, stale-lease updates, and runtime writes in the workspace home region.',
+    partitionKeyColumn: 'Workspace.homeRegion',
+  },
+  {
+    fn: 'runChatQueueDrain',
+    file: 'apps/api/src/jobs/run-chat-queue-drain.ts',
+    reason:
+      'chat_queued_messages replicates and its pending→dispatching claim is a local conditional UPDATE, so two regions could both claim a row and insert the same chat_messages.id (insert_exists stopped replication on 2026-10-01). The dispatcher (dispatchNext, resetStuckDispatching, dispatchPendingSessions) only acts on sessions whose project or workspace is homed in this region via homeRegionWorkspaceWhere(), so each region drains a disjoint slice and every turn starts in its home region.',
     partitionKeyColumn: 'Workspace.homeRegion',
   },
   {
@@ -248,6 +262,30 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
       'One profile belongs to one workspace; personal signup creation and runtime profile updates are scoped to that workspace and use an upsert.',
   },
   {
+    key: 'WorkspaceEvent.(dedupeKey,workspaceId)',
+    category: 'single_tenant_upsert',
+    reason:
+      'workspace-events.ts deduplicates one emitted event key per workspace before creating the append-only event row and its deliveries.',
+  },
+  {
+    key: 'EventSubscription.composioTriggerId',
+    category: 'external_global_id',
+    reason:
+      'The Composio provider assigns this globally unique trigger id; subscription creation and webhook reconciliation reuse that external id.',
+  },
+  {
+    key: 'AppInstallGrant.installId',
+    category: 'single_tenant_upsert',
+    reason:
+      'One marketplace install has one grant; consent, version updates, and revocation address the grant by its install id.',
+  },
+  {
+    key: 'EventDelivery.(eventId,subscriptionId)',
+    category: 'request_scoped',
+    reason:
+      'workspace-events.ts creates at most one delivery for each emitted event/subscription pair and treats a concurrent duplicate as an idempotent race.',
+  },
+  {
     key: 'Project.publishedSubdomain',
     category: 'request_scoped',
     reason:
@@ -275,6 +313,26 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
     key: 'GitHubConnection.projectId',
     category: 'single_tenant_upsert',
     reason: 'github.service.ts:309 upserts on projectId from a user request.',
+  },
+  {
+    key: 'IntegrationCredentialPolicy.(projectId,provider)',
+    category: 'single_tenant_upsert',
+    reason: 'integration-credentials/store.ts savePolicy upserts one per-project row from a user PUT request.',
+  },
+  {
+    key: 'UserIntegrationConnection.(provider,userId)',
+    category: 'single_tenant_upsert',
+    reason: 'integration-credentials/store.ts savePersonalConnection upserts the user\'s own row from their OAuth callback or a token refresh.',
+  },
+  {
+    key: 'UserIdentityLink.(externalId,source,userId)',
+    category: 'single_tenant_upsert',
+    reason: 'identity-links.ts linkIdentity upserts the user\'s own link when they connect an account or the status route runs a Composio who-am-I for them.',
+  },
+  {
+    key: 'UserIntegrationGrant.(projectId,provider,userId)',
+    category: 'single_tenant_upsert',
+    reason: 'integration-credentials/store.ts grantAccess upserts the user\'s own consent row from their consent POST or OAuth callback.',
   },
   {
     key: 'StarredProject.(projectId,userId)',
@@ -626,6 +684,105 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
     category: 'single_tenant_upsert',
     reason:
       'The proxy capture path upserts one summary per workspace turn key. proxy_turns is region-local (excluded from shogo_all_pub, see k8s/cnpg/logical-replication/exclude-region-local-tables.sql), so the unique is only ever enforced against rows this region wrote; turnKey still hashes in REGION_ID, so a turn served by two regions yields one row in each.',
+  },
+  {
+    key: 'Conversation.(slug,workspaceId)',
+    category: 'request_scoped',
+    reason:
+      'Channel create (POST /api/workspaces/:workspaceId/conversations, path-resolved to the home region) picks a free slug; #general/#activity seeding is find-then-create with a raced-create fallback in the same region.',
+  },
+  {
+    key: 'Conversation.(dmKey,workspaceId)',
+    category: 'single_tenant_upsert',
+    reason:
+      'DM open (POST /api/workspaces/:workspaceId/dms) is find-then-create on the deterministic participant key, re-reading on conflict; always routed to the workspace home region.',
+  },
+  {
+    key: 'Conversation.(externalId,provider,workspaceId)',
+    category: 'external_global_id',
+    reason:
+      'Shadow conversation for an external chat channel (Slack/Teams/Google Chat channel id). The inbound bridge upserts on this key per webhook delivery; a raced duplicate delivery re-reads the existing row. No cron writer.',
+  },
+  {
+    key: 'ChatInstallation.(provider,workspaceId)',
+    category: 'request_scoped',
+    reason:
+      'chat-providers/installations.ts upsertInstallation, called from a single user-initiated OAuth callback or connect command; one install per provider per Shogo workspace. Not a cron/leader-election writer.',
+  },
+  {
+    key: 'ChatInstallation.(externalTenantId,provider)',
+    category: 'single_tenant_upsert',
+    reason:
+      'upsertInstallation keys on the provider-assigned tenant id (Slack team, Azure AD tenant, Google Chat space owner) from a single user-initiated install request.',
+  },
+  {
+    key: 'ChatIdentityLink.(externalTenantId,externalUserId,provider)',
+    category: 'single_tenant_upsert',
+    reason:
+      'chat-providers/installations.ts linkIdentity upserts on the provider user id from a single user-initiated account-link callback.',
+  },
+  {
+    key: 'ConversationMember.(conversationId,userId)',
+    category: 'single_tenant_upsert',
+    reason:
+      'Join/add-member under /api/conversations/:id (resolved to the home region by resolve-workspace-id) is find-then-create per (conversation,user).',
+  },
+  {
+    key: 'ConversationMessage.(conversationId,seq)',
+    category: 'request_scoped',
+    reason:
+      'seq comes from an atomic Conversation.lastSeq increment; every post path (/api/conversations/:id/messages, agent-channel internal routes, activity producers) runs in the workspace home region.',
+  },
+  {
+    key: 'ChatUserSettings.(userId,workspaceId)',
+    category: 'single_tenant_upsert',
+    reason: 'Per-user settings upsert under /api/workspaces/:workspaceId/chat-settings, routed to the workspace home region.',
+  },
+  {
+    key: 'ConversationDraft.(conversationId,threadRootId,userId)',
+    category: 'single_tenant_upsert',
+    reason: 'The owning user upserts their own draft per composer under /api/conversations/:id (home region).',
+  },
+  {
+    key: 'ConversationMessageEmbedding.messageId',
+    category: 'request_scoped',
+    reason: 'Written once per message by the embedding indexer in the region that posted it; create-or-ignore on conflict.',
+  },
+  {
+    key: 'ConversationPin.messageId',
+    category: 'single_tenant_upsert',
+    reason: 'Pin toggle under /api/conversation-messages/:id/pin (home region); create-or-ignore / delete on the same message.',
+  },
+  {
+    key: 'CustomEmoji.(name,workspaceId)',
+    category: 'request_scoped',
+    reason: 'Emoji upload under /api/workspaces/:workspaceId/emoji (home region) rejects a taken name.',
+  },
+  {
+    key: 'SavedMessage.(messageId,userId)',
+    category: 'single_tenant_upsert',
+    reason: 'Save toggle by the saving user only under /api/conversation-messages/:id/save; create-or-ignore / delete.',
+  },
+  {
+    key: 'UserGroup.(handle,workspaceId)',
+    category: 'request_scoped',
+    reason: 'Group create under /api/workspaces/:workspaceId/user-groups (home region) rejects a taken handle.',
+  },
+  {
+    key: 'UserGroupMember.(groupId,userId)',
+    category: 'single_tenant_upsert',
+    reason: 'Membership replace under /api/user-groups/:id (home region) is delete-then-create per (group,user).',
+  },
+  {
+    key: 'ConversationMessage.(clientMsgId,conversationId)',
+    category: 'random_secret',
+    reason: 'Client-generated UUID idempotency key for sends; postMessage returns the existing row on repeat.',
+  },
+  {
+    key: 'ConversationReaction.(emoji,messageId,userId)',
+    category: 'single_tenant_upsert',
+    reason:
+      'Reaction toggle under /api/conversation-messages/:id/reactions by the reacting user only; create-or-ignore / deleteMany on the same triple.',
   },
 ]
 

@@ -30,11 +30,15 @@ import {
   resolveLocalOwnerUserId,
   resolvePersonalWorkspaceId,
   serializeMeeting,
+  DICTATION_MAX_BYTES,
+  friendlyMeetingError,
+  transcribeDictation,
   transcribeMeeting,
   upsertRecordingDraft,
   writeTranscriptToProject,
 } from '../services/meeting.service'
-import { handleLiveChunk } from './workspace-meetings'
+import { handleLiveChunk, handleLiveEvents, handleStreamTicket } from './workspace-meetings'
+import { describeStreamAvailability, runHttpAudioStream } from '../services/meeting-live-stream'
 import { mkdirSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { execSync } from 'child_process'
@@ -57,9 +61,23 @@ interface MeetingOwner {
 async function resolveOwner(c: any): Promise<MeetingOwner | null> {
   const auth = c.get('auth')
   const sessionUserId: string | null = auth?.isAuthenticated && auth.userId ? auth.userId : null
-  const workspaceId = await resolvePersonalWorkspaceId(sessionUserId)
+  // The desktop main process has no session. It sends the workspace the app
+  // is showing, so live chunks land where the app reads them even when the
+  // install has more than one personal workspace.
+  // EventSource can't set headers, so the same hint may come as `?workspace=`.
+  const hinted = await resolveHintedWorkspaceId(c.req.header(WORKSPACE_HINT_HEADER) || c.req.query('workspace'))
+  const workspaceId = hinted ?? (await resolvePersonalWorkspaceId(sessionUserId))
   if (!workspaceId) return null
   return { workspaceId, userId: sessionUserId ?? (await resolveLocalOwnerUserId(workspaceId)) }
+}
+
+export const WORKSPACE_HINT_HEADER = 'x-shogo-workspace-id'
+
+/** Local mode only: a personal workspace named by the desktop app, or null when absent or not usable. */
+export async function resolveHintedWorkspaceId(hint: string | null | undefined): Promise<string | null> {
+  if (process.env.SHOGO_LOCAL_MODE !== 'true' || !hint || hint.length > 128) return null
+  const workspace = await db.workspace.findFirst({ where: { id: hint, kind: 'personal' }, select: { id: true } })
+  return workspace?.id ?? null
 }
 
 /**
@@ -146,6 +164,58 @@ meetingRoutes.post('/api/local/meetings/recordings/:recordingId/live', async (c)
   const owner = await resolveOwner(c)
   if (!owner) return c.json({ error: 'No personal workspace found' }, 404)
   return handleLiveChunk(c, owner, c.req.param('recordingId'))
+})
+
+// Audio-socket ticket for the desktop recorder (main process, no session).
+meetingRoutes.post('/api/local/meetings/recordings/:recordingId/stream-ticket', async (c) => {
+  const owner = await resolveOwner(c)
+  if (!owner) return c.json({ error: 'No personal workspace found' }, 404)
+  return handleStreamTicket(c, owner, c.req.param('recordingId'))
+})
+
+// Audio for the live transcript as one long chunked POST (the desktop main
+// process has no WebSocket client). 16 kHz mono PCM16 in; the coverage summary
+// comes back when the body ends.
+meetingRoutes.post('/api/local/meetings/recordings/:recordingId/audio-stream', async (c) => {
+  // Desktop-only transport; the cloud streams over the ticketed WebSocket.
+  if (process.env.SHOGO_LOCAL_MODE !== 'true') return c.json({ error: 'Not found' }, 404)
+  const owner = await resolveOwner(c)
+  if (!owner) return c.json({ error: 'No personal workspace found' }, 404)
+  const availability = await describeStreamAvailability()
+  if (!availability.ok) return c.json({ error: availability.reason }, availability.reason === 'disabled' ? 409 : 501)
+  const outcome = await runHttpAudioStream(
+    c.req.raw.body,
+    { workspaceId: owner.workspaceId, userId: owner.userId, recordingId: c.req.param('recordingId'), exp: 0 },
+    { signal: c.req.raw.signal },
+  )
+  return c.json(outcome, outcome.ok ? 200 : outcome.code === 'not_recording' ? 409 : 503)
+})
+
+meetingRoutes.get('/api/local/meetings/recordings/:recordingId/live/events', async (c) => {
+  const owner = await resolveOwner(c)
+  if (!owner) return c.json({ error: 'No personal workspace found' }, 404)
+  return handleLiveEvents(c, owner, c.req.param('recordingId'))
+})
+
+// One-shot dictation for the chat composer: a short 16 kHz WAV in, text out.
+// Electron has no Web Speech backend, so the desktop renderer records and posts here.
+meetingRoutes.post('/api/local/transcribe', async (c) => {
+  const declared = Number(c.req.header('content-length') || 0)
+  if (declared > DICTATION_MAX_BYTES + 64 * 1024) return c.json({ error: 'Audio clip is too large' }, 413)
+  let audio: Buffer
+  try {
+    audio = Buffer.from(await c.req.arrayBuffer())
+  } catch {
+    return c.json({ error: 'Could not read the audio clip' }, 400)
+  }
+  try {
+    const result = await transcribeDictation(audio)
+    if (!result.ok) return c.json({ error: 'Send a WAV clip of 8 MB or less' }, 400)
+    return c.json({ text: result.text })
+  } catch (err: any) {
+    console.warn('[Dictation] Transcription failed:', err?.message ?? err)
+    return c.json({ error: friendlyMeetingError('transcript', err) }, 503)
+  }
 })
 
 // List meetings in the personal workspace

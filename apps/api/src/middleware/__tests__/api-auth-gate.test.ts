@@ -40,6 +40,8 @@ describe('apiAuthGate', () => {
       expect(isGatePublicPath(`${prefix}x`)).toBe(true)
     }
     expect(isGatePublicPath('/api/github/webhook')).toBe(true)
+    expect(isGatePublicPath('/api/github/callback')).toBe(true)
+    expect(isGatePublicPath('/api/github/installations')).toBe(false)
     expect(isGatePublicPath('/api/voice/elevenlabs/webhook')).toBe(true)
     expect(isGatePublicPath('/api/projects/p1/thumbnail.png')).toBe(true)
     expect(isGatePublicPath('/api/projects/p1/agent-proxy/agent/channels/webchat/widget.js')).toBe(true)

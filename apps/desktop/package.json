@@ -19,6 +19,7 @@
     "test:sync-web": "bun test-sync-web.ts",
     "test:update-channel": "bun test-update-channel.ts",
     "test:island": "bun test src/__tests__/island-*.test.ts",
+    "test:e2e:streaming": "PLAYWRIGHT_E2E=1 playwright test --config e2e/playwright.config.ts streaming.spec.ts",
     "test:shogo-ide-bundle": "node scripts/sync-shogo-ide.mjs",
     "test:packaged-shogo-ide": "node scripts/assert-packaged-shogo-ide.mjs",
     "test:desktop-bundle": "bun test-web-bundle.ts && bun test-sync-web.ts && bun test-forge-config.ts && bun test-update-channel.ts && npm run test:shogo-ide-bundle",
@@ -31,6 +32,7 @@
     "download-bun": "node scripts/download-bun.mjs",
     "download-sherpa": "node scripts/download-sherpa.mjs",
     "build-sysaudio": "cd native/shogo-sysaudio && make build",
+    "build-hotkey": "cd native/shogo-hotkey && make build",
     "generate-install-gif": "node scripts/generate-install-gif.mjs",
     "test:db-recovery": "bun test-db-recovery.ts",
     "bundle:pty-host": "node scripts/bundle-pty-host.mjs"

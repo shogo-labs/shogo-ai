@@ -21,7 +21,7 @@ interface IDEPanelProps {
   remoteHostId?: string | null
   primarySideBarPosition?: IdePrimarySideBarPosition
   /** File to open once the Workbench's file tree is ready. `nonce` re-opens the same path. */
-  requestedFile?: { path: string; nonce: number } | null
+  requestedFile?: { path: string; nonce: number; line?: number; column?: number } | null
 }
 
 /**
@@ -95,6 +95,15 @@ export function IDEPanel({
     return () => { cancelled = true }
   }, [sdkService, projectId, folderLinked, isExternalProject, folderPath, remoteHostId])
 
+  // Once the IDE tab has been opened for this project, keep the Workbench
+  // mounted (just hidden) so switching to Canvas and back doesn't throw away
+  // open tabs, unsaved edits, the expanded tree and Monaco models.
+  const [openedFor, setOpenedFor] = useState<string | null>(visible ? projectId : null)
+  useEffect(() => {
+    if (visible) setOpenedFor(projectId)
+  }, [visible, projectId])
+  const keepMounted = visible || openedFor === projectId
+
   if (Platform.OS !== 'web') {
     if (!visible) return null
     return (
@@ -115,19 +124,23 @@ export function IDEPanel({
     if (!visible) return null
     return (
       <View className="flex-1 items-center justify-center p-6 bg-background">
-        <Text className="text-muted-foreground text-xs">Agent not ready yet…</Text>
+        <Text className="text-foreground text-sm font-semibold">Starting the project agent…</Text>
+        <Text className="text-muted-foreground text-xs mt-1.5 text-center max-w-[300px]">
+          The editor opens as soon as the agent is reachable. This usually takes a few seconds.
+        </Text>
       </View>
     )
   }
 
   // Keep the lightweight service setup alive, but do not mount Monaco or the
   // Workbench until the user actually opens the IDE tab.
-  if (!visible) return null
+  if (!keepMounted) return null
 
   return (
     <View style={{ flex: 1, minHeight: 0, display: visible ? 'flex' : 'none' }}>
       <div style={{ flex: 1, minHeight: 0 }}>
         <Workbench
+          key={projectId}
           agentService={agentService}
           agentLabel={projectName || `project/${projectId}`}
           projectId={projectId}

@@ -4,6 +4,7 @@ import { Platform } from 'react-native'
 import { HttpClient } from '@shogo-ai/sdk'
 import { API_URL } from './api-url'
 import { authClient } from './auth-client'
+import { defaultLocalAccess, type LocalAccessPrefs } from './local-access'
 
 export { API_URL } from './api-url'
 
@@ -490,6 +491,68 @@ export interface RemoteAskpassPrompt {
   createdAt?: number
 }
 
+export interface WorkspaceTrigger {
+  id: string
+  name: string
+  enabled: boolean
+  eventType: string
+  source: 'shogo' | 'composio' | string
+  target: 'agent' | 'project' | 'webhook' | string
+  targetProjectId?: string | null
+  targetMode?: string | null
+  webhookUrl?: string | null
+  ownerUserId?: string | null
+  ownerKind: 'user' | 'app' | string
+  installId?: string | null
+  /** Whose accounts a project agent may use when this fires. */
+  actsAs?: 'subscriber' | 'actor' | 'nobody' | string
+  actorIdPath?: string | null
+  actorEmailPath?: string | null
+  trustActorEmail?: boolean
+  consecutiveFailures: number
+  lastDeliveredAt?: string | null
+  lastError?: string | null
+  createdAt: string
+}
+
+export interface TriggerDelivery {
+  id: string
+  status: 'pending' | 'running' | 'ok' | 'failed' | 'dead' | 'skipped' | string
+  attempts: number
+  responseStatus?: number | null
+  error?: string | null
+  summary?: string | null
+  createdAt: string
+  updatedAt: string
+  event?: { id: string; type: string; occurredAt: string; source: string }
+}
+
+export interface WorkspaceAppGrant {
+  id: string
+  installId: string
+  status: 'active' | 'revoked' | string
+  version: string
+  grantedScopes: string[]
+  grantedToolkits: string[]
+  pendingScopes: string[]
+  pendingVersion?: string | null
+  hasToken: boolean
+  createdAt: string
+  revokedAt?: string | null
+  app: { slug: string; title: string; iconUrl: string | null } | null
+  projectId: string | null
+  installStatus: string | null
+  grantedBy: { id: string; name: string } | null
+}
+
+export interface AppConsentRequest {
+  version: string
+  scopes: Array<{ scope: string; description: string }>
+  optionalScopes: Array<{ scope: string; description: string }>
+  requiredToolkits: string[]
+  events: Array<{ type: string; target: string; name?: string }>
+}
+
 function throwIfBetterAuthErrorPayload(data: unknown): void {
   if (!data || typeof data !== 'object') return
   const err = (data as { error?: { message?: unknown } | null }).error
@@ -629,7 +692,7 @@ export const api = {
     return res.data?.count ?? 0
   },
 
-  async registerMobilePushSubscription(http: HttpClient, body: { pushToken: string; platform: 'ios' | 'android' }) {
+  async registerMobilePushSubscription(http: HttpClient, body: { pushToken: string; platform: 'ios' | 'android'; agentTurns?: boolean }) {
     const res = await http.post<{ ok?: boolean; id?: string }>('/api/mobile-push-subscriptions', body)
     return res.data
   },
@@ -1250,6 +1313,67 @@ export const api = {
     )
   },
 
+  async listWorkspaceTriggers(http: HttpClient, workspaceId: string) {
+    const res = await http.get<{ triggers: WorkspaceTrigger[] }>(`/api/workspaces/${workspaceId}/triggers`)
+    return res.data?.triggers ?? []
+  },
+
+  async setWorkspaceTriggerEnabled(http: HttpClient, workspaceId: string, triggerId: string, enabled: boolean) {
+    const res = await http.patch<{ trigger: WorkspaceTrigger }>(`/api/workspaces/${workspaceId}/triggers/${triggerId}`, { enabled })
+    return res.data.trigger
+  },
+
+  async updateWorkspaceTrigger(
+    http: HttpClient,
+    workspaceId: string,
+    triggerId: string,
+    patch: Partial<Pick<WorkspaceTrigger, 'actsAs' | 'actorIdPath' | 'actorEmailPath' | 'trustActorEmail'>>,
+  ) {
+    const res = await http.patch<{ trigger: WorkspaceTrigger }>(`/api/workspaces/${workspaceId}/triggers/${triggerId}`, patch)
+    return res.data.trigger
+  },
+
+  /** Suggested "who did it" payload fields for a Composio trigger, from its payload schema. */
+  async getTriggerActorFields(http: HttpClient, workspaceId: string, eventType: string) {
+    const toolkit = eventType.split('.')[1] ?? ''
+    const res = await http.get<{ composio?: { types?: Array<{ type: string; actorFields?: { idPaths: string[]; emailPaths: string[] } }> } }>(
+      `/api/workspaces/${workspaceId}/trigger-types`,
+      { toolkit },
+    )
+    const match = res.data?.composio?.types?.find((t) => t.type === eventType)
+    return match?.actorFields ?? { idPaths: [], emailPaths: [] }
+  },
+
+  async listTriggerDeliveries(http: HttpClient, workspaceId: string, triggerId: string, limit = 10) {
+    const res = await http.get<{ deliveries: TriggerDelivery[] }>(
+      `/api/workspaces/${workspaceId}/triggers/${triggerId}/deliveries`,
+      { limit: String(limit) },
+    )
+    return res.data?.deliveries ?? []
+  },
+
+  async redeliverTriggerDelivery(http: HttpClient, workspaceId: string, triggerId: string, deliveryId: string) {
+    const res = await http.post<{ delivery: TriggerDelivery }>(
+      `/api/workspaces/${workspaceId}/triggers/${triggerId}/deliveries/${deliveryId}/redeliver`,
+      {},
+    )
+    return res.data.delivery
+  },
+
+  async listWorkspaceAppGrants(http: HttpClient, workspaceId: string) {
+    const res = await http.get<{ grants: WorkspaceAppGrant[] }>(`/api/workspaces/${workspaceId}/app-grants`)
+    return res.data?.grants ?? []
+  },
+
+  async revokeAppInstall(http: HttpClient, installId: string) {
+    await http.post(`/api/marketplace/installs/${installId}/revoke`, {})
+  },
+
+  async getMarketplaceConsent(http: HttpClient, slug: string) {
+    const res = await http.get<{ consent: AppConsentRequest | null }>(`/api/marketplace/${encodeURIComponent(slug)}/consent`)
+    return res.data?.consent ?? null
+  },
+
   /**
    * Shogo Agent for Slack — a single workspace-level Slack app install
    * (Slack's native Agents platform) that routes DMs/mentions to any
@@ -1388,6 +1512,7 @@ export const api = {
   async getMemberUsageStats(
     http: HttpClient,
     workspaceId: string,
+    params: { period?: string } = {},
   ): Promise<{
     monthly: Record<string, number>
     total: Record<string, number>
@@ -1395,6 +1520,7 @@ export const api = {
     free: Record<string, number>
     onDemand: Record<string, number>
   }> {
+    const qs = params.period ? `?period=${encodeURIComponent(params.period)}` : ''
     const res = await http.get<{
       ok: boolean
       data?: {
@@ -1404,7 +1530,7 @@ export const api = {
         free?: Record<string, number>
         onDemand?: Record<string, number>
       }
-    }>(`/api/workspaces/${workspaceId}/analytics/member-usage`)
+    }>(`/api/workspaces/${workspaceId}/analytics/member-usage${qs}`)
     const data = res.data?.data
     return {
       monthly: data?.monthly ?? {},
@@ -2268,7 +2394,17 @@ export const api = {
   /** Saves the Shogo buddy look; the server rejects unknown accessories. */
   async setBuddyLook(
     http: HttpClient,
-    look: { topper: string; face: string; tail: string; eyewear: string; neck: string; bolts: boolean; blush: boolean },
+    look: {
+      topper: string
+      face: string
+      tail: string
+      eyewear: string
+      neck: string
+      bolts: boolean
+      blush: boolean
+      color: string | null
+      finish: string
+    },
   ) {
     const res = await http.request<{ ok: boolean; data?: unknown }>('/api/me/buddy', { method: 'PUT', body: look })
     return res.data
@@ -2401,6 +2537,21 @@ export const api = {
 
   async saveSecurityPrefs(http: HttpClient, prefs: SecurityPrefs) {
     const res = await http.post<{ ok: boolean }>('/api/local/security-prefs', prefs)
+    return res.data
+  },
+
+  // ─── Desktop local access (apps, computer use, dictation shortcuts) ───
+
+  async getLocalAccessPrefs(http: HttpClient): Promise<{ configured: boolean; prefs: LocalAccessPrefs }> {
+    const res = await http.get<{ configured: boolean; prefs: LocalAccessPrefs }>('/api/local/access-prefs')
+    return res.data ?? { configured: false, prefs: defaultLocalAccess() }
+  },
+
+  async saveLocalAccessPrefs(http: HttpClient, prefs: Partial<LocalAccessPrefs>) {
+    const res = await http.request<{ ok: boolean; prefs: LocalAccessPrefs }>('/api/local/access-prefs', {
+      method: 'PUT',
+      body: prefs,
+    })
     return res.data
   },
 
@@ -2786,6 +2937,8 @@ export interface SecurityPrefs {
     fileAccess?: { allow?: string[]; deny?: string[] }
     network?: { allowedDomains?: string[] }
     mcpTools?: { autoApprove?: string[] }
+    /** Per-tool: allow, ask a person first, or block. */
+    actions?: Record<string, 'allow' | 'ask' | 'block'>
   }
   approvalTimeoutSeconds?: number
 }

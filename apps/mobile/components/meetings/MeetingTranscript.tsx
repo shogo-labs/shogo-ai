@@ -71,12 +71,24 @@ function SpeakerTranscriptView({ segments }: { segments: TranscriptSegment[] }) 
   )
 }
 
-export function MeetingTranscript({ transcript, live = false }: { transcript: ParsedTranscript | null; live?: boolean }) {
-  if (!transcript || (!transcript.text && transcript.segments.length === 0)) {
+export function MeetingTranscript({
+  transcript,
+  live = false,
+  partial = null,
+  notice = null,
+}: {
+  transcript: ParsedTranscript | null
+  live?: boolean
+  /** Words still being said, shown muted after the settled text. */
+  partial?: string | null
+  /** Why the live transcript isn't updating. */
+  notice?: string | null
+}) {
+  if (!transcript || (!transcript.text && transcript.segments.length === 0 && !partial)) {
     return (
       <View className="items-center justify-center py-16">
         <Text className="text-sm text-muted-foreground text-center px-6">
-          {transcript?.error || (live ? 'Listening… the live transcript shows up here as people talk.' : 'No transcript available')}
+          {transcript?.error || notice || (live ? 'Listening… the live transcript shows up here as people talk.' : 'No transcript available')}
         </Text>
       </View>
     )
@@ -99,6 +111,11 @@ export function MeetingTranscript({ transcript, live = false }: { transcript: Pa
           </Text>
         </View>
       )}
+      {live && !!notice && (
+        <View className="bg-amber-500/10 rounded-lg p-3 mb-4">
+          <Text className="text-xs leading-5 text-amber-700 dark:text-amber-300">{notice}</Text>
+        </View>
+      )}
       {hasSpeakers ? (
         <SpeakerTranscriptView segments={transcript.segments} />
       ) : transcript.segments.length > 0 ? (
@@ -110,8 +127,16 @@ export function MeetingTranscript({ transcript, live = false }: { transcript: Pa
             <Text className="flex-1 text-sm text-foreground leading-relaxed">{segment.text}</Text>
           </View>
         ))
-      ) : (
+      ) : transcript.text ? (
         <Text className="text-sm text-foreground leading-relaxed">{transcript.text}</Text>
+      ) : null}
+      {live && !!partial && (
+        <View className="flex-row gap-3 mb-3">
+          <Text className="text-xs text-muted-foreground font-mono w-12 pt-0.5 text-right">…</Text>
+          <Text accessibilityLabel="Words being said" className="flex-1 text-sm text-muted-foreground leading-relaxed">
+            {partial}
+          </Text>
+        </View>
       )}
     </View>
   )

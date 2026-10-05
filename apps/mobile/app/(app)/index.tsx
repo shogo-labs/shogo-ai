@@ -20,16 +20,18 @@ import { observer } from 'mobx-react-lite'
 import { LinearGradient } from 'expo-linear-gradient'
 import Svg, { Defs, RadialGradient, Stop, Ellipse } from 'react-native-svg'
 import { Button } from '@shogo/shared-ui/primitives'
+import { chatSessionEvents } from '../../lib/chat-session-events'
 import { usePostHogSafe } from '../../contexts/posthog'
 import { useAuth } from '../../contexts/auth'
 import {
   useProjectCollection,
   useWorkspaceCollection,
   useMemberCollection,
+  useChatSessionCollection,
   useDomainActions,
   useDomainHttp,
 } from '../../contexts/domain'
-import { CompactChatInput, ComposerPlusSection } from '../../components/chat/CompactChatInput'
+import { ComposerPlusSection } from '../../components/chat/ComposerPlusMenu'
 import {
   ChatInput,
   DEFAULT_MODEL_PRO,
@@ -72,6 +74,7 @@ import { useResolvedTheme } from '../../contexts/theme'
 import { Layers } from 'lucide-react-native'
 import { ShogoLogoMark } from '../../components/branding/ShogoLogoMark'
 import { WorkspaceAgentChatScreen } from '../../components/workspace/WorkspaceAgentChatScreen'
+import { MobileHomeFeed } from '../../components/home/MobileHomeFeed'
 import { CreatePersonalSpaceBanner } from '../../components/personal/CreatePersonalSpaceBanner'
 import { GetStartedChecklist, useGettingStarted } from '../../components/onboarding/GetStartedChecklist'
 import { useMobileWorkspaceChrome } from '../../components/layout/MobileWorkspaceChromeContext'
@@ -221,30 +224,7 @@ const LovableGradient = memo(function LovableGradient({ isDark, phone = false }:
 // (apps/mobile/components/project/useOpenLocalFolder.ts), shared with
 // the `/projects` page's "New project" menu so both surfaces stay in sync.
 
-// Static style fragments. The composer-wrapper variants below are a
-// per-theme ✕ per-platform decision tree, so we precompute the four
-// possibilities once and pick by index instead of building a new object
-// literal on every render.
-const COMPOSER_WRAPPER_NATIVE = { maxWidth: 680 }
-const COMPOSER_WRAPPER_NATIVE_LIGHT = {
-  maxWidth: 680,
-  shadowColor: '#000000',
-  shadowOffset: { width: 0, height: 6 },
-  shadowOpacity: 0.1,
-  shadowRadius: 16,
-  elevation: 5,
-} as const
 const CONTENT_MAX_WIDTH = { maxWidth: 680 } as const
-const COMPOSER_WRAPPER_WEB_LIGHT = {
-  maxWidth: 680,
-  boxShadow:
-    '0 4px 24px rgba(0,0,0,0.08), 0 1px 4px rgba(0,0,0,0.04)',
-} as const
-const COMPOSER_WRAPPER_WEB_DARK = {
-  maxWidth: 680,
-  boxShadow:
-    '0 4px 24px rgba(0,0,0,0.4), 0 1px 4px rgba(0,0,0,0.3)',
-} as const
 
 const styles = StyleSheet.create({
   gradientLayer: {
@@ -269,6 +249,7 @@ export const HomeScreen = observer(function HomeScreen({
   const membersColl = useMemberCollection()
   const http = useDomainHttp()
   const actions = useDomainActions()
+  const chatSessions = useChatSessionCollection()
   const isDark = useResolvedTheme() === 'dark'
   const { width: screenWidth, height: screenHeight } = useWindowDimensions()
   const insets = useSafeAreaInsets()
@@ -293,7 +274,6 @@ export const HomeScreen = observer(function HomeScreen({
     iosKeyboardAvoiding: iosComposerAvoiding,
   })
 
-  const [prompt, setPrompt] = useState('')
   const [interactionMode, setInteractionMode] = useState<InteractionMode>('agent')
   const [selectedModel, setSelectedModel] = useState<string>(DEFAULT_MODEL_FREE)
   // Gate stale-selection reconciliation until the persisted preference has
@@ -328,7 +308,7 @@ export const HomeScreen = observer(function HomeScreen({
   /**
    * Draft project the homepage opens behind the scenes for a creation
    * gesture (pressing Send or tapping the mic for EZ Mode). It is NOT
-   * created while the user is merely typing — see `handlePromptChange`.
+   * created while the user is merely typing.
    * Reused by both submit and the Shogo voice entry point so we never
    * create two projects for one creation gesture.
    */
@@ -612,16 +592,6 @@ export const HomeScreen = observer(function HomeScreen({
   }, [actions, createHomeDraftSession, currentWorkspace?.id, prewarmHomeDraft, user?.id])
 
   /**
-   * Home composer input handler. Updates local state only — project and
-   * chat-session creation is deferred to the actual creation gesture
-   * (Send -> `createProjectFromPrompt`, mic -> `handleStartVoiceProjectCreation`)
-   * so we never open a stray project while the user is still typing.
-   */
-  const handlePromptChange = useCallback((next: string) => {
-    setPrompt(next)
-  }, [])
-
-  /**
    * Composer tech-stack chip handler. Updates local state (consumed at
    * creation time via `techStackIdRef`). A draft is only created on the
    * actual Send/mic gesture, so normally no project exists yet — but if a
@@ -721,17 +691,28 @@ export const HomeScreen = observer(function HomeScreen({
       // Fire-and-forget: replace heuristic name with AI-generated name
       const pid = consumed.projectId
       const sid = consumed.chatSessionId
-      const sidScope = consumed.chatScope
       api.generateProjectName(http, text, currentWorkspace.id, pid).then(({ name, description, source }) => {
         if (source === 'ai' && name && name !== projectName) {
           actions.updateProject(pid, { name, description: description || undefined })
-          // Only project-scoped sessions live in the local MST collection.
-          // Workspace sessions are created server-side (api.createWorkspaceSession)
-          // and aren't in `chatSessionCollection`, so updateChatSession would
-          // throw "Item not found" — skip the local rename for them.
-          if (sidScope === 'project') {
-            actions.updateChatSession(sid, { inferredName: name })
-          }
+          // Workspace sessions are created server-side
+          // (api.createWorkspaceSession), so pull them into the local MST
+          // collection before updateChatSession (which throws "Item not
+          // found" otherwise).
+          void (async () => {
+            try {
+              if (!chatSessions.get(sid)) await chatSessions.loadById(sid)
+              if (!chatSessions.get(sid)) return
+              await actions.updateChatSession(sid, { inferredName: name })
+              chatSessionEvents.emit({
+                projectId: pid,
+                workspaceId: currentWorkspace.id,
+                activeSessionId: sid,
+                refresh: true,
+              })
+            } catch (err) {
+              console.warn('[Home] Failed to save AI chat name:', err)
+            }
+          })()
         }
       }).catch((err) => {
         console.warn('[Home] AI project name generation failed, keeping heuristic name:', err)
@@ -741,6 +722,7 @@ export const HomeScreen = observer(function HomeScreen({
     }
   }, [
     actions,
+    chatSessions,
     createHomeDraftSession,
     currentWorkspace?.id,
     ensureDraftProject,
@@ -887,15 +869,6 @@ export const HomeScreen = observer(function HomeScreen({
     () => ({ fontSize: isMobile ? 14 : 16 }),
     [isMobile],
   )
-  const composerWrapperStyle =
-    Platform.OS === 'web'
-      ? isDark
-        ? COMPOSER_WRAPPER_WEB_DARK
-        : COMPOSER_WRAPPER_WEB_LIGHT
-      : isNativePhone && !isDark
-        ? COMPOSER_WRAPPER_NATIVE_LIGHT
-        : COMPOSER_WRAPPER_NATIVE
-
   // Unauthenticated local-mode sessions bounce back to the root router — but
   // NEVER navigate during render. Calling `router.replace()` in the render body
   // reschedules a navigation on every render while this screen is still mounted
@@ -939,6 +912,11 @@ export const HomeScreen = observer(function HomeScreen({
   // Personal workspaces use the agent chat surface on every platform.
   // Shared workspaces use it on narrow surfaces while wide web retains the
   // established builder home.
+  // Team workspaces on a phone open on a work-first feed; the workspace agent
+  // chat is one tap away at `/agent`.
+  if (rendersAgentChat && currentExperience.kind === 'team' && isNarrowAgentSurface) {
+    return <MobileHomeFeed />
+  }
   if (rendersAgentChat) {
     return <WorkspaceAgentChatScreen key={currentWorkspace?.id ?? 'workspace-loading'} />
   }
@@ -1002,60 +980,55 @@ export const HomeScreen = observer(function HomeScreen({
       placeholder="Describe the project you want to build..."
       composer={currentExperience.composer}
       presentation="agent"
+      inputTestID="home-composer-input"
     />
   ) : (
-    <View className={isNativePhone ? 'w-full' : 'w-full rounded-2xl'} style={composerWrapperStyle}>
-      <CompactChatInput
-        onSubmit={handlePromptSubmit}
-        isLoading={isCreating}
+    <View className="w-full" style={CONTENT_MAX_WIDTH}>
+      <ChatInput
+        onSubmit={(text, files) => handlePromptSubmit(text, files)}
+        submitting={isCreating}
         placeholder={homeComposerPlaceholder}
-        agentPlaceholderActive={interactionMode === 'agent'}
-        value={prompt}
-        onChange={handlePromptChange}
+        typingPlaceholder={interactionMode === 'agent'}
+        composer={currentExperience.composer}
         interactionMode={interactionMode}
         onInteractionModeChange={handleHomeInteractionModeChange}
         selectedModel={selectedModel}
         onModelChange={handleHomeModelChange}
         isPro={hasAdvancedModelAccess}
         onUpgradeClick={() => router.push('/billing')}
-        onStartVoiceProjectCreation={
+        onVoiceStart={
           Platform.OS === 'web' && features.ezMode
             ? handleStartVoiceProjectCreation
             : undefined
         }
-        prominentMobile={isNativePhone}
-        prominentColorScheme={isDark ? 'dark' : 'light'}
+        inputTestID="home-composer-input"
         leadingControls={
-          isNativePhone ? undefined : (
-            <View className="flex-row items-center gap-1">
-              <ProjectSourceMenu
-                workspaceId={currentWorkspace?.id}
-                variant="chip"
-              />
-              <TechStackPicker
-                value={techStackId}
-                onChange={handleTechStackChange}
-                disabled={isCreating}
-              />
-            </View>
-          )
+          <View className="flex-row items-center gap-1">
+            <ProjectSourceMenu
+              workspaceId={currentWorkspace?.id}
+              variant="chip"
+            />
+            <TechStackPicker
+              value={techStackId}
+              onChange={handleTechStackChange}
+              disabled={isCreating}
+            />
+          </View>
         }
         plusMenuExtras={
-          isNativePhone ? (
-            <ComposerPlusSection
-              id="stack"
-              label="Tech stack"
-              value={techStackDisplayName(techStackId)}
-              Icon={Layers}
-            >
-              <TechStackPicker
-                value={techStackId}
-                onChange={handleTechStackChange}
-                disabled={isCreating}
-                presentation="list"
-              />
-            </ComposerPlusSection>
-          ) : undefined
+          <ComposerPlusSection
+            id="stack"
+            label="Tech stack"
+            value={techStackDisplayName(techStackId)}
+            Icon={Layers}
+          >
+            <TechStackPicker
+              value={techStackId}
+              onChange={handleTechStackChange}
+              disabled={isCreating}
+              presentation="list"
+            />
+          </ComposerPlusSection>
         }
       />
     </View>
