@@ -37,6 +37,7 @@ import {
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { api } from '../../../lib/api'
+import { localFilePart } from '../../../lib/upload-part'
 import { useResolvedTheme } from '../../../contexts/theme'
 import {
   nativePhoneCanvas,
@@ -519,11 +520,7 @@ export function FilesBrowserPanel({ projectId, agentUrl, visible, requestedFile 
             return
           }
           const mime = doc.mimeType ?? 'text/plain'
-          formData.append('files', {
-            uri: doc.uri,
-            name: doc.name,
-            type: mime,
-          } as unknown as Blob)
+          formData.append('files', localFilePart(doc.uri, doc.name, mime) as unknown as Blob)
         }
         await client.uploadWorkspaceFiles(formData)
         loadTree()
