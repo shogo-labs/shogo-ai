@@ -5,7 +5,10 @@
  */
 
 import { beforeEach, describe, expect, test } from 'bun:test'
+import { createHmac } from 'node:crypto'
 import {
+  handOffRequesterTicket,
+  MAX_TICKET_HOPS,
   REQUESTER_TICKET_HEADER,
   requesterTicketHeader,
   signRequesterTicket,
@@ -46,6 +49,46 @@ describe('requester tickets', () => {
     for (const junk of [undefined, null, '', 'u1', 'a.b', `${encoded}.`]) {
       expect(verifyRequesterTicket(junk as any, 'p1')).toBeNull()
     }
+  })
+
+  test('carries where the turn started; old tickets without it read as a chat', () => {
+    const origin = { kind: 'chat' as const, chatSessionId: 'cs-1' }
+    expect(verifyRequesterTicket(signRequesterTicket({ projectId: 'p1', userId: 'u1', origin }), 'p1')).toMatchObject({
+      origin,
+      via: [],
+    })
+    const legacy = Buffer.from(JSON.stringify({ projectId: 'p1', userId: 'u1', exp: Date.now() + 60_000, nonce: 'n' })).toString('base64url')
+    const mac = createHmac('sha256', 'ticket-secret').update(`requester-ticket.${legacy}`).digest('base64url')
+    expect(verifyRequesterTicket(`${legacy}.${mac}`, 'p1')).toMatchObject({ userId: 'u1', origin: { kind: 'chat' }, via: [] })
+  })
+
+  test('hands off to the next project with the same person, origin and expiry', () => {
+    const now = Date.now()
+    const origin = { kind: 'chat' as const, chatSessionId: 'cs-1' }
+    const a = verifyRequesterTicket(signRequesterTicket({ projectId: 'A', userId: 'bob', origin }, now), 'A', now)!
+    const toB = handOffRequesterTicket(a, 'B')!
+    expect(verifyRequesterTicket(toB, 'A')).toBeNull()
+    const b = verifyRequesterTicket(toB, 'B', now)!
+    expect(b).toMatchObject({ projectId: 'B', userId: 'bob', origin, via: ['A'], exp: a.exp })
+    const c = verifyRequesterTicket(handOffRequesterTicket(b, 'C'), 'C', now)!
+    expect(c.via).toEqual(['A', 'B'])
+    expect(verifyRequesterTicket(toB, 'B', a.exp + 1)).toBeNull()
+  })
+
+  test('refuses hand-offs that loop back or go past the hop limit', () => {
+    const a = verifyRequesterTicket(signRequesterTicket({ projectId: 'A', userId: 'bob' }), 'A')!
+    const b = verifyRequesterTicket(handOffRequesterTicket(a, 'B'), 'B')!
+    expect(handOffRequesterTicket(b, 'A')).toBeNull()
+    expect(handOffRequesterTicket(b, 'B')).toBeNull()
+
+    let ticket = a
+    for (let i = 1; i <= MAX_TICKET_HOPS; i++) {
+      const next = handOffRequesterTicket(ticket, `P${i}`)
+      expect(next).not.toBeNull()
+      ticket = verifyRequesterTicket(next, `P${i}`)!
+    }
+    expect(ticket.via).toHaveLength(MAX_TICKET_HOPS)
+    expect(handOffRequesterTicket(ticket, 'one-too-many')).toBeNull()
   })
 
   test('the forwarding header is skipped for system turns and when signing is not configured', () => {

@@ -18,6 +18,8 @@ export interface PersonalConnectState {
   provider: string
   /** Project the person consented for; absent when connecting from their own settings. */
   projectId?: string
+  /** Signed resume token: the conversation to pick back up once connected. */
+  resume?: string
   exp: number
   nonce: string
 }

@@ -117,12 +117,12 @@ export function githubCredentialProvider(loadGitHub: () => Promise<GitHubService
       }
     },
 
-    async beginConnect({ userId, projectId, provider }) {
+    async beginConnect({ userId, projectId, provider, resume }) {
       const github = await loadGitHub()
       if (!github.isOAuthConfigured()) {
         throw new Error('Connecting a personal GitHub account is not configured on this server.')
       }
-      const state = signPersonalConnectState({ userId, provider, projectId })
+      const state = signPersonalConnectState({ userId, provider, projectId, ...(resume ? { resume } : {}) })
       return { url: github.getOAuthUrl(state, github.getAuthorizeCallbackUrl()) }
     },
 

@@ -446,6 +446,15 @@ describe('POST /projects/:projectId/chat', () => {
       expect(verifyRequesterTicket(await chat({ userId: 'user-1' }), 'p-2')).toBeNull()
     })
 
+    test('names the chat session, so a connect link can pick the conversation back up', async () => {
+      process.env.BETTER_AUTH_SECRET = 'ticket-secret'
+      const { verifyRequesterTicket } = await import('../lib/requester-ticket')
+      expect(verifyRequesterTicket(await chat({ userId: 'user-1' }), 'p-1')).toMatchObject({
+        origin: { kind: 'chat', chatSessionId: 'chat-1' },
+        via: [],
+      })
+    })
+
     test('is not issued to runtime-token callers, which authenticate as the project owner', async () => {
       process.env.BETTER_AUTH_SECRET = 'ticket-secret'
       expect(await chat({ userId: 'owner-1', via: 'runtimeToken' })).toBeNull()

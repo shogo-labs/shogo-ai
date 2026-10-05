@@ -11,14 +11,15 @@ const opened: string[] = []
 mock.module('react-native', () =>
   createReactNativeMock({
     Platform: { OS: 'web', select: (s: any) => s.web ?? s.default },
-    Pressable: ({ accessibilityLabel, accessibilityState, children, onPress }: any) =>
+    Pressable: ({ accessibilityLabel, accessibilityState, children, disabled, onPress }: any) =>
       createElement(
         'div',
         {
           role: 'button',
           'aria-label': accessibilityLabel,
           'aria-pressed': accessibilityState?.selected ?? accessibilityState?.checked ?? undefined,
-          onClick: onPress,
+          'aria-disabled': disabled ? 'true' : undefined,
+          onClick: disabled ? undefined : onPress,
         },
         children,
       ),
@@ -30,19 +31,21 @@ mock.module('../account-sheet-chrome', () => ({
 }))
 mock.module('../../../lib/api', () => ({ API_URL: 'https://api.test' }))
 
-const { IntegrationActsAsSection } = await import('../IntegrationActsAsSection')
+const { IntegrationActsAsSection, chainsFromChoices, choicesFromChains } = await import('../IntegrationActsAsSection')
 
 let policy: any
 let connections: any[]
 let policyStatus = 200
+let canEdit = true
 const puts: any[] = []
 const deletes: string[] = []
 const realFetch = globalThis.fetch
 
 beforeEach(() => {
-  policy = { provider: 'github', writeMode: 'shared', readMode: 'shared', fallback: 'ask', label: 'GitHub' }
+  policy = { provider: 'github', writeChain: ['shared'], readChain: ['shared'], label: 'GitHub' }
   connections = []
   policyStatus = 200
+  canEdit = true
   globalThis.fetch = (async (url: string, init: any = {}) => {
     if (init.method === 'PUT') {
       const patch = JSON.parse(init.body)
@@ -55,7 +58,7 @@ beforeEach(() => {
       return new Response(JSON.stringify({ ok: true }), { status: 200 })
     }
     if (policyStatus !== 200) return new Response('not found', { status: policyStatus })
-    return new Response(JSON.stringify({ ok: true, policies: [policy], me: { connections, grants: [] } }), { status: 200 })
+    return new Response(JSON.stringify({ ok: true, canEdit, policies: [policy], me: { connections, grants: [] } }), { status: 200 })
   }) as any
 })
 
@@ -78,23 +81,57 @@ describe('IntegrationActsAsSection', () => {
     await waitFor(() => expect(puts).toHaveLength(1))
     expect(puts[0]).toEqual({
       url: 'https://api.test/api/projects/proj-1/integrations/policies/github',
-      patch: { writeMode: 'requester' },
+      patch: { writeChain: ['requester', 'ask', 'deny'], readChain: ['shared'] },
     })
     expect(await screen.findByText("If they haven't connected GitHub:")).toBeTruthy()
     expect(screen.getByLabelText('Ask them to connect').getAttribute('aria-pressed')).toBe('true')
+    expect(screen.getByText(/When no one asked/)).toBeTruthy()
 
-    fireEvent.click(screen.getByLabelText("Don't do it"))
-    await waitFor(() => expect(puts.at(-1)?.patch).toEqual({ fallback: 'deny' }))
+    fireEvent.click(screen.getAllByLabelText('Use the project account')[1])
+    await waitFor(() => expect(puts.at(-1)?.patch.writeChain).toEqual(['requester', 'ask', 'shared']))
 
     fireEvent.click(screen.getByLabelText('Use their account for reading too'))
-    await waitFor(() => expect(puts.at(-1)?.patch).toEqual({ readMode: 'requester' }))
+    await waitFor(() => expect(puts.at(-1)?.patch.readChain).toEqual(['requester', 'shared']))
+
+    fireEvent.click(screen.getAllByLabelText("Don't do it")[0])
+    await waitFor(() =>
+      expect(puts.at(-1)?.patch).toEqual({ writeChain: ['requester', 'deny'], readChain: ['requester', 'deny'] }),
+    )
+    expect(screen.queryByText(/When no one asked/)).toBeNull()
 
     fireEvent.click(screen.getByLabelText('Project account'))
-    await waitFor(() => expect(puts.at(-1)?.patch).toEqual({ writeMode: 'shared', readMode: 'shared' }))
+    await waitFor(() => expect(puts.at(-1)?.patch).toEqual({ writeChain: ['shared'], readChain: ['shared'] }))
+  })
+
+  test('is read-only for people who cannot change it', async () => {
+    canEdit = false
+    policy.writeChain = ['requester', 'ask', 'shared']
+    render(<IntegrationActsAsSection projectId="proj-1" />)
+    expect(await screen.findByText('Only the project owner and workspace admins can change this.')).toBeTruthy()
+    expect(screen.getByLabelText('Person who asked').getAttribute('aria-pressed')).toBe('true')
+    fireEvent.click(screen.getByLabelText('Project account'))
+    fireEvent.click(screen.getAllByLabelText("Don't do it")[0])
+    await new Promise((r) => setTimeout(r, 10))
+    expect(puts).toHaveLength(0)
+    // Connecting your own account is still yours to do.
+    expect(screen.getByLabelText('Connect my GitHub account').getAttribute('aria-disabled')).toBeNull()
+  })
+
+  test('settings and stored step lists convert both ways', () => {
+    const lists: Array<[string[], string[]]> = [
+      [['shared'], ['shared']],
+      [['requester', 'ask', 'shared'], ['shared']],
+      [['requester', 'ask', 'deny'], ['requester', 'shared']],
+      [['requester', 'shared'], ['requester', 'shared']],
+      [['requester', 'deny'], ['requester', 'deny']],
+    ]
+    for (const [writeChain, readChain] of lists) {
+      expect(chainsFromChoices(choicesFromChains(writeChain as any, readChain as any))).toEqual({ writeChain, readChain } as any)
+    }
   })
 
   test('offers to connect your own account, or shows it and lets you disconnect', async () => {
-    policy.writeMode = 'requester'
+    policy.writeChain = ['requester', 'ask', 'deny']
     const { unmount } = render(<IntegrationActsAsSection projectId="proj-1" />)
     fireEvent.click(await screen.findByLabelText('Connect my GitHub account'))
     expect(opened).toEqual(['https://api.test/api/projects/proj-1/integrations/github/connect'])

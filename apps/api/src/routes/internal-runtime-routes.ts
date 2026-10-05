@@ -55,7 +55,14 @@ import { projectTrustRoutes } from './internal-project-trust'
 import { signSharedFileToken } from '../lib/shared-file-token'
 import { withShogoPrFooter } from '@shogo/shared-runtime/agent-attribution'
 import { resolveConnectionAuth } from '../services/github-auth'
-import { REQUESTER_TICKET_HEADER, verifyRequesterTicket } from '../lib/requester-ticket'
+import { handOffRequesterTicket, REQUESTER_TICKET_HEADER, verifyRequesterTicket, type RequesterTicket } from '../lib/requester-ticket'
+import { signResumeToken } from '../services/integration-credentials/resume'
+
+/** Where a connect link handed out in this turn should pick the conversation back up. */
+function resumeTokenFor(ticket: RequesterTicket | null): string | undefined {
+  const chatSessionId = ticket?.origin.chatSessionId
+  return ticket && chatSessionId ? signResumeToken({ userId: ticket.userId, chatSessionId }) : undefined
+}
 
 type ProjectLifecycleService = typeof import('../services/project-lifecycle.service')
 type AgentCallService = typeof import('../services/agent-call.service')
@@ -154,6 +161,7 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
       provider: 'github',
       op: 'write',
       requesterUserId: ticket?.userId ?? null,
+      resume: resumeTokenFor(ticket),
     })
     if (!result.ok) {
       return {
@@ -1031,6 +1039,7 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
         provider,
         op,
         requesterUserId: ticket?.userId ?? null,
+        resume: resumeTokenFor(ticket),
       })
       return c.json(result)
     } catch (err: any) {
@@ -1778,6 +1787,21 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
         ? body.callerProjectId
         : authz.identity.kind === 'project' ? authz.identity.projectId : undefined
 
+    // The person behind the caller's turn carries over to the callee, as long
+    // as they belong to the callee's workspace. The ticket must have been
+    // issued to the calling project.
+    let requesterTicket: string | undefined
+    const callerTicket = callerProjectId
+      ? verifyRequesterTicket(c.req.header(REQUESTER_TICKET_HEADER), callerProjectId)
+      : null
+    if (callerTicket && callerProjectId !== projectId) {
+      const member = await prisma.member.findFirst({
+        where: { userId: callerTicket.userId, workspaceId: authz.workspaceId },
+        select: { id: true },
+      })
+      if (member) requesterTicket = handOffRequesterTicket(callerTicket, projectId) ?? undefined
+    }
+
     const agentCallSvc = await loadAgentCall?.()
     if (!agentCallSvc) return unavailable(c, 'Cross-project agent calls')
     const { callProjectAgent } = agentCallSvc
@@ -1788,6 +1812,7 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
       wait: body.wait !== false,
       timeoutMs: typeof body.timeoutMs === 'number' ? body.timeoutMs : undefined,
       callerProjectId,
+      ...(requesterTicket ? { requesterTicket } : {}),
     })
     return c.json(outcome.body, outcome.status as any)
   })

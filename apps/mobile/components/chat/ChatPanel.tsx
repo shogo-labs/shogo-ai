@@ -252,6 +252,7 @@ import {
   X,
   ChevronDown,
   Shield,
+  KeyRound,
   MessageCircleQuestion,
 } from "lucide-react-native"
 import { type PlanData } from "./PlanCard"
@@ -260,6 +261,7 @@ import { AgentClient } from "@shogo-ai/sdk/agent"
 import { agentFetch } from "../../lib/agent-fetch"
 import { openAuthFlow, preCreateAuthWindow } from "@shogo/ui-kit/platform"
 import { PermissionApprovalDialog } from "../security/PermissionApprovalDialog"
+import { IntegrationConnectCard, type IntegrationAuthRequest } from "./IntegrationConnectCard"
 import { buildStopRequest } from "../../lib/chat-stop"
 import {
   planToPublishToStream,
@@ -2738,6 +2740,13 @@ const ChatPanelContent = observer(function ChatPanelContent({
         }
       }
 
+      if ((dataPart as any).type === "data-integration-auth-required") {
+        const d = (dataPart as any).data
+        if (d && typeof d.provider === "string" && typeof d.connectUrl === "string") {
+          setPendingIntegrationAuth({ provider: d.provider, connectUrl: d.connectUrl, message: d.message })
+        }
+      }
+
       // Handle permission approval requests from the agent runtime
       if ((dataPart as any).type === "data-permission-request") {
         const req = (dataPart as any).data
@@ -3461,6 +3470,9 @@ const ChatPanelContent = observer(function ChatPanelContent({
   >(null)
   const [optimisticUserInput, setOptimisticUserInput] =
     useState<OptimisticUserInput | null>(null)
+
+  // The agent needs the person's own account on an integration.
+  const [pendingIntegrationAuth, setPendingIntegrationAuth] = useState<IntegrationAuthRequest | null>(null)
 
   // Permission approval state (local mode security)
   const [pendingPermissionRequest, setPendingPermissionRequest] = useState<{
@@ -7052,6 +7064,28 @@ const ChatPanelContent = observer(function ChatPanelContent({
     }
   }, [pendingPermissionRequest, respondToPermission])
   useDockPanel(permissionDockDescriptor, chatDockStore)
+
+  const integrationAuthDockDescriptor = useMemo<DockPanelDescriptor | null>(() => {
+    if (!pendingIntegrationAuth) return null
+    return {
+      id: `integration-auth:${pendingIntegrationAuth.provider}`,
+      kind: "blocking",
+      order: 0,
+      title: "Connect your account",
+      icon: KeyRound,
+      onDismiss: () => setPendingIntegrationAuth(null),
+      render: () => (
+        <IntegrationConnectCard
+          request={pendingIntegrationAuth}
+          onContinue={(label) => {
+            setPendingIntegrationAuth(null)
+            void sendMessageInternal(`I connected ${label}. Please go ahead.`)
+          }}
+        />
+      ),
+    }
+  }, [pendingIntegrationAuth, sendMessageInternal])
+  useDockPanel(integrationAuthDockDescriptor, chatDockStore)
 
   const questionDockDescriptor = useMemo<DockPanelDescriptor | null>(() => {
     if (!pendingQuestion) return null
