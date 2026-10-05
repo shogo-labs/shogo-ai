@@ -89,6 +89,8 @@ import {
   nativeCanvasBaseReady,
   projectIdFromAgentProxyUrl,
   previewWakeUrl,
+  isApiGateLatched,
+  latchApiGate,
 } from "../../../../lib/preview-gate";
 import { ChatPanel } from "../../../../components/chat/ChatPanel";
 import { PlanStreamProvider } from "../../../../components/chat/PlanStreamContext";
@@ -5235,10 +5237,22 @@ function CanvasPanel({
   // Latch it: a healthy sidecar that later restarts (schema / custom-routes
   // edits trigger `restartApiServerOnly`) briefly flips `apiReady` false, and
   // we don't want a live preview to flash back to a spinner on every save.
-  const [apiLatched, setApiLatched] = useState(false);
+  //
+  // The latch is also remembered per preview (module-level, see
+  // `isApiGateLatched`) so a fresh mount of this panel — navigating away and
+  // back to the canvas, switching tabs — doesn't re-gate a preview whose API
+  // already came up (or whose fallback already fired) in this tab.
+  const apiGateKey = previewStatusPollBase(agentUrl, canvasBaseUrl);
+  const [apiLatchedState, setApiLatched] = useState(() =>
+    isApiGateLatched(apiGateKey)
+  );
+  const apiLatched = apiLatchedState || isApiGateLatched(apiGateKey);
   useEffect(() => {
-    if (apiReady || nativeBaseReady) setApiLatched(true);
-  }, [apiReady, nativeBaseReady]);
+    if (apiReady || nativeBaseReady) {
+      latchApiGate(apiGateKey);
+      setApiLatched(true);
+    }
+  }, [apiReady, nativeBaseReady, apiGateKey]);
 
   // Resume a sleeping metal/Knative preview the same way a browser tab does.
   // `/preview/start` is kicked from usePreviewPhase when status is not running —
@@ -5290,11 +5304,13 @@ function CanvasPanel({
     if (!baseReady) return;
     // Start exactly once; do NOT restart on baseReady / phase oscillation.
     if (apiWaitTimerRef.current) return;
-    apiWaitTimerRef.current = setTimeout(
-      () => setApiWaitElapsed(true),
-      API_WAIT_TIMEOUT_MS
-    );
-  }, [baseReady, apiLatched]);
+    apiWaitTimerRef.current = setTimeout(() => {
+      // Remember the fallback too, so remounting the panel doesn't make the
+      // user sit through the same wait again for this preview.
+      latchApiGate(apiGateKey);
+      setApiWaitElapsed(true);
+    }, API_WAIT_TIMEOUT_MS);
+  }, [baseReady, apiLatched, apiGateKey]);
   useEffect(
     () => () => {
       if (apiWaitTimerRef.current) {
