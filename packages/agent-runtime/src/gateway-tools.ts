@@ -1219,6 +1219,14 @@ export function createGitHubConnectTool(ctx: ToolContext): AgentTool {
                 ? `checked out ${workspace.branch ?? result.data.defaultBranch}` +
                   (workspace.backupBranch ? `; previous project files kept on branch ${workspace.backupBranch}` : '')
                 : 'already up to date with the repository',
+          ...(workspace?.ok === false
+            ? {
+                next:
+                  'The token was accepted and the repository is connected; only copying its files into the project failed. ' +
+                  'This is not a token problem, so don\'t ask for a new one. Call github_connect again with the same arguments; ' +
+                  'if it fails again, tell the user the project runtime was unavailable and to retry in a minute.',
+              }
+            : {}),
         })
       }
 
