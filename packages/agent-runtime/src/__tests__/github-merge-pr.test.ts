@@ -90,10 +90,10 @@ describe('github_merge_pr', () => {
 })
 
 describe('as registered', () => {
-  test('is part of the default tool set and asks a person before it runs', async () => {
+  test('is part of the default tool set and asks a person when an ask rule is set', async () => {
     const events: any[] = []
     const engine = new PermissionEngine({
-      preference: DEFAULT_CLOUD_SECURITY_PREFERENCE,
+      preference: { ...DEFAULT_CLOUD_SECURITY_PREFERENCE, overrides: { actions: { github_merge_pr: 'ask' } } },
       workspaceDir: DIR,
       actionsOnly: true,
       sendSseEvent: (e) => events.push(e),

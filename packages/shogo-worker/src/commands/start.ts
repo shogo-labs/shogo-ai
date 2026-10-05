@@ -135,6 +135,9 @@ export async function runStart(flags: StartFlags): Promise<void> {
     apiKey: cfg.apiKey,
     aiProxyUrl,
     aiProxyToken: cfg.apiKey,
+    // Projects here belong to a cloud workspace: teammates chat from the web, so the
+    // runtime must not raise permission prompts unless a rule was configured.
+    extraEnv: { SHOGO_PERMISSION_SCOPE: 'cloud' },
     // No projectDir up front — the runtime manager's `maybeAutoPull`
     // sets PROJECT_DIR per-project to <projectsDir>/<projectId>/ once
     // the clone completes. CWD defaults to that same directory.
