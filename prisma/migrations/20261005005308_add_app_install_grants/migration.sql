@@ -41,4 +41,3 @@ CREATE INDEX "event_subscriptions_installId_idx" ON "event_subscriptions"("insta
 
 -- CreateIndex
 CREATE INDEX "api_keys_installId_idx" ON "api_keys"("installId");
-

@@ -100,4 +100,3 @@ ALTER TABLE "event_deliveries" ADD CONSTRAINT "event_deliveries_subscriptionId_f
 
 -- AddForeignKey
 ALTER TABLE "event_deliveries" ADD CONSTRAINT "event_deliveries_eventId_fkey" FOREIGN KEY ("eventId") REFERENCES "workspace_events"("id") ON DELETE CASCADE ON UPDATE CASCADE;
-

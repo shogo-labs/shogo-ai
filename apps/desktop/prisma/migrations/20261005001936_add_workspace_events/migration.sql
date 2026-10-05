@@ -98,5 +98,3 @@ CREATE INDEX "event_deliveries_workspaceId_idx" ON "event_deliveries"("workspace
 
 -- CreateIndex
 CREATE UNIQUE INDEX "event_deliveries_subscriptionId_eventId_key" ON "event_deliveries"("subscriptionId", "eventId");
-
-
