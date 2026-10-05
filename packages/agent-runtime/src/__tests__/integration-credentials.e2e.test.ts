@@ -33,6 +33,7 @@ process.env.GH_APP_PRIVATE_KEY = 'unused-in-these-flows'
 process.env.GH_APP_CLIENT_ID = 'Iv1.client'
 process.env.GH_APP_CLIENT_SECRET = 'client-secret'
 process.env.SHOGO_PUBLIC_API_URL = 'https://studio.test'
+process.env.GH_APP_WEBHOOK_SECRET = 'gh-webhook-secret'
 delete process.env.RUNTIME_AUTH_SECRET
 
 // Where `project_call` finds the callee's runtime: a fake one per project (see the hop tests).
@@ -56,6 +57,16 @@ const teamChannels = await import('../../../../apps/api/src/services/conversatio
 const { runtimeInternalRoutes } = await import('../../../../apps/api/src/routes/internal-runtime-routes')
 const { integrationCredentialRoutes } = await import('../../../../apps/api/src/routes/integration-credentials')
 const { githubRoutes } = await import('../../../../apps/api/src/routes/github')
+const { workspaceAgentRoutes, sessionAuthorize } = await import('../../../../apps/api/src/routes/workspace-agent')
+const { integrationRoutes, setIntegrationsComposioClient } = await import('../../../../apps/api/src/routes/integrations')
+const { handleComposioWebhook, setComposioTriggersClient, composioEntityFor } = await import(
+  '../../../../apps/api/src/services/composio-triggers.service'
+)
+const { setComposioIdentityClient, linkIdentity } = await import('../../../../apps/api/src/services/identity-links')
+const { onWorkspaceMemberJoined } = await import('../../../../apps/api/src/services/workspace-events')
+const { savePersonalConnection } = await import('../../../../apps/api/src/services/integration-credentials/store')
+const eventWorker = await import('../../../../apps/api/src/jobs/run-event-delivery-dispatch')
+const { createFakeComposio, signComposioWebhook, COMPOSIO_WEBHOOK_SECRET } = await import('../../../../e2e/events/helpers')
 const { createTools } = await import('../gateway-tools')
 const { createIntegrationCredentialWrapper, clearCredentialPolicyCache } = await import(
   '../integration-credentials'
@@ -74,6 +85,8 @@ const GITHUB_USERS: Record<string, { id: number; login: string; name: string }> 
   gho_bob_1: { id: 202, login: 'bob-gh', name: 'Bob' },
   gho_bob_2: { id: 202, login: 'bob-gh', name: 'Bob' },
   ghs_shared_b: { id: 2, login: 'acme-b-shared', name: 'Acme B Shared' },
+  ghs_shared_e: { id: 3, login: 'acme-events-shared', name: 'Acme Events Shared' },
+  gho_carol: { id: 303, login: 'carol-gh', name: 'Carol' },
 }
 
 interface GitHubCall { method: string; path: string; token: string | null; body: any }
@@ -103,10 +116,12 @@ async function fakeGitHub(url: URL, init: RequestInit = {}): Promise<Response> {
     const user = token ? GITHUB_USERS[token] : undefined
     return user ? json(user) : json({ message: 'Bad credentials' }, 401)
   }
-  if (url.host === 'api.github.com' && url.pathname === '/repos/acme/site/pulls' && method === 'POST') {
+  const pulls = /^\/repos\/acme\/([\w-]+)\/pulls$/.exec(url.pathname)
+  if (url.host === 'api.github.com' && pulls && method === 'POST') {
     if (!token || !GITHUB_USERS[token]) return json({ message: 'Bad credentials' }, 401)
     prNumber += 1
-    return json({ number: prNumber, html_url: `https://github.com/acme/site/pull/${prNumber}`, url: `https://api.github.com/repos/acme/site/pulls/${prNumber}` }, 201)
+    const repo = pulls[1]
+    return json({ number: prNumber, html_url: `https://github.com/acme/${repo}/pull/${prNumber}`, url: `https://api.github.com/repos/acme/${repo}/pulls/${prNumber}` }, 201)
   }
   return json({ message: `fake GitHub: no route for ${method} ${url.pathname}` }, 404)
 }
@@ -143,6 +158,17 @@ root.route(
 root.route('/api', integrationCredentialRoutes({ loadGitHub }))
 root.route('/api', githubRoutes())
 root.route('/api', conversationRoutes({ resolveUserId: async (c) => c.req.header('x-test-user') ?? null }))
+root.route('/api', workspaceAgentRoutes({ authorize: sessionAuthorize(async (c: any) => c.req.header('x-test-user') ?? null) }))
+// The runtime's trigger tools: trusted as the workspace, with the user named in the body.
+root.route('/api/runtime', workspaceAgentRoutes({ authorize: async (c: any) => ({ workspaceId: c.req.param('workspaceId') }) }))
+root.route('/api', integrationRoutes())
+root.post('/api/webhooks/composio', async (c) => {
+  const result = await handleComposioWebhook({
+    rawBody: await c.req.text(),
+    headers: { id: c.req.header('webhook-id'), timestamp: c.req.header('webhook-timestamp'), signature: c.req.header('webhook-signature') },
+  })
+  return c.json(result.body, result.status)
+})
 
 const server = Bun.serve({ port: 0, fetch: root.fetch })
 const API = `http://127.0.0.1:${server.port}`
@@ -334,6 +360,9 @@ describe('acts as the person who asked (GitHub)', () => {
     expect(stored.externalLogin).toBe('bob-gh')
     expect(stored.encryptedAccessToken).not.toContain('gho_bob_1')
     expect(await db.userIntegrationGrant.count({ where: { userId: bob, projectId: seeded.projectId, revokedAt: null } })).toBe(1)
+    // GitHub told us who Bob is there, so events he triggers on GitHub can be matched to him.
+    expect(await db.userIdentityLink.findMany({ where: { userId: bob }, select: { source: true, externalId: true } }))
+      .toEqual([{ source: 'github', externalId: '202' }])
 
     githubCalls = []
     const retry = await turnTools(bob).createPr('Fix login')
@@ -453,6 +482,7 @@ describe('acts as the person who asked (GitHub)', () => {
     expect((await browser(bob, '/api/me/integrations/github', { method: 'DELETE' })).status).toBe(200)
     expect(await db.userIntegrationConnection.count({ where: { userId: bob } })).toBe(0)
     expect(await db.userIntegrationGrant.count({ where: { userId: bob, revokedAt: null } })).toBe(0)
+    expect(await db.userIdentityLink.count({ where: { userId: bob } })).toBe(0)
     expect((await turnTools(bob).createPr('Gone')).code).toBe('requester_auth_required')
   })
 })
@@ -838,5 +868,397 @@ describe('project_call carries the person to the next project', () => {
     expect(pr.code).toBe('requester_auth_required')
     expect(pr.connectUrl).toContain(`/projects/${projectB}/integrations/github/connect`)
     expect(await turnTools(bob).createPr('Still fine on A')).toMatchObject({ ok: true, author: 'bob-gh' })
+  })
+})
+
+describe('event-triggered turns act as a person', () => {
+  const JIRA_TRIGGER = {
+    slug: 'JIRA_NEW_ISSUE_TRIGGER',
+    name: 'New issue',
+    description: 'A new Jira issue was created',
+    toolkit: { slug: 'jira', name: 'Jira' },
+    config: { type: 'object', properties: {} },
+    payload: {
+      type: 'object',
+      properties: {
+        issue: {
+          type: 'object',
+          properties: {
+            key: { type: 'string' },
+            fields: {
+              type: 'object',
+              properties: {
+                summary: { type: 'string' },
+                reporter: {
+                  type: 'object',
+                  properties: { accountId: { type: 'string' }, emailAddress: { type: 'string' }, displayName: { type: 'string' } },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  }
+
+  let projectE: string
+  let carol: string
+  let runtimeE: ReturnType<typeof Bun.serve>
+  let fake: Awaited<ReturnType<typeof createFakeComposio>>
+  let whoAmI: Record<string, { accountId: string; emailAddress?: string }>
+  let turns: Array<{ ticket: string | null; message: string; result?: any }> = []
+
+  const eventPrCalls = () => githubCalls.filter((c) => c.method === 'POST' && c.path === 'api.github.com/repos/acme/events/pulls')
+
+  async function api(user: string | null, method: string, path: string, body?: unknown, prefix = '/api') {
+    const res = await realFetch(`${API}${prefix}${path}`, {
+      method,
+      headers: { ...(user ? { 'x-test-user': user } : {}), ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}) },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    })
+    return { status: res.status, json: (await res.json().catch(() => null)) as any }
+  }
+
+  async function createTrigger(by: string, body: Record<string, unknown>) {
+    return api(by, 'POST', `/workspaces/${seeded.workspaceId}/triggers`, {
+      name: 'File it',
+      target: 'project',
+      targetProjectId: projectE,
+      targetMode: 'agent',
+      prompt: 'Open a PR for this.',
+      ...body,
+    })
+  }
+
+  /** Runs the delivery worker until it goes idle, then returns the last delivery for `subscriptionId`. */
+  async function deliver(subscriptionId: string) {
+    await waitFor(async () => {
+      await eventWorker.runEventDeliveryDispatch()
+      await eventWorker.waitForEventDeliveries()
+      const pending = await db.eventDelivery.count({ where: { subscriptionId, status: { in: ['pending', 'running'] } } })
+      return pending === 0 ? true : null
+    }, 5_000)
+    return db.eventDelivery.findFirst({ where: { subscriptionId }, orderBy: { createdAt: 'desc' } })
+  }
+
+  async function join(name: string) {
+    const user = await db.user.create({ data: { name, email: `${name.toLowerCase()}-${Date.now()}@example.com` } })
+    const member = await db.member.create({ data: { userId: user.id, workspaceId: seeded.workspaceId, role: 'member' } })
+    await onWorkspaceMemberJoined({ workspaceId: seeded.workspaceId, userId: user.id, memberId: member.id, source: 'invitation' })
+    return user.id as string
+  }
+
+  async function jiraWebhook(triggerId: string, reporter: Record<string, unknown>, opts: { secret?: string } = {}) {
+    const signed = signComposioWebhook({
+      triggerId,
+      triggerSlug: 'JIRA_NEW_ISSUE_TRIGGER',
+      data: { issue: { key: `OPS-${Date.now()}`, fields: { summary: 'Login is broken', reporter } } },
+      ...(opts.secret ? { secret: opts.secret } : {}),
+    })
+    const res = await realFetch(`${API}/api/webhooks/composio`, { method: 'POST', headers: signed.headers, body: signed.body })
+    return res.status
+  }
+
+  const ticketOf = (index = 0) => verifyRequesterTicket(turns[index]?.ticket, projectE)
+
+  beforeAll(async () => {
+    const e = await db.project.create({ data: { name: 'Event Bot', workspaceId: seeded.workspaceId } })
+    projectE = e.id
+    await db.gitHubConnection.create({
+      data: {
+        projectId: projectE,
+        repoOwner: 'acme',
+        repoName: 'events',
+        repoFullName: 'acme/events',
+        authType: 'token',
+        encryptedToken: encryptSecret('ghs_shared_e'),
+        tokenLogin: 'acme-events-shared',
+      },
+    })
+    // Project E's runtime runs the turn with whatever ticket the API sent, like /agent/pipeline/call.
+    runtimeE = Bun.serve({
+      port: 0,
+      fetch: async (req) => {
+        const ticket = req.headers.get('x-requester-ticket')
+        const body = (await req.json().catch(() => ({}))) as { message?: string }
+        const turn: (typeof turns)[number] = { ticket, message: body.message ?? '' }
+        turns.push(turn)
+        const pr = await turnTools(null, { runtimeProjectId: projectE, ...(ticket ? { ticket } : {}) }).createPr('From an event')
+        turn.result = pr
+        return Response.json({ status: 'completed', reply: JSON.stringify(pr), sessionId: 'pipeline' })
+      },
+    })
+    runtimeUrls.set(projectE, `http://127.0.0.1:${runtimeE.port}`)
+    process.env.SHOGO_LOCAL_MODE = 'true'
+    process.env.COMPOSIO_WEBHOOK_SECRET = COMPOSIO_WEBHOOK_SECRET
+    await putPolicy(alice, { writeChain: ['requester', 'shared'], readChain: ['shared'] }, 'github', projectE)
+
+    // Bob connects GitHub for project E the normal way; that records his GitHub id.
+    await browser(bob, '/api/me/integrations/github', { method: 'DELETE' })
+    expect(await db.userIdentityLink.count({ where: { userId: bob } })).toBe(0)
+    const html = await connectThroughLink(bob, `https://studio.test/api/projects/${projectE}/integrations/github/connect`, 'bob-code')
+    expect(html).toContain('GitHub connected as @bob-gh')
+
+    // Carol isn't in the workspace yet, but already has GitHub connected and allowed for E.
+    const c = await db.user.create({ data: { name: 'Carol', email: 'carol@acme.test', emailVerified: true } })
+    carol = c.id
+    await savePersonalConnection(carol, 'github', { externalId: '303', externalLogin: 'carol-gh', accessToken: 'gho_carol' })
+    await db.userIntegrationGrant.create({ data: { userId: carol, projectId: projectE, provider: 'github' } })
+
+    fake = await createFakeComposio()
+    const types = [JIRA_TRIGGER]
+    const { listTypes, getType } = fake.client.triggers
+    fake.client.triggers.listTypes = async (q?: { toolkits?: string[] }) =>
+      q?.toolkits?.includes('jira') ? { items: types } : listTypes(q)
+    fake.client.triggers.getType = async (slug: string) => types.find((t) => t.slug === slug) ?? getType(slug)
+    whoAmI = {}
+    const client: any = {
+      ...fake.client,
+      tools: {
+        getRawComposioTools: async ({ toolkits }: { toolkits: string[] }) => toolkits[0] === 'jira'
+          ? [
+              { slug: 'JIRA_CREATE_ISSUE', input_parameters: { required: ['summary'] } },
+              { slug: 'JIRA_GET_CURRENT_USER', input_parameters: { required: [] } },
+            ]
+          : [],
+        execute: async (slug: string, body: { userId: string }) => {
+          const me = whoAmI[body.userId]
+          return slug === 'JIRA_GET_CURRENT_USER' && me
+            ? { successful: true, data: me }
+            : { successful: false, error: 'no connection' }
+        },
+      },
+    }
+    setComposioTriggersClient(client)
+    setIntegrationsComposioClient(client)
+    setComposioIdentityClient(client)
+    fake.connect(await composioEntityFor(seeded.workspaceId, alice, projectE), 'jira')
+  })
+
+  afterAll(() => {
+    runtimeE.stop(true)
+    delete process.env.SHOGO_LOCAL_MODE
+    setComposioTriggersClient(undefined)
+    setIntegrationsComposioClient(null)
+    setComposioIdentityClient(undefined)
+  })
+
+  beforeEach(async () => {
+    turns = []
+    await db.eventSubscription.deleteMany({ where: { workspaceId: seeded.workspaceId } })
+  })
+
+  test('by default a trigger acts as whoever set it up', async () => {
+    const created = await createTrigger(bob, { eventType: 'member.joined' })
+    expect(created.status).toBe(201)
+    expect(created.json.trigger.actsAs).toBe('subscriber')
+
+    await join('Dave')
+    const delivery = await deliver(created.json.trigger.id)
+    expect(delivery.status).toBe('ok')
+    expect(turns.at(-1)!.result).toMatchObject({ ok: true, mode: 'requester', author: 'bob-gh' })
+    expect(eventPrCalls().map((c) => c.token)).toEqual(['gho_bob_1'])
+    expect(ticketOf()).toMatchObject({
+      userId: bob,
+      origin: { kind: 'event', subscriptionId: created.json.trigger.id, source: 'shogo', match: 'subscriber' },
+    })
+  })
+
+  test('only an admin can make a trigger act as the person who triggered it', async () => {
+    const asBob = await createTrigger(bob, { eventType: 'member.joined', actsAs: 'actor' })
+    expect(asBob.status).toBe(403)
+
+    const mine = await createTrigger(bob, { eventType: 'member.joined' })
+    expect(mine.status).toBe(201)
+    const path = `/workspaces/${seeded.workspaceId}/triggers/${mine.json.trigger.id}`
+    expect((await api(bob, 'PATCH', path, { actsAs: 'actor' })).status).toBe(403)
+    // Narrowing is always fine.
+    expect((await api(bob, 'PATCH', path, { actsAs: 'nobody' })).status).toBe(200)
+    // The runtime's trigger tools can't turn it on, even naming an admin.
+    expect((await api(null, 'PATCH', path, { actsAs: 'actor', userId: alice }, '/api/runtime')).status).toBe(403)
+    expect((await api(null, 'POST', `/workspaces/${seeded.workspaceId}/triggers`, {
+      name: 'x', eventType: 'member.joined', target: 'project', targetProjectId: projectE, targetMode: 'agent',
+      prompt: 'x', actsAs: 'actor', userId: alice,
+    }, '/api/runtime')).status).toBe(403)
+
+    const byAlice = await api(alice, 'PATCH', path, { actsAs: 'actor' })
+    expect(byAlice.status).toBe(200)
+    expect(byAlice.json.trigger.actsAs).toBe('actor')
+    // Actor fields belong to Composio triggers; Shogo events name their own actor.
+    expect((await api(alice, 'PATCH', path, { actorIdPath: 'member.userId' })).status).toBe(400)
+    // Only project agents act as anyone.
+    expect((await createTrigger(alice, { eventType: 'member.joined', target: 'agent', actsAs: 'actor' })).status).toBe(400)
+  })
+
+  test('acting as the actor: a newcomer\'s own GitHub, or the shared account when they have none', async () => {
+    const created = await createTrigger(alice, { eventType: 'member.joined', actsAs: 'actor' })
+    expect(created.status).toBe(201)
+
+    // Carol joins. She allowed E to use her GitHub before joining.
+    await db.member.create({ data: { userId: carol, workspaceId: seeded.workspaceId, role: 'member' } })
+    const carolMember = await db.member.findFirst({ where: { userId: carol, workspaceId: seeded.workspaceId } })
+    await onWorkspaceMemberJoined({ workspaceId: seeded.workspaceId, userId: carol, memberId: carolMember.id, source: 'invitation' })
+    await deliver(created.json.trigger.id)
+    expect(turns.at(-1)!.result).toMatchObject({ ok: true, mode: 'requester', author: 'carol-gh' })
+    expect(ticketOf()).toMatchObject({ userId: carol, origin: { kind: 'event', source: 'shogo', match: 'platform_id' } })
+
+    // Erin has no GitHub: the chain moves on to the project account.
+    turns = []
+    githubCalls = []
+    const erin = await join('Erin')
+    await deliver(created.json.trigger.id)
+    expect(ticketOf()).toMatchObject({ userId: erin })
+    expect(turns.at(-1)!.result).toMatchObject({ ok: true, author: 'acme-events-shared' })
+    expect(eventPrCalls().map((c) => c.token)).toEqual(['ghs_shared_e'])
+  })
+
+  test('Composio: a Jira issue is filed on GitHub as its reporter, once Shogo knows who they are on Jira', async () => {
+    // The picker suggests the reporter fields from the trigger's payload schema.
+    const types = await api(alice, 'GET', `/workspaces/${seeded.workspaceId}/trigger-types?toolkit=jira&projectId=${projectE}`)
+    expect(types.status).toBe(200)
+    const jira = types.json.composio.types.find((t: any) => t.slug === 'JIRA_NEW_ISSUE_TRIGGER')
+    expect(jira.actorFields.idPaths[0]).toBe('issue.fields.reporter.accountId')
+    expect(jira.actorFields.emailPaths).toEqual(['issue.fields.reporter.emailAddress'])
+
+    expect((await createTrigger(alice, { eventType: 'composio.jira.JIRA_NEW_ISSUE_TRIGGER', actsAs: 'actor' })).status).toBe(400)
+    const created = await createTrigger(alice, {
+      eventType: 'composio.jira.JIRA_NEW_ISSUE_TRIGGER',
+      actsAs: 'actor',
+      actorIdPath: 'issue.fields.reporter.accountId',
+    })
+    expect(created.status).toBe(201)
+    const sub = created.json.trigger
+
+    // Before Bob's Jira account is known, his issue can't be tied to him.
+    expect(await jiraWebhook(sub.composioTriggerId, { accountId: 'jira-bob' })).toBe(200)
+    await deliver(sub.id)
+    expect(turns[0]!.ticket).toBeNull()
+    expect(turns.at(-1)!.result).toMatchObject({ ok: true, author: 'acme-events-shared' })
+
+    // Bob connects Jira; checking its status asks Jira who he is, with his own connection.
+    const bobEntity = await composioEntityFor(seeded.workspaceId, bob, projectE)
+    fake.connect(bobEntity, 'jira')
+    whoAmI[bobEntity] = { accountId: 'jira-bob', emailAddress: 'bob@acme.test' }
+    const status = await api(bob, 'GET', `/integrations/status/jira?projectId=${projectE}`)
+    expect(status.json.data.connected).toBe(true)
+    await waitFor(() => db.userIdentityLink.findFirst({ where: { userId: bob, source: 'composio:jira', externalId: 'jira-bob' } }), 3_000)
+
+    turns = []
+    githubCalls = []
+    expect(await jiraWebhook(sub.composioTriggerId, { accountId: 'jira-bob', displayName: 'Bob' })).toBe(200)
+    await deliver(sub.id)
+    expect(turns.at(-1)!.result).toMatchObject({ ok: true, mode: 'requester', author: 'bob-gh' })
+    expect(eventPrCalls().map((c) => c.token)).toEqual(['gho_bob_1'])
+    expect(ticketOf()).toMatchObject({ userId: bob, origin: { kind: 'event', source: 'composio:jira', match: 'platform_id' } })
+    // The actor stays off the payload the agent sees.
+    const event = await db.workspaceEvent.findFirst({ where: { workspaceId: seeded.workspaceId, type: 'composio.jira.JIRA_NEW_ISSUE_TRIGGER' }, orderBy: { occurredAt: 'desc' } })
+    expect(event.actor).toEqual({ source: 'composio:jira', externalId: 'jira-bob', trust: 'platform' })
+
+    // A forged webhook is rejected, and a test event can't claim to be Bob.
+    turns = []
+    expect(await jiraWebhook(sub.composioTriggerId, { accountId: 'jira-bob' }, { secret: 'whsec_forged' })).toBe(401)
+    const tested = await api(alice, 'POST', `/workspaces/${seeded.workspaceId}/triggers/${sub.id}/test`, {
+      payload: { issue: { fields: { reporter: { accountId: 'jira-bob' } } } },
+    })
+    expect(tested.status).toBeLessThan(300)
+    await deliver(sub.id)
+    expect(turns.map((t) => t.ticket)).toEqual([null])
+  })
+
+  test('an email in the payload only counts when the trigger says to trust it', async () => {
+    const created = await createTrigger(alice, {
+      eventType: 'composio.jira.JIRA_NEW_ISSUE_TRIGGER',
+      actsAs: 'actor',
+      actorIdPath: 'issue.fields.reporter.accountId',
+      actorEmailPath: 'issue.fields.reporter.emailAddress',
+    })
+    expect(created.status).toBe(201)
+    const sub = created.json.trigger
+
+    await jiraWebhook(sub.composioTriggerId, { accountId: 'jira-carol', emailAddress: 'Carol@acme.test' })
+    await deliver(sub.id)
+    expect(turns[0]!.ticket).toBeNull()
+
+    expect((await api(bob, 'PATCH', `/workspaces/${seeded.workspaceId}/triggers/${sub.id}`, { trustActorEmail: true })).status).toBe(403)
+    expect((await api(alice, 'PATCH', `/workspaces/${seeded.workspaceId}/triggers/${sub.id}`, { trustActorEmail: true })).status).toBe(200)
+    turns = []
+    await jiraWebhook(sub.composioTriggerId, { accountId: 'jira-carol', emailAddress: 'Carol@acme.test' })
+    await deliver(sub.id)
+    expect(ticketOf()).toMatchObject({ userId: carol, origin: { match: 'platform_email' } })
+    expect(turns.at(-1)!.result).toMatchObject({ author: 'carol-gh' })
+  })
+
+  test('an account two members both claim matches nobody', async () => {
+    const created = await createTrigger(alice, {
+      eventType: 'composio.jira.JIRA_NEW_ISSUE_TRIGGER',
+      actsAs: 'actor',
+      actorIdPath: 'issue.fields.reporter.accountId',
+    })
+    await linkIdentity({ userId: alice, source: 'composio:jira', externalId: 'jira-bob' })
+    try {
+      await jiraWebhook(created.json.trigger.composioTriggerId, { accountId: 'jira-bob' })
+      await deliver(created.json.trigger.id)
+      expect(turns.map((t) => t.ticket)).toEqual([null])
+    } finally {
+      await db.userIdentityLink.deleteMany({ where: { userId: alice, source: 'composio:jira' } })
+    }
+  })
+
+  test('an event turn never stops to hand out a connect link; the chain moves on', async () => {
+    await putPolicy(alice, { writeChain: ['requester', 'ask', 'deny'], readChain: ['shared'] }, 'github', projectE)
+    await db.userIntegrationGrant.updateMany({ where: { userId: bob, projectId: projectE }, data: { revokedAt: new Date() } })
+    try {
+      const created = await createTrigger(alice, {
+        eventType: 'composio.jira.JIRA_NEW_ISSUE_TRIGGER',
+        actsAs: 'actor',
+        actorIdPath: 'issue.fields.reporter.accountId',
+      })
+      await jiraWebhook(created.json.trigger.composioTriggerId, { accountId: 'jira-bob' })
+      await deliver(created.json.trigger.id)
+      expect(ticketOf()).toMatchObject({ userId: bob })
+      const result = turns.at(-1)!.result
+      expect(result.code).toBe('denied')
+      expect(result.connectUrl).toBeUndefined()
+      expect(eventPrCalls()).toEqual([])
+    } finally {
+      await putPolicy(alice, { writeChain: ['requester', 'shared'], readChain: ['shared'] }, 'github', projectE)
+      await db.userIntegrationGrant.updateMany({ where: { userId: bob, projectId: projectE }, data: { revokedAt: null } })
+    }
+  })
+
+  describe('GitHub webhooks act as their sender', () => {
+    async function issueOpened(sender: Record<string, unknown>) {
+      const body = JSON.stringify({
+        action: 'opened',
+        repository: { full_name: 'acme/events' },
+        issue: { number: 7, title: 'Login is broken', body: 'Steps…', html_url: 'https://github.com/acme/events/issues/7' },
+        sender,
+      })
+      const { createHmac } = await import('node:crypto')
+      const signature = `sha256=${createHmac('sha256', 'gh-webhook-secret').update(body).digest('hex')}`
+      const res = await realFetch(`${API}/api/github/webhook`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-github-event': 'issues', 'x-hub-signature-256': signature, 'x-github-delivery': 'dlv-1' },
+        body,
+      })
+      expect(res.status).toBe(200)
+      await waitFor(() => (turns.length ? true : null), 3_000)
+    }
+
+    test('a linked member who opens an issue is the person the turn acts as', async () => {
+      await issueOpened({ id: 202, login: 'bob-gh', type: 'User' })
+      expect(ticketOf()).toMatchObject({ userId: bob, origin: { kind: 'event', eventId: 'dlv-1', source: 'github', match: 'platform_id' } })
+      await waitFor(() => (eventPrCalls().length ? true : null), 3_000)
+      expect(eventPrCalls().map((c) => c.token)).toEqual(['gho_bob_1'])
+    })
+
+    test('bots and strangers get no person', async () => {
+      // A bot carrying Bob's id still isn't Bob.
+      await issueOpened({ id: 202, login: 'bob-gh', type: 'Bot' })
+      expect(turns.map((t) => t.ticket)).toEqual([null])
+      turns = []
+      await issueOpened({ id: 999, login: 'stranger', type: 'User' })
+      expect(turns.map((t) => t.ticket)).toEqual([null])
+    })
   })
 })

@@ -82,7 +82,8 @@ model User {
   integrationGrants    UserIntegrationGrant[]
 
   @@index([createdAt])
-  @@index([homeRegion])
+  @@index([homeRegion])  identityLinks           UserIdentityLink[]
+
   @@map("users")
 }
 
@@ -376,6 +377,8 @@ model WorkspaceEvent {
   source      String   @default("shogo")
   payload     Json
   dedupeKey   String
+  /// Who triggered it: { source, externalId?, email?, trust, principalUserId? }.
+  actor       Json?
   occurredAt  DateTime @default(now())
 
   workspace  Workspace       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
@@ -411,6 +414,13 @@ model EventSubscription {
   composioConnectedAccountId String?
   composioEntityId           String?
   triggerConfig              Json?
+
+  /// Whose accounts a project agent may use for this trigger:
+  /// subscriber | actor | nobody. See services/event-identity.ts.
+  actsAs          String  @default("subscriber")
+  actorIdPath     String?
+  actorEmailPath  String?
+  trustActorEmail Boolean @default(false)
 
   /// agent | project | webhook
   target               String  @default("agent")
@@ -1017,6 +1027,25 @@ model UserIntegrationConnection {
 }
 
 /// A person's consent for one project's agent to act as them on a provider.
+/// Which account on another platform belongs to which Shogo user, e.g.
+/// ("github", "202") or ("composio:jira", "<accountId>"). Written when someone
+/// connects a personal account; used to tell who triggered an event.
+model UserIdentityLink {
+  id         String   @id @default(uuid())
+  userId     String
+  source     String
+  externalId String
+  email      String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, source, externalId])
+  @@index([source, externalId])
+  @@map("user_identity_links")
+}
+
 model UserIntegrationGrant {
   id        String    @id @default(uuid())
   userId    String

@@ -61,6 +61,7 @@ model User {
   conversationMessages ConversationMessage[]
   integrationConnections UserIntegrationConnection[]
   integrationGrants    UserIntegrationGrant[]
+  identityLinks           UserIdentityLink[]
 
   @@map("users")
 }
@@ -318,6 +319,7 @@ model WorkspaceEvent {
   source      String   @default("shogo")
   payload     String
   dedupeKey   String
+  actor       String?
   occurredAt  DateTime @default(now())
 
   workspace  Workspace       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
@@ -347,6 +349,11 @@ model EventSubscription {
   composioConnectedAccountId String?
   composioEntityId           String?
   triggerConfig              String?
+
+  actsAs          String  @default("subscriber")
+  actorIdPath     String?
+  actorEmailPath  String?
+  trustActorEmail Boolean @default(false)
 
   target               String  @default("agent")
   targetProjectId      String?
@@ -874,6 +881,22 @@ model UserIntegrationConnection {
 
   @@unique([userId, provider])
   @@map("user_integration_connections")
+}
+
+model UserIdentityLink {
+  id         String   @id @default(uuid())
+  userId     String
+  source     String
+  externalId String
+  email      String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, source, externalId])
+  @@index([source, externalId])
+  @@map("user_identity_links")
 }
 
 model UserIntegrationGrant {

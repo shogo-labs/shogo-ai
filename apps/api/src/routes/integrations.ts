@@ -672,6 +672,12 @@ export function integrationRoutes() {
       })
 
       const isActive = match?.status === 'ACTIVE' || match?.status === 'active'
+      if (isActive) {
+        const entityIds = buildLookupCandidates(auth.userId, ctx.workspaceId, ctx.projectId, ctx.scope)
+        void import('../services/identity-links')
+          .then((m) => m.linkComposioIdentity({ userId: auth.userId, toolkit, entityIds }))
+          .catch(() => {})
+      }
 
       return c.json({
         ok: true,

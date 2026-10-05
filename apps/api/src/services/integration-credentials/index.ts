@@ -72,6 +72,11 @@ export interface ResolveArgs {
   requesterUserId: string | null
   /** Signed resume token for the connect link (see resume.ts). */
   resume?: string
+  /**
+   * False when nobody is there to follow a connect link (event-triggered
+   * turns); `ask` steps are skipped and the chain moves on.
+   */
+  canAsk?: boolean
 }
 
 async function sharedResult(adapter: CredentialProvider, ctx: ResolveContext): Promise<ResolveResult> {
@@ -115,7 +120,7 @@ export async function resolveIntegrationCredential(args: ResolveArgs): Promise<R
       }
     }
     if (step === 'ask') {
-      if (!requester || !adapter.supportsPersonal) continue
+      if (!requester || !adapter.supportsPersonal || args.canAsk === false) continue
       return {
         ok: false,
         code: 'requester_auth_required',
@@ -151,4 +156,19 @@ async function personalCredential(adapter: CredentialProvider, ctx: ResolveConte
   if (!(await hasActiveGrant(userId, ctx.projectId, ctx.provider))) return null
   const connection = await getPersonalConnection(userId, ctx.provider)
   return connection ? adapter.personal(ctx, connection) : null
+}
+
+/** Workspace owners and admins, and the project's creator, may change how its integrations act. */
+export async function canEditCredentialPolicies(userId: string, projectId: string): Promise<boolean> {
+  const project = (await prisma.project.findUnique({
+    where: { id: projectId },
+    select: { workspaceId: true, createdBy: true },
+  })) as { workspaceId: string; createdBy: string | null } | null
+  if (!project) return false
+  if (project.createdBy === userId) return true
+  const member = (await prisma.member.findFirst({
+    where: { userId, workspaceId: project.workspaceId },
+    select: { role: true },
+  })) as { role: string } | null
+  return member?.role === 'owner' || member?.role === 'admin'
 }

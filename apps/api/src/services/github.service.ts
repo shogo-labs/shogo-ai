@@ -1050,6 +1050,34 @@ async function findConnectionByRepo(repoFullName: string, installationId?: numbe
 }
 
 /**
+ * A requester ticket for the person who sent a webhook, when their GitHub
+ * account is linked to exactly one member of the project's workspace. The
+ * webhook is signed by GitHub, so `sender.id` is GitHub's word, not the
+ * payload author's. Bots and unlinked senders get none, and the project's
+ * credential chain falls through to its shared account.
+ */
+async function webhookSenderTicket(
+  c: Context,
+  project: { id: string; workspaceId: string },
+  sender: { id?: number | string; type?: string } | null | undefined,
+): Promise<string | undefined> {
+  if (sender?.id === undefined || sender.id === null || sender.type === 'Bot') return undefined;
+  try {
+    const { resolveEventPerson, eventRequesterTicket } = await import('./event-identity');
+    const person = await resolveEventPerson({
+      workspaceId: project.workspaceId,
+      actsAs: 'actor',
+      actor: { source: 'github', externalId: String(sender.id), trust: 'platform' },
+    });
+    const deliveryId = c.req.header('x-github-delivery') || `github:${Date.now()}`;
+    return eventRequesterTicket(project.id, person, { id: deliveryId, source: 'github' });
+  } catch (err: any) {
+    console.warn('[GitHub] Could not match the webhook sender:', err?.message ?? err);
+    return undefined;
+  }
+}
+
+/**
  * Look up the connected project and, if found, fire a fire-and-forget
  * `project_call`-style wake. Never throws — a failure to reach the runtime
  * must not fail the webhook ack to GitHub.
@@ -1058,7 +1086,7 @@ async function wakeConnectedProjectAgent(
   c: Context,
   repoFullName: string,
   installationId: number | undefined,
-  opts: { message: string; runId?: string },
+  opts: { message: string; runId?: string; sender?: { id?: number | string; type?: string } | null },
 ): Promise<void> {
   try {
     const connection = await findConnectionByRepo(repoFullName, installationId);
@@ -1066,11 +1094,13 @@ async function wakeConnectedProjectAgent(
       console.log(`[GitHub] No project connected to ${repoFullName}; ignoring task-source webhook event`);
       return;
     }
+    const requesterTicket = await webhookSenderTicket(c, connection.project, opts.sender);
     const { callProjectAgent } = await import('./agent-call.service');
     const outcome = await callProjectAgent(c, connection.project.id, connection.project.workspaceId, {
       message: opts.message,
       runId: opts.runId,
       wait: false,
+      ...(requesterTicket ? { requesterTicket } : {}),
     });
     if (outcome.status >= 400) {
       console.warn(
@@ -1117,7 +1147,7 @@ export async function handleIssueWebhook(c: Context, payload: any): Promise<void
     '',
     `(This is a brand-new item — its runId is "${runId}"; use exactly that string, do not reuse or invent a different one.)`,
   ].join('\n');
-  await wakeConnectedProjectAgent(c, repoFullName, payload.installation?.id, { message, runId });
+  await wakeConnectedProjectAgent(c, repoFullName, payload.installation?.id, { message, runId, sender: payload.sender });
 }
 
 /**
@@ -1155,7 +1185,7 @@ export async function handleIssueCommentWebhook(c: Context, payload: any): Promi
     '',
     `URL: ${comment.html_url}`,
   ].join('\n');
-  await wakeConnectedProjectAgent(c, repoFullName, payload.installation?.id, { message, runId });
+  await wakeConnectedProjectAgent(c, repoFullName, payload.installation?.id, { message, runId, sender: payload.sender });
 }
 
 /**
@@ -1188,7 +1218,7 @@ export async function handlePullRequestReviewWebhook(c: Context, payload: any): 
     '',
     `URL: ${review.html_url}`,
   ].join('\n');
-  await wakeConnectedProjectAgent(c, repoFullName, payload.installation?.id, { message, runId });
+  await wakeConnectedProjectAgent(c, repoFullName, payload.installation?.id, { message, runId, sender: payload.sender });
 }
 
 /**
@@ -1214,7 +1244,7 @@ export async function handlePullRequestReviewCommentWebhook(c: Context, payload:
     '',
     `URL: ${comment.html_url}`,
   ].join('\n');
-  await wakeConnectedProjectAgent(c, repoFullName, payload.installation?.id, { message, runId });
+  await wakeConnectedProjectAgent(c, repoFullName, payload.installation?.id, { message, runId, sender: payload.sender });
 }
 
 // =============================================================================
