@@ -35,6 +35,8 @@ export interface AgentCallRequest {
   /** Reply timeout in ms when waiting (default 5 min, max 20 min). */
   timeoutMs?: number
   callerProjectId?: string
+  /** Signed requester ticket for the callee, so it can act as the person behind the call. */
+  requesterTicket?: string
 }
 
 export interface AgentCallOutcome {
@@ -70,6 +72,7 @@ export async function callProjectAgent(
   })
 
   return forwardToProjectRuntime(c, projectId, workspaceId, '/agent/pipeline/call', forwardBody, {
+    ...(req.requesterTicket ? { headers: { 'X-Requester-Ticket': req.requesterTicket } } : {}),
     timeoutMs: wait ? timeoutMs + 5_000 : 15_000,
     timeoutMessage: `The target agent did not reply within ${Math.round(timeoutMs / 1000)}s. Re-issue with wait=false and poll, or raise timeoutMs.`,
   })
@@ -94,8 +97,9 @@ export async function forwardToProjectRuntime(
   workspaceId: string,
   agentPath: string,
   forwardBody: string,
-  opts: { timeoutMs: number; timeoutMessage?: string },
+  opts: { timeoutMs: number; timeoutMessage?: string; headers?: Record<string, string> },
 ): Promise<AgentCallOutcome> {
+  const extraHeaders = opts.headers ?? {}
   try {
     const { deriveProjectRuntimeToken } = await import('../lib/project-runtime-token')
     const runtimeToken = await deriveProjectRuntimeToken(projectId, { workspaceId })
@@ -125,7 +129,7 @@ export async function forwardToProjectRuntime(
           cleanPath: agentPath,
           method: 'POST',
           body: forwardBody,
-          headers: { 'content-type': 'application/json', 'x-runtime-token': runtimeToken },
+          headers: { 'content-type': 'application/json', 'x-runtime-token': runtimeToken, ...extraHeaders },
         })
         const json = await res.json().catch(() => ({}))
         return { status: res.status, body: json }
@@ -135,7 +139,7 @@ export async function forwardToProjectRuntime(
 
     const res = await fetch(`${runtimeUrl}${agentPath}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-runtime-token': runtimeToken },
+      headers: { 'Content-Type': 'application/json', 'x-runtime-token': runtimeToken, ...extraHeaders },
       body: forwardBody,
       signal: AbortSignal.timeout(opts.timeoutMs),
     })

@@ -9,9 +9,14 @@ import { decryptSecret, encryptSecret } from '../../lib/secret-crypto'
 import {
   ACTOR_FALLBACKS,
   ACTOR_MODES,
+  CHAIN_STEPS,
   DEFAULT_POLICY,
+  chainFallback,
+  chainMode,
+  legacyChain,
   type ActorFallback,
   type ActorMode,
+  type ChainStep,
   type ConnectResult,
   type CredentialPolicy,
   type PersonalConnection,
@@ -33,15 +38,47 @@ function asFallback(value: unknown): ActorFallback {
   return ACTOR_FALLBACKS.includes(value as ActorFallback) ? (value as ActorFallback) : 'ask'
 }
 
-function toPolicy(provider: string, row: any | null): CredentialPolicy {
-  if (!row) return { provider, ...DEFAULT_POLICY }
+function parseChain(value: unknown): ChainStep[] | null {
+  if (typeof value !== 'string' || !value) return null
+  try {
+    const parsed = JSON.parse(value)
+    return validChain(parsed) ? parsed : null
+  } catch {
+    return null
+  }
+}
+
+function validChain(value: unknown): value is ChainStep[] {
+  return (
+    Array.isArray(value) &&
+    value.length > 0 &&
+    value.length <= CHAIN_STEPS.length &&
+    value.every((s) => CHAIN_STEPS.includes(s)) &&
+    new Set(value).size === value.length
+  )
+}
+
+function withSummaries(provider: string, writeChain: ChainStep[], readChain: ChainStep[], sharedUserId: string | null): CredentialPolicy {
   return {
     provider,
-    writeMode: asMode(row.writeMode),
-    readMode: asMode(row.readMode),
-    fallback: asFallback(row.fallback),
-    sharedUserId: row.sharedUserId ?? null,
+    writeChain,
+    readChain,
+    writeMode: chainMode(writeChain),
+    readMode: chainMode(readChain),
+    fallback: chainFallback(writeChain),
+    sharedUserId,
   }
+}
+
+function toPolicy(provider: string, row: any | null): CredentialPolicy {
+  if (!row) return { provider, ...DEFAULT_POLICY }
+  const fallback = asFallback(row.fallback)
+  return withSummaries(
+    provider,
+    parseChain(row.writeChain) ?? legacyChain(asMode(row.writeMode), fallback, 'write'),
+    parseChain(row.readChain) ?? legacyChain(asMode(row.readMode), fallback, 'read'),
+    row.sharedUserId ?? null,
+  )
 }
 
 export async function getPolicy(projectId: string, provider: string): Promise<CredentialPolicy> {
@@ -58,10 +95,19 @@ export async function listPolicies(projectId: string): Promise<CredentialPolicy[
 
 export class PolicyValidationError extends Error {}
 
+export type PolicyChanges = Partial<
+  Pick<CredentialPolicy, 'writeChain' | 'readChain' | 'writeMode' | 'readMode' | 'fallback' | 'sharedUserId'>
+>
+
+/**
+ * Save a policy. Chains can be set directly; the v1 fields (`writeMode`,
+ * `readMode`, `fallback`) still work and are turned into the chains they
+ * mean, applied on top of the current policy.
+ */
 export async function savePolicy(
   projectId: string,
   provider: string,
-  changes: Partial<Omit<CredentialPolicy, 'provider'>>,
+  changes: PolicyChanges,
   updatedBy: string | null,
 ): Promise<CredentialPolicy> {
   if (!isValidProviderId(provider)) throw new PolicyValidationError(`Unknown integration: ${provider}`)
@@ -73,14 +119,40 @@ export async function savePolicy(
   if (changes.fallback !== undefined && !ACTOR_FALLBACKS.includes(changes.fallback)) {
     throw new PolicyValidationError(`fallback must be one of ${ACTOR_FALLBACKS.join(', ')}`)
   }
-  const data: Record<string, unknown> = { updatedBy }
-  if (changes.writeMode !== undefined) data.writeMode = changes.writeMode
-  if (changes.readMode !== undefined) data.readMode = changes.readMode
-  if (changes.fallback !== undefined) data.fallback = changes.fallback
-  if (changes.sharedUserId !== undefined) data.sharedUserId = changes.sharedUserId
+  for (const key of ['writeChain', 'readChain'] as const) {
+    if (changes[key] !== undefined && !validChain(changes[key])) {
+      throw new PolicyValidationError(`${key} must be a list of distinct steps from: ${CHAIN_STEPS.join(', ')}`)
+    }
+  }
+
+  const current = await getPolicy(projectId, provider)
+  const fallback = changes.fallback ?? current.fallback
+  const legacyTouched = changes.writeMode !== undefined || changes.readMode !== undefined || changes.fallback !== undefined
+  const writeChain =
+    changes.writeChain ??
+    (legacyTouched ? legacyChain(changes.writeMode ?? current.writeMode, fallback, 'write') : current.writeChain)
+  const readChain =
+    changes.readChain ??
+    (legacyTouched ? legacyChain(changes.readMode ?? current.readMode, fallback, 'read') : current.readChain)
+  const next = withSummaries(
+    provider,
+    writeChain,
+    readChain,
+    changes.sharedUserId !== undefined ? changes.sharedUserId : current.sharedUserId,
+  )
+
+  const data = {
+    writeChain: JSON.stringify(next.writeChain),
+    readChain: JSON.stringify(next.readChain),
+    writeMode: next.writeMode,
+    readMode: next.readMode,
+    fallback: next.fallback,
+    sharedUserId: next.sharedUserId,
+    updatedBy,
+  }
   const row = await db.integrationCredentialPolicy.upsert({
     where: { projectId_provider: { projectId, provider } },
-    create: { projectId, provider, ...DEFAULT_POLICY, ...data },
+    create: { projectId, provider, ...data },
     update: data,
   })
   return toPolicy(provider, row)

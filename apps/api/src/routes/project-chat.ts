@@ -1461,7 +1461,13 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       const requesterUserId = callerAuth?.via === "runtimeToken" ? undefined : sessionUserId ?? verifiedUserId
       if (requesterUserId) {
         const { requesterTicketHeader } = await import('../lib/requester-ticket')
-        Object.assign(headers, requesterTicketHeader(projectId, requesterUserId))
+        Object.assign(
+          headers,
+          requesterTicketHeader(projectId, requesterUserId, {
+            kind: 'chat',
+            ...(incomingChatSessionId ? { chatSessionId: incomingChatSessionId } : {}),
+          }),
+        )
       }
 
       // Forward the chat-session id so the runtime can stamp it on its

@@ -976,6 +976,11 @@ model IntegrationCredentialPolicy {
   writeMode    String   @default("shared")
   readMode     String   @default("shared")
   fallback     String   @default("ask")
+  /// JSON list of steps tried in order for writes and reads, e.g.
+  /// ["requester","ask","shared"]. Null on rows written before lists existed;
+  /// those are read from writeMode/readMode/fallback.
+  writeChain   String?
+  readChain    String?
   /// Whose personal connection backs `shared` for providers with no project
   /// connection of their own (Composio).
   sharedUserId String?

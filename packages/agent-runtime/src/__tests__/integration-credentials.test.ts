@@ -173,10 +173,58 @@ describe('withIntegrationCredentials', () => {
     expect(pinned.seen().composioEntityId).toBe('shogo_alice_ws1')
   })
 
+  test('fallback lists decide when to look up: only a list that is just the project account skips it', async () => {
+    resolveResult = { ok: true, source: 'shared', actingAs: 'project account', credential: { token: 'ghs' } }
+    const lookups = async (policy: any, provider = 'github') => {
+      clearCredentialPolicyCache()
+      requests = []
+      policies = [{ provider, writeMode: 'shared', readMode: 'shared', fallback: 'ask', sharedUserId: null, ...policy }]
+      await withIntegrationCredentials(probe({ credential: { provider, op: 'write' } }).tool, { projectId: 'p1' }).execute('c', {})
+      return requests.filter((r) => r.url.endsWith('/integrations/resolve')).length
+    }
+    expect(await lookups({ writeChain: ['shared'] })).toBe(0)
+    // A list that can reach the project account on its own still asks the API (the person may come first).
+    expect(await lookups({ writeChain: ['requester', 'shared'] })).toBe(1)
+    expect(await lookups({ writeChain: ['shared', 'deny'] })).toBe(1)
+    // The list wins over the older summary fields...
+    expect(await lookups({ writeMode: 'requester', writeChain: ['shared'] })).toBe(0)
+    // ...which still work on their own, from older APIs.
+    expect(await lookups({ writeMode: 'requester' })).toBe(1)
+    // Composio's default is already per person, so pinning it to the project account needs the lookup.
+    expect(await lookups({ writeChain: ['shared'] }, 'composio:gmail')).toBe(1)
+  })
+
   test('workspace (non-project) runtimes never look anything up', async () => {
     const p = probe()
     await withIntegrationCredentials(p.tool, { projectId: 'ws:abc', requesterTicket: 't' }).execute('c', {})
     expect(requests).toEqual([])
     expect(p.seen()).toEqual({ requesterTicket: 't' })
+  })
+})
+
+describe('project_call turns', () => {
+  test('the ticket the API handed to this project reaches the turn', async () => {
+    const { AgentGateway } = await import('../gateway')
+    const calls: any[][] = []
+    const self = {
+      activePipelineRuns: new Map(),
+      agentTurn: async (...args: any[]) => {
+        calls.push(args)
+        return 'done'
+      },
+    }
+    const result = await (AgentGateway.prototype as any).processPipelineCall.call(self, {
+      message: 'file it',
+      runId: 'r1',
+      callerProjectId: 'pA',
+      requesterTicket: 'ticket-for-B',
+    })
+    expect(result).toEqual({ reply: 'done', sessionId: 'run:r1', runId: 'r1' })
+    expect(calls[0]![0]).toBe('[pipeline runId=r1] [from project pA]\nfile it')
+    expect(calls[0]![1]).toBe('run:r1')
+    expect(calls[0]![9]).toBe('ticket-for-B')
+
+    await (AgentGateway.prototype as any).processPipelineCall.call(self, { message: 'no person' })
+    expect(calls[1]![9]).toBeUndefined()
   })
 })

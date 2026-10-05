@@ -30,9 +30,12 @@ import {
   PolicyValidationError,
   revokeGrant,
   savePolicy,
+  CHAIN_STEPS,
   type ActorFallback,
   type ActorMode,
+  type ChainStep,
 } from '../services/integration-credentials'
+import { resumeAfterConnect, verifyResumeToken, type ResumeOutcome } from '../services/integration-credentials/resume'
 import { ensureDefaultCredentialProviders } from '../services/integration-credentials/defaults'
 import { signPersonalConnectState, verifyPersonalConnectState } from '../services/integration-credentials/connect-state'
 import { getPersonalConnection } from '../services/integration-credentials/store'
@@ -51,6 +54,21 @@ function authUserId(c: Context): string | null {
   const auth = c.get('auth') as { userId?: string; via?: string } | undefined
   if (!auth?.userId || auth.via === 'runtimeToken') return null
   return auth.userId
+}
+
+/** Who may change what an agent acts as: workspace owners and admins, and the project's creator. */
+async function canEditPolicies(userId: string, projectId: string): Promise<boolean> {
+  const project = (await prisma.project.findUnique({
+    where: { id: projectId },
+    select: { workspaceId: true, createdBy: true },
+  })) as { workspaceId: string; createdBy: string | null } | null
+  if (!project) return false
+  if (project.createdBy === userId) return true
+  const member = (await prisma.member.findFirst({
+    where: { userId, workspaceId: project.workspaceId },
+    select: { role: true },
+  })) as { role: string } | null
+  return member?.role === 'owner' || member?.role === 'admin'
 }
 
 function page(title: string, body: string): string {
@@ -77,10 +95,13 @@ export function integrationCredentialRoutes(config: IntegrationCredentialRoutesC
     const me = userId ? await listUserIntegrations(userId) : { connections: [], grants: [] }
     return c.json({
       ok: true,
+      canEdit: !!userId && (await canEditPolicies(userId, projectId)),
+      steps: CHAIN_STEPS,
       policies: all.map((p) => ({
         ...p,
         label: getCredentialProvider(p.provider)?.label(p.provider) ?? p.provider,
         supportsPersonal: getCredentialProvider(p.provider)?.supportsPersonal ?? false,
+        supportsShared: getCredentialProvider(p.provider)?.supportsShared !== false,
         sharedIsMe: !!userId && p.sharedUserId === userId,
       })),
       me: {
@@ -98,6 +119,12 @@ export function integrationCredentialRoutes(config: IntegrationCredentialRoutesC
     if (!isValidProviderId(provider)) {
       return c.json({ error: { code: 'invalid_request', message: `Unknown integration: ${provider}` } }, 400)
     }
+    if (!(await canEditPolicies(userId, projectId))) {
+      return c.json(
+        { error: { code: 'forbidden', message: 'Only the project owner and workspace admins can change what this agent acts as' } },
+        403,
+      )
+    }
     const body = await c.req.json().catch(() => ({})) as Record<string, unknown>
     // A project's shared account can only be the caller's own: nobody can volunteer someone else's.
     let sharedUserId: string | null | undefined
@@ -111,6 +138,8 @@ export function integrationCredentialRoutes(config: IntegrationCredentialRoutesC
         projectId,
         provider,
         {
+          ...(body.writeChain !== undefined ? { writeChain: body.writeChain as ChainStep[] } : {}),
+          ...(body.readChain !== undefined ? { readChain: body.readChain as ChainStep[] } : {}),
           ...(body.writeMode !== undefined ? { writeMode: body.writeMode as ActorMode } : {}),
           ...(body.readMode !== undefined ? { readMode: body.readMode as ActorMode } : {}),
           ...(body.fallback !== undefined ? { fallback: body.fallback as ActorFallback } : {}),
@@ -139,8 +168,11 @@ export function integrationCredentialRoutes(config: IntegrationCredentialRoutesC
     const project = await prisma.project.findUnique({ where: { id: projectId }, select: { name: true } })
     const label = adapter.label(provider)
     const connected = adapter.personal ? !!(await getPersonalConnection(userId, provider)) : true
-    const state = signPersonalConnectState({ userId, provider, projectId })
-    const action = `${c.req.path}`
+    // Only carry the resume token for the person it was made for.
+    const resume = c.req.query('resume')
+    const resumeFor = verifyResumeToken(resume)?.userId === userId ? resume : undefined
+    const state = signPersonalConnectState({ userId, provider, projectId, ...(resumeFor ? { resume: resumeFor } : {}) })
+    const action = c.req.path
     return c.html(
       page(
         `Allow ${project?.name ?? 'this agent'} to use ${label}`,
@@ -171,16 +203,29 @@ export function integrationCredentialRoutes(config: IntegrationCredentialRoutesC
     if (!adapter?.supportsPersonal) return c.html(page('Not available', '<h1>Not available</h1>'), 404)
 
     await grantAccess(userId, projectId, provider)
-    const needsAccount = adapter.personal ? !(await getPersonalConnection(userId, provider)) : true
+    const existing = adapter.personal ? await getPersonalConnection(userId, provider) : null
+    const needsAccount = adapter.personal ? !existing : true
     if (needsAccount && adapter.beginConnect) {
       try {
-        const { url } = await adapter.beginConnect({ userId, projectId, provider, returnUrl: getFrontendUrl() })
+        const { url } = await adapter.beginConnect({
+          userId,
+          projectId,
+          provider,
+          returnUrl: getFrontendUrl(),
+          ...(state.resume ? { resume: state.resume } : {}),
+        })
         return c.redirect(url)
       } catch (err: any) {
         return c.html(page('Could not connect', `<h1>Could not connect</h1><p>${escapeHtml(err?.message ?? String(err))}</p>`), 500)
       }
     }
-    return c.html(connectedPage(adapter.label(provider), null))
+    const label = adapter.label(provider)
+    const login = existing?.externalLogin ?? null
+    const resumed = await resumeAfterConnect({ userId, resume: state.resume, label, login }).catch((err) => {
+      console.error('[IntegrationCredentials] Resume after consent failed:', err?.message ?? err)
+      return { resumed: false } as const
+    })
+    return c.html(connectedPage(label, login, resumed))
   })
 
   router.get('/me/integrations', async (c) => {
@@ -208,11 +253,15 @@ export function integrationCredentialRoutes(config: IntegrationCredentialRoutesC
   return router
 }
 
-export function connectedPage(label: string, login: string | null): string {
+export function connectedPage(label: string, login: string | null, resumed: ResumeOutcome = { resumed: false }): string {
+  const next = resumed.resumed
+    ? `<p>The agent is picking up where it left off${
+        resumed.conversationName ? ` in ${escapeHtml(resumed.conversationName)}` : ''
+      }, using your account. You can close this tab.</p>`
+    : `<p>You can close this tab and go back to the conversation. Ask the agent to try again and it will use your account.</p>`
   return page(
     `${label} connected`,
-    `<h1>${escapeHtml(label)} connected${login ? ` as @${escapeHtml(login)}` : ''}</h1>` +
-      `<p>You can close this tab and go back to the conversation. Ask the agent to try again and it will use your account.</p>`,
+    `<h1>${escapeHtml(label)} connected${login ? ` as @${escapeHtml(login)}` : ''}</h1>${next}`,
   )
 }
 

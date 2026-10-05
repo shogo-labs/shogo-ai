@@ -843,6 +843,8 @@ model IntegrationCredentialPolicy {
   writeMode    String   @default("shared")
   readMode     String   @default("shared")
   fallback     String   @default("ask")
+  writeChain   String?
+  readChain    String?
   sharedUserId String?
   updatedBy    String?
   createdAt    DateTime @default(now())
