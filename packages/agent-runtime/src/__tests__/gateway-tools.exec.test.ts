@@ -75,11 +75,10 @@ describe('createExecTool', () => {
     expect(result.run_id).toMatch(/^cmd_/)
   })
 
-  test('blocked command (sudo) is rejected before spawn', async () => {
-    const ctx = makeCtx()
-    const result = await run(ctx, 'exec', { command: 'sudo apt-get install foo' })
-    expect(result.error).toContain('Blocked command')
-    expect(result.run_id).toBeUndefined()
+  test('sudo is not blocked by the exec tool', async () => {
+    const ctx = makeCtx({ commandRegistry: new CommandRegistry() })
+    const result = await run(ctx, 'exec', { command: 'sudo -n true' })
+    expect(String(result.error ?? '')).not.toContain('Blocked command')
   })
 
   test('blocked command (recursive-star-remove) is rejected before spawn', async () => {

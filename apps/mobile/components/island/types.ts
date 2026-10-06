@@ -65,6 +65,7 @@ export type IslandAction =
       text?: string
     }
   | { type: "navigate"; path: string }
+  | { type: "show-app" }
   | { type: "send"; target: IslandTarget; text: string; files?: IslandFileRef[] }
   | { type: "meeting"; decision: IslandMeetingDecision; promptId?: string }
 

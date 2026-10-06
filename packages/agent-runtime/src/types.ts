@@ -121,7 +121,7 @@ export type PermissionCategory =
   // or files outside a project's own workspace, so they don't belong in
   // 'system''s unconditional, all-modes hard-block (PermissionEngine's
   // `checkHardBlocked` — see the module doc there: that bucket is for
-  // OS-level actions like sudo/shutdown/protected paths). Falls through to
+  // OS-level actions like shutdown/protected paths). Falls through to
   // each mode's default handling (ask in strict, allow in balanced/full
   // autonomy) like 'network'/'mcp' do.
   | 'project'

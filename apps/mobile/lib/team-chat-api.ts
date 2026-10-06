@@ -9,6 +9,7 @@ import type { BuddyLook } from '@shogo/shared-app/buddy-look'
 import { Platform } from 'react-native'
 import { API_URL, createHttpClient } from './api'
 import { authClient } from './auth-client'
+import type { UploadPart } from './upload-part'
 import { routeUrl } from './workspace-route'
 
 export type ConversationKind = 'public' | 'private' | 'dm' | 'group_dm' | 'activity'
@@ -331,6 +332,47 @@ export type TeamChatEvent =
   | { type: 'groups.changed' }
   | { type: 'agent.updated'; projectId: string | null }
   | { type: 'emoji.changed' }
+  | { type: 'huddle.updated'; conversationId: string; huddle: Huddle | null }
+  | {
+      type: 'huddle.ring'
+      conversationId: string
+      conversationKind: ConversationKind
+      huddleId: string
+      from: { userId: string; name: string; image: string | null }
+    }
+  | { type: 'huddle.declined'; conversationId: string; huddleId: string; userId: string; name: string }
+
+export interface HuddleParticipant {
+  userId: string
+  name: string
+  image: string | null
+  joinedAt: string
+}
+
+/** A live audio call in a conversation. */
+export interface Huddle {
+  id: string
+  conversationId: string
+  workspaceId: string
+  startedById: string
+  startedAt: string
+  participants: HuddleParticipant[]
+}
+
+/** A live huddle as the workspace list returns it. */
+export interface ActiveHuddle extends Huddle {
+  conversationKind: ConversationKind
+  /** Started in a DM moments ago without you, so it should still be ringing here. */
+  ringing: boolean
+}
+
+export interface HuddleJoin {
+  huddle: Huddle
+  /** LiveKit access token for the huddle's room. */
+  token: string
+  /** LiveKit server URL (`wss://`). */
+  url: string
+}
 
 export const mentionToken = {
   user: (id: string) => `<@u:${id}>`,
@@ -477,7 +519,7 @@ export function teamChatApi() {
     async emoji(workspaceId: string): Promise<CustomEmoji[]> {
       return (await http.get<{ emoji: CustomEmoji[] }>(`${ws(workspaceId)}/emoji`)).data.emoji ?? []
     },
-    async uploadEmoji(workspaceId: string, name: string, file: File | { uri: string; name: string; type: string }): Promise<CustomEmoji> {
+    async uploadEmoji(workspaceId: string, name: string, file: File | UploadPart): Promise<CustomEmoji> {
       const form = new FormData()
       form.append('name', name)
       form.append('file', file as any)
@@ -591,7 +633,31 @@ export function teamChatApi() {
     async decideApproval(messageId: string, decision: 'approve' | 'deny'): Promise<ChatMessage> {
       return (await http.post<{ message: ChatMessage }>(`${msg(messageId)}/approval`, { decision })).data.message
     },
-    async upload(id: string, file: { uri: string; name: string; type: string } | File): Promise<MessageAttachment> {
+    async huddles(workspaceId: string): Promise<{ enabled: boolean; huddles: ActiveHuddle[] }> {
+      return (await http.get<{ enabled: boolean; huddles: ActiveHuddle[] }>(`${ws(workspaceId)}/huddles`)).data
+    },
+    async joinHuddle(id: string): Promise<HuddleJoin> {
+      return (await http.post<HuddleJoin>(`${conv(id)}/huddle/join`, {})).data
+    },
+    async leaveHuddle(id: string): Promise<Huddle | null> {
+      return (await http.post<{ huddle: Huddle | null }>(`${conv(id)}/huddle/leave`, {})).data.huddle
+    },
+    async declineHuddle(id: string): Promise<Huddle | null> {
+      return (await http.post<{ huddle: Huddle | null }>(`${conv(id)}/huddle/decline`, {})).data.huddle
+    },
+    /** Leave from a closing tab: survives page unload, never throws. */
+    leaveHuddleOnUnload(id: string): void {
+      try {
+        void fetch(`${API_URL}${conv(id)}/huddle/leave`, {
+          method: 'POST',
+          keepalive: true,
+          credentials: Platform.OS === 'web' ? 'include' : 'omit',
+          headers: { 'Content-Type': 'application/json', ...nativeCookieHeader() },
+          body: '{}',
+        }).catch(() => {})
+      } catch {}
+    },
+    async upload(id: string, file: UploadPart | File): Promise<MessageAttachment> {
       const form = new FormData()
       form.append('file', file as any)
       const res = await fetch(`${API_URL}${conv(id)}/attachments`, {

@@ -371,6 +371,10 @@ resource "cloudflare_worker_script" "preview_router" {
     async function proxyToApiPortRender(request, env, projectId, port, url) {
       const base = env.API_WAKE_ORIGIN.replace(/\/+$/, '');
       const target = base + '/api/preview/' + projectId + '/ports/' + port + '/render' + url.pathname + url.search;
+      // WebSocket upgrades (Vite hot reload) must be streamed, not buffered.
+      if ((request.headers.get('upgrade') || '').toLowerCase() === 'websocket') {
+        return fetch(target, request);
+      }
       const headers = new Headers(request.headers);
       headers.delete('host');
       const init = { method: request.method, headers: headers, redirect: 'manual' };

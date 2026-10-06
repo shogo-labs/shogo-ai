@@ -140,7 +140,14 @@ import {
   buildPortBridgeWsData,
   isPortBridgeWsData,
   createPortBridgeWsHandlers,
+  setAllowedPorts,
+  allowedPorts,
+  listListeningPorts,
+  buildPortHttpWsData,
+  isPortHttpWsData,
+  createPortHttpWsHandlers,
   type PortBridgeWsData,
+  type PortHttpWsData,
 } from './port-bridge'
 import { deriveApiUrl, getInternalHeaders, postCheckpointRecord, postWorktreeStatus, postPlanMirror } from './internal-api'
 import {
@@ -5193,6 +5200,17 @@ const handlePortHttpProxy = async (c: any) => {
 app.all('/agent/ports/:port/http', handlePortHttpProxy)
 app.all('/agent/ports/:port/http/*', handlePortHttpProxy)
 
+app.put('/agent/ports/allowlist', async (c) => {
+  const body = await c.req.json<{ ports?: unknown }>().catch(() => ({ ports: [] as unknown }))
+  const ports = Array.isArray(body.ports) ? body.ports.filter((n): n is number => typeof n === 'number') : []
+  setAllowedPorts(ports)
+  return c.json({ ok: true, ports: [...allowedPorts()] })
+})
+
+app.get('/agent/ports/listening', async (c) => {
+  return c.json({ ports: await listListeningPorts() })
+})
+
 // =============================================================================
 // Workspace per-project preview routes — `/p/<projectId>/…`
 //
@@ -7403,7 +7421,9 @@ if (state.isPoolMode && !state.poolAssigned && process.env.SHOGO_POOL_SKIP_PRESE
 const WS_PATH_RE = /^\/terminal\/sessions\/([^/]+)\/ws$/
 // Raw TCP port-bridge upgrade (Phase 3, Tier 2 plan) — see port-bridge.ts.
 const PORT_WS_PATH_RE = /^\/agent\/ports\/([0-9]+)\/ws$/
+const PORT_HTTP_WS_PATH_RE = /^\/agent\/ports\/([0-9]+)\/http(\/.*)?$/
 const portBridgeWs = createPortBridgeWsHandlers()
+const portHttpWs = createPortHttpWsHandlers()
 let healthPerfReported = false
 
 /**
@@ -7500,19 +7520,35 @@ export default {
       if (upgraded) return undefined
       return new Response('WebSocket upgrade failed', { status: 500 })
     }
+    const portHttpWsMatch = upgrade === 'websocket' ? PORT_HTTP_WS_PATH_RE.exec(url.pathname) : null
+    if (portHttpWsMatch) {
+      if (!isAuthedForPortBridge(req)) {
+        return new Response('Unauthorized', { status: 401 })
+      }
+      const port = parsePortParam(portHttpWsMatch[1])
+      if (port == null) return new Response('Invalid port', { status: 400 })
+      const path = `${portHttpWsMatch[2] || '/'}${url.search}`
+      const data: PortHttpWsData = buildPortHttpWsData(port, path)
+      const upgraded = server.upgrade(req, { data })
+      if (upgraded) return undefined
+      return new Response('WebSocket upgrade failed', { status: 500 })
+    }
     return app.fetch(req)
   },
   websocket: {
     open(ws: any) {
-      if (isPortBridgeWsData(ws.data)) portBridgeWs.open(ws)
+      if (isPortHttpWsData(ws.data)) portHttpWs.open(ws)
+      else if (isPortBridgeWsData(ws.data)) portBridgeWs.open(ws)
       else ptyWs.open(ws)
     },
     message(ws: any, msg: any) {
-      if (isPortBridgeWsData(ws.data)) portBridgeWs.message(ws, msg)
+      if (isPortHttpWsData(ws.data)) portHttpWs.message(ws, msg)
+      else if (isPortBridgeWsData(ws.data)) portBridgeWs.message(ws, msg)
       else ptyWs.message(ws, msg)
     },
     close(ws: any, code?: number, reason?: string) {
-      if (isPortBridgeWsData(ws.data)) portBridgeWs.close(ws)
+      if (isPortHttpWsData(ws.data)) portHttpWs.close(ws)
+      else if (isPortBridgeWsData(ws.data)) portBridgeWs.close(ws)
       else ptyWs.close(ws, code, reason)
     },
   },

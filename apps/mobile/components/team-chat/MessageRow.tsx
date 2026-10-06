@@ -5,14 +5,16 @@
  * body with mentions, attachments, reactions, thread summary, and live agent
  * replies (streaming text, the tool in use, Stop).
  */
-import { memo, useCallback, useEffect, useRef, useState } from 'react'
+import { createElement, memo, useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { ActionSheetIOS, Alert, Image, Linking, Modal, Platform, Pressable, Text, TextInput, View } from 'react-native'
 import * as Clipboard from 'expo-clipboard'
-import { AlarmClock, AlertCircle, Bookmark, Check, CircleDot, CornerDownRight, FileText, Link2, Loader2, MessageSquare, Pencil, Pin, SmilePlus, Square, Trash2 } from 'lucide-react-native'
+import { AlarmClock, AlertCircle, Bookmark, Check, CircleDot, CornerDownRight, FileText, Link2, Loader2, MessageSquare, MoreHorizontal, Pencil, Pin, SmilePlus, Square, Trash2 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { MarkdownText } from '../chat/MarkdownText'
+import { SidebarContextMenu, type SidebarMenuEntry } from '../layout/SidebarContextMenu'
 import { absoluteApiUrl, teamChatApi, type ChatMessage, type LinkUnfurl } from '../../lib/team-chat-api'
 import { messageLink, parseMessageLink } from '../../lib/team-chat-links'
+import { formatFullTime, formatShortTime, formatTime } from '../../lib/team-chat-time'
 import { EmojiPicker } from './EmojiPicker'
 import { AgentAvatar } from './AgentAvatar'
 import { AgentProfileCard } from './AgentProfileCard'
@@ -85,8 +87,39 @@ export function openMessageLinkInApp(href: string): boolean {
   return true
 }
 
-function formatTime(iso: string): string {
-  return new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+/**
+ * Wraps a message time so hovering it underlines the time and shows the full
+ * date and time in a dark bubble above it (web only; passthrough on native).
+ * `children` receives whether the time is hovered.
+ */
+function TimeTooltip({ iso, align = 'center', children }: { iso: string; align?: 'center' | 'start'; children: (hovered: boolean) => ReactNode }) {
+  const [hovered, setHovered] = useState(false)
+  if (Platform.OS !== 'web') return <>{children(false)}</>
+  return createElement(
+    'div',
+    {
+      onMouseEnter: () => setHovered(true),
+      onMouseLeave: () => setHovered(false),
+      style: { position: 'relative', display: 'inline-flex', whiteSpace: 'nowrap' },
+    },
+    children(hovered),
+    hovered
+      ? createElement(
+          'div',
+          {
+            role: 'tooltip',
+            'data-testid': 'time-tooltip',
+            style: { position: 'absolute', bottom: '100%', ...(align === 'start' ? { left: 0 } : { left: '50%', transform: 'translateX(-50%)' }), marginBottom: 6, zIndex: 100, pointerEvents: 'none', whiteSpace: 'nowrap', width: 'max-content' },
+          },
+          <View className={align === 'start' ? 'items-start' : 'items-center'}>
+            <View className="rounded-md border border-transparent bg-zinc-900 px-3 py-2 shadow-lg dark:border-white/20 dark:bg-zinc-600">
+              <Text className="text-sm font-semibold text-white">{formatFullTime(iso)}</Text>
+            </View>
+            <View className={cn('-mt-1 h-2 w-2 rotate-45 bg-zinc-900 dark:bg-zinc-600', align === 'start' && 'ml-3')} />
+          </View>,
+        )
+      : null,
+  )
 }
 
 function formatBytes(size: number): string {
@@ -199,9 +232,12 @@ function ReactionGlyph({ emoji, size = 12 }: { emoji: string; size?: number }) {
 }
 
 /**
- * Hover state for a row whose action bar floats half outside it. Leaving the row hides the bar
- * after a short grace period, and entering the bar (or the row again) cancels that, so moving
- * the pointer from the message onto the emoji buttons never makes them vanish.
+ * Hover state for a row whose action bar floats half outside it. Wire `hoverIn`/`hoverOut` to the
+ * DOM `onPointerEnter`/`onPointerLeave` of the row, not to `Pressable`'s `onHoverIn`/`onHoverOut`:
+ * react-native-web's Pressable hover is `contain`ed, so entering any nested Pressable (every
+ * emoji button, reaction chip, ...) ends the hover of all its ancestor Pressables. Pointer
+ * enter/leave ignore moves between a row and its descendants. Leaving the row still hides the bar
+ * after a short grace period, which entering the row again cancels.
  */
 function useRowHover() {
   const [hovered, setHovered] = useState(false)
@@ -226,8 +262,9 @@ function MessageRowImpl(props: MessageRowProps) {
   const { message, grouped, me, names, streaming, canManage, inThread } = props
   const { hovered, hoverIn, hoverOut } = useRowHover()
   const [pickerOpen, setPickerOpen] = useState(false)
-  const [remindOpen, setRemindOpen] = useState(false)
-  useEffect(() => { if (!hovered) setRemindOpen(false) }, [hovered])
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
+  // The menu is portaled out of the row, so keep the row lit while it is open.
+  const active = hovered || !!menu
   const [editing, setEditing] = useState(false)
   const [profileOpen, setProfileOpen] = useState(false)
   const saved = useIsSaved(message.id)
@@ -264,7 +301,6 @@ function MessageRowImpl(props: MessageRowProps) {
   const pin = () => void api.pin(message.id, !message.pinned).catch(() => {})
   const save = () => void toggleSaved(message.id, !saved).catch(() => {})
   const remind = (at: Date) => {
-    setRemindOpen(false)
     if (!props.workspaceId) return
     void api.createReminder(props.workspaceId, { messageId: message.id, remindAt: at.toISOString() }).catch(() => {})
   }
@@ -298,6 +334,47 @@ function MessageRowImpl(props: MessageRowProps) {
     }
   }
 
+  const startEditing = () => { setDraft(message.text); setEditing(true) }
+  const menuItems = (): SidebarMenuEntry[] => {
+    const icon = (Icon: typeof Link2, tone = 'text-muted-foreground') => <Icon size={14} className={tone} />
+    const items: SidebarMenuEntry[] = []
+    if (canAct) {
+      items.push({ label: copied ? 'Link copied' : 'Copy link', icon: icon(copied ? Check : Link2, copied ? 'text-primary' : undefined), onSelect: copyLink })
+      if (markUnread) items.push({ label: 'Mark unread', icon: icon(CircleDot), onSelect: markUnread })
+      items.push({ label: saved ? 'Remove from saved' : 'Save for later', icon: icon(Bookmark, saved ? 'text-primary' : undefined), onSelect: save })
+      if (props.workspaceId) {
+        for (const o of REMIND_OPTIONS) {
+          items.push({ label: `Remind me: ${o.label.toLowerCase()}`, icon: icon(AlarmClock), onSelect: () => remind(o.at()) })
+        }
+      }
+      if (props.canPin) items.push({ label: message.pinned ? 'Unpin' : 'Pin to conversation', icon: icon(Pin, message.pinned ? 'text-amber-600' : undefined), onSelect: pin })
+    }
+    if (mine && message.authorType === 'user') items.push({ label: 'Edit message', icon: icon(Pencil), onSelect: startEditing })
+    if (mine || canManage) {
+      if (items.length) items.push({ separator: true })
+      items.push({ label: 'Delete message', icon: icon(Trash2, 'text-destructive'), danger: true, onSelect: () => props.onDelete(message) })
+    }
+    return items
+  }
+  const hasMenu = !deleted && !message.pending && menuItems().length > 0
+  const closeMenu = useCallback(() => setMenu(null), [])
+  const openMenuFromButton = (e: any) => {
+    const rect = e?.currentTarget?.getBoundingClientRect?.()
+    const ne = e?.nativeEvent ?? e
+    setMenu(rect && (rect.width || rect.height) ? { x: rect.left, y: rect.bottom + 4 } : { x: ne?.clientX ?? 0, y: ne?.clientY ?? 0 })
+  }
+  const onContextMenu = (e: any) => {
+    if (!hasMenu || editing) return
+    // Leave the browser's own menu when text is selected, so it can still be copied.
+    const sel = typeof window !== 'undefined' ? window.getSelection?.() : null
+    if (sel && !sel.isCollapsed && sel.toString().trim() && sel.anchorNode && e.currentTarget?.contains?.(sel.anchorNode)) return
+    e.preventDefault?.()
+    const ne = e.nativeEvent ?? e
+    setMenu({ x: ne.clientX ?? 0, y: ne.clientY ?? 0 })
+  }
+  // Web only: pointer enter/leave drive the row hover, and a right-click opens the actions menu.
+  const rowWebProps = isWeb ? ({ onPointerEnter: hoverIn, onPointerLeave: hoverOut, onContextMenu } as object) : {}
+
   const saveEdit = async () => {
     const text = draft.trim()
     if (!text || text === message.text) {
@@ -313,8 +390,7 @@ function MessageRowImpl(props: MessageRowProps) {
     return (
       <Pressable
         onPress={canDiscuss && !isWeb ? () => props.onReply!(message) : undefined}
-        onHoverIn={hoverIn}
-        onHoverOut={hoverOut}
+        {...(isWeb ? ({ onPointerEnter: hoverIn, onPointerLeave: hoverOut } as object) : {})}
         className={cn('flex-row items-start gap-2 px-4 py-1.5', hovered && 'bg-muted/40')}
       >
         <View className="mt-1.5 h-1.5 w-1.5 rounded-full bg-primary/60" />
@@ -334,7 +410,9 @@ function MessageRowImpl(props: MessageRowProps) {
             <Text className="text-[11px] text-muted-foreground">Discuss</Text>
           </Pressable>
         ) : (
-          <Text className="text-[11px] text-muted-foreground">{formatTime(message.createdAt)}</Text>
+          <TimeTooltip iso={message.createdAt}>
+            {(h) => <Text className={cn('text-[11px] text-muted-foreground', h && 'underline')}>{formatTime(message.createdAt)}</Text>}
+          </TimeTooltip>
         )}
       </Pressable>
     )
@@ -343,13 +421,12 @@ function MessageRowImpl(props: MessageRowProps) {
   return (
     <Pressable
       onLongPress={isWeb ? undefined : openActions}
-      onHoverIn={hoverIn}
-      onHoverOut={hoverOut}
+      {...rowWebProps}
       className={cn(
         'relative flex-row gap-3 px-4',
         grouped ? 'py-0.5' : 'pt-2.5 pb-0.5',
         message.pinned && !deleted ? 'bg-amber-500/5' : null,
-        hovered && 'bg-muted/40',
+        active && 'bg-muted/40',
         kind === 'decision' && !deleted ? 'border-l-2 border-amber-500 bg-amber-500/10' : null,
         kind === 'alert' && !deleted ? 'border-l-2 border-destructive bg-destructive/10' : null,
         props.highlighted && 'bg-amber-400/20',
@@ -359,7 +436,15 @@ function MessageRowImpl(props: MessageRowProps) {
     >
       <View className="w-8">
         {grouped ? (
-          hovered ? <Text className="pt-1 text-[10px] text-muted-foreground">{formatTime(message.createdAt)}</Text> : null
+          active ? (
+            <TimeTooltip iso={message.createdAt} align="start">
+              {(h) => (
+                <Text numberOfLines={1} className={cn('pt-1 text-[10px] text-muted-foreground', h && 'underline')}>
+                  {formatShortTime(message.createdAt)}
+                </Text>
+              )}
+            </TimeTooltip>
+          ) : null
         ) : (
           <Avatar message={message} onPress={message.authorType === 'agent' && !deleted ? () => setProfileOpen(true) : undefined} />
         )}
@@ -390,7 +475,9 @@ function MessageRowImpl(props: MessageRowProps) {
                 </Text>
               </View>
             ) : null}
-            <Text className="text-[11px] text-muted-foreground">{formatTime(message.createdAt)}</Text>
+            <TimeTooltip iso={message.createdAt}>
+              {(h) => <Text className={cn('text-[11px] text-muted-foreground', h && 'underline')}>{formatTime(message.createdAt)}</Text>}
+            </TimeTooltip>
           </View>
         )}
 
@@ -576,14 +663,14 @@ function MessageRowImpl(props: MessageRowProps) {
         )}
       </View>
 
-      {isWeb && hovered && !deleted && !message.pending && !editing && (
-        <Pressable onHoverIn={hoverIn} onHoverOut={hoverOut} className="absolute right-3 -top-3 flex-row items-center rounded-lg border border-border bg-card px-1 py-0.5 shadow-sm">
+      {isWeb && active && !deleted && !message.pending && !editing && (
+        <View className="absolute right-3 -top-3 flex-row items-center rounded-lg border border-border bg-card px-1 py-0.5 shadow-sm">
           {QUICK_REACTIONS.slice(0, 3).map((emoji) => (
             <Pressable key={emoji} onPress={() => props.onReact(message, emoji)} className="rounded px-1.5 py-1 hover:bg-muted">
               <Text className="text-sm">{emoji}</Text>
             </Pressable>
           ))}
-          <Pressable onPress={() => { setRemindOpen(false); setPickerOpen((open) => !open) }} accessibilityLabel="More reactions" className="rounded px-1.5 py-1 hover:bg-muted">
+          <Pressable onPress={() => setPickerOpen((open) => !open)} accessibilityLabel="More reactions" className="rounded px-1.5 py-1 hover:bg-muted">
             <SmilePlus size={14} className="text-muted-foreground" />
           </Pressable>
           {props.onReply && !inThread && (
@@ -591,53 +678,14 @@ function MessageRowImpl(props: MessageRowProps) {
               <MessageSquare size={14} className="text-muted-foreground" />
             </Pressable>
           )}
-          {canAct && (
-            <Pressable onPress={copyLink} accessibilityLabel={copied ? 'Link copied' : 'Copy link'} className="rounded px-1.5 py-1 hover:bg-muted">
-              {copied ? <Check size={14} className="text-primary" /> : <Link2 size={14} className="text-muted-foreground" />}
+          {hasMenu && (
+            <Pressable onPress={openMenuFromButton} accessibilityLabel="More actions" className="rounded px-1.5 py-1 hover:bg-muted">
+              <MoreHorizontal size={14} className="text-muted-foreground" />
             </Pressable>
           )}
-          {canAct && markUnread && (
-            <Pressable onPress={markUnread} accessibilityLabel="Mark unread" className="rounded px-1.5 py-1 hover:bg-muted">
-              <CircleDot size={14} className="text-muted-foreground" />
-            </Pressable>
-          )}
-          {canAct && (
-            <Pressable onPress={save} accessibilityLabel={saved ? 'Remove from saved' : 'Save for later'} className="rounded px-1.5 py-1 hover:bg-muted">
-              <Bookmark size={14} className={saved ? 'text-primary' : 'text-muted-foreground'} fill={saved ? 'currentColor' : 'none'} />
-            </Pressable>
-          )}
-          {canAct && props.workspaceId && (
-            <Pressable onPress={() => { setPickerOpen(false); setRemindOpen((v) => !v) }} accessibilityLabel="Remind me about this" className="rounded px-1.5 py-1 hover:bg-muted">
-              <AlarmClock size={14} className="text-muted-foreground" />
-            </Pressable>
-          )}
-          {canAct && props.canPin && (
-            <Pressable onPress={pin} accessibilityLabel={message.pinned ? 'Unpin' : 'Pin to conversation'} className="rounded px-1.5 py-1 hover:bg-muted">
-              <Pin size={14} className={message.pinned ? 'text-amber-600' : 'text-muted-foreground'} />
-            </Pressable>
-          )}
-          {mine && message.authorType === 'user' && (
-            <Pressable onPress={() => { setDraft(message.text); setEditing(true) }} accessibilityLabel="Edit message" className="rounded px-1.5 py-1 hover:bg-muted">
-              <Pencil size={14} className="text-muted-foreground" />
-            </Pressable>
-          )}
-          {(mine || canManage) && (
-            <Pressable onPress={() => props.onDelete(message)} accessibilityLabel="Delete message" className="rounded px-1.5 py-1 hover:bg-muted">
-              <Trash2 size={14} className="text-muted-foreground" />
-            </Pressable>
-          )}
-        </Pressable>
+        </View>
       )}
-      {isWeb && hovered && remindOpen && (
-        <Pressable onHoverIn={hoverIn} onHoverOut={hoverOut} className="absolute right-3 top-6 z-10 w-44 rounded-lg border border-border bg-card py-1 shadow-md">
-          <Text className="px-3 pb-1 pt-1 text-[11px] font-semibold uppercase text-muted-foreground">Remind me</Text>
-          {REMIND_OPTIONS.map((o) => (
-            <Pressable key={o.label} onPress={() => remind(o.at())} className="px-3 py-1.5 hover:bg-muted">
-              <Text className="text-sm text-foreground">{o.label}</Text>
-            </Pressable>
-          ))}
-        </Pressable>
-      )}
+      {menu && <SidebarContextMenu x={menu.x} y={menu.y} items={menuItems()} onClose={closeMenu} />}
       {profileOpen && message.authorAgent && (
         <AgentProfileCard
           workspaceId={message.workspaceId}

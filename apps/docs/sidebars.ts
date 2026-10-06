@@ -67,6 +67,7 @@ const sidebars: SidebarsConfig = {
             "features/my-machines/networking",
             "features/my-machines/project-pull",
             "features/my-machines/docker-projects",
+            "features/my-machines/docker-cloud",
             "features/my-machines/checkpoints-on-the-vps",
             "features/my-machines/troubleshooting",
           ],

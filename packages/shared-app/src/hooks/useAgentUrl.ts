@@ -103,6 +103,21 @@ const STALL_THRESHOLD_MS = 45_000
  * (`ready:false` or a hard 4xx), we drop the optimistic seed and the cache so a
  * truly cold runtime still shows the loading gate.
  */
+/**
+ * A workspace compute-budget message from `/sandbox/url`: either other
+ * projects were put to sleep to make room for this one, or this one was
+ * refused because busy projects hold the workspace's compute.
+ */
+export interface WorkspaceBudgetMessage {
+  message: string
+  instanceSize: string
+  instanceLabel: string
+  budgetGb: number
+  runningCount: number
+  projects: Array<{ id: string; name: string }>
+  canUpgrade: boolean
+}
+
 type ResolvedUrls = {
   agentUrl: string | null
   previewUrl: string | null
@@ -148,6 +163,10 @@ export function useAgentUrl(
   const [canvasBaseUrl, setCanvasBaseUrl] = useState<string | null>(initialWarm?.canvasBaseUrl ?? null)
   const [loaderUrl, setLoaderUrl] = useState<string | null>(initialWarm?.loaderUrl ?? null)
   const [error, setError] = useState<string | null>(null)
+  /** Set when opening this project put other workspace projects to sleep. */
+  const [budgetNotice, setBudgetNotice] = useState<WorkspaceBudgetMessage | null>(null)
+  /** Set when the open was refused because busy projects hold the workspace's compute. */
+  const [capacity, setCapacity] = useState<WorkspaceBudgetMessage | null>(null)
   const [stalled, setStalled] = useState<boolean>(false)
   const [lastStatus, setLastStatus] = useState<string | null>(initialWarm ? 'ready' : null)
   // Local-agent-url short-circuit always counts as ready (the caller has
@@ -282,14 +301,24 @@ export function useAgentUrl(
           // Authoritative failure for a project: drop any optimistic warm
           // seed/cache so switch-back can't keep showing a dead runtime.
           warmResolutionCache.delete(cacheKey)
+          // 409 = the workspace's compute budget is held by busy projects;
+          // the body says which and what to do about it.
+          const capacityBody =
+            res.status === 409 ? await res.json().catch(() => null) : null
+          const refused = capacityBody?.error === 'workspace_capacity'
           if (!controller.signal.aborted) {
             setAgentUrl(null)
             setPreviewUrl(null)
             setCanvasBaseUrl(null)
             setLoaderUrl(null)
             setReady(false)
-            setError(`Failed to get sandbox URL (HTTP ${res.status})`)
-            setLastStatus(`http_${res.status}`)
+            setCapacity(refused ? capacityBody.capacity ?? null : null)
+            setError(
+              refused && typeof capacityBody.message === 'string'
+                ? capacityBody.message
+                : `Failed to get sandbox URL (HTTP ${res.status})`,
+            )
+            setLastStatus(refused ? 'workspace_capacity' : `http_${res.status}`)
           }
           if (res.status >= 500) scheduleRetry()
           return
@@ -357,6 +386,10 @@ export function useAgentUrl(
           setStalled(false)
           setLastStatus('ready')
           setError(null)
+          setCapacity(null)
+          if (data.budgetNotice && typeof data.budgetNotice.message === 'string') {
+            setBudgetNotice(data.budgetNotice as WorkspaceBudgetMessage)
+          }
           if (stallTimer) {
             clearTimeout(stallTimer)
             stallTimer = null
@@ -385,5 +418,20 @@ export function useAgentUrl(
     // flips from default to stack-specific, same as an ordinary retry cycle.
   }, [apiBaseUrl, projectId, options?.localAgentUrl, options?.credentials, retryNonce, stallThresholdMs])
 
-  return { agentUrl, previewUrl, canvasBaseUrl, loaderUrl, ready, error, stalled, lastStatus, retry }
+  const dismissBudgetNotice = useCallback(() => setBudgetNotice(null), [])
+
+  return {
+    agentUrl,
+    previewUrl,
+    canvasBaseUrl,
+    loaderUrl,
+    ready,
+    error,
+    stalled,
+    lastStatus,
+    retry,
+    budgetNotice,
+    dismissBudgetNotice,
+    capacity,
+  }
 }

@@ -9,16 +9,20 @@
 
 import { generateProxyToken } from '../ai-proxy-token'
 import { resolveAgentModelEnv } from './agent-model-defaults'
-import { INSTANCE_SIZES, meetsMinimumInstanceSize, type InstanceSizeName } from '../../config/instance-sizes'
+import {
+  INSTANCE_SIZES,
+  meetsMinimumInstanceSize,
+  resolveMetalVmSize,
+  type InstanceSizeName,
+  type MetalVmSize,
+} from '../../config/instance-sizes'
 import { buildToolsProxyUrl } from '../cloud-urls'
 import { getSandboxExecOverride } from '../sandbox-exec-setting'
 import { isDockerClassEnabled } from '../runtime-class-setting'
 import { parseProjectSettings } from '../project-settings'
 import { importCloudModule } from '../cloud-import'
-import {
-  isDockerTechStack,
-  getDeclaredPorts,
-} from '../../../../../packages/core/src/tech-stack-registry'
+import { isDockerTechStack } from '../../../../../packages/core/src/tech-stack-registry'
+import { resolveExposedPorts } from '../project-ports'
 
 /**
  * Thrown when the project row is gone (typically deleted while a session was
@@ -32,6 +36,15 @@ export class ProjectNotFoundError extends Error {
     super(`project ${projectId} does not exist (deleted?) — cannot build a runtime env`)
     this.name = 'ProjectNotFoundError'
   }
+}
+
+/**
+ * The microVM size a metal host should boot for this assignment. Hosts that
+ * predate per-VM sizing ignore these and use their configured class size; the
+ * API still accounts the workspace budget by them.
+ */
+export function metalVmSizeEnv(size: MetalVmSize): Record<string, string> {
+  return { SHOGO_VM_VCPUS: String(size.vcpus), SHOGO_VM_MEM_MIB: String(size.memMiB) }
 }
 
 /**
@@ -210,6 +223,19 @@ export async function buildProjectEnv(
         }
       }
 
+      if (opts?.forMetal) {
+        Object.assign(
+          env,
+          metalVmSizeEnv(
+            resolveMetalVmSize(
+              instanceSize as InstanceSizeName,
+              [techStackFromSettings],
+              env.SHOGO_RUNTIME_CLASS === 'docker',
+            ),
+          ),
+        )
+      }
+
       // Exposed-ports allowlist (Phase 3: client-side tunnel + public per-port
       // preview). This is the guest-side defense-in-depth check — `apps/api`
       // already refuses to open a tunnel/preview for a port the project's
@@ -219,7 +245,7 @@ export async function buildProjectEnv(
       // an attacker got listening via a shell tool). Comma-separated, empty
       // when the stack declares no ports (the default for every non-Docker
       // stack today).
-      const declaredPorts = getDeclaredPorts(techStackFromSettings)
+      const declaredPorts = resolveExposedPorts(techStackFromSettings, settings)
       if (declaredPorts.length > 0) {
         env.SHOGO_EXPOSED_PORTS = declaredPorts.map((p) => p.port).join(',')
       }

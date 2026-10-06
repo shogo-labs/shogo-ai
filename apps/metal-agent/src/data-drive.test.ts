@@ -15,7 +15,7 @@ import { existsSync, mkdtempSync, rmSync, statSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { config } from './config'
-import { DataDriveProvisioner, WORKSPACE_DRIVE_LABEL, WORKSPACE_DRIVE_SUFFIX } from './data-drive'
+import { DataDriveProvisioner, DOCKER_DRIVE_LABEL, WORKSPACE_DRIVE_LABEL, WORKSPACE_DRIVE_SUFFIX } from './data-drive'
 
 const dirs: string[] = []
 afterEach(() => {
@@ -58,7 +58,7 @@ describe('DataDriveProvisioner', () => {
 
     expect(ws).toBe(join(cfg.runDir, `fcvm-3${WORKSPACE_DRIVE_SUFFIX}`))
     expect(ws).not.toBe(docker)
-    expect(dd.labels).toEqual([undefined, WORKSPACE_DRIVE_LABEL])
+    expect(dd.labels).toEqual([DOCKER_DRIVE_LABEL, WORKSPACE_DRIVE_LABEL])
     expect(WORKSPACE_DRIVE_LABEL).toBe('shogo-ws')
   })
 

@@ -34,12 +34,26 @@
  */
 
 import { generateProxyToken } from '../ai-proxy-token'
+import {
+  INSTANCE_SIZES,
+  meetsMinimumInstanceSize,
+  resolveMetalVmSize,
+  type InstanceSizeName,
+} from '../../config/instance-sizes'
+import { isDockerClassEnabled } from '../runtime-class-setting'
+import { isWorkspaceBudgetEnabled } from '../workspace-compute-budget'
+import { isDockerTechStack } from '../../../../../packages/core/src/tech-stack-registry'
 import { resolveAgentModelEnv } from './agent-model-defaults'
 import { deriveWorkspaceRuntimeToken } from '../workspace-runtime-token'
 import { buildToolsProxyUrl } from '../cloud-urls'
 import { getSandboxExecOverride } from '../sandbox-exec-setting'
 import { parseProjectSettings } from '../project-settings'
+import { resolveExposedPorts } from '../project-ports'
 import { importCloudModule } from '../cloud-import'
+
+function metalVmSizeEnv(size: { vcpus: number; memMiB: number }): Record<string, string> {
+  return { SHOGO_VM_VCPUS: String(size.vcpus), SHOGO_VM_MEM_MIB: String(size.memMiB) }
+}
 
 export interface BuildWorkspaceEnvOpts {
   logPrefix?: string
@@ -146,6 +160,7 @@ export async function buildWorkspaceEnv(
 
   // Workspace identity carries the base agent persona; per-project
   // AGENTS.md/MEMORY.md layering happens runtime-side (Phase 2b).
+  let workspaceInstanceSize: InstanceSizeName = 'micro'
   try {
     const loadWorkspace =
       opts._loadWorkspace ??
@@ -157,16 +172,19 @@ export async function buildWorkspaceEnv(
             name: true,
             kind: true,
             composioScope: true,
+            instanceSize: true,
             agentProfile: { select: { name: true } },
           } as any,
         })) as {
           name?: string | null
           kind?: string | null
           composioScope?: string | null
+          instanceSize?: string | null
           agentProfile?: { name?: string | null } | null
         } | null
       })
     const ws = await loadWorkspace(workspaceId)
+    if (ws?.instanceSize) workspaceInstanceSize = ws.instanceSize as InstanceSizeName
     const { normalizeWorkspaceKind } = await import('../../services/workspace.service')
     env.WORKSPACE_KIND = normalizeWorkspaceKind(ws?.kind)
     const profileName = ws?.profileName || ws?.agentProfile?.name
@@ -210,6 +228,55 @@ export async function buildWorkspaceEnv(
     }
     if (Object.keys(techStacks).length > 0) {
       env.WORKSPACE_TECH_STACKS = JSON.stringify(techStacks)
+    }
+
+    // Studio opens a project as a workspace runtime (`ws:proj:<id>`), not a
+    // single-project pod. That path uses this builder, so a docker-compose
+    // member has to request the docker VM here or it lands on a standard
+    // guest with no dockerd. One member that needs docker lifts the whole
+    // VM: a standard project can run there, a compose project cannot run
+    // on a standard one.
+    const dockerStackId = Object.values(techStacks).find((id) => isDockerTechStack(id))
+    if (dockerStackId) {
+      if (!isDockerClassEnabled()) {
+        console.error(
+          `[${prefix}] workspace ${workspaceId} has a docker-class project (${dockerStackId}) but the platform gate is off — assigning a standard VM`,
+        )
+      } else if (!meetsMinimumInstanceSize(workspaceInstanceSize, dockerStackId)) {
+        console.error(
+          `[${prefix}] workspace ${workspaceId} has a docker-class project (${dockerStackId}) but instance size '${workspaceInstanceSize}' is below the stack minimum — assigning a standard VM`,
+        )
+      } else {
+        env.SHOGO_RUNTIME_CLASS = 'docker'
+      }
+    }
+
+    if (opts.forMetal) {
+      Object.assign(
+        env,
+        metalVmSizeEnv(
+          resolveMetalVmSize(workspaceInstanceSize, Object.values(techStacks), env.SHOGO_RUNTIME_CLASS === 'docker'),
+        ),
+      )
+      // Paid tiers stay warm, as their single-project runtimes already do.
+      // Only with the pooled budget on: it is what bounds how many of a
+      // workspace's always-on VMs can be running at once.
+      if (isWorkspaceBudgetEnabled() && (INSTANCE_SIZES[workspaceInstanceSize]?.minScale ?? 0) >= 1) {
+        env.SHOGO_ALWAYS_ON = '1'
+      }
+    }
+
+    // Guest-side port allowlist for the shared VM: the union of every
+    // member's exposed ports. Without it the runtime's port bridge refuses
+    // the per-port preview and tunnel even though the API allows them.
+    const exposedPorts = new Set<number>()
+    for (const row of rows) {
+      const settings = parseProjectSettings(row.settings)
+      const stackId = settings?.techStackId as string | undefined
+      for (const p of resolveExposedPorts(stackId, settings)) exposedPorts.add(p.port)
+    }
+    if (exposedPorts.size > 0) {
+      env.SHOGO_EXPOSED_PORTS = [...exposedPorts].sort((a, b) => a - b).join(',')
     }
 
     const loadAvailable =

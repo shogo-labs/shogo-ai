@@ -39,6 +39,9 @@ import { allocatedBytes } from './disk'
 /** ext4 label fc-init mounts at /data (build-runtime-rootfs.sh). */
 export const WORKSPACE_DRIVE_LABEL = 'shogo-ws'
 
+/** ext4 label fc-init mounts at /var/lib/docker before dockerd starts. */
+export const DOCKER_DRIVE_LABEL = 'shogo-docker'
+
 /** File suffix of a workspace drive under runDir (the GC sweeps by it). */
 export const WORKSPACE_DRIVE_SUFFIX = '.ws.ext4'
 
@@ -66,7 +69,7 @@ export class DataDriveProvisioner {
     } finally {
       closeSync(fd)
     }
-    this.runMkfs(dst, kind === 'workspace' ? WORKSPACE_DRIVE_LABEL : undefined)
+    this.runMkfs(dst, kind === 'workspace' ? WORKSPACE_DRIVE_LABEL : DOCKER_DRIVE_LABEL)
     return dst
   }
 

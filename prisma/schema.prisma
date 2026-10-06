@@ -4099,12 +4099,52 @@ model Conversation {
   pins              ConversationPin[]
   drafts            ConversationDraft[]
   scheduledMessages ScheduledMessage[]
+  huddles           Huddle[]
 
   @@unique([workspaceId, slug])
   @@unique([workspaceId, dmKey])
   @@unique([workspaceId, provider, externalId])
   @@index([workspaceId, kind])
   @@map("conversations")
+}
+
+/// A live audio call in a conversation. Media runs on LiveKit; this row is the
+/// roster and lifecycle. `activeKey` holds the conversation id while the huddle
+/// is live and null once it ends, so its unique index allows one live huddle
+/// per conversation.
+model Huddle {
+  id             String    @id @default(uuid())
+  workspaceId    String
+  conversationId String
+  activeKey      String?   @unique
+  roomName       String    @unique
+  startedById    String
+  /// The "started a huddle" system message, updated when the huddle ends.
+  messageId      String?
+  startedAt      DateTime  @default(now())
+  endedAt        DateTime?
+
+  conversation Conversation        @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  participants HuddleParticipant[]
+
+  @@index([workspaceId, endedAt])
+  @@index([conversationId, startedAt])
+  @@map("huddles")
+}
+
+/// One stay in a huddle. Rejoining after leaving opens a new row.
+model HuddleParticipant {
+  id       String    @id @default(uuid())
+  huddleId String
+  userId   String
+  joinedAt DateTime  @default(now())
+  leftAt   DateTime?
+
+  huddle Huddle @relation(fields: [huddleId], references: [id], onDelete: Cascade)
+
+  @@index([huddleId, leftAt])
+  @@index([userId])
+  @@map("huddle_participants")
 }
 
 /// A workspace's install of an external chat app (Slack, Teams, Google Chat).

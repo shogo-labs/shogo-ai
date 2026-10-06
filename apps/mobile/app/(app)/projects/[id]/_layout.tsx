@@ -59,6 +59,10 @@ import { authClient } from "../../../../lib/auth-client";
 import { API_URL, api, type RemoteHostStatus } from "../../../../lib/api";
 import { openWebAppSession } from "../../../../lib/openWebAppSession";
 import {
+  useWorkspaceBudgetToast,
+  WorkspaceCapacityCard,
+} from "../../../../components/project/WorkspaceBudgetNotice";
+import {
   chatSessionEvents,
   chatActivityEvents,
 } from "../../../../lib/chat-session-events";
@@ -121,6 +125,7 @@ import {
   type ChatSession,
 } from "../../../../components/chat/ChatSessionPicker";
 import { CanvasWebView } from "../../../../components/canvas/CanvasWebView";
+import { ComposePortPreview } from "../../../../components/project/ComposePortPreview";
 import { ExternalPreviewWebView } from "../../../../components/canvas/ExternalPreviewWebView";
 import { ProjectTopBar } from "../../../../components/project/ProjectTopBar";
 import { SessionBreadcrumb } from "../../../../components/team-chat/SessionBreadcrumb";
@@ -1049,6 +1054,9 @@ export default observer(function ProjectLayout() {
     stalled: runtimeStalled,
     lastStatus: runtimeLastStatus,
     retry: retryAgentUrl,
+    budgetNotice,
+    dismissBudgetNotice,
+    capacity: runtimeCapacity,
   } = useAgentUrl(API_URL!, projectId, {
     credentials: Platform.OS === "web" ? "include" : "omit",
     headers: openRequestHeaders,
@@ -1061,6 +1069,7 @@ export default observer(function ProjectLayout() {
     // 45s and re-arms once the real value is known.
     stallThresholdMs: techStackId === "expo-app" ? 150_000 : undefined,
   });
+  useWorkspaceBudgetToast(budgetNotice, dismissBudgetNotice);
 
   // Pre-warm on intent: reaching for "open preview in new tab" is a strong
   // signal a top-level visit is coming, so nudge the pod awake now instead of
@@ -3697,6 +3706,8 @@ export default observer(function ProjectLayout() {
       agentUrl={agentUrl}
       canvasBaseUrl={canvasBaseUrl}
       previewUrl={previewUrl}
+      projectId={projectId}
+      techStackId={techStackId}
       onRefresh={reconnect}
       // True whenever the canvas owns the entire viewport (chat fullscreen
       // / collapsed in wide split, or narrow with the canvas tab active).
@@ -3832,7 +3843,16 @@ export default observer(function ProjectLayout() {
               </Text>
             </>
           )}
-          {showStalledRecovery && (
+          {showStalledRecovery && runtimeCapacity && (
+            <WorkspaceCapacityCard
+              capacity={runtimeCapacity}
+              onRetry={() => retryAgentUrl()}
+              onBack={() =>
+                router.canGoBack() ? router.back() : router.replace("/(app)")
+              }
+            />
+          )}
+          {showStalledRecovery && !runtimeCapacity && (
             <View className="w-full max-w-sm gap-3 items-center">
               <ActivityIndicator size="small" />
               <Text className="text-foreground text-base font-semibold text-center">
@@ -5182,6 +5202,8 @@ function CanvasPanel({
   agentUrl,
   canvasBaseUrl,
   previewUrl,
+  projectId,
+  techStackId,
   onRefresh,
   fullBleed = false,
   iframeRefreshKey = 0,
@@ -5191,6 +5213,8 @@ function CanvasPanel({
   agentUrl: string | null;
   canvasBaseUrl?: string | null;
   previewUrl?: string | null;
+  projectId?: string;
+  techStackId?: string;
   onRefresh?: () => void;
   fullBleed?: boolean;
   iframeRefreshKey?: number;
@@ -5237,6 +5261,14 @@ function CanvasPanel({
     previewUrl,
     canvasBaseUrl,
   });
+
+  if (techStackId === "docker-compose" && projectId) {
+    return (
+      <View className="flex-1 overflow-hidden bg-background">
+        <ComposePortPreview projectId={projectId} />
+      </View>
+    );
+  }
 
   // Don't load the app UI until the project's API sidecar is responding —
   // otherwise the SPA renders and fires `/api/*` calls into a server that

@@ -196,6 +196,65 @@ export function meetsMinimumInstanceSize(
 }
 
 /**
+ * Default memory size of a standard (non-docker) metal VM, before the
+ * workspace tier caps it. Large workspaces don't get one 16 GiB VM per
+ * project: the tier is a budget shared by every running project, so a
+ * standard project takes `small` out of it and a docker project takes its
+ * stack floor.
+ */
+const STANDARD_VM_SIZE: InstanceSizeName = 'small'
+
+export interface MetalVmSize {
+  vcpus: number
+  memMiB: number
+}
+
+function smallerSize(a: InstanceSizeName, b: InstanceSizeName): InstanceSizeName {
+  return INSTANCE_SIZE_ORDER.indexOf(a) <= INSTANCE_SIZE_ORDER.indexOf(b) ? a : b
+}
+
+/**
+ * vCPU and memory for one metal microVM in a workspace on `instanceSize`.
+ *
+ *   - vCPUs follow the tier (host CPU is shared and overcommitted; memory is
+ *     what the workspace budget accounts for). Firecracker needs whole vCPUs,
+ *     so `micro`'s 0.5 rounds up to 1.
+ *   - Memory is the docker stack's floor for a docker-class VM, otherwise
+ *     `STANDARD_VM_SIZE` capped at the tier. The unbilled mobile floor still
+ *     lifts a micro workspace's Expo project to `small`.
+ *
+ * `techStackIds` are the stacks of every project the VM serves (one for a
+ * project runtime, every member for a merged workspace runtime).
+ */
+export function resolveMetalVmSize(
+  instanceSize: InstanceSizeName,
+  techStackIds: Array<string | null | undefined>,
+  dockerClass: boolean,
+): MetalVmSize {
+  const size: InstanceSizeName = INSTANCE_SIZES[instanceSize] ? instanceSize : 'micro'
+  let vcpus = Math.max(1, Math.ceil(INSTANCE_SIZES[size].cpuCores))
+  let memSize = smallerSize(STANDARD_VM_SIZE, size)
+  if (dockerClass) {
+    const floor = techStackIds
+      .map((id) => getMinimumInstanceSize(id) as InstanceSizeName | null)
+      .filter((s): s is InstanceSizeName => !!s)
+      .sort((a, b) => INSTANCE_SIZE_ORDER.indexOf(b) - INSTANCE_SIZE_ORDER.indexOf(a))[0]
+    if (floor) {
+      memSize = floor
+      vcpus = Math.max(vcpus, Math.ceil(INSTANCE_SIZES[floor].cpuCores))
+    }
+  } else {
+    for (const id of techStackIds) memSize = applyTechStackFloor(memSize, id)
+  }
+  return { vcpus, memMiB: INSTANCE_SIZES[memSize].memoryGb * 1024 }
+}
+
+/** A workspace's pooled memory budget on metal: its tier's RAM, shared by every running VM. */
+export function getWorkspaceMemoryBudgetMiB(instanceSize: InstanceSizeName): number {
+  return (INSTANCE_SIZES[instanceSize] ?? INSTANCE_SIZES.micro).memoryGb * 1024
+}
+
+/**
  * Mobile stacks need extra disk for `node_modules` plus Metro's bundle
  * cache. Even after picking `small` (4 GiB diskSizeLimit), Expo + RN +
  * three.js can consume more, so we lift the disk overlay specifically

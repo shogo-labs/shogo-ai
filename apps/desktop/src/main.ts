@@ -18,7 +18,7 @@ import { initSentry, setSentryDeviceTag } from './sentry'
 initSentry()
 
 import { app, BrowserWindow, protocol, net, session, ipcMain, Menu, shell, Notification, dialog, powerMonitor, systemPreferences, desktopCapturer } from 'electron'
-import { ensureMicAccess, MAC_MIC_SETTINGS_URL, type MicAccess } from './media-permissions'
+import { ensureMediaAccess, ensureMicAccess, MAC_MIC_SETTINGS_URL, type MicAccess } from './media-permissions'
 import { DictationHotkeyService } from './dictation-hotkey'
 import { normalizeDictationConfig } from './dictation-protocol'
 import {
@@ -80,6 +80,7 @@ import {
   closePreview,
   setPreviewBounds,
   setPreviewVisible,
+  capturePreview,
   reloadPreview,
   goBackPreview,
   goForwardPreview,
@@ -222,8 +223,9 @@ const windowManager = new WindowManager({
   onWindowClosed: (window) => {
     closeAllForWindow(window)
     // The island is itself a BrowserWindow, so `window-all-closed` never
-    // fires while it's alive; quit here once the last app window goes.
-    if (!windowManager.hasWindows() && process.platform !== 'darwin') {
+    // fires while it's alive; quit here once the last app window goes, on
+    // every platform (otherwise the island and process outlive the app).
+    if (!windowManager.hasWindows()) {
       islandWindow?.destroy()
       islandWindow = null
       app.quit()
@@ -1188,12 +1190,50 @@ function buildAppMenu(): void {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template))
 }
 
-function checkMicAccess(): Promise<MicAccess> {
-  return ensureMicAccess({
+function mediaAccessDeps() {
+  return {
     platform: process.platform,
-    getMediaAccessStatus: (type) => systemPreferences.getMediaAccessStatus(type),
-    askForMediaAccess: (type) => systemPreferences.askForMediaAccess(type),
-  })
+    getMediaAccessStatus: (type: 'microphone' | 'camera') => systemPreferences.getMediaAccessStatus(type),
+    askForMediaAccess: (type: 'microphone' | 'camera') => systemPreferences.askForMediaAccess(type),
+  }
+}
+
+function checkMicAccess(): Promise<MicAccess> {
+  return ensureMicAccess(mediaAccessDeps())
+}
+
+/** Every OS grant a getUserMedia request needs: the mic for audio, the camera for video. */
+async function checkCaptureAccess(mediaTypes: string[] | undefined): Promise<boolean> {
+  const wantsAudio = !mediaTypes || mediaTypes.includes('audio')
+  const wantsVideo = !!mediaTypes?.includes('video')
+  if (wantsAudio && (await checkMicAccess()) !== 'granted') {
+    console.warn('[Desktop] microphone access not granted; denying media request')
+    return false
+  }
+  if (wantsVideo && (await ensureMediaAccess(mediaAccessDeps(), 'camera')) !== 'granted') {
+    console.warn('[Desktop] camera access not granted; denying media request')
+    return false
+  }
+  return true
+}
+
+/**
+ * Pick what to share for getDisplayMedia (huddle screen share). macOS 15+
+ * shows the system picker instead; elsewhere we offer the displays.
+ */
+async function pickDisplaySource(): Promise<Electron.DesktopCapturerSource | null> {
+  const sources = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 0, height: 0 } })
+  if (sources.length <= 1) return sources[0] ?? null
+  const parent = BrowserWindow.getFocusedWindow()
+  const options = {
+    type: 'question' as const,
+    message: 'Share which screen?',
+    buttons: [...sources.map((s, i) => s.name || `Screen ${i + 1}`), 'Cancel'],
+    cancelId: sources.length,
+    defaultId: 0,
+  }
+  const { response } = parent ? await dialog.showMessageBox(parent, options) : await dialog.showMessageBox(options)
+  return sources[response] ?? null
 }
 
 function osPermissionDeps(): OsPermissionDeps {
@@ -1520,6 +1560,13 @@ function registerIpcHandlers(): void {
     return { ok: true }
   })
 
+  ipcMain.handle('preview:capture', async (event, args: { projectId: string }) => {
+    if (!args?.projectId) return null
+    const win = windowManager.getWindowForWebContentsOrFocused(event.sender)
+    if (!win) return null
+    return capturePreview(win.id, args.projectId)
+  })
+
   ipcMain.handle('preview:reload', (event, args: { projectId: string }) => {
     if (!args?.projectId) return { ok: false, error: 'project-id-required' }
     const win = windowManager.getWindowForWebContentsOrFocused(event.sender)
@@ -1653,17 +1700,8 @@ function setupSessionHandlers(): void {
       const requestingUrl = details?.requestingUrl || webContents.getURL()
       if (isTrustedMediaOrigin(requestingUrl)) {
         const mediaTypes = (details as { mediaTypes?: string[] } | undefined)?.mediaTypes
-        // Audio requests must also clear the macOS TCC gate (prompting once).
-        if (!mediaTypes || mediaTypes.includes('audio')) {
-          void checkMicAccess().then((access) => {
-            if (access !== 'granted') {
-              console.warn(`[Desktop] microphone access ${access}; denying media request`)
-            }
-            callback(access === 'granted')
-          })
-          return
-        }
-        callback(true)
+        // Mic and camera requests must also clear the macOS TCC gate (prompting once).
+        void checkCaptureAccess(mediaTypes).then(callback)
         return
       }
       console.warn(`[Desktop] denying ${permission} request from untrusted origin: ${requestingUrl}`)
@@ -1679,6 +1717,24 @@ function setupSessionHandlers(): void {
     }
     return false
   })
+
+  ses.setDisplayMediaRequestHandler((request, callback) => {
+    const requestingUrl = request.frame?.url || request.securityOrigin
+    if (!isTrustedMediaOrigin(requestingUrl) || !request.videoRequested) {
+      console.warn(`[Desktop] denying display capture from ${requestingUrl}`)
+      callback({})
+      return
+    }
+    void pickDisplaySource()
+      .then((source) => {
+        if (!source) return callback({})
+        callback({ video: source, ...(request.audioRequested && process.platform === 'win32' ? { audio: 'loopback' as const } : {}) })
+      })
+      .catch((err) => {
+        console.warn('[Desktop] display capture failed:', (err as Error).message)
+        callback({})
+      })
+  }, { useSystemPicker: true })
 
   ses.webRequest.onBeforeSendHeaders(
     { urls: [`${apiOrigin}/*`] },
@@ -1965,9 +2021,7 @@ app.whenReady().then(async () => {
 })
 
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
-    app.quit()
-  }
+  app.quit()
 })
 
 let isQuitting = false

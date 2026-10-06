@@ -8,6 +8,7 @@ import { createReactNativeMock } from '../../../test/react-native-mock'
 
 const sentTyping: string[] = []
 const copied: string[] = []
+const pins: Array<{ id: string; pinned: boolean }> = []
 const uploaded: string[] = []
 const updates: Array<{ id: string; patch: unknown }> = []
 const decisions: Array<{ id: string; decision: string }> = []
@@ -16,10 +17,13 @@ let decisionError: string | null = null
 mock.module('react-native', () =>
   createReactNativeMock({
     Platform: { OS: 'web', select: (s: any) => s.web ?? s.default },
-    Pressable: ({ accessibilityLabel, children, onPress, onHoverIn, onHoverOut, disabled, testID }: any) =>
+    Pressable: ({ accessibilityLabel, children, onPress, onHoverIn, onHoverOut, onPointerEnter, onPointerLeave, onContextMenu, disabled, testID }: any) =>
       createElement(
         'div',
-        { role: 'button', 'aria-label': accessibilityLabel, onClick: onPress, onMouseEnter: onHoverIn, onMouseLeave: onHoverOut, disabled, 'data-testid': testID },
+        {
+          role: 'button', 'aria-label': accessibilityLabel, onClick: onPress, onMouseEnter: onHoverIn, onMouseLeave: onHoverOut,
+          onPointerEnter, onPointerLeave, onContextMenu, disabled, 'data-testid': testID,
+        },
         children,
       ),
     TextInput: forwardRef(function Input({ value, onChangeText, onSelectionChange, onKeyPress, placeholder, accessibilityLabel }: any, ref: any) {
@@ -86,6 +90,7 @@ mock.module('../../../lib/team-chat-api', () => ({
   conversationTitle: () => 'DM',
   isAgentDm: (c: any) => c.kind === 'dm' && (c.participants ?? []).some((p: any) => p.type === 'agent'),
   teamChatApi: () => ({
+    pin: async (id: string, pinned: boolean) => { pins.push({ id, pinned }) },
     workLog: (id: string) => { workLogs.push(id); return workLogResult() },
     upload: async (_id: string, file: { name: string }) => {
       uploaded.push(file.name)
@@ -427,47 +432,105 @@ describe('MessageRow', () => {
     const { container } = render(
       <MessageRow message={message({ id: 'm7', seq: 7 })} grouped={false} me="u-me" names={names} canManage={false} {...h} />,
     )
-    fireEvent.mouseEnter(container.querySelector('[role="button"]')!)
+    fireEvent.pointerEnter(container.querySelector('[role="button"]')!)
+    fireEvent.click(screen.getByLabelText('More actions'))
     await act(async () => {
-      fireEvent.click(screen.getByLabelText('Copy link'))
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Copy link' }))
     })
     expect(copied.at(-1)).toMatch(/\/c\/c1\?msg=m7$/)
-    expect(screen.getByLabelText('Link copied')).toBeTruthy()
-    fireEvent.click(screen.getByLabelText('Mark unread'))
+    fireEvent.click(screen.getByLabelText('More actions'))
+    expect(screen.getByRole('menuitem', { name: 'Link copied' })).toBeTruthy()
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Mark unread' }))
     expect(h.onMarkUnread).toHaveBeenCalledTimes(1)
 
     cleanup()
     const thread = render(<MessageRow message={message({ id: 'r1', threadRootId: 'm7' })} grouped={false} me="u-me" names={names} canManage={false} inThread {...h} />)
-    fireEvent.mouseEnter(thread.container.querySelector('[role="button"]')!)
-    expect(screen.queryByLabelText('Mark unread')).toBeNull()
+    fireEvent.pointerEnter(thread.container.querySelector('[role="button"]')!)
+    fireEvent.click(screen.getByLabelText('More actions'))
+    expect(screen.queryByRole('menuitem', { name: 'Mark unread' })).toBeNull()
     await act(async () => {
-      fireEvent.click(screen.getByLabelText('Copy link'))
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Copy link' }))
     })
     expect(copied.at(-1)).toMatch(/\/c\/c1\?thread=m7&msg=r1$/)
   })
 
-  test('the action bar survives the pointer moving from the message onto it, and goes after leaving', async () => {
+  test('the bar keeps only the primary actions; the rest live in the More actions menu', () => {
+    const h = handlers()
+    const { container } = render(
+      <MessageRow message={message({ authorUserId: 'u-me' })} grouped={false} me="u-me" names={names} canManage={false} canPin workspaceId="ws" {...h} />,
+    )
+    fireEvent.pointerEnter(container.querySelector('[role="button"]')!)
+    for (const label of ['Copy link', 'Save for later', 'Pin to conversation', 'Edit message', 'Delete message', 'Remind me about this']) {
+      expect(screen.queryByLabelText(label)).toBeNull()
+    }
+    expect(screen.queryByLabelText('More reactions')).toBeTruthy()
+    fireEvent.click(screen.getByLabelText('More actions'))
+    for (const name of ['Copy link', 'Save for later', 'Remind me: in 1 hour', 'Pin to conversation', 'Edit message', 'Delete message']) {
+      expect(screen.getByRole('menuitem', { name })).toBeTruthy()
+    }
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Delete message' }))
+    expect(h.onDelete).toHaveBeenCalledTimes(1)
+    expect(screen.queryByRole('menu')).toBeNull()
+  })
+
+  test('right-clicking a message opens the actions menu, with Delete only when permitted', () => {
+    const h = handlers()
+    const { container } = render(<MessageRow message={message()} grouped={false} me="u-me" names={names} canManage={false} canPin {...h} />)
+    const row = container.querySelector('[role="button"]')!
+    expect(fireEvent.contextMenu(row, { clientX: 40, clientY: 50 })).toBe(false) // default prevented
+    expect(screen.getByRole('menu')).toBeTruthy()
+    expect(screen.queryByRole('menuitem', { name: 'Delete message' })).toBeNull()
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Pin to conversation' }))
+    expect(pins.at(-1)).toEqual({ id: 'm1', pinned: true })
+    expect(screen.queryByRole('menu')).toBeNull()
+    cleanup()
+
+    const mine = render(<MessageRow message={message({ authorUserId: 'u-me' })} grouped={false} me="u-me" names={names} canManage={false} {...h} />)
+    fireEvent.contextMenu(mine.container.querySelector('[role="button"]')!)
+    expect(screen.getByRole('menuitem', { name: 'Delete message' })).toBeTruthy()
+    cleanup()
+
+    const pending = render(<MessageRow message={message({ pending: 'sending' as any })} grouped={false} me="u-me" names={names} canManage={false} {...h} />)
+    expect(fireEvent.contextMenu(pending.container.querySelector('[role="button"]')!)).toBe(true) // browser menu
+    expect(screen.queryByRole('menu')).toBeNull()
+  })
+
+  test('the action bar survives the pointer moving onto it and its buttons, and goes after leaving', async () => {
     const { container } = render(<MessageRow message={message()} grouped={false} me="u-me" names={names} canManage={false} {...handlers()} />)
     const row = container.querySelector('[role="button"]')!
-    fireEvent.mouseEnter(row)
-    const bar = screen.getByLabelText('More reactions').parentElement!
-    // The pointer leaves the row's own box on its way to the bar that floats above it.
+    fireEvent.pointerEnter(row)
+    // Pressable's own hover would end the row's hover as soon as a nested Pressable is entered.
     fireEvent.mouseLeave(row)
-    expect(screen.queryByLabelText('More reactions')).toBeTruthy()
-    fireEvent.mouseEnter(bar)
+    fireEvent.mouseEnter(screen.getByLabelText('More reactions'))
+    fireEvent.mouseLeave(screen.getByLabelText('More reactions'))
     await new Promise((r) => setTimeout(r, 260))
     expect(screen.queryByLabelText('More reactions')).toBeTruthy()
     await act(async () => {
-      fireEvent.mouseLeave(bar)
+      fireEvent.pointerLeave(row)
       await new Promise((r) => setTimeout(r, 260))
     })
+    expect(screen.queryByLabelText('More reactions')).toBeNull()
+  })
+
+  test('the bar stays while its menu is open, even after the pointer leaves the row', async () => {
+    const { container } = render(<MessageRow message={message()} grouped={false} me="u-me" names={names} canManage={false} {...handlers()} />)
+    const row = container.querySelector('[role="button"]')!
+    fireEvent.pointerEnter(row)
+    fireEvent.click(screen.getByLabelText('More actions'))
+    await act(async () => {
+      fireEvent.pointerLeave(row)
+      await new Promise((r) => setTimeout(r, 260))
+    })
+    expect(screen.queryByLabelText('More reactions')).toBeTruthy()
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(screen.queryByRole('menu')).toBeNull()
     expect(screen.queryByLabelText('More reactions')).toBeNull()
   })
 
   test('more reactions opens the searchable picker', () => {
     const h = handlers()
     const { container } = render(<MessageRow message={message()} grouped={false} me="u-me" names={names} canManage={false} workspaceId="ws" {...h} />)
-    fireEvent.mouseEnter(container.querySelector('[role="button"]')!)
+    fireEvent.pointerEnter(container.querySelector('[role="button"]')!)
     fireEvent.click(screen.getByLabelText('More reactions'))
     fireEvent.change(screen.getByLabelText('Search emoji'), { target: { value: 'rocket' } })
     fireEvent.click(screen.getByLabelText('rocket'))
