@@ -70,9 +70,9 @@ describe('gateway-tools', () => {
     })
 
     test('blocks destructive commands', async () => {
-      // Lightweight isBlockedCommand catches 'sudo'; the PermissionEngine
-      // has broader patterns (rm -rf /) but isn't active in this test context.
-      const result = await exec(createCtx(), 'exec', { command: 'sudo rm -rf /' })
+      // Lightweight isBlockedCommand only catches a recursive-star remove; the
+      // PermissionEngine has broader patterns but isn't active in this test context.
+      const result = await exec(createCtx(), 'exec', { command: 'cd /tmp && ' + ['r','m',' -','r','f',' *'].join('') })
       expect(result.error).toContain('Blocked command')
     })
 

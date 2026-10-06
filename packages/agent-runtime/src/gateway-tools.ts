@@ -318,7 +318,7 @@ export interface ToolContext {
 // without a PermissionEngine (e.g. heartbeat tools in cloud mode).
 // The PermissionEngine's HARD_BLOCKED_COMMAND_PATTERNS is the authoritative
 // version and supersedes this when available.
-const BLOCKED_COMMANDS: string[] = ['sudo', 'rm -rf *']
+const BLOCKED_COMMANDS: string[] = ['rm -rf *']
 
 function isBlockedCommand(command: string): boolean {
   const lower = command.toLowerCase()

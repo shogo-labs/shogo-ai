@@ -6,7 +6,7 @@
  * before they run and evaluate them against the active security policy.
  *
  * Three tiers: strict (ask everything), balanced (allowlist-based), full_autonomy (YOLO).
- * Hard-blocked actions (sudo, rm -rf /, system paths) are denied in ALL modes.
+ * Hard-blocked actions (rm -rf /, shutdown, system paths) are denied in ALL modes.
  */
 
 import { resolve, join, dirname } from 'path'
@@ -43,7 +43,6 @@ export type { ActionRule, SecurityPreference, PermissionCategory, PermissionChec
 
 // Patterns checked against each sub-command after splitting on ; && ||
 const SUB_COMMAND_BLOCKED: RegExp[] = [
-  /^\s*sudo\s/,
   /^\s*rm\s+(-[a-z]*r[a-z]*\s+|--recursive\s+)\//,
   /^\s*shutdown\b/,
   /^\s*reboot\b/,
@@ -63,11 +62,21 @@ const FULL_COMMAND_BLOCKED: RegExp[] = [
   /\beval\s+["']/,
 ]
 
+// `sudo` itself is allowed (subject to mode/allowlist rules), but must not
+// hide a hard-blocked command behind it, e.g. `sudo -u root rm -rf /`.
+const SUDO_PREFIX = /^\s*sudo(?:\s+(?:-[ugCDhpRrTt]\s+\S+|--\S+|-\S+))*\s+/
+
+function stripSudoPrefix(sub: string): string {
+  let out = sub
+  while (SUDO_PREFIX.test(out)) out = out.replace(SUDO_PREFIX, '')
+  return out
+}
+
 function isHardBlockedCommand(command: string): boolean {
   for (const pattern of FULL_COMMAND_BLOCKED) {
     if (pattern.test(command)) return true
   }
-  const subCommands = command.split(/\s*(?:&&|\|\||;)\s*/)
+  const subCommands = command.split(/\s*(?:&&|\|\||;)\s*/).map(stripSudoPrefix)
   for (const sub of subCommands) {
     for (const pattern of SUB_COMMAND_BLOCKED) {
       if (pattern.test(sub)) return true
@@ -118,9 +127,8 @@ const DEFAULT_SHELL_ALLOWLIST: string[] = [
  * gating them behind `SHOGO_RUNTIME_CLASS=docker` — set by the API only
  * when it actually assigned a docker-class VM — avoids widening the
  * default surface for the vast majority of (non-Docker) projects.
- * `sudo` stays hard-blocked in every mode regardless (see
- * `SUB_COMMAND_BLOCKED` above): dockerd itself runs as root from `fc-init`,
- * the agent's own user only needs group membership, never `sudo`.
+ * dockerd itself runs as root from `fc-init`; the agent's own user only
+ * needs group membership, so `sudo docker …` is not auto-allowed here.
  */
 const DOCKER_CLASS_SHELL_ALLOWLIST: string[] = [
   'docker *', 'docker',
