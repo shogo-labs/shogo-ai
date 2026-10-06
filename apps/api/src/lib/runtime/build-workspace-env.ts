@@ -42,7 +42,6 @@ import {
 } from '../../config/instance-sizes'
 import { isDockerClassEnabled } from '../runtime-class-setting'
 import { isWorkspaceBudgetEnabled } from '../workspace-compute-budget'
-import { metalVmSizeEnv } from './build-project-env'
 import { isDockerTechStack } from '../../../../../packages/core/src/tech-stack-registry'
 import { resolveAgentModelEnv } from './agent-model-defaults'
 import { deriveWorkspaceRuntimeToken } from '../workspace-runtime-token'
@@ -51,6 +50,10 @@ import { getSandboxExecOverride } from '../sandbox-exec-setting'
 import { parseProjectSettings } from '../project-settings'
 import { resolveExposedPorts } from '../project-ports'
 import { importCloudModule } from '../cloud-import'
+
+function metalVmSizeEnv(size: { vcpus: number; memMiB: number }): Record<string, string> {
+  return { SHOGO_VM_VCPUS: String(size.vcpus), SHOGO_VM_MEM_MIB: String(size.memMiB) }
+}
 
 export interface BuildWorkspaceEnvOpts {
   logPrefix?: string
