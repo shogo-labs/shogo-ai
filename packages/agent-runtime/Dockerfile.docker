@@ -82,3 +82,9 @@ RUN apt-get update -qq \
   # process per published port).
   && mkdir -p /etc/docker \
   && printf '{\n  "iptables": true,\n  "userland-proxy": false\n}\n' > /etc/docker/daemon.json
+
+# Same starter fc-init runs inside a Firecracker guest. Copying it into the
+# image lets a privileged `docker run` of this image prove dockerd before the
+# rootfs build. The rootfs build also copies it from scripts/metal-agent.
+COPY scripts/metal-agent/start-dockerd.sh /usr/local/bin/start-dockerd
+RUN chmod 0755 /usr/local/bin/start-dockerd

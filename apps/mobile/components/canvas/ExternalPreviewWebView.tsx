@@ -31,6 +31,7 @@ import {
   Pressable,
   TextInput,
   View,
+  Image,
   StyleSheet,
   ActivityIndicator,
 } from 'react-native'
@@ -44,6 +45,7 @@ import {
   RefreshCw,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
+import { useDomOverlayOpen } from '../../lib/use-dom-overlay-open'
 
 interface PreviewBridge {
   open: (
@@ -57,6 +59,8 @@ interface PreviewBridge {
     bounds: { x: number; y: number; width: number; height: number },
   ) => Promise<unknown>
   setVisible: (projectId: string, visible: boolean) => Promise<unknown>
+  /** Still image (data URL) of the live page, or null if unavailable. */
+  capture: (projectId: string) => Promise<string | null>
   reload: (projectId: string) => Promise<unknown>
   goBack: (projectId: string) => Promise<unknown>
   goForward: (projectId: string) => Promise<unknown>
@@ -81,6 +85,16 @@ function getPreviewBridge(): PreviewBridge | null {
   if (Platform.OS !== 'web' || typeof window === 'undefined') return null
   const w = window as unknown as { shogoDesktop?: { preview?: PreviewBridge } }
   return w.shogoDesktop?.preview ?? null
+}
+
+/** Max time to wait for a still before hiding the native view anyway. */
+const SNAPSHOT_TIMEOUT_MS = 150
+
+function nextFrame(): Promise<void> {
+  return new Promise((resolve) => {
+    if (typeof requestAnimationFrame === 'function') requestAnimationFrame(() => resolve())
+    else setTimeout(resolve, 16)
+  })
 }
 
 function getDevicePixelRatio(): number {
@@ -136,6 +150,13 @@ export function ExternalPreviewWebView({
   const [loading, setLoading] = useState(false)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [waitingForServer, setWaitingForServer] = useState(false)
+  const [snapshot, setSnapshot] = useState<string | null>(null)
+
+  // The native view paints above all DOM, so hide it while any modal/menu is
+  // open in the page (see lib/use-dom-overlay-open.ts).
+  const rootRef = useRef<View | null>(null)
+  const overlayOpen = useDomOverlayOpen(rootRef)
+  const effectiveVisible = visible && !overlayOpen
 
   // Keep the draft URL in sync when the parent supplies a new one.
   useEffect(() => {
@@ -242,17 +263,60 @@ export function ExternalPreviewWebView({
         // React modal is open), re-apply that state after `open` creates
         // the native Electron view. A prior `setVisible(false)` can be a
         // no-op when the view does not exist yet.
-        void bridge.setVisible(projectId, visible)
-        if (visible) pushBounds()
+        void bridge.setVisible(projectId, effectiveVisible)
+        if (effectiveVisible) pushBounds()
       })
     }
-  }, [bridge, projectId, url, isTrusted, onTrustRequired, visible, pushBounds])
+  }, [bridge, projectId, url, isTrusted, onTrustRequired, effectiveVisible, pushBounds])
 
+  // Show / hide the native view. When an in-page overlay (modal, menu) opens
+  // while this tab is still active, grab a still of the live page and paint
+  // it in the placeholder *before* hiding the native view, so the preview
+  // doesn't flash blank behind the modal backdrop. Tab switches (`visible`
+  // false) skip the capture since nothing is shown in the placeholder then.
   useEffect(() => {
     if (!bridge) return
-    void bridge.setVisible(projectId, visible)
-    if (visible) pushBounds()
-  }, [bridge, projectId, visible, pushBounds])
+    let cancelled = false
+    let raf = 0
+
+    if (effectiveVisible) {
+      void bridge.setVisible(projectId, true)
+      pushBounds()
+      // Clear the still on the next frame so the swap back doesn't flicker.
+      raf = requestAnimationFrame(() => {
+        if (!cancelled) setSnapshot(null)
+      })
+    } else if (visible) {
+      void (async () => {
+        let image: string | null = null
+        try {
+          image = await Promise.race([
+            bridge.capture(projectId),
+            new Promise<null>((resolve) => setTimeout(() => resolve(null), SNAPSHOT_TIMEOUT_MS)),
+          ])
+        } catch {
+          image = null
+        }
+        if (cancelled) return
+        if (image) {
+          setSnapshot(image)
+          // Let React paint the still before the native view goes away.
+          await nextFrame()
+          await nextFrame()
+          if (cancelled) return
+        }
+        void bridge.setVisible(projectId, false)
+      })()
+    } else {
+      setSnapshot(null)
+      void bridge.setVisible(projectId, false)
+    }
+
+    return () => {
+      cancelled = true
+      if (raf) cancelAnimationFrame(raf)
+    }
+  }, [bridge, projectId, visible, effectiveVisible, pushBounds])
 
   // Cleanup on unmount.
   useEffect(() => {
@@ -292,7 +356,7 @@ export function ExternalPreviewWebView({
   }
 
   return (
-    <View className="flex-1 flex-col bg-background">
+    <View ref={rootRef} className="flex-1 flex-col bg-background">
       {/* Address bar */}
       <View className="flex-row items-center gap-1.5 px-2 py-1.5 border-b border-border bg-card">
         <Pressable
@@ -374,6 +438,14 @@ export function ExternalPreviewWebView({
           onLayout={pushBounds}
           className="absolute inset-0 bg-background"
         />
+        {snapshot ? (
+          <Image
+            source={{ uri: snapshot }}
+            resizeMode="stretch"
+            className="absolute inset-0"
+            style={snapshotStyle}
+          />
+        ) : null}
         {!url ? (
           <View className="absolute inset-0 items-center justify-center px-6">
             <Globe size={32} className="text-muted-foreground mb-3" />
@@ -419,6 +491,12 @@ function prettyHost(rawUrl: string): string {
     return rawUrl
   }
 }
+
+const snapshotStyle = StyleSheet.flatten({
+  width: '100%',
+  height: '100%',
+  pointerEvents: 'none',
+} as any)
 
 const addressInputStyle = StyleSheet.flatten({
   paddingVertical: 0,

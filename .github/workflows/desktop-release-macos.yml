@@ -106,6 +106,32 @@ jobs:
             echo "${BETA_TAG} already exists at ${GITHUB_SHA}."
           fi
 
+      - name: Dispatch agent-runtime publish
+        # Remote-SSH bootstraps shogo-agent-runtime-<target>.tar.gz from the
+        # release matching the desktop version. The tag above is minted with
+        # GITHUB_TOKEN, so publish-agent-runtime.yml's `push: tags` trigger
+        # never fires for it and beta installs would 404. Dispatch it
+        # explicitly; for a dispatched beta it uploads to the (already public)
+        # prerelease instead of a draft, since finalize-release.yml does not
+        # coordinate beta tags.
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3 4 5; do
+            if gh workflow run publish-agent-runtime.yml \
+              --repo "$GITHUB_REPOSITORY" \
+              --ref main \
+              --field tag="$BETA_TAG" \
+              --field channel=beta; then
+              echo "Queued agent-runtime publish for ${BETA_TAG}."
+              exit 0
+            fi
+            if [ "$attempt" -eq 5 ]; then
+              echo "::error::Failed to dispatch agent-runtime publish for ${BETA_TAG}."
+              exit 1
+            fi
+            sleep 5
+          done
+
       - name: Dispatch iOS workflow
         run: |
           set -euo pipefail
@@ -365,6 +391,8 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build workspace packages
+        env:
+          NODE_OPTIONS: --max-old-space-size=8192
         run: bun run build:packages
 
       # `apps/api/src/generated/admin-routes.ts` is git-ignored and produced
@@ -933,11 +961,13 @@ jobs:
           # published only once all four runs for this commit succeed.
           #
           # Beta: publish immediately (not draft, prerelease, not "latest").
-          # Only this workflow + desktop-release-windows target a beta tag
-          # (the tag is minted via GITHUB_TOKEN, which doesn't re-trigger
-          # `push: tags` workflows — see scripts/desktop-next-beta-version.ts),
-          # so there's no finalize-release.yml coordinator to wait for and
-          # no reason to hide a beta build from opted-in users.
+          # Only this workflow, desktop-release-windows, and a dispatched
+          # publish-agent-runtime target a beta tag (the tag is minted via
+          # GITHUB_TOKEN, which doesn't re-trigger `push: tags` workflows —
+          # see scripts/desktop-next-beta-version.ts; trigger-ios-beta
+          # dispatches the runtime publish explicitly), so there's no
+          # finalize-release.yml coordinator to wait for and no reason to hide
+          # a beta build from opted-in users.
           draft: ${{ needs.resolve-version.outputs.channel != 'beta' }}
           prerelease: ${{ needs.resolve-version.outputs.channel == 'beta' }}
           make_latest: ${{ needs.resolve-version.outputs.channel != 'beta' }}
@@ -1034,8 +1064,9 @@ jobs:
         # installers up top and everything else (CLI / runtime / auto-update
         # feeds) tucked into a collapsed section. `gh release edit` overwrites
         # the body regardless of which workflow created the release first.
-        # Beta releases get their own short notes above instead (no CLI /
-        # runtime assets ever land on a beta tag to explain away).
+        # Beta releases get their own short notes above instead (only the
+        # desktop installers and the agent-runtime tarballs land on a beta
+        # tag, so there is no CLI listing to tuck away).
         if: needs.resolve-version.outputs.channel != 'beta'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

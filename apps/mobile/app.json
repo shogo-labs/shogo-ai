@@ -50,7 +50,7 @@
         "expo-image-picker",
         {
           "photosPermission": "Allow Shogo to access your photos so you can attach them to messages.",
-          "cameraPermission": "Allow Shogo to use the camera so you can attach photos to messages."
+          "cameraPermission": "Allow Shogo to use the camera so you can attach photos to messages and turn on video in huddles."
         }
       ],
       [
@@ -90,14 +90,16 @@
       [
         "expo-audio",
         {
-          "microphonePermission": "Shogo records meetings you start so it can transcribe them and write your notes.",
+          "microphonePermission": "Shogo records meetings you start so it can transcribe them and write your notes, and uses your microphone when you talk in a huddle.",
           "enableBackgroundRecording": true
         }
       ],
       "expo-sharing",
       "expo-status-bar",
       "expo-font",
-      "expo-asset"
+      "expo-asset",
+      "@livekit/react-native-expo-plugin",
+      "@config-plugins/react-native-webrtc"
     ],
     "extra": {
       "router": {},

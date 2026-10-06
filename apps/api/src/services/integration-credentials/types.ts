@@ -20,11 +20,15 @@ export const ACTOR_FALLBACKS: readonly ActorFallback[] = ['ask', 'shared', 'deny
  * skips steps that don't apply:
  *   requester - the person's own account, when they've connected and allowed this project
  *   ask       - a known person who hasn't connected yet gets a connect link
+ *   approve   - post a card where the turn is happening; whoever approves
+ *               becomes the person and the chain restarts with them
+ *   delegate  - the account of whoever opted in to stand in for runs with no
+ *               usable person
  *   shared    - the project's account, when it has one
  *   deny      - refuse
  */
-export type ChainStep = 'requester' | 'ask' | 'shared' | 'deny'
-export const CHAIN_STEPS: readonly ChainStep[] = ['requester', 'ask', 'shared', 'deny']
+export type ChainStep = 'requester' | 'ask' | 'approve' | 'delegate' | 'shared' | 'deny'
+export const CHAIN_STEPS: readonly ChainStep[] = ['requester', 'ask', 'approve', 'delegate', 'shared', 'deny']
 
 export interface CredentialPolicy {
   provider: string
@@ -35,6 +39,8 @@ export interface CredentialPolicy {
   readMode: ActorMode
   fallback: ActorFallback
   sharedUserId: string | null
+  /** Who stands in for runs with no usable person (the `delegate` step). */
+  delegateUserId: string | null
 }
 
 /** The chain a v1 policy (mode + single fallback) behaves as. */
@@ -63,6 +69,7 @@ export const DEFAULT_POLICY: Omit<CredentialPolicy, 'provider'> = {
   readMode: 'shared',
   fallback: 'ask',
   sharedUserId: null,
+  delegateUserId: null,
 }
 
 /** A stored personal connection, decrypted. */
@@ -133,18 +140,33 @@ export interface CredentialProvider {
   beginConnect?(args: { userId: string; projectId: string; provider: string; returnUrl: string; resume?: string }): Promise<{ url: string }>
 }
 
+/**
+ * Where a credential came from: the project's account, the person who asked,
+ * the project's delegate, or someone who approved this call.
+ */
+export type CredentialSource = 'shared' | 'personal' | 'delegate' | 'approved'
+
 export type ResolveResult =
   | {
       ok: true
-      source: 'shared' | 'personal'
+      source: CredentialSource
       /** Display name of the identity used, e.g. "@octocat" or "project account". */
       actingAs: string
       userId?: string
+      /** On a shared account: the person it acted for, to credit them in what it writes. */
+      onBehalfOf?: string
       credential: CredentialMaterial
     }
   | {
       ok: false
-      code: 'requester_auth_required' | 'requester_unknown' | 'denied' | 'not_connected'
+      code: 'requester_auth_required' | 'requester_unknown' | 'denied' | 'not_connected' | 'approval_denied' | 'approval_expired'
       message: string
       connectUrl?: string
+    }
+  | {
+      ok: false
+      code: 'approval_pending'
+      message: string
+      approvalId: string
+      expiresAt: string
     }

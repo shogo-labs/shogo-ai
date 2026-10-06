@@ -166,6 +166,17 @@ const MUTE_AGENT_IDLE_MS = 5 * 60_000
 // now costs a rescue, not just a reboot, so give it room before giving up.
 const HEALTH_GATE_TIMEOUT_MS = 2000
 const HEALTH_GATE_RETRIES = 4
+/**
+ * One longer probe before a running guest is discarded. A docker build can
+ * pin every vCPU for minutes; that guest is slow, not wedged.
+ */
+const HEALTH_GATE_PATIENT_TIMEOUT_MS = 15_000
+/**
+ * How long background activity polls must have been failing before open()
+ * discards a running guest. Shorter than this, open() reports "busy" and the
+ * caller retries.
+ */
+const MUTE_DISCARD_AFTER_MS = 10 * 60_000
 
 export interface PooledVm {
   handle: FcVmHandle
@@ -1083,7 +1094,8 @@ export class MetalWarmPool {
    * (fake 172.16 URLs would otherwise always fail and trip the health gate).
    * A couple of short retries so a slow-but-live guest is not discarded.
    */
-  protected async isGuestHealthy(handle: FcVmHandle): Promise<boolean> {
+  protected async isGuestHealthy(handle: FcVmHandle, opts: { patient?: boolean } = {}): Promise<boolean> {
+    if (opts.patient) return probeHealth(handle.agentUrl, HEALTH_GATE_PATIENT_TIMEOUT_MS)
     for (let i = 0; i < HEALTH_GATE_RETRIES; i++) {
       if (await probeHealth(handle.agentUrl, HEALTH_GATE_TIMEOUT_MS)) return true
       if (i + 1 < HEALTH_GATE_RETRIES) await Bun.sleep(150)
@@ -1198,9 +1210,25 @@ export class MetalWarmPool {
         // proxy to it and get ECONNREFUSED/timeout, and because the wake poll keeps
         // touching the entry the idle reaper never clears it. A mute guest (FC
         // process alive, HTTP hung) is the same phantom with a live PID — the
-        // 2026-08 wedged-guest outage. Discard and fall through to resume/boot
-        // so THIS open self-heals.
-        if (this.mgr.isRunning(live.handle) && (await this.isGuestHealthy(live.handle))) {
+        // 2026-08 wedged-guest outage. Once it has stayed mute past
+        // MUTE_DISCARD_AFTER_MS, discard and fall through to resume/boot so
+        // THIS open self-heals.
+        const running = this.mgr.isRunning(live.handle)
+        let healthy =
+          running &&
+          ((await this.isGuestHealthy(live.handle)) || (await this.isGuestHealthy(live.handle, { patient: true })))
+        if (running && !healthy) {
+          // Hand back a slow guest rather than destroy it: reprovisioning a
+          // busy VM loses its in-flight work and its unsaved workspace.
+          const failedFor = live.activityPollFailedAt !== undefined ? Date.now() - live.activityPollFailedAt : 0
+          if (failedFor < MUTE_DISCARD_AFTER_MS) {
+            console.warn(
+              `[pool] assigned VM ${live.handle.id} for ${projectId} is slow to answer (activity polls failing for ${Math.round(failedFor / 1000)}s) — keeping it`,
+            )
+            healthy = true
+          }
+        }
+        if (healthy) {
           live.lastTouchedAt = Date.now()
           live.lastHealthOk = true
           if (bind?.attachedProjectIds) {
@@ -1292,7 +1320,7 @@ export class MetalWarmPool {
       // debug than a log line here.
       console.error(
         `[pool] project ${projectId} requested vmClass=${vmClass} but this host does not support it ` +
-          `(METAL_DOCKER_ROOTFS unset or rootfsCow=dm) — falling back to a standard VM`,
+          `(METAL_DOCKER_ROOTFS unset) — falling back to a standard VM`,
       )
       vmClass = 'standard'
     }

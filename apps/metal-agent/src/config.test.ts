@@ -36,13 +36,12 @@ describe('isVmClassSupported', () => {
     expect(isVmClassSupported(cfg, 'docker')).toBe(true)
   })
 
-  test('docker is refused under dm rootfsCow even with a configured rootfs — fail-safe', () => {
+  test('docker is supported under dm when its own rootfs is configured', () => {
     const cfg = fakeCfg({
       rootfsCow: 'dm',
       dockerClass: { ...config.dockerClass, baseRootfs: '/opt/fc-spike/img/docker-rootfs.ext4' },
     })
-    expect(isVmClassSupported(cfg, 'docker')).toBe(false)
-    // Standard is unaffected by dm mode.
+    expect(isVmClassSupported(cfg, 'docker')).toBe(true)
     expect(isVmClassSupported(cfg, 'standard')).toBe(true)
   })
 })

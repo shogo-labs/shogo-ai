@@ -211,6 +211,11 @@ export async function installAgent(params: {
   // free, sync check that returns null for every non-Docker stack, so this
   // doesn't add a query to the common (non-Docker) install path.
   const techStackId = settingsJson?.techStackId as string | undefined
+  const { dockerClassBlockedMessage } = await import('../lib/runtime-class-setting')
+  const dockerBlocked = dockerClassBlockedMessage(techStackId)
+  if (dockerBlocked) {
+    throw new Error(`docker_class_disabled: ${dockerBlocked}`)
+  }
   if (getMinimumInstanceSize(techStackId)) {
     const { allowed, currentSize, requiredSize } = await canRunTechStackOnInstanceSize(
       workspaceId,

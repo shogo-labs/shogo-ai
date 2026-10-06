@@ -19,6 +19,7 @@ import { getMinimumInstanceSize } from '@shogo/shared-runtime'
 import { projectHooks, type HookContext } from '../generated/project.hooks'
 import { encodeProjectSettingsForWrite, normalizeProjectSettings } from '../lib/project-settings'
 import { canRunTechStackOnInstanceSize, hasPaidSubscription } from './billing-runtime'
+import { dockerClassBlockedMessage } from '../lib/runtime-class-setting'
 
 export type ProjectLifecycleErrorCode =
   | 'unauthorized'
@@ -27,6 +28,7 @@ export type ProjectLifecycleErrorCode =
   | 'not_found'
   | 'invalid_working_mode'
   | 'instance_too_small'
+  | 'docker_class_disabled'
   | 'paywall'
 
 export class ProjectLifecycleError extends Error {
@@ -221,19 +223,25 @@ export async function configureProject(
     // Docker-class stack the same way the UI's settings PATCH can, so it
     // needs the same "does this workspace's instance size afford it?" check.
     const incomingTechStackId = patch.settings.techStackId as string | undefined
-    if (incomingTechStackId && getMinimumInstanceSize(incomingTechStackId)) {
+    if (incomingTechStackId) {
       const currentTechStackId = current.techStackId as string | undefined
       if (currentTechStackId !== incomingTechStackId) {
-        const { allowed, currentSize, requiredSize } = await canRunTechStackOnInstanceSize(
-          existing.workspaceId,
-          incomingTechStackId,
-        )
-        if (!allowed) {
-          throw new ProjectLifecycleError(
-            'instance_too_small',
-            `Switching to this stack requires the ${requiredSize} compute tier or higher ` +
-              `(workspace is currently on ${currentSize}). Upgrade compute in Settings > Billing to continue.`,
+        const dockerBlocked = dockerClassBlockedMessage(incomingTechStackId)
+        if (dockerBlocked) {
+          throw new ProjectLifecycleError('docker_class_disabled', dockerBlocked)
+        }
+        if (getMinimumInstanceSize(incomingTechStackId)) {
+          const { allowed, currentSize, requiredSize } = await canRunTechStackOnInstanceSize(
+            existing.workspaceId,
+            incomingTechStackId,
           )
+          if (!allowed) {
+            throw new ProjectLifecycleError(
+              'instance_too_small',
+              `Switching to this stack requires the ${requiredSize} compute tier or higher ` +
+                `(workspace is currently on ${currentSize}). Upgrade compute in Settings > Billing to continue.`,
+            )
+          }
         }
       }
     }

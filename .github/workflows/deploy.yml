@@ -869,6 +869,9 @@ jobs:
           if [ -n "${{ secrets.ELEVENLABS_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=ELEVENLABS_API_KEY="${{ secrets.ELEVENLABS_API_KEY }}"); fi
           if [ -n "${{ secrets.ELEVENLABS_VOICE_MODE_AGENT_ID }}" ]; then SECRET_ARGS+=(--from-literal=ELEVENLABS_VOICE_MODE_AGENT_ID="${{ secrets.ELEVENLABS_VOICE_MODE_AGENT_ID }}"); fi
           if [ -n "${{ secrets.ELEVENLABS_WEBHOOK_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=ELEVENLABS_WEBHOOK_SECRET="${{ secrets.ELEVENLABS_WEBHOOK_SECRET }}"); fi
+          if [ -n "${{ secrets.LIVEKIT_URL }}" ]; then SECRET_ARGS+=(--from-literal=LIVEKIT_URL="${{ secrets.LIVEKIT_URL }}"); fi
+          if [ -n "${{ secrets.LIVEKIT_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=LIVEKIT_API_KEY="${{ secrets.LIVEKIT_API_KEY }}"); fi
+          if [ -n "${{ secrets.LIVEKIT_API_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=LIVEKIT_API_SECRET="${{ secrets.LIVEKIT_API_SECRET }}"); fi
           if [ -n "${{ secrets.TWILIO_ACCOUNT_SID }}" ]; then SECRET_ARGS+=(--from-literal=TWILIO_ACCOUNT_SID="${{ secrets.TWILIO_ACCOUNT_SID }}"); fi
           if [ -n "${{ secrets.TWILIO_AUTH_TOKEN }}" ]; then SECRET_ARGS+=(--from-literal=TWILIO_AUTH_TOKEN="${{ secrets.TWILIO_AUTH_TOKEN }}"); fi
           # Shared secret with shogo-website/functions/r/[code].ts for
@@ -1476,6 +1479,9 @@ jobs:
           if [ -n "${{ secrets.ELEVENLABS_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=ELEVENLABS_API_KEY="${{ secrets.ELEVENLABS_API_KEY }}"); fi
           if [ -n "${{ secrets.ELEVENLABS_VOICE_MODE_AGENT_ID }}" ]; then SECRET_ARGS+=(--from-literal=ELEVENLABS_VOICE_MODE_AGENT_ID="${{ secrets.ELEVENLABS_VOICE_MODE_AGENT_ID }}"); fi
           if [ -n "${{ secrets.ELEVENLABS_WEBHOOK_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=ELEVENLABS_WEBHOOK_SECRET="${{ secrets.ELEVENLABS_WEBHOOK_SECRET }}"); fi
+          if [ -n "${{ secrets.LIVEKIT_URL }}" ]; then SECRET_ARGS+=(--from-literal=LIVEKIT_URL="${{ secrets.LIVEKIT_URL }}"); fi
+          if [ -n "${{ secrets.LIVEKIT_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=LIVEKIT_API_KEY="${{ secrets.LIVEKIT_API_KEY }}"); fi
+          if [ -n "${{ secrets.LIVEKIT_API_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=LIVEKIT_API_SECRET="${{ secrets.LIVEKIT_API_SECRET }}"); fi
           if [ -n "${{ secrets.TWILIO_ACCOUNT_SID }}" ]; then SECRET_ARGS+=(--from-literal=TWILIO_ACCOUNT_SID="${{ secrets.TWILIO_ACCOUNT_SID }}"); fi
           if [ -n "${{ secrets.TWILIO_AUTH_TOKEN }}" ]; then SECRET_ARGS+=(--from-literal=TWILIO_AUTH_TOKEN="${{ secrets.TWILIO_AUTH_TOKEN }}"); fi
           # Shared secret with shogo-website/functions/r/[code].ts for
@@ -2162,6 +2168,9 @@ jobs:
           if [ -n "${{ secrets.ELEVENLABS_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=ELEVENLABS_API_KEY="${{ secrets.ELEVENLABS_API_KEY }}"); fi
           if [ -n "${{ secrets.ELEVENLABS_VOICE_MODE_AGENT_ID }}" ]; then SECRET_ARGS+=(--from-literal=ELEVENLABS_VOICE_MODE_AGENT_ID="${{ secrets.ELEVENLABS_VOICE_MODE_AGENT_ID }}"); fi
           if [ -n "${{ secrets.ELEVENLABS_WEBHOOK_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=ELEVENLABS_WEBHOOK_SECRET="${{ secrets.ELEVENLABS_WEBHOOK_SECRET }}"); fi
+          if [ -n "${{ secrets.LIVEKIT_URL }}" ]; then SECRET_ARGS+=(--from-literal=LIVEKIT_URL="${{ secrets.LIVEKIT_URL }}"); fi
+          if [ -n "${{ secrets.LIVEKIT_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=LIVEKIT_API_KEY="${{ secrets.LIVEKIT_API_KEY }}"); fi
+          if [ -n "${{ secrets.LIVEKIT_API_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=LIVEKIT_API_SECRET="${{ secrets.LIVEKIT_API_SECRET }}"); fi
           if [ -n "${{ secrets.TWILIO_ACCOUNT_SID }}" ]; then SECRET_ARGS+=(--from-literal=TWILIO_ACCOUNT_SID="${{ secrets.TWILIO_ACCOUNT_SID }}"); fi
           if [ -n "${{ secrets.TWILIO_AUTH_TOKEN }}" ]; then SECRET_ARGS+=(--from-literal=TWILIO_AUTH_TOKEN="${{ secrets.TWILIO_AUTH_TOKEN }}"); fi
           # Shared secret with shogo-website/functions/r/[code].ts for
@@ -2545,14 +2554,23 @@ jobs:
       # api rollout below, while the new tables hold no EU-written rows.
       # Non-blocking: a failure leaves sub_from_eu trailing the publication,
       # which the replication-monitor staleness check pages on.
+      # deploy-us's oci_region / ns_system outputs contain "-", which a
+      # secret's value matches, so Actions drops them ("Skip output ... may
+      # contain secret"). Derive the region from the cluster OCID's region key
+      # instead; the system namespace has the same name in both regions.
       - name: Refresh US subscription for tables published on EU
         continue-on-error: true
         env:
           US_CLUSTER_OCID: ${{ needs.deploy-us.outputs.oke_cluster_ocid }}
-          US_REGION: ${{ needs.deploy-us.outputs.oci_region }}
-          US_NS_SYSTEM: ${{ needs.deploy-us.outputs.ns_system }}
         run: |
           set -euo pipefail
+          US_REGION_KEY=$(echo "$US_CLUSTER_OCID" | cut -d. -f4 | tr '[:lower:]' '[:upper:]')
+          US_REGION=$(oci iam region list --query "data[?key=='${US_REGION_KEY}'].name | [0]" --raw-output)
+          if [ -z "$US_REGION" ] || [ "$US_REGION" = "null" ]; then
+            echo "::error::Could not resolve the US region from cluster OCID region key '${US_REGION_KEY}'"
+            exit 1
+          fi
+          US_NS_SYSTEM="$NS_SYSTEM"
           US_KUBECONFIG="$RUNNER_TEMP/us-kubeconfig"
           oci ce cluster create-kubeconfig \
             --cluster-id "$US_CLUSTER_OCID" \

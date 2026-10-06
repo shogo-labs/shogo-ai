@@ -4,7 +4,7 @@
  * The desktop relay for cloud workspaces, against a stub cloud: per-workspace
  * keys, prefix stripping, cookie dropping, SSE pass-through, the team chat
  * WebSocket (typing/presence), key re-sync on 403, the merged workspace list
- * (cloud Personal replacing the local one), and signed-out behavior.
+ * (local and cloud workspaces side by side), and signed-out behavior.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, mock, test } from 'bun:test'
 import { Hono } from 'hono'
@@ -290,7 +290,7 @@ describe('workspace list and status', () => {
     expect(body.total).toBe(4)
   })
 
-  test('a cloud Personal workspace takes the local one\'s place', async () => {
+  test('a cloud Personal workspace is listed alongside the local one', async () => {
     await cloudWorkspaces.setCloudWorkspaces({
       user: { id: 'cloud-user', name: 'Russ', email: null },
       workspaces: [
@@ -300,11 +300,12 @@ describe('workspace list and status', () => {
     })
     const body = await (await app.request('/api/workspaces')).json()
     expect(body.items.map((w: any) => [w.id, w.kind, w.source ?? 'local'])).toEqual([
-      ['cloud-personal', 'personal', 'cloud'],
+      ['local-personal', 'personal', 'local'],
       ['local-ws', 'team', 'local'],
+      ['cloud-personal', 'personal', 'cloud'],
       ['ws-acme', 'team', 'cloud'],
     ])
-    expect(body.total).toBe(3)
+    expect(body.total).toBe(4)
     const status = await (await app.request('/api/local/cloud-workspaces')).json()
     expect(status.workspaces.map((w: any) => w.kind)).toEqual(['team', 'personal'])
   })

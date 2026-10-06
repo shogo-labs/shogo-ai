@@ -59,7 +59,13 @@ function validChain(value: unknown): value is ChainStep[] {
   )
 }
 
-function withSummaries(provider: string, writeChain: ChainStep[], readChain: ChainStep[], sharedUserId: string | null): CredentialPolicy {
+function withSummaries(
+  provider: string,
+  writeChain: ChainStep[],
+  readChain: ChainStep[],
+  sharedUserId: string | null,
+  delegateUserId: string | null = null,
+): CredentialPolicy {
   return {
     provider,
     writeChain,
@@ -68,6 +74,7 @@ function withSummaries(provider: string, writeChain: ChainStep[], readChain: Cha
     readMode: chainMode(readChain),
     fallback: chainFallback(writeChain),
     sharedUserId,
+    delegateUserId,
   }
 }
 
@@ -79,6 +86,7 @@ function toPolicy(provider: string, row: any | null): CredentialPolicy {
     parseChain(row.writeChain) ?? legacyChain(asMode(row.writeMode), fallback, 'write'),
     parseChain(row.readChain) ?? legacyChain(asMode(row.readMode), fallback, 'read'),
     row.sharedUserId ?? null,
+    row.delegateUserId ?? null,
   )
 }
 
@@ -140,6 +148,7 @@ export async function savePolicy(
     writeChain,
     readChain,
     changes.sharedUserId !== undefined ? changes.sharedUserId : current.sharedUserId,
+    current.delegateUserId,
   )
 
   const data = {
@@ -215,6 +224,31 @@ export async function deletePersonalConnection(userId: string, provider: string)
     where: { userId, provider, revokedAt: null },
     data: { revokedAt: new Date() },
   })
+}
+
+/**
+ * Make `userId` the project's delegate for `provider`, or clear it. Callers
+ * check who may do this: only the person themselves opts in.
+ */
+export async function setDelegate(projectId: string, provider: string, userId: string | null): Promise<CredentialPolicy> {
+  if (!isValidProviderId(provider)) throw new PolicyValidationError(`Unknown integration: ${provider}`)
+  const current = await getPolicy(projectId, provider)
+  const data = { delegateUserId: userId, delegatedAt: userId ? new Date() : null }
+  const row = await db.integrationCredentialPolicy.upsert({
+    where: { projectId_provider: { projectId, provider } },
+    create: {
+      projectId,
+      provider,
+      writeChain: JSON.stringify(current.writeChain),
+      readChain: JSON.stringify(current.readChain),
+      writeMode: current.writeMode,
+      readMode: current.readMode,
+      fallback: current.fallback,
+      ...data,
+    },
+    update: data,
+  })
+  return toPolicy(provider, row)
 }
 
 export async function hasActiveGrant(userId: string, projectId: string, provider: string): Promise<boolean> {

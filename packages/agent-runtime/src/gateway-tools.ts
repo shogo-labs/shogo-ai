@@ -153,6 +153,7 @@ import {
   type CheckpointCallResult,
 } from './internal-api'
 import { clearGitHubCliEnvCache, githubCliEnvForProject } from './github-cli-credentials'
+import { approvalOutcomeResult, waitForCredentialApproval, withCredentialApproval } from './integration-credentials'
 import { checkServerTsxDrift, healServerTsxDrift } from './server-tsx-drift'
 import { getCanvasRuntimeErrors, clearCanvasRuntimeErrors } from './canvas-runtime-errors'
 import { scanAndFixFile as scanFileForHardcodedPorts, type PortFix, type PortWarning } from './lint-hardcoded-ports'
@@ -317,7 +318,7 @@ export interface ToolContext {
 // without a PermissionEngine (e.g. heartbeat tools in cloud mode).
 // The PermissionEngine's HARD_BLOCKED_COMMAND_PATTERNS is the authoritative
 // version and supersedes this when available.
-const BLOCKED_COMMANDS: string[] = ['sudo', 'rm -rf *']
+const BLOCKED_COMMANDS: string[] = ['rm -rf *']
 
 function isBlockedCommand(command: string): boolean {
   const lower = command.toLowerCase()
@@ -1006,7 +1007,7 @@ function createGitHubPullRequestTool(ctx: ToolContext): AgentTool {
         }),
       ),
     }),
-    execute: async (_toolCallId, params) => {
+    execute: async (_toolCallId, params, signal) => {
       const input = params as {
         title: string
         head?: string
@@ -1056,7 +1057,13 @@ function createGitHubPullRequestTool(ctx: ToolContext): AgentTool {
         draft: options.draft,
       }
 
-      const botResult = await apiCreateGitHubPullRequest(ctx.projectId, options)
+      let botResult = await apiCreateGitHubPullRequest(ctx.projectId, options)
+      if (botResult.code === 'approval_pending' && botResult.approvalId) {
+        const approvalId = botResult.approvalId
+        const outcome = await waitForCredentialApproval(ctx.projectId, approvalId, botResult.expiresAt, signal)
+        if (outcome !== 'approved') return approvalOutcomeResult('github', outcome)
+        botResult = await withCredentialApproval(approvalId, () => apiCreateGitHubPullRequest(ctx.projectId, options))
+      }
       if (botResult.ok && botResult.data) {
         return textResult({
           ok: true,
@@ -1064,6 +1071,7 @@ function createGitHubPullRequestTool(ctx: ToolContext): AgentTool {
           author: botResult.data.author,
           number: botResult.data.number,
           url: botResult.data.url,
+          ...(botResult.data.credential ? { credential: botResult.data.credential } : {}),
         })
       }
       if (isRequesterCredentialBlock(botResult)) return requesterCredentialBlockResult(botResult)
@@ -1282,15 +1290,29 @@ export function createGitHubMergePullRequestTool(ctx: ToolContext): AgentTool {
       ),
       commitTitle: Type.Optional(Type.String({ description: 'Title for the merge or squash commit' })),
     }),
-    execute: async (_toolCallId, params) => {
+    execute: async (_toolCallId, params, signal) => {
       const input = params as { number: number; method?: 'merge' | 'squash' | 'rebase'; commitTitle?: string }
       const number = Math.trunc(Number(input.number))
       if (!Number.isFinite(number) || number <= 0) return textResult({ error: 'A pull request number is required.' })
       const method = input.method ?? 'squash'
 
-      const botResult = await apiMergeGitHubPullRequest(ctx.projectId, number, { method, commitTitle: input.commitTitle })
+      const merge = () => apiMergeGitHubPullRequest(ctx.projectId, number, { method, commitTitle: input.commitTitle })
+      let botResult = await merge()
+      if (botResult.code === 'approval_pending' && botResult.approvalId) {
+        const approvalId = botResult.approvalId
+        const outcome = await waitForCredentialApproval(ctx.projectId, approvalId, botResult.expiresAt, signal)
+        if (outcome !== 'approved') return approvalOutcomeResult('github', outcome)
+        botResult = await withCredentialApproval(approvalId, merge)
+      }
       if (botResult.ok && botResult.data) {
-        return textResult({ ok: true, mode: 'github-app', merged: botResult.data.merged !== false, number, sha: botResult.data.sha })
+        return textResult({
+          ok: true,
+          mode: 'github-app',
+          merged: botResult.data.merged !== false,
+          number,
+          sha: botResult.data.sha,
+          ...(botResult.data.credential ? { credential: botResult.data.credential } : {}),
+        })
       }
       if (isRequesterCredentialBlock(botResult)) return requesterCredentialBlockResult(botResult)
       if (botResult.code !== 'github_app_not_installed' && botResult.status !== 409) {
@@ -7362,6 +7384,75 @@ If the desktop terminal is not available (web/mobile), falls back to the sandbox
   }
 }
 
+export function createExposePortTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'expose_port',
+    label: 'Expose Port',
+    description:
+      'Expose a TCP port this project is listening on so Studio can reach it. ' +
+      'A new port is tunnel-only (project members). Set visibility to "preview" to make an http port public; ' +
+      'that asks the user to approve before it happens. Use this when `docker compose ps` shows the app on a port ' +
+      'that is not already in the Exposed ports list.',
+    parameters: Type.Object({
+      port: Type.Number({ description: 'Port number between 1024 and 65535' }),
+      protocol: Type.Union([Type.Literal('http'), Type.Literal('tcp')], { description: 'http for a web app, tcp for a database or other raw protocol' }),
+      label: Type.Optional(Type.String({ description: 'Short name, such as "vite" or "api"' })),
+      visibility: Type.Optional(Type.Union([Type.Literal('tunnel'), Type.Literal('preview')])),
+    }),
+    execute: async (toolCallId, params) => {
+      const input = params as { port: number; protocol: 'http' | 'tcp'; label?: string; visibility?: 'tunnel' | 'preview' }
+      const projectId = projectScopedId(ctx.projectId) || projectScopedId(process.env.WORKSPACE_ANCHOR_PROJECT_ID)
+      if (!projectId) return textResult({ error: 'No project selected.' })
+      const visibility = input.visibility === 'preview' ? 'preview' : 'tunnel'
+      if (visibility === 'preview') {
+        if (input.protocol !== 'http') {
+          return textResult({ error: 'Only an http port can be made public. Use protocol "http", or leave visibility as tunnel.' })
+        }
+        const engine = ctx.permissionEngine
+        if (engine) {
+          const approved = await engine.requestApproval(
+            toolCallId,
+            'expose_port',
+            'network',
+            input,
+            `Make port ${input.port} publicly reachable at its preview URL, with no login.`,
+          )
+          if (!approved) {
+            return textResult({
+              error: 'The user declined making this port public.',
+              instruction: 'Do not ask again in chat. The port was not exposed.',
+            })
+          }
+        }
+      }
+      const apiUrl = deriveApiUrl()
+      if (!apiUrl) return textResult({ error: 'The project API is not configured.' })
+      const response = await fetch(`${apiUrl}/api/internal/projects/${projectId}/ports`, {
+        method: 'POST',
+        headers: getInternalHeaders(),
+        body: JSON.stringify({
+          port: input.port,
+          protocol: input.protocol,
+          label: input.label,
+          visibility,
+        }),
+      })
+      const body = await response.json().catch(() => ({}))
+      if (!response.ok) {
+        return textResult({ error: (body as any)?.error || `Could not expose port ${input.port}.`, status: response.status })
+      }
+      const listed = Array.isArray((body as any).ports) ? (body as any).ports : []
+      const mine = listed.find((p: any) => p.port === input.port)
+      return textResult({
+        ok: true,
+        port: input.port,
+        visibility: mine?.visibility ?? visibility,
+        previewUrl: mine?.previewUrl,
+      })
+    },
+  }
+}
+
 /** All gateway tools (unified set). Includes base tools + agent_* orchestration tools. */
 export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTool[] {
   const pe = ctx.permissionEngine
@@ -7374,6 +7465,7 @@ export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTo
     g(createGitHubPullRequestTool(ctx), 'network'),
     g(createGitHubMergePullRequestTool(ctx), 'network'),
     g(createGitHubConnectTool(ctx), 'network'),
+    createExposePortTool(ctx),
     g(createReadFileTool(ctx), 'file_read'),
     g(createWriteFileTool(ctx), 'file_write'),
     g(createEditFileTool(ctx), 'file_write'),

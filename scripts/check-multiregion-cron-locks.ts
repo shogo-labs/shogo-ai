@@ -200,6 +200,27 @@ const HOME_REGION_PARTITIONED: HomeRegionPartitioned[] = [
     partitionKeyColumn: 'Workspace.homeRegion',
   },
   {
+    fn: 'runChannelScheduler',
+    file: 'apps/api/src/jobs/run-channel-workers.ts',
+    reason:
+      'Scheduled messages and reminders replicate, and `withGlobalJobLock` is a per-database advisory lock that does not coordinate across regions. sendDueScheduledMessages restricts to conversations whose workspace is homed here (homeRegionWorkspaceWhere) and fireDueReminders to home workspace ids (homeWorkspaceIds), so only the home region posts the `scheduled:<id>` message (seq + clientMsgId uniques) or fires the reminder. The per-region lock only de-duplicates pods within a region.',
+    partitionKeyColumn: 'Workspace.homeRegion',
+  },
+  {
+    fn: 'runChannelEmailDigest',
+    file: 'apps/api/src/jobs/run-channel-workers.ts',
+    reason:
+      'chat_user_settings replicates. runDigestPass only considers people in workspaces homed here (homeWorkspaceIds) and claims each row with a conditional lastDigestAt update, so each digest is emailed once, by the home region. The per-region lock only de-duplicates pods within a region.',
+    partitionKeyColumn: 'Workspace.homeRegion',
+  },
+  {
+    fn: 'runChannelIndexer',
+    file: 'apps/api/src/jobs/run-channel-workers.ts',
+    reason:
+      'conversation_message_embeddings replicates. indexPendingMessages only embeds messages in conversations whose workspace is homed here (homeRegionWorkspaceWhere), so a message is embedded by one region and the messageId unique never collides across regions. The per-region lock only de-duplicates pods within a region.',
+    partitionKeyColumn: 'Workspace.homeRegion',
+  },
+  {
     fn: 'runGrantMonthlyRefill',
     file: 'apps/api/src/jobs/grant-monthly-refill.ts',
     reason:
@@ -242,6 +263,17 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
     key: 'Session.token',
     category: 'random_secret',
     reason: 'Random session token; collision astronomically improbable.',
+  },
+  {
+    key: 'Huddle.roomName',
+    category: 'random_secret',
+    reason: 'LiveKit room name embeds the huddle row\'s random UUID (hd_<workspaceId>_<huddleId>); collision astronomically improbable.',
+  },
+  {
+    key: 'Huddle.activeKey',
+    category: 'request_scoped',
+    reason:
+      'One live huddle per conversation, written by the join/leave request in the workspace\'s home region (LiveKit webhooks forward there via routeToHomeRegion); a cross-region race needs a failover mid-join.',
   },
   {
     key: 'Account.(accountId,providerId)',
@@ -745,8 +777,9 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
   },
   {
     key: 'ConversationMessageEmbedding.messageId',
-    category: 'request_scoped',
-    reason: 'Written once per message by the embedding indexer in the region that posted it; create-or-ignore on conflict.',
+    category: 'cron_home_partitioned',
+    reason: 'Written once per message by the embedding indexer, which only embeds messages in workspaces homed in its own region; create-or-ignore on conflict.',
+    writer: 'runChannelIndexer',
   },
   {
     key: 'ConversationPin.messageId',
@@ -776,7 +809,7 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
   {
     key: 'ConversationMessage.(clientMsgId,conversationId)',
     category: 'random_secret',
-    reason: 'Client-generated UUID idempotency key for sends; postMessage returns the existing row on repeat.',
+    reason: 'Client-generated UUID idempotency key for sends; postMessage returns the existing row on repeat. Scheduled sends use `scheduled:<id>` and are posted only by the home region (runChannelScheduler is home-partitioned).',
   },
   {
     key: 'ConversationReaction.(emoji,messageId,userId)',

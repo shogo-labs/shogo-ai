@@ -8,12 +8,18 @@
  */
 
 import { Hono } from 'hono'
+import { timingSafeEqual } from 'node:crypto'
 import { validatePodToken } from '../lib/k8s-auth'
 import { getMetalWarmPoolController } from '../lib/metal-warm-pool-controller'
 import { saveAgentAvatar } from '../services/workspace-agent-cloud-storage'
 import { authenticate, authorizeWorkspaceScope, validateAuth } from './internal-auth'
 import { numberOr, runtimeInternalRoutes } from './internal-runtime-routes'
 import { signSharedFileToken } from '../lib/shared-file-token'
+import { handleInboundEvents, resumeAfterLink } from '../services/chat-providers/inbound'
+import { getChatProvider } from '../services/chat-providers/registry'
+import type { InboundEvent } from '../services/chat-providers/types'
+import { publishRelayed, type ConversationEnvelope } from '../lib/conversation-bus'
+import { applyRelayedPresence, type RelayedPresence } from '../services/conversation-presence'
 
 const app = new Hono()
 
@@ -553,6 +559,127 @@ app.post('/billing/provision', async (c) => {
   } catch (err: any) {
     console.error('[Internal] billing/provision failed:', err?.message ?? err)
     return c.json({ error: 'provision failed' }, 500)
+  }
+})
+
+/** Constant-time check of the shared cross-region secret (`SHOGO_INTERNAL_SECRET`). */
+function hasInternalSecret(c: { req: { header(name: string): string | undefined } }): boolean {
+  const expected = process.env.SHOGO_INTERNAL_SECRET
+  const provided = c.req.header('x-shogo-internal-secret') || ''
+  if (!expected) return false
+  const a = Buffer.from(expected)
+  const b = Buffer.from(provided)
+  return a.length === b.length && timingSafeEqual(a, b)
+}
+
+/**
+ * POST /api/internal/conversation-bus/relay
+ *
+ * Realtime chat events and presence forwarded from a sibling region (see
+ * `lib/conversation-relay`). Re-delivered to this region's sockets without
+ * relaying again.
+ */
+const RELAY_MAX_ITEMS = 500
+app.post('/conversation-bus/relay', async (c) => {
+  if (!hasInternalSecret(c)) return c.json({ error: 'Unauthorized' }, 401)
+  const body = (await c.req.json().catch(() => null)) as { envelopes?: unknown; presence?: unknown } | null
+  const envelopes = Array.isArray(body?.envelopes) ? (body!.envelopes as any[]) : []
+  const presence = Array.isArray(body?.presence) ? (body!.presence as any[]) : []
+  if (!body || envelopes.length > RELAY_MAX_ITEMS || presence.length > RELAY_MAX_ITEMS) {
+    return c.json({ error: 'Invalid relay batch' }, 400)
+  }
+  const validEnvelopes: ConversationEnvelope[] = envelopes.filter(
+    (e) =>
+      e &&
+      typeof e.workspaceId === 'string' &&
+      e.event && typeof e.event.type === 'string' &&
+      (e.audience === null || Array.isArray(e.audience)),
+  )
+  const validPresence: RelayedPresence[] = presence.filter(
+    (p) =>
+      p &&
+      typeof p.workspaceId === 'string' &&
+      typeof p.userId === 'string' &&
+      (p.status === 'active' || p.status === 'away' || p.status === 'offline'),
+  )
+  await applyRelayedPresence(validPresence)
+  publishRelayed(validEnvelopes)
+  return c.json({ ok: true, envelopes: validEnvelopes.length, presence: validPresence.length })
+})
+
+/**
+ * POST /api/internal/chat-providers/:provider/inbound
+ *
+ * Inbound Slack / Teams / Google Chat events forwarded from a sibling region
+ * because the workspace is homed here (see `routeInboundEvents`). The sender
+ * already verified the provider signature; this authenticates the region with
+ * the shared secret, acknowledges immediately, and runs the bridge locally. It
+ * never re-routes, so a forwarded call cannot bounce between regions.
+ */
+app.post('/chat-providers/:provider/inbound', async (c) => {
+  if (!hasInternalSecret(c)) return c.json({ error: 'Unauthorized' }, 401)
+  const provider = getChatProvider(c.req.param('provider'))
+  if (!provider) return c.json({ error: 'Unknown chat provider' }, 404)
+  const body = (await c.req.json().catch(() => null)) as { events?: unknown } | null
+  if (!body || !Array.isArray(body.events)) return c.json({ error: 'Invalid inbound params' }, 400)
+  void handleInboundEvents(provider, body.events as InboundEvent[]).catch((err) => {
+    console.error(`[Internal] ${provider.kind} forwarded inbound events failed:`, err?.message ?? err)
+  })
+  return c.json({ ok: true })
+})
+
+/**
+ * POST /api/internal/huddles/livekit
+ *
+ * A LiveKit webhook forwarded from a sibling region because the huddle's
+ * workspace is homed here (see `handleLiveKitWebhook`). The sender verified
+ * LiveKit's signature; this checks the region secret and applies it locally.
+ */
+app.post('/huddles/livekit', async (c) => {
+  if (!hasInternalSecret(c)) return c.json({ error: 'Unauthorized' }, 401)
+  const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null
+  if (!body || typeof body.event !== 'string' || typeof body.roomName !== 'string') {
+    return c.json({ error: 'Invalid huddle event' }, 400)
+  }
+  const { applyLiveKitEvent } = await import('../services/huddle.service')
+  await applyLiveKitEvent({
+    event: body.event as any,
+    roomName: body.roomName,
+    identity: typeof body.identity === 'string' ? body.identity : null,
+  })
+  return c.json({ ok: true })
+})
+
+/**
+ * POST /api/internal/chat-providers/:provider/resume
+ *
+ * Resume a message held for an unlinked person, in the workspace's home region
+ * (see `resumeAfterLinkInHomeRegion`). Replies `{ resumed }`.
+ */
+app.post('/chat-providers/:provider/resume', async (c) => {
+  if (!hasInternalSecret(c)) return c.json({ error: 'Unauthorized' }, 401)
+  const provider = getChatProvider(c.req.param('provider'))
+  if (!provider) return c.json({ error: 'Unknown chat provider' }, 404)
+  const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null
+  if (
+    !body ||
+    typeof body.tenantId !== 'string' ||
+    typeof body.channelId !== 'string' ||
+    typeof body.messageId !== 'string' ||
+    typeof body.userId !== 'string'
+  ) {
+    return c.json({ error: 'Invalid resume params' }, 400)
+  }
+  try {
+    const resumed = await resumeAfterLink(
+      provider,
+      { tenantId: body.tenantId, channelId: body.channelId, messageId: body.messageId },
+      body.userId,
+    )
+    return c.json({ resumed })
+  } catch (err: any) {
+    console.error(`[Internal] ${provider.kind} resume failed:`, err?.message ?? err)
+    return c.json({ error: 'resume failed' }, 500)
   }
 })
 

@@ -201,6 +201,9 @@ const PopoverContent = React.forwardRef<
       style={[style, { pointerEvents: 'auto' }]}
     >
       <View
+        // Popovers have no dialog/menu role; mark them so the native desktop
+        // preview (which paints above all DOM) hides while one is open.
+        {...({ dataSet: { suppressNativePreview: true } } as object)}
         className={popoverContentStyle({
           parentVariants: {
             size: parentSize,

@@ -16,6 +16,8 @@ mock.module('../../../services/billing.service', () => ({
   hasAdvancedModelAccess: async () => true,
 }))
 
+import { setDockerClassOverride } from '../../runtime-class-setting'
+import { setWorkspaceBudgetOverride } from '../../workspace-compute-budget'
 import { buildWorkspaceEnv } from '../build-workspace-env'
 
 const seams = {
@@ -88,6 +90,109 @@ describe('buildWorkspaceEnv', () => {
     } as any)
     expect(JSON.parse(env.WORKSPACE_TECH_STACKS)).toEqual({ p1: 'expo-app', p2: 'react-app' })
     expect(env.TECH_STACK_ID).toBeUndefined()
+  })
+
+  it('requests a docker VM when a member is docker-compose, the gate is on, and the workspace is large enough', async () => {
+    setDockerClassOverride(true)
+    try {
+      const env = await buildWorkspaceEnv('ws-1', ['p1'], {
+        ...seams,
+        _loadWorkspace: async () => ({ name: 'My WS', composioScope: 'workspace', instanceSize: 'large' }),
+        _loadProjects: async (ids: string[]) =>
+          ids.map((id) => ({ id, name: id, settings: { techStackId: 'docker-compose' } })),
+      } as any)
+      expect(env.SHOGO_RUNTIME_CLASS).toBe('docker')
+    } finally {
+      setDockerClassOverride(null)
+    }
+  })
+
+  it('keeps a docker-compose workspace on a standard VM when the compute tier is too small', async () => {
+    setDockerClassOverride(true)
+    try {
+      const env = await buildWorkspaceEnv('ws-1', ['p1'], {
+        ...seams,
+        _loadWorkspace: async () => ({ name: 'My WS', composioScope: 'workspace', instanceSize: 'micro' }),
+        _loadProjects: async (ids: string[]) =>
+          ids.map((id) => ({ id, name: id, settings: { techStackId: 'docker-compose' } })),
+      } as any)
+      expect(env.SHOGO_RUNTIME_CLASS).toBeUndefined()
+    } finally {
+      setDockerClassOverride(null)
+    }
+  })
+
+  it('allowlists the union of member exposed ports in SHOGO_EXPOSED_PORTS', async () => {
+    const env = await buildWorkspaceEnv('ws-1', ['p1', 'p2'], {
+      ...seams,
+      _loadProjects: async (ids: string[]) =>
+        ids.map((id) => ({
+          id,
+          name: id,
+          settings:
+            id === 'p1'
+              ? {
+                  techStackId: 'docker-compose',
+                  exposedPorts: { '3001': { source: 'project', protocol: 'http' } },
+                }
+              : { techStackId: 'react-app' },
+        })),
+    } as any)
+    expect(env.SHOGO_EXPOSED_PORTS).toBe('3001,5432,8000')
+  })
+
+  it('sizes the metal VM from the tier and the members\' stacks', async () => {
+    setDockerClassOverride(true)
+    try {
+      const docker = await buildWorkspaceEnv('ws-1', ['p1'], {
+        ...seams,
+        forMetal: true,
+        _loadWorkspace: async () => ({ name: 'My WS', composioScope: 'workspace', instanceSize: 'xlarge' }),
+        _loadProjects: async (ids: string[]) =>
+          ids.map((id) => ({ id, name: id, settings: { techStackId: 'docker-compose' } })),
+      } as any)
+      expect(docker.SHOGO_VM_VCPUS).toBe('8')
+      expect(docker.SHOGO_VM_MEM_MIB).toBe('16384')
+
+      const standard = await buildWorkspaceEnv('ws-1', ['p1'], {
+        ...seams,
+        forMetal: true,
+        _loadWorkspace: async () => ({ name: 'My WS', composioScope: 'workspace', instanceSize: 'micro' }),
+        _loadProjects: async (ids: string[]) =>
+          ids.map((id) => ({ id, name: id, settings: { techStackId: 'react-app' } })),
+      } as any)
+      expect(standard.SHOGO_VM_VCPUS).toBe('1')
+      expect(standard.SHOGO_VM_MEM_MIB).toBe('2048')
+    } finally {
+      setDockerClassOverride(null)
+    }
+  })
+
+  it('keeps paid workspace runtimes warm only with the workspace budget on', async () => {
+    const opts = {
+      ...seams,
+      forMetal: true,
+      _loadWorkspace: async () => ({ name: 'My WS', composioScope: 'workspace', instanceSize: 'large' }),
+      _loadProjects: async (ids: string[]) => ids.map((id) => ({ id, name: id, settings: { techStackId: 'react-app' } })),
+    } as any
+    expect((await buildWorkspaceEnv('ws-1', ['p1'], opts)).SHOGO_ALWAYS_ON).toBeUndefined()
+    setWorkspaceBudgetOverride(true)
+    try {
+      expect((await buildWorkspaceEnv('ws-1', ['p1'], opts)).SHOGO_ALWAYS_ON).toBe('1')
+      const micro = { ...opts, _loadWorkspace: async () => ({ name: 'My WS', instanceSize: 'micro' }) }
+      expect((await buildWorkspaceEnv('ws-1', ['p1'], micro)).SHOGO_ALWAYS_ON).toBeUndefined()
+    } finally {
+      setWorkspaceBudgetOverride(null)
+    }
+  })
+
+  it('omits SHOGO_EXPOSED_PORTS when no member declares ports', async () => {
+    const env = await buildWorkspaceEnv('ws-1', ['p1'], {
+      ...seams,
+      _loadProjects: async (ids: string[]) =>
+        ids.map((id) => ({ id, name: id, settings: { techStackId: 'react-app' } })),
+    } as any)
+    expect(env.SHOGO_EXPOSED_PORTS).toBeUndefined()
   })
 
   it('omits WORKSPACE_TECH_STACKS when no member has a tech stack', async () => {

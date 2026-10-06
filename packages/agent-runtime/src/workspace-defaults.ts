@@ -1248,6 +1248,9 @@ function readPackageDeps(dir: string): Record<string, unknown> | null {
  * stack — callers fall back to the marker or `react-app`.
  */
 function inferStackFromWorkspaceFiles(dir: string): string | null {
+  for (const name of ['docker-compose.yml', 'docker-compose.yaml', 'compose.yml', 'compose.yaml']) {
+    if (existsSync(join(dir, name))) return 'docker-compose'
+  }
   const deps = readPackageDeps(dir)
   const has = (name: string) => !!(deps && deps[name])
   let expoConfig = false

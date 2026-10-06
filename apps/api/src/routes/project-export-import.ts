@@ -16,6 +16,7 @@ import { join, resolve, relative } from 'node:path'
 import { spawn } from 'node:child_process'
 import { zipSync, unzipSync, strToU8, strFromU8 } from 'fflate'
 import { createS3SyncForProject, isMacOSJunkName, getMinimumInstanceSize } from '@shogo/shared-runtime'
+import { dockerClassBlockedMessage } from '../lib/runtime-class-setting'
 import { prisma } from '../lib/prisma'
 import * as billingService from '../services/billing.service'
 import type { AuthContext } from '../middleware/auth'
@@ -591,6 +592,10 @@ export async function runImport(
   // project the workspace never paid for.
   const importedTechStackId =
     typeof importedSettings.techStackId === 'string' ? importedSettings.techStackId : undefined
+  const dockerBlocked = dockerClassBlockedMessage(importedTechStackId)
+  if (dockerBlocked) {
+    return { ok: false, status: 403, error: dockerBlocked }
+  }
   if (getMinimumInstanceSize(importedTechStackId)) {
     const { allowed, currentSize, requiredSize } = await billingService.canRunTechStackOnInstanceSize(
       workspaceId,

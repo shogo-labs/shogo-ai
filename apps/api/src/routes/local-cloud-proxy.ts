@@ -268,9 +268,9 @@ export const cloudSocketRelayHandlers = {
 }
 
 /**
- * Merges cloud workspaces into the local workspace list. A cloud Personal
- * workspace replaces the local one while signed in; the local one (and its
- * data) is back after sign-out.
+ * Appends cloud workspaces to the local workspace list: local ones first,
+ * then cloud (cloud Personal first among those). Local workspaces, Personal
+ * included, stay listed while signed in.
  */
 export const cloudWorkspaceListMiddleware: MiddlewareHandler = async (c, next) => {
   await next()
@@ -279,15 +279,17 @@ export const cloudWorkspaceListMiddleware: MiddlewareHandler = async (c, next) =
   if (!workspaces.length) return
   const body = await c.res.clone().json().catch(() => null)
   if (!body || !Array.isArray(body.items)) return
-  const hasCloudPersonal = workspaces.some((w) => w.kind === 'personal')
-  const local = hasCloudPersonal ? body.items.filter((w: any) => w.kind !== 'personal') : body.items
+  const local = body.items
   const known = new Set(local.map((w: any) => w.id))
   const extra = workspaces.filter((w) => !known.has(w.id)).map(cloudRow)
-  const personal = extra.filter((w) => w.kind === 'personal')
-  const items = [...personal, ...local, ...extra.filter((w) => w.kind !== 'personal')]
+  const items = [
+    ...local,
+    ...extra.filter((w) => w.kind === 'personal'),
+    ...extra.filter((w) => w.kind !== 'personal'),
+  ]
   const headers = new Headers(c.res.headers)
   headers.delete('content-length')
-  const total = (body.total ?? body.items.length) - (body.items.length - local.length) + extra.length
+  const total = (body.total ?? body.items.length) + extra.length
   c.res = new Response(JSON.stringify({ ...body, items, total }), {
     status: 200,
     headers,

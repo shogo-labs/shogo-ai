@@ -61,6 +61,7 @@ export const PROFILE_TOOL_GROUPS: Record<string, string[]> = {
   builder: [
     'checkpoint', 'publish', 'create_plan', 'update_plan', 'system_apply',
     'canvas_create', 'canvas_update', 'canvas_delete', 'canvas_publish', 'canvas_preview',
+    'expose_port',
   ],
   // Composing MULTIPLE projects into one workspace runtime (attach/detach,
   // mount-for-preview). `project_create` / `project_call` / `project_list` /

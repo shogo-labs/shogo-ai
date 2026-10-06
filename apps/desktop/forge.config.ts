@@ -229,7 +229,8 @@ const config: ForgeConfig = {
     // packaged .app silently fails getUserMedia({ audio: true }) instead
     // of triggering the system microphone prompt.
     extendInfo: {
-      NSMicrophoneUsageDescription: 'Shogo needs microphone access to record audio for note-taking, transcription and dictation.',
+      NSMicrophoneUsageDescription: 'Shogo needs microphone access to record audio for note-taking, transcription, dictation and huddles.',
+      NSCameraUsageDescription: 'Shogo uses your camera when you turn on video in a huddle.',
       NSAppleEventsUsageDescription: 'Shogo uses automation to work with apps like Mail, Messages and Notes when you ask it to.',
       NSDesktopFolderUsageDescription: 'Shogo can read and edit files on your Desktop when you ask it to.',
       NSDocumentsFolderUsageDescription: 'Shogo can read and edit files in your Documents folder when you ask it to.',

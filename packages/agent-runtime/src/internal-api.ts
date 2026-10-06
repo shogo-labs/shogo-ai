@@ -256,6 +256,9 @@ export interface CheckpointCallResult<T> {
   code?: string
   /** Where the requester connects their account, when `code` is `requester_auth_required`. */
   connectUrl?: string
+  /** The card someone has to approve, when `code` is `approval_pending`. */
+  approvalId?: string
+  expiresAt?: string
 }
 
 async function checkpointFetch<T>(
@@ -280,6 +283,8 @@ async function checkpointFetch<T>(
         error: message ?? `HTTP ${res.status}`,
         code: err?.code,
         ...(typeof err?.connectUrl === 'string' ? { connectUrl: err.connectUrl } : {}),
+        ...(typeof err?.approvalId === 'string' ? { approvalId: err.approvalId } : {}),
+        ...(typeof err?.expiresAt === 'string' ? { expiresAt: err.expiresAt } : {}),
       }
     }
     return { ok: true, status: res.status, data: init.parse ? init.parse(json) : (json as T) }
@@ -351,6 +356,14 @@ export interface GitHubPullRequestResult {
   author?: string
   /** `github-app` (App bot), `user-token` (the connection's stored user token), or `requester` (the person who asked). */
   mode?: 'github-app' | 'user-token' | 'requester'
+  /** Which account the write used, for the tool call's "as …" label. */
+  credential?: CredentialUse
+}
+
+export interface CredentialUse {
+  source: 'shared' | 'personal' | 'delegate' | 'approved'
+  actingAs: string
+  onBehalfOf?: string
 }
 
 export interface GitHubCliCredentials {
@@ -481,6 +494,7 @@ export interface GitHubMergeResult {
   merged: boolean
   sha?: string
   message?: string
+  credential?: CredentialUse
 }
 
 /** Merge a pull request with the project's GitHub App installation. */

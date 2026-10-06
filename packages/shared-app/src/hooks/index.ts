@@ -53,7 +53,7 @@ export {
   useRemoteState,
   type RemoteState,
 } from './useRemoteState'
-export { useAgentUrl } from './useAgentUrl'
+export { useAgentUrl, type WorkspaceBudgetMessage } from './useAgentUrl'
 export {
   usePublishState,
   type PublishState,

@@ -55,10 +55,33 @@ import { projectTrustRoutes } from './internal-project-trust'
 import { signSharedFileToken } from '../lib/shared-file-token'
 import { withShogoPrFooter } from '@shogo/shared-runtime/agent-attribution'
 import { resolveConnectionAuth } from '../services/github-auth'
+import { CREDENTIAL_APPROVAL_HEADER } from '../services/integration-credentials/approvals'
 import { handOffRequesterTicket, REQUESTER_TICKET_HEADER, verifyRequesterTicket, type RequesterTicket } from '../lib/requester-ticket'
 import { signResumeToken } from '../services/integration-credentials/resume'
 
 /** Where a connect link handed out in this turn should pick the conversation back up. */
+type CredentialUseSource = 'shared' | 'personal' | 'delegate' | 'approved'
+
+/** Which account a GitHub write used, for the tool call's "as …" label. */
+function credentialUse(
+  actor: { kind: 'connection'; onBehalfOf?: string } | { kind: 'personal'; login?: string; source: CredentialUseSource },
+  author: string | undefined,
+) {
+  if (actor.kind === 'personal') {
+    return { source: actor.source, actingAs: actor.login ? `@${actor.login}` : 'the requester' }
+  }
+  return {
+    source: 'shared' as const,
+    actingAs: author ? `project account (@${author})` : 'project account',
+    ...(actor.onBehalfOf ? { onBehalfOf: actor.onBehalfOf } : {}),
+  }
+}
+
+/** A person's name as plain text in a GitHub body: no mentions, links or markup. */
+function attributionName(name: string): string {
+  return name.replace(/[^\p{L}\p{N} .'_-]/gu, '').replace(/\s+/g, ' ').trim().slice(0, 80) || 'a Shogo user'
+}
+
 function resumeTokenFor(ticket: RequesterTicket | null): string | undefined {
   const chatSessionId = ticket?.origin.kind === 'chat' ? ticket.origin.chatSessionId : undefined
   return ticket && chatSessionId ? signResumeToken({ userId: ticket.userId, chatSessionId }) : undefined
@@ -142,41 +165,100 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
   const app = new Hono()
 
   /**
+   * Resolve the credential for one tool call from the runtime. The person
+   * comes from the signed requester ticket. `X-Credential-Approval` names an
+   * approval someone granted from a card for this call; it is spent here,
+   * once, on success.
+   */
+  async function resolveForCall(
+    c: Context,
+    projectId: string,
+    provider: string,
+    op: 'read' | 'write',
+    toolName: string | null,
+  ) {
+    const credentials = await import('../services/integration-credentials')
+    const approvals = await import('../services/integration-credentials/approvals')
+    const ticket = verifyRequesterTicket(c.req.header(REQUESTER_TICKET_HEADER), projectId)
+    const approvalId = c.req.header(CREDENTIAL_APPROVAL_HEADER)?.trim()
+    let approval: { approvalId: string; approverUserId: string; requesterUserId: string | null } | undefined
+    if (approvalId) {
+      const state = await approvals.approvalState(projectId, approvalId)
+      if (state.state !== 'approved' || state.provider !== provider || state.op !== op) {
+        return {
+          ok: false as const,
+          code: state.state === 'denied' ? 'approval_denied' as const : 'approval_expired' as const,
+          message: state.state === 'denied' ? 'The request to use a personal account was denied.' : 'That approval is no longer valid.',
+        }
+      }
+      approval = { approvalId, approverUserId: state.approverUserId, requesterUserId: state.requesterUserId }
+    }
+    const result = await credentials.resolveIntegrationCredential({
+      projectId,
+      provider,
+      op,
+      requesterUserId: ticket?.userId ?? null,
+      resume: resumeTokenFor(ticket),
+      canAsk: approval ? true : ticket?.origin.kind !== 'event',
+      origin: ticket?.origin,
+      approval,
+      approve: async () => {
+        const place = await approvals.approvalPlaceFor(projectId, ticket)
+        if (!place) return null
+        const adapter = credentials.getCredentialProvider(provider)
+        return approvals.requestCredentialApproval({
+          projectId,
+          provider,
+          providerLabel: adapter?.label(provider) ?? provider,
+          op,
+          toolName,
+          ticket,
+          place,
+        })
+      },
+    })
+    if (approval && result.ok && !(await approvals.markApprovalUsed(approval.approvalId))) {
+      return { ok: false as const, code: 'approval_expired' as const, message: 'That approval was already used.' }
+    }
+    return result
+  }
+
+  /**
    * Who a GitHub write runs as. `connection` keeps the project's own
-   * connection; `personal` is the requester's token under an "act as the
-   * requester" policy; `blocked` is the 409 to return instead.
+   * connection; `personal` is a person's own token (the requester, an
+   * approver, or the project's delegate); `blocked` is the 409 to return
+   * instead.
    */
   async function githubWriteActor(
     c: Context,
     projectId: string,
-  ): Promise<{ kind: 'connection' } | { kind: 'personal'; token: string; login?: string } | { kind: 'blocked'; response: Response }> {
+    toolName: string,
+  ): Promise<
+    | { kind: 'connection'; onBehalfOf?: string }
+    | { kind: 'personal'; token: string; login?: string; source: CredentialUseSource }
+    | { kind: 'blocked'; response: Response }
+  > {
     const credentials = await import('../services/integration-credentials')
     const policy = await credentials.getPolicy(projectId, 'github')
-    if (policy.writeMode !== 'requester') return { kind: 'connection' }
+    if (policy.writeChain[0] === 'shared') {
+      const ticket = verifyRequesterTicket(c.req.header(REQUESTER_TICKET_HEADER), projectId)
+      const onBehalfOf = ticket ? await credentials.requesterDisplayName(ticket.userId) : null
+      return onBehalfOf ? { kind: 'connection', onBehalfOf } : { kind: 'connection' }
+    }
     const { ensureDefaultCredentialProviders } = await import('../services/integration-credentials/defaults')
     ensureDefaultCredentialProviders({ loadGitHub })
-    const ticket = verifyRequesterTicket(c.req.header(REQUESTER_TICKET_HEADER), projectId)
-    const result = await credentials.resolveIntegrationCredential({
-      projectId,
-      provider: 'github',
-      op: 'write',
-      requesterUserId: ticket?.userId ?? null,
-      resume: resumeTokenFor(ticket),
-      canAsk: ticket?.origin.kind !== 'event',
-    })
+    const result = await resolveForCall(c, projectId, 'github', 'write', toolName)
     if (!result.ok) {
-      return {
-        kind: 'blocked',
-        response: c.json(
-          { error: { code: result.code, message: result.message, ...(result.connectUrl ? { connectUrl: result.connectUrl } : {}) } },
-          409,
-        ),
+      const extra = {
+        ...('connectUrl' in result && result.connectUrl ? { connectUrl: result.connectUrl } : {}),
+        ...(result.code === 'approval_pending' ? { approvalId: result.approvalId, expiresAt: result.expiresAt } : {}),
       }
+      return { kind: 'blocked', response: c.json({ error: { code: result.code, message: result.message, ...extra } }, 409) }
     }
-    if (result.source === 'personal' && result.credential.token) {
-      return { kind: 'personal', token: result.credential.token, login: result.credential.login }
+    if (result.userId && result.credential.token) {
+      return { kind: 'personal', token: result.credential.token, login: result.credential.login, source: result.source }
     }
-    return { kind: 'connection' }
+    return { kind: 'connection', ...(result.onBehalfOf ? { onBehalfOf: result.onBehalfOf } : {}) }
   }
 
   /**
@@ -999,6 +1081,60 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
   })
 
   /**
+   * Project exposed ports, for the agent's `expose_port` tool. Same rules as
+   * the Studio routes: a new port starts tunnel-only; `visibility: preview`
+   * is what makes it public, and the tool asks the user before requesting it.
+   */
+  app.get('/projects/:projectId/ports', async (c) => {
+    const projectId = c.req.param('projectId')
+    if (!projectId) return c.json({ error: 'Missing projectId' }, 400)
+    if (!(await validateAuth(c, projectId))) return c.json({ error: 'Unauthorized' }, 401)
+    const { readProjectPorts } = await import('../lib/project-port-mutations')
+    const { getPortPreviewUrl } = await import('../lib/knative-project-manager')
+    const ports = await readProjectPorts(projectId)
+    if (!ports) return c.json({ error: 'Project not found' }, 404)
+    return c.json({
+      ports: ports.map((p) =>
+        p.visibility === 'preview' && p.protocol === 'http'
+          ? { ...p, previewUrl: getPortPreviewUrl(projectId, p.port) }
+          : p,
+      ),
+    })
+  })
+
+  app.post('/projects/:projectId/ports', async (c) => {
+    const projectId = c.req.param('projectId')
+    if (!projectId) return c.json({ error: 'Missing projectId' }, 400)
+    if (!(await validateAuth(c, projectId))) return c.json({ error: 'Unauthorized' }, 401)
+    const body = await c.req.json<{ port?: number; protocol?: string; label?: string; visibility?: string }>().catch(() => ({} as any))
+    const { createProjectPort, setProjectPortVisibility } = await import('../lib/project-port-mutations')
+    const { getPortPreviewUrl } = await import('../lib/knative-project-manager')
+    if (body.protocol !== 'http' && body.protocol !== 'tcp') {
+      return c.json({ error: "protocol must be 'http' or 'tcp'" }, 400)
+    }
+    const created = await createProjectPort(projectId, {
+      port: Number(body.port),
+      protocol: body.protocol,
+      label: typeof body.label === 'string' ? body.label : undefined,
+    })
+    if (!created.ok) return c.json({ error: created.message }, created.status as any)
+    let ports = created.ports
+    if (body.visibility === 'preview') {
+      const updated = await setProjectPortVisibility(projectId, Number(body.port), 'preview')
+      if (!updated.ok) return c.json({ error: updated.message }, updated.status as any)
+      ports = updated.ports
+    }
+    return c.json({
+      ok: true,
+      ports: ports.map((p) =>
+        p.visibility === 'preview' && p.protocol === 'http'
+          ? { ...p, previewUrl: getPortPreviewUrl(projectId, p.port) }
+          : p,
+      ),
+    })
+  })
+
+  /**
    * GET /api/internal/projects/:projectId/integrations/policies
    *
    * The project's saved "acts as" policies. The runtime only consults the
@@ -1018,9 +1154,12 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
    *   header: X-Requester-Ticket (from the turn's chat request)
    *   body: { provider, op: 'read' | 'write' }
    *
+   *   body: { provider, op, toolName? }
+   *
    * The credential one tool call should use. Always 200; `ok: false` carries
-   * `code` (`requester_auth_required` with `connectUrl`, `denied`,
-   * `requester_unknown`, `not_connected`) for the tool to relay.
+   * `code` (`requester_auth_required` with `connectUrl`, `approval_pending`
+   * with `approvalId`, `denied`, `requester_unknown`, `not_connected`, ...)
+   * for the tool to relay. See `resolveForCall` for approvals.
    */
   app.post('/projects/:projectId/integrations/resolve', async (c) => {
     const projectId = c.req.param('projectId')
@@ -1033,21 +1172,30 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     if (!provider || !credentials.isValidProviderId(provider)) return c.json({ error: 'provider is required' }, 400)
     const { ensureDefaultCredentialProviders } = await import('../services/integration-credentials/defaults')
     ensureDefaultCredentialProviders({ loadGitHub })
-    const ticket = verifyRequesterTicket(c.req.header(REQUESTER_TICKET_HEADER), projectId)
+    const toolName = typeof body?.toolName === 'string' ? body.toolName.trim().slice(0, 200) || null : null
     try {
-      const result = await credentials.resolveIntegrationCredential({
-        projectId,
-        provider,
-        op,
-        requesterUserId: ticket?.userId ?? null,
-        resume: resumeTokenFor(ticket),
-        canAsk: ticket?.origin.kind !== 'event',
-      })
+      const result = await resolveForCall(c, projectId, provider, op, toolName)
       return c.json(result)
     } catch (err: any) {
       console.error(`[Internal] Credential resolve for ${projectId}/${provider} failed:`, err?.message ?? err)
       return c.json({ error: 'Failed to resolve integration credentials' }, 502)
     }
+  })
+
+  /**
+   * GET /api/internal/projects/:projectId/integrations/approvals/:approvalId
+   *
+   * Where an approval card stands: `pending` (with `expiresAt`), `approved`,
+   * `denied`, `expired`, `used`, or `unknown`. The runtime polls this while a
+   * tool call waits, then repeats the call with `X-Credential-Approval`.
+   */
+  app.get('/projects/:projectId/integrations/approvals/:approvalId', async (c) => {
+    const projectId = c.req.param('projectId')
+    if (!projectId) return c.json({ error: 'Missing projectId' }, 400)
+    if (!(await validateAuth(c, projectId))) return c.json({ error: 'Unauthorized' }, 401)
+    const { approvalState } = await import('../services/integration-credentials/approvals')
+    const state = await approvalState(projectId, c.req.param('approvalId'))
+    return c.json(state.state === 'pending' ? state : { state: state.state })
   })
 
   /**
@@ -1227,12 +1375,15 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
         )
       }
 
-      const actor = await githubWriteActor(c, projectId)
+      const actor = await githubWriteActor(c, projectId, 'github_create_pr')
       if (actor.kind === 'blocked') return actor.response
 
+      const requestedBody = actor.kind === 'connection' && actor.onBehalfOf
+        ? `${prBody.trimEnd()}${prBody.trim() ? '\n\n' : ''}Requested by ${attributionName(actor.onBehalfOf)}`
+        : prBody
       const markedBody = runId && !github.extractRunId(prBody)
-        ? `${withShogoPrFooter(prBody)}\n\n${github.runIdMarker(runId)}`
-        : withShogoPrFooter(prBody)
+        ? `${withShogoPrFooter(requestedBody)}\n\n${github.runIdMarker(runId)}`
+        : withShogoPrFooter(requestedBody)
       const result = await github.createPullRequest({
         ...(actor.kind === 'personal'
           ? { token: actor.token }
@@ -1245,17 +1396,19 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
         body: markedBody,
         draft: body?.draft === true,
       })
+      const author = actor.kind === 'personal'
+        ? actor.login
+        : auth.kind === 'token'
+          ? auth.login ?? undefined
+          : `${process.env.GH_APP_SLUG || 'shogo-ai'}[bot]`
       return c.json({
         ok: true,
         number: result.number,
         url: result.html_url,
         htmlUrl: result.html_url,
         mode: actor.kind === 'personal' ? 'requester' : auth.kind === 'token' ? 'user-token' : 'github-app',
-        author: actor.kind === 'personal'
-          ? actor.login
-          : auth.kind === 'token'
-            ? auth.login ?? undefined
-            : `${process.env.GH_APP_SLUG || 'shogo-ai'}[bot]`,
+        author,
+        credential: credentialUse(actor, author),
       })
     } catch (err: any) {
       console.error(`[Internal] GitHub PR creation for ${projectId} failed:`, err?.message ?? err)
@@ -1292,7 +1445,7 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
       if (!connection || !auth) {
         return c.json({ error: { code: 'github_app_not_installed', message: 'This project has no GitHub connection.' } }, 409)
       }
-      const actor = await githubWriteActor(c, projectId)
+      const actor = await githubWriteActor(c, projectId, 'github_merge_pr')
       if (actor.kind === 'blocked') return actor.response
       const result = await github.mergePullRequest({
         ...(actor.kind === 'personal'
@@ -1304,7 +1457,8 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
         method,
         commitTitle,
       })
-      return c.json({ ok: true, merged: result.merged, sha: result.sha })
+      const author = actor.kind === 'personal' ? actor.login : auth.kind === 'token' ? auth.login ?? undefined : undefined
+      return c.json({ ok: true, merged: result.merged, sha: result.sha, credential: credentialUse(actor, author) })
     } catch (err: any) {
       console.error(`[Internal] GitHub PR merge for ${projectId} failed:`, err?.message ?? err)
       return c.json({ error: String(err?.message ?? 'Failed to merge pull request') }, 502)

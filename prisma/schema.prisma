@@ -636,6 +636,8 @@ model Project {
   githubConnection       GitHubConnection?
   integrationPolicies    IntegrationCredentialPolicy[]
   integrationGrants      UserIntegrationGrant[]
+  integrationApprovals   IntegrationCredentialApproval[]
+  integrationAudit       IntegrationCredentialAudit[]
   starredBy              StarredProject[]
   agentConfig            AgentConfig?
   meetings               Meeting[]
@@ -995,6 +997,10 @@ model IntegrationCredentialPolicy {
   /// Whose personal connection backs `shared` for providers with no project
   /// connection of their own (Composio).
   sharedUserId String?
+  /// Who opted in to have runs with no person act as them (the `delegate`
+  /// step). Set only by that person; cleared by them or an admin.
+  delegateUserId String?
+  delegatedAt    DateTime?
   updatedBy    String?
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
@@ -1045,6 +1051,55 @@ model UserIdentityLink {
   @@unique([userId, source, externalId])
   @@index([source, externalId])
   @@map("user_identity_links")
+}
+
+/// An `approve` step waiting on someone: the card posted in the turn's thread,
+/// and, once decided, who approved it. The approver's account is handed out
+/// once, to the project's runtime that asked.
+model IntegrationCredentialApproval {
+  id              String    @id @default(uuid())
+  projectId       String
+  provider        String
+  op              String
+  toolName        String?
+  summary         String?
+  /// pending | approved | denied | expired | used
+  status          String    @default("pending")
+  requesterUserId String?
+  origin          Json?
+  conversationId  String?
+  messageId       String?
+  decidedByUserId String?
+  decidedAt       DateTime?
+  expiresAt       DateTime
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId, status])
+  @@map("integration_credential_approvals")
+}
+
+/// One credential handed to a tool call: which account it acted as and why.
+model IntegrationCredentialAudit {
+  id              String   @id @default(uuid())
+  projectId       String
+  provider        String
+  op              String
+  /// shared | personal | delegate | approved
+  source          String
+  actingAs        String
+  actingUserId    String?
+  requesterUserId String?
+  origin          Json?
+  approvalId      String?
+  createdAt       DateTime @default(now())
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId, createdAt])
+  @@map("integration_credential_audit")
 }
 
 model UserIntegrationGrant {
@@ -4044,12 +4099,52 @@ model Conversation {
   pins              ConversationPin[]
   drafts            ConversationDraft[]
   scheduledMessages ScheduledMessage[]
+  huddles           Huddle[]
 
   @@unique([workspaceId, slug])
   @@unique([workspaceId, dmKey])
   @@unique([workspaceId, provider, externalId])
   @@index([workspaceId, kind])
   @@map("conversations")
+}
+
+/// A live audio call in a conversation. Media runs on LiveKit; this row is the
+/// roster and lifecycle. `activeKey` holds the conversation id while the huddle
+/// is live and null once it ends, so its unique index allows one live huddle
+/// per conversation.
+model Huddle {
+  id             String    @id @default(uuid())
+  workspaceId    String
+  conversationId String
+  activeKey      String?   @unique
+  roomName       String    @unique
+  startedById    String
+  /// The "started a huddle" system message, updated when the huddle ends.
+  messageId      String?
+  startedAt      DateTime  @default(now())
+  endedAt        DateTime?
+
+  conversation Conversation        @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  participants HuddleParticipant[]
+
+  @@index([workspaceId, endedAt])
+  @@index([conversationId, startedAt])
+  @@map("huddles")
+}
+
+/// One stay in a huddle. Rejoining after leaving opens a new row.
+model HuddleParticipant {
+  id       String    @id @default(uuid())
+  huddleId String
+  userId   String
+  joinedAt DateTime  @default(now())
+  leftAt   DateTime?
+
+  huddle Huddle @relation(fields: [huddleId], references: [id], onDelete: Cascade)
+
+  @@index([huddleId, leftAt])
+  @@index([userId])
+  @@map("huddle_participants")
 }
 
 /// A workspace's install of an external chat app (Slack, Teams, Google Chat).

@@ -187,16 +187,21 @@ export class RootfsProvisioner {
    * (defaults to the standard `cfg.baseRootfs` — e.g. a docker-class VM's
    * layered image). Returns the FC backing path.
    *
-   * Ignored in dm mode: dm-snapshot shares ONE loop-mounted golden base across
-   * every VM on the host, and making that per-class-safe (base loop + CoW
-   * sizing keyed per golden image, not just per VM) is a deferred follow-up —
-   * see `isVmClassSupported` in config.ts, which is what actually keeps a
-   * non-standard class from reaching dm mode in the first place. This
-   * fallback exists only so a caller that got that gate wrong fails to a
-   * (wrong-content-free) standard-class rootfs rather than corrupting the dm
-   * base's sizing.
+   * dm mode snapshots only the standard golden base. A different
+   * `baseRootfsOverride` (the docker-class image) is copied to its own file
+   * so it never shares that snapshot device.
    */
   provision(vmId: string, baseRootfsOverride?: string): string {
+    // A docker-class image is a different file from the dm golden base. Copy
+    // it instead of snapshotting the standard rootfs, which would boot the
+    // wrong disk.
+    if (
+      this.mode === 'dm' &&
+      baseRootfsOverride &&
+      baseRootfsOverride !== this.cfg.baseRootfs
+    ) {
+      return this.provisionCopy(vmId, false, baseRootfsOverride)
+    }
     switch (this.mode) {
       case 'dm':
         return this.provisionDm(vmId)
