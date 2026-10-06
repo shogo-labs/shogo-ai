@@ -166,6 +166,7 @@ describe('pool open() liveness gate', () => {
     const { pool } = makePool(dir)
     const handle = pool.seedAssigned('mute', 'fcvm-mute', true)
     pool.muteIds.add(handle.id)
+    pool.peek('mute')!.activityPollFailedAt = Date.now() - 11 * 60_000
 
     const r = await pool.open('mute', {})
 
@@ -174,6 +175,22 @@ describe('pool open() liveness gate', () => {
     expect(pool.stoppedHandles).toContain('fcvm-mute')
     expect(r.handle.id).not.toBe('fcvm-mute')
     expect(metrics.getCounter(M.healthGateDiscard)).toBeGreaterThan(0)
+  })
+
+  // A docker build pinned every vCPU and the guest missed the quick probes;
+  // discarding it lost the build and the unsaved workspace.
+  test('keeps a running guest that only just stopped answering (busy, not wedged)', async () => {
+    const { pool } = makePool(dir)
+    const handle = pool.seedAssigned('busy', 'fcvm-busy', true)
+    pool.muteIds.add(handle.id)
+    pool.peek('busy')!.activityPollFailedAt = Date.now() - 4 * 60_000
+
+    const r = await pool.open('busy', {})
+
+    expect(r.reused).toBe(true)
+    expect(r.handle.id).toBe('fcvm-busy')
+    expect(pool.assignCalls).toEqual([])
+    expect(pool.stoppedHandles).toEqual([])
   })
 
   // The core reproduction: a dead tracked VM must NOT be served as a warm hit.

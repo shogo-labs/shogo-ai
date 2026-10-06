@@ -134,9 +134,10 @@ async function openAccountPopover(page: Page, trigger: Locator) {
  * react-native-web emits it as an unadorned `<div>` (matched by
  * `getByText`, not any role query) whose `textContent` concatenates, with
  * no separator, the avatar-letter initial + workspace name + kind badge
- * ("Personal"/"Team"), e.g. `"LLocal User PersonalPersonal"`. The avatar
- * letter is always the name's own first character, so stripping the badge
- * suffix then the leading character recovers the name exactly.
+ * ("Local"/"Cloud" on desktop), e.g. `"LLocal User PersonalLocal"`. The
+ * avatar letter is always the name's own first character, so stripping the
+ * badge suffix then the leading character recovers the name exactly. The
+ * "Sign in to Shogo Cloud" row below the workspaces is skipped.
  */
 async function listWorkspaceNames(page: Page): Promise<string[]> {
   const trigger = await goHome(page)
@@ -149,8 +150,8 @@ async function listWorkspaceNames(page: Page): Promise<string[]> {
     )
     if (!heading?.parentElement) return []
     return Array.from(heading.parentElement.children)
-      .filter((el) => el !== heading)
-      .map((el) => (el.textContent ?? "").replace(/(Personal|Team)$/, "").slice(1))
+      .filter((el) => el !== heading && !el.getAttribute("aria-label")?.includes("Shogo Cloud"))
+      .map((el) => (el.textContent ?? "").replace(/(Personal|Team|Local|Cloud)$/, "").slice(1))
       .filter((name) => name.length > 0)
   })
 
@@ -235,6 +236,19 @@ test.describe("Workspace switching (local mode)", () => {
 
   test.afterAll(async () => {
     await page?.close()
+  })
+
+  test("signed out of Shogo Cloud: rows are tagged Local, with a Sign in row", async () => {
+    test.setTimeout(60_000)
+    await page.setViewportSize({ width: 1280, height: 800 })
+    const trigger = await goHome(page)
+    await openAccountPopover(page, trigger)
+    const rows = page.getByText("All workspaces").locator("..")
+    await expect(rows.getByText("Local", { exact: true }).first()).toBeVisible({ timeout: 10_000 })
+    expect(await rows.getByText("Local", { exact: true }).count()).toBeGreaterThanOrEqual(2)
+    await expect(rows.getByText("Cloud", { exact: true })).toHaveCount(0)
+    await expect(rows.getByLabel("Sign in to Shogo Cloud")).toBeVisible()
+    await page.keyboard.press("Escape")
   })
 
   test("wide desktop (1280×800): switches both directions via the account popover", async () => {

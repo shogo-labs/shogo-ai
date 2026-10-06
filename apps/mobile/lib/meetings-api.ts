@@ -11,6 +11,7 @@ import { useWorkspaceCollection } from '../contexts/domain'
 import { API_URL, createHttpClient } from './api'
 import { authClient } from './auth-client'
 import { usePlatformConfig } from './platform-config'
+import { localFilePart } from './upload-part'
 
 export type MeetingStatus = 'recording' | 'transcribing' | 'ready' | 'error'
 export type EnhanceStatus = 'idle' | 'running' | 'ready' | 'error' | 'skipped'
@@ -258,7 +259,7 @@ export async function uploadMeetingAudio(
 ): Promise<MeetingDetail> {
   const form = new FormData()
   if (audio.kind === 'blob') form.append('audio', audio.blob, audio.filename)
-  else form.append('audio', { uri: audio.uri, name: audio.filename, type: audio.type } as any)
+  else form.append('audio', localFilePart(audio.uri, audio.filename, audio.type) as any)
   form.append('source', fields.source)
   if (fields.duration) form.append('duration', String(fields.duration))
   if (fields.notes?.trim()) form.append('notes', fields.notes)

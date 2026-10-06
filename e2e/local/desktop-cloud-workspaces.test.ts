@@ -2,9 +2,9 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * Desktop signed in to Shogo Cloud works in the user's cloud workspaces live,
- * like the Slack desktop app: their cloud Personal workspace replaces the
- * local one (so desktop and mobile share it) and their cloud team workspace
- * sits next to the local team workspace, with typing and presence.
+ * like the Slack desktop app: their cloud workspaces (Personal, shared with
+ * mobile, and team) are listed next to the local ones, tagged Local/Cloud,
+ * with typing and presence.
  *
  * Needs a real cloud-mode API (Postgres + Redis) and a desktop API started
  * with `E2E_CLOUD_URL` (the config passes it through as SHOGO_CLOUD_URL):
@@ -155,9 +155,10 @@ test.describe("Desktop + Shogo Cloud workspaces", () => {
     await teammate?.api.dispose()
   })
 
-  test("Personal becomes the cloud Personal workspace, shared with the web and mobile apps", async () => {
+  test("signing in keeps the local Personal active; the cloud Personal is shared with the web and mobile apps", async () => {
     await page.goto("/")
-    await expect.poll(() => page.evaluate(() => localStorage.getItem("shogo:active-workspace-id")), { timeout: 20_000 }).toBe(personal.id)
+    await expect.poll(() => page.evaluate(() => localStorage.getItem("shogo:cloud-workspaces")), { timeout: 20_000 }).toContain(personal.id)
+    expect(await page.evaluate(() => localStorage.getItem("shogo:active-workspace-id"))).not.toBe(personal.id)
 
     // Something made on the web/mobile side shows up on the desktop.
     const created = await json(
@@ -174,16 +175,17 @@ test.describe("Desktop + Shogo Cloud workspaces", () => {
     expect(names).toContain(`From mobile ${suffix}`)
   })
 
-  test("the switcher shows cloud Personal, the local team workspace and the cloud team workspace", async () => {
+  test("the switcher shows local and cloud workspaces side by side, tagged Local and Cloud", async () => {
     await page.goto("/")
     await openSwitcher(page)
     const rows = page.getByText("All workspaces").locator("..")
     await expect(rows.getByText(personal.name, { exact: true })).toBeVisible({ timeout: 15_000 })
     await expect(rows.getByText(team.name, { exact: true })).toBeVisible()
-    await expect(rows.getByText("Cloud", { exact: true })).toBeVisible()
-    await expect(rows.getByText("Team", { exact: true }).first()).toBeVisible()
-    await expect(rows.getByText("Personal", { exact: true })).toHaveCount(1)
-    if (localPersonalName !== personal.name) await expect(rows.getByText(localPersonalName, { exact: true })).toHaveCount(0)
+    await expect(rows.getByText(localPersonalName, { exact: true }).first()).toBeVisible()
+    await expect(rows.getByText("Cloud", { exact: true })).toHaveCount(2)
+    await expect(rows.getByText("Local", { exact: true }).first()).toBeVisible()
+    await expect(rows.getByText(/@example\.com$/)).toBeVisible()
+    await expect(rows.getByLabel("Sign out of Shogo Cloud")).toBeVisible()
 
     await Promise.all([page.waitForEvent("load", { timeout: 30_000 }), rows.getByText(team.name, { exact: true }).click()])
     await openSwitcher(page)

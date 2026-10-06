@@ -97,12 +97,24 @@ describe('mergePolicy', () => {
 })
 
 describe('PermissionEngine.check — hard blocks', () => {
-  test('blocks sudo in every mode', () => {
+  test('sudo does not hide a hard-blocked command, in every mode', () => {
     for (const mode of ['strict', 'balanced', 'full_autonomy'] as const) {
       const eng = newEngine({ preference: { mode } })
-      const res = eng.check('shell', 'exec', { command: 'sudo rm -rf /' })
-      expect(res.action).toBe('deny')
+      expect(eng.check('shell', 'exec', { command: 'sudo rm -rf /' }).action).toBe('deny')
+      expect(eng.check('shell', 'exec', { command: 'sudo -u root shutdown now' }).action).toBe('deny')
+      expect(eng.check('shell', 'exec', { command: 'ls && sudo -n reboot' }).action).toBe('deny')
     }
+  })
+
+  test('sudo itself is not hard-blocked; it follows the mode and allowlist', () => {
+    const cmd = 'sudo -u postgres psql -c "select 1"'
+    expect(newEngine({ preference: { mode: 'full_autonomy' } }).check('shell', 'exec', { command: cmd }).action).toBe('allow')
+    expect(newEngine({ preference: { mode: 'balanced' } }).check('shell', 'exec', { command: cmd }).action).toBe('ask')
+    expect(newEngine({ preference: { mode: 'strict' } }).check('shell', 'exec', { command: cmd }).action).toBe('ask')
+    const allowed = newEngine({ preference: { mode: 'balanced', overrides: { shellCommands: { allow: ['sudo *'] } } } })
+    expect(allowed.check('shell', 'exec', { command: cmd }).action).toBe('allow')
+    const denied = newEngine({ preference: { mode: 'full_autonomy', overrides: { shellCommands: { deny: ['sudo *'] } } } })
+    expect(denied.check('shell', 'exec', { command: cmd }).action).toBe('deny')
   })
 
   test('blocks pipe-to-shell exploits in every mode', () => {
@@ -205,8 +217,8 @@ describe('PermissionEngine.check — balanced mode', () => {
       expect(eng.check('shell', 'exec', { command: 'docker compose up -d --build' }).action).toBe('allow')
       expect(eng.check('shell', 'exec', { command: 'docker ps' }).action).toBe('allow')
       expect(eng.check('shell', 'exec', { command: 'make build' }).action).toBe('allow')
-      // sudo stays hard-blocked regardless of runtime class.
-      expect(eng.check('shell', 'exec', { command: 'sudo docker compose up' }).action).toBe('deny')
+      // sudo isn't on the docker-class allowlist, so it still asks.
+      expect(eng.check('shell', 'exec', { command: 'sudo docker compose up' }).action).toBe('ask')
     } finally {
       if (prevClass === undefined) delete process.env.SHOGO_RUNTIME_CLASS
       else process.env.SHOGO_RUNTIME_CLASS = prevClass

@@ -40,7 +40,13 @@ if ! command -v dockerd >/dev/null 2>&1; then
   exit 1
 fi
 
-dockerd >/var/log/dockerd.log 2>&1 &
+# Containers and builds inherit this priority, so the Shogo runtime keeps
+# answering the host's health checks while a large image builds.
+PRIO=(nice -n 10)
+if command -v ionice >/dev/null 2>&1; then
+  PRIO+=(ionice -c2 -n7)
+fi
+"${PRIO[@]}" dockerd >/var/log/dockerd.log 2>&1 &
 
 ready=0
 for _ in $(seq 1 60); do

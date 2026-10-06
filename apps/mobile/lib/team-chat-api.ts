@@ -9,6 +9,7 @@ import type { BuddyLook } from '@shogo/shared-app/buddy-look'
 import { Platform } from 'react-native'
 import { API_URL, createHttpClient } from './api'
 import { authClient } from './auth-client'
+import type { UploadPart } from './upload-part'
 import { routeUrl } from './workspace-route'
 
 export type ConversationKind = 'public' | 'private' | 'dm' | 'group_dm' | 'activity'
@@ -518,7 +519,7 @@ export function teamChatApi() {
     async emoji(workspaceId: string): Promise<CustomEmoji[]> {
       return (await http.get<{ emoji: CustomEmoji[] }>(`${ws(workspaceId)}/emoji`)).data.emoji ?? []
     },
-    async uploadEmoji(workspaceId: string, name: string, file: File | { uri: string; name: string; type: string }): Promise<CustomEmoji> {
+    async uploadEmoji(workspaceId: string, name: string, file: File | UploadPart): Promise<CustomEmoji> {
       const form = new FormData()
       form.append('name', name)
       form.append('file', file as any)
@@ -656,7 +657,7 @@ export function teamChatApi() {
         }).catch(() => {})
       } catch {}
     },
-    async upload(id: string, file: { uri: string; name: string; type: string } | File): Promise<MessageAttachment> {
+    async upload(id: string, file: UploadPart | File): Promise<MessageAttachment> {
       const form = new FormData()
       form.append('file', file as any)
       const res = await fetch(`${API_URL}${conv(id)}/attachments`, {

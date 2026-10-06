@@ -266,7 +266,7 @@ describe('diarize — spawn outcomes', () => {
     expect(captured.some((a) => a.startsWith('--clustering.cluster-threshold='))).toBe(false)
   })
 
-  it('uses --clustering.cluster-threshold default 0.5 when numSpeakers not specified', async () => {
+  it('uses --clustering.cluster-threshold default 1.2 when numSpeakers not specified', async () => {
     let captured: string[] = []
     spawnImpl = (_cmd, args) => {
       captured = args
@@ -275,7 +275,7 @@ describe('diarize — spawn outcomes', () => {
       return p
     }
     await svc.diarize(wavFile)
-    expect(captured.some((a) => a === '--clustering.cluster-threshold=0.5')).toBe(true)
+    expect(captured.some((a) => a === '--clustering.cluster-threshold=1.2')).toBe(true)
   })
 
   it('forwards a custom clusterThreshold', async () => {
