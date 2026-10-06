@@ -4,16 +4,18 @@
  * The Home and More panels of the desktop sidebar. Channels, DMs, Agents,
  * Projects and Activity have panels of their own.
  */
-import type { ReactNode } from 'react'
+import { useCallback, type ReactNode } from 'react'
 import { Pressable, Text, View } from 'react-native'
-import { useRouter } from 'expo-router'
-import { Bookmark, ChevronRight, FileText, ListTodo, MessageCircle, MessagesSquare, Store } from 'lucide-react-native'
+import { useFocusEffect, usePathname, useRouter } from 'expo-router'
+import { Bookmark, ChevronRight, FileText, ListTodo, MessageCircle, MessageSquare, MessagesSquare, Store } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
+import { useWorkspaceChatHistory } from '../../../hooks/useWorkspaceChatHistory'
 import { useHomeSignals } from '../../../hooks/useHomeSignals'
 import { useWorkspaceExperience } from '../../../hooks/useWorkspaceExperience'
 // Leaf import: the `@shogo/shared-app` barrel also loads the domain SDK.
 import { TASKS_NAV_HIDDEN } from '../../../../../packages/shared-app/src/hooks/useWorkspaceExperience'
 import type { ActivityEntry } from '../../../lib/activity-feed'
+import { sideChatLabel } from '../../../lib/side-chats'
 import { moreItems, type MoreIcon } from '../../../lib/more-items'
 import { usePlatformConfig } from '../../../lib/platform-config'
 import { RunningNow } from '../../activity/ActivityFeed'
@@ -26,6 +28,61 @@ const MORE_ICONS: Record<MoreIcon, React.ElementType> = {
   marketplace: Store,
   'side-chats': MessagesSquare,
   files: FileText,
+}
+
+/**
+ * The workspace agent's chat history: the chats you've started with it, newest
+ * first, and a "+" to start another. The main chat is the "Workspace agent" row
+ * above; these are the rest.
+ */
+export function WorkspaceChatHistory({ onNavPress }: { onNavPress?: () => void }) {
+  const router = useRouter()
+  const pathname = usePathname()
+  const { chats, loading, reload, createChat } = useWorkspaceChatHistory()
+
+  // Reload on navigation so a chat started elsewhere (or just named) shows up.
+  useFocusEffect(
+    useCallback(() => {
+      void reload()
+    }, [reload, pathname]),
+  )
+
+  const open = (id: string) => {
+    router.push({ pathname: '/(app)/side-chats/[id]', params: { id } } as any)
+    onNavPress?.()
+  }
+
+  return (
+    <View className="mt-3 px-2" testID="workspace-chat-history">
+      <PanelSection
+        label="Chats"
+        addLabel="New chat"
+        onAdd={() => {
+          void createChat().then((id) => id && open(id))
+        }}
+      >
+        {chats.map((chat) => {
+          const active = pathname.includes(`/side-chats/${chat.id}`)
+          return (
+            <Pressable
+              key={chat.id}
+              accessibilityRole="link"
+              accessibilityLabel={sideChatLabel(chat)}
+              aria-current={active ? 'page' : undefined}
+              onPress={() => open(chat.id)}
+              className={cn('flex-row items-center gap-2.5 rounded-md px-2 py-1.5 active:bg-accent/50', active && 'bg-accent')}
+            >
+              <MessageSquare size={14} className="text-muted-foreground" />
+              <Text className="min-w-0 flex-1 text-sm text-foreground" numberOfLines={1}>{sideChatLabel(chat)}</Text>
+            </Pressable>
+          )
+        })}
+        {!loading && chats.length === 0 && (
+          <Text className="px-2 py-2 text-xs leading-4 text-muted-foreground">No chats yet. Tap + to start one.</Text>
+        )}
+      </PanelSection>
+    </View>
+  )
 }
 
 export interface HomePanelProps {
@@ -54,6 +111,8 @@ export function HomePanel({ pinned, onNavPress, isHomeRoute }: HomePanelProps) {
         <NavItem icon={MessageCircle} label="Workspace agent" href="/(app)/agent" active={isHomeRoute} onNavPress={onNavPress} />
         {!TASKS_NAV_HIDDEN && <NavItem icon={ListTodo} label="Tasks" href="/(app)/tasks" onNavPress={onNavPress} />}
       </View>
+
+      <WorkspaceChatHistory onNavPress={onNavPress} />
 
       {running.length > 0 && <RunningNow entries={running} compact onOpen={open} />}
 

@@ -5,48 +5,28 @@
  * workspace's other (side) chats under it. Meetings, Goals and Activity are
  * pages the rail already names, so they are not repeated here.
  */
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback } from 'react'
 import { ActivityIndicator, Pressable, Text, View } from 'react-native'
 import { useFocusEffect, usePathname, useRouter } from 'expo-router'
 import { MessageCircle, MessageSquare, Plus } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
-import { useDomainHttp } from '../../../contexts/domain'
-import { useActiveWorkspace } from '../../../hooks/useActiveWorkspace'
-import { api } from '../../../lib/api'
+import { useWorkspaceChatHistory } from '../../../hooks/useWorkspaceChatHistory'
 import { isMainChatPath } from '../../../lib/sidebar-tab'
-import { sideChatLabel, sortSideChats, type SideChatItem } from '../../../lib/side-chats'
+import { sideChatLabel } from '../../../lib/side-chats'
 
 const ROW = 'flex-row items-center gap-2.5 rounded-md px-2 py-2 active:bg-accent/50'
 
 export function PersonalChatsPanel({ onNavPress }: { onNavPress?: () => void }) {
-  const http = useDomainHttp()
   const router = useRouter()
   const pathname = usePathname()
-  const workspace = useActiveWorkspace()
-  const [sessions, setSessions] = useState<SideChatItem[]>([])
-  const [loading, setLoading] = useState(true)
-  const [creating, setCreating] = useState(false)
-
-  const load = useCallback(async () => {
-    if (!workspace?.id) return
-    try {
-      const all = await api.listWorkspaceSessions(http, workspace.id)
-      setSessions(all.filter((s: any) => !s.isPrimary))
-    } catch {
-      setSessions([])
-    } finally {
-      setLoading(false)
-    }
-  }, [http, workspace?.id])
+  const { chats: sorted, loading, creating, reload, createChat } = useWorkspaceChatHistory()
 
   // Reload when the route changes so a chat started elsewhere shows up.
   useFocusEffect(
     useCallback(() => {
-      void load()
-    }, [load, pathname]),
+      void reload()
+    }, [reload, pathname]),
   )
-
-  const sorted = useMemo(() => sortSideChats(sessions), [sessions])
 
   const go = (href: any) => {
     router.push(href)
@@ -54,16 +34,8 @@ export function PersonalChatsPanel({ onNavPress }: { onNavPress?: () => void }) 
   }
 
   const startNewChat = async () => {
-    if (!workspace?.id || creating) return
-    setCreating(true)
-    try {
-      const session = await api.createWorkspaceSession(http, workspace.id, {})
-      go({ pathname: '/(app)/side-chats/[id]', params: { id: session.id } })
-    } catch {
-      // Non-fatal: the person can try again.
-    } finally {
-      setCreating(false)
-    }
+    const id = await createChat()
+    if (id) go({ pathname: '/(app)/side-chats/[id]', params: { id } })
   }
 
   return (

@@ -1692,12 +1692,14 @@ export const api = {
   async listWorkspaceSessions(
     http: HttpClient,
     workspaceId: string,
-  ): Promise<Array<{ id: string; workspaceId: string; isPrimary?: boolean; name?: string | null; inferredName?: string | null; createdAt?: string; lastActiveAt?: string }>> {
+  ): Promise<Array<{ id: string; workspaceId: string; isPrimary?: boolean; isArchived?: boolean; contextId?: string | null; name?: string | null; inferredName?: string | null; createdAt?: string; lastActiveAt?: string }>> {
     const res = await http.get<{
       sessions?: Array<{
         id: string
         workspaceId: string
         isPrimary?: boolean
+        isArchived?: boolean
+        contextId?: string | null
         name?: string | null
         inferredName?: string | null
         createdAt?: string
