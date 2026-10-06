@@ -337,6 +337,11 @@ export const memberHooks: MemberHooks = {
       return { ok: false, error: { code: "forbidden", message: "Only owners and admins can remove members" } }
     }
 
+    // Mirror beforeUpdate: admins can't touch owners.
+    if (member.role === 'owner' && currentUserMember.role !== 'owner') {
+      return { ok: false, error: { code: "forbidden", message: "Only owners can remove owners" } }
+    }
+
     return { ok: true }
   },
 
