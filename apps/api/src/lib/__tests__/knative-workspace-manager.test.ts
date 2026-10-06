@@ -19,6 +19,7 @@ mock.module('@shogo/shared-runtime', () => ({
   // mobile or docker-class stack, so plain no-op stubs are correct.
   isMobileTechStack: (_techStackId: string | null | undefined) => false,
   getMinimumInstanceSize: (_techStackId: string | null | undefined) => null,
+  getDeclaredPorts: (_techStackId: string | null | undefined) => null,
 }))
 
 // NOTE: `@shogo/model-catalog` is intentionally NOT mocked here. Under
