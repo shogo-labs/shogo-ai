@@ -109,6 +109,10 @@ const LEASE_TTL_MS = parseInt(process.env.METAL_LEASE_TTL_MS || '60000', 10)
 // long enough to cover a working session, short enough that a project the user
 // abandoned days ago doesn't keep occupying one of their slots.
 const USER_OPEN_TTL_S = parseInt(process.env.METAL_USER_OPEN_TTL_S || `${12 * 60 * 60}`, 10)
+// A workspace's running-VM set is only a cache of what the hosts run: entries
+// are confirmed against the host before anything is suspended over them, so
+// this just bounds how long an abandoned entry lingers in Redis.
+const WORKSPACE_RUN_TTL_S = parseInt(process.env.METAL_WORKSPACE_RUN_TTL_S || `${24 * 60 * 60}`, 10)
 
 const HOST_KEY = 'metal:host:'
 const HOST_SET = 'metal:hosts'
@@ -120,6 +124,10 @@ const BURST_HASH = 'metal:burst' // hostId → BurstHostRecord JSON
 const RECONCILE_LEASE_KEY = 'metal:reconcile:leader'
 const SCALE_COOLDOWN_KEY = 'metal:burst:cooldown:' // + region → epoch ms of last scale action
 const USER_OPEN_KEY = 'metal:useropen:' // + userId → ZSET(member=projectId, score=openedAt ms)
+const WS_RUN_KEY = 'metal:wsrun:' // + workspaceId → ZSET(member=runtimeKey, score=openedAt ms)
+const WS_MEM_KEY = 'metal:wsmem:' // + workspaceId → HASH(runtimeKey → memMiB)
+const WS_NOTICE_KEY = 'metal:wsnotice:' // + runtimeKey → JSON BudgetNotice, read once
+const WS_NOTICE_TTL_S = 300
 
 // Compare-and-delete / compare-and-expire so only the lease holder can
 // renew or release it (a stale holder must not free a re-acquired lease).
@@ -139,6 +147,9 @@ export class MetalPlacementRegistry {
   private memCooldown = new Map<string, number>()
   // userId → (projectId → openedAt ms). The in-process analog of the Redis ZSET.
   private memUserOpen = new Map<string, Map<string, number>>()
+  // workspaceId → (runtimeKey → { openedAt, memMiB }). Analog of the wsrun/wsmem keys.
+  private memWorkspaceRuns = new Map<string, Map<string, WorkspaceRun>>()
+  private memBudgetNotices = new Map<string, { notice: unknown; expiresAt: number }>()
 
   constructor(private redisGetter: () => Redis | null = getSharedRedis) {}
 
@@ -580,6 +591,119 @@ export class MetalPlacementRegistry {
     const cutoff = now - USER_OPEN_TTL_S * 1000
     for (const [pid, ts] of m) if (ts < cutoff) m.delete(pid)
   }
+
+  // --- per-workspace running set (pooled compute budget) -------------------
+  // The runtimes a workspace has running on metal and the memory each was
+  // sized at, so admission can sum them against the workspace's tier budget
+  // from any API replica. Same best-effort contract as the user open set.
+
+  async recordWorkspaceRun(workspaceId: string, runtimeKey: string, memMiB: number, now: number = Date.now()): Promise<void> {
+    if (!workspaceId || !runtimeKey) return
+    const r = this.redis()
+    const setMem = () => {
+      const m = this.memWorkspaceRuns.get(workspaceId) ?? new Map<string, WorkspaceRun>()
+      m.set(runtimeKey, { runtimeKey, openedAt: now, memMiB })
+      this.memWorkspaceRuns.set(workspaceId, m)
+    }
+    if (!r) return setMem()
+    try {
+      await r
+        .multi()
+        .zadd(`${WS_RUN_KEY}${workspaceId}`, String(now), runtimeKey)
+        .hset(`${WS_MEM_KEY}${workspaceId}`, runtimeKey, String(memMiB))
+        .expire(`${WS_RUN_KEY}${workspaceId}`, WORKSPACE_RUN_TTL_S)
+        .expire(`${WS_MEM_KEY}${workspaceId}`, WORKSPACE_RUN_TTL_S)
+        .exec()
+    } catch {
+      setMem()
+    }
+  }
+
+  /** The workspace's recorded running runtimes, least-recently opened first. */
+  async listWorkspaceRuns(workspaceId: string): Promise<WorkspaceRun[]> {
+    if (!workspaceId) return []
+    const r = this.redis()
+    const fromMem = () =>
+      [...(this.memWorkspaceRuns.get(workspaceId)?.values() ?? [])].sort((a, b) => a.openedAt - b.openedAt)
+    if (!r) return fromMem()
+    try {
+      const [flat, mem] = await Promise.all([
+        r.zrange(`${WS_RUN_KEY}${workspaceId}`, 0, -1, 'WITHSCORES'),
+        r.hgetall(`${WS_MEM_KEY}${workspaceId}`),
+      ])
+      const out: WorkspaceRun[] = []
+      for (let i = 0; i < flat.length; i += 2) {
+        const runtimeKey = flat[i]
+        out.push({
+          runtimeKey,
+          openedAt: parseInt(flat[i + 1], 10) || 0,
+          memMiB: parseInt(mem?.[runtimeKey] ?? '0', 10) || 0,
+        })
+      }
+      return out
+    } catch {
+      return fromMem()
+    }
+  }
+
+  async removeWorkspaceRun(workspaceId: string, runtimeKey: string): Promise<void> {
+    if (!workspaceId || !runtimeKey) return
+    const r = this.redis()
+    this.memWorkspaceRuns.get(workspaceId)?.delete(runtimeKey)
+    if (!r) return
+    try {
+      await r
+        .multi()
+        .zrem(`${WS_RUN_KEY}${workspaceId}`, runtimeKey)
+        .hdel(`${WS_MEM_KEY}${workspaceId}`, runtimeKey)
+        .exec()
+    } catch {
+      /* stale entries are re-checked against the host before they cost anything */
+    }
+  }
+
+  /**
+   * Leave a notice for whoever is waiting on `runtimeKey`'s open. Stored
+   * shared because the open request may be answered by a different replica
+   * than the one that did the admission.
+   */
+  async setBudgetNotice(runtimeKey: string, notice: unknown, now: number = Date.now()): Promise<void> {
+    const r = this.redis()
+    const setMem = () => {
+      this.memBudgetNotices.set(runtimeKey, { notice, expiresAt: now + WS_NOTICE_TTL_S * 1000 })
+    }
+    if (!r) return setMem()
+    try {
+      await r.set(`${WS_NOTICE_KEY}${runtimeKey}`, JSON.stringify(notice), 'EX', WS_NOTICE_TTL_S)
+    } catch {
+      setMem()
+    }
+  }
+
+  /** Read and clear `runtimeKey`'s notice, so it is shown once. */
+  async takeBudgetNotice<T = unknown>(runtimeKey: string, now: number = Date.now()): Promise<T | null> {
+    const fromMem = (): T | null => {
+      const e = this.memBudgetNotices.get(runtimeKey)
+      this.memBudgetNotices.delete(runtimeKey)
+      return e && e.expiresAt > now ? (e.notice as T) : null
+    }
+    const r = this.redis()
+    if (!r) return fromMem()
+    try {
+      const key = `${WS_NOTICE_KEY}${runtimeKey}`
+      const res = await r.multi().get(key).del(key).exec()
+      const raw = res?.[0]?.[1] as string | null | undefined
+      return raw ? (JSON.parse(raw) as T) : fromMem()
+    } catch {
+      return fromMem()
+    }
+  }
+}
+
+export interface WorkspaceRun {
+  runtimeKey: string
+  openedAt: number
+  memMiB: number
 }
 
 let registry: MetalPlacementRegistry | null = null

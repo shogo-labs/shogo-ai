@@ -11,6 +11,7 @@ import { PlansPanel } from "./panels/PlansPanel";
 import { ProjectSettingsContent } from "../settings/ProjectSettingsContent";
 import { agentFetch } from "../../lib/agent-fetch";
 import { API_URL } from "../../lib/api";
+import { useWorkspaceBudgetToast } from "./WorkspaceBudgetNotice";
 
 export type ProjectSurface = "canvas" | "files" | "plans" | "settings";
 
@@ -108,10 +109,11 @@ export const ProjectSurfaceView = observer(function ProjectSurfaceView({
   projectId: string | undefined;
   surface?: ProjectSurface;
 }) {
-  const { agentUrl, canvasBaseUrl, previewUrl } = useAgentUrl(
+  const { agentUrl, canvasBaseUrl, previewUrl, budgetNotice, dismissBudgetNotice } = useAgentUrl(
     API_URL ?? "",
     projectId ?? ""
   );
+  useWorkspaceBudgetToast(budgetNotice, dismissBudgetNotice);
 
   const panel = useMemo(() => {
     if (!projectId) return null;

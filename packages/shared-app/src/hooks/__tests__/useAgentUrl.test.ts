@@ -114,3 +114,57 @@ describe('useAgentUrl — stallThresholdMs', () => {
     }
   })
 })
+
+describe('useAgentUrl — workspace compute budget', () => {
+  const budgetMessage = {
+    message: 'Opening this project put 1 other project to sleep (Odin A).',
+    instanceSize: 'large',
+    instanceLabel: 'Large',
+    budgetGb: 16,
+    runningCount: 1,
+    projects: [{ id: 'a', name: 'Odin A' }],
+    canUpgrade: true,
+  }
+
+  it('surfaces the notice when opening put other projects to sleep, until dismissed', async () => {
+    const fetchMock = mock(
+      async () =>
+        new Response(
+          JSON.stringify({ ready: true, agentUrl: 'https://agent.test', budgetNotice: budgetMessage }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        ),
+    )
+    const { result, unmount } = renderHook(() =>
+      useAgentUrl('https://api.test', 'proj-budget-notice', { fetch: fetchMock as unknown as typeof fetch }),
+    )
+    try {
+      await waitFor(() => expect(result.current.budgetNotice).toEqual(budgetMessage))
+      expect(result.current.ready).toBe(true)
+      result.current.dismissBudgetNotice()
+      await waitFor(() => expect(result.current.budgetNotice).toBeNull())
+    } finally {
+      unmount()
+    }
+  })
+
+  it('reports a refused open with its message and capacity details', async () => {
+    const fetchMock = mock(
+      async () =>
+        new Response(
+          JSON.stringify({ error: 'workspace_capacity', message: 'All of it is in use.', capacity: budgetMessage }),
+          { status: 409, headers: { 'content-type': 'application/json' } },
+        ),
+    )
+    const { result, unmount } = renderHook(() =>
+      useAgentUrl('https://api.test', 'proj-budget-refused', { fetch: fetchMock as unknown as typeof fetch }),
+    )
+    try {
+      await waitFor(() => expect(result.current.lastStatus).toBe('workspace_capacity'))
+      expect(result.current.error).toBe('All of it is in use.')
+      expect(result.current.capacity).toEqual(budgetMessage)
+      expect(result.current.ready).toBe(false)
+    } finally {
+      unmount()
+    }
+  })
+})

@@ -134,6 +134,11 @@ import { cloudProjectsRoutes } from './routes/cloud-projects'
 import { requireSuperAdmin } from './middleware/super-admin'
 import { SANDBOX_EXEC_SETTING_KEY, setSandboxExecOverride, loadSandboxExecOverride } from './lib/sandbox-exec-setting'
 import { DOCKER_CLASS_SETTING_KEY, setDockerClassOverride, loadDockerClassOverride } from './lib/runtime-class-setting'
+import {
+  WORKSPACE_BUDGET_SETTING_KEY,
+  setWorkspaceBudgetOverride,
+  loadWorkspaceBudgetOverride,
+} from './lib/workspace-compute-budget'
 import { requireSuperAdminUnlessScoped } from './middleware/admin-access'
 import { historyRoutes } from './routes/history'
 // Note: Manual routes (workspaces, projects, folders, starred) removed in favor of generated v2 routes
@@ -2905,8 +2910,36 @@ app.get('/api/projects/:projectId/sandbox/url', async (c) => {
         void import('./lib/metal-user-open-limit')
           .then((m) => m.enforceUserMetalOpenLimit(userId, projectId))
           .catch((err) => console.warn(`[sandbox/url] user open-limit enforce failed (non-fatal): ${err?.message ?? err}`))
-        return c.json(metalBody(true), 200)
+        // Opening this project may have put others in the workspace to sleep
+        // to fit its compute budget; tell the user once, with an upgrade path.
+        let budgetNotice: unknown = null
+        try {
+          const { getMetalPlacementRegistry } = await import('./lib/metal-placement-registry')
+          const { workspaceRuntimeKey } = await import('./lib/metal-warm-pool-controller')
+          const { describeSleepNotice } = await import('./lib/workspace-compute-budget')
+          const notice = await getMetalPlacementRegistry().takeBudgetNotice<
+            import('./lib/workspace-compute-budget').BudgetNotice
+          >(workspaceRuntimeKey('', projectId))
+          if (notice) budgetNotice = await describeSleepNotice(notice)
+        } catch (err: any) {
+          console.warn(`[sandbox/url] budget notice failed (non-fatal): ${err?.message ?? err}`)
+        }
+        return c.json({ ...metalBody(true), ...(budgetNotice ? { budgetNotice } : {}) }, 200)
       } catch (err: any) {
+        const { WorkspaceCapacityError, describeCapacityRefusal } = await import('./lib/workspace-compute-budget')
+        if (err instanceof WorkspaceCapacityError) {
+          const described = await describeCapacityRefusal(err).catch(() => null)
+          return c.json(
+            {
+              error: 'workspace_capacity',
+              message:
+                described?.message ??
+                'Your workspace is out of room for running projects. Stop a project or upgrade your instance size.',
+              capacity: described,
+            },
+            409,
+          )
+        }
         console.log(`[sandbox/url] ${projectId.slice(0, 8)} metal still starting: ${err?.message ?? err}`)
         return c.json(metalBody(false), 202)
       }
@@ -6451,6 +6484,43 @@ app.put('/api/admin/settings/docker-class', async (c) => {
   }
 })
 
+// GET /api/admin/settings/workspace-budget - Read the metal pooled workspace budget gate
+app.get('/api/admin/settings/workspace-budget', async (c) => {
+  try {
+    const row = await prisma.platformSetting.findUnique({ where: { key: WORKSPACE_BUDGET_SETTING_KEY } })
+    return c.json({ enabled: row ? row.value === 'true' : null })
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500)
+  }
+})
+
+// PUT /api/admin/settings/workspace-budget - Set/clear the metal pooled workspace budget.
+// `enabled: true` makes each workspace's instance-size memory a budget shared by
+// its running microVMs (see workspace-compute-budget.ts); `null` falls back to
+// `METAL_WORKSPACE_BUDGET_ENABLED`, then off.
+app.put('/api/admin/settings/workspace-budget', async (c) => {
+  try {
+    const body = await c.req.json()
+    const auth = c.get('auth') as any
+    const userId = auth?.user?.id || 'unknown'
+    const { enabled } = body as { enabled: boolean | null }
+
+    if (enabled === null) {
+      await prisma.platformSetting.deleteMany({ where: { key: WORKSPACE_BUDGET_SETTING_KEY } })
+    } else {
+      await prisma.platformSetting.upsert({
+        where: { key: WORKSPACE_BUDGET_SETTING_KEY },
+        create: { key: WORKSPACE_BUDGET_SETTING_KEY, value: String(enabled), updatedBy: userId },
+        update: { value: String(enabled), updatedBy: userId },
+      })
+    }
+    setWorkspaceBudgetOverride(enabled)
+    return c.json({ ok: true, enabled })
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500)
+  }
+})
+
 // PUT /api/admin/settings/agent-models - Update agent mode model overrides
 app.put('/api/admin/settings/agent-models', async (c) => {
   try {
@@ -9281,6 +9351,7 @@ await (async () => {
 await loadSandboxExecOverride()
 // Load the Docker-capable project class gate (see apps/api/src/lib/runtime-class-setting.ts).
 await loadDockerClassOverride()
+await loadWorkspaceBudgetOverride()
 
 // Self-provision in-process AI proxy credentials so the API server can reach
 // its own AI proxy for server-initiated LLM surfaces (title generation, in-app

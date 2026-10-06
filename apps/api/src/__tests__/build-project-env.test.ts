@@ -801,6 +801,36 @@ describe('buildProjectEnv — always-on (instance tier)', () => {
   })
 })
 
+describe('buildProjectEnv — metal VM size', () => {
+  test('sizes a standard metal VM from the tier', async () => {
+    findUniqueProjectMock.mockImplementation(async () => ({
+      workspaceId: 'ws-1',
+      workspace: { instanceSize: 'large' },
+    }))
+    const env = await buildProjectEnv('proj-large', { forMetal: true })
+    expect(env.SHOGO_VM_VCPUS).toBe('4')
+    expect(env.SHOGO_VM_MEM_MIB).toBe('4096')
+  })
+
+  test('treats an unrecognized tier as micro', async () => {
+    findUniqueProjectMock.mockImplementation(async () => ({
+      workspaceId: 'ws-1',
+      workspace: { instanceSize: 'bogus-tier' },
+    }))
+    const env = await buildProjectEnv('proj-bogus', { forMetal: true })
+    expect(env.SHOGO_VM_MEM_MIB).toBe('2048')
+  })
+
+  test('leaves the size off non-metal envs', async () => {
+    findUniqueProjectMock.mockImplementation(async () => ({
+      workspaceId: 'ws-1',
+      workspace: { instanceSize: 'large' },
+    }))
+    const env = await buildProjectEnv('proj-k8s')
+    expect(env.SHOGO_VM_MEM_MIB).toBeUndefined()
+  })
+})
+
 // ─── Docker-capable ("Tier 2") project class ──────────────────────────────
 
 describe('buildProjectEnv — SHOGO_RUNTIME_CLASS (Docker project class)', () => {

@@ -27,6 +27,13 @@ import { trace, SpanStatusCode, metrics } from '@opentelemetry/api'
 import { buildProjectEnv, buildPublishedProjectEnv } from './runtime/build-project-env'
 import { buildWorkspaceEnv } from './runtime/build-workspace-env'
 import { getMetalPlacementRegistry, type HostScalars, type MetalPlacementRegistry } from './metal-placement-registry'
+import {
+  admitWorkspaceRuntime,
+  isWorkspaceBudgetEnabled,
+  loadWorkspaceBudgetMiB,
+  runtimeKeyProjectId,
+  type BudgetNotice,
+} from './workspace-compute-budget'
 
 /**
  * The controller keys every runtime by an opaque string. A dev/preview runtime
@@ -435,6 +442,10 @@ type PublishedEnvBuilder = (
   opts?: { alwaysOn?: boolean },
 ) => Promise<Record<string, string>>
 type FetchImpl = typeof fetch
+interface BudgetDeps {
+  isEnabled?: () => boolean
+  loadBudgetMiB?: (workspaceId: string) => Promise<number>
+}
 
 export class MetalWarmPoolController {
   private hosts = new Map<string, HostEntry>()
@@ -458,7 +469,47 @@ export class MetalWarmPoolController {
     private now: () => number = Date.now,
     private registry: MetalPlacementRegistry = getMetalPlacementRegistry(),
     private publishedEnvBuilder: PublishedEnvBuilder = buildPublishedProjectEnv,
+    private budgetDeps: BudgetDeps = {},
   ) {}
+
+  /**
+   * The workspace budget this assignment draws from, or null when the budget
+   * is off or doesn't apply. Published sites are left out: a visitor waking
+   * one must never be refused, or suspend the owner's dev projects.
+   */
+  private budgetFor(
+    runtimeKey: string,
+    env: Record<string, string>,
+    bind?: { workspaceId?: string },
+  ): { workspaceId: string; memMiB: number } | null {
+    const enabled = this.budgetDeps.isEnabled ?? isWorkspaceBudgetEnabled
+    if (!enabled() || runtimeKey.startsWith('published:')) return null
+    const workspaceId = env.WORKSPACE_ID || bind?.workspaceId
+    const memMiB = parseInt(env.SHOGO_VM_MEM_MIB || '', 10)
+    if (!workspaceId || !(memMiB > 0)) return null
+    return { workspaceId, memMiB }
+  }
+
+  private async admitToBudget(workspaceId: string, runtimeKey: string, memMiB: number): Promise<void> {
+    const loadBudget = this.budgetDeps.loadBudgetMiB ?? loadWorkspaceBudgetMiB
+    const budgetMiB = await loadBudget(workspaceId)
+    const res = await admitWorkspaceRuntime(workspaceId, runtimeKey, memMiB, {
+      registry: this.registry,
+      status: (key) => this.getRuntimeHostStatus(key),
+      stop: (key) => this.stopProject(key),
+      budgetMiB,
+      now: this.now,
+    })
+    if (res.suspended.length > 0) {
+      const notice: BudgetNotice = {
+        workspaceId,
+        suspendedProjectIds: res.suspended.map(runtimeKeyProjectId),
+        runningCount: res.runningCount,
+        budgetMiB,
+      }
+      await this.registry.setBudgetNotice(runtimeKey, notice, this.now()).catch(() => {})
+    }
+  }
 
   /** Upsert a host from its heartbeat, mirroring scalars to the shared registry. */
   registerHost(reg: MetalHostRegistration): void {
@@ -709,6 +760,17 @@ export class MetalWarmPoolController {
         const env = await buildEnv()
         let lastErr: unknown
 
+        const budget = this.budgetFor(projectId, env, bind)
+        if (budget) {
+          try {
+            await this.admitToBudget(budget.workspaceId, projectId, budget.memMiB)
+          } catch (err) {
+            if (gotLease) void this.registry.releaseLease(projectId, this.holderId).catch(() => {})
+            span.setAttribute('resolve.method', 'workspace_over_budget')
+            throw err
+          }
+        }
+
         // Class-aware placement (Phase 1 docker project class): a docker-class
         // assign (env.SHOGO_RUNTIME_CLASS === 'docker') should land on a host
         // that actually advertises docker support, not on whichever standard
@@ -742,6 +804,11 @@ export class MetalWarmPoolController {
             // any lease loser converges on this host. The project is now local.
             void this.registry.setPlacement(projectId, host.hostId, 'local').catch(() => {})
             if (gotLease) void this.registry.renewLease(projectId, this.holderId).catch(() => {})
+            if (budget) {
+              void this.registry
+                .recordWorkspaceRun(budget.workspaceId, projectId, budget.memMiB, this.now())
+                .catch(() => {})
+            }
 
             const mode = res.mode ?? 'assigned'
             const source = res.source ?? 'none'

@@ -16,7 +16,42 @@ const {
   getMobileDiskSizeLimit,
   isInstanceUpgrade,
   isMobileTechStack,
+  resolveMetalVmSize,
+  getWorkspaceMemoryBudgetMiB,
 } = await import('../instance-sizes')
+
+describe('resolveMetalVmSize', () => {
+  it('sizes a standard VM at small, capped by the tier', () => {
+    expect(resolveMetalVmSize('micro', ['nextjs'], false)).toEqual({ vcpus: 1, memMiB: 2048 })
+    expect(resolveMetalVmSize('small', ['nextjs'], false)).toEqual({ vcpus: 1, memMiB: 4096 })
+    expect(resolveMetalVmSize('large', ['nextjs'], false)).toEqual({ vcpus: 4, memMiB: 4096 })
+  })
+
+  it('keeps the unbilled mobile floor on a micro workspace', () => {
+    expect(resolveMetalVmSize('micro', ['expo-app'], false)).toEqual({ vcpus: 1, memMiB: 4096 })
+  })
+
+  it('sizes a docker VM at the stack floor, with vCPUs following the tier', () => {
+    expect(resolveMetalVmSize('large', ['docker-compose'], true)).toEqual({ vcpus: 4, memMiB: 16384 })
+    expect(resolveMetalVmSize('xlarge', ['docker-compose'], true)).toEqual({ vcpus: 8, memMiB: 16384 })
+  })
+
+  it('treats an unknown tier as micro', () => {
+    expect(resolveMetalVmSize('bogus' as any, [], false)).toEqual({ vcpus: 1, memMiB: 2048 })
+  })
+
+  it('takes the largest floor across a merged runtime\'s members', () => {
+    expect(resolveMetalVmSize('xlarge', ['nextjs', 'docker-compose'], true)).toEqual({ vcpus: 8, memMiB: 16384 })
+  })
+})
+
+describe('getWorkspaceMemoryBudgetMiB', () => {
+  it('is the tier memory', () => {
+    expect(getWorkspaceMemoryBudgetMiB('micro')).toBe(2048)
+    expect(getWorkspaceMemoryBudgetMiB('large')).toBe(16384)
+    expect(getWorkspaceMemoryBudgetMiB('xlarge')).toBe(32768)
+  })
+})
 
 describe('INSTANCE_SIZES', () => {
   it('has exactly 5 sizes in canonical order', () => {

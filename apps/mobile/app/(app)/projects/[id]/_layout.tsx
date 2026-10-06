@@ -59,6 +59,10 @@ import { authClient } from "../../../../lib/auth-client";
 import { API_URL, api, type RemoteHostStatus } from "../../../../lib/api";
 import { openWebAppSession } from "../../../../lib/openWebAppSession";
 import {
+  useWorkspaceBudgetToast,
+  WorkspaceCapacityCard,
+} from "../../../../components/project/WorkspaceBudgetNotice";
+import {
   chatSessionEvents,
   chatActivityEvents,
 } from "../../../../lib/chat-session-events";
@@ -1050,6 +1054,9 @@ export default observer(function ProjectLayout() {
     stalled: runtimeStalled,
     lastStatus: runtimeLastStatus,
     retry: retryAgentUrl,
+    budgetNotice,
+    dismissBudgetNotice,
+    capacity: runtimeCapacity,
   } = useAgentUrl(API_URL!, projectId, {
     credentials: Platform.OS === "web" ? "include" : "omit",
     headers: openRequestHeaders,
@@ -1062,6 +1069,7 @@ export default observer(function ProjectLayout() {
     // 45s and re-arms once the real value is known.
     stallThresholdMs: techStackId === "expo-app" ? 150_000 : undefined,
   });
+  useWorkspaceBudgetToast(budgetNotice, dismissBudgetNotice);
 
   // Pre-warm on intent: reaching for "open preview in new tab" is a strong
   // signal a top-level visit is coming, so nudge the pod awake now instead of
@@ -3835,7 +3843,16 @@ export default observer(function ProjectLayout() {
               </Text>
             </>
           )}
-          {showStalledRecovery && (
+          {showStalledRecovery && runtimeCapacity && (
+            <WorkspaceCapacityCard
+              capacity={runtimeCapacity}
+              onRetry={() => retryAgentUrl()}
+              onBack={() =>
+                router.canGoBack() ? router.back() : router.replace("/(app)")
+              }
+            />
+          )}
+          {showStalledRecovery && !runtimeCapacity && (
             <View className="w-full max-w-sm gap-3 items-center">
               <ActivityIndicator size="small" />
               <Text className="text-foreground text-base font-semibold text-center">
