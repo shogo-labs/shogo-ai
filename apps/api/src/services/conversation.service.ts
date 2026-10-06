@@ -357,7 +357,7 @@ async function uniqueSlug(workspaceId: string, base: string): Promise<string> {
 }
 
 async function participantNames(workspaceId: string, conversationIds: string[], viewerId: string) {
-  if (!conversationIds.length) return new Map<string, any[]>()
+  if (!conversationIds.length) return { byConversation: new Map<string, any[]>(), orphanedDirectIds: new Set<string>() }
   const rows = await db.conversationMember.findMany({
     where: { conversationId: { in: conversationIds } },
     include: { user: { select: USER_SELECT } },
@@ -367,6 +367,12 @@ async function participantNames(workspaceId: string, conversationIds: string[], 
     ? await db.project.findMany({ where: { id: { in: projectIds } }, select: { id: true, name: true } })
     : []
   const projectNames = new Map<string, string>(projects.map((p: any) => [p.id, p.name]))
+  // Conversations whose agent belongs to a project that no longer exists.
+  const orphanedDirectIds = new Set<string>(
+    rows
+      .filter((r: any) => r.memberType === 'agent' && r.projectId && !projectNames.has(r.projectId))
+      .map((r: any) => r.conversationId),
+  )
   const workspaceAgentName = rows.some((r: any) => r.memberType === 'agent' && !r.projectId)
     ? await agentDisplayName(workspaceId, null)
     : null
@@ -379,7 +385,7 @@ async function participantNames(workspaceId: string, conversationIds: string[], 
       : { type: 'user', id: r.user?.id ?? r.userId, name: r.user?.name || r.user?.email || 'Unknown', image: r.user?.image ?? null })
     byConversation.set(r.conversationId, list)
   }
-  return byConversation
+  return { byConversation, orphanedDirectIds }
 }
 
 export async function listConversationsForUser(workspaceId: string, userId: string) {
@@ -404,7 +410,16 @@ export async function listConversationsForUser(workspaceId: string, userId: stri
   })
 
   const directIds = conversations.filter((c: any) => c.kind === 'dm' || c.kind === 'group_dm').map((c: any) => c.id)
-  const participants = await participantNames(workspaceId, directIds, userId)
+  const { byConversation: participants, orphanedDirectIds } = await participantNames(workspaceId, directIds, userId)
+  // Agent DMs left behind by a project deleted before cleanup existed: archive them now.
+  const orphanedDmIds = conversations
+    .filter((c: any) => c.kind === 'dm' && !c.archivedAt && orphanedDirectIds.has(c.id))
+    .map((c: any) => c.id)
+  if (orphanedDmIds.length) {
+    const archivedAt = new Date()
+    await db.conversation.updateMany({ where: { id: { in: orphanedDmIds } }, data: { archivedAt } }).catch(() => {})
+    for (const c of conversations) if (orphanedDmIds.includes(c.id)) c.archivedAt = archivedAt
+  }
   const mentionCounts = await unreadMentionCounts(userId, memberships)
   const unread = await unreadCounts(userId, conversations, membershipByConv)
   const lastMessages = await lastMessagePreviews(directIds)
@@ -854,6 +869,38 @@ export async function addAgentMember(
 
 export async function listAgentMembers(conversationId: string) {
   return db.conversationMember.findMany({ where: { conversationId, memberType: 'agent' } })
+}
+
+/**
+ * Takes a deleted project's agent out of team chat: its DMs are archived (history is
+ * kept), it leaves every channel and group DM, and clients are told to refresh their
+ * lists and agent pickers. `workspaceId` is passed so the pickers refresh even when the
+ * agent was never in a conversation.
+ */
+export async function removeProjectAgent(projectId: string, workspaceId?: string | null): Promise<void> {
+  const rows = await db.conversationMember.findMany({
+    where: { memberType: 'agent', projectId },
+    include: { conversation: true },
+  })
+  const workspaces = new Set<string>(workspaceId ? [workspaceId] : [])
+  for (const row of rows) {
+    const conversation = row.conversation
+    workspaces.add(conversation.workspaceId)
+    if (conversation.kind === 'dm') {
+      if (conversation.archivedAt) continue
+      const audience = await conversationAudience(conversation)
+      const updated = await db.conversation.update({ where: { id: conversation.id }, data: { archivedAt: new Date() } })
+      publishConversationEvent(updated.workspaceId, {
+        type: 'conversation.updated', conversationId: updated.id, conversation: serializeConversation(updated),
+      } as any, audience)
+    } else {
+      await db.conversationMember.delete({ where: { id: row.id } })
+      await publish(conversation, { type: 'member.left', agent: { projectId } })
+    }
+  }
+  for (const ws of workspaces) {
+    publishConversationEvent(ws, { type: 'agent.updated', projectId } as any)
+  }
 }
 
 // ─── Messages ────────────────────────────────────────────────────────────────
