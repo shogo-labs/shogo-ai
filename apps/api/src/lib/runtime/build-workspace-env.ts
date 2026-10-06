@@ -34,8 +34,14 @@
  */
 
 import { generateProxyToken } from '../ai-proxy-token'
-import { meetsMinimumInstanceSize, type InstanceSizeName } from '../../config/instance-sizes'
+import {
+  INSTANCE_SIZES,
+  meetsMinimumInstanceSize,
+  resolveMetalVmSize,
+  type InstanceSizeName,
+} from '../../config/instance-sizes'
 import { isDockerClassEnabled } from '../runtime-class-setting'
+import { isWorkspaceBudgetEnabled } from '../workspace-compute-budget'
 import { isDockerTechStack } from '../../../../../packages/core/src/tech-stack-registry'
 import { resolveAgentModelEnv } from './agent-model-defaults'
 import { deriveWorkspaceRuntimeToken } from '../workspace-runtime-token'
@@ -44,6 +50,10 @@ import { getSandboxExecOverride } from '../sandbox-exec-setting'
 import { parseProjectSettings } from '../project-settings'
 import { resolveExposedPorts } from '../project-ports'
 import { importCloudModule } from '../cloud-import'
+
+function metalVmSizeEnv(size: { vcpus: number; memMiB: number }): Record<string, string> {
+  return { SHOGO_VM_VCPUS: String(size.vcpus), SHOGO_VM_MEM_MIB: String(size.memMiB) }
+}
 
 export interface BuildWorkspaceEnvOpts {
   logPrefix?: string
@@ -238,6 +248,21 @@ export async function buildWorkspaceEnv(
         )
       } else {
         env.SHOGO_RUNTIME_CLASS = 'docker'
+      }
+    }
+
+    if (opts.forMetal) {
+      Object.assign(
+        env,
+        metalVmSizeEnv(
+          resolveMetalVmSize(workspaceInstanceSize, Object.values(techStacks), env.SHOGO_RUNTIME_CLASS === 'docker'),
+        ),
+      )
+      // Paid tiers stay warm, as their single-project runtimes already do.
+      // Only with the pooled budget on: it is what bounds how many of a
+      // workspace's always-on VMs can be running at once.
+      if (isWorkspaceBudgetEnabled() && (INSTANCE_SIZES[workspaceInstanceSize]?.minScale ?? 0) >= 1) {
+        env.SHOGO_ALWAYS_ON = '1'
       }
     }
 

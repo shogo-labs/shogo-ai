@@ -9,7 +9,13 @@
 
 import { generateProxyToken } from '../ai-proxy-token'
 import { resolveAgentModelEnv } from './agent-model-defaults'
-import { INSTANCE_SIZES, meetsMinimumInstanceSize, type InstanceSizeName } from '../../config/instance-sizes'
+import {
+  INSTANCE_SIZES,
+  meetsMinimumInstanceSize,
+  resolveMetalVmSize,
+  type InstanceSizeName,
+  type MetalVmSize,
+} from '../../config/instance-sizes'
 import { buildToolsProxyUrl } from '../cloud-urls'
 import { getSandboxExecOverride } from '../sandbox-exec-setting'
 import { isDockerClassEnabled } from '../runtime-class-setting'
@@ -30,6 +36,15 @@ export class ProjectNotFoundError extends Error {
     super(`project ${projectId} does not exist (deleted?) — cannot build a runtime env`)
     this.name = 'ProjectNotFoundError'
   }
+}
+
+/**
+ * The microVM size a metal host should boot for this assignment. Hosts that
+ * predate per-VM sizing ignore these and use their configured class size; the
+ * API still accounts the workspace budget by them.
+ */
+export function metalVmSizeEnv(size: MetalVmSize): Record<string, string> {
+  return { SHOGO_VM_VCPUS: String(size.vcpus), SHOGO_VM_MEM_MIB: String(size.memMiB) }
 }
 
 /**
@@ -198,6 +213,19 @@ export async function buildProjectEnv(
         } else {
           env.SHOGO_RUNTIME_CLASS = 'docker'
         }
+      }
+
+      if (opts?.forMetal) {
+        Object.assign(
+          env,
+          metalVmSizeEnv(
+            resolveMetalVmSize(
+              instanceSize as InstanceSizeName,
+              [techStackFromSettings],
+              env.SHOGO_RUNTIME_CLASS === 'docker',
+            ),
+          ),
+        )
       }
 
       // Exposed-ports allowlist (Phase 3: client-side tunnel + public per-port
