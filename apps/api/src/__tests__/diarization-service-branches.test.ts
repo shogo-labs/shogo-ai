@@ -154,7 +154,7 @@ describe('diarize', () => {
 
     await diarize('/audio/input.wav', { numSpeakers: 0 })
 
-    expect(spawnCalls[0].args).toContain('--clustering.cluster-threshold=0.5')
+    expect(spawnCalls[0].args).toContain('--clustering.cluster-threshold=1.2')
   })
 
   test('surfaces missing ffmpeg, spawn errors, non-zero exits, and parse failures', async () => {

@@ -4,6 +4,9 @@
 import { spawn } from 'child_process'
 import { existsSync } from 'fs'
 import { readFile } from 'fs/promises'
+// Namespace imports: a test that mocks these modules partially must not break linking.
+import * as fsp from 'fs/promises'
+import * as os from 'os'
 import { join, resolve } from 'path'
 
 export interface TranscriptSegment {
@@ -134,12 +137,11 @@ export async function transcribeLocal(
   }
 
   const prefix = model
-  const args = [
+  const baseArgs = [
     `--whisper-encoder=${join(modelDir, `${prefix}-encoder.onnx`)}`,
     `--whisper-decoder=${join(modelDir, `${prefix}-decoder.onnx`)}`,
     `--tokens=${join(modelDir, `${prefix}-tokens.txt`)}`,
     '--num-threads=4',
-    audioPath,
   ]
 
   const libDir = getSherpaLibDir()
@@ -153,11 +155,377 @@ export async function transcribeLocal(
     env.LD_LIBRARY_PATH = [libDir, env.LD_LIBRARY_PATH].filter(Boolean).join(':')
   }
 
+  const run = (files: string[], durationSeconds: number) =>
+    runSherpaOffline(binaryPath, [...baseArgs, ...files], env, durationSeconds)
+
+  // Whisper decodes at most ~30 s per call, so anything longer is cut into
+  // windows. If the audio can't be windowed, fall back to a single pass.
+  const prepared = await prepareWindows(audioPath).catch((err) => {
+    console.warn(`[Transcription] Could not window ${audioPath}; transcribing in one pass:`, err?.message ?? err)
+    return null
+  })
+  if (prepared) {
+    try {
+      return await transcribeWindows(prepared, run)
+    } finally {
+      await fsp.rm(prepared.dir, { recursive: true, force: true }).catch(() => {})
+    }
+  }
+
+  const info = await readWavInfo(audioPath).catch(() => null)
+  const stdout = await run([audioPath], info?.durationSeconds ?? 0)
+  let result: TranscriptionResult
+  try {
+    result = parseSherpaOutput(stdout)
+  } catch (err) {
+    throw new Error(`Failed to parse sherpa-onnx output: ${err}`)
+  }
+  if (info && isImplausiblyEmpty(countWords(result.text), info.durationSeconds)) {
+    throw new Error(emptyResultMessage(info.durationSeconds))
+  }
+  return result
+}
+
+// ---------------------------------------------------------------------------
+// Windowing for long recordings
+// ---------------------------------------------------------------------------
+
+/** Whisper's context is 30 s; audio at or below this goes through in one piece. */
+export const WHISPER_MAX_SINGLE_SECONDS = 28
+/** Target window length. Cuts snap to the quietest moment within SNAP_RADIUS_SECONDS. */
+export const WHISPER_WINDOW_SECONDS = 25
+const SNAP_RADIUS_SECONDS = 2
+const SNAP_FRAME_SECONDS = 0.1
+const WINDOW_RATE = 16_000
+/** Windows quieter than this RMS (16-bit scale) are skipped: Whisper invents text for silence. */
+export const SILENT_WINDOW_RMS = 25
+/** Audio this long (non-silent) with fewer words than 1 per 5 minutes did not get transcribed. */
+const MIN_SECONDS_PER_WORD = 300
+const MIN_CHECKED_SECONDS = 120
+
+export interface WavInfo {
+  sampleRate: number
+  channels: number
+  bitsPerSample: number
+  /** 1 = PCM, 3 = float. WAVE_FORMAT_EXTENSIBLE is reported as 1 when 16-bit. */
+  audioFormat: number
+  dataOffset: number
+  dataBytes: number
+  durationSeconds: number
+}
+
+/** Parse a WAV header. Tolerates the zero / 0xFFFFFFFF data sizes that streaming writers leave behind. */
+export function parseWavHeader(buf: Buffer, fileSize: number): WavInfo | null {
+  if (buf.length < 12 || buf.toString('ascii', 0, 4) !== 'RIFF' || buf.toString('ascii', 8, 12) !== 'WAVE') return null
+  let audioFormat = 0
+  let channels = 0
+  let sampleRate = 0
+  let bitsPerSample = 0
+  let pos = 12
+  while (pos + 8 <= buf.length) {
+    const id = buf.toString('ascii', pos, pos + 4)
+    const size = buf.readUInt32LE(pos + 4)
+    if (id === 'fmt ') {
+      if (pos + 8 + 16 > buf.length) return null
+      audioFormat = buf.readUInt16LE(pos + 8)
+      channels = buf.readUInt16LE(pos + 10)
+      sampleRate = buf.readUInt32LE(pos + 12)
+      bitsPerSample = buf.readUInt16LE(pos + 22)
+      if (audioFormat === 0xfffe && bitsPerSample === 16) audioFormat = 1
+    } else if (id === 'data') {
+      if (!channels || !sampleRate || !bitsPerSample) return null
+      const dataOffset = pos + 8
+      const available = Math.max(0, fileSize - dataOffset)
+      const dataBytes = size === 0 || size === 0xffffffff || size > available ? available : size
+      const bytesPerFrame = channels * (bitsPerSample / 8)
+      return {
+        sampleRate,
+        channels,
+        bitsPerSample,
+        audioFormat,
+        dataOffset,
+        dataBytes,
+        durationSeconds: dataBytes / (sampleRate * bytesPerFrame),
+      }
+    }
+    pos += 8 + size + (size & 1)
+  }
+  return null
+}
+
+export async function readWavInfo(path: string): Promise<WavInfo | null> {
+  const fh = await fsp.open(path, 'r')
+  try {
+    const { size } = await fh.stat()
+    const buf = Buffer.alloc(Math.min(size, 4096))
+    const { bytesRead } = await fh.read(buf, 0, buf.length, 0)
+    return parseWavHeader(buf.subarray(0, bytesRead), size)
+  } finally {
+    await fh.close()
+  }
+}
+
+export interface AudioWindow {
+  /** Sample offsets into the 16 kHz mono audio. */
+  start: number
+  end: number
+}
+
+/** Offset (in samples, from the start of `samples`) of the centre of the quietest frame. */
+export function quietestFrameCenter(samples: Int16Array, frame: number): number {
+  if (samples.length <= frame) return Math.floor(samples.length / 2)
+  const step = Math.max(1, Math.floor(frame / 2))
+  let bestStart = 0
+  let bestEnergy = Infinity
+  for (let s = 0; s + frame <= samples.length; s += step) {
+    let energy = 0
+    for (let i = s; i < s + frame; i++) energy += samples[i] * samples[i]
+    if (energy < bestEnergy) {
+      bestEnergy = energy
+      bestStart = s
+    }
+  }
+  return bestStart + Math.floor(frame / 2)
+}
+
+/**
+ * Split `totalSamples` of 16 kHz audio into windows of about
+ * WHISPER_WINDOW_SECONDS, each cut placed at the quietest moment near the
+ * nominal boundary so words aren't split. Windows never exceed Whisper's limit.
+ */
+export async function planWindows(
+  totalSamples: number,
+  readRegion: (start: number, count: number) => Promise<Int16Array>,
+  sampleRate = WINDOW_RATE,
+): Promise<AudioWindow[]> {
+  const target = WHISPER_WINDOW_SECONDS * sampleRate
+  const radius = SNAP_RADIUS_SECONDS * sampleRate
+  const frame = Math.round(SNAP_FRAME_SECONDS * sampleRate)
+  const windows: AudioWindow[] = []
+  let start = 0
+  while (start < totalSamples) {
+    if (totalSamples - start <= WHISPER_MAX_SINGLE_SECONDS * sampleRate) {
+      windows.push({ start, end: totalSamples })
+      break
+    }
+    const nominal = start + target
+    const from = Math.max(start + frame, nominal - radius)
+    const to = Math.min(totalSamples - frame, nominal + radius)
+    const region = await readRegion(from, to - from)
+    const cut = from + quietestFrameCenter(region, frame)
+    windows.push({ start, end: cut })
+    start = cut
+  }
+  return windows
+}
+
+export function rmsOf(samples: Int16Array): number {
+  if (samples.length === 0) return 0
+  let sum = 0
+  for (let i = 0; i < samples.length; i++) sum += samples[i] * samples[i]
+  return Math.sqrt(sum / samples.length)
+}
+
+export function countWords(text: string): number {
+  const t = text.trim()
+  return t ? t.split(/\s+/).length : 0
+}
+
+/** True when long audio produced so little text that the transcriber clearly didn't cover it. */
+export function isImplausiblyEmpty(words: number, speechSeconds: number): boolean {
+  return speechSeconds >= MIN_CHECKED_SECONDS && words < speechSeconds / MIN_SECONDS_PER_WORD
+}
+
+function emptyResultMessage(seconds: number): string {
+  return `Local transcription returned almost no text for ${Math.round(seconds / 60)} minutes of audio`
+}
+
+/** One JSON result per input file, in input order. */
+export function parseSherpaJsonLines(stdout: string): Array<{ text: string; lang: string }> {
+  const out: Array<{ text: string; lang: string }> = []
+  for (const line of stdout.split('\n')) {
+    const trimmed = line.trim()
+    if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) continue
+    try {
+      const json = JSON.parse(trimmed)
+      out.push({ text: String(json.text ?? '').trim(), lang: json.lang || '' })
+    } catch { /* not JSON, continue */ }
+  }
+  return out
+}
+
+/**
+ * Turn per-window texts into a transcript. This sherpa build returns no token
+ * timestamps, so each window's text is split into sentences and the window's
+ * time span is shared out by sentence length. That keeps segments short enough
+ * for speaker labels to land on the right turn.
+ */
+export function assembleWindowedResult(
+  windows: AudioWindow[],
+  texts: string[],
+  durationSeconds: number,
+  sampleRate = WINDOW_RATE,
+  language = 'en',
+): TranscriptionResult {
+  const segments: TranscriptSegment[] = []
+  windows.forEach((w, i) => {
+    const text = (texts[i] ?? '').trim()
+    if (!text) return
+    const start = w.start / sampleRate
+    const span = (w.end - w.start) / sampleRate
+    const sentences = text.split(/(?<=[.!?])\s+/).filter(Boolean)
+    const totalChars = sentences.reduce((n, s) => n + s.length, 0)
+    let cursor = start
+    for (const sentence of sentences) {
+      const end = cursor + (span * sentence.length) / totalChars
+      segments.push({ start: cursor, end, text: sentence })
+      cursor = end
+    }
+  })
+  return { text: segments.map((s) => s.text).join(' '), segments, language, duration: durationSeconds }
+}
+
+interface PreparedWindows {
+  dir: string
+  /** 16 kHz mono source the windows are cut from. */
+  windows: Array<AudioWindow & { path: string; silent: boolean }>
+  durationSeconds: number
+}
+
+function runFfmpegTo16kMono(src: string, dest: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const proc = spawn('ffmpeg', ['-y', '-v', 'error', '-i', src, '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le', dest], {
+      stdio: ['ignore', 'ignore', 'pipe'],
+      timeout: 30 * 60_000,
+    })
+    let stderr = ''
+    proc.stderr?.on('data', (d: Buffer) => { stderr += d.toString() })
+    proc.on('error', (err) => reject(new Error(`ffmpeg failed: ${err.message}`)))
+    proc.on('exit', (code) => (code === 0 ? resolve() : reject(new Error(`ffmpeg exited with code ${code}: ${stderr.slice(-300)}`))))
+  })
+}
+
+function is16kMonoPcm(info: WavInfo | null): boolean {
+  return !!info && info.sampleRate === WINDOW_RATE && info.channels === 1 && info.bitsPerSample === 16 && info.audioFormat === 1
+}
+
+function wavHeader(dataBytes: number): Buffer {
+  const h = Buffer.alloc(44)
+  h.write('RIFF', 0, 'ascii')
+  h.writeUInt32LE(36 + dataBytes, 4)
+  h.write('WAVEfmt ', 8, 'ascii')
+  h.writeUInt32LE(16, 16)
+  h.writeUInt16LE(1, 20)
+  h.writeUInt16LE(1, 22)
+  h.writeUInt32LE(WINDOW_RATE, 24)
+  h.writeUInt32LE(WINDOW_RATE * 2, 28)
+  h.writeUInt16LE(2, 32)
+  h.writeUInt16LE(16, 34)
+  h.write('data', 36, 'ascii')
+  h.writeUInt32LE(dataBytes, 40)
+  return h
+}
+
+/**
+ * Cut audio longer than Whisper's context into window files in a temp dir.
+ * Returns null when the audio is short enough (or isn't a readable WAV).
+ */
+async function prepareWindows(audioPath: string): Promise<PreparedWindows | null> {
+  let sourceInfo: WavInfo | null
+  try {
+    sourceInfo = await readWavInfo(audioPath)
+  } catch {
+    return null
+  }
+  if (!sourceInfo || sourceInfo.durationSeconds <= WHISPER_MAX_SINGLE_SECONDS) return null
+
+  const dir = await fsp.mkdtemp(join(os.tmpdir(), 'shogo-whisper-'))
+  try {
+    let srcPath = audioPath
+    let info: WavInfo | null = sourceInfo
+    if (!is16kMonoPcm(sourceInfo)) {
+      // The recorder's `-16k.wav` sibling may already exist; use it only if it covers the same audio.
+      const sibling = audioPath.replace(/\.wav$/i, '-16k.wav')
+      const siblingInfo = sibling !== audioPath && existsSync(sibling) ? await readWavInfo(sibling).catch(() => null) : null
+      if (siblingInfo && is16kMonoPcm(siblingInfo) && Math.abs(siblingInfo.durationSeconds - sourceInfo.durationSeconds) < 1) {
+        srcPath = sibling
+        info = siblingInfo
+      } else {
+        srcPath = join(dir, 'source-16k.wav')
+        await runFfmpegTo16kMono(audioPath, srcPath)
+        info = await readWavInfo(srcPath)
+        if (!info || !is16kMonoPcm(info)) throw new Error('ffmpeg did not produce 16 kHz mono PCM')
+      }
+    }
+
+    const totalSamples = Math.floor(info.dataBytes / 2)
+    const fh = await fsp.open(srcPath, 'r')
+    try {
+      const readRegion = async (start: number, count: number): Promise<Int16Array> => {
+        const buf = Buffer.alloc(count * 2)
+        const { bytesRead } = await fh.read(buf, 0, buf.length, info!.dataOffset + start * 2)
+        const n = Math.floor(bytesRead / 2)
+        const out = new Int16Array(n)
+        for (let i = 0; i < n; i++) out[i] = buf.readInt16LE(i * 2)
+        return out
+      }
+
+      const plan = await planWindows(totalSamples, readRegion)
+      const windows: PreparedWindows['windows'] = []
+      for (let i = 0; i < plan.length; i++) {
+        const w = plan[i]
+        const samples = await readRegion(w.start, w.end - w.start)
+        const silent = rmsOf(samples) < SILENT_WINDOW_RMS
+        const path = join(dir, `w${String(i).padStart(5, '0')}.wav`)
+        if (!silent) {
+          await fsp.writeFile(path, Buffer.concat([wavHeader(samples.length * 2), Buffer.from(samples.buffer, samples.byteOffset, samples.byteLength)]))
+        }
+        windows.push({ ...w, path, silent })
+      }
+      return { dir, windows, durationSeconds: totalSamples / WINDOW_RATE }
+    } finally {
+      await fh.close()
+    }
+  } catch (err) {
+    await fsp.rm(dir, { recursive: true, force: true }).catch(() => {})
+    throw err
+  }
+}
+
+async function transcribeWindows(
+  prepared: PreparedWindows,
+  run: (files: string[], durationSeconds: number) => Promise<string>,
+): Promise<TranscriptionResult> {
+  const active = prepared.windows.filter((w) => !w.silent)
+  const speechSeconds = active.reduce((sum, w) => sum + (w.end - w.start) / WINDOW_RATE, 0)
+  if (active.length === 0) return assembleWindowedResult([], [], prepared.durationSeconds)
+
+  const stdout = await run(active.map((w) => w.path), speechSeconds)
+  const outputs = parseSherpaJsonLines(stdout)
+  if (outputs.length !== active.length) {
+    throw new Error(`sherpa-onnx returned ${outputs.length} results for ${active.length} audio windows`)
+  }
+
+  const language = outputs.find((o) => o.lang)?.lang || 'en'
+  const result = assembleWindowedResult(active, outputs.map((o) => o.text), prepared.durationSeconds, WINDOW_RATE, language)
+  if (isImplausiblyEmpty(countWords(result.text), speechSeconds)) {
+    throw new Error(emptyResultMessage(speechSeconds))
+  }
+  return result
+}
+
+function runSherpaOffline(
+  binaryPath: string,
+  args: string[],
+  env: NodeJS.ProcessEnv,
+  durationSeconds: number,
+): Promise<string> {
   return new Promise((resolve, reject) => {
     const proc = spawn(binaryPath, args, {
       stdio: ['ignore', 'pipe', 'pipe'],
       env,
-      timeout: 600_000,
+      // Long recordings need more than the old flat 10 minutes on slow machines.
+      timeout: 600_000 + Math.round(durationSeconds * 500),
     })
 
     let stdout = ''
@@ -172,13 +540,7 @@ export async function transcribeLocal(
         reject(new Error(`sherpa-onnx-offline exited with code ${code}: ${stderr.slice(-500)}`))
         return
       }
-
-      try {
-        const result = parseSherpaOutput(stdout)
-        resolve(result)
-      } catch (err) {
-        reject(new Error(`Failed to parse sherpa-onnx output: ${err}`))
-      }
+      resolve(stdout)
     })
   })
 }

@@ -69,6 +69,18 @@ function whichSync(cmd: string): string | null {
 // ---------------------------------------------------------------------------
 
 /**
+ * Agglomerative clustering threshold for the titanet embeddings. Higher merges
+ * more, and the speaker count grows with recording length, so short clips need
+ * less than long calls. Measured on one 50-minute call with three people
+ * (confirmed by the user): 0.5 gave 189 "speakers", 1.0 gave 34, 1.1 gave 14,
+ * 1.2 gave 6 (the three real talkers plus brief noise clusters) and 1.3 gave 2,
+ * which merged the quietest participant into another. So higher is not better:
+ * 1.2 keeps real speakers apart, and MAX_PLAUSIBLE_SPEAKERS in meeting.service
+ * drops labels if clustering still over-splits.
+ */
+export const DEFAULT_CLUSTER_THRESHOLD = 1.2
+
+/**
  * Runs speaker diarization on a WAV file.
  *
  * The sherpa-onnx diarization binary requires 16 kHz mono WAV input.
@@ -97,7 +109,7 @@ export async function diarize(
   if (options?.numSpeakers && options.numSpeakers > 0) {
     args.push(`--clustering.num-clusters=${options.numSpeakers}`)
   } else {
-    args.push(`--clustering.cluster-threshold=${options?.clusterThreshold ?? 0.5}`)
+    args.push(`--clustering.cluster-threshold=${options?.clusterThreshold ?? DEFAULT_CLUSTER_THRESHOLD}`)
   }
 
   args.push(wavPath)

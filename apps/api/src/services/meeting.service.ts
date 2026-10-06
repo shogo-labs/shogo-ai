@@ -382,6 +382,26 @@ function transcriptErrorUpdate(raw: string | null | undefined, error: string) {
   return { data, keepLive }
 }
 
+/** More distinct speakers than this in one meeting means diarization over-split. */
+export const MAX_PLAUSIBLE_SPEAKERS = 12
+const MIN_LIVE_WORDS_TO_KEEP = 20
+
+function wordCount(text: string): number {
+  const t = text.trim()
+  return t ? t.split(/\s+/).length : 0
+}
+
+/**
+ * Whether the live transcript captured while recording should survive the
+ * final full-file pass: it must be substantial, and the final text less than
+ * half its length.
+ */
+export function shouldKeepLiveTranscript(live: StoredTranscript | null, finalText: string): boolean {
+  if (!live?.live) return false
+  const liveWords = wordCount(live.text)
+  return liveWords >= MIN_LIVE_WORDS_TO_KEEP && wordCount(finalText) < liveWords / 2
+}
+
 export interface TranscribeMeetingOptions {
   model?: string
   preferLocal?: boolean
@@ -486,7 +506,7 @@ export async function transcribeMeeting(
 
     const meeting = await db.meeting.findUnique({
       where: { id: meetingId },
-      select: { workspaceId: true, userId: true },
+      select: { workspaceId: true, userId: true, transcript: true },
     })
     if (!meeting) return
 
@@ -524,23 +544,38 @@ export async function transcribeMeeting(
         : Promise.resolve(null),
     ])
 
+    // A final pass that came back far shorter than the live transcript is the
+    // one that failed, so keep the live text rather than replace it.
+    const live = readTranscript(meeting.transcript)
+    const keepLive = shouldKeepLiveTranscript(live, transcriptionResult.text)
+    if (keepLive) {
+      console.warn(
+        `[Meetings] Final transcript for ${meetingId} is much shorter than the live one; keeping the live transcript`,
+      )
+    }
+
     let segments = transcriptionResult.segments
-    if (diarizationResult && diarizationResult.segments.length > 0) {
+    // Too many speakers means the clustering over-split; labels would only mislead.
+    const speakerLabelsUsable =
+      !!diarizationResult && diarizationResult.numSpeakers <= MAX_PLAUSIBLE_SPEAKERS
+    if (!keepLive && speakerLabelsUsable && diarizationResult!.segments.length > 0) {
       const hasTimedSegments = segments.length > 1 || (segments.length === 1 && segments[0].end > 0)
       segments = hasTimedSegments
-        ? mergeTranscriptWithSpeakers(segments, diarizationResult.segments)
-        : splitTextBySpeakers(transcriptionResult.text, diarizationResult.segments)
+        ? mergeTranscriptWithSpeakers(segments, diarizationResult!.segments)
+        : splitTextBySpeakers(transcriptionResult.text, diarizationResult!.segments)
     }
 
     const updated = await db.meeting.update({
       where: { id: meetingId },
       data: {
-        transcript: writeTranscript({
-          text: transcriptionResult.text,
-          segments,
-          language: transcriptionResult.language,
-          numSpeakers: diarizationResult?.numSpeakers || 0,
-        }),
+        transcript: keepLive
+          ? writeTranscript({ text: live!.text, segments: live!.segments, language: live!.language ?? 'en', numSpeakers: 0 })
+          : writeTranscript({
+              text: transcriptionResult.text,
+              segments,
+              language: transcriptionResult.language,
+              numSpeakers: speakerLabelsUsable ? diarizationResult?.numSpeakers || 0 : 0,
+            }),
         duration: Math.round(transcriptionResult.duration) || undefined,
         status: 'ready',
         ...(options.deleteAudioAfter ? { audioPath: '' } : {}),
@@ -551,7 +586,11 @@ export async function transcribeMeeting(
 
     console.log(
       `[Meetings] Transcription complete for ${meetingId}: ${segments.length} segments` +
-        (diarizationResult ? `, ${diarizationResult.numSpeakers} speakers` : ''),
+        (diarizationResult
+          ? speakerLabelsUsable
+            ? `, ${diarizationResult.numSpeakers} speakers`
+            : `, speaker labels dropped (${diarizationResult.numSpeakers} speakers is implausible)`
+          : ''),
     )
     if (options.enhance !== false) {
       void enhanceMeeting(meetingId).catch((err) =>

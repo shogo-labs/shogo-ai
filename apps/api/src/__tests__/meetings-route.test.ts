@@ -1324,6 +1324,79 @@ describe('transcribeMeeting full happy path (getAudioDuration WAV branch)', () =
     expect(diarization.splitTextBySpeakers).toHaveBeenCalled()
   })
 
+  test('final pass far shorter than the live transcript → live transcript is kept', async () => {
+    const path = '/audio/keep-live.wav'
+    const liveText = Array.from({ length: 60 }, (_, i) => `word${i}`).join(' ')
+    meetings.set('m-keeplive', {
+      id: 'm-keeplive', audioPath: path, workspaceId: 'w1', status: 'transcribing',
+      transcript: JSON.stringify({ text: liveText, segments: [{ start: 0, end: 30, text: liveText }], language: 'en', live: true }),
+    })
+    fsFiles.add(path)
+    fsContent.set(path, buildWavHeader())
+    fsSizes.set(path, 60000)
+    transcription.transcribe.mockImplementationOnce(async () => ({
+      text: 'you', segments: [{ start: 0, end: 0, text: 'you' }], language: 'en', duration: 30,
+    } as any))
+    diarization.isDiarizationAvailable.mockImplementation(() => false)
+    const res = await meetingRoutes.request('/api/local/meetings/m-keeplive/transcribe', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}',
+    })
+    expect(res.status).toBe(200)
+    await new Promise(r => setTimeout(r, 120))
+    const m = meetings.get('m-keeplive')!
+    expect(m.status).toBe('ready')
+    expect(JSON.parse(m.transcript).text).toBe(liveText)
+  })
+
+  test('final pass that is as long as the live one replaces it', async () => {
+    const path = '/audio/replace-live.wav'
+    const liveText = Array.from({ length: 60 }, (_, i) => `word${i}`).join(' ')
+    const finalText = Array.from({ length: 80 }, (_, i) => `final${i}`).join(' ')
+    meetings.set('m-replacelive', {
+      id: 'm-replacelive', audioPath: path, workspaceId: 'w1', status: 'transcribing',
+      transcript: JSON.stringify({ text: liveText, segments: [], language: 'en', live: true }),
+    })
+    fsFiles.add(path)
+    fsContent.set(path, buildWavHeader())
+    fsSizes.set(path, 60000)
+    transcription.transcribe.mockImplementationOnce(async () => ({
+      text: finalText, segments: [{ start: 0, end: 30, text: finalText }], language: 'en', duration: 30,
+    } as any))
+    diarization.isDiarizationAvailable.mockImplementation(() => false)
+    await meetingRoutes.request('/api/local/meetings/m-replacelive/transcribe', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}',
+    })
+    await new Promise(r => setTimeout(r, 120))
+    expect(JSON.parse(meetings.get('m-replacelive')!.transcript).text).toBe(finalText)
+  })
+
+  test('implausibly many speakers (over-split clustering) → no speaker labels stored', async () => {
+    const path = '/audio/many-speakers.wav'
+    meetings.set('m-many', { id: 'm-many', audioPath: path, workspaceId: 'w1', status: 'transcribing' })
+    fsFiles.add(path)
+    fsContent.set(path, buildWavHeader())
+    fsSizes.set(path, 60000)
+    transcription.transcribe.mockImplementationOnce(async () => ({
+      text: 'a b', segments: [{ start: 0, end: 1, text: 'a' }, { start: 1, end: 2, text: 'b' }], language: 'en', duration: 2,
+    } as any))
+    diarization.isDiarizationAvailable.mockImplementation(() => true)
+    diarization.diarize.mockImplementationOnce(async () => ({
+      segments: [{ start: 0, end: 1, speaker: 'speaker_00' }, { start: 1, end: 2, speaker: 'speaker_01' }],
+      numSpeakers: 189,
+    } as any))
+    diarization.mergeTranscriptWithSpeakers.mockClear()
+    diarization.splitTextBySpeakers.mockClear()
+    await meetingRoutes.request('/api/local/meetings/m-many/transcribe', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}',
+    })
+    await new Promise(r => setTimeout(r, 120))
+    expect(diarization.mergeTranscriptWithSpeakers).not.toHaveBeenCalled()
+    expect(diarization.splitTextBySpeakers).not.toHaveBeenCalled()
+    const stored = JSON.parse(meetings.get('m-many')!.transcript)
+    expect(stored.numSpeakers).toBe(0)
+    expect(stored.segments.some((s: any) => s.speaker)).toBe(false)
+  })
+
   test('diarize itself throws → swallowed; transcription still completes', async () => {
     const path = '/audio/diar-throw.wav'
     meetings.set('m-diart', { id: 'm-diart', audioPath: path, workspaceId: 'w1', status: 'transcribing' })
