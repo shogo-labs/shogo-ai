@@ -5,7 +5,7 @@
  * body with mentions, attachments, reactions, thread summary, and live agent
  * replies (streaming text, the tool in use, Stop).
  */
-import { memo, useCallback, useEffect, useRef, useState } from 'react'
+import { createElement, memo, useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { ActionSheetIOS, Alert, Image, Linking, Modal, Platform, Pressable, Text, TextInput, View } from 'react-native'
 import * as Clipboard from 'expo-clipboard'
 import { AlarmClock, AlertCircle, Bookmark, Check, CircleDot, CornerDownRight, FileText, Link2, Loader2, MessageSquare, MoreHorizontal, Pencil, Pin, SmilePlus, Square, Trash2 } from 'lucide-react-native'
@@ -14,6 +14,7 @@ import { MarkdownText } from '../chat/MarkdownText'
 import { SidebarContextMenu, type SidebarMenuEntry } from '../layout/SidebarContextMenu'
 import { absoluteApiUrl, teamChatApi, type ChatMessage, type LinkUnfurl } from '../../lib/team-chat-api'
 import { messageLink, parseMessageLink } from '../../lib/team-chat-links'
+import { formatFullTime, formatShortTime, formatTime } from '../../lib/team-chat-time'
 import { EmojiPicker } from './EmojiPicker'
 import { AgentAvatar } from './AgentAvatar'
 import { AgentProfileCard } from './AgentProfileCard'
@@ -86,8 +87,39 @@ export function openMessageLinkInApp(href: string): boolean {
   return true
 }
 
-function formatTime(iso: string): string {
-  return new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+/**
+ * Wraps a message time so hovering it underlines the time and shows the full
+ * date and time in a dark bubble above it (web only; passthrough on native).
+ * `children` receives whether the time is hovered.
+ */
+function TimeTooltip({ iso, align = 'center', children }: { iso: string; align?: 'center' | 'start'; children: (hovered: boolean) => ReactNode }) {
+  const [hovered, setHovered] = useState(false)
+  if (Platform.OS !== 'web') return <>{children(false)}</>
+  return createElement(
+    'div',
+    {
+      onMouseEnter: () => setHovered(true),
+      onMouseLeave: () => setHovered(false),
+      style: { position: 'relative', display: 'inline-flex', whiteSpace: 'nowrap' },
+    },
+    children(hovered),
+    hovered
+      ? createElement(
+          'div',
+          {
+            role: 'tooltip',
+            'data-testid': 'time-tooltip',
+            style: { position: 'absolute', bottom: '100%', ...(align === 'start' ? { left: 0 } : { left: '50%', transform: 'translateX(-50%)' }), marginBottom: 6, zIndex: 100, pointerEvents: 'none', whiteSpace: 'nowrap', width: 'max-content' },
+          },
+          <View className={align === 'start' ? 'items-start' : 'items-center'}>
+            <View className="rounded-md border border-transparent bg-zinc-900 px-3 py-2 shadow-lg dark:border-white/20 dark:bg-zinc-600">
+              <Text className="text-sm font-semibold text-white">{formatFullTime(iso)}</Text>
+            </View>
+            <View className={cn('-mt-1 h-2 w-2 rotate-45 bg-zinc-900 dark:bg-zinc-600', align === 'start' && 'ml-3')} />
+          </View>,
+        )
+      : null,
+  )
 }
 
 function formatBytes(size: number): string {
@@ -378,7 +410,9 @@ function MessageRowImpl(props: MessageRowProps) {
             <Text className="text-[11px] text-muted-foreground">Discuss</Text>
           </Pressable>
         ) : (
-          <Text className="text-[11px] text-muted-foreground">{formatTime(message.createdAt)}</Text>
+          <TimeTooltip iso={message.createdAt}>
+            {(h) => <Text className={cn('text-[11px] text-muted-foreground', h && 'underline')}>{formatTime(message.createdAt)}</Text>}
+          </TimeTooltip>
         )}
       </Pressable>
     )
@@ -402,7 +436,15 @@ function MessageRowImpl(props: MessageRowProps) {
     >
       <View className="w-8">
         {grouped ? (
-          active ? <Text className="pt-1 text-[10px] text-muted-foreground">{formatTime(message.createdAt)}</Text> : null
+          active ? (
+            <TimeTooltip iso={message.createdAt} align="start">
+              {(h) => (
+                <Text numberOfLines={1} className={cn('pt-1 text-[10px] text-muted-foreground', h && 'underline')}>
+                  {formatShortTime(message.createdAt)}
+                </Text>
+              )}
+            </TimeTooltip>
+          ) : null
         ) : (
           <Avatar message={message} onPress={message.authorType === 'agent' && !deleted ? () => setProfileOpen(true) : undefined} />
         )}
@@ -433,7 +475,9 @@ function MessageRowImpl(props: MessageRowProps) {
                 </Text>
               </View>
             ) : null}
-            <Text className="text-[11px] text-muted-foreground">{formatTime(message.createdAt)}</Text>
+            <TimeTooltip iso={message.createdAt}>
+              {(h) => <Text className={cn('text-[11px] text-muted-foreground', h && 'underline')}>{formatTime(message.createdAt)}</Text>}
+            </TimeTooltip>
           </View>
         )}
 
