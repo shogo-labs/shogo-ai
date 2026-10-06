@@ -19,6 +19,8 @@ import { getIslandBounds, getIslandTopInset, isIslandFocusable, isNotchedDisplay
 import { readIslandFiles } from './island-files'
 import { ISLAND_WINDOW_ARG } from './preload-island'
 import { hasMeetingActivity } from './island-meeting'
+import { planPendingNotifications } from './island-notifications'
+import { PendingNotifier } from './island-pending-notification'
 import {
   EMPTY_ISLAND_MEETING_STATE,
   EMPTY_ISLAND_SNAPSHOT,
@@ -29,6 +31,7 @@ import {
   parseIslandFileRefs,
   parseIslandSnapshot,
   pendingRequestsToAutoExpand,
+  type IslandAction,
   type IslandActionResult,
   type IslandAppAction,
   type IslandConfig,
@@ -65,6 +68,9 @@ export class IslandWindow {
   private readonly snapshots = new Map<number, IslandSnapshot>()
   private snapshot: IslandSnapshot = EMPTY_ISLAND_SNAPSHOT
   private readonly autoExpandedRequestIds = new Set<string>()
+  /** Waiting requests already announced with an OS notification. */
+  private announcedRequestIds = new Set<string>()
+  private readonly pendingNotifier = new PendingNotifier((action) => this.performAction(action))
   /** Rendered card height reported by the route; sizes expanded/compose. */
   private contentHeight: number | undefined
   private meetingState: IslandMeetingState = EMPTY_ISLAND_MEETING_STATE
@@ -143,6 +149,7 @@ export class IslandWindow {
     this.destroyWindow()
     this.unsubscribeMeeting?.()
     this.unsubscribeMeeting = null
+    this.pendingNotifier.closeAll()
     screen.removeListener('display-added', this.positionWindow)
     screen.removeListener('display-removed', this.positionWindow)
     screen.removeListener('display-metrics-changed', this.positionWindow)
@@ -395,13 +402,29 @@ export class IslandWindow {
     this.snapshot = mergeIslandSnapshots(this.snapshots.values(), focusedSnapshot)
     this.sendSnapshot()
     this.reconcileMode()
+    this.notifyPending()
+  }
+
+  /** A waiting agent the island is not showing gets an OS notification. */
+  private notifyPending(): void {
+    const plan = planPendingNotifications(this.snapshot, this.announcedRequestIds, {
+      islandPresent: this.canPresentMeetingPrompt(),
+    })
+    this.announcedRequestIds = plan.announced
+    for (const id of plan.resolved) this.pendingNotifier.close(id)
+    for (const notice of plan.notify) this.pendingNotifier.show(notice)
   }
 
   private onAction = async (event: IpcMainInvokeEvent, raw: unknown): Promise<IslandActionResult> => {
     if (!this.isIslandSender(event.sender)) return { ok: false, error: 'Unauthorized' }
     const action = parseIslandAction(raw)
     if (!action) return { ok: false, error: 'Invalid island action' }
+    return this.performAction(action)
+  }
 
+  /** Runs an island action. The island's IPC and the OS notification buttons
+   * both come through here, so an answer behaves the same from either. */
+  private performAction = async (action: IslandAction): Promise<IslandActionResult> => {
     switch (action.type) {
       case 'open':
         return this.deliver(

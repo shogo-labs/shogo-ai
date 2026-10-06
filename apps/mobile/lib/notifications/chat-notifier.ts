@@ -24,6 +24,8 @@ export type ChatNotificationClickData =
   | { taskId: string; sessionId?: string; projectId?: string; conversationId?: undefined }
   | { sessionId: string; projectId: string; taskId?: string; conversationId?: undefined }
   | { conversationId: string; threadRootId?: string | null; taskId?: undefined }
+  /** A tap on the agents notification: open that agent (`shogo://agents/<key>`). */
+  | { agentKey: string; conversationId?: undefined; taskId?: undefined }
 
 export interface ChannelNotificationPayload {
   conversationId: string

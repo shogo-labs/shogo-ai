@@ -27,6 +27,8 @@ interface ExpoPushMessage {
   data?: Record<string, unknown>
   priority?: 'high' | 'default'
   channelId?: string
+  /** Notification category registered on the phone; it decides which action buttons show. */
+  categoryId?: string
 }
 
 type InvalidTokenCleanup = (tokens: string[]) => Promise<unknown>
@@ -115,6 +117,8 @@ export async function sendPushToUser(
      * every device, since chat has its own levels, mute, and Do Not Disturb.
      */
     audience?: 'agent' | 'chat'
+    /** Shows the action buttons of this category on the notification (e.g. `agent-approval`). */
+    categoryId?: string
   },
 ): Promise<void> {
   try {
@@ -135,6 +139,7 @@ export async function sendPushToUser(
         data: { ...(payload.data ?? {}), type: pushType },
         priority: payload.priority ?? 'high',
         channelId,
+        ...(payload.categoryId ? { categoryId: payload.categoryId } : {}),
       })),
       subs.map((sub) => sub.pushToken),
     )

@@ -13,7 +13,12 @@
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false
       },
-      "scheme": "shogo"
+      "scheme": "shogo",
+      "entitlements": {
+        "com.apple.security.application-groups": [
+          "group.ai.shogo.app"
+        ]
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -56,6 +61,12 @@
       ],
       "expo-document-picker",
       "expo-secure-store",
+      [
+        "expo-local-authentication",
+        {
+          "faceIDPermission": "Shogo uses Face ID to confirm that you want to approve an action an agent is waiting on, if you turn that on in Settings."
+        }
+      ],
       "expo-web-browser",
       "expo-localization",
       [
@@ -93,7 +104,33 @@
       "expo-font",
       "expo-asset",
       "@livekit/react-native-expo-plugin",
-      "@config-plugins/react-native-webrtc"
+      "@config-plugins/react-native-webrtc",
+      "@bacons/apple-targets",
+      [
+        "react-native-android-widget",
+        {
+          "widgets": [
+            {
+              "name": "ShogoAgents",
+              "label": "Agents",
+              "description": "See which agents are waiting on you and which are working.",
+              "minWidth": "180dp",
+              "minHeight": "110dp",
+              "targetCellWidth": 3,
+              "targetCellHeight": 2,
+              "resizeMode": "horizontal|vertical",
+              "updatePeriodMillis": 1800000
+            }
+          ]
+        }
+      ],
+      [
+        "expo-widgets",
+        {
+          "groupIdentifier": "group.ai.shogo.app",
+          "enablePushNotifications": true
+        }
+      ]
     ],
     "extra": {
       "router": {},

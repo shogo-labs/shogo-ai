@@ -687,6 +687,8 @@ describe('agent message kinds', () => {
     decisionError = null
     await act(async () => { fireEvent.click(screen.getByLabelText('Deny')) })
     expect(decisions).toEqual([{ id: 'a1', decision: 'deny' }])
+    expect(shim('approval-sent')!.textContent).toBe('Denied, sent to the agent')
+    expect(screen.queryByLabelText('Approve')).toBeNull()
 
     rerender(
       <MessageRow message={agentMsg('a1', 1, 'x', blocks({ ...approval, status: 'approved', decidedBy: { userId: 'u-ana', name: 'Ana' } }))} grouped={false} me="u-me" names={names} canManage={false} {...handlers()} />,
