@@ -78,6 +78,7 @@
       ],
       "./plugins/withRemoveOrientationLocks",
       "./plugins/withAndroidEdgeToEdge",
+      "./plugins/withAndroidWorkRuntimeAlign",
       [
         "expo-speech-recognition",
         {
