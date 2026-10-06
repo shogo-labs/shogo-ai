@@ -86,7 +86,7 @@ describe('rules', () => {
 
   test('hard blocks and deny lists still win over an allow rule', () => {
     const e = engine({ mode: 'full_autonomy', overrides: { actions: { exec: 'allow' }, shellCommands: { deny: ['gh pr merge*'] } } })
-    expect(e.check('shell', 'exec', { command: 'sudo ls' }).action).toBe('deny')
+    expect(e.check('shell', 'exec', { command: 'sudo rm -rf /' }).action).toBe('deny')
     expect(e.check('shell', 'exec', { command: 'gh pr merge 12' }).action).toBe('deny')
     expect(e.check('shell', 'exec', { command: 'ls' }).action).toBe('allow')
   })
@@ -160,7 +160,7 @@ describe('cloud workspace on a worker machine (no default rules)', () => {
     expect(e.isActionsOnly).toBe(false)
     expect(e.actionRuleFor('github_merge_pr')).toBeUndefined()
     expect(e.check('project', 'github_merge_pr', {}).action).toBe('allow')
-    expect(e.check('shell', 'exec', { command: 'sudo ls' }).action).toBe('deny')
+    expect(e.check('shell', 'exec', { command: 'sudo rm -rf /' }).action).toBe('deny')
     const asked = engine({ ...DEFAULT_CLOUD_SECURITY_PREFERENCE, overrides: { actions: { github_merge_pr: 'ask' } } }, { noDefaultActionRules: true })
     expect(asked.check('project', 'github_merge_pr', {}).action).toBe('ask')
   })
