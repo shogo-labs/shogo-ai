@@ -133,10 +133,16 @@ export async function detachProjectFromProject(
  * host, not a local folder, so it is never reported here.
  */
 export async function getAnchorLocalFolders(anchorProjectId: string): Promise<string[]> {
-  const anchor = (await prisma.project.findUnique({
-    where: { id: anchorProjectId },
-    select: { remoteHostId: true },
-  })) as { remoteHostId?: string | null } | null
+  let anchor: { remoteHostId?: string | null } | null = null
+  try {
+    anchor = (await prisma.project.findUnique({
+      where: { id: anchorProjectId },
+      select: { remoteHostId: true } as any,
+    })) as { remoteHostId?: string | null } | null
+  } catch (err: any) {
+    // The cloud schema has no Remote-SSH columns; only the desktop schema does.
+    if (err?.name !== 'PrismaClientValidationError') throw err
+  }
   if (anchor?.remoteHostId) return []
 
   const rows = (await prisma.projectFolder.findMany({
