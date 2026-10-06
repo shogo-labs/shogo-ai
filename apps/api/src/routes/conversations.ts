@@ -57,7 +57,8 @@ import { getFrontendUrl } from '../lib/cloud-urls'
 import { adoptSlackRouting } from '../services/chat-providers/slack-adopt'
 import { catchUp } from '../services/conversation-activity'
 import { respondToPermission, stopAgentReply } from '../services/conversation-agent-dispatcher'
-import { decideApproval } from '../services/conversation-approvals'
+import { decideApproval, listPendingApprovals } from '../services/conversation-approvals'
+import { liveActivityApprovalAnswered } from '../services/approval-live-activity'
 import { loadWorkLog } from '../services/agent-work-log'
 import { chainForAgentPost, rootChain, setThreadOwner } from '../services/conversation-agent-chain'
 import { loadAgentCard, loadTeamDirectory, resolveFriendlyMentions, setAgentBuddyLook } from '../services/conversation-directory'
@@ -189,6 +190,18 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
     const auth = await requireWorkspace(c)
     if (auth instanceof Response) return auth
     return c.json({ conversations: await listConversationsForUser(auth.workspaceId, auth.userId) })
+  })
+
+  /** Approvals agents are waiting on that this person can answer (viewers see none). */
+  router.get('/workspaces/:workspaceId/approvals/pending', async (c) => {
+    const auth = await requireWorkspace(c)
+    if (auth instanceof Response) return auth
+    if ((await getWorkspaceRole(auth.workspaceId, auth.userId)) === 'viewer') return c.json({ approvals: [] })
+    try {
+      return c.json({ approvals: await listPendingApprovals(auth.workspaceId, auth.userId) })
+    } catch (err) {
+      return errorResponse(c, err)
+    }
   })
 
   router.post('/workspaces/:workspaceId/conversations', async (c) => {
@@ -683,6 +696,11 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
         decision,
         by: { userId, name: user?.name || user?.email || 'Someone' },
         respond: respondToPermission,
+      })
+      void liveActivityApprovalAnswered(userId, {
+        projectId: result.approval.projectId,
+        agentName: row.authorAgentRef?.name?.trim() || 'Agent',
+        decision,
       })
       return c.json({ message: result.message, approval: result.approval })
     } catch (err) {

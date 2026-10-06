@@ -18,6 +18,9 @@ import {
 } from './chat-notifier'
 
 function buildChatHref(data: ChatNotificationClickData) {
+  if ('agentKey' in data && data.agentKey) {
+    return { pathname: '/(app)/agents/[key]' as const, params: { key: data.agentKey } }
+  }
   if (data.conversationId) {
     return {
       pathname: '/(app)/c/[conversationId]' as const,
