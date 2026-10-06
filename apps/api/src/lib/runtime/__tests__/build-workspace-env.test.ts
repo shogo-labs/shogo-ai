@@ -121,6 +121,34 @@ describe('buildWorkspaceEnv', () => {
     }
   })
 
+  it('allowlists the union of member exposed ports in SHOGO_EXPOSED_PORTS', async () => {
+    const env = await buildWorkspaceEnv('ws-1', ['p1', 'p2'], {
+      ...seams,
+      _loadProjects: async (ids: string[]) =>
+        ids.map((id) => ({
+          id,
+          name: id,
+          settings:
+            id === 'p1'
+              ? {
+                  techStackId: 'docker-compose',
+                  exposedPorts: { '3001': { source: 'project', protocol: 'http' } },
+                }
+              : { techStackId: 'react-app' },
+        })),
+    } as any)
+    expect(env.SHOGO_EXPOSED_PORTS).toBe('3001,5432,8000')
+  })
+
+  it('omits SHOGO_EXPOSED_PORTS when no member declares ports', async () => {
+    const env = await buildWorkspaceEnv('ws-1', ['p1'], {
+      ...seams,
+      _loadProjects: async (ids: string[]) =>
+        ids.map((id) => ({ id, name: id, settings: { techStackId: 'react-app' } })),
+    } as any)
+    expect(env.SHOGO_EXPOSED_PORTS).toBeUndefined()
+  })
+
   it('omits WORKSPACE_TECH_STACKS when no member has a tech stack', async () => {
     const env = await buildWorkspaceEnv('ws-1', ['p1', 'p2'], seams as any)
     expect(env.WORKSPACE_TECH_STACKS).toBeUndefined()
