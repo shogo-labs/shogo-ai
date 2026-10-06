@@ -10,6 +10,7 @@ interface ProjectRow {
   id: string
   workspaceId: string
   name?: string | null
+  remoteHostId?: string | null
 }
 
 interface State {
@@ -180,5 +181,11 @@ describe('getAnchorLocalFolders', () => {
       { projectId: 'b', path: '/Users/me/other' },
     ]
     expect(await svc.getAnchorLocalFolders('anchor')).toEqual(['/Users/me/data'])
+  })
+
+  it('does not report a Remote-SSH anchor\'s remote folder as a local folder', async () => {
+    s.projects.set('anchor', { id: 'anchor', workspaceId: 'ws1', name: 'Anchor', remoteHostId: 'host-1' })
+    s.folders = [{ projectId: 'anchor', path: '/home/dev/app' }]
+    expect(await svc.getAnchorLocalFolders('anchor')).toEqual([])
   })
 })

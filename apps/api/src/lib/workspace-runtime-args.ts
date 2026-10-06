@@ -9,6 +9,7 @@
  */
 
 import { prisma } from './prisma'
+import { getAnchorLocalFolders } from '../services/project-attachment.service'
 import {
   assertWorkspaceSessionInWorkspace,
   getAttachedProjects,
@@ -58,11 +59,7 @@ export async function anchorRuntimeOpts(
 
   let localFolders: string[] = []
   try {
-    const folders = (await prisma.projectFolder.findMany({
-      where: { projectId: anchorProjectId },
-      select: { path: true },
-    })) as Array<{ path: string }>
-    localFolders = folders.map((f) => f.path).filter((p) => typeof p === 'string' && p.length > 0)
+    localFolders = await getAnchorLocalFolders(anchorProjectId)
   } catch {
     localFolders = []
   }
