@@ -168,6 +168,7 @@ import {
   cn,
 } from "@shogo/shared-ui/primitives";
 import { useNotifyOnTurnComplete as useNotifyOnTurnCompletePref } from "../../lib/notifications/preferences";
+import { useRequireBiometricApproval } from "../../lib/approval-lock";
 import { useDualPlan } from "../../lib/dual-plan-preference";
 
 const latestAnnouncedRelease = whatsNewCatalog.find((release) => release.announce);
@@ -981,6 +982,7 @@ const WorkspaceSettingsTab = observer(function WorkspaceSettingsTab() {
 
 function NotificationsCard() {
   const [notifyOnTurn, setNotifyOnTurn] = useNotifyOnTurnCompletePref();
+  const [requireBiometric, setRequireBiometric] = useRequireBiometricApproval();
   return (
     <Card>
       <CardContent className="p-0">
@@ -1001,6 +1003,23 @@ function NotificationsCard() {
             }}
           />
         </View>
+        {Platform.OS !== "web" ? (
+          <View className="px-6 py-5 flex-row items-center justify-between border-t border-border">
+            <View className="flex-1 mr-4">
+              <Text className="text-sm font-semibold text-foreground">
+                Confirm approvals with Face ID or fingerprint
+              </Text>
+              <Text className="text-sm text-muted-foreground mt-0.5">
+                Ask for Face ID or your fingerprint before an agent's action is
+                approved from this device. Denying never asks.
+              </Text>
+            </View>
+            <Switch
+              checked={requireBiometric}
+              onCheckedChange={(v) => setRequireBiometric(v)}
+            />
+          </View>
+        ) : null}
       </CardContent>
     </Card>
   );

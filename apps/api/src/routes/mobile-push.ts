@@ -98,5 +98,38 @@ export function mobilePushRoutes() {
     return c.json({ ok: true })
   })
 
+  /**
+   * Record the APNs tokens of this iPhone's Live Activity, so the server can
+   * start and update it while the app is closed. `pushToken` names the device's
+   * subscription; a token left out is unchanged, and `null` clears it.
+   */
+  router.patch('/mobile-push-subscriptions/live-activity', async (c) => {
+    const userId = authUserId(c)
+    if (!userId) return unauthorized(c)
+
+    const body = await c.req.json<{ pushToken?: string; activityToken?: string | null; pushToStartToken?: string | null }>().catch(
+      () => ({} as { pushToken?: string; activityToken?: string | null; pushToStartToken?: string | null }),
+    )
+    const pushToken = typeof body.pushToken === 'string' ? body.pushToken.trim() : ''
+    const data: { liveActivityToken?: string | null; liveActivityPushToStartToken?: string | null } = {}
+    for (const [field, column] of [['activityToken', 'liveActivityToken'], ['pushToStartToken', 'liveActivityPushToStartToken']] as const) {
+      const value = body[field]
+      if (value === undefined) continue
+      if (value !== null && (typeof value !== 'string' || !/^[0-9a-fA-F]{16,512}$/.test(value.trim()))) {
+        return c.json({ error: { code: 'invalid_request', message: `${field} must be an APNs hex token or null` } }, 400)
+      }
+      data[column] = value === null ? null : value.trim().toLowerCase()
+    }
+    if (!pushToken || Object.keys(data).length === 0) {
+      return c.json({ error: { code: 'invalid_request', message: 'pushToken and at least one token are required' } }, 400)
+    }
+
+    const result = await prisma.mobilePushSubscription.updateMany({ where: { userId, pushToken }, data })
+    if (result.count === 0) {
+      return c.json({ error: { code: 'not_found', message: 'Register this device for push first' } }, 404)
+    }
+    return c.json({ ok: true })
+  })
+
   return router
 }

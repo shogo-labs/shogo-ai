@@ -532,7 +532,7 @@ function MessageRowImpl(props: MessageRowProps) {
         ) : (
           <>
             {card ? <StatusCardView card={card} onOpenLink={openMessageLinkInApp} /> : null}
-            {approval ? <ApprovalCardView approval={approval} canDecide={!message.pending} onDecide={(decision) => api.decideApproval(message.id, decision)} /> : null}
+            {approval ? <ApprovalCardView approval={approval} messageId={message.id} canDecide={!message.pending} onDecide={(decision) => api.decideApproval(message.id, decision)} /> : null}
             {work ? <AgentWorkedFor messageId={message.id} work={work} /> : null}
             {/* While an agent works the row shows its status; its closing message appears when it is done. */}
             {!card && !approval && !!body && !(running && message.authorType === 'agent') && (() => {

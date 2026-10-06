@@ -11,6 +11,16 @@
 import { AppState, Platform } from 'react-native'
 import * as Notifications from 'expo-notifications'
 
+import { parseAgentDeepLink } from '../agent-glance'
+import { answerApproval } from '../approval-decision'
+import { getRequireBiometricApproval, subscribeRequireBiometricApproval } from '../approval-lock'
+import {
+  APPROVAL_CATEGORY,
+  approvalActionFrom,
+  approvalCategoryActions,
+  failedAnswerBody,
+  type ApprovalAction,
+} from './agent-actions'
 import type {
   ChannelNotificationPayload,
   ChatNotificationClickData,
@@ -32,9 +42,48 @@ export function setActiveChatNotificationContext(
   activeChatContext = context
 }
 
+/** Approve and Deny buttons on approval notifications; Approve opens the app when Face ID is required. */
+async function registerApprovalCategory(requireBiometric?: boolean) {
+  try {
+    const required = requireBiometric ?? (await getRequireBiometricApproval())
+    await Notifications.setNotificationCategoryAsync(APPROVAL_CATEGORY, approvalCategoryActions({ requireBiometric: required }))
+  } catch {
+    // Without the category the notification still shows; its buttons just don't.
+  }
+}
+
+/** Answer an approval from its notification, and say so if it could not be sent. */
+async function handleApprovalAction(action: ApprovalAction) {
+  const outcome = await answerApproval(action.messageId, action.decision, { biometricReason: 'Approve this action' })
+  if (action.notificationId) {
+    try {
+      await Notifications.dismissNotificationAsync(action.notificationId)
+    } catch {
+      // Already gone.
+    }
+  }
+  if (outcome.ok || outcome.reason === 'cancelled') return
+  try {
+    await Notifications.scheduleNotificationAsync({
+      identifier: `approval-failed-${action.messageId}`,
+      content: {
+        title: 'Agent approval',
+        body: failedAnswerBody(action.decision, outcome.message),
+        data: { approvalMessageId: action.messageId },
+        ...(Platform.OS === 'android' ? { channelId: 'messages' } : {}),
+      },
+      trigger: null,
+    })
+  } catch {
+    // Best-effort.
+  }
+}
+
 function ensureHandler() {
   if (handlerConfigured) return
   handlerConfigured = true
+  void registerApprovalCategory()
+  subscribeRequireBiometricApproval((value) => void registerApprovalCategory(value))
   Notifications.setNotificationHandler({
     handleNotification: async (notification) => {
       const data = notification.request.content.data as
@@ -135,6 +184,8 @@ export async function notifyChatFinished(p: ChatNotificationPayload): Promise<vo
 
 function parseClickData(raw: unknown): ChatNotificationClickData | null {
   const data = (raw ?? {}) as Record<string, unknown>
+  const agentKey = typeof data.url === 'string' ? parseAgentDeepLink(data.url) : null
+  if (agentKey) return { agentKey }
   if (typeof data.taskId === 'string') return { taskId: data.taskId }
   if (typeof data.conversationId === 'string') {
     return {
@@ -177,6 +228,12 @@ export function subscribeNotificationClicks(
 ): () => void {
   ensureHandler()
   const sub = Notifications.addNotificationResponseReceivedListener((response) => {
+    // A press on Approve or Deny answers the agent; it is not a tap to open a chat.
+    const answer = approvalActionFrom(response)
+    if (answer) {
+      void handleApprovalAction(answer)
+      return
+    }
     const data = parseClickData(response.notification.request.content.data)
     if (data) cb(data)
   })
@@ -192,6 +249,14 @@ export function subscribeNotificationClicks(
 export async function consumeColdStartNotification(): Promise<ChatNotificationClickData | null> {
   try {
     const resp = await Notifications.getLastNotificationResponseAsync()
+    // The app was started by a press on Approve or Deny: send it once, and
+    // clear the response so the next launch does not send it again.
+    const answer = approvalActionFrom(resp)
+    if (answer) {
+      await Notifications.clearLastNotificationResponseAsync().catch(() => {})
+      void handleApprovalAction(answer)
+      return null
+    }
     return parseClickData(resp?.notification.request.content.data)
   } catch {
     // ignore

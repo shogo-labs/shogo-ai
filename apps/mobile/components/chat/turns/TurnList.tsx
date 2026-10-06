@@ -42,8 +42,8 @@ export const TurnList = memo(
 
     return (
       <View className={cn("gap-4", className)}>
-        {turns.map((turn) => (
-          <TurnGroup key={turn.id} turn={turn} phase={phase} />
+        {turns.map((turn, index) => (
+          <TurnGroup key={turn.id} turn={turn} phase={phase} summaryCard={index === turns.length - 1} />
         ))}
       </View>
     )

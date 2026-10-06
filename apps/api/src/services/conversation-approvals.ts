@@ -225,6 +225,67 @@ export async function expirePendingApprovals(messageIds: string[]): Promise<void
   }
 }
 
+export interface PendingApproval {
+  messageId: string
+  conversationId: string
+  requestId: string
+  projectId: string
+  agentName: string
+  toolName: string
+  summary: string
+  reason?: string
+  expiresAt?: string
+  createdAt: string
+}
+
+/** A card row as a pending approval, or null when it is not one or is no longer open. */
+export function toPendingApproval(row: any, now: Date = new Date()): PendingApproval | null {
+  if (!row || row.deletedAt) return null
+  const approval = approvalOf(row.blocks)
+  if (!approval || approval.status !== 'pending') return null
+  if (approval.expiresAt && Date.parse(approval.expiresAt) <= now.getTime()) return null
+  return {
+    messageId: row.id,
+    conversationId: row.conversationId,
+    requestId: approval.requestId,
+    projectId: approval.projectId,
+    agentName: (row.authorAgentRef?.name as string | undefined) ?? 'Agent',
+    toolName: approval.toolName,
+    summary: approval.summary,
+    ...(approval.reason ? { reason: approval.reason } : {}),
+    ...(approval.expiresAt ? { expiresAt: approval.expiresAt } : {}),
+    createdAt: new Date(row.createdAt).toISOString(),
+  }
+}
+
+const PENDING_LOOKBACK_MS = 24 * 60 * 60 * 1000
+const PENDING_LIMIT = 50
+
+/**
+ * The approvals a person can answer right now in a workspace: open cards in
+ * channels they can read (open channels, or ones they belong to), newest first.
+ * Cards whose run has ended are expired when the runtime reports it, so the
+ * lookback and the expiry check keep stale ones out meanwhile.
+ */
+export async function listPendingApprovals(workspaceId: string, userId: string, now: Date = new Date()): Promise<PendingApproval[]> {
+  const rows = await db.conversationMessage.findMany({
+    where: {
+      workspaceId,
+      authorType: 'agent',
+      deletedAt: null,
+      createdAt: { gte: new Date(now.getTime() - PENDING_LOOKBACK_MS) },
+      blocks: { path: ['approval', 'status'], equals: 'pending' },
+      conversation: {
+        archivedAt: null,
+        OR: [{ kind: { in: ['public', 'activity'] } }, { members: { some: { userId } } }],
+      },
+    },
+    orderBy: { createdAt: 'desc' },
+    take: PENDING_LIMIT,
+  })
+  return (rows as any[]).map((row) => toPendingApproval(row, now)).filter((p): p is PendingApproval => p !== null)
+}
+
 export function _resetApprovalsForTests(): void {
   deciding.clear()
 }

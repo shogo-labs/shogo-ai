@@ -2773,6 +2773,10 @@ model MobilePushSubscription {
   platform  String
   /// Also deliver agent turn and task completion pushes (team chat pushes always go).
   agentTurns Boolean @default(true)
+  /// APNs token that lets the server start the agent Live Activity on this iPhone (iOS 17.2+).
+  liveActivityPushToStartToken String?
+  /// APNs token for the Live Activity running now on this iPhone, to update or end it.
+  liveActivityToken String?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 

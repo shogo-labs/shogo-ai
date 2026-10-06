@@ -7,7 +7,7 @@
  * agents, each its own section.
  */
 import { useMemo } from 'react'
-import { Pressable, RefreshControl, ScrollView, Text, View } from 'react-native'
+import { Pressable, RefreshControl, Text, View } from 'react-native'
 import { useFocusEffect, useRouter } from 'expo-router'
 import { useCallback, useState } from 'react'
 import { observer } from 'mobx-react-lite'
@@ -15,11 +15,13 @@ import { ChevronDown, Folder, Sparkles } from 'lucide-react-native'
 import { useProjectCollection } from '../../contexts/domain'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { useHomeSignals } from '../../hooks/useHomeSignals'
-import { RunningNow } from '../activity/ActivityFeed'
+import { useAgentRows } from '../../hooks/useAgentRows'
+import { WORKSPACE_AGENT_KEY } from '../../lib/agent-urgency'
+import { AgentsSection } from './AgentsSection'
 import { ChannelsPanel } from '../team-chat/panels/ChannelsPanel'
 import { AgentsPanel } from '../team-chat/panels/AgentsPanel'
 import { ConversationRow, PanelSection } from '../team-chat/ConversationRows'
-import { TabScreen } from '../layout/TabScreenHeader'
+import { TabScreen, TabScreenScrollView } from '../layout/TabScreenHeader'
 import { recentProjects } from './recentProjects'
 
 function useFocused(): boolean {
@@ -38,9 +40,22 @@ export const MobileHomeFeed = observer(function MobileHomeFeed() {
   const workspace = useActiveWorkspace()
   const projects = useProjectCollection()
   const focused = useFocused()
-  const { chat, activity, running, failed, mentions, starred, unread, openEntry, needsYou } = useHomeSignals({ polling: focused })
+  const { chat, activity, failed, mentions, starred, unread, openEntry } = useHomeSignals({ polling: focused })
   const workspaceId = chat.workspaceId
   const recent = useMemo(() => recentProjects(projects.all as any[], workspace?.id), [projects.all, workspace?.id])
+  const { rows, refreshApprovals } = useAgentRows({
+    workspaceId,
+    agents: chat.mentionables?.agents,
+    tasks: activity.tasks,
+    activeChats: activity.activeChats,
+    polling: focused,
+  })
+  // Failures of agents without a row of their own (not in the directory) stay listed below.
+  const unlisted = useMemo(() => {
+    const shown = new Set(rows.map((r) => r.key))
+    return failed.filter((entry) => !shown.has(entry.agent?.task?.projectId ?? WORKSPACE_AGENT_KEY))
+  }, [failed, rows])
+  const needsYou = unlisted.length + mentions.length
 
   return (
     <TabScreen
@@ -58,9 +73,17 @@ export const MobileHomeFeed = observer(function MobileHomeFeed() {
           </Pressable>
         }
     >
-      <ScrollView
+      <TabScreenScrollView
         contentContainerClassName="pb-36"
-        refreshControl={<RefreshControl refreshing={activity.refreshing} onRefresh={() => void activity.refresh({ manual: true })} />}
+        refreshControl={
+          <RefreshControl
+            refreshing={activity.refreshing}
+            onRefresh={() => {
+              void activity.refresh({ manual: true })
+              void refreshApprovals()
+            }}
+          />
+        }
       >
         <Pressable
           accessibilityRole="button"
@@ -72,12 +95,12 @@ export const MobileHomeFeed = observer(function MobileHomeFeed() {
           <Text className="flex-1 text-base text-muted-foreground">Ask the workspace agent…</Text>
         </Pressable>
 
-        {running.length > 0 && <RunningNow entries={running} onOpen={openEntry} />}
+        {workspaceId && <AgentsSection rows={rows} workspaceId={workspaceId} />}
 
         {needsYou > 0 && (
           <View className="mt-3 px-2">
             <PanelSection label="Needs you">
-              {failed.map((entry) => (
+              {unlisted.map((entry) => (
                 <Pressable
                   key={entry.id}
                   accessibilityRole="button"
@@ -128,7 +151,7 @@ export const MobileHomeFeed = observer(function MobileHomeFeed() {
             <AgentsPanel />
           </View>
         )}
-      </ScrollView>
+      </TabScreenScrollView>
     </TabScreen>
   )
 })

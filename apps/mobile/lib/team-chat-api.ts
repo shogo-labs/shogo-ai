@@ -167,6 +167,21 @@ export interface Mentionables {
   groups?: UserGroup[]
 }
 
+/** An action an agent is waiting on a person to approve, across all channels. */
+export interface PendingApproval {
+  /** The channel message holding the card; decide through `decideApproval`. */
+  messageId: string
+  conversationId: string
+  requestId: string
+  projectId: string
+  agentName: string
+  toolName: string
+  summary: string
+  reason?: string
+  expiresAt?: string
+  createdAt: string
+}
+
 export interface AgentCard {
   projectId: string | null
   name: string
@@ -550,6 +565,10 @@ export function teamChatApi() {
     },
     async mentionables(workspaceId: string): Promise<Mentionables> {
       return (await http.get<Mentionables>(`${ws(workspaceId)}/mentionables`)).data
+    },
+    /** Approvals agents are waiting on that this person can answer, newest first. */
+    async pendingApprovals(workspaceId: string): Promise<PendingApproval[]> {
+      return (await http.get<{ approvals: PendingApproval[] }>(`${ws(workspaceId)}/approvals/pending`)).data.approvals
     },
     /** Batched: ~400 ids would push the URL past the server's header limit. */
     async presence(workspaceId: string, userIds: string[]): Promise<Record<string, PresenceStatus>> {

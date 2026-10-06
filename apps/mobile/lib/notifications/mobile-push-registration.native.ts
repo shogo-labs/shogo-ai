@@ -10,6 +10,18 @@ import { ensureNotificationPermission } from './chat-notifier'
 import { getNotifyOnTurnComplete } from './preferences'
 
 let registeredDevice: { userId: string; pushToken: string; agentTurns: boolean } | null = null
+const pushTokenListeners = new Set<(token: string | null) => void>()
+
+/** Told the device's push token when it registers, and null when it is unregistered. */
+export function subscribePushToken(listener: (token: string | null) => void): () => void {
+  pushTokenListeners.add(listener)
+  listener(registeredDevice?.pushToken ?? null)
+  return () => pushTokenListeners.delete(listener)
+}
+
+function notifyPushToken(token: string | null) {
+  pushTokenListeners.forEach((l) => l(token))
+}
 let registrationInFlight: Promise<void> | null = null
 
 async function unregisterRegisteredDevice(): Promise<void> {
@@ -20,6 +32,7 @@ async function unregisterRegisteredDevice(): Promise<void> {
   // account switch cannot continue suppressing local notifications if the
   // server is temporarily unavailable.
   registeredDevice = null
+  notifyPushToken(null)
   try {
     await api.unregisterMobilePushSubscription(createHttpClient(), device.pushToken)
   } catch {
@@ -57,6 +70,7 @@ async function registerCurrentDevice(userId: string, agentTurns: boolean) {
     agentTurns,
   })
   registeredDevice = { userId, pushToken, agentTurns }
+  notifyPushToken(pushToken)
 }
 
 /** True when the server will push agent turn completions to this device. */

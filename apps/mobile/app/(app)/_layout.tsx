@@ -48,6 +48,7 @@ import {
 import { useResolvedTheme } from "../../contexts/theme";
 import { AppSidebar } from "../../components/layout/AppSidebar";
 import { TeamChatNotifier } from "../../components/team-chat/TeamChatNotifier";
+import { AgentGlancePublisher } from "../../components/layout/AgentGlancePublisher";
 import { HuddleDock } from "../../components/team-chat/HuddleDock";
 import { HuddleRinger } from "../../components/team-chat/HuddleRinger";
 import { AppHeader } from "../../components/layout/AppHeader";
@@ -535,6 +536,7 @@ function AppLayoutInner() {
     >
       {(localMode || Platform.OS !== "web") && !isIdeEmbed ? <RecordingIndicator /> : null}
       {!isIdeEmbed ? <TeamChatNotifier /> : null}
+      {!isIdeEmbed ? <AgentGlancePublisher /> : null}
       {!isIdeEmbed ? <HuddleDock /> : null}
       {!isIdeEmbed ? <HuddleRinger /> : null}
       {useMobileWorkspaceShell ? (

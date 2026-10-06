@@ -697,6 +697,15 @@ export const api = {
     return res.data
   },
 
+  /** Tells the server this iPhone's Live Activity tokens (see live-activity-tokens.ts). */
+  async putLiveActivityTokens(
+    http: HttpClient,
+    body: { pushToken: string; activityToken?: string | null; pushToStartToken?: string | null },
+  ) {
+    const res = await http.patch<{ ok?: boolean }>('/api/mobile-push-subscriptions/live-activity', body)
+    return res.data
+  },
+
   async unregisterMobilePushSubscription(http: HttpClient, pushToken: string) {
     const res = await http.delete<{ ok?: boolean }>('/api/mobile-push-subscriptions', { pushToken })
     return res.data

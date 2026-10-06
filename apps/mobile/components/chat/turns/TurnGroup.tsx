@@ -19,6 +19,7 @@ import { MessageContent, extractTextContent } from "./MessageContent";
 import { AssistantContent } from "./AssistantContent";
 import { EditableUserMessage } from "./EditableUserMessage";
 import { TurnFooter } from "./TurnFooter";
+import { TurnSummaryCard } from "./TurnSummaryCard";
 import { extractTurnTiming } from "./turnShaping";
 import { ToolTimeline } from "../tools";
 import { useIsNativePhoneLayout } from "../../../lib/native-phone-layout";
@@ -27,6 +28,8 @@ export interface TurnGroupProps {
   turn: ConversationTurn;
   phase?: string | null;
   showToolTimeline?: boolean;
+  /** Show a glass recap (steps, files changed) under this turn once it is done. */
+  summaryCard?: boolean;
   className?: string;
 }
 
@@ -93,6 +96,7 @@ export const TurnGroup = memo(
     turn,
     phase,
     showToolTimeline = false,
+    summaryCard = false,
     className,
   }: TurnGroupProps) {
     const colors = usePhaseColor(phase || "");
@@ -194,6 +198,10 @@ export const TurnGroup = memo(
           </View>
         )}
 
+        {summaryCard && nativePhone && !turn.isStreaming && turn.toolCalls.length > 0 && (
+          <TurnSummaryCard toolCalls={turn.toolCalls} />
+        )}
+
         {/* Loading indicator when streaming but no assistant message yet */}
         {turn.isStreaming && !turn.assistantMessage && <LoadingDots />}
       </Motion.View>
@@ -203,6 +211,7 @@ export const TurnGroup = memo(
     prev.turn === next.turn &&
     prev.phase === next.phase &&
     prev.showToolTimeline === next.showToolTimeline &&
+    prev.summaryCard === next.summaryCard &&
     prev.className === next.className,
 );
 

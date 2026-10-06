@@ -9,3 +9,8 @@ export function hasRegisteredMobilePushSubscription(): boolean {
 export function useMobilePushRegistration(_userId: string | null, _agentTurns = true) {
   void _userId
 }
+
+/** Web and desktop have no device push token. */
+export function subscribePushToken(_listener: (token: string | null) => void): () => void {
+  return () => {}
+}
