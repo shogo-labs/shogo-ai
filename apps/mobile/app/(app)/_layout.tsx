@@ -71,7 +71,7 @@ import { MobileBottomNav } from "../../components/layout/MobileBottomNav";
 import { TeamChatSidebarProvider } from "../../components/team-chat/TeamChatSidebarProvider";
 import { MobileWorkspaceShell } from "../../components/layout/MobileWorkspaceShell";
 import { projectSidebarEvents } from "../../lib/project-sidebar-events";
-import { refreshCloudWorkspaces } from "../../lib/workspace-route";
+import { getCloudWorkspacesState, refreshCloudWorkspaces, subscribeCloudWorkspaces } from "../../lib/workspace-route";
 import { isConversationPath } from "../../lib/sidebar-tab";
 
 csMark("app:layout:module-load");
@@ -275,22 +275,25 @@ function AppLayoutInner() {
     });
   }, [isAuthenticated, workspaces]);
 
-  // Desktop signed in to Shogo Cloud: keep its cloud team workspaces in the
-  // switcher, re-checking on focus so newly joined ones appear.
+  // Desktop signed in to Shogo Cloud: keep its cloud workspaces in the
+  // switcher, re-checking on focus so newly joined ones appear, and reload
+  // the list whenever sign-in or sign-out changes them.
   useEffect(() => {
     if (!localMode || !isAuthenticated || !workspaces) return;
-    let known = "";
-    const refresh = (sync = false) =>
-      refreshCloudWorkspaces(API_URL!, { sync }).then((next) => {
-        const ids = next.workspaces.map((w) => w.id).sort().join(",");
-        if (known && ids !== known) workspaces.loadAll().catch(() => undefined);
-        known = ids;
-      });
+    const idsOf = () => getCloudWorkspacesState().workspaces.map((w) => w.id).sort().join(",");
+    let known = idsOf();
+    const unsubscribe = subscribeCloudWorkspaces(() => {
+      const ids = idsOf();
+      if (ids !== known) workspaces.loadAll().catch(() => undefined);
+      known = ids;
+    });
+    const refresh = (sync = false) => refreshCloudWorkspaces(API_URL!, { sync });
     void refresh();
     const timer = setInterval(() => void refresh(), 5 * 60_000);
     const onFocus = () => void refresh(true);
     if (typeof window !== "undefined") window.addEventListener("focus", onFocus);
     return () => {
+      unsubscribe();
       clearInterval(timer);
       if (typeof window !== "undefined") window.removeEventListener("focus", onFocus);
     };
