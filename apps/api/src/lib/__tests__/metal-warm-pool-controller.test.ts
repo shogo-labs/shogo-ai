@@ -3,6 +3,7 @@
 
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test'
 import {
+  MetalHostUnreachableError,
   MetalWarmPoolController,
   NoMetalHostError,
   isAssignTimeout,
@@ -104,6 +105,7 @@ describe('MetalWarmPoolController', () => {
   it('is sticky: a project returns to the same host', async () => {
     const seen: string[] = []
     const fetchImpl = (async (url: string) => {
+      if (url.endsWith('/status')) return Response.json({ state: 'none' })
       seen.push(new URL(url).host)
       return new Response(JSON.stringify({ url: 'http://guest:8080', mode: 'resumed', source: 'local' }), { status: 200 })
     }) as any
@@ -162,6 +164,7 @@ describe('MetalWarmPoolController', () => {
   it('a stop invalidates the cached URL so the next open re-resolves', async () => {
     let calls = 0
     const fetchImpl = (async (url: string) => {
+      if (url.endsWith('/status')) return Response.json({ state: 'none' })
       calls++
       const p = new URL(url).pathname
       if (p === '/stop') return new Response(JSON.stringify({ suspended: true }), { status: 200 })
@@ -211,6 +214,7 @@ describe('MetalWarmPoolController', () => {
 
     it('reports an aborted recycle (409) as not ok, with the step report', async () => {
       const fetchImpl = (async (url: string) => {
+      if (url.endsWith('/status')) return Response.json({ state: 'none' })
         if (new URL(url).pathname === '/recycle') {
           return new Response(
             JSON.stringify({ ok: false, aborted: true, steps: [{ step: 'data', ok: false, detail: 'S3 503' }] }),
@@ -237,6 +241,7 @@ describe('MetalWarmPoolController', () => {
   it('cordon drains: a cordoned host takes no new placements', async () => {
     const seen: string[] = []
     const fetchImpl = (async (url: string) => {
+      if (url.endsWith('/status')) return Response.json({ state: 'none' })
       seen.push(new URL(url).hostname)
       return new Response(JSON.stringify({ url: 'http://guest:8080', mode: 'assigned' }), { status: 200 })
     }) as any
@@ -271,6 +276,7 @@ describe('MetalWarmPoolController', () => {
   it('fails over to another host when the first errors, dropping stickiness', async () => {
     let calls = 0
     const fetchImpl = (async (url: string) => {
+      if (url.endsWith('/status')) return Response.json({ state: 'none' })
       calls++
       if (new URL(url).host === '10.8.0.2:9900') throw new Error('conn refused')
       return new Response(JSON.stringify({ url: 'http://guest:8080', mode: 'assigned' }), { status: 200 })
@@ -294,6 +300,7 @@ describe('MetalWarmPoolController', () => {
     let calls = 0
     const hosts: string[] = []
     const fetchImpl = (async (url: string) => {
+      if (url.endsWith('/status')) return Response.json({ state: 'none' })
       calls++
       hosts.push(new URL(url).host)
       if (new URL(url).host === '10.8.0.2:9900') {
@@ -320,6 +327,7 @@ describe('MetalWarmPoolController', () => {
     // moving on is correct and must keep working.
     let calls = 0
     const fetchImpl = (async (url: string) => {
+      if (url.endsWith('/status')) return Response.json({ state: 'none' })
       calls++
       if (new URL(url).host === '10.8.0.2:9900') throw new Error('conn refused')
       return new Response(JSON.stringify({ url: 'http://guest:8080', mode: 'assigned' }), { status: 200 })
@@ -330,6 +338,50 @@ describe('MetalWarmPoolController', () => {
 
     expect(await c.getMetalProjectUrl('p-refused')).toBe('http://guest:8080')
     expect(calls).toBe(2)
+  })
+
+  it('does NOT fail over when the owner host is unreachable — its VM outlives an agent restart', async () => {
+    const assigns: string[] = []
+    const fetchImpl = (async (url: string) => {
+      const host = new URL(url).host
+      if (host === '10.8.0.2:9900') throw Object.assign(new Error('Unable to connect'), { code: 'ConnectionRefused' })
+      assigns.push(host)
+      return new Response(JSON.stringify({ url: 'http://guest:8080', mode: 'assigned' }), { status: 200 })
+    }) as any
+    const c = new MetalWarmPoolController(fakeEnv(), fetchImpl)
+    c.registerHost({ ...REG, hostId: 'ash-1', meshIp: '10.8.0.2' })
+    c.registerHost({ ...REG, hostId: 'ash-2', meshIp: '10.8.0.3' })
+    await getMetalPlacementRegistry().setPlacement('p-owned', 'ash-1', 'local')
+
+    await expect(c.getMetalProjectUrl('p-owned')).rejects.toBeInstanceOf(MetalHostUnreachableError)
+    expect(assigns).toEqual([])
+    expect((await getMetalPlacementRegistry().getPlacement('p-owned'))?.hostId).toBe('ash-1')
+  })
+
+  it('without a placement, asks the hosts and lands on the one already running the key', async () => {
+    const assigns: string[] = []
+    const fetchImpl = (async (url: string) => {
+      const u = new URL(url)
+      if (u.pathname === '/status') return Response.json({ state: u.host === '10.8.0.3:9900' ? 'assigned' : 'none' })
+      assigns.push(u.host)
+      return new Response(JSON.stringify({ url: 'http://guest:8080', reused: true }), { status: 200 })
+    }) as any
+    const c = new MetalWarmPoolController(fakeEnv(), fetchImpl)
+    c.registerHost({ ...REG, hostId: 'ash-1', meshIp: '10.8.0.2', load: { available: 4, assigned: 0, suspended: 0 } })
+    c.registerHost({ ...REG, hostId: 'ash-2', meshIp: '10.8.0.3', load: { available: 1, assigned: 3, suspended: 0 } })
+
+    await c.getMetalProjectUrl('p-orphan')
+    expect(assigns).toEqual(['10.8.0.3:9900'])
+    expect((await getMetalPlacementRegistry().getPlacement('p-orphan'))?.hostId).toBe('ash-2')
+  })
+
+  it('a failed assign only clears the placement while it still names that host', async () => {
+    const reg = getMetalPlacementRegistry()
+    await reg.setPlacement('p-moved', 'ash-2', 'local')
+    await reg.clearPlacement('p-moved', 'ash-1')
+    expect((await reg.getPlacement('p-moved'))?.hostId).toBe('ash-2')
+    await reg.clearPlacement('p-moved', 'ash-2')
+    expect(await reg.getPlacement('p-moved')).toBeNull()
   })
 
   it('classifies the abort shapes a fetch can actually produce', () => {
@@ -380,6 +432,7 @@ describe('MetalWarmPoolController', () => {
   it('prefers a docker-capable host for a docker-class assign, even though it sorts second by load', async () => {
     const seen: string[] = []
     const fetchImpl = (async (url: string) => {
+      if (url.endsWith('/status')) return Response.json({ state: 'none' })
       seen.push(new URL(url).hostname)
       return new Response(JSON.stringify({ url: 'http://guest:8080', mode: 'assigned' }), { status: 200 })
     }) as any
@@ -406,6 +459,7 @@ describe('MetalWarmPoolController', () => {
   it('falls back to a standard-only host for a docker-class assign when none supports it (fail-closed lives on the agent)', async () => {
     const seen: string[] = []
     const fetchImpl = (async (url: string) => {
+      if (url.endsWith('/status')) return Response.json({ state: 'none' })
       seen.push(new URL(url).hostname)
       return new Response(JSON.stringify({ url: 'http://guest:8080', mode: 'assigned' }), { status: 200 })
     }) as any
@@ -419,6 +473,7 @@ describe('MetalWarmPoolController', () => {
   it('never moves a project off its sticky host to chase docker support', async () => {
     const seen: string[] = []
     const fetchImpl = (async (url: string) => {
+      if (url.endsWith('/status')) return Response.json({ state: 'none' })
       seen.push(new URL(url).hostname)
       return new Response(JSON.stringify({ url: 'http://guest:8080', mode: 'resumed', source: 'local' }), { status: 200 })
     }) as any
