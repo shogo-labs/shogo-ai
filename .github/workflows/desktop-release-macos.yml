@@ -95,7 +95,11 @@ jobs:
       - name: Create beta tag
         run: |
           set -euo pipefail
-          EXISTING=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$BETA_TAG" --jq .object.sha 2>/dev/null || true)
+          # matching-refs returns [] (not a 404) when the tag is absent. Reading
+          # git/ref/tags/<tag> instead prints the 404 JSON body to stdout, which
+          # `|| true` kept, so a brand-new tag looked like it already existed.
+          EXISTING=$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/$BETA_TAG" \
+            --jq "[.[] | select(.ref == \"refs/tags/$BETA_TAG\") | .object.sha][0] // empty")
           if [ -z "$EXISTING" ]; then
             gh api "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/$BETA_TAG" -f sha="$GITHUB_SHA" >/dev/null
             echo "Created ${BETA_TAG} at ${GITHUB_SHA}."
