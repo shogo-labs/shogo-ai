@@ -557,6 +557,21 @@ const HYDRATE_BUDGET_CEILING_MS = 30 * 60_000
  * flagged this as a server-backed published microVM. Returns undefined for an
  * ordinary dev/preview VM (no PUBLISHED_SUBDOMAIN / SHOGO_PUBLISHED_MODE).
  */
+/**
+ * The project whose durable source a `published:{id}` runtime serves, or null
+ * for any other key.
+ *
+ * A published microVM is a read-only copy of its project: it boots from the
+ * project's own `{id}/project-src.tar.gz` and never writes source, `.git` or
+ * project-data archives (its live data is `{subdomain}/data.tar.gz`). Keyed by
+ * the runtime key instead, it restored `published:{id}/…` — archives only its
+ * own earlier boots ever wrote, from the template — so every cold boot served
+ * the starter app and backed it up again.
+ */
+export function publishedSourceId(runtimeKey: string): string | null {
+  return runtimeKey.startsWith('published:') ? runtimeKey.slice('published:'.length) || null : null
+}
+
 function publishedSubdomainFromEnv(env: Record<string, string>): string | undefined {
   const published = env.SHOGO_PUBLISHED_MODE === 'true' || env.SHOGO_PUBLISHED_MODE === '1'
   const subdomain = env.PUBLISHED_SUBDOMAIN
@@ -1394,7 +1409,7 @@ export class MetalWarmPool {
     try {
       const h: { hydrated: boolean; parentEtag?: string; lastModified?: number | null } = projectId.startsWith('ws:')
         ? { hydrated: false }
-        : await this.hydrateFromBackup(projectId, vm.handle, env)
+        : await this.hydrateFromBackup(publishedSourceId(projectId) ?? projectId, vm.handle, env)
       if (h.hydrated) {
         a.workspaceOrigin = 'backup'
         a.backupParentEtag = h.parentEtag
@@ -1434,6 +1449,9 @@ export class MetalWarmPool {
     // user's data — the exact incident this subsystem exists to prevent.
     if (projectId.startsWith('ws:')) {
       await this.hydrateWorkspaceMemberData(a, env)
+    } else if (publishedSourceId(projectId)) {
+      // Live site data is the published-data overlay below; the project's dev
+      // database must not leak into the site.
     } else {
       try {
         const d = await this.hydrateProjectData(projectId, vm.handle, env)
@@ -1465,7 +1483,11 @@ export class MetalWarmPool {
     // the hydrate leaves the replacement VM create-only against an archive
     // that already exists, so every later export is refused as a conflict.
     try {
-      const r = await this.hydrateRepo(projectId, vm.handle, env, sourceTimes)
+      // A published runtime never commits, and resetting its tree to a `.git`
+      // HEAD would replace the source it just restored.
+      const r = publishedSourceId(projectId)
+        ? { hydrated: false as const, parentEtag: undefined }
+        : await this.hydrateRepo(projectId, vm.handle, env, sourceTimes)
       if (r.hydrated) {
         a.repoParentEtag = r.parentEtag
         // A workspace runtime has no source backup of its own (members are
@@ -1734,6 +1756,7 @@ export class MetalWarmPool {
    * legacy workspaces — a genuine template origin is never trusted this way.
    */
   private async saveBackupToStore(a: AssignedVm): Promise<SourceSaveResult> {
+    if (publishedSourceId(a.projectId)) return 'empty'
     const bytes = await this.fetchExport(a.handle, a.runtimeToken)
     if (!bytes) {
       console.log(`[pool] no source to back up for ${a.projectId} (empty/new workspace)`)
@@ -1751,6 +1774,8 @@ export class MetalWarmPool {
   }
 
   private async storeSource(a: AssignedVm, bytes: Uint8Array): Promise<'written' | 'quarantined' | 'lost'> {
+    // Its source is the project's archive, which is already durable.
+    if (publishedSourceId(a.projectId)) return 'written'
     const outcome = await this.uploadBackupGuarded(a.projectId, bytes, {
       parentEtag: a.backupParentEtag,
       // Only a resumed legacy snapshot (origin 'snapshot' with no stamped ETag)
@@ -2246,6 +2271,7 @@ export class MetalWarmPool {
   }
 
   private async saveRepoInner(a: AssignedVm): Promise<boolean> {
+    if (publishedSourceId(a.projectId)) return false
     if (a.repoHydratePending) return false
     const lineage = this.repoLineageOf(a)
     if (lineage.kind === 'untrusted') {
@@ -2268,6 +2294,7 @@ export class MetalWarmPool {
     bytes: Uint8Array,
     rootCommitAt: number | null,
   ): Promise<'written' | 'quarantined' | 'lost'> {
+    if (publishedSourceId(a.projectId)) return 'written'
     const outcome = await this.uploadRepoGuarded(a.projectId, bytes, {
       lineage: this.repoLineageOf(a),
       preserveOnRefusal: true,
@@ -2520,6 +2547,7 @@ export class MetalWarmPool {
    * refused, or there was nothing to persist.
    */
   async saveProjectDataToStore(a: AssignedVm, opts: DataSaveOpts = {}): Promise<boolean> {
+    if (publishedSourceId(a.projectId)) return false
     if (a.projectId.startsWith('ws:')) return this.saveWorkspaceMemberDataToStore(a, opts)
     const slot = this.projectDataSlot(a)
     return this.dataFlight.run(slot.flightKey, () => this.saveDataSlotInner(a, slot, opts))
@@ -3122,7 +3150,7 @@ export class MetalWarmPool {
   ): Promise<string | null> {
     const norm = (e?: string | null) => (e ? e.replace(/"/g, '') : undefined)
     const checks: Array<[string, string | undefined, () => Promise<ArchiveRef | null>]> = [
-      ['source', stamps.backupEtag, () => this.sourceRef(projectId)],
+      ['source', stamps.backupEtag, () => this.sourceRef(publishedSourceId(projectId) ?? projectId)],
       ['repo', stamps.repoEtag, () => this.repoRef(projectId)],
       ['data', stamps.dataEtag, () => this.projectDataRef(projectId)],
       ...Object.entries(stamps.memberDataEtags ?? {}).map(
