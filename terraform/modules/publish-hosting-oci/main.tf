@@ -600,12 +600,22 @@ resource "cloudflare_worker_script" "subdomain_router" {
     // -----------------------------------------------------------------------
     const WAKE_PATHS = ['/__shogo/wake', '/__shogo/ready'];
 
-    // Raw SERVER_BACKED value: `metal` (proxy /api/* to the Shogo API published
-    // endpoint), or any other truthy value — legacy `1` / `knative` — (proxy to
-    // the Kourier ingress). Empty/absent → static app.
+    // Resolve a subdomain's SERVER_BACKED value to its backend:
+    //   - `metal`   → the Shogo API published endpoint.
+    //   - `knative` → the Kourier ingress (the explicit rollback marker).
+    //   - any other truthy value (the pre-cutover `1`) → metal when
+    //     API_PUBLISHED_ORIGIN is bound, else Kourier. Those sites' Knative
+    //     services are pinned to a runtime image that is no longer cached on
+    //     the nodes, so their cold start outlasts the edge timeout.
+    //   - empty/absent → null (static app).
     async function serverBackedFlag(env, subdomain) {
       if (!env.SERVER_BACKED) return null;
-      try { return (await env.SERVER_BACKED.get(subdomain)) || null; } catch (e) { return null; }
+      let raw = null;
+      try { raw = (await env.SERVER_BACKED.get(subdomain)) || null; } catch (e) { return null; }
+      if (!raw) return null;
+      const val = String(raw).trim().toLowerCase();
+      if (val === 'metal' || val === 'knative') return val;
+      return env.API_PUBLISHED_ORIGIN ? 'metal' : 'knative';
     }
 
     async function isServerBacked(env, subdomain) {
