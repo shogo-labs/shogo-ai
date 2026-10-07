@@ -7436,6 +7436,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
                     : "text-destructive",
                 )}
                 selectable
+                testID="chat-error-banner"
               >
                 {errorBannerText}
               </Text>
@@ -7450,6 +7451,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
               )}
               numberOfLines={2}
               selectable
+              testID="chat-error-banner"
             >
               {errorBannerText}
             </Text>
