@@ -21,7 +21,7 @@
  *     suspend or evict a project that is actively serving.
  */
 
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { CacheIndex, type CacheEntry } from './cache-index'
 import { Semaphore, Singleflight } from './concurrency'
@@ -62,8 +62,11 @@ import {
 import {
   describeRepoArchive,
   preserveRepoArchive,
+  REPO_MAX_BYTES,
+  repoBodySize,
   statRepoArchive,
   uploadRepoArchiveGuarded,
+  type RepoBody,
   type RepoLineage,
   type RepoWriteOutcome,
 } from './repo-archive'
@@ -103,8 +106,51 @@ const REPO_BORN_ON_BOOT_SLACK_MS = 10 * 60_000
 
 /** A guest's packed `.git` and when its history began (null if not reported). */
 export interface RepoExport {
-  bytes: Uint8Array
+  bytes: RepoBody
   rootCommitAt: number | null
+  /** Removes the export's spool file, if it has one. Idempotent. */
+  dispose?: () => void
+}
+
+/** The guest's export exceeded the cap, so the host stopped reading it. */
+export class ExportTooLargeError extends Error {
+  constructor(
+    readonly bytes: number,
+    readonly limit: number,
+  ) {
+    super(`export exceeds ${limit} bytes (read ${bytes})`)
+  }
+}
+
+/** Longest the periodic sweep waits before retrying a failed `.git` export. */
+const REPO_EXPORT_MAX_BACKOFF_MS = 30 * 60_000
+const REPO_EXPORT_MIN_BACKOFF_MS = 60_000
+
+/**
+ * Write a response body to `path`, failing once it passes `maxBytes`. Chunks
+ * go straight to disk so a large export never sits whole in the heap.
+ */
+export async function spoolResponse(res: Response, path: string, maxBytes: number): Promise<number> {
+  const declared = Number(res.headers.get('content-length'))
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    await res.body?.cancel().catch(() => {})
+    throw new ExportTooLargeError(declared, maxBytes)
+  }
+  const writer = Bun.file(path).writer()
+  let size = 0
+  try {
+    if (res.body) {
+      for await (const chunk of res.body) {
+        size += chunk.byteLength
+        if (size > maxBytes) throw new ExportTooLargeError(size, maxBytes)
+        writer.write(chunk)
+        await writer.flush()
+      }
+    }
+  } finally {
+    await writer.end()
+  }
+  return size
 }
 
 /** The guest answered `/pool/repo-hydrated` with an error, so it did not adopt. */
@@ -393,6 +439,15 @@ export interface AssignedVm {
   repoLinked?: boolean
   /** Last `repoHeadSha` the guest reported; export when it changes. */
   repoHeadSha?: string
+  /**
+   * The `repoHeadSha` whose `.git` is already durable (written or
+   * quarantined). The periodic sweep skips the VM while HEAD still matches.
+   */
+  repoExportedHeadSha?: string
+  /** Periodic `.git` export failed; the sweep leaves it alone until then. */
+  repoExportRetryAt?: number
+  /** Consecutive periodic `.git` export failures, for backoff. */
+  repoExportFailures?: number
   /** First consecutive `/pool/activity` failure (undefined while polls succeed). */
   activityPollFailedAt?: number
   /** Last health/activity poll outcome. `false` = assigned-but-unhealthy. */
@@ -664,6 +719,7 @@ export class MetalWarmPool {
     this.rootfsId = this.rootfsIds.standard
     this.index = new CacheIndex(cfg.snapDir)
     this.live = new LiveRegistry(cfg.runDir)
+    rmSync(this.exportSpoolDir, { recursive: true, force: true })
     this.heavy = new Semaphore(parseInt(process.env.METAL_HEAVY_CONCURRENCY ?? '2', 10))
     this.hydrateProxy = new HydrateProxy({
       partBytes: cfg.hydrateProxyPartBytes,
@@ -1487,6 +1543,7 @@ export class MetalWarmPool {
     } finally {
       a.repoHydratePending = false
       a.repoHeadSha = undefined
+      a.repoExportedHeadSha = undefined
       this.writeLive(a)
     }
 
@@ -2224,18 +2281,41 @@ export class MetalWarmPool {
     if (res.status === 204) return null
     if (res.status === 404) return null
     if (!res.ok) throw new Error(`/pool/export-repo failed (${res.status}): ${await res.text()}`)
-    const buf = await res.arrayBuffer()
-    if (!buf.byteLength) return null
+    const path = this.exportSpoolPath(handle.id, 'repo')
+    const dispose = () => rmSync(path, { force: true })
+    let size: number
+    try {
+      size = await spoolResponse(res, path, REPO_MAX_BYTES)
+    } catch (err) {
+      dispose()
+      throw err
+    }
+    if (!size) {
+      dispose()
+      return null
+    }
     const rootCommitAt = Number(res.headers.get(REPO_ROOT_COMMIT_AT_HEADER))
     return {
-      bytes: new Uint8Array(buf),
+      bytes: Bun.file(path),
       rootCommitAt: Number.isFinite(rootCommitAt) && rootCommitAt > 0 ? rootCommitAt : null,
+      dispose,
     }
+  }
+
+  /** Spool dir for in-flight guest exports. Emptied at startup. */
+  protected get exportSpoolDir(): string {
+    return join(this.cfg.runDir, 'exports')
+  }
+
+  private exportSpoolPath(vmId: string, kind: string): string {
+    mkdirSync(this.exportSpoolDir, { recursive: true })
+    const rand = Math.random().toString(36).slice(2, 8)
+    return join(this.exportSpoolDir, `${vmId}-${kind}-${Date.now()}-${rand}.tar.gz`)
   }
 
   protected uploadRepoGuarded(
     projectId: string,
-    bytes: Uint8Array,
+    bytes: RepoBody,
     opts: { lineage: RepoLineage; preserveOnRefusal?: boolean },
   ): Promise<RepoWriteOutcome> {
     return uploadRepoArchiveGuarded(projectId, bytes, opts, this.cfg)
@@ -2252,9 +2332,22 @@ export class MetalWarmPool {
       metrics.inc(M.repoRefused)
       return false
     }
-    const exported = await this.fetchRepoExport(a.handle, a.runtimeToken)
+    const head = a.repoHeadSha
+    let exported: RepoExport | null
+    try {
+      exported = await this.fetchRepoExport(a.handle, a.runtimeToken)
+    } catch (err) {
+      if (err instanceof ExportTooLargeError) metrics.inc(M.repoTooLarge)
+      throw err
+    }
     if (!exported) return false
-    return (await this.storeRepoBytes(a, exported.bytes, exported.rootCommitAt)) === 'written'
+    try {
+      const out = await this.storeRepoBytes(a, exported.bytes, exported.rootCommitAt)
+      if (out !== 'lost' && head && a.repoHeadSha === head) a.repoExportedHeadSha = head
+      return out === 'written'
+    } finally {
+      exported.dispose?.()
+    }
   }
 
   /**
@@ -2265,7 +2358,7 @@ export class MetalWarmPool {
    */
   private async storeRepoBytes(
     a: AssignedVm,
-    bytes: Uint8Array,
+    bytes: RepoBody,
     rootCommitAt: number | null,
   ): Promise<'written' | 'quarantined' | 'lost'> {
     const outcome = await this.uploadRepoGuarded(a.projectId, bytes, {
@@ -2278,7 +2371,7 @@ export class MetalWarmPool {
         a.repoParentEtag = outcome.etag ?? a.repoParentEtag
         this.writeLive(a)
         console.log(
-          `[pool] saved repo archive for ${a.projectId} (${bytes.byteLength} bytes, ${outcome.status}, etag=${outcome.etag ?? 'none'})`,
+          `[pool] saved repo archive for ${a.projectId} (${repoBodySize(bytes)} bytes, ${outcome.status}, etag=${outcome.etag ?? 'none'})`,
         )
         return 'written'
       case 'conflict':
@@ -2319,7 +2412,7 @@ export class MetalWarmPool {
    * that `.git` was seeded from whatever the workspace held at boot, and
    * superseding with it discards the durable history it never contained.
    */
-  private async promoteUnlinkedRepo(a: AssignedVm, bytes: Uint8Array, rootCommitAt: number | null): Promise<boolean> {
+  private async promoteUnlinkedRepo(a: AssignedVm, bytes: RepoBody, rootCommitAt: number | null): Promise<boolean> {
     const since = a.stateSince ?? a.assignedAt
     if (rootCommitAt === null || rootCommitAt >= since - REPO_BORN_ON_BOOT_SLACK_MS) {
       console.warn(
@@ -2458,16 +2551,33 @@ export class MetalWarmPool {
    * Export `.git` for every live VM whose HEAD has moved, or whose last export
    * is missing. Driven by the same guarded interval as writable-state so a
    * host that never suspends still persists git_only history.
+   *
+   * A HEAD the guest reported that is already durable is skipped: re-exporting
+   * an unchanged multi-GB repo every interval is what starved the agent's
+   * event loop. A guest that reports no HEAD is exported every time. Failures
+   * back off so a repo that cannot export is not retried every interval.
    */
-  async exportAllRepos(): Promise<number> {
+  async exportAllRepos(now = Date.now()): Promise<number> {
     let n = 0
     for (const a of this.assigned.values()) {
       if (a.repoUntrustedReason) continue
+      if (a.repoHeadSha && a.repoHeadSha === a.repoExportedHeadSha) continue
+      if (a.repoExportRetryAt && now < a.repoExportRetryAt) continue
       try {
         const wrote = await this.saveRepoToStore(a)
         if (wrote) n++
+        a.repoExportFailures = 0
+        a.repoExportRetryAt = undefined
       } catch (err: any) {
-        console.error(`[pool] repo export failed for ${a.projectId}:`, err?.message ?? err)
+        const failures = (a.repoExportFailures ?? 0) + 1
+        a.repoExportFailures = failures
+        a.repoExportRetryAt =
+          now + Math.min(REPO_EXPORT_MAX_BACKOFF_MS, REPO_EXPORT_MIN_BACKOFF_MS * 2 ** (failures - 1))
+        console.error(
+          `[pool] repo export failed for ${a.projectId} (attempt ${failures}, next ` +
+            `${new Date(a.repoExportRetryAt).toISOString()}):`,
+          err?.message ?? err,
+        )
       }
     }
     return n
@@ -3731,7 +3841,7 @@ export class MetalWarmPool {
         outDir,
       )
       let ok = true
-      if (repo) ok = (await this.storeRepoBytes(a, new Uint8Array(readFileSync(repo)), null)) !== 'lost' && ok
+      if (repo) ok = (await this.storeRepoBytes(a, Bun.file(repo), null)) !== 'lost' && ok
       if (source) ok = (await this.storeSourceBytes(a, new Uint8Array(readFileSync(source)))) && ok
       return ok
     } finally {
@@ -4494,7 +4604,11 @@ export class MetalWarmPool {
       const exportRepo = () =>
         this.repoFlight.run(a.projectId, async () => {
           const exported = await this.fetchRepoExport(a.handle, a.runtimeToken)
-          out = exported ? await this.storeRepoBytes(a, exported.bytes, exported.rootCommitAt) : 'empty'
+          try {
+            out = exported ? await this.storeRepoBytes(a, exported.bytes, exported.rootCommitAt) : 'empty'
+          } finally {
+            exported?.dispose?.()
+          }
           return out === 'written'
         })
       await exportRepo()
