@@ -13,6 +13,7 @@ import { teamChatApi, type ConversationSummary } from '../../../lib/team-chat-ap
 import { invalidateConversationList, useConversationList, useMentionables, useMyUserId } from '../../../hooks/useTeamChat'
 import { NewConversationModal, type NewConversationMode } from '../../../components/team-chat/NewConversationModal'
 import { conversationHref } from '../../../components/team-chat/ConversationRows'
+import { usePhoneLayout } from '../../../lib/native-phone-layout'
 
 const api = teamChatApi()
 
@@ -27,6 +28,12 @@ export default function TeamChatHome() {
   const [filter, setFilter] = useState('')
   const [creating, setCreating] = useState<NewConversationMode | null>(null)
   const [joining, setJoining] = useState<string | null>(null)
+  const phone = usePhoneLayout()
+  // Phones get a full-screen route instead of a modal.
+  const startCreate = (mode: NewConversationMode) => {
+    if (phone) router.push({ pathname: '/(app)/c/new', params: { mode } } as any)
+    else setCreating(mode)
+  }
 
   const channels = useMemo(() => {
     const q = filter.trim().toLowerCase().replace(/^#/, '')
@@ -65,9 +72,9 @@ export default function TeamChatHome() {
       </Text>
 
       <View className="mt-5 flex-row flex-wrap gap-2">
-        <ActionButton icon={Plus} label="Create channel" onPress={() => setCreating('channel')} primary />
-        <ActionButton icon={MessageSquarePlus} label="New message" onPress={() => setCreating('dm')} />
-        <ActionButton icon={Bot} label="Message an agent" onPress={() => setCreating('agent')} />
+        <ActionButton icon={Plus} label="Create channel" onPress={() => startCreate('channel')} primary />
+        <ActionButton icon={MessageSquarePlus} label="New message" onPress={() => startCreate('message')} />
+        <ActionButton icon={Bot} label="Message an agent" onPress={() => startCreate('agent')} />
       </View>
 
       <View className="mt-6 flex-row items-center rounded-md border border-border px-3">
@@ -114,7 +121,7 @@ export default function TeamChatHome() {
         </View>
       )}
 
-      {creating && workspaceId && (
+      {creating && workspaceId && !phone && (
         <NewConversationModal
           workspaceId={workspaceId}
           mode={creating}

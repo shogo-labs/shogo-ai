@@ -23,7 +23,7 @@ import { REGION_ID, REGION_LABEL, REGION_PEERS, getPeer } from './lib/region'
 import { runtimeRoutes } from './routes/runtime'
 import { filesRoutes } from './routes/files'
 import { projectChatRoutes, trackUsageFromStream } from './routes/project-chat'
-import { pinChatToHomeRegion } from './lib/chat-region-pin'
+import { pinChatToHomeRegion, pinProjectRoutesToHomeRegion } from './lib/chat-region-pin'
 import { workspaceChatRoutes } from './routes/workspace-chat'
 import { workspaceAgentRoutes, sessionAuthorize } from './routes/workspace-agent'
 import { workspaceMeetingRoutes, sharedMeetingRoutes } from './routes/workspace-meetings'
@@ -803,6 +803,10 @@ app.use('/api/projects/:projectId/*', async (c, next) => {
   }
   return requireProjectAccess(c, next)
 })
+
+// A project's runtime lives only in its workspace's home region; serve every
+// project request there instead of booting a second runtime with a stale tree.
+app.use('/api/projects/:projectId/*', pinProjectRoutesToHomeRegion({ skip: isProjectReservedTopLevelPath }))
 
 // Home-region write router: proxy workspace-scoped mutations to the region that
 // owns the workspace so tenant data is only ever written in one place (keeps
@@ -1979,6 +1983,14 @@ app.get('/api/published/:subdomain/wake', async (c) => {
   }
 })
 
+// Record this (home) region in the preview-router KV so the Worker sends the
+// project's metal wake/render calls here directly. Fire-and-forget.
+function rememberMetalPreviewRegion(projectId: string): void {
+  void import('./lib/cloudflare-preview-region-kv')
+    .then((m) => m.rememberPreviewRegion(projectId))
+    .catch((err) => console.warn(`[preview-region] remember ${projectId} failed (non-fatal): ${err?.message ?? err}`))
+}
+
 // Wake a dev preview ({projectId}.preview.shogo.ai). Unlike published apps, the
 // preview DomainMapping + pod are provisioned lazily by getProjectPodUrl(), so a
 // never-opened project has nothing for Kourier to route to. We kick provisioning
@@ -1996,6 +2008,12 @@ app.get('/api/preview/:projectId/wake', async (c) => {
     if (!isKubernetes()) {
       return c.json({ ready: true }, 200, WAKE_RESPONSE_HEADERS)
     }
+
+    // Only the workspace's home region may resume/boot its runtime. Resolving
+    // here from another region boots a second VM that serves the starter
+    // template while the agent edits the home-region copy.
+    const pinned = await pinChatToHomeRegion(c, projectId)
+    if (pinned) return pinned
 
     // Metal substrate: a metal project has NO Knative service/route, so Kourier
     // can't serve its `{id}.preview.<base>` subdomain (a raw 404). Resolve its
@@ -2016,6 +2034,7 @@ app.get('/api/preview/:projectId/wake', async (c) => {
           metalRetryDelayMs: 1000,
         })
         if (resolved.mode === 'metal') {
+          rememberMetalPreviewRegion(projectId)
           const ready = await probeMetalPreviewReady(resolved.url, 4000)
           return c.json({ ready, url: resolved.url }, 200, WAKE_RESPONSE_HEADERS)
         }
@@ -2125,6 +2144,9 @@ const previewRenderHandler = async (c: any) => {
     if (!project) return c.json({ error: { code: 'not_found' } }, 404)
     if (!isKubernetes()) return c.json({ error: { code: 'not_supported_locally' } }, 404)
 
+    const pinned = await pinChatToHomeRegion(c, projectId)
+    if (pinned) return pinned
+
     const { resolveProjectPodUrl } = await import('./lib/resolve-pod-url')
     let target: string
     try {
@@ -2222,6 +2244,9 @@ const previewPortRenderHandler = async (c: any) => {
     if (!exposed || exposed.protocol !== 'http' || exposed.visibility !== 'preview') {
       return c.json({ error: { code: 'not_found', message: 'Port is not publicly previewable' } }, 404)
     }
+
+    const pinned = await pinChatToHomeRegion(c, projectId)
+    if (pinned) return pinned
 
     const { resolveProjectPodUrl } = await import('./lib/resolve-pod-url')
     const { deriveProjectRuntimeToken } = await import('./lib/project-runtime-token')
@@ -2711,6 +2736,9 @@ app.get('/api/projects/:projectId/runtime/status', async (c) => {
   const projectId = c.req.param('projectId')
   
   if (isKubernetes()) {
+    const pinned = await pinChatToHomeRegion(c, projectId)
+    if (pinned) return pinned
+
     // Metal: read status straight from the owning host's node-agent (exists /
     // ready / replicas). Metal has no Knative Revision/health-check machinery, so
     // it maps onto the same not_found / starting / running shape the frontend
@@ -2822,6 +2850,11 @@ app.get('/api/projects/:projectId/sandbox/url', async (c) => {
     return c.json({ error: { code: 'forbidden', message: 'No access to this project' } }, 403)
   }
 
+  // The canvas iframe must point at the runtime the agent edits, which only
+  // the workspace's home region resolves (see the preview wake route).
+  const pinned = await pinChatToHomeRegion(c, projectId)
+  if (pinned) return pinned
+
   const shouldWait = c.req.query('wait') !== 'false' // Default to waiting for backwards compat
   const previewMode = c.req.query('mode') || 'subdomain' // Default to subdomain mode
   
@@ -2903,6 +2936,7 @@ app.get('/api/projects/:projectId/sandbox/url', async (c) => {
         const { resolveProjectPodUrl } = await import('./lib/resolve-pod-url')
         await resolveProjectPodUrl(projectId, { logTag: 'sandbox/url' })
         console.log(`[sandbox/url] ${projectId.slice(0, 8)} ready via metal`)
+        rememberMetalPreviewRegion(projectId)
         // Per-user open cap: record this open and suspend the user's
         // least-recently-opened project(s) beyond METAL_MAX_OPEN_PROJECTS_PER_USER
         // so one user can't pin unbounded host RAM. Fire-and-forget: never blocks
@@ -3169,6 +3203,9 @@ app.all('/api/projects/:projectId/preview/*', async (c) => {
     }
     return c.json({ error: { code: 'not_running', message: 'Project runtime not running' } }, 404)
   }
+
+  const pinned = await pinChatToHomeRegion(c, projectId)
+  if (pinned) return pinned
   
   try {
     const { getProjectPodUrl } = await import('./lib/knative-project-manager')
@@ -3864,6 +3901,8 @@ app.get('/api/projects/:projectId/ports/listening', async (c) => {
   if (!workspaceId) {
     return c.json({ error: { code: 'forbidden', message: 'No access to this project' } }, 403)
   }
+  const pinned = await pinChatToHomeRegion(c, projectId)
+  if (pinned) return pinned
   try {
     const { resolveProjectPodUrl } = await import('./lib/resolve-pod-url')
     const { deriveProjectRuntimeToken } = await import('./lib/project-runtime-token')
@@ -5605,6 +5644,9 @@ app.post('/api/projects/:projectId/chat', async (c) => {
 app.get('/api/projects/:projectId/chat/status', async (c) => {
   const authResult = await requireProjectAuth(c)
   if ('error' in authResult) return authResult.error
+
+  const pinned = await pinChatToHomeRegion(c, authResult.projectId)
+  if (pinned) return pinned
 
   const manager = getRuntimeManager()
   const router = projectChatRoutes({ runtimeManager: manager })

@@ -40,6 +40,15 @@ export const HOME_REGION_PROXY_HEADER = 'x-shogo-home-region-proxy'
  */
 const CONNECT_TIMEOUT_MS = parseInt(process.env.REGION_PROXY_CONNECT_TIMEOUT_MS || '10000', 10)
 
+/**
+ * The same budget for requests that carry a body. Those can't be retried (the
+ * body stream is single-use), and time-to-first-byte includes the peer's
+ * handler — a publish answers only after its build, well past 10s. Giving up
+ * early reports a failure for work the peer goes on to complete. Kept under
+ * the ~100s edge timeout.
+ */
+const WRITE_TIMEOUT_MS = parseInt(process.env.REGION_PROXY_WRITE_TIMEOUT_MS || '90000', 10)
+
 /** True for fetch failures worth retrying once on a fresh connection: our own
  * connect-timeout firing, or a lower-level connection error (refused, reset,
  * DNS blip) — as opposed to the peer answering with a real (if unwelcome)
@@ -126,7 +135,10 @@ export async function proxyToPeer(
     if (key.toLowerCase().startsWith('x-shogo-')) headers.set(key, value)
   })
   // Peers share one public hostname; spoof Host/Origin so CORS + Better Auth
-  // trusted-origin checks pass on the receiving side.
+  // trusted-origin checks pass on the receiving side. The client's own host
+  // rides along so URLs the peer builds for it (sandbox/url) stay on that host.
+  const clientHost = src.get('x-original-host') || src.get('host')
+  if (clientHost) headers.set('x-original-host', clientHost)
   headers.set('Host', HOST_HEADER_FOR_PEERS)
   headers.set('Origin', `https://${HOST_HEADER_FOR_PEERS}`)
   headers.set(HOME_REGION_PROXY_HEADER, '1')
@@ -140,7 +152,10 @@ export async function proxyToPeer(
 
   async function attempt(): Promise<Response> {
     const ac = new AbortController()
-    const timer = setTimeout(() => ac.abort(new DOMException('Peer connect timed out', 'TimeoutError')), CONNECT_TIMEOUT_MS)
+    const timer = setTimeout(
+      () => ac.abort(new DOMException('Peer connect timed out', 'TimeoutError')),
+      hasBody ? WRITE_TIMEOUT_MS : CONNECT_TIMEOUT_MS,
+    )
     try {
       return await fetch(targetUrl.toString(), {
         method,

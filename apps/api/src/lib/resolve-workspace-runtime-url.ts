@@ -131,6 +131,9 @@ export interface ResolveWorkspaceRuntimeOpts {
    * the lease (single-process, SQLite-backed).
    */
   _spawnLease?: <T>(workspaceId: string, fn: () => Promise<T>) => Promise<T>
+
+  /** Test-only override for the cloud-branch home-region guard. */
+  _assertHomeRegion?: (workspaceId: string) => Promise<void>
 }
 
 function defaultIsKubernetes(): boolean {
@@ -229,6 +232,14 @@ export async function resolveWorkspaceRuntimeUrl(
 
   if (!workspaceId) {
     throw new Error('[WorkspaceRuntime] resolveWorkspaceRuntimeUrl: workspaceId is required')
+  }
+  // Cloud runtimes are region-local: never boot or claim one outside the
+  // workspace's home region (see runtime-home-region-guard.ts).
+  if (process.env.SHOGO_LOCAL_MODE !== 'true' && (isMetalEnabled() || isKubernetes())) {
+    const assertHomeRegion =
+      opts._assertHomeRegion ??
+      (await import('./runtime-home-region-guard')).assertRuntimeInHomeRegion
+    await assertHomeRegion(workspaceId)
   }
   // Metal takes precedence over the k8s (Knative) branch: in metal regions the
   // API pod runs IN Kubernetes, so a workspace runtime must resolve to a

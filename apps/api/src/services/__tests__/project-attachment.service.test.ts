@@ -10,6 +10,7 @@ interface ProjectRow {
   id: string
   workspaceId: string
   name?: string | null
+  remoteHostId?: string | null
 }
 
 interface State {
@@ -28,12 +29,21 @@ const s: State = {
   folders: [],
 }
 
+let rejectRemoteHostSelect = false
+
 let idSeq = 0
 
 mock.module('../../lib/prisma', () => ({
   prisma: {
     project: {
-      findUnique: async (args: any) => s.projects.get(args.where.id) ?? null,
+      findUnique: async (args: any) => {
+        if (rejectRemoteHostSelect && args.select?.remoteHostId) {
+          const err = new Error('Unknown field `remoteHostId` for select statement on model `Project`.')
+          err.name = 'PrismaClientValidationError'
+          throw err
+        }
+        return s.projects.get(args.where.id) ?? null
+      },
     },
     projectAttachment: {
       findMany: async (args: any) => {
@@ -113,6 +123,7 @@ beforeEach(() => {
   s.sessionProjects = []
   s.folders = []
   idSeq = 0
+  rejectRemoteHostSelect = false
 })
 
 describe('attachProjectToProject', () => {
@@ -179,6 +190,18 @@ describe('getAnchorLocalFolders', () => {
       { projectId: 'anchor', path: '/Users/me/data' },
       { projectId: 'b', path: '/Users/me/other' },
     ]
+    expect(await svc.getAnchorLocalFolders('anchor')).toEqual(['/Users/me/data'])
+  })
+
+  it('does not report a Remote-SSH anchor\'s remote folder as a local folder', async () => {
+    s.projects.set('anchor', { id: 'anchor', workspaceId: 'ws1', name: 'Anchor', remoteHostId: 'host-1' })
+    s.folders = [{ projectId: 'anchor', path: '/home/dev/app' }]
+    expect(await svc.getAnchorLocalFolders('anchor')).toEqual([])
+  })
+
+  it('works on the cloud schema, which has no remoteHostId column', async () => {
+    rejectRemoteHostSelect = true
+    s.folders = [{ projectId: 'anchor', path: '/Users/me/data' }]
     expect(await svc.getAnchorLocalFolders('anchor')).toEqual(['/Users/me/data'])
   })
 })

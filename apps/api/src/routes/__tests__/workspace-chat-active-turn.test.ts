@@ -210,6 +210,7 @@ mock.module('../../services/workspace-session.service', () => ({
 
 mock.module('../../services/project-attachment.service', () => ({
   attachProjectToProject: async () => ({}),
+  getAnchorLocalFolders: async () => [] as string[],
   syncPinnedSessionAttachments: async (anchorProjectId: string, sessionId?: string) => {
     store.syncCalls.push([anchorProjectId, sessionId])
   },

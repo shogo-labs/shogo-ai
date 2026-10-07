@@ -59,6 +59,15 @@ test.describe("Team workspace: phone dock and tab screens", () => {
     await expect(feed.getByRole("button", { name: /switch workspace$/ })).toBeVisible()
   })
 
+  test("tapping a project on Home opens the project", async ({ page }) => {
+    const feed = page.getByTestId("mobile-home-feed")
+    const row = feed.getByRole("link", { name: seed.idleAgent, exact: true })
+    await expect(row).toBeVisible({ timeout: 30_000 })
+    await row.click()
+    await expect(page).toHaveURL(new RegExp(`/projects/${seed.projectIds[1]}`), { timeout: 30_000 })
+    await expect(page.getByTestId("mobile-home-feed")).toHaveCount(0)
+  })
+
   test("DMs lists conversations with the latest message and opens one", async ({ page }) => {
     await tab(page, "DMs").click()
     await expect(page).toHaveURL(/\/c\/dms/)
@@ -119,6 +128,45 @@ test.describe("Team workspace: phone dock and tab screens", () => {
     await expect(menu.getByRole("menuitem", { name: "Pause notifications" })).toBeVisible()
     await menu.getByRole("menuitem", { name: "Preferences" }).click()
     await expect(page).toHaveURL(/\/settings/)
+  })
+
+  test("New message is a full screen with people and agents, not a dialog", async ({ page }) => {
+    await tab(page, "DMs").click()
+    await page.getByRole("button", { name: "Create", exact: true }).click()
+    await page.getByRole("menuitem", { name: "New message" }).click()
+
+    await expect(page).toHaveURL(/\/c\/new/)
+    await expect(page.getByTestId("new-conversation-screen")).toBeVisible()
+    await expect(page.getByRole("dialog")).toHaveCount(0)
+    // The dock steps aside so the picker (and keyboard) own the screen.
+    await expect(dock(page)).toHaveCount(0)
+
+    const picker = page.getByTestId("new-message-picker")
+    await expect(picker.getByRole("button", { name: `${seed.idleAgent}, agent` })).toBeVisible({ timeout: 30_000 })
+    // The local workspace has one member, so only the agents section is populated;
+    // people rows are covered by new-message-picker.rtl.test.tsx.
+    await expect(picker.getByRole("tab", { name: "People" })).toBeVisible()
+
+    // An agent opens its DM straight away.
+    await picker.getByRole("button", { name: `${seed.idleAgent}, agent` }).click()
+    await expect(page).toHaveURL(/\/c\/(?!new)[^/]+/, { timeout: 30_000 })
+    await expect(page.getByTestId("new-conversation-screen")).toHaveCount(0)
+  })
+
+  test("Message an agent from DMs opens the same screen on the agents list", async ({ page }) => {
+    await tab(page, "DMs").click()
+    await page.getByTestId("dms-screen").getByText("Message an agent", { exact: true }).click()
+    await expect(page).toHaveURL(/\/c\/new\?mode=agent/)
+    await expect(page.getByRole("tab", { name: "Agents" })).toHaveAttribute("aria-selected", "true")
+    await expect(page.getByTestId("new-message-picker").getByRole("button", { name: `${seed.idleAgent}, agent` })).toBeVisible({ timeout: 30_000 })
+  })
+
+  test("a project has a Message agent button that opens the agent's DM", async ({ page }) => {
+    await page.goto(`/projects/${seed.dmAgentProjectId}`)
+    const message = page.getByTestId("project-message-agent").or(page.getByRole("button", { name: "Message agent" })).first()
+    await expect(message).toBeVisible({ timeout: 60_000 })
+    await message.click()
+    await expect(page).toHaveURL(new RegExp(`/c/${seed.dmId}`), { timeout: 30_000 })
   })
 
   test("the floating + leads with agents", async ({ page }) => {

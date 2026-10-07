@@ -306,11 +306,12 @@ const STOP_TIMEOUT_MS = parseInt(process.env.METAL_STOP_TIMEOUT_MS || '90000', 1
  * Did this assign fail because we stopped waiting, rather than because the host
  * refused us?
  *
- * The distinction decides whether the project may be placed elsewhere. A
- * refusal (connection refused, 5xx, dead host) means this host does not have
- * the project and another one should take it. A timeout means we do not know —
- * and since the agent carries on booting regardless, assuming failure is how
- * duplicates get created.
+ * The distinction decides whether the project may be placed elsewhere. An HTTP
+ * refusal (5xx) means this host does not have the project and another one
+ * should take it. A timeout means we do not know — and since the agent carries
+ * on booting regardless, assuming failure is how duplicates get created. An
+ * unreachable agent (see MetalHostUnreachableError) is unknown too when the
+ * host is the project's owner: microVMs outlive an agent restart.
  *
  * `AbortSignal.timeout()` rejects with a DOMException named `TimeoutError`;
  * an aborted fetch surfaces as `AbortError`; undici/node socket timeouts use
@@ -333,6 +334,19 @@ export function isAssignTimeout(err: unknown): boolean {
     code === 'UND_ERR_CONNECT_TIMEOUT'
   )
 }
+
+/** The agent never answered /assign (connection refused/reset, DNS, TLS). */
+export class MetalHostUnreachableError extends Error {
+  constructor(
+    readonly hostId: string,
+    readonly cause: unknown,
+  ) {
+    super(`metal host ${hostId} unreachable: ${(cause as any)?.message ?? cause}`)
+    this.name = 'MetalHostUnreachableError'
+  }
+}
+
+const OWNER_PROBE_TIMEOUT_MS = parseInt(process.env.METAL_OWNER_PROBE_TIMEOUT_MS || '1500', 10)
 /** Hosts at/above this used% are de-prioritized for NEW cold placements (GC pressure). */
 const DISK_HIGH_PCT = parseInt(process.env.METAL_DISK_HIGH_PCT || '85', 10)
 /**
@@ -746,7 +760,17 @@ export class MetalWarmPoolController {
           span.setAttribute('resolve.lease', 'acquired')
         }
 
-        const cands = this.candidates(projectId, placedHostId, await this.liveHostsShared())
+        const live = await this.liveHostsShared()
+        let ownerHostId = placedHostId ?? this.projectHost.get(projectId)
+        if (live.length > 1 && !live.some((h) => h.hostId === ownerHostId)) {
+          const probed = await this.probeOwner(projectId, live)
+          if (probed) {
+            ownerHostId = probed
+            span.setAttribute('resolve.owner_probe', probed)
+          }
+        }
+
+        const cands = this.candidates(projectId, ownerHostId, live)
         if (cands.length === 0) {
           if (gotLease) void this.registry.releaseLease(projectId, this.holderId).catch(() => {})
           this.stats.noHost++
@@ -783,7 +807,7 @@ export class MetalWarmPoolController {
         // sticky host out of first place — it is the one holding the durable
         // snapshot/data drive, and losing stickiness for a class preference
         // is exactly how a project ends up split across two hosts.
-        const stickyHostId = placedHostId ?? this.projectHost.get(projectId)
+        const stickyHostId = ownerHostId
         const wantClass = env.SHOGO_RUNTIME_CLASS === 'docker' ? 'docker' : 'standard'
         const orderedCands =
           wantClass === 'standard'
@@ -879,10 +903,27 @@ export class MetalWarmPoolController {
               throw err
             }
 
+            // The owner's agent not answering is not the owner's VM being gone:
+            // microVMs keep running through an agent restart (every release
+            // restarts the fleet's agents). Failing over here boots a second
+            // copy next to the live one. Keep the placement and let the caller
+            // retry; a host that is really dead ages out of the live set and
+            // the next resolve places the project elsewhere.
+            if (err instanceof MetalHostUnreachableError && host.hostId === stickyHostId) {
+              this.urlCache.delete(projectId)
+              if (gotLease) void this.registry.releaseLease(projectId, this.holderId).catch(() => {})
+              console.warn(
+                `[MetalPool] owner host ${host.hostId} for ${projectId} unreachable — keeping placement instead of failing over`,
+              )
+              span.setAttribute('resolve.method', 'owner_unreachable')
+              span.setStatus({ code: SpanStatusCode.ERROR, message: 'owner host unreachable' })
+              throw err
+            }
+
             // Drop stickiness/placement/cache so we don't keep hammering a dead host.
             if (this.projectHost.get(projectId) === host.hostId) this.projectHost.delete(projectId)
             this.urlCache.delete(projectId)
-            void this.registry.clearPlacement(projectId).catch(() => {})
+            void this.registry.clearPlacement(projectId, host.hostId).catch(() => {})
             console.warn(`[MetalPool] assign on host ${host.hostId} failed for ${projectId}: ${(err as any)?.message ?? err}`)
           }
         }
@@ -900,6 +941,33 @@ export class MetalWarmPoolController {
         span.end()
       }
     })
+  }
+
+  /**
+   * Ask the hosts themselves which one holds a key — running first, then a
+   * local snapshot. Used when there's no live placement: one that expired, was
+   * cleared, or names a host that isn't live must not lead to a second VM for a
+   * key a host is still running.
+   */
+  private async probeOwner(projectId: string, hosts: HostEntry[]): Promise<string | undefined> {
+    const states = await Promise.all(
+      hosts.map(async (h) => {
+        try {
+          const res = await this.fetchImpl(`http://${h.meshIp}:${h.agentPort}/status`, {
+            method: 'POST',
+            headers: this.agentHeaders(),
+            body: JSON.stringify({ projectId }),
+            signal: AbortSignal.timeout(OWNER_PROBE_TIMEOUT_MS),
+          })
+          if (!res.ok) return undefined
+          return ((await res.json()) as { state?: string }).state
+        } catch {
+          return undefined
+        }
+      }),
+    )
+    const holding = (state: string) => hosts[states.indexOf(state)]?.hostId
+    return holding('assigned') ?? holding('suspended')
   }
 
   /**
@@ -1260,22 +1328,28 @@ export class MetalWarmPoolController {
     bind?: { workspaceId?: string; attachedProjectIds?: string[]; anchorProjectId?: string },
   ): Promise<AssignResult> {
     const base = `http://${host.meshIp}:${host.agentPort}`
-    const res = await this.fetchImpl(`${base}/assign`, {
-      method: 'POST',
-      headers: this.agentHeaders(),
-      body: JSON.stringify({
-        projectId,
-        env,
-        ...(bind?.workspaceId
-          ? {
-              workspaceId: bind.workspaceId,
-              attachedProjectIds: bind.attachedProjectIds ?? [],
-              anchorProjectId: bind.anchorProjectId,
-            }
-          : {}),
-      }),
-      signal: AbortSignal.timeout(ASSIGN_TIMEOUT_MS),
-    })
+    let res: Response
+    try {
+      res = await this.fetchImpl(`${base}/assign`, {
+        method: 'POST',
+        headers: this.agentHeaders(),
+        body: JSON.stringify({
+          projectId,
+          env,
+          ...(bind?.workspaceId
+            ? {
+                workspaceId: bind.workspaceId,
+                attachedProjectIds: bind.attachedProjectIds ?? [],
+                anchorProjectId: bind.anchorProjectId,
+              }
+            : {}),
+        }),
+        signal: AbortSignal.timeout(ASSIGN_TIMEOUT_MS),
+      })
+    } catch (err) {
+      if (isAssignTimeout(err)) throw err
+      throw new MetalHostUnreachableError(host.hostId, err)
+    }
     if (!res.ok) {
       throw new Error(`metal /assign ${res.status}: ${await res.text().catch(() => '')}`)
     }

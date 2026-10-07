@@ -177,9 +177,18 @@ export function metalRoutes(): Hono {
     }
     const registry = getMetalPlacementRegistry()
     if (body.event === 'suspended' && body.hostId) {
-      await registry.setPlacement(String(body.projectId), String(body.hostId), 'local').catch(() => {})
+      const kept = await registry
+        .setPlacementUnlessOtherHost(String(body.projectId), String(body.hostId), 'local')
+        .catch(() => true)
+      if (!kept) {
+        console.warn(
+          `[metal/placement] ${body.hostId} suspended ${body.projectId}, which is placed on another host — leaving placement`,
+        )
+      }
     } else if (body.event === 'evicted' || body.event === 'cold') {
-      await registry.clearPlacement(String(body.projectId)).catch(() => {})
+      await registry
+        .clearPlacement(String(body.projectId), body.hostId ? String(body.hostId) : undefined)
+        .catch(() => {})
     }
     return c.json({ ok: true })
   })

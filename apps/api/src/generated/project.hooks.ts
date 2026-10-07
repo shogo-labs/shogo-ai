@@ -15,6 +15,9 @@ import { getRuntimeManager } from '../lib/runtime/manager'
 import { normalizeProjectSettings, parseProjectSettings } from '../lib/project-settings'
 import { deleteChatAttachmentPrefix } from '../lib/chat-attachments'
 
+/** projectId -> workspaceId, recorded in beforeDelete for use in afterDelete. */
+const deletingProjectWorkspaces = new Map<string, string>()
+
 /**
  * Result from a hook that can modify or reject the operation
  */
@@ -474,6 +477,13 @@ export const projectHooks: ProjectHooks = {
    * Super admins can delete any project.
    */
   beforeDelete: async (id, ctx) => {
+    // Remember the workspace so afterDelete can tell team chat the agent is gone.
+    try {
+      const row = await ctx.prisma.project.findUnique({ where: { id }, select: { workspaceId: true } })
+      if (row?.workspaceId) deletingProjectWorkspaces.set(id, row.workspaceId)
+    } catch {
+      // Best-effort; afterDelete falls back to the conversations the agent was in.
+    }
     const userId = ctx.userId
     if (!userId) {
       return {
@@ -540,6 +550,15 @@ export const projectHooks: ProjectHooks = {
    * don't pay for the dependency.
    */
   afterDelete: async (id) => {
+    // Drop the project's agent from team chat (DMs archived, channel memberships removed).
+    const workspaceId = deletingProjectWorkspaces.get(id) ?? null
+    deletingProjectWorkspaces.delete(id)
+    try {
+      const { removeProjectAgent } = await import('../services/conversation.service')
+      await removeProjectAgent(id, workspaceId)
+    } catch (err: any) {
+      console.warn(`[project.afterDelete] team chat cleanup for ${id} failed:`, err?.message ?? err)
+    }
     try {
       await getRuntimeManager().stop(id).catch(() => {})
     } catch {

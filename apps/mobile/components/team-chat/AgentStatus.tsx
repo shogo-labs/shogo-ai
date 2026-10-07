@@ -11,6 +11,9 @@ import { cn } from '@shogo/shared-ui/primitives'
 import { MarkdownText } from '../chat/MarkdownText'
 import type { ChatMessage } from '../../lib/team-chat-api'
 import { cardProgress, stepStates, type ApprovalCard, type CardStatus, type StatusCard } from '../../lib/team-chat-kinds'
+import { answerApproval } from '../../lib/approval-decision'
+import { DrawnCheckmark } from '../ui/DrawnCheckmark'
+import { GlassCard } from '../ui/GlassCard'
 import { AgentAvatar } from './AgentAvatar'
 
 const STATUS_LABEL: Record<CardStatus, string> = { working: 'In progress', blocked: 'Blocked', done: 'Done', failed: 'Failed' }
@@ -102,72 +105,97 @@ const APPROVAL_STATUS: Record<Exclude<ApprovalCard['status'], 'pending'>, { labe
   expired: { label: 'Not run: no answer in time', text: 'text-muted-foreground' },
 }
 
-function errorText(err: any): string {
-  return err?.response?.data?.error?.message ?? err?.message ?? 'Could not send that answer'
-}
+const AMBER = '#f59e0b'
 
-/** An agent asking permission: Approve or Deny while open, who decided once it is closed. */
+/**
+ * An agent asking permission, in glass with an amber edge: the command in
+ * monospace, then Approve or Deny. Once answered, a ring and tick draw
+ * themselves; once closed, it says who decided. Approving asks for Face ID or
+ * a fingerprint first when that is switched on in Settings.
+ */
 export function ApprovalCardView({
   approval,
   canDecide = true,
   onDecide,
+  messageId,
 }: {
   approval: ApprovalCard
   canDecide?: boolean
   onDecide: (decision: 'approve' | 'deny') => Promise<unknown>
+  /** The card's message, so other lists (Home) drop it as soon as it is answered. */
+  messageId?: string
 }) {
   const [busy, setBusy] = useState<'approve' | 'deny' | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [sent, setSent] = useState<'approve' | 'deny' | null>(null)
   const decide = async (decision: 'approve' | 'deny') => {
     if (busy) return
     setBusy(decision)
     setError(null)
-    try {
-      await onDecide(decision)
-    } catch (err) {
-      setError(errorText(err))
-    } finally {
-      setBusy(null)
-    }
+    const outcome = await answerApproval(messageId ?? approval.requestId, decision, {
+      biometricReason: `Approve: ${approval.summary}`,
+      send: (_id, answer) => onDecide(answer),
+    })
+    if (outcome.ok) setSent(decision)
+    else if (outcome.reason === 'failed') setError(outcome.message)
+    setBusy(null)
   }
   const pending = approval.status === 'pending'
   const settled = approval.status === 'pending' ? null : APPROVAL_STATUS[approval.status]
   return (
-    <View className={cn('mt-1 max-w-[520px] gap-2 rounded-lg border bg-card p-3', pending ? 'border-amber-500/50' : 'border-border')} testID="approval-card">
-      <Text className="text-sm font-semibold text-foreground">{approval.summary}</Text>
-      {approval.reason ? <Text className="text-xs text-muted-foreground">{approval.reason}</Text> : null}
-      {pending ? (
-        canDecide ? (
-          <View className="flex-row gap-2">
-            <Pressable
-              onPress={() => void decide('approve')}
-              disabled={!!busy}
-              accessibilityRole="button"
-              accessibilityLabel="Approve"
-              className={cn('rounded-md bg-primary px-3 py-1.5', busy && 'opacity-60')}
-            >
-              <Text className="text-xs font-medium text-primary-foreground">{busy === 'approve' ? 'Approving…' : 'Approve'}</Text>
-            </Pressable>
-            <Pressable
-              onPress={() => void decide('deny')}
-              disabled={!!busy}
-              accessibilityRole="button"
-              accessibilityLabel="Deny"
-              className={cn('rounded-md border border-border px-3 py-1.5 active:bg-muted', busy && 'opacity-60')}
-            >
-              <Text className="text-xs font-medium text-foreground">{busy === 'deny' ? 'Denying…' : 'Deny'}</Text>
-            </Pressable>
-          </View>
-        ) : (
-          <Text className="text-xs text-muted-foreground">Waiting for someone to decide</Text>
-        )
-      ) : (
-        <Text className={cn('text-xs font-medium', settled!.text)} testID="approval-outcome">
-          {approval.decidedBy ? `${settled!.label} by ${approval.decidedBy.name}` : settled!.label}
+    <GlassCard
+      style={{ marginTop: 4, maxWidth: 520 }}
+      radius={16}
+      accent={pending ? `${AMBER}80` : undefined}
+      tint={pending ? `${AMBER}1a` : undefined}
+      testID="approval-card"
+    >
+      <View className="gap-2 p-3">
+        {pending ? <Text className="text-xs font-semibold text-amber-600 dark:text-amber-400">Waiting for your OK</Text> : null}
+        <Text className="rounded-lg bg-black/5 px-2.5 py-2 font-mono text-[13px] text-foreground dark:bg-white/10" selectable>
+          {approval.summary}
         </Text>
-      )}
-      {error ? <Text className="text-xs text-destructive" testID="approval-error">{error}</Text> : null}
-    </View>
+        {approval.reason ? <Text className="text-xs text-muted-foreground">{approval.reason}</Text> : null}
+        {pending ? (
+          sent ? (
+            <View className="flex-row items-center gap-2" testID="approval-sent">
+              <DrawnCheckmark size={28} tone={sent === 'approve' ? 'success' : 'danger'} />
+              <Text className={cn('text-sm font-medium', sent === 'approve' ? 'text-emerald-700 dark:text-emerald-400' : 'text-destructive')}>
+                {sent === 'approve' ? 'Approved, sent to the agent' : 'Denied, sent to the agent'}
+              </Text>
+            </View>
+          ) : canDecide ? (
+            <View className="flex-row gap-2">
+              <Pressable
+                onPress={() => void decide('approve')}
+                disabled={!!busy}
+                accessibilityRole="button"
+                accessibilityLabel="Approve"
+                className={cn('rounded-lg bg-primary px-3.5 py-2', busy && 'opacity-60')}
+              >
+                <Text className="text-sm font-medium text-primary-foreground">{busy === 'approve' ? 'Approving…' : 'Approve'}</Text>
+              </Pressable>
+              <Pressable
+                onPress={() => void decide('deny')}
+                disabled={!!busy}
+                accessibilityRole="button"
+                accessibilityLabel="Deny"
+                className={cn('rounded-lg border border-border px-3.5 py-2 active:bg-muted', busy && 'opacity-60')}
+              >
+                <Text className="text-sm font-medium text-foreground">{busy === 'deny' ? 'Denying…' : 'Deny'}</Text>
+              </Pressable>
+            </View>
+          ) : (
+            <Text className="text-xs text-muted-foreground">Waiting for someone to decide</Text>
+          )
+        ) : (
+          <Text className={cn('text-xs font-medium', settled!.text)} testID="approval-outcome">
+            {approval.decidedBy ? `${settled!.label} by ${approval.decidedBy.name}` : settled!.label}
+          </Text>
+        )}
+        {error ? <Text className="text-xs text-destructive" testID="approval-error">{error}</Text> : null}
+      </View>
+    </GlassCard>
   )
 }
 

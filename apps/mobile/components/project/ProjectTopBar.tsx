@@ -31,6 +31,7 @@ import {
   ExternalLink,
   History,
   MessageSquare,
+  MessagesSquare,
   MoreHorizontal,
   PanelLeft,
   PanelLeftClose,
@@ -128,6 +129,7 @@ export function ProjectTopBar({
   onCreateNewSession,
   onOpenChatSessions,
   chatSessionsOpen = false,
+  onMessageAgent,
   chatPanelWidth: chatPanelWidthProp,
   chatFullscreenSidebarWidth,
   onSearchChats,
@@ -370,6 +372,7 @@ export function ProjectTopBar({
           handleTabPress={handleTabPress}
           onOpenChatSessions={onOpenChatSessions}
           chatSessionsOpen={chatSessionsOpen}
+          onMessageAgent={onMessageAgent}
           overlayState={overlayState}
         />
       )
@@ -507,6 +510,15 @@ export function ProjectTopBar({
         {remoteHostIndicator}
 
         {showIdeAlignmentControl && renderIdeAlignmentControl()}
+
+        {onMessageAgent && (
+          <BarIconButton
+            icon={MessagesSquare}
+            onPress={onMessageAgent}
+            title="Message agent"
+            testID="project-message-agent"
+          />
+        )}
 
         {onOpenChatSessions && narrowActiveTab === 'chat' && (
           <BarIconButton

@@ -57,6 +57,14 @@ export interface ChatMessage {
  * - isPolling: Whether data is being refreshed via polling (task-3-1-008)
  * - error: Current error state (null if none)
  */
+export interface OpenProjectPaneRequest {
+  projectId: string
+  name?: string
+  /** Resume this project chat in the pane's Chat tab. */
+  chatSessionId?: string
+  tab?: "canvas" | "files" | "plans" | "chat"
+}
+
 export interface ChatContextValue {
   /** The currently active chat session, or null if none exists */
   currentSession: ChatSession | null
@@ -106,6 +114,15 @@ export interface ChatContextValue {
 
   /** Open a file the assistant mentioned. `path` may be project-relative or `<projectId>/...`. */
   openFile?: (path: string) => void
+
+  /** The workspace this chat belongs to, when known (agent avatars use it). */
+  workspaceId?: string | null
+
+  /**
+   * Show another project (and optionally one of its chats) beside this chat.
+   * Absent when the host surface has no side pane; callers then navigate.
+   */
+  openProjectPane?: (request: OpenProjectPaneRequest) => void
 
   /** Chat's current model — the plan Build picker starts here. */
   selectedModel?: string

@@ -17,6 +17,8 @@ import {
   BaseHeartbeatScheduler,
   type DueAgent,
 } from './base-heartbeat-scheduler'
+import type { Prisma } from './prisma'
+import type { WorkspaceHomeWhere } from './region'
 
 const tracer = trace.getTracer('shogo-heartbeat-scheduler')
 const meter = metrics.getMeter('shogo-heartbeat-scheduler')
@@ -34,6 +36,25 @@ const heartbeatsSkippedCounter = meter.createCounter('heartbeat_scheduler.skippe
 const POLL_INTERVAL_MS = parseInt(process.env.HEARTBEAT_POLL_INTERVAL_MS || '30000', 10)
 const BATCH_SIZE = parseInt(process.env.HEARTBEAT_BATCH_SIZE || '10', 10)
 const TRIGGER_TIMEOUT_MS = parseInt(process.env.HEARTBEAT_TRIGGER_TIMEOUT_MS || '15000', 10)
+
+/**
+ * Restrict due agents to workspaces homed in this region (the
+ * `homeRegionWorkspaceWhere()` ownership rule, alias `w`). Every region runs
+ * this scheduler against its own replica of `agent_configs`; without the
+ * partition each region claims and triggers every heartbeat, booting a second
+ * runtime outside the home region and double-writing `nextHeartbeatAt`.
+ */
+export function heartbeatHomeRegionFilter(
+  P: { sql: typeof Prisma.sql; empty: typeof Prisma.empty },
+  home: WorkspaceHomeWhere | null,
+): Prisma.Sql {
+  if (!home) return P.empty
+  if ('OR' in home) {
+    const region = home.OR.find((c) => c.homeRegion !== null)?.homeRegion ?? null
+    return P.sql`AND (w."homeRegion" = ${region} OR w."homeRegion" IS NULL)`
+  }
+  return P.sql`AND w."homeRegion" = ${home.homeRegion}`
+}
 
 // ─── Scheduler ───────────────────────────────────────────────────────────────
 
@@ -73,17 +94,21 @@ export class HeartbeatScheduler extends BaseHeartbeatScheduler {
   }
 
   protected async fetchDueAgents(): Promise<DueAgent[]> {
-    const { prisma } = await import('./prisma')
+    const { prisma, Prisma } = await import('./prisma')
+    const { homeRegionWorkspaceWhere } = await import('./region')
+    const homeFilter = heartbeatHomeRegionFilter(Prisma, homeRegionWorkspaceWhere())
 
     return prisma.$queryRaw<DueAgent[]>`
       SELECT ac."id", ac."projectId", ac."heartbeatInterval",
              ac."quietHoursStart", ac."quietHoursEnd", ac."quietHoursTimezone"
       FROM "agent_configs" ac
       JOIN "projects" p ON p."id" = ac."projectId"
+      JOIN "workspaces" w ON w."id" = p."workspaceId"
       JOIN "subscriptions" s ON s."workspaceId" = p."workspaceId"
         AND s."status" IN ('active', 'trialing')
       WHERE ac."heartbeatEnabled" = true
         AND ac."nextHeartbeatAt" <= NOW()
+        ${homeFilter}
       ORDER BY ac."nextHeartbeatAt" ASC
       FOR UPDATE OF ac SKIP LOCKED
       LIMIT ${BATCH_SIZE}

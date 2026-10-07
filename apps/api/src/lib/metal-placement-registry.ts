@@ -133,6 +133,23 @@ const WS_NOTICE_TTL_S = 300
 // renew or release it (a stale holder must not free a re-acquired lease).
 const RELEASE_LUA = `if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end`
 const RENEW_LUA = `if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('pexpire', KEYS[1], ARGV[2]) else return 0 end`
+// Drop a placement only while it still names the given host, so one host's
+// evict/cold report can't erase the placement of a sibling that owns the key.
+const CLEAR_PLACEMENT_IF_HOST_LUA = `local v = redis.call('get', KEYS[1])
+if not v then return 0 end
+local ok, p = pcall(cjson.decode, v)
+if ok and type(p) == 'table' and p.hostId == ARGV[1] then return redis.call('del', KEYS[1]) end
+return 0`
+// Write a placement unless it names a different host. A host suspending a key
+// that a sibling owns is running a duplicate; repointing routing at it splits
+// the project across both.
+const SET_PLACEMENT_UNLESS_OTHER_HOST_LUA = `local v = redis.call('get', KEYS[1])
+if v then
+  local ok, p = pcall(cjson.decode, v)
+  if ok and type(p) == 'table' and p.hostId ~= nil and p.hostId ~= ARGV[1] then return 0 end
+end
+redis.call('set', KEYS[1], ARGV[2], 'EX', tonumber(ARGV[3]))
+return 1`
 
 /** Registry backed by shared Redis, with an in-process fallback. */
 export class MetalPlacementRegistry {
@@ -240,6 +257,35 @@ export class MetalPlacementRegistry {
 
   // --- placement -----------------------------------------------------------
 
+  /**
+   * Record a host-reported placement unless the key is placed on another host.
+   * Returns false when it was left alone.
+   */
+  async setPlacementUnlessOtherHost(projectId: string, hostId: string, tier: PlacementTier): Promise<boolean> {
+    const p: Placement = { hostId, tier, lastAccessAt: Date.now() }
+    const setMem = () => {
+      const cur = this.memPlace.get(projectId)
+      if (cur && cur.hostId !== hostId) return false
+      this.memPlace.set(projectId, p)
+      return true
+    }
+    const r = this.redis()
+    if (!r) return setMem()
+    try {
+      const res = await r.eval(
+        SET_PLACEMENT_UNLESS_OTHER_HOST_LUA,
+        1,
+        `${PLACE_KEY}${projectId}`,
+        hostId,
+        JSON.stringify(p),
+        String(PLACEMENT_TTL_S),
+      )
+      return res === 1
+    } catch {
+      return setMem()
+    }
+  }
+
   async setPlacement(projectId: string, hostId: string, tier: PlacementTier): Promise<void> {
     const p: Placement = { hostId, tier, lastAccessAt: Date.now() }
     const r = this.redis()
@@ -265,16 +311,23 @@ export class MetalPlacementRegistry {
     }
   }
 
-  async clearPlacement(projectId: string): Promise<void> {
-    const r = this.redis()
-    if (!r) {
+  /**
+   * Remove a project's placement. With `onlyIfHostId`, it's removed only while
+   * it still points at that host — use it whenever the caller speaks for one
+   * host (an agent's evict report, a failed assign on that host).
+   */
+  async clearPlacement(projectId: string, onlyIfHostId?: string): Promise<void> {
+    const clearMem = () => {
+      if (onlyIfHostId && this.memPlace.get(projectId)?.hostId !== onlyIfHostId) return
       this.memPlace.delete(projectId)
-      return
     }
+    const r = this.redis()
+    if (!r) return clearMem()
     try {
-      await r.del(`${PLACE_KEY}${projectId}`)
+      if (onlyIfHostId) await r.eval(CLEAR_PLACEMENT_IF_HOST_LUA, 1, `${PLACE_KEY}${projectId}`, onlyIfHostId)
+      else await r.del(`${PLACE_KEY}${projectId}`)
     } catch {
-      this.memPlace.delete(projectId)
+      clearMem()
     }
   }
 

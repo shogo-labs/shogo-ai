@@ -7,7 +7,7 @@
  * stable primary workspace session.
  */
 import { useCallback, useEffect, useRef, useState } from "react"
-import { ActivityIndicator, Pressable, Text, View } from "react-native"
+import { ActivityIndicator, Pressable, Text, View, useWindowDimensions } from "react-native"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
 import { useRouter } from "expo-router"
 import { observer } from "mobx-react-lite"
@@ -30,6 +30,8 @@ import { useWorkspaceExperience } from "../../hooks/useWorkspaceExperience"
 import { clearChatPrefill, useChatPrefill } from "../../hooks/useChatPrefill"
 import { api, type PersonalAgentProfile } from "../../lib/api"
 import { ChatPanel } from "../chat/ChatPanel"
+import type { OpenProjectPaneRequest } from "../chat/ChatContext"
+import { ProjectSidePane } from "../team-chat/ProjectSidePane"
 import type { RestoreDraftRequest } from "../chat/ChatInput"
 import { NativePhoneSheet } from "../phone/NativePhoneSheet"
 import { PersonalAgentHeader } from "../personal/PersonalAgentHeader"
@@ -45,6 +47,14 @@ import {
   subscribeWorkspaceSessionScopeChanged,
 } from "./workspace-agent-session-bus"
 
+/** Wide enough to show a project beside the chat (same as team chat's side pane). */
+const PROJECT_SIDE_PANE_MIN_WIDTH = 1024
+
+interface ProjectPaneState extends OpenProjectPaneRequest {
+  /** Changes on every open so a new request re-targets the pane. */
+  nonce: number
+}
+
 export const WorkspaceAgentChatScreen = observer(
   function WorkspaceAgentChatScreen() {
     const router = useRouter()
@@ -55,6 +65,8 @@ export const WorkspaceAgentChatScreen = observer(
     const experience = useWorkspaceExperience()
     const usesMobileWorkspaceChrome = useMobileWorkspaceChrome()
     const insets = useSafeAreaInsets()
+    const { width } = useWindowDimensions()
+    const [projectPane, setProjectPane] = useState<ProjectPaneState | null>(null)
     const [profile, setProfile] = useState<PersonalAgentProfile | null>(null)
     const [sessionId, setSessionId] = useState<string | null>(null)
     const [prefillRequest, setPrefillRequest] =
@@ -95,6 +107,7 @@ export const WorkspaceAgentChatScreen = observer(
     const loadWorkspaceChat = useCallback(async () => {
       avatarStreaming.current = false
       setAvatarState("idle")
+      setProjectPane(null)
       if (avatarFinishedTimer.current) {
         clearTimeout(avatarFinishedTimer.current)
         avatarFinishedTimer.current = null
@@ -138,6 +151,12 @@ export const WorkspaceAgentChatScreen = observer(
     useEffect(() => {
       void loadWorkspaceChat()
     }, [loadWorkspaceChat])
+
+    const hasSidePane = width >= PROJECT_SIDE_PANE_MIN_WIDTH && !usesMobileWorkspaceChrome
+    const openProjectPane = useCallback((request: OpenProjectPaneRequest) => {
+      setProjectPane({ ...request, nonce: Date.now() })
+    }, [])
+    const closeProjectPane = useCallback(() => setProjectPane(null), [])
 
     useEffect(() => {
       if (!workspace?.id || !sessionId) {
@@ -391,8 +410,11 @@ export const WorkspaceAgentChatScreen = observer(
       }
     }
 
+    const activePane = hasSidePane ? projectPane : null
+
     return (
-      <View className="flex-1 bg-background">
+      <View className="flex-1 flex-row bg-background">
+      <View className="min-w-0 flex-1 bg-background">
         {usesMobileWorkspaceChrome ? (
           <PersonalAgentMobileHeader
             profile={profile}
@@ -507,6 +529,7 @@ export const WorkspaceAgentChatScreen = observer(
             onStreamingChange={handleStreamingChange}
             composer={experience.composer}
             presentation="agent"
+            onOpenProjectPane={hasSidePane ? openProjectPane : undefined}
             prefillRequest={prefillRequest}
             onPrefillConsumed={handlePrefillConsumed}
             className="flex-1"
@@ -638,6 +661,20 @@ export const WorkspaceAgentChatScreen = observer(
           </View>
         </NativePhoneSheet>
         <BuddyLookSheet visible={buddyLookSheetOpen} onClose={() => setBuddyLookSheetOpen(false)} />
+      </View>
+      {activePane ? (
+        <View className="w-[45%] min-w-[420px] border-l border-border" testID="workspace-project-pane">
+          <ProjectSidePane
+            key={`${activePane.projectId}:${activePane.chatSessionId ?? ""}:${activePane.nonce}`}
+            projectId={activePane.projectId}
+            workspaceId={workspace.id}
+            name={activePane.name ?? projectName(activePane.projectId)}
+            initialTab={activePane.tab ?? (activePane.chatSessionId ? "chat" : "canvas")}
+            chatSessionId={activePane.chatSessionId}
+            onClose={closeProjectPane}
+          />
+        </View>
+      ) : null}
       </View>
     )
   },

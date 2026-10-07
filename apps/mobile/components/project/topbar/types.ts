@@ -103,6 +103,11 @@ export interface ProjectTopBarProps {
   onOpenChatSessions?: () => void;
   /** Narrow (mobile) only: whether the in-place picker is currently shown. */
   chatSessionsOpen?: boolean;
+  /**
+   * Open the team-chat DM with this project's agent. Only set when team chat is
+   * enabled for the workspace.
+   */
+  onMessageAgent?: () => void;
   chatPanelWidth?: number;
   chatFullscreenSidebarWidth?: number;
   /** Search chats — shown in the top bar left zone when in fullscreen chat mode. */

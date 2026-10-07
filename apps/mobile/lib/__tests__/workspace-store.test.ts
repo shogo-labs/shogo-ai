@@ -185,3 +185,20 @@ describe('subscribeActiveWorkspaceId', () => {
     unsub()
   })
 })
+
+describe('switches made in another window', () => {
+  test('notify subscribers when the active workspace changes elsewhere', () => {
+    let pings = 0
+    const unsub = subscribeActiveWorkspaceId(() => {
+      pings++
+    })
+    localStorage.setItem('shogo:active-workspace-id', 'ws-2')
+    window.dispatchEvent(new StorageEvent('storage', { key: 'shogo:active-workspace-id', newValue: 'ws-2' }))
+    window.dispatchEvent(new StorageEvent('storage', { key: 'unrelated', newValue: 'x' }))
+    expect(pings).toBe(1)
+    expect(getActiveWorkspaceId()).toBe('ws-2')
+    unsub()
+    window.dispatchEvent(new StorageEvent('storage', { key: 'shogo:active-workspace-id', newValue: 'ws-3' }))
+    expect(pings).toBe(1)
+  })
+})

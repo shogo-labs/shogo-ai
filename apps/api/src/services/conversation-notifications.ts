@@ -20,6 +20,8 @@ import { getPresence } from './conversation-presence'
 import { getSettingsRows, isSilenced, parseKeywords } from './chat-settings'
 import { createInboxItems } from './chat-inbox'
 import { interrupts } from './conversation-message-kind'
+import { approvalPushFor } from './approval-push'
+import { liveActivityApprovalOpened } from './approval-live-activity'
 
 const db = prisma as any
 
@@ -180,6 +182,7 @@ export async function notifyForMessage(result: PostMessageResult): Promise<Notif
   const { row, conversation } = result
   const { title, body } = await describe(result)
   const presence = await getPresence(conversation.workspaceId, recipients.map((r) => r.userId))
+  const approval = approvalPushFor(row)
   const data = {
     conversationId: conversation.id,
     messageId: row.id,
@@ -208,6 +211,21 @@ export async function notifyForMessage(result: PostMessageResult): Promise<Notif
         { type: 'notification', ...data, reason, title, body },
         [userId],
       )
+      continue
+    }
+    // An approval waits on a person, so it is never folded into the last push
+    // for the channel, and its notification carries Approve and Deny buttons.
+    if (approval) {
+      void sendPush(userId, {
+        title: approval.title,
+        body: approval.body,
+        type: 'agent-approval',
+        channelId: 'messages',
+        audience: 'chat',
+        categoryId: approval.categoryId,
+        data: { ...data, reason, ...approval.data },
+      })
+      void liveActivityApprovalOpened(userId, approval)
       continue
     }
     const key = `${userId}:${conversation.id}`
