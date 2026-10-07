@@ -100,6 +100,7 @@ function burstUserDataFor(hostId: string, region: string): string {
     s3Prefix: process.env.METAL_FLEET_S3_PREFIX || 'metal-snapshots/',
     s3AccessKeyId: required.s3AccessKeyId,
     s3SecretAccessKey: required.s3SecretAccessKey,
+    publishDataBucket: process.env.PUBLISH_DATA_BUCKET || process.env.S3_PUBLISHED_DATA_BUCKET || '',
     ocirDockerConfigB64: required.ocirDockerConfigB64,
     runtimeImage: required.runtimeImage,
     bundleUrl: required.bundleUrl,

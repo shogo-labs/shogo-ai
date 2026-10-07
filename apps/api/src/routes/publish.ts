@@ -857,6 +857,18 @@ async function pushPublishedData(
     }
   }
 
+  // A running metal published VM is a writer too, and its periodic export
+  // would replace the push. Its next visit cold-boots from the pushed archive.
+  const { isMetalEnabled } = await import("../lib/metal-eligibility")
+  if (isMetalEnabled()) {
+    try {
+      const { MetalSubstrate } = await import("../lib/substrate/metal-substrate")
+      await new MetalSubstrate().discardPublishedRuntime(projectId, subdomain)
+    } catch (err: any) {
+      return { ok: false, status: 502, code: "published_stop_failed", message: `Could not stop the live app before pushing: ${err?.message ?? err}` }
+    }
+  }
+
   // 4. Back up the current live archive (reversible replace).
   let backupKey: string | null = null
   try {

@@ -101,6 +101,13 @@ export interface BurstUserDataOpts {
   s3Prefix: string
   s3AccessKeyId: string
   s3SecretAccessKey: string
+  /**
+   * Bucket holding each server-backed published site's `{subdomain}/data.tar.gz`,
+   * read and written with the snapshot store's endpoint and credentials. Must be
+   * the bucket the region's API publishes to. Absent = published VMs boot from
+   * the source's database and never export.
+   */
+  publishDataBucket?: string
 
   /** Base64 docker config.json with the OCIR pull secret (from the cluster). */
   ocirDockerConfigB64: string
@@ -164,6 +171,7 @@ export function buildBurstUserData(o: BurstUserDataOpts): string {
     envLine('S3_REGION', o.s3Region),
     envLine('AWS_ACCESS_KEY_ID', o.s3AccessKeyId),
     envLine('AWS_SECRET_ACCESS_KEY', o.s3SecretAccessKey),
+    ...(o.publishDataBucket ? [envLine('PUBLISH_DATA_BUCKET', o.publishDataBucket)] : []),
     envLine('METAL_ROOTFS_COW', cow),
     envLine('METAL_DM_COW_DIR', `${work}/cow`),
     envLine('METAL_DM_COW_SIZE', '2G'),

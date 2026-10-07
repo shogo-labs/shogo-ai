@@ -20,6 +20,7 @@ import { mkdtempSync, mkdirSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { config } from './config'
+import { LiveRegistry } from './live-registry'
 import { MetalWarmPool, type AssignedVm } from './pool'
 import type { FirecrackerVMManager } from './firecracker-vm-manager'
 import type { SnapshotStore } from './snapshot-store'
@@ -104,6 +105,7 @@ describe('pool published-data durability (host-side export)', () => {
       assignedAt: 0,
       lastTouchedAt: 0,
       publishedSubdomain: 'my-site',
+      publishedDataLoaded: true,
       runtimeToken: 'tok',
     } as AssignedVm)
     expect(ok).toBe(true)
@@ -129,11 +131,109 @@ describe('pool published-data durability (host-side export)', () => {
     const pool = makePool(dir)
     globalThis.fetch = mock(async () => new Response(JSON.stringify({ archive: b64([1]) }), { status: 200 })) as any
     pool.addAssigned({ projectId: 'dev', runtimeToken: 't' }) // not published
-    pool.addAssigned({ projectId: 'published:p1', publishedSubdomain: 'site-a', runtimeToken: 't' })
-    pool.addAssigned({ projectId: 'published:p2', publishedSubdomain: 'site-b', runtimeToken: 't' })
+    pool.addAssigned({ projectId: 'published:p1', publishedSubdomain: 'site-a', publishedDataLoaded: true, runtimeToken: 't' })
+    pool.addAssigned({ projectId: 'published:p2', publishedSubdomain: 'site-b', publishedDataLoaded: true, runtimeToken: 't' })
+    // Booted without loading the live archive: must never overwrite it.
+    pool.addAssigned({ projectId: 'published:p3', publishedSubdomain: 'site-c', runtimeToken: 't' })
 
     const n = await pool.exportAllPublishedData()
     expect(n).toBe(2)
     expect(pool.uploads.map((u) => u.subdomain).sort()).toEqual(['site-a', 'site-b'])
+  })
+
+  test('exportPublishedData refuses a VM that never loaded the live archive', async () => {
+    const pool = makePool(dir)
+    globalThis.fetch = mock(async () => new Response(JSON.stringify({ archive: b64([1]) }), { status: 200 })) as any
+    const ok = await pool.exportPublishedData({
+      projectId: 'published:p1',
+      handle: HANDLE,
+      assignedAt: 0,
+      lastTouchedAt: 0,
+      publishedSubdomain: 'my-site',
+      runtimeToken: 'tok',
+    } as AssignedVm)
+    expect(ok).toBe(false)
+    expect(pool.uploads).toHaveLength(0)
+  })
+})
+
+describe('pool published-data hydrate gates exports', () => {
+  let dir: string
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'metal-pubdata-hydrate-'))
+  })
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  class HydratePool extends TestPool {
+    enabled = true
+    ref: { url: string; bytes: number } | null = null
+    applied: string[] = []
+    applyError: Error | null = null
+    constructor(...args: ConstructorParameters<typeof TestPool>) {
+      super(...args)
+      ;(this as any).applyArchive = async (_h: unknown, _env: unknown, ref: { url: string }) => {
+        if (this.applyError) throw this.applyError
+        this.applied.push(ref.url)
+      }
+    }
+    protected override publishedDataEnabled(): boolean {
+      return this.enabled
+    }
+    protected override publishedDataRef(): Promise<any> {
+      return Promise.resolve(this.ref)
+    }
+    hydrate(a: AssignedVm) {
+      return (this as any).hydratePublishedData(a, a.publishedSubdomain, a.handle, {}) as Promise<void>
+    }
+  }
+
+  function makeHydratePool(): HydratePool {
+    const cfg = { ...config, work: dir, snapDir: join(dir, 'snap'), runDir: join(dir, 'run') } as typeof config
+    mkdirSync(cfg.snapDir, { recursive: true })
+    mkdirSync(cfg.runDir, { recursive: true })
+    const fakeMgr = { procCount: () => 0 } as unknown as FirecrackerVMManager
+    return new HydratePool(fakeMgr, cfg, { kind: 'none' } as unknown as SnapshotStore)
+  }
+
+  const vm = (): AssignedVm =>
+    ({ projectId: 'published:p1', handle: HANDLE, assignedAt: 0, lastTouchedAt: 0, publishedSubdomain: 'my-site' }) as AssignedVm
+
+  test('an applied archive enables exports and is recorded in the live registry', async () => {
+    const pool = makeHydratePool()
+    pool.ref = { url: 'https://bucket/my-site/data.tar.gz', bytes: 4096 }
+    const a = vm()
+    await pool.hydrate(a)
+    expect(pool.applied).toEqual(['https://bucket/my-site/data.tar.gz'])
+    expect(a.publishedDataLoaded).toBe(true)
+    expect(new LiveRegistry(join(dir, 'run')).get('published:p1')?.publishedDataLoaded).toBe(true)
+  })
+
+  test('a confirmed-absent archive (first publish) enables exports', async () => {
+    const pool = makeHydratePool()
+    const a = vm()
+    await pool.hydrate(a)
+    expect(pool.applied).toEqual([])
+    expect(a.publishedDataLoaded).toBe(true)
+  })
+
+  test('an unconfigured bucket never enables exports', async () => {
+    const pool = makeHydratePool()
+    pool.enabled = false
+    pool.ref = { url: 'https://bucket/my-site/data.tar.gz', bytes: 4096 }
+    const a = vm()
+    await pool.hydrate(a)
+    expect(pool.applied).toEqual([])
+    expect(a.publishedDataLoaded).toBeUndefined()
+  })
+
+  test('a failed apply never enables exports', async () => {
+    const pool = makeHydratePool()
+    pool.ref = { url: 'https://bucket/my-site/data.tar.gz', bytes: 4096 }
+    pool.applyError = new Error('hydrate timed out')
+    const a = vm()
+    await expect(pool.hydrate(a)).rejects.toThrow('hydrate timed out')
+    expect(a.publishedDataLoaded).toBeUndefined()
   })
 })

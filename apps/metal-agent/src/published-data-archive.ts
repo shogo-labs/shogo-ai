@@ -48,6 +48,11 @@ function publishedDataS3(cfg: MetalConfig): { client: import('bun').S3Client } |
   return { client }
 }
 
+/** Whether the published-data bucket and its credentials are configured. */
+export function publishedDataConfigured(cfg: MetalConfig): boolean {
+  return publishedDataS3(cfg) !== null
+}
+
 /**
  * Download `{subdomain}/data.tar.gz` from the published-data bucket. Returns the
  * gzipped tar bytes, or `null` when there is no archive yet (a first publish

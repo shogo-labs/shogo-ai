@@ -142,6 +142,16 @@ export class MetalSubstrate implements ProjectSubstrate {
     await kv.clearServerBackedFlag(subdomain).catch(() => {})
   }
 
+  /**
+   * Stop the published VM without exporting its database, leaving the edge
+   * routing in place, so an API-side overwrite of `{subdomain}/data.tar.gz` is
+   * what the next visit cold-boots from. A running VM would otherwise export
+   * over it within the host's export interval.
+   */
+  async discardPublishedRuntime(projectId: string, subdomain: string): Promise<void> {
+    await this.backend.destroyPublished(projectId, subdomain)
+  }
+
   async wakePublished(projectId: string, subdomain: string, opts?: WakeOpts): Promise<{ ready: boolean; url?: string }> {
     // getMetalPublishedUrl resumes-from-snapshot on a hit, else claims + boots —
     // i.e. it IS the wake. Contract: never throw (callers poll on ready:false).
