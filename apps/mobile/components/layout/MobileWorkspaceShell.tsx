@@ -89,6 +89,14 @@ import {
 
 interface MobileWorkspaceShellProps {
   children: ReactNode;
+  /**
+   * When false the shell stays mounted but draws no chrome (menu button,
+   * session drawer, swipe gesture). Keeping it mounted keeps `children` at the
+   * same place in the React tree, so navigating between routes that do and do
+   * not want the chrome does not remount the navigator (which cancels the
+   * in-flight navigation and makes taps look like no-ops).
+   */
+  enabled?: boolean;
 }
 
 type ProjectChatState = {
@@ -101,7 +109,7 @@ const DRAWER_CHAT_LIST_MAX_HEIGHT = 216;
 const DRAWER_OPEN_SWIPE_DISTANCE = 48;
 const DRAWER_CLOSE_SWIPE_DISTANCE = 48;
 
-export function MobileWorkspaceShell({ children }: MobileWorkspaceShellProps) {
+export function MobileWorkspaceShell({ children, enabled = true }: MobileWorkspaceShellProps) {
   const router = useRouter();
   const pathname = usePathname();
   const routeParams = useLocalSearchParams<{
@@ -200,6 +208,7 @@ export function MobileWorkspaceShell({ children }: MobileWorkspaceShellProps) {
   // chrome.
   const isProjectDetailRoute = /\/projects\//.test(pathname);
   const showChatChrome =
+    enabled &&
     !isProjectDetailRoute &&
     !pathname.includes("/project-surface/") &&
     !["canvas", "external-preview", "app-preview", "files", "plans"].includes(
@@ -264,13 +273,15 @@ export function MobileWorkspaceShell({ children }: MobileWorkspaceShellProps) {
   // Project detail uses NativePhoneHeader, whose menu button emits this
   // existing event. The legacy app drawer intentionally ignores it while this
   // shell owns the screen, so this shell must claim it and open its drawer.
-  useEffect(
-    () =>
-      projectSidebarEvents.subscribeOpenProject(() => {
-        openSessionsRef.current();
-      }),
-    []
-  );
+  useEffect(() => {
+    if (!enabled) return;
+    const unsubscribe = projectSidebarEvents.subscribeOpenProject(() => {
+      openSessionsRef.current();
+    });
+    return () => {
+      unsubscribe();
+    };
+  }, [enabled]);
 
   // The mobile workspace chrome owns its drawer. Claim only clear,
   // horizontal right-swipes so vertical transcript scrolling remains native.
@@ -987,12 +998,9 @@ export function MobileWorkspaceShell({ children }: MobileWorkspaceShellProps) {
                           >
                             <Pressable
                               accessibilityRole="button"
-                              accessibilityLabel={`${
-                                expanded ? "Collapse" : "Expand"
-                              } chats for ${
+                              accessibilityLabel={`Open ${
                                 project.name || "Untitled project"
                               }`}
-                              accessibilityState={{ expanded }}
                               onPress={() => {
                                 if (
                                   suppressNextProjectToggleRef.current ===
@@ -1001,7 +1009,19 @@ export function MobileWorkspaceShell({ children }: MobileWorkspaceShellProps) {
                                   suppressNextProjectToggleRef.current = null;
                                   return;
                                 }
-                                toggleProjectChats(project.id);
+                                // Tapping the row opens the project; the
+                                // chevron expands its chats.
+                                closeSessions();
+                                router.push({
+                                  pathname: "/(app)/projects/[id]",
+                                  params:
+                                    Platform.OS === "web"
+                                      ? { id: project.id }
+                                      : {
+                                          id: project.id,
+                                          tab: "chat-fullscreen",
+                                        },
+                                } as any);
                               }}
                               onLongPress={
                                 Platform.OS === "web"
@@ -1041,6 +1061,32 @@ export function MobileWorkspaceShell({ children }: MobileWorkspaceShellProps) {
                               </Text>
                               <Pressable
                                 accessibilityRole="button"
+                                accessibilityLabel={`${
+                                  expanded ? "Collapse" : "Expand"
+                                } chats for ${
+                                  project.name || "Untitled project"
+                                }`}
+                                accessibilityState={{ expanded }}
+                                onPress={(event) => {
+                                  event.stopPropagation?.();
+                                  toggleProjectChats(project.id);
+                                }}
+                                className="h-8 w-8 items-center justify-center rounded-lg active:bg-muted"
+                              >
+                                {expanded ? (
+                                  <ChevronDown
+                                    size={16}
+                                    className="text-muted-foreground"
+                                  />
+                                ) : (
+                                  <ChevronRight
+                                    size={16}
+                                    className="text-muted-foreground"
+                                  />
+                                )}
+                              </Pressable>
+                              <Pressable
+                                accessibilityRole="button"
                                 accessibilityLabel={`Create a new chat in ${
                                   project.name || "this project"
                                 }`}
@@ -1048,7 +1094,12 @@ export function MobileWorkspaceShell({ children }: MobileWorkspaceShellProps) {
                                   event.stopPropagation?.();
                                   startProjectChat(project.id);
                                 }}
-                                className="hidden h-8 w-8 items-center justify-center rounded-lg active:bg-muted group-hover:flex"
+                                // Hover-only on web; always visible on touch.
+                                className={
+                                  Platform.OS === "web"
+                                    ? "hidden h-8 w-8 items-center justify-center rounded-lg active:bg-muted group-hover:flex"
+                                    : "h-8 w-8 items-center justify-center rounded-lg active:bg-muted"
+                                }
                               >
                                 <Plus size={16} className="text-muted-foreground" />
                               </Pressable>
