@@ -96,6 +96,8 @@ export interface SnapshotMeta {
    * before writable-state durability shipped.
    */
   dataEtag?: string
+  /** See AssignedVm.publishedDataLoaded. Absent on snapshots taken before it shipped. */
+  publishedDataLoaded?: boolean
   /**
    * Workspace runtimes: `{memberId}/project-data.tar.gz` ETag per member, the
    * per-member counterpart of `dataEtag`. Carried into AssignedVm.memberData.

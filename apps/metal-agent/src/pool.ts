@@ -48,6 +48,7 @@ import {
 } from './workspace-archive'
 import {
   describePublishedDataArchive,
+  publishedDataConfigured,
   uploadPublishedDataArchive,
 } from './published-data-archive'
 import {
@@ -293,6 +294,12 @@ export interface AssignedVm {
    */
   publishedSubdomain?: string
   /**
+   * The guest's database descends from `{subdomain}/data.tar.gz`: the pool
+   * hydrated it at boot, or confirmed the bucket held none. Only such a VM may
+   * export, because every export overwrites the live site's data.
+   */
+  publishedDataLoaded?: boolean
+  /**
    * Lineage of this VM's workspace — where its current source came from, so the
    * write side can tell whether it may overwrite the durable backup:
    *   'template' → a warm VM's pristine template (new project, or a cold boot
@@ -470,6 +477,8 @@ export interface SuspendedVm {
    * VM's next export can overwrite the data archive its database derives from.
    */
   dataEtag?: string
+  /** Carried back into AssignedVm.publishedDataLoaded on resume. */
+  publishedDataLoaded?: boolean
   /** Workspace runtimes: per-member `dataEtag`. Carried back into AssignedVm.memberData. */
   memberDataEtags?: Record<string, string>
   /** Workspace runtimes: per-member source backup ETag. Carried back into AssignedVm.memberData. */
@@ -962,6 +971,7 @@ export class MetalWarmPool {
         alwaysOn: e.alwaysOn,
         runtimeToken: e.runtimeToken,
         publishedSubdomain: e.publishedSubdomain,
+        publishedDataLoaded: e.publishedDataLoaded,
         handle,
         assignedAt: e.assignedAt,
         lastTouchedAt: Date.now(),
@@ -1033,6 +1043,7 @@ export class MetalWarmPool {
       alwaysOn: a.alwaysOn,
       runtimeToken: a.runtimeToken,
       publishedSubdomain: a.publishedSubdomain,
+      publishedDataLoaded: a.publishedDataLoaded,
       workspaceOrigin: a.workspaceOrigin,
       backupParentEtag: a.backupParentEtag,
       dataParentEtag: a.dataParentEtag,
@@ -1085,6 +1096,7 @@ export class MetalWarmPool {
         rootfsIdentity: e.rootfsIdentity,
         backupEtag: e.backupEtag,
         dataEtag: e.dataEtag,
+        publishedDataLoaded: e.publishedDataLoaded,
         memberDataEtags: e.memberDataEtags,
         memberSourceEtags: e.memberSourceEtags,
         repoEtag: e.repoEtag,
@@ -1517,9 +1529,14 @@ export class MetalWarmPool {
     // boots with accumulated end-user data (not a fresh DB). Host-side — the
     // guest holds no S3 creds. Best-effort: a fresh/first publish has no archive.
     // Applied last so a published site's live data wins over the dev snapshot.
+    // A failed hydrate leaves the VM unable to export, so its dev database can
+    // never overwrite the live archive.
     if (publishedSubdomain) {
-      await this.hydratePublishedData(publishedSubdomain, vm.handle, env).catch((err) =>
-        console.error(`[pool] published-data hydrate failed for ${publishedSubdomain} (fresh DB):`, err?.message ?? err),
+      await this.hydratePublishedData(a, publishedSubdomain, vm.handle, env).catch((err) =>
+        console.error(
+          `[pool] published-data hydrate failed for ${publishedSubdomain} (serving the source's database; exports disabled):`,
+          err?.message ?? err,
+        ),
       )
     }
     return a
@@ -2786,20 +2803,32 @@ export class MetalWarmPool {
   }
 
   private async hydratePublishedData(
+    a: AssignedVm,
     subdomain: string,
     handle: FcVmHandle,
     env: Record<string, string>,
   ): Promise<void> {
+    if (!this.publishedDataEnabled()) {
+      console.log(`[pool] published-data bucket not configured — ${subdomain} serves the source's database and never exports`)
+      return
+    }
     const ref = await this.publishedDataRef(subdomain)
     if (!ref) {
       console.log(`[pool] no published-data archive for ${subdomain} — booting fresh DB`)
-      return
+    } else {
+      // Goes through the same hydrate path as the other overlays: it extracts a
+      // tar over the workspace tree, so a data.tar.gz rooted at the writable
+      // paths (prisma/dev.db, uploads/) lands cleanly on the restored source.
+      await this.applyArchive(handle, env, ref, `${subdomain} published data`)
+      console.log(`[pool] hydrated published-data for ${subdomain} (${ref.bytes} bytes)`)
     }
-    // Goes through the same hydrate path as the other overlays: it extracts a
-    // tar over the workspace tree, so a data.tar.gz rooted at the writable
-    // paths (prisma/dev.db, uploads/) lands cleanly on the restored source.
-    await this.applyArchive(handle, env, ref, `${subdomain} published data`)
-    console.log(`[pool] hydrated published-data for ${subdomain} (${ref.bytes} bytes)`)
+    a.publishedDataLoaded = true
+    this.writeLive(a)
+  }
+
+  /** `protected` for tests. */
+  protected publishedDataEnabled(): boolean {
+    return publishedDataConfigured(this.cfg)
   }
 
   /** Describe a published subdomain's writable-state archive. `protected` for tests. */
@@ -2815,7 +2844,7 @@ export class MetalWarmPool {
    * idempotent; a no-op when the guest reports nothing writable yet.
    */
   async exportPublishedData(a: AssignedVm): Promise<boolean> {
-    if (!a.publishedSubdomain) return false
+    if (!a.publishedSubdomain || !a.publishedDataLoaded) return false
     const bytes = await this.fetchPublishedExport(a.handle, a.runtimeToken)
     if (!bytes) return false
     const uploaded = await this.uploadPublishedData(a.publishedSubdomain, bytes)
@@ -2977,6 +3006,7 @@ export class MetalWarmPool {
         rootfsIdentity: this.bootRootfsIdentity(a),
         backupEtag: a.backupParentEtag,
         dataEtag: this.trustedDataEtag(a),
+        publishedDataLoaded: a.publishedDataLoaded,
         memberDataEtags: this.trustedMemberDataEtags(a),
         memberSourceEtags: this.trustedMemberSourceEtags(a),
         repoEtag: this.trustedRepoEtag(a),
@@ -3051,6 +3081,7 @@ export class MetalWarmPool {
           dataDriveMiB: a.handle.dataDrive ? classConfig(this.cfg, a.handle.vmClass).dataDriveMiB : undefined,
           backupEtag: a.backupParentEtag,
           dataEtag: this.trustedDataEtag(a),
+          publishedDataLoaded: a.publishedDataLoaded,
           memberDataEtags: this.trustedMemberDataEtags(a),
           memberSourceEtags: this.trustedMemberSourceEtags(a),
           repoEtag: this.trustedRepoEtag(a),
@@ -3099,6 +3130,7 @@ export class MetalWarmPool {
       workspaceDrive: s.snapshot.workspaceDrive,
       backupEtag: s.backupEtag,
       dataEtag: s.dataEtag,
+      publishedDataLoaded: s.publishedDataLoaded,
       memberDataEtags: s.memberDataEtags,
       memberSourceEtags: s.memberSourceEtags,
       repoEtag: s.repoEtag,
@@ -3287,6 +3319,7 @@ export class MetalWarmPool {
         rootfsIdentity: pulled.meta.rootfsIdentity,
         backupEtag: pulled.meta.backupEtag,
         dataEtag: pulled.meta.dataEtag,
+        publishedDataLoaded: pulled.meta.publishedDataLoaded,
         memberDataEtags: pulled.meta.memberDataEtags,
         memberSourceEtags: pulled.meta.memberSourceEtags,
         repoEtag: pulled.meta.repoEtag,
@@ -3341,6 +3374,7 @@ export class MetalWarmPool {
       // The resumed guest's database is the one frozen in the snapshot, which
       // descends from this archive — so its next export may overwrite it.
       dataParentEtag: s.dataEtag,
+      publishedDataLoaded: s.publishedDataLoaded,
       memberData: resumedMemberData(s),
       repoParentEtag: s.repoEtag,
       stateSince: s.suspendedAt,
