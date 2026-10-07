@@ -14,6 +14,7 @@ import {
   routePath,
   routeUrl,
   setCloudWorkspacesState,
+  subscribeCloudWorkspaces,
 } from '../workspace-route'
 import { clearActiveWorkspaceId, getActiveWorkspaceId, rememberWorkspaceKind, setActiveWorkspaceId } from '../workspace-store'
 
@@ -209,5 +210,27 @@ describe('cloud Personal workspace', () => {
     }
     await Promise.resolve()
     expect(getActiveWorkspaceId()).toBe('local-team')
+  })
+})
+
+describe('another window refreshing the list', () => {
+  test('reloads the cached list and notifies subscribers', () => {
+    let pings = 0
+    const unsub = subscribeCloudWorkspaces(() => {
+      pings++
+    })
+    const next = {
+      signedIn: true,
+      cloudUrl: 'https://studio.shogo.ai',
+      reachable: true,
+      user: null,
+      workspaces: [{ id: 'ws-acme', name: 'Acme', slug: 'acme', kind: 'team' }],
+    }
+    localStorage.setItem('shogo:cloud-workspaces', JSON.stringify(next))
+    window.dispatchEvent(new StorageEvent('storage', { key: 'shogo:cloud-workspaces' }))
+    expect(pings).toBe(1)
+    expect(getCloudWorkspacesState().workspaces.map((w) => w.id)).toEqual(['ws-acme'])
+    expect(routePath('/api/projects?workspaceId=ws-acme')).toBe('/api/cloud/ws-acme/projects?workspaceId=ws-acme')
+    unsub()
   })
 })

@@ -107,9 +107,20 @@ export function markCloudReachable(ok: boolean): void {
   reachable = ok
 }
 
+async function keyInfoUser(): Promise<CloudUser | null> {
+  const row = await localDb.localConfig.findUnique({ where: { key: 'SHOGO_KEY_INFO' } }).catch(() => null)
+  try {
+    const user = row?.value ? JSON.parse(row.value)?.user : null
+    return user?.id ? { id: user.id, name: user.name ?? null, email: user.email ?? null } : null
+  } catch {
+    return null
+  }
+}
+
 /**
  * Picks up keys for team workspaces joined since sign-in and drops the ones
- * the user left. Authenticates with the primary device key.
+ * the user left. Authenticates with the primary device key. Sign-ins from
+ * before per-workspace keys stored no list; their first sync backfills it.
  */
 export function syncCloudWorkspaces(): Promise<void> {
   if (inflight) return inflight
@@ -117,7 +128,6 @@ export function syncCloudWorkspaces(): Promise<void> {
     const primary = process.env.SHOGO_API_KEY
     if (!primary) return
     const stored = await load()
-    if (!stored.enabled) return
     try {
       const res = await fetch(`${getShogoCloudUrl()}/api/cli/device-keys/sync`, {
         method: 'POST',
@@ -139,7 +149,8 @@ export function syncCloudWorkspaces(): Promise<void> {
         const kind = workspace.kind === 'personal' ? 'personal' : 'team'
         if (resolved) next.push({ id: workspace.id, name: workspace.name, slug: workspace.slug ?? null, kind, key: resolved })
       }
-      await save({ ...stored, workspaces: next, syncedAt: new Date().toISOString() })
+      const user = stored.user ?? (await keyInfoUser())
+      await save({ ...stored, enabled: true, user, workspaces: next, syncedAt: new Date().toISOString() })
       reachable = true
     } catch {
       reachable = false
