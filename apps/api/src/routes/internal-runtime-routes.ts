@@ -1960,8 +1960,8 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
 
     const agentCallSvc = await loadAgentCall?.()
     if (!agentCallSvc) return unavailable(c, 'Cross-project agent calls')
-    const { callProjectAgent } = agentCallSvc
-    const outcome = await callProjectAgent(c, projectId, authz.workspaceId, {
+    const { callProjectAgentAsChat } = agentCallSvc
+    const outcome = await callProjectAgentAsChat(c, projectId, authz.workspaceId, {
       message: body.message,
       runId: typeof body.runId === 'string' ? body.runId : undefined,
       sessionId: typeof body.sessionId === 'string' ? body.sessionId : undefined,

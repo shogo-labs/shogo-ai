@@ -390,6 +390,7 @@ export function createProjectCallTool(ctx: ToolContext): AgentTool {
           error: res.error ?? 'Call failed',
           code: res.code,
           status: res.status,
+          project: { id: target.id, name: target.name },
           runId,
           hint: res.code === 'agent_call_timeout' || res.code === 'timeout'
             ? 'The callee is still working. Re-issue with wait=false or a larger timeoutMs; the same runId keeps the trace intact.'
@@ -407,7 +408,9 @@ export function createProjectCallTool(ctx: ToolContext): AgentTool {
         project: { id: target.id, name: target.name },
         runId,
         status: res.data.status,
+        wait: p.wait !== false,
         sessionId: res.data.sessionId,
+        chatSessionId: res.data.chatSessionId ?? res.data.sessionId,
         reply,
         ...(urls.length > 0
           ? {
