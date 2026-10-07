@@ -76,6 +76,9 @@ const DEFAULT_OPTIONS: Required<Omit<AutoResumingFetchOptions, 'buildResumeUrl' 
   maxBackoffMs: 5_000,
 }
 
+/** The SDK's resume convention: `${chatPostUrl}/${chatSessionId}/stream`. */
+const RESUME_STREAM_URL = /\/([^/?#]+)\/stream(?:[?#]|$)/
+
 const TURN_HEADER = {
   TURN_ID: 'X-Turn-Id',
   CHAT_SESSION_ID: 'X-Chat-Session-Id',
@@ -230,7 +233,8 @@ function createResponseWithBody(source: Response, body: ReadableStream<Uint8Arra
 
 /**
  * Wrap a fetch implementation so that any chat POST whose response carries
- * `X-Turn-Id` + `X-Chat-Session-Id` headers becomes auto-resuming on
+ * `X-Turn-Id` + `X-Chat-Session-Id` headers, and any `…/<chatSessionId>/stream`
+ * resume GET whose response carries `X-Turn-Id`, becomes auto-resuming on
  * premature stream termination.
  */
 export function createAutoResumingFetch(
@@ -246,9 +250,18 @@ export function createAutoResumingFetch(
 
   const wrapped: typeof globalThis.fetch = async (input, init) => {
     const method = (init?.method || 'GET').toUpperCase()
-    // Only wrap POST chat requests; GET (resume), DELETE (stop), etc. are
-    // forwarded as-is.
-    if (method !== 'POST') {
+    const requestUrl = typeof input === 'string'
+      ? input
+      : input instanceof URL
+        ? input.toString()
+        : (input as Request).url
+    // Wrap chat POSTs and the SDK's `resumeStream()` GET of
+    // `…/<chatSessionId>/stream`. A resume stream outlives proxy idle
+    // timeouts no better than the POST does, and without a `fromSeq`
+    // reconnect here the panel's only recovery is another `resumeStream()`,
+    // which replays the whole turn from seq 0. DELETE (stop) etc. pass through.
+    const resumeMatch = method === 'GET' ? RESUME_STREAM_URL.exec(requestUrl) : null
+    if (method !== 'POST' && !resumeMatch) {
       return baseFetch(input as any, init)
     }
 
@@ -288,25 +301,27 @@ export function createAutoResumingFetch(
     if (!initialResponse.ok || !initialResponse.body) return initialResponse
 
     const turnId = initialResponse.headers.get(TURN_HEADER.TURN_ID)
-    const chatSessionId = initialResponse.headers.get(TURN_HEADER.CHAT_SESSION_ID)
+    const chatSessionId = resumeMatch
+      ? decodeURIComponent(resumeMatch[1])
+      : initialResponse.headers.get(TURN_HEADER.CHAT_SESSION_ID)
     if (!turnId || !chatSessionId) {
       // Server didn't tag this response with durable turn metadata —
       // not a chat stream we can resume. Pass through.
       return initialResponse
     }
 
-    const chatPostUrl = typeof input === 'string'
-      ? input
-      : input instanceof URL
-        ? input.toString()
-        : (input as Request).url
-
-    const resumeUrl = opts.buildResumeUrl(chatPostUrl, chatSessionId)
+    const resumeUrl = resumeMatch
+      ? requestUrl.replace(/[?#].*$/, '')
+      : opts.buildResumeUrl(requestUrl, chatSessionId)
+    const initialSeq = resumeMatch
+      ? Math.max(0, Number(new URL(requestUrl, 'http://x').searchParams.get('fromSeq')) || 0)
+      : 0
     const logger = opts.logger
 
     const wrappedBody = createDurableBody({
       initialBody: initialResponse.body,
       resumeUrl,
+      initialSeq,
       fetcher: baseFetch,
       maxResumeAttempts: opts.maxResumeAttempts,
       initialBackoffMs: opts.initialBackoffMs,
@@ -334,6 +349,8 @@ export function createAutoResumingFetch(
 interface DurableBodyOpts {
   initialBody: ReadableStream<Uint8Array>
   resumeUrl: string
+  /** Seq the initial body starts after (a resume GET's `fromSeq`). */
+  initialSeq?: number
   fetcher: typeof globalThis.fetch
   maxResumeAttempts: number
   initialBackoffMs: number
@@ -353,6 +370,7 @@ function createDurableBody(opts: DurableBodyOpts): ReadableStream<Uint8Array> {
   const {
     initialBody,
     resumeUrl,
+    initialSeq = 0,
     fetcher,
     maxResumeAttempts,
     initialBackoffMs,
@@ -370,7 +388,7 @@ function createDurableBody(opts: DurableBodyOpts): ReadableStream<Uint8Array> {
       // `error()`. Keep the terminal state ourselves so the cleanup path
       // never asks the bridge to close an already-errored stream.
       let streamErrored = false
-      let lastSeq = 0
+      let lastSeq = initialSeq
       let turnCompleted = false
       let cancelled = false
       let resumeAttempts = 0

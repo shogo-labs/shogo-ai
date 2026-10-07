@@ -2151,6 +2151,9 @@ app.post('/agent/chat', async (c) => {
 // Optional query params:
 //   - fromSeq: replay only frames with seq > fromSeq (delta resume so the
 //              client doesn't render duplicates).
+//   - compact: the buffered frames are replayed compacted (one delta per
+//              part, see compactSseFrames) so a client joining a long turn
+//              rebuilds it in a few chunks. `compact=0` replays them raw.
 //
 // Response headers always include:
 //   - X-Turn-Id: the active turn this stream belongs to
@@ -2175,7 +2178,8 @@ app.get('/agent/chat/:chatSessionId/stream', (c) => {
     return new Response(null, { status: 204 })
   }
 
-  const replayStream = streamBufferStore.createReplayStream(chatSessionId, { fromSeq })
+  const compact = c.req.query('compact') !== '0'
+  const replayStream = streamBufferStore.createReplayStream(chatSessionId, { fromSeq, compact })
   if (!replayStream) {
     return new Response(null, { status: 204 })
   }

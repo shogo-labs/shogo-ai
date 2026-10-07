@@ -64,28 +64,48 @@ describe("dropUnfinishedAssistantTail", () => {
   })
 })
 
+function chunkStream(chunks: unknown[]): ReadableStream<any> {
+  return new ReadableStream({
+    start(controller) {
+      for (const chunk of chunks) controller.enqueue(chunk)
+      controller.close()
+    },
+  })
+}
+
+async function readAll(stream: ReadableStream<any> | null): Promise<unknown[]> {
+  const out: unknown[] = []
+  if (!stream) return out
+  const reader = stream.getReader()
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) return out
+    out.push(value)
+  }
+}
+
 describe("withResumeReplayReset", () => {
   const request = { chatId: "c1" }
+  const chunks = [{ type: "start" }, { type: "text-start", id: "t" }]
 
   test("runs beforeReplay only when a replay stream comes back", async () => {
     let resets = 0
-    const stream = new ReadableStream()
     const withStream = withResumeReplayReset(
       {
-        sendMessages: async () => stream,
-        reconnectToStream: async () => stream,
+        sendMessages: async () => chunkStream(chunks),
+        reconnectToStream: async () => chunkStream(chunks),
       },
       () => resets++,
     )
     const without = withResumeReplayReset(
       {
-        sendMessages: async () => stream,
+        sendMessages: async () => chunkStream(chunks),
         reconnectToStream: async () => null,
       },
       () => resets++,
     )
 
-    expect(await withStream.reconnectToStream(request)).toBe(stream)
+    expect(await readAll(await withStream.reconnectToStream(request))).toEqual(chunks)
     expect(resets).toBe(1)
     expect(await without.reconnectToStream(request)).toBeNull()
     expect(resets).toBe(1)
@@ -93,10 +113,9 @@ describe("withResumeReplayReset", () => {
 
   test("sendMessages passes straight through without a reset", async () => {
     let resets = 0
-    const stream = new ReadableStream()
     const transport = withResumeReplayReset(
       {
-        sendMessages: async () => stream,
+        sendMessages: async () => chunkStream(chunks),
         reconnectToStream: async () => null,
       },
       () => resets++,
@@ -109,7 +128,7 @@ describe("withResumeReplayReset", () => {
       messages: [],
       abortSignal: undefined,
     })
-    expect(result).toBe(stream)
+    expect(await readAll(result)).toEqual(chunks)
     expect(resets).toBe(0)
   })
 })
