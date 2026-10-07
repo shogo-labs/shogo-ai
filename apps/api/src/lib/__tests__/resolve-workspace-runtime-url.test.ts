@@ -372,4 +372,86 @@ describe('resolveWorkspaceRuntimeUrl', () => {
       }),
     ).rejects.toThrow(/metal workspace runtime driver not configured/)
   })
+
+  describe('home-region guard', () => {
+    const notHome = async (wsId: string) => {
+      throw new Error(`not home: ${wsId}`)
+    }
+
+    it('refuses a metal boot outside the home region before leasing or resolving', async () => {
+      let leased = false
+      let resolved = false
+      await expect(
+        resolveWorkspaceRuntimeUrl('ws-1', {
+          attachedProjectIds: [],
+          anchorProjectId: 'anchor',
+          _isMetalEnabled: () => true,
+          _isKubernetes: () => true,
+          _assertHomeRegion: notHome,
+          _spawnLease: <T>(_id: string, fn: () => Promise<T>) => {
+            leased = true
+            return fn()
+          },
+          _metalResolver: async () => {
+            resolved = true
+            return 'http://stray-vm'
+          },
+        }),
+      ).rejects.toThrow('not home: ws-1')
+      expect(leased).toBe(false)
+      expect(resolved).toBe(false)
+    })
+
+    it('refuses a k8s boot outside the home region', async () => {
+      let resolved = false
+      await expect(
+        resolveWorkspaceRuntimeUrl('ws-1', {
+          attachedProjectIds: [],
+          _isMetalEnabled: () => false,
+          _isKubernetes: () => true,
+          _assertHomeRegion: notHome,
+          _spawnLease: passthroughLease,
+          _k8sResolver: async () => {
+            resolved = true
+            return 'http://stray-ksvc'
+          },
+        }),
+      ).rejects.toThrow('not home: ws-1')
+      expect(resolved).toBe(false)
+    })
+
+    it('resolves normally once the guard passes', async () => {
+      const checked: string[] = []
+      const res = await resolveWorkspaceRuntimeUrl('ws-1', {
+        attachedProjectIds: [],
+        _isMetalEnabled: () => true,
+        _isKubernetes: () => true,
+        _assertHomeRegion: async (wsId) => {
+          checked.push(wsId)
+        },
+        _spawnLease: passthroughLease,
+        _metalResolver: async () => 'http://home-vm',
+      })
+      expect(res).toEqual({ mode: 'metal', url: 'http://home-vm' })
+      expect(checked).toEqual(['ws-1'])
+    })
+
+    it('does not guard host mode (desktop/local runtimes are not region-placed)', async () => {
+      const res = await resolveWorkspaceRuntimeUrl('ws-1', {
+        attachedProjectIds: [],
+        _isKubernetes: () => false,
+        _isMetalEnabled: () => false,
+        _assertHomeRegion: notHome,
+        _hostStart: async () => ({
+          projectId: 'ws-1',
+          port: 37000,
+          agentPort: 38000,
+          status: 'running' as const,
+          url: 'http://localhost:37000',
+          startedAt: Date.now(),
+        }),
+      })
+      expect(res).toMatchObject({ mode: 'host' })
+    })
+  })
 })

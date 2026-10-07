@@ -44,8 +44,13 @@ mock.module('@opentelemetry/api', () => ({
 // ─── prisma mock ──────────────────────────────────────────────────────────
 
 const queryRawMock = mock(async (..._args: any[]): Promise<any[]> => [])
+const PRISMA_EMPTY = { __empty: true }
 mock.module('../lib/prisma', () => ({
   prisma: { $queryRaw: queryRawMock },
+  Prisma: {
+    sql: (strings: TemplateStringsArray, ...values: unknown[]) => ({ strings, values }),
+    empty: PRISMA_EMPTY,
+  },
 }))
 
 // ─── knative + runtime-token + self-heal mocks (dynamic-import targets) ──
@@ -185,6 +190,16 @@ describe('fetchDueAgents — SQL contract', () => {
     const fragments = queryRawMock.mock.calls[0][0] as unknown as string[]
     const sql = (Array.isArray(fragments) ? fragments.join(' ') : String(fragments)).toLowerCase()
     expect(sql).toMatch(/order by .*nextheartbeatat.* asc/)
+  })
+
+  test('partitions due agents by workspace home region', async () => {
+    const s = new TestableScheduler()
+    await s._fetchDueAgents()
+    const [fragments, ...values] = queryRawMock.mock.calls[0] as unknown as [string[], ...unknown[]]
+    expect(fragments.join(' ').toLowerCase()).toContain('join "workspaces" w')
+    // Single-region in tests → no partition; the clause itself is covered by
+    // heartbeat-home-region-filter.test.ts.
+    expect(values).toContain(PRISMA_EMPTY)
   })
 
   test('forwards the result of $queryRaw verbatim', async () => {
