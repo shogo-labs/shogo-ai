@@ -34,6 +34,14 @@ describe('MetalPlacementRegistry (in-memory fallback)', () => {
     expect(await r.listHosts()).toEqual([])
   })
 
+  it("a host's suspend report doesn't repoint a key placed on another host", async () => {
+    const r = mk()
+    expect(await r.setPlacementUnlessOtherHost('p', 'host-1', 'local')).toBe(true)
+    expect(await r.setPlacementUnlessOtherHost('p', 'host-2', 'local')).toBe(false)
+    expect((await r.getPlacement('p'))?.hostId).toBe('host-1')
+    expect(await r.setPlacementUnlessOtherHost('p', 'host-1', 'local')).toBe(true)
+  })
+
   it('set/get/clear placement round-trips', async () => {
     const r = mk()
     await r.setPlacement('p', 'host-1', 'local')
