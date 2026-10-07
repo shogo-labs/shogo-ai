@@ -17,6 +17,9 @@
  */
 
 import { describe, expect, test } from 'bun:test'
+import { mkdtempSync, rmSync, writeFileSync } from 'fs'
+import { tmpdir } from 'os'
+import { join } from 'path'
 
 import {
   amzDates,
@@ -25,6 +28,7 @@ import {
   copyObject,
   objectUrl,
   signCopyHeaders,
+  sha256HexFile,
   signPutHeaders,
   type S3Target,
 } from './s3-conditional'
@@ -253,6 +257,35 @@ describe('conditionalPutObject', () => {
   test('409 is reported separately so the caller can retry', async () => {
     const { result } = await put(new Response('conflict', { status: 409 }), { ifNoneMatch: '*' })
     expect(result).toEqual({ status: 'conflict' })
+  })
+
+  test('a file body is signed exactly like the same bytes in memory, and sent from disk', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 's3-cond-'))
+    try {
+      const payload = new Uint8Array(3 * 1024 * 1024 + 17).map((_, i) => i % 251)
+      const path = join(dir, 'body.tar.gz')
+      writeFileSync(path, payload)
+      const now = new Date('2026-01-02T03:04:05Z')
+      const send = async (body: Uint8Array | ReturnType<typeof Bun.file>) => {
+        let headers: Record<string, string> = {}
+        let sentBytes = 0
+        const fetchImpl = (async (_url: string, init: RequestInit) => {
+          headers = init.headers as Record<string, string>
+          sentBytes = (await new Response(init.body as BodyInit).arrayBuffer()).byteLength
+          return new Response(null, { status: 200, headers: { etag: '"e"' } })
+        }) as unknown as typeof fetch
+        await conditionalPutObject({ target: TARGET, key: 'p/repo.git.tar.gz', body, now, fetchImpl })
+        return { headers, sentBytes }
+      }
+      const fromMemory = await send(payload)
+      const fromFile = await send(Bun.file(path))
+      expect(fromFile.headers).toEqual(fromMemory.headers)
+      expect(fromFile.headers['content-length']).toBe(String(payload.byteLength))
+      expect(fromFile.sentBytes).toBe(payload.byteLength)
+      expect(await sha256HexFile(Bun.file(path))).toBe(fromMemory.headers['x-amz-content-sha256'])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 
   test('other failures throw rather than masquerading as a refusal', async () => {
