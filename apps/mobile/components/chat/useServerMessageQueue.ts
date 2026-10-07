@@ -90,6 +90,7 @@ export function useServerMessageQueue({
   const previousIdsRef = useRef<string[]>([])
   const previousRowsRef = useRef(new Map<string, IChatQueuedMessage>())
   const userRemovedIdsRef = useRef(new Set<string>())
+  const pendingTurnRef = useRef<{ userMessage?: UIMessage } | null>(null)
 
   // `collection.all` mutates in place, so it must be read on every render for
   // the observer to see new rows; the signature keeps `rows` stable otherwise.
@@ -109,7 +110,8 @@ export function useServerMessageQueue({
   useEffect(() => {
     previousIdsRef.current = []
     previousRowsRef.current = new Map()
-  }, [sessionId])
+    pendingTurnRef.current = null
+  }, [sessionId, enabled])
 
   const load = useCallback(async () => {
     if (!enabled || !sessionId) return
@@ -133,23 +135,36 @@ export function useServerMessageQueue({
   useEffect(() => {
     const previous = previousIdsRef.current
     const previousRows = previousRowsRef.current
-    const current = rows.map((row) => row.id)
+    const current = new Set(rows.map((row) => row.id))
     previousRowsRef.current = new Map(rows.map((row) => [row.id, row]))
-    const removedHead =
-      previous.length > 0 &&
-      !!previous[0] &&
-      !previous[0].startsWith(OPTIMISTIC_ID_PREFIX) &&
-      !current.includes(previous[0])
-    previousIdsRef.current = current
-    if (removedHead && previous[0] && userRemovedIdsRef.current.has(previous[0])) {
-      userRemovedIdsRef.current.delete(previous[0])
-      return
+    previousIdsRef.current = rows.map((row) => row.id)
+    // "Send now" moves any row to the front and the server can dispatch and
+    // delete it before the client sees the new order, so the dispatched row
+    // is not necessarily the head we last saw.
+    let dispatchedId: string | undefined
+    for (const id of previous) {
+      if (current.has(id) || id.startsWith(OPTIMISTIC_ID_PREFIX)) continue
+      if (userRemovedIdsRef.current.has(id)) {
+        userRemovedIdsRef.current.delete(id)
+        continue
+      }
+      dispatchedId ??= id
     }
-    if (removedHead && onTurnAvailable) {
-      const removed = previous[0] ? previousRows.get(previous[0]) : undefined
-      onTurnAvailable(removed ? queuedRowToUserMessage(removed) : undefined)
+    if (!dispatchedId) return
+    const removed = previousRows.get(dispatchedId)
+    pendingTurnRef.current = {
+      userMessage: removed ? queuedRowToUserMessage(removed) : undefined,
     }
-  }, [rows, onTurnAvailable])
+  }, [rows])
+
+  // Attaching while the previous turn's stream is still open (the server
+  // stops it for "send now") would resume on top of a live stream.
+  useEffect(() => {
+    if (isStreaming || !pendingTurnRef.current || !onTurnAvailable) return
+    const { userMessage } = pendingTurnRef.current
+    pendingTurnRef.current = null
+    onTurnAvailable(userMessage)
+  }, [rows, isStreaming, onTurnAvailable])
 
   const enqueue = useCallback(
     async (input: ServerQueueEnqueueInput) => {
