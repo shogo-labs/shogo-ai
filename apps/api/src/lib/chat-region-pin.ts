@@ -79,7 +79,10 @@ function homeRegionUnavailable(c: Context, homeRegion: string): Response {
 
 /**
  * Pin a chat request to its session's home region. Call at the top of every
- * chat route forwarder (POST /chat, GET /stream, GET /turn, POST /stop).
+ * chat route forwarder (POST /chat, GET /stream, GET /turn, POST /stop), and
+ * of every route that resolves the project's runtime (agent-proxy,
+ * sandbox/url, preview wake/render, runtime/status, …): the runtime only
+ * exists in the home region, and resolving it elsewhere boots a second one.
  *
  * - Returns `null` (handle locally) when: single-region/local mode, the pin is
  *   disabled, the request is already a cross-region proxy (loop guard), the
