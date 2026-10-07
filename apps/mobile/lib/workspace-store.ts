@@ -12,10 +12,20 @@ let nativeActiveWorkspaceId: string | null = null
 let nativeActiveWorkspaceKind: { id: string; kind: CachedWorkspaceKind } | null = null
 const listeners = new Set<() => void>()
 
+/** Another window (e.g. the desktop island) switched workspace. */
+function onStorage(event: StorageEvent): void {
+  if (event.key === null || event.key === STORAGE_KEY || event.key === KIND_STORAGE_KEY) {
+    emitActiveWorkspaceId()
+  }
+}
+
 export function subscribeActiveWorkspaceId(listener: () => void): () => void {
+  const watchOtherWindows = Platform.OS === 'web' && typeof window !== 'undefined'
+  if (watchOtherWindows && listeners.size === 0) window.addEventListener('storage', onStorage)
   listeners.add(listener)
   return () => {
     listeners.delete(listener)
+    if (watchOtherWindows && listeners.size === 0) window.removeEventListener('storage', onStorage)
   }
 }
 

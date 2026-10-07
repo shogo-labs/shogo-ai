@@ -344,6 +344,28 @@ describe('workspace list and status', () => {
     expect(await cloudWorkspaces.cloudWorkspaceKey('ws-beta')).toBeNull()
   })
 
+  test('a sign-in from before per-workspace keys backfills its list on sync', async () => {
+    configRows.clear()
+    cloudWorkspaces._resetCloudWorkspacesForTests()
+    configRows.set(
+      'SHOGO_KEY_INFO',
+      JSON.stringify({ workspace: { id: 'ws-acme' }, user: { id: 'cloud-user', name: 'Russ', email: 'russ@example.com' } }),
+    )
+    syncResponse = {
+      ok: true,
+      workspaces: [
+        { workspace: { id: 'ws-acme', name: 'Acme', slug: 'acme', kind: 'team' }, key: 'shogo_sk_primary' },
+        { workspace: { id: 'cloud-personal', name: 'Russ Personal', slug: 'p', kind: 'personal' }, key: 'shogo_sk_personal' },
+      ],
+      removed: [],
+    }
+    await app.request('/api/local/cloud-workspaces/sync', { method: 'POST' })
+    const status = await (await app.request('/api/local/cloud-workspaces')).json()
+    expect(status.user).toEqual({ id: 'cloud-user', name: 'Russ', email: 'russ@example.com' })
+    expect(status.workspaces.map((w: any) => w.id)).toEqual(['ws-acme', 'cloud-personal'])
+    expect(await cloudWorkspaces.cloudWorkspaceKey('cloud-personal')).toBe('shogo_sk_personal')
+  })
+
   test('signing out clears them from the list', async () => {
     await cloudWorkspaces.clearCloudWorkspaces()
     const body = await (await app.request('/api/workspaces')).json()
