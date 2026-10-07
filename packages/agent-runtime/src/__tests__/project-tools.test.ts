@@ -337,6 +337,43 @@ describe('project_call', () => {
     ])
   })
 
+  test('returns the chat that records the call, and the target project', async () => {
+    api.graph.data = [
+      { id: 'caller-1', name: 'Caller', description: null, workingMode: 'managed', settings: null, attachments: [], agent: null },
+      { id: 'proj-2', name: 'Worker', description: null, workingMode: 'managed', settings: null, attachments: [], agent: null },
+    ]
+    api.call = {
+      ok: true,
+      status: 200,
+      data: { status: 'completed', reply: 'done', sessionId: 'chat-123', chatSessionId: 'chat-123' },
+    }
+    const out = await run(createProjectCallTool(baseCtx()), { project: 'proj-2', message: 'go' })
+    expect(out.chatSessionId).toBe('chat-123')
+    expect(out.wait).toBe(true)
+    expect(out.project).toEqual({ id: 'proj-2', name: 'Worker' })
+  })
+
+  test('falls back to the runtime session id and reports wait=false', async () => {
+    api.graph.data = [
+      { id: 'caller-1', name: 'Caller', description: null, workingMode: 'managed', settings: null, attachments: [], agent: null },
+      { id: 'proj-2', name: 'Worker', description: null, workingMode: 'managed', settings: null, attachments: [], agent: null },
+    ]
+    api.call = { ok: true, status: 202, data: { status: 'accepted', sessionId: 'run:abc' } }
+    const out = await run(createProjectCallTool(baseCtx()), { project: 'proj-2', message: 'go', wait: false })
+    expect(out.chatSessionId).toBe('run:abc')
+    expect(out.wait).toBe(false)
+  })
+
+  test('names the target project on failure', async () => {
+    api.graph.data = [
+      { id: 'caller-1', name: 'Caller', description: null, workingMode: 'managed', settings: null, attachments: [], agent: null },
+      { id: 'proj-2', name: 'Worker', description: null, workingMode: 'managed', settings: null, attachments: [], agent: null },
+    ]
+    api.call = { ok: false, status: 502, error: 'boom', code: 'agent_call_failed' }
+    const out = await run(createProjectCallTool(baseCtx()), { project: 'proj-2', message: 'go' })
+    expect(out.project).toEqual({ id: 'proj-2', name: 'Worker' })
+  })
+
   test('adds a hint when the call times out', async () => {
     api.graph.data = [
       { id: 'caller-1', name: 'Caller', description: null, workingMode: 'managed', settings: null, attachments: [], agent: null },

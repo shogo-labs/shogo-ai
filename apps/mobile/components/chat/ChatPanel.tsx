@@ -214,6 +214,7 @@ import {
   ChatContextProvider,
   type ChatContextValue,
   type ChatMessage,
+  type OpenProjectPaneRequest,
 } from "./ChatContext"
 import {
   registerDesktopIslandSession,
@@ -556,6 +557,11 @@ export interface ChatPanelProps {
    * navigates to that project's IDE (or Files, on native) tab.
    */
   onOpenFile?: (projectId: string, relPath: string) => void
+  /**
+   * Shows another project (or one of its chats) beside this chat. Only set by
+   * hosts with room for a side pane; otherwise cards navigate to the project.
+   */
+  onOpenProjectPane?: (request: OpenProjectPaneRequest) => void
   /** Controlled model selection — when provided, ChatPanel uses this instead of its own state */
   selectedModel?: string
   onModelChange?: (modelId: string) => void
@@ -975,6 +981,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
   onBuildPlanConsumed,
   onOpenPlan,
   onOpenFile,
+  onOpenProjectPane,
   selectedModel: controlledSelectedModel,
   onModelChange: controlledOnModelChange,
   onResolveSessionModel,
@@ -6986,6 +6993,8 @@ const ChatPanelContent = observer(function ChatPanelContent({
       confirmedPlan,
       openPlan: onOpenPlan,
       openFile,
+      workspaceId: workspaceId ?? null,
+      openProjectPane: onOpenProjectPane,
       generateSummary: handleGenerateSummary,
       selectedModel,
       isPro: hasAdvancedModelAccess,
@@ -7005,6 +7014,8 @@ const ChatPanelContent = observer(function ChatPanelContent({
       confirmedPlan,
       onOpenPlan,
       openFile,
+      workspaceId,
+      onOpenProjectPane,
       handleGenerateSummary,
       selectedModel,
       hasAdvancedModelAccess,

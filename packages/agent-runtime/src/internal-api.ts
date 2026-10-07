@@ -1526,6 +1526,8 @@ export interface AgentCallResult {
   reply?: string
   runId?: string
   sessionId?: string
+  /** The project chat (API ChatSession id) that records this call, when persisted. */
+  chatSessionId?: string
 }
 
 export async function callProjectAgent(
