@@ -147,6 +147,7 @@ function AppLayoutInner() {
     mobileAgentShellEnabled &&
     isWorkspaceChatRoute &&
     !isTeamHomeFeed;
+  const phoneShellMounted = !isWide && !isIdeEmbed && mobileAgentShellEnabled;
   // Team phone tab screens draw their own large title and avatar.
   const isTeamTabScreen =
     !isWide &&
@@ -161,6 +162,11 @@ function AppLayoutInner() {
   // the dock drawn over the messages.
   const isFloatingConversation =
     !isWide && !isIdeEmbed && isConversationPath(pathname);
+
+  // The phone "New message" / "Create channel" screen draws its own header and
+  // sits full-screen: no app header, no dock, edge-to-edge.
+  const isNewConversationPage =
+    !isWide && !isIdeEmbed && /\/c\/new\/?$/.test(pathname);
 
   const isSettingsPage =
     pathname === "/settings" ||
@@ -330,6 +336,7 @@ function AppLayoutInner() {
     isAIModelsPage ||
     isNonChatWorkspacePage ||
     isTeamTabScreen ||
+    isNewConversationPage ||
     isFloatingConversation;
   // The companion mobile shell owns its own drawer and swipe gesture. Keep
   // the legacy sheet drawer inactive there so an edge swipe cannot reveal the
@@ -489,6 +496,7 @@ function AppLayoutInner() {
     !isBillingPage;
   const nativeEdgeToEdgeChrome =
     isFloatingConversation ||
+    isNewConversationPage ||
     (isNativeApp &&
       !isIdeEmbed &&
       (isHomePage ||
@@ -539,8 +547,15 @@ function AppLayoutInner() {
       {!isIdeEmbed ? <AgentGlancePublisher /> : null}
       {!isIdeEmbed ? <HuddleDock /> : null}
       {!isIdeEmbed ? <HuddleRinger /> : null}
-      {useMobileWorkspaceShell ? (
-        <MobileWorkspaceShell key={activeWorkspace?.id ?? "workspace-loading"}>
+      {/* The shell stays mounted on every phone route and only toggles its
+          chrome. Swapping the parent of <Slot /> between routes (e.g. the team
+          Home feed -> a project) remounts the navigator mid-push and the tap
+          appears to do nothing. */}
+      {phoneShellMounted ? (
+        <MobileWorkspaceShell
+          key={activeWorkspace?.id ?? "workspace-loading"}
+          enabled={useMobileWorkspaceShell}
+        >
           <Slot />
         </MobileWorkspaceShell>
       ) : (

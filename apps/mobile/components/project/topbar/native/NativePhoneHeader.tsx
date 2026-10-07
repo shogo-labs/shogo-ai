@@ -8,6 +8,7 @@ import {
   History,
   Menu,
   MessageSquare,
+  MessagesSquare,
   MoreHorizontal,
   X,
 } from "lucide-react-native";
@@ -49,6 +50,7 @@ export function NativePhoneHeader({
   handleTabPress,
   onOpenChatSessions,
   chatSessionsOpen,
+  onMessageAgent,
   overlayState,
 }: {
   projectName: string;
@@ -65,6 +67,7 @@ export function NativePhoneHeader({
   handleTabPress: (tabId: string) => void;
   onOpenChatSessions?: () => void;
   chatSessionsOpen: boolean;
+  onMessageAgent?: () => void;
   overlayState: TopBarOverlayState;
 }) {
   const onChat = narrowActiveTab === "chat";
@@ -74,6 +77,7 @@ export function NativePhoneHeader({
     NATIVE_HEADER_PAD_X +
     (showChatMoreCluster ? NATIVE_CLUSTER_WIDTH : NATIVE_PHONE_CONTROL_SIZE) +
     (showTrustBadge ? NATIVE_PHONE_CONTROL_SIZE + 8 : 0) +
+    (onMessageAgent ? NATIVE_PHONE_CONTROL_SIZE + 8 : 0) +
     (remoteHostIndicator ? NATIVE_REMOTE_INDICATOR_WIDTH : 0);
   const titleInset = nativePhoneTitleInset(leftChrome, rightChrome);
 
@@ -138,6 +142,14 @@ export function NativePhoneHeader({
                 compact
               />
             )}
+            {onMessageAgent ? (
+              <NativeCircleButton
+                icon={MessagesSquare}
+                onPress={onMessageAgent}
+                accessibilityLabel="Message agent"
+                testID="project-message-agent"
+              />
+            ) : null}
             {showChatMoreCluster ? (
               <View
                 className="flex-row items-center rounded-full bg-muted"

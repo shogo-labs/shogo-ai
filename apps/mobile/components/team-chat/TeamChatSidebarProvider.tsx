@@ -24,6 +24,7 @@ import { useCustomEmojiFeed } from '../../hooks/useCustomEmoji'
 import { ShortcutsHelp, useChatShortcuts } from '../../hooks/useChatShortcuts'
 import { NewConversationModal, type NewConversationMode } from './NewConversationModal'
 import { conversationHref } from './ConversationRows'
+import { usePhoneLayout } from '../../lib/native-phone-layout'
 
 export interface TeamChatCounts {
   /** Mentions in channels. */
@@ -160,7 +161,19 @@ function Feeds({
     },
     [router, onNavPress],
   )
-  const startCreate = useCallback((mode: NewConversationMode) => setCreating(mode), [])
+  // Phones get a full-screen route instead of a modal.
+  const phone = usePhoneLayout()
+  const startCreate = useCallback(
+    (mode: NewConversationMode) => {
+      if (phone) {
+        router.push({ pathname: '/(app)/c/new', params: { mode } } as any)
+        onNavPress?.()
+      } else {
+        setCreating(mode)
+      }
+    },
+    [phone, router, onNavPress],
+  )
   const openShortcuts = useCallback(() => setHelpOpen(true), [])
 
   useEffect(() => {
@@ -177,7 +190,7 @@ function Feeds({
           shortcuts.closeHelp()
         }}
       />
-      {creating && (
+      {creating && !phone && (
         <NewConversationModal
           workspaceId={workspaceId}
           mode={creating}

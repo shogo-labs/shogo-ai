@@ -24,14 +24,14 @@ export interface CreateMenuItem {
 }
 
 /** The menu's items for the current workspace. Pure, so it can be tested. */
-export function createMenuItems(opts: { teamChat: boolean; startCreate: (mode: 'channel' | 'dm' | 'agent') => void }): CreateMenuItem[] {
+export function createMenuItems(opts: { teamChat: boolean; startCreate: (mode: 'channel' | 'message' | 'agent') => void }): CreateMenuItem[] {
   return [
     { id: 'ask-agent', label: 'Ask an agent', icon: Sparkles, href: '/(app)/agent' },
     ...(TASKS_NAV_HIDDEN ? [] : [{ id: 'start-task', label: 'Start a task', icon: ListTodo, href: '/(app)/tasks' }]),
     { id: 'new-project', label: 'New project', icon: FolderPlus, href: '/(app)/new-project' },
     ...(opts.teamChat
       ? [
-          { id: 'new-message', label: 'New message', icon: MessageSquarePlus, run: () => opts.startCreate('dm') },
+          { id: 'new-message', label: 'New message', icon: MessageSquarePlus, run: () => opts.startCreate('message') },
           { id: 'new-channel', label: 'Create channel', icon: Hash, run: () => opts.startCreate('channel') },
         ]
       : []),

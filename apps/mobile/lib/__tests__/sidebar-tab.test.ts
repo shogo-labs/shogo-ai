@@ -113,6 +113,7 @@ describe('phone dock', () => {
     expect(dockTabForPathname('/projects/p1')).toBe('home')
     expect(dockTabForPathname('/c/dm1', conversations)).toBe('dms')
     expect(dockTabForPathname('/c/dms')).toBe('dms')
+    expect(dockTabForPathname('/c/new')).toBe('dms')
     expect(dockTabForPathname('/activity')).toBe('activity')
     expect(dockTabForPathname('/c/inbox')).toBe('activity')
     expect(dockTabForPathname('/tasks')).toBe('more')
@@ -124,7 +125,7 @@ describe('isConversationPath', () => {
   test('a channel or DM is a conversation; the chat pages around it are not', () => {
     expect(isConversationPath('/c/ch1')).toBe(true)
     expect(isConversationPath('/(app)/c/dm1/')).toBe(true)
-    for (const page of ['/c', '/c/dms', '/c/inbox', '/c/later', '/c/search', '/c/settings', '/', '/projects/p1']) {
+    for (const page of ['/c', '/c/dms', '/c/new', '/c/inbox', '/c/later', '/c/search', '/c/settings', '/', '/projects/p1']) {
       expect(isConversationPath(page)).toBe(false)
     }
   })

@@ -61,7 +61,7 @@ export function DmsPanel({ variant = 'panel' }: { variant?: 'panel' | 'screen' }
         {rows.length === 0 && (
           <Text className="px-3 py-4 text-xs text-muted-foreground">{filter === 'unreads' ? "You're all caught up." : 'No conversations yet.'}</Text>
         )}
-        <PanelLink icon={Plus} label="New message" onPress={() => chat.startCreate('dm')} />
+        <PanelLink icon={Plus} label="New message" onPress={() => chat.startCreate('message')} />
         <PanelLink icon={Plus} label="Message an agent" onPress={() => chat.startCreate('agent')} />
       </Rows>
     </View>

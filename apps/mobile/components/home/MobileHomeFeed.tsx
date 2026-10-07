@@ -7,7 +7,7 @@
  * agents, each its own section.
  */
 import { useMemo } from 'react'
-import { Pressable, RefreshControl, Text, View } from 'react-native'
+import { Platform, Pressable, RefreshControl, Text, View } from 'react-native'
 import { useFocusEffect, useRouter } from 'expo-router'
 import { useCallback, useState } from 'react'
 import { observer } from 'mobx-react-lite'
@@ -134,7 +134,13 @@ export const MobileHomeFeed = observer(function MobileHomeFeed() {
                 key={project.id}
                 accessibilityRole="link"
                 accessibilityLabel={project.name}
-                onPress={() => router.push({ pathname: '/(app)/projects/[id]', params: { id: project.id } } as any)}
+                onPress={() =>
+                  router.push({
+                    pathname: '/(app)/projects/[id]',
+                    // Native phones always land on the project chat.
+                    params: Platform.OS === 'web' ? { id: project.id } : { id: project.id, tab: 'chat-fullscreen' },
+                  } as any)
+                }
                 className="flex-row items-center gap-2.5 rounded-md px-2 py-2 active:bg-accent/50"
               >
                 <Folder size={16} className="text-muted-foreground" />

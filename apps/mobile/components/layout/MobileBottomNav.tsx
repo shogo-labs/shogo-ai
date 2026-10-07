@@ -91,6 +91,7 @@ function isHiddenPath(pathname: string) {
     "/members",
     "/new-workspace",
     "/remote-control",
+    "/c/new",
   ].some(
     (path) =>
       pathname === path ||

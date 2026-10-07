@@ -11,16 +11,15 @@ import { useRouter } from 'expo-router'
 import { Info, Store } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { useAgentActivity } from '../../../hooks/useAgentActivity'
-import { teamChatApi, type Mentionables } from '../../../lib/team-chat-api'
+import type { Mentionables } from '../../../lib/team-chat-api'
 import { agentWorkingOn } from '../../../lib/agent-directory'
-import { invalidateConversationList } from '../../../hooks/useTeamChat'
+import { useOpenAgentDm } from '../../../lib/use-open-agent-dm'
 import { AgentAvatar } from '../AgentAvatar'
 import { AgentProfileCard } from '../AgentProfileCard'
 import { PanelLink, PanelSection } from '../ConversationRows'
 import { useTeamChatNav } from '../TeamChatSidebarProvider'
 import { useWorkspaceExperience } from '../../../hooks/useWorkspaceExperience'
 
-const api = teamChatApi()
 type Agent = Mentionables['agents'][number]
 
 export function AgentsPanel({ onNavPress }: { onNavPress?: () => void }) {
@@ -30,29 +29,31 @@ export function AgentsPanel({ onNavPress }: { onNavPress?: () => void }) {
   const experience = useWorkspaceExperience()
   const activity = useAgentActivity({ light: true })
   const [profile, setProfile] = useState<Agent | null>(null)
-  const [opening, setOpening] = useState<string | null>(null)
+  const { openAgentDm, opening } = useOpenAgentDm(chat.workspaceId)
+  const [openingKey, setOpeningKey] = useState<string | null>(null)
   const agents = chat.mentionables?.agents ?? []
   const work = useMemo(() => agentWorkingOn(activity.tasks, activity.activeChats), [activity.tasks, activity.activeChats])
   if (!chat.enabled || !chat.workspaceId) return null
   const workspaceId = chat.workspaceId
 
   const message = async (agent: Agent) => {
-    setOpening(agent.key)
+    setOpeningKey(agent.key)
     try {
-      const conversation = await api.openAgentDm(workspaceId, agent.projectId)
-      invalidateConversationList(workspaceId)
-      chat.openConversation(conversation)
+      await openAgentDm(agent.projectId, { navigate: chat.openConversation })
     } finally {
-      setOpening(null)
+      setOpeningKey(null)
     }
   }
 
   // The project pane sits beside a conversation, so it needs a wide screen.
   const showInPane = async (projectId: string) => {
-    const conversation = await api.openAgentDm(workspaceId, projectId)
-    invalidateConversationList(workspaceId)
-    router.push(`/(app)/c/${encodeURIComponent(conversation.id)}?project=${encodeURIComponent(projectId)}` as any)
-    onNavPress?.()
+    await openAgentDm(projectId, {
+      withProjectPane: true,
+      navigate: (conversation) => {
+        router.push(`/(app)/c/${encodeURIComponent(conversation.id)}?project=${encodeURIComponent(projectId)}` as any)
+        onNavPress?.()
+      },
+    })
   }
 
   return (
@@ -65,9 +66,9 @@ export function AgentsPanel({ onNavPress }: { onNavPress?: () => void }) {
               <Pressable
                 accessibilityRole="button"
                 accessibilityLabel={`Message ${agent.name}${doing ? `, working on ${doing}` : ''}`}
-                disabled={opening === agent.key}
+                disabled={opening && openingKey === agent.key}
                 onPress={() => void message(agent)}
-                className={cn('min-w-0 flex-1 flex-row items-center gap-2.5 rounded-md px-2 py-1.5 active:bg-accent/50', opening === agent.key && 'opacity-60')}
+                className={cn('min-w-0 flex-1 flex-row items-center gap-2.5 rounded-md px-2 py-1.5 active:bg-accent/50', opening && openingKey === agent.key && 'opacity-60')}
               >
                 <View>
                   <AgentAvatar name={agent.name} projectId={agent.projectId} workspaceId={workspaceId} iconUrl={agent.image} size={28} />
