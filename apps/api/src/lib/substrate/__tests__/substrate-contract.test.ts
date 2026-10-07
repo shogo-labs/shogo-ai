@@ -333,6 +333,16 @@ describe('MetalSubstrate addresses the anchored workspace runtime key', () => {
   })
 })
 
+describe('MetalSubstrate.discardPublishedRuntime', () => {
+  it('destroys the published VM and keeps the edge routing to metal', async () => {
+    const { substrate, spies } = metalCase.make()
+    await substrate.publish('p1', { subdomain: 'my-site', serverBacked: true })
+    await (substrate as MetalSubstrate).discardPublishedRuntime('p1', 'my-site')
+    expect(spies.unpublished).toEqual(['p1'])
+    expect(spies.kv.get('my-site')).toBe('metal')
+  })
+})
+
 // Regression coverage for the metal wake-path always-on bug: `wakePublished`
 // used to call `getMetalPublishedUrl(projectId, subdomain)` WITHOUT the
 // caller's `alwaysOn`, unlike `publish()` a few lines above it in the same
