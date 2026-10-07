@@ -15,6 +15,7 @@ import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test'
 // set before the module under test is imported (it reads the env var once,
 // at module load, into a top-level const).
 process.env.REGION_PROXY_CONNECT_TIMEOUT_MS = '50'
+process.env.REGION_PROXY_WRITE_TIMEOUT_MS = '300'
 
 const PEERS: Record<string, { id: string; label: string; url: string }> = {
   'eu-frankfurt-1': { id: 'eu-frankfurt-1', label: 'EU', url: 'https://79.76.126.115' },
@@ -201,6 +202,21 @@ describe('proxyToPeer', () => {
     expect(n).toBe(1) // no retry for a body-carrying request
     expect(res.status).toBe(502)
     expect(res.__json.error).not.toContain('after retry')
+  })
+
+  test('a POST whose peer answers after the GET connect-timeout still succeeds (publish builds take >10s)', async () => {
+    global.fetch = ((_url: string, init: any) =>
+      new Promise<Response>((resolve, reject) => {
+        const t = setTimeout(() => resolve(new Response('{"ok":true}', { status: 200 })), 150)
+        init?.signal?.addEventListener('abort', () => {
+          clearTimeout(t)
+          reject(init.signal.reason)
+        })
+      })) as any
+
+    const c = makeCtx({ method: 'POST', path: '/api/projects/p1/republish', body: '{}' })
+    const res: any = await proxyToPeer(c, 'eu-frankfurt-1')
+    expect(res.status).toBe(200)
   })
 
   test('a non-2xx response from the peer is returned as-is (not treated as a transport failure / no retry)', async () => {
