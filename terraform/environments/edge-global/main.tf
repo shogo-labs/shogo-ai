@@ -170,6 +170,58 @@ output "worker_m2m_bot_skip_ruleset_id" {
   value       = cloudflare_ruleset.worker_m2m_bot_skip.id
 }
 
+# =============================================================================
+# Cache Rule — respect origin Cache-Control for mutable, unhashed static files
+# =============================================================================
+# `apps/mobile/nginx.conf` deliberately gives /favicon.ico and /manifest.json a
+# short, revalidating policy (`max-age=300, must-revalidate`) because — unlike
+# the content-hashed /_expo/* bundle assets — these filenames never change, so
+# updating the file (e.g. a new favicon) is invisible to any cache that keeps
+# serving the old bytes under the same URL.
+#
+# With no cache_rule in this zone, Cloudflare fell back to its dashboard-
+# configured zone default for static extensions, which serves
+# `Cache-Control: public, max-age=31536000, immutable` — a full year — and
+# completely ignores nginx's origin header. Observed in production: Cloudflare
+# was serving a `/favicon.ico` cached since July, unaffected by TWO favicon
+# updates since (commits 219fae219 / 413766244) and by any Cache-Control the
+# origin sends, because "respect origin" was never enabled for these paths.
+#
+# `cache = true` + `edge_ttl.mode = "respect_origin"` makes Cloudflare treat
+# nginx's own Cache-Control as authoritative for both edge and browser TTLs,
+# instead of a fixed zone-wide default — matching bounded staleness (~5 min)
+# instead of the effectively-permanent staleness disclosed above.
+resource "cloudflare_ruleset" "studio_static_respect_origin_cache" {
+  zone_id     = var.cloudflare_zone_id
+  name        = "Respect origin Cache-Control for mutable static files"
+  description = "favicon.ico / favicon.png / manifest.json must revalidate against origin, not use the zone's year-long default edge TTL"
+  kind        = "zone"
+  phase       = "http_request_cache_settings"
+
+  rules {
+    ref         = "studio_static_respect_origin"
+    description = "Honor nginx's short max-age for favicon/manifest instead of the zone default"
+    expression  = "(http.host eq \"studio.shogo.ai\") and (http.request.uri.path in {\"/favicon.ico\" \"/favicon.png\" \"/manifest.json\"})"
+    action      = "set_cache_settings"
+    enabled     = true
+
+    action_parameters {
+      cache = true
+      edge_ttl {
+        mode = "respect_origin"
+      }
+      browser_ttl {
+        mode = "respect_origin"
+      }
+    }
+  }
+}
+
+output "studio_static_respect_origin_cache_ruleset_id" {
+  description = "Zone ruleset id for the favicon/manifest respect-origin cache rule."
+  value       = cloudflare_ruleset.studio_static_respect_origin_cache.id
+}
+
 output "install_url" { value = module.install_shogo_ai.install_url }
 output "releases_url" { value = module.install_shogo_ai.releases_url }
 
