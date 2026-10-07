@@ -6790,8 +6790,8 @@ async function startGateway(expectedProjectId?: string): Promise<void> {
   // kicked off above / in essentials, instead of blocking the whole start.
   agentGateway.setWorkspaceDepsReady(() => workspaceDepsReadyPromise)
   if (IS_WORKSPACE_RUNTIME) {
-    agentGateway.setWorkspaceRebuild(effectiveWorkspaceProjectIds, (projectId: string) => {
-      workspacePreviewManagers.get(projectId)?.requestWebRebuild()
+    agentGateway.setWorkspaceRebuild(effectiveWorkspaceProjectIds, (projectId: string, path: string) => {
+      workspacePreviewManagers.get(projectId)?.requestWebRebuild(path)
     })
   }
   // Wire the runtime's root-serving PreviewManager into the gateway so prompt

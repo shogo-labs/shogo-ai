@@ -639,7 +639,7 @@ export class AgentGateway {
   }
   /** Canvas build manager — runs per-workspace Vite builds */
   private canvasBuildManager: CanvasBuildManager | null = null
-  private workspaceRebuild: ((projectId: string) => void) | null = null
+  private workspaceRebuild: ((projectId: string, path: string) => void) | null = null
   /**
    * Post-build `tsc --noEmit` gate. Vite/Expo transpile without
    * type-checking, so type errors (missing imports, boolean-as-component,
@@ -798,7 +798,7 @@ export class AgentGateway {
    * member's own preview. The root CanvasBuildManager is rooted at the
    * merged root, which has no package.json, so it can never build them.
    */
-  setWorkspaceRebuild(memberIds: () => readonly string[], rebuild: (projectId: string) => void): void {
+  setWorkspaceRebuild(memberIds: () => readonly string[], rebuild: (projectId: string, path: string) => void): void {
     this.workspaceRebuild = rebuild
     this.canvasFileWatcher.setWorkspaceMembers(memberIds)
   }
@@ -1286,7 +1286,7 @@ export class AgentGateway {
         waitForDeps: pm ? () => pm.depsReady : undefined,
       })
       watcher.setOnRebuild((target) => {
-        if (target.projectId) this.workspaceRebuild?.(target.projectId)
+        if (target.projectId) this.workspaceRebuild?.(target.projectId, target.path)
         else this.canvasBuildManager?.triggerRebuild()
       })
       this.canvasBuildManager.start().then(() => {

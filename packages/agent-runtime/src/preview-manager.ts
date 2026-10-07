@@ -192,10 +192,15 @@ export function normalizeExpoBasePath(basePath: string): string {
  * wrapping arbitrary user config is unsafe. The export still receives
  * EXPO_BASE_URL, which lets projects that opt into an env-driven config use
  * the same path.
+ *
+ * `onWrite` receives every content written to app.json (patched, then the
+ * restored original) so callers can tell these self-writes apart from user
+ * edits — the workspace file watcher treats app.json as buildable source.
  */
 export function patchExpoAppJsonForBasePath(
   cwd: string,
   basePath: string,
+  onWrite?: (appJsonPath: string, contents: readonly string[]) => void,
 ): () => void {
   const appJsonPath = join(cwd, 'app.json')
   const dynamicConfig = ['app.config.js', 'app.config.cjs', 'app.config.mjs', 'app.config.ts']
@@ -228,7 +233,9 @@ export function patchExpoAppJsonForBasePath(
         },
       },
     }
-    writeFileSync(appJsonPath, `${JSON.stringify(patched, null, 2)}\n`, 'utf8')
+    const patchedText = `${JSON.stringify(patched, null, 2)}\n`
+    onWrite?.(appJsonPath, [patchedText, original])
+    writeFileSync(appJsonPath, patchedText, 'utf8')
   } catch (err: any) {
     console.warn(`[${LOG_PREFIX}] Could not apply Expo base path: ${err?.message ?? err}`)
     return () => {}
@@ -1110,6 +1117,8 @@ export class PreviewManager {
   private webRebuildTimer: ReturnType<typeof setTimeout> | null = null
   private webRebuildRunning = false
   private webRebuildPending = false
+  /** app.json contents written by the last base-path patch; see {@link isSelfWrittenAppJson}. */
+  private selfWrittenAppJson: { path: string; contents: Set<string> } | null = null
   /**
    * Reentrancy guard for `startApiServer()`, mirroring `expoExportInFlight`
    * above. `startApiServer()` is reachable from many independent entry
@@ -3155,6 +3164,14 @@ export class PreviewManager {
    * `emitBuildLine`) and triggers a rebuild, which writes more log
    * lines, ad infinitum.
    *
+   * `server.watch` only applies to the dev server, so the same paths (plus
+   * `dist/` and `node_modules/`) also go in `build.watch.exclude` for
+   * `vite build --watch`. Vite only auto-ignores the outDir when
+   * `emptyOutDir` is true, and the watcher runs with `--emptyOutDir false`.
+   * Tailwind v4 registers every file it scans as a dependency; when its
+   * scan reaches `dist/`, each build's own output would otherwise trigger
+   * the next build.
+   *
    * The wrapper is written on every `startBuildWatch` call — cheap
    * (single writeFileSync) and idempotent. Existing workspaces whose
    * own `vite.config.ts` already includes the ignore are unaffected
@@ -3177,6 +3194,11 @@ export class PreviewManager {
       '  server: {',
       '    watch: {',
       "      ignored: ['**/.shogo/**'],",
+      '    },',
+      '  },',
+      '  build: {',
+      '    watch: {',
+      "      exclude: ['**/node_modules/**', '**/dist/**', '**/.shogo/**'],",
       '    },',
       '  },',
       `  plugins: [${buildOutputManifestPluginSource(join(shogoDir, BUILD_OUTPUT_MANIFEST))}],`,
@@ -4214,15 +4236,30 @@ export class PreviewManager {
    * No-op for non-Metro stacks (Vite rebuilds via its own watch process)
    * and for managers that were never started — their first `start()`
    * exports the current tree anyway.
+   *
+   * `changedPath` (relative to the workspace dir) lets the export's own
+   * app.json base-path patch/restore be ignored; otherwise every export
+   * would queue the next one forever.
    */
-  requestWebRebuild(): void {
+  requestWebRebuild(changedPath?: string): void {
     if (this.resolveDevServer() !== 'metro') return
     if (!this.started && this.expoExportInFlight.size === 0) return
+    if (changedPath && this.isSelfWrittenAppJson(changedPath)) return
     if (this.webRebuildTimer) clearTimeout(this.webRebuildTimer)
     this.webRebuildTimer = setTimeout(() => {
       this.webRebuildTimer = null
       void this.runWebRebuild()
     }, WEB_REBUILD_DEBOUNCE_MS)
+  }
+
+  private isSelfWrittenAppJson(changedPath: string): boolean {
+    const own = this.selfWrittenAppJson
+    if (!own || join(this.workspaceDir, changedPath) !== own.path) return false
+    try {
+      return own.contents.has(readFileSync(own.path, 'utf8'))
+    } catch {
+      return false
+    }
   }
 
   private async runWebRebuild(): Promise<void> {
@@ -4311,7 +4348,9 @@ export class PreviewManager {
 
     const t0 = Date.now()
     const restoreExpoConfig = basePath
-      ? patchExpoAppJsonForBasePath(cwd, basePath)
+      ? patchExpoAppJsonForBasePath(cwd, basePath, (path, contents) => {
+          this.selfWrittenAppJson = { path, contents: new Set(contents) }
+        })
       : () => {}
     console.log(`[${LOG_PREFIX}] Running expo export --platform web (staging)...`)
     let exitCode: number | null

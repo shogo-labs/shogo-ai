@@ -7,7 +7,7 @@
 // debounce / trailing-edge contract.
 
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test'
-import { mkdirSync, rmSync, writeFileSync } from 'fs'
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { PreviewManager } from '../preview-manager'
 
@@ -116,5 +116,71 @@ describe('PreviewManager.requestWebRebuild', () => {
     pm.stop()
     await sleep(SETTLE_MS)
     expect(exportCount()).toBe(0)
+  })
+})
+
+describe('PreviewManager.requestWebRebuild — app.json base-path self-writes', () => {
+  const APP_JSON = JSON.stringify({ expo: { name: 'fixture' } }, null, 2) + '\n'
+  const COUNT_FILE = join(TEST_DIR, 'export-count')
+  const PATCHED_SEEN = join(TEST_DIR, 'patched-seen')
+
+  beforeEach(() => {
+    rmSync(TEST_DIR, { recursive: true, force: true })
+    mkdirSync(TEST_DIR, { recursive: true })
+    writeFileSync(join(TEST_DIR, 'package.json'), JSON.stringify({ name: 'fixture' }))
+    writeFileSync(join(TEST_DIR, 'app.json'), APP_JSON)
+    const fakeExpo = join(TEST_DIR, 'fake-expo')
+    // Args: export --platform web --output-dir <dir>
+    writeFileSync(
+      fakeExpo,
+      [
+        '#!/bin/sh',
+        `cp app.json "${PATCHED_SEEN}"`,
+        `echo x >> "${COUNT_FILE}"`,
+        'mkdir -p "$5" && echo "<html></html>" > "$5/index.html"',
+      ].join('\n'),
+    )
+    chmodSync(fakeExpo, 0o755)
+  })
+  afterEach(() => {
+    rmSync(TEST_DIR, { recursive: true, force: true })
+  })
+
+  function makeRealExportManager() {
+    const pm = new PreviewManager({ workspaceDir: TEST_DIR, runtimePort: 8080, basePath: '/workspace-preview/p1/' })
+    const internals = pm as any
+    internals.resolveDevServer = () => 'metro'
+    internals.started = true
+    internals.resolveExpoBin = () => join(TEST_DIR, 'fake-expo')
+    const exportCount = () =>
+      existsSync(COUNT_FILE) ? readFileSync(COUNT_FILE, 'utf8').trim().split('\n').length : 0
+    return { pm, exportCount }
+  }
+
+  test('the export patching and restoring app.json does not queue another export', async () => {
+    const { pm, exportCount } = makeRealExportManager()
+    pm.requestWebRebuild('src/App.tsx')
+    await sleep(SETTLE_MS + 500)
+    expect(exportCount()).toBe(1)
+    expect(readFileSync(PATCHED_SEEN, 'utf8')).toContain('"baseUrl": "/workspace-preview/p1"')
+    expect(readFileSync(join(TEST_DIR, 'app.json'), 'utf8')).toBe(APP_JSON)
+
+    // The watcher reports both self-writes once they settle.
+    pm.requestWebRebuild('app.json')
+    pm.requestWebRebuild('app.json')
+    await sleep(SETTLE_MS + 500)
+    expect(exportCount()).toBe(1)
+  })
+
+  test('a real app.json edit still triggers an export', async () => {
+    const { pm, exportCount } = makeRealExportManager()
+    pm.requestWebRebuild('src/App.tsx')
+    await sleep(SETTLE_MS + 500)
+    expect(exportCount()).toBe(1)
+
+    writeFileSync(join(TEST_DIR, 'app.json'), JSON.stringify({ expo: { name: 'renamed' } }, null, 2) + '\n')
+    pm.requestWebRebuild('app.json')
+    await sleep(SETTLE_MS + 500)
+    expect(exportCount()).toBe(2)
   })
 })
