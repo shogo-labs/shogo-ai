@@ -26,7 +26,7 @@
  * `null` when the caller should handle it locally.
  */
 
-import type { Context } from 'hono'
+import type { Context, Next } from 'hono'
 import { prisma } from './prisma'
 import { RAW_REGION_ID, REGION_PEERS, getPeer } from './region'
 import { proxyToPeer, isProxiedRequest } from './region-peer-proxy'
@@ -42,15 +42,22 @@ function chatRegionPinEnabled(): boolean {
 }
 
 /** Resolve a project's workspace home region, or null if unknown. */
-async function resolveProjectHomeRegion(projectId: string): Promise<string | null> {
+async function resolveProjectHomeRegion(
+  projectId: string,
+  knownWorkspaceId?: string,
+): Promise<string | null> {
   try {
-    const project = await prisma.project.findUnique({
-      where: { id: projectId },
-      select: { workspaceId: true },
-    })
-    if (!project) return null
+    let workspaceId = knownWorkspaceId
+    if (!workspaceId) {
+      const project = await prisma.project.findUnique({
+        where: { id: projectId },
+        select: { workspaceId: true },
+      })
+      if (!project) return null
+      workspaceId = project.workspaceId
+    }
     const ws = await prisma.workspace.findUnique({
-      where: { id: project.workspaceId },
+      where: { id: workspaceId },
       select: { homeRegion: true },
     })
     return ws?.homeRegion ?? null
@@ -91,10 +98,14 @@ function homeRegionUnavailable(c: Context, homeRegion: string): Response {
  *   peer region.
  * - Returns a retryable 503 (fail closed) when the home region is known but
  *   unreachable, rather than serving a bufferless local region.
+ *
+ * `knownWorkspaceId` skips the project lookup; pass it only when it is
+ * verified to be `projectId`'s workspace (e.g. cached by `requireProjectAccess`).
  */
 export async function pinChatToHomeRegion(
   c: Context,
   projectId: string,
+  knownWorkspaceId?: string,
 ): Promise<Response | null> {
   // Single-region / local / desktop: nothing to pin.
   if (!RAW_REGION_ID) return null
@@ -108,7 +119,7 @@ export async function pinChatToHomeRegion(
   // Already proxied here from a sibling region — handle locally, never re-proxy.
   if (isProxiedRequest(c)) return null
 
-  const homeRegion = await resolveProjectHomeRegion(projectId)
+  const homeRegion = await resolveProjectHomeRegion(projectId, knownWorkspaceId)
   // Unknown home region (missing project, lookup error, or legacy null row):
   // fall through to local handling. The local handler validates access and
   // will 404/serve as appropriate — we don't want to fail closed on an
@@ -132,4 +143,19 @@ export async function pinChatToHomeRegion(
   // stream data.
   if (resp.status === 502) return homeRegionUnavailable(c, homeRegion)
   return resp
+}
+
+/**
+ * Middleware for `/api/projects/:projectId/*`: pin every method to the home
+ * region. Most project routes resolve (and so boot) the runtime — files,
+ * terminal, database, diagnostics, preview — while the home-region write
+ * router only pins mutating methods. Register after `requireProjectAccess`,
+ * which caches the verified `workspaceId`.
+ */
+export function pinProjectRoutesToHomeRegion(opts: { skip?: (path: string) => boolean } = {}) {
+  return async (c: Context, next: Next) => {
+    if (opts.skip?.(new URL(c.req.url).pathname)) return next()
+    const pinned = await pinChatToHomeRegion(c, c.req.param('projectId')!, c.get('workspaceId'))
+    return pinned ?? next()
+  }
 }

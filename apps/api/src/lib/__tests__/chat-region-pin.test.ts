@@ -136,6 +136,13 @@ describe('pinChatToHomeRegion', () => {
     expect(res.__json?.error?.retryable).toBe(true)
   })
 
+  test('uses a verified knownWorkspaceId instead of looking the project up', async () => {
+    // p_missing has no project row; the known workspace still pins it.
+    const res = await pinChatToHomeRegion(makeCtx(), 'p_missing', 'ws_us')
+    expect(proxyCalls).toEqual([{ region: 'us-ashburn-1' }])
+    expect(res).toBe(proxyResponse)
+  })
+
   test('kill switch CHAT_REGION_PIN=off disables pinning (serve locally)', async () => {
     process.env.CHAT_REGION_PIN = 'off'
     const res = await pinChatToHomeRegion(makeCtx(), 'p_us')

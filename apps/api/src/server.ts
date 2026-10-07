@@ -23,7 +23,7 @@ import { REGION_ID, REGION_LABEL, REGION_PEERS, getPeer } from './lib/region'
 import { runtimeRoutes } from './routes/runtime'
 import { filesRoutes } from './routes/files'
 import { projectChatRoutes, trackUsageFromStream } from './routes/project-chat'
-import { pinChatToHomeRegion } from './lib/chat-region-pin'
+import { pinChatToHomeRegion, pinProjectRoutesToHomeRegion } from './lib/chat-region-pin'
 import { workspaceChatRoutes } from './routes/workspace-chat'
 import { workspaceAgentRoutes, sessionAuthorize } from './routes/workspace-agent'
 import { workspaceMeetingRoutes, sharedMeetingRoutes } from './routes/workspace-meetings'
@@ -803,6 +803,10 @@ app.use('/api/projects/:projectId/*', async (c, next) => {
   }
   return requireProjectAccess(c, next)
 })
+
+// A project's runtime lives only in its workspace's home region; serve every
+// project request there instead of booting a second runtime with a stale tree.
+app.use('/api/projects/:projectId/*', pinProjectRoutesToHomeRegion({ skip: isProjectReservedTopLevelPath }))
 
 // Home-region write router: proxy workspace-scoped mutations to the region that
 // owns the workspace so tenant data is only ever written in one place (keeps
