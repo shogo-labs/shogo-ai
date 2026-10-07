@@ -49,6 +49,9 @@ test.describe("Team workspace: desktop rail and panels", () => {
     // The scripted agent answered the seeded DM while nobody was looking.
     await expect(rail(page).getByRole("tab", { name: /^DMs, \d+ unread$/ })).toBeVisible({ timeout: 30_000 })
     await expect(panel(page, "home-panel").getByText("Workspace agent")).toBeVisible()
+    // Home is the activity inbox: filter chips and the Unreads toggle.
+    await expect(panel(page, "home-panel").getByRole("button", { name: "All", exact: true })).toBeVisible()
+    await expect(panel(page, "home-panel").getByRole("button", { name: "Unreads only" })).toBeVisible()
   })
 
   test("the rail is icons only, and a label appears beside an icon on hover or focus", async () => {

@@ -1188,13 +1188,7 @@ export const AppSidebar = observer(function AppSidebar({
       case "home":
       default:
         if (experience.kind === "personal") return <PersonalChatsPanel onNavPress={onNavPress} />;
-        return (
-          <HomePanel
-            onNavPress={onNavPress}
-            isHomeRoute={/\/agent\/?$/.test(pathname)}
-            pinned={pinnedProjects.length > 0 ? <View className="mt-3 px-2">{pinnedBlock}</View> : null}
-          />
-        );
+        return <HomePanel onNavPress={onNavPress} isHomeRoute={/\/agent\/?$/.test(pathname)} />;
     }
   };
 
@@ -1356,10 +1350,14 @@ export const AppSidebar = observer(function AppSidebar({
       )}
 
       {/* ── Main Navigation (scrollable) ── */}
-      {tab === "activity" && experience.kind === "team" ? (
-        // The feed owns its scrolling and filters.
+      {(tab === "activity" || tab === "home") && experience.kind === "team" ? (
+        // The feed owns its scrolling and filters; Home is the same feed under a short header.
         <View className="flex-1">
-          <ActivityFeed compact />
+          {tab === "home" ? (
+            <HomePanel onNavPress={onNavPress} isHomeRoute={/\/agent\/?$/.test(pathname)} />
+          ) : (
+            <ActivityFeed compact />
+          )}
         </View>
       ) : (
       <ScrollView
