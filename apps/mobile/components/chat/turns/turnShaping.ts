@@ -83,6 +83,7 @@ const UNGROUPABLE_TOOLS = new Set([
   "task",
   "Task",
   "agent_spawn",
+  "project_call",
   "team_create",
   "browser",
   "create_plan",

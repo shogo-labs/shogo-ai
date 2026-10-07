@@ -28,12 +28,16 @@ export interface ProjectSidePaneProps {
   workspaceId?: string | null
   name: string
   onClose: () => void
+  /** The tab to show first (default Canvas). */
+  initialTab?: ProjectPaneTab
+  /** Resume this project chat in the Chat tab instead of starting a new one. */
+  chatSessionId?: string
 }
 
-export function ProjectSidePane({ projectId, workspaceId, name, onClose }: ProjectSidePaneProps) {
+export function ProjectSidePane({ projectId, workspaceId, name, onClose, initialTab = 'canvas', chatSessionId }: ProjectSidePaneProps) {
   const router = useRouter()
-  const [tab, setTab] = useState<ProjectPaneTab>('canvas')
-  const [visited, setVisited] = useState<ReadonlySet<ProjectPaneTab>>(() => new Set(['canvas']))
+  const [tab, setTab] = useState<ProjectPaneTab>(initialTab)
+  const [visited, setVisited] = useState<ReadonlySet<ProjectPaneTab>>(() => new Set([initialTab]))
   const select = (next: ProjectPaneTab) => {
     setTab(next)
     setVisited((prev) => (prev.has(next) ? prev : new Set(prev).add(next)))
@@ -47,7 +51,12 @@ export function ProjectSidePane({ projectId, workspaceId, name, onClose }: Proje
         <AgentAvatar name={name} projectId={projectId} workspaceId={workspaceId} size={20} />
         <Text className="min-w-0 flex-1 text-sm font-semibold text-foreground" numberOfLines={1}>{name}</Text>
         <Pressable
-          onPress={() => router.push({ pathname: '/(app)/projects/[id]', params: { id: projectId } } as any)}
+          onPress={() =>
+            router.push({
+              pathname: '/(app)/projects/[id]',
+              params: { id: projectId, ...(tab === 'chat' && chatSessionId ? { chatSessionId } : {}) },
+            } as any)
+          }
           accessibilityRole="button"
           accessibilityLabel="Open full project"
           className="rounded p-1.5 active:bg-muted"
@@ -65,7 +74,7 @@ export function ProjectSidePane({ projectId, workspaceId, name, onClose }: Proje
         {visited.has('canvas') && <View style={show('canvas')}><ProjectSurfaceView projectId={projectId} surface="canvas" /></View>}
         {visited.has('files') && <View style={show('files')}><ProjectSurfaceView projectId={projectId} surface="files" /></View>}
         {visited.has('plans') && <View style={show('plans')}><ProjectSurfaceView projectId={projectId} surface="plans" /></View>}
-        {visited.has('chat') && <View style={show('chat')}><ProjectChatView projectId={projectId} /></View>}
+        {visited.has('chat') && <View style={show('chat')}><ProjectChatView projectId={projectId} chatSessionId={chatSessionId} /></View>}
       </View>
     </View>
   )

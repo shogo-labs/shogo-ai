@@ -216,3 +216,109 @@ describe('callProjectAgent — desktop (local mode)', () => {
     expect(store.tokenCalledWith.projectId).toBe('proj-2')
   })
 })
+
+describe('callProjectAgentAsChat — chat persistence', () => {
+  const sessions = new Map<string, any>()
+  const messages: any[] = []
+  const fakeDb = {
+    project: { findUnique: async () => ({ name: 'Caller' }) },
+    chatSession: {
+      upsert: async ({ where, create }: any) => {
+        if (!sessions.has(where.id)) sessions.set(where.id, { ...create, cachedMessageCount: 0 })
+        return sessions.get(where.id)
+      },
+      update: async ({ where, data }: any) => {
+        const s = sessions.get(where.id)
+        if (data.cachedMessageCount?.increment) s.cachedMessageCount += data.cachedMessageCount.increment
+        return s
+      },
+    },
+    chatMessage: { create: async ({ data }: any) => { messages.push(data); return data } },
+  }
+
+  beforeEach(() => {
+    sessions.clear()
+    messages.length = 0
+    svc.setCallChatDb(fakeDb)
+  })
+  afterEach(() => svc.setCallChatDb(null))
+
+  it('derives one stable chat id per project and runId', () => {
+    const a = svc.runChatSessionId('proj-1', 'run-1')
+    expect(a).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
+    expect(svc.runChatSessionId('proj-1', 'run-1')).toBe(a)
+    expect(svc.runChatSessionId('proj-2', 'run-1')).not.toBe(a)
+    expect(svc.runChatSessionId('proj-1', 'run-2')).not.toBe(a)
+  })
+
+  it('records the request and reply, forwards the chat id as the runtime session, and returns it', async () => {
+    let forwarded: any = null
+    globalThis.fetch = (async (_url: any, init: any) => {
+      forwarded = JSON.parse(init.body)
+      return new Response(JSON.stringify({ status: 'completed', reply: 'all done', sessionId: forwarded.sessionId }), { status: 200 })
+    }) as any
+
+    const out = await svc.callProjectAgentAsChat(FAKE_CTX, 'proj-1', 'ws-1', {
+      message: 'do it', runId: 'run-1', callerProjectId: 'proj-caller',
+    })
+    const chatId = svc.runChatSessionId('proj-1', 'run-1')
+
+    expect(out.status).toBe(200)
+    expect(out.body.chatSessionId).toBe(chatId)
+    expect(forwarded.sessionId).toBe(chatId)
+    expect(forwarded.runId).toBe('run-1')
+    expect(sessions.get(chatId)).toMatchObject({ contextType: 'project', contextId: 'proj-1' })
+    expect(sessions.get(chatId).inferredName).toBe('Caller: do it')
+    expect(messages.map((m) => [m.role, m.content])).toEqual([['user', 'do it'], ['assistant', 'all done']])
+    expect(sessions.get(chatId).cachedMessageCount).toBe(2)
+  })
+
+  it('reuses one chat for every hop of the same runId', async () => {
+    globalThis.fetch = (async () => new Response(JSON.stringify({ status: 'completed', reply: 'ok' }), { status: 200 })) as any
+    await svc.callProjectAgentAsChat(FAKE_CTX, 'proj-1', 'ws-1', { message: 'first', runId: 'run-7' })
+    await svc.callProjectAgentAsChat(FAKE_CTX, 'proj-1', 'ws-1', { message: 'second', runId: 'run-7' })
+    expect(sessions.size).toBe(1)
+    expect(messages.filter((m) => m.role === 'user').map((m) => m.content)).toEqual(['first', 'second'])
+  })
+
+  it('still calls the runtime when the chat cannot be recorded', async () => {
+    svc.setCallChatDb({ ...fakeDb, chatSession: { ...fakeDb.chatSession, upsert: async () => { throw new Error('db down') } } })
+    let forwarded: any = null
+    globalThis.fetch = (async (_url: any, init: any) => {
+      forwarded = JSON.parse(init.body)
+      return new Response(JSON.stringify({ status: 'completed', reply: 'ok' }), { status: 200 })
+    }) as any
+    const out = await svc.callProjectAgentAsChat(FAKE_CTX, 'proj-1', 'ws-1', { message: 'hi', runId: 'run-9' })
+    expect(out.status).toBe(200)
+    expect(out.body.chatSessionId).toBeUndefined()
+    expect(forwarded.sessionId).toBeUndefined()
+  })
+
+  it('leaves an explicit sessionId alone', async () => {
+    let forwarded: any = null
+    globalThis.fetch = (async (_url: any, init: any) => {
+      forwarded = JSON.parse(init.body)
+      return new Response(JSON.stringify({ status: 'completed', reply: 'ok' }), { status: 200 })
+    }) as any
+    await svc.callProjectAgentAsChat(FAKE_CTX, 'proj-1', 'ws-1', { message: 'hi', runId: 'r', sessionId: 'custom' })
+    expect(forwarded.sessionId).toBe('custom')
+    expect(sessions.size).toBe(0)
+  })
+
+  it('wait=false acks with the chat id and saves the reply once the background call finishes', async () => {
+    let forwarded: any = null
+    globalThis.fetch = (async (_url: any, init: any) => {
+      forwarded = JSON.parse(init.body)
+      return new Response(JSON.stringify({ status: 'completed', reply: 'later reply' }), { status: 200 })
+    }) as any
+
+    const out = await svc.callProjectAgentAsChat(FAKE_CTX, 'proj-1', 'ws-1', { message: 'long job', runId: 'run-bg', wait: false })
+    const chatId = svc.runChatSessionId('proj-1', 'run-bg')
+    expect(out.status).toBe(202)
+    expect(out.body).toMatchObject({ status: 'accepted', runId: 'run-bg', chatSessionId: chatId })
+
+    for (let i = 0; i < 50 && !messages.some((m) => m.role === 'assistant'); i++) await new Promise((r) => setTimeout(r, 5))
+    expect(forwarded.wait).toBe(true)
+    expect(messages.find((m) => m.role === 'assistant')?.content).toBe('later reply')
+  })
+})

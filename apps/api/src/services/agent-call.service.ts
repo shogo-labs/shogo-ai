@@ -22,6 +22,7 @@
  * alone — workspace runtimes are never given a `WEBHOOK_TOKEN`, so the
  * external `/agent/hooks/*` path can't be reused here.
  */
+import { createHash, randomUUID } from 'node:crypto'
 import type { Context } from 'hono'
 
 export interface AgentCallRequest {
@@ -76,6 +77,162 @@ export async function callProjectAgent(
     timeoutMs: wait ? timeoutMs + 5_000 : 15_000,
     timeoutMessage: `The target agent did not reply within ${Math.round(timeoutMs / 1000)}s. Re-issue with wait=false and poll, or raise timeoutMs.`,
   })
+}
+
+// ---------------------------------------------------------------------------
+// Chat persistence for project_call
+// ---------------------------------------------------------------------------
+
+/**
+ * Deterministic UUID (v5-style, sha1) for the chat that holds every hop of one
+ * `runId` into one project. Lets repeated calls reuse a single ChatSession
+ * without a schema change or a lookup column.
+ */
+export function runChatSessionId(projectId: string, runId: string): string {
+  const hash = createHash('sha1').update(`shogo:project-call:${projectId}:${runId}`).digest()
+  hash[6] = (hash[6]! & 0x0f) | 0x50
+  hash[8] = (hash[8]! & 0x3f) | 0x80
+  const hex = hash.subarray(0, 16).toString('hex')
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`
+}
+
+function oneLine(text: string, max: number): string {
+  const flat = text.replace(/\s+/g, ' ').trim()
+  return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat
+}
+
+let dbOverride: any = null
+
+/** Test seam: replace the Prisma client used to record call chats. */
+export function setCallChatDb(db: any | null): void {
+  dbOverride = db
+}
+
+async function callChatDb(): Promise<any> {
+  if (dbOverride) return dbOverride
+  const { prisma } = await import('../lib/prisma')
+  return prisma as any
+}
+
+async function ensureCallSession(projectId: string, sessionId: string, name: string, message: string): Promise<boolean> {
+  try {
+    const db = await callChatDb()
+    const label = oneLine(`${name}: ${message}`, 120)
+    await db.chatSession.upsert({
+      where: { id: sessionId },
+      update: { lastActiveAt: new Date() },
+      create: { id: sessionId, inferredName: label, contextType: 'project', contextId: projectId },
+    })
+    await db.chatMessage.create({
+      data: {
+        sessionId,
+        role: 'user',
+        content: message,
+        parts: JSON.stringify([{ type: 'text', text: message }]),
+        agent: 'technical',
+      },
+    })
+    await db.chatSession.update({
+      where: { id: sessionId },
+      data: { cachedMessageCount: { increment: 1 } },
+    }).catch(() => {})
+    return true
+  } catch (err: any) {
+    console.warn('[AgentCall] could not persist call chat:', err?.message ?? err)
+    return false
+  }
+}
+
+async function saveCallReply(sessionId: string, reply: string): Promise<void> {
+  try {
+    const db = await callChatDb()
+    await db.chatMessage.create({
+      data: {
+        sessionId,
+        role: 'assistant',
+        content: reply,
+        parts: JSON.stringify([{ type: 'text', text: reply }]),
+        agent: 'technical',
+      },
+    })
+    await db.chatSession.update({
+      where: { id: sessionId },
+      data: { lastActiveAt: new Date(), cachedMessageCount: { increment: 1 } },
+    })
+  } catch (err: any) {
+    console.warn('[AgentCall] could not save call reply:', err?.message ?? err)
+  }
+}
+
+async function callerName(callerProjectId: string | undefined): Promise<string> {
+  if (!callerProjectId) return 'Project call'
+  try {
+    const project = await (await callChatDb()).project.findUnique({ where: { id: callerProjectId }, select: { name: true } })
+    return project?.name || 'Project call'
+  } catch {
+    return 'Project call'
+  }
+}
+
+/**
+ * Minimal stand-in for the request context, safe to use after the HTTP
+ * response has been sent (the tunnel relay reads only the request signal and
+ * the origin header).
+ */
+function detachedContext(c: Context): Context {
+  const origin = typeof c?.req?.header === 'function' ? c.req.header('origin') : undefined
+  return {
+    req: { raw: { signal: undefined }, header: (name: string) => (name.toLowerCase() === 'origin' ? origin : undefined) },
+  } as unknown as Context
+}
+
+/**
+ * `callProjectAgent`, but the call is also recorded as a normal project chat
+ * (one ChatSession per project + runId) so the UI can open it. The ChatSession
+ * id is handed to the runtime as the session key, so the transcript the
+ * runtime keeps matches the chat. Persistence failures never fail the call.
+ *
+ * With `wait: false` the API keeps the call going in the background and saves
+ * the reply when it lands; the caller gets a 202 straight away.
+ */
+export async function callProjectAgentAsChat(
+  c: Context,
+  projectId: string,
+  workspaceId: string,
+  req: AgentCallRequest,
+): Promise<AgentCallOutcome> {
+  if (!req.message || !req.message.trim() || req.sessionId) {
+    return callProjectAgent(c, projectId, workspaceId, req)
+  }
+  const runId = req.runId?.trim() || randomUUID()
+  const chatSessionId = runChatSessionId(projectId, runId)
+  const persisted = await ensureCallSession(projectId, chatSessionId, await callerName(req.callerProjectId), req.message)
+  if (!persisted) return callProjectAgent(c, projectId, workspaceId, { ...req, runId })
+
+  const call = { ...req, runId, sessionId: chatSessionId }
+  const withChat = (body: any) =>
+    body && typeof body === 'object' && !Array.isArray(body) ? { ...body, chatSessionId } : body
+  const replyOf = (outcome: AgentCallOutcome): string | null =>
+    outcome.status >= 200 && outcome.status < 300 && typeof outcome.body?.reply === 'string' && outcome.body.reply.trim()
+      ? outcome.body.reply
+      : null
+
+  if (req.wait === false) {
+    const detached = detachedContext(c)
+    void callProjectAgent(detached, projectId, workspaceId, { ...call, wait: true, timeoutMs: 20 * 60_000 })
+      .then(async (outcome) => {
+        const reply = replyOf(outcome)
+        if (reply) await saveCallReply(chatSessionId, reply)
+        else console.warn(`[AgentCall] background call ${runId} ended without a reply (status ${outcome.status})`)
+      })
+      .catch((err) => console.warn('[AgentCall] background call failed:', err?.message ?? err))
+    return { status: 202, body: { status: 'accepted', runId, sessionId: chatSessionId, chatSessionId } }
+  }
+
+  const outcome = await callProjectAgent(c, projectId, workspaceId, call)
+  const reply = replyOf(outcome)
+  if (reply) await saveCallReply(chatSessionId, reply)
+  return { status: outcome.status, body: withChat(outcome.body) }
 }
 
 let runtimeUrlOverride: ((projectId: string) => Promise<string | null> | string | null) | null = null

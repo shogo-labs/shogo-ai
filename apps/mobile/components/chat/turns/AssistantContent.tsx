@@ -14,6 +14,7 @@ import { FileText } from "lucide-react-native"
 import type { UIMessage } from "@ai-sdk/react"
 import { InlineToolWidget } from "./InlineToolWidget"
 import { SubagentCard } from "./SubagentCard"
+import { ProjectCallCard } from "./ProjectCallCard"
 import { TeamCard } from "./TeamCard"
 import { ExecWidget } from "./ExecWidget"
 import { ConnectToolWidget, parseToolInstallResult } from "./ConnectToolWidget"
@@ -664,6 +665,10 @@ export const AssistantContent = memo(
 
         if (TASK_TOOL_NAMES.has(part.tool.toolName)) {
           return <SubagentCard key={part.id} tool={part.tool} />
+        }
+
+        if (part.tool.toolName === "project_call") {
+          return <ProjectCallCard key={part.id} tool={part.tool} />
         }
 
         if (part.tool.toolName === "ask_user") {
