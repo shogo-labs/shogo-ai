@@ -94,7 +94,7 @@ import {
   nativeDrawerSideInset,
   nativeDrawerTopInset,
 } from "../../../lib/use-native-drawer-swipe";
-import { invitationEvents } from "../../../lib/invitation-events";
+import { usePendingInvitations } from "../../../lib/use-pending-invitations";
 import { projectSidebarEvents } from "../../../lib/project-sidebar-events";
 import { WorkspaceChromeSkeletonRows } from "../WorkspaceChromeSkeleton";
 import { useWorkspaceExperience } from "../../../hooks/useWorkspaceExperience";
@@ -193,11 +193,8 @@ export const AppSidebar = observer(function AppSidebar({
   const actions = useDomainActions();
   const http = useDomainHttp();
 
-  const [pendingInvites, setPendingInvites] = useState<any[]>([]);
-  const [processingInvite, setProcessingInvite] = useState<{
-    id: string;
-    action: "accept" | "decline";
-  } | null>(null);
+  const { pendingInvites, processingInvite, acceptInvite, declineInvite } =
+    usePendingInvitations();
   const [inboxOpen, setInboxOpen] = useState(false);
 
   useEffect(() => {
@@ -228,63 +225,6 @@ export const AppSidebar = observer(function AppSidebar({
         console.error("[AppSidebar] Failed to load workspaces:", e),
       );
   }, []);
-
-  const loadInvites = useCallback(() => {
-    if (!http || !user?.email) return;
-    api
-      .getReceivedInvitations(http, user.email)
-      .then(setPendingInvites)
-      .catch((e) =>
-        console.error("[AppSidebar] Failed to load invitations:", e),
-      );
-  }, [http, user?.email]);
-
-  const acceptInvite = useCallback(
-    async (invite: any) => {
-      setProcessingInvite({ id: invite.id, action: "accept" });
-      try {
-        await actions.acceptInvitation(invite.id, user?.id || "", {
-          workspaceId: invite.workspaceId,
-          role: invite.role,
-          projectId: invite.projectId,
-        });
-        setPendingInvites((prev) =>
-          prev.filter((item: any) => item.id !== invite.id),
-        );
-      } catch {}
-      loadInvites();
-      invitationEvents.emit();
-      workspaces
-        .loadAll()
-        .catch((e) =>
-          console.error("[AppSidebar] Failed to reload workspaces:", e),
-        );
-      setProcessingInvite(null);
-    },
-    [actions, loadInvites, user?.id, workspaces],
-  );
-
-  const declineInvite = useCallback(
-    async (invite: any) => {
-      setProcessingInvite({ id: invite.id, action: "decline" });
-      try {
-        await actions.declineInvitation(invite.id);
-        setPendingInvites((prev) =>
-          prev.filter((item: any) => item.id !== invite.id),
-        );
-      } catch {}
-      loadInvites();
-      invitationEvents.emit();
-      setProcessingInvite(null);
-    },
-    [actions, loadInvites],
-  );
-
-  useEffect(() => {
-    loadInvites();
-  }, [loadInvites]);
-
-  useEffect(() => invitationEvents.subscribe(loadInvites), [loadInvites]);
 
   // Detect return from Stripe checkout: verify payment, provision subscription, reload
   useEffect(() => {
