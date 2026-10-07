@@ -1,23 +1,20 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * The Home and More panels of the desktop sidebar. Channels, DMs, Agents,
- * Projects and Activity have panels of their own.
+ * The Home (activity inbox) and More panels of the desktop sidebar. Channels,
+ * DMs, Agents, Projects and Activity have panels of their own.
  */
-import type { ReactNode } from 'react'
 import { Pressable, Text, View } from 'react-native'
 import { useRouter } from 'expo-router'
 import { Bookmark, ChevronRight, FileText, ListTodo, MessageCircle, MessagesSquare, Store } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
-import { useHomeSignals } from '../../../hooks/useHomeSignals'
 import { useWorkspaceExperience } from '../../../hooks/useWorkspaceExperience'
 // Leaf import: the `@shogo/shared-app` barrel also loads the domain SDK.
 import { TASKS_NAV_HIDDEN } from '../../../../../packages/shared-app/src/hooks/useWorkspaceExperience'
-import type { ActivityEntry } from '../../../lib/activity-feed'
 import { moreItems, type MoreIcon } from '../../../lib/more-items'
 import { usePlatformConfig } from '../../../lib/platform-config'
-import { RunningNow } from '../../activity/ActivityFeed'
-import { ConversationRow, PanelLink, PanelSection } from '../../team-chat/ConversationRows'
+import { ActivityFeed } from '../../activity/ActivityFeed'
+import { PanelLink } from '../../team-chat/ConversationRows'
 import { useTeamChatNav } from '../../team-chat/TeamChatSidebarProvider'
 import { NavItem } from './NavItem'
 
@@ -29,65 +26,26 @@ const MORE_ICONS: Record<MoreIcon, React.ElementType> = {
 }
 
 export interface HomePanelProps {
-  /** Pinned projects, rendered by the sidebar that owns the project state. */
-  pinned?: ReactNode
   onNavPress?: () => void
   isHomeRoute: boolean
 }
 
 /**
- * Team Home: the workspace agent first, what agents are doing, what needs
- * you, then starred conversations and pinned projects.
+ * Team Home is the activity inbox: a short header (the workspace agent and
+ * Later) over the compact activity feed, which already carries what agents
+ * are running, what failed, and who mentioned you. The feed scrolls itself,
+ * so this panel must not sit inside a ScrollView.
  */
-export function HomePanel({ pinned, onNavPress, isHomeRoute }: HomePanelProps) {
+export function HomePanel({ onNavPress, isHomeRoute }: HomePanelProps) {
   const router = useRouter()
-  const { chat, running, failed, mentions, starred, openEntry } = useHomeSignals()
-  const open = (entry: ActivityEntry) => {
-    openEntry(entry)
-    onNavPress?.()
-  }
-  const needsYou = failed.length + mentions.length
+  const chat = useTeamChatNav()
 
   return (
-    <View testID="home-panel">
-      <View className="px-2">
+    <View testID="home-panel" className="flex-1">
+      <View className="px-2 pb-1">
         <NavItem icon={MessageCircle} label="Workspace agent" href="/(app)/agent" active={isHomeRoute} onNavPress={onNavPress} />
         {!TASKS_NAV_HIDDEN && <NavItem icon={ListTodo} label="Tasks" href="/(app)/tasks" onNavPress={onNavPress} />}
-      </View>
-
-      {running.length > 0 && <RunningNow entries={running} compact onOpen={open} />}
-
-      {needsYou > 0 && (
-        <View className="mt-3 px-2">
-          <PanelSection label="Needs you">
-            {failed.map((entry) => (
-              <Pressable key={entry.id} accessibilityRole="button" accessibilityLabel={`${entry.title}, failed`} onPress={() => open(entry)} className="rounded-md px-2 py-1.5 active:bg-accent/50">
-                <Text className="text-xs font-medium text-foreground" numberOfLines={1}>{entry.title}</Text>
-                <Text className="text-xs text-destructive" numberOfLines={1}>{`Failed · ${entry.context.replace('Agent task in ', '')}`}</Text>
-              </Pressable>
-            ))}
-            {chat.workspaceId &&
-              mentions.map((c) => (
-                <ConversationRow key={c.id} conversation={c} workspaceId={chat.workspaceId!} active={chat.activeId === c.id} onPress={chat.openConversation} />
-              ))}
-          </PanelSection>
-        </View>
-      )}
-
-      {starred.length > 0 && chat.workspaceId && (
-        <View className="mt-3 px-2">
-          <PanelSection label="Starred">
-            {starred.map((c) => (
-              <ConversationRow key={c.id} conversation={c} workspaceId={chat.workspaceId!} active={chat.activeId === c.id} onPress={chat.openConversation} />
-            ))}
-          </PanelSection>
-        </View>
-      )}
-
-      {pinned}
-
-      {chat.enabled && (
-        <View className="mt-3 px-2">
+        {chat.enabled && (
           <PanelLink
             icon={Bookmark}
             label="Later"
@@ -96,8 +54,11 @@ export function HomePanel({ pinned, onNavPress, isHomeRoute }: HomePanelProps) {
               onNavPress?.()
             }}
           />
-        </View>
-      )}
+        )}
+      </View>
+      <View className="flex-1">
+        <ActivityFeed compact />
+      </View>
     </View>
   )
 }
