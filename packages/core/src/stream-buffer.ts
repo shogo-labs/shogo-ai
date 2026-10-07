@@ -19,6 +19,10 @@
  * Lifted into the SDK from `@shogo/shared-runtime` (was AGPL) under MIT.
  */
 
+import { compactSseFrames, encodeTurnSeqFrame } from './stream-compaction'
+
+export { compactSseFrames, encodeTurnSeqFrame, TURN_SEQ_EVENT_TYPE } from './stream-compaction'
+
 const CLEANUP_INTERVAL_MS = 60_000
 const MAX_BUFFER_AGE_MS = 30 * 60_000
 const COMPLETED_GRACE_MS = 30_000
@@ -69,6 +73,13 @@ export interface ReplayOptions {
    * Skip frames with seq <= fromSeq. Use 0 (or omit) to replay from the start.
    */
   fromSeq?: number
+  /**
+   * Replay the buffered frames as one compacted chunk (see
+   * `compactSseFrames`) followed by a `data-turn-seq` frame with the exact
+   * last seq, then the live frames. The rebuilt message is the same; the
+   * client processes a handful of chunks instead of one per delta.
+   */
+  compact?: boolean
 }
 
 export interface TurnSnapshot {
@@ -226,12 +237,25 @@ export class StreamBufferStore {
 
     return new ReadableStream<Uint8Array>({
       start(controller) {
-        for (const frame of buf.frames) {
-          if (frame.seq <= fromSeq) continue
+        if (opts.compact) {
+          const pending = buf.frames.filter((frame) => frame.seq > fromSeq)
+          const compacted = compactSseFrames(pending.map((frame) => frame.chunk))
           try {
-            controller.enqueue(frame.chunk)
+            if (compacted.byteLength > 0) controller.enqueue(compacted)
+            if (pending.length > 0 && buf.status === 'active') {
+              controller.enqueue(encodeTurnSeqFrame(buf.turnId, buf.nextSeq - 1))
+            }
           } catch {
             return
+          }
+        } else {
+          for (const frame of buf.frames) {
+            if (frame.seq <= fromSeq) continue
+            try {
+              controller.enqueue(frame.chunk)
+            } catch {
+              return
+            }
           }
         }
 

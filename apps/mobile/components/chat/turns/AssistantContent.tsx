@@ -27,6 +27,7 @@ import { clampAspectRatio, DEFAULT_IMAGE_ASPECT } from "./image-sizing"
 import { useChatImageWidth } from "./use-chat-image-width"
 import { WorkedForGroup } from "./WorkedForGroup"
 import { PlanningStatusLine } from "./PlanningStatusLine"
+import { useDeferredBacklog } from "./use-deferred-backlog"
 import type { MessagePart, GroupedMessagePart } from "./types"
 import {
   groupWorkParts,
@@ -566,6 +567,7 @@ export const AssistantContent = memo(
     )
 
     const timing = useMemo(() => extractTurnTiming(message), [message])
+    const hiddenWork = useDeferredBacklog(workLog.length, isStreaming)
 
     const lastGroupId = useMemo(() => {
       const last = groupedParts[groupedParts.length - 1]
@@ -573,6 +575,14 @@ export const AssistantContent = memo(
         ? last.id
         : null
     }, [groupedParts])
+
+    // Only the turn's last part can still grow; earlier text parts are final
+    // and render as static markdown.
+    const streamingTextPartId = useMemo(() => {
+      if (!isStreaming) return null
+      const last = orderedParts[orderedParts.length - 1]
+      return last?.type === "text" ? last.id : null
+    }, [orderedParts, isStreaming])
 
     const showPlanningStatus = useMemo(
       () => shouldShowPlanningStatus(orderedParts, isStreaming),
@@ -619,7 +629,7 @@ export const AssistantContent = memo(
                   ? "text-foreground text-base leading-6"
                   : "text-foreground text-xs prose-sm"
               }
-              isStreaming={isStreaming}
+              isStreaming={part.id === streamingTextPartId}
               onFilePress={chatContext?.openFile}
             >
               {part.text}
@@ -940,7 +950,10 @@ export const AssistantContent = memo(
             </View>
           </WorkedForGroup>
         )}
-        {isStreaming && workLog.map((part, index) => renderPart(part, index))}
+        {isStreaming &&
+          workLog
+            .slice(hiddenWork)
+            .map((part, index) => renderPart(part, hiddenWork + index))}
         {!isStreaming &&
           visibleImageWork.map(({ part, index }) => renderPart(part, index))}
         {finalSegment.map((part, index) =>

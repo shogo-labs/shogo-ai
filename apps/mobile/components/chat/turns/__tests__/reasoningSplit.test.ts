@@ -252,14 +252,16 @@ describe("repeated Thought rows", () => {
     })
     chunks.push(...textReply("t0", "back"))
 
-    const seen: string[] = []
-    const chat = createChat(chunks, null, (part) => seen.push(part.type))
+    const seen: any[] = []
+    const chat = createChat(chunks, null, (part) => seen.push(part))
     await chat.sendMessage({ text: "keep going" })
     const message = lastAssistant(chat)
 
     expect(message.parts.map((part) => part.type)).toEqual(["reasoning", "text"])
-    expect(seen.filter((type) => type === "data-connectivity-wait")).toHaveLength(ticks + 1)
-    expect(seen.filter((type) => type === "data-turn-seq")).toHaveLength(ticks)
+    expect(seen.filter((part) => part.type === "data-connectivity-wait")).toHaveLength(ticks + 1)
+    // Seq heartbeats that arrive in one burst collapse to the latest.
+    const seqs = seen.filter((part) => part.type === "data-turn-seq")
+    expect(seqs.at(-1)?.data.seq).toBe(ticks)
   })
 })
 

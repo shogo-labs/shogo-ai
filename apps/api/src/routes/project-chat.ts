@@ -1490,7 +1490,10 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       // Metal guests currently hang rather than refuse — a 4h fetch timeout
       // never fires before the client aborts, so we never invalidate the
       // placement. A 90s budget is long enough for a healthy wake and short
-      // enough that a mute guest is detected.
+      // enough that a mute guest is detected. It bounds connect + response
+      // headers only: the timer is cleared once a metal turn starts streaming,
+      // because an abort signal on fetch also kills the body and would cut
+      // every turn longer than the budget.
       const FETCH_TIMEOUT_MS = metalChat
         ? parseInt(process.env.METAL_CHAT_FETCH_TIMEOUT_MS || '90000', 10)
         : parseInt(process.env.CHAT_UPSTREAM_FETCH_TIMEOUT_MS || '14400000', 10)
@@ -1506,7 +1509,12 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       // keeps the agent running in memory so the client can resume the stream.
       // trackUsageFromStream also needs the full stream for billing/persistence.
       const clientSignal = c.req.raw.signal
-      const fetchTimeoutSignal = AbortSignal.timeout(FETCH_TIMEOUT_MS)
+      const fetchTimeoutController = new AbortController()
+      const fetchTimeoutTimer = setTimeout(
+        () => fetchTimeoutController.abort(new DOMException('The operation timed out.', 'TimeoutError')),
+        FETCH_TIMEOUT_MS,
+      )
+      const fetchTimeoutSignal = fetchTimeoutController.signal
       // Normal chat requests intentionally survive a client disconnect so the
       // runtime can be resumed. Delegated tasks opt into cancellation by
       // sending X-Agent-Task-Id; their AbortController must reach the runtime.
@@ -1595,6 +1603,8 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
               response.status as any
             )
           }
+
+          if (metalChat) clearTimeout(fetchTimeoutTimer)
 
           // Stream the response back
           // Copy response headers

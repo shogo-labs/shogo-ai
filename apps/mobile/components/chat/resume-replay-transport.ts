@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import type { ChatTransport, UIMessage } from "ai"
+import { coalesceChunkBursts } from "./chunk-coalescer"
 
 /**
  * `resumeStream()` hits the SDK's default `/stream` URL, which carries no
@@ -43,16 +44,23 @@ export function dropUnfinishedAssistantTail<T extends UIMessage>(
   return messages.slice(0, -1)
 }
 
+/**
+ * Also coalesces chunk bursts on both streams (see chunk-coalescer.ts): the
+ * replay arrives as one burst, and a POST stream can carry one too when the
+ * API resumes a cut turn server-side.
+ */
 export function withResumeReplayReset<T extends UIMessage>(
   transport: ChatTransport<T>,
   beforeReplay: () => void,
 ): ChatTransport<T> {
   return {
-    sendMessages: (options) => transport.sendMessages(options),
+    sendMessages: async (options) =>
+      coalesceChunkBursts(await transport.sendMessages(options)),
     reconnectToStream: async (options) => {
       const stream = await transport.reconnectToStream(options)
-      if (stream) beforeReplay()
-      return stream
+      if (!stream) return stream
+      beforeReplay()
+      return coalesceChunkBursts(stream)
     },
   }
 }
