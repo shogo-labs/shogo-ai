@@ -179,7 +179,9 @@ export function metalRoutes(): Hono {
     if (body.event === 'suspended' && body.hostId) {
       await registry.setPlacement(String(body.projectId), String(body.hostId), 'local').catch(() => {})
     } else if (body.event === 'evicted' || body.event === 'cold') {
-      await registry.clearPlacement(String(body.projectId)).catch(() => {})
+      await registry
+        .clearPlacement(String(body.projectId), body.hostId ? String(body.hostId) : undefined)
+        .catch(() => {})
     }
     return c.json({ ok: true })
   })

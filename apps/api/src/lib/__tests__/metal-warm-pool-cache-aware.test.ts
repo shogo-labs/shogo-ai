@@ -21,6 +21,7 @@ describe('MetalWarmPoolController — cache/disk-aware routing', () => {
   it('de-prioritizes hosts over the disk high-watermark for new placements', async () => {
     const seen: string[] = []
     const fetchImpl = (async (url: string) => {
+      if (url.endsWith('/status')) return Response.json({ state: 'none' })
       seen.push(new URL(url).hostname)
       return new Response(JSON.stringify({ url: 'http://g:8080', mode: 'assigned' }), { status: 200 })
     }) as any
