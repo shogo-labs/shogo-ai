@@ -11,7 +11,9 @@
  * This module is the write side of that map. Each region's API writes its OWN
  * region code when it creates a preview DomainMapping and clears it on
  * teardown, so the global namespace ends up holding the authoritative location
- * of every live preview.
+ * of every live preview. Metal projects (no DomainMapping) are written by their
+ * workspace's home region when it resolves their runtime
+ * (`rememberPreviewRegion`).
  *
  * This REPLACES the per-preview Cloudflare DNS records (cloudflare-dns.ts) that
  * previously overrode the flat `*.shogo.ai` wildcard per region. Those records
@@ -105,12 +107,45 @@ export async function setPreviewRegion(projectId: string): Promise<boolean> {
   }
 }
 
+const REMEMBER_TTL_MS = 30 * 60 * 1000
+const remembered = new Map<string, number>()
+const rememberInFlight = new Map<string, Promise<boolean>>()
+
+/**
+ * `setPreviewRegion` for hot paths (sandbox/url opens, preview wake polls).
+ * Metal projects have no DomainMapping, so this is how their home region
+ * reaches the Worker — which then sends their render/wake calls straight to
+ * that region instead of whichever region the edge picked. Writes at most
+ * once per project per TTL per pod; a failed write is retried on the next call.
+ */
+export function rememberPreviewRegion(projectId: string): Promise<boolean> {
+  const at = remembered.get(projectId)
+  if (at !== undefined && Date.now() - at < REMEMBER_TTL_MS) return Promise.resolve(true)
+  const pending = rememberInFlight.get(projectId)
+  if (pending) return pending
+  const p = setPreviewRegion(projectId)
+    .then((ok) => {
+      if (ok) remembered.set(projectId, Date.now())
+      return ok
+    })
+    .finally(() => rememberInFlight.delete(projectId))
+  rememberInFlight.set(projectId, p)
+  return p
+}
+
+/** Test-only: reset the `rememberPreviewRegion` memo. */
+export function _resetRememberedPreviewRegions(): void {
+  remembered.clear()
+  rememberInFlight.clear()
+}
+
 /**
  * Remove the region mapping for `projectId` when its preview is torn down.
  * Best-effort; a 404 (already gone) counts as success. Returns false only when
  * unconfigured or on a real error.
  */
 export async function clearPreviewRegion(projectId: string): Promise<boolean> {
+  remembered.delete(projectId)
   const cfg = getPreviewRegionKvConfig()
   if (!cfg) return false
   try {

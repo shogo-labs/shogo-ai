@@ -21,6 +21,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
 const ANCHOR_HOST = 'kourier-preview-us.shogo.ai'
+const EU_ANCHOR_HOST = 'kourier-preview-eu.shogo.ai'
 const API_WAKE_ORIGIN = 'https://api.shogo.ai'
 
 function extractWorkerScript(): string {
@@ -40,7 +41,7 @@ function extractWorkerScript(): string {
   body = body
     .replaceAll(
       '${jsonencode({ for code, r in cloudflare_record.anchor : code => r.hostname })}',
-      JSON.stringify({ us: ANCHOR_HOST }),
+      JSON.stringify({ us: ANCHOR_HOST, eu: EU_ANCHOR_HOST }),
     )
     .replaceAll("'${var.default_region}'", JSON.stringify('us'))
 
@@ -107,7 +108,7 @@ function makeEnv(
   return {
     PREVIEW_REGIONS: {
       get: async (key: string) =>
-        key.startsWith('mm:') ? kv.get(key) ?? null : opts.region ?? 'us',
+        key.startsWith('mm:') ? kv.get(key) ?? null : opts.region ?? null,
       put: async (key: string, value: string) => {
         kv.set(key, value)
       },
@@ -336,6 +337,57 @@ describe('preview-router worker — metal previews via the API render proxy', ()
     await workerModule.fetch(asset, env)
     expect(calls).toHaveLength(1)
     expect(calls[0].url).toBe(`${API_WAKE_ORIGIN}/api/preview/p1/render/assets/app.js`)
+  })
+
+  // A US visitor's API hostname geo-steers to the US region, but only the
+  // workspace's home region runs the project's runtime. The home region records
+  // itself in KV, and the Worker sends the wake + render calls straight there.
+  test('a known home region routes the wake and render API calls to that region anchor', async () => {
+    installFetch((url) =>
+      url.includes('/wake')
+        ? { status: 200, body: '{"ready":true,"url":"http://10.0.0.9:31234"}' }
+        : { status: 200, body: '<html>live</html>', headers: { 'x-shogo-runtime': '1' } },
+    )
+    const env = makeEnv({ apiWakeOrigin: API_WAKE_ORIGIN, region: 'eu' })
+    const req = new Request('https://p1.preview.shogo.ai/', { headers: { Accept: 'text/html' } })
+
+    const res = await workerModule.fetch(req, env)
+    expect(await res.text()).toBe('<html>live</html>')
+    expect(calls.map((c) => c.url)).toEqual([
+      `${API_WAKE_ORIGIN}/api/preview/p1/wake`,
+      `${API_WAKE_ORIGIN}/api/preview/p1/render/`,
+    ])
+    expect(calls.map((c) => c.cf?.resolveOverride)).toEqual([EU_ANCHOR_HOST, EU_ANCHOR_HOST])
+  })
+
+  test('a cached metal marker with a known region sends sub-resources to that region', async () => {
+    installFetch(() => ({ status: 200, body: 'console.log(1)' }))
+    const env = makeEnv({ apiWakeOrigin: API_WAKE_ORIGIN, region: 'eu', metalProjects: ['p1'] })
+    const req = new Request('https://p1.preview.shogo.ai/assets/app.js', { headers: { Accept: '*/*' } })
+
+    await workerModule.fetch(req, env)
+    expect(calls).toHaveLength(1)
+    expect(calls[0].url).toBe(`${API_WAKE_ORIGIN}/api/preview/p1/render/assets/app.js`)
+    expect(calls[0].cf?.resolveOverride).toBe(EU_ANCHOR_HOST)
+  })
+
+  test('/__shogo/wake polls go to the known region', async () => {
+    installFetch(() => ({ status: 200, body: '{"ready":false}' }))
+    const env = makeEnv({ apiWakeOrigin: API_WAKE_ORIGIN, region: 'eu' })
+
+    await workerModule.fetch(new Request('https://p1.preview.shogo.ai/__shogo/wake'), env)
+    expect(calls).toHaveLength(1)
+    expect(calls[0].cf?.resolveOverride).toBe(EU_ANCHOR_HOST)
+  })
+
+  test('an unrecognized region code leaves the API calls on the default hostname routing', async () => {
+    installFetch(() => ({ status: 200, body: 'console.log(1)' }))
+    const env = makeEnv({ apiWakeOrigin: API_WAKE_ORIGIN, region: 'mars', metalProjects: ['p1'] })
+    const req = new Request('https://p1.preview.shogo.ai/assets/app.js', { headers: { Accept: '*/*' } })
+
+    await workerModule.fetch(req, env)
+    expect(calls).toHaveLength(1)
+    expect(calls[0].cf).toBeUndefined()
   })
 })
 

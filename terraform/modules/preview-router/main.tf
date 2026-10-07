@@ -23,8 +23,10 @@
 #
 # This module provisions:
 #   - ONE Workers KV namespace (`PREVIEW_REGIONS`): projectId -> region code.
-#     Written by the API in each region on DomainMapping create/delete. KV is
-#     effectively unlimited, so the 200-record ceiling no longer applies.
+#     Written by the API in each region on DomainMapping create/delete, and for
+#     metal projects by the workspace's home region when it resolves the
+#     runtime (metal wake/render calls are then sent to that region's anchor).
+#     KV is effectively unlimited, so the 200-record ceiling no longer applies.
 #   - ONE proxied wildcard A record `*.preview.<base>` — the request host the
 #     route matches against and the resolveOverride source. Points at the
 #     default region's Kourier LB so previews work even with empty KV.
@@ -306,16 +308,16 @@ resource "cloudflare_worker_script" "preview_router" {
     //                  anchor as before.
     // Degrades to { ready:false, url:null } (keep polling / transparent proxy)
     // when no API origin is configured or the call fails.
-    async function previewWake(env, projectId, timeoutMs) {
+    async function previewWake(env, projectId, timeoutMs, region) {
       if (!env.API_WAKE_ORIGIN || !projectId) return { ready: false, url: null };
       const base = env.API_WAKE_ORIGIN.replace(/\/+$/, '');
       const ctrl = new AbortController();
       const timer = setTimeout(function () { ctrl.abort(); }, timeoutMs);
       try {
-        const resp = await fetch(base + '/api/preview/' + projectId + '/wake', {
+        const resp = await fetch(base + '/api/preview/' + projectId + '/wake', withRegionOverride({
           signal: ctrl.signal,
           headers: { 'User-Agent': 'Cloudflare-Worker-Wake' },
-        });
+        }, region));
         if (!resp.ok) return { ready: false, url: null };
         const data = await resp.json();
         return { ready: !!(data && data.ready), url: (data && data.url) || null };
@@ -324,6 +326,23 @@ resource "cloudflare_worker_script" "preview_router" {
       } finally {
         clearTimeout(timer);
       }
+    }
+
+    // The project's hosting region from KV, or null on a miss / error. Metal
+    // projects are written by their workspace's home region.
+    async function getRegion(env, projectId) {
+      if (!env.PREVIEW_REGIONS || !projectId) return null;
+      try { return await env.PREVIEW_REGIONS.get(projectId); } catch (e) { return null; }
+    }
+
+    // API calls (wake/render) for a project with a known region go straight to
+    // that region's anchor — the same LB that serves the API there — instead
+    // of whichever region the API hostname geo-steers to. Only the home region
+    // runs a metal project's runtime; without this the nearest region has to
+    // proxy every preview request across. Unknown region: no override.
+    function withRegionOverride(init, region) {
+      if (!region || !ANCHORS[region]) return init;
+      return Object.assign({}, init, { cf: { resolveOverride: ANCHORS[region] } });
     }
 
     // --- Metal (API-proxy) helpers -------------------------------------------
@@ -350,7 +369,7 @@ resource "cloudflare_worker_script" "preview_router" {
     // raw-IP fetch is involved. Path + query are preserved; the render endpoint
     // forwards them to the runtime ROOT (built SPA). Non-GET bodies are buffered
     // (preview POSTs are small).
-    async function proxyToApiRender(request, env, projectId, url) {
+    async function proxyToApiRender(request, env, projectId, url, region) {
       const base = env.API_WAKE_ORIGIN.replace(/\/+$/, '');
       const target = base + '/api/preview/' + projectId + '/render' + url.pathname + url.search;
       const headers = new Headers(request.headers);
@@ -359,7 +378,7 @@ resource "cloudflare_worker_script" "preview_router" {
       if (request.method !== 'GET' && request.method !== 'HEAD') {
         init.body = await request.arrayBuffer();
       }
-      return fetch(target, init);
+      return fetch(target, withRegionOverride(init, region));
     }
 
     // Per-port public preview (Phase 3, Tier 2 plan): sibling of
@@ -368,12 +387,12 @@ resource "cloudflare_worker_script" "preview_router" {
     // Knative anchor fallback for this path; the API's port-render endpoint
     // re-validates the port is declared AND currently `visibility: 'preview'`
     // before proxying anywhere.
-    async function proxyToApiPortRender(request, env, projectId, port, url) {
+    async function proxyToApiPortRender(request, env, projectId, port, url, region) {
       const base = env.API_WAKE_ORIGIN.replace(/\/+$/, '');
       const target = base + '/api/preview/' + projectId + '/ports/' + port + '/render' + url.pathname + url.search;
       // WebSocket upgrades (Vite hot reload) must be streamed, not buffered.
       if ((request.headers.get('upgrade') || '').toLowerCase() === 'websocket') {
-        return fetch(target, request);
+        return fetch(new Request(target, request), withRegionOverride({}, region));
       }
       const headers = new Headers(request.headers);
       headers.delete('host');
@@ -381,7 +400,7 @@ resource "cloudflare_worker_script" "preview_router" {
       if (request.method !== 'GET' && request.method !== 'HEAD') {
         init.body = await request.arrayBuffer();
       }
-      return fetch(target, init);
+      return fetch(target, withRegionOverride(init, region));
     }
 
     function wakeJsonResponse(ready) {
@@ -469,7 +488,7 @@ resource "cloudflare_worker_script" "preview_router" {
         // projectId only — readiness is a property of the project's runtime,
         // not of any one exposed port.
         if (url.pathname === '/__shogo/wake' || url.pathname === '/__shogo/ready') {
-          const w = await previewWake(env, projectId, 8000);
+          const w = await previewWake(env, projectId, 8000, await getRegion(env, projectId));
           if (w.url) await setMetalMark(env, projectId);
           return wakeJsonResponse(w.ready);
         }
@@ -482,9 +501,10 @@ resource "cloudflare_worker_script" "preview_router" {
           if (!env.API_WAKE_ORIGIN || !projectId) {
             return new Response('Preview not available', { status: 502 });
           }
-          const w = await previewWake(env, projectId, 8000);
+          const portRegion = await getRegion(env, projectId);
+          const w = await previewWake(env, projectId, 8000, portRegion);
           if (!w.ready && isDoc) return shogoLoadingResponse(url.hostname);
-          const resp = await proxyToApiPortRender(request, env, projectId, port, url);
+          const resp = await proxyToApiPortRender(request, env, projectId, port, url, portRegion);
           if (isDoc && INFRA_ERROR_STATUSES[resp.status] && !isRuntimeResponse(resp)) {
             return shogoLoadingResponse(url.hostname);
           }
@@ -498,9 +518,10 @@ resource "cloudflare_worker_script" "preview_router" {
         // we ask the API once (which also tells us metal-vs-knative and gates a
         // document navigation on readiness).
         if (env.API_WAKE_ORIGIN && projectId) {
+          const metalRegion = await getRegion(env, projectId);
           let metal = await getMetalMark(env, projectId);
           if (!metal) {
-            const w = await previewWake(env, projectId, 8000);
+            const w = await previewWake(env, projectId, 8000, metalRegion);
             if (w.url) {
               metal = true;
               await setMetalMark(env, projectId);
@@ -513,7 +534,7 @@ resource "cloudflare_worker_script" "preview_router" {
             }
           }
           if (metal) {
-            const resp = await proxyToApiRender(request, env, projectId, url);
+            const resp = await proxyToApiRender(request, env, projectId, url, metalRegion);
             // A retryable "starting" (503) or ingress error the runtime did not
             // stamp: for a document navigation, show the loading page (keeps
             // polling). Sub-resources pass through.
