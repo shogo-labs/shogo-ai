@@ -91,6 +91,17 @@ describe("WideSidebar", () => {
     expect(screen.getByTestId("panel")).toBeTruthy()
   })
 
+  test("onSelectTab fires on every tab click, including re-clicks of the selected tab", () => {
+    const onSelectTab = mock(() => {})
+    renderSidebar({ onSelectTab })
+    fireEvent.click(screen.getByRole("tab", { name: "Projects" }))
+    expect(onSelectTab).toHaveBeenCalledTimes(1)
+    expect(onSelectTab).toHaveBeenLastCalledWith("projects")
+    fireEvent.click(screen.getByRole("tab", { name: "Projects" }))
+    expect(onSelectTab).toHaveBeenCalledTimes(2)
+    expect(onSelectTab).toHaveBeenLastCalledWith("projects")
+  })
+
   test("the panel's own hide button collapses it to the rail", () => {
     renderSidebar()
     fireEvent.click(screen.getByText("hide"))

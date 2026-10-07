@@ -827,6 +827,20 @@ export const AppSidebar = observer(function AppSidebar({
     setCommandPaletteOpen(true);
   }, [isNativeDrawer, onNavPress, router, setCommandPaletteOpen]);
 
+  // Reload the project list whenever the Projects rail tab is clicked, so
+  // projects created elsewhere (other clients, agents) show up.
+  const handleSelectTab = useCallback(
+    (selected: SidebarTabId) => {
+      if (selected !== "projects" || !activeWorkspaceId) return;
+      projects
+        .loadAll({ workspaceId: activeWorkspaceId })
+        .catch((e: unknown) =>
+          console.error("[AppSidebar] Failed to refresh projects:", e),
+        );
+    },
+    [projects, activeWorkspaceId],
+  );
+
   const isHomePage =
     pathname === "/" || pathname === "/(app)" || pathname === "/(app)/index";
   const isMeetingsPage =
@@ -1241,6 +1255,15 @@ export const AppSidebar = observer(function AppSidebar({
         <View className="h-12 flex-row items-center justify-between border-b border-border px-3">
           <Text className="text-sm font-semibold text-foreground">{TAB_META[tab].label}</Text>
           <View className="flex-row items-center gap-1">
+            {tab === "projects" && (
+              <Pressable
+                onPress={() => router.push("/(app)/new-project" as any)}
+                accessibilityLabel="New project"
+                className="h-8 w-8 items-center justify-center rounded-md active:bg-muted"
+              >
+                <Plus size={14} className="text-muted-foreground" />
+              </Pressable>
+            )}
             <Pressable onPress={handleSearchPress} accessibilityLabel="Search" className="h-8 w-8 items-center justify-center rounded-md active:bg-muted">
               <Search size={14} className="text-muted-foreground" />
             </Pressable>
@@ -1577,6 +1600,7 @@ export const AppSidebar = observer(function AppSidebar({
         // only Home (the chats) and More open a list; search then lives on the rail.
         panelTabs={!experience.resolved ? [] : experience.kind === "personal" ? ["home", "more"] : undefined}
         onSearch={experience.kind === "personal" ? handleSearchPress : undefined}
+        onSelectTab={handleSelectTab}
         renderPanel={renderSidebar}
       />,
     );

@@ -32,6 +32,8 @@ export interface WideSidebarProps {
   switcher?: ReactNode
   invites?: { count: number; onPress: () => void }
   onSearch?: () => void
+  /** Called on every rail tab click, including a re-click of the selected tab. */
+  onSelectTab?: (tab: SidebarTabId) => void
   /**
    * The tabs that have a list panel. Tabs outside it are pages (or the rail
    * says it all), and show no panel. Defaults to every tab.
@@ -41,7 +43,7 @@ export interface WideSidebarProps {
   renderPanel: (tab: SidebarTabId, hidePanel: () => void) => ReactNode
 }
 
-export function WideSidebar({ workspaceId, tabs, kind, showAdmin, switcher, invites, onSearch, panelTabs, renderPanel }: WideSidebarProps) {
+export function WideSidebar({ workspaceId, tabs, kind, showAdmin, switcher, invites, onSearch, onSelectTab, panelTabs, renderPanel }: WideSidebarProps) {
   const router = useRouter()
   const pathname = usePathname()
   const chat = useTeamChatNav()
@@ -59,6 +61,7 @@ export function WideSidebar({ workspaceId, tabs, kind, showAdmin, switcher, invi
   const hasPanel = (id: SidebarTabId) => !panelTabs || panelTabs.includes(id)
 
   const select = (next: SidebarTabId) => {
+    onSelectTab?.(next)
     // Personal Meetings, Goals and Activity are pages, not panels, and Home is
     // the main chat (its panel lists the other chats beside it).
     const personalHref = kind !== 'personal' ? null : next === 'activity' ? '/(app)/activity' : next === 'home' ? '/(app)' : null
