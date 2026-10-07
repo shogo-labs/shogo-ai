@@ -251,6 +251,15 @@ test.describe("Team workspace: desktop rail and panels", () => {
     await expect(page.getByText("Create a channel")).toBeVisible()
     await page.getByLabel("Close", { exact: true }).click()
 
+    // On desktop "New message" is a dialog that lists people and agents together.
+    await rail(page).getByRole("button", { name: "Create", exact: true }).click()
+    await page.getByRole("menuitem", { name: "New message" }).click()
+    const picker = page.getByTestId("new-message-picker")
+    await expect(picker).toBeVisible()
+    await expect(picker.getByText("People", { exact: true }).first()).toBeVisible()
+    await expect(picker.getByRole("button", { name: `${seed.idleAgent}, agent` })).toBeVisible({ timeout: 30_000 })
+    await page.getByLabel("Close", { exact: true }).click()
+
     await rail(page).getByRole("button", { name: "Create", exact: true }).click()
     await page.getByRole("menuitem", { name: "Ask an agent" }).click()
     await expect(page).toHaveURL(/\/agent/)
