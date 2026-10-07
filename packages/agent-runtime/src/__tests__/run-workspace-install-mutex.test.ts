@@ -34,7 +34,7 @@
 // Run: bun test packages/agent-runtime/src/__tests__/run-workspace-install-mutex.test.ts
 
 import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -61,6 +61,14 @@ const { runWorkspaceInstall, _resetWorkspaceInstallMutex } = await import(
 )
 
 let TMP: string
+
+async function waitFor(cond: () => boolean, timeoutMs = 1000): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (!cond()) {
+    if (Date.now() > deadline) throw new Error('waitFor: condition not met')
+    await new Promise((r) => setTimeout(r, 5))
+  }
+}
 
 beforeEach(() => {
   installCalls.length = 0
@@ -152,6 +160,47 @@ describe('runWorkspaceInstall — concurrent-call mutex', () => {
     expect(installCalls.length).toBe(2)
     installCalls[1].resolve()
     await p3
+  })
+
+  // Production 2026-10-07 (published runtimes on metal): the pool pre-seed
+  // starts installing the TEMPLATE package.json, the host then writes the
+  // project's source (its own package.json, e.g. + cheerio) into the
+  // workspace, and PreviewManager joins the template install. Both callers
+  // record an install marker for the project's package.json, so the app's
+  // API server crash-loops on `Cannot find package 'cheerio'` with nothing
+  // left to reinstall.
+  test('package.json changing mid-install triggers a second install before callers resolve', async () => {
+    const pkgPath = join(TMP, 'package.json')
+    writeFileSync(pkgPath, JSON.stringify({ dependencies: { react: '19' } }))
+    let p1Done = false
+    let p2Done = false
+    const p1 = runWorkspaceInstall(TMP, { frozen: true }).then(() => { p1Done = true })
+    await Promise.resolve()
+    expect(installCalls.length).toBe(1)
+
+    writeFileSync(pkgPath, JSON.stringify({ dependencies: { react: '19', cheerio: '1' } }))
+    const p2 = runWorkspaceInstall(TMP, { frozen: false }).then(() => { p2Done = true })
+
+    installCalls[0].resolve()
+    await waitFor(() => installCalls.length === 2)
+    expect(p1Done).toBe(false)
+    expect(p2Done).toBe(false)
+
+    installCalls[1].resolve()
+    await p1
+    await p2
+    expect(installCalls.length).toBe(2)
+  })
+
+  test('an unchanged package.json is installed exactly once', async () => {
+    writeFileSync(join(TMP, 'package.json'), JSON.stringify({ dependencies: { react: '19' } }))
+    const p1 = runWorkspaceInstall(TMP, { frozen: true })
+    const p2 = runWorkspaceInstall(TMP, { frozen: false })
+    await Promise.resolve()
+    installCalls[0].resolve()
+    await p1
+    await p2
+    expect(installCalls.length).toBe(1)
   })
 
   test('different workspaces do NOT share the mutex', async () => {
