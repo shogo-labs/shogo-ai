@@ -223,6 +223,8 @@ export {
   StreamBufferStore,
   createBufferingTransform,
   encodeTurnCompleteFrame,
+  createSseFrameSplitter,
+  SEQ_MODE_FRAME,
   TURN_COMPLETE_EVENT_TYPE,
   type StreamBufferWriter,
   type TurnCompleteFrameData,
