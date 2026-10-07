@@ -59,6 +59,22 @@ describe('runtime-resolving routes pin to the home region first', () => {
   }
 })
 
+describe('every /api/projects/:projectId/* method is pinned', () => {
+  // Files, terminal, database, diagnostics, … GETs resolve the runtime too,
+  // and the home-region write router only pins mutating methods.
+  test('a project-wide pin runs after requireProjectAccess and before any project route', () => {
+    const accessAt = src.indexOf('return requireProjectAccess(c, next)')
+    const pinMw = src.indexOf(
+      "app.use('/api/projects/:projectId/*', pinProjectRoutesToHomeRegion(",
+    )
+    const firstFilesRoute = src.indexOf("app.get('/api/projects/:projectId/files'")
+    expect(accessAt).toBeGreaterThan(-1)
+    expect(pinMw).toBeGreaterThan(accessAt)
+    expect(firstFilesRoute).toBeGreaterThan(pinMw)
+    expect(src.indexOf('app.use(\'/api/*\', homeRegionWriteProxy)')).toBeGreaterThan(pinMw)
+  })
+})
+
 describe('metal runtime resolution records the preview region', () => {
   test('sandbox/url and preview wake remember the region after a metal resolve', () => {
     for (const start of [
