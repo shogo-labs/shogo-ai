@@ -126,7 +126,10 @@ export async function proxyToPeer(
     if (key.toLowerCase().startsWith('x-shogo-')) headers.set(key, value)
   })
   // Peers share one public hostname; spoof Host/Origin so CORS + Better Auth
-  // trusted-origin checks pass on the receiving side.
+  // trusted-origin checks pass on the receiving side. The client's own host
+  // rides along so URLs the peer builds for it (sandbox/url) stay on that host.
+  const clientHost = src.get('x-original-host') || src.get('host')
+  if (clientHost) headers.set('x-original-host', clientHost)
   headers.set('Host', HOST_HEADER_FOR_PEERS)
   headers.set('Origin', `https://${HOST_HEADER_FOR_PEERS}`)
   headers.set(HOME_REGION_PROXY_HEADER, '1')

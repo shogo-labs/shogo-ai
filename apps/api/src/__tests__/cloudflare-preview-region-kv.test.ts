@@ -13,6 +13,8 @@ import {
   getPreviewRegionKvConfig,
   setPreviewRegion,
   clearPreviewRegion,
+  rememberPreviewRegion,
+  _resetRememberedPreviewRegions,
 } from '../lib/cloudflare-preview-region-kv'
 
 const ENV_KEYS = [
@@ -165,5 +167,43 @@ describe('clearPreviewRegion', () => {
     installFetch()
     expect(await clearPreviewRegion('proj-1')).toBe(true)
     expect(calls.length).toBe(1)
+  })
+})
+
+describe('rememberPreviewRegion', () => {
+  beforeEach(() => _resetRememberedPreviewRegions())
+
+  test('writes once, then skips repeat calls (wake polls) for the same project', async () => {
+    configure('eu-frankfurt-1')
+    installFetch()
+    expect(await rememberPreviewRegion('proj-1')).toBe(true)
+    expect(await rememberPreviewRegion('proj-1')).toBe(true)
+    expect(calls.filter((c) => c.method === 'PUT')).toHaveLength(1)
+    expect(calls[0].body).toBe('eu')
+  })
+
+  test('concurrent calls share one write', async () => {
+    configure()
+    installFetch()
+    await Promise.all([rememberPreviewRegion('proj-1'), rememberPreviewRegion('proj-1')])
+    expect(calls).toHaveLength(1)
+  })
+
+  test('a failed write is retried on the next call', async () => {
+    configure()
+    installFetch(500)
+    expect(await rememberPreviewRegion('proj-1')).toBe(false)
+    installFetch()
+    expect(await rememberPreviewRegion('proj-1')).toBe(true)
+    expect(calls).toHaveLength(1)
+  })
+
+  test('clearPreviewRegion forgets the memo so the next call writes again', async () => {
+    configure()
+    installFetch()
+    await rememberPreviewRegion('proj-1')
+    await clearPreviewRegion('proj-1')
+    await rememberPreviewRegion('proj-1')
+    expect(calls.map((c) => c.method)).toEqual(['PUT', 'DELETE', 'PUT'])
   })
 })

@@ -27,11 +27,11 @@ mock.module('../region', () => ({
 
 const { proxyToPeer } = await import('../region-peer-proxy')
 
-function makeCtx(opts: { method?: string; path?: string; body?: string }) {
+function makeCtx(opts: { method?: string; path?: string; body?: string; headers?: Record<string, string> }) {
   const url = `https://studio.shogo.ai${opts.path ?? '/api/admin/warm-pool'}`
   const raw = new Request(url, {
     method: opts.method ?? 'GET',
-    headers: { cookie: 'session=abc', 'content-type': 'application/json' },
+    headers: { cookie: 'session=abc', 'content-type': 'application/json', ...opts.headers },
     ...(opts.body ? { body: opts.body } : {}),
   })
   return {
@@ -95,6 +95,21 @@ describe('proxyToPeer', () => {
     // Host/Origin are spoofed to the shared public hostname for every hop.
     expect(calls[0].init.headers.get('Host')).toBe('studio.shogo.ai')
     expect(calls[0].init.headers.get('x-shogo-home-region-proxy')).toBe('1')
+  })
+
+  test("forwards the client's own host as x-original-host (URLs the peer builds stay on it)", async () => {
+    const { fn, calls } = abortAwareFetch(5, () => new Response('ok'))
+    global.fetch = fn as any
+
+    await proxyToPeer(makeCtx({ path: '/api/projects/p1/sandbox/url', headers: { host: 'app.shogo.ai' } }), 'eu-frankfurt-1')
+    expect(calls[0].init.headers.get('x-original-host')).toBe('app.shogo.ai')
+    expect(calls[0].init.headers.get('Host')).toBe('studio.shogo.ai')
+
+    await proxyToPeer(
+      makeCtx({ path: '/api/projects/p1/sandbox/url', headers: { host: 'edge.internal', 'x-original-host': 'app.shogo.ai' } }),
+      'eu-frankfurt-1',
+    )
+    expect(calls[1].init.headers.get('x-original-host')).toBe('app.shogo.ai')
   })
 
   test('strips content-encoding when the runtime has already decompressed the peer response', async () => {
