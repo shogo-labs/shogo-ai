@@ -821,7 +821,13 @@ export class MetalWarmPoolController {
               })
 
         for (const host of orderedCands) {
+          // Publish the target before assigning. A cold boot outlasts a lease
+          // loser's placement wait, and a loser that finds none boots a second
+          // copy on its own least-loaded host. Pointed here instead, its
+          // /assign joins ours (the agent singleflights per runtime key).
+          const provisional = gotLease && placedHostId !== host.hostId
           try {
+            if (provisional) await this.registry.setPlacement(projectId, host.hostId, 'local').catch(() => {})
             const res = await this.assignOnHost(host, projectId, env, bind)
             this.projectHost.set(projectId, host.hostId)
             // Publish placement so sibling replicas route here (cache-aware) and
@@ -910,6 +916,9 @@ export class MetalWarmPoolController {
             // retry; a host that is really dead ages out of the live set and
             // the next resolve places the project elsewhere.
             if (err instanceof MetalHostUnreachableError && host.hostId === stickyHostId) {
+              // Keep a placement that existed, not one written above: nothing
+              // confirms this host still holds the key.
+              if (provisional) void this.registry.clearPlacement(projectId, host.hostId).catch(() => {})
               this.urlCache.delete(projectId)
               if (gotLease) void this.registry.releaseLease(projectId, this.holderId).catch(() => {})
               console.warn(
