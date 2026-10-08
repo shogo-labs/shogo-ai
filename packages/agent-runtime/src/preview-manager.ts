@@ -167,6 +167,7 @@ import {
   findMissingTopLevelDeps,
   migrateLegacyShogoSdkPin,
   runWorkspaceInstall,
+  inFlightWorkspaceInstall,
   resolveWorkspaceTechStackId,
 } from './workspace-defaults'
 
@@ -2586,6 +2587,16 @@ export class PreviewManager {
     //      stamp a hash on a tree we just declared stale.
     try { migrateLegacyShogoSdkPin(installCwd) } catch (err: any) {
       console.warn(`[${LOG_PREFIX}] migrateLegacyShogoSdkPin threw: ${err?.message ?? err}`)
+    }
+
+    // A running install leaves node_modules half-written, and the project
+    // source restored over it mid-install carries the dev workspace's install
+    // marker, so the marker and top-level probe below would both pass. Let the
+    // install finish first (it repeats until package.json stops changing).
+    const inFlight = inFlightWorkspaceInstall(installCwd)
+    if (inFlight) {
+      console.log(`[${LOG_PREFIX}] install in flight for ${installCwd} — waiting before checking the install marker`)
+      await inFlight.catch(() => {})
     }
 
     const hasNodeModules = existsSync(join(installCwd, 'node_modules'))
