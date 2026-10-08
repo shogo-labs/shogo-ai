@@ -160,12 +160,14 @@ jobs:
           # Include the rootfs build script at scripts/metal-agent/ so a rebuildRootfs
           # release can actually run it — self-update.ts resolves it relative to the
           # extracted bundle root; without it the rebuild silently no-ops.
+          # start-dockerd.sh is installed by the script into docker-class rootfs
+          # images; without it every rebuild on a METAL_DOCKER_ROOTFS host fails.
           OUT="agent-${VERSION}.tgz"
           STAGE="$(mktemp -d)"
           cp -a apps/metal-agent/src "$STAGE/src"
           cp -a apps/metal-agent/package.json apps/metal-agent/tsconfig.json "$STAGE/"
           mkdir -p "$STAGE/scripts/metal-agent"
-          cp -a scripts/metal-agent/build-runtime-rootfs.sh "$STAGE/scripts/metal-agent/"
+          cp -a scripts/metal-agent/build-runtime-rootfs.sh scripts/metal-agent/start-dockerd.sh "$STAGE/scripts/metal-agent/"
           # Deterministic tar+gzip: identical bundle CONTENT must always yield an
           # identical sha256. tar otherwise records per-file mtime/uid/gid and gzip
           # records a build timestamp+filename, so two runs of the SAME commit

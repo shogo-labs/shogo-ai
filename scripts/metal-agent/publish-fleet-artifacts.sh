@@ -7,6 +7,7 @@
 # is built on-box from the OCIR image, so it never needs shipping. Contents:
 #   scripts/metal-agent/host-bootstrap.sh
 #   scripts/metal-agent/build-runtime-rootfs.sh
+#   scripts/metal-agent/start-dockerd.sh (installed into docker-class rootfs)
 #   scripts/metal-agent/provision-burst-host.sh
 #   apps/metal-agent/{src/*.ts,package.json,tsconfig.json}
 #
@@ -42,6 +43,7 @@ mkdir -p "$STAGE/scripts/metal-agent" "$STAGE/apps/metal-agent/src"
 
 cp "$REPO_ROOT"/scripts/metal-agent/host-bootstrap.sh \
    "$REPO_ROOT"/scripts/metal-agent/build-runtime-rootfs.sh \
+   "$REPO_ROOT"/scripts/metal-agent/start-dockerd.sh \
    "$REPO_ROOT"/scripts/metal-agent/provision-burst-host.sh \
    "$STAGE/scripts/metal-agent/"
 cp "$REPO_ROOT"/apps/metal-agent/src/*.ts "$STAGE/apps/metal-agent/src/"
