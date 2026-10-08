@@ -2396,6 +2396,16 @@ export class PreviewManager {
     // this decision.
     const startedWithPrebuiltDist = this._phase === 'ready'
 
+    // `start()` returns before this finishes, so a restart can land mid-way
+    // and run its own setup. `stop()` bumps the generation; past that point
+    // this run must not start anything, or it races the restart's API server.
+    const generation = this.apiServerGeneration
+    const superseded = () => {
+      if (generation === this.apiServerGeneration) return false
+      console.log(`[${LOG_PREFIX}] Abandoning background setup superseded by a stop()/restart()`)
+      return true
+    }
+
     // If a pool pre-warm is still in flight (an assign that landed before the
     // unassigned pod finished pre-warming), let it settle first so we reuse
     // its prisma client / dev.db / generated server.tsx instead of racing a
@@ -2408,14 +2418,18 @@ export class PreviewManager {
       }
     }
 
+    if (superseded()) return
     await this.installDepsIfNeeded(timings)
+    if (superseded()) return
     await this.runPrismaIfNeeded(timings)
+    if (superseded()) return
 
     if (!startedWithPrebuiltDist) {
       this._phase = 'building'
     }
     await this.startBuildWatch()
     timings.buildWatch = 0
+    if (superseded()) return
 
     if (!startedWithPrebuiltDist) {
       this._phase = 'starting-api'
@@ -3538,6 +3552,15 @@ export class PreviewManager {
     const generation = this.apiServerGeneration
     const isStaleAttempt = () => generation !== this.apiServerGeneration
     const cwd = this.bundlerCwd
+
+    // Every path that wants a fresh server kills the current one first, so a
+    // live healthy process here is ours to keep — the reap below would
+    // otherwise SIGKILL it as a "stale sidecar" and trip crash recovery.
+    const running = this.apiServerProcess
+    if (running && !running.killed && running.exitCode === null && running.signalCode === null && this.apiPhase === 'healthy') {
+      console.log(`[${LOG_PREFIX}] API server already healthy on port ${this.apiPort} — keeping it`)
+      return
+    }
 
     // Clear any orphaned sidecar squatting our port BEFORE the (slower)
     // generate/drift steps below, so the fresh spawn never races an
