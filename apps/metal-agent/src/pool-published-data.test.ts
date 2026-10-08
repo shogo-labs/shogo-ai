@@ -114,6 +114,32 @@ describe('pool published-data durability (host-side export)', () => {
     expect(pool.uploads[0].bytes).toEqual(new Uint8Array([5, 6, 7, 8]))
   })
 
+  test('exportPublishedData skips state it already uploaded, and retries after a failed upload', async () => {
+    // Production 2026-10-08: idle stray copies re-uploaded the same near-empty
+    // state every 2 minutes, overwriting the real copy's newer archive.
+    const pool = makePool(dir)
+    let archive = [1, 2, 3]
+    globalThis.fetch = mock(async () => new Response(JSON.stringify({ archive: b64(archive) }), { status: 200 })) as any
+    const vm = {
+      projectId: 'published:p1',
+      handle: HANDLE,
+      assignedAt: 0,
+      lastTouchedAt: 0,
+      publishedSubdomain: 'my-site',
+      publishedDataLoaded: true,
+      runtimeToken: 'tok',
+    } as AssignedVm
+
+    pool.uploadResult = false
+    expect(await pool.exportPublishedData(vm)).toBe(false)
+    pool.uploadResult = true
+    expect(await pool.exportPublishedData(vm)).toBe(true)
+    expect(await pool.exportPublishedData(vm)).toBe(false)
+    archive = [1, 2, 3, 4]
+    expect(await pool.exportPublishedData(vm)).toBe(true)
+    expect(pool.uploads.map((u) => [...u.bytes])).toEqual([[1, 2, 3], [1, 2, 3], [1, 2, 3, 4]])
+  })
+
   test('exportPublishedData is a no-op for a non-published VM', async () => {
     const pool = makePool(dir)
     globalThis.fetch = mock(async () => new Response(JSON.stringify({ archive: b64([9]) }), { status: 200 })) as any

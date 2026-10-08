@@ -21,6 +21,7 @@
  *     suspend or evict a project that is actively serving.
  */
 
+import { createHash } from 'crypto'
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { CacheIndex, type CacheEntry } from './cache-index'
@@ -299,6 +300,8 @@ export interface AssignedVm {
    * export, because every export overwrites the live site's data.
    */
   publishedDataLoaded?: boolean
+  /** sha256 of the last published-data archive this VM uploaded (memory only). */
+  publishedExportSha?: string
   /**
    * Lineage of this VM's workspace — where its current source came from, so the
    * write side can tell whether it may overwrite the durable backup:
@@ -2847,8 +2850,13 @@ export class MetalWarmPool {
     if (!a.publishedSubdomain || !a.publishedDataLoaded) return false
     const bytes = await this.fetchPublishedExport(a.handle, a.runtimeToken)
     if (!bytes) return false
+    // Re-uploading unchanged state every interval lets an idle copy keep
+    // overwriting whatever newer archive has landed since.
+    const sha = createHash('sha256').update(bytes).digest('hex')
+    if (sha === a.publishedExportSha) return false
     const uploaded = await this.uploadPublishedData(a.publishedSubdomain, bytes)
     if (uploaded) {
+      a.publishedExportSha = sha
       console.log(`[pool] exported published-data for ${a.publishedSubdomain} (${bytes.byteLength} bytes)`)
     }
     return uploaded

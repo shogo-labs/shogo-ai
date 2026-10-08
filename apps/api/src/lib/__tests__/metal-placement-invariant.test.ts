@@ -504,6 +504,27 @@ describe('metal placement invariant: named regressions through the real route + 
     expect(w.fleet.violations).toEqual([])
   })
 
+  it('with no placement, a replica asks the hosts instead of trusting a host it remembers', async () => {
+    // Seed 1217: r1 placed p0 on A; A evicted it; r0 later placed it on B; the
+    // placement expired. r1 still remembered A and booted a second copy there.
+    const w = new World()
+    await w.open(1, 'p0')
+    const first = w.fleet.holders('p0')[0]
+    await w.evict(first.id, 'p0', 'evicted')
+    first.agentUp = false
+    await w.open(0, 'p0')
+    first.agentUp = true
+    const owner = w.fleet.holders('p0')[0]
+    expect(owner.id).not.toBe(first.id)
+    await w.suspend(owner.id, 'p0')
+    await w.registry.clearPlacement('p0')
+
+    await w.open(1, 'p0')
+
+    expect(w.fleet.holders('p0').map((h) => h.id)).toEqual([owner.id])
+    expect(w.fleet.violations).toEqual([])
+  })
+
   it('an assign that times out keeps the placement on the host that is still booting', async () => {
     const w = new World()
     w.fleet.hosts[0].slowNext = true
