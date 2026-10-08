@@ -60,12 +60,12 @@ A single file with all agent configuration sections:
 ## config
 - heartbeatInterval: 1800-7200 depending on use case
 - heartbeatEnabled: true
-- model: { provider: "anthropic", name: "claude-sonnet-4-5" }
+- model: { provider: "anthropic", name: "auto" }
 - activeMode: "canvas"
 
 ## settings
 - Match config values for heartbeatInterval, heartbeatEnabled
-- modelProvider: "anthropic", modelName: "claude-sonnet-4-5"
+- modelProvider: "anthropic", modelName: "auto"
 
 ## integrations
 - 2-5 recommended integrations (category name from Composio, e.g. "github", "slack", "stripe")
@@ -159,7 +159,7 @@ function writeTemplateToDisk(
       heartbeatInterval: 3600,
       heartbeatEnabled: true,
       modelProvider: 'anthropic',
-      modelName: 'claude-sonnet-4-5',
+      modelName: 'auto',
     },
     integrations,
   }
@@ -180,7 +180,7 @@ function writeTemplateToDisk(
     heartbeatEnabled: true,
     quietHours: { start: '23:00', end: '07:00', timezone: 'UTC' },
     channels: [],
-    model: { provider: 'anthropic', name: 'claude-sonnet-4-6' },
+    model: { provider: 'anthropic', name: 'auto' },
     activeMode: 'canvas',
   }
   writeFileSync(join(shogoDir, 'config.json'), JSON.stringify(configObj, null, 2) + '\n')

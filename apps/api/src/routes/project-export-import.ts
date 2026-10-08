@@ -16,6 +16,7 @@ import { join, resolve, relative } from 'node:path'
 import { spawn } from 'node:child_process'
 import { zipSync, unzipSync, strToU8, strFromU8 } from 'fflate'
 import { createS3SyncForProject, isMacOSJunkName, getMinimumInstanceSize } from '@shogo/shared-runtime'
+import { AUTO_MODEL_ID } from '@shogo/model-catalog'
 import { dockerClassBlockedMessage } from '../lib/runtime-class-setting'
 import { prisma } from '../lib/prisma'
 import * as billingService from '../services/billing.service'
@@ -655,7 +656,7 @@ export async function runImport(
       modelProvider: ac?.modelProvider ?? 'anthropic',
       // Map the bundle's portable model slug back to this instance's canonical
       // id (a DB model's UUID when one matches by apiModel).
-      modelName: (await fromPortableModelName(ac?.modelName)) ?? 'claude-haiku-4-5',
+      modelName: (await fromPortableModelName(ac?.modelName)) ?? AUTO_MODEL_ID,
       channels: channelsValue,
     }
     // PG-only fields — include only when present in the bundle

@@ -942,7 +942,7 @@ export class AgentGateway {
         heartbeatEnabled: false,
         quietHours: { start: '23:00', end: '07:00', timezone: 'UTC' },
         channels: [],
-        model: { provider: 'anthropic', name: 'claude-haiku-4-5' },
+        model: { provider: 'anthropic', name: AUTO_MODEL_ID },
         maxSessionMessages: 30,
         activeMode: teamDefaults.activeMode,
         allowedModes: teamDefaults.allowedModes,

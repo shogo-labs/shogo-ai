@@ -781,7 +781,7 @@ model AgentConfig {
   quietHoursTimezone String?
   channels           String    @default("[]")
   modelProvider      String    @default("anthropic")
-  modelName          String    @default("claude-haiku-4-5")
+  modelName          String    @default("auto")
   createdAt          DateTime  @default(now())
   updatedAt          DateTime  @updatedAt
 

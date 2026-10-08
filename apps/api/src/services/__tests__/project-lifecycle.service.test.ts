@@ -267,6 +267,18 @@ describe('configureProject — Docker-class minimum compute tier', () => {
     expect(tierGateCalls).toEqual([{ workspaceId: 'ws_large', techStackId: 'docker-compose' }])
   })
 
+  it('creates a missing agent config on auto model routing when no model is given', async () => {
+    const p = seedProject({ workspaceId: 'ws_free' })
+    await configureProject(p.id, { agent: { heartbeatInterval: 900 } })
+    expect(agentConfigs.get(p.id)?.modelName).toBe('auto')
+  })
+
+  it('keeps an explicitly requested model when creating the agent config', async () => {
+    const p = seedProject({ workspaceId: 'ws_free' })
+    await configureProject(p.id, { agent: { modelName: 'claude-haiku-4-5' } })
+    expect(agentConfigs.get(p.id)?.modelName).toBe('claude-haiku-4-5')
+  })
+
   it('throws not_found for a nonexistent project', async () => {
     await expect(configureProject('nope', { name: 'x' })).rejects.toMatchObject({
       name: 'ProjectLifecycleError',

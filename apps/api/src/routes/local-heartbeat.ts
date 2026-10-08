@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { Hono } from 'hono'
+import { AUTO_MODEL_ID } from '@shogo/model-catalog'
 import { prisma } from '../lib/prisma'
 import { verifyRuntimeToken } from '../lib/runtime-token'
 
@@ -116,6 +117,7 @@ export function localHeartbeatRoutes(): Hono {
         heartbeatEnabled: enabled,
         heartbeatInterval: interval,
         nextHeartbeatAt,
+        modelName: AUTO_MODEL_ID,
         channels: [],
       },
     })

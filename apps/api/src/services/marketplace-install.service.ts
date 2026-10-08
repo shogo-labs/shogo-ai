@@ -14,6 +14,7 @@ import {
   extractSnapshotToProject,
 } from './marketplace-snapshot-storage.service'
 import { createS3SyncForProject, getMinimumInstanceSize } from '@shogo/shared-runtime'
+import { AUTO_MODEL_ID } from '@shogo/model-catalog'
 import { trackEvent } from './loops.service'
 import { canRunTechStackOnInstanceSize } from './billing.service'
 import type { AppConsentInput } from './app-install-grants.service'
@@ -255,7 +256,7 @@ export async function installAgent(params: {
         heartbeatInterval: ac?.heartbeatInterval ?? 1800,
         heartbeatEnabled: ac?.heartbeatEnabled ?? false,
         modelProvider: ac?.modelProvider ?? 'anthropic',
-        modelName: ac?.modelName ?? 'claude-haiku-4-5',
+        modelName: ac?.modelName ?? AUTO_MODEL_ID,
         channels: (ac?.channels as object) ?? [],
         quietHoursStart: ac?.quietHoursStart ?? null,
         quietHoursEnd: ac?.quietHoursEnd ?? null,

@@ -9,6 +9,7 @@ import { bodyLimit } from 'hono/body-limit'
 import { type ModelMessage } from 'ai'
 import type StripeTypes from 'stripe'
 import { z } from 'zod'
+import { AUTO_MODEL_ID } from '@shogo/model-catalog'
 import { resolve, join } from 'path'
 import { fileURLToPath } from 'url'
 import { readdir, stat, mkdir, appendFile } from 'fs/promises'
@@ -5590,6 +5591,7 @@ app.put('/api/projects/:projectId/heartbeat/sync', async (c) => {
       heartbeatEnabled: enabled,
       heartbeatInterval: interval,
       nextHeartbeatAt: data.nextHeartbeatAt,
+      modelName: AUTO_MODEL_ID,
       channels: [],
     },
   })
