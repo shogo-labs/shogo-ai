@@ -434,6 +434,8 @@ export class S3Sync {
 
   /** Lineage of the stored project archive; anchors the next conditional write. */
   private projectLineage: ProjectArchiveLineage = { kind: 'unknown' }
+  /** Why the lineage is unknown, so a refused write explains itself. */
+  private lineageUnknownReason: string = 'downloadAll() was never called on this instance'
   private allowUnconditionalWrite: boolean = false
 
   constructor(config: S3SyncConfig) {
@@ -709,6 +711,11 @@ export class S3Sync {
       })
     } catch (error: any) {
       console.error(`[S3Sync] [downloadAll] Download failed after ${Date.now() - totalStart}ms:`, error)
+      // A failed (or timed-out) read leaves the lineage unestablished — unless it
+      // had already been established before the failure, in which case keep it.
+      if (this.projectLineage.kind === 'unknown') {
+        this.lineageUnknownReason = `downloadAll() failed: ${error?.message ?? error}`
+      }
       this.stats.errors.push(`Download failed: ${error.message}`)
       return this.getStats()
     } finally {
@@ -771,13 +778,20 @@ export class S3Sync {
       Key: projectKey,
     }))
     // The ETag anchors the lineage: a later upload may replace exactly this object.
-    this.projectLineage = projectResponse.ETag
-      ? { kind: 'descends', etag: projectResponse.ETag }
-      : { kind: 'unknown' }
+    if (projectResponse.ETag) {
+      this.projectLineage = { kind: 'descends', etag: projectResponse.ETag }
+    } else {
+      this.projectLineage = { kind: 'unknown' }
+      this.lineageUnknownReason =
+        'the store returned no ETag on GetObject, so there is nothing to anchor a conditional write to ' +
+        '(S3-compatible store omitting ETag?)'
+    }
     const s3ResponseMs = Date.now() - projectStart
     console.log(`[S3Sync] [downloadLayered] S3 GetObject response received in ${s3ResponseMs}ms (contentLength=${projectResponse.ContentLength ?? 'unknown'})`)
 
     if (!projectResponse.Body) {
+      this.projectLineage = { kind: 'unknown' }
+      this.lineageUnknownReason = 'the project archive GetObject response had an empty body'
       console.log(`[S3Sync] [downloadLayered] Empty project archive response — aborting`)
       return this.getStats()
     }
@@ -1121,7 +1135,7 @@ export class S3Sync {
     else if (!this.allowUnconditionalWrite) {
       const msg =
         `refusing to write s3://${this.config.bucket}/${key}: this instance has not established ` +
-        `the stored archive's lineage (never downloaded, or the download failed)`
+        `the stored archive's lineage: ${this.lineageUnknownReason}`
       console.error(`[S3Sync] ${msg}`)
       if (!this.stats.errors.includes(msg)) this.stats.errors.push(msg)
       return 'refused'
@@ -1144,12 +1158,19 @@ export class S3Sync {
           .then((h) => h.ETag)
           .catch(() => undefined)
       }
-      this.projectLineage = etag ? { kind: 'descends', etag } : { kind: 'unknown' }
+      if (etag) {
+        this.projectLineage = { kind: 'descends', etag }
+      } else {
+        this.projectLineage = { kind: 'unknown' }
+        this.lineageUnknownReason =
+          'the store returned no ETag after our own write (PutObject and HeadObject), so the next write has no anchor'
+      }
       return 'written'
     } catch (error: any) {
       if (error?.name !== 'PreconditionFailed' && error?.$metadata?.httpStatusCode !== 412) throw error
 
       this.projectLineage = { kind: 'unknown' }
+      this.lineageUnknownReason = 'a LINEAGE CONFLICT was detected: another runtime wrote the archive after we read it'
       const quarantineKey = `conflict/${this.config.prefix}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}-src.tar.gz`
       let parked = false
       try {

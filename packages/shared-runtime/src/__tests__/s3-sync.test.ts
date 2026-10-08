@@ -1449,6 +1449,38 @@ describe('project archive lineage guard', () => {
     sync.shutdown()
   })
 
+  test('the refusal says WHY lineage is unknown', async () => {
+    seed('x.txt', 'x')
+
+    // never downloaded
+    const a = guarded()
+    expect((await a.uploadAll(false)).errors.join()).toContain('downloadAll() was never called')
+    a.shutdown()
+
+    // download failed
+    const b = guarded()
+    ;(b as any).client.send = async () => { throw new Error('network down') }
+    await b.downloadAll()
+    ;(b as any).stats.errors = []
+    const errs = (await b.uploadAll(false)).errors.join()
+    expect(errs).toContain('downloadAll() failed: network down')
+    b.shutdown()
+
+    // store returns no ETag
+    await otherRuntimeWrites('REAL')
+    const c = guarded()
+    const realSend = (c as any).client.send.bind((c as any).client)
+    ;(c as any).client.send = async (cmd: any) => {
+      const r = await realSend(cmd)
+      if (cmd.__type === 'GetObject') delete r.ETag
+      return r
+    }
+    await c.downloadAll()
+    await c.waitForDeps()
+    expect((await c.uploadAll(false)).errors.join()).toContain('returned no ETag on GetObject')
+    c.shutdown()
+  })
+
   test('a download that FAILED leaves lineage unknown, so a later upload is refused', async () => {
     await otherRuntimeWrites('REAL')
     const before = s3Store.get(KEY)!
