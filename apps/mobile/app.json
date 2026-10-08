@@ -13,12 +13,7 @@
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false
       },
-      "scheme": "shogo",
-      "entitlements": {
-        "com.apple.security.application-groups": [
-          "group.ai.shogo.app"
-        ]
-      }
+      "scheme": "shogo"
     },
     "android": {
       "adaptiveIcon": {
@@ -106,7 +101,6 @@
       "expo-asset",
       "@livekit/react-native-expo-plugin",
       "@config-plugins/react-native-webrtc",
-      "@bacons/apple-targets",
       [
         "react-native-android-widget",
         {
@@ -123,13 +117,6 @@
               "updatePeriodMillis": 1800000
             }
           ]
-        }
-      ],
-      [
-        "expo-widgets",
-        {
-          "groupIdentifier": "group.ai.shogo.app",
-          "enablePushNotifications": true
         }
       ]
     ],
