@@ -278,7 +278,7 @@ function MessageRowImpl(props: MessageRowProps) {
   const approval = !running && message.authorType === 'agent' ? approvalOf(message) : null
   const kind = message.authorType === 'agent' ? messageKind(message) : null
   const onBehalfOf = message.authorType === 'agent' ? onBehalfOfName(message) : null
-  const canOpenSession = message.authorType === 'agent' && !!message.agentSessionId && !!message.authorAgent?.projectId && !!props.onOpenSession
+  const canOpenSession = message.authorType === 'agent' && !!message.agentSessionId && !!props.onOpenSession
   const work = !running && message.authorType === 'agent' ? workOf(message) : null
   const isWeb = Platform.OS === 'web'
   useEditRequest(message.id, () => {

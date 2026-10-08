@@ -124,8 +124,9 @@ export default function ConversationScreen() {
   const closeProjectPane = useCallback(() => router.setParams({ project: undefined } as any), [router])
   const openSession = useCallback(
     (message: ChatMessage) => {
-      const projectId = message.authorAgent?.projectId
-      if (!projectId || !message.agentSessionId) return
+      // The workspace agent has no project; its session opens in the workspace agent chat.
+      const projectId = message.authorAgent?.projectId ?? null
+      if (!message.agentSessionId) return
       if (!conversation) return
       router.push(
         sessionRoute({
