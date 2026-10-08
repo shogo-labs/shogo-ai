@@ -123,10 +123,6 @@ const REPO_ROOT = resolve(import.meta.dir, '..')
  * indicating what is known about the drift on it.
  */
 export const ACCEPTED_DRIFT: Record<string, KnownDrift> = {
-  agent_configs: {
-    reason:
-      'Pre-existing drift discovered when this check was added (2026-05-21). Detailed audit pending.',
-  },
   agent_eval_sets: {
     reason:
       'Pre-existing drift discovered when this check was added (2026-05-21). Detailed audit pending.',

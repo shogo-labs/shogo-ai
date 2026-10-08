@@ -211,7 +211,7 @@ Long-lived facts and learnings are stored here.
       activeMode: 'canvas',
       model: {
         provider: 'anthropic',
-        name: 'claude-sonnet-4-6',
+        name: 'auto',
       },
     },
     null,
@@ -374,7 +374,11 @@ export function seedPersonalCompanionTemplate(dir: string): boolean {
   const templateConfig = JSON.parse(readFileSync(join(templatePath, 'config.json'), 'utf-8')) as Record<string, any>
   let pristineConfig = false
   try {
-    pristineConfig = JSON.stringify(config) === JSON.stringify(JSON.parse(DEFAULT_WORKSPACE_FILES['config.json']))
+    const defaults = JSON.parse(DEFAULT_WORKSPACE_FILES['config.json'])
+    // Workspaces seeded before the default became `auto` hold this model instead.
+    const legacyDefaults = { ...defaults, model: { ...defaults.model, name: 'claude-sonnet-4-6' } }
+    const current = JSON.stringify(config)
+    pristineConfig = current === JSON.stringify(defaults) || current === JSON.stringify(legacyDefaults)
   } catch { /* malformed defaults are impossible, but do not block boot */ }
   // Policy (capabilityProfile / activeMode / allowedModes / shellEnabled) is
   // NOT written here. `gateway.ts loadConfig()` forces those four fields
@@ -387,7 +391,7 @@ export function seedPersonalCompanionTemplate(dir: string): boolean {
     ...(pristineConfig ? templateConfig : {}),
     model: config.model ?? {
       provider: templateConfig.modelProvider ?? 'anthropic',
-      name: templateConfig.modelName ?? 'claude-sonnet-4-5',
+      name: templateConfig.modelName ?? 'auto',
     },
   }
   if (JSON.stringify(config) !== JSON.stringify(merged)) {

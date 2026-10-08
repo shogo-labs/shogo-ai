@@ -601,8 +601,8 @@ function chainContext(conversation: any, trigger: any, threadRootId: string | nu
   return lines
 }
 
-/** `AgentConfig.modelName` when nobody chose a model for the project. */
-const DEFAULT_AGENT_MODEL = 'claude-haiku-4-5'
+/** The old `AgentConfig.modelName` column default; rows still holding it never chose a model. */
+const LEGACY_DEFAULT_AGENT_MODEL = 'claude-haiku-4-5'
 
 /**
  * The model a channel run asks for. Auto routing suits a general assistant, but a project whose
@@ -612,7 +612,7 @@ export async function agentModeFor(projectId: string | null): Promise<string> {
   if (!projectId) return 'auto'
   const row = await db.agentConfig.findUnique({ where: { projectId }, select: { modelName: true } }).catch(() => null)
   const name = row?.modelName?.trim()
-  return name && name !== DEFAULT_AGENT_MODEL && name !== 'auto' ? name : 'auto'
+  return name && name !== LEGACY_DEFAULT_AGENT_MODEL && name !== 'auto' ? name : 'auto'
 }
 
 async function invokeChat(args: InvokeArgs): Promise<Response> {

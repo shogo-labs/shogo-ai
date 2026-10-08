@@ -16,6 +16,7 @@
 
 import { prisma } from '../lib/prisma'
 import { getMinimumInstanceSize } from '@shogo/shared-runtime'
+import { AUTO_MODEL_ID } from '@shogo/model-catalog'
 import { projectHooks, type HookContext } from '../generated/project.hooks'
 import { encodeProjectSettingsForWrite, normalizeProjectSettings } from '../lib/project-settings'
 import { canRunTechStackOnInstanceSize, hasPaidSubscription } from './billing-runtime'
@@ -294,7 +295,7 @@ export async function configureProject(
         heartbeatEnabled: enabledAfter,
         heartbeatInterval: intervalAfter,
         modelProvider: a.modelProvider ?? 'anthropic',
-        modelName: a.modelName ?? 'claude-sonnet-4-6',
+        modelName: a.modelName ?? AUTO_MODEL_ID,
         quietHoursStart: a.quietHoursStart ?? null,
         quietHoursEnd: a.quietHoursEnd ?? null,
         quietHoursTimezone: a.quietHoursTimezone ?? null,

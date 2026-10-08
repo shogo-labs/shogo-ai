@@ -864,7 +864,7 @@ describe('installAgent — agentConfig defaults', () => {
     expect(ac.heartbeatInterval).toBe(1800)
     expect(ac.heartbeatEnabled).toBe(false)
     expect(ac.modelProvider).toBe('anthropic')
-    expect(ac.modelName).toBe('claude-haiku-4-5')
+    expect(ac.modelName).toBe('auto')
   })
 })
 

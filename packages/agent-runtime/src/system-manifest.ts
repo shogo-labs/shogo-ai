@@ -43,7 +43,7 @@ export const HeartbeatSpecSchema = z.object({
 })
 
 export const AgentSpecSchema = z.object({
-  /** Model id or alias (e.g. `claude-haiku-4-5`, `sonnet`). */
+  /** Model id or alias (e.g. `claude-haiku-4-5`, `sonnet`). Omit for the platform default, `auto`. */
   model: z.string().min(1).optional(),
   provider: z.string().min(1).optional(),
   heartbeat: HeartbeatSpecSchema.optional(),

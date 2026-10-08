@@ -303,7 +303,7 @@ export function createProjectConfigureTool(ctx: ToolContext): AgentTool {
       project: Type.Optional(Type.String({ description: 'Project id, name, or manifest key. Default: current project.' })),
       name: Type.Optional(Type.String()),
       description: Type.Optional(Type.String()),
-      model: Type.Optional(Type.String({ description: 'Default model id/alias for the agent (e.g. "claude-haiku-4-5").' })),
+      model: Type.Optional(Type.String({ description: 'Omit to keep the platform default ("auto", routed per turn). Only set a specific model id/alias when the user asked for one; pass "auto" to clear a pinned model.' })),
       provider: Type.Optional(Type.String({ description: 'Model provider (usually inferred).' })),
       heartbeatEnabled: Type.Optional(Type.Boolean()),
       heartbeatInterval: Type.Optional(Type.Number({ description: 'Seconds, minimum 60.' })),
