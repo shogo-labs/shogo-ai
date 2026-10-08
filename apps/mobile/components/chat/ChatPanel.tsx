@@ -115,6 +115,7 @@ import {
 import { useServerMessageQueue } from "./useServerMessageQueue"
 import {
   dropUnfinishedAssistantTail,
+  applyMessageSnapshot,
   withResumeReplayReset,
 } from "./resume-replay-transport"
 import { cn } from "@shogo/shared-ui/primitives"
@@ -1940,14 +1941,20 @@ const ChatPanelContent = observer(function ChatPanelContent({
     // Anthropic TTFB).
     onChunk: bumpChatProgress,
     getClientTurnId,
+    // Reopening a live turn gets the message so far in one chunk instead of
+    // the whole stream replayed; `withResumeReplayReset` applies it below.
+    resumeSnapshot: true,
   })
   // Set once `useChat` has returned `setMessages`; see resume-replay-transport.ts.
   const beforeResumeReplayRef = useRef<() => void>(() => {})
+  const applyResumeSnapshotRef = useRef<(message: UIMessage) => void>(() => {})
   const chatTransport = useMemo(
     () =>
       transportConfig
-        ? withResumeReplayReset(new DefaultChatTransport(transportConfig), () =>
-            beforeResumeReplayRef.current(),
+        ? withResumeReplayReset(
+            new DefaultChatTransport(transportConfig),
+            () => beforeResumeReplayRef.current(),
+            (message) => applyResumeSnapshotRef.current(message),
           )
         : undefined,
     [transportConfig],
@@ -3038,6 +3045,8 @@ const ChatPanelContent = observer(function ChatPanelContent({
   })
   beforeResumeReplayRef.current = () =>
     setMessages((prev) => dropUnfinishedAssistantTail(prev))
+  applyResumeSnapshotRef.current = (message) =>
+    setMessages((prev) => applyMessageSnapshot(prev, message))
 
   // All resume paths share a single-flight guard. The history-load probe and
   // delegated-task reconciliation can finish at the same time when the app is

@@ -1995,6 +1995,10 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
    *
    * Matches the AI SDK's default resume URL pattern: ${api}/${chatId}/stream
    *
+   * Optional query: ?snapshot=1 — a client joining from the start gets the
+   * message so far as one `data-message-snapshot` chunk, not the replayed
+   * stream (forwarded to the runtime; see its `/stream` handler).
+   *
    * Optional query: ?fromSeq=N — replay only frames the runtime emitted after
    * sequence N. Combined with the runtime's `data-turn-start` /
    * `data-turn-complete` markers, this gives a client a delta resume so it
@@ -2019,8 +2023,11 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
         )
       }
 
-      const runtimePath = fromSeq !== undefined && fromSeq !== ""
-        ? `/agent/chat/${chatSessionId}/stream?fromSeq=${encodeURIComponent(fromSeq)}`
+      const runtimeQuery = new URLSearchParams()
+      if (fromSeq !== undefined && fromSeq !== "") runtimeQuery.set("fromSeq", fromSeq)
+      if (c.req.query("snapshot") === "1") runtimeQuery.set("snapshot", "1")
+      const runtimePath = runtimeQuery.toString()
+        ? `/agent/chat/${chatSessionId}/stream?${runtimeQuery}`
         : `/agent/chat/${chatSessionId}/stream`
 
       const response = await fetchFromRuntime(

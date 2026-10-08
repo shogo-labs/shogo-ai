@@ -548,6 +548,19 @@ describe('GET /projects/:projectId/chat/:chatSessionId/stream', () => {
     expect(lastFetchUrl).toContain('fromSeq=10')
   })
 
+  test('forwards ?snapshot=1 to the runtime, alone or with fromSeq', async () => {
+    nextFetchResponse = () => new Response('data: hi\n\n', { status: 200 })
+    const app = buildApp()
+    await app.fetch(new Request('http://x/api/projects/p-1/chat/s-1/stream?snapshot=1'))
+    expect(lastFetchUrl).toContain('/agent/chat/s-1/stream?snapshot=1')
+    await app.fetch(new Request('http://x/api/projects/p-1/chat/s-1/stream?fromSeq=4&snapshot=1'))
+    expect(lastFetchUrl).toContain('fromSeq=4')
+    expect(lastFetchUrl).toContain('snapshot=1')
+    // Anything but `1` is not forwarded.
+    await app.fetch(new Request('http://x/api/projects/p-1/chat/s-1/stream?snapshot=yes'))
+    expect(lastFetchUrl).not.toContain('snapshot')
+  })
+
   test('returns 204 (best-effort) when runtime resolution throws', async () => {
     resolvePodUrlResult = new Error('runtime down')
     const app = buildApp()
