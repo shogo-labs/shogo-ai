@@ -1936,6 +1936,21 @@ async function probeMetalPreviewReady(baseUrl: string, timeoutMs: number): Promi
   }
 }
 
+// The edge steers `studio.shogo.ai` by latency, so a visitor's region is not the
+// site's. Serve every published request from the workspace's home region and
+// retire any copy this region still runs (see releaseForeignPublished).
+async function pinPublishedToHomeRegion(c: any, projectId: string, subdomain: string): Promise<Response | null> {
+  const { pinChatToHomeRegion } = await import('./lib/chat-region-pin')
+  return pinChatToHomeRegion(c, projectId, undefined, {
+    onForeignHome: (homeRegion) => {
+      if (!isKubernetes()) return
+      void import('./lib/metal-warm-pool-controller')
+        .then((m) => m.getMetalWarmPoolController().releaseForeignPublished(projectId, subdomain, homeRegion))
+        .catch((err) => console.warn(`[published] release ${subdomain} failed: ${err?.message ?? err}`))
+    },
+  })
+}
+
 // Wake a published, server-backed app ({subdomain}.shogo.one -> published-{id}).
 app.get('/api/published/:subdomain/wake', async (c) => {
   const subdomain = (c.req.param('subdomain') || '').toLowerCase()
@@ -1947,6 +1962,8 @@ app.get('/api/published/:subdomain/wake', async (c) => {
     if (!project) {
       return c.json({ ready: false, error: 'not_found' }, 404, WAKE_RESPONSE_HEADERS)
     }
+    const pinned = await pinPublishedToHomeRegion(c, project.id, subdomain)
+    if (pinned) return pinned
     // No cluster locally — nothing to wake; tell the page to proceed.
     if (!isKubernetes()) {
       return c.json({ ready: true }, 200, WAKE_RESPONSE_HEADERS)
@@ -2312,10 +2329,12 @@ const publishedApiHandler = async (c: any) => {
   try {
     const project = await prisma.project.findUnique({
       where: { publishedSubdomain: subdomain },
-      select: { id: true, publishedAlwaysOn: true } as any,
+      select: { id: true, publishedAlwaysOn: true },
     })
     if (!project) return c.json({ error: { code: 'not_found' } }, 404)
     if (!isKubernetes()) return c.json({ error: { code: 'not_supported_locally' } }, 404)
+    const pinned = await pinPublishedToHomeRegion(c, project.id, subdomain)
+    if (pinned) return pinned
 
     const { getMetalPublishedUrl } = await import('./lib/metal-warm-pool-controller')
     let target: string

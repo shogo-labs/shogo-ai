@@ -101,11 +101,14 @@ function homeRegionUnavailable(c: Context, homeRegion: string): Response {
  *
  * `knownWorkspaceId` skips the project lookup; pass it only when it is
  * verified to be `projectId`'s workspace (e.g. cached by `requireProjectAccess`).
+ * `onForeignHome` runs whenever the request belongs to another region (proxied
+ * or failed closed), before the proxy starts.
  */
 export async function pinChatToHomeRegion(
   c: Context,
   projectId: string,
   knownWorkspaceId?: string,
+  opts: { onForeignHome?: (homeRegion: string) => void } = {},
 ): Promise<Response | null> {
   // Single-region / local / desktop: nothing to pin.
   if (!RAW_REGION_ID) return null
@@ -127,6 +130,7 @@ export async function pinChatToHomeRegion(
   if (!homeRegion) return null
   // We ARE the home region — serve locally (the buffer + rows live here).
   if (homeRegion === RAW_REGION_ID) return null
+  opts.onForeignHome?.(homeRegion)
 
   // The session lives in a peer region. Fail closed if we can't reach it so
   // the client retries instead of getting a bufferless 204/404 locally.

@@ -378,6 +378,12 @@ export const MAX_VMS_PER_HOST = Math.max(1, parseInt(process.env.METAL_MAX_VMS_P
  */
 const URL_CACHE_TTL_MS = parseInt(process.env.METAL_URL_CACHE_TTL_MS || '15000', 10)
 
+/** Minimum gap between attempts to hand one published site off to its home region. */
+const FOREIGN_PUBLISHED_RELEASE_INTERVAL_MS = parseInt(
+  process.env.METAL_FOREIGN_PUBLISHED_RELEASE_INTERVAL_MS || '300000',
+  10,
+)
+
 export class NoMetalHostError extends Error {
   readonly code = 'NO_METAL_HOST'
   constructor(msg = 'no live metal host available') {
@@ -469,6 +475,7 @@ export class MetalWarmPoolController {
   /** projectId → resolved runtime URL, short-lived (URL_CACHE_TTL_MS). Skips the
    * host /assign for repeat requests to an already-running project. */
   private urlCache = new Map<string, UrlCacheEntry>()
+  private foreignPublishedReleaseAt = new Map<string, number>()
   private stats = { assigned: 0, resumed: 0, reused: 0, coldMiss: 0, cacheHit: 0, hostErrors: 0, noHost: 0 }
   /** Cordoned hostIds (admin drain) — excluded from NEW placements. Synced from
    * the shared registry on each resolve so every API replica honors a cordon. */
@@ -1417,6 +1424,30 @@ export class MetalWarmPoolController {
   async destroyPublished(projectId: string, subdomain?: string): Promise<void> {
     await this.destroyProject(publishedRuntimeKey(projectId))
     if (subdomain) await this.registry.clearPublishedPlacement(subdomain).catch(() => {})
+  }
+
+  /**
+   * Retire this region's copy of a published site whose workspace lives in
+   * another region. Each region keeps its own placements, so a copy here and
+   * the home region's copy would both export to the same archive and overwrite
+   * each other's writes. Recycling exports this copy's data first; a failed
+   * backup leaves it running. Returns null when throttled.
+   */
+  async releaseForeignPublished(projectId: string, subdomain: string, homeRegion: string): Promise<RecycleResult | null> {
+    const key = publishedRuntimeKey(projectId)
+    const last = this.foreignPublishedReleaseAt.get(key)
+    if (last !== undefined && this.now() - last < FOREIGN_PUBLISHED_RELEASE_INTERVAL_MS) return null
+    this.foreignPublishedReleaseAt.set(key, this.now())
+    const r = await this.recycleRuntime(key, { reason: `published home region is ${homeRegion}` })
+    if (r.ok) {
+      this.projectHost.delete(key)
+      await this.registry.clearPlacement(key, r.hostId).catch(() => {})
+      await this.registry.clearPublishedPlacement(subdomain).catch(() => {})
+      console.log(`[MetalPool] released ${key} (${subdomain}) from ${r.hostId}: home region is ${homeRegion}`)
+    } else if (r.found) {
+      console.warn(`[MetalPool] could not release ${key} (${subdomain}) from ${r.hostId}: ${r.error ?? 'recycle aborted'}`)
+    }
+    return r
   }
 
   /**
