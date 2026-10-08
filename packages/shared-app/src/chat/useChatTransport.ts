@@ -67,6 +67,15 @@ export interface ChatTransportOptions {
    * no header (older servers ignore unknown headers).
    */
   getClientTurnId?: () => string | undefined
+  /**
+   * Ask the runtime to answer `resumeStream()` with the message built so far
+   * as one `data-message-snapshot` chunk instead of replaying the buffered
+   * turn. Only enable it when the transport is wrapped with
+   * `withResumeReplayReset` (or otherwise consumes that chunk): the snapshot
+   * chunk is not a message part and the SDK would not apply it. Runtimes that
+   * predate it ignore the flag and replay as before.
+   */
+  resumeSnapshot?: boolean
 }
 
 export interface ChatTransportConfig {
@@ -74,6 +83,7 @@ export interface ChatTransportConfig {
   credentials?: RequestCredentials
   fetch?: typeof globalThis.fetch
   headers?: Record<string, string> | (() => Record<string, string>)
+  prepareReconnectToStreamRequest?: (options: { id: string; api: string }) => { api?: string }
 }
 
 /**
@@ -131,6 +141,7 @@ export function useChatTransportConfig({
   durableResume = true,
   onChunk,
   getClientTurnId,
+  resumeSnapshot = false,
 }: ChatTransportOptions): ChatTransportConfig | undefined {
   return useMemo(() => {
     if (!projectId && !workspaceId && !localAgentUrl) return undefined
@@ -163,6 +174,12 @@ export function useChatTransportConfig({
       credentials,
       fetch,
       headers: composedHeaders,
+      ...(resumeSnapshot && {
+        // Same URL the SDK builds by default, plus the snapshot flag. The
+        // auto-resuming fetch strips the query for its own `?fromSeq=N`
+        // reconnects, which replay deltas and never ask for a snapshot.
+        prepareReconnectToStreamRequest: ({ id, api }) => ({ api: `${api}/${id}/stream?snapshot=1` }),
+      }),
     }
-  }, [apiBaseUrl, projectId, workspaceId, localAgentUrl, credentials, customFetch, headers, chatSessionId, durableResume, onChunk, getClientTurnId])
+  }, [apiBaseUrl, projectId, workspaceId, localAgentUrl, credentials, customFetch, headers, chatSessionId, durableResume, onChunk, getClientTurnId, resumeSnapshot])
 }
