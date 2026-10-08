@@ -6,7 +6,7 @@
  * workspaces. It is the only root-route surface that creates or retrieves the
  * stable primary workspace session.
  */
-import { useCallback, useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import { ActivityIndicator, Pressable, Text, View, useWindowDimensions } from "react-native"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
 import { useRouter } from "expo-router"
@@ -55,8 +55,15 @@ interface ProjectPaneState extends OpenProjectPaneRequest {
   nonce: number
 }
 
+export interface WorkspaceAgentChatScreenProps {
+  /** Open this workspace session instead of the primary one (e.g. a session a DM reply ran in). */
+  initialSessionId?: string
+  /** Rendered above the chat, e.g. the breadcrumb back to the conversation it was opened from. */
+  header?: ReactNode
+}
+
 export const WorkspaceAgentChatScreen = observer(
-  function WorkspaceAgentChatScreen() {
+  function WorkspaceAgentChatScreen({ initialSessionId, header }: WorkspaceAgentChatScreenProps = {}) {
     const router = useRouter()
     const { user } = useAuth()
     const http = useDomainHttp()
@@ -130,6 +137,15 @@ export const WorkspaceAgentChatScreen = observer(
         setSessionId(null)
         setAttachments([])
         setFocusedProjectId(null)
+        if (initialSessionId) {
+          // A specific session (e.g. the one a DM reply ran in): not the primary
+          // one, so it is not published as such.
+          const nextProfile = await api.getAgentProfile(http, workspace.id)
+          if (version !== loadVersion.current) return
+          setProfile(nextProfile)
+          setSessionId(initialSessionId)
+          return
+        }
         const [session, nextProfile] = await Promise.all([
           api.getPrimaryWorkspaceSession(http, workspace.id),
           api.getAgentProfile(http, workspace.id),
@@ -146,7 +162,7 @@ export const WorkspaceAgentChatScreen = observer(
             : "Could not load Workspace Agent Chat",
         )
       }
-    }, [http, workspace?.id])
+    }, [http, workspace?.id, initialSessionId])
 
     useEffect(() => {
       void loadWorkspaceChat()
@@ -429,7 +445,15 @@ export const WorkspaceAgentChatScreen = observer(
             compact
           />
         )}
+        {header ? (
+          // Opened from a team chat message: the trail back. On phones the
+          // floating header needs the same clearance the content below gets.
+          <View style={usesMobileWorkspaceChrome ? { paddingTop: insets.top + 112 } : undefined}>
+            {header}
+          </View>
+        ) : null}
         {usesMobileWorkspaceChrome &&
+        !header &&
         ((isPersonalWorkspace && showWelcome) ||
           gettingStarted.visible ||
           attachments.length > 0) ? (

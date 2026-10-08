@@ -838,6 +838,14 @@ describe('agent work', () => {
     expect(h.onOpenSession).toHaveBeenCalledWith(expect.objectContaining({ id: 'm1', agentSessionId: 's1' }))
   })
 
+  test('the workspace agent (no project) opens its session from the running status too', () => {
+    const h = handlers()
+    const running = { ...reply(), authorAgent: { projectId: null, name: 'Workspace agent' }, agentStatus: 'running', text: '' }
+    render(<MessageRow message={running} grouped={false} me="u-me" names={names} canManage={false} {...h} />)
+    fireEvent.click(screen.getByLabelText('Open the session this agent is working in'))
+    expect(h.onOpenSession).toHaveBeenCalledWith(expect.objectContaining({ id: 'm1', agentSessionId: 's1' }))
+  })
+
   test('before any tool runs the row says the agent is planning; once tools run it shows them', () => {
     const running = { ...reply(), agentStatus: 'running', text: '' }
     const { rerender } = render(<MessageRow message={running} grouped={false} me="u-me" names={names} canManage={false} {...handlers()} />)
