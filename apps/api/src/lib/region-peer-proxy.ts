@@ -68,6 +68,9 @@ const FORWARD_REQUEST_HEADERS = [
   'x-shogo-api-key',
   'x-api-key',
   'idempotency-key',
+  'range',
+  'if-none-match',
+  'if-modified-since',
 ]
 
 /**

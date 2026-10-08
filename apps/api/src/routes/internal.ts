@@ -573,6 +573,21 @@ function hasInternalSecret(c: { req: { header(name: string): string | undefined 
 }
 
 /**
+ * POST /api/internal/published/release
+ *
+ * The home region of a published site asks this region to retire its copy
+ * (see `lib/published-home-region`). Body `{ projectId, subdomain }`.
+ */
+app.post('/published/release', async (c) => {
+  if (!hasInternalSecret(c)) return c.json({ error: 'Unauthorized' }, 401)
+  const { releasePublishedForPeer } = await import('../lib/published-home-region')
+  const r = await releasePublishedForPeer(await c.req.json().catch(() => null), (projectId, subdomain, homeRegion) =>
+    getMetalWarmPoolController().releaseForeignPublished(projectId, subdomain, homeRegion),
+  )
+  return c.json(r.body, r.status)
+})
+
+/**
  * POST /api/internal/conversation-bus/relay
  *
  * Realtime chat events and presence forwarded from a sibling region (see

@@ -59,6 +59,45 @@ describe('runtime-resolving routes pin to the home region first', () => {
   }
 })
 
+describe('published site routes pin to the home region first', () => {
+  // The edge steers studio.shogo.ai by latency, and each region keeps its own
+  // placements: an EU visitor's request resolved in the EU booted a second VM
+  // for a US site, and both copies exported over one data archive.
+  const PUBLISHED_RESOLVERS = /getMetalPublishedUrl\(|wakePublished\(|healthCheckPublished\(/
+  for (const [label, start] of [
+    ['GET published wake', "app.get('/api/published/:subdomain/wake'"],
+    ['published /api proxy', 'const publishedApiHandler = async'],
+  ] as const) {
+    test(label, () => {
+      const body = handlerBody(start)
+      const pinAt = body.indexOf('pinPublishedToHomeRegion(')
+      const resolveAt = body.search(PUBLISHED_RESOLVERS)
+      expect(resolveAt).toBeGreaterThan(-1)
+      expect(pinAt).toBeGreaterThan(-1)
+      expect(pinAt).toBeLessThan(resolveAt)
+    })
+  }
+
+  test('the published pin retires copies outside the home region from both sides', () => {
+    const body = handlerBody('async function pinPublishedToHomeRegion(')
+    expect(body).toContain('pinChatToHomeRegion(')
+    expect(body).toContain('onForeignHome')
+    expect(body).toContain('releaseForeignPublished(')
+    expect(body).toContain('onLocalHome')
+    expect(body).toContain('askPeersToReleasePublished(')
+  })
+
+  test('peers accept release requests on the internal route the home region calls', () => {
+    const internal = readFileSync(join(import.meta.dir, '..', 'routes', 'internal.ts'), 'utf8')
+    const route = internal.indexOf("app.post('/published/release'")
+    expect(route).toBeGreaterThan(-1)
+    const body = internal.slice(route, route + 600)
+    expect(body).toContain('hasInternalSecret(c)')
+    expect(body).toContain('releasePublishedForPeer(')
+    expect(body).toContain('releaseForeignPublished(')
+  })
+})
+
 describe('every /api/projects/:projectId/* method is pinned', () => {
   // Files, terminal, database, diagnostics, … GETs resolve the runtime too,
   // and the home-region write router only pins mutating methods.

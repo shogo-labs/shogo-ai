@@ -567,6 +567,59 @@ describe('MetalWarmPoolController', () => {
     await c.destroyPublished('p1', 'my-site')
     expect(await reg.getPublishedPlacement('my-site')).toBeNull()
   })
+
+  describe('releaseForeignPublished', () => {
+    function setup(recycle: () => Response) {
+      const paths: string[] = []
+      const fetchImpl = (async (url: string) => {
+        const p = new URL(url).pathname
+        paths.push(p)
+        if (p === '/recycle') return recycle()
+        return new Response(JSON.stringify({ url: 'http://g:8080', mode: 'assigned' }), { status: 200 })
+      }) as any
+      let clock = 1_000_000
+      const reg = new MetalPlacementRegistry(() => null)
+      _setMetalPlacementRegistry(reg)
+      const c = new MetalWarmPoolController(fakeEnv(), fetchImpl, () => clock, reg, fakePublishedEnv())
+      c.registerHost(REG)
+      return { c, reg, paths, advance: (ms: number) => (clock += ms) }
+    }
+    const recycled = () => new Response(JSON.stringify({ ok: true, aborted: false, steps: [] }), { status: 200 })
+
+    it('recycles the local copy, then forgets its placements so this region never resolves it again', async () => {
+      const { c, reg, paths } = setup(recycled)
+      await c.getMetalPublishedUrl('p1', 'my-site', { alwaysOn: true })
+
+      const r = await c.releaseForeignPublished('p1', 'my-site', 'eu-frankfurt-1')
+      expect(r).toMatchObject({ found: true, ok: true, hostId: 'ash-1' })
+      expect(paths).toContain('/recycle')
+      expect(await reg.getPlacement('published:p1')).toBeNull()
+      expect(await reg.getPublishedPlacement('my-site')).toBeNull()
+    })
+
+    it('keeps the placement when the backup fails, so a later attempt finds the copy again', async () => {
+      const { c, reg, advance } = setup(
+        () => new Response(JSON.stringify({ ok: false, aborted: true, steps: [{ step: 'data', ok: false }] }), { status: 409 }),
+      )
+      await c.getMetalPublishedUrl('p1', 'my-site')
+
+      expect((await c.releaseForeignPublished('p1', 'my-site', 'eu-frankfurt-1'))?.ok).toBe(false)
+      expect(await reg.getPlacement('published:p1')).not.toBeNull()
+      expect(await reg.getPublishedPlacement('my-site')).not.toBeNull()
+      advance(10 * 60_000)
+      expect((await c.releaseForeignPublished('p1', 'my-site', 'eu-frankfurt-1'))?.found).toBe(true)
+    })
+
+    it('tries at most once per interval per site', async () => {
+      const { c, paths, advance } = setup(recycled)
+      expect(await c.releaseForeignPublished('p1', 'my-site', 'eu-frankfurt-1')).toEqual({ found: false, ok: false })
+      expect(await c.releaseForeignPublished('p1', 'my-site', 'eu-frankfurt-1')).toBeNull()
+      expect(await c.releaseForeignPublished('p2', 'other-site', 'eu-frankfurt-1')).toEqual({ found: false, ok: false })
+      advance(10 * 60_000)
+      expect(await c.releaseForeignPublished('p1', 'my-site', 'eu-frankfurt-1')).toEqual({ found: false, ok: false })
+      expect(paths).not.toContain('/recycle')
+    })
+  })
 })
 
 describe('metal eligibility', () => {
