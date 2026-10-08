@@ -3160,11 +3160,16 @@ export class PreviewManager {
 
   /**
    * Write a thin Vite config wrapper inside `.shogo/` that imports the
-   * workspace's `vite.config.ts` and adds `server.watch.ignored` for
-   * `.shogo/**`. This prevents the build-log infinite loop: Vite's
-   * chokidar detects writes to `.shogo/logs/build.log` (made by
-   * `emitBuildLine`) and triggers a rebuild, which writes more log
-   * lines, ad infinitum.
+   * workspace's `vite.config.ts` and excludes `.shogo/**` from watching.
+   * This prevents rebuild loops: every build writes runtime state into
+   * `.shogo/` (build log, output manifest, prune history, fingerprint),
+   * and if any of those files is watched the write triggers another
+   * build, ad infinitum.
+   *
+   * `vite build --watch` only honours `build.watch` (Rollup's watcher);
+   * `server.watch` applies to the dev server alone. Tailwind v4 registers
+   * every non-gitignored project file as a CSS dependency, so without
+   * `build.watch.exclude` the `.shogo/` state files are watched.
    *
    * The wrapper is written on every `startBuildWatch` call — cheap
    * (single writeFileSync) and idempotent. Existing workspaces whose
@@ -3188,6 +3193,11 @@ export class PreviewManager {
       '  server: {',
       '    watch: {',
       "      ignored: ['**/.shogo/**'],",
+      '    },',
+      '  },',
+      '  build: {',
+      '    watch: {',
+      "      exclude: ['**/.shogo/**'],",
       '    },',
       '  },',
       `  plugins: [${buildOutputManifestPluginSource(join(shogoDir, BUILD_OUTPUT_MANIFEST))}],`,
