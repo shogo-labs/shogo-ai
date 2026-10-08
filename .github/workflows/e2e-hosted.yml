@@ -115,6 +115,11 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Build workspace packages
+        # Specs import runtime source that imports `@shogo-ai/sdk/*`, which
+        # Playwright resolves to the package's compiled `dist/`.
+        run: bun run build:packages
+
       - name: Cache Playwright browsers
         id: cache-playwright
         uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
