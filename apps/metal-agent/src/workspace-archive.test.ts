@@ -128,9 +128,16 @@ describe('isTemplateRegression (size backstop core)', () => {
   test('real → real is not', () => {
     expect(isTemplateRegression(REAL_BYTES, REAL_BYTES)).toBe(false)
   })
-  test('small (sub-real) current → template is not (avoids false-positive on tiny real projects)', () => {
-    // Current below the real floor: we can't be sure it was real, so defer.
-    expect(isTemplateRegression(TEMPLATE_MAX_BYTES + 1, TEMPLATE_BYTES)).toBe(false)
+  test('a current object that is itself template-shaped never counts as a regression', () => {
+    // Both at or below the ceiling are indistinguishable by size: defer to lineage.
+    expect(isTemplateRegression(TEMPLATE_MAX_BYTES, TEMPLATE_BYTES)).toBe(false)
+    expect(isTemplateRegression(TEMPLATE_BYTES, TEMPLATE_BYTES)).toBe(false)
+  })
+  test('a 0.5-1 MB current (between the template ceiling and the real floor) IS protected', () => {
+    // This gap used to fail open: not "real" enough to defend, so a template
+    // that resumed from a lineage-less snapshot was adopted over it.
+    expect(isTemplateRegression(TEMPLATE_MAX_BYTES + 1, TEMPLATE_BYTES)).toBe(true)
+    expect(isTemplateRegression(REAL_MIN_BYTES - 1, TEMPLATE_BYTES)).toBe(true)
   })
   test('unknown sizes never regress', () => {
     expect(isTemplateRegression(null, TEMPLATE_BYTES)).toBe(false)
@@ -144,6 +151,64 @@ describe('isTemplateRegression (size backstop core)', () => {
     // Both hosts descended from "v1"; one wins and advances S3 to "v2". The
     // other still carries "v1" and must NOT clobber the winner's write.
     expect(decideBackupWrite({ exists: true, currentEtag: '"v2"', parentEtag: '"v1"' })).toBe('quarantine')
+  })
+})
+
+describe('a template that resumes from a snapshot cannot adopt over ANY non-template backup', () => {
+  // The lifecycle that reaches the `adopt` path: a VM that came up as the template
+  // (second VM in a peer region, a failed hydrate) is quarantined while it is
+  // 'template' origin. Once it suspends and resumes it is origin 'snapshot' with no
+  // lineage stamped (its backups were all refused), so `adoptWhenUnknown` is true and
+  // only the size backstop stands between its template export and the real backup.
+  const resumedTemplate = { adoptWhenUnknown: true, parentEtag: undefined, incomingSize: TEMPLATE_BYTES } as const
+
+  test('while still template-origin it is quarantined, never adopted', () => {
+    expect(
+      decideBackupWrite({ exists: true, currentEtag: '"real"', adoptWhenUnknown: false, currentSize: 700_000, incomingSize: TEMPLATE_BYTES }),
+    ).toBe('quarantine')
+  })
+
+  for (const currentSize of [TEMPLATE_MAX_BYTES + 1, 600_000, 700_000, 900_000, REAL_MIN_BYTES - 1, REAL_MIN_BYTES, 6_537_360, 38_000_000]) {
+    test(`resumed template (${currentSize} B incoming ${TEMPLATE_BYTES} B) over a ${currentSize} B backup is quarantined`, () => {
+      expect(
+        decideBackupWrite({ exists: true, currentEtag: '"real"', currentSize, ...resumedTemplate }),
+      ).toBe('quarantine')
+    })
+  }
+
+  test('a legitimate legacy resume (real content) still adopts and self-heals', () => {
+    expect(
+      decideBackupWrite({
+        exists: true,
+        currentEtag: '"real"',
+        adoptWhenUnknown: true,
+        parentEtag: undefined,
+        currentSize: 700_000,
+        incomingSize: 720_000,
+      }),
+    ).toBe('adopt')
+  })
+
+  test('invariant over a size grid: a template-shaped export never replaces a larger non-template backup', () => {
+    const sizes = [0, 1, 100_000, TEMPLATE_BYTES, TEMPLATE_MAX_BYTES, TEMPLATE_MAX_BYTES + 1, 800_000, REAL_MIN_BYTES - 1, REAL_MIN_BYTES, 5_000_000, 200_000_000]
+    for (const current of sizes) {
+      for (const incoming of sizes) {
+        if (!(current > TEMPLATE_MAX_BYTES && incoming <= TEMPLATE_MAX_BYTES)) continue
+        for (const adoptWhenUnknown of [true, false]) {
+          for (const parentEtag of [undefined, '"stale"']) {
+            const action = decideBackupWrite({
+              exists: true,
+              currentEtag: '"current"',
+              parentEtag,
+              adoptWhenUnknown,
+              currentSize: current,
+              incomingSize: incoming,
+            })
+            expect(['adopt', 'promote', 'create']).not.toContain(action)
+          }
+        }
+      }
+    }
   })
 })
 

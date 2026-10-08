@@ -347,7 +347,30 @@ export interface S3SyncConfig {
    * automatic fallback when git fails (see `setSuppressProjectArchive`).
    */
   suppressProjectArchive?: boolean
+  /**
+   * Opt out of the lineage guard on `project-src.tar.gz` writes.
+   *
+   * By default a write is conditional: it may only replace the exact object
+   * this instance downloaded (`If-Match`), or create one that did not exist
+   * (`If-None-Match: *`). An instance that has not established that lineage
+   * (never downloaded, or the download failed) refuses to write at all, so a
+   * duplicate runtime or a runtime holding starter source can never overwrite
+   * the durable backup. See {@link S3Sync.putProjectArchive}.
+   *
+   * Set this only for callers that intentionally replace the stored source
+   * wholesale without reading it first (import / marketplace-install seeding).
+   */
+  allowUnconditionalWrite?: boolean
 }
+
+/**
+ * What this instance knows about the stored `project-src.tar.gz`, which decides
+ * the precondition on its next write.
+ */
+type ProjectArchiveLineage =
+  | { kind: 'descends'; etag: string } // we read (or last wrote) exactly this object
+  | { kind: 'absent' } // we confirmed there is no object
+  | { kind: 'unknown' } // never read, or the read failed
 
 export interface SyncStats {
   downloaded: number
@@ -409,7 +432,12 @@ export class S3Sync {
    */
   private suppressProjectArchive: boolean = false
 
+  /** Lineage of the stored project archive; anchors the next conditional write. */
+  private projectLineage: ProjectArchiveLineage = { kind: 'unknown' }
+  private allowUnconditionalWrite: boolean = false
+
   constructor(config: S3SyncConfig) {
+    this.allowUnconditionalWrite = config.allowUnconditionalWrite ?? false
     this.suppressProjectArchive = config.suppressProjectArchive ?? false
     this.config = {
       bucket: config.bucket,
@@ -448,6 +476,7 @@ export class S3Sync {
       syncInterval: config.syncInterval ?? 30000, // 30 seconds default
       watchEnabled: config.watchEnabled ?? true,
       suppressProjectArchive: config.suppressProjectArchive ?? false,
+      allowUnconditionalWrite: config.allowUnconditionalWrite ?? false,
     }
 
     this.client = new S3Client({
@@ -706,6 +735,10 @@ export class S3Sync {
     const hasLegacyArchive = await this.objectExists(legacyKey)
     console.log(`[S3Sync] [downloadAll] Legacy archive check: ${hasLegacyArchive ? 'EXISTS' : 'NOT FOUND'} (${Date.now() - checkLegacyStart}ms)`)
 
+    // `project-src.tar.gz` itself was confirmed absent above, so the next write
+    // may create it (and only create it) whether or not a legacy archive exists.
+    this.projectLineage = { kind: 'absent' }
+
     if (hasLegacyArchive) {
       console.log(`[S3Sync] Using legacy archive format (will migrate on next upload)`)
       return await this.downloadLegacy(totalStart)
@@ -737,6 +770,10 @@ export class S3Sync {
       Bucket: this.config.bucket,
       Key: projectKey,
     }))
+    // The ETag anchors the lineage: a later upload may replace exactly this object.
+    this.projectLineage = projectResponse.ETag
+      ? { kind: 'descends', etag: projectResponse.ETag }
+      : { kind: 'unknown' }
     const s3ResponseMs = Date.now() - projectStart
     console.log(`[S3Sync] [downloadLayered] S3 GetObject response received in ${s3ResponseMs}ms (contentLength=${projectResponse.ContentLength ?? 'unknown'})`)
 
@@ -1057,6 +1094,85 @@ export class S3Sync {
     return { bytes }
   }
 
+  /**
+   * The only place `project-src.tar.gz` is written.
+   *
+   * The write is conditional so the storage layer, not a check we make
+   * beforehand, enforces that this instance can only replace the archive it
+   * came from. Two runtimes for one project (a duplicate VM, a pod in the wrong
+   * region) therefore cannot silently overwrite each other, and a runtime that
+   * booted from starter source cannot overwrite a real backup:
+   *
+   *   descends(etag) -> If-Match: etag
+   *   absent         -> If-None-Match: *
+   *   unknown        -> refused (unless `allowUnconditionalWrite`)
+   *
+   * Losing a race (412) leaves the stored object untouched; the losing content
+   * is parked under `conflict/` so the work is recoverable, and this instance
+   * stops writing until it re-reads.
+   */
+  private async putProjectArchive(body: Uint8Array): Promise<'written' | 'refused' | 'conflict'> {
+    const key = this.getProjectArchiveKey()
+    const lineage = this.projectLineage
+
+    let precondition: { IfMatch?: string; IfNoneMatch?: string } = {}
+    if (lineage.kind === 'descends') precondition = { IfMatch: lineage.etag }
+    else if (lineage.kind === 'absent') precondition = { IfNoneMatch: '*' }
+    else if (!this.allowUnconditionalWrite) {
+      const msg =
+        `refusing to write s3://${this.config.bucket}/${key}: this instance has not established ` +
+        `the stored archive's lineage (never downloaded, or the download failed)`
+      console.error(`[S3Sync] ${msg}`)
+      if (!this.stats.errors.includes(msg)) this.stats.errors.push(msg)
+      return 'refused'
+    }
+
+    try {
+      const res = await this.client.send(new PutObjectCommand({
+        Bucket: this.config.bucket,
+        Key: key,
+        Body: body,
+        ContentType: 'application/gzip',
+        ...precondition,
+      }))
+      let etag = res.ETag
+      if (!etag) {
+        // Some S3-compatible stores omit the ETag on PUT. Without one the next
+        // conditional write has no anchor, so ask for it.
+        etag = await this.client
+          .send(new HeadObjectCommand({ Bucket: this.config.bucket, Key: key }))
+          .then((h) => h.ETag)
+          .catch(() => undefined)
+      }
+      this.projectLineage = etag ? { kind: 'descends', etag } : { kind: 'unknown' }
+      return 'written'
+    } catch (error: any) {
+      if (error?.name !== 'PreconditionFailed' && error?.$metadata?.httpStatusCode !== 412) throw error
+
+      this.projectLineage = { kind: 'unknown' }
+      const quarantineKey = `conflict/${this.config.prefix}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}-src.tar.gz`
+      let parked = false
+      try {
+        await this.client.send(new PutObjectCommand({
+          Bucket: this.config.bucket,
+          Key: quarantineKey,
+          Body: body,
+          ContentType: 'application/gzip',
+        }))
+        parked = true
+      } catch (qErr: any) {
+        console.error(`[S3Sync] could not park the losing archive: ${qErr?.message ?? qErr}`)
+      }
+      const msg =
+        `LINEAGE CONFLICT: s3://${this.config.bucket}/${key} changed since this instance read it ` +
+        `(another runtime wrote it). Durable archive left untouched; ` +
+        (parked ? `this instance's archive parked at ${quarantineKey}.` : `this instance's archive was NOT saved.`)
+      console.error(`[S3Sync] ${msg}`)
+      this.stats.errors.push(msg)
+      return 'conflict'
+    }
+  }
+
   private async uploadProjectArchive(forceWriteWhenSuppressed: boolean = false): Promise<void> {
     if (this.suppressProjectArchive && !forceWriteWhenSuppressed) {
       // Honor the suppress flag: agent-runtime is in git_only mode and
@@ -1118,15 +1234,15 @@ export class S3Sync {
     }
 
     // Upload to S3
-    const archiveKey = this.getProjectArchiveKey()
     const uploadStart = Date.now()
 
-    await this.client.send(new PutObjectCommand({
-      Bucket: this.config.bucket,
-      Key: archiveKey,
-      Body: archiveContent,
-      ContentType: 'application/gzip',
-    }))
+    const outcome = await this.putProjectArchive(archiveContent)
+    if (outcome !== 'written') {
+      // Refused or lost a race: the stored archive is untouched, and we must not
+      // remember this content as uploaded or the next tick would skip retrying.
+      await unlink(tempArchive).catch(() => {})
+      return
+    }
 
     const uploadTime = Date.now() - uploadStart
     this.lastUploadHash = archiveHash
@@ -1549,12 +1665,12 @@ export class S3Sync {
 
     const archiveKey = this.getProjectArchiveKey()
     const uploadStart = Date.now()
-    await this.client.send(new PutObjectCommand({
-      Bucket: this.config.bucket,
-      Key: archiveKey,
-      Body: archiveContent,
-      ContentType: 'application/gzip',
-    }))
+    const outcome = await this.putProjectArchive(archiveContent)
+    if (outcome !== 'written') {
+      await unlink(tempArchive).catch(() => { })
+      // Throw so the caller doesn't believe a cold-start snapshot exists.
+      throw new Error(`snapshotFromGit: durable archive not written (${outcome})`)
+    }
     console.log(`[S3Sync] snapshotFromGit: uploaded to s3://${this.config.bucket}/${archiveKey} in ${Date.now() - uploadStart}ms`)
 
     await unlink(tempArchive).catch(() => { })
@@ -1721,7 +1837,13 @@ export function createS3SyncFromEnv(
 export function createS3SyncForProject(
   localDir: string,
   projectId: string,
-  opts: { syncInterval?: number; watchEnabled?: boolean; suppressProjectArchive?: boolean } = {},
+  opts: {
+    syncInterval?: number
+    watchEnabled?: boolean
+    suppressProjectArchive?: boolean
+    /** See {@link S3SyncConfig.allowUnconditionalWrite}. */
+    allowUnconditionalWrite?: boolean
+  } = {},
 ): S3Sync | null {
   const bucket = process.env.S3_WORKSPACES_BUCKET
   if (!bucket || !projectId) {
@@ -1747,6 +1869,7 @@ export function createS3SyncForProject(
     syncInterval: opts.syncInterval ?? 0,
     watchEnabled: opts.watchEnabled ?? false,
     suppressProjectArchive: opts.suppressProjectArchive,
+    allowUnconditionalWrite: opts.allowUnconditionalWrite,
   })
 }
 

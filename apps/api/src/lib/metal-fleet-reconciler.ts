@@ -36,6 +36,7 @@ import { getMetalWarmPoolController, MAX_VMS_PER_HOST, type MetalWarmPoolControl
 import { getMetalPlacementRegistry, type BurstHostRecord, type MetalPlacementRegistry } from './metal-placement-registry'
 import { getLatitudeClient, type LatitudeClient } from './latitude-client'
 import { buildBurstUserData } from './metal-cloud-init'
+import { auditMetalRuntimes } from './metal-runtime-audit'
 
 const meter = metrics.getMeter('shogo-metal-fleet')
 const scaleActionsCounter = meter.createCounter('metal.fleet.scale_actions', {
@@ -313,6 +314,11 @@ export class MetalFleetReconciler {
     }
 
     const plan = planReconcile(snap)
+
+    // Placement invariant (one runtime per project, in its home region). Asked of
+    // the fleet every tick so a duplicate is an alert, not a user report. Never
+    // throws and never blocks the plan below.
+    await auditMetalRuntimes({ listRuntimes: () => this.controller.listProjects() })
 
     // Always surface baseline drift (observe-only, no actuation).
     for (const a of plan.actions) {
