@@ -1084,7 +1084,8 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
   })
 
   // Resume an active workspace turn stream (AI SDK resume URL pattern:
-  // ${chatPostUrl}/${sessionId}/stream). Optional ?fromSeq=N for delta replay.
+  // ${chatPostUrl}/${sessionId}/stream). Optional ?fromSeq=N for delta replay,
+  // ?snapshot=1 for a message snapshot instead of a stream replay.
   router.get('/workspaces/:workspaceId/chat/:sessionId/stream', async (c) => {
     const auth = await authorize(c)
     if ('res' in auth) return auth.res
@@ -1104,9 +1105,12 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
     const runtimeRes = await resolveOr501(c, workspaceId, attachedProjectIds, 'WorkspaceResume', runtimeExtra, auth.kind)
     if ('res' in runtimeRes) return runtimeRes.res
 
+    const runtimeQuery = new URLSearchParams()
+    if (fromSeq !== undefined && fromSeq !== '') runtimeQuery.set('fromSeq', fromSeq)
+    if (c.req.query('snapshot') === '1') runtimeQuery.set('snapshot', '1')
     const runtimePath =
-      fromSeq !== undefined && fromSeq !== ''
-        ? `/agent/chat/${encodeURIComponent(sessionId)}/stream?fromSeq=${encodeURIComponent(fromSeq)}`
+      runtimeQuery.toString()
+        ? `/agent/chat/${encodeURIComponent(sessionId)}/stream?${runtimeQuery}`
         : `/agent/chat/${encodeURIComponent(sessionId)}/stream`
     try {
       const response = await fetchFromWorkspaceRuntime(workspaceId, attachedProjectIds, runtimePath, {

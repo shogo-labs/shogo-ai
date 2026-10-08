@@ -2151,6 +2151,9 @@ app.post('/agent/chat', async (c) => {
 // Optional query params:
 //   - fromSeq: replay only frames with seq > fromSeq (delta resume so the
 //              client doesn't render duplicates).
+//   - snapshot: `1` (with fromSeq=0) replays the turn as a single
+//              `data-message-snapshot` chunk holding the message up to the
+//              last finished step, then the unfinished step and live frames.
 //   - compact: the buffered frames are replayed compacted (one delta per
 //              part, see compactSseFrames) so a client joining a long turn
 //              rebuilds it in a few chunks. `compact=0` replays them raw.
@@ -2179,7 +2182,13 @@ app.get('/agent/chat/:chatSessionId/stream', (c) => {
   }
 
   const compact = c.req.query('compact') !== '0'
-  const replayStream = streamBufferStore.createReplayStream(chatSessionId, { fromSeq, compact })
+  // A client joining from the start gets the message so far as one snapshot
+  // chunk instead of the buffered turn chunk by chunk; see stream-snapshot.ts.
+  const wantsSnapshot = c.req.query('snapshot') === '1' && fromSeq === 0 && compact
+  const replayStream = streamBufferStore.createReplayStream(
+    chatSessionId,
+    wantsSnapshot ? { fromSeq, buildReplay: buildSnapshotReplay } : { fromSeq, compact },
+  )
   if (!replayStream) {
     return new Response(null, { status: 204 })
   }
@@ -4120,6 +4129,7 @@ app.put('/agent/files/:filename', async (c) => {
 // ---------------------------------------------------------------------------
 
 import { IndexEngine, createDefaultConfig } from './index-engine'
+import { buildSnapshotReplay } from './stream-snapshot'
 
 let indexEngineSingleton: IndexEngine | null = null
 function getIndexEngine(): IndexEngine {

@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { expect, type Page, type Route } from "@playwright/test"
 import { compactSseFrames, encodeTurnSeqFrame } from "../../packages/core/src/stream-compaction"
+import { buildSnapshotReplay } from "../../packages/agent-runtime/src/stream-snapshot"
 
 /**
  * Reopening a project whose turn is still running on the server, with the
@@ -108,12 +109,35 @@ export function liveTurnReplay({ stepFrames, answerLines }: LiveTurnReplayOption
 
 /** The replay as the runtime serves it by default: compacted, then the exact seq. */
 export function compactedReplay(replay: { body: string; lastSeq: number }): { body: string; lastSeq: number } {
+  return { body: compactedReplayBody(replay), lastSeq: replay.lastSeq }
+}
+
+function compactedReplayBody(replay: { body: string; lastSeq: number }): string {
   const decoder = new TextDecoder()
   const compacted = compactSseFrames([new TextEncoder().encode(replay.body)])
+  return decoder.decode(compacted) + decoder.decode(encodeTurnSeqFrame(TURN_ID, replay.lastSeq))
+}
+
+/**
+ * What the runtime serves a client that asks for `?snapshot=1`: the message up
+ * to the last finished step in one chunk, the unfinished step, then the exact
+ * seq.
+ */
+export async function snapshotReplay(replay: { body: string; lastSeq: number }): Promise<{ body: string; lastSeq: number }> {
+  const decoder = new TextDecoder()
+  const snapshot = await buildSnapshotReplay([new TextEncoder().encode(replay.body)])
   return {
-    body: decoder.decode(compacted) + decoder.decode(encodeTurnSeqFrame(TURN_ID, replay.lastSeq)),
+    body: decoder.decode(snapshot) + decoder.decode(encodeTurnSeqFrame(TURN_ID, replay.lastSeq)),
     lastSeq: replay.lastSeq,
   }
+}
+
+export interface LiveTurnMocksOptions {
+  /**
+   * Whether the mocked runtime understands `?snapshot=1`. `false` plays a
+   * runtime that predates it and replays the (compacted) buffer instead.
+   */
+  snapshot?: boolean
 }
 
 export interface LiveTurnMocks {
@@ -121,11 +145,24 @@ export interface LiveTurnMocks {
   goLive(): void
   /** Full `/stream` replays served (no `fromSeq`, or `fromSeq=0`). */
   fullReplays(): number
+  /** Of those, how many asked for `?snapshot=1` and were answered with one. */
+  snapshotReplays(): number
+  /** Of those, how many asked for `?snapshot=1`, whether or not it was honored. */
+  snapshotRequests(): number
 }
 
-export async function installLiveTurnMocks(page: Page, replay: { body: string; lastSeq: number }): Promise<LiveTurnMocks> {
+export async function installLiveTurnMocks(
+  page: Page,
+  replay: { body: string; lastSeq: number },
+  { snapshot = true }: LiveTurnMocksOptions = {},
+): Promise<LiveTurnMocks> {
   let live = false
   let fullReplays = 0
+  let snapshotReplays = 0
+  let snapshotRequests = 0
+  const snapshotBody = snapshot ? (await snapshotReplay(replay)).body : null
+  // A runtime that predates snapshots replays the compacted buffer.
+  const plainBody = snapshot ? null : compactedReplayBody(replay)
 
   await page.route(CHAT_POST_GLOB, async (route: Route) => {
     if (route.request().method() !== "POST") return route.continue()
@@ -164,6 +201,10 @@ export async function installLiveTurnMocks(page: Page, replay: { body: string; l
       return
     }
     fullReplays++
+    const wantsSnapshot = new URL(route.request().url()).searchParams.get("snapshot") === "1"
+    if (wantsSnapshot) snapshotRequests++
+    const body = wantsSnapshot && snapshotBody ? snapshotBody : (plainBody ?? replay.body)
+    if (wantsSnapshot && snapshotBody) snapshotReplays++
     await route.fulfill({
       status: 200,
       contentType: "text/event-stream",
@@ -174,7 +215,7 @@ export async function installLiveTurnMocks(page: Page, replay: { body: string; l
         // As the API sets it; without it a cross-origin client can't read X-Turn-Id.
         "Access-Control-Expose-Headers": "X-Turn-Id, X-Last-Seq, X-Turn-Status",
       },
-      body: replay.body,
+      body,
     })
   })
 
@@ -183,6 +224,8 @@ export async function installLiveTurnMocks(page: Page, replay: { body: string; l
       live = true
     },
     fullReplays: () => fullReplays,
+    snapshotReplays: () => snapshotReplays,
+    snapshotRequests: () => snapshotRequests,
   }
 }
 

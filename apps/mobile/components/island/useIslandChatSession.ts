@@ -30,7 +30,7 @@ import { resolveChatScope } from "../../lib/chat-scope"
 import type { IslandPermissionDecision, IslandPlanSummary } from "../../lib/desktop-island"
 import type { PlanData } from "../chat/PlanCard"
 import { probeChatTurnStatus, shouldAttachLiveStream } from "../chat/probe-turn-status"
-import { dropUnfinishedAssistantTail, withResumeReplayReset } from "../chat/resume-replay-transport"
+import { applyMessageSnapshot, dropUnfinishedAssistantTail, withResumeReplayReset } from "../chat/resume-replay-transport"
 import { derivePendingQuestion, type PendingQuestion } from "../chat/turns/pendingQuestion"
 import { buildAskUserAnswerMessage } from "../chat/turns/askUserAnswers"
 import { useServerMessageQueue } from "../chat/useServerMessageQueue"
@@ -257,12 +257,18 @@ export function useOwnedIslandSession(
     credentials: "include",
     chatSessionId: sessionId,
     getClientTurnId,
+    resumeSnapshot: true,
   })
   const beforeReplayRef = useRef<() => void>(() => {})
+  const applySnapshotRef = useRef<(message: UIMessage) => void>(() => {})
   const transport = useMemo(
     () =>
       transportConfig
-        ? withResumeReplayReset(new DefaultChatTransport(transportConfig), () => beforeReplayRef.current())
+        ? withResumeReplayReset(
+            new DefaultChatTransport(transportConfig),
+            () => beforeReplayRef.current(),
+            (message) => applySnapshotRef.current(message),
+          )
         : undefined,
     [transportConfig],
   )
@@ -293,6 +299,7 @@ export function useOwnedIslandSession(
     onFinish: () => setPermission(null),
   })
   beforeReplayRef.current = () => setMessages((prev) => dropUnfinishedAssistantTail(prev))
+  applySnapshotRef.current = (message) => setMessages((prev) => applyMessageSnapshot(prev, message))
   const isStreaming = status === "submitted" || status === "streaming"
 
   const resume = useCallback(() => {

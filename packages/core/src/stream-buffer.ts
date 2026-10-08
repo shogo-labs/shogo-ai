@@ -80,6 +80,17 @@ export interface ReplayOptions {
    * client processes a handful of chunks instead of one per delta.
    */
   compact?: boolean
+  /**
+   * Replace the buffered-frame replay with caller-built bytes. Receives the
+   * frames after `fromSeq` and returns what to send before the live frames
+   * (a `data-turn-seq` frame with the exact last seq is appended). Takes
+   * precedence over `compact`; if it throws, the replay falls back to
+   * `compactSseFrames`.
+   *
+   * The builder may be async: live frames written while it runs are held
+   * back and delivered after its output, in order.
+   */
+  buildReplay?: (frames: Uint8Array[], ctx: { turnId: string; lastSeq: number }) => Uint8Array | Promise<Uint8Array>
 }
 
 export interface TurnSnapshot {
@@ -235,6 +246,8 @@ export class StreamBufferStore {
     const fromSeq = Math.max(0, opts.fromSeq ?? 0)
     let subscribedController: ReadableStreamDefaultController<Uint8Array> | null = null
 
+    if (opts.buildReplay) return this.createBuiltReplayStream(buf, fromSeq, opts.buildReplay)
+
     return new ReadableStream<Uint8Array>({
       start(controller) {
         if (opts.compact) {
@@ -272,6 +285,64 @@ export class StreamBufferStore {
           buf.subscribers.delete(subscribedController)
           subscribedController = null
         }
+      },
+    })
+  }
+
+  private createBuiltReplayStream(
+    buf: StreamBuffer,
+    fromSeq: number,
+    buildReplay: NonNullable<ReplayOptions['buildReplay']>,
+  ): ReadableStream<Uint8Array> {
+    const pending = buf.frames.filter((frame) => frame.seq > fromSeq).map((frame) => frame.chunk)
+    const ctx = { turnId: buf.turnId, lastSeq: buf.nextSeq - 1 }
+    const held: Uint8Array[] = []
+    let ended = false
+    let target: ReadableStreamDefaultController<Uint8Array> | null = null
+    // Stands in for the real controller while the builder runs, so frames
+    // written meanwhile are kept in order instead of racing the replay.
+    const proxy = {
+      enqueue(chunk: Uint8Array) {
+        if (target) target.enqueue(chunk)
+        else held.push(chunk)
+      },
+      close() {
+        if (target) target.close()
+        else ended = true
+      },
+      error(reason?: unknown) {
+        if (target) target.error(reason)
+        else ended = true
+      },
+    } as unknown as ReadableStreamDefaultController<Uint8Array>
+    const active = buf.status === 'active'
+    if (active) buf.subscribers.add(proxy)
+
+    return new ReadableStream<Uint8Array>({
+      async start(controller) {
+        let replay: Uint8Array
+        try {
+          replay = await buildReplay(pending, ctx)
+        } catch {
+          replay = compactSseFrames(pending)
+        }
+        try {
+          if (replay.byteLength > 0) controller.enqueue(replay)
+          if (pending.length > 0 && active) controller.enqueue(encodeTurnSeqFrame(ctx.turnId, ctx.lastSeq))
+          for (const chunk of held) controller.enqueue(chunk)
+          held.length = 0
+          if (!active || ended || buf.status !== 'active') {
+            controller.close()
+            return
+          }
+          target = controller
+        } catch {
+          buf.subscribers.delete(proxy)
+        }
+      },
+      cancel() {
+        buf.subscribers.delete(proxy)
+        target = null
       },
     })
   }
