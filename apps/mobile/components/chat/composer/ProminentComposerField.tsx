@@ -7,6 +7,7 @@ import {
   Platform,
   Text,
   TextInput,
+  type LayoutChangeEvent,
   type NativeSyntheticEvent,
   type TextInputContentSizeChangeEventData,
   type TextInputKeyPressEventData,
@@ -54,6 +55,10 @@ type ProminentComposerFieldProps = {
   onMeasureTextLayout: (
     event: NativeSyntheticEvent<TextLayoutEventData>
   ) => void;
+  /** Height cap for the self-sizing iOS field. */
+  maxHeight: number;
+  /** iOS: the field's laid-out height, in place of `onContentSizeChange`. */
+  onInputHeight?: (height: number) => void;
   scrollEnabled?: boolean;
   onLayout?: (event: any) => void;
   inputComponent?: ComponentType<any>;
@@ -88,6 +93,8 @@ export const ProminentComposerField = forwardRef<
     onKeyPress,
     onContentSizeChange,
     onMeasureTextLayout,
+    maxHeight,
+    onInputHeight,
     scrollEnabled = false,
     onLayout,
     inputComponent,
@@ -101,15 +108,25 @@ export const ProminentComposerField = forwardRef<
         : ProminentAnimatedTextInput,
     [inputComponent]
   );
+  // iOS only reports `onContentSizeChange` on a text edit, measured at the
+  // field's width at that moment, so a fixed-height field misses wraps
+  // caused by the compact -> stacked resize and stops growing. Its Yoga
+  // measurement is always current, so let the field size itself there and
+  // report the laid-out height instead.
+  const selfSizing = Platform.OS === "ios";
   return (
     <>
       <Text
         pointerEvents="none"
+        accessibilityElementsHidden
+        importantForAccessibility="no-hide-descendants"
         style={{
           position: "absolute",
           opacity: 0,
           width: PROMINENT_COMPOSER_MEASURE_TEXT_WIDTH,
-          height: 0,
+          // iOS lays out `onTextLayout` lines inside the frame; a zero-height
+          // frame reports no lines.
+          height: selfSizing ? undefined : 0,
           overflow: "hidden",
           fontSize: PROMINENT_COMPOSER_FONT_SIZE,
           lineHeight: PROMINENT_COMPOSER_LINE_HEIGHT,
@@ -122,9 +139,7 @@ export const ProminentComposerField = forwardRef<
         pointerEvents="auto"
         style={[
           slotStyle,
-          {
-            height: inputHeightAnimation,
-          },
+          selfSizing ? null : { height: inputHeightAnimation },
         ]}
         onLayout={onLayout}
       >
@@ -173,13 +188,21 @@ export const ProminentComposerField = forwardRef<
           onKeyPress={onKeyPress}
           editable={!disabled}
           multiline
-          scrollEnabled={scrollEnabled}
+          scrollEnabled={selfSizing ? stacked : scrollEnabled}
           {...COMPOSER_KEYBOARD_PROPS}
-          onContentSizeChange={onContentSizeChange}
+          onContentSizeChange={selfSizing ? undefined : onContentSizeChange}
+          onLayout={
+            selfSizing && onInputHeight
+              ? (event: LayoutChangeEvent) =>
+                  onInputHeight(event.nativeEvent.layout.height)
+              : undefined
+          }
           style={{
             width: "100%",
             minHeight: PROMINENT_COMPOSER_MIN_HEIGHT,
-            height: inputHeightAnimation,
+            ...(selfSizing
+              ? { maxHeight }
+              : { height: inputHeightAnimation }),
             color: textColor,
             fontSize: PROMINENT_COMPOSER_FONT_SIZE,
             lineHeight: PROMINENT_COMPOSER_LINE_HEIGHT,

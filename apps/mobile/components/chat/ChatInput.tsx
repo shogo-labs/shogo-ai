@@ -1514,6 +1514,29 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
     setInputHeight: setInputHeightTarget,
     animate: animateProminentHeight,
   });
+  const { reportContentSize: reportProminentContentSize } = prominentExpansion;
+  const reportProminentHeight = useCallback(
+    (height: number) => {
+      const currentText =
+        pendingTextChangeRef.current?.text ?? inputValueRef.current;
+      reportProminentContentSize(height, !currentText.trim());
+    },
+    [reportProminentContentSize]
+  );
+
+  // Web: a textarea capped at max height doesn't follow the caret on a
+  // programmatic value update, so the line being typed can sit below the fold.
+  useEffect(() => {
+    if (Platform.OS !== "web" || !useProminentComposer) return;
+    const node = textInputRef.current as unknown as HTMLTextAreaElement | null;
+    if (!node || typeof node.scrollHeight !== "number") return;
+    if (
+      node.selectionStart === node.value.length &&
+      node.scrollHeight > node.clientHeight
+    ) {
+      node.scrollTop = node.scrollHeight;
+    }
+  }, [composerDisplayValue, inputHeight, useProminentComposer]);
 
   const mentionLabels = useMemo(
     () => references.map((r) => r.label).filter((l): l is string => !!l),
@@ -3514,12 +3537,11 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
               }}
               onSubmitEditing={handleSubmitEditing}
               scrollEnabled={inputHeight >= inputMaxHeight}
-              onContentSizeChange={(e) => {
-                const currentText =
-                  pendingTextChangeRef.current?.text ?? inputValueRef.current;
-                const h = e.nativeEvent.contentSize.height;
-                prominentExpansion.reportContentSize(h, !currentText.trim());
-              }}
+              maxHeight={inputMaxHeight}
+              onContentSizeChange={(e) =>
+                reportProminentHeight(e.nativeEvent.contentSize.height)
+              }
+              onInputHeight={reportProminentHeight}
             />
           ) : null}
         </View>
