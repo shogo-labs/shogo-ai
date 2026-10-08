@@ -32,8 +32,11 @@ test.use({ video: "off", trace: "off" })
 const STEP_FRAMES = Number(process.env.E2E_REPLAY_FRAMES || 12_000)
 const ANSWER_LINES = Number(process.env.E2E_ANSWER_LINES || 400)
 const CPU_THROTTLE = Number(process.env.E2E_CPU_THROTTLE || (process.env.CI ? 2 : 4))
-// The dev bundle CI serves renders several times slower than production.
-const BUDGET_MS = Number(process.env.E2E_REOPEN_BUDGET_MS || 3_000)
+// The same emulated device measured ~0.8s on a developer laptop and 4-10s on a
+// CI runner (dev bundle, shared core), so CI gets a wider budget. The gap this
+// guards is minutes, not seconds: before compaction the panel rebuilt the turn
+// chunk by chunk.
+const BUDGET_MS = Number(process.env.E2E_REOPEN_BUDGET_MS || (process.env.CI ? 20_000 : 3_000))
 
 test("joining a running turn shows it right after the stream responds", async ({ page }) => {
   test.setTimeout(120_000)
