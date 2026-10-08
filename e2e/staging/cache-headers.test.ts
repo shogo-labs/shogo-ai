@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
-import { test, expect } from "@playwright/test"
+import { test, expect } from "./fixtures"
 
 /**
  * Cache-header smoke checks for a deployed Studio and published app.

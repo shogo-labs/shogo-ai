@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
-import { test, expect, type Page } from "@playwright/test"
+import { test, expect, type Page } from "./fixtures"
 import { makeTestUser, waitForAgentResponse } from "./helpers"
 import {
   INITIAL_BUILD_TIMEOUT_MS,
@@ -81,18 +81,19 @@ test.describe("Agent preview hygiene", () => {
   test("agent gives a Free user a working direct file download link", async ({ request }) => {
     test.setTimeout(360_000)
 
-    await createProject(page, "A project for testing direct artifact delivery")
-    await waitForAgentResponse(page, INITIAL_BUILD_TIMEOUT_MS)
+    // The file request is the project's very first prompt. A vague seed prompt
+    // sends the agent off building a whole app (often >180s on staging) that
+    // this test never uses, so ask for the artifact directly and skip the build.
     const prompt =
       "Create a small PDF named artifact-delivery-test.pdf in the workspace. " +
       "Then use the file-sharing tool to give me a direct download link. " +
-      "Do not give me localhost, a preview URL, or a published app URL."
-    await sendProjectChatMessage(page, prompt)
-    await waitForAgentResponse(page, 180_000)
+      "Do not give me localhost, a preview URL, or a published app URL. " +
+      "Do not build or scaffold an app."
+    await createProject(page, prompt)
+    await waitForAgentResponse(page, 240_000)
 
-    // Only judge the reply to this prompt: the initial build turn legitimately
-    // surfaces the preview URL and may share files of its own. Read the raw
-    // text because `transcript()` lowercases, which breaks the signed /f/ token.
+    // Only judge the reply to this prompt. Read the raw text because
+    // `transcript()` lowercases, which breaks the signed /f/ token.
     const rawText = await page.locator("body").innerText()
     const promptAt = rawText.lastIndexOf(prompt.slice(0, 40))
     expect(promptAt, "follow-up prompt should be in the transcript").toBeGreaterThanOrEqual(0)
