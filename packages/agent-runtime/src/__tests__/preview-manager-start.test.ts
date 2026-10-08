@@ -250,6 +250,47 @@ describe('PreviewManager.start (non-blocking)', () => {
     expect(lifecycleRuns).toBe(2)
   })
 
+  test('a restart() after start() returned abandons the first background setup', async () => {
+    // Production 2026-10-08 (published VMs): the published-data hydrate
+    // restarts the preview while the first start()'s background setup is
+    // still awaiting. That setup went on to start the API server after the
+    // restart's own server was healthy, reaped the port (killing it), and the
+    // crash restart that followed collided with it, leaving phase=crashed.
+    const root = makeWorkspace({ prebuiltDist: true, hasPrisma: false })
+    workspaces.push(root)
+
+    const pm = new PreviewManager({ workspaceDir: root, runtimePort: 0 })
+    const hits: string[] = []
+    stubBackgroundWork(pm, 100, hits)
+
+    await pm.start()
+    await new Promise((r) => setTimeout(r, 150))
+    await pm.restart()
+    await new Promise((r) => setTimeout(r, 800))
+
+    expect(hits.filter((h) => h === 'api')).toHaveLength(1)
+    expect(hits.filter((h) => h === 'build')).toHaveLength(1)
+    expect(pm.getStatus().phase).toBe('ready')
+  })
+
+  test('starting the API server keeps this manager’s own healthy server', async () => {
+    const root = makeWorkspace({ prebuiltDist: true, hasPrisma: false })
+    workspaces.push(root)
+
+    const pm = new PreviewManager({ workspaceDir: root, runtimePort: 0 })
+    const live = { pid: 4242, killed: false, exitCode: null, signalCode: null, kill: () => true }
+    ;(pm as any).apiServerProcess = live
+    ;(pm as any).apiPhase = 'healthy'
+    let reaped = 0
+    ;(pm as any).reapStaleApiSidecars = async () => void reaped++
+
+    await (pm as any).startApiServer()
+
+    expect(reaped).toBe(0)
+    expect((pm as any).apiServerProcess).toBe(live)
+    expect((pm as any).apiPhase).toBe('healthy')
+  })
+
   test('no package.json → start() returns mode=no-project without scheduling bg work', async () => {
     const root = mkdtempSync(join(tmpdir(), 'shogo-pm-no-pkg-'))
     workspaces.push(root)
