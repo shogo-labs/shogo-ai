@@ -711,7 +711,7 @@ jobs:
   # Uses skopeo to copy images from US OCIR to EU OCIR.
   # ===========================================================================
   replicate-images:
-    name: Replicate to ${{ matrix.target_region }}
+    name: Replicate to ${{ matrix.target_region.region }}
     runs-on: ubuntu-latest
     needs: [resolve-config, detect-changes, build-base-image, build-and-push]
     if: |
