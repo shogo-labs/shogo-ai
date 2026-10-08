@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
-import { test, expect, type APIRequestContext } from "@playwright/test"
+import { test, expect, type APIRequestContext } from "./fixtures"
 
 /**
  * Composio triggers against real Composio and GitHub: create a GitHub "issue

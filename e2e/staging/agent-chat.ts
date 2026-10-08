@@ -92,7 +92,8 @@ export async function transcript(page: Page): Promise<string> {
 /** Creates a project from the home composer, returns its id once it boots. */
 export async function createProject(page: Page, prompt: string): Promise<string> {
   await page.goto("/")
-  await page.waitForSelector("text=What are we building", { timeout: 30_000 })
+  // 60s matches `ensureAuthenticated`: staging's home can load slowly.
+  await page.waitForSelector("text=What are we building", { timeout: 60_000 })
   const input = homeComposerInput(page)
   await input.click()
   await input.fill(prompt)

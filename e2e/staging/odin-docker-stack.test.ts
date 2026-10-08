@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
-import { expect, test } from "@playwright/test"
+import { expect, test } from "./fixtures"
 import { createProjectAndWait, makeTestUser, sendChatMessage, signUpAndOnboard, waitForAgentIdle } from "./helpers"
 
 /**
