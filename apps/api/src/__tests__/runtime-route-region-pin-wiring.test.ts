@@ -78,10 +78,22 @@ describe('published site routes pin to the home region first', () => {
     })
   }
 
-  test('the published pin retires this region’s copy when the site lives elsewhere', () => {
+  test('the published pin retires copies outside the home region from both sides', () => {
     const body = handlerBody('async function pinPublishedToHomeRegion(')
     expect(body).toContain('pinChatToHomeRegion(')
     expect(body).toContain('onForeignHome')
+    expect(body).toContain('releaseForeignPublished(')
+    expect(body).toContain('onLocalHome')
+    expect(body).toContain('askPeersToReleasePublished(')
+  })
+
+  test('peers accept release requests on the internal route the home region calls', () => {
+    const internal = readFileSync(join(import.meta.dir, '..', 'routes', 'internal.ts'), 'utf8')
+    const route = internal.indexOf("app.post('/published/release'")
+    expect(route).toBeGreaterThan(-1)
+    const body = internal.slice(route, route + 600)
+    expect(body).toContain('hasInternalSecret(c)')
+    expect(body).toContain('releasePublishedForPeer(')
     expect(body).toContain('releaseForeignPublished(')
   })
 })

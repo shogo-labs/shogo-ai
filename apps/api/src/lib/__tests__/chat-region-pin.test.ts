@@ -162,4 +162,14 @@ describe('pinChatToHomeRegion', () => {
     })
     expect(seen).toEqual(['us-ashburn-1', 'unknown-region-9'])
   })
+
+  test('onLocalHome fires only when this region is the known home', async () => {
+    let local = 0
+    const onLocalHome = () => void local++
+    await pinChatToHomeRegion(makeCtx(), 'p_eu', undefined, { onLocalHome })
+    await pinChatToHomeRegion(makeCtx(), 'p_us', undefined, { onLocalHome })
+    await pinChatToHomeRegion(makeCtx(), 'p_legacy', undefined, { onLocalHome })
+    await pinChatToHomeRegion(makeCtx(), 'p_missing', undefined, { onLocalHome })
+    expect(local).toBe(1)
+  })
 })

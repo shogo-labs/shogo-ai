@@ -1937,8 +1937,8 @@ async function probeMetalPreviewReady(baseUrl: string, timeoutMs: number): Promi
 }
 
 // The edge steers `studio.shogo.ai` by latency, so a visitor's region is not the
-// site's. Serve every published request from the workspace's home region and
-// retire any copy this region still runs (see releaseForeignPublished).
+// site's. Serve every published request from the workspace's home region, and
+// make sure no other region keeps a copy (see lib/published-home-region).
 async function pinPublishedToHomeRegion(c: any, projectId: string, subdomain: string): Promise<Response | null> {
   const { pinChatToHomeRegion } = await import('./lib/chat-region-pin')
   return pinChatToHomeRegion(c, projectId, undefined, {
@@ -1947,6 +1947,12 @@ async function pinPublishedToHomeRegion(c: any, projectId: string, subdomain: st
       void import('./lib/metal-warm-pool-controller')
         .then((m) => m.getMetalWarmPoolController().releaseForeignPublished(projectId, subdomain, homeRegion))
         .catch((err) => console.warn(`[published] release ${subdomain} failed: ${err?.message ?? err}`))
+    },
+    onLocalHome: () => {
+      if (!isKubernetes()) return
+      void import('./lib/published-home-region')
+        .then((m) => m.askPeersToReleasePublished(projectId, subdomain))
+        .catch((err) => console.warn(`[published] asking peers to release ${subdomain} failed: ${err?.message ?? err}`))
     },
   })
 }
