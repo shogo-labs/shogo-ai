@@ -75,6 +75,11 @@ export async function runWorkspaceInstall(
   return promise
 }
 
+/** The install currently running for `dir`, if any. */
+export function inFlightWorkspaceInstall(dir: string): Promise<void> | undefined {
+  return inFlightInstalls.get(resolvePath(dir))
+}
+
 const MAX_INSTALL_PASSES = 3
 
 /**
