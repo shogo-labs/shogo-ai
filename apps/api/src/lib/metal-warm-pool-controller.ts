@@ -822,6 +822,11 @@ export class MetalWarmPoolController {
 
         for (const host of orderedCands) {
           try {
+            // Publish the target before assigning. A cold boot outlasts a lease
+            // loser's placement wait, and a loser that finds none boots a second
+            // copy on its own least-loaded host. Pointed here instead, its
+            // /assign joins ours (the agent singleflights per runtime key).
+            if (gotLease) await this.registry.setPlacement(projectId, host.hostId, 'local').catch(() => {})
             const res = await this.assignOnHost(host, projectId, env, bind)
             this.projectHost.set(projectId, host.hostId)
             // Publish placement so sibling replicas route here (cache-aware) and
