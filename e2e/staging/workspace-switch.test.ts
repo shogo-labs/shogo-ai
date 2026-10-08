@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
-import { test, expect, type Page, type BrowserContext } from "@playwright/test"
+import { test, expect, type Page, type BrowserContext } from "./fixtures"
 import { makeTestUser, signUpAndOnboard, type TestUser } from "./helpers"
 
 /**
@@ -99,8 +99,12 @@ async function switchWorkspaceWide(page: Page, fromName: string, toName: string)
   await openAccountPopover(page, fromName)
   await expect(page.getByText("All workspaces")).toBeVisible({ timeout: 10_000 })
 
+  // The switch reloads the page from a timeout after the click. Arm the wait
+  // for that reload first: `waitForLoadState("load")` resolves immediately on
+  // the still-loaded old page and races the reload.
+  const reloaded = page.waitForEvent("load", { timeout: 30_000 })
   await page.getByText(toName, { exact: true }).first().click()
-  await page.waitForLoadState("load")
+  await reloaded
   await waitForAccountTriggerNamed(page, toName)
 }
 
@@ -152,9 +156,13 @@ async function switchWorkspaceNarrow(page: Page, fromName: string, toName: strin
     await mobileSwitcherRow(page, fromName).click()
   }
   await page.getByText("Workspaces", { exact: true }).first().waitFor({ state: "visible", timeout: 10_000 })
+  // Switching triggers a full reload from a timeout after the click. Arm the
+  // wait for it first (`waitForLoadState` would resolve on the old page and
+  // the next goto("/") would collide with the reload), then re-derive state
+  // from a clean "/".
+  const reloaded = page.waitForEvent("load", { timeout: 30_000 })
   await page.getByText(toName, { exact: true }).last().click()
-  // Switching triggers a full reload; re-derive state from a clean "/".
-  await page.waitForLoadState("load")
+  await reloaded
 
   await expectNarrowWorkspace(page, toName)
 }
