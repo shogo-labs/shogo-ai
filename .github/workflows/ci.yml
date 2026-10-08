@@ -531,6 +531,22 @@ jobs:
       # Set CI_TEST_PACKAGE_CONCURRENCY=4 together with the 8-vCPU runner.
       # The safe default matches ubuntu-latest's four-vCPU runner.
       SHOGO_TEST_PACKAGE_CONCURRENCY: ${{ vars.CI_TEST_PACKAGE_CONCURRENCY || '2' }}
+      # Real Redis for the metal placement registry's Lua compare-and-set
+      # scripts (apps/api metal-placement-registry.redis.test.ts). Those scripts
+      # enforce "one runtime per project"; without a server the suite would
+      # silently skip, so CI_REQUIRE_REDIS makes a missing URL a hard failure.
+      TEST_REDIS_URL: redis://127.0.0.1:6379
+      CI_REQUIRE_REDIS: '1'
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
     strategy:
       fail-fast: false
       matrix:
@@ -872,9 +888,29 @@ jobs:
           cd packages/agent-runtime
           bun --no-env-file test src/__tests__/pty-session.test.ts src/__tests__/pty-ws-e2e.test.ts src/__tests__/runtime-terminal-routes.test.ts
 
+  # Lints .github/workflows with actionlint (syntax, expression types, runner
+  # labels) and shellcheck on every `run:` block at error severity. Workflow
+  # bugs only otherwise surface when a deploy or release runs. Style-level
+  # shellcheck findings (SC2086 etc.) are deliberately out of scope.
+  workflow-lint:
+    name: Lint workflows
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: actionlint
+        env:
+          SHELLCHECK_OPTS: --severity=error
+        run: |
+          set -euo pipefail
+          bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.7/scripts/download-actionlint.bash) 1.7.7
+          ./actionlint -color
+
   ci:
     name: Lint, Typecheck, Test
-    needs: [windows-changes, typecheck, typecheck-mobile, test, test-windows]
+    needs: [windows-changes, typecheck, typecheck-mobile, test, test-windows, workflow-lint]
     runs-on: ubuntu-latest
     if: always()
     steps:
@@ -885,6 +921,7 @@ jobs:
           echo "typecheck-mobile: ${{ needs.typecheck-mobile.result }}"
           echo "test: ${{ needs.test.result }}"
           echo "test-windows: ${{ needs.test-windows.result }}"
-          if [ "${{ needs.windows-changes.result }}" != "success" ] || [ "${{ needs.typecheck.result }}" != "success" ] || [ "${{ needs.typecheck-mobile.result }}" != "success" ] || [ "${{ needs.test.result }}" != "success" ] || { [ "${{ needs.test-windows.result }}" != "success" ] && [ "${{ needs.test-windows.result }}" != "skipped" ]; }; then
+          echo "workflow-lint: ${{ needs.workflow-lint.result }}"
+          if [ "${{ needs.windows-changes.result }}" != "success" ] || [ "${{ needs.typecheck.result }}" != "success" ] || [ "${{ needs.typecheck-mobile.result }}" != "success" ] || [ "${{ needs.test.result }}" != "success" ] || [ "${{ needs.workflow-lint.result }}" != "success" ] || { [ "${{ needs.test-windows.result }}" != "success" ] && [ "${{ needs.test-windows.result }}" != "skipped" ]; }; then
             exit 1
           fi

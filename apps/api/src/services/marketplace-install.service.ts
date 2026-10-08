@@ -42,7 +42,8 @@ async function pushWorkspaceToS3(
     return { status: 'skipped' }
   }
   const projectDir = join(getWorkspacesDir(), projectId)
-  const sync = createS3SyncForProject(projectDir, projectId)
+  // Installing replaces the stored workspace wholesale; there is no prior read to anchor a conditional write.
+  const sync = createS3SyncForProject(projectDir, projectId, { allowUnconditionalWrite: true })
   if (!sync) {
     return {
       status: 'failed',
