@@ -14,7 +14,10 @@ export interface ActiveChatTarget {
 /**
  * Open the chat behind an Activity "running now" card. Project sessions open
  * in the project surface; workspace sessions open as the primary workspace
- * chat (home) or, for any other session, as a side chat.
+ * chat or, for any other session, as a side chat.
+ *
+ * The primary chat opens at `/agent`, not `/`: wide team workspaces render
+ * the project builder at `/`.
  */
 export function openActiveChat(router: Router, chat: ActiveChatTarget) {
   if (chat.projectId && chat.chatSessionId) {
@@ -25,7 +28,7 @@ export function openActiveChat(router: Router, chat: ActiveChatTarget) {
     return
   }
   if (!chat.chatSessionId || chat.isPrimary) {
-    router.replace('/(app)' as any)
+    router.push('/(app)/agent' as any)
     return
   }
   router.push({ pathname: '/(app)/side-chats/[id]', params: { id: chat.chatSessionId } } as any)

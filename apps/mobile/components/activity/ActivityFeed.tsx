@@ -157,7 +157,10 @@ function openTask(router: ReturnType<typeof useRouter>, task: AgentTask) {
       params: { id: task.projectId, ...(task.chatSessionId ? { chatSessionId: task.chatSessionId } : {}) },
     } as any)
   } else {
-    router.replace('/(app)' as any)
+    router.push({
+      pathname: '/(app)/agent',
+      params: task.chatSessionId ? { chatSessionId: task.chatSessionId } : {},
+    } as any)
   }
 }
 
