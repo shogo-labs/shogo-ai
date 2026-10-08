@@ -100,7 +100,7 @@ describe('planDataWrite', () => {
 })
 
 describe('isDataCollapse (observational only)', () => {
-  it('counts a collapse of a 0.5-1 MiB database (the old floor hid this window)', () => {
+  test('counts a collapse of a 0.5-1 MiB database (the old floor hid this window)', () => {
     expect(isDataCollapse(800 * 1024, 0)).toBe(true)
     expect(isDataCollapse(800 * 1024, 100 * 1024)).toBe(true)
   })
