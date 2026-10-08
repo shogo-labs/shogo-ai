@@ -43,7 +43,9 @@ import React from "react"
 import { createReactNativeMock, reactNativeMockBase } from "../../../test/react-native-mock"
 
 const animationConfigs: Array<Record<string, unknown>> = []
-let latestContentSizeChange: ((event: any) => void) | undefined
+/** Reports the field's height the way the platform does: iOS via `onLayout`. */
+let latestReportHeight: ((height: number) => void) | undefined
+let latestUsesContentSize = false
 
 const Host = React.forwardRef<HTMLElement, any>(function Host(
   {
@@ -79,6 +81,7 @@ const TextInput = React.forwardRef<HTMLTextAreaElement, any>(function TextInput(
     onChange,
     onChangeText,
     onContentSizeChange,
+    onLayout,
     onKeyPress,
     onSelectionChange,
     onSubmitEditing,
@@ -91,7 +94,12 @@ const TextInput = React.forwardRef<HTMLTextAreaElement, any>(function TextInput(
   },
   ref,
 ) {
-  latestContentSizeChange = onContentSizeChange
+  latestUsesContentSize = !!onContentSizeChange
+  latestReportHeight = onLayout
+    ? (height) => onLayout({ nativeEvent: { layout: { height } } })
+    : onContentSizeChange
+      ? (height) => onContentSizeChange({ nativeEvent: { contentSize: { height } } })
+      : undefined
   return (
     <textarea
       {...props}
@@ -229,7 +237,7 @@ const { ChatInput } = await import("../ChatInput")
 
 afterEach(() => {
   cleanup()
-  latestContentSizeChange = undefined
+  latestReportHeight = undefined
   animationConfigs.length = 0
 })
 
@@ -250,11 +258,11 @@ function renderChatInput() {
 describe("ChatInput — native caret regression guard", () => {
   test("animates prominent height changes and removes the placeholder while typing", async () => {
     const input = renderChatInput()
-    const contentSizeChangeBeforeTyping = latestContentSizeChange
+    const reportHeightBeforeTyping = latestReportHeight
 
     await act(async () => {
       fireEvent.change(input, { target: { value: "hello" } })
-      contentSizeChangeBeforeTyping?.({ nativeEvent: { contentSize: { height: 54 } } })
+      reportHeightBeforeTyping?.(54)
       await new Promise((resolve) => setTimeout(resolve, 32))
     })
 
@@ -282,7 +290,7 @@ describe("ChatInput — native caret regression guard", () => {
 
     await act(async () => {
       fireEvent.change(input, { target: { value: "" } })
-      latestContentSizeChange?.({ nativeEvent: { contentSize: { height: 22 } } })
+      latestReportHeight?.(22)
       await new Promise((resolve) => setTimeout(resolve, 32))
     })
 
@@ -304,17 +312,23 @@ describe("ChatInput — native caret regression guard", () => {
     ).toBe(true)
   })
 
+  test("on iOS the field sizes itself and reports its laid-out height, not onContentSizeChange", () => {
+    renderChatInput()
+    expect(latestUsesContentSize).toBe(false)
+    expect(latestReportHeight).toBeDefined()
+  })
+
   test("coalesces repeated content-size measurements to the latest height", async () => {
     const input = renderChatInput()
     act(() => {
       fireEvent.change(input, { target: { value: "hello" } })
     })
-    const reportContentSize = latestContentSizeChange
+    const reportHeight = latestReportHeight
     animationConfigs.length = 0
 
     act(() => {
-      reportContentSize?.({ nativeEvent: { contentSize: { height: 54 } } })
-      reportContentSize?.({ nativeEvent: { contentSize: { height: 80 } } })
+      reportHeight?.(54)
+      reportHeight?.(80)
     })
 
     expect(animationConfigs.some((config) => config.toValue === 54)).toBe(false)

@@ -92,6 +92,35 @@ function setDraftLocal(key: string, text: string) {
   drafts.set(next)
 }
 
+/**
+ * The server echoes `draft.changed` to every device, the author's included,
+ * so an echo of an earlier save can land after a newer local edit (such as
+ * the clear on send). While a local save is recent, only an echo of that
+ * exact text is accepted for its key.
+ */
+const DRAFT_ECHO_GUARD_MS = 3000
+const localDraftWrites = new Map<string, { text: string; until: number }>()
+
+function guardLocalDraft(key: string, text: string, ms: number) {
+  localDraftWrites.set(key, { text, until: Date.now() + ms })
+}
+
+function isStaleEcho(key: string, text: string): boolean {
+  const local = localDraftWrites.get(key)
+  if (!local) return false
+  if (Date.now() >= local.until) {
+    localDraftWrites.delete(key)
+    return false
+  }
+  return local.text !== text
+}
+
+export function _resetDraftsForTests(): void {
+  drafts.set(new Map())
+  draftsLoaded.clear()
+  localDraftWrites.clear()
+}
+
 export function useDraftsFeed(workspaceId: string | null | undefined): void {
   useEffect(() => {
     if (!workspaceId || draftsLoaded.has(workspaceId)) return
@@ -99,13 +128,19 @@ export function useDraftsFeed(workspaceId: string | null | undefined): void {
     api.drafts(workspaceId)
       .then((list) => {
         const next = new Map(drafts.get())
-        for (const d of list) if (!next.has(draftKey(d.conversationId, d.threadRootId))) next.set(draftKey(d.conversationId, d.threadRootId), d.text)
+        for (const d of list) {
+          const key = draftKey(d.conversationId, d.threadRootId)
+          if (!next.has(key) && !localDraftWrites.has(key)) next.set(key, d.text)
+        }
         drafts.set(next)
       })
       .catch(() => draftsLoaded.delete(workspaceId))
   }, [workspaceId])
   useTeamChatEvents(workspaceId, (event) => {
-    if (event.type === 'draft.changed') setDraftLocal(draftKey(event.draft.conversationId, event.draft.threadRootId), event.draft.text)
+    if (event.type !== 'draft.changed') return
+    const key = draftKey(event.draft.conversationId, event.draft.threadRootId)
+    if (isStaleEcho(key, event.draft.text)) return
+    setDraftLocal(key, event.draft.text)
   })
 }
 
@@ -128,13 +163,18 @@ export function useDraft(conversationId: string, threadRootId?: string | null) {
     timer.current = null
     const p = pending.current
     pending.current = null
-    if (p) void api.putDraft(p.conversationId, p.text, p.threadRootId).catch(() => {})
+    if (!p) return
+    const settle = () => {
+      if (localDraftWrites.get(p.key)?.text === p.text) guardLocalDraft(p.key, p.text, DRAFT_ECHO_GUARD_MS)
+    }
+    void api.putDraft(p.conversationId, p.text, p.threadRootId).then(settle, settle)
   }, [])
 
   useEffect(() => flush, [key, flush])
 
   const save = useCallback((text: string, opts: { immediate?: boolean } = {}) => {
     setDraftLocal(key, text)
+    guardLocalDraft(key, text, DRAFT_SAVE_MS + DRAFT_ECHO_GUARD_MS)
     pending.current = { key, conversationId, threadRootId: threadRootId ?? null, text }
     if (timer.current) clearTimeout(timer.current)
     if (opts.immediate) flush()
