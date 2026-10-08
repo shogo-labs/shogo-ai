@@ -768,7 +768,10 @@ export class MetalWarmPoolController {
         }
 
         const live = await this.liveHostsShared()
-        let ownerHostId = placedHostId ?? this.projectHost.get(projectId)
+        // This replica's memory of a host is only a fallback: the copy may have
+        // been evicted there and moved since, so without a placement ask the
+        // hosts before trusting it.
+        let ownerHostId = placedHostId
         if (live.length > 1 && !live.some((h) => h.hostId === ownerHostId)) {
           const probed = await this.probeOwner(projectId, live)
           if (probed) {
@@ -776,6 +779,7 @@ export class MetalWarmPoolController {
             span.setAttribute('resolve.owner_probe', probed)
           }
         }
+        ownerHostId ??= this.projectHost.get(projectId)
 
         const cands = this.candidates(projectId, ownerHostId, live)
         if (cands.length === 0) {
