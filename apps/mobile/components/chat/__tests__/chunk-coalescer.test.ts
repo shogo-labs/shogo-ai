@@ -118,4 +118,89 @@ describe("coalesceChunkBursts", () => {
     close()
     expect((await reading).map((c) => c.delta)).toEqual(["a", "b"])
   })
+
+  test("yields to the event loop while the consumer is busy, so renders can commit between slices", async () => {
+    const burst: any[] = []
+    for (let i = 0; i < 30; i++) burst.push({ type: "text-start", id: `p${i}` })
+    const source = new ReadableStream({
+      start(controller) {
+        for (const chunk of burst) controller.enqueue(chunk)
+        controller.close()
+      },
+    })
+    let yields = 0
+    const out = coalesceChunkBursts(source, {
+      sliceMs: 5,
+      yieldToEventLoop: async () => {
+        yields++
+        await new Promise((r) => setTimeout(r, 0))
+      },
+    })
+    const reader = out.getReader()
+    let seen = 0
+    while (true) {
+      const { done } = await reader.read()
+      if (done) break
+      seen++
+      const until = performance.now() + 6 // the SDK applying a chunk
+      while (performance.now() < until) {}
+    }
+    expect(seen).toBe(30)
+    expect(yields).toBeGreaterThanOrEqual(25)
+  })
+
+  test("a fast consumer never pays for a yield", async () => {
+    const burst: any[] = []
+    for (let i = 0; i < 200; i++) burst.push({ type: "text-start", id: `p${i}` })
+    const source = new ReadableStream({
+      start(controller) {
+        for (const chunk of burst) controller.enqueue(chunk)
+        controller.close()
+      },
+    })
+    let yields = 0
+    const out = await readAll(
+      coalesceChunkBursts(source, {
+        yieldToEventLoop: async () => {
+          yields++
+        },
+      }),
+    )
+    expect(out).toHaveLength(200)
+    expect(yields).toBe(0)
+  })
+
+  test("cancelling mid-burst stops delivery and cancels the source", async () => {
+    let cancelled = false
+    const source = new ReadableStream({
+      start(controller) {
+        for (let i = 0; i < 50; i++) controller.enqueue({ type: "text-start", id: `p${i}` })
+      },
+      cancel() {
+        cancelled = true
+      },
+    })
+    const reader = coalesceChunkBursts(source).getReader()
+    expect((await reader.read()).done).toBe(false)
+    await reader.cancel()
+    expect(cancelled).toBe(true)
+  })
+
+  test("a source error surfaces to the reader instead of hanging", async () => {
+    const source = new ReadableStream({
+      start(controller) {
+        controller.enqueue({ type: "text-start", id: "a" })
+        controller.error(new Error("boom"))
+      },
+    })
+    const reader = coalesceChunkBursts(source).getReader()
+    await expect(
+      (async () => {
+        while (true) {
+          const { done } = await reader.read()
+          if (done) return
+        }
+      })(),
+    ).rejects.toThrow("boom")
+  })
 })
