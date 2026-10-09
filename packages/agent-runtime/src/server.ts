@@ -2839,7 +2839,7 @@ function getCanvasFileWatcher(): any {
  */
 function notifyCanvasWorkspaceWrite(relativePath: string, absolutePath: string): void {
   try {
-    getCanvasFileWatcher().onFileChanged(relativePath, absolutePath)
+    getCanvasFileWatcher().onFileChanged(relativePath, absolutePath, 'ide')
   } catch (err) {
     console.warn('[workspace] canvas watcher write-notify failed:', err)
   }
@@ -2847,7 +2847,7 @@ function notifyCanvasWorkspaceWrite(relativePath: string, absolutePath: string):
 
 function notifyCanvasWorkspaceDelete(relativePath: string): void {
   try {
-    getCanvasFileWatcher().onFileDeleted(relativePath)
+    getCanvasFileWatcher().onFileDeleted(relativePath, 'ide')
   } catch (err) {
     console.warn('[workspace] canvas watcher delete-notify failed:', err)
   }

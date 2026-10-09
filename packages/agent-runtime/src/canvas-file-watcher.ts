@@ -108,6 +108,17 @@ const IGNORED_PATH_PREFIXES = [
                    // (`.shogo/server.migrated-<ts>/`) are also under
                    // `.shogo/`, which we ignore wholesale next:
   '.shogo/cache',
+  // Runtime-owned state written continuously in the background (console /
+  // build logs, agent state, preview pid + build markers). These are never
+  // user-edited sources; forwarding them as `file.changed` made the web IDE
+  // auto-open log files and steal the active tab. Keep in sync with the
+  // exclude list in github-workspace-git.ts.
+  '.shogo/logs',
+  '.shogo/local',
+  '.shogo/install-marker',
+  '.shogo/agent-state.json',
+  '.shogo/vite-watch.pid',
+  '.shogo/vite.watch.config.ts',
   'dist',
   // Build-output-commit staging/rotation dirs. Must be ignored or
   // chokidar's recursive ReadDirectoryChangesW on Windows pins a handle
@@ -142,6 +153,8 @@ function shouldIgnore(relativePath: string): boolean {
     if (relativePath === p || relativePath.startsWith(p + '/')) return true
   }
   if (isNoisyFileBasename(relativePath)) return true
+  // `.shogo/build-output*` is a prefix family (build-output, build-output.json, ...).
+  if (relativePath.startsWith('.shogo/build-output')) return true
   return false
 }
 
@@ -372,11 +385,20 @@ export const __testInternals = {
   normalizeRelativePath,
 }
 
+/**
+ * Who caused a file event. Lets the IDE "follow agent" only on real agent
+ * edits instead of every write on disk.
+ *   - 'agent': the chat agent's write_file / edit_file / delete tools
+ *   - 'ide':   HTTP PUT/DELETE/upload (IDE or SDK saves)
+ *   - 'fs':    chokidar (external processes, exec, git, build tooling)
+ */
+export type CanvasEventSource = 'agent' | 'ide' | 'fs'
+
 export type CanvasEvent =
   | { type: 'init' }
   | { type: 'reload' }
-  | { type: 'file.changed'; path: string; mtime: number }
-  | { type: 'file.deleted'; path: string }
+  | { type: 'file.changed'; path: string; mtime: number; source?: CanvasEventSource }
+  | { type: 'file.deleted'; path: string; source?: CanvasEventSource }
 
 /**
  * What a buildable change should rebuild. `projectId` is set when the path
@@ -554,7 +576,7 @@ export class CanvasFileWatcher {
       // does its own filtering against registered globs.
       this.notifyLspBridge(absPath, 'deleted')
       if (this.shouldDedupe('file.deleted', path)) return
-      this.broadcast({ type: 'file.deleted', path })
+      this.broadcast({ type: 'file.deleted', path, source: 'fs' })
       this.maybeRebuild(path)
       return
     }
@@ -568,7 +590,7 @@ export class CanvasFileWatcher {
     }
     this.notifyLspBridge(absPath, op === 'add' ? 'created' : 'changed')
     if (this.shouldDedupe('file.changed', path)) return
-    this.broadcast({ type: 'file.changed', path, mtime })
+    this.broadcast({ type: 'file.changed', path, mtime, source: 'fs' })
     this.maybeRebuild(path)
   }
 
@@ -647,17 +669,21 @@ export class CanvasFileWatcher {
    * redundant with chokidar but faster (no debounce or filesystem stat)
    * and survives watcher init failures / silent inotify on Firecracker.
    */
-  onFileChanged(relativePath: string, _absolutePath: string): void {
+  onFileChanged(
+    relativePath: string,
+    _absolutePath: string,
+    source: CanvasEventSource = 'agent',
+  ): void {
     const path = normalizeRelativePath(relativePath)
     if (this.shouldDedupe('file.changed', path)) return
-    this.broadcast({ type: 'file.changed', path, mtime: Date.now() })
+    this.broadcast({ type: 'file.changed', path, mtime: Date.now(), source })
     this.maybeRebuild(path)
   }
 
-  onFileDeleted(relativePath: string): void {
+  onFileDeleted(relativePath: string, source: CanvasEventSource = 'agent'): void {
     const path = normalizeRelativePath(relativePath)
     if (this.shouldDedupe('file.deleted', path)) return
-    this.broadcast({ type: 'file.deleted', path })
+    this.broadcast({ type: 'file.deleted', path, source })
     this.maybeRebuild(path)
   }
 

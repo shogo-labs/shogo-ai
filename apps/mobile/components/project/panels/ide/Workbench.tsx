@@ -697,6 +697,8 @@ export function Workbench({
     setConflicts,
     refreshTree: refreshAgentTree,
     tryAnimate: tryAnimateLive,
+    followAgent: settings.followAgent,
+    activityRootRef: ideRootRef,
     visible: paneVisible,
   });
 

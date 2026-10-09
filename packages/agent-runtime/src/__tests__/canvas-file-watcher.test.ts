@@ -723,3 +723,66 @@ describe('buildIgnoreGlobs (noisy-file pattern coverage)', () => {
     expect(globs).toContain('**/*.crdownload')
   })
 })
+
+describe('shouldIgnore (runtime-owned .shogo state)', () => {
+  test.each([
+    '.shogo/logs/console.log',
+    '.shogo/logs/build.log',
+    '.shogo/local/state.json',
+    '.shogo/install-marker',
+    '.shogo/agent-state.json',
+    '.shogo/vite-watch.pid',
+    '.shogo/vite.watch.config.ts',
+    '.shogo/build-output',
+    '.shogo/build-output.json',
+  ])('ignores %s', (p) => {
+    expect(shouldIgnore(p)).toBe(true)
+  })
+
+  test.each([
+    '.shogo/skills/foo/SKILL.md',
+    '.shogo/plans/plan.md',
+    '.shogo/permissions.json',
+    'AGENTS.md',
+  ])('does not ignore user-authored %s', (p) => {
+    expect(shouldIgnore(p)).toBe(false)
+  })
+})
+
+describe('event source tagging', () => {
+  test('onFileChanged defaults to source "agent"', () => {
+    const watcher = new CanvasFileWatcher(tmpDir)
+    const events: CanvasEvent[] = []
+    watcher.subscribe((e) => events.push(e))
+    watcher.onFileChanged('src/a.ts', join(tmpDir, 'src', 'a.ts'))
+    expect(events).toEqual([
+      expect.objectContaining({ type: 'file.changed', path: 'src/a.ts', source: 'agent' }),
+    ])
+  })
+
+  test('onFileChanged / onFileDeleted carry an explicit source', () => {
+    const watcher = new CanvasFileWatcher(tmpDir)
+    const events: CanvasEvent[] = []
+    watcher.subscribe((e) => events.push(e))
+    watcher.onFileChanged('src/a.ts', join(tmpDir, 'src', 'a.ts'), 'ide')
+    watcher.onFileDeleted('src/b.ts', 'ide')
+    expect(events).toEqual([
+      expect.objectContaining({ type: 'file.changed', path: 'src/a.ts', source: 'ide' }),
+      expect.objectContaining({ type: 'file.deleted', path: 'src/b.ts', source: 'ide' }),
+    ])
+  })
+
+  test('chokidar-originated events are tagged "fs"', () => {
+    const watcher = new CanvasFileWatcher(tmpDir)
+    const events: CanvasEvent[] = []
+    watcher.subscribe((e) => events.push(e))
+    // @ts-expect-error — private, exercised directly to avoid real fs timing
+    watcher.handleChokidarFileEvent('change', join(tmpDir, 'src', 'c.ts'))
+    // @ts-expect-error — private
+    watcher.handleChokidarFileEvent('unlink', join(tmpDir, 'src', 'd.ts'))
+    expect(events).toEqual([
+      expect.objectContaining({ type: 'file.changed', path: 'src/c.ts', source: 'fs' }),
+      expect.objectContaining({ type: 'file.deleted', path: 'src/d.ts', source: 'fs' }),
+    ])
+  })
+})

@@ -300,6 +300,12 @@ export function SettingsPane({
 
         <Section title="Save">
           <ToggleRow
+            k="followAgent" label="Follow agent edits"
+            hint="Open files in the editor when the chat agent edits them (never switches tabs while you're typing)"
+            value={settings.followAgent}
+            onChange={(v) => set("followAgent", v)}
+          />
+          <ToggleRow
             k="autoSave" label="Auto save"
             hint="Save the active file after you pause typing (~1s), and when switching tabs"
             value={settings.autoSave}
