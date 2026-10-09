@@ -59,9 +59,11 @@ export interface SearchResponse {
  * no echo when the IDE itself saves. Paths are forward-slashed, relative to
  * the workspace root.
  */
+export type WorkspaceFsEventSource = "agent" | "ide" | "fs";
+
 export type WorkspaceFsEvent =
-  | { type: "file.changed"; path: string; mtime: number }
-  | { type: "file.deleted"; path: string };
+  | { type: "file.changed"; path: string; mtime: number; source?: WorkspaceFsEventSource }
+  | { type: "file.deleted"; path: string; source?: WorkspaceFsEventSource };
 
 export interface WorkspaceService {
   readonly id: string;

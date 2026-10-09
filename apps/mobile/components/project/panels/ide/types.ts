@@ -92,6 +92,12 @@ export interface EditorSettings {
   /** Ensure the file ends with exactly one newline on (manual) save. */
   insertFinalNewline: boolean;
   /**
+   * Follow the chat agent: when it edits a file that isn't open, open it in
+   * the editor (without stealing focus while you are actively working).
+   * Already-open tabs always stay in sync regardless of this setting.
+   */
+  followAgent: boolean;
+  /**
    * Desktop-only: Monaco theme id (built-in from `BUILTIN_DESKTOP_THEMES`
    * or `shogo-user-<slug>` for an imported custom theme). Ignored by the
    * web/mobile build; CodeEditor falls back to shogo-dark/light when this
@@ -129,6 +135,7 @@ export const DEFAULT_SETTINGS: EditorSettings = {
   fontLigatures: true,
   trimTrailingWhitespace: false,
   insertFinalNewline: false,
+  followAgent: true,
 };
 
 export interface Root {
