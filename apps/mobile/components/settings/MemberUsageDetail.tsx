@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
+import type { ReactNode } from 'react'
 import { View, ScrollView, Pressable, Modal, ActivityIndicator } from 'react-native'
 import { X } from 'lucide-react-native'
 import type { MemberInsight } from '../../lib/api'
+import { RoleBadge } from './people/MemberRow'
 import {
   Text,
   useAccountSheetIcons,
@@ -26,23 +28,43 @@ function formatLines(added: number, removed: number): string {
   return `+${formatNumber(added)} / -${formatNumber(removed)}`
 }
 
-export function MemberUsageDetail({
+export interface MemberProfile {
+  name: string
+  email: string
+  role: string
+}
+
+/**
+ * Bottom sheet for a single workspace member: who they are, an optional
+ * "Access" section (role / remove / leave controls, supplied by the caller),
+ * and their usage for the selected period.
+ */
+export function MemberDetailSheet({
   visible,
+  profile,
   member,
+  canSeeUsage,
   loading,
   period,
   onPeriodChange,
   onClose,
+  access,
 }: {
   visible: boolean
+  profile: MemberProfile | null
+  /** Usage insight for the member; `null` when there is none for this period. */
   member: MemberInsight | null
+  /** Usage is only visible to owners/admins and to the member themselves. */
+  canSeeUsage: boolean
   loading: boolean
   period: MemberUsagePeriod
   onPeriodChange: (period: MemberUsagePeriod) => void
   onClose: () => void
+  access?: ReactNode
 }) {
   const { X: CloseIcon } = useAccountSheetIcons({ X })
-  const displayName = member?.userName || member?.userEmail || 'Member'
+  const displayName = profile?.name || member?.userName || member?.userEmail || 'Member'
+  const displayEmail = profile?.email || member?.userEmail || ''
   const chartDays = (member?.daily ?? []).map((day) => ({
     date: day.date,
     values: { tokens: day.totalTokens },
@@ -62,9 +84,14 @@ export function MemberUsageDetail({
               <Text className="text-lg font-semibold text-foreground" numberOfLines={1}>
                 {displayName}
               </Text>
-              <Text className="mt-0.5 text-xs text-muted-foreground">
-                Member usage details
-              </Text>
+              <View className="mt-1 flex-row items-center gap-2">
+                {profile?.role ? <RoleBadge role={profile.role} /> : null}
+                {displayEmail ? (
+                  <Text className="min-w-0 flex-shrink text-xs text-muted-foreground" numberOfLines={1}>
+                    {displayEmail}
+                  </Text>
+                ) : null}
+              </View>
             </View>
             <Pressable
               onPress={onClose}
@@ -76,21 +103,32 @@ export function MemberUsageDetail({
           </View>
 
           <ScrollView contentContainerClassName="gap-4 px-5 py-5">
-            <View className="flex-row gap-2">
-              {(['7d', '30d', '90d'] as MemberUsagePeriod[]).map((option) => (
-                <Pressable
-                  key={option}
-                  onPress={() => onPeriodChange(option)}
-                  className={`rounded-md border px-3 py-2 ${
-                    period === option ? 'border-foreground bg-muted' : 'border-border'
-                  }`}
-                >
-                  <Text className="text-xs font-medium text-foreground">{option}</Text>
-                </Pressable>
-              ))}
-            </View>
+            {access}
 
-            {loading ? (
+            {canSeeUsage ? (
+              <View className="gap-2">
+                <Text className="text-sm font-semibold text-foreground">Usage</Text>
+                <View className="flex-row gap-2">
+                  {(['7d', '30d', '90d'] as MemberUsagePeriod[]).map((option) => (
+                    <Pressable
+                      key={option}
+                      onPress={() => onPeriodChange(option)}
+                      className={`rounded-md border px-3 py-2 ${
+                        period === option ? 'border-foreground bg-muted' : 'border-border'
+                      }`}
+                    >
+                      <Text className="text-xs font-medium text-foreground">{option}</Text>
+                    </Pressable>
+                  ))}
+                </View>
+              </View>
+            ) : null}
+
+            {!canSeeUsage ? (
+              <Text className="py-6 text-center text-sm text-muted-foreground">
+                Usage details are only visible to workspace owners and admins.
+              </Text>
+            ) : loading ? (
               <View className="h-48 items-center justify-center">
                 <ActivityIndicator />
               </View>
