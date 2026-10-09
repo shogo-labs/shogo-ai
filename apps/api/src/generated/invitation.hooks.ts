@@ -9,6 +9,7 @@
 
 import { sendInvitationEmail, sendProjectInviteEmail, sendInviteAcceptedEmail } from "../services/email.service"
 import { getFrontendUrl } from "../lib/cloud-urls"
+import { createNotification } from "../services/notification.service"
 
 /**
  * Result from a hook that can modify or reject the operation
@@ -288,6 +289,33 @@ export const invitationHooks: InvitationHooks = {
     const acceptUrl = `${baseUrl}/invitations/${invitation.id}/accept`
 
     const inviterName = inviter?.name || inviter?.email || 'A team member'
+
+    // In-app notification for invitees who already have an account, so the
+    // invite shows up on the bell / Notifications screen (the only place phone
+    // users can see it). Best-effort: must never block the email below.
+    try {
+      const invitee = await ctx.prisma.user.findFirst({
+        where: { email: invitation.email.toLowerCase() },
+        select: { id: true },
+      })
+      if (invitee?.id && invitee.id !== invitation.invitedBy) {
+        await createNotification({
+          userId: invitee.id,
+          type: 'invitation_pending' as any,
+          title: `${inviterName} invited you to ${resourceName}`,
+          message: `You've been invited to join ${resourceName} as ${invitation.role}. Tap to accept or decline.`,
+          actionUrl: `/invitations/${invitation.id}/accept`,
+          dedupeKey: invitation.id,
+          metadata: {
+            invitationId: invitation.id,
+            workspaceId: invitation.workspaceId ?? null,
+            projectId: invitation.projectId ?? null,
+          },
+        })
+      }
+    } catch (err) {
+      console.error('[Notifications] invitation_pending failed:', err)
+    }
 
     const emailResult = invitation.projectId && project?.name
       ? await sendProjectInviteEmail({

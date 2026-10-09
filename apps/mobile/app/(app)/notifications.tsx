@@ -31,6 +31,8 @@ import { cn } from '@shogo/shared-ui/primitives'
 import { useNotificationCollection, useDomainActions } from '../../contexts/domain'
 import { notificationEvents } from '../../lib/notification-events'
 import { filterNotificationsForPlatform } from '../../lib/notification-policy'
+import { usePendingInvitations } from '../../lib/use-pending-invitations'
+import { InvitationRow } from '../../components/layout/sidebar/InboxPanel'
 
 /** Type → icon + accent color (Tailwind text class) for the row glyph. */
 function visualForType(type: string): { Icon: React.ElementType; color: string } {
@@ -81,6 +83,8 @@ export default observer(function NotificationsScreen() {
   const router = useRouter()
   const notifications = useNotificationCollection()
   const actions = useDomainActions()
+  const { pendingInvites, processingInvite, loadInvites, acceptInvite, declineInvite } =
+    usePendingInvitations()
   const [refreshing, setRefreshing] = useState(false)
   const [markingAllRead, setMarkingAllRead] = useState(false)
   const [markAllError, setMarkAllError] = useState(false)
@@ -99,9 +103,9 @@ export default observer(function NotificationsScreen() {
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true)
-    await load()
+    await Promise.all([load(), loadInvites()])
     setRefreshing(false)
-  }, [load])
+  }, [load, loadInvites])
 
   // Newest first.
   const items = filterNotificationsForPlatform(notifications.all, Platform.OS)
@@ -199,7 +203,7 @@ export default observer(function NotificationsScreen() {
         <View className="flex-1 items-center justify-center">
           <ActivityIndicator />
         </View>
-      ) : items.length === 0 ? (
+      ) : items.length === 0 && pendingInvites.length === 0 ? (
         <View className={cn('flex-1 items-center justify-center px-8', isNative ? 'gap-3' : 'gap-2')}>
           <View className="w-full max-w-sm items-center rounded-2xl border border-border bg-card px-6 py-8">
             <View className="mb-4 h-12 w-12 items-center justify-center rounded-xl bg-primary/10">
@@ -219,6 +223,23 @@ export default observer(function NotificationsScreen() {
           contentContainerClassName="w-full max-w-3xl self-center px-4 pb-8 pt-3"
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
         >
+          {pendingInvites.length > 0 && (
+            <View className="mb-3 overflow-hidden rounded-xl border border-border bg-card" testID="notifications-invitations">
+              <Text className="px-4 pb-1 pt-3 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                Invitations
+              </Text>
+              {pendingInvites.map((invite: any, index: number) => (
+                <InvitationRow
+                  key={invite.id}
+                  invite={invite}
+                  processingInvite={processingInvite}
+                  onAccept={acceptInvite}
+                  onDecline={declineInvite}
+                  bordered={index > 0}
+                />
+              ))}
+            </View>
+          )}
           {items.map((n) => {
             const { Icon, color } = visualForType(n.type)
             const isUnread = !n.readAt

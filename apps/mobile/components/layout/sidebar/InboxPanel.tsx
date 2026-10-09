@@ -29,6 +29,113 @@ export interface InboxPanelProps {
   onDecline: (invite: any) => void | Promise<void>;
 }
 
+export interface InvitationRowProps {
+  invite: any;
+  processingInvite: InviteProcessingState;
+  onAccept: (invite: any) => void | Promise<void>;
+  onDecline: (invite: any) => void | Promise<void>;
+  /** Draw the divider above the card (sidebar list style). */
+  bordered?: boolean;
+}
+
+/** One pending workspace/project invitation with Accept / Decline actions. */
+export function InvitationRow({
+  invite,
+  processingInvite,
+  onAccept,
+  onDecline,
+  bordered = true,
+}: InvitationRowProps) {
+  const expired = isInvitationExpired(invite);
+  const isAccepting =
+    processingInvite?.id === invite.id && processingInvite?.action === "accept";
+  const isDeclining =
+    processingInvite?.id === invite.id && processingInvite?.action === "decline";
+  const busy = processingInvite?.id === invite.id;
+  const resourceName =
+    invite.project?.name ||
+    invite.workspace?.name ||
+    invite.workspaceName ||
+    "Workspace";
+  return (
+    <View
+      className={cn("px-4 py-3", bordered && "border-t border-border")}
+      testID={`invitation-row-${invite.id}`}
+    >
+      <View className="mb-0.5 flex-row items-center justify-between">
+        <Text className="text-sm font-medium text-card-foreground">
+          {resourceName}
+        </Text>
+        <View className="flex-row items-center gap-1.5">
+          {expired ? (
+            <View className="rounded bg-amber-100 px-1.5 py-0.5 dark:bg-amber-950/40">
+              <Text className="text-[10px] text-amber-700 dark:text-amber-300">
+                Expired
+              </Text>
+            </View>
+          ) : null}
+          <View className="rounded bg-muted px-1.5 py-0.5">
+            <Text className="text-[10px] capitalize text-muted-foreground">
+              {invite.role}
+            </Text>
+          </View>
+        </View>
+      </View>
+      <Text className="mb-2.5 text-xs text-muted-foreground">
+        {expired
+          ? "Expired invitation. Ask for a new invite to join."
+          : invite.projectId
+            ? "Invited to join this project"
+            : "Invited to join this workspace"}
+      </Text>
+      <View className="flex-row gap-2">
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={expired ? "Expired" : "Accept invitation"}
+          disabled={expired || busy}
+          onPress={() => onAccept(invite)}
+          className={cn(
+            "h-8 flex-1 items-center justify-center rounded-md",
+            expired ? "bg-muted" : "bg-primary",
+            (expired || busy) && "opacity-50",
+          )}
+        >
+          {isAccepting ? (
+            <ActivityIndicator size="small" color="white" />
+          ) : (
+            <Text
+              className={cn(
+                "text-xs font-medium",
+                expired ? "text-muted-foreground" : "text-primary-foreground",
+              )}
+            >
+              {expired ? "Expired" : "Accept"}
+            </Text>
+          )}
+        </Pressable>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={expired ? "Dismiss invitation" : "Decline invitation"}
+          disabled={busy}
+          onPress={() => onDecline(invite)}
+          className={cn(
+            "h-8 flex-1 items-center justify-center rounded-md border border-border",
+            busy && "opacity-50",
+          )}
+        >
+          {isDeclining ? (
+            <ActivityIndicator size="small" />
+          ) : (
+            <Text className="text-xs font-medium text-card-foreground">
+              {expired ? "Dismiss" : "Decline"}
+            </Text>
+          )}
+        </Pressable>
+      </View>
+    </View>
+  );
+}
+
 function InboxContent({
   pendingInvites,
   processingInvite,
@@ -68,91 +175,15 @@ function InboxContent({
           <Text className="px-4 pb-1.5 pt-1 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
             Invitations
           </Text>
-          {pendingInvites.map((invite: any) => {
-            const expired = isInvitationExpired(invite);
-            const isAccepting =
-              processingInvite?.id === invite.id &&
-              processingInvite?.action === "accept";
-            const isDeclining =
-              processingInvite?.id === invite.id &&
-              processingInvite?.action === "decline";
-            return (
-              <View
-                key={invite.id}
-                className="border-t border-border px-4 py-3"
-              >
-                <View className="mb-0.5 flex-row items-center justify-between">
-                  <Text className="text-sm font-medium text-card-foreground">
-                    {invite.workspace?.name ||
-                      invite.workspaceName ||
-                      "Workspace"}
-                  </Text>
-                  <View className="flex-row items-center gap-1.5">
-                    {expired ? (
-                      <View className="rounded bg-amber-100 px-1.5 py-0.5 dark:bg-amber-950/40">
-                        <Text className="text-[10px] text-amber-700 dark:text-amber-300">
-                          Expired
-                        </Text>
-                      </View>
-                    ) : null}
-                    <View className="rounded bg-muted px-1.5 py-0.5">
-                      <Text className="text-[10px] capitalize text-muted-foreground">
-                        {invite.role}
-                      </Text>
-                    </View>
-                  </View>
-                </View>
-                <Text className="mb-2.5 text-xs text-muted-foreground">
-                  {expired
-                    ? "Expired invitation. Ask for a new invite to join."
-                    : "Invited to join this workspace"}
-                </Text>
-                <View className="flex-row gap-2">
-                  <Pressable
-                    disabled={expired || processingInvite?.id === invite.id}
-                    onPress={() => onAccept(invite)}
-                    className={cn(
-                      "h-8 flex-1 items-center justify-center rounded-md",
-                      expired ? "bg-muted" : "bg-primary",
-                      (expired || processingInvite?.id === invite.id) &&
-                        "opacity-50",
-                    )}
-                  >
-                    {isAccepting ? (
-                      <ActivityIndicator size="small" color="white" />
-                    ) : (
-                      <Text
-                        className={cn(
-                          "text-xs font-medium",
-                          expired
-                            ? "text-muted-foreground"
-                            : "text-primary-foreground",
-                        )}
-                      >
-                        {expired ? "Expired" : "Accept"}
-                      </Text>
-                    )}
-                  </Pressable>
-                  <Pressable
-                    disabled={processingInvite?.id === invite.id}
-                    onPress={() => onDecline(invite)}
-                    className={cn(
-                      "h-8 flex-1 items-center justify-center rounded-md border border-border",
-                      processingInvite?.id === invite.id && "opacity-50",
-                    )}
-                  >
-                    {isDeclining ? (
-                      <ActivityIndicator size="small" />
-                    ) : (
-                      <Text className="text-xs font-medium text-card-foreground">
-                        {expired ? "Dismiss" : "Decline"}
-                      </Text>
-                    )}
-                  </Pressable>
-                </View>
-              </View>
-            );
-          })}
+          {pendingInvites.map((invite: any) => (
+            <InvitationRow
+              key={invite.id}
+              invite={invite}
+              processingInvite={processingInvite}
+              onAccept={onAccept}
+              onDecline={onDecline}
+            />
+          ))}
         </ScrollView>
       )}
     </>
