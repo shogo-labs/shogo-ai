@@ -111,6 +111,10 @@ export interface LiveVmEntry {
    * allowed to seed an archive. See AssignedVm.dataUntrustedReason.
    */
   dataUntrustedReason?: string
+  /** Encrypted home-directory archive lineage. See AssignedVm.homeParentEtag. */
+  homeParentEtag?: string
+  /** Sticky: home hydrate failed, so exports must not overwrite it. See AssignedVm.homeUntrustedReason. */
+  homeUntrustedReason?: string
   /** Per-member writable-state lineage for workspace runtimes. See AssignedVm.memberData. */
   memberData?: Record<string, MemberDataState>
   /**

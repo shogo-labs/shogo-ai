@@ -58,6 +58,8 @@ export interface CacheEntry {
    * taken. Same role as `backupEtag`, for the database + uploads.
    */
   dataEtag?: string
+  /** ETag of the encrypted home-directory archive current when this snapshot was taken. */
+  homeEtag?: string
   /** See AssignedVm.publishedDataLoaded. */
   publishedDataLoaded?: boolean
   /** Per-member writable-state archive ETags for workspace runtimes (`dataEtag` per member). */

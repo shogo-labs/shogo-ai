@@ -25,7 +25,7 @@
  *    timing-safe comparison and log redaction (no reversible crypto).
  */
 
-import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto'
+import { createCipheriv, createDecipheriv, hkdfSync, randomBytes } from 'node:crypto'
 
 const ALGO = 'aes-256-gcm'
 const IV_BYTES = 12 // 96-bit nonce, the GCM-recommended size
@@ -120,6 +120,22 @@ export function decryptSecret(blob: string): string {
   decipher.setAuthTag(authTag)
   const plaintext = Buffer.concat([decipher.update(ciphertext), decipher.final()])
   return plaintext.toString('utf8')
+}
+
+/**
+ * Derive a 32-byte key scoped to one project and one purpose from the master
+ * key (HKDF-SHA256). Lets a runtime encrypt its own state without ever being
+ * handed the master key: a derived key opens only that project's data for that
+ * purpose. `purpose` must be a fixed, versioned label (e.g. `home-state:v1`) so
+ * two subsystems can never share a key by accident. Throws if the master key
+ * is missing/invalid (fail closed).
+ */
+export function deriveProjectKey(purpose: string, projectId: string): Buffer {
+  if (!purpose || !projectId) {
+    throw new Error('deriveProjectKey requires a purpose and a projectId')
+  }
+  const derived = hkdfSync('sha256', getMasterKey(), Buffer.from(`shogo:${purpose}`), Buffer.from(projectId), KEY_BYTES)
+  return Buffer.from(derived)
 }
 
 /**
