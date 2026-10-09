@@ -48,10 +48,15 @@ function checkPort(port: number): Promise<boolean> {
 }
 
 async function findFreePort(): Promise<number> {
-  for (let port = PREFERRED_PORT; port < PREFERRED_PORT + PORT_RANGE; port++) {
+  // E2E runs can start the search elsewhere so they never share a port with an
+  // installed Shogo (which listens on IPv6 only, so the IPv4 probe above can
+  // wrongly report 39100 as free).
+  const e2eStart = process.env.SHOGO_E2E === '1' ? Number(process.env.SHOGO_E2E_API_PORT_START) : NaN
+  const start = Number.isInteger(e2eStart) && e2eStart > 0 ? e2eStart : PREFERRED_PORT
+  for (let port = start; port < start + PORT_RANGE; port++) {
     if (await checkPort(port)) return port
   }
-  throw new Error(`No free port found in range ${PREFERRED_PORT}-${PREFERRED_PORT + PORT_RANGE - 1}`)
+  throw new Error(`No free port found in range ${start}-${start + PORT_RANGE - 1}`)
 }
 
 // --- PID file management ---

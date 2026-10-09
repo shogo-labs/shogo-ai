@@ -6,7 +6,7 @@
  * touches a developer's own running Shogo (separate user-data dir, a free API
  * port, and its own Metro port).
  */
-import { _electron as electron, expect, type ElectronApplication, type Locator, type Page } from '@playwright/test'
+import { _electron as electron, chromium, expect, type Browser, type ElectronApplication, type Locator, type Page } from '@playwright/test'
 import { spawn, type ChildProcess } from 'node:child_process'
 import fs from 'node:fs'
 import net from 'node:net'
@@ -15,6 +15,7 @@ import path from 'node:path'
 import { mainAppWindow } from '../electron-helpers'
 import { FakeLlmServer } from './fake-llm-server'
 import { installOwnStreamTap, installProbe } from './stream-probe'
+import { installReactProfiler } from './react-profile'
 
 const DESKTOP_DIR = path.resolve(__dirname, '..', '..')
 const REPO_ROOT = path.resolve(DESKTOP_DIR, '..', '..')
@@ -37,7 +38,8 @@ export async function snapshotFailure(page: Page, name: string): Promise<void> {
 }
 
 export interface Harness {
-  app: ElectronApplication
+  /** Set when running the Electron build; null for the plain browser target. */
+  app: ElectronApplication | null
   page: Page
   llm: FakeLlmServer
   devUrl: string
@@ -102,7 +104,7 @@ interface MetroHandle {
  * Metro for this checkout. Set SHOGO_E2E_DEV_URL to reuse a server you already
  * run from this worktree instead of starting one.
  */
-async function startMetro(): Promise<MetroHandle> {
+async function startMetro(extraEnv: Record<string, string> = {}, extraArgs: string[] = []): Promise<MetroHandle> {
   const provided = process.env.SHOGO_E2E_DEV_URL
   if (provided) {
     await waitForHttp(provided, 30_000, 'SHOGO_E2E_DEV_URL')
@@ -113,9 +115,9 @@ async function startMetro(): Promise<MetroHandle> {
   fs.mkdirSync(REPORT_DIR, { recursive: true })
   const logPath = path.join(REPORT_DIR, 'metro.log')
   const log = fs.openSync(logPath, 'w')
-  const child: ChildProcess = spawn(process.execPath, ['scripts/start-web.mjs', '--port', String(port)], {
+  const child: ChildProcess = spawn(process.execPath, ['scripts/start-web.mjs', '--port', String(port), ...extraArgs], {
     cwd: MOBILE_DIR,
-    env: { ...process.env, CI: '1', BROWSER: 'none', EXPO_NO_TELEMETRY: '1', EXPO_OFFLINE: '1' },
+    env: { ...process.env, CI: '1', BROWSER: 'none', EXPO_NO_TELEMETRY: '1', EXPO_OFFLINE: '1', ...extraEnv },
     stdio: ['ignore', log, log],
     detached: true,
   })
@@ -145,7 +147,7 @@ function ensureDesktopBuild(): void {
 export async function apiFetch<T = any>(page: Page, route: string, init?: { method?: string; body?: unknown }): Promise<{ status: number; body: T }> {
   return page.evaluate(
     async ({ route, init }) => {
-      const base = (window as any).shogoDesktop?.apiUrl as string
+      const base = ((window as any).shogoDesktop?.apiUrl ?? (window as any).__E2E_API_URL) as string
       const res = await fetch(`${base}${route}`, {
         method: init?.method ?? 'GET',
         credentials: 'include',
@@ -213,6 +215,8 @@ export async function launchDesktop(): Promise<Harness> {
     env: {
       ...env,
       SHOGO_E2E: '1',
+      // Never share a port with an installed Shogo, which may be running.
+      SHOGO_E2E_API_PORT_START: process.env.SHOGO_E2E_API_PORT_START ?? '39400',
       DESKTOP_DEV_URL: metro.url,
       LOCAL_LLM_BASE_URL: llm.url,
       LOCAL_LLM_BASIC_MODEL: 'fake-stream',
@@ -278,6 +282,7 @@ export async function launchDesktop(): Promise<Harness> {
     log(`created project ${projectId} in workspace ${workspace.id} (${workspace.kind})`)
 
     await installOwnStreamTap(page)
+    if (process.env.SHOGO_E2E_REACT_PROFILE === '1') await installReactProfiler(page)
     await page.goto(new URL(projectPath, metro.url).toString(), { waitUntil: 'domcontentloaded' })
     await expect(composer(page)).toBeVisible({ timeout: 180_000 }).catch(async (err) => {
       await snapshotFailure(page, 'project-composer-missing')
@@ -299,6 +304,133 @@ export async function launchDesktop(): Promise<Harness> {
   }
 }
 
+
+/**
+ * The same app in a plain Chromium tab: the local-mode API on a free port
+ * (throwaway SQLite DB, fake model) plus this checkout's Metro web bundle. No
+ * Electron needed, and it never touches a developer's running dev stack.
+ */
+export async function launchWeb(): Promise<Harness> {
+  const llm = new FakeLlmServer()
+  await llm.start()
+  const apiPort = await freePort()
+  const apiUrl = `http://localhost:${apiPort}`
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shogo-streaming-web-e2e-'))
+  const dbPath = path.join(dir, 'local.db')
+  fs.mkdirSync(REPORT_DIR, { recursive: true })
+
+  const localEnv: Record<string, string> = {
+    SHOGO_LOCAL_MODE: 'true',
+    DATABASE_URL: `file:${dbPath}`,
+    BETTER_AUTH_SECRET: 'e2e-local-secret',
+    BETTER_AUTH_URL: apiUrl,
+    NODE_ENV: 'development',
+    EXPO_PUBLIC_LOCAL_MODE: 'true',
+    API_PORT: String(apiPort),
+    EXPO_PUBLIC_API_PORT: String(apiPort),
+    EXPO_PUBLIC_API_URL: apiUrl,
+    EXPO_NO_DOTENV: '1',
+    RATE_LIMIT_GLOBAL_MAX: '100000',
+    SHOGO_RECORDING_BRIDGE: 'off',
+    SHOGO_E2E: '1',
+    LOCAL_LLM_BASE_URL: llm.url,
+    LOCAL_LLM_BASIC_MODEL: 'fake-stream',
+    LOCAL_LLM_ADVANCED_MODEL: 'fake-stream',
+  }
+  const baseEnv: Record<string, string> = {}
+  for (const [key, value] of Object.entries(process.env)) if (value !== undefined) baseEnv[key] = value
+
+  const { spawnSync } = require('node:child_process') as typeof import('node:child_process')
+  log('creating the local database')
+  const push = spawnSync('bun', ['x', 'prisma', 'db', 'push', '--schema=prisma/schema.local.prisma', '--url', `file:${dbPath}`, '--accept-data-loss'], { cwd: REPO_ROOT, stdio: 'inherit', env: { ...baseEnv, ...localEnv } })
+  if (push.status !== 0) throw new Error('prisma db push failed')
+
+  const traceLines: string[] = []
+  const collectTraces = (chunk: Buffer) => {
+    for (const line of chunk.toString().split('\n')) {
+      const at = line.indexOf('[StreamTrace] ')
+      if (at >= 0) traceLines.push(line.slice(at + '[StreamTrace] '.length))
+    }
+  }
+  const apiLogPath = path.join(REPORT_DIR, 'web-api.log')
+  const apiLog = fs.openSync(apiLogPath, 'w')
+  const api: ChildProcess = spawn('bun', ['--no-env-file', 'apps/api/src/entry.ts'], {
+    cwd: REPO_ROOT,
+    env: { ...baseEnv, ...localEnv },
+    stdio: ['ignore', 'pipe', 'pipe'],
+    detached: true,
+  })
+  const pipeLog = (chunk: Buffer) => { fs.writeSync(apiLog, chunk); collectTraces(chunk) }
+  api.stdout?.on('data', pipeLog)
+  api.stderr?.on('data', pipeLog)
+
+  let metro: MetroHandle | undefined
+  let browser: Browser | undefined
+  const close = async () => {
+    try { await browser?.close() } catch { /* already closed */ }
+    metro?.stop()
+    try { process.kill(-api.pid!, 'SIGTERM') } catch { /* gone */ }
+    await llm.stop()
+    try { fs.rmSync(dir, { recursive: true, force: true }) } catch { /* ignore */ }
+  }
+
+  try {
+    await waitForHttp(`${apiUrl}/api/health`, 180_000, `local API (log: ${apiLogPath})`)
+    log(`local API ready at ${apiUrl}`)
+    metro = await startMetro(localEnv, ['--clear'])
+    log(`Metro ready at ${metro.url}`)
+
+    browser = await chromium.launch()
+    const context = await browser.newContext({ viewport: { width: 1440, height: 900 } })
+    const page = await context.newPage()
+    await page.addInitScript((url) => { (window as any).__E2E_API_URL = url }, apiUrl)
+    await installOwnStreamTap(page)
+    if (process.env.SHOGO_E2E_REACT_PROFILE === '1') await installReactProfiler(page)
+
+    await page.goto(metro.url, { waitUntil: 'domcontentloaded', timeout: 240_000 })
+    const signIn = await apiFetch(page, '/api/local/auto-sign-in', { method: 'POST' })
+    if (signIn.status >= 400) throw new Error(`auto-sign-in failed: ${JSON.stringify(signIn.body)}`)
+    const onboarding = await apiFetch(page, '/api/onboarding/complete', { method: 'POST' })
+    if (onboarding.status >= 400) throw new Error(`onboarding failed: ${JSON.stringify(onboarding.body)}`)
+    log('signed in, onboarding complete')
+
+    const workspaces = await apiFetch<any>(page, '/api/workspaces')
+    const list: any[] = workspaces.body?.items ?? workspaces.body?.data ?? workspaces.body ?? []
+    const workspace = list.find((w) => w?.kind === 'team') ?? list[0]
+    if (!workspace?.id) throw new Error(`no workspace found: ${JSON.stringify(workspaces.body).slice(0, 300)}`)
+    const created = await apiFetch<any>(page, '/api/projects', {
+      method: 'POST',
+      body: { name: 'Streaming E2E', workspaceId: workspace.id, tier: 'starter', status: 'draft', accessLevel: 'anyone' },
+    })
+    const projectId: string | undefined = created.body?.data?.id ?? created.body?.id
+    if (!projectId) throw new Error(`project create failed (${created.status}): ${JSON.stringify(created.body).slice(0, 300)}`)
+    const projectPath = `/projects/${encodeURIComponent(projectId)}`
+    log(`created project ${projectId}`)
+
+    await page.goto(new URL(projectPath, metro.url).toString(), { waitUntil: 'domcontentloaded' })
+    await expect(composer(page)).toBeVisible({ timeout: 240_000 }).catch(async (err) => {
+      await snapshotFailure(page, 'project-composer-missing')
+      throw err
+    })
+    log('project composer visible')
+    await waitIdle(page, 120_000)
+
+    const opened = await findOpenedChat(page, projectId)
+    log(`project ${projectId} ready; chat ${opened.sessionId}`)
+    await installProbe(page)
+    const rendererErrors: string[] = []
+    watchErrors(page, rendererErrors)
+    return { app: null, page, llm, devUrl: metro.url, apiUrl, projectId, projectPath, sessionId: opened.sessionId, workspaceId: opened.workspaceId, rendererErrors, streamTraces: () => traceLines.flatMap((l) => { try { return [JSON.parse(l)] } catch { return [] } }), close }
+  } catch (err) {
+    await close()
+    throw err
+  }
+}
+
+/** Launches the Electron app, or the plain browser tab when SHOGO_E2E_TARGET=web. */
+export function launchTarget(): Promise<Harness> {
+  return process.env.SHOGO_E2E_TARGET === 'web' ? launchWeb() : launchDesktop()
+}
 
 /** The workspace chat session the project window opened with. */
 async function findOpenedChat(page: Page, projectId: string): Promise<{ sessionId: string; workspaceId: string }> {
