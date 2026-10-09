@@ -131,6 +131,17 @@ export const M = {
   // End-of-day restore points (`project-data/daily/<date>.tar.gz`).
   dataDailyCopied: 'metal_data_daily_copy_ok_total',
   dataDailyCopyFailed: 'metal_data_daily_copy_failed_total',
+  // Encrypted home-directory durability (pool.saveHomeStateToStore). Same
+  // meanings as the writable-state counters above, for `home-state.enc`.
+  homeHydrated: 'metal_home_hydrated_total',
+  homeHydrateFailed: 'metal_home_hydrate_failed_total',
+  homeUploadPeriodic: 'metal_home_upload_periodic_total',
+  homeUploadFinal: 'metal_home_upload_final_total',
+  homeUnchanged: 'metal_home_unchanged_total',
+  homeConflict: 'metal_home_conflict_total',
+  homeRefused: 'metal_home_refused_untrusted_total',
+  homeTooLarge: 'metal_home_too_large_total',
+  homeUnsupported: 'metal_home_unsupported_total',
   // API health watchdog. `apiUnhealthy` is how many live runtimes currently
   // report an unhealthy project API sidecar. The auto-recycle counters split
   // by outcome: `observed` = would have recycled (observe mode), `aborted` = a

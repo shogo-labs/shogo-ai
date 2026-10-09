@@ -491,6 +491,9 @@ if (config.projectDataExportIntervalMs > 0) {
         pool.exportAllRepos().then((n) => {
           if (n) console.log(`[metal-agent] exported .git for ${n} project(s)`)
         }),
+        pool.exportAllHomeState().then((n) => {
+          if (n) console.log(`[metal-agent] exported home directory for ${n} project(s)`)
+        }),
       ]),
   )
 }

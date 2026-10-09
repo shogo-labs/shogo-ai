@@ -59,6 +59,14 @@ class TestPool extends MetalWarmPool {
     if (opts.lineage.kind === 'untrusted') return { status: 'refused', reason: opts.lineage.reason, quarantineKey: 'q' }
     return this.data
   }
+  protected override async fetchHomeExport(): Promise<any> {
+    return { bytes: new Uint8Array([3]), tag: 'h1' }
+  }
+  protected override async uploadHomeGuarded(projectId: string, _b: Uint8Array, opts: any): Promise<any> {
+    this.events.push(`home ${projectId}`)
+    if (opts.lineage.kind === 'untrusted') return { status: 'refused', reason: opts.lineage.reason, quarantineKey: 'q' }
+    return { status: 'written', etag: '"h"' }
+  }
 
   add(projectId: string, extra: Partial<AssignedVm> = {}): AssignedVm {
     const a = {
@@ -104,16 +112,17 @@ beforeEach(() => {
 afterEach(() => rmSync(dir, { recursive: true, force: true }))
 
 describe('pool.recycle', () => {
-  test('backs up repo, source and data, then stops the VM without a snapshot', async () => {
+  test('backs up repo, source, data and home, then stops the VM without a snapshot', async () => {
     const pool = makePool()
     pool.add('p1')
     const r = await pool.recycle('p1', { reason: 'test' })
     expect(r.aborted).toBe(false)
-    expect(pool.events).toEqual(['repo p1', 'source p1', 'data p1'])
+    expect(pool.events).toEqual(['repo p1', 'source p1', 'data p1', 'home p1'])
     expect(r.steps.map((s) => [s.step, s.ok])).toEqual([
       ['repo', true],
       ['source', true],
       ['data', true],
+      ['home', true],
       ['destroy', true],
     ])
     expect(stopped).toEqual(['vm-1'])
@@ -147,6 +156,15 @@ describe('pool.recycle', () => {
     const r = await pool.recycle('p1')
     expect(r.aborted).toBe(true)
     expect(r.steps.find((s) => s.step === 'data')?.detail).toMatch(/database not persisted/)
+    expect(stopped).toEqual([])
+  })
+
+  test('an untrusted home aborts: credentials set up since boot would be dropped', async () => {
+    const pool = makePool()
+    pool.add('p1', { homeUntrustedReason: 'home-state hydrate failed at assign' })
+    const r = await pool.recycle('p1')
+    expect(r.aborted).toBe(true)
+    expect(r.steps.find((s) => s.step === 'home')?.detail).toMatch(/home directory not persisted/)
     expect(stopped).toEqual([])
   })
 
