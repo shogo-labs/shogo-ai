@@ -415,7 +415,7 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
             quietHoursEnd: body.quietHoursEnd,
             quietHoursTimezone: body.quietHoursTimezone,
           },
-          { alwaysReschedule: true, createIfMissing: true },
+          { alwaysReschedule: true },
         )
         return c.json({ ok: true, nextHeartbeatAt: config.nextHeartbeatAt })
       } catch (err) {

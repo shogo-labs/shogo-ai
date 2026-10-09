@@ -441,7 +441,7 @@ describe('PUT /heartbeat/config/:projectId', () => {
     expect(store.heartbeatCalls).toHaveLength(1)
     expect(store.heartbeatCalls[0].projectId).toBe('p1')
     expect(store.heartbeatCalls[0].patch).toMatchObject({ heartbeatEnabled: true, heartbeatInterval: 120, quietHoursStart: '22:00' })
-    expect(store.heartbeatCalls[0].opts).toMatchObject({ alwaysReschedule: true, createIfMissing: true })
+    expect(store.heartbeatCalls[0].opts).toMatchObject({ alwaysReschedule: true })
   })
   test('200 disables and clears next heartbeat', async () => {
     const res = await app.request('/heartbeat/config/p1', {
