@@ -299,7 +299,7 @@ export function createProjectConfigureTool(ctx: ToolContext): AgentTool {
     name: 'project_configure',
     label: 'Configure Project',
     description:
-      'Read or change a project\'s agent configuration: heartbeat (enabled/interval/quiet hours), default model, name and description. Defaults to the current project. Call with no changes to read the current config. For the current project\'s heartbeat prefer heartbeat_configure (it also updates config.json).',
+      'Read or change a project\'s agent configuration: heartbeat (enabled/interval/quiet hours), default model, name and description. Defaults to the current project. Call with no changes to read the current config. Heartbeats require a paid plan: on a free plan the other changes are still applied and the result includes a `heartbeatError`.',
     parameters: Type.Object({
       project: Type.Optional(Type.String({ description: 'Project id, name, or manifest key. Default: current project.' })),
       name: Type.Optional(Type.String()),
@@ -346,7 +346,16 @@ export function createProjectConfigureTool(ctx: ToolContext): AgentTool {
           })
         : await apiGetProjectConfig(targetId)
       if (!res.ok || !res.data) return textResult({ error: res.error ?? 'Configure failed', code: res.code, status: res.status })
-      return textResult({ ok: true, changed: hasChanges, project: res.data })
+      const heartbeatError = res.data.heartbeatError
+      return textResult({
+        ok: true,
+        changed: hasChanges,
+        project: res.data,
+        // Partial success: everything but the heartbeat change was applied.
+        ...(heartbeatError
+          ? { heartbeatError, warning: `Heartbeat settings were not applied: ${heartbeatError.message}` }
+          : {}),
+      })
     },
   }
 }
@@ -591,7 +600,13 @@ export function createSystemApplyTool(ctx: ToolContext): AgentTool {
         if (!id) { report.skipped.push(`configure ${op.key}: unresolved binding`); continue }
         const res = await apiConfigureProject(id, op.patch)
         if (!res.ok) report.errors.push(`configure ${op.key}: ${res.error ?? 'failed'}`)
-        else { report.applied.push(`configure ${op.key}`); configured.add(op.key) }
+        else {
+          report.applied.push(`configure ${op.key}`)
+          configured.add(op.key)
+          if (res.data?.heartbeatError) {
+            report.errors.push(`configure ${op.key}: heartbeat not applied (${res.data.heartbeatError.message}); the other settings were applied`)
+          }
+        }
       }
       for (const op of diff.create) {
         if (configured.has(op.key) || !op.spec.agent) continue
@@ -610,7 +625,12 @@ export function createSystemApplyTool(ctx: ToolContext): AgentTool {
           },
         })
         if (!res.ok) report.errors.push(`configure ${op.key}: ${res.error ?? 'failed'}`)
-        else report.applied.push(`configure ${op.key}`)
+        else {
+          report.applied.push(`configure ${op.key}`)
+          if (res.data?.heartbeatError) {
+            report.errors.push(`configure ${op.key}: heartbeat not applied (${res.data.heartbeatError.message}); the other settings were applied`)
+          }
+        }
       }
 
       // 4. Files. Only projects reachable on disk; the rest are reported so

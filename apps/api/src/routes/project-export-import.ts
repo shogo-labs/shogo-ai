@@ -648,22 +648,20 @@ export async function runImport(
     }
     if (!Array.isArray(channelsValue)) channelsValue = []
 
-    const agentData: Record<string, any> = {
-      projectId: project.id,
-      heartbeatInterval: ac?.heartbeatInterval ?? 1800,
-      heartbeatEnabled: ac?.heartbeatEnabled ?? false,
-      modelProvider: ac?.modelProvider ?? 'anthropic',
+    const { buildAgentConfigCreateData } = await import('../services/heartbeat-config.service')
+    const agentData = buildAgentConfigCreateData(project.id, {
+      heartbeatInterval: ac?.heartbeatInterval,
+      heartbeatEnabled: ac?.heartbeatEnabled,
+      modelProvider: ac?.modelProvider,
       // Map the bundle's portable model slug back to this instance's canonical
       // id (a DB model's UUID when one matches by apiModel).
       modelName: (await fromPortableModelName(ac?.modelName)) ?? 'claude-haiku-4-5',
       channels: channelsValue,
-    }
-    // PG-only fields — include only when present in the bundle
-    if (ac) {
-      for (const key of ['quietHoursStart', 'quietHoursEnd', 'quietHoursTimezone']) {
-        if ((ac as any)[key] !== undefined) agentData[key] = (ac as any)[key]
-      }
-    }
+      // PG-only fields — included only when present in the bundle
+      quietHoursStart: (ac as any)?.quietHoursStart,
+      quietHoursEnd: (ac as any)?.quietHoursEnd,
+      quietHoursTimezone: (ac as any)?.quietHoursTimezone,
+    })
     await prisma.agentConfig.create({ data: agentData as any })
   }
 

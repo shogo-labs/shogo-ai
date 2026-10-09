@@ -272,6 +272,13 @@ jobs:
         # next launch with Prisma's P3009 "failed migration" lock.
         run: bun run check:migrations
 
+      - name: Check heartbeat schedule has a single writer
+        # `agent_configs.heartbeatEnabled/heartbeatInterval/nextHeartbeatAt`
+        # must only be written via heartbeat-config.service.ts. Direct writes
+        # left rows "enabled" with a null nextHeartbeatAt, so staging agents
+        # silently never fired.
+        run: bun run check:heartbeat-writes
+
       - name: Check desktop SQLite migrations match schema.local.prisma
         # Catches the OTHER half of the v1.7.8 bug class: schema.local.prisma
         # has a model (CreatorProfile, MarketplaceListing, ...) but the

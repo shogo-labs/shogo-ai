@@ -3,7 +3,8 @@
 
 import { Hono } from 'hono'
 import { prisma } from '../lib/prisma'
-import { verifyRuntimeToken } from '../lib/runtime-token'
+import { authenticateRuntimeToken } from './internal-runtime-auth'
+import { HeartbeatConfigError, updateHeartbeatConfig } from '../services/heartbeat-config.service'
 
 function userId(c: any): string | null {
   const auth = c.get('auth') as { userId?: string; isAuthenticated?: boolean } | undefined
@@ -57,68 +58,54 @@ export function localHeartbeatRoutes(): Hono {
       return c.json({ error: { code: 'forbidden', message: 'No access to this project' } }, 403)
     }
     const body = await c.req.json().catch(() => ({} as any))
-    const data: Record<string, unknown> = {}
-    if (typeof body.heartbeatEnabled === 'boolean') data.heartbeatEnabled = body.heartbeatEnabled
-    if (typeof body.heartbeatInterval === 'number' && body.heartbeatInterval >= 60) {
-      data.heartbeatInterval = body.heartbeatInterval
+    try {
+      const { config: updated } = await updateHeartbeatConfig(
+        projectId,
+        {
+          heartbeatEnabled: typeof body.heartbeatEnabled === 'boolean' ? body.heartbeatEnabled : undefined,
+          heartbeatInterval: typeof body.heartbeatInterval === 'number' ? body.heartbeatInterval : undefined,
+          quietHoursStart: body.quietHoursStart,
+          quietHoursEnd: body.quietHoursEnd,
+          quietHoursTimezone: body.quietHoursTimezone,
+        },
+        { enforcePaywall: false, alwaysReschedule: true, createIfMissing: true },
+      )
+      return c.json(
+        configShape({
+          heartbeatEnabled: updated.heartbeatEnabled,
+          heartbeatInterval: updated.heartbeatInterval,
+          nextHeartbeatAt: updated.nextHeartbeatAt,
+          lastHeartbeatAt: updated.lastHeartbeatAt,
+          quietHoursStart: updated.quietHoursStart,
+          quietHoursEnd: updated.quietHoursEnd,
+          quietHoursTimezone: updated.quietHoursTimezone,
+          modelName: updated.modelName,
+        }),
+      )
+    } catch (err) {
+      if (err instanceof HeartbeatConfigError && err.code === 'not_found') {
+        return c.json({ error: 'Agent config not found' }, 404)
+      }
+      throw err
     }
-    if (body.quietHoursStart !== undefined) data.quietHoursStart = body.quietHoursStart || null
-    if (body.quietHoursEnd !== undefined) data.quietHoursEnd = body.quietHoursEnd || null
-    if (body.quietHoursTimezone !== undefined) data.quietHoursTimezone = body.quietHoursTimezone || null
-
-    const existing = await prisma.agentConfig.findUnique({ where: { projectId } })
-    if (!existing) return c.json({ error: 'Agent config not found' }, 404)
-    const enabled = (data.heartbeatEnabled as boolean | undefined) ?? existing.heartbeatEnabled
-    const interval = (data.heartbeatInterval as number | undefined) ?? existing.heartbeatInterval
-    data.nextHeartbeatAt = enabled
-      ? new Date(Date.now() + interval * 1000 + Math.floor(Math.random() * interval * 100))
-      : null
-    const updated = await prisma.agentConfig.update({
-      where: { projectId },
-      data,
-      select: {
-        heartbeatEnabled: true,
-        heartbeatInterval: true,
-        nextHeartbeatAt: true,
-        lastHeartbeatAt: true,
-        quietHoursStart: true,
-        quietHoursEnd: true,
-        quietHoursTimezone: true,
-        modelName: true,
-      },
-    })
-    return c.json(configShape(updated))
   })
 
+  // DEPRECATED: heartbeat settings live only in the database now. Kept for
+  // one release for runtimes that still push config.json heartbeat fields.
   router.put('/projects/:projectId/heartbeat/sync', async (c) => {
     const projectId = c.req.param('projectId')
-    const token = c.req.header('x-runtime-token')
-    const verified = verifyRuntimeToken(token, projectId)
-    if (!verified.ok || verified.projectId !== projectId) {
+    if (!(await authenticateRuntimeToken(c, projectId))) {
       return c.json({ error: 'Unauthorized' }, 401)
     }
     const body = await c.req.json().catch(() => ({} as any))
-    const existing = await prisma.agentConfig.findUnique({ where: { projectId } })
-    const enabled = typeof body.heartbeatEnabled === 'boolean'
-      ? body.heartbeatEnabled
-      : existing?.heartbeatEnabled ?? false
-    const interval = typeof body.heartbeatInterval === 'number' && body.heartbeatInterval >= 60
-      ? body.heartbeatInterval
-      : existing?.heartbeatInterval ?? 1800
-    const nextHeartbeatAt = enabled
-      ? new Date(Date.now() + interval * 1000 + Math.floor(Math.random() * interval * 100))
-      : null
-    await prisma.agentConfig.upsert({
-      where: { projectId },
-      update: { heartbeatEnabled: enabled, heartbeatInterval: interval, nextHeartbeatAt },
-      create: {
-        projectId,
-        heartbeatEnabled: enabled,
-        heartbeatInterval: interval,
-        nextHeartbeatAt,
-        channels: [],
+    await updateHeartbeatConfig(
+      projectId,
+      {
+        heartbeatEnabled: typeof body.heartbeatEnabled === 'boolean' ? body.heartbeatEnabled : undefined,
+        heartbeatInterval: typeof body.heartbeatInterval === 'number' ? body.heartbeatInterval : undefined,
       },
-    })
+      { enforcePaywall: false, createIfMissing: true, alwaysReschedule: true },
+    )
     return c.json({ ok: true })
   })
 
