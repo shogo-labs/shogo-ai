@@ -10,6 +10,7 @@
  */
 
 import { beforeEach, describe, expect, it, mock } from 'bun:test'
+import { withPrismaExports } from './helpers/prisma-mock-exports'
 
 // --- Mocked dependencies of workspace.hooks ---------------------------------
 let ownedCount = 0
@@ -27,8 +28,6 @@ mock.module('../lib/region', () => ({
   homeRegionForNewWorkspace: () => 'us-east',
 }))
 
-const { workspaceHooks } = await import('../generated/workspace.hooks')
-
 // --- Fake Prisma ------------------------------------------------------------
 interface FakeWorkspace {
   id: string
@@ -40,6 +39,25 @@ interface FakeWorkspace {
 let workspacesById: Record<string, FakeWorkspace> = {}
 let usersById: Record<string, { role: string }> = {}
 const updateCalls: { id: string; data: any }[] = []
+
+// The RBAC engine reads memberships through the global prisma client.
+const enginePrisma = {
+  user: {
+    findUnique: async ({ where }: any) => usersById[where.id] ?? null,
+  },
+  member: {
+    findMany: async ({ where }: any) => {
+      const wsScope = where.OR?.find((w: any) => w.projectId === null)
+      const members = wsScope ? workspacesById[wsScope.workspaceId]?.members ?? [] : []
+      return members
+        .filter((m) => m.userId === where.userId)
+        .map((m) => ({ role: m.role, projectId: null, isBillingAdmin: !!m.isBillingAdmin }))
+    },
+  },
+}
+mock.module('../lib/prisma', () => withPrismaExports({ prisma: enginePrisma }))
+
+const { workspaceHooks } = await import('../generated/workspace.hooks')
 
 function makeCtx(opts: {
   userId?: string

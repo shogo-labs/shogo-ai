@@ -146,7 +146,7 @@ describe('GET /api/me/getting-started', () => {
       session: {
         OR: [
           { project: { createdBy: 'u-1' } },
-          { workspace: { kind: 'personal', members: { some: { userId: 'u-1' } } } },
+          { workspace: { kind: 'personal', members: { some: { userId: 'u-1', projectId: null } } } },
         ],
       },
     })

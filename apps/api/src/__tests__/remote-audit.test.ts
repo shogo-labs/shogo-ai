@@ -20,7 +20,12 @@ const mockPrisma = {
   },
   member: {
     findFirst: mock(() => Promise.resolve({ id: 'member-1', userId: 'user-1', workspaceId: 'ws-1' })),
+    findMany: async ({ where }: any) =>
+      (await mockPrisma.member.findFirst({ where: { userId: where.userId, workspaceId: where.OR?.[0]?.workspaceId } } as any))
+        ? [{ role: 'member', projectId: null, isBillingAdmin: false }]
+        : [],
   },
+  user: { findUnique: async () => ({ role: 'user' }) },
   remoteAction: {
     create: mock(() => Promise.resolve({ id: 'ra-new' })),
     findMany: mock(() => Promise.resolve([...mockActions])),

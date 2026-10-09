@@ -51,6 +51,10 @@ mock.module('../lib/prisma', () => withPrismaExports({
         }
         return null
       },
+      findMany: async ({ where }: any) =>
+        [...members.values()]
+          .filter((m) => m.userId === where.userId && m.workspaceId === where.OR?.[0]?.workspaceId)
+          .map(() => ({ role: 'member', projectId: null, isBillingAdmin: false })),
     },
     user: { findUnique: async (args: any) => users.get(args.where.id) ?? null },
     project: {

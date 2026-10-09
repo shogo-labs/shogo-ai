@@ -12,7 +12,7 @@
 generator client {
   provider        = "prisma-client"
   output          = "../apps/api/src/generated/prisma-pg"
-  previewFeatures = ["postgresqlExtensions"]
+  previewFeatures = ["postgresqlExtensions", "partialIndexes"]
 }
 
 datasource db {
@@ -556,6 +556,10 @@ model Project {
   // allotment (see billing.service.ts canEnableAlwaysOn + publish.ts).
   publishedAlwaysOn  Boolean          @default(false)
   accessLevel        AccessLevel      @default(anyone)
+  // Who inside the workspace can open this project (RBAC). `restricted`
+  // limits access to workspace owners/admins plus explicit project
+  // Members. See packages/authz/src/resolve.ts.
+  visibility         ProjectVisibility @default(workspace)
   // SHA-256 hash (hex) of the published-site password, salted by subdomain
   // (sha256(`${subdomain}:${password}`)). Only set when accessLevel ==
   // `password`. Mirrored to the SITE_AUTH Cloudflare KV namespace by
@@ -1152,6 +1156,8 @@ model Member {
   workspace Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   project   Project?   @relation(fields: [projectId], references: [id], onDelete: Cascade)
 
+  @@unique([userId, workspaceId], map: "members_workspace_scope_key", where: raw("\"projectId\" IS NULL"))
+  @@unique([userId, projectId], map: "members_project_scope_key", where: raw("\"projectId\" IS NOT NULL"))
   @@index([userId])
   @@index([workspaceId])
   @@index([projectId])
@@ -1163,6 +1169,11 @@ enum MemberRole {
   admin
   member
   viewer
+}
+
+enum ProjectVisibility {
+  workspace
+  restricted
 }
 
 /// Workspace-level Slack app installation. The bot token is encrypted at rest

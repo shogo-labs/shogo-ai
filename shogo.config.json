@@ -33,7 +33,12 @@
       "dir": "./packages/domain-stores/src",
       "generate": ["types", "mst"],
       "perModel": true,
-      "fileExtension": "ts"
+      "fileExtension": "ts",
+      "extraFields": {
+        "Project": {
+          "myPermissions": { "type": "String", "list": true }
+        }
+      }
     }
   ]
 }

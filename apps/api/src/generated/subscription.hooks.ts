@@ -7,6 +7,10 @@
  * This file is safe to edit - it will not be overwritten.
  */
 
+import type { Permission } from "@shogo/authz"
+import type { Principal } from "../lib/authz"
+import { hookAccess, hookAuthorize, hookRequire } from "../lib/authz/hooks"
+
 /**
  * Result from a hook that can modify or reject the operation
  */
@@ -24,7 +28,33 @@ export interface HookContext {
   params: Record<string, string>
   query: Record<string, string>
   userId?: string
+  tunnelAuthenticated?: boolean
+  auth?: Principal
   prisma: any
+}
+
+/**
+ * Require `permission` on the workspace while keeping this resource's error
+ * messages. Admins lost billing management under RBAC, so their denials go
+ * through the enforcement mode instead of failing outright.
+ */
+async function requireWorkspacePermission(
+  ctx: HookContext,
+  workspaceId: string,
+  permission: Permission,
+  roleMessage: string,
+  where: string,
+  nonMemberMessage = "Access denied",
+): Promise<HookResult | null> {
+  const access = await hookAccess(ctx, { workspaceId })
+  if (access.permissions.has(permission)) return null
+  if (!access.workspaceRole) {
+    return { ok: false, error: { code: "forbidden", message: nonMemberMessage } }
+  }
+  if (permission === "workspace.billing:manage" && access.workspaceRole === "admin") {
+    if (!(await hookAuthorize(ctx, permission, { workspaceId }, where))) return null
+  }
+  return { ok: false, error: { code: "forbidden", message: roleMessage } }
 }
 
 /**
@@ -73,7 +103,7 @@ export const subscriptionHooks: SubscriptionHooks = {
         data: {
           where: {
             workspace: {
-              members: { some: { userId } },
+              members: { some: { userId, projectId: null } },
             },
           },
           include: { workspace: true },
@@ -82,15 +112,11 @@ export const subscriptionHooks: SubscriptionHooks = {
       }
     }
 
-    // Verify user has access to this workspace
-    const membership = await ctx.prisma.member.findFirst({
-      where: { userId, workspaceId },
-    })
-
-    if (!membership) {
+    const denied = await hookRequire(ctx, "workspace:read", { workspaceId })
+    if (denied) {
       return {
         ok: false,
-        error: { code: "forbidden", message: "Access denied to this workspace" },
+        error: { code: denied.error.code, message: "Access denied to this workspace" },
       }
     }
 
@@ -116,10 +142,9 @@ export const subscriptionHooks: SubscriptionHooks = {
       }
     }
 
-    // Get subscription and verify workspace access
     const subscription = await ctx.prisma.subscription.findUnique({
       where: { id },
-      include: { workspace: { include: { members: true } } },
+      select: { workspaceId: true },
     })
 
     if (!subscription) {
@@ -129,11 +154,11 @@ export const subscriptionHooks: SubscriptionHooks = {
       }
     }
 
-    const hasAccess = subscription.workspace.members.some((m: any) => m.userId === userId)
-    if (!hasAccess) {
+    const denied = await hookRequire(ctx, "workspace:read", { workspaceId: subscription.workspaceId })
+    if (denied) {
       return {
         ok: false,
-        error: { code: "forbidden", message: "Access denied" },
+        error: { code: denied.error.code, message: "Access denied" },
       }
     }
 
@@ -144,7 +169,7 @@ export const subscriptionHooks: SubscriptionHooks = {
   },
 
   /**
-   * Verify user has access to update the subscription (owner/admin only)
+   * Verify user has access to update the subscription (workspace.billing:manage)
    */
   beforeUpdate: async (id, input, ctx) => {
     const userId = ctx.userId
@@ -157,7 +182,7 @@ export const subscriptionHooks: SubscriptionHooks = {
 
     const subscription = await ctx.prisma.subscription.findUnique({
       where: { id },
-      include: { workspace: { include: { members: true } } },
+      select: { workspaceId: true },
     })
 
     if (!subscription) {
@@ -167,26 +192,20 @@ export const subscriptionHooks: SubscriptionHooks = {
       }
     }
 
-    const member = subscription.workspace.members.find((m: any) => m.userId === userId)
-    if (!member) {
-      return {
-        ok: false,
-        error: { code: "forbidden", message: "Access denied" },
-      }
-    }
-
-    if (member.role !== 'owner' && member.role !== 'admin') {
-      return {
-        ok: false,
-        error: { code: "forbidden", message: "Only workspace owners and admins can manage subscriptions" },
-      }
-    }
+    const denied = await requireWorkspacePermission(
+      ctx,
+      subscription.workspaceId,
+      "workspace.billing:manage",
+      "Only workspace owners and billing admins can manage subscriptions",
+      `PATCH /api/subscriptions/${id}`,
+    )
+    if (denied) return denied
 
     return { ok: true }
   },
 
   /**
-   * Verify user has access to delete the subscription (owner only)
+   * Verify user has access to delete the subscription (workspace:delete)
    */
   beforeDelete: async (id, ctx) => {
     const userId = ctx.userId
@@ -199,7 +218,7 @@ export const subscriptionHooks: SubscriptionHooks = {
 
     const subscription = await ctx.prisma.subscription.findUnique({
       where: { id },
-      include: { workspace: { include: { members: true } } },
+      select: { workspaceId: true },
     })
 
     if (!subscription) {
@@ -209,20 +228,14 @@ export const subscriptionHooks: SubscriptionHooks = {
       }
     }
 
-    const member = subscription.workspace.members.find((m: any) => m.userId === userId)
-    if (!member) {
-      return {
-        ok: false,
-        error: { code: "forbidden", message: "Access denied" },
-      }
-    }
-
-    if (member.role !== 'owner') {
-      return {
-        ok: false,
-        error: { code: "forbidden", message: "Only workspace owners can delete subscriptions" },
-      }
-    }
+    const denied = await requireWorkspacePermission(
+      ctx,
+      subscription.workspaceId,
+      "workspace:delete",
+      "Only workspace owners can delete subscriptions",
+      `DELETE /api/subscriptions/${id}`,
+    )
+    if (denied) return denied
 
     return { ok: true }
   },

@@ -262,7 +262,7 @@ describe('getOverviewStats', () => {
   })
 
   test('workspace-scoped overview returns members / projects / chatSessions / usageEvents', async () => {
-    store.members.push({ id: 'm-1', workspaceId: 'w-1' })
+    store.members.push({ id: 'm-1', workspaceId: 'w-1', projectId: null })
     store.projects.push({ id: 'p-1', workspaceId: 'w-1' })
     store.usageEvents.push({ id: 'u-1', workspaceId: 'w-1', projectId: 'p-1', memberId: 'm', billedUsd: 0, actionType: 'x', source: 'monthly', createdAt: new Date() })
     rebuildModels()
@@ -292,7 +292,7 @@ describe('getOverviewStats', () => {
 describe('getGrowthTimeSeries', () => {
   test('workspace scope returns projects + members series', async () => {
     store.projects.push({ id: 'p-1', workspaceId: 'w-1', createdAt: new Date() })
-    store.members.push({ id: 'm-1', workspaceId: 'w-1', createdAt: new Date() })
+    store.members.push({ id: 'm-1', workspaceId: 'w-1', projectId: null, createdAt: new Date() })
     rebuildModels()
     const out = await analytics.getGrowthTimeSeries({ workspaceId: 'w-1' })
     expect(Array.isArray(out)).toBe(true)

@@ -52,6 +52,10 @@ import {
   useProjectCollection,
 } from "../../contexts/domain";
 import { useActiveWorkspace } from "../../hooks/useActiveWorkspace";
+import {
+  projectPermissionsFor,
+  usePermissions,
+} from "../../hooks/usePermissions";
 import { useWorkspaceExperience } from "../../hooks/useWorkspaceExperience";
 import { useReducedMotion } from "../../hooks/useReducedMotion";
 import { api } from "../../lib/api";
@@ -125,6 +129,9 @@ export function MobileWorkspaceShell({ children, enabled = true }: MobileWorkspa
   const actions = useDomainActions();
   const chatSessions = useChatSessionCollection();
   const workspace = useActiveWorkspace();
+  const workspaceAccess = usePermissions({ workspaceId: workspace?.id });
+  const canProject = (project: any, permission: "project:update" | "project:delete") =>
+    !!project && projectPermissionsFor(project, workspaceAccess).has(permission);
   const workspaceExperience = useWorkspaceExperience();
   const isTeamWorkspace = workspaceExperience.kind === "team";
   const projects = useProjectCollection();
@@ -609,11 +616,15 @@ export function MobileWorkspaceShell({ children, enabled = true }: MobileWorkspa
 
   const projectMenuItems: SidebarMenuEntry[] = projectMenu
     ? [
-        {
-          label: "Rename",
-          icon: <Pencil size={14} className="text-muted-foreground" />,
-          onSelect: () => setRenamingProject(projectMenu.project),
-        },
+        ...(canProject(projectMenu.project, "project:update")
+          ? [
+              {
+                label: "Rename",
+                icon: <Pencil size={14} className="text-muted-foreground" />,
+                onSelect: () => setRenamingProject(projectMenu.project),
+              },
+            ]
+          : []),
         {
           label: pinnedProjectIds.has(projectMenu.project.id) ? "Unpin" : "Pin",
           icon: pinnedProjectIds.has(projectMenu.project.id) ? (
@@ -627,13 +638,17 @@ export function MobileWorkspaceShell({ children, enabled = true }: MobileWorkspa
               !pinnedProjectIds.has(projectMenu.project.id)
             ),
         },
-        { separator: true },
-        {
-          label: "Delete",
-          danger: true,
-          icon: <Trash2 size={14} className="text-destructive" />,
-          onSelect: () => deleteProject(projectMenu.project),
-        },
+        ...(canProject(projectMenu.project, "project:delete")
+          ? [
+              { separator: true as const },
+              {
+                label: "Delete",
+                danger: true,
+                icon: <Trash2 size={14} className="text-destructive" />,
+                onSelect: () => deleteProject(projectMenu.project),
+              },
+            ]
+          : []),
       ]
     : [];
 
@@ -1361,10 +1376,14 @@ export function MobileWorkspaceShell({ children, enabled = true }: MobileWorkspa
             suppressNextProjectToggleRef.current = null;
             setNativeProjectActions(null);
           }}
-          onRename={() => {
-            setRenamingProject(nativeProjectActions);
-            setNativeProjectActions(null);
-          }}
+          onRename={
+            canProject(nativeProjectActions, "project:update")
+              ? () => {
+                  setRenamingProject(nativeProjectActions);
+                  setNativeProjectActions(null);
+                }
+              : undefined
+          }
           onTogglePin={() => {
             if (!nativeProjectActions) return;
             toggleProjectPin(
@@ -1372,9 +1391,13 @@ export function MobileWorkspaceShell({ children, enabled = true }: MobileWorkspa
               !pinnedProjectIds.has(nativeProjectActions.id)
             );
           }}
-          onDelete={() => {
-            if (nativeProjectActions) deleteProject(nativeProjectActions);
-          }}
+          onDelete={
+            canProject(nativeProjectActions, "project:delete")
+              ? () => {
+                  if (nativeProjectActions) deleteProject(nativeProjectActions);
+                }
+              : undefined
+          }
         />
         <MobileWorkspaceSwitcherSheet
           visible={workspaceSheetOpen}

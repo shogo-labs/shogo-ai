@@ -76,6 +76,7 @@ import {
 import { useDomainActions } from "@shogo/shared-app/domain";
 import { useActiveWorkspace } from "../../hooks/useActiveWorkspace";
 import { usePooledWorkspaceCreation } from "../../hooks/usePooledWorkspaceCreation";
+import { usePermissions } from "../../hooks/usePermissions";
 import {
   resolveActiveWorkspaceId,
   setActiveWorkspaceId,
@@ -519,25 +520,27 @@ const WorkspaceSettingsTab = observer(function WorkspaceSettingsTab() {
   const hasChanges = name !== originalName;
   const isValid = name.trim().length > 0 && name.length <= 60;
 
-  const currentUserId = user?.id;
   const membersAll = Array.isArray(members.all) ? members.all : [];
   const workspaceMembers = currentWorkspace?.id
     ? membersAll.filter(
         (m: any) => m.workspaceId === currentWorkspace.id && !m.projectId
       )
     : [];
-  const currentUserMember = workspaceMembers.find(
-    (m: any) => m.userId === currentUserId
-  );
-  const isOwner = currentUserMember?.role === "owner";
-  const canManageWorkspace = isOwner || currentUserMember?.role === "admin";
+  const { can, workspaceRole } = usePermissions({
+    workspaceId: currentWorkspace?.id,
+  });
+  const isOwner = workspaceRole === "owner";
+  const canRename = can("workspace:update");
+  const canManageWorkspace = can("workspace.settings:manage");
+  const canDeleteWorkspace = can("workspace:delete");
 
   // `kind` (not a slug/name heuristic) is the source of truth — a team
   // workspace named e.g. "My Personal Brand" must stay deletable.
   const isPersonalWorkspace = currentWorkspace?.kind === "personal";
 
   const wsAll = Array.isArray(workspaces.all) ? workspaces.all : [];
-  const canDelete = isOwner && wsAll.length > 1 && !isPersonalWorkspace;
+  const canDelete =
+    canDeleteWorkspace && wsAll.length > 1 && !isPersonalWorkspace;
   const deleteConfirmRequired = currentWorkspace?.name || "delete";
   const isDeleteConfirmed = deleteConfirmText === deleteConfirmRequired;
 
@@ -557,7 +560,7 @@ const WorkspaceSettingsTab = observer(function WorkspaceSettingsTab() {
   }, [currentWorkspace?.id]);
 
   const handleSave = async () => {
-    if (!hasChanges || !isValid || !currentWorkspace?.id) return;
+    if (!hasChanges || !isValid || !canRename || !currentWorkspace?.id) return;
     setIsSaving(true);
     setSaveStatus("idle");
     try {
@@ -633,6 +636,7 @@ const WorkspaceSettingsTab = observer(function WorkspaceSettingsTab() {
                   <View className="flex-1">
                     <Input
                       value={name}
+                      disabled={!canRename}
                       onChangeText={(t) => {
                         setName(t);
                         setSaveStatus("idle");
@@ -641,7 +645,7 @@ const WorkspaceSettingsTab = observer(function WorkspaceSettingsTab() {
                   </View>
                   <Button
                     onPress={handleSave}
-                    disabled={!hasChanges || !isValid || isSaving}
+                    disabled={!canRename || !hasChanges || !isValid || isSaving}
                     size="sm"
                   >
                     {isSaving ? "Saving..." : "Save"}
@@ -673,6 +677,7 @@ const WorkspaceSettingsTab = observer(function WorkspaceSettingsTab() {
               <Input
                 className="mt-3 w-full min-w-0"
                 value={name}
+                disabled={!canRename}
                 onChangeText={(t) => {
                   setName(t);
                   setSaveStatus("idle");
@@ -684,7 +689,7 @@ const WorkspaceSettingsTab = observer(function WorkspaceSettingsTab() {
               <View className="mt-3 flex-row justify-end">
                 <Button
                   onPress={handleSave}
-                  disabled={!hasChanges || !isValid || isSaving}
+                  disabled={!canRename || !hasChanges || !isValid || isSaving}
                   size="sm"
                 >
                   {isSaving ? "Saving..." : "Save"}
@@ -769,7 +774,7 @@ const WorkspaceSettingsTab = observer(function WorkspaceSettingsTab() {
                 </Button>
               </View>
 
-              {isOwner && (
+              {canDeleteWorkspace && (
                 <>
                   <Separator />
                   <View className="px-6 py-5 flex-row items-center justify-between">
@@ -1630,12 +1635,42 @@ const PeopleTab = observer(function PeopleTab() {
     }
   };
 
-  const currentUserMembership = workspaceMembers.find(
-    (m: any) => m.userId === user?.id
-  );
-  const canManageMembers =
-    currentUserMembership?.role === "owner" ||
-    currentUserMembership?.role === "admin";
+  const { can } = usePermissions({ workspaceId: currentWorkspace?.id });
+  const canManageMembers = can("workspace.members:manage");
+  const canManageOwners = can("workspace.owners:manage");
+  const canViewMemberAnalytics = can("workspace.analytics:read");
+  const canManageMember = (member: { role?: string }) =>
+    canManageMembers && (member.role !== "owner" || canManageOwners);
+
+  const projects = useProjectCollection();
+  const projectGuests = useMemo(() => {
+    if (!currentWorkspace?.id) return [];
+    const allMembers = Array.isArray(members.all) ? members.all : [];
+    const allProjects = Array.isArray(projects.all) ? projects.all : [];
+    type GuestEntry = {
+      userId: string;
+      grants: { memberId: string; projectName: string; role: string }[];
+    };
+    const byUser = new Map<string, GuestEntry>();
+    for (const m of allMembers as any[]) {
+      if (m.workspaceId !== currentWorkspace.id || !m.projectId) continue;
+      const project = allProjects.find((p: any) => p.id === m.projectId);
+      const entry: GuestEntry = byUser.get(m.userId) ?? {
+        userId: m.userId,
+        grants: [],
+      };
+      entry.grants.push({
+        memberId: m.id,
+        projectName: project?.name || "Restricted project",
+        role: m.role === "owner" ? "admin" : m.role,
+      });
+      byUser.set(m.userId, entry);
+    }
+    const workspaceUserIds = new Set(workspaceMembers.map((m: any) => m.userId));
+    return Array.from(byUser.values()).filter(
+      (g) => !workspaceUserIds.has(g.userId)
+    );
+  }, [currentWorkspace?.id, members.all, projects.all, workspaceMembers]);
 
   const handleOpenMemberUsage = useCallback(
     async (memberUserId: string) => {
@@ -1876,7 +1911,8 @@ const PeopleTab = observer(function PeopleTab() {
 
       {filteredMembers.map((member: any) => {
         const isCurrentUser = member.userId === user?.id;
-        const canSeeInsight = canManageMembers || isCurrentUser;
+        const canSeeInsight = canViewMemberAnalytics || isCurrentUser;
+        const canEditMember = canManageMember(member) && !isCurrentUser;
         const insight = memberInsightMap.get(member.userId);
         const avatarColor = ROLE_COLORS[member.role] || "bg-primary";
         const resolved = userMap[member.userId];
@@ -1935,7 +1971,7 @@ const PeopleTab = observer(function PeopleTab() {
 
             <View className={peopleMetricsRow}>
               <View className={colRole}>
-                {canManageMembers && !isCurrentUser ? (
+                {canEditMember ? (
                   <Pressable
                     onPress={() =>
                       setMenuState(
@@ -2018,7 +2054,7 @@ const PeopleTab = observer(function PeopleTab() {
               </View>
 
               <View className={colActions}>
-                {canManageMembers && !isCurrentUser ? (
+                {canEditMember ? (
                   <Pressable
                     onPress={() =>
                       setMenuState({ memberId: member.id, view: "actions" })
@@ -2145,7 +2181,7 @@ const PeopleTab = observer(function PeopleTab() {
                 isMobilePeopleLayout && "shrink-0"
               )}
             >
-              {status === "pending" && (
+              {status === "pending" && canManageMembers && (
                 <Pressable
                   onPress={() =>
                     setRevokeInvitationTarget({ id: inv.id, email: inv.email })
@@ -2330,18 +2366,20 @@ const PeopleTab = observer(function PeopleTab() {
           <View className="flex-1" />
         )}
 
-        <Pressable
-          onPress={() => setShowInviteModal(true)}
-          className={cn(
-            "flex-row items-center gap-1.5 px-3 bg-primary rounded-lg",
-            isMobilePeopleLayout ? "w-full justify-center h-11" : "h-9"
-          )}
-        >
-          <UserPlus size={14} className="text-primary-foreground" />
-          <Text className="text-sm font-medium text-primary-foreground">
-            Invite members
-          </Text>
-        </Pressable>
+        {canManageMembers && (
+          <Pressable
+            onPress={() => setShowInviteModal(true)}
+            className={cn(
+              "flex-row items-center gap-1.5 px-3 bg-primary rounded-lg",
+              isMobilePeopleLayout ? "w-full justify-center h-11" : "h-9"
+            )}
+          >
+            <UserPlus size={14} className="text-primary-foreground" />
+            <Text className="text-sm font-medium text-primary-foreground">
+              Invite members
+            </Text>
+          </Pressable>
+        )}
       </View>
 
       {/* Content based on sub-tab */}
@@ -2378,6 +2416,83 @@ const PeopleTab = observer(function PeopleTab() {
             )}
           </CardContent>
         </Card>
+      )}
+
+      {subTab === "all" && !isLoading && projectGuests.length > 0 && (
+        <View className="mt-6">
+          <Text className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-1 px-1">
+            Project guests
+          </Text>
+          <Text className="text-sm text-muted-foreground mb-2 px-1">
+            People outside the workspace who were added to specific projects.
+            They don't count as workspace members.
+          </Text>
+          <Card>
+            <CardContent className="p-0">
+              {projectGuests.map((guest) => {
+                const resolved = userMap[guest.userId];
+                const gName = resolved?.name || resolved?.email || guest.userId;
+                return (
+                  <View
+                    key={guest.userId}
+                    className="px-4 py-3 border-b border-border gap-2"
+                  >
+                    <View className="flex-row items-center gap-3">
+                      <View className="h-8 w-8 rounded-full items-center justify-center shrink-0 bg-slate-400">
+                        <Text className="text-xs font-semibold text-white">
+                          {(gName || "G")[0]?.toUpperCase()}
+                        </Text>
+                      </View>
+                      <View className="min-w-0 flex-1">
+                        <Text
+                          className="text-sm font-medium text-foreground"
+                          numberOfLines={1}
+                        >
+                          {gName}
+                        </Text>
+                        {resolved?.email && resolved.email !== gName ? (
+                          <Text
+                            className="text-xs text-muted-foreground"
+                            numberOfLines={1}
+                          >
+                            {resolved.email}
+                          </Text>
+                        ) : null}
+                      </View>
+                      <Badge variant="outline">Guest</Badge>
+                    </View>
+                    {guest.grants.map((grant) => (
+                      <View
+                        key={grant.memberId}
+                        className="flex-row items-center justify-between pl-11"
+                      >
+                        <Text
+                          className="text-xs text-muted-foreground flex-1"
+                          numberOfLines={1}
+                        >
+                          {grant.projectName} ·{" "}
+                          {ROLE_DISPLAY[grant.role] || grant.role}
+                        </Text>
+                        {canManageMembers && (
+                          <Pressable
+                            onPress={() => handleRemoveMember(grant.memberId)}
+                            hitSlop={8}
+                            accessibilityRole="button"
+                            accessibilityLabel={`Remove ${gName} from ${grant.projectName}`}
+                          >
+                            <Text className="text-xs text-destructive">
+                              Remove
+                            </Text>
+                          </Pressable>
+                        )}
+                      </View>
+                    ))}
+                  </View>
+                );
+              })}
+            </CardContent>
+          </Card>
+        </View>
       )}
 
       {subTab === "invitations" && (
@@ -2545,15 +2660,17 @@ const PeopleTab = observer(function PeopleTab() {
                     <Text className="text-base font-medium text-foreground mb-2">
                       No invitations found
                     </Text>
-                    <Pressable
-                      onPress={() => setShowInviteModal(true)}
-                      className="flex-row items-center gap-1.5 mt-2 px-4 py-2 border border-border rounded-lg"
-                    >
-                      <UserPlus size={14} className="text-foreground" />
-                      <Text className="text-sm font-medium text-foreground">
-                        Invite members
-                      </Text>
-                    </Pressable>
+                    {canManageMembers && (
+                      <Pressable
+                        onPress={() => setShowInviteModal(true)}
+                        className="flex-row items-center gap-1.5 mt-2 px-4 py-2 border border-border rounded-lg"
+                      >
+                        <UserPlus size={14} className="text-foreground" />
+                        <Text className="text-sm font-medium text-foreground">
+                          Invite members
+                        </Text>
+                      </Pressable>
+                    )}
                   </View>
                 ) : (
                   <>
@@ -2756,7 +2873,10 @@ const PeopleTab = observer(function PeopleTab() {
                 <Text className="text-base font-semibold text-foreground mb-1">
                   Select role
                 </Text>
-                {(["owner", "admin", "member", "viewer"] as const).map((r) => {
+                {(canManageOwners
+                  ? (["owner", "admin", "member", "viewer"] as const)
+                  : (["admin", "member", "viewer"] as const)
+                ).map((r) => {
                   const activeMember = workspaceMembers.find(
                     (m: any) => m.id === menuState?.memberId
                   );

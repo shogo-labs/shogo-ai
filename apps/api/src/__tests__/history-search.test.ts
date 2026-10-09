@@ -32,7 +32,11 @@ const projectFindManyCalls: any[] = []
 
 mock.module('../lib/prisma', () => ({
   prisma: {
-    member: { findFirst: async () => ({ id: 'member-1' }) },
+    member: {
+      findFirst: async () => ({ id: 'member-1' }),
+      findMany: async () => [{ role: 'member', workspaceId: 'workspace-1', projectId: null }],
+    },
+    user: { findUnique: async () => ({ role: 'user' }) },
     project: {
       findMany: async (args: any) => {
         projectFindManyCalls.push(args)

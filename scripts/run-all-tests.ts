@@ -44,6 +44,7 @@ const BACKEND_PACKAGES = [
   'apps/api',
   'packages/shared-runtime',
   'packages/model-catalog',
+  'packages/authz',
   'packages/sdk',
   // Internal repo tooling tests (merge-lcov, etc.). Lives outside the
   // bun workspaces glob — see scripts/package.json. Counted as backend
@@ -130,6 +131,13 @@ const IN_PROCESS_E2E_SUITES: readonly InProcessE2ESuite[] = [
       DATABASE_URL: 'file:./shogo.db',
     },
   },
+  // RBAC scenarios build their own throwaway database and stub the session
+  // lookup per file, so each file runs in its own process.
+  ...['enterprise-onboarding', 'restricted-project-lifecycle', 'api-key-lifecycle'].map((name) => ({
+    name: `rbac e2e: ${name}`,
+    files: [`e2e/rbac/${name}.e2e.test.ts`],
+    env: {},
+  })),
 ] as const
 
 interface PackageResult {

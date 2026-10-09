@@ -35,7 +35,7 @@ describe('removeProjectAgent', () => {
     const channel = await service.createChannel({ workspaceId: seed.workspaceId, userId: seed.owner, name: 'doomed-room' } as any)
     await service.addAgentMember(channel.id, seed.owner, { projectId: project.id })
 
-    expect((await service.listMentionables(seed.workspaceId)).agents.some((a: any) => a.projectId === project.id)).toBe(true)
+    expect((await service.listMentionables(seed.workspaceId, seed.owner)).agents.some((a: any) => a.projectId === project.id)).toBe(true)
 
     await db.project.delete({ where: { id: project.id } })
     await service.removeProjectAgent(project.id, seed.workspaceId)
@@ -43,7 +43,7 @@ describe('removeProjectAgent', () => {
     const list = await service.listConversationsForUser(seed.workspaceId, seed.owner)
     expect(list.find((c: any) => c.id === dm.id)!.archivedAt).toBeTruthy()
     expect(await service.listAgentMembers(channel.id)).toHaveLength(0)
-    expect((await service.listMentionables(seed.workspaceId)).agents.some((a: any) => a.projectId === project.id)).toBe(false)
+    expect((await service.listMentionables(seed.workspaceId, seed.owner)).agents.some((a: any) => a.projectId === project.id)).toBe(false)
   })
 
   test('archives agent DMs orphaned before cleanup existed when the list loads', async () => {

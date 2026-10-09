@@ -12,6 +12,8 @@ import { getUserOwnedWorkspaceCount } from '../services/workspace.service'
 import { getEffectivePlanId } from '../services/billing.service'
 import { homeRegionForNewWorkspace } from '../lib/region'
 import { clearConsentCache } from '../lib/proxy-capture'
+import type { Principal } from '../lib/authz'
+import { hookAccess, hookCan, hookPrincipal } from '../lib/authz/hooks'
 
 const nanoid = customAlphabet('0123456789abcdefghijklmnopqrstuvwxyz', 6)
 
@@ -39,7 +41,7 @@ async function validateChildWorkspaceCreation(
 
   const parent = await ctx.prisma.workspace.findUnique({
     where: { id: parentWorkspaceId },
-    include: { members: true },
+    select: { parentWorkspaceId: true },
   })
   if (!parent) {
     return { ok: false, error: { code: "not_found", message: "Parent workspace not found" } }
@@ -52,10 +54,8 @@ async function validateChildWorkspaceCreation(
     }
   }
 
-  const superAdmin = await isSuperAdmin(ctx)
-  const member = parent.members.find((m: any) => m.userId === userId)
-  const isParentAdmin = !!member && (member.role === 'owner' || member.role === 'admin' || member.isBillingAdmin)
-  if (!superAdmin && !isParentAdmin) {
+  const access = await hookAccess(ctx, { workspaceId: parentWorkspaceId })
+  if (!access.permissions.has('workspace:update') && !access.permissions.has('workspace.billing:manage')) {
     return {
       ok: false,
       error: {
@@ -99,6 +99,8 @@ export interface HookContext {
   params: Record<string, string>
   query: Record<string, string>
   userId?: string
+  tunnelAuthenticated?: boolean
+  auth?: Principal
   prisma: any
 }
 
@@ -125,24 +127,11 @@ export interface WorkspaceHooks {
 }
 
 /**
- * Check if the current user is a super admin.
- */
-async function isSuperAdmin(ctx: HookContext): Promise<boolean> {
-  if (!ctx.userId) return false
-  const user = await ctx.prisma.user.findUnique({
-    where: { id: ctx.userId },
-    select: { role: true },
-  })
-  return user?.role === 'super_admin'
-}
-
-/**
  * Default Workspace hooks (customize as needed)
  */
 export const workspaceHooks: WorkspaceHooks = {
   /**
-   * Filter workspaces by user membership and enforce access control.
-   * Super admins can see all workspaces.
+   * Filter workspaces by the caller's workspace-scoped membership.
    */
   beforeList: async (ctx) => {
     const requestedUserId = ctx.query.userId
@@ -156,45 +145,31 @@ export const workspaceHooks: WorkspaceHooks = {
     }
 
     // Super admins can view any user's workspaces when an explicit userId is provided.
-    // Without a filter, scope to their own memberships so the app stays usable.
-    if (await isSuperAdmin(ctx)) {
-      const targetUserId = requestedUserId || currentUserId
-      return {
-        ok: true,
-        data: {
-          where: {
-            members: { some: { userId: targetUserId } },
-          },
-        },
-      }
-    }
-
-    // Force filter by current user only - security check
     if (requestedUserId && requestedUserId !== currentUserId) {
-      return {
-        ok: false,
-        error: { code: "forbidden", message: "Can only view your own workspaces" },
+      const principal = hookPrincipal(ctx)
+      const user = await ctx.prisma.user.findUnique({ where: { id: currentUserId }, select: { role: true } })
+      if (user?.role !== 'super_admin' || principal.via === 'runtimeToken') {
+        return {
+          ok: false,
+          error: { code: "forbidden", message: "Can only view your own workspaces" },
+        }
       }
     }
 
-    // Filter workspaces where user has a membership
+    // Workspace-scoped memberships only: project guests reach their projects
+    // through "Shared with me", not the workspace list.
     return {
       ok: true,
       data: {
         where: {
-          members: {
-            some: {
-              userId: currentUserId,
-            },
-          },
+          members: { some: { userId: requestedUserId || currentUserId, projectId: null } },
         },
       },
     }
   },
 
   /**
-   * Verify user has access to the workspace before returning it.
-   * Super admins can access any workspace.
+   * Require workspace:read.
    */
   beforeGet: async (id, ctx) => {
     const userId = ctx.userId
@@ -205,31 +180,13 @@ export const workspaceHooks: WorkspaceHooks = {
       }
     }
 
-    // Super admins can access any workspace
-    if (await isSuperAdmin(ctx)) {
-      return { ok: true }
+    const exists = await ctx.prisma.workspace.findUnique({ where: { id }, select: { id: true } })
+    if (!exists) {
+      return { ok: false, error: { code: "not_found", message: "Workspace not found" } }
     }
-
-    const workspace = await ctx.prisma.workspace.findUnique({
-      where: { id },
-      include: { members: true },
-    })
-
-    if (!workspace) {
-      return {
-        ok: false,
-        error: { code: "not_found", message: "Workspace not found" },
-      }
+    if (!(await hookCan(ctx, 'workspace:read', { workspaceId: id }))) {
+      return { ok: false, error: { code: "forbidden", message: "Access denied to this workspace" } }
     }
-
-    const hasAccess = workspace.members.some((m: any) => m.userId === userId)
-    if (!hasAccess) {
-      return {
-        ok: false,
-        error: { code: "forbidden", message: "Access denied to this workspace" },
-      }
-    }
-
     return { ok: true }
   },
 
@@ -348,8 +305,7 @@ export const workspaceHooks: WorkspaceHooks = {
   },
 
   /**
-   * Verify user has access to update the workspace.
-   * Super admins can update any workspace.
+   * Require workspace:update.
    */
   beforeUpdate: async (id, input, ctx) => {
     const userId = ctx.userId
@@ -360,36 +316,20 @@ export const workspaceHooks: WorkspaceHooks = {
       }
     }
 
-    // Super admins can update any workspace
-    if (await isSuperAdmin(ctx)) {
-      return { ok: true }
+    const exists = await ctx.prisma.workspace.findUnique({ where: { id }, select: { id: true } })
+    if (!exists) {
+      return { ok: false, error: { code: "not_found", message: "Workspace not found" } }
     }
-
-    const workspace = await ctx.prisma.workspace.findUnique({
-      where: { id },
-      include: { members: true },
-    })
-
-    if (!workspace) {
+    const access = await hookAccess(ctx, { workspaceId: id })
+    if (!access.permissions.has('workspace:update')) {
       return {
         ok: false,
-        error: { code: "not_found", message: "Workspace not found" },
-      }
-    }
-
-    const member = workspace.members.find((m: any) => m.userId === userId)
-    if (!member) {
-      return {
-        ok: false,
-        error: { code: "forbidden", message: "Access denied to this workspace" },
-      }
-    }
-
-    // Only owners and admins can update workspace settings
-    if (member.role !== 'owner' && member.role !== 'admin') {
-      return {
-        ok: false,
-        error: { code: "forbidden", message: "Only workspace owners and admins can update workspace settings" },
+        error: {
+          code: "forbidden",
+          message: access.permissions.has('workspace:read')
+            ? "Only workspace owners and admins can update workspace settings"
+            : "Access denied to this workspace",
+        },
       }
     }
 
@@ -414,8 +354,7 @@ export const workspaceHooks: WorkspaceHooks = {
   },
 
   /**
-   * Verify user has access to delete the workspace (owner only).
-   * Super admins can delete any workspace.
+   * Require workspace:delete (owners; super admins via the engine).
    */
   beforeDelete: async (id, ctx) => {
     const userId = ctx.userId
@@ -428,7 +367,7 @@ export const workspaceHooks: WorkspaceHooks = {
 
     const workspace = await ctx.prisma.workspace.findUnique({
       where: { id },
-      include: { members: true, children: { select: { id: true } } },
+      include: { children: { select: { id: true } } },
     })
 
     if (!workspace) {
@@ -452,24 +391,16 @@ export const workspaceHooks: WorkspaceHooks = {
       }
     }
 
-    // Super admins can delete any workspace (subject to the child guard above)
-    if (await isSuperAdmin(ctx)) {
-      return { ok: true }
-    }
-
-    const member = workspace.members.find((m: any) => m.userId === userId)
-    if (!member) {
+    const access = await hookAccess(ctx, { workspaceId: id })
+    if (!access.permissions.has('workspace:delete')) {
       return {
         ok: false,
-        error: { code: "forbidden", message: "Access denied to this workspace" },
-      }
-    }
-
-    // Only owners can delete workspaces
-    if (member.role !== 'owner') {
-      return {
-        ok: false,
-        error: { code: "forbidden", message: "Only workspace owners can delete workspaces" },
+        error: {
+          code: "forbidden",
+          message: access.permissions.has('workspace:read')
+            ? "Only workspace owners can delete workspaces"
+            : "Access denied to this workspace",
+        },
       }
     }
 

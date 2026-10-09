@@ -26,6 +26,7 @@ import { z } from 'zod'
 import { authMiddleware, requireAuth } from '../middleware/auth'
 import { requireSuperAdmin } from '../middleware/super-admin'
 import { prisma } from '../lib/prisma'
+import { can } from '../lib/authz'
 import { applyGrantMonthlyAllocation } from '../services/billing.service'
 import {
   LicenseKeyRedeemError,
@@ -175,11 +176,7 @@ export function licenseKeyRoutes(): Hono {
     // restrictive for the "team-mate hands me a coupon" flow), but the
     // user must be on the workspace they're redeeming into so they
     // can't park a coupon on a stranger's workspace.
-    const member = await prisma.member.findFirst({
-      where: { userId, workspaceId },
-      select: { id: true },
-    })
-    if (!member) {
+    if (!(await can(c, 'workspace:read', { workspaceId }))) {
       return c.json(
         { error: { code: 'forbidden', message: 'Not a member of this workspace' } },
         403,

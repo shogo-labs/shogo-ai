@@ -37,6 +37,8 @@ import { useBillingData } from '@shogo/shared-app/hooks'
 import { CompactUsageWindows } from '../../components/billing/UsageWindows'
 import { usePlatformConfig } from '../../lib/platform-config'
 import { api } from '../../lib/api'
+import { ROLE_LABELS, isWorkspaceRole } from '@shogo/authz'
+import { usePermissions } from '../../hooks/usePermissions'
 import {
   type AnalyticsPeriod,
   type UsageLogData,
@@ -83,7 +85,7 @@ export default observer(function ProfilePage() {
 
   const getRoleForWorkspace = (workspaceId: string) => {
     const membership = userMemberships.find(
-      (m: any) => m.workspace?.id === workspaceId
+      (m: any) => m.workspaceId === workspaceId && !m.projectId
     )
     return membership?.role || 'member'
   }
@@ -374,6 +376,8 @@ const WorkspaceCard = observer(function WorkspaceCard({
     effectiveBalance,
     usageWindows,
   } = useBillingData(features.billing ? workspace.id : undefined)
+  const { can } = usePermissions({ workspaceId: workspace.id })
+  const canManageBilling = can('workspace.billing:manage')
 
   return (
     <View className="rounded-xl border border-border bg-card p-4">
@@ -394,7 +398,9 @@ const WorkspaceCard = observer(function WorkspaceCard({
         </View>
         <View className={cn("flex-row items-center gap-2", comfortable && "flex-wrap")}>
           <Badge variant={role === 'owner' ? 'default' : 'secondary'}>
-            <Text className={density.text.caption}>{role}</Text>
+            <Text className={density.text.caption}>
+              {isWorkspaceRole(role) ? ROLE_LABELS[role] : role}
+            </Text>
           </Badge>
           <Button variant="ghost" size={comfortable ? "lg" : "sm"} onPress={onManage}>
             <View className="flex-row items-center gap-1">
@@ -408,8 +414,8 @@ const WorkspaceCard = observer(function WorkspaceCard({
         </View>
       </View>
 
-      {/* Billing Section for Workspace Owners */}
-      {features.billing && role === 'owner' && (
+      {/* Billing Section for billing managers */}
+      {features.billing && canManageBilling && (
         <View className="pt-3 border-t border-border">
           {subscription ? (
             <View className="gap-3">

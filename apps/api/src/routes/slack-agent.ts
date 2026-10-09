@@ -15,6 +15,8 @@ import { handleApprovalPress } from '../services/chat-providers/approval-actions
 import { createHash, randomUUID } from 'node:crypto'
 import { Hono } from 'hono'
 import { prisma } from '../lib/prisma'
+import { accessibleProjectsWhere, loadAccess } from '../lib/authz'
+import type { Permission } from '@shogo/authz'
 import { encryptSecret, decryptSecret, isSecretCryptoConfigured } from '../lib/secret-crypto'
 import { getFrontendUrl } from '../lib/cloud-urls'
 import { resolveWorkspaceRuntimeUrl } from '../lib/resolve-workspace-runtime-url'
@@ -111,11 +113,9 @@ export function slackAgentRoutes(config: SlackAgentRoutesConfig): Hono {
     const workspaceId = c.req.query('workspaceId')
     if (!userId || !workspaceId) return c.json({ error: 'workspaceId and authentication are required' }, 401)
 
-    const membership = await prisma.member.findFirst({
-      where: { userId, workspaceId, role: { in: ['owner', 'admin'] } },
-      select: { id: true },
-    })
-    if (!membership) return c.json({ error: 'Workspace owner or admin access is required' }, 403)
+    if (!(await isWorkspaceAdmin(userId, workspaceId))) {
+      return c.json({ error: 'Workspace owner or admin access is required' }, 403)
+    }
 
     const state = createSlackOAuthState({ mode: 'install', workspaceId, userId }, stateSecret())
     const params = new URLSearchParams({
@@ -144,11 +144,9 @@ export function slackAgentRoutes(config: SlackAgentRoutesConfig): Hono {
       return c.json({ error: 'SECRETS_ENCRYPTION_KEY is required before installing Slack' }, 503)
     }
 
-    const membership = await prisma.member.findFirst({
-      where: { userId: parsedState.userId, workspaceId: parsedState.workspaceId, role: { in: ['owner', 'admin'] } },
-      select: { id: true },
-    })
-    if (!membership) return c.json({ error: 'Workspace access changed during OAuth' }, 403)
+    if (!(await isWorkspaceAdmin(parsedState.userId, parsedState.workspaceId))) {
+      return c.json({ error: 'Workspace access changed during OAuth' }, 403)
+    }
 
     const response = await fetch(`${SLACK_API}/oauth.v2.access`, {
       method: 'POST',
@@ -237,11 +235,9 @@ export function slackAgentRoutes(config: SlackAgentRoutesConfig): Hono {
     })
     if (!installation) return c.json({ error: 'Slack workspace is not installed in Shogo' }, 404)
 
-    const member = await prisma.member.findFirst({
-      where: { userId, workspaceId: installation.workspaceId },
-      select: { id: true },
-    })
-    if (!member) return c.json({ error: 'You are not a member of this Shogo workspace' }, 403)
+    if (!(await hasWorkspaceMembership(userId, installation.workspaceId))) {
+      return c.json({ error: 'You are not a member of this Shogo workspace' }, 403)
+    }
 
     await prisma.slackUserLink.upsert({
       where: {
@@ -506,7 +502,10 @@ export function slackAgentRoutes(config: SlackAgentRoutesConfig): Hono {
     })
     if (!installation) return c.json({ rules: [] })
     const rules = await prisma.slackProjectRoutingRule.findMany({
-      where: { slackTeamId: installation.slackTeamId },
+      where: {
+        slackTeamId: installation.slackTeamId,
+        project: await accessibleProjectsWhere({ userId, via: 'session' }, workspaceId),
+      },
       include: { project: { select: { id: true, name: true } } },
       orderBy: { keyword: 'asc' },
     })
@@ -1269,16 +1268,12 @@ export function slackAgentRoutes(config: SlackAgentRoutesConfig): Hono {
     userId: string,
     slackOnly: boolean,
   ): Promise<Array<SlackRoutableProject & { slackEnabled: boolean; createdBy: string | null }>> {
-    const workspaceMember = await prisma.member.findFirst({
-      where: { userId, workspaceId },
-      select: { id: true },
-    })
     const projects = await prisma.project.findMany({
       where: {
-        workspaceId,
-        hidden: false,
-        ...(slackOnly ? { slackEnabled: true } : {}),
-        ...(workspaceMember ? {} : { members: { some: { userId } } }),
+        AND: [
+          { workspaceId, hidden: false, ...(slackOnly ? { slackEnabled: true } : {}) },
+          await accessibleProjectsWhere({ userId, via: 'session' }, workspaceId),
+        ],
       },
       select: { id: true, name: true, description: true, slackEnabled: true, createdBy: true },
       orderBy: { name: 'asc' },
@@ -1322,15 +1317,16 @@ export function slackAgentRoutes(config: SlackAgentRoutesConfig): Hono {
     })
   }
 
-  async function hasWorkspaceMembership(userId: string, workspaceId: string): Promise<boolean> {
-    return !!(await prisma.member.findFirst({ where: { userId, workspaceId }, select: { id: true } }))
+  async function userCan(userId: string, workspaceId: string, permission: Permission): Promise<boolean> {
+    return (await loadAccess({ userId, via: 'session' }, { workspaceId })).permissions.has(permission)
   }
 
-  async function isWorkspaceAdmin(userId: string, workspaceId: string): Promise<boolean> {
-    return !!(await prisma.member.findFirst({
-      where: { userId, workspaceId, role: { in: ['owner', 'admin'] } },
-      select: { id: true },
-    }))
+  function hasWorkspaceMembership(userId: string, workspaceId: string): Promise<boolean> {
+    return userCan(userId, workspaceId, 'workspace:read')
+  }
+
+  function isWorkspaceAdmin(userId: string, workspaceId: string): Promise<boolean> {
+    return userCan(userId, workspaceId, 'workspace.settings:manage')
   }
 
   return router

@@ -25,6 +25,7 @@ import {
   getDiff as getDiffSvc,
 } from '../services/checkpoint.service'
 import { prisma } from '../lib/prisma'
+import { accessibleProjectsWhere, loadAccess } from '../lib/authz'
 import { hydrateRepo } from '../services/git-repo-store'
 import {
   attachProject,
@@ -612,15 +613,12 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
    * `capability-profiles.ts`), so this only affects team workspaces today.
    */
   async function accessibleWorkspaceProjects(workspaceId: string, userId: string) {
-    const workspaceMember = await prisma.member.findFirst({
-      where: { workspaceId, userId },
-      select: { id: true },
-    })
     return prisma.project.findMany({
       where: {
-        workspaceId,
-        hidden: false,
-        ...(workspaceMember ? {} : { members: { some: { userId } } }),
+        AND: [
+          { workspaceId, hidden: false },
+          await accessibleProjectsWhere({ userId, via: 'session' }, workspaceId),
+        ],
       },
       select: { id: true, name: true, description: true, createdBy: true },
       orderBy: { name: 'asc' },
@@ -1672,7 +1670,7 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     }
     if (identity.kind === 'workspace') {
       const owner = await prisma.member.findFirst({
-        where: { workspaceId: identity.workspaceId, role: 'owner' },
+        where: { workspaceId: identity.workspaceId, projectId: null, role: 'owner' },
         select: { userId: true },
         orderBy: { createdAt: 'asc' },
       })
@@ -1922,18 +1920,15 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
         : authz.identity.kind === 'project' ? authz.identity.projectId : undefined
 
     // The person behind the caller's turn carries over to the callee, as long
-    // as they belong to the callee's workspace. The ticket must have been
+    // as they can read the callee project. The ticket must have been
     // issued to the calling project.
     let requesterTicket: string | undefined
     const callerTicket = callerProjectId
       ? verifyRequesterTicket(c.req.header(REQUESTER_TICKET_HEADER), callerProjectId)
       : null
     if (callerTicket && callerProjectId !== projectId) {
-      const member = await prisma.member.findFirst({
-        where: { userId: callerTicket.userId, workspaceId: authz.workspaceId },
-        select: { id: true },
-      })
-      if (member) requesterTicket = handOffRequesterTicket(callerTicket, projectId) ?? undefined
+      const access = await loadAccess({ userId: callerTicket.userId, via: 'session' }, { projectId })
+      if (access.permissions.has('project:read') && access.workspaceId === authz.workspaceId) requesterTicket = handOffRequesterTicket(callerTicket, projectId) ?? undefined
     }
 
     const agentCallSvc = await loadAgentCall?.()

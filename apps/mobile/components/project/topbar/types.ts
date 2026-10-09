@@ -54,7 +54,12 @@ export interface ProjectTopBarProps {
   projectCreatedAt?: string | number;
   projectModifiedAt?: string | number;
   isStarred?: boolean;
+  /** Omit to hide rename (caller lacks `project:update`). */
   onRenameProject?: (newName: string) => void;
+  /** Defaults to true; false hides export (no `project:export`). */
+  canExport?: boolean;
+  /** Defaults to true; false hides the publish control (no `project:publish`). */
+  canPublish?: boolean;
   onToggleStar?: () => void;
   onMoveToFolder?: (folderId: string | null) => void;
   folders?: { id: string; name: string }[];

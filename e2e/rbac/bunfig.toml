@@ -1,0 +1,3 @@
+[test]
+timeout = 120_000
+conditions = ["development"]

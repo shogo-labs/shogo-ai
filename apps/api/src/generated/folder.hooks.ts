@@ -7,6 +7,9 @@
  * This file is safe to edit - it will not be overwritten.
  */
 
+import type { Principal } from "../lib/authz"
+import { hookAuthorize, hookRequire } from "../lib/authz/hooks"
+
 /**
  * Result from a hook that can modify or reject the operation
  */
@@ -25,6 +28,7 @@ export interface HookContext {
   query: Record<string, string>
   userId?: string
   tunnelAuthenticated?: boolean
+  auth?: Principal
   prisma: any
 }
 
@@ -77,14 +81,11 @@ export const folderHooks: FolderHooks = {
 
     if (workspaceId) {
       if (!ctx.tunnelAuthenticated) {
-        const membership = await ctx.prisma.member.findFirst({
-          where: { userId, workspaceId },
-        })
-
-        if (!membership) {
+        const denied = await hookRequire(ctx, "workspace:read", { workspaceId })
+        if (denied) {
           return {
             ok: false,
-            error: { code: "forbidden", message: "Access denied to this workspace" },
+            error: { code: denied.error.code, message: "Access denied to this workspace" },
           }
         }
       }
@@ -102,7 +103,7 @@ export const folderHooks: FolderHooks = {
     const whereClause = ctx.tunnelAuthenticated ? {} : {
       workspace: {
         members: {
-          some: { userId },
+          some: { userId, projectId: null },
         },
       },
     }
@@ -131,11 +132,7 @@ export const folderHooks: FolderHooks = {
 
     const folder = await ctx.prisma.folder.findUnique({
       where: { id },
-      include: {
-        workspace: {
-          include: { members: true },
-        },
-      },
+      select: { workspaceId: true },
     })
 
     if (!folder) {
@@ -145,11 +142,11 @@ export const folderHooks: FolderHooks = {
       }
     }
 
-    const hasAccess = folder.workspace?.members?.some((m: any) => m.userId === userId)
-    if (!hasAccess) {
+    const denied = await hookRequire(ctx, "workspace:read", { workspaceId: folder.workspaceId })
+    if (denied) {
       return {
         ok: false,
-        error: { code: "forbidden", message: "Access denied to this folder" },
+        error: { code: denied.error.code, message: "Access denied to this folder" },
       }
     }
 
@@ -183,14 +180,11 @@ export const folderHooks: FolderHooks = {
     }
 
     if (!ctx.tunnelAuthenticated) {
-      const membership = await ctx.prisma.member.findFirst({
-        where: { userId, workspaceId },
-      })
-
-      if (!membership) {
+      const denied = await hookAuthorize(ctx, "project:create", { workspaceId }, "POST /api/folders")
+      if (denied) {
         return {
           ok: false,
-          error: { code: "forbidden", message: "Access denied to this workspace" },
+          error: { code: denied.error.code, message: "Access denied to this workspace" },
         }
       }
     }
@@ -214,11 +208,7 @@ export const folderHooks: FolderHooks = {
 
     const folder = await ctx.prisma.folder.findUnique({
       where: { id },
-      include: {
-        workspace: {
-          include: { members: true },
-        },
-      },
+      select: { workspaceId: true },
     })
 
     if (!folder) {
@@ -228,11 +218,11 @@ export const folderHooks: FolderHooks = {
       }
     }
 
-    const hasAccess = folder.workspace?.members?.some((m: any) => m.userId === userId)
-    if (!hasAccess) {
+    const denied = await hookAuthorize(ctx, "project:create", { workspaceId: folder.workspaceId }, `PATCH /api/folders/${id}`)
+    if (denied) {
       return {
         ok: false,
-        error: { code: "forbidden", message: "Access denied to this folder" },
+        error: { code: denied.error.code, message: "Access denied to this folder" },
       }
     }
 
@@ -255,11 +245,7 @@ export const folderHooks: FolderHooks = {
 
     const folder = await ctx.prisma.folder.findUnique({
       where: { id },
-      include: {
-        workspace: {
-          include: { members: true },
-        },
-      },
+      select: { workspaceId: true },
     })
 
     if (!folder) {
@@ -269,11 +255,11 @@ export const folderHooks: FolderHooks = {
       }
     }
 
-    const hasAccess = folder.workspace?.members?.some((m: any) => m.userId === userId)
-    if (!hasAccess) {
+    const denied = await hookAuthorize(ctx, "project:create", { workspaceId: folder.workspaceId }, `DELETE /api/folders/${id}`)
+    if (denied) {
       return {
         ok: false,
-        error: { code: "forbidden", message: "Access denied to this folder" },
+        error: { code: denied.error.code, message: "Access denied to this folder" },
       }
     }
 

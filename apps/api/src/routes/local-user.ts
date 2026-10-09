@@ -187,7 +187,7 @@ export function userProfileRoutes(): Hono {
 
     const ownedTeamWorkspaceIds = (
       await prisma.member.findMany({
-        where: { userId, role: 'owner', workspace: { kind: 'team' } },
+        where: { userId, projectId: null, role: 'owner', workspace: { kind: 'team' } },
         select: { workspaceId: true },
       })
     )
@@ -204,7 +204,7 @@ export function userProfileRoutes(): Hono {
                 { project: { createdBy: userId } },
                 // ChatMessage has no author, so shared team workspaces can't
                 // be attributed to this user; only their personal space can.
-                { workspace: { kind: 'personal', members: { some: { userId } } } },
+                { workspace: { kind: 'personal', members: { some: { userId, projectId: null } } } },
               ],
             },
           },
@@ -252,7 +252,7 @@ export function userProfileRoutes(): Hono {
       oneYearAgo.setHours(0, 0, 0, 0)
 
       const memberships = await prisma.member.findMany({
-        where: { userId },
+        where: { userId, projectId: null },
         select: { workspaceId: true },
       })
       const workspaceIds = memberships

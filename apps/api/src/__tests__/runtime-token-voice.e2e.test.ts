@@ -298,8 +298,7 @@ describe('E2E: pod → Shogo API runtime-token flow', () => {
     // caller as WRONG_PROJECT_ID (the token's true scope) rather than
     // rejecting at the HMAC check. `authorizeProject` then enforces the
     // target project from `?projectId=PROJECT_ID` against the
-    // authenticated scope → 403. Same security outcome as before, just
-    // a more honest status code (see runtime-token.md §9).
+    // authenticated scope → 404, the same response as a missing project.
     const podApp = createPodApp(
       {
         runtimeToken: deriveRuntimeToken(WRONG_PROJECT_ID),
@@ -309,12 +308,12 @@ describe('E2E: pod → Shogo API runtime-token flow', () => {
     )
 
     const res = await podApp.request('/api/voice/signed-url')
-    expect(res.status).toBe(403)
+    expect(res.status).toBe(404)
     // EL was never called — fast rejection at the authorization layer.
     expect(getSignedUrlMock).not.toHaveBeenCalled()
   })
 
-  test('negative: direct API call with token for project A but ?projectId=B → 403', async () => {
+  test('negative: direct API call with token for project A but ?projectId=B → 404', async () => {
     const apiApp = createShogoApiApp()
     // Token for WRONG_PROJECT_ID, routed at /api/voice/signed-url?projectId=PROJECT_ID.
     // With v1 tokens, authentication succeeds as WRONG_PROJECT_ID; the
@@ -324,7 +323,7 @@ describe('E2E: pod → Shogo API runtime-token flow', () => {
       `/api/voice/signed-url?projectId=${PROJECT_ID}`,
       { headers: { 'x-runtime-token': wrongToken } },
     )
-    expect(res.status).toBe(403)
+    expect(res.status).toBe(404)
   })
 
   test('negative: structurally malformed runtime token → 401 at the auth layer', async () => {

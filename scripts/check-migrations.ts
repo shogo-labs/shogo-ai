@@ -146,6 +146,10 @@ interface Checkpoint {
   throughMigration: string | null
   /** Human-readable description shown on failure. */
   description: string
+  /** Rows inserted into the pre-state, for data migrations that need real shapes. */
+  seed?: string
+  /** Post-upgrade assertion; returns an error message, or null when the data is right. */
+  verify?: (db: Database) => string | null
 }
 
 const CHECKPOINTS: Checkpoint[] = [
@@ -171,6 +175,44 @@ const CHECKPOINTS: Checkpoint[] = [
     throughMigration: '20260515000000_project_preferred_instance',
     description:
       'Existing user one release behind HEAD; database is identical to a v1.7.x install just before the marketplace_versioning_audit ALTER landed.',
+  },  {
+    name: 'rbac-member-dedupe',
+    throughMigration: '20261006215336_add_live_activity_tokens',
+    description:
+      'Pre-RBAC database with duplicate memberships and project-level owner rows; the RBAC migration must dedupe them, fold project owners into admin, and create the scope-unique indexes.',
+    seed: `
+      INSERT INTO users (id, email, name, createdAt, updatedAt) VALUES
+        ('u1', 'u1@example.com', 'U1', 0, 0),
+        ('u2', 'u2@example.com', 'U2', 0, 0);
+      INSERT INTO workspaces (id, name, slug, createdAt, updatedAt) VALUES ('w1', 'W', 'w', 0, 0);
+      INSERT INTO projects (id, name, workspaceId, createdAt, updatedAt) VALUES ('p1', 'P', 'w1', 0, 0);
+      INSERT INTO members (id, userId, workspaceId, projectId, role, isBillingAdmin, createdAt, updatedAt) VALUES
+        ('m1', 'u1', 'w1', NULL, 'member', 1, 1, 1),
+        ('m2', 'u1', 'w1', NULL, 'admin', 0, 2, 2),
+        ('m3', 'u1', 'w1', NULL, 'viewer', 0, 3, 3),
+        ('m4', 'u2', 'w1', 'p1', 'owner', 0, 1, 1),
+        ('m5', 'u2', 'w1', 'p1', 'viewer', 0, 2, 2),
+        ('m6', 'u2', 'w1', NULL, 'member', 0, 1, 1);
+    `,
+    verify: (db) => {
+      const rows = db
+        .query('SELECT id, role, isBillingAdmin FROM members ORDER BY id')
+        .all() as Array<{ id: string; role: string; isBillingAdmin: number }>
+      const got = rows.map((r) => `${r.id}:${r.role}:${r.isBillingAdmin}`).join(' ')
+      const want = 'm2:admin:1 m4:admin:0 m6:member:0'
+      if (got !== want) return `members after upgrade were "${got}", expected "${want}"`
+      const visibility = db.query("SELECT visibility FROM projects WHERE id = 'p1'").get() as { visibility: string }
+      if (visibility?.visibility !== 'workspace') return `project visibility default was ${visibility?.visibility}`
+      try {
+        db.exec("INSERT INTO members (id, userId, workspaceId, projectId, role, createdAt, updatedAt) VALUES ('dup', 'u1', 'w1', NULL, 'viewer', 0, 0)")
+        return 'members_workspace_scope_key did not reject a duplicate workspace membership'
+      } catch {}
+      try {
+        db.exec("INSERT INTO members (id, userId, workspaceId, projectId, role, createdAt, updatedAt) VALUES ('dup2', 'u2', 'w1', 'p1', 'viewer', 0, 0)")
+        return 'members_project_scope_key did not reject a duplicate project membership'
+      } catch {}
+      return null
+    },
   },
 ]
 
@@ -451,6 +493,16 @@ function runCheckpoint(
     }
   }
 
+  if (checkpoint.seed) {
+    try {
+      db.exec(checkpoint.seed)
+    } catch (err) {
+      db.close()
+      console.error(`[migrations] [${checkpoint.name}] seed data failed to insert: ${(err as Error).message}`)
+      process.exit(2)
+    }
+  }
+
   // Phase 3: the actual subject under test. Apply remaining
   // migrations one at a time, stopping at the first failure.
   let appliedCount = 0
@@ -466,6 +518,11 @@ function runCheckpoint(
       break
     }
     appliedCount++
+  }
+
+  if (!failure && checkpoint.verify) {
+    const error = checkpoint.verify(db)
+    if (error) failure = { migration: '(post-upgrade data check)', statementPreview: '', error, hint: '' }
   }
 
   db.close()

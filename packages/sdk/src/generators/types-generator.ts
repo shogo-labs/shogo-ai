@@ -117,6 +117,10 @@ function resolveModelTypeName(modelName: string, enumNames: Set<string>): string
  * Map Prisma type to TypeScript type
  */
 function mapPrismaType(field: PrismaField): string {
+  if (field.isList && field.kind !== 'object') {
+    return `${mapPrismaType({ ...field, isList: false })}[]`
+  }
+
   // Handle relations
   if (field.kind === 'object') {
     return field.isList ? `${field.type}Type[]` : `${field.type}Type`
@@ -182,7 +186,7 @@ function generateModelType(model: PrismaModel, enumNames: Set<string> = new Set(
  */
 function generateInputTypes(model: PrismaModel): string[] {
   const lines: string[] = []
-  const scalarFields = getScalarFields(model)
+  const scalarFields = getScalarFields(model).filter(f => !f.isExtra)
 
   // Create input - required fields without defaults
   lines.push(`export interface ${model.name}CreateInput {`)

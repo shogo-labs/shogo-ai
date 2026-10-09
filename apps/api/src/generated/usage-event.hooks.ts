@@ -7,6 +7,10 @@
  * This file is safe to edit - it will not be overwritten.
  */
 
+import type { Permission } from "@shogo/authz"
+import type { Principal } from "../lib/authz"
+import { hookAccess, hookAuthorize, hookRequire } from "../lib/authz/hooks"
+
 /**
  * Result from a hook that can modify or reject the operation
  */
@@ -24,7 +28,33 @@ export interface HookContext {
   params: Record<string, string>
   query: Record<string, string>
   userId?: string
+  tunnelAuthenticated?: boolean
+  auth?: Principal
   prisma: any
+}
+
+/**
+ * Require `permission` on the workspace while keeping this resource's error
+ * messages. Admins lost billing management under RBAC, so their denials go
+ * through the enforcement mode instead of failing outright.
+ */
+async function requireWorkspacePermission(
+  ctx: HookContext,
+  workspaceId: string,
+  permission: Permission,
+  roleMessage: string,
+  where: string,
+  nonMemberMessage = "Access denied",
+): Promise<HookResult | null> {
+  const access = await hookAccess(ctx, { workspaceId })
+  if (access.permissions.has(permission)) return null
+  if (!access.workspaceRole) {
+    return { ok: false, error: { code: "forbidden", message: nonMemberMessage } }
+  }
+  if (permission === "workspace.billing:manage" && access.workspaceRole === "admin") {
+    if (!(await hookAuthorize(ctx, permission, { workspaceId }, where))) return null
+  }
+  return { ok: false, error: { code: "forbidden", message: roleMessage } }
 }
 
 /**
@@ -69,22 +99,18 @@ export const usageEventHooks: UsageEventHooks = {
     const where: Record<string, any> = {}
 
     if (workspaceId) {
-      // Verify user has access to this workspace
-      const membership = await ctx.prisma.member.findFirst({
-        where: { userId, workspaceId },
-      })
-
-      if (!membership) {
+      const denied = await hookRequire(ctx, "workspace:read", { workspaceId })
+      if (denied) {
         return {
           ok: false,
-          error: { code: "forbidden", message: "Access denied to this workspace" },
+          error: { code: denied.error.code, message: "Access denied to this workspace" },
         }
       }
       where.workspaceId = workspaceId
     } else {
       // Filter to accessible workspaces only
       where.workspace = {
-        members: { some: { userId } },
+        members: { some: { userId, projectId: null } },
       }
     }
 
@@ -115,11 +141,7 @@ export const usageEventHooks: UsageEventHooks = {
 
     const event = await ctx.prisma.usageEvent.findUnique({
       where: { id },
-      include: {
-        workspace: {
-          include: { members: true },
-        },
-      },
+      select: { workspaceId: true },
     })
 
     if (!event) {
@@ -129,11 +151,11 @@ export const usageEventHooks: UsageEventHooks = {
       }
     }
 
-    const hasAccess = event.workspace?.members?.some((m: any) => m.userId === userId)
-    if (!hasAccess) {
+    const denied = await hookRequire(ctx, "workspace:read", { workspaceId: event.workspaceId })
+    if (denied) {
       return {
         ok: false,
-        error: { code: "forbidden", message: "Access denied" },
+        error: { code: denied.error.code, message: "Access denied" },
       }
     }
 
@@ -141,7 +163,7 @@ export const usageEventHooks: UsageEventHooks = {
   },
 
   /**
-   * Verify user has access to update the usage event (owner/admin only)
+   * Verify user has access to update the usage event (workspace.billing:manage)
    */
   beforeUpdate: async (id, input, ctx) => {
     const userId = ctx.userId
@@ -154,11 +176,7 @@ export const usageEventHooks: UsageEventHooks = {
 
     const event = await ctx.prisma.usageEvent.findUnique({
       where: { id },
-      include: {
-        workspace: {
-          include: { members: true },
-        },
-      },
+      select: { workspaceId: true },
     })
 
     if (!event) {
@@ -168,26 +186,20 @@ export const usageEventHooks: UsageEventHooks = {
       }
     }
 
-    const member = event.workspace?.members?.find((m: any) => m.userId === userId)
-    if (!member) {
-      return {
-        ok: false,
-        error: { code: "forbidden", message: "Access denied" },
-      }
-    }
-
-    if (member.role !== 'owner' && member.role !== 'admin') {
-      return {
-        ok: false,
-        error: { code: "forbidden", message: "Only workspace owners and admins can modify usage events" },
-      }
-    }
+    const denied = await requireWorkspacePermission(
+      ctx,
+      event.workspaceId,
+      "workspace.billing:manage",
+      "Only workspace owners and billing admins can modify usage events",
+      `PATCH /api/usage-events/${id}`,
+    )
+    if (denied) return denied
 
     return { ok: true }
   },
 
   /**
-   * Verify user has access to delete the usage event (owner only)
+   * Verify user has access to delete the usage event (workspace:delete)
    */
   beforeDelete: async (id, ctx) => {
     const userId = ctx.userId
@@ -200,11 +212,7 @@ export const usageEventHooks: UsageEventHooks = {
 
     const event = await ctx.prisma.usageEvent.findUnique({
       where: { id },
-      include: {
-        workspace: {
-          include: { members: true },
-        },
-      },
+      select: { workspaceId: true },
     })
 
     if (!event) {
@@ -214,20 +222,14 @@ export const usageEventHooks: UsageEventHooks = {
       }
     }
 
-    const member = event.workspace?.members?.find((m: any) => m.userId === userId)
-    if (!member) {
-      return {
-        ok: false,
-        error: { code: "forbidden", message: "Access denied" },
-      }
-    }
-
-    if (member.role !== 'owner') {
-      return {
-        ok: false,
-        error: { code: "forbidden", message: "Only workspace owners can delete usage events" },
-      }
-    }
+    const denied = await requireWorkspacePermission(
+      ctx,
+      event.workspaceId,
+      "workspace:delete",
+      "Only workspace owners can delete usage events",
+      `DELETE /api/usage-events/${id}`,
+    )
+    if (denied) return denied
 
     return { ok: true }
   },

@@ -34,6 +34,7 @@ import { Hono, type Context } from 'hono'
 import { lfsObjectKey, isValidLfsOid } from '@shogo/shared-runtime'
 import { prisma } from '../lib/prisma'
 import { authorizeProject } from '../middleware/auth'
+import type { Permission } from '@shogo/authz'
 import {
   getLfsPresignedReadUrl,
   getLfsPresignedWriteUrl,
@@ -82,12 +83,12 @@ function lfsError(message: string, status: number): Response {
  * Shared auth + project resolution, mirroring `git-http.ts`. Returns null on
  * success or a ready-to-return Response on any failure path.
  */
-async function authorizeLfs(c: Context, projectId: string): Promise<Response | null> {
+async function authorizeLfs(c: Context, projectId: string, permission: Permission): Promise<Response | null> {
   const auth = c.get('auth')
   if (!auth?.isAuthenticated || !auth.userId) {
     return lfsError('Authentication required', 401)
   }
-  const access = await authorizeProject(c, projectId)
+  const access = await authorizeProject(c, projectId, permission)
   if (!access.ok) {
     return lfsError(access.message || 'Forbidden', access.status || 403)
   }
@@ -132,7 +133,7 @@ export function gitLfsRoutes(_config: GitLfsRoutesConfig) {
     const projectId = c.req.param('projectId')
     if (!projectId) return lfsError('projectId is required', 400)
 
-    const denied = await authorizeLfs(c, projectId)
+    const denied = await authorizeLfs(c, projectId, 'project:read')
     if (denied) return denied
 
     let body: any
@@ -145,6 +146,10 @@ export function gitLfsRoutes(_config: GitLfsRoutesConfig) {
     const operation = body?.operation
     if (operation !== 'upload' && operation !== 'download') {
       return lfsError('operation must be "upload" or "download"', 422)
+    }
+    if (operation === 'upload') {
+      const deniedUpload = await authorizeLfs(c, projectId, 'project:update')
+      if (deniedUpload) return deniedUpload
     }
 
     const objects = parseBatchObjects(body?.objects)
@@ -217,7 +222,7 @@ export function gitLfsRoutes(_config: GitLfsRoutesConfig) {
     const projectId = c.req.param('projectId')
     if (!projectId) return lfsError('projectId is required', 400)
 
-    const denied = await authorizeLfs(c, projectId)
+    const denied = await authorizeLfs(c, projectId, 'project:update')
     if (denied) return denied
 
     let body: any

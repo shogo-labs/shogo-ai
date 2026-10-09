@@ -55,7 +55,11 @@ mock.module('../lib/prisma', () => ({
     chatMessage: { create: async (args: any) => ({ id: 'm-1', ...args.data }) },
     chatSession: { findUnique: async () => ({ id: 's-1' }) },
     toolCallLog: { createMany: async () => ({ count: 0 }) },
-    member: { findFirst: async () => memberFixture },
+    member: {
+      findFirst: async () => memberFixture,
+      findMany: async () => (memberFixture ? [{ role: 'member', projectId: null, isBillingAdmin: false }] : []),
+    },
+    user: { findUnique: async () => ({ role: 'user' }) },
   },
 }))
 

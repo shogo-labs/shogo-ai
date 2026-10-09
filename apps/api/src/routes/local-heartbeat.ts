@@ -14,7 +14,7 @@ function userId(c: any): string | null {
 async function canAccess(user: string | null, projectId: string): Promise<boolean> {
   if (!user) return false
   const project = await prisma.project.findFirst({
-    where: { id: projectId, workspace: { members: { some: { userId: user } } } },
+    where: { id: projectId, workspace: { members: { some: { userId: user, projectId: null } } } },
     select: { id: true },
   })
   return !!project

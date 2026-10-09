@@ -1143,7 +1143,7 @@ export function localProjectsRoutes(): Hono {
       where: {
         workingMode: 'external',
         hidden: false,
-        workspace: { members: { some: { userId: auth.userId } } },
+        workspace: { members: { some: { userId: auth.userId, projectId: null } } },
       },
       include: { projectFolders: true },
       orderBy: { updatedAt: 'desc' },
@@ -1353,12 +1353,12 @@ export async function resolveFolderProjectWorkspace(
   }
   const team =
     (await prisma.workspace.findFirst({
-      where: { kind: 'team', members: { some: { userId, role: 'owner' } } },
+      where: { kind: 'team', members: { some: { userId, role: 'owner', projectId: null } } },
       orderBy: { createdAt: 'asc' },
       select: { id: true },
     })) ??
     (await prisma.workspace.findFirst({
-      where: { kind: 'team', members: { some: { userId } } },
+      where: { kind: 'team', members: { some: { userId, projectId: null } } },
       orderBy: { createdAt: 'asc' },
       select: { id: true },
     }))

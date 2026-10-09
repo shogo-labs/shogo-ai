@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { Platform } from 'react-native'
 import { HttpClient } from '@shogo-ai/sdk'
+import type { Permission, ProjectRole, WorkspaceRole } from '@shogo/authz'
 import { API_URL } from './api-url'
 import { authClient } from './auth-client'
 import { defaultLocalAccess, type LocalAccessPrefs } from './local-access'
@@ -38,6 +39,66 @@ export function isInvitationExpired(invitation: { status?: string; expiresAt?: s
 // This `api` object is for non-domain endpoints (billing, analytics, etc.)
 // that aren't covered by the domain stores. They use the SDK HttpClient
 // available via `useDomainHttp()`.
+
+export type ProjectVisibility = 'workspace' | 'restricted'
+
+/** `GET /api/workspaces/:id/permissions` payload. */
+export interface WorkspacePermissionsData {
+  workspaceId: string
+  role: WorkspaceRole | null
+  isSuperAdmin: boolean
+  permissions: Permission[]
+}
+
+/** `GET /api/projects/:id/permissions` payload. */
+export interface ProjectPermissionsData {
+  projectId: string
+  workspaceId: string
+  visibility: ProjectVisibility
+  workspaceRole: WorkspaceRole | null
+  projectRole: ProjectRole | null
+  isGuest: boolean
+  isSuperAdmin: boolean
+  permissions: Permission[]
+}
+
+export interface ProjectAccessUser {
+  id: string
+  name: string | null
+  email: string | null
+  image: string | null
+}
+
+export interface ProjectMemberEntry {
+  id: string
+  userId: string
+  role: ProjectRole
+  isGuest: boolean
+  user: ProjectAccessUser
+}
+
+export interface ProjectWorkspaceAccessEntry {
+  userId: string
+  workspaceRole: WorkspaceRole
+  effectiveRole: ProjectRole | null
+  user: ProjectAccessUser
+}
+
+export interface ProjectInvitationEntry {
+  id: string
+  email: string
+  role: ProjectRole
+  expiresAt: string
+  createdAt: string
+}
+
+/** `GET /api/projects/:id/members` payload. */
+export interface ProjectMembersData {
+  visibility: ProjectVisibility
+  members: ProjectMemberEntry[]
+  workspaceMembers: ProjectWorkspaceAccessEntry[]
+  invitations: ProjectInvitationEntry[]
+}
 
 /** Where a new cloud user chose to start (mirror of `ONBOARDING_INTENTS` in apps/api/src/routes/local-user.ts). */
 export type OnboardingIntent = 'personal' | 'team'
@@ -2694,6 +2755,70 @@ export const api = {
       return await importViaXhr(opts, onProgress)
     }
     return await importViaFetchSSE(opts, onProgress)
+  },
+
+  /** GET /api/workspaces/:id/permissions — the caller's effective workspace access. */
+  async getWorkspacePermissions(http: HttpClient, workspaceId: string) {
+    const res = await http.get<{ ok?: boolean; data?: WorkspacePermissionsData }>(
+      `/api/workspaces/${encodeURIComponent(workspaceId)}/permissions`,
+    )
+    return res.data?.data ?? null
+  },
+
+  /** GET /api/projects/:id/permissions — the caller's effective project access. */
+  async getProjectPermissions(http: HttpClient, projectId: string) {
+    const res = await http.get<{ ok?: boolean; data?: ProjectPermissionsData }>(
+      `/api/projects/${encodeURIComponent(projectId)}/permissions`,
+    )
+    return res.data?.data ?? null
+  },
+
+  /** PATCH /api/projects/:id/visibility (requires project.members:manage). */
+  async setProjectVisibility(http: HttpClient, projectId: string, visibility: ProjectVisibility) {
+    await http.patch(`/api/projects/${encodeURIComponent(projectId)}/visibility`, { visibility })
+  },
+
+  /** GET /api/projects/:id/members (requires project.members:manage). */
+  async getProjectMembers(http: HttpClient, projectId: string) {
+    const res = await http.get<{ ok?: boolean; data?: ProjectMembersData }>(
+      `/api/projects/${encodeURIComponent(projectId)}/members`,
+    )
+    return res.data?.data ?? null
+  },
+
+  /**
+   * POST /api/projects/:id/members — grants an explicit project role to an
+   * existing user (outside users become guests) or, for unknown emails,
+   * creates a pending project invitation.
+   */
+  async addProjectMember(
+    http: HttpClient,
+    projectId: string,
+    body: { userId?: string; email?: string; role: ProjectRole },
+  ) {
+    const res = await http.post<{ ok?: boolean; data?: { member?: ProjectMemberEntry; invitation?: ProjectInvitationEntry } }>(
+      `/api/projects/${encodeURIComponent(projectId)}/members`,
+      body,
+    )
+    return res.data?.data ?? {}
+  },
+
+  async updateProjectMember(http: HttpClient, projectId: string, memberId: string, role: ProjectRole) {
+    await http.patch(
+      `/api/projects/${encodeURIComponent(projectId)}/members/${encodeURIComponent(memberId)}`,
+      { role },
+    )
+  },
+
+  async removeProjectMember(http: HttpClient, projectId: string, memberId: string) {
+    await http.delete(
+      `/api/projects/${encodeURIComponent(projectId)}/members/${encodeURIComponent(memberId)}`,
+    )
+  },
+
+  /** DELETE /api/invitations/:id — revokes a workspace or project invitation. */
+  async revokeInvitation(http: HttpClient, invitationId: string) {
+    await http.delete(`/api/invitations/${encodeURIComponent(invitationId)}`)
   },
 }
 

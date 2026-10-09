@@ -153,7 +153,22 @@ export function generateModelRoutes(
     '// Prisma client instance (injected)',
     'let prisma: PrismaClient | null = null',
     '',
-    `let hooks: ${modelName}Hooks = {}`,
+    '/**',
+    ' * Optional route hooks that hooks files written before they existed may',
+    ' * not declare on their interface.',
+    ' */',
+    'interface ResponseHooks {',
+    '  /** Transform listed records before they are returned. */',
+    '  afterList?: (items: any[], ctx: any) => Promise<any[] | void>',
+    '  /** Transform a fetched record before it is returned. */',
+    '  afterGet?: (item: any, ctx: any) => Promise<any | void>',
+    '  /** Replace the default delete (e.g. to remove dependent rows in one transaction). */',
+    '  performDelete?: (id: string, ctx: any) => Promise<void>',
+    '}',
+    '',
+    `type RouteHooks = ${modelName}Hooks & ResponseHooks`,
+    '',
+    'let hooks: RouteHooks = {}',
     '',
     '/**',
     ' * Set the Prisma client instance',
@@ -165,7 +180,7 @@ export function generateModelRoutes(
     '/**',
     ` * Set hooks for ${modelName} routes`,
     ' */',
-    `export function set${modelName}Hooks(h: ${modelName}Hooks) {`,
+    `export function set${modelName}Hooks(h: RouteHooks) {`,
     '  hooks = h',
     '}',
     '',
@@ -190,7 +205,24 @@ export function generateModelRoutes(
     '    query: Object.fromEntries(new URL(c.req.url).searchParams),',
     '    userId: auth?.userId,',
     '    tunnelAuthenticated: !!auth?.tunnelAuthenticated,',
+    '    auth,',
     '    prisma: getPrisma(),',
+    '  }',
+    '}',
+    '',
+    '/**',
+    ' * HTTP status for a hook rejection. Hooks signal authorization failures',
+    ' * with `unauthorized` / `forbidden` / `not_found` codes, and state',
+    ' * conflicts with `already_member` / `last_owner`.',
+    ' */',
+    'function hookErrorStatus(error: { code?: string } | undefined): number {',
+    '  switch (error?.code) {',
+    '    case "unauthorized": return 401',
+    '    case "forbidden": return 403',
+    '    case "not_found": return 404',
+    '    case "already_member":',
+    '    case "last_owner": return 409',
+    '    default: return 400',
     '  }',
     '}',
     '',
@@ -286,7 +318,7 @@ export function generateModelRoutes(
       lines.push('      if (hooks.beforeList) {')
       lines.push('        const result = await hooks.beforeList(ctx)')
       lines.push('        if (result && !result.ok) {')
-      lines.push('          return sendJson(c, { error: result.error }, 400)')
+      lines.push('          return sendJson(c, { error: result.error }, hookErrorStatus(result.error))')
       lines.push('        }')
       lines.push('        if (result?.data) {')
       lines.push('          where = result.data.where || where')
@@ -306,7 +338,8 @@ export function generateModelRoutes(
   lines.push(`        prisma.${modelLower}.count({ where }),`)
   lines.push('      ])')
   lines.push('')
-  lines.push('      return sendJson(c, { ok: true, items, total })')
+  lines.push('      const shaped = hooks.afterList ? (await hooks.afterList(items, ctx)) ?? items : items')
+  lines.push('      return sendJson(c, { ok: true, items: shaped, total })')
   lines.push('    } catch (error: any) {')
   lines.push(`      console.error("[${modelName}] List error:", error)`)
   lines.push('      return sendJson(c, { error: { code: "list_failed", message: error.message } }, 500)')
@@ -326,7 +359,7 @@ export function generateModelRoutes(
   lines.push('      if (hooks.beforeGet) {')
   lines.push('        const result = await hooks.beforeGet(id, ctx)')
   lines.push('        if (result && !result.ok) {')
-  lines.push('          return sendJson(c, { error: result.error }, result.error?.code === "not_found" ? 404 : 400)')
+  lines.push('          return sendJson(c, { error: result.error }, hookErrorStatus(result.error))')
   lines.push('        }')
   lines.push('      }')
   lines.push('')
@@ -338,7 +371,8 @@ export function generateModelRoutes(
   lines.push(`        return sendJson(c, { error: { code: "not_found", message: "${modelName} not found" } }, 404)`)
   lines.push('      }')
   lines.push('')
-  lines.push('      return sendJson(c, { ok: true, data: item })')
+  lines.push('      const shaped = hooks.afterGet ? (await hooks.afterGet(item, ctx)) ?? item : item')
+  lines.push('      return sendJson(c, { ok: true, data: shaped })')
   lines.push('    } catch (error: any) {')
   lines.push(`      console.error("[${modelName}] Get error:", error)`)
   lines.push('      return sendJson(c, { error: { code: "get_failed", message: error.message } }, 500)')
@@ -358,7 +392,7 @@ export function generateModelRoutes(
   lines.push('      if (hooks.beforeCreate) {')
   lines.push('        const result = await hooks.beforeCreate(body, ctx)')
   lines.push('        if (result && !result.ok) {')
-  lines.push('          return sendJson(c, { error: result.error }, 400)')
+  lines.push('          return sendJson(c, { error: result.error }, hookErrorStatus(result.error))')
   lines.push('        }')
   lines.push('        if (result?.data) {')
   lines.push('          body = result.data')
@@ -402,7 +436,7 @@ export function generateModelRoutes(
   lines.push('      if (hooks.beforeUpdate) {')
   lines.push('        const result = await hooks.beforeUpdate(id, body, ctx)')
   lines.push('        if (result && !result.ok) {')
-  lines.push('          return sendJson(c, { error: result.error }, 400)')
+  lines.push('          return sendJson(c, { error: result.error }, hookErrorStatus(result.error))')
   lines.push('        }')
   lines.push('        if (result?.data) {')
   lines.push('          body = result.data')
@@ -445,13 +479,17 @@ export function generateModelRoutes(
   lines.push('      if (hooks.beforeDelete) {')
   lines.push('        const result = await hooks.beforeDelete(id, ctx)')
   lines.push('        if (result && !result.ok) {')
-  lines.push('          return sendJson(c, { error: result.error }, 400)')
+  lines.push('          return sendJson(c, { error: result.error }, hookErrorStatus(result.error))')
   lines.push('        }')
   lines.push('      }')
   lines.push('')
-  lines.push(`      await prisma.${modelLower}.delete({`)
-  lines.push('        where: { id },')
-  lines.push('      })')
+  lines.push('      if (hooks.performDelete) {')
+  lines.push('        await hooks.performDelete(id, ctx)')
+  lines.push('      } else {')
+  lines.push(`        await prisma.${modelLower}.delete({`)
+  lines.push('          where: { id },')
+  lines.push('        })')
+  lines.push('      }')
   lines.push('')
   lines.push('      // Apply afterDelete hook')
   lines.push('      if (hooks.afterDelete) {')
@@ -512,6 +550,8 @@ export function generateModelHooks(model: PrismaModel, config: RouteGeneratorCon
     '  query: Record<string, string>',
     '  userId?: string',
     '  tunnelAuthenticated: boolean',
+    '  /** Full auth principal from the auth middleware (via, workspaceId, projectId, ...). */',
+    '  auth?: any',
     '  prisma: any',
     '}',
     '',
@@ -525,8 +565,12 @@ export function generateModelHooks(model: PrismaModel, config: RouteGeneratorCon
     '   * added to the where clause. This hook receives them and can override/extend them.',
     '   */',
     '  beforeList?: (ctx: HookContext) => Promise<HookResult<{ where?: any; include?: any; orderBy?: any }> | void>',
+    '  /** Called with listed records before they are returned. Return a replacement array to reshape them. */',
+    '  afterList?: (items: any[], ctx: HookContext) => Promise<any[] | void>',
     '  /** Called before getting a single record. Can reject access. */',
     '  beforeGet?: (id: string, ctx: HookContext) => Promise<HookResult | void>',
+    '  /** Called with a fetched record before it is returned. Return a replacement to reshape it. */',
+    '  afterGet?: (item: any, ctx: HookContext) => Promise<any | void>',
     '  /** Called before creating a record. Can modify input or reject. */',
     '  beforeCreate?: (input: any, ctx: HookContext) => Promise<HookResult<any> | void>',
     '  /** Called after creating a record. Can perform side effects. */',
@@ -537,6 +581,8 @@ export function generateModelHooks(model: PrismaModel, config: RouteGeneratorCon
     '  afterUpdate?: (record: any, ctx: HookContext) => Promise<void>',
     '  /** Called before deleting a record. Can reject deletion. */',
     '  beforeDelete?: (id: string, ctx: HookContext) => Promise<HookResult | void>',
+    '  /** Replaces the default delete when set (e.g. to remove dependent rows in one transaction). */',
+    '  performDelete?: (id: string, ctx: HookContext) => Promise<void>',
     '  /** Called after deleting a record. Can perform cleanup. */',
     '  afterDelete?: (id: string, ctx: HookContext) => Promise<void>',
     '}',

@@ -12,6 +12,7 @@
  */
 
 import { prisma } from '../../lib/prisma'
+import { accessibleProjectsWhere, loadAccess } from '../../lib/authz'
 import { getWorkspaceChatConfig, providerLabel, type ExternalChatProvider } from '../chat-mode'
 import { agentMentionToken } from '../conversation-mentions'
 import { postMessage, updateMessageInternal, type PostMessageResult } from '../conversation.service'
@@ -182,11 +183,8 @@ async function handleConnect(provider: ChatProvider, event: MessageEvent, code: 
     await reply(provisional, 'That connect code is invalid or has expired. Get a new one from Shogo settings → Integrations.')
     return
   }
-  const admin = await db.member.findFirst({
-    where: { userId: payload.userId, workspaceId: payload.workspaceId, role: { in: ['owner', 'admin'] } },
-    select: { id: true },
-  })
-  if (!admin) {
+  const access = await loadAccess({ userId: payload.userId, via: 'session' }, { workspaceId: payload.workspaceId })
+  if (!access.permissions.has('workspace.settings:manage')) {
     await reply(provisional, 'Only a Shogo workspace admin can connect this app.')
     return
   }
@@ -281,7 +279,7 @@ export async function ensureShadowConversation(
 async function linkedMember(installation: ChatInstallationRecord, externalUserId: string): Promise<string | null> {
   const userId = await linkedUserId(installation.provider, installation.externalTenantId, externalUserId)
   if (!userId) return null
-  const member = await db.member.findFirst({ where: { userId, workspaceId: installation.workspaceId }, select: { id: true } })
+  const member = await db.member.findFirst({ where: { userId, workspaceId: installation.workspaceId, projectId: null }, select: { id: true } })
   return member ? userId : null
 }
 
@@ -328,18 +326,26 @@ export async function addressAgents(
   installation: ChatInstallationRecord,
   conversation: any,
   text: string,
+  userId: string | null = null,
 ): Promise<string> {
-  const projects: Array<{ id: string; name: string }> = await db.project.findMany({
-    where: { workspaceId: installation.workspaceId },
-    select: { id: true, name: true },
-  })
+  const workspaceId = installation.workspaceId
+  type Row = { id: string; name: string; visibility?: string }
+  const [projects, readable]: [Row[], Row[] | null] = await Promise.all([
+    db.project.findMany({ where: { workspaceId }, select: { id: true, name: true, visibility: true } }),
+    userId
+      ? accessibleProjectsWhere({ userId, via: 'session' }, workspaceId)
+          .then((where) => db.project.findMany({ where, select: { id: true, name: true } }))
+      : null,
+  ])
+  // Naming a project only reaches the ones the sender can see; admin-set rules and defaults reach any.
+  const nameable = readable ?? projects.filter((p) => p.visibility !== 'restricted')
   let body = text
   let targets: Array<string | null> = []
 
   const selector = /(?:^|\s)project=("([^"]+)"|(\S+))/i.exec(body)
   if (selector) {
     const wanted = normalize(selector[2] ?? selector[3])
-    const project = projects.find((p) => p.id.toLowerCase() === wanted || normalize(p.name) === wanted)
+    const project = nameable.find((p) => p.id.toLowerCase() === wanted || normalize(p.name) === wanted)
     if (project) {
       targets = [project.id]
       body = body.replace(selector[0], ' ').replace(/[ \t]+/g, ' ').trim()
@@ -347,7 +353,7 @@ export async function addressAgents(
   }
   if (!targets.length) {
     const lower = normalize(body).replace(/^ask\s+/, '')
-    const leading = projects
+    const leading = nameable
       .filter((p) => p.name.trim().length > 2)
       .sort((a, b) => b.name.length - a.name.length)
       .find((p) => {
@@ -383,7 +389,7 @@ async function handleMessage(provider: ChatProvider, installation: ChatInstallat
   const userId = await linkedMember(installation, event.user.externalUserId)
   const threadRootId = await threadRootFor(provider, conversation, event)
   const isDm = conversation.kind === 'dm'
-  const text = event.addressed && !isDm ? await addressAgents(installation, conversation, event.text) : event.text
+  const text = event.addressed && !isDm ? await addressAgents(installation, conversation, event.text, userId) : event.text
 
   if (userId) await ensureUserMember(conversation.id, userId)
   const result = await postMessage({

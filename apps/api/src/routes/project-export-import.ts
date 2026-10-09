@@ -18,6 +18,7 @@ import { zipSync, unzipSync, strToU8, strFromU8 } from 'fflate'
 import { createS3SyncForProject, isMacOSJunkName, getMinimumInstanceSize } from '@shogo/shared-runtime'
 import { dockerClassBlockedMessage } from '../lib/runtime-class-setting'
 import { prisma } from '../lib/prisma'
+import { decide, loadAccess, type Principal } from '../lib/authz'
 import * as billingService from '../services/billing.service'
 import type { AuthContext } from '../middleware/auth'
 import { parseEnvFile } from '../lib/bundle-crypto'
@@ -457,21 +458,13 @@ export async function runImport(
   zipBuffer: Uint8Array,
   workspaceId: string,
   userId: string,
-  options: { includeChats: boolean; password?: string; runBootstrap?: boolean },
+  options: { includeChats: boolean; password?: string; runBootstrap?: boolean; principal?: Principal },
   emit: (ev: ImportEvent) => void | Promise<void>,
 ): Promise<ImportResult> {
-  // Verify user has access to the target workspace
-  const member = await prisma.member.findFirst({
-    where: { userId, workspaceId },
-  })
-  if (!member) {
-    const user = await prisma.user.findUnique({
-      where: { id: userId },
-      select: { role: true },
-    })
-    if (user?.role !== 'super_admin') {
-      return { ok: false, status: 403, error: 'Access denied to this workspace' }
-    }
+  const principal: Principal = options.principal ?? { userId, via: 'session' }
+  const access = await loadAccess(principal, { workspaceId })
+  if (!(await decide(access, 'project:create', principal, 'POST /projects/import')).ok) {
+    return { ok: false, status: 403, error: 'Access denied to this workspace' }
   }
 
   // Password-protected (ZipCrypto) archives can't be read by fflate. Detect
@@ -1500,7 +1493,7 @@ export function projectExportImportRoutes() {
             zipBuffer,
             workspaceId,
             userId,
-            { includeChats, password, runBootstrap },
+            { includeChats, password, runBootstrap, principal: authCtx },
             async (ev) => {
               if (ev.phase === 'error') {
                 await stream.writeSSE({
@@ -1550,7 +1543,7 @@ export function projectExportImportRoutes() {
         zipBuffer,
         workspaceId,
         userId,
-        { includeChats, password, runBootstrap },
+        { includeChats, password, runBootstrap, principal: authCtx },
         () => {
           /* drop events */
         },

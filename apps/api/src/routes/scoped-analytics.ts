@@ -11,8 +11,9 @@
  */
 
 import { Hono } from 'hono'
-import { prisma } from '../lib/prisma'
+import type { Context } from 'hono'
 import { authMiddleware, requireAuth } from '../middleware/auth'
+import { accessibleProjectsWhere, authorize, can, getAccess, principalOf } from '../lib/authz'
 import { isBusinessOrHigherPlan } from '../services/billing.service'
 import * as analytics from '../services/analytics.service'
 import type { AnalyticsPeriod } from '../services/analytics.service'
@@ -23,50 +24,27 @@ import type { EngagementPeriod } from '../services/engagement-analytics.service'
 // Helpers
 // ============================================================================
 
+function checkWorkspaceAccess(c: Context, workspaceId: string): Promise<boolean> {
+  return can(c, 'workspace:read', { workspaceId })
+}
+
 /**
- * Check if user has access to a workspace (is a member).
+ * Members see their own analytics; `isAdmin` callers (workspace.analytics:read)
+ * see the whole workspace.
  */
-async function checkWorkspaceAccess(userId: string, workspaceId: string): Promise<boolean> {
-  const member = await prisma.member.findFirst({
-    where: { userId, workspaceId },
-  })
-  return !!member
-}
-
-async function getWorkspaceMemberRole(userId: string, workspaceId: string): Promise<string | null> {
-  const member = await prisma.member.findFirst({
-    where: { userId, workspaceId },
-    select: { role: true },
-  })
-  return member?.role ?? null
-}
-
-function isWorkspaceAdminRole(role: string | null): boolean {
-  return role === 'owner' || role === 'admin'
-}
-
 async function checkWorkspaceAnalyticsAccess(
-  userId: string,
+  c: Context,
   workspaceId: string,
-): Promise<{ role: string } | null> {
-  const role = await getWorkspaceMemberRole(userId, workspaceId)
-  return role ? { role } : null
+): Promise<{ isAdmin: boolean } | null> {
+  const access = await getAccess(c, { workspaceId })
+  if (!access.permissions.has('workspace:read')) return null
+  return { isAdmin: access.permissions.has('workspace.analytics:read') }
 }
 
-/**
- * Check if user has access to a project (via workspace membership).
- */
-async function checkProjectAccess(userId: string, projectId: string): Promise<string | null> {
-  const project = await prisma.project.findUnique({
-    where: { id: projectId },
-    select: { workspaceId: true },
-  })
-  if (!project) return null
-
-  const member = await prisma.member.findFirst({
-    where: { userId, workspaceId: project.workspaceId },
-  })
-  return member ? project.workspaceId : null
+/** Resolves the project's workspace when the caller can read the project. */
+async function checkProjectAccess(c: Context, projectId: string): Promise<string | null> {
+  const decision = await authorize(c, 'project:read', { projectId })
+  return decision.ok ? decision.access.workspaceId : null
 }
 
 const ENGAGEMENT_PERIODS = new Set(['1d', '7d', '30d', '90d', '1y', 'mtd', 'last_month', 'all'])
@@ -95,9 +73,8 @@ export function scopedAnalyticsRoutes(): Hono {
   router.get('/workspaces/:workspaceId/analytics/overview', async (c) => {
     try {
       const workspaceId = c.req.param('workspaceId')
-      const auth = c.get('auth')
 
-      if (!await checkWorkspaceAccess(auth.userId!, workspaceId)) {
+      if (!await checkWorkspaceAccess(c, workspaceId)) {
         return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
       }
 
@@ -113,14 +90,14 @@ export function scopedAnalyticsRoutes(): Hono {
       const workspaceId = c.req.param('workspaceId')
       const auth = c.get('auth')
 
-      const access = await checkWorkspaceAnalyticsAccess(auth.userId!, workspaceId)
+      const access = await checkWorkspaceAnalyticsAccess(c, workspaceId)
       if (!access) {
         return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
       }
 
       const period = (new URL(c.req.url).searchParams.get('period') || undefined) as AnalyticsPeriod | undefined
       const data = await analytics.getMemberUsageStats(workspaceId, {
-        userId: isWorkspaceAdminRole(access.role) ? undefined : auth.userId!,
+        userId: access.isAdmin ? undefined : auth.userId!,
         ...(period ? { period } : {}),
       })
       return c.json({ ok: true, data })
@@ -134,7 +111,7 @@ export function scopedAnalyticsRoutes(): Hono {
       const workspaceId = c.req.param('workspaceId')
       const auth = c.get('auth')
 
-      const access = await checkWorkspaceAnalyticsAccess(auth.userId!, workspaceId)
+      const access = await checkWorkspaceAnalyticsAccess(c, workspaceId)
       if (!access) {
         return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
       }
@@ -144,10 +121,10 @@ export function scopedAnalyticsRoutes(): Hono {
       const page = parseInt(url.searchParams.get('page') || '1', 10)
       const limit = parseInt(url.searchParams.get('limit') || '50', 10)
       const requestedUserId = url.searchParams.get('userId') || undefined
-      if (!isWorkspaceAdminRole(access.role) && requestedUserId && requestedUserId !== auth.userId) {
+      if (!access.isAdmin && requestedUserId && requestedUserId !== auth.userId) {
         return c.json({ error: { code: 'forbidden', message: 'Members can only view their own usage' } }, 403)
       }
-      const userId = isWorkspaceAdminRole(access.role) ? requestedUserId : auth.userId
+      const userId = access.isAdmin ? requestedUserId : auth.userId
       const model = url.searchParams.get('model') || undefined
 
       const data = await analytics.getUsageLog({ workspaceId }, period, { page, limit, userId, model })
@@ -162,7 +139,7 @@ export function scopedAnalyticsRoutes(): Hono {
       const workspaceId = c.req.param('workspaceId')
       const auth = c.get('auth')
 
-      const access = await checkWorkspaceAnalyticsAccess(auth.userId!, workspaceId)
+      const access = await checkWorkspaceAnalyticsAccess(c, workspaceId)
       if (!access) {
         return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
       }
@@ -174,10 +151,10 @@ export function scopedAnalyticsRoutes(): Hono {
       // rows (workspaces are small); admin paginates explicitly.
       const limit = parseInt(url.searchParams.get('limit') || '500', 10)
       const requestedUserId = url.searchParams.get('userId') || undefined
-      if (!isWorkspaceAdminRole(access.role) && requestedUserId && requestedUserId !== auth.userId) {
+      if (!access.isAdmin && requestedUserId && requestedUserId !== auth.userId) {
         return c.json({ error: { code: 'forbidden', message: 'Members can only view their own usage' } }, 403)
       }
-      const userId = isWorkspaceAdminRole(access.role) ? requestedUserId : auth.userId
+      const userId = access.isAdmin ? requestedUserId : auth.userId
       const data = await analytics.getUsageSummary({ workspaceId, userId }, period, { page, limit })
       return c.json({ ok: true, data })
     } catch (error: any) {
@@ -190,7 +167,7 @@ export function scopedAnalyticsRoutes(): Hono {
       const workspaceId = c.req.param('workspaceId')
       const auth = c.get('auth')
 
-      const access = await checkWorkspaceAnalyticsAccess(auth.userId!, workspaceId)
+      const access = await checkWorkspaceAnalyticsAccess(c, workspaceId)
       if (!access) {
         return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
       }
@@ -204,7 +181,7 @@ export function scopedAnalyticsRoutes(): Hono {
       const topN = parseInt(url.searchParams.get('topN') || '8', 10)
       const scope = {
         workspaceId,
-        ...(!isWorkspaceAdminRole(access.role)
+        ...(!access.isAdmin
           ? { userId: auth.userId }
           : {}),
       }
@@ -225,7 +202,7 @@ export function scopedAnalyticsRoutes(): Hono {
       const workspaceId = c.req.param('workspaceId')
       const auth = c.get('auth')
 
-      const access = await checkWorkspaceAnalyticsAccess(auth.userId!, workspaceId)
+      const access = await checkWorkspaceAnalyticsAccess(c, workspaceId)
       if (!access) {
         return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
       }
@@ -233,10 +210,10 @@ export function scopedAnalyticsRoutes(): Hono {
       const url = new URL(c.req.url)
       const period = (url.searchParams.get('period') || '30d') as AnalyticsPeriod
       const requestedUserId = url.searchParams.get('userId') || undefined
-      if (!isWorkspaceAdminRole(access.role) && requestedUserId && requestedUserId !== auth.userId) {
+      if (!access.isAdmin && requestedUserId && requestedUserId !== auth.userId) {
         return c.json({ error: { code: 'forbidden', message: 'Members can only view their own usage' } }, 403)
       }
-      const userId = isWorkspaceAdminRole(access.role) ? requestedUserId : auth.userId
+      const userId = access.isAdmin ? requestedUserId : auth.userId
       const model = url.searchParams.get('model') || undefined
       const limit = Math.min(parseInt(url.searchParams.get('limit') || '5000', 10), 10000)
 
@@ -283,7 +260,7 @@ export function scopedAnalyticsRoutes(): Hono {
     try {
       const workspaceId = c.req.param('workspaceId')
       const auth = c.get('auth')
-      const access = await checkWorkspaceAnalyticsAccess(auth.userId!, workspaceId)
+      const access = await checkWorkspaceAnalyticsAccess(c, workspaceId)
       if (!access) {
         return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
       }
@@ -291,12 +268,12 @@ export function scopedAnalyticsRoutes(): Hono {
       const url = new URL(c.req.url)
       const period = (url.searchParams.get('period') || '30d') as AnalyticsPeriod
       const requestedUserId = url.searchParams.get('userId') || undefined
-      if (!isWorkspaceAdminRole(access.role) && requestedUserId && requestedUserId !== auth.userId) {
+      if (!access.isAdmin && requestedUserId && requestedUserId !== auth.userId) {
         return c.json({ error: { code: 'forbidden', message: 'Members can only view their own usage' } }, 403)
       }
 
       const data = await analytics.getMemberInsights(workspaceId, period, {
-        userId: isWorkspaceAdminRole(access.role) ? requestedUserId : auth.userId,
+        userId: access.isAdmin ? requestedUserId : auth.userId,
       })
       return c.json({ ok: true, data })
     } catch (error: any) {
@@ -311,14 +288,14 @@ export function scopedAnalyticsRoutes(): Hono {
     try {
       const workspaceId = c.req.param('workspaceId')
       const auth = c.get('auth')
-      const access = await checkWorkspaceAnalyticsAccess(auth.userId!, workspaceId)
+      const access = await checkWorkspaceAnalyticsAccess(c, workspaceId)
       if (!access) {
         return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
       }
 
       const url = new URL(c.req.url)
       const requestedUserId = url.searchParams.get('userId') || undefined
-      const isAdmin = isWorkspaceAdminRole(access.role)
+      const isAdmin = access.isAdmin
       if (!isAdmin && requestedUserId && requestedUserId !== auth.userId) {
         return c.json({ error: { code: 'forbidden', message: 'Members can only view their own activity' } }, 403)
       }
@@ -357,10 +334,9 @@ export function scopedAnalyticsRoutes(): Hono {
   router.get('/workspaces/:workspaceId/analytics/growth', requireBusinessPlan, async (c) => {
     try {
       const workspaceId = c.req.param('workspaceId')
-      const auth = c.get('auth')
       const period = (new URL(c.req.url).searchParams.get('period') || '30d') as AnalyticsPeriod
 
-      if (!await checkWorkspaceAccess(auth.userId!, workspaceId)) {
+      if (!await checkWorkspaceAccess(c, workspaceId)) {
         return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
       }
 
@@ -377,14 +353,14 @@ export function scopedAnalyticsRoutes(): Hono {
       const auth = c.get('auth')
       const period = (new URL(c.req.url).searchParams.get('period') || '30d') as AnalyticsPeriod
 
-      const access = await checkWorkspaceAnalyticsAccess(auth.userId!, workspaceId)
+      const access = await checkWorkspaceAnalyticsAccess(c, workspaceId)
       if (!access) {
         return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
       }
 
       const data = await analytics.getUsageAnalytics({
         workspaceId,
-        ...(!isWorkspaceAdminRole(access.role) ? { userId: auth.userId } : {}),
+        ...(!access.isAdmin ? { userId: auth.userId } : {}),
       }, period)
       return c.json({ ok: true, data })
     } catch (error: any) {
@@ -395,10 +371,9 @@ export function scopedAnalyticsRoutes(): Hono {
   router.get('/workspaces/:workspaceId/analytics/chat', requireBusinessPlan, async (c) => {
     try {
       const workspaceId = c.req.param('workspaceId')
-      const auth = c.get('auth')
       const period = (new URL(c.req.url).searchParams.get('period') || '30d') as AnalyticsPeriod
 
-      if (!await checkWorkspaceAccess(auth.userId!, workspaceId)) {
+      if (!await checkWorkspaceAccess(c, workspaceId)) {
         return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
       }
 
@@ -412,13 +387,18 @@ export function scopedAnalyticsRoutes(): Hono {
   router.get('/workspaces/:workspaceId/analytics/projects', requireBusinessPlan, async (c) => {
     try {
       const workspaceId = c.req.param('workspaceId')
-      const auth = c.get('auth')
 
-      if (!await checkWorkspaceAccess(auth.userId!, workspaceId)) {
+      const access = await checkWorkspaceAnalyticsAccess(c, workspaceId)
+      if (!access) {
         return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
       }
 
-      const data = await analytics.getProjectAnalytics({ workspaceId })
+      const data = access.isAdmin
+        ? await analytics.getProjectAnalytics({ workspaceId })
+        : await analytics.getProjectAnalytics(
+          { workspaceId },
+          { projectWhere: await accessibleProjectsWhere(principalOf(c), workspaceId) },
+        )
       return c.json({ ok: true, data })
     } catch (error: any) {
       return c.json({ error: { code: 'analytics_failed', message: error.message } }, 500)
@@ -428,9 +408,8 @@ export function scopedAnalyticsRoutes(): Hono {
   router.get('/workspaces/:workspaceId/analytics/billing', requireBusinessPlan, async (c) => {
     try {
       const workspaceId = c.req.param('workspaceId')
-      const auth = c.get('auth')
 
-      if (!await checkWorkspaceAccess(auth.userId!, workspaceId)) {
+      if (!await checkWorkspaceAccess(c, workspaceId)) {
         return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
       }
 
@@ -444,10 +423,9 @@ export function scopedAnalyticsRoutes(): Hono {
   router.get('/workspaces/:workspaceId/analytics/activity-timeseries', requireBusinessPlan, async (c) => {
     try {
       const workspaceId = c.req.param('workspaceId')
-      const auth = c.get('auth')
       const period = (new URL(c.req.url).searchParams.get('period') || '30d') as AnalyticsPeriod
 
-      if (!await checkWorkspaceAccess(auth.userId!, workspaceId)) {
+      if (!await checkWorkspaceAccess(c, workspaceId)) {
         return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
       }
 
@@ -461,10 +439,9 @@ export function scopedAnalyticsRoutes(): Hono {
   router.get('/workspaces/:workspaceId/analytics/active-users-timeseries', requireBusinessPlan, async (c) => {
     try {
       const workspaceId = c.req.param('workspaceId')
-      const auth = c.get('auth')
       const period = (new URL(c.req.url).searchParams.get('period') || '30d') as AnalyticsPeriod
 
-      if (!await checkWorkspaceAccess(auth.userId!, workspaceId)) {
+      if (!await checkWorkspaceAccess(c, workspaceId)) {
         return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
       }
 
@@ -478,10 +455,9 @@ export function scopedAnalyticsRoutes(): Hono {
   router.get('/workspaces/:workspaceId/analytics/quality-timeseries', requireBusinessPlan, async (c) => {
     try {
       const workspaceId = c.req.param('workspaceId')
-      const auth = c.get('auth')
       const period = (new URL(c.req.url).searchParams.get('period') || '30d') as AnalyticsPeriod
 
-      if (!await checkWorkspaceAccess(auth.userId!, workspaceId)) {
+      if (!await checkWorkspaceAccess(c, workspaceId)) {
         return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
       }
 
@@ -495,13 +471,12 @@ export function scopedAnalyticsRoutes(): Hono {
   router.get('/workspaces/:workspaceId/analytics/tool-calls', requireBusinessPlan, async (c) => {
     try {
       const workspaceId = c.req.param('workspaceId')
-      const auth = c.get('auth')
       const url = new URL(c.req.url)
       const period = (url.searchParams.get('period') || '30d') as AnalyticsPeriod
       const page = parseInt(url.searchParams.get('page') || '1', 10)
       const limit = parseInt(url.searchParams.get('limit') || '10', 10)
 
-      if (!await checkWorkspaceAccess(auth.userId!, workspaceId)) {
+      if (!await checkWorkspaceAccess(c, workspaceId)) {
         return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
       }
 
@@ -517,12 +492,11 @@ export function scopedAnalyticsRoutes(): Hono {
   router.get('/workspaces/:workspaceId/analytics/team-work', requireBusinessPlan, async (c) => {
     try {
       const workspaceId = c.req.param('workspaceId')
-      const auth = c.get('auth')
-      const access = await checkWorkspaceAnalyticsAccess(auth.userId!, workspaceId)
+      const access = await checkWorkspaceAnalyticsAccess(c, workspaceId)
       if (!access) {
         return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
       }
-      if (!isWorkspaceAdminRole(access.role)) {
+      if (!access.isAdmin) {
         return c.json({ error: { code: 'forbidden', message: 'Only workspace owners and admins can view team activity' } }, 403)
       }
 
@@ -541,9 +515,8 @@ export function scopedAnalyticsRoutes(): Hono {
   router.get('/projects/:projectId/analytics/overview', async (c) => {
     try {
       const projectId = c.req.param('projectId')
-      const auth = c.get('auth')
 
-      const workspaceId = await checkProjectAccess(auth.userId!, projectId)
+      const workspaceId = await checkProjectAccess(c, projectId)
       if (!workspaceId) {
         return c.json({ error: { code: 'forbidden', message: 'No access to this project' } }, 403)
       }
@@ -558,10 +531,9 @@ export function scopedAnalyticsRoutes(): Hono {
   router.get('/projects/:projectId/analytics/chat', async (c) => {
     try {
       const projectId = c.req.param('projectId')
-      const auth = c.get('auth')
       const period = (new URL(c.req.url).searchParams.get('period') || '30d') as AnalyticsPeriod
 
-      const workspaceId = await checkProjectAccess(auth.userId!, projectId)
+      const workspaceId = await checkProjectAccess(c, projectId)
       if (!workspaceId) {
         return c.json({ error: { code: 'forbidden', message: 'No access to this project' } }, 403)
       }
@@ -576,10 +548,9 @@ export function scopedAnalyticsRoutes(): Hono {
   router.get('/projects/:projectId/analytics/usage', async (c) => {
     try {
       const projectId = c.req.param('projectId')
-      const auth = c.get('auth')
       const period = (new URL(c.req.url).searchParams.get('period') || '30d') as AnalyticsPeriod
 
-      const workspaceId = await checkProjectAccess(auth.userId!, projectId)
+      const workspaceId = await checkProjectAccess(c, projectId)
       if (!workspaceId) {
         return c.json({ error: { code: 'forbidden', message: 'No access to this project' } }, 403)
       }

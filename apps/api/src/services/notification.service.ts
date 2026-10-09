@@ -103,6 +103,7 @@ export async function getWorkspaceBillingRecipients(workspaceId: string): Promis
     const members = await prisma.member.findMany({
       where: {
         workspaceId,
+        projectId: null,
         OR: [{ role: 'owner' }, { isBillingAdmin: true }],
       },
       select: { userId: true },

@@ -35,6 +35,7 @@ const PACKAGES: readonly string[] = [
   'apps/mobile',
   'packages/agent-runtime',
   'packages/agent',
+  'packages/authz',
   'packages/canvas-runtime',
   'packages/cli',
   'packages/core',

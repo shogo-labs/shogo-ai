@@ -32,6 +32,9 @@ import { auth } from "../auth"
 import { prisma } from "../lib/prisma"
 import { resolveApiKey } from "../routes/api-keys"
 import { verifyRuntimeToken } from "../lib/runtime-token"
+import type { Permission } from "@shogo/authz"
+import { authorize, decide, denialResponse, getAccess } from "../lib/authz"
+import { projectRoutePermission } from "../lib/authz/project-routes"
 
 /**
  * Auth context set by middleware
@@ -168,7 +171,7 @@ export async function authMiddleware(c: Context, next: Next) {
           select: {
             workspaceId: true,
             members: {
-              where: { role: 'owner' },
+              where: { role: { in: ['owner', 'admin'] } },
               orderBy: { createdAt: 'asc' },
               select: { userId: true },
               take: 1,
@@ -176,7 +179,7 @@ export async function authMiddleware(c: Context, next: Next) {
             workspace: {
               select: {
                 members: {
-                  where: { role: 'owner' },
+                  where: { role: 'owner', projectId: null },
                   orderBy: { createdAt: 'asc' },
                   select: { userId: true },
                   take: 1,
@@ -346,56 +349,34 @@ export async function requireAuth(c: Context, next: Next) {
   await next()
 }
 
-/**
- * Middleware that requires a specific role.
- * Use with membership checks in hooks for workspace-level authorization.
- *
- * @param role - Required role (or array of acceptable roles)
- */
-export function requireRole(role: string | string[]) {
-  const roles = Array.isArray(role) ? role : [role]
-
-  return async (c: Context, next: Next) => {
-    const auth = c.get("auth")
-
-    if (!auth?.isAuthenticated) {
-      return c.json(
-        { error: { code: "unauthorized", message: "Authentication required" } },
-        401
-      )
-    }
-
-    // Role checking is done at the hook level with workspace membership
-    // This middleware just ensures auth context exists
-    // Actual role validation happens in beforeList/beforeGet hooks
-
-    await next()
-  }
+/** Request path after `/api/projects/:projectId` (e.g. `/publish`). */
+function projectSubpath(path: string, projectId: string): string {
+  const marker = `/projects/${projectId}`
+  const at = path.indexOf(marker)
+  if (at < 0) return ''
+  return path.slice(at + marker.length)
 }
 
 /**
- * Middleware that verifies the authenticated user has access to the
- * project specified by the `:projectId` route parameter.
- *
- * Access is granted if the user is a member of the project's workspace,
- * or if the user has the super_admin role.
+ * Middleware for `/api/projects/:projectId/*`: requires the permission the
+ * route declares in `PROJECT_ROUTE_RULES` (reads need `project:read`,
+ * writes `project:update` unless the table says otherwise).
  *
  * Must be applied AFTER authMiddleware and requireAuth so that
  * c.get("auth").userId is available.
  */
 export async function requireProjectAccess(c: Context, next: Next) {
   const auth = c.get("auth")
-  const userId = auth?.userId
-  if (!userId) {
+  if (!auth?.userId) {
     return c.json(
       { error: { code: "unauthorized", message: "Authentication required" } },
       401
     )
   }
 
-  // Tunnel-authenticated requests already had workspace membership verified
-  // by the cloud proxy — skip local DB membership checks.
-  if (auth?.tunnelAuthenticated) {
+  // Tunnel-authenticated requests were already authorized by the cloud
+  // proxy — skip local DB membership checks.
+  if (auth.tunnelAuthenticated) {
     await next()
     return
   }
@@ -408,57 +389,20 @@ export async function requireProjectAccess(c: Context, next: Next) {
     )
   }
 
-  // Runtime-token is project-scoped: only the token's own projectId is trusted.
-  if (auth?.via === 'runtimeToken') {
-    if (auth.projectId === projectId) {
-      // Cache the token's workspace scope for the home-region write router.
-      if (auth.workspaceId) c.set("workspaceId", auth.workspaceId)
-      await next()
-      return
-    }
+  if (auth.via === 'runtimeToken' && auth.projectId !== projectId) {
     return c.json(
       { error: { code: "forbidden", message: "Runtime token scope mismatch" } },
       403
     )
   }
 
-  // Super admins bypass project access checks.
-  // Note: runtime-token callers never reach here — the `via` branch
-  // above short-circuits them; the project-owner userId we stamp is
-  // not expected to carry super_admin role.
-  const user = await prisma.user.findUnique({
-    where: { id: userId },
-    select: { role: true },
-  })
-  if (user?.role === "super_admin") {
-    await next()
-    return
-  }
-
-  const project = await prisma.project.findUnique({
-    where: { id: projectId },
-    select: { workspaceId: true },
-  })
-  if (!project) {
-    return c.json(
-      { error: { code: "not_found", message: "Project not found" } },
-      404
-    )
-  }
-
-  const member = await prisma.member.findFirst({
-    where: { userId, workspaceId: project.workspaceId },
-  })
-  if (!member) {
-    return c.json(
-      { error: { code: "forbidden", message: "Access denied to this project" } },
-      403
-    )
-  }
+  const permission = projectRoutePermission(c.req.method, projectSubpath(c.req.path, projectId))
+  const decision = await authorize(c, permission, { projectId })
+  if (!decision.ok) return denialResponse(c, decision)
 
   // Cache the resolved workspace so the home-region write router can reuse it
   // without a second project lookup.
-  c.set("workspaceId", project.workspaceId)
+  if (decision.access.workspaceId) c.set("workspaceId", decision.access.workspaceId)
   await next()
 }
 
@@ -521,12 +465,12 @@ export type AuthorizeProjectResult =
   | { ok: false; status: 400 | 401 | 403 | 404; code: string; message: string }
 
 /**
- * Verify the authenticated caller has access to `projectId`.
+ * Verify the authenticated caller holds `permission` on `projectId`.
  *
- * - API-key callers: project.workspaceId must match auth.workspaceId.
- * - Runtime-token callers: authCtx.projectId must match the requested projectId.
- * - Session callers: caller must be a member of project.workspaceId.
- * - Tunnel callers: trusted (cloud proxy already verified membership).
+ * - API-key callers: the key owner's current access, inside the key's workspace.
+ * - Runtime-token callers: only the token's own project.
+ * - Session callers: effective workspace/project role (see `@shogo/authz`).
+ * - Tunnel callers: trusted (cloud proxy already authorized them).
  *
  * Returns a structured result instead of throwing / responding so
  * handlers can shape their own error envelope.
@@ -534,6 +478,7 @@ export type AuthorizeProjectResult =
 export async function authorizeProject(
   c: Context,
   projectId: string,
+  permission: Permission,
 ): Promise<AuthorizeProjectResult> {
   const authCtx = c.get('auth')
   if (!authCtx?.isAuthenticated || !authCtx.userId) {
@@ -553,63 +498,15 @@ export async function authorizeProject(
     }
   }
 
-  const project = await prisma.project.findUnique({
-    where: { id: projectId },
-    select: { id: true, workspaceId: true },
-  })
-  if (!project) {
-    return {
-      ok: false,
-      status: 404,
-      code: 'not_found',
-      message: 'Project not found',
-    }
+  const access = await getAccess(c, { projectId })
+  if (!access.exists || !access.workspaceId) {
+    return { ok: false, status: 404, code: 'not_found', message: 'Project not found' }
   }
-
-  if (authCtx.via === 'apiKey') {
-    if (!authCtx.workspaceId || authCtx.workspaceId !== project.workspaceId) {
-      return {
-        ok: false,
-        status: 403,
-        code: 'forbidden',
-        message: 'Project is not in this API key\'s workspace',
-      }
-    }
-    return { ok: true, workspaceId: project.workspaceId, projectId: project.id }
+  // API keys outside their workspace and runtime tokens for another project
+  // resolve to no access, so they get the same 404 as a missing project.
+  const decision = await decide(access, permission, authCtx, `${c.req.method} ${c.req.path}`)
+  if (!decision.ok) {
+    return { ok: false, status: decision.status, code: decision.code, message: decision.message }
   }
-
-  if (authCtx.via === 'runtimeToken') {
-    // Runtime tokens are per-project capabilities; only the token's own
-    // projectId is trusted. No workspace/membership check needed because
-    // the token itself is the capability, derived from platform signing
-    // material + the projectId.
-    if (authCtx.projectId !== project.id) {
-      return {
-        ok: false,
-        status: 403,
-        code: 'forbidden',
-        message: 'Runtime token scope mismatch',
-      }
-    }
-    return { ok: true, workspaceId: project.workspaceId, projectId: project.id }
-  }
-
-  if (authCtx.tunnelAuthenticated) {
-    return { ok: true, workspaceId: project.workspaceId, projectId: project.id }
-  }
-
-  // Session / other: verify workspace membership.
-  const member = await prisma.member.findFirst({
-    where: { userId: authCtx.userId, workspaceId: project.workspaceId },
-    select: { id: true },
-  })
-  if (!member) {
-    return {
-      ok: false,
-      status: 403,
-      code: 'forbidden',
-      message: 'Access denied to this project',
-    }
-  }
-  return { ok: true, workspaceId: project.workspaceId, projectId: project.id }
+  return { ok: true, workspaceId: access.workspaceId, projectId }
 }
