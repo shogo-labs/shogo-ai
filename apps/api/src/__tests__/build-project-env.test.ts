@@ -137,6 +137,7 @@ const ENV_KEYS = [
   'OTEL_EXPORTER_OTLP_ENDPOINT',
   'SIGNOZ_INGESTION_KEY',
   'BETTER_AUTH_URL',
+  'SECRETS_ENCRYPTION_KEY',
 ] as const
 
 beforeEach(() => {
@@ -267,6 +268,23 @@ describe('buildProjectEnv — proxy URLs', () => {
     process.env.SHOGO_PUBLIC_API_URL = 'https://studio.shogo.ai'
     const env = await buildProjectEnv('proj-metal-durability', { forMetal: true })
     expect(env.SHOGO_DURABILITY_HOST_MEDIATED).toBe('1')
+  })
+
+  test('forMetal injects a per-project HOME_STATE_KEY derived from the master key', async () => {
+    process.env.SECRETS_ENCRYPTION_KEY = Buffer.alloc(32, 7).toString('base64')
+    const a = await buildProjectEnv('proj-home-a', { forMetal: true })
+    const b = await buildProjectEnv('proj-home-b', { forMetal: true })
+    expect(Buffer.from(a.HOME_STATE_KEY, 'base64').length).toBe(32)
+    expect(a.HOME_STATE_KEY_VERSION).toBe('1')
+    expect(a.HOME_STATE_KEY).not.toBe(b.HOME_STATE_KEY)
+    expect(a.HOME_STATE_KEY).not.toBe(process.env.SECRETS_ENCRYPTION_KEY)
+    expect((await buildProjectEnv('proj-home-a', { forMetal: true })).HOME_STATE_KEY).toBe(a.HOME_STATE_KEY)
+  })
+
+  test('no HOME_STATE_KEY without a master key, or off metal', async () => {
+    expect((await buildProjectEnv('proj-home-c', { forMetal: true })).HOME_STATE_KEY).toBeUndefined()
+    process.env.SECRETS_ENCRYPTION_KEY = Buffer.alloc(32, 7).toString('base64')
+    expect((await buildProjectEnv('proj-home-d')).HOME_STATE_KEY).toBeUndefined()
   })
 
   test('non-metal callers do not set SHOGO_DURABILITY_HOST_MEDIATED', async () => {

@@ -17,7 +17,7 @@
  */
 
 import { execFileSync } from 'child_process'
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import {
@@ -27,6 +27,7 @@ import {
   packRepoArchive,
   seedRepoIfAbsent,
 } from '../../../../packages/shared-runtime/src/repo-store'
+import { handleExportHome, handleHydrateHome } from '../../../../packages/agent-runtime/src/home-state-routes'
 import { config, type MetalConfig } from '../config'
 import type { FcSnapshot, FcVmHandle } from '../firecracker-vm-manager'
 
@@ -109,6 +110,10 @@ export type GuestKind =
  */
 export class FakeGuest {
   readonly ws: string
+  /** The guest's HOME (`/app` in a real VM), kept beside the workspace so snapshots carry it. */
+  readonly home: string
+  /** Env from the last `/pool/assign` or `/pool/refresh-env`; feeds the real home-state handlers. */
+  env: Record<string, string> = {}
   readonly adopts: Array<Promise<unknown>> = []
   alive = true
   private server: ReturnType<typeof Bun.serve>
@@ -128,8 +133,11 @@ export class FakeGuest {
     opts: { gitReady?: boolean } = {},
   ) {
     this.ws = mkdtempSync(join(tmpdir(), 'fake-guest-'))
+    this.home = homeOf(this.ws)
+    mkdirSync(this.home, { recursive: true })
     if ('fromDir' in init) {
       cpSync(init.fromDir, this.ws, { recursive: true })
+      if (existsSync(homeOf(init.fromDir))) cpSync(homeOf(init.fromDir), this.home, { recursive: true })
     } else {
       for (const [rel, body] of Object.entries(init.template)) writeRel(this.ws, rel, body)
       execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: this.ws })
@@ -171,6 +179,22 @@ export class FakeGuest {
     if (this.alive) this.server.stop(true)
     this.alive = false
     rmSync(this.ws, { recursive: true, force: true })
+    rmSync(this.home, { recursive: true, force: true })
+  }
+
+  /** Something the agent left in its home directory (`~/<rel>`). */
+  writeHome(rel: string, body: string, mode = 0o644): void {
+    writeRel(this.home, rel, body)
+    chmodSync(join(this.home, rel), mode)
+  }
+
+  readHome(rel: string): string | null {
+    const p = join(this.home, rel)
+    return existsSync(p) ? readFileSync(p, 'utf-8') : null
+  }
+
+  private homeEnv(): NodeJS.ProcessEnv {
+    return { ...this.env, SHOGO_HOME_STATE_DIR: this.home }
   }
 
   /** Guest paths as the host sends them: absolute `/app/workspace/...` or workspace-relative. */
@@ -182,8 +206,15 @@ export class FakeGuest {
 
   private async handle(req: Request): Promise<Response> {
     const path = new URL(req.url).pathname
+    // Binary bodies: the real guest handlers, before anything parses JSON.
+    if (path === '/pool/export-home') return handleExportHome(req, { env: this.homeEnv(), stageDir: () => tmpdir() })
+    if (path === '/pool/hydrate-home') return handleHydrateHome(req, { env: this.homeEnv() })
     const body: any = await req.json().catch(() => ({}))
     switch (path) {
+      case '/pool/assign':
+      case '/pool/refresh-env':
+        this.env = { ...this.env, ...(body.env ?? {}), PROJECT_ID: body.projectId ?? this.env.PROJECT_ID }
+        return Response.json({ ok: true })
       case '/pool/hydrate-url': {
         const res = await fetch(body.url)
         if (!res.ok) return new Response(`pull failed ${res.status}`, { status: 502 })
@@ -356,6 +387,7 @@ export class FakeHost {
         const snapshotPath = join(this.dir, `${h.id}-${Date.now()}.vmstate`)
         const copy = join(this.dir, `${h.id}-${Date.now()}-ws`)
         cpSync(guest.ws, copy, { recursive: true })
+        cpSync(guest.home, homeOf(copy), { recursive: true })
         this.snapshotDirs.set(snapshotPath, copy)
         guest.stop()
         this.guests.delete(h.id)
@@ -430,6 +462,11 @@ export function git(dir: string, ...args: string[]): string {
 export function gitCommitAll(dir: string, message: string): void {
   git(dir, 'add', '-A')
   git(dir, 'commit', '-q', '--allow-empty', '-m', message)
+}
+
+/** Where a guest workspace's HOME lives: a sibling, so it is never inside a source export. */
+function homeOf(ws: string): string {
+  return `${ws}-home`
 }
 
 export function writeRel(dir: string, rel: string, body: string): void {

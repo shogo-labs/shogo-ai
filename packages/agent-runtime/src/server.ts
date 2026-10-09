@@ -127,6 +127,7 @@ import {
 } from './writable-state'
 import { spoolDir, spoolPath, spooledFileResponse, sweepSpool } from './spool'
 import { extractTarFromUrl, extractTarStream, redactUrls } from './tar-stream'
+import { handleExportHome, handleHydrateHome } from './home-state-routes'
 import { runtimeDiagnosticsRoutes } from './runtime-diagnostics-routes'
 import { runtimeLspRoutes } from './runtime-lsp-routes'
 import { computePublishedReadiness } from './published-readiness'
@@ -3397,6 +3398,11 @@ app.post('/pool/export-data', async (c) => {
     await fsp.rm(stage, { recursive: true, force: true }).catch(() => {})
   }
 })
+
+// Encrypted HOME credentials/config (~/.ssh, ~/.oci, ~/.kube, ~/.config). Same
+// host-pulls/host-pushes model as writable state; see home-state.ts.
+app.post('/pool/export-home', (c) => handleExportHome(c.req.raw, { stageDir: () => spoolDir() }))
+app.post('/pool/hydrate-home', (c) => handleHydrateHome(c.req.raw))
 
 /**
  * Every PreviewManager this runtime has built, keyed by project id. The root
