@@ -20,9 +20,33 @@ import { afterEach, beforeEach, describe, test, expect, mock } from 'bun:test'
 import { Hono } from 'hono'
 
 const resolveApiKeyMock = mock(async (_key: string) => null as any)
+const findProjectMock = mock(async (_args: any) => null as any)
+const getSocialContentProviderMock = mock(async () => {
+  throw new Error('social provider not stubbed')
+})
+
+class SocialProviderErrorMock extends Error {
+  code: string
+  constructor(code: string, message: string) {
+    super(message)
+    this.code = code
+    this.name = 'SocialProviderError'
+  }
+}
 
 mock.module('../routes/api-keys', () => ({
   resolveApiKey: resolveApiKeyMock,
+}))
+
+mock.module('../lib/prisma', () => ({
+  prisma: {
+    project: { findUnique: (args: any) => findProjectMock(args) },
+  },
+}))
+
+mock.module('../services/social-content', () => ({
+  getSocialContentProvider: () => getSocialContentProviderMock(),
+  SocialProviderError: SocialProviderErrorMock,
 }))
 
 const ENV_KEYS = [
@@ -35,6 +59,7 @@ const ENV_KEYS = [
   'LOCAL_LLM_BASE_URL',
   'LOCAL_EMBEDDING_MODEL',
   'LOCAL_EMBEDDING_DIMENSIONS',
+  'SOCIAL_TOOL_DAILY_LIMIT',
 ] as const
 let savedEnv: Record<string, string | undefined> = {}
 
@@ -47,6 +72,12 @@ beforeEach(() => {
   process.env.AI_PROXY_SECRET = 'tools-proxy-test-secret'
   resolveApiKeyMock.mockClear()
   resolveApiKeyMock.mockImplementation(async () => null)
+  findProjectMock.mockReset()
+  findProjectMock.mockImplementation(async () => null)
+  getSocialContentProviderMock.mockReset()
+  getSocialContentProviderMock.mockImplementation(async () => {
+    throw new Error('social provider not stubbed')
+  })
 })
 
 afterEach(() => {
@@ -383,6 +414,192 @@ describe('Tools Proxy', () => {
       expect(res.status).toBe(200)
       expect(calls[0].url).toBe('https://api.openai.com/v1/chat/completions')
       expect(calls[0].init.headers.get('Authorization')).toBe('Bearer sk-openai-real')
+    })
+  })
+
+  describe('Social media lookup', () => {
+    function enableSocial() {
+      findProjectMock.mockImplementation(async () => ({
+        settings: { socialMediaEnabled: true },
+      }))
+    }
+
+    function stubProvider(overrides: Record<string, unknown> = {}) {
+      const getProfile = mock(async () => ({
+        providerUserId: '99',
+        bio: 'hello',
+        displayName: 'Nike',
+      }))
+      const listRecentPosts = mock(async () => ([
+        {
+          providerPostId: 'p1',
+          url: 'https://www.tiktok.com/@nike/video/1',
+          caption: 'run',
+          postedAt: new Date('2026-01-02T03:04:05.000Z'),
+          views: 10,
+          likes: 2,
+          comments: 1,
+          shares: 0,
+        },
+      ]))
+      getSocialContentProviderMock.mockImplementation(async () => ({
+        name: 'ensembledata',
+        getProfile,
+        listRecentPosts,
+        ...overrides,
+      }))
+      return { getProfile, listRecentPosts }
+    }
+
+    beforeEach(async () => {
+      const { resetSocialToolQuotaForTests } = await import('../routes/tools-proxy')
+      resetSocialToolQuotaForTests()
+    })
+
+    test('rejects requests without a token', async () => {
+      const app = await makeApp()
+      const res = await app.request('/tools/social/tiktok/profile', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ handle: 'nike' }),
+      })
+      expect(res.status).toBe(401)
+    })
+
+    test('returns 403 when the project has social media switched off', async () => {
+      findProjectMock.mockImplementation(async () => ({ settings: {} }))
+      stubProvider()
+      const app = await makeApp()
+      const token = await makeToken()
+      const res = await app.request('/tools/social/tiktok/profile', {
+        method: 'POST',
+        headers: { 'x-api-key': token, 'content-type': 'application/json' },
+        body: JSON.stringify({ handle: 'nike' }),
+      })
+      expect(res.status).toBe(403)
+      expect(getSocialContentProviderMock).not.toHaveBeenCalled()
+    })
+
+    test('returns 403 when that platform is switched off', async () => {
+      findProjectMock.mockImplementation(async () => ({
+        settings: { socialMediaEnabled: true, socialInstagramEnabled: false },
+      }))
+      stubProvider()
+      const app = await makeApp()
+      const token = await makeToken()
+      const res = await app.request('/tools/social/instagram/posts', {
+        method: 'POST',
+        headers: { 'x-api-key': token, 'content-type': 'application/json' },
+        body: JSON.stringify({ handle: '@nike' }),
+      })
+      expect(res.status).toBe(403)
+      expect((await res.json() as any).error).toContain('instagram')
+      expect(getSocialContentProviderMock).not.toHaveBeenCalled()
+    })
+
+    test('returns a profile and serializes post timestamps as ISO strings', async () => {
+      enableSocial()
+      const { getProfile, listRecentPosts } = stubProvider()
+      const app = await makeApp()
+      const token = await makeToken()
+
+      const profile = await app.request('/tools/social/tiktok/profile', {
+        method: 'POST',
+        headers: { 'x-api-key': token, 'content-type': 'application/json' },
+        body: JSON.stringify({ handle: '@Nike' }),
+      })
+      expect(profile.status).toBe(200)
+      expect(await profile.json()).toEqual({
+        platform: 'tiktok',
+        handle: 'Nike',
+        providerUserId: '99',
+        bio: 'hello',
+        displayName: 'Nike',
+      })
+      expect(getProfile).toHaveBeenCalledWith('tiktok', 'Nike')
+
+      const posts = await app.request('/tools/social/tiktok/posts', {
+        method: 'POST',
+        headers: { 'x-api-key': token, 'content-type': 'application/json' },
+        body: JSON.stringify({ handle: 'nike', limit: 999 }),
+      })
+      expect(posts.status).toBe(200)
+      const body = await posts.json() as any
+      expect(body.posts[0].postedAt).toBe('2026-01-02T03:04:05.000Z')
+      expect(listRecentPosts).toHaveBeenCalledWith('tiktok', 'nike', 50)
+    })
+
+    test('maps provider errors onto HTTP status codes', async () => {
+      enableSocial()
+      const cases: Array<[string, number]> = [
+        ['not_found', 404],
+        ['rate_limited', 429],
+        ['not_configured', 503],
+        ['bad_credentials', 503],
+        ['upstream', 502],
+      ]
+      const app = await makeApp()
+      const token = await makeToken()
+      for (const [code, status] of cases) {
+        getSocialContentProviderMock.mockImplementation(async () => ({
+          name: 'ensembledata',
+          getProfile: async () => {
+            throw new SocialProviderErrorMock(code, `failed: ${code}`)
+          },
+          listRecentPosts: async () => [],
+        }))
+        const res = await app.request('/tools/social/instagram/profile', {
+          method: 'POST',
+          headers: { 'x-api-key': token, 'content-type': 'application/json' },
+          body: JSON.stringify({ handle: 'nike' }),
+        })
+        expect(res.status).toBe(status)
+        expect((await res.json() as any).code).toBe(code)
+      }
+    })
+
+    test('enforces the per-project daily cap', async () => {
+      enableSocial()
+      stubProvider()
+      process.env.SOCIAL_TOOL_DAILY_LIMIT = '1'
+      const app = await makeApp()
+      const token = await makeToken()
+      const call = () => app.request('/tools/social/tiktok/profile', {
+        method: 'POST',
+        headers: { 'x-api-key': token, 'content-type': 'application/json' },
+        body: JSON.stringify({ handle: 'nike' }),
+      })
+      expect((await call()).status).toBe(200)
+      const limited = await call()
+      expect(limited.status).toBe(429)
+      expect((await limited.json() as any).limit).toBe(1)
+    })
+
+    test('forwards to Shogo Cloud after the local capability check passes', async () => {
+      enableSocial()
+      stubProvider()
+      process.env.SHOGO_API_KEY = 'shogo-cloud-key'
+      process.env.SHOGO_CLOUD_URL = 'https://cloud.example'
+      const calls: any[] = []
+      globalThis.fetch = (async (url: string, init: any) => {
+        calls.push({ url, init })
+        return Response.json({ ok: true, forwarded: true })
+      }) as any
+
+      const app = await makeApp()
+      const token = await makeToken()
+      const res = await app.request('/tools/social/tiktok/profile', {
+        method: 'POST',
+        headers: { 'x-api-key': token, 'content-type': 'application/json' },
+        body: JSON.stringify({ handle: '@nike', limit: 5 }),
+      })
+
+      expect(res.status).toBe(200)
+      expect(calls[0].url).toBe('https://cloud.example/api/tools/social/tiktok/profile')
+      expect(calls[0].init.headers.get('Authorization')).toBe('Bearer shogo-cloud-key')
+      const forwardedBody = await new Response(calls[0].init.body).text()
+      expect(JSON.parse(forwardedBody)).toEqual({ handle: 'nike', limit: 5 })
+      expect(getSocialContentProviderMock).not.toHaveBeenCalled()
     })
   })
 })

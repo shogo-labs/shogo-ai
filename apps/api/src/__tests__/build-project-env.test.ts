@@ -517,7 +517,9 @@ describe('buildProjectEnv — project-derived fields', () => {
     }))
     const env = await buildProjectEnv('proj-flags-string-settings')
     expect(env.MOUNT_WORKSPACE).toBe('false')
-    expect(env.SHOGO_GIT_WORKTREES).toBe('1')
+    // Capability toggles (including git worktrees) are pulled from
+    // Project.settings by the runtime. They are not seeded through env.
+    expect(env.SHOGO_GIT_WORKTREES).toBeUndefined()
   })
 
   test('injects SHOGO_CLOUD_SYNC_MODE for an explicit "s3" project (pod default is git_only)', async () => {

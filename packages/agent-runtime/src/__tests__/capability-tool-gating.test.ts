@@ -9,7 +9,7 @@
  */
 
 import { describe, test, expect } from 'bun:test'
-import { createTools, filterDisabledCapabilityTools, filterSubagentOnlyTools, type ToolContext } from '../gateway-tools'
+import { createTools, enabledSocialPlatforms, filterDisabledCapabilityTools, filterSubagentOnlyTools, type ToolContext } from '../gateway-tools'
 import type { GatewayConfig } from '../gateway'
 
 function makeConfig(overrides: Partial<GatewayConfig> = {}): GatewayConfig {
@@ -112,11 +112,51 @@ describe('filterDisabledCapabilityTools', () => {
     expect(n.has('write_file')).toBe(true)
   })
 
+  test('social_media is off unless the master switch is on', () => {
+    expect(names(makeConfig()).has('social_media')).toBe(false)
+    expect(names(makeConfig({ socialMediaEnabled: true })).has('social_media')).toBe(true)
+  })
+
+  test('social_media is removed when every platform is off', () => {
+    const n = names(makeConfig({
+      socialMediaEnabled: true,
+      socialInstagramEnabled: false,
+      socialTiktokEnabled: false,
+    }))
+    expect(n.has('social_media')).toBe(false)
+  })
+
+  test('a disabled platform is left out of the tool schema', () => {
+    const config = makeConfig({ socialMediaEnabled: true, socialTiktokEnabled: false })
+    const tool = createTools(makeCtx(config)).find((t) => t.name === 'social_media')
+    expect(tool).toBeTruthy()
+    expect(enabledSocialPlatforms(config)).toEqual(['instagram'])
+    const platform = (tool!.parameters as { properties?: { platform?: { const?: string; anyOf?: Array<{ const?: string }> } } }).properties?.platform
+    const values = platform?.const
+      ? [platform.const]
+      : (platform?.anyOf ?? []).map((entry) => entry.const).filter((value): value is string => !!value)
+    expect(values).toEqual(['instagram'])
+    expect(tool!.description).toContain('instagram')
+    expect(tool!.description).not.toContain('tiktok')
+  })
+
+  test('execute rejects a platform the config has turned off', async () => {
+    const config = makeConfig({ socialMediaEnabled: true, socialInstagramEnabled: false })
+    const tool = createTools(makeCtx(config)).find((t) => t.name === 'social_media')!
+    const result = await tool.execute('call-1', {
+      platform: 'instagram',
+      action: 'profile',
+      handle: 'nike',
+    })
+    expect(result.details.error).toContain('instagram')
+    expect(result.details.error).toContain('not enabled')
+  })
+
   test('returns the same array reference when nothing is disabled (no-op fast path)', () => {
-    // `gitWorktreesEnabled` is opt-in beta: leaving it unset gates `worktree_list`,
-    // which by itself defeats the fast path. Turn it on so genuinely nothing is
-    // disabled and the identity shortcut can fire.
-    const config = makeConfig({ gitWorktreesEnabled: true })
+    // `gitWorktreesEnabled` and `socialMediaEnabled` are opt-in: leaving them
+    // unset gates `worktree_list` and `social_media`, which defeats the fast
+    // path. Turn both on so genuinely nothing is disabled.
+    const config = makeConfig({ gitWorktreesEnabled: true, socialMediaEnabled: true })
     const tools = createTools(makeCtx(config))
     expect(filterDisabledCapabilityTools(tools, config)).toBe(tools)
   })

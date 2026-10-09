@@ -11,6 +11,14 @@ export {
 } from './s3-sync'
 
 export {
+  CAPABILITY_KEYS,
+  mergeCapabilitySettingsIntoConfig,
+  normalizeCapabilitySettings,
+  type CapabilityKey,
+  type CapabilitySettings,
+} from './capability-settings'
+
+export {
   DEFAULT_SHOGO_AGENT_EMAIL,
   DEFAULT_SHOGO_AGENT_NAME,
   SHOGO_PR_FOOTER_MARKER,

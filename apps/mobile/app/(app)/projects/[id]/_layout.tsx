@@ -645,6 +645,10 @@ export default observer(function ProjectLayout() {
     (canvasEnabled ? "canvas" : "none");
   const activeMode = rawMode === "app" ? "none" : rawMode;
 
+  // Defaults match `normalizeCapabilitySettings` in
+  // @shogo/shared-runtime/capability-settings. Mobile does not depend on
+  // that package, so the same rules are applied inline: most toggles are
+  // on unless explicitly false; git worktrees and social media are opt-in.
   const capabilitySettings = useMemo(
     () => ({
       canvasEnabled: projectSettings.canvasEnabled !== false,
@@ -662,6 +666,9 @@ export default observer(function ProjectLayout() {
       channelsEnabled: projectSettings.channelsEnabled !== false,
       // Beta, opt-in: off unless explicitly enabled.
       gitWorktreesEnabled: projectSettings.gitWorktreesEnabled === true,
+      socialMediaEnabled: projectSettings.socialMediaEnabled === true,
+      socialInstagramEnabled: projectSettings.socialInstagramEnabled !== false,
+      socialTiktokEnabled: projectSettings.socialTiktokEnabled !== false,
     }),
     [projectSettings]
   );
