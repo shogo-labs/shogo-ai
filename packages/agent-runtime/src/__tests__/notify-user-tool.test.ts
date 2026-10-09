@@ -18,6 +18,12 @@ const TEST_DIR = '/tmp/test-notify-user-tool'
 
 let fetchSpy: ReturnType<typeof spyOn>
 let lastFetchArgs: any[] = []
+// Quiet hours come from the project's agent config in the database.
+let quietHoursFixture: { start: string | null; end: string | null; timezone: string | null } = {
+  start: null,
+  end: null,
+  timezone: null,
+}
 
 // Env must be set before createTools() runs so `notify_user` is registered and
 // `workspaceMetaFetch` can resolve a workspace id + API URL.
@@ -44,7 +50,30 @@ beforeEach(() => {
   rmSync(TEST_DIR, { recursive: true, force: true })
   mkdirSync(TEST_DIR, { recursive: true })
   lastFetchArgs = []
+  quietHoursFixture = { start: null, end: null, timezone: null }
   fetchSpy = spyOn(global, 'fetch').mockImplementation(async (...args: any[]) => {
+    if (String(args[0]).includes('/api/internal/projects/')) {
+      return new Response(
+        JSON.stringify({
+          ok: true,
+          project: {
+            id: 'proj-1',
+            agent: {
+              heartbeatEnabled: true,
+              heartbeatInterval: 1800,
+              modelName: 'm',
+              modelProvider: 'p',
+              quietHoursStart: quietHoursFixture.start,
+              quietHoursEnd: quietHoursFixture.end,
+              quietHoursTimezone: quietHoursFixture.timezone,
+              nextHeartbeatAt: null,
+              lastHeartbeatAt: null,
+            },
+          },
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      )
+    }
     lastFetchArgs = args
     return new Response(JSON.stringify({ ok: true, created: true, id: 'n1' }), {
       status: 200,
@@ -67,8 +96,6 @@ function ctx(overrides?: Partial<ToolContext>): ToolContext {
     workspaceId: 'ws-1',
     userId: 'u1',
     config: {
-      heartbeatInterval: 1800,
-      heartbeatEnabled: true,
       channels: [],
       model: { provider: 'anthropic', name: 'claude-sonnet-4-5' },
     } as any,
@@ -103,7 +130,6 @@ describe('notify_user tool', () => {
       dedupeKey: 'rem-1:2026-09-26T09:00:00Z',
     })) as any
 
-    expect(fetchSpy).toHaveBeenCalledTimes(1)
     const [url, init] = lastFetchArgs
     expect(String(url)).toBe('http://api.test/api/internal/reminders/notify')
     expect(init.method).toBe('POST')
@@ -123,11 +149,7 @@ describe('notify_user tool', () => {
 
   test('returns a quiet-hours skip instead of firing during quiet hours', async () => {
     // A window that covers the whole day so the assertion is timezone-agnostic.
-    writeFileSync(
-      join(TEST_DIR, 'config.json'),
-      JSON.stringify({ quietHours: { start: '00:00', end: '23:59', timezone: 'UTC' } }),
-      'utf-8',
-    )
+    quietHoursFixture = { start: '00:00', end: '23:59', timezone: 'UTC' }
 
     const tool = findNotifyUser(ctx())
     const { details: result } = (await tool.execute('call-2', {
@@ -136,6 +158,19 @@ describe('notify_user tool', () => {
     })) as any
 
     expect(result.skipped).toBe('quiet_hours')
-    expect(fetchSpy).not.toHaveBeenCalled()
+    // Only the quiet-hours lookup happened; nothing was sent to /reminders/notify.
+    expect(lastFetchArgs).toEqual([])
+  })
+
+  test('config.json quiet hours are ignored (the database is the source of truth)', async () => {
+    writeFileSync(
+      join(TEST_DIR, 'config.json'),
+      JSON.stringify({ quietHours: { start: '00:00', end: '23:59', timezone: 'UTC' } }),
+      'utf-8',
+    )
+    const tool = findNotifyUser(ctx())
+    const { details: result } = (await tool.execute('call-3', { title: 'Reminder', body: 'x' })) as any
+    expect(result.ok).toBe(true)
+    expect(String(lastFetchArgs[0])).toContain('/api/internal/reminders/notify')
   })
 })

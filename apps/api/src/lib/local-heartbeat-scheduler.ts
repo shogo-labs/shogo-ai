@@ -44,15 +44,16 @@ export class LocalHeartbeatScheduler extends BaseHeartbeatScheduler {
     const { prisma } = await import('./prisma')
 
     try {
-      return await prisma.agentConfig.findMany({
+      const rows = await prisma.agentConfig.findMany({
         where: {
           heartbeatEnabled: true,
-          nextHeartbeatAt: { lte: new Date() },
+          OR: [{ nextHeartbeatAt: null }, { nextHeartbeatAt: { lte: new Date() } }],
         },
         select: {
           id: true,
           projectId: true,
           heartbeatInterval: true,
+          nextHeartbeatAt: true,
           quietHoursStart: true,
           quietHoursEnd: true,
           quietHoursTimezone: true,
@@ -60,6 +61,11 @@ export class LocalHeartbeatScheduler extends BaseHeartbeatScheduler {
         orderBy: { nextHeartbeatAt: 'asc' },
         take: BATCH_SIZE,
       })
+      return rows.map(({ nextHeartbeatAt, ...row }: any) => ({
+        ...row,
+        // Enabled with no next run: give it a time instead of firing.
+        unscheduled: nextHeartbeatAt == null,
+      }))
     } catch (err: any) {
       // Local SQLite may be missing the table when running in CLI worker mode
       // before any agent has been provisioned. No-op silently in that case
@@ -112,6 +118,8 @@ export class LocalHeartbeatScheduler extends BaseHeartbeatScheduler {
           'Content-Type': 'application/json',
           'x-runtime-token': token,
         },
+        // A workspace runtime serves many projects; say which one is due.
+        body: JSON.stringify({ projectId }),
         signal: AbortSignal.timeout(TRIGGER_TIMEOUT_MS),
       })
 

@@ -14,7 +14,7 @@
     "webEnabled": false,
     "browserEnabled": true,
     "shellEnabled": true,
-    "heartbeatEnabled": false,
+    "heartbeatToolsEnabled": false,
     "imageGenEnabled": true,
     "memoryEnabled": true,
     "quickActionsEnabled": false

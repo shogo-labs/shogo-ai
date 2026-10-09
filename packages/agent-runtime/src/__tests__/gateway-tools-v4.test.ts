@@ -46,9 +46,6 @@ function makeCtx(overrides?: Partial<ToolContext>): ToolContext {
     workspaceDir: TEST_DIR,
     channels: new Map(),
     config: {
-      heartbeatInterval: 1800,
-      heartbeatEnabled: false,
-      quietHours: { start: '23:00', end: '07:00', timezone: 'UTC' },
       channels: [],
       model: { provider: 'anthropic', name: 'claude-sonnet-4-5' },
     } as any,
@@ -551,19 +548,6 @@ describe('channel_list', () => {
     const r = await tool.execute('c', {})
     expect(r).toBeTruthy()
     expect((r as any).details).toBeDefined()
-  })
-})
-
-// ---------------------------------------------------------------------------
-// heartbeat_status — no-config branch returns falsy state
-// ---------------------------------------------------------------------------
-
-describe('heartbeat_status', () => {
-  test('returns a state envelope even when config is the default', async () => {
-    const ctx = makeCtx()
-    const tool = createTools(ctx).find(t => t.name === 'heartbeat_status')!
-    const r = await tool.execute('c', {})
-    expect(r).toBeTruthy()
   })
 })
 

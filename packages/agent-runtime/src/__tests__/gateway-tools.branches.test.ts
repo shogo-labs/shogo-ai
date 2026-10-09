@@ -45,9 +45,6 @@ function createCtx(overrides?: Partial<ToolContext>): ToolContext {
     workspaceDir: TEST_DIR,
     channels: new Map(),
     config: {
-      heartbeatInterval: 1800,
-      heartbeatEnabled: false,
-      quietHours: { start: '23:00', end: '07:00', timezone: 'UTC' },
       channels: [],
       model: { provider: 'anthropic', name: 'claude-sonnet-4-5' },
     },
@@ -295,80 +292,6 @@ describe('delete_file', () => {
     const result = await call(createCtx(), 'delete_file', { path: 'bye.txt' })
     expect(result.ok).toBe(true)
     expect(existsSync(p)).toBe(false)
-  })
-})
-
-// ---------------------------------------------------------------------------
-// Heartbeat tools — exercise both happy path and the interval-too-low guard.
-// ---------------------------------------------------------------------------
-
-describe('heartbeat_configure / heartbeat_status', () => {
-  test('rejects intervals below 60s', async () => {
-    const result = await call(createCtx(), 'heartbeat_configure', { interval: 30 })
-    expect(result.error).toContain('60 seconds')
-  })
-
-  test('persists enabled+interval+quietHours to config.json', async () => {
-    const result = await call(createCtx(), 'heartbeat_configure', {
-      enabled: true,
-      interval: 3600,
-      quietHoursStart: '22:00',
-      quietHoursEnd: '07:00',
-      timezone: 'UTC',
-    })
-    expect(result.ok).toBe(true)
-    expect(result.enabled).toBe(true)
-    expect(result.interval).toBe(3600)
-    expect(result.quietHours.start).toBe('22:00')
-    const onDisk = JSON.parse(readFileSync(join(TEST_DIR, 'config.json'), 'utf-8'))
-    expect(onDisk.heartbeatEnabled).toBe(true)
-    expect(onDisk.heartbeatInterval).toBe(3600)
-  })
-
-  test('updates an existing config.json without clobbering unrelated keys', async () => {
-    writeFileSync(join(TEST_DIR, 'config.json'), JSON.stringify({ someOther: 'value', heartbeatEnabled: false }))
-    const result = await call(createCtx(), 'heartbeat_configure', { enabled: true })
-    expect(result.ok).toBe(true)
-    const onDisk = JSON.parse(readFileSync(join(TEST_DIR, 'config.json'), 'utf-8'))
-    expect(onDisk.someOther).toBe('value')
-    expect(onDisk.heartbeatEnabled).toBe(true)
-  })
-
-  test('invokes updateHeartbeatConfig if provided', async () => {
-    let captured: any = null
-    const ctx = createCtx({
-      updateHeartbeatConfig: async (c) => { captured = c },
-    })
-    await call(ctx, 'heartbeat_configure', { enabled: true, interval: 1200 })
-    expect(captured).toBeTruthy()
-    expect(captured.heartbeatEnabled).toBe(true)
-    expect(captured.heartbeatInterval).toBe(1200)
-  })
-
-  test('heartbeat_status returns defaults with no config', async () => {
-    const result = await call(createCtx(), 'heartbeat_status')
-    expect(result.enabled).toBe(false)
-    expect(result.interval).toBe(1800)
-    expect(result.checklistLength).toBe(0)
-  })
-
-  test('heartbeat_status surfaces HEARTBEAT.md preview', async () => {
-    writeFileSync(join(TEST_DIR, 'HEARTBEAT.md'), 'do this\nand that\n')
-    writeFileSync(
-      join(TEST_DIR, 'config.json'),
-      JSON.stringify({ heartbeatEnabled: true, heartbeatInterval: 600 }),
-    )
-    const result = await call(createCtx(), 'heartbeat_status')
-    expect(result.enabled).toBe(true)
-    expect(result.interval).toBe(600)
-    expect(result.checklistLength).toBeGreaterThan(0)
-    expect(result.checklistPreview).toContain('do this')
-  })
-
-  test('heartbeat_status tolerates corrupt config.json', async () => {
-    writeFileSync(join(TEST_DIR, 'config.json'), '{not}json')
-    const result = await call(createCtx(), 'heartbeat_status')
-    expect(result.enabled).toBe(false)
   })
 })
 

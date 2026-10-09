@@ -27,9 +27,6 @@ import type { GatewayConfig } from '../gateway'
 
 function makeConfig(overrides: Partial<GatewayConfig> = {}): GatewayConfig {
   return {
-    heartbeatInterval: 1800,
-    heartbeatEnabled: true,
-    quietHours: { start: '23:00', end: '07:00', timezone: 'UTC' },
     channels: [],
     model: { provider: 'anthropic', name: 'claude-sonnet-4-5' },
     ...overrides,
@@ -56,7 +53,7 @@ describe('WS7: core tools always present in agent mode', () => {
     ['default', {}],
     ['web off', { webEnabled: false }],
     ['browser off', { browserEnabled: false }],
-    ['heartbeat off', { heartbeatEnabled: false }],
+    ['heartbeat off', { heartbeatToolsEnabled: false }],
     ['channels off', { channelsEnabled: false }],
     ['integrations off', { integrationsEnabled: false }],
     ['memory off', { memoryEnabled: false }],
@@ -64,7 +61,7 @@ describe('WS7: core tools always present in agent mode', () => {
     ['everything optional off', {
       webEnabled: false,
       browserEnabled: false,
-      heartbeatEnabled: false,
+      heartbeatToolsEnabled: false,
       channelsEnabled: false,
       integrationsEnabled: false,
       memoryEnabled: false,

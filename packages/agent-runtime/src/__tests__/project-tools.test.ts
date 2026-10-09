@@ -272,6 +272,31 @@ describe('project_configure', () => {
     ])
   })
 
+  test('reports a paywall heartbeatError as a warning while the rest of the patch applies', async () => {
+    api.configure = {
+      ok: true,
+      status: 200,
+      data: {
+        id: 'proj-1', name: 'Renamed', description: null, settings: null, slackEnabled: false, agent: null,
+        heartbeatError: { code: 'paywall', message: 'Heartbeats require a paid plan.' },
+      },
+    }
+    const ctx = baseCtx({ projectId: 'proj-1' })
+    const out = await run(createProjectConfigureTool(ctx), { name: 'Renamed', heartbeatEnabled: true })
+    expect(out.ok).toBe(true)
+    expect(out.changed).toBe(true)
+    expect(out.project.name).toBe('Renamed')
+    expect(out.heartbeatError).toMatchObject({ code: 'paywall' })
+    expect(out.warning).toContain('Heartbeat settings were not applied')
+  })
+
+  test('has no warning when the heartbeat part was applied', async () => {
+    const ctx = baseCtx({ projectId: 'proj-1' })
+    const out = await run(createProjectConfigureTool(ctx), { heartbeatEnabled: true })
+    expect(out.heartbeatError).toBeUndefined()
+    expect(out.warning).toBeUndefined()
+  })
+
   test('targets another project by manifest key resolved through the lock', async () => {
     api.graph.data = [
       { id: 'caller-1', name: 'Caller', description: null, workingMode: 'managed', settings: null, attachments: [], agent: null },
@@ -486,6 +511,34 @@ describe('system_apply', () => {
     expect(out.applied).toHaveLength(0)
     expect(calls.find((c) => c.fn === 'createProject')).toBeUndefined()
     expect(calls.find((c) => c.fn === 'attachProject')).toBeUndefined()
+  })
+
+  test('reports a heartbeat paywall as an error but still applies the rest of the configure', async () => {
+    api.create = { ok: true, status: 201, data: { id: 'proj-intake', name: 'Intake', description: null, workingMode: 'managed', settings: null } }
+    api.configure = {
+      ok: true,
+      status: 200,
+      data: {
+        id: 'proj-intake', name: 'Intake', description: null, settings: null, slackEnabled: false, agent: null,
+        heartbeatError: { code: 'paywall', message: 'Heartbeats require a paid plan.' },
+      },
+    }
+    const manifest = `
+version: 1
+name: issue-pipeline
+projects:
+  - key: intake
+    name: Intake
+    agent:
+      model: claude-haiku-4-5
+      heartbeat:
+        enabled: true
+        interval: 900
+`
+    const out = await run(createSystemApplyTool(baseCtx()), { manifest })
+    expect(out.applied.some((l: string) => l.includes('configure intake'))).toBe(true)
+    expect(out.errors.some((l: string) => l.includes('heartbeat not applied') && l.includes('paid plan'))).toBe(true)
+    expect(out.ok).toBe(false)
   })
 
   test('skips writing files for a project not yet reachable on disk, and reports it instead of erroring', async () => {

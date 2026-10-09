@@ -2992,7 +2992,7 @@ export interface TechStackSummary {
     webEnabled?: boolean
     browserEnabled?: boolean
     shellEnabled?: boolean
-    heartbeatEnabled?: boolean
+    heartbeatToolsEnabled?: boolean
     imageGenEnabled?: boolean
     memoryEnabled?: boolean
     quickActionsEnabled?: boolean

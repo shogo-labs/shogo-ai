@@ -41,9 +41,6 @@ function makeCtx(overrides: Partial<ToolContext> = {}): ToolContext {
     workspaceDir: TEST_DIR,
     channels: new Map(),
     config: {
-      heartbeatInterval: 1800,
-      heartbeatEnabled: false,
-      quietHours: { start: '23:00', end: '07:00', timezone: 'UTC' },
       channels: [],
       model: { provider: 'anthropic', name: 'claude-sonnet-4-5' },
     },
@@ -576,70 +573,6 @@ describe('quick_action', () => {
     const d = await exec(makeCtx(), 'quick_action', { label: 'OneMore', prompt: 'tip' })
     // Either rejected (ok: false with errors) or accepted depending on actual MAX_ACTIONS.
     expect(d).toBeDefined()
-  })
-})
-
-// ---------------------------------------------------------------------------
-// heartbeat_configure / heartbeat_status
-// ---------------------------------------------------------------------------
-
-describe('heartbeat_configure / heartbeat_status', () => {
-  test('configure rejects interval < 60', async () => {
-    const d = await exec(makeCtx(), 'heartbeat_configure', { interval: 30 })
-    expect(d.error).toContain('Interval must be at least 60')
-  })
-
-  test('configure writes config.json and reports back', async () => {
-    const d = await exec(makeCtx(), 'heartbeat_configure', {
-      enabled: true, interval: 600, quietHoursStart: '22:00', quietHoursEnd: '08:00', timezone: 'UTC',
-    })
-    expect(d.ok).toBe(true)
-    expect(d.enabled).toBe(true)
-    expect(d.interval).toBe(600)
-    expect(d.quietHours.start).toBe('22:00')
-    expect(existsSync(join(TEST_DIR, 'config.json'))).toBe(true)
-  })
-
-  test('configure invokes ctx.updateHeartbeatConfig if provided', async () => {
-    let called: any = null
-    const ctx = makeCtx({
-      updateHeartbeatConfig: async (c) => { called = c },
-    })
-    await exec(ctx, 'heartbeat_configure', { enabled: false, interval: 120 })
-    expect(called).not.toBeNull()
-    expect(called.heartbeatEnabled).toBe(false)
-    expect(called.heartbeatInterval).toBe(120)
-  })
-
-  test('configure merges into existing config.json', async () => {
-    writeFileSync(join(TEST_DIR, 'config.json'), JSON.stringify({ heartbeatEnabled: false, extra: 'kept' }))
-    const d = await exec(makeCtx(), 'heartbeat_configure', { enabled: true })
-    expect(d.ok).toBe(true)
-    const cfg = JSON.parse(readFileSync(join(TEST_DIR, 'config.json'), 'utf-8'))
-    expect(cfg.extra).toBe('kept')
-    expect(cfg.heartbeatEnabled).toBe(true)
-  })
-
-  test('status with no config returns defaults + empty checklist', async () => {
-    const d = await exec(makeCtx(), 'heartbeat_status', {})
-    expect(d.enabled).toBe(false)
-    expect(d.interval).toBe(1800)
-    expect(d.checklistLength).toBe(0)
-  })
-
-  test('status reads HEARTBEAT.md preview when present', async () => {
-    writeFileSync(join(TEST_DIR, 'HEARTBEAT.md'), '# heartbeat\nstep 1\nstep 2')
-    writeFileSync(join(TEST_DIR, 'config.json'), JSON.stringify({ heartbeatEnabled: true, heartbeatInterval: 900 }))
-    const d = await exec(makeCtx(), 'heartbeat_status', {})
-    expect(d.enabled).toBe(true)
-    expect(d.interval).toBe(900)
-    expect(d.checklistPreview).toContain('heartbeat')
-  })
-
-  test('status tolerates corrupt config.json', async () => {
-    writeFileSync(join(TEST_DIR, 'config.json'), '{ this is not json')
-    const d = await exec(makeCtx(), 'heartbeat_status', {})
-    expect(d.enabled).toBe(false)
   })
 })
 

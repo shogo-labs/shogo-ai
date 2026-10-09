@@ -14,9 +14,7 @@ import type { GatewayConfig } from '../gateway'
 
 function makeConfig(overrides: Partial<GatewayConfig> = {}): GatewayConfig {
   return {
-    heartbeatInterval: 1800,
-    heartbeatEnabled: true,
-    quietHours: { start: '23:00', end: '07:00', timezone: 'UTC' },
+    heartbeatToolsEnabled: true,
     channels: [],
     model: { provider: 'anthropic', name: 'claude-sonnet-4-5' },
     ...overrides,
@@ -59,10 +57,23 @@ describe('filterDisabledCapabilityTools', () => {
     expect(n.has('read_file')).toBe(true)
   })
 
-  test('heartbeatEnabled: false removes heartbeat tools', () => {
-    const n = names(makeConfig({ heartbeatEnabled: false }))
+  test('heartbeatToolsEnabled: false removes heartbeat tools', () => {
+    const n = names(makeConfig({ heartbeatToolsEnabled: false }))
     expect(n.has('heartbeat_configure')).toBe(false)
     expect(n.has('heartbeat_status')).toBe(false)
+  })
+
+  test('heartbeat tools stay visible when the flag is unset (default on)', () => {
+    const n = names(makeConfig({ heartbeatToolsEnabled: undefined }))
+    expect(n.has('heartbeat_configure')).toBe(true)
+    expect(n.has('heartbeat_status')).toBe(true)
+  })
+
+  test('a disabled heartbeat SCHEDULE never hides the tools (schedule lives in the database)', () => {
+    // Old configs carried `heartbeatEnabled: false` meaning "no heartbeat
+    // running yet"; the loader maps that legacy key, the filter must not read it.
+    const n = names(makeConfig({ heartbeatEnabled: false } as any))
+    expect(n.has('heartbeat_configure')).toBe(true)
   })
 
   test('channelsEnabled: false removes channel + messaging tools', () => {
@@ -113,7 +124,7 @@ describe('filterDisabledCapabilityTools', () => {
   test('orchestration / core tools are never gated', () => {
     const n = names(makeConfig({
       imageGenEnabled: false,
-      heartbeatEnabled: false,
+      heartbeatToolsEnabled: false,
       channelsEnabled: false,
       integrationsEnabled: false,
     }))

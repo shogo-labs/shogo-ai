@@ -92,7 +92,7 @@ import {
 } from './workspace-runtime-mode'
 import { initComposioSession, resetComposioSession, isComposioEnabled, isComposioInitialized } from './composio'
 import { createIntegrationCredentialWrapper } from './integration-credentials'
-import { deriveApiUrl, getInternalHeaders, postCostMetric, projectScopedId } from './internal-api'
+import { deriveApiUrl, getInternalHeaders, getProjectConfig, postCostMetric, projectScopedId } from './internal-api'
 import { getRuntimeTrust } from './runtime-trust'
 import { refreshTrust } from './trust-resolver'
 import type { FilePart } from './file-attachment-utils'
@@ -112,7 +112,6 @@ import { loadWorkspaceCustomAgents } from './subagent'
 import { CommandRegistry } from './command-registry'
 import { releaseSessionBrowsers, reapOrphanChromium } from './browser-pool'
 import { TeamManager } from './team-manager'
-import { isInQuietHours } from './quiet-hours'
 import {
   RUNTIME_LOG_SUBDIR,
   BUILD_LOG_BASENAME,
@@ -421,9 +420,15 @@ export interface GatewayConfig {
    * Undefined behaves like `'team'` (see `capability-profiles.ts`).
    */
   capabilityProfile?: CapabilityProfileName
-  heartbeatInterval: number
-  heartbeatEnabled: boolean
-  quietHours: { start: string; end: string; timezone: string }
+  /**
+   * Whether the heartbeat tools (`heartbeat_configure`, `heartbeat_status`) and
+   * the devops guide are available to the agent. This is a capability toggle,
+   * NOT the schedule: whether heartbeats actually run (enabled, interval,
+   * quiet hours) lives in the `agent_configs` table and is read/written through
+   * the project config API. Default: on. The legacy `heartbeatEnabled` key in
+   * config.json is read as a fallback for projects that predate this field.
+   */
+  heartbeatToolsEnabled?: boolean
   channels: Array<{ type: string; config: Record<string, string>; model?: string }>
   /** Model configuration: provider + name (e.g. { provider: 'anthropic', name: 'claude-sonnet-4-5' }).
    *  `thinkingLevel` is the admin-configured reasoning effort for the selected
@@ -457,7 +462,7 @@ export interface GatewayConfig {
   browserExtensionToken?: string
   /** Whether shell/exec tool is enabled (default: true) */
   shellEnabled?: boolean
-  // heartbeat tools are gated by heartbeatEnabled (above)
+  // heartbeat tools are gated by heartbeatToolsEnabled (above)
   /** Whether image generation tool is enabled (default: true) */
   imageGenEnabled?: boolean
   /** Whether memory tools are enabled (default: true) */
@@ -938,9 +943,7 @@ export class AgentGateway {
     const defaults: GatewayConfig = applyCapabilityProfile(
       {
         capabilityProfile: undefined,
-        heartbeatInterval: 1800,
-        heartbeatEnabled: false,
-        quietHours: { start: '23:00', end: '07:00', timezone: 'UTC' },
+        heartbeatToolsEnabled: undefined,
         channels: [],
         model: { provider: 'anthropic', name: 'claude-haiku-4-5' },
         maxSessionMessages: 30,
@@ -972,10 +975,9 @@ export class AgentGateway {
             activeMode: raw.activeMode ?? defaults.activeMode,
             allowedModes: raw.allowedModes ?? defaults.allowedModes,
             shellEnabled: raw.shellEnabled,
-            heartbeatInterval: raw.heartbeat?.intervalMs
-              ? Math.round(raw.heartbeat.intervalMs / 1000)
-              : raw.heartbeatInterval ?? defaults.heartbeatInterval,
-            heartbeatEnabled: raw.heartbeat?.enabled ?? raw.heartbeatEnabled ?? defaults.heartbeatEnabled,
+            // Capability toggle only; the schedule lives in the database.
+            // `heartbeatEnabled` is the pre-split name of this flag.
+            heartbeatToolsEnabled: raw.heartbeatToolsEnabled ?? raw.heartbeatEnabled ?? undefined,
             channels: Array.isArray(raw.channels) ? raw.channels : [],
             gitWorktreesEnabled: raw.gitWorktreesEnabled ?? worktreesEnvDefault,
           },
@@ -1051,11 +1053,9 @@ export class AgentGateway {
       }
     }
 
-    if (this.config.heartbeatEnabled) {
-      console.log(
-        `[AgentGateway] Heartbeat enabled (externally scheduled, interval ${this.config.heartbeatInterval}s)`
-      )
-    }
+    // Heartbeats are scheduled externally from the database; load a copy for
+    // the status output (non-blocking, best effort).
+    void this.refreshHeartbeatSnapshot()
 
     // Start configured MCP servers (stdio + remote)
     if (this.config.mcpServers && Object.keys(this.config.mcpServers).length > 0) {
@@ -1538,27 +1538,62 @@ export class AgentGateway {
   // ---------------------------------------------------------------------------
 
 
-  private checkQuietHours(): boolean {
-    const { start, end, timezone } = this.config.quietHours
-    return isInQuietHours(start || null, end || null, timezone || null)
+  /**
+   * Cached copy of this project's schedule from the database, for the status
+   * output only. The scheduler (not the runtime) decides when heartbeats run.
+   */
+  private heartbeatSnapshot: {
+    enabled: boolean
+    intervalSeconds: number
+    quietHours: { start: string; end: string; timezone: string }
+  } = {
+    enabled: false,
+    intervalSeconds: 1800,
+    quietHours: { start: '', end: '', timezone: 'UTC' },
   }
 
-  async heartbeatTick(): Promise<string> {
+  /** Reload the cached schedule from the project config API (best effort). */
+  async refreshHeartbeatSnapshot(): Promise<void> {
+    const projectId = projectScopedId(this.projectId) ?? projectScopedId(process.env.WORKSPACE_ANCHOR_PROJECT_ID)
+    if (!projectId) return
+    try {
+      const res = await getProjectConfig(projectId)
+      const agent = res.ok ? res.data?.agent : null
+      if (!agent) return
+      this.heartbeatSnapshot = {
+        enabled: agent.heartbeatEnabled,
+        intervalSeconds: agent.heartbeatInterval,
+        quietHours: {
+          start: agent.quietHoursStart ?? '',
+          end: agent.quietHoursEnd ?? '',
+          timezone: agent.quietHoursTimezone ?? 'UTC',
+        },
+      }
+    } catch {
+      /* status falls back to defaults */
+    }
+  }
+
+  /**
+   * Run one heartbeat. Quiet hours are enforced by the API scheduler (the
+   * schedule lives in the database), so a tick that reaches here always runs.
+   *
+   * A workspace runtime serves several attached projects, so the caller says
+   * which one is due: `projectDir` is where its `HEARTBEAT.md` lives and
+   * `projectId` tells the agent which project the checklist belongs to.
+   * Defaults to the gateway's own workspace dir (single-project runtimes).
+   */
+  async heartbeatTick(opts: { projectId?: string; projectDir?: string } = {}): Promise<string> {
     this.lastHeartbeatTick = new Date()
 
-    const heartbeatPath = resolveWorkspaceConfigFilePath(this.workspaceDir, 'HEARTBEAT.md')
+    const projectDir = opts.projectDir ?? this.workspaceDir
+    const heartbeatPath = resolveWorkspaceConfigFilePath(projectDir, 'HEARTBEAT.md')
     if (!heartbeatPath) {
       return 'HEARTBEAT_OK'
     }
 
     const checklist = readFileSync(heartbeatPath, 'utf-8').trim()
     if (!checklist) {
-      return 'HEARTBEAT_OK'
-    }
-
-    if (this.checkQuietHours()) {
-      console.log('[AgentGateway] Heartbeat skipped (quiet hours)')
-      this.emitLog('Heartbeat skipped (quiet hours)')
       return 'HEARTBEAT_OK'
     }
 
@@ -1571,15 +1606,22 @@ export class AgentGateway {
       this.pendingEvents = []
     }
 
+    // In a workspace runtime the checklist belongs to one attached project,
+    // whose files live in a subfolder of the merged root.
+    const projectLine =
+      opts.projectId && projectDir !== this.workspaceDir
+        ? ` for project ${opts.projectId} (its files are under \`${opts.projectId}/\`)`
+        : ''
+
     const response = await this.agentTurn(
-      `[HEARTBEAT]\nYou are performing a scheduled heartbeat check. Review the following checklist and take action as needed. If everything is fine, respond with exactly "HEARTBEAT_OK". If something needs attention, describe the issue and any actions taken.\n\n${checklist}${pendingSection}`,
+      `[HEARTBEAT]\nYou are performing a scheduled heartbeat check${projectLine}. Review the following checklist and take action as needed. If everything is fine, respond with exactly "HEARTBEAT_OK". If something needs attention, describe the issue and any actions taken.\n\n${checklist}${pendingSection}`,
       'heartbeat',
       true
     )
 
     await this.hookEmitter.emit(
       HookEmitter.createEvent('heartbeat', 'tick', 'heartbeat', {
-        workspaceDir: this.workspaceDir,
+        workspaceDir: projectDir,
         response,
         hadAlert: response !== 'HEARTBEAT_OK',
       })
@@ -1592,7 +1634,7 @@ export class AgentGateway {
 
       await this.hookEmitter.emit(
         HookEmitter.createEvent('heartbeat', 'alert', 'heartbeat', {
-          workspaceDir: this.workspaceDir,
+          workspaceDir: projectDir,
           alertText: response,
         })
       )
@@ -1603,13 +1645,13 @@ export class AgentGateway {
 
     const heartbeatSummary = response === 'HEARTBEAT_OK' ? 'Routine check — all clear' : response.substring(0, 300)
     this.appendDailyMemory(`Heartbeat: ${response === 'HEARTBEAT_OK' ? 'All clear' : response.substring(0, 200)}`)
-    this.appendHeartbeatLog(heartbeatSummary)
+    this.appendHeartbeatLog(heartbeatSummary, projectDir)
 
     return response
   }
 
-  async triggerHeartbeat(): Promise<string> {
-    return this.heartbeatTick()
+  async triggerHeartbeat(opts: { projectId?: string; projectDir?: string } = {}): Promise<string> {
+    return this.heartbeatTick(opts)
   }
 
   queuePendingEvent(text: string): void {
@@ -2334,21 +2376,9 @@ export class AgentGateway {
       guideRegistry: this.currentGuideRegistry,
       listWorktreeStatuses: this.isWorktreesEnabled() ? () => this.listWorktreeStatuses() : undefined,
       toolMockFns: this.toolMocks.size > 0 ? this.toolMocks : undefined,
-      updateHeartbeatConfig: async (config) => {
-        const apiUrl = deriveApiUrl()
-        if (!apiUrl) return
-        const url = `${apiUrl}/api/internal/heartbeat/config/${this.projectId}`
-        const res = await fetch(url, {
-          method: 'PUT',
-          headers: getInternalHeaders(),
-          body: JSON.stringify(config),
-          signal: AbortSignal.timeout(10_000),
-        })
-        if (!res.ok) {
-          throw new Error(`Heartbeat config update failed: HTTP ${res.status}`)
-        }
-        this.reloadConfig()
-      },
+      // heartbeat_configure writes the schedule to the database through the
+      // project config API; refresh the cached copy the status output shows.
+      onHeartbeatConfigured: () => { void this.refreshHeartbeatSnapshot() },
 
     }
 
@@ -4125,7 +4155,7 @@ export class AgentGateway {
     const integrationsGuideOn = this.config.integrationsEnabled !== false
     const channelsGuideOn = this.config.channelsEnabled !== false
     const mediaGuideOn = this.config.imageGenEnabled !== false
-    const devopsGuideOn = this.config.heartbeatEnabled !== false
+    const devopsGuideOn = this.config.heartbeatToolsEnabled !== false
 
     this.currentGuideRegistry = buildGuideRegistry(this.promptOverrides)
     pushStable('capabilities-index', buildCapabilitiesIndex({
@@ -5064,8 +5094,8 @@ export class AgentGateway {
   // Memory
   // ---------------------------------------------------------------------------
 
-  private appendHeartbeatLog(summary: string): void {
-    const logPath = join(this.workspaceDir, 'HEARTBEAT_LOG.md')
+  private appendHeartbeatLog(summary: string, dir: string = this.workspaceDir): void {
+    const logPath = join(dir, 'HEARTBEAT_LOG.md')
     const timestamp = new Date().toISOString()
     const entry = `- [${timestamp}] ${summary}\n`
     const MAX_ENTRIES = 20
@@ -5198,10 +5228,10 @@ export class AgentGateway {
       currentTask: this._currentTask,
       lastTool: this._lastTool,
       heartbeat: {
-        enabled: this.config.heartbeatEnabled,
-        intervalSeconds: this.config.heartbeatInterval,
+        enabled: this.heartbeatSnapshot.enabled,
+        intervalSeconds: this.heartbeatSnapshot.intervalSeconds,
         lastTick: this.lastHeartbeatTick?.toISOString() ?? null,
-        quietHours: this.config.quietHours,
+        quietHours: this.heartbeatSnapshot.quietHours,
       },
       channels: channelStatuses,
       skills: [...fsSkills, ...configSkills],
@@ -5216,7 +5246,6 @@ export class AgentGateway {
   }
 
   reloadConfig(): void {
-    const prevEnabled = this.config.heartbeatEnabled
     this.config = this.loadConfig()
     this.skills = loadAllSkills(this.workspaceDir)
     this.quickActions = loadQuickActions(this.workspaceDir)

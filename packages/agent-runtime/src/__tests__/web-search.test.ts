@@ -13,9 +13,6 @@ function createCtx(): ToolContext {
     workspaceDir: TEST_DIR,
     channels: new Map(),
     config: {
-      heartbeatInterval: 1800,
-      heartbeatEnabled: false,
-      quietHours: { start: '23:00', end: '07:00', timezone: 'UTC' },
       channels: [],
       model: { provider: 'anthropic', name: 'claude-sonnet-4-5' },
     },
