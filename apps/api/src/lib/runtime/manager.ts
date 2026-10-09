@@ -2019,19 +2019,45 @@ export class ShogoErrorBoundary extends Component<Props, State> {
     )
   }
 
+  /**
+   * The path on the remote host. Older projects can carry leftover
+   * non-primary `ProjectFolder` rows, or a single row that was never marked
+   * primary. Those are still the remote project path, not local mounts.
+   * Ambiguous shapes stay errors so we never guess among several remotes.
+   */
   private remoteProjectPath(projectId: string, info: ProjectInfo): string {
     const folders = info.folders ?? []
     const primaryFolders = folders.filter((folder) => folder.isPrimary)
-    if (primaryFolders.length !== 1 || folders.length !== 1) {
+    let chosen: { path: string; isPrimary: boolean } | undefined
+    const ignored: { path: string; isPrimary: boolean }[] = []
+
+    if (primaryFolders.length === 1) {
+      chosen = primaryFolders[0]
+      ignored.push(...folders.filter((folder) => folder !== chosen))
+    } else if (primaryFolders.length === 0 && folders.length === 1) {
+      chosen = folders[0]
+    } else if (folders.length === 0) {
+      throw new Error(`Remote SSH project ${projectId} has no folder path.`)
+    } else if (primaryFolders.length > 1) {
       throw new Error(
-        `Remote SSH project ${projectId} requires exactly one primary folder and no additional local folders.`,
+        `Remote SSH project ${projectId} has ${primaryFolders.length} primary folders; expected exactly one.`,
+      )
+    } else {
+      throw new Error(
+        `Remote SSH project ${projectId} has ${folders.length} folder rows and none is primary.`,
       )
     }
-    const primary = primaryFolders[0]?.path?.trim()
-    if (!primary) {
+
+    const path = chosen?.path?.trim()
+    if (!path) {
       throw new Error(`Remote SSH project ${projectId} has an empty primary folder path.`)
     }
-    return primary
+    if (ignored.length > 0) {
+      console.warn(
+        `[RuntimeManager] Remote SSH project ${projectId} ignoring ${ignored.length} non-primary folder row(s): ${ignored.map((folder) => folder.path).join(', ')}`,
+      )
+    }
+    return path
   }
 
   /**

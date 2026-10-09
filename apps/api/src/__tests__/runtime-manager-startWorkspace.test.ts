@@ -64,6 +64,50 @@ type ProjectInfo = {
   }
 }
 
+function remoteHost(): NonNullable<ProjectInfo['remoteHost']> {
+  return {
+    label: 'Build host',
+    sshTarget: 'alice@example.com',
+    port: 2222,
+    identityFile: '/tmp/id_ed25519',
+    platform: 'linux-x64',
+  }
+}
+
+function remoteProjectInfo(
+  primaryPath: string,
+  extra: { path: string; isPrimary: boolean }[] = [],
+  primary = true,
+): ProjectInfo {
+  return {
+    workingMode: 'external',
+    runtimeEnabled: true,
+    folders: [{ path: primaryPath, isPrimary: primary }, ...extra],
+    remoteHostId: 'host-1',
+    remoteHost: remoteHost(),
+  }
+}
+
+function stubRemoteStart(rm: any, localPort = 37200) {
+  process.env.APP_VERSION = '1.2.3'
+  rm.allocatePortAsync = mock(async () => localPort)
+  rm.remoteApiGatewayPort = mock(async () => 45555)
+  const remote = {
+    start: mock(async () => ({
+      workspaceKey: 'remote-anchor-1',
+      status: 'running',
+      agentPort: localPort,
+      remoteAgentPort: 41234,
+      remoteApiPort: 41235,
+    })),
+    stop: mock(async () => {}),
+    status: mock(() => ({ status: 'running', agentPort: localPort })),
+    getHealth: mock(async () => ({ healthy: true, lastCheck: Date.now(), url: `http://127.0.0.1:${localPort}/health` })),
+  }
+  rm.remoteManager = mock(async () => remote)
+  return remote
+}
+
 function makeManager(opts: { agentStatus?: any; agentThrows?: Error; projectInfo?: Record<string, ProjectInfo> } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'rm-ws-'))
   dirs.push(root)
@@ -367,6 +411,84 @@ describe('RuntimeManager.startProjectWorkspace (anchor-keyed merged root)', () =
     await rm.stop('anchor-1')
     expect(remote.stop).toHaveBeenCalled()
     expect(rm.agentManager.stop).not.toHaveBeenCalled()
+  })
+
+  test('uses the primary remote folder and ignores leftover non-primary rows', async () => {
+    const remotePath = '/srv/projects/anchor-1'
+    const stale = '/Users/me/old-local-copy'
+    const { rm } = makeManager({
+      projectInfo: {
+        'anchor-1': remoteProjectInfo(remotePath, [
+          { path: stale, isPrimary: false },
+          { path: '/tmp/another-stale', isPrimary: false },
+        ]),
+      },
+    })
+    const warns: string[] = []
+    const origWarn = console.warn
+    console.warn = (...args: unknown[]) => {
+      warns.push(args.map(String).join(' '))
+    }
+    try {
+      stubRemoteStart(rm)
+      await rm.startProjectWorkspace('anchor-1', { workspaceId: 'ws-1' })
+    } finally {
+      console.warn = origWarn
+    }
+    expect(rm.remoteManager.mock.calls[0][3].remoteProjectDir).toBe(remotePath)
+    expect(rm.agentManager.ensureRunning).not.toHaveBeenCalled()
+    expect(warns.some((line) => line.includes(stale) && line.includes('/tmp/another-stale'))).toBe(true)
+  })
+
+  test('uses a lone folder row that was never marked primary', async () => {
+    const remotePath = '/srv/projects/legacy'
+    const { rm } = makeManager({
+      projectInfo: {
+        'anchor-1': remoteProjectInfo(remotePath, [], false),
+      },
+    })
+    stubRemoteStart(rm)
+    await rm.startProjectWorkspace('anchor-1', { workspaceId: 'ws-1' })
+    expect(rm.remoteManager.mock.calls[0][3].remoteProjectDir).toBe(remotePath)
+  })
+
+  test('rejects a remote project with two primary folders', async () => {
+    const { rm } = makeManager({
+      projectInfo: {
+        'anchor-1': remoteProjectInfo('/srv/a', [{ path: '/srv/b', isPrimary: true }]),
+      },
+    })
+    await expect(rm.startProjectWorkspace('anchor-1', { workspaceId: 'ws-1' })).rejects.toThrow(
+      /has 2 primary folders/,
+    )
+  })
+
+  test('rejects several folder rows when none is primary', async () => {
+    const { rm } = makeManager({
+      projectInfo: {
+        'anchor-1': remoteProjectInfo('/srv/a', [{ path: '/srv/b', isPrimary: false }], false),
+      },
+    })
+    await expect(rm.startProjectWorkspace('anchor-1', { workspaceId: 'ws-1' })).rejects.toThrow(
+      /none is primary/,
+    )
+  })
+
+  test('rejects a remote project with no folder rows', async () => {
+    const { rm } = makeManager({
+      projectInfo: {
+        'anchor-1': {
+          workingMode: 'external',
+          runtimeEnabled: true,
+          folders: [],
+          remoteHostId: 'host-1',
+          remoteHost: remoteHost(),
+        },
+      },
+    })
+    await expect(rm.startProjectWorkspace('anchor-1', { workspaceId: 'ws-1' })).rejects.toThrow(
+      /has no folder path/,
+    )
   })
 })
 
