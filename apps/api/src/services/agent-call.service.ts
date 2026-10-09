@@ -22,8 +22,11 @@
  * alone — workspace runtimes are never given a `WEBHOOK_TOKEN`, so the
  * external `/agent/hooks/*` path can't be reused here.
  */
-import { createHash, randomUUID } from 'node:crypto'
+import { randomUUID } from 'node:crypto'
 import type { Context } from 'hono'
+import { runChatSessionId } from '@shogo/shared-runtime/project-call-chat'
+
+export { runChatSessionId } from '@shogo/shared-runtime/project-call-chat'
 
 export interface AgentCallRequest {
   message: string
@@ -82,19 +85,6 @@ export async function callProjectAgent(
 // ---------------------------------------------------------------------------
 // Chat persistence for project_call
 // ---------------------------------------------------------------------------
-
-/**
- * Deterministic UUID (v5-style, sha1) for the chat that holds every hop of one
- * `runId` into one project. Lets repeated calls reuse a single ChatSession
- * without a schema change or a lookup column.
- */
-export function runChatSessionId(projectId: string, runId: string): string {
-  const hash = createHash('sha1').update(`shogo:project-call:${projectId}:${runId}`).digest()
-  hash[6] = (hash[6]! & 0x0f) | 0x50
-  hash[8] = (hash[8]! & 0x3f) | 0x80
-  const hex = hash.subarray(0, 16).toString('hex')
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`
-}
 
 function oneLine(text: string, max: number): string {
   const flat = text.replace(/\s+/g, ' ').trim()
