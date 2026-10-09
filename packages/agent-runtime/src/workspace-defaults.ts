@@ -952,6 +952,8 @@ export interface TechStackMeta {
   capabilities?: {
     webEnabled?: boolean
     browserEnabled?: boolean
+    /** Personal-companion browser (default off) — see browser-capability.ts */
+    personalBrowserEnabled?: boolean
     shellEnabled?: boolean
     heartbeatToolsEnabled?: boolean
     imageGenEnabled?: boolean

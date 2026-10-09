@@ -640,6 +640,8 @@ export default observer(function ProjectLayout() {
       canvasEnabled: projectSettings.canvasEnabled !== false,
       webEnabled: projectSettings.webEnabled !== false,
       browserEnabled: projectSettings.browserEnabled !== false,
+      // Beta, opt-in: off unless explicitly enabled (personal-companion browser).
+      personalBrowserEnabled: projectSettings.personalBrowserEnabled === true,
       shellEnabled: projectSettings.shellEnabled !== false,
       // `heartbeatEnabled` is the pre-split name of this capability toggle.
       heartbeatToolsEnabled:
