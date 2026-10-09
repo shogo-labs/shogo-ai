@@ -641,7 +641,9 @@ export default observer(function ProjectLayout() {
       webEnabled: projectSettings.webEnabled !== false,
       browserEnabled: projectSettings.browserEnabled !== false,
       shellEnabled: projectSettings.shellEnabled !== false,
-      heartbeatEnabled: projectSettings.heartbeatEnabled !== false,
+      // `heartbeatEnabled` is the pre-split name of this capability toggle.
+      heartbeatToolsEnabled:
+        (projectSettings.heartbeatToolsEnabled ?? projectSettings.heartbeatEnabled) !== false,
       imageGenEnabled: projectSettings.imageGenEnabled !== false,
       memoryEnabled: projectSettings.memoryEnabled !== false,
       quickActionsEnabled: projectSettings.quickActionsEnabled !== false,

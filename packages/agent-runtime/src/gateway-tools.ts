@@ -21,7 +21,7 @@ import { createWorkspaceAgentTools } from './workspace-agent-tools'
 import { createTriggerTools } from './trigger-tools'
 import { createMeetingTools } from './meeting-tools'
 import { createChannelTools } from './channel-tools'
-import { resolveRuntimeIdentity } from './workspace-runtime-mode'
+import { isWorkspaceRuntimeMode, resolveRuntimeIdentity } from './workspace-runtime-mode'
 import { isSearchEnabled } from './search-flag'
 import { isInQuietHours } from './quiet-hours'
 import { disabledToolNamesForProfile } from './capability-profiles'
@@ -150,6 +150,8 @@ import {
   switchGitHubBranch as apiSwitchGitHubBranch,
   projectScopedId,
   postPlanMirror,
+  configureProject as apiConfigureProject,
+  getProjectConfig as apiGetProjectConfig,
   type CheckpointCallResult,
 } from './internal-api'
 import { clearGitHubCliEnvCache, githubCliEnvForProject } from './github-cli-credentials'
@@ -195,14 +197,8 @@ export interface ToolContext {
   aiProxyToken?: string
   /** UI message writer for streaming events to the client (set during agent turns, not heartbeats) */
   uiWriter?: any
-  /** Sync heartbeat config to the central DB (called by heartbeat_configure tool) */
-  updateHeartbeatConfig?: (config: {
-    heartbeatEnabled?: boolean
-    heartbeatInterval?: number
-    quietHoursStart?: string | null
-    quietHoursEnd?: string | null
-    quietHoursTimezone?: string | null
-  }) => Promise<void>
+  /** Called after heartbeat_configure writes the schedule to the database (refreshes the cached status copy). */
+  onHeartbeatConfigured?: () => void
   /** Multi-language LSP manager for read_lints diagnostics */
   lspManager?: import('@shogo/shared-runtime').WorkspaceLSPManager
   /** Live LSP accessor — the manager starts asynchronously after a deferred
@@ -5334,14 +5330,18 @@ function createNotifyUserTool(ctx: ToolContext): AgentTool {
 
       // Respect quiet hours: a due reminder is deferred, not dropped — the
       // agent keeps it in memory and re-attempts on a later heartbeat.
-      let quietHours: { start?: string; end?: string; timezone?: string } | undefined
+      // Quiet hours live in the database (the project's agent config). A
+      // failed lookup is treated as no quiet hours rather than blocking.
+      let quietHours: { start?: string | null; end?: string | null; timezone?: string | null } | undefined
       try {
-        const configPath = join(ctx.workspaceDir, 'config.json')
-        if (existsSync(configPath)) {
-          quietHours = JSON.parse(readFileSync(configPath, 'utf-8'))?.quietHours
+        const hbProjectId = resolveHeartbeatProjectId(ctx)
+        if (hbProjectId) {
+          const cfg = await apiGetProjectConfig(hbProjectId)
+          const a = cfg.ok ? cfg.data?.agent : null
+          if (a) quietHours = { start: a.quietHoursStart, end: a.quietHoursEnd, timezone: a.quietHoursTimezone }
         }
       } catch {
-        // Unreadable/invalid config → treat as no quiet hours.
+        // Lookup failed → treat as no quiet hours.
       }
       if (isInQuietHours(quietHours?.start ?? null, quietHours?.end ?? null, quietHours?.timezone ?? null)) {
         return textResult({
@@ -8150,7 +8150,7 @@ export function filterDisabledCapabilityTools(tools: AgentTool[], config: import
   if (config.webEnabled === false) for (const n of TOOL_GROUP_MAP.web) disabled.add(n)
   if (config.browserEnabled === false) disabled.add('browser')
   if (config.shellEnabled === false) for (const n of TOOL_GROUP_MAP.shell) disabled.add(n)
-  if (config.heartbeatEnabled === false) for (const n of TOOL_GROUP_MAP.heartbeat) disabled.add(n)
+  if (config.heartbeatToolsEnabled === false) for (const n of TOOL_GROUP_MAP.heartbeat) disabled.add(n)
   if (config.imageGenEnabled === false) disabled.add('generate_image')
   if (config.quickActionsEnabled === false) disabled.add('quick_action')
   if (config.channelsEnabled === false) for (const n of TOOL_GROUP_MAP.messaging) disabled.add(n)
@@ -9439,11 +9439,24 @@ function createGenerateImageTool(ctx: ToolContext): AgentTool {
 // Heartbeat Tools
 // ---------------------------------------------------------------------------
 
+/**
+ * The project a heartbeat tool acts on: an explicit `projectId`, else the
+ * current project, else the workspace anchor. `ws:<workspaceId>` runtime keys
+ * are not projects and are skipped.
+ */
+function resolveHeartbeatProjectId(ctx: ToolContext, requested?: string): string | undefined {
+  return (
+    projectScopedId(requested) ??
+    projectScopedId(ctx.projectId) ??
+    projectScopedId(process.env.WORKSPACE_ANCHOR_PROJECT_ID)
+  )
+}
+
 function createHeartbeatConfigureTool(ctx: ToolContext): AgentTool {
   return {
     name: 'heartbeat_configure',
     description:
-      'Configure the heartbeat system: enable/disable, set interval, and quiet hours. Changes are persisted to config.json and synced to the central scheduler database.',
+      'Configure the heartbeat system: enable/disable, set interval, and quiet hours. The schedule is stored in the central scheduler database (not config.json). Heartbeats require a paid plan; on a free plan this returns a paywall error. Defaults to the current project.',
     label: 'Configure Heartbeat',
     parameters: Type.Object({
       enabled: Type.Optional(Type.Boolean({ description: 'Enable or disable heartbeat' })),
@@ -9467,61 +9480,64 @@ function createHeartbeatConfigureTool(ctx: ToolContext): AgentTool {
           description: 'IANA timezone for quiet hours (e.g. "America/Los_Angeles")',
         }),
       ),
+      projectId: Type.Optional(
+        Type.String({
+          description: 'Project id to configure (default: the current project). Must be a project in this workspace.',
+        }),
+      ),
     }),
     execute: async (_toolCallId, params) => {
-      const { enabled, interval, quietHoursStart, quietHoursEnd, timezone } = params as {
+      const { enabled, interval, quietHoursStart, quietHoursEnd, timezone, projectId: requestedId } = params as {
         enabled?: boolean
         interval?: number
         quietHoursStart?: string
         quietHoursEnd?: string
         timezone?: string
+        projectId?: string
       }
 
       if (interval !== undefined && interval < 60) {
         return textResult({ error: 'Interval must be at least 60 seconds' })
       }
 
-      try {
-        const { existsSync, readFileSync, writeFileSync } = await import('fs')
-        const { join } = await import('path')
-        const configPath = join(ctx.workspaceDir, 'config.json')
-        let config: Record<string, any> = {}
-        if (existsSync(configPath)) {
-          config = JSON.parse(readFileSync(configPath, 'utf-8'))
-        }
+      const projectId = resolveHeartbeatProjectId(ctx, requestedId)
+      if (!projectId) {
+        return textResult({ error: 'No project to configure heartbeat for. Pass projectId.' })
+      }
 
-        if (enabled !== undefined) config.heartbeatEnabled = enabled
-        if (interval !== undefined) config.heartbeatInterval = interval
-        if (quietHoursStart || quietHoursEnd || timezone) {
-          config.quietHours = config.quietHours || {}
-          if (quietHoursStart) config.quietHours.start = quietHoursStart
-          if (quietHoursEnd) config.quietHours.end = quietHoursEnd
-          if (timezone) config.quietHours.timezone = timezone
-        }
+      const agent: Record<string, unknown> = {}
+      if (enabled !== undefined) agent.heartbeatEnabled = enabled
+      if (interval !== undefined) agent.heartbeatInterval = interval
+      if (quietHoursStart !== undefined) agent.quietHoursStart = quietHoursStart
+      if (quietHoursEnd !== undefined) agent.quietHoursEnd = quietHoursEnd
+      if (timezone !== undefined) agent.quietHoursTimezone = timezone
 
-        writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8')
-
-        if (ctx.updateHeartbeatConfig) {
-          await ctx.updateHeartbeatConfig({
-            heartbeatEnabled: enabled,
-            heartbeatInterval: interval,
-            quietHoursStart: quietHoursStart ?? undefined,
-            quietHoursEnd: quietHoursEnd ?? undefined,
-            quietHoursTimezone: timezone ?? undefined,
-          })
-        }
-
+      const res =
+        Object.keys(agent).length > 0
+          ? await apiConfigureProject(projectId, { agent: agent as any })
+          : await apiGetProjectConfig(projectId)
+      if (!res.ok || !res.data) {
         return textResult({
-          ok: true,
-          enabled: config.heartbeatEnabled ?? false,
-          interval: config.heartbeatInterval ?? 1800,
-          quietHours: config.quietHours ?? null,
-        })
-      } catch (err: any) {
-        return textResult({
-          error: `Failed to configure heartbeat: ${err.message}`,
+          error: `Failed to configure heartbeat: ${res.error ?? 'request failed'}`,
+          code: res.code,
         })
       }
+      if (res.data.heartbeatError) {
+        return textResult({ error: res.data.heartbeatError.message, code: res.data.heartbeatError.code })
+      }
+
+      ctx.onHeartbeatConfigured?.()
+      const a = res.data.agent
+      return textResult({
+        ok: true,
+        projectId,
+        enabled: a?.heartbeatEnabled ?? false,
+        interval: a?.heartbeatInterval ?? 1800,
+        quietHours: a?.quietHoursStart || a?.quietHoursEnd
+          ? { start: a?.quietHoursStart ?? null, end: a?.quietHoursEnd ?? null, timezone: a?.quietHoursTimezone ?? null }
+          : null,
+        nextHeartbeatAt: a?.nextHeartbeatAt ?? null,
+      })
     },
   }
 }
@@ -9529,30 +9545,45 @@ function createHeartbeatConfigureTool(ctx: ToolContext): AgentTool {
 function createHeartbeatStatusTool(ctx: ToolContext): AgentTool {
   return {
     name: 'heartbeat_status',
-    description: 'Get current heartbeat configuration and HEARTBEAT.md checklist preview',
+    description:
+      'Get the current heartbeat schedule (enabled, interval, quiet hours, next and last run) and a preview of the project\'s HEARTBEAT.md checklist. Defaults to the current project.',
     label: 'Heartbeat Status',
-    parameters: Type.Object({}),
-    execute: async () => {
+    parameters: Type.Object({
+      projectId: Type.Optional(
+        Type.String({ description: 'Project id (default: the current project).' }),
+      ),
+    }),
+    execute: async (_toolCallId, params) => {
       const { existsSync, readFileSync } = await import('fs')
       const { join } = await import('path')
 
-      const configPath = join(ctx.workspaceDir, 'config.json')
-      let config: Record<string, any> = {}
-      if (existsSync(configPath)) {
-        try {
-          config = JSON.parse(readFileSync(configPath, 'utf-8'))
-        } catch {
-          /* corrupt config */
-        }
+      const { projectId: requestedId } = (params ?? {}) as { projectId?: string }
+      const projectId = resolveHeartbeatProjectId(ctx, requestedId)
+      if (!projectId) {
+        return textResult({ error: 'No project to report heartbeat status for. Pass projectId.' })
       }
 
-      const heartbeatPath = join(ctx.workspaceDir, 'HEARTBEAT.md')
+      const res = await apiGetProjectConfig(projectId)
+      if (!res.ok || !res.data) {
+        return textResult({ error: `Failed to read heartbeat status: ${res.error ?? 'request failed'}`, code: res.code })
+      }
+      const a = res.data.agent
+
+      // A workspace runtime keeps each project's files in its own subfolder
+      // of the merged root; a single-project runtime serves the root itself.
+      const projectDir = isWorkspaceRuntimeMode() ? join(ctx.workspaceDir, projectId) : ctx.workspaceDir
+      const heartbeatPath = join(projectDir, 'HEARTBEAT.md')
       const heartbeatContent = existsSync(heartbeatPath) ? readFileSync(heartbeatPath, 'utf-8') : ''
 
       return textResult({
-        enabled: config.heartbeatEnabled ?? false,
-        interval: config.heartbeatInterval ?? 1800,
-        quietHours: config.quietHours ?? null,
+        projectId,
+        enabled: a?.heartbeatEnabled ?? false,
+        interval: a?.heartbeatInterval ?? 1800,
+        quietHours: a?.quietHoursStart || a?.quietHoursEnd
+          ? { start: a?.quietHoursStart ?? null, end: a?.quietHoursEnd ?? null, timezone: a?.quietHoursTimezone ?? null }
+          : null,
+        nextHeartbeatAt: a?.nextHeartbeatAt ?? null,
+        lastHeartbeatAt: a?.lastHeartbeatAt ?? null,
         checklistLength: heartbeatContent.trim().length,
         checklistPreview: heartbeatContent.substring(0, 500),
       })

@@ -204,9 +204,6 @@ Long-lived facts and learnings are stored here.
 `,
   'config.json': JSON.stringify(
     {
-      heartbeatInterval: 1800,
-      heartbeatEnabled: false,
-      quietHours: { start: '23:00', end: '07:00', timezone: 'UTC' },
       channels: [],
       activeMode: 'canvas',
       model: {
@@ -956,7 +953,7 @@ export interface TechStackMeta {
     webEnabled?: boolean
     browserEnabled?: boolean
     shellEnabled?: boolean
-    heartbeatEnabled?: boolean
+    heartbeatToolsEnabled?: boolean
     imageGenEnabled?: boolean
     memoryEnabled?: boolean
     quickActionsEnabled?: boolean

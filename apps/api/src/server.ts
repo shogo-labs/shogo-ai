@@ -5512,112 +5512,76 @@ app.patch('/api/projects/:projectId/heartbeat', async (c) => {
   if ('error' in authResult) return authResult.error
 
   const body = await c.req.json()
-  const data: Record<string, any> = {}
 
-  if (typeof body.heartbeatEnabled === 'boolean') {
-    data.heartbeatEnabled = body.heartbeatEnabled
-  }
-  if (typeof body.heartbeatInterval === 'number' && body.heartbeatInterval >= 60) {
-    data.heartbeatInterval = body.heartbeatInterval
-  }
-  if (body.quietHoursStart !== undefined) data.quietHoursStart = body.quietHoursStart || null
-  if (body.quietHoursEnd !== undefined) data.quietHoursEnd = body.quietHoursEnd || null
-  if (body.quietHoursTimezone !== undefined) data.quietHoursTimezone = body.quietHoursTimezone || null
-
-  const existing = await prisma.agentConfig.findUnique({
-    where: { projectId: authResult.projectId },
-    include: { project: { select: { workspaceId: true } } },
-  })
-  if (!existing) {
-    return c.json({ error: 'Agent config not found' }, 404)
-  }
-
-  const enabled = data.heartbeatEnabled ?? existing.heartbeatEnabled
-  const interval = data.heartbeatInterval ?? existing.heartbeatInterval
-
-  if (enabled && existing.project?.workspaceId) {
-    const isPaid = await billingService.hasPaidSubscription(existing.project.workspaceId)
-    if (!isPaid) {
-      return c.json(
-        { error: { code: 'paywall', message: 'Heartbeats require a paid plan. Please upgrade to enable scheduled heartbeats.' } },
-        402
-      )
+  const { updateHeartbeatConfig, HeartbeatConfigError } = await import('./services/heartbeat-config.service')
+  let updated: any
+  try {
+    ;({ config: updated } = await updateHeartbeatConfig(
+      authResult.projectId,
+      {
+        heartbeatEnabled: typeof body.heartbeatEnabled === 'boolean' ? body.heartbeatEnabled : undefined,
+        heartbeatInterval: typeof body.heartbeatInterval === 'number' ? body.heartbeatInterval : undefined,
+        quietHoursStart: body.quietHoursStart,
+        quietHoursEnd: body.quietHoursEnd,
+        quietHoursTimezone: body.quietHoursTimezone,
+      },
+      { alwaysReschedule: true, createIfMissing: true },
+    ))
+  } catch (err) {
+    if (err instanceof HeartbeatConfigError) {
+      if (err.code === 'paywall') {
+        return c.json({ error: { code: 'paywall', message: err.message } }, 402)
+      }
+      if (err.code === 'not_found') return c.json({ error: err.message }, 404)
     }
+    throw err
   }
-
-  if (enabled) {
-    const jitter = Math.floor(Math.random() * interval * 0.1) * 1000
-    data.nextHeartbeatAt = new Date(Date.now() + interval * 1000 + jitter)
-  } else {
-    data.nextHeartbeatAt = null
-  }
-
-  const updated = await prisma.agentConfig.update({
-    where: { projectId: authResult.projectId },
-    data,
-    select: {
-      heartbeatEnabled: true,
-      heartbeatInterval: true,
-      nextHeartbeatAt: true,
-      lastHeartbeatAt: true,
-      quietHoursStart: true,
-      quietHoursEnd: true,
-      quietHoursTimezone: true,
-      modelName: true,
-    },
-  })
 
   const { resolveModelLabel } = await import('./services/model-registry.service')
   return c.json({
-    ...updated,
+    heartbeatEnabled: updated.heartbeatEnabled,
+    heartbeatInterval: updated.heartbeatInterval,
+    nextHeartbeatAt: updated.nextHeartbeatAt,
+    lastHeartbeatAt: updated.lastHeartbeatAt,
+    quietHoursStart: updated.quietHoursStart,
+    quietHoursEnd: updated.quietHoursEnd,
+    quietHoursTimezone: updated.quietHoursTimezone,
+    modelName: updated.modelName,
     modelLabel: updated.modelName ? await resolveModelLabel(updated.modelName) : null,
   })
 })
 
-// Sync heartbeat config from runtime config.json to DB (local mode).
-// Authenticated via x-runtime-token so the agent runtime can call it.
+// DEPRECATED: heartbeat settings now live only in the database, written
+// through the heartbeat config service. Kept for one release because cloud
+// runtime images can lag behind API deploys and still push config.json
+// heartbeat fields here. Authenticated via x-runtime-token (project or
+// workspace token scoped to the project's workspace).
 app.put('/api/projects/:projectId/heartbeat/sync', async (c) => {
   const projectId = c.req.param('projectId')
-  const token = c.req.header('x-runtime-token')
 
-  const { verifyRuntimeToken } = await import('./lib/runtime-token')
-  const verified = verifyRuntimeToken(token, projectId)
-  if (!verified.ok || verified.projectId !== projectId) {
+  const { authenticateRuntimeToken } = await import('./routes/internal-runtime-auth')
+  if (!(await authenticateRuntimeToken(c, projectId))) {
     return c.json({ error: 'Unauthorized' }, 401)
   }
 
   const body = await c.req.json()
-  const data: Record<string, any> = {}
 
-  if (typeof body.heartbeatEnabled === 'boolean') {
-    data.heartbeatEnabled = body.heartbeatEnabled
-  }
-  if (typeof body.heartbeatInterval === 'number' && body.heartbeatInterval >= 60) {
-    data.heartbeatInterval = body.heartbeatInterval
-  }
-
-  const existing = await prisma.agentConfig.findUnique({ where: { projectId } })
-  const enabled = data.heartbeatEnabled ?? existing?.heartbeatEnabled ?? false
-  const interval = data.heartbeatInterval ?? existing?.heartbeatInterval ?? 1800
-
-  if (enabled) {
-    const jitter = Math.floor(Math.random() * interval * 0.1) * 1000
-    data.nextHeartbeatAt = new Date(Date.now() + interval * 1000 + jitter)
-  } else {
-    data.nextHeartbeatAt = null
-  }
-
-  await prisma.agentConfig.upsert({
-    where: { projectId },
-    update: data,
-    create: {
+  const { updateHeartbeatConfig, HeartbeatConfigError } = await import('./services/heartbeat-config.service')
+  try {
+    await updateHeartbeatConfig(
       projectId,
-      heartbeatEnabled: enabled,
-      heartbeatInterval: interval,
-      nextHeartbeatAt: data.nextHeartbeatAt,
-      channels: [],
-    },
-  })
+      {
+        heartbeatEnabled: typeof body.heartbeatEnabled === 'boolean' ? body.heartbeatEnabled : undefined,
+        heartbeatInterval: typeof body.heartbeatInterval === 'number' ? body.heartbeatInterval : undefined,
+      },
+      { createIfMissing: true, alwaysReschedule: true },
+    )
+  } catch (err) {
+    if (err instanceof HeartbeatConfigError && err.code === 'paywall') {
+      return c.json({ error: { code: 'paywall', message: err.message } }, 402)
+    }
+    throw err
+  }
 
   return c.json({ ok: true })
 })

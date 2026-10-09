@@ -26,7 +26,6 @@ import {
 } from '../services/checkpoint.service'
 import { prisma } from '../lib/prisma'
 import { hydrateRepo } from '../services/git-repo-store'
-import { trackEvent } from '../services/loops.service'
 import {
   attachProject,
   detachProject,
@@ -390,8 +389,11 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
   /**
    * PUT /api/internal/heartbeat/config/:projectId
    *
-   * Update heartbeat scheduling config for an agent. Manages nextHeartbeatAt
-   * based on enabled/disabled state and interval changes.
+   * DEPRECATED shim over the heartbeat config service. Agents now change
+   * heartbeat settings through `PATCH /api/internal/projects/:id/config`
+   * (`configureProject`); this stays for one release because cloud runtime
+   * images can lag behind API deploys. Enforces the same paid-plan gate as
+   * the UI route.
    */
   app.put('/heartbeat/config/:projectId', async (c) => {
     const projectId = c.req.param('projectId')
@@ -402,53 +404,29 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     const body = await c.req.json()
 
     try {
-      const { prisma } = await import('../lib/prisma')
-      const data: Record<string, any> = {}
-
-      if (typeof body.heartbeatEnabled === 'boolean') {
-        data.heartbeatEnabled = body.heartbeatEnabled
-      }
-      if (typeof body.heartbeatInterval === 'number' && body.heartbeatInterval >= 60) {
-        data.heartbeatInterval = body.heartbeatInterval
-      }
-      if (body.quietHoursStart !== undefined) data.quietHoursStart = body.quietHoursStart || null
-      if (body.quietHoursEnd !== undefined) data.quietHoursEnd = body.quietHoursEnd || null
-      if (body.quietHoursTimezone !== undefined) data.quietHoursTimezone = body.quietHoursTimezone || null
-
-      const existing = await prisma.agentConfig.findUnique({ where: { projectId } })
-      if (!existing) {
-        return c.json({ error: 'Agent config not found' }, 404)
-      }
-
-      const enabled = data.heartbeatEnabled ?? existing.heartbeatEnabled
-      const interval = data.heartbeatInterval ?? existing.heartbeatInterval
-
-      if (enabled) {
-        const jitter = Math.floor(Math.random() * interval * 0.1) * 1000
-        data.nextHeartbeatAt = new Date(Date.now() + interval * 1000 + jitter)
-      } else {
-        data.nextHeartbeatAt = null
-      }
-
-      await prisma.agentConfig.update({
-        where: { projectId },
-        data,
-      })
-
-      // FIRE-AND-FORGET: track first heartbeat scheduled when enabling for the first time
-      if (enabled && !existing.heartbeatEnabled) {
-        // Look up the project owner to identify the user
-        prisma.project.findUnique({
-          where: { id: projectId },
-          select: { createdBy: true },
-        }).then((proj) => {
-          if (proj?.createdBy) {
-            trackEvent(proj.createdBy, 'first_heartbeat_scheduled', { project_id: projectId }).catch(() => {})
+      const { updateHeartbeatConfig, HeartbeatConfigError } = await import('../services/heartbeat-config.service')
+      try {
+        const { config } = await updateHeartbeatConfig(
+          projectId,
+          {
+            heartbeatEnabled: typeof body.heartbeatEnabled === 'boolean' ? body.heartbeatEnabled : undefined,
+            heartbeatInterval: typeof body.heartbeatInterval === 'number' ? body.heartbeatInterval : undefined,
+            quietHoursStart: body.quietHoursStart,
+            quietHoursEnd: body.quietHoursEnd,
+            quietHoursTimezone: body.quietHoursTimezone,
+          },
+          { alwaysReschedule: true },
+        )
+        return c.json({ ok: true, nextHeartbeatAt: config.nextHeartbeatAt })
+      } catch (err) {
+        if (err instanceof HeartbeatConfigError) {
+          if (err.code === 'not_found') return c.json({ error: 'Agent config not found' }, 404)
+          if (err.code === 'paywall') {
+            return c.json({ error: { code: 'paywall', message: err.message } }, 402)
           }
-        }).catch(() => {})
+        }
+        throw err
       }
-
-      return c.json({ ok: true, nextHeartbeatAt: data.nextHeartbeatAt })
     } catch (err: any) {
       console.error(`[Internal] Failed to update heartbeat config for ${projectId}:`, err.message)
       return c.json({ error: 'Failed to update heartbeat config' }, 500)

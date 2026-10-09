@@ -189,6 +189,78 @@ describe('AgentGateway integration', () => {
     expect(allText).toContain('Deployment failed')
   })
 
+  test('heartbeat runs the due project\'s checklist, not the merged root\'s, and logs in that project', async () => {
+    const projectDir = join(TEST_DIR, 'p-2')
+    mkdirSync(projectDir, { recursive: true })
+    writeFileSync(join(TEST_DIR, 'HEARTBEAT.md'), '- ROOT-ONLY task')
+    writeFileSync(join(projectDir, 'HEARTBEAT.md'), '- PROJECT-TWO task')
+
+    const prompts: string[] = []
+    const mockStream = createMockStreamFn([buildTextResponse('HEARTBEAT_OK')], (_idx, msgs) => {
+      for (const m of msgs) {
+        if (m.role !== 'user') continue
+        prompts.push(
+          typeof m.content === 'string'
+            ? m.content
+            : (m.content as any[]).filter((c: any) => c.type === 'text').map((c: any) => c.text).join(''),
+        )
+      }
+    })
+    gateway = new AgentGateway(TEST_DIR, 'test-project')
+    gateway.setStreamFn(mockStream)
+    await gateway.start()
+
+    const result = await gateway.triggerHeartbeat({ projectId: 'p-2', projectDir })
+
+    expect(result).toBe('HEARTBEAT_OK')
+    const all = prompts.join('\n')
+    expect(all).toContain('PROJECT-TWO task')
+    expect(all).not.toContain('ROOT-ONLY task')
+    expect(all).toContain('p-2')
+    expect(existsSync(join(projectDir, 'HEARTBEAT_LOG.md'))).toBe(true)
+    expect(existsSync(join(TEST_DIR, 'HEARTBEAT_LOG.md'))).toBe(false)
+  })
+
+  test('heartbeat for a project with no HEARTBEAT.md is a no-op that never calls the model', async () => {
+    const projectDir = join(TEST_DIR, 'p-empty')
+    mkdirSync(projectDir, { recursive: true })
+    // The merged root has a checklist, but the due project has none.
+    writeFileSync(join(TEST_DIR, 'HEARTBEAT.md'), '- ROOT-ONLY task')
+
+    let modelCalls = 0
+    const mockStream = createMockStreamFn([buildTextResponse('SHOULD NOT RUN')], () => { modelCalls++ })
+    gateway = new AgentGateway(TEST_DIR, 'test-project')
+    gateway.setStreamFn(mockStream)
+    await gateway.start()
+
+    const result = await gateway.triggerHeartbeat({ projectId: 'p-empty', projectDir })
+
+    expect(result).toBe('HEARTBEAT_OK')
+    expect(modelCalls).toBe(0)
+  })
+
+  test('heartbeat is not gated by quiet hours in the runtime (the scheduler enforces them from the DB)', async () => {
+    writeFileSync(join(TEST_DIR, 'HEARTBEAT.md'), '- Check system status')
+    // A stale config.json quiet-hours window covering the whole day must not suppress the run.
+    writeFileSync(
+      join(TEST_DIR, 'config.json'),
+      JSON.stringify({
+        quietHours: { start: '00:00', end: '23:59', timezone: 'UTC' },
+        channels: [],
+        model: { provider: 'anthropic', name: 'claude-sonnet-4-5' },
+      }),
+    )
+    let modelCalls = 0
+    const mockStream = createMockStreamFn([buildTextResponse('HEARTBEAT_OK')], () => { modelCalls++ })
+    gateway = new AgentGateway(TEST_DIR, 'test-project')
+    gateway.setStreamFn(mockStream)
+    await gateway.start()
+
+    await gateway.triggerHeartbeat()
+
+    expect(modelCalls).toBeGreaterThan(0)
+  })
+
   test('processWebhookMessage runs isolated turn', async () => {
     gateway = createGateway([buildTextResponse('Webhook processed.')])
     await gateway.start()

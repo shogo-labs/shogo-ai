@@ -4,7 +4,7 @@
  * Final-cluster sweep for gateway-tools.ts:
  *   - transcribe_audio (Whisper proxy + direct key + error paths)
  *   - generate_image (DALL-E + edit + path-traversal + error paths)
- *   - heartbeat_configure / heartbeat_status (config.json + scheduler hook)
+ *   - heartbeat_configure / heartbeat_status (moved to heartbeat-tools.test.ts)
  *   - create_plan / update_plan (.shogo/plans/ + dualPlan branch)
  *   - read_lints (lspManager off + on + edited-this-turn auto-scope)
  *
@@ -76,9 +76,6 @@ function ctxWith(over: Record<string, any> = {}): any {
     workspaceDir: TEST_DIR,
     channels: new Map(),
     config: {
-      heartbeatInterval: 1800,
-      heartbeatEnabled: false,
-      quietHours: { start: '23:00', end: '07:00', timezone: 'UTC' },
       channels: [],
       model: { provider: 'anthropic', name: 'claude-sonnet-4-5' },
     },
@@ -338,77 +335,6 @@ describe('gateway-tools final-cluster sweep', () => {
       const r = await call(ctx, 'generate_image', { prompt: 'x' })
       expect(r.error).toContain('Image generation error')
       expect(r.error).toContain('boom-net')
-    })
-  })
-
-  // ===================================================================
-  // heartbeat_configure / heartbeat_status
-  // ===================================================================
-  describe('heartbeat tools', () => {
-    test('configure: interval below 60 returns error', async () => {
-      const r = await call(ctxWith(), 'heartbeat_configure', { interval: 30 })
-      expect(r.error).toContain('at least 60')
-    })
-
-    test('configure: writes config.json and reports back', async () => {
-      const r = await call(ctxWith(), 'heartbeat_configure', {
-        enabled: true,
-        interval: 120,
-        quietHoursStart: '22:00',
-        quietHoursEnd: '08:00',
-        timezone: 'America/Los_Angeles',
-      })
-      expect(r.ok).toBe(true)
-      expect(r.enabled).toBe(true)
-      expect(r.interval).toBe(120)
-      const cfg = JSON.parse(readFileSync(join(TEST_DIR, 'config.json'), 'utf-8'))
-      expect(cfg.heartbeatInterval).toBe(120)
-      expect(cfg.quietHours.timezone).toBe('America/Los_Angeles')
-    })
-
-    test('configure: invokes updateHeartbeatConfig hook when present', async () => {
-      let captured: any = null
-      const ctx = ctxWith({
-        updateHeartbeatConfig: async (c: any) => {
-          captured = c
-        },
-      })
-      await call(ctx, 'heartbeat_configure', { enabled: true, interval: 60 })
-      expect(captured.heartbeatEnabled).toBe(true)
-      expect(captured.heartbeatInterval).toBe(60)
-    })
-
-    test('configure: surfaces hook throw', async () => {
-      const ctx = ctxWith({
-        updateHeartbeatConfig: async () => {
-          throw new Error('sched-down')
-        },
-      })
-      const r = await call(ctx, 'heartbeat_configure', { enabled: true })
-      expect(r.error).toContain('Failed to configure heartbeat')
-    })
-
-    test('status: returns defaults when no config and no HEARTBEAT.md', async () => {
-      const r = await call(ctxWith(), 'heartbeat_status', {})
-      expect(r.enabled).toBe(false)
-      expect(r.interval).toBe(1800)
-      expect(r.checklistLength).toBe(0)
-    })
-
-    test('status: reads checklist preview from HEARTBEAT.md', async () => {
-      writeFileSync(join(TEST_DIR, 'HEARTBEAT.md'), '# Tasks\n- review\n- summarize')
-      writeFileSync(join(TEST_DIR, 'config.json'), JSON.stringify({ heartbeatEnabled: true, heartbeatInterval: 600 }))
-      const r = await call(ctxWith(), 'heartbeat_status', {})
-      expect(r.enabled).toBe(true)
-      expect(r.interval).toBe(600)
-      expect(r.checklistLength).toBeGreaterThan(0)
-      expect(r.checklistPreview).toContain('Tasks')
-    })
-
-    test('status: tolerates corrupted config.json', async () => {
-      writeFileSync(join(TEST_DIR, 'config.json'), 'NOT JSON')
-      const r = await call(ctxWith(), 'heartbeat_status', {})
-      expect(r.enabled).toBe(false)
     })
   })
 

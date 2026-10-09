@@ -868,6 +868,26 @@ describe('installAgent — agentConfig defaults', () => {
   })
 })
 
+describe('installAgent — heartbeat scheduling', () => {
+  it('schedules nextHeartbeatAt when the source agent has heartbeats enabled', async () => {
+    const L = seedListing({ id: 'lst_hbon' })
+    L.project.agentConfig = { ...(L.project.agentConfig ?? {}), heartbeatEnabled: true, heartbeatInterval: 600 }
+    db.versions.push({ listingId: L.id, version: '1.0.0', workspaceSnapshot: { 'a': 'x' } })
+    await svc.installAgent({ listingId: L.id, userId: 'user_1', workspaceId: 'ws_1' })
+    const ac = db.agentConfigs[0]!
+    expect(ac.heartbeatEnabled).toBe(true)
+    expect(ac.nextHeartbeatAt).toBeInstanceOf(Date)
+  })
+
+  it('leaves nextHeartbeatAt null when heartbeats are disabled', async () => {
+    const L = seedListing({ id: 'lst_hboff' })
+    L.project.agentConfig = null
+    db.versions.push({ listingId: L.id, version: '1.0.0', workspaceSnapshot: { 'a': 'x' } })
+    await svc.installAgent({ listingId: L.id, userId: 'user_1', workspaceId: 'ws_1' })
+    expect(db.agentConfigs[0]!.nextHeartbeatAt).toBeNull()
+  })
+})
+
 describe('installAgent — settings normalization', () => {
   it('parses string settings', async () => {
     const L = seedListing({ id: 'lst_setstr' })

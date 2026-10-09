@@ -83,6 +83,8 @@ const prismaMock = {
   project: {
     findFirst: (args: any) => projectFindFirstImpl(args),
     findMany: async () => historyProjectIds,
+    // Heartbeat config service paywall lookup: no workspace → no billing gate.
+    findUnique: async () => ({ workspaceId: null, createdBy: null }),
   },
   member: { findFirst: async () => ({ id: 'member-1' }) },
   chatSession: {

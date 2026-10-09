@@ -21,7 +21,7 @@
  *
  * and was never reassigned anywhere else in the class. Every outbound call
  * that needs "which project am I" for its URL path (e.g.
- * `updateHeartbeatConfig`'s `PUT .../heartbeat/config/${this.projectId}`,
+ * the heartbeat tools' `PATCH .../projects/${projectId}/config`,
  * gateway-tools.ts's webchat widget URL, Composio session init) used this
  * frozen value for the lifetime of the process.
  *
@@ -70,11 +70,9 @@ function setupWorkspace() {
   writeFileSync(
     join(TEST_DIR, 'config.json'),
     JSON.stringify({
-      heartbeatInterval: 1800,
-      // Must be enabled or `filterDisabledCapabilityTools` strips
-      // heartbeat_configure/heartbeat_status before the LLM ever sees them.
-      heartbeatEnabled: true,
-      quietHours: { start: '23:00', end: '07:00', timezone: 'UTC' },
+      // The heartbeat tools are visible unless explicitly disabled; the
+      // schedule itself lives in the database, not config.json.
+      heartbeatToolsEnabled: true,
       channels: [],
       model: { provider: 'anthropic', name: 'claude-sonnet-4-5' },
     }),
@@ -142,10 +140,21 @@ describe('AgentGateway project identity survives a pool-assign race (regression)
     const captured: { url: string; headers: Record<string, string> }[] = []
     fetchSpy = spyOn(globalThis, 'fetch').mockImplementation(async (input: any, init?: any) => {
       const url = typeof input === 'string' ? input : input.url
-      if (url.includes('/api/internal/heartbeat/config/')) {
+      // heartbeat_configure PATCHes the project config (the gateway's own
+      // startup snapshot read is a GET and is ignored here).
+      if (url.includes('/api/internal/projects/') && init?.method === 'PATCH') {
         captured.push({ url, headers: (init?.headers ?? {}) as Record<string, string> })
       }
-      return new Response(JSON.stringify({ ok: true }), { status: 200 })
+      return new Response(
+        JSON.stringify({
+          ok: true,
+          project: {
+            id: REAL_PROJECT_ID,
+            agent: { heartbeatEnabled: true, heartbeatInterval: 1200, modelName: 'm', modelProvider: 'p', nextHeartbeatAt: null, lastHeartbeatAt: null },
+          },
+        }),
+        { status: 200 },
+      )
     })
 
     const mockStream = createMockStreamFn([
@@ -164,7 +173,7 @@ describe('AgentGateway project identity survives a pool-assign race (regression)
 
     // The URL path segment now reflects the live-assigned project, not the
     // pool placeholder captured at construction...
-    expect(url).toBe(`https://api.internal.test/api/internal/heartbeat/config/${REAL_PROJECT_ID}`)
+    expect(url).toBe(`https://api.internal.test/api/internal/projects/${REAL_PROJECT_ID}/config`)
 
     // ...and agrees with the auth token sent alongside it. Before the fix,
     // this URL was pinned to `__POOL__` forever, which apps/api/src/routes
@@ -172,7 +181,7 @@ describe('AgentGateway project identity survives a pool-assign race (regression)
     // `runtime_token_project_mismatch tokenProject=<real> projectId=__POOL__`
     // even though the token is legitimately signed for the real project.
     const token = headers['x-runtime-token']
-    const urlProjectId = url.split('/heartbeat/config/')[1]
+    const urlProjectId = url.split('/api/internal/projects/')[1].split('/config')[0]
     const tokenProjectId = token.split('_').slice(2, -1).join('_') // rt_v1_<projectId>_<hex>
     expect(urlProjectId).toBe(tokenProjectId)
     expect(urlProjectId).toBe(REAL_PROJECT_ID)

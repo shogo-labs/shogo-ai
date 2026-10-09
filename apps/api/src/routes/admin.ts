@@ -907,68 +907,51 @@ export function adminRoutes(): Hono {
     const projectId = c.req.param('projectId')
     try {
       const body = await c.req.json()
-      const data: Record<string, any> = {}
-
-      if (typeof body.heartbeatEnabled === 'boolean') {
-        data.heartbeatEnabled = body.heartbeatEnabled
-      }
-      if (typeof body.heartbeatInterval === 'number') {
-        if (body.heartbeatInterval < 60) {
-          return c.json(
-            { error: { code: 'invalid_interval', message: 'heartbeatInterval must be >= 60 seconds' } },
-            400
-          )
+      const { updateHeartbeatConfig, HeartbeatConfigError } = await import('../services/heartbeat-config.service')
+      let updated: any
+      try {
+        ;({ config: updated } = await updateHeartbeatConfig(
+          projectId,
+          {
+            heartbeatEnabled: typeof body.heartbeatEnabled === 'boolean' ? body.heartbeatEnabled : undefined,
+            heartbeatInterval: typeof body.heartbeatInterval === 'number' ? body.heartbeatInterval : undefined,
+            quietHoursStart: body.quietHoursStart,
+            quietHoursEnd: body.quietHoursEnd,
+            quietHoursTimezone: body.quietHoursTimezone,
+          },
+          // Admin override: bypasses the paid-plan gate and is not the
+          // user's own "first heartbeat" milestone.
+          { enforcePaywall: false, strictInterval: true, trackFirstEnable: false },
+        ))
+      } catch (err) {
+        if (err instanceof HeartbeatConfigError) {
+          if (err.code === 'invalid_interval') {
+            return c.json(
+              { error: { code: 'invalid_interval', message: 'heartbeatInterval must be >= 60 seconds' } },
+              400,
+            )
+          }
+          if (err.code === 'not_found') {
+            return c.json({ error: { code: 'not_found', message: 'Agent config not found' } }, 404)
+          }
         }
-        data.heartbeatInterval = body.heartbeatInterval
+        throw err
       }
-      if (body.quietHoursStart !== undefined) data.quietHoursStart = body.quietHoursStart || null
-      if (body.quietHoursEnd !== undefined) data.quietHoursEnd = body.quietHoursEnd || null
-      if (body.quietHoursTimezone !== undefined) {
-        data.quietHoursTimezone = body.quietHoursTimezone || null
-      }
-
-      const existing = await prisma.agentConfig.findUnique({ where: { projectId } })
-      if (!existing) {
-        return c.json({ error: { code: 'not_found', message: 'Agent config not found' } }, 404)
-      }
-
-      const enabled = data.heartbeatEnabled ?? existing.heartbeatEnabled
-      const interval = data.heartbeatInterval ?? existing.heartbeatInterval
-      const intervalChanged =
-        typeof data.heartbeatInterval === 'number' && data.heartbeatInterval !== existing.heartbeatInterval
-      const enabledFlipped =
-        typeof data.heartbeatEnabled === 'boolean' && data.heartbeatEnabled !== existing.heartbeatEnabled
-
-      if (!enabled) {
-        data.nextHeartbeatAt = null
-      } else if (enabledFlipped || intervalChanged) {
-        const { computeJitter } = await import('../lib/base-heartbeat-scheduler')
-        const jitter = computeJitter(interval)
-        data.nextHeartbeatAt = new Date(Date.now() + interval * 1000 + jitter)
-      }
-
-      const updated = await prisma.agentConfig.update({
-        where: { projectId },
-        data,
-        select: {
-          id: true,
-          projectId: true,
-          heartbeatEnabled: true,
-          heartbeatInterval: true,
-          nextHeartbeatAt: true,
-          lastHeartbeatAt: true,
-          quietHoursStart: true,
-          quietHoursEnd: true,
-          quietHoursTimezone: true,
-          modelProvider: true,
-          modelName: true,
-        },
-      })
 
       return c.json({
         ok: true,
         data: {
-          ...updated,
+          id: updated.id,
+          projectId: updated.projectId,
+          heartbeatEnabled: updated.heartbeatEnabled,
+          heartbeatInterval: updated.heartbeatInterval,
+          nextHeartbeatAt: updated.nextHeartbeatAt,
+          lastHeartbeatAt: updated.lastHeartbeatAt,
+          quietHoursStart: updated.quietHoursStart,
+          quietHoursEnd: updated.quietHoursEnd,
+          quietHoursTimezone: updated.quietHoursTimezone,
+          modelProvider: updated.modelProvider,
+          modelName: updated.modelName,
           modelLabel: updated.modelName ? await resolveModelLabel(updated.modelName) : null,
         },
       })

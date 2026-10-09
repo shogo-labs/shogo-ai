@@ -340,6 +340,26 @@ describe('POST /import — additional edges', () => {
 // ─── runImport — error / corner branches ──────────────────────────────────
 
 describe('runImport — additional corner branches', () => {
+  test('an imported agent with heartbeats enabled is scheduled (nextHeartbeatAt set)', async () => {
+    members.set('m-1', { id: 'm-1', userId: 'u-1', workspaceId: 'w-1' })
+    const buf = zipSync({
+      'project.json': strToU8(
+        makeProjectJson({
+          agentConfig: {
+            heartbeatInterval: 900, heartbeatEnabled: true,
+            modelProvider: 'anthropic', modelName: 'claude-haiku-4-5', channels: [],
+          },
+        }),
+      ),
+    })
+    const result = await runImport(buf, 'w-1', 'u-1', { includeChats: false, passphrase: '', runBootstrap: false }, () => {})
+    expect(result.ok).toBe(true)
+    const created = agentConfigs.find((a) => a.heartbeatEnabled === true && a.heartbeatInterval === 900)
+    expect(created).toBeDefined()
+    // Without this the scheduler (nextHeartbeatAt <= NOW()) never picks the row up.
+    expect(created!.nextHeartbeatAt).toBeInstanceOf(Date)
+  })
+
   test('unsafe path "../../etc/passwd" inside the zip is rejected (skipped) without crashing', async () => {
     members.set('m-1', { id: 'm-1', userId: 'u-1', workspaceId: 'w-1' })
     const buf = zipSync({

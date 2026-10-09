@@ -23,6 +23,7 @@ import {
   shouldAutoStartAnchorPreview,
   userOwnedTrustGroups,
   defaultShellCwd,
+  resolveHeartbeatTarget,
   type WorkspaceMount,
 } from '../workspace-runtime-mode'
 
@@ -351,5 +352,58 @@ describe('defaultShellCwd', () => {
   it('leaves single-project runtimes and anchorless workspace runtimes alone', () => {
     expect(defaultShellCwd('/ws/p1', {}, everything)).toBe('/ws/p1')
     expect(defaultShellCwd(root, { WORKSPACE_RUNTIME: 'true' }, everything)).toBe(root)
+  })
+})
+
+describe('resolveHeartbeatTarget', () => {
+  const root = '/ws'
+  const ws = { isWorkspaceRuntime: true, workspaceDir: root, attachedIds: ['p-anchor', 'p-2'] }
+
+  it('runs the project named by the scheduler out of its own subfolder of the merged root', () => {
+    expect(resolveHeartbeatTarget({ ...ws, requestedId: 'p-2', fallbackId: 'p-anchor' })).toEqual({
+      ok: true,
+      projectId: 'p-2',
+      projectDir: join(root, 'p-2'),
+    })
+  })
+
+  it('falls back to the heartbeat project when an older API sends no body', () => {
+    expect(resolveHeartbeatTarget({ ...ws, requestedId: undefined, fallbackId: 'p-anchor' })).toEqual({
+      ok: true,
+      projectId: 'p-anchor',
+      projectDir: join(root, 'p-anchor'),
+    })
+    // An empty / non-string id is treated as absent.
+    expect(resolveHeartbeatTarget({ ...ws, requestedId: '', fallbackId: 'p-anchor' })).toMatchObject({ ok: true, projectId: 'p-anchor' })
+    expect(resolveHeartbeatTarget({ ...ws, requestedId: 42, fallbackId: 'p-anchor' })).toMatchObject({ ok: true, projectId: 'p-anchor' })
+  })
+
+  it('refuses a project that is not attached to this workspace runtime', () => {
+    expect(resolveHeartbeatTarget({ ...ws, requestedId: 'p-other', fallbackId: 'p-anchor' })).toEqual({
+      ok: false,
+      projectId: 'p-other',
+    })
+  })
+
+  it('never resolves the runtime\'s own ws:<workspaceId> identity as a project', () => {
+    expect(resolveHeartbeatTarget({ ...ws, requestedId: 'ws:workspace-1' })).toEqual({
+      ok: false,
+      projectId: 'ws:workspace-1',
+    })
+  })
+
+  it('fails when there is neither a requested nor a fallback project', () => {
+    expect(resolveHeartbeatTarget({ ...ws })).toEqual({ ok: false, projectId: undefined })
+  })
+
+  it('a single-project runtime serves its working directory', () => {
+    expect(
+      resolveHeartbeatTarget({
+        isWorkspaceRuntime: false,
+        workspaceDir: '/ws/p1',
+        attachedIds: [],
+        requestedId: 'p1',
+      }),
+    ).toEqual({ ok: true, projectId: 'p1', projectDir: '/ws/p1' })
   })
 })

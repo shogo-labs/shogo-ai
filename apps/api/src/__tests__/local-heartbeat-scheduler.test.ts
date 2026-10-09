@@ -55,14 +55,35 @@ afterEach(() => {
 
 describe('fetchDueAgents()', () => {
   test('forwards to prisma.agentConfig.findMany with the expected shape', async () => {
-    findManyResult.value = [{ id: 'a', projectId: 'p' }]
+    findManyResult.value = [{ id: 'a', projectId: 'p', nextHeartbeatAt: new Date() }]
     const s = new LocalHeartbeatScheduler()
     const out = await (s as any).fetchDueAgents()
-    expect(out).toEqual([{ id: 'a', projectId: 'p' }])
+    expect(out).toEqual([{ id: 'a', projectId: 'p', unscheduled: false }])
     expect(prismaCalls.findMany).toHaveLength(1)
-    expect(prismaCalls.findMany[0]).toMatchObject({
-      where: { heartbeatEnabled: true },
-    })
+    expect(prismaCalls.findMany[0].where.heartbeatEnabled).toBe(true)
+  })
+
+  test('selects enabled rows that are due OR have no nextHeartbeatAt (self-heal)', async () => {
+    const s = new LocalHeartbeatScheduler()
+    await (s as any).fetchDueAgents()
+    const { OR } = prismaCalls.findMany[0].where
+    expect(OR).toHaveLength(2)
+    expect(OR[0]).toEqual({ nextHeartbeatAt: null })
+    expect(OR[1].nextHeartbeatAt.lte).toBeInstanceOf(Date)
+  })
+
+  test('marks rows with a null nextHeartbeatAt as unscheduled so they are repaired, not fired', async () => {
+    findManyResult.value = [
+      { id: 'a', projectId: 'p1', nextHeartbeatAt: null },
+      { id: 'b', projectId: 'p2', nextHeartbeatAt: new Date(Date.now() - 1000) },
+    ]
+    const s = new LocalHeartbeatScheduler()
+    const out = await (s as any).fetchDueAgents()
+    expect(out.map((r: any) => [r.projectId, r.unscheduled])).toEqual([
+      ['p1', true],
+      ['p2', false],
+    ])
+    expect(out.every((r: any) => !('nextHeartbeatAt' in r))).toBe(true)
   })
 
   test('returns [] silently when the agent_configs table does not exist', async () => {
@@ -120,6 +141,8 @@ describe('triggerAgent()', () => {
     await (s as any).triggerAgent('proj-1')
     expect(fetched[0].url).toBe('http://localhost:4321/agent/heartbeat/trigger')
     expect(fetched[0].init.headers['x-runtime-token']).toBe('tok-proj-1')
+    // The workspace runtime needs to know which project is due.
+    expect(JSON.parse(fetched[0].init.body)).toEqual({ projectId: 'proj-1' })
     const stats = s.getStats()
     expect(stats.totalTriggered).toBe(1)
   })

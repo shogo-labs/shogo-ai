@@ -174,6 +174,7 @@ import {
   buildWorkspacePreviewPath,
   parseWorkspacePreviewUrls,
   isAttachedProjectId,
+  resolveHeartbeatTarget,
   parseWorkspaceMounts,
   shouldAutoStartAnchorPreview,
   userOwnedTrustGroups,
@@ -1402,7 +1403,8 @@ app.get('/agent/config', (c) => {
   return c.json({})
 })
 
-// Update agent config — deep-merge fields into config.json and hot-reload the gateway
+// Update agent config — deep-merge fields into config.json and hot-reload the gateway.
+// Schedule fields are not accepted here (see below).
 app.patch('/agent/config', async (c) => {
   const body = await c.req.json() as Record<string, unknown>
   if (!body || typeof body !== 'object') {
@@ -1419,6 +1421,17 @@ app.patch('/agent/config', async (c) => {
       }
     }
 
+    // The heartbeat schedule (enabled, interval, quiet hours) lives in the
+    // database and is changed through heartbeat_configure / the project config
+    // API, never config.json. `heartbeatEnabled` is the pre-split name of the
+    // capability toggle (`heartbeatToolsEnabled`).
+    if ('heartbeatEnabled' in body) {
+      if (!('heartbeatToolsEnabled' in body)) body.heartbeatToolsEnabled = body.heartbeatEnabled
+      delete body.heartbeatEnabled
+    }
+    delete body.heartbeatInterval
+    delete body.quietHours
+
     // Support flat convenience aliases for the nested model key
     if (('modelName' in body || 'modelProvider' in body) && !('model' in body)) {
       const existing = (fileConfig.model ?? {}) as Record<string, string>
@@ -1433,7 +1446,7 @@ app.patch('/agent/config', async (c) => {
 
     // Deep merge (one level) for known nested object keys so partial
     // updates like { model: { name: "..." } } preserve existing fields
-    const NESTED_KEYS = ['model', 'quietHours', 'session', 'loopDetection', 'streamChunk', 'sandbox'] as const
+    const NESTED_KEYS = ['model', 'session', 'loopDetection', 'streamChunk', 'sandbox'] as const
     for (const key of NESTED_KEYS) {
       if (key in body && body[key] && typeof body[key] === 'object' && !Array.isArray(body[key])
           && fileConfig[key] && typeof fileConfig[key] === 'object' && !Array.isArray(fileConfig[key])) {
@@ -1444,25 +1457,6 @@ app.patch('/agent/config', async (c) => {
     Object.assign(fileConfig, body)
     writeFileSync(configPath, JSON.stringify(fileConfig, null, 2), 'utf-8')
     agentGateway?.reloadConfig()
-
-    // Sync heartbeat fields to the API's agent_configs DB table so the
-    // local scheduler picks them up. Fire-and-forget.
-    if ('heartbeatEnabled' in body || 'heartbeatInterval' in body) {
-      const toolsProxyUrl = process.env.TOOLS_PROXY_URL
-      const projectId = state.currentProjectId || process.env.PROJECT_ID
-      const runtimeToken = process.env.RUNTIME_AUTH_SECRET
-      if (toolsProxyUrl && projectId && runtimeToken) {
-        const apiBase = toolsProxyUrl.replace(/\/api(\/.*)?$/, '/api')
-        fetch(`${apiBase}/projects/${projectId}/heartbeat/sync`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json', 'x-runtime-token': runtimeToken },
-          body: JSON.stringify({
-            heartbeatEnabled: fileConfig.heartbeatEnabled,
-            heartbeatInterval: fileConfig.heartbeatInterval,
-          }),
-        }).catch(() => {})
-      }
-    }
 
     return c.json({ ok: true })
   } catch (error: any) {
@@ -2797,6 +2791,16 @@ function getAnchorProjectId(): string | undefined {
 }
 
 /**
+ * The real project id to use when this runtime talks to the API about "its"
+ * project (heartbeat reports, config reads). In a workspace runtime
+ * `state.currentProjectId` is the `ws:<workspaceId>` identity, which is not a
+ * project, so use the anchor project instead.
+ */
+function getHeartbeatProjectId(): string | undefined {
+  return getAnchorProjectId() ?? state.currentProjectId ?? process.env.PROJECT_ID
+}
+
+/**
  * The PreviewManager that the bare runtime root should reflect: the anchor's
  * own workspace-scoped PreviewManager in workspace mode (its dist/ is what
  * `/`, `/preview/status`, etc. must serve — see `getWorkspacePreviewManager`'s
@@ -3755,7 +3759,11 @@ app.post('/agent/hooks/wake', async (c) => {
   }
 
   try {
-    const result = await agentGateway.triggerHeartbeat()
+    const heartbeatProjectId = getHeartbeatProjectId()
+    const heartbeatProjectDir = heartbeatProjectId ? getProjectWorkspaceDir(heartbeatProjectId) : null
+    const result = await agentGateway.triggerHeartbeat(
+      heartbeatProjectId && heartbeatProjectDir ? { projectId: heartbeatProjectId, projectDir: heartbeatProjectDir } : {},
+    )
     return c.json({ ok: true, mode: 'now', result: result.substring(0, 500) })
   } catch (error: any) {
     return c.json({ error: error.message }, 500)
@@ -4021,9 +4029,29 @@ app.post('/agent/heartbeat/trigger', async (c) => {
     return c.json({ error: 'Agent gateway not running' }, 503)
   }
 
+  // The scheduler names the project that is due. A workspace runtime serves
+  // several attached projects, so the heartbeat must run against THAT
+  // project's HEARTBEAT.md and report back under ITS id (`state.currentProjectId`
+  // is `ws:<workspaceId>` here, which the API doesn't recognise as a project).
+  // Older API builds send no body; fall back to the heartbeat project.
+  const body = (await c.req.json().catch(() => null)) as { projectId?: unknown } | null
+  const target = resolveHeartbeatTarget({
+    requestedId: body?.projectId,
+    fallbackId: getHeartbeatProjectId(),
+    isWorkspaceRuntime: IS_WORKSPACE_RUNTIME,
+    workspaceDir: WORKSPACE_DIR,
+    attachedIds: effectiveWorkspaceProjectIds(),
+  })
+  if (!target.ok) {
+    return c.json(
+      { error: 'project_not_attached', message: `Project ${target.projectId ?? '(none)'} is not attached to this runtime` },
+      404,
+    )
+  }
+  const { projectId, projectDir } = target
+
   // Fire-and-forget: run heartbeat asynchronously
-  const projectId = state.currentProjectId!
-  agentGateway.triggerHeartbeat().then(async () => {
+  agentGateway.triggerHeartbeat({ projectId, projectDir }).then(async () => {
     try {
       await reportHeartbeatComplete(projectId)
     } catch (err: any) {
@@ -4033,7 +4061,7 @@ app.post('/agent/heartbeat/trigger', async (c) => {
     console.error('[Heartbeat] Heartbeat tick failed:', err.message)
   })
 
-  return c.json({ ok: true, async: true })
+  return c.json({ ok: true, async: true, projectId })
 })
 
 // Permission approval response (local mode security)

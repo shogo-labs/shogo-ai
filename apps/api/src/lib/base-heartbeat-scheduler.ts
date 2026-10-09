@@ -86,6 +86,12 @@ export interface DueAgent {
   quietHoursStart?: string | null
   quietHoursEnd?: string | null
   quietHoursTimezone?: string | null
+  /**
+   * The row is enabled but has no `nextHeartbeatAt` (written by a path that
+   * forgot to schedule it). The scheduler only gives it a next-run time —
+   * it never fires straight away, so a bulk import can't cause a burst.
+   */
+  unscheduled?: boolean
 }
 
 // ─── Scheduler stats ─────────────────────────────────────────────────────────
@@ -267,28 +273,34 @@ export abstract class BaseHeartbeatScheduler {
     const triggers: Promise<void>[] = []
 
     for (const agent of dueAgents) {
-      if (this.breaker.isBackedOff(agent.projectId)) continue
-
       const jitter = computeJitter(agent.heartbeatInterval)
+      const nextHeartbeatAt = new Date(Date.now() + agent.heartbeatInterval * 1000 + jitter)
+
+      if (agent.unscheduled) {
+        // Repair: schedule, don't fire. (Claiming fetchers already did this.)
+        if (!this.claimsOnFetch) {
+          await prisma.agentConfig.update({ where: { id: agent.id }, data: { nextHeartbeatAt } })
+        }
+        console.warn(
+          `[${this.config.logPrefix}] Project ${agent.projectId} had heartbeats enabled with no next run; scheduled it`
+        )
+        continue
+      }
+
+      if (this.breaker.isBackedOff(agent.projectId)) continue
 
       if (isInQuietHours(agent.quietHoursStart ?? null, agent.quietHoursEnd ?? null, agent.quietHoursTimezone ?? null)) {
         this.totalQuietSkips++
         this.onQuietHoursSkip(agent)
-        await prisma.agentConfig.update({
-          where: { id: agent.id },
-          data: {
-            nextHeartbeatAt: new Date(Date.now() + agent.heartbeatInterval * 1000 + jitter),
-          },
-        })
+        if (!this.claimsOnFetch) {
+          await prisma.agentConfig.update({ where: { id: agent.id }, data: { nextHeartbeatAt } })
+        }
         continue
       }
 
-      await prisma.agentConfig.update({
-        where: { id: agent.id },
-        data: {
-          nextHeartbeatAt: new Date(Date.now() + agent.heartbeatInterval * 1000 + jitter),
-        },
-      })
+      if (!this.claimsOnFetch) {
+        await prisma.agentConfig.update({ where: { id: agent.id }, data: { nextHeartbeatAt } })
+      }
 
       triggers.push(this.triggerAgent(agent.projectId))
     }
@@ -317,9 +329,19 @@ export abstract class BaseHeartbeatScheduler {
   }
 
   /**
+   * True when `fetchDueAgents` already advanced `nextHeartbeatAt` for every
+   * row it returns (an atomic claim), so `processBatch` must not write it
+   * again. Concurrent schedulers can then never pick up the same row.
+   */
+  protected get claimsOnFetch(): boolean {
+    return false
+  }
+
+  /**
    * Query the database for agents whose heartbeat is due.
    * Cloud uses raw SQL with FOR UPDATE SKIP LOCKED + subscription join.
    * Local uses Prisma findMany without subscription check.
+   * Rows enabled with no `nextHeartbeatAt` are returned with `unscheduled: true`.
    */
   protected abstract fetchDueAgents(): Promise<DueAgent[]>
 

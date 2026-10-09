@@ -202,6 +202,26 @@ describe('fetchDueAgents — SQL contract', () => {
     expect(values).toContain(PRISMA_EMPTY)
   })
 
+  test('claims due rows atomically: one statement selects FOR UPDATE and UPDATEs nextHeartbeatAt', async () => {
+    const s = new TestableScheduler()
+    await s._fetchDueAgents()
+    const fragments = queryRawMock.mock.calls[0][0] as unknown as string[]
+    const sql = (Array.isArray(fragments) ? fragments.join(' ') : String(fragments)).toLowerCase()
+    expect(sql).toContain('update "agent_configs"')
+    expect(sql).toMatch(/set "nextheartbeatat" = now\(\)/)
+    expect(sql).toContain('returning')
+    expect((s as any).claimsOnFetch).toBe(true)
+  })
+
+  test('also selects enabled rows with a NULL nextHeartbeatAt and flags them unscheduled (self-heal)', async () => {
+    const s = new TestableScheduler()
+    await s._fetchDueAgents()
+    const fragments = queryRawMock.mock.calls[0][0] as unknown as string[]
+    const sql = (Array.isArray(fragments) ? fragments.join(' ') : String(fragments)).toLowerCase()
+    expect(sql).toContain('"nextheartbeatat" is null')
+    expect(sql).toContain('"unscheduled"')
+  })
+
   test('forwards the result of $queryRaw verbatim', async () => {
     const rows = [
       { id: 'cfg-1', projectId: 'p1', heartbeatInterval: 60 },
@@ -241,6 +261,8 @@ describe('triggerAgent — happy path', () => {
     expect(init.method).toBe('POST')
     expect(init.headers['Content-Type']).toBe('application/json')
     expect(init.headers['x-runtime-token']).toBe('rt_v1_proj-X_TOKEN')
+    // A workspace runtime serves many projects, so the due project is named.
+    expect(JSON.parse(init.body)).toEqual({ projectId: 'proj-X' })
     expect(init.signal).toBeDefined() // AbortSignal.timeout
   })
 
