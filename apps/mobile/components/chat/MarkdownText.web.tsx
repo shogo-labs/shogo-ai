@@ -16,6 +16,10 @@ import {
 export interface MarkdownTextProps {
   children: string
   className?: string
+  /**
+   * `false` renders the text as finished markdown (one parse, no
+   * incomplete-markdown repair). Leave unset for text that may still grow.
+   */
   isStreaming?: boolean
   /** Opens a workspace file when the text mentions its path. */
   onFilePress?: (path: string) => void
@@ -105,6 +109,7 @@ export const MarkdownText = memo(
     return (
       <Streamdown
         className={cls}
+        mode={isStreaming === false ? "static" : "streaming"}
         isAnimating={isStreaming}
         linkSafety={linkSafetyOff}
         controls={false}

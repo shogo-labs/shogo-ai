@@ -167,6 +167,7 @@ import {
   findMissingTopLevelDeps,
   migrateLegacyShogoSdkPin,
   runWorkspaceInstall,
+  inFlightWorkspaceInstall,
   resolveWorkspaceTechStackId,
 } from './workspace-defaults'
 
@@ -2395,6 +2396,16 @@ export class PreviewManager {
     // this decision.
     const startedWithPrebuiltDist = this._phase === 'ready'
 
+    // `start()` returns before this finishes, so a restart can land mid-way
+    // and run its own setup. `stop()` bumps the generation; past that point
+    // this run must not start anything, or it races the restart's API server.
+    const generation = this.apiServerGeneration
+    const superseded = () => {
+      if (generation === this.apiServerGeneration) return false
+      console.log(`[${LOG_PREFIX}] Abandoning background setup superseded by a stop()/restart()`)
+      return true
+    }
+
     // If a pool pre-warm is still in flight (an assign that landed before the
     // unassigned pod finished pre-warming), let it settle first so we reuse
     // its prisma client / dev.db / generated server.tsx instead of racing a
@@ -2407,14 +2418,18 @@ export class PreviewManager {
       }
     }
 
+    if (superseded()) return
     await this.installDepsIfNeeded(timings)
+    if (superseded()) return
     await this.runPrismaIfNeeded(timings)
+    if (superseded()) return
 
     if (!startedWithPrebuiltDist) {
       this._phase = 'building'
     }
     await this.startBuildWatch()
     timings.buildWatch = 0
+    if (superseded()) return
 
     if (!startedWithPrebuiltDist) {
       this._phase = 'starting-api'
@@ -2586,6 +2601,16 @@ export class PreviewManager {
     //      stamp a hash on a tree we just declared stale.
     try { migrateLegacyShogoSdkPin(installCwd) } catch (err: any) {
       console.warn(`[${LOG_PREFIX}] migrateLegacyShogoSdkPin threw: ${err?.message ?? err}`)
+    }
+
+    // A running install leaves node_modules half-written, and the project
+    // source restored over it mid-install carries the dev workspace's install
+    // marker, so the marker and top-level probe below would both pass. Let the
+    // install finish first (it repeats until package.json stops changing).
+    const inFlight = inFlightWorkspaceInstall(installCwd)
+    if (inFlight) {
+      console.log(`[${LOG_PREFIX}] install in flight for ${installCwd} — waiting before checking the install marker`)
+      await inFlight.catch(() => {})
     }
 
     const hasNodeModules = existsSync(join(installCwd, 'node_modules'))
@@ -3149,11 +3174,16 @@ export class PreviewManager {
 
   /**
    * Write a thin Vite config wrapper inside `.shogo/` that imports the
-   * workspace's `vite.config.ts` and adds `server.watch.ignored` for
-   * `.shogo/**`. This prevents the build-log infinite loop: Vite's
-   * chokidar detects writes to `.shogo/logs/build.log` (made by
-   * `emitBuildLine`) and triggers a rebuild, which writes more log
-   * lines, ad infinitum.
+   * workspace's `vite.config.ts` and excludes `.shogo/**` from watching.
+   * This prevents rebuild loops: every build writes runtime state into
+   * `.shogo/` (build log, output manifest, prune history, fingerprint),
+   * and if any of those files is watched the write triggers another
+   * build, ad infinitum.
+   *
+   * `vite build --watch` only honours `build.watch` (Rollup's watcher);
+   * `server.watch` applies to the dev server alone. Tailwind v4 registers
+   * every non-gitignored project file as a CSS dependency, so without
+   * `build.watch.exclude` the `.shogo/` state files are watched.
    *
    * The wrapper is written on every `startBuildWatch` call — cheap
    * (single writeFileSync) and idempotent. Existing workspaces whose
@@ -3177,6 +3207,11 @@ export class PreviewManager {
       '  server: {',
       '    watch: {',
       "      ignored: ['**/.shogo/**'],",
+      '    },',
+      '  },',
+      '  build: {',
+      '    watch: {',
+      "      exclude: ['**/.shogo/**'],",
       '    },',
       '  },',
       `  plugins: [${buildOutputManifestPluginSource(join(shogoDir, BUILD_OUTPUT_MANIFEST))}],`,
@@ -3517,6 +3552,15 @@ export class PreviewManager {
     const generation = this.apiServerGeneration
     const isStaleAttempt = () => generation !== this.apiServerGeneration
     const cwd = this.bundlerCwd
+
+    // Every path that wants a fresh server kills the current one first, so a
+    // live healthy process here is ours to keep — the reap below would
+    // otherwise SIGKILL it as a "stale sidecar" and trip crash recovery.
+    const running = this.apiServerProcess
+    if (running && !running.killed && running.exitCode === null && running.signalCode === null && this.apiPhase === 'healthy') {
+      console.log(`[${LOG_PREFIX}] API server already healthy on port ${this.apiPort} — keeping it`)
+      return
+    }
 
     // Clear any orphaned sidecar squatting our port BEFORE the (slower)
     // generate/drift steps below, so the fresh spawn never races an

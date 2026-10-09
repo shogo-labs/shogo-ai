@@ -309,6 +309,53 @@ describe('POST /projects/:projectId/chat', () => {
     }
   })
 
+  // Regression: the metal fetch budget was an AbortSignal.timeout on the whole
+  // fetch, so it also aborted the response body — every metal turn longer than
+  // 90s was cut mid-stream ("Background reader error: The operation timed out").
+  test('metal fetch budget does not cut a turn that streams past it', async () => {
+    const prevK8s = process.env.KUBERNETES_SERVICE_HOST
+    const prevAll = process.env.SHOGO_METAL_ALL_PROJECTS
+    const prevBudget = process.env.METAL_CHAT_FETCH_TIMEOUT_MS
+    process.env.KUBERNETES_SERVICE_HOST = 'k8s.test'
+    process.env.SHOGO_METAL_ALL_PROJECTS = 'true'
+    process.env.METAL_CHAT_FETCH_TIMEOUT_MS = '50'
+    const enc = new TextEncoder()
+    nextFetchResponse = () => {
+      const signal = lastFetchInit?.signal
+      const body = new ReadableStream<Uint8Array>({
+        async start(controller) {
+          signal?.addEventListener('abort', () => {
+            try { controller.error(signal.reason) } catch { /* closed */ }
+          })
+          controller.enqueue(enc.encode('data: {"type":"text-delta","delta":"first"}\n\n'))
+          await new Promise((r) => setTimeout(r, 200))
+          if (signal?.aborted) return
+          controller.enqueue(enc.encode('data: {"type":"text-delta","delta":"second"}\n\n'))
+          controller.close()
+        },
+      })
+      return new Response(body, { status: 200, headers: { 'Content-Type': 'text/event-stream' } })
+    }
+    try {
+      const app = buildApp()
+      const res = await app.fetch(new Request('http://x/api/projects/p-1/chat', {
+        method: 'POST',
+        body: JSON.stringify({ chatSessionId: 's-1' }),
+      }))
+      expect(res.status).toBe(200)
+      const text = await res.text()
+      expect(text).toContain('first')
+      expect(text).toContain('second')
+    } finally {
+      if (prevK8s === undefined) delete process.env.KUBERNETES_SERVICE_HOST
+      else process.env.KUBERNETES_SERVICE_HOST = prevK8s
+      if (prevAll === undefined) delete process.env.SHOGO_METAL_ALL_PROJECTS
+      else process.env.SHOGO_METAL_ALL_PROJECTS = prevAll
+      if (prevBudget === undefined) delete process.env.METAL_CHAT_FETCH_TIMEOUT_MS
+      else process.env.METAL_CHAT_FETCH_TIMEOUT_MS = prevBudget
+    }
+  })
+
   test('streams a successful runtime response with trusted billing user and model downgrade', async () => {
     hasAdvancedModelAccessResult = false
     nextFetchResponse = () => new Response('data: {"type":"text","text":"hi"}\n\n', {
@@ -499,6 +546,19 @@ describe('GET /projects/:projectId/chat/:chatSessionId/stream', () => {
     expect(res.headers.get('Transfer-Encoding')).toBeNull()
     // fromSeq propagates to upstream URL.
     expect(lastFetchUrl).toContain('fromSeq=10')
+  })
+
+  test('forwards ?snapshot=1 to the runtime, alone or with fromSeq', async () => {
+    nextFetchResponse = () => new Response('data: hi\n\n', { status: 200 })
+    const app = buildApp()
+    await app.fetch(new Request('http://x/api/projects/p-1/chat/s-1/stream?snapshot=1'))
+    expect(lastFetchUrl).toContain('/agent/chat/s-1/stream?snapshot=1')
+    await app.fetch(new Request('http://x/api/projects/p-1/chat/s-1/stream?fromSeq=4&snapshot=1'))
+    expect(lastFetchUrl).toContain('fromSeq=4')
+    expect(lastFetchUrl).toContain('snapshot=1')
+    // Anything but `1` is not forwarded.
+    await app.fetch(new Request('http://x/api/projects/p-1/chat/s-1/stream?snapshot=yes'))
+    expect(lastFetchUrl).not.toContain('snapshot')
   })
 
   test('returns 204 (best-effort) when runtime resolution throws', async () => {

@@ -129,6 +129,8 @@ import { ComposePortPreview } from "../../../../components/project/ComposePortPr
 import { ExternalPreviewWebView } from "../../../../components/canvas/ExternalPreviewWebView";
 import { ProjectTopBar } from "../../../../components/project/ProjectTopBar";
 import { SessionBreadcrumb } from "../../../../components/team-chat/SessionBreadcrumb";
+import { useTeamChatNav } from "../../../../components/team-chat/TeamChatSidebarProvider";
+import { useOpenAgentDm } from "../../../../lib/use-open-agent-dm";
 import { PanelErrorBoundary } from "../../../../components/project/panels/PanelErrorBoundary";
 import {
   ChannelsPanel,
@@ -528,6 +530,12 @@ export default observer(function ProjectLayout() {
   const [project, setProject] = useState<any>(null);
   const [isLoading, setIsLoading] = useState(true);
 
+  // "Message agent": the project is an agent in the workspace's team chat, so
+  // from here you can jump to a DM with it (the same thread as the DMs tab).
+  const teamChat = useTeamChatNav();
+  const { openAgentDm: openProjectAgentDm } =
+    useOpenAgentDm(project?.workspaceId ?? teamChat.workspaceId);
+
   const { features } = usePlatformConfig();
   const billingData = useBillingData(
     features.billing ? project?.workspaceId : undefined
@@ -633,7 +641,9 @@ export default observer(function ProjectLayout() {
       webEnabled: projectSettings.webEnabled !== false,
       browserEnabled: projectSettings.browserEnabled !== false,
       shellEnabled: projectSettings.shellEnabled !== false,
-      heartbeatEnabled: projectSettings.heartbeatEnabled !== false,
+      // `heartbeatEnabled` is the pre-split name of this capability toggle.
+      heartbeatToolsEnabled:
+        (projectSettings.heartbeatToolsEnabled ?? projectSettings.heartbeatEnabled) !== false,
       imageGenEnabled: projectSettings.imageGenEnabled !== false,
       memoryEnabled: projectSettings.memoryEnabled !== false,
       quickActionsEnabled: projectSettings.quickActionsEnabled !== false,
@@ -3791,6 +3801,10 @@ export default observer(function ProjectLayout() {
         }
       : undefined,
     chatSessionsOpen: enableNativePhoneChatPicker && narrowChatPickerOpen,
+    onMessageAgent:
+      teamChat.enabled && projectId && !isIdeChatEmbed
+        ? () => void openProjectAgentDm(projectId)
+        : undefined,
     onNewChat: isChatFullscreen ? handleCreateNewSession : undefined,
     onRenameChat: isChatFullscreen ? handleRenameChatSession : undefined,
     onDeleteChat: isChatFullscreen ? handleDeleteChatSession : undefined,

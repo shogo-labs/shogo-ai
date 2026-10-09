@@ -18,6 +18,15 @@ describe('session trail', () => {
     expect(sessionRoute({ projectId: 'p1', sessionId: 's1', origin, wide: true }).pathname).toBe('/(app)/projects/[id]')
   })
 
+  test('the workspace agent has no project, so its session opens in the workspace agent chat', () => {
+    for (const wide of [false, true]) {
+      const route = sessionRoute({ projectId: null, sessionId: 's1', origin, wide })
+      expect(route.pathname).toBe('/(app)/agent')
+      expect(route.params).toEqual({ chatSessionId: 's1', fromConversation: 'c1', fromLabel: 'eng', fromKind: 'channel', fromThread: 't1', fromAgent: 'Reviewer' })
+    }
+    expect(sessionCrumbs(sessionRoute({ projectId: null, sessionId: 's1', origin, wide: false }).params)!.map((c) => c.label)).toEqual(['#eng', 'Thread', 'Reviewer · session'])
+  })
+
   test('a thread session reads channel › thread › agent, each step back up is a link', () => {
     const crumbs = sessionCrumbs(sessionRoute({ projectId: 'p1', sessionId: 's1', origin, wide: true }).params)!
     expect(crumbs.map((c) => c.label)).toEqual(['#eng', 'Thread', 'Reviewer · session'])

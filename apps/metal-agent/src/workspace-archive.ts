@@ -180,18 +180,28 @@ export function isTemplatePromotion(
 
 /**
  * True when replacing a `currentSize`-byte object with `incomingSize` bytes
- * would collapse a real backup down to a template-shaped one — the exact
- * signature of the clobber incident (multi-MB real → ~337 KB template). Used as
- * a size backstop on the `adopt` path so a mislabeled-lineage template can
- * never overwrite real source. Fails SAFE: when either size is unknown it
- * returns false (defer to the lineage decision).
+ * would collapse a backup that is NOT template-shaped down to a template-shaped
+ * one — the signature of the clobber incident (multi-MB real → ~337 KB
+ * template). Used as a size backstop on the `adopt` path so a mislabeled-lineage
+ * template can never overwrite real source. Fails SAFE: when either size is
+ * unknown it returns false (defer to the lineage decision).
+ *
+ * The current object only has to be larger than the template ceiling, NOT at
+ * the {@link REAL_MIN_BYTES} floor. That floor is for the opposite decision —
+ * `isTemplatePromotion`, where being wrong destroys user work, so it demands
+ * unambiguous evidence. Here being wrong the other way merely diverts the
+ * bytes to quarantine (recoverable), whereas the old "at least 1 MB" condition
+ * left a gap: a real project of 0.5–1 MB sat in no-man's land, so a template
+ * that resumed from a snapshot (origin 'snapshot', no lineage stamped) was
+ * adopted over it. Both objects at or below the ceiling remain
+ * indistinguishable by size and are left to the lineage rule.
  */
 export function isTemplateRegression(
   currentSize: number | null,
   incomingSize: number | null,
 ): boolean {
   if (currentSize == null || incomingSize == null) return false
-  return currentSize >= REAL_MIN_BYTES && incomingSize <= TEMPLATE_MAX_BYTES
+  return currentSize > TEMPLATE_MAX_BYTES && incomingSize <= TEMPLATE_MAX_BYTES
 }
 
 /**

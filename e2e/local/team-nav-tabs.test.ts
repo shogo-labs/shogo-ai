@@ -49,6 +49,9 @@ test.describe("Team workspace: desktop rail and panels", () => {
     // The scripted agent answered the seeded DM while nobody was looking.
     await expect(rail(page).getByRole("tab", { name: /^DMs, \d+ unread$/ })).toBeVisible({ timeout: 30_000 })
     await expect(panel(page, "home-panel").getByText("Workspace agent")).toBeVisible()
+    // Home is the activity inbox: filter chips and the Unreads toggle.
+    await expect(panel(page, "home-panel").getByRole("button", { name: "All", exact: true })).toBeVisible()
+    await expect(panel(page, "home-panel").getByRole("button", { name: "Unreads only" })).toBeVisible()
   })
 
   test("the rail is icons only, and a label appears beside an icon on hover or focus", async () => {
@@ -249,6 +252,15 @@ test.describe("Team workspace: desktop rail and panels", () => {
 
     await page.getByRole("menuitem", { name: "Create channel" }).click()
     await expect(page.getByText("Create a channel")).toBeVisible()
+    await page.getByLabel("Close", { exact: true }).click()
+
+    // On desktop "New message" is a dialog that lists people and agents together.
+    await rail(page).getByRole("button", { name: "Create", exact: true }).click()
+    await page.getByRole("menuitem", { name: "New message" }).click()
+    const picker = page.getByTestId("new-message-picker")
+    await expect(picker).toBeVisible()
+    await expect(picker.getByText("People", { exact: true }).first()).toBeVisible()
+    await expect(picker.getByRole("button", { name: `${seed.idleAgent}, agent` })).toBeVisible({ timeout: 30_000 })
     await page.getByLabel("Close", { exact: true }).click()
 
     await rail(page).getByRole("button", { name: "Create", exact: true }).click()

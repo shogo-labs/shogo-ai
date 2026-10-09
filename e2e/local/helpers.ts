@@ -30,3 +30,16 @@ export async function openTeamHome(page: Page, timeout = 30_000): Promise<void> 
   await page.goto("/")
   await home.waitFor({ state: "visible", timeout })
 }
+
+/** Start a project from the home composer and wait for its (mocked) bootstrap turn. */
+export async function startProjectWithBootstrapTurn(page: Page): Promise<void> {
+  await openTeamHome(page)
+  const home = page.getByTestId("home-composer-input").or(
+    page.getByRole("textbox", { name: "Describe the agent you want to build" }),
+  )
+  await home.click()
+  await home.fill("Build a tiny app for the resume-replay E2E")
+  await page.keyboard.press("Enter")
+  await page.waitForURL(/\/projects\//, { timeout: 30_000 })
+  await page.getByText("Bootstrap done.").waitFor({ state: "visible", timeout: 30_000 })
+}

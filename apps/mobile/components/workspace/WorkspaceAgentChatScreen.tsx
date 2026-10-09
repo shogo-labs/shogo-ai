@@ -6,8 +6,8 @@
  * workspaces. It is the only root-route surface that creates or retrieves the
  * stable primary workspace session.
  */
-import { useCallback, useEffect, useRef, useState } from "react"
-import { ActivityIndicator, Pressable, Text, View } from "react-native"
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
+import { ActivityIndicator, Pressable, Text, View, useWindowDimensions } from "react-native"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
 import { useRouter } from "expo-router"
 import { observer } from "mobx-react-lite"
@@ -30,6 +30,8 @@ import { useWorkspaceExperience } from "../../hooks/useWorkspaceExperience"
 import { clearChatPrefill, useChatPrefill } from "../../hooks/useChatPrefill"
 import { api, type PersonalAgentProfile } from "../../lib/api"
 import { ChatPanel } from "../chat/ChatPanel"
+import type { OpenProjectPaneRequest } from "../chat/ChatContext"
+import { ProjectSidePane } from "../team-chat/ProjectSidePane"
 import type { RestoreDraftRequest } from "../chat/ChatInput"
 import { NativePhoneSheet } from "../phone/NativePhoneSheet"
 import { PersonalAgentHeader } from "../personal/PersonalAgentHeader"
@@ -45,8 +47,23 @@ import {
   subscribeWorkspaceSessionScopeChanged,
 } from "./workspace-agent-session-bus"
 
+/** Wide enough to show a project beside the chat (same as team chat's side pane). */
+const PROJECT_SIDE_PANE_MIN_WIDTH = 1024
+
+interface ProjectPaneState extends OpenProjectPaneRequest {
+  /** Changes on every open so a new request re-targets the pane. */
+  nonce: number
+}
+
+export interface WorkspaceAgentChatScreenProps {
+  /** Open this workspace session instead of the primary one (e.g. a session a DM reply ran in). */
+  initialSessionId?: string
+  /** Rendered above the chat, e.g. the breadcrumb back to the conversation it was opened from. */
+  header?: ReactNode
+}
+
 export const WorkspaceAgentChatScreen = observer(
-  function WorkspaceAgentChatScreen() {
+  function WorkspaceAgentChatScreen({ initialSessionId, header }: WorkspaceAgentChatScreenProps = {}) {
     const router = useRouter()
     const { user } = useAuth()
     const http = useDomainHttp()
@@ -55,6 +72,8 @@ export const WorkspaceAgentChatScreen = observer(
     const experience = useWorkspaceExperience()
     const usesMobileWorkspaceChrome = useMobileWorkspaceChrome()
     const insets = useSafeAreaInsets()
+    const { width } = useWindowDimensions()
+    const [projectPane, setProjectPane] = useState<ProjectPaneState | null>(null)
     const [profile, setProfile] = useState<PersonalAgentProfile | null>(null)
     const [sessionId, setSessionId] = useState<string | null>(null)
     const [prefillRequest, setPrefillRequest] =
@@ -95,6 +114,7 @@ export const WorkspaceAgentChatScreen = observer(
     const loadWorkspaceChat = useCallback(async () => {
       avatarStreaming.current = false
       setAvatarState("idle")
+      setProjectPane(null)
       if (avatarFinishedTimer.current) {
         clearTimeout(avatarFinishedTimer.current)
         avatarFinishedTimer.current = null
@@ -117,6 +137,15 @@ export const WorkspaceAgentChatScreen = observer(
         setSessionId(null)
         setAttachments([])
         setFocusedProjectId(null)
+        if (initialSessionId) {
+          // A specific session (e.g. the one a DM reply ran in): not the primary
+          // one, so it is not published as such.
+          const nextProfile = await api.getAgentProfile(http, workspace.id)
+          if (version !== loadVersion.current) return
+          setProfile(nextProfile)
+          setSessionId(initialSessionId)
+          return
+        }
         const [session, nextProfile] = await Promise.all([
           api.getPrimaryWorkspaceSession(http, workspace.id),
           api.getAgentProfile(http, workspace.id),
@@ -133,11 +162,17 @@ export const WorkspaceAgentChatScreen = observer(
             : "Could not load Workspace Agent Chat",
         )
       }
-    }, [http, workspace?.id])
+    }, [http, workspace?.id, initialSessionId])
 
     useEffect(() => {
       void loadWorkspaceChat()
     }, [loadWorkspaceChat])
+
+    const hasSidePane = width >= PROJECT_SIDE_PANE_MIN_WIDTH && !usesMobileWorkspaceChrome
+    const openProjectPane = useCallback((request: OpenProjectPaneRequest) => {
+      setProjectPane({ ...request, nonce: Date.now() })
+    }, [])
+    const closeProjectPane = useCallback(() => setProjectPane(null), [])
 
     useEffect(() => {
       if (!workspace?.id || !sessionId) {
@@ -391,8 +426,11 @@ export const WorkspaceAgentChatScreen = observer(
       }
     }
 
+    const activePane = hasSidePane ? projectPane : null
+
     return (
-      <View className="flex-1 bg-background">
+      <View className="flex-1 flex-row bg-background">
+      <View className="min-w-0 flex-1 bg-background">
         {usesMobileWorkspaceChrome ? (
           <PersonalAgentMobileHeader
             profile={profile}
@@ -407,7 +445,15 @@ export const WorkspaceAgentChatScreen = observer(
             compact
           />
         )}
+        {header ? (
+          // Opened from a team chat message: the trail back. On phones the
+          // floating header needs the same clearance the content below gets.
+          <View style={usesMobileWorkspaceChrome ? { paddingTop: insets.top + 112 } : undefined}>
+            {header}
+          </View>
+        ) : null}
         {usesMobileWorkspaceChrome &&
+        !header &&
         ((isPersonalWorkspace && showWelcome) ||
           gettingStarted.visible ||
           attachments.length > 0) ? (
@@ -507,6 +553,7 @@ export const WorkspaceAgentChatScreen = observer(
             onStreamingChange={handleStreamingChange}
             composer={experience.composer}
             presentation="agent"
+            onOpenProjectPane={hasSidePane ? openProjectPane : undefined}
             prefillRequest={prefillRequest}
             onPrefillConsumed={handlePrefillConsumed}
             className="flex-1"
@@ -638,6 +685,20 @@ export const WorkspaceAgentChatScreen = observer(
           </View>
         </NativePhoneSheet>
         <BuddyLookSheet visible={buddyLookSheetOpen} onClose={() => setBuddyLookSheetOpen(false)} />
+      </View>
+      {activePane ? (
+        <View className="w-[45%] min-w-[420px] border-l border-border" testID="workspace-project-pane">
+          <ProjectSidePane
+            key={`${activePane.projectId}:${activePane.chatSessionId ?? ""}:${activePane.nonce}`}
+            projectId={activePane.projectId}
+            workspaceId={workspace.id}
+            name={activePane.name ?? projectName(activePane.projectId)}
+            initialTab={activePane.tab ?? (activePane.chatSessionId ? "chat" : "canvas")}
+            chatSessionId={activePane.chatSessionId}
+            onClose={closeProjectPane}
+          />
+        </View>
+      ) : null}
       </View>
     )
   },

@@ -23,7 +23,7 @@ import { REGION_ID, REGION_LABEL, REGION_PEERS, getPeer } from './lib/region'
 import { runtimeRoutes } from './routes/runtime'
 import { filesRoutes } from './routes/files'
 import { projectChatRoutes, trackUsageFromStream } from './routes/project-chat'
-import { pinChatToHomeRegion } from './lib/chat-region-pin'
+import { pinChatToHomeRegion, pinProjectRoutesToHomeRegion } from './lib/chat-region-pin'
 import { workspaceChatRoutes } from './routes/workspace-chat'
 import { workspaceAgentRoutes, sessionAuthorize } from './routes/workspace-agent'
 import { workspaceMeetingRoutes, sharedMeetingRoutes } from './routes/workspace-meetings'
@@ -803,6 +803,10 @@ app.use('/api/projects/:projectId/*', async (c, next) => {
   }
   return requireProjectAccess(c, next)
 })
+
+// A project's runtime lives only in its workspace's home region; serve every
+// project request there instead of booting a second runtime with a stale tree.
+app.use('/api/projects/:projectId/*', pinProjectRoutesToHomeRegion({ skip: isProjectReservedTopLevelPath }))
 
 // Home-region write router: proxy workspace-scoped mutations to the region that
 // owns the workspace so tenant data is only ever written in one place (keeps
@@ -1932,6 +1936,27 @@ async function probeMetalPreviewReady(baseUrl: string, timeoutMs: number): Promi
   }
 }
 
+// The edge steers `studio.shogo.ai` by latency, so a visitor's region is not the
+// site's. Serve every published request from the workspace's home region, and
+// make sure no other region keeps a copy (see lib/published-home-region).
+async function pinPublishedToHomeRegion(c: any, projectId: string, subdomain: string): Promise<Response | null> {
+  const { pinChatToHomeRegion } = await import('./lib/chat-region-pin')
+  return pinChatToHomeRegion(c, projectId, undefined, {
+    onForeignHome: (homeRegion) => {
+      if (!isKubernetes()) return
+      void import('./lib/metal-warm-pool-controller')
+        .then((m) => m.getMetalWarmPoolController().releaseForeignPublished(projectId, subdomain, homeRegion))
+        .catch((err) => console.warn(`[published] release ${subdomain} failed: ${err?.message ?? err}`))
+    },
+    onLocalHome: () => {
+      if (!isKubernetes()) return
+      void import('./lib/published-home-region')
+        .then((m) => m.askPeersToReleasePublished(projectId, subdomain))
+        .catch((err) => console.warn(`[published] asking peers to release ${subdomain} failed: ${err?.message ?? err}`))
+    },
+  })
+}
+
 // Wake a published, server-backed app ({subdomain}.shogo.one -> published-{id}).
 app.get('/api/published/:subdomain/wake', async (c) => {
   const subdomain = (c.req.param('subdomain') || '').toLowerCase()
@@ -1943,6 +1968,8 @@ app.get('/api/published/:subdomain/wake', async (c) => {
     if (!project) {
       return c.json({ ready: false, error: 'not_found' }, 404, WAKE_RESPONSE_HEADERS)
     }
+    const pinned = await pinPublishedToHomeRegion(c, project.id, subdomain)
+    if (pinned) return pinned
     // No cluster locally — nothing to wake; tell the page to proceed.
     if (!isKubernetes()) {
       return c.json({ ready: true }, 200, WAKE_RESPONSE_HEADERS)
@@ -1979,6 +2006,14 @@ app.get('/api/published/:subdomain/wake', async (c) => {
   }
 })
 
+// Record this (home) region in the preview-router KV so the Worker sends the
+// project's metal wake/render calls here directly. Fire-and-forget.
+function rememberMetalPreviewRegion(projectId: string): void {
+  void import('./lib/cloudflare-preview-region-kv')
+    .then((m) => m.rememberPreviewRegion(projectId))
+    .catch((err) => console.warn(`[preview-region] remember ${projectId} failed (non-fatal): ${err?.message ?? err}`))
+}
+
 // Wake a dev preview ({projectId}.preview.shogo.ai). Unlike published apps, the
 // preview DomainMapping + pod are provisioned lazily by getProjectPodUrl(), so a
 // never-opened project has nothing for Kourier to route to. We kick provisioning
@@ -1996,6 +2031,12 @@ app.get('/api/preview/:projectId/wake', async (c) => {
     if (!isKubernetes()) {
       return c.json({ ready: true }, 200, WAKE_RESPONSE_HEADERS)
     }
+
+    // Only the workspace's home region may resume/boot its runtime. Resolving
+    // here from another region boots a second VM that serves the starter
+    // template while the agent edits the home-region copy.
+    const pinned = await pinChatToHomeRegion(c, projectId)
+    if (pinned) return pinned
 
     // Metal substrate: a metal project has NO Knative service/route, so Kourier
     // can't serve its `{id}.preview.<base>` subdomain (a raw 404). Resolve its
@@ -2016,6 +2057,7 @@ app.get('/api/preview/:projectId/wake', async (c) => {
           metalRetryDelayMs: 1000,
         })
         if (resolved.mode === 'metal') {
+          rememberMetalPreviewRegion(projectId)
           const ready = await probeMetalPreviewReady(resolved.url, 4000)
           return c.json({ ready, url: resolved.url }, 200, WAKE_RESPONSE_HEADERS)
         }
@@ -2125,6 +2167,9 @@ const previewRenderHandler = async (c: any) => {
     if (!project) return c.json({ error: { code: 'not_found' } }, 404)
     if (!isKubernetes()) return c.json({ error: { code: 'not_supported_locally' } }, 404)
 
+    const pinned = await pinChatToHomeRegion(c, projectId)
+    if (pinned) return pinned
+
     const { resolveProjectPodUrl } = await import('./lib/resolve-pod-url')
     let target: string
     try {
@@ -2223,6 +2268,9 @@ const previewPortRenderHandler = async (c: any) => {
       return c.json({ error: { code: 'not_found', message: 'Port is not publicly previewable' } }, 404)
     }
 
+    const pinned = await pinChatToHomeRegion(c, projectId)
+    if (pinned) return pinned
+
     const { resolveProjectPodUrl } = await import('./lib/resolve-pod-url')
     const { deriveProjectRuntimeToken } = await import('./lib/project-runtime-token')
     let target: string
@@ -2287,10 +2335,12 @@ const publishedApiHandler = async (c: any) => {
   try {
     const project = await prisma.project.findUnique({
       where: { publishedSubdomain: subdomain },
-      select: { id: true, publishedAlwaysOn: true } as any,
+      select: { id: true, publishedAlwaysOn: true },
     })
     if (!project) return c.json({ error: { code: 'not_found' } }, 404)
     if (!isKubernetes()) return c.json({ error: { code: 'not_supported_locally' } }, 404)
+    const pinned = await pinPublishedToHomeRegion(c, project.id, subdomain)
+    if (pinned) return pinned
 
     const { getMetalPublishedUrl } = await import('./lib/metal-warm-pool-controller')
     let target: string
@@ -2711,6 +2761,9 @@ app.get('/api/projects/:projectId/runtime/status', async (c) => {
   const projectId = c.req.param('projectId')
   
   if (isKubernetes()) {
+    const pinned = await pinChatToHomeRegion(c, projectId)
+    if (pinned) return pinned
+
     // Metal: read status straight from the owning host's node-agent (exists /
     // ready / replicas). Metal has no Knative Revision/health-check machinery, so
     // it maps onto the same not_found / starting / running shape the frontend
@@ -2822,6 +2875,11 @@ app.get('/api/projects/:projectId/sandbox/url', async (c) => {
     return c.json({ error: { code: 'forbidden', message: 'No access to this project' } }, 403)
   }
 
+  // The canvas iframe must point at the runtime the agent edits, which only
+  // the workspace's home region resolves (see the preview wake route).
+  const pinned = await pinChatToHomeRegion(c, projectId)
+  if (pinned) return pinned
+
   const shouldWait = c.req.query('wait') !== 'false' // Default to waiting for backwards compat
   const previewMode = c.req.query('mode') || 'subdomain' // Default to subdomain mode
   
@@ -2903,6 +2961,7 @@ app.get('/api/projects/:projectId/sandbox/url', async (c) => {
         const { resolveProjectPodUrl } = await import('./lib/resolve-pod-url')
         await resolveProjectPodUrl(projectId, { logTag: 'sandbox/url' })
         console.log(`[sandbox/url] ${projectId.slice(0, 8)} ready via metal`)
+        rememberMetalPreviewRegion(projectId)
         // Per-user open cap: record this open and suspend the user's
         // least-recently-opened project(s) beyond METAL_MAX_OPEN_PROJECTS_PER_USER
         // so one user can't pin unbounded host RAM. Fire-and-forget: never blocks
@@ -3169,6 +3228,9 @@ app.all('/api/projects/:projectId/preview/*', async (c) => {
     }
     return c.json({ error: { code: 'not_running', message: 'Project runtime not running' } }, 404)
   }
+
+  const pinned = await pinChatToHomeRegion(c, projectId)
+  if (pinned) return pinned
   
   try {
     const { getProjectPodUrl } = await import('./lib/knative-project-manager')
@@ -3864,6 +3926,8 @@ app.get('/api/projects/:projectId/ports/listening', async (c) => {
   if (!workspaceId) {
     return c.json({ error: { code: 'forbidden', message: 'No access to this project' } }, 403)
   }
+  const pinned = await pinChatToHomeRegion(c, projectId)
+  if (pinned) return pinned
   try {
     const { resolveProjectPodUrl } = await import('./lib/resolve-pod-url')
     const { deriveProjectRuntimeToken } = await import('./lib/project-runtime-token')
@@ -5448,112 +5512,76 @@ app.patch('/api/projects/:projectId/heartbeat', async (c) => {
   if ('error' in authResult) return authResult.error
 
   const body = await c.req.json()
-  const data: Record<string, any> = {}
 
-  if (typeof body.heartbeatEnabled === 'boolean') {
-    data.heartbeatEnabled = body.heartbeatEnabled
-  }
-  if (typeof body.heartbeatInterval === 'number' && body.heartbeatInterval >= 60) {
-    data.heartbeatInterval = body.heartbeatInterval
-  }
-  if (body.quietHoursStart !== undefined) data.quietHoursStart = body.quietHoursStart || null
-  if (body.quietHoursEnd !== undefined) data.quietHoursEnd = body.quietHoursEnd || null
-  if (body.quietHoursTimezone !== undefined) data.quietHoursTimezone = body.quietHoursTimezone || null
-
-  const existing = await prisma.agentConfig.findUnique({
-    where: { projectId: authResult.projectId },
-    include: { project: { select: { workspaceId: true } } },
-  })
-  if (!existing) {
-    return c.json({ error: 'Agent config not found' }, 404)
-  }
-
-  const enabled = data.heartbeatEnabled ?? existing.heartbeatEnabled
-  const interval = data.heartbeatInterval ?? existing.heartbeatInterval
-
-  if (enabled && existing.project?.workspaceId) {
-    const isPaid = await billingService.hasPaidSubscription(existing.project.workspaceId)
-    if (!isPaid) {
-      return c.json(
-        { error: { code: 'paywall', message: 'Heartbeats require a paid plan. Please upgrade to enable scheduled heartbeats.' } },
-        402
-      )
+  const { updateHeartbeatConfig, HeartbeatConfigError } = await import('./services/heartbeat-config.service')
+  let updated: any
+  try {
+    ;({ config: updated } = await updateHeartbeatConfig(
+      authResult.projectId,
+      {
+        heartbeatEnabled: typeof body.heartbeatEnabled === 'boolean' ? body.heartbeatEnabled : undefined,
+        heartbeatInterval: typeof body.heartbeatInterval === 'number' ? body.heartbeatInterval : undefined,
+        quietHoursStart: body.quietHoursStart,
+        quietHoursEnd: body.quietHoursEnd,
+        quietHoursTimezone: body.quietHoursTimezone,
+      },
+      { alwaysReschedule: true, createIfMissing: true },
+    ))
+  } catch (err) {
+    if (err instanceof HeartbeatConfigError) {
+      if (err.code === 'paywall') {
+        return c.json({ error: { code: 'paywall', message: err.message } }, 402)
+      }
+      if (err.code === 'not_found') return c.json({ error: err.message }, 404)
     }
+    throw err
   }
-
-  if (enabled) {
-    const jitter = Math.floor(Math.random() * interval * 0.1) * 1000
-    data.nextHeartbeatAt = new Date(Date.now() + interval * 1000 + jitter)
-  } else {
-    data.nextHeartbeatAt = null
-  }
-
-  const updated = await prisma.agentConfig.update({
-    where: { projectId: authResult.projectId },
-    data,
-    select: {
-      heartbeatEnabled: true,
-      heartbeatInterval: true,
-      nextHeartbeatAt: true,
-      lastHeartbeatAt: true,
-      quietHoursStart: true,
-      quietHoursEnd: true,
-      quietHoursTimezone: true,
-      modelName: true,
-    },
-  })
 
   const { resolveModelLabel } = await import('./services/model-registry.service')
   return c.json({
-    ...updated,
+    heartbeatEnabled: updated.heartbeatEnabled,
+    heartbeatInterval: updated.heartbeatInterval,
+    nextHeartbeatAt: updated.nextHeartbeatAt,
+    lastHeartbeatAt: updated.lastHeartbeatAt,
+    quietHoursStart: updated.quietHoursStart,
+    quietHoursEnd: updated.quietHoursEnd,
+    quietHoursTimezone: updated.quietHoursTimezone,
+    modelName: updated.modelName,
     modelLabel: updated.modelName ? await resolveModelLabel(updated.modelName) : null,
   })
 })
 
-// Sync heartbeat config from runtime config.json to DB (local mode).
-// Authenticated via x-runtime-token so the agent runtime can call it.
+// DEPRECATED: heartbeat settings now live only in the database, written
+// through the heartbeat config service. Kept for one release because cloud
+// runtime images can lag behind API deploys and still push config.json
+// heartbeat fields here. Authenticated via x-runtime-token (project or
+// workspace token scoped to the project's workspace).
 app.put('/api/projects/:projectId/heartbeat/sync', async (c) => {
   const projectId = c.req.param('projectId')
-  const token = c.req.header('x-runtime-token')
 
-  const { verifyRuntimeToken } = await import('./lib/runtime-token')
-  const verified = verifyRuntimeToken(token, projectId)
-  if (!verified.ok || verified.projectId !== projectId) {
+  const { authenticateRuntimeToken } = await import('./routes/internal-runtime-auth')
+  if (!(await authenticateRuntimeToken(c, projectId))) {
     return c.json({ error: 'Unauthorized' }, 401)
   }
 
   const body = await c.req.json()
-  const data: Record<string, any> = {}
 
-  if (typeof body.heartbeatEnabled === 'boolean') {
-    data.heartbeatEnabled = body.heartbeatEnabled
-  }
-  if (typeof body.heartbeatInterval === 'number' && body.heartbeatInterval >= 60) {
-    data.heartbeatInterval = body.heartbeatInterval
-  }
-
-  const existing = await prisma.agentConfig.findUnique({ where: { projectId } })
-  const enabled = data.heartbeatEnabled ?? existing?.heartbeatEnabled ?? false
-  const interval = data.heartbeatInterval ?? existing?.heartbeatInterval ?? 1800
-
-  if (enabled) {
-    const jitter = Math.floor(Math.random() * interval * 0.1) * 1000
-    data.nextHeartbeatAt = new Date(Date.now() + interval * 1000 + jitter)
-  } else {
-    data.nextHeartbeatAt = null
-  }
-
-  await prisma.agentConfig.upsert({
-    where: { projectId },
-    update: data,
-    create: {
+  const { updateHeartbeatConfig, HeartbeatConfigError } = await import('./services/heartbeat-config.service')
+  try {
+    await updateHeartbeatConfig(
       projectId,
-      heartbeatEnabled: enabled,
-      heartbeatInterval: interval,
-      nextHeartbeatAt: data.nextHeartbeatAt,
-      channels: [],
-    },
-  })
+      {
+        heartbeatEnabled: typeof body.heartbeatEnabled === 'boolean' ? body.heartbeatEnabled : undefined,
+        heartbeatInterval: typeof body.heartbeatInterval === 'number' ? body.heartbeatInterval : undefined,
+      },
+      { createIfMissing: true, alwaysReschedule: true },
+    )
+  } catch (err) {
+    if (err instanceof HeartbeatConfigError && err.code === 'paywall') {
+      return c.json({ error: { code: 'paywall', message: err.message } }, 402)
+    }
+    throw err
+  }
 
   return c.json({ ok: true })
 })
@@ -5605,6 +5633,9 @@ app.post('/api/projects/:projectId/chat', async (c) => {
 app.get('/api/projects/:projectId/chat/status', async (c) => {
   const authResult = await requireProjectAuth(c)
   if ('error' in authResult) return authResult.error
+
+  const pinned = await pinChatToHomeRegion(c, authResult.projectId)
+  if (pinned) return pinned
 
   const manager = getRuntimeManager()
   const router = projectChatRoutes({ runtimeManager: manager })

@@ -18,7 +18,8 @@ import { prisma } from '../lib/prisma'
 import { getMinimumInstanceSize } from '@shogo/shared-runtime'
 import { projectHooks, type HookContext } from '../generated/project.hooks'
 import { encodeProjectSettingsForWrite, normalizeProjectSettings } from '../lib/project-settings'
-import { canRunTechStackOnInstanceSize, hasPaidSubscription } from './billing-runtime'
+import { canRunTechStackOnInstanceSize } from './billing-runtime'
+import { HeartbeatConfigError, buildAgentConfigCreateData, updateHeartbeatConfig } from './heartbeat-config.service'
 import { dockerClassBlockedMessage } from '../lib/runtime-class-setting'
 
 export type ProjectLifecycleErrorCode =
@@ -185,7 +186,13 @@ export interface ConfiguredProject {
     quietHoursEnd: string | null
     quietHoursTimezone: string | null
     nextHeartbeatAt: Date | null
+    lastHeartbeatAt: Date | null
   } | null
+  /**
+   * Set when the patch asked for heartbeat changes the workspace's plan does
+   * not allow. The rest of the patch was still applied.
+   */
+  heartbeatError?: { code: 'paywall'; message: string }
 }
 
 /**
@@ -252,61 +259,58 @@ export async function configureProject(
     await prisma.project.update({ where: { id: projectId }, data: projectData as any })
   }
 
+  let heartbeatError: ConfiguredProject['heartbeatError']
   if (patch.agent) {
     const a = patch.agent
-    const agentData: Record<string, unknown> = {}
-    if (a.heartbeatEnabled !== undefined) agentData.heartbeatEnabled = a.heartbeatEnabled
-    if (a.heartbeatInterval !== undefined) agentData.heartbeatInterval = a.heartbeatInterval
-    if (a.modelProvider !== undefined) agentData.modelProvider = a.modelProvider
-    if (a.modelName !== undefined) agentData.modelName = a.modelName
-    if (a.quietHoursStart !== undefined) agentData.quietHoursStart = a.quietHoursStart
-    if (a.quietHoursEnd !== undefined) agentData.quietHoursEnd = a.quietHoursEnd
-    if (a.quietHoursTimezone !== undefined) agentData.quietHoursTimezone = a.quietHoursTimezone
 
-    // Keep the scheduler consistent: enabling schedules the next tick,
-    // disabling clears it, and an interval change on an enabled agent
-    // reschedules from now.
-    const currentAgent = (await prisma.agentConfig.findUnique({
-      where: { projectId },
-      select: { heartbeatEnabled: true, heartbeatInterval: true },
-    })) as { heartbeatEnabled: boolean; heartbeatInterval: number } | null
-    const enabledAfter = a.heartbeatEnabled ?? currentAgent?.heartbeatEnabled ?? false
-    const intervalAfter = a.heartbeatInterval ?? currentAgent?.heartbeatInterval ?? 1800
-
-    // Mirror the public PATCH /api/projects/:id/heartbeat paywall: enabling
-    // (or leaving enabled while patching other fields) requires a paid
-    // workspace. Only gate on a rising or steady-enabled edge — disabling
-    // must always be allowed regardless of plan.
-    if (enabledAfter && !(await hasPaidSubscription(existing.workspaceId))) {
-      throw new ProjectLifecycleError(
-        'paywall',
-        'Heartbeats require a paid plan. Please upgrade to enable scheduled heartbeats.',
-      )
-    }
-    if (a.heartbeatEnabled !== undefined || a.heartbeatInterval !== undefined) {
-      agentData.nextHeartbeatAt = enabledAfter ? new Date(Date.now() + intervalAfter * 1000) : null
-    }
-
+    // Row + model columns. Heartbeat columns are owned by the heartbeat config
+    // service below (it is the only writer of schedule fields).
+    const modelData: Record<string, unknown> = {}
+    if (a.modelProvider !== undefined) modelData.modelProvider = a.modelProvider
+    if (a.modelName !== undefined) modelData.modelName = a.modelName
     await prisma.agentConfig.upsert({
       where: { projectId },
-      create: {
-        projectId,
-        heartbeatEnabled: enabledAfter,
-        heartbeatInterval: intervalAfter,
+      create: buildAgentConfigCreateData(projectId, {
         modelProvider: a.modelProvider ?? 'anthropic',
         modelName: a.modelName ?? 'claude-sonnet-4-6',
-        quietHoursStart: a.quietHoursStart ?? null,
-        quietHoursEnd: a.quietHoursEnd ?? null,
-        quietHoursTimezone: a.quietHoursTimezone ?? null,
         channels: [],
-        nextHeartbeatAt: enabledAfter ? new Date(Date.now() + intervalAfter * 1000) : null,
-      },
-      update: agentData,
+      }) as any,
+      update: modelData,
     })
+
+    const touchesHeartbeat =
+      a.heartbeatEnabled !== undefined ||
+      a.heartbeatInterval !== undefined ||
+      a.quietHoursStart !== undefined ||
+      a.quietHoursEnd !== undefined ||
+      a.quietHoursTimezone !== undefined
+    if (touchesHeartbeat) {
+      try {
+        await updateHeartbeatConfig(projectId, {
+          heartbeatEnabled: a.heartbeatEnabled,
+          heartbeatInterval: a.heartbeatInterval,
+          quietHoursStart: a.quietHoursStart,
+          quietHoursEnd: a.quietHoursEnd,
+          quietHoursTimezone: a.quietHoursTimezone,
+        })
+      } catch (err) {
+        // A free workspace can't schedule heartbeats, but that must not discard
+        // the rest of the patch (name, model, ...). Report it back instead.
+        if (err instanceof HeartbeatConfigError && err.code === 'paywall') {
+          heartbeatError = { code: 'paywall', message: err.message }
+        } else if (err instanceof HeartbeatConfigError && err.code === 'invalid_interval') {
+          throw new ProjectLifecycleError('bad_request', err.message)
+        } else {
+          throw err
+        }
+      }
+    }
   }
 
-  return readProjectConfig(projectId)
+  const configured = await readProjectConfig(projectId)
+  return heartbeatError ? { ...configured, heartbeatError } : configured
 }
+
 
 export async function readProjectConfig(projectId: string): Promise<ConfiguredProject> {
   const project = (await prisma.project.findUnique({
@@ -327,6 +331,7 @@ export async function readProjectConfig(projectId: string): Promise<ConfiguredPr
       quietHoursEnd: true,
       quietHoursTimezone: true,
       nextHeartbeatAt: true,
+      lastHeartbeatAt: true,
     },
   })) as ConfiguredProject['agent']
   return {

@@ -65,7 +65,7 @@ export interface CapabilitySettings {
   webEnabled: boolean
   browserEnabled: boolean
   shellEnabled: boolean
-  heartbeatEnabled: boolean
+  heartbeatToolsEnabled: boolean
   imageGenEnabled: boolean
   memoryEnabled: boolean
   quickActionsEnabled: boolean
@@ -128,7 +128,7 @@ const CAPABILITIES: CapabilityDef[] = [
     warning: 'Disabling this prevents the agent from running any code or commands.',
   },
   {
-    key: 'heartbeatEnabled',
+    key: 'heartbeatToolsEnabled',
     label: 'Heartbeat',
     description: 'Periodic autonomous check-ins on a schedule',
     detail: 'The agent wakes up on a configurable interval to check for updates, run monitoring tasks, send reports, or perform any recurring work — even when you\'re not actively chatting with it.',

@@ -10,15 +10,14 @@ import { ActivityIndicator, Pressable, ScrollView, Text, View, useWindowDimensio
 import { useRouter } from 'expo-router'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { ChevronLeft, FolderOpen, MessageSquare, PanelRight, Palette } from 'lucide-react-native'
-import { teamChatApi } from '../../lib/team-chat-api'
-import { invalidateConversationList, useAgentLook } from '../../hooks/useTeamChat'
+import { useOpenAgentDm } from '../../lib/use-open-agent-dm'
+import { useAgentLook } from '../../hooks/useTeamChat'
 import { ShogoBuddy } from '../island/buddy/ShogoBuddy'
 import { BuddyLookSheet } from '../personal/BuddyLookSheet'
 import { AgentProfileBody, useAgentCard } from './AgentProfileBody'
 import { buddyAvatarColor } from './BuddyAvatar'
 import { useAgentLookEditor } from './useAgentLookEditor'
 
-const api = teamChatApi()
 const SIDE_PANE_MIN_WIDTH = 1024
 
 /** `ws` is the workspace agent; anything else is a project id (or its `p:` mention key). */
@@ -34,7 +33,7 @@ export function AgentProfileScreen({ workspaceId, agentKey }: { workspaceId: str
   const { card, failed, toggleMute } = useAgentCard(workspaceId, projectId)
   const look = useAgentLook(workspaceId, projectId)
   const [customizing, setCustomizing] = useState(false)
-  const [opening, setOpening] = useState(false)
+  const { openAgentDm, opening } = useOpenAgentDm(workspaceId)
 
   const { save, error } = useAgentLookEditor(workspaceId, projectId, look, card?.buddyLook ?? null)
 
@@ -42,27 +41,8 @@ export function AgentProfileScreen({ workspaceId, agentKey }: { workspaceId: str
   const color = buddyAvatarColor(look)
   const canEdit = !!card?.canEdit
 
-  const message = async () => {
-    setOpening(true)
-    try {
-      const conversation = await api.openAgentDm(workspaceId, projectId)
-      invalidateConversationList(workspaceId)
-      router.push({ pathname: '/(app)/c/[conversationId]', params: { conversationId: conversation.id } } as any)
-    } finally {
-      setOpening(false)
-    }
-  }
-  const showInPane = async () => {
-    if (!projectId) return
-    setOpening(true)
-    try {
-      const conversation = await api.openAgentDm(workspaceId, projectId)
-      invalidateConversationList(workspaceId)
-      router.push({ pathname: '/(app)/c/[conversationId]', params: { conversationId: conversation.id, project: projectId } } as any)
-    } finally {
-      setOpening(false)
-    }
-  }
+  const message = () => void openAgentDm(projectId)
+  const showInPane = () => void openAgentDm(projectId, { withProjectPane: true })
   const goBack = () => {
     if (router.canGoBack()) router.back()
     else router.replace('/(app)/c' as any)
@@ -88,7 +68,7 @@ export function AgentProfileScreen({ workspaceId, agentKey }: { workspaceId: str
           </View>
 
           <View className="flex-row flex-wrap justify-center gap-2">
-            <ActionButton label="Message" icon={<MessageSquare size={14} className="text-foreground" />} onPress={() => void message()} disabled={opening} />
+            <ActionButton label="Message" icon={<MessageSquare size={14} className="text-foreground" />} onPress={message} disabled={opening} />
             {projectId ? (
               <ActionButton
                 label="Open project"
@@ -97,7 +77,7 @@ export function AgentProfileScreen({ workspaceId, agentKey }: { workspaceId: str
               />
             ) : null}
             {projectId && width >= SIDE_PANE_MIN_WIDTH ? (
-              <ActionButton label="Show in side panel" icon={<PanelRight size={14} className="text-foreground" />} onPress={() => void showInPane()} disabled={opening} />
+              <ActionButton label="Show in side panel" icon={<PanelRight size={14} className="text-foreground" />} onPress={showInPane} disabled={opening} />
             ) : null}
             {canEdit ? (
               <ActionButton label="Customize look" icon={<Palette size={14} className="text-foreground" />} onPress={() => setCustomizing(true)} />

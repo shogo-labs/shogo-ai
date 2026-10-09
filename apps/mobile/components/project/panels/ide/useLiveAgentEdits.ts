@@ -17,9 +17,14 @@
  *
  * Per-file behaviour is identical across all three paths:
  *
- *   • File not open + clean state → auto-open in the active editor group
- *     ("follow agent"). The tab is a normal tab; the user can close or pin it.
- *     (Push-only — polling never opens new tabs.)
+ *   • File not open + the event came from the agent (`source === "agent"`)
+ *     + the "Follow agent edits" setting is on → auto-open in the active
+ *     editor group. The tab is a normal tab; the user can close or pin it.
+ *     It is only focused if the user hasn't typed/clicked in the IDE in the
+ *     last USER_ACTIVE_WINDOW_MS and the active file has no unsaved edits;
+ *     otherwise it opens as a background tab. Events from IDE saves or
+ *     external processes never open tabs. (Push-only — polling never opens
+ *     new tabs.)
  *   • File open + no unsaved edits → replace buffer content. If the file is
  *     the one the user is looking at, run the Cursor-style green-flash +
  *     typewriter animation; otherwise swap silently.
@@ -34,7 +39,7 @@
  */
 
 import { useCallback, useEffect, useRef } from "react";
-import type { Dispatch, SetStateAction } from "react";
+import type { Dispatch, RefObject, SetStateAction } from "react";
 
 import type { EditorGroup, OpenFile } from "./types";
 import type { WorkspaceService } from "./workspace/types";
@@ -54,6 +59,13 @@ const fileId = (rootId: string, path: string) => `${rootId}::${path}`;
 
 /** How often to poll the active file for changes when SSE is flaky. */
 const POLL_INTERVAL_MS = 2000;
+
+/**
+ * If the user typed or clicked inside the IDE within this window, an
+ * auto-opened agent file is added as a background tab instead of being
+ * focused.
+ */
+export const USER_ACTIVE_WINDOW_MS = 10_000;
 
 function languageFor(path: string): string {
   const ext = path.toLowerCase().split(".").pop() ?? "";
@@ -109,6 +121,16 @@ export interface UseLiveAgentEditsArgs {
   /** Master switch (user setting). Default true. */
   enabled?: boolean;
   /**
+   * "Follow agent" (user setting, default true). When false, files the agent
+   * edits are never auto-opened; already-open tabs still stay in sync.
+   */
+  followAgent?: boolean;
+  /**
+   * Element whose keyboard / pointer activity counts as "the user is working
+   * in the IDE". Used to avoid switching tabs under the user's hands.
+   */
+  activityRootRef?: RefObject<HTMLElement | null>;
+  /**
    * Whether the IDE pane is visible to the user. The hook stays mounted
    * across tab switches (the SSE subscription must survive so live edits
    * still flow into the buffers), but the 2s polling fallback only runs
@@ -135,8 +157,30 @@ export function useLiveAgentEdits({
   refreshTree,
   tryAnimate,
   enabled = true,
+  followAgent = true,
+  activityRootRef,
   visible = true,
 }: UseLiveAgentEditsArgs): void {
+  const followAgentRef = useRef(followAgent);
+  followAgentRef.current = followAgent;
+
+  // Timestamp of the last keystroke / pointer press inside the IDE root.
+  const lastUserActivityRef = useRef(0);
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    const mark = (e: Event) => {
+      const root = activityRootRef?.current;
+      if (root && e.target instanceof Node && !root.contains(e.target)) return;
+      lastUserActivityRef.current = Date.now();
+    };
+    document.addEventListener("keydown", mark, true);
+    document.addEventListener("pointerdown", mark, true);
+    return () => {
+      document.removeEventListener("keydown", mark, true);
+      document.removeEventListener("pointerdown", mark, true);
+    };
+  }, [activityRootRef]);
+
   // Keep refs to the latest values so handlers closed over at subscribe time
   // read fresh state without us retearing the subscription on every render.
   const conflictsRef = useRef(conflicts);
@@ -239,6 +283,21 @@ export function useLiveAgentEdits({
 
         // Not open anywhere → auto-open in the active group (follow agent).
         didTouch = true;
+        const groupIdxForFocus = Math.min(
+          Math.max(0, activeGroupIdxRef.current),
+          next.length - 1,
+        );
+        const focusGroup = next[groupIdxForFocus];
+        const activeInGroup = focusGroup?.files.find(
+          (f) => f.id === focusGroup.activeId,
+        );
+        // Never yank the user's tab away while they're working: skip the
+        // focus switch if they interacted with the IDE recently or the
+        // active file has unsaved edits. The tab is still added so they
+        // can find the agent's file.
+        const stealFocus =
+          !activeInGroup?.dirty &&
+          Date.now() - lastUserActivityRef.current > USER_ACTIVE_WINDOW_MS;
         const name = path.split("/").pop() ?? path;
         const openFile: OpenFile = {
           id,
@@ -261,7 +320,7 @@ export function useLiveAgentEdits({
                 files: g.files.some((f) => f.id === id)
                   ? g.files
                   : [...g.files, openFile],
-                activeId: id,
+                activeId: stealFocus ? id : g.activeId,
               }
             : g,
         );
@@ -384,7 +443,11 @@ export function useLiveAgentEdits({
         // full `loadWorkspaceModels` re-walk inside `refreshTree`, which
         // burst hundreds of `readFile`s through agent-proxy on every edit.
         upsertModelFromContent(AGENT_ROOT_ID, path, content);
-        const touched = applyIncomingRef.current(path, content, mtime, true);
+        // Only genuine agent edits may open new tabs. Events from the IDE's
+        // own saves, external processes (`fs`) or older runtimes that don't
+        // tag a source just refresh already-open tabs.
+        const autoOpen = followAgentRef.current && evt.source === "agent";
+        const touched = applyIncomingRef.current(path, content, mtime, autoOpen);
         if (touched) refreshTree(path);
       })();
     });

@@ -39,6 +39,7 @@ export const STRIPE_CARDS = {
  * Leaves the browser on the home screen with "What are we building" visible.
  */
 export async function signUpAndOnboard(page: Page, user: TestUser): Promise<void> {
+  watchChatHealth(page)
   // ── Sign up ────────────────────────────────────────────────────────────────
   await page.goto("/sign-in")
   // Switch to the Sign Up tab. The LoginScreen renders both tabs as
@@ -253,6 +254,7 @@ export const AGENT_STOP_SELECTOR = '[data-testid="stop-streaming"], [aria-label=
  */
 export async function waitForAgentResponse(page: Page, timeoutMs = 240_000) {
   extendTestTimeout(timeoutMs + 20_000)
+  watchChatHealth(page)
   // First wait for the stop button to appear (agent starts streaming). Give it
   // a bit longer than before — on a cold runtime the first token can lag.
   try {
@@ -261,10 +263,19 @@ export async function waitForAgentResponse(page: Page, timeoutMs = 240_000) {
     // Agent may have already finished or not started — that's fine
   }
   // Then wait for it to disappear (agent done)
-  await page
+  const finished = await page
     .waitForSelector(AGENT_STOP_SELECTOR, { state: "detached", timeout: timeoutMs })
-    .catch(() => {})
+    .then(() => true)
+    .catch(() => false)
   await page.waitForTimeout(1000)
+  await assertChatHealthy(page)
+  if (!finished) {
+    throw new Error(`waitForAgentResponse: the agent turn was still streaming after ${timeoutMs}ms`)
+  }
+  const failure = await chatErrorBannerText(page)
+  if (failure) {
+    throw new Error(`waitForAgentResponse: the agent turn ended with an error banner: "${failure}"`)
+  }
 }
 
 /**
@@ -275,13 +286,75 @@ export async function waitForAgentResponse(page: Page, timeoutMs = 240_000) {
  */
 export async function waitForAgentIdle(page: Page, timeoutMs = 240_000) {
   extendTestTimeout(timeoutMs)
+  watchChatHealth(page)
   await page
     .waitForSelector(AGENT_STOP_SELECTOR, { state: "detached", timeout: timeoutMs })
     .catch(() => {})
+  await assertChatHealthy(page)
+}
+
+// ── Chat health ──────────────────────────────────────────────────────────────
+
+/**
+ * Console/page errors that mean the chat panel crashed. React #185 is
+ * "Maximum update depth exceeded" in a production build; the panel's error
+ * boundary logs `[PanelErrorBoundary:<panel>]` before it remounts the panel,
+ * which recovers silently and would otherwise go unnoticed.
+ */
+const CHAT_CRASH_PATTERNS = [
+  /Maximum update depth exceeded/,
+  /Minified React error #185/,
+  /\[PanelErrorBoundary:/,
+]
+
+const chatHealth = new WeakMap<Page, { crashes: string[] }>()
+
+/**
+ * Start recording chat crashes on `page`. Idempotent; every agent-wait helper
+ * calls it, so tests get crash detection without opting in. Call it right
+ * after creating a page to also cover crashes before the first agent wait.
+ */
+export function watchChatHealth(page: Page): void {
+  if (chatHealth.has(page)) return
+  const health = { crashes: [] as string[] }
+  chatHealth.set(page, health)
+  const record = (source: string, text: string) => {
+    if (CHAT_CRASH_PATTERNS.some((pattern) => pattern.test(text))) {
+      health.crashes.push(`${source}: ${text.slice(0, 400)}`)
+    }
+  }
+  page.on("console", (msg) => record("console", msg.text()))
+  page.on("pageerror", (err) => record("pageerror", `${err.message}\n${err.stack ?? ""}`))
+}
+
+/** The chat's error banner text ("Runtime unreachable — tap retry", ...), if shown. */
+export async function chatErrorBannerText(page: Page): Promise<string | null> {
+  const banner = page.getByTestId("chat-error-banner").filter({ visible: true }).first()
+  if (!(await banner.isVisible().catch(() => false))) return null
+  return ((await banner.textContent().catch(() => "")) || "").trim() || null
+}
+
+/**
+ * Throw if the chat panel crashed since the page was first watched, or is
+ * showing its error-boundary screen right now.
+ */
+export async function assertChatHealthy(page: Page): Promise<void> {
+  const crashes = chatHealth.get(page)?.crashes ?? []
+  if (crashes.length > 0) {
+    throw new Error(`chat panel crashed:\n${crashes.join("\n")}`)
+  }
+  const boundary = page
+    .getByText(/encountered an error|^Recovering .+\.\.\.$/)
+    .filter({ visible: true })
+    .first()
+  if (await boundary.isVisible().catch(() => false)) {
+    throw new Error(`chat panel is showing its error screen: "${await boundary.textContent()}"`)
+  }
 }
 
 export async function createProjectAndWait(page: Page, prompt: string) {
   extendTestTimeout(90_000)
+  watchChatHealth(page)
   await page.goto("/")
   await page.waitForSelector("text=What are we building", { timeout: 15_000 })
 

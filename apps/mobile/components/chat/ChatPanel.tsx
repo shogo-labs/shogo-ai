@@ -115,6 +115,7 @@ import {
 import { useServerMessageQueue } from "./useServerMessageQueue"
 import {
   dropUnfinishedAssistantTail,
+  applyMessageSnapshot,
   withResumeReplayReset,
 } from "./resume-replay-transport"
 import { cn } from "@shogo/shared-ui/primitives"
@@ -214,6 +215,7 @@ import {
   ChatContextProvider,
   type ChatContextValue,
   type ChatMessage,
+  type OpenProjectPaneRequest,
 } from "./ChatContext"
 import {
   registerDesktopIslandSession,
@@ -556,6 +558,11 @@ export interface ChatPanelProps {
    * navigates to that project's IDE (or Files, on native) tab.
    */
   onOpenFile?: (projectId: string, relPath: string) => void
+  /**
+   * Shows another project (or one of its chats) beside this chat. Only set by
+   * hosts with room for a side pane; otherwise cards navigate to the project.
+   */
+  onOpenProjectPane?: (request: OpenProjectPaneRequest) => void
   /** Controlled model selection — when provided, ChatPanel uses this instead of its own state */
   selectedModel?: string
   onModelChange?: (modelId: string) => void
@@ -975,6 +982,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
   onBuildPlanConsumed,
   onOpenPlan,
   onOpenFile,
+  onOpenProjectPane,
   selectedModel: controlledSelectedModel,
   onModelChange: controlledOnModelChange,
   onResolveSessionModel,
@@ -1933,14 +1941,20 @@ const ChatPanelContent = observer(function ChatPanelContent({
     // Anthropic TTFB).
     onChunk: bumpChatProgress,
     getClientTurnId,
+    // Reopening a live turn gets the message so far in one chunk instead of
+    // the whole stream replayed; `withResumeReplayReset` applies it below.
+    resumeSnapshot: true,
   })
   // Set once `useChat` has returned `setMessages`; see resume-replay-transport.ts.
   const beforeResumeReplayRef = useRef<() => void>(() => {})
+  const applyResumeSnapshotRef = useRef<(message: UIMessage) => void>(() => {})
   const chatTransport = useMemo(
     () =>
       transportConfig
-        ? withResumeReplayReset(new DefaultChatTransport(transportConfig), () =>
-            beforeResumeReplayRef.current(),
+        ? withResumeReplayReset(
+            new DefaultChatTransport(transportConfig),
+            () => beforeResumeReplayRef.current(),
+            (message) => applyResumeSnapshotRef.current(message),
           )
         : undefined,
     [transportConfig],
@@ -3031,6 +3045,8 @@ const ChatPanelContent = observer(function ChatPanelContent({
   })
   beforeResumeReplayRef.current = () =>
     setMessages((prev) => dropUnfinishedAssistantTail(prev))
+  applyResumeSnapshotRef.current = (message) =>
+    setMessages((prev) => applyMessageSnapshot(prev, message))
 
   // All resume paths share a single-flight guard. The history-load probe and
   // delegated-task reconciliation can finish at the same time when the app is
@@ -6986,6 +7002,8 @@ const ChatPanelContent = observer(function ChatPanelContent({
       confirmedPlan,
       openPlan: onOpenPlan,
       openFile,
+      workspaceId: workspaceId ?? null,
+      openProjectPane: onOpenProjectPane,
       generateSummary: handleGenerateSummary,
       selectedModel,
       isPro: hasAdvancedModelAccess,
@@ -7005,6 +7023,8 @@ const ChatPanelContent = observer(function ChatPanelContent({
       confirmedPlan,
       onOpenPlan,
       openFile,
+      workspaceId,
+      onOpenProjectPane,
       handleGenerateSummary,
       selectedModel,
       hasAdvancedModelAccess,
@@ -7425,6 +7445,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
                     : "text-destructive",
                 )}
                 selectable
+                testID="chat-error-banner"
               >
                 {errorBannerText}
               </Text>
@@ -7439,6 +7460,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
               )}
               numberOfLines={2}
               selectable
+              testID="chat-error-banner"
             >
               {errorBannerText}
             </Text>

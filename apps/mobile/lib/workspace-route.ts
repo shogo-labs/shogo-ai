@@ -86,10 +86,21 @@ export function getCloudWorkspacesState(): CloudWorkspacesState {
   return state
 }
 
+/** Another window (e.g. the desktop island) refreshed the list. */
+function onStorage(event: StorageEvent): void {
+  if (event.key !== null && event.key !== STORAGE_KEY) return
+  state = loadCached()
+  cloudIds = new Set(state.workspaces.map((w) => w.id))
+  for (const listener of [...listeners]) listener()
+}
+
 export function subscribeCloudWorkspaces(listener: () => void): () => void {
+  const watchOtherWindows = typeof window !== 'undefined' && typeof window.addEventListener === 'function'
+  if (watchOtherWindows && listeners.size === 0) window.addEventListener('storage', onStorage)
   listeners.add(listener)
   return () => {
     listeners.delete(listener)
+    if (watchOtherWindows && listeners.size === 0) window.removeEventListener('storage', onStorage)
   }
 }
 

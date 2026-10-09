@@ -492,6 +492,59 @@ describe('BaseHeartbeatScheduler — quiet hours + breaker integration', () => {
   })
 })
 
+describe('BaseHeartbeatScheduler — self-heal of unscheduled rows', () => {
+  test('an enabled row with no nextHeartbeatAt is scheduled, NOT triggered', async () => {
+    const s = new TestScheduler()
+    s.agents = [makeAgent({ unscheduled: true })]
+    await s.start()
+    try {
+      await s.tick()
+      expect(s.triggered).toEqual([])
+      expect(agentConfigUpdate).toHaveBeenCalledTimes(1)
+      const call = agentConfigUpdate.mock.calls[0][0]
+      expect(call.where).toEqual({ id: 'cfg-1' })
+      // First run is one full interval out (60s + jitter), never "now".
+      expect(call.data.nextHeartbeatAt.getTime()).toBeGreaterThanOrEqual(Date.now() + 59_000)
+    } finally {
+      s.stop()
+    }
+  })
+
+  test('an unscheduled row is repaired even if its circuit breaker is open or it is in quiet hours', async () => {
+    isInQuietHoursMock.mockImplementation(() => true)
+    const s = new TestScheduler()
+    s.agents = [makeAgent({ unscheduled: true, quietHoursStart: '22:00', quietHoursEnd: '06:00' })]
+    ;(s as any).breaker.recordFailure('proj-1')
+    await s.start()
+    try {
+      await s.tick()
+      expect(agentConfigUpdate).toHaveBeenCalledTimes(1)
+      expect(s.quietSkipCalls).toHaveLength(0)
+      expect(s.getStats().totalQuietSkips).toBe(0)
+    } finally {
+      s.stop()
+    }
+  })
+
+  test('a claiming fetcher (claimsOnFetch) has already advanced the row; the base class does not write again', async () => {
+    class ClaimingScheduler extends TestScheduler {
+      protected override get claimsOnFetch(): boolean {
+        return true
+      }
+    }
+    const s = new ClaimingScheduler()
+    s.agents = [makeAgent({ id: 'cfg-A', projectId: 'A' }), makeAgent({ id: 'cfg-B', projectId: 'B', unscheduled: true })]
+    await s.start()
+    try {
+      await s.tick()
+      expect(s.triggered).toEqual(['A'])
+      expect(agentConfigUpdate).not.toHaveBeenCalled()
+    } finally {
+      s.stop()
+    }
+  })
+})
+
 describe('BaseHeartbeatScheduler — trigger outcomes', () => {
   test('successful trigger bumps totalTriggered via onTriggerSuccess', async () => {
     const s = new TestScheduler()

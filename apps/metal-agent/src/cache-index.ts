@@ -60,6 +60,8 @@ export interface CacheEntry {
   dataEtag?: string
   /** ETag of the encrypted home-directory archive current when this snapshot was taken. */
   homeEtag?: string
+  /** See AssignedVm.publishedDataLoaded. */
+  publishedDataLoaded?: boolean
   /** Per-member writable-state archive ETags for workspace runtimes (`dataEtag` per member). */
   memberDataEtags?: Record<string, string>
   /** Per-member source backup ETags for workspace runtimes. */

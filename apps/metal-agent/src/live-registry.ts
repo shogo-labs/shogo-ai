@@ -130,6 +130,8 @@ export interface LiveVmEntry {
   stateSince?: number
   /** See AssignedVm.repoLinked. */
   repoLinked?: boolean
+  /** See AssignedVm.publishedDataLoaded. */
+  publishedDataLoaded?: boolean
   v: 1
 }
 

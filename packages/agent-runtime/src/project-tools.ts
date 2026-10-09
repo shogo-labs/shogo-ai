@@ -21,6 +21,7 @@ import { dirname, join, resolve } from 'path'
 import { randomBytes } from 'crypto'
 import { Type } from '@sinclair/typebox'
 import type { AgentTool } from '@mariozechner/pi-agent-core'
+import { runChatSessionId } from '@shogo/shared-runtime/project-call-chat'
 import type { ToolContext } from './gateway-tools'
 import { textResult } from './gateway-tools'
 import {
@@ -298,7 +299,7 @@ export function createProjectConfigureTool(ctx: ToolContext): AgentTool {
     name: 'project_configure',
     label: 'Configure Project',
     description:
-      'Read or change a project\'s agent configuration: heartbeat (enabled/interval/quiet hours), default model, name and description. Defaults to the current project. Call with no changes to read the current config. For the current project\'s heartbeat prefer heartbeat_configure (it also updates config.json).',
+      'Read or change a project\'s agent configuration: heartbeat (enabled/interval/quiet hours), default model, name and description. Defaults to the current project. Call with no changes to read the current config. Heartbeats require a paid plan: on a free plan the other changes are still applied and the result includes a `heartbeatError`.',
     parameters: Type.Object({
       project: Type.Optional(Type.String({ description: 'Project id, name, or manifest key. Default: current project.' })),
       name: Type.Optional(Type.String()),
@@ -345,7 +346,16 @@ export function createProjectConfigureTool(ctx: ToolContext): AgentTool {
           })
         : await apiGetProjectConfig(targetId)
       if (!res.ok || !res.data) return textResult({ error: res.error ?? 'Configure failed', code: res.code, status: res.status })
-      return textResult({ ok: true, changed: hasChanges, project: res.data })
+      const heartbeatError = res.data.heartbeatError
+      return textResult({
+        ok: true,
+        changed: hasChanges,
+        project: res.data,
+        // Partial success: everything but the heartbeat change was applied.
+        ...(heartbeatError
+          ? { heartbeatError, warning: `Heartbeat settings were not applied: ${heartbeatError.message}` }
+          : {}),
+      })
     },
   }
 }
@@ -370,7 +380,7 @@ export function createProjectCallTool(ctx: ToolContext): AgentTool {
       wait: Type.Optional(Type.Boolean({ description: 'Wait for the reply (default true).' })),
       timeoutMs: Type.Optional(Type.Number({ description: 'Wait budget in ms (default 300000, max 1200000).' })),
     }),
-    execute: async (_id, params) => {
+    execute: async (toolCallId, params) => {
       const p = params as { project: string; message: string; runId?: string; wait?: boolean; timeoutMs?: number }
       const target = await resolveProjectRef(ctx, p.project)
       if ('error' in target) return textResult(target)
@@ -378,6 +388,19 @@ export function createProjectCallTool(ctx: ToolContext): AgentTool {
         return textResult({ error: 'project_call targets another project; use agent_spawn to delegate within this one.', code: 'self_call' })
       }
       const runId = p.runId?.trim() || newRunId()
+      ctx.uiWriter?.write({
+        type: 'tool-output-available',
+        toolCallId,
+        output: {
+          project: { id: target.id, name: target.name },
+          runId,
+          status: 'running',
+          wait: p.wait !== false,
+          chatSessionId: runChatSessionId(target.id, runId),
+        },
+        dynamic: true,
+        preliminary: true,
+      })
       const res = await apiCallProjectAgent(target.id, {
         message: p.message,
         runId,
@@ -390,6 +413,7 @@ export function createProjectCallTool(ctx: ToolContext): AgentTool {
           error: res.error ?? 'Call failed',
           code: res.code,
           status: res.status,
+          project: { id: target.id, name: target.name },
           runId,
           hint: res.code === 'agent_call_timeout' || res.code === 'timeout'
             ? 'The callee is still working. Re-issue with wait=false or a larger timeoutMs; the same runId keeps the trace intact.'
@@ -407,7 +431,9 @@ export function createProjectCallTool(ctx: ToolContext): AgentTool {
         project: { id: target.id, name: target.name },
         runId,
         status: res.data.status,
+        wait: p.wait !== false,
         sessionId: res.data.sessionId,
+        chatSessionId: res.data.chatSessionId ?? res.data.sessionId,
         reply,
         ...(urls.length > 0
           ? {
@@ -574,7 +600,13 @@ export function createSystemApplyTool(ctx: ToolContext): AgentTool {
         if (!id) { report.skipped.push(`configure ${op.key}: unresolved binding`); continue }
         const res = await apiConfigureProject(id, op.patch)
         if (!res.ok) report.errors.push(`configure ${op.key}: ${res.error ?? 'failed'}`)
-        else { report.applied.push(`configure ${op.key}`); configured.add(op.key) }
+        else {
+          report.applied.push(`configure ${op.key}`)
+          configured.add(op.key)
+          if (res.data?.heartbeatError) {
+            report.errors.push(`configure ${op.key}: heartbeat not applied (${res.data.heartbeatError.message}); the other settings were applied`)
+          }
+        }
       }
       for (const op of diff.create) {
         if (configured.has(op.key) || !op.spec.agent) continue
@@ -593,7 +625,12 @@ export function createSystemApplyTool(ctx: ToolContext): AgentTool {
           },
         })
         if (!res.ok) report.errors.push(`configure ${op.key}: ${res.error ?? 'failed'}`)
-        else report.applied.push(`configure ${op.key}`)
+        else {
+          report.applied.push(`configure ${op.key}`)
+          if (res.data?.heartbeatError) {
+            report.errors.push(`configure ${op.key}: heartbeat not applied (${res.data.heartbeatError.message}); the other settings were applied`)
+          }
+        }
       }
 
       // 4. Files. Only projects reachable on disk; the rest are reported so

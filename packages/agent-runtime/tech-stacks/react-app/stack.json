@@ -13,7 +13,7 @@
     "webEnabled": true,
     "browserEnabled": true,
     "shellEnabled": true,
-    "heartbeatEnabled": true,
+    "heartbeatToolsEnabled": true,
     "imageGenEnabled": true,
     "memoryEnabled": true,
     "quickActionsEnabled": true

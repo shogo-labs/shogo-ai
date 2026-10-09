@@ -38,7 +38,7 @@ All capabilities default to **on**. Set a flag to `false` to disable it.
 | Browser control | `browserEnabled` | `browser` | Browser guide (delegated) |
 | Shell | `shellEnabled` | `exec`, `exec_wait` | — |
 | Image generation | `imageGenEnabled` | `generate_image` | `media` capability line |
-| Heartbeat | `heartbeatEnabled` | `heartbeat_configure`, `heartbeat_status` | `devops` line + Action Tools reminder |
+| Heartbeat | `heartbeatToolsEnabled` | `heartbeat_configure`, `heartbeat_status` | `devops` line + Action Tools reminder |
 | Memory | `memoryEnabled` | `memory_read`, `memory_search` | — |
 | Quick actions | `quickActionsEnabled` | `quick_action` | Quick Action guide |
 | Channels | `channelsEnabled` | `channel_connect`, `channel_disconnect`, `channel_list`, `send_message` | `channel` line + Action Tools bullet |
@@ -88,7 +88,7 @@ leaner prompt.
   "channelsEnabled": false,
   "integrationsEnabled": false,
   "imageGenEnabled": false,
-  "heartbeatEnabled": false,
+  "heartbeatToolsEnabled": false,
   "sdkGuideEnabled": false
 }
 ```

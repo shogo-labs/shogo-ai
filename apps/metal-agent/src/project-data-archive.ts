@@ -174,8 +174,14 @@ export function dataQuarantineKey(projectId: string): string {
  */
 export const DATA_MAX_BYTES = 4 * 1024 * 1024 * 1024
 
-/** A current archive at or above this size holds enough state to be worth noting. */
-export const DATA_REAL_MIN_BYTES = 1024 * 1024
+/**
+ * A current archive at or above this size holds enough state to be worth noting.
+ *
+ * 512 KiB, matching the source-archive template ceiling (`TEMPLATE_MAX_BYTES`).
+ * This was 1 MiB, which left 0.5-1 MiB databases invisible to the collapse
+ * signal. It is observational only, so lowering it cannot refuse a write.
+ */
+export const DATA_REAL_MIN_BYTES = 512 * 1024
 
 /** Shrink ratio below which an update looks less like an edit than an erasure. */
 export const COLLAPSE_RATIO = 0.25

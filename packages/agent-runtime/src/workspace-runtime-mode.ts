@@ -428,6 +428,38 @@ export function isAttachedProjectId(projectId: string, attachedIds: string[]): b
   return attachedIds.includes(projectId)
 }
 
+export type HeartbeatTarget =
+  | { ok: true; projectId: string; projectDir: string }
+  | { ok: false; projectId: string | undefined }
+
+/**
+ * Decide which project a `/agent/heartbeat/trigger` request is for and where
+ * its files live.
+ *
+ * The scheduler names the due project in the request body. A workspace runtime
+ * serves several attached projects from one merged root, so the heartbeat must
+ * read THAT project's `HEARTBEAT.md` (a subfolder of the root) and report back
+ * under ITS id; the runtime's own identity (`ws:<workspaceId>`) is not a
+ * project the API recognises. Older API builds send no body, so fall back to
+ * the heartbeat project (anchor / current project).
+ *
+ * A single-project runtime serves its working directory itself.
+ */
+export function resolveHeartbeatTarget(input: {
+  requestedId?: unknown
+  fallbackId?: string
+  isWorkspaceRuntime: boolean
+  workspaceDir: string
+  attachedIds: string[]
+}): HeartbeatTarget {
+  const requested = typeof input.requestedId === 'string' && input.requestedId ? input.requestedId : undefined
+  const projectId = requested ?? input.fallbackId
+  if (!projectId) return { ok: false, projectId }
+  if (!input.isWorkspaceRuntime) return { ok: true, projectId, projectDir: input.workspaceDir }
+  if (!isAttachedProjectId(projectId, input.attachedIds)) return { ok: false, projectId }
+  return { ok: true, projectId, projectDir: join(input.workspaceDir, projectId) }
+}
+
 /**
  * Parse the optional per-project external preview URL map the API may
  * attach as `WORKSPACE_PREVIEW_URLS` (JSON object `{ [projectId]: url }`).

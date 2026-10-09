@@ -1487,7 +1487,13 @@ export interface ProjectConfigSnapshot {
     quietHoursEnd: string | null
     quietHoursTimezone: string | null
     nextHeartbeatAt: string | null
+    lastHeartbeatAt: string | null
   } | null
+  /**
+   * Set when the patch asked for heartbeat changes the workspace's plan does
+   * not allow; the rest of the patch was still applied.
+   */
+  heartbeatError?: { code: 'paywall'; message: string }
 }
 
 export async function getProjectConfig(projectId: string): Promise<CheckpointCallResult<ProjectConfigSnapshot>> {
@@ -1526,6 +1532,8 @@ export interface AgentCallResult {
   reply?: string
   runId?: string
   sessionId?: string
+  /** The project chat (API ChatSession id) that records this call, when persisted. */
+  chatSessionId?: string
 }
 
 export async function callProjectAgent(

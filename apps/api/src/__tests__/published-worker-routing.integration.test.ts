@@ -328,3 +328,81 @@ describe('subdomain-router worker — wake-on-visit', () => {
     expect(calls[0].url).toBe(`${OCI_ORIGIN}/plain-static-site/index.html`)
   })
 })
+
+// Production binds BOTH origins: KOURIER_ORIGIN (Knative) and
+// API_PUBLISHED_ORIGIN (metal). Sites published before the metal cutover still
+// carry the legacy `1` flag, and their Knative services are pinned to a runtime
+// image that has aged out of the node cache, so a cold start takes longer than
+// the edge waits. Once metal is bound, legacy flags must route there.
+// An explicit `knative` value is the rollback marker and still routes to Kourier.
+const API_PUBLISHED_ORIGIN = 'https://studio.shogo.test'
+
+function makeBothOriginsEnv(flags: Record<string, string>): any {
+  return {
+    KOURIER_ORIGIN,
+    API_PUBLISHED_ORIGIN,
+    SERVER_BACKED: { get: async (key: string) => flags[key] ?? null },
+    CUSTOM_DOMAINS: undefined,
+  }
+}
+
+describe('subdomain-router worker — legacy flags once metal is bound', () => {
+  test('/api/* on a legacy `1` site is proxied to the metal API, not Kourier', async () => {
+    installFetch(() => ({ status: 200, body: '{"ok":true}' }))
+    const env = makeBothOriginsEnv({ 'legacy-site': '1' })
+    const req = new Request('https://legacy-site.shogo.one/api/items?x=1')
+
+    const res = await workerModule.fetch(req, env)
+    expect(res.status).toBe(200)
+    expect(calls.length).toBe(1)
+    expect(calls[0].url).toBe(`${API_PUBLISHED_ORIGIN}/api/published/legacy-site/api/items?x=1`)
+    expect(calls[0].cf?.resolveOverride).toBeUndefined()
+    expect(calls[0].headers['x-forwarded-host']).toBe('legacy-site.shogo.one')
+  })
+
+  test('/__shogo/wake on a legacy `1` site wakes through the metal API', async () => {
+    installFetch((url) =>
+      url.endsWith('/wake') ? { status: 200, body: '{"ready":true}' } : { status: 404 },
+    )
+    const env = makeBothOriginsEnv({ 'legacy-site': '1' })
+    const req = new Request('https://legacy-site.shogo.one/__shogo/wake')
+
+    const res = await workerModule.fetch(req, env)
+    expect(await res.json()).toEqual({ ready: true })
+    expect(calls.length).toBe(1)
+    expect(calls[0].url).toBe(`${API_PUBLISHED_ORIGIN}/api/published/legacy-site/wake`)
+  })
+
+  test('cold document navigation on a legacy `1` site probes the metal API wake', async () => {
+    installFetch((url) =>
+      url.endsWith('/wake') ? { status: 200, body: '{"ready":false}' } : { status: 200, body: '<html>app</html>' },
+    )
+    const env = makeBothOriginsEnv({ 'legacy-site': '1' })
+    const req = new Request('https://legacy-site.shogo.one/', { headers: { Accept: 'text/html' } })
+
+    const res = await workerModule.fetch(req, env)
+    expect(await res.text()).toContain('Waking things up')
+    expect(calls.length).toBe(1)
+    expect(calls[0].url).toBe(`${API_PUBLISHED_ORIGIN}/api/published/legacy-site/wake`)
+  })
+
+  test('an explicit `knative` flag still routes to Kourier (rollback)', async () => {
+    installFetch(() => ({ status: 200, body: '{"ok":true}' }))
+    const env = makeBothOriginsEnv({ 'rolled-back': 'knative' })
+    const req = new Request('https://rolled-back.shogo.one/api/items')
+
+    await workerModule.fetch(req, env)
+    expect(calls.length).toBe(1)
+    expect(calls[0].url).toBe('https://rolled-back.shogo.one/api/items')
+    expect(calls[0].cf?.resolveOverride).toBe(KOURIER_ORIGIN.replace(/^https?:\/\//, ''))
+  })
+
+  test('a `metal` flag routes to the metal API', async () => {
+    installFetch(() => ({ status: 200, body: '{"ok":true}' }))
+    const env = makeBothOriginsEnv({ 'new-site': 'metal' })
+    const req = new Request('https://new-site.shogo.one/api/items')
+
+    await workerModule.fetch(req, env)
+    expect(calls[0].url).toBe(`${API_PUBLISHED_ORIGIN}/api/published/new-site/api/items`)
+  })
+})

@@ -27,6 +27,10 @@ export const CRITICAL_PATH_SPECS: readonly string[] = [
   "workspace-switch.test.ts",
   // Event triggers run, Settings → Automations shows them, /api/v1 answers.
   "apps-critical.test.ts",
+  // A >90s agent turn finishes and persists across a reopen mid-turn.
+  "chat-long-turn.test.ts",
+  // Reopening during a live turn renders the replay at phone CPU speed.
+  "chat-reopen-live-turn.test.ts",
 ]
 
 export function criticalPathTestMatch(): string[] {

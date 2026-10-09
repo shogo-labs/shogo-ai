@@ -96,6 +96,8 @@ export interface SnapshotMeta {
    * before writable-state durability shipped.
    */
   dataEtag?: string
+  /** See AssignedVm.publishedDataLoaded. Absent on snapshots taken before it shipped. */
+  publishedDataLoaded?: boolean
   /**
    * ETag of the encrypted home-directory archive (`{projectId}/home-state.enc`)
    * current when this snapshot was taken. Carried back into

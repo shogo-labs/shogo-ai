@@ -115,6 +115,11 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Build workspace packages
+        # Specs import runtime source that imports `@shogo-ai/sdk/*`, which
+        # Playwright resolves to the package's compiled `dist/`.
+        run: bun run build:packages
+
       - name: Cache Playwright browsers
         id: cache-playwright
         uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
@@ -137,6 +142,11 @@ jobs:
           # runtime-lifecycle specs skip. Must match the staging API's
           # `e2e-bootstrap` k8s secret (k8s/overlays/staging/api-service.yaml).
           SHOGO_E2E_BOOTSTRAP_SECRET: ${{ secrets.SHOGO_E2E_BOOTSTRAP_SECRET }}
+          # Rate-limit bypass (x-load-test-key). All workers share this runner's
+          # IP, which the API otherwise throttles with 429s and logs test users
+          # out. Must match staging's `api-secrets` LOAD_TEST_SECRET; sent only to
+          # staging (see e2e/staging/fixtures.ts), never to production.
+          LOAD_TEST_SECRET: ${{ (inputs.target || 'staging') == 'staging' && secrets.LOAD_TEST_SECRET || '' }}
           E2E_ADMIN_EMAIL: ${{ secrets.E2E_ADMIN_EMAIL }}
           E2E_ADMIN_PASSWORD: ${{ secrets.E2E_ADMIN_PASSWORD }}
 

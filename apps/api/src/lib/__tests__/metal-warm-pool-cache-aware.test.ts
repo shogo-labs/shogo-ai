@@ -21,6 +21,7 @@ describe('MetalWarmPoolController — cache/disk-aware routing', () => {
   it('de-prioritizes hosts over the disk high-watermark for new placements', async () => {
     const seen: string[] = []
     const fetchImpl = (async (url: string) => {
+      if (url.endsWith('/status')) return Response.json({ state: 'none' })
       seen.push(new URL(url).hostname)
       return new Response(JSON.stringify({ url: 'http://g:8080', mode: 'assigned' }), { status: 200 })
     }) as any
@@ -83,5 +84,42 @@ describe('MetalWarmPoolController — cache/disk-aware routing', () => {
     // This controller loses the lease → must route to the winner's placed host.
     await c.getMetalProjectUrl('p-race')
     expect(seen[0]).toBe('10.0.0.7')
+  })
+
+  it('a lease loser joins the winner’s host while the winner’s cold boot is still running', async () => {
+    const registry = new MetalPlacementRegistry(() => null)
+    let finishWinnerBoot!: () => void
+    const winnerBooting = new Promise<void>((r) => (finishWinnerBoot = r))
+    const assigns: Array<{ pod: string; host: string }> = []
+    const fetchFor = (pod: string) =>
+      (async (url: string) => {
+        if (url.endsWith('/status')) return Response.json({ state: 'none' })
+        assigns.push({ pod, host: new URL(url).hostname })
+        if (pod === 'a') await winnerBooting
+        return new Response(JSON.stringify({ url: 'http://g:8080', mode: 'assigned' }), { status: 200 })
+      }) as any
+
+    // Each API pod sees a different least-loaded host (heartbeats lag the
+    // winner's in-flight boot), so load ordering alone would split them.
+    const pod = (name: string) => {
+      const c = new MetalWarmPoolController(fakeEnv(), fetchFor(name), Date.now, registry, async () => ({ PROJECT_ID: 'p' }))
+      ;(c as any).holderId = `pod-${name}`
+      return c
+    }
+    const a = pod('a')
+    a.registerHost({ ...REG, hostId: 'h1', meshIp: '10.0.1.1', load: { available: 4, assigned: 0, suspended: 0 } })
+    a.registerHost({ ...REG, hostId: 'h2', meshIp: '10.0.1.2', load: { available: 1, assigned: 3, suspended: 0 } })
+    const b = pod('b')
+    b.registerHost({ ...REG, hostId: 'h1', meshIp: '10.0.1.1', load: { available: 1, assigned: 3, suspended: 0 } })
+    b.registerHost({ ...REG, hostId: 'h2', meshIp: '10.0.1.2', load: { available: 4, assigned: 0, suspended: 0 } })
+
+    const winner = a.getMetalPublishedUrl('p-cold', 'cold-site')
+    while (!assigns.some((x) => x.pod === 'a')) await Bun.sleep(5)
+    const loser = await b.getMetalPublishedUrl('p-cold', 'cold-site')
+    finishWinnerBoot()
+    await winner
+
+    expect(loser.hostId).toBe('h1')
+    expect(new Set(assigns.map((x) => x.host))).toEqual(new Set(['10.0.1.1']))
   })
 })

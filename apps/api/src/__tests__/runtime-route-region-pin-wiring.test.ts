@@ -1,0 +1,126 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Shogo Technologies, Inc.
+
+/**
+ * Architectural regression test: every route that resolves a project's
+ * runtime must pin to the workspace's home region before resolving.
+ *
+ * Production bug: a US visitor opened an EU-homed project. Chat and
+ * agent-proxy were pinned to the EU, so the agent built the app on the EU VM,
+ * but `sandbox/url` and the preview render/wake routes resolved the runtime
+ * locally — booting a second, US VM seeded with the starter template. The
+ * canvas iframe showed "Project Ready / Start building your app!" while the
+ * real app sat on the other VM.
+ *
+ * Source check (same shape as `trust-resolver-wiring.test.ts`): for each
+ * handler, `pinChatToHomeRegion(` must appear before the first runtime
+ * resolver call. The pin's behavior itself is covered by
+ * `chat-region-pin.test.ts`, and the agent-proxy route by
+ * `agent-proxy-region-pin.integration.test.ts`.
+ */
+
+import { describe, expect, test } from 'bun:test'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+
+const src = readFileSync(join(import.meta.dir, '..', 'server.ts'), 'utf8')
+
+const RESOLVERS = /resolveProjectPodUrl\(|getProjectPodUrl\(|new MetalSubstrate\(\)\.getStatus\(|projectChatRoutes\(/
+
+function handlerBody(start: string): string {
+  const from = src.indexOf(start)
+  if (from === -1) throw new Error(`handler not found in server.ts: ${start}`)
+  const rest = src.slice(from + start.length)
+  const next = rest.search(/\n(app\.(get|post|all|put|delete|use)\(|const \w+Handler = async)/)
+  return next === -1 ? rest : rest.slice(0, next)
+}
+
+const ROUTES: Array<[label: string, start: string]> = [
+  ['GET sandbox/url', "app.get('/api/projects/:projectId/sandbox/url'"],
+  ['GET preview wake', "app.get('/api/preview/:projectId/wake'"],
+  ['preview render', 'const previewRenderHandler = async'],
+  ['preview port render', 'const previewPortRenderHandler = async'],
+  ['GET runtime/status', "app.get('/api/projects/:projectId/runtime/status'"],
+  ['legacy preview proxy', "app.all('/api/projects/:projectId/preview/*'"],
+  ['GET ports/listening', "app.get('/api/projects/:projectId/ports/listening'"],
+  ['GET chat/status', "app.get('/api/projects/:projectId/chat/status'"],
+]
+
+describe('runtime-resolving routes pin to the home region first', () => {
+  for (const [label, start] of ROUTES) {
+    test(label, () => {
+      const body = handlerBody(start)
+      const pinAt = body.indexOf('pinChatToHomeRegion(')
+      const resolveAt = body.search(RESOLVERS)
+      expect(resolveAt).toBeGreaterThan(-1)
+      expect(pinAt).toBeGreaterThan(-1)
+      expect(pinAt).toBeLessThan(resolveAt)
+    })
+  }
+})
+
+describe('published site routes pin to the home region first', () => {
+  // The edge steers studio.shogo.ai by latency, and each region keeps its own
+  // placements: an EU visitor's request resolved in the EU booted a second VM
+  // for a US site, and both copies exported over one data archive.
+  const PUBLISHED_RESOLVERS = /getMetalPublishedUrl\(|wakePublished\(|healthCheckPublished\(/
+  for (const [label, start] of [
+    ['GET published wake', "app.get('/api/published/:subdomain/wake'"],
+    ['published /api proxy', 'const publishedApiHandler = async'],
+  ] as const) {
+    test(label, () => {
+      const body = handlerBody(start)
+      const pinAt = body.indexOf('pinPublishedToHomeRegion(')
+      const resolveAt = body.search(PUBLISHED_RESOLVERS)
+      expect(resolveAt).toBeGreaterThan(-1)
+      expect(pinAt).toBeGreaterThan(-1)
+      expect(pinAt).toBeLessThan(resolveAt)
+    })
+  }
+
+  test('the published pin retires copies outside the home region from both sides', () => {
+    const body = handlerBody('async function pinPublishedToHomeRegion(')
+    expect(body).toContain('pinChatToHomeRegion(')
+    expect(body).toContain('onForeignHome')
+    expect(body).toContain('releaseForeignPublished(')
+    expect(body).toContain('onLocalHome')
+    expect(body).toContain('askPeersToReleasePublished(')
+  })
+
+  test('peers accept release requests on the internal route the home region calls', () => {
+    const internal = readFileSync(join(import.meta.dir, '..', 'routes', 'internal.ts'), 'utf8')
+    const route = internal.indexOf("app.post('/published/release'")
+    expect(route).toBeGreaterThan(-1)
+    const body = internal.slice(route, route + 600)
+    expect(body).toContain('hasInternalSecret(c)')
+    expect(body).toContain('releasePublishedForPeer(')
+    expect(body).toContain('releaseForeignPublished(')
+  })
+})
+
+describe('every /api/projects/:projectId/* method is pinned', () => {
+  // Files, terminal, database, diagnostics, … GETs resolve the runtime too,
+  // and the home-region write router only pins mutating methods.
+  test('a project-wide pin runs after requireProjectAccess and before any project route', () => {
+    const accessAt = src.indexOf('return requireProjectAccess(c, next)')
+    const pinMw = src.indexOf(
+      "app.use('/api/projects/:projectId/*', pinProjectRoutesToHomeRegion(",
+    )
+    const firstFilesRoute = src.indexOf("app.get('/api/projects/:projectId/files'")
+    expect(accessAt).toBeGreaterThan(-1)
+    expect(pinMw).toBeGreaterThan(accessAt)
+    expect(firstFilesRoute).toBeGreaterThan(pinMw)
+    expect(src.indexOf('app.use(\'/api/*\', homeRegionWriteProxy)')).toBeGreaterThan(pinMw)
+  })
+})
+
+describe('metal runtime resolution records the preview region', () => {
+  test('sandbox/url and preview wake remember the region after a metal resolve', () => {
+    for (const start of [
+      "app.get('/api/projects/:projectId/sandbox/url'",
+      "app.get('/api/preview/:projectId/wake'",
+    ]) {
+      expect(handlerBody(start)).toContain('rememberMetalPreviewRegion(projectId)')
+    }
+  })
+})

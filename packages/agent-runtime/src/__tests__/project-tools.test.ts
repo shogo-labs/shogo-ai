@@ -10,6 +10,7 @@ import { describe, test, expect, beforeEach, mock } from 'bun:test'
 import { mkdtempSync, rmSync, existsSync, readFileSync, mkdirSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
+import { runChatSessionId } from '@shogo/shared-runtime/project-call-chat'
 import * as realInternalApi from '../internal-api'
 
 // ─── internal-api fakes ─────────────────────────────────────────────────
@@ -271,6 +272,31 @@ describe('project_configure', () => {
     ])
   })
 
+  test('reports a paywall heartbeatError as a warning while the rest of the patch applies', async () => {
+    api.configure = {
+      ok: true,
+      status: 200,
+      data: {
+        id: 'proj-1', name: 'Renamed', description: null, settings: null, slackEnabled: false, agent: null,
+        heartbeatError: { code: 'paywall', message: 'Heartbeats require a paid plan.' },
+      },
+    }
+    const ctx = baseCtx({ projectId: 'proj-1' })
+    const out = await run(createProjectConfigureTool(ctx), { name: 'Renamed', heartbeatEnabled: true })
+    expect(out.ok).toBe(true)
+    expect(out.changed).toBe(true)
+    expect(out.project.name).toBe('Renamed')
+    expect(out.heartbeatError).toMatchObject({ code: 'paywall' })
+    expect(out.warning).toContain('Heartbeat settings were not applied')
+  })
+
+  test('has no warning when the heartbeat part was applied', async () => {
+    const ctx = baseCtx({ projectId: 'proj-1' })
+    const out = await run(createProjectConfigureTool(ctx), { heartbeatEnabled: true })
+    expect(out.heartbeatError).toBeUndefined()
+    expect(out.warning).toBeUndefined()
+  })
+
   test('targets another project by manifest key resolved through the lock', async () => {
     api.graph.data = [
       { id: 'caller-1', name: 'Caller', description: null, workingMode: 'managed', settings: null, attachments: [], agent: null },
@@ -309,6 +335,42 @@ describe('project_call', () => {
     expect(callArgs[1].callerProjectId).toBe('caller-1')
   })
 
+  test('emits a preliminary result with the target chat before waiting for the call', async () => {
+    api.graph.data = [
+      { id: 'caller-1', name: 'Caller', description: null, workingMode: 'managed', settings: null, attachments: [], agent: null },
+      { id: 'proj-2', name: 'Worker', description: null, workingMode: 'managed', settings: null, attachments: [], agent: null },
+    ]
+    let resolveCall!: (value: any) => void
+    api.call = new Promise((resolve) => {
+      resolveCall = resolve
+    }) as any
+    const events: any[] = []
+    const pending = run(
+      createProjectCallTool(baseCtx({ uiWriter: { write: (event: any) => events.push(event) } })),
+      { project: 'proj-2', message: 'go', runId: 'run_fixed' },
+    )
+
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(events[0]).toEqual({
+      type: 'tool-output-available',
+      toolCallId: 'cid',
+      output: {
+        project: { id: 'proj-2', name: 'Worker' },
+        runId: 'run_fixed',
+        status: 'running',
+        wait: true,
+        chatSessionId: runChatSessionId('proj-2', 'run_fixed'),
+      },
+      dynamic: true,
+      preliminary: true,
+    })
+    expect(calls.find((call) => call.fn === 'callProjectAgent')).toBeDefined()
+
+    resolveCall({ ok: true, status: 200, data: { status: 'completed', reply: 'done', chatSessionId: 'chat-123' } })
+    await pending
+  })
+
   test('reuses a caller-supplied runId', async () => {
     api.graph.data = [
       { id: 'caller-1', name: 'Caller', description: null, workingMode: 'managed', settings: null, attachments: [], agent: null },
@@ -335,6 +397,43 @@ describe('project_call', () => {
       { type: 'url', label: 'Worker', href: 'https://demo.shogo.one', projectId: 'proj-2' },
       { type: 'url', label: 'Worker', href: 'https://app.example.com/path', projectId: 'proj-2' },
     ])
+  })
+
+  test('returns the chat that records the call, and the target project', async () => {
+    api.graph.data = [
+      { id: 'caller-1', name: 'Caller', description: null, workingMode: 'managed', settings: null, attachments: [], agent: null },
+      { id: 'proj-2', name: 'Worker', description: null, workingMode: 'managed', settings: null, attachments: [], agent: null },
+    ]
+    api.call = {
+      ok: true,
+      status: 200,
+      data: { status: 'completed', reply: 'done', sessionId: 'chat-123', chatSessionId: 'chat-123' },
+    }
+    const out = await run(createProjectCallTool(baseCtx()), { project: 'proj-2', message: 'go' })
+    expect(out.chatSessionId).toBe('chat-123')
+    expect(out.wait).toBe(true)
+    expect(out.project).toEqual({ id: 'proj-2', name: 'Worker' })
+  })
+
+  test('falls back to the runtime session id and reports wait=false', async () => {
+    api.graph.data = [
+      { id: 'caller-1', name: 'Caller', description: null, workingMode: 'managed', settings: null, attachments: [], agent: null },
+      { id: 'proj-2', name: 'Worker', description: null, workingMode: 'managed', settings: null, attachments: [], agent: null },
+    ]
+    api.call = { ok: true, status: 202, data: { status: 'accepted', sessionId: 'run:abc' } }
+    const out = await run(createProjectCallTool(baseCtx()), { project: 'proj-2', message: 'go', wait: false })
+    expect(out.chatSessionId).toBe('run:abc')
+    expect(out.wait).toBe(false)
+  })
+
+  test('names the target project on failure', async () => {
+    api.graph.data = [
+      { id: 'caller-1', name: 'Caller', description: null, workingMode: 'managed', settings: null, attachments: [], agent: null },
+      { id: 'proj-2', name: 'Worker', description: null, workingMode: 'managed', settings: null, attachments: [], agent: null },
+    ]
+    api.call = { ok: false, status: 502, error: 'boom', code: 'agent_call_failed' }
+    const out = await run(createProjectCallTool(baseCtx()), { project: 'proj-2', message: 'go' })
+    expect(out.project).toEqual({ id: 'proj-2', name: 'Worker' })
   })
 
   test('adds a hint when the call times out', async () => {
@@ -412,6 +511,34 @@ describe('system_apply', () => {
     expect(out.applied).toHaveLength(0)
     expect(calls.find((c) => c.fn === 'createProject')).toBeUndefined()
     expect(calls.find((c) => c.fn === 'attachProject')).toBeUndefined()
+  })
+
+  test('reports a heartbeat paywall as an error but still applies the rest of the configure', async () => {
+    api.create = { ok: true, status: 201, data: { id: 'proj-intake', name: 'Intake', description: null, workingMode: 'managed', settings: null } }
+    api.configure = {
+      ok: true,
+      status: 200,
+      data: {
+        id: 'proj-intake', name: 'Intake', description: null, settings: null, slackEnabled: false, agent: null,
+        heartbeatError: { code: 'paywall', message: 'Heartbeats require a paid plan.' },
+      },
+    }
+    const manifest = `
+version: 1
+name: issue-pipeline
+projects:
+  - key: intake
+    name: Intake
+    agent:
+      model: claude-haiku-4-5
+      heartbeat:
+        enabled: true
+        interval: 900
+`
+    const out = await run(createSystemApplyTool(baseCtx()), { manifest })
+    expect(out.applied.some((l: string) => l.includes('configure intake'))).toBe(true)
+    expect(out.errors.some((l: string) => l.includes('heartbeat not applied') && l.includes('paid plan'))).toBe(true)
+    expect(out.ok).toBe(false)
   })
 
   test('skips writing files for a project not yet reachable on disk, and reports it instead of erroring', async () => {
