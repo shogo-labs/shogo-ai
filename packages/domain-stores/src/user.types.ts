@@ -15,7 +15,7 @@ export interface UserType {
   emailVerified: boolean
   image?: string
   role: UserRole
-  adminScopes: string
+  adminScopes: string[]
   onboardingCompleted: boolean
   lastSeenAnnouncementVersion?: string
   onboardingIntent?: string
@@ -31,7 +31,7 @@ export interface UserCreateInput {
   emailVerified?: boolean
   image?: string
   role?: UserRole
-  adminScopes?: string
+  adminScopes?: string[]
   onboardingCompleted?: boolean
   lastSeenAnnouncementVersion?: string
   onboardingIntent?: string
@@ -45,7 +45,7 @@ export interface UserUpdateInput {
   emailVerified?: boolean
   image?: string
   role?: UserRole
-  adminScopes?: string
+  adminScopes?: string[]
   onboardingCompleted?: boolean
   lastSeenAnnouncementVersion?: string
   onboardingIntent?: string

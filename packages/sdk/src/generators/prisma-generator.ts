@@ -61,6 +61,47 @@ export interface OutputConfig {
    * unless `voice-components` is included in `generate`.
    */
   voiceComponents?: import('./voice-components-generator').VoiceComponentsGeneratorOptions
+  /**
+   * Fields the API attaches to responses that are not database columns
+   * (e.g. computed permissions), keyed by model then field name. Added to
+   * the `types` and `mst` outputs only; routes never see them.
+   */
+  extraFields?: Record<string, Record<string, ExtraFieldSpec>>
+}
+
+export interface ExtraFieldSpec {
+  type: 'String' | 'Int' | 'Float' | 'Boolean' | 'DateTime' | 'Json'
+  list?: boolean
+}
+
+/** Append `extraFields` to the matching models as optional scalars. */
+export function withExtraFields(
+  models: PrismaModel[],
+  extraFields: OutputConfig['extraFields'],
+): PrismaModel[] {
+  if (!extraFields) return models
+  return models.map((model) => {
+    const extras = extraFields[model.name]
+    if (!extras) return model
+    const taken = new Set(model.fields.map((f) => f.name))
+    const added: PrismaField[] = Object.entries(extras).map(([name, spec]) => {
+      if (taken.has(name)) {
+        throw new Error(`extraFields.${model.name}.${name} collides with a schema field`)
+      }
+      return {
+        name,
+        kind: 'scalar',
+        type: spec.type,
+        isRequired: false,
+        isList: !!spec.list,
+        isId: false,
+        isUnique: false,
+        hasDefaultValue: false,
+        isExtra: true,
+      }
+    })
+    return { ...model, fields: [...model.fields, ...added] }
+  })
 }
 
 export interface GenerateOptions {
@@ -121,6 +162,8 @@ export interface PrismaField {
   default?: PrismaFieldDefault
   relationName?: string
   relationFromFields?: string[]
+  /** Response-only field from `OutputConfig.extraFields`; never written. */
+  isExtra?: boolean
 }
 
 export interface PrismaModel {
@@ -278,7 +321,7 @@ export async function generateFromPrisma(options: GenerateOptions): Promise<Gene
       // Generate types (requires models)
       if (hasModels && output.generate.includes('types')) {
         if (perModel) {
-          const typeFiles = generateTypesPerModel(models, enums, ext)
+          const typeFiles = generateTypesPerModel(withExtraFields(models, output.extraFields), enums, ext)
           for (const typeFile of typeFiles) {
             files.push({
               path: `${dir}/${typeFile.fileName}`,
@@ -306,7 +349,7 @@ export async function generateFromPrisma(options: GenerateOptions): Promise<Gene
           // Single file mode
           files.push({
             path: `${dir}/types.${ext}`,
-            content: generateTypes(models, enums),
+            content: generateTypes(withExtraFields(models, output.extraFields), enums),
           })
         }
       }
@@ -339,7 +382,8 @@ export async function generateFromPrisma(options: GenerateOptions): Promise<Gene
       if (hasModels && output.generate.includes('mst')) {
         if (perModel) {
           // Generate MST models (pass enums for proper enum value generation)
-          const mstModelFiles = generateMSTModels(models, models, enums, ext)
+          const mstModels = withExtraFields(models, output.extraFields)
+          const mstModelFiles = generateMSTModels(mstModels, mstModels, enums, ext)
           for (const modelFile of mstModelFiles) {
             files.push({
               path: `${dir}/${modelFile.fileName}`,

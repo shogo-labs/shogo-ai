@@ -193,8 +193,13 @@ export function generateMSTModel(
     const mstType = mapPrismaToMSTType(field, enums)
     const wrappedType = wrapOptional(mstType, field)
 
+    // Extra (response-only) fields stay undefined when the payload omits
+    // them, so callers can tell "not provided" from "empty"
+    if (field.isExtra) {
+      lines.push(`    ${field.name}: types.maybe(${mstType}),`)
+    }
     // Handle array fields - always use types.optional with [] default
-    if (field.isList) {
+    else if (field.isList) {
       lines.push(`    ${field.name}: types.optional(${mstType}, []),`)
     }
     // Handle required fields that have a database default

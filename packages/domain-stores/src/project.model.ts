@@ -64,6 +64,7 @@ export const ProjectModel = types
     preferredInstanceId: types.optional(types.string, ""),
     preferredInstancePolicy: types.optional(types.string, "pinned"),
     cloudSyncMode: types.optional(types.enumeration("CloudSyncMode", ["s3", "dual_shadow", "git_only"]), "git_only"),
+    myPermissions: types.maybe(types.array(types.string)),
     workspace: types.safeReference(types.late(() => WorkspaceModel)),
     folder: types.safeReference(types.late(() => FolderModel)),
     members: types.optional(types.array(types.safeReference(types.late(() => MemberModel))), []),

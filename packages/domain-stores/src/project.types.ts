@@ -28,7 +28,7 @@ export interface ProjectType {
   workspaceId: string
   tier: ProjectTier
   status: ProjectStatus
-  schemas: string
+  schemas: string[]
   createdBy?: string
   createdAt: Date
   updatedAt: Date
@@ -60,6 +60,7 @@ export interface ProjectType {
   preferredInstanceId?: string
   preferredInstancePolicy: string
   cloudSyncMode: CloudSyncMode
+  myPermissions?: string[]
 }
 
 export interface ProjectCreateInput {
@@ -69,7 +70,7 @@ export interface ProjectCreateInput {
   workspaceId: string
   tier?: ProjectTier
   status?: ProjectStatus
-  schemas?: string
+  schemas?: string[]
   createdBy?: string
   folderId?: string
   publishedSubdomain?: string
@@ -108,7 +109,7 @@ export interface ProjectUpdateInput {
   workspaceId?: string
   tier?: ProjectTier
   status?: ProjectStatus
-  schemas?: string
+  schemas?: string[]
   createdBy?: string
   folderId?: string
   publishedSubdomain?: string
