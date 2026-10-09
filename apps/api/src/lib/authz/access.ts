@@ -17,6 +17,7 @@ import {
   resolveAccess,
   toProjectRole,
   isWorkspaceRole,
+  type AccessFacts,
   type EffectiveAccess,
   type Permission,
   type ProjectVisibility,
@@ -89,6 +90,71 @@ async function loadProject(projectId: string) {
   }) as Promise<{ id: string; workspaceId: string; visibility: string } | null>
 }
 
+export interface MembershipFacts {
+  isSuperAdmin: boolean
+  /** Workspace-scoped rows (`projectId IS NULL`) by workspace id. */
+  workspaceRows: Map<string, { role: string; isBillingAdmin: boolean }>
+  /** Project-scoped roles by project id. */
+  projectRoles: Map<string, string>
+}
+
+/**
+ * The membership rows that decide a user's access to `workspaceIds` and
+ * `projectIds`, plus their super-admin flag, in two parallel queries.
+ */
+export async function loadMembershipFacts(
+  userId: string,
+  scope: { workspaceIds: string[]; projectIds: string[] },
+): Promise<MembershipFacts> {
+  const { workspaceIds, projectIds } = scope
+  const or: Record<string, unknown>[] = workspaceIds.map((workspaceId) => ({ workspaceId, projectId: null }))
+  if (projectIds.length === 1) or.push({ projectId: projectIds[0] })
+  else if (projectIds.length > 1) or.push({ projectId: { in: projectIds } })
+
+  const [user, rows] = await Promise.all([
+    prisma.user.findUnique({ where: { id: userId }, select: { role: true } }) as Promise<{ role: string } | null>,
+    or.length
+      ? (prisma.member.findMany({
+          where: { userId, OR: or },
+          select: { role: true, workspaceId: true, projectId: true, isBillingAdmin: true },
+        }) as Promise<MembershipRow[]>)
+      : Promise.resolve([] as MembershipRow[]),
+  ])
+
+  const wanted = new Set(workspaceIds)
+  const onlyWorkspace = workspaceIds.length === 1 ? workspaceIds[0] : null
+  const workspaceRows = new Map<string, { role: string; isBillingAdmin: boolean }>()
+  const projectRoles = new Map<string, string>()
+  for (const r of rows) {
+    if (r.projectId) {
+      projectRoles.set(r.projectId, r.role)
+      continue
+    }
+    const ws = r.workspaceId ?? onlyWorkspace
+    if (ws && wanted.has(ws)) workspaceRows.set(ws, { role: r.role, isBillingAdmin: !!r.isBillingAdmin })
+  }
+  return { isSuperAdmin: user?.role === 'super_admin', workspaceRows, projectRoles }
+}
+
+type MembershipRow = { role: string; workspaceId?: string | null; projectId: string | null; isBillingAdmin?: boolean }
+
+/** `resolveAccess` input for one workspace (and optionally one of its projects). */
+export function accessFacts(
+  facts: MembershipFacts,
+  workspaceId: string,
+  project: { id: string; visibility: ProjectVisibility } | null,
+): AccessFacts {
+  const wsRow = facts.workspaceRows.get(workspaceId)
+  return {
+    isSuperAdmin: facts.isSuperAdmin,
+    workspaceRole: wsRow && isWorkspaceRole(wsRow.role) ? wsRow.role : null,
+    isBillingAdmin: !!wsRow?.isBillingAdmin,
+    project: project
+      ? { visibility: project.visibility, projectRole: toProjectRole(facts.projectRoles.get(project.id)) }
+      : null,
+  }
+}
+
 /**
  * Resolve effective access. Pass a per-request `cache` so repeated checks in
  * one request share a single round-trip.
@@ -151,30 +217,16 @@ async function computeAccess(principal: Principal, scope: AccessScope): Promise<
   }
 
   const userId = principal.userId!
-  const [user, rows] = await Promise.all([
-    prisma.user.findUnique({ where: { id: userId }, select: { role: true } }) as Promise<{ role: string } | null>,
-    prisma.member.findMany({
-      where: {
-        userId,
-        OR: [
-          { workspaceId: workspaceId!, projectId: null },
-          ...(projectId ? [{ projectId }] : []),
-        ],
-      },
-      select: { role: true, projectId: true, isBillingAdmin: true },
-    }) as Promise<Array<{ role: string; projectId: string | null; isBillingAdmin: boolean }>>,
-  ])
-
-  const wsRow = rows.find((r) => r.projectId === null)
-  const projectRow = projectId ? rows.find((r) => r.projectId === projectId) : undefined
-  const isSuperAdmin = user?.role === 'super_admin'
-
-  const access = resolveAccess({
-    isSuperAdmin,
-    workspaceRole: wsRow && isWorkspaceRole(wsRow.role) ? wsRow.role : null,
-    isBillingAdmin: !!wsRow?.isBillingAdmin,
-    project: projectId ? { visibility: visibility!, projectRole: toProjectRole(projectRow?.role) } : null,
+  const facts = await loadMembershipFacts(userId, {
+    workspaceIds: [workspaceId!],
+    projectIds: projectId ? [projectId] : [],
   })
+  const wsRow = facts.workspaceRows.get(workspaceId!)
+  const isSuperAdmin = facts.isSuperAdmin
+
+  const access = resolveAccess(
+    accessFacts(facts, workspaceId!, projectId ? { id: projectId, visibility: visibility! } : null),
+  )
 
   if (isSuperAdmin && !wsRow) {
     console.info('[rbac] super_admin access without membership', { userId, workspaceId, projectId })

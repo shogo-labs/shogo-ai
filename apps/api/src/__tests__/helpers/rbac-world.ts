@@ -40,7 +40,6 @@ const { apiKeyRoutes } = await import('../../routes/api-keys')
 const { generateApiKey } = await import('../../lib/api-keys-mint')
 const { deriveRuntimeToken } = await import('../../lib/runtime-token')
 const { _setRbacModeForTests } = await import('../../lib/authz')
-const { attachProjectPermissions } = await import('../../lib/authz/project-permissions')
 
 export const db = prisma as any
 export { _setRbacModeForTests }
@@ -144,8 +143,6 @@ export function buildRbacApp(): Hono {
   app.route('/api', inviteLinkRoutes())
   app.route('/api', inviteLinkAcceptRoutes({ resolveUserId: (c) => (c.get('auth') as any)?.userId ?? null }))
   app.route('/api', apiKeyRoutes())
-  app.use('/api/projects', attachProjectPermissions)
-  app.use('/api/projects/:id', attachProjectPermissions)
   app.route('/api', createGeneratedRoutes({ prisma: prisma as any }))
   // Stand-in for every other `/api/projects/:projectId/*` handler: reaching it
   // means the real `requireProjectAccess` let the request through.

@@ -4,9 +4,10 @@
  * Permission required for each route under `/api/projects/:projectId/*`,
  * enforced by `requireProjectAccess`.
  *
- * Every mutating project route must be listed here, either with a specific
- * permission or in `PROJECT_UPDATE_ROUTES` (plain `project:update`). The
- * route-coverage test fails when a new mutating route is not declared.
+ * Every project route must be listed here, either with a specific permission
+ * or in `PROJECT_UPDATE_ROUTES` (plain `project:update`) or
+ * `PROJECT_READ_ROUTES` (plain `project:read`). The route-coverage test fails
+ * when a new route is not declared.
  * Paths are relative to `/api/projects/:projectId`; `:param` matches one
  * segment and a trailing `*` matches the rest.
  */
@@ -48,6 +49,16 @@ export const PROJECT_ROUTE_RULES: readonly ProjectRouteRule[] = [
     ],
     permission: 'project.settings:manage',
   },
+  // Reads that expose app end-user data, channel tokens, or start an OAuth grant.
+  {
+    methods: ['GET'],
+    paths: ['/auth-config', '/auth-users', '/github/authorize', '/agent-proxy/agent/config'],
+    permission: 'project.settings:manage',
+  },
+  // Direct database access and terminal state are editor tools, not reads.
+  { methods: 'any', paths: ['/database/proxy', '/database/proxy/*'], permission: 'project:update' },
+  { methods: ['GET'], paths: ['/database/url', '/terminal/sessions', '/terminal/commands'], permission: 'project:update' },
+  { methods: ['GET'], paths: ['/download'], permission: 'project:export' },
 ]
 
 /** Mutating routes that intentionally require plain `project:update`. */
@@ -68,6 +79,27 @@ export const PROJECT_UPDATE_ROUTES: readonly string[] = [
   '/apply-template', '/diagnostics/refresh', '/diagnostics/terminal',
   '/heartbeat', '/heartbeat/sync', '/ports', '/ports/:port',
   '/terminal/sessions', '/terminal/sessions/:id',
+]
+
+/**
+ * GET routes reviewed and found safe for anyone with `project:read`. A new
+ * GET route must be added here or given a rule above.
+ */
+export const PROJECT_READ_ROUTES: readonly string[] = [
+  '/analytics/chat', '/analytics/overview', '/analytics/usage',
+  '/chat/status', '/chat/:chatSessionId/stream', '/chat/:chatSessionId/turn',
+  '/checkpoints', '/checkpoints/:checkpointId', '/checkpoints/:checkpointId/diff',
+  '/database/status', '/diagnostics', '/domains', '/files', '/files/*',
+  '/git/commit/:sha', '/git/graph', '/git/info/refs', '/git/status',
+  '/github', '/github/branches', '/heartbeat',
+  // Connecting the caller's own account; the handler signs state for them only.
+  '/integrations/:provider/connect',
+  // The handler limits the audit log to people who can edit credential policies.
+  '/integrations/audit', '/integrations/policies',
+  '/members', '/permissions', '/ports', '/ports/listening', '/preferred-instance',
+  '/preview/metro', '/publish', '/runtime/status', '/s3/files', '/sandbox/url',
+  '/tests/list', '/tests/traces', '/tests/traces/*',
+  '/thumbnail', '/thumbnail.png', '/workspace/manifest',
 ]
 
 function templateToRegex(template: string): RegExp {
@@ -102,14 +134,16 @@ export function projectRoutePermission(method: string, subpath: string): Project
 }
 
 const UPDATE_ROUTE_REGEXES = PROJECT_UPDATE_ROUTES.map(templateToRegex)
+const READ_ROUTE_REGEXES = PROJECT_READ_ROUTES.map(templateToRegex)
 
 /**
- * True when a mutating route template is declared above, either listed
- * directly or covered by a wildcard entry (e.g. `/chat/stop` by `/chat/*`).
+ * True when a route template is declared above, either listed directly or
+ * covered by a wildcard entry (e.g. `/chat/stop` by `/chat/*`).
  */
 export function isDeclaredProjectRoute(method: string, template: string): boolean {
   const m = method.toUpperCase()
-  if (UPDATE_ROUTE_REGEXES.some((r) => r.test(template))) return true
+  const listed = SAFE_METHODS.has(m) ? READ_ROUTE_REGEXES : UPDATE_ROUTE_REGEXES
+  if (listed.some((r) => r.test(template))) return true
   return COMPILED.some(
     ({ rule, regexes }) =>
       (m === 'ALL' ? rule.methods === 'any' : methodMatches(rule, m)) && regexes.some((r) => r.test(template)),

@@ -65,20 +65,42 @@ describe('visibility toggle', () => {
     expect(await listNames(w.users.viewer)).toContain(p.name)
   })
 
-  test('restricting via PATCH /api/projects/:id also auto-adds the creator', async () => {
+  test('the generic PATCH /api/projects/:id rejects visibility changes', async () => {
     const p = await freshProject(w.users.billingAdmin)
     const res = await call(app, as(w.users.admin), 'PATCH', `/api/projects/${p.id}`, { visibility: 'restricted' })
-    expect(res.status).toBe(200)
-    const row = await db.member.findFirst({ where: { userId: w.users.billingAdmin, projectId: p.id } })
-    expect(row?.role).toBe('admin')
+    expect(res.status).toBe(400)
+    expect(res.body.error.code).toBe('use_visibility_endpoint')
+    expect((await db.project.findUnique({ where: { id: p.id } })).visibility).toBe('workspace')
+    // Callers without access still get the 404, not the 400.
+    expect((await call(app, as(w.users.outsider), 'PATCH', `/api/projects/${p.id}`, { visibility: 'restricted' })).status).toBe(404)
   })
 
   test('editors cannot change visibility', async () => {
     const p = await freshProject(w.users.owner)
     expect((await call(app, as(w.users.member), 'PATCH', `/api/projects/${p.id}/visibility`, { visibility: 'restricted' })).status).toBe(403)
-    expect((await call(app, as(w.users.member), 'PATCH', `/api/projects/${p.id}`, { visibility: 'restricted' })).status).toBe(403)
     const stored = await db.project.findUnique({ where: { id: p.id } })
     expect(stored.visibility).toBe('workspace')
+  })
+
+  test('a failed admin grant leaves the visibility unchanged', async () => {
+    const { setProjectVisibility } = await import('../../lib/authz/project-access')
+    const p = await freshProject(w.users.member)
+    const failing = {
+      $transaction: (fn: (tx: any) => Promise<unknown>) =>
+        db.$transaction((tx: any) =>
+          fn({
+            project: tx.project,
+            member: {
+              findFirst: tx.member.findFirst.bind(tx.member),
+              update: tx.member.update.bind(tx.member),
+              create: async () => { throw new Error('grant failed') },
+            },
+          }),
+        ),
+    }
+    await expect(setProjectVisibility(failing, p.id, 'restricted', w.users.member)).rejects.toThrow('grant failed')
+    expect((await db.project.findUnique({ where: { id: p.id } })).visibility).toBe('workspace')
+    expect(await db.member.findFirst({ where: { userId: w.users.member, projectId: p.id } })).toBeNull()
   })
 
   test('project creation as restricted adds a non-admin creator as project admin', async () => {
@@ -88,6 +110,7 @@ describe('visibility toggle', () => {
       visibility: 'restricted',
     })
     expect(res.status).toBe(201)
+    expect(res.body.data.visibility).toBe('restricted')
     const id = res.body.data.id
     expect((await db.member.findFirst({ where: { userId: w.users.member, projectId: id } }))?.role).toBe('admin')
     expect((await call(app, as(w.users.viewer), 'GET', `/api/projects/${id}`)).status).toBe(404)

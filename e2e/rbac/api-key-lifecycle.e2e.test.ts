@@ -72,7 +72,7 @@ describe('API key lifecycle', () => {
 
   test('removing the owner kills the key', async () => {
     expect((await call(app, { user: owner }, 'DELETE', `/api/members/${devMemberId}`)).status).toBe(200)
-    expect((await withKey('GET', `/api/projects/${openProject}`)).status).toBe(403)
+    expect((await withKey('GET', `/api/projects/${openProject}`)).status).toBe(404)
     const list = await withKey('GET', `/api/projects?workspaceId=${workspaceId}`)
     expect(list.status === 403 || list.body.items.length === 0).toBe(true)
   })

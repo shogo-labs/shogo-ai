@@ -9,11 +9,12 @@
  *   authorize(c, perm, scope)  decision honoring the enforcement mode (use
  *                              where the check is stricter than pre-RBAC)
  *   requirePermission(perm)    Hono middleware built on `authorize`
- *   accessibleProjectsWhere()  Prisma filter for project listings
+ *   accessibleProjects()       which projects a principal can read
+ *   accessibleProjectsWhere()  the same, as a Prisma filter for listings
  */
 
 import type { Context, Next } from 'hono'
-import type { Permission } from '@shogo/authz'
+import { governsAllProjects, isWorkspaceRole, type Permission } from '@shogo/authz'
 import { loadAccess, type AccessCache, type AccessContext, type AccessScope, type Principal } from './access'
 import { getRbacMode } from './mode'
 import { prisma } from '../prisma'
@@ -53,17 +54,14 @@ export async function can(c: Context, permission: Permission, scope: AccessScope
 }
 
 /**
- * Shape a denial. Restricted or missing projects answer 404 to callers who
- * cannot read them, so existence does not leak.
+ * Shape a denial. Projects the caller cannot read answer 404, exactly like
+ * missing ones, so existence does not leak.
  */
 export function denial(access: AccessContext, permission: Permission, principal?: Principal): Denial {
   if (principal && !principal.userId && principal.via !== 'tunnel') {
     return { ok: false, status: 401, code: 'unauthorized', message: 'Authentication required' }
   }
-  if (!access.exists) {
-    return { ok: false, status: 404, code: 'not_found', message: 'Project not found' }
-  }
-  if (access.projectId && !access.permissions.has('project:read') && access.visibility === 'restricted') {
+  if (!access.exists || (access.projectId && !access.permissions.has('project:read'))) {
     return { ok: false, status: 404, code: 'not_found', message: 'Project not found' }
   }
   return {
@@ -138,35 +136,37 @@ export function requirePermission(
   }
 }
 
+/** The projects a principal can read: none, every project, or a Prisma filter. */
+export type ProjectScope =
+  | { kind: 'none' }
+  | { kind: 'all' }
+  | { kind: 'where'; where: Record<string, unknown> }
+
 /**
- * Prisma `where` fragment selecting the projects in `workspaceId` the user can
- * read: every open project for workspace members, every project for owners,
- * admins and super admins, plus any project they hold a project role on.
- * Without `workspaceId`, spans the workspaces and projects the user belongs
- * to (super admins included, so unscoped lists stay personal).
+ * The projects in `workspaceId` the user can read: every open project for
+ * workspace members, every project for owners, admins and super admins, plus
+ * any project they hold a project role on. Without `workspaceId`, spans the
+ * workspaces and projects the user belongs to (super admins included, so
+ * unscoped lists stay personal).
  */
-export async function accessibleProjectsWhere(
-  principal: Principal,
-  workspaceId?: string,
-): Promise<Record<string, unknown>> {
-  const nothing = { id: { in: [] as string[] } }
+export async function accessibleProjects(principal: Principal, workspaceId?: string): Promise<ProjectScope> {
   if (principal.via === 'tunnel' || principal.tunnelAuthenticated) {
-    return workspaceId ? { workspaceId } : {}
+    return workspaceId ? { kind: 'where', where: { workspaceId } } : { kind: 'all' }
   }
   if (principal.via === 'runtimeToken') {
-    return principal.projectId ? { id: principal.projectId } : nothing
+    return principal.projectId ? { kind: 'where', where: { id: principal.projectId } } : { kind: 'none' }
   }
   const userId = principal.userId
-  if (!userId) return nothing
+  if (!userId) return { kind: 'none' }
   if (principal.via === 'apiKey') {
-    if (!principal.workspaceId || (workspaceId && workspaceId !== principal.workspaceId)) return nothing
+    if (!principal.workspaceId || (workspaceId && workspaceId !== principal.workspaceId)) return { kind: 'none' }
     workspaceId = principal.workspaceId
   }
 
   const user = (await prisma.user.findUnique({ where: { id: userId }, select: { role: true } })) as
     | { role: string }
     | null
-  if (user?.role === 'super_admin' && workspaceId) return { workspaceId }
+  if (user?.role === 'super_admin' && workspaceId) return { kind: 'where', where: { workspaceId } }
 
   const rows = (await prisma.member.findMany({
     where: { userId, ...(workspaceId ? { workspaceId } : {}) },
@@ -178,14 +178,31 @@ export async function accessibleProjectsWhere(
   const projectIds: string[] = []
   for (const r of rows) {
     if (r.projectId) projectIds.push(r.projectId)
-    else if (r.workspaceId) (r.role === 'owner' || r.role === 'admin' ? governed : memberOf).push(r.workspaceId)
+    else if (r.workspaceId) {
+      ;(governsAllProjects(isWorkspaceRole(r.role) ? r.role : null) ? governed : memberOf).push(r.workspaceId)
+    }
   }
 
   const or: Record<string, unknown>[] = []
   if (governed.length) or.push({ workspaceId: { in: governed } })
   if (memberOf.length) or.push({ workspaceId: { in: memberOf }, visibility: 'workspace' })
   if (projectIds.length) or.push({ id: { in: projectIds } })
-  if (!or.length) return nothing
+  if (!or.length) return { kind: 'none' }
   const filter = or.length === 1 ? or[0] : { OR: or }
-  return workspaceId ? { AND: [{ workspaceId }, filter] } : filter
+  return { kind: 'where', where: workspaceId ? { AND: [{ workspaceId }, filter] } : filter }
+}
+
+/** Prisma `where` for a `ProjectScope`. */
+export function projectScopeWhere(scope: ProjectScope): Record<string, unknown> {
+  if (scope.kind === 'none') return { id: { in: [] as string[] } }
+  if (scope.kind === 'all') return {}
+  return scope.where
+}
+
+/** Prisma `where` fragment selecting the projects the principal can read (see `accessibleProjects`). */
+export async function accessibleProjectsWhere(
+  principal: Principal,
+  workspaceId?: string,
+): Promise<Record<string, unknown>> {
+  return projectScopeWhere(await accessibleProjects(principal, workspaceId))
 }

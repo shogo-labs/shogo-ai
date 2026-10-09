@@ -1,18 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
-import type { Context, Next } from 'hono'
 import {
   isProjectPermission,
-  isWorkspaceRole,
   permissionList,
   resolveAccess,
-  toProjectRole,
   type Permission,
   type ProjectVisibility,
 } from '@shogo/authz'
-import { loadAccess, type Principal } from './access'
-import { prisma } from '../prisma'
+import { accessFacts, loadAccess, loadMembershipFacts, type Principal } from './access'
 
 type ProjectRef = { id: string; workspaceId: string; visibility?: string | null }
 
@@ -41,28 +37,13 @@ export async function projectPermissionsFor(
     return out
   }
 
-  const workspaceIds = [...new Set(projects.map((p) => p.workspaceId))]
-  const [user, rows] = await Promise.all([
-    prisma.user.findUnique({ where: { id: userId }, select: { role: true } }) as Promise<{ role: string } | null>,
-    prisma.member.findMany({
-      where: { userId, workspaceId: { in: workspaceIds } },
-      select: { role: true, workspaceId: true, projectId: true, isBillingAdmin: true },
-    }) as Promise<Array<{ role: string; workspaceId: string | null; projectId: string | null; isBillingAdmin: boolean }>>,
-  ])
-  const wsRows = new Map(rows.filter((r) => !r.projectId).map((r) => [r.workspaceId, r]))
-  const projectRoles = new Map(rows.filter((r) => r.projectId).map((r) => [r.projectId, r.role]))
-
+  const facts = await loadMembershipFacts(userId, {
+    workspaceIds: [...new Set(projects.map((p) => p.workspaceId))],
+    projectIds: projects.map((p) => p.id),
+  })
   for (const p of projects) {
-    const wsRow = wsRows.get(p.workspaceId)
-    const access = resolveAccess({
-      isSuperAdmin: user?.role === 'super_admin',
-      workspaceRole: wsRow && isWorkspaceRole(wsRow.role) ? wsRow.role : null,
-      isBillingAdmin: !!wsRow?.isBillingAdmin,
-      project: {
-        visibility: (p.visibility === 'restricted' ? 'restricted' : 'workspace') as ProjectVisibility,
-        projectRole: toProjectRole(projectRoles.get(p.id)),
-      },
-    })
+    const visibility: ProjectVisibility = p.visibility === 'restricted' ? 'restricted' : 'workspace'
+    const access = resolveAccess(accessFacts(facts, p.workspaceId, { id: p.id, visibility }))
     out.set(p.id, projectOnly(permissionList(access)))
   }
   return out
@@ -72,33 +53,10 @@ function isProjectRef(value: any): value is ProjectRef {
   return !!value && typeof value.id === 'string' && typeof value.workspaceId === 'string'
 }
 
-/**
- * Middleware for the generated `GET /api/projects` and `GET /api/projects/:id`
- * routes: adds `myPermissions` to each project in the JSON payload.
- */
-export async function attachProjectPermissions(c: Context, next: Next) {
-  await next()
-  if (c.req.method !== 'GET' || !c.res.ok) return
-  if (!c.res.headers.get('content-type')?.includes('application/json')) return
-
-  const res = c.res
-  let payload: any
-  try {
-    payload = await res.clone().json()
-  } catch {
-    return
-  }
-  const projects: ProjectRef[] = Array.isArray(payload?.items)
-    ? payload.items.filter(isProjectRef)
-    : isProjectRef(payload?.data)
-      ? [payload.data]
-      : []
-  if (!projects.length) return
-
-  const perms = await projectPermissionsFor((c.get('auth') as Principal | undefined) ?? {}, projects)
-  for (const p of projects as any[]) p.myPermissions = perms.get(p.id) ?? []
-
-  const headers = new Headers(res.headers)
-  headers.delete('content-length')
-  c.res = new Response(JSON.stringify(payload), { status: res.status, headers })
+/** Adds `myPermissions` to each project record (used by the project route hooks). */
+export async function withProjectPermissions<T>(principal: Principal, records: T[]): Promise<T[]> {
+  const projects = (records as unknown[]).filter(isProjectRef)
+  if (!projects.length) return records
+  const perms = await projectPermissionsFor(principal, projects)
+  return records.map((r) => (isProjectRef(r) ? { ...r, myPermissions: perms.get(r.id) ?? [] } : r))
 }

@@ -18,6 +18,7 @@ import {
   PROJECT_ROLE_PERMISSIONS,
   WORKSPACE_ROLE_PERMISSIONS,
   WORKSPACE_TO_PROJECT_ROLE,
+  governsAllProjects,
   projectRoleRank,
   workspaceRoleRank,
   type ProjectRole,
@@ -73,9 +74,8 @@ export function resolveAccess(facts: AccessFacts): EffectiveAccess {
 
   let projectRole: ProjectRole | null = null
   if (facts.project) {
-    const governs = workspaceRole === 'owner' || workspaceRole === 'admin'
     const inherited =
-      workspaceRole && (governs || facts.project.visibility === 'workspace')
+      workspaceRole && (governsAllProjects(workspaceRole) || facts.project.visibility === 'workspace')
         ? WORKSPACE_TO_PROJECT_ROLE[workspaceRole]
         : null
     projectRole =
@@ -123,4 +123,20 @@ export function canAssignProjectRole(actor: EffectiveAccess, role: ProjectRole):
   if (actor.isSuperAdmin) return true
   if (!actor.permissions.has('project.members:manage')) return false
   return projectRoleRank(role) <= projectRoleRank(actor.projectRole)
+}
+
+/**
+ * Whether `actor` may change or remove an existing workspace member holding
+ * `targetRole`: the same rule as granting that role. Rows with an unknown
+ * role only need `workspace.members:manage`.
+ */
+export function canManageWorkspaceMember(actor: EffectiveAccess, targetRole: WorkspaceRole | null): boolean {
+  if (targetRole) return canAssignWorkspaceRole(actor, targetRole)
+  return actor.isSuperAdmin || actor.permissions.has('workspace.members:manage')
+}
+
+/** Whether `actor` may change or remove an existing project member holding `targetRole`. */
+export function canManageProjectMember(actor: EffectiveAccess, targetRole: ProjectRole | null): boolean {
+  if (targetRole) return canAssignProjectRole(actor, targetRole)
+  return actor.isSuperAdmin || actor.permissions.has('project.members:manage')
 }

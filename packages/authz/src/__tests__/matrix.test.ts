@@ -11,6 +11,9 @@ import {
   ALL_PERMISSIONS,
   canAssignProjectRole,
   canAssignWorkspaceRole,
+  canManageProjectMember,
+  canManageWorkspaceMember,
+  governsAllProjects,
   permissionList,
   resolveAccess,
   toProjectRole,
@@ -179,5 +182,41 @@ describe('toProjectRole', () => {
     expect(toProjectRole('member')).toBe('member')
     expect(toProjectRole('superuser')).toBeNull()
     expect(toProjectRole(undefined)).toBeNull()
+  })
+})
+
+describe('governsAllProjects', () => {
+  test('only owners and admins', () => {
+    expect(governsAllProjects('owner')).toBe(true)
+    expect(governsAllProjects('admin')).toBe(true)
+    expect(governsAllProjects('member')).toBe(false)
+    expect(governsAllProjects('viewer')).toBe(false)
+    expect(governsAllProjects(null)).toBe(false)
+  })
+})
+
+describe('managing existing members', () => {
+  const ws = (workspaceRole: AccessFacts['workspaceRole']) => resolveAccess({ workspaceRole })
+  const proj = (workspaceRole: AccessFacts['workspaceRole'], projectRole: 'admin' | 'member' | 'viewer' | null) =>
+    resolveAccess({ workspaceRole, project: { visibility: 'restricted', projectRole } })
+
+  test('workspace: owners manage everyone, admins up to admin, members nobody', () => {
+    expect(canManageWorkspaceMember(ws('owner'), 'owner')).toBe(true)
+    expect(canManageWorkspaceMember(ws('admin'), 'owner')).toBe(false)
+    expect(canManageWorkspaceMember(ws('admin'), 'admin')).toBe(true)
+    expect(canManageWorkspaceMember(ws('admin'), 'viewer')).toBe(true)
+    expect(canManageWorkspaceMember(ws('member'), 'viewer')).toBe(false)
+    expect(canManageWorkspaceMember(ws('admin'), null)).toBe(true)
+    expect(canManageWorkspaceMember(ws('member'), null)).toBe(false)
+    expect(canManageWorkspaceMember(resolveAccess({ isSuperAdmin: true }), 'owner')).toBe(true)
+  })
+
+  test('project: project admins manage up to admin, editors nobody', () => {
+    expect(canManageProjectMember(proj(null, 'admin'), 'admin')).toBe(true)
+    expect(canManageProjectMember(proj(null, 'admin'), 'viewer')).toBe(true)
+    expect(canManageProjectMember(proj(null, 'member'), 'viewer')).toBe(false)
+    expect(canManageProjectMember(proj('owner', null), 'admin')).toBe(true)
+    expect(canManageProjectMember(proj(null, 'admin'), null)).toBe(true)
+    expect(canManageProjectMember(proj(null, 'member'), null)).toBe(false)
   })
 })

@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
+import { governsAllProjects, isWorkspaceRole, type ProjectVisibility } from '@shogo/authz'
+
 /**
  * Making a project Restricted must not lock out the person doing it or the
  * project's creator: both get an explicit project Admin row unless their
@@ -17,7 +19,7 @@ export async function ensureRestrictedAdmins(
       where: { userId, workspaceId: project.workspaceId, projectId: null },
       select: { role: true },
     })
-    if (!wsRow || wsRow.role === 'owner' || wsRow.role === 'admin') continue
+    if (!wsRow || governsAllProjects(isWorkspaceRole(wsRow.role) ? wsRow.role : null)) continue
     const existing = await db.member.findFirst({
       where: { userId, projectId: project.id },
       select: { id: true, role: true },
@@ -30,4 +32,26 @@ export async function ensureRestrictedAdmins(
       })
     }
   }
+}
+
+/**
+ * Change a project's visibility. Restricting it and granting the admin rows
+ * from `ensureRestrictedAdmins` happen in one transaction, so a failure
+ * leaves the visibility unchanged.
+ */
+export async function setProjectVisibility(
+  db: any,
+  projectId: string,
+  visibility: ProjectVisibility,
+  actorId?: string | null,
+): Promise<{ id: string; workspaceId: string; visibility: ProjectVisibility }> {
+  return db.$transaction(async (tx: any) => {
+    const project = await tx.project.update({
+      where: { id: projectId },
+      data: { visibility },
+      select: { id: true, workspaceId: true, createdBy: true, visibility: true },
+    })
+    if (visibility === 'restricted') await ensureRestrictedAdmins(tx, project, actorId)
+    return project
+  })
 }

@@ -502,23 +502,8 @@ export async function authorizeProject(
   if (!access.exists || !access.workspaceId) {
     return { ok: false, status: 404, code: 'not_found', message: 'Project not found' }
   }
-  if (authCtx.via === 'apiKey' && authCtx.workspaceId !== access.workspaceId) {
-    return {
-      ok: false,
-      status: 403,
-      code: 'forbidden',
-      message: 'Project is not in this API key\'s workspace',
-    }
-  }
-  if (authCtx.via === 'runtimeToken' && authCtx.projectId !== projectId) {
-    return {
-      ok: false,
-      status: 403,
-      code: 'forbidden',
-      message: 'Runtime token scope mismatch',
-    }
-  }
-
+  // API keys outside their workspace and runtime tokens for another project
+  // resolve to no access, so they get the same 404 as a missing project.
   const decision = await decide(access, permission, authCtx, `${c.req.method} ${c.req.path}`)
   if (!decision.ok) {
     return { ok: false, status: decision.status, code: decision.code, message: decision.message }

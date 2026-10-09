@@ -14,8 +14,9 @@ import { dockerClassBlockedMessage } from '../lib/runtime-class-setting'
 import { getRuntimeManager } from '../lib/runtime/manager'
 import { normalizeProjectSettings, parseProjectSettings } from '../lib/project-settings'
 import { deleteChatAttachmentPrefix } from '../lib/chat-attachments'
-import { accessibleProjectsWhere, type Principal } from '../lib/authz'
-import { ensureRestrictedAdmins } from '../lib/authz/project-access'
+import { accessibleProjects, projectScopeWhere, type Principal } from '../lib/authz'
+import { withProjectPermissions } from '../lib/authz/project-permissions'
+import { setProjectVisibility } from '../lib/authz/project-access'
 import { hookAccess, hookAuthorize, hookPrincipal, hookRequire } from '../lib/authz/hooks'
 
 /** projectId -> workspaceId, recorded in beforeDelete for use in afterDelete. */
@@ -50,8 +51,12 @@ export interface HookContext {
 export interface ProjectHooks {
   /** Called before listing records. Can modify where/include. */
   beforeList?: (ctx: HookContext) => Promise<HookResult<{ where?: any; include?: any; orderBy?: any }> | void>
+  /** Called with listed records before they are returned. Can reshape them. */
+  afterList?: (items: any[], ctx: HookContext) => Promise<any[] | void>
   /** Called before getting a single record. Can reject access. */
   beforeGet?: (id: string, ctx: HookContext) => Promise<HookResult | void>
+  /** Called with a fetched record before it is returned. Can reshape it. */
+  afterGet?: (item: any, ctx: HookContext) => Promise<any | void>
   /** Called before creating a record. Can modify input or reject. */
   beforeCreate?: (input: any, ctx: HookContext) => Promise<HookResult<any> | void>
   /** Called after creating a record. Can perform side effects. */
@@ -100,8 +105,8 @@ export const projectHooks: ProjectHooks = {
 
     // Workspace members see open projects, owners/admins see all, guests see
     // only the projects they were added to; restricted projects stay hidden.
-    const scope = await accessibleProjectsWhere(hookPrincipal(ctx), workspaceId || undefined)
-    if (workspaceId && 'id' in scope && Array.isArray((scope.id as any)?.in) && (scope.id as any).in.length === 0) {
+    const scope = await accessibleProjects(hookPrincipal(ctx), workspaceId || undefined)
+    if (workspaceId && scope.kind === 'none') {
       return {
         ok: false,
         error: { code: "forbidden", message: "Access denied to this workspace" },
@@ -111,16 +116,16 @@ export const projectHooks: ProjectHooks = {
     return {
       ok: true,
       data: {
-        where: { AND: [scope, { hidden: false }] },
+        where: { AND: [projectScopeWhere(scope), { hidden: false }] },
         include: { workspace: true, folder: true },
       },
     }
   },
 
-  /**
-   * Require project:read (guests only see their own projects).
+  /** Adds the caller's effective `myPermissions` to each listed project. */
+  afterList: async (items, ctx) => withProjectPermissions(hookPrincipal(ctx), items),
 
-   */
+  /** Require project:read (guests only see their own projects). */
   beforeGet: async (id, ctx) => {
     if (!ctx.userId) {
       return {
@@ -131,6 +136,9 @@ export const projectHooks: ProjectHooks = {
     const denied = await hookRequire(ctx, 'project:read', { projectId: id })
     return denied ?? { ok: true }
   },
+
+  /** Adds the caller's effective `myPermissions` to the project. */
+  afterGet: async (item, ctx) => (await withProjectPermissions(hookPrincipal(ctx), [item]))[0],
 
   /** Require project:create in the target workspace. */
   beforeCreate: async (input, ctx) => {
@@ -168,6 +176,12 @@ export const projectHooks: ProjectHooks = {
     if (denied) return denied
     if (input.visibility !== undefined && input.visibility !== 'workspace' && input.visibility !== 'restricted') {
       return { ok: false, error: { code: "bad_request", message: "visibility must be workspace or restricted" } }
+    }
+    // Restricted projects start open and are flipped in afterCreate together
+    // with their admin grants, so a failed grant never leaves them locked.
+    if (input.visibility === 'restricted') {
+      ;(ctx as any)._restrictAfterCreate = true
+      input.visibility = 'workspace'
     }
 
     // Normalize tier and status to lowercase, set defaults if missing
@@ -235,10 +249,9 @@ export const projectHooks: ProjectHooks = {
    * (heartbeat disabled, economy model) are used.
    */
   afterCreate: async (record, ctx) => {
-    if (record.visibility === 'restricted') {
-      await ensureRestrictedAdmins(ctx.prisma, record, ctx.userId).catch((err) =>
-        console.error('[project.afterCreate] restricted admin grant failed:', err),
-      )
+    if ((ctx as any)._restrictAfterCreate) {
+      await setProjectVisibility(ctx.prisma, record.id, 'restricted', ctx.userId)
+      record.visibility = 'restricted'
     }
 
     const existing = await ctx.prisma.agentConfig.findUnique({
@@ -315,22 +328,24 @@ export const projectHooks: ProjectHooks = {
     for (const field of IMMUTABLE_FIELDS) {
       if (input) delete input[field]
     }
-    if (input?.visibility !== undefined && input.visibility !== 'workspace' && input.visibility !== 'restricted') {
-      return { ok: false, error: { code: "bad_request", message: "visibility must be workspace or restricted" } }
-    }
 
     const access = await hookAccess(ctx, { projectId: id })
     if (!access.exists) {
       return { ok: false, error: { code: "not_found", message: "Project not found" } }
     }
-    const required =
-      input?.visibility !== undefined ? 'project.members:manage'
-        : PUBLISH_FIELDS.some((f) => input?.[f] !== undefined) ? 'project:publish'
-          : 'project:update'
-    const denied = required === 'project:update'
-      ? await hookAuthorize(ctx, required, { projectId: id }, `PATCH /api/projects/${id}`)
-      : await hookRequire(ctx, required, { projectId: id })
+    const denied = PUBLISH_FIELDS.some((f) => input?.[f] !== undefined)
+      ? await hookRequire(ctx, 'project:publish', { projectId: id })
+      : await hookAuthorize(ctx, 'project:update', { projectId: id }, `PATCH /api/projects/${id}`)
     if (denied) return denied
+    if (input?.visibility !== undefined) {
+      return {
+        ok: false,
+        error: {
+          code: "use_visibility_endpoint",
+          message: "Change visibility with PATCH /api/projects/:projectId/visibility",
+        },
+      }
+    }
 
     // Docker-class ("Tier 2") minimum compute tier — same rationale as
     // `beforeCreate`'s check. Only triggers a lookup when the PATCH is
@@ -379,14 +394,6 @@ export const projectHooks: ProjectHooks = {
     }
 
     return { ok: true }
-  },
-
-  afterUpdate: async (record, ctx) => {
-    if (record.visibility === 'restricted' && ctx.body?.visibility === 'restricted') {
-      await ensureRestrictedAdmins(ctx.prisma, record, ctx.userId).catch((err) =>
-        console.error('[project.afterUpdate] restricted admin grant failed:', err),
-      )
-    }
   },
 
   /** Require project:delete (workspace owner/admin or project admin). */

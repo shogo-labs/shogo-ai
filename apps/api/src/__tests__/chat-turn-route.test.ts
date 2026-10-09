@@ -334,7 +334,7 @@ describe('POST /api/chat/turn — body validation', () => {
 })
 
 describe('POST /api/chat/turn — project authorization', () => {
-  test('403 when caller is not a workspace member', async () => {
+  test('404 when caller is not a workspace member', async () => {
     memberByUserAndWorkspace.clear()
     const app = createApp()
     const res = await app.request('/api/chat/turn', {
@@ -342,7 +342,7 @@ describe('POST /api/chat/turn — project authorization', () => {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(validBody),
     })
-    expect(res.status).toBe(403)
+    expect(res.status).toBe(404)
     expect(streamTextMock).not.toHaveBeenCalled()
   })
 

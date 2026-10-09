@@ -97,8 +97,8 @@ describe('last-owner invariant', () => {
     const ws = await db.workspace.create({ data: { name: 'Solo', slug: `solo-${crypto.randomUUID().slice(0, 8)}`, kind: 'team' } })
     const owner = await newUser('solo')
     const row = await db.member.create({ data: { userId: owner, workspaceId: ws.id, role: 'owner' } })
-    expect((await call(app, as(owner), 'PATCH', `/api/members/${row.id}`, { role: 'admin' })).status).toBe(400)
-    expect((await call(app, as(owner), 'DELETE', `/api/members/${row.id}`)).status).toBe(400)
+    expect((await call(app, as(owner), 'PATCH', `/api/members/${row.id}`, { role: 'admin' })).status).toBe(409)
+    expect((await call(app, as(owner), 'DELETE', `/api/members/${row.id}`)).status).toBe(409)
 
     const second = await newUser('second')
     await db.member.create({ data: { userId: second, workspaceId: ws.id, role: 'owner' } })
@@ -125,6 +125,18 @@ describe('project roles', () => {
     const remove = await call(app, as(w.users.member), 'DELETE', `/api/projects/${pid}/members/${add.body.data.id}`)
     expect(remove.status).toBe(200)
     expect((await call(app, as(guest), 'GET', `/api/projects/${pid}`)).status).toBe(404)
+  })
+
+  test('concurrent adds of the same user return one 201 and 409s, never a 500', async () => {
+    const target = await newUser('racer')
+    const results = await Promise.all(
+      Array.from({ length: 4 }, () =>
+        call(app, as(w.users.owner), 'POST', `/api/projects/${w.projects.open}/members`, { userId: target, role: 'viewer' }),
+      ),
+    )
+    const statuses = results.map((r) => r.status).sort()
+    expect(statuses.filter((s) => s === 201)).toHaveLength(1)
+    expect(statuses.every((s) => s === 201 || s === 409)).toBe(true)
   })
 
   test('project editors cannot manage project members', async () => {
@@ -167,7 +179,7 @@ describe('changes apply on the next request', () => {
     expect((await call(app, as(m.userId), 'GET', `/api/projects/${w.projects.open}`)).status).toBe(200)
 
     expect((await call(app, as(w.users.owner), 'DELETE', `/api/members/${m.memberId}`)).status).toBe(200)
-    expect((await call(app, as(m.userId), 'GET', `/api/projects/${w.projects.open}`)).status).toBe(403)
+    expect((await call(app, as(m.userId), 'GET', `/api/projects/${w.projects.open}`)).status).toBe(404)
   })
 
   test('removing a workspace member also removes their project roles in that workspace', async () => {
@@ -175,5 +187,22 @@ describe('changes apply on the next request', () => {
     await db.member.create({ data: { userId: m.userId, projectId: w.projects.restricted2, workspaceId: w.workspaceA, role: 'admin' } })
     expect((await call(app, as(w.users.owner), 'DELETE', `/api/members/${m.memberId}`)).status).toBe(200)
     expect(await db.member.count({ where: { userId: m.userId, workspaceId: w.workspaceA } })).toBe(0)
+    expect((await call(app, as(m.userId), 'GET', `/api/projects/${w.projects.restricted2}`)).status).toBe(404)
+  })
+
+  test('if removing the workspace row fails, the project roles are kept', async () => {
+    const { removeMembership } = await import('../../services/membership.service')
+    const m = await wsMember('member')
+    await db.member.create({ data: { userId: m.userId, projectId: w.projects.restricted2, workspaceId: w.workspaceA, role: 'admin' } })
+    const failing = {
+      member: {
+        findUnique: db.member.findUnique.bind(db.member),
+        deleteMany: db.member.deleteMany.bind(db.member),
+        delete: () => db.member.delete({ where: { id: 'no-such-member' } }),
+      },
+      $transaction: db.$transaction.bind(db),
+    }
+    await expect(removeMembership(failing, m.memberId)).rejects.toThrow()
+    expect(await db.member.count({ where: { userId: m.userId, workspaceId: w.workspaceA } })).toBe(2)
   })
 })

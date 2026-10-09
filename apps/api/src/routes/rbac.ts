@@ -29,22 +29,42 @@ import {
   resolveAccess,
   toProjectRole,
   type ProjectRole,
-  type ProjectVisibility,
 } from '@shogo/authz'
+import { z } from 'zod'
 import { getAccess, principalOf } from '../lib/authz'
-import { ensureRestrictedAdmins } from '../lib/authz/project-access'
+import { setProjectVisibility } from '../lib/authz/project-access'
+import { parseBody } from '../lib/parse-body'
 import { prisma } from '../lib/prisma'
 import { invitationHooks } from '../generated/invitation.hooks'
 
 const USER_SELECT = { id: true, name: true, email: true, image: true } as const
-const VISIBILITIES: ProjectVisibility[] = ['workspace', 'restricted']
+
+const ROLE_MESSAGE = 'role must be admin, member or viewer'
+const projectRole = z.unknown().transform((value, ctx): ProjectRole => {
+  const role = toProjectRole(value)
+  if (!role) {
+    ctx.addIssue({ code: 'custom', message: ROLE_MESSAGE })
+    return z.NEVER
+  }
+  return role
+})
+
+const visibilityBody = z.object({
+  visibility: z.enum(['workspace', 'restricted'], { message: "visibility must be 'workspace' or 'restricted'" }),
+})
+
+const addMemberBody = z
+  .object({
+    role: projectRole.optional().transform((role) => role ?? 'member'),
+    userId: z.string().min(1).optional(),
+    email: z.string().trim().toLowerCase().min(1).optional(),
+  })
+  .refine((b) => b.userId || b.email, { message: 'userId or email is required' })
+
+const updateMemberBody = z.object({ role: projectRole })
 
 function forbidden(c: Context, message: string) {
   return c.json({ error: { code: 'forbidden', message } }, 403)
-}
-
-function badRequest(c: Context, message: string) {
-  return c.json({ error: { code: 'bad_request', message } }, 400)
 }
 
 async function requireMembersManage(c: Context, projectId: string) {
@@ -101,18 +121,9 @@ export function rbacRoutes(): Hono {
     if (!(await requireMembersManage(c, projectId))) {
       return forbidden(c, 'Only project admins can change visibility')
     }
-    const body = await c.req.json().catch(() => ({}))
-    if (!VISIBILITIES.includes(body?.visibility)) {
-      return badRequest(c, "visibility must be 'workspace' or 'restricted'")
-    }
-    const project = await prisma.project.update({
-      where: { id: projectId },
-      data: { visibility: body.visibility },
-      select: { id: true, workspaceId: true, createdBy: true, visibility: true },
-    })
-    if (project.visibility === 'restricted') {
-      await ensureRestrictedAdmins(prisma, project, principalOf(c).userId)
-    }
+    const body = await parseBody(c, visibilityBody)
+    if (!body.ok) return body.response
+    const project = await setProjectVisibility(prisma, projectId, body.data.visibility, principalOf(c).userId)
     return c.json({ ok: true, data: { id: project.id, visibility: project.visibility } })
   })
 
@@ -140,26 +151,28 @@ export function rbacRoutes(): Hono {
     ])
 
     const visibility = access.visibility ?? 'workspace'
-    const wsRoleByUser = new Map(workspaceRows.map((m: any) => [m.userId, m.role]))
-    const projectRoleByUser = new Map(projectRows.map((m: any) => [m.userId, m.role]))
-    const effectiveRole = (userId: string) =>
-      resolveAccess({
-        workspaceRole: isWorkspaceRole(wsRoleByUser.get(userId)) ? (wsRoleByUser.get(userId) as any) : null,
+    const wsRoleByUser = new Map<string, string>(workspaceRows.map((m) => [m.userId, m.role]))
+    const projectRoleByUser = new Map<string, string>(projectRows.map((m) => [m.userId, m.role]))
+    const effectiveRole = (userId: string) => {
+      const workspaceRole = wsRoleByUser.get(userId)
+      return resolveAccess({
+        workspaceRole: isWorkspaceRole(workspaceRole) ? workspaceRole : null,
         project: { visibility, projectRole: toProjectRole(projectRoleByUser.get(userId)) },
       }).projectRole
+    }
 
     return c.json({
       ok: true,
       data: {
         visibility,
-        members: projectRows.map((m: any) => ({
+        members: projectRows.map((m) => ({
           id: m.id,
           userId: m.userId,
           role: toProjectRole(m.role),
           isGuest: !wsRoleByUser.has(m.userId),
           user: m.user,
         })),
-        workspaceMembers: workspaceRows.map((m: any) => ({
+        workspaceMembers: workspaceRows.map((m) => ({
           userId: m.userId,
           workspaceRole: m.role,
           effectiveRole: effectiveRole(m.userId),
@@ -175,16 +188,14 @@ export function rbacRoutes(): Hono {
     const access = await requireMembersManage(c, projectId)
     if (!access) return forbidden(c, 'Only project admins can add project members')
 
-    const body = await c.req.json().catch(() => ({}))
-    const role = toProjectRole(body?.role ?? 'member')
-    if (!role) return badRequest(c, 'role must be admin, member or viewer')
+    const body = await parseBody(c, addMemberBody)
+    if (!body.ok) return body.response
+    const { role, email } = body.data
     if (!canAssignProjectRole(access, role)) {
       return forbidden(c, 'Cannot grant a role above your own')
     }
 
-    let userId: string | undefined = typeof body?.userId === 'string' ? body.userId : undefined
-    const email = typeof body?.email === 'string' ? body.email.trim().toLowerCase() : undefined
-    if (!userId && !email) return badRequest(c, 'userId or email is required')
+    let userId = body.data.userId
     if (!userId && email) {
       const user = await prisma.user.findFirst({ where: { email }, select: { id: true } })
       userId = user?.id
@@ -194,15 +205,16 @@ export function rbacRoutes(): Hono {
       return inviteByEmail(c, { projectId, workspaceId: access.workspaceId!, email: email!, role })
     }
 
-    const existing = await prisma.member.findFirst({ where: { userId, projectId } })
-    if (existing) {
+    try {
+      const member = await prisma.member.create({
+        data: { userId, projectId, workspaceId: access.workspaceId!, role },
+        include: { user: { select: USER_SELECT } },
+      })
+      return c.json({ ok: true, data: member }, 201)
+    } catch (err) {
+      if ((err as { code?: string } | null)?.code !== 'P2002') throw err
       return c.json({ error: { code: 'already_member', message: 'User already has a role on this project' } }, 409)
     }
-    const member = await prisma.member.create({
-      data: { userId, projectId, workspaceId: access.workspaceId!, role },
-      include: { user: { select: USER_SELECT } },
-    })
-    return c.json({ ok: true, data: member }, 201)
   })
 
   router.patch('/projects/:projectId/members/:memberId', async (c) => {
@@ -214,9 +226,9 @@ export function rbacRoutes(): Hono {
     if (!member || member.projectId !== projectId) {
       return c.json({ error: { code: 'not_found', message: 'Project member not found' } }, 404)
     }
-    const body = await c.req.json().catch(() => ({}))
-    const role = toProjectRole(body?.role)
-    if (!role) return badRequest(c, 'role must be admin, member or viewer')
+    const body = await parseBody(c, updateMemberBody)
+    if (!body.ok) return body.response
+    const { role } = body.data
     const current = toProjectRole(member.role) as ProjectRole
     if (!canAssignProjectRole(access, role) || !canAssignProjectRole(access, current)) {
       return forbidden(c, 'Cannot change a role above your own')

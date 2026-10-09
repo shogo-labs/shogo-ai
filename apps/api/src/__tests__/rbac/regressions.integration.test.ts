@@ -50,6 +50,46 @@ describe('invite links listing', () => {
     expect((await call(app, as(w.users.admin), 'PATCH', `/api/invite-links/${id}`, { enabled: false })).status).toBe(200)
     expect((await call(app, as(w.users.admin), 'DELETE', `/api/invite-links/${id}`)).status).toBe(200)
   })
+
+  test('errors use the { error: { code, message } } envelope', async () => {
+    const missing = await call(app, as(w.users.owner), 'POST', '/api/invite-links', { role: 'member' })
+    expect(missing.status).toBe(400)
+    expect(missing.body.error).toEqual({ code: 'bad_request', message: 'projectId or workspaceId required' })
+
+    const badRole = await call(app, as(w.users.owner), 'POST', '/api/invite-links', { workspaceId: w.workspaceA, role: 'owner' })
+    expect(badRole.status).toBe(400)
+    expect(badRole.body.error.code).toBe('bad_request')
+
+    const denied = await call(app, as(w.users.member), 'GET', `/api/invite-links?workspaceId=${w.workspaceA}`)
+    expect(denied.body.error.code).toBe('forbidden')
+
+    const notFound = await call(app, as(w.users.owner), 'PATCH', '/api/invite-links/nope', { enabled: false })
+    expect(notFound.status).toBe(404)
+    expect(notFound.body.error.code).toBe('not_found')
+
+    const link = await call(app, as(w.users.owner), 'POST', '/api/invite-links', { workspaceId: w.workspaceA, role: 'viewer' })
+    const badPatch = await call(app, as(w.users.owner), 'PATCH', `/api/invite-links/${link.body.data.id}`, { enabled: 'no' })
+    expect(badPatch.status).toBe(400)
+    expect(badPatch.body.error).toEqual({ code: 'bad_request', message: 'enabled (boolean) required' })
+  })
+})
+
+describe('rbac request bodies are validated', () => {
+  test('visibility and member bodies reject bad input with bad_request', async () => {
+    const base = `/api/projects/${w.projects.open}`
+    const cases: Array<[string, string, unknown, string]> = [
+      ['PATCH', `${base}/visibility`, { visibility: 'secret' }, "visibility must be 'workspace' or 'restricted'"],
+      ['POST', `${base}/members`, { email: 'a@example.com', role: 'god' }, 'role must be admin, member or viewer'],
+      ['POST', `${base}/members`, { role: 'viewer' }, 'userId or email is required'],
+      ['POST', `${base}/members`, { userId: 42 }, ''],
+    ]
+    for (const [method, path, body, message] of cases) {
+      const res = await call(app, as(w.users.owner), method, path, body)
+      expect(res.status).toBe(400)
+      expect(res.body.error.code).toBe('bad_request')
+      if (message) expect(res.body.error.message).toBe(message)
+    }
+  })
 })
 
 describe('default mode keeps viewer write paths working', () => {
@@ -77,6 +117,24 @@ describe('default mode keeps viewer write paths working', () => {
   test('viewer folders', async () => {
     const res = await call(app, as(w.users.viewer), 'POST', '/api/folders', { name: 'Viewer folder', workspaceId: w.workspaceA })
     expect(res.status).toBe(201)
+  })
+})
+
+describe('project existence does not leak', () => {
+  test('an outsider gets the same 404 for an open project as for a missing one', async () => {
+    const missing = await call(app, as(w.users.outsider), 'GET', `/api/projects/${crypto.randomUUID()}`)
+    const open = await call(app, as(w.users.outsider), 'GET', `/api/projects/${w.projects.open}`)
+    expect(open.status).toBe(404)
+    expect(open).toEqual(missing)
+
+    const missingSub = await call(app, as(w.users.outsider), 'POST', `/api/projects/${crypto.randomUUID()}/chat`, {})
+    const openSub = await call(app, as(w.users.outsider), 'POST', `/api/projects/${w.projects.open}/chat`, {})
+    expect(openSub.status).toBe(404)
+    expect(openSub).toEqual(missingSub)
+  })
+
+  test('an API key from another workspace gets 404, not 403', async () => {
+    expect((await call(app, { apiKey: w.keys.ownerB }, 'GET', `/api/projects/${w.projects.open}`)).status).toBe(404)
   })
 })
 

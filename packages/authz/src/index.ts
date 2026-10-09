@@ -9,6 +9,8 @@ export {
   permissionList,
   canAssignWorkspaceRole,
   canAssignProjectRole,
+  canManageWorkspaceMember,
+  canManageProjectMember,
   type AccessFacts,
   type EffectiveAccess,
   type ProjectVisibility,

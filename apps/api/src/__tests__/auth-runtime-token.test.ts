@@ -532,8 +532,8 @@ describe('authorizeProject — runtimeToken branch', () => {
 
     expect(await authorizeProject(c, 'proj_api', 'project:read')).toMatchObject({
       ok: false,
-      status: 403,
-      code: 'forbidden',
+      status: 404,
+      code: 'not_found',
     })
 
     stored.auth.workspaceId = 'ws_project'
@@ -569,7 +569,7 @@ describe('authorizeProject — runtimeToken branch', () => {
     )
     expect(await authorizeProject(c, 'proj_session', 'project:read')).toMatchObject({
       ok: false,
-      status: 403,
+      status: 404,
     })
 
     mockPrisma.member.findMany.mockImplementationOnce(
@@ -604,7 +604,7 @@ describe('authorizeProject — runtimeToken branch', () => {
     }
   })
 
-  test('mismatched projectId → 403 forbidden with scope mismatch code', async () => {
+  test('mismatched projectId → 404, same as a missing project', async () => {
     const tokenProject = 'proj_a'
     const requestedProject = 'proj_b'
     mockPrisma.project.findUnique.mockImplementation(() =>
@@ -622,9 +622,8 @@ describe('authorizeProject — runtimeToken branch', () => {
     const result = await authorizeProject(c, requestedProject, 'project:read')
     expect(result.ok).toBe(false)
     if (!result.ok) {
-      expect(result.status).toBe(403)
-      expect(result.code).toBe('forbidden')
-      expect(result.message.toLowerCase()).toContain('runtime token')
+      expect(result.status).toBe(404)
+      expect(result.code).toBe('not_found')
     }
   })
 
@@ -747,7 +746,7 @@ describe('requireProjectAccess — runtimeToken branch', () => {
       membersFrom([{ userId: 'user_1', workspaceId: 'ws_other', projectId: null, role: 'owner' }]),
     )
     await requireProjectAccess(denied.c, async () => {})
-    expect(denied.c._response().status).toBe(403)
+    expect(denied.c._response().status).toBe(404)
 
     let nextCalled = false
     const allowed = makeCtx({ params: { projectId: 'proj_allowed' } })

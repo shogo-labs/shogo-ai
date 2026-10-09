@@ -38,7 +38,8 @@ const prismaStub = {
 
 mock.module('../../prisma', () => withPrismaExports({ prisma: prismaStub }))
 
-const { loadAccess, accessibleProjectsWhere, decide, denial, _setRbacModeForTests } = await import('../index')
+const { loadAccess, accessibleProjects, accessibleProjectsWhere, projectScopeWhere, decide, denial, _setRbacModeForTests } =
+  await import('../index')
 const { projectRoutePermission, isDeclaredProjectRoute } = await import('../project-routes')
 
 beforeEach(() => {
@@ -128,6 +129,28 @@ describe('accessibleProjectsWhere', () => {
   test('tunnel and runtime token shapes', async () => {
     expect(await accessibleProjectsWhere({ via: 'tunnel', userId: 'x' }, 'ws')).toEqual({ workspaceId: 'ws' })
     expect(await accessibleProjectsWhere({ via: 'runtimeToken', userId: 'x', projectId: 'open' })).toEqual({ id: 'open' })
+  })
+})
+
+describe('accessibleProjects', () => {
+  test('says explicitly when nothing or everything is readable', async () => {
+    expect(await accessibleProjects(session('nobody'), 'ws')).toEqual({ kind: 'none' })
+    expect(await accessibleProjects({})).toEqual({ kind: 'none' })
+    expect(await accessibleProjects({ via: 'tunnel', userId: 'x' })).toEqual({ kind: 'all' })
+    expect(await accessibleProjects({ via: 'apiKey', userId: 'owner' })).toEqual({ kind: 'none' })
+  })
+
+  test('returns a filter otherwise', async () => {
+    expect(await accessibleProjects(session('owner'), 'ws')).toEqual({
+      kind: 'where',
+      where: { AND: [{ workspaceId: 'ws' }, { workspaceId: { in: ['ws'] } }] },
+    })
+  })
+
+  test('projectScopeWhere maps each kind to a Prisma filter', () => {
+    expect(projectScopeWhere({ kind: 'none' })).toEqual({ id: { in: [] } })
+    expect(projectScopeWhere({ kind: 'all' })).toEqual({})
+    expect(projectScopeWhere({ kind: 'where', where: { id: 'p' } })).toEqual({ id: 'p' })
   })
 })
 

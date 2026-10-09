@@ -47,6 +47,8 @@ export interface MemberHooks {
   afterUpdate?: (record: any, ctx: HookContext) => Promise<void>
   /** Called before deleting a record. Can reject deletion. */
   beforeDelete?: (id: string, ctx: HookContext) => Promise<HookResult | void>
+  /** Replaces the default delete when set. */
+  performDelete?: (id: string, ctx: HookContext) => Promise<void>
   /** Called after deleting a record. Can perform cleanup. */
   afterDelete?: (id: string, ctx: HookContext) => Promise<void>
 }
@@ -54,15 +56,16 @@ export interface MemberHooks {
 import {
   canAssignProjectRole,
   canAssignWorkspaceRole,
+  canManageProjectMember,
+  canManageWorkspaceMember,
   isWorkspaceRole,
-  projectRoleRank,
   toProjectRole,
-  workspaceRoleRank,
 } from "@shogo/authz"
 import type { Principal } from "../lib/authz"
 import { hookAccess, hookRequire } from "../lib/authz/hooks"
 import { sendMemberJoinedEmail, sendMemberRemovedEmail } from "../services/email.service"
 import { syncSeatsFromMembership } from "../services/billing.service"
+import { removeMembership } from "../services/membership.service"
 
 const userInclude = {
   user: {
@@ -291,7 +294,7 @@ export const memberHooks: MemberHooks = {
       if (!access.permissions.has("project.members:manage")) {
         return forbidden("Only project admins can update project members")
       }
-      if (projectRoleRank(toProjectRole(target.role)) > projectRoleRank(access.projectRole) && !access.isSuperAdmin) {
+      if (!canManageProjectMember(access, toProjectRole(target.role))) {
         return forbidden("You cannot change a member with a higher role")
       }
       if (input.role !== undefined) {
@@ -307,7 +310,7 @@ export const memberHooks: MemberHooks = {
     if (!access.permissions.has("workspace.members:manage")) {
       return forbidden("Only owners and admins can update members")
     }
-    if (isWorkspaceRole(target.role) && !canAssignWorkspaceRole(access, target.role)) {
+    if (!canManageWorkspaceMember(access, isWorkspaceRole(target.role) ? target.role : null)) {
       return forbidden(target.role === "owner" ? "Only owners can manage owner role" : "You cannot change a member with a higher role")
     }
 
@@ -364,7 +367,7 @@ export const memberHooks: MemberHooks = {
       if (!access.permissions.has("project.members:manage")) {
         return forbidden("Only project admins can remove project members")
       }
-      if (projectRoleRank(toProjectRole(member.role)) > projectRoleRank(access.projectRole) && !access.isSuperAdmin) {
+      if (!canManageProjectMember(access, toProjectRole(member.role))) {
         return forbidden("You cannot remove a member with a higher role")
       }
       return { ok: true }
@@ -374,23 +377,19 @@ export const memberHooks: MemberHooks = {
     if (!access.permissions.has("workspace.members:manage")) {
       return forbidden("Only owners and admins can remove members")
     }
-    if (isWorkspaceRole(member.role) && workspaceRoleRank(member.role) > workspaceRoleRank(access.workspaceRole) && !access.isSuperAdmin) {
-      return forbidden("You cannot remove a member with a higher role")
-    }
-    if (member.role === "owner" && !access.permissions.has("workspace.owners:manage")) {
-      return forbidden("Only owners can remove owners")
+    if (!canManageWorkspaceMember(access, isWorkspaceRole(member.role) ? member.role : null)) {
+      return forbidden(member.role === "owner" ? "Only owners can remove owners" : "You cannot remove a member with a higher role")
     }
     return { ok: true }
+  },
+
+  performDelete: async (id, ctx) => {
+    await removeMembership(ctx.prisma, id)
   },
 
   afterDelete: async (id, ctx) => {
     const member = (ctx as any)._deletedMember
     if (!member?.workspaceId || member.projectId) return
-
-    // Leaving a workspace also ends any project roles inside it.
-    await ctx.prisma.member
-      .deleteMany({ where: { userId: member.userId, workspaceId: member.workspaceId, projectId: { not: null } } })
-      .catch((err: unknown) => console.error('[Members] project-row cleanup failed:', err))
 
     // Active-seat billing: removing a workspace member shrinks the seat
     // quantity. Stripe credits the remaining time as account credit on the

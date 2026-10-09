@@ -50,6 +50,11 @@ export function projectRoleRank(role: ProjectRole | null | undefined): number {
   return role ? PROJECT_ROLE_RANK[role] : 0
 }
 
+/** Workspace owners and admins see and administer every project, restricted or not. */
+export function governsAllProjects(role: WorkspaceRole | null | undefined): boolean {
+  return role === 'owner' || role === 'admin'
+}
+
 export function isWorkspaceRole(value: unknown): value is WorkspaceRole {
   return typeof value === 'string' && (WORKSPACE_ROLES as readonly string[]).includes(value)
 }

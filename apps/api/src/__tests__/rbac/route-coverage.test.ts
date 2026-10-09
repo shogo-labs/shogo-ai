@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * Every mutating route under `/api/projects/:projectId` must declare the
- * permission it needs in `lib/authz/project-routes.ts`; otherwise it silently
- * falls back to `project:update`. `server.ts` cannot be imported in tests, so
+ * Every route under `/api/projects/:projectId` must declare the permission it
+ * needs in `lib/authz/project-routes.ts`; otherwise writes silently fall back
+ * to `project:update` and reads to `project:read`, which may be too weak for
+ * reads that expose secrets. `server.ts` cannot be imported in tests, so
  * this scans route registrations in the API source instead of walking a live
  * router. Routers mounted at `/api/projects` register `/:projectId/...`.
  */
@@ -11,7 +12,8 @@
 import { describe, expect, test } from 'bun:test'
 import { readdirSync, readFileSync, statSync } from 'fs'
 import { join, relative, resolve } from 'path'
-import { isDeclaredProjectRoute } from '../../lib/authz/project-routes'
+import type { ProjectPermission } from '@shogo/authz'
+import { isDeclaredProjectRoute, projectRoutePermission } from '../../lib/authz/project-routes'
 
 const SRC = resolve(import.meta.dir, '../..')
 const SKIP_DIRS = new Set(['__tests__', 'generated', 'node_modules'])
@@ -22,6 +24,7 @@ const NON_PROJECT_MOUNTS = new Set<string>([
   // Mounted at /api/internal, authenticated by runtime token, not requireProjectAccess.
   'routes/internal.ts',
   'routes/internal-runtime-routes.ts',
+  'routes/internal-project-trust.ts',
 ])
 
 function sourceFiles(dir: string, out: string[] = []): string[] {
@@ -36,7 +39,7 @@ function sourceFiles(dir: string, out: string[] = []): string[] {
   return out
 }
 
-const ROUTE_RE = /\.\s*(post|put|patch|delete|all)\(\s*(['"`])([^'"`]+)\2/g
+const ROUTE_RE = /\.\s*(get|post|put|patch|delete|all)\(\s*(['"`])([^'"`]+)\2/g
 
 interface Found { file: string; method: string; template: string }
 
@@ -46,7 +49,7 @@ function projectSubpath(path: string, file: string): string | null {
   return m ? m[1] : null
 }
 
-function findMutatingProjectRoutes(): Found[] {
+function findProjectRoutes(): Found[] {
   const found: Found[] = []
   for (const abs of sourceFiles(SRC)) {
     const file = relative(SRC, abs)
@@ -61,18 +64,42 @@ function findMutatingProjectRoutes(): Found[] {
 }
 
 describe('project route coverage', () => {
-  const routes = findMutatingProjectRoutes()
+  const routes = findProjectRoutes()
+  const undeclared = (method: (m: string) => boolean) =>
+    routes
+      .filter((r) => method(r.method) && !isDeclaredProjectRoute(r.method, r.template))
+      .map((r) => `${r.method} ${r.template}  (${r.file})`)
 
   test('the scan finds the known project routers', () => {
     const files = new Set(routes.map((r) => r.file))
     expect(files.has('server.ts')).toBe(true)
-    expect(routes.length).toBeGreaterThan(30)
+    expect(routes.filter((r) => r.method !== 'GET').length).toBeGreaterThan(30)
+    expect(routes.filter((r) => r.method === 'GET').length).toBeGreaterThan(30)
   })
 
   test('every mutating /api/projects/:projectId route declares its permission', () => {
-    const undeclared = routes
-      .filter((r) => !isDeclaredProjectRoute(r.method, r.template))
-      .map((r) => `${r.method} ${r.template}  (${r.file})`)
-    expect(undeclared).toEqual([])
+    expect(undeclared((m) => m !== 'GET')).toEqual([])
+  })
+
+  test('every GET route is reviewed: listed as a plain read or given a rule', () => {
+    expect(undeclared((m) => m === 'GET')).toEqual([])
+  })
+})
+
+describe('sensitive reads', () => {
+  test.each([
+    ['GET', '/database/url', 'project:update'],
+    ['GET', '/database/proxy/tables', 'project:update'],
+    ['GET', '/terminal/sessions', 'project:update'],
+    ['GET', '/terminal/commands', 'project:update'],
+    ['GET', '/auth-config', 'project.settings:manage'],
+    ['GET', '/auth-users', 'project.settings:manage'],
+    ['GET', '/github/authorize', 'project.settings:manage'],
+    ['GET', '/agent-proxy/agent/config', 'project.settings:manage'],
+    ['GET', '/download', 'project:export'],
+    ['GET', '/agent-proxy/agent/chat/history', 'project:read'],
+    ['GET', '/files/src/App.tsx', 'project:read'],
+  ])('%s %s needs %s', (method, path, permission) => {
+    expect(projectRoutePermission(method, path)).toBe(permission as ProjectPermission)
   })
 })

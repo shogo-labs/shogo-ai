@@ -77,7 +77,7 @@ describe('Routes Generator', () => {
     it('should generate hooks setter', () => {
       const result = generateModelRoutes(mockProjectModel)
 
-      expect(result!.code).toContain('export function setProjectHooks(h: ProjectHooks)')
+      expect(result!.code).toContain('export function setProjectHooks(h: RouteHooks)')
       expect(result!.code).toContain('hooks = h')
     })
 
@@ -168,7 +168,7 @@ describe('Routes Generator', () => {
       it('should return items and total in response', () => {
         const result = generateModelRoutes(mockProjectModel)
 
-        expect(result!.code).toContain('return sendJson(c, { ok: true, items, total })')
+        expect(result!.code).toContain('return sendJson(c, { ok: true, items: shaped, total })')
       })
 
       it('should include error handling', () => {

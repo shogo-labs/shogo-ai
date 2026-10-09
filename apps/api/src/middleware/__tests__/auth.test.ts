@@ -482,13 +482,13 @@ describe('requirePermission', () => {
     expect(nextCalled).toBe(1)
   })
 
-  it('returns 403 for a non-member', async () => {
+  it('returns 404 for a non-member', async () => {
     projectFindUniqueImpl = async () => project('p', 'w')
     userFindUniqueImpl = async () => ({ role: 'user' })
     const mw = requirePermission('project:read')
     const c = makeContext({ auth: { isAuthenticated: true, userId: 'u' }, params: { projectId: 'p' } })
     const res = (await mw(c, next)) as FakeJsonResponse
-    expect(res.status).toBe(403)
+    expect(res.status).toBe(404)
     expect(nextCalled).toBe(0)
   })
 })
@@ -555,13 +555,13 @@ describe('requireProjectAccess', () => {
     expect(res.status).toBe(404)
   })
 
-  it('returns 403 when user is not a workspace member', async () => {
+  it('returns 404 when user is not a workspace member', async () => {
     userFindUniqueImpl = async () => ({ role: 'user' })
     projectFindUniqueImpl = async () => project('p', 'w')
     memberFindManyImpl = membersFrom([{ userId: 'u', workspaceId: 'w-other', projectId: null, role: 'owner' }])
     const c = makeContext({ auth: { userId: 'u' }, params: { projectId: 'p' } })
     const res = (await requireProjectAccess(c, next)) as FakeJsonResponse
-    expect(res.status).toBe(403)
+    expect(res.status).toBe(404)
   })
 
   it('calls next when user is a workspace member', async () => {
@@ -654,24 +654,24 @@ describe('authorizeProject', () => {
     if (r.ok) expect(r.workspaceId).toBe('w')
   })
 
-  it('apiKey: 403 when workspaceId is missing on auth', async () => {
+  it('apiKey: 404 when workspaceId is missing on auth', async () => {
     projectFindUniqueImpl = async () => project('p', 'w')
     const c = makeContext({
       auth: { isAuthenticated: true, userId: 'u', via: 'apiKey' },
     })
     const r = await authorizeProject(c, 'p', 'project:read')
     expect(r.ok).toBe(false)
-    if (!r.ok) expect(r.status).toBe(403)
+    if (!r.ok) expect(r.status).toBe(404)
   })
 
-  it('apiKey: 403 when workspaceId mismatches', async () => {
+  it('apiKey: 404 when workspaceId mismatches', async () => {
     projectFindUniqueImpl = async () => project('p', 'w-other')
     const c = makeContext({
       auth: { isAuthenticated: true, userId: 'u', via: 'apiKey', workspaceId: 'w-mine' },
     })
     const r = await authorizeProject(c, 'p', 'project:read')
     expect(r.ok).toBe(false)
-    if (!r.ok) expect(r.status).toBe(403)
+    if (!r.ok) expect(r.status).toBe(404)
   })
 
   it('runtimeToken: ok when scope matches', async () => {
@@ -683,14 +683,14 @@ describe('authorizeProject', () => {
     expect(r.ok).toBe(true)
   })
 
-  it('runtimeToken: 403 when scope mismatches', async () => {
+  it('runtimeToken: 404 when scope mismatches', async () => {
     projectFindUniqueImpl = async () => project('p', 'w')
     const c = makeContext({
       auth: { isAuthenticated: true, userId: 'u', via: 'runtimeToken', projectId: 'other' },
     })
     const r = await authorizeProject(c, 'p', 'project:read')
     expect(r.ok).toBe(false)
-    if (!r.ok) expect(r.status).toBe(403)
+    if (!r.ok) expect(r.status).toBe(404)
   })
 
   it('tunnel: ok without further DB checks', async () => {
@@ -712,14 +712,14 @@ describe('authorizeProject', () => {
     expect(r.ok).toBe(true)
   })
 
-  it('session: 403 when caller is not a workspace member', async () => {
+  it('session: 404 when caller is not a workspace member', async () => {
     projectFindUniqueImpl = async () => project('p', 'w')
     const c = makeContext({
       auth: { isAuthenticated: true, userId: 'u', via: 'session' },
     })
     const r = await authorizeProject(c, 'p', 'project:read')
     expect(r.ok).toBe(false)
-    if (!r.ok) expect(r.status).toBe(403)
+    if (!r.ok) expect(r.status).toBe(404)
   })
 
   it('session: ok for a guest with a project-scoped role only', async () => {

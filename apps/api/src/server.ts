@@ -39,7 +39,6 @@ import { startEventDeliveryWorker, stopEventDeliveryWorker } from './jobs/run-ev
 import { inviteLinkAcceptRoutes } from './routes/invite-link-accept'
 import { inviteLinkRoutes } from './routes/invite-links'
 import { rbacRoutes } from './routes/rbac'
-import { attachProjectPermissions } from './lib/authz/project-permissions'
 import { appActionsRoutes } from './routes/app-actions'
 import { startChatQueueWorker, stopChatQueueWorker } from './jobs/run-chat-queue-drain'
 import { startChannelWorkers, stopChannelWorkers } from './jobs/run-channel-workers'
@@ -9019,9 +9018,6 @@ app.use('/api/projects', async (c, next) => {
 
   c.res = new Response(JSON.stringify(payload), { status: res.status, headers })
 })
-
-app.use('/api/projects', attachProjectPermissions)
-app.use('/api/projects/:id', attachProjectPermissions)
 
 // Mount generated routes at /api
 const generatedRoutes = createGeneratedRoutes({

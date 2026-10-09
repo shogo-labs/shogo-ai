@@ -72,7 +72,7 @@ describe('modes', () => {
       expect((await call(app, as(w.users.guestViewer), 'GET', `/api/projects/${w.projects.restricted}`)).status).toBe(404)
       expect((await call(app, as(w.users.viewer), 'GET', `/api/projects/${w.projects.restricted}`)).status).toBe(404)
       expect((await call(app, as(w.users.viewer), 'POST', `/api/projects/${w.projects.restricted}/chat`, {})).status).toBe(404)
-      expect((await call(app, as(w.users.outsider), 'GET', `/api/projects/${w.projects.open}`)).status).toBe(403)
+      expect((await call(app, as(w.users.outsider), 'GET', `/api/projects/${w.projects.open}`)).status).toBe(404)
     })
 
     test(`${mode}: replaced role checks stay strict`, async () => {

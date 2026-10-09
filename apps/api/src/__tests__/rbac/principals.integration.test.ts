@@ -50,7 +50,7 @@ describe('API keys', () => {
     expect((await call(app, { apiKey: key }, 'GET', `/api/projects/${w.projects.open}`)).status).toBe(200)
 
     await db.member.delete({ where: { id: row.id } })
-    expect((await call(app, { apiKey: key }, 'GET', `/api/projects/${w.projects.open}`)).status).toBe(403)
+    expect((await call(app, { apiKey: key }, 'GET', `/api/projects/${w.projects.open}`)).status).toBe(404)
   })
 
   test('a key loses access when its project becomes restricted', async () => {
@@ -61,8 +61,8 @@ describe('API keys', () => {
   })
 
   test('a workspace-B key is rejected in workspace A even though the user could be a member', async () => {
-    expect((await call(app, { apiKey: w.keys.ownerB }, 'GET', `/api/projects/${w.projects.open}`)).status).toBe(403)
-    expect((await call(app, { apiKey: w.keys.ownerB }, 'POST', `/api/projects/${w.projects.open}/chat`, {})).status).toBe(403)
+    expect((await call(app, { apiKey: w.keys.ownerB }, 'GET', `/api/projects/${w.projects.open}`)).status).toBe(404)
+    expect((await call(app, { apiKey: w.keys.ownerB }, 'POST', `/api/projects/${w.projects.open}/chat`, {})).status).toBe(404)
     expect((await call(app, { apiKey: w.keys.ownerB }, 'GET', `/api/projects/${w.projects.foreign}`)).status).toBe(200)
     const list = await call(app, { apiKey: w.keys.ownerB }, 'GET', '/api/projects')
     expect(list.body.items.map((p: any) => p.id)).toEqual([w.projects.foreign])

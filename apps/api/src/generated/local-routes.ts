@@ -9,7 +9,9 @@ import {
   setWorkspaceHooks,
 } from './workspace.routes'
 import type { WorkspaceHooks } from './workspace.hooks'
-import { createProjectRoutes, setPrisma as setPrismaProject } from './project.routes'
+import { createProjectRoutes, setPrisma as setPrismaProject, setProjectHooks } from './project.routes'
+import type { ProjectHooks } from './project.hooks'
+import { withProjectPermissions } from '../lib/authz/project-permissions'
 import { createProjectFolderRoutes, setPrisma as setPrismaProjectFolder } from './project-folder.routes'
 import { createStarredProjectRoutes, setPrisma as setPrismaStarredProject } from './starred-project.routes'
 import { createMemberRoutes, setPrisma as setPrismaMember } from './member.routes'
@@ -47,6 +49,7 @@ export function createLocalGeneratedRoutes(prisma: any): Hono {
   setPrismaWorkspace(prisma)
   setWorkspaceHooks(localWorkspaceHooks)
   setPrismaProject(prisma)
+  setProjectHooks(localProjectHooks)
   setPrismaProjectFolder(prisma)
   setPrismaStarredProject(prisma)
   setPrismaMember(prisma)
@@ -88,6 +91,12 @@ export function createLocalGeneratedRoutes(prisma: any): Hono {
   router.route('/tool-call-logs', createToolCallLogRoutes())
   router.route('/feature-sessions', createFeatureSessionRoutes())
   return router
+}
+
+/** Local project routes only add the caller's `myPermissions` to project payloads. */
+export const localProjectHooks: ProjectHooks = {
+  afterList: async (items, ctx) => withProjectPermissions(ctx.auth ?? {}, items),
+  afterGet: async (item, ctx) => (await withProjectPermissions(ctx.auth ?? {}, [item]))[0],
 }
 
 /**
