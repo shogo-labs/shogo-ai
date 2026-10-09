@@ -181,7 +181,10 @@ import {
   Plus,
   History,
   Zap,
+  Users,
 } from "lucide-react-native";
+import { ProjectAccessPanel } from "../../../../components/project/ProjectAccessPanel";
+import { usePermissions } from "../../../../hooks/usePermissions";
 import {
   useToast,
   Toast,
@@ -592,6 +595,13 @@ export default observer(function ProjectLayout() {
     },
     [projectId, actions]
   );
+
+  const { can: canProject, loading: projectPermissionsLoading } =
+    usePermissions({ projectId });
+  const canEditProject = canProject("project:update");
+  const canManageProjectSettings = canProject("project.settings:manage");
+  const canManageProjectMembers = canProject("project.members:manage");
+  const projectReadOnly = !projectPermissionsLoading && !canEditProject;
 
   const handleToggleStar = useCallback(async () => {
     if (!projectId || !user?.id) return;
@@ -3659,6 +3669,11 @@ export default observer(function ProjectLayout() {
                 className="flex-1"
                 ideMode={isIdeChatEmbed}
                 enrichMessage={enrichMessage}
+                readOnlyReason={
+                  projectReadOnly
+                    ? "You have view-only access to this project"
+                    : undefined
+                }
               />
             </PanelErrorBoundary>
           </View>
@@ -3750,7 +3765,9 @@ export default observer(function ProjectLayout() {
     projectCreatedAt: project?.createdAt,
     projectModifiedAt: project?.updatedAt,
     isStarred,
-    onRenameProject: handleRenameProject,
+    onRenameProject: canEditProject ? handleRenameProject : undefined,
+    canExport: canProject("project:export"),
+    canPublish: canProject("project:publish"),
     onToggleStar: handleToggleStar,
     onMoveToFolder: handleMoveToFolder,
     folders,
@@ -4795,10 +4812,46 @@ export default observer(function ProjectLayout() {
                             ],
                           }
                         );
+                        // Unfiltered while loading so SettingsPanel doesn't drop the
+                        // restored section before permissions arrive.
+                        const visibleSettingsGroups = projectPermissionsLoading
+                          ? settingsGroups
+                          : settingsGroups.filter((group) =>
+                              group.id === "monitoring"
+                                ? true
+                                : group.id === "workspace"
+                                ? canEditProject
+                                : canManageProjectSettings
+                            );
+                        if (canManageProjectMembers) {
+                          visibleSettingsGroups.unshift({
+                            id: "sharing",
+                            label: "SHARING",
+                            items: [
+                              {
+                                id: "access",
+                                label: "Access",
+                                icon: Users,
+                                render: () => (
+                                  <PanelErrorBoundary panelName="Access">
+                                    <ProjectAccessPanel
+                                      projectId={projectId!}
+                                      onVisibilityChange={(visibility) =>
+                                        setProject((prev: any) =>
+                                          prev ? { ...prev, visibility } : prev
+                                        )
+                                      }
+                                    />
+                                  </PanelErrorBoundary>
+                                ),
+                              },
+                            ],
+                          });
+                        }
                         return (
                           <SettingsPanel
                             visible={effectiveTab === "settings"}
-                            groups={settingsGroups}
+                            groups={visibleSettingsGroups}
                             requestedItem={requestedSettingsItem}
                           />
                         );

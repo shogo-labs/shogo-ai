@@ -77,7 +77,7 @@ describe('Routes Generator', () => {
     it('should generate hooks setter', () => {
       const result = generateModelRoutes(mockProjectModel)
 
-      expect(result!.code).toContain('export function setProjectHooks(h: ProjectHooks)')
+      expect(result!.code).toContain('export function setProjectHooks(h: RouteHooks)')
       expect(result!.code).toContain('hooks = h')
     })
 
@@ -137,7 +137,7 @@ describe('Routes Generator', () => {
         expect(result!.code).toContain('if (hooks.beforeList) {')
         expect(result!.code).toContain('const result = await hooks.beforeList(ctx)')
         expect(result!.code).toContain('if (result && !result.ok) {')
-        expect(result!.code).toContain('return sendJson(c, { error: result.error }, 400)')
+        expect(result!.code).toContain('return sendJson(c, { error: result.error }, hookErrorStatus(result.error))')
       })
 
       it('should allow hook to override where clause', () => {
@@ -168,7 +168,7 @@ describe('Routes Generator', () => {
       it('should return items and total in response', () => {
         const result = generateModelRoutes(mockProjectModel)
 
-        expect(result!.code).toContain('return sendJson(c, { ok: true, items, total })')
+        expect(result!.code).toContain('return sendJson(c, { ok: true, items: shaped, total })')
       })
 
       it('should include error handling', () => {

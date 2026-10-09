@@ -75,6 +75,7 @@ mock.module("lucide-react-native", () => {
     ChevronDown: Icon,
     ChevronRight: Icon,
     Folder: Icon,
+    Lock: Icon,
     Pencil: Icon,
     Pin: Icon,
     PinOff: Icon,

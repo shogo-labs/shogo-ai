@@ -7,7 +7,8 @@
  */
 
 import { prisma } from '../lib/prisma'
-import { agentIconUrl, ConversationError, getWorkspaceRole, storedAgentBuddyLook } from './conversation.service'
+import { loadAccess } from '../lib/authz'
+import { agentIconUrl, ConversationError, storedAgentBuddyLook } from './conversation.service'
 import { publishConversationEvent } from '../lib/conversation-bus'
 import { parseBuddyLook, type BuddyLook } from '../../../../packages/shared-app/src/buddy-look'
 import {
@@ -27,15 +28,21 @@ export interface TeamDirectory {
   groups: Array<{ groupId: string; handle: string; name: string; tag: string }>
 }
 
-export async function loadTeamDirectory(workspaceId: string): Promise<TeamDirectory> {
+/**
+ * Restricted projects are left out (other than `viewerProjectId`, the asking
+ * agent's own): the directory is shared with every agent in the workspace.
+ */
+export async function loadTeamDirectory(workspaceId: string, viewerProjectId: string | null = null): Promise<TeamDirectory> {
+  const visible: Record<string, unknown>[] = [{ visibility: 'workspace' }]
+  if (viewerProjectId) visible.push({ id: viewerProjectId })
   const [members, projects, groups, profile] = await Promise.all([
     db.member.findMany({
-      where: { workspaceId },
+      where: { workspaceId, projectId: null },
       distinct: ['userId'],
       select: { userId: true, user: { select: { name: true, email: true } } },
     }),
     db.project.findMany({
-      where: { workspaceId, status: { not: 'archived' } },
+      where: { workspaceId, status: { not: 'archived' }, OR: visible },
       select: { id: true, name: true, description: true },
       orderBy: { createdAt: 'asc' },
     }),
@@ -75,9 +82,9 @@ export function directoryEntries(directory: TeamDirectory): MentionDirectoryEntr
 }
 
 /** Resolve plain `@Name`, `@email` and `@group-handle` in `text` to mention tokens. */
-export async function resolveFriendlyMentions(workspaceId: string, text: string): Promise<string> {
+export async function resolveFriendlyMentions(workspaceId: string, text: string, viewerProjectId: string | null = null): Promise<string> {
   if (!text.includes('@')) return text
-  const directory = await loadTeamDirectory(workspaceId)
+  const directory = await loadTeamDirectory(workspaceId, viewerProjectId)
   return resolveFriendlyMentionsWith(text, buildMentionLookup(directoryEntries(directory)))
 }
 
@@ -110,16 +117,17 @@ export async function loadAgentCard(workspaceId: string, projectId: string | nul
   let role: string | null
   let owner: AgentCard['owner'] = null
   let buddyLook: BuddyLook | null = null
-  const role_ = await getWorkspaceRole(workspaceId, viewerId)
-  let canEdit = role_ === 'owner' || role_ === 'admin'
+  let canEdit: boolean
   if (projectId) {
     const project = await db.project.findFirst({
       where: { id: projectId, workspaceId },
       select: { name: true, description: true, createdBy: true, buddyLook: true },
     })
     if (!project) return null
+    const access = await loadAccess({ userId: viewerId, via: 'session' }, { projectId })
+    if (!access.permissions.has('project:read')) return null
     buddyLook = storedAgentBuddyLook(project.buddyLook)
-    if (project.createdBy && project.createdBy === viewerId) canEdit = true
+    canEdit = access.permissions.has('project.settings:manage') || (!!project.createdBy && project.createdBy === viewerId)
     name = project.name
     role = project.description ?? null
     if (project.createdBy) {
@@ -127,6 +135,7 @@ export async function loadAgentCard(workspaceId: string, projectId: string | nul
       if (user) owner = { id: user.id, name: user.name || user.email }
     }
   } else {
+    canEdit = (await loadAccess({ userId: viewerId, via: 'session' }, { workspaceId })).permissions.has('workspace.settings:manage')
     const profile = await db.workspaceAgentProfile.findUnique({ where: { workspaceId }, select: { name: true, tagline: true, buddyLook: true } }).catch(() => null)
     buddyLook = storedAgentBuddyLook(profile?.buddyLook)
     name = profile?.name || 'Shogo'
@@ -187,18 +196,19 @@ export async function setAgentBuddyLook(
     if (!parsed.ok) throw new ConversationError(400, 'invalid_look', parsed.error)
     next = parsed.look
   }
-  const role = await getWorkspaceRole(workspaceId, userId)
-  const isAdmin = role === 'owner' || role === 'admin'
+  const principal = { userId, via: 'session' as const }
   const data = { buddyLook: next ? JSON.stringify(next) : null }
   if (projectId) {
     const project = await db.project.findFirst({ where: { id: projectId, workspaceId }, select: { createdBy: true } })
-    if (!project) throw new ConversationError(404, 'not_found', 'Agent not found')
-    if (!isAdmin && !(project.createdBy && project.createdBy === userId)) {
+    const access = project ? await loadAccess(principal, { projectId }) : null
+    if (!project || !access?.permissions.has('project:read')) throw new ConversationError(404, 'not_found', 'Agent not found')
+    if (!access.permissions.has('project.settings:manage') && !(project.createdBy && project.createdBy === userId)) {
       throw new ConversationError(403, 'forbidden', 'Only the project owner and workspace admins can change an agent\'s look')
     }
     await db.project.update({ where: { id: projectId }, data })
   } else {
-    if (!isAdmin) throw new ConversationError(403, 'forbidden', 'Only workspace admins can change the workspace agent\'s look')
+    const access = await loadAccess(principal, { workspaceId })
+    if (!access.permissions.has('workspace.settings:manage')) throw new ConversationError(403, 'forbidden', 'Only workspace admins can change the workspace agent\'s look')
     await db.workspaceAgentProfile.upsert({
       where: { workspaceId },
       create: { workspaceId, ...data },

@@ -254,6 +254,7 @@ describe('createDefaultTeamWorkspace', () => {
     expect(s.txMemberFindFirstCalls[0].where).toEqual({
       userId: 'abcdefgh',
       role: 'owner',
+      projectId: null,
       workspace: { kind: 'team' },
     })
     expect(s.txWorkspaceCreateCalls).toHaveLength(0)

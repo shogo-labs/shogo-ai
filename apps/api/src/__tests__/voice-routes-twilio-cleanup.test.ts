@@ -45,7 +45,10 @@ const mockPrisma = {
     }),
   },
   user: { findUnique: mock(async () => null) },
-  member: { findFirst: mock(async () => memberRow) },
+  member: {
+    findFirst: mock(async () => memberRow),
+    findMany: mock(async () => (memberRow ? [{ role: 'member', projectId: null, isBillingAdmin: false }] : [])),
+  },
   voiceProjectConfig: {
     findUnique: mock(async () => voiceCfg),
     findFirst: mock(async () => voiceCfg),

@@ -9,7 +9,7 @@
  * Run: bun test apps/api/src/__tests__/auth-runtime-token.test.ts
  */
 
-import { describe, test, expect, mock, beforeEach } from 'bun:test'
+import { describe, test, expect, mock, beforeAll, afterAll, beforeEach } from 'bun:test'
 
 const mockPrisma = {
   project: {
@@ -19,8 +19,31 @@ const mockPrisma = {
     findUnique: mock((_args: any) => Promise.resolve(null as any)),
   },
   member: {
-    findFirst: mock((_args: any) => Promise.resolve(null as any)),
+    findMany: mock((_args: any) => Promise.resolve([] as any[])),
   },
+  platformSetting: {
+    findUnique: mock((_args: any) => Promise.resolve(null as any)),
+  },
+}
+
+type MemberRow = { userId: string; workspaceId: string | null; projectId: string | null; role: string }
+
+/** `member.findMany` honoring the engine's `{ userId, OR: [...] }` filter. */
+function membersFrom(rows: MemberRow[]) {
+  return (args: any) =>
+    Promise.resolve(
+      rows
+        .filter(
+          (r) =>
+            r.userId === args.where.userId &&
+            args.where.OR.some((cond: any) =>
+              'workspaceId' in cond
+                ? r.workspaceId === cond.workspaceId && r.projectId === null
+                : r.projectId === cond.projectId,
+            ),
+        )
+        .map((r) => ({ role: r.role, projectId: r.projectId, isBillingAdmin: false })) as any[],
+    )
 }
 const authGetSessionMock = mock(() => Promise.resolve(null as any))
 const resolveApiKeyMock = mock(() => Promise.resolve(null as any))
@@ -40,6 +63,10 @@ mock.module('../routes/api-keys', () => ({
 process.env.AI_PROXY_SECRET =
   process.env.AI_PROXY_SECRET ?? 'test-signing-secret-for-runtime-token'
 
+const { _setRbacModeForTests } = await import('../lib/authz')
+beforeAll(() => _setRbacModeForTests('shadow'))
+afterAll(() => _setRbacModeForTests(null))
+
 const { deriveRuntimeToken, RUNTIME_TOKEN_V1_PREFIX } = await import(
   '../lib/runtime-token'
 )
@@ -50,7 +77,6 @@ const {
   isProjectReservedTopLevelPath,
   requireAuth,
   requireProjectAccess,
-  requireRole,
 } = await import('../middleware/auth')
 
 /**
@@ -77,6 +103,7 @@ function makeCtx(opts: {
   query?: Record<string, string>
   params?: Record<string, string>
   url?: string
+  method?: string
 }): { c: any; stored: { auth?: AuthCtx }; calledNext: { called: boolean } } {
   const stored: { auth?: AuthCtx } = {}
   const calledNext = { called: false }
@@ -92,6 +119,8 @@ function makeCtx(opts: {
       query: (name: string) => query[name],
       param: (name: string) => params[name],
       url,
+      method: opts.method ?? 'GET',
+      path: new URL(url).pathname,
       raw: { headers: new Headers() },
     },
     set: (key: string, val: AuthCtx) => {
@@ -111,7 +140,8 @@ function makeCtx(opts: {
 beforeEach(() => {
   mockPrisma.project.findUnique.mockReset()
   mockPrisma.user.findUnique.mockReset()
-  mockPrisma.member.findFirst.mockReset()
+  mockPrisma.member.findMany.mockReset()
+  mockPrisma.member.findMany.mockImplementation(() => Promise.resolve([]))
   authGetSessionMock.mockReset()
   authGetSessionMock.mockImplementation(() => Promise.resolve(null))
   resolveApiKeyMock.mockReset()
@@ -466,7 +496,7 @@ describe('authMiddleware — runtime-token path', () => {
 describe('authorizeProject — runtimeToken branch', () => {
   test('rejects missing auth, invalid project ids, and unknown projects', async () => {
     const unauth = makeCtx({})
-    expect(await authorizeProject(unauth.c, 'proj')).toMatchObject({
+    expect(await authorizeProject(unauth.c, 'proj', 'project:read')).toMatchObject({
       ok: false,
       status: 401,
       code: 'unauthorized',
@@ -474,14 +504,14 @@ describe('authorizeProject — runtimeToken branch', () => {
 
     const badProject = makeCtx({})
     badProject.stored.auth = { isAuthenticated: true, userId: 'user_1' }
-    expect(await authorizeProject(badProject.c, '')).toMatchObject({
+    expect(await authorizeProject(badProject.c, '', 'project:read')).toMatchObject({
       ok: false,
       status: 400,
       code: 'bad_request',
     })
 
     mockPrisma.project.findUnique.mockImplementationOnce(() => Promise.resolve(null))
-    expect(await authorizeProject(badProject.c, 'missing')).toMatchObject({
+    expect(await authorizeProject(badProject.c, 'missing', 'project:read')).toMatchObject({
       ok: false,
       status: 404,
       code: 'not_found',
@@ -490,7 +520,7 @@ describe('authorizeProject — runtimeToken branch', () => {
 
   test('API key authorization requires matching workspace', async () => {
     mockPrisma.project.findUnique.mockImplementation(() =>
-      Promise.resolve({ id: 'proj_api', workspaceId: 'ws_project' }),
+      Promise.resolve({ id: 'proj_api', workspaceId: 'ws_project', visibility: 'workspace' }),
     )
     const { c, stored } = makeCtx({})
     stored.auth = {
@@ -500,14 +530,17 @@ describe('authorizeProject — runtimeToken branch', () => {
       via: 'apiKey',
     }
 
-    expect(await authorizeProject(c, 'proj_api')).toMatchObject({
+    expect(await authorizeProject(c, 'proj_api', 'project:read')).toMatchObject({
       ok: false,
-      status: 403,
-      code: 'forbidden',
+      status: 404,
+      code: 'not_found',
     })
 
     stored.auth.workspaceId = 'ws_project'
-    expect(await authorizeProject(c, 'proj_api')).toEqual({
+    mockPrisma.member.findMany.mockImplementation(
+      membersFrom([{ userId: 'user_api', workspaceId: 'ws_project', projectId: null, role: 'member' }]),
+    )
+    expect(await authorizeProject(c, 'proj_api', 'project:read')).toEqual({
       ok: true,
       workspaceId: 'ws_project',
       projectId: 'proj_api',
@@ -516,7 +549,7 @@ describe('authorizeProject — runtimeToken branch', () => {
 
   test('tunnel auth is trusted and session auth checks workspace membership', async () => {
     mockPrisma.project.findUnique.mockImplementation(() =>
-      Promise.resolve({ id: 'proj_session', workspaceId: 'ws_session' }),
+      Promise.resolve({ id: 'proj_session', workspaceId: 'ws_session', visibility: 'workspace' }),
     )
     const { c, stored } = makeCtx({})
     stored.auth = {
@@ -524,21 +557,25 @@ describe('authorizeProject — runtimeToken branch', () => {
       userId: 'user_tunnel',
       tunnelAuthenticated: true,
     }
-    expect(await authorizeProject(c, 'proj_session')).toEqual({
+    expect(await authorizeProject(c, 'proj_session', 'project:read')).toEqual({
       ok: true,
       workspaceId: 'ws_session',
       projectId: 'proj_session',
     })
 
     stored.auth = { isAuthenticated: true, userId: 'user_session', via: 'session' }
-    mockPrisma.member.findFirst.mockImplementationOnce(() => Promise.resolve(null))
-    expect(await authorizeProject(c, 'proj_session')).toMatchObject({
+    mockPrisma.member.findMany.mockImplementationOnce(
+      membersFrom([{ userId: 'user_session', workspaceId: 'ws_elsewhere', projectId: null, role: 'owner' }]),
+    )
+    expect(await authorizeProject(c, 'proj_session', 'project:read')).toMatchObject({
       ok: false,
-      status: 403,
+      status: 404,
     })
 
-    mockPrisma.member.findFirst.mockImplementationOnce(() => Promise.resolve({ id: 'member_1' }))
-    expect(await authorizeProject(c, 'proj_session')).toEqual({
+    mockPrisma.member.findMany.mockImplementationOnce(
+      membersFrom([{ userId: 'user_session', workspaceId: 'ws_session', projectId: null, role: 'member' }]),
+    )
+    expect(await authorizeProject(c, 'proj_session', 'project:read')).toEqual({
       ok: true,
       workspaceId: 'ws_session',
       projectId: 'proj_session',
@@ -548,7 +585,7 @@ describe('authorizeProject — runtimeToken branch', () => {
   test('matching projectId → ok', async () => {
     const projectId = 'proj_ok'
     mockPrisma.project.findUnique.mockImplementation(() =>
-      Promise.resolve({ id: projectId, workspaceId: 'ws_ok' }),
+      Promise.resolve({ id: projectId, workspaceId: 'ws_ok', visibility: 'workspace' }),
     )
 
     const { c, stored } = makeCtx({})
@@ -559,7 +596,7 @@ describe('authorizeProject — runtimeToken branch', () => {
       projectId,
       via: 'runtimeToken',
     }
-    const result = await authorizeProject(c, projectId)
+    const result = await authorizeProject(c, projectId, 'project:read')
     expect(result.ok).toBe(true)
     if (result.ok) {
       expect(result.projectId).toBe(projectId)
@@ -567,11 +604,11 @@ describe('authorizeProject — runtimeToken branch', () => {
     }
   })
 
-  test('mismatched projectId → 403 forbidden with scope mismatch code', async () => {
+  test('mismatched projectId → 404, same as a missing project', async () => {
     const tokenProject = 'proj_a'
     const requestedProject = 'proj_b'
     mockPrisma.project.findUnique.mockImplementation(() =>
-      Promise.resolve({ id: requestedProject, workspaceId: 'ws_b' }),
+      Promise.resolve({ id: requestedProject, workspaceId: 'ws_b', visibility: 'workspace' }),
     )
 
     const { c, stored } = makeCtx({})
@@ -582,19 +619,18 @@ describe('authorizeProject — runtimeToken branch', () => {
       projectId: tokenProject,
       via: 'runtimeToken',
     }
-    const result = await authorizeProject(c, requestedProject)
+    const result = await authorizeProject(c, requestedProject, 'project:read')
     expect(result.ok).toBe(false)
     if (!result.ok) {
-      expect(result.status).toBe(403)
-      expect(result.code).toBe('forbidden')
-      expect(result.message.toLowerCase()).toContain('runtime token')
+      expect(result.status).toBe(404)
+      expect(result.code).toBe('not_found')
     }
   })
 
   test('runtime-token caller does NOT hit prisma.user.findUnique', async () => {
     const projectId = 'proj_no_user_lookup'
     mockPrisma.project.findUnique.mockImplementation(() =>
-      Promise.resolve({ id: projectId, workspaceId: 'ws_1' }),
+      Promise.resolve({ id: projectId, workspaceId: 'ws_1', visibility: 'workspace' }),
     )
 
     const { c, stored } = makeCtx({})
@@ -605,10 +641,10 @@ describe('authorizeProject — runtimeToken branch', () => {
       projectId,
       via: 'runtimeToken',
     }
-    await authorizeProject(c, projectId)
+    await authorizeProject(c, projectId, 'project:read')
 
     expect(mockPrisma.user.findUnique).not.toHaveBeenCalled()
-    expect(mockPrisma.member.findFirst).not.toHaveBeenCalled()
+    expect(mockPrisma.member.findMany).not.toHaveBeenCalled()
   })
 })
 
@@ -641,6 +677,9 @@ describe('requireProjectAccess — runtimeToken branch', () => {
   test('matching projectId → calls next()', async () => {
     const projectId = 'proj_access_ok'
     let nextCalled = false
+    mockPrisma.project.findUnique.mockImplementation(() =>
+      Promise.resolve({ id: projectId, workspaceId: 'ws_1', visibility: 'workspace' }),
+    )
     const { c, stored } = makeCtx({ params: { projectId } })
     stored.auth = {
       isAuthenticated: true,
@@ -654,6 +693,7 @@ describe('requireProjectAccess — runtimeToken branch', () => {
     })
     expect(nextCalled).toBe(true)
     expect(mockPrisma.user.findUnique).not.toHaveBeenCalled()
+    expect(mockPrisma.member.findMany).not.toHaveBeenCalled()
   })
 
   test('mismatched projectId → 403, no next()', async () => {
@@ -679,11 +719,13 @@ describe('requireProjectAccess — runtimeToken branch', () => {
     const { c, stored } = makeCtx({ params: { projectId: 'proj_super' } })
     stored.auth = { isAuthenticated: true, userId: 'user_super' }
     mockPrisma.user.findUnique.mockImplementationOnce(() => Promise.resolve({ role: 'super_admin' }))
+    mockPrisma.project.findUnique.mockImplementationOnce(() =>
+      Promise.resolve({ id: 'proj_super', workspaceId: 'ws_other', visibility: 'restricted' }),
+    )
 
     await requireProjectAccess(c, async () => { nextCalled = true })
 
     expect(nextCalled).toBe(true)
-    expect(mockPrisma.project.findUnique).not.toHaveBeenCalled()
   })
 
   test('session project access handles missing project, missing member, and member success', async () => {
@@ -697,23 +739,31 @@ describe('requireProjectAccess — runtimeToken branch', () => {
     const denied = makeCtx({ params: { projectId: 'proj_denied' } })
     denied.stored.auth = { isAuthenticated: true, userId: 'user_1' }
     mockPrisma.user.findUnique.mockImplementationOnce(() => Promise.resolve({ role: 'user' }))
-    mockPrisma.project.findUnique.mockImplementationOnce(() => Promise.resolve({ workspaceId: 'ws_1' }))
-    mockPrisma.member.findFirst.mockImplementationOnce(() => Promise.resolve(null))
+    mockPrisma.project.findUnique.mockImplementationOnce(() =>
+      Promise.resolve({ id: 'proj_denied', workspaceId: 'ws_1', visibility: 'workspace' }),
+    )
+    mockPrisma.member.findMany.mockImplementationOnce(
+      membersFrom([{ userId: 'user_1', workspaceId: 'ws_other', projectId: null, role: 'owner' }]),
+    )
     await requireProjectAccess(denied.c, async () => {})
-    expect(denied.c._response().status).toBe(403)
+    expect(denied.c._response().status).toBe(404)
 
     let nextCalled = false
     const allowed = makeCtx({ params: { projectId: 'proj_allowed' } })
     allowed.stored.auth = { isAuthenticated: true, userId: 'user_1' }
     mockPrisma.user.findUnique.mockImplementationOnce(() => Promise.resolve({ role: 'user' }))
-    mockPrisma.project.findUnique.mockImplementationOnce(() => Promise.resolve({ workspaceId: 'ws_1' }))
-    mockPrisma.member.findFirst.mockImplementationOnce(() => Promise.resolve({ id: 'member_1' }))
+    mockPrisma.project.findUnique.mockImplementationOnce(() =>
+      Promise.resolve({ id: 'proj_allowed', workspaceId: 'ws_1', visibility: 'workspace' }),
+    )
+    mockPrisma.member.findMany.mockImplementationOnce(
+      membersFrom([{ userId: 'user_1', workspaceId: 'ws_1', projectId: null, role: 'member' }]),
+    )
     await requireProjectAccess(allowed.c, async () => { nextCalled = true })
     expect(nextCalled).toBe(true)
   })
 })
 
-describe('requireAuth, requireRole, apiKeyOrSession helpers', () => {
+describe('requireAuth, apiKeyOrSession helpers', () => {
   test('requireAuth allows public unauthenticated paths and rejects private paths', async () => {
     let publicNext = false
     const publicCtx = makeCtx({ url: 'http://localhost/api/health' })
@@ -752,25 +802,15 @@ describe('requireAuth, requireRole, apiKeyOrSession helpers', () => {
     }
   })
 
-  test('requireAuth and requireRole pass authenticated users through', async () => {
+  test('requireAuth passes authenticated users through', async () => {
     let authNext = false
     const authCtx = makeCtx({})
     authCtx.stored.auth = { isAuthenticated: true, userId: 'user_1' }
     await requireAuth(authCtx.c, async () => { authNext = true })
     expect(authNext).toBe(true)
-
-    const roleMiddleware = requireRole(['admin', 'member'])
-    let roleNext = false
-    await roleMiddleware(authCtx.c, async () => { roleNext = true })
-    expect(roleNext).toBe(true)
   })
 
-  test('requireRole and apiKeyOrSession reject unauthenticated callers', async () => {
-    const roleCtx = makeCtx({})
-    roleCtx.stored.auth = { isAuthenticated: false }
-    await requireRole('admin')(roleCtx.c, async () => {})
-    expect(roleCtx.c._response().status).toBe(401)
-
+  test('apiKeyOrSession rejects unauthenticated callers', async () => {
     const apiCtx = makeCtx({})
     apiCtx.stored.auth = { isAuthenticated: false }
     await apiKeyOrSession(apiCtx.c, async () => {})

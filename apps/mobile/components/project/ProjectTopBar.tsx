@@ -97,6 +97,8 @@ export function ProjectTopBar({
   projectModifiedAt,
   isStarred = false,
   onRenameProject,
+  canExport = true,
+  canPublish = true,
   onToggleStar,
   onMoveToFolder,
   folders = [],
@@ -313,6 +315,7 @@ export function ProjectTopBar({
       projectModifiedAt={projectModifiedAt}
       isStarred={isStarred}
       onRenameProject={onRenameProject}
+      canExport={canExport}
       onToggleStar={onToggleStar}
       onMoveToFolder={onMoveToFolder}
       folders={folders}
@@ -471,6 +474,7 @@ export function ProjectTopBar({
                     projectModifiedAt={projectModifiedAt}
                     isStarred={isStarred}
                     onRenameProject={onRenameProject}
+                    canExport={canExport}
                     onToggleStar={onToggleStar}
                     onMoveToFolder={onMoveToFolder}
                     folders={folders}
@@ -673,6 +677,7 @@ export function ProjectTopBar({
                       projectModifiedAt={projectModifiedAt}
                       isStarred={isStarred}
                       onRenameProject={onRenameProject}
+                      canExport={canExport}
                       onToggleStar={onToggleStar}
                       onMoveToFolder={onMoveToFolder}
                       folders={folders}
@@ -864,7 +869,7 @@ export function ProjectTopBar({
               </Text>
             </Pressable>
           )}
-          {isCanvasActive && (
+          {isCanvasActive && canPublish && (
             <PublishDropdown
               projectId={projectId}
               projectName={projectName}

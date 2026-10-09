@@ -16,6 +16,12 @@ const apiKeyFindManyCalls: any[] = []
 const mockPrisma = {
   member: {
     findFirst: mock(async () => memberResult),
+    findMany: mock(async (_args: any) =>
+      memberResult ? [{ role: memberResult.role ?? 'owner', projectId: null, isBillingAdmin: false }] : [],
+    ),
+  },
+  user: {
+    findUnique: mock(async () => ({ role: 'user' })),
   },
   apiKey: {
     create: mock(async (args: any) => apiKeyCreateResult ?? {
@@ -71,6 +77,7 @@ beforeEach(() => {
   apiKeyUpdateManyCalls.length = 0
   apiKeyFindManyCalls.length = 0
   mockPrisma.member.findFirst.mockClear()
+  mockPrisma.member.findMany.mockClear()
   mockPrisma.apiKey.create.mockClear()
   mockPrisma.apiKey.findMany.mockClear()
   mockPrisma.apiKey.findUnique.mockClear()
@@ -176,8 +183,9 @@ describe('apiKeyRoutes create/list/delete', () => {
     })
 
     expect(res.status).toBe(200)
-    expect(mockPrisma.member.findFirst.mock.calls[0][0]).toEqual({
-      where: { userId: 'user-1', workspaceId: 'ws-explicit' },
+    expect(mockPrisma.member.findMany.mock.calls[0][0].where).toEqual({
+      userId: 'user-1',
+      OR: [{ workspaceId: 'ws-explicit', projectId: null }],
     })
     expect(apiKeyUpdateManyCalls[0].where.workspaceId).toBe('ws-explicit')
     const created = mockPrisma.apiKey.create.mock.calls[0][0].data

@@ -37,6 +37,7 @@ export interface ProjectDropdownContentProps {
   projectModifiedAt?: string | number;
   isStarred: boolean;
   onRenameProject?: (newName: string) => void;
+  canExport?: boolean;
   onToggleStar?: () => void;
   onMoveToFolder?: (folderId: string | null) => void;
   folders: { id: string; name: string }[];
@@ -61,6 +62,7 @@ export function ProjectDropdownContent({
   projectModifiedAt,
   isStarred,
   onRenameProject,
+  canExport = true,
   onToggleStar,
   onMoveToFolder,
   folders,
@@ -173,6 +175,7 @@ export function ProjectDropdownContent({
       projectModifiedAt={projectModifiedAt}
       isStarred={isStarred}
       onRenameProject={onRenameProject}
+      canExport={canExport}
       onToggleStar={onToggleStar}
       onMoveToFolder={onMoveToFolder}
       folders={folders}

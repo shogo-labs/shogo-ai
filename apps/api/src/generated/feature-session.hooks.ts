@@ -7,6 +7,10 @@
  * This file is safe to edit - it will not be overwritten.
  */
 
+import type { Permission } from "@shogo/authz"
+import { accessibleProjectsWhere, type Principal } from "../lib/authz"
+import { hookAuthorize, hookPrincipal, hookRequire } from "../lib/authz/hooks"
+
 /**
  * Result from a hook that can modify or reject the operation
  */
@@ -24,6 +28,8 @@ export interface HookContext {
   params: Record<string, string>
   query: Record<string, string>
   userId?: string
+  tunnelAuthenticated?: boolean
+  auth?: Principal
   prisma: any
 }
 
@@ -50,11 +56,55 @@ export interface FeatureSessionHooks {
 }
 
 /**
+ * `permission` on `projectId`; project:read is strict, writes go through
+ * the enforcement mode (`writeOp` names the operation for shadow logs).
+ */
+async function authorizeProject(
+  ctx: HookContext,
+  projectId: string | null | undefined,
+  permission: Permission,
+  forbiddenMessage: string,
+  writeOp?: string,
+): Promise<HookResult> {
+  if (!projectId) {
+    return { ok: false, error: { code: "forbidden", message: forbiddenMessage } }
+  }
+  const denied = writeOp
+    ? await hookAuthorize(ctx, permission, { projectId }, writeOp)
+    : await hookRequire(ctx, permission, { projectId })
+  if (!denied) return { ok: true }
+  return denied.error.code === "forbidden"
+    ? { ok: false, error: { code: "forbidden", message: forbiddenMessage } }
+    : denied
+}
+
+async function authorizeExistingSession(
+  id: string,
+  ctx: HookContext,
+  permission: Permission,
+  writeOp?: string,
+): Promise<HookResult> {
+  const session = await ctx.prisma.featureSession.findUnique({
+    where: { id },
+    select: { projectId: true },
+  })
+
+  if (!session) {
+    return {
+      ok: false,
+      error: { code: "not_found", message: "Feature session not found" },
+    }
+  }
+
+  return authorizeProject(ctx, session.projectId, permission, "Access denied", writeOp)
+}
+
+/**
  * Default FeatureSession hooks (customize as needed)
  */
 export const featureSessionHooks: FeatureSessionHooks = {
   /**
-   * Filter feature sessions to only accessible projects via workspace membership
+   * Filter feature sessions to projects the user can read
    */
   beforeList: async (ctx) => {
     const userId = ctx.userId
@@ -69,35 +119,12 @@ export const featureSessionHooks: FeatureSessionHooks = {
     const where: Record<string, any> = {}
 
     if (projectId) {
-      // Verify user has access to this specific project
-      const project = await ctx.prisma.project.findUnique({
-        where: { id: projectId },
-        include: { workspace: { include: { members: true } } },
-      })
-
-      if (!project) {
-        return {
-          ok: false,
-          error: { code: "not_found", message: "Project not found" },
-        }
-      }
-
-      const hasAccess = project.workspace.members.some((m: any) => m.userId === userId)
-      if (!hasAccess) {
-        return {
-          ok: false,
-          error: { code: "forbidden", message: "Access denied to this project" },
-        }
-      }
+      const access = await authorizeProject(ctx, projectId, "project:read", "Access denied to this project")
+      if (!access.ok) return access
 
       where.projectId = projectId
     } else {
-      // Filter to only accessible projects
-      where.project = {
-        workspace: {
-          members: { some: { userId } },
-        },
-      }
+      where.project = await accessibleProjectsWhere(hookPrincipal(ctx))
     }
 
     return {
@@ -111,7 +138,7 @@ export const featureSessionHooks: FeatureSessionHooks = {
   },
 
   /**
-   * Verify user has access to the feature session via project workspace
+   * Require project:read on the feature session's project
    */
   beforeGet: async (id, ctx) => {
     const userId = ctx.userId
@@ -122,42 +149,11 @@ export const featureSessionHooks: FeatureSessionHooks = {
       }
     }
 
-    const session = await ctx.prisma.featureSession.findUnique({
-      where: { id },
-      include: {
-        project: {
-          include: {
-            workspace: {
-              include: { members: true },
-            },
-          },
-        },
-      },
-    })
-
-    if (!session) {
-      return {
-        ok: false,
-        error: { code: "not_found", message: "Feature session not found" },
-      }
-    }
-
-    const hasAccess = session.project?.workspace?.members?.some(
-      (m: any) => m.userId === userId
-    )
-
-    if (!hasAccess) {
-      return {
-        ok: false,
-        error: { code: "forbidden", message: "Access denied" },
-      }
-    }
-
-    return { ok: true }
+    return authorizeExistingSession(id, ctx, "project:read")
   },
 
   /**
-   * Verify user can create feature sessions in the target project
+   * Require project:update on the target project
    */
   beforeCreate: async (input, ctx) => {
     const userId = ctx.userId
@@ -176,32 +172,17 @@ export const featureSessionHooks: FeatureSessionHooks = {
       }
     }
 
-    // Verify user has access to create in this project
-    const project = await ctx.prisma.project.findUnique({
-      where: { id: projectId },
-      include: { workspace: { include: { members: true } } },
-    })
-
-    if (!project) {
-      return {
-        ok: false,
-        error: { code: "not_found", message: "Project not found" },
-      }
-    }
-
-    const hasAccess = project.workspace.members.some((m: any) => m.userId === userId)
-    if (!hasAccess) {
-      return {
-        ok: false,
-        error: { code: "forbidden", message: "Cannot create sessions in this project" },
-      }
-    }
-
-    return { ok: true }
+    return authorizeProject(
+      ctx,
+      projectId,
+      "project:update",
+      "Cannot create sessions in this project",
+      "POST /api/feature-sessions",
+    )
   },
 
   /**
-   * Verify user has access to update the feature session
+   * Require project:update on the feature session's project
    */
   beforeUpdate: async (id, input, ctx) => {
     const userId = ctx.userId
@@ -212,42 +193,19 @@ export const featureSessionHooks: FeatureSessionHooks = {
       }
     }
 
-    const session = await ctx.prisma.featureSession.findUnique({
-      where: { id },
-      include: {
-        project: {
-          include: {
-            workspace: {
-              include: { members: true },
-            },
-          },
-        },
-      },
-    })
+    const op = `PATCH /api/feature-sessions/${id}`
+    const access = await authorizeExistingSession(id, ctx, "project:update", op)
+    if (!access.ok) return access
 
-    if (!session) {
-      return {
-        ok: false,
-        error: { code: "not_found", message: "Feature session not found" },
-      }
-    }
-
-    const hasAccess = session.project?.workspace?.members?.some(
-      (m: any) => m.userId === userId
-    )
-
-    if (!hasAccess) {
-      return {
-        ok: false,
-        error: { code: "forbidden", message: "Access denied" },
-      }
+    if (input?.projectId) {
+      return authorizeProject(ctx, input.projectId, "project:update", "Access denied", op)
     }
 
     return { ok: true }
   },
 
   /**
-   * Verify user has access to delete the feature session
+   * Require project:update on the feature session's project
    */
   beforeDelete: async (id, ctx) => {
     const userId = ctx.userId
@@ -258,37 +216,6 @@ export const featureSessionHooks: FeatureSessionHooks = {
       }
     }
 
-    const session = await ctx.prisma.featureSession.findUnique({
-      where: { id },
-      include: {
-        project: {
-          include: {
-            workspace: {
-              include: { members: true },
-            },
-          },
-        },
-      },
-    })
-
-    if (!session) {
-      return {
-        ok: false,
-        error: { code: "not_found", message: "Feature session not found" },
-      }
-    }
-
-    const hasAccess = session.project?.workspace?.members?.some(
-      (m: any) => m.userId === userId
-    )
-
-    if (!hasAccess) {
-      return {
-        ok: false,
-        error: { code: "forbidden", message: "Access denied" },
-      }
-    }
-
-    return { ok: true }
+    return authorizeExistingSession(id, ctx, "project:update", `DELETE /api/feature-sessions/${id}`)
   },
 }

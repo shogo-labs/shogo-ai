@@ -69,6 +69,13 @@ const mockPrisma = {
       const workspaceId = args.where?.workspaceId
       return memberByUserAndWorkspace.get(memberKey(userId, workspaceId)) ?? null
     }),
+    findMany: mock(async (args: any) => {
+      const userId = args.where?.userId
+      const workspaceId = args.where?.OR?.find((c: any) => c.projectId === null)?.workspaceId
+      return memberByUserAndWorkspace.has(memberKey(userId, workspaceId))
+        ? [{ role: 'member', projectId: null, isBillingAdmin: false }]
+        : []
+    }),
   },
   projectAgent: {
     findMany: mock(async (args: any) =>
@@ -196,7 +203,7 @@ describe('POST /api/projects/:projectId/agents/sync', () => {
     expect(res.status).toBe(401)
   })
 
-  test('403 when caller is not a workspace member', async () => {
+  test('404 when caller is not a workspace member', async () => {
     memberByUserAndWorkspace.clear()
     const app = createApp()
     const res = await app.request(`/api/projects/${PROJECT}/agents/sync`, {
@@ -204,7 +211,7 @@ describe('POST /api/projects/:projectId/agents/sync', () => {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ agents: {} }),
     })
-    expect(res.status).toBe(403)
+    expect(res.status).toBe(404)
   })
 
   test('200 happy path: creates rows + provisions EL for voice agents', async () => {

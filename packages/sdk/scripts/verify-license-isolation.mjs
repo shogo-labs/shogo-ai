@@ -183,6 +183,13 @@ const MIT_PACKAGES = [
     exempt: new Set(),
   },
   {
+    name: '@shogo/authz',
+    dir: join(REPO_ROOT, 'packages/authz'),
+    srcRoots: ['src'],
+    binAllowList: null,
+    exempt: new Set(),
+  },
+  {
     name: '@shogo/mobile',
     dir: join(REPO_ROOT, 'apps/mobile'),
     srcRoots: ['app', 'components', 'lib', 'hooks', 'contexts', 'scripts'],

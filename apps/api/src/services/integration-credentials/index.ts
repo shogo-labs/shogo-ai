@@ -12,6 +12,7 @@
  */
 
 import { prisma } from '../../lib/prisma'
+import { loadAccess } from '../../lib/authz'
 import { getPersonalConnection, getPolicy, hasActiveGrant } from './store'
 import type { ChainStep, CredentialOp, CredentialProvider, CredentialSource, ResolveContext, ResolveResult } from './types'
 
@@ -164,7 +165,7 @@ async function walkChain(args: ResolveArgs): Promise<ResolveResult> {
     if (step === 'delegate') {
       const delegate = policy.delegateUserId
       if (!delegate || !adapter.supportsPersonal) continue
-      if (!(await isWorkspaceMember(project.workspaceId, delegate))) continue
+      if (!(await canReadProject(args.projectId, delegate))) continue
       const personal = await personalCredential(adapter, ctx, delegate)
       if (!personal) continue
       return {
@@ -198,9 +199,8 @@ async function walkChain(args: ResolveArgs): Promise<ResolveResult> {
   }
 }
 
-async function isWorkspaceMember(workspaceId: string, userId: string): Promise<boolean> {
-  const row = await prisma.member.findFirst({ where: { workspaceId, userId }, select: { id: true } })
-  return !!row
+async function canReadProject(projectId: string, userId: string): Promise<boolean> {
+  return (await loadAccess({ userId, via: 'session' }, { projectId })).permissions.has('project:read')
 }
 
 /** The name a shared-account action credits, e.g. "requested by Bob". */
@@ -251,20 +251,12 @@ export async function personalAccountFor(projectId: string, provider: string, us
   return personalCredential(adapter, { projectId, workspaceId: project.workspaceId, provider, policy }, userId)
 }
 
-/** Workspace members who can do more than view: who can approve a card or act for the project. */
+/** People who can do more than view the project: who can approve a card or act for it. */
 export async function canActForProject(userId: string, projectId: string): Promise<boolean> {
-  const project = (await prisma.project.findUnique({ where: { id: projectId }, select: { workspaceId: true } })) as
-    | { workspaceId: string }
-    | null
-  if (!project) return false
-  const member = (await prisma.member.findFirst({
-    where: { userId, workspaceId: project.workspaceId },
-    select: { role: true },
-  })) as { role: string } | null
-  return !!member && member.role !== 'viewer'
+  return (await loadAccess({ userId, via: 'session' }, { projectId })).permissions.has('project:update')
 }
 
-/** Workspace owners and admins, and the project's creator, may change how its integrations act. */
+/** Whoever manages the project's credentials, and the project's creator, may change how its integrations act. */
 export async function canEditCredentialPolicies(userId: string, projectId: string): Promise<boolean> {
   const project = (await prisma.project.findUnique({
     where: { id: projectId },
@@ -272,9 +264,5 @@ export async function canEditCredentialPolicies(userId: string, projectId: strin
   })) as { workspaceId: string; createdBy: string | null } | null
   if (!project) return false
   if (project.createdBy === userId) return true
-  const member = (await prisma.member.findFirst({
-    where: { userId, workspaceId: project.workspaceId },
-    select: { role: true },
-  })) as { role: string } | null
-  return member?.role === 'owner' || member?.role === 'admin'
+  return (await loadAccess({ userId, via: 'session' }, { projectId })).permissions.has('project.credentials:manage')
 }

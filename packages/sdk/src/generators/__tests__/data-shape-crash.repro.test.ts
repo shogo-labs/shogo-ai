@@ -50,7 +50,7 @@ async function fetchJson(body: unknown): Promise<any> {
 describe('REPRO #1 — CRUD envelope vs naive consumer', () => {
   it('premise: the generated LIST route returns { ok, items, total } — not a raw array', () => {
     const src = generateModelRoutes(Widget)!.code
-    expect(src).toContain('return sendJson(c, { ok: true, items, total })') // LIST
+    expect(src).toContain('return sendJson(c, { ok: true, items: shaped, total })') // LIST
     expect(src).toContain('return sendJson(c, { ok: true, data: item })') // GET/CREATE/UPDATE
     // Error path carries no `items` at all:
     expect(src).toContain('{ error: { code: "list_failed", message: error.message } }')

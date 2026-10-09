@@ -119,7 +119,7 @@ export interface EventPerson {
 }
 
 async function isMember(workspaceId: string, userId: string): Promise<boolean> {
-  const row = await db.member.findFirst({ where: { workspaceId, userId }, select: { id: true } })
+  const row = await db.member.findFirst({ where: { workspaceId, userId, projectId: null }, select: { id: true } })
   return !!row
 }
 

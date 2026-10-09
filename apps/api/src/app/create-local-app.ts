@@ -33,6 +33,7 @@ import { checkpointRoutes } from '../routes/checkpoints'
 import { aiProxyRoutes } from '../routes/ai-proxy'
 import { aiLiveRoutes } from '../routes/ai-live'
 import { voiceRoutes } from '../routes/voice'
+import { rbacRoutes } from '../routes/rbac'
 import { chatRoutes } from '../routes/chat'
 import { createChatMessageEditRoutes } from '../routes/chat-message-edits'
 import { createChatMessageFeedbackRoutes, createChatSessionFeedbackRoutes } from '../routes/chat-message-feedback'
@@ -164,6 +165,7 @@ export function createLocalApp(): LocalAppBundle {
   app.route('/api', aiProxyRoutes())
   app.route('/api', aiLiveRoutes())
   app.route('/api', voiceRoutes())
+  app.route('/api', rbacRoutes())
   app.route('/api', chatRoutes())
   app.route('/api', toolsProxyRoutes())
   app.route('/api', techStackRoutes())

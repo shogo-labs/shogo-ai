@@ -7,6 +7,9 @@
  * This file is safe to edit - it will not be overwritten.
  */
 
+import { accessibleProjectsWhere, type Principal } from "../lib/authz"
+import { hookPrincipal, hookRequire } from "../lib/authz/hooks"
+
 /**
  * Result from a hook that can modify or reject the operation
  */
@@ -25,6 +28,7 @@ export interface HookContext {
   query: Record<string, string>
   userId?: string
   tunnelAuthenticated?: boolean
+  auth?: Principal
   prisma: any
 }
 
@@ -81,8 +85,12 @@ export const starredProjectHooks: StarredProjectHooks = {
       data: {
         // `project.hidden: false` — a starred row for a project that was
         // (or became) hidden, e.g. a companion builder-delegate, must not
-        // surface in the user-facing starred list.
-        where: { userId: currentUserId, project: { hidden: false } },
+        // surface in the user-facing starred list. Stars on projects the
+        // user can no longer read (removed, or made restricted) drop out too.
+        where: {
+          userId: currentUserId,
+          project: { AND: [{ hidden: false }, await accessibleProjectsWhere(hookPrincipal(ctx))] },
+        },
       },
     }
   },
@@ -121,7 +129,7 @@ export const starredProjectHooks: StarredProjectHooks = {
   },
 
   /**
-   * Before creating a star, check if it already exists
+   * Require project:read, then check if the star already exists
    */
   beforeCreate: async (input, ctx) => {
     const userId = ctx.userId
@@ -143,6 +151,11 @@ export const starredProjectHooks: StarredProjectHooks = {
     // Set userId if not provided
     if (!input.userId) {
       input.userId = userId
+    }
+
+    if (input.projectId) {
+      const denied = await hookRequire(ctx, 'project:read', { projectId: input.projectId })
+      if (denied) return denied
     }
 
     const existing = await ctx.prisma.starredProject.findFirst({

@@ -8,28 +8,35 @@
 // before the value reaches Prisma. Uses an in-memory prisma double so the real
 // branch logic runs.
 
-import { describe, expect, test } from 'bun:test'
-import { projectHooks } from '../generated/project.hooks'
+import { describe, expect, mock, test } from 'bun:test'
+import { withPrismaExports } from './helpers/prisma-mock-exports'
 
 const USER_ID = 'user-1'
 const WORKSPACE_ID = 'ws-1'
 const PROJECT_ID = 'proj-1'
 
+const prisma = {
+  user: {
+    findUnique: async () => ({ role: 'super_admin' }),
+  },
+  member: {
+    findMany: async () => [{ role: 'owner', projectId: null, isBillingAdmin: false }],
+  },
+  project: {
+    findUnique: async () => ({
+      id: PROJECT_ID,
+      workspaceId: WORKSPACE_ID,
+      visibility: 'workspace',
+    }),
+  },
+}
+
+// The RBAC engine reads memberships through the global prisma client.
+mock.module('../lib/prisma', () => withPrismaExports({ prisma }))
+
+const { projectHooks } = await import('../generated/project.hooks')
+
 function makeCtx(body: any = {}) {
-  const prisma = {
-    user: {
-      findUnique: async () => ({ role: 'super_admin' }),
-    },
-    member: {
-      findFirst: async () => ({ userId: USER_ID, workspaceId: WORKSPACE_ID, role: 'owner' }),
-    },
-    project: {
-      findUnique: async () => ({
-        id: PROJECT_ID,
-        workspace: { members: [{ userId: USER_ID, role: 'owner' }] },
-      }),
-    },
-  }
   return { body, params: {}, query: {}, userId: USER_ID, prisma } as any
 }
 

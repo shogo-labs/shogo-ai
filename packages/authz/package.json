@@ -1,0 +1,17 @@
+{
+  "name": "@shogo/authz",
+  "version": "0.0.1",
+  "license": "MIT",
+  "description": "Workspace and project RBAC: permission catalog, role maps, and the effective-access resolver shared by the API and the apps",
+  "type": "module",
+  "main": "src/index.ts",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun --no-env-file test",
+    "test:coverage": "bun --no-env-file test --coverage"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^6.0.2"
+  }
+}

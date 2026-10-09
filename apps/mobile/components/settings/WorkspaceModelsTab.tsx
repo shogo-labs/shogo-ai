@@ -10,7 +10,7 @@
  * (`getWorkspaceVisibleModels` -> `allowedModelIds`, where `null` = inherit
  * all). Saving writes the allowlist back and refreshes the chat picker.
  *
- * Editing is gated to owner/admin; other members see a read-only view. The
+ * Editing is gated on `workspace.settings:manage`; others see a read-only view. The
  * server enforces both the admin check and the subset rule, and the AI proxy
  * hard-blocks hidden models, so this UI is a convenience, not the gate.
  */
@@ -27,8 +27,7 @@ import { cn } from '@shogo/shared-ui/primitives'
 import { PlatformApi } from '@shogo-ai/sdk'
 import { createHttpClient } from '../../lib/api'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
-import { useMemberCollection } from '../../contexts/domain'
-import { useAuth } from '../../contexts/auth'
+import { usePermissions } from '../../hooks/usePermissions'
 import { invalidateVisibleModelsCache } from '../../lib/visible-models'
 import {
   Text,
@@ -63,8 +62,6 @@ export const WorkspaceModelsTab = observer(function WorkspaceModelsTab() {
   const platform = useMemo(() => new PlatformApi(createHttpClient()), [])
   const workspace = useActiveWorkspace()
   const workspaceId = workspace?.id ?? null
-  const members = useMemberCollection()
-  const { user } = useAuth()
 
   const [candidates, setCandidates] = useState<Candidate[]>([])
   // null = inherit (allow all platform-visible models); a Set is the explicit
@@ -75,14 +72,8 @@ export const WorkspaceModelsTab = observer(function WorkspaceModelsTab() {
   const [error, setError] = useState<string | null>(null)
   const [savedAt, setSavedAt] = useState(0)
 
-  const canManage = useMemo(() => {
-    if (!workspaceId) return false
-    const all = Array.isArray(members.all) ? members.all : []
-    const mine = all.find(
-      (m: any) => m.userId === user?.id && m.workspaceId === workspaceId && !m.projectId,
-    )
-    return mine?.role === 'owner' || mine?.role === 'admin'
-  }, [members.all, workspaceId, user?.id])
+  const { can } = usePermissions({ workspaceId })
+  const canManage = can('workspace.settings:manage')
 
   const load = useCallback(async () => {
     if (!workspaceId) {
@@ -92,7 +83,6 @@ export const WorkspaceModelsTab = observer(function WorkspaceModelsTab() {
     setLoading(true)
     setError(null)
     try {
-      try { await members.loadAll({ workspaceId }) } catch { /* role falls back to read-only */ }
       const [platformSet, ws] = await Promise.all([
         platform.getVisibleModels(),
         platform.getWorkspaceVisibleModels(workspaceId),
@@ -118,7 +108,7 @@ export const WorkspaceModelsTab = observer(function WorkspaceModelsTab() {
     } finally {
       setLoading(false)
     }
-  }, [workspaceId, platform, members])
+  }, [workspaceId, platform])
 
   useEffect(() => { load() }, [load])
 

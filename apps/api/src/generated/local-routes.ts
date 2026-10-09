@@ -9,7 +9,9 @@ import {
   setWorkspaceHooks,
 } from './workspace.routes'
 import type { WorkspaceHooks } from './workspace.hooks'
-import { createProjectRoutes, setPrisma as setPrismaProject } from './project.routes'
+import { createProjectRoutes, setPrisma as setPrismaProject, setProjectHooks } from './project.routes'
+import type { ProjectHooks } from './project.hooks'
+import { withProjectPermissions } from '../lib/authz/project-permissions'
 import { createProjectFolderRoutes, setPrisma as setPrismaProjectFolder } from './project-folder.routes'
 import { createStarredProjectRoutes, setPrisma as setPrismaStarredProject } from './starred-project.routes'
 import { createMemberRoutes, setPrisma as setPrismaMember } from './member.routes'
@@ -47,6 +49,7 @@ export function createLocalGeneratedRoutes(prisma: any): Hono {
   setPrismaWorkspace(prisma)
   setWorkspaceHooks(localWorkspaceHooks)
   setPrismaProject(prisma)
+  setProjectHooks(localProjectHooks)
   setPrismaProjectFolder(prisma)
   setPrismaStarredProject(prisma)
   setPrismaMember(prisma)
@@ -90,6 +93,12 @@ export function createLocalGeneratedRoutes(prisma: any): Hono {
   return router
 }
 
+/** Local project routes only add the caller's `myPermissions` to project payloads. */
+export const localProjectHooks: ProjectHooks = {
+  afterList: async (items, ctx) => withProjectPermissions(ctx.auth ?? {}, items),
+  afterGet: async (item, ctx) => (await withProjectPermissions(ctx.auth ?? {}, [item]))[0],
+}
+
 /**
  * Keep local workspace discovery/access aligned with the workspace-scoped
  * APIs. We deliberately do not install the full cloud hook set here: local
@@ -110,7 +119,7 @@ export const localWorkspaceHooks: WorkspaceHooks = {
       data: {
         where: {
           members: {
-            some: { userId: ctx.userId },
+            some: { userId: ctx.userId, projectId: null },
           },
         },
       },
@@ -125,7 +134,7 @@ export const localWorkspaceHooks: WorkspaceHooks = {
       }
     }
     const member = await ctx.prisma.member.findFirst({
-      where: { userId: ctx.userId, workspaceId: id },
+      where: { userId: ctx.userId, workspaceId: id, projectId: null },
     })
     return member
       ? { ok: true }

@@ -15,6 +15,7 @@ import { Hono } from 'hono'
 import type { Context } from 'hono'
 import { prisma } from '../lib/prisma'
 import { authMiddleware, requireAuth } from '../middleware/auth'
+import { can } from '../lib/authz'
 import * as costAnalytics from '../services/cost-analytics.service'
 import { isCostPeriod, type CostPeriod } from '../services/cost-analytics.service'
 
@@ -22,18 +23,12 @@ import { isCostPeriod, type CostPeriod } from '../services/cost-analytics.servic
 // Helpers
 // ============================================================================
 
-async function checkWorkspaceAccess(userId: string, workspaceId: string): Promise<boolean> {
-  const member = await prisma.member.findFirst({
-    where: { userId, workspaceId },
-  })
-  return !!member
+function checkWorkspaceAccess(c: Context, workspaceId: string): Promise<boolean> {
+  return can(c, 'workspace:read', { workspaceId })
 }
 
-async function checkWorkspaceAdmin(userId: string, workspaceId: string): Promise<boolean> {
-  const member = await prisma.member.findFirst({
-    where: { userId, workspaceId, role: { in: ['owner', 'admin'] } },
-  })
-  return !!member
+function checkWorkspaceAdmin(c: Context, workspaceId: string): Promise<boolean> {
+  return can(c, 'workspace.settings:manage', { workspaceId })
 }
 
 /**
@@ -78,9 +73,8 @@ export function costAnalyticsRoutes(): Hono {
   router.get('/workspaces/:workspaceId/cost-analytics/agent-breakdown', async (c) => {
     try {
       const workspaceId = c.req.param('workspaceId')
-      const auth = c.get('auth')
 
-      if (!await checkWorkspaceAccess(auth.userId!, workspaceId)) {
+      if (!await checkWorkspaceAccess(c, workspaceId)) {
         return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
       }
 
@@ -102,9 +96,8 @@ export function costAnalyticsRoutes(): Hono {
   router.get('/workspaces/:workspaceId/cost-analytics/recommendations', async (c) => {
     try {
       const workspaceId = c.req.param('workspaceId')
-      const auth = c.get('auth')
 
-      if (!await checkWorkspaceAccess(auth.userId!, workspaceId)) {
+      if (!await checkWorkspaceAccess(c, workspaceId)) {
         return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
       }
 
@@ -124,9 +117,8 @@ export function costAnalyticsRoutes(): Hono {
   router.get('/workspaces/:workspaceId/cost-analytics/trends', async (c) => {
     try {
       const workspaceId = c.req.param('workspaceId')
-      const auth = c.get('auth')
 
-      if (!await checkWorkspaceAccess(auth.userId!, workspaceId)) {
+      if (!await checkWorkspaceAccess(c, workspaceId)) {
         return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
       }
 
@@ -148,9 +140,8 @@ export function costAnalyticsRoutes(): Hono {
   router.get('/workspaces/:workspaceId/cost-analytics/budget-alerts', async (c) => {
     try {
       const workspaceId = c.req.param('workspaceId')
-      const auth = c.get('auth')
 
-      if (!await checkWorkspaceAccess(auth.userId!, workspaceId)) {
+      if (!await checkWorkspaceAccess(c, workspaceId)) {
         return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
       }
 
@@ -164,9 +155,8 @@ export function costAnalyticsRoutes(): Hono {
   router.post('/workspaces/:workspaceId/cost-analytics/budget-alerts', async (c) => {
     try {
       const workspaceId = c.req.param('workspaceId')
-      const auth = c.get('auth')
 
-      if (!await checkWorkspaceAdmin(auth.userId!, workspaceId)) {
+      if (!await checkWorkspaceAdmin(c, workspaceId)) {
         return c.json({ error: { code: 'forbidden', message: 'Admin access required' } }, 403)
       }
 
@@ -186,9 +176,8 @@ export function costAnalyticsRoutes(): Hono {
     try {
       const workspaceId = c.req.param('workspaceId')
       const alertId = c.req.param('alertId')
-      const auth = c.get('auth')
 
-      if (!await checkWorkspaceAdmin(auth.userId!, workspaceId)) {
+      if (!await checkWorkspaceAdmin(c, workspaceId)) {
         return c.json({ error: { code: 'forbidden', message: 'Admin access required' } }, 403)
       }
 
@@ -204,9 +193,8 @@ export function costAnalyticsRoutes(): Hono {
     try {
       const workspaceId = c.req.param('workspaceId')
       const alertId = c.req.param('alertId')
-      const auth = c.get('auth')
 
-      if (!await checkWorkspaceAdmin(auth.userId!, workspaceId)) {
+      if (!await checkWorkspaceAdmin(c, workspaceId)) {
         return c.json({ error: { code: 'forbidden', message: 'Admin access required' } }, 403)
       }
 
@@ -223,9 +211,8 @@ export function costAnalyticsRoutes(): Hono {
   router.get('/workspaces/:workspaceId/cost-analytics/budget-status', async (c) => {
     try {
       const workspaceId = c.req.param('workspaceId')
-      const auth = c.get('auth')
 
-      if (!await checkWorkspaceAccess(auth.userId!, workspaceId)) {
+      if (!await checkWorkspaceAccess(c, workspaceId)) {
         return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
       }
 
@@ -246,9 +233,8 @@ export function costAnalyticsRoutes(): Hono {
   router.get('/workspaces/:workspaceId/cost-analytics/experiments', async (c) => {
     try {
       const workspaceId = c.req.param('workspaceId')
-      const auth = c.get('auth')
 
-      if (!await checkWorkspaceAccess(auth.userId!, workspaceId)) {
+      if (!await checkWorkspaceAccess(c, workspaceId)) {
         return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
       }
 
@@ -262,9 +248,8 @@ export function costAnalyticsRoutes(): Hono {
   router.post('/workspaces/:workspaceId/cost-analytics/experiments', async (c) => {
     try {
       const workspaceId = c.req.param('workspaceId')
-      const auth = c.get('auth')
 
-      if (!await checkWorkspaceAdmin(auth.userId!, workspaceId)) {
+      if (!await checkWorkspaceAdmin(c, workspaceId)) {
         return c.json({ error: { code: 'forbidden', message: 'Admin access required' } }, 403)
       }
 
@@ -289,9 +274,8 @@ export function costAnalyticsRoutes(): Hono {
     try {
       const workspaceId = c.req.param('workspaceId')
       const experimentId = c.req.param('experimentId')
-      const auth = c.get('auth')
 
-      if (!await checkWorkspaceAccess(auth.userId!, workspaceId)) {
+      if (!await checkWorkspaceAccess(c, workspaceId)) {
         return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
       }
 
@@ -309,9 +293,8 @@ export function costAnalyticsRoutes(): Hono {
     try {
       const workspaceId = c.req.param('workspaceId')
       const experimentId = c.req.param('experimentId')
-      const auth = c.get('auth')
 
-      if (!await checkWorkspaceAdmin(auth.userId!, workspaceId)) {
+      if (!await checkWorkspaceAdmin(c, workspaceId)) {
         return c.json({ error: { code: 'forbidden', message: 'Admin access required' } }, 403)
       }
 
@@ -328,9 +311,8 @@ export function costAnalyticsRoutes(): Hono {
   router.post('/workspaces/:workspaceId/cost-analytics/experiments/shadow', async (c) => {
     try {
       const workspaceId = c.req.param('workspaceId')
-      const auth = c.get('auth')
 
-      if (!await checkWorkspaceAdmin(auth.userId!, workspaceId)) {
+      if (!await checkWorkspaceAdmin(c, workspaceId)) {
         return c.json({ error: { code: 'forbidden', message: 'Admin access required' } }, 403)
       }
 
@@ -356,9 +338,8 @@ export function costAnalyticsRoutes(): Hono {
     try {
       const workspaceId = c.req.param('workspaceId')
       const experimentId = c.req.param('experimentId')
-      const auth = c.get('auth')
 
-      if (!await checkWorkspaceAccess(auth.userId!, workspaceId)) {
+      if (!await checkWorkspaceAccess(c, workspaceId)) {
         return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
       }
 
@@ -382,8 +363,7 @@ export function costAnalyticsRoutes(): Hono {
   router.get('/workspaces/:workspaceId/cost-analytics/optimizer-in-action', async (c) => {
     try {
       const workspaceId = c.req.param('workspaceId')
-      const auth = c.get('auth')
-      if (!await checkWorkspaceAccess(auth.userId!, workspaceId)) {
+      if (!await checkWorkspaceAccess(c, workspaceId)) {
         return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
       }
       const data = await costAnalytics.getOptimizerInActionReport(workspaceId)
@@ -404,8 +384,7 @@ export function costAnalyticsRoutes(): Hono {
   router.get('/workspaces/:workspaceId/cost-analytics/agent-eval-sets', async (c) => {
     try {
       const workspaceId = c.req.param('workspaceId')
-      const auth = c.get('auth')
-      if (!await checkWorkspaceAccess(auth.userId!, workspaceId)) {
+      if (!await checkWorkspaceAccess(c, workspaceId)) {
         return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
       }
 
@@ -426,7 +405,7 @@ export function costAnalyticsRoutes(): Hono {
     try {
       const workspaceId = c.req.param('workspaceId')
       const auth = c.get('auth')
-      if (!await checkWorkspaceAdmin(auth.userId!, workspaceId)) {
+      if (!await checkWorkspaceAdmin(c, workspaceId)) {
         return c.json({ error: { code: 'forbidden', message: 'Admin access required' } }, 403)
       }
 
@@ -501,8 +480,7 @@ export function costAnalyticsRoutes(): Hono {
     try {
       const workspaceId = c.req.param('workspaceId')
       const id = c.req.param('id')
-      const auth = c.get('auth')
-      if (!await checkWorkspaceAdmin(auth.userId!, workspaceId)) {
+      if (!await checkWorkspaceAdmin(c, workspaceId)) {
         return c.json({ error: { code: 'forbidden', message: 'Admin access required' } }, 403)
       }
 
@@ -525,8 +503,7 @@ export function costAnalyticsRoutes(): Hono {
   router.get('/workspaces/:workspaceId/cost-analytics/subagent-overrides', async (c) => {
     try {
       const workspaceId = c.req.param('workspaceId')
-      const auth = c.get('auth')
-      if (!await checkWorkspaceAccess(auth.userId!, workspaceId)) {
+      if (!await checkWorkspaceAccess(c, workspaceId)) {
         return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
       }
       const data = await costAnalytics.listSubagentOverrides(workspaceId)
@@ -540,7 +517,7 @@ export function costAnalyticsRoutes(): Hono {
     try {
       const workspaceId = c.req.param('workspaceId')
       const auth = c.get('auth')
-      if (!await checkWorkspaceAdmin(auth.userId!, workspaceId)) {
+      if (!await checkWorkspaceAdmin(c, workspaceId)) {
         return c.json({ error: { code: 'forbidden', message: 'Admin access required' } }, 403)
       }
       const body = await c.req.json().catch(() => null) as {
@@ -576,8 +553,7 @@ export function costAnalyticsRoutes(): Hono {
     try {
       const workspaceId = c.req.param('workspaceId')
       const agentType = c.req.param('agentType')
-      const auth = c.get('auth')
-      if (!await checkWorkspaceAdmin(auth.userId!, workspaceId)) {
+      if (!await checkWorkspaceAdmin(c, workspaceId)) {
         return c.json({ error: { code: 'forbidden', message: 'Admin access required' } }, 403)
       }
       const projectId = new URL(c.req.url).searchParams.get('projectId') || null

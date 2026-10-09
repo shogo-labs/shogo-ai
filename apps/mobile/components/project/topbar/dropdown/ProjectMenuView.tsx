@@ -37,7 +37,8 @@ export function ProjectMenuView({
   projectCreatedAt: _projectCreatedAt,
   projectModifiedAt: _projectModifiedAt,
   isStarred,
-  onRenameProject: _onRenameProject,
+  onRenameProject,
+  canExport = true,
   onToggleStar,
   onMoveToFolder: _onMoveToFolder,
   folders: _folders,
@@ -64,6 +65,7 @@ export function ProjectMenuView({
   projectModifiedAt?: string | number;
   isStarred: boolean;
   onRenameProject?: (newName: string) => void;
+  canExport?: boolean;
   onToggleStar?: () => void;
   onMoveToFolder?: (folderId: string | null) => void;
   folders: { id: string; name: string }[];
@@ -135,13 +137,19 @@ export function ProjectMenuView({
     },
   ];
 
+  const canRename = !!onRenameProject;
   const isSheet = variant === "sheet";
-  const visibleMenuItems = isSheet
-    ? menuItems.filter(
-        (item) =>
-          item.id !== "rename" && item.id !== "star" && item.id !== "export",
-      )
-    : menuItems;
+  const visibleMenuItems = (
+    isSheet
+      ? menuItems.filter(
+          (item) =>
+            item.id !== "rename" && item.id !== "star" && item.id !== "export",
+        )
+      : menuItems
+  ).filter(
+    (item) =>
+      (item.id !== "rename" || canRename) && (item.id !== "export" || canExport),
+  );
 
   return (
     <>
@@ -155,11 +163,13 @@ export function ProjectMenuView({
               {projectName}
             </Text>
             <View className="flex-row items-center gap-4 px-5 pb-4">
-              <NativeSheetCircleAction
-                icon={Pencil}
-                label="Rename"
-                onPress={onRequestRename}
-              />
+              {canRename && (
+                <NativeSheetCircleAction
+                  icon={Pencil}
+                  label="Rename"
+                  onPress={onRequestRename}
+                />
+              )}
               <NativeSheetCircleAction
                 icon={Star}
                 label={isStarred ? "Unstar" : "Star"}
@@ -168,11 +178,13 @@ export function ProjectMenuView({
                 }}
                 active={isStarred}
               />
-              <NativeSheetCircleAction
-                icon={Share2}
-                label="Export"
-                onPress={onRequestExport}
-              />
+              {canExport && (
+                <NativeSheetCircleAction
+                  icon={Share2}
+                  label="Export"
+                  onPress={onRequestExport}
+                />
+              )}
             </View>
           </>
         ) : (

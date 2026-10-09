@@ -3,12 +3,13 @@
 //
 // Unit tests for src/middleware/auth.ts — wave-1.
 // Covers every branch of authMiddleware (apiKey / runtimeToken / tunnel /
-// session), requireAuth (public-prefix bypass, authError, 401), requireRole,
-// requireProjectAccess (tunnel skip, runtime-token scope, super-admin, 404,
-// 403, happy path), apiKeyOrSession (401/503/200), and authorizeProject
-// (401 / 400 / 404 / apiKey / runtimeToken / tunnel / session-membership).
+// session), requireAuth (public-prefix bypass, authError, 401),
+// requirePermission, requireProjectAccess (tunnel skip, runtime-token scope,
+// super-admin, 404, 403, happy path), apiKeyOrSession (401/503/200), and
+// authorizeProject (401 / 400 / 404 / apiKey / runtimeToken / tunnel /
+// session-membership).
 
-import { beforeEach, describe, expect, it, mock } from 'bun:test'
+import { beforeEach, describe, expect, it, mock, beforeAll, afterAll } from 'bun:test'
 
 // ---------------------------------------------------------------------------
 // Mocks for every collaborator imported by auth.ts.
@@ -20,7 +21,29 @@ let getSessionImpl: (args: any) => Promise<any> = async () => null
 
 let projectFindUniqueImpl: (args: any) => Promise<any> = async () => null
 let userFindUniqueImpl: (args: any) => Promise<any> = async () => null
-let memberFindFirstImpl: (args: any) => Promise<any> = async () => null
+let memberFindManyImpl: (args: any) => Promise<any[]> = async () => []
+
+type MemberRow = { userId: string; workspaceId: string | null; projectId: string | null; role: string; isBillingAdmin?: boolean }
+
+/** `member.findMany` honoring the engine's `{ userId, OR: [...] }` filter. */
+function membersFrom(rows: MemberRow[]) {
+  return async (args: any) =>
+    rows
+      .filter(
+        (r) =>
+          r.userId === args.where.userId &&
+          args.where.OR.some((cond: any) =>
+            'workspaceId' in cond
+              ? r.workspaceId === cond.workspaceId && r.projectId === null
+              : r.projectId === cond.projectId,
+          ),
+      )
+      .map((r) => ({ role: r.role, projectId: r.projectId, isBillingAdmin: !!r.isBillingAdmin }))
+}
+
+function project(id: string, workspaceId: string, visibility = 'workspace') {
+  return { id, workspaceId, visibility }
+}
 
 mock.module('../../routes/api-keys', () => ({
   resolveApiKey: (key: string) => resolveApiKeyImpl(key),
@@ -42,14 +65,18 @@ mock.module('../../lib/prisma', () => ({
   prisma: {
     project: { findUnique: (args: any) => projectFindUniqueImpl(args) },
     user: { findUnique: (args: any) => userFindUniqueImpl(args) },
-    member: { findFirst: (args: any) => memberFindFirstImpl(args) },
+    member: { findMany: (args: any) => memberFindManyImpl(args) },
+    platformSetting: { findUnique: async () => null },
   },
 }))
+
+const { requirePermission, _setRbacModeForTests } = await import('../../lib/authz')
+beforeAll(() => _setRbacModeForTests('shadow'))
+afterAll(() => _setRbacModeForTests(null))
 
 const {
   authMiddleware,
   requireAuth,
-  requireRole,
   requireProjectAccess,
   apiKeyOrSession,
   authorizeProject,
@@ -72,6 +99,7 @@ function makeContext(opts: {
   params?: Record<string, string>
   query?: Record<string, string>
   auth?: any
+  method?: string
 }) {
   const store: Record<string, any> = {}
   if (opts.auth !== undefined) store.auth = opts.auth
@@ -87,6 +115,7 @@ function makeContext(opts: {
     },
     req: {
       url,
+      method: opts.method ?? 'GET',
       raw: { headers: new Headers(headers) },
       header: (name: string) => headers[name.toLowerCase()] ?? headers[name],
       param: (name: string) => params[name],
@@ -114,7 +143,7 @@ beforeEach(() => {
   getSessionImpl = async () => null
   projectFindUniqueImpl = async () => null
   userFindUniqueImpl = async () => null
-  memberFindFirstImpl = async () => null
+  memberFindManyImpl = async () => []
 })
 
 // ---------------------------------------------------------------------------
@@ -413,30 +442,54 @@ describe('requireAuth', () => {
 })
 
 // ---------------------------------------------------------------------------
-// requireRole
+// requirePermission (replaces the removed requireRole)
 // ---------------------------------------------------------------------------
 
-describe('requireRole', () => {
+describe('requirePermission', () => {
   it('returns 401 when not authenticated', async () => {
-    const mw = requireRole('admin')
-    const c = makeContext({ auth: { isAuthenticated: false } })
+    projectFindUniqueImpl = async () => project('p', 'w')
+    const mw = requirePermission('project:read')
+    const c = makeContext({ auth: { isAuthenticated: false }, params: { projectId: 'p' } })
     const res = (await mw(c, next)) as FakeJsonResponse
     expect(res.status).toBe(401)
     expect(nextCalled).toBe(0)
   })
 
-  it('calls next when authenticated (single role)', async () => {
-    const mw = requireRole('admin')
+  it('returns 400 when the scope cannot be derived', async () => {
+    const mw = requirePermission('project:read')
+    const c = makeContext({ auth: { isAuthenticated: true, userId: 'u' } })
+    const res = (await mw(c, next)) as FakeJsonResponse
+    expect(res.status).toBe(400)
+    expect(nextCalled).toBe(0)
+  })
+
+  it('calls next when the caller holds the permission', async () => {
+    projectFindUniqueImpl = async () => project('p', 'w')
+    userFindUniqueImpl = async () => ({ role: 'user' })
+    memberFindManyImpl = membersFrom([{ userId: 'u', workspaceId: 'w', projectId: null, role: 'admin' }])
+    const mw = requirePermission('project:update')
+    const c = makeContext({ auth: { isAuthenticated: true, userId: 'u' }, params: { projectId: 'p' } })
+    await mw(c, next)
+    expect(nextCalled).toBe(1)
+  })
+
+  it('accepts a custom workspace scope', async () => {
+    userFindUniqueImpl = async () => ({ role: 'user' })
+    memberFindManyImpl = membersFrom([{ userId: 'u', workspaceId: 'w', projectId: null, role: 'owner' }])
+    const mw = requirePermission('workspace:read', () => ({ workspaceId: 'w' }))
     const c = makeContext({ auth: { isAuthenticated: true, userId: 'u' } })
     await mw(c, next)
     expect(nextCalled).toBe(1)
   })
 
-  it('calls next when authenticated (array of roles)', async () => {
-    const mw = requireRole(['admin', 'owner'])
-    const c = makeContext({ auth: { isAuthenticated: true, userId: 'u' } })
-    await mw(c, next)
-    expect(nextCalled).toBe(1)
+  it('returns 404 for a non-member', async () => {
+    projectFindUniqueImpl = async () => project('p', 'w')
+    userFindUniqueImpl = async () => ({ role: 'user' })
+    const mw = requirePermission('project:read')
+    const c = makeContext({ auth: { isAuthenticated: true, userId: 'u' }, params: { projectId: 'p' } })
+    const res = (await mw(c, next)) as FakeJsonResponse
+    expect(res.status).toBe(404)
+    expect(nextCalled).toBe(0)
   })
 })
 
@@ -467,6 +520,7 @@ describe('requireProjectAccess', () => {
   })
 
   it('allows runtime-token callers when scope matches', async () => {
+    projectFindUniqueImpl = async () => project('p1', 'w')
     const c = makeContext({
       auth: { userId: 'u', via: 'runtimeToken', projectId: 'p1' },
       params: { projectId: 'p1' },
@@ -487,6 +541,7 @@ describe('requireProjectAccess', () => {
 
   it('lets super_admin users bypass membership checks', async () => {
     userFindUniqueImpl = async () => ({ role: 'super_admin' })
+    projectFindUniqueImpl = async () => project('p', 'w', 'restricted')
     const c = makeContext({ auth: { userId: 'u' }, params: { projectId: 'p' } })
     await requireProjectAccess(c, next)
     expect(nextCalled).toBe(1)
@@ -500,22 +555,32 @@ describe('requireProjectAccess', () => {
     expect(res.status).toBe(404)
   })
 
-  it('returns 403 when user is not a workspace member', async () => {
+  it('returns 404 when user is not a workspace member', async () => {
     userFindUniqueImpl = async () => ({ role: 'user' })
-    projectFindUniqueImpl = async () => ({ workspaceId: 'w' })
-    memberFindFirstImpl = async () => null
+    projectFindUniqueImpl = async () => project('p', 'w')
+    memberFindManyImpl = membersFrom([{ userId: 'u', workspaceId: 'w-other', projectId: null, role: 'owner' }])
     const c = makeContext({ auth: { userId: 'u' }, params: { projectId: 'p' } })
     const res = (await requireProjectAccess(c, next)) as FakeJsonResponse
-    expect(res.status).toBe(403)
+    expect(res.status).toBe(404)
   })
 
   it('calls next when user is a workspace member', async () => {
     userFindUniqueImpl = async () => ({ role: 'user' })
-    projectFindUniqueImpl = async () => ({ workspaceId: 'w' })
-    memberFindFirstImpl = async () => ({ id: 'm' })
+    projectFindUniqueImpl = async () => project('p', 'w')
+    memberFindManyImpl = membersFrom([{ userId: 'u', workspaceId: 'w', projectId: null, role: 'member' }])
     const c = makeContext({ auth: { userId: 'u' }, params: { projectId: 'p' } })
     await requireProjectAccess(c, next)
     expect(nextCalled).toBe(1)
+  })
+
+  it('returns 404 for a restricted project the workspace member cannot read', async () => {
+    userFindUniqueImpl = async () => ({ role: 'user' })
+    projectFindUniqueImpl = async () => project('p', 'w', 'restricted')
+    memberFindManyImpl = membersFrom([{ userId: 'u', workspaceId: 'w', projectId: null, role: 'member' }])
+    const c = makeContext({ auth: { userId: 'u' }, params: { projectId: 'p' } })
+    const res = (await requireProjectAccess(c, next)) as FakeJsonResponse
+    expect(res.status).toBe(404)
+    expect(nextCalled).toBe(0)
   })
 })
 
@@ -551,21 +616,21 @@ describe('apiKeyOrSession', () => {
 describe('authorizeProject', () => {
   it('returns 401 when not authenticated', async () => {
     const c = makeContext({ auth: { isAuthenticated: false } })
-    const r = await authorizeProject(c, 'p')
+    const r = await authorizeProject(c, 'p', 'project:read')
     expect(r.ok).toBe(false)
     if (!r.ok) expect(r.status).toBe(401)
   })
 
   it('returns 400 when projectId is empty', async () => {
     const c = makeContext({ auth: { isAuthenticated: true, userId: 'u' } })
-    const r = await authorizeProject(c, '')
+    const r = await authorizeProject(c, '', 'project:read')
     expect(r.ok).toBe(false)
     if (!r.ok) expect(r.status).toBe(400)
   })
 
   it('returns 400 when projectId is not a string', async () => {
     const c = makeContext({ auth: { isAuthenticated: true, userId: 'u' } })
-    const r = await authorizeProject(c, 123 as any)
+    const r = await authorizeProject(c, 123 as any, 'project:read')
     expect(r.ok).toBe(false)
     if (!r.ok) expect(r.status).toBe(400)
   })
@@ -573,88 +638,98 @@ describe('authorizeProject', () => {
   it('returns 404 when project missing', async () => {
     projectFindUniqueImpl = async () => null
     const c = makeContext({ auth: { isAuthenticated: true, userId: 'u' } })
-    const r = await authorizeProject(c, 'p')
+    const r = await authorizeProject(c, 'p', 'project:read')
     expect(r.ok).toBe(false)
     if (!r.ok) expect(r.status).toBe(404)
   })
 
   it('apiKey: ok when workspace matches', async () => {
-    projectFindUniqueImpl = async () => ({ id: 'p', workspaceId: 'w' })
+    projectFindUniqueImpl = async () => project('p', 'w')
+    memberFindManyImpl = membersFrom([{ userId: 'u', workspaceId: 'w', projectId: null, role: 'member' }])
     const c = makeContext({
       auth: { isAuthenticated: true, userId: 'u', via: 'apiKey', workspaceId: 'w' },
     })
-    const r = await authorizeProject(c, 'p')
+    const r = await authorizeProject(c, 'p', 'project:read')
     expect(r.ok).toBe(true)
     if (r.ok) expect(r.workspaceId).toBe('w')
   })
 
-  it('apiKey: 403 when workspaceId is missing on auth', async () => {
-    projectFindUniqueImpl = async () => ({ id: 'p', workspaceId: 'w' })
+  it('apiKey: 404 when workspaceId is missing on auth', async () => {
+    projectFindUniqueImpl = async () => project('p', 'w')
     const c = makeContext({
       auth: { isAuthenticated: true, userId: 'u', via: 'apiKey' },
     })
-    const r = await authorizeProject(c, 'p')
+    const r = await authorizeProject(c, 'p', 'project:read')
     expect(r.ok).toBe(false)
-    if (!r.ok) expect(r.status).toBe(403)
+    if (!r.ok) expect(r.status).toBe(404)
   })
 
-  it('apiKey: 403 when workspaceId mismatches', async () => {
-    projectFindUniqueImpl = async () => ({ id: 'p', workspaceId: 'w-other' })
+  it('apiKey: 404 when workspaceId mismatches', async () => {
+    projectFindUniqueImpl = async () => project('p', 'w-other')
     const c = makeContext({
       auth: { isAuthenticated: true, userId: 'u', via: 'apiKey', workspaceId: 'w-mine' },
     })
-    const r = await authorizeProject(c, 'p')
+    const r = await authorizeProject(c, 'p', 'project:read')
     expect(r.ok).toBe(false)
-    if (!r.ok) expect(r.status).toBe(403)
+    if (!r.ok) expect(r.status).toBe(404)
   })
 
   it('runtimeToken: ok when scope matches', async () => {
-    projectFindUniqueImpl = async () => ({ id: 'p', workspaceId: 'w' })
+    projectFindUniqueImpl = async () => project('p', 'w')
     const c = makeContext({
       auth: { isAuthenticated: true, userId: 'u', via: 'runtimeToken', projectId: 'p' },
     })
-    const r = await authorizeProject(c, 'p')
+    const r = await authorizeProject(c, 'p', 'project:read')
     expect(r.ok).toBe(true)
   })
 
-  it('runtimeToken: 403 when scope mismatches', async () => {
-    projectFindUniqueImpl = async () => ({ id: 'p', workspaceId: 'w' })
+  it('runtimeToken: 404 when scope mismatches', async () => {
+    projectFindUniqueImpl = async () => project('p', 'w')
     const c = makeContext({
       auth: { isAuthenticated: true, userId: 'u', via: 'runtimeToken', projectId: 'other' },
     })
-    const r = await authorizeProject(c, 'p')
+    const r = await authorizeProject(c, 'p', 'project:read')
     expect(r.ok).toBe(false)
-    if (!r.ok) expect(r.status).toBe(403)
+    if (!r.ok) expect(r.status).toBe(404)
   })
 
   it('tunnel: ok without further DB checks', async () => {
-    projectFindUniqueImpl = async () => ({ id: 'p', workspaceId: 'w' })
+    projectFindUniqueImpl = async () => project('p', 'w')
     const c = makeContext({
       auth: { isAuthenticated: true, userId: 'u', tunnelAuthenticated: true },
     })
-    const r = await authorizeProject(c, 'p')
+    const r = await authorizeProject(c, 'p', 'project:read')
     expect(r.ok).toBe(true)
   })
 
   it('session: ok when caller is a workspace member', async () => {
-    projectFindUniqueImpl = async () => ({ id: 'p', workspaceId: 'w' })
-    memberFindFirstImpl = async () => ({ id: 'm' })
+    projectFindUniqueImpl = async () => project('p', 'w')
+    memberFindManyImpl = membersFrom([{ userId: 'u', workspaceId: 'w', projectId: null, role: 'member' }])
     const c = makeContext({
       auth: { isAuthenticated: true, userId: 'u', via: 'session' },
     })
-    const r = await authorizeProject(c, 'p')
+    const r = await authorizeProject(c, 'p', 'project:read')
     expect(r.ok).toBe(true)
   })
 
-  it('session: 403 when caller is not a workspace member', async () => {
-    projectFindUniqueImpl = async () => ({ id: 'p', workspaceId: 'w' })
-    memberFindFirstImpl = async () => null
+  it('session: 404 when caller is not a workspace member', async () => {
+    projectFindUniqueImpl = async () => project('p', 'w')
     const c = makeContext({
       auth: { isAuthenticated: true, userId: 'u', via: 'session' },
     })
-    const r = await authorizeProject(c, 'p')
+    const r = await authorizeProject(c, 'p', 'project:read')
     expect(r.ok).toBe(false)
-    if (!r.ok) expect(r.status).toBe(403)
+    if (!r.ok) expect(r.status).toBe(404)
+  })
+
+  it('session: ok for a guest with a project-scoped role only', async () => {
+    projectFindUniqueImpl = async () => project('p', 'w', 'restricted')
+    memberFindManyImpl = membersFrom([{ userId: 'u', workspaceId: null, projectId: 'p', role: 'viewer' }])
+    const c = makeContext({
+      auth: { isAuthenticated: true, userId: 'u', via: 'session' },
+    })
+    const r = await authorizeProject(c, 'p', 'project:read')
+    expect(r.ok).toBe(true)
   })
 })
 

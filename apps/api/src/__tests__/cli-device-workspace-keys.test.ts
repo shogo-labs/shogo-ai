@@ -37,7 +37,7 @@ let n = 0
 function matches(row: Record<string, any>, where: Record<string, any>): boolean {
   return Object.entries(where).every(([k, v]) => {
     if (v && typeof v === 'object' && !(v instanceof Date) && 'in' in v) return v.in.includes(row[k])
-    return row[k] === v
+    return (row[k] ?? null) === v
   })
 }
 
@@ -59,10 +59,14 @@ const prisma: any = {
   member: {
     findFirst: async ({ where }: any) => members.find((m) => matches(m, where)) ?? null,
     findMany: async ({ where }: any) =>
-      members
-        .filter((m) => m.userId === where.userId)
-        .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())
-        .map((m) => ({ workspace: workspaces.get(m.workspaceId) ?? null })),
+      where.OR
+        ? members
+            .filter((m) => m.userId === where.userId && m.workspaceId === where.OR[0].workspaceId)
+            .map(() => ({ role: 'member', projectId: null, isBillingAdmin: false }))
+        : members
+            .filter((m) => m.userId === where.userId)
+            .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())
+            .map((m) => ({ workspace: workspaces.get(m.workspaceId) ?? null })),
   },
   workspace: { findUnique: async ({ where }: any) => workspaces.get(where.id) ?? null },
   user: { findUnique: async () => ({ id: 'user-1', email: 'russ@example.com' }) },

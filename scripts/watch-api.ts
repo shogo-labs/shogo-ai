@@ -21,6 +21,7 @@ const WATCH_DIRS = [
   resolve(ROOT, "apps/api/src"),
   resolve(ROOT, "packages/agent-runtime/src"),
   resolve(ROOT, "packages/model-catalog/src"),
+  resolve(ROOT, "packages/authz/src"),
   resolve(ROOT, "packages/sdk/src"),
   resolve(ROOT, "packages/shared-runtime/src"),
 ];

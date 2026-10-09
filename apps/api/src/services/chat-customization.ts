@@ -6,6 +6,7 @@
  */
 
 import { prisma } from '../lib/prisma'
+import { loadAccess } from '../lib/authz'
 import { publishConversationEvent } from '../lib/conversation-bus'
 import {
   buildConversationFileKey,
@@ -27,11 +28,10 @@ async function requireContributor(workspaceId: string, userId: string) {
   const role = await getWorkspaceRole(workspaceId, userId)
   if (!role) throw new ConversationError(403, 'forbidden', 'No access to this workspace')
   if (role === 'viewer') throw new ConversationError(403, 'forbidden', 'Viewers cannot change this')
-  return role
 }
 
-function isAdmin(role: string | null) {
-  return role === 'owner' || role === 'admin'
+async function canModerate(workspaceId: string, userId: string): Promise<boolean> {
+  return (await loadAccess({ userId, via: 'session' }, { workspaceId })).permissions.has('workspace.settings:manage')
 }
 
 // ─── User groups ─────────────────────────────────────────────────────────────
@@ -59,7 +59,7 @@ function cleanHandle(raw: unknown): string {
 async function workspaceUserIds(workspaceId: string, ids: unknown): Promise<string[]> {
   const list = Array.isArray(ids) ? [...new Set(ids.map(String))].slice(0, 500) : []
   if (!list.length) return []
-  const members = await db.member.findMany({ where: { workspaceId, userId: { in: list } }, select: { userId: true } })
+  const members = await db.member.findMany({ where: { workspaceId, projectId: null, userId: { in: list } }, select: { userId: true } })
   return [...new Set<string>(members.map((m: any) => m.userId))]
 }
 
@@ -105,8 +105,8 @@ export async function createGroup(
 async function editableGroup(groupId: string, userId: string) {
   const row = await db.userGroup.findUnique({ where: { id: groupId } })
   if (!row) throw new ConversationError(404, 'not_found', 'Group not found')
-  const role = await requireContributor(row.workspaceId, userId)
-  return { row, role }
+  await requireContributor(row.workspaceId, userId)
+  return { row }
 }
 
 export async function updateGroup(
@@ -141,8 +141,8 @@ export async function updateGroup(
 }
 
 export async function deleteGroup(groupId: string, userId: string) {
-  const { row, role } = await editableGroup(groupId, userId)
-  if (row.createdById !== userId && !isAdmin(role)) {
+  const { row } = await editableGroup(groupId, userId)
+  if (row.createdById !== userId && !(await canModerate(row.workspaceId, userId))) {
     throw new ConversationError(403, 'forbidden', 'Only the creator or a workspace admin can delete this group')
   }
   await db.userGroup.delete({ where: { id: groupId } })
@@ -191,8 +191,8 @@ export async function createEmoji(
 export async function deleteEmoji(emojiId: string, userId: string) {
   const row = await db.customEmoji.findUnique({ where: { id: emojiId } })
   if (!row) throw new ConversationError(404, 'not_found', 'Emoji not found')
-  const role = await requireContributor(row.workspaceId, userId)
-  if (row.createdById !== userId && !isAdmin(role)) {
+  await requireContributor(row.workspaceId, userId)
+  if (row.createdById !== userId && !(await canModerate(row.workspaceId, userId))) {
     throw new ConversationError(403, 'forbidden', 'Only the uploader or a workspace admin can remove this emoji')
   }
   await db.customEmoji.delete({ where: { id: emojiId } })

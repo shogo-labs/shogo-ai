@@ -57,6 +57,7 @@ const prismaState: {
 const mockPrisma = {
   member: {
     findFirst: mock(async (_args: any) => ({ id: 'member-1', role: 'admin' })),
+    findMany: mock(async (_args: any) => [{ role: 'admin', projectId: null, isBillingAdmin: false }]),
   },
   user: {
     findUnique: mock(async () => ({ role: 'admin' })),

@@ -15,9 +15,11 @@ interface NativeProjectActionsSheetProps {
   projectName: string;
   isPinned: boolean;
   onClose: () => void;
-  onRename: () => void;
+  /** Omit to hide the action (no `project:update`). */
+  onRename?: () => void;
   onTogglePin: () => void;
-  onDelete: () => void;
+  /** Omit to hide the action (no `project:delete`). */
+  onDelete?: () => void;
 }
 
 function ActionRow({
@@ -81,16 +83,18 @@ export function NativeProjectActionsSheet({
         accessibilityLabel={`Project actions for ${projectName}`}
         className="gap-1 px-2 pb-3"
       >
-        <ActionRow
-          label="Rename"
-          icon={
-            <Pencil
-              size={ACTION_ICON_SIZE}
-              className="text-muted-foreground"
-            />
-          }
-          onPress={() => runAction(onRename)}
-        />
+        {onRename && (
+          <ActionRow
+            label="Rename"
+            icon={
+              <Pencil
+                size={ACTION_ICON_SIZE}
+                className="text-muted-foreground"
+              />
+            }
+            onPress={() => runAction(onRename)}
+          />
+        )}
         <ActionRow
           label={isPinned ? "Unpin project" : "Pin project"}
           icon={
@@ -108,15 +112,19 @@ export function NativeProjectActionsSheet({
           }
           onPress={() => runAction(onTogglePin)}
         />
-        <View className="my-1 h-px bg-border" />
-        <ActionRow
-          label="Delete project"
-          icon={
-            <Trash2 size={ACTION_ICON_SIZE} className="text-destructive" />
-          }
-          danger
-          onPress={() => runAction(onDelete)}
-        />
+        {onDelete && (
+          <>
+            <View className="my-1 h-px bg-border" />
+            <ActionRow
+              label="Delete project"
+              icon={
+                <Trash2 size={ACTION_ICON_SIZE} className="text-destructive" />
+              }
+              danger
+              onPress={() => runAction(onDelete)}
+            />
+          </>
+        )}
       </View>
     </NativePhoneSheet>
   );

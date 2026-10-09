@@ -18,6 +18,8 @@ export type PublishStatus = 'idle' | 'building' | 'uploading' | 'configuring' | 
 
 export type ProjectCategory = 'app' | 'website' | 'tool' | 'game'
 
+export type ProjectVisibility = 'workspace' | 'restricted'
+
 export interface ProjectType {
   id: string
   name: string
@@ -26,7 +28,7 @@ export interface ProjectType {
   workspaceId: string
   tier: ProjectTier
   status: ProjectStatus
-  schemas: string
+  schemas: string[]
   createdBy?: string
   createdAt: Date
   updatedAt: Date
@@ -40,6 +42,7 @@ export interface ProjectType {
   publishedTag?: string
   publishedAlwaysOn: boolean
   accessLevel: AccessLevel
+  visibility: ProjectVisibility
   sitePasswordHash?: string
   category?: ProjectCategory
   siteTitle?: string
@@ -57,6 +60,7 @@ export interface ProjectType {
   preferredInstanceId?: string
   preferredInstancePolicy: string
   cloudSyncMode: CloudSyncMode
+  myPermissions?: string[]
 }
 
 export interface ProjectCreateInput {
@@ -66,7 +70,7 @@ export interface ProjectCreateInput {
   workspaceId: string
   tier?: ProjectTier
   status?: ProjectStatus
-  schemas?: string
+  schemas?: string[]
   createdBy?: string
   folderId?: string
   publishedSubdomain?: string
@@ -78,6 +82,7 @@ export interface ProjectCreateInput {
   publishedTag?: string
   publishedAlwaysOn?: boolean
   accessLevel?: AccessLevel
+  visibility?: ProjectVisibility
   sitePasswordHash?: string
   category?: ProjectCategory
   siteTitle?: string
@@ -104,7 +109,7 @@ export interface ProjectUpdateInput {
   workspaceId?: string
   tier?: ProjectTier
   status?: ProjectStatus
-  schemas?: string
+  schemas?: string[]
   createdBy?: string
   folderId?: string
   publishedSubdomain?: string
@@ -116,6 +121,7 @@ export interface ProjectUpdateInput {
   publishedTag?: string
   publishedAlwaysOn?: boolean
   accessLevel?: AccessLevel
+  visibility?: ProjectVisibility
   sitePasswordHash?: string
   category?: ProjectCategory
   siteTitle?: string

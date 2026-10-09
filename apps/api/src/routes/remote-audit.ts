@@ -12,6 +12,7 @@
 
 import { Hono } from 'hono'
 import { prisma } from '../lib/prisma'
+import { can } from '../lib/authz'
 
 // ─── Audit logging helper (used by proxy routes) ───────────────────────────
 
@@ -64,10 +65,7 @@ export function remoteAuditRoutes() {
       return c.json({ error: { code: 'not_found', message: 'Instance not found' } }, 404)
     }
 
-    const member = await prisma.member.findFirst({
-      where: { userId: auth.userId, workspaceId: instance.workspaceId },
-    })
-    if (!member) {
+    if (!(await can(c, 'workspace:read', { workspaceId: instance.workspaceId }))) {
       return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
     }
 
@@ -93,10 +91,7 @@ export function remoteAuditRoutes() {
       return c.json({ error: { code: 'not_found', message: 'Instance not found' } }, 404)
     }
 
-    const member = await prisma.member.findFirst({
-      where: { userId: auth.userId, workspaceId: instance.workspaceId },
-    })
-    if (!member) {
+    if (!(await can(c, 'workspace:read', { workspaceId: instance.workspaceId }))) {
       return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
     }
 

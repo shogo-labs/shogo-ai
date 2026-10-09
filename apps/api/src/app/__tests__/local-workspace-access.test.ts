@@ -37,7 +37,7 @@ describe('local workspace access hooks', () => {
 
     expect(response.status).toBe(200)
     expect(observedWhere).toEqual({
-      members: { some: { userId: 'user-1' } },
+      members: { some: { userId: 'user-1', projectId: null } },
     })
     expect(await response.json()).toMatchObject({
       items: [{ id: 'ws-team', kind: 'team' }],
@@ -62,7 +62,7 @@ describe('local workspace access hooks', () => {
 
     const response = await app.request('/api/workspaces/foreign')
 
-    expect(response.status).toBe(400)
+    expect(response.status).toBe(403)
     expect(await response.json()).toMatchObject({
       error: { code: 'forbidden' },
     })

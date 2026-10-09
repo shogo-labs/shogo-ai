@@ -19,6 +19,7 @@
  */
 
 import { prisma } from '../lib/prisma'
+import { loadAccess } from '../lib/authz'
 
 export type ProjectAuthMode = 'anyone' | 'workspace' | 'custom'
 
@@ -199,9 +200,9 @@ export interface AllowlistEvaluation {
  * Modes:
  *   - `anyone`     -> always allowed
  *   - `workspace`  -> allowed iff the email already corresponds to a
- *                     User who has a Member row in the project's
- *                     workspace, OR there is a pending Invitation
- *                     scoped to that workspace for this email.
+ *                     User who can read the project, OR there is a
+ *                     pending Invitation scoped to that workspace (or
+ *                     this project) for this email.
  *   - `custom`     -> allowed iff the email is in `allowedEmails` OR
  *                     the email's domain is in `allowedDomains`.
  *
@@ -235,17 +236,15 @@ export async function evaluateAllowlist(
 
   const user = await prisma.user.findUnique({ where: { email: lower }, select: { id: true } })
   if (user) {
-    const member = await prisma.member.findFirst({
-      where: { userId: user.id, workspaceId: project.workspaceId },
-      select: { id: true },
-    })
-    if (member) return { allowed: true }
+    const access = await loadAccess({ userId: user.id, via: 'session' }, { projectId })
+    if (access.permissions.has('project:read')) return { allowed: true }
   }
 
   const invitation = await prisma.invitation.findFirst({
     where: {
       email: lower,
       workspaceId: project.workspaceId,
+      OR: [{ projectId: null }, { projectId }],
       status: 'pending',
       expiresAt: { gt: new Date() },
     },
@@ -337,7 +336,7 @@ export async function listUsers(
   const userIds = visible.map((r) => r.userId)
   const memberRows = userIds.length
     ? await prisma.member.findMany({
-        where: { userId: { in: userIds }, workspaceId: project.workspaceId },
+        where: { userId: { in: userIds }, workspaceId: project.workspaceId, projectId: null },
         select: { userId: true },
       })
     : []

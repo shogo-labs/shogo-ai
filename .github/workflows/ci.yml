@@ -577,7 +577,7 @@ jobs:
             desktop_bundle: false
             include_e2e: false
           - name: remaining + e2e
-            packages: packages/shared-runtime,packages/model-catalog,packages/sdk,scripts,packages/shared-app,apps/metal-agent,packages/agent,packages/core,packages/email,packages/voice
+            packages: packages/shared-runtime,packages/model-catalog,packages/authz,packages/sdk,scripts,packages/shared-app,apps/metal-agent,packages/agent,packages/core,packages/email,packages/voice
             shard: ''
             build_templates: true
             desktop_bundle: true
@@ -720,6 +720,83 @@ jobs:
       - name: Test unsharded packages
         if: matrix.shard == '' && matrix.include_e2e == false
         run: bun run test -- --packages "${{ matrix.packages }}"
+
+  # The RBAC suites run on SQLite in the `test` job; this job reruns them on
+  # Postgres so the PG migrations (partial unique indexes on Member, the
+  # project visibility column) and PG query semantics are exercised too.
+  rbac-postgres:
+    name: RBAC (Postgres)
+    runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-latest' }}
+    permissions:
+      contents: read
+    timeout-minutes: 15
+    env:
+      CHANNELS_TEST_PG_URL: postgresql://shogo:shogo@127.0.0.1:5432/shogo
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: shogo
+          POSTGRES_PASSWORD: shogo
+          POSTGRES_DB: shogo
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U shogo"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - id: setup-bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: '1.4.2'
+
+      - name: Restore node_modules
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: node_modules
+          key: ci-node-modules-${{ runner.os }}-bun${{ steps.setup-bun.outputs.bun-version }}-${{ hashFiles('bun.lock') }}
+
+      - name: Restore prepared build artifacts
+        id: rbac-prepared-cache
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: |
+            apps/api/src/generated
+            packages/*/dist
+            templates/runtime-template/node_modules
+            templates/runtime-template/dist
+            packages/agent-runtime/templates/sales-bdr-pipeline/dist
+          key: ci-prepared-v2-${{ runner.os }}-bun${{ steps.setup-bun.outputs.bun-version }}-${{ hashFiles('bun.lock', 'package.json', 'apps/*/package.json', 'packages/*/package.json', 'packages/sdk/examples/*/package.json', 'scripts/package.json', 'templates/runtime-template/package.json', 'prisma/schema*.prisma', 'packages/*/src/**', 'packages/*/tsup.config.*', 'packages/sdk/bin/**', 'templates/runtime-template/src/**', 'templates/runtime-template/vite.config.*', 'packages/agent-runtime/templates/sales-bdr-pipeline/src/**', 'packages/agent-runtime/templates/sales-bdr-pipeline/.shogo/**', 'packages/agent-runtime/templates/sales-bdr-pipeline/template.json', 'scripts/postinstall.ts', 'scripts/db-generate-all.ts', 'scripts/materialize-runtime-template.ts', 'packages/agent-runtime/scripts/build-template-dists.ts') }}
+
+      - name: Restore bun dependencies
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-ci-bun${{ steps.setup-bun.outputs.bun-version }}-${{ hashFiles('bun.lock') }}
+          restore-keys: bun-ci-bun${{ steps.setup-bun.outputs.bun-version }}-
+
+      - name: Install dependencies
+        # Same rationale as the `typecheck` job's install step.
+        run: bun install --frozen-lockfile
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build workspace packages
+        if: steps.rbac-prepared-cache.outputs.cache-hit != 'true'
+        run: bun run build:packages
+
+      - name: RBAC integration suites (Postgres)
+        working-directory: apps/api
+        run: |
+          for f in src/__tests__/rbac/*.test.ts; do
+            echo "::group::$f"
+            bun --no-env-file test "$f" || exit 1
+            echo "::endgroup::"
+          done
 
   # Thin aggregator so branch protection's required status check keeps its
   # original name/context ("Lint, Typecheck, Test") no matter how the real
@@ -917,7 +994,7 @@ jobs:
 
   ci:
     name: Lint, Typecheck, Test
-    needs: [windows-changes, typecheck, typecheck-mobile, test, test-windows, workflow-lint]
+    needs: [windows-changes, typecheck, typecheck-mobile, test, rbac-postgres, test-windows, workflow-lint]
     runs-on: ubuntu-latest
     if: always()
     steps:
@@ -927,8 +1004,9 @@ jobs:
           echo "typecheck: ${{ needs.typecheck.result }}"
           echo "typecheck-mobile: ${{ needs.typecheck-mobile.result }}"
           echo "test: ${{ needs.test.result }}"
+          echo "rbac-postgres: ${{ needs.rbac-postgres.result }}"
           echo "test-windows: ${{ needs.test-windows.result }}"
           echo "workflow-lint: ${{ needs.workflow-lint.result }}"
-          if [ "${{ needs.windows-changes.result }}" != "success" ] || [ "${{ needs.typecheck.result }}" != "success" ] || [ "${{ needs.typecheck-mobile.result }}" != "success" ] || [ "${{ needs.test.result }}" != "success" ] || [ "${{ needs.workflow-lint.result }}" != "success" ] || { [ "${{ needs.test-windows.result }}" != "success" ] && [ "${{ needs.test-windows.result }}" != "skipped" ]; }; then
+          if [ "${{ needs.windows-changes.result }}" != "success" ] || [ "${{ needs.typecheck.result }}" != "success" ] || [ "${{ needs.typecheck-mobile.result }}" != "success" ] || [ "${{ needs.test.result }}" != "success" ] || [ "${{ needs.rbac-postgres.result }}" != "success" ] || [ "${{ needs.workflow-lint.result }}" != "success" ] || { [ "${{ needs.test-windows.result }}" != "success" ] && [ "${{ needs.test-windows.result }}" != "skipped" ]; }; then
             exit 1
           fi

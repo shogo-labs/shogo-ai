@@ -102,7 +102,7 @@ export async function resumeAfterConnect(args: {
     select: { id: true, name: true, workspaceId: true, kind: true },
   })
   if (!conversation) return { resumed: false }
-  const member = await db.member.findFirst({ where: { userId: args.userId, workspaceId: conversation.workspaceId }, select: { id: true } })
+  const member = await db.member.findFirst({ where: { userId: args.userId, workspaceId: conversation.workspaceId, projectId: null }, select: { id: true } })
   if (!member) return { resumed: false }
 
   const { postMessage } = await import('../conversation.service')

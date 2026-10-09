@@ -48,6 +48,7 @@
     "@shogo-ai/sdk": "workspace:*",
     "@shogo/desktop-terminal": "workspace:*",
     "@shogo/domain-stores": "workspace:*",
+    "@shogo/authz": "workspace:*",
     "@shogo/model-catalog": "workspace:*",
     "@shogo/shared-app": "workspace:*",
     "@shogo/shared-ui": "workspace:*",

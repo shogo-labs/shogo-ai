@@ -35,10 +35,15 @@ const memberRoles: Record<string, string> = {
   'user-viewer': 'viewer',
 }
 
-mock.module('../services/workspace.service', () => ({
-  hasWorkspaceAccess: async (workspaceId: string, userId: string, requiredRoles?: string[]) => {
-    const role = workspaceId === 'workspace-1' ? memberRoles[userId] : undefined
-    return !!role && (!requiredRoles || requiredRoles.includes(role))
+mock.module('../lib/prisma', () => ({
+  prisma: {
+    user: { findUnique: async () => ({ role: 'user' }) },
+    member: {
+      findMany: async ({ where }: any) => {
+        const role = where.OR?.[0]?.workspaceId === 'workspace-1' ? memberRoles[where.userId] : undefined
+        return role ? [{ role, projectId: null, isBillingAdmin: false }] : []
+      },
+    },
   },
 }))
 

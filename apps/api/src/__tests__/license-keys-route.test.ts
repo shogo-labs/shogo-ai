@@ -202,7 +202,12 @@ const prismaMock = {
   member: {
     findFirst: async ({ where }: any) =>
       members.find((m) => m.userId === where.userId && m.workspaceId === where.workspaceId) ?? null,
+    findMany: async ({ where }: any) =>
+      members.some((m) => m.userId === where.userId && m.workspaceId === where.OR?.[0]?.workspaceId)
+        ? [{ role: 'member', projectId: null, isBillingAdmin: false }]
+        : [],
   },
+  user: { findUnique: async () => ({ role: 'user' }) },
   $transaction: async (ops: any) => {
     if (Array.isArray(ops)) return Promise.all(ops)
     return ops(prismaMock)

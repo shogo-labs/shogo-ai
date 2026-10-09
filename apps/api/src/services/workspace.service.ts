@@ -141,7 +141,7 @@ export async function createDefaultTeamWorkspace(
 
   const result = await prisma.$transaction(async (tx) => {
     const owned = await tx.member.findFirst({
-      where: { userId, role: 'owner', workspace: { kind: 'team' } },
+      where: { userId, role: 'owner', projectId: null, workspace: { kind: 'team' } },
       include: { workspace: true },
     });
     if (owned?.workspace) return { workspace: owned.workspace, member: owned };
@@ -190,7 +190,7 @@ export async function createDefaultTeamWorkspace(
  */
 export async function getWorkspacesForUser(userId: string) {
   const members = await prisma.member.findMany({
-    where: { userId, workspaceId: { not: null } },
+    where: { userId, workspaceId: { not: null }, projectId: null },
     include: {
       workspace: true,
     },
@@ -208,7 +208,7 @@ export async function getWorkspacesForUser(userId: string) {
  */
 export async function getWorkspace(workspaceId: string, userId: string) {
   const member = await prisma.member.findFirst({
-    where: { workspaceId, userId },
+    where: { workspaceId, userId, projectId: null },
     include: { workspace: true },
   });
 
@@ -313,6 +313,7 @@ export async function getUserOwnedWorkspaceCount(
       userId,
       role: 'owner',
       workspaceId: { not: null },
+      projectId: null,
       ...(kind ? { workspace: { kind } } : {}),
     },
   });
@@ -333,6 +334,7 @@ export async function hasPersonalWorkspace(userId: string): Promise<boolean> {
   const member = await prisma.member.findFirst({
     where: {
       userId,
+      projectId: null,
       workspace: { kind: 'personal' },
     },
   });
@@ -351,6 +353,7 @@ export async function hasWorkspaceAccess(
     where: {
       workspaceId,
       userId,
+      projectId: null,
       ...(requiredRoles ? { role: { in: requiredRoles as any } } : {}),
     },
   });

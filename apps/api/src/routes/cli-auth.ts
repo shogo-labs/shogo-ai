@@ -44,6 +44,7 @@
 import { Hono } from 'hono'
 import crypto from 'crypto'
 import { prisma } from '../lib/prisma'
+import { can } from '../lib/authz'
 import { getFrontendUrl } from '../lib/cloud-urls'
 import { hashApiKey, mintDeviceApiKey } from '../lib/api-keys-mint'
 import { syncDeviceWorkspaceKeys } from '../lib/device-workspace-keys'
@@ -260,10 +261,7 @@ export function cliAuthRoutes() {
       undefined
 
     if (workspaceId) {
-      const member = await prisma.member.findFirst({
-        where: { userId: auth.userId, workspaceId },
-      })
-      if (!member) {
+      if (!(await can(c, 'workspace:read', { workspaceId }))) {
         return c.json(
           { ok: false, error: 'Not a member of the requested workspace' },
           403,
@@ -271,7 +269,7 @@ export function cliAuthRoutes() {
       }
     } else {
       const member = await prisma.member.findFirst({
-        where: { userId: auth.userId },
+        where: { userId: auth.userId, projectId: null },
         orderBy: { createdAt: 'asc' },
         select: { workspaceId: true },
       })
