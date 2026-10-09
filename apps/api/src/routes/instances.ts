@@ -22,6 +22,7 @@
 
 import { Hono } from 'hono'
 import { prisma, InstanceKind } from '../lib/prisma'
+import { can } from '../lib/authz'
 import { resolveApiKey } from './api-keys'
 import { logRemoteAction, classifyAction } from './remote-audit'
 import {
@@ -749,10 +750,7 @@ export function instanceRoutes() {
       return c.json({ error: { code: 'invalid_request', message: 'workspaceId required' } }, 400)
     }
 
-    const member = await prisma.member.findFirst({
-      where: { userId: auth.userId, workspaceId: body.workspaceId },
-    })
-    if (!member) {
+    if (!(await can(c, 'workspace:read', { workspaceId: body.workspaceId }))) {
       return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
     }
 
@@ -780,10 +778,7 @@ export function instanceRoutes() {
       return c.json({ error: { code: 'not_found', message: 'Instance not found' } }, 404)
     }
 
-    const member = await prisma.member.findFirst({
-      where: { userId: auth.userId, workspaceId: instance.workspaceId },
-    })
-    if (!member) {
+    if (!(await can(c, 'workspace:read', { workspaceId: instance.workspaceId }))) {
       return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
     }
 
@@ -822,10 +817,7 @@ export function instanceRoutes() {
       return c.json({ error: { code: 'invalid_request', message: 'workspaceId query param required' } }, 400)
     }
 
-    const member = await prisma.member.findFirst({
-      where: { userId: auth.userId, workspaceId },
-    })
-    if (!member) {
+    if (!(await can(c, 'workspace:read', { workspaceId }))) {
       return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
     }
 
@@ -879,10 +871,7 @@ export function instanceRoutes() {
       return c.json({ error: { code: 'invalid_request', message: 'workspaceId query param required' } }, 400)
     }
 
-    const member = await prisma.member.findFirst({
-      where: { userId: auth.userId, workspaceId },
-    })
-    if (!member) {
+    if (!(await can(c, 'workspace:read', { workspaceId }))) {
       return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
     }
 
@@ -935,10 +924,7 @@ export function instanceRoutes() {
       return c.json({ error: { code: 'not_found', message: 'Instance not found' } }, 404)
     }
 
-    const member = await prisma.member.findFirst({
-      where: { userId: auth.userId, workspaceId: instance.workspaceId },
-    })
-    if (!member) {
+    if (!(await can(c, 'workspace:read', { workspaceId: instance.workspaceId }))) {
       return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
     }
 
@@ -976,10 +962,7 @@ export function instanceRoutes() {
       return c.json({ error: { code: 'not_found', message: 'Instance not found' } }, 404)
     }
 
-    const member = await prisma.member.findFirst({
-      where: { userId: auth.userId, workspaceId: instance.workspaceId },
-    })
-    if (!member) {
+    if (!(await can(c, 'workspace:read', { workspaceId: instance.workspaceId }))) {
       return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
     }
 
@@ -1011,10 +994,7 @@ export function instanceRoutes() {
       return c.json({ error: { code: 'not_found', message: 'Instance not found' } }, 404)
     }
 
-    const member = await prisma.member.findFirst({
-      where: { userId: auth.userId, workspaceId: instance.workspaceId },
-    })
-    if (!member) {
+    if (!(await can(c, 'workspace:read', { workspaceId: instance.workspaceId }))) {
       return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
     }
 
@@ -1054,10 +1034,7 @@ export function instanceRoutes() {
       return c.json({ error: { code: 'not_found', message: 'Instance not found' } }, 404)
     }
 
-    const member = await prisma.member.findFirst({
-      where: { userId: auth.userId, workspaceId: instance.workspaceId },
-    })
-    if (!member) {
+    if (!(await can(c, 'workspace:read', { workspaceId: instance.workspaceId }))) {
       return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
     }
 
@@ -1172,10 +1149,7 @@ export function instanceRoutes() {
       return c.json({ error: { code: 'not_found', message: 'Instance not found' } }, 404)
     }
 
-    const member = await prisma.member.findFirst({
-      where: { userId: auth.userId, workspaceId: instance.workspaceId },
-    })
-    if (!member) {
+    if (!(await can(c, 'workspace:read', { workspaceId: instance.workspaceId }))) {
       return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
     }
 
@@ -1331,10 +1305,7 @@ export function instanceRoutes() {
       return c.json({ error: { code: 'not_found', message: 'Instance not found' } }, 404)
     }
 
-    const member = await prisma.member.findFirst({
-      where: { userId: auth.userId, workspaceId: instance.workspaceId },
-    })
-    if (!member) {
+    if (!(await can(c, 'workspace:read', { workspaceId: instance.workspaceId }))) {
       return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
     }
 

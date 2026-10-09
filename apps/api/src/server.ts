@@ -37,6 +37,9 @@ import { startAgentTaskWorker, stopAgentTaskWorker } from './jobs/run-agent-task
 import { startAgentScheduleWorker, stopAgentScheduleWorker } from './jobs/run-agent-schedule-dispatch'
 import { startEventDeliveryWorker, stopEventDeliveryWorker } from './jobs/run-event-delivery-dispatch'
 import { inviteLinkAcceptRoutes } from './routes/invite-link-accept'
+import { inviteLinkRoutes } from './routes/invite-links'
+import { rbacRoutes } from './routes/rbac'
+import { attachProjectPermissions } from './lib/authz/project-permissions'
 import { appActionsRoutes } from './routes/app-actions'
 import { startChatQueueWorker, stopChatQueueWorker } from './jobs/run-chat-queue-drain'
 import { startChannelWorkers, stopChannelWorkers } from './jobs/run-channel-workers'
@@ -154,6 +157,8 @@ import {
   requireProjectAccess,
   isProjectReservedTopLevelPath,
 } from './middleware/auth'
+import type { Permission } from '@shogo/authz'
+import { decide, getAccess, loadAccess } from './lib/authz'
 import {
   apiAuthGate,
   isAllowedUnauthWebchatProxyPath,
@@ -302,40 +307,39 @@ async function getAuthUserId(c: any): Promise<string | null> {
 }
 
 /**
- * Verify that the authenticated user is a member of the given workspace.
+ * Verify that the authenticated principal can read the given workspace
+ * (workspace-scoped membership; project guests do not qualify).
  * Returns the userId on success, or null if not a member / not authenticated.
  */
 async function verifyWorkspaceMembership(c: any, workspaceId: string): Promise<string | null> {
   const auth = c.get('auth') as any
   const userId = auth?.userId
   if (!userId) return null
-  const member = await prisma.member.findFirst({
-    where: { userId, workspaceId },
-  })
-  return member ? userId : null
+  const access = await getAccess(c, { workspaceId })
+  return access.permissions.has('workspace:read') ? userId : null
 }
 
 /**
- * Verify that a user has access to a project via workspace membership.
+ * Verify that a user holds `permission` on a project.
  * Returns the project's workspaceId if access is granted, null otherwise.
  */
-async function verifyProjectAccess(userId: string, projectId: string): Promise<string | null> {
-  const project = await prisma.project.findUnique({
-    where: { id: projectId },
-    select: { workspaceId: true },
-  })
-  if (!project) {
+async function verifyProjectAccess(
+  userId: string,
+  projectId: string,
+  permission: Permission = 'project:read',
+): Promise<string | null> {
+  const principal = { userId, via: 'session' as const }
+  const access = await loadAccess(principal, { projectId })
+  if (!access.exists) {
     console.warn(`[Auth] verifyProjectAccess: project ${projectId} not found`)
     return null
   }
-
-  const member = await prisma.member.findFirst({
-    where: { userId, workspaceId: project.workspaceId },
-  })
-  if (!member) {
-    console.warn(`[Auth] verifyProjectAccess: user ${userId} not a member of workspace ${project.workspaceId} (project ${projectId})`)
+  const decision = await decide(access, permission, principal, `verifyProjectAccess ${projectId}`)
+  if (!decision.ok) {
+    console.warn(`[Auth] verifyProjectAccess: user ${userId} lacks ${permission} on project ${projectId}`)
+    return null
   }
-  return member ? project.workspaceId : null
+  return access.workspaceId
 }
 
 /**
@@ -7124,7 +7128,7 @@ app.get('/api/billing/workspace-plan', async (c) => {
       // Filter to only workspaces the user is a member of
       const memberships = userId
         ? await prisma.member.findMany({
-            where: { userId, workspaceId: { in: ids } },
+            where: { userId, workspaceId: { in: ids }, projectId: null },
             select: { workspaceId: true, role: true, isBillingAdmin: true },
           })
         : []
@@ -7848,10 +7852,7 @@ app.put('/api/workspaces/:id/visible-models', async (c) => {
     if (!userId) {
       return c.json({ error: { code: 'forbidden', message: 'Access denied' } }, 403)
     }
-    const admin = await prisma.member.findFirst({
-      where: { userId, workspaceId, role: { in: ['owner', 'admin'] } },
-    })
-    if (!admin) {
+    if (!(await getAccess(c, { workspaceId })).permissions.has('workspace.settings:manage')) {
       return c.json({ error: { code: 'forbidden', message: 'Workspace admin access required' } }, 403)
     }
 
@@ -8261,7 +8262,7 @@ app.post('/api/webhooks/stripe', async (c) => {
             try {
               const workspace = await prisma.workspace.findUnique({
                 where: { id: workspaceId },
-                include: { members: { where: { role: 'owner' }, include: { user: { select: { id: true, email: true } } } } },
+                include: { members: { where: { role: 'owner', projectId: null }, include: { user: { select: { id: true, email: true } } } } },
               })
               const ownerEmail = workspace?.members?.[0]?.user?.email
               if (ownerEmail) {
@@ -8507,7 +8508,7 @@ app.delete('/api/admin/users/:id', authMiddleware, requireAuth, requireSuperAdmi
   const id = c.req.param('id')
   const workspacesWithSubs = await prisma.workspace.findMany({
     where: {
-      members: { some: { userId: id, role: 'owner' } },
+      members: { some: { userId: id, role: 'owner', projectId: null } },
       subscriptions: { some: { status: { in: ['active', 'past_due', 'trialing'] } } },
     },
     select: { name: true, subscriptions: { where: { status: { in: ['active', 'past_due', 'trialing'] } }, select: { planId: true } } },
@@ -8819,46 +8820,15 @@ app.get('/api/workspaces/:id/children', async (c) => {
 // Invite Link Routes (custom, not auto-generated)
 // =============================================================================
 
-// Create invite link for a project or workspace
-app.post('/api/invite-links', async (c) => {
-  const auth = c.get('auth') as any
-  const userId = auth?.userId
-  if (!userId) return c.json({ error: 'Unauthorized' }, 401)
+app.route('/api', rbacRoutes())
 
-  const body = await c.req.json()
-  const { projectId, workspaceId, role = 'member' } = body
-
-  if (!projectId && !workspaceId) {
-    return c.json({ error: 'projectId or workspaceId required' }, 400)
-  }
-
-  // Resolve workspaceId from project if needed
-  let resolvedWorkspaceId = workspaceId
-  if (projectId && !workspaceId) {
-    const project = await prisma.project.findUnique({ where: { id: projectId }, select: { workspaceId: true } })
-    if (!project) return c.json({ error: 'Project not found' }, 404)
-    resolvedWorkspaceId = project.workspaceId
-  }
-
-  // Verify admin access
-  const membership = await prisma.member.findFirst({
-    where: { userId, workspaceId: resolvedWorkspaceId },
-  })
-  if (!membership || (membership.role !== 'owner' && membership.role !== 'admin')) {
-    return c.json({ error: 'Only admins and owners can create invite links' }, 403)
-  }
-
-  const link = await prisma.inviteLink.create({
-    data: { projectId, workspaceId: resolvedWorkspaceId, role, createdBy: userId },
-  })
-
-  const inviteeEmail = body.email as string | undefined
-  if (inviteeEmail) {
-    const baseUrl = getFrontendUrl()
-    const acceptUrl = `${baseUrl}/invite/${link.token}`
+app.route('/api', inviteLinkRoutes({
+  afterCreate: async ({ link, userId, workspaceId, projectId, email }) => {
+    if (!email) return
+    const acceptUrl = `${getFrontendUrl()}/invite/${link.token}`
     const [inviter, workspace] = await Promise.all([
       prisma.user.findUnique({ where: { id: userId }, select: { name: true } }),
-      prisma.workspace.findUnique({ where: { id: resolvedWorkspaceId }, select: { name: true } }),
+      prisma.workspace.findUnique({ where: { id: workspaceId }, select: { name: true } }),
     ])
     const inviterName = inviter?.name || 'A teammate'
     const workspaceName = workspace?.name || 'your workspace'
@@ -8866,96 +8836,18 @@ app.post('/api/invite-links', async (c) => {
     if (projectId) {
       const project = await prisma.project.findUnique({ where: { id: projectId }, select: { name: true } })
       await sendProjectInviteEmail({
-        to: inviteeEmail,
+        to: email,
         inviterName,
         projectName: project?.name || 'a project',
         workspaceName,
-        role,
+        role: link.role,
         acceptUrl,
       })
     } else {
-      await sendInvitationEmail({
-        to: inviteeEmail,
-        inviterName,
-        workspaceName,
-        role,
-        acceptUrl,
-      })
+      await sendInvitationEmail({ to: email, inviterName, workspaceName, role: link.role, acceptUrl })
     }
-  }
-
-  return c.json({ ok: true, data: link })
-})
-
-// List invite links
-app.get('/api/invite-links', async (c) => {
-  const auth = c.get('auth') as any
-  const userId = auth?.userId
-  if (!userId) return c.json({ error: 'Unauthorized' }, 401)
-
-  const projectId = c.req.query('projectId')
-  const workspaceId = c.req.query('workspaceId')
-
-  const where: any = {}
-  if (projectId) where.projectId = projectId
-  else if (workspaceId) where.workspaceId = workspaceId
-  else return c.json({ ok: true, items: [] })
-
-  const links = await prisma.inviteLink.findMany({ where, orderBy: { createdAt: 'desc' } })
-  return c.json({ ok: true, items: links })
-})
-
-// Toggle invite link (owner must be the creator or workspace admin)
-app.patch('/api/invite-links/:id', async (c) => {
-  const auth = c.get('auth') as any
-  const userId = auth?.userId
-  if (!userId) return c.json({ error: 'Unauthorized' }, 401)
-
-  const id = c.req.param('id')
-  const existing = await prisma.inviteLink.findUnique({ where: { id } })
-  if (!existing) return c.json({ error: 'Not found' }, 404)
-
-  // Only the creator or a workspace admin can modify
-  if (existing.createdBy !== userId) {
-    const wsId = existing.workspaceId
-    if (wsId) {
-      const member = await prisma.member.findFirst({ where: { userId, workspaceId: wsId } })
-      if (!member || (member.role !== 'owner' && member.role !== 'admin')) {
-        return c.json({ error: 'Forbidden' }, 403)
-      }
-    } else {
-      return c.json({ error: 'Forbidden' }, 403)
-    }
-  }
-
-  const body = await c.req.json()
-  const link = await prisma.inviteLink.update({ where: { id }, data: { enabled: body.enabled } })
-  return c.json({ ok: true, data: link })
-})
-
-app.delete('/api/invite-links/:id', async (c) => {
-  const auth = c.get('auth') as any
-  const userId = auth?.userId
-  if (!userId) return c.json({ error: 'Unauthorized' }, 401)
-
-  const existing = await prisma.inviteLink.findUnique({ where: { id: c.req.param('id') } })
-  if (!existing) return c.json({ error: 'Not found' }, 404)
-
-  if (existing.createdBy !== userId) {
-    const wsId = existing.workspaceId
-    if (wsId) {
-      const member = await prisma.member.findFirst({ where: { userId, workspaceId: wsId } })
-      if (!member || (member.role !== 'owner' && member.role !== 'admin')) {
-        return c.json({ error: 'Forbidden' }, 403)
-      }
-    } else {
-      return c.json({ error: 'Forbidden' }, 403)
-    }
-  }
-
-  await prisma.inviteLink.delete({ where: { id: existing.id } })
-  return c.json({ ok: true })
-})
+  },
+}))
 
 // Accept invite link (public-ish - requires auth but not membership)
 app.route('/api', inviteLinkAcceptRoutes({
@@ -8998,7 +8890,7 @@ app.route('/api', inviteLinkAcceptRoutes({
 
     if (resolvedWorkspaceId) {
       const owners = await prisma.member.findMany({
-        where: { workspaceId: resolvedWorkspaceId, role: 'owner', userId: { not: userId } },
+        where: { workspaceId: resolvedWorkspaceId, role: 'owner', projectId: null, userId: { not: userId } },
         include: { user: { select: { email: true } } },
       })
       for (const owner of owners) {
@@ -9127,6 +9019,9 @@ app.use('/api/projects', async (c, next) => {
 
   c.res = new Response(JSON.stringify(payload), { status: res.status, headers })
 })
+
+app.use('/api/projects', attachProjectPermissions)
+app.use('/api/projects/:id', attachProjectPermissions)
 
 // Mount generated routes at /api
 const generatedRoutes = createGeneratedRoutes({

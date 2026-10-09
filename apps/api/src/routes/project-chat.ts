@@ -18,6 +18,7 @@ import { existsSync } from "fs"
 import { trace, SpanStatusCode } from "@opentelemetry/api"
 
 import { prisma } from "../lib/prisma"
+import { loadAccess } from "../lib/authz"
 import type { IRuntimeManager } from "../lib/runtime"
 import * as billingService from "../services/billing-runtime"
 import { getModelTier, resolveModelId } from "@shogo/model-catalog"
@@ -1272,23 +1273,17 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
         setProjectUser(projectId, billingUserId)
       }
 
-      // Validate the claimed user ID against workspace membership.
-      // Only forward a trusted X-User-Id if the user is actually a member
-      // of the project's workspace — prevents header spoofing.
+      // Validate the claimed user ID against project access.
+      // Only forward a trusted X-User-Id if the user can actually read
+      // this project — prevents header spoofing.
       let verifiedUserId: string | undefined
       if (billingUserId && billingUserId !== 'system') {
         try {
-          const member = await prisma.member.findFirst({
-            where: {
-              userId: billingUserId,
-              workspaceId: project.workspaceId,
-            },
-            select: { id: true },
-          })
-          if (member) {
+          const access = await loadAccess({ userId: billingUserId, via: 'session' }, { projectId })
+          if (access.permissions.has('project:read')) {
             verifiedUserId = billingUserId
           } else {
-            console.warn(`[ProjectChat] User ${billingUserId} is not a member of workspace ${project.workspaceId} — ignoring for Composio context`)
+            console.warn(`[ProjectChat] User ${billingUserId} cannot access project ${projectId} — ignoring for Composio context`)
           }
         } catch (err: any) {
           console.error(`[ProjectChat] Failed to verify user membership:`, err.message)
@@ -1446,7 +1441,7 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       }
 
       // Forward verified user ID for per-user integrations (e.g. Composio OAuth).
-      // Only set after validating workspace membership above.
+      // Only set after validating project access above.
       if (verifiedUserId) {
         headers["X-User-Id"] = verifiedUserId
       }

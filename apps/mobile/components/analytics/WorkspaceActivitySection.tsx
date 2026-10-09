@@ -5,7 +5,7 @@
  *
  * The "who is doing what" part of Settings > Usage.
  *
- *   - Owners/admins: a per-member table (Business+) and a workspace-wide
+ *   - Members with `workspace.analytics:read`: a per-member table (Business+) and a workspace-wide
  *     dashboard. Tapping a member drills into that person's dashboard.
  *   - Everyone else: just their own dashboard, on any plan.
  *
@@ -18,8 +18,7 @@ import { useEffect, useState } from 'react'
 import { Pressable, View } from 'react-native'
 import { observer } from 'mobx-react-lite'
 import { ArrowLeft } from 'lucide-react-native'
-import { useAuth } from '../../contexts/auth'
-import { useMemberCollection } from '../../contexts/domain'
+import { usePermissions } from '../../hooks/usePermissions'
 import { Text } from '../settings/account-sheet-chrome'
 import { UsageDashboard } from './UsageDashboard'
 import { TeamWorkTable } from './TeamWorkTable'
@@ -31,18 +30,13 @@ export const WorkspaceActivitySection = observer(function WorkspaceActivitySecti
   workspaceId: string
   isBusinessOrHigher: boolean
 }) {
-  const { user } = useAuth()
-  const members = useMemberCollection()
+  const { can } = usePermissions({ workspaceId })
   const [selected, setSelected] = useState<{ userId: string; label: string } | null>(null)
 
   // A drill-in belongs to one workspace; switching workspaces must not carry it over.
   useEffect(() => setSelected(null), [workspaceId])
 
-  const all = Array.isArray(members.all) ? members.all : []
-  const mine = all.find(
-    (m: any) => m.workspaceId === workspaceId && !m.projectId && m.userId === user?.id,
-  )
-  const isAdmin = mine?.role === 'owner' || mine?.role === 'admin'
+  const isAdmin = can('workspace.analytics:read')
 
   return (
     <View className="gap-4">

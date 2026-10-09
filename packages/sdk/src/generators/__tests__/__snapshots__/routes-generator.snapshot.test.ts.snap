@@ -69,7 +69,21 @@ function buildContext(c: any, body?: any) {
     query: Object.fromEntries(new URL(c.req.url).searchParams),
     userId: auth?.userId,
     tunnelAuthenticated: !!auth?.tunnelAuthenticated,
+    auth,
     prisma: getPrisma(),
+  }
+}
+
+/**
+ * HTTP status for a hook rejection. Hooks signal authorization failures
+ * with \`unauthorized\` / \`forbidden\` / \`not_found\` codes.
+ */
+function hookErrorStatus(error: { code?: string } | undefined): number {
+  switch (error?.code) {
+    case "unauthorized": return 401
+    case "forbidden": return 403
+    case "not_found": return 404
+    default: return 400
   }
 }
 
@@ -162,7 +176,7 @@ export function createProjectRoutes(): Hono {
       if (hooks.beforeList) {
         const result = await hooks.beforeList(ctx)
         if (result && !result.ok) {
-          return sendJson(c, { error: result.error }, 400)
+          return sendJson(c, { error: result.error }, hookErrorStatus(result.error))
         }
         if (result?.data) {
           where = result.data.where || where
@@ -200,7 +214,7 @@ export function createProjectRoutes(): Hono {
       if (hooks.beforeGet) {
         const result = await hooks.beforeGet(id, ctx)
         if (result && !result.ok) {
-          return sendJson(c, { error: result.error }, result.error?.code === "not_found" ? 404 : 400)
+          return sendJson(c, { error: result.error }, hookErrorStatus(result.error))
         }
       }
 
@@ -230,7 +244,7 @@ export function createProjectRoutes(): Hono {
       if (hooks.beforeCreate) {
         const result = await hooks.beforeCreate(body, ctx)
         if (result && !result.ok) {
-          return sendJson(c, { error: result.error }, 400)
+          return sendJson(c, { error: result.error }, hookErrorStatus(result.error))
         }
         if (result?.data) {
           body = result.data
@@ -272,7 +286,7 @@ export function createProjectRoutes(): Hono {
       if (hooks.beforeUpdate) {
         const result = await hooks.beforeUpdate(id, body, ctx)
         if (result && !result.ok) {
-          return sendJson(c, { error: result.error }, 400)
+          return sendJson(c, { error: result.error }, hookErrorStatus(result.error))
         }
         if (result?.data) {
           body = result.data
@@ -313,7 +327,7 @@ export function createProjectRoutes(): Hono {
       if (hooks.beforeDelete) {
         const result = await hooks.beforeDelete(id, ctx)
         if (result && !result.ok) {
-          return sendJson(c, { error: result.error }, 400)
+          return sendJson(c, { error: result.error }, hookErrorStatus(result.error))
         }
       }
 
@@ -366,6 +380,8 @@ export interface HookContext {
   query: Record<string, string>
   userId?: string
   tunnelAuthenticated: boolean
+  /** Full auth principal from the auth middleware (via, workspaceId, projectId, ...). */
+  auth?: any
   prisma: any
 }
 

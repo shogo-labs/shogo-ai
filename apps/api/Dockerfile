@@ -75,6 +75,7 @@ COPY --from=workspace /app/packages/pty-core ./packages/pty-core
 COPY --from=workspace /app/packages/shared-runtime ./packages/shared-runtime
 COPY --from=workspace /app/packages/sdk ./packages/sdk
 COPY --from=workspace /app/packages/model-catalog ./packages/model-catalog
+COPY --from=workspace /app/packages/authz ./packages/authz
 COPY --from=workspace /app/packages/shogo-worker ./packages/shogo-worker
 # SDK split-out packages (3a2798abc "refactor(sdk): split monorepo into focused
 # packages"). packages/sdk re-exports from all six; without these, importing
@@ -120,6 +121,7 @@ RUN mkdir -p node_modules/@shogo && \
     ln -sf ../../../packages/sdk node_modules/@shogo/sdk && \
     ln -sf ../../../packages/agent-runtime node_modules/@shogo/agent-runtime && \
     ln -sf ../../../packages/model-catalog node_modules/@shogo/model-catalog && \
+    ln -sf ../../../packages/authz node_modules/@shogo/authz && \
     chown -h appuser:appgroup node_modules/@shogo node_modules/@shogo/*
 
 RUN mkdir -p /app/workspaces /app/.claude && \

@@ -46,6 +46,7 @@ export const ProjectModel = types
     publishedTag: types.optional(types.string, ""),
     publishedAlwaysOn: types.optional(types.boolean, false),
     accessLevel: types.optional(types.enumeration("AccessLevel", ["anyone", "authenticated", "private", "password"]), "anyone"),
+    visibility: types.optional(types.enumeration("ProjectVisibility", ["workspace", "restricted"]), "workspace"),
     sitePasswordHash: types.optional(types.string, ""),
     category: types.maybeNull(types.enumeration("ProjectCategory", ["app", "website", "tool", "game"])),
     siteTitle: types.optional(types.string, ""),

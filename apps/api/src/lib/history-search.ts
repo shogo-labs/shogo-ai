@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { prisma } from './prisma'
+import { accessibleProjectsWhere } from './authz'
 
 export type HistoryKind = 'chat' | 'plan' | 'all'
 
@@ -49,12 +50,13 @@ const matches = (values: unknown[], terms: string[]) => {
 
 async function accessible(workspaceId: string, userId?: string | null): Promise<boolean> {
   if (!userId) return true
-  return Boolean(await (prisma as any).member.findFirst({ where: { workspaceId, userId }, select: { id: true } }))
+  return Boolean(await (prisma as any).member.findFirst({ where: { workspaceId, userId, projectId: null }, select: { id: true } }))
 }
 
-async function projectIds(workspaceId: string): Promise<string[]> {
+async function projectIds(workspaceId: string, userId?: string | null): Promise<string[]> {
+  const readable = userId ? { AND: [await accessibleProjectsWhere({ userId, via: 'session' }, workspaceId)] } : {}
   const projects = await (prisma as any).project.findMany({
-    where: { workspaceId, hidden: false },
+    where: { workspaceId, hidden: false, ...readable },
     select: { id: true },
   })
   return projects.map((project: any) => project.id)
@@ -64,7 +66,7 @@ export async function searchWorkspaceHistory(options: HistorySearchOptions): Pro
   if (!(await accessible(options.workspaceId, options.userId))) return { results: [], count: 0 }
   const limit = limitOf(options.limit)
   const terms = termsOf(options.query)
-  const ids = await projectIds(options.workspaceId)
+  const ids = await projectIds(options.workspaceId, options.userId)
   const results: HistorySearchResult[] = []
   if (!options.kind || options.kind === 'all' || options.kind === 'chat') {
     const sessions = await (prisma as any).chatSession.findMany({
@@ -143,7 +145,7 @@ export async function renderWorkspaceTranscript(
 
 async function searchWorkspaceSession(sessionId: string, options: { workspaceId: string; userId?: string | null }) {
   if (!(await accessible(options.workspaceId, options.userId))) return null
-  const ids = await projectIds(options.workspaceId)
+  const ids = await projectIds(options.workspaceId, options.userId)
   return (prisma as any).chatSession.findFirst({
     where: {
       id: sessionId,
@@ -158,7 +160,7 @@ async function searchWorkspaceSession(sessionId: string, options: { workspaceId:
 
 export async function readWorkspacePlan(planId: string, options: { workspaceId: string; userId?: string | null }) {
   if (!(await accessible(options.workspaceId, options.userId))) return null
-  const ids = await projectIds(options.workspaceId)
+  const ids = await projectIds(options.workspaceId, options.userId)
   const plan = await (prisma as any).plan.findFirst({
     where: { id: planId, OR: [{ workspaceId: options.workspaceId }, ...(ids.length ? [{ projectId: { in: ids } }] : [])] },
     include: { project: { select: { id: true, name: true } } },

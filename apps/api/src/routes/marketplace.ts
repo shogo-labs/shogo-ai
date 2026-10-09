@@ -4,6 +4,7 @@
 import { Hono } from 'hono'
 import { prisma, PricingModel, type Prisma } from '../lib/prisma'
 import type { AuthContext } from '../middleware/auth'
+import { authorize, can, denialResponse } from '../lib/authz'
 import { requireMarketplaceFeature } from '../middleware/marketplace-feature'
 import * as marketplaceService from '../services/marketplace.service'
 import * as installService from '../services/marketplace-install.service'
@@ -738,6 +739,8 @@ export function marketplaceRoutes() {
       if (!body.projectId || typeof body.projectId !== 'string') {
         return c.json({ error: 'projectId is required' }, 400)
       }
+      const decision = await authorize(c, 'project:read', { projectId: body.projectId })
+      if (!decision.ok) return denialResponse(c, decision)
       if (!body.title || typeof body.title !== 'string') {
         return c.json({ error: 'title is required' }, 400)
       }
@@ -1176,9 +1179,7 @@ export function marketplaceRoutes() {
     const install = await prisma.marketplaceInstall.findUnique({ where: { id: installId }, select: { userId: true, workspaceId: true } })
     if (!install) return c.json({ error: 'install_not_found' }, 404)
     if (install.userId !== authCtx.userId) {
-      const admin = opts.allowAdmins
-        ? await prisma.member.findFirst({ where: { workspaceId: install.workspaceId, userId: authCtx.userId, role: { in: ['owner', 'admin'] } }, select: { id: true } })
-        : null
+      const admin = opts.allowAdmins && (await can(c, 'workspace.settings:manage', { workspaceId: install.workspaceId }))
       if (!admin) return c.json({ error: 'Forbidden' }, 403)
     }
     return { installId, userId: authCtx.userId }

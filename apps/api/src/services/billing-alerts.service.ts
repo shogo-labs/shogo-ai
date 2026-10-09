@@ -62,7 +62,7 @@ async function resolveBillingContacts(
   const [workspace, members] = await Promise.all([
     prisma.workspace.findUnique({ where: { id: workspaceId }, select: { name: true } }),
     prisma.member.findMany({
-      where: { workspaceId, OR: [{ role: 'owner' }, { isBillingAdmin: true }] },
+      where: { workspaceId, projectId: null, OR: [{ role: 'owner' }, { isBillingAdmin: true }] },
       select: { user: { select: { email: true } } },
     }),
   ])

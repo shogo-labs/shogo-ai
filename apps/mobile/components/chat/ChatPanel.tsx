@@ -587,6 +587,8 @@ export interface ChatPanelProps {
    * Desktop provides this via ContextAggregator; mobile passes nothing (no-op).
    */
   enrichMessage?: (text: string) => Promise<string>
+  /** When set, the composer is disabled and shows this text as its placeholder (e.g. read-only project access). */
+  readOnlyReason?: string
   /**
    * Phone transcript top inset. `"chrome"` (default) reserves room for
    * `MobileWorkspaceShell`'s floating menu/bell buttons. `"floating-agent"`
@@ -989,6 +991,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
   isActive = true,
   ideMode = false,
   enrichMessage,
+  readOnlyReason,
   phoneTranscriptTopPadding = "chrome",
 }: ChatPanelProps) {
   const composer = composerProp ?? DEFAULT_CHAT_COMPOSER
@@ -7859,9 +7862,11 @@ const ChatPanelContent = observer(function ChatPanelContent({
                   <ExecutionBadge />
                   <ChatInput
                     onSubmit={handleInputSubmit}
-                    disabled={!currentSessionId}
+                    disabled={!currentSessionId || !!readOnlyReason}
                     placeholder={
-                      !featureId
+                      readOnlyReason
+                        ? readOnlyReason
+                        : !featureId
                         ? "Message"
                         : hasPendingQuestion
                           ? questionPresentation === "sheet"

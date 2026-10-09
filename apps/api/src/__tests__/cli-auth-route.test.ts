@@ -26,7 +26,13 @@ const userFindUnique = mock(async (_: any): Promise<any> => null)
 
 mock.module('../lib/prisma', () => ({
   prisma: {
-    member: { findFirst: memberFindFirst },
+    member: {
+      findFirst: memberFindFirst,
+      findMany: async ({ where }: any) =>
+        (await memberFindFirst({ where: { userId: where.userId, workspaceId: where.OR?.[0]?.workspaceId } }))
+          ? [{ role: 'member', projectId: null, isBillingAdmin: false }]
+          : [],
+    },
     workspace: { findUnique: workspaceFindUnique },
     user: { findUnique: userFindUnique },
   },

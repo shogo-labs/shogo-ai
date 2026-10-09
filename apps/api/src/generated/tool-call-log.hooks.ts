@@ -7,6 +7,13 @@
  * This file is safe to edit - it will not be overwritten.
  */
 
+import type { Principal } from "../lib/authz"
+import {
+  accessibleChatSessionsWhere,
+  authorizeChatSession,
+  CHAT_SESSION_SCOPE_SELECT,
+} from "./chat-session.hooks"
+
 /**
  * Result from a hook that can modify or reject the operation
  */
@@ -25,6 +32,7 @@ export interface HookContext {
   query: Record<string, string>
   userId?: string
   tunnelAuthenticated?: boolean
+  auth?: Principal
   prisma: any
 }
 
@@ -86,18 +94,7 @@ export const toolCallLogHooks: ToolCallLogHooks = {
     if (chatSessionId && !ctx.tunnelAuthenticated) {
       const session = await ctx.prisma.chatSession.findUnique({
         where: { id: chatSessionId },
-        include: {
-          project: {
-            include: {
-              workspace: {
-                include: { members: true },
-              },
-            },
-          },
-          workspace: {
-            include: { members: true },
-          },
-        },
+        select: CHAT_SESSION_SCOPE_SELECT,
       })
 
       if (!session) {
@@ -107,16 +104,10 @@ export const toolCallLogHooks: ToolCallLogHooks = {
         }
       }
 
-      const hasAccess =
-        session.project?.workspace?.members?.some((m: any) => m.userId === userId) ||
-        session.workspace?.members?.some((m: any) => m.userId === userId)
-
-      if (!hasAccess) {
-        return {
-          ok: false,
-          error: { code: "forbidden", message: "Access denied to this chat session" },
-        }
-      }
+      const access = await authorizeChatSession(ctx, session, "Access denied to this chat session")
+      if (!access.ok) return access
+    } else if (!ctx.tunnelAuthenticated) {
+      where.chatSession = await accessibleChatSessionsWhere(ctx)
     }
 
     return {
@@ -145,22 +136,7 @@ export const toolCallLogHooks: ToolCallLogHooks = {
 
     const toolCall = await ctx.prisma.toolCallLog.findUnique({
       where: { id },
-      include: {
-        chatSession: {
-          include: {
-            project: {
-              include: {
-                workspace: {
-                  include: { members: true },
-                },
-              },
-            },
-            workspace: {
-              include: { members: true },
-            },
-          },
-        },
-      },
+      select: { chatSession: { select: CHAT_SESSION_SCOPE_SELECT } },
     })
 
     if (!toolCall) {
@@ -170,17 +146,6 @@ export const toolCallLogHooks: ToolCallLogHooks = {
       }
     }
 
-    const hasAccess =
-      toolCall.chatSession?.project?.workspace?.members?.some((m: any) => m.userId === userId) ||
-      toolCall.chatSession?.workspace?.members?.some((m: any) => m.userId === userId)
-
-    if (!hasAccess) {
-      return {
-        ok: false,
-        error: { code: "forbidden", message: "Access denied" },
-      }
-    }
-
-    return { ok: true }
+    return authorizeChatSession(ctx, toolCall.chatSession ?? {}, "Access denied")
   },
 }

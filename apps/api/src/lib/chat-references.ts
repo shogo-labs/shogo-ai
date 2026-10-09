@@ -19,6 +19,7 @@
  */
 
 import { prisma } from './prisma'
+import { accessibleProjectsWhere, loadAccess } from './authz'
 import { readWorkspacePlan, renderWorkspaceTranscript } from './history-search'
 
 /** Max projects to enumerate in a workspace reference summary. */
@@ -47,7 +48,7 @@ export async function enrichWorkspaceReferences(
 
     try {
       const member = await prisma.member.findFirst({
-        where: { userId: actingUserId, workspaceId: ref.id },
+        where: { userId: actingUserId, workspaceId: ref.id, projectId: null },
         select: { id: true },
       })
       if (!member) {
@@ -65,8 +66,9 @@ export async function enrichWorkspaceReferences(
         continue
       }
 
+      const readable = await accessibleProjectsWhere({ userId: actingUserId, via: 'session' }, ref.id)
       const projects = await prisma.project.findMany({
-        where: { workspaceId: ref.id, hidden: false },
+        where: { workspaceId: ref.id, hidden: false, AND: [readable] },
         select: { name: true },
         orderBy: { name: 'asc' },
         take: MAX_WORKSPACE_PROJECTS,
@@ -103,26 +105,9 @@ export async function enrichWorkspaceReferences(
   return changed
 }
 
-/**
- * True when `userId` can access `projectId`. Workspace membership grants access
- * to every project in that workspace; otherwise a project-scoped membership row
- * is required. Mirrors `verifyProjectAccess` in server.ts.
- */
-async function userCanAccessProject(
-  userId: string,
-  projectId: string,
-  workspaceId: string,
-): Promise<boolean> {
-  const wsMember = await prisma.member.findFirst({
-    where: { userId, workspaceId },
-    select: { id: true },
-  })
-  if (wsMember) return true
-  const projMember = await prisma.member.findFirst({
-    where: { userId, projectId },
-    select: { id: true },
-  })
-  return !!projMember
+/** True when `userId` can read `projectId` (restricted projects included). */
+async function userCanAccessProject(userId: string, projectId: string): Promise<boolean> {
+  return (await loadAccess({ userId, via: 'session' }, { projectId })).permissions.has('project:read')
 }
 
 /**
@@ -177,7 +162,7 @@ export async function enrichProjectReferences(
         continue
       }
 
-      const allowed = await userCanAccessProject(actingUserId, ref.id, project.workspaceId)
+      const allowed = await userCanAccessProject(actingUserId, ref.id)
       if (!allowed) {
         changed = true
         continue

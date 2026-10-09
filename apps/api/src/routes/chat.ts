@@ -251,7 +251,7 @@ export function chatRoutes() {
     // auth-via paths (apiKey/session/runtimeToken/tunnel) — we
     // already filtered out runtime-token above, so the remaining
     // paths just verify workspace membership.
-    const authz = await authorizeProject(c, projectId)
+    const authz = await authorizeProject(c, projectId, 'project:update')
     if (!authz.ok) {
       return c.json(
         { error: { code: authz.code, message: authz.message } },

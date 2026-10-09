@@ -110,7 +110,7 @@ export const localWorkspaceHooks: WorkspaceHooks = {
       data: {
         where: {
           members: {
-            some: { userId: ctx.userId },
+            some: { userId: ctx.userId, projectId: null },
           },
         },
       },
@@ -125,7 +125,7 @@ export const localWorkspaceHooks: WorkspaceHooks = {
       }
     }
     const member = await ctx.prisma.member.findFirst({
-      where: { userId: ctx.userId, workspaceId: id },
+      where: { userId: ctx.userId, workspaceId: id, projectId: null },
     })
     return member
       ? { ok: true }

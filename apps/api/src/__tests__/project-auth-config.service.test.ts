@@ -128,16 +128,21 @@ mock.module('../lib/prisma', () => ({
         db.projects.get(where.id) ?? null,
     },
     user: {
-      findUnique: async ({ where }: { where: { email: string } }) => {
-        for (const u of db.users.values()) if (u.email.toLowerCase() === where.email.toLowerCase()) return u
+      findUnique: async ({ where }: { where: { email?: string; id?: string } }) => {
+        if (where.id) return db.users.get(where.id) ?? null
+        for (const u of db.users.values()) if (u.email.toLowerCase() === where.email!.toLowerCase()) return u
         return null
       },
     },
     member: {
       findFirst: async ({ where }: { where: { userId: string; workspaceId: string } }) =>
         db.members.find((m) => m.userId === where.userId && m.workspaceId === where.workspaceId) ?? null,
-      findMany: async ({ where }: { where: { userId: { in: string[] }; workspaceId: string } }) =>
-        db.members.filter((m) => where.userId.in.includes(m.userId) && m.workspaceId === where.workspaceId),
+      findMany: async ({ where }: { where: any }) =>
+        where.OR
+          ? db.members
+              .filter((m) => m.userId === where.userId && m.workspaceId === where.OR[0].workspaceId)
+              .map(() => ({ role: 'member', projectId: null, isBillingAdmin: false }))
+          : db.members.filter((m) => where.userId.in.includes(m.userId) && m.workspaceId === where.workspaceId),
     },
     invitation: {
       findFirst: async ({

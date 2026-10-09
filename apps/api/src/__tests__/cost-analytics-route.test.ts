@@ -42,7 +42,12 @@ let members: Member[] = []
 
 mock.module('../lib/prisma', () => ({
   prisma: {
+    user: { findUnique: async () => ({ role: 'user' }) },
     member: {
+      findMany: async (args: any) =>
+        members
+          .filter((m) => m.userId === args.where.userId && args.where.OR.some((o: any) => o.workspaceId === m.workspaceId))
+          .map((m) => ({ role: m.role, projectId: null, isBillingAdmin: false })),
       findFirst: async (args: any) => {
         const w = args.where
         return (
@@ -118,7 +123,7 @@ beforeEach(() => {
   }
 })
 
-function seedMember(role: 'owner' | 'admin' | 'editor' | 'viewer' = 'editor') {
+function seedMember(role: 'owner' | 'admin' | 'member' | 'viewer' = 'member') {
   members.push({ userId: 'user_1', workspaceId: WS, role })
 }
 
@@ -299,7 +304,7 @@ describe('budget-alerts', () => {
   })
 
   test('DELETE requires admin', async () => {
-    seedMember('editor')
+    seedMember('member')
     const res = await call('DELETE', PATH('budget-alerts/ba_1'))
     expect(res.status).toBe(403)
   })
@@ -454,7 +459,7 @@ describe('experiments', () => {
 
 describe('shadow experiment', () => {
   test('requires admin', async () => {
-    seedMember('editor')
+    seedMember('member')
     const res = await call('POST', PATH('experiments/shadow'), {
       agentType: 'chat', modelA: 'a', modelB: 'b',
     })

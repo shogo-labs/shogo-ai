@@ -14,6 +14,9 @@ import { dockerClassBlockedMessage } from '../lib/runtime-class-setting'
 import { getRuntimeManager } from '../lib/runtime/manager'
 import { normalizeProjectSettings, parseProjectSettings } from '../lib/project-settings'
 import { deleteChatAttachmentPrefix } from '../lib/chat-attachments'
+import { accessibleProjectsWhere, type Principal } from '../lib/authz'
+import { ensureRestrictedAdmins } from '../lib/authz/project-access'
+import { hookAccess, hookAuthorize, hookPrincipal, hookRequire } from '../lib/authz/hooks'
 
 /** projectId -> workspaceId, recorded in beforeDelete for use in afterDelete. */
 const deletingProjectWorkspaces = new Map<string, string>()
@@ -37,6 +40,7 @@ export interface HookContext {
   userId?: string
   /** True when authenticated via cloud tunnel — local DB membership checks can be skipped. */
   tunnelAuthenticated?: boolean
+  auth?: Principal
   prisma: any
 }
 
@@ -62,17 +66,10 @@ export interface ProjectHooks {
   afterDelete?: (id: string, ctx: HookContext) => Promise<void>
 }
 
-/**
- * Check if the current user is a super admin.
- */
-async function isSuperAdmin(ctx: HookContext): Promise<boolean> {
-  if (!ctx.userId) return false
-  const user = await ctx.prisma.user.findUnique({
-    where: { id: ctx.userId },
-    select: { role: true },
-  })
-  return user?.role === 'super_admin'
-}
+/** Fields only the project's publish flow may change. */
+const PUBLISH_FIELDS = ['accessLevel', 'sitePasswordHash', 'publishedSubdomain', 'publishedAt', 'publishedAlwaysOn'] as const
+/** Fields the generic PATCH silently drops. */
+const IMMUTABLE_FIELDS = ['workspaceId', 'createdBy', 'createdAt'] as const
 
 /**
  * Default Project hooks (customize as needed)
@@ -93,7 +90,6 @@ export const projectHooks: ProjectHooks = {
       }
     }
 
-    const superAdmin = await isSuperAdmin(ctx)
     let workspaceId = ctx.query.workspaceId
 
     // Remap cloud workspaceId to local workspace for tunnel-authenticated requests
@@ -102,106 +98,41 @@ export const projectHooks: ProjectHooks = {
       if (localWs) workspaceId = localWs.id
     }
 
-    if (workspaceId) {
-      if (!superAdmin && !ctx.tunnelAuthenticated) {
-        const membership = await ctx.prisma.member.findFirst({
-          where: { userId, workspaceId },
-        })
-
-        if (!membership) {
-          return {
-            ok: false,
-            error: { code: "forbidden", message: "Access denied to this workspace" },
-          }
-        }
-      }
-
+    // Workspace members see open projects, owners/admins see all, guests see
+    // only the projects they were added to; restricted projects stay hidden.
+    const scope = await accessibleProjectsWhere(hookPrincipal(ctx), workspaceId || undefined)
+    if (workspaceId && 'id' in scope && Array.isArray((scope.id as any)?.in) && (scope.id as any).in.length === 0) {
       return {
-        ok: true,
-        data: {
-          where: { workspaceId, hidden: false },
-          include: { workspace: true, folder: true },
-        },
+        ok: false,
+        error: { code: "forbidden", message: "Access denied to this workspace" },
       }
     }
 
-    // Tunnel-authenticated: return all local projects (no membership filter)
-    if (ctx.tunnelAuthenticated) {
-      return {
-        ok: true,
-        data: {
-          where: { hidden: false },
-          include: { workspace: true, folder: true },
-        },
-      }
-    }
-
-    // No workspaceId — scope to the user's own memberships (even for super admins)
     return {
       ok: true,
       data: {
-        where: {
-          hidden: false,
-          OR: [
-            { workspace: { members: { some: { userId } } } },
-            { members: { some: { userId } } },
-          ],
-        },
+        where: { AND: [scope, { hidden: false }] },
         include: { workspace: true, folder: true },
       },
     }
   },
 
   /**
-   * Verify user has access to the project's workspace before returning.
-   * Super admins can access any project.
+   * Require project:read (guests only see their own projects).
+
    */
   beforeGet: async (id, ctx) => {
-    const userId = ctx.userId
-    if (!userId) {
+    if (!ctx.userId) {
       return {
         ok: false,
         error: { code: "unauthorized", message: "Authentication required" },
       }
     }
-
-    // Super admins and tunnel-authenticated users bypass local membership checks
-    if (await isSuperAdmin(ctx)) return { ok: true }
-    if (ctx.tunnelAuthenticated) return { ok: true }
-
-    // Get project and check workspace membership
-    const project = await ctx.prisma.project.findUnique({
-      where: { id },
-      include: { workspace: { include: { members: true } } },
-    })
-
-    if (!project) {
-      return {
-        ok: false,
-        error: { code: "not_found", message: "Project not found" },
-      }
-    }
-
-    // Check workspace membership
-    const hasWorkspaceAccess = project.workspace.members.some((m: any) => m.userId === userId)
-    if (hasWorkspaceAccess) return { ok: true }
-
-    // Check direct project membership
-    const projectMember = await ctx.prisma.member.findFirst({
-      where: { userId, projectId: id },
-    })
-    if (projectMember) return { ok: true }
-
-    return {
-      ok: false,
-      error: { code: "forbidden", message: "Access denied to this project" },
-    }
+    const denied = await hookRequire(ctx, 'project:read', { projectId: id })
+    return denied ?? { ok: true }
   },
 
-  /**
-   * Verify user can create projects in the target workspace.
-   * Super admins can create in any workspace.
-   */
+  /** Require project:create in the target workspace. */
   beforeCreate: async (input, ctx) => {
     // Never allow client-supplied id — always let Prisma generate a UUID.
     // A crafted id could trigger SQL injection downstream (e.g. database provisioning).
@@ -233,19 +164,10 @@ export const projectHooks: ProjectHooks = {
       }
     }
 
-    // Super admins can create in any workspace.
-    // Tunnel-authenticated requests already had membership verified by the cloud proxy.
-    if (!(await isSuperAdmin(ctx)) && !ctx.tunnelAuthenticated) {
-      const membership = await ctx.prisma.member.findFirst({
-        where: { userId, workspaceId },
-      })
-
-      if (!membership) {
-        return {
-          ok: false,
-          error: { code: "forbidden", message: "Access denied to this workspace" },
-        }
-      }
+    const denied = await hookAuthorize(ctx, 'project:create', { workspaceId }, 'POST /api/projects')
+    if (denied) return denied
+    if (input.visibility !== undefined && input.visibility !== 'workspace' && input.visibility !== 'restricted') {
+      return { ok: false, error: { code: "bad_request", message: "visibility must be workspace or restricted" } }
     }
 
     // Normalize tier and status to lowercase, set defaults if missing
@@ -313,6 +235,12 @@ export const projectHooks: ProjectHooks = {
    * (heartbeat disabled, economy model) are used.
    */
   afterCreate: async (record, ctx) => {
+    if (record.visibility === 'restricted') {
+      await ensureRestrictedAdmins(ctx.prisma, record, ctx.userId).catch((err) =>
+        console.error('[project.afterCreate] restricted admin grant failed:', err),
+      )
+    }
+
     const existing = await ctx.prisma.agentConfig.findUnique({
       where: { projectId: record.id },
     })
@@ -366,8 +294,8 @@ export const projectHooks: ProjectHooks = {
   },
 
   /**
-   * Verify user has access to update the project (workspace member or project editor+).
-   * Super admins can update any project.
+   * Require project:update (publish fields need project:publish, visibility
+   * needs project.members:manage).
    */
   beforeUpdate: async (id, input, ctx) => {
     // Mutate in place: the access-control branches below don't return
@@ -384,42 +312,25 @@ export const projectHooks: ProjectHooks = {
       }
     }
 
-    // `project` is fetched lazily below only for the non-admin/non-tunnel
-    // path, then reused (rather than re-queried) by the instance-tier gate
-    // further down if a workspaceId lookup is needed there too.
-    let project: any = null
-    let authorized = (await isSuperAdmin(ctx)) || !!ctx.tunnelAuthenticated
-
-    if (!authorized) {
-      project = await ctx.prisma.project.findUnique({
-        where: { id },
-        include: { workspace: { include: { members: true } } },
-      })
-
-      if (!project) {
-        return {
-          ok: false,
-          error: { code: "not_found", message: "Project not found" },
-        }
-      }
-
-      const hasWorkspaceAccess = project.workspace.members.some((m: any) => m.userId === userId)
-      if (hasWorkspaceAccess) {
-        authorized = true
-      } else {
-        const projectMember = await ctx.prisma.member.findFirst({
-          where: { userId, projectId: id },
-        })
-        if (projectMember && projectMember.role !== 'viewer') authorized = true
-      }
+    for (const field of IMMUTABLE_FIELDS) {
+      if (input) delete input[field]
+    }
+    if (input?.visibility !== undefined && input.visibility !== 'workspace' && input.visibility !== 'restricted') {
+      return { ok: false, error: { code: "bad_request", message: "visibility must be workspace or restricted" } }
     }
 
-    if (!authorized) {
-      return {
-        ok: false,
-        error: { code: "forbidden", message: "Access denied to this project" },
-      }
+    const access = await hookAccess(ctx, { projectId: id })
+    if (!access.exists) {
+      return { ok: false, error: { code: "not_found", message: "Project not found" } }
     }
+    const required =
+      input?.visibility !== undefined ? 'project.members:manage'
+        : PUBLISH_FIELDS.some((f) => input?.[f] !== undefined) ? 'project:publish'
+          : 'project:update'
+    const denied = required === 'project:update'
+      ? await hookAuthorize(ctx, required, { projectId: id }, `PATCH /api/projects/${id}`)
+      : await hookRequire(ctx, required, { projectId: id })
+    if (denied) return denied
 
     // Docker-class ("Tier 2") minimum compute tier — same rationale as
     // `beforeCreate`'s check. Only triggers a lookup when the PATCH is
@@ -435,12 +346,10 @@ export const projectHooks: ProjectHooks = {
       incomingTechStackId &&
       (getMinimumInstanceSize(incomingTechStackId) || dockerClassBlockedMessage(incomingTechStackId))
     ) {
-      const existing =
-        project ??
-        (await ctx.prisma.project.findUnique({
-          where: { id },
-          select: { workspaceId: true, settings: true },
-        }))
+      const existing = await ctx.prisma.project.findUnique({
+        where: { id },
+        select: { workspaceId: true, settings: true },
+      })
       if (existing) {
         const currentTechStackId = parseProjectSettings(existing.settings)?.techStackId as
           | string
@@ -472,10 +381,15 @@ export const projectHooks: ProjectHooks = {
     return { ok: true }
   },
 
-  /**
-   * Verify user has access to delete the project (workspace admin+ or project admin+).
-   * Super admins can delete any project.
-   */
+  afterUpdate: async (record, ctx) => {
+    if (record.visibility === 'restricted' && ctx.body?.visibility === 'restricted') {
+      await ensureRestrictedAdmins(ctx.prisma, record, ctx.userId).catch((err) =>
+        console.error('[project.afterUpdate] restricted admin grant failed:', err),
+      )
+    }
+  },
+
+  /** Require project:delete (workspace owner/admin or project admin). */
   beforeDelete: async (id, ctx) => {
     // Remember the workspace so afterDelete can tell team chat the agent is gone.
     try {
@@ -492,53 +406,25 @@ export const projectHooks: ProjectHooks = {
       }
     }
 
-    if (await isSuperAdmin(ctx)) return { ok: true }
-    if (ctx.tunnelAuthenticated) return { ok: true }
-
-    const project = await ctx.prisma.project.findUnique({
-      where: { id },
-      include: { workspace: { include: { members: true } } },
-    })
-
-    if (!project) {
-      return {
-        ok: false,
-        error: { code: "not_found", message: "Project not found" },
-      }
+    const denied = await hookRequire(ctx, 'project:delete', { projectId: id })
+    if (denied) {
+      return denied.error.code === 'forbidden'
+        ? { ok: false, error: { code: "forbidden", message: "Only admins and owners can delete projects" } }
+        : denied
     }
 
-    const cleanupChatAttachments = async () => {
-      try {
-        const sessions = await ctx.prisma.chatSession.findMany({
-          where: { contextType: 'project', contextId: id },
-          select: { id: true },
-        })
-        await Promise.all(
-          sessions.map((session: { id: string }) => deleteChatAttachmentPrefix(session.id)),
-        )
-      } catch (error: any) {
-        console.warn(`[project.beforeDelete] attachment cleanup failed for ${id}:`, error?.message || error)
-      }
+    try {
+      const sessions = await ctx.prisma.chatSession.findMany({
+        where: { contextType: 'project', contextId: id },
+        select: { id: true },
+      })
+      await Promise.all(
+        sessions.map((session: { id: string }) => deleteChatAttachmentPrefix(session.id)),
+      )
+    } catch (error: any) {
+      console.warn(`[project.beforeDelete] attachment cleanup failed for ${id}:`, error?.message || error)
     }
-
-    const wsMember = project.workspace.members.find((m: any) => m.userId === userId)
-    if (wsMember && (wsMember.role === 'owner' || wsMember.role === 'admin')) {
-      await cleanupChatAttachments()
-      return { ok: true }
-    }
-
-    const projectMember = await ctx.prisma.member.findFirst({
-      where: { userId, projectId: id },
-    })
-    if (projectMember && (projectMember.role === 'owner' || projectMember.role === 'admin')) {
-      await cleanupChatAttachments()
-      return { ok: true }
-    }
-
-    return {
-      ok: false,
-      error: { code: "forbidden", message: "Only admins and owners can delete projects" },
-    }
+    return { ok: true }
   },
 
   /**

@@ -53,11 +53,16 @@ function resetTask() {
 }
 
 const prismaStub = {
+  user: {
+    findUnique: async () => ({ role: 'user' }),
+  },
   member: {
     findFirst: async () => ({ id: 'member-1' }),
+    findMany: async () => [{ role: 'member', projectId: null, isBillingAdmin: false }],
   },
   project: {
     findFirst: async () => ({ id: 'project-1' }),
+    findUnique: async () => ({ id: 'project-1', workspaceId: 'workspace-1', visibility: 'workspace' }),
   },
   chatSession: {
     findFirst: async () => ({ id: 'session-1' }),

@@ -159,7 +159,7 @@ export async function fallbackBillingUser(workspaceId: string, projectId: string
   const recent = projectId ? getProjectUser(projectId) : undefined
   if (recent) return recent
   const owner = await db.member.findFirst({
-    where: { workspaceId, role: 'owner' },
+    where: { workspaceId, projectId: null, role: 'owner' },
     orderBy: { createdAt: 'asc' },
     select: { userId: true },
   })

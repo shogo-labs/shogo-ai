@@ -117,14 +117,20 @@ mock.module('../../lib/prisma', () => ({
         // Mimic Prisma: apply the `hidden` filter the route passes in so the
         // test can assert hidden projects never reach the response, exactly
         // as a real hidden:false where-clause would filter them at the DB.
-        const hiddenFilter = args?.where?.hidden
+        const clauses = args?.where?.AND ?? [args?.where ?? {}]
+        const hiddenFilter = clauses.find((w: any) => w && 'hidden' in w)?.hidden
         return store.workspaceProjects.filter((p) =>
           hiddenFilter === undefined ? true : Boolean(p.hidden) === hiddenFilter,
         )
       },
     },
+    user: {
+      findUnique: async () => ({ role: 'user' }),
+    },
     member: {
       findFirst: async () => store.workspaceMember,
+      findMany: async () =>
+        store.workspaceMember ? [{ role: 'member', projectId: null, isBillingAdmin: false }] : [],
     },
     agentConfig: {
       updateMany: async () => {
@@ -237,7 +243,7 @@ describe('GET /workspaces/:workspaceId/projects', () => {
     expect(res.status).toBe(200)
     const json = await res.json() as { projects: Array<{ id: string }> }
     expect(json.projects.map((p) => p.id)).toEqual(['proj-visible'])
-    expect(store.projectFindManyCalledWith?.where).toMatchObject({ workspaceId: 'ws-1', hidden: false })
+    expect(store.projectFindManyCalledWith?.where?.AND?.[0]).toMatchObject({ workspaceId: 'ws-1', hidden: false })
   })
 })
 

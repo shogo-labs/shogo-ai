@@ -83,16 +83,19 @@ export const userHooks: UserHooks = {
       return { ok: true, data: { where: {} } }
     }
 
-    // Only show users who are in the same workspaces as the current user
+    // Only show users who are in the same workspaces as the current user.
+    // Workspace-scoped rows only: project guests carry workspaceId too but
+    // must not see (or be seen by) the rest of the workspace.
     return {
       ok: true,
       data: {
         where: {
           memberships: {
             some: {
+              projectId: null,
               workspace: {
                 members: {
-                  some: { userId },
+                  some: { userId, projectId: null },
                 },
               },
             },
@@ -125,31 +128,19 @@ export const userHooks: UserHooks = {
       return { ok: true }
     }
 
-    // Check if the target user is in any shared workspaces
+    // Check if the target user is in any shared workspaces (workspace-scoped
+    // membership for both; project guest rows don't count)
     const sharedWorkspace = await ctx.prisma.workspace.findFirst({
       where: {
-        members: {
-          some: {
-            OR: [
-              { userId: userId },
-              { userId: id },
-            ],
-          },
-        },
+        AND: [
+          { members: { some: { userId, projectId: null } } },
+          { members: { some: { userId: id, projectId: null } } },
+        ],
       },
-      include: {
-        members: {
-          where: {
-            OR: [
-              { userId: userId },
-              { userId: id },
-            ],
-          },
-        },
-      },
+      select: { id: true },
     })
 
-    if (!sharedWorkspace || sharedWorkspace.members.length < 2) {
+    if (!sharedWorkspace) {
       return {
         ok: false,
         error: { code: "forbidden", message: "Access denied" },
@@ -209,12 +200,13 @@ export const userHooks: UserHooks = {
           some: {
             userId: id,
             role: 'owner',
+            projectId: null,
           },
         },
       },
       include: {
         members: {
-          where: { role: 'owner' },
+          where: { role: 'owner', projectId: null },
         },
         subscriptions: {
           where: {

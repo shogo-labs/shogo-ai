@@ -47,7 +47,10 @@ process.env.WORKSPACES_DIR = WORKSPACES_ROOT
 const prismaState: { projects: Map<string, any> } = { projects: new Map() }
 
 const mockPrisma = {
-  member: { findFirst: mock(async () => ({ id: 'member-1', role: 'admin' })) },
+  member: {
+    findFirst: mock(async () => ({ id: 'member-1', role: 'admin' })),
+    findMany: mock(async () => [{ role: 'admin', projectId: null, isBillingAdmin: false }]),
+  },
   user: { findUnique: mock(async () => ({ role: 'admin' })) },
   project: {
     create: mock(async ({ data }: any) => {

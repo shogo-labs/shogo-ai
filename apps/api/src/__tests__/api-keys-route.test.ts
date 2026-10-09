@@ -21,6 +21,9 @@ import { Hono } from 'hono'
 // ─── prisma mock ──────────────────────────────────────────────────────────
 
 const memberFindFirst = mock(async (_: any): Promise<any> => null)
+// RBAC engine membership lookup (default set in beforeEach: caller owns the workspace).
+const memberFindMany = mock(async (_: any): Promise<any[]> => [])
+const userFindUnique = mock(async (_: any): Promise<any> => ({ role: 'user' }))
 const apiKeyCreate = mock(async (_: any): Promise<any> => ({}))
 const apiKeyFindMany = mock(async (_: any): Promise<any[]> => [])
 const apiKeyFindUnique = mock(async (_: any): Promise<any> => null)
@@ -29,7 +32,8 @@ const workspaceFindUnique = mock(async (_: any): Promise<any> => null)
 
 mock.module('../lib/prisma', () => ({
   prisma: {
-    member: { findFirst: memberFindFirst },
+    member: { findFirst: memberFindFirst, findMany: memberFindMany },
+    user: { findUnique: userFindUnique },
     apiKey: {
       create: apiKeyCreate,
       findMany: apiKeyFindMany,
@@ -104,6 +108,12 @@ beforeEach(() => {
     userId: 'user-1',
     workspaceId: 'ws-1',
   }))
+  memberFindMany.mockReset()
+  memberFindMany.mockImplementation(async () => [
+    { role: 'owner', projectId: null, isBillingAdmin: false },
+  ])
+  userFindUnique.mockReset()
+  userFindUnique.mockImplementation(async () => ({ role: 'user' }))
   apiKeyCreate.mockReset()
   apiKeyCreate.mockImplementation(async ({ data }: any) => ({
     id: 'apikey-1',
@@ -174,7 +184,7 @@ describe('POST /api-keys — create user key', () => {
   })
 
   test('403 when user is not a member of the workspace', async () => {
-    memberFindFirst.mockImplementation(async () => null)
+    memberFindMany.mockImplementation(async () => [])
     const res = await authedApp().request('/api/api-keys', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -295,7 +305,7 @@ describe('POST /api-keys/device — mint device key', () => {
   })
 
   test('explicit workspaceId: 403 when user is not a member', async () => {
-    memberFindFirst.mockImplementation(async () => null)
+    memberFindMany.mockImplementation(async () => [])
     const res = await authedApp().request('/api/api-keys/device', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -399,7 +409,7 @@ describe('GET /api-keys — list', () => {
   })
 
   test('403 when not a member', async () => {
-    memberFindFirst.mockImplementation(async () => null)
+    memberFindMany.mockImplementation(async () => [])
     const res = await authedApp().request('/api/api-keys?workspaceId=ws-1')
     expect(res.status).toBe(403)
   })
@@ -466,7 +476,7 @@ describe('DELETE /api-keys/:id — revoke', () => {
       id: 'k1',
       workspaceId: 'ws-OTHER',
     }))
-    memberFindFirst.mockImplementation(async () => null)
+    memberFindMany.mockImplementation(async () => [])
     const res = await authedApp().request('/api/api-keys/k1', { method: 'DELETE' })
     expect(res.status).toBe(403)
     expect(apiKeyUpdate).not.toHaveBeenCalled() // crucial: no soft-delete on unauthorized target

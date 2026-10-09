@@ -190,7 +190,21 @@ export function generateModelRoutes(
     '    query: Object.fromEntries(new URL(c.req.url).searchParams),',
     '    userId: auth?.userId,',
     '    tunnelAuthenticated: !!auth?.tunnelAuthenticated,',
+    '    auth,',
     '    prisma: getPrisma(),',
+    '  }',
+    '}',
+    '',
+    '/**',
+    ' * HTTP status for a hook rejection. Hooks signal authorization failures',
+    ' * with `unauthorized` / `forbidden` / `not_found` codes.',
+    ' */',
+    'function hookErrorStatus(error: { code?: string } | undefined): number {',
+    '  switch (error?.code) {',
+    '    case "unauthorized": return 401',
+    '    case "forbidden": return 403',
+    '    case "not_found": return 404',
+    '    default: return 400',
     '  }',
     '}',
     '',
@@ -286,7 +300,7 @@ export function generateModelRoutes(
       lines.push('      if (hooks.beforeList) {')
       lines.push('        const result = await hooks.beforeList(ctx)')
       lines.push('        if (result && !result.ok) {')
-      lines.push('          return sendJson(c, { error: result.error }, 400)')
+      lines.push('          return sendJson(c, { error: result.error }, hookErrorStatus(result.error))')
       lines.push('        }')
       lines.push('        if (result?.data) {')
       lines.push('          where = result.data.where || where')
@@ -326,7 +340,7 @@ export function generateModelRoutes(
   lines.push('      if (hooks.beforeGet) {')
   lines.push('        const result = await hooks.beforeGet(id, ctx)')
   lines.push('        if (result && !result.ok) {')
-  lines.push('          return sendJson(c, { error: result.error }, result.error?.code === "not_found" ? 404 : 400)')
+  lines.push('          return sendJson(c, { error: result.error }, hookErrorStatus(result.error))')
   lines.push('        }')
   lines.push('      }')
   lines.push('')
@@ -358,7 +372,7 @@ export function generateModelRoutes(
   lines.push('      if (hooks.beforeCreate) {')
   lines.push('        const result = await hooks.beforeCreate(body, ctx)')
   lines.push('        if (result && !result.ok) {')
-  lines.push('          return sendJson(c, { error: result.error }, 400)')
+  lines.push('          return sendJson(c, { error: result.error }, hookErrorStatus(result.error))')
   lines.push('        }')
   lines.push('        if (result?.data) {')
   lines.push('          body = result.data')
@@ -402,7 +416,7 @@ export function generateModelRoutes(
   lines.push('      if (hooks.beforeUpdate) {')
   lines.push('        const result = await hooks.beforeUpdate(id, body, ctx)')
   lines.push('        if (result && !result.ok) {')
-  lines.push('          return sendJson(c, { error: result.error }, 400)')
+  lines.push('          return sendJson(c, { error: result.error }, hookErrorStatus(result.error))')
   lines.push('        }')
   lines.push('        if (result?.data) {')
   lines.push('          body = result.data')
@@ -445,7 +459,7 @@ export function generateModelRoutes(
   lines.push('      if (hooks.beforeDelete) {')
   lines.push('        const result = await hooks.beforeDelete(id, ctx)')
   lines.push('        if (result && !result.ok) {')
-  lines.push('          return sendJson(c, { error: result.error }, 400)')
+  lines.push('          return sendJson(c, { error: result.error }, hookErrorStatus(result.error))')
   lines.push('        }')
   lines.push('      }')
   lines.push('')
@@ -512,6 +526,8 @@ export function generateModelHooks(model: PrismaModel, config: RouteGeneratorCon
     '  query: Record<string, string>',
     '  userId?: string',
     '  tunnelAuthenticated: boolean',
+    '  /** Full auth principal from the auth middleware (via, workspaceId, projectId, ...). */',
+    '  auth?: any',
     '  prisma: any',
     '}',
     '',

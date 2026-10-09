@@ -22,6 +22,7 @@ import {
   ChevronDown,
   ChevronRight,
   Folder,
+  Lock,
   Pencil,
   Pin,
   PinOff,
@@ -31,6 +32,10 @@ import {
 } from "lucide-react-native";
 import { cn } from "@shogo/shared-ui/primitives";
 import { useDomainActions, useDomainHttp } from "../../../contexts/domain";
+import {
+  projectPermissionsFor,
+  usePermissions,
+} from "../../../hooks/usePermissions";
 import { api } from "../../../lib/api";
 import { defaultTabForProject } from "../../../lib/project-preview-tab";
 import {
@@ -195,6 +200,10 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
   const params = useLocalSearchParams<{ chatSessionId?: string }>();
   const http = useDomainHttp();
   const actions = useDomainActions();
+  const workspaceAccess = usePermissions({ workspaceId: project.workspaceId });
+  const projectPermissions = projectPermissionsFor(project, workspaceAccess);
+  const canEditProject = projectPermissions.has("project:update");
+  const canDeleteProject = projectPermissions.has("project:delete");
   const [expanded, setExpanded] = useState(false);
   // Chats are fetched directly into local state (rather than the shared
   // chat-session collection) because the collection's loaders prune items
@@ -608,16 +617,20 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
   }
 
   const projectMenuItems: SidebarMenuEntry[] = [
-    {
-      label: "New chat",
-      icon: <Plus size={14} className="text-muted-foreground" />,
-      onSelect: handleCreateChat,
-    },
-    {
-      label: "Rename",
-      icon: <Pencil size={14} className="text-muted-foreground" />,
-      onSelect: startEditProject,
-    },
+    ...(canEditProject
+      ? [
+          {
+            label: "New chat",
+            icon: <Plus size={14} className="text-muted-foreground" />,
+            onSelect: handleCreateChat,
+          },
+          {
+            label: "Rename",
+            icon: <Pencil size={14} className="text-muted-foreground" />,
+            onSelect: startEditProject,
+          },
+        ]
+      : []),
     {
       label: isPinned ? "Unpin" : "Pin",
       icon: isPinned ? (
@@ -627,13 +640,17 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
       ),
       onSelect: () => onTogglePin?.(project.id, !isPinned),
     },
-    { separator: true },
-    {
-      label: "Delete",
-      danger: true,
-      icon: <Trash2 size={14} className="text-destructive" />,
-      onSelect: requestProjectDelete,
-    },
+    ...(canDeleteProject
+      ? [
+          { separator: true as const },
+          {
+            label: "Delete",
+            danger: true,
+            icon: <Trash2 size={14} className="text-destructive" />,
+            onSelect: requestProjectDelete,
+          },
+        ]
+      : []),
   ];
 
   const renderChatList = () => {
@@ -963,6 +980,12 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
             >
               {project.name || "Untitled"}
             </Text>
+            {project.visibility === "restricted" && (
+              <Lock
+                size={comfortable ? density.icon.xs : 10}
+                className="text-muted-foreground"
+              />
+            )}
           </Pressable>
           {mobileProjectFirstTapShowsChats ? (
             // Explicit "browse chats" affordance. The row itself now always
@@ -1034,9 +1057,9 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
           projectName={project.name || "Untitled"}
           isPinned={!!isPinned}
           onClose={closeNativeActions}
-          onRename={startEditProject}
+          onRename={canEditProject ? startEditProject : undefined}
           onTogglePin={() => onTogglePin?.(project.id, !isPinned)}
-          onDelete={requestProjectDelete}
+          onDelete={canDeleteProject ? requestProjectDelete : undefined}
         />
       )}
       <Modal

@@ -84,7 +84,13 @@ const mockPrisma = {
     findFirst: mock(() =>
       Promise.resolve({ id: 'm-1', userId: 'user-1', workspaceId: 'ws-1' }),
     ),
+    findMany: mock(async ({ where }: any) =>
+      where.userId === 'user-1' && where.OR?.some((w: any) => w.workspaceId === 'ws-1' && w.projectId === null)
+        ? [{ role: 'member', projectId: null, isBillingAdmin: false }]
+        : [],
+    ),
   },
+  user: { findUnique: mock(async () => ({ role: 'user' })) },
   chatMessage: { create: chatMessageCreate, update: chatMessageUpdate },
   chatSession: { findUnique: chatSessionFindUnique },
   project: { findUnique: projectFindUnique, update: mock(async () => ({})) },

@@ -69,6 +69,13 @@ const mockPrisma = {
       const workspaceId = args.where?.workspaceId
       return memberByUserAndWorkspace.get(memberKey(userId, workspaceId)) ?? null
     }),
+    findMany: mock(async (args: any) => {
+      const userId = args.where?.userId
+      const workspaceId = args.where?.OR?.find((c: any) => c.projectId === null)?.workspaceId
+      return memberByUserAndWorkspace.has(memberKey(userId, workspaceId))
+        ? [{ role: 'member', projectId: null, isBillingAdmin: false }]
+        : []
+    }),
   },
   projectAgent: {
     findMany: mock(async (args: any) =>

@@ -74,7 +74,9 @@ const mockPrisma = {
       userId: 'user-e2e',
       workspaceId: 'ws-e2e',
     })),
+    findMany: mock(async () => [{ role: 'member', projectId: null, isBillingAdmin: false }]),
   },
+  user: { findUnique: mock(async () => ({ role: 'user' })) },
 }
 
 // Run in local mode so the Redis-backed tunnel module short-circuits instead of

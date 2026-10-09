@@ -7,6 +7,8 @@ import {
   useDomainActions,
   useProjectCollection,
 } from "@shogo/shared-app/domain";
+import { usePermissions } from "../../hooks/usePermissions";
+import { ProjectAccessPanel } from "../project/ProjectAccessPanel";
 import { Text } from "./account-sheet-chrome";
 import { ProjectAgentLookSection } from "./ProjectAgentLookSection";
 import { ProjectGitHubSection } from "./ProjectGitHubSection";
@@ -17,6 +19,9 @@ export function ProjectSettingsContent({ projectId }: { projectId: string }) {
   const project = projects.all.find((item: any) => item.id === projectId);
   const [name, setName] = useState(project?.name ?? "");
   const [saving, setSaving] = useState(false);
+  const { can } = usePermissions({ projectId });
+  const canRename = can("project:update");
+  const canManageSettings = can("project.settings:manage");
 
   useEffect(() => {
     setName(project?.name ?? "");
@@ -24,7 +29,7 @@ export function ProjectSettingsContent({ projectId }: { projectId: string }) {
 
   const save = async () => {
     const nextName = name.trim();
-    if (!nextName || nextName === project?.name) return;
+    if (!canRename || !nextName || nextName === project?.name) return;
     setSaving(true);
     try {
       await actions.updateProject(projectId, { name: nextName });
@@ -36,7 +41,9 @@ export function ProjectSettingsContent({ projectId }: { projectId: string }) {
   return (
     <View className="flex-1">
       <Text className="text-sm text-muted-foreground">
-        Settings for this project only.
+        {canRename
+          ? "Settings for this project only."
+          : "You have view-only access to this project."}
       </Text>
 
       <View className="mt-6">
@@ -46,6 +53,7 @@ export function ProjectSettingsContent({ projectId }: { projectId: string }) {
         <TextInput
           value={name}
           onChangeText={setName}
+          editable={canRename}
           placeholder="Project name"
           placeholderTextColor="#8a8a8f"
           className="rounded-xl border border-border bg-card px-3 py-3 text-sm text-foreground web:outline-none"
@@ -57,20 +65,22 @@ export function ProjectSettingsContent({ projectId }: { projectId: string }) {
             } as any
           }
         />
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="Save project name"
-          disabled={saving || !name.trim() || name.trim() === project?.name}
-          onPress={() => void save()}
-          className="mt-3 self-start rounded-lg bg-primary px-4 py-2.5 disabled:opacity-50"
-        >
-          <Text className="text-sm font-medium text-primary-foreground">
-            {saving ? "Saving…" : "Save changes"}
-          </Text>
-        </Pressable>
+        {canRename ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Save project name"
+            disabled={saving || !name.trim() || name.trim() === project?.name}
+            onPress={() => void save()}
+            className="mt-3 self-start rounded-lg bg-primary px-4 py-2.5 disabled:opacity-50"
+          >
+            <Text className="text-sm font-medium text-primary-foreground">
+              {saving ? "Saving…" : "Save changes"}
+            </Text>
+          </Pressable>
+        ) : null}
       </View>
 
-      {project?.workspaceId ? (
+      {canManageSettings && project?.workspaceId ? (
         <ProjectAgentLookSection
           workspaceId={project.workspaceId}
           projectId={projectId}
@@ -78,7 +88,11 @@ export function ProjectSettingsContent({ projectId }: { projectId: string }) {
         />
       ) : null}
 
-      <ProjectGitHubSection projectId={projectId} />
+      {canManageSettings ? <ProjectGitHubSection projectId={projectId} /> : null}
+
+      {can("project.members:manage") ? (
+        <ProjectAccessPanel projectId={projectId} embedded />
+      ) : null}
     </View>
   );
 }

@@ -5,8 +5,16 @@
 // prisma double so we exercise the real branch logic (active pending blocks,
 // expired pending is ignored and cleaned up).
 
-import { beforeEach, describe, expect, test } from 'bun:test'
-import { invitationHooks } from '../generated/invitation.hooks'
+import { beforeEach, describe, expect, mock, test } from 'bun:test'
+import { withPrismaExports } from './helpers/prisma-mock-exports'
+
+// The RBAC engine reads memberships through the global prisma client.
+let activePrisma: any = {}
+mock.module('../lib/prisma', () =>
+  withPrismaExports({ prisma: new Proxy({}, { get: (_t, key) => activePrisma[key as string] }) }),
+)
+
+const { invitationHooks } = await import('../generated/invitation.hooks')
 
 interface InvitationRow {
   id: string
@@ -40,17 +48,18 @@ function makeCtx(userId = ADMIN_USER_ID) {
   const prisma = {
     user: {
       findUnique: async ({ where }: { where: any }) => {
-        if (where.id === INVITEE_USER_ID) return { email: INVITEE_EMAIL }
-        if (where.id === ADMIN_USER_ID) return { email: 'admin@example.com' }
+        if (where.id === INVITEE_USER_ID) return { email: INVITEE_EMAIL, role: 'user' }
+        if (where.id === ADMIN_USER_ID) return { email: 'admin@example.com', role: 'user' }
         return null
       },
     },
     member: {
-      findFirst: async ({ where }: { where: any }) => {
-        if (where.userId === ADMIN_USER_ID && where.workspaceId === WORKSPACE_ID) {
-          return { id: 'm-1', userId: ADMIN_USER_ID, workspaceId: WORKSPACE_ID, role: 'owner' }
+      findMany: async ({ where }: { where: any }) => {
+        const wantsWorkspace = where.OR?.some((w: any) => w.workspaceId === WORKSPACE_ID && w.projectId === null)
+        if (where.userId === ADMIN_USER_ID && wantsWorkspace) {
+          return [{ role: 'owner', projectId: null, isBillingAdmin: false }]
         }
-        return null
+        return []
       },
     },
     project: {
@@ -70,6 +79,7 @@ function makeCtx(userId = ADMIN_USER_ID) {
       },
     },
   }
+  activePrisma = prisma
   return { body: {}, params: {}, query: {}, userId, prisma }
 }
 

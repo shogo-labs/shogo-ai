@@ -83,7 +83,7 @@ export function cloudProjectsRoutes(): Hono {
       if (!project) {
         // Personal workspace for the single local user (mirrors local-projects).
         const personal = await prisma.workspace.findFirst({
-          where: { members: { some: { userId } } },
+          where: { members: { some: { userId, projectId: null } } },
           orderBy: { createdAt: 'asc' },
         })
         if (!personal) return c.json({ error: 'no_workspace_for_user' }, 400)

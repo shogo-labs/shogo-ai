@@ -8,6 +8,7 @@
  */
 
 import { Hono } from 'hono'
+import { isWorkspaceRole, toProjectRole } from '@shogo/authz'
 import { prisma } from '../lib/prisma'
 
 export interface InviteLinkAccepted {
@@ -38,26 +39,42 @@ export function inviteLinkAcceptRoutes(config: InviteLinkAcceptConfig): Hono {
       return c.json({ error: 'Invite link has expired' }, 410)
     }
 
+    let workspaceId = link.workspaceId
+    if (link.projectId) {
+      const project = await prisma.project.findUnique({ where: { id: link.projectId }, select: { workspaceId: true } })
+      if (!project) return c.json({ error: 'Invite link not found or disabled' }, 404)
+      workspaceId = project.workspaceId
+    }
+
     const existingMember = await prisma.member.findFirst({
       where: {
         userId,
-        ...(link.projectId ? { projectId: link.projectId } : { workspaceId: link.workspaceId }),
+        ...(link.projectId ? { projectId: link.projectId } : { workspaceId, projectId: null }),
       },
     })
     if (existingMember) {
       return c.json({ ok: true, data: existingMember, alreadyMember: true })
     }
 
-    const memberData: any = { userId, role: link.role }
-    if (link.projectId) {
-      memberData.projectId = link.projectId
-      const project = await prisma.project.findUnique({ where: { id: link.projectId }, select: { workspaceId: true } })
-      if (project) memberData.workspaceId = project.workspaceId
-    } else {
-      memberData.workspaceId = link.workspaceId
-    }
+    // Project links grant a project-scoped (guest) row only; links can never mint owners.
+    const memberData: any = link.projectId
+      ? { userId, workspaceId, projectId: link.projectId, role: toProjectRole(link.role) ?? 'viewer' }
+      : {
+          userId,
+          workspaceId,
+          role: isWorkspaceRole(link.role) && link.role !== 'owner' ? link.role : 'member',
+        }
 
-    const member = await prisma.member.create({ data: memberData })
+    let member
+    try {
+      member = await prisma.member.create({ data: memberData })
+    } catch (err: any) {
+      if (err?.code !== 'P2002') throw err
+      const raced = await prisma.member.findFirst({
+        where: link.projectId ? { userId, projectId: link.projectId } : { userId, workspaceId, projectId: null },
+      })
+      return c.json({ ok: true, data: raced, alreadyMember: true })
+    }
     await prisma.inviteLink.update({ where: { id: link.id }, data: { useCount: { increment: 1 } } })
 
     if (memberData.workspaceId && !memberData.projectId) {

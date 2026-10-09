@@ -102,7 +102,7 @@ async function matchUsers(workspaceId: string, names: string[], viewerId: string
   if (names.includes('me')) ids.add(viewerId)
   if (wanted.length) {
     const members = await db.member.findMany({
-      where: { workspaceId },
+      where: { workspaceId, projectId: null },
       select: { user: { select: { id: true, name: true, email: true } } },
     })
     for (const { user } of members) {

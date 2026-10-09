@@ -38,7 +38,13 @@ let projects: Map<string, { workspaceId: string }> = new Map()
 
 mock.module('../lib/prisma', () => ({
   prisma: {
+    user: { findUnique: async () => ({ role: 'user' }) },
     member: {
+      findMany: async (args: any) =>
+        members
+          .filter((m) => m.userId === args.where.userId)
+          .filter((m) => (args.where.OR ? args.where.OR.some((o: any) => o.workspaceId === m.workspaceId) : !args.where.workspaceId || args.where.workspaceId === m.workspaceId))
+          .map((m) => ({ role: m.role, workspaceId: m.workspaceId, projectId: null, isBillingAdmin: false })),
       findFirst: async (args: any) => {
         const w = args.where
         return (
@@ -370,6 +376,17 @@ describe('advanced workspace endpoints', () => {
     const res = await call('GET', `/workspaces/${WS}/analytics/projects`)
     expect(res.status).toBe(200)
     expect(svcSpies.getProjectAnalytics).toHaveBeenCalledWith({ workspaceId: WS })
+  })
+
+  test('projects (workspace-scoped): non-admins only see projects they can read', async () => {
+    isBusiness = true
+    seedMember(WS, 'member')
+    const res = await call('GET', `/workspaces/${WS}/analytics/projects`)
+    expect(res.status).toBe(200)
+    expect(svcSpies.getProjectAnalytics).toHaveBeenCalledWith(
+      { workspaceId: WS },
+      { projectWhere: { AND: [{ workspaceId: WS }, { workspaceId: { in: [WS] }, visibility: 'workspace' }] } },
+    )
   })
 
   test('billing: 200 with business plan', async () => {

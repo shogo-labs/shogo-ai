@@ -18,7 +18,15 @@ let members: Array<{ userId: string; workspaceId: string; role: string }> = []
 let projects: Map<string, { workspaceId: string }> = new Map()
 mock.module('../lib/prisma', () => ({
   prisma: {
-    member: { findFirst: async (args: any) => members.find(m => m.userId === args.where.userId && m.workspaceId === args.where.workspaceId) ?? null },
+    user: { findUnique: async () => ({ role: 'user' }) },
+    member: {
+      findMany: async (args: any) =>
+        members
+          .filter((m) => m.userId === args.where.userId)
+          .filter((m) => (args.where.OR ? args.where.OR.some((o: any) => o.workspaceId === m.workspaceId) : !args.where.workspaceId || args.where.workspaceId === m.workspaceId))
+          .map((m) => ({ role: m.role, workspaceId: m.workspaceId, projectId: null, isBillingAdmin: false })),
+      findFirst: async (args: any) => members.find(m => m.userId === args.where.userId && m.workspaceId === args.where.workspaceId) ?? null,
+    },
     project: { findUnique: async (args: any) => projects.get(args.where.id) ? { workspaceId: projects.get(args.where.id)!.workspaceId } : null },
   },
 }))

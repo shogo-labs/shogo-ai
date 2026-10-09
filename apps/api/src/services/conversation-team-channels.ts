@@ -96,7 +96,7 @@ async function workspaceUserIds(workspaceId: string, emails: string[], groupHand
   const ids = new Set<string>()
   if (emails.length) {
     const members = await db.member.findMany({
-      where: { workspaceId, user: { email: { in: emails.map((e) => e.toLowerCase()) } } },
+      where: { workspaceId, projectId: null, user: { email: { in: emails.map((e) => e.toLowerCase()) } } },
       select: { userId: true },
     })
     for (const m of members) ids.add(m.userId)
@@ -107,7 +107,7 @@ async function workspaceUserIds(workspaceId: string, emails: string[], groupHand
       select: { userId: true },
     })
     const inWorkspace = await db.member.findMany({
-      where: { workspaceId, userId: { in: rows.map((r: any) => r.userId) } },
+      where: { workspaceId, projectId: null, userId: { in: rows.map((r: any) => r.userId) } },
       select: { userId: true },
     })
     for (const m of inWorkspace) ids.add(m.userId)

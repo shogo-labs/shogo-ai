@@ -34,7 +34,12 @@ let projects: Map<string, { workspaceId: string }> = new Map()
 
 mock.module('../lib/prisma', () => ({
   prisma: {
+    user: { findUnique: async () => ({ role: 'user' }) },
     member: {
+      findMany: async (args: any) =>
+        members
+          .filter((m) => m.userId === args.where.userId && args.where.OR.some((o: any) => o.workspaceId === m.workspaceId))
+          .map((m) => ({ role: m.role, projectId: null, isBillingAdmin: false })),
       findFirst: async (args: any) => {
         const w = args.where
         return members.find(
@@ -121,7 +126,7 @@ beforeEach(() => {
   deleteSubagentOverride.mockImplementation(async () => undefined)
 })
 
-const seedMember = (role: 'owner' | 'admin' | 'editor' | 'viewer' = 'admin') => {
+const seedMember = (role: 'owner' | 'admin' | 'member' | 'viewer' = 'admin') => {
   members.push({ userId: 'user_1', workspaceId: WS, role })
 }
 
@@ -261,7 +266,7 @@ describe('GET /subagent-overrides', () => {
   })
 
   test('200 returns service list to members', async () => {
-    seedMember('editor')
+    seedMember('member')
     const res = await call('GET', PATH('subagent-overrides'))
     expect(res.status).toBe(200)
     expect(res.body.ok).toBe(true)
@@ -270,7 +275,7 @@ describe('GET /subagent-overrides', () => {
   })
 
   test('500 when listSubagentOverrides throws', async () => {
-    seedMember('editor')
+    seedMember('member')
     listSubagentOverrides.mockImplementation(async () => { throw new Error('list-fail') })
     const res = await call('GET', PATH('subagent-overrides'))
     expect(res.status).toBe(500)

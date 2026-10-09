@@ -57,6 +57,7 @@ import {
   Trash2,
   ArrowRightLeft,
   Pencil,
+  Lock,
 } from 'lucide-react-native'
 import {
   useSDKDomain,
@@ -81,6 +82,8 @@ import { ProjectSourceMenu } from '../../../components/project/ProjectSourceMenu
 import {
   useNativePhoneWindow, useNativePhoneSheetChrome } from '../../../lib/native-phone-layout'
 import { useActiveWorkspace } from '../../../hooks/useActiveWorkspace'
+import { usePermissions, projectPermissionsFor } from '../../../hooks/usePermissions'
+import type { Permission } from '@shogo/authz'
 import { useDomainHttp } from '../../../contexts/domain'
 
 // Types
@@ -311,6 +314,17 @@ export default observer(function AllProjectsPage() {
   // multiple workspaces.
   const currentWorkspace = useActiveWorkspace()
   const workspaces = store?.workspaceCollection?.all ?? []
+  const {
+    can: canWorkspace,
+    workspaceRole,
+    isSuperAdmin,
+  } = usePermissions({ workspaceId: currentWorkspace?.id })
+  const canCreateProject = canWorkspace('project:create')
+  const projectCan = useCallback(
+    (project: Project, permission: Permission) =>
+      projectPermissionsFor(project as any, { workspaceRole, isSuperAdmin }).has(permission),
+    [workspaceRole, isSuperAdmin],
+  )
 
   // Load data
   useEffect(() => {
@@ -696,10 +710,19 @@ export default observer(function AllProjectsPage() {
   const [deleteConfirmVisible, setDeleteConfirmVisible] = useState(false)
   const [isDeleting, setIsDeleting] = useState(false)
 
+  const canDeleteSelection = useMemo(
+    () =>
+      Array.from(selectedIds).every((id) => {
+        const project = allProjects.find((p) => p.id === id)
+        return !!project && projectCan(project, 'project:delete')
+      }),
+    [selectedIds, allProjects, projectCan],
+  )
+
   const handleBulkDelete = useCallback(() => {
-    if (selectedIds.size === 0) return
+    if (selectedIds.size === 0 || !canDeleteSelection) return
     setDeleteConfirmVisible(true)
-  }, [selectedIds])
+  }, [selectedIds, canDeleteSelection])
 
   const confirmBulkDelete = useCallback(async () => {
     setDeleteConfirmVisible(false)
@@ -800,7 +823,7 @@ export default observer(function AllProjectsPage() {
     | { type: 'spacer' }
 
   const listData = useMemo((): ListItem[] => {
-    const items: ListItem[] = [{ type: 'create' }]
+    const items: ListItem[] = canCreateProject ? [{ type: 'create' }] : []
     currentFolders.forEach((f) => items.push({ type: 'folder', data: f }))
     filteredProjects.forEach((p) => items.push({ type: 'project', data: p }))
     if (!comfortable) {
@@ -812,7 +835,7 @@ export default observer(function AllProjectsPage() {
       }
     }
     return items
-  }, [currentFolders, filteredProjects, numColumns, comfortable])
+  }, [currentFolders, filteredProjects, numColumns, comfortable, canCreateProject])
 
   const renderGridItem = useCallback(
     ({ item }: { item: ListItem }) => {
@@ -931,6 +954,7 @@ export default observer(function AllProjectsPage() {
             name={project.name || 'Untitled'}
             updatedAt={project.updatedAt || project.createdAt}
             thumbnailUrl={(project as any).thumbnailUrl}
+            restricted={(project as any).visibility === 'restricted'}
             isSelected={isSelected}
             isStarred={isStarred}
             selectMode={selectMode}
@@ -1004,26 +1028,30 @@ export default observer(function AllProjectsPage() {
                 <PopoverBackdrop />
                 <PopoverContent className="p-0 min-w-[150px]">
                   <PopoverBody>
-                    <Pressable
-                      onPress={() => {
-                        setActionMenuProjectId(null)
-                        handleRenameProject(project)
-                      }}
-                      className="flex-row items-center gap-2.5 px-3 py-2.5 active:bg-muted"
-                    >
-                      <Pencil size={14} className="text-muted-foreground" />
-                      <Text className="text-sm text-foreground">Rename</Text>
-                    </Pressable>
-                    <Pressable
-                      onPress={() => {
-                        setActionMenuProjectId(null)
-                        handleDeleteProject(project)
-                      }}
-                      className="flex-row items-center gap-2.5 px-3 py-2.5 active:bg-muted"
-                    >
-                      <Trash2 size={14} className="text-destructive" />
-                      <Text className="text-sm text-destructive">Delete</Text>
-                    </Pressable>
+                    {projectCan(project, 'project:update') && (
+                      <Pressable
+                        onPress={() => {
+                          setActionMenuProjectId(null)
+                          handleRenameProject(project)
+                        }}
+                        className="flex-row items-center gap-2.5 px-3 py-2.5 active:bg-muted"
+                      >
+                        <Pencil size={14} className="text-muted-foreground" />
+                        <Text className="text-sm text-foreground">Rename</Text>
+                      </Pressable>
+                    )}
+                    {projectCan(project, 'project:delete') && (
+                      <Pressable
+                        onPress={() => {
+                          setActionMenuProjectId(null)
+                          handleDeleteProject(project)
+                        }}
+                        className="flex-row items-center gap-2.5 px-3 py-2.5 active:bg-muted"
+                      >
+                        <Trash2 size={14} className="text-destructive" />
+                        <Text className="text-sm text-destructive">Delete</Text>
+                      </Pressable>
+                    )}
                   </PopoverBody>
                 </PopoverContent>
               </Popover>
@@ -1046,6 +1074,7 @@ export default observer(function AllProjectsPage() {
       handleDeleteProject,
       handleRenameFolder,
       handleDeleteFolder,
+      projectCan,
       starredIds,
       selectedIds,
       selectMode,
@@ -1225,9 +1254,14 @@ export default observer(function AllProjectsPage() {
 
             {/* Details */}
             <View className="flex-1 min-w-0">
-              <Text className={cn('font-medium text-foreground', comfortable ? 'text-base' : 'text-sm')} numberOfLines={1}>
-                {project.name}
-              </Text>
+              <View className="flex-row items-center gap-1.5">
+                {(project as any).visibility === 'restricted' && (
+                  <Lock size={comfortable ? 14 : 12} className="text-muted-foreground" />
+                )}
+                <Text className={cn('flex-1 font-medium text-foreground', comfortable ? 'text-base' : 'text-sm')} numberOfLines={1}>
+                  {project.name}
+                </Text>
+              </View>
               <Text className={cn('text-muted-foreground', comfortable ? 'text-sm' : 'text-xs')}>
                 Edited {getTimeAgo(project.updatedAt || project.createdAt)}
               </Text>
@@ -1271,26 +1305,30 @@ export default observer(function AllProjectsPage() {
                 <PopoverBackdrop />
                 <PopoverContent className="p-0 min-w-[150px]">
                   <PopoverBody>
-                    <Pressable
-                      onPress={() => {
-                        setActionMenuProjectId(null)
-                        handleRenameProject(project)
-                      }}
-                      className="flex-row items-center gap-2.5 px-3 py-2.5 active:bg-muted"
-                    >
-                      <Pencil size={14} className="text-muted-foreground" />
-                      <Text className="text-sm text-foreground">Rename</Text>
-                    </Pressable>
-                    <Pressable
-                      onPress={() => {
-                        setActionMenuProjectId(null)
-                        handleDeleteProject(project)
-                      }}
-                      className="flex-row items-center gap-2.5 px-3 py-2.5 active:bg-muted"
-                    >
-                      <Trash2 size={14} className="text-destructive" />
-                      <Text className="text-sm text-destructive">Delete</Text>
-                    </Pressable>
+                    {projectCan(project, 'project:update') && (
+                      <Pressable
+                        onPress={() => {
+                          setActionMenuProjectId(null)
+                          handleRenameProject(project)
+                        }}
+                        className="flex-row items-center gap-2.5 px-3 py-2.5 active:bg-muted"
+                      >
+                        <Pencil size={14} className="text-muted-foreground" />
+                        <Text className="text-sm text-foreground">Rename</Text>
+                      </Pressable>
+                    )}
+                    {projectCan(project, 'project:delete') && (
+                      <Pressable
+                        onPress={() => {
+                          setActionMenuProjectId(null)
+                          handleDeleteProject(project)
+                        }}
+                        className="flex-row items-center gap-2.5 px-3 py-2.5 active:bg-muted"
+                      >
+                        <Trash2 size={14} className="text-destructive" />
+                        <Text className="text-sm text-destructive">Delete</Text>
+                      </Pressable>
+                    )}
                   </PopoverBody>
                 </PopoverContent>
               </Popover>
@@ -1311,6 +1349,7 @@ export default observer(function AllProjectsPage() {
       handleDeleteProject,
       handleRenameFolder,
       handleDeleteFolder,
+      projectCan,
       starredIds,
       selectedIds,
       selectMode,
@@ -1373,6 +1412,7 @@ export default observer(function AllProjectsPage() {
               Organize, revisit, and build on your work.
             </Text>
           </View>
+          {canCreateProject && (
           <Pressable
             onPress={handleCreateProject}
             accessibilityRole="button"
@@ -1387,6 +1427,7 @@ export default observer(function AllProjectsPage() {
               New project
             </Text>
           </Pressable>
+          )}
         </View>
       </View>
 
@@ -2319,7 +2360,11 @@ export default observer(function AllProjectsPage() {
               <Pressable
                 testID="bulk-delete-btn"
                 onPress={handleBulkDelete}
-                className="flex-row items-center gap-1.5 px-2 py-1 rounded-md active:bg-muted"
+                disabled={!canDeleteSelection}
+                className={cn(
+                  'flex-row items-center gap-1.5 px-2 py-1 rounded-md active:bg-muted',
+                  !canDeleteSelection && 'opacity-40',
+                )}
               >
                 <Trash2 size={15} className="text-destructive" />
                 <Text className="text-sm text-destructive">Delete</Text>

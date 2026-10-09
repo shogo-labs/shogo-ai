@@ -18,6 +18,8 @@ export type PublishStatus = 'idle' | 'building' | 'uploading' | 'configuring' | 
 
 export type ProjectCategory = 'app' | 'website' | 'tool' | 'game'
 
+export type ProjectVisibility = 'workspace' | 'restricted'
+
 export interface ProjectType {
   id: string
   name: string
@@ -40,6 +42,7 @@ export interface ProjectType {
   publishedTag?: string
   publishedAlwaysOn: boolean
   accessLevel: AccessLevel
+  visibility: ProjectVisibility
   sitePasswordHash?: string
   category?: ProjectCategory
   siteTitle?: string
@@ -78,6 +81,7 @@ export interface ProjectCreateInput {
   publishedTag?: string
   publishedAlwaysOn?: boolean
   accessLevel?: AccessLevel
+  visibility?: ProjectVisibility
   sitePasswordHash?: string
   category?: ProjectCategory
   siteTitle?: string
@@ -116,6 +120,7 @@ export interface ProjectUpdateInput {
   publishedTag?: string
   publishedAlwaysOn?: boolean
   accessLevel?: AccessLevel
+  visibility?: ProjectVisibility
   sitePasswordHash?: string
   category?: ProjectCategory
   siteTitle?: string

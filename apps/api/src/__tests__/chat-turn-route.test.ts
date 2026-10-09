@@ -34,7 +34,7 @@ type ProjectFixture = {
   ownerUserId?: string
 }
 const projectsById = new Map<string, ProjectFixture>()
-const memberByUserAndWorkspace = new Map<string, { id: string }>()
+const memberByUserAndWorkspace = new Map<string, { id: string; role: string }>()
 
 function memberKey(userId: string, workspaceId: string): string {
   return `${userId}::${workspaceId}`
@@ -84,17 +84,24 @@ const mockPrisma = {
           },
         }
       }
-      return { id: p.id, workspaceId: p.workspaceId }
+      return { id: p.id, workspaceId: p.workspaceId, visibility: 'workspace' }
     }),
   },
   member: {
-    findFirst: mock(async (args: any) => {
+    // RBAC engine: `{ userId, OR: [{ workspaceId, projectId: null }, { projectId }?] }`.
+    // Fixtures only hold workspace-scoped rows.
+    findMany: mock(async (args: any) => {
       const userId = args.where?.userId
-      const workspaceId = args.where?.workspaceId
-      const m = memberByUserAndWorkspace.get(memberKey(userId, workspaceId))
-      return m ?? null
+      const rows: Array<{ role: string; projectId: null; isBillingAdmin: boolean }> = []
+      for (const cond of args.where?.OR ?? []) {
+        if (cond.projectId !== null || !cond.workspaceId) continue
+        const m = memberByUserAndWorkspace.get(memberKey(userId, cond.workspaceId))
+        if (m) rows.push({ role: m.role, projectId: null, isBillingAdmin: false })
+      }
+      return rows
     }),
   },
+  platformSetting: { findUnique: mock(async () => null) },
   user: {
     findUnique: mock(async () => null),
   },
@@ -219,12 +226,12 @@ beforeEach(() => {
     workspaceId: WORKSPACE_A,
     ownerUserId: USER_A,
   })
-  memberByUserAndWorkspace.set(memberKey(USER_A, WORKSPACE_A), { id: 'mem_a' })
+  memberByUserAndWorkspace.set(memberKey(USER_A, WORKSPACE_A), { id: 'mem_a', role: 'member' })
   currentSession = { user: { id: USER_A } }
   resolveVoiceContextMock.mockClear()
   streamTextMock.mockClear()
   mockPrisma.project.findUnique.mockClear()
-  mockPrisma.member.findFirst.mockClear()
+  mockPrisma.member.findMany.mockClear()
   mockPrisma.user.findUnique.mockClear()
   mockPrisma.projectAgent.findUnique.mockClear()
   mockPrisma.projectAgent.findMany.mockClear()

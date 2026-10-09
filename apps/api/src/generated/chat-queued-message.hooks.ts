@@ -9,6 +9,8 @@
 
 import { dispatchNext } from "../services/chat-queue-dispatcher.service"
 import { externalizeMessageAttachments } from "../lib/chat-attachments"
+import type { Principal } from "../lib/authz"
+import { authorizeChatSession, CHAT_SESSION_SCOPE_SELECT } from "./chat-session.hooks"
 
 /**
  * Result from a hook that can modify or reject the operation
@@ -28,6 +30,7 @@ export interface HookContext {
   query: Record<string, string>
   userId?: string
   tunnelAuthenticated: boolean
+  auth?: Principal
   prisma: any
 }
 
@@ -95,7 +98,7 @@ export const chatQueuedMessageHooks: ChatQueuedMessageHooks = {
     if (!sessionId) {
       return { ok: false, error: { code: "bad_request", message: "sessionId is required" } }
     }
-    const access = await verifySessionAccess(sessionId, ctx)
+    const access = await verifySessionAccess(sessionId, ctx, "POST /api/chat-queued-messages")
     if (!access.ok) return access
     if (!ctx.userId) {
       return { ok: false, error: { code: "unauthorized", message: "Authentication required" } }
@@ -147,7 +150,7 @@ export const chatQueuedMessageHooks: ChatQueuedMessageHooks = {
     if (!row) {
       return { ok: false, error: { code: "not_found", message: "Queued message not found" } }
     }
-    const access = await verifySessionAccess(row.sessionId, ctx)
+    const access = await verifySessionAccess(row.sessionId, ctx, `PATCH /api/chat-queued-messages/${id}`)
     if (!access.ok) return access
     if (row.status === "dispatching") {
       return {
@@ -189,7 +192,7 @@ export const chatQueuedMessageHooks: ChatQueuedMessageHooks = {
     if (!row) {
       return { ok: false, error: { code: "not_found", message: "Queued message not found" } }
     }
-    const access = await verifySessionAccess(row.sessionId, ctx)
+    const access = await verifySessionAccess(row.sessionId, ctx, `DELETE /api/chat-queued-messages/${id}`)
     if (!access.ok) return access
     if (row.status === "dispatching") {
       return {
@@ -212,9 +215,11 @@ export const chatQueuedMessageHooks: ChatQueuedMessageHooks = {
   // },
 }
 
-async function verifySessionAccess(
+/** Reads need project:read on the session's project; `writeOp` requires project:update. */
+export async function verifySessionAccess(
   sessionId: string,
   ctx: HookContext,
+  writeOp?: string,
 ): Promise<HookResult> {
   if (!ctx.userId) {
     return { ok: false, error: { code: "unauthorized", message: "Authentication required" } }
@@ -223,18 +228,10 @@ async function verifySessionAccess(
 
   const session = await ctx.prisma.chatSession.findUnique({
     where: { id: sessionId },
-    include: {
-      project: { include: { workspace: { include: { members: true } } } },
-      workspace: { include: { members: true } },
-    },
+    select: CHAT_SESSION_SCOPE_SELECT,
   })
   if (!session) {
     return { ok: false, error: { code: "not_found", message: "Chat session not found" } }
   }
-  const hasAccess =
-    session.project?.workspace?.members?.some((member: any) => member.userId === ctx.userId) ||
-    session.workspace?.members?.some((member: any) => member.userId === ctx.userId)
-  return hasAccess
-    ? { ok: true }
-    : { ok: false, error: { code: "forbidden", message: "Access denied to this chat session" } }
+  return authorizeChatSession(ctx, session, "Access denied to this chat session", writeOp)
 }

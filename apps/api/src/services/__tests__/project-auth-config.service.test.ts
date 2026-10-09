@@ -107,6 +107,11 @@ const prismaStub = {
     findFirst: async ({ where }: any) =>
       members.find((m) => m.userId === where.userId && m.workspaceId === where.workspaceId) ?? null,
     findMany: async ({ where }: any) => {
+      if (where.OR) {
+        return members
+          .filter((m) => m.userId === where.userId && m.workspaceId === where.OR[0].workspaceId)
+          .map(() => ({ role: 'member', projectId: null, isBillingAdmin: false }))
+      }
       const ids: string[] = where.userId?.in ?? []
       return members.filter((m) => ids.includes(m.userId) && m.workspaceId === where.workspaceId)
     },

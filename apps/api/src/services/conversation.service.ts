@@ -8,6 +8,7 @@
  */
 
 import { prisma } from '../lib/prisma'
+import { accessibleProjectsWhere, loadAccess as loadAuthzAccess } from '../lib/authz'
 import { publishConversationEvent } from '../lib/conversation-bus'
 import { parseMentions, renderMentionsAsText, type AgentTarget, type ParsedMention } from './conversation-mentions'
 import { assertNativeChat } from './chat-mode'
@@ -47,7 +48,7 @@ const notFound = () => new ConversationError(404, 'not_found', 'Conversation not
 
 export async function getWorkspaceRole(workspaceId: string, userId: string): Promise<WorkspaceRole | null> {
   const member = await db.member.findFirst({
-    where: { workspaceId, userId },
+    where: { workspaceId, userId, projectId: null },
     select: { role: true },
   })
   return (member?.role as WorkspaceRole) ?? null
@@ -609,7 +610,7 @@ async function filterWorkspaceMembers(workspaceId: string, userIds: string[]): P
   const unique = [...new Set(userIds.filter((id) => typeof id === 'string' && id))]
   if (!unique.length) return []
   const members = await db.member.findMany({
-    where: { workspaceId, userId: { in: unique } },
+    where: { workspaceId, projectId: null, userId: { in: unique } },
     select: { userId: true },
   })
   return members.map((m: any) => m.userId)
@@ -821,10 +822,13 @@ async function findOrCreateDirect(
 
 // ─── Agent members ───────────────────────────────────────────────────────────
 
-export async function assertAgentInWorkspace(workspaceId: string, target: AgentTarget) {
+/** With `viewerId`, the agent's project must also be readable by that user (restricted projects). */
+export async function assertAgentInWorkspace(workspaceId: string, target: AgentTarget, viewerId?: string) {
   if (!target.projectId) return
   const project = await db.project.findUnique({ where: { id: target.projectId }, select: { workspaceId: true } })
-  if (!project || project.workspaceId !== workspaceId) {
+  const readable = !!project && project.workspaceId === workspaceId && (!viewerId
+    || (await loadAuthzAccess({ userId: viewerId, via: 'session' }, { projectId: target.projectId })).permissions.has('project:read'))
+  if (!readable) {
     throw new ConversationError(400, 'invalid_agent', 'That agent is not in this workspace')
   }
 }
@@ -852,7 +856,7 @@ export async function addAgentMember(
 ) {
   const access = await loadAccess(conversationId, actorId)
   if (!canPost(access)) throw new ConversationError(403, 'forbidden', 'You cannot add agents here')
-  await assertAgentInWorkspace(access.conversation.workspaceId, { projectId: input.projectId })
+  await assertAgentInWorkspace(access.conversation.workspaceId, { projectId: input.projectId }, actorId)
   const trigger = AGENT_TRIGGERS.includes(input.trigger ?? '') ? input.trigger! : 'mention'
   const existing = await db.conversationMember.findFirst({
     where: { conversationId, memberType: 'agent', projectId: input.projectId },
@@ -1309,14 +1313,15 @@ export async function markRead(conversationId: string, userId: string, seq?: num
 
 // ─── Mentionables ────────────────────────────────────────────────────────────
 
-export async function listMentionables(workspaceId: string) {
+export async function listMentionables(workspaceId: string, userId: string) {
+  const readable = await accessibleProjectsWhere({ userId, via: 'session' }, workspaceId)
   const [members, projects, profile] = await Promise.all([
     db.member.findMany({
-      where: { workspaceId },
+      where: { workspaceId, projectId: null },
       include: { user: { select: USER_SELECT } },
     }),
     db.project.findMany({
-      where: { workspaceId },
+      where: { AND: [{ workspaceId }, readable] },
       select: { id: true, name: true, description: true, buddyLook: true },
       orderBy: { updatedAt: 'desc' },
       take: 200,

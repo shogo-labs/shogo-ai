@@ -260,7 +260,7 @@ export async function getOverviewStats(scope: AnalyticsScope = {}) {
         where: {
           project: {
             workspace: {
-              members: { some: { userId: scope.userId } },
+              members: { some: { userId: scope.userId, projectId: null } },
             },
           },
         },
@@ -297,7 +297,7 @@ export async function getOverviewStats(scope: AnalyticsScope = {}) {
     // Workspace-level overview
     const [members, projects, chatSessions, usageEvents] = await Promise.all([
       prisma.member.count({
-        where: { workspaceId: scope.workspaceId },
+        where: { workspaceId: scope.workspaceId, projectId: null },
       }),
       prisma.project.count({
         where: { workspaceId: scope.workspaceId },
@@ -357,7 +357,7 @@ export async function getGrowthTimeSeries(
         orderBy: { createdAt: 'asc' },
       }),
       prisma.member.findMany({
-        where: { workspaceId: scope.workspaceId, createdAt: { gte: since } },
+        where: { workspaceId: scope.workspaceId, projectId: null, createdAt: { gte: since } },
         select: { createdAt: true },
         orderBy: { createdAt: 'asc' },
       }),
@@ -459,7 +459,7 @@ export async function getActivityTimeseries(
     // newUsers → platform: signups; workspace: new members
     scope.workspaceId
       ? prisma.member.findMany({
-          where: { workspaceId: scope.workspaceId, createdAt: { gte: from, lt: to } },
+          where: { workspaceId: scope.workspaceId, projectId: null, createdAt: { gte: from, lt: to } },
           select: { createdAt: true },
         })
       : prisma.user.findMany({
@@ -734,6 +734,7 @@ export async function getMemberInsights(
     prisma.member.findMany({
       where: {
         workspaceId,
+        projectId: null,
         ...(options.userId ? { userId: options.userId } : {}),
       },
       select: { userId: true },
@@ -2043,12 +2044,19 @@ export async function getChatAnalytics(
 /**
  * Get project analytics - status distribution, tier breakdown, most active.
  */
-export async function getProjectAnalytics(scope: AnalyticsScope = {}) {
+export async function getProjectAnalytics(
+  scope: AnalyticsScope = {},
+  options: { projectWhere?: Record<string, unknown> } = {},
+) {
   // Workspace-scoped calls back a user-facing `mostActive` project list
   // (`scoped-analytics.ts`), so hidden (companion builder-delegate)
   // projects are excluded there. The platform-wide admin call (no
   // `workspaceId`) intentionally keeps everything for operational visibility.
-  const where = scope.workspaceId ? { workspaceId: scope.workspaceId, hidden: false } : {}
+  // `projectWhere` narrows the list to the projects the caller can read.
+  const where = {
+    ...(scope.workspaceId ? { workspaceId: scope.workspaceId, hidden: false } : {}),
+    ...(options.projectWhere ? { AND: [options.projectWhere] } : {}),
+  }
 
   const projects = await prisma.project.findMany({
     where,
@@ -2710,7 +2718,7 @@ export async function getWorkspaceActivityTable(
 
   const [projectCounts, memberCounts, messageRows, toolRows] = await Promise.all([
     prisma.project.groupBy({ by: ['workspaceId'], where: { workspaceId: { in: ids } }, _count: true }),
-    prisma.member.groupBy({ by: ['workspaceId'], where: { workspaceId: { in: ids } }, _count: true }),
+    prisma.member.groupBy({ by: ['workspaceId'], where: { workspaceId: { in: ids }, projectId: null }, _count: true }),
     isSqlite
       ? prisma.$queryRawUnsafe<{ wid: string; count: number }[]>(`
           SELECT p."workspaceId" AS "wid", CAST(COUNT(cm."id") AS INTEGER) AS "count"

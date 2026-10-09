@@ -75,6 +75,7 @@ import { generateProxyToken } from '../lib/ai-proxy-token'
 import { resolveApiBaseUrl } from '../lib/internal-proxy-config'
 import { resolveAutoTierModel } from '../lib/runtime/agent-model-defaults'
 import { prisma } from '../lib/prisma'
+import { loadAccess } from '../lib/authz'
 import { apiKeyOrSession, authorizeProject, type AuthContext } from '../middleware/auth'
 import { resolveVoiceContext, composeVoiceSystemPrompt } from '../lib/voice-context'
 import { resolveShogoTwilioClient, verifyTwilioSignature } from '../lib/twilio'
@@ -323,8 +324,8 @@ type AuthzResult =
   | { ok: false; status: 404 | 403; message: string }
 
 /**
- * Verify the authenticated user has access to the chat session via
- * workspace membership on the owning project. Returns `{ok:true}` or
+ * Verify the authenticated user has access to the chat session: read
+ * access to the owning project, else workspace membership. Returns `{ok:true}` or
  * an error response payload.
  *
  * Runtime-token callers (`via === 'runtimeToken'`) are rejected
@@ -370,11 +371,11 @@ async function authorizeChatSession(
       message: 'Chat session is not accessible to this user',
     }
   }
-  const member = await prisma.member.findFirst({
-    where: { userId, workspaceId },
-    select: { id: true },
-  })
-  if (!member) {
+  const access = await loadAccess(
+    { userId, via: 'session' },
+    session.project ? { projectId: session.project.id } : { workspaceId },
+  )
+  if (!access.permissions.has(session.project ? 'project:read' : 'workspace:read')) {
     return {
       ok: false,
       status: 403,
@@ -528,7 +529,7 @@ export function voiceRoutes() {
     const chatSessionId = c.req.query('chatSessionId')
 
     if (projectId) {
-      const authz = await authorizeProject(c, projectId)
+      const authz = await authorizeProject(c, projectId, 'project:update')
       if (!authz.ok) {
         return c.json(
           { error: { code: authz.code, message: authz.message } },
@@ -1235,7 +1236,7 @@ export function voiceRoutes() {
     '/voice/twilio/available-numbers/:projectId',
     async (c) => {
       const projectId = c.req.param('projectId')
-      const authz = await authorizeProject(c, projectId)
+      const authz = await authorizeProject(c, projectId, 'project:read')
       if (!authz.ok) {
         return c.json(
           { error: { code: authz.code, message: authz.message } },
@@ -1306,7 +1307,7 @@ export function voiceRoutes() {
     '/voice/twilio/provision-number/:projectId',
     async (c) => {
       const projectId = c.req.param('projectId')
-      const authz = await authorizeProject(c, projectId)
+      const authz = await authorizeProject(c, projectId, 'project.settings:manage')
       if (!authz.ok) {
         return c.json(
           { error: { code: authz.code, message: authz.message } },
@@ -1610,7 +1611,7 @@ export function voiceRoutes() {
    */
   router.post('/voice/twilio/outbound/:projectId', async (c) => {
     const projectId = c.req.param('projectId')
-    const authz = await authorizeProject(c, projectId)
+    const authz = await authorizeProject(c, projectId, 'project:update')
     if (!authz.ok) {
       return c.json(
         { error: { code: authz.code, message: authz.message } },
@@ -1755,7 +1756,7 @@ export function voiceRoutes() {
    */
   router.get('/voice/config/:projectId', async (c) => {
     const projectId = c.req.param('projectId')
-    const authz = await authorizeProject(c, projectId)
+    const authz = await authorizeProject(c, projectId, 'project:read')
     if (!authz.ok) {
       return c.json(
         { error: { code: authz.code, message: authz.message } },
@@ -1793,7 +1794,7 @@ export function voiceRoutes() {
 
   router.get('/voice/usage/:projectId', async (c) => {
     const projectId = c.req.param('projectId')
-    const authz = await authorizeProject(c, projectId)
+    const authz = await authorizeProject(c, projectId, 'project:read')
     if (!authz.ok) {
       return c.json(
         { error: { code: authz.code, message: authz.message } },
@@ -1912,7 +1913,7 @@ export function voiceRoutes() {
    */
   router.get('/voice/calls/:projectId', async (c) => {
     const projectId = c.req.param('projectId')
-    const authz = await authorizeProject(c, projectId)
+    const authz = await authorizeProject(c, projectId, 'project:read')
     if (!authz.ok) {
       return c.json(
         { error: { code: authz.code, message: authz.message } },
@@ -1975,7 +1976,7 @@ export function voiceRoutes() {
   router.get('/voice/calls/:projectId/:callId', async (c) => {
     const projectId = c.req.param('projectId')
     const callId = c.req.param('callId')
-    const authz = await authorizeProject(c, projectId)
+    const authz = await authorizeProject(c, projectId, 'project:read')
     if (!authz.ok) {
       return c.json(
         { error: { code: authz.code, message: authz.message } },
@@ -2282,7 +2283,7 @@ export function voiceRoutes() {
    */
   router.delete('/voice/twilio/number/:projectId', async (c) => {
     const projectId = c.req.param('projectId')
-    const authz = await authorizeProject(c, projectId)
+    const authz = await authorizeProject(c, projectId, 'project.settings:manage')
     if (!authz.ok) {
       return c.json(
         { error: { code: authz.code, message: authz.message } },
@@ -2370,7 +2371,7 @@ export function voiceRoutes() {
    */
   router.post('/projects/:projectId/agents/sync', async (c) => {
     const projectId = c.req.param('projectId')
-    const authz = await authorizeProject(c, projectId)
+    const authz = await authorizeProject(c, projectId, 'project:update')
     if (!authz.ok) {
       return c.json(
         { error: { code: authz.code, message: authz.message } },

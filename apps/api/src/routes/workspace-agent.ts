@@ -19,7 +19,8 @@
  */
 
 import { Hono } from 'hono'
-import { hasWorkspaceAccess } from '../services/workspace.service'
+import type { Permission } from '@shogo/authz'
+import { loadAccess, principalOf, type Principal } from '../lib/authz'
 import { ConversationError, resolveNotifyConversation, resolveNotifyThread } from '../services/conversation.service'
 import { listActiveChatTurns } from '../services/chat-turn-state.service'
 import {
@@ -75,10 +76,23 @@ export type WorkspaceAgentAuthorize = (
   c: any,
 ) => Promise<WorkspaceAgentAuthContext | Response>
 
-/** Roles allowed to create schedules that run as themselves. */
-const SCHEDULE_CREATOR_ROLES = ['owner', 'admin', 'member']
-/** Roles allowed to manage schedules created by someone else. */
-const SCHEDULE_ADMIN_ROLES = ['owner', 'admin']
+/** Permission to create schedules that run as themselves (non-viewers). */
+const SCHEDULE_CREATOR_PERMISSION: Permission = 'project:create'
+/** Permission to manage schedules created by someone else. */
+const SCHEDULE_ADMIN_PERMISSION: Permission = 'workspace.settings:manage'
+
+/**
+ * Internal (runtime) callers act on behalf of a user named in the request, so
+ * their access is resolved as that user's session.
+ */
+function principalFor(c: any, userId: string): Principal {
+  const auth = principalOf(c)
+  return auth.userId === userId ? auth : { userId, via: 'session' }
+}
+
+async function userCan(c: any, workspaceId: string, userId: string, permission: Permission): Promise<boolean> {
+  return (await loadAccess(principalFor(c, userId), { workspaceId })).permissions.has(permission)
+}
 
 export interface WorkspaceAgentRoutesConfig {
   authorize: WorkspaceAgentAuthorize
@@ -95,7 +109,7 @@ export function sessionAuthorize(
     if (!userId) {
       return c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401)
     }
-    if (!(await hasWorkspaceAccess(workspaceId, userId))) {
+    if (!(await userCan(c, workspaceId, userId, 'workspace:read'))) {
       return c.json({ error: { code: 'forbidden', message: 'No access to this workspace' } }, 403)
     }
     return { workspaceId, userId }
@@ -138,7 +152,7 @@ export function workspaceAgentRoutes(config: WorkspaceAgentRoutesConfig): Hono {
         error: { code: 'invalid_body', message: 'userId is required for an internal schedule request' },
       }, 400)
     }
-    if (!auth.userId && !(await hasWorkspaceAccess(auth.workspaceId, userId))) {
+    if (!auth.userId && !(await userCan(c, auth.workspaceId, userId, 'workspace:read'))) {
       return forbidden(c)
     }
     return userId
@@ -156,7 +170,7 @@ export function workspaceAgentRoutes(config: WorkspaceAgentRoutesConfig): Hono {
     if (!existing) return c.json({ error: { code: 'not_found', message: 'Schedule not found' } }, 404)
     if (
       existing.userId !== actor &&
-      !(await hasWorkspaceAccess(auth.workspaceId, actor, SCHEDULE_ADMIN_ROLES))
+      !(await userCan(c, auth.workspaceId, actor, SCHEDULE_ADMIN_PERMISSION))
     ) {
       return forbidden(c, 'Only the schedule creator or a workspace admin can change this schedule')
     }
@@ -299,7 +313,7 @@ export function workspaceAgentRoutes(config: WorkspaceAgentRoutesConfig): Hono {
     const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null
     const userId = await resolveScheduleActor(c, auth, body)
     if (userId instanceof Response) return userId
-    if (!(await hasWorkspaceAccess(auth.workspaceId, userId, SCHEDULE_CREATOR_ROLES))) {
+    if (!(await userCan(c, auth.workspaceId, userId, SCHEDULE_CREATOR_PERMISSION))) {
       return forbidden(c, 'Viewers cannot create schedules')
     }
     if (
@@ -441,7 +455,7 @@ export function workspaceAgentRoutes(config: WorkspaceAgentRoutesConfig): Hono {
     if (actor instanceof Response) return actor
     const trigger = await getSubscription(auth.workspaceId, c.req.param('triggerId'))
     if (!trigger) return c.json({ error: { code: 'not_found', message: 'Trigger not found' } }, 404)
-    if (trigger.ownerUserId !== actor && !(await hasWorkspaceAccess(auth.workspaceId, actor, SCHEDULE_ADMIN_ROLES))) {
+    if (trigger.ownerUserId !== actor && !(await userCan(c, auth.workspaceId, actor, SCHEDULE_ADMIN_PERMISSION))) {
       return forbidden(c, 'Only the trigger creator or a workspace admin can change this trigger')
     }
     return { actor, trigger }
@@ -452,7 +466,7 @@ export function workspaceAgentRoutes(config: WorkspaceAgentRoutesConfig): Hono {
     if (auth instanceof Response) return auth
     const userId = auth.userId || c.req.query('userId')
     if (!userId) return c.json({ error: { code: 'invalid_body', message: 'userId is required for an internal request' } }, 400)
-    if (!auth.userId && !(await hasWorkspaceAccess(auth.workspaceId, userId))) return forbidden(c)
+    if (!auth.userId && !(await userCan(c, auth.workspaceId, userId, 'workspace:read'))) return forbidden(c)
     return c.json(await listTriggerTypes(auth.workspaceId, userId, {
       toolkit: c.req.query('toolkit') || null,
       projectId: c.req.query('projectId') || null,
@@ -474,7 +488,7 @@ export function workspaceAgentRoutes(config: WorkspaceAgentRoutesConfig): Hono {
     }
     const userId = await resolveScheduleActor(c, auth, body)
     if (userId instanceof Response) return userId
-    if (!(await hasWorkspaceAccess(auth.workspaceId, userId, SCHEDULE_CREATOR_ROLES))) {
+    if (!(await userCan(c, auth.workspaceId, userId, SCHEDULE_CREATOR_PERMISSION))) {
       return forbidden(c, 'Viewers cannot create triggers')
     }
     try {
@@ -680,7 +694,7 @@ export function workspaceAgentRoutes(config: WorkspaceAgentRoutesConfig): Hono {
         error: { code: 'invalid_request', message: 'requestedBy is required for an internal request' },
       }, 400)
     }
-    if (!(await hasWorkspaceAccess(auth.workspaceId, actor, ['owner', 'admin']))) {
+    if (!(await userCan(c, auth.workspaceId, actor, 'workspace.analytics:read'))) {
       return forbidden(c, 'Only workspace owners and admins can look up what a teammate worked on')
     }
 

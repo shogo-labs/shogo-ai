@@ -357,7 +357,7 @@ export async function getTeamWork(
   const [raw, members] = await Promise.all([
     collectActivity({ workspaceId }, window),
     prisma.member.findMany({
-      where: { workspaceId },
+      where: { workspaceId, projectId: null },
       select: {
         userId: true,
         role: true,
@@ -430,11 +430,11 @@ export async function findWorkspaceMember(
   if (!needle) return null
   const select = { userId: true, role: true, user: { select: { name: true, email: true } } }
 
-  const byId = await prisma.member.findFirst({ where: { workspaceId, userId: needle }, select })
+  const byId = await prisma.member.findFirst({ where: { workspaceId, projectId: null, userId: needle }, select })
   const member =
     byId ??
     (await prisma.member.findFirst({
-      where: { workspaceId, user: { email: { in: [needle, needle.toLowerCase()] } } },
+      where: { workspaceId, projectId: null, user: { email: { in: [needle, needle.toLowerCase()] } } },
       select,
     }))
   if (!member) return null

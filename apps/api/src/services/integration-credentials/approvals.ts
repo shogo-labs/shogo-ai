@@ -15,6 +15,7 @@
  */
 
 import { prisma } from '../../lib/prisma'
+import { loadAccess } from '../../lib/authz'
 import type { RequesterTicket } from '../../lib/requester-ticket'
 import type { CredentialOp } from './types'
 
@@ -151,14 +152,11 @@ export async function decideCredentialApproval(input: {
   if (!input.userId) return false
   const approval = await db.integrationCredentialApproval.findUnique({
     where: { id: input.approvalId },
-    select: { projectId: true, project: { select: { workspaceId: true } } },
+    select: { projectId: true },
   })
   if (!approval) return false
-  const member = await db.member.findFirst({
-    where: { userId: input.userId, workspaceId: approval.project.workspaceId },
-    select: { role: true },
-  })
-  if (!member || member.role === 'viewer') return false
+  const access = await loadAccess({ userId: input.userId, via: 'session' }, { projectId: approval.projectId })
+  if (!access.permissions.has('project:update')) return false
   const now = input.now ?? new Date()
   const updated = await db.integrationCredentialApproval.updateMany({
     where: { id: input.approvalId, status: 'pending', expiresAt: { gt: now } },

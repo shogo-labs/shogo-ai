@@ -52,8 +52,8 @@ interface ApiKeyRow {
 const apiKeys = new Map<string, ApiKeyRow>()
 const localConfig = new Map<string, string>()
 const members = [
-  { id: 'member-1', userId: 'user-1', workspaceId: 'ws-1', createdAt: new Date('2026-01-01') },
-  { id: 'member-2', userId: 'user-1', workspaceId: 'ws-2', createdAt: new Date('2026-02-01') },
+  { id: 'member-1', userId: 'user-1', workspaceId: 'ws-1', projectId: null, createdAt: new Date('2026-01-01') },
+  { id: 'member-2', userId: 'user-1', workspaceId: 'ws-2', projectId: null, createdAt: new Date('2026-02-01') },
 ]
 const workspaces = new Map<string, { id: string; name: string; slug: string }>([
   ['ws-1', { id: 'ws-1', name: 'Personal', slug: 'personal' }],
@@ -166,6 +166,15 @@ const mockPrisma = {
       }
       return matches[0] || null
     }),
+    findMany: mock(async (args: { where: { userId: string; OR: Array<Record<string, unknown>> } }) => {
+      const { userId, OR } = args.where
+      return members
+        .filter((m) => m.userId === userId && OR.some((c) => c.projectId === null && c.workspaceId === m.workspaceId))
+        .map(() => ({ role: 'member', projectId: null, isBillingAdmin: false }))
+    }),
+  },
+  user: {
+    findUnique: mock(async (args: { where: { id: string } }) => (users.has(args.where.id) ? { role: 'user' } : null)),
   },
   workspace: {
     findUnique: mock(async (args: { where: { id: string } }) => {

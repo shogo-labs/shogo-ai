@@ -24,6 +24,8 @@ export interface HookContext {
   params: Record<string, string>
   query: Record<string, string>
   userId?: string
+  tunnelAuthenticated?: boolean
+  auth?: Principal
   prisma: any
 }
 
@@ -49,6 +51,16 @@ export interface MemberHooks {
   afterDelete?: (id: string, ctx: HookContext) => Promise<void>
 }
 
+import {
+  canAssignProjectRole,
+  canAssignWorkspaceRole,
+  isWorkspaceRole,
+  projectRoleRank,
+  toProjectRole,
+  workspaceRoleRank,
+} from "@shogo/authz"
+import type { Principal } from "../lib/authz"
+import { hookAccess, hookRequire } from "../lib/authz/hooks"
 import { sendMemberJoinedEmail, sendMemberRemovedEmail } from "../services/email.service"
 import { syncSeatsFromMembership } from "../services/billing.service"
 
@@ -58,51 +70,45 @@ const userInclude = {
   },
 }
 
+const unauthorized = { ok: false, error: { code: "unauthorized", message: "Authentication required" } }
+const forbidden = (message: string) => ({ ok: false, error: { code: "forbidden", message } })
+
+async function otherWorkspaceOwners(ctx: HookContext, workspaceId: string, excludeId: string): Promise<number> {
+  return ctx.prisma.member.count({
+    where: { workspaceId, role: "owner", projectId: null, id: { not: excludeId } },
+  })
+}
+
 export const memberHooks: MemberHooks = {
   /**
    * Filter members:
-   * - ?workspaceId=X  → workspace members
+   * - ?workspaceId=X  → workspace members (and the workspace's project guests)
    * - ?projectId=X    → project-level members
-   * - (neither)       → members from all accessible workspaces
+   * - (neither)       → members from all workspaces the caller belongs to
    */
   beforeList: async (ctx) => {
     const userId = ctx.userId
-    if (!userId) {
-      return { ok: false, error: { code: "unauthorized", message: "Authentication required" } }
-    }
+    if (!userId) return unauthorized
 
     const workspaceId = ctx.query.workspaceId
     const projectId = ctx.query.projectId
 
     if (projectId) {
-      // Verify user has access (project member or workspace member)
-      const projectMember = await ctx.prisma.member.findFirst({ where: { userId, projectId } })
-      if (!projectMember) {
-        const project = await ctx.prisma.project.findUnique({ where: { id: projectId }, select: { workspaceId: true } })
-        if (project) {
-          const wsMember = await ctx.prisma.member.findFirst({ where: { userId, workspaceId: project.workspaceId } })
-          if (!wsMember) {
-            return { ok: false, error: { code: "forbidden", message: "Access denied to this project" } }
-          }
-        } else {
-          return { ok: false, error: { code: "not_found", message: "Project not found" } }
-        }
-      }
+      const denied = await hookRequire(ctx, "project:read", { projectId })
+      if (denied) return denied
       return { ok: true, data: { where: { projectId }, include: userInclude } }
     }
 
     if (workspaceId) {
-      const membership = await ctx.prisma.member.findFirst({ where: { userId, workspaceId } })
-      if (!membership) {
-        return { ok: false, error: { code: "forbidden", message: "Access denied to this workspace" } }
-      }
+      const denied = await hookRequire(ctx, "workspace.members:read", { workspaceId })
+      if (denied) return denied
       return { ok: true, data: { where: { workspaceId }, include: userInclude } }
     }
 
     return {
       ok: true,
       data: {
-        where: { workspace: { members: { some: { userId } } } },
+        where: { workspace: { members: { some: { userId, projectId: null } } } },
         include: userInclude,
       },
     }
@@ -156,193 +162,235 @@ export const memberHooks: MemberHooks = {
   },
 
   beforeGet: async (id, ctx) => {
-    const userId = ctx.userId
-    if (!userId) {
-      return { ok: false, error: { code: "unauthorized", message: "Authentication required" } }
-    }
+    if (!ctx.userId) return unauthorized
 
     const member = await ctx.prisma.member.findUnique({
       where: { id },
-      include: { workspace: { include: { members: true } } },
+      select: { userId: true, workspaceId: true, projectId: true },
     })
     if (!member) {
       return { ok: false, error: { code: "not_found", message: "Member not found" } }
     }
+    if (member.userId === ctx.userId) return { ok: true }
 
-    // Check project-level access
     if (member.projectId) {
-      const projectMember = await ctx.prisma.member.findFirst({ where: { userId, projectId: member.projectId } })
-      if (projectMember) return { ok: true }
+      const access = await hookAccess(ctx, { projectId: member.projectId })
+      if (access.permissions.has("project:read")) return { ok: true }
     }
-
-    const hasAccess = member.workspace?.members.some((m: any) => m.userId === userId)
-    if (!hasAccess) {
-      return { ok: false, error: { code: "forbidden", message: "Access denied" } }
+    if (member.workspaceId) {
+      const denied = await hookRequire(ctx, "workspace.members:read", { workspaceId: member.workspaceId })
+      if (!denied) return { ok: true }
     }
-    return { ok: true }
+    return forbidden("Access denied")
   },
 
   /**
-   * Add members to workspace or project.
-   * - Admin/owner can add anyone
-   * - Users can add themselves if they have an accepted invitation
+   * Add members to a workspace or project.
+   * - Callers with members:manage may grant roles up to their own.
+   * - Users may add themselves with the role from an accepted invitation.
    */
   beforeCreate: async (input, ctx) => {
     const userId = ctx.userId
-    if (!userId) {
-      return { ok: false, error: { code: "unauthorized", message: "Authentication required" } }
-    }
+    if (!userId) return unauthorized
 
-    const projectId = input.projectId
-    let workspaceId = input.workspaceId
+    const projectId: string | undefined = input.projectId || undefined
+    let workspaceId: string | undefined = input.workspaceId || undefined
 
     if (!workspaceId && !projectId) {
       return { ok: false, error: { code: "bad_request", message: "workspaceId or projectId is required" } }
     }
+    if (!input.userId) {
+      return { ok: false, error: { code: "bad_request", message: "userId is required" } }
+    }
 
-    // For project members, resolve workspace from project if not provided
-    if (projectId && !workspaceId) {
+    if (projectId) {
       const project = await ctx.prisma.project.findUnique({ where: { id: projectId }, select: { workspaceId: true } })
       if (!project) {
         return { ok: false, error: { code: "not_found", message: "Project not found" } }
       }
       workspaceId = project.workspaceId
-      input.workspaceId = workspaceId
     }
 
-    // Check if requesting user has admin access at the target scope
-    const targetScope = projectId ? { projectId } : { workspaceId }
-    const membership = await ctx.prisma.member.findFirst({
-      where: { userId, ...targetScope },
+    const existing = await ctx.prisma.member.findFirst({
+      where: projectId ? { userId: input.userId, projectId } : { userId: input.userId, workspaceId, projectId: null },
+      select: { id: true },
     })
-
-    if (membership && (membership.role === 'owner' || membership.role === 'admin')) {
-      return { ok: true }
+    if (existing) {
+      return { ok: false, error: { code: "already_member", message: "User is already a member" } }
     }
 
-    // Also check workspace-level admin for project operations
-    if (projectId && workspaceId) {
-      const wsMembership = await ctx.prisma.member.findFirst({ where: { userId, workspaceId } })
-      if (wsMembership && (wsMembership.role === 'owner' || wsMembership.role === 'admin')) {
-        return { ok: true }
-      }
+    const data = {
+      userId: input.userId,
+      workspaceId,
+      projectId: projectId ?? null,
+      role: input.role ?? "member",
+      isBillingAdmin: !!input.isBillingAdmin,
     }
 
-    // Allow self-join via accepted invitation
+    // Self-join via accepted invitation: the invitation decides the role.
     if (input.userId === userId) {
       const user = await ctx.prisma.user.findUnique({ where: { id: userId }, select: { email: true } })
       if (user) {
-        const invitationWhere: any = {
-          email: user.email.toLowerCase(),
-          status: 'accepted',
+        const invitation = await ctx.prisma.invitation.findFirst({
+          where: {
+            email: user.email.toLowerCase(),
+            status: 'accepted',
+            ...(projectId ? { projectId } : { workspaceId, projectId: null }),
+          },
+          orderBy: { updatedAt: 'desc' },
+          select: { role: true },
+        })
+        if (invitation) {
+          const role = projectId ? toProjectRole(invitation.role) : invitation.role
+          if (!role) return { ok: false, error: { code: "bad_request", message: "Invalid invitation role" } }
+          return { ok: true, data: { ...data, role, isBillingAdmin: false } }
         }
-        if (projectId) {
-          invitationWhere.projectId = projectId
-        } else {
-          invitationWhere.workspaceId = workspaceId
-        }
-        const invitation = await ctx.prisma.invitation.findFirst({ where: invitationWhere })
-        if (invitation) return { ok: true }
       }
     }
 
-    return { ok: false, error: { code: "forbidden", message: "Access denied" } }
-  },
-
-  beforeUpdate: async (id, input, ctx) => {
-    const userId = ctx.userId
-    if (!userId) {
-      return { ok: false, error: { code: "unauthorized", message: "Authentication required" } }
+    if (projectId) {
+      const role = toProjectRole(data.role)
+      if (!role) return { ok: false, error: { code: "bad_request", message: "Invalid project role" } }
+      const access = await hookAccess(ctx, { projectId })
+      if (!canAssignProjectRole(access, role)) {
+        return forbidden("You cannot grant this project role")
+      }
+      return { ok: true, data: { ...data, role, isBillingAdmin: false } }
     }
 
-    const targetMember = await ctx.prisma.member.findUnique({
+    if (!isWorkspaceRole(data.role)) {
+      return { ok: false, error: { code: "bad_request", message: "Invalid workspace role" } }
+    }
+    const access = await hookAccess(ctx, { workspaceId: workspaceId! })
+    if (!canAssignWorkspaceRole(access, data.role)) {
+      return forbidden("You cannot grant this workspace role")
+    }
+    if (data.isBillingAdmin && !access.permissions.has("workspace.billing:manage")) {
+      return forbidden("Only billing managers can grant billing admin")
+    }
+    return { ok: true, data }
+  },
+
+  /** Only `role` and `isBillingAdmin` are mutable, within the no-escalation rule. */
+  beforeUpdate: async (id, input, ctx) => {
+    const userId = ctx.userId
+    if (!userId) return unauthorized
+
+    const target = await ctx.prisma.member.findUnique({
       where: { id },
-      include: { workspace: { include: { members: true } } },
+      select: { id: true, userId: true, role: true, workspaceId: true, projectId: true, isBillingAdmin: true },
     })
-    if (!targetMember) {
+    if (!target) {
       return { ok: false, error: { code: "not_found", message: "Member not found" } }
     }
 
-    // Check project-level admin access
-    if (targetMember.projectId) {
-      const projectMember = await ctx.prisma.member.findFirst({ where: { userId, projectId: targetMember.projectId } })
-      if (projectMember && (projectMember.role === 'owner' || projectMember.role === 'admin')) {
-        return { ok: true }
+    const data: Record<string, unknown> = {}
+
+    if (target.projectId) {
+      const access = await hookAccess(ctx, { projectId: target.projectId })
+      if (!access.permissions.has("project.members:manage")) {
+        return forbidden("Only project admins can update project members")
       }
-    }
-
-    const currentUserMember = targetMember.workspace?.members.find((m: any) => m.userId === userId)
-    if (!currentUserMember) {
-      return { ok: false, error: { code: "forbidden", message: "Access denied" } }
-    }
-
-    if (currentUserMember.role !== 'owner' && currentUserMember.role !== 'admin') {
-      return { ok: false, error: { code: "forbidden", message: "Only owners and admins can update members" } }
-    }
-
-    if (input.role === 'owner' || targetMember.role === 'owner') {
-      if (currentUserMember.role !== 'owner') {
-        return { ok: false, error: { code: "forbidden", message: "Only owners can manage owner role" } }
+      if (projectRoleRank(toProjectRole(target.role)) > projectRoleRank(access.projectRole) && !access.isSuperAdmin) {
+        return forbidden("You cannot change a member with a higher role")
       }
+      if (input.role !== undefined) {
+        const role = toProjectRole(input.role)
+        if (!role) return { ok: false, error: { code: "bad_request", message: "Invalid project role" } }
+        if (!canAssignProjectRole(access, role)) return forbidden("You cannot grant this project role")
+        data.role = role
+      }
+      return { ok: true, data }
     }
 
-    return { ok: true }
+    const access = await hookAccess(ctx, { workspaceId: target.workspaceId })
+    if (!access.permissions.has("workspace.members:manage")) {
+      return forbidden("Only owners and admins can update members")
+    }
+    if (isWorkspaceRole(target.role) && !canAssignWorkspaceRole(access, target.role)) {
+      return forbidden(target.role === "owner" ? "Only owners can manage owner role" : "You cannot change a member with a higher role")
+    }
+
+    if (input.role !== undefined && input.role !== target.role) {
+      if (!isWorkspaceRole(input.role)) {
+        return { ok: false, error: { code: "bad_request", message: "Invalid workspace role" } }
+      }
+      if (!canAssignWorkspaceRole(access, input.role)) {
+        return forbidden(input.role === "owner" ? "Only owners can manage owner role" : "You cannot grant a role above your own")
+      }
+      if (target.role === "owner" && (await otherWorkspaceOwners(ctx, target.workspaceId, target.id)) === 0) {
+        return { ok: false, error: { code: "last_owner", message: "A workspace must keep at least one owner" } }
+      }
+      data.role = input.role
+    }
+
+    if (input.isBillingAdmin !== undefined && !!input.isBillingAdmin !== target.isBillingAdmin) {
+      if (!access.permissions.has("workspace.billing:manage")) {
+        return forbidden("Only billing managers can change billing admin")
+      }
+      data.isBillingAdmin = !!input.isBillingAdmin
+    }
+
+    return { ok: true, data }
   },
 
   beforeDelete: async (id, ctx) => {
     const userId = ctx.userId
-    if (!userId) {
-      return { ok: false, error: { code: "unauthorized", message: "Authentication required" } }
-    }
+    if (!userId) return unauthorized
 
     const member = await ctx.prisma.member.findUnique({
       where: { id },
-      include: { workspace: { include: { members: true } }, user: { select: { email: true, name: true } } },
+      include: { workspace: { select: { name: true } }, user: { select: { email: true, name: true } } },
     })
-
-    // Stash for afterDelete email
-    if (member) (ctx as any)._deletedMember = member
     if (!member) {
       return { ok: false, error: { code: "not_found", message: "Member not found" } }
     }
 
-    // Users can remove themselves
-    if (member.userId === userId) {
-      // Prevent removing last owner of a workspace
-      if (member.role === 'owner' && member.workspaceId && !member.projectId) {
-        const otherOwners = await ctx.prisma.member.count({
-          where: { workspaceId: member.workspaceId, role: "owner", id: { not: id }, projectId: null },
-        })
-        if (otherOwners === 0) {
-          return { ok: false, error: { code: "last_owner", message: "Cannot remove the last owner" } }
-        }
+    // Stash for afterDelete email
+    ;(ctx as any)._deletedMember = member
+
+    const isWorkspaceRow = !member.projectId
+    if (isWorkspaceRow && member.role === "owner" && member.workspaceId) {
+      if ((await otherWorkspaceOwners(ctx, member.workspaceId, id)) === 0) {
+        return { ok: false, error: { code: "last_owner", message: "Cannot remove the last owner" } }
+      }
+    }
+
+    // Users can always leave.
+    if (member.userId === userId) return { ok: true }
+
+    if (member.projectId) {
+      const access = await hookAccess(ctx, { projectId: member.projectId })
+      if (!access.permissions.has("project.members:manage")) {
+        return forbidden("Only project admins can remove project members")
+      }
+      if (projectRoleRank(toProjectRole(member.role)) > projectRoleRank(access.projectRole) && !access.isSuperAdmin) {
+        return forbidden("You cannot remove a member with a higher role")
       }
       return { ok: true }
     }
 
-    // Check project-level admin access
-    if (member.projectId) {
-      const projectMember = await ctx.prisma.member.findFirst({ where: { userId, projectId: member.projectId } })
-      if (projectMember && (projectMember.role === 'owner' || projectMember.role === 'admin')) {
-        return { ok: true }
-      }
+    const access = await hookAccess(ctx, { workspaceId: member.workspaceId })
+    if (!access.permissions.has("workspace.members:manage")) {
+      return forbidden("Only owners and admins can remove members")
     }
-
-    const currentUserMember = member.workspace?.members.find((m: any) => m.userId === userId)
-    if (!currentUserMember) {
-      return { ok: false, error: { code: "forbidden", message: "Access denied" } }
+    if (isWorkspaceRole(member.role) && workspaceRoleRank(member.role) > workspaceRoleRank(access.workspaceRole) && !access.isSuperAdmin) {
+      return forbidden("You cannot remove a member with a higher role")
     }
-
-    if (currentUserMember.role !== 'owner' && currentUserMember.role !== 'admin') {
-      return { ok: false, error: { code: "forbidden", message: "Only owners and admins can remove members" } }
+    if (member.role === "owner" && !access.permissions.has("workspace.owners:manage")) {
+      return forbidden("Only owners can remove owners")
     }
-
     return { ok: true }
   },
 
   afterDelete: async (id, ctx) => {
     const member = (ctx as any)._deletedMember
     if (!member?.workspaceId || member.projectId) return
+
+    // Leaving a workspace also ends any project roles inside it.
+    await ctx.prisma.member
+      .deleteMany({ where: { userId: member.userId, workspaceId: member.workspaceId, projectId: { not: null } } })
+      .catch((err: unknown) => console.error('[Members] project-row cleanup failed:', err))
 
     // Active-seat billing: removing a workspace member shrinks the seat
     // quantity. Stripe credits the remaining time as account credit on the

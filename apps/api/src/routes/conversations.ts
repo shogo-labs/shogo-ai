@@ -8,7 +8,9 @@
  */
 
 import { Hono } from 'hono'
+import type { Permission } from '@shogo/authz'
 import { prisma } from '../lib/prisma'
+import { loadAccess as loadAuthzAccess } from '../lib/authz'
 import { canReceive, subscribeWorkspaceEvents } from '../lib/conversation-bus'
 import {
   MAX_CONVERSATION_FILE_BYTES,
@@ -21,6 +23,7 @@ import {
 import {
   ConversationError,
   addAgentMember,
+  assertAgentInWorkspace,
   setAgentMuted,
   agentDisplayName,
   addUserMembers,
@@ -111,6 +114,10 @@ async function readJson(c: any): Promise<Record<string, any>> {
   }
 }
 
+async function userCan(userId: string, permission: Permission, workspaceId: string): Promise<boolean> {
+  return (await loadAuthzAccess({ userId, via: 'session' }, { workspaceId })).permissions.has(permission)
+}
+
 function numberParam(value: string | undefined): number | undefined {
   if (value === undefined || value === '') return undefined
   const n = Number(value)
@@ -150,10 +157,14 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
     const workspaceId = c.req.param('workspaceId')
     const role = await getWorkspaceRole(workspaceId, userId)
     if (!role) return c.json({ error: { code: 'forbidden', message: 'No access to this workspace' } }, 403)
-    const [config, installations] = await Promise.all([getWorkspaceChatConfig(workspaceId), listInstallations(workspaceId)])
+    const [config, installations, canManage] = await Promise.all([
+      getWorkspaceChatConfig(workspaceId),
+      listInstallations(workspaceId),
+      userCan(userId, 'workspace.settings:manage', workspaceId),
+    ])
     return c.json({
       ...config,
-      canManage: role === 'owner' || role === 'admin',
+      canManage,
       installations: installations.map((i: any) => ({ provider: i.provider, tenantName: i.tenantName, createdAt: i.createdAt })),
     })
   })
@@ -162,8 +173,7 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
     const userId = await requireUser(c)
     if (userId instanceof Response) return userId
     const workspaceId = c.req.param('workspaceId')
-    const role = await getWorkspaceRole(workspaceId, userId)
-    if (role !== 'owner' && role !== 'admin') {
+    if (!(await userCan(userId, 'workspace.settings:manage', workspaceId))) {
       return c.json({ error: { code: 'forbidden', message: 'Only workspace admins can change team chat settings' } }, 403)
     }
     const body = await readJson(c)
@@ -230,10 +240,12 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
     if (limited) return limited
     const body = await readJson(c)
     try {
-      const conversation = body.agent && typeof body.agent === 'object'
-        ? await openAgentConversation(auth.workspaceId, auth.userId, {
-            projectId: typeof body.agent.projectId === 'string' ? body.agent.projectId : null,
-          })
+      const agent = body.agent && typeof body.agent === 'object'
+        ? { projectId: typeof body.agent.projectId === 'string' ? body.agent.projectId : null }
+        : null
+      if (agent) await assertAgentInWorkspace(auth.workspaceId, agent, auth.userId)
+      const conversation = agent
+        ? await openAgentConversation(auth.workspaceId, auth.userId, agent)
         : await openDirectConversation(auth.workspaceId, auth.userId, Array.isArray(body.userIds) ? body.userIds : [])
       return c.json({ conversation: await getConversationForUser(conversation.id, auth.userId) })
     } catch (err) {
@@ -245,7 +257,7 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
     const auth = await requireWorkspace(c)
     if (auth instanceof Response) return auth
     const [mentionables, statuses, groups] = await Promise.all([
-      listMentionables(auth.workspaceId),
+      listMentionables(auth.workspaceId, auth.userId),
       listStatuses(auth.workspaceId),
       listGroups(auth.workspaceId),
     ])
@@ -315,8 +327,7 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
   router.get('/workspaces/:workspaceId/conversations/metrics', async (c) => {
     const auth = await requireWorkspace(c)
     if (auth instanceof Response) return auth
-    const role = await getWorkspaceRole(auth.workspaceId, auth.userId)
-    if (role !== 'owner' && role !== 'admin') {
+    if (!(await userCan(auth.userId, 'workspace.analytics:read', auth.workspaceId))) {
       return c.json({ error: { code: 'forbidden', message: 'Only workspace admins can view channel metrics' } }, 403)
     }
     return c.json(await getChannelMetrics(auth.workspaceId, { weeks: numberParam(c.req.query('weeks')) }))
@@ -855,7 +866,7 @@ export function agentChannelRoutes(routeConfig: AgentChannelRoutesConfig): Hono 
   router.get(`${base}/directory`, async (c) => {
     const auth = await config.authorize(c)
     if (auth instanceof Response) return auth
-    return c.json({ directory: await loadTeamDirectory(auth.workspaceId) })
+    return c.json({ directory: await loadTeamDirectory(auth.workspaceId, auth.projectId ?? null) })
   })
 
   router.get(`${base}/team-channels`, async (c) => {
@@ -988,7 +999,7 @@ export function agentChannelRoutes(routeConfig: AgentChannelRoutesConfig): Hono 
       const note = String(body.text ?? '')
       const result = await postAgentMessage({
         conversationId: conversation.id,
-        text: await resolveFriendlyMentions(auth.workspaceId, card ? [cardToMarkdown(card), note.trim()].filter(Boolean).join('\n\n') : note),
+        text: await resolveFriendlyMentions(auth.workspaceId, card ? [cardToMarkdown(card), note.trim()].filter(Boolean).join('\n\n') : note, projectId),
         agent: { projectId, name: await agentDisplayName(auth.workspaceId, projectId) },
         threadRootId,
         agentChain,
@@ -1030,7 +1041,7 @@ export function agentChannelRoutes(routeConfig: AgentChannelRoutesConfig): Hono 
         messageId: c.req.param('messageId'),
         workspaceId: auth.workspaceId,
         projectId,
-        text: typeof body.text === 'string' ? await resolveFriendlyMentions(auth.workspaceId, body.text) : undefined,
+        text: typeof body.text === 'string' ? await resolveFriendlyMentions(auth.workspaceId, body.text, projectId) : undefined,
         kind: normalizeKind(body.kind),
         card,
       })
@@ -1070,7 +1081,7 @@ export function agentChannelRoutes(routeConfig: AgentChannelRoutesConfig): Hono 
     const who = String(body.user ?? '').trim()
     if (!who) return c.json({ error: { code: 'invalid_input', message: 'user is required' } }, 400)
     const member = await db.member.findFirst({
-      where: { workspaceId: auth.workspaceId, OR: [{ userId: who }, { user: { email: who.toLowerCase() } }] },
+      where: { workspaceId: auth.workspaceId, projectId: null, OR: [{ userId: who }, { user: { email: who.toLowerCase() } }] },
       select: { userId: true, user: { select: { name: true, email: true } } },
     })
     if (!member) return c.json({ error: { code: 'not_found', message: 'No workspace member matches that user' } }, 404)
@@ -1080,7 +1091,7 @@ export function agentChannelRoutes(routeConfig: AgentChannelRoutesConfig): Hono 
       let onBehalfOf: { userId: string; name: string } | undefined
       if (onBehalfOfUserId && onBehalfOfUserId !== member.userId) {
         const requester = await db.member.findFirst({
-          where: { workspaceId: auth.workspaceId, userId: onBehalfOfUserId },
+          where: { workspaceId: auth.workspaceId, projectId: null, userId: onBehalfOfUserId },
           select: { userId: true, user: { select: { name: true, email: true } } },
         })
         if (!requester) {
@@ -1096,7 +1107,7 @@ export function agentChannelRoutes(routeConfig: AgentChannelRoutesConfig): Hono 
       }
       const result = await postAgentMessage({
         conversationId: conversation.id,
-        text: await resolveFriendlyMentions(auth.workspaceId, String(body.text ?? '')),
+        text: await resolveFriendlyMentions(auth.workspaceId, String(body.text ?? ''), projectId),
         agent: { projectId, name: await agentDisplayName(auth.workspaceId, projectId) },
         agentChain: await postChain(auth.workspaceId, projectId, body, null),
         ...(onBehalfOf ? { blocks: { onBehalfOf } } : {}),

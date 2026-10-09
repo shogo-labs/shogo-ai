@@ -55,7 +55,7 @@ async function onlyMember(workspaceId: string, userIds: string[]): Promise<strin
   const unique = [...new Set(userIds)]
   if (unique.length === 0) return null
   const members = await db.member.findMany({
-    where: { workspaceId, userId: { in: unique } },
+    where: { workspaceId, projectId: null, userId: { in: unique } },
     select: { userId: true },
   })
   const memberIds = [...new Set(members.map((m: { userId: string }) => m.userId))]

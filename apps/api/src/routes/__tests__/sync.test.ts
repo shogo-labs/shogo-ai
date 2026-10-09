@@ -9,6 +9,13 @@ mock.module('../../lib/prisma', () => ({
   prisma: {
     member: {
       findFirst: async (args: any) => memberImpl(args),
+      findMany: async (args: any) => {
+        const m = await memberImpl(args)
+        return m ? [{ role: m.role ?? 'member', projectId: null, isBillingAdmin: false }] : []
+      },
+    },
+    user: {
+      findUnique: async () => ({ role: 'user' }),
     },
   },
 }))
@@ -149,7 +156,10 @@ describe('GET /sync — catch-up', () => {
       return { id: 'm-1' }
     }
     await run(makeRequest('/sync?workspaceId=ws-99&since=0'), { userId: 'user-99' })
-    expect(capturedWhere).toEqual({ userId: 'user-99', workspaceId: 'ws-99' })
+    expect(capturedWhere).toEqual({
+      userId: 'user-99',
+      OR: [{ workspaceId: 'ws-99', projectId: null }],
+    })
   })
 })
 
