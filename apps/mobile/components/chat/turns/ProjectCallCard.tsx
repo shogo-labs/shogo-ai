@@ -45,6 +45,7 @@ export interface ProjectCallView {
   hint: string | null;
   /** API chat that recorded the call; null when it was not persisted. */
   chatSessionId: string | null;
+  running: boolean;
   queued: boolean;
   deliverables: ProjectCallDeliverable[];
 }
@@ -100,6 +101,7 @@ export function parseProjectCall(tool: ToolCallData): ProjectCallView {
     error: resultError,
     hint: str(result.hint),
     chatSessionId: openableChatId(result.chatSessionId),
+    running: result.status === "running",
     queued: result.status === "accepted" || result.wait === false || args.wait === false,
     deliverables,
   };
@@ -109,8 +111,10 @@ type CallStatus = "calling" | "queued" | "replied" | "failed";
 
 function statusOf(tool: ToolCallData, view: ProjectCallView): CallStatus {
   if (view.error || tool.state === "error") return "failed";
+  if (view.queued) return "queued";
+  if (view.running) return "calling";
   if (tool.state === "streaming") return view.queued ? "queued" : "calling";
-  return view.queued ? "queued" : "replied";
+  return "replied";
 }
 
 function statusLabel(status: CallStatus, elapsedMs: number): string {

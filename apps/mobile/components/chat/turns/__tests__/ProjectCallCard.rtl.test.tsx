@@ -119,6 +119,36 @@ describe("ProjectCallCard", () => {
     expect((screen.getByLabelText("Open chat with Worker") as HTMLButtonElement).disabled).toBe(true)
   })
 
+  test("enables project buttons from the preliminary result while the call is running", () => {
+    const openProjectPane = mock((_req: unknown) => {})
+    chatContext = { openProjectPane, workspaceId: "ws-1" }
+    const preliminary = {
+      project: { id: "proj-2", name: "Worker" },
+      runId: "run_abcdef123456",
+      status: "running",
+      wait: true,
+      chatSessionId: CHAT_ID,
+    }
+    const { rerender } = render(
+      <ProjectCallCard tool={tool({ state: "streaming", result: preliminary })} />,
+    )
+
+    expect(screen.getByTestId("project-call-status").textContent).toMatch(/^Calling/)
+    expect((screen.getByLabelText("Open project Worker") as HTMLButtonElement).disabled).toBe(false)
+    expect((screen.getByLabelText("Open chat with Worker") as HTMLButtonElement).disabled).toBe(false)
+
+    fireEvent.click(screen.getByLabelText("Open chat with Worker"))
+    expect(openProjectPane).toHaveBeenLastCalledWith({
+      projectId: "proj-2",
+      name: "Worker",
+      chatSessionId: CHAT_ID,
+      tab: "chat",
+    })
+
+    rerender(<ProjectCallCard tool={tool({ state: "success", result: preliminary })} />)
+    expect(screen.getByTestId("project-call-status").textContent).toMatch(/^Calling/)
+  })
+
   test("shows queued for a wait=false call", () => {
     render(
       <ProjectCallCard
