@@ -10,6 +10,7 @@ import { describe, test, expect, beforeEach, mock } from 'bun:test'
 import { mkdtempSync, rmSync, existsSync, readFileSync, mkdirSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
+import { runChatSessionId } from '@shogo/shared-runtime/project-call-chat'
 import * as realInternalApi from '../internal-api'
 
 // ─── internal-api fakes ─────────────────────────────────────────────────
@@ -307,6 +308,42 @@ describe('project_call', () => {
     expect(callArgs[0]).toBe('proj-2')
     expect(callArgs[1].runId).toBe(out.runId)
     expect(callArgs[1].callerProjectId).toBe('caller-1')
+  })
+
+  test('emits a preliminary result with the target chat before waiting for the call', async () => {
+    api.graph.data = [
+      { id: 'caller-1', name: 'Caller', description: null, workingMode: 'managed', settings: null, attachments: [], agent: null },
+      { id: 'proj-2', name: 'Worker', description: null, workingMode: 'managed', settings: null, attachments: [], agent: null },
+    ]
+    let resolveCall!: (value: any) => void
+    api.call = new Promise((resolve) => {
+      resolveCall = resolve
+    }) as any
+    const events: any[] = []
+    const pending = run(
+      createProjectCallTool(baseCtx({ uiWriter: { write: (event: any) => events.push(event) } })),
+      { project: 'proj-2', message: 'go', runId: 'run_fixed' },
+    )
+
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(events[0]).toEqual({
+      type: 'tool-output-available',
+      toolCallId: 'cid',
+      output: {
+        project: { id: 'proj-2', name: 'Worker' },
+        runId: 'run_fixed',
+        status: 'running',
+        wait: true,
+        chatSessionId: runChatSessionId('proj-2', 'run_fixed'),
+      },
+      dynamic: true,
+      preliminary: true,
+    })
+    expect(calls.find((call) => call.fn === 'callProjectAgent')).toBeDefined()
+
+    resolveCall({ ok: true, status: 200, data: { status: 'completed', reply: 'done', chatSessionId: 'chat-123' } })
+    await pending
   })
 
   test('reuses a caller-supplied runId', async () => {

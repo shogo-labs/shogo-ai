@@ -21,6 +21,7 @@ import { dirname, join, resolve } from 'path'
 import { randomBytes } from 'crypto'
 import { Type } from '@sinclair/typebox'
 import type { AgentTool } from '@mariozechner/pi-agent-core'
+import { runChatSessionId } from '@shogo/shared-runtime/project-call-chat'
 import type { ToolContext } from './gateway-tools'
 import { textResult } from './gateway-tools'
 import {
@@ -370,7 +371,7 @@ export function createProjectCallTool(ctx: ToolContext): AgentTool {
       wait: Type.Optional(Type.Boolean({ description: 'Wait for the reply (default true).' })),
       timeoutMs: Type.Optional(Type.Number({ description: 'Wait budget in ms (default 300000, max 1200000).' })),
     }),
-    execute: async (_id, params) => {
+    execute: async (toolCallId, params) => {
       const p = params as { project: string; message: string; runId?: string; wait?: boolean; timeoutMs?: number }
       const target = await resolveProjectRef(ctx, p.project)
       if ('error' in target) return textResult(target)
@@ -378,6 +379,19 @@ export function createProjectCallTool(ctx: ToolContext): AgentTool {
         return textResult({ error: 'project_call targets another project; use agent_spawn to delegate within this one.', code: 'self_call' })
       }
       const runId = p.runId?.trim() || newRunId()
+      ctx.uiWriter?.write({
+        type: 'tool-output-available',
+        toolCallId,
+        output: {
+          project: { id: target.id, name: target.name },
+          runId,
+          status: 'running',
+          wait: p.wait !== false,
+          chatSessionId: runChatSessionId(target.id, runId),
+        },
+        dynamic: true,
+        preliminary: true,
+      })
       const res = await apiCallProjectAgent(target.id, {
         message: p.message,
         runId,
