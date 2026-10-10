@@ -20,9 +20,46 @@ import { afterEach, beforeEach, describe, test, expect, mock } from 'bun:test'
 import { Hono } from 'hono'
 
 const resolveApiKeyMock = mock(async (_key: string) => null as any)
+const findProjectMock = mock(async (_args: any) => null as any)
+const getSocialContentProviderMock = mock(async () => {
+  throw new Error('social provider not stubbed')
+})
+
+class SocialProviderErrorMock extends Error {
+  code: string
+  constructor(code: string, message: string) {
+    super(message)
+    this.code = code
+    this.name = 'SocialProviderError'
+  }
+}
 
 mock.module('../routes/api-keys', () => ({
   resolveApiKey: resolveApiKeyMock,
+}))
+
+mock.module('../lib/prisma', () => ({
+  prisma: {
+    project: { findUnique: (args: any) => findProjectMock(args) },
+  },
+}))
+
+mock.module('../services/social-content', () => ({
+  getSocialContentProvider: () => getSocialContentProviderMock(),
+  SocialProviderError: SocialProviderErrorMock,
+}))
+
+const checkUsageBalanceMock = mock(async (_workspaceId: string) => ({ ok: true }))
+const consumeUsageMock = mock(async (_params: any) => ({ success: true, remainingIncludedUsd: 1 }))
+const usageLimitErrorPayloadMock = mock((reason?: string) => ({
+  code: reason || 'usage_limit_reached',
+  message: "You've reached your usage limit.",
+}))
+
+mock.module('../services/billing.service', () => ({
+  checkUsageBalance: (workspaceId: string) => checkUsageBalanceMock(workspaceId),
+  consumeUsage: (params: any) => consumeUsageMock(params),
+  usageLimitErrorPayload: (reason?: string) => usageLimitErrorPayloadMock(reason),
 }))
 
 const ENV_KEYS = [
@@ -35,6 +72,7 @@ const ENV_KEYS = [
   'LOCAL_LLM_BASE_URL',
   'LOCAL_EMBEDDING_MODEL',
   'LOCAL_EMBEDDING_DIMENSIONS',
+  'SHOGO_LOCAL_MODE',
 ] as const
 let savedEnv: Record<string, string | undefined> = {}
 
@@ -47,6 +85,21 @@ beforeEach(() => {
   process.env.AI_PROXY_SECRET = 'tools-proxy-test-secret'
   resolveApiKeyMock.mockClear()
   resolveApiKeyMock.mockImplementation(async () => null)
+  findProjectMock.mockReset()
+  findProjectMock.mockImplementation(async () => null)
+  getSocialContentProviderMock.mockReset()
+  getSocialContentProviderMock.mockImplementation(async () => {
+    throw new Error('social provider not stubbed')
+  })
+  checkUsageBalanceMock.mockReset()
+  checkUsageBalanceMock.mockImplementation(async () => ({ ok: true }))
+  consumeUsageMock.mockReset()
+  consumeUsageMock.mockImplementation(async () => ({ success: true, remainingIncludedUsd: 1 }))
+  usageLimitErrorPayloadMock.mockReset()
+  usageLimitErrorPayloadMock.mockImplementation((reason?: string) => ({
+    code: reason || 'usage_limit_reached',
+    message: "You've reached your usage limit.",
+  }))
 })
 
 afterEach(() => {
@@ -383,6 +436,290 @@ describe('Tools Proxy', () => {
       expect(res.status).toBe(200)
       expect(calls[0].url).toBe('https://api.openai.com/v1/chat/completions')
       expect(calls[0].init.headers.get('Authorization')).toBe('Bearer sk-openai-real')
+    })
+  })
+
+  describe('Social media lookup', () => {
+    function enableSocial() {
+      findProjectMock.mockImplementation(async () => ({
+        settings: { socialMediaEnabled: true },
+      }))
+    }
+
+    function stubProvider(overrides: Record<string, unknown> = {}) {
+      const getProfile = mock(async () => ({
+        providerUserId: '99',
+        bio: 'hello',
+        displayName: 'Nike',
+      }))
+      const listRecentPosts = mock(async () => ([
+        {
+          providerPostId: 'p1',
+          url: 'https://www.tiktok.com/@nike/video/1',
+          caption: 'run',
+          postedAt: new Date('2026-01-02T03:04:05.000Z'),
+          views: 10,
+          likes: 2,
+          comments: 1,
+          shares: 0,
+        },
+      ]))
+      getSocialContentProviderMock.mockImplementation(async () => ({
+        name: 'ensembledata',
+        getProfile,
+        listRecentPosts,
+        ...overrides,
+      }))
+      return { getProfile, listRecentPosts }
+    }
+
+    test('rejects requests without a token', async () => {
+      const app = await makeApp()
+      const res = await app.request('/tools/social/tiktok/profile', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ handle: 'nike' }),
+      })
+      expect(res.status).toBe(401)
+    })
+
+    test('returns 403 when the project has social media switched off', async () => {
+      findProjectMock.mockImplementation(async () => ({ settings: {} }))
+      stubProvider()
+      const app = await makeApp()
+      const token = await makeToken()
+      const res = await app.request('/tools/social/tiktok/profile', {
+        method: 'POST',
+        headers: { 'x-api-key': token, 'content-type': 'application/json' },
+        body: JSON.stringify({ handle: 'nike' }),
+      })
+      expect(res.status).toBe(403)
+      expect(getSocialContentProviderMock).not.toHaveBeenCalled()
+    })
+
+    test('returns 403 when that platform is switched off', async () => {
+      findProjectMock.mockImplementation(async () => ({
+        settings: { socialMediaEnabled: true, socialInstagramEnabled: false },
+      }))
+      stubProvider()
+      const app = await makeApp()
+      const token = await makeToken()
+      const res = await app.request('/tools/social/instagram/posts', {
+        method: 'POST',
+        headers: { 'x-api-key': token, 'content-type': 'application/json' },
+        body: JSON.stringify({ handle: '@nike' }),
+      })
+      expect(res.status).toBe(403)
+      expect((await res.json() as any).error).toContain('instagram')
+      expect(getSocialContentProviderMock).not.toHaveBeenCalled()
+    })
+
+    test('returns a profile and serializes post timestamps as ISO strings', async () => {
+      enableSocial()
+      const { getProfile, listRecentPosts } = stubProvider()
+      const app = await makeApp()
+      const token = await makeToken()
+
+      const profile = await app.request('/tools/social/tiktok/profile', {
+        method: 'POST',
+        headers: { 'x-api-key': token, 'content-type': 'application/json' },
+        body: JSON.stringify({ handle: '@Nike' }),
+      })
+      expect(profile.status).toBe(200)
+      expect(await profile.json()).toEqual({
+        platform: 'tiktok',
+        handle: 'Nike',
+        providerUserId: '99',
+        bio: 'hello',
+        displayName: 'Nike',
+      })
+      expect(getProfile).toHaveBeenCalledWith('tiktok', 'Nike')
+
+      const posts = await app.request('/tools/social/tiktok/posts', {
+        method: 'POST',
+        headers: { 'x-api-key': token, 'content-type': 'application/json' },
+        body: JSON.stringify({ handle: 'nike', limit: 999 }),
+      })
+      expect(posts.status).toBe(200)
+      const body = await posts.json() as any
+      expect(body.posts[0].postedAt).toBe('2026-01-02T03:04:05.000Z')
+      expect(listRecentPosts).toHaveBeenCalledWith('tiktok', 'nike', 50)
+    })
+
+    test('maps provider errors onto HTTP status codes', async () => {
+      enableSocial()
+      const cases: Array<[string, number]> = [
+        ['not_found', 404],
+        ['rate_limited', 429],
+        ['not_configured', 503],
+        ['bad_credentials', 503],
+        ['upstream', 502],
+      ]
+      const app = await makeApp()
+      const token = await makeToken()
+      for (const [code, status] of cases) {
+        getSocialContentProviderMock.mockImplementation(async () => ({
+          name: 'ensembledata',
+          getProfile: async () => {
+            throw new SocialProviderErrorMock(code, `failed: ${code}`)
+          },
+          listRecentPosts: async () => [],
+        }))
+        const res = await app.request('/tools/social/instagram/profile', {
+          method: 'POST',
+          headers: { 'x-api-key': token, 'content-type': 'application/json' },
+          body: JSON.stringify({ handle: 'nike' }),
+        })
+        expect(res.status).toBe(status)
+        expect((await res.json() as any).code).toBe(code)
+      }
+    })
+
+    test('charges a TikTok posts lookup for ceil(limit/10) units', async () => {
+      enableSocial()
+      stubProvider()
+      const { calculateSocialLookupCost, socialLookupUnits } = await import('../lib/usage-cost')
+      const app = await makeApp()
+      const token = await makeToken()
+      const res = await app.request('/tools/social/tiktok/posts', {
+        method: 'POST',
+        headers: { 'x-api-key': token, 'content-type': 'application/json' },
+        body: JSON.stringify({ handle: 'nike', limit: 25 }),
+      })
+      expect(res.status).toBe(200)
+      const units = socialLookupUnits('tiktok', 'posts', 25)
+      const { rawUsd, billedUsd } = calculateSocialLookupCost(units)
+      expect(units).toBe(3)
+      expect(consumeUsageMock).toHaveBeenCalledWith({
+        workspaceId: 'workspace-1',
+        projectId: 'project-1',
+        memberId: 'user-1',
+        actionType: 'social_media_lookup',
+        rawUsd,
+        billedUsd,
+        actionMetadata: { platform: 'tiktok', op: 'posts', limit: 25, units },
+      })
+    })
+
+    test('charges an Instagram posts lookup for the profile plus both feeds', async () => {
+      enableSocial()
+      stubProvider()
+      const { calculateSocialLookupCost, socialLookupUnits } = await import('../lib/usage-cost')
+      const app = await makeApp()
+      const token = await makeToken()
+      const res = await app.request('/tools/social/instagram/posts', {
+        method: 'POST',
+        headers: { 'x-api-key': token, 'content-type': 'application/json' },
+        body: JSON.stringify({ handle: 'nike', limit: 25 }),
+      })
+      expect(res.status).toBe(200)
+      const units = socialLookupUnits('instagram', 'posts', 25)
+      const { rawUsd, billedUsd } = calculateSocialLookupCost(units)
+      expect(units).toBe(7)
+      expect(consumeUsageMock).toHaveBeenCalledWith(expect.objectContaining({
+        actionType: 'social_media_lookup',
+        rawUsd,
+        billedUsd,
+        actionMetadata: { platform: 'instagram', op: 'posts', limit: 25, units },
+      }))
+    })
+
+    test('does not charge when the provider fails', async () => {
+      enableSocial()
+      getSocialContentProviderMock.mockImplementation(async () => ({
+        name: 'ensembledata',
+        getProfile: async () => {
+          throw new SocialProviderErrorMock('not_found', 'missing')
+        },
+        listRecentPosts: async () => [],
+      }))
+      const app = await makeApp()
+      const token = await makeToken()
+      const res = await app.request('/tools/social/tiktok/profile', {
+        method: 'POST',
+        headers: { 'x-api-key': token, 'content-type': 'application/json' },
+        body: JSON.stringify({ handle: 'nike' }),
+      })
+      expect(res.status).toBe(404)
+      expect(consumeUsageMock).not.toHaveBeenCalled()
+    })
+
+    test('returns 402 and skips the provider when the workspace has no balance', async () => {
+      enableSocial()
+      stubProvider()
+      checkUsageBalanceMock.mockImplementation(async () => ({ ok: false, reason: 'usage_limit_reached' }))
+      const app = await makeApp()
+      const token = await makeToken()
+      const res = await app.request('/tools/social/tiktok/profile', {
+        method: 'POST',
+        headers: { 'x-api-key': token, 'content-type': 'application/json' },
+        body: JSON.stringify({ handle: 'nike' }),
+      })
+      expect(res.status).toBe(402)
+      expect(await res.json()).toEqual({
+        error: {
+          message: "You've reached your usage limit.",
+          type: 'billing_error',
+          code: 'usage_limit_reached',
+        },
+      })
+      expect(getSocialContentProviderMock).not.toHaveBeenCalled()
+      expect(consumeUsageMock).not.toHaveBeenCalled()
+    })
+
+    test('bills a workspace API key to that workspace with no project id', async () => {
+      stubProvider()
+      resolveApiKeyMock.mockImplementation(async () => ({
+        workspaceId: 'workspace-billed',
+        userId: 'user-billed',
+        kind: 'workspace',
+        deviceId: null,
+      }))
+      const app = await makeApp()
+      const res = await app.request('/tools/social/tiktok/profile', {
+        method: 'POST',
+        headers: { 'x-api-key': 'shogo_sk_test', 'content-type': 'application/json' },
+        body: JSON.stringify({ handle: 'nike' }),
+      })
+      expect(res.status).toBe(200)
+      expect(checkUsageBalanceMock).toHaveBeenCalledWith('workspace-billed')
+      expect(findProjectMock).not.toHaveBeenCalled()
+      expect(consumeUsageMock).toHaveBeenCalledWith(expect.objectContaining({
+        workspaceId: 'workspace-billed',
+        projectId: null,
+        memberId: 'user-billed',
+        actionType: 'social_media_lookup',
+        actionMetadata: expect.objectContaining({ platform: 'tiktok', op: 'profile', units: 1 }),
+      }))
+    })
+
+    test('forwards to Shogo Cloud after the local capability check passes', async () => {
+      enableSocial()
+      stubProvider()
+      process.env.SHOGO_API_KEY = 'shogo-cloud-key'
+      process.env.SHOGO_CLOUD_URL = 'https://cloud.example'
+      const calls: any[] = []
+      globalThis.fetch = (async (url: string, init: any) => {
+        calls.push({ url, init })
+        return Response.json({ ok: true, forwarded: true })
+      }) as any
+
+      const app = await makeApp()
+      const token = await makeToken()
+      const res = await app.request('/tools/social/tiktok/profile', {
+        method: 'POST',
+        headers: { 'x-api-key': token, 'content-type': 'application/json' },
+        body: JSON.stringify({ handle: '@nike', limit: 5 }),
+      })
+
+      expect(res.status).toBe(200)
+      expect(calls[0].url).toBe('https://cloud.example/api/tools/social/tiktok/profile')
+      expect(calls[0].init.headers.get('Authorization')).toBe('Bearer shogo-cloud-key')
+      const forwardedBody = await new Response(calls[0].init.body).text()
+      expect(JSON.parse(forwardedBody)).toEqual({ handle: 'nike', limit: 5 })
+      expect(getSocialContentProviderMock).not.toHaveBeenCalled()
+      expect(checkUsageBalanceMock).not.toHaveBeenCalled()
+      expect(consumeUsageMock).not.toHaveBeenCalled()
     })
   })
 })
