@@ -1,3 +1,4 @@
+const fs = require('fs')
 const path = require('path')
 // Sentry's Expo Metro config is a drop-in superset of
 // `expo/metro-config`'s `getDefaultConfig(__dirname)`: it installs a
@@ -84,6 +85,16 @@ config.resolver.blockList = [
 if (/^(1|true)$/i.test(process.env.EXPO_NO_DOTENV ?? '')) {
   config.resolver.blockList.push(
     new RegExp(escapePathForRegex(path.resolve(__dirname)) + '[/\\\\]\\.env(\\.[a-z.]+)?$'),
+  )
+}
+
+// Desktop exports set EXPO_PUBLIC_LOCAL_MODE. Dev harnesses and the admin
+// console are not part of that shell; leaving them in the graph pulls a
+// ~1.2 MB chat fixture and the admin screens into the entry chunk.
+if (process.env.EXPO_PUBLIC_LOCAL_MODE === 'true') {
+  config.resolver.blockList.push(
+    new RegExp(escapePathForRegex(path.resolve(__dirname, 'app', 'dev')) + '.*'),
+    new RegExp(escapePathForRegex(path.resolve(__dirname, 'app', '(admin)')) + '.*'),
   )
 }
 
@@ -239,8 +250,27 @@ function resolveSdkSourceJsAsTs(context, moduleName, platform) {
   return null
 }
 
+const LUCIDE_ICON = /^lucide-react-native\/dist\/esm\/icons\/([a-z0-9-]+\.js)$/
+
+function resolveLucideIcon(context, moduleName) {
+  const match = moduleName.match(LUCIDE_ICON)
+  if (!match) return null
+  try {
+    const pkgJson = require.resolve('lucide-react-native/package.json', {
+      paths: [context.originModulePath ? path.dirname(context.originModulePath) : __dirname],
+    })
+    const filePath = path.join(path.dirname(pkgJson), 'dist', 'esm', 'icons', match[1])
+    if (fs.existsSync(filePath)) return { type: 'sourceFile', filePath }
+  } catch {
+    return null
+  }
+  return null
+}
+
 const originalResolveRequest = config.resolver.resolveRequest
 config.resolver.resolveRequest = (context, moduleName, platform) => {
+  const lucideIcon = resolveLucideIcon(context, moduleName)
+  if (lucideIcon) return lucideIcon
   if (singletonPackageFor(moduleName)) {
     return context.resolveRequest(
       { ...context, originModulePath: path.join(__dirname, '_virtual.js') },

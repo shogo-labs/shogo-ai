@@ -56,6 +56,8 @@ function broadcastUpdateStatus() {
 async function probeFeed(): Promise<FeedResponse | null> {
   if (!feedURL) return null
   try {
+    // Plain HTTP(S) feed, not a frame destination, so Electron 44's
+    // net.request navigate-mode check does not apply.
     const res = await net.fetch(feedURL, {
       headers: userAgent ? { 'User-Agent': userAgent } : undefined,
     })

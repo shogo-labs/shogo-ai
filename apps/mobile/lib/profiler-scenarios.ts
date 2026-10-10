@@ -18,7 +18,17 @@
  * real AI SDK emits.
  */
 import type { UIMessage } from '@ai-sdk/react'
-import longChatFixture from '../test/fixtures/long-chat-session.json'
+
+let longChatHistory: Promise<UIMessage[]> | null = null
+
+/** The 180-message fixture is ~1.2 MB. Load it only when the profiler runs. */
+export function loadLongChatHistory(): Promise<UIMessage[]> {
+  longChatHistory ??= import('../test/fixtures/long-chat-session.json').then((mod) => {
+    const data = (mod.default ?? mod) as { messages: unknown[] }
+    return data.messages.map((message) => message as UIMessage)
+  })
+  return longChatHistory
+}
 
 const LOREM = (
   'The quick brown fox jumps over the lazy dog. Pack my box with five dozen liquor jugs. ' +
@@ -366,14 +376,12 @@ export function multiTurnScenario(): Scenario {
  * memoized turns should bail out — proving they actually do under a real
  * 180-message tree is the test.
  */
-export function longHistoryScenario(): Scenario {
+export async function longHistoryScenario(): Promise<Scenario> {
   // Coerce the fixture into the UIMessage shape lazily and cache the
   // result. We do NOT clone the message objects across steps — each
   // historical message is the SAME reference throughout the run, which is
   // what `useTurnGrouping`'s reuse cache requires to bail.
-  const history = (longChatFixture as { messages: unknown[] }).messages.map(
-    (m) => m as unknown as UIMessage,
-  )
+  const history = await loadLongChatHistory()
   const newUser = userMessage('u-long-history-prompt', 'Continue the conversation.')
   const TOKEN_PER_STEP = 10
   const STREAM_STEPS = 300

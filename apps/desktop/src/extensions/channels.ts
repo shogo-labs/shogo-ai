@@ -1,0 +1,30 @@
+// SPDX-License-Identifier: MIT
+// Copyright (C) 2026 Shogo Technologies, Inc.
+/** Channel names only — importing this must not load the extension host. */
+export const EXTENSION_IPC_CHANNELS = [
+  'extensions:listInstalled',
+  'extensions:getContributions',
+  'extensions:search',
+  'extensions:listTrustedPublishers',
+  'extensions:trustPublisher',
+  'extensions:getWorkspaceTrust',
+  'extensions:trustWorkspace',
+  'extensions:installFromVsix',
+  'extensions:installFromRegistry',
+  'extensions:uninstall',
+  'extensions:enable',
+  'extensions:disable',
+  'extensions:restartHost',
+  'extensions:checkUpdates',
+  'extensions:update',
+  'extensions:runCommand',
+  'extensions:activateEvent',
+  'extensions:getView',
+  'extensions:getStatusBarItems',
+  'extensions:getWebviewPanels',
+  'extensions:getOutputChannels',
+  'extensions:respondUiRequest',
+  'extensions:updateWorkspaceState',
+  'extensions:showRunningExtensions',
+  'extensions:startBisect',
+] as const

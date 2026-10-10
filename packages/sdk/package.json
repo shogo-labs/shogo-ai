@@ -97,6 +97,18 @@
       "import": "./dist/voice/react/index.js",
       "require": "./dist/voice/react/index.cjs"
     },
+    "./voice/react/conversation": {
+      "types": "./dist/voice/react/conversation.d.ts",
+      "development": "./src/voice/react/conversation.ts",
+      "import": "./dist/voice/react/conversation.js",
+      "require": "./dist/voice/react/conversation.cjs"
+    },
+    "./voice/react/visuals": {
+      "types": "./dist/voice/react/visuals.d.ts",
+      "development": "./src/voice/react/visuals.ts",
+      "import": "./dist/voice/react/visuals.js",
+      "require": "./dist/voice/react/visuals.cjs"
+    },
     "./voice/native": {
       "types": "./dist/voice/native/index.d.ts",
       "development": "./src/voice/native/index.ts",

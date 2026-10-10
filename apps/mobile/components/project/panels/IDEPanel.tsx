@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
-import { useEffect, useMemo, useState } from 'react'
+import { lazy, Suspense, useEffect, useMemo, useState } from 'react'
 import { Platform, View, Text } from 'react-native'
 import { Code2 } from 'lucide-react-native'
-import { Workbench } from './ide/Workbench'
+
+const Workbench = lazy(() =>
+  import('./ide/Workbench').then((mod) => ({ default: mod.Workbench })),
+)
 import { sdkFsFor } from './ide/workspace/sdkFs'
 import { DesktopFs, getDesktopFsBridge, isFolderLinkedProject } from './ide/workspace/desktopFs'
 import type { WorkspaceService } from './ide/workspace/types'
@@ -139,6 +142,7 @@ export function IDEPanel({
   return (
     <View style={{ flex: 1, minHeight: 0, display: visible ? 'flex' : 'none' }}>
       <div style={{ flex: 1, minHeight: 0 }}>
+        <Suspense fallback={null}>
         <Workbench
           key={projectId}
           agentService={agentService}
@@ -153,6 +157,7 @@ export function IDEPanel({
           primarySideBarPosition={primarySideBarPosition}
           requestedFile={requestedFile}
         />
+        </Suspense>
       </div>
     </View>
   )

@@ -86,6 +86,7 @@ export class IslandWindow {
       this.meetingState = options.meeting.getState()
       this.unsubscribeMeeting = options.meeting.subscribe((state) => {
         this.meetingState = state
+        this.maybeMaterialize()
         this.sendMeeting()
         this.reconcileMode()
       })
@@ -96,7 +97,16 @@ export class IslandWindow {
     app.on('browser-window-blur', this.onAppFocusChange)
     const shortcutError = this.applyShortcut()
     if (shortcutError) console.warn(`[Island] ${shortcutError}`)
-    if (this.config.enabled) this.createWindow()
+    // The island route is a second full renderer. Create that window on the
+    // first shortcut, meeting, or agent activity instead of at launch.
+    this.maybeMaterialize()
+  }
+
+  /** Open the island BrowserWindow once there is something to show. */
+  private maybeMaterialize(): void {
+    if (!this.config.enabled) return
+    if (this.window && !this.window.isDestroyed()) return
+    if (this.hasActivity()) this.createWindow()
   }
 
   getConfig(): IslandConfig {
@@ -400,6 +410,7 @@ export class IslandWindow {
     const focused = this.windowManager.getFocusedWindowRecord()
     const focusedSnapshot = focused ? this.snapshots.get(focused.browserWindow.id) : undefined
     this.snapshot = mergeIslandSnapshots(this.snapshots.values(), focusedSnapshot)
+    this.maybeMaterialize()
     this.sendSnapshot()
     this.reconcileMode()
     this.notifyPending()
