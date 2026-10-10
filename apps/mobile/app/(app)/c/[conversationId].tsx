@@ -29,10 +29,16 @@ import { ConversationHeader } from '../../../components/team-chat/ConversationHe
 import { HuddleBanner } from '../../../components/team-chat/Huddle'
 import { TimelinePane } from '../../../components/team-chat/TimelinePane'
 import { ProjectSidePane } from '../../../components/team-chat/ProjectSidePane'
+import { SidePaneResizeHandle, useSidePaneWidth } from '../../../components/team-chat/SidePaneResizer'
 import { usePhoneChromeOverlay } from '../../../components/layout/PhoneChromeOverlay'
 
 const api = teamChatApi()
 const THREAD_SIDE_PANE_MIN_WIDTH = 1024
+const THREAD_PANE_DEFAULT = 420
+const THREAD_PANE_MIN = 320
+const PROJECT_PANE_MIN = 420
+/** Room left for the main timeline so a pane can never cover the conversation. */
+const MAIN_TIMELINE_MIN = 480
 
 function first(value: string | string[] | undefined): string | undefined {
   return Array.isArray(value) ? value[0] : value
@@ -58,6 +64,19 @@ export default function ConversationScreen() {
   const workspaceId = conversation?.workspaceId ?? workspace?.id ?? null
   const mentionables = useMentionables(workspaceId)
   const sidePane = width >= THREAD_SIDE_PANE_MIN_WIDTH
+  const maxPaneWidth = width - MAIN_TIMELINE_MIN
+  const threadPane = useSidePaneWidth({
+    storageKey: 'shogo.teamChat.threadPaneWidth',
+    defaultWidth: THREAD_PANE_DEFAULT,
+    minWidth: THREAD_PANE_MIN,
+    maxWidth: maxPaneWidth,
+  })
+  const projectPane = useSidePaneWidth({
+    storageKey: 'shogo.teamChat.projectPaneWidth',
+    defaultWidth: Math.max(PROJECT_PANE_MIN, Math.round(width * 0.45)),
+    minWidth: PROJECT_PANE_MIN,
+    maxWidth: maxPaneWidth,
+  })
   useStatusFeed(workspaceId)
   usePresenceFeed(workspaceId)
   useSavedFeed(workspaceId)
@@ -218,7 +237,7 @@ export default function ConversationScreen() {
     <KeyboardAvoidingView className="flex-1 bg-background" behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
       <View className="flex-1 flex-row">
         {showMain && (
-          <View className="flex-1">
+          <View className="min-w-0 flex-1">
             {header}
             {huddleBanner}
             <TimelinePane
@@ -239,7 +258,20 @@ export default function ConversationScreen() {
           </View>
         )}
         {showThreadPane && (
-          <View className={sidePane ? 'w-[420px] border-l border-border' : 'flex-1'}>
+          <View
+            className={sidePane ? 'relative shrink-0 border-l border-border' : 'flex-1'}
+            style={sidePane ? { width: threadPane.width } : undefined}
+          >
+            {sidePane && (
+              <SidePaneResizeHandle
+                width={threadPane.width}
+                minWidth={THREAD_PANE_MIN}
+                maxWidth={maxPaneWidth}
+                onResize={threadPane.setWidth}
+                onResizeEnd={threadPane.commit}
+                onReset={threadPane.reset}
+              />
+            )}
             <TimelinePane
               key={`${conversation.id}:${threadRootId}`}
               workspaceId={workspaceId}
@@ -256,7 +288,15 @@ export default function ConversationScreen() {
           </View>
         )}
         {showProjectPane && projectPaneId && (
-          <View className="w-[45%] min-w-[420px] border-l border-border">
+          <View className="relative shrink-0 border-l border-border" style={{ width: projectPane.width }}>
+            <SidePaneResizeHandle
+              width={projectPane.width}
+              minWidth={PROJECT_PANE_MIN}
+              maxWidth={maxPaneWidth}
+              onResize={projectPane.setWidth}
+              onResizeEnd={projectPane.commit}
+              onReset={projectPane.reset}
+            />
             <ProjectSidePane key={projectPaneId} projectId={projectPaneId} workspaceId={workspaceId} name={projectPaneName} onClose={closeProjectPane} />
           </View>
         )}
