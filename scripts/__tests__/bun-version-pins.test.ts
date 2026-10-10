@@ -66,6 +66,12 @@ describe('Bun version pins', () => {
     expect(drift).toEqual([])
   })
 
+  it('desktop download-bun.mjs defaults to packageManager, not latest', () => {
+    const text = readFileSync(join(ROOT, 'apps/desktop/scripts/download-bun.mjs'), 'utf-8')
+    const match = text.match(/process\.env\.BUN_VERSION\s*\|\|\s*['"]([^'"]+)['"]/)
+    expect(match?.[1]).toBe(expected)
+  })
+
   it('detects each pin style', () => {
     const text = [
       "          bun-version: '1.3.11'",

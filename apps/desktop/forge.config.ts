@@ -230,6 +230,7 @@ const config: ForgeConfig = {
     // of triggering the system microphone prompt.
     extendInfo: {
       NSMicrophoneUsageDescription: 'Shogo needs microphone access to record audio for note-taking, transcription, dictation and huddles.',
+      NSAudioCaptureUsageDescription: 'Shogo captures system audio when you record a meeting or share your screen.',
       NSCameraUsageDescription: 'Shogo uses your camera when you turn on video in a huddle.',
       NSAppleEventsUsageDescription: 'Shogo uses automation to work with apps like Mail, Messages and Notes when you ask it to.',
       NSDesktopFolderUsageDescription: 'Shogo can read and edit files on your Desktop when you ask it to.',

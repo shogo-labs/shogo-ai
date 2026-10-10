@@ -1,0 +1,42 @@
+name: Desktop memory
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Nightly on macOS. PR CI runs the pure unit tests via desktop-perf-smoke;
+    # this job launches Electron and writes bench-results.
+    - cron: '0 9 * * *'
+
+jobs:
+  memory:
+    name: macOS memory budgets
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: package.json
+      - run: bun install --frozen-lockfile
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - run: bun test scripts/__tests__/memory-report.test.ts apps/mobile/scripts/bundle-report.test.ts
+      - name: Install desktop dependencies
+        working-directory: apps/desktop
+        run: npm install
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Download Electron
+        working-directory: apps/desktop
+        run: node node_modules/electron/install.js || node node_modules/electron/cli.js --version
+      - name: Build desktop main process
+        working-directory: apps/desktop
+        run: npm run build
+      - name: Memory budget and leak specs
+        working-directory: apps/desktop
+        env:
+          SHOGO_MEMORY_E2E: '1'
+          SHOGO_MEMORY_ASSERT: '1'
+          SHOGO_MEMORY_IDLE_MS: '20000'
+          SHOGO_SKIP_LOCAL_SERVER: 'true'
+          PLAYWRIGHT_E2E: '1'
+        run: npx playwright test --config e2e/playwright.config.ts e2e/memory-budget.spec.ts e2e/memory-leak.spec.ts

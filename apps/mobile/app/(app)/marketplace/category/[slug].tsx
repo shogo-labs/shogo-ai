@@ -12,10 +12,10 @@ import {
   Platform,
   useWindowDimensions,
 } from 'react-native'
-import * as Lucide from 'lucide-react-native'
 import { observer } from 'mobx-react-lite'
 import { useRouter, useLocalSearchParams } from 'expo-router'
 import { ArrowLeft, Search } from 'lucide-react-native'
+import { LucideByName } from '../../../../lib/lucide-catalog'
 import { useDomainHttp } from '../../../../contexts/domain'
 import {
   AgentTile,
@@ -97,13 +97,6 @@ function toTile(item: ListingFromAPI): AgentTileListing {
           creatorTier: 'newcomer',
         },
   }
-}
-
-function getLucideIcon(name: string) {
-  return ((Lucide as any)[name] ?? Lucide.Sparkles) as React.ComponentType<{
-    size?: number
-    color?: string
-  }>
 }
 
 export default observer(function CategoryLandingScreen() {
@@ -210,7 +203,6 @@ export default observer(function CategoryLandingScreen() {
     )
   }
 
-  const Icon = getLucideIcon(category.icon)
   const tileListings = listings.map(toTile)
   const padded = (() => {
     if (numColumns <= 1) return tileListings
@@ -294,7 +286,7 @@ export default observer(function CategoryLandingScreen() {
                     backgroundColor: `${category.accent}33`,
                   }}
                 >
-                  <Icon size={36} color={category.accent} />
+                  <LucideByName name={category.icon} size={36} color={category.accent} />
                 </View>
               }
             >

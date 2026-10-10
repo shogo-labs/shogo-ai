@@ -19,7 +19,7 @@ initSentry()
 
 import { app, BrowserWindow, protocol, net, session, ipcMain, Menu, shell, Notification, dialog, powerMonitor, systemPreferences, desktopCapturer } from 'electron'
 import { ensureMediaAccess, ensureMicAccess, MAC_MIC_SETTINGS_URL, type MicAccess } from './media-permissions'
-import { DictationHotkeyService } from './dictation-hotkey'
+import type { DictationHotkeyService } from './dictation-hotkey'
 import { normalizeDictationConfig } from './dictation-protocol'
 import {
   getPermissionStatus,
@@ -49,32 +49,22 @@ import {
   repairFailedMigrations,
 } from './db-recovery'
 import { readConfig, writeConfig, getDeviceInfo, getCloudUrl } from './config'
-import { buildBugReportZip, submitToDiscord, submitToGitHub, collectSystemInfo, type BugReportPayload } from './bug-report'
+import type { BugReportPayload } from './bug-report'
 import { initAutoUpdater, getIsApplyingUpdate } from './updater'
-import {
-  registerRecordingIpcHandlers,
-  cleanupRecording,
-  startRecordingHttpBridge,
-  setRecordingWindowResolver,
-  getMeetingState,
-  onMeetingStateChange,
-  respondToMeeting,
-  initMeetingConfig,
-  setMeetingPromptPresenter,
-} from './recording'
+type RecordingModule = typeof import('./recording')
 import { registerFsIpcHandlers } from './fs-ipc'
 import { registerGitIpcHandlers, disposeGitIpc } from './git/ipc'
 import { registerRunIpcHandlers, disposeRunIpc } from './run-ipc'
-import { registerDebugIpcHandlers, disposeDebugIpc } from './debug-ipc'
+import { DEBUG_IPC_CHANNELS } from './debug-channels'
 import { registerTerminalIpcHandlers, disposeTerminalIpc } from './ipc/terminal-ipc'
 import { startTerminalExecServer, stopTerminalExecServer, getTerminalExecToken } from './ipc/terminal-exec-server'
 import { registerLlmIpcHandlers, disposeLlmIpcHandlers } from './ipc/llm-ipc'
 import { registerPortsIpcHandlers, disposePortsIpcHandlers } from './ipc/ports-ipc'
-import { registerExtensionsIpcHandlers, disposeExtensionsIpcHandlers } from './extensions/ipc'
+import { EXTENSION_IPC_CHANNELS } from './extensions/channels'
+import { registerLazyChannels } from './lazy-ipc'
 import { createTray, destroyTray } from './tray'
 import { WindowManager } from './window-manager'
 import { IslandWindow } from './island-window'
-import { runCloudLogin, CloudLoginError } from '@shogo-ai/worker/cloud-login'
 import {
   openPreview,
   closePreview,
@@ -89,7 +79,6 @@ import {
   onPreviewEvent,
   type PreviewBounds,
 } from './preview-views'
-import { openIdeWindow, disposeIdeServers } from './ide-views'
 
 // Shape of JSON responses from the local API's cloud-login endpoints
 // (used by the heartbeat + signout helpers below). Every field is optional
@@ -232,8 +221,70 @@ const windowManager = new WindowManager({
     }
   },
 })
-setRecordingWindowResolver(() => windowManager.getPrimaryWindow())
-const dictationHotkeys = new DictationHotkeyService(() => windowManager.getPrimaryWindow())
+let recordingP: Promise<RecordingModule> | null = null
+function loadRecording(): Promise<RecordingModule> {
+  recordingP ??= import('./recording')
+  return recordingP
+}
+
+let dictationP: Promise<DictationHotkeyService> | null = null
+function loadDictation(): Promise<DictationHotkeyService> {
+  dictationP ??= import('./dictation-hotkey').then(({ DictationHotkeyService: Service }) =>
+    new Service(() => windowManager.getPrimaryWindow()),
+  )
+  return dictationP
+}
+
+function loadBugReport() {
+  return import('./bug-report')
+}
+
+let ideLoaded = false
+function loadIde() {
+  ideLoaded = true
+  return import('./ide-views')
+}
+
+let debugLoaded = false
+const lazyDebug = registerLazyChannels(ipcMain, DEBUG_IPC_CHANNELS, async () => {
+  debugLoaded = true
+  const mod = await import('./debug-ipc')
+  mod.registerDebugIpcHandlers()
+  return { call: (channel, event, args) => mod.callDebugIpc(channel, event, args) }
+})
+
+let extensionsLoaded = false
+const lazyExtensions = registerLazyChannels(ipcMain, EXTENSION_IPC_CHANNELS, async () => {
+  extensionsLoaded = true
+  const mod = await import('./extensions/ipc')
+  mod.registerExtensionsIpcHandlers()
+  return { call: (channel, event, args) => mod.callExtensionsIpc(channel, event, args) }
+})
+
+function stopDictation(): void {
+  void dictationP?.then((service) => service.stop())
+}
+
+function stopRecording(): void {
+  void recordingP?.then((mod) => mod.cleanupRecording())
+}
+
+function disposeIdeIfLoaded(): void {
+  if (!ideLoaded) return
+  void import('./ide-views').then((mod) => mod.disposeIdeServers())
+}
+
+function disposeDebugIfLoaded(): void {
+  lazyDebug.dispose()
+  if (!debugLoaded) return
+  void import('./debug-ipc').then((mod) => mod.disposeDebugIpc())
+}
+
+function disposeExtensionsIfLoaded(): void {
+  lazyExtensions.dispose()
+  if (!extensionsLoaded) return
+  void import('./extensions/ipc').then((mod) => mod.disposeExtensionsIpcHandlers())
+}
 
 let isCloudMode = false
 
@@ -324,6 +375,7 @@ async function performCloudSignIn(
   let mintedWorkspace: string | null
   let mintedWorkspaces: unknown = null
   try {
+    const { runCloudLogin } = await import('@shogo-ai/worker/cloud-login')
     const result = await runCloudLogin({
       cloudUrl,
       client: 'desktop',
@@ -348,8 +400,9 @@ async function performCloudSignIn(
     // Superseded by a newer sign-in: stay silent so the user doesn't see
     // a "Cancelled" error for the run they intentionally replaced.
     if (handle.superseded) return { ok: false, error: 'Cancelled' }
+    const { CloudLoginError: CloudLoginFailure } = await import('@shogo-ai/worker/cloud-login')
     const error =
-      err instanceof CloudLoginError
+      err instanceof CloudLoginFailure
         ? mapCloudLoginError(err)
         : `Sign-in failed: ${(err as Error)?.message ?? err}`
     const out = { ok: false as const, error }
@@ -398,7 +451,7 @@ async function performCloudSignIn(
  * strings the renderer's Settings UI expects. Keeps the strings in one
  * place (the previous duplicate had them inlined at five different
  * `return { ok: false, error: '...' }` sites). */
-function mapCloudLoginError(err: CloudLoginError): string {
+function mapCloudLoginError(err: { kind: string; message: string }): string {
   switch (err.kind) {
     case 'denied': return 'Sign-in was denied in the browser.'
     case 'expired': return 'Sign-in request expired before approval.'
@@ -992,6 +1045,7 @@ async function openCodeWorkbenchWindow(
   ownerWindow?: BrowserWindow | null,
 ): Promise<{ ok: true; windowId: number; url: string } | { ok: false; error: string }> {
   if (!options.projectId) return { ok: false, error: 'project-id-required' }
+  const { openIdeWindow } = await loadIde()
   return openIdeWindow(
     options.projectId,
     () => windowManager.createCodeWorkbenchWindow(options),
@@ -1276,19 +1330,19 @@ function registerIpcHandlers(): void {
     }),
   )
   ipcMain.handle('dictation:get-config', () => readConfig().dictation)
-  ipcMain.handle('dictation:set-config', (_event, patch: unknown) => {
+  ipcMain.handle('dictation:set-config', async (_event, patch: unknown) => {
     const current = readConfig().dictation
     const next = normalizeDictationConfig(patch, current)
     writeConfig({ dictation: next })
-    dictationHotkeys.applyConfig(next)
+    await (await loadDictation()).applyConfig(next)
     return { ok: true as const, config: next }
   })
-  ipcMain.handle('dictation:hotkey-state', () => {
-    const { fnAvailable } = dictationHotkeys.getState()
+  ipcMain.handle('dictation:hotkey-state', async () => {
+    const { fnAvailable } = (await loadDictation()).getState()
     return { fnAvailable }
   })
-  ipcMain.handle('dictation:deliver-text', (_event, text: unknown) =>
-    dictationHotkeys.deliverText(typeof text === 'string' ? text : ''),
+  ipcMain.handle('dictation:deliver-text', async (_event, text: unknown) =>
+    (await loadDictation()).deliverText(typeof text === 'string' ? text : ''),
   )
   ipcMain.handle('permissions:relaunch', () => {
     app.relaunch()
@@ -1450,6 +1504,7 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle('export-bug-report', async (_event, payload: BugReportPayload) => {
     try {
+      const { buildBugReportZip } = await loadBugReport()
       const bundle = buildBugReportZip(payload)
       const result = await dialog.showSaveDialog({
         title: 'Save Bug Report',
@@ -1469,6 +1524,7 @@ function registerIpcHandlers(): void {
   ipcMain.handle('submit-bug-report', async (_event, payload: BugReportPayload) => {
     try {
       const config = readConfig()
+      const { buildBugReportZip, submitToDiscord, submitToGitHub } = await loadBugReport()
       const bundle = buildBugReportZip(payload)
       const results: { discord?: { ok: boolean; error?: string }; github?: { ok: boolean; error?: string; issueUrl?: string } } = {}
 
@@ -1510,7 +1566,7 @@ function registerIpcHandlers(): void {
     return { ok: true }
   })
 
-  ipcMain.handle('get-system-info', () => collectSystemInfo())
+  ipcMain.handle('get-system-info', async () => (await loadBugReport()).collectSystemInfo())
 
   // ---------------------------------------------------------------------
   // External preview: Electron WebContentsView overlay
@@ -1876,7 +1932,9 @@ app.whenReady().then(async () => {
   }
 
   registerIpcHandlers()
-  registerRecordingIpcHandlers()
+  const recording = await loadRecording()
+  recording.setRecordingWindowResolver(() => windowManager.getPrimaryWindow())
+  recording.registerRecordingIpcHandlers()
   // Local-mode filesystem fast-path: lets the IDE renderer skip the HTTP
   // round-trip to agent-runtime for tree listing + file reads on managed
   // projects. Safe to register in cloud mode too — the handlers reject any
@@ -1885,11 +1943,9 @@ app.whenReady().then(async () => {
   registerFsIpcHandlers()
   registerGitIpcHandlers()
   registerRunIpcHandlers()
-  registerDebugIpcHandlers()
   registerTerminalIpcHandlers()
   registerLlmIpcHandlers()
   registerPortsIpcHandlers()
-  registerExtensionsIpcHandlers()
   buildAppMenu()
   buildDockMenu()
 
@@ -1939,20 +1995,20 @@ app.whenReady().then(async () => {
   }
 
   createWindow()
-  dictationHotkeys.start(readConfig().dictation)
+  void loadDictation().then((service) => service.start(readConfig().dictation))
   islandWindow = new IslandWindow(windowManager, {
     loadApp: (window) => loadAppWindow(window, '/island'),
     ...(isCloudMode
       ? {}
       : {
           meeting: {
-            getState: getMeetingState,
-            subscribe: onMeetingStateChange,
-            respond: respondToMeeting,
+            getState: recording.getMeetingState,
+            subscribe: recording.onMeetingStateChange,
+            respond: recording.respondToMeeting,
           },
         }),
   })
-  setMeetingPromptPresenter(() => islandWindow?.canPresentMeetingPrompt() ?? false)
+  recording.setMeetingPromptPresenter(() => islandWindow?.canPresentMeetingPrompt() ?? false)
 
   if (!isCloudMode) {
     createTray({
@@ -1961,9 +2017,9 @@ app.whenReady().then(async () => {
       },
       setIslandEnabled: (enabled) => islandWindow?.updateConfig({ enabled }),
     })
-    initMeetingConfig()
+    recording.initMeetingConfig()
     startCloudLoginHeartbeat()
-    void startRecordingHttpBridge()
+    void recording.startRecordingHttpBridge()
   }
 
   // SHOGO_UPDATER_E2E lets the update-channel Playwright spec exercise the
@@ -2033,40 +2089,40 @@ app.on('before-quit', (event) => {
   islandWindow?.destroy()
   islandWindow = null
   if (isCloudMode) {
-    disposeIdeServers()
+    disposeIdeIfLoaded()
     return
   }
   isQuitting = true
 
   if (getIsApplyingUpdate()) {
     console.log('[Desktop] Update pending — doing fast sync cleanup, letting Squirrel handle restart')
-    cleanupRecording()
-    dictationHotkeys.stop()
+    stopRecording()
+    stopDictation()
     destroyTray()
     void disposeTerminalIpc().catch(() => {})
     disposeLlmIpcHandlers()
     disposePortsIpcHandlers()
-    disposeExtensionsIpcHandlers()
+    disposeExtensionsIfLoaded()
     disposeGitIpc()
     disposeRunIpc()
-    disposeDebugIpc()
-    disposeIdeServers()
+    disposeDebugIfLoaded()
+    disposeIdeIfLoaded()
     stopLocalServer().catch(() => {})
     return
   }
 
   event.preventDefault()
   console.log('[Desktop] Waiting for server cleanup before exit...')
-  cleanupRecording()
-  dictationHotkeys.stop()
+  stopRecording()
+  stopDictation()
   destroyTray()
   disposeLlmIpcHandlers()
   disposePortsIpcHandlers()
-  disposeExtensionsIpcHandlers()
+  disposeExtensionsIfLoaded()
   disposeGitIpc()
   disposeRunIpc()
-  disposeDebugIpc()
-  disposeIdeServers()
+  disposeDebugIfLoaded()
+  disposeIdeIfLoaded()
   Promise.allSettled([disposeTerminalIpc(), stopTerminalExecServer(), stopLocalServer()])
     .then(() => console.log('[Desktop] Server cleanup complete'))
     .catch((err) => console.error('[Desktop] Server cleanup error:', err))

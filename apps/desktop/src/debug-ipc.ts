@@ -169,20 +169,36 @@ async function listHandler(): Promise<{ ok: true; sessions: Array<{ sessionId: s
 
 let registered = false
 
+const debugHandlers = new Map<string, (event: unknown, ...args: unknown[]) => unknown>()
+
+function handleDebug(channel: string, handler: (event: unknown, ...args: unknown[]) => unknown): void {
+  debugHandlers.set(channel, handler)
+  ipcMain.removeHandler(channel)
+  ipcMain.handle(channel, handler as never)
+}
+
+export { DEBUG_IPC_CHANNELS } from './debug-channels'
+
+export function callDebugIpc(channel: string, event: unknown, args: unknown[]): unknown {
+  const handler = debugHandlers.get(channel)
+  if (!handler) throw new Error(`debug IPC channel ${channel} is not registered`)
+  return handler(event, ...args)
+}
+
 export function registerDebugIpcHandlers(): void {
   if (registered) return
   registered = true
-  ipcMain.handle('debug:start', startHandler)
-  ipcMain.handle('debug:setBreakpoint', setBreakpointHandler)
-  ipcMain.handle('debug:removeBreakpoint', removeBreakpointHandler)
-  ipcMain.handle('debug:resume', makeSimpleHandler('resume'))
-  ipcMain.handle('debug:pause', makeSimpleHandler('pause'))
-  ipcMain.handle('debug:stepOver', makeSimpleHandler('stepOver'))
-  ipcMain.handle('debug:stepInto', makeSimpleHandler('stepInto'))
-  ipcMain.handle('debug:stepOut', makeSimpleHandler('stepOut'))
-  ipcMain.handle('debug:evaluate', evaluateHandler)
-  ipcMain.handle('debug:detach', detachHandler)
-  ipcMain.handle('debug:list', listHandler)
+  handleDebug('debug:start', startHandler as never)
+  handleDebug('debug:setBreakpoint', setBreakpointHandler as never)
+  handleDebug('debug:removeBreakpoint', removeBreakpointHandler as never)
+  handleDebug('debug:resume', makeSimpleHandler('resume') as never)
+  handleDebug('debug:pause', makeSimpleHandler('pause') as never)
+  handleDebug('debug:stepOver', makeSimpleHandler('stepOver') as never)
+  handleDebug('debug:stepInto', makeSimpleHandler('stepInto') as never)
+  handleDebug('debug:stepOut', makeSimpleHandler('stepOut') as never)
+  handleDebug('debug:evaluate', evaluateHandler as never)
+  handleDebug('debug:detach', detachHandler as never)
+  handleDebug('debug:list', listHandler as never)
 }
 
 export function disposeDebugIpc(): void {

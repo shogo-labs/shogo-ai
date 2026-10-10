@@ -282,6 +282,9 @@ jobs:
           # maps here; the upload is the explicit sentry-cli step below.
           SENTRY_DISABLE_AUTO_UPLOAD: 'true'
 
+      - name: Check web bundle size
+        run: node apps/mobile/scripts/bundle-report.mjs
+
       - name: Upload renderer source maps to Sentry (shogo-desktop)
         working-directory: apps/mobile
         # Injects Debug IDs into the exported web bundle + maps and uploads
@@ -489,9 +492,14 @@ jobs:
             # postinstall, newer builds read ELECTRON_INSTALL_ARCH. The x64 leg
             # runs on this arm64 host, so without an explicit arch it would
             # fetch arm64 and the x64 package would still copy a wrong/host dist.
+            # Electron 42+ downloads the binary on first cli run, not in
+            # postinstall. install.js is gone on those releases; cli.js
+            # --version triggers the same download and honours the arch env.
             npm_config_arch=${{ matrix.arch }} ELECTRON_INSTALL_ARCH=${{ matrix.arch }} \
               node node_modules/electron/install.js \
-              || echo "  (electron install.js exited non-zero on attempt $attempt)"
+              || npm_config_arch=${{ matrix.arch }} ELECTRON_INSTALL_ARCH=${{ matrix.arch }} \
+              node node_modules/electron/cli.js --version \
+              || echo "  (electron download exited non-zero on attempt $attempt)"
             [ "$attempt" -lt 5 ] && [ ! -f "$BIN" ] && sleep 10
           done
           if [ ! -f "$BIN" ]; then

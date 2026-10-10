@@ -1,30 +1,14 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * Registers all lucide-react-native icons with NativeWind's cssInterop
- * so that className color classes (e.g. text-purple-400, text-muted-foreground)
- * work correctly. Without this, SVG icons render with default black stroke.
+ * NativeWind `className` → SVG `color` for Lucide icons.
  *
- * Maps className directly to the `color` prop rather than going through
- * style → nativeStyleToProp, which is broken for SVGs in NativeWind >=4.1.22.
- * See: https://github.com/nativewind/nativewind/issues/1710
+ * This used to `import *` the whole icon set at startup, which put every
+ * icon into the desktop web chunk. Named imports are rewritten by
+ * `scripts/babel-plugin-lucide-direct.js`, which calls `cssInterop` on
+ * each icon it loads. Dynamic names go through `lib/lucide-catalog.tsx`.
  *
- * Uses import * to auto-register every icon — no manual list to maintain.
- * Metro doesn't tree-shake on native anyway, so bundle impact is negligible.
- *
- * Import this file once at app startup (root _layout.tsx).
+ * Kept as a side-effect import from `app/_layout.tsx` so the startup
+ * hook stays obvious; the module itself no longer loads icons.
  */
-
-import { cssInterop } from 'nativewind'
-import * as LucideIcons from 'lucide-react-native'
-
-for (const [name, component] of Object.entries(LucideIcons)) {
-  if (component != null && /^[A-Z]/.test(name)) {
-    cssInterop(component as any, {
-      className: {
-        target: 'style',
-        nativeStyleToProp: { color: true },
-      },
-    })
-  }
-}
+export {}

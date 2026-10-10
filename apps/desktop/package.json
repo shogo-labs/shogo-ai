@@ -57,7 +57,7 @@
     "@electron-forge/publisher-github": "^7.11.1",
     "@types/multicast-dns": "^7.2.4",
     "canvas": "^3.2.3",
-    "electron": "^33.0.0",
+    "electron": "^44.7.0",
     "gif-encoder-2": "^1.0.5",
     "typescript": "^5.7.0"
   }
