@@ -481,7 +481,7 @@ function createListProjectsTool(ctx: ToolContext): AgentTool {
     name: 'list_projects',
     label: 'List Projects',
     description:
-      'List projects available in this Shogo workspace and show which ones are currently mounted. ' +
+      'List the projects you can access in this Shogo workspace and show which ones are currently mounted. ' +
       'Use this before mounting when the request names a project ambiguously or asks about project availability.',
     parameters: Type.Object({}),
     execute: async () => {

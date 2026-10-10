@@ -344,10 +344,16 @@ export async function readProjectConfig(projectId: string): Promise<ConfiguredPr
   }
 }
 
-/** Projects in a workspace with their attachment edges — the manifest's live state. */
-export async function listWorkspaceProjectsWithAttachments(workspaceId: string) {
+/**
+ * Projects in a workspace with their attachment edges — the manifest's live state.
+ * `where` further restricts the set (the caller's readable projects).
+ */
+export async function listWorkspaceProjectsWithAttachments(
+  workspaceId: string,
+  where?: Record<string, unknown>,
+) {
   const projects = (await prisma.project.findMany({
-    where: { workspaceId },
+    where: where ? { AND: [{ workspaceId }, where] } : { workspaceId },
     select: {
       id: true,
       name: true,

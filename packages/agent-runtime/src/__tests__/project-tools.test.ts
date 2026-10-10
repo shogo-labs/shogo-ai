@@ -513,6 +513,27 @@ describe('system_apply', () => {
     expect(calls.find((c) => c.fn === 'attachProject')).toBeUndefined()
   })
 
+  test('a lock binding the requester cannot see is not_accessible and is not recreated', async () => {
+    mkdirSync(join(workspaceDir, '.shogo'), { recursive: true })
+    writeFileSync(join(workspaceDir, '.shogo/system.lock.json'), JSON.stringify({
+      version: 1, name: 'hidden', bindings: { secret: 'proj-hidden' },
+    }))
+    api.graph.data = []
+    const manifest = `
+version: 1
+name: hidden
+projects:
+  - key: secret
+    name: Secret
+`
+    const out = await run(createSystemApplyTool(baseCtx()), { manifest })
+    expect(out.errors.some((l: string) => l.includes('not_accessible') && l.includes('proj-hidden'))).toBe(true)
+    expect(out.plan.some((l: string) => l.startsWith('not_accessible secret'))).toBe(true)
+    expect(calls.find((c) => c.fn === 'createProject')).toBeUndefined()
+    const lock = JSON.parse(readFileSync(join(workspaceDir, '.shogo/system.lock.json'), 'utf-8'))
+    expect(lock.bindings.secret).toBe('proj-hidden')
+  })
+
   test('reports a heartbeat paywall as an error but still applies the rest of the configure', async () => {
     api.create = { ok: true, status: 201, data: { id: 'proj-intake', name: 'Intake', description: null, workingMode: 'managed', settings: null } }
     api.configure = {
