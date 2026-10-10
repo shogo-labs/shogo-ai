@@ -47,6 +47,7 @@ import {
 import { resolveWorkspaceRuntimeUrl, WorkspaceRuntimeNotEnabledError } from '../lib/resolve-workspace-runtime-url'
 import { readWorkspaceSessionRuntimeArgs, type WorkspaceSessionRuntimeArgs } from '../lib/workspace-runtime-args'
 import { deriveWorkspaceRuntimeToken } from '../lib/workspace-runtime-token'
+import { requesterTicketHeader, workspaceTicketKey } from '../lib/requester-ticket'
 import { setProjectUser } from '../lib/project-user-context'
 import { openSession, closeSession } from '../lib/proxy-billing-session-runtime'
 import { enrichWorkspaceReferences, enrichProjectReferences, enrichChatReferences } from '../lib/chat-references'
@@ -775,6 +776,17 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
       }
       // The caller passed workspace membership above, so X-User-Id is trusted.
       headers['X-User-Id'] = auth.userId
+      // Signed proof of who started this turn. Internal project tools trust
+      // this over any userId the runtime puts in a request body. Schedules
+      // and triggers reach this route as `auth.userId`, so they act as their
+      // owner with no extra wiring.
+      Object.assign(
+        headers,
+        requesterTicketHeader(workspaceTicketKey(workspaceId), auth.userId, {
+          kind: 'chat',
+          ...(sessionId ? { chatSessionId: sessionId } : {}),
+        }),
+      )
       // Runtime keys its durable-turn + billing state on the chat session id.
       headers['x-chat-session-id'] = sessionId
 

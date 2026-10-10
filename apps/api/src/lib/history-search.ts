@@ -48,9 +48,35 @@ const matches = (values: unknown[], terms: string[]) => {
   return count ? count / Math.max(1, terms.length) : terms.length ? 0 : 0.1
 }
 
-async function accessible(workspaceId: string, userId?: string | null): Promise<boolean> {
+/** Workspace-level chats and plans. A membership row is what grants `workspace:read`. */
+async function canReadWorkspaceLevel(workspaceId: string, userId?: string | null): Promise<boolean> {
   if (!userId) return true
   return Boolean(await (prisma as any).member.findFirst({ where: { workspaceId, userId, projectId: null }, select: { id: true } }))
+}
+
+function chatScope(
+  workspaceId: string,
+  ids: string[],
+  includeWorkspace: boolean,
+  excludeSessionId?: string,
+): Record<string, unknown> | null {
+  const OR = [
+    ...(includeWorkspace ? [{ contextType: 'workspace', workspaceId }] : []),
+    ...(ids.length ? [{ contextType: 'project', contextId: { in: ids } }] : []),
+  ]
+  if (OR.length === 0) return null
+  return { OR, ...(excludeSessionId ? { id: { not: excludeSessionId } } : {}) }
+}
+
+function planScope(workspaceId: string, ids: string[], includeWorkspace: boolean, scoped: boolean): Record<string, unknown> | null {
+  if (!scoped) {
+    return { OR: [{ workspaceId }, ...(ids.length ? [{ projectId: { in: ids } }] : [])] }
+  }
+  const OR = [
+    ...(includeWorkspace ? [{ workspaceId, projectId: null }] : []),
+    ...(ids.length ? [{ projectId: { in: ids } }] : []),
+  ]
+  return OR.length ? { OR } : null
 }
 
 async function projectIds(workspaceId: string, userId?: string | null): Promise<string[]> {
@@ -63,20 +89,17 @@ async function projectIds(workspaceId: string, userId?: string | null): Promise<
 }
 
 export async function searchWorkspaceHistory(options: HistorySearchOptions): Promise<{ results: HistorySearchResult[]; count: number }> {
-  if (!(await accessible(options.workspaceId, options.userId))) return { results: [], count: 0 }
   const limit = limitOf(options.limit)
   const terms = termsOf(options.query)
+  const scoped = Boolean(options.userId)
+  const includeWorkspace = await canReadWorkspaceLevel(options.workspaceId, options.userId)
   const ids = await projectIds(options.workspaceId, options.userId)
+  const chats = chatScope(options.workspaceId, ids, includeWorkspace, options.excludeSessionId)
+  const plans = planScope(options.workspaceId, ids, includeWorkspace, scoped)
   const results: HistorySearchResult[] = []
-  if (!options.kind || options.kind === 'all' || options.kind === 'chat') {
+  if (chats && (!options.kind || options.kind === 'all' || options.kind === 'chat')) {
     const sessions = await (prisma as any).chatSession.findMany({
-      where: {
-        OR: [
-          { contextType: 'workspace', workspaceId: options.workspaceId },
-          ...(ids.length ? [{ contextType: 'project', contextId: { in: ids } }] : []),
-        ],
-        ...(options.excludeSessionId ? { id: { not: options.excludeSessionId } } : {}),
-      },
+      where: chats,
       include: {
         project: { select: { id: true, name: true } },
         messages: { where: { role: { in: ['user', 'assistant'] } }, orderBy: { createdAt: 'asc' }, take: 500, select: { role: true, content: true, createdAt: true } },
@@ -97,14 +120,14 @@ export async function searchWorkspaceHistory(options: HistorySearchOptions): Pro
       })
     }
   }
-  if (!options.kind || options.kind === 'all' || options.kind === 'plan') {
-    const plans = await (prisma as any).plan.findMany({
-      where: { OR: [{ workspaceId: options.workspaceId }, ...(ids.length ? [{ projectId: { in: ids } }] : [])] },
+  if (plans && (!options.kind || options.kind === 'all' || options.kind === 'plan')) {
+    const planRows = await (prisma as any).plan.findMany({
+      where: plans,
       include: { project: { select: { id: true, name: true } } },
       orderBy: { updatedAt: 'desc' },
       take: 500,
     })
-    for (const plan of plans) {
+    for (const plan of planRows) {
       const score = matches([plan.name, plan.overview, plan.content], terms)
       if (!score) continue
       results.push({
@@ -144,25 +167,24 @@ export async function renderWorkspaceTranscript(
 }
 
 async function searchWorkspaceSession(sessionId: string, options: { workspaceId: string; userId?: string | null }) {
-  if (!(await accessible(options.workspaceId, options.userId))) return null
+  const includeWorkspace = await canReadWorkspaceLevel(options.workspaceId, options.userId)
   const ids = await projectIds(options.workspaceId, options.userId)
+  const scope = chatScope(options.workspaceId, ids, includeWorkspace)
+  if (!scope) return null
   return (prisma as any).chatSession.findFirst({
-    where: {
-      id: sessionId,
-      OR: [
-        { contextType: 'workspace', workspaceId: options.workspaceId },
-        ...(ids.length ? [{ contextType: 'project', contextId: { in: ids } }] : []),
-      ],
-    },
+    where: { id: sessionId, ...scope },
     include: { project: { select: { id: true, name: true } }, messages: { where: { role: { in: ['user', 'assistant'] } }, orderBy: { createdAt: 'asc' } } },
   })
 }
 
 export async function readWorkspacePlan(planId: string, options: { workspaceId: string; userId?: string | null }) {
-  if (!(await accessible(options.workspaceId, options.userId))) return null
+  const scoped = Boolean(options.userId)
+  const includeWorkspace = await canReadWorkspaceLevel(options.workspaceId, options.userId)
   const ids = await projectIds(options.workspaceId, options.userId)
+  const scope = planScope(options.workspaceId, ids, includeWorkspace, scoped)
+  if (!scope) return null
   const plan = await (prisma as any).plan.findFirst({
-    where: { id: planId, OR: [{ workspaceId: options.workspaceId }, ...(ids.length ? [{ projectId: { in: ids } }] : [])] },
+    where: { id: planId, ...scope },
     include: { project: { select: { id: true, name: true } } },
   })
   return plan ? { ...plan, createdAt: new Date(plan.createdAt).toISOString(), updatedAt: new Date(plan.updatedAt).toISOString() } : null

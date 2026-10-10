@@ -215,6 +215,8 @@ export interface SystemLock {
 
 export interface CreateOp { kind: 'create'; key: string; spec: ProjectSpec }
 export interface AdoptOp { kind: 'adopt'; key: string; projectId: string; reason: 'lock' | 'name' | 'anchor' }
+/** Lock points at a project the caller cannot see. Do not create a second one. */
+export interface InaccessibleOp { kind: 'inaccessible'; key: string; projectId: string }
 export interface ConfigureOp {
   kind: 'configure'
   key: string
@@ -287,6 +289,7 @@ export interface TeamChannelOp {
 
 export interface SystemDiff {
   adopt: AdoptOp[]
+  inaccessible: InaccessibleOp[]
   create: CreateOp[]
   configure: ConfigureOp[]
   attach: AttachOp[]
@@ -319,9 +322,10 @@ export function resolveBindings(
   live: LiveProject[],
   lock: SystemLock | null,
   callerProjectId: string,
-): { bindings: Record<string, string>; adopt: AdoptOp[] } {
+): { bindings: Record<string, string>; adopt: AdoptOp[]; inaccessible: InaccessibleOp[] } {
   const bindings: Record<string, string> = {}
   const adopt: AdoptOp[] = []
+  const inaccessible: InaccessibleOp[] = []
   const liveIds = new Set(live.map((p) => p.id))
   const byName = new Map<string, LiveProject[]>()
   for (const p of live) {
@@ -341,6 +345,10 @@ export function resolveBindings(
       bindings[spec.key] = locked
       continue
     }
+    if (locked) {
+      inaccessible.push({ kind: 'inaccessible', key: spec.key, projectId: locked })
+      continue
+    }
     const candidates = byName.get(spec.name) ?? []
     // Only adopt by name when it is unambiguous and not already claimed.
     const taken = new Set(Object.values(bindings))
@@ -350,7 +358,7 @@ export function resolveBindings(
       adopt.push({ kind: 'adopt', key: spec.key, projectId: free[0].id, reason: 'name' })
     }
   }
-  return { bindings, adopt }
+  return { bindings, adopt, inaccessible }
 }
 
 function agentPatch(spec: ProjectSpec, live: LiveProject | null): ConfigureOp['patch']['agent'] | undefined {
@@ -389,8 +397,9 @@ export function computeSystemDiff(
   lock: SystemLock | null,
   opts: DiffOptions,
 ): SystemDiff {
-  const { bindings, adopt } = resolveBindings(manifest, live, lock, opts.callerProjectId)
+  const { bindings, adopt, inaccessible } = resolveBindings(manifest, live, lock, opts.callerProjectId)
   const liveById = new Map(live.map((p) => [p.id, p]))
+  const blocked = new Set(inaccessible.map((op) => op.key))
 
   const create: CreateOp[] = []
   const configure: ConfigureOp[] = []
@@ -400,6 +409,7 @@ export function computeSystemDiff(
   const manual: string[] = []
 
   for (const spec of manifest.projects) {
+    if (blocked.has(spec.key)) continue
     const id = bindings[spec.key] ?? null
     const liveProject = id ? liveById.get(id) ?? null : null
     if (!id) create.push({ kind: 'create', key: spec.key, spec })
@@ -461,6 +471,7 @@ export function computeSystemDiff(
   if (!manifest.anchor) {
     const caller = liveById.get(opts.callerProjectId) ?? null
     for (const spec of manifest.projects) {
+      if (blocked.has(spec.key)) continue
       const targetId = bindings[spec.key] ?? null
       const existing = caller?.attachments.find((e) => e.attachedProjectId === targetId)
       if (existing && existing.attachMode === 'readwrite') continue
@@ -491,7 +502,7 @@ export function computeSystemDiff(
     detach.length === 0 &&
     files.every((f) => f.action === 'unchanged')
 
-  return { adopt, create, configure, attach, detach, files, teamChannels, manual, empty }
+  return { adopt, inaccessible, create, configure, attach, detach, files, teamChannels, manual, empty }
 }
 
 function keywordsOf(member: { keywords?: string[] }): string | null {
@@ -588,6 +599,7 @@ export const IMPLICIT_ANCHOR = IMPLICIT_ANCHOR_KEY
 export function summarizeDiff(diff: SystemDiff): string[] {
   const lines: string[] = []
   for (const a of diff.adopt) lines.push(`adopt ${a.key} → ${a.projectId} (${a.reason})`)
+  for (const op of diff.inaccessible ?? []) lines.push(`not_accessible ${op.key} (bound to ${op.projectId})`)
   for (const c of diff.create) lines.push(`create ${c.key} "${c.spec.name}"`)
   for (const c of diff.configure) lines.push(`configure ${c.key}: ${Object.keys({ ...c.patch, ...(c.patch.agent ?? {}) }).filter((k) => k !== 'agent').join(', ')}`)
   for (const a of diff.attach) lines.push(`${a.changeMode ? 'remode' : 'attach'} ${a.anchorKey === IMPLICIT_ANCHOR_KEY ? '(caller)' : a.anchorKey} → ${a.targetKey} [${a.mode}]`)

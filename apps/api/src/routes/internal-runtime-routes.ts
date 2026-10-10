@@ -25,7 +25,8 @@ import {
   getDiff as getDiffSvc,
 } from '../services/checkpoint.service'
 import { prisma } from '../lib/prisma'
-import { accessibleProjectsWhere, loadAccess } from '../lib/authz'
+import type { Permission } from '@shogo/authz'
+import { accessibleProjectsWhere, decide, getRbacMode, loadAccess, resolveAgentActor } from '../lib/authz'
 import { hydrateRepo } from '../services/git-repo-store'
 import {
   attachProject,
@@ -112,6 +113,65 @@ export interface RuntimeInternalRoutesOptions {
 
 export function numberOr(value: unknown, fallback: number): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback
+}
+
+function requesterRequired(c: Context) {
+  return c.json(
+    { error: { code: 'requester_required', message: 'A signed requester is required for this action' } },
+    403,
+  )
+}
+
+/**
+ * Prisma filter for the projects this caller may see, or null when the call
+ * is unscoped (service account, or a runtime with no person while enforcement
+ * is still off/shadow). A Response when enforcement is on and there is no actor.
+ */
+async function readableProjectFilter(
+  c: Context,
+  identity: InternalIdentity,
+  workspaceId: string,
+  claimedUserId?: unknown,
+): Promise<Record<string, unknown> | null | Response> {
+  const actor = await resolveAgentActor(c, identity, { workspaceId, claimedUserId })
+  if (actor?.principal.userId && !actor.unscoped) {
+    return accessibleProjectsWhere(actor.principal, workspaceId)
+  }
+  if (identity.kind === 'sa' || (await getRbacMode()) !== 'on') return null
+  return requesterRequired(c)
+}
+
+/**
+ * Permission check for a runtime acting as a person. Service accounts stay
+ * unscoped (cluster-internal). With no actor, off/shadow keeps the old
+ * workspace-scoped behavior; `on` refuses.
+ */
+async function enforceProjectPermission(
+  c: Context,
+  identity: InternalIdentity,
+  workspaceId: string,
+  projectId: string,
+  permission: Permission,
+  claimedUserId?: unknown,
+): Promise<Response | null> {
+  if (identity.kind === 'sa') return null
+  const actor = await resolveAgentActor(c, identity, { workspaceId, claimedUserId })
+  if (!actor?.principal.userId || actor.unscoped) {
+    if ((await getRbacMode()) !== 'on') return null
+    return requesterRequired(c)
+  }
+  const access = await loadAccess(actor.principal, { projectId })
+  const decision = await decide(access, permission, actor.principal, `${c.req.method} ${c.req.path}`)
+  if (!decision.ok) return c.json({ error: { code: decision.code, message: decision.message } }, decision.status)
+  return null
+}
+
+function hideInaccessibleEdges<T extends { id: string; attachments?: Array<{ attachedProjectId: string }> }>(projects: T[]): T[] {
+  const ids = new Set(projects.map((p) => p.id))
+  return projects.map((p) => ({
+    ...p,
+    attachments: (p.attachments ?? []).filter((edge) => ids.has(edge.attachedProjectId)),
+  }))
 }
 
 function unavailable(c: Context, capability: string) {
@@ -562,7 +622,9 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
         if (!(await authorizeWorkspaceScope(c, workspaceId))) {
           return c.json({ error: 'Unauthorized' }, 401)
         }
-        return { workspaceId }
+        const identity = await authenticate(c)
+        if (!identity) return c.json({ error: 'Unauthorized' }, 401)
+        return { workspaceId, identity }
       },
     }),
   )
@@ -612,17 +674,24 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
    * disabled for the `personal` capability profile (see
    * `capability-profiles.ts`), so this only affects team workspaces today.
    */
-  async function accessibleWorkspaceProjects(workspaceId: string, userId: string) {
+  async function accessibleWorkspaceProjects(workspaceId: string, where: Record<string, unknown> | null) {
     return prisma.project.findMany({
       where: {
-        AND: [
-          { workspaceId, hidden: false },
-          await accessibleProjectsWhere({ userId, via: 'session' }, workspaceId),
-        ],
+        AND: [{ workspaceId, hidden: false }, ...(where ? [where] : [])],
       },
       select: { id: true, name: true, description: true, createdBy: true },
       orderBy: { name: 'asc' },
     })
+  }
+
+  /** The person history is filtered for. `undefined` keeps the legacy unscoped read. */
+  async function historyActorId(c: Context, workspaceId: string): Promise<string | undefined | Response> {
+    const identity = await authenticate(c)
+    if (!identity) return c.json({ error: 'Unauthorized' }, 401)
+    const actor = await resolveAgentActor(c, identity, { workspaceId, claimedUserId: c.req.query('userId') })
+    if (actor?.principal.userId && !actor.unscoped) return actor.principal.userId
+    if (identity.kind === 'sa' || (await getRbacMode()) !== 'on') return undefined
+    return requesterRequired(c)
   }
 
   async function workspaceRuntimeMemberCall(
@@ -684,10 +753,10 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     const workspaceId = c.req.param('workspaceId')
     const identity = await authorizeWorkspaceRuntimeRequest(c, workspaceId)
     if (!identity) return c.json({ error: 'Unauthorized' }, 401)
-    const userId = c.req.query('userId')
     const sessionId = c.req.query('sessionId')
-    if (!userId) return c.json({ error: 'userId is required' }, 400)
-    const projects = await accessibleWorkspaceProjects(workspaceId, userId)
+    const visible = await readableProjectFilter(c, identity, workspaceId, c.req.query('userId'))
+    if (visible instanceof Response) return visible
+    const projects = await accessibleWorkspaceProjects(workspaceId, visible)
     const attached = sessionId ? await getAttachedProjects(sessionId) : []
     const attachedIds = new Set(attached.map((row) => row.projectId))
     return c.json({
@@ -702,6 +771,8 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
   app.get('/workspaces/:workspaceId/history/search', async (c) => {
     const workspaceId = c.req.param('workspaceId')
     if (!(await authorizeWorkspaceScope(c, workspaceId))) return c.json({ error: 'Unauthorized' }, 401)
+    const userId = await historyActorId(c, workspaceId)
+    if (userId instanceof Response) return userId
     const rawKind = c.req.query('kind')
     const kind = rawKind === 'chat' || rawKind === 'plan' ? rawKind : 'all'
     return c.json({
@@ -709,6 +780,7 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
       kind,
       ...(await searchWorkspaceHistory({
         workspaceId,
+        userId,
         query: c.req.query('q') || c.req.query('query') || '',
         kind,
         limit: Number(c.req.query('limit') || 8),
@@ -720,15 +792,18 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
   app.get('/workspaces/:workspaceId/history/read', async (c) => {
     const workspaceId = c.req.param('workspaceId')
     if (!(await authorizeWorkspaceScope(c, workspaceId))) return c.json({ error: 'Unauthorized' }, 401)
+    const userId = await historyActorId(c, workspaceId)
+    if (userId instanceof Response) return userId
     const kind = c.req.query('kind')
     const id = c.req.query('id')
     if ((kind !== 'chat' && kind !== 'plan') || !id) return c.json({ error: 'kind and id are required' }, 400)
     if (kind === 'plan') {
-      const plan = await readWorkspacePlan(id, { workspaceId })
+      const plan = await readWorkspacePlan(id, { workspaceId, userId })
       return plan ? c.json(plan) : c.json({ error: 'Not found' }, 404)
     }
     const transcript = await renderWorkspaceTranscript(id, {
       workspaceId,
+      userId,
       from: Number(c.req.query('from') || 0),
       limit: Number(c.req.query('limit') || 100),
     })
@@ -739,8 +814,11 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     const chatSessionId = c.req.param('chatSessionId')
     const workspaceId = c.req.query('workspaceId')
     if (!workspaceId || !(await authorizeWorkspaceScope(c, workspaceId))) return c.json({ error: 'Unauthorized' }, 401)
+    const userId = await historyActorId(c, workspaceId)
+    if (userId instanceof Response) return userId
     const transcript = await renderWorkspaceTranscript(chatSessionId, {
       workspaceId,
+      userId,
       from: Number(c.req.query('from') || 0),
       limit: Number(c.req.query('limit') || 100),
     })
@@ -807,12 +885,13 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     const identity = await authorizeWorkspaceRuntimeRequest(c, workspaceId)
     if (!identity) return c.json({ error: 'Unauthorized' }, 401)
     const body = await c.req.json().catch(() => ({}))
-    const userId = typeof body?.userId === 'string' ? body.userId : ''
     const projectId = typeof body?.projectId === 'string' ? body.projectId : ''
-    if (!userId || !projectId) return c.json({ error: 'userId and projectId are required' }, 400)
-    const projects = await accessibleWorkspaceProjects(workspaceId, userId)
+    if (!projectId) return c.json({ error: 'projectId is required' }, 400)
+    const visible = await readableProjectFilter(c, identity, workspaceId, body?.userId)
+    if (visible instanceof Response) return visible
+    const projects = await accessibleWorkspaceProjects(workspaceId, visible)
     const project = projects.find((row) => row.id === projectId)
-    if (!project) return c.json({ error: 'Project is not accessible in this workspace' }, 403)
+    if (!project) return c.json({ error: { code: 'not_found', message: 'Project not found' } }, 404)
 
     try {
       const attachedRow = await attachProject(
@@ -860,11 +939,11 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     const identity = await authorizeWorkspaceRuntimeRequest(c, workspaceId)
     if (!identity) return c.json({ error: 'Unauthorized' }, 401)
     const body = await c.req.json().catch(() => ({}))
-    const userId = typeof body?.userId === 'string' ? body.userId : ''
-    if (!userId) return c.json({ error: 'userId is required' }, 400)
-    const accessible = await accessibleWorkspaceProjects(workspaceId, userId)
+    const visible = await readableProjectFilter(c, identity, workspaceId, body?.userId)
+    if (visible instanceof Response) return visible
+    const accessible = await accessibleWorkspaceProjects(workspaceId, visible)
     if (!accessible.some((project) => project.id === projectId)) {
-      return c.json({ error: 'Project is not accessible in this workspace' }, 403)
+      return c.json({ error: { code: 'not_found', message: 'Project not found' } }, 404)
     }
     try {
       const removed = await detachProject(sessionId, projectId)
@@ -1648,37 +1727,6 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     return { identity, workspaceId: project.workspaceId }
   }
 
-  /**
-   * Resolve the user a lifecycle write is attributed to. Prefer the explicit
-   * `userId` the runtime forwards from the chat request; fall back to the
-   * calling project's creator for heartbeat-triggered turns that have no user.
-   *
-   * A merged-root (universal workspace) runtime authenticates with a workspace
-   * token, so there is no calling project to inherit from — attribute the write
-   * to the workspace's owner instead. Without this every `system_apply` /
-   * `project_create` from such a runtime 400s with `userId is required`, which
-   * breaks the `harness` anchor and any other multi-project assembly.
-   */
-  async function resolveActingUserId(identity: InternalIdentity, requested: unknown): Promise<string | null> {
-    if (typeof requested === 'string' && requested.length > 0) return requested
-    if (identity.kind === 'project') {
-      const row = (await prisma.project.findUnique({
-        where: { id: identity.projectId },
-        select: { createdBy: true },
-      })) as { createdBy: string | null } | null
-      return row?.createdBy ?? null
-    }
-    if (identity.kind === 'workspace') {
-      const owner = await prisma.member.findFirst({
-        where: { workspaceId: identity.workspaceId, projectId: null, role: 'owner' },
-        select: { userId: true },
-        orderBy: { createdAt: 'asc' },
-      })
-      return owner?.userId ?? null
-    }
-    return null
-  }
-
   function lifecycleErrorResponse(c: Context, err: unknown): Response {
     const anyErr = err as { name?: string; code?: string; message?: string }
     if (anyErr?.name === 'ProjectLifecycleError') {
@@ -1709,10 +1757,17 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
   app.get('/workspaces/:workspaceId/projects/graph', async (c) => {
     const workspaceId = c.req.param('workspaceId')
     if (!(await authorizeWorkspaceScope(c, workspaceId))) return c.json({ error: 'Unauthorized' }, 401)
+    const identity = await authenticate(c)
+    if (!identity) return c.json({ error: 'Unauthorized' }, 401)
+    const visible = await readableProjectFilter(c, identity, workspaceId, c.req.query('userId'))
+    if (visible instanceof Response) return visible
     const lifecycleSvc = await loadProjectLifecycle?.()
     if (!lifecycleSvc) return unavailable(c, 'Project lifecycle')
     const { listWorkspaceProjectsWithAttachments } = lifecycleSvc
-    return c.json({ workspaceId, projects: await listWorkspaceProjectsWithAttachments(workspaceId) })
+    const projects = hideInaccessibleEdges(
+      await listWorkspaceProjectsWithAttachments(workspaceId, visible ?? undefined),
+    )
+    return c.json({ workspaceId, projects })
   })
 
   /**
@@ -1739,9 +1794,13 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     if (!body || typeof body.name !== 'string') {
       return c.json({ error: { code: 'bad_request', message: 'name is required' } }, 400)
     }
-    const actingUserId = await resolveActingUserId(identity, body.userId)
-    if (!actingUserId) {
-      return c.json({ error: { code: 'bad_request', message: 'userId is required' } }, 400)
+    const actor = await resolveAgentActor(c, identity, { workspaceId, claimedUserId: body.userId })
+    const actingUserId = actor?.principal.userId
+    if (!actingUserId || actor?.unscoped) {
+      if (identity.kind === 'sa') {
+        return c.json({ error: { code: 'bad_request', message: 'userId is required' } }, 400)
+      }
+      return requesterRequired(c)
     }
 
     try {
@@ -1768,9 +1827,25 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
   /** GET /api/internal/projects/:projectId/attachments — durable anchor → attached edges. */
   app.get('/projects/:projectId/attachments', async (c) => {
     const projectId = c.req.param('projectId')
-    if (!(await authorizeLifecycleProject(c, projectId))) return c.json({ error: 'Unauthorized' }, 401)
+    const authz = await authorizeLifecycleProject(c, projectId)
+    if (!authz) return c.json({ error: 'Unauthorized' }, 401)
+    const denied = await enforceProjectPermission(c, authz.identity, authz.workspaceId, projectId, 'project:read')
+    if (denied) return denied
     const { listAttachments } = await import('../services/project-attachment.service')
-    return c.json({ projectId, attachments: await listAttachments(projectId) })
+    const rows = await listAttachments(projectId)
+    const visible = await readableProjectFilter(c, authz.identity, authz.workspaceId)
+    if (visible instanceof Response) return visible
+    if (!visible || rows.length === 0) return c.json({ projectId, attachments: rows })
+    const allowed = new Set(
+      ((await prisma.project.findMany({
+        where: { AND: [{ id: { in: rows.map((row) => row.attachedProjectId) } }, visible] },
+        select: { id: true },
+      })) as Array<{ id: string }>).map((row) => row.id),
+    )
+    return c.json({
+      projectId,
+      attachments: rows.filter((row) => allowed.has(row.attachedProjectId)),
+    })
   })
 
   /**
@@ -1793,6 +1868,18 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
       return c.json({ error: { code: 'bad_request', message: 'attachedProjectId is required' } }, 400)
     }
     const attachMode = body.attachMode === 'readonly' ? 'readonly' : 'readwrite'
+    const anchorDenied = await enforceProjectPermission(
+      c, authz.identity, authz.workspaceId, projectId, 'project:update',
+    )
+    if (anchorDenied) return anchorDenied
+    const targetDenied = await enforceProjectPermission(
+      c,
+      authz.identity,
+      authz.workspaceId,
+      body.attachedProjectId,
+      attachMode === 'readonly' ? 'project:read' : 'project:update',
+    )
+    if (targetDenied) return targetDenied
 
     try {
       const svc = await import('../services/project-attachment.service')
@@ -1843,7 +1930,10 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
   app.delete('/projects/:projectId/attachments/:attachedProjectId', async (c) => {
     const projectId = c.req.param('projectId')
     const attachedProjectId = c.req.param('attachedProjectId')
-    if (!(await authorizeLifecycleProject(c, projectId))) return c.json({ error: 'Unauthorized' }, 401)
+    const authz = await authorizeLifecycleProject(c, projectId)
+    if (!authz) return c.json({ error: 'Unauthorized' }, 401)
+    const denied = await enforceProjectPermission(c, authz.identity, authz.workspaceId, projectId, 'project:update')
+    if (denied) return denied
     try {
       const { detachProjectFromProject } = await import('../services/project-attachment.service')
       const removed = await detachProjectFromProject(projectId, attachedProjectId)
@@ -1856,7 +1946,10 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
   /** GET /api/internal/projects/:projectId/config — agent-facing config snapshot. */
   app.get('/projects/:projectId/config', async (c) => {
     const projectId = c.req.param('projectId')
-    if (!(await authorizeLifecycleProject(c, projectId))) return c.json({ error: 'Unauthorized' }, 401)
+    const authz = await authorizeLifecycleProject(c, projectId)
+    if (!authz) return c.json({ error: 'Unauthorized' }, 401)
+    const denied = await enforceProjectPermission(c, authz.identity, authz.workspaceId, projectId, 'project:read')
+    if (denied) return denied
     try {
       const lifecycleSvc = await loadProjectLifecycle?.()
       if (!lifecycleSvc) return unavailable(c, 'Project lifecycle')
@@ -1873,9 +1966,22 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
    */
   app.patch('/projects/:projectId/config', async (c) => {
     const projectId = c.req.param('projectId')
-    if (!(await authorizeLifecycleProject(c, projectId))) return c.json({ error: 'Unauthorized' }, 401)
+    const authz = await authorizeLifecycleProject(c, projectId)
+    if (!authz) return c.json({ error: 'Unauthorized' }, 401)
     const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null
     if (!body) return c.json({ error: { code: 'bad_request', message: 'Invalid JSON body' } }, 400)
+    const permissions = new Set<Permission>()
+    if (typeof body.name === 'string' || body.description !== undefined || (body.agent && typeof body.agent === 'object')) {
+      permissions.add('project:update')
+    }
+    if ((body.settings && typeof body.settings === 'object') || typeof body.slackEnabled === 'boolean') {
+      permissions.add('project.settings:manage')
+    }
+    if (permissions.size === 0) permissions.add('project:update')
+    for (const permission of permissions) {
+      const denied = await enforceProjectPermission(c, authz.identity, authz.workspaceId, projectId, permission)
+      if (denied) return denied
+    }
     try {
       const lifecycleSvc = await loadProjectLifecycle?.()
       if (!lifecycleSvc) return unavailable(c, 'Project lifecycle')
@@ -1909,6 +2015,8 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     const projectId = c.req.param('projectId')
     const authz = await authorizeLifecycleProject(c, projectId)
     if (!authz) return c.json({ error: 'Unauthorized' }, 401)
+    const denied = await enforceProjectPermission(c, authz.identity, authz.workspaceId, projectId, 'project:update')
+    if (denied) return denied
 
     const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null
     if (!body || typeof body.message !== 'string' || !body.message.trim()) {

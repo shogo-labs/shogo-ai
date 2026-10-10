@@ -76,6 +76,47 @@ function encode(payload: RequesterTicket): string {
   return `${encoded}.${mac(encoded)}`
 }
 
+/** Ticket binding for a workspace-runtime turn, which has no single project. */
+export function workspaceTicketKey(workspaceId: string): string {
+  return `ws:${workspaceId}`
+}
+
+/**
+ * Signature and expiry only. Callers still have to check that `projectId` is
+ * the project (or workspace key) this request is allowed to act in.
+ */
+export function readRequesterTicket(
+  ticket: string | null | undefined,
+  nowMs = Date.now(),
+): RequesterTicket | null {
+  const [encoded, given] = (ticket ?? '').trim().split('.')
+  if (!encoded || !given) return null
+  let expected: Buffer
+  try {
+    expected = Buffer.from(mac(encoded))
+  } catch {
+    return null
+  }
+  const actual = Buffer.from(given)
+  if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) return null
+  try {
+    const payload = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8')) as Partial<RequesterTicket>
+    if (typeof payload?.userId !== 'string' || !payload.userId) return null
+    if (typeof payload.projectId !== 'string' || !payload.projectId) return null
+    if (typeof payload.exp !== 'number' || payload.exp < nowMs) return null
+    return {
+      projectId: payload.projectId,
+      userId: payload.userId,
+      origin: readOrigin(payload.origin),
+      via: Array.isArray(payload.via) ? payload.via.filter((p): p is string => typeof p === 'string') : [],
+      exp: payload.exp,
+      nonce: typeof payload.nonce === 'string' ? payload.nonce : '',
+    }
+  } catch {
+    return null
+  }
+}
+
 export function signRequesterTicket(
   value: { projectId: string; userId: string; origin?: TicketOrigin },
   nowMs = Date.now(),
@@ -96,32 +137,37 @@ export function verifyRequesterTicket(
   projectId: string,
   nowMs = Date.now(),
 ): RequesterTicket | null {
-  const [encoded, given] = (ticket ?? '').trim().split('.')
-  if (!encoded || !given) return null
-  let expected: Buffer
-  try {
-    expected = Buffer.from(mac(encoded))
-  } catch {
-    return null
-  }
-  const actual = Buffer.from(given)
-  if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) return null
-  try {
-    const payload = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8')) as Partial<RequesterTicket>
-    if (typeof payload?.userId !== 'string' || !payload.userId) return null
-    if (payload.projectId !== projectId) return null
-    if (typeof payload.exp !== 'number' || payload.exp < nowMs) return null
-    return {
-      projectId: payload.projectId,
-      userId: payload.userId,
-      origin: readOrigin(payload.origin),
-      via: Array.isArray(payload.via) ? payload.via.filter((p): p is string => typeof p === 'string') : [],
-      exp: payload.exp,
-      nonce: typeof payload.nonce === 'string' ? payload.nonce : '',
-    }
-  } catch {
-    return null
-  }
+  const payload = readRequesterTicket(ticket, nowMs)
+  if (!payload || payload.projectId !== projectId) return null
+  return payload
+}
+
+async function defaultProjectWorkspace(projectId: string): Promise<string | null> {
+  const { prisma } = await import('./prisma')
+  const row = (await prisma.project.findUnique({
+    where: { id: projectId },
+    select: { workspaceId: true },
+  })) as { workspaceId: string } | null
+  return row?.workspaceId ?? null
+}
+
+/**
+ * The ticket when it is genuine and was issued for this workspace: either
+ * bound to `ws:<workspaceId>` (a workspace-runtime turn) or to a project
+ * that belongs to the workspace (a project-runtime turn, including one
+ * handed across `project_call`).
+ */
+export async function verifyRequesterTicketInWorkspace(
+  ticket: string | null | undefined,
+  workspaceId: string,
+  nowMs = Date.now(),
+  lookup: (projectId: string) => Promise<string | null> = defaultProjectWorkspace,
+): Promise<RequesterTicket | null> {
+  const payload = readRequesterTicket(ticket, nowMs)
+  if (!payload) return null
+  if (payload.projectId === workspaceTicketKey(workspaceId)) return payload
+  if ((await lookup(payload.projectId)) !== workspaceId) return null
+  return payload
 }
 
 /**

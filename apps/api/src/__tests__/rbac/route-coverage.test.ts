@@ -14,6 +14,7 @@ import { readdirSync, readFileSync, statSync } from 'fs'
 import { join, relative, resolve } from 'path'
 import type { ProjectPermission } from '@shogo/authz'
 import { isDeclaredProjectRoute, projectRoutePermission } from '../../lib/authz/project-routes'
+import { INTERNAL_AGENT_ROUTES, isInternalAgentRoute } from '../../lib/authz/internal-agent-routes'
 
 const SRC = resolve(import.meta.dir, '../..')
 const SKIP_DIRS = new Set(['__tests__', 'generated', 'node_modules'])
@@ -83,6 +84,18 @@ describe('project route coverage', () => {
 
   test('every GET route is reviewed: listed as a plain read or given a rule', () => {
     expect(undeclared((m) => m === 'GET')).toEqual([])
+  })
+})
+
+describe('internal agent route coverage', () => {
+  const text = readFileSync(join(SRC, 'routes/internal-runtime-routes.ts'), 'utf-8')
+  const found = [...text.matchAll(ROUTE_RE)]
+    .filter((m) => isInternalAgentRoute(m[3]))
+    .map((m) => `${m[1].toUpperCase()} ${m[3].replace(/\/$/, '')}`)
+
+  test('every agent-facing internal project route declares its permission', () => {
+    expect(found.filter((key) => !(key in INTERNAL_AGENT_ROUTES))).toEqual([])
+    expect(found.length).toBe(Object.keys(INTERNAL_AGENT_ROUTES).length)
   })
 })
 
