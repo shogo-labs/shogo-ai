@@ -860,10 +860,22 @@ describe('project_call carries the person to the next project', () => {
     expect(pr.code).toBe('requester_unknown')
   })
 
-  test('someone outside B\'s workspace is not carried over', async () => {
-    const pr = await callB(seeded.projectId, signRequesterTicket({ projectId: seeded.projectId, userId: seeded.outsider }))
-    expect(hopTickets).toEqual([null])
-    expect(pr.code).toBe('requester_unknown')
+  test('someone outside B\'s workspace cannot call B', async () => {
+    internalIdentity = { kind: 'project', projectId: seeded.projectId }
+    try {
+      const res = await realFetch(`${API}/api/internal/projects/${projectB}/agent-call`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Requester-Ticket': signRequesterTicket({ projectId: seeded.projectId, userId: seeded.outsider }),
+        },
+        body: JSON.stringify({ message: 'File an issue for the login bug', wait: true }),
+      })
+      expect(res.status).toBe(404)
+      expect(hopTickets).toEqual([])
+    } finally {
+      internalIdentity = { kind: 'sa' }
+    }
   })
 
   test('B\'s own consent still applies: revoking it stops B, not A', async () => {
