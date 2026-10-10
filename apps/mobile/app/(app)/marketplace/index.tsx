@@ -13,7 +13,6 @@ import {
   Image,
   Platform,
 } from 'react-native'
-import * as Lucide from 'lucide-react-native'
 import { observer } from 'mobx-react-lite'
 import { useRouter } from 'expo-router'
 import {
@@ -28,6 +27,7 @@ import {
   Package,
   X,
 } from 'lucide-react-native'
+import { LucideByName } from '../../../lib/lucide-catalog'
 import { useDomainHttp } from '../../../contexts/domain'
 import {
   AgentTile,
@@ -170,13 +170,6 @@ function toTileListing(item: ListingFromAPI): AgentTileListing {
           creatorTier: 'newcomer',
         },
   }
-}
-
-function getLucideIcon(name: string) {
-  return ((Lucide as any)[name] ?? Lucide.Sparkles) as React.ComponentType<{
-    size?: number
-    color?: string
-  }>
 }
 
 export default observer(function MarketplaceHomeScreen() {
@@ -1221,7 +1214,7 @@ function CategoryCard({
   numColumns: number
   onPress: () => void
 }) {
-  const Icon = getLucideIcon(category.icon)
+  const icon = <LucideByName name={category.icon} size={16} color={category.accent} />
   // Map device columns to category-grid columns. We always show at least 2.
   const cols = numColumns === 1 ? 2 : numColumns >= 4 ? 4 : numColumns
   const widthPct = `${(100 - (cols - 1) * 3) / cols}%`
@@ -1240,7 +1233,7 @@ function CategoryCard({
           className="rounded-full w-9 h-9 items-center justify-center mb-1"
           style={{ backgroundColor: `${category.accent}33` }}
         >
-          <Icon size={16} color={category.accent} />
+          {icon}
         </View>
         <Text className="text-base font-semibold text-foreground">{category.label}</Text>
         <Text className="text-xs text-muted-foreground" numberOfLines={2}>

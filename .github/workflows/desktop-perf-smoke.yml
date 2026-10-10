@@ -35,6 +35,6 @@ jobs:
         # as desktop-release-windows.yml / desktop-release-macos.yml.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - run: bun test apps/desktop/src/__tests__/runtime-memory.test.ts
+      - run: bun test apps/desktop/src/__tests__/runtime-memory.test.ts scripts/__tests__/memory-report.test.ts apps/mobile/scripts/bundle-report.test.ts
       - run: bun build scripts/bench/project-open.ts --target bun --format esm --outfile .perf-smoke/project-open.js
       - run: bun build packages/agent-runtime/src/server.ts --target bun --format esm --packages external --outfile .perf-smoke/agent-runtime.js

@@ -2,8 +2,10 @@
 
 ## Prerequisites
 
+- **macOS 13 (Ventura) or later.** Electron 44 dropped macOS 12. Windows and Linux builds are 64-bit only (no ia32 / armv7l).
+- **`@sentry/electron` stays on 7.13.** Main-process Sentry is disabled in `src/sentry.ts` because 7.13 hung packaged macOS on the first real DSN. Do not bump it as part of the Electron upgrade.
 - **macOS** with Xcode Command Line Tools (`xcode-select --install`)
-- **Bun** >= 1.3 (`curl -fsSL https://bun.sh/install | bash`)
+- **Bun** 1.4.2, matching the repo `packageManager` pin (`curl -fsSL https://bun.sh/install | bash`)
 - **Node.js** >= 20 (for Expo CLI and Electron)
 - **Apple Developer ID Certificate** installed in Keychain (for signing)
 - **App-specific password** generated at https://appleid.apple.com (for notarization)
@@ -34,7 +36,7 @@ source .env.local
 
 ### 2. Download the bundled Bun binary
 
-Downloads the latest Bun release for the target platform into `apps/desktop/resources/bun/`.
+Downloads the pinned Bun release (`1.4.2`, override with `BUN_VERSION`) for the target platform into `apps/desktop/resources/bun/`.
 Skips if already present — delete the directory to force a re-download.
 
 ```bash
@@ -246,7 +248,7 @@ you also bundle the matching-arch native engine for every target.
 
 **Prisma Node version check fails during `bun install` in project**
 The bundled Bun binary is too old. Delete `apps/desktop/resources/bun/` and
-re-run `download-bun.mjs` to get the latest version.
+re-run `download-bun.mjs` to get the pinned version (`1.4.2`).
 
 **`ERR_BLOCKED_BY_CSP` for canvas iframe**
 The Electron CSP in `main.ts` needs `frame-src` for `http://localhost:*`.

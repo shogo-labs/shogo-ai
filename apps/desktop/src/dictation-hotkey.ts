@@ -91,13 +91,15 @@ export class DictationHotkeyService {
   async deliverText(text: string): Promise<{ ok: boolean; pasted: boolean }> {
     const clean = text.trim()
     if (!clean) return { ok: true, pasted: false }
-    const previous = clipboard.readText()
-    clipboard.writeText(clean)
+    const previous = await clipboard.readText()
+    await clipboard.writeText(clean)
     if (this.helper && this.helperStatus === 'listening') {
       this.helper.stdin.write('paste\n')
       setTimeout(() => {
         // Only restore if nothing else replaced the clipboard in the meantime.
-        if (clipboard.readText() === clean) clipboard.writeText(previous)
+        void clipboard.readText().then((current) => {
+          if (current === clean) void clipboard.writeText(previous)
+        })
       }, 500)
       return { ok: true, pasted: true }
     }

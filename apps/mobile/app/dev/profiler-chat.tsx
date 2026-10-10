@@ -39,12 +39,11 @@ import { profilerRecorder } from '../../lib/profiler-recorder'
 
 declare const __DEV__: boolean
 
-const SCENARIOS: Scenario[] = [
+const BASE_SCENARIOS: Scenario[] = [
   longTextScenario(),
   toolHeavyScenario(),
   planHeavyScenario(),
   multiTurnScenario(),
-  longHistoryScenario(),
 ]
 
 const SPEEDS: { label: string; ms: number }[] = [
@@ -76,19 +75,29 @@ export default function ProfilerChat() {
 }
 
 function ProfilerHarness() {
+  const [scenarios, setScenarios] = useState<Scenario[]>(BASE_SCENARIOS)
   const [scenarioIdx, setScenarioIdx] = useState(0)
   const [speedIdx, setSpeedIdx] = useState(1)
   const [driver, setDriver] = useState<DriverState>({
-    scenarioId: SCENARIOS[0].id,
+    scenarioId: BASE_SCENARIOS[0].id,
     step: 0,
     running: false,
   })
   const [snapshot, setSnapshot] = useState<{ messages: UIMessage[]; isStreaming: boolean }>(
-    SCENARIOS[0].build(0),
+    BASE_SCENARIOS[0].build(0),
   )
+  useEffect(() => {
+    let cancelled = false
+    void longHistoryScenario().then((scenario) => {
+      if (!cancelled) setScenarios((current) => [...current, scenario])
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [])
   const [summaryText, setSummaryText] = useState<string>('')
 
-  const scenario = SCENARIOS[scenarioIdx]
+  const scenario = scenarios[scenarioIdx] ?? scenarios[0]
   const speedMs = SPEEDS[speedIdx].ms
 
   const tickRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -219,7 +228,7 @@ function ProfilerHarness() {
           <View className="gap-1">
             <Text className="text-foreground text-sm font-semibold">Scenario</Text>
             <View className="flex-row flex-wrap gap-2">
-              {SCENARIOS.map((sc, i) => (
+              {scenarios.map((sc, i) => (
                 <Toggle
                   key={sc.id}
                   label={sc.title}

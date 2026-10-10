@@ -33,6 +33,18 @@
       "import": "./dist/react/index.js",
       "require": "./dist/react/index.cjs"
     },
+    "./react/conversation": {
+      "types": "./dist/react/conversation.d.ts",
+      "development": "./src/react/conversation.ts",
+      "import": "./dist/react/conversation.js",
+      "require": "./dist/react/conversation.cjs"
+    },
+    "./react/visuals": {
+      "types": "./dist/react/visuals.d.ts",
+      "development": "./src/react/visuals.ts",
+      "import": "./dist/react/visuals.js",
+      "require": "./dist/react/visuals.cjs"
+    },
     "./native": {
       "types": "./dist/native/index.d.ts",
       "development": "./src/native/index.ts",
