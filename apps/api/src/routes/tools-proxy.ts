@@ -32,6 +32,12 @@ import {
   shouldSkipResponseHeader,
 } from '../lib/proxy-headers'
 import {
+  calculateSocialLookupCost,
+  socialLookupUnits,
+  type SocialLookupOp,
+} from '../lib/usage-cost'
+import * as billingService from '../services/billing.service'
+import {
   getSocialContentProvider,
   SocialProviderError,
   type NormalizedPost,
@@ -198,7 +204,7 @@ async function forwardRequest(
 
 async function requireProxyAuth(
   req: Request,
-): Promise<{ error: Response } | { projectId: string }> {
+): Promise<{ error: Response } | { projectId: string; workspaceId: string; userId?: string }> {
   const token = extractToken(req)
   if (!token) {
     return {
@@ -208,14 +214,22 @@ async function requireProxyAuth(
 
   const payload = await verifyProxyToken(token)
   if (payload) {
-    return { projectId: payload.projectId }
+    return {
+      projectId: payload.projectId,
+      workspaceId: payload.workspaceId,
+      userId: payload.userId,
+    }
   }
 
   if (token.startsWith('shogo_sk_')) {
     try {
       const resolved = await resolveApiKey(token)
       if (resolved) {
-        return { projectId: `ws_${resolved.workspaceId}` }
+        return {
+          projectId: `ws_${resolved.workspaceId}`,
+          workspaceId: resolved.workspaceId,
+          userId: resolved.userId,
+        }
       }
     } catch {}
   }
@@ -289,43 +303,47 @@ async function forwardLocalEmbedding(
 
 const SOCIAL_PLATFORMS = new Set<SocialPlatform>(['instagram', 'tiktok'])
 const SOCIAL_OPS = new Set(['profile', 'posts'])
-const SOCIAL_DAILY_LIMIT_DEFAULT = 200
-
-/** In-process per-project call counter. Resets on the UTC day boundary. */
-const socialQuota = new Map<string, { day: string; count: number }>()
-
-/** Test hook. Not part of the route contract. */
-export function resetSocialToolQuotaForTests(): void {
-  socialQuota.clear()
-}
-
-function socialToolDailyLimit(): number {
-  const raw = process.env.SOCIAL_TOOL_DAILY_LIMIT
-  if (raw === undefined || raw.trim() === '') return SOCIAL_DAILY_LIMIT_DEFAULT
-  const n = Number(raw)
-  if (!Number.isFinite(n) || n < 0) return SOCIAL_DAILY_LIMIT_DEFAULT
-  return Math.floor(n)
-}
 
 /**
- * Count one call against the project's daily cap. Workspace API keys
- * (`ws_…`, used when desktop forwards to cloud) are not projects — the
- * originating API already counted the real project — so they are not
- * capped again here. `0` disables the cap.
+ * Charge a successful lookup to the workspace. Fire-and-forget, like
+ * transcription billing: the response is not held on the wallet write.
+ * Provider errors are not charged. Workspace API keys (`ws_…`) have no
+ * project row, so the event is attributed to the workspace only.
  */
-function consumeSocialToolQuota(projectId: string): { ok: true } | { ok: false; limit: number } {
-  if (projectId.startsWith('ws_')) return { ok: true }
-  const limit = socialToolDailyLimit()
-  if (limit === 0) return { ok: true }
-  const day = new Date().toISOString().slice(0, 10)
-  const row = socialQuota.get(projectId)
-  if (!row || row.day !== day) {
-    socialQuota.set(projectId, { day, count: 1 })
-    return { ok: true }
-  }
-  if (row.count >= limit) return { ok: false, limit }
-  row.count += 1
-  return { ok: true }
+function recordSocialUsage(args: {
+  workspaceId: string
+  projectId: string
+  userId?: string
+  platform: SocialPlatform
+  op: SocialLookupOp
+  limit: number
+}): void {
+  const units = socialLookupUnits(args.platform, args.op, args.limit)
+  const { rawUsd, billedUsd } = calculateSocialLookupCost(units)
+  if (billedUsd === 0) return
+
+  void billingService.consumeUsage({
+    workspaceId: args.workspaceId,
+    projectId: args.projectId.startsWith('ws_') ? null : args.projectId,
+    memberId: args.userId || 'system',
+    actionType: 'social_media_lookup',
+    rawUsd,
+    billedUsd,
+    actionMetadata: {
+      platform: args.platform,
+      op: args.op,
+      limit: args.limit,
+      units,
+    },
+  }).then((result) => {
+    if (result.success) {
+      console.log(`[Tools Proxy] Charged $${billedUsd.toFixed(4)} (social ${args.platform} ${args.op}, ${units} units) — remaining included: $${result.remainingIncludedUsd?.toFixed(4)}`)
+    } else {
+      console.warn(`[Tools Proxy] Could not charge social lookup: ${result.error}`)
+    }
+  }).catch((err) => {
+    console.error('[Tools Proxy] Failed to charge social lookup:', err)
+  })
 }
 
 function parseSocialHandle(raw: unknown): string | null {
@@ -479,11 +497,8 @@ export function toolsProxyRoutes() {
     const denied = await socialCapabilityDenied(auth.projectId, socialPlatform)
     if (denied) return denied
 
-    const quota = consumeSocialToolQuota(auth.projectId)
-    if (!quota.ok) {
-      return c.json({ error: 'Social media daily limit reached', limit: quota.limit }, 429)
-    }
-
+    // Desktop forwards to cloud, which is the server that calls EnsembleData
+    // and the one that charges. Do not bill (or balance-check) twice.
     if (isShogoCloudForwarding()) {
       const headers = new Headers(c.req.raw.headers)
       headers.delete('content-length')
@@ -496,18 +511,43 @@ export function toolsProxyRoutes() {
       return forwardToCloud(forwarded, 'social', `/${socialPlatform}/${op}`)
     }
 
+    if (process.env.SHOGO_LOCAL_MODE !== 'true') {
+      const balanceCheck = await billingService.checkUsageBalance(auth.workspaceId)
+      if (!balanceCheck.ok) {
+        const { code, message } = billingService.usageLimitErrorPayload(balanceCheck.reason)
+        return c.json(
+          {
+            error: {
+              message,
+              type: 'billing_error',
+              code,
+            },
+          },
+          402,
+        )
+      }
+    }
+
+    const socialOp: SocialLookupOp = op === 'profile' ? 'profile' : 'posts'
+
     try {
       const provider = await getSocialContentProvider()
-      if (op === 'profile') {
-        const profile = await provider.getProfile(socialPlatform, handle)
-        return c.json({ platform: socialPlatform, handle, ...profile })
-      }
-      const posts = await provider.listRecentPosts(socialPlatform, handle, limit)
-      return c.json({
+      const payload = socialOp === 'profile'
+        ? { platform: socialPlatform, handle, ...(await provider.getProfile(socialPlatform, handle)) }
+        : {
+            platform: socialPlatform,
+            handle,
+            posts: (await provider.listRecentPosts(socialPlatform, handle, limit)).map(serializePost),
+          }
+      recordSocialUsage({
+        workspaceId: auth.workspaceId,
+        projectId: auth.projectId,
+        userId: auth.userId,
         platform: socialPlatform,
-        handle,
-        posts: posts.map(serializePost),
+        op: socialOp,
+        limit,
       })
+      return c.json(payload)
     } catch (err) {
       if (err instanceof SocialProviderError) {
         return c.json({ error: err.message, code: err.code }, socialErrorStatus(err))
