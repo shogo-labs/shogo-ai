@@ -92,7 +92,8 @@ import {
 } from './workspace-runtime-mode'
 import { initComposioSession, resetComposioSession, isComposioEnabled, isComposioInitialized } from './composio'
 import { createIntegrationCredentialWrapper } from './integration-credentials'
-import { deriveApiUrl, getInternalHeaders, getProjectConfig, postCostMetric, projectScopedId } from './internal-api'
+import { deriveApiUrl, getInternalHeaders, getProjectConfig, hasInternalApiCredentials, postCostMetric, projectScopedId } from './internal-api'
+import { mergeCapabilitySettingsIntoConfig } from '@shogo/shared-runtime/capability-settings'
 import { getRuntimeTrust } from './runtime-trust'
 import { refreshTrust } from './trust-resolver'
 import type { FilePart } from './file-attachment-utils'
@@ -485,8 +486,18 @@ export interface GatewayConfig {
    * BETA: per-chat git worktrees. When true, each chat session operates on
    * its own branch (`shogo/chat/<sessionId>`) checked out in an isolated
    * worktree; `main` only changes via the merge-on-done flow. Default off.
+   * Opt-in: anything other than `true` leaves it off.
    */
   gitWorktreesEnabled?: boolean
+  /**
+   * Instagram/TikTok lookups (`social_media`). Opt-in: anything other than
+   * `true` leaves the tool off. Each call spends paid EnsembleData units.
+   */
+  socialMediaEnabled?: boolean
+  /** When the master switch is on, Instagram lookups stay available unless this is `false`. */
+  socialInstagramEnabled?: boolean
+  /** When the master switch is on, TikTok lookups stay available unless this is `false`. */
+  socialTiktokEnabled?: boolean
 }
 
 /**
@@ -954,11 +965,6 @@ export class AgentGateway {
       },
       profileName,
     )
-    // BETA: per-chat git worktrees default. The warm-pool controller injects
-    // SHOGO_GIT_WORKTREES=1 at assignment when the project setting is on, so it
-    // acts as the boot default. An explicit value in config.json (written by
-    // PATCH /agent/config when the user toggles) always wins.
-    const worktreesEnvDefault = process.env.SHOGO_GIT_WORKTREES === '1'
     const configPath = resolveWorkspaceConfigFilePath(this.workspaceDir, 'config.json')
     if (configPath) {
       try {
@@ -979,7 +985,6 @@ export class AgentGateway {
             // `heartbeatEnabled` is the pre-split name of this flag.
             heartbeatToolsEnabled: raw.heartbeatToolsEnabled ?? raw.heartbeatEnabled ?? undefined,
             channels: Array.isArray(raw.channels) ? raw.channels : [],
-            gitWorktreesEnabled: raw.gitWorktreesEnabled ?? worktreesEnvDefault,
           },
           profileName,
         )
@@ -987,7 +992,7 @@ export class AgentGateway {
         console.error('[AgentGateway] Failed to parse config.json:', error.message)
       }
     }
-    return { ...defaults, gitWorktreesEnabled: worktreesEnvDefault }
+    return defaults
   }
 
   /**
@@ -1031,6 +1036,16 @@ export class AgentGateway {
     }
     console.log('[AgentGateway] Starting...')
     this.running = true
+
+    // Project.settings is the source of truth for capability toggles. Pull
+    // them before the first turn so a stale config.json cannot override the
+    // database. A failed pull keeps the last-known cache; opt-in tools stay
+    // off when there is no cache yet.
+    try {
+      await this.syncCapabilitiesFromApi()
+    } catch (err: any) {
+      console.warn(`[AgentGateway] capability sync failed: ${err?.message ?? err}`)
+    }
 
     migrateFromLegacySkills(this.workspaceDir)
     this.skills = loadAllSkills(this.workspaceDir)
@@ -5252,6 +5267,60 @@ export class AgentGateway {
     setLoadedSkills(this.skills)
     this.configSkills = this.loadConfigSkills()
 
+  }
+
+  /**
+   * Pull capability toggles from `Project.settings` and write them into
+   * `config.json`. The database wins over a stale cache. When the API can't
+   * be reached, the file is left as-is.
+   *
+   * Workspace runtimes (no project id) and processes without internal-API
+   * credentials skip the pull. Tests pass `fetchConfig` to skip the
+   * credential check and the network.
+   *
+   * Returns true when the database was applied.
+   */
+  async syncCapabilitiesFromApi(
+    fetchConfig?: (projectId: string) => Promise<{ ok: boolean; data?: { settings?: unknown } | null }>,
+  ): Promise<boolean> {
+    const projectId = projectScopedId(this.projectId)
+    if (!projectId) return false
+    if (!fetchConfig && !hasInternalApiCredentials()) return false
+
+    let result: { ok: boolean; data?: { settings?: unknown } | null }
+    try {
+      result = fetchConfig
+        ? await fetchConfig(projectId)
+        : await getProjectConfig(projectId, 3_000)
+    } catch (err: any) {
+      console.warn(`[AgentGateway] capability sync failed: ${err?.message ?? err}`)
+      return false
+    }
+    if (!result.ok || !result.data) {
+      console.warn('[AgentGateway] capability sync skipped; keeping the last-known config.json')
+      return false
+    }
+
+    const configPath = resolveWorkspaceConfigFilePath(this.workspaceDir, 'config.json')
+      ?? join(this.workspaceDir, 'config.json')
+    let fileConfig: Record<string, unknown> = {}
+    if (existsSync(configPath)) {
+      try {
+        const parsed = JSON.parse(readFileSync(configPath, 'utf-8'))
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          fileConfig = parsed
+        }
+      } catch {
+        fileConfig = {}
+      }
+    }
+
+    const { config, changed } = mergeCapabilitySettingsIntoConfig(fileConfig, result.data.settings)
+    if (changed) {
+      writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8')
+    }
+    this.reloadConfig()
+    return true
   }
 
   // ── BETA: per-chat git worktrees ──────────────────────────────────────────

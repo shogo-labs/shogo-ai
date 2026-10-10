@@ -26,6 +26,7 @@ import {
   Settings,
   Package,
   GitBranch,
+  Share2,
 } from 'lucide-react-native'
 import {
   useNativePhoneWindow,
@@ -73,6 +74,9 @@ export interface CapabilitySettings {
   integrationsEnabled: boolean
   channelsEnabled: boolean
   gitWorktreesEnabled: boolean
+  socialMediaEnabled: boolean
+  socialInstagramEnabled: boolean
+  socialTiktokEnabled: boolean
 }
 
 interface CapabilityDef {
@@ -219,6 +223,20 @@ const CAPABILITIES: CapabilityDef[] = [
     examples: [
       '"Mark this chat done and merge it into main"',
       '"What are the other chats working on right now?"',
+    ],
+  },
+  {
+    key: 'socialMediaEnabled',
+    label: 'Social Media',
+    description: 'Look up public Instagram and TikTok profiles and posts',
+    detail: 'Lets the agent read a public Instagram or TikTok profile and its recent posts, including views, likes, comments, and shares. Each lookup uses paid API units, so leave this off unless the agent needs social data. Turn individual platforms off below to hide them from the agent.',
+    disabledDescription: 'No Instagram or TikTok lookups',
+    icon: Share2,
+    toolNames: ['social_media'],
+    examples: [
+      '"Pull @nike\'s last 20 TikToks and rank them by views"',
+      '"Read @nasa\'s Instagram bio and recent posts"',
+      '"Which of @duolingo\'s latest TikToks got the most likes?"',
     ],
   },
 ]
@@ -955,6 +973,36 @@ export function CapabilitiesConfigPane({
                               Extension mode active — using your real browser
                             </Text>
                           )}
+                        </View>
+                      )}
+
+                      {cap.key === 'socialMediaEnabled' && (
+                        <View className="mt-3 pt-2 border-t border-border/50 gap-2">
+                          <Text className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide">
+                            Platforms
+                          </Text>
+                          <Text className="text-[10px] text-muted-foreground">
+                            Each lookup uses paid API units. A platform that is off is hidden from the agent.
+                          </Text>
+                          {([
+                            ['socialInstagramEnabled', 'Instagram'],
+                            ['socialTiktokEnabled', 'TikTok'],
+                          ] as const).map(([key, label]) => (
+                            <View key={key} className="flex-row items-center justify-between">
+                              <Text className={cn('text-xs', enabled ? 'text-foreground' : 'text-muted-foreground')}>
+                                {label}
+                              </Text>
+                              <Switch
+                                value={capabilities[key]}
+                                disabled={!enabled}
+                                onValueChange={(v) => {
+                                  if (!enabled) return
+                                  onCapabilityToggle(key, v)
+                                }}
+                                size="sm"
+                              />
+                            </View>
+                          ))}
                         </View>
                       )}
                     </View>

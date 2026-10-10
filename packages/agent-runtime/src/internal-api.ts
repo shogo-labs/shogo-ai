@@ -41,6 +41,20 @@ export function projectScopedId(projectId: string | null | undefined): string | 
   return projectId
 }
 
+/**
+ * True when this process can authenticate an `/api/internal` call.
+ * Tests and unassigned processes have neither, and calling the API would
+ * only burn a timeout before failing.
+ */
+export function hasInternalApiCredentials(): boolean {
+  if (process.env.RUNTIME_AUTH_SECRET) return true
+  try {
+    return existsSync(SA_TOKEN_PATH)
+  } catch {
+    return false
+  }
+}
+
 export function getInternalHeaders(): Record<string, string> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
   try {
@@ -1496,9 +1510,13 @@ export interface ProjectConfigSnapshot {
   heartbeatError?: { code: 'paywall'; message: string }
 }
 
-export async function getProjectConfig(projectId: string): Promise<CheckpointCallResult<ProjectConfigSnapshot>> {
+export async function getProjectConfig(
+  projectId: string,
+  timeoutMs?: number,
+): Promise<CheckpointCallResult<ProjectConfigSnapshot>> {
   return lifecycleFetch(`/api/internal/projects/${encodeURIComponent(projectId)}/config`, {
     method: 'GET',
+    timeoutMs,
     parse: (j) => j?.project as ProjectConfigSnapshot,
   })
 }

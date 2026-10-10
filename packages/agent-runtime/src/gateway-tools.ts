@@ -3972,12 +3972,12 @@ async function webCacheGet<T>(key: string | null): Promise<T | null> {
   return null
 }
 
-async function webCachePut(key: string | null, value: unknown): Promise<void> {
+async function webCachePut(key: string | null, value: unknown, ttlSeconds = WEB_CACHE_TTL): Promise<void> {
   if (!key) return
   try {
     const redis = getWebCacheRedis()
     if (!redis) return
-    await redis.set(key, JSON.stringify(value), 'EX', WEB_CACHE_TTL)
+    await redis.set(key, JSON.stringify(value), 'EX', ttlSeconds)
   } catch {}
 }
 
@@ -7453,6 +7453,112 @@ export function createExposePortTool(ctx: ToolContext): AgentTool {
   }
 }
 
+const SOCIAL_CACHE_TTL_SECONDS = 10 * 60
+
+export type SocialPlatformName = 'instagram' | 'tiktok'
+
+/** Platforms the `social_media` tool may call. Empty when the tool should be hidden. */
+export function enabledSocialPlatforms(config: import('./gateway').GatewayConfig): SocialPlatformName[] {
+  if (config.socialMediaEnabled !== true) return []
+  const platforms: SocialPlatformName[] = []
+  if (config.socialInstagramEnabled !== false) platforms.push('instagram')
+  if (config.socialTiktokEnabled !== false) platforms.push('tiktok')
+  return platforms
+}
+
+function socialPlatformSchema(platforms: SocialPlatformName[]) {
+  if (platforms.length === 1) return Type.Literal(platforms[0])
+  const listed = platforms.length > 0 ? platforms : (['instagram', 'tiktok'] as SocialPlatformName[])
+  return Type.Union(listed.map((platform) => Type.Literal(platform)))
+}
+
+/**
+ * Public Instagram/TikTok profile and recent-post lookup. The EnsembleData
+ * token stays on the API server; this calls `POST ${TOOLS_PROXY_URL}/social/...`.
+ */
+function createSocialMediaTool(ctx: ToolContext): AgentTool {
+  const platforms = enabledSocialPlatforms(ctx.config)
+  const platformList = platforms.join(', ') || 'none'
+  return {
+    name: 'social_media',
+    description:
+      `Look up a public social profile or its recent posts (views, likes, comments, shares). ` +
+      `Enabled platforms: ${platformList}. ` +
+      `Use action "profile" for the bio and display name, or "recent_posts" for the latest posts. ` +
+      `Each call spends paid API units — prefer one call with a sufficient limit over several small ones.`,
+    label: 'Social Media',
+    parameters: Type.Object({
+      platform: socialPlatformSchema(platforms),
+      action: Type.Union([Type.Literal('profile'), Type.Literal('recent_posts')], {
+        description: 'profile | recent_posts',
+      }),
+      handle: Type.String({ description: 'Account handle, with or without a leading @.' }),
+      limit: Type.Optional(Type.Number({
+        description: 'How many recent posts to return (1-50, default 20). Ignored for profile.',
+      })),
+    }),
+    execute: async (_toolCallId, rawParams) => {
+      // The platform enum is built from the enabled set, so TypeBox cannot
+      // infer the parameter object. Read the fields explicitly.
+      const params = rawParams as { platform?: unknown; action?: unknown; handle?: unknown; limit?: unknown }
+      const platform = String(params.platform ?? '')
+      const action = params.action === 'recent_posts' ? 'recent_posts' : params.action === 'profile' ? 'profile' : ''
+      const handle = String(params.handle ?? '').trim().replace(/^@+/, '')
+      const allowed = enabledSocialPlatforms(ctx.config)
+      if (!allowed.includes(platform as SocialPlatformName)) {
+        return textResult({
+          error: `Platform "${platform || 'unknown'}" is not enabled. Enabled platforms: ${allowed.join(', ') || 'none'}.`,
+        })
+      }
+      if (!action) return textResult({ error: 'action must be "profile" or "recent_posts".' })
+      if (!handle) return textResult({ error: 'handle is required.' })
+
+      const proxyUrl = process.env.TOOLS_PROXY_URL
+      const proxyToken = process.env.AI_PROXY_TOKEN
+      if (!proxyUrl || !proxyToken) {
+        return textResult({
+          error: 'Social media lookup is unavailable.',
+          suggestion: 'Configure TOOLS_PROXY_URL and AI_PROXY_TOKEN.',
+        })
+      }
+
+      const limit = typeof params.limit === 'number' && Number.isFinite(params.limit)
+        ? Math.min(50, Math.max(1, Math.floor(params.limit)))
+        : 20
+      const op = action === 'profile' ? 'profile' : 'posts'
+      const cacheKey = webCacheKey('social', JSON.stringify({ platform, action, handle: handle.toLowerCase(), limit }))
+      const cached = await webCacheGet<AgentToolResult<any>>(cacheKey)
+      if (cached) return cached
+
+      try {
+        const response = await fetch(`${proxyUrl.replace(/\/$/, '')}/social/${platform}/${op}`, {
+          method: 'POST',
+          headers: {
+            'x-api-key': proxyToken,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ handle, limit }),
+          signal: AbortSignal.timeout(20_000),
+        })
+        const data = await response.json().catch(() => ({}))
+        if (!response.ok) {
+          return textResult({
+            error: (data as any)?.error || `Social lookup failed: HTTP ${response.status}`,
+            code: (data as any)?.code,
+            platform,
+            handle,
+          })
+        }
+        const result = textResult(data)
+        await webCachePut(cacheKey, result, SOCIAL_CACHE_TTL_SECONDS)
+        return result
+      } catch (err: any) {
+        return textResult({ error: `Social lookup failed: ${err?.message ?? err}`, platform, handle })
+      }
+    },
+  }
+}
+
 /** All gateway tools (unified set). Includes base tools + agent_* orchestration tools. */
 export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTool[] {
   const pe = ctx.permissionEngine
@@ -7480,6 +7586,7 @@ export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTo
     g(createReviewContextTool(ctx), 'file_read'),
     g(createWebTool(ctx), 'network'),
     g(createBrowserTool(ctx), 'network'),
+    g(createSocialMediaTool(ctx), 'network'),
     createMemoryReadTool(ctx),
     createMemorySearchTool(ctx),
     createSearchHistoryTool(ctx),
@@ -8062,6 +8169,7 @@ export const TOOL_GROUP_MAP: Record<string, string[]> = {
   web_fetch: ['web'],
   web_search: ['web'],
   browser: ['browser', 'web'],
+  social: ['social_media'],
   memory: ['memory_read', 'memory_search'],
   messaging: ['send_message', 'channel_connect', 'channel_disconnect', 'channel_list'],
   heartbeat: ['heartbeat_configure', 'heartbeat_status'],
@@ -8077,6 +8185,7 @@ export const ALL_TOOL_NAMES = [
   'edit_file',
   'web',
   'browser',
+  'social_media',
   'delete_file',
   'search',
   'impact_radius',
@@ -8140,7 +8249,9 @@ export function resolveToolNames(refs: string[]): string[] {
  * still receive the tool because subagents draw from the unfiltered set.
  *
  * Capability flags default to enabled, so only an explicit `=== false`
- * disables a tool group.
+ * disables a tool group. `gitWorktreesEnabled` and `socialMediaEnabled`
+ * are the exceptions: they are opt-in, and the social tool is also hidden
+ * when every platform under it is off.
  */
 export function filterDisabledCapabilityTools(tools: AgentTool[], config: import('./gateway').GatewayConfig): AgentTool[] {
   const disabled = new Set<string>()
@@ -8157,6 +8268,8 @@ export function filterDisabledCapabilityTools(tools: AgentTool[], config: import
   if (config.integrationsEnabled === false) for (const n of TOOL_GROUP_MAP.integrations) disabled.add(n)
   // BETA: worktree awareness tool only exists when per-chat worktrees are on (off by default).
   if (config.gitWorktreesEnabled !== true) disabled.add('worktree_list')
+  // Social lookups are opt-in, and a platform that is off must not be callable.
+  if (enabledSocialPlatforms(config).length === 0) disabled.add('social_media')
 
   const memoryOff = config.memoryEnabled === false
   if (disabled.size === 0 && !memoryOff) return tools

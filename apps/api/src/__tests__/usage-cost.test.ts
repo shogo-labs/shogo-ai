@@ -24,10 +24,13 @@ import { describe, expect, test } from 'bun:test'
 import {
   agentModeToModel,
   calculateImageUsageCost,
+  calculateSocialLookupCost,
   calculateUsageCost,
   IMAGE_USD_CONFIG,
   MARKUP_MULTIPLIER,
   proxyModelToBillingModel,
+  SOCIAL_LOOKUP_USD_PER_UNIT,
+  socialLookupUnits,
 } from '../lib/usage-cost'
 import { MODEL_DOLLAR_COSTS } from '@shogo/model-catalog'
 
@@ -285,5 +288,34 @@ describe('calculateImageUsageCost — defensive edges', () => {
       const r = calculateImageUsageCost(m, 'standard', '1024x1024')
       expect(r.rawUsd).toBeGreaterThan(0)
     }
+  })
+})
+
+describe('socialLookupUnits', () => {
+  test('a profile is one unit on either platform', () => {
+    expect(socialLookupUnits('tiktok', 'profile', 20)).toBe(1)
+    expect(socialLookupUnits('instagram', 'profile', 20)).toBe(1)
+  })
+
+  test('TikTok posts bill one unit per 10 posts', () => {
+    expect(socialLookupUnits('tiktok', 'posts', 1)).toBe(1)
+    expect(socialLookupUnits('tiktok', 'posts', 10)).toBe(1)
+    expect(socialLookupUnits('tiktok', 'posts', 11)).toBe(2)
+    expect(socialLookupUnits('tiktok', 'posts', 25)).toBe(3)
+    expect(socialLookupUnits('tiktok', 'posts', 50)).toBe(5)
+  })
+
+  test('Instagram posts bill the profile resolve plus posts and reels feeds', () => {
+    expect(socialLookupUnits('instagram', 'posts', 10)).toBe(3)
+    expect(socialLookupUnits('instagram', 'posts', 25)).toBe(7)
+  })
+})
+
+describe('calculateSocialLookupCost', () => {
+  test('raw cost is units times the per-unit price, billed at the flat markup', () => {
+    const units = socialLookupUnits('tiktok', 'posts', 25)
+    const cost = calculateSocialLookupCost(units)
+    expect(cost.rawUsd).toBeCloseTo(units * SOCIAL_LOOKUP_USD_PER_UNIT, PRECISION)
+    expect(cost.billedUsd).toBeCloseTo(cost.rawUsd * MARKUP_MULTIPLIER, PRECISION)
   })
 })

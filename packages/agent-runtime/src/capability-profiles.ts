@@ -80,7 +80,7 @@ export const PROFILE_TOOL_GROUPS: Record<string, string[]> = {
   // so the classification test can verify 100% coverage without lumping
   // everything into CORE_TOOL_NAMES.
   files: ['read_file', 'write_file', 'edit_file', 'delete_file', 'search', 'share_file'],
-  web: ['web', 'browser'],
+  web: ['web', 'browser', 'social_media'],
   memory: ['memory_read', 'memory_search'],
   messaging: ['send_message', 'notify_user', 'channel_connect', 'channel_disconnect', 'channel_list'],
   heartbeat: ['heartbeat_configure', 'heartbeat_status'],

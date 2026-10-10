@@ -146,13 +146,6 @@ export async function buildProjectEnv(
         env.MOUNT_WORKSPACE = 'false'
       }
 
-      // BETA: per-chat git worktrees (off by default). Injected so the
-      // runtime seeds config.json on cold boot; the live toggle path goes
-      // through PATCH /agent/config. Read in agent-runtime/src/server.ts.
-      if (settings?.gitWorktreesEnabled === true) {
-        env.SHOGO_GIT_WORKTREES = '1'
-      }
-
       // Tech stack is sourced exclusively from project.settings.techStackId
       // now that templateId is gone. Populated by the marketplace installer
       // and by the home composer's stack picker. When absent the runtime

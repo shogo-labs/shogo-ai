@@ -1459,6 +1459,10 @@ app.patch('/agent/config', async (c) => {
     writeFileSync(configPath, JSON.stringify(fileConfig, null, 2), 'utf-8')
     agentGateway?.reloadConfig()
 
+    // The PATCH is the immediate update. Capability toggles are then
+    // confirmed against Project.settings, which wins when the pull succeeds.
+    await agentGateway?.syncCapabilitiesFromApi()
+
     return c.json({ ok: true })
   } catch (error: any) {
     return c.json({ error: error.message || 'Failed to update config' }, 500)
