@@ -12,8 +12,9 @@
  *   system_apply       reconcile a `shogo-system.yaml` manifest against the workspace
  *
  * All of them go through `/api/internal/...` routes (see internal-api.ts) with
- * the runtime's own token, so authorization is "same workspace as the caller".
- * Nothing here can reach a project outside the workspace.
+ * the runtime's own token plus the signed requester ticket for the person who
+ * started the turn. Lists, creates, attachments and calls are limited to what
+ * that person is allowed to do. Nothing here can reach another workspace.
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
@@ -60,6 +61,21 @@ function noWorkspace() {
   return textResult({
     error: 'This runtime has no workspace context, so project lifecycle tools are unavailable.',
     code: 'no_workspace',
+  })
+}
+
+function apiFailure(res: { error?: string; code?: string; status?: number }) {
+  const hint =
+    res.code === 'requester_required'
+      ? 'This turn has no signed requester, so project tools cannot act as a person.'
+      : res.code === 'forbidden' || res.code === 'not_found'
+        ? 'The requester is not allowed to do that.'
+        : undefined
+  return textResult({
+    error: res.error ?? 'Request failed',
+    code: res.code,
+    status: res.status,
+    ...(hint ? { hint } : {}),
   })
 }
 
@@ -149,13 +165,13 @@ export function createProjectListTool(ctx: ToolContext): AgentTool {
     name: 'project_list',
     label: 'List Workspace Projects',
     description:
-      'List every project in this workspace with its attachments (which projects it can see/edit), agent config (heartbeat, model) and whether it is the current project. Use before project_attach / project_call to find ids.',
+      'List the projects you can access in this workspace, with attachments (which projects it can see/edit), agent config (heartbeat, model) and whether it is the current project. Use before project_attach / project_call to find ids.',
     parameters: Type.Object({}),
     execute: async () => {
       const workspaceId = workspaceIdOf(ctx)
       if (!workspaceId) return noWorkspace()
       const res = await apiGetWorkspaceProjectGraph(workspaceId)
-      if (!res.ok || !res.data) return textResult({ error: res.error ?? 'Failed to list projects', code: res.code })
+      if (!res.ok || !res.data) return apiFailure(res)
       const lock = readLock(ctx)
       const keyById = new Map(Object.entries(lock?.bindings ?? {}).map(([k, v]) => [v, k]))
       return textResult({
@@ -211,7 +227,7 @@ export function createProjectCreateTool(ctx: ToolContext): AgentTool {
         userId: ctx.userId,
       })
       if (!created.ok || !created.data) {
-        return textResult({ error: created.error ?? 'Project creation failed', code: created.code, status: created.status })
+        return apiFailure(created)
       }
 
       let attachment: unknown = null
@@ -260,7 +276,7 @@ export function createProjectAttachTool(ctx: ToolContext): AgentTool {
       if ('error' in target) return textResult(target)
       if (target.id === ctx.projectId) return textResult({ error: 'A project cannot attach to itself.', code: 'self_attach' })
       const res = await apiAttachProject(ctx.projectId, target.id, p.mode ?? 'readwrite')
-      if (!res.ok || !res.data) return textResult({ error: res.error ?? 'Attach failed', code: res.code, status: res.status })
+      if (!res.ok || !res.data) return apiFailure(res)
       return textResult({
         ok: true,
         attachment: res.data.attachment,
@@ -284,7 +300,7 @@ export function createProjectDetachTool(ctx: ToolContext): AgentTool {
       const target = await resolveProjectRef(ctx, p.project)
       if ('error' in target) return textResult(target)
       const res = await apiDetachProject(ctx.projectId, target.id)
-      if (!res.ok) return textResult({ error: res.error ?? 'Detach failed', code: res.code, status: res.status })
+      if (!res.ok) return apiFailure(res)
       return textResult({ ok: true, removed: res.data?.removed ?? false })
     },
   }
@@ -345,7 +361,7 @@ export function createProjectConfigureTool(ctx: ToolContext): AgentTool {
             agent: Object.keys(agent).length > 0 ? (agent as any) : undefined,
           })
         : await apiGetProjectConfig(targetId)
-      if (!res.ok || !res.data) return textResult({ error: res.error ?? 'Configure failed', code: res.code, status: res.status })
+      if (!res.ok || !res.data) return apiFailure(res)
       const heartbeatError = res.data.heartbeatError
       return textResult({
         ok: true,
@@ -417,7 +433,11 @@ export function createProjectCallTool(ctx: ToolContext): AgentTool {
           runId,
           hint: res.code === 'agent_call_timeout' || res.code === 'timeout'
             ? 'The callee is still working. Re-issue with wait=false or a larger timeoutMs; the same runId keeps the trace intact.'
-            : undefined,
+            : res.code === 'requester_required'
+              ? 'This turn has no signed requester, so project tools cannot act as a person.'
+              : res.code === 'forbidden' || res.code === 'not_found'
+                ? 'The requester is not allowed to do that.'
+                : undefined,
         })
       }
       const reply = res.data.reply ?? null
@@ -504,7 +524,7 @@ export function createSystemApplyTool(ctx: ToolContext): AgentTool {
       const manifest = parsed.manifest
 
       const graphRes = await apiGetWorkspaceProjectGraph(workspaceId)
-      if (!graphRes.ok || !graphRes.data) return textResult({ error: graphRes.error ?? 'Could not read workspace graph', code: graphRes.code })
+      if (!graphRes.ok || !graphRes.data) return apiFailure(graphRes)
       const live = toLive(graphRes.data)
       const lock = readLock(ctx)
 
@@ -543,9 +563,15 @@ export function createSystemApplyTool(ctx: ToolContext): AgentTool {
       const bindings: Record<string, string> = { ...(lock?.bindings ?? {}) }
       for (const a of diff.adopt) bindings[a.key] = a.projectId
       if (manifest.anchor) bindings[manifest.anchor] = ctx.projectId
+      for (const op of diff.inaccessible) {
+        delete bindings[op.key]
+        report.errors.push(`${op.key}: not_accessible (bound to ${op.projectId}; this requester cannot see it). Not creating a duplicate.`)
+      }
 
       if (p.dryRun) {
-        report.bindings = bindings
+        report.bindings = { ...bindings }
+        for (const op of diff.inaccessible) report.bindings[op.key] = op.projectId
+        report.ok = report.errors.length === 0
         return textResult(report)
       }
 
@@ -686,6 +712,7 @@ export function createSystemApplyTool(ctx: ToolContext): AgentTool {
         const id = idOf(spec.key)
         if (id) finalBindings[spec.key] = id
       }
+      for (const op of diff.inaccessible) finalBindings[op.key] = op.projectId
       writeLock(ctx, { version: 1, name: manifest.name, bindings: finalBindings })
       report.bindings = finalBindings
       report.ok = report.errors.length === 0
