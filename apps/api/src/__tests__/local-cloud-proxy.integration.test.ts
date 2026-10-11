@@ -80,6 +80,17 @@ upstream.all('/api/*', async (c) => {
       mentions: ['cloud-user', 'teammate'],
     })
   }
+  if (c.req.path === '/api/projects/p1/sandbox/url') {
+    const cloud = process.env.SHOGO_CLOUD_URL
+    return c.json({
+      url: 'https://p1.preview.example.com/?__preview_token=t',
+      agentUrl: `${cloud}/api/projects/p1/agent-proxy`,
+      directUrl: `${cloud}/api/projects/p1/agent-proxy`,
+      loaderUrl: `${cloud}/api/preview/p1/open`,
+      canvasBaseUrl: 'https://p1.preview.example.com',
+      ready: true,
+    })
+  }
   return c.json({ ok: true, path: c.req.path })
 })
 
@@ -236,6 +247,20 @@ describe('cloud workspace relay', () => {
       reactions: { 'local-user': ['+1'], teammate: ['+1'] },
       mentions: ['local-user', 'teammate'],
     })
+  })
+
+  test('points the sandbox agent-proxy URLs back through the relay', async () => {
+    const res = await app.request('http://localhost:39100/api/cloud/ws-acme/projects/p1/sandbox/url')
+    const body = await res.json()
+    expect(body.agentUrl).toBe('http://localhost:39100/api/cloud/ws-acme/projects/p1/agent-proxy')
+    expect(body.directUrl).toBe('http://localhost:39100/api/cloud/ws-acme/projects/p1/agent-proxy')
+    expect(body.loaderUrl).toBe(`${process.env.SHOGO_CLOUD_URL}/api/preview/p1/open`)
+    expect(body.canvasBaseUrl).toBe('https://p1.preview.example.com')
+
+    seen.length = 0
+    const status = await app.request(`${body.agentUrl}/preview/status`)
+    expect(status.status).toBe(200)
+    expect(seen.map((s) => [s.path, s.auth])).toEqual([['/api/projects/p1/agent-proxy/preview/status', 'Bearer shogo_sk_acme']])
   })
 
   test('a 403 from cloud re-syncs keys', async () => {
