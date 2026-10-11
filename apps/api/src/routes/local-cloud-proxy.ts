@@ -176,6 +176,29 @@ export async function translateRequest(
   return { path, search, body }
 }
 
+const SANDBOX_URL_PATH = /^\/api\/projects\/[^/]+\/sandbox\/url$/
+const AGENT_URL_FIELDS = ['agentUrl', 'directUrl'] as const
+
+/**
+ * `/sandbox/url` names the cloud agent-proxy by absolute URL. The desktop has
+ * no cloud session, so calling it directly 401s (the preview gate then times
+ * out); point it back through this relay, which adds the workspace key.
+ */
+export function relayAgentUrls(text: string, cloudUrl: string, relayBase: string): string {
+  const cloudApi = `${cloudUrl.replace(/\/+$/, '')}/api/`
+  try {
+    const body = JSON.parse(text)
+    if (!body || typeof body !== 'object') return text
+    for (const field of AGENT_URL_FIELDS) {
+      const value = body[field]
+      if (typeof value === 'string' && value.startsWith(cloudApi)) body[field] = `${relayBase}/${value.slice(cloudApi.length)}`
+    }
+    return JSON.stringify(body)
+  } catch {
+    return text
+  }
+}
+
 async function relay(c: Context, workspaceId: string, upstreamPath: string, identity: Identity = NO_IDENTITY): Promise<Response> {
   const key = await cloudWorkspaceKey(workspaceId)
   if (!key) return noKey(c)
@@ -194,6 +217,11 @@ async function relay(c: Context, workspaceId: string, upstreamPath: string, iden
   // Cloud's session cookies would land on the desktop origin and clobber the
   // local session.
   headers.delete('set-cookie')
+  if (resp.ok && SANDBOX_URL_PATH.test(upstreamPath)) {
+    const relayBase = `${new URL(c.req.url).origin}${PREFIX}${encodeURIComponent(workspaceId)}`
+    const text = relayAgentUrls(translateJsonText(await resp.text(), identity.toLocal), getShogoCloudUrl(), relayBase)
+    return new Response(text, { status: resp.status, headers })
+  }
   return new Response(await translateResponseBody(resp, identity.toLocal), { status: resp.status, headers })
 }
 
