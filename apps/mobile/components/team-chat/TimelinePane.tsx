@@ -5,12 +5,14 @@
  * or a single thread when `threadRootId` is set.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Alert, Platform, Pressable, Text, View } from 'react-native'
+import { Alert, Platform, Pressable, ScrollView, Text, View } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { ChevronLeft, Upload, X } from 'lucide-react-native'
+import { cn } from '@shogo/shared-ui/primitives'
 import { conversationTitle, teamChatApi, type ChatMessage, type ConversationDetail, type Mentionables } from '../../lib/team-chat-api'
 import { mentionNames } from '../../lib/team-chat-state'
-import { TIMELINE_SOFT_LIMIT, useConversationTimeline, useMarkReadWhileVisible, useTypingUsers } from '../../hooks/useTeamChat'
+import { ACTIVITY_CHANNEL_FILTERS, matchesActivityFilter, type ActivityChannelFilter } from '../../lib/activity-channel-filters'
+import { TIMELINE_SOFT_LIMIT, useConversationList, useConversationTimeline, useMarkReadWhileVisible, useTypingUsers } from '../../hooks/useTeamChat'
 import { requestEditMessage } from '../../hooks/useChatShortcuts'
 import { threadCrumbs } from '../../lib/team-chat-nav'
 import { Breadcrumb } from './SessionBreadcrumb'
@@ -25,6 +27,8 @@ const api = teamChatApi()
 const SEEK_PAGES = 6
 const SEEK_PAGE_SIZE = 200
 const HIGHLIGHT_MS = 4000
+/** Keep loading older #activity pages until a filter has about this many rows. */
+const ACTIVITY_FILTER_MIN = 20
 
 export interface TimelinePaneProps {
   workspaceId: string
@@ -116,9 +120,19 @@ export function TimelinePane(props: TimelinePaneProps) {
   const insets = useSafeAreaInsets()
   const [threadHeaderHeight, setThreadHeaderHeight] = useState(0)
   const [footerHeight, setFooterHeight] = useState(0)
+  const showActivityFilters = conversation.kind === 'activity' && !threadRootId
+  const channelList = useConversationList(showActivityFilters ? workspaceId : null)
+  const [activityFilter, setActivityFilter] = useState<ActivityChannelFilter>('all')
   const timeline = useConversationTimeline(workspaceId, conversation.id, threadRootId)
   const typing = useTypingUsers(workspaceId, conversation.id, threadRootId)
-  const names = useMemo(() => mentionNames(mentionables), [mentionables])
+  const names = useMemo(() => {
+    const base = mentionNames(mentionables)
+    if (!showActivityFilters) return base
+    return {
+      ...base,
+      conversations: new Map(channelList.list.map((c) => [c.id, c.slug ?? c.name ?? 'channel'])),
+    }
+  }, [mentionables, showActivityFilters, channelList.list])
   const newestSeq = useMemo(() => {
     for (let i = timeline.state.messages.length - 1; i >= 0; i--) {
       const m = timeline.state.messages[i]!
@@ -162,6 +176,35 @@ export function TimelinePane(props: TimelinePaneProps) {
     }
     return found(timeline.getState().messages)
   }, [timeline.getState, timeline.loadOlder])
+
+  const filtering = showActivityFilters && activityFilter !== 'all'
+  const visibleMessages = useMemo(
+    () => (filtering ? timeline.state.messages.filter((m) => matchesActivityFilter(m, activityFilter)) : timeline.state.messages),
+    [filtering, activityFilter, timeline.state.messages],
+  )
+  const filterLoads = useRef(0)
+  useEffect(() => {
+    filterLoads.current = 0
+  }, [activityFilter, conversation.id])
+  useEffect(() => {
+    if (!filtering) return
+    if (visibleMessages.length >= ACTIVITY_FILTER_MIN) return
+    if (!timeline.state.hasMoreOlder || timeline.loading) return
+    if (filterLoads.current >= SEEK_PAGES) return
+    let cancelled = false
+    void (async () => {
+      while (!cancelled && filterLoads.current < SEEK_PAGES) {
+        const current = timeline.getState()
+        const count = current.messages.filter((m) => matchesActivityFilter(m, activityFilter)).length
+        if (count >= ACTIVITY_FILTER_MIN || !current.hasMoreOlder) return
+        filterLoads.current += 1
+        await timeline.loadOlder(SEEK_PAGE_SIZE)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [filtering, activityFilter, visibleMessages.length, timeline.state.hasMoreOlder, timeline.loading, timeline.getState, timeline.loadOlder])
 
   const sought = useRef<string | null>(null)
   useEffect(() => {
@@ -226,11 +269,11 @@ export function TimelinePane(props: TimelinePaneProps) {
   const crumbs = threadCrumbs({ kind: conversation.kind, label: conversationTitle(conversation) })
   const typingText = typingLabel(typing)
   const listInsets = floating
-    ? { top: topInset + threadHeaderHeight, bottom: footerHeight }
+    ? { top: (showActivityFilters ? 0 : topInset) + threadHeaderHeight, bottom: footerHeight }
     : undefined
   const list = (
     <MessageList
-      state={timeline.state}
+      state={{ ...timeline.state, messages: visibleMessages }}
       loading={timeline.loading}
       me={me}
       names={names}
@@ -239,7 +282,7 @@ export function TimelinePane(props: TimelinePaneProps) {
       workspaceId={workspaceId}
       inThread={!!threadRootId}
       header={props.header}
-      emptyText={threadRootId ? 'No replies yet.' : isChannel ? `This is the very beginning of #${conversation.name}.` : 'Say hello.'}
+      emptyText={filtering ? 'No matching activity yet.' : threadRootId ? 'No replies yet.' : isChannel ? `This is the very beginning of #${conversation.name}.` : 'Say hello.'}
       onLoadOlder={threadRootId ? undefined : onLoadOlder}
       onTrim={timeline.trimOld}
       trimThreshold={TIMELINE_SOFT_LIMIT}
@@ -253,14 +296,36 @@ export function TimelinePane(props: TimelinePaneProps) {
       onOpenSession={props.onOpenSession}
       onOpenProjectPane={props.onOpenProjectPane}
       onMarkUnread={threadRootId || !conversation.joined ? undefined : onMarkUnread}
-      unreadAfterSeq={unread?.afterSeq ?? null}
+      unreadAfterSeq={filtering ? null : unread?.afterSeq ?? null}
       unreadUpToSeq={unread?.upToSeq}
-      unreadNotLoaded={unreadNotLoaded}
+      unreadNotLoaded={filtering ? false : unreadNotLoaded}
       onRevealUnread={onRevealUnread}
       highlightId={highlight}
       insets={listInsets}
     />
   )
+  const filterBar = showActivityFilters ? (
+    <ScrollView
+      horizontal
+      showsHorizontalScrollIndicator={false}
+      className="max-h-12 shrink-0 grow-0 border-b border-border/60"
+      contentContainerClassName="items-center gap-2 px-3 py-2"
+      style={floating && topInset ? { marginTop: topInset } : undefined}
+      testID="activity-filters"
+    >
+      {ACTIVITY_CHANNEL_FILTERS.map(({ id, label }) => (
+        <Pressable
+          key={id}
+          accessibilityRole="button"
+          aria-selected={activityFilter === id}
+          onPress={() => setActivityFilter(id)}
+          className={cn('rounded-full border px-3 py-1', activityFilter === id ? 'border-primary bg-primary/10' : 'border-border active:bg-accent/50')}
+        >
+          <Text className={cn('text-xs', activityFilter === id ? 'font-medium text-primary' : 'text-muted-foreground')}>{label}</Text>
+        </Pressable>
+      ))}
+    </ScrollView>
+  ) : null
   const composer = (
     <Composer
       ref={composerRef}
@@ -280,6 +345,7 @@ export function TimelinePane(props: TimelinePaneProps) {
   if (floating) {
     return (
       <View className="flex-1" ref={rootRef}>
+        {filterBar}
         <GlassBlurTarget>
           {timeline.error && !timeline.state.messages.length ? (
             <View className="flex-1 items-center justify-center gap-2 px-8">
@@ -363,6 +429,7 @@ export function TimelinePane(props: TimelinePaneProps) {
           )}
         </View>
       )}
+      {filterBar}
       {timeline.error && !timeline.state.messages.length ? (
         <View className="flex-1 items-center justify-center gap-2 px-8">
           <Text className="text-center text-sm text-muted-foreground">{timeline.error}</Text>

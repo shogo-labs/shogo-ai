@@ -58,7 +58,7 @@ import { listInstallations } from '../services/chat-providers/installations'
 import { CHAT_RATE_LIMITS, takeRateLimit } from '../lib/chat-limits'
 import { getFrontendUrl } from '../lib/cloud-urls'
 import { adoptSlackRouting } from '../services/chat-providers/slack-adopt'
-import { catchUp } from '../services/conversation-activity'
+import { catchUp, registerConversationActivity } from '../services/conversation-activity'
 import { respondToPermission, stopAgentReply } from '../services/conversation-agent-dispatcher'
 import { decideApproval, listPendingApprovals } from '../services/conversation-approvals'
 import { liveActivityApprovalAnswered } from '../services/approval-live-activity'
@@ -128,6 +128,7 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
   const router = new Hono()
   registerConversationNotifications()
   registerConversationUnfurls()
+  registerConversationActivity()
 
   async function requireUser(c: any): Promise<string | Response> {
     const userId = await config.resolveUserId(c)

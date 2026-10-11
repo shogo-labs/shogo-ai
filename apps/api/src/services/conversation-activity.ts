@@ -4,8 +4,8 @@
  * Workspace activity in team chat.
  *
  * - `#activity` gets a system line for agent task outcomes, schedule runs,
- *   goal events, publishes and new members, so the whole team can see what
- *   agents and teammates are doing.
+ *   goal events, publishes, new members, and finished agent posts in public
+ *   channels, so the whole team can see what agents and teammates are doing.
  * - Schedules and tasks with `notifyConversationId` also post their result
  *   into that channel/DM as the agent that did the work.
  * - "Catch me up" summarizes unread messages with the workspace agent.
@@ -16,12 +16,15 @@
 
 import { prisma } from '../lib/prisma'
 import { homeRegionWorkspaceWhere } from '../lib/region'
+import { registerAfterPostHook } from './conversation-pipeline'
 import {
   ConversationError,
   agentDisplayName,
   getActivityConversation,
   loadAccess,
+  onMessageTextSettled,
   postMessage,
+  type PostMessageResult,
 } from './conversation.service'
 import { renderTranscript, runWorkspaceAgentPrompt } from './conversation-agent-dispatcher'
 import { agentChatEnabled, getWorkspaceChatConfig, nativeChatEnabled } from './chat-mode'
@@ -41,6 +44,7 @@ export type ActivityKind =
   | 'goal.event'
   | 'project.published'
   | 'member.joined'
+  | 'agent.message'
 
 export interface ActivityInput {
   kind: ActivityKind
@@ -92,6 +96,58 @@ export async function postActivity(workspaceId: string, input: ActivityInput) {
       actorUserId: input.actorUserId ?? null,
       ...input.meta,
     },
+  })
+}
+
+/**
+ * A finished agent post in a public channel becomes one #activity line.
+ * `#activity` is visible to the whole workspace, so private channels and
+ * direct messages are skipped. `ref` dedupes, so a streamed reply that
+ * settles and then re-runs the post hooks still posts once.
+ */
+export async function recordAgentMessage(result: PostMessageResult): Promise<void> {
+  const { row, conversation } = result
+  if (row.authorType !== 'agent' || row.agentStatus === 'running') return
+  if (conversation?.kind !== 'public') return
+  try {
+    const projectId = row.authorAgentRef?.projectId ?? null
+    const name = row.authorAgentRef?.name ?? (await agentDisplayName(conversation.workspaceId, projectId))
+    const where = `<#c:${conversation.id}>`
+    await postActivity(conversation.workspaceId, {
+      kind: 'agent.message',
+      text: row.threadRootId
+        ? `**${name}** replied in a thread in ${where}`
+        : `**${name}** sent a message in ${where}`,
+      ref: `agent-message:${row.id}`,
+      projectId,
+      meta: {
+        conversationId: conversation.id,
+        messageId: row.id,
+        threadRootId: row.threadRootId ?? null,
+      },
+    })
+  } catch (err) {
+    logFailure('agent message', err)
+  }
+}
+
+let activityRegistered = false
+
+/** Post #activity lines for agent messages. Safe to call more than once. */
+export function registerConversationActivity(): void {
+  if (activityRegistered) return
+  activityRegistered = true
+  registerAfterPostHook((result) => recordAgentMessage(result))
+  // A streamed reply is posted as a running placeholder and finished with an
+  // update, which does not go through the post hooks unless it has mentions.
+  onMessageTextSettled((row) => {
+    if (row.authorType !== 'agent' || row.agentStatus === 'running') return
+    void db.conversation.findUnique({ where: { id: row.conversationId } })
+      .then((conversation: any) => {
+        if (!conversation) return
+        return recordAgentMessage({ row, conversation, message: null as any, mentions: [], duplicate: false })
+      })
+      .catch((err: unknown) => logFailure('agent message', err))
   })
 }
 
