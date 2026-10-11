@@ -6,7 +6,6 @@
 //
 //   - WorkerRuntimeManager config closures (L143-145 spawnCommand, L151-156 resolveBin)
 //     incl. AGENT_RUNTIME_ENTRY env override and the existsSync->null branch
-//   - private getProjectWorkspaceId (L971-983), success + prisma-throws branches
 //   - startHealthCheck (L1973-1981) — drive the setInterval callback once
 
 import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
@@ -140,32 +139,6 @@ describe('WorkerRuntimeManager config closures (constructor wiring)', () => {
     else process.env.SHOGO_LOCAL_MODE = prev
     if (prevIdle === undefined) delete process.env.RUNTIME_LOCAL_IDLE_MS
     else process.env.RUNTIME_LOCAL_IDLE_MS = prevIdle
-  })
-})
-
-describe('RuntimeManager.getProjectWorkspaceId (private)', () => {
-  test('returns prisma.project.workspaceId on success', async () => {
-    fakePrismaState.workspaceId = 'ws-abc'
-    const rm = new RuntimeManager() as unknown as {
-      getProjectWorkspaceId: (id: string) => Promise<string | null>
-    }
-    expect(await rm.getProjectWorkspaceId('proj-1')).toBe('ws-abc')
-  })
-
-  test('returns null when prisma returns project with null workspaceId', async () => {
-    fakePrismaState.workspaceId = null
-    const rm = new RuntimeManager() as unknown as {
-      getProjectWorkspaceId: (id: string) => Promise<string | null>
-    }
-    expect(await rm.getProjectWorkspaceId('proj-2')).toBeNull()
-  })
-
-  test('returns null when prisma throws', async () => {
-    fakePrismaState.throws = true
-    const rm = new RuntimeManager() as unknown as {
-      getProjectWorkspaceId: (id: string) => Promise<string | null>
-    }
-    expect(await rm.getProjectWorkspaceId('proj-3')).toBeNull()
   })
 })
 

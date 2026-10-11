@@ -205,7 +205,6 @@ describe('RuntimeManager.getProjectInfo', () => {
 describe('RuntimeManager private project runtime metadata helpers', () => {
   function managerWithPrivateHelpers() {
     return new RuntimeManager() as unknown as {
-      getProjectComposioScope: (projectId: string) => Promise<'workspace' | 'project'>
       buildSecurityPolicy: (projectId: string) => Promise<string | null>
     }
   }
@@ -214,19 +213,6 @@ describe('RuntimeManager private project runtime metadata helpers', () => {
     expect(encoded).toBeTruthy()
     return JSON.parse(Buffer.from(encoded!, 'base64').toString('utf8'))
   }
-
-  test('getProjectComposioScope accepts valid scopes and defaults invalid or failed reads', async () => {
-    const manager = managerWithPrivateHelpers()
-
-    projectResult = { workspace: { composioScope: 'project' } }
-    await expect(manager.getProjectComposioScope('p1')).resolves.toBe('project')
-
-    projectResult = { workspace: { composioScope: 'team' } }
-    await expect(manager.getProjectComposioScope('p2')).resolves.toBe('workspace')
-
-    projectFindError = new Error('missing workspace relation')
-    await expect(manager.getProjectComposioScope('p3')).resolves.toBe('workspace')
-  })
 
   test('buildSecurityPolicy merges user prefs with non-escalating project overrides', async () => {
     localConfigResult = {

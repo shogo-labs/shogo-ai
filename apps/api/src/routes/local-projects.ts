@@ -48,8 +48,7 @@ import {
 // =============================================================================
 //
 // The agent-runtime is a Bun subprocess that has to load thousands of
-// TypeScript modules on cold start (~25–30 s on a typical Mac laptop —
-// see RuntimeManager.waitForAgentReady's 50 × 500 ms budget). When the
+// TypeScript modules on cold start (~25–30 s on a typical Mac laptop). When the
 // user picks a folder, the frontend lands on the project page and
 // immediately polls `/agent/chat/:cid/turn`, `/agent/quick-actions`,
 // etc. Each of those proxies hits `getProjectUrl` which awaits
