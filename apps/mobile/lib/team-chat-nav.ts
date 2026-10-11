@@ -44,6 +44,17 @@ export function sessionRoute(input: { projectId: string | null; sessionId: strin
   }
 }
 
+/** The conversation, and the thread when the run happened in one. Same shape as the session breadcrumb. */
+export function conversationThreadRoute(conversationId: string, threadRootId?: string | null): {
+  pathname: '/(app)/c/[conversationId]'
+  params: Record<string, string>
+} {
+  return {
+    pathname: '/(app)/c/[conversationId]',
+    params: threadRootId ? { conversationId, thread: threadRootId } : { conversationId },
+  }
+}
+
 export interface Crumb {
   key: string
   label: string

@@ -131,6 +131,58 @@ export function stripInternalErrorMarkers(message: string): string {
   return message.replace(STREAM_ERROR_MARKER_PATTERN, '').trim()
 }
 
+/**
+ * A channel run's user message carries this part so the session can show who
+ * asked and where, instead of the wrapper prompt the model was given.
+ */
+export interface ChannelDispatch {
+  conversationId: string
+  conversationName: string | null
+  threadRootId: string | null
+  agentName: string
+  trigger: { authorName: string; text: string }
+  handedOffBy?: string
+  contextMode: string
+}
+
+function messageParts(message: { parts?: unknown }): unknown[] | null {
+  const parts = message?.parts
+  if (Array.isArray(parts)) return parts
+  if (typeof parts !== 'string' || !parts) return null
+  try {
+    const parsed = JSON.parse(parts)
+    return Array.isArray(parsed) ? parsed : null
+  } catch {
+    return null
+  }
+}
+
+/** The channel-dispatch card on a message, or null when it is an ordinary user message. */
+export function channelDispatchOf(message: { parts?: unknown } | null | undefined): ChannelDispatch | null {
+  const parts = message ? messageParts(message) : null
+  if (!parts) return null
+  const part = parts.find((entry) => !!entry && typeof entry === 'object' && (entry as { type?: unknown }).type === 'data-channel-dispatch') as
+    | { data?: unknown }
+    | undefined
+  const data = part?.data
+  if (!data || typeof data !== 'object') return null
+  const record = data as Record<string, unknown>
+  const trigger = record.trigger
+  if (typeof record.conversationId !== 'string' || typeof record.agentName !== 'string') return null
+  if (!trigger || typeof trigger !== 'object') return null
+  const asked = trigger as Record<string, unknown>
+  if (typeof asked.authorName !== 'string' || typeof asked.text !== 'string') return null
+  return {
+    conversationId: record.conversationId,
+    conversationName: typeof record.conversationName === 'string' && record.conversationName.trim() ? record.conversationName : null,
+    threadRootId: typeof record.threadRootId === 'string' && record.threadRootId ? record.threadRootId : null,
+    agentName: record.agentName,
+    trigger: { authorName: asked.authorName, text: asked.text },
+    ...(typeof record.handedOffBy === 'string' && record.handedOffBy ? { handedOffBy: record.handedOffBy } : {}),
+    contextMode: typeof record.contextMode === 'string' && record.contextMode ? record.contextMode : 'shared',
+  }
+}
+
 const GENERIC_REQUEST_FAILED = 'The request failed. Please tap Retry to try again.'
 
 export function formatErrorMessage(rawMessage: string): string {
