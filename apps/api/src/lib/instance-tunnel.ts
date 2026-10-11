@@ -33,7 +33,7 @@ import {
 } from '@shogo-ai/worker/tunnel'
 import { getRuntimeManager } from './runtime'
 import { wipeCloudKey } from './cloud-key-wipe'
-import { deriveRuntimeToken } from './runtime-token'
+import { deriveProjectRuntimeToken } from './project-runtime-token'
 import { getShogoCloudUrl } from './cloud-urls'
 
 // Re-export the worker's symbols so existing callers keep working.
@@ -64,9 +64,9 @@ function splitPathAndQuery(pathWithQuery: string): { pathname: string; search: s
  *   - Anything else → forwards to the local apps/api on `getApiPort()`,
  *     which is what the desktop already serves.
  *
- * `deriveRuntimeToken` is the AGPL v1-self-identifying derivation
- * (`rt_v1_<projectId>_<hmac>`) — desktop runtimes were minted with
- * this scheme and the API server's verifier expects it.
+ * `deriveRuntimeToken` replaces the cloud's `x-runtime-token` with one this
+ * desktop minted: the local runtime serving a project is a workspace runtime,
+ * so its RUNTIME_AUTH_SECRET is the locally signed workspace token.
  */
 const desktopResolver: RuntimeResolver = {
   async resolveLocalUrl(pathWithQuery, projectId) {
@@ -103,8 +103,13 @@ const desktopResolver: RuntimeResolver = {
     return `http://localhost:${getApiPort()}${path}${search}`
   },
 
-  deriveRuntimeToken(projectId) {
-    return deriveRuntimeToken(projectId)
+  async deriveRuntimeToken(projectId) {
+    try {
+      return await deriveProjectRuntimeToken(projectId)
+    } catch (err: any) {
+      console.warn(`[InstanceTunnel] runtime token for ${projectId} unavailable: ${err?.message ?? err}`)
+      return null
+    }
   },
 
   getActiveProjects() {

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { existsSync, readFileSync } from 'fs'
+import { publishRequestTimeoutMs } from '@shogo/shared-runtime/publish-timeouts'
 import { requesterTicketHeaders } from './credential-scope'
 
 const SA_TOKEN_PATH = '/var/run/secrets/kubernetes.io/serviceaccount/token'
@@ -564,6 +565,7 @@ export interface PublishOptions {
 async function publishFetch<T>(
   path: string,
   init: RequestInit & { parse?: (json: any) => T },
+  timeoutMs = 120_000,
 ): Promise<CheckpointCallResult<T>> {
   const apiUrl = deriveApiUrl()
   if (!apiUrl) return { ok: false, status: 0, error: 'No API URL configured' }
@@ -571,7 +573,7 @@ async function publishFetch<T>(
     const res = await fetch(`${apiUrl}${path}`, {
       headers: getInternalHeaders(),
       // Publish builds + uploads the app, which can take a while — be generous.
-      signal: AbortSignal.timeout(120_000),
+      signal: AbortSignal.timeout(timeoutMs),
       ...init,
     })
     const json = (await res.json().catch(() => null)) as any
@@ -601,7 +603,7 @@ export async function publishProject(
     method: 'POST',
     body: JSON.stringify(opts),
     parse: (j) => j as PublishResult,
-  })
+  }, publishRequestTimeoutMs())
 }
 
 export interface SharedFileResult {

@@ -83,6 +83,17 @@ export function inFlightWorkspaceInstall(dir: string): Promise<void> | undefined
 const MAX_INSTALL_PASSES = 3
 
 /**
+ * Install scripts run package code. In a workspace runtime they must not see
+ * the workspace token, and nothing in an install needs a runtime token.
+ */
+function installEnv(): NodeJS.ProcessEnv | undefined {
+  if (process.env.WORKSPACE_RUNTIME !== 'true') return undefined
+  const env = { ...process.env }
+  delete env.RUNTIME_AUTH_SECRET
+  return env
+}
+
+/**
  * A joined caller may have seen a newer package.json than the one the
  * in-flight install read (the pool pre-seed installs the template, then
  * the host overlays the project's source mid-install). Every caller writes
@@ -96,7 +107,7 @@ async function installUntilPackageJsonSettles(
 ): Promise<void> {
   for (let pass = 1; ; pass++) {
     const installedHash = computePackageJsonHash(key)
-    await pkg.installAsync(dir, opts)
+    await pkg.installAsync(dir, { ...opts, env: installEnv() })
     if (computePackageJsonHash(key) === installedHash) return
     if (pass >= MAX_INSTALL_PASSES) {
       console.warn(

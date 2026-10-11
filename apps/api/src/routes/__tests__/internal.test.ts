@@ -549,6 +549,24 @@ describe('POST /validate-runtime-token', () => {
     const body = await res.json()
     expect(body).toEqual({ valid: true, projectId: 'p1', format: 'v1' })
   })
+  test('200 valid workspace token returns workspaceId', async () => {
+    store.runtimeVerify = { ok: false, reason: 'malformed' }
+    store.workspaceVerify = { ok: true, workspaceId: 'ws-1' }
+    const res = await app.request('/validate-runtime-token', {
+      method: 'POST', headers: { ...SA, ...JSON_H }, body: JSON.stringify({ token: 'wrt_v1_ws-1_abc' }),
+    })
+    const body = await res.json()
+    expect(body).toEqual({ valid: true, workspaceId: 'ws-1', format: 'wrt_v1' })
+  })
+  test('rejects a workspace token the verifier does not accept', async () => {
+    store.runtimeVerify = { ok: false, reason: 'malformed' }
+    store.workspaceVerify = { ok: false, reason: 'bad_hmac' }
+    const res = await app.request('/validate-runtime-token', {
+      method: 'POST', headers: { ...SA, ...JSON_H }, body: JSON.stringify({ token: 'wrt_v1_ws-1_nope' }),
+    })
+    const body = await res.json()
+    expect(body).toEqual({ valid: false, reason: 'bad_hmac' })
+  })
 })
 
 // ─── GET /subagent-overrides/resolve ────────────────────────────────────────

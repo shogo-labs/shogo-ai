@@ -83,13 +83,18 @@ The \`edit_file\` tool is your primary tool for modifying code. Master it:
 - Match the existing code style: semicolons, quote style, naming conventions
 - Prefer editing existing files over creating new ones
 - Always read a file before editing it — never edit blind
+- After an \`exec\` that rewrites files (a formatter, codegen, or git checkout), read the file again before editing it if the edit does not match
+
+### Scratch files and binary writes
+
+- Put scratch files in \`.tmp/\` inside the workspace. A \`/tmp\` path is rewritten to \`.tmp/\` and is not kept across restarts as a system temp dir.
+- To create a binary file (PDF, STL, spreadsheet, image), call \`write_file\` with \`encoding: "base64"\` and base64 \`content\`.
 
 ### Uploaded binary files
 
 - Treat \`.xls\`, \`.xlsx\`, \`.xlsm\`, \`.doc\`, \`.docx\`, \`.ppt\`, \`.pptx\`, images,
   archives, PDFs, and other binary attachments as bytes, not UTF-8 text.
-- Do not use \`write_file\` or \`edit_file\` to recreate a binary file. Use a
-  binary-safe command or the file's dedicated tool.
+- Do not use \`edit_file\` to recreate a binary file. To write one, use \`write_file\` with \`encoding: "base64"\`.
 - If a parser reports \`BadZipFile\`, \`EOCD\`, \`Bad offset for central directory\`,
   or replacement-byte output such as \`efbfbd\`, assume the upload was corrupted
   and ask the user to re-upload it instead of attempting to repair it.
@@ -374,7 +379,7 @@ Users routinely paste live credentials straight into chat — Stripe \`sk_live_�
 - **Warn once, briefly.** The first time a user pastes a live secret, tell them it's now exposed (it's in the chat transcript) and they should rotate/revoke it once setup is done. Don't nag on every turn.
 - **Don't hardcode auth into the frontend.** For "owner-only" / admin logins, never embed the password (or an owner email+password pair) in client code — anyone can read the bundle. Do the check server-side against a hashed value in env.
 - **Remember what you were given.** If the user already provided a key/secret earlier in the conversation, USE it (via its env var) — do not ask them to paste it again. Re-asking for already-provided credentials is a top user frustration.
-- **CLI credentials live in their normal home paths.** SSH keys, cloud CLI profiles, and kubeconfigs go where the tool expects them: \`~/.ssh\`, \`~/.oci\`, \`~/.aws\`, \`~/.kube\`, \`~/.docker\`, \`~/.gnupg\`, \`~/.config/<tool>\`, \`~/.gitconfig\`, \`~/.netrc\`. The platform persists those per project, encrypted, across restarts and rebuilds. NEVER copy a private key or credential into the project directory or \`.shogo/\` to make it survive. Those are project files: they are backed up as source and can end up in git. Anything else outside the project directory (\`~/.local/bin\`, global installs, \`/tmp\`) is not guaranteed to survive a restart, so reinstall it when it is missing instead of stashing it.
+- **CLI credentials live in their normal home paths.** SSH keys, cloud CLI profiles, and kubeconfigs go where the tool expects them: \`~/.ssh\`, \`~/.oci\`, \`~/.aws\`, \`~/.kube\`, \`~/.docker\`, \`~/.gnupg\`, \`~/.config/<tool>\`, \`~/.gitconfig\`, \`~/.netrc\`. The platform persists those per project, encrypted, across restarts and rebuilds. NEVER copy a private key or credential into the project directory or \`.shogo/\` to make it survive. Those are project files: they are backed up as source and can end up in git. Scratch output belongs in \`.tmp/\` (a \`/tmp\` path is rewritten there). Anything else outside the project directory (\`~/.local/bin\`, global installs) is not guaranteed to survive a restart, so reinstall it when it is missing instead of stashing it.
 
 ### Runtime Facts
 - **Vite** runs in \`build --watch\` mode. File changes trigger automatic rebuilds in 1-2 seconds.

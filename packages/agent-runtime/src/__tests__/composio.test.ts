@@ -45,6 +45,7 @@ mock.module('../response-transforms', () => ({
   },
 }))
 
+import { runInCredentialScope } from '../credential-scope'
 import {
   getComposioTimings,
   clearComposioTimings,
@@ -62,6 +63,7 @@ import {
   checkComposioAuth,
   classifyComposioError,
   extractComposioErrorDetail,
+  requestComposioReconnect,
   normalizeFileUploadableArgs,
   getComposioFileUploadDirs,
 } from '../composio'
@@ -529,6 +531,103 @@ describe('registerToolkitProxyTools', () => {
     const res = await tool.execute('tc', {})
     expect(res.details.error).toMatch(/Unauthorized/)
     expect(res.details.authExpired).toBe(true)
+    expect(res.details.needs_reconnect).toBe(true)
+  })
+
+  it('proxy tool execute() marks needs_reconnect on a Shopify invalid token', async () => {
+    mockedSchemas = [{ slug: 'SHOPIFY_GET_ORDERS', description: '', is_deprecated: false }]
+    handlers.toolsExecute = async () => ({ successful: false, error: 'Invalid API key or access token' })
+    const mgr = fakeMcpMgr()
+    await registerToolkitProxyTools(mgr, 'shopify')
+    const tool = mgr.calls[0].tools[0]
+    const res = await tool.execute('tc', {})
+    expect(res.details.errorKind).toBe('auth')
+    expect(res.details.needs_reconnect).toBe(true)
+  })
+
+  it('proxy tool execute() asks the UI for a reconnect card', async () => {
+    mockedSchemas = [{ slug: 'SHOPIFY_GET_ORDERS', description: '', is_deprecated: false }]
+    handlers.toolsExecute = async () => ({ successful: false, error: 'Invalid API key or access token' })
+    const writes: any[] = []
+    const mgr = fakeMcpMgr()
+    await registerToolkitProxyTools(mgr, 'shopify')
+    const tool = mgr.calls[0].tools[0]
+    await runInCredentialScope(
+      { uiWriter: { write: (chunk) => writes.push(chunk) } },
+      () => tool.execute('tc', {}),
+    )
+    expect(writes).toEqual([
+      {
+        type: 'data-integration-auth-required',
+        data: {
+          provider: 'composio:shopify',
+          connectUrl: 'https://oauth.example/x',
+          message: "The integration's OAuth session is expired or invalid. Ask the user to reconnect the integration, then retry.",
+        },
+      },
+    ])
+    expect(await requestComposioReconnect('shopify')).toMatchObject({ authUrl: 'https://oauth.example/x' })
+  })
+
+  it('raises one reconnect card per toolkit in a turn', async () => {
+    mockedSchemas = [{ slug: 'SHOPIFY_GET_ORDERS', description: '', is_deprecated: false }]
+    let auths = 0
+    handlers.toolsExecute = async () => ({ successful: false, error: 'Invalid API key or access token' })
+    handlers.create = async () => {
+      auths += 1
+      return { authorize: async () => ({ redirectUrl: 'https://oauth.example/x' }) }
+    }
+    const writes: any[] = []
+    const mgr = fakeMcpMgr()
+    await registerToolkitProxyTools(mgr, 'shopify')
+    const tool = mgr.calls[0].tools[0]
+    const scope = {
+      uiWriter: { write: (chunk: Record<string, any>) => writes.push(chunk) },
+      reconnectCardsShown: new Set<string>(),
+    }
+    await runInCredentialScope(scope, () => tool.execute('tc-1', {}))
+    await runInCredentialScope(scope, () => tool.execute('tc-2', {}))
+    expect(writes).toHaveLength(1)
+    expect(auths).toBe(1)
+  })
+
+  it('proxy tool execute() marks needs_reconnect on a Drive 403 scope error', async () => {
+    mockedSchemas = [{ slug: 'GOOGLEDRIVE_LIST_FILES', description: '', is_deprecated: false }]
+    handlers.toolsExecute = async () => ({ successful: false, error: '403 insufficient authentication scopes' })
+    const mgr = fakeMcpMgr()
+    await registerToolkitProxyTools(mgr, 'googledrive')
+    const tool = mgr.calls[0].tools[0]
+    const res = await tool.execute('tc', {})
+    expect(res.details.errorKind).toBe('permission')
+    expect(res.details.needsScope).toBe(true)
+    expect(res.details.needs_reconnect).toBe(true)
+  })
+
+  it('proxy tool execute() tells the agent to use a numeric page id on a Facebook 404', async () => {
+    setEnv('COMPOSIO_NOTFOUND_RETRY_DELAY_MS', '0')
+    mockedSchemas = [{ slug: 'FACEBOOK_GET_PAGE_POSTS', description: 'posts', is_deprecated: false }]
+    handlers.toolsExecute = async () => ({ successful: false, error: 'Error executing the tool FACEBOOK_GET_PAGE_POSTS | 404 Not Found' })
+    const mgr = fakeMcpMgr()
+    await registerToolkitProxyTools(mgr, 'facebook')
+    const tool = mgr.calls[0].tools[0]
+    const res = await tool.execute('tc', {})
+    expect(res.details.errorKind).toBe('notfound')
+    expect(res.details.hint).toMatch(/numeric page id/i)
+    expect(res.details.hint).toMatch(/FACEBOOK_LIST_MANAGED_PAGES/)
+  })
+
+  it('proxy tool description requires a numeric page id when the schema takes page_id', async () => {
+    mockedSchemas = [{
+      slug: 'FACEBOOK_CREATE_POST',
+      description: 'Create a post',
+      is_deprecated: false,
+      input_parameters: { properties: { page_id: { type: 'string' }, message: { type: 'string' } } },
+    }]
+    const mgr = fakeMcpMgr()
+    await registerToolkitProxyTools(mgr, 'facebook')
+    const tool = mgr.calls[0].tools[0]
+    expect(tool.description).toMatch(/numeric page id/i)
+    expect(tool.description).toMatch(/FACEBOOK_LIST_MANAGED_PAGES/)
   })
 
   it('proxy tool execute() falls back to generic error message when SDK gives none', async () => {
@@ -908,12 +1007,20 @@ describe('classifyComposioError', () => {
     const c = classifyComposioError('401 unauthorized: token expired')
     expect(c.kind).toBe('auth')
     expect(c.authExpired).toBe(true)
+    expect(c.needsReconnect).toBe(true)
+  })
+
+  it('classifies a Shopify invalid token as auth that needs a reconnect', () => {
+    const c = classifyComposioError('Invalid API key or access token')
+    expect(c.kind).toBe('auth')
+    expect(c.needsReconnect).toBe(true)
   })
 
   it('classifies a YouTube 403 as permission (needsScope), not auth', () => {
     const c = classifyComposioError('{"error":{"code":403,"message":"The request is not properly authorized.","reason":"forbidden"}}')
     expect(c.kind).toBe('permission')
     expect(c.needsScope).toBe(true)
+    expect(c.needsReconnect).toBe(true)
     expect(c.authExpired).toBeUndefined()
   })
 

@@ -62,6 +62,7 @@ export const SHOGO_RUNTIME_EXCLUDES = [
   'node_modules/',
   'dist.staging/',
   'dist.publish.staging/',
+  '.tmp/',
   // The dev database is backed up separately as project data, and a restore
   // can drop it into any project, including ones that don't use Prisma.
   'prisma/dev.db',

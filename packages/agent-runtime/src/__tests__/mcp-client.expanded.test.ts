@@ -3,6 +3,7 @@
 // Expanded coverage for mcp-client.ts: targets buildSchemaHint,
 // installPackageLocally, stderr handler, and image-content tool paths.
 import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test'
+import * as realCatalog from '../mcp-catalog'
 import { EventEmitter } from 'events'
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
@@ -51,6 +52,7 @@ mock.module('@modelcontextprotocol/sdk/client/stdio.js', () => ({ StdioClientTra
 mock.module('@modelcontextprotocol/sdk/client/streamableHttp.js', () => ({ StreamableHTTPClientTransport: FakeHttpTransport }))
 
 mock.module('../mcp-catalog', () => ({
+  ...realCatalog,
   isMcpServerAllowed: () => true,
   isPreinstalledMcpId: () => false,
   isCatalogEntry: () => true,

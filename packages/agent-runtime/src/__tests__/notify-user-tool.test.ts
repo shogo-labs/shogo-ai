@@ -147,6 +147,19 @@ describe('notify_user tool', () => {
     expect(result.ok).toBe(true)
   })
 
+  test('omits projectId when the runtime key is ws: so the API is not sent a non-project', async () => {
+    const tool = findNotifyUser(ctx({ projectId: 'ws:ws-1' }))
+    const { details: result } = (await tool.execute('call-ws', {
+      title: 'Reminder',
+      body: 'no project',
+    })) as any
+
+    const body = JSON.parse(lastFetchArgs[1].body)
+    expect(body.workspaceId).toBe('ws-1')
+    expect(body.projectId).toBeUndefined()
+    expect(result.ok).toBe(true)
+  })
+
   test('returns a quiet-hours skip instead of firing during quiet hours', async () => {
     // A window that covers the whole day so the assertion is timezone-agnostic.
     quietHoursFixture = { start: '00:00', end: '23:59', timezone: 'UTC' }

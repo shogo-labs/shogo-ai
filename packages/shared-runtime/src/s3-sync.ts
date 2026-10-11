@@ -1093,6 +1093,7 @@ export class S3Sync {
       '.expo',
       '.metro-cache',
       '.expo-shared',
+      '.tmp',
     ])
     if (filesToInclude.length === 0) return null
     await tar.create(
@@ -1212,6 +1213,7 @@ export class S3Sync {
       '.expo',
       '.metro-cache',
       '.expo-shared',
+      '.tmp',
     ])
 
     if (filesToInclude.length === 0) {

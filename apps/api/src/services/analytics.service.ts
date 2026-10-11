@@ -2281,6 +2281,7 @@ export async function getUserFunnel(
       FROM "chat_messages" cm
       JOIN "chat_sessions" cs ON cs."id" = cm."sessionId"
       JOIN "projects" p ON p."id" = cs."contextId"
+      -- 'technical' excludes project_call prompts (role 'user', written by another agent).
       WHERE cm."role" = 'user' AND cm."agent" = 'technical' AND p."createdBy" IS NOT NULL
       GROUP BY cs."contextId", p."createdBy"
     ),
@@ -2320,6 +2321,7 @@ export async function getUserFunnel(
       FROM "chat_messages" cm
       JOIN "chat_sessions" cs ON cs."id" = cm."sessionId"
       JOIN "projects" p ON p."id" = cs."contextId"
+      -- 'technical' excludes project_call prompts (role 'user', written by another agent).
       WHERE cm."role" = 'user' AND cm."agent" = 'technical' AND p."createdBy" IS NOT NULL
       GROUP BY cs."contextId", p."createdBy"
     ),

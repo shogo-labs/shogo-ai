@@ -7,6 +7,7 @@
  * This file is safe to edit - it will not be overwritten.
  */
 
+import { PROJECT_CALL_MESSAGE_AGENT } from "@shogo/shared-runtime/project-call-chat"
 import { externalizeMessageAttachments } from "../lib/chat-attachments"
 import type { Principal } from "../lib/authz"
 import { authorizeChatSession, CHAT_SESSION_SCOPE_SELECT } from "./chat-session.hooks"
@@ -67,7 +68,10 @@ export const chatMessageHooks: ChatMessageHooks = {
    *              clause is narrowed to rows authored by that agent, so
    *              the technical ChatPanel and Shogo Mode overlay never
    *              read each other's rows even though they share a
-   *              ChatSession.
+   *              ChatSession. "technical" also includes `project_call`
+   *              prompts (the workspace agent calling this project) so
+   *              that transcript still shows them. Analytics does not:
+   *              it counts only `agent = 'technical'`.
    *
    * IMPORTANT: We explicitly set include: undefined to prevent Prisma
    * from returning the session relation as a nested object. The
@@ -125,7 +129,11 @@ export const chatMessageHooks: ChatMessageHooks = {
     }
 
     const where: Record<string, unknown> = { sessionId }
-    if (agent) where.agent = agent
+    if (agent === "technical") {
+      where.agent = { in: ["technical", PROJECT_CALL_MESSAGE_AGENT] }
+    } else if (agent) {
+      where.agent = agent
+    }
 
     return {
       ok: true,

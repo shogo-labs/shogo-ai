@@ -70,6 +70,7 @@ mock.module('../../lib/k8s-auth', () => ({
 mock.module('../../lib/runtime-token', () => ({
   getSigningSecret: () => 'test-runtime-secret',
   verifyRuntimeToken: (_t: string, _p?: string) => store.runtimeVerify ?? { ok: false, reason: 'bad' },
+  deriveRuntimeToken: (projectId: string) => `rt_v1_${projectId}_mock`,
 }))
 
 mock.module('../../lib/workspace-runtime-token', () => ({
@@ -554,6 +555,33 @@ describe('PATCH /projects/:projectId/config', () => {
       body: JSON.stringify({ settings: { techStackId: 'docker-compose' } }),
     })
     expect(res.status).toBe(402)
+  })
+})
+
+// ─── GET /projects/:projectId/app-runtime-token ─────────────────────────────
+
+describe('GET /projects/:projectId/app-runtime-token', () => {
+  test('returns the project token to its workspace runtime', async () => {
+    store.projects.set('proj-2', { workspaceId: 'ws-1' })
+    store.workspaceVerify = { ok: true, workspaceId: 'ws-1' }
+    const res = await app.request('/projects/proj-2/app-runtime-token', { headers: { 'x-runtime-token': 'wrt' } })
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ projectId: 'proj-2', token: 'rt_v1_proj-2_mock' })
+  })
+
+  test('401 for a workspace token from another workspace', async () => {
+    store.projects.set('proj-2', { workspaceId: 'ws-1' })
+    store.workspaceVerify = { ok: true, workspaceId: 'ws-OTHER' }
+    const res = await app.request('/projects/proj-2/app-runtime-token', { headers: { 'x-runtime-token': 'wrt' } })
+    expect(res.status).toBe(401)
+  })
+
+  test('401 for a sibling project token in the same workspace', async () => {
+    store.projects.set('proj-2', { workspaceId: 'ws-1' })
+    store.runtimeVerify = { ok: true, projectId: 'proj-1', format: 'v1' }
+    store.resolvedWorkspaceId = 'ws-1'
+    const res = await app.request('/projects/proj-2/app-runtime-token', { headers: { 'x-runtime-token': 'rt' } })
+    expect(res.status).toBe(401)
   })
 })
 

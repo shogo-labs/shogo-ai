@@ -201,6 +201,43 @@ describe('PreviewManager runShogoGenerate (private — invoked indirectly)', () 
   })
 })
 
+describe('PreviewManager publish Expo export', () => {
+  it('writes the publish export into dist.publish.staging and reports that path when index.html is missing', async () => {
+    const cwd = projectDir()
+    writeFileSync(join(cwd, 'package.json'), '{}')
+    const m = mk() as any
+    m.resolveDevServer = () => 'metro'
+    m.installDepsIfNeeded = async () => {}
+    m.runPrismaIfNeeded = async () => {}
+    let exportOptions: { stagingDir?: string; promote?: boolean; basePath?: string } | undefined
+    m.runExpoExportWeb = async (_timings: Record<string, number>, exportCwd: string, options: typeof exportOptions) => {
+      expect(exportCwd).toBe(cwd)
+      exportOptions = options
+    }
+    const result = await m._buildForPublish()
+    expect(exportOptions).toEqual({ basePath: '/', stagingDir: 'dist.publish.staging', promote: false })
+    expect(result).toEqual({
+      ok: false,
+      error: 'Expo publish build did not produce dist.publish.staging/index.html',
+    })
+  })
+
+  it('accepts a publish export that lands index.html in the staging dir', async () => {
+    const cwd = projectDir()
+    writeFileSync(join(cwd, 'package.json'), '{}')
+    const m = mk() as any
+    m.resolveDevServer = () => 'metro'
+    m.installDepsIfNeeded = async () => {}
+    m.runPrismaIfNeeded = async () => {}
+    m.runExpoExportWeb = async () => {
+      mkdirSync(join(cwd, 'dist.publish.staging'), { recursive: true })
+      writeFileSync(join(cwd, 'dist.publish.staging', 'index.html'), '<html></html>')
+    }
+    const result = await m._buildForPublish()
+    expect(result).toEqual({ ok: true })
+  })
+})
+
 // --- runExpoExportWeb early bail ------------------------------------------
 
 describe('PreviewManager.runExpoExportWeb (private)', () => {

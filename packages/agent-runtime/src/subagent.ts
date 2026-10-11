@@ -1175,6 +1175,9 @@ export async function runSubagent(
       responseEmpty: true,
     }
   } finally {
+    if (parentCtx.fileStateCache && subCtx.fileStateCache) {
+      parentCtx.fileStateCache.mergeNewerReads(subCtx.fileStateCache)
+    }
     void disposeBrowserTool(ownBrowserTool)
   }
 }

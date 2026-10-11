@@ -24,6 +24,7 @@ let getPublishStateImpl: (projectId: string) => Promise<any>
 let publishProjectImpl: (projectId: string, opts: any) => Promise<any>
 let createSharedFileLinkImpl: (projectId: string, opts: any) => Promise<any>
 let publishCalls: Array<{ projectId: string; opts: any }> = []
+let sharedFileCalls: Array<{ projectId: string; opts: any }> = []
 
 mock.module('../internal-api', () => ({
   ...realInternalApi,
@@ -32,7 +33,10 @@ mock.module('../internal-api', () => ({
     publishCalls.push({ projectId, opts })
     return publishProjectImpl(projectId, opts)
   },
-  createSharedFileLink: (projectId: string, opts: any) => createSharedFileLinkImpl(projectId, opts),
+  createSharedFileLink: (projectId: string, opts: any) => {
+    sharedFileCalls.push({ projectId, opts })
+    return createSharedFileLinkImpl(projectId, opts)
+  },
 }))
 
 const { createTools } = await import('../gateway-tools')
@@ -94,6 +98,7 @@ const origFetch = globalThis.fetch
 
 beforeEach(() => {
   publishCalls = []
+  sharedFileCalls = []
   getPublishStateImpl = async () => STATE_UNPUBLISHED
   createSharedFileLinkImpl = async (_projectId, _opts) => ({
     ok: true,
@@ -132,6 +137,74 @@ test('share_file validates and returns a signed download link', async () => {
 test('share_file rejects paths outside the workspace', async () => {
   const result = await runShareFile(baseCtx(), { path: '../secret.txt' })
   expect(result.error).toContain('relative workspace path')
+})
+
+describe('workspace runtime project id', () => {
+  const prev = {
+    WORKSPACE_RUNTIME: process.env.WORKSPACE_RUNTIME,
+    WORKSPACE_ANCHOR_PROJECT_ID: process.env.WORKSPACE_ANCHOR_PROJECT_ID,
+    WORKSPACE_PROJECT_IDS: process.env.WORKSPACE_PROJECT_IDS,
+  }
+
+  afterEach(() => {
+    for (const [key, value] of Object.entries(prev)) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
+  })
+
+  function workspaceEnv(over: Record<string, string | undefined>) {
+    process.env.WORKSPACE_RUNTIME = 'true'
+    delete process.env.WORKSPACE_ANCHOR_PROJECT_ID
+    delete process.env.WORKSPACE_PROJECT_IDS
+    for (const [key, value] of Object.entries(over)) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
+  }
+
+  test('publish uses the anchor when PROJECT_ID is the workspace runtime key', async () => {
+    workspaceEnv({ WORKSPACE_ANCHOR_PROJECT_ID: 'anchor-1' })
+    const details = await run(baseCtx({ projectId: 'ws:abc' }), { subdomain: 'site' })
+    expect(details.ok).toBe(true)
+    expect(publishCalls[0].projectId).toBe('anchor-1')
+  })
+
+  test('publish uses the only attached project when there is no anchor', async () => {
+    workspaceEnv({ WORKSPACE_PROJECT_IDS: 'only-1' })
+    const details = await run(baseCtx({ projectId: 'ws:abc' }), { subdomain: 'site' })
+    expect(details.ok).toBe(true)
+    expect(publishCalls[0].projectId).toBe('only-1')
+  })
+
+  test('publish asks for project_id instead of calling the API with a workspace key', async () => {
+    workspaceEnv({ WORKSPACE_PROJECT_IDS: 'p1,p2' })
+    const details = await run(baseCtx({ projectId: 'ws:abc' }), { subdomain: 'site' })
+    expect(details.error).toMatch(/pass project_id/i)
+    expect(publishCalls).toHaveLength(0)
+  })
+
+  test('an explicit project_id wins over the workspace key', async () => {
+    workspaceEnv({ WORKSPACE_ANCHOR_PROJECT_ID: 'anchor-1', WORKSPACE_PROJECT_IDS: 'only-1' })
+    await run(baseCtx({ projectId: 'ws:abc' }), { subdomain: 'site', project_id: 'chosen-1' })
+    expect(publishCalls[0].projectId).toBe('chosen-1')
+  })
+
+  test('share_file uses the anchor and never sends the workspace key', async () => {
+    workspaceEnv({ WORKSPACE_ANCHOR_PROJECT_ID: 'anchor-1' })
+    writeFileSync(`${TEST_DIR}/report.pdf`, 'pdf bytes')
+    const result = await runShareFile(baseCtx({ projectId: 'ws:abc' }), { path: 'report.pdf' })
+    expect(result.ok).toBe(true)
+    expect(sharedFileCalls[0].projectId).toBe('anchor-1')
+  })
+
+  test('share_file asks for project_id when several projects are attached', async () => {
+    workspaceEnv({ WORKSPACE_PROJECT_IDS: 'p1,p2' })
+    writeFileSync(`${TEST_DIR}/report.pdf`, 'pdf bytes')
+    const result = await runShareFile(baseCtx({ projectId: 'ws:abc' }), { path: 'report.pdf' })
+    expect(result.error).toMatch(/pass project_id/i)
+    expect(sharedFileCalls).toHaveLength(0)
+  })
 })
 
 afterEach(() => {

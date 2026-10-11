@@ -116,13 +116,13 @@ export async function runStaticBuild(
   opts: {
     stagingDir: string
     basePath?: string
+    /** The build's environment. Defaults to `process.env`. */
     env?: Record<string, string | undefined>
     onLine?: (stream: 'stdout' | 'stderr', line: string) => void
   },
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   const env = {
-    ...process.env,
-    ...opts.env,
+    ...(opts.env ?? process.env),
     SHOGO_BASE_PATH: opts.basePath || '/',
     CI: '1',
   }

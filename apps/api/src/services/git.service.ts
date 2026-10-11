@@ -163,6 +163,9 @@ build/
 # Held open by the agent runtime and managed out-of-band, not project content.
 .shogo/
 
+# Agent scratch files (/tmp writes are remapped here). Not project content.
+.tmp/
+
 # Environment
 .env
 .env.local
@@ -293,6 +296,9 @@ const REQUIRED_IGNORE_ENTRIES = [
   // `git checkout` (most importantly the rollback path) errors out
   // with `unable to unlink old '.shogo/index.db-shm': Invalid argument`.
   '.shogo/',
+  // Scratch dir. write_file remaps /tmp here; it is not project content
+  // and must not be checkpointed, synced, or published.
+  '.tmp/',
   // Windows reserved device names. These can be created via Git Bash / WSL
   // (which use the MSYS POSIX layer where `nul` is just a filename), but
   // the Win32 `git.exe` then refuses to add them with `error: invalid
@@ -323,6 +329,7 @@ const UNTRACK_IF_TRACKED: readonly string[] = [
   '.output',
   '.nitro',
   '.shogo',
+  '.tmp',
 ];
 
 /**

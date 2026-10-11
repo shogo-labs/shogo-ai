@@ -269,7 +269,10 @@ describe('callProjectAgentAsChat — chat persistence', () => {
     expect(forwarded.runId).toBe('run-1')
     expect(sessions.get(chatId)).toMatchObject({ contextType: 'project', contextId: 'proj-1' })
     expect(sessions.get(chatId).inferredName).toBe('Caller: do it')
-    expect(messages.map((m) => [m.role, m.content])).toEqual([['user', 'do it'], ['assistant', 'all done']])
+    expect(messages.map((m) => [m.role, m.agent, m.content])).toEqual([
+      ['user', 'project_call', 'do it'],
+      ['assistant', 'technical', 'all done'],
+    ])
     expect(sessions.get(chatId).cachedMessageCount).toBe(2)
   })
 

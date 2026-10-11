@@ -4,6 +4,15 @@
 import { createHash } from 'node:crypto'
 
 /**
+ * `ChatMessage.agent` for a prompt written by `project_call`, not by a person.
+ * Analytics counts `role = 'user' AND agent = 'technical'` as human messages,
+ * so this value keeps agent-to-agent prompts out of signup and engagement funnels.
+ * The technical chat list still includes these rows so the called project's
+ * transcript shows the prompt.
+ */
+export const PROJECT_CALL_MESSAGE_AGENT = 'project_call'
+
+/**
  * Deterministic UUID for the project chat that records one runId's calls into
  * a project. Keeping this in shared-runtime lets the caller UI know the chat
  * id before the project agent finishes.

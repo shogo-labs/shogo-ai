@@ -10,6 +10,7 @@
     "./agent-attribution": "./src/agent-attribution.ts",
     "./capability-settings": "./src/capability-settings.ts",
     "./project-call-chat": "./src/project-call-chat.ts",
+    "./publish-timeouts": "./src/publish-timeouts.ts",
     "./sse-keepalive": "./src/sse-keepalive.ts",
     "./stream-trace": "./src/stream-trace.ts"
   },

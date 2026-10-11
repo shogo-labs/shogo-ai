@@ -19,7 +19,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import { Type } from '@sinclair/typebox'
 import type { AgentTool, AgentToolResult } from '@mariozechner/pi-agent-core'
-import { isPreinstalledMcpId, isMcpServerAllowed, isCatalogEntry, getPreinstalledPackages } from './mcp-catalog'
+import { isPreinstalledMcpId, isMcpServerAllowed, isCatalogEntry, getPreinstalledPackages, builtinCapabilityRefusal } from './mcp-catalog'
 import { getSanitizedEnv } from './sandbox-exec'
 import { shouldRouteThroughCloud, getCloudDispatcher, type McpTransportPin } from './lib/cloud-fetcher'
 import { enforceImageSizeLimit } from './image-size-guard'
@@ -312,7 +312,7 @@ export class MCPClientManager {
 
   async startServer(name: string, config: MCPServerConfig): Promise<AgentTool[]> {
     if (!isMcpServerAllowed(name)) {
-      throw new Error(`MCP server "${name}" is not in the catalog. Use a catalog server ID or a remote MCP URL.`)
+      throw new Error(builtinCapabilityRefusal(name) ?? `MCP server "${name}" is not in the catalog. Use a catalog server ID or a remote MCP URL.`)
     }
 
     if (this.servers.has(name)) {

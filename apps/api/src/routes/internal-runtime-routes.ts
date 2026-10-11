@@ -2000,6 +2000,21 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
   })
 
   /**
+   * GET /api/internal/projects/:projectId/app-runtime-token
+   *
+   * The project's own runtime token for the app server a workspace runtime
+   * starts for it. That app runs user code, so it must not hold the workspace
+   * token; a project token is refused so it can't mint a sibling's.
+   */
+  app.get('/projects/:projectId/app-runtime-token', async (c) => {
+    const projectId = c.req.param('projectId')
+    const authz = await authorizeLifecycleProject(c, projectId)
+    if (!authz || authz.identity.kind === 'project') return c.json({ error: 'Unauthorized' }, 401)
+    const { deriveRuntimeToken } = await import('../lib/runtime-token')
+    return c.json({ projectId, token: deriveRuntimeToken(projectId) })
+  })
+
+  /**
    * POST /api/internal/projects/:projectId/agent-call
    *   body: { message, runId?, sessionId?, wait?, timeoutMs?, callerProjectId? }
    *

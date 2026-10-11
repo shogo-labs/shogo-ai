@@ -276,6 +276,22 @@ export function isCatalogEntry(id: string): boolean {
   return MCP_CATALOG.some((e) => e.id === id)
 }
 
+/**
+ * Names agents pass to `connect` that are already built into the runtime.
+ * Connecting them as MCP servers always fails the catalog check; point at the
+ * real tools instead of a bare "not in the catalog" error.
+ */
+export function builtinCapabilityRefusal(name: string): string | undefined {
+  const key = name.trim().toLowerCase()
+  if (key === 'filesystem' || key === 'file-system' || key === 'files') {
+    return `"${name}" is built in. Use read_file, write_file, and edit_file for files in the workspace. Do not connect a filesystem server.`
+  }
+  if (key === 'computer-use' || key === 'computer_use' || key === 'computeruse') {
+    return `"${name}" is built in. Use exec for shell commands. Do not connect a computer-use server.`
+  }
+  return undefined
+}
+
 /** Get the preinstalled catalog entry for a server ID, or undefined if not whitelisted */
 export function getPreinstalledEntry(id: string): MCPCatalogEntry | undefined {
   return MCP_CATALOG.find((e) => e.id === id && e.preinstalled === true)

@@ -133,6 +133,11 @@ const IN_PROCESS_E2E_SUITES: readonly InProcessE2ESuite[] = [
   },
   // RBAC scenarios build their own throwaway database and stub the session
   // lookup per file, so each file runs in its own process.
+  {
+    name: 'workspace tool failures',
+    files: ['e2e/workspace-tool-failures.integration.test.ts'],
+    env: {},
+  },
   ...['enterprise-onboarding', 'restricted-project-lifecycle', 'api-key-lifecycle'].map((name) => ({
     name: `rbac e2e: ${name}`,
     files: [`e2e/rbac/${name}.e2e.test.ts`],

@@ -24,7 +24,7 @@
  */
 import { randomUUID } from 'node:crypto'
 import type { Context } from 'hono'
-import { runChatSessionId } from '@shogo/shared-runtime/project-call-chat'
+import { PROJECT_CALL_MESSAGE_AGENT, runChatSessionId } from '@shogo/shared-runtime/project-call-chat'
 
 export { runChatSessionId } from '@shogo/shared-runtime/project-call-chat'
 
@@ -119,7 +119,9 @@ async function ensureCallSession(projectId: string, sessionId: string, name: str
         role: 'user',
         content: message,
         parts: JSON.stringify([{ type: 'text', text: message }]),
-        agent: 'technical',
+        // Not 'technical': funnels treat that pair (role user + agent technical)
+        // as a person. The list hook still returns this row in the technical thread.
+        agent: PROJECT_CALL_MESSAGE_AGENT,
       },
     })
     await db.chatSession.update({

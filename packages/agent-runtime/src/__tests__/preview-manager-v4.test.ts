@@ -375,4 +375,46 @@ describe('resolveApiServerEnv extra branches', () => {
     const env = resolveApiServerEnv({ parentEnv: {}, portStr: '5000', cwd: '/work/proj' })
     expect(env.DATABASE_URL).toBe('file:/work/proj/prisma/dev.db')
   })
+
+  const workspaceParent = {
+    WORKSPACE_RUNTIME: 'true',
+    PROJECT_ID: 'ws-proj',
+    RUNTIME_AUTH_SECRET: 'wrt_v1_ws-1_secret',
+  }
+
+  test('workspace runtime: app gets its own PROJECT_ID and project token', () => {
+    const env = resolveApiServerEnv({
+      parentEnv: workspaceParent,
+      portStr: '5000',
+      cwd: '/srv',
+      projectId: 'p1',
+      appRuntimeToken: 'rt_v1_p1_tok',
+    })
+    expect(env.PROJECT_ID).toBe('p1')
+    expect(env.RUNTIME_AUTH_SECRET).toBe('rt_v1_p1_tok')
+  })
+
+  test('workspace runtime: workspace token is dropped when no project token is available', () => {
+    const env = resolveApiServerEnv({
+      parentEnv: workspaceParent,
+      portStr: '5000',
+      cwd: '/srv',
+      projectId: 'p1',
+      appRuntimeToken: null,
+    })
+    expect(env.PROJECT_ID).toBe('p1')
+    expect(env.RUNTIME_AUTH_SECRET).toBeUndefined()
+  })
+
+  test('non-workspace runtime keeps the parent PROJECT_ID and RUNTIME_AUTH_SECRET', () => {
+    const env = resolveApiServerEnv({
+      parentEnv: { PROJECT_ID: 'p0', RUNTIME_AUTH_SECRET: 'rt_v1_p0_tok' },
+      portStr: '5000',
+      cwd: '/srv',
+      projectId: 'p1',
+      appRuntimeToken: 'rt_v1_p1_tok',
+    })
+    expect(env.PROJECT_ID).toBe('p0')
+    expect(env.RUNTIME_AUTH_SECRET).toBe('rt_v1_p0_tok')
+  })
 })

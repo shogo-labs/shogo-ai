@@ -854,6 +854,54 @@ describe('write_file honors line ending policy', () => {
 // Math.floor mtime precision
 // ---------------------------------------------------------------------------
 
+describe('stale read still applies a unique edit', () => {
+  beforeEach(() => {
+    rmSync(TEST_DIR, { recursive: true, force: true })
+    mkdirSync(TEST_DIR, { recursive: true })
+  })
+  afterEach(() => {
+    rmSync(TEST_DIR, { recursive: true, force: true })
+  })
+
+  test('applies the edit when the file changed but old_string still matches once', async () => {
+    const ctx = createCtx()
+    const path = join(TEST_DIR, 'stale.ts')
+    writeFileSync(path, 'const a = 1\nconst b = 2\n')
+    await exec(ctx, 'read_file', { path: 'stale.ts' })
+    writeFileSync(path, 'const a = 1\nconst b = 3\n')
+    const future = new Date(Date.now() + 5_000)
+    utimesSync(path, future, future)
+
+    const result = await exec(ctx, 'edit_file', {
+      path: 'stale.ts',
+      old_string: 'const a = 1',
+      new_string: 'const a = 9',
+    })
+    expect(result.ok).toBe(true)
+    expect(readFileSync(path, 'utf-8')).toContain('const a = 9')
+    expect(readFileSync(path, 'utf-8')).toContain('const b = 3')
+  })
+
+  test('refreshes the cache and returns the current text when old_string no longer matches', async () => {
+    const ctx = createCtx()
+    const path = join(TEST_DIR, 'stale-miss.ts')
+    writeFileSync(path, 'const a = 1\n')
+    await exec(ctx, 'read_file', { path: 'stale-miss.ts' })
+    writeFileSync(path, 'const z = 7\n')
+    const future = new Date(Date.now() + 5_000)
+    utimesSync(path, future, future)
+
+    const result = await exec(ctx, 'edit_file', {
+      path: 'stale-miss.ts',
+      old_string: 'const a = 1',
+      new_string: 'const a = 2',
+    })
+    expect(result.error).toMatch(/modified since last read/)
+    expect(result.hint).toMatch(/const z = 7/)
+    expect(ctx.fileStateCache!.isStale('stale-miss.ts', path)).toBe(false)
+  })
+})
+
 describe('mtime precision', () => {
   beforeEach(() => {
     rmSync(TEST_DIR, { recursive: true, force: true })

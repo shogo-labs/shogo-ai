@@ -151,6 +151,7 @@ import {
   type PortHttpWsData,
 } from './port-bridge'
 import { deriveApiUrl, getInternalHeaders, postCheckpointRecord, postWorktreeStatus, postPlanMirror } from './internal-api'
+import { acceptsAppToolToken } from './app-runtime-token'
 import {
   detachMemberFromRootRepo,
   runGitHubWorkspaceOp,
@@ -642,6 +643,7 @@ const { app, state, logTiming } = await createRuntimeApp({
   runtimeType: 'unified',
   internalPaths: ['/agent/heartbeat/trigger'],
   authPrefixes: ['/agent', '/pool', '/diagnostics', '/terminal'],
+  acceptsScopedToken: acceptsAppToolToken,
   async onAssign(projectId, envVars) {
     const hostWorkspacesRoot = envVars.SHOGO_HOST_WORKSPACES_ROOT || '/host-workspaces'
     const assignedWorkspaceDir = envVars.WORKSPACE_DIR || envVars.PROJECT_DIR

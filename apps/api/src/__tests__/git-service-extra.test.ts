@@ -183,7 +183,7 @@ describe('ensureGitignoreIgnoresDeps — exercised via commit()', () => {
       [
         'node_modules/', '.bun/',
         'dist/', 'dist.staging/', 'dist.canvas.staging/', 'dist.publish.staging/', 'dist.prev/',
-        'build/', '.output/', '.nitro/', '.shogo/',
+        'build/', '.output/', '.nitro/', '.shogo/', '.tmp/',
         'nul', 'con', 'prn', 'aux',
       ].join('\n') + '\n',
     )

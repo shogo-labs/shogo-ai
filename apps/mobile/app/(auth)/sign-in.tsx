@@ -8,7 +8,7 @@ import { EmailNotVerifiedError } from '@shogo/shared-app/auth'
 import { useTheme } from '../../contexts/theme'
 import { usePlatformConfig } from '../../lib/platform-config'
 import { trackSignUp, trackLogin } from '../../lib/tracking'
-import { getStoredAttribution, clearStoredAttribution } from '../../lib/attribution'
+import { discardPendingSignupAttribution, flushSignupAttribution, queueSignupAttribution } from '../../lib/attribution'
 import { api, createHttpClient, API_URL } from '../../lib/api'
 import { getPasswordResetRedirectUrl } from '../../lib/password-reset-redirect'
 import { LoginScreen } from '@shogo/shared-ui/screens'
@@ -88,13 +88,14 @@ export default function SignInScreen() {
     }
   }
 
-  const sendAttribution = async (method: 'email' | 'google' | 'apple') => {
-    try {
-      const attribution = getStoredAttribution()
-      const http = createHttpClient()
-      await api.postSignupAttribution(http, { ...attribution, method })
-      clearStoredAttribution()
-    } catch {}
+  // Post when the signup response already has a session. If verification is
+  // required, this 401s and the queued payload stays until the signed-in app
+  // shell retries. Google and Apple only queue: those buttons also sign in
+  // existing accounts, and posting here would attribute the old account.
+  const sendEmailAttribution = () => {
+    queueSignupAttribution('email')
+    const http = createHttpClient()
+    void flushSignupAttribution((body) => api.postSignupAttribution(http, body)).catch(() => {})
   }
 
   const handleSignUp = async (name: string, email: string, password: string) => {
@@ -111,7 +112,7 @@ export default function SignInScreen() {
           : undefined
       const result = await signUp(name, email, password, verifyCallback ? { callbackURL: verifyCallback } : undefined)
       trackSignUp('email')
-      sendAttribution('email')
+      sendEmailAttribution()
       if (result.requiresVerification) {
         router.replace({ pathname: '/(auth)/verify-email', params: { email, next: nextPath !== '/' ? nextPath : undefined } as any })
       } else {
@@ -121,6 +122,9 @@ export default function SignInScreen() {
   }
 
   const handleGoogleSignIn = () => {
+    // Queue before the redirect. The app shell posts after the round trip,
+    // and only if the account was just created.
+    queueSignupAttribution('google')
     try { sessionStorage.setItem('oauth_pending', 'google') } catch {}
     // Pass an absolute callbackURL built from `?next=…` so post-OAuth
     // users return to e.g. /auth/cli-link?state=… instead of `/`.
@@ -150,6 +154,9 @@ export default function SignInScreen() {
   //      The raw value never leaves the client; the hashed value travels
   //      with both legs of the flow so they can be compared.
   const handleAppleSignIn = async () => {
+    // Queue before sign-in so the app shell's auth effect sees it. A cancelled
+    // or failed attempt drops the queue in the catch below.
+    queueSignupAttribution('apple')
     try {
       const rawNonce = Array.from(Crypto.getRandomBytes(32))
         .map(b => b.toString(16).padStart(2, '0'))
@@ -170,9 +177,9 @@ export default function SignInScreen() {
       }
       await signInWithApple({ idToken: credential.identityToken, nonce: hashedNonce })
       trackLogin('apple')
-      sendAttribution('apple')
       try { navigateAfterAuth() } catch {}
     } catch (e: any) {
+      discardPendingSignupAttribution()
       if (e?.code === 'ERR_REQUEST_CANCELED') return
       clearError()
       Alert.alert('Apple sign-in failed', e?.message || 'Please try again.')

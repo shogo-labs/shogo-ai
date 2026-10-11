@@ -490,6 +490,20 @@ describe('discovery error paths', () => {
     expect(result.error).toBeDefined()
   })
 
+  test('connect filesystem and computer-use point at the built-in tools', async () => {
+    const saved = process.env.SHOGO_LOCAL_MODE
+    delete process.env.SHOGO_LOCAL_MODE
+    try {
+      const ctx = createCtx({ mcpClientManager: { isRunning: () => false } as any })
+      const files = await call(ctx, 'connect', { name: 'filesystem', source: 'mcp' })
+      expect(files.error).toMatch(/read_file/)
+      const computer = await call(ctx, 'connect', { name: 'computer-use', source: 'mcp' })
+      expect(computer.error).toMatch(/Use exec/)
+    } finally {
+      if (saved !== undefined) process.env.SHOGO_LOCAL_MODE = saved
+    }
+  })
+
   test('disconnect returns an error for a server that is not running', async () => {
     const result = await call(createCtx(), 'disconnect', { name: 'github' })
     expect(typeof result.error).toBe('string')

@@ -262,6 +262,8 @@ export interface CredentialWrapperContext {
   projectId: string
   requesterTicket?: string
   uiWriter?: { write(chunk: Record<string, any>): void }
+  /** Shared across tool calls in one turn so a toolkit raises one reconnect card. */
+  reconnectCardsShown?: Set<string>
 }
 
 function blockedResult(provider: string, resolved: Extract<ResolvedCredential, { ok: false }>) {
@@ -288,10 +290,12 @@ function blockedResult(provider: string, resolved: Extract<ResolvedCredential, {
  */
 export function createIntegrationCredentialWrapper(ctx: CredentialWrapperContext): (tool: AgentTool) => AgentTool {
   const wrapped = new WeakMap<AgentTool, AgentTool>()
+  const reconnectCardsShown = ctx.reconnectCardsShown ?? new Set<string>()
+  const turnCtx: CredentialWrapperContext = { ...ctx, reconnectCardsShown }
   return (tool) => {
     let result = wrapped.get(tool)
     if (!result) {
-      result = withIntegrationCredentials(tool, ctx)
+      result = withIntegrationCredentials(tool, turnCtx)
       wrapped.set(tool, result)
     }
     return result
@@ -300,7 +304,11 @@ export function createIntegrationCredentialWrapper(ctx: CredentialWrapperContext
 
 export function withIntegrationCredentials(tool: AgentTool, ctx: CredentialWrapperContext): AgentTool {
   const execute: AgentTool['execute'] = async (toolCallId, params, signal, onUpdate) => {
-    const scope: CredentialScope = { requesterTicket: ctx.requesterTicket }
+    const scope: CredentialScope = {
+      requesterTicket: ctx.requesterTicket,
+      uiWriter: ctx.uiWriter,
+      reconnectCardsShown: ctx.reconnectCardsShown,
+    }
     const meta = toolCredentialMeta(tool, params)
     const projectId = projectScopedId(ctx.projectId)
     let used: Extract<ResolvedCredential, { ok: true }> | null = null

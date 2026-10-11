@@ -152,6 +152,25 @@ describe('bogusPathPrefixHint via read_file File-not-found branch', () => {
     expect(r.error).not.toContain('Hint:')
   })
 
+  test('hints when the project-id folder is off by one character', async () => {
+    const id = '11111111-1111-1111-1111-111111111111'
+    mkdirSync(join(TEST_DIR, id, 'src'), { recursive: true })
+    writeFileSync(join(TEST_DIR, id, 'src/App.tsx'), 'export default 1\n')
+    const typo = '11111111-1111-1111-1111-111111111112'
+    const ctx = makeCtx()
+    const r = await runTool(ctx, 'read_file', { path: `${typo}/src/App.tsx` })
+    expect(r.error).toContain(`did you mean "${id}/src/App.tsx"`)
+  })
+
+  test('hints when the path exists under the only mounted project', async () => {
+    const id = 'only-project'
+    mkdirSync(join(TEST_DIR, id, 'src'), { recursive: true })
+    writeFileSync(join(TEST_DIR, id, 'src/App.tsx'), 'export default 1\n')
+    const ctx = makeCtx()
+    const r = await runTool(ctx, 'read_file', { path: 'src/App.tsx' })
+    expect(r.error).toContain(`Try "${id}/src/App.tsx"`)
+  })
+
   test('bare prefix (just "project/") with no remainder → no hint', async () => {
     const ctx = makeCtx()
     const r = await runTool(ctx, 'read_file', { path: 'project/' })
