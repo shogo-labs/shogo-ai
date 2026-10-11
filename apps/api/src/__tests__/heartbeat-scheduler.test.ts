@@ -151,7 +151,7 @@ describe('HeartbeatScheduler constructor', () => {
 // ─── fetchDueAgents (SQL contract) ───────────────────────────────────────
 
 describe('fetchDueAgents — SQL contract', () => {
-  test('issues a $queryRaw call against agent_configs JOIN projects JOIN subscriptions', async () => {
+  test('issues a $queryRaw call against agent_configs, projects, and the billing workspace', async () => {
     queryRawMock.mockImplementation(async () => [])
     const s = new TestableScheduler()
     await s._fetchDueAgents()
@@ -165,6 +165,11 @@ describe('fetchDueAgents — SQL contract', () => {
     expect(sql).toContain('subscriptions')
     expect(sql).toContain('heartbeatenabled')
     expect(sql).toContain('nextheartbeatat')
+    // Paid-plan gate follows the parent workspace and paid grants, matching
+    // getEffectivePlanId — not only a subscription on the project workspace.
+    expect(sql).toContain('parentworkspaceid')
+    expect(sql).toContain('workspace_grants')
+    expect(sql).toContain('coalesce(w."parentworkspaceid", w."id")')
   })
 
   test("SQL contains 'FOR UPDATE OF ac SKIP LOCKED' (concurrent-pod safety pin)", async () => {

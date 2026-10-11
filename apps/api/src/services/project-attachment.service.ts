@@ -134,14 +134,18 @@ export async function detachProjectFromProject(
  */
 export async function getAnchorLocalFolders(anchorProjectId: string): Promise<string[]> {
   let anchor: { remoteHostId?: string | null } | null = null
-  try {
-    anchor = (await prisma.project.findUnique({
-      where: { id: anchorProjectId },
-      select: { remoteHostId: true } as any,
-    })) as { remoteHostId?: string | null } | null
-  } catch (err: any) {
-    // The cloud schema has no Remote-SSH columns; only the desktop schema does.
-    if (err?.name !== 'PrismaClientValidationError') throw err
+  // `remoteHostId` exists only on the desktop schema. Selecting it on cloud
+  // makes Prisma log a validation error (before the throw) on every call.
+  if (process.env.SHOGO_LOCAL_MODE === 'true') {
+    try {
+      anchor = (await prisma.project.findUnique({
+        where: { id: anchorProjectId },
+        select: { remoteHostId: true } as any,
+      })) as { remoteHostId?: string | null } | null
+    } catch (err: any) {
+      // Older desktop databases may not have the Remote-SSH column yet.
+      if (err?.name !== 'PrismaClientValidationError') throw err
+    }
   }
   if (anchor?.remoteHostId) return []
 

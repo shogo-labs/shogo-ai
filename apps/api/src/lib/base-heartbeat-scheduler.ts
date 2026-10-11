@@ -339,8 +339,9 @@ export abstract class BaseHeartbeatScheduler {
 
   /**
    * Query the database for agents whose heartbeat is due.
-   * Cloud uses raw SQL with FOR UPDATE SKIP LOCKED + subscription join.
-   * Local uses Prisma findMany without subscription check.
+   * Cloud uses raw SQL with FOR UPDATE SKIP LOCKED and a billing-workspace
+   * check (own or parent subscription, or a paid grant).
+   * Local uses Prisma findMany without a subscription check.
    * Rows enabled with no `nextHeartbeatAt` are returned with `unscheduled: true`.
    */
   protected abstract fetchDueAgents(): Promise<DueAgent[]>

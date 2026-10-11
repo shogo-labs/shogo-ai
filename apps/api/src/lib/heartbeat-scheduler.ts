@@ -105,6 +105,13 @@ export class HeartbeatScheduler extends BaseHeartbeatScheduler {
    * can never trigger the same project twice. (A bare `SELECT ... FOR UPDATE`
    * outside a transaction releases its lock immediately.)
    *
+   * Paid-plan gate matches `getEffectivePlanId`: the billing workspace is the
+   * parent when this workspace pools one, otherwise itself, and it qualifies
+   * with an active/trialing subscription or an unexpired grant whose planId
+   * ranks basic or higher (`normalizePlanId` prefix match). `EXISTS` (not a
+   * join) so two subscriptions on one workspace can't duplicate a row inside
+   * the `LIMIT`. The home-region filter stays on the child workspace.
+   *
    * Rows that are enabled but have no `nextHeartbeatAt` are claimed too and
    * flagged `unscheduled`; the base class then skips them instead of firing.
    */
@@ -119,10 +126,22 @@ export class HeartbeatScheduler extends BaseHeartbeatScheduler {
         FROM "agent_configs" ac
         JOIN "projects" p ON p."id" = ac."projectId"
         JOIN "workspaces" w ON w."id" = p."workspaceId"
-        JOIN "subscriptions" s ON s."workspaceId" = p."workspaceId"
-          AND s."status" IN ('active', 'trialing')
         WHERE ac."heartbeatEnabled" = true
           AND (ac."nextHeartbeatAt" IS NULL OR ac."nextHeartbeatAt" <= NOW())
+          AND (
+            EXISTS (
+              SELECT 1 FROM "subscriptions" s
+              WHERE s."workspaceId" = COALESCE(w."parentWorkspaceId", w."id")
+                AND s."status" IN ('active', 'trialing')
+            )
+            OR EXISTS (
+              SELECT 1 FROM "workspace_grants" g
+              WHERE g."workspaceId" = COALESCE(w."parentWorkspaceId", w."id")
+                AND g."startsAt" <= NOW()
+                AND (g."expiresAt" IS NULL OR g."expiresAt" > NOW())
+                AND lower(g."planId") ~ '^(basic|pro|business|enterprise)'
+            )
+          )
           ${homeFilter}
         ORDER BY ac."nextHeartbeatAt" ASC NULLS FIRST
         FOR UPDATE OF ac SKIP LOCKED

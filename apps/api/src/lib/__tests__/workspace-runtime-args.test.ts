@@ -49,10 +49,15 @@ describe('anchorRuntimeOpts localFolders', () => {
   })
 
   it('returns no local folders for a Remote-SSH anchor', async () => {
-    s.projects.set('anchor', { id: 'anchor', remoteHostId: 'host-1' })
-    s.folders = [{ projectId: 'anchor', path: '/home/dev/app' }]
-    const extra = await anchorRuntimeOpts('sess', [])
-    expect(extra.anchorProjectId).toBe('anchor')
-    expect(extra.localFolders).toEqual([])
+    process.env.SHOGO_LOCAL_MODE = 'true'
+    try {
+      s.projects.set('anchor', { id: 'anchor', remoteHostId: 'host-1' })
+      s.folders = [{ projectId: 'anchor', path: '/home/dev/app' }]
+      const extra = await anchorRuntimeOpts('sess', [])
+      expect(extra.anchorProjectId).toBe('anchor')
+      expect(extra.localFolders).toEqual([])
+    } finally {
+      delete process.env.SHOGO_LOCAL_MODE
+    }
   })
 })

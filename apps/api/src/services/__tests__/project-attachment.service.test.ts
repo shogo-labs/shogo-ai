@@ -30,6 +30,7 @@ const s: State = {
 }
 
 let rejectRemoteHostSelect = false
+const projectFinds: any[] = []
 
 let idSeq = 0
 
@@ -37,6 +38,7 @@ mock.module('../../lib/prisma', () => ({
   prisma: {
     project: {
       findUnique: async (args: any) => {
+        projectFinds.push(args)
         if (rejectRemoteHostSelect && args.select?.remoteHostId) {
           const err = new Error('Unknown field `remoteHostId` for select statement on model `Project`.')
           err.name = 'PrismaClientValidationError'
@@ -124,6 +126,8 @@ beforeEach(() => {
   s.folders = []
   idSeq = 0
   rejectRemoteHostSelect = false
+  projectFinds.length = 0
+  delete process.env.SHOGO_LOCAL_MODE
 })
 
 describe('attachProjectToProject', () => {
@@ -194,14 +198,22 @@ describe('getAnchorLocalFolders', () => {
   })
 
   it('does not report a Remote-SSH anchor\'s remote folder as a local folder', async () => {
+    process.env.SHOGO_LOCAL_MODE = 'true'
     s.projects.set('anchor', { id: 'anchor', workspaceId: 'ws1', name: 'Anchor', remoteHostId: 'host-1' })
     s.folders = [{ projectId: 'anchor', path: '/home/dev/app' }]
     expect(await svc.getAnchorLocalFolders('anchor')).toEqual([])
   })
 
-  it('works on the cloud schema, which has no remoteHostId column', async () => {
+  it('still returns folders when an older desktop database has no remoteHostId column', async () => {
+    process.env.SHOGO_LOCAL_MODE = 'true'
     rejectRemoteHostSelect = true
     s.folders = [{ projectId: 'anchor', path: '/Users/me/data' }]
     expect(await svc.getAnchorLocalFolders('anchor')).toEqual(['/Users/me/data'])
+  })
+
+  it('does not select remoteHostId outside local mode', async () => {
+    s.folders = [{ projectId: 'anchor', path: '/Users/me/data' }]
+    expect(await svc.getAnchorLocalFolders('anchor')).toEqual(['/Users/me/data'])
+    expect(projectFinds.some((args) => args.select?.remoteHostId)).toBe(false)
   })
 })
