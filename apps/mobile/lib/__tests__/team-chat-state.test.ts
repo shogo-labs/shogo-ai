@@ -7,6 +7,11 @@ import {
   decodeMentions,
   scheduleOptions,
   expiryFrom,
+  flattenMarkdownBlocks,
+  inlineMarkdownSegments,
+  inlinePreview,
+  markdownToPlainText,
+  plainPreview,
   searchSnippet,
   activeMentionQuery,
   addOptimistic,
@@ -262,7 +267,8 @@ describe('searchSnippet', () => {
 
   test('highlights word-prefix matches and renders mentions', () => {
     expect(searchSnippet('<@u:u1> is shipping the Launch', ['ship', 'launch'], names)).toEqual([
-      { text: '@Ada is ', match: false },
+      { text: '@Ada', match: false, bold: true },
+      { text: ' is ', match: false },
       { text: 'shipping', match: true },
       { text: ' the ', match: false },
       { text: 'Launch', match: true },
@@ -280,6 +286,50 @@ describe('searchSnippet', () => {
 
   test('without terms it is a truncated preview', () => {
     expect(searchSnippet('hello there', [], names)).toEqual([{ text: 'hello there', match: false }])
+  })
+
+  test('drops heading markers and keeps bold on the matched word', () => {
+    const segments = searchSnippet('## Ship the launch', ['launch'], names)
+    expect(segments.map((s) => s.text).join('')).toBe('Ship the launch')
+    expect(segments.some((s) => s.match && s.text === 'launch')).toBe(true)
+    expect(segments.some((s) => s.text.includes('#'))).toBe(false)
+  })
+})
+
+describe('markdown previews', () => {
+  const names = { users: new Map([['u1', 'Ada']]), agents: new Map() }
+
+  test('flattens blocks and keeps inline markers', () => {
+    expect(flattenMarkdownBlocks('## Done\n\n**shipped** the fix\n- see `main`\n\n```ts\nconst x = 1\n```')).toBe(
+      'Done **shipped** the fix see `main` const x = 1',
+    )
+    expect(flattenMarkdownBlocks('> quoted\n\n| a | b |\n| --- | --- |\n| 1 | 2 |\n\n![shot](https://example.com/a.png)')).toBe(
+      'quoted a b 1 2 shot',
+    )
+    expect(flattenMarkdownBlocks('```\nconst x = 1')).toBe('const x = 1')
+  })
+
+  test('parses inline formatting and drops an unclosed marker', () => {
+    expect(inlineMarkdownSegments('**bold** and *italic* and ~~gone~~ and `code` and [docs](https://example.com)')).toEqual([
+      { text: 'bold', bold: true },
+      { text: ' and ', },
+      { text: 'italic', italic: true },
+      { text: ' and ', },
+      { text: 'gone', strike: true },
+      { text: ' and ', },
+      { text: 'code', code: true },
+      { text: ' and docs' },
+    ])
+    expect(inlineMarkdownSegments('***both*** snake_case **wor')).toEqual([
+      { text: 'both', bold: true, italic: true },
+      { text: ' snake_case wor' },
+    ])
+  })
+
+  test('plain text strips markers; the DM preview keeps them', () => {
+    expect(markdownToPlainText('## Hi\n\n**Ada**')).toBe('Hi Ada')
+    expect(plainPreview('**hi** <@u:u1>', names)).toBe('hi @Ada')
+    expect(inlinePreview('## Done\n**shipped** <@u:u1>', names)).toBe('Done **shipped** @Ada')
   })
 })
 

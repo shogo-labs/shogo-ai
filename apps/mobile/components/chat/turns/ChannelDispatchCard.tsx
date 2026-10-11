@@ -14,6 +14,7 @@ import { useRouter } from "expo-router"
 import { cn } from "@shogo/shared-ui/primitives"
 import type { ChannelDispatch } from "@shogo/shared-app/chat"
 import { conversationThreadRoute } from "../../../lib/team-chat-nav"
+import { ChatMarkdown } from "../ChatMarkdown"
 
 export interface ChannelDispatchCardProps {
   dispatch: ChannelDispatch
@@ -93,14 +94,9 @@ export function ChannelDispatchCard({
             </Text>
           </Pressable>
           {dispatch.trigger.text ? (
-            <Text
-              className={cn(
-                "text-sm leading-5",
-                isBubble ? "text-white" : "text-foreground",
-              )}
-            >
+            <ChatMarkdown isStreaming={false} className={isBubble ? "text-white" : undefined}>
               {dispatch.trigger.text}
-            </Text>
+            </ChatMarkdown>
           ) : null}
         </View>
       </View>

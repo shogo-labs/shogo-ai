@@ -8,7 +8,8 @@ import { useState } from 'react'
 import { Linking, Pressable, Text, View } from 'react-native'
 import { AlertTriangle, Check, ChevronDown, ChevronRight, Circle, ExternalLink, Loader2 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
-import { MarkdownText } from '../chat/MarkdownText'
+import { ChatMarkdown } from '../chat/ChatMarkdown'
+import { InlineMarkdown } from './InlineMarkdown'
 import type { ChatMessage } from '../../lib/team-chat-api'
 import { cardProgress, stepStates, type ApprovalCard, type CardStatus, type StatusCard } from '../../lib/team-chat-kinds'
 import { answerApproval } from '../../lib/approval-decision'
@@ -92,7 +93,7 @@ export function StatusCardView({ card, onOpenLink }: { card: StatusCard; onOpenL
 
       {card.summary ? (
         <View testID="status-card-summary">
-          <MarkdownText>{card.summary}</MarkdownText>
+          <ChatMarkdown isStreaming={false}>{card.summary}</ChatMarkdown>
         </View>
       ) : null}
     </View>
@@ -221,7 +222,9 @@ export function StatusRunRow({ latest, folded, onOpenThread }: { latest: ChatMes
         <AgentAvatar name={name} projectId={latest.authorAgent?.projectId ?? null} workspaceId={latest.workspaceId} iconUrl={latest.authorAgent?.iconUrl} size={20} />
         <Chevron size={12} className="text-muted-foreground" />
         <Text className="text-xs font-medium text-muted-foreground">{`${name} · ${all.length} updates`}</Text>
-        {!open ? <Text className="min-w-0 flex-1 text-xs text-muted-foreground" numberOfLines={1}>{latest.text}</Text> : null}
+        {!open ? (
+          <InlineMarkdown text={latest.text} numberOfLines={1} className="min-w-0 flex-1 text-xs text-muted-foreground" />
+        ) : null}
         <Text className="text-[11px] text-muted-foreground">{formatTime(latest.createdAt)}</Text>
       </Pressable>
       {open ? (
@@ -229,7 +232,7 @@ export function StatusRunRow({ latest, folded, onOpenThread }: { latest: ChatMes
           {all.map((m) => (
             <Pressable key={m.id} onPress={onOpenThread ? () => onOpenThread(m) : undefined} className="flex-row gap-2">
               <Text className="w-14 text-[11px] text-muted-foreground">{formatTime(m.createdAt)}</Text>
-              <View className="min-w-0 flex-1"><MarkdownText>{m.text}</MarkdownText></View>
+              <View className="min-w-0 flex-1"><ChatMarkdown isStreaming={false}>{m.text}</ChatMarkdown></View>
             </Pressable>
           ))}
         </View>

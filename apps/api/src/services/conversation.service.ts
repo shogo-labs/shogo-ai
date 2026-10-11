@@ -10,7 +10,7 @@
 import { prisma } from '../lib/prisma'
 import { accessibleProjectsWhere, loadAccess as loadAuthzAccess } from '../lib/authz'
 import { publishConversationEvent } from '../lib/conversation-bus'
-import { parseMentions, renderMentionsAsText, type AgentTarget, type ParsedMention } from './conversation-mentions'
+import { flattenMarkdownBlocks, parseMentions, renderMentionsAsText, type AgentTarget, type ParsedMention } from './conversation-mentions'
 import { assertNativeChat } from './chat-mode'
 import type { AgentChain } from './conversation-agent-chain'
 import { normalizeBuddyLook, type BuddyLook } from '../../../../packages/shared-app/src/buddy-look'
@@ -469,7 +469,7 @@ export async function lastMessagePreviews(conversationIds: string[]): Promise<Ma
     select: { conversationId: true, text: true, authorUserId: true, authorType: true, createdAt: true },
   })
   for (const row of rows as any[]) {
-    const preview = renderMentionsAsText(row.text ?? '').replace(/\s+/g, ' ').trim().slice(0, LAST_MESSAGE_PREVIEW_CHARS)
+    const preview = flattenMarkdownBlocks(renderMentionsAsText(row.text ?? '')).slice(0, LAST_MESSAGE_PREVIEW_CHARS)
     out.set(row.conversationId, { preview, authorId: row.authorUserId ?? null, authorType: row.authorType, createdAt: row.createdAt })
   }
   return out

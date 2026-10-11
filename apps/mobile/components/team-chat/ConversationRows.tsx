@@ -14,6 +14,7 @@ import { usePhoneLayout } from '../../lib/native-phone-layout'
 import { conversationTitle, type ConversationSummary } from '../../lib/team-chat-api'
 import { useHasDraft } from '../../hooks/useChatItems'
 import { PresenceDot } from './PresenceDot'
+import { InlineMarkdown } from './InlineMarkdown'
 
 export function conversationHref(id: string): string {
   return `/(app)/c/${encodeURIComponent(id)}`
@@ -100,9 +101,12 @@ export function ConversationRow({ conversation: c, workspaceId, active = false, 
           {title}
         </Text>
         {preview && c.lastMessage?.preview ? (
-          <Text className={cn('text-xs', unread ? 'text-foreground' : 'text-muted-foreground')} numberOfLines={1} testID="conversation-preview">
-            {c.lastMessage.preview}
-          </Text>
+          <InlineMarkdown
+            text={c.lastMessage.preview}
+            numberOfLines={1}
+            testID="conversation-preview"
+            className={cn('text-xs', unread ? 'text-foreground' : 'text-muted-foreground')}
+          />
         ) : null}
       </View>
       {!active && <DraftMark conversationId={c.id} />}

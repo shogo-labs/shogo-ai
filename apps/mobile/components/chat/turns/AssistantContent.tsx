@@ -39,8 +39,7 @@ import { buildFallbackWorkedLabel } from "./workSummary"
 import { TASK_TOOL_NAMES, extractOrderedParts } from "./messageParts"
 import { useChatContextSafe } from "../ChatContext"
 import { resolveChatAttachmentUrl } from "../../../lib/chat-attachment-url"
-import { MarkdownText } from "../MarkdownText"
-import { useMobileWorkspaceChrome } from "../../layout/MobileWorkspaceChromeContext"
+import { ChatMarkdown } from "../ChatMarkdown"
 import { GenerateImageWidget } from "./GenerateImageWidget"
 import { FileDeliveryWidget } from "./FileDeliveryWidget"
 import { GeneratedImageGallery } from "./GeneratedImageGallery"
@@ -441,7 +440,6 @@ export const AssistantContent = memo(
   }: AssistantContentProps) {
     const chatContext = useChatContextSafe()
     const nativePhone = useIsNativePhoneLayout()
-    const usesMobileWorkspaceChrome = useMobileWorkspaceChrome()
 
     const [expandedTools, setExpandedTools] = useState<Set<string>>(new Set())
 
@@ -623,17 +621,12 @@ export const AssistantContent = memo(
       if (part.type === "text") {
         return (
           <View key={part.id}>
-            <MarkdownText
-              className={
-                Platform.OS !== "web" || usesMobileWorkspaceChrome
-                  ? "text-foreground text-base leading-6"
-                  : "text-foreground text-xs prose-sm"
-              }
+            <ChatMarkdown
               isStreaming={part.id === streamingTextPartId}
               onFilePress={chatContext?.openFile}
             >
               {part.text}
-            </MarkdownText>
+            </ChatMarkdown>
           </View>
         )
       }

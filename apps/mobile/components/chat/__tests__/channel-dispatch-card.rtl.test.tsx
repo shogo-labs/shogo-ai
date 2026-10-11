@@ -117,6 +117,18 @@ describe('channel dispatch card', () => {
     expect(screen.getByText('@Ops run the check')).toBeTruthy()
   })
 
+  test('the message is rendered as markdown', () => {
+    renderMessage(message({
+      parts: [
+        { type: 'text', text: prompt },
+        { type: 'data-channel-dispatch', data: { ...dispatch, trigger: { authorName: 'Russell', text: '**bold** ask' } } },
+      ],
+    }))
+    expect(screen.getByText('bold')).toBeTruthy()
+    expect(screen.getByText(/ask/)).toBeTruthy()
+    expect(document.body.textContent).not.toContain('**')
+  })
+
   test('an ordinary user message still shows its text and can be edited', () => {
     renderMessage(message({ content: 'please rename the button', parts: [{ type: 'text', text: 'please rename the button' }] }))
     expect(screen.getByText('please rename the button')).toBeTruthy()

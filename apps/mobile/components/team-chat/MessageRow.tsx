@@ -10,7 +10,7 @@ import { ActionSheetIOS, Alert, Image, Linking, Modal, Platform, Pressable, Text
 import * as Clipboard from 'expo-clipboard'
 import { AlarmClock, AlertCircle, Bookmark, Check, CircleDot, CornerDownRight, FileText, Link2, Loader2, MessageSquare, MoreHorizontal, Pencil, Pin, SmilePlus, Square, Trash2 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
-import { MarkdownText } from '../chat/MarkdownText'
+import { ChatMarkdown } from '../chat/ChatMarkdown'
 import { SidebarContextMenu, type SidebarMenuEntry } from '../layout/SidebarContextMenu'
 import { absoluteApiUrl, teamChatApi, type ChatMessage, type LinkUnfurl } from '../../lib/team-chat-api'
 import { messageLink, parseMessageLink } from '../../lib/team-chat-links'
@@ -408,7 +408,7 @@ function MessageRowImpl(props: MessageRowProps) {
       >
         <View className="mt-1.5 h-1.5 w-1.5 rounded-full bg-primary/60" />
         <View className="min-w-0 flex-1">
-          <MarkdownText>{renderMentions(message.text, names)}</MarkdownText>
+          <ChatMarkdown isStreaming={false}>{renderMentions(message.text, names)}</ChatMarkdown>
           {viewHref ? (
             <Pressable
               onPress={() => openMessageLinkInApp(viewHref)}
@@ -567,7 +567,7 @@ function MessageRowImpl(props: MessageRowProps) {
                       {jumbo.map((code, i) => <ReactionGlyph key={`${code}-${i}`} emoji={code} size={32} />)}
                     </View>
                   ) : (
-                    <MarkdownText isStreaming={running} onLinkPress={openMessageLinkInApp}>{renderMentions(body, names)}</MarkdownText>
+                    <ChatMarkdown isStreaming={running} onLinkPress={openMessageLinkInApp}>{renderMentions(body, names)}</ChatMarkdown>
                   )}
                 </View>
               )

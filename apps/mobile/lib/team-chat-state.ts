@@ -181,7 +181,7 @@ export function applyListEvent(
         lastSeq: Math.max(c.lastSeq, message.seq),
         lastMessageAt: visibleInChannel ? message.createdAt : c.lastMessageAt,
         lastMessage: visibleInChannel && (c.kind === 'dm' || c.kind === 'group_dm')
-          ? { preview: plainPreview(message.text, { users: new Map(), agents: new Map() }, 140), authorId: message.authorUserId, authorType: message.authorType, createdAt: message.createdAt }
+          ? { preview: inlinePreview(message.text, { users: new Map(), agents: new Map() }, 140), authorId: message.authorUserId, authorType: message.authorType, createdAt: message.createdAt }
           : c.lastMessage,
         lastReadSeq: caughtUp ? Math.max(c.lastReadSeq, message.seq) : c.lastReadSeq,
         unreadCount: caughtUp ? 0 : c.joined && visibleInChannel ? c.unreadCount + 1 : c.unreadCount,
@@ -365,46 +365,291 @@ export function renderMentions(text: string, names: MentionNames): string {
     .replace(/<@g:([^>]+)>/g, (_m, id) => `**@${names.groups?.get(id) ?? 'group'}**`)
 }
 
-/** Plain-text preview for notifications/sidebars. */
+/** Mention tokens as plain `@name` labels, leaving the message's own markdown alone. */
+function renderMentionLabels(text: string, names: MentionNames): string {
+  return text
+    .replace(/<@u:([^>]+)>/g, (_m, id) => `@${names.users.get(id) ?? 'someone'}`)
+    .replace(/<@a:(ws|p:[^>]+)>/g, (_m, key) => `@${names.agents.get(key) ?? 'agent'}`)
+    .replace(/<!(here|channel)>/g, (_m, which) => `@${which}`)
+    .replace(/<#c:([^>]+)>/g, (_m, id) => `#${names.conversations?.get(id) ?? 'channel'}`)
+    .replace(/<@g:([^>]+)>/g, (_m, id) => `@${names.groups?.get(id) ?? 'group'}`)
+}
+
+export interface InlineSegment {
+  text: string
+  bold?: boolean
+  italic?: boolean
+  strike?: boolean
+  code?: boolean
+}
+
+interface InlineStyle {
+  bold?: boolean
+  italic?: boolean
+  strike?: boolean
+  code?: boolean
+}
+
+/**
+ * Drop block syntax and collapse to one line, keeping inline markers.
+ * Mirrors `flattenMarkdownBlocks` in the API's `conversation-mentions`.
+ */
+export function flattenMarkdownBlocks(text: string): string {
+  let source = text.replace(/\r\n/g, '\n')
+  source = source.replace(/```[^\n]*\n([\s\S]*?)```/g, (_m, code: string) => code.replace(/\n+$/, ''))
+  source = source.replace(/~~~[^\n]*\n([\s\S]*?)~~~/g, (_m, code: string) => code.replace(/\n+$/, ''))
+  source = source.replace(/^[ \t]*```[^\n]*$/gm, '')
+  source = source.replace(/^[ \t]*~~~[^\n]*$/gm, '')
+  source = source.replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')
+  const lines: string[] = []
+  for (const raw of source.split('\n')) {
+    let line = raw.trim()
+    if (!line) continue
+    if (/^(-{3,}|\*{3,}|_{3,})$/.test(line)) continue
+    if (/^\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?$/.test(line)) continue
+    while (/^#{1,6}\s+/.test(line)) line = line.replace(/^#{1,6}\s+/, '')
+    while (/^>\s?/.test(line)) line = line.replace(/^>\s?/, '')
+    line = line.replace(/^(?:[-*+]|\d+[.)])\s+/, '')
+    const pipes = line.split('|').length - 1
+    if (line.startsWith('|') || pipes >= 2) {
+      line = line.replace(/^\|/, '').replace(/\|$/, '').split('|').map((cell) => cell.trim()).filter(Boolean).join(' ')
+    }
+    line = line.trim()
+    if (line) lines.push(line)
+  }
+  return lines.join(' ').replace(/[ \t]+/g, ' ').trim()
+}
+
+function styleFlags(style: InlineStyle): InlineStyle {
+  const out: InlineStyle = {}
+  if (style.bold) out.bold = true
+  if (style.italic) out.italic = true
+  if (style.strike) out.strike = true
+  if (style.code) out.code = true
+  return out
+}
+
+function isWordChar(ch: string | undefined): boolean {
+  return !!ch && /[\p{L}\p{N}_]/u.test(ch)
+}
+
+function markerAt(src: string, index: number): { token: string; style: InlineStyle } | null {
+  const prev = src[index - 1]
+  const rest = src.slice(index)
+  const candidates: Array<{ token: string; style: InlineStyle; underscore: boolean }> = [
+    { token: '***', style: { bold: true, italic: true }, underscore: false },
+    { token: '___', style: { bold: true, italic: true }, underscore: true },
+    { token: '**', style: { bold: true }, underscore: false },
+    { token: '__', style: { bold: true }, underscore: true },
+    { token: '~~', style: { strike: true }, underscore: false },
+    { token: '*', style: { italic: true }, underscore: false },
+    { token: '_', style: { italic: true }, underscore: true },
+  ]
+  for (const candidate of candidates) {
+    if (!rest.startsWith(candidate.token)) continue
+    const next = src[index + candidate.token.length]
+    if (next === undefined || /\s/.test(next)) continue
+    if ((candidate.token === '*' || candidate.token === '_') && next === candidate.token) continue
+    if (candidate.underscore && (isWordChar(prev) || isWordChar(next))) continue
+    return { token: candidate.token, style: candidate.style }
+  }
+  return null
+}
+
+function findClose(src: string, from: number, token: string): number {
+  let index = from
+  while (index < src.length) {
+    const at = src.indexOf(token, index)
+    if (at === -1) return -1
+    const before = src[at - 1]
+    if (before !== undefined && /\s/.test(before)) {
+      index = at + token.length
+      continue
+    }
+    if (token === '*' || token === '_') {
+      if (src[at + 1] === token) {
+        index = at + 2
+        continue
+      }
+      if (token === '_' && isWordChar(src[at + 1])) {
+        index = at + 1
+        continue
+      }
+    }
+    return at
+  }
+  return -1
+}
+
+function parseInline(src: string, style: InlineStyle, out: InlineSegment[]): void {
+  let index = 0
+  let plain = ''
+  const flush = () => {
+    if (!plain) return
+    const flags = styleFlags(style)
+    const last = out[out.length - 1]
+    if (last && !last.code && !flags.code && last.bold === flags.bold && last.italic === flags.italic && last.strike === flags.strike) {
+      last.text += plain
+    } else {
+      out.push({ text: plain, ...flags })
+    }
+    plain = ''
+  }
+  while (index < src.length) {
+    if (src[index] === '\\' && index + 1 < src.length && /[*_~`\\[\]]/.test(src[index + 1]!)) {
+      plain += src[index + 1]
+      index += 2
+      continue
+    }
+    if (src[index] === '`') {
+      const close = src.indexOf('`', index + 1)
+      if (close === -1) {
+        index++
+        continue
+      }
+      flush()
+      const code = src.slice(index + 1, close)
+      if (code) out.push({ text: code, code: true })
+      index = close + 1
+      continue
+    }
+    if (src[index] === '[') {
+      const link = /^\[([^\]]+)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/.exec(src.slice(index))
+      if (link) {
+        flush()
+        parseInline(link[1]!, style, out)
+        index += link[0].length
+        continue
+      }
+      if (src.indexOf(']', index + 1) === -1) {
+        index++
+        continue
+      }
+    }
+    const marker = markerAt(src, index)
+    if (marker) {
+      const close = findClose(src, index + marker.token.length, marker.token)
+      if (close === -1) {
+        index += marker.token.length
+        continue
+      }
+      flush()
+      parseInline(src.slice(index + marker.token.length, close), { ...style, ...marker.style }, out)
+      index = close + marker.token.length
+      continue
+    }
+    plain += src[index]
+    index++
+  }
+  flush()
+}
+
+/** Inline formatting spans. An unclosed marker is dropped instead of shown. */
+export function inlineMarkdownSegments(text: string): InlineSegment[] {
+  const out: InlineSegment[] = []
+  parseInline(text, {}, out)
+  return out
+}
+
+/** Block syntax flattened, then inline markers removed. For plain-text surfaces. */
+export function markdownToPlainText(text: string): string {
+  return inlineMarkdownSegments(flattenMarkdownBlocks(text)).map((segment) => segment.text).join('').replace(/\s+/g, ' ').trim()
+}
+
+/** Plain-text preview for accessibility labels. */
 export function plainPreview(text: string, names: MentionNames, max = 120): string {
-  const flat = renderMentions(text, names).replace(/\*\*/g, '').replace(/\s+/g, ' ').trim()
+  const flat = markdownToPlainText(renderMentions(text, names))
   return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat
+}
+
+/**
+ * One-line preview that keeps inline markdown (`**bold**`, `code`) so the
+ * DM row can render it. Block syntax is already gone. Matches the server's
+ * `lastMessage.preview`, which slices rather than adding an ellipsis.
+ */
+export function inlinePreview(text: string, names: MentionNames, max = 140): string {
+  const flat = flattenMarkdownBlocks(renderMentionLabels(text, names))
+  return flat.length > max ? flat.slice(0, max) : flat
 }
 
 export interface HighlightSegment {
   text: string
   match: boolean
+  bold?: boolean
+  italic?: boolean
+  strike?: boolean
+  code?: boolean
 }
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
+function sliceSegments(segments: InlineSegment[], start: number, length: number): InlineSegment[] {
+  const out: InlineSegment[] = []
+  let pos = 0
+  for (const segment of segments) {
+    const segStart = pos
+    const segEnd = pos + segment.text.length
+    pos = segEnd
+    if (segEnd <= start || segStart >= start + length) continue
+    const from = Math.max(0, start - segStart)
+    const to = Math.min(segment.text.length, start + length - segStart)
+    const text = segment.text.slice(from, to)
+    if (text) out.push({ ...segment, text })
+  }
+  return out
+}
+
+function windowSegments(segments: InlineSegment[], total: number, start: number, max: number): InlineSegment[] {
+  const taken = sliceSegments(segments, start, max)
+  if (start > 0) taken.unshift({ text: '…' })
+  if (start + max < total) taken.push({ text: '…' })
+  return taken
+}
+
+function asHighlight(segment: InlineSegment, match: boolean): HighlightSegment {
+  const out: HighlightSegment = { text: segment.text, match }
+  if (segment.bold) out.bold = true
+  if (segment.italic) out.italic = true
+  if (segment.strike) out.strike = true
+  if (segment.code) out.code = true
+  return out
+}
+
+function splitHighlights(segments: InlineSegment[], re: RegExp): HighlightSegment[] {
+  const out: HighlightSegment[] = []
+  for (const segment of segments) {
+    re.lastIndex = 0
+    let last = 0
+    for (const match of segment.text.matchAll(re)) {
+      const at = match.index ?? 0
+      if (at > last) out.push(asHighlight({ ...segment, text: segment.text.slice(last, at) }, false))
+      out.push(asHighlight({ ...segment, text: match[0] }, true))
+      last = at + match[0].length
+    }
+    if (last < segment.text.length) out.push(asHighlight({ ...segment, text: segment.text.slice(last) }, false))
+  }
+  return out.length ? out : [{ text: '', match: false }]
+}
+
 /**
  * A search-result excerpt around the first matching term, split into
- * segments so matches can be emphasised. Terms match word prefixes, which
- * approximates the server's stemming ("ship" highlights "shipping").
+ * segments so matches can be emphasised. Inline markdown stays on the
+ * segments. Terms match word prefixes, which approximates the server's
+ * stemming ("ship" highlights "shipping").
  */
 export function searchSnippet(text: string, terms: string[], names: MentionNames, max = 220): HighlightSegment[] {
-  const flat = renderMentions(text, names).replace(/\*\*/g, '').replace(/\s+/g, ' ').trim()
-  const words = terms.map((t) => t.trim()).filter(Boolean)
-  if (!words.length) return [{ text: flat.length > max ? `${flat.slice(0, max - 1)}…` : flat, match: false }]
+  const segments = inlineMarkdownSegments(flattenMarkdownBlocks(renderMentions(text, names)))
+  const flat = segments.map((segment) => segment.text).join('')
+  if (!flat) return [{ text: '', match: false }]
+  const words = terms.map((term) => term.trim()).filter(Boolean)
+  if (!words.length) return splitHighlights(windowSegments(segments, flat.length, 0, max), /$^/g)
   const re = new RegExp(`\\b(${words.map(escapeRegExp).join('|')})\\w*`, 'gi')
   const first = flat.search(re)
   let start = 0
   if (first > max / 3) start = Math.max(0, flat.lastIndexOf(' ', first - Math.floor(max / 3)) + 1)
-  let excerpt = flat.slice(start, start + max)
-  if (start > 0) excerpt = `…${excerpt}`
-  if (start + max < flat.length) excerpt = `${excerpt}…`
-  const segments: HighlightSegment[] = []
-  let last = 0
-  for (const m of excerpt.matchAll(re)) {
-    if (m.index! > last) segments.push({ text: excerpt.slice(last, m.index), match: false })
-    segments.push({ text: m[0], match: true })
-    last = m.index! + m[0].length
-  }
-  if (last < excerpt.length) segments.push({ text: excerpt.slice(last), match: false })
-  return segments
+  return splitHighlights(windowSegments(segments, flat.length, start, max), re)
 }
 
 export type ClearAfter = number | 'today' | 'tomorrow' | null

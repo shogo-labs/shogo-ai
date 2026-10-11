@@ -329,7 +329,9 @@ describe('MessageRow', () => {
   test('renders mentions by name, and a running agent reply streams with a Stop control', () => {
     const h = handlers()
     const { rerender } = render(<MessageRow message={message()} grouped={false} me="u-me" names={names} canManage={false} {...h} />)
-    expect(screen.getByText('hi **@Billing Bot**')).toBeTruthy()
+    expect(screen.getByText('@Billing Bot')).toBeTruthy()
+    expect(screen.getByText(/hi/)).toBeTruthy()
+    expect(document.body.textContent).not.toContain('**')
 
     const agentReply = message({
       id: 'm2', authorType: 'agent', author: null, authorUserId: null, authorAgent: { projectId: 'proj-1', name: 'Billing Bot' },
@@ -351,6 +353,36 @@ describe('MessageRow', () => {
     )
     fireEvent.click(screen.getByText('Open full session'))
     expect(h.onOpenSession).toHaveBeenCalled()
+  })
+
+  test('an agent reply uses the project chat markdown renderer', () => {
+    const { container } = render(
+      <MessageRow
+        message={message({
+          id: 'md',
+          authorType: 'agent',
+          author: null,
+          authorUserId: null,
+          authorAgent: { projectId: 'proj-1', name: 'Billing Bot' },
+          text: '## Title\n\n**done**',
+          agentStatus: 'done',
+        })}
+        grouped={false}
+        me="u-me"
+        names={names}
+        canManage={false}
+        {...handlers()}
+      />,
+    )
+    const markdown = container.querySelector('.chat-md')
+    expect(markdown).not.toBeNull()
+    expect(markdown?.className).toContain('text-foreground')
+    expect(markdown?.className).toContain('text-xs')
+    expect(markdown?.className).toContain('prose-sm')
+    expect(markdown?.textContent).toContain('Title')
+    expect(markdown?.textContent).toContain('done')
+    expect(markdown?.textContent).not.toContain('##')
+    expect(markdown?.textContent).not.toContain('**')
   })
 
   test('tapping an agent opens its profile card with role, owner and channels', async () => {
