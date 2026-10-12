@@ -447,16 +447,43 @@ describe('MessageRow', () => {
     expect(h.onReply).toHaveBeenCalled()
   })
 
-  test('#activity lines can be discussed in a thread', () => {
+  test('#activity lines show what happened and open the real source', () => {
     const h = handlers()
-    render(
+    routed.length = 0
+    const { rerender } = render(
       <MessageRow
-        message={message({ authorType: 'system', author: null, authorUserId: null, text: '**Billing Bot** finished a task', blocks: { type: 'activity', kind: 'task.completed' }, replyCount: 1 })}
+        message={message({
+          authorType: 'system', author: null, authorUserId: null,
+          text: '**Billing Bot** finished a task',
+          blocks: { type: 'activity', kind: 'task.completed', projectId: 'p1', chatSessionId: 's1', preview: '3 invoices overdue', summary: 'Reconciled three overdue invoices.' },
+          replyCount: 1,
+        })}
         grouped={false} me="u-me" names={names} canManage={false} {...h}
       />,
     )
+    expect(screen.getByText('Reconciled three overdue invoices.')).toBeTruthy()
+    expect(screen.queryByText('3 invoices overdue')).toBeNull()
+    fireEvent.click(screen.getByLabelText('Open activity'))
+    expect(routed.at(-1)).toEqual({ pathname: '/(app)/projects/[id]', params: { id: 'p1', chatSessionId: 's1' } })
     fireEvent.click(screen.getByText('1 reply'))
     expect(h.onReply).toHaveBeenCalledTimes(1)
+
+    rerender(
+      <MessageRow
+        message={message({
+          authorType: 'system', author: null, authorUserId: null,
+          text: '**Billing Bot** sent a message in #eng',
+          blocks: { type: 'activity', kind: 'agent.message', conversationId: 'c9', messageId: 'm9', threadRootId: 'root', preview: 'Three are overdue.' },
+        })}
+        grouped={false} me="u-me" names={names} canManage={false} {...h}
+      />,
+    )
+    expect(screen.getByText('Three are overdue.')).toBeTruthy()
+    fireEvent.click(screen.getByLabelText('Open activity'))
+    expect(routed.at(-1)).toEqual({
+      pathname: '/(app)/c/[conversationId]',
+      params: { conversationId: 'c9', msg: 'm9', thread: 'root' },
+    })
   })
 
   test('copy link copies a link to the message; mark unread is offered outside threads', async () => {
