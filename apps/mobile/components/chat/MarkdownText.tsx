@@ -32,6 +32,8 @@ export interface MarkdownTextProps {
   className?: string;
   isStreaming?: boolean;
   variant?: MarkdownVariant;
+  /** Overrides the markdown body color on native. */
+  textColor?: ColorValue;
   /** Opens a workspace file when the text mentions its path. */
   onFilePress?: (path: string) => void;
   /** Return true to handle a link in the app instead of opening it in a browser. */
@@ -272,6 +274,7 @@ function markdownPropsEqual(prev: MarkdownTextProps, next: MarkdownTextProps) {
   if (prev.variant !== next.variant) return false;
   if (prev.className !== next.className) return false;
   if (prev.isStreaming !== next.isStreaming) return false;
+  if (prev.textColor !== next.textColor) return false;
   if (prev.onFilePress !== next.onFilePress) return false;
   if (prev.onLinkPress !== next.onLinkPress) return false;
   const a = prev.children || "";
@@ -282,6 +285,7 @@ function markdownPropsEqual(prev: MarkdownTextProps, next: MarkdownTextProps) {
 export const MarkdownText = memo(function MarkdownText({
   children,
   variant = "default",
+  textColor,
   onFilePress,
   onLinkPress,
 }: MarkdownTextProps) {
@@ -299,6 +303,7 @@ export const MarkdownText = memo(function MarkdownText({
       : isThinking
       ? lightThinkingColors
       : lightColors;
+  const markdownColors = textColor ? { ...colors, text: textColor } : colors;
   const styles = isThinking
     ? thinkingStyles
     : isPhoneLayout || usesMobileWorkspaceChrome
@@ -318,7 +323,7 @@ export const MarkdownText = memo(function MarkdownText({
     <Markdown
       value={value}
       styles={styles}
-      theme={{ colors }}
+      theme={{ colors: markdownColors }}
       renderer={renderer}
       flatListProps={{
         scrollEnabled: false,

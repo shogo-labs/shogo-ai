@@ -36,6 +36,7 @@ import { useAgentImageSource } from "../../../lib/agent-image-source"
 import { clampAspectRatio, DEFAULT_IMAGE_ASPECT } from "./image-sizing"
 import { useChatImageWidth } from "./use-chat-image-width"
 import { stripAskUserAnswerMarker } from "./askUserAnswers"
+import { preserveUserLineBreaks } from "../user-markdown"
 
 export interface MessageContentProps {
   message: UIMessage
@@ -481,12 +482,8 @@ export function MessageContent({
       isLongText ? (
         <LongTextPreviewCard text={content} title="Your Message" />
       ) : (
-        <Text
-          style={
-            usesMobileChatTypography
-              ? { fontSize: 16, lineHeight: 24 }
-              : undefined
-          }
+        <MarkdownText
+          isStreaming={false}
           className={
             userBubble
               ? usesMobileChatTypography
@@ -496,10 +493,10 @@ export function MessageContent({
                 ? "text-[16px] leading-6 text-foreground"
                 : "text-sm leading-5 text-foreground"
           }
-          selectable={!userBubble}
+          textColor={userBubble ? "#ffffff" : undefined}
         >
-          {content}
-        </Text>
+          {preserveUserLineBreaks(content)}
+        </MarkdownText>
       )
     ) : null
 

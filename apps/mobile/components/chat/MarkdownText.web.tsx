@@ -16,6 +16,8 @@ import {
 export interface MarkdownTextProps {
   children: string
   className?: string
+  /** Kept in sync with the native renderer; web color comes from className/CSS. */
+  textColor?: string
   /**
    * `false` renders the text as finished markdown (one parse, no
    * incomplete-markdown repair). Leave unset for text that may still grow.
@@ -37,6 +39,7 @@ const linkSafetyOff = { enabled: false as const }
 function markdownPropsEqual(prev: MarkdownTextProps, next: MarkdownTextProps) {
   if (prev.isStreaming !== next.isStreaming) return false
   if (prev.className !== next.className) return false
+  if (prev.textColor !== next.textColor) return false
   if (prev.onFilePress !== next.onFilePress) return false
   const a = prev.children || ""
   const b = next.children || ""
