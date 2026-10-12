@@ -1109,10 +1109,12 @@ export function MobileWorkspaceShell({ children, enabled = true }: MobileWorkspa
                                   event.stopPropagation?.();
                                   startProjectChat(project.id);
                                 }}
-                                // Hover-only on web; always visible on touch.
+                                // Hover-only on web, but the slot stays in the
+                                // layout so the row does not grow. Always
+                                // visible on touch.
                                 className={
                                   Platform.OS === "web"
-                                    ? "hidden h-8 w-8 items-center justify-center rounded-lg active:bg-muted group-hover:flex"
+                                    ? "h-8 w-8 items-center justify-center rounded-lg active:bg-muted opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto"
                                     : "h-8 w-8 items-center justify-center rounded-lg active:bg-muted"
                                 }
                               >

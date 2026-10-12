@@ -334,11 +334,13 @@ export function ChatTreeItem({
           state. The one overflow menu replaces the previously exposed actions.
           Gated on web (hover-only), not on comfortable density — a touch-only
           narrow web viewport still gets no functional hover affordance here
-          either way, same as before this density fix. */}
+          either way, same as before this density fix.
+          The slot keeps a fixed size: the label stays in flow and the menu
+          overlays it, so hover only changes opacity, never the row's size. */}
         {Platform.OS === "web" && workspacePane && (
-          <View className="ml-auto flex flex-row items-center gap-0.5 shrink-0">
+          <View className="relative ml-auto h-4 min-w-4 shrink-0 flex-row items-center justify-end">
             {activityLabel ? (
-              <Text className="mr-1 text-[11px] text-muted-foreground group-hover:hidden">
+              <Text className="mr-1 text-[11px] text-muted-foreground group-hover:opacity-0">
                 {activityLabel}
               </Text>
             ) : null}
@@ -351,7 +353,7 @@ export function ChatTreeItem({
                   y: event.clientY ?? event.pageY ?? 0,
                 });
               }}
-              className="hidden p-0.5 group-hover:flex"
+              className="absolute right-0 h-4 w-4 items-center justify-center opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto"
               accessibilityLabel={`Manage ${label}`}
             >
               <MoreHorizontal size={14} className="text-muted-foreground" />
