@@ -123,6 +123,7 @@ import {
 import { shouldInjectPreviewUrl, buildPreviewUrlBlock } from './preview-url-context'
 import { detectLocalMode } from './preview-manager'
 import { LocalhostLinkRewriter, rewriteLocalhostLinks } from './preview-link-rewrite'
+import { extractShareLinkTokens, repairShareLinks } from './share-link-repair'
 
 const QUICK_ACTION_GUIDE = `## Quick Actions
 
@@ -2769,7 +2770,8 @@ export class AgentGateway {
     const previewPublicUrl = (this.previewManager?.isLocalMode ?? detectLocalMode())
       ? ''
       : (process.env.PUBLIC_PREVIEW_URL ?? '')
-    let linkRewriter = new LocalhostLinkRewriter(previewPublicUrl)
+    const shareLinkTokens = this.shareLinkTokensFor(sessionId)
+    let linkRewriter = new LocalhostLinkRewriter(previewPublicUrl, shareLinkTokens)
 
     // Forward streamed assistant text (post-rewrite) to the chunker + UI,
     // opening a UI text block lazily on first non-empty content.
@@ -2799,7 +2801,7 @@ export class AgentGateway {
     const discardFailedStep = (retry: { attempt: number; maxAttempts?: number; reason: string; delayMs: number }) => {
       // Drop any text the rewriter was holding from the failed attempt and
       // reset its scanner state so the regenerated output starts clean.
-      linkRewriter = new LocalhostLinkRewriter(previewPublicUrl)
+      linkRewriter = new LocalhostLinkRewriter(previewPublicUrl, shareLinkTokens)
       if (uiWriter && uiTextId) {
         uiWriter.write({ type: 'text-end', id: uiTextId })
         uiTextId = null
@@ -3551,6 +3553,10 @@ export class AgentGateway {
           } else {
             console.log(`${this.logPrefix} Tool result: ${toolName}`, JSON.stringify(result).substring(0, 20))
           }
+          if (toolName === 'share_file' && !isError) {
+            const resultText = typeof result === 'string' ? result : JSON.stringify(result ?? '')
+            for (const token of extractShareLinkTokens([resultText])) shareLinkTokens.add(token)
+          }
           // Wait for onBeforeToolCall's flush gate so the client receives
           // tool-input-start in a separate HTTP chunk before we send the output.
           const gate = toolFlushGates.get(toolCallId)
@@ -3733,17 +3739,20 @@ export class AgentGateway {
       // public preview URL in the persisted history + returned text too (the
       // live UI stream is handled by linkRewriter above). No-op locally. Skips
       // code spans/fences and `curl` lines — see preview-link-rewrite.ts.
-      if (previewPublicUrl) {
+      // Mistyped share_file tokens are repaired the same way.
+      if (previewPublicUrl || shareLinkTokens.size > 0) {
+        const rewriteText = (text: string) =>
+          repairShareLinks(rewriteLocalhostLinks(text, previewPublicUrl), shareLinkTokens)
         for (const msg of result.newMessages) {
           if (msg.role !== 'assistant' || !Array.isArray(msg.content)) continue
           for (const block of msg.content as any[]) {
             if (block?.type === 'text' && typeof block.text === 'string') {
-              block.text = rewriteLocalhostLinks(block.text, previewPublicUrl)
+              block.text = rewriteText(block.text)
             }
           }
         }
         if (typeof result.text === 'string') {
-          result.text = rewriteLocalhostLinks(result.text, previewPublicUrl)
+          result.text = rewriteText(result.text)
         }
       }
 
@@ -5603,6 +5612,21 @@ export class AgentGateway {
 
   /** Per-session waker for the active turn's retry backoff ("Retry now"). */
   private retryWakers = new Map<string, RetryWaker>()
+
+  /**
+   * Per-session tokens of every link `share_file` minted, so a token the model
+   * mistypes when quoting it (now or in a later turn) can be repaired.
+   */
+  private shareLinkTokens = new Map<string, Set<string>>()
+
+  private shareLinkTokensFor(sessionId: string): Set<string> {
+    let tokens = this.shareLinkTokens.get(sessionId)
+    if (!tokens) {
+      tokens = new Set()
+      this.shareLinkTokens.set(sessionId, tokens)
+    }
+    return tokens
+  }
 
   /**
    * Cut the active turn's retry backoff short so the dropped model call is
