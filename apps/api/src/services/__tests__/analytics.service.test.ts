@@ -401,6 +401,23 @@ describe('getChatConversations (Postgres branch)', () => {
     expect(out.conversations).toEqual([])
     expect(rawCalls[0].sql).not.toContain('NOT ILIKE')
   })
+
+  test('only reads columns the ai_analysis_turns view exposes', async () => {
+    const migration = await Bun.file(
+      `${import.meta.dir}/../../../../../prisma/migrations/20260926050000_add_proxy_capture_training_data/migration.sql`,
+    ).text()
+    const viewSql = migration.slice(migration.indexOf('CREATE VIEW "ai_analysis_turns"'))
+    const viewColumns = new Set(
+      [...viewSql.split('UNION ALL')[0].matchAll(/AS "(\w+)"/g)].map((m) => m[1]),
+    )
+    expect(viewColumns.has('createdAt')).toBe(true)
+
+    enqueueRaw([])
+    await analytics.getChatConversations(new Date(0), true)
+    const referenced = [...rawCalls[0].sql.matchAll(/\bpt\."(\w+)"/g)].map((m) => m[1])
+    expect(referenced.length).toBeGreaterThan(0)
+    expect(referenced.filter((col) => !viewColumns.has(col))).toEqual([])
+  })
 })
 
 describe('getSourceBreakdown (Postgres branch)', () => {

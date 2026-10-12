@@ -2980,14 +2980,14 @@ export async function getChatConversations(
     WHERE cm."createdAt" >= $1 AND cm."agent" = 'technical' ${filter}
     UNION ALL
     SELECT
-      COALESCE(pt."chatSessionId", CONCAT('proxy:', pt."id")) AS "sessionId",
+      COALESCE(pt."chatSessionId", CONCAT('proxy:', pt."turnId")) AS "sessionId",
       u."name" AS "userName",
       COALESCE(pr."name", 'Proxy traffic') AS "projectName",
       NULL AS "templateId",
       pt."source" AS "source",
       'user' AS "role",
       LEFT(pt."userText", ${ASSISTANT_TRUNCATE_LENGTH}) AS "content",
-      pt."lastAt" AS "sentAt"
+      pt."createdAt" AS "sentAt"
     FROM "ai_analysis_turns" pt
     LEFT JOIN "users" u ON u."id" = pt."userId"
     LEFT JOIN "projects" pr ON pr."id" = pt."projectId"
@@ -2997,14 +2997,14 @@ export async function getChatConversations(
       ${excludeInternal ? `AND (u."id" IS NULL OR (${realUserEmailNotLike()}))` : ''}
     UNION ALL
     SELECT
-      COALESCE(pt."chatSessionId", CONCAT('proxy:', pt."id")) AS "sessionId",
+      COALESCE(pt."chatSessionId", CONCAT('proxy:', pt."turnId")) AS "sessionId",
       u."name" AS "userName",
       COALESCE(pr."name", 'Proxy traffic') AS "projectName",
       NULL AS "templateId",
       pt."source" AS "source",
       'assistant' AS "role",
       RIGHT(pt."assistantText", ${ASSISTANT_TRUNCATE_LENGTH}) AS "content",
-      pt."lastAt" AS "sentAt"
+      pt."createdAt" AS "sentAt"
     FROM "ai_analysis_turns" pt
     LEFT JOIN "users" u ON u."id" = pt."userId"
     LEFT JOIN "projects" pr ON pr."id" = pt."projectId"
