@@ -36,7 +36,7 @@
  */
 
 import { Hono } from "hono"
-import { spawn } from "child_process"
+import { spawn } from "./child-process"
 import { existsSync, readdirSync, statSync } from "fs"
 import { join, relative, isAbsolute } from "path"
 import { getBuildErrors } from "./diagnostics-build-buffer"

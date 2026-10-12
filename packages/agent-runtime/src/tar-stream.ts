@@ -75,7 +75,7 @@ export async function extractTarStream(
     // stdin stays hand-pumped. Handing Bun the ReadableStream instead makes it
     // accumulate: measured at +2.4 GB of RSS for a 1 GB archive, which is the
     // exact failure being engineered out here. write()+flush() holds one chunk.
-    const proc = spawn(['tar', ...TAR_ARGS, '-C', cwd], { stdin: 'pipe', stdout: fd, stderr: fd })
+    const proc = spawn(['tar', ...TAR_ARGS, '-C', cwd], { stdin: 'pipe', stdout: fd, stderr: fd, windowsHide: true })
 
     let bytes = 0
     try {
@@ -157,6 +157,7 @@ export async function extractTarFromUrl(
     const proc = spawn(['bash', '-c', PULL_SCRIPT, 'hydrate', url, cwd, String(opts.maxSeconds)], {
       stdout: fd,
       stderr: fd,
+      windowsHide: true,
     })
 
     const code = await proc.exited

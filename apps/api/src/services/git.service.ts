@@ -15,7 +15,7 @@
  * - getStatus: Get working directory status
  */
 
-import { execSync, execFileSync, exec } from 'child_process';
+import { execSync, execFileSync, exec } from '@shogo/shared-runtime/child-process';
 import { existsSync, writeFileSync, mkdirSync, readFileSync, appendFileSync, readdirSync, statSync, unlinkSync } from 'fs';
 import { readFile, writeFile } from 'fs/promises';
 import { join, basename } from 'path';

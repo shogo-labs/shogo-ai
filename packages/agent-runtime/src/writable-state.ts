@@ -322,7 +322,7 @@ export async function packWritableState(opts: {
     paths.push(...dirs)
   }
 
-  const proc = Bun.spawn(['tar', ...args], { stdout: 'ignore', stderr: 'pipe' })
+  const proc = Bun.spawn(['tar', ...args], { stdout: 'ignore', stderr: 'pipe', windowsHide: true })
   const [code, stderr] = await Promise.all([proc.exited, new Response(proc.stderr).text()])
   if (code !== 0) throw new Error(`tar exited ${code}: ${stderr.trim().slice(0, 400)}`)
 

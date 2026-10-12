@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { app } from 'electron'
-import { spawn, spawnSync } from 'child_process'
+import { spawn, spawnSync } from './child-process'
 import { createHash } from 'crypto'
 import fs from 'fs'
 import path from 'path'

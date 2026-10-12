@@ -21,7 +21,7 @@
  * - GH_APP_WEBHOOK_SECRET: Webhook secret for verification
  */
 
-import { execSync } from 'child_process';
+import { execSync } from '@shogo/shared-runtime/child-process';
 import { sign } from 'jsonwebtoken';
 import type { Context } from 'hono';
 import { prisma } from '../lib/prisma';

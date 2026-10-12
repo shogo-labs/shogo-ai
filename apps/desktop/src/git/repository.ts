@@ -11,7 +11,7 @@
 // LFS + submodules + hooks for free, and `--porcelain=v2 -z` is a stable
 // machine-readable contract we can parse without a dependency.
 
-import { spawn } from 'node:child_process'
+import { spawn } from '../child-process'
 
 export type RunGitResult =
   | { ok: true; stdout: string; stderr: string; code: 0 }

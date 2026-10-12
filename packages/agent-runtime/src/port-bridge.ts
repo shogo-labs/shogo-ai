@@ -82,7 +82,7 @@ export async function listListeningPorts(): Promise<number[]> {
   }
   const run = async (cmd: string[], args: string[]) => {
     try {
-      const proc = Bun.spawn([cmd, ...args], { stdout: 'pipe', stderr: 'ignore' })
+      const proc = Bun.spawn([cmd, ...args], { stdout: 'pipe', stderr: 'ignore', windowsHide: true })
       const text = await new Response(proc.stdout).text()
       await proc.exited
       collect(text)

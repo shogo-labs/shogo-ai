@@ -8,7 +8,7 @@
 // ripgrep when it is on PATH (fast, honours .gitignore), otherwise a bounded
 // JS walker over the same tree the Explorer shows.
 
-import { spawn } from 'node:child_process'
+import { spawn } from '@shogo/shared-runtime/child-process'
 import { existsSync } from 'node:fs'
 import { promises as fsp } from 'node:fs'
 import { join } from 'node:path'

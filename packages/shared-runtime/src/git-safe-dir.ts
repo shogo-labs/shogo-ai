@@ -15,7 +15,7 @@
  * (the sync, LFS, and the agent's own shell).
  */
 
-import { spawn } from 'child_process'
+import { spawn } from './child-process'
 
 export const DUBIOUS_OWNERSHIP_RE = /dubious ownership/i
 

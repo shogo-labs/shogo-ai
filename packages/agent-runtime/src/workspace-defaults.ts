@@ -1197,7 +1197,7 @@ export async function runTechStackSetup(dir: string, stackId: string): Promise<v
   if (!existsSync(destSetup)) return
 
   console.log(`[workspace-defaults] Running tech stack setup for "${stackId}"...`)
-  const { spawn } = await import('child_process')
+  const { spawn } = await import('@shogo/shared-runtime/child-process')
   await new Promise<void>((resolve, reject) => {
     const proc = spawn('bash', ['setup.sh'], {
       cwd: dir,

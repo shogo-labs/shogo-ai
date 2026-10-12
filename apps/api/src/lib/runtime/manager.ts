@@ -7,7 +7,7 @@
  * Uses child_process.spawn with random port allocation in range 37100-37900.
  */
 
-import { execSync, type ChildProcess } from 'child_process'
+import { execSync, type ChildProcess } from '@shogo/shared-runtime/child-process'
 import {
   existsSync,
   cpSync,

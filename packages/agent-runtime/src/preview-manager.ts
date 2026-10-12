@@ -15,7 +15,7 @@
  * missing or unrecognised value falls back to Vite for backwards compat.
  */
 
-import { spawn, execSync, type ChildProcess } from 'child_process'
+import { spawn, execSync, type ChildProcess } from '@shogo/shared-runtime/child-process'
 import { createHash } from 'crypto'
 import { join } from 'path'
 import { homedir } from 'os'

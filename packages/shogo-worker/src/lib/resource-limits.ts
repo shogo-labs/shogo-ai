@@ -21,7 +21,7 @@
  * The JS-heap env cap (see {@link applyHeapEnvCap}) is a secondary hint layered
  * on top everywhere — OS-level limits are the real enforcement.
  */
-import { spawnSync } from 'node:child_process';
+import { spawnSync } from './child-process.ts';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 

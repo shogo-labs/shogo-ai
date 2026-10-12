@@ -29,7 +29,7 @@
  * permissioning a separate file inside each project's `.git/hooks/`).
  */
 
-import { spawn } from 'child_process'
+import { spawn } from '@shogo/shared-runtime/child-process'
 import { existsSync, mkdirSync } from 'fs'
 import { join } from 'path'
 import { Hono, type Context } from 'hono'
@@ -153,7 +153,7 @@ function spawnSync(cmd: string, args: string[], cwd: string): void {
   // polluting the streaming path. Imported lazily so the streaming
   // CGI handlers can use the async `spawn` cleanly.
   // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { execFileSync } = require('child_process') as typeof import('child_process')
+  const { execFileSync } = require('@shogo/shared-runtime/child-process') as typeof import('@shogo/shared-runtime/child-process')
   execFileSync(cmd, args, { cwd, stdio: 'pipe' })
 }
 

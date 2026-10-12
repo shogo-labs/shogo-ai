@@ -31,7 +31,7 @@
  *   - No Prisma reads. All policy comes from the spawn config.
  *   - No security policy build. Cloud signs the policy and sends it.
  */
-import { type ChildProcess, spawn, spawnSync } from 'node:child_process';
+import { type ChildProcess, spawn, spawnSync } from './child-process.ts';
 import { createHmac, randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync } from 'node:fs';
 import { createConnection } from 'node:net';

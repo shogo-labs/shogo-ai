@@ -12,7 +12,7 @@
  * resulting text into the focused app.
  */
 import { app, clipboard, globalShortcut, type BrowserWindow } from 'electron'
-import { spawn, type ChildProcessWithoutNullStreams } from 'child_process'
+import { spawn, type ChildProcessWithoutNullStreams } from './child-process'
 import fs from 'fs'
 import path from 'path'
 import { createDictationController, parseHelperLine, type DictationEvent } from './dictation-controller'

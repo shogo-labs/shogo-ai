@@ -16,7 +16,7 @@
  */
 
 import { S3Client, GetObjectCommand, PutObjectCommand, HeadObjectCommand } from '@aws-sdk/client-s3'
-import { spawn, execSync } from 'child_process'
+import { spawn, execSync } from './child-process'
 import { writeFile, readFile, mkdir, unlink, stat } from 'fs/promises'
 import { existsSync } from 'fs'
 import { dirname, join } from 'path'

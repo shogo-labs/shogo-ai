@@ -14,7 +14,7 @@
  * The detached codepath doesn't need it — once `child.unref()` runs the
  * CLI exits and the child owns its own PID file.
  */
-import { spawn, type ChildProcess } from 'node:child_process';
+import { spawn, type ChildProcess } from './child-process.ts';
 import { existsSync, openSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { PID_FILE, WORKER_LOG, WORKER_ERR, ensureHome } from './paths.ts';
 

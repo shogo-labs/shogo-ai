@@ -12,7 +12,7 @@
  * startup (what `fix-path` / VS Code do) and always include the standard
  * Homebrew / Docker Desktop directories in case the shell can't be read.
  */
-import { execFile } from 'child_process'
+import { execFile } from './child-process'
 import { existsSync } from 'fs'
 
 const MARKER = '__SHOGO_LOGIN_PATH__'

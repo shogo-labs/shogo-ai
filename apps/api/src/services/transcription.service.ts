@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
-import { spawn } from 'child_process'
+import { spawn } from '@shogo/shared-runtime/child-process'
 import { existsSync } from 'fs'
 import { readFile } from 'fs/promises'
 // Namespace imports: a test that mocks these modules partially must not break linking.

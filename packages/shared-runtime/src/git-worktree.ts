@@ -28,7 +28,7 @@
  * git plumbing (`git-sync.ts`, `git-bootstrap.ts`).
  */
 
-import { spawn } from 'child_process'
+import { spawn } from './child-process'
 import { dirname, join } from 'path'
 import { mkdirSync } from 'fs'
 import {

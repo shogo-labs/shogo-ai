@@ -17,10 +17,10 @@ import { fileURLToPath } from 'url'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const RESOURCES_DIR = path.join(__dirname, '..', 'resources')
-// Pinned to the repo's package.json `packageManager` (bun@1.4.2).
+// Pinned to the repo's package.json `packageManager` (bun@1.4.3).
 // `latest` made desktop memory measurements and shipped runtimes
 // unreproducible. Override with BUN_VERSION only for a one-off download.
-const BUN_VERSION = process.env.BUN_VERSION || '1.4.2'
+const BUN_VERSION = process.env.BUN_VERSION || '1.4.3'
 
 const PLATFORM_MAP = {
   'darwin-arm64': 'bun-darwin-aarch64',

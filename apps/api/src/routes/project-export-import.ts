@@ -13,7 +13,7 @@ import {
   statSync,
 } from 'node:fs'
 import { join, resolve, relative } from 'node:path'
-import { spawn } from 'node:child_process'
+import { spawn } from '@shogo/shared-runtime/child-process'
 import { zipSync, unzipSync, strToU8, strFromU8 } from 'fflate'
 import { createS3SyncForProject, isMacOSJunkName, getMinimumInstanceSize } from '@shogo/shared-runtime'
 import { dockerClassBlockedMessage } from '../lib/runtime-class-setting'

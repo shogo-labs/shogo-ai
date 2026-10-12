@@ -14,7 +14,7 @@
  * - getDiff: Compare checkpoint with current state
  */
 
-import { execSync } from 'child_process';
+import { execSync } from '@shogo/shared-runtime/child-process';
 import { existsSync, mkdirSync } from 'fs';
 import { writeFile, readFile, unlink } from 'fs/promises';
 import { join } from 'path';

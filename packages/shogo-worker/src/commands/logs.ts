@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
-import { spawn } from 'node:child_process';
+import { spawn } from '../lib/child-process.ts';
 import { existsSync, statSync } from 'node:fs';
 import pc from 'picocolors';
 import { WORKER_LOG, WORKER_ERR } from '../lib/paths.ts';

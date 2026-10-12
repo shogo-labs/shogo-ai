@@ -3212,6 +3212,7 @@ function repoRootCommitAt(dir: string): number | null {
     const out = Bun.spawnSync(['git', '-C', dir, 'log', '--max-parents=0', '--format=%ct', 'HEAD'], {
       stdout: 'pipe',
       stderr: 'ignore',
+      windowsHide: true,
     })
     if (out.exitCode !== 0) return null
     const times = out.stdout
@@ -3570,7 +3571,7 @@ app.get('/preview/metro', (c) => {
 // Template Copy (app mode — extract pre-built archive into project/)
 // ---------------------------------------------------------------------------
 
-import { execSync } from 'child_process'
+import { execSync } from '@shogo/shared-runtime/child-process'
 
 const TEMPLATES_DIR = resolve(MONOREPO_ROOT, 'packages/sdk/templates')
 const EXAMPLES_DIR = resolve(MONOREPO_ROOT, 'packages/sdk/examples')
@@ -6909,7 +6910,7 @@ async function initialize(): Promise<void> {
  */
 async function checkoutPublishedTag(subdomain: string): Promise<void> {
   if (!subdomain) return
-  const { execFile } = await import('child_process')
+  const { execFile } = await import('@shogo/shared-runtime/child-process')
   await new Promise<void>((resolve) => {
     execFile(
       'git',

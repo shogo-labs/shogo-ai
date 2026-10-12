@@ -39,7 +39,7 @@
 // apps/desktop/src/db-recovery.ts (kept as a separate copy there because
 // the Electron main process is bundled in a different runtime context).
 
-import { execFileSync } from 'node:child_process';
+import { execFileSync } from './child-process.ts';
 import { existsSync, copyFileSync } from 'node:fs';
 import path from 'node:path';
 import { homedir, platform } from 'node:os';

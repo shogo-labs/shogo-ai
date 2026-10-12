@@ -69,7 +69,7 @@ jobs:
       - id: setup-bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: '1.4.2'
+          bun-version: '1.4.3'
 
       - name: Restore node_modules
         id: node-modules-cache
@@ -308,7 +308,7 @@ jobs:
       - id: setup-bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: '1.4.2'
+          bun-version: '1.4.3'
 
       - name: Restore node_modules
         id: mobile-node-modules-cache
@@ -402,7 +402,7 @@ jobs:
       - id: setup-bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: '1.4.2'
+          bun-version: '1.4.3'
 
       - name: Restore node_modules
         uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
@@ -478,7 +478,7 @@ jobs:
       - id: setup-bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: '1.4.2'
+          bun-version: '1.4.3'
 
       - name: Restore node_modules
         id: known-node-modules-cache
@@ -589,7 +589,7 @@ jobs:
       - id: setup-bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: '1.4.2'
+          bun-version: '1.4.3'
 
       - name: Restore node_modules
         id: test-node-modules-cache
@@ -752,7 +752,7 @@ jobs:
       - id: setup-bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: '1.4.2'
+          bun-version: '1.4.3'
 
       - name: Restore node_modules
         uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
@@ -879,7 +879,7 @@ jobs:
       - id: setup-bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: '1.4.2'
+          bun-version: '1.4.3'
 
       # No node_modules cache on Windows: installing over a restored tree fails
       # with EPERM inside node_modules/.bun during postinstall's prisma generate.

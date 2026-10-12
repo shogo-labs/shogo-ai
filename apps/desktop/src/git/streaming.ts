@@ -13,7 +13,7 @@
 // per-job channel so multiple operations can run concurrently without
 // stepping on each other.
 
-import { spawn } from "node:child_process";
+import { spawn } from "../child-process";
 
 import { getOrCreateGitWorkspace } from "./service";
 

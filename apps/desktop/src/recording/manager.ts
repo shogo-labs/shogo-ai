@@ -17,7 +17,7 @@
  * The manager is intentionally dumb about IPC — `recording.ts` wires it to
  * `ipcMain` and to the renderer.
  */
-import { spawn, type ChildProcess } from 'child_process'
+import { spawn, type ChildProcess } from '../child-process'
 import { existsSync, mkdirSync, openSync, readSync, closeSync, statSync, fstatSync } from 'fs'
 import path from 'path'
 import { WavWriter } from './wav-writer'

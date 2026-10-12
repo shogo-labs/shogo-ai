@@ -20,7 +20,7 @@
  * `gitIsAvailable()` probe.
  */
 
-import { spawn, execFile } from 'node:child_process';
+import { spawn, execFile } from './child-process.ts';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { promisify } from 'node:util';

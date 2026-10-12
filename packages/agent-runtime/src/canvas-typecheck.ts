@@ -38,7 +38,7 @@
  * non-TS / marker-less workspaces skip it entirely.
  */
 
-import { spawn, type ChildProcess } from 'child_process'
+import { spawn, type ChildProcess } from '@shogo/shared-runtime/child-process'
 import { existsSync } from 'fs'
 import { join } from 'path'
 import { resolveBinInvocation } from '@shogo/shared-runtime'

@@ -21,7 +21,7 @@
  */
 
 import { ipcMain, shell, BrowserWindow, type WebContents } from 'electron'
-import { spawn } from 'node:child_process'
+import { spawn } from '../child-process'
 import { parseLsof, diffNewPorts, type PortEntry } from './lsof-parser'
 
 const CH = {

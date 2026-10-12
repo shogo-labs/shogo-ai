@@ -12,7 +12,8 @@
     "./project-call-chat": "./src/project-call-chat.ts",
     "./publish-timeouts": "./src/publish-timeouts.ts",
     "./sse-keepalive": "./src/sse-keepalive.ts",
-    "./stream-trace": "./src/stream-trace.ts"
+    "./stream-trace": "./src/stream-trace.ts",
+    "./child-process": "./src/child-process.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

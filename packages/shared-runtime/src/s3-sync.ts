@@ -36,7 +36,7 @@ import { readdir, readFile, writeFile, mkdir, stat, unlink, rm } from 'fs/promis
 import { join, relative, dirname } from 'path'
 import { existsSync, statSync, mkdirSync } from 'fs'
 import { createHash } from 'crypto'
-import { spawn } from 'child_process'
+import { spawn } from './child-process'
 import * as tar from 'tar'
 import { isMacOSJunkName } from './macos-junk'
 

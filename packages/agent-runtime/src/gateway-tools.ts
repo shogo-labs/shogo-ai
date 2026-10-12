@@ -13,7 +13,7 @@
 import { getModelTier, resolveModelId, calculateDollarCost } from '@shogo/model-catalog'
 import { existsSync, readFileSync, writeFileSync, readdirSync, mkdirSync, unlinkSync, statSync, copyFileSync } from 'fs'
 import { join, resolve, extname, dirname, relative, sep } from 'path'
-import { execSync } from 'child_process'
+import { execSync } from '@shogo/shared-runtime/child-process'
 import { fileURLToPath } from 'node:url'
 import { isProtectedFile, PROTECTED_FILE_REJECTION } from './protected-files'
 import { createProjectTools } from './project-tools'
@@ -4710,7 +4710,7 @@ function createReadHistoryTool(ctx: ToolContext): AgentTool {
 }
 
 function spawnCDPRelay(token: string): Promise<{ cdpEndpoint: string; kill: () => void }> {
-  const { spawn } = require('child_process') as typeof import('child_process')
+  const { spawn } = require('@shogo/shared-runtime/child-process') as typeof import('@shogo/shared-runtime/child-process')
   // Use fileURLToPath so this works on Windows. `new URL(import.meta.url).pathname`
   // returns a `/C:/...` path that breaks existsSync / spawn on win32.
   const srcDir = dirname(fileURLToPath(import.meta.url))
@@ -8794,7 +8794,7 @@ function createDetectChangesTool(ctx: ToolContext): AgentTool {
         return textResult({ error: 'Knowledge graph not available.' })
       }
 
-      const { execSync } = require('child_process')
+      const { execSync } = require('@shogo/shared-runtime/child-process')
       const { readFileSync } = require('fs')
       const cwd = ctx.workspaceDir
 
@@ -8982,7 +8982,7 @@ function createReviewContextTool(ctx: ToolContext): AgentTool {
         return textResult({ error: 'Knowledge graph not available.' })
       }
 
-      const { execSync } = require('child_process')
+      const { execSync } = require('@shogo/shared-runtime/child-process')
       const { readFileSync, existsSync } = require('fs')
       const { join } = require('path')
       const cwd = ctx.workspaceDir

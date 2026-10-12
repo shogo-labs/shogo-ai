@@ -52,7 +52,7 @@ import {
   withShogoCommitTrailer,
 } from './agent-attribution'
 
-import { spawn } from 'child_process'
+import { spawn } from './child-process'
 
 // ---------------------------------------------------------------------------
 // Configuration

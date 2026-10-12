@@ -296,6 +296,7 @@ export class TSLanguageServer {
         stdin: 'pipe',
         stdout: 'pipe',
         stderr: 'pipe',
+        windowsHide: true,
       })
 
       this.readOutputStream()
@@ -1319,6 +1320,7 @@ export class WorkspaceLSPManager {
         env: { ...process.env },
         stdout: 'pipe',
         stderr: 'pipe',
+        windowsHide: true,
       })
 
       const chunks: Buffer[] = []

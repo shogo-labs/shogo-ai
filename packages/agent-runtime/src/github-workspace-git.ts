@@ -8,7 +8,7 @@
  * scoped to https://github.com/), so it is never written into `.git/config`,
  * a remote URL, or argv.
  */
-import { execFile } from 'node:child_process'
+import { execFile } from '@shogo/shared-runtime/child-process'
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 

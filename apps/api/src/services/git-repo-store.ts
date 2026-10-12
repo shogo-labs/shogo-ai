@@ -25,7 +25,7 @@
  * upload-pack work.
  */
 
-import { spawn } from 'child_process'
+import { spawn } from '@shogo/shared-runtime/child-process'
 import { existsSync, mkdirSync, createWriteStream, rmSync } from 'fs'
 import { unlink } from 'fs/promises'
 import { tmpdir } from 'os'

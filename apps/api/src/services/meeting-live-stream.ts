@@ -18,7 +18,7 @@
  * the chunk upload path.
  */
 
-import { spawn, type ChildProcess } from 'child_process'
+import { spawn, type ChildProcess } from '@shogo/shared-runtime/child-process'
 import { createServer } from 'net'
 import {
   appendStreamFinal,

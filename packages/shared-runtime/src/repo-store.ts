@@ -22,7 +22,7 @@
  * stays small.
  */
 
-import { spawn } from 'child_process'
+import { spawn } from './child-process'
 import { existsSync, mkdirSync, createReadStream, createWriteStream, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'fs'
 import { unlink } from 'fs/promises'
 import { tmpdir } from 'os'

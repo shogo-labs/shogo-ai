@@ -249,6 +249,7 @@ async function runTar(args: string[], opts: { capture?: boolean } = {}): Promise
     stdout: opts.capture ? 'pipe' : 'ignore',
     stderr: 'pipe',
     env: { ...process.env, COPYFILE_DISABLE: '1' },
+    windowsHide: true,
   })
   const [code, out, stderr] = await Promise.all([
     proc.exited,

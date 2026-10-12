@@ -41,7 +41,7 @@ import { handleLiveChunk, handleLiveEvents, handleStreamTicket } from './workspa
 import { describeStreamAvailability, runHttpAudioStream } from '../services/meeting-live-stream'
 import { mkdirSync, writeFileSync } from 'fs'
 import { join } from 'path'
-import { execSync } from 'child_process'
+import { execSync } from '@shogo/shared-runtime/child-process'
 
 const db = prisma
 // LocalConfig exists only in the desktop (SQLite) schema.

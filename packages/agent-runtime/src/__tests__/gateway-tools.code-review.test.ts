@@ -7,7 +7,7 @@
 // overlap path (L5015-5036), node-iteration skip (L5140-5148), and the source-
 // hunk range merging (L5169-5196).
 
-import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test'
+import { describe, test, expect, beforeEach, afterEach, mock, spyOn } from 'bun:test'
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
@@ -15,9 +15,9 @@ import { tmpdir } from 'os'
 // Mock child_process so execSync returns controlled diff output
 let execOutputs: Record<string, string> = {}
 let execThrows: Record<string, boolean> = {}
-// gateway-tools uses require('child_process') dynamically inside detect_changes
-// and review_context — patch the CJS resolved module's execSync. mock.module()
-// alone is unreliable for require() in mixed ESM/CJS.
+// gateway-tools runs git through @shogo/shared-runtime/child-process, which
+// reads `child_process.execSync` at call time. spyOn updates that binding;
+// assigning `cp.execSync =` does not.
 function fakeExecSync(cmd: string): string {
   for (const k of Object.keys(execThrows)) {
     if (cmd.includes(k) && execThrows[k]) throw new Error('git failed')
@@ -29,7 +29,7 @@ function fakeExecSync(cmd: string): string {
 }
 {
   const cpCjs = require('child_process')
-  cpCjs.execSync = fakeExecSync
+  spyOn(cpCjs, 'execSync').mockImplementation(fakeExecSync as typeof cpCjs.execSync)
 }
 
 // Mock risk-scorer + flow-detector (loaded via require())

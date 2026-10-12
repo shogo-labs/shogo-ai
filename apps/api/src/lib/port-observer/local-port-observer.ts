@@ -47,7 +47,7 @@
  *    surfacing nothing.
  */
 
-import { spawn } from 'node:child_process'
+import { spawn } from '@shogo/shared-runtime/child-process'
 import { realpath } from 'node:fs/promises'
 import { platform } from 'node:os'
 import { prisma } from '../prisma'
