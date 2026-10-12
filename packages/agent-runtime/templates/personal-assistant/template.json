@@ -28,6 +28,7 @@
     },
     "webEnabled": true,
     "browserEnabled": true,
+    "personalBrowserEnabled": false,
     "shellEnabled": true,
     "imageGenEnabled": false,
     "memoryEnabled": true,

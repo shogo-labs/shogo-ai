@@ -42,6 +42,8 @@ export interface AgentTemplate {
     mcpServers?: Record<string, { command: string; args: string[] }>
     webEnabled?: boolean
     browserEnabled?: boolean
+    /** Personal-companion browser (default off) — see browser-capability.ts */
+    personalBrowserEnabled?: boolean
     shellEnabled?: boolean
     imageGenEnabled?: boolean
     memoryEnabled?: boolean

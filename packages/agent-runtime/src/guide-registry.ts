@@ -161,6 +161,17 @@ export interface CapabilitiesIndexFlags {
    * instead of pointing at an `agent_spawn` call the model can't make.
    */
   mediaDelegated?: boolean
+  /** Browser automation line (default: true) */
+  browser?: boolean
+  /**
+   * Whether browser is reached via the browser subagent (default: true) or
+   * called directly. Personal-companion workspaces have no subagent
+   * orchestration at all, so `browser` is kept directly callable there only
+   * when `personalBrowserEnabled` is set (see gateway.ts's
+   * `SUBAGENT_ONLY_TOOLS` filtering) — pass `false` so the index says so
+   * instead of pointing at an `agent_spawn` call the model can't make.
+   */
+  browserDelegated?: boolean
 }
 
 /**
@@ -174,6 +185,8 @@ export function buildCapabilitiesIndex(flags: CapabilitiesIndexFlags = {}): stri
   const channels = flags.channels !== false
   const media = flags.media !== false
   const mediaDelegated = flags.mediaDelegated !== false
+  const browser = flags.browser !== false
+  const browserDelegated = flags.browserDelegated !== false
   const devops = flags.devops !== false
 
   // The subagent line advertises delegated agent types; only list the ones
@@ -182,7 +195,7 @@ export function buildCapabilitiesIndex(flags: CapabilitiesIndexFlags = {}): stri
     'explore',
     'general-purpose',
     'code-reviewer',
-    'browser',
+    ...(browser && browserDelegated ? ['browser'] : []),
     ...(integrations ? ['integration'] : []),
     ...(channels ? ['channel'] : []),
     ...(media && mediaDelegated ? ['media'] : []),
@@ -204,7 +217,13 @@ export function buildCapabilitiesIndex(flags: CapabilitiesIndexFlags = {}): stri
   }
   lines.push(
     `- **subagent**: Agent orchestration — ${subagentTypes}. Read before delegating tasks.`,
-    '- **browser**: Browser automation via snapshot/ref/click workflow. Delegated — use `agent_spawn({ type: "browser", prompt: "..." })`. The `web` tool for HTTP fetching is available directly. Read the guide before first browser delegation.',
+    ...(browser
+      ? [
+          browserDelegated
+            ? '- **browser**: Browser automation via snapshot/ref/click workflow. Delegated — use `agent_spawn({ type: "browser", prompt: "..." })`. The `web` tool for HTTP fetching is available directly. Read the guide before first browser delegation.'
+            : '- **browser**: Browser automation via snapshot/ref/click workflow. Call `browser` directly — subagent delegation is not available in this workspace. The `web` tool for HTTP fetching is available directly. Read the guide before first use.',
+        ]
+      : []),
     '- **constraint-awareness**: Track and enforce user constraints (budgets, dates, requirements). Read when user states explicit constraints.',
     '- **personality**: Rules for updating AGENTS.md identity/personality. Read before modifying personality, tone, or role.',
     '- **skill-matching**: Skill discovery, trigger matching, and management in .shogo/skills/. Read before skill operations.',
