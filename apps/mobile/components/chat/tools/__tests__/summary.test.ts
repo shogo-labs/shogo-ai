@@ -5,7 +5,7 @@
  * tool rows in the chat thread.
  */
 import { describe, expect, test } from "bun:test"
-import { getToolSummary, parseShellCommand, sepLabel } from "../summary"
+import { getToolSummary, LOOKUP_TOOL_NAMES, parseShellCommand, sepLabel } from "../summary"
 
 describe("getToolSummary — built-in tools", () => {
   test("read_file returns Read + basename", () => {
@@ -68,6 +68,68 @@ describe("getToolSummary — built-in tools", () => {
     expect(getToolSummary("WebFetch", { url: "https://example.com/x/y" })).toEqual({
       verb: "Fetch",
       target: "example.com",
+    })
+  })
+
+  test("runtime web tool distinguishes fetches from searches", () => {
+    expect(getToolSummary("web", { url: "https://example.com/docs" })).toEqual({
+      verb: "Fetch",
+      target: "example.com",
+    })
+    expect(getToolSummary("web", { query: "best coffee in Oakland" })).toEqual({
+      verb: "Search the web for",
+      target: "best coffee in Oakland",
+    })
+  })
+
+  test("runtime search tools use the shared search summary", () => {
+    expect(getToolSummary("memory_search", { query: "deployment notes" })).toEqual({
+      verb: "Search for",
+      target: "deployment notes",
+    })
+    expect(getToolSummary("team_chat_search", { query: "release plan" })).toEqual({
+      verb: "Search for",
+      target: "release plan",
+    })
+    expect(getToolSummary("meeting_search", { query: "Q4 planning" })).toEqual({
+      verb: "Search for",
+      target: "Q4 planning",
+    })
+  })
+
+  test("runtime lookup tools never fall back to their raw tool name", () => {
+    const args: Record<string, Record<string, unknown>> = {
+      team_chat_read: { channel: "general", thread_id: "thread-1" },
+      member_activity: { user: "sam@example.com" },
+      agent_status: { instance_id: "agent-1" },
+      agent_result: { instance_id: "agent-1" },
+      task_get: { task_id: 7 },
+      meeting_read: { meeting_id: "meeting-1" },
+      memory_read: { file: "MEMORY.md" },
+      read_history: { kind: "plan", id: "plan-1" },
+      read_guide: { name: "browser" },
+      terminal_read: { terminalId: "terminal-1" },
+      impact_radius: { files: ["src/index.ts"] },
+      detect_changes: { changed_files: ["src/index.ts"] },
+      review_context: { changed_files: ["src/index.ts"] },
+    }
+    const lookupVerbs = new Set(["List", "Read", "Read lints", "Check"])
+
+    for (const toolName of LOOKUP_TOOL_NAMES) {
+      const summary = getToolSummary(toolName, args[toolName])
+      expect(lookupVerbs.has(summary.verb)).toBe(true)
+      expect(summary.verb).not.toBe(toolName)
+    }
+  })
+
+  test("team_chat_read includes its channel and thread in the target", () => {
+    expect(getToolSummary("team_chat_read", { channel: "#general" })).toEqual({
+      verb: "Read",
+      target: "#general",
+    })
+    expect(getToolSummary("team_chat_read", { channel: "general", thread_id: "root-1" })).toEqual({
+      verb: "Read",
+      target: "#general thread",
     })
   })
 })

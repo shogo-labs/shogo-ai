@@ -74,6 +74,23 @@ describe("groupWorkParts", () => {
     }
   });
 
+  test("collapses read-only runtime tools into the surrounding work-group", () => {
+    const parts = [
+      tool("read_file", { path: "/a.ts" }),
+      tool("project_list"),
+      tool("team_chat_read", { channel: "general" }),
+      tool("web", { query: "latest release notes" }),
+      tool("impact_radius", { files: ["src/a.ts"] }),
+      tool("team_chat_post", { channel: "general", text: "done" }),
+    ];
+    const grouped = groupWorkParts(parts);
+    expect(grouped.map((part) => part.type)).toEqual(["work-group", "tool"]);
+    if (grouped[0].type === "work-group") {
+      expect(grouped[0].items).toHaveLength(5);
+    }
+    expect(grouped[1].type).toBe("tool");
+  });
+
   test("reasoning rides along transparently inside a work run", () => {
     const parts = [
       tool("Read", { path: "/a.ts" }),

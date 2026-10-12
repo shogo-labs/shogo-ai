@@ -45,7 +45,9 @@ import { getToolSummary } from "../tools/summary";
 // ran) for the *label* lives in `workSummary.ts`.
 const EXPLORATION_VERBS = new Set([
   "Read",
+  "Read lints",
   "List",
+  "Check",
   "Search for",
   "Find in",
   "Find files matching",

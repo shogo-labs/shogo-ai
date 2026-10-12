@@ -47,6 +47,7 @@ import { BrowserWidget } from "./BrowserWidget"
 import { ThinkingWidget } from "./ThinkingWidget"
 import { WriteFileWidget } from "./WriteFileWidget"
 import { EditFileWidget } from "./EditFileWidget"
+import { LOOKUP_TOOL_NAMES } from "../tools/summary"
 import type { PlanData } from "../PlanCard"
 import { PlanReferenceCard } from "./PlanReferenceCard"
 import { extractPlanFilepath } from "./plan-tool"
@@ -188,6 +189,7 @@ const TEAM_TOOL_NAMES = new Set(["team_create"])
 // by default, so it's NOT in this set — only tools that flow through
 // `InlineToolWidget` need to be flagged here.
 const MINIMAL_TOOL_NAMES = new Set([
+  ...LOOKUP_TOOL_NAMES,
   "Read",
   "read_file",
   "ReadLints",
@@ -199,6 +201,12 @@ const MINIMAL_TOOL_NAMES = new Set([
   "glob",
   "WebSearch",
   "WebFetch",
+  "web",
+  "memory_search",
+  "search_history",
+  "search_integrations",
+  "team_chat_search",
+  "meeting_search",
   "Delete",
   "exec_wait",
 ])
