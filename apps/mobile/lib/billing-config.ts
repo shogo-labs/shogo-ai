@@ -304,7 +304,7 @@ export const BASIC_FEATURES = [
 export const PRO_FEATURES = [
   'Unlimited usage with higher 5-hour & weekly limits (per seat)',
   'All AI models',
-  'Auto-billed overage in $100→$500 trust blocks (cap optional)',
+  'Auto-billed overage in $25→$500 trust blocks (cap optional)',
   'Unlimited domains',
   'Custom domains',
   'Remove branding',

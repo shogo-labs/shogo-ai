@@ -39,6 +39,13 @@ export interface EffectiveBalance {
 
 export type PlanSource = "subscription" | "grant" | "free"
 
+/** An invoiced-but-unpaid on-demand usage block (overage is paused until it's paid). */
+export interface OveragePaymentPending {
+  amountUsd: number
+  /** Stripe's hosted invoice page: pay it or confirm a bank-required authentication. */
+  invoiceUrl: string | null
+}
+
 /** One rolling usage window as surfaced to the client. */
 export interface UsageWindowView {
   kind: "five_hour" | "weekly"
@@ -133,6 +140,10 @@ export function useBillingData(
   // can distinguish "still loading" from "definitely not paid" and avoid a
   // flash of "entitlement expired" before the first fetch resolves.
   const [paidTier, setPaidTier] = useState<boolean | null>(null)
+  // An on-demand usage block that's invoiced but unpaid pauses overage until
+  // the customer pays (or confirms, for bank-required authentication) on
+  // Stripe's hosted invoice page.
+  const [overagePayment, setOveragePayment] = useState<OveragePaymentPending | null>(null)
 
   useEffect(() => {
     if (!workspaceId || !store?.subscriptionCollection) { setIsLoadingSubscription(false); return }
@@ -146,7 +157,16 @@ export function useBillingData(
     Promise.all([
       store.subscriptionCollection.loadAll({ workspaceId }),
       http
-        .get<{ ok?: boolean; planId?: string; source?: PlanSource; usageWindows?: UsageWindows; paidTier?: boolean }>(
+        .get<{
+          ok?: boolean
+          planId?: string
+          source?: PlanSource
+          usageWindows?: UsageWindows
+          paidTier?: boolean
+          overagePaymentPending?: boolean
+          overageOutstandingUsd?: number
+          overageOutstandingInvoiceUrl?: string | null
+        }>(
           `/api/billing/workspace-plan?workspaceId=${encodeURIComponent(workspaceId)}`,
         )
         .then((res) => {
@@ -159,6 +179,11 @@ export function useBillingData(
             })
             if (data.usageWindows) setUsageWindows(data.usageWindows as UsageWindows)
             if (typeof data.paidTier === "boolean") setPaidTier(data.paidTier)
+            setOveragePayment(
+              data.overagePaymentPending
+                ? { amountUsd: data.overageOutstandingUsd ?? 0, invoiceUrl: data.overageOutstandingInvoiceUrl ?? null }
+                : null,
+            )
           }
         })
         .catch(() => {
@@ -362,6 +387,7 @@ export function useBillingData(
     subscription,
     usageWallet,
     effectiveBalance,
+    overagePayment,
     usageEvents,
     isLoadingMoreUsageEvents,
     hasMoreUsageEvents,

@@ -211,6 +211,7 @@ const unsubscribeUser: any = cloud.unsubscribeUser ?? (async () => {})
 const getUnreadNotificationCount: any = cloud.getUnreadNotificationCount ?? (async () => 0)
 const notifyPaymentReceipt: any = cloud.notifyPaymentReceipt ?? (async () => {})
 const notifyPaymentFailed: any = cloud.notifyPaymentFailed ?? (async () => {})
+const notifyPaymentActionRequired: any = cloud.notifyPaymentActionRequired ?? (async () => {})
 const STRIPE_API_VERSION: any = cloud.STRIPE_API_VERSION
 const resolveInvoiceSubscriptionId: any = cloud.resolveInvoiceSubscriptionId ?? (() => null)
 const proxyToPeer: any = cloud.proxyToPeer ?? (async () => new Response('Cloud peer routing unavailable', { status: 503 }))
@@ -7209,6 +7210,14 @@ app.get('/api/billing/workspace-plan', async (c) => {
       paidTier: overageStatus.paidTier,
       overageHardLimitUsd: wallet?.overageHardLimitUsd ?? null,
       overageAccumulatedUsd: wallet?.overageAccumulatedUsd ?? 0,
+      // Current overage block: the most unpaid overage the workspace can
+      // carry before usage pauses for payment. Grows as blocks get paid.
+      overageBlockUsd: billingService.overageBlockUsd(wallet?.overagePaidBlocks ?? 0),
+      overagePaymentPending: Boolean(wallet?.overageOutstandingInvoiceId),
+      overageOutstandingUsd: wallet?.overageOutstandingUsd ?? 0,
+      // Stripe's hosted invoice page for the pending block: pay it or confirm
+      // a bank-required authentication there.
+      overageOutstandingInvoiceUrl: wallet?.overageOutstandingInvoiceUrl ?? null,
       // Rolling usage windows (time-gated "unlimited"). `limitUsd: null`
       // means the window is uncapped (enterprise).
       usageWindows,
@@ -8154,9 +8163,20 @@ app.post('/api/webhooks/stripe', async (c) => {
         // before this — nothing synced a canceled instance add-on back to
         // `workspace.instanceSize`, so a workspace that canceled kept
         // running (and being billed floor-wise) at its old tier forever.
-        // Seat-plan cancellation is intentionally NOT handled here — that's
-        // a separate, pre-existing gap outside this change's scope.
         const subscription = event.data.object as StripeTypes.Subscription
+        // Seat-plan cancellation: mark the local row canceled so
+        // `resolveEffectivePlan` drops the workspace to free (and overage stops).
+        try {
+          const canceled = await prisma.subscription.updateMany({
+            where: { stripeSubscriptionId: subscription.id, status: { not: 'canceled' } },
+            data: { status: 'canceled', cancelAtPeriodEnd: false },
+          })
+          if (canceled.count > 0) {
+            console.log('[Webhook] Plan subscription canceled:', { subscriptionId: subscription.id })
+          }
+        } catch (err: any) {
+          console.error('[Webhook] Failed to cancel plan subscription:', err.message)
+        }
         try {
           const instanceSub = await instanceService.findInstanceSubscriptionByStripeId(subscription.id)
           if (instanceSub) {
@@ -8305,6 +8325,19 @@ app.post('/api/webhooks/stripe', async (c) => {
         // 2025+. The old code only read the legacy field (null on the current
         // version), so this entire receipt + monthly-refill path never ran.
         const subscriptionId = resolveInvoiceSubscriptionId(invoice)
+        const overageWorkspaceId = invoice.metadata?.kind === 'overage_block' ? invoice.metadata?.workspaceId : undefined
+        if (overageWorkspaceId && invoice.id) {
+          try {
+            const settled = await billingService.markOverageInvoicePaid(
+              overageWorkspaceId,
+              invoice.id,
+              invoice.hosted_invoice_url ?? undefined,
+            )
+            console.log('[Webhook] Overage invoice paid:', { workspaceId: overageWorkspaceId, invoiceId: invoice.id, settled })
+          } catch (err: any) {
+            console.error('[Webhook] Failed to settle overage invoice:', err.message)
+          }
+        }
         if (customerId && subscriptionId) {
           try {
             const sub = await stripe!.subscriptions.retrieve(subscriptionId)
@@ -8392,26 +8425,53 @@ app.post('/api/webhooks/stripe', async (c) => {
         }
         break
       }
-      case 'invoice.payment_failed': {
+      case 'invoice.payment_failed':
+      case 'invoice.payment_action_required': {
         const invoice = event.data.object as StripeTypes.Invoice
         const customerId = typeof invoice.customer === 'string' ? invoice.customer : (invoice.customer as any)?.id
         const subscriptionId = resolveInvoiceSubscriptionId(invoice)
+        // Off-session charges on cards whose bank demands authentication
+        // (3-D Secure; most Indian cards under RBI rules) land here as
+        // `payment_action_required`: the customer has to approve the charge
+        // on the hosted invoice page, so that link is the call to action.
+        const invoiceUrl = invoice.hosted_invoice_url ?? undefined
+        const notify = (wsId: string, planName: string) => {
+          const params = { planName, amountUsd: (invoice.amount_due || 0) / 100, invoiceId: invoice.id, invoiceUrl }
+          if (event.type === 'invoice.payment_action_required' && invoiceUrl) {
+            void notifyPaymentActionRequired(wsId, { ...params, invoiceUrl })
+          } else {
+            void notifyPaymentFailed(wsId, params)
+          }
+        }
+        if (invoice.metadata?.kind === 'overage_block' && invoice.metadata?.workspaceId) {
+          notify(invoice.metadata.workspaceId, 'On-demand usage')
+        }
         if (customerId && subscriptionId) {
           try {
             const sub = await stripe!.subscriptions.retrieve(subscriptionId)
             const wsId = sub.metadata?.workspaceId
             if (wsId) {
-              // In-app notification + payment-failed email to all billing
-              // admins, deduped on the invoice id.
+              // In-app notification + email to all billing admins, deduped
+              // on the invoice id.
               const planLabel = (sub.metadata?.planId || 'Pro').charAt(0).toUpperCase() + (sub.metadata?.planId || 'pro').slice(1)
-              void notifyPaymentFailed(wsId, {
-                planName: planLabel,
-                amountUsd: (invoice.amount_due || 0) / 100,
-                invoiceId: invoice.id,
-              })
+              notify(wsId, planLabel)
             }
           } catch (err: any) {
             console.error('[Webhook] payment-failed lookup failed:', err.message)
+          }
+        }
+        break
+      }
+      case 'invoice.voided':
+      case 'invoice.marked_uncollectible': {
+        const invoice = event.data.object as StripeTypes.Invoice
+        const wsId = invoice.metadata?.kind === 'overage_block' ? invoice.metadata?.workspaceId : undefined
+        if (wsId && invoice.id) {
+          try {
+            const released = await billingService.releaseOverageInvoice(wsId, invoice.id)
+            console.log('[Webhook] Overage invoice released:', { workspaceId: wsId, invoiceId: invoice.id, type: event.type, released })
+          } catch (err: any) {
+            console.error('[Webhook] Failed to release overage invoice:', err.message)
           }
         }
         break

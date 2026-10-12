@@ -30,7 +30,7 @@ import {
 } from './services/email.service'
 import { identifyUser, unsubscribeUser } from './services/loops.service'
 import { getUnreadNotificationCount } from './services/notification.service'
-import { notifyPaymentReceipt, notifyPaymentFailed } from './services/billing-alerts.service'
+import { notifyPaymentReceipt, notifyPaymentFailed, notifyPaymentActionRequired } from './services/billing-alerts.service'
 import { STRIPE_API_VERSION, resolveInvoiceSubscriptionId } from './lib/stripe-helpers'
 import { proxyToPeer } from './lib/region-peer-proxy'
 import { publishRoutes } from './routes/publish'
@@ -94,6 +94,7 @@ export {
   getUnreadNotificationCount,
   notifyPaymentReceipt,
   notifyPaymentFailed,
+  notifyPaymentActionRequired,
   STRIPE_API_VERSION,
   resolveInvoiceSubscriptionId,
   proxyToPeer,

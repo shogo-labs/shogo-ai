@@ -23,6 +23,7 @@ export { inviteAcceptedTemplate } from './invitation/invite-accepted.js'
 export { planUpgradedTemplate } from './billing/plan-upgraded.js'
 export { paymentReceiptTemplate } from './billing/payment-receipt.js'
 export { paymentFailedTemplate } from './billing/payment-failed.js'
+export { paymentActionRequiredTemplate } from './billing/payment-action-required.js'
 export { usageOverageChargedTemplate } from './billing/usage-overage-charged.js'
 export { usageApproachingLimitTemplate } from './billing/usage-approaching-limit.js'
 
@@ -65,6 +66,7 @@ import { inviteAcceptedTemplate } from './invitation/invite-accepted.js'
 import { planUpgradedTemplate } from './billing/plan-upgraded.js'
 import { paymentReceiptTemplate } from './billing/payment-receipt.js'
 import { paymentFailedTemplate } from './billing/payment-failed.js'
+import { paymentActionRequiredTemplate } from './billing/payment-action-required.js'
 import { usageOverageChargedTemplate } from './billing/usage-overage-charged.js'
 import { usageApproachingLimitTemplate } from './billing/usage-approaching-limit.js'
 import { memberJoinedTemplate } from './workspace/member-joined.js'
@@ -97,6 +99,7 @@ export const allTemplates: EmailTemplate[] = [
   planUpgradedTemplate,
   paymentReceiptTemplate,
   paymentFailedTemplate,
+  paymentActionRequiredTemplate,
   usageOverageChargedTemplate,
   usageApproachingLimitTemplate,
   memberJoinedTemplate,

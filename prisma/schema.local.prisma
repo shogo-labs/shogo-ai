@@ -1259,6 +1259,10 @@ model UsageWallet {
   overageHardLimitUsd          Float?
   overageAccumulatedUsd        Float     @default(0)
   overageBilledUsd             Float     @default(0)
+  overagePaidBlocks            Int       @default(0)
+  overageOutstandingInvoiceId  String?
+  overageOutstandingUsd        Float     @default(0)
+  overageOutstandingInvoiceUrl String?
   // JSON-encoded per-period alert dedupe ledger (Json? on PG). See
   // prisma/schema.prisma UsageWallet.alertsSentThisPeriod.
   alertsSentThisPeriod         String?

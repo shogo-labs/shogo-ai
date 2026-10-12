@@ -30,6 +30,7 @@ import {
   sendApproachingLimitEmail,
   sendPaymentReceiptEmail,
   sendPaymentFailedEmail,
+  sendPaymentActionRequiredEmail,
 } from './email.service'
 import { getFrontendUrl } from '../lib/cloud-urls'
 
@@ -155,23 +156,25 @@ export async function notifyPaymentReceipt(
 /**
  * Notify billing admins of a failed subscription/usage payment. In-app
  * (`payment_failed`, deduped on invoice id) + the existing payment-failed
- * email. Used by the Stripe `invoice.payment_failed` webhook.
+ * email. Used by the Stripe `invoice.payment_failed` webhook. `invoiceUrl`
+ * (Stripe's hosted invoice page) lets the customer pay the open invoice
+ * directly instead of only updating their card.
  */
 export async function notifyPaymentFailed(
   workspaceId: string,
-  params: { planName: string; amountUsd: number; invoiceId?: string },
+  params: { planName: string; amountUsd: number; invoiceId?: string; invoiceUrl?: string },
 ): Promise<void> {
   try {
     const { workspaceName, emails } = await resolveBillingContacts(workspaceId)
     const amount = usd(params.amountUsd)
-    const retryUrl = billingUrl(workspaceId)
+    const retryUrl = params.invoiceUrl || billingUrl(workspaceId)
 
     await notifyWorkspaceBillingAdmins(workspaceId, {
       type: 'payment_failed',
       title: `Payment failed for ${workspaceName}`,
       message: `We couldn't process your payment of $${amount} for ${workspaceName} (${params.planName}). Update your payment method to avoid interruption.`,
       actionUrl: '/billing',
-      metadata: { workspaceId, amountUsd: params.amountUsd },
+      metadata: { workspaceId, amountUsd: params.amountUsd, invoiceUrl: params.invoiceUrl },
       ...(params.invoiceId ? { dedupeKey: `payment_failed:${params.invoiceId}` } : {}),
     })
 
@@ -188,6 +191,46 @@ export async function notifyPaymentFailed(
     )
   } catch (err) {
     console.error('[billing-alerts] notifyPaymentFailed failed:', (err as Error)?.message ?? err)
+  }
+}
+
+/**
+ * Notify billing admins that their bank requires them to confirm a payment
+ * (3-D Secure; mandatory for most off-session charges on Indian cards). The
+ * charge can't complete until the customer approves it on Stripe's hosted
+ * invoice page, so that link is the call to action. Used by the Stripe
+ * `invoice.payment_action_required` webhook.
+ */
+export async function notifyPaymentActionRequired(
+  workspaceId: string,
+  params: { planName: string; amountUsd: number; invoiceId?: string; invoiceUrl: string },
+): Promise<void> {
+  try {
+    const { workspaceName, emails } = await resolveBillingContacts(workspaceId)
+    const amount = usd(params.amountUsd)
+
+    await notifyWorkspaceBillingAdmins(workspaceId, {
+      type: 'payment_failed',
+      title: `Confirm your payment for ${workspaceName}`,
+      message: `Your bank needs you to confirm the payment of $${amount} for ${workspaceName} (${params.planName}). Open the invoice to approve it.`,
+      actionUrl: '/billing',
+      metadata: { workspaceId, amountUsd: params.amountUsd, invoiceUrl: params.invoiceUrl, actionRequired: true },
+      ...(params.invoiceId ? { dedupeKey: `payment_action_required:${params.invoiceId}` } : {}),
+    })
+
+    await Promise.all(
+      emails.map((to) =>
+        sendPaymentActionRequiredEmail({
+          to,
+          workspaceName,
+          planName: params.planName,
+          amount,
+          confirmUrl: params.invoiceUrl,
+        }).catch((err) => console.error('[billing-alerts] payment-action-required email failed:', err?.message ?? err)),
+      ),
+    )
+  } catch (err) {
+    console.error('[billing-alerts] notifyPaymentActionRequired failed:', (err as Error)?.message ?? err)
   }
 }
 

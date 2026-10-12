@@ -84,11 +84,13 @@ const EXPECTED_PATTERNS = [
   /\brate_limit_exceeded\b/i,
   /\bentitlement_expired\b/i,
   /\boverage_cap_reached\b/i,
+  /\boverage_payment_pending\b/i,
   /usage limit reached/i,
   /usage-based pricing/i,
   /sending messages too quickly/i,
   /billing entitlement has expired/i,
   /spending cap for this period/i,
+  /usage charge hasn't been paid/i,
 ]
 
 // Stream-decoding failures thrown by the AI SDK's SSE/JSON reader

@@ -563,6 +563,20 @@ app.post('/billing/provision', async (c) => {
           overageHardLimitUsd: body.overageHardLimitUsd ?? null,
         })
         break
+      case 'markOverageInvoicePaid':
+        if (typeof body.invoiceId !== 'string') return c.json({ error: 'invoiceId required' }, 400)
+        wallet = {
+          settled: await svc.markOverageInvoicePaidLocal(
+            body.workspaceId,
+            body.invoiceId,
+            typeof body.invoiceUrl === 'string' ? body.invoiceUrl : undefined,
+          ),
+        }
+        break
+      case 'releaseOverageInvoice':
+        if (typeof body.invoiceId !== 'string') return c.json({ error: 'invoiceId required' }, 400)
+        wallet = { released: await svc.releaseOverageInvoiceLocal(body.workspaceId, body.invoiceId) }
+        break
       default:
         return c.json({ error: `Unknown provision op: ${body.op}` }, 400)
     }

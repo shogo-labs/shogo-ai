@@ -397,44 +397,40 @@ export async function applyGrantMonthlyAllocationLocal(
 
 
 /**
- * Trust-first overage block ladder. The first mid-cycle invoice is `$100`;
- * subsequent blocks step up by `$100` each as the workspace proves it pays
- * (extending trust), capped at `$500` so a single mid-cycle charge never
- * spikes too aggressively. So the n-th block is `min(OVERAGE_BLOCK_MAX_USD,
- * OVERAGE_BLOCK_STEP_USD * n)`, and cumulative billed after N blocks is
- * `100, 300, 600, 1000, 1500, 2000, 2500, ...`.
+ * Paid-trust overage ladder. A block is both the invoice size and the most
+ * unpaid overage a workspace can carry: once `overageBlockUsd` of overage is
+ * unbilled, it is invoiced and further overage pauses until that invoice is
+ * paid. Trust only grows with *paid* blocks (lifetime, never reset):
+ *
+ *   paid blocks 0–3 → $25, 4 → $100, 5 → $200, 6 → $300, 7 → $400, 8+ → $500
  */
+export const OVERAGE_STARTER_BLOCK_USD = 25
+export const OVERAGE_STARTER_BLOCKS = 4
 export const OVERAGE_BLOCK_STEP_USD = 100
 export const OVERAGE_BLOCK_MAX_USD = 500
-/** @deprecated retained for any caller that imports the legacy constant. */
-export const OVERAGE_BLOCK_USD = OVERAGE_BLOCK_STEP_USD
+
+export function overageBlockUsd(paidBlocks: number): number {
+  const paid = Math.max(0, Math.floor(paidBlocks || 0))
+  if (paid < OVERAGE_STARTER_BLOCKS) return OVERAGE_STARTER_BLOCK_USD
+  return Math.min(OVERAGE_BLOCK_MAX_USD, OVERAGE_BLOCK_STEP_USD * (paid - OVERAGE_STARTER_BLOCKS + 1))
+}
 
 /**
- * Compute the size of the next overage block to bill, given how much has
- * already been invoiced this period in trust blocks. The block size grows
- * with cumulative billed history: `$100 → $200 → $300 → $400 → $500 → $500 → …`
+ * Overage bookkeeping carried into a new period: whatever was accumulated
+ * but not yet invoiced rolls forward instead of being forgiven.
  */
-export function nextOverageBlockUsd(overageBilledUsd: number): number {
-  let remainder = Math.max(0, overageBilledUsd)
-  let blockIdx = 1
-  // Bounded loop: once `blockIdx > 5`, every block is the cap. Heavy hitters
-  // bail after a handful of iterations, but we keep an outer guard so a
-  // pathological wallet state can't loop forever.
-  while (blockIdx < 10_000) {
-    const size = Math.min(OVERAGE_BLOCK_MAX_USD, OVERAGE_BLOCK_STEP_USD * blockIdx)
-    if (remainder < size) return size
-    remainder -= size
-    blockIdx++
+function carryOverageIntoNewPeriod(wallet: { overageAccumulatedUsd: number; overageBilledUsd: number }) {
+  return {
+    overageAccumulatedUsd: Math.max(0, wallet.overageAccumulatedUsd - wallet.overageBilledUsd),
+    overageBilledUsd: 0,
   }
-  return OVERAGE_BLOCK_MAX_USD
 }
 
 /**
  * Allocate the monthly included USD for a subscription plan and seat count.
  * `seats` is the number of *paying* seats on the Stripe subscription
- * (Pro/Business are per-seat plans; Basic is always 1). Resets accumulated
- * overage so the upcoming period starts clean (any flushed overage should
- * have already been billed via `chargeOverageBlocks` mid-cycle).
+ * (Pro/Business are per-seat plans; Basic is always 1). Starts a new overage
+ * period, carrying any not-yet-invoiced overage forward.
  *
  * Super-admin grants stack on top: free-seat counts contribute their
  * per-seat plan-included USD (Pro/Business only) and the grant's flat
@@ -464,7 +460,7 @@ export async function allocateMonthlyIncludedLocal(
     getActiveGrantsForWorkspace(workspaceId, now),
     prisma.usageWallet.findUnique({
       where: { workspaceId },
-      select: { overageHardLimitUsd: true },
+      select: { overageHardLimitUsd: true, overageAccumulatedUsd: true, overageBilledUsd: true },
     }),
   ])
   // Free seats from a grant get the same per-seat plan included USD.
@@ -489,8 +485,9 @@ export async function allocateMonthlyIncludedLocal(
     update: {
       monthlyIncludedUsd,
       monthlyIncludedAllocationUsd: monthlyIncludedUsd,
-      overageAccumulatedUsd: 0,
-      overageBilledUsd: 0,
+      ...(existing
+        ? carryOverageIntoNewPeriod(existing)
+        : { overageAccumulatedUsd: 0, overageBilledUsd: 0 }),
       // Clear the proactive-alert dedupe ledger so threshold notifications
       // (approaching included / spend cap) can fire again next period. An
       // empty object resets it cleanly under both PG (Json) and SQLite (TEXT).
@@ -825,6 +822,20 @@ export async function checkUsageBalance(
     healStaleOverageFlag(billingWorkspaceId);
     return { ok: false, reason: 'entitlement_expired' };
   }
+  if (wallet.overageOutstandingInvoiceId) {
+    reconcileOutstandingOverage(billingWorkspaceId, wallet.overageOutstandingInvoiceId).catch((err) =>
+      console.error('[billing] failed to reconcile outstanding overage invoice:', err),
+    )
+    return { ok: false, reason: 'overage_payment_pending' };
+  }
+  if (wallet.overageAccumulatedUsd - wallet.overageBilledUsd >= overageBlockUsd(wallet.overagePaidBlocks)) {
+    // A full block is unbilled — normally the charge is already in flight
+    // from the debit that crossed it; kick it again in case that attempt failed.
+    chargeOverageBlocks(billingWorkspaceId).catch((err) =>
+      console.error('[billing] failed to charge overage blocks:', err),
+    )
+    return { ok: false, reason: 'overage_payment_pending' };
+  }
   if (wallet.overageHardLimitUsd == null) return { ok: true };
   const overageRoom = Math.max(0, wallet.overageHardLimitUsd - wallet.overageAccumulatedUsd);
   if (overageRoom >= minimumRequiredUsd) return { ok: true };
@@ -936,6 +947,8 @@ type WalletProvisionOp =
   | { op: 'allocateMonthlyIncluded'; planId: string; seats: number }
   | { op: 'applyGrantMonthlyAllocation' }
   | { op: 'setUsageBasedPricing'; overageEnabled: boolean; overageHardLimitUsd: number | null }
+  | { op: 'markOverageInvoicePaid'; invoiceId: string; invoiceUrl?: string }
+  | { op: 'releaseOverageInvoice'; invoiceId: string }
 
 /**
  * Route a wallet-provisioning write to `workspace.homeRegion` so the wallet has
@@ -1103,10 +1116,7 @@ export async function consumeUsageLocal(
       const result = await _consumeUsageTransaction({ ...params, billingWorkspaceId })
       if (result.success) {
         if ((result.overageChargedUsd ?? 0) > 0) {
-          // Fire-and-forget mid-cycle block charging. We invoice the user in
-          // $100 trust blocks as accumulated overage crosses each boundary;
-          // any leftover sub-$100 amount carries over and gets billed on the
-          // next crossing or end-of-period reconciliation.
+          // Fire-and-forget block charging once a full block is unbilled.
           chargeOverageBlocks(billingWorkspaceId).catch((err) =>
             console.error('[billing] failed to charge overage blocks:', err),
           )
@@ -1203,11 +1213,13 @@ async function _consumeUsageTransaction(
     const five = rollWindow(wallet.fiveHourWindowStart, wallet.fiveHourUsedUsd, now, FIVE_HOUR_MS);
     const week = rollWindow(wallet.weeklyWindowStart, wallet.weeklyUsedUsd, now, SEVEN_DAY_MS);
 
-    // Monthly boundary still governs overage bookkeeping (overage is invoiced
-    // per Stripe period). The included USD pools are no longer drained — the
-    // rolling windows are the gate — so we only reset overage accounting here.
+    // Monthly boundary still governs overage bookkeeping. The included USD
+    // pools are no longer drained — the rolling windows are the gate — so we
+    // only roll overage accounting here (unbilled overage carries forward).
     const needsMonthlyReset = isNewMonth(now, wallet.lastMonthlyReset);
-    let overageAccumulatedUsd = needsMonthlyReset ? 0 : wallet.overageAccumulatedUsd;
+    let overageAccumulatedUsd = needsMonthlyReset
+      ? carryOverageIntoNewPeriod(wallet).overageAccumulatedUsd
+      : wallet.overageAccumulatedUsd;
 
     let source: UsageSource;
     let balanceBefore: number;
@@ -1247,6 +1259,17 @@ async function _consumeUsageTransaction(
         // an expired grant / lapsed subscription falls through to the hard
         // "Usage limit reached" branch instead of metering unbillable usage.
         if (wallet.overageEnabled && paidTier) {
+          if (wallet.overageOutstandingInvoiceId) {
+            return {
+              success: false,
+              error: 'Overage payment pending',
+              reason: 'overage_payment_pending',
+              remainingIncludedUsd: 0,
+              source: 'overage',
+              window,
+              resetsAt,
+            };
+          }
           const overageRoom = wallet.overageHardLimitUsd == null
             ? Number.POSITIVE_INFINITY
             : Math.max(0, wallet.overageHardLimitUsd - overageAccumulatedUsd);
@@ -1441,26 +1464,22 @@ async function resolveEffectivePlan(
 }
 
 /**
- * Charge whole overage blocks the workspace has crossed since the last
- * block was billed this period. Trust-first model with an escalating
- * ladder:
+ * Invoice and charge the next overage block once a full block of overage is
+ * unbilled (see `overageBlockUsd` for the paid-trust ladder).
  *
- *   `overageAccumulatedUsd` is the marked-up USD the workspace has consumed
- *   beyond their included usage. `overageBilledUsd` is how much of that has
- *   already been invoiced + paid this period. The block size starts at
- *   `$100` and steps up by `$100` per successfully billed block, capped at
- *   `$500` (so trust grows with proven payment history but never spikes the
- *   card by more than `$500` in a single mid-cycle charge).
+ *   `overageAccumulatedUsd` is the marked-up USD consumed beyond included
+ *   usage; `overageBilledUsd` is how much of it has been invoiced this
+ *   period. Exactly one block is invoiced at a time and recorded as the
+ *   wallet's outstanding invoice; overage stays paused until it is paid
+ *   (here, or later via the `invoice.payment_succeeded` webhook after
+ *   Stripe's retries / the customer paying the hosted invoice).
  *
- *   Sub-block leftovers carry to the next crossing or end-of-period
- *   reconciliation. If usage races past several thresholds at once we
- *   bundle them into a single invoice so customers don't get a flurry of
- *   small statements.
+ * The invoice is charged to the subscription's default payment method —
+ * Checkout stores the card there, not on the customer, so an invoice
+ * without it has nothing to charge.
  *
- * Returns the number of blocks billed (zero is the steady state). Best
- * effort: logs and swallows errors so a missed Stripe call never blocks
- * usage from being recorded — `overageAccumulatedUsd` stays as the source
- * of truth and a future call (or end-of-period reconciler) will catch up.
+ * Returns the number of blocks invoiced (0 or 1). Best effort: logs and
+ * swallows errors; the preflight retries while a full block is unbilled.
  */
 export async function chargeOverageBlocks(workspaceId: string): Promise<number> {
   const stripeKey = process.env.STRIPE_SECRET_KEY
@@ -1475,27 +1494,18 @@ export async function chargeOverageBlocks(workspaceId: string): Promise<number> 
       id: true,
       overageAccumulatedUsd: true,
       overageBilledUsd: true,
+      overagePaidBlocks: true,
+      overageOutstandingInvoiceId: true,
     },
   })
-  if (!wallet) return 0
+  if (!wallet || wallet.overageOutstandingInvoiceId) return 0
 
-  // Walk the ladder against the unbilled balance: peel off as many full
-  // blocks as fit, leaving any sub-block remainder for next time.
-  const blockSizes: number[] = []
-  let billedSimulated = wallet.overageBilledUsd
-  let unbilled = wallet.overageAccumulatedUsd - wallet.overageBilledUsd
-  while (unbilled > 0) {
-    const size = nextOverageBlockUsd(billedSimulated)
-    if (unbilled < size) break
-    blockSizes.push(size)
-    unbilled -= size
-    billedSimulated += size
-  }
-  if (blockSizes.length === 0) return 0
+  const totalUsd = overageBlockUsd(wallet.overagePaidBlocks)
+  if (wallet.overageAccumulatedUsd - wallet.overageBilledUsd < totalUsd) return 0
 
   const sub = await prisma.subscription.findFirst({
     where: { workspaceId, status: { in: ['active', 'trialing'] } },
-    select: { stripeCustomerId: true },
+    select: { stripeCustomerId: true, stripeSubscriptionId: true },
   })
   if (!sub?.stripeCustomerId) {
     console.warn(`[billing] no active Stripe customer for workspace ${workspaceId}; deferring overage block charge`)
@@ -1507,43 +1517,30 @@ export async function chargeOverageBlocks(workspaceId: string): Promise<number> 
   }
   const stripe = new Stripe(stripeKey)
 
-  const totalUsd = blockSizes.reduce((a, b) => a + b, 0)
-  const blocksDue = blockSizes.length
-
-  // Idempotency: keyed on (workspace, billed snapshot, total). Re-running
-  // with the same prior state hits the same key, so Stripe dedupes a retry
-  // even if our local update was rolled back.
-  const idempotencyKey = `overage:${workspaceId}:${Math.round(wallet.overageBilledUsd)}:${Math.round(totalUsd)}`
-
-  const blockBreakdown = blockSizes.map((s) => `$${s}`).join(' + ')
-  const description = blocksDue === 1
-    ? `Usage overage block (${blockBreakdown})`
-    : `Usage overage (${blocksDue} blocks: ${blockBreakdown})`
-
+  // Idempotency: keyed on (workspace, paid-trust level, billed snapshot), so a
+  // retry from the same wallet state reuses the same Stripe invoice.
+  const idempotencyKey =
+    `overage:${workspaceId}:${wallet.overagePaidBlocks}:${Math.round(wallet.overageBilledUsd * 100)}`
   const expectedCents = Math.round(totalUsd * 100)
 
   try {
-    // Create the invoice FIRST with `pending_invoice_items_behavior: 'exclude'`
-    // so Stripe does not sweep unrelated pending items onto it, then attach our
-    // item to *this* invoice explicitly via `invoice: invoice.id`. The previous
-    // code created a free-floating pending item and a separate auto-advancing
-    // invoice with no `pending_invoice_items_behavior`; for a subscription
-    // customer Stripe held the pending item for the next cycle, so the manual
-    // invoice finalized at $0 while we still advanced the ladder — the root
-    // cause of the lump-sum, no-receipt charge.
+    const paymentMethod = await resolveDefaultPaymentMethod(stripe, sub)
+
+    // Create the invoice first with `pending_invoice_items_behavior: 'exclude'`
+    // and attach the item to it explicitly; otherwise Stripe holds a pending
+    // item for a subscription customer's next cycle and this invoice
+    // finalizes at $0.
     const invoice = await stripe.invoices.create(
       {
         customer: sub.stripeCustomerId,
-        auto_advance: false,
+        // Stripe only retries collection (Smart Retries / dunning) on
+        // auto-advancing invoices.
+        auto_advance: true,
         collection_method: 'charge_automatically',
         pending_invoice_items_behavior: 'exclude',
-        description: 'Mid-cycle usage overage',
-        metadata: {
-          workspaceId,
-          kind: 'overage_block',
-          blocks: String(blocksDue),
-          blockSizes: blockSizes.join(','),
-        },
+        ...(paymentMethod ? { default_payment_method: paymentMethod } : {}),
+        description: 'Usage overage',
+        metadata: { workspaceId, kind: 'overage_block', blockUsd: String(totalUsd) },
       },
       { idempotencyKey: `${idempotencyKey}:invoice` },
     )
@@ -1554,25 +1551,18 @@ export async function chargeOverageBlocks(workspaceId: string): Promise<number> 
         invoice: invoice.id,
         amount: expectedCents, // cents
         currency: 'usd',
-        description,
-        metadata: {
-          workspaceId,
-          blocks: String(blocksDue),
-          blockSizes: blockSizes.join(','),
-          kind: 'overage_block',
-        },
+        description: `Usage overage block ($${totalUsd})`,
+        metadata: { workspaceId, kind: 'overage_block', blockUsd: String(totalUsd) },
       },
       { idempotencyKey: `${idempotencyKey}:item` },
     )
 
     const finalized = await stripe.invoices.finalizeInvoice(invoice.id)
 
-    // Only advance the ladder once we've confirmed the invoice actually carries
-    // the amount we intended. If the total is off (e.g. the item didn't attach),
-    // bail without advancing so the next call retries instead of silently
-    // skipping the charge.
+    // Only record the block once the invoice actually carries the amount we
+    // intended; otherwise bail so the next call retries.
     if (typeof finalized?.total === 'number' && finalized.total !== expectedCents) {
-      console.error('[billing] overage invoice total mismatch; not advancing ladder', {
+      console.error('[billing] overage invoice total mismatch; not recording block', {
         workspaceId,
         invoiceId: finalized.id,
         expectedCents,
@@ -1581,51 +1571,176 @@ export async function chargeOverageBlocks(workspaceId: string): Promise<number> 
       return 0
     }
 
+    // Claim the block: conditional on the snapshot we read, so a concurrent
+    // call that got the same (idempotent) invoice can't record it twice.
+    const claimed = await prisma.usageWallet.updateMany({
+      where: { workspaceId, overageOutstandingInvoiceId: null, overageBilledUsd: wallet.overageBilledUsd },
+      data: {
+        overageBilledUsd: { increment: totalUsd },
+        overageOutstandingInvoiceId: finalized.id,
+        overageOutstandingUsd: totalUsd,
+        overageOutstandingInvoiceUrl: finalized.hosted_invoice_url ?? null,
+      },
+    })
+    if (claimed.count === 0) return 0
+
     let paid = finalized?.status === 'paid'
-    try {
-      const payResult = await stripe.invoices.pay(finalized.id)
-      paid = payResult?.status === 'paid' || paid
-    } catch (payErr: any) {
-      console.warn('[billing] overage invoice pay attempt failed (will retry via Stripe dunning):', payErr?.message ?? payErr)
+    if (!paid) {
+      try {
+        const payResult = await stripe.invoices.pay(finalized.id, {
+          ...(paymentMethod ? { payment_method: paymentMethod } : {}),
+          off_session: true,
+        })
+        paid = payResult?.status === 'paid'
+      } catch (payErr: any) {
+        console.warn('[billing] overage invoice pay attempt failed (Stripe will retry; overage paused):', {
+          workspaceId,
+          invoiceId: finalized.id,
+          error: payErr?.message ?? payErr,
+        })
+      }
     }
 
-    // Advance the ladder now that the amount is confirmed on a finalized
-    // invoice (collection is guaranteed via Stripe dunning even if the
-    // immediate pay attempt didn't settle). Read back the period-to-date
-    // overage for the notification.
-    const updated = await prisma.usageWallet.update({
-      where: { workspaceId },
-      data: { overageBilledUsd: { increment: totalUsd } },
-      select: { overageAccumulatedUsd: true },
-    })
-
-    console.log('[billing] Charged overage blocks:', {
+    console.log('[billing] Invoiced overage block:', {
       workspaceId,
-      blocks: blocksDue,
-      blockSizes,
       totalUsd,
+      paidBlocks: wallet.overagePaidBlocks,
       invoiceId: finalized.id,
       paid,
     })
 
-    // Heads-up notification + email so an on-demand charge never surprises the
-    // user. Fire-and-forget: billing correctness must not depend on delivery.
-    void notifyOverageCharged(workspaceId, {
-      blockAmountUsd: totalUsd,
-      periodOverageUsd: updated.overageAccumulatedUsd,
-      invoiceId: finalized.id,
-      invoiceUrl: finalized.hosted_invoice_url ?? undefined,
-    })
-
-    return blocksDue
+    if (paid) {
+      await markOverageInvoicePaidLocal(workspaceId, finalized.id, finalized.hosted_invoice_url ?? undefined)
+    }
+    return 1
   } catch (err: any) {
     console.error('[billing] chargeOverageBlocks failed:', err?.message ?? err)
     return 0
   }
 }
 
+async function resolveDefaultPaymentMethod(
+  stripe: any,
+  sub: { stripeCustomerId: string; stripeSubscriptionId: string },
+): Promise<string | null> {
+  const idOf = (pm: unknown) => (typeof pm === 'string' ? pm : (pm as { id?: string } | null)?.id ?? null)
+  try {
+    const stripeSub = await stripe.subscriptions.retrieve(sub.stripeSubscriptionId)
+    const fromSub = idOf(stripeSub?.default_payment_method)
+    if (fromSub) return fromSub
+  } catch (err: any) {
+    console.warn('[billing] could not read subscription payment method:', err?.message ?? err)
+  }
+  try {
+    const customer = await stripe.customers.retrieve(sub.stripeCustomerId)
+    return idOf(customer?.invoice_settings?.default_payment_method)
+  } catch (err: any) {
+    console.warn('[billing] could not read customer payment method:', err?.message ?? err)
+    return null
+  }
+}
+
 /**
- * @deprecated Trust-first overage now charges in $100 blocks via
+ * Settle the wallet's outstanding overage block: clears the pause, bumps the
+ * lifetime paid-block count (raising the next block size), and notifies the
+ * billing admins. Idempotent — only the call that actually clears the
+ * matching invoice id has any effect, so the sync pay path and the
+ * `invoice.payment_succeeded` webhook can both call it. Routed to the
+ * wallet's home region (webhooks land in whichever region serves them).
+ */
+export async function markOverageInvoicePaid(
+  workspaceId: string,
+  invoiceId: string,
+  invoiceUrl?: string,
+): Promise<boolean> {
+  const routed = await routeWalletProvision(workspaceId, { op: 'markOverageInvoicePaid', invoiceId, invoiceUrl })
+  if (routed.handled) return Boolean(routed.wallet?.settled)
+  return markOverageInvoicePaidLocal(workspaceId, invoiceId, invoiceUrl)
+}
+
+export async function markOverageInvoicePaidLocal(
+  workspaceId: string,
+  invoiceId: string,
+  invoiceUrl?: string,
+): Promise<boolean> {
+  const wallet = await prisma.usageWallet.findUnique({
+    where: { workspaceId },
+    select: { overageOutstandingUsd: true },
+  })
+  const settled = await prisma.usageWallet.updateMany({
+    where: { workspaceId, overageOutstandingInvoiceId: invoiceId },
+    data: {
+      overageOutstandingInvoiceId: null,
+      overageOutstandingUsd: 0,
+      overageOutstandingInvoiceUrl: null,
+      overagePaidBlocks: { increment: 1 },
+    },
+  })
+  if (settled.count === 0) return false
+
+  const updated = await prisma.usageWallet.findUnique({
+    where: { workspaceId },
+    select: { overageAccumulatedUsd: true },
+  })
+  void notifyOverageCharged(workspaceId, {
+    blockAmountUsd: wallet?.overageOutstandingUsd ?? 0,
+    periodOverageUsd: updated?.overageAccumulatedUsd ?? 0,
+    invoiceId,
+    invoiceUrl,
+  })
+  return true
+}
+
+/**
+ * Release the wallet's outstanding overage block without counting it as
+ * paid (invoice voided / marked uncollectible). Overage resumes, but the
+ * trust ladder does not advance.
+ */
+export async function releaseOverageInvoice(workspaceId: string, invoiceId: string): Promise<boolean> {
+  const routed = await routeWalletProvision(workspaceId, { op: 'releaseOverageInvoice', invoiceId })
+  if (routed.handled) return Boolean(routed.wallet?.released)
+  return releaseOverageInvoiceLocal(workspaceId, invoiceId)
+}
+
+export async function releaseOverageInvoiceLocal(workspaceId: string, invoiceId: string): Promise<boolean> {
+  const released = await prisma.usageWallet.updateMany({
+    where: { workspaceId, overageOutstandingInvoiceId: invoiceId },
+    data: { overageOutstandingInvoiceId: null, overageOutstandingUsd: 0, overageOutstandingInvoiceUrl: null },
+  })
+  return released.count > 0
+}
+
+const OVERAGE_RECONCILE_INTERVAL_MS = 60_000
+const overageReconcileLastCheck = new Map<string, number>()
+
+/**
+ * Settle a paused wallet straight from Stripe's view of its outstanding
+ * invoice. Webhooks only reach the region that serves them, so without this a
+ * wallet in another region would stay paused after the customer pays.
+ * Throttled per workspace; called from the balance preflight.
+ */
+export async function reconcileOutstandingOverage(workspaceId: string, invoiceId: string): Promise<boolean> {
+  const stripeKey = process.env.STRIPE_SECRET_KEY
+  if (!stripeKey) return false
+  const last = overageReconcileLastCheck.get(workspaceId) ?? 0
+  if (Date.now() - last < OVERAGE_RECONCILE_INTERVAL_MS) return false
+  overageReconcileLastCheck.set(workspaceId, Date.now())
+
+  const { default: Stripe } = await import('stripe') as unknown as {
+    default: new (key: string, opts?: unknown) => any
+  }
+  const invoice = await new Stripe(stripeKey).invoices.retrieve(invoiceId)
+  if (invoice?.status === 'paid') {
+    return markOverageInvoicePaidLocal(workspaceId, invoiceId, invoice.hosted_invoice_url ?? undefined)
+  }
+  if (invoice?.status === 'void' || invoice?.status === 'uncollectible') {
+    return releaseOverageInvoiceLocal(workspaceId, invoiceId)
+  }
+  return false
+}
+
+/**
+ * @deprecated Overage now charges in paid-trust blocks via
  * `chargeOverageBlocks`. The Stripe Meter Events path is kept as a no-op
  * shim for callers that still import this symbol; it will be removed in a
  * follow-up after migration data is verified.

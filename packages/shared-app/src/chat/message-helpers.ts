@@ -45,6 +45,9 @@ export const ERROR_CODE_MESSAGES: Record<string, string> = {
   entitlement_expired: "Your on-demand billing entitlement has expired. Reactivate your subscription or license key to continue using on-demand usage.",
   // Overage is active, but the workspace's own spending cap is exhausted.
   overage_cap_reached: "You've reached your on-demand spending cap for this period. Raise your cap in Billing settings to continue.",
+  // An on-demand usage block is invoiced but unpaid (declined card, or the
+  // bank requires the customer to confirm the charge).
+  overage_payment_pending: "Your latest on-demand usage charge hasn't been paid yet. Pay or confirm the open invoice in Billing settings to continue.",
   session_expired: 'Your session has expired. Please refresh the page.',
   internal_error: 'Something went wrong on our end. Please try again.',
   shutting_down: 'A server update is in progress. Please retry in a few seconds.',

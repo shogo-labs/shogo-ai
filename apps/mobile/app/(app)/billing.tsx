@@ -127,6 +127,7 @@ export default observer(function BillingPage() {
     refetchUsageWallet,
     planSource,
     usageWindows,
+    overagePayment,
   } = useBillingData(currentWorkspace?.id)
   // A grant-conferred plan has no Stripe customer / portal, so hide
   // "Manage" / Stripe-only affordances and let "Free Plan"-style copy
@@ -766,6 +767,22 @@ export default observer(function BillingPage() {
             />
           </View>
 
+          {overagePayment ? (
+            <View className="gap-2 rounded-md p-3 bg-destructive/10">
+              <View className="flex-row items-center gap-2">
+                <Info size={16} className="text-destructive" />
+                <Text className="flex-1 text-sm text-foreground font-medium">
+                  {`On-demand usage is paused: your ${formatUsd(overagePayment.amountUsd)} usage charge hasn't been paid. If your bank asked you to confirm the payment, approve it on the invoice page.`}
+                </Text>
+              </View>
+              {Platform.OS !== 'ios' && overagePayment.invoiceUrl ? (
+                <Button size="sm" onPress={() => WebBrowser.openBrowserAsync(overagePayment.invoiceUrl!)}>
+                  Pay or confirm invoice
+                </Button>
+              ) : null}
+            </View>
+          ) : null}
+
           {usageLimitNotice ? (
             <View
               className={cn(
@@ -808,7 +825,7 @@ export default observer(function BillingPage() {
               <View className="flex-row items-center gap-2">
                 <Info size={16} className="text-muted-foreground" />
                 <Text className="text-sm text-muted-foreground">
-                  Need more before a window resets? Overage charges in escalating trust blocks ($100 → $500){effectiveBalance.overageHardLimitUsd != null
+                  Need more before a window resets? Overage charges in escalating trust blocks ($25 → $500, growing as blocks are paid){effectiveBalance.overageHardLimitUsd != null
                     ? ` (cap ${formatUsd(effectiveBalance.overageHardLimitUsd)}/mo)`
                     : ''}
                   {effectiveBalance.overageAccumulatedUsd > 0

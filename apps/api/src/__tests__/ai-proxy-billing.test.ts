@@ -323,10 +323,11 @@ describe('AI proxy → billing (cloud-side, shogo_sk_ auth)', () => {
     expect(charged.billedUsd).toBeGreaterThan(0)
   })
 
-  test('overage caused by a forwarded request triggers a $100 trust block on the cloud workspace', async () => {
+  test('overage caused by a forwarded request triggers a $25 starter block on the cloud workspace', async () => {
     // Wallet set up so this single request will blow past included usage
-    // and accrue >$100 of overage in one shot — proves the new escalating
-    // ladder fires on the cloud side without any client-side trigger.
+    // and accrue a large overage in one shot — proves the paid-trust ladder
+    // fires on the cloud side without any client-side trigger, and that only
+    // one starter block is invoiced regardless of how far past it usage went.
     wallet = {
       ...wallet,
       monthlyIncludedUsd: 0,
@@ -382,9 +383,9 @@ describe('AI proxy → billing (cloud-side, shogo_sk_ auth)', () => {
 
     // The cloud workspace was billed and a trust block invoice fired.
     expect(consumeCalls.find((c) => c.workspaceId === 'ws-cloud')).toBeDefined()
-    expect(stripe.invoiceItemCreate.length).toBeGreaterThan(0)
-    expect(stripe.invoiceItemCreate[0].amount).toBeGreaterThanOrEqual(100 * 100)
-    expect(stripe.invoiceCreate.length).toBeGreaterThan(0)
+    expect(stripe.invoiceItemCreate.length).toBe(1)
+    expect(stripe.invoiceItemCreate[0].amount).toBe(25 * 100)
+    expect(stripe.invoiceCreate.length).toBe(1)
   })
 })
 

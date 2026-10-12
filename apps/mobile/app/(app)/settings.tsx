@@ -3698,7 +3698,7 @@ function BillingTab() {
                 <Text className="text-xs text-muted-foreground">
                   Overage this period:{" "}
                   {formatUsd(effectiveBalance.overageAccumulatedUsd)} (billed in
-                  trust blocks: $100 → $500)
+                  trust blocks: $25 → $500)
                 </Text>
               )}
           </View>

@@ -269,6 +269,28 @@ export async function sendPaymentFailedEmail(params: {
 }
 
 /**
+ * Send a "confirm your payment" email when the customer's bank requires
+ * authentication (3-D Secure / RBI e-mandate rules) before an off-session
+ * charge can complete. `confirmUrl` is Stripe's hosted invoice page.
+ */
+export async function sendPaymentActionRequiredEmail(params: {
+  to: string
+  workspaceName: string
+  planName: string
+  amount: string
+  currency?: string
+  confirmUrl: string
+}): Promise<{ success: boolean; error?: string }> {
+  return sendTemplateEmail('payment-action-required', params.to, {
+    workspaceName: params.workspaceName,
+    planName: params.planName,
+    amount: params.amount,
+    currency: params.currency || '$',
+    confirmUrl: params.confirmUrl,
+  })
+}
+
+/**
  * Send an on-demand usage (overage) charged email. Fired when a mid-cycle
  * overage block is invoiced so the charge never arrives unannounced.
  */

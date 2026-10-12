@@ -31,6 +31,9 @@ type Wallet = {
   overageBilledUsd: number
   overageEnabled: boolean
   overageHardLimitUsd: number | null
+  overagePaidBlocks: number
+  overageOutstandingInvoiceId: string | null
+  overageOutstandingUsd: number
   anniversaryDay: number
   lastDailyReset: Date
   lastMonthlyReset: Date
@@ -148,6 +151,9 @@ const prismaApi = {
         overageBilledUsd: 0,
         overageEnabled: data.overageEnabled ?? false,
         overageHardLimitUsd: data.overageHardLimitUsd ?? null,
+        overagePaidBlocks: 0,
+        overageOutstandingInvoiceId: null,
+        overageOutstandingUsd: 0,
         anniversaryDay: data.anniversaryDay,
         lastDailyReset: data.lastDailyReset,
         lastMonthlyReset: data.lastMonthlyReset,
@@ -181,8 +187,16 @@ const prismaApi = {
     },
     updateMany: async ({ where, data }: any) => {
       const w = wallets.get(where.workspaceId)
-      if (w) Object.assign(w, data)
-      return { count: w ? 1 : 0 }
+      const matches = w && Object.entries(where).every(([k, v]) => (w as any)[k] === v)
+      if (!matches) return { count: 0 }
+      for (const [k, v] of Object.entries(data)) {
+        if (v && typeof v === 'object' && 'increment' in (v as any)) {
+          ;(w as any)[k] = ((w as any)[k] ?? 0) + (v as any).increment
+        } else {
+          ;(w as any)[k] = v
+        }
+      }
+      return { count: 1 }
     },
   },
   workspaceGrant: {
@@ -367,6 +381,9 @@ function freshWallet(over: Partial<Wallet> = {}): Wallet {
     overageBilledUsd: 0,
     overageEnabled: false,
     overageHardLimitUsd: null,
+    overagePaidBlocks: 0,
+    overageOutstandingInvoiceId: null,
+    overageOutstandingUsd: 0,
     anniversaryDay: 1,
     lastDailyReset: now,
     lastMonthlyReset: now,
@@ -508,19 +525,20 @@ describe('applyGrantMonthlyAllocation', () => {
 // ============================================================================
 // Overage block ladder
 // ============================================================================
-describe('nextOverageBlockUsd', () => {
-  it('returns $100 at zero', () => {
-    expect(billing.nextOverageBlockUsd(0)).toBe(100)
+describe('overageBlockUsd', () => {
+  it('starts at $25 for the first four paid blocks', () => {
+    for (const paid of [0, 1, 2, 3]) expect(billing.overageBlockUsd(paid)).toBe(25)
   })
-  it('escalates by $100 per block, capped at $500', () => {
-    expect(billing.nextOverageBlockUsd(100)).toBe(200) // after 1 block of 100
-    expect(billing.nextOverageBlockUsd(300)).toBe(300) // 100+200
-    expect(billing.nextOverageBlockUsd(600)).toBe(400) // 100+200+300
-    expect(billing.nextOverageBlockUsd(1000)).toBe(500)
-    expect(billing.nextOverageBlockUsd(10_000)).toBe(500)
+  it('steps to $100 after four paid blocks, then +$100 per paid block, capped at $500', () => {
+    expect(billing.overageBlockUsd(4)).toBe(100)
+    expect(billing.overageBlockUsd(5)).toBe(200)
+    expect(billing.overageBlockUsd(6)).toBe(300)
+    expect(billing.overageBlockUsd(7)).toBe(400)
+    expect(billing.overageBlockUsd(8)).toBe(500)
+    expect(billing.overageBlockUsd(1_000)).toBe(500)
   })
-  it('clamps negatives to zero', () => {
-    expect(billing.nextOverageBlockUsd(-50)).toBe(100)
+  it('clamps negatives to the starter block', () => {
+    expect(billing.overageBlockUsd(-5)).toBe(25)
   })
 })
 
@@ -554,10 +572,10 @@ describe('allocateMonthlyIncluded', () => {
     const w = await billing.allocateMonthlyIncluded('w1', 'pro', 1)
     expect(w.monthlyIncludedUsd).toBe(20 * 3 + 50)
   })
-  it('updates existing wallet and clears overage counters', async () => {
+  it('updates existing wallet and carries unbilled overage into the new period', async () => {
     wallets.set('w1', freshWallet({ overageAccumulatedUsd: 99, overageBilledUsd: 88 }))
     const w = await billing.allocateMonthlyIncluded('w1', 'pro', 1)
-    expect(w.overageAccumulatedUsd).toBe(0)
+    expect(w.overageAccumulatedUsd).toBe(11)
     expect(w.overageBilledUsd).toBe(0)
   })
   it('seats coerced to floor and minimum 1', async () => {
@@ -1125,7 +1143,7 @@ describe('chargeOverageBlocks', () => {
   })
   it('returns 0 when nothing to bill', async () => {
     process.env.STRIPE_SECRET_KEY = 'sk_test'
-    wallets.set('w1', freshWallet({ overageAccumulatedUsd: 50, overageBilledUsd: 0 }))
+    wallets.set('w1', freshWallet({ overageAccumulatedUsd: 20, overageBilledUsd: 0 }))
     expect(await billing.chargeOverageBlocks('w1')).toBe(0)
   })
   it('returns 0 when no Stripe customer linked', async () => {
@@ -1133,7 +1151,7 @@ describe('chargeOverageBlocks', () => {
     wallets.set('w1', freshWallet({ overageAccumulatedUsd: 150, overageBilledUsd: 0 }))
     expect(await billing.chargeOverageBlocks('w1')).toBe(0)
   })
-  it('bills one $100 block when over threshold', async () => {
+  it('invoices one $25 starter block and holds it outstanding until paid', async () => {
     process.env.STRIPE_SECRET_KEY = 'sk_test'
     wallets.set('w1', freshWallet({ overageAccumulatedUsd: 150, overageBilledUsd: 0 }))
     subs.set('w1', [{
@@ -1143,8 +1161,10 @@ describe('chargeOverageBlocks', () => {
     }])
     const n = await billing.chargeOverageBlocks('w1')
     expect(n).toBe(1)
-    expect(stripeCalls.find((c) => c.method === 'invoiceItems.create')).toBeDefined()
-    expect(wallets.get('w1')?.overageBilledUsd).toBe(100)
+    expect(stripeCalls.find((c) => c.method === 'invoiceItems.create')?.args[0].amount).toBe(2500)
+    expect(wallets.get('w1')?.overageBilledUsd).toBe(25)
+    expect(wallets.get('w1')?.overageOutstandingInvoiceId).toBe('in_1')
+    expect(await billing.chargeOverageBlocks('w1')).toBe(0)
   })
   it('handles stripe.invoices.pay throwing (dunning fallback)', async () => {
     process.env.STRIPE_SECRET_KEY = 'sk_test'
@@ -1435,12 +1455,6 @@ describe('setUsageBasedPricing', () => {
 // Targets uncovered lines: 257, 400-404, 443-459, 461, 472, 477-483, 532-540,
 // 556-563, 573-579, 640-647.
 // ============================================================================
-
-describe('nextOverageBlockUsd — outer-guard fallback (L257)', () => {
-  it('returns OVERAGE_BLOCK_MAX_USD when remainder exceeds every block size up to the 10_000 iteration cap', () => {
-    expect(billing.nextOverageBlockUsd(Number.MAX_SAFE_INTEGER)).toBe(500)
-  })
-})
 
 describe('consumeUsage — FK retry (L398-404, isFkConstraintError branches)', () => {
   it('retries on usage_events_projectId_fkey P2003 then succeeds', async () => {
