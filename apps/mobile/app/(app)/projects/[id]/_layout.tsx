@@ -76,6 +76,7 @@ import {
   usePlatformConfig,
 } from "../../../../lib/platform-config";
 import { resolveChatScope } from "../../../../lib/chat-scope";
+import { useProjectChatTabs } from "../../../../lib/project-chat-tabs";
 import { stripAskUserAnswerMarker } from "../../../../components/chat/turns/askUserAnswers";
 import { consumePendingFiles } from "../../../../lib/pending-image-store";
 import {
@@ -1531,7 +1532,19 @@ export default observer(function ProjectLayout() {
   }, [projectId, chatSessionId]);
 
   // ─── Open chat tabs state ───────────────────────────────
-  const [openChatTabIds, setOpenChatTabIds] = useState<string[]>([]);
+  // Under the always-on workspace runtime, a project has exactly one chat:
+  // its anchor-pinned workspace session. Restoring previously-open
+  // project-scoped tabs here would (a) mount hidden sibling ChatPanels on the
+  // legacy single-project runtime and (b) make `openChatTabIds` non-empty
+  // before the pinned session resolves, defeating the loading gate. So when
+  // the flag is on and we're not following an explicit deep-link, skip the
+  // restore entirely and let the pinned-session promotion seed the sole tab.
+  const { openChatTabIds, setOpenChatTabIds, tabsHydration } = useProjectChatTabs({
+    projectId,
+    chatSessionId,
+    skipRestore: workspaceRuntimeEnabled && !params.chatSessionId,
+    nativePhone,
+  });
   /** Web: pending delete confirmation (AlertDialog); native uses Alert.alert */
   const [deleteChatConfirmSessionId, setDeleteChatConfirmSessionId] = useState<
     string | null
@@ -1544,90 +1557,6 @@ export default observer(function ProjectLayout() {
   const [debugInitMessages, setDebugInitMessages] = useState<
     Record<string, string>
   >({});
-  /**
-   * Tri-state hydration status for the open-tabs list:
-   * - 'loading': haven't read AsyncStorage yet
-   * - 'restored-with-tabs': storage had a non-empty list, restored it
-   * - 'restored-empty': storage had an explicit `[]` (user previously closed everything)
-   * - 'fresh': no storage key — first visit to this project, OK to auto-create
-   * Distinguishing 'restored-empty' from 'fresh' is what prevents the auto-select
-   * effect from resurrecting a tab the user just closed.
-   */
-  type TabsHydration =
-    | "loading"
-    | "restored-with-tabs"
-    | "restored-empty"
-    | "fresh";
-  const [tabsHydration, setTabsHydration] = useState<TabsHydration>("loading");
-  const openTabsRestoredRef = useRef(false);
-
-  // Restore open tabs from AsyncStorage on mount
-  useEffect(() => {
-    if (!projectId || openTabsRestoredRef.current) return;
-    // Under the always-on workspace runtime, a project has exactly one chat:
-    // its anchor-pinned workspace session. Restoring previously-open
-    // project-scoped tabs here would (a) mount hidden sibling ChatPanels on the
-    // legacy single-project runtime and (b) make `openChatTabIds` non-empty
-    // before the pinned session resolves, defeating the loading gate. So when
-    // the flag is on and we're not following an explicit deep-link, skip the
-    // restore entirely and let the pinned-session promotion seed the sole tab.
-    if (workspaceRuntimeEnabled && !params.chatSessionId) {
-      openTabsRestoredRef.current = true;
-      setTabsHydration("fresh");
-      return;
-    }
-    AsyncStorage.getItem(`shogo:chatTabs:${projectId}`)
-      .then((raw) => {
-        if (raw === null) {
-          openTabsRestoredRef.current = true;
-          setTabsHydration("fresh");
-          return;
-        }
-        try {
-          const ids = JSON.parse(raw);
-          if (Array.isArray(ids)) {
-            if (ids.length > 0) {
-              setOpenChatTabIds(ids);
-              openTabsRestoredRef.current = true;
-              setTabsHydration("restored-with-tabs");
-              return;
-            }
-            openTabsRestoredRef.current = true;
-            setTabsHydration(nativePhone ? "fresh" : "restored-empty");
-            return;
-          }
-        } catch {
-          /* ignore malformed data */
-        }
-        // Malformed payload — treat as fresh so we still auto-create.
-        openTabsRestoredRef.current = true;
-        setTabsHydration("fresh");
-      })
-      .catch(() => {
-        openTabsRestoredRef.current = true;
-        setTabsHydration("fresh");
-      });
-  }, [projectId, phoneLayout, nativePhone]);
-
-  // Persist open tabs to AsyncStorage on every change, including `[]`.
-  // Storing the explicit empty array is what lets the next mount distinguish
-  // "user closed everything" from "first-ever visit".
-  useEffect(() => {
-    if (!projectId || tabsHydration === "loading") return;
-    AsyncStorage.setItem(
-      `shogo:chatTabs:${projectId}`,
-      JSON.stringify(openChatTabIds)
-    ).catch(() => {});
-  }, [projectId, openChatTabIds, tabsHydration]);
-
-  // Ensure the active session is always in the open tabs list
-  useEffect(() => {
-    if (!chatSessionId) return;
-    setOpenChatTabIds((prev) => {
-      if (prev.includes(chatSessionId)) return prev;
-      return [...prev, chatSessionId];
-    });
-  }, [chatSessionId]);
 
   // Apply a deep-linked chat session whenever the `chatSessionId` param
   // changes — e.g. selecting a chat in a project that isn't open yet. The
