@@ -138,6 +138,8 @@ export interface ChatCompletionRequest {
       description?: string
       parameters?: Record<string, unknown>
     }
+    /** Anthropic-native passthrough (pi-ai's `cacheControlFormat: 'anthropic'`). */
+    cache_control?: AnthropicCacheControl
   }>
   tool_choice?: 'none' | 'auto' | 'required' | { type: 'function'; function: { name: string } }
   /** OpenAI-compatible reasoning controls forwarded to DeepSeek. */
@@ -1071,11 +1073,15 @@ function convertToAnthropicFormat(request: ChatCompletionRequest) {
 
   // Convert tools to Anthropic format
   if (request.tools && request.tools.length > 0) {
-    body.tools = request.tools.map(tool => ({
-      name: tool.function.name,
-      description: tool.function.description || '',
-      input_schema: tool.function.parameters || { type: 'object', properties: {} },
-    }))
+    body.tools = request.tools.map(tool => {
+      const cc = mapCacheControl(tool.cache_control)
+      return {
+        name: tool.function.name,
+        description: tool.function.description || '',
+        input_schema: tool.function.parameters || { type: 'object', properties: {} },
+        ...(cc ? { cache_control: cc } : {}),
+      }
+    })
   }
 
   if (request.tool_choice) {
@@ -1092,6 +1098,109 @@ function convertToAnthropicFormat(request: ChatCompletionRequest) {
   }
 
   return body
+}
+
+/** Anthropic accepts at most four `cache_control` breakpoints per request. */
+const MAX_CACHE_BREAKPOINTS = 4
+const UNCACHEABLE_BLOCK_TYPES = new Set(['thinking', 'redacted_thinking'])
+
+function countCacheBreakpoints(body: Record<string, any>): number {
+  let n = 0
+  const countBlocks = (blocks: unknown) => {
+    if (!Array.isArray(blocks)) return
+    for (const b of blocks) {
+      if (b?.cache_control) n++
+      if (b?.type === 'tool_result') countBlocks(b.content)
+    }
+  }
+  countBlocks(body.system)
+  countBlocks(body.tools)
+  for (const m of body.messages ?? []) countBlocks(m?.content)
+  return n
+}
+
+/** Last block of a message that may carry `cache_control`, promoting string content. */
+function lastCacheableBlock(message: { content: unknown } | undefined): Record<string, any> | undefined {
+  if (!message) return undefined
+  if (typeof message.content === 'string') {
+    if (!message.content) return undefined
+    message.content = [{ type: 'text', text: message.content }]
+  }
+  if (!Array.isArray(message.content)) return undefined
+  for (let i = message.content.length - 1; i >= 0; i--) {
+    const block = message.content[i]
+    if (!block || UNCACHEABLE_BLOCK_TYPES.has(block.type)) continue
+    if (block.type === 'text' && !block.text) continue
+    return block
+  }
+  return undefined
+}
+
+/**
+ * Backstop prompt caching for chat-completions requests routed to Anthropic.
+ *
+ * The OpenAI wire format has no caching concept, so callers that never send
+ * cache markers (older desktop runtimes routing Anthropic models by DB id
+ * through this endpoint) were billed full input price on every step of a
+ * long agent turn. Clients that do send markers (pi-ai's anthropic compat)
+ * place the last-message marker on the latest user/assistant *text*, which in
+ * a tool loop is the original prompt, leaving every tool result uncached.
+ *
+ * Caching never changes model output, so fill breakpoints up to Anthropic's
+ * limit, in priority order: the final message (the rolling anchor that makes
+ * each step's growth cacheable), the stable system prompt, the last tool, and
+ * the second-to-last message. Also strips the runtime's `<|CACHE_BOUNDARY|>`
+ * marker from the system prompt, which would otherwise reach the model as text.
+ *
+ * `AI_PROXY_AUTO_CACHE=0` disables adding breakpoints.
+ */
+export function applyDefaultCacheBreakpoints(body: Record<string, any>): void {
+  const autoCache = process.env.AI_PROXY_AUTO_CACHE !== '0'
+  let stableSystemBlock: Record<string, any> | undefined
+  if (typeof body.system === 'string' && (autoCache || body.system.includes(CACHE_BOUNDARY))) {
+    if (body.system) body.system = [{ type: 'text', text: body.system }]
+    else delete body.system
+  }
+  if (Array.isArray(body.system)) {
+    const blocks: any[] = []
+    for (const block of body.system) {
+      if (block?.type !== 'text' || typeof block.text !== 'string' || !block.text.includes(CACHE_BOUNDARY)) {
+        blocks.push(block)
+        continue
+      }
+      const idx = block.text.indexOf(CACHE_BOUNDARY)
+      const stableText = block.text.slice(0, idx).trimEnd()
+      const dynamicText = block.text.slice(idx + CACHE_BOUNDARY.length).trimStart()
+      if (stableText) {
+        const stable: Record<string, any> = { type: 'text', text: stableText }
+        if (block.cache_control) stable.cache_control = block.cache_control
+        blocks.push(stable)
+        stableSystemBlock ??= stable
+      }
+      if (dynamicText) blocks.push({ type: 'text', text: dynamicText })
+    }
+    body.system = blocks
+    stableSystemBlock ??= [...blocks].reverse().find(b => b?.type === 'text' && b.text)
+  }
+
+  if (!autoCache) return
+
+  const messages: Array<{ role: string; content: unknown }> = body.messages ?? []
+  const tools: Array<Record<string, any>> | undefined = Array.isArray(body.tools) ? body.tools : undefined
+  const candidates = [
+    () => lastCacheableBlock(messages[messages.length - 1]),
+    () => stableSystemBlock,
+    () => tools?.[tools.length - 1],
+    () => lastCacheableBlock(messages[messages.length - 2]),
+  ]
+  let budget = MAX_CACHE_BREAKPOINTS - countCacheBreakpoints(body)
+  for (const pick of candidates) {
+    if (budget <= 0) break
+    const target = pick()
+    if (!target || target.cache_control) continue
+    target.cache_control = { type: 'ephemeral' }
+    budget--
+  }
 }
 
 /**
@@ -1118,6 +1227,13 @@ function convertAnthropicResponseToOpenAI(anthropicResponse: any, model: string)
     }))
   }
 
+  // Same shape as the streaming path's terminal usage chunk: prompt_tokens
+  // includes cache reads; cache writes are reported separately for billing.
+  const inputTokens = anthropicResponse.usage?.input_tokens || 0
+  const cachedInputTokens = anthropicResponse.usage?.cache_read_input_tokens || 0
+  const cacheWriteTokens = anthropicResponse.usage?.cache_creation_input_tokens || 0
+  const outputTokens = anthropicResponse.usage?.output_tokens || 0
+  const promptTokens = inputTokens + cachedInputTokens
   return {
     id: anthropicResponse.id || `chatcmpl-${Date.now()}`,
     object: 'chat.completion',
@@ -1131,11 +1247,11 @@ function convertAnthropicResponseToOpenAI(anthropicResponse: any, model: string)
       },
     ],
     usage: {
-      prompt_tokens: anthropicResponse.usage?.input_tokens || 0,
-      completion_tokens: anthropicResponse.usage?.output_tokens || 0,
-      total_tokens:
-        (anthropicResponse.usage?.input_tokens || 0) +
-        (anthropicResponse.usage?.output_tokens || 0),
+      prompt_tokens: promptTokens,
+      completion_tokens: outputTokens,
+      total_tokens: promptTokens + outputTokens,
+      prompt_tokens_details: { cached_tokens: cachedInputTokens },
+      ...(cacheWriteTokens > 0 ? { cache_creation_input_tokens: cacheWriteTokens } : {}),
     },
   }
 }
@@ -1363,6 +1479,7 @@ export async function proxyAnthropicStream(
     model: modelConfig.apiModel,
     stream: true,
   })
+  applyDefaultCacheBreakpoints(body)
 
   logCacheControlIfEnabled(body, 'stream')
 
@@ -1647,6 +1764,7 @@ export async function proxyAnthropicNonStream(
     model: modelConfig.apiModel,
     stream: false,
   })
+  applyDefaultCacheBreakpoints(body)
 
   logCacheControlIfEnabled(body, 'nonstream')
 
@@ -1740,6 +1858,23 @@ function getOpenAICompatibleHeaders(apiKey: string, modelConfig: ModelConfig): R
  * runtimes, OpenRouter, admin-configured custom providers) generally only
  * understand `max_tokens`, so leave those untouched.
  */
+/**
+ * Drop Anthropic `cache_control` markers from a chat-completions message.
+ * pi-ai's anthropic compat turns string content into a single marked text
+ * part; collapse that back to a string so strict upstreams see plain content.
+ */
+function stripCacheMarkersFromMessage(
+  message: ChatCompletionRequest['messages'][number],
+): ChatCompletionRequest['messages'][number] {
+  if (!Array.isArray(message.content) || !message.content.some(p => p.cache_control)) return message
+  const parts = message.content.map(({ cache_control: _cc, ...part }) => part)
+  const only = parts.length === 1 ? parts[0] : undefined
+  const content = only?.type === 'text' && Object.keys(only).length === 2 && typeof only.text === 'string'
+    ? only.text
+    : parts
+  return { ...message, content }
+}
+
 function buildOpenAICompatibleBody(
   request: ChatCompletionRequest,
   modelConfig: ModelConfig,
@@ -1747,6 +1882,12 @@ function buildOpenAICompatibleBody(
 ): Record<string, unknown> {
   const { max_tokens, ...rest } = request
   const body: Record<string, unknown> = { ...rest, model: modelConfig.apiModel, ...extra }
+  // OpenRouter honors Anthropic-style markers for the models that cache;
+  // other OpenAI-compatible upstreams get the payload shape they always had.
+  if (!isOpenRouterHost(modelConfig)) {
+    body.messages = request.messages.map(stripCacheMarkersFromMessage)
+    if (request.tools) body.tools = request.tools.map(({ cache_control: _cc, ...tool }) => tool)
+  }
   if (max_tokens !== undefined) {
     if (modelConfig.provider === 'openai') body.max_completion_tokens = max_tokens
     else body.max_tokens = max_tokens
@@ -3424,7 +3565,7 @@ export function aiProxyRoutes() {
             inputPrompt,
             usage.completion_tokens || 0,
             cachedPrompt,
-            0,
+            usage.cache_creation_input_tokens || 0,
             chatSessionId,
             internalUsage,
             usage.completion_tokens_details?.reasoning_tokens || 0,

@@ -30,7 +30,15 @@ import {
   getProviders,
 } from '@mariozechner/pi-ai'
 import type { AgentMessage, StreamFn } from '@mariozechner/pi-agent-core'
-import { getMaxOutputTokens, OPENROUTER_MODEL_PREFIX, stripOpenRouterPrefix } from './model-catalog'
+import {
+  getDynamicModel,
+  getMaxOutputTokens,
+  isAnthropicBacked,
+  OPENROUTER_MODEL_PREFIX,
+  stripOpenRouterPrefix,
+} from './model-catalog'
+
+const DEFAULT_CONTEXT_WINDOW = 200_000
 
 // ---------------------------------------------------------------------------
 // Model Resolution
@@ -77,6 +85,16 @@ export function resolveModel(provider: string, modelId: string): Model<Api> {
   // text-only). Tag the pi model's provider as 'openai' so the proxy token
   // and base URL injected by configureAIProxy (OPENAI_API_KEY /
   // OPENAI_BASE_URL) are used for auth and routing.
+  const dynamic = getDynamicModel(modelId)
+  const contextWindow = dynamic?.contextWindow ?? DEFAULT_CONTEXT_WINDOW
+
+  // A 'custom' id the API registry knows is Anthropic-backed (e.g. Opus 5.5
+  // addressed by UUID) goes through the native Anthropic path, where pi-ai
+  // places prompt-cache breakpoints. The proxy maps the id to its apiModel.
+  if (provider === 'custom' && isAnthropicBacked(dynamic)) {
+    return resolveModel('anthropic', modelId)
+  }
+
   if (provider === 'custom') {
     const baseUrl = resolveBaseUrl('openai') ?? getDefaultBaseUrl('openai')
     const deepSeek = isDeepSeekModel(modelId)
@@ -89,18 +107,21 @@ export function resolveModel(provider: string, modelId: string): Model<Api> {
       reasoning: true,
       input: ['text', 'image'],
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-      contextWindow: 200000,
+      contextWindow,
       maxTokens: getMaxOutputTokens(modelId),
-      ...(deepSeek
-        ? {
-            compat: {
+      // Anthropic-style cache markers survive the proxy's chat-completions →
+      // Anthropic conversion, and the proxy drops them for other upstreams.
+      compat: {
+        cacheControlFormat: 'anthropic',
+        ...(deepSeek
+          ? {
               thinkingFormat: 'deepseek',
               requiresReasoningContentOnAssistantMessages: true,
               supportsStore: false,
               supportsDeveloperRole: false,
-            },
-          }
-        : {}),
+            }
+          : {}),
+      },
     } as Model<Api>
   }
 
@@ -139,7 +160,7 @@ export function resolveModel(provider: string, modelId: string): Model<Api> {
       reasoning: true,
       input: ['text', 'image'],
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-      contextWindow: 200000,
+      contextWindow,
       maxTokens: catalogMax,
     } as Model<Api>
   } else {

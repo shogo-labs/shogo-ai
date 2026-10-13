@@ -16,11 +16,28 @@ mock.module('../services/public-models.service', () => ({
       : null,
 }))
 
+const OPUS_UUID = '8947628a-1415-4b3a-90c3-63f8a85c16b7'
+
+// Like the real registry on the local/desktop entry point: empty until the
+// first load completes.
+let registryLoaded = false
 mock.module('../services/model-registry.service', () => ({
   getMergedModelEntrySync: (id: string) =>
     id === 'local-premium'
       ? { id, provider: 'local', tier: 'premium' }
       : undefined,
+  ensureModelRegistryLoaded: async () => {
+    await Promise.resolve()
+    registryLoaded = true
+  },
+  getDbModelEntriesSync: () => registryLoaded ? [
+    { id: OPUS_UUID, provider: 'anthropic', apiModel: 'claude-opus-5-5', contextWindow: 1_000_000, maxOutputTokens: 128_000 },
+    { id: 'gpt-live-uuid', provider: 'openai', apiModel: 'gpt-live-1', kind: 'live' },
+  ] : [],
+  getCloudModelEntriesSync: () => registryLoaded ? [
+    { id: OPUS_UUID, provider: 'anthropic', apiModel: 'claude-opus-5-5' },
+    { id: 'mimo-v2.5', provider: 'custom', apiModel: 'mimo-v2.5' },
+  ] : [],
 }))
 
 mock.module('../lib/prisma', () => ({
@@ -127,6 +144,14 @@ describe('agent model defaults', () => {
     setSummarizerModelId('hoshi-1.0')
     const defaults = await resolveEffectiveAgentModelDefaults('ws-free')
     expect(defaults.summarizer.id).toBe('gpt-5.4-nano')
+  })
+
+  test('passes DB and cloud chat models to the runtime as AGENT_MODEL_REGISTRY', async () => {
+    const env = await resolveAgentModelEnv('ws-free')
+    expect(JSON.parse(env.AGENT_MODEL_REGISTRY!)).toEqual([
+      { id: OPUS_UUID, provider: 'anthropic', apiModel: 'claude-opus-5-5', contextWindow: 1_000_000, maxOutputTokens: 128_000 },
+      { id: 'mimo-v2.5', provider: 'custom', apiModel: 'mimo-v2.5' },
+    ])
   })
 
   test('serializes a single model entry, omitting absent fields', () => {

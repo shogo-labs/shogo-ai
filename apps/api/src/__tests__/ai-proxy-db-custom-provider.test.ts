@@ -435,6 +435,24 @@ describe('ai-proxy DB-defined model routing', () => {
     expect(auth).toBe(`Bearer ${MIMO_KEY}`)
   })
 
+  test('strips Anthropic cache markers before forwarding to a non-Anthropic upstream', async () => {
+    const cc = { type: 'ephemeral' }
+    const res = await postChatBody(buildApp(), {
+      model: 'mimo-v2.5',
+      messages: [
+        { role: 'system', content: [{ type: 'text', text: 'Be concise.', cache_control: cc }] },
+        { role: 'user', content: [{ type: 'text', text: 'hi' }, { type: 'text', text: 'there', cache_control: cc }] },
+      ],
+      tools: [{ type: 'function', function: { name: 'lookup', parameters: { type: 'object' } }, cache_control: cc }],
+    })
+    expect(res.status).toBe(200)
+    const body = lastForwardedBody()
+    expect(body.messages[0]).toEqual({ role: 'system', content: 'Be concise.' })
+    expect(body.messages[1].content).toEqual([{ type: 'text', text: 'hi' }, { type: 'text', text: 'there' }])
+    expect(body.tools[0].cache_control).toBeUndefined()
+    expect(JSON.stringify(body)).not.toContain('cache_control')
+  })
+
   test('resolves a DB alias to the custom provider', async () => {
     const res = await postChat(buildApp(), 'mimo')
     expect(res.status).toBe(200)

@@ -20,6 +20,7 @@ import {
 // local bundle, which must not pull in the Stripe-backed billing service.
 import * as billingService from '../../services/billing-runtime'
 import { resolvePublicModelSync } from '../../services/public-models.service'
+import * as modelRegistryService from '../../services/model-registry.service'
 import { getMergedModelEntrySync } from '../../services/model-registry.service'
 import { prisma } from '../prisma'
 import { fetchCloudAgentModelDefaults } from '../federated-upstream'
@@ -50,6 +51,7 @@ export interface AgentModelEnv {
   AGENT_AUTO_TIER_MAP: string
   AGENT_DEEPSEEK_MODEL_IDS?: string
   AGENT_SUMMARIZER_MODEL?: string
+  AGENT_MODEL_REGISTRY?: string
 }
 
 const AUTO_TIERS: AgentModelTier[] = ['economy', 'standard', 'premium']
@@ -236,6 +238,33 @@ export function serializeModelEntryEnv(entry: AgentModelEntry | undefined): stri
 }
 
 /**
+ * Serialize the admin-managed chat models (this instance's DB rows plus, in
+ * cloud-proxy mode, the mirrored cloud catalog) for `AGENT_MODEL_REGISTRY`.
+ * The runtime can't classify these opaque ids on its own; without this it
+ * routes Anthropic-backed ones through the uncached chat-completions path.
+ */
+export function serializeModelRegistryEnv(): string | undefined {
+  const seen = new Set<string>()
+  const out: Array<{ id: string; provider: string; apiModel?: string; contextWindow?: number; maxOutputTokens?: number }> = []
+  const entries = [
+    ...(modelRegistryService.getDbModelEntriesSync?.() ?? []),
+    ...(modelRegistryService.getCloudModelEntriesSync?.() ?? []),
+  ]
+  for (const entry of entries) {
+    if (!entry?.id || !entry.provider || seen.has(entry.id) || entry.kind === 'live') continue
+    seen.add(entry.id)
+    out.push({
+      id: entry.id,
+      provider: entry.provider,
+      ...(entry.apiModel ? { apiModel: entry.apiModel } : {}),
+      ...(entry.contextWindow ? { contextWindow: entry.contextWindow } : {}),
+      ...(entry.maxOutputTokens ? { maxOutputTokens: entry.maxOutputTokens } : {}),
+    })
+  }
+  return out.length > 0 ? JSON.stringify(out) : undefined
+}
+
+/**
  * Resolve the env for a newly spawned runtime.
  *
  * In local cloud-forwarding mode, the connected cloud is authoritative. If
@@ -263,12 +292,17 @@ export async function resolveAgentModelEnv(workspaceId = 'local-dev'): Promise<A
     }
   }
 
+  await modelRegistryService.ensureModelRegistryLoaded?.()
+  const modelRegistry = serializeModelRegistryEnv()
+  const registryEnv = modelRegistry ? { AGENT_MODEL_REGISTRY: modelRegistry } : {}
+
   const cloudDefaults = await fetchCloudAgentModelDefaults()
   if (cloudDefaults) {
     const autoTierMap = serializeAutoTierMapEnv(cloudDefaults.autoTiers)
     if (autoTierMap) {
       const summarizer = serializeModelEntryEnv(cloudDefaults.summarizer)
       return {
+        ...registryEnv,
         AGENT_BASIC_MODEL: cloudDefaults.basic,
         AGENT_ADVANCED_MODEL: cloudDefaults.advanced,
         AGENT_AUTO_TIER_MAP: autoTierMap,
@@ -283,6 +317,7 @@ export async function resolveAgentModelEnv(workspaceId = 'local-dev'): Promise<A
   const localDefaults = await resolveEffectiveAgentModelDefaults(workspaceId)
   const summarizer = serializeModelEntryEnv(localDefaults.summarizer)
   return {
+    ...registryEnv,
     AGENT_BASIC_MODEL: localDefaults.basic,
     AGENT_ADVANCED_MODEL: localDefaults.advanced,
     AGENT_AUTO_TIER_MAP: serializeAutoTierMapEnv(localDefaults.autoTiers) as string,

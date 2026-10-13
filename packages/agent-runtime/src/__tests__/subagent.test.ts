@@ -5,6 +5,7 @@ import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
+import { clearDynamicModels, registerDynamicModels, rememberProviderHint } from '@shogo/model-catalog'
 
 // --- Module mocks (set up BEFORE importing the SUT) ------------------------
 
@@ -380,6 +381,36 @@ describe('resolveSubagentModel', () => {
     expect(r.source).toBe('experiment')
     expect(r.experimentVariant).toBe('B')
     expect(r.model).toBe('sonnet')
+  })
+
+  describe('with DB-defined (UUID) models', () => {
+    const OPUS_UUID = '8947628a-1415-4b3a-90c3-63f8a85c16b7'
+    afterEach(() => clearDynamicModels())
+
+    it('resolves a provider-less override for a registered Anthropic UUID to anthropic', async () => {
+      registerDynamicModels([{ id: OPUS_UUID, provider: 'anthropic', apiModel: 'claude-opus-5-5' }])
+      fetchImpl = async () => new Response(JSON.stringify({
+        override: { model: OPUS_UUID, provider: null, source: 'workspace' },
+        experiment: null,
+      }), { status: 200 })
+      const r = await resolveSubagentModel('explore', 'w1', null, undefined, undefined, 'haiku', 'custom')
+      expect(r.provider).toBe('anthropic')
+    })
+
+    it('resolves an experiment UUID learned from a chat provider hint to anthropic', async () => {
+      rememberProviderHint(OPUS_UUID, 'anthropic')
+      fetchImpl = async () => new Response(JSON.stringify({
+        override: null,
+        experiment: { experimentId: 'e1', model: OPUS_UUID, variant: 'A' },
+      }), { status: 200 })
+      const r = await resolveSubagentModel('explore', 'w1', null, undefined, undefined, 'haiku', 'custom', 'bkt')
+      expect(r.provider).toBe('anthropic')
+    })
+
+    it('still resolves an unregistered UUID to custom', async () => {
+      const r = await resolveSubagentModel('explore', null, null, OPUS_UUID, undefined, 'haiku', 'anthropic')
+      expect(r.provider).toBe('custom')
+    })
   })
 })
 

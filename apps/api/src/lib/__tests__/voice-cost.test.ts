@@ -12,6 +12,7 @@ mock.module('@shogo/model-catalog', () => ({
   MODEL_DOLLAR_COSTS: { sonnet: { inputPerMillion: 3, outputPerMillion: 15, cacheWritePerMillion: 3.75, cachedInputPerMillion: 0.3 } },
   getModelTier: () => 'pro',
   getModelBillingModel: () => 'sonnet',
+  getModelEntry: (id: string) => ({ id }),
   resolveAgentModeDefault: () => 'sonnet',
   calculateDollarCost: () => 0,
 }))

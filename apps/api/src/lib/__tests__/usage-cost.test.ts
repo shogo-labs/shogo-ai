@@ -14,6 +14,7 @@ mock.module('@shogo/model-catalog', () => ({
   MODEL_DOLLAR_COSTS: stubCosts,
   getModelTier: (_: string) => 'pro',
   getModelBillingModel: (id: string) => (id in stubCosts ? id : 'unknown-billing'),
+  getModelEntry: (id: string) => (id in stubCosts ? { id } : undefined),
   resolveAgentModeDefault: (mode: string) => (mode === 'advanced' ? 'sonnet' : 'haiku'),
   calculateDollarCost: () => 0,
 }))

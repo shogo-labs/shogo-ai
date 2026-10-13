@@ -69,6 +69,9 @@ import {
   setAgentModeOverrides,
   isAutoModel,
   AUTO_MODEL_ID,
+  parseDynamicModelsEnv,
+  registerDynamicModels,
+  rememberProviderHint,
 } from '@shogo/model-catalog'
 import {
   selectModelForSpawn,
@@ -759,6 +762,18 @@ export class AgentGateway {
     this.autoTierOverride = parseAutoTierOverride(process.env.AGENT_AUTO_TIER_MAP)
     if (this.autoTierOverride) {
       console.log(`[AgentGateway] Auto tier override active: ${JSON.stringify(this.autoTierOverride)}`)
+    }
+
+    // DB-defined models (UUID ids) the API resolved for us. Every provider
+    // inference path (subagents, forks, channels, heartbeats, fallbacks)
+    // consults this, so Anthropic-backed ones keep native prompt caching.
+    const dynamicModels = parseDynamicModelsEnv(process.env.AGENT_MODEL_REGISTRY)
+    for (const entry of Object.values(this.autoTierOverride ?? {})) {
+      if (entry?.provider) dynamicModels.push({ id: entry.id, provider: entry.provider })
+    }
+    registerDynamicModels(dynamicModels)
+    if (dynamicModels.length > 0) {
+      console.log(`[AgentGateway] Registered ${dynamicModels.length} dynamic model entries`)
     }
 
     // Initialize permission engine. Local mode enforces the full mode-based
@@ -1914,6 +1929,9 @@ export class AgentGateway {
       // undefined so a previously-hinted model can't leave a stale provider
       // behind once the selection changes.
       session.modelProvider = options.modelProvider
+      // Remember the hint beyond this session so subagents, forks and
+      // channel turns that run the same model infer the same provider.
+      rememberProviderHint(resolveModelId(options.modelOverride), options.modelProvider)
     }
 
     if (options?.userId) {

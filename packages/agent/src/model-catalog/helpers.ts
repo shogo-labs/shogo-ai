@@ -18,6 +18,7 @@ import {
   type CapabilityReliability,
 } from './models'
 import { MODEL_ALIASES, resolveAgentModeDefault } from './aliases'
+import { getDynamicModel, isAnthropicBacked } from './dynamic-models'
 
 /** True if `id` is an OpenRouter-routed model (carries the `openrouter:` prefix). */
 export function isOpenRouterModel(id: string): boolean {
@@ -118,6 +119,13 @@ export function inferProviderFromModel(modelId: string, fallback: string = 'anth
   if (modelId.startsWith('claude')) return 'anthropic'
   if (modelId.startsWith('gemini')) return 'google'
 
+  // DB-defined models are addressed by opaque ids (UUIDs). When the API has
+  // told us one is Anthropic-backed, route it natively: the 'custom'
+  // chat-completions path below loses Anthropic prompt caching, which bills
+  // every step of a long agent turn at the full uncached input price.
+  // Other DB providers keep the 'custom' route, which the proxy resolves.
+  if (isAnthropicBacked(getDynamicModel(modelId))) return 'anthropic'
+
   // Unknown model id: not in the static catalog and not a recognized native
   // prefix. These are DB-defined OpenAI-compatible models (e.g. MiMo) that
   // only the AI proxy knows how to route. Returning the (historically
@@ -172,7 +180,7 @@ const DEFAULT_MAX_OUTPUT_TOKENS = 64_000
 export function getMaxOutputTokens(id: string): number {
   const entry = getModelEntry(id)
   if (entry) return entry.maxOutputTokens
-  return DEFAULT_MAX_OUTPUT_TOKENS
+  return getDynamicModel(id)?.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS
 }
 
 /**

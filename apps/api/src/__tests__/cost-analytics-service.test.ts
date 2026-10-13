@@ -258,6 +258,7 @@ mock.module('@shogo/model-catalog', () => ({
   resolveModelId: (s: string) => MODEL_ALIASES_STUB[s] ?? s,
   getModelTier: () => ({ name: 'medium', includeBudget: 0, overageRate: 0 }),
   getModelBillingModel: (s: string) => s,
+  getModelEntry: (id: string) => ({ id }),
   resolveAgentModeDefault: () => 'claude-sonnet-4-6',
   MODEL_DOLLAR_COSTS: {
     'claude-haiku-4-5': { inputPerMillion: 1, outputPerMillion: 5 },

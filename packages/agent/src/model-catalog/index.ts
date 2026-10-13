@@ -73,3 +73,13 @@ export {
   type AvailableModelFilter,
   type CapabilityRating,
 } from './helpers'
+
+export {
+  registerDynamicModels,
+  rememberProviderHint,
+  getDynamicModel,
+  isAnthropicBacked,
+  parseDynamicModelsEnv,
+  clearDynamicModels,
+  type DynamicModelEntry,
+} from './dynamic-models'

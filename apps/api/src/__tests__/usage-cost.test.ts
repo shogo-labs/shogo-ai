@@ -33,6 +33,7 @@ import {
   socialLookupUnits,
 } from '../lib/usage-cost'
 import { MODEL_DOLLAR_COSTS } from '@shogo/model-catalog'
+import { setDbModelBillingModelProvider } from '../lib/db-model-pricing'
 
 const PRECISION = 12
 
@@ -155,6 +156,19 @@ describe('proxyModelToBillingModel', () => {
 
   test('falls back to sonnet for unknown proxy model strings', () => {
     expect(proxyModelToBillingModel('definitely-not-a-real-model-xyz')).toBe('sonnet')
+  })
+
+  test('resolves DB model UUIDs through the registry hook', () => {
+    const OPUS_UUID = '1d2b6dc7-047f-44fa-b38d-825ec4a5dd3c'
+    setDbModelBillingModelProvider((id) => (id === OPUS_UUID ? 'claude-opus-5-5' : undefined))
+    try {
+      expect(proxyModelToBillingModel(OPUS_UUID)).toBe('claude-opus-5-5')
+      expect(agentModeToModel(OPUS_UUID)).toBe('claude-opus-5-5')
+      expect(proxyModelToBillingModel('claude-haiku-4-5-20251001')).toBe('haiku')
+      expect(proxyModelToBillingModel('definitely-not-a-real-model-xyz')).toBe('sonnet')
+    } finally {
+      setDbModelBillingModelProvider(() => undefined)
+    }
   })
 })
 

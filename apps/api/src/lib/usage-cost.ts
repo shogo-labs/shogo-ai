@@ -15,6 +15,7 @@
 import {
   getModelTier as catalogGetModelTier,
   getModelBillingModel,
+  getModelEntry,
   resolveAgentModeDefault,
   MODEL_DOLLAR_COSTS,
   calculateDollarCost,
@@ -22,7 +23,7 @@ import {
   type AgentMode,
   type BillingModel,
 } from '@shogo/model-catalog'
-import { getDbModelPricing } from './db-model-pricing'
+import { getDbModelBillingModel, getDbModelPricing } from './db-model-pricing'
 
 export type { ModelTier, AgentMode }
 export { MODEL_DOLLAR_COSTS, calculateDollarCost }
@@ -43,8 +44,16 @@ export function agentModeToModel(agentMode?: string): ModelName {
   if (agentMode === 'basic' || agentMode === 'advanced') {
     return resolveAgentModeDefault(agentMode as AgentMode) as ModelName
   }
-  const billing = getModelBillingModel(agentMode)
-  if (billing in MODEL_DOLLAR_COSTS) return billing as ModelName
+  return modelIdToBillingModel(agentMode)
+}
+
+/**
+ * Static catalog first, then DB/cloud models (addressed by UUID), then the
+ * `sonnet` fallback.
+ */
+function modelIdToBillingModel(id: string): ModelName {
+  const billing = getModelEntry(id) ? getModelBillingModel(id) : getDbModelBillingModel(id)
+  if (billing && billing in MODEL_DOLLAR_COSTS) return billing as ModelName
   return 'sonnet'
 }
 
@@ -52,9 +61,7 @@ export function agentModeToModel(agentMode?: string): ModelName {
  * Map a proxy model string to a billing ModelName using the shared catalog.
  */
 export function proxyModelToBillingModel(proxyModel: string): ModelName {
-  const billing = getModelBillingModel(proxyModel)
-  if (billing in MODEL_DOLLAR_COSTS) return billing as ModelName
-  return 'sonnet'
+  return modelIdToBillingModel(proxyModel)
 }
 
 function resolveModel(modelOrAgentMode?: string): ModelName {
@@ -65,9 +72,7 @@ function resolveModel(modelOrAgentMode?: string): ModelName {
   if (modelOrAgentMode in MODEL_DOLLAR_COSTS) {
     return modelOrAgentMode as ModelName
   }
-  const billing = getModelBillingModel(modelOrAgentMode)
-  if (billing in MODEL_DOLLAR_COSTS) return billing as ModelName
-  return 'sonnet'
+  return modelIdToBillingModel(modelOrAgentMode)
 }
 
 export interface UsageCostResult {
