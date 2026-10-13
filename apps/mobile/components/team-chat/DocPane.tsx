@@ -1,0 +1,459 @@
+// SPDX-License-Identifier: MIT
+// Copyright (C) 2026 Shogo Technologies, Inc.
+/**
+ * The channel doc: one shared markdown document per channel, shown beside
+ * the timeline on wide screens and in its place on phones. View mode renders
+ * markdown with tappable task items; edit mode is a markdown editor with a
+ * formatting toolbar that autosaves. Unrelated to project canvases.
+ */
+import { useEffect, useRef, useState } from 'react'
+import { ActivityIndicator, Modal, Pressable, ScrollView, Text, TextInput, View } from 'react-native'
+import * as Clipboard from 'expo-clipboard'
+import {
+  AtSign,
+  Bold,
+  Check,
+  Code,
+  Copy,
+  FileText,
+  Heading1,
+  Heading2,
+  History,
+  Italic,
+  Link2,
+  List,
+  ListOrdered,
+  ListTodo,
+  Lock,
+  LockOpen,
+  Pencil,
+  Quote,
+  Square,
+  SquareCheck,
+  Strikethrough,
+  X,
+} from 'lucide-react-native'
+import { cn } from '@shogo/shared-ui/primitives'
+import { MarkdownText } from '../chat/MarkdownText'
+import { useConversationDoc } from '../../hooks/useConversationDoc'
+import { describeAuthor } from '../../lib/channel-doc-state'
+import { applyFormat, insertAt, splitTaskSegments, toggleTask, type DocFormat, type Selection } from '../../lib/doc-markdown'
+import { teamChatApi, type ChannelDocRevision, type ConversationDetail, type Mentionables } from '../../lib/team-chat-api'
+import { docLink } from '../../lib/team-chat-links'
+import { mentionNames, renderMentions } from '../../lib/team-chat-state'
+import { relativeTime } from '../../lib/activity-feed'
+
+const api = teamChatApi()
+
+export interface DocPaneProps {
+  conversation: ConversationDetail
+  workspaceId: string
+  mentionables: Mentionables | null
+  onClose: () => void
+}
+
+const TOOLBAR: Array<{ format: DocFormat; label: string; Icon: typeof Bold }> = [
+  { format: 'h1', label: 'Heading', Icon: Heading1 },
+  { format: 'h2', label: 'Subheading', Icon: Heading2 },
+  { format: 'bold', label: 'Bold', Icon: Bold },
+  { format: 'italic', label: 'Italic', Icon: Italic },
+  { format: 'strike', label: 'Strikethrough', Icon: Strikethrough },
+  { format: 'bullet', label: 'Bulleted list', Icon: List },
+  { format: 'numbered', label: 'Numbered list', Icon: ListOrdered },
+  { format: 'task', label: 'Checklist', Icon: ListTodo },
+  { format: 'quote', label: 'Quote', Icon: Quote },
+  { format: 'code', label: 'Code', Icon: Code },
+  { format: 'link', label: 'Link', Icon: Link2 },
+]
+
+export function DocPane({ conversation, workspaceId, mentionables, onClose }: DocPaneProps) {
+  const { state, doc, dirty, edit, flush, resolve, setLocked, restore } = useConversationDoc(workspaceId, conversation.id)
+  const [editing, setEditing] = useState(false)
+  const [selection, setSelection] = useState<Selection>({ start: 0, end: 0 })
+  const [historyOpen, setHistoryOpen] = useState(false)
+  const [mentionOpen, setMentionOpen] = useState(false)
+  const [copied, setCopied] = useState(false)
+  const [actionError, setActionError] = useState<string | null>(null)
+  const pendingSelection = useRef<Selection | null>(null)
+  const names = mentionNames(mentionables)
+  const exists = !!state.server
+  const canEdit = state.canEdit && !conversation.archivedAt
+
+  useEffect(() => () => void flush(), [flush])
+  useEffect(() => {
+    if (!canEdit && editing) setEditing(false)
+  }, [canEdit, editing])
+  useEffect(() => {
+    if (!copied) return
+    const t = setTimeout(() => setCopied(false), 1500)
+    return () => clearTimeout(t)
+  }, [copied])
+
+  const format = (f: DocFormat) => {
+    const result = applyFormat(doc.content, selection, f)
+    pendingSelection.current = result.selection
+    setSelection(result.selection)
+    edit({ content: result.text })
+  }
+  const insertMention = (name: string) => {
+    const result = insertAt(doc.content, selection, `@${name} `)
+    pendingSelection.current = result.selection
+    setSelection(result.selection)
+    edit({ content: result.text })
+    setMentionOpen(false)
+  }
+  const toggle = (line: number) => {
+    if (!canEdit) return
+    edit({ content: toggleTask(doc.content, line) })
+  }
+  const done = () => {
+    setEditing(false)
+    void flush()
+  }
+  const copyLink = () => void Clipboard.setStringAsync(docLink(conversation.id)).then(() => setCopied(true)).catch(() => {})
+  const runAction = async (fn: () => Promise<unknown>) => {
+    try {
+      setActionError(null)
+      await fn()
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Something went wrong')
+    }
+  }
+
+  const status = state.saving
+    ? 'Saving…'
+    : dirty
+      ? 'Unsaved changes'
+      : state.server?.updatedBy
+        ? `Edited by ${describeAuthor(state.server.updatedBy)} · ${relativeTime(new Date(state.server.updatedAt).getTime()) || 'now'}`
+        : null
+
+  return (
+    <View className="flex-1 bg-background" testID="channel-doc-pane">
+      <View className="flex-row items-center gap-2 border-b border-border px-4 py-2.5">
+        <FileText size={16} className="text-muted-foreground" />
+        <View className="min-w-0 flex-1">
+          {editing ? (
+            <TextInput
+              value={doc.title}
+              onChangeText={(title) => edit({ title })}
+              placeholder="Untitled doc"
+              placeholderTextColor="#8a8a8a"
+              accessibilityLabel="Doc title"
+              maxLength={200}
+              className="text-base font-semibold text-foreground"
+            />
+          ) : (
+            <Text className="text-base font-semibold text-foreground" numberOfLines={1}>
+              {doc.title || `#${conversation.name ?? 'channel'} doc`}
+            </Text>
+          )}
+          {status ? (
+            <Text className="text-[11px] text-muted-foreground" numberOfLines={1} testID="doc-status">
+              {status}
+            </Text>
+          ) : null}
+        </View>
+        {state.server?.locked ? (
+          <View className="flex-row items-center gap-1 rounded bg-muted px-1.5 py-0.5">
+            <Lock size={10} className="text-muted-foreground" />
+            <Text className="text-[10px] font-medium uppercase text-muted-foreground">Locked</Text>
+          </View>
+        ) : null}
+        {canEdit && (exists || editing) ? (
+          editing ? (
+            <PaneButton label="Done editing" onPress={done}>
+              <Check size={16} className="text-primary" />
+            </PaneButton>
+          ) : (
+            <PaneButton label="Edit doc" onPress={() => setEditing(true)}>
+              <Pencil size={16} className="text-muted-foreground" />
+            </PaneButton>
+          )
+        ) : null}
+        {exists ? (
+          <PaneButton label="Version history" onPress={() => setHistoryOpen(true)}>
+            <History size={16} className="text-muted-foreground" />
+          </PaneButton>
+        ) : null}
+        {exists && state.canManage ? (
+          <PaneButton
+            label={state.server?.locked ? 'Unlock doc' : 'Lock doc'}
+            onPress={() => void runAction(() => setLocked(!state.server?.locked))}
+          >
+            {state.server?.locked ? <LockOpen size={16} className="text-muted-foreground" /> : <Lock size={16} className="text-muted-foreground" />}
+          </PaneButton>
+        ) : null}
+        {exists ? (
+          <PaneButton label={copied ? 'Link copied' : 'Copy link'} onPress={copyLink}>
+            {copied ? <Check size={16} className="text-primary" /> : <Copy size={16} className="text-muted-foreground" />}
+          </PaneButton>
+        ) : null}
+        <PaneButton label="Close doc" onPress={onClose}>
+          <X size={16} className="text-muted-foreground" />
+        </PaneButton>
+      </View>
+
+      {state.conflict ? (
+        <View className="gap-2 border-b border-amber-500/40 bg-amber-500/10 px-4 py-2.5" testID="doc-conflict">
+          <Text className="text-sm text-foreground">
+            This doc was updated by {describeAuthor(state.conflict.theirs?.updatedBy)} while you were editing.
+          </Text>
+          <View className="flex-row flex-wrap gap-2">
+            <BannerButton label="View theirs" onPress={() => resolve('theirs')} />
+            <BannerButton label="Overwrite with mine" onPress={() => resolve('overwrite')} />
+            <BannerButton
+              label="Copy mine"
+              onPress={() => {
+                const mine = doc.content
+                void Clipboard.setStringAsync(mine).catch(() => {})
+                resolve('theirs')
+              }}
+            />
+          </View>
+        </View>
+      ) : null}
+      {state.error || actionError ? (
+        <Text className="border-b border-border px-4 py-1.5 text-xs text-destructive">{actionError ?? state.error}</Text>
+      ) : null}
+
+      {!state.loaded ? (
+        <View className="flex-1 items-center justify-center">
+          <ActivityIndicator />
+        </View>
+      ) : editing ? (
+        <View className="flex-1">
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} className="max-h-11 grow-0 border-b border-border" contentContainerClassName="items-center gap-0.5 px-2 py-1">
+            {TOOLBAR.map(({ format: f, label, Icon }) => (
+              <PaneButton key={f} label={label} onPress={() => format(f)}>
+                <Icon size={16} className="text-muted-foreground" />
+              </PaneButton>
+            ))}
+            <PaneButton label="Mention" onPress={() => setMentionOpen(true)}>
+              <AtSign size={16} className="text-muted-foreground" />
+            </PaneButton>
+          </ScrollView>
+          <TextInput
+            value={doc.content}
+            onChangeText={(content) => edit({ content })}
+            selection={pendingSelection.current ?? undefined}
+            onSelectionChange={(e) => {
+              pendingSelection.current = null
+              setSelection(e.nativeEvent.selection)
+            }}
+            multiline
+            autoFocus
+            textAlignVertical="top"
+            placeholder={'Write notes, decisions, checklists…\n\nMarkdown works: # headings, **bold**, - [ ] tasks'}
+            placeholderTextColor="#8a8a8a"
+            accessibilityLabel="Doc content"
+            className="flex-1 px-4 py-3 font-mono text-sm leading-6 text-foreground"
+          />
+        </View>
+      ) : !exists && !doc.content ? (
+        <View className="flex-1 items-center justify-center gap-3 px-8">
+          <FileText size={28} className="text-muted-foreground" />
+          <Text className="text-center text-base font-semibold text-foreground">No doc yet</Text>
+          <Text className="text-center text-sm text-muted-foreground">
+            Keep the channel's plans, decisions, and checklists in one place everyone (and every agent) can read.
+          </Text>
+          {canEdit ? (
+            <Pressable onPress={() => setEditing(true)} accessibilityRole="button" accessibilityLabel="Create doc" className="rounded-md bg-primary px-3 py-1.5">
+              <Text className="text-sm font-medium text-primary-foreground">Create doc</Text>
+            </Pressable>
+          ) : null}
+        </View>
+      ) : (
+        <ScrollView className="flex-1" contentContainerClassName="px-4 py-3">
+          <DocView content={doc.content} names={names} canToggle={canEdit} onToggle={toggle} />
+        </ScrollView>
+      )}
+
+      {historyOpen ? (
+        <HistoryModal
+          conversationId={conversation.id}
+          canRestore={canEdit}
+          onClose={() => setHistoryOpen(false)}
+          onRestore={(id) =>
+            runAction(async () => {
+              await restore(id)
+              setHistoryOpen(false)
+              setEditing(false)
+            })
+          }
+        />
+      ) : null}
+      {mentionOpen ? <MentionModal mentionables={mentionables} onPick={insertMention} onClose={() => setMentionOpen(false)} /> : null}
+    </View>
+  )
+}
+
+function DocView({
+  content,
+  names,
+  canToggle,
+  onToggle,
+}: {
+  content: string
+  names: ReturnType<typeof mentionNames>
+  canToggle: boolean
+  onToggle: (line: number) => void
+}) {
+  const segments = splitTaskSegments(content)
+  return (
+    <View className="gap-1" testID="doc-view">
+      {segments.map((s, i) =>
+        s.type === 'markdown' ? (
+          <MarkdownText key={`m${i}`}>{renderMentions(s.text, names)}</MarkdownText>
+        ) : (
+          <Pressable
+            key={`t${s.line}`}
+            disabled={!canToggle}
+            onPress={() => onToggle(s.line)}
+            accessibilityRole="checkbox"
+            accessibilityState={{ checked: s.checked }}
+            accessibilityLabel={s.text}
+            className="flex-row items-start gap-2 py-0.5"
+            style={{ paddingLeft: s.indent * 16 }}
+          >
+            <View className="pt-0.5">
+              {s.checked ? <SquareCheck size={16} className="text-primary" /> : <Square size={16} className="text-muted-foreground" />}
+            </View>
+            <View className={cn('min-w-0 flex-1', s.checked && 'opacity-60')}>
+              <MarkdownText>{renderMentions(s.checked ? `~~${s.text}~~` : s.text, names)}</MarkdownText>
+            </View>
+          </Pressable>
+        ),
+      )}
+    </View>
+  )
+}
+
+function HistoryModal({
+  conversationId,
+  canRestore,
+  onClose,
+  onRestore,
+}: {
+  conversationId: string
+  canRestore: boolean
+  onClose: () => void
+  onRestore: (revisionId: string) => void
+}) {
+  const [revisions, setRevisions] = useState<ChannelDocRevision[] | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [selected, setSelected] = useState<ChannelDocRevision | null>(null)
+
+  useEffect(() => {
+    api.listDocRevisions(conversationId).then(setRevisions).catch((err) => setError(err?.message ?? 'Could not load history'))
+  }, [conversationId])
+
+  return (
+    <Modal visible transparent animationType="fade" onRequestClose={onClose}>
+      <Pressable className="flex-1 items-center justify-center bg-black/40 p-6" onPress={onClose}>
+        <Pressable className="max-h-[85%] w-full max-w-2xl rounded-xl bg-card p-5" onPress={() => {}}>
+          <View className="mb-3 flex-row items-center gap-2">
+            <History size={16} className="text-muted-foreground" />
+            <Text className="flex-1 text-base font-semibold text-foreground">{selected ? `Version ${selected.version}` : 'Version history'}</Text>
+            {selected ? (
+              <Pressable onPress={() => setSelected(null)} className="rounded-md px-2 py-1 active:bg-muted hover:bg-muted">
+                <Text className="text-xs text-muted-foreground">All versions</Text>
+              </Pressable>
+            ) : null}
+            <Pressable onPress={onClose} accessibilityLabel="Close">
+              <X size={16} className="text-muted-foreground" />
+            </Pressable>
+          </View>
+          {error ? <Text className="text-sm text-destructive">{error}</Text> : null}
+          {!revisions && !error ? <ActivityIndicator /> : null}
+          {selected ? (
+            <>
+              <ScrollView className="max-h-[60vh] rounded-md border border-border p-3">
+                <MarkdownText>{selected.content || '_Empty_'}</MarkdownText>
+              </ScrollView>
+              {canRestore ? (
+                <View className="mt-3 flex-row justify-end">
+                  <Pressable
+                    onPress={() => onRestore(selected.id)}
+                    accessibilityRole="button"
+                    accessibilityLabel="Restore this version"
+                    className="rounded-md bg-primary px-3 py-1.5"
+                  >
+                    <Text className="text-sm font-medium text-primary-foreground">Restore this version</Text>
+                  </Pressable>
+                </View>
+              ) : null}
+            </>
+          ) : (
+            <ScrollView>
+              {revisions?.map((r, i) => (
+                <Pressable
+                  key={r.id}
+                  onPress={() => setSelected(r)}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Version ${r.version}`}
+                  className="flex-row items-center gap-2 rounded-md px-2 py-2 active:bg-muted hover:bg-muted"
+                >
+                  <Text className="flex-1 text-sm text-foreground" numberOfLines={1}>
+                    {describeAuthor(r.updatedBy)}
+                    {i === 0 ? <Text className="text-xs text-muted-foreground">{'  current'}</Text> : null}
+                  </Text>
+                  <Text className="text-xs text-muted-foreground">{new Date(r.updatedAt).toLocaleString()}</Text>
+                </Pressable>
+              ))}
+              {revisions && !revisions.length ? <Text className="text-sm text-muted-foreground">No history yet.</Text> : null}
+            </ScrollView>
+          )}
+        </Pressable>
+      </Pressable>
+    </Modal>
+  )
+}
+
+function MentionModal({ mentionables, onPick, onClose }: { mentionables: Mentionables | null; onPick: (name: string) => void; onClose: () => void }) {
+  const [filter, setFilter] = useState('')
+  const q = filter.trim().toLowerCase()
+  const entries = [
+    ...(mentionables?.people ?? []).map((p) => ({ key: `u:${p.id}`, name: p.name })),
+    ...(mentionables?.agents ?? []).map((a) => ({ key: `a:${a.key}`, name: a.name })),
+  ].filter((e) => !q || e.name.toLowerCase().includes(q))
+  return (
+    <Modal visible transparent animationType="fade" onRequestClose={onClose}>
+      <Pressable className="flex-1 items-center justify-center bg-black/40 p-6" onPress={onClose}>
+        <Pressable className="max-h-[70%] w-full max-w-sm rounded-xl bg-card p-4" onPress={() => {}}>
+          <TextInput
+            value={filter}
+            onChangeText={setFilter}
+            autoFocus
+            placeholder="Mention a person or agent"
+            placeholderTextColor="#8a8a8a"
+            className="mb-2 rounded-md border border-border px-3 py-2 text-sm text-foreground"
+          />
+          <ScrollView>
+            {entries.map((e) => (
+              <Pressable key={e.key} onPress={() => onPick(e.name)} className="rounded-md px-2 py-1.5 active:bg-muted hover:bg-muted">
+                <Text className="text-sm text-foreground">{e.name}</Text>
+              </Pressable>
+            ))}
+          </ScrollView>
+        </Pressable>
+      </Pressable>
+    </Modal>
+  )
+}
+
+function PaneButton({ label, onPress, children }: { label: string; onPress: () => void; children: React.ReactNode }) {
+  return (
+    <Pressable onPress={onPress} accessibilityRole="button" accessibilityLabel={label} className="rounded-md p-1.5 active:bg-muted hover:bg-muted">
+      {children}
+    </Pressable>
+  )
+}
+
+function BannerButton({ label, onPress }: { label: string; onPress: () => void }) {
+  return (
+    <Pressable onPress={onPress} accessibilityRole="button" accessibilityLabel={label} className="rounded-md border border-border bg-background px-2.5 py-1 active:bg-muted hover:bg-muted">
+      <Text className="text-xs font-medium text-foreground">{label}</Text>
+    </Pressable>
+  )
+}

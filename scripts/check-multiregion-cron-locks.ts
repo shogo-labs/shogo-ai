@@ -736,6 +736,12 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
       'Shadow conversation for an external chat channel (Slack/Teams/Google Chat channel id). The inbound bridge upserts on this key per webhook delivery; a raced duplicate delivery re-reads the existing row. No cron writer.',
   },
   {
+    key: 'ConversationDoc.conversationId',
+    category: 'request_scoped',
+    reason:
+      'One shared doc per channel, created by the user or agent channel request after resolving the conversation; optimistic version checks handle concurrent saves, and a cross-region create race is limited to failover.',
+  },
+  {
     key: 'ChatInstallation.(provider,workspaceId)',
     category: 'request_scoped',
     reason:

@@ -48,7 +48,7 @@ test.describe("Team workspace: desktop rail and panels", () => {
     await expect(tab(page, "Home")).toHaveAttribute("aria-selected", "true")
     // The scripted agent answered the seeded DM while nobody was looking.
     await expect(rail(page).getByRole("tab", { name: /^DMs, \d+ unread$/ })).toBeVisible({ timeout: 30_000 })
-    await expect(panel(page, "home-panel").getByText("Workspace agent")).toBeVisible()
+    await expect(panel(page, "home-panel").getByText("Workspace agent", { exact: true })).toBeVisible()
     // Home is this person's workspace-agent chats, not the activity inbox.
     await expect(panel(page, "home-panel").getByRole("button", { name: "New chat" })).toBeVisible()
     await expect(panel(page, "home-panel").getByRole("button", { name: "Unreads only" })).toHaveCount(0)
@@ -136,8 +136,13 @@ test.describe("Team workspace: desktop rail and panels", () => {
     }
     await tab(page, "Home").click()
 
+    const workspaces = await api(page, "GET", "/api/workspaces")
+    const rows = (workspaces.json?.items ?? workspaces.json?.data?.items ?? []) as Array<{ id: string; name: string }>
+    const team = rows.find((w) => w.id === seed.workspaceId)
+    if (!team) throw new Error(`team workspace missing: ${JSON.stringify(workspaces.json)}`)
     await switcher.click()
-    await expect(page.getByText("All workspaces")).toBeVisible()
+    // The switcher lists every workspace as a row.
+    await expect(page.getByLabel(team.name, { exact: true })).toBeVisible()
     await page.keyboard.press("Escape")
   })
 
@@ -290,7 +295,7 @@ test.describe("Personal workspace: its own tab set", () => {
     }
     // Home's list is this person's chats with the workspace agent.
     const chats = page.getByTestId("workspace-chats-panel")
-    await expect(chats.getByText("Workspace agent")).toBeVisible({ timeout: 30_000 })
+    await expect(chats.getByText("Workspace agent", { exact: true })).toBeVisible({ timeout: 30_000 })
     for (const name of ["Meetings", "Goals", "Activity"]) {
       await expect(chats.getByRole("link", { name })).toHaveCount(0)
     }
@@ -318,7 +323,7 @@ test.describe("Personal workspace: its own tab set", () => {
     await expect(rail(page)).toBeVisible({ timeout: 60_000 })
 
     const chats = page.getByTestId("workspace-chats-panel")
-    await expect(chats.getByText("Workspace agent")).toBeVisible({ timeout: 30_000 })
+    await expect(chats.getByText("Workspace agent", { exact: true })).toBeVisible({ timeout: 30_000 })
     await chats.getByRole("button", { name: "New chat" }).click()
     await expect(page).toHaveURL(/\/agent\?.*chatSessionId=/, { timeout: 30_000 })
     await expect(tab(page, "Home")).toHaveAttribute("aria-selected", "true")
@@ -336,6 +341,6 @@ test.describe("Personal workspace: its own tab set", () => {
     await tab(page, "Home").click()
     await expect(page).not.toHaveURL(/\/meetings/)
     await expect(tab(page, "Home")).toHaveAttribute("aria-selected", "true")
-    await expect(chats.getByText("Workspace agent")).toBeVisible()
+    await expect(chats.getByText("Workspace agent", { exact: true })).toBeVisible()
   })
 })

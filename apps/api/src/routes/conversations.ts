@@ -51,6 +51,7 @@ import {
   updateConversation,
   updateMembership,
 } from '../services/conversation.service'
+import { getDocForAgent, updateDocAsAgent } from '../services/conversation-doc.service'
 import { afterMessagePosted } from '../services/conversation-pipeline'
 import { AgentMessageError, postAgentMessage, updateAgentMessage } from '../services/chat-providers/outbound'
 import { blocksForKind, cardToMarkdown, normalizeCard, normalizeKind } from '../services/conversation-message-kind'
@@ -90,7 +91,7 @@ export interface ConversationRoutesConfig {
 
 function errorResponse(c: any, err: unknown) {
   if (err instanceof ConversationError) {
-    return c.json({ error: { code: err.code, message: err.message } }, err.status)
+    return c.json({ error: { code: err.code, message: err.message, ...err.details } }, err.status)
   }
   throw err
 }
@@ -832,6 +833,10 @@ async function renderForAgent(rows: any[]) {
   }))
 }
 
+function docUrl(conversationId: string): string {
+  return `${getFrontendUrl()}/c/${encodeURIComponent(conversationId)}?doc=1`
+}
+
 export function agentChannelRoutes(routeConfig: AgentChannelRoutesConfig): Hono {
   const router = new Hono()
   const base = '/workspaces/:workspaceId/agent-channels'
@@ -975,6 +980,46 @@ export function agentChannelRoutes(routeConfig: AgentChannelRoutesConfig): Hono 
       channel: { id: conversation.id, kind: conversation.kind, name: conversation.name, topic: conversation.topic, lastMessageAt: conversation.lastMessageAt },
       messages: await renderForAgent(rows),
     })
+  })
+
+  router.get(`${base}/:channel/doc`, async (c) => {
+    const auth = await config.authorize(c)
+    if (auth instanceof Response) return auth
+    const projectId = await agentIdentity(auth, c.req.query('projectId'))
+    const conversation = await resolveAgentConversation(auth.workspaceId, c.req.param('channel'), projectId)
+    if (!conversation) return c.json({ error: { code: 'not_found', message: 'Channel not found or not visible to this agent' } }, 404)
+    if (await isolatedIn(conversation.id, projectId)) return c.json(ISOLATED_ERROR, 403)
+    try {
+      const doc = await getDocForAgent(conversation)
+      return c.json({ channel: { id: conversation.id, name: conversation.name }, doc, url: docUrl(conversation.id) })
+    } catch (err) {
+      return errorResponse(c, err)
+    }
+  })
+
+  router.put(`${base}/:channel/doc`, async (c) => {
+    const auth = await config.authorize(c)
+    if (auth instanceof Response) return auth
+    const body = await readJson(c)
+    const projectId = await agentIdentity(auth, body.projectId)
+    const limited = await rateLimited(c, `agent:${auth.workspaceId}:${projectId ?? 'ws'}`, CHAT_RATE_LIMITS.agentPost)
+    if (limited) return limited
+    const conversation = await resolveAgentConversation(auth.workspaceId, c.req.param('channel'), projectId)
+    if (!conversation) return c.json({ error: { code: 'not_found', message: 'Channel not found or not visible to this agent' } }, 404)
+    if (await isolatedIn(conversation.id, projectId)) return c.json(ISOLATED_ERROR, 403)
+    const mode = body.mode === 'append' || body.mode === 'patch_section' ? body.mode : 'replace'
+    try {
+      const doc = await updateDocAsAgent(conversation, projectId, {
+        mode,
+        content: body.content,
+        title: typeof body.title === 'string' ? body.title : undefined,
+        section: typeof body.section === 'string' ? body.section : undefined,
+        baseVersion: Number.isInteger(body.baseVersion) ? body.baseVersion : undefined,
+      })
+      return c.json({ doc, url: docUrl(conversation.id) })
+    } catch (err) {
+      return errorResponse(c, err)
+    }
   })
 
   router.post(`${base}/:channel/messages`, async (c) => {

@@ -54,6 +54,9 @@ export interface ConversationSummary {
   unreadCount: number
   mentionCount: number
   participants?: Participant[]
+  /** Whether the channel has a doc (the shared markdown document tab). */
+  hasDoc?: boolean
+  docUpdatedAt?: string | null
   /** Newest top-level message; sent for direct messages only. */
   lastMessage?: {
     preview: string
@@ -356,6 +359,63 @@ export type TeamChatEvent =
       from: { userId: string; name: string; image: string | null }
     }
   | { type: 'huddle.declined'; conversationId: string; huddleId: string; userId: string; name: string }
+  | {
+      type: 'doc.updated'
+      conversationId: string
+      version: number
+      title: string
+      locked: boolean
+      updatedBy: DocAuthor | null
+    }
+
+export interface DocAuthor {
+  type: 'user' | 'agent'
+  id: string | null
+  name: string
+}
+
+/** A channel's shared markdown document. */
+export interface ChannelDoc {
+  id: string
+  conversationId: string
+  title: string
+  content: string
+  version: number
+  locked: boolean
+  updatedBy: DocAuthor | null
+  createdAt: string
+  updatedAt: string
+}
+
+export interface ChannelDocState {
+  doc: ChannelDoc | null
+  canEdit: boolean
+  canManage: boolean
+}
+
+export interface ChannelDocRevision {
+  id: string
+  version: number
+  title: string
+  content: string
+  updatedBy: DocAuthor | null
+  createdAt: string
+  updatedAt: string
+}
+
+/** Thrown by `saveDoc` when someone else saved first; `current` is the doc as it is now. */
+export class DocConflictError extends Error {
+  constructor(public current: ChannelDoc | null) {
+    super('This doc was changed by someone else')
+    this.name = 'DocConflictError'
+  }
+}
+
+function asDocConflict(err: unknown): DocConflictError | null {
+  const e = err as { status?: number; details?: { error?: { code?: string; doc?: ChannelDoc | null } } }
+  if (e?.status !== 409 || e.details?.error?.code !== 'doc_conflict') return null
+  return new DocConflictError(e.details.error.doc ?? null)
+}
 
 export interface HuddleParticipant {
   userId: string
@@ -479,6 +539,32 @@ export function teamChatApi() {
     },
     async pins(conversationId: string): Promise<ChatMessage[]> {
       return (await http.get<{ messages: ChatMessage[] }>(`${conv(conversationId)}/pins`)).data.messages ?? []
+    },
+    async getDoc(conversationId: string): Promise<ChannelDocState> {
+      return (await http.get<ChannelDocState>(`${conv(conversationId)}/doc`)).data
+    },
+    async saveDoc(conversationId: string, input: { title: string; content: string; baseVersion: number }): Promise<ChannelDoc> {
+      try {
+        return (await http.request<{ doc: ChannelDoc }>(`${conv(conversationId)}/doc`, { method: 'PUT', body: input })).data.doc
+      } catch (err) {
+        throw asDocConflict(err) ?? err
+      }
+    },
+    async listDocRevisions(conversationId: string): Promise<ChannelDocRevision[]> {
+      return (await http.get<{ revisions: ChannelDocRevision[] }>(`${conv(conversationId)}/doc/revisions`)).data.revisions ?? []
+    },
+    async restoreDocRevision(conversationId: string, revisionId: string, baseVersion: number): Promise<ChannelDoc> {
+      try {
+        return (await http.post<{ doc: ChannelDoc }>(
+          `${conv(conversationId)}/doc/revisions/${encodeURIComponent(revisionId)}/restore`,
+          { baseVersion },
+        )).data.doc
+      } catch (err) {
+        throw asDocConflict(err) ?? err
+      }
+    },
+    async lockDoc(conversationId: string, locked: boolean): Promise<ChannelDoc> {
+      return (await http.post<{ doc: ChannelDoc }>(`${conv(conversationId)}/doc/lock`, { locked })).data.doc
     },
     async save(messageId: string, on: boolean) {
       await http.post(`${msg(messageId)}/save`, { on })

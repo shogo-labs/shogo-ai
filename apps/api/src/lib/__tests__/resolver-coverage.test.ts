@@ -66,6 +66,7 @@ const EXEMPT: Record<string, string> = {
   conversationMember: 'Mutated only via /api/conversations/:id/... (members, join, leave, agents) — resolved by the conversations lookup.',
   conversationMention: 'Written only as part of posting a message via /api/conversations/:id/messages — resolved by the conversations lookup.',
   conversationMessageEmbedding: 'Written as a side effect of indexing a conversation message — the parent conversation route resolves its workspace.',
+  conversationDoc: 'Mutated only via /api/conversations/:id/doc routes — the conversation lookup resolves its workspace.',
   customDomain: 'Mutated via /api/projects/:projectId/domains — resolved by path projectId.',
   customEmoji: 'Mutated via workspace-scoped custom emoji routes — resolved by path workspaceId.',
   gitHubConnection: 'Mutated via /api/projects/:projectId/github — resolved by path projectId.',

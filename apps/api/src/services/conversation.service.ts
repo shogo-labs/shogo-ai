@@ -37,7 +37,12 @@ export type ConversationKind = 'public' | 'private' | 'dm' | 'group_dm' | 'activ
 export type WorkspaceRole = 'owner' | 'admin' | 'member' | 'viewer'
 
 export class ConversationError extends Error {
-  constructor(public status: 400 | 403 | 404 | 409 | 502, public code: string, message: string) {
+  constructor(
+    public status: 400 | 403 | 404 | 409 | 502,
+    public code: string,
+    message: string,
+    public details?: Record<string, unknown>,
+  ) {
     super(message)
   }
 }
@@ -424,10 +429,13 @@ export async function listConversationsForUser(workspaceId: string, userId: stri
   const mentionCounts = await unreadMentionCounts(userId, memberships)
   const unread = await unreadCounts(userId, conversations, membershipByConv)
   const lastMessages = await lastMessagePreviews(directIds)
+  const docs = await docUpdatedAts(conversations.map((c: any) => c.id))
 
   return conversations.map((c: any) => {
     const m = membershipByConv.get(c.id)
     return serializeConversation(c, {
+      hasDoc: docs.has(c.id),
+      docUpdatedAt: docs.get(c.id) ?? null,
       joined: !!m,
       starred: !!m?.starred,
       muted: !!m?.muted,
@@ -524,10 +532,23 @@ async function unreadMentionCounts(userId: string, memberships: any[]): Promise<
   return counts
 }
 
+/** Channel doc `updatedAt` by conversation id, for `hasDoc` / `docUpdatedAt` on conversation payloads. */
+async function docUpdatedAts(conversationIds: string[]): Promise<Map<string, Date>> {
+  if (!conversationIds.length) return new Map()
+  const rows = await db.conversationDoc.findMany({
+    where: { conversationId: { in: conversationIds } },
+    select: { conversationId: true, updatedAt: true },
+  })
+  return new Map(rows.map((r: any) => [r.conversationId, r.updatedAt]))
+}
+
 export async function getConversationForUser(conversationId: string, userId: string) {
   const access = await loadAccess(conversationId, userId)
   const members = await listMembers(access.conversation.workspaceId, conversationId)
+  const docs = await docUpdatedAts([conversationId])
   return serializeConversation(access.conversation, {
+    hasDoc: docs.has(conversationId),
+    docUpdatedAt: docs.get(conversationId) ?? null,
     joined: !!access.membership,
     starred: !!access.membership?.starred,
     muted: !!access.membership?.muted,

@@ -36,6 +36,7 @@ import {
   updateReminder,
   updateScheduled,
 } from '../services/chat-items'
+import { getDoc, listRevisions, restoreRevision, saveDoc, setDocLocked } from '../services/conversation-doc.service'
 
 export interface ExtrasHelpers {
   requireUser: (c: any) => Promise<string | Response>
@@ -115,6 +116,67 @@ export function mountConversationExtras(router: Hono, h: ExtrasHelpers): void {
     if (userId instanceof Response) return userId
     try {
       return c.json({ messages: await listPins(c.req.param('conversationId'), userId) })
+    } catch (err) {
+      return h.errorResponse(c, err)
+    }
+  })
+
+  // ─── Channel doc ────────────────────────────────────────────────────────
+
+  router.get('/conversations/:conversationId/doc', async (c) => {
+    const userId = await h.requireUser(c)
+    if (userId instanceof Response) return userId
+    try {
+      return c.json(await getDoc(c.req.param('conversationId'), userId))
+    } catch (err) {
+      return h.errorResponse(c, err)
+    }
+  })
+
+  router.put('/conversations/:conversationId/doc', async (c) => {
+    const userId = await h.requireUser(c)
+    if (userId instanceof Response) return userId
+    const body = await h.readJson(c)
+    try {
+      const doc = await saveDoc(c.req.param('conversationId'), userId, {
+        title: body.title,
+        content: body.content,
+        baseVersion: body.baseVersion,
+      })
+      return c.json({ doc })
+    } catch (err) {
+      return h.errorResponse(c, err)
+    }
+  })
+
+  router.get('/conversations/:conversationId/doc/revisions', async (c) => {
+    const userId = await h.requireUser(c)
+    if (userId instanceof Response) return userId
+    try {
+      return c.json({ revisions: await listRevisions(c.req.param('conversationId'), userId) })
+    } catch (err) {
+      return h.errorResponse(c, err)
+    }
+  })
+
+  router.post('/conversations/:conversationId/doc/revisions/:revisionId/restore', async (c) => {
+    const userId = await h.requireUser(c)
+    if (userId instanceof Response) return userId
+    const body = await h.readJson(c)
+    try {
+      const doc = await restoreRevision(c.req.param('conversationId'), userId, c.req.param('revisionId'), body.baseVersion)
+      return c.json({ doc })
+    } catch (err) {
+      return h.errorResponse(c, err)
+    }
+  })
+
+  router.post('/conversations/:conversationId/doc/lock', async (c) => {
+    const userId = await h.requireUser(c)
+    if (userId instanceof Response) return userId
+    const body = await h.readJson(c)
+    try {
+      return c.json({ doc: await setDocLocked(c.req.param('conversationId'), userId, body.locked !== false) })
     } catch (err) {
       return h.errorResponse(c, err)
     }

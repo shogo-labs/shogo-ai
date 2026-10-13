@@ -4132,6 +4132,7 @@ model Conversation {
   drafts            ConversationDraft[]
   scheduledMessages ScheduledMessage[]
   huddles           Huddle[]
+  doc               ConversationDoc?
 
   @@unique([workspaceId, slug])
   @@unique([workspaceId, dmKey])
@@ -4403,6 +4404,52 @@ model ConversationPin {
 
   @@index([conversationId, createdAt])
   @@map("conversation_pins")
+}
+
+/// The channel's single shared markdown document (Slack-canvas style; unrelated
+/// to project canvases). `version` increments on every save and writers must
+/// send the version they edited so concurrent edits surface as conflicts.
+model ConversationDoc {
+  id                 String   @id @default(uuid())
+  conversationId     String   @unique
+  workspaceId        String
+  title              String   @default("")
+  content            String   @default("")
+  version            Int      @default(1)
+  /// While locked only channel managers can edit.
+  locked             Boolean  @default(false)
+  /// "user" or "agent".
+  updatedByType      String   @default("user")
+  updatedByUserId    String?
+  updatedByProjectId String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  conversation Conversation              @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  revisions    ConversationDocRevision[]
+
+  @@index([workspaceId])
+  @@map("conversation_docs")
+}
+
+/// Snapshot history for a ConversationDoc. Rapid saves by one author are
+/// coalesced into a single revision.
+model ConversationDocRevision {
+  id                 String   @id @default(uuid())
+  docId              String
+  version            Int
+  title              String   @default("")
+  content            String   @default("")
+  updatedByType      String   @default("user")
+  updatedByUserId    String?
+  updatedByProjectId String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  doc ConversationDoc @relation(fields: [docId], references: [id], onDelete: Cascade)
+
+  @@index([docId, createdAt])
+  @@map("conversation_doc_revisions")
 }
 
 model SavedMessage {

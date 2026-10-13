@@ -1108,6 +1108,59 @@ export async function addAgentChannelMembers(
   })
 }
 
+/** A channel's shared markdown doc (see the API's `conversation-doc.service`). */
+export interface AgentChannelDoc {
+  id: string
+  conversationId: string
+  title: string
+  content: string
+  version: number
+  locked: boolean
+  updatedBy: { type: 'user' | 'agent'; id: string | null; name: string } | null
+  updatedAt: string
+}
+
+export type AgentDocMode = 'replace' | 'append' | 'patch_section'
+
+export async function readAgentChannelDoc(
+  workspaceId: string,
+  channel: string,
+  identity: AgentChannelIdentity,
+): Promise<CheckpointCallResult<{ channel: { id: string; name: string | null }; doc: AgentChannelDoc | null; url: string | null }>> {
+  const params = new URLSearchParams()
+  if (identity.projectId) params.set('projectId', identity.projectId)
+  return personalFetch(channelsPath(workspaceId, `/${encodeURIComponent(channel)}/doc?${params}`), {
+    method: 'GET',
+    parse: (j) => ({ channel: j?.channel, doc: j?.doc ?? null, url: j?.url ?? null }),
+  })
+}
+
+export async function updateAgentChannelDoc(
+  workspaceId: string,
+  channel: string,
+  input: {
+    identity: AgentChannelIdentity
+    mode: AgentDocMode
+    content: string
+    title?: string
+    section?: string
+    baseVersion?: number
+  },
+): Promise<CheckpointCallResult<{ doc: AgentChannelDoc; url: string | null }>> {
+  return personalFetch(channelsPath(workspaceId, `/${encodeURIComponent(channel)}/doc`), {
+    method: 'PUT',
+    body: JSON.stringify({
+      projectId: input.identity.projectId,
+      mode: input.mode,
+      content: input.content,
+      title: input.title,
+      section: input.section,
+      baseVersion: input.baseVersion,
+    }),
+    parse: (j) => ({ doc: j?.doc, url: j?.url ?? null }),
+  })
+}
+
 export interface TeamDirectory {
   people: Array<{ userId: string; name: string | null; email: string; tag: string }>
   agents: Array<{ projectId: string | null; name: string; role: string | null; tag: string }>

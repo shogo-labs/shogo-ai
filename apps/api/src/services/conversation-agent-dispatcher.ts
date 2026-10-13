@@ -54,6 +54,7 @@ import { resolveFriendlyMentions } from './conversation-directory'
 import { expirePendingApprovals, postApprovalCard, type ApprovalRequest } from './conversation-approvals'
 import type { AgentWork, StatusCard } from './conversation-message-kind'
 import { agentWorkOf } from './agent-work-log'
+import { docContextFor } from './conversation-doc.service'
 import { parseMuteCommand, pickResponder, type RelevanceCandidate } from './conversation-agent-relevance'
 
 const db = prisma as any
@@ -635,10 +636,32 @@ async function buildPrompt(args: {
     'Reply to the latest message addressed to you. Write concise Markdown suitable for a chat message.',
     'Do real work with your tools when asked. The team sees only your final reply here; your full session is linked from it.',
     ...chainContext(conversation, trigger, threadRootId, chain),
+    ...(await channelDocContext(conversation)),
     '',
     transcript,
   ]
   return lines.join('\n')
+}
+
+/** Characters of the channel doc included in an agent's prompt. */
+const DOC_CONTEXT_CHARS = 8000
+
+/** The channel doc as shared context: the channel's plans, decisions and checklists. */
+async function channelDocContext(conversation: any): Promise<string[]> {
+  if (conversation.kind !== 'public' && conversation.kind !== 'private') return []
+  const doc = await docContextFor(conversation.id).catch(() => null)
+  if (!doc) return []
+  const truncated = doc.content.length > DOC_CONTEXT_CHARS
+  const body = truncated ? `${doc.content.slice(0, DOC_CONTEXT_CHARS)}\n…(truncated; read the rest with team_chat_doc_read)` : doc.content
+  return [
+    '',
+    `Channel doc${doc.title ? ` "${doc.title}"` : ''} (version ${doc.version}): the channel's shared document. Treat it as the ` +
+      'source of truth for plans, decisions and checklists. Update it with team_chat_doc_update when you settle ' +
+      'something the team should keep (prefer mode "patch_section" or "append" over rewriting it).',
+    '<channel_doc>',
+    body,
+    '</channel_doc>',
+  ]
 }
 
 function chainContext(conversation: any, trigger: any, threadRootId: string | null, chain: AgentChain): string[] {

@@ -111,7 +111,7 @@ async function goHome(page: Page, attempts = 8): Promise<Locator> {
  * events, then a direct DOM click, before giving up.
  */
 async function openAccountPopover(page: Page, trigger: Locator) {
-  const popoverOpen = () => page.getByText("All workspaces").isVisible().catch(() => false)
+  const popoverOpen = () => page.getByLabel("Sign in to Shogo Cloud").isVisible().catch(() => false)
 
   await trigger.click()
   await page.waitForTimeout(400)
@@ -128,32 +128,19 @@ async function openAccountPopover(page: Page, trigger: Locator) {
 }
 
 /**
- * All workspace names currently offered by the switcher. `WorkspaceMenuSection`
- * (apps/mobile/components/layout/sidebar/WorkspaceMenuSection.tsx) renders
- * each row as a plain `Pressable` with no `accessibilityRole`/`aria-label` —
- * react-native-web emits it as an unadorned `<div>` (matched by
- * `getByText`, not any role query) whose `textContent` concatenates, with
- * no separator, the avatar-letter initial + workspace name + kind badge
- * ("Local"/"Cloud" on desktop), e.g. `"LLocal User PersonalLocal"`. The
- * avatar letter is always the name's own first character, so stripping the
- * badge suffix then the leading character recovers the name exactly. The
- * "Sign in to Shogo Cloud" row below the workspaces is skipped.
+ * All workspace names currently offered by the switcher. Workspace rows expose
+ * their workspace name as an accessibility label; the cloud sign-in row is
+ * skipped.
  */
 async function listWorkspaceNames(page: Page): Promise<string[]> {
   const trigger = await goHome(page)
   await openAccountPopover(page, trigger)
-  await expect(page.getByText("All workspaces")).toBeVisible({ timeout: 10_000 })
+  await expect(page.getByLabel("Sign in to Shogo Cloud")).toBeVisible({ timeout: 10_000 })
 
-  const names = await page.evaluate(() => {
-    const heading = Array.from(document.querySelectorAll("*")).find(
-      (el) => el.textContent?.trim() === "All workspaces" && el.children.length === 0,
-    )
-    if (!heading?.parentElement) return []
-    return Array.from(heading.parentElement.children)
-      .filter((el) => el !== heading && !el.getAttribute("aria-label")?.includes("Shogo Cloud"))
-      .map((el) => (el.textContent ?? "").replace(/(Personal|Team|Local|Cloud)$/, "").slice(1))
-      .filter((name) => name.length > 0)
-  })
+  const response = await page.request.get(`${LOCAL_API_BASE}/api/workspaces`)
+  const body = await response.json()
+  const items = (body?.items ?? body?.data?.items ?? []) as Array<{ name?: string }>
+  const names = items.map((item) => item.name).filter((name): name is string => Boolean(name))
 
   await page.keyboard.press("Escape")
   return names
@@ -181,9 +168,9 @@ async function switchWorkspaceWide(page: Page, toName: string) {
   if (await accountTrigger(page, toName).isVisible().catch(() => false)) return
 
   await openAccountPopover(page, trigger)
-  await expect(page.getByText("All workspaces")).toBeVisible({ timeout: 10_000 })
+  await expect(page.getByLabel("Sign in to Shogo Cloud")).toBeVisible({ timeout: 10_000 })
 
-  await clickAndWaitForReload(page, page.getByText(toName, { exact: true }).first())
+  await clickAndWaitForReload(page, page.getByLabel(toName, { exact: true }))
   await expect(accountTrigger(page, toName)).toBeVisible({ timeout: 30_000 })
 }
 
@@ -243,11 +230,11 @@ test.describe("Workspace switching (local mode)", () => {
     await page.setViewportSize({ width: 1280, height: 800 })
     const trigger = await goHome(page)
     await openAccountPopover(page, trigger)
-    const rows = page.getByText("All workspaces").locator("..")
-    await expect(rows.getByText("Local", { exact: true }).first()).toBeVisible({ timeout: 10_000 })
-    expect(await rows.getByText("Local", { exact: true }).count()).toBeGreaterThanOrEqual(2)
-    await expect(rows.getByText("Cloud", { exact: true })).toHaveCount(0)
-    await expect(rows.getByLabel("Sign in to Shogo Cloud")).toBeVisible()
+    const localRows = page.getByText("Local", { exact: true })
+    await expect(localRows.first()).toBeVisible({ timeout: 10_000 })
+    expect(await localRows.count()).toBeGreaterThanOrEqual(2)
+    await expect(page.getByText("Cloud", { exact: true })).toHaveCount(0)
+    await expect(page.getByLabel("Sign in to Shogo Cloud")).toBeVisible()
     await page.keyboard.press("Escape")
   })
 

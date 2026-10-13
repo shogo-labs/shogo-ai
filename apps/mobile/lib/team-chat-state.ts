@@ -193,6 +193,13 @@ export function applyListEvent(
       if (event.moved && !caughtUp) copy[idx] = { ...next, unreadCount: c.unreadCount }
       return { list: copy, refetch: event.moved === true && !caughtUp }
     }
+    case 'doc.updated': {
+      const idx = list.findIndex((c) => c.id === event.conversationId)
+      if (idx < 0 || list[idx].hasDoc) return { list, refetch: false }
+      const copy = [...list]
+      copy[idx] = { ...list[idx], hasDoc: true }
+      return { list: copy, refetch: false }
+    }
     case 'read': {
       if (event.userId !== me) return { list, refetch: false }
       return {

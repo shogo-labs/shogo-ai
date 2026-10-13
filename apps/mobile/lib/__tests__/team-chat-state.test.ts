@@ -159,6 +159,15 @@ describe('timeline', () => {
 })
 
 describe('conversation list', () => {
+  test('a doc update marks the channel as having a doc', () => {
+    const list = [conv({ id: 'ch', kind: 'public' })]
+    const event = { type: 'doc.updated' as const, conversationId: 'ch', version: 1, title: '', locked: false, updatedBy: null }
+    const update = applyListEvent(list, event, 'me', null)
+    expect(update.list[0]!.hasDoc).toBe(true)
+    expect(update.refetch).toBe(false)
+    expect(applyListEvent(update.list, event, 'me', null).list).toBe(update.list)
+  })
+
   test('a new message becomes a direct message\'s preview; channels and thread-only replies do not get one', () => {
     const list = [conv({ id: 'dm', kind: 'dm' }), conv({ id: 'ch', kind: 'public' })]
     let update = applyListEvent(list, { type: 'message.created', conversationId: 'dm', message: msg({ id: 'a', seq: 6, conversationId: 'dm', authorUserId: 'u2', text: 'ship it\n <@u:me>' }) }, 'me', null)

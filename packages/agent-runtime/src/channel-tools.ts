@@ -18,11 +18,14 @@ import {
   listAgentChannels,
   postAgentChannelMessage,
   readAgentChannel,
+  readAgentChannelDoc,
+  updateAgentChannelDoc,
   updateAgentChannelMessage,
   searchAgentChannels,
   sendAgentDirectMessage,
   addAgentChannelMembers,
   type AgentChannelIdentity,
+  type AgentDocMode,
   type AgentMessageKind,
   type AgentStatusCard,
 } from './internal-api'
@@ -56,6 +59,8 @@ export const CHANNEL_TOOL_NAMES = [
   'team_chat_search',
   'team_chat_dm',
   'team_chat_add_member',
+  'team_chat_doc_read',
+  'team_chat_doc_update',
   'team_directory',
   'member_activity',
 ] as const
@@ -77,6 +82,7 @@ export const TEAM_CHAT_GUIDE = [
   '- Use `team_chat_dm` to escalate something urgent to one person instead of tagging a whole channel.',
   '- If someone asks you to message a teammate for them, use `team_chat_dm` with `for_requester: true`; then reply to the requester with the returned link.',
   '- Use `team_chat_add_member` to put someone in a channel, e.g. when welcoming a new teammate.',
+  '- Each channel can have a doc: a shared markdown page for its plans, decisions and checklists. Read it with `team_chat_doc_read`; record settled decisions and long content there with `team_chat_doc_update` (prefer `patch_section` or `append` over rewriting it), then mention the change briefly in your reply.',
   '- Asked what a teammate worked on ("what did Sam do today?")? Use `member_activity`. Only owners and admins may ask; if the API refuses, say so plainly and do not guess from channel history. Answer only the person who asked, in the conversation where they asked. Never post someone\'s activity summary into a channel.',
   '- Respect Do Not Disturb: when someone is away, leave the question in the thread rather than pinging them repeatedly.',
   '- Starting a new piece of work? Post a top-level message with `team_chat_post` (pass `run_id` if you track one); you own that thread and unaddressed replies there come to you.',
@@ -315,6 +321,75 @@ export function createAddChannelMemberTool(ctx: ToolContext): AgentTool {
   }
 }
 
+export function createChannelDocReadTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'team_chat_doc_read',
+    label: 'Read Channel Doc',
+    description:
+      "Read a team chat channel's doc: its shared markdown page of plans, decisions and checklists. Returns the " +
+      'title, content and version (pass version as base_version when you replace the whole doc), or doc: null when ' +
+      'the channel has none yet.',
+    parameters: Type.Object({
+      channel: Type.String({ description: 'Channel name (without #) or conversation id.' }),
+    }),
+    execute: async (_id, params) => {
+      const workspaceId = workspaceIdOf(ctx)
+      if (!workspaceId) return noWorkspace()
+      const input = params as { channel: string }
+      const result = await readAgentChannelDoc(workspaceId, input.channel.replace(/^#/, ''), channelIdentity(ctx))
+      return result.ok ? textResult({ ok: true, ...result.data }) : apiError(result, 'Could not read the channel doc')
+    },
+  }
+}
+
+export function createChannelDocUpdateTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'team_chat_doc_update',
+    label: 'Update Channel Doc',
+    description:
+      "Change a team chat channel's doc (creating it if needed), attributed to you. Modes: \"patch_section\" " +
+      'replaces the body under one heading (or adds that section), "append" adds to the end, and "replace" rewrites ' +
+      'the whole doc and needs base_version from team_chat_doc_read. Prefer patch_section or append so you do not ' +
+      'overwrite teammates. Everyone in the channel sees the change live and can restore an earlier version. ' +
+      'Fails with code doc_conflict if someone saved since you read it: read again and retry.',
+    parameters: Type.Object({
+      channel: Type.String({ description: 'Channel name (without #) or conversation id.' }),
+      mode: Type.Union([Type.Literal('patch_section'), Type.Literal('append'), Type.Literal('replace')], {
+        description: 'How to apply content.',
+      }),
+      content: Type.String({ description: 'Markdown. For patch_section, the new body of the section (without its heading).' }),
+      section: Type.Optional(Type.String({ description: 'Heading text of the section to replace (patch_section only), e.g. "Decisions".' })),
+      title: Type.Optional(Type.String({ description: 'New doc title. Omit to keep the current one.' })),
+      base_version: Type.Optional(Type.Number({ description: 'Version you read; required for replace.' })),
+    }),
+    execute: async (_id, params) => {
+      const workspaceId = workspaceIdOf(ctx)
+      if (!workspaceId) return noWorkspace()
+      const input = params as { channel: string; mode: AgentDocMode; content: string; section?: string; title?: string; base_version?: number }
+      if (typeof input.content !== 'string') return textResult({ error: 'content is required', code: 'invalid_input' })
+      if (input.mode === 'patch_section' && !input.section?.trim()) {
+        return textResult({ error: 'section is required for patch_section', code: 'invalid_input' })
+      }
+      if (input.mode === 'replace' && typeof input.base_version !== 'number') {
+        return textResult({ error: 'base_version is required for replace; read the doc first', code: 'invalid_input' })
+      }
+      const result = await updateAgentChannelDoc(workspaceId, input.channel.replace(/^#/, ''), {
+        identity: channelIdentity(ctx),
+        mode: input.mode,
+        content: input.content,
+        section: input.section,
+        title: input.title,
+        baseVersion: input.base_version,
+      })
+      if (result.ok && result.data) {
+        const { doc, url } = result.data
+        return textResult({ ok: true, version: doc?.version, title: doc?.title, url })
+      }
+      return apiError(result, 'Could not update the channel doc')
+    },
+  }
+}
+
 export function createTeamDirectoryTool(ctx: ToolContext): AgentTool {
   return {
     name: 'team_directory',
@@ -385,6 +460,8 @@ export function createChannelTools(ctx: ToolContext): AgentTool[] {
     createChannelSearchTool(ctx),
     createDmUserTool(ctx),
     createAddChannelMemberTool(ctx),
+    createChannelDocReadTool(ctx),
+    createChannelDocUpdateTool(ctx),
     createTeamDirectoryTool(ctx),
     createMemberActivityTool(ctx),
   ]

@@ -35,6 +35,11 @@ export function messageLink(target: MessageLinkTarget, base = linkBase()): strin
   return `${base}/c/${encodeURIComponent(target.conversationId)}?${q}`
 }
 
+/** Link that opens a channel with its doc showing. */
+export function docLink(conversationId: string, base = linkBase()): string {
+  return `${base}/c/${encodeURIComponent(conversationId)}?doc=1`
+}
+
 function ownHosts(): Set<string> {
   const hosts = new Set<string>()
   try {

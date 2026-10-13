@@ -249,6 +249,38 @@ describe('channel tools call the internal agent-channel API', () => {
     expect(empty.code).toBe('invalid_input')
   })
 
+  test('team_chat_doc_read fetches the channel doc as this agent', async () => {
+    reply = { channel: { id: 'c-1', name: 'roadmap' }, doc: { title: 'Plan', content: '# Q4', version: 3 }, url: 'https://x/c/c-1?doc=1' }
+    const result = payload(await tool('team_chat_doc_read').execute('t', { channel: '#roadmap' }))
+    expect(result).toMatchObject({ ok: true, doc: { content: '# Q4', version: 3 }, url: 'https://x/c/c-1?doc=1' })
+    const url = new URL(calls[0].url)
+    expect(url.pathname).toBe('/api/internal/workspaces/ws-1/agent-channels/roadmap/doc')
+    expect(url.searchParams.get('projectId')).toBe('proj-1')
+  })
+
+  test('team_chat_doc_update sends mode, section and base version; replace needs a base version', async () => {
+    reply = { doc: { title: 'Plan', version: 4 }, url: 'https://x/c/c-1?doc=1' }
+    const result = payload(await tool('team_chat_doc_update').execute('t', {
+      channel: 'roadmap', mode: 'patch_section', section: 'Decisions', content: '- Ship Friday',
+    }))
+    expect(result).toEqual({ ok: true, version: 4, title: 'Plan', url: 'https://x/c/c-1?doc=1' })
+    expect(calls[0].init?.method).toBe('PUT')
+    expect(JSON.parse(String(calls[0].init?.body))).toEqual({
+      projectId: 'proj-1', mode: 'patch_section', content: '- Ship Friday', section: 'Decisions',
+    })
+
+    const noBase = payload(await tool('team_chat_doc_update').execute('t', { channel: 'roadmap', mode: 'replace', content: 'x' }))
+    expect(noBase.code).toBe('invalid_input')
+    const noSection = payload(await tool('team_chat_doc_update').execute('t', { channel: 'roadmap', mode: 'patch_section', content: 'x' }))
+    expect(noSection.code).toBe('invalid_input')
+    expect(calls).toHaveLength(1)
+
+    status = 409
+    reply = { error: { code: 'doc_conflict', message: 'This doc was changed by someone else' } }
+    const conflict = payload(await tool('team_chat_doc_update').execute('t', { channel: 'roadmap', mode: 'replace', content: 'x', base_version: 1 }))
+    expect(conflict).toMatchObject({ code: 'doc_conflict', status: 409 })
+  })
+
   test('validation and API errors are returned to the model', async () => {
     const empty = payload(await tool('team_chat_post').execute('t', { channel: 'general', text: '  ' }))
     expect(empty.code).toBe('invalid_input')

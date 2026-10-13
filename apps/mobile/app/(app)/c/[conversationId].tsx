@@ -6,7 +6,8 @@
  * narrow ones. `?msg=<id>` scrolls to and highlights one message (in the
  * thread when `thread` is set too). `?project=<id>` shows an agent's project
  * (canvas, files, plans, chat) beside the timeline on wide screens, where it
- * replaces the thread pane.
+ * replaces the thread pane. `?doc=1` shows the channel doc: beside the
+ * timeline on wide screens (replacing the other panes), in its place on narrow.
  */
 import { useCallback, useEffect, useState } from 'react'
 import { ActivityIndicator, AppState, KeyboardAvoidingView, Platform, Pressable, Text, View, useWindowDimensions } from 'react-native'
@@ -31,13 +32,17 @@ import { HuddleBanner } from '../../../components/team-chat/Huddle'
 import { TimelinePane } from '../../../components/team-chat/TimelinePane'
 import { ProjectSidePane } from '../../../components/team-chat/ProjectSidePane'
 import { SidePaneResizeHandle, useSidePaneWidth } from '../../../components/team-chat/SidePaneResizer'
+import { DocPane } from '../../../components/team-chat/DocPane'
+import { ChannelTabs, channelSupportsDoc } from '../../../components/team-chat/ChannelTabs'
 import { usePhoneChromeOverlay } from '../../../components/layout/PhoneChromeOverlay'
+import { useSafeAreaInsets } from 'react-native-safe-area-context'
 
 const api = teamChatApi()
 const THREAD_SIDE_PANE_MIN_WIDTH = 1024
 const THREAD_PANE_DEFAULT = 420
 const THREAD_PANE_MIN = 320
 const PROJECT_PANE_MIN = 420
+const DOC_PANE_MIN = 380
 /** Room left for the main timeline so a pane can never cover the conversation. */
 const MAIN_TIMELINE_MIN = 480
 
@@ -46,11 +51,13 @@ function first(value: string | string[] | undefined): string | undefined {
 }
 
 export default function ConversationScreen() {
-  const params = useLocalSearchParams<{ conversationId: string; thread?: string; msg?: string; project?: string }>()
+  const params = useLocalSearchParams<{ conversationId: string; thread?: string; msg?: string; project?: string; doc?: string }>()
   const conversationId = first(params.conversationId) ?? null
   const threadRootId = first(params.thread) ?? null
   const linkedMessageId = first(params.msg) ?? null
   const projectPaneId = first(params.project) ?? null
+  const docParam = first(params.doc) === '1'
+  const insets = useSafeAreaInsets()
   const router = useRouter()
   const workspace = useActiveWorkspace()
   const me = useMyUserId()
@@ -76,6 +83,12 @@ export default function ConversationScreen() {
     storageKey: 'shogo.teamChat.projectPaneWidth',
     defaultWidth: Math.max(PROJECT_PANE_MIN, Math.round(width * 0.45)),
     minWidth: PROJECT_PANE_MIN,
+    maxWidth: maxPaneWidth,
+  })
+  const docPane = useSidePaneWidth({
+    storageKey: 'shogo.teamChat.docPaneWidth',
+    defaultWidth: Math.max(DOC_PANE_MIN, Math.round(width * 0.45)),
+    minWidth: DOC_PANE_MIN,
     maxWidth: maxPaneWidth,
   })
   useStatusFeed(workspaceId)
@@ -128,20 +141,28 @@ export default function ConversationScreen() {
     ) {
       void load()
     }
+    if (event.type === 'doc.updated' && event.conversationId === conversationId) {
+      setConversation((c) => (c && !c.hasDoc ? { ...c, hasDoc: true } : c))
+    }
   })
 
   const openThread = useCallback(
     (message: ChatMessage) => {
-      router.setParams({ thread: message.threadRootId ?? message.id, project: undefined } as any)
+      router.setParams({ thread: message.threadRootId ?? message.id, project: undefined, doc: undefined } as any)
     },
     [router],
   )
   const closeThread = useCallback(() => router.setParams({ thread: undefined } as any), [router])
   const openProjectPane = useCallback(
-    (projectId: string) => router.setParams({ project: projectId, thread: undefined } as any),
+    (projectId: string) => router.setParams({ project: projectId, thread: undefined, doc: undefined } as any),
     [router],
   )
   const closeProjectPane = useCallback(() => router.setParams({ project: undefined } as any), [router])
+  const openDoc = useCallback(
+    () => router.setParams({ doc: '1', thread: undefined, project: undefined } as any),
+    [router],
+  )
+  const closeDoc = useCallback(() => router.setParams({ doc: undefined } as any), [router])
   const openSession = useCallback(
     (message: ChatMessage) => {
       // The workspace agent has no project; its session opens in the workspace agent chat.
@@ -194,9 +215,13 @@ export default function ConversationScreen() {
   }
 
   const visible = focused && foreground
-  const showProjectPane = sidePane && !!projectPaneId
-  const showThreadPane = !!threadRootId && !showProjectPane
-  const showMain = sidePane || !threadRootId
+  const supportsDoc = channelSupportsDoc(conversation)
+  const docOpen = supportsDoc && docParam
+  const showDocPane = sidePane && docOpen
+  const showDocFull = !sidePane && docOpen
+  const showProjectPane = sidePane && !!projectPaneId && !showDocPane
+  const showThreadPane = !!threadRootId && !showProjectPane && !showDocPane && !showDocFull
+  const showMain = !showDocFull && (sidePane || !threadRootId)
   const projectPaneName =
     (projectPaneId &&
       (conversation.members.find((m) => m.type === 'agent' && m.projectId === projectPaneId)?.name ??
@@ -218,9 +243,13 @@ export default function ConversationScreen() {
       floating={floating}
       onBack={goBack}
       onOpenProjectPane={openProjectPaneCb}
+      onOpenDoc={supportsDoc ? openDoc : undefined}
       onLayout={floating ? (e) => setHeaderHeight(Math.round(e.nativeEvent.layout.height)) : undefined}
     />
   )
+  const tabs = supportsDoc && !floating ? (
+    <ChannelTabs conversation={conversation} docOpen={docOpen} onOpenDoc={openDoc} onShowMessages={closeDoc} />
+  ) : null
 
   const huddleLabel =
     conversation.kind === 'dm' || conversation.kind === 'group_dm'
@@ -254,6 +283,7 @@ export default function ConversationScreen() {
         {showMain && (
           <View className="min-w-0 flex-1">
             {header}
+            {tabs}
             {huddleBanner}
             <TimelinePane
               key={conversation.id}
@@ -313,6 +343,30 @@ export default function ConversationScreen() {
               onReset={projectPane.reset}
             />
             <ProjectSidePane key={projectPaneId} projectId={projectPaneId} workspaceId={workspaceId} name={projectPaneName} onClose={closeProjectPane} />
+          </View>
+        )}
+        {showDocPane && (
+          <View className="relative shrink-0 border-l border-border" style={{ width: docPane.width }}>
+            <SidePaneResizeHandle
+              width={docPane.width}
+              minWidth={DOC_PANE_MIN}
+              maxWidth={maxPaneWidth}
+              onResize={docPane.setWidth}
+              onResizeEnd={docPane.commit}
+              onReset={docPane.reset}
+            />
+            <DocPane key={conversation.id} conversation={conversation} workspaceId={workspaceId} mentionables={mentionables} onClose={closeDoc} />
+          </View>
+        )}
+        {showDocFull && (
+          <View className="flex-1">
+            {floating ? <View style={{ height: insets.top }} /> : (
+              <>
+                {header}
+                {tabs}
+              </>
+            )}
+            <DocPane key={conversation.id} conversation={conversation} workspaceId={workspaceId} mentionables={mentionables} onClose={closeDoc} />
           </View>
         )}
       </View>
