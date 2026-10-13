@@ -2,7 +2,8 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * Account trigger + popover/screen body. Leaves live alongside this file
- * (UserMenuContent, WorkspaceMenuSection, native groups).
+ * (WorkspaceMenuSection, native groups). Profile, appearance, and sign out
+ * live on the rail avatar menu.
  */
 
 import { useCallback, useState } from "react";
@@ -10,6 +11,7 @@ import { Pressable, ScrollView, Text, View } from "react-native";
 import { ChevronDown } from "lucide-react-native";
 import { Avatar } from "@shogo/shared-ui/primitives";
 import { cn } from "@shogo/shared-ui/primitives";
+import { workspaceColor, workspaceInitial } from "../../../lib/workspace-color";
 import {
   Popover,
   PopoverBackdrop,
@@ -22,7 +24,7 @@ import { NativeAccountItems } from "./NativeAccountItems";
 import { NativeAccountPersonalGroups } from "./NativeAccountPersonalGroups";
 import { NativeAccountSettingsSection } from "./NativeAccountSettingsSection";
 import { AccountNavLinks } from "./AccountNavLinks";
-import { UserMenuContent, type UserMenuProps } from "./UserMenuContent";
+import { type UserMenuProps } from "./UserMenuContent";
 import { WorkspaceMenuSection } from "./WorkspaceMenuSection";
 import type { AccountSettingsSheetTab } from "../../settings/account-settings-sheets";
 
@@ -93,28 +95,33 @@ export function AccountMenu({
 
   const triggerInner = (
     <>
+      {tile ? (
+        <View
+          className="h-10 w-10 items-center justify-center rounded-xl"
+          style={{ backgroundColor: workspaceColor(currentWorkspace?.id) }}
+        >
+          <Text className="text-base font-bold text-white">
+            {workspaceInitial(currentWorkspace?.name)}
+          </Text>
+        </View>
+      ) : (
       <View
         className={cn(
-          tile ? "rounded-lg bg-foreground" : "rounded-full bg-primary/20",
+          "rounded-full bg-primary/20",
           "items-center justify-center",
-          isNative ? density.hitSize : tile ? "h-9 w-9" : "h-7 w-7",
+          isNative ? density.hitSize : "h-7 w-7",
         )}
       >
         <Text
           className={cn(
-            "font-bold",
-            tile ? "text-background" : "text-primary",
+            "font-bold text-primary",
             isNative ? density.text.body : "text-[11px]",
           )}
         >
-          {currentWorkspace?.name?.[0]?.toUpperCase() || "W"}
+          {workspaceInitial(currentWorkspace?.name)}
         </Text>
-        {tile && (
-          <View className="absolute -bottom-1 -right-1 h-4 w-4 items-center justify-center rounded-full border border-border bg-card">
-            <ChevronDown size={10} className="text-muted-foreground" />
-          </View>
-        )}
       </View>
+      )}
       {!collapsed && (
         <View className="flex-1 min-w-0">
           <Text
@@ -201,6 +208,24 @@ export function AccountMenu({
             bounces={false}
             overScrollMode="never"
           >
+            {tile ? (
+              <WorkspaceMenuSection
+                workspaces={workspaces}
+                currentWorkspace={currentWorkspace}
+                billingData={billingData}
+                workspacePlan={workspacePlan}
+                allPlans={allPlans}
+                showBilling={showBilling}
+                onNavigate={onNavigate}
+                onSwitchWorkspace={onSwitchWorkspace}
+                onCreateWorkspace={onCreateWorkspace}
+                hasPersonalWorkspace={hasPersonalWorkspace}
+                onCreatePersonalWorkspace={onCreatePersonalWorkspace}
+                localMode={localMode}
+                onClose={close}
+                presentation="switcher"
+              />
+            ) : (
             <AccountMenuBody
               user={user}
               onSignOut={onSignOut}
@@ -220,6 +245,83 @@ export function AccountMenu({
               onClose={close}
               isNative={false}
             />
+            )}
+          </ScrollView>
+        </PopoverBody>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+/** The bold workspace name in the wide panel header. Opens settings, usage, and links. */
+export function WorkspaceHeaderButton({
+  onNavigate,
+  workspaces,
+  currentWorkspace,
+  billingData,
+  workspacePlan,
+  allPlans,
+  showBilling,
+  onSwitchWorkspace,
+  onCreateWorkspace,
+  hasPersonalWorkspace,
+  onCreatePersonalWorkspace,
+  localMode,
+}: AccountMenuProps) {
+  const [isOpen, setIsOpen] = useState(false);
+  const close = useCallback(() => setIsOpen(false), []);
+  const name = currentWorkspace?.name || "Workspace";
+
+  return (
+    <Popover
+      placement="bottom left"
+      size="sm"
+      className="h-auto min-w-0 w-auto flex-1 items-stretch"
+      isOpen={isOpen}
+      onOpen={() => setIsOpen(true)}
+      onClose={close}
+      trigger={(triggerProps) => (
+        <Pressable
+          {...triggerProps}
+          accessibilityRole="button"
+          accessibilityLabel={`${name}, workspace menu`}
+          accessibilityState={{ expanded: isOpen }}
+          className="min-w-0 flex-1 flex-row items-center gap-1 rounded-md py-1 active:opacity-80"
+        >
+          <Text className="shrink text-lg font-bold text-foreground" numberOfLines={1}>
+            {name}
+          </Text>
+          <ChevronDown size={16} className="shrink-0 text-muted-foreground" />
+        </Pressable>
+      )}
+    >
+      <PopoverBackdrop />
+      <PopoverContent className={ACCOUNT_POPOVER_WIDTH_CLASS}>
+        <PopoverBody>
+          <ScrollView
+            className={ACCOUNT_POPOVER_MAX_HEIGHT_CLASS}
+            showsVerticalScrollIndicator={false}
+            bounces={false}
+            overScrollMode="never"
+          >
+            <WorkspaceMenuSection
+              workspaces={workspaces}
+              currentWorkspace={currentWorkspace}
+              billingData={billingData}
+              workspacePlan={workspacePlan}
+              allPlans={allPlans}
+              showBilling={showBilling}
+              onNavigate={onNavigate}
+              onSwitchWorkspace={onSwitchWorkspace}
+              onCreateWorkspace={onCreateWorkspace}
+              hasPersonalWorkspace={hasPersonalWorkspace}
+              onCreatePersonalWorkspace={onCreatePersonalWorkspace}
+              localMode={localMode}
+              onClose={close}
+              presentation="workspace-menu"
+            />
+            <View className="h-px bg-border" />
+            <AccountNavLinks localMode={localMode} onNavigate={onNavigate} onClose={close} />
           </ScrollView>
         </PopoverBody>
       </PopoverContent>
@@ -330,14 +432,6 @@ export function AccountMenuBody({
       <AccountNavLinks
         localMode={localMode}
         onNavigate={onNavigate}
-        onClose={onClose}
-      />
-      <View className="h-px bg-border" />
-      <UserMenuContent
-        user={user}
-        onSignOut={onSignOut}
-        onNavigate={onNavigate}
-        isSuperAdmin={isSuperAdmin}
         onClose={onClose}
       />
     </>

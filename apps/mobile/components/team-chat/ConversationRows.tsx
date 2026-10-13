@@ -81,9 +81,15 @@ export function ConversationRow({ conversation: c, workspaceId, active = false, 
       accessibilityRole="link"
       accessibilityLabel={`${title}${c.mentionCount ? `, ${c.mentionCount} mentions` : unread ? ', unread' : ''}`}
       className={cn(
-        'flex-row items-center rounded-md',
-        comfortable ? `${density.rowMin} gap-3 px-3 py-2` : 'gap-2 px-2 py-1',
-        active ? 'bg-accent' : 'active:bg-accent/50',
+        'flex-row items-center',
+        comfortable ? `${density.rowMin} gap-3 rounded-md px-3 py-2` : 'gap-2 rounded-lg px-2 py-1',
+        active
+          ? comfortable
+            ? 'bg-accent'
+            : 'bg-sidebar-accent'
+          : comfortable
+            ? 'active:bg-accent/50'
+            : 'hover:bg-sidebar-accent/60 active:bg-sidebar-accent/60',
       )}
     >
       {dmPeer ? (
@@ -91,11 +97,36 @@ export function ConversationRow({ conversation: c, workspaceId, active = false, 
           <PresenceDot userId={dmPeer} workspaceId={workspaceId} />
         </View>
       ) : (
-        <Icon size={comfortable ? density.icon.nav : 12} className={active || unread ? 'text-foreground' : 'text-muted-foreground'} />
+        <Icon
+          size={comfortable ? density.icon.nav : 12}
+          className={
+            comfortable
+              ? active || unread
+                ? 'text-foreground'
+                : 'text-muted-foreground'
+              : active
+                ? 'text-sidebar-accent-foreground'
+                : unread
+                  ? 'text-sidebar-foreground'
+                  : 'text-sidebar-foreground/70'
+          }
+        />
       )}
       <View className="min-w-0 flex-1">
         <Text
-          className={cn(comfortable ? density.text.body : 'text-xs', active || unread ? 'text-foreground' : 'text-muted-foreground', unread && 'font-semibold')}
+          className={cn(
+            comfortable ? density.text.body : 'text-xs',
+            comfortable
+              ? active || unread
+                ? 'text-foreground'
+                : 'text-muted-foreground'
+              : active
+                ? 'font-semibold text-sidebar-accent-foreground'
+                : unread
+                  ? 'font-semibold text-sidebar-foreground'
+                  : 'text-sidebar-foreground/80',
+            comfortable && unread && 'font-semibold',
+          )}
           numberOfLines={1}
         >
           {title}
@@ -131,16 +162,28 @@ export function PanelSection({ label, addLabel, onAdd, fixed, children }: PanelS
   const [expanded, setExpanded] = useState(true)
   const Chevron = expanded ? ChevronDown : ChevronRight
   return (
-    <View className="mb-2">
+    <View className={comfortable ? 'mb-2' : 'mb-2 mt-3'}>
       <View className="flex-row items-center">
         <Pressable
           onPress={() => !fixed && setExpanded((v) => !v)}
           accessibilityRole="button"
           aria-expanded={expanded}
           accessibilityLabel={`${expanded ? 'Collapse' : 'Expand'} ${label}`}
-          className="flex-1 flex-row items-center gap-1.5 rounded-md px-1 py-1 active:bg-accent/50"
+          className={cn(
+            'flex-1 flex-row items-center gap-1.5 rounded-lg px-1 py-1',
+            comfortable ? 'active:bg-accent/50' : 'hover:bg-sidebar-accent/60 active:bg-sidebar-accent/60',
+          )}
         >
-          <Text className={cn('flex-1 font-semibold uppercase tracking-wider text-muted-foreground', density.text.label)}>{label}</Text>
+          <Text
+            className={cn(
+              'flex-1 text-muted-foreground',
+              comfortable
+                ? `font-semibold uppercase tracking-wider ${density.text.label}`
+                : 'text-[13px] font-medium text-sidebar-muted-foreground',
+            )}
+          >
+            {label}
+          </Text>
           {!fixed && <Chevron size={12} className="text-muted-foreground" />}
         </Pressable>
         {onAdd && (
@@ -170,10 +213,27 @@ export function PanelLink({ icon: Icon, label, count = 0, onPress }: PanelLinkPr
       accessibilityRole="button"
       accessibilityLabel={count ? `${label}, ${count} unread` : label}
       onPress={onPress}
-      className={cn('flex-row items-center rounded-md active:bg-accent/50', comfortable ? `${density.rowMin} gap-3 px-3 py-2` : 'gap-2 px-2 py-1')}
+      className={cn(
+        'flex-row items-center',
+        comfortable ? `${density.rowMin} gap-3 rounded-md px-3 py-2 active:bg-accent/50` : 'gap-2 rounded-lg px-2 py-1 hover:bg-sidebar-accent/60 active:bg-sidebar-accent/60',
+      )}
     >
       <Icon size={comfortable ? density.icon.nav : 12} className={count ? 'text-foreground' : 'text-muted-foreground'} />
-      <Text className={cn('flex-1', count ? 'font-semibold text-foreground' : 'text-muted-foreground', comfortable ? density.text.body : 'text-xs')}>{label}</Text>
+      <Text
+        className={cn(
+          'flex-1',
+          comfortable ? density.text.body : 'text-xs',
+          comfortable
+            ? count
+              ? 'font-semibold text-foreground'
+              : 'text-muted-foreground'
+            : count
+              ? 'font-semibold text-sidebar-foreground'
+              : 'text-sidebar-foreground/80',
+        )}
+      >
+        {label}
+      </Text>
       <CountPill count={count} />
     </Pressable>
   )

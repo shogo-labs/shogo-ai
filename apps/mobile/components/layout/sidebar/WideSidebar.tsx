@@ -14,6 +14,7 @@ import { activityBadge } from '../../../lib/activity-feed'
 import { hrefForTab, isMainChatPath, tabForPathname } from '../../../lib/sidebar-tab'
 import { useTeamChatNav } from '../../team-chat/TeamChatSidebarProvider'
 import { IconRail } from './IconRail'
+import { useReportWidePanel } from './WidePanelContext'
 
 // Leaf import: the `@shogo/shared-app` barrel also loads the domain SDK.
 import { TEAM_CHAT_TABS } from '../../../../../packages/shared-app/src/hooks/useWorkspaceExperience'
@@ -59,6 +60,8 @@ export function WideSidebar({ workspaceId, tabs, kind, showAdmin, switcher, invi
   }
 
   const hasPanel = (id: SidebarTabId) => !panelTabs || panelTabs.includes(id)
+  const panelShown = !panelHidden && hasPanel(tab)
+  useReportWidePanel(panelShown)
 
   const select = (next: SidebarTabId) => {
     onSelectTab?.(next)
@@ -81,7 +84,11 @@ export function WideSidebar({ workspaceId, tabs, kind, showAdmin, switcher, invi
   return (
     <View className="h-full flex-row">
       <IconRail tabs={available} active={tab} badges={badges} onSelect={select} showAdmin={showAdmin} switcher={switcher} invites={invites} onSearch={onSearch} />
-      {!panelHidden && hasPanel(tab) && <View className="h-full w-64 border-r border-border bg-card">{renderPanel(tab, () => setPanelHidden(true))}</View>}
+      {panelShown && (
+        <View className="my-1.5 ml-1.5 w-64 overflow-hidden rounded-l-xl border-y border-l border-r border-sidebar-border bg-sidebar-panel">
+          {renderPanel(tab, () => setPanelHidden(true))}
+        </View>
+      )}
     </View>
   )
 }

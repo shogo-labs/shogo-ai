@@ -117,13 +117,12 @@ import { ActivityFeed } from "../../activity/ActivityFeed";
 import { WideSidebar } from "./WideSidebar";
 import { PersonalChatsPanel } from "./PersonalChatsPanel";
 import { HomePanel, MorePanel } from "./TabPanels";
-import { TAB_META } from "./IconRail";
 import {
   MENU_ITEM_RADIO_ROLE,
   PROJECT_SCOPE_OPTIONS,
   PROJECT_SORT_OPTIONS,
 } from "./ProjectFilterSheet";
-import { AccountMenu, type AccountMenuProps } from "./AccountMenu";
+import { AccountMenu, WorkspaceHeaderButton, type AccountMenuProps } from "./AccountMenu";
 import { CreateWorkspaceModal } from "./CreateWorkspaceModal";
 import { InboxPanel } from "./InboxPanel";
 import { useHasAdminAccess } from "../../../hooks/useHasAdminAccess";
@@ -907,16 +906,18 @@ export const AppSidebar = observer(function AppSidebar({
                 }
                 accessibilityState={{ expanded: pinnedExpanded }}
                 className={cn(
-                  "flex-row items-center rounded-md px-1 active:bg-accent/50",
+                  "flex-row items-center rounded-lg px-1",
                   isNativeDrawer
-                    ? `${drawerDensity.rowMin} gap-2.5 py-2`
-                    : "gap-1.5 py-1",
+                    ? `${drawerDensity.rowMin} gap-2.5 py-2 active:bg-accent/50`
+                    : "mt-3 gap-1.5 py-1 hover:bg-sidebar-accent/60 active:bg-sidebar-accent/60",
                 )}
               >
                 <Text
                   className={cn(
-                    "flex-1 font-semibold uppercase tracking-wider text-muted-foreground",
-                    drawerDensity.text.label,
+                    "flex-1 text-muted-foreground",
+                    isNativeDrawer
+                      ? `font-semibold uppercase tracking-wider ${drawerDensity.text.label}`
+                      : "text-[13px] font-medium text-sidebar-muted-foreground",
                   )}
                 >
                   Pinned
@@ -960,14 +961,18 @@ export const AppSidebar = observer(function AppSidebar({
                   }
                   accessibilityState={{ expanded: projectsExpanded }}
                   className={cn(
-                    "min-w-0 flex-1 flex-row items-center rounded-md active:bg-accent/50",
-                    isNativeDrawer ? `${drawerDensity.rowMin} py-2` : "py-1",
+                    "min-w-0 flex-1 flex-row items-center rounded-lg",
+                    isNativeDrawer
+                      ? `${drawerDensity.rowMin} py-2 active:bg-accent/50`
+                      : "mt-3 py-1 hover:bg-sidebar-accent/60 active:bg-sidebar-accent/60",
                   )}
                 >
                   <Text
                     className={cn(
-                      "flex-1 font-semibold uppercase tracking-wider text-muted-foreground",
-                      drawerDensity.text.label,
+                      "flex-1 text-muted-foreground",
+                      isNativeDrawer
+                        ? `font-semibold uppercase tracking-wider ${drawerDensity.text.label}`
+                        : "text-[13px] font-medium text-sidebar-muted-foreground",
                     )}
                   >
                     Projects
@@ -1144,15 +1149,18 @@ export const AppSidebar = observer(function AppSidebar({
                       // *text*, not their icon column, instead of adding an
                       // icon of its own just to fill the slot.
                       style={{
-                        paddingLeft:
-                          (isNativeDrawer ? drawerDensity.icon.md : 12) + 10,
+                        paddingLeft: isNativeDrawer
+                          ? drawerDensity.icon.md + 10
+                          : 28,
                         paddingRight: 8,
                       }}
                     >
                       <Text
                         className={cn(
-                          "text-muted-foreground flex-1",
-                          drawerDensity.text.body,
+                          "flex-1",
+                          isNativeDrawer
+                            ? `text-muted-foreground ${drawerDensity.text.body}`
+                            : "text-xs text-sidebar-muted-foreground",
                         )}
                       >
                         {showAllProjects
@@ -1246,8 +1254,28 @@ export const AppSidebar = observer(function AppSidebar({
       {isNativeDrawer && <View style={{ height: drawerTopInset }} />}
       {/* ── Panel header (wide): the tab's name, search, hide panel ── */}
       {tab !== null && (
-        <View className="h-12 flex-row items-center justify-between border-b border-border px-3">
-          <Text className="text-sm font-semibold text-foreground">{TAB_META[tab].label}</Text>
+        <View className="h-14 flex-row items-center justify-between px-3">
+          <WorkspaceHeaderButton
+            user={user}
+            onSignOut={handleSignOut}
+            onNavigate={(href) => {
+              router.push(href as any);
+              onNavPress();
+            }}
+            isSuperAdmin={hasAdminAccess}
+            isWide={isWide}
+            workspaces={allWorkspaces}
+            currentWorkspace={currentWorkspace}
+            billingData={billingData}
+            workspacePlan={workspacePlan}
+            allPlans={allPlans}
+            showBilling={features.billing}
+            onSwitchWorkspace={handleSwitchWorkspace}
+            onCreateWorkspace={handleCreateWorkspace}
+            hasPersonalWorkspace={hasPersonalWorkspace}
+            onCreatePersonalWorkspace={handleCreatePersonalWorkspace}
+            localMode={localMode}
+          />
           <View className="flex-row items-center gap-1">
             {tab === "projects" && (
               <Pressable
@@ -1255,14 +1283,14 @@ export const AppSidebar = observer(function AppSidebar({
                 accessibilityLabel="New project"
                 className="h-8 w-8 items-center justify-center rounded-md active:bg-muted"
               >
-                <Plus size={14} className="text-muted-foreground" />
+                <Plus size={16} className="text-muted-foreground" />
               </Pressable>
             )}
             <Pressable onPress={handleSearchPress} accessibilityLabel="Search" className="h-8 w-8 items-center justify-center rounded-md active:bg-muted">
-              <Search size={14} className="text-muted-foreground" />
+              <Search size={16} className="text-muted-foreground" />
             </Pressable>
             <Pressable onPress={onHidePanel} accessibilityLabel="Hide panel" className="h-8 w-8 items-center justify-center rounded-md active:bg-muted">
-              <PanelLeftClose size={12} className="text-muted-foreground" />
+              <PanelLeftClose size={16} className="text-muted-foreground" />
             </Pressable>
           </View>
         </View>

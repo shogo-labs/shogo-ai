@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * Native Theme / Resources / More / Sign Out groups on the Account screen.
- * Web popover still uses UserMenuContent.
+ * The rail avatar menu carries the same destinations on desktop.
  */
 
 import { useState } from "react";

@@ -9,16 +9,22 @@
 import { useState } from 'react'
 import { Pressable, Text, View } from 'react-native'
 import { useRouter } from 'expo-router'
-import { BellOff, ChevronDown, ChevronRight, Settings, SmilePlus, UserRound } from 'lucide-react-native'
+import { BellOff, ChevronDown, ChevronRight, LogOut, Monitor, Settings, Shield, SmilePlus, Store, User, UserRound } from 'lucide-react-native'
 import { Avatar, cn } from '@shogo/shared-ui/primitives'
 import { Popover, PopoverBackdrop, PopoverBody, PopoverContent } from '@/components/ui/popover'
 import { useAuth } from '../../contexts/auth'
+import { useTheme, type ThemePreference } from '../../contexts/theme'
+import { usePostHogSafe } from '../../contexts/posthog'
 import { useChatSettings } from '../../hooks/useChatPrefs'
+import { useHasAdminAccess } from '../../hooks/useHasAdminAccess'
 import { usePresence } from '../../hooks/usePresence'
+import { EVENTS, trackEvent } from '../../lib/analytics'
 import { PAUSE_OPTIONS, pauseState } from '../../lib/profile-menu'
+import { usePlatformConfig } from '../../lib/platform-config'
 import { expiryFrom } from '../../lib/team-chat-state'
 import { PresenceDot, presenceLabel } from '../team-chat/PresenceDot'
 import { useTeamChatNav } from '../team-chat/TeamChatSidebarProvider'
+import { ThemeChoiceList } from './sidebar/ThemeChoiceList'
 
 function initials(name: string | null | undefined): string {
   if (!name) return '?'
@@ -35,15 +41,21 @@ export interface ProfileMenuProps {
   size?: 'sm' | 'md'
   /** Open the menu on every avatar tap; false only for tests. */
   testID?: string
+  /** Presence-dot ring. The rail passes the sidebar color so the dot sits on that surface. */
+  badgeRingClassName?: string
 }
 
 /** The avatar button and the menu it opens. */
-export function ProfileMenu({ placement = 'bottom right', size = 'md', testID = 'profile-avatar' }: ProfileMenuProps) {
+export function ProfileMenu({ placement = 'bottom right', size = 'md', testID = 'profile-avatar', badgeRingClassName }: ProfileMenuProps) {
   const router = useRouter()
-  const { user } = useAuth()
+  const { user, signOut } = useAuth()
   const chat = useTeamChatNav()
+  const posthog = usePostHogSafe()
   const [open, setOpen] = useState(false)
   const status = usePresence(chat.workspaceId, user?.id)
+  const { localMode, shogoKeyConnected } = usePlatformConfig()
+  const isSuperAdmin = useHasAdminAccess(user?.id)
+  const { theme, setTheme } = useTheme()
   // The menu renders in a portal above the app's providers, so everything that
   // comes from context is read here, where the avatar is, and passed down.
   const { settings, update } = useChatSettings(chat.enabled ? chat.workspaceId : null)
@@ -54,9 +66,19 @@ export function ProfileMenu({ placement = 'bottom right', size = 'md', testID = 
     presence: status,
     settings,
     update,
+    isSuperAdmin,
+    showCreator: !localMode || !!shogoKeyConnected,
+    localMode,
+    theme,
+    setTheme,
     go: (href) => {
       setOpen(false)
       router.push(href as any)
+    },
+    signOut: () => {
+      setOpen(false)
+      trackEvent(posthog, EVENTS.SIGN_OUT)
+      void signOut().catch(() => {})
     },
   }
   const dimension = size === 'sm' ? 32 : 40
@@ -74,11 +96,19 @@ export function ProfileMenu({ placement = 'bottom right', size = 'md', testID = 
           accessibilityRole="button"
           accessibilityLabel="Profile and settings"
           aria-expanded={open}
-          className="active:opacity-80"
+          className="relative items-center justify-center active:opacity-80"
           style={{ width: dimension, height: dimension }}
         >
           <Avatar fallback={initials(user?.name)} src={user?.image} size={size === 'sm' ? 'sm' : 'md'} />
-          {chat.enabled && status ? <PresenceDot userId={user?.id} workspaceId={chat.workspaceId} badge size={10} /> : null}
+          {chat.enabled && status ? (
+            <PresenceDot
+              userId={user?.id}
+              workspaceId={chat.workspaceId}
+              badge
+              size={10}
+              ringClassName={badgeRingClassName}
+            />
+          ) : null}
         </Pressable>
       )}
     >
@@ -103,6 +133,14 @@ export interface ProfileMenuModel {
   update: ReturnType<typeof useChatSettings>['update']
   /** Closes the menu and navigates. */
   go: (href: string) => void
+  isSuperAdmin?: boolean
+  /** Creator hub is cloud-backed, so desktop hides it until Shogo Cloud is signed in. */
+  showCreator?: boolean
+  localMode?: boolean
+  theme?: ThemePreference
+  setTheme?: (theme: ThemePreference) => void
+  /** Closes the menu and signs out. Omitted where there is no session. */
+  signOut?: () => void
 }
 
 /**
@@ -110,9 +148,10 @@ export interface ProfileMenuModel {
  * app's context providers, so it must not read any (auth, router, chat) itself.
  */
 export function ProfileMenuContent({ model }: { model: ProfileMenuModel }) {
-  const { user, presence, settings, update, go } = model
+  const { user, presence, settings, update, go, signOut } = model
   const chat = { enabled: model.chatEnabled, workspaceId: model.workspaceId }
   const [pauseOpen, setPauseOpen] = useState(false)
+  const [appearanceOpen, setAppearanceOpen] = useState(false)
   const pause = pauseState(settings?.dndUntil)
 
   return (
@@ -193,6 +232,42 @@ export function ProfileMenuContent({ model }: { model: ProfileMenuModel }) {
         </>
       )}
 
+      <Pressable role="menuitem" accessibilityLabel="Profile" onPress={() => go('/(app)/profile')} className={ROW}>
+        <User size={16} className="text-muted-foreground" />
+        <Text className="flex-1 text-sm text-foreground">Profile</Text>
+      </Pressable>
+      <Popover
+        placement="right top"
+        offset={8}
+        shouldFlip
+        size="sm"
+        className="h-auto w-auto"
+        isOpen={appearanceOpen}
+        onOpen={() => setAppearanceOpen(true)}
+        onClose={() => setAppearanceOpen(false)}
+        trigger={(triggerProps) => (
+          <Pressable
+            {...triggerProps}
+            role="menuitem"
+            accessibilityLabel="Appearance"
+            accessibilityState={{ expanded: appearanceOpen }}
+            onPress={() => setAppearanceOpen((open) => !open)}
+            className={cn(ROW, appearanceOpen && "bg-muted")}
+          >
+            <Monitor size={16} className="text-muted-foreground" />
+            <Text className="flex-1 text-sm text-foreground">Appearance</Text>
+            <ChevronRight size={14} className="text-muted-foreground" />
+          </Pressable>
+        )}
+      >
+        <PopoverContent className="w-[200px] p-0" style={{ width: 200, padding: 0 }}>
+          <PopoverBody>
+            {model.theme && model.setTheme ? (
+              <ThemeChoiceList theme={model.theme} onSelect={model.setTheme} variant="submenu" />
+            ) : null}
+          </PopoverBody>
+        </PopoverContent>
+      </Popover>
       <Pressable role="menuitem" accessibilityLabel="Preferences" onPress={() => go('/(app)/settings')} className={ROW}>
         <Settings size={16} className="text-muted-foreground" />
         <Text className="flex-1 text-sm text-foreground">Preferences</Text>
@@ -201,6 +276,27 @@ export function ProfileMenuContent({ model }: { model: ProfileMenuModel }) {
         <UserRound size={16} className="text-muted-foreground" />
         <Text className="flex-1 text-sm text-foreground">Account and workspaces</Text>
       </Pressable>
+      {model.showCreator ? (
+        <Pressable role="menuitem" accessibilityLabel="Creator" onPress={() => go('/(app)/creator')} className={ROW}>
+          <Store size={16} className="text-muted-foreground" />
+          <Text className="flex-1 text-sm text-foreground">Creator</Text>
+        </Pressable>
+      ) : null}
+      {model.isSuperAdmin ? (
+        <Pressable role="menuitem" accessibilityLabel="Admin panel" onPress={() => go('/(admin)')} className={ROW}>
+          <Shield size={16} className="text-primary" />
+          <Text className="flex-1 text-sm text-foreground">Admin</Text>
+        </Pressable>
+      ) : null}
+      {!model.localMode && signOut ? (
+        <>
+          <View className="my-1 h-px bg-border" />
+          <Pressable role="menuitem" accessibilityLabel="Sign out" onPress={signOut} className={ROW}>
+            <LogOut size={16} className="text-muted-foreground" />
+            <Text className="flex-1 text-sm text-foreground">Sign Out</Text>
+          </Pressable>
+        </>
+      ) : null}
     </View>
   )
 }

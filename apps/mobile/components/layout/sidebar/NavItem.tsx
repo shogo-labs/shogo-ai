@@ -72,9 +72,17 @@ export function NavItem({
       role={href || externalHref ? "link" : "button"}
       accessibilityLabel={label}
       className={cn(
-        "flex-row items-center rounded-md",
-        comfortable ? `${density.rowMin} gap-3 px-3 py-2` : "gap-2 px-2 py-1",
-        active ? "bg-accent" : "active:bg-accent/50",
+        "flex-row items-center",
+        comfortable
+          ? `${density.rowMin} gap-3 rounded-md px-3 py-2`
+          : "gap-2 rounded-lg px-2 py-1",
+        active
+          ? comfortable
+            ? "bg-accent"
+            : "bg-sidebar-accent"
+          : comfortable
+            ? "active:bg-accent/50"
+            : "hover:bg-sidebar-accent/60 active:bg-sidebar-accent/60",
         collapsed && "justify-center px-2",
       )}
     >
@@ -84,14 +92,28 @@ export function NavItem({
         strokeWidth={nativePlatform ? iconChrome.strokeWidth : undefined}
         className={cn(
           iconClassName,
-          !nativePlatform && (active ? "text-foreground" : "text-muted-foreground"),
+          !nativePlatform &&
+            (comfortable
+              ? active
+                ? "text-foreground"
+                : "text-muted-foreground"
+              : active
+                ? "text-sidebar-accent-foreground"
+                : "text-sidebar-foreground/70"),
         )}
       />
       {!collapsed && (
         <Text
           className={cn(
             comfortable ? `${density.text.body} flex-1` : "text-xs flex-1",
-            labelClassName ?? (active ? "text-foreground" : "text-muted-foreground"),
+            labelClassName ??
+              (comfortable
+                ? active
+                  ? "text-foreground"
+                  : "text-muted-foreground"
+                : active
+                  ? "font-semibold text-sidebar-accent-foreground"
+                  : "text-sidebar-foreground/80"),
           )}
           numberOfLines={1}
         >

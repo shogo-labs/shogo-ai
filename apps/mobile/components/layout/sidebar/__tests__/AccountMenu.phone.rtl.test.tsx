@@ -217,7 +217,9 @@ describe("AccountMenuBody native grouping", () => {
     expect(screen.queryByText("Workspace")).toBeNull()
     expect(screen.queryByText("Theme")).toBeNull()
     expect(screen.queryByText("Resources")).toBeNull()
-    expect(screen.getByLabelText("Profile")).toBeTruthy()
+    // Profile, appearance, and sign out live on the rail avatar menu.
+    expect(screen.queryByLabelText("Profile")).toBeNull()
+    expect(screen.queryByLabelText("Sign out")).toBeNull()
     expect(screen.getByText("Settings")).toBeTruthy()
     expect(screen.getByText("Invite")).toBeTruthy()
   })

@@ -83,7 +83,10 @@ export function MorePanel({ onNavPress, variant = 'panel' }: { onNavPress?: () =
               router.push(item.href as any)
               onNavPress?.()
             }}
-            className={cn('flex-row items-center gap-3 rounded-md active:bg-accent/50', screen ? 'px-3 py-3.5' : 'px-2 py-2')}
+            className={cn(
+              'flex-row items-center gap-3',
+              screen ? 'rounded-md px-3 py-3.5 active:bg-accent/50' : 'rounded-lg px-2 py-2 hover:bg-sidebar-accent/60 active:bg-sidebar-accent/60',
+            )}
           >
             <Icon size={screen ? 22 : 18} className="text-muted-foreground" />
             <View className="min-w-0 flex-1">

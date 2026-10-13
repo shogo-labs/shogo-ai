@@ -16,7 +16,7 @@ import { api } from '../../../lib/api'
 import { isMainChatPath } from '../../../lib/sidebar-tab'
 import { sideChatLabel, sortSideChats, type SideChatItem } from '../../../lib/side-chats'
 
-const ROW = 'flex-row items-center gap-2.5 rounded-md px-2 py-2 active:bg-accent/50'
+const ROW = 'flex-row items-center gap-2.5 rounded-lg px-2 py-2 hover:bg-sidebar-accent/60 active:bg-sidebar-accent/60'
 
 export function PersonalChatsPanel({ onNavPress }: { onNavPress?: () => void }) {
   const http = useDomainHttp()
@@ -73,17 +73,17 @@ export function PersonalChatsPanel({ onNavPress }: { onNavPress?: () => void }) 
         accessibilityLabel="Chat"
         aria-current={isMainChatPath(pathname) ? 'page' : undefined}
         onPress={() => go('/(app)')}
-        className={cn(ROW, isMainChatPath(pathname) && 'bg-accent')}
+        className={cn(ROW, isMainChatPath(pathname) && 'bg-sidebar-accent')}
       >
-        <MessageCircle size={16} className="text-muted-foreground" />
+        <MessageCircle size={16} className={isMainChatPath(pathname) ? 'text-sidebar-accent-foreground' : 'text-sidebar-foreground/70'} />
         <View className="min-w-0 flex-1">
-          <Text className="text-sm font-medium text-foreground" numberOfLines={1}>Chat</Text>
+          <Text className={cn('text-sm', isMainChatPath(pathname) ? 'font-semibold text-sidebar-accent-foreground' : 'font-medium text-sidebar-foreground/80')} numberOfLines={1}>Chat</Text>
           <Text className="text-xs text-muted-foreground" numberOfLines={1}>Your main conversation</Text>
         </View>
       </Pressable>
 
       <View className="mt-3 flex-row items-center justify-between px-2 pb-1">
-        <Text className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Other chats</Text>
+        <Text className="text-[13px] font-medium text-sidebar-muted-foreground">Other chats</Text>
         <Pressable
           accessibilityRole="button"
           accessibilityLabel="New side chat"
@@ -113,10 +113,10 @@ export function PersonalChatsPanel({ onNavPress }: { onNavPress?: () => void }) 
               accessibilityLabel={sideChatLabel(chat)}
               aria-current={active ? 'page' : undefined}
               onPress={() => go({ pathname: '/(app)/side-chats/[id]', params: { id: chat.id } })}
-              className={cn(ROW, active && 'bg-accent')}
+              className={cn(ROW, active && 'bg-sidebar-accent')}
             >
-              <MessageSquare size={14} className="text-muted-foreground" />
-              <Text className="min-w-0 flex-1 text-sm text-foreground" numberOfLines={1}>{sideChatLabel(chat)}</Text>
+              <MessageSquare size={14} className={active ? 'text-sidebar-accent-foreground' : 'text-sidebar-foreground/70'} />
+              <Text className={cn('min-w-0 flex-1 text-sm', active ? 'font-semibold text-sidebar-accent-foreground' : 'text-sidebar-foreground/80')} numberOfLines={1}>{sideChatLabel(chat)}</Text>
             </Pressable>
           )
         })

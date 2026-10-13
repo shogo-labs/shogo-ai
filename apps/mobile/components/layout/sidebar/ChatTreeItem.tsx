@@ -275,7 +275,13 @@ export function ChatTreeItem({
                   : "gap-1 px-1 py-1.5"
               ),
           rowClassName,
-          active ? "bg-primary/10" : "hover:bg-accent/50 active:bg-accent/50"
+          workspacePane
+            ? active
+              ? "bg-sidebar-accent"
+              : "hover:bg-sidebar-accent/60 active:bg-sidebar-accent/60"
+            : active
+              ? "bg-primary/10"
+              : "hover:bg-accent/50 active:bg-accent/50"
         )}
         {...(Platform.OS === "web"
           ? ({ onContextMenu: handleContextMenu } as any)
@@ -323,8 +329,12 @@ export function ChatTreeItem({
             textClassName ?? (comfortable ? density.text.body : "text-xs"),
             "flex-1",
             active
-              ? "text-foreground"
-              : inactiveTextClassName ?? "text-muted-foreground"
+              ? workspacePane
+                ? "font-semibold text-sidebar-accent-foreground"
+                : "text-foreground"
+              : workspacePane
+                ? inactiveTextClassName ?? "text-sidebar-foreground/80"
+                : inactiveTextClassName ?? "text-muted-foreground"
           )}
           numberOfLines={1}
         >

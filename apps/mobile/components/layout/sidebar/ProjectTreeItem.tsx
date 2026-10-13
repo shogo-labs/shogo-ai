@@ -250,6 +250,9 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
     routeChatId,
   );
   const activeChatId = activeOverride ?? routeChatId;
+  // The open project stays expanded, but the row itself only looks selected
+  // when no chat under it is the current selection.
+  const projectHighlighted = isActive && !activeChatId;
 
   useEffect(() => {
     if (routeChatId) setActiveOverride(routeChatId);
@@ -946,11 +949,17 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
       ) : (
         <View
           className={cn(
-            "group flex-row items-center rounded-md pr-1",
-            comfortable ? `${density.rowMin} gap-2 py-2` : "gap-1.5 py-1.5",
-            isActive
-              ? "bg-accent"
-              : "hover:bg-accent/50 active:bg-accent/50",
+            "group flex-row items-center pr-1",
+            comfortable
+              ? `${density.rowMin} gap-2 rounded-md py-2`
+              : "gap-1.5 rounded-lg py-1.5",
+            projectHighlighted
+              ? comfortable
+                ? "bg-accent"
+                : "bg-sidebar-accent"
+              : comfortable
+                ? "hover:bg-accent/50 active:bg-accent/50"
+                : "hover:bg-sidebar-accent/60 active:bg-sidebar-accent/60",
           )}
         >
           <Pressable
@@ -969,12 +978,19 @@ export const ProjectTreeItem = observer(function ProjectTreeItem({
           >
             <Folder
               size={comfortable ? density.icon.md : 12}
-              className={isActive ? "text-foreground" : "text-muted-foreground"}
+              className={projectHighlighted ? "text-foreground" : "text-muted-foreground"}
             />
             <Text
               className={cn(
-                comfortable ? `${density.text.body} flex-1` : "text-xs flex-1",
-                isActive ? "text-foreground" : "text-foreground",
+                "flex-1",
+                comfortable
+                  ? density.text.body
+                  : "text-xs",
+                comfortable
+                  ? "text-foreground"
+                  : projectHighlighted
+                    ? "font-semibold text-sidebar-accent-foreground"
+                    : "text-sidebar-foreground/80",
               )}
               numberOfLines={1}
             >

@@ -6,6 +6,7 @@ import { Animated, Platform, View } from 'react-native'
 import { SafeAreaView, type Edge, useSafeAreaInsets } from 'react-native-safe-area-context'
 import type { useNativeSheetDrawer } from '../../lib/use-native-drawer-swipe'
 import { PhoneChromeOverlayContext } from './PhoneChromeOverlay'
+import { useWidePanelVisible, WidePanelProvider } from './sidebar/WidePanelContext'
 
 export interface NativeSheetDrawerShellProps {
   isWide: boolean
@@ -27,7 +28,15 @@ export interface NativeSheetDrawerShellProps {
  * Shared two-layer native drawer shell. Breakpoint decisions stay in each
  * route layout; this component only owns the repeated animated composition.
  */
-export function NativeSheetDrawerShell({
+export function NativeSheetDrawerShell(props: NativeSheetDrawerShellProps) {
+  return (
+    <WidePanelProvider>
+      <NativeSheetDrawerShellFrame {...props} />
+    </WidePanelProvider>
+  )
+}
+
+function NativeSheetDrawerShellFrame({
   isWide,
   nativeSheetDrawer,
   canvas,
@@ -47,6 +56,8 @@ export function NativeSheetDrawerShell({
   const { drawerOpen, sheetSwipeHandlers, sheetStyle, sheetClipStyle, sheetFill, sheetCompositing, underlayStyle } =
     drawer
   const insets = useSafeAreaInsets()
+  const wideCard = isWide && !!sidebarWide
+  const panelVisible = useWidePanelVisible()
   const frameFill = nativeSheetDrawer ? (sheetFill ?? canvas) : canvas
   const flattenSheet = nativeSheetDrawer && (drawerOpen || sheetCompositing)
   const frameOverflow = nativeSheetDrawer && Platform.OS !== 'web' ? 'visible' : 'hidden'
@@ -62,7 +73,7 @@ export function NativeSheetDrawerShell({
 
   return (
     <SafeAreaView
-      className="flex-1 bg-background"
+      className={wideCard ? 'flex-1 bg-sidebar' : 'flex-1 bg-background'}
       style={frameFill && nativeSheetDrawer ? { backgroundColor: frameFill } : undefined}
       edges={safeAreaEdges}
     >
@@ -70,8 +81,15 @@ export function NativeSheetDrawerShell({
         {isWide ? sidebarWide : null}
 
         <View
+          className={
+            wideCard
+              ? panelVisible
+                ? 'my-1.5 mr-1.5 overflow-hidden rounded-r-xl border-y border-r border-sidebar-border bg-background'
+                : 'my-1.5 ml-1.5 mr-1.5 overflow-hidden rounded-xl border border-sidebar-border bg-background'
+              : undefined
+          }
           style={[
-            { flex: 1, overflow: frameOverflow },
+            { flex: 1, overflow: wideCard ? 'hidden' : frameOverflow },
             nativeSheetDrawer && frameFill ? { backgroundColor: frameFill } : undefined,
           ]}
           collapsable={false}
