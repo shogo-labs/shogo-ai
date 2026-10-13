@@ -134,10 +134,32 @@ mock.module('../../../hooks/useCustomEmoji', () => ({
 }))
 mock.module('../../../hooks/useChatShortcuts', () => ({
   useEditRequest: () => {},
+  requestEditMessage: () => {},
 }))
+const activityTimeline: { messages: any[]; channels: any[] } = { messages: [], channels: [] }
 const { resolveAgentLook } = await import('@shogo/shared-app/buddy-look')
 mock.module('../../../hooks/useTeamChat', () => ({
+  TIMELINE_SOFT_LIMIT: 600,
   useAgentLook: (_workspaceId: string | null | undefined, projectId: string | null) => resolveAgentLook(null, projectId),
+  useConversationList: () => ({ list: activityTimeline.channels, loading: false, error: null, refresh: async () => {} }),
+  useConversationTimeline: () => ({
+    state: { messages: activityTimeline.messages, hasMoreOlder: false, streaming: {} },
+    loading: false,
+    error: null,
+    getState: () => ({ messages: activityTimeline.messages, hasMoreOlder: false, streaming: {} }),
+    loadOlder: async () => {},
+    react: async () => {},
+    edit: () => {},
+    remove: async () => {},
+    stopAgent: async () => {},
+    retry: () => {},
+    discard: () => {},
+    send: async () => {},
+    reload: async () => {},
+    trimOld: () => {},
+  }),
+  useMarkReadWhileVisible: () => {},
+  useTypingUsers: () => [],
 }))
 const routed: any[] = []
 mock.module('expo-router', () => ({ useRouter: () => ({ push: (r: any) => routed.push(r) }) }))
@@ -171,6 +193,7 @@ const { PhoneLayoutOverrideProvider } = await import('../../../lib/native-phone-
 const { MessageRow } = await import('../MessageRow')
 const { MessageList } = await import('../MessageList')
 const { ConversationHeader } = await import('../ConversationHeader')
+const { TimelinePane } = await import('../TimelinePane')
 
 const mentionables = {
   people: [
@@ -1043,5 +1066,69 @@ describe('ConversationHeader agent DMs', () => {
     header(dm('proj-1'), { floating: true, onBack: () => {} })
     fireEvent.click(screen.getAllByLabelText('Open project')[0])
     expect(routed).toEqual([{ pathname: '/(app)/projects/[id]', params: { id: 'proj-1' } }])
+  })
+})
+
+describe('#activity filters', () => {
+  test('picking agents hides every other agent\'s lines', () => {
+    activityTimeline.messages = [
+      message({
+        id: 'a1', seq: 1, authorType: 'system', author: null, authorUserId: null,
+        text: 'finished the invoices',
+        blocks: { type: 'activity', kind: 'task.completed', projectId: 'proj-1' },
+      }),
+      message({
+        id: 'a2', seq: 2, authorType: 'system', author: null, authorUserId: null,
+        text: 'ran the daily digest',
+        blocks: { type: 'activity', kind: 'schedule.ok', projectId: null },
+      }),
+      message({
+        id: 'a3', seq: 3, authorType: 'system', author: null, authorUserId: null,
+        text: 'answered the ticket',
+        blocks: { type: 'activity', kind: 'agent.message', projectId: 'proj-2', conversationId: 'c-eng' },
+      }),
+    ]
+    activityTimeline.channels = [
+      { id: 'c-eng', kind: 'public', name: 'eng', slug: 'eng' },
+      { id: 'c-ops', kind: 'public', name: 'ops', slug: 'ops' },
+      { id: 'c-dm', kind: 'dm', name: 'Ana', slug: null },
+    ]
+    const agents = [
+      { key: 'ws', projectId: null, name: 'Workspace agent', description: null, image: null },
+      { key: 'p:proj-1', projectId: 'proj-1', name: 'Billing Bot', description: null, image: null },
+      { key: 'p:proj-2', projectId: 'proj-2', name: 'Support Bot', description: null, image: null },
+    ]
+    render(
+      <TimelinePane
+        workspaceId="ws"
+        conversation={{
+          id: 'c-activity', workspaceId: 'ws', kind: 'activity', name: 'activity', slug: 'activity',
+          topic: null, lastSeq: 3, lastMessageAt: null, archivedAt: null, createdAt: '2026-09-29T10:00:00.000Z',
+          joined: true, starred: false, muted: false, notifyLevel: 'all', lastReadSeq: 3,
+          canPost: false, canReply: true, canManage: false, members: [],
+        }}
+        me="u-me"
+        mentionables={{ ...mentionables, agents }}
+        visible
+      />,
+    )
+    expect(screen.getByText(/finished the invoices/)).toBeTruthy()
+    expect(screen.getByText(/ran the daily digest/)).toBeTruthy()
+    expect(screen.getByText(/answered the ticket/)).toBeTruthy()
+
+    fireEvent.click(screen.getByTestId('activity-filter-agent'))
+    fireEvent.click(screen.getByText('Billing Bot'))
+
+    expect(screen.getByText(/finished the invoices/)).toBeTruthy()
+    expect(screen.queryByText(/ran the daily digest/)).toBeNull()
+    expect(screen.queryByText(/answered the ticket/)).toBeNull()
+    expect(screen.getByLabelText('Agent: Billing Bot')).toBeTruthy()
+
+    fireEvent.click(screen.getByText('Workspace agent'))
+    expect(screen.getByText(/finished the invoices/)).toBeTruthy()
+    expect(screen.getByText(/ran the daily digest/)).toBeTruthy()
+    expect(screen.queryByText(/answered the ticket/)).toBeNull()
+    expect(screen.getByLabelText('Agent: Workspace agent, Billing Bot')).toBeTruthy()
+    expect(screen.getByText('2 agents')).toBeTruthy()
   })
 })

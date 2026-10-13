@@ -11,11 +11,12 @@ import { ChevronLeft, Upload, X } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { conversationTitle, teamChatApi, type ChatMessage, type ConversationDetail, type Mentionables } from '../../lib/team-chat-api'
 import { mentionNames } from '../../lib/team-chat-state'
-import { ACTIVITY_CHANNEL_FILTERS, matchesActivityFilter, type ActivityChannelFilter } from '../../lib/activity-channel-filters'
+import { ACTIVITY_CHANNEL_FILTERS, EMPTY_ACTIVITY_FILTER, isActivityFilterActive, matchesActivityFilters, type ActivityFilterState } from '../../lib/activity-channel-filters'
 import { TIMELINE_SOFT_LIMIT, useConversationList, useConversationTimeline, useMarkReadWhileVisible, useTypingUsers } from '../../hooks/useTeamChat'
 import { requestEditMessage } from '../../hooks/useChatShortcuts'
 import { threadCrumbs } from '../../lib/team-chat-nav'
 import { Breadcrumb } from './SessionBreadcrumb'
+import { ActivityFilterPicker } from './ActivityFilterPicker'
 import { MessageList } from './MessageList'
 import { Composer, type ComposerHandle } from './Composer'
 import { CHROME_SIZE, GlassButton, GlassChip } from './FloatingChrome'
@@ -122,7 +123,7 @@ export function TimelinePane(props: TimelinePaneProps) {
   const [footerHeight, setFooterHeight] = useState(0)
   const showActivityFilters = conversation.kind === 'activity' && !threadRootId
   const channelList = useConversationList(showActivityFilters ? workspaceId : null)
-  const [activityFilter, setActivityFilter] = useState<ActivityChannelFilter>('all')
+  const [activityFilter, setActivityFilter] = useState<ActivityFilterState>(EMPTY_ACTIVITY_FILTER)
   const timeline = useConversationTimeline(workspaceId, conversation.id, threadRootId)
   const typing = useTypingUsers(workspaceId, conversation.id, threadRootId)
   const names = useMemo(() => {
@@ -177,10 +178,21 @@ export function TimelinePane(props: TimelinePaneProps) {
     return found(timeline.getState().messages)
   }, [timeline.getState, timeline.loadOlder])
 
-  const filtering = showActivityFilters && activityFilter !== 'all'
+  const filtering = showActivityFilters && isActivityFilterActive(activityFilter)
   const visibleMessages = useMemo(
-    () => (filtering ? timeline.state.messages.filter((m) => matchesActivityFilter(m, activityFilter)) : timeline.state.messages),
+    () => (filtering ? timeline.state.messages.filter((m) => matchesActivityFilters(m, activityFilter)) : timeline.state.messages),
     [filtering, activityFilter, timeline.state.messages],
+  )
+  const agentOptions = useMemo(
+    () => (mentionables?.agents ?? []).map((agent) => ({ id: agent.key, label: agent.name })),
+    [mentionables],
+  )
+  const channelOptions = useMemo(
+    () => channelList.list
+      .filter((channel) => channel.kind === 'public')
+      .map((channel) => ({ id: channel.id, label: channel.name ?? channel.slug ?? 'channel' }))
+      .sort((a, b) => a.label.localeCompare(b.label)),
+    [channelList.list],
   )
   const filterLoads = useRef(0)
   useEffect(() => {
@@ -195,7 +207,7 @@ export function TimelinePane(props: TimelinePaneProps) {
     void (async () => {
       while (!cancelled && filterLoads.current < SEEK_PAGES) {
         const current = timeline.getState()
-        const count = current.messages.filter((m) => matchesActivityFilter(m, activityFilter)).length
+        const count = current.messages.filter((m) => matchesActivityFilters(m, activityFilter)).length
         if (count >= ACTIVITY_FILTER_MIN || !current.hasMoreOlder) return
         filterLoads.current += 1
         await timeline.loadOlder(SEEK_PAGE_SIZE)
@@ -313,15 +325,27 @@ export function TimelinePane(props: TimelinePaneProps) {
       style={floating && topInset ? { marginTop: topInset } : undefined}
       testID="activity-filters"
     >
+      <ActivityFilterPicker
+        label="Agent"
+        value={activityFilter.agentKeys}
+        options={agentOptions}
+        onChange={(agentKeys) => setActivityFilter((filter) => ({ ...filter, agentKeys }))}
+      />
+      <ActivityFilterPicker
+        label="Channel"
+        value={activityFilter.conversationIds}
+        options={channelOptions}
+        onChange={(conversationIds) => setActivityFilter((filter) => ({ ...filter, conversationIds }))}
+      />
       {ACTIVITY_CHANNEL_FILTERS.map(({ id, label }) => (
         <Pressable
           key={id}
           accessibilityRole="button"
-          aria-selected={activityFilter === id}
-          onPress={() => setActivityFilter(id)}
-          className={cn('rounded-full border px-3 py-1', activityFilter === id ? 'border-primary bg-primary/10' : 'border-border active:bg-accent/50')}
+          aria-selected={activityFilter.kind === id}
+          onPress={() => setActivityFilter((filter) => ({ ...filter, kind: id }))}
+          className={cn('rounded-full border px-3 py-1', activityFilter.kind === id ? 'border-primary bg-primary/10' : 'border-border active:bg-accent/50')}
         >
-          <Text className={cn('text-xs', activityFilter === id ? 'font-medium text-primary' : 'text-muted-foreground')}>{label}</Text>
+          <Text className={cn('text-xs', activityFilter.kind === id ? 'font-medium text-primary' : 'text-muted-foreground')}>{label}</Text>
         </Pressable>
       ))}
     </ScrollView>

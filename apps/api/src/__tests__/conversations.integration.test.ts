@@ -489,6 +489,7 @@ describe('#activity and agent results', () => {
     expect(lines[0].authorType).toBe('system')
     expect(lines[0].text).toContain('**Billing Bot** finished the task “Reconcile invoices”')
     expect(lines[0].blocks.kind).toBe('task.completed')
+    expect(lines[0].blocks.conversationId).toBe(ch.json.conversation.id)
 
     const delivered = await call(seed.owner, 'GET', `/conversations/${ch.json.conversation.id}/messages`)
     expect(delivered.json.messages).toHaveLength(1)
@@ -516,8 +517,9 @@ describe('#activity and agent results', () => {
   })
 
   test('schedule failures, goal events, publishes and joins show up in #activity', async () => {
+    const generalId = (await general()).id
     await activity.recordScheduleOutcome(
-      { id: 'sch-1', workspaceId: seed.workspaceId, userId: seed.owner, name: 'Daily digest' },
+      { id: 'sch-1', workspaceId: seed.workspaceId, userId: seed.owner, name: 'Daily digest', notifyConversationId: generalId },
       { status: 'failed', error: 'runtime offline', runKey: '2026-09-30T08:00:00.000Z' },
     )
     const goal = await db.goal.create({ data: { workspaceId: seed.workspaceId, title: 'Launch v2' } })
@@ -526,7 +528,9 @@ describe('#activity and agent results', () => {
     await activity.recordProjectPublished({ id: seed.projectId, workspaceId: seed.workspaceId, name: 'Billing Bot' }, 'https://billing.shogo.one', new Date(1))
     await activity.recordMemberJoined(seed.workspaceId, seed.viewer)
 
-    const texts = (await activityTexts()).map((m) => m.text)
+    const lines = await activityTexts()
+    const texts = lines.map((m) => m.text)
+    expect(lines.find((m) => m.blocks?.scheduleId === 'sch-1').blocks.conversationId).toBe(generalId)
     expect(texts.some((t) => t.includes('scheduled run “Daily digest” failed: runtime offline'))).toBe(true)
     expect(texts.some((t) => t.includes('is blocked on the goal “Launch v2”: Waiting on legal'))).toBe(true)
     expect(texts.some((t) => t.includes('ignored'))).toBe(false)
