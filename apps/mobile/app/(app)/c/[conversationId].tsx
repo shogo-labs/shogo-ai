@@ -25,6 +25,7 @@ import { useStatusFeed } from '../../../hooks/useChatPrefs'
 import { usePresenceFeed } from '../../../hooks/usePresence'
 import { useDraftsFeed, useSavedFeed } from '../../../hooks/useChatItems'
 import { useCustomEmojiFeed } from '../../../hooks/useCustomEmoji'
+import { AgentWorkingBanner } from '../../../components/team-chat/AgentWorkingBanner'
 import { ConversationHeader } from '../../../components/team-chat/ConversationHeader'
 import { HuddleBanner } from '../../../components/team-chat/Huddle'
 import { TimelinePane } from '../../../components/team-chat/TimelinePane'
@@ -225,12 +226,26 @@ export default function ConversationScreen() {
     conversation.kind === 'dm' || conversation.kind === 'group_dm'
       ? conversation.members.filter((m) => m.type === 'user' && m.userId !== me).map((m) => m.name).join(', ') || 'Direct message'
       : `#${conversation.name ?? 'channel'}`
+  const agentMember = conversation.kind === 'dm' ? conversation.members.find((m) => m.type === 'agent' && m.projectId) : undefined
+  const banners = (
+    <>
+      <HuddleBanner conversation={conversation} me={me} label={huddleLabel} />
+      {agentMember?.type === 'agent' && agentMember.projectId ? (
+        <AgentWorkingBanner
+          projectId={agentMember.projectId}
+          agentName={agentMember.name || 'Agent'}
+          conversationId={conversation.id}
+          polling={visible}
+        />
+      ) : null}
+    </>
+  )
   const huddleBanner = floating ? (
     <View pointerEvents="box-none" className="absolute left-0 right-0 z-20" style={{ top: headerHeight }}>
-      <HuddleBanner conversation={conversation} me={me} label={huddleLabel} />
+      {banners}
     </View>
   ) : (
-    <HuddleBanner conversation={conversation} me={me} label={huddleLabel} />
+    banners
   )
 
   return (
