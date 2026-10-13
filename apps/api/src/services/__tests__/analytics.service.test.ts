@@ -283,6 +283,17 @@ describe('getUserFunnel (Postgres branch)', () => {
     expect(rawCalls[0].sql).not.toContain('NOT ILIKE')
   })
 
+  test('asOf ends the signup cohort at that time', async () => {
+    enqueueRaw([], [])
+    const asOf = new Date('2026-10-01T08:00:00.000Z')
+    await analytics.getUserFunnel('30d', true, asOf)
+    await analytics.getUserFunnel('30d', true)
+    expect(rawCalls[0].sql).toContain('u."createdAt" < $2')
+    expect(rawCalls[0].args).toEqual([new Date('2026-09-01T08:00:00.000Z'), asOf])
+    expect(rawCalls[1].sql).not.toContain('$2')
+    expect(rawCalls[1].args).toHaveLength(1)
+  })
+
   test('with excludeInternal appends NOT ILIKE (Postgres)', async () => {
     enqueueRaw([])
     await analytics.getUserFunnel('7d', true)
@@ -402,6 +413,16 @@ describe('getChatConversations (Postgres branch)', () => {
     expect(rawCalls[0].sql).not.toContain('NOT ILIKE')
   })
 
+  test('until bounds chat and proxy rows to the window', async () => {
+    enqueueRaw([])
+    const since = new Date('2026-09-30T08:00:00.000Z')
+    const until = new Date('2026-10-01T08:00:00.000Z')
+    await analytics.getChatConversations(since, true, until)
+    expect(rawCalls[0].sql).toContain('cm."createdAt" < $2')
+    expect(rawCalls[0].sql.match(/pt\."createdAt" < \$2/g)).toHaveLength(2)
+    expect(rawCalls[0].args).toEqual([since, until])
+  })
+
   test('only reads columns the ai_analysis_turns view exposes', async () => {
     const migration = await Bun.file(
       `${import.meta.dir}/../../../../../prisma/migrations/20260926050000_add_proxy_capture_training_data/migration.sql`,
@@ -439,6 +460,14 @@ describe('getSourceBreakdown (Postgres branch)', () => {
     const out = await analytics.getSourceBreakdown('7d', false)
     expect(out.sources).toEqual([])
     expect(rawCalls[0].sql).not.toContain('NOT ILIKE')
+  })
+
+  test('asOf ends the signup cohort at that time', async () => {
+    enqueueRaw([])
+    const asOf = new Date('2026-10-01T08:00:00.000Z')
+    await analytics.getSourceBreakdown('30d', true, asOf)
+    expect(rawCalls[0].sql).toContain('u."createdAt" < $2')
+    expect(rawCalls[0].args).toEqual([new Date('2026-09-01T08:00:00.000Z'), asOf])
   })
 })
 
