@@ -8,11 +8,13 @@
 import { useCallback, useMemo, useState } from 'react'
 import { ActivityIndicator, Pressable, RefreshControl, ScrollView, Text, View } from 'react-native'
 import { useFocusEffect, useRouter } from 'expo-router'
-import { AlarmClock, AtSign, Bot, Heart, Lock, Megaphone, MessageSquare, MessagesSquare, Tag } from 'lucide-react-native'
+import { AlarmClock, AtSign, Bot, ChevronRight, Heart, Lock, Megaphone, MessageCircleQuestion, MessageSquare, MessagesSquare, Tag } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { useAgentActivity } from '../../hooks/useAgentActivity'
 import { useInbox } from '../../hooks/useChatPrefs'
+import { useOpenQuestionCount } from '../../hooks/useOpenQuestions'
+import { useWorkspaceExperience } from '../../hooks/useWorkspaceExperience'
 import { openActiveChat } from '../../lib/open-active-chat'
 import { readableAgentTaskError } from '../../lib/agent-task-ui'
 import { ACTIVITY_FILTERS, buildFeed, relativeTime, type ActivityEntry, type ActivityFilter } from '../../lib/activity-feed'
@@ -28,6 +30,7 @@ const KIND_ICON: Record<InboxKind, typeof AtSign> = {
   keyword: Tag,
   broadcast: Megaphone,
   message: MessageSquare,
+  question: MessageCircleQuestion,
 }
 
 /** Polls only while the screen showing the feed is focused. */
@@ -56,6 +59,8 @@ export function ActivityFeed({ compact = false }: ActivityFeedProps) {
   const [unreadOnly, setUnreadOnly] = useState(false)
   const inbox = useInbox(workspaceId, false)
   const agents = useAgentActivity({ polling: focused, light: true })
+  const experience = useWorkspaceExperience()
+  const waitingOnYou = useOpenQuestionCount(experience.kind === 'team' ? workspaceId : null)
 
   const feed = useMemo(
     () => buildFeed({ inbox: inbox.items, tasks: agents.tasks, activeChats: agents.activeChats, filter, unreadOnly }),
@@ -118,6 +123,21 @@ export function ActivityFeed({ compact = false }: ActivityFeedProps) {
           />
         }
       >
+        {waitingOnYou > 0 ? (
+          <Pressable
+            onPress={() => router.push('/(app)/c/questions' as any)}
+            accessibilityRole="link"
+            accessibilityLabel={`${waitingOnYou} ${waitingOnYou === 1 ? 'question' : 'questions'} waiting on you`}
+            className={cn('flex-row items-center gap-2 border-b border-amber-500/30 bg-amber-500/10 active:bg-amber-500/20', compact ? 'px-3 py-2' : 'px-4 py-2.5')}
+            testID="questions-waiting"
+          >
+            <MessageCircleQuestion size={14} className="text-amber-600" />
+            <Text className="flex-1 text-sm font-medium text-amber-800 dark:text-amber-300">
+              {`Waiting on you: ${waitingOnYou} ${waitingOnYou === 1 ? 'question' : 'questions'}`}
+            </Text>
+            <ChevronRight size={14} className="text-amber-700 dark:text-amber-400" />
+          </Pressable>
+        ) : null}
         {feed.running.length > 0 && <RunningNow entries={feed.running} compact={compact} onOpen={open} />}
         {loading ? <ActivityIndicator className="mt-8" /> : null}
         {inbox.error && !loading ? <Text className="px-4 pt-3 text-sm text-destructive">{inbox.error}</Text> : null}

@@ -4,8 +4,10 @@
  * Workspace activity in team chat.
  *
  * - `#activity` gets a system line for agent task outcomes, schedule runs,
- *   goal events, publishes, new members, and finished agent posts in public
- *   channels, so the whole team can see what agents and teammates are doing.
+ *   goal events, publishes, new members, finished agent posts in public
+ *   channels, and questions agents ask people (asked, answered, closed), so
+ *   the whole team can see what agents and teammates are doing. A question
+ *   from a private conversation is only shown to its members (`visibleTo`).
  * - Schedules and tasks with `notifyConversationId` also post their result
  *   into that channel/DM as the agent that did the work.
  * - "Catch me up" summarizes unread messages with the workspace agent.
@@ -48,6 +50,9 @@ export type ActivityKind =
   | 'project.published'
   | 'member.joined'
   | 'agent.message'
+  | 'question.asked'
+  | 'question.answered'
+  | 'question.closed'
 
 export interface ActivityInput {
   kind: ActivityKind

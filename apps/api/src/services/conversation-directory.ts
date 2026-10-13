@@ -14,6 +14,7 @@ import { parseBuddyLook, type BuddyLook } from '../../../../packages/shared-app/
 import {
   agentMentionToken,
   buildMentionLookup,
+  collapseRepeatedMentions,
   groupMentionToken,
   resolveFriendlyMentionsWith,
   userMentionToken,
@@ -81,11 +82,15 @@ export function directoryEntries(directory: TeamDirectory): MentionDirectoryEntr
   return entries
 }
 
-/** Resolve plain `@Name`, `@email` and `@group-handle` in `text` to mention tokens. */
+/**
+ * Resolve plain `@Name`, `@email` and `@group-handle` in `text` to mention
+ * tokens, and fold a mention repeated in parentheses into one.
+ */
 export async function resolveFriendlyMentions(workspaceId: string, text: string, viewerProjectId: string | null = null): Promise<string> {
   if (!text.includes('@')) return text
   const directory = await loadTeamDirectory(workspaceId, viewerProjectId)
-  return resolveFriendlyMentionsWith(text, buildMentionLookup(directoryEntries(directory)))
+  const lookup = buildMentionLookup(directoryEntries(directory))
+  return collapseRepeatedMentions(resolveFriendlyMentionsWith(text, lookup), lookup)
 }
 
 

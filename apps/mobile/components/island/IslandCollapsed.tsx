@@ -58,6 +58,7 @@ export function IslandCollapsed({
   look,
   buddyState,
   entrance,
+  questionsWaiting = 0,
   onExpand,
 }: {
   snapshot: IslandSnapshot
@@ -68,8 +69,11 @@ export function IslandCollapsed({
   look: BuddyLook
   buddyState: BuddyState
   entrance: IslandBuddyEntrance
+  /** Questions agents asked this person in team channels, still open. */
+  questionsWaiting?: number
   onExpand: () => void
 }) {
+  const questionsLabel = questionsWaiting > 0 ? `${questionsWaiting} ${questionsWaiting === 1 ? "question" : "questions"} waiting on you` : null
   const sessions = orderIslandSessions(inboxSessions(snapshot.sessions, snapshot.focusedSessionKey))
   const top = sessions[0]
   const attentionCount = sessions.filter((s) => needsAttention(s.status)).length
@@ -120,9 +124,11 @@ export function IslandCollapsed({
         ? peek.detail
         : running && top?.step
           ? top.step
-          : sessions.length > 1
-            ? `+${sessions.length - 1} more`
-            : null
+          : questionsLabel
+            ? questionsLabel
+            : sessions.length > 1
+              ? `+${sessions.length - 1} more`
+              : null
   const trailing = meeting.prompt ? (
     <View className="rounded-full bg-red-500 px-2 py-0.5">
       <Text className="text-[10px] font-bold text-white">Record?</Text>
@@ -137,7 +143,9 @@ export function IslandCollapsed({
       ? "Recording"
       : attentionCount > 0
         ? `${attentionCount} ${attentionCount === 1 ? "chat needs" : "chats need"} you`
-        : running
+        : questionsLabel
+          ? questionsLabel
+          : running
           ? "Working"
           : peek
             ? `${peek.title} finished`

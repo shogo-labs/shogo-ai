@@ -2,7 +2,8 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * The activity inbox: mentions, thread replies, keyword hits, reactions to
- * your messages, and reminders, each with its own read state.
+ * your messages, reminders, and questions agents asked you, each with its own
+ * read state. A question's item is read once the question is closed.
  */
 
 import { prisma } from '../lib/prisma'
@@ -10,7 +11,7 @@ import { publishConversationEvent } from '../lib/conversation-bus'
 
 const db = prisma as any
 
-export type InboxKind = 'mention' | 'dm' | 'thread' | 'reaction' | 'reminder' | 'keyword' | 'broadcast' | 'message'
+export type InboxKind = 'mention' | 'dm' | 'thread' | 'reaction' | 'reminder' | 'keyword' | 'broadcast' | 'message' | 'question'
 const PREVIEW_CHARS = 280
 
 export interface InboxItemInput {

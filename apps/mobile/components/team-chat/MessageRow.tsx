@@ -21,7 +21,8 @@ import { EmojiPicker } from './EmojiPicker'
 import { AgentAvatar } from './AgentAvatar'
 import { AgentProfileCard } from './AgentProfileCard'
 import { ApprovalCardView, StatusCardView } from './AgentStatus'
-import { approvalOf, messageKind, statusCardOf, workOf } from '../../lib/team-chat-kinds'
+import { QuestionCardView } from './QuestionCard'
+import { approvalOf, isAskedOf, messageKind, questionRefsOf, questionsOf, statusCardOf, workOf } from '../../lib/team-chat-kinds'
 import { AgentWorkedFor, AgentWorkingStatus } from './AgentWork'
 import { renderMentions, type MentionNames } from '../../lib/team-chat-state'
 import { useUserStatus } from '../../hooks/useChatPrefs'
@@ -31,6 +32,9 @@ import { customEmojiFor, jumboEmojiCodes, useCustomEmoji } from '../../hooks/use
 import { useEditRequest } from '../../hooks/useChatShortcuts'
 
 export const QUICK_REACTIONS = ['👍', '✅', '👀', '🎉', '❤️', '😂']
+
+/** Above this, an update carrying a question for the viewer folds behind "Show full update". */
+const LONG_UPDATE_CHARS = 600
 
 const api = teamChatApi()
 
@@ -283,6 +287,12 @@ function MessageRowImpl(props: MessageRowProps) {
   const onBehalfOf = message.authorType === 'agent' ? onBehalfOfName(message) : null
   const canOpenSession = message.authorType === 'agent' && !!message.agentSessionId && !!props.onOpenSession
   const work = !running && message.authorType === 'agent' ? workOf(message) : null
+  const questions = !running && message.authorType === 'agent' ? questionsOf(message) : []
+  const questionRefs = !running && message.authorType === 'agent' ? questionRefsOf(message) : []
+  const openQuestion = questions.some((q) => q.status === 'open')
+  const askedOfMe = questions.some((q) => q.status === 'open' && isAskedOf(q, me))
+  const [showFullUpdate, setShowFullUpdate] = useState(false)
+  const foldBody = askedOfMe && !showFullUpdate && (body?.length ?? 0) > LONG_UPDATE_CHARS
   const isWeb = Platform.OS === 'web'
   useEditRequest(message.id, () => {
     if (!mine || deleted || message.authorType !== 'user') return
@@ -488,7 +498,7 @@ function MessageRowImpl(props: MessageRowProps) {
             {onBehalfOf && (
               <Text className="text-[11px] text-muted-foreground">on behalf of {onBehalfOf}</Text>
             )}
-            {(kind === 'decision' && (!approval || approval.status === 'pending')) || kind === 'alert' ? (
+            {(kind === 'decision' && (approval ? approval.status === 'pending' : questions.length ? openQuestion : true)) || kind === 'alert' ? (
               <View className={cn('rounded px-1.5 py-px', kind === 'alert' ? 'bg-destructive/15' : 'bg-amber-500/20')}>
                 <Text className={cn('text-[10px] font-semibold', kind === 'alert' ? 'text-destructive' : 'text-amber-700 dark:text-amber-400')} testID={`kind-${kind}`}>
                   {kind === 'alert' ? 'ALERT' : 'NEEDS A DECISION'}
@@ -554,8 +564,37 @@ function MessageRowImpl(props: MessageRowProps) {
             {card ? <StatusCardView card={card} onOpenLink={openMessageLinkInApp} /> : null}
             {approval ? <ApprovalCardView approval={approval} messageId={message.id} canDecide={!message.pending} onDecide={(decision) => api.decideApproval(message.id, decision)} /> : null}
             {work ? <AgentWorkedFor messageId={message.id} work={work} /> : null}
+            {questions.length ? (
+              <QuestionCardView
+                questions={questions}
+                messageId={message.id}
+                workspaceId={props.workspaceId ?? message.workspaceId}
+                me={me}
+                names={names}
+                canAnswer={!message.pending}
+                agentName={message.authorAgent?.name}
+              />
+            ) : null}
+            {questionRefs.map((ref) => (
+              <Pressable
+                key={`${ref.messageId}:${ref.questionId}`}
+                onPress={() => router.push({ pathname: '/(app)/c/[conversationId]', params: { conversationId: message.conversationId, msg: ref.messageId } } as any)}
+                accessibilityRole="link"
+                className="mt-1 flex-row items-center gap-1.5 self-start rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1 active:bg-amber-500/20"
+                testID="question-ref"
+              >
+                <Text className="text-[11px] font-semibold text-amber-700 dark:text-amber-400">Still waiting</Text>
+                <Text className="text-[11px] text-foreground" numberOfLines={1}>{ref.header}</Text>
+                <Text className="text-[11px] text-primary">View question</Text>
+              </Pressable>
+            ))}
             {/* While an agent works the row shows its status; its closing message appears when it is done. */}
-            {!card && !approval && !!body && !(running && message.authorType === 'agent') && (() => {
+            {!card && !approval && !!body && !(running && message.authorType === 'agent') && foldBody ? (
+              <Pressable onPress={() => setShowFullUpdate(true)} accessibilityRole="button" className="mt-1 self-start" testID="show-full-update">
+                <Text className="text-xs font-medium text-primary">Show full update</Text>
+              </Pressable>
+            ) : null}
+            {!card && !approval && !!body && !foldBody && !(running && message.authorType === 'agent') && (() => {
               const jumbo = running ? null : jumboEmojiCodes(body, customEmoji)
               return (
                 <View className={cn(message.pending && 'opacity-60')}>

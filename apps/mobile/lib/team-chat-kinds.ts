@@ -54,6 +54,72 @@ export function approvalOf(message: Pick<ChatMessage, 'blocks'>): ApprovalCard |
   return blocks.approval
 }
 
+export type QuestionInteraction = 'choice' | 'confirm' | 'text' | 'person' | 'secret'
+export type QuestionStatus = 'open' | 'answered' | 'superseded' | 'dismissed'
+
+export interface QuestionOption {
+  label: string
+  description?: string
+}
+
+/** Something an agent needs a person to answer, shown as a card on its message. */
+export interface Question {
+  id: string
+  to: { userIds: string[]; anyone?: boolean; via: 'mention' | 'run' | 'thread' | 'channel' }
+  header: string
+  prompt: string
+  interaction: QuestionInteraction
+  options?: QuestionOption[]
+  multiSelect?: boolean
+  hint?: 'number' | 'url'
+  secretName?: string
+  status: QuestionStatus
+  answer?: { text: string; by: { userId: string; name: string }; at: string }
+  closedReason?: string
+  closedAt?: string
+  source: 'agent' | 'inferred'
+  askCount?: number
+  lastAskedAt?: string
+}
+
+/** A later message asking again for a question that is still open on an earlier one. */
+export interface QuestionRef {
+  messageId: string
+  questionId: string
+  header: string
+  prompt: string
+}
+
+const INTERACTIONS: readonly string[] = ['choice', 'confirm', 'text', 'person', 'secret']
+
+export const CONFIRM_OPTIONS: QuestionOption[] = [{ label: 'Approve' }, { label: 'Not yet' }, { label: 'Discuss' }]
+
+export function questionsOf(message: Pick<ChatMessage, 'blocks'>): Question[] {
+  const list = (message.blocks as { questions?: unknown } | null)?.questions
+  if (!Array.isArray(list)) return []
+  return list.filter(
+    (q): q is Question =>
+      !!q && typeof q === 'object' && typeof (q as Question).id === 'string' && typeof (q as Question).prompt === 'string' && INTERACTIONS.includes((q as Question).interaction),
+  )
+}
+
+export function questionRefsOf(message: Pick<ChatMessage, 'blocks'>): QuestionRef[] {
+  const list = (message.blocks as { questionRefs?: unknown } | null)?.questionRefs
+  if (!Array.isArray(list)) return []
+  return list.filter((r): r is QuestionRef => !!r && typeof (r as QuestionRef).messageId === 'string' && typeof (r as QuestionRef).questionId === 'string')
+}
+
+/** The buttons a choice or confirm question offers. */
+export function questionOptions(q: Question): QuestionOption[] {
+  if (q.interaction === 'confirm') return q.options?.length ? q.options : CONFIRM_OPTIONS
+  return q.interaction === 'choice' ? q.options ?? [] : []
+}
+
+/** Whether `userId` is asked: named on it, or anyone may answer. */
+export function isAskedOf(q: Question, userId: string | null): boolean {
+  return !!q.to.anyone || (!!userId && q.to.userIds.includes(userId))
+}
+
 export type StepState = 'done' | 'current' | 'pending'
 
 /** Done before `step`, current at it, pending after; a finished card has every step done. */

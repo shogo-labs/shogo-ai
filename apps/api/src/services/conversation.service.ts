@@ -13,6 +13,7 @@ import { publishConversationEvent } from '../lib/conversation-bus'
 import { flattenMarkdownBlocks, parseMentions, renderMentionsAsText, type AgentTarget, type ParsedMention } from './conversation-mentions'
 import { assertNativeChat } from './chat-mode'
 import type { AgentChain } from './conversation-agent-chain'
+import { publicBlocks } from './conversation-message-kind'
 import { normalizeBuddyLook, type BuddyLook } from '../../../../packages/shared-app/src/buddy-look'
 
 const db = prisma as any
@@ -130,8 +131,22 @@ export async function conversationAudience(conversation: { id: string; kind: str
   return members.map((m: any) => m.userId).filter(Boolean)
 }
 
-async function publish(conversation: { id: string; kind: string; workspaceId: string }, event: Record<string, unknown>) {
-  const audience = await conversationAudience(conversation)
+/**
+ * People allowed to see one `#activity` line about a private conversation
+ * (`blocks.visibleTo`); null when the line is open to the whole workspace.
+ */
+export function messageVisibleTo(row: { blocks?: unknown } | null | undefined): string[] | null {
+  const list = (row?.blocks as { visibleTo?: unknown } | null | undefined)?.visibleTo
+  return Array.isArray(list) ? list.filter((id): id is string => typeof id === 'string') : null
+}
+
+export function canSeeMessage(row: { blocks?: unknown }, userId: string): boolean {
+  const visibleTo = messageVisibleTo(row)
+  return !visibleTo || visibleTo.includes(userId)
+}
+
+async function publish(conversation: { id: string; kind: string; workspaceId: string }, event: Record<string, unknown>, row?: { blocks?: unknown }) {
+  const audience = messageVisibleTo(row) ?? (await conversationAudience(conversation))
   publishConversationEvent(conversation.workspaceId, { conversationId: conversation.id, ...event } as any, audience)
 }
 
@@ -188,7 +203,7 @@ export function serializeMessage(row: any) {
     authorUserId: row.authorUserId ?? null,
     authorAgent: row.authorAgentRef ?? null,
     text: deleted ? '' : row.text,
-    blocks: deleted ? null : row.blocks ?? null,
+    blocks: deleted ? null : publicBlocks(row.blocks) ?? null,
     clientMsgId: row.clientMsgId ?? null,
     agentSessionId: row.agentSessionId ?? null,
     agentStatus: row.agentStatus ?? null,
@@ -1085,7 +1100,7 @@ export async function postMessage(input: PostMessageInput): Promise<PostMessageR
 
   const full = await db.conversationMessage.findUnique({ where: { id: row.id }, include: MESSAGE_INCLUDE })
   const message = serializeMessage(full)
-  await publish(conversation, { type: 'message.created', message })
+  await publish(conversation, { type: 'message.created', message }, full)
 
   if (root) {
     const updatedRoot = await db.conversationMessage.update({
@@ -1140,7 +1155,7 @@ export async function updateMessageInternal(
   const row = await db.conversationMessage.update({ where: { id: messageId }, data, include: MESSAGE_INCLUDE })
   const conversation = await db.conversation.findUnique({ where: { id: row.conversationId } })
   const message = serializeMessage(row)
-  if (conversation) await publish(conversation, moved ? { type: 'message.created', message, moved: true } : { type: 'message.updated', message })
+  if (conversation) await publish(conversation, moved ? { type: 'message.created', message, moved: true } : { type: 'message.updated', message }, row)
   if ('text' in data && !row.deletedAt && row.agentStatus !== 'running') {
     for (const hook of textSettledHooks) hook(row)
   }
@@ -1198,8 +1213,10 @@ export interface ListMessagesOptions {
 }
 
 export async function listMessages(conversationId: string, userId: string, opts: ListMessagesOptions = {}) {
-  await loadAccess(conversationId, userId)
-  return listMessagesUnchecked(conversationId, opts)
+  const { conversation } = await loadAccess(conversationId, userId)
+  const result = await listMessagesUnchecked(conversationId, opts)
+  if (conversation.kind !== 'activity') return result
+  return { ...result, messages: result.messages.filter((m: { blocks?: unknown }) => canSeeMessage(m, userId)) }
 }
 
 export async function listMessagesUnchecked(conversationId: string, opts: ListMessagesOptions = {}) {
@@ -1248,6 +1265,7 @@ export async function getMessage(messageId: string, userId: string) {
   const row = await db.conversationMessage.findUnique({ where: { id: messageId }, include: MESSAGE_INCLUDE })
   if (!row) throw new ConversationError(404, 'not_found', 'Message not found')
   await loadAccess(row.conversationId, userId)
+  if (!canSeeMessage(row, userId)) throw new ConversationError(404, 'not_found', 'Message not found')
   return serializeMessage(row)
 }
 

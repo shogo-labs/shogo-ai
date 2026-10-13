@@ -25,6 +25,7 @@ import {
   searchAgentChannels,
   sendAgentDirectMessage,
   addAgentChannelMembers,
+  readAgentQuestionSecret,
   listAgentChatFiles,
   readAgentChatFileText,
   searchAgentChatFiles,
@@ -55,6 +56,50 @@ const CARD_SCHEMA = Type.Object(
   { description: 'A status card: one message you keep up to date with team_chat_update instead of posting every step.' },
 )
 
+const QUESTIONS_SCHEMA = Type.Array(
+  Type.Object({
+    header: Type.String({ description: 'Very short label shown as a chip, max 40 chars, e.g. "Alert destination".' }),
+    question: Type.String({ description: 'The complete question, ending with a question mark.' }),
+    interaction: Type.Optional(Type.Union(
+      [Type.Literal('choice'), Type.Literal('confirm'), Type.Literal('text'), Type.Literal('person'), Type.Literal('secret')],
+      {
+        description:
+          'How the person answers. choice: pick from options. confirm: Approve / Not yet / Discuss. text: a short ' +
+          'free answer. person: pick a teammate ("who owns…"). secret: a key or password; it is never shown in the ' +
+          'channel and you read it with team_chat_question_secret. Default: choice with options, else text.',
+      },
+    )),
+    options: Type.Optional(Type.Array(Type.Object({
+      label: Type.String({ description: 'Short option text (1-5 words).' }),
+      description: Type.Optional(Type.String({ description: 'What picking this means or what happens next.' })),
+    }), { description: 'For choice: 2-6 options. People can always type their own answer instead.' })),
+    multiSelect: Type.Optional(Type.Boolean({ description: 'For choice: allow picking several.' })),
+    hint: Type.Optional(Type.Union([Type.Literal('number'), Type.Literal('url')], { description: 'For text: the kind of value expected.' })),
+    secret_name: Type.Optional(Type.String({ description: 'For secret: an env-style name, e.g. ENSEMBLEDATA_API_TOKEN.' })),
+  }),
+  {
+    description:
+      'Questions for the people you tag in this message, shown as an answerable card. The answer comes back to ' +
+      'you as a reply in the thread. Use this whenever you need input from a person instead of asking in prose. ' +
+      'Questions that repeat one still open in the channel are folded into it, so do not re-ask.',
+  },
+)
+
+type QuestionInput = {
+  header: string
+  question: string
+  interaction?: string
+  options?: Array<{ label: string; description?: string }>
+  multiSelect?: boolean
+  hint?: string
+  secret_name?: string
+}
+
+function questionsForApi(questions: QuestionInput[] | undefined) {
+  if (!Array.isArray(questions) || !questions.length) return undefined
+  return questions.map(({ question, secret_name, ...rest }) => ({ ...rest, prompt: question, secretName: secret_name }))
+}
+
 export const CHANNEL_TOOL_NAMES = [
   'team_chat_list',
   'team_chat_read',
@@ -68,6 +113,7 @@ export const CHANNEL_TOOL_NAMES = [
   'team_chat_doc_update',
   'team_directory',
   'member_activity',
+  'team_chat_question_secret',
 ] as const
 
 /** True when this runtime registers the team chat tools (non-personal workspace runtimes). */
@@ -83,6 +129,7 @@ export const TEAM_CHAT_GUIDE = [
   '- Hand work to another agent by tagging it (`@Planner`, or its tag from `team_directory`). It runs next in the same thread.',
   '- Write every message so someone reading the thread later knows what happened and why: in two to four sentences, say what you did, what you found or decided and why, and what you need next. Never post a bare "your turn", "done", or "back to you".',
   '- Tag people only when you need a decision or approval from them, and ask one clear question.',
+  '- When you need input from a person, post with `team_chat_post` and pass `questions` (tag them in the text) so they get an answerable card, instead of burying the question in prose. Their answer arrives as a reply in the thread. A question already open in the channel is not re-asked; refer to it instead.',
   '- Keep messages to a few sentences, not paragraphs. Put long content (plans, logs, diffs) in files or links and reference them.',
   '- Use `team_chat_dm` to escalate something urgent to one person instead of tagging a whole channel.',
   '- If someone asks you to message a teammate for them, use `team_chat_dm` with `for_requester: true`; then reply to the requester with the returned link.',
@@ -97,7 +144,7 @@ export const TEAM_CHAT_GUIDE = [
   'Every post you make has a kind. People only get notified for `decision` and `alert`, so choose honestly:',
   '- `status`: routine progress. Prefer one status card you update in place over many separate posts.',
   '- `result`: finished work someone will want to open (a PR, a preview link, a report).',
-  '- `decision`: you need a person to choose or approve. Ask one clear question and say what happens on each answer.',
+  '- `decision`: you need a person to choose or approve. Ask one clear question (as `questions`) and say what happens on each answer.',
   '- `alert`: something is broken or blocked and you cannot continue alone.',
   'For work that takes more than a few steps, post one `card` at the top of your thread (title, steps, the criteria that mean it is done), then change it with `team_chat_update` as you go and finish by setting `status: "done"` with a short `summary`. Do not post a new message for each step.',
 ].join('\n')
@@ -183,11 +230,15 @@ export function createChannelPostTool(ctx: ToolContext): AgentTool {
       run_id: Type.Optional(Type.String({ description: 'Id of the run or work item this thread tracks; stored on the thread and shown to agents woken in it.' })),
       kind: Type.Optional(KIND_SCHEMA),
       card: Type.Optional(CARD_SCHEMA),
+      questions: Type.Optional(QUESTIONS_SCHEMA),
     }),
     execute: async (_id, params) => {
       const workspaceId = workspaceIdOf(ctx)
       if (!workspaceId) return noWorkspace()
-      const input = params as { channel: string; text?: string; thread_id?: string; owner?: boolean; run_id?: string; kind?: AgentMessageKind; card?: AgentStatusCard }
+      const input = params as {
+        channel: string; text?: string; thread_id?: string; owner?: boolean; run_id?: string
+        kind?: AgentMessageKind; card?: AgentStatusCard; questions?: QuestionInput[]
+      }
       if (!input.text?.trim() && !input.card) return textResult({ error: 'text or card is required', code: 'invalid_input' })
       const result = await postAgentChannelMessage(workspaceId, input.channel.replace(/^#/, ''), {
         text: input.text ?? '',
@@ -198,6 +249,7 @@ export function createChannelPostTool(ctx: ToolContext): AgentTool {
         runId: input.run_id,
         kind: input.kind,
         card: input.card,
+        questions: questionsForApi(input.questions),
       })
       if (result.ok && result.data) {
         const { threadId, ...rest } = result.data
@@ -223,19 +275,21 @@ export function createChannelUpdateTool(ctx: ToolContext): AgentTool {
       text: Type.Optional(Type.String({ description: 'New Markdown text, or the note under a card.' })),
       kind: Type.Optional(KIND_SCHEMA),
       card: Type.Optional(CARD_SCHEMA),
+      questions: Type.Optional(QUESTIONS_SCHEMA),
     }),
     execute: async (_id, params) => {
       const workspaceId = workspaceIdOf(ctx)
       if (!workspaceId) return noWorkspace()
-      const input = params as { message_id: string; text?: string; kind?: AgentMessageKind; card?: AgentStatusCard }
-      if (input.text === undefined && !input.card && !input.kind) {
-        return textResult({ error: 'Pass text, card or kind to change', code: 'invalid_input' })
+      const input = params as { message_id: string; text?: string; kind?: AgentMessageKind; card?: AgentStatusCard; questions?: QuestionInput[] }
+      if (input.text === undefined && !input.card && !input.kind && !input.questions?.length) {
+        return textResult({ error: 'Pass text, card, kind or questions to change', code: 'invalid_input' })
       }
       const result = await updateAgentChannelMessage(workspaceId, input.message_id, {
         identity: channelIdentity(ctx),
         text: input.text,
         kind: input.kind,
         card: input.card,
+        questions: questionsForApi(input.questions),
       })
       return result.ok ? textResult({ ok: true, ...result.data }) : apiError(result, 'Could not update the message')
     },
@@ -552,6 +606,28 @@ export function createFetchChatFilesTool(ctx: ToolContext): AgentTool {
   }
 }
 
+export function createQuestionSecretTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'team_chat_question_secret',
+    label: 'Read a Secret Answer',
+    description:
+      'Read the value a person entered for one of your `secret` questions (a key, token or password). The reply in ' +
+      'the thread names the question but never the value. Only the agent that asked can read it. Use the value ' +
+      'directly (e.g. set it as an env var or call the API with it); never post it in a channel or write it to MEMORY.md.',
+    parameters: Type.Object({
+      message_id: Type.String({ description: 'Id of the message that carries the question card.' }),
+      question_id: Type.String({ description: 'Id of the question, from the answer reply.' }),
+    }),
+    execute: async (_id, params) => {
+      const workspaceId = workspaceIdOf(ctx)
+      if (!workspaceId) return noWorkspace()
+      const input = params as { message_id: string; question_id: string }
+      const result = await readAgentQuestionSecret(workspaceId, input.message_id, input.question_id, channelIdentity(ctx))
+      return result.ok ? textResult({ ok: true, ...result.data }) : apiError(result, 'Could not read the secret')
+    },
+  }
+}
+
 export function createChannelTools(ctx: ToolContext): AgentTool[] {
   return [
     createChannelListTool(ctx),
@@ -566,5 +642,6 @@ export function createChannelTools(ctx: ToolContext): AgentTool[] {
     createChannelDocUpdateTool(ctx),
     createTeamDirectoryTool(ctx),
     createMemberActivityTool(ctx),
+    createQuestionSecretTool(ctx),
   ]
 }

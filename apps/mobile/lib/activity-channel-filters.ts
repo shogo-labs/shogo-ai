@@ -9,6 +9,7 @@ import type { ChatMessage } from './team-chat-api'
 export type ActivityChannelFilter =
   | 'all'
   | 'agent_messages'
+  | 'questions'
   | 'tasks'
   | 'schedules'
   | 'goals'
@@ -18,6 +19,7 @@ export type ActivityChannelFilter =
 export const ACTIVITY_CHANNEL_FILTERS: Array<{ id: ActivityChannelFilter; label: string }> = [
   { id: 'all', label: 'All' },
   { id: 'agent_messages', label: 'Agent messages' },
+  { id: 'questions', label: 'Questions' },
   { id: 'tasks', label: 'Tasks' },
   { id: 'schedules', label: 'Schedules' },
   { id: 'goals', label: 'Goals' },
@@ -26,6 +28,7 @@ export const ACTIVITY_CHANNEL_FILTERS: Array<{ id: ActivityChannelFilter; label:
 ]
 
 const PREFIX: Partial<Record<ActivityChannelFilter, string>> = {
+  questions: 'question.',
   tasks: 'task.',
   schedules: 'schedule.',
 }

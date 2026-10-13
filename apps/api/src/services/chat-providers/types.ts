@@ -58,6 +58,8 @@ export interface OutboundAction {
   label: string
   style?: 'primary' | 'danger'
   value: string
+  /** What the button answers; approval cards by default. */
+  kind?: 'approval' | 'question'
 }
 
 export interface OutboundMessage {

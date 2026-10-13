@@ -10,8 +10,9 @@
  * no project mounted; the meta-agent mounts only the projects it needs.
  */
 
-import { APPROVAL_ACTION_PREFIX } from '../services/chat-providers/slack'
+import { APPROVAL_ACTION_PREFIX, QUESTION_ACTION_PREFIX } from '../services/chat-providers/slack'
 import { handleApprovalPress } from '../services/chat-providers/approval-actions'
+import { handleQuestionPress } from '../services/chat-providers/question-actions'
 import { createHash, randomUUID } from 'node:crypto'
 import { Hono } from 'hono'
 import { prisma } from '../lib/prisma'
@@ -623,6 +624,23 @@ export function slackAgentRoutes(config: SlackAgentRoutesConfig): Hono {
         }))?.shogoUserId ?? null,
       )
       // Success edits the card itself; only the person who pressed hears about problems.
+      if (!result.ok && typeof payload.response_url === 'string') {
+        await fetch(payload.response_url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ response_type: 'ephemeral', replace_original: false, text: result.message }),
+        }).catch(() => {})
+      }
+      return
+    }
+
+    if (action.action_id?.startsWith(QUESTION_ACTION_PREFIX)) {
+      const result = await handleQuestionPress(
+        { provider: 'slack', tenantId: installation.slackTeamId, externalUserId: userId, value: String(action.value ?? '') },
+        async () => (await prisma.slackUserLink.findUnique({
+          where: { slackTeamId_slackUserId: { slackTeamId: installation.slackTeamId, slackUserId: userId } },
+        }))?.shogoUserId ?? null,
+      )
       if (!result.ok && typeof payload.response_url === 'string') {
         await fetch(payload.response_url, {
           method: 'POST',

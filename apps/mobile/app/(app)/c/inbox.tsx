@@ -7,7 +7,7 @@
 import { useState } from 'react'
 import { ActivityIndicator, FlatList, Pressable, Text, View } from 'react-native'
 import { useRouter } from 'expo-router'
-import { AlarmClock, AtSign, CheckCheck, Heart, Megaphone, MessageSquare, MessagesSquare, Tag } from 'lucide-react-native'
+import { AlarmClock, AtSign, CheckCheck, Heart, Megaphone, MessageCircleQuestion, MessageSquare, MessagesSquare, Tag } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { useActiveWorkspace } from '../../../hooks/useActiveWorkspace'
 import { useWorkspaceExperience } from '../../../hooks/useWorkspaceExperience'
@@ -23,6 +23,7 @@ const ICONS: Record<InboxKind, typeof AtSign> = {
   keyword: Tag,
   broadcast: Megaphone,
   message: MessageSquare,
+  question: MessageCircleQuestion,
 }
 
 const KIND_LABEL: Record<InboxKind, string> = {
@@ -34,6 +35,7 @@ const KIND_LABEL: Record<InboxKind, string> = {
   keyword: 'Keyword',
   broadcast: 'Announcement',
   message: 'Message',
+  question: 'Question',
 }
 
 function relativeTime(iso: string, now = Date.now()): string {

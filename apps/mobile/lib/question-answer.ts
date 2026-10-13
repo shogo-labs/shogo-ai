@@ -1,0 +1,44 @@
+// SPDX-License-Identifier: MIT
+// Copyright (C) 2026 Shogo Technologies, Inc.
+/**
+ * Answering or dismissing an agent's question from anywhere in the app: the
+ * card in a channel or the Questions inbox. One path, so the haptic and the
+ * refresh of every list and badge happen the same way each time.
+ */
+import { haptics } from './haptics'
+import { teamChatApi } from './team-chat-api'
+
+export type QuestionOutcome = { ok: true } | { ok: false; message: string }
+
+type Listener = (event: { messageId: string; questionId: string }) => void
+const listeners = new Set<Listener>()
+
+/** Called after any question is answered or dismissed, so lists can drop it at once. */
+export function subscribeQuestionClosed(listener: Listener): () => void {
+  listeners.add(listener)
+  return () => listeners.delete(listener)
+}
+
+export function questionErrorMessage(err: any): string {
+  return err?.response?.data?.error?.message ?? err?.message ?? 'Could not send that answer'
+}
+
+async function run(messageId: string, questionId: string, send: () => Promise<unknown>): Promise<QuestionOutcome> {
+  try {
+    await send()
+  } catch (err) {
+    haptics.error()
+    return { ok: false, message: questionErrorMessage(err) }
+  }
+  haptics.success()
+  for (const listener of [...listeners]) listener({ messageId, questionId })
+  return { ok: true }
+}
+
+export function answerQuestion(messageId: string, questionId: string, input: { answer?: string; secret?: string }): Promise<QuestionOutcome> {
+  return run(messageId, questionId, () => teamChatApi().answerQuestion(messageId, questionId, input))
+}
+
+export function dismissQuestion(messageId: string, questionId: string): Promise<QuestionOutcome> {
+  return run(messageId, questionId, () => teamChatApi().dismissQuestion(messageId, questionId))
+}

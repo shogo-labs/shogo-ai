@@ -8,6 +8,7 @@ import { observer } from "mobx-react-lite"
 import { ChevronDown, ChevronLeft, ChevronsUpDown, ExternalLink, Minus } from "lucide-react-native"
 import { cn } from "@shogo/shared-ui/primitives"
 import { useDomainActions } from "../../contexts/domain"
+import { useOpenQuestionCount } from "../../hooks/useOpenQuestions"
 import { API_URL } from "../../lib/api"
 import { loadModelPreference } from "../../lib/agent-mode-preference"
 import type { ChatSendInteractionMode } from "../../lib/chat-send-body"
@@ -242,6 +243,7 @@ export const IslandApp = observer(function IslandApp({
     [],
   )
   const usage = useIslandUsage(workspaceId, cardOpen)
+  const questionsWaiting = useOpenQuestionCount(workspaceId)
   const projects = useWorkspaceProjects(workspaceId)
   const sortedProjects = useMemo(() => sortIslandProjects(projects, snapshot.sessions), [projects, snapshot.sessions])
   const orderedSessions = useMemo(
@@ -577,6 +579,7 @@ export const IslandApp = observer(function IslandApp({
           look={buddyLook}
           buddyState={buddyState}
           entrance={openEntrance}
+          questionsWaiting={questionsWaiting}
           onExpand={() => requestMode("expanded")}
         />
       </View>

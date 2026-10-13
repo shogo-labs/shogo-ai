@@ -55,7 +55,9 @@ import {
 import { getDocForAgent, updateDocAsAgent } from '../services/conversation-doc.service'
 import { afterMessagePosted } from '../services/conversation-pipeline'
 import { AgentMessageError, postAgentMessage, updateAgentMessage } from '../services/chat-providers/outbound'
-import { blocksForKind, cardToMarkdown, normalizeCard, normalizeKind } from '../services/conversation-message-kind'
+import { blocksForKind, cardToMarkdown, normalizeCard, normalizeKind, normalizeQuestionDrafts, questionsOf, questionsToMarkdown } from '../services/conversation-message-kind'
+import { answerQuestion, attachQuestions, dismissQuestion, listQuestions, readQuestionSecret } from '../services/conversation-questions'
+import { registerQuestionDesigner } from '../services/conversation-question-designer'
 import { listInstallations } from '../services/chat-providers/installations'
 import { CHAT_RATE_LIMITS, takeRateLimit } from '../lib/chat-limits'
 import { getFrontendUrl } from '../lib/cloud-urls'
@@ -140,6 +142,7 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
   registerConversationNotifications()
   registerConversationUnfurls()
   registerConversationActivity()
+  registerQuestionDesigner()
 
   async function requireUser(c: any): Promise<string | Response> {
     const userId = await config.resolveUserId(c)
@@ -221,6 +224,32 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
     if ((await getWorkspaceRole(auth.workspaceId, auth.userId)) === 'viewer') return c.json({ approvals: [] })
     try {
       return c.json({ approvals: await listPendingApprovals(auth.workspaceId, auth.userId) })
+    } catch (err) {
+      return errorResponse(c, err)
+    }
+  })
+
+  /**
+   * Questions agents asked in channels this person can read. `scope=mine` (default) is the ones for
+   * them; `status` is open (default), answered, or all. Open lists also carry pending approvals, so the
+   * inbox shows everything waiting on this person in one place.
+   */
+  router.get('/workspaces/:workspaceId/questions', async (c) => {
+    const auth = await requireWorkspace(c)
+    if (auth instanceof Response) return auth
+    const status = c.req.query('status')
+    const scope = c.req.query('scope') === 'all' ? 'all' : 'mine'
+    try {
+      const result = await listQuestions(auth.workspaceId, auth.userId, {
+        status: status === 'answered' || status === 'all' ? status : 'open',
+        scope,
+      })
+      const role = await getWorkspaceRole(auth.workspaceId, auth.userId)
+      // Pending approvals filter on a JSON path, which SQLite (local mode) can't; questions still load.
+      const approvals = status === 'answered' || role === 'viewer'
+        ? []
+        : await listPendingApprovals(auth.workspaceId, auth.userId).catch(() => [])
+      return c.json({ questions: result.items, openCount: result.openCount, approvals })
     } catch (err) {
       return errorResponse(c, err)
     }
@@ -750,6 +779,42 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
     }
   })
 
+  /** Answer a question an agent asked; the answer is posted in the thread as this person. */
+  router.post('/conversation-messages/:messageId/questions/:questionId/answer', async (c) => {
+    const userId = await requireUser(c)
+    if (userId instanceof Response) return userId
+    const limited = await rateLimited(c, `msg:${userId}`, CHAT_RATE_LIMITS.message)
+    if (limited) return limited
+    const body = await readJson(c)
+    try {
+      const result = await answerQuestion({
+        messageId: c.req.param('messageId'),
+        questionId: c.req.param('questionId'),
+        userId,
+        answer: typeof body.answer === 'string' ? body.answer : undefined,
+        secret: typeof body.secret === 'string' ? body.secret : undefined,
+      })
+      const { secretCipher: _secret, ...question } = result.question
+      return c.json({ message: result.message, question, reply: result.reply.message })
+    } catch (err) {
+      if (err instanceof AgentMessageError) return c.json({ error: { code: err.code, message: err.message } }, err.status)
+      return errorResponse(c, err)
+    }
+  })
+
+  router.post('/conversation-messages/:messageId/questions/:questionId/dismiss', async (c) => {
+    const userId = await requireUser(c)
+    if (userId instanceof Response) return userId
+    try {
+      const result = await dismissQuestion({ messageId: c.req.param('messageId'), questionId: c.req.param('questionId'), userId })
+      const { secretCipher: _secret, ...question } = result.question
+      return c.json({ message: result.message, question })
+    } catch (err) {
+      if (err instanceof AgentMessageError) return c.json({ error: { code: err.code, message: err.message } }, err.status)
+      return errorResponse(c, err)
+    }
+  })
+
   /** What an agent did before its final message, trimmed for the channel (see agent-work-log). */
   router.get('/conversation-messages/:messageId/work', async (c) => {
     const userId = await requireUser(c)
@@ -875,7 +940,7 @@ async function renderForAgent(rows: any[]) {
       ? `${r.authorUser?.name || r.authorUser?.email || 'Someone'} (<@u:${r.authorUserId}>)`
       : r.authorType === 'agent' ? `${r.authorAgentRef?.name ?? 'Agent'} (agent)` : r.authorType,
     authorType: r.authorType,
-    text: renderMentionsAsText(r.text, names),
+    text: [renderMentionsAsText(r.text, names), questionsToMarkdown(questionsOf(r.blocks), names)].filter(Boolean).join('\n\n'),
     threadRootId: r.threadRootId ?? null,
     replyCount: r.replyCount ?? 0,
     files: (r.attachments ?? []).map((a: any) => ({ id: a.id, name: a.name, mimeType: a.mimeType, size: a.size })),
@@ -1185,20 +1250,27 @@ export function agentChannelRoutes(routeConfig: AgentChannelRoutesConfig): Hono 
       if (body.card !== undefined && body.card !== null && !card) {
         return c.json({ error: { code: 'invalid_card', message: 'A status card needs a title' } }, 400)
       }
+      const questions = normalizeQuestionDrafts(body.questions)
       // A card is routine by default; agents mark it a decision or alert when it needs a person.
-      const kind = normalizeKind(body.kind) ?? (card ? 'status' : null)
+      const kind = normalizeKind(body.kind) ?? (questions.length ? 'decision' : card ? 'status' : null)
       const note = String(body.text ?? '')
+      const blocks = blocksForKind({ kind, card })
       const result = await postAgentMessage({
         conversationId: conversation.id,
         text: await resolveFriendlyMentions(auth.workspaceId, card ? [cardToMarkdown(card), note.trim()].filter(Boolean).join('\n\n') : note, projectId),
         agent: { projectId, name: await agentDisplayName(auth.workspaceId, projectId) },
         threadRootId,
         agentChain,
-        blocks: blocksForKind({ kind, card }),
+        // The designer leaves alone a message whose agent asked its own questions.
+        blocks: questions.length ? { ...blocks, questionScan: 'explicit' } : blocks,
       })
       const rootId = result.row.threadRootId ?? result.row.id
       if (!result.duplicate && (body.owner === true || (!result.row.threadRootId && body.owner !== false))) {
         await setThreadOwner(rootId, { projectId }, agentChain?.runId)
+      }
+      if (!result.duplicate && questions.length) {
+        await attachQuestions({ messageId: result.row.id, drafts: questions, source: 'agent' })
+          .catch((err) => console.warn('[AgentChannels] questions failed:', (err as Error).message))
       }
       void afterMessagePosted(result, { actorUserId: null, origin: 'agent' })
       return c.json({
@@ -1227,16 +1299,48 @@ export function agentChannelRoutes(routeConfig: AgentChannelRoutesConfig): Hono 
     if (body.card !== undefined && body.card !== null && !card) {
       return c.json({ error: { code: 'invalid_card', message: 'A status card needs a title' } }, 400)
     }
+    const questions = normalizeQuestionDrafts(body.questions)
     try {
-      const { message } = await updateAgentMessage({
-        messageId: c.req.param('messageId'),
-        workspaceId: auth.workspaceId,
-        projectId,
-        text: typeof body.text === 'string' ? await resolveFriendlyMentions(auth.workspaceId, body.text, projectId) : undefined,
-        kind: normalizeKind(body.kind),
-        card,
-      })
+      const text = typeof body.text === 'string' ? await resolveFriendlyMentions(auth.workspaceId, body.text, projectId) : undefined
+      let message: any
+      if (text !== undefined || card || normalizeKind(body.kind)) {
+        ;({ message } = await updateAgentMessage({
+          messageId: c.req.param('messageId'),
+          workspaceId: auth.workspaceId,
+          projectId,
+          text,
+          kind: normalizeKind(body.kind),
+          card,
+        }))
+      }
+      if (questions.length) {
+        const row = await db.conversationMessage.findUnique({ where: { id: c.req.param('messageId') } })
+        const own = row && row.workspaceId === auth.workspaceId && row.authorType === 'agent' && (row.authorAgentRef?.projectId ?? null) === projectId
+        if (!own) return c.json({ error: { code: 'forbidden', message: 'Agents can only add questions to their own messages' } }, 403)
+        await attachQuestions({ messageId: row.id, drafts: questions, source: 'agent' })
+        message ??= row
+      }
+      if (!message) return c.json({ error: { code: 'empty', message: 'Pass text, card, kind or questions to change' } }, 400)
       return c.json({ message: { id: message.id, conversationId: message.conversationId } })
+    } catch (err) {
+      if (err instanceof AgentMessageError) return c.json({ error: { code: err.code, message: err.message } }, err.status)
+      return errorResponse(c, err)
+    }
+  })
+
+  /** The value a person entered for one of this agent's `secret` questions. */
+  router.get(`${base}/messages/:messageId/questions/:questionId/secret`, async (c) => {
+    const auth = await config.authorize(c)
+    if (auth instanceof Response) return auth
+    const projectId = await agentIdentity(auth, c.req.query('projectId'))
+    try {
+      const secret = await readQuestionSecret({
+        workspaceId: auth.workspaceId,
+        messageId: c.req.param('messageId'),
+        questionId: c.req.param('questionId'),
+        projectId,
+      })
+      return c.json(secret)
     } catch (err) {
       if (err instanceof AgentMessageError) return c.json({ error: { code: err.code, message: err.message } }, err.status)
       return errorResponse(c, err)

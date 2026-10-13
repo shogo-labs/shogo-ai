@@ -3506,7 +3506,7 @@ model ChatInboxItem {
   id             String    @id @default(uuid())
   workspaceId    String
   userId         String
-  /// mention | dm | thread | reaction | reminder | keyword | broadcast | message
+  /// mention | dm | thread | reaction | reminder | keyword | broadcast | message | question
   kind           String
   conversationId String?
   messageId      String?

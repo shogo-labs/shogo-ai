@@ -12,11 +12,12 @@ import { readableAgentTaskError, taskStatusLabel } from './agent-task-ui'
 import { conversationLabel } from './team-chat-nav'
 import type { InboxItem } from './team-chat-api'
 
-export type ActivityFilter = 'all' | 'dms' | 'mentions' | 'threads' | 'agents'
+export type ActivityFilter = 'all' | 'dms' | 'mentions' | 'threads' | 'agents' | 'questions'
 
 export const ACTIVITY_FILTERS: Array<{ id: ActivityFilter; label: string }> = [
   { id: 'all', label: 'All' },
   { id: 'agents', label: 'Agents' },
+  { id: 'questions', label: 'Questions' },
   { id: 'dms', label: 'DMs' },
   { id: 'mentions', label: 'Mentions' },
   { id: 'threads', label: 'Threads' },
@@ -58,6 +59,7 @@ function inboxContext(item: InboxItem): { context: string; private: boolean } {
   if (item.kind === 'mention' || item.kind === 'keyword') return { context: `Mention in ${where}`, private: isPrivate }
   if (item.kind === 'reaction') return { context: `Reaction in ${where}`, private: isPrivate }
   if (item.kind === 'reminder') return { context: 'Reminder', private: false }
+  if (item.kind === 'question') return { context: `Question in ${where}`, private: isPrivate }
   return { context: where, private: isPrivate }
 }
 
@@ -133,6 +135,8 @@ export function matchesFilter(entry: ActivityEntry, filter: ActivityFilter): boo
       return entry.kind === 'thread'
     case 'agents':
       return entry.source === 'agent'
+    case 'questions':
+      return entry.kind === 'question'
   }
 }
 

@@ -181,6 +181,25 @@ export function resolveFriendlyMentionsWith(text: string, lookup: Map<string, st
   return result + resolveSegment(text.slice(last))
 }
 
+const COLLAPSIBLE_TOKEN = '<(?:@[uag]:[A-Za-z0-9_:-]+|@a:ws)>'
+const REPEATED_TOKEN_RE = new RegExp(`(${COLLAPSIBLE_TOKEN})\\s*\\(\\s*\\1\\s*\\)`, 'g')
+const TOKEN_THEN_NAME_RE = new RegExp(`(${COLLAPSIBLE_TOKEN})\\s*\\(([^()<>\\n]{1,80})\\)`, 'g')
+
+/**
+ * Agents read people as `Name (<@u:ID>)` and often write both back, which
+ * renders the name twice: `<@u:ID> (<@u:ID>)` or `<@u:ID> (Name)` become one
+ * mention. With a `lookup` (lowercased name → token), a name in parentheses
+ * only goes when it is that same person.
+ */
+export function collapseRepeatedMentions(text: string, lookup?: Map<string, string>): string {
+  let out = text.replace(REPEATED_TOKEN_RE, '$1')
+  if (lookup?.size) {
+    out = out.replace(TOKEN_THEN_NAME_RE, (whole, token: string, name: string) =>
+      lookup.get(name.trim().replace(/^@/, '').toLowerCase()) === token ? token : whole)
+  }
+  return out
+}
+
 /** `@handle` names for group tokens, scoped to one workspace. */
 export async function groupNames(db: any, workspaceId: string, groupIds: string[]): Promise<Map<string, string>> {
   if (!groupIds.length) return new Map()

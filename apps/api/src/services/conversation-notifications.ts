@@ -263,6 +263,40 @@ export async function notifyForReaction({ message, conversation, reactorId, emoj
   }])
 }
 
+/**
+ * An agent asked these people something they weren't tagged in (or the post
+ * that asked it was too quiet to notify). Never folded into a channel's last
+ * push, since someone is waiting on the answer.
+ */
+export async function notifyQuestion(input: {
+  conversation: any
+  row: any
+  userIds: string[]
+  title: string
+  body: string
+}): Promise<void> {
+  const { conversation, row } = input
+  const settings = await getSettingsRows(conversation.workspaceId, input.userIds)
+  const presence = await getPresence(conversation.workspaceId, input.userIds)
+  const now = new Date()
+  const body = markdownToPlainText(renderMentionsAsText(input.body)).slice(0, BODY_CHARS)
+  const data = {
+    conversationId: conversation.id,
+    messageId: row.id,
+    threadRootId: row.threadRootId ?? null,
+    workspaceId: conversation.workspaceId,
+    reason: 'question',
+  }
+  for (const userId of input.userIds) {
+    if (isSilenced(settings.get(userId), now)) continue
+    if (presence[userId] === 'active') {
+      publishConversationEvent(conversation.workspaceId, { type: 'notification', ...data, title: input.title, body }, [userId])
+      continue
+    }
+    void sendPush(userId, { title: input.title, body, type: 'agent-question', channelId: 'messages', audience: 'chat', data })
+  }
+}
+
 let registered = false
 
 export function registerConversationNotifications(): void {

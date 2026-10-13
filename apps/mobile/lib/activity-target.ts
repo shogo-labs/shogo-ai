@@ -18,7 +18,7 @@ export function activityTarget(blocks: Record<string, unknown> | null | undefine
   if (!blocks || blocks.type !== 'activity' || typeof blocks.kind !== 'string') return null
   const kind = blocks.kind
 
-  if (kind === 'agent.message') {
+  if (kind === 'agent.message' || kind.startsWith('question.')) {
     const conversationId = text(blocks.conversationId)
     const messageId = text(blocks.messageId)
     if (!conversationId || !messageId) return null

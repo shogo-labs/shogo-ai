@@ -29,7 +29,7 @@ export function tabForPathname(pathname: string, conversations: TabConversation[
   if (chat) {
     const segment = chat[1] ? decodeURIComponent(chat[1]) : null
     if (!segment) return 'channels' // browse channels
-    if (segment === 'inbox') return 'activity'
+    if (segment === 'inbox' || segment === 'questions') return 'activity'
     if (segment === 'later') return 'home'
     if (segment === 'dms' || segment === 'new') return 'dms'
     if (segment === 'search' || segment === 'settings') return 'channels'
@@ -54,7 +54,7 @@ export function isMainChatPath(pathname: string): boolean {
   return path === '/' || path === '/index'
 }
 
-const CHAT_PAGES = new Set(['inbox', 'later', 'dms', 'new', 'search', 'settings'])
+const CHAT_PAGES = new Set(['inbox', 'questions', 'later', 'dms', 'new', 'search', 'settings'])
 
 /** A single team chat conversation (channel or DM), not one of the chat pages. */
 export function isConversationPath(pathname: string): boolean {

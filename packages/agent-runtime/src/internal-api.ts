@@ -993,6 +993,17 @@ export interface AgentStatusCard {
   summary?: string
 }
 
+/** A question for the people an agent tags; see the API's `QuestionDraft`. */
+export interface AgentQuestion {
+  header: string
+  prompt: string
+  interaction?: string
+  options?: Array<{ label: string; description?: string }>
+  multiSelect?: boolean
+  hint?: string
+  secretName?: string
+}
+
 function channelsPath(workspaceId: string, suffix = ''): string {
   return `/api/internal/workspaces/${encodeURIComponent(workspaceId)}/agent-channels${suffix}`
 }
@@ -1032,6 +1043,7 @@ export async function postAgentChannelMessage(
     runId?: string
     kind?: AgentMessageKind
     card?: AgentStatusCard
+    questions?: AgentQuestion[]
   },
 ): Promise<CheckpointCallResult<{ id: string; conversationId: string; threadId: string; runId: string | null; url: string | null }>> {
   return personalFetch(channelsPath(workspaceId, `/${encodeURIComponent(channel)}/messages`), {
@@ -1045,6 +1057,7 @@ export async function postAgentChannelMessage(
       runId: input.runId,
       kind: input.kind,
       card: input.card,
+      questions: input.questions,
     }),
     parse: (j) => ({
       id: j?.message?.id,
@@ -1060,13 +1073,27 @@ export async function postAgentChannelMessage(
 export async function updateAgentChannelMessage(
   workspaceId: string,
   messageId: string,
-  input: { identity: AgentChannelIdentity; text?: string; kind?: AgentMessageKind; card?: AgentStatusCard },
+  input: { identity: AgentChannelIdentity; text?: string; kind?: AgentMessageKind; card?: AgentStatusCard; questions?: AgentQuestion[] },
 ): Promise<CheckpointCallResult<{ id: string; conversationId: string }>> {
   return personalFetch(channelsPath(workspaceId, `/messages/${encodeURIComponent(messageId)}`), {
     method: 'PATCH',
-    body: JSON.stringify({ text: input.text, kind: input.kind, card: input.card, projectId: input.identity.projectId }),
+    body: JSON.stringify({ text: input.text, kind: input.kind, card: input.card, questions: input.questions, projectId: input.identity.projectId }),
     parse: (j) => ({ id: j?.message?.id, conversationId: j?.message?.conversationId }),
   })
+}
+
+/** The value a person entered for one of this agent's `secret` questions. */
+export async function readAgentQuestionSecret(
+  workspaceId: string,
+  messageId: string,
+  questionId: string,
+  identity: AgentChannelIdentity,
+): Promise<CheckpointCallResult<{ name: string; value: string }>> {
+  const query = identity.projectId ? `?projectId=${encodeURIComponent(identity.projectId)}` : ''
+  return personalFetch(
+    channelsPath(workspaceId, `/messages/${encodeURIComponent(messageId)}/questions/${encodeURIComponent(questionId)}/secret${query}`),
+    { method: 'GET', parse: (j) => ({ name: j?.name, value: j?.value }) },
+  )
 }
 
 export async function sendAgentDirectMessage(

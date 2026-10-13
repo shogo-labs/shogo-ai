@@ -108,6 +108,7 @@ export const CORE_TOOL_NAMES = [
   // Team chat; registered for non-personal workspace runtimes.
   'team_chat_list', 'team_chat_read', 'team_chat_post', 'team_chat_update', 'team_chat_search', 'team_chat_dm', 'team_chat_add_member',
   'fetch_chat_files', 'team_chat_doc_read', 'team_chat_doc_update', 'team_directory', 'member_activity',
+  'team_chat_question_secret',
 ]
 
 export interface CapabilityProfile {

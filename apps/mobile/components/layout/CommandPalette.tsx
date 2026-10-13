@@ -41,6 +41,7 @@ import {
   MessageSquare,
   Bot,
   Inbox,
+  MessageCircleQuestion,
   Sparkles,
   Radio,
 } from 'lucide-react-native'
@@ -133,6 +134,7 @@ function useChatCommands(query: string, visible: boolean): CommandItem[] {
     const items: CommandItem[] = [...conversations, ...(q ? people : [])].filter(matches).slice(0, MAX_CHAT_ITEMS)
     if (!q) {
       items.push({ id: 'chat-inbox', label: 'Inbox', description: 'Mentions, replies, and reminders', icon: Inbox, href: '/(app)/c/inbox', category: 'chat' })
+      items.push({ id: 'chat-questions', label: 'Questions', description: 'What agents are waiting on you for', icon: MessageCircleQuestion, href: '/(app)/c/questions', category: 'chat' })
     } else {
       const raw = query.trim()
       items.push(

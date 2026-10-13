@@ -354,13 +354,16 @@ export async function updateAgentMessage(input: {
  */
 export async function rewriteMessage(input: {
   messageId: string
-  text: string
+  /** New stored text; omitted to change only the blocks. */
+  text?: string
   blocks: MessageBlocks
   actions?: OutboundAction[]
+  /** What the mirrored copy shows, when it differs from the stored text. */
+  providerText?: string
 }): Promise<{ message: any; row: any }> {
   const row = await db.conversationMessage.findUnique({ where: { id: input.messageId } })
   if (!row || row.deletedAt) throw new AgentMessageError(404, 'not_found', 'Message not found')
-  const message = await shogoProvider.updateMessage(row.id, { text: input.text, blocks: input.blocks })
+  const message = await shogoProvider.updateMessage(row.id, input.text === undefined ? { blocks: input.blocks } : { text: input.text, blocks: input.blocks })
   const conversation = await db.conversation.findUnique({ where: { id: row.conversationId } })
   const target = conversation ? await conversationRef(conversation, row.threadRootId ?? null) : null
   const ref = parseExternalRef(row.externalRef)
@@ -370,7 +373,7 @@ export async function rewriteMessage(input: {
       .updateMessage?.(
         target.conv,
         { provider: ref.provider as ExternalChatProvider, channelId: ref.channelId, id: ref.id, threadId: target.conv.threadExternalId },
-        { text: await providerText(row.workspaceId, input.text), author, actions: input.actions },
+        { text: await providerText(row.workspaceId, input.providerText ?? input.text ?? row.text), author, actions: input.actions },
       )
       .catch((err: Error) => console.warn(`[ChatOutbound] ${target.provider.kind} message update failed:`, err.message))
   }

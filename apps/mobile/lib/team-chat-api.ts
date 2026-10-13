@@ -9,6 +9,7 @@ import type { BuddyLook } from '@shogo/shared-app/buddy-look'
 import { Platform } from 'react-native'
 import { API_URL, createHttpClient } from './api'
 import { authClient } from './auth-client'
+import type { Question } from './team-chat-kinds'
 import type { UploadPart } from './upload-part'
 import { routeUrl } from './workspace-route'
 
@@ -261,7 +262,28 @@ export interface ChatSettings {
   emailDigest: 'off' | 'daily'
 }
 
-export type InboxKind = 'mention' | 'dm' | 'thread' | 'reaction' | 'reminder' | 'keyword' | 'broadcast' | 'message'
+export type InboxKind = 'mention' | 'dm' | 'thread' | 'reaction' | 'reminder' | 'keyword' | 'broadcast' | 'message' | 'question'
+
+/** A question an agent asked, across channels the viewer can read. */
+export interface QuestionListItem {
+  messageId: string
+  conversationId: string
+  threadRootId: string | null
+  conversation: { id: string; kind: string; name: string | null; slug: string | null }
+  agent: { projectId: string | null; name: string; iconUrl: string | null }
+  question: Question
+  askedAt: string
+  /** For the viewer, or open to anyone. */
+  mine: boolean
+  canAnswer: boolean
+}
+
+export interface QuestionInbox {
+  questions: QuestionListItem[]
+  /** Open questions for the viewer, for the badge. */
+  openCount: number
+  approvals: PendingApproval[]
+}
 
 export interface InboxItem {
   id: string
@@ -773,6 +795,20 @@ export function teamChatApi() {
     /** Approve or deny an action an agent is waiting on. The first answer wins; later ones throw. */
     async decideApproval(messageId: string, decision: 'approve' | 'deny'): Promise<ChatMessage> {
       return (await http.post<{ message: ChatMessage }>(`${msg(messageId)}/approval`, { decision })).data.message
+    },
+    /** Agent questions the viewer can see, plus approvals waiting on them. */
+    async questions(workspaceId: string, opts: { status?: 'open' | 'answered' | 'all'; scope?: 'mine' | 'all' } = {}): Promise<QuestionInbox> {
+      const q = new URLSearchParams()
+      if (opts.status) q.set('status', opts.status)
+      if (opts.scope) q.set('scope', opts.scope)
+      return (await http.get<QuestionInbox>(`${ws(workspaceId)}/questions?${q}`)).data
+    },
+    /** Answer an agent's question; posts the answer in its thread. The first answer wins; later ones throw. */
+    async answerQuestion(messageId: string, questionId: string, input: { answer?: string; secret?: string }): Promise<{ message: ChatMessage; question: Question; reply: ChatMessage }> {
+      return (await http.post<{ message: ChatMessage; question: Question; reply: ChatMessage }>(`${msg(messageId)}/questions/${encodeURIComponent(questionId)}/answer`, input)).data
+    },
+    async dismissQuestion(messageId: string, questionId: string): Promise<{ message: ChatMessage; question: Question }> {
+      return (await http.post<{ message: ChatMessage; question: Question }>(`${msg(messageId)}/questions/${encodeURIComponent(questionId)}/dismiss`, {})).data
     },
     async huddles(workspaceId: string): Promise<{ enabled: boolean; huddles: ActiveHuddle[] }> {
       return (await http.get<{ enabled: boolean; huddles: ActiveHuddle[] }>(`${ws(workspaceId)}/huddles`)).data
