@@ -56,6 +56,7 @@ import {
 import { SqliteSessionPersistence } from './sqlite-session-persistence'
 import { BlockChunker } from './block-chunker'
 import { canvasModeStableGuides } from './canvas-v2-prompt'
+import { buildCapabilityStatusSection } from './capability-status-prompt'
 import { buildViewerContextPrompt, parseCanvasViewer } from './viewer-context'
 import { buildAccountContextPrompt, type AccountContext } from './account-context'
 import { CanvasFileWatcher } from './canvas-file-watcher'
@@ -2395,6 +2396,10 @@ export class AgentGateway {
       // heartbeat_configure writes the schedule to the database through the
       // project config API; refresh the cached copy the status output shows.
       onHeartbeatConfigured: () => { void this.refreshHeartbeatSnapshot() },
+      onCapabilitiesChanged: async () => {
+        const synced = await this.syncCapabilitiesFromApi()
+        if (!synced) this.reloadConfig()
+      },
 
     }
 
@@ -4005,6 +4010,7 @@ export class AgentGateway {
 
     parts.push(CODE_AGENT_GENERAL_GUIDE)
     if (this.config.capabilityProfile === 'personal') parts.push(PERSONAL_COMPANION_GUIDE)
+    parts.push(buildCapabilityStatusSection(this.config))
     parts.push(OUTPUT_CONTRACT_GUIDE)
     if (this.config.browserEnabled !== false) {
       parts.push(BROWSER_TOOL_GUIDE)
@@ -4047,6 +4053,7 @@ export class AgentGateway {
 
     parts.push(CODE_AGENT_GENERAL_GUIDE)
     if (this.config.capabilityProfile === 'personal') parts.push(PERSONAL_COMPANION_GUIDE)
+    parts.push(buildCapabilityStatusSection(this.config))
     if (this.config.browserEnabled !== false) {
       parts.push(BROWSER_TOOL_GUIDE)
     }
@@ -4154,8 +4161,10 @@ export class AgentGateway {
 
     // 1. Mode-specific canvas/tool guides (changes only on mode switch)
     const activeMode = this.config.activeMode || 'canvas'
-    for (const [id, text] of canvasModeStableGuides(activeMode)) {
-      pushStable(id, text)
+    if (this.config.canvasEnabled !== false) {
+      for (const [id, text] of canvasModeStableGuides(activeMode)) {
+        pushStable(id, text)
+      }
     }
 
     // 2. General coding guide (always the same)
@@ -4182,6 +4191,7 @@ export class AgentGateway {
     const devopsGuideOn = this.config.heartbeatToolsEnabled !== false
 
     this.currentGuideRegistry = buildGuideRegistry(this.promptOverrides)
+    pushStable('capability-status', buildCapabilityStatusSection(this.config))
     pushStable('capabilities-index', buildCapabilitiesIndex({
       integrations: integrationsGuideOn,
       channels: channelsGuideOn,

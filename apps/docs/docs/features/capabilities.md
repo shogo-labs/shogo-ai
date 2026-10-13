@@ -112,6 +112,16 @@ Leave **Heartbeat**, **Channels**, and **Integrations** on — these are exactly
 the surfaces a background agent relies on to check things on a schedule and
 report out. See [Heartbeat](/concepts/heartbeat).
 
+## The agent can change its own capabilities
+
+The system prompt lists which capabilities are enabled, disabled, or locked by
+the workspace profile. The agent turns them on and off for **its own project**
+with `capabilities_configure`. The change is saved to the project and applies
+on the next turn.
+
+A personal workspace still cannot turn Shell or Canvas back on. Those stay
+locked by the profile.
+
 ## How to change capabilities
 
 ### In Shogo Studio
@@ -151,9 +161,9 @@ No. Capability gating is applied to the shared tool set that subagents draw
 from, so a disabled tool is unreachable for delegated agents too.
 
 **What if I disable Shell or Memory by accident?**
-The agent will tell you a needed tool isn't available. Re-enable it in the
-**Capabilities** tab (or `config.json`) and the tool comes back on the next
-turn.
+The agent can turn it back on with `capabilities_configure`, and you can
+re-enable it in the **Capabilities** tab (or `config.json`). The tool comes
+back on the next turn. Shell stays off on a personal workspace.
 
 **Can I keep the tools but trim only the prompt?**
 For most capabilities the tool and its prompt guidance are linked — that's the

@@ -17,6 +17,7 @@ import * as realInternalApi from '../internal-api'
 
 type Call = { fn: string; args: unknown[] }
 const calls: Call[] = []
+let internalApiCredentials = false
 
 const api = {
   graph: { ok: true, status: 200, data: [] as any[] } as any,
@@ -32,6 +33,7 @@ const api = {
 
 mock.module('../internal-api', () => ({
   ...realInternalApi,
+  hasInternalApiCredentials: () => internalApiCredentials,
   getWorkspaceProjectGraph: (workspaceId: string) => {
     calls.push({ fn: 'getWorkspaceProjectGraph', args: [workspaceId] })
     return api.graph
@@ -76,6 +78,7 @@ const {
   createProjectAttachTool,
   createProjectDetachTool,
   createProjectConfigureTool,
+  createCapabilitiesConfigureTool,
   createProjectCallTool,
   createSystemApplyTool,
   resolveProjectDir,
@@ -110,6 +113,7 @@ async function run(tool: { execute: (id: string, params: any) => Promise<any> },
 
 beforeEach(() => {
   calls.length = 0
+  internalApiCredentials = false
   workspaceDir = mkdtempSync(join(tmpdir(), 'project-tools-test-'))
   api.graph = { ok: true, status: 200, data: [] }
   api.create = { ok: true, status: 201, data: { id: 'proj-new', name: 'New', description: null, workingMode: 'managed', settings: null } }
@@ -615,5 +619,100 @@ projects:
 `
     const out = await run(createSystemApplyTool(baseCtx()), { manifest, dryRun: true })
     expect(out.manual.join('\n')).toContain('create #ops by hand')
+  })
+})
+
+describe('capabilities_configure', () => {
+  test('reads the current state without writing', async () => {
+    const ctx = baseCtx({ onCapabilitiesChanged: () => { throw new Error('should not reload') } })
+    const out = await run(createCapabilitiesConfigureTool(ctx))
+    expect(out.changed).toBe(false)
+    expect(out.enabled).toContain('webEnabled')
+    expect(out.disabled).toContain('gitWorktreesEnabled')
+    expect(out.locked).toEqual([])
+    expect(calls.find((c) => c.fn === 'configureProject')).toBeUndefined()
+  })
+
+  test('writes through the project config API and reloads', async () => {
+    internalApiCredentials = true
+    let reloaded = 0
+    const ctx = baseCtx({ onCapabilitiesChanged: async () => { reloaded++ } })
+    const out = await run(createCapabilitiesConfigureTool(ctx), { changes: { channelsEnabled: false } })
+    expect(out.changed).toBe(true)
+    expect(out.applies).toBe('next turn')
+    expect(out.disabled).toContain('channelsEnabled')
+    expect(calls.find((c) => c.fn === 'configureProject')?.args).toEqual([
+      'caller-1',
+      { settings: { channelsEnabled: false } },
+    ])
+    expect(reloaded).toBe(1)
+    const saved = JSON.parse(readFileSync(join(workspaceDir, 'config.json'), 'utf-8'))
+    expect(saved.channelsEnabled).toBe(false)
+    expect(saved.webEnabled).toBe(true)
+  })
+
+  test('turning canvas off also sets activeMode to none', async () => {
+    internalApiCredentials = true
+    const ctx = baseCtx()
+    const out = await run(createCapabilitiesConfigureTool(ctx), { changes: { canvasEnabled: false } })
+    expect(out.changed).toBe(true)
+    expect(out.capabilities.canvasEnabled).toBe(false)
+    expect(calls.find((c) => c.fn === 'configureProject')?.args[1]).toEqual({
+      settings: { canvasEnabled: false, activeMode: 'none' },
+    })
+    const saved = JSON.parse(readFileSync(join(workspaceDir, 'config.json'), 'utf-8'))
+    expect(saved.canvasEnabled).toBe(false)
+    expect(saved.activeMode).toBe('none')
+  })
+
+  test('without API credentials, merges the patch into config.json and preserves other flags', async () => {
+    writeFileSync(join(workspaceDir, 'config.json'), JSON.stringify({
+      webEnabled: false,
+      model: { name: 'kept' },
+    }))
+    let reloaded = 0
+    const ctx = baseCtx({
+      config: {
+        ...(baseCtx().config),
+        webEnabled: false,
+      },
+      onCapabilitiesChanged: () => { reloaded++ },
+    })
+    const out = await run(createCapabilitiesConfigureTool(ctx), { changes: { imageGenEnabled: false } })
+    expect(out.changed).toBe(true)
+    expect(calls.find((c) => c.fn === 'configureProject')).toBeUndefined()
+    expect(reloaded).toBe(1)
+    const saved = JSON.parse(readFileSync(join(workspaceDir, 'config.json'), 'utf-8'))
+    expect(saved.imageGenEnabled).toBe(false)
+    expect(saved.webEnabled).toBe(false)
+    expect(saved.model).toEqual({ name: 'kept' })
+  })
+
+  test('rejects an unknown capability', async () => {
+    const out = await run(createCapabilitiesConfigureTool(baseCtx()), { changes: { notACapability: true } })
+    expect(out.code).toBe('unknown_capability')
+    expect(existsSync(join(workspaceDir, 'config.json'))).toBe(false)
+  })
+
+  test('rejects a capability locked by the personal profile', async () => {
+    internalApiCredentials = true
+    const ctx = baseCtx({
+      config: { ...(baseCtx().config), capabilityProfile: 'personal', shellEnabled: false },
+    })
+    const out = await run(createCapabilitiesConfigureTool(ctx), { changes: { shellEnabled: true } })
+    expect(out.code).toBe('capability_locked')
+    expect(calls.find((c) => c.fn === 'configureProject')).toBeUndefined()
+    expect(existsSync(join(workspaceDir, 'config.json'))).toBe(false)
+  })
+
+  test('a failed API write does not update the local cache', async () => {
+    internalApiCredentials = true
+    api.configure = { ok: false, status: 403, error: 'not allowed', code: 'forbidden' }
+    let reloaded = 0
+    const ctx = baseCtx({ onCapabilitiesChanged: () => { reloaded++ } })
+    const out = await run(createCapabilitiesConfigureTool(ctx), { changes: { shellEnabled: false } })
+    expect(out.code).toBe('forbidden')
+    expect(reloaded).toBe(0)
+    expect(existsSync(join(workspaceDir, 'config.json'))).toBe(false)
   })
 })

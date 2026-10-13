@@ -63,6 +63,8 @@ describe('Capabilities / Action Tools prompt gating', () => {
     gateway = await buildGatewayAndTurn()
 
     expect(section('capabilities-index')).toBeDefined()
+    expect(section('capability-status')).toBeDefined()
+    expect(section('capability-status')!.zone).toBe('stable')
     expect(section('action-tools-guide')).toBeDefined()
     expect(section('action-tools-guide')!.zone).toBe('stable')
   })

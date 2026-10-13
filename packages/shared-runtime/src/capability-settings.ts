@@ -33,6 +33,70 @@ export type CapabilityKey = (typeof CAPABILITY_KEYS)[number]
 
 export type CapabilitySettings = Record<CapabilityKey, boolean>
 
+/** Human label and the tools (or prompt section) a toggle controls. */
+export const CAPABILITY_INFO: Record<CapabilityKey, { label: string; summary: string }> = {
+  canvasEnabled: {
+    label: 'Canvas',
+    summary: 'Visual canvas mode and the canvas prompt guide. Turning this off sets activeMode to "none"; turning it on sets activeMode to "canvas".',
+  },
+  webEnabled: {
+    label: 'Web search',
+    summary: 'Gates the `web` tool.',
+  },
+  browserEnabled: {
+    label: 'Browser control',
+    summary: 'Gates the `browser` tool and the browser guide.',
+  },
+  shellEnabled: {
+    label: 'Shell',
+    summary: 'Gates `exec` and `exec_wait`.',
+  },
+  heartbeatToolsEnabled: {
+    label: 'Heartbeat',
+    summary: 'Gates `heartbeat_configure` and `heartbeat_status`.',
+  },
+  imageGenEnabled: {
+    label: 'Image generation',
+    summary: 'Gates `generate_image`.',
+  },
+  memoryEnabled: {
+    label: 'Memory',
+    summary: 'Gates `memory_read` and `memory_search`.',
+  },
+  quickActionsEnabled: {
+    label: 'Quick actions',
+    summary: 'Gates `quick_action` and the quick-action guide.',
+  },
+  sdkGuideEnabled: {
+    label: 'Shogo SDK guide',
+    summary: 'Prompt-only. Includes the `@shogo-ai/sdk` reference. No tool is removed.',
+  },
+  integrationsEnabled: {
+    label: 'Integrations',
+    summary: 'Gates `search_integrations`, `connect`, and `disconnect`.',
+  },
+  channelsEnabled: {
+    label: 'Channels',
+    summary: 'Gates `channel_connect`, `channel_disconnect`, `channel_list`, and `send_message`.',
+  },
+  gitWorktreesEnabled: {
+    label: 'Git worktrees',
+    summary: 'Opt-in. Gates `worktree_list` and per-chat git worktrees.',
+  },
+  socialMediaEnabled: {
+    label: 'Social media',
+    summary: 'Opt-in. Gates the `social_media` tool.',
+  },
+  socialInstagramEnabled: {
+    label: 'Instagram',
+    summary: 'When social media is on, allows Instagram lookups through `social_media`.',
+  },
+  socialTiktokEnabled: {
+    label: 'TikTok',
+    summary: 'When social media is on, allows TikTok lookups through `social_media`.',
+  },
+}
+
 /** Off unless the stored value is exactly `true`. */
 const OPT_IN_KEYS = new Set<CapabilityKey>(['gitWorktreesEnabled', 'socialMediaEnabled'])
 

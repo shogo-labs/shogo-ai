@@ -3,6 +3,7 @@
 
 import { describe, expect, test } from 'bun:test'
 import {
+  CAPABILITY_INFO,
   CAPABILITY_KEYS,
   mergeCapabilitySettingsIntoConfig,
   normalizeCapabilitySettings,
@@ -61,6 +62,16 @@ describe('normalizeCapabilitySettings', () => {
     expect(
       normalizeCapabilitySettings({ heartbeatEnabled: false, heartbeatToolsEnabled: true }).heartbeatToolsEnabled,
     ).toBe(true)
+  })
+})
+
+describe('CAPABILITY_INFO', () => {
+  test('every capability key has a label and a summary', () => {
+    expect(Object.keys(CAPABILITY_INFO).sort()).toEqual([...CAPABILITY_KEYS].sort())
+    for (const key of CAPABILITY_KEYS) {
+      expect(CAPABILITY_INFO[key].label.length).toBeGreaterThan(0)
+      expect(CAPABILITY_INFO[key].summary.length).toBeGreaterThan(0)
+    }
   })
 })
 

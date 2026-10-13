@@ -199,6 +199,8 @@ export interface ToolContext {
   uiWriter?: any
   /** Called after heartbeat_configure writes the schedule to the database (refreshes the cached status copy). */
   onHeartbeatConfigured?: () => void
+  /** Called after capabilities_configure writes this project's toggles. Reloads config so the next turn sees them. */
+  onCapabilitiesChanged?: () => void | Promise<void>
   /** Multi-language LSP manager for read_lints diagnostics */
   lspManager?: import('@shogo/shared-runtime').WorkspaceLSPManager
   /** Live LSP accessor — the manager starts asynchronously after a deferred

@@ -152,6 +152,30 @@ describe('filterDisabledCapabilityTools', () => {
     expect(result.details.error).toContain('not enabled')
   })
 
+  test('capabilities_configure stays available when every capability is off', () => {
+    const n = names(makeConfig({
+      canvasEnabled: false,
+      webEnabled: false,
+      browserEnabled: false,
+      shellEnabled: false,
+      heartbeatToolsEnabled: false,
+      imageGenEnabled: false,
+      memoryEnabled: false,
+      quickActionsEnabled: false,
+      sdkGuideEnabled: false,
+      integrationsEnabled: false,
+      channelsEnabled: false,
+      gitWorktreesEnabled: false,
+      socialMediaEnabled: false,
+      socialInstagramEnabled: false,
+      socialTiktokEnabled: false,
+    }))
+    expect(n.has('capabilities_configure')).toBe(true)
+    expect(n.has('exec')).toBe(false)
+    expect(n.has('web')).toBe(false)
+    expect(n.has('generate_image')).toBe(false)
+  })
+
   test('returns the same array reference when nothing is disabled (no-op fast path)', () => {
     // `gitWorktreesEnabled` and `socialMediaEnabled` are opt-in: leaving them
     // unset gates `worktree_list` and `social_media`, which defeats the fast
@@ -198,6 +222,7 @@ describe('filterDisabledCapabilityTools', () => {
       'project_list',
       'project_create',
       'project_configure',
+      'capabilities_configure',
       'project_call',
       'agent_profile_get',
       'agent_profile_set',

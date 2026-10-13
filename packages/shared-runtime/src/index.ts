@@ -11,6 +11,7 @@ export {
 } from './s3-sync'
 
 export {
+  CAPABILITY_INFO,
   CAPABILITY_KEYS,
   mergeCapabilitySettingsIntoConfig,
   normalizeCapabilitySettings,

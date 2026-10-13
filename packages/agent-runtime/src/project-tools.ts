@@ -8,6 +8,7 @@
  *   project_attach     attach an existing project to this one (readwrite / readonly)
  *   project_detach     remove an attachment
  *   project_configure  heartbeat / model / name / description of a project
+ *   capabilities_configure  enable or disable this project's own capabilities
  *   project_call       run one agent turn in another project, threading a runId
  *   system_apply       reconcile a `shogo-system.yaml` manifest against the workspace
  *
@@ -23,8 +24,18 @@ import { randomBytes } from 'crypto'
 import { Type } from '@sinclair/typebox'
 import type { AgentTool } from '@mariozechner/pi-agent-core'
 import { runChatSessionId } from '@shogo/shared-runtime/project-call-chat'
+import {
+  CAPABILITY_INFO,
+  CAPABILITY_KEYS,
+  mergeCapabilitySettingsIntoConfig,
+  normalizeCapabilitySettings,
+  type CapabilityKey,
+  type CapabilitySettings,
+} from '@shogo/shared-runtime/capability-settings'
 import type { ToolContext } from './gateway-tools'
 import { textResult } from './gateway-tools'
+import { capabilityState, effectiveCapabilityValue, lockedCapabilityKeys } from './capability-status-prompt'
+import { resolveWorkspaceConfigFilePath } from './workspace-defaults'
 import {
   attachProject as apiAttachProject,
   callProjectAgent as apiCallProjectAgent,
@@ -33,7 +44,9 @@ import {
   detachProject as apiDetachProject,
   getProjectConfig as apiGetProjectConfig,
   getWorkspaceProjectGraph as apiGetWorkspaceProjectGraph,
+  hasInternalApiCredentials,
   listTeamChannels,
+  projectScopedId,
   upsertTeamChannel,
   type ProjectGraphNode,
 } from './internal-api'
@@ -372,6 +385,132 @@ export function createProjectConfigureTool(ctx: ToolContext): AgentTool {
           ? { heartbeatError, warning: `Heartbeat settings were not applied: ${heartbeatError.message}` }
           : {}),
       })
+    },
+  }
+}
+
+// ---------------------------------------------------------------------------
+// capabilities_configure
+// ---------------------------------------------------------------------------
+
+const CAPABILITY_KEY_SET = new Set<string>(CAPABILITY_KEYS)
+
+function capabilityChangesSchema() {
+  const properties: Record<string, ReturnType<typeof Type.Optional<ReturnType<typeof Type.Boolean>>>> = {}
+  for (const key of CAPABILITY_KEYS) {
+    properties[key] = Type.Optional(Type.Boolean({ description: CAPABILITY_INFO[key].label }))
+  }
+  return Type.Optional(Type.Object(properties, {
+    description: 'Flags to set on this project. Omit to read the current state.',
+  }))
+}
+
+function capabilityStatus(config: ToolContext['config'], changed: boolean) {
+  const caps = normalizeCapabilitySettings(config)
+  const view = capabilityState(config)
+  const resolved: CapabilitySettings = { ...caps }
+  for (const key of view.locked) {
+    resolved[key] = effectiveCapabilityValue(key, caps, config.capabilityProfile)
+  }
+  return {
+    ok: true,
+    changed,
+    enabled: view.enabled,
+    disabled: view.disabled,
+    locked: view.locked,
+    capabilities: resolved,
+    ...(changed ? { applies: 'next turn' as const } : {}),
+  }
+}
+
+/**
+ * Persist a capability patch into config.json without clobbering flags the
+ * patch does not mention. `activeMode` rides along with canvas so the prompt
+ * guide matches the toggle.
+ */
+function writeLocalCapabilityCache(
+  workspaceDir: string,
+  patch: Partial<CapabilitySettings>,
+  activeMode?: 'canvas' | 'none',
+): void {
+  const configPath = resolveWorkspaceConfigFilePath(workspaceDir, 'config.json')
+    ?? join(workspaceDir, 'config.json')
+  let fileConfig: Record<string, unknown> = {}
+  if (existsSync(configPath)) {
+    try {
+      const parsed = JSON.parse(readFileSync(configPath, 'utf-8'))
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) fileConfig = parsed
+    } catch {
+      fileConfig = {}
+    }
+  }
+  const source = { ...fileConfig, ...patch }
+  const { config } = mergeCapabilitySettingsIntoConfig(fileConfig, source)
+  if (activeMode) config.activeMode = activeMode
+  writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8')
+}
+
+export function createCapabilitiesConfigureTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'capabilities_configure',
+    label: 'Configure Capabilities',
+    description:
+      'Read or change this project\'s capability toggles (web search, shell, browser, channels, and the rest). Call with no changes to read what is enabled, disabled, or locked. Changes are saved on this project only and apply from your next turn. Locked capabilities cannot be changed.',
+    parameters: Type.Object({
+      changes: capabilityChangesSchema(),
+    }),
+    execute: async (_id, params) => {
+      const raw = (params as { changes?: unknown }).changes
+      if (raw === undefined) return textResult(capabilityStatus(ctx.config, false))
+      if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+        return textResult({ error: 'changes must be an object of capability flags', code: 'bad_request' })
+      }
+
+      const current = normalizeCapabilitySettings(ctx.config)
+      const locked = new Set(lockedCapabilityKeys(ctx.config.capabilityProfile))
+      const patch: Partial<CapabilitySettings> = {}
+      for (const [key, value] of Object.entries(raw)) {
+        if (!CAPABILITY_KEY_SET.has(key)) {
+          return textResult({ error: `Unknown capability "${key}"`, code: 'unknown_capability' })
+        }
+        if (typeof value !== 'boolean') {
+          return textResult({ error: `${key} must be a boolean`, code: 'bad_request' })
+        }
+        if (locked.has(key as CapabilityKey)) {
+          return textResult({
+            error: `${key} is locked by the ${ctx.config.capabilityProfile} workspace profile`,
+            code: 'capability_locked',
+          })
+        }
+        patch[key as CapabilityKey] = value
+      }
+      if (Object.keys(patch).length === 0) return textResult(capabilityStatus(ctx.config, false))
+
+      const currentMode = ctx.config.activeMode || 'canvas'
+      let activeMode: 'canvas' | 'none' | undefined
+      if (patch.canvasEnabled === false && currentMode !== 'none') activeMode = 'none'
+      if (patch.canvasEnabled === true && currentMode !== 'canvas') activeMode = 'canvas'
+
+      const differs = (Object.keys(patch) as CapabilityKey[]).some((key) => patch[key] !== current[key]) || activeMode !== undefined
+      if (!differs) return textResult(capabilityStatus(ctx.config, false))
+
+      const settings: Record<string, unknown> = { ...patch }
+      if (activeMode) settings.activeMode = activeMode
+
+      const projectId = projectScopedId(ctx.projectId)
+      if (projectId && hasInternalApiCredentials()) {
+        const res = await apiConfigureProject(projectId, { settings })
+        if (!res.ok || !res.data) return apiFailure(res)
+      }
+      writeLocalCapabilityCache(ctx.workspaceDir, patch, activeMode)
+      await ctx.onCapabilitiesChanged?.()
+
+      const nextConfig = {
+        ...ctx.config,
+        ...patch,
+        ...(activeMode ? { activeMode } : {}),
+      }
+      return textResult(capabilityStatus(nextConfig, true))
     },
   }
 }
@@ -731,6 +870,7 @@ export const PROJECT_TOOL_NAMES = [
   'project_attach',
   'project_detach',
   'project_configure',
+  'capabilities_configure',
   'project_call',
   'system_apply',
 ] as const
@@ -744,6 +884,7 @@ export function createProjectTools(ctx: ToolContext): { readonly: AgentTool[]; m
       createProjectAttachTool(ctx),
       createProjectDetachTool(ctx),
       createProjectConfigureTool(ctx),
+      createCapabilitiesConfigureTool(ctx),
       createProjectCallTool(ctx),
       createSystemApplyTool(ctx),
     ],
