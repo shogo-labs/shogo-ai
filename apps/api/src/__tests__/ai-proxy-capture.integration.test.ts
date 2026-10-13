@@ -359,7 +359,72 @@ describe('AI proxy capture integration', () => {
     expect(lastFetchUrl).toBe('https://cloud.example/api/ai/v1/chat/completions')
     expect(new Headers(lastFetchInit?.headers).get('x-shogo-client')).toBe('desktop')
     expect(new Headers(lastFetchInit?.headers).get('Authorization')).toBe('Bearer shogo_sk_desktop-test')
+    expect(new Headers(lastFetchInit?.headers).get('x-chat-session-id')).toBeNull()
     expect(await flushAndReadArchive()).toBeNull()
     expect(summaryUpserts).toHaveLength(0)
+  })
+
+  describe('desktop cloud forwarding relays the chat session id', () => {
+    beforeEach(() => {
+      process.env.SHOGO_LOCAL_MODE = 'true'
+      process.env.SHOGO_API_KEY = 'shogo_sk_desktop-test'
+      process.env.SHOGO_CLOUD_URL = 'https://cloud.example/'
+    })
+
+    const jsonResponse = (body: unknown) => () =>
+      new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } })
+
+    function post(path: string, body: Record<string, unknown>, headers: Record<string, string>) {
+      return buildApp().fetch(new Request(`http://test/api${path}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...headers },
+        body: JSON.stringify(body),
+      }))
+    }
+
+    test('chat completions', async () => {
+      nextFetchResponses.push(jsonResponse({ id: 'chatcmpl_cloud', choices: [] }))
+
+      const response = await postChat(
+        { model: 'gpt-4o-mini', messages: [{ role: 'user', content: 'hi' }] },
+        { 'x-chat-session-id': 'desktop-chat-1' },
+      )
+
+      expect(response.status).toBe(200)
+      expect(lastFetchUrl).toBe('https://cloud.example/api/ai/v1/chat/completions')
+      expect(new Headers(lastFetchInit?.headers).get('x-chat-session-id')).toBe('desktop-chat-1')
+      expect(new Headers(lastFetchInit?.headers).get('x-shogo-client')).toBe('desktop')
+    })
+
+    test('responses', async () => {
+      nextFetchResponses.push(jsonResponse({ id: 'resp_cloud', output: [] }))
+
+      const response = await post(
+        '/ai/v1/responses',
+        { model: 'gpt-4o-mini', input: 'hi' },
+        { Authorization: `Bearer ${TOKEN}`, 'x-chat-session-id': 'desktop-chat-2' },
+      )
+
+      expect(response.status).toBe(200)
+      expect(lastFetchUrl).toBe('https://cloud.example/api/ai/v1/responses')
+      expect(new Headers(lastFetchInit?.headers).get('x-chat-session-id')).toBe('desktop-chat-2')
+    })
+
+    test('anthropic messages', async () => {
+      nextFetchResponses.push(jsonResponse({ id: 'msg_cloud', type: 'message', content: [] }))
+
+      const response = await post(
+        '/ai/anthropic/v1/messages',
+        { model: 'claude-haiku-4-5', max_tokens: 10, messages: [{ role: 'user', content: 'hi' }] },
+        { 'x-api-key': TOKEN, 'anthropic-version': '2023-06-01', 'x-chat-session-id': 'desktop-chat-3' },
+      )
+
+      expect(response.status).toBe(200)
+      expect(lastFetchUrl).toBe('https://cloud.example/api/ai/anthropic/v1/messages')
+      const forwarded = new Headers(lastFetchInit?.headers)
+      expect(forwarded.get('x-chat-session-id')).toBe('desktop-chat-3')
+      expect(forwarded.get('anthropic-version')).toBe('2023-06-01')
+      expect(forwarded.get('x-api-key')).toBe('shogo_sk_desktop-test')
+    })
   })
 })

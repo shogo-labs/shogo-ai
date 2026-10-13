@@ -2963,6 +2963,15 @@ export function aiProxyRoutes() {
   }
 
   /**
+   * Request headers the local proxy relays to Shogo Cloud so cloud capture can
+   * group desktop calls by chat.
+   */
+  function cloudPassthroughHeaders(c: any): Record<string, string> {
+    const chatSessionId = c.req.header('x-chat-session-id')
+    return chatSessionId ? { 'x-chat-session-id': chatSessionId } : {}
+  }
+
+  /**
    * Forward an OpenAI-compatible chat completions request to the Shogo Cloud proxy.
    */
   async function forwardChatCompletionsToCloud(c: any, request: ChatCompletionRequest, signal?: AbortSignal): Promise<Response> {
@@ -2972,6 +2981,7 @@ export function aiProxyRoutes() {
     const response = await fetch(`${cloudUrl}/api/ai/v1/chat/completions`, {
       method: 'POST',
       headers: {
+        ...cloudPassthroughHeaders(c),
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${shogoKey}`,
         'x-shogo-client': 'desktop',
@@ -3021,6 +3031,7 @@ export function aiProxyRoutes() {
     const response = await fetch(`${cloudUrl}/api/ai/v1/responses`, {
       method: 'POST',
       headers: {
+        ...cloudPassthroughHeaders(c),
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${shogoKey}`,
         'x-shogo-client': 'desktop',
@@ -3064,6 +3075,7 @@ export function aiProxyRoutes() {
     splitSystemBlocksForCaching(parsed)
 
     const forwardHeaders: Record<string, string> = {
+      ...cloudPassthroughHeaders(c),
       'Content-Type': 'application/json',
       'x-api-key': shogoKey,
       'x-shogo-client': 'desktop',
