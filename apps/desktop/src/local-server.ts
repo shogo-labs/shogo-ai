@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
-import { spawn, execSync, execFileSync, type ChildProcess } from 'child_process'
+import { spawn, execSync, execFileSync, type ChildProcess } from './child-process'
 import { createServer } from 'net'
 import { existsSync } from 'fs'
 import path from 'path'

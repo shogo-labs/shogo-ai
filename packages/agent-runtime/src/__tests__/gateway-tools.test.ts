@@ -16,9 +16,6 @@ function createCtx(overrides?: Partial<ToolContext>): ToolContext {
     workspaceDir: TEST_DIR,
     channels: new Map(),
     config: {
-      heartbeatInterval: 1800,
-      heartbeatEnabled: false,
-      quietHours: { start: '23:00', end: '07:00', timezone: 'UTC' },
       channels: [],
       model: { provider: 'anthropic', name: 'claude-sonnet-4-5' },
     },
@@ -442,12 +439,15 @@ describe('gateway-tools', () => {
     test('createTools returns expected tools', () => {
       // Base tool count with every feature flag at its production default
       // (notably SHOGO_SEARCH_ENABLED unset, so `search` is not registered).
-      // 66 = 52 + `search_history` + `read_history` (chat/plan history search)
-      // + the 7 project-lifecycle tools (project_list/create/attach/detach/
-      // configure/call, system_apply — see project-tools.ts) + github_create_pr
-      // + github_merge_pr + github_connect + expose_port.
+      // 68 = 52 + `search_history` + `read_history` (chat/plan history search)
+      // + the 8 project-lifecycle tools (project_list/create/attach/detach/
+      // configure/call, capabilities_configure, system_apply — see
+      // project-tools.ts) + github_create_pr
+      // + github_merge_pr + github_connect + expose_port + social_media.
       // (`notify_user_error` was removed along with the noisy error toast UI.)
-      expect(createTools(createCtx())).toHaveLength(66)
+      // `social_media` is registered here and then hidden unless the project
+      // opts in (`filterDisabledCapabilityTools`).
+      expect(createTools(createCtx())).toHaveLength(68)
       expect(createTools(createCtx()).find((t) => t.name === 'heartbeat_configure')).toBeDefined()
       expect(createTools(createCtx()).find((t) => t.name === 'heartbeat_status')).toBeDefined()
       expect(createTools(createCtx()).find((t) => t.name === 'memory_search')).toBeDefined()

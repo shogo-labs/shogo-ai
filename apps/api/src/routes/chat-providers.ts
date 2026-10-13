@@ -7,6 +7,7 @@
  */
 
 import { Hono } from 'hono'
+import { loadAccess } from '../lib/authz'
 import { EXTERNAL_CHAT_PROVIDERS, getWorkspaceChatConfig, setWorkspaceChatConfig, type ExternalChatProvider } from '../services/chat-mode'
 import { getWorkspaceRole } from '../services/conversation.service'
 import { handleInboundEvents, resumeAfterLinkInHomeRegion, routeInboundEvents } from '../services/chat-providers/inbound'
@@ -77,8 +78,8 @@ export function chatProviderRoutes(config: ChatProviderRoutesConfig): Hono {
     const workspaceId = c.req.param('workspaceId')
     const provider = c.req.param('provider')
     if (!isProvider(provider)) return c.json({ error: { code: 'invalid_provider', message: 'Unknown chat provider' } }, 400)
-    const role = await getWorkspaceRole(workspaceId, userId)
-    if (role !== 'owner' && role !== 'admin') {
+    const access = await loadAccess({ userId, via: 'session' }, { workspaceId })
+    if (!access.permissions.has('workspace.settings:manage')) {
       return c.json({ error: { code: 'forbidden', message: 'Only workspace admins can manage chat apps' } }, 403)
     }
     return { userId, workspaceId, provider }

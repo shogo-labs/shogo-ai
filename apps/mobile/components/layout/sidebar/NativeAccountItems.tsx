@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * Native Account group rows for email, Profile, and API Keys.
- * Web popover still uses UserMenuContent + AccountNavLinks.
+ * The wide panel header uses AccountNavLinks. Profile lives on the rail avatar.
  */
 
 import { Text } from "react-native";

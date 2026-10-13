@@ -151,7 +151,7 @@ describe('HeartbeatScheduler constructor', () => {
 // ─── fetchDueAgents (SQL contract) ───────────────────────────────────────
 
 describe('fetchDueAgents — SQL contract', () => {
-  test('issues a $queryRaw call against agent_configs JOIN projects JOIN subscriptions', async () => {
+  test('issues a $queryRaw call against agent_configs, projects, and the billing workspace', async () => {
     queryRawMock.mockImplementation(async () => [])
     const s = new TestableScheduler()
     await s._fetchDueAgents()
@@ -165,6 +165,11 @@ describe('fetchDueAgents — SQL contract', () => {
     expect(sql).toContain('subscriptions')
     expect(sql).toContain('heartbeatenabled')
     expect(sql).toContain('nextheartbeatat')
+    // Paid-plan gate follows the parent workspace and paid grants, matching
+    // getEffectivePlanId — not only a subscription on the project workspace.
+    expect(sql).toContain('parentworkspaceid')
+    expect(sql).toContain('workspace_grants')
+    expect(sql).toContain('coalesce(w."parentworkspaceid", w."id")')
   })
 
   test("SQL contains 'FOR UPDATE OF ac SKIP LOCKED' (concurrent-pod safety pin)", async () => {
@@ -200,6 +205,26 @@ describe('fetchDueAgents — SQL contract', () => {
     // Single-region in tests → no partition; the clause itself is covered by
     // heartbeat-home-region-filter.test.ts.
     expect(values).toContain(PRISMA_EMPTY)
+  })
+
+  test('claims due rows atomically: one statement selects FOR UPDATE and UPDATEs nextHeartbeatAt', async () => {
+    const s = new TestableScheduler()
+    await s._fetchDueAgents()
+    const fragments = queryRawMock.mock.calls[0][0] as unknown as string[]
+    const sql = (Array.isArray(fragments) ? fragments.join(' ') : String(fragments)).toLowerCase()
+    expect(sql).toContain('update "agent_configs"')
+    expect(sql).toMatch(/set "nextheartbeatat" = now\(\)/)
+    expect(sql).toContain('returning')
+    expect((s as any).claimsOnFetch).toBe(true)
+  })
+
+  test('also selects enabled rows with a NULL nextHeartbeatAt and flags them unscheduled (self-heal)', async () => {
+    const s = new TestableScheduler()
+    await s._fetchDueAgents()
+    const fragments = queryRawMock.mock.calls[0][0] as unknown as string[]
+    const sql = (Array.isArray(fragments) ? fragments.join(' ') : String(fragments)).toLowerCase()
+    expect(sql).toContain('"nextheartbeatat" is null')
+    expect(sql).toContain('"unscheduled"')
   })
 
   test('forwards the result of $queryRaw verbatim', async () => {
@@ -241,6 +266,8 @@ describe('triggerAgent — happy path', () => {
     expect(init.method).toBe('POST')
     expect(init.headers['Content-Type']).toBe('application/json')
     expect(init.headers['x-runtime-token']).toBe('rt_v1_proj-X_TOKEN')
+    // A workspace runtime serves many projects, so the due project is named.
+    expect(JSON.parse(init.body)).toEqual({ projectId: 'proj-X' })
     expect(init.signal).toBeDefined() // AbortSignal.timeout
   })
 

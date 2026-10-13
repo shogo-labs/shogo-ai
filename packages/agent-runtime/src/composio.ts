@@ -575,6 +575,9 @@ const COMPOSIO_AUTH_PATTERNS = [
   'not_authed', 'invalid_auth', 'token expired', 'refresh token',
   'invalid_grant', 'revoked', 'auth_expired', 'oauth', '401',
   'unauthorized', 'authentication failed', 'credentials',
+  // Shopify and similar store APIs say "invalid token" / "invalid api key"
+  // rather than a generic 401.
+  'invalid token', 'invalid api key',
 ]
 const COMPOSIO_PERMISSION_PATTERNS = [
   'forbidden', '403', 'access denied', 'not properly authorized',
@@ -641,6 +644,8 @@ interface ComposioErrorClass {
   authExpired?: boolean
   needsScope?: boolean
   needsArgFix?: boolean
+  /** Auth, missing scope, or no connection: the UI can show a reconnect card. */
+  needsReconnect?: boolean
   hint?: string
 }
 
@@ -664,6 +669,7 @@ export function classifyComposioError(raw: string): ComposioErrorClass {
     return {
       kind: 'notconnected',
       authExpired: true,
+      needsReconnect: true,
       hint: 'This integration is not connected for the user yet. Initiate the connection flow (connect / COMPOSIO_INITIATE_CONNECTION) for this toolkit and wait for the user to authorize, then retry. Do not repeat the call until the account is connected.',
     }
   }
@@ -671,6 +677,7 @@ export function classifyComposioError(raw: string): ComposioErrorClass {
     return {
       kind: 'auth',
       authExpired: true,
+      needsReconnect: true,
       hint: "The integration's OAuth session is expired or invalid. Ask the user to reconnect the integration, then retry.",
     }
   }
@@ -678,6 +685,7 @@ export function classifyComposioError(raw: string): ComposioErrorClass {
     return {
       kind: 'permission',
       needsScope: true,
+      needsReconnect: true,
       hint: 'The integration is connected but lacks the scope/permission for this action. Ask the user to reconnect granting the required scope (e.g. repo for GitHub, youtube.* for YouTube), then retry. Do not repeat the call unchanged.',
     }
   }
@@ -709,14 +717,38 @@ function buildComposioErrorResult(errMsg: string, slug: string) {
       hint = `${hint ?? ''} Valid bound tools for this integration: ${available.join(', ')}.`.trim()
     }
   }
+  const socialIdHint = socialResourceHint(slug)
+  if (c.kind === 'notfound' && socialIdHint) {
+    hint = `${hint ?? ''} ${socialIdHint}`.trim()
+  }
   return {
     error: errMsg,
     errorKind: c.kind,
     ...(c.authExpired && { authExpired: true }),
     ...(c.needsScope && { needsScope: true }),
+    ...(c.needsReconnect && { needs_reconnect: true }),
     ...(c.needsArgFix && { needsArgFix: true }),
     ...(hint && { hint }),
   }
+}
+
+/**
+ * Facebook, Instagram, and YouTube 404s are usually a username, a made-up id,
+ * or a stale slug. When property keys are known, only tools that take an id
+ * get the hint, and list tools are the source of those ids so they stay quiet.
+ */
+function socialResourceHint(slug: string, propertyKeys?: string[]): string | null {
+  const upper = slug.toUpperCase()
+  if (upper.includes('_LIST_')) return null
+  const keys = propertyKeys?.map(k => k.toLowerCase())
+  const takesId = (re: RegExp) => !keys || keys.some(k => re.test(k))
+  if ((upper.startsWith('FACEBOOK_') || upper.startsWith('INSTAGRAM_')) && takesId(/page_?id|ig_user|account_?id/)) {
+    return 'page_id must be the numeric page id from the list-pages tool (FACEBOOK_LIST_MANAGED_PAGES, or the Instagram accounts list). Do not pass a username, @handle, or an invented id.'
+  }
+  if (upper.startsWith('YOUTUBE_') && takesId(/channel_?id|video_?id|playlist_?id/)) {
+    return 'Pass a channel or video id returned by a list tool such as YOUTUBE_LIST_CHANNEL_VIDEOS. Do not invent ids. For uploads use YOUTUBE_MULTIPART_UPLOAD_VIDEO; YOUTUBE_UPLOAD_VIDEO is unavailable.'
+  }
+  return null
 }
 
 function textResult(data: any): AgentToolResult<any> {
@@ -809,12 +841,18 @@ function createProxyTool(schema: ComposioToolSchema, toolkitSlug: string): Agent
     .map(([key]) => key)
 
   const baseDescription = schema.description || `Composio tool: ${schema.slug}`
+  const idHint = socialResourceHint(schema.slug, Object.keys(schema.input_parameters?.properties ?? {}))
+  const description = [
+    baseDescription,
+    idHint,
+    fileUploadableFields.length > 0
+      ? `File fields (${fileUploadableFields.join(', ')}): ${FILE_UPLOAD_PARAM_HINT}`
+      : '',
+  ].filter(Boolean).join(' ')
 
   return {
     name: schema.slug,
-    description: fileUploadableFields.length > 0
-      ? `${baseDescription} File fields (${fileUploadableFields.join(', ')}): ${FILE_UPLOAD_PARAM_HINT}`
-      : baseDescription,
+    description,
     label: `composio: ${schema.slug}`,
     parameters,
     credential: {
@@ -894,6 +932,7 @@ function createProxyTool(schema: ComposioToolSchema, toolkitSlug: string): Agent
         console.warn(
           `[Composio] ${schema.slug} failed (kind=${built.errorKind}): ${res.errMsg}`,
         )
+        await emitReconnectCard(toolkitSlug, built)
         return textResult(built)
       }
 
@@ -967,6 +1006,46 @@ function jsonSchemaPropertyToTypebox(p: Record<string, any>): any {
     }
     default:
       return Type.Any({ description: p.description })
+  }
+}
+
+/**
+ * Start a fresh OAuth flow even when an account still looks connected.
+ * Expired tokens and missing scopes stay "active" in Composio's list, so a
+ * reconnect has to authorize again rather than trust that status.
+ */
+export async function requestComposioReconnect(
+  toolkitSlug: string,
+): Promise<{ status: 'active' | 'needs_auth'; authUrl?: string }> {
+  return initiateComposioAuth(toolkitSlug)
+}
+
+/** Ask the chat UI to show the reconnect card when this failure needs one. */
+async function emitReconnectCard(
+  toolkitSlug: string,
+  result: { needs_reconnect?: boolean; hint?: string; error?: string },
+): Promise<void> {
+  if (!result.needs_reconnect) return
+  const scope = currentCredentialScope()
+  const writer = scope?.uiWriter
+  if (!writer) return
+  const shown = scope?.reconnectCardsShown
+  const key = toolkitSlug.toLowerCase()
+  if (shown?.has(key)) return
+  try {
+    const auth = await requestComposioReconnect(toolkitSlug)
+    if (!auth.authUrl) return
+    shown?.add(key)
+    writer.write({
+      type: 'data-integration-auth-required',
+      data: {
+        provider: `composio:${key}`,
+        connectUrl: auth.authUrl,
+        message: result.hint ?? result.error,
+      },
+    })
+  } catch (err: any) {
+    console.warn(`[Composio] Reconnect card for "${toolkitSlug}" failed: ${err?.message ?? err}`)
   }
 }
 

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { existsSync, readFileSync } from 'fs'
+import { publishRequestTimeoutMs } from '@shogo/shared-runtime/publish-timeouts'
 import { requesterTicketHeaders } from './credential-scope'
 
 const SA_TOKEN_PATH = '/var/run/secrets/kubernetes.io/serviceaccount/token'
@@ -39,6 +40,20 @@ export function derivePublicApiUrl(): string | null {
 export function projectScopedId(projectId: string | null | undefined): string | undefined {
   if (!projectId || projectId === '__POOL__' || projectId.startsWith('ws:')) return undefined
   return projectId
+}
+
+/**
+ * True when this process can authenticate an `/api/internal` call.
+ * Tests and unassigned processes have neither, and calling the API would
+ * only burn a timeout before failing.
+ */
+export function hasInternalApiCredentials(): boolean {
+  if (process.env.RUNTIME_AUTH_SECRET) return true
+  try {
+    return existsSync(SA_TOKEN_PATH)
+  } catch {
+    return false
+  }
 }
 
 export function getInternalHeaders(): Record<string, string> {
@@ -550,6 +565,7 @@ export interface PublishOptions {
 async function publishFetch<T>(
   path: string,
   init: RequestInit & { parse?: (json: any) => T },
+  timeoutMs = 120_000,
 ): Promise<CheckpointCallResult<T>> {
   const apiUrl = deriveApiUrl()
   if (!apiUrl) return { ok: false, status: 0, error: 'No API URL configured' }
@@ -557,7 +573,7 @@ async function publishFetch<T>(
     const res = await fetch(`${apiUrl}${path}`, {
       headers: getInternalHeaders(),
       // Publish builds + uploads the app, which can take a while — be generous.
-      signal: AbortSignal.timeout(120_000),
+      signal: AbortSignal.timeout(timeoutMs),
       ...init,
     })
     const json = (await res.json().catch(() => null)) as any
@@ -587,7 +603,7 @@ export async function publishProject(
     method: 'POST',
     body: JSON.stringify(opts),
     parse: (j) => j as PublishResult,
-  })
+  }, publishRequestTimeoutMs())
 }
 
 export interface SharedFileResult {
@@ -1487,12 +1503,22 @@ export interface ProjectConfigSnapshot {
     quietHoursEnd: string | null
     quietHoursTimezone: string | null
     nextHeartbeatAt: string | null
+    lastHeartbeatAt: string | null
   } | null
+  /**
+   * Set when the patch asked for heartbeat changes the workspace's plan does
+   * not allow; the rest of the patch was still applied.
+   */
+  heartbeatError?: { code: 'paywall'; message: string }
 }
 
-export async function getProjectConfig(projectId: string): Promise<CheckpointCallResult<ProjectConfigSnapshot>> {
+export async function getProjectConfig(
+  projectId: string,
+  timeoutMs?: number,
+): Promise<CheckpointCallResult<ProjectConfigSnapshot>> {
   return lifecycleFetch(`/api/internal/projects/${encodeURIComponent(projectId)}/config`, {
     method: 'GET',
+    timeoutMs,
     parse: (j) => j?.project as ProjectConfigSnapshot,
   })
 }

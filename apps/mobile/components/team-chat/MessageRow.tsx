@@ -7,13 +7,15 @@
  */
 import { createElement, memo, useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { ActionSheetIOS, Alert, Image, Linking, Modal, Platform, Pressable, Text, TextInput, View } from 'react-native'
+import { useRouter } from 'expo-router'
 import * as Clipboard from 'expo-clipboard'
 import { AlarmClock, AlertCircle, Bookmark, Check, CircleDot, CornerDownRight, FileText, Link2, Loader2, MessageSquare, MoreHorizontal, Pencil, Pin, SmilePlus, Square, Trash2 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
-import { MarkdownText } from '../chat/MarkdownText'
+import { ChatMarkdown } from '../chat/ChatMarkdown'
 import { SidebarContextMenu, type SidebarMenuEntry } from '../layout/SidebarContextMenu'
 import { absoluteApiUrl, teamChatApi, type ChatMessage, type LinkUnfurl } from '../../lib/team-chat-api'
 import { messageLink, parseMessageLink } from '../../lib/team-chat-links'
+import { activityTarget } from '../../lib/activity-target'
 import { formatFullTime, formatShortTime, formatTime } from '../../lib/team-chat-time'
 import { EmojiPicker } from './EmojiPicker'
 import { AgentAvatar } from './AgentAvatar'
@@ -259,6 +261,7 @@ function useRowHover() {
 }
 
 function MessageRowImpl(props: MessageRowProps) {
+  const router = useRouter()
   const { message, grouped, me, names, streaming, canManage, inThread } = props
   const { hovered, hoverIn, hoverOut } = useRowHover()
   const [pickerOpen, setPickerOpen] = useState(false)
@@ -278,7 +281,7 @@ function MessageRowImpl(props: MessageRowProps) {
   const approval = !running && message.authorType === 'agent' ? approvalOf(message) : null
   const kind = message.authorType === 'agent' ? messageKind(message) : null
   const onBehalfOf = message.authorType === 'agent' ? onBehalfOfName(message) : null
-  const canOpenSession = message.authorType === 'agent' && !!message.agentSessionId && !!message.authorAgent?.projectId && !!props.onOpenSession
+  const canOpenSession = message.authorType === 'agent' && !!message.agentSessionId && !!props.onOpenSession
   const work = !running && message.authorType === 'agent' ? workOf(message) : null
   const isWeb = Platform.OS === 'web'
   useEditRequest(message.id, () => {
@@ -387,15 +390,32 @@ function MessageRowImpl(props: MessageRowProps) {
 
   if (message.authorType === 'system' && message.blocks?.type === 'activity') {
     const canDiscuss = !!props.onReply && !inThread
+    const target = activityTarget(message.blocks)
+    const detail = typeof message.blocks.summary === 'string' && message.blocks.summary
+      ? message.blocks.summary
+      : typeof message.blocks.preview === 'string' ? message.blocks.preview : ''
+    const open = () => {
+      if (!target) return
+      if (target.type === 'url') {
+        void Linking.openURL(target.url)
+        return
+      }
+      router.push({ pathname: target.pathname, params: target.params } as any)
+    }
     return (
       <Pressable
-        onPress={canDiscuss && !isWeb ? () => props.onReply!(message) : undefined}
+        onPress={target ? open : undefined}
+        accessibilityRole={target ? 'link' : undefined}
+        accessibilityLabel={target ? 'Open activity' : undefined}
         {...(isWeb ? ({ onPointerEnter: hoverIn, onPointerLeave: hoverOut } as object) : {})}
         className={cn('flex-row items-start gap-2 px-4 py-1.5', hovered && 'bg-muted/40')}
       >
         <View className="mt-1.5 h-1.5 w-1.5 rounded-full bg-primary/60" />
         <View className="min-w-0 flex-1">
-          <MarkdownText>{renderMentions(message.text, names)}</MarkdownText>
+          <ChatMarkdown isStreaming={false}>{renderMentions(message.text, names)}</ChatMarkdown>
+          {detail ? (
+            <Text className="mt-0.5 text-xs text-muted-foreground" numberOfLines={2}>{renderMentions(detail, names)}</Text>
+          ) : null}
           {message.replyCount > 0 && canDiscuss && (
             <Pressable onPress={() => props.onReply!(message)} className="mt-0.5 flex-row items-center gap-1 self-start">
               <MessageSquare size={11} className="text-primary" />
@@ -405,9 +425,9 @@ function MessageRowImpl(props: MessageRowProps) {
             </Pressable>
           )}
         </View>
-        {isWeb && hovered && canDiscuss ? (
-          <Pressable onPress={() => props.onReply!(message)} accessibilityLabel="Discuss in thread" className="rounded px-1.5 py-0.5 hover:bg-muted">
-            <Text className="text-[11px] text-muted-foreground">Discuss</Text>
+        {isWeb && hovered && target ? (
+          <Pressable onPress={open} accessibilityLabel="Open" className="rounded px-1.5 py-0.5 hover:bg-muted">
+            <Text className="text-[11px] text-muted-foreground">Open</Text>
           </Pressable>
         ) : (
           <TimeTooltip iso={message.createdAt}>
@@ -544,7 +564,7 @@ function MessageRowImpl(props: MessageRowProps) {
                       {jumbo.map((code, i) => <ReactionGlyph key={`${code}-${i}`} emoji={code} size={32} />)}
                     </View>
                   ) : (
-                    <MarkdownText isStreaming={running} onLinkPress={openMessageLinkInApp}>{renderMentions(body, names)}</MarkdownText>
+                    <ChatMarkdown isStreaming={running} onLinkPress={openMessageLinkInApp}>{renderMentions(body, names)}</ChatMarkdown>
                   )}
                 </View>
               )

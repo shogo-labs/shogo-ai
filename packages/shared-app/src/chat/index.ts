@@ -8,7 +8,9 @@ export {
   formatToolName,
   getToolCategory,
   ERROR_CODE_MESSAGES,
+  channelDispatchOf,
 } from './message-helpers'
+export type { ChannelDispatch } from './message-helpers'
 
 export {
   buildChatStreamErrorReport,

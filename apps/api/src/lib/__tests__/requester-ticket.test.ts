@@ -13,6 +13,8 @@ import {
   requesterTicketHeader,
   signRequesterTicket,
   verifyRequesterTicket,
+  verifyRequesterTicketInWorkspace,
+  workspaceTicketKey,
 } from '../requester-ticket'
 
 beforeEach(() => {
@@ -89,6 +91,30 @@ describe('requester tickets', () => {
     }
     expect(ticket.via).toHaveLength(MAX_TICKET_HOPS)
     expect(handOffRequesterTicket(ticket, 'one-too-many')).toBeNull()
+  })
+
+  test('a workspace ticket is accepted for that workspace and rejected for another', async () => {
+    const ticket = signRequesterTicket({ projectId: workspaceTicketKey('ws-1'), userId: 'u1' })
+    const lookup = async () => null
+    expect(await verifyRequesterTicketInWorkspace(ticket, 'ws-1', Date.now(), lookup)).toMatchObject({ userId: 'u1' })
+    expect(await verifyRequesterTicketInWorkspace(ticket, 'ws-2', Date.now(), lookup)).toBeNull()
+  })
+
+  test('a project ticket is accepted only when the project is in the workspace', async () => {
+    const ticket = signRequesterTicket({ projectId: 'p1', userId: 'u1' })
+    const lookup = async (projectId: string) => (projectId === 'p1' ? 'ws-1' : null)
+    expect(await verifyRequesterTicketInWorkspace(ticket, 'ws-1', Date.now(), lookup)).toMatchObject({ userId: 'u1', projectId: 'p1' })
+    expect(await verifyRequesterTicketInWorkspace(ticket, 'ws-2', Date.now(), lookup)).toBeNull()
+  })
+
+  test('a workspace ticket rejects expiry and a tampered payload', async () => {
+    const now = Date.now()
+    const ticket = signRequesterTicket({ projectId: workspaceTicketKey('ws-1'), userId: 'u1' }, now)
+    expect(await verifyRequesterTicketInWorkspace(ticket, 'ws-1', now + 7 * 60 * 60 * 1000, async () => null)).toBeNull()
+    const [encoded, mac] = ticket.split('.')
+    const payload = JSON.parse(Buffer.from(encoded!, 'base64url').toString('utf8'))
+    const forged = Buffer.from(JSON.stringify({ ...payload, userId: 'admin' })).toString('base64url')
+    expect(await verifyRequesterTicketInWorkspace(`${forged}.${mac}`, 'ws-1', now, async () => null)).toBeNull()
   })
 
   test('the forwarding header is skipped for system turns and when signing is not configured', () => {

@@ -21,7 +21,7 @@
  * subscription metadata `source === 'ios_iap'`. Attribution is still
  * recorded so we can audit later; only the payout walk is skipped.
  *
- * Overage trust blocks (the $100→$500 ladder in billing.service.ts) are
+ * Overage trust blocks (the $25→$500 ladder in billing.service.ts) are
  * EXCLUDED from the commission basis. They represent provider-cost
  * passthrough, not plan revenue.
  *

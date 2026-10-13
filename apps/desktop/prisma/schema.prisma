@@ -620,6 +620,9 @@ model ChatSession {
   inferredName        String
   contextType         String
   contextId           String?
+  // Owner of a personal workspace-agent chat. Null for project chats and
+  // chats created before ownership existed.
+  createdByUserId     String?
   isPrimary           Boolean  @default(false)
   phase               String?
   claudeCodeSessionId String?
@@ -642,6 +645,7 @@ model ChatSession {
 
   @@index([contextType, contextId])
   @@index([activeTurnHeartbeatAt])
+  @@index([createdByUserId])
   @@map("chat_sessions")
 }
 

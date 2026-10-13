@@ -3,7 +3,7 @@
 import { Platform } from 'react-native'
 import { View, Text, Pressable } from 'react-native'
 import { Image } from 'react-native'
-import { FolderOpen, Star, Check, Users } from 'lucide-react-native'
+import { FolderOpen, Star, Check, Users, Lock } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { memo, type ReactNode } from 'react'
 
@@ -46,6 +46,9 @@ export interface ProjectCardProps {
   /** Small pill badge shown over the header (e.g. "Shared") */
   badge?: string
 
+  /** Shows a lock next to the name for projects restricted to explicit members */
+  restricted?: boolean
+
   /** Compact mode for mobile screens */
   compact?: boolean
 
@@ -74,6 +77,7 @@ export const ProjectCard = memo(function ProjectCard({
   isStarred,
   selectMode,
   badge,
+  restricted = false,
   compact,
   onPress,
   onLongPress,
@@ -205,9 +209,12 @@ export const ProjectCard = memo(function ProjectCard({
         {compact && (renderLeading || renderTrailing) ? (
           <View className="gap-2">
             <View className="flex-row items-start gap-2">
-              <View className="flex-1 min-w-0">
+              <View className="flex-1 min-w-0 flex-row items-start gap-1.5">
+                {restricted && (
+                  <Lock size={14} className="text-muted-foreground mt-0.5" accessibilityLabel="Restricted project" />
+                )}
                 <Text
-                  className="font-semibold text-base leading-5 text-card-foreground"
+                  className="flex-1 font-semibold text-base leading-5 text-card-foreground"
                   numberOfLines={2}
                 >
                   {name || 'Untitled'}
@@ -233,15 +240,20 @@ export const ProjectCard = memo(function ProjectCard({
           <View className="flex-row items-center gap-2.5">
             {renderLeading?.()}
             <View className="flex-1 min-w-0">
-              <Text
-                className={cn(
-                  'font-semibold text-card-foreground',
-                  compact ? 'text-[14px] leading-[18px]' : 'text-[15px]',
+              <View className="flex-row items-center gap-1.5">
+                {restricted && (
+                  <Lock size={13} className="text-muted-foreground" accessibilityLabel="Restricted project" />
                 )}
-                numberOfLines={compact ? 2 : 1}
-              >
-                {name || 'Untitled'}
-              </Text>
+                <Text
+                  className={cn(
+                    'flex-1 font-semibold text-card-foreground',
+                    compact ? 'text-[14px] leading-[18px]' : 'text-[15px]',
+                  )}
+                  numberOfLines={compact ? 2 : 1}
+                >
+                  {name || 'Untitled'}
+                </Text>
+              </View>
               {subtitle ? (
                 <Text
                   className={cn(

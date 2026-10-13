@@ -76,7 +76,9 @@ import {
   usePlatformConfig,
 } from "../../../../lib/platform-config";
 import { resolveChatScope } from "../../../../lib/chat-scope";
+import { useProjectChatTabs } from "../../../../lib/project-chat-tabs";
 import { stripAskUserAnswerMarker } from "../../../../components/chat/turns/askUserAnswers";
+import { buildCanvasErrorDebugPrompt } from "../../../../components/chat/turns/canvasErrorPrompt";
 import { consumePendingFiles } from "../../../../lib/pending-image-store";
 import {
   isPhoneLayout,
@@ -181,7 +183,10 @@ import {
   Plus,
   History,
   Zap,
+  Users,
 } from "lucide-react-native";
+import { ProjectAccessPanel } from "../../../../components/project/ProjectAccessPanel";
+import { usePermissions } from "../../../../hooks/usePermissions";
 import {
   useToast,
   Toast,
@@ -239,100 +244,6 @@ const CHAT_PANEL_WIDTH_STORAGE_KEY = "shogo:chatPanelWidth";
 const CANVAS_ERROR_DEDUP_MS = 10_000;
 /** How many recent runtime log entries to attach to a debug-with-EZ-Mode prompt. */
 const CANVAS_ERROR_LOG_TAIL = 30;
-/** Cap any single error / log line so the seed prompt stays bounded. */
-const CANVAS_ERROR_MAX_LINE = 1200;
-
-/**
- * Build the seed message that gets auto-sent into a fresh chat when the
- * user clicks "Debug" on a `[canvas-error]` toast.
- *
- * The prompt deliberately includes everything the agent would otherwise
- * have to hunt down: the iframe's current page, the phase (compile vs
- * runtime), the full error string, the breadcrumb of recent user actions
- * (clicks / navigations / form submits) leading up to the crash, and the
- * tail of the runtime log buffer (build output / console lines).
- *
- * The surface label is only included when the canvas actually exposes a
- * Shogo surface — workspace canvases (Vite/Expo apps with their own
- * router) don't, and the page route is the meaningful identifier there.
- */
-function buildCanvasErrorDebugPrompt(args: {
-  phase: "compile" | "runtime";
-  error: string;
-  /** Iframe `pathname + search + hash` at the moment of the error. */
-  route?: string;
-  /** Recent user-interaction breadcrumb from `canvas-bridge.js`, oldest first. */
-  recentActions?: ReadonlyArray<{
-    ts: number;
-    kind: string;
-    target?: string;
-    route?: string;
-  }>;
-  recentLogs: ReadonlyArray<{
-    source: string;
-    level: string;
-    text: string;
-    ts: number;
-  }>;
-}): string {
-  const { phase, error, route, recentActions, recentLogs } = args;
-  const truncate = (s: string, n: number) =>
-    s.length <= n ? s : `${s.slice(0, n - 1)}…`;
-  const phaseLabel = phase === "compile" ? "compile-time" : "runtime";
-  const pageLabel = route ? ` (page \`${route}\`)` : "";
-
-  const lines: string[] = [];
-  lines.push(
-    `🐞 The canvas just hit a ${phaseLabel} error${pageLabel}. Please diagnose the root cause and propose / apply a minimal fix.`
-  );
-  lines.push("");
-  lines.push("**Error**");
-  lines.push("```");
-  lines.push(truncate(error, CANVAS_ERROR_MAX_LINE));
-  lines.push("```");
-
-  if (recentActions && recentActions.length > 0) {
-    lines.push("");
-    lines.push(
-      `**Recent user actions** (last ${recentActions.length}, oldest first — most recent immediately before the error)`
-    );
-    lines.push("```");
-    for (const a of recentActions) {
-      const ts = Number.isFinite(a.ts)
-        ? new Date(a.ts).toISOString().slice(11, 23)
-        : "--:--:--.---";
-      const target = a.target ? ` ${a.target}` : "";
-      const onPage = a.route && a.route !== route ? ` @ ${a.route}` : "";
-      lines.push(
-        truncate(`${ts} ${a.kind}${target}${onPage}`, CANVAS_ERROR_MAX_LINE)
-      );
-    }
-    lines.push("```");
-  }
-
-  if (recentLogs.length > 0) {
-    lines.push("");
-    lines.push(
-      `**Recent runtime logs** (last ${recentLogs.length}, oldest first)`
-    );
-    lines.push("```");
-    for (const e of recentLogs) {
-      const ts = new Date(e.ts).toISOString().slice(11, 23);
-      lines.push(
-        `${ts} [${e.source}] ${
-          e.level !== "info" ? `${e.level.toUpperCase()} ` : ""
-        }${truncate(e.text, CANVAS_ERROR_MAX_LINE)}`
-      );
-    }
-    lines.push("```");
-  }
-
-  lines.push("");
-  lines.push(
-    "Read the relevant files, identify the offending change, and either propose a fix or apply it directly. Keep the change minimal and explain what went wrong."
-  );
-  return lines.join("\n");
-}
 
 export default observer(function ProjectLayout() {
   csMark("project:layout:render");
@@ -593,6 +504,13 @@ export default observer(function ProjectLayout() {
     [projectId, actions]
   );
 
+  const { can: canProject, loading: projectPermissionsLoading } =
+    usePermissions({ projectId });
+  const canEditProject = canProject("project:update");
+  const canManageProjectSettings = canProject("project.settings:manage");
+  const canManageProjectMembers = canProject("project.members:manage");
+  const projectReadOnly = !projectPermissionsLoading && !canEditProject;
+
   const handleToggleStar = useCallback(async () => {
     if (!projectId || !user?.id) return;
     await actions.toggleStarProject(projectId, user.id, project?.workspaceId);
@@ -635,13 +553,19 @@ export default observer(function ProjectLayout() {
     (canvasEnabled ? "canvas" : "none");
   const activeMode = rawMode === "app" ? "none" : rawMode;
 
+  // Defaults match `normalizeCapabilitySettings` in
+  // @shogo/shared-runtime/capability-settings. Mobile does not depend on
+  // that package, so the same rules are applied inline: most toggles are
+  // on unless explicitly false; git worktrees and social media are opt-in.
   const capabilitySettings = useMemo(
     () => ({
       canvasEnabled: projectSettings.canvasEnabled !== false,
       webEnabled: projectSettings.webEnabled !== false,
       browserEnabled: projectSettings.browserEnabled !== false,
       shellEnabled: projectSettings.shellEnabled !== false,
-      heartbeatEnabled: projectSettings.heartbeatEnabled !== false,
+      // `heartbeatEnabled` is the pre-split name of this capability toggle.
+      heartbeatToolsEnabled:
+        (projectSettings.heartbeatToolsEnabled ?? projectSettings.heartbeatEnabled) !== false,
       imageGenEnabled: projectSettings.imageGenEnabled !== false,
       memoryEnabled: projectSettings.memoryEnabled !== false,
       quickActionsEnabled: projectSettings.quickActionsEnabled !== false,
@@ -650,6 +574,9 @@ export default observer(function ProjectLayout() {
       channelsEnabled: projectSettings.channelsEnabled !== false,
       // Beta, opt-in: off unless explicitly enabled.
       gitWorktreesEnabled: projectSettings.gitWorktreesEnabled === true,
+      socialMediaEnabled: projectSettings.socialMediaEnabled === true,
+      socialInstagramEnabled: projectSettings.socialInstagramEnabled !== false,
+      socialTiktokEnabled: projectSettings.socialTiktokEnabled !== false,
     }),
     [projectSettings]
   );
@@ -1512,7 +1439,19 @@ export default observer(function ProjectLayout() {
   }, [projectId, chatSessionId]);
 
   // ─── Open chat tabs state ───────────────────────────────
-  const [openChatTabIds, setOpenChatTabIds] = useState<string[]>([]);
+  // Under the always-on workspace runtime, a project has exactly one chat:
+  // its anchor-pinned workspace session. Restoring previously-open
+  // project-scoped tabs here would (a) mount hidden sibling ChatPanels on the
+  // legacy single-project runtime and (b) make `openChatTabIds` non-empty
+  // before the pinned session resolves, defeating the loading gate. So when
+  // the flag is on and we're not following an explicit deep-link, skip the
+  // restore entirely and let the pinned-session promotion seed the sole tab.
+  const { openChatTabIds, setOpenChatTabIds, tabsHydration } = useProjectChatTabs({
+    projectId,
+    chatSessionId,
+    skipRestore: workspaceRuntimeEnabled && !params.chatSessionId,
+    nativePhone,
+  });
   /** Web: pending delete confirmation (AlertDialog); native uses Alert.alert */
   const [deleteChatConfirmSessionId, setDeleteChatConfirmSessionId] = useState<
     string | null
@@ -1525,90 +1464,6 @@ export default observer(function ProjectLayout() {
   const [debugInitMessages, setDebugInitMessages] = useState<
     Record<string, string>
   >({});
-  /**
-   * Tri-state hydration status for the open-tabs list:
-   * - 'loading': haven't read AsyncStorage yet
-   * - 'restored-with-tabs': storage had a non-empty list, restored it
-   * - 'restored-empty': storage had an explicit `[]` (user previously closed everything)
-   * - 'fresh': no storage key — first visit to this project, OK to auto-create
-   * Distinguishing 'restored-empty' from 'fresh' is what prevents the auto-select
-   * effect from resurrecting a tab the user just closed.
-   */
-  type TabsHydration =
-    | "loading"
-    | "restored-with-tabs"
-    | "restored-empty"
-    | "fresh";
-  const [tabsHydration, setTabsHydration] = useState<TabsHydration>("loading");
-  const openTabsRestoredRef = useRef(false);
-
-  // Restore open tabs from AsyncStorage on mount
-  useEffect(() => {
-    if (!projectId || openTabsRestoredRef.current) return;
-    // Under the always-on workspace runtime, a project has exactly one chat:
-    // its anchor-pinned workspace session. Restoring previously-open
-    // project-scoped tabs here would (a) mount hidden sibling ChatPanels on the
-    // legacy single-project runtime and (b) make `openChatTabIds` non-empty
-    // before the pinned session resolves, defeating the loading gate. So when
-    // the flag is on and we're not following an explicit deep-link, skip the
-    // restore entirely and let the pinned-session promotion seed the sole tab.
-    if (workspaceRuntimeEnabled && !params.chatSessionId) {
-      openTabsRestoredRef.current = true;
-      setTabsHydration("fresh");
-      return;
-    }
-    AsyncStorage.getItem(`shogo:chatTabs:${projectId}`)
-      .then((raw) => {
-        if (raw === null) {
-          openTabsRestoredRef.current = true;
-          setTabsHydration("fresh");
-          return;
-        }
-        try {
-          const ids = JSON.parse(raw);
-          if (Array.isArray(ids)) {
-            if (ids.length > 0) {
-              setOpenChatTabIds(ids);
-              openTabsRestoredRef.current = true;
-              setTabsHydration("restored-with-tabs");
-              return;
-            }
-            openTabsRestoredRef.current = true;
-            setTabsHydration(nativePhone ? "fresh" : "restored-empty");
-            return;
-          }
-        } catch {
-          /* ignore malformed data */
-        }
-        // Malformed payload — treat as fresh so we still auto-create.
-        openTabsRestoredRef.current = true;
-        setTabsHydration("fresh");
-      })
-      .catch(() => {
-        openTabsRestoredRef.current = true;
-        setTabsHydration("fresh");
-      });
-  }, [projectId, phoneLayout, nativePhone]);
-
-  // Persist open tabs to AsyncStorage on every change, including `[]`.
-  // Storing the explicit empty array is what lets the next mount distinguish
-  // "user closed everything" from "first-ever visit".
-  useEffect(() => {
-    if (!projectId || tabsHydration === "loading") return;
-    AsyncStorage.setItem(
-      `shogo:chatTabs:${projectId}`,
-      JSON.stringify(openChatTabIds)
-    ).catch(() => {});
-  }, [projectId, openChatTabIds, tabsHydration]);
-
-  // Ensure the active session is always in the open tabs list
-  useEffect(() => {
-    if (!chatSessionId) return;
-    setOpenChatTabIds((prev) => {
-      if (prev.includes(chatSessionId)) return prev;
-      return [...prev, chatSessionId];
-    });
-  }, [chatSessionId]);
 
   // Apply a deep-linked chat session whenever the `chatSessionId` param
   // changes — e.g. selecting a chat in a project that isn't open yet. The
@@ -3657,6 +3512,11 @@ export default observer(function ProjectLayout() {
                 className="flex-1"
                 ideMode={isIdeChatEmbed}
                 enrichMessage={enrichMessage}
+                readOnlyReason={
+                  projectReadOnly
+                    ? "You have view-only access to this project"
+                    : undefined
+                }
               />
             </PanelErrorBoundary>
           </View>
@@ -3748,7 +3608,9 @@ export default observer(function ProjectLayout() {
     projectCreatedAt: project?.createdAt,
     projectModifiedAt: project?.updatedAt,
     isStarred,
-    onRenameProject: handleRenameProject,
+    onRenameProject: canEditProject ? handleRenameProject : undefined,
+    canExport: canProject("project:export"),
+    canPublish: canProject("project:publish"),
     onToggleStar: handleToggleStar,
     onMoveToFolder: handleMoveToFolder,
     folders,
@@ -4793,10 +4655,46 @@ export default observer(function ProjectLayout() {
                             ],
                           }
                         );
+                        // Unfiltered while loading so SettingsPanel doesn't drop the
+                        // restored section before permissions arrive.
+                        const visibleSettingsGroups = projectPermissionsLoading
+                          ? settingsGroups
+                          : settingsGroups.filter((group) =>
+                              group.id === "monitoring"
+                                ? true
+                                : group.id === "workspace"
+                                ? canEditProject
+                                : canManageProjectSettings
+                            );
+                        if (canManageProjectMembers) {
+                          visibleSettingsGroups.unshift({
+                            id: "sharing",
+                            label: "SHARING",
+                            items: [
+                              {
+                                id: "access",
+                                label: "Access",
+                                icon: Users,
+                                render: () => (
+                                  <PanelErrorBoundary panelName="Access">
+                                    <ProjectAccessPanel
+                                      projectId={projectId!}
+                                      onVisibilityChange={(visibility) =>
+                                        setProject((prev: any) =>
+                                          prev ? { ...prev, visibility } : prev
+                                        )
+                                      }
+                                    />
+                                  </PanelErrorBoundary>
+                                ),
+                              },
+                            ],
+                          });
+                        }
                         return (
                           <SettingsPanel
                             visible={effectiveTab === "settings"}
-                            groups={settingsGroups}
+                            groups={visibleSettingsGroups}
                             requestedItem={requestedSettingsItem}
                           />
                         );

@@ -23,11 +23,11 @@ mock.module('../../lib/prisma', () => withPrismaExports({
   prisma: {
     member: {
       findFirst: async () => (s.role ? { role: s.role } : null),
-      findMany: async () => [],
+      findMany: async () => (s.role ? [{ role: s.role, workspaceId: 'w1', projectId: null, isBillingAdmin: false }] : []),
     },
     project: {
       findFirst: async (args: any) => (args.where.id === s.project.id ? s.project : null),
-      findUnique: async () => ({ thumbnailUrl: null }),
+      findUnique: async () => ({ id: s.project.id, workspaceId: 'w1', visibility: 'workspace', thumbnailUrl: null }),
       findMany: async () => [s.project],
       update: async (args: any) => {
         s.projectUpdates.push(args)
@@ -148,7 +148,7 @@ describe('reading a look', () => {
 
   test('mentionables list each agent with its look', async () => {
     s.project.buddyLook = JSON.stringify(WIZARD)
-    const { agents } = await listMentionables('w1')
+    const { agents } = await listMentionables('w1', 'someone')
     expect(agents.find((a: any) => a.key === 'ws')?.buddyLook).toBeNull()
     expect(agents.find((a: any) => a.key === 'p:p1')?.buddyLook?.topper).toBe('wizard')
   })

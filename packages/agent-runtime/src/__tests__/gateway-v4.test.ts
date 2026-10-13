@@ -96,26 +96,61 @@ describe('AgentGateway constructor + loadConfig', () => {
     expect(gw.getActiveMode()).toBe('canvas')
   })
 
-  test('honors raw.heartbeat.intervalMs (converted to seconds)', () => {
-    const ws = makeWorkspace('ctor-hb-ms', JSON.stringify({
-      heartbeat: { intervalMs: 60000, enabled: true },
+  test('heartbeatToolsEnabled is read from config.json', () => {
+    const ws = makeWorkspace('ctor-hb-tools', JSON.stringify({
+      heartbeatToolsEnabled: false,
       channels: [],
       model: { provider: 'anthropic', name: 'claude-haiku-4-5' },
     }))
-    const gw = new AgentGateway(ws, 'p-hb-ms')
-    // Implementation private — exercise via public surface (no crash + active mode default).
-    expect(gw.getActiveMode()).toBe('canvas')
+    const gw = new AgentGateway(ws, 'p-hb-tools')
+    expect((gw as any).config.heartbeatToolsEnabled).toBe(false)
   })
 
-  test('honors top-level heartbeatInterval when heartbeat sub-object absent', () => {
-    const ws = makeWorkspace('ctor-hb-top', JSON.stringify({
-      heartbeatInterval: 3600,
-      heartbeatEnabled: true,
+  test('legacy heartbeatEnabled is read as the capability toggle when heartbeatToolsEnabled is absent', () => {
+    const ws = makeWorkspace('ctor-hb-legacy', JSON.stringify({
+      heartbeatEnabled: false,
       channels: [],
       model: { provider: 'anthropic', name: 'claude-haiku-4-5' },
     }))
-    const gw = new AgentGateway(ws, 'p-hb-top')
-    expect(gw.getActiveMode()).toBe('canvas')
+    const gw = new AgentGateway(ws, 'p-hb-legacy')
+    expect((gw as any).config.heartbeatToolsEnabled).toBe(false)
+  })
+
+  test('heartbeatToolsEnabled wins over the legacy heartbeatEnabled key', () => {
+    const ws = makeWorkspace('ctor-hb-both', JSON.stringify({
+      heartbeatToolsEnabled: true,
+      heartbeatEnabled: false,
+      channels: [],
+      model: { provider: 'anthropic', name: 'claude-haiku-4-5' },
+    }))
+    const gw = new AgentGateway(ws, 'p-hb-both')
+    expect((gw as any).config.heartbeatToolsEnabled).toBe(true)
+  })
+
+  test('heartbeat tools default to visible (unset) when config.json does not mention them', () => {
+    const ws = makeWorkspace('ctor-hb-default', JSON.stringify({
+      channels: [],
+      model: { provider: 'anthropic', name: 'claude-haiku-4-5' },
+    }))
+    const gw = new AgentGateway(ws, 'p-hb-default')
+    expect((gw as any).config.heartbeatToolsEnabled).toBeUndefined()
+  })
+
+  test('the heartbeat schedule is NOT loaded from config.json (the database owns it)', () => {
+    const ws = makeWorkspace('ctor-hb-schedule', JSON.stringify({
+      heartbeat: { intervalMs: 60000, enabled: true },
+      heartbeatInterval: 3600,
+      quietHours: { start: '22:00', end: '06:00', timezone: 'UTC' },
+      channels: [],
+      model: { provider: 'anthropic', name: 'claude-haiku-4-5' },
+    }))
+    const gw = new AgentGateway(ws, 'p-hb-schedule')
+    // The status snapshot is a default until the project config API answers.
+    expect((gw as any).heartbeatSnapshot).toEqual({
+      enabled: false,
+      intervalSeconds: 1800,
+      quietHours: { start: '', end: '', timezone: 'UTC' },
+    })
   })
 
   test('preserves activeMode + allowedModes from config.json', () => {

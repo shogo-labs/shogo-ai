@@ -55,7 +55,7 @@
 // zero risk of a driver-version mismatch corrupting the DB during
 // repair.
 
-import { execFileSync } from 'child_process'
+import { execFileSync } from './child-process'
 import fs from 'fs'
 import path from 'path'
 

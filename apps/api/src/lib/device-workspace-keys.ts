@@ -26,7 +26,7 @@ export interface DeviceInfo {
 
 async function memberships(prisma: PrismaClient, userId: string) {
   const members = await (prisma as any).member.findMany({
-    where: { userId, workspaceId: { not: null } },
+    where: { userId, workspaceId: { not: null }, projectId: null },
     select: { workspace: { select: { id: true, name: true, slug: true, kind: true } } },
     orderBy: { createdAt: 'asc' },
   })

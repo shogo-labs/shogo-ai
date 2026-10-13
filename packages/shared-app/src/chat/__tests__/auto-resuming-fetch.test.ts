@@ -207,6 +207,57 @@ describe('createAutoResumingFetch', () => {
     expect(text).toContain('data-turn-complete')
   })
 
+  test('a resume GET that ends mid-turn reconnects with ?fromSeq=N instead of replaying again', async () => {
+    const STREAM_URL = `${POST_URL}/${SESSION_ID}/stream`
+    const replayBody = streamFrom([
+      sseFrame({ type: 'text-delta', delta: 'replayed-' }),
+      sseFrame({ type: 'data-turn-seq', data: { turnId: TURN_ID, seq: 40 } }),
+    ])
+    const tailBody = streamFrom([
+      sseFrame({ type: 'text-delta', delta: 'tail' }),
+      sseFrame({ type: 'data-turn-complete', data: { turnId: TURN_ID, status: 'completed', lastSeq: 42 } }),
+    ])
+    const calls: string[] = []
+    const baseFetch: any = async (url: string) => {
+      calls.push(url)
+      return new Response(calls.length === 1 ? replayBody : tailBody, {
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream', 'X-Turn-Id': TURN_ID },
+      })
+    }
+
+    const fetcher = createAutoResumingFetch(baseFetch, { logger: SILENT_LOGGER, initialBackoffMs: 1, maxBackoffMs: 1 })
+    const r = await fetcher(STREAM_URL, { method: 'GET' })
+    const text = await readAll(r.body!)
+
+    expect(calls).toEqual([STREAM_URL, `${STREAM_URL}?fromSeq=40`])
+    expect(text).toContain('replayed-')
+    expect(text).toContain('tail')
+  })
+
+  test('a resume GET with fromSeq starts its cursor there', async () => {
+    const STREAM_URL = `${POST_URL}/${SESSION_ID}/stream`
+    const calls: string[] = []
+    const baseFetch: any = async (url: string) => {
+      calls.push(url)
+      const body =
+        calls.length === 1
+          ? streamFrom([sseFrame({ type: 'text-delta', delta: 'x' })])
+          : streamFrom([sseFrame({ type: 'data-turn-complete', data: { turnId: TURN_ID, status: 'completed' } })])
+      return new Response(body, { status: 200, headers: { 'X-Turn-Id': TURN_ID } })
+    }
+    const fetcher = createAutoResumingFetch(baseFetch, { logger: SILENT_LOGGER, initialBackoffMs: 1, maxBackoffMs: 1 })
+    await readAll((await fetcher(`${STREAM_URL}?fromSeq=12`, { method: 'GET' })).body!)
+    expect(calls).toEqual([`${STREAM_URL}?fromSeq=12`, `${STREAM_URL}?fromSeq=12`])
+  })
+
+  test('a 204 resume GET passes through untouched', async () => {
+    const baseFetch: any = async () => new Response(null, { status: 204 })
+    const fetcher = createAutoResumingFetch(baseFetch, { logger: SILENT_LOGGER })
+    const r = await fetcher(`${POST_URL}/${SESSION_ID}/stream`, { method: 'GET' })
+    expect(r.status).toBe(204)
+  })
+
   test('falls back to fromSeq=0 if no seq heartbeats arrived before EOF', async () => {
     const initialBody = streamFrom([
       sseFrame({ type: 'data-turn-start', data: { turnId: TURN_ID, chatSessionId: SESSION_ID, startedAt: 1 } }),

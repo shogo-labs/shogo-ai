@@ -28,7 +28,14 @@ const deleteSub = mock(async () => ({ id: 'ps-1' }))
 mock.module('../lib/prisma', () => ({
   prisma: {
     instance: { findUnique: findUniqueInstance },
-    member: { findFirst: findFirstMember },
+    member: {
+      findFirst: findFirstMember,
+      findMany: async ({ where }: any) =>
+        (await findFirstMember({ where: { userId: where.userId, workspaceId: where.OR?.[0]?.workspaceId } } as any))
+          ? [{ role: 'member', projectId: null, isBillingAdmin: false }]
+          : [],
+    },
+    user: { findUnique: async () => ({ role: 'user' }) },
     pushSubscription: { upsert: upsertSub, delete: deleteSub },
     remoteAction: {
       create: mock(async () => ({ id: 'ra' })),

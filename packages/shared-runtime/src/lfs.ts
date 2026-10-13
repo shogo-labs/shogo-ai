@@ -29,7 +29,7 @@
  * explicit {@link lfsPull}.
  */
 
-import { spawn } from 'child_process'
+import { spawn } from './child-process'
 import { existsSync, readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
 

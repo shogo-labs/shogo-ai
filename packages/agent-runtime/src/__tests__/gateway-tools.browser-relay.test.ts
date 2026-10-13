@@ -5,10 +5,10 @@
 // Targets the playwright/cdp clusters:
 //   L2324-2369 spawnCDPRelay (child_process.spawn relay handshake)
 //   L2487-2522 ensureScreencast (CDPSession attach + Page.screencastFrame)
-// Mocks playwright-core and patches require('child_process').spawn at the
-// cached-module level.
+// Mocks playwright-core and spies on child_process.spawn so the
+// windowsHide wrapper, which reads that binding at call time, sees the fake.
 
-import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test'
+import { describe, test, expect, beforeEach, afterEach, mock, spyOn } from 'bun:test'
 import { EventEmitter } from 'events'
 
 // Mock playwright-core BEFORE importing gateway-tools
@@ -57,7 +57,9 @@ mock.module('../screencast-broadcaster', () => ({
   },
 }))
 
-// Patch child_process.spawn at the cached CJS module level
+// Patch child_process.spawn on the module namespace. gateway-tools spawns
+// through @shogo/shared-runtime/child-process, which reads this binding at
+// call time. A plain `cp.spawn =` assignment is not visible to that import.
 class FakeChild extends EventEmitter {
   stdout = new EventEmitter()
   stderr = new EventEmitter()
@@ -68,7 +70,7 @@ let lastChild: FakeChild | null = null
 let spawnBehavior: 'success' | 'error' | 'exit-nonzero' | 'timeout' = 'success'
 {
   const cp = require('child_process')
-  cp.spawn = (_cmd: string, _args: string[], _opts: any) => {
+  spyOn(cp, 'spawn').mockImplementation((_cmd: string, _args: string[], _opts: any) => {
     const child = new FakeChild()
     lastChild = child
     setImmediate(() => {
@@ -91,7 +93,7 @@ let spawnBehavior: 'success' | 'error' | 'exit-nonzero' | 'timeout' = 'success'
       ))
     })
     return child as any
-  }
+  })
 }
 
 const { createBrowserTool } = await import('../gateway-tools')

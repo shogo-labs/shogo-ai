@@ -27,7 +27,11 @@ describe('createWidgetSink', () => {
 describe('shared native config', () => {
   test('the app and the widget target use the same App Group', () => {
     const appJson = JSON.parse(readFileSync(join(root, 'app.json'), 'utf8'))
-    expect(appJson.expo.ios.entitlements['com.apple.security.application-groups']).toContain(GLANCE_APP_GROUP)
+    const plugins: unknown[] = appJson.expo.plugins
+    const widgetsEnabled = plugins.some((p) => (Array.isArray(p) ? p[0] : p) === '@bacons/apple-targets')
+    const appGroups = appJson.expo.ios.entitlements?.['com.apple.security.application-groups'] ?? []
+    if (widgetsEnabled) expect(appGroups).toContain(GLANCE_APP_GROUP)
+    else expect(appGroups).not.toContain(GLANCE_APP_GROUP)
     const target = readFileSync(join(root, 'targets/widgets/expo-target.config.js'), 'utf8')
     expect(target).toContain('application-groups')
   })

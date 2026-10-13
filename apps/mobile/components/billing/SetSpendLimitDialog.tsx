@@ -115,8 +115,9 @@ export function SetSpendLimitDialog({
           <View className="p-4 gap-3">
             <Text className="text-sm text-muted-foreground">
               You keep working when included usage runs out — we charge the saved card
-              in trust blocks billed at provider cost + 20%. Blocks start at $100 and
-              step up by $100 as you build payment history (capped at $500 per charge).
+              in trust blocks billed at provider cost + 20%. Blocks start at $25 and
+              grow as earlier blocks are paid (up to $500 per charge). On-demand usage
+              pauses while a block is unpaid.
             </Text>
 
             <View className="gap-1">

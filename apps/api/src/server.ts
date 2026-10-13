@@ -37,6 +37,8 @@ import { startAgentTaskWorker, stopAgentTaskWorker } from './jobs/run-agent-task
 import { startAgentScheduleWorker, stopAgentScheduleWorker } from './jobs/run-agent-schedule-dispatch'
 import { startEventDeliveryWorker, stopEventDeliveryWorker } from './jobs/run-event-delivery-dispatch'
 import { inviteLinkAcceptRoutes } from './routes/invite-link-accept'
+import { inviteLinkRoutes } from './routes/invite-links'
+import { rbacRoutes } from './routes/rbac'
 import { appActionsRoutes } from './routes/app-actions'
 import { startChatQueueWorker, stopChatQueueWorker } from './jobs/run-chat-queue-drain'
 import { startChannelWorkers, stopChannelWorkers } from './jobs/run-channel-workers'
@@ -154,6 +156,8 @@ import {
   requireProjectAccess,
   isProjectReservedTopLevelPath,
 } from './middleware/auth'
+import type { Permission } from '@shogo/authz'
+import { decide, getAccess, loadAccess } from './lib/authz'
 import {
   apiAuthGate,
   isAllowedUnauthWebchatProxyPath,
@@ -207,6 +211,7 @@ const unsubscribeUser: any = cloud.unsubscribeUser ?? (async () => {})
 const getUnreadNotificationCount: any = cloud.getUnreadNotificationCount ?? (async () => 0)
 const notifyPaymentReceipt: any = cloud.notifyPaymentReceipt ?? (async () => {})
 const notifyPaymentFailed: any = cloud.notifyPaymentFailed ?? (async () => {})
+const notifyPaymentActionRequired: any = cloud.notifyPaymentActionRequired ?? (async () => {})
 const STRIPE_API_VERSION: any = cloud.STRIPE_API_VERSION
 const resolveInvoiceSubscriptionId: any = cloud.resolveInvoiceSubscriptionId ?? (() => null)
 const proxyToPeer: any = cloud.proxyToPeer ?? (async () => new Response('Cloud peer routing unavailable', { status: 503 }))
@@ -302,40 +307,39 @@ async function getAuthUserId(c: any): Promise<string | null> {
 }
 
 /**
- * Verify that the authenticated user is a member of the given workspace.
+ * Verify that the authenticated principal can read the given workspace
+ * (workspace-scoped membership; project guests do not qualify).
  * Returns the userId on success, or null if not a member / not authenticated.
  */
 async function verifyWorkspaceMembership(c: any, workspaceId: string): Promise<string | null> {
   const auth = c.get('auth') as any
   const userId = auth?.userId
   if (!userId) return null
-  const member = await prisma.member.findFirst({
-    where: { userId, workspaceId },
-  })
-  return member ? userId : null
+  const access = await getAccess(c, { workspaceId })
+  return access.permissions.has('workspace:read') ? userId : null
 }
 
 /**
- * Verify that a user has access to a project via workspace membership.
+ * Verify that a user holds `permission` on a project.
  * Returns the project's workspaceId if access is granted, null otherwise.
  */
-async function verifyProjectAccess(userId: string, projectId: string): Promise<string | null> {
-  const project = await prisma.project.findUnique({
-    where: { id: projectId },
-    select: { workspaceId: true },
-  })
-  if (!project) {
+async function verifyProjectAccess(
+  userId: string,
+  projectId: string,
+  permission: Permission = 'project:read',
+): Promise<string | null> {
+  const principal = { userId, via: 'session' as const }
+  const access = await loadAccess(principal, { projectId })
+  if (!access.exists) {
     console.warn(`[Auth] verifyProjectAccess: project ${projectId} not found`)
     return null
   }
-
-  const member = await prisma.member.findFirst({
-    where: { userId, workspaceId: project.workspaceId },
-  })
-  if (!member) {
-    console.warn(`[Auth] verifyProjectAccess: user ${userId} not a member of workspace ${project.workspaceId} (project ${projectId})`)
+  const decision = await decide(access, permission, principal, `verifyProjectAccess ${projectId}`)
+  if (!decision.ok) {
+    console.warn(`[Auth] verifyProjectAccess: user ${userId} lacks ${permission} on project ${projectId}`)
+    return null
   }
-  return member ? project.workspaceId : null
+  return access.workspaceId
 }
 
 /**
@@ -1936,6 +1940,27 @@ async function probeMetalPreviewReady(baseUrl: string, timeoutMs: number): Promi
   }
 }
 
+// The edge steers `studio.shogo.ai` by latency, so a visitor's region is not the
+// site's. Serve every published request from the workspace's home region, and
+// make sure no other region keeps a copy (see lib/published-home-region).
+async function pinPublishedToHomeRegion(c: any, projectId: string, subdomain: string): Promise<Response | null> {
+  const { pinChatToHomeRegion } = await import('./lib/chat-region-pin')
+  return pinChatToHomeRegion(c, projectId, undefined, {
+    onForeignHome: (homeRegion) => {
+      if (!isKubernetes()) return
+      void import('./lib/metal-warm-pool-controller')
+        .then((m) => m.getMetalWarmPoolController().releaseForeignPublished(projectId, subdomain, homeRegion))
+        .catch((err) => console.warn(`[published] release ${subdomain} failed: ${err?.message ?? err}`))
+    },
+    onLocalHome: () => {
+      if (!isKubernetes()) return
+      void import('./lib/published-home-region')
+        .then((m) => m.askPeersToReleasePublished(projectId, subdomain))
+        .catch((err) => console.warn(`[published] asking peers to release ${subdomain} failed: ${err?.message ?? err}`))
+    },
+  })
+}
+
 // Wake a published, server-backed app ({subdomain}.shogo.one -> published-{id}).
 app.get('/api/published/:subdomain/wake', async (c) => {
   const subdomain = (c.req.param('subdomain') || '').toLowerCase()
@@ -1947,6 +1972,8 @@ app.get('/api/published/:subdomain/wake', async (c) => {
     if (!project) {
       return c.json({ ready: false, error: 'not_found' }, 404, WAKE_RESPONSE_HEADERS)
     }
+    const pinned = await pinPublishedToHomeRegion(c, project.id, subdomain)
+    if (pinned) return pinned
     // No cluster locally — nothing to wake; tell the page to proceed.
     if (!isKubernetes()) {
       return c.json({ ready: true }, 200, WAKE_RESPONSE_HEADERS)
@@ -2312,10 +2339,12 @@ const publishedApiHandler = async (c: any) => {
   try {
     const project = await prisma.project.findUnique({
       where: { publishedSubdomain: subdomain },
-      select: { id: true, publishedAlwaysOn: true } as any,
+      select: { id: true, publishedAlwaysOn: true },
     })
     if (!project) return c.json({ error: { code: 'not_found' } }, 404)
     if (!isKubernetes()) return c.json({ error: { code: 'not_supported_locally' } }, 404)
+    const pinned = await pinPublishedToHomeRegion(c, project.id, subdomain)
+    if (pinned) return pinned
 
     const { getMetalPublishedUrl } = await import('./lib/metal-warm-pool-controller')
     let target: string
@@ -5487,112 +5516,76 @@ app.patch('/api/projects/:projectId/heartbeat', async (c) => {
   if ('error' in authResult) return authResult.error
 
   const body = await c.req.json()
-  const data: Record<string, any> = {}
 
-  if (typeof body.heartbeatEnabled === 'boolean') {
-    data.heartbeatEnabled = body.heartbeatEnabled
-  }
-  if (typeof body.heartbeatInterval === 'number' && body.heartbeatInterval >= 60) {
-    data.heartbeatInterval = body.heartbeatInterval
-  }
-  if (body.quietHoursStart !== undefined) data.quietHoursStart = body.quietHoursStart || null
-  if (body.quietHoursEnd !== undefined) data.quietHoursEnd = body.quietHoursEnd || null
-  if (body.quietHoursTimezone !== undefined) data.quietHoursTimezone = body.quietHoursTimezone || null
-
-  const existing = await prisma.agentConfig.findUnique({
-    where: { projectId: authResult.projectId },
-    include: { project: { select: { workspaceId: true } } },
-  })
-  if (!existing) {
-    return c.json({ error: 'Agent config not found' }, 404)
-  }
-
-  const enabled = data.heartbeatEnabled ?? existing.heartbeatEnabled
-  const interval = data.heartbeatInterval ?? existing.heartbeatInterval
-
-  if (enabled && existing.project?.workspaceId) {
-    const isPaid = await billingService.hasPaidSubscription(existing.project.workspaceId)
-    if (!isPaid) {
-      return c.json(
-        { error: { code: 'paywall', message: 'Heartbeats require a paid plan. Please upgrade to enable scheduled heartbeats.' } },
-        402
-      )
+  const { updateHeartbeatConfig, HeartbeatConfigError } = await import('./services/heartbeat-config.service')
+  let updated: any
+  try {
+    ;({ config: updated } = await updateHeartbeatConfig(
+      authResult.projectId,
+      {
+        heartbeatEnabled: typeof body.heartbeatEnabled === 'boolean' ? body.heartbeatEnabled : undefined,
+        heartbeatInterval: typeof body.heartbeatInterval === 'number' ? body.heartbeatInterval : undefined,
+        quietHoursStart: body.quietHoursStart,
+        quietHoursEnd: body.quietHoursEnd,
+        quietHoursTimezone: body.quietHoursTimezone,
+      },
+      { alwaysReschedule: true, createIfMissing: true },
+    ))
+  } catch (err) {
+    if (err instanceof HeartbeatConfigError) {
+      if (err.code === 'paywall') {
+        return c.json({ error: { code: 'paywall', message: err.message } }, 402)
+      }
+      if (err.code === 'not_found') return c.json({ error: err.message }, 404)
     }
+    throw err
   }
-
-  if (enabled) {
-    const jitter = Math.floor(Math.random() * interval * 0.1) * 1000
-    data.nextHeartbeatAt = new Date(Date.now() + interval * 1000 + jitter)
-  } else {
-    data.nextHeartbeatAt = null
-  }
-
-  const updated = await prisma.agentConfig.update({
-    where: { projectId: authResult.projectId },
-    data,
-    select: {
-      heartbeatEnabled: true,
-      heartbeatInterval: true,
-      nextHeartbeatAt: true,
-      lastHeartbeatAt: true,
-      quietHoursStart: true,
-      quietHoursEnd: true,
-      quietHoursTimezone: true,
-      modelName: true,
-    },
-  })
 
   const { resolveModelLabel } = await import('./services/model-registry.service')
   return c.json({
-    ...updated,
+    heartbeatEnabled: updated.heartbeatEnabled,
+    heartbeatInterval: updated.heartbeatInterval,
+    nextHeartbeatAt: updated.nextHeartbeatAt,
+    lastHeartbeatAt: updated.lastHeartbeatAt,
+    quietHoursStart: updated.quietHoursStart,
+    quietHoursEnd: updated.quietHoursEnd,
+    quietHoursTimezone: updated.quietHoursTimezone,
+    modelName: updated.modelName,
     modelLabel: updated.modelName ? await resolveModelLabel(updated.modelName) : null,
   })
 })
 
-// Sync heartbeat config from runtime config.json to DB (local mode).
-// Authenticated via x-runtime-token so the agent runtime can call it.
+// DEPRECATED: heartbeat settings now live only in the database, written
+// through the heartbeat config service. Kept for one release because cloud
+// runtime images can lag behind API deploys and still push config.json
+// heartbeat fields here. Authenticated via x-runtime-token (project or
+// workspace token scoped to the project's workspace).
 app.put('/api/projects/:projectId/heartbeat/sync', async (c) => {
   const projectId = c.req.param('projectId')
-  const token = c.req.header('x-runtime-token')
 
-  const { verifyRuntimeToken } = await import('./lib/runtime-token')
-  const verified = verifyRuntimeToken(token, projectId)
-  if (!verified.ok || verified.projectId !== projectId) {
+  const { authenticateRuntimeToken } = await import('./routes/internal-runtime-auth')
+  if (!(await authenticateRuntimeToken(c, projectId))) {
     return c.json({ error: 'Unauthorized' }, 401)
   }
 
   const body = await c.req.json()
-  const data: Record<string, any> = {}
 
-  if (typeof body.heartbeatEnabled === 'boolean') {
-    data.heartbeatEnabled = body.heartbeatEnabled
-  }
-  if (typeof body.heartbeatInterval === 'number' && body.heartbeatInterval >= 60) {
-    data.heartbeatInterval = body.heartbeatInterval
-  }
-
-  const existing = await prisma.agentConfig.findUnique({ where: { projectId } })
-  const enabled = data.heartbeatEnabled ?? existing?.heartbeatEnabled ?? false
-  const interval = data.heartbeatInterval ?? existing?.heartbeatInterval ?? 1800
-
-  if (enabled) {
-    const jitter = Math.floor(Math.random() * interval * 0.1) * 1000
-    data.nextHeartbeatAt = new Date(Date.now() + interval * 1000 + jitter)
-  } else {
-    data.nextHeartbeatAt = null
-  }
-
-  await prisma.agentConfig.upsert({
-    where: { projectId },
-    update: data,
-    create: {
+  const { updateHeartbeatConfig, HeartbeatConfigError } = await import('./services/heartbeat-config.service')
+  try {
+    await updateHeartbeatConfig(
       projectId,
-      heartbeatEnabled: enabled,
-      heartbeatInterval: interval,
-      nextHeartbeatAt: data.nextHeartbeatAt,
-      channels: [],
-    },
-  })
+      {
+        heartbeatEnabled: typeof body.heartbeatEnabled === 'boolean' ? body.heartbeatEnabled : undefined,
+        heartbeatInterval: typeof body.heartbeatInterval === 'number' ? body.heartbeatInterval : undefined,
+      },
+      { createIfMissing: true, alwaysReschedule: true },
+    )
+  } catch (err) {
+    if (err instanceof HeartbeatConfigError && err.code === 'paywall') {
+      return c.json({ error: { code: 'paywall', message: err.message } }, 402)
+    }
+    throw err
+  }
 
   return c.json({ ok: true })
 })
@@ -7135,7 +7128,7 @@ app.get('/api/billing/workspace-plan', async (c) => {
       // Filter to only workspaces the user is a member of
       const memberships = userId
         ? await prisma.member.findMany({
-            where: { userId, workspaceId: { in: ids } },
+            where: { userId, workspaceId: { in: ids }, projectId: null },
             select: { workspaceId: true, role: true, isBillingAdmin: true },
           })
         : []
@@ -7217,6 +7210,14 @@ app.get('/api/billing/workspace-plan', async (c) => {
       paidTier: overageStatus.paidTier,
       overageHardLimitUsd: wallet?.overageHardLimitUsd ?? null,
       overageAccumulatedUsd: wallet?.overageAccumulatedUsd ?? 0,
+      // Current overage block: the most unpaid overage the workspace can
+      // carry before usage pauses for payment. Grows as blocks get paid.
+      overageBlockUsd: billingService.overageBlockUsd(wallet?.overagePaidBlocks ?? 0),
+      overagePaymentPending: Boolean(wallet?.overageOutstandingInvoiceId),
+      overageOutstandingUsd: wallet?.overageOutstandingUsd ?? 0,
+      // Stripe's hosted invoice page for the pending block: pay it or confirm
+      // a bank-required authentication there.
+      overageOutstandingInvoiceUrl: wallet?.overageOutstandingInvoiceUrl ?? null,
       // Rolling usage windows (time-gated "unlimited"). `limitUsd: null`
       // means the window is uncapped (enterprise).
       usageWindows,
@@ -7859,10 +7860,7 @@ app.put('/api/workspaces/:id/visible-models', async (c) => {
     if (!userId) {
       return c.json({ error: { code: 'forbidden', message: 'Access denied' } }, 403)
     }
-    const admin = await prisma.member.findFirst({
-      where: { userId, workspaceId, role: { in: ['owner', 'admin'] } },
-    })
-    if (!admin) {
+    if (!(await getAccess(c, { workspaceId })).permissions.has('workspace.settings:manage')) {
       return c.json({ error: { code: 'forbidden', message: 'Workspace admin access required' } }, 403)
     }
 
@@ -8165,9 +8163,20 @@ app.post('/api/webhooks/stripe', async (c) => {
         // before this — nothing synced a canceled instance add-on back to
         // `workspace.instanceSize`, so a workspace that canceled kept
         // running (and being billed floor-wise) at its old tier forever.
-        // Seat-plan cancellation is intentionally NOT handled here — that's
-        // a separate, pre-existing gap outside this change's scope.
         const subscription = event.data.object as StripeTypes.Subscription
+        // Seat-plan cancellation: mark the local row canceled so
+        // `resolveEffectivePlan` drops the workspace to free (and overage stops).
+        try {
+          const canceled = await prisma.subscription.updateMany({
+            where: { stripeSubscriptionId: subscription.id, status: { not: 'canceled' } },
+            data: { status: 'canceled', cancelAtPeriodEnd: false },
+          })
+          if (canceled.count > 0) {
+            console.log('[Webhook] Plan subscription canceled:', { subscriptionId: subscription.id })
+          }
+        } catch (err: any) {
+          console.error('[Webhook] Failed to cancel plan subscription:', err.message)
+        }
         try {
           const instanceSub = await instanceService.findInstanceSubscriptionByStripeId(subscription.id)
           if (instanceSub) {
@@ -8272,7 +8281,7 @@ app.post('/api/webhooks/stripe', async (c) => {
             try {
               const workspace = await prisma.workspace.findUnique({
                 where: { id: workspaceId },
-                include: { members: { where: { role: 'owner' }, include: { user: { select: { id: true, email: true } } } } },
+                include: { members: { where: { role: 'owner', projectId: null }, include: { user: { select: { id: true, email: true } } } } },
               })
               const ownerEmail = workspace?.members?.[0]?.user?.email
               if (ownerEmail) {
@@ -8316,6 +8325,19 @@ app.post('/api/webhooks/stripe', async (c) => {
         // 2025+. The old code only read the legacy field (null on the current
         // version), so this entire receipt + monthly-refill path never ran.
         const subscriptionId = resolveInvoiceSubscriptionId(invoice)
+        const overageWorkspaceId = invoice.metadata?.kind === 'overage_block' ? invoice.metadata?.workspaceId : undefined
+        if (overageWorkspaceId && invoice.id) {
+          try {
+            const settled = await billingService.markOverageInvoicePaid(
+              overageWorkspaceId,
+              invoice.id,
+              invoice.hosted_invoice_url ?? undefined,
+            )
+            console.log('[Webhook] Overage invoice paid:', { workspaceId: overageWorkspaceId, invoiceId: invoice.id, settled })
+          } catch (err: any) {
+            console.error('[Webhook] Failed to settle overage invoice:', err.message)
+          }
+        }
         if (customerId && subscriptionId) {
           try {
             const sub = await stripe!.subscriptions.retrieve(subscriptionId)
@@ -8403,26 +8425,53 @@ app.post('/api/webhooks/stripe', async (c) => {
         }
         break
       }
-      case 'invoice.payment_failed': {
+      case 'invoice.payment_failed':
+      case 'invoice.payment_action_required': {
         const invoice = event.data.object as StripeTypes.Invoice
         const customerId = typeof invoice.customer === 'string' ? invoice.customer : (invoice.customer as any)?.id
         const subscriptionId = resolveInvoiceSubscriptionId(invoice)
+        // Off-session charges on cards whose bank demands authentication
+        // (3-D Secure; most Indian cards under RBI rules) land here as
+        // `payment_action_required`: the customer has to approve the charge
+        // on the hosted invoice page, so that link is the call to action.
+        const invoiceUrl = invoice.hosted_invoice_url ?? undefined
+        const notify = (wsId: string, planName: string) => {
+          const params = { planName, amountUsd: (invoice.amount_due || 0) / 100, invoiceId: invoice.id, invoiceUrl }
+          if (event.type === 'invoice.payment_action_required' && invoiceUrl) {
+            void notifyPaymentActionRequired(wsId, { ...params, invoiceUrl })
+          } else {
+            void notifyPaymentFailed(wsId, params)
+          }
+        }
+        if (invoice.metadata?.kind === 'overage_block' && invoice.metadata?.workspaceId) {
+          notify(invoice.metadata.workspaceId, 'On-demand usage')
+        }
         if (customerId && subscriptionId) {
           try {
             const sub = await stripe!.subscriptions.retrieve(subscriptionId)
             const wsId = sub.metadata?.workspaceId
             if (wsId) {
-              // In-app notification + payment-failed email to all billing
-              // admins, deduped on the invoice id.
+              // In-app notification + email to all billing admins, deduped
+              // on the invoice id.
               const planLabel = (sub.metadata?.planId || 'Pro').charAt(0).toUpperCase() + (sub.metadata?.planId || 'pro').slice(1)
-              void notifyPaymentFailed(wsId, {
-                planName: planLabel,
-                amountUsd: (invoice.amount_due || 0) / 100,
-                invoiceId: invoice.id,
-              })
+              notify(wsId, planLabel)
             }
           } catch (err: any) {
             console.error('[Webhook] payment-failed lookup failed:', err.message)
+          }
+        }
+        break
+      }
+      case 'invoice.voided':
+      case 'invoice.marked_uncollectible': {
+        const invoice = event.data.object as StripeTypes.Invoice
+        const wsId = invoice.metadata?.kind === 'overage_block' ? invoice.metadata?.workspaceId : undefined
+        if (wsId && invoice.id) {
+          try {
+            const released = await billingService.releaseOverageInvoice(wsId, invoice.id)
+            console.log('[Webhook] Overage invoice released:', { workspaceId: wsId, invoiceId: invoice.id, type: event.type, released })
+          } catch (err: any) {
+            console.error('[Webhook] Failed to release overage invoice:', err.message)
           }
         }
         break
@@ -8518,7 +8567,7 @@ app.delete('/api/admin/users/:id', authMiddleware, requireAuth, requireSuperAdmi
   const id = c.req.param('id')
   const workspacesWithSubs = await prisma.workspace.findMany({
     where: {
-      members: { some: { userId: id, role: 'owner' } },
+      members: { some: { userId: id, role: 'owner', projectId: null } },
       subscriptions: { some: { status: { in: ['active', 'past_due', 'trialing'] } } },
     },
     select: { name: true, subscriptions: { where: { status: { in: ['active', 'past_due', 'trialing'] } }, select: { planId: true } } },
@@ -8830,46 +8879,15 @@ app.get('/api/workspaces/:id/children', async (c) => {
 // Invite Link Routes (custom, not auto-generated)
 // =============================================================================
 
-// Create invite link for a project or workspace
-app.post('/api/invite-links', async (c) => {
-  const auth = c.get('auth') as any
-  const userId = auth?.userId
-  if (!userId) return c.json({ error: 'Unauthorized' }, 401)
+app.route('/api', rbacRoutes())
 
-  const body = await c.req.json()
-  const { projectId, workspaceId, role = 'member' } = body
-
-  if (!projectId && !workspaceId) {
-    return c.json({ error: 'projectId or workspaceId required' }, 400)
-  }
-
-  // Resolve workspaceId from project if needed
-  let resolvedWorkspaceId = workspaceId
-  if (projectId && !workspaceId) {
-    const project = await prisma.project.findUnique({ where: { id: projectId }, select: { workspaceId: true } })
-    if (!project) return c.json({ error: 'Project not found' }, 404)
-    resolvedWorkspaceId = project.workspaceId
-  }
-
-  // Verify admin access
-  const membership = await prisma.member.findFirst({
-    where: { userId, workspaceId: resolvedWorkspaceId },
-  })
-  if (!membership || (membership.role !== 'owner' && membership.role !== 'admin')) {
-    return c.json({ error: 'Only admins and owners can create invite links' }, 403)
-  }
-
-  const link = await prisma.inviteLink.create({
-    data: { projectId, workspaceId: resolvedWorkspaceId, role, createdBy: userId },
-  })
-
-  const inviteeEmail = body.email as string | undefined
-  if (inviteeEmail) {
-    const baseUrl = getFrontendUrl()
-    const acceptUrl = `${baseUrl}/invite/${link.token}`
+app.route('/api', inviteLinkRoutes({
+  afterCreate: async ({ link, userId, workspaceId, projectId, email }) => {
+    if (!email) return
+    const acceptUrl = `${getFrontendUrl()}/invite/${link.token}`
     const [inviter, workspace] = await Promise.all([
       prisma.user.findUnique({ where: { id: userId }, select: { name: true } }),
-      prisma.workspace.findUnique({ where: { id: resolvedWorkspaceId }, select: { name: true } }),
+      prisma.workspace.findUnique({ where: { id: workspaceId }, select: { name: true } }),
     ])
     const inviterName = inviter?.name || 'A teammate'
     const workspaceName = workspace?.name || 'your workspace'
@@ -8877,96 +8895,18 @@ app.post('/api/invite-links', async (c) => {
     if (projectId) {
       const project = await prisma.project.findUnique({ where: { id: projectId }, select: { name: true } })
       await sendProjectInviteEmail({
-        to: inviteeEmail,
+        to: email,
         inviterName,
         projectName: project?.name || 'a project',
         workspaceName,
-        role,
+        role: link.role,
         acceptUrl,
       })
     } else {
-      await sendInvitationEmail({
-        to: inviteeEmail,
-        inviterName,
-        workspaceName,
-        role,
-        acceptUrl,
-      })
+      await sendInvitationEmail({ to: email, inviterName, workspaceName, role: link.role, acceptUrl })
     }
-  }
-
-  return c.json({ ok: true, data: link })
-})
-
-// List invite links
-app.get('/api/invite-links', async (c) => {
-  const auth = c.get('auth') as any
-  const userId = auth?.userId
-  if (!userId) return c.json({ error: 'Unauthorized' }, 401)
-
-  const projectId = c.req.query('projectId')
-  const workspaceId = c.req.query('workspaceId')
-
-  const where: any = {}
-  if (projectId) where.projectId = projectId
-  else if (workspaceId) where.workspaceId = workspaceId
-  else return c.json({ ok: true, items: [] })
-
-  const links = await prisma.inviteLink.findMany({ where, orderBy: { createdAt: 'desc' } })
-  return c.json({ ok: true, items: links })
-})
-
-// Toggle invite link (owner must be the creator or workspace admin)
-app.patch('/api/invite-links/:id', async (c) => {
-  const auth = c.get('auth') as any
-  const userId = auth?.userId
-  if (!userId) return c.json({ error: 'Unauthorized' }, 401)
-
-  const id = c.req.param('id')
-  const existing = await prisma.inviteLink.findUnique({ where: { id } })
-  if (!existing) return c.json({ error: 'Not found' }, 404)
-
-  // Only the creator or a workspace admin can modify
-  if (existing.createdBy !== userId) {
-    const wsId = existing.workspaceId
-    if (wsId) {
-      const member = await prisma.member.findFirst({ where: { userId, workspaceId: wsId } })
-      if (!member || (member.role !== 'owner' && member.role !== 'admin')) {
-        return c.json({ error: 'Forbidden' }, 403)
-      }
-    } else {
-      return c.json({ error: 'Forbidden' }, 403)
-    }
-  }
-
-  const body = await c.req.json()
-  const link = await prisma.inviteLink.update({ where: { id }, data: { enabled: body.enabled } })
-  return c.json({ ok: true, data: link })
-})
-
-app.delete('/api/invite-links/:id', async (c) => {
-  const auth = c.get('auth') as any
-  const userId = auth?.userId
-  if (!userId) return c.json({ error: 'Unauthorized' }, 401)
-
-  const existing = await prisma.inviteLink.findUnique({ where: { id: c.req.param('id') } })
-  if (!existing) return c.json({ error: 'Not found' }, 404)
-
-  if (existing.createdBy !== userId) {
-    const wsId = existing.workspaceId
-    if (wsId) {
-      const member = await prisma.member.findFirst({ where: { userId, workspaceId: wsId } })
-      if (!member || (member.role !== 'owner' && member.role !== 'admin')) {
-        return c.json({ error: 'Forbidden' }, 403)
-      }
-    } else {
-      return c.json({ error: 'Forbidden' }, 403)
-    }
-  }
-
-  await prisma.inviteLink.delete({ where: { id: existing.id } })
-  return c.json({ ok: true })
-})
+  },
+}))
 
 // Accept invite link (public-ish - requires auth but not membership)
 app.route('/api', inviteLinkAcceptRoutes({
@@ -9009,7 +8949,7 @@ app.route('/api', inviteLinkAcceptRoutes({
 
     if (resolvedWorkspaceId) {
       const owners = await prisma.member.findMany({
-        where: { workspaceId: resolvedWorkspaceId, role: 'owner', userId: { not: userId } },
+        where: { workspaceId: resolvedWorkspaceId, role: 'owner', projectId: null, userId: { not: userId } },
         include: { user: { select: { email: true } } },
       })
       for (const owner of owners) {

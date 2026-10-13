@@ -38,6 +38,15 @@ import {
   PopoverContent,
 } from '@/components/ui/popover'
 import { useAuth } from '../../contexts/auth'
+
+/**
+ * Starred projects span workspaces, so there is no single workspace role to
+ * fall back on: hide actions only when the server's `myPermissions` rules them out.
+ */
+function projectAllows(project: { myPermissions?: readonly string[] } | undefined, permission: string): boolean {
+  const own = project?.myPermissions
+  return !Array.isArray(own) || own.includes(permission)
+}
 import {
   useWorkspaceCollection,
   useProjectCollection,
@@ -293,20 +302,24 @@ export default observer(function StarredProjectsPage() {
                       <StarOff size={14} className="text-muted-foreground" />
                       <Text className="text-sm text-foreground">Unstar</Text>
                     </Pressable>
-                    <Pressable
-                      onPress={() => handleRename(project)}
-                      className="flex-row items-center gap-2.5 px-3 py-2.5 active:bg-muted"
-                    >
-                      <Pencil size={14} className="text-muted-foreground" />
-                      <Text className="text-sm text-foreground">Rename</Text>
-                    </Pressable>
-                    <Pressable
-                      onPress={() => handleDelete(project)}
-                      className="flex-row items-center gap-2.5 px-3 py-2.5 active:bg-muted"
-                    >
-                      <Trash2 size={14} className="text-destructive" />
-                      <Text className="text-sm text-destructive">Delete</Text>
-                    </Pressable>
+                    {projectAllows(project, 'project:update') && (
+                      <Pressable
+                        onPress={() => handleRename(project)}
+                        className="flex-row items-center gap-2.5 px-3 py-2.5 active:bg-muted"
+                      >
+                        <Pencil size={14} className="text-muted-foreground" />
+                        <Text className="text-sm text-foreground">Rename</Text>
+                      </Pressable>
+                    )}
+                    {projectAllows(project, 'project:delete') && (
+                      <Pressable
+                        onPress={() => handleDelete(project)}
+                        className="flex-row items-center gap-2.5 px-3 py-2.5 active:bg-muted"
+                      >
+                        <Trash2 size={14} className="text-destructive" />
+                        <Text className="text-sm text-destructive">Delete</Text>
+                      </Pressable>
+                    )}
                   </PopoverBody>
                 </PopoverContent>
               </Popover>
@@ -396,20 +409,24 @@ export default observer(function StarredProjectsPage() {
                   <StarOff size={14} className="text-muted-foreground" />
                   <Text className="text-sm text-foreground">Unstar</Text>
                 </Pressable>
-                <Pressable
-                  onPress={() => handleRename(project)}
-                  className="flex-row items-center gap-2.5 px-3 py-2.5 active:bg-muted"
-                >
-                  <Pencil size={14} className="text-muted-foreground" />
-                  <Text className="text-sm text-foreground">Rename</Text>
-                </Pressable>
-                <Pressable
-                  onPress={() => handleDelete(project)}
-                  className="flex-row items-center gap-2.5 px-3 py-2.5 active:bg-muted"
-                >
-                  <Trash2 size={14} className="text-destructive" />
-                  <Text className="text-sm text-destructive">Delete</Text>
-                </Pressable>
+                {projectAllows(project, 'project:update') && (
+                  <Pressable
+                    onPress={() => handleRename(project)}
+                    className="flex-row items-center gap-2.5 px-3 py-2.5 active:bg-muted"
+                  >
+                    <Pencil size={14} className="text-muted-foreground" />
+                    <Text className="text-sm text-foreground">Rename</Text>
+                  </Pressable>
+                )}
+                {projectAllows(project, 'project:delete') && (
+                  <Pressable
+                    onPress={() => handleDelete(project)}
+                    className="flex-row items-center gap-2.5 px-3 py-2.5 active:bg-muted"
+                  >
+                    <Trash2 size={14} className="text-destructive" />
+                    <Text className="text-sm text-destructive">Delete</Text>
+                  </Pressable>
+                )}
               </PopoverBody>
             </PopoverContent>
           </Popover>

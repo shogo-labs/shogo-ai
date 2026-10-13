@@ -229,8 +229,13 @@ kubectl create secret generic custom-domains-config \
   --from-literal=CF_CUSTOM_DOMAIN_ZONE_ID="$(terraform output -raw custom_domains_zone_id)" \
   --from-literal=CF_ACCOUNT_ID="<cloudflare account id>" \
   --from-literal=CF_CUSTOM_DOMAIN_KV_NAMESPACE_ID="$(terraform output -raw custom_domains_kv_namespace_id)" \
+  --from-literal=CF_SERVER_BACKED_KV_NAMESPACE_ID="$(terraform output -raw server_backed_kv_namespace_id)" \
   --from-literal=CUSTOM_DOMAIN_FALLBACK_ORIGIN="$(terraform output -raw custom_domain_fallback_origin)"
 ```
+
+`CF_SERVER_BACKED_KV_NAMESPACE_ID` is required in **every** region that can
+publish: without it the API cannot mark a published site as server-backed, so
+the edge Worker never sends its `/api/*` calls to the API.
 
 ## Rollout (staging)
 
@@ -291,8 +296,8 @@ inert `custom-domains-config` env block. To enable:
    precondition by design — it must name a dedicated zone, never `shogo.one`.
 3. Create the `custom-domains-config` secret in `shogo-production-system` from
    the env outputs (`terraform output custom_domains_zone_id`,
-   `custom_domains_kv_namespace_id`, `custom_domain_fallback_origin`) + a
-   SaaS-scoped token, then restart the api.
+   `custom_domains_kv_namespace_id`, `server_backed_kv_namespace_id`,
+   `custom_domain_fallback_origin`) + a SaaS-scoped token, then restart the api.
 
 A `v*` tag only ships the (inert) code and runs the `custom_domains` migrations;
 it does not enable the feature. EU/India serve published-app *traffic* via the

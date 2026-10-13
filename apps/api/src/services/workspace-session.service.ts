@@ -24,10 +24,9 @@ export interface AttachedProject {
   attachMode: AttachMode
 }
 
-// Coalesce duplicate first requests in one process. The partial unique index
-// introduced in `20260921092000_enforce_workspace_primary_session` is the
-// authoritative cross-pod guard; this map merely avoids needless DB races in
-// a single API process.
+// Coalesce duplicate first requests in one process, keyed by workspace and
+// user. A cross-pod race can still create one extra empty chat; both belong
+// to the same user and show up in their history.
 const primarySessionFlights = new Map<string, Promise<any>>()
 
 function normalizeAttachMode(mode: string | undefined | null): AttachMode {
@@ -52,6 +51,11 @@ export async function createWorkspaceSession(
     attachProjectIds?: string[]
     attachMode?: AttachMode
     anchorProjectId?: string
+    /**
+     * Owner of a personal workspace-agent chat. Ignored when the session is
+     * pinned to a project: those chats stay shared, like other project chats.
+     */
+    createdByUserId?: string
   } = {},
 ): Promise<{ id: string; workspaceId: string; contextId: string | null; attached: AttachedProject[] }> {
   const anchorProjectId = opts.anchorProjectId || undefined
@@ -66,6 +70,7 @@ export async function createWorkspaceSession(
       contextType: 'workspace',
       workspaceId,
       contextId: anchorProjectId ?? null,
+      createdByUserId: anchorProjectId ? null : (opts.createdByUserId ?? null),
       name: opts.name ?? null,
       inferredName: opts.inferredName ?? opts.name ?? 'Workspace chat',
       attachedProjects: attachIds.length
@@ -91,8 +96,8 @@ export async function createWorkspaceSession(
 /**
  * Pin an existing workspace session to `projectId` (set `contextId`) when
  * doing so can't change which runtime its other projects live on: the
- * session must not be the workspace's primary chat, must not already be
- * pinned, and must have no attachments besides `projectId`. `pinned` says
+ * session must not already be pinned, and must have no attachments besides
+ * `projectId`. `pinned` says
  * whether the session is pinned to `projectId` afterwards; `changed` whether
  * this call did the pinning.
  */
@@ -102,11 +107,10 @@ export async function pinWorkspaceSessionToProject(
 ): Promise<{ pinned: boolean; changed: boolean }> {
   const session = (await prisma.chatSession.findUnique({
     where: { id: sessionId },
-    select: { contextType: true, contextId: true, isPrimary: true } as any,
-  })) as { contextType?: string; contextId?: string | null; isPrimary?: boolean } | null
+    select: { contextType: true, contextId: true } as any,
+  })) as { contextType?: string; contextId?: string | null } | null
   if (!session || session.contextType !== 'workspace') return { pinned: false, changed: false }
   if (session.contextId) return { pinned: session.contextId === projectId, changed: false }
-  if (session.isPrimary) return { pinned: false, changed: false }
 
   const attached = await getAttachedProjects(sessionId)
   if (attached.some((a) => a.projectId !== projectId)) return { pinned: false, changed: false }
@@ -159,55 +163,48 @@ export async function unpinWorkspaceSession(sessionId: string, projectId: string
 }
 
 /**
- * Return the stable main chat for a workspace, creating it once. This is a
- * universal workspace primitive — any workspace runtime can have a primary
- * session — but today only personal workspaces auto-create one eagerly (see
- * `routes/workspace-chat.ts`); team workspaces let users create/select
- * sessions explicitly.
+ * Return the caller's most recently active personal workspace chat, creating
+ * one when they have none. There is no shared "main" chat: each member lands
+ * on their own history, the same way a project opens its latest chat.
+ *
+ * A race across API pods can create one extra empty chat. That is harmless
+ * (both show up in the owner's history), so this does not take a unique index.
  */
-export function getOrCreatePrimaryWorkspaceSession(workspaceId: string): Promise<any> {
-  const inFlight = primarySessionFlights.get(workspaceId)
+export function getOrCreateDefaultWorkspaceSession(workspaceId: string, userId: string): Promise<any> {
+  const key = `${workspaceId}:${userId}`
+  const inFlight = primarySessionFlights.get(key)
   if (inFlight) return inFlight
 
   const create = (async () => {
     const existing = await prisma.chatSession.findFirst({
-      where: { workspaceId, contextType: 'workspace', isPrimary: true } as any,
-      orderBy: { createdAt: 'asc' },
+      where: {
+        workspaceId,
+        contextType: 'workspace',
+        createdByUserId: userId,
+        contextId: null,
+        isArchived: false,
+      } as any,
+      orderBy: { lastActiveAt: 'desc' },
       include: { attachedProjects: true } as any,
     })
     if (existing) return existing as any
 
-    try {
-      return await prisma.chatSession.create({
-        data: {
-          contextType: 'workspace',
-          workspaceId,
-          isPrimary: true,
-          name: 'Chat',
-          inferredName: 'Chat',
-        } as any,
-        include: { attachedProjects: true } as any,
-      }) as any
-    } catch (err: any) {
-      // A second API pod may have won the partial-unique-index race between
-      // our lookup and create. Re-read the singleton rather than surfacing a
-      // false failure to the client.
-      if (err?.code === 'P2002') {
-        const raced = await prisma.chatSession.findFirst({
-          where: { workspaceId, contextType: 'workspace', isPrimary: true } as any,
-          orderBy: { createdAt: 'asc' },
-          include: { attachedProjects: true } as any,
-        })
-        if (raced) return raced as any
-      }
-      throw err
-    }
+    return await prisma.chatSession.create({
+      data: {
+        contextType: 'workspace',
+        workspaceId,
+        createdByUserId: userId,
+        name: 'Chat',
+        inferredName: 'Chat',
+      } as any,
+      include: { attachedProjects: true } as any,
+    }) as any
   })()
 
-  primarySessionFlights.set(workspaceId, create)
+  primarySessionFlights.set(key, create)
   return create.finally(() => {
-    if (primarySessionFlights.get(workspaceId) === create) {
-      primarySessionFlights.delete(workspaceId)
+    if (primarySessionFlights.get(key) === create) {
+      primarySessionFlights.delete(key)
     }
   })
 }
@@ -222,7 +219,7 @@ export async function attachProject(
   projectId: string,
   attachMode: AttachMode = 'readwrite',
 ): Promise<AttachedProject> {
-  const workspaceId = await getSessionWorkspaceId(sessionId)
+  const workspaceId = (await loadWorkspaceSession(sessionId)).workspaceId
   await assertProjectsInWorkspace(workspaceId, [projectId])
 
   const mode = normalizeAttachMode(attachMode)
@@ -265,8 +262,8 @@ export async function assertWorkspaceSessionInWorkspace(
   workspaceId: string,
   sessionId: string,
 ): Promise<void> {
-  const sessionWorkspaceId = await getSessionWorkspaceId(sessionId)
-  if (sessionWorkspaceId !== workspaceId) {
+  const session = await loadWorkspaceSession(sessionId)
+  if (session.workspaceId !== workspaceId) {
     throw new WorkspaceSessionError(
       'session_not_in_workspace',
       `Chat session ${sessionId} does not belong to workspace ${workspaceId}`,
@@ -274,10 +271,34 @@ export async function assertWorkspaceSessionInWorkspace(
   }
 }
 
-/** List workspace-scoped sessions for a workspace (most-recent first). */
-export async function listWorkspaceSessions(workspaceId: string) {
+/**
+ * Same workspace check as `assertWorkspaceSessionInWorkspace`, plus ownership.
+ * A session with an owner is visible only to that user. Sessions with no
+ * owner (project-anchored, scheduled, DM, Slack, and legacy shared chats)
+ * stay reachable by any workspace member. A foreign owner is reported as
+ * not-found so a guessed id does not reveal that the chat exists.
+ */
+export async function assertWorkspaceSessionAccess(
+  workspaceId: string,
+  sessionId: string,
+  userId: string,
+): Promise<void> {
+  const session = await loadWorkspaceSession(sessionId)
+  if (session.workspaceId !== workspaceId) {
+    throw new WorkspaceSessionError(
+      'session_not_in_workspace',
+      `Chat session ${sessionId} does not belong to workspace ${workspaceId}`,
+    )
+  }
+  if (session.createdByUserId && session.createdByUserId !== userId) {
+    throw new WorkspaceSessionError('session_not_found', `Chat session ${sessionId} not found`)
+  }
+}
+
+/** List the caller's personal workspace chats (most-recent first). */
+export async function listWorkspaceSessions(workspaceId: string, userId: string) {
   return prisma.chatSession.findMany({
-    where: { contextType: 'workspace', workspaceId } as any,
+    where: { contextType: 'workspace', workspaceId, createdByUserId: userId } as any,
     orderBy: { lastActiveAt: 'desc' },
     include: { attachedProjects: true } as any,
   }) as any
@@ -299,11 +320,14 @@ function toAttachedProject(row: any): AttachedProject {
   }
 }
 
-async function getSessionWorkspaceId(sessionId: string): Promise<string> {
+async function loadWorkspaceSession(sessionId: string): Promise<{
+  workspaceId: string
+  createdByUserId: string | null
+}> {
   const session = (await prisma.chatSession.findUnique({
     where: { id: sessionId },
-    select: { contextType: true, workspaceId: true } as any,
-  })) as { contextType?: string; workspaceId?: string | null } | null
+    select: { contextType: true, workspaceId: true, createdByUserId: true } as any,
+  })) as { contextType?: string; workspaceId?: string | null; createdByUserId?: string | null } | null
 
   if (!session) {
     throw new WorkspaceSessionError('session_not_found', `Chat session ${sessionId} not found`)
@@ -314,7 +338,7 @@ async function getSessionWorkspaceId(sessionId: string): Promise<string> {
       `Chat session ${sessionId} is not a workspace session`,
     )
   }
-  return session.workspaceId
+  return { workspaceId: session.workspaceId, createdByUserId: session.createdByUserId ?? null }
 }
 
 /**

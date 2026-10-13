@@ -14,7 +14,7 @@
  * workspace key (`AI_PROXY_TOKEN` = `shogo_sk_…`). The proxy accepts the key
  * directly, so all LLM usage bills to the account with no token minting.
  */
-import { spawn } from 'node:child_process';
+import { spawn } from '../lib/child-process.ts';
 import { resolve as resolvePath } from 'node:path';
 import pc from 'picocolors';
 import { resolveConfig } from '../lib/config.ts';

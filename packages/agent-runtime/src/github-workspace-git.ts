@@ -8,7 +8,7 @@
  * scoped to https://github.com/), so it is never written into `.git/config`,
  * a remote URL, or argv.
  */
-import { execFile } from 'node:child_process'
+import { execFile } from '@shogo/shared-runtime/child-process'
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
@@ -62,6 +62,7 @@ export const SHOGO_RUNTIME_EXCLUDES = [
   'node_modules/',
   'dist.staging/',
   'dist.publish.staging/',
+  '.tmp/',
   // The dev database is backed up separately as project data, and a restore
   // can drop it into any project, including ones that don't use Prisma.
   'prisma/dev.db',

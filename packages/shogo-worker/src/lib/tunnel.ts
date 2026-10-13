@@ -62,8 +62,8 @@ export interface RuntimeResolver {
    */
   resolveLocalUrl(pathWithQuery: string, projectId?: string): Promise<string | null>;
 
-  /** Mint a per-project runtime token for `x-runtime-token`. */
-  deriveRuntimeToken(projectId: string): string | null;
+  /** Mint the `x-runtime-token` the local runtime serving `projectId` accepts. */
+  deriveRuntimeToken(projectId: string): string | null | Promise<string | null>;
 
   /** Return the project ids the worker currently has runtimes for. */
   getActiveProjects(): string[];
@@ -444,7 +444,7 @@ export class WorkerTunnel {
       const headers: Record<string, string> = { ...(msg.headers ?? {}) };
 
       if (msg.projectId && (msg.path.startsWith('/agent/') || msg.path === '/agent')) {
-        const token = this.opts.resolver.deriveRuntimeToken(msg.projectId);
+        const token = await this.opts.resolver.deriveRuntimeToken(msg.projectId);
         if (token) headers['x-runtime-token'] = token;
       }
 

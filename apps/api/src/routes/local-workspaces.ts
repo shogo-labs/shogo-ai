@@ -13,7 +13,7 @@ function authUserId(c: any): string | null {
 }
 
 async function hasMembership(userId: string, workspaceId: string): Promise<boolean> {
-  const member = await prisma.member.findFirst({ where: { userId, workspaceId } })
+  const member = await prisma.member.findFirst({ where: { userId, workspaceId, projectId: null } })
   return !!member
 }
 
@@ -56,7 +56,7 @@ export function localWorkspaceRoutes(): Hono {
       return c.json({ error: { code: 'forbidden', message: 'Access denied' } }, 403)
     }
     const admin = await prisma.member.findFirst({
-      where: { userId, workspaceId, role: { in: ['owner', 'admin'] } },
+      where: { userId, workspaceId, projectId: null, role: { in: ['owner', 'admin'] } },
     })
     if (!admin) {
       return c.json({ error: { code: 'forbidden', message: 'Workspace admin access required' } }, 403)

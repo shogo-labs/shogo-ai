@@ -7,6 +7,8 @@ export default defineConfig({
     'src/index.ts',
     'src/server.ts',
     'src/react/index.ts',
+    'src/react/conversation.ts',
+    'src/react/visuals.ts',
     'src/native/index.ts',
     'src/route/index.ts',
     'src/route/signed-url.ts',

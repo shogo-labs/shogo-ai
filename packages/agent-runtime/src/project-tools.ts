@@ -8,12 +8,14 @@
  *   project_attach     attach an existing project to this one (readwrite / readonly)
  *   project_detach     remove an attachment
  *   project_configure  heartbeat / model / name / description of a project
+ *   capabilities_configure  enable or disable this project's own capabilities
  *   project_call       run one agent turn in another project, threading a runId
  *   system_apply       reconcile a `shogo-system.yaml` manifest against the workspace
  *
  * All of them go through `/api/internal/...` routes (see internal-api.ts) with
- * the runtime's own token, so authorization is "same workspace as the caller".
- * Nothing here can reach a project outside the workspace.
+ * the runtime's own token plus the signed requester ticket for the person who
+ * started the turn. Lists, creates, attachments and calls are limited to what
+ * that person is allowed to do. Nothing here can reach another workspace.
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
@@ -21,8 +23,19 @@ import { dirname, join, resolve } from 'path'
 import { randomBytes } from 'crypto'
 import { Type } from '@sinclair/typebox'
 import type { AgentTool } from '@mariozechner/pi-agent-core'
+import { runChatSessionId } from '@shogo/shared-runtime/project-call-chat'
+import {
+  CAPABILITY_INFO,
+  CAPABILITY_KEYS,
+  mergeCapabilitySettingsIntoConfig,
+  normalizeCapabilitySettings,
+  type CapabilityKey,
+  type CapabilitySettings,
+} from '@shogo/shared-runtime/capability-settings'
 import type { ToolContext } from './gateway-tools'
 import { textResult } from './gateway-tools'
+import { capabilityState, effectiveCapabilityValue, lockedCapabilityKeys } from './capability-status-prompt'
+import { resolveWorkspaceConfigFilePath } from './workspace-defaults'
 import {
   attachProject as apiAttachProject,
   callProjectAgent as apiCallProjectAgent,
@@ -31,7 +44,9 @@ import {
   detachProject as apiDetachProject,
   getProjectConfig as apiGetProjectConfig,
   getWorkspaceProjectGraph as apiGetWorkspaceProjectGraph,
+  hasInternalApiCredentials,
   listTeamChannels,
+  projectScopedId,
   upsertTeamChannel,
   type ProjectGraphNode,
 } from './internal-api'
@@ -59,6 +74,21 @@ function noWorkspace() {
   return textResult({
     error: 'This runtime has no workspace context, so project lifecycle tools are unavailable.',
     code: 'no_workspace',
+  })
+}
+
+function apiFailure(res: { error?: string; code?: string; status?: number }) {
+  const hint =
+    res.code === 'requester_required'
+      ? 'This turn has no signed requester, so project tools cannot act as a person.'
+      : res.code === 'forbidden' || res.code === 'not_found'
+        ? 'The requester is not allowed to do that.'
+        : undefined
+  return textResult({
+    error: res.error ?? 'Request failed',
+    code: res.code,
+    status: res.status,
+    ...(hint ? { hint } : {}),
   })
 }
 
@@ -148,13 +178,13 @@ export function createProjectListTool(ctx: ToolContext): AgentTool {
     name: 'project_list',
     label: 'List Workspace Projects',
     description:
-      'List every project in this workspace with its attachments (which projects it can see/edit), agent config (heartbeat, model) and whether it is the current project. Use before project_attach / project_call to find ids.',
+      'List the projects you can access in this workspace, with attachments (which projects it can see/edit), agent config (heartbeat, model) and whether it is the current project. Use before project_attach / project_call to find ids.',
     parameters: Type.Object({}),
     execute: async () => {
       const workspaceId = workspaceIdOf(ctx)
       if (!workspaceId) return noWorkspace()
       const res = await apiGetWorkspaceProjectGraph(workspaceId)
-      if (!res.ok || !res.data) return textResult({ error: res.error ?? 'Failed to list projects', code: res.code })
+      if (!res.ok || !res.data) return apiFailure(res)
       const lock = readLock(ctx)
       const keyById = new Map(Object.entries(lock?.bindings ?? {}).map(([k, v]) => [v, k]))
       return textResult({
@@ -210,7 +240,7 @@ export function createProjectCreateTool(ctx: ToolContext): AgentTool {
         userId: ctx.userId,
       })
       if (!created.ok || !created.data) {
-        return textResult({ error: created.error ?? 'Project creation failed', code: created.code, status: created.status })
+        return apiFailure(created)
       }
 
       let attachment: unknown = null
@@ -259,7 +289,7 @@ export function createProjectAttachTool(ctx: ToolContext): AgentTool {
       if ('error' in target) return textResult(target)
       if (target.id === ctx.projectId) return textResult({ error: 'A project cannot attach to itself.', code: 'self_attach' })
       const res = await apiAttachProject(ctx.projectId, target.id, p.mode ?? 'readwrite')
-      if (!res.ok || !res.data) return textResult({ error: res.error ?? 'Attach failed', code: res.code, status: res.status })
+      if (!res.ok || !res.data) return apiFailure(res)
       return textResult({
         ok: true,
         attachment: res.data.attachment,
@@ -283,7 +313,7 @@ export function createProjectDetachTool(ctx: ToolContext): AgentTool {
       const target = await resolveProjectRef(ctx, p.project)
       if ('error' in target) return textResult(target)
       const res = await apiDetachProject(ctx.projectId, target.id)
-      if (!res.ok) return textResult({ error: res.error ?? 'Detach failed', code: res.code, status: res.status })
+      if (!res.ok) return apiFailure(res)
       return textResult({ ok: true, removed: res.data?.removed ?? false })
     },
   }
@@ -298,7 +328,7 @@ export function createProjectConfigureTool(ctx: ToolContext): AgentTool {
     name: 'project_configure',
     label: 'Configure Project',
     description:
-      'Read or change a project\'s agent configuration: heartbeat (enabled/interval/quiet hours), default model, name and description. Defaults to the current project. Call with no changes to read the current config. For the current project\'s heartbeat prefer heartbeat_configure (it also updates config.json).',
+      'Read or change a project\'s agent configuration: heartbeat (enabled/interval/quiet hours), default model, name and description. Defaults to the current project. Call with no changes to read the current config. Heartbeats require a paid plan: on a free plan the other changes are still applied and the result includes a `heartbeatError`.',
     parameters: Type.Object({
       project: Type.Optional(Type.String({ description: 'Project id, name, or manifest key. Default: current project.' })),
       name: Type.Optional(Type.String()),
@@ -344,8 +374,143 @@ export function createProjectConfigureTool(ctx: ToolContext): AgentTool {
             agent: Object.keys(agent).length > 0 ? (agent as any) : undefined,
           })
         : await apiGetProjectConfig(targetId)
-      if (!res.ok || !res.data) return textResult({ error: res.error ?? 'Configure failed', code: res.code, status: res.status })
-      return textResult({ ok: true, changed: hasChanges, project: res.data })
+      if (!res.ok || !res.data) return apiFailure(res)
+      const heartbeatError = res.data.heartbeatError
+      return textResult({
+        ok: true,
+        changed: hasChanges,
+        project: res.data,
+        // Partial success: everything but the heartbeat change was applied.
+        ...(heartbeatError
+          ? { heartbeatError, warning: `Heartbeat settings were not applied: ${heartbeatError.message}` }
+          : {}),
+      })
+    },
+  }
+}
+
+// ---------------------------------------------------------------------------
+// capabilities_configure
+// ---------------------------------------------------------------------------
+
+const CAPABILITY_KEY_SET = new Set<string>(CAPABILITY_KEYS)
+
+function capabilityChangesSchema() {
+  const properties: Record<string, ReturnType<typeof Type.Optional<ReturnType<typeof Type.Boolean>>>> = {}
+  for (const key of CAPABILITY_KEYS) {
+    properties[key] = Type.Optional(Type.Boolean({ description: CAPABILITY_INFO[key].label }))
+  }
+  return Type.Optional(Type.Object(properties, {
+    description: 'Flags to set on this project. Omit to read the current state.',
+  }))
+}
+
+function capabilityStatus(config: ToolContext['config'], changed: boolean) {
+  const caps = normalizeCapabilitySettings(config)
+  const view = capabilityState(config)
+  const resolved: CapabilitySettings = { ...caps }
+  for (const key of view.locked) {
+    resolved[key] = effectiveCapabilityValue(key, caps, config.capabilityProfile)
+  }
+  return {
+    ok: true,
+    changed,
+    enabled: view.enabled,
+    disabled: view.disabled,
+    locked: view.locked,
+    capabilities: resolved,
+    ...(changed ? { applies: 'next turn' as const } : {}),
+  }
+}
+
+/**
+ * Persist a capability patch into config.json without clobbering flags the
+ * patch does not mention. `activeMode` rides along with canvas so the prompt
+ * guide matches the toggle.
+ */
+function writeLocalCapabilityCache(
+  workspaceDir: string,
+  patch: Partial<CapabilitySettings>,
+  activeMode?: 'canvas' | 'none',
+): void {
+  const configPath = resolveWorkspaceConfigFilePath(workspaceDir, 'config.json')
+    ?? join(workspaceDir, 'config.json')
+  let fileConfig: Record<string, unknown> = {}
+  if (existsSync(configPath)) {
+    try {
+      const parsed = JSON.parse(readFileSync(configPath, 'utf-8'))
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) fileConfig = parsed
+    } catch {
+      fileConfig = {}
+    }
+  }
+  const source = { ...fileConfig, ...patch }
+  const { config } = mergeCapabilitySettingsIntoConfig(fileConfig, source)
+  if (activeMode) config.activeMode = activeMode
+  writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8')
+}
+
+export function createCapabilitiesConfigureTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'capabilities_configure',
+    label: 'Configure Capabilities',
+    description:
+      'Read or change this project\'s capability toggles (web search, shell, browser, channels, and the rest). Call with no changes to read what is enabled, disabled, or locked. Changes are saved on this project only and apply from your next turn. Locked capabilities cannot be changed.',
+    parameters: Type.Object({
+      changes: capabilityChangesSchema(),
+    }),
+    execute: async (_id, params) => {
+      const raw = (params as { changes?: unknown }).changes
+      if (raw === undefined) return textResult(capabilityStatus(ctx.config, false))
+      if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+        return textResult({ error: 'changes must be an object of capability flags', code: 'bad_request' })
+      }
+
+      const current = normalizeCapabilitySettings(ctx.config)
+      const locked = new Set(lockedCapabilityKeys(ctx.config.capabilityProfile))
+      const patch: Partial<CapabilitySettings> = {}
+      for (const [key, value] of Object.entries(raw)) {
+        if (!CAPABILITY_KEY_SET.has(key)) {
+          return textResult({ error: `Unknown capability "${key}"`, code: 'unknown_capability' })
+        }
+        if (typeof value !== 'boolean') {
+          return textResult({ error: `${key} must be a boolean`, code: 'bad_request' })
+        }
+        if (locked.has(key as CapabilityKey)) {
+          return textResult({
+            error: `${key} is locked by the ${ctx.config.capabilityProfile} workspace profile`,
+            code: 'capability_locked',
+          })
+        }
+        patch[key as CapabilityKey] = value
+      }
+      if (Object.keys(patch).length === 0) return textResult(capabilityStatus(ctx.config, false))
+
+      const currentMode = ctx.config.activeMode || 'canvas'
+      let activeMode: 'canvas' | 'none' | undefined
+      if (patch.canvasEnabled === false && currentMode !== 'none') activeMode = 'none'
+      if (patch.canvasEnabled === true && currentMode !== 'canvas') activeMode = 'canvas'
+
+      const differs = (Object.keys(patch) as CapabilityKey[]).some((key) => patch[key] !== current[key]) || activeMode !== undefined
+      if (!differs) return textResult(capabilityStatus(ctx.config, false))
+
+      const settings: Record<string, unknown> = { ...patch }
+      if (activeMode) settings.activeMode = activeMode
+
+      const projectId = projectScopedId(ctx.projectId)
+      if (projectId && hasInternalApiCredentials()) {
+        const res = await apiConfigureProject(projectId, { settings })
+        if (!res.ok || !res.data) return apiFailure(res)
+      }
+      writeLocalCapabilityCache(ctx.workspaceDir, patch, activeMode)
+      await ctx.onCapabilitiesChanged?.()
+
+      const nextConfig = {
+        ...ctx.config,
+        ...patch,
+        ...(activeMode ? { activeMode } : {}),
+      }
+      return textResult(capabilityStatus(nextConfig, true))
     },
   }
 }
@@ -370,7 +535,7 @@ export function createProjectCallTool(ctx: ToolContext): AgentTool {
       wait: Type.Optional(Type.Boolean({ description: 'Wait for the reply (default true).' })),
       timeoutMs: Type.Optional(Type.Number({ description: 'Wait budget in ms (default 300000, max 1200000).' })),
     }),
-    execute: async (_id, params) => {
+    execute: async (toolCallId, params) => {
       const p = params as { project: string; message: string; runId?: string; wait?: boolean; timeoutMs?: number }
       const target = await resolveProjectRef(ctx, p.project)
       if ('error' in target) return textResult(target)
@@ -378,6 +543,19 @@ export function createProjectCallTool(ctx: ToolContext): AgentTool {
         return textResult({ error: 'project_call targets another project; use agent_spawn to delegate within this one.', code: 'self_call' })
       }
       const runId = p.runId?.trim() || newRunId()
+      ctx.uiWriter?.write({
+        type: 'tool-output-available',
+        toolCallId,
+        output: {
+          project: { id: target.id, name: target.name },
+          runId,
+          status: 'running',
+          wait: p.wait !== false,
+          chatSessionId: runChatSessionId(target.id, runId),
+        },
+        dynamic: true,
+        preliminary: true,
+      })
       const res = await apiCallProjectAgent(target.id, {
         message: p.message,
         runId,
@@ -394,7 +572,11 @@ export function createProjectCallTool(ctx: ToolContext): AgentTool {
           runId,
           hint: res.code === 'agent_call_timeout' || res.code === 'timeout'
             ? 'The callee is still working. Re-issue with wait=false or a larger timeoutMs; the same runId keeps the trace intact.'
-            : undefined,
+            : res.code === 'requester_required'
+              ? 'This turn has no signed requester, so project tools cannot act as a person.'
+              : res.code === 'forbidden' || res.code === 'not_found'
+                ? 'The requester is not allowed to do that.'
+                : undefined,
         })
       }
       const reply = res.data.reply ?? null
@@ -481,7 +663,7 @@ export function createSystemApplyTool(ctx: ToolContext): AgentTool {
       const manifest = parsed.manifest
 
       const graphRes = await apiGetWorkspaceProjectGraph(workspaceId)
-      if (!graphRes.ok || !graphRes.data) return textResult({ error: graphRes.error ?? 'Could not read workspace graph', code: graphRes.code })
+      if (!graphRes.ok || !graphRes.data) return apiFailure(graphRes)
       const live = toLive(graphRes.data)
       const lock = readLock(ctx)
 
@@ -520,9 +702,15 @@ export function createSystemApplyTool(ctx: ToolContext): AgentTool {
       const bindings: Record<string, string> = { ...(lock?.bindings ?? {}) }
       for (const a of diff.adopt) bindings[a.key] = a.projectId
       if (manifest.anchor) bindings[manifest.anchor] = ctx.projectId
+      for (const op of diff.inaccessible) {
+        delete bindings[op.key]
+        report.errors.push(`${op.key}: not_accessible (bound to ${op.projectId}; this requester cannot see it). Not creating a duplicate.`)
+      }
 
       if (p.dryRun) {
-        report.bindings = bindings
+        report.bindings = { ...bindings }
+        for (const op of diff.inaccessible) report.bindings[op.key] = op.projectId
+        report.ok = report.errors.length === 0
         return textResult(report)
       }
 
@@ -577,7 +765,13 @@ export function createSystemApplyTool(ctx: ToolContext): AgentTool {
         if (!id) { report.skipped.push(`configure ${op.key}: unresolved binding`); continue }
         const res = await apiConfigureProject(id, op.patch)
         if (!res.ok) report.errors.push(`configure ${op.key}: ${res.error ?? 'failed'}`)
-        else { report.applied.push(`configure ${op.key}`); configured.add(op.key) }
+        else {
+          report.applied.push(`configure ${op.key}`)
+          configured.add(op.key)
+          if (res.data?.heartbeatError) {
+            report.errors.push(`configure ${op.key}: heartbeat not applied (${res.data.heartbeatError.message}); the other settings were applied`)
+          }
+        }
       }
       for (const op of diff.create) {
         if (configured.has(op.key) || !op.spec.agent) continue
@@ -596,7 +790,12 @@ export function createSystemApplyTool(ctx: ToolContext): AgentTool {
           },
         })
         if (!res.ok) report.errors.push(`configure ${op.key}: ${res.error ?? 'failed'}`)
-        else report.applied.push(`configure ${op.key}`)
+        else {
+          report.applied.push(`configure ${op.key}`)
+          if (res.data?.heartbeatError) {
+            report.errors.push(`configure ${op.key}: heartbeat not applied (${res.data.heartbeatError.message}); the other settings were applied`)
+          }
+        }
       }
 
       // 4. Files. Only projects reachable on disk; the rest are reported so
@@ -652,6 +851,7 @@ export function createSystemApplyTool(ctx: ToolContext): AgentTool {
         const id = idOf(spec.key)
         if (id) finalBindings[spec.key] = id
       }
+      for (const op of diff.inaccessible) finalBindings[op.key] = op.projectId
       writeLock(ctx, { version: 1, name: manifest.name, bindings: finalBindings })
       report.bindings = finalBindings
       report.ok = report.errors.length === 0
@@ -670,6 +870,7 @@ export const PROJECT_TOOL_NAMES = [
   'project_attach',
   'project_detach',
   'project_configure',
+  'capabilities_configure',
   'project_call',
   'system_apply',
 ] as const
@@ -683,6 +884,7 @@ export function createProjectTools(ctx: ToolContext): { readonly: AgentTool[]; m
       createProjectAttachTool(ctx),
       createProjectDetachTool(ctx),
       createProjectConfigureTool(ctx),
+      createCapabilitiesConfigureTool(ctx),
       createProjectCallTool(ctx),
       createSystemApplyTool(ctx),
     ],

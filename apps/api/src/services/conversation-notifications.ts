@@ -10,7 +10,7 @@
 import { prisma } from '../lib/prisma'
 import { publishConversationEvent } from '../lib/conversation-bus'
 import { sendPushToUser } from '../lib/push-notifications'
-import { collectMentionIds, groupNames, renderMentionsAsText } from './conversation-mentions'
+import { collectMentionIds, groupNames, markdownToPlainText, renderMentionsAsText } from './conversation-mentions'
 import { registerAfterPostHook } from './conversation-pipeline'
 import {
   agentDisplayName, getWorkspaceRole, isOpenKind, onReactionAdded,
@@ -162,12 +162,12 @@ async function describe(result: PostMessageResult) {
     ids.userIds.length ? db.user.findMany({ where: { id: { in: ids.userIds } }, select: { id: true, name: true, email: true } }) : [],
     ids.projectIds.length ? db.project.findMany({ where: { id: { in: ids.projectIds } }, select: { id: true, name: true } }) : [],
   ])
-  const text = renderMentionsAsText(row.text ?? '', {
+  const text = markdownToPlainText(renderMentionsAsText(row.text ?? '', {
     users: new Map(users.map((u: any) => [u.id, u.name || u.email])),
     projects: new Map(projects.map((p: any) => [p.id, p.name])),
     groups: await groupNames(db, conversation.workspaceId, ids.groupIds),
     workspaceAgentName: await agentDisplayName(conversation.workspaceId, null),
-  }).replace(/\s+/g, ' ').trim()
+  }))
   const attachments = row.attachments?.length ? `📎 ${row.attachments.length} file${row.attachments.length > 1 ? 's' : ''}` : ''
   const body = (text || attachments || 'New message').slice(0, BODY_CHARS)
   const where = isDirect(conversation.kind) ? null : `#${conversation.slug ?? conversation.name ?? 'channel'}`
@@ -250,7 +250,7 @@ export async function notifyForReaction({ message, conversation, reactorId, emoj
   if (existing) return
   const reactor = await db.user.findUnique({ where: { id: reactorId }, select: { name: true, email: true } })
   const who = reactor?.name || reactor?.email || 'Someone'
-  const preview = renderMentionsAsText(message.text ?? '').replace(/\s+/g, ' ').trim() || 'your message'
+  const preview = markdownToPlainText(renderMentionsAsText(message.text ?? '')) || 'your message'
   await createInboxItems([{
     workspaceId: conversation.workspaceId,
     userId: authorId,

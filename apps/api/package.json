@@ -44,6 +44,7 @@
     "@shogo-ai/sdk": "workspace:*",
     "@shogo-ai/worker": "workspace:*",
     "@shogo/agent-runtime": "workspace:*",
+    "@shogo/authz": "workspace:*",
     "@shogo/model-catalog": "workspace:*",
     "@shogo/shared-runtime": "workspace:*",
     "@zip.js/zip.js": "^2.8.26",

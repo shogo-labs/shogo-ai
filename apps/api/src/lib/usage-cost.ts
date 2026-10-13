@@ -3,8 +3,8 @@
 /**
  * Usage Cost Calculator
  *
- * Computes USD usage cost from LLM/image/voice usage using raw provider costs
- * plus a flat MARKUP_MULTIPLIER (Cursor-style pricing).
+ * Computes USD usage cost from LLM/image/voice/social usage using raw provider
+ * costs plus a flat MARKUP_MULTIPLIER (Cursor-style pricing).
  *
  * `rawUsd` is the provider list-price cost; `billedUsd` is what we charge the
  * workspace. There are no per-call minimums.
@@ -162,6 +162,42 @@ export function calculateImageUsageCost(
     rawUsd *= config.largeSizeMultiplier
   }
 
+  return { rawUsd, billedUsd: rawUsd * MARKUP_MULTIPLIER }
+}
+
+// =============================================================================
+// Social lookup usage costs (EnsembleData)
+// =============================================================================
+
+/**
+ * EnsembleData list price per request unit, in USD.
+ * Confirm against the current EnsembleData plan. 0.0025 is a placeholder.
+ */
+export const SOCIAL_LOOKUP_USD_PER_UNIT = 0.0025
+
+export type SocialLookupPlatform = 'instagram' | 'tiktok'
+export type SocialLookupOp = 'profile' | 'posts'
+
+/**
+ * Estimated EnsembleData units for one agent lookup.
+ *
+ * Must stay aligned with `ensembledata-provider.ts`: a profile is one
+ * request. Recent posts page ~10 items per request (`depth`). TikTok posts
+ * are one request at that depth. Instagram posts also resolve the profile,
+ * then fetch the posts feed and the reels feed.
+ */
+export function socialLookupUnits(
+  platform: SocialLookupPlatform,
+  op: SocialLookupOp,
+  limit: number,
+): number {
+  if (op === 'profile') return 1
+  const depth = Math.max(1, Math.ceil(limit / 10))
+  return platform === 'tiktok' ? depth : 1 + 2 * depth
+}
+
+export function calculateSocialLookupCost(units: number): UsageCostResult {
+  const rawUsd = units * SOCIAL_LOOKUP_USD_PER_UNIT
   return { rawUsd, billedUsd: rawUsd * MARKUP_MULTIPLIER }
 }
 

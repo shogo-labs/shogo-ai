@@ -63,7 +63,14 @@ function toolWithId(
   }
 }
 
-const emptyCounts: WorkCounts = { editedFiles: 0, readFiles: 0, searches: 0, fetches: 0, commands: 0 }
+const emptyCounts: WorkCounts = {
+  editedFiles: 0,
+  readFiles: 0,
+  searches: 0,
+  fetches: 0,
+  lookups: 0,
+  commands: 0,
+}
 
 describe("tallyWork", () => {
   test("counts a write_file as an edited file with added lines from content", () => {
@@ -106,6 +113,19 @@ describe("tallyWork", () => {
     const parts = [tool("WebFetch", { url: "https://example.com" })]
     const { counts } = tallyWork(parts)
     expect(counts.fetches).toBe(1)
+  })
+
+  test("counts read-only runtime tools as lookups", () => {
+    const parts = [
+      tool("project_list"),
+      tool("team_chat_read", { channel: "general" }),
+      tool("impact_radius", { files: ["src/a.ts"] }),
+      tool("read_lints", { paths: ["src/a.ts"] }),
+    ]
+    const { counts } = tallyWork(parts)
+    expect(counts.lookups).toBe(4)
+    expect(counts.readFiles).toBe(0)
+    expect(counts.commands).toBe(0)
   })
 
   test("counts a generic shell command (exec) as commands", () => {
@@ -204,6 +224,7 @@ describe("classifyWorkKind", () => {
     expect(classifyWorkKind({ ...emptyCounts, readFiles: 1 })).toBe("explored")
     expect(classifyWorkKind({ ...emptyCounts, searches: 1 })).toBe("explored")
     expect(classifyWorkKind({ ...emptyCounts, fetches: 1 })).toBe("explored")
+    expect(classifyWorkKind({ ...emptyCounts, lookups: 1 })).toBe("explored")
   })
 
   test("ran when only commands (or nothing) is present", () => {
@@ -214,43 +235,97 @@ describe("classifyWorkKind", () => {
 
 describe("buildWorkLabel", () => {
   test("edited + past tense: 'Edited N files, explored ..., ran N commands'", () => {
-    const counts: WorkCounts = { editedFiles: 11, readFiles: 0, searches: 3, fetches: 1, commands: 13 }
+    const counts: WorkCounts = {
+      editedFiles: 11,
+      readFiles: 0,
+      searches: 3,
+      fetches: 1,
+      lookups: 2,
+      commands: 13,
+    }
     expect(buildWorkLabel(counts, "edited", "past")).toBe(
-      "Edited 11 files, explored 3 searches, 1 fetch, ran 13 commands",
+      "Edited 11 files, explored 3 searches, 1 fetch, 2 lookups, ran 13 commands",
     )
   })
 
   test("edited + present tense uses 'Editing' but keeps trailing segments past tense", () => {
-    const counts: WorkCounts = { editedFiles: 32, readFiles: 0, searches: 1, fetches: 0, commands: 23 }
+    const counts: WorkCounts = {
+      editedFiles: 32,
+      readFiles: 0,
+      searches: 1,
+      fetches: 0,
+      lookups: 0,
+      commands: 23,
+    }
     expect(buildWorkLabel(counts, "edited", "present")).toBe(
       "Editing 32 files, explored 1 search, ran 23 commands",
     )
   })
 
   test("edited with singular file count uses singular noun", () => {
-    const counts: WorkCounts = { editedFiles: 1, readFiles: 0, searches: 0, fetches: 0, commands: 0 }
+    const counts: WorkCounts = {
+      editedFiles: 1,
+      readFiles: 0,
+      searches: 0,
+      fetches: 0,
+      lookups: 0,
+      commands: 0,
+    }
     expect(buildWorkLabel(counts, "edited", "past")).toBe("Edited 1 file")
   })
 
   test("explored + past tense: 'Explored N files, N searches, ran N commands'", () => {
-    const counts: WorkCounts = { editedFiles: 0, readFiles: 14, searches: 9, fetches: 0, commands: 4 }
+    const counts: WorkCounts = {
+      editedFiles: 0,
+      readFiles: 14,
+      searches: 9,
+      fetches: 0,
+      lookups: 0,
+      commands: 4,
+    }
     expect(buildWorkLabel(counts, "explored", "past")).toBe("Explored 14 files, 9 searches, ran 4 commands")
   })
 
   test("explored + present tense uses 'Exploring'", () => {
-    const counts: WorkCounts = { editedFiles: 0, readFiles: 2, searches: 0, fetches: 0, commands: 0 }
+    const counts: WorkCounts = {
+      editedFiles: 0,
+      readFiles: 2,
+      searches: 0,
+      fetches: 0,
+      lookups: 0,
+      commands: 0,
+    }
     expect(buildWorkLabel(counts, "explored", "present")).toBe("Exploring 2 files")
   })
 
   test("ran: 'Ran N commands' / 'Running N commands'", () => {
-    const counts: WorkCounts = { editedFiles: 0, readFiles: 0, searches: 0, fetches: 0, commands: 3 }
+    const counts: WorkCounts = {
+      editedFiles: 0,
+      readFiles: 0,
+      searches: 0,
+      fetches: 0,
+      lookups: 0,
+      commands: 3,
+    }
     expect(buildWorkLabel(counts, "ran", "past")).toBe("Ran 3 commands")
     expect(buildWorkLabel(counts, "ran", "present")).toBe("Running 3 commands")
   })
 
   test("ran with a single command uses singular noun", () => {
-    const counts: WorkCounts = { editedFiles: 0, readFiles: 0, searches: 0, fetches: 0, commands: 1 }
+    const counts: WorkCounts = {
+      editedFiles: 0,
+      readFiles: 0,
+      searches: 0,
+      fetches: 0,
+      lookups: 0,
+      commands: 1,
+    }
     expect(buildWorkLabel(counts, "ran", "past")).toBe("Ran 1 command")
+  })
+
+  test("lookup-only groups use the lookup label", () => {
+    const counts = { ...emptyCounts, lookups: 2 }
+    expect(buildWorkLabel(counts, "explored", "past")).toBe("Explored 2 lookups")
   })
 })
 

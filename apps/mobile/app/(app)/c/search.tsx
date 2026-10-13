@@ -16,7 +16,8 @@ import { cn } from '@shogo/shared-ui/primitives'
 import { useActiveWorkspace } from '../../../hooks/useActiveWorkspace'
 import { useWorkspaceExperience } from '../../../hooks/useWorkspaceExperience'
 import { useMentionables } from '../../../hooks/useTeamChat'
-import { MarkdownText } from '../../../components/chat/MarkdownText'
+import { ChatMarkdown } from '../../../components/chat/ChatMarkdown'
+import { InlineMarkdown } from '../../../components/team-chat/InlineMarkdown'
 import { teamChatApi, type AskResult, type SearchResponse } from '../../../lib/team-chat-api'
 import { mentionNames, renderMentions, searchSnippet } from '../../../lib/team-chat-state'
 
@@ -268,13 +269,10 @@ export default function TeamChatSearch() {
                   {item.message.authorType === 'agent' ? <Bot size={13} className="text-primary" /> : null}
                   <Text className="text-sm font-semibold text-foreground">{authorLabel(item.message)}</Text>
                 </View>
-                <Text className="mt-0.5 text-sm text-foreground">
-                  {searchSnippet(item.message.text, data?.terms ?? [], names).map((seg, i) => (
-                    <Text key={i} className={seg.match ? 'rounded bg-yellow-300/40 font-semibold' : undefined}>
-                      {seg.text}
-                    </Text>
-                  ))}
-                </Text>
+                <InlineMarkdown
+                  segments={searchSnippet(item.message.text, data?.terms ?? [], names)}
+                  className="mt-0.5 text-sm text-foreground"
+                />
               </Pressable>
             )
           }}
@@ -327,7 +325,7 @@ function AskPanel({
             <Sparkles size={12} className="text-primary" />
             <Text className="text-xs font-semibold text-primary">Answer</Text>
           </View>
-          <MarkdownText>{answer.answer}</MarkdownText>
+          <ChatMarkdown isStreaming={false}>{answer.answer}</ChatMarkdown>
           {shown.length ? <Text className="mt-3 text-xs font-semibold text-muted-foreground">Sources</Text> : null}
         </View>
       }

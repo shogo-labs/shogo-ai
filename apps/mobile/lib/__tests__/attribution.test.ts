@@ -36,8 +36,16 @@ function setLocation(search: string, pathname = '/'): void {
   window.history.replaceState({}, '', `${pathname}${search}`)
 }
 
-const { captureAttribution, getStoredAttribution, clearStoredAttribution } =
-  await import('../attribution')
+const {
+  captureAttribution,
+  getStoredAttribution,
+  clearStoredAttribution,
+  queueSignupAttribution,
+  getPendingSignupAttribution,
+  discardPendingSignupAttribution,
+  shouldRecordSignupAttribution,
+  flushSignupAttribution,
+} = await import('../attribution')
 
 beforeEach(() => {
   localStorage.clear()
@@ -121,5 +129,74 @@ describe('clearStoredAttribution', () => {
 
     expect(localStorage.getItem('shogo_attribution')).toBeNull()
     expect(localStorage.getItem('shogo_landing_page')).toBeNull()
+  })
+})
+
+describe('queueSignupAttribution', () => {
+  test('keeps captured UTMs and the signup method until the post succeeds', async () => {
+    setLocation('?utm_source=google&utm_medium=cpc')
+    captureAttribution()
+    queueSignupAttribution('email')
+
+    const pending = getPendingSignupAttribution()
+    expect(pending!.method).toBe('email')
+    expect(pending!.utmSource).toBe('google')
+    expect(pending!.utmMedium).toBe('cpc')
+
+    let posted: unknown = null
+    const ok = await flushSignupAttribution(async (body) => {
+      posted = body
+    })
+    expect(ok).toBe(true)
+    expect(posted).toMatchObject({ method: 'email', utmSource: 'google' })
+    expect(getPendingSignupAttribution()).toBeNull()
+    expect(getStoredAttribution()).toBeNull()
+  })
+
+  test('leaves the queue in place when the post fails', async () => {
+    queueSignupAttribution('google')
+    await expect(flushSignupAttribution(async () => {
+      throw new Error('unauthorized')
+    })).rejects.toThrow('unauthorized')
+    expect(getPendingSignupAttribution()!.method).toBe('google')
+  })
+
+  test('records email signups for a week, and oauth only for a fresh account', () => {
+    const now = Date.parse('2026-10-10T00:00:00Z')
+    const email = { method: 'email' as const, queuedAt: now - 6 * 24 * 60 * 60 * 1000 }
+    expect(shouldRecordSignupAttribution(email, new Date(email.queuedAt), now)).toBe(true)
+    expect(shouldRecordSignupAttribution(email, new Date(now - 8 * 24 * 60 * 60 * 1000), now)).toBe(false)
+
+    const google = { method: 'google' as const, queuedAt: now - 60 * 1000 }
+    expect(shouldRecordSignupAttribution(google, new Date(now - 30 * 1000), now)).toBe(true)
+    expect(shouldRecordSignupAttribution(google, new Date(now - 30 * 60 * 1000), now)).toBe(false)
+    expect(shouldRecordSignupAttribution(google, null, now)).toBe(false)
+  })
+
+  test('does not attribute a queued signup to a different account', () => {
+    const now = Date.parse('2026-10-10T00:00:00Z')
+    const pending = { method: 'email' as const, queuedAt: now - 60 * 1000 }
+    expect(shouldRecordSignupAttribution(pending, new Date(now - 2 * 24 * 60 * 60 * 1000), now)).toBe(false)
+    expect(shouldRecordSignupAttribution(pending, new Date(now - 2 * 60 * 60 * 1000), now)).toBe(false)
+    expect(shouldRecordSignupAttribution(pending, new Date(now - 30 * 1000), now)).toBe(true)
+  })
+
+  test('posts once when two flushes overlap', async () => {
+    queueSignupAttribution('email')
+    let posts = 0
+    let release: () => void = () => {}
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    const first = flushSignupAttribution(async () => {
+      posts += 1
+      await gate
+    })
+    const second = flushSignupAttribution(async () => {
+      posts += 1
+      await gate
+    })
+    release()
+    await Promise.all([first, second])
+    expect(posts).toBe(1)
+    expect(getPendingSignupAttribution()).toBeNull()
   })
 })

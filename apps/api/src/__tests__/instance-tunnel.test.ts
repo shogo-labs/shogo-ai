@@ -7,7 +7,7 @@ const runtimeStatus = mock((_projectId: string) => ({ status: 'running', agentPo
 const runtimeStart = mock(async (_projectId: string) => ({ status: 'running', agentPort: 9124 }))
 const getActiveProjects = mock(() => ['active-1'])
 const wipeCloudKey = mock(async () => {})
-const deriveRuntimeToken = mock((projectId: string) => `runtime-token-${projectId}`)
+const deriveProjectRuntimeToken = mock(async (projectId: string) => `runtime-token-${projectId}`)
 
 mock.module('../lib/runtime', () => ({
   getRuntimeManager: () => ({
@@ -21,8 +21,8 @@ mock.module('../lib/cloud-key-wipe', () => ({
   wipeCloudKey,
 }))
 
-mock.module('../lib/runtime-token', () => ({
-  deriveRuntimeToken,
+mock.module('../lib/project-runtime-token', () => ({
+  deriveProjectRuntimeToken,
 }))
 
 const originalFetch = globalThis.fetch
@@ -100,7 +100,7 @@ beforeEach(() => {
   runtimeStart.mockClear()
   getActiveProjects.mockClear()
   wipeCloudKey.mockClear()
-  deriveRuntimeToken.mockClear()
+  deriveProjectRuntimeToken.mockClear()
   _testing.serverPublishedWsUrl = null
   _testing.wsReconnectAttempt = 0
   _testing.currentPollInterval = _testing.DEFAULT_POLL_INTERVAL_S
@@ -195,6 +195,30 @@ describe('instance tunnel heartbeat and websocket client', () => {
       headers: { 'x-agent': 'yes' },
       body: 'agent-ok',
     })
+  })
+
+  test('keeps the forwarded runtime token when the local workspace token cannot be derived', async () => {
+    deriveProjectRuntimeToken.mockImplementationOnce(async () => {
+      throw new Error('project proj-1 has no workspaceId')
+    })
+    fetchQueue.push(() => new Response('agent-ok', { status: 200 }))
+
+    await markTunnelStarted()
+    _testing.connectWs()
+    lastSocket!.open()
+    lastSocket!.message({
+      type: 'request',
+      requestId: 'req-2',
+      method: 'POST',
+      path: '/agent/chat',
+      projectId: 'proj-1',
+      headers: { 'x-runtime-token': 'cloud-token' },
+      body: '{}',
+    })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(fetchCalls[0].url).toBe('http://localhost:9123/agent/chat')
+    expect((fetchCalls[0].init?.headers as Record<string, string>)['x-runtime-token']).toBe('cloud-token')
   })
 
   test('streams tunneled responses as chunks and end markers', async () => {

@@ -20,8 +20,11 @@
  * - POST /api/api-keys            - Create a new "user" API key (authed)
  * - POST /api/api-keys/device     - Mint a "device" key for the caller's
  *                                    device; dedupes by deviceId (authed)
- * - GET  /api/api-keys            - List keys for workspace (authed, ?kind=)
- * - DELETE /api/api-keys/:id      - Revoke a key (authed)
+ * - GET  /api/api-keys            - List keys for workspace (authed, ?kind=);
+ *                                    only the caller's own unless they hold
+ *                                    workspace.api_keys:manage
+ * - DELETE /api/api-keys/:id      - Revoke own key, or any with
+ *                                    workspace.api_keys:manage (authed)
  * - POST /api/api-keys/validate   - Validate a key (public, key is credential)
  * - POST /api/api-keys/heartbeat  - Refresh lastSeenAt for a device key
  *                                    (public, key is credential)
@@ -35,6 +38,7 @@ import {
   hashApiKey,
   mintDeviceApiKey,
 } from '../lib/api-keys-mint'
+import { getAccess } from '../lib/authz'
 
 export function apiKeyRoutes() {
   const router = new Hono()
@@ -51,10 +55,8 @@ export function apiKeyRoutes() {
       return c.json({ error: { code: 'invalid_request', message: 'workspaceId is required' } }, 400)
     }
 
-    const member = await prisma.member.findFirst({
-      where: { userId: auth.userId, workspaceId: body.workspaceId },
-    })
-    if (!member) {
+    const access = await getAccess(c, { workspaceId: body.workspaceId })
+    if (!access.permissions.has('workspace:read')) {
       return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
     }
 
@@ -115,15 +117,13 @@ export function apiKeyRoutes() {
 
     let workspaceId = body.workspaceId
     if (workspaceId) {
-      const member = await prisma.member.findFirst({
-        where: { userId: auth.userId, workspaceId },
-      })
-      if (!member) {
+      const access = await getAccess(c, { workspaceId })
+      if (!access.permissions.has('workspace:read')) {
         return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
       }
     } else {
       const member = await prisma.member.findFirst({
-        where: { userId: auth.userId },
+        where: { userId: auth.userId, projectId: null },
         orderBy: { createdAt: 'asc' },
         select: { workspaceId: true },
       })
@@ -178,17 +178,17 @@ export function apiKeyRoutes() {
     }
     const kindFilter = c.req.query('kind')
 
-    const member = await prisma.member.findFirst({
-      where: { userId: auth.userId, workspaceId },
-    })
-    if (!member) {
+    const access = await getAccess(c, { workspaceId })
+    if (!access.permissions.has('workspace:read')) {
       return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
     }
+    const canManageAll = access.permissions.has('workspace.api_keys:manage')
 
     const keys = await prisma.apiKey.findMany({
       where: {
         workspaceId,
         revokedAt: null,
+        ...(canManageAll ? {} : { userId: auth.userId }),
         ...(kindFilter === 'device' || kindFilter === 'user' ? { kind: kindFilter } : {}),
       },
       select: {
@@ -230,11 +230,12 @@ export function apiKeyRoutes() {
       return c.json({ error: { code: 'not_found', message: 'API key not found' } }, 404)
     }
 
-    const member = await prisma.member.findFirst({
-      where: { userId: auth.userId, workspaceId: apiKey.workspaceId },
-    })
-    if (!member) {
+    const access = await getAccess(c, { workspaceId: apiKey.workspaceId })
+    if (!access.permissions.has('workspace:read')) {
       return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
+    }
+    if (apiKey.userId !== auth.userId && !access.permissions.has('workspace.api_keys:manage')) {
+      return c.json({ error: { code: 'forbidden', message: "Only workspace admins can revoke other members' keys" } }, 403)
     }
 
     await prisma.apiKey.update({

@@ -48,8 +48,7 @@ import {
 // =============================================================================
 //
 // The agent-runtime is a Bun subprocess that has to load thousands of
-// TypeScript modules on cold start (~25–30 s on a typical Mac laptop —
-// see RuntimeManager.waitForAgentReady's 50 × 500 ms budget). When the
+// TypeScript modules on cold start (~25–30 s on a typical Mac laptop). When the
 // user picks a folder, the frontend lands on the project page and
 // immediately polls `/agent/chat/:cid/turn`, `/agent/quick-actions`,
 // etc. Each of those proxies hits `getProjectUrl` which awaits
@@ -1143,7 +1142,7 @@ export function localProjectsRoutes(): Hono {
       where: {
         workingMode: 'external',
         hidden: false,
-        workspace: { members: { some: { userId: auth.userId } } },
+        workspace: { members: { some: { userId: auth.userId, projectId: null } } },
       },
       include: { projectFolders: true },
       orderBy: { updatedAt: 'desc' },
@@ -1353,12 +1352,12 @@ export async function resolveFolderProjectWorkspace(
   }
   const team =
     (await prisma.workspace.findFirst({
-      where: { kind: 'team', members: { some: { userId, role: 'owner' } } },
+      where: { kind: 'team', members: { some: { userId, role: 'owner', projectId: null } } },
       orderBy: { createdAt: 'asc' },
       select: { id: true },
     })) ??
     (await prisma.workspace.findFirst({
-      where: { kind: 'team', members: { some: { userId } } },
+      where: { kind: 'team', members: { some: { userId, projectId: null } } },
       orderBy: { createdAt: 'asc' },
       select: { id: true },
     }))

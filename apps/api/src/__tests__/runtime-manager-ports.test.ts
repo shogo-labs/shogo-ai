@@ -58,8 +58,6 @@ afterEach(() => {
 
 function managerPrivate() {
   return new RuntimeManager({ domainSuffix: 'apps.example' }) as unknown as {
-    isPortInUse: (port: number) => Promise<boolean>
-    killProcessOnPort: (port: number) => Promise<boolean>
     isPortListening: (port: number) => Promise<boolean>
     allocatePortAsync: () => Promise<number>
     releasePort: (port: number) => void
@@ -69,15 +67,6 @@ function managerPrivate() {
 }
 
 describe('RuntimeManager private port helpers', () => {
-  test('isPortInUse returns true for any HTTP response and false for fetch failures', async () => {
-    const rm = managerPrivate()
-    globalThis.fetch = (async () => new Response('', { status: 500 })) as typeof fetch
-    await expect(rm.isPortInUse(37123)).resolves.toBe(true)
-
-    globalThis.fetch = (async () => { throw new Error('ECONNREFUSED') }) as typeof fetch
-    await expect(rm.isPortInUse(37123)).resolves.toBe(false)
-  })
-
   test('isPortListening ignores self and parent pids, accepts other numeric listeners, and swallows exec errors', async () => {
     const rm = managerPrivate()
     execPlan = [`${process.pid}\n${process.ppid}\nabc\n43210\n`]
@@ -88,42 +77,6 @@ describe('RuntimeManager private port helpers', () => {
 
     execPlan = [new Error('lsof failed')]
     await expect(rm.isPortListening(37123)).resolves.toBe(false)
-  })
-
-  test('killProcessOnPort returns true when no external pid holds the port', async () => {
-    const rm = managerPrivate()
-    execPlan = [`${process.pid}\n${process.ppid}\n`]
-
-    await expect(rm.killProcessOnPort(37123)).resolves.toBe(true)
-    expect(execCalls.some((cmd) => cmd.includes('kill'))).toBe(false)
-  })
-
-  test('killProcessOnPort sends SIGTERM first and succeeds once the port is free', async () => {
-    const rm = managerPrivate()
-    globalThis.setTimeout = ((cb: (...args: any[]) => void) => {
-      cb()
-      return 0 as any
-    }) as typeof setTimeout
-    ;(rm as any).isPortListening = mock(async () => false)
-    // The pid-discovery exec returns a single line containing "43210". On
-    // Windows that's the trailing column of a netstat -ano LISTENING row,
-    // on POSIX it's the bare lsof -t output. Both shapes parse to PID
-    // 43210 in the implementation.
-    const isWindows = process.platform === 'win32'
-    execPlan = isWindows
-      ? ['  TCP    127.0.0.1:37123        0.0.0.0:0              LISTENING       43210\n', '', '']
-      : ['43210\n', '', '']
-
-    await expect(rm.killProcessOnPort(37123)).resolves.toBe(true)
-    if (isWindows) {
-      // Windows path: taskkill /F goes straight to a hard kill — there's
-      // no SIGTERM-equivalent on win32, so killProcessOnPort skips the
-      // graceful step and only emits one taskkill.
-      expect(execCalls.some((cmd) => cmd.includes('taskkill /F /PID 43210'))).toBe(true)
-      expect(execCalls.some((cmd) => cmd.startsWith('kill '))).toBe(false)
-    } else {
-      expect(execCalls).toContain('kill -15 43210 2>/dev/null || true')
-    }
   })
 
   test('allocatePortAsync skips used ports, checks companion ports, and releases allocated ports', async () => {

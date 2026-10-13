@@ -29,7 +29,7 @@ export const SideChatsScreen = observer(function SideChatsScreen() {
     if (!workspace?.id) return
     try {
       const all = await api.listWorkspaceSessions(http, workspace.id)
-      setSessions(all.filter((s) => !s.isPrimary))
+      setSessions(all)
     } catch {
       setSessions([])
     } finally {
@@ -45,7 +45,7 @@ export const SideChatsScreen = observer(function SideChatsScreen() {
 
   const openChat = useCallback(
     (sessionId: string) => {
-      router.push({ pathname: '/(app)/side-chats/[id]', params: { id: sessionId } } as any)
+      router.push({ pathname: '/(app)/agent', params: { chatSessionId: sessionId } } as any)
     },
     [router],
   )

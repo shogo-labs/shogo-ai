@@ -860,10 +860,22 @@ describe('project_call carries the person to the next project', () => {
     expect(pr.code).toBe('requester_unknown')
   })
 
-  test('someone outside B\'s workspace is not carried over', async () => {
-    const pr = await callB(seeded.projectId, signRequesterTicket({ projectId: seeded.projectId, userId: seeded.outsider }))
-    expect(hopTickets).toEqual([null])
-    expect(pr.code).toBe('requester_unknown')
+  test('someone outside B\'s workspace cannot call B', async () => {
+    internalIdentity = { kind: 'project', projectId: seeded.projectId }
+    try {
+      const res = await realFetch(`${API}/api/internal/projects/${projectB}/agent-call`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Requester-Ticket': signRequesterTicket({ projectId: seeded.projectId, userId: seeded.outsider }),
+        },
+        body: JSON.stringify({ message: 'File an issue for the login bug', wait: true }),
+      })
+      expect(res.status).toBe(404)
+      expect(hopTickets).toEqual([])
+    } finally {
+      internalIdentity = { kind: 'sa' }
+    }
   })
 
   test('B\'s own consent still applies: revoking it stops B, not A', async () => {
@@ -1492,7 +1504,9 @@ describe('someone in the conversation approves, or the project has a delegate', 
     const root = await ask(gina, 'file an issue for the flake')
     const pending = await card(root)
     expect(pending.blocks.approval.toolName).toBe('exec')
-    expect(ui.find((c) => c.type === 'data-integration-approval-pending')?.data).toMatchObject({
+    // The card is in the DB before the runtime hears back from the API and emits this.
+    const pendingUi = await waitFor(async () => ui.find((c) => c.type === 'data-integration-approval-pending'), 5000)
+    expect(pendingUi.data).toMatchObject({
       provider: 'github',
       approvalId: pending.blocks.approval.requestId,
     })

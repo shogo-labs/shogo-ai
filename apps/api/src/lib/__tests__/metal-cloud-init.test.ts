@@ -106,6 +106,13 @@ describe('buildBurstUserData', () => {
     expect(s).not.toContain('SIGNOZ_INGESTION_KEY')
   })
 
+  it('points published-data durability at the given bucket, and omits it when unset', () => {
+    expect(buildBurstUserData({ ...BASE, publishDataBucket: 'shogo-published-data-production' })).toContain(
+      "PUBLISH_DATA_BUCKET='shogo-published-data-production'",
+    )
+    expect(buildBurstUserData(BASE)).not.toContain('PUBLISH_DATA_BUCKET')
+  })
+
   it('a new host comes up observing control auth, not enforcing it', () => {
     // A burst host is provisioned mid-incident to absorb load. Enforcing on
     // arrival would make a token problem look like a host that never came up.

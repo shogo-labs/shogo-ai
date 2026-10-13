@@ -228,10 +228,21 @@ app.post('/validate-runtime-token', async (c) => {
     // legacy fallback. We pass it through but verifyRuntimeToken ignores it
     // when the token is v1-formatted.
     const verified = verifyRuntimeToken(token, body.expectedProjectId)
-    if (!verified.ok) {
-      return c.json({ valid: false, reason: verified.reason })
+    if (verified.ok) {
+      return c.json({ valid: true, projectId: verified.projectId, format: verified.format })
     }
-    return c.json({ valid: true, projectId: verified.projectId, format: verified.format })
+    // Every agent runtime is a workspace runtime, so the API calls it with a
+    // workspace token (`wrt_v1_*`). The runtime compares the recovered
+    // workspace with its own WORKSPACE_ID.
+    if (token.startsWith('wrt_v1_')) {
+      const { verifyWorkspaceRuntimeToken } = await import('../lib/workspace-runtime-token')
+      const workspace = verifyWorkspaceRuntimeToken(token)
+      if (!workspace.ok) {
+        return c.json({ valid: false, reason: workspace.reason })
+      }
+      return c.json({ valid: true, workspaceId: workspace.workspaceId, format: 'wrt_v1' })
+    }
+    return c.json({ valid: false, reason: verified.reason })
   } catch (err: any) {
     console.error('[Internal] Failed to validate runtime token:', err.message)
     return c.json({ valid: false, error: 'Validation failed' }, 500)
@@ -552,6 +563,20 @@ app.post('/billing/provision', async (c) => {
           overageHardLimitUsd: body.overageHardLimitUsd ?? null,
         })
         break
+      case 'markOverageInvoicePaid':
+        if (typeof body.invoiceId !== 'string') return c.json({ error: 'invoiceId required' }, 400)
+        wallet = {
+          settled: await svc.markOverageInvoicePaidLocal(
+            body.workspaceId,
+            body.invoiceId,
+            typeof body.invoiceUrl === 'string' ? body.invoiceUrl : undefined,
+          ),
+        }
+        break
+      case 'releaseOverageInvoice':
+        if (typeof body.invoiceId !== 'string') return c.json({ error: 'invoiceId required' }, 400)
+        wallet = { released: await svc.releaseOverageInvoiceLocal(body.workspaceId, body.invoiceId) }
+        break
       default:
         return c.json({ error: `Unknown provision op: ${body.op}` }, 400)
     }
@@ -571,6 +596,21 @@ function hasInternalSecret(c: { req: { header(name: string): string | undefined 
   const b = Buffer.from(provided)
   return a.length === b.length && timingSafeEqual(a, b)
 }
+
+/**
+ * POST /api/internal/published/release
+ *
+ * The home region of a published site asks this region to retire its copy
+ * (see `lib/published-home-region`). Body `{ projectId, subdomain }`.
+ */
+app.post('/published/release', async (c) => {
+  if (!hasInternalSecret(c)) return c.json({ error: 'Unauthorized' }, 401)
+  const { releasePublishedForPeer } = await import('../lib/published-home-region')
+  const r = await releasePublishedForPeer(await c.req.json().catch(() => null), (projectId, subdomain, homeRegion) =>
+    getMetalWarmPoolController().releaseForeignPublished(projectId, subdomain, homeRegion),
+  )
+  return c.json(r.body, r.status)
+})
 
 /**
  * POST /api/internal/conversation-bus/relay

@@ -56,7 +56,9 @@ mock.module('../lib/prisma', () => withPrismaExports({
     },
     member: {
       findFirst: mock(async () => ({ id: 'member-1' })),
+      findMany: mock(async () => [{ role: 'member', projectId: null, isBillingAdmin: false }]),
     },
+    user: { findUnique: mock(async () => ({ role: 'user' })) },
     chatMessage: {
       upsert: mock(async ({ where, create, update }: any) => {
         const row = { id: where.id, ...(chatMessages.find((m) => m.id === where.id) ? update : create) }

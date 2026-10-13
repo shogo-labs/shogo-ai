@@ -38,7 +38,7 @@ All capabilities default to **on**. Set a flag to `false` to disable it.
 | Browser control | `browserEnabled` | `browser` | Browser guide (delegated) |
 | Shell | `shellEnabled` | `exec`, `exec_wait` | — |
 | Image generation | `imageGenEnabled` | `generate_image` | `media` capability line |
-| Heartbeat | `heartbeatEnabled` | `heartbeat_configure`, `heartbeat_status` | `devops` line + Action Tools reminder |
+| Heartbeat | `heartbeatToolsEnabled` | `heartbeat_configure`, `heartbeat_status` | `devops` line + Action Tools reminder |
 | Memory | `memoryEnabled` | `memory_read`, `memory_search` | — |
 | Quick actions | `quickActionsEnabled` | `quick_action` | Quick Action guide |
 | Channels | `channelsEnabled` | `channel_connect`, `channel_disconnect`, `channel_list`, `send_message` | `channel` line + Action Tools bullet |
@@ -88,7 +88,7 @@ leaner prompt.
   "channelsEnabled": false,
   "integrationsEnabled": false,
   "imageGenEnabled": false,
-  "heartbeatEnabled": false,
+  "heartbeatToolsEnabled": false,
   "sdkGuideEnabled": false
 }
 ```
@@ -111,6 +111,16 @@ conversation, reach people, and look things up.
 Leave **Heartbeat**, **Channels**, and **Integrations** on — these are exactly
 the surfaces a background agent relies on to check things on a schedule and
 report out. See [Heartbeat](/concepts/heartbeat).
+
+## The agent can change its own capabilities
+
+The system prompt lists which capabilities are enabled, disabled, or locked by
+the workspace profile. The agent turns them on and off for **its own project**
+with `capabilities_configure`. The change is saved to the project and applies
+on the next turn.
+
+A personal workspace still cannot turn Shell or Canvas back on. Those stay
+locked by the profile.
 
 ## How to change capabilities
 
@@ -151,9 +161,9 @@ No. Capability gating is applied to the shared tool set that subagents draw
 from, so a disabled tool is unreachable for delegated agents too.
 
 **What if I disable Shell or Memory by accident?**
-The agent will tell you a needed tool isn't available. Re-enable it in the
-**Capabilities** tab (or `config.json`) and the tool comes back on the next
-turn.
+The agent can turn it back on with `capabilities_configure`, and you can
+re-enable it in the **Capabilities** tab (or `config.json`). The tool comes
+back on the next turn. Shell stays off on a personal workspace.
 
 **Can I keep the tools but trim only the prompt?**
 For most capabilities the tool and its prompt guidance are linked — that's the

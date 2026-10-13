@@ -2,9 +2,11 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { describe, it, expect, beforeEach, afterEach, mock, spyOn } from 'bun:test'
 import * as fs from 'fs'
+import { runInCredentialScope } from '../credential-scope'
 import {
   deriveApiUrl,
   derivePublicApiUrl,
+  createProject,
   getInternalHeaders,
   postCheckpointRecord,
   postCostMetric,
@@ -121,6 +123,35 @@ describe('getInternalHeaders', () => {
       expect(h['Authorization']).toBeUndefined()
       expect(h['Content-Type']).toBe('application/json')
     } finally {
+      existsSpy.mockRestore()
+    }
+  })
+
+  it('forwards the requester ticket from the tool credential scope', () => {
+    const existsSpy = spyOn(fs, 'existsSync').mockReturnValue(false)
+    try {
+      runInCredentialScope({ requesterTicket: 'ticket-1' }, () => {
+        expect(getInternalHeaders()['X-Requester-Ticket']).toBe('ticket-1')
+      })
+    } finally {
+      existsSpy.mockRestore()
+    }
+  })
+
+  it('lifecycleFetch sends that ticket (workspace meta tools use the same headers)', async () => {
+    process.env.SHOGO_API_URL = 'http://api.test'
+    const existsSpy = spyOn(fs, 'existsSync').mockReturnValue(false)
+    const original = globalThis.fetch
+    const seen: { ticket: string | null } = { ticket: null }
+    globalThis.fetch = (async (_url: unknown, init?: RequestInit) => {
+      seen.ticket = new Headers(init?.headers).get('X-Requester-Ticket')
+      return new Response(JSON.stringify({ project: { id: 'p' } }), { status: 201 })
+    }) as typeof fetch
+    try {
+      await runInCredentialScope({ requesterTicket: 'ticket-1' }, () => createProject('ws-1', { name: 'N' }))
+      expect(seen.ticket).toBe('ticket-1')
+    } finally {
+      globalThis.fetch = original
       existsSpy.mockRestore()
     }
   })

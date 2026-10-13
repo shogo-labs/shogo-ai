@@ -308,6 +308,59 @@ describe('auth middleware', () => {
     expect(res.status).toBe(200)
   })
 
+  test('accepts a token the acceptsScopedToken hook allows for that path', async () => {
+    const { app } = await buildApp({
+      config: { acceptsScopedToken: (path, token) => path === '/agent/tools/execute' && token === 'rt_v1_p1_app' },
+    })
+    app.post('/agent/tools/execute', (c) => c.json({ ok: true }))
+    app.post('/agent/tools/install', (c) => c.json({ ok: true }))
+    const allowed = await app.request('/agent/tools/execute', {
+      method: 'POST',
+      headers: { 'x-runtime-token': 'rt_v1_p1_app' },
+    })
+    expect(allowed.status).toBe(200)
+    const otherPath = await app.request('/agent/tools/install', {
+      method: 'POST',
+      headers: { 'x-runtime-token': 'rt_v1_p1_app' },
+    })
+    expect(otherPath.status).toBe(401)
+  })
+
+  test('accepts a workspace token the API verifies for this WORKSPACE_ID', async () => {
+    fetchResponses = [
+      { ok: true, body: { valid: true, workspaceId: 'ws-9' } },
+    ]
+    const { app } = await buildApp({ env: { WORKSPACE_ID: 'ws-9' } })
+    app.get('/agent/secret', (c) => c.json({ ok: true }))
+    const res = await app.request('/agent/secret', {
+      headers: { 'x-runtime-token': 'wrt_v1_ws-9_abcdef' },
+    })
+    expect(res.status).toBe(200)
+    expect(fetchCalls[0].url).toContain('/api/internal/validate-runtime-token')
+  })
+
+  test('rejects a workspace token minted for a different workspace', async () => {
+    const { app } = await buildApp({ env: { WORKSPACE_ID: 'ws-9' } })
+    app.get('/agent/secret', (c) => c.json({ ok: true }))
+    const res = await app.request('/agent/secret', {
+      headers: { 'x-runtime-token': 'wrt_v1_other-ws_abcdef' },
+    })
+    expect(res.status).toBe(401)
+    expect(fetchCalls.length).toBe(0)
+  })
+
+  test('rejects a workspace token when the API returns a different workspaceId', async () => {
+    fetchResponses = [
+      { ok: true, body: { valid: true, workspaceId: 'someone-else' } },
+    ]
+    const { app } = await buildApp({ env: { WORKSPACE_ID: 'ws-9' } })
+    app.get('/agent/secret', (c) => c.json({ ok: true }))
+    const res = await app.request('/agent/secret', {
+      headers: { 'x-runtime-token': 'wrt_v1_ws-9_abcdef' },
+    })
+    expect(res.status).toBe(401)
+  })
+
   test('rejects bogus bearer that does not match v1 prefix', async () => {
     const { app } = await buildApp()
     app.get('/agent/secret', (c) => c.json({ ok: true }))

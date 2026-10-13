@@ -19,11 +19,18 @@
  *     alone can't be trusted (incident 2026-08-06 / 2026-09-02).
  *   - `overage_cap_reached`: overage is genuinely active, but the
  *     workspace's own spending cap (`overageHardLimitUsd`) is exhausted.
+ *   - `overage_payment_pending`: overage is active, but the current overage
+ *     block is invoiced and unpaid (or due to be invoiced). Overage resumes
+ *     once that invoice is paid.
  *   - `usage_limit_reached`: the generic case — no overage configured at
  *     all (or an uncapped/free wallet was never found), so the window is
  *     just the hard stop.
  */
-export type UsageBlockReason = 'entitlement_expired' | 'overage_cap_reached' | 'usage_limit_reached'
+export type UsageBlockReason =
+  | 'entitlement_expired'
+  | 'overage_cap_reached'
+  | 'overage_payment_pending'
+  | 'usage_limit_reached'
 
 export interface BalanceCheck {
   ok: boolean
@@ -51,6 +58,12 @@ export function usageLimitErrorPayload(reason: UsageBlockReason | undefined): { 
         code: 'overage_cap_reached',
         message:
           "You've reached your on-demand spending cap for this period. Raise your cap in Billing settings to continue.",
+      }
+    case 'overage_payment_pending':
+      return {
+        code: 'overage_payment_pending',
+        message:
+          "Your latest on-demand usage charge hasn't been paid yet. Pay or confirm the open invoice in Billing settings to continue.",
       }
     default:
       return {

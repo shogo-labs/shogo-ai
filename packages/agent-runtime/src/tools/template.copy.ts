@@ -21,7 +21,7 @@ import {
   readlinkSync,
   symlinkSync,
 } from "fs"
-import { execSync } from "child_process"
+import { execSync } from "@shogo/shared-runtime/child-process"
 import { pkg } from "@shogo/shared-runtime"
 import { MONOREPO_ROOT } from "./template-paths"
 import { loadTemplates, type TemplateInfo } from "./template.list"

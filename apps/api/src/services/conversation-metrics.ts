@@ -42,7 +42,7 @@ export interface ChannelMetrics {
 }
 
 async function workspaceMemberIds(workspaceId: string): Promise<Set<string>> {
-  const rows = await db.member.findMany({ where: { workspaceId }, select: { userId: true } })
+  const rows = await db.member.findMany({ where: { workspaceId, projectId: null }, select: { userId: true } })
   return new Set(rows.map((r: any) => r.userId).filter(Boolean))
 }
 

@@ -3,23 +3,23 @@
 
 import { describe, expect, test } from 'bun:test'
 import {
-  getKnownPrimaryWorkspaceSession,
-  publishPrimaryWorkspaceSession,
+  getKnownCurrentWorkspaceSession,
+  publishCurrentWorkspaceSession,
   publishWorkspaceSessionScopeChanged,
-  subscribePrimaryWorkspaceSession,
+  subscribeCurrentWorkspaceSession,
   subscribeWorkspaceSessionScopeChanged,
 } from '../workspace-agent-session-bus'
 
 describe('workspace-agent-session-bus', () => {
-  test('lets the chat surface publish the primary session without shell creation', () => {
+  test('lets the chat surface publish the open session without shell creation', () => {
     const workspaceId = 'ws-primary-bus-test'
     const received = []
-    const unsubscribe = subscribePrimaryWorkspaceSession(workspaceId, (sessionId) => received.push(sessionId))
+    const unsubscribe = subscribeCurrentWorkspaceSession(workspaceId, (sessionId) => received.push(sessionId))
 
-    publishPrimaryWorkspaceSession(workspaceId, 'session-primary')
+    publishCurrentWorkspaceSession(workspaceId, 'session-current')
 
-    expect(getKnownPrimaryWorkspaceSession(workspaceId)).toBe('session-primary')
-    expect(received).toEqual(['session-primary'])
+    expect(getKnownCurrentWorkspaceSession(workspaceId)).toBe('session-current')
+    expect(received).toEqual(['session-current'])
     unsubscribe()
   })
 

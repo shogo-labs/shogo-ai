@@ -61,7 +61,7 @@
  * Builds are debounced so rapid file writes don't cause build storms.
  */
 
-import { spawn, type ChildProcess } from 'child_process'
+import { spawn, type ChildProcess } from '@shogo/shared-runtime/child-process'
 import { join } from 'path'
 import { existsSync, readFileSync } from 'fs'
 import { resolveBinInvocation } from '@shogo/shared-runtime'

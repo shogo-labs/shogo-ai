@@ -15,11 +15,11 @@ export interface FeatureSessionType {
   name: string
   intent: string
   status: FeatureStatus
-  affectedPackages: string
+  affectedPackages: string[]
   schemaName?: string
   initialAssessment?: Record<string, unknown>
   featureArchetype?: FeatureArchetype
-  applicablePatterns: string
+  applicablePatterns: string[]
   createdAt: Date
   updatedAt: Date
   projectId?: string
@@ -29,11 +29,11 @@ export interface FeatureSessionCreateInput {
   name: string
   intent: string
   status?: FeatureStatus
-  affectedPackages?: string
+  affectedPackages?: string[]
   schemaName?: string
   initialAssessment?: Record<string, unknown>
   featureArchetype?: FeatureArchetype
-  applicablePatterns?: string
+  applicablePatterns?: string[]
   projectId?: string
 }
 
@@ -41,10 +41,10 @@ export interface FeatureSessionUpdateInput {
   name?: string
   intent?: string
   status?: FeatureStatus
-  affectedPackages?: string
+  affectedPackages?: string[]
   schemaName?: string
   initialAssessment?: Record<string, unknown>
   featureArchetype?: FeatureArchetype
-  applicablePatterns?: string
+  applicablePatterns?: string[]
   projectId?: string
 }

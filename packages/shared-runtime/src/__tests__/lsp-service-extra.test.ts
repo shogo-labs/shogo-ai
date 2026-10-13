@@ -163,6 +163,7 @@ describe('TSLanguageServer.start', () => {
     expect(spawnCalls.length).toBe(1)
     expect(spawnCalls[0]!.cmd[0]).toBe('bun')
     expect(spawnCalls[0]!.cmd).toContain('--stdio')
+    expect(spawnCalls[0]!.opts.windowsHide).toBe(true)
     expect(server.isRunning()).toBe(true)
     // Second start() is a no-op.
     await server.start()

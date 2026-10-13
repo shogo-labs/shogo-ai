@@ -14,7 +14,7 @@
  */
 
 import { Hono } from "hono"
-import { spawn, type ChildProcess } from "child_process"
+import { spawn, type ChildProcess } from "@shogo/shared-runtime/child-process"
 import { existsSync } from "fs"
 import { join } from "path"
 

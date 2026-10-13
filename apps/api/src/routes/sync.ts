@@ -16,7 +16,7 @@
  */
 
 import { Hono } from 'hono'
-import { prisma } from '../lib/prisma'
+import { can } from '../lib/authz'
 import {
   getSyncEngine,
   type SyncEvent,
@@ -64,10 +64,7 @@ export function syncRoutes() {
     }
 
     // Verify workspace membership
-    const member = await prisma.member.findFirst({
-      where: { userId: auth.userId, workspaceId },
-    })
-    if (!member) {
+    if (!(await can(c, 'workspace:read', { workspaceId }))) {
       return c.json(
         { error: { code: 'forbidden', message: 'Not a member of this workspace' } },
         403,
@@ -142,10 +139,7 @@ export function syncRoutes() {
     }
 
     // Verify workspace membership
-    const member = await prisma.member.findFirst({
-      where: { userId: auth.userId, workspaceId: body.workspaceId },
-    })
-    if (!member) {
+    if (!(await can(c, 'workspace:read', { workspaceId: body.workspaceId }))) {
       return c.json(
         { error: { code: 'forbidden', message: 'Not a member of this workspace' } },
         403,

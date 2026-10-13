@@ -275,7 +275,13 @@ export function ChatTreeItem({
                   : "gap-1 px-1 py-1.5"
               ),
           rowClassName,
-          active ? "bg-primary/10" : "hover:bg-accent/50 active:bg-accent/50"
+          workspacePane
+            ? active
+              ? "bg-sidebar-accent"
+              : "hover:bg-sidebar-accent/60 active:bg-sidebar-accent/60"
+            : active
+              ? "bg-primary/10"
+              : "hover:bg-accent/50 active:bg-accent/50"
         )}
         {...(Platform.OS === "web"
           ? ({ onContextMenu: handleContextMenu } as any)
@@ -323,8 +329,12 @@ export function ChatTreeItem({
             textClassName ?? (comfortable ? density.text.body : "text-xs"),
             "flex-1",
             active
-              ? "text-foreground"
-              : inactiveTextClassName ?? "text-muted-foreground"
+              ? workspacePane
+                ? "font-semibold text-sidebar-accent-foreground"
+                : "text-foreground"
+              : workspacePane
+                ? inactiveTextClassName ?? "text-sidebar-foreground/80"
+                : inactiveTextClassName ?? "text-muted-foreground"
           )}
           numberOfLines={1}
         >
@@ -334,11 +344,13 @@ export function ChatTreeItem({
           state. The one overflow menu replaces the previously exposed actions.
           Gated on web (hover-only), not on comfortable density — a touch-only
           narrow web viewport still gets no functional hover affordance here
-          either way, same as before this density fix. */}
+          either way, same as before this density fix.
+          The slot keeps a fixed size: the label stays in flow and the menu
+          overlays it, so hover only changes opacity, never the row's size. */}
         {Platform.OS === "web" && workspacePane && (
-          <View className="ml-auto flex flex-row items-center gap-0.5 shrink-0">
+          <View className="relative ml-auto h-4 min-w-4 shrink-0 flex-row items-center justify-end">
             {activityLabel ? (
-              <Text className="mr-1 text-[11px] text-muted-foreground group-hover:hidden">
+              <Text className="mr-1 text-[11px] text-muted-foreground group-hover:opacity-0">
                 {activityLabel}
               </Text>
             ) : null}
@@ -351,7 +363,7 @@ export function ChatTreeItem({
                   y: event.clientY ?? event.pageY ?? 0,
                 });
               }}
-              className="hidden p-0.5 group-hover:flex"
+              className="absolute right-0 h-4 w-4 items-center justify-center opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto"
               accessibilityLabel={`Manage ${label}`}
             >
               <MoreHorizontal size={14} className="text-muted-foreground" />

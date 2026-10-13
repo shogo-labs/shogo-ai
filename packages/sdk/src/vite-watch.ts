@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
-import * as childProcess from 'node:child_process'
+import * as childProcess from './child-process'
 import {
   existsSync,
   mkdirSync,

@@ -4,6 +4,7 @@
 import { Hono, type Context } from 'hono'
 import { prisma } from '../lib/prisma'
 import type { NotificationType } from '../lib/prisma'
+import { authorize, can, denialResponse } from '../lib/authz'
 import { projectChatRoutes } from './project-chat'
 import { createNotification } from '../services/notification.service'
 import { sendPushToUser } from '../lib/push-notifications'
@@ -577,11 +578,19 @@ export function createAgentTaskRoutes(config: { runtimeManager?: RuntimeManager 
     if (!title || title.length > 500 || !workspaceId) {
       return c.json({ error: { code: 'bad_request', message: 'title and workspaceId are required' } }, 400)
     }
-    const member = await prisma.member.findFirst({ where: { userId, workspaceId }, select: { id: true } })
-    if (!member) return c.json({ error: { code: 'forbidden', message: 'No access to this workspace' } }, 403)
+    if (!(await can(c, 'workspace:read', { workspaceId }))) {
+      return c.json({ error: { code: 'forbidden', message: 'No access to this workspace' } }, 403)
+    }
     if (projectId) {
       const project = await prisma.project.findFirst({ where: { id: projectId, workspaceId }, select: { id: true } })
       if (!project) return c.json({ error: { code: 'bad_request', message: 'Invalid project for workspace' } }, 400)
+      const decision = await authorize(c, 'project:update', { projectId })
+      if (!decision.ok) {
+        if (decision.status === 404) {
+          return c.json({ error: { code: 'bad_request', message: 'Invalid project for workspace' } }, 400)
+        }
+        return denialResponse(c, decision)
+      }
     }
     const dueAt = typeof body.dueAt === 'string' && body.dueAt ? new Date(body.dueAt) : null
     if (dueAt && Number.isNaN(dueAt.getTime())) return c.json({ error: { code: 'bad_request', message: 'Invalid dueAt' } }, 400)
@@ -611,17 +620,20 @@ export function createAgentTaskRoutes(config: { runtimeManager?: RuntimeManager 
     if (task.status === 'completed' || task.status === 'cancelled') {
       return c.json({ error: { code: 'conflict', message: 'This task cannot be started again' } }, 409)
     }
-    const member = await prisma.member.findFirst({
-      where: { userId, workspaceId: task.workspaceId },
-      select: { id: true },
-    })
-    if (!member) return c.json({ error: { code: 'forbidden', message: 'No access to this workspace' } }, 403)
+    if (!(await can(c, 'workspace:read', { workspaceId: task.workspaceId }))) {
+      return c.json({ error: { code: 'forbidden', message: 'No access to this workspace' } }, 403)
+    }
     if (task.projectId) {
       const project = await prisma.project.findFirst({
         where: { id: task.projectId, workspaceId: task.workspaceId },
         select: { id: true },
       })
-      if (!project) return c.json({ error: { code: 'conflict', message: 'Task project is no longer available' } }, 409)
+      if (!project || !(await authorize(c, 'project:update', { projectId: task.projectId })).ok) {
+        return c.json({ error: { code: 'conflict', message: 'Task project is no longer available' } }, 409)
+      }
+    } else {
+      const decision = await authorize(c, 'project:create', { workspaceId: task.workspaceId })
+      if (!decision.ok) return denialResponse(c, decision)
     }
     // Claim the task before creating a project/session so two rapid Start
     // Agent taps cannot create duplicate project chats or workers.

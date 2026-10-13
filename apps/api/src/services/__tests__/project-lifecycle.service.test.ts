@@ -103,6 +103,17 @@ const prismaStub = {
       agentConfigs.set(where.projectId, record)
       return record
     },
+    update: async ({ where, data }: { where: { projectId: string }; data: Record<string, unknown> }) => {
+      const existing = agentConfigs.get(where.projectId)
+      if (!existing) throw new Error('not found')
+      const record = { ...existing, ...data }
+      agentConfigs.set(where.projectId, record)
+      return record
+    },
+    create: async ({ data }: { data: Record<string, unknown> }) => {
+      agentConfigs.set(data.projectId as string, data)
+      return data
+    },
   },
 }
 
@@ -289,24 +300,29 @@ describe('configureProject — heartbeat paywall', () => {
     expect(paidCalls).toHaveLength(0)
   })
 
-  it('blocks enabling the heartbeat on an unpaid workspace', async () => {
+  it('applies the rest of the patch but reports a paywall error when enabling on an unpaid workspace', async () => {
     paidAnswer = false
     const p = seedProject({ workspaceId: 'ws_free' })
-    await expect(
-      configureProject(p.id, { agent: { heartbeatEnabled: true } }),
-    ).rejects.toMatchObject({ name: 'ProjectLifecycleError', code: 'paywall' })
+    const result = await configureProject(p.id, {
+      name: 'Renamed',
+      agent: { heartbeatEnabled: true, modelName: 'claude-haiku-4-5' },
+    })
     expect(paidCalls).toEqual(['ws_free'])
-    // AgentConfig must NOT have been persisted as enabled.
-    expect(agentConfigs.get(p.id)).toBeUndefined()
+    expect(result.name).toBe('Renamed')
+    expect(result.heartbeatError).toMatchObject({ code: 'paywall' })
+    // Model change landed; the heartbeat did NOT get persisted as enabled.
+    const row = agentConfigs.get(p.id)!
+    expect(row.modelName).toBe('claude-haiku-4-5')
+    expect(row.heartbeatEnabled).not.toBe(true)
   })
 
-  it('blocks patching other agent fields while the heartbeat is already enabled on an unpaid workspace', async () => {
+  it('does not report a paywall error when patching only model fields on an already-enabled unpaid workspace', async () => {
     paidAnswer = false
     const p = seedProject({ workspaceId: 'ws_free' })
     agentConfigs.set(p.id, { heartbeatEnabled: true, heartbeatInterval: 1800 })
-    await expect(
-      configureProject(p.id, { agent: { modelName: 'claude-haiku-4-5' } }),
-    ).rejects.toMatchObject({ name: 'ProjectLifecycleError', code: 'paywall' })
+    const result = await configureProject(p.id, { agent: { modelName: 'claude-haiku-4-5' } })
+    expect(result.heartbeatError).toBeUndefined()
+    expect(agentConfigs.get(p.id)!.modelName).toBe('claude-haiku-4-5')
   })
 
   it('allows disabling the heartbeat on an unpaid workspace', async () => {
@@ -322,6 +338,9 @@ describe('configureProject — heartbeat paywall', () => {
     const p = seedProject({ workspaceId: 'ws_paid' })
     const result = await configureProject(p.id, { agent: { heartbeatEnabled: true, heartbeatInterval: 900 } })
     expect(result.agent?.heartbeatEnabled).toBe(true)
+    expect(result.heartbeatError).toBeUndefined()
+    // Enabling schedules the first run (the scheduler needs nextHeartbeatAt).
+    expect(agentConfigs.get(p.id)!.nextHeartbeatAt).toBeInstanceOf(Date)
     expect(paidCalls).toEqual(['ws_paid'])
   })
 })

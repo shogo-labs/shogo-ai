@@ -77,7 +77,7 @@
  *     memory surface of its own.
  */
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import React, { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Platform,
   Pressable,
@@ -88,12 +88,15 @@ import {
 import { Text } from '@/components/ui/text'
 import { Eye, Keyboard, Mic, MicOff, Send, X } from 'lucide-react-native'
 import {
-  OrganicParticles,
   ShogoVoiceProvider,
   useLiveVoiceConversation,
   useVoiceConversation,
   type LiveTranscriptTurn,
-} from '@shogo-ai/sdk/voice/react'
+} from '@shogo-ai/sdk/voice/react/conversation'
+
+const OrganicParticles = lazy(() =>
+  import('@shogo-ai/sdk/voice/react/visuals').then((mod) => ({ default: mod.OrganicParticles })),
+)
 import { API_URL } from '../../lib/api'
 import { usePlatformConfig } from '../../lib/platform-config'
 import { useEzModeInputModePreference } from '../../lib/ez-mode-preference'
@@ -1864,12 +1867,14 @@ function SphereHero({
         // the particle cloud scales inside via `style`.
         style={{ height: 350 }}
       >
-        <OrganicParticles
-          config={EZ_MODE_PARTICLES_CONFIG}
-          getFrequencyData={getFrequencyData}
-          active={voiceActive}
-          style={{ width: '100%', height: '100%' }}
-        />
+        <Suspense fallback={null}>
+          <OrganicParticles
+            config={EZ_MODE_PARTICLES_CONFIG}
+            getFrequencyData={getFrequencyData}
+            active={voiceActive}
+            style={{ width: '100%', height: '100%' }}
+          />
+        </Suspense>
       </View>
       {/* <Text className="text-xs text-muted-foreground pb-2">{caption}</Text> */}
     </View>

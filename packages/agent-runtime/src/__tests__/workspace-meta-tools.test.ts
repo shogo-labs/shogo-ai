@@ -106,6 +106,55 @@ describe('workspace meta-agent tools', () => {
     })
   })
 
+  it('retries a mount on HTTP 502 and does not include an HTML gateway page in the error', async () => {
+    await withWorkspaceEnv({}, async () => {
+      let attempts = 0
+      globalThis.fetch = (async () => {
+        attempts += 1
+        if (attempts < 3) {
+          return new Response('<!DOCTYPE html><html>cloudflare</html>', { status: 502 })
+        }
+        return Response.json({ ok: true, attached: { projectId: 'p1' } })
+      }) as unknown as typeof fetch
+      const mount = createTools(wsCtx()).find((tool) => tool.name === 'mount_project')
+      const result = await mount!.execute('call-1', { projectId: 'p1' })
+      expect(attempts).toBe(3)
+      expect(result.details.ok).toBe(true)
+    })
+  })
+
+  it('drops the HTML body when a mount keeps failing', async () => {
+    await withWorkspaceEnv({}, async () => {
+      globalThis.fetch = (async () =>
+        new Response('<!DOCTYPE html><html>cloudflare</html>', { status: 502 })) as unknown as typeof fetch
+      const mount = createTools(wsCtx()).find((tool) => tool.name === 'mount_project')
+      await expect(mount!.execute('call-1', { projectId: 'p1' })).rejects.toThrow('Workspace API HTTP 502')
+    })
+  })
+
+  it('preview_project mounts once when the project is not attached, then starts the preview', async () => {
+    await withWorkspaceEnv({ PORT: '37287' }, async () => {
+      const calls: string[] = []
+      globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input)
+        calls.push(`${init?.method || 'GET'} ${url}`)
+        if (url.includes('/preview/start') && calls.filter((c) => c.includes('/preview/start')).length === 1) {
+          return Response.json({ error: 'project_not_attached' }, { status: 404 })
+        }
+        if (url.includes('/members')) {
+          return Response.json({ ok: true, attached: { projectId: 'COUNTER' } })
+        }
+        return Response.json({ ok: true, phase: 'running' })
+      }) as typeof fetch
+      const preview = createTools(wsCtx()).find((tool) => tool.name === 'preview_project')
+      const result = await preview!.execute('call-1', { projectId: 'COUNTER' })
+      expect(calls[0]).toBe('POST http://localhost:37287/p/COUNTER/preview/start')
+      expect(calls[1]).toContain('/sessions/session-1/members')
+      expect(calls[2]).toBe('POST http://localhost:37287/p/COUNTER/preview/start')
+      expect(result.details.url).toBe('http://localhost:37287/p/COUNTER/')
+    })
+  })
+
   it('preview_project builds the mounted member and returns a /p/<id>/ url, never the runtime\'s own port', async () => {
     const previous = {
       WORKSPACE_RUNTIME: process.env.WORKSPACE_RUNTIME,

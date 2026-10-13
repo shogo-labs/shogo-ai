@@ -14,6 +14,9 @@ module.exports = function (api) {
       // preset does not transpile them by default, so its import could
       // abort the bundle before Expo Router registers the application.
       '@babel/plugin-transform-class-static-block',
+      // Direct Lucide icon imports so Metro does not pull the full barrel
+      // into the web entry chunk. See scripts/babel-plugin-lucide-direct.js.
+      './scripts/babel-plugin-lucide-direct.js',
       [
         'module-resolver',
         {

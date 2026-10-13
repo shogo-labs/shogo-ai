@@ -80,7 +80,7 @@ const mockPrisma = {
     findFirst: mock(async ({ where, orderBy }: any) => {
       const matches = members.filter((m) => {
         for (const [k, v] of Object.entries(where)) {
-          if ((m as any)[k] !== v) return false
+          if (((m as any)[k] ?? null) !== v) return false
         }
         return true
       })
@@ -89,6 +89,11 @@ const mockPrisma = {
       }
       return matches[0] || null
     }),
+    findMany: mock(async ({ where }: any) =>
+      members
+        .filter((m) => m.userId === where.userId && m.workspaceId === where.OR?.[0]?.workspaceId)
+        .map(() => ({ role: 'member', projectId: null, isBillingAdmin: false })),
+    ),
   },
   workspace: {
     findUnique: mock(async ({ where }: any) => workspaces.get(where.id) || null),

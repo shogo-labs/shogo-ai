@@ -12,7 +12,7 @@
 generator client {
   provider        = "prisma-client"
   output          = "../apps/api/src/generated/prisma-pg"
-  previewFeatures = ["postgresqlExtensions"]
+  previewFeatures = ["postgresqlExtensions", "partialIndexes"]
 }
 
 datasource db {
@@ -556,6 +556,10 @@ model Project {
   // allotment (see billing.service.ts canEnableAlwaysOn + publish.ts).
   publishedAlwaysOn  Boolean          @default(false)
   accessLevel        AccessLevel      @default(anyone)
+  // Who inside the workspace can open this project (RBAC). `restricted`
+  // limits access to workspace owners/admins plus explicit project
+  // Members. See packages/authz/src/resolve.ts.
+  visibility         ProjectVisibility @default(workspace)
   // SHA-256 hash (hex) of the published-site password, salted by subdomain
   // (sha256(`${subdomain}:${password}`)). Only set when accessLevel ==
   // `password`. Mirrored to the SITE_AUTH Cloudflare KV namespace by
@@ -1152,6 +1156,8 @@ model Member {
   workspace Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   project   Project?   @relation(fields: [projectId], references: [id], onDelete: Cascade)
 
+  @@unique([userId, workspaceId], map: "members_workspace_scope_key", where: raw("\"projectId\" IS NULL"))
+  @@unique([userId, projectId], map: "members_project_scope_key", where: raw("\"projectId\" IS NOT NULL"))
   @@index([userId])
   @@index([workspaceId])
   @@index([projectId])
@@ -1163,6 +1169,11 @@ enum MemberRole {
   admin
   member
   viewer
+}
+
+enum ProjectVisibility {
+  workspace
+  restricted
 }
 
 /// Workspace-level Slack app installation. The bot token is encrypted at rest
@@ -1491,11 +1502,24 @@ model UsageWallet {
   overageEnabled               Boolean  @default(true)
   overageHardLimitUsd          Float?
   overageAccumulatedUsd        Float    @default(0)
-  // USD already invoiced this period in $100 trust blocks. When
-  // `overageAccumulatedUsd` crosses the next 100 dollar threshold past this
-  // value, a new $100 invoice is created mid-cycle and this field bumps.
+  // USD already invoiced this period in trust blocks ($25 to start, growing
+  // to $500 as blocks get paid; see `overageBlockUsd`). When
+  // `overageAccumulatedUsd` crosses the next block past this value, a new
+  // invoice is created mid-cycle and this field bumps.
   // Resets to 0 each monthly allocation reset.
   overageBilledUsd             Float    @default(0)
+  // Lifetime count of overage block invoices that actually got paid. Drives
+  // the trust ladder in `overageBlockUsd` and never resets.
+  overagePaidBlocks            Int      @default(0)
+  // The single overage block invoice that is invoiced but not yet paid.
+  // While set, further overage is paused (`overage_payment_pending`).
+  // Cleared by a conditional update on payment so the sync pay path and the
+  // `invoice.payment_succeeded` webhook can't double-count one invoice.
+  overageOutstandingInvoiceId  String?
+  overageOutstandingUsd        Float    @default(0)
+  // Stripe's hosted page for the outstanding invoice: where the customer pays
+  // it or confirms a bank-required authentication (3-D Secure).
+  overageOutstandingInvoiceUrl String?
   // Per-period dedupe ledger for proactive usage/overage alerts so a given
   // threshold notification (e.g. "overage started", "80% of spend cap")
   // fires at most once per allocation period. Shape:
@@ -1698,6 +1722,9 @@ model ChatSession {
   // cannot hold a workspace id, so workspace-scoped sessions carry the
   // workspace reference here and leave contextId null.
   workspaceId         String?
+  // Owner of a personal workspace-agent chat. Null for project chats,
+  // scheduled/DM/Slack sessions, and chats created before ownership existed.
+  createdByUserId     String?
   phase               String?
   claudeCodeSessionId String?
   cachedMessageCount  Int         @default(0)
@@ -1738,6 +1765,7 @@ model ChatSession {
 
   @@index([contextType, contextId])
   @@index([workspaceId])
+  @@index([workspaceId, createdByUserId, lastActiveAt])
   @@index([activeTurnHeartbeatAt])
   @@index([createdAt])
   @@map("chat_sessions")

@@ -158,6 +158,15 @@ export interface WorkspaceActiveChat {
   projectName: string | null
   projectHidden: boolean
   startedAt: string
+  /**
+   * Set when this turn is an agent reply inside team chat. The client uses it
+   * to open that channel or thread instead of a separate project session.
+   */
+  conversationId?: string | null
+  threadRootId?: string | null
+  messageId?: string | null
+  conversationName?: string | null
+  conversationKind?: string | null
 }
 
 /**

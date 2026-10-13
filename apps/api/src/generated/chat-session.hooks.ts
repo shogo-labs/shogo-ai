@@ -8,6 +8,8 @@
  */
 
 import { deleteChatAttachmentPrefix } from "../lib/chat-attachments"
+import { accessibleProjectsWhere, type Principal } from "../lib/authz"
+import { hookAuthorize, hookPrincipal, hookRequire, type HookDenial } from "../lib/authz/hooks"
 
 /**
  * Result from a hook that can modify or reject the operation
@@ -27,6 +29,7 @@ export interface HookContext {
   query: Record<string, string>
   userId?: string
   tunnelAuthenticated?: boolean
+  auth?: Principal
   prisma: any
 }
 
@@ -52,12 +55,112 @@ export interface ChatSessionHooks {
   afterDelete?: (id: string, ctx: HookContext) => Promise<void>
 }
 
+/** The fields that decide which scope a chat session belongs to. */
+export const CHAT_SESSION_SCOPE_SELECT = {
+  contextId: true,
+  workspaceId: true,
+  createdByUserId: true,
+} as const
+
+export type ChatSessionScope = {
+  contextId?: string | null
+  workspaceId?: string | null
+  createdByUserId?: string | null
+}
+
+/** A chat with an owner is personal. Ownerless chats stay shared. */
+export function isForeignOwnedChat(
+  session: { createdByUserId?: string | null } | null | undefined,
+  userId: string | undefined,
+): boolean {
+  return Boolean(session?.createdByUserId && session.createdByUserId !== userId)
+}
+
+function withForbiddenMessage(denied: HookDenial | null, message: string): HookResult | null {
+  if (!denied) return null
+  return denied.error.code === "forbidden" ? { ok: false, error: { code: "forbidden", message } } : denied
+}
+
+/**
+ * Authorize access to a chat session. Project sessions (contextId) need
+ * project:read, or project:update when `writeOp` is given; workspace-level
+ * sessions need workspace:read.
+ */
+export async function authorizeChatSession(
+  ctx: HookContext,
+  session: ChatSessionScope,
+  forbiddenMessage: string,
+  writeOp?: string,
+): Promise<HookResult> {
+  if (isForeignOwnedChat(session, ctx.userId)) {
+    return { ok: false, error: { code: "not_found", message: "Chat session not found" } }
+  }
+  if (session.contextId) {
+    const scope = { projectId: session.contextId }
+    const denied = writeOp
+      ? await hookAuthorize(ctx, "project:update", scope, writeOp)
+      : await hookRequire(ctx, "project:read", scope)
+    return withForbiddenMessage(denied, forbiddenMessage) ?? { ok: true }
+  }
+  if (session.workspaceId) {
+    const denied = await hookRequire(ctx, "workspace:read", { workspaceId: session.workspaceId })
+    return withForbiddenMessage(denied, forbiddenMessage) ?? { ok: true }
+  }
+  return { ok: false, error: { code: "forbidden", message: forbiddenMessage } }
+}
+
+/**
+ * Prisma `where` on ChatSession selecting the sessions the caller can read:
+ * sessions of readable projects, plus workspace-level sessions (e.g. the
+ * personal companion home chat) in workspaces the caller is a member of.
+ */
+export async function accessibleChatSessionsWhere(ctx: HookContext): Promise<Record<string, unknown>> {
+  const principal = hookPrincipal(ctx)
+  const pinned = principal.via === "apiKey" || principal.via === "runtimeToken"
+  return {
+    OR: [
+      { project: await accessibleProjectsWhere(principal) },
+      {
+        AND: [
+          {
+            workspace: {
+              ...(pinned ? { id: principal.workspaceId ?? "" } : {}),
+              members: { some: { userId: ctx.userId, projectId: null } },
+            },
+          },
+          { OR: [{ createdByUserId: ctx.userId }, { createdByUserId: null }] },
+        ],
+      },
+    ],
+  }
+}
+
+async function authorizeExistingSession(
+  id: string,
+  ctx: HookContext,
+  writeOp?: string,
+): Promise<HookResult> {
+  const session = await ctx.prisma.chatSession.findUnique({
+    where: { id },
+    select: CHAT_SESSION_SCOPE_SELECT,
+  })
+
+  if (!session) {
+    return {
+      ok: false,
+      error: { code: "not_found", message: "Chat session not found" },
+    }
+  }
+
+  return authorizeChatSession(ctx, session, "Access denied", writeOp)
+}
+
 /**
  * Default ChatSession hooks (customize as needed)
  */
 export const chatSessionHooks: ChatSessionHooks = {
   /**
-   * Filter chat sessions by contextType and contextId (projectId), verify workspace access
+   * Filter chat sessions by contextType and contextId (projectId), verify project access
    */
   beforeList: async (ctx) => {
     const userId = ctx.userId
@@ -69,7 +172,7 @@ export const chatSessionHooks: ChatSessionHooks = {
     }
 
     const { contextType, contextId, projectId } = ctx.query
-    const where: Record<string, any> = {}
+    let where: Record<string, any> = {}
 
     if (contextType) where.contextType = contextType
     if (contextId) where.contextId = contextId
@@ -78,36 +181,12 @@ export const chatSessionHooks: ChatSessionHooks = {
     // If projectId is specified, verify user has access to that project
     if (projectId || contextId) {
       if (!ctx.tunnelAuthenticated) {
-        const targetProjectId = projectId || contextId
-        const project = await ctx.prisma.project.findUnique({
-          where: { id: targetProjectId },
-          include: { workspace: { include: { members: true } } },
-        })
-
-        if (!project) {
-          return {
-            ok: false,
-            error: { code: "not_found", message: "Project not found" },
-          }
-        }
-
-        const hasAccess = project.workspace.members.some((m: any) => m.userId === userId)
-        if (!hasAccess) {
-          return {
-            ok: false,
-            error: { code: "forbidden", message: "Access denied to this project" },
-          }
-        }
+        const denied = await hookRequire(ctx, "project:read", { projectId: projectId || contextId })
+        const rejected = withForbiddenMessage(denied, "Access denied to this project")
+        if (rejected) return rejected
       }
     } else if (!ctx.tunnelAuthenticated) {
-      // No specific project - filter to only sessions the user can access:
-      // either via their project's workspace, or (for workspace-level
-      // sessions with no project, e.g. the personal companion home chat)
-      // via the session's own workspace relation.
-      where.OR = [
-        { project: { workspace: { members: { some: { userId } } } } },
-        { workspace: { members: { some: { userId } } } },
-      ]
+      where = { AND: [where, await accessibleChatSessionsWhere(ctx)] }
     }
 
     return {
@@ -123,7 +202,7 @@ export const chatSessionHooks: ChatSessionHooks = {
   },
 
   /**
-   * Verify user has access to the chat session via workspace membership
+   * Require project:read (project sessions) or workspace:read (workspace sessions)
    */
   beforeGet: async (id, ctx) => {
     const userId = ctx.userId
@@ -136,45 +215,12 @@ export const chatSessionHooks: ChatSessionHooks = {
 
     if (ctx.tunnelAuthenticated) return { ok: true }
 
-    const session = await ctx.prisma.chatSession.findUnique({
-      where: { id },
-      include: {
-        project: {
-          include: {
-            workspace: {
-              include: { members: true },
-            },
-          },
-        },
-        workspace: {
-          include: { members: true },
-        },
-      },
-    })
-
-    if (!session) {
-      return {
-        ok: false,
-        error: { code: "not_found", message: "Chat session not found" },
-      }
-    }
-
-    const hasAccess =
-      session.project?.workspace?.members?.some((m: any) => m.userId === userId) ||
-      session.workspace?.members?.some((m: any) => m.userId === userId)
-
-    if (!hasAccess) {
-      return {
-        ok: false,
-        error: { code: "forbidden", message: "Access denied" },
-      }
-    }
-
-    return { ok: true }
+    return authorizeExistingSession(id, ctx)
   },
 
   /**
-   * Verify user can create chat sessions in the target project
+   * Require project:update on the target project (or workspace:read for
+   * workspace-level sessions)
    */
   beforeCreate: async (input, ctx) => {
     const userId = ctx.userId
@@ -195,34 +241,28 @@ export const chatSessionHooks: ChatSessionHooks = {
       input.contextType = 'general'
     }
 
-    // If contextId (projectId) is provided, verify access
-    if (input.contextId && !ctx.tunnelAuthenticated) {
-      const project = await ctx.prisma.project.findUnique({
-        where: { id: input.contextId },
-        include: { workspace: { include: { members: true } } },
-      })
+    // The client never chooses the owner. Personal workspace-agent chats
+    // belong to the caller. Project-anchored sessions stay shared.
+    delete input.createdByUserId
+    if (input.contextType === "workspace" && !input.contextId) {
+      input.createdByUserId = userId
+    }
 
-      if (!project) {
-        return {
-          ok: false,
-          error: { code: "not_found", message: "Project not found" },
-        }
-      }
-
-      const hasAccess = project.workspace.members.some((m: any) => m.userId === userId)
-      if (!hasAccess) {
-        return {
-          ok: false,
-          error: { code: "forbidden", message: "Cannot create sessions in this project" },
-        }
-      }
+    if ((input.contextId || input.workspaceId) && !ctx.tunnelAuthenticated) {
+      const access = await authorizeChatSession(
+        ctx,
+        input,
+        "Cannot create sessions in this project",
+        "POST /api/chat-sessions",
+      )
+      if (!access.ok) return access
     }
 
     return { ok: true, data: input }
   },
 
   /**
-   * Verify user has access to update the chat session
+   * Require project:update (or workspace:read for workspace-level sessions)
    */
   beforeUpdate: async (id, input, ctx) => {
     const userId = ctx.userId
@@ -235,45 +275,25 @@ export const chatSessionHooks: ChatSessionHooks = {
 
     if (ctx.tunnelAuthenticated) return { ok: true }
 
-    const session = await ctx.prisma.chatSession.findUnique({
-      where: { id },
-      include: {
-        project: {
-          include: {
-            workspace: {
-              include: { members: true },
-            },
-          },
-        },
-        workspace: {
-          include: { members: true },
-        },
-      },
-    })
+    // Ownership is assigned at creation. A client cannot move a chat to
+    // someone else or clear it and make a personal chat shared.
+    if (input && typeof input === "object") delete input.createdByUserId
 
-    if (!session) {
-      return {
-        ok: false,
-        error: { code: "not_found", message: "Chat session not found" },
-      }
-    }
+    const op = `PATCH /api/chat-sessions/${id}`
+    const access = await authorizeExistingSession(id, ctx, op)
+    if (!access.ok) return access
 
-    const hasAccess =
-      session.project?.workspace?.members?.some((m: any) => m.userId === userId) ||
-      session.workspace?.members?.some((m: any) => m.userId === userId)
-
-    if (!hasAccess) {
-      return {
-        ok: false,
-        error: { code: "forbidden", message: "Access denied" },
-      }
+    // Moving a session also needs write access to where it lands.
+    if (input?.contextId || input?.workspaceId) {
+      const target = await authorizeChatSession(ctx, input, "Access denied", op)
+      if (!target.ok) return target
     }
 
     return { ok: true }
   },
 
   /**
-   * Verify user has access to delete the chat session
+   * Require project:update (or workspace:read for workspace-level sessions)
    */
   beforeDelete: async (id, ctx) => {
     const userId = ctx.userId
@@ -286,41 +306,7 @@ export const chatSessionHooks: ChatSessionHooks = {
 
     if (ctx.tunnelAuthenticated) return { ok: true }
 
-    const session = await ctx.prisma.chatSession.findUnique({
-      where: { id },
-      include: {
-        project: {
-          include: {
-            workspace: {
-              include: { members: true },
-            },
-          },
-        },
-        workspace: {
-          include: { members: true },
-        },
-      },
-    })
-
-    if (!session) {
-      return {
-        ok: false,
-        error: { code: "not_found", message: "Chat session not found" },
-      }
-    }
-
-    const hasAccess =
-      session.project?.workspace?.members?.some((m: any) => m.userId === userId) ||
-      session.workspace?.members?.some((m: any) => m.userId === userId)
-
-    if (!hasAccess) {
-      return {
-        ok: false,
-        error: { code: "forbidden", message: "Access denied" },
-      }
-    }
-
-    return { ok: true }
+    return authorizeExistingSession(id, ctx, `DELETE /api/chat-sessions/${id}`)
   },
 
   afterDelete: async (id) => {

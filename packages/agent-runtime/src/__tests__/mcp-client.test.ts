@@ -5,6 +5,7 @@
 // the surrounding catalog gating and config persistence without spawning
 // real MCP server subprocesses.
 import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test'
+import * as realCatalog from '../mcp-catalog'
 import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
@@ -59,7 +60,9 @@ mock.module('@modelcontextprotocol/sdk/client/stdio.js', () => ({ StdioClientTra
 mock.module('@modelcontextprotocol/sdk/client/streamableHttp.js', () => ({ StreamableHTTPClientTransport: FakeHttpTransport }))
 
 mock.module('../mcp-catalog', () => ({
-  isMcpServerAllowed: (name: string) => name !== 'forbidden',
+  ...realCatalog,
+  isMcpServerAllowed: (name: string) =>
+    name !== 'forbidden' && name !== 'filesystem' && name !== 'computer-use',
   isPreinstalledMcpId: () => false,
   isCatalogEntry: () => true,
   getPreinstalledPackages: () => [],
@@ -205,6 +208,18 @@ describe('MCPClientManager — startServer (stdio)', () => {
   it('rejects names not in the catalog', async () => {
     const m = new MCPClientManager()
     await expect(m.startServer('forbidden', baseCfg)).rejects.toThrow(/not in the catalog/)
+  })
+
+  it('points filesystem and computer-use at the built-in tools', async () => {
+    const saved = process.env.SHOGO_LOCAL_MODE
+    delete process.env.SHOGO_LOCAL_MODE
+    try {
+      const m = new MCPClientManager()
+      await expect(m.startServer('filesystem', baseCfg)).rejects.toThrow(/read_file/)
+      await expect(m.startServer('computer-use', baseCfg)).rejects.toThrow(/Use exec/)
+    } finally {
+      if (saved !== undefined) process.env.SHOGO_LOCAL_MODE = saved
+    }
   })
 
   it('connects, lists tools, and registers them', async () => {

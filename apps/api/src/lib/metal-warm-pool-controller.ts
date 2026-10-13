@@ -378,6 +378,12 @@ export const MAX_VMS_PER_HOST = Math.max(1, parseInt(process.env.METAL_MAX_VMS_P
  */
 const URL_CACHE_TTL_MS = parseInt(process.env.METAL_URL_CACHE_TTL_MS || '15000', 10)
 
+/** Minimum gap between attempts to hand one published site off to its home region. */
+const FOREIGN_PUBLISHED_RELEASE_INTERVAL_MS = parseInt(
+  process.env.METAL_FOREIGN_PUBLISHED_RELEASE_INTERVAL_MS || '300000',
+  10,
+)
+
 export class NoMetalHostError extends Error {
   readonly code = 'NO_METAL_HOST'
   constructor(msg = 'no live metal host available') {
@@ -469,6 +475,7 @@ export class MetalWarmPoolController {
   /** projectId → resolved runtime URL, short-lived (URL_CACHE_TTL_MS). Skips the
    * host /assign for repeat requests to an already-running project. */
   private urlCache = new Map<string, UrlCacheEntry>()
+  private foreignPublishedReleaseAt = new Map<string, number>()
   private stats = { assigned: 0, resumed: 0, reused: 0, coldMiss: 0, cacheHit: 0, hostErrors: 0, noHost: 0 }
   /** Cordoned hostIds (admin drain) — excluded from NEW placements. Synced from
    * the shared registry on each resolve so every API replica honors a cordon. */
@@ -761,7 +768,10 @@ export class MetalWarmPoolController {
         }
 
         const live = await this.liveHostsShared()
-        let ownerHostId = placedHostId ?? this.projectHost.get(projectId)
+        // This replica's memory of a host is only a fallback: the copy may have
+        // been evicted there and moved since, so without a placement ask the
+        // hosts before trusting it.
+        let ownerHostId = placedHostId
         if (live.length > 1 && !live.some((h) => h.hostId === ownerHostId)) {
           const probed = await this.probeOwner(projectId, live)
           if (probed) {
@@ -769,6 +779,7 @@ export class MetalWarmPoolController {
             span.setAttribute('resolve.owner_probe', probed)
           }
         }
+        ownerHostId ??= this.projectHost.get(projectId)
 
         const cands = this.candidates(projectId, ownerHostId, live)
         if (cands.length === 0) {
@@ -821,7 +832,13 @@ export class MetalWarmPoolController {
               })
 
         for (const host of orderedCands) {
+          // Publish the target before assigning. A cold boot outlasts a lease
+          // loser's placement wait, and a loser that finds none boots a second
+          // copy on its own least-loaded host. Pointed here instead, its
+          // /assign joins ours (the agent singleflights per runtime key).
+          const provisional = gotLease && placedHostId !== host.hostId
           try {
+            if (provisional) await this.registry.setPlacement(projectId, host.hostId, 'local').catch(() => {})
             const res = await this.assignOnHost(host, projectId, env, bind)
             this.projectHost.set(projectId, host.hostId)
             // Publish placement so sibling replicas route here (cache-aware) and
@@ -910,6 +927,9 @@ export class MetalWarmPoolController {
             // retry; a host that is really dead ages out of the live set and
             // the next resolve places the project elsewhere.
             if (err instanceof MetalHostUnreachableError && host.hostId === stickyHostId) {
+              // Keep a placement that existed, not one written above: nothing
+              // confirms this host still holds the key.
+              if (provisional) void this.registry.clearPlacement(projectId, host.hostId).catch(() => {})
               this.urlCache.delete(projectId)
               if (gotLease) void this.registry.releaseLease(projectId, this.holderId).catch(() => {})
               console.warn(
@@ -1408,6 +1428,30 @@ export class MetalWarmPoolController {
   async destroyPublished(projectId: string, subdomain?: string): Promise<void> {
     await this.destroyProject(publishedRuntimeKey(projectId))
     if (subdomain) await this.registry.clearPublishedPlacement(subdomain).catch(() => {})
+  }
+
+  /**
+   * Retire this region's copy of a published site whose workspace lives in
+   * another region. Each region keeps its own placements, so a copy here and
+   * the home region's copy would both export to the same archive and overwrite
+   * each other's writes. Recycling exports this copy's data first; a failed
+   * backup leaves it running. Returns null when throttled.
+   */
+  async releaseForeignPublished(projectId: string, subdomain: string, homeRegion: string): Promise<RecycleResult | null> {
+    const key = publishedRuntimeKey(projectId)
+    const last = this.foreignPublishedReleaseAt.get(key)
+    if (last !== undefined && this.now() - last < FOREIGN_PUBLISHED_RELEASE_INTERVAL_MS) return null
+    this.foreignPublishedReleaseAt.set(key, this.now())
+    const r = await this.recycleRuntime(key, { reason: `published home region is ${homeRegion}` })
+    if (r.ok) {
+      this.projectHost.delete(key)
+      await this.registry.clearPlacement(key, r.hostId).catch(() => {})
+      await this.registry.clearPublishedPlacement(subdomain).catch(() => {})
+      console.log(`[MetalPool] released ${key} (${subdomain}) from ${r.hostId}: home region is ${homeRegion}`)
+    } else if (r.found) {
+      console.warn(`[MetalPool] could not release ${key} (${subdomain}) from ${r.hostId}: ${r.error ?? 'recycle aborted'}`)
+    }
+    return r
   }
 
   /**

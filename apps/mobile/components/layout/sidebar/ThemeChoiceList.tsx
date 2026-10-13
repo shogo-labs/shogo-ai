@@ -18,10 +18,11 @@ export function ThemeChoiceList({
 }: {
   theme: string;
   onSelect: (value: (typeof THEME_CHOICES)[number]["value"]) => void;
-  /** Popover = web AccountMenu. Grouped = native Account cards. */
-  variant: "popover" | "grouped";
+  /** Popover = indented inside a menu. Submenu = its own side menu. Grouped = native Account cards. */
+  variant: "popover" | "submenu" | "grouped";
 }) {
   const density = variant === "grouped" ? PHONE_DENSITY : COMPACT_DENSITY;
+  const inMenu = variant !== "grouped";
   const rows = THEME_CHOICES.map(({ value, label, Icon }, index) => (
     <Pressable
       key={value}
@@ -36,7 +37,7 @@ export function ThemeChoiceList({
               density.rowMin,
               index < THEME_CHOICES.length - 1 && "border-b border-border",
             )
-          : "flex-row items-center rounded-md px-2 active:bg-muted gap-3 py-2.5"
+          : "flex-row items-center gap-3 rounded-md px-2 py-2.5 active:bg-muted"
       }
     >
       <Icon
@@ -58,9 +59,12 @@ export function ThemeChoiceList({
     </Pressable>
   ));
 
-  if (variant === "popover") {
+  if (inMenu) {
     return (
-      <View accessibilityLabel="Theme options" className="pr-4 py-1 pl-11">
+      <View
+        accessibilityLabel="Theme options"
+        className={variant === "submenu" ? "px-1 py-1" : "py-1 pl-11 pr-4"}
+      >
         {rows}
       </View>
     );

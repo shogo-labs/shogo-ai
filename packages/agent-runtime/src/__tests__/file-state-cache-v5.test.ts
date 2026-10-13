@@ -142,6 +142,40 @@ describe('clone', () => {
   })
 })
 
+describe('resyncMtimes and mergeNewerReads', () => {
+  test('resyncMtimes updates a tracked file the process rewrote', () => {
+    const dir = fs.mkdtempSync('/tmp/fsc-resync-')
+    try {
+      const cache = new FileStateCache(dir)
+      fs.writeFileSync(`${dir}/a.txt`, 'one')
+      const before = Math.floor(fs.statSync(`${dir}/a.txt`).mtimeMs)
+      cache.recordRead('a.txt', before, 1, undefined, 'one')
+      fs.writeFileSync(`${dir}/a.txt`, 'two')
+      const future = new Date(Date.now() + 5_000)
+      fs.utimesSync(`${dir}/a.txt`, future, future)
+      cache.resyncMtimes()
+      const record = cache.getRecord('a.txt')!
+      expect(record.mtime).toBe(Math.floor(fs.statSync(`${dir}/a.txt`).mtimeMs))
+      expect(record.content).toBeUndefined()
+      expect(cache.isStale('a.txt', `${dir}/a.txt`)).toBe(false)
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  test('mergeNewerReads keeps the newer record and ignores an older clone', async () => {
+    const parent = new FileStateCache()
+    parent.recordRead('a.ts', 1, 1, undefined, 'parent')
+    const child = parent.clone()
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    child.recordEdit('a.ts', 'child', 2)
+    parent.recordEdit('b.ts', 'only-parent', 3)
+    parent.mergeNewerReads(child)
+    expect(parent.getRecord('a.ts')!.content).toBe('child')
+    expect(parent.getRecord('b.ts')!.content).toBe('only-parent')
+  })
+})
+
 describe('clear', () => {
   test('clear wipes reads and editedThisTurn', () => {
     cache.recordRead('a.ts', 1, 1)

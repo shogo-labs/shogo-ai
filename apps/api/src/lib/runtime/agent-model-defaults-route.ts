@@ -4,6 +4,7 @@
 import type { Context } from 'hono'
 import type { AuthContext } from '../../middleware/auth'
 import { prisma } from '../prisma'
+import { loadAccess } from '../authz'
 import { resolveEffectiveAgentModelDefaults } from './agent-model-defaults'
 
 type RouteError = {
@@ -42,20 +43,17 @@ async function resolveWorkspaceForAuth(
         body: { error: { code: 'unauthorized', message: 'Authentication required' } },
       }
     }
-    const member = await prisma.member.findFirst({
-      where: { userId: auth.userId, workspaceId: requestedWorkspaceId },
-      select: { workspaceId: true },
-    })
-    if (!member) {
+    const access = await loadAccess(auth, { workspaceId: requestedWorkspaceId })
+    if (!access.permissions.has('workspace:read')) {
       return {
         status: 403,
         body: { error: { code: 'forbidden', message: 'Not a member of this workspace' } },
       }
     }
-    workspaceId = member.workspaceId ?? undefined
+    workspaceId = requestedWorkspaceId
   } else if (!workspaceId && auth.userId) {
     const member = await prisma.member.findFirst({
-      where: { userId: auth.userId },
+      where: { userId: auth.userId, projectId: null },
       orderBy: { createdAt: 'asc' },
       select: { workspaceId: true },
     })

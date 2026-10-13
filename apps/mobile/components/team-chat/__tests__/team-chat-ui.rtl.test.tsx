@@ -134,10 +134,32 @@ mock.module('../../../hooks/useCustomEmoji', () => ({
 }))
 mock.module('../../../hooks/useChatShortcuts', () => ({
   useEditRequest: () => {},
+  requestEditMessage: () => {},
 }))
+const activityTimeline: { messages: any[]; channels: any[] } = { messages: [], channels: [] }
 const { resolveAgentLook } = await import('@shogo/shared-app/buddy-look')
 mock.module('../../../hooks/useTeamChat', () => ({
+  TIMELINE_SOFT_LIMIT: 600,
   useAgentLook: (_workspaceId: string | null | undefined, projectId: string | null) => resolveAgentLook(null, projectId),
+  useConversationList: () => ({ list: activityTimeline.channels, loading: false, error: null, refresh: async () => {} }),
+  useConversationTimeline: () => ({
+    state: { messages: activityTimeline.messages, hasMoreOlder: false, streaming: {} },
+    loading: false,
+    error: null,
+    getState: () => ({ messages: activityTimeline.messages, hasMoreOlder: false, streaming: {} }),
+    loadOlder: async () => {},
+    react: async () => {},
+    edit: () => {},
+    remove: async () => {},
+    stopAgent: async () => {},
+    retry: () => {},
+    discard: () => {},
+    send: async () => {},
+    reload: async () => {},
+    trimOld: () => {},
+  }),
+  useMarkReadWhileVisible: () => {},
+  useTypingUsers: () => [],
 }))
 const routed: any[] = []
 mock.module('expo-router', () => ({ useRouter: () => ({ push: (r: any) => routed.push(r) }) }))
@@ -171,6 +193,7 @@ const { PhoneLayoutOverrideProvider } = await import('../../../lib/native-phone-
 const { MessageRow } = await import('../MessageRow')
 const { MessageList } = await import('../MessageList')
 const { ConversationHeader } = await import('../ConversationHeader')
+const { TimelinePane } = await import('../TimelinePane')
 
 const mentionables = {
   people: [
@@ -329,7 +352,9 @@ describe('MessageRow', () => {
   test('renders mentions by name, and a running agent reply streams with a Stop control', () => {
     const h = handlers()
     const { rerender } = render(<MessageRow message={message()} grouped={false} me="u-me" names={names} canManage={false} {...h} />)
-    expect(screen.getByText('hi **@Billing Bot**')).toBeTruthy()
+    expect(screen.getByText('@Billing Bot')).toBeTruthy()
+    expect(screen.getByText(/hi/)).toBeTruthy()
+    expect(document.body.textContent).not.toContain('**')
 
     const agentReply = message({
       id: 'm2', authorType: 'agent', author: null, authorUserId: null, authorAgent: { projectId: 'proj-1', name: 'Billing Bot' },
@@ -351,6 +376,36 @@ describe('MessageRow', () => {
     )
     fireEvent.click(screen.getByText('Open full session'))
     expect(h.onOpenSession).toHaveBeenCalled()
+  })
+
+  test('an agent reply uses the project chat markdown renderer', () => {
+    const { container } = render(
+      <MessageRow
+        message={message({
+          id: 'md',
+          authorType: 'agent',
+          author: null,
+          authorUserId: null,
+          authorAgent: { projectId: 'proj-1', name: 'Billing Bot' },
+          text: '## Title\n\n**done**',
+          agentStatus: 'done',
+        })}
+        grouped={false}
+        me="u-me"
+        names={names}
+        canManage={false}
+        {...handlers()}
+      />,
+    )
+    const markdown = container.querySelector('.chat-md')
+    expect(markdown).not.toBeNull()
+    expect(markdown?.className).toContain('text-foreground')
+    expect(markdown?.className).toContain('text-xs')
+    expect(markdown?.className).toContain('prose-sm')
+    expect(markdown?.textContent).toContain('Title')
+    expect(markdown?.textContent).toContain('done')
+    expect(markdown?.textContent).not.toContain('##')
+    expect(markdown?.textContent).not.toContain('**')
   })
 
   test('tapping an agent opens its profile card with role, owner and channels', async () => {
@@ -415,16 +470,43 @@ describe('MessageRow', () => {
     expect(h.onReply).toHaveBeenCalled()
   })
 
-  test('#activity lines can be discussed in a thread', () => {
+  test('#activity lines show what happened and open the real source', () => {
     const h = handlers()
-    render(
+    routed.length = 0
+    const { rerender } = render(
       <MessageRow
-        message={message({ authorType: 'system', author: null, authorUserId: null, text: '**Billing Bot** finished a task', blocks: { type: 'activity', kind: 'task.completed' }, replyCount: 1 })}
+        message={message({
+          authorType: 'system', author: null, authorUserId: null,
+          text: '**Billing Bot** finished a task',
+          blocks: { type: 'activity', kind: 'task.completed', projectId: 'p1', chatSessionId: 's1', preview: '3 invoices overdue', summary: 'Reconciled three overdue invoices.' },
+          replyCount: 1,
+        })}
         grouped={false} me="u-me" names={names} canManage={false} {...h}
       />,
     )
+    expect(screen.getByText('Reconciled three overdue invoices.')).toBeTruthy()
+    expect(screen.queryByText('3 invoices overdue')).toBeNull()
+    fireEvent.click(screen.getByLabelText('Open activity'))
+    expect(routed.at(-1)).toEqual({ pathname: '/(app)/projects/[id]', params: { id: 'p1', chatSessionId: 's1' } })
     fireEvent.click(screen.getByText('1 reply'))
     expect(h.onReply).toHaveBeenCalledTimes(1)
+
+    rerender(
+      <MessageRow
+        message={message({
+          authorType: 'system', author: null, authorUserId: null,
+          text: '**Billing Bot** sent a message in #eng',
+          blocks: { type: 'activity', kind: 'agent.message', conversationId: 'c9', messageId: 'm9', threadRootId: 'root', preview: 'Three are overdue.' },
+        })}
+        grouped={false} me="u-me" names={names} canManage={false} {...h}
+      />,
+    )
+    expect(screen.getByText('Three are overdue.')).toBeTruthy()
+    fireEvent.click(screen.getByLabelText('Open activity'))
+    expect(routed.at(-1)).toEqual({
+      pathname: '/(app)/c/[conversationId]',
+      params: { conversationId: 'c9', msg: 'm9', thread: 'root' },
+    })
   })
 
   test('copy link copies a link to the message; mark unread is offered outside threads', async () => {
@@ -838,6 +920,14 @@ describe('agent work', () => {
     expect(h.onOpenSession).toHaveBeenCalledWith(expect.objectContaining({ id: 'm1', agentSessionId: 's1' }))
   })
 
+  test('the workspace agent (no project) opens its session from the running status too', () => {
+    const h = handlers()
+    const running = { ...reply(), authorAgent: { projectId: null, name: 'Workspace agent' }, agentStatus: 'running', text: '' }
+    render(<MessageRow message={running} grouped={false} me="u-me" names={names} canManage={false} {...h} />)
+    fireEvent.click(screen.getByLabelText('Open the session this agent is working in'))
+    expect(h.onOpenSession).toHaveBeenCalledWith(expect.objectContaining({ id: 'm1', agentSessionId: 's1' }))
+  })
+
   test('before any tool runs the row says the agent is planning; once tools run it shows them', () => {
     const running = { ...reply(), agentStatus: 'running', text: '' }
     const { rerender } = render(<MessageRow message={running} grouped={false} me="u-me" names={names} canManage={false} {...handlers()} />)
@@ -976,5 +1066,69 @@ describe('ConversationHeader agent DMs', () => {
     header(dm('proj-1'), { floating: true, onBack: () => {} })
     fireEvent.click(screen.getAllByLabelText('Open project')[0])
     expect(routed).toEqual([{ pathname: '/(app)/projects/[id]', params: { id: 'proj-1' } }])
+  })
+})
+
+describe('#activity filters', () => {
+  test('picking agents hides every other agent\'s lines', () => {
+    activityTimeline.messages = [
+      message({
+        id: 'a1', seq: 1, authorType: 'system', author: null, authorUserId: null,
+        text: 'finished the invoices',
+        blocks: { type: 'activity', kind: 'task.completed', projectId: 'proj-1' },
+      }),
+      message({
+        id: 'a2', seq: 2, authorType: 'system', author: null, authorUserId: null,
+        text: 'ran the daily digest',
+        blocks: { type: 'activity', kind: 'schedule.ok', projectId: null },
+      }),
+      message({
+        id: 'a3', seq: 3, authorType: 'system', author: null, authorUserId: null,
+        text: 'answered the ticket',
+        blocks: { type: 'activity', kind: 'agent.message', projectId: 'proj-2', conversationId: 'c-eng' },
+      }),
+    ]
+    activityTimeline.channels = [
+      { id: 'c-eng', kind: 'public', name: 'eng', slug: 'eng' },
+      { id: 'c-ops', kind: 'public', name: 'ops', slug: 'ops' },
+      { id: 'c-dm', kind: 'dm', name: 'Ana', slug: null },
+    ]
+    const agents = [
+      { key: 'ws', projectId: null, name: 'Workspace agent', description: null, image: null },
+      { key: 'p:proj-1', projectId: 'proj-1', name: 'Billing Bot', description: null, image: null },
+      { key: 'p:proj-2', projectId: 'proj-2', name: 'Support Bot', description: null, image: null },
+    ]
+    render(
+      <TimelinePane
+        workspaceId="ws"
+        conversation={{
+          id: 'c-activity', workspaceId: 'ws', kind: 'activity', name: 'activity', slug: 'activity',
+          topic: null, lastSeq: 3, lastMessageAt: null, archivedAt: null, createdAt: '2026-09-29T10:00:00.000Z',
+          joined: true, starred: false, muted: false, notifyLevel: 'all', lastReadSeq: 3,
+          canPost: false, canReply: true, canManage: false, members: [],
+        }}
+        me="u-me"
+        mentionables={{ ...mentionables, agents }}
+        visible
+      />,
+    )
+    expect(screen.getByText(/finished the invoices/)).toBeTruthy()
+    expect(screen.getByText(/ran the daily digest/)).toBeTruthy()
+    expect(screen.getByText(/answered the ticket/)).toBeTruthy()
+
+    fireEvent.click(screen.getByTestId('activity-filter-agent'))
+    fireEvent.click(screen.getByText('Billing Bot'))
+
+    expect(screen.getByText(/finished the invoices/)).toBeTruthy()
+    expect(screen.queryByText(/ran the daily digest/)).toBeNull()
+    expect(screen.queryByText(/answered the ticket/)).toBeNull()
+    expect(screen.getByLabelText('Agent: Billing Bot')).toBeTruthy()
+
+    fireEvent.click(screen.getByText('Workspace agent'))
+    expect(screen.getByText(/finished the invoices/)).toBeTruthy()
+    expect(screen.getByText(/ran the daily digest/)).toBeTruthy()
+    expect(screen.queryByText(/answered the ticket/)).toBeNull()
+    expect(screen.getByLabelText('Agent: Workspace agent, Billing Bot')).toBeTruthy()
+    expect(screen.getByText('2 agents')).toBeTruthy()
   })
 })

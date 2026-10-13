@@ -52,6 +52,10 @@ import {
   useProjectCollection,
 } from "../../contexts/domain";
 import { useActiveWorkspace } from "../../hooks/useActiveWorkspace";
+import {
+  projectPermissionsFor,
+  usePermissions,
+} from "../../hooks/usePermissions";
 import { useWorkspaceExperience } from "../../hooks/useWorkspaceExperience";
 import { useReducedMotion } from "../../hooks/useReducedMotion";
 import { api } from "../../lib/api";
@@ -125,6 +129,9 @@ export function MobileWorkspaceShell({ children, enabled = true }: MobileWorkspa
   const actions = useDomainActions();
   const chatSessions = useChatSessionCollection();
   const workspace = useActiveWorkspace();
+  const workspaceAccess = usePermissions({ workspaceId: workspace?.id });
+  const canProject = (project: any, permission: "project:update" | "project:delete") =>
+    !!project && projectPermissionsFor(project, workspaceAccess).has(permission);
   const workspaceExperience = useWorkspaceExperience();
   const isTeamWorkspace = workspaceExperience.kind === "team";
   const projects = useProjectCollection();
@@ -174,7 +181,7 @@ export function MobileWorkspaceShell({ children, enabled = true }: MobileWorkspa
     return label.toLowerCase().includes(sessionSearch.trim().toLowerCase());
   });
   const sideChats = filteredSessions
-    .filter((session) => !session.isPrimary && !session.isArchived)
+    .filter((session) => !session.isArchived)
     .sort((a, b) => {
       return (
         Number(!!b.isPinned) - Number(!!a.isPinned) ||
@@ -182,7 +189,7 @@ export function MobileWorkspaceShell({ children, enabled = true }: MobileWorkspa
       );
     });
   const archivedSideChats = filteredSessions
-    .filter((session) => !session.isPrimary && session.isArchived)
+    .filter((session) => session.isArchived)
     .sort((a, b) => {
       return (
         Number(!!b.isPinned) - Number(!!a.isPinned) ||
@@ -367,8 +374,8 @@ export function MobileWorkspaceShell({ children, enabled = true }: MobileWorkspa
       drawerProgress.setValue(0);
       setSessionsOpen(false);
       router.push({
-        pathname: "/(app)/side-chats/[id]",
-        params: { id: session.id },
+        pathname: "/(app)/agent",
+        params: { chatSessionId: session.id },
       } as any);
     } finally {
       setCreatingSession(false);
@@ -609,11 +616,15 @@ export function MobileWorkspaceShell({ children, enabled = true }: MobileWorkspa
 
   const projectMenuItems: SidebarMenuEntry[] = projectMenu
     ? [
-        {
-          label: "Rename",
-          icon: <Pencil size={14} className="text-muted-foreground" />,
-          onSelect: () => setRenamingProject(projectMenu.project),
-        },
+        ...(canProject(projectMenu.project, "project:update")
+          ? [
+              {
+                label: "Rename",
+                icon: <Pencil size={14} className="text-muted-foreground" />,
+                onSelect: () => setRenamingProject(projectMenu.project),
+              },
+            ]
+          : []),
         {
           label: pinnedProjectIds.has(projectMenu.project.id) ? "Unpin" : "Pin",
           icon: pinnedProjectIds.has(projectMenu.project.id) ? (
@@ -627,13 +638,17 @@ export function MobileWorkspaceShell({ children, enabled = true }: MobileWorkspa
               !pinnedProjectIds.has(projectMenu.project.id)
             ),
         },
-        { separator: true },
-        {
-          label: "Delete",
-          danger: true,
-          icon: <Trash2 size={14} className="text-destructive" />,
-          onSelect: () => deleteProject(projectMenu.project),
-        },
+        ...(canProject(projectMenu.project, "project:delete")
+          ? [
+              { separator: true as const },
+              {
+                label: "Delete",
+                danger: true,
+                icon: <Trash2 size={14} className="text-destructive" />,
+                onSelect: () => deleteProject(projectMenu.project),
+              },
+            ]
+          : []),
       ]
     : [];
 
@@ -790,34 +805,17 @@ export function MobileWorkspaceShell({ children, enabled = true }: MobileWorkspa
                         New Project
                       </Text>
                     </Pressable>
-                  ) : (
-                    sessions
-                      .filter((session) => session.isPrimary)
-                      .map((session) => (
-                        <Pressable
-                          key={session.id}
-                          onPress={() => {
-                            closeSessions();
-                            router.replace("/(app)" as any);
-                          }}
-                          className="rounded-xl bg-primary/10 px-3 py-3 active:opacity-80"
-                        >
-                          <Text className="text-base font-semibold text-foreground">
-                            Main chat
-                          </Text>
-                        </Pressable>
-                      ))
-                  )}
+                  ) : null}
                   <View className="mt-4">
                     <WorkspaceSidebarSection
-                      label="Side chats"
+                      label="Chats"
                       expanded={sideChatsExpanded}
                       onExpandedChange={setSideChatsExpanded}
                       headerClassName="px-3"
                       action={
                         <Pressable
                           accessibilityRole="button"
-                          accessibilityLabel="Start a new side chat"
+                          accessibilityLabel="New chat"
                           disabled={creatingSession}
                           onPress={() => void createSideChat()}
                           className="h-11 w-11 items-center justify-center rounded-lg active:bg-muted disabled:opacity-50"
@@ -845,8 +843,8 @@ export function MobileWorkspaceShell({ children, enabled = true }: MobileWorkspa
                             onSelect={() => {
                               closeSessions();
                               router.push({
-                                pathname: "/(app)/side-chats/[id]",
-                                params: { id: session.id },
+                                pathname: "/(app)/agent",
+                                params: { chatSessionId: session.id },
                               } as any);
                             }}
                             onTogglePin={(id, next) =>
@@ -924,8 +922,8 @@ export function MobileWorkspaceShell({ children, enabled = true }: MobileWorkspa
                                   onSelect={() => {
                                     closeSessions();
                                     router.push({
-                                      pathname: "/(app)/side-chats/[id]",
-                                      params: { id: session.id },
+                                      pathname: "/(app)/agent",
+                                      params: { chatSessionId: session.id },
                                     } as any);
                                   }}
                                   onTogglePin={(id, next) =>
@@ -1094,10 +1092,12 @@ export function MobileWorkspaceShell({ children, enabled = true }: MobileWorkspa
                                   event.stopPropagation?.();
                                   startProjectChat(project.id);
                                 }}
-                                // Hover-only on web; always visible on touch.
+                                // Hover-only on web, but the slot stays in the
+                                // layout so the row does not grow. Always
+                                // visible on touch.
                                 className={
                                   Platform.OS === "web"
-                                    ? "hidden h-8 w-8 items-center justify-center rounded-lg active:bg-muted group-hover:flex"
+                                    ? "h-8 w-8 items-center justify-center rounded-lg active:bg-muted opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto"
                                     : "h-8 w-8 items-center justify-center rounded-lg active:bg-muted"
                                 }
                               >
@@ -1361,10 +1361,14 @@ export function MobileWorkspaceShell({ children, enabled = true }: MobileWorkspa
             suppressNextProjectToggleRef.current = null;
             setNativeProjectActions(null);
           }}
-          onRename={() => {
-            setRenamingProject(nativeProjectActions);
-            setNativeProjectActions(null);
-          }}
+          onRename={
+            canProject(nativeProjectActions, "project:update")
+              ? () => {
+                  setRenamingProject(nativeProjectActions);
+                  setNativeProjectActions(null);
+                }
+              : undefined
+          }
           onTogglePin={() => {
             if (!nativeProjectActions) return;
             toggleProjectPin(
@@ -1372,9 +1376,13 @@ export function MobileWorkspaceShell({ children, enabled = true }: MobileWorkspa
               !pinnedProjectIds.has(nativeProjectActions.id)
             );
           }}
-          onDelete={() => {
-            if (nativeProjectActions) deleteProject(nativeProjectActions);
-          }}
+          onDelete={
+            canProject(nativeProjectActions, "project:delete")
+              ? () => {
+                  if (nativeProjectActions) deleteProject(nativeProjectActions);
+                }
+              : undefined
+          }
         />
         <MobileWorkspaceSwitcherSheet
           visible={workspaceSheetOpen}

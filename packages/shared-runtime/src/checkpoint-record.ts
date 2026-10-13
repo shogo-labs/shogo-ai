@@ -12,7 +12,7 @@
  * `postCheckpointRecord`), which inserts the row idempotent on commitSha.
  */
 
-import { spawn } from 'child_process'
+import { spawn } from './child-process'
 
 export interface CommitMeta {
   sha: string

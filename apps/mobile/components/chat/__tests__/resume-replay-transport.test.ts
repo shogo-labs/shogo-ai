@@ -64,28 +64,48 @@ describe("dropUnfinishedAssistantTail", () => {
   })
 })
 
+function chunkStream(chunks: unknown[]): ReadableStream<any> {
+  return new ReadableStream({
+    start(controller) {
+      for (const chunk of chunks) controller.enqueue(chunk)
+      controller.close()
+    },
+  })
+}
+
+async function readAll(stream: ReadableStream<any> | null): Promise<unknown[]> {
+  const out: unknown[] = []
+  if (!stream) return out
+  const reader = stream.getReader()
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) return out
+    out.push(value)
+  }
+}
+
 describe("withResumeReplayReset", () => {
   const request = { chatId: "c1" }
+  const chunks = [{ type: "start" }, { type: "text-start", id: "t" }]
 
   test("runs beforeReplay only when a replay stream comes back", async () => {
     let resets = 0
-    const stream = new ReadableStream()
     const withStream = withResumeReplayReset(
       {
-        sendMessages: async () => stream,
-        reconnectToStream: async () => stream,
+        sendMessages: async () => chunkStream(chunks),
+        reconnectToStream: async () => chunkStream(chunks),
       },
       () => resets++,
     )
     const without = withResumeReplayReset(
       {
-        sendMessages: async () => stream,
+        sendMessages: async () => chunkStream(chunks),
         reconnectToStream: async () => null,
       },
       () => resets++,
     )
 
-    expect(await withStream.reconnectToStream(request)).toBe(stream)
+    expect(await readAll(await withStream.reconnectToStream(request))).toEqual(chunks)
     expect(resets).toBe(1)
     expect(await without.reconnectToStream(request)).toBeNull()
     expect(resets).toBe(1)
@@ -93,10 +113,9 @@ describe("withResumeReplayReset", () => {
 
   test("sendMessages passes straight through without a reset", async () => {
     let resets = 0
-    const stream = new ReadableStream()
     const transport = withResumeReplayReset(
       {
-        sendMessages: async () => stream,
+        sendMessages: async () => chunkStream(chunks),
         reconnectToStream: async () => null,
       },
       () => resets++,
@@ -109,7 +128,82 @@ describe("withResumeReplayReset", () => {
       messages: [],
       abortSignal: undefined,
     })
-    expect(result).toBe(stream)
+    expect(await readAll(result)).toEqual(chunks)
     expect(resets).toBe(0)
+  })
+})
+
+describe("withResumeReplayReset message snapshot", () => {
+  const request = { chatId: "c1" }
+  const snapshotMessage = { id: "m1", role: "assistant", parts: [{ type: "text", text: "so far" }] } as UIMessage
+  const snapshotChunk = { type: "data-message-snapshot", data: { message: snapshotMessage }, transient: true }
+  const rest = [{ type: "start-step" }, { type: "text-start", id: "0" }]
+
+  function wrap(streamChunks: unknown[], calls: string[]) {
+    return withResumeReplayReset(
+      {
+        sendMessages: async () => chunkStream([]),
+        reconnectToStream: async () => chunkStream(streamChunks),
+      },
+      () => calls.push("reset"),
+      (m) => calls.push(`snapshot:${m.id}`),
+    )
+  }
+
+  test("applies the snapshot, strips its chunk and skips the replay reset", async () => {
+    const calls: string[] = []
+    const out = await readAll(await wrap([snapshotChunk, ...rest], calls).reconnectToStream(request))
+    expect(out).toEqual(rest)
+    expect(calls).toEqual(["snapshot:m1"])
+  })
+
+  test("falls back to the reset for a runtime that replays the stream", async () => {
+    const calls: string[] = []
+    const replay = [{ type: "start" }, ...rest]
+    expect(await readAll(await wrap(replay, calls).reconnectToStream(request))).toEqual(replay)
+    expect(calls).toEqual(["reset"])
+  })
+
+  test("a snapshot is not applied for a 204", async () => {
+    const calls: string[] = []
+    const transport = withResumeReplayReset(
+      { sendMessages: async () => chunkStream([]), reconnectToStream: async () => null },
+      () => calls.push("reset"),
+      () => calls.push("snapshot"),
+    )
+    expect(await transport.reconnectToStream(request)).toBeNull()
+    expect(calls).toEqual([])
+  })
+
+  test("a silent stream is treated as a replay once the peek times out, keeping later chunks", async () => {
+    const calls: string[] = []
+    let push!: (chunk: unknown) => void
+    let close!: () => void
+    const live = new ReadableStream<any>({
+      start(controller) {
+        push = (chunk) => controller.enqueue(chunk)
+        close = () => controller.close()
+      },
+    })
+    const transport = withResumeReplayReset(
+      { sendMessages: async () => chunkStream([]), reconnectToStream: async () => live },
+      () => calls.push("reset"),
+      () => calls.push("snapshot"),
+    )
+    const stream = (await transport.reconnectToStream(request))!
+    expect(calls).toEqual(["reset"])
+    push({ type: "late" })
+    close()
+    expect(await readAll(stream)).toEqual([{ type: "late" }])
+  })
+
+  test("without onSnapshot the snapshot chunk is left alone and the reset runs", async () => {
+    const calls: string[] = []
+    const transport = withResumeReplayReset(
+      { sendMessages: async () => chunkStream([]), reconnectToStream: async () => chunkStream([snapshotChunk]) },
+      () => calls.push("reset"),
+    )
+    expect(await readAll(await transport.reconnectToStream(request))).toEqual([snapshotChunk])
+    expect(calls).toEqual(["reset"])
   })
 })

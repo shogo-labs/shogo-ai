@@ -57,16 +57,24 @@ export interface WorkspaceGrantHooks {
 /**
  * Default WorkspaceGrant hooks (customize as needed)
  */
+/**
+ * Grants hand out free seats and included spend, so only super admins may
+ * touch them; everyone else manages billing through the admin console.
+ */
+async function requireSuperAdmin(ctx: HookContext): Promise<HookResult | void> {
+  if (!ctx.userId) {
+    return { ok: false, error: { code: 'unauthorized', message: 'Authentication required' } }
+  }
+  const user = await ctx.prisma.user.findUnique({ where: { id: ctx.userId }, select: { role: true } })
+  if (user?.role !== 'super_admin') {
+    return { ok: false, error: { code: 'forbidden', message: 'Workspace grants are managed by Shogo staff' } }
+  }
+}
+
 export const workspaceGrantHooks: WorkspaceGrantHooks = {
-  // beforeList: async (ctx) => {
-  //   // Query params are automatically added to where clause
-  //   // Example: GET /api/projects?workspaceId=123 => where: { workspaceId: "123" }
-  //   
-  //   // You can override or extend the where clause:
-  //   // return { ok: true, data: { where: { ...ctx.query, userId: ctx.userId } } }
-  // },
-  // beforeCreate: async (input, ctx) => {
-  //   // Set userId on create
-  //   return { ok: true, data: { ...input, userId: ctx.userId } }
-  // },
+  beforeList: (ctx) => requireSuperAdmin(ctx),
+  beforeGet: (_id, ctx) => requireSuperAdmin(ctx),
+  beforeCreate: (_input, ctx) => requireSuperAdmin(ctx),
+  beforeUpdate: (_id, _input, ctx) => requireSuperAdmin(ctx),
+  beforeDelete: (_id, ctx) => requireSuperAdmin(ctx),
 }

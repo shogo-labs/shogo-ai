@@ -7,7 +7,10 @@
  * This file is safe to edit - it will not be overwritten.
  */
 
+import { PROJECT_CALL_MESSAGE_AGENT } from "@shogo/shared-runtime/project-call-chat"
 import { externalizeMessageAttachments } from "../lib/chat-attachments"
+import type { Principal } from "../lib/authz"
+import { authorizeChatSession, CHAT_SESSION_SCOPE_SELECT } from "./chat-session.hooks"
 
 /**
  * Result from a hook that can modify or reject the operation
@@ -27,6 +30,7 @@ export interface HookContext {
   query: Record<string, string>
   userId?: string
   tunnelAuthenticated?: boolean
+  auth?: Principal
   prisma: any
 }
 
@@ -64,7 +68,10 @@ export const chatMessageHooks: ChatMessageHooks = {
    *              clause is narrowed to rows authored by that agent, so
    *              the technical ChatPanel and Shogo Mode overlay never
    *              read each other's rows even though they share a
-   *              ChatSession.
+   *              ChatSession. "technical" also includes `project_call`
+   *              prompts (the workspace agent calling this project) so
+   *              that transcript still shows them. Analytics does not:
+   *              it counts only `agent = 'technical'`.
    *
    * IMPORTANT: We explicitly set include: undefined to prevent Prisma
    * from returning the session relation as a nested object. The
@@ -103,23 +110,9 @@ export const chatMessageHooks: ChatMessageHooks = {
       }
     }
 
-    // Verify user owns this session via project workspace membership, or
-    // (for workspace-level sessions with no project, e.g. the personal
-    // companion home chat) via the session's own workspace relation.
     const session = await ctx.prisma.chatSession.findUnique({
       where: { id: sessionId },
-      include: {
-        project: {
-          include: {
-            workspace: {
-              include: { members: true },
-            },
-          },
-        },
-        workspace: {
-          include: { members: true },
-        },
-      },
+      select: CHAT_SESSION_SCOPE_SELECT,
     })
 
     if (!session) {
@@ -131,20 +124,16 @@ export const chatMessageHooks: ChatMessageHooks = {
 
     // Tunnel-authenticated requests skip local membership checks
     if (!ctx.tunnelAuthenticated) {
-      const hasAccess =
-        session.project?.workspace?.members?.some((m: any) => m.userId === userId) ||
-        session.workspace?.members?.some((m: any) => m.userId === userId)
-
-      if (!hasAccess) {
-        return {
-          ok: false,
-          error: { code: "forbidden", message: "Access denied to this chat session" },
-        }
-      }
+      const access = await authorizeChatSession(ctx, session, "Access denied to this chat session")
+      if (!access.ok) return access
     }
 
     const where: Record<string, unknown> = { sessionId }
-    if (agent) where.agent = agent
+    if (agent === "technical") {
+      where.agent = { in: ["technical", PROJECT_CALL_MESSAGE_AGENT] }
+    } else if (agent) {
+      where.agent = agent
+    }
 
     return {
       ok: true,
@@ -173,22 +162,7 @@ export const chatMessageHooks: ChatMessageHooks = {
 
     const message = await ctx.prisma.chatMessage.findUnique({
       where: { id },
-      include: {
-        session: {
-          include: {
-            project: {
-              include: {
-                workspace: {
-                  include: { members: true },
-                },
-              },
-            },
-            workspace: {
-              include: { members: true },
-            },
-          },
-        },
-      },
+      select: { session: { select: CHAT_SESSION_SCOPE_SELECT } },
     })
 
     if (!message) {
@@ -198,18 +172,7 @@ export const chatMessageHooks: ChatMessageHooks = {
       }
     }
 
-    const hasAccess =
-      message.session?.project?.workspace?.members?.some((m: any) => m.userId === userId) ||
-      message.session?.workspace?.members?.some((m: any) => m.userId === userId)
-
-    if (!hasAccess) {
-      return {
-        ok: false,
-        error: { code: "forbidden", message: "Access denied" },
-      }
-    }
-
-    return { ok: true }
+    return authorizeChatSession(ctx, message.session ?? {}, "Access denied")
   },
 
   /**
@@ -236,18 +199,7 @@ export const chatMessageHooks: ChatMessageHooks = {
     if (!ctx.tunnelAuthenticated) {
       const session = await ctx.prisma.chatSession.findUnique({
         where: { id: sessionId },
-        include: {
-          project: {
-            include: {
-              workspace: {
-                include: { members: true },
-              },
-            },
-          },
-          workspace: {
-            include: { members: true },
-          },
-        },
+        select: CHAT_SESSION_SCOPE_SELECT,
       })
 
       if (!session) {
@@ -257,16 +209,13 @@ export const chatMessageHooks: ChatMessageHooks = {
         }
       }
 
-      const hasAccess =
-        session.project?.workspace?.members?.some((m: any) => m.userId === userId) ||
-        session.workspace?.members?.some((m: any) => m.userId === userId)
-
-      if (!hasAccess) {
-        return {
-          ok: false,
-          error: { code: "forbidden", message: "Cannot create messages in this session" },
-        }
-      }
+      const access = await authorizeChatSession(
+        ctx,
+        session,
+        "Cannot create messages in this session",
+        "POST /api/chat-messages",
+      )
+      if (!access.ok) return access
     }
 
     const externalized = await externalizeMessageAttachments(
@@ -285,15 +234,39 @@ export const chatMessageHooks: ChatMessageHooks = {
     }
   },
 
+  /**
+   * Require write access to the message's session (project:update for
+   * project sessions)
+   */
   beforeUpdate: async (id, input, ctx) => {
     const existing = await ctx.prisma.chatMessage.findUnique({
       where: { id },
-      select: { sessionId: true },
+      select: { sessionId: true, session: { select: CHAT_SESSION_SCOPE_SELECT } },
     })
     if (!existing) {
       return {
         ok: false,
         error: { code: "not_found", message: "Message not found" },
+      }
+    }
+
+    if (!ctx.tunnelAuthenticated) {
+      const op = `PATCH /api/chat-messages/${id}`
+      const access = await authorizeChatSession(ctx, existing.session ?? {}, "Access denied", op)
+      if (!access.ok) return access
+      if (input.sessionId && input.sessionId !== existing.sessionId) {
+        const target = await ctx.prisma.chatSession.findUnique({
+          where: { id: input.sessionId },
+          select: CHAT_SESSION_SCOPE_SELECT,
+        })
+        if (!target) {
+          return {
+            ok: false,
+            error: { code: "not_found", message: "Chat session not found" },
+          }
+        }
+        const targetAccess = await authorizeChatSession(ctx, target, "Access denied", op)
+        if (!targetAccess.ok) return targetAccess
       }
     }
 

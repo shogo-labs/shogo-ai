@@ -21,8 +21,8 @@ import type {
 export type WorkspaceEvent =
   | { type: 'init' }
   | { type: 'reload' }
-  | { type: 'file.changed'; path: string; mtime: number }
-  | { type: 'file.deleted'; path: string }
+  | { type: 'file.changed'; path: string; mtime: number; source?: 'agent' | 'ide' | 'fs' }
+  | { type: 'file.deleted'; path: string; source?: 'agent' | 'ide' | 'fs' }
 
 function withoutContentType(headers: Record<string, string>): Record<string, string> {
   const out: Record<string, string> = {}

@@ -499,7 +499,7 @@ async function executeHiddenOneShot(
   timeoutMs: number,
   startMs: number,
 ): Promise<TerminalExecResponse> {
-  const { spawn } = await import('node:child_process')
+  const { spawn } = await import('../child-process')
   const command = request.cwd
     ? `cd ${shellQuote(request.cwd)} && ${request.command}`
     : request.command

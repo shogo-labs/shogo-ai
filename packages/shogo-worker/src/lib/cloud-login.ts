@@ -34,7 +34,7 @@
  *   - No localhost listener, no protocol handler, no deep links —
  *     works behind firewalls / over SSH / from a remote tmux session.
  */
-import { spawn } from 'node:child_process';
+import { spawn } from './child-process.ts';
 import { hostname, platform as osPlatform, arch } from 'node:os';
 import pc from 'picocolors';
 import { workerUserAgent } from './user-agent.ts';

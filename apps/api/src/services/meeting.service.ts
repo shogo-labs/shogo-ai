@@ -50,7 +50,7 @@ const isLocalMode = () => process.env.SHOGO_LOCAL_MODE === 'true'
 export async function resolvePersonalWorkspaceId(userId: string | null): Promise<string | null> {
   if (userId) {
     const member = await db.member.findFirst({
-      where: { userId, workspace: { kind: 'personal' } },
+      where: { userId, projectId: null, workspace: { kind: 'personal' } },
       select: { workspaceId: true },
       orderBy: { createdAt: 'asc' },
     })
@@ -69,7 +69,7 @@ export async function resolvePersonalWorkspaceId(userId: string | null): Promise
 
 export async function resolveLocalOwnerUserId(workspaceId: string): Promise<string | null> {
   const owner = await db.member.findFirst({
-    where: { workspaceId, role: 'owner' },
+    where: { workspaceId, projectId: null, role: 'owner' },
     select: { userId: true },
     orderBy: { createdAt: 'asc' },
   })

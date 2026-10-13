@@ -111,6 +111,7 @@ function mkS3(opts: { suppress: boolean }) {
     syncInterval: 0,
     watchEnabled: false,
     suppressProjectArchive: opts.suppress,
+    allowUnconditionalWrite: true, // lineage guard has its own suite (s3-sync.test.ts)
   })
 }
 

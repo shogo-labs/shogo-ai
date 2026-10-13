@@ -60,6 +60,11 @@ const db = prisma as any
 
 export const MAX_AGENTS_PER_MESSAGE = 3
 export const MAX_CONCURRENT_AGENT_REPLIES_PER_WORKSPACE = envInt('SHOGO_CHANNEL_AGENT_CONCURRENCY', 6)
+/** Backoff for a runtime that is still waking. The last delay repeats until the budget is spent. */
+const DEFAULT_START_RETRY_DELAYS_MS = [2_000, 4_000, 8_000, 15_000]
+const DEFAULT_START_RETRY_BUDGET_MS = 3 * 60_000
+/** Safety cap so a zero delay cannot spin for the whole budget. */
+const MAX_START_RETRIES = 20
 const CONTEXT_MESSAGES = 20
 const DELTA_THROTTLE_MS = 350
 export const AGENT_REPLY_TIMEOUT_MS = envInt('SHOGO_CHANNEL_AGENT_TIMEOUT_MS', 30 * 60_000)
@@ -71,6 +76,13 @@ interface DispatcherConfig {
   invoke?: (args: InvokeArgs) => Promise<Response>
   /** Test seam: replaces the permission-response call. */
   respondToPermission?: (input: { projectId: string; requestId: string; decision: 'allow_once' | 'deny' }) => Promise<boolean>
+  /**
+   * Waits between retries of a retryable 503, in milliseconds. The last entry
+   * is reused. Defaults to 2s, 4s, 8s, then 15s.
+   */
+  retryDelaysMs?: number[]
+  /** Total scheduled wait before a retryable 503 is final. Defaults to 3 minutes. */
+  retryBudgetMs?: number
 }
 
 let config: DispatcherConfig = {}
@@ -480,6 +492,57 @@ async function threadStatusCard(conversationId: string, threadRootId: string | n
   return null
 }
 
+/** What the session view shows instead of the wrapper prompt. */
+export interface ChannelDispatch {
+  conversationId: string
+  conversationName: string | null
+  threadRootId: string | null
+  agentName: string
+  trigger: { authorName: string; text: string }
+  handedOffBy?: string
+  contextMode: string
+}
+
+async function messageAuthorName(message: any): Promise<string> {
+  if (message.authorType === 'user') {
+    const known = message.authorUser?.name || message.authorUser?.email || message.blocks?.externalAuthor?.name
+    if (typeof known === 'string' && known.trim()) return known
+    if (message.authorUserId) {
+      const user = await db.user.findUnique({ where: { id: message.authorUserId }, select: { name: true, email: true } })
+      if (user) return user.name || user.email
+    }
+    return 'Someone'
+  }
+  if (message.authorType === 'agent') return message.authorAgentRef?.name ?? 'Agent'
+  if (message.authorType === 'bot') return 'Bot'
+  return 'System'
+}
+
+/** The card the session shows for this run: who asked, where, and the message that woke the agent. */
+async function channelDispatchFor(args: {
+  conversation: any
+  trigger: any
+  threadRootId: string | null
+  name: string
+  contextMode: string
+}): Promise<ChannelDispatch> {
+  const { conversation, trigger, threadRootId, name, contextMode } = args
+  const [authorName, names] = await Promise.all([
+    messageAuthorName(trigger),
+    loadMentionNames(conversation.workspaceId, [trigger.text ?? '']),
+  ])
+  const dispatch: ChannelDispatch = {
+    conversationId: conversation.id,
+    conversationName: typeof conversation.name === 'string' && conversation.name.trim() ? conversation.name : null,
+    threadRootId,
+    agentName: name,
+    trigger: { authorName, text: renderMentionsAsText(trigger.text ?? '', names) },
+    contextMode,
+  }
+  if (trigger.authorType === 'agent') dispatch.handedOffBy = trigger.authorAgentRef?.name ?? authorName
+  return dispatch
+}
+
 /**
  * Prompt for an agent that reviews without the discussion: only the hand-off,
  * the task's acceptance criteria and its links. It forms its own view from the
@@ -651,6 +714,63 @@ async function invokeChat(args: InvokeArgs): Promise<Response> {
   )
 }
 
+function abortError(signal: AbortSignal): Error {
+  return signal.reason instanceof Error ? signal.reason : new DOMException('The operation was aborted.', 'AbortError')
+}
+
+/** A 503 the chat route marked retryable: the runtime is waking, not broken. */
+async function isRetryableUnavailable(response: Response): Promise<boolean> {
+  if (response.status !== 503) return false
+  try {
+    const payload = await response.clone().json()
+    return payload?.error?.retryable === true
+  } catch {
+    return false
+  }
+}
+
+function sleepAbortable(ms: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.reject(abortError(signal))
+  if (ms <= 0) return Promise.resolve()
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort)
+      resolve()
+    }, ms)
+    const onAbort = () => {
+      clearTimeout(timer)
+      reject(abortError(signal))
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
+  })
+}
+
+/**
+ * The project chat route answers a cold or stale runtime with a retryable 503
+ * and expects the caller to try again. A channel run has no person watching
+ * the request, so retry here until the runtime answers or the budget is spent.
+ * `spent` is the wait we have scheduled, not wall-clock time, so a slow invoke
+ * cannot eat the budget before the next delay.
+ */
+async function invokeUntilReady(args: InvokeArgs, onRetry?: () => Promise<void> | void): Promise<Response> {
+  const budget = config.retryBudgetMs ?? DEFAULT_START_RETRY_BUDGET_MS
+  const delays = config.retryDelaysMs?.length ? config.retryDelaysMs : DEFAULT_START_RETRY_DELAYS_MS
+  let spent = 0
+  let last: Response | null = null
+  for (let attempt = 0; attempt <= MAX_START_RETRIES; attempt++) {
+    if (args.signal.aborted) throw abortError(args.signal)
+    last = await invokeChat(args)
+    if (!(await isRetryableUnavailable(last))) return last
+    if (attempt === MAX_START_RETRIES) return last
+    const delay = delays[Math.min(attempt, delays.length - 1)]!
+    if (spent >= budget || spent + delay > budget) return last
+    spent += delay
+    await onRetry?.()
+    await sleepAbortable(delay, args.signal)
+  }
+  return last!
+}
+
 export interface StreamProgress {
   /** The message being written now: text since the last tool call. */
   text: string
@@ -786,7 +906,7 @@ export async function runWorkspaceAgentPrompt(args: {
   let release: (() => void) | null = null
   try {
     release = await acquireSlot(args.workspaceId, controller.signal)
-    const response = await invokeChat({
+    const response = await invokeUntilReady({
       workspaceId: args.workspaceId,
       projectId: null,
       sessionId,
@@ -861,20 +981,34 @@ export async function runAgentReply(args: RunAgentReplyArgs): Promise<string | n
   const startedAt = new Date()
   let release: (() => void) | null = null
   try {
-    release = await acquireSlot(conversation.workspaceId, controller.signal)
+    // Saved before the slot, so opening the session while the runtime is busy
+    // or still waking already shows what was asked.
     const prompt = await buildPrompt({
       conversation, trigger, threadRootId, reusedSession: !!reused, name, workspaceName: workspace?.name ?? 'workspace', chain, contextMode,
     })
+    const dispatch = await channelDispatchFor({ conversation, trigger, threadRootId, name, contextMode })
     await db.chatMessage.create({
-      data: { sessionId, role: 'user', content: prompt, parts: JSON.stringify([{ type: 'text', text: prompt }]), agent: 'technical' },
+      data: {
+        sessionId,
+        role: 'user',
+        content: prompt,
+        parts: JSON.stringify([
+          { type: 'text', text: prompt },
+          { type: 'data-channel-dispatch', data: dispatch },
+        ]),
+        agent: 'technical',
+      },
     }).catch(() => {})
-    const response = await invokeChat({
+    release = await acquireSlot(conversation.workspaceId, controller.signal)
+    const response = await invokeUntilReady({
       workspaceId: conversation.workspaceId,
       projectId: target.projectId,
       sessionId,
       userId,
       prompt,
       signal: controller.signal,
+    }, async () => {
+      await streamAgentReply(reply, { text: 'Starting up…', tool: null, tools: [] })
     })
     const summary = await readAgentStream(response, (state) => {
       latest = state

@@ -20,7 +20,9 @@ function setKey(): string {
 // Re-import fresh each time so module-level state (none here, but defensive)
 // is clean. The module reads the env var lazily inside each call, so a plain
 // import is sufficient.
-const { encryptSecret, decryptSecret, maskSecret, isSecretCryptoConfigured } = await import('../secret-crypto')
+const { encryptSecret, decryptSecret, maskSecret, isSecretCryptoConfigured, deriveProjectKey } = await import(
+  '../secret-crypto'
+)
 
 describe('secret-crypto', () => {
   beforeEach(() => {
@@ -90,5 +92,37 @@ describe('secret-crypto', () => {
     expect(maskSecret('sk-sibaghjedsxj939rokadg6ibwxub1qgonv53c8eyj7av3xaa')).toBe('sk-s…3xaa')
     expect(maskSecret('short')).toBe('••••')
     expect(maskSecret('')).toBe('')
+  })
+
+  describe('deriveProjectKey', () => {
+    test('is a deterministic 32-byte key per (purpose, project)', () => {
+      const a = deriveProjectKey('home-state:v1', 'proj-a')
+      expect(a.length).toBe(32)
+      expect(deriveProjectKey('home-state:v1', 'proj-a').equals(a)).toBe(true)
+    })
+
+    test('differs across projects and across purposes', () => {
+      const a = deriveProjectKey('home-state:v1', 'proj-a')
+      expect(deriveProjectKey('home-state:v1', 'proj-b').equals(a)).toBe(false)
+      expect(deriveProjectKey('home-state:v2', 'proj-a').equals(a)).toBe(false)
+    })
+
+    test('changes when the master key changes', () => {
+      const a = deriveProjectKey('home-state:v1', 'proj-a')
+      setKey()
+      expect(deriveProjectKey('home-state:v1', 'proj-a').equals(a)).toBe(false)
+    })
+
+    test('never returns the master key itself', () => {
+      const master = Buffer.from(process.env.SECRETS_ENCRYPTION_KEY!, 'base64')
+      expect(deriveProjectKey('home-state:v1', 'proj-a').equals(master)).toBe(false)
+    })
+
+    test('fails closed without a master key or with empty inputs', () => {
+      expect(() => deriveProjectKey('', 'proj-a')).toThrow()
+      expect(() => deriveProjectKey('home-state:v1', '')).toThrow()
+      delete process.env.SECRETS_ENCRYPTION_KEY
+      expect(() => deriveProjectKey('home-state:v1', 'proj-a')).toThrow(/SECRETS_ENCRYPTION_KEY/)
+    })
   })
 })

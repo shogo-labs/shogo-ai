@@ -86,7 +86,12 @@ const mockPrisma = {
   },
   member: {
     findFirst: async (args: any) => membersByUserWs.get(memberKey(args.where.userId, args.where.workspaceId)) ?? null,
+    findMany: async ({ where }: any) =>
+      membersByUserWs.has(memberKey(where.userId, where.OR?.[0]?.workspaceId))
+        ? [{ role: 'member', projectId: null, isBillingAdmin: false }]
+        : [],
   },
+  user: { findUnique: async () => ({ role: 'user' }) },
 }
 
 mock.module('../lib/prisma', () => withPrismaExports({ prisma: mockPrisma }))

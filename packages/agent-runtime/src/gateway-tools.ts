@@ -13,7 +13,7 @@
 import { getModelTier, resolveModelId, calculateDollarCost } from '@shogo/model-catalog'
 import { existsSync, readFileSync, writeFileSync, readdirSync, mkdirSync, unlinkSync, statSync, copyFileSync } from 'fs'
 import { join, resolve, extname, dirname, relative, sep } from 'path'
-import { execSync } from 'child_process'
+import { execSync } from '@shogo/shared-runtime/child-process'
 import { fileURLToPath } from 'node:url'
 import { isProtectedFile, PROTECTED_FILE_REJECTION } from './protected-files'
 import { createProjectTools } from './project-tools'
@@ -21,7 +21,7 @@ import { createWorkspaceAgentTools } from './workspace-agent-tools'
 import { createTriggerTools } from './trigger-tools'
 import { createMeetingTools } from './meeting-tools'
 import { createChannelTools } from './channel-tools'
-import { resolveRuntimeIdentity } from './workspace-runtime-mode'
+import { isWorkspaceRuntimeMode, resolveRuntimeIdentity, workspaceAttachedProjectIds } from './workspace-runtime-mode'
 import { isSearchEnabled } from './search-flag'
 import { isInQuietHours } from './quiet-hours'
 import { disabledToolNamesForProfile } from './capability-profiles'
@@ -75,7 +75,7 @@ import {
 import { MemorySearchEngine } from '@shogo-ai/sdk/memory'
 import { IndexEngine, createDefaultConfig } from './index-engine'
 import { HistoryIndex, type HistoryKind } from './history-index'
-import { MCP_CATALOG, isPreinstalledMcpId, isMcpServerAllowed, getPreinstalledPackages } from './mcp-catalog'
+import { MCP_CATALOG, isPreinstalledMcpId, isMcpServerAllowed, getPreinstalledPackages, builtinCapabilityRefusal } from './mcp-catalog'
 import {
   initComposioSession,
   isComposioEnabled,
@@ -87,7 +87,7 @@ import {
 } from './composio'
 import { loadAllSkills, loadBundledSkills, searchSkills } from './skills'
 import { addQuickAction, validateQuickActions } from './quick-actions'
-import { withActionRules, withPermissionGate, assertWithinWorkspace as assertWithinWorkspaceSecure, type PermissionEngine } from './permission-engine'
+import { withActionRules, withPermissionGate, assertWithinWorkspace as assertWithinWorkspaceSecure, scratchPathForWrite, type PermissionEngine } from './permission-engine'
 import { assertAllowedPath as assertAllowedPathRaw, getRuntimeTrust } from './runtime-trust'
 import { isBinaryFilePath } from '@shogo/shared-runtime'
 import { withShogoPrFooter } from '@shogo/shared-runtime/agent-attribution'
@@ -150,6 +150,8 @@ import {
   switchGitHubBranch as apiSwitchGitHubBranch,
   projectScopedId,
   postPlanMirror,
+  configureProject as apiConfigureProject,
+  getProjectConfig as apiGetProjectConfig,
   type CheckpointCallResult,
 } from './internal-api'
 import { clearGitHubCliEnvCache, githubCliEnvForProject } from './github-cli-credentials'
@@ -195,14 +197,10 @@ export interface ToolContext {
   aiProxyToken?: string
   /** UI message writer for streaming events to the client (set during agent turns, not heartbeats) */
   uiWriter?: any
-  /** Sync heartbeat config to the central DB (called by heartbeat_configure tool) */
-  updateHeartbeatConfig?: (config: {
-    heartbeatEnabled?: boolean
-    heartbeatInterval?: number
-    quietHoursStart?: string | null
-    quietHoursEnd?: string | null
-    quietHoursTimezone?: string | null
-  }) => Promise<void>
+  /** Called after heartbeat_configure writes the schedule to the database (refreshes the cached status copy). */
+  onHeartbeatConfigured?: () => void
+  /** Called after capabilities_configure writes this project's toggles. Reloads config so the next turn sees them. */
+  onCapabilitiesChanged?: () => void | Promise<void>
   /** Multi-language LSP manager for read_lints diagnostics */
   lspManager?: import('@shogo/shared-runtime').WorkspaceLSPManager
   /** Live LSP accessor — the manager starts asynchronously after a deferred
@@ -372,6 +370,84 @@ function bogusPathPrefixHint(workspaceDir: string, filePath: string): string | n
       )
     }
   }
+  return projectFolderHint(workspaceDir, filePath)
+}
+
+function withinOneEdit(a: string, b: string): boolean {
+  if (a === b) return false
+  const delta = a.length - b.length
+  if (Math.abs(delta) > 1) return false
+  if (delta === 0) {
+    let mismatches = 0
+    for (let i = 0; i < a.length; i++) {
+      if (a[i] !== b[i] && ++mismatches > 1) return false
+    }
+    return mismatches === 1
+  }
+  const [shorter, longer] = a.length < b.length ? [a, b] : [b, a]
+  let i = 0
+  let j = 0
+  let skipped = false
+  while (i < shorter.length && j < longer.length) {
+    if (shorter[i] === longer[j]) {
+      i++
+      j++
+    } else if (skipped) {
+      return false
+    } else {
+      skipped = true
+      j++
+    }
+  }
+  return true
+}
+
+function workspaceChildDirs(workspaceDir: string): string[] {
+  try {
+    return readdirSync(workspaceDir, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && !entry.name.startsWith('.'))
+      .map((entry) => entry.name)
+  } catch {
+    return []
+  }
+}
+
+function pathExistsInWorkspace(workspaceDir: string, relativePath: string): boolean {
+  try {
+    return existsSync(assertWithinWorkspace(workspaceDir, relativePath))
+  } catch {
+    return false
+  }
+}
+
+/**
+ * A workspace mounts each project as `<projectId>/…`. When that prefix is
+ * mistyped by one character, or omitted and only one project is mounted,
+ * point at the path that actually exists.
+ */
+function projectFolderHint(workspaceDir: string, filePath: string): string | null {
+  const normalized = filePath.replace(/\\/g, '/').replace(/^\.\//, '')
+  const parts = normalized.split('/').filter(Boolean)
+  if (parts.length === 0) return null
+  const dirs = workspaceChildDirs(workspaceDir)
+  if (dirs.length === 0) return null
+  const prefix = parts[0]!
+  const rest = parts.slice(1).join('/')
+  if (!dirs.includes(prefix)) {
+    const close = dirs.filter((name) => withinOneEdit(name, prefix))
+    if (close.length === 1) {
+      const candidate = rest ? `${close[0]}/${rest}` : close[0]!
+      if (pathExistsInWorkspace(workspaceDir, candidate)) {
+        return `Hint: did you mean "${candidate}"?`
+      }
+    }
+  }
+  if (dirs.length === 1 && !normalized.startsWith(`${dirs[0]}/`)) {
+    const candidate = `${dirs[0]}/${normalized}`
+    if (pathExistsInWorkspace(workspaceDir, candidate)) {
+      return `Hint: that path exists under the only mounted project. Try "${candidate}".`
+    }
+  }
   return null
 }
 
@@ -473,11 +549,58 @@ async function workspaceMetaFetch(
   }
   if (!response.ok) {
     const detail = result?.error?.message || result?.error
-    if (detail) throw new Error(detail)
+    if (typeof detail === 'string' && detail.trim() && !detail.trim().startsWith('<')) {
+      throw new Error(detail)
+    }
     const snippet = text.trim().slice(0, 200)
-    throw new Error(`Workspace API HTTP ${response.status}${snippet ? `: ${snippet}` : ''}`)
+    // Cloudflare and other proxies answer 502 with an HTML page. Don't hand
+    // that document to the agent; the status is the useful part.
+    if (!snippet || snippet.startsWith('<')) {
+      throw new Error(`Workspace API HTTP ${response.status}`)
+    }
+    throw new Error(`Workspace API HTTP ${response.status}: ${snippet}`)
   }
   return result
+}
+
+/** Fast gateway failures and the caller's own timeout. Not 4xx. */
+function isRetryableWorkspaceFailure(err: unknown): boolean {
+  const name = err instanceof Error ? err.name : ''
+  if (name === 'TimeoutError' || name === 'AbortError') return true
+  const message = err instanceof Error ? err.message : String(err)
+  return /Workspace API HTTP 50[234]\b/.test(message) || /timed out|operation timed out/i.test(message)
+}
+
+const MOUNT_RETRY_BACKOFF_MS = [200, 500]
+
+async function mountWorkspaceProject(
+  ctx: ToolContext,
+  projectId: string,
+  mode: 'readwrite' | 'readonly' = 'readwrite',
+): Promise<any> {
+  const workspaceId = resolveWorkspaceId(ctx)
+  const path = `/api/internal/workspaces/${encodeURIComponent(workspaceId!)}/sessions/${encodeURIComponent(ctx.sessionId || '')}/members`
+  const init: RequestInit = {
+    method: 'POST',
+    body: JSON.stringify({
+      projectId,
+      attachMode: mode === 'readonly' ? 'readonly' : 'readwrite',
+      userId: ctx.userId,
+      sessionId: ctx.sessionId,
+    }),
+  }
+  let lastError: unknown
+  for (let attempt = 0; attempt <= MOUNT_RETRY_BACKOFF_MS.length; attempt++) {
+    try {
+      return await workspaceMetaFetch(ctx, path, init, WORKSPACE_MEMBER_TIMEOUT_MS)
+    } catch (err) {
+      lastError = err
+      const delay = MOUNT_RETRY_BACKOFF_MS[attempt]
+      if (delay === undefined || !isRetryableWorkspaceFailure(err)) throw err
+      await new Promise((resolve) => setTimeout(resolve, delay))
+    }
+  }
+  throw lastError
 }
 
 function createListProjectsTool(ctx: ToolContext): AgentTool {
@@ -485,7 +608,7 @@ function createListProjectsTool(ctx: ToolContext): AgentTool {
     name: 'list_projects',
     label: 'List Projects',
     description:
-      'List projects available in this Shogo workspace and show which ones are currently mounted. ' +
+      'List the projects you can access in this Shogo workspace and show which ones are currently mounted. ' +
       'Use this before mounting when the request names a project ambiguously or asks about project availability.',
     parameters: Type.Object({}),
     execute: async () => {
@@ -520,22 +643,8 @@ function createMountProjectTool(ctx: ToolContext): AgentTool {
         return textResult({
           error: 'This tool is only available in a workspace runtime.',
         })
-      const workspaceId = resolveWorkspaceId(ctx)
       return textResult(
-        await workspaceMetaFetch(
-          ctx,
-          `/api/internal/workspaces/${encodeURIComponent(workspaceId!)}/sessions/${encodeURIComponent(ctx.sessionId || '')}/members`,
-          {
-            method: 'POST',
-            body: JSON.stringify({
-              projectId: params.projectId,
-              attachMode: params.mode === 'readonly' ? 'readonly' : 'readwrite',
-              userId: ctx.userId,
-              sessionId: ctx.sessionId,
-            }),
-          },
-          WORKSPACE_MEMBER_TIMEOUT_MS,
-        ),
+        await mountWorkspaceProject(ctx, params.projectId, params.mode === 'readonly' ? 'readonly' : 'readwrite'),
       )
     },
   }
@@ -593,15 +702,16 @@ function createPreviewProjectTool(ctx: ToolContext): AgentTool {
     name: 'preview_project',
     label: 'Preview Project',
     description:
-      "Build and serve a mounted project's app so it can be opened in a browser, and return the one URL that is " +
-      'actually reachable. Call this before sharing any "preview"/"running app" link — never construct or hand out ' +
+      "Build and serve a project's app so it can be opened in a browser, and return the one URL that is " +
+      'actually reachable. If the project is not mounted yet, this mounts it first and then starts the preview. ' +
+      'Call this before sharing any "preview"/"running app" link — never construct or hand out ' +
       "a localhost/port link yourself (e.g. from this runtime's own base URL or an env var); only the URL this " +
       'tool returns is guaranteed to work. If this tool errors, there is NO working localhost fallback — report ' +
       'the error to the user and offer to retry or publish; do not suggest any other link, including this ' +
       "runtime's own base URL.",
     parameters: Type.Object({
       projectId: Type.String({
-        description: 'The mounted project id to preview (must already be mounted via mount_project).',
+        description: 'The project id to preview. Mounts it first when it is not already attached.',
       }),
     }),
     execute: async (_toolCallId, params: any) => {
@@ -612,12 +722,19 @@ function createPreviewProjectTool(ctx: ToolContext): AgentTool {
       const projectId = String(params?.projectId || '')
       if (!projectId) return textResult({ error: 'projectId is required' })
       const port = process.env.PORT || '8080'
-      try {
-        const response = await fetch(`http://localhost:${port}/p/${encodeURIComponent(projectId)}/preview/start`, {
+      const startPreview = () =>
+        fetch(`http://localhost:${port}/p/${encodeURIComponent(projectId)}/preview/start`, {
           method: 'POST',
           signal: AbortSignal.timeout(60_000),
         })
-        const result = await response.json().catch(() => ({}))
+      try {
+        let response = await startPreview()
+        let result = await response.json().catch(() => ({}))
+        if (response.status === 404 && result?.error === 'project_not_attached') {
+          await mountWorkspaceProject(ctx, projectId, 'readwrite')
+          response = await startPreview()
+          result = await response.json().catch(() => ({}))
+        }
         if (!response.ok || result?.error) {
           return textResult({
             error: result?.error || result?.message || `preview start failed (HTTP ${response.status})`,
@@ -722,6 +839,9 @@ function buildCompletedExecResult({ ctx, entry, finalResult }: BuildExecResultOp
   // get `"hello"` not `"hello\n"`.
   const stdoutTrimmed = finalResult.stdout.trim()
   const stderrTrimmed = finalResult.stderr.trim()
+  // The command may have rewritten files the agent already read (formatters,
+  // generators). Re-stat them so the next edit is not rejected as stale.
+  ctx.fileStateCache?.resyncMtimes()
   return textResult({
     cwd: newCwd,
     exitCode: finalResult.exitCode,
@@ -2001,28 +2121,45 @@ function createWriteFileTool(ctx: ToolContext): AgentTool {
     description:
       'Create a NEW file in the agent workspace. Creates parent directories as needed. ' +
       'WARNING: Do NOT use write_file to modify existing files — use edit_file instead. ' +
-      'write_file overwrites the entire file which risks losing code. Only use for creating brand-new files.',
+      'write_file overwrites the entire file which risks losing code. Only use for creating brand-new files. ' +
+      'For a binary file (PDF, image, STL, spreadsheet), pass encoding: "base64" and base64 content. ' +
+      'Scratch files go in .tmp/ — a /tmp path is rewritten there.',
     label: 'Write File',
     parameters: Type.Object({
-      path: Type.String({ description: 'File path relative to workspace' }),
-      content: Type.String({ description: 'Content to write' }),
+      path: Type.String({ description: 'File path relative to workspace. /tmp/... is rewritten to .tmp/...' }),
+      content: Type.String({ description: 'Content to write. UTF-8 text, or base64 when encoding is "base64".' }),
       append: Type.Optional(
         Type.Boolean({
-          description: 'Append instead of overwrite (default: false)',
+          description: 'Append instead of overwrite (default: false). Ignored for base64 writes.',
+        }),
+      ),
+      encoding: Type.Optional(
+        Type.Union([Type.Literal('utf-8'), Type.Literal('base64')], {
+          description: 'utf-8 (default) or base64. base64 is required for binary files.',
         }),
       ),
     }),
     execute: async (_toolCallId, params) => {
       const {
-        path: filePath,
+        path: requestedPath,
         content,
         append,
+        encoding,
       } = params as {
         path: string
         content: string
         append?: boolean
+        encoding?: 'utf-8' | 'base64'
       }
+      const scratch = scratchPathForWrite(ctx.workspaceDir, requestedPath)
+      const filePath = scratch.path
       const resolved = assertWithinWorkspace(ctx.workspaceDir, filePath)
+      const scratchFields = scratch.remappedFrom
+        ? {
+            remappedFrom: scratch.remappedFrom,
+            note: `Wrote ${filePath} instead of ${scratch.remappedFrom}. /tmp is outside the workspace; scratch files go in .tmp/.`,
+          }
+        : {}
       // Workspace Trust gate for external (VS Code-style) projects.
       // For managed projects (the historical case) `assertAllowedPath`
       // returns ok=true because trustLevel is 'trusted' by default.
@@ -2030,9 +2167,27 @@ function createWriteFileTool(ctx: ToolContext): AgentTool {
       if (!trustCheck.ok) return textResult({ error: trustCheck.message })
       const protectedRejection = rejectIfProtected(ctx, resolved)
       if (protectedRejection) return protectedRejection
+      if (encoding === 'base64') {
+        const compact = content.replace(/\s/g, '')
+        if (!compact || compact.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(compact)) {
+          return textResult({ error: 'content is not valid base64. Pass raw base64 with encoding: "base64".' })
+        }
+        const buf = Buffer.from(compact, 'base64')
+        const dirForBinary = dirname(resolved)
+        if (dirForBinary && dirForBinary !== resolved) mkdirSync(dirForBinary, { recursive: true })
+        writeFileSync(resolved, buf)
+        ctx.fileStateCache?.invalidate(filePath)
+        return textResult({
+          ok: true,
+          path: filePath,
+          bytes: buf.length,
+          encoding: 'base64',
+          ...scratchFields,
+        })
+      }
       if (isBinaryFilePath(filePath)) {
         return textResult({
-          error: `Refusing to write binary file "${filePath}" as UTF-8 text. Use exec with a binary-safe tool or provide the file as base64.`,
+          error: `Refusing to write binary file "${filePath}" as UTF-8 text. Call write_file again with encoding: "base64" and base64 content.`,
         })
       }
       const dir = dirname(resolved)
@@ -2071,6 +2226,7 @@ function createWriteFileTool(ctx: ToolContext): AgentTool {
         ok: true,
         path: filePath,
         bytes: content.length,
+        ...scratchFields,
       }
       appendImpactHint(ctx, filePath, base)
       // Canvas-API contract hint: surfaced eagerly on every write so the
@@ -2650,7 +2806,7 @@ function createEditFileTool(ctx: ToolContext): AgentTool {
     }),
     execute: async (_toolCallId, params) => {
       const {
-        path: filePath,
+        path: requestedPath,
         old_string,
         new_string,
         replace_all = false,
@@ -2660,6 +2816,7 @@ function createEditFileTool(ctx: ToolContext): AgentTool {
         new_string: string
         replace_all?: boolean
       }
+      const filePath = scratchPathForWrite(ctx.workspaceDir, requestedPath).path
       if (old_string === new_string) {
         return textResult({ error: 'old_string and new_string must differ' })
       }
@@ -2743,22 +2900,26 @@ function createEditFileTool(ctx: ToolContext): AgentTool {
         }
       }
 
-      // Staleness detection — content-comparison fallback only for full reads
+      // Staleness detection. An identical re-read is safe. When the bytes
+      // changed, still apply the edit if old_string matches once (or
+      // replace_all is set) — that is the check the match pipeline below
+      // already makes. Otherwise refresh the cache from disk and tell the
+      // agent what the file looks like now.
+      let fileChangedSinceRead = false
       if (readRecord && ctx.fileStateCache?.isStale(filePath, resolved)) {
-        const isFullRead = !readRecord.partial
-        if (isFullRead && readRecord.content) {
-          const currentContent = readFileSync(resolved, 'utf-8')
-          if (currentContent === readRecord.content) {
-            // mtime changed but content is identical — safe to proceed
-          } else {
-            return textResult({
-              error: 'File has been modified since last read (by user, linter, or another process). Read it again before editing.',
-            })
-          }
+        const currentContent = readFileSync(resolved, 'utf-8')
+        const isFullRead = !readRecord.partial && readRecord.content != null
+        if (isFullRead && currentContent === readRecord.content) {
+          const freshMtime = Math.floor(statSync(resolved).mtimeMs)
+          ctx.fileStateCache.recordRead(
+            filePath,
+            freshMtime,
+            currentContent.split('\n').length,
+            undefined,
+            currentContent,
+          )
         } else {
-          return textResult({
-            error: 'File has been modified since last read (by user, linter, or another process). Read it again before editing.',
-          })
+          fileChangedSinceRead = true
         }
       }
 
@@ -2779,6 +2940,22 @@ function createEditFileTool(ctx: ToolContext): AgentTool {
       // --- Match pipeline ---
       // 1. Exact match
       const exactOccurrences = content.split(normalizedOldString).length - 1
+      const staleRecoverable = exactOccurrences === 1 || (exactOccurrences > 0 && replace_all)
+      if (fileChangedSinceRead && !staleRecoverable) {
+        const freshMtime = Math.floor(statSync(resolved).mtimeMs)
+        const rawNow = readFileSync(resolved, 'utf-8')
+        ctx.fileStateCache?.recordRead(
+          filePath,
+          freshMtime,
+          rawNow.split('\n').length,
+          undefined,
+          rawNow,
+        )
+        return textResult({
+          error: 'File has been modified since last read (by user, linter, or another process). Read it again before editing.',
+          hint: staleEditHint(content, normalizedOldString),
+        })
+      }
       if (exactOccurrences === 1 || (exactOccurrences > 1 && replace_all)) {
         const updated = applyEditToFile(content, normalizedOldString, cleanNewString, replace_all)
         return commitEdit(ctx, filePath, resolved, content, updated, encoding, target, replace_all ? exactOccurrences : 1)
@@ -2846,6 +3023,20 @@ function createEditFileTool(ctx: ToolContext): AgentTool {
       return textResult({ error: `old_string not found in ${filePath}`, hint })
     },
   }
+}
+
+function staleEditHint(content: string, oldString: string): string {
+  const lines = content.split('\n')
+  const needle = oldString.split('\n')[0]?.trim()
+  if (needle) {
+    const index = lines.findIndex((line) => line.includes(needle))
+    if (index >= 0) {
+      const start = Math.max(0, index - 1)
+      const end = Math.min(lines.length, index + 3)
+      return `Current contents around the closest line:\n${lines.slice(start, end).join('\n')}`
+    }
+  }
+  return `Current file starts with:\n${lines.slice(0, 12).join('\n')}`
 }
 
 async function commitEdit(
@@ -3259,6 +3450,23 @@ async function checkAssets(urls: string[]): Promise<Array<{ url: string; problem
   return results.filter((r): r is { url: string; problem: string } => r.problem !== null)
 }
 
+/**
+ * The project a project-scoped internal call acts on. Workspace runtimes
+ * often have `PROJECT_ID = ws:<workspaceId>`, which the API cannot map to a
+ * project and rejects with 401. Try, in order: an explicit id, the current
+ * project, the workspace anchor, then the only attached project.
+ */
+function resolveTargetProjectId(ctx: ToolContext, requested?: string): string | undefined {
+  const explicit = projectScopedId(requested?.trim())
+  if (explicit) return explicit
+  const current = projectScopedId(ctx.projectId)
+  if (current) return current
+  const anchor = projectScopedId(process.env.WORKSPACE_ANCHOR_PROJECT_ID)
+  if (anchor) return anchor
+  const attached = workspaceAttachedProjectIds().filter((id) => projectScopedId(id))
+  return attached.length === 1 ? attached[0] : undefined
+}
+
 function createPublishTool(ctx: ToolContext): AgentTool {
   return {
     name: 'publish',
@@ -3269,6 +3477,7 @@ function createPublishTool(ctx: ToolContext): AgentTool {
       'Re-publish (already published): omit `subdomain` to redeploy the latest build to the existing live subdomain. Existing access-level/password settings are preserved unless you pass new ones.',
       'On success this returns the live `https://{subdomain}.shogo.one` URL after verifying it responds and that the scripts/stylesheets it references load — share THAT URL with the user. If it returns `brokenAssets`, the site renders blank: fix the asset paths and republish before telling the user it works.',
       'The runtime auto-recovers from stale bundles on its own (self-healing reload + no-store HTML), so never tell the user to hard-refresh or clear their cache. Distinguish the stable preview URL from the published URL first; if the published site is still stale after ~30s, republish instead of asking the user to refresh.',
+      'In a workspace runtime, pass `project_id` for the mounted project to publish. It defaults to the current project, the workspace anchor, or the only attached project.',
     ].join('\n'),
     label: 'Publish',
     parameters: Type.Object({
@@ -3290,19 +3499,26 @@ function createPublishTool(ctx: ToolContext): AgentTool {
       ),
       site_title: Type.Optional(Type.String({ description: 'Optional site title (meta).' })),
       site_description: Type.Optional(Type.String({ description: 'Optional site description (meta).' })),
+      project_id: Type.Optional(
+        Type.String({
+          description:
+            'Project to publish. Required in a workspace runtime when more than one project is attached and none is the current or anchor project.',
+        }),
+      ),
     }),
     execute: async (_toolCallId, params) => {
-      const { subdomain, access_level, password, site_title, site_description } = params as {
+      const { subdomain, access_level, password, site_title, site_description, project_id } = params as {
         subdomain?: string
         access_level?: 'anyone' | 'authenticated' | 'private' | 'password'
         password?: string
         site_title?: string
         site_description?: string
+        project_id?: string
       }
-      const projectId = ctx.projectId
+      const projectId = resolveTargetProjectId(ctx, project_id)
       if (!projectId) {
         return textResult({
-          error: 'No project context is available, so the app cannot be published.',
+          error: 'No project context is available, so the app cannot be published. Pass project_id for the project to publish.',
         })
       }
 
@@ -3400,6 +3616,7 @@ function createShareFileTool(ctx: ToolContext): AgentTool {
       'Use this whenever the user asks to download, receive, get, or send a generated file such as a PDF, DOCX, ZIP, EXE, image, or other artifact.',
       'This is for individual files, not web apps. Do not invent a localhost or preview URL, and do not use the publish tool for a file download.',
       'After this succeeds, paste the returned URL verbatim and tell the user when it expires. Do not delete or overwrite the shared file before the user downloads it.',
+      'In a workspace runtime, pass `project_id` for the project that owns the file. It defaults to the current project, the workspace anchor, or the only attached project.',
     ].join(' '),
     label: 'Share file',
     parameters: Type.Object({
@@ -3409,9 +3626,15 @@ function createShareFileTool(ctx: ToolContext): AgentTool {
       expires_in_days: Type.Optional(Type.Number({
         description: 'How many days the link should work, from 1 to 7. Defaults to 7.',
       })),
+      project_id: Type.Optional(
+        Type.String({
+          description:
+            'Project that owns the file. Required in a workspace runtime when more than one project is attached and none is the current or anchor project.',
+        }),
+      ),
     }),
     execute: async (_toolCallId, params) => {
-      const input = params as { path: string; expires_in_days?: number }
+      const input = params as { path: string; expires_in_days?: number; project_id?: string }
       const path = input.path.trim().replace(/\\/g, '/').replace(/^\.\/+/, '')
       if (!path || path.startsWith('/') || path.split('/').some((segment) => !segment || segment === '.' || segment === '..')) {
         return textResult({ error: 'path must be a relative workspace path without ".."' })
@@ -3438,7 +3661,13 @@ function createShareFileTool(ctx: ToolContext): AgentTool {
         })
       }
 
-      const result = await apiCreateSharedFileLink(ctx.projectId, {
+      const projectId = resolveTargetProjectId(ctx, input.project_id)
+      if (!projectId) {
+        return textResult({
+          error: 'No project selected. Pass project_id for the project that owns this file.',
+        })
+      }
+      const result = await apiCreateSharedFileLink(projectId, {
         path,
         expiresInDays: input.expires_in_days,
       })
@@ -3976,12 +4205,12 @@ async function webCacheGet<T>(key: string | null): Promise<T | null> {
   return null
 }
 
-async function webCachePut(key: string | null, value: unknown): Promise<void> {
+async function webCachePut(key: string | null, value: unknown, ttlSeconds = WEB_CACHE_TTL): Promise<void> {
   if (!key) return
   try {
     const redis = getWebCacheRedis()
     if (!redis) return
-    await redis.set(key, JSON.stringify(value), 'EX', WEB_CACHE_TTL)
+    await redis.set(key, JSON.stringify(value), 'EX', ttlSeconds)
   } catch {}
 }
 
@@ -4483,7 +4712,7 @@ function createReadHistoryTool(ctx: ToolContext): AgentTool {
 }
 
 function spawnCDPRelay(token: string): Promise<{ cdpEndpoint: string; kill: () => void }> {
-  const { spawn } = require('child_process') as typeof import('child_process')
+  const { spawn } = require('@shogo/shared-runtime/child-process') as typeof import('@shogo/shared-runtime/child-process')
   // Use fileURLToPath so this works on Windows. `new URL(import.meta.url).pathname`
   // returns a `/C:/...` path that breaks existsSync / spawn on win32.
   const srcDir = dirname(fileURLToPath(import.meta.url))
@@ -5334,14 +5563,18 @@ function createNotifyUserTool(ctx: ToolContext): AgentTool {
 
       // Respect quiet hours: a due reminder is deferred, not dropped — the
       // agent keeps it in memory and re-attempts on a later heartbeat.
-      let quietHours: { start?: string; end?: string; timezone?: string } | undefined
+      // Quiet hours live in the database (the project's agent config). A
+      // failed lookup is treated as no quiet hours rather than blocking.
+      let quietHours: { start?: string | null; end?: string | null; timezone?: string | null } | undefined
       try {
-        const configPath = join(ctx.workspaceDir, 'config.json')
-        if (existsSync(configPath)) {
-          quietHours = JSON.parse(readFileSync(configPath, 'utf-8'))?.quietHours
+        const hbProjectId = resolveHeartbeatProjectId(ctx)
+        if (hbProjectId) {
+          const cfg = await apiGetProjectConfig(hbProjectId)
+          const a = cfg.ok ? cfg.data?.agent : null
+          if (a) quietHours = { start: a.quietHoursStart, end: a.quietHoursEnd, timezone: a.quietHoursTimezone }
         }
       } catch {
-        // Unreadable/invalid config → treat as no quiet hours.
+        // Lookup failed → treat as no quiet hours.
       }
       if (isInQuietHours(quietHours?.start ?? null, quietHours?.end ?? null, quietHours?.timezone ?? null)) {
         return textResult({
@@ -5352,12 +5585,16 @@ function createNotifyUserTool(ctx: ToolContext): AgentTool {
       }
 
       const workspaceId = resolveWorkspaceId(ctx)
+      // A workspace runtime's PROJECT_ID is often `ws:<id>`. Sending that as
+      // projectId fails the API's project-membership check. Omit it: a
+      // workspace token is enough when no real project id is available.
+      const scopedProjectId = projectScopedId(ctx.projectId)
       try {
         const result = await workspaceMetaFetch(ctx, '/api/internal/reminders/notify', {
           method: 'POST',
           body: JSON.stringify({
             workspaceId,
-            projectId: ctx.projectId,
+            ...(scopedProjectId ? { projectId: scopedProjectId } : {}),
             title,
             body,
             ...(actionUrl ? { actionUrl } : {}),
@@ -5837,6 +6074,8 @@ async function connectViaMcp(
 
   const catalogEntry = MCP_CATALOG.find((e) => e.id === name)
   if (!isMcpServerAllowed(name) || !catalogEntry) {
+    const builtin = builtinCapabilityRefusal(name)
+    if (builtin) return textResult({ error: builtin })
     const catalogIds = MCP_CATALOG.map((e) => e.id).join(', ')
     return textResult({
       error: `"${name}" is not in the MCP catalog. Available servers: ${catalogIds}. For remote servers, provide a "url" parameter.`,
@@ -5883,14 +6122,14 @@ function createConnectTool(ctx: ToolContext): AgentTool {
   return {
     name: 'connect',
     description:
-      'Install (connect) an integration so its tools become available. Auto-routes by name: tries Composio managed OAuth first (Google, Slack, GitHub, etc. — no credentials needed), falls back to MCP catalog (postgres, filesystem, etc.), then to a remote URL if provided. Use `source: "mcp"` to skip Composio. Use `skill:<name>` to install a bundled skill. Pair with search_integrations to discover names.\n\n' +
+      'Install (connect) an integration so its tools become available. Auto-routes by name: tries Composio managed OAuth first (Google, Slack, GitHub, etc. — no credentials needed), falls back to the MCP catalog (postgres, etc.), then to a remote URL if provided. Files and shell commands are built in (read_file, write_file, edit_file, exec) — do not connect filesystem or computer-use. Use `source: "mcp"` to skip Composio. Use `skill:<name>` to install a bundled skill. Pair with search_integrations to discover names.\n\n' +
       'When to call connect vs. when not to: only call connect when the user has asked for an ACTION you can\'t perform without that integration (send a calendar invite, post to Slack, query a Postgres database, etc.). Do NOT call connect when the user is asking to "show", "list", "compare", "describe", or "preview" data you can already produce with `web`, `read_file`, or in-context information — installing an integration the user did not ask for forces them through an OAuth dance for no reason and is one of the most disliked agent behaviors. If you\'re unsure whether the user wants the action or just an explanation, ask one clarifying question via `ask_user` before calling connect.\n\n' +
       'GitHub issues, pull requests, Actions, releases, and repo metadata: do NOT call connect. Use the pre-installed `gh` CLI via exec for listing and issue operations (`gh issue list`, `gh issue create`, `gh pr list`, `gh run list`). Use the `github_create_pr` tool to create a PR so Shogo can add attribution and use the GitHub App when connected. To bring a repository into a project, use `github_connect`. If gh is not authenticated, save a PAT to `.env` as GITHUB_TOKEN and retry. Only connect({ name: "github" }) if the user explicitly asks for the Composio GitHub OAuth integration.',
     label: 'Connect Integration',
     parameters: Type.Object({
       name: Type.String({
         description:
-          'Integration name. Examples: "googlecalendar", "gmail", "slack" (managed); "postgres", "filesystem" (mcp catalog); "skill:github-ops" (bundled skill); any custom name when providing url.',
+          'Integration name. Examples: "googlecalendar", "gmail", "slack" (managed); "postgres" (mcp catalog); "skill:github-ops" (bundled skill); any custom name when providing url. Do not pass "filesystem" or "computer-use" — those capabilities are built in.',
       }),
       source: Type.Optional(
         Type.Union([Type.Literal('managed'), Type.Literal('mcp')], {
@@ -7453,6 +7692,112 @@ export function createExposePortTool(ctx: ToolContext): AgentTool {
   }
 }
 
+const SOCIAL_CACHE_TTL_SECONDS = 10 * 60
+
+export type SocialPlatformName = 'instagram' | 'tiktok'
+
+/** Platforms the `social_media` tool may call. Empty when the tool should be hidden. */
+export function enabledSocialPlatforms(config: import('./gateway').GatewayConfig): SocialPlatformName[] {
+  if (config.socialMediaEnabled !== true) return []
+  const platforms: SocialPlatformName[] = []
+  if (config.socialInstagramEnabled !== false) platforms.push('instagram')
+  if (config.socialTiktokEnabled !== false) platforms.push('tiktok')
+  return platforms
+}
+
+function socialPlatformSchema(platforms: SocialPlatformName[]) {
+  if (platforms.length === 1) return Type.Literal(platforms[0])
+  const listed = platforms.length > 0 ? platforms : (['instagram', 'tiktok'] as SocialPlatformName[])
+  return Type.Union(listed.map((platform) => Type.Literal(platform)))
+}
+
+/**
+ * Public Instagram/TikTok profile and recent-post lookup. The EnsembleData
+ * token stays on the API server; this calls `POST ${TOOLS_PROXY_URL}/social/...`.
+ */
+function createSocialMediaTool(ctx: ToolContext): AgentTool {
+  const platforms = enabledSocialPlatforms(ctx.config)
+  const platformList = platforms.join(', ') || 'none'
+  return {
+    name: 'social_media',
+    description:
+      `Look up a public social profile or its recent posts (views, likes, comments, shares). ` +
+      `Enabled platforms: ${platformList}. ` +
+      `Use action "profile" for the bio and display name, or "recent_posts" for the latest posts. ` +
+      `Each call spends paid API units — prefer one call with a sufficient limit over several small ones.`,
+    label: 'Social Media',
+    parameters: Type.Object({
+      platform: socialPlatformSchema(platforms),
+      action: Type.Union([Type.Literal('profile'), Type.Literal('recent_posts')], {
+        description: 'profile | recent_posts',
+      }),
+      handle: Type.String({ description: 'Account handle, with or without a leading @.' }),
+      limit: Type.Optional(Type.Number({
+        description: 'How many recent posts to return (1-50, default 20). Ignored for profile.',
+      })),
+    }),
+    execute: async (_toolCallId, rawParams) => {
+      // The platform enum is built from the enabled set, so TypeBox cannot
+      // infer the parameter object. Read the fields explicitly.
+      const params = rawParams as { platform?: unknown; action?: unknown; handle?: unknown; limit?: unknown }
+      const platform = String(params.platform ?? '')
+      const action = params.action === 'recent_posts' ? 'recent_posts' : params.action === 'profile' ? 'profile' : ''
+      const handle = String(params.handle ?? '').trim().replace(/^@+/, '')
+      const allowed = enabledSocialPlatforms(ctx.config)
+      if (!allowed.includes(platform as SocialPlatformName)) {
+        return textResult({
+          error: `Platform "${platform || 'unknown'}" is not enabled. Enabled platforms: ${allowed.join(', ') || 'none'}.`,
+        })
+      }
+      if (!action) return textResult({ error: 'action must be "profile" or "recent_posts".' })
+      if (!handle) return textResult({ error: 'handle is required.' })
+
+      const proxyUrl = process.env.TOOLS_PROXY_URL
+      const proxyToken = process.env.AI_PROXY_TOKEN
+      if (!proxyUrl || !proxyToken) {
+        return textResult({
+          error: 'Social media lookup is unavailable.',
+          suggestion: 'Configure TOOLS_PROXY_URL and AI_PROXY_TOKEN.',
+        })
+      }
+
+      const limit = typeof params.limit === 'number' && Number.isFinite(params.limit)
+        ? Math.min(50, Math.max(1, Math.floor(params.limit)))
+        : 20
+      const op = action === 'profile' ? 'profile' : 'posts'
+      const cacheKey = webCacheKey('social', JSON.stringify({ platform, action, handle: handle.toLowerCase(), limit }))
+      const cached = await webCacheGet<AgentToolResult<any>>(cacheKey)
+      if (cached) return cached
+
+      try {
+        const response = await fetch(`${proxyUrl.replace(/\/$/, '')}/social/${platform}/${op}`, {
+          method: 'POST',
+          headers: {
+            'x-api-key': proxyToken,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ handle, limit }),
+          signal: AbortSignal.timeout(20_000),
+        })
+        const data = await response.json().catch(() => ({}))
+        if (!response.ok) {
+          return textResult({
+            error: (data as any)?.error || `Social lookup failed: HTTP ${response.status}`,
+            code: (data as any)?.code,
+            platform,
+            handle,
+          })
+        }
+        const result = textResult(data)
+        await webCachePut(cacheKey, result, SOCIAL_CACHE_TTL_SECONDS)
+        return result
+      } catch (err: any) {
+        return textResult({ error: `Social lookup failed: ${err?.message ?? err}`, platform, handle })
+      }
+    },
+  }
+}
+
 /** All gateway tools (unified set). Includes base tools + agent_* orchestration tools. */
 export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTool[] {
   const pe = ctx.permissionEngine
@@ -7480,6 +7825,7 @@ export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTo
     g(createReviewContextTool(ctx), 'file_read'),
     g(createWebTool(ctx), 'network'),
     g(createBrowserTool(ctx), 'network'),
+    g(createSocialMediaTool(ctx), 'network'),
     createMemoryReadTool(ctx),
     createMemorySearchTool(ctx),
     createSearchHistoryTool(ctx),
@@ -8062,6 +8408,7 @@ export const TOOL_GROUP_MAP: Record<string, string[]> = {
   web_fetch: ['web'],
   web_search: ['web'],
   browser: ['browser', 'web'],
+  social: ['social_media'],
   memory: ['memory_read', 'memory_search'],
   messaging: ['send_message', 'channel_connect', 'channel_disconnect', 'channel_list'],
   heartbeat: ['heartbeat_configure', 'heartbeat_status'],
@@ -8077,6 +8424,7 @@ export const ALL_TOOL_NAMES = [
   'edit_file',
   'web',
   'browser',
+  'social_media',
   'delete_file',
   'search',
   'impact_radius',
@@ -8140,7 +8488,9 @@ export function resolveToolNames(refs: string[]): string[] {
  * still receive the tool because subagents draw from the unfiltered set.
  *
  * Capability flags default to enabled, so only an explicit `=== false`
- * disables a tool group.
+ * disables a tool group. `gitWorktreesEnabled` and `socialMediaEnabled`
+ * are the exceptions: they are opt-in, and the social tool is also hidden
+ * when every platform under it is off.
  */
 export function filterDisabledCapabilityTools(tools: AgentTool[], config: import('./gateway').GatewayConfig): AgentTool[] {
   const disabled = new Set<string>()
@@ -8150,13 +8500,15 @@ export function filterDisabledCapabilityTools(tools: AgentTool[], config: import
   if (config.webEnabled === false) for (const n of TOOL_GROUP_MAP.web) disabled.add(n)
   if (config.browserEnabled === false) disabled.add('browser')
   if (config.shellEnabled === false) for (const n of TOOL_GROUP_MAP.shell) disabled.add(n)
-  if (config.heartbeatEnabled === false) for (const n of TOOL_GROUP_MAP.heartbeat) disabled.add(n)
+  if (config.heartbeatToolsEnabled === false) for (const n of TOOL_GROUP_MAP.heartbeat) disabled.add(n)
   if (config.imageGenEnabled === false) disabled.add('generate_image')
   if (config.quickActionsEnabled === false) disabled.add('quick_action')
   if (config.channelsEnabled === false) for (const n of TOOL_GROUP_MAP.messaging) disabled.add(n)
   if (config.integrationsEnabled === false) for (const n of TOOL_GROUP_MAP.integrations) disabled.add(n)
   // BETA: worktree awareness tool only exists when per-chat worktrees are on (off by default).
   if (config.gitWorktreesEnabled !== true) disabled.add('worktree_list')
+  // Social lookups are opt-in, and a platform that is off must not be callable.
+  if (enabledSocialPlatforms(config).length === 0) disabled.add('social_media')
 
   const memoryOff = config.memoryEnabled === false
   if (disabled.size === 0 && !memoryOff) return tools
@@ -8444,7 +8796,7 @@ function createDetectChangesTool(ctx: ToolContext): AgentTool {
         return textResult({ error: 'Knowledge graph not available.' })
       }
 
-      const { execSync } = require('child_process')
+      const { execSync } = require('@shogo/shared-runtime/child-process')
       const { readFileSync } = require('fs')
       const cwd = ctx.workspaceDir
 
@@ -8632,7 +8984,7 @@ function createReviewContextTool(ctx: ToolContext): AgentTool {
         return textResult({ error: 'Knowledge graph not available.' })
       }
 
-      const { execSync } = require('child_process')
+      const { execSync } = require('@shogo/shared-runtime/child-process')
       const { readFileSync, existsSync } = require('fs')
       const { join } = require('path')
       const cwd = ctx.workspaceDir
@@ -9439,11 +9791,24 @@ function createGenerateImageTool(ctx: ToolContext): AgentTool {
 // Heartbeat Tools
 // ---------------------------------------------------------------------------
 
+/**
+ * The project a heartbeat tool acts on: an explicit `projectId`, else the
+ * current project, else the workspace anchor. `ws:<workspaceId>` runtime keys
+ * are not projects and are skipped.
+ */
+function resolveHeartbeatProjectId(ctx: ToolContext, requested?: string): string | undefined {
+  return (
+    projectScopedId(requested) ??
+    projectScopedId(ctx.projectId) ??
+    projectScopedId(process.env.WORKSPACE_ANCHOR_PROJECT_ID)
+  )
+}
+
 function createHeartbeatConfigureTool(ctx: ToolContext): AgentTool {
   return {
     name: 'heartbeat_configure',
     description:
-      'Configure the heartbeat system: enable/disable, set interval, and quiet hours. Changes are persisted to config.json and synced to the central scheduler database.',
+      'Configure the heartbeat system: enable/disable, set interval, and quiet hours. The schedule is stored in the central scheduler database (not config.json). Heartbeats require a paid plan; on a free plan this returns a paywall error. Defaults to the current project.',
     label: 'Configure Heartbeat',
     parameters: Type.Object({
       enabled: Type.Optional(Type.Boolean({ description: 'Enable or disable heartbeat' })),
@@ -9467,61 +9832,64 @@ function createHeartbeatConfigureTool(ctx: ToolContext): AgentTool {
           description: 'IANA timezone for quiet hours (e.g. "America/Los_Angeles")',
         }),
       ),
+      projectId: Type.Optional(
+        Type.String({
+          description: 'Project id to configure (default: the current project). Must be a project in this workspace.',
+        }),
+      ),
     }),
     execute: async (_toolCallId, params) => {
-      const { enabled, interval, quietHoursStart, quietHoursEnd, timezone } = params as {
+      const { enabled, interval, quietHoursStart, quietHoursEnd, timezone, projectId: requestedId } = params as {
         enabled?: boolean
         interval?: number
         quietHoursStart?: string
         quietHoursEnd?: string
         timezone?: string
+        projectId?: string
       }
 
       if (interval !== undefined && interval < 60) {
         return textResult({ error: 'Interval must be at least 60 seconds' })
       }
 
-      try {
-        const { existsSync, readFileSync, writeFileSync } = await import('fs')
-        const { join } = await import('path')
-        const configPath = join(ctx.workspaceDir, 'config.json')
-        let config: Record<string, any> = {}
-        if (existsSync(configPath)) {
-          config = JSON.parse(readFileSync(configPath, 'utf-8'))
-        }
+      const projectId = resolveHeartbeatProjectId(ctx, requestedId)
+      if (!projectId) {
+        return textResult({ error: 'No project to configure heartbeat for. Pass projectId.' })
+      }
 
-        if (enabled !== undefined) config.heartbeatEnabled = enabled
-        if (interval !== undefined) config.heartbeatInterval = interval
-        if (quietHoursStart || quietHoursEnd || timezone) {
-          config.quietHours = config.quietHours || {}
-          if (quietHoursStart) config.quietHours.start = quietHoursStart
-          if (quietHoursEnd) config.quietHours.end = quietHoursEnd
-          if (timezone) config.quietHours.timezone = timezone
-        }
+      const agent: Record<string, unknown> = {}
+      if (enabled !== undefined) agent.heartbeatEnabled = enabled
+      if (interval !== undefined) agent.heartbeatInterval = interval
+      if (quietHoursStart !== undefined) agent.quietHoursStart = quietHoursStart
+      if (quietHoursEnd !== undefined) agent.quietHoursEnd = quietHoursEnd
+      if (timezone !== undefined) agent.quietHoursTimezone = timezone
 
-        writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8')
-
-        if (ctx.updateHeartbeatConfig) {
-          await ctx.updateHeartbeatConfig({
-            heartbeatEnabled: enabled,
-            heartbeatInterval: interval,
-            quietHoursStart: quietHoursStart ?? undefined,
-            quietHoursEnd: quietHoursEnd ?? undefined,
-            quietHoursTimezone: timezone ?? undefined,
-          })
-        }
-
+      const res =
+        Object.keys(agent).length > 0
+          ? await apiConfigureProject(projectId, { agent: agent as any })
+          : await apiGetProjectConfig(projectId)
+      if (!res.ok || !res.data) {
         return textResult({
-          ok: true,
-          enabled: config.heartbeatEnabled ?? false,
-          interval: config.heartbeatInterval ?? 1800,
-          quietHours: config.quietHours ?? null,
-        })
-      } catch (err: any) {
-        return textResult({
-          error: `Failed to configure heartbeat: ${err.message}`,
+          error: `Failed to configure heartbeat: ${res.error ?? 'request failed'}`,
+          code: res.code,
         })
       }
+      if (res.data.heartbeatError) {
+        return textResult({ error: res.data.heartbeatError.message, code: res.data.heartbeatError.code })
+      }
+
+      ctx.onHeartbeatConfigured?.()
+      const a = res.data.agent
+      return textResult({
+        ok: true,
+        projectId,
+        enabled: a?.heartbeatEnabled ?? false,
+        interval: a?.heartbeatInterval ?? 1800,
+        quietHours: a?.quietHoursStart || a?.quietHoursEnd
+          ? { start: a?.quietHoursStart ?? null, end: a?.quietHoursEnd ?? null, timezone: a?.quietHoursTimezone ?? null }
+          : null,
+        nextHeartbeatAt: a?.nextHeartbeatAt ?? null,
+      })
     },
   }
 }
@@ -9529,30 +9897,45 @@ function createHeartbeatConfigureTool(ctx: ToolContext): AgentTool {
 function createHeartbeatStatusTool(ctx: ToolContext): AgentTool {
   return {
     name: 'heartbeat_status',
-    description: 'Get current heartbeat configuration and HEARTBEAT.md checklist preview',
+    description:
+      'Get the current heartbeat schedule (enabled, interval, quiet hours, next and last run) and a preview of the project\'s HEARTBEAT.md checklist. Defaults to the current project.',
     label: 'Heartbeat Status',
-    parameters: Type.Object({}),
-    execute: async () => {
+    parameters: Type.Object({
+      projectId: Type.Optional(
+        Type.String({ description: 'Project id (default: the current project).' }),
+      ),
+    }),
+    execute: async (_toolCallId, params) => {
       const { existsSync, readFileSync } = await import('fs')
       const { join } = await import('path')
 
-      const configPath = join(ctx.workspaceDir, 'config.json')
-      let config: Record<string, any> = {}
-      if (existsSync(configPath)) {
-        try {
-          config = JSON.parse(readFileSync(configPath, 'utf-8'))
-        } catch {
-          /* corrupt config */
-        }
+      const { projectId: requestedId } = (params ?? {}) as { projectId?: string }
+      const projectId = resolveHeartbeatProjectId(ctx, requestedId)
+      if (!projectId) {
+        return textResult({ error: 'No project to report heartbeat status for. Pass projectId.' })
       }
 
-      const heartbeatPath = join(ctx.workspaceDir, 'HEARTBEAT.md')
+      const res = await apiGetProjectConfig(projectId)
+      if (!res.ok || !res.data) {
+        return textResult({ error: `Failed to read heartbeat status: ${res.error ?? 'request failed'}`, code: res.code })
+      }
+      const a = res.data.agent
+
+      // A workspace runtime keeps each project's files in its own subfolder
+      // of the merged root; a single-project runtime serves the root itself.
+      const projectDir = isWorkspaceRuntimeMode() ? join(ctx.workspaceDir, projectId) : ctx.workspaceDir
+      const heartbeatPath = join(projectDir, 'HEARTBEAT.md')
       const heartbeatContent = existsSync(heartbeatPath) ? readFileSync(heartbeatPath, 'utf-8') : ''
 
       return textResult({
-        enabled: config.heartbeatEnabled ?? false,
-        interval: config.heartbeatInterval ?? 1800,
-        quietHours: config.quietHours ?? null,
+        projectId,
+        enabled: a?.heartbeatEnabled ?? false,
+        interval: a?.heartbeatInterval ?? 1800,
+        quietHours: a?.quietHoursStart || a?.quietHoursEnd
+          ? { start: a?.quietHoursStart ?? null, end: a?.quietHoursEnd ?? null, timezone: a?.quietHoursTimezone ?? null }
+          : null,
+        nextHeartbeatAt: a?.nextHeartbeatAt ?? null,
+        lastHeartbeatAt: a?.lastHeartbeatAt ?? null,
         checklistLength: heartbeatContent.trim().length,
         checklistPreview: heartbeatContent.substring(0, 500),
       })

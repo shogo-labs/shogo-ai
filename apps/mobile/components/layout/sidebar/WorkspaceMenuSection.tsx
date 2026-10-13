@@ -16,6 +16,7 @@ import { CompactUsageWindows } from "../../billing/UsageWindows";
 import { densityFor } from "../../../lib/phone-density";
 import { AccountSettingsGroup } from "./AccountSettingsGroup";
 import { isCloudWorkspace, useCloudWorkspaces } from "../../../lib/workspace-route";
+import { workspaceColor, workspaceInitial } from "../../../lib/workspace-color";
 import { useCloudSession } from "../../../hooks/useCloudSession";
 
 export interface WorkspaceMenuSectionProps {
@@ -46,6 +47,12 @@ export interface WorkspaceMenuSectionProps {
   /** Native Settings rows (Workspace, People, …) between identity and Account. */
   settingsItems?: ReactNode;
   isNative?: boolean;
+  /**
+   * `full` is the account page and the legacy popover. `switcher` is the
+   * rail tile's lean list. `workspace-menu` is the panel-header menu
+   * (identity, settings, usage) without the workspace list.
+   */
+  presentation?: "full" | "switcher" | "workspace-menu";
 }
 
 /**
@@ -89,6 +96,7 @@ export function WorkspaceMenuSection({
   includePlan = true,
   accountItems,
   settingsItems,
+  presentation = "full",
 }: WorkspaceMenuSectionProps) {
   const posthog = usePostHogSafe();
   const density = densityFor(isNative);
@@ -125,14 +133,14 @@ export function WorkspaceMenuSection({
       <View className="flex-row items-start gap-3">
         <View
           className={cn(
-            "rounded-lg bg-primary/10 items-center justify-center",
-            isNative ? density.hitSize : "h-10 w-10",
+            "items-center justify-center",
+            isNative ? `rounded-lg bg-primary/10 ${density.hitSize}` : "h-10 w-10 rounded-xl",
           )}
+          style={isNative ? undefined : { backgroundColor: workspaceColor(currentWorkspace?.id) }}
         >
           <Text
             className={cn(
-              "font-medium text-primary",
-              isNative ? density.text.body : "text-sm",
+              isNative ? `font-medium text-primary ${density.text.body}` : "text-sm font-bold text-white",
             )}
           >
             {wsInitial}
@@ -375,6 +383,111 @@ export function WorkspaceMenuSection({
       )}
     </>
   );
+
+  const switcherRows = (
+    <View className="gap-0.5 px-2 py-2">
+      {workspaces.map((ws: any) => {
+        const isCurrent = ws.id === currentWorkspace?.id;
+        const wsIsCloud = !!localMode && isCloudWorkspace(ws.id);
+        const isPersonal = ws.kind === "personal";
+        return (
+          <Pressable
+            key={ws.id}
+            onPress={() => {
+              if (!isCurrent) onSwitchWorkspace(ws.id);
+              onClose();
+            }}
+            accessibilityLabel={ws.name}
+            className="flex-row items-center gap-3 rounded-lg px-2 py-1.5 active:bg-muted"
+          >
+            <View className={cn("rounded-[14px] border-2 p-0.5", isCurrent ? "border-foreground" : "border-transparent")}>
+              <View
+                className="h-9 w-9 items-center justify-center rounded-lg"
+                style={{ backgroundColor: workspaceColor(ws.id) }}
+              >
+                <Text className="text-sm font-bold text-white">{workspaceInitial(ws.name)}</Text>
+              </View>
+            </View>
+            <View className="min-w-0 flex-1">
+              <Text className="text-sm font-semibold text-foreground" numberOfLines={1}>
+                {ws.name}
+              </Text>
+              <View className="mt-0.5 flex-row items-center gap-1">
+                {localMode ? (
+                  <View className={cn("rounded px-1.5 py-0.5", wsIsCloud ? "bg-primary/10" : "bg-muted")}>
+                    <Text className={cn("text-[10px]", wsIsCloud ? "font-medium text-primary" : "text-muted-foreground")}>
+                      {wsIsCloud ? "Cloud" : "Local"}
+                    </Text>
+                  </View>
+                ) : null}
+                <View className={cn("rounded px-1.5 py-0.5", isPersonal ? "bg-primary/10" : "bg-muted")}>
+                  <Text className={cn("text-[10px]", isPersonal ? "font-medium text-primary" : "text-muted-foreground")}>
+                    {isPersonal ? "Personal" : "Team"}
+                  </Text>
+                </View>
+              </View>
+            </View>
+            {wsIsCloud && !cloud.reachable && (
+              <CloudOff size={14} className="text-destructive" accessibilityLabel="Offline" />
+            )}
+          </Pressable>
+        );
+      })}
+      {!localMode && hasPersonalWorkspace === false && onCreatePersonalWorkspace && (
+        <Pressable
+          onPress={() => {
+            onClose();
+            onCreatePersonalWorkspace();
+          }}
+          accessibilityLabel="Create personal space"
+          className="flex-row items-center gap-3 rounded-lg px-2 py-1.5 active:bg-muted"
+        >
+          <View className="h-11 w-11 items-center justify-center">
+            <View className="h-9 w-9 items-center justify-center rounded-lg bg-muted">
+              <Sparkles size={16} className="text-primary" />
+            </View>
+          </View>
+          <View className="min-w-0 flex-1">
+            <Text className="text-sm font-semibold text-foreground" numberOfLines={1}>
+              Create personal space
+            </Text>
+            <Text className="text-xs text-muted-foreground">Free</Text>
+          </View>
+        </Pressable>
+      )}
+      {localMode && <CloudSessionRow isNative={false} />}
+      {!localMode && (
+        <Pressable
+          onPress={() => {
+            onClose();
+            onCreateWorkspace();
+          }}
+          accessibilityLabel="Create new workspace"
+          className="flex-row items-center gap-3 rounded-lg px-2 py-1.5 active:bg-muted"
+        >
+          <View className="h-11 w-11 items-center justify-center">
+            <View className="h-9 w-9 items-center justify-center rounded-lg bg-muted">
+              <Plus size={18} className="text-foreground" />
+            </View>
+          </View>
+          <Text className="text-sm font-semibold text-foreground" numberOfLines={1}>
+            Create new workspace
+          </Text>
+        </Pressable>
+      )}
+    </View>
+  );
+
+  if (presentation === "switcher") return switcherRows;
+  if (presentation === "workspace-menu") {
+    return (
+      <>
+        {identityHeader}
+        {identityPills}
+        {plan}
+      </>
+    );
+  }
 
   if (isNative) {
     return (

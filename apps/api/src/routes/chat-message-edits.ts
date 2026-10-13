@@ -122,6 +122,9 @@ export function createChatMessageEditRoutes(): Hono {
           403,
         )
       }
+      if (message.session?.createdByUserId && message.session.createdByUserId !== auth.userId) {
+        return c.json({ error: { code: 'not_found', message: 'Message not found' } }, 404)
+      }
     }
 
     const sessionId = message.sessionId

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
-import { execSync, spawn } from 'child_process'
+import { execSync, spawn } from '@shogo/shared-runtime/child-process'
 import { existsSync, openSync, readSync, closeSync } from 'fs'
 import { join, resolve } from 'path'
 import { getSherpaLibDir, type TranscriptSegment } from './transcription.service'

@@ -4,7 +4,7 @@
 import { Hono } from 'hono'
 import { prisma } from '../lib/prisma'
 import { getRuntimeManager } from '../lib/runtime'
-import { chatQueuedMessageHooks, type HookContext } from '../generated/chat-queued-message.hooks'
+import { verifySessionAccess, type HookContext } from '../generated/chat-queued-message.hooks'
 import { dispatchNext } from '../services/chat-queue-dispatcher.service'
 import { projectChatRoutes } from './project-chat'
 import { workspaceChatRoutes } from './workspace-chat'
@@ -17,6 +17,7 @@ function hookContext(c: any, body: unknown = {}): HookContext {
     query: Object.fromEntries(new URL(c.req.url).searchParams),
     userId: auth?.userId,
     tunnelAuthenticated: !!auth?.tunnelAuthenticated,
+    auth,
     prisma,
   }
 }
@@ -31,9 +32,12 @@ function hookError(c: any, result: any): Response {
   return c.json({ error: result.error }, status)
 }
 
+/** Both actions reorder or dispatch the queue, so they need write access to the session. */
 async function getAuthorizedRow(c: any, id: string): Promise<any | Response> {
-  const result = await chatQueuedMessageHooks.beforeGet?.(id, hookContext(c))
-  if (result && !result.ok) return hookError(c, result)
+  const queued = await (prisma as any).chatQueuedMessage.findUnique({ where: { id }, select: { sessionId: true } })
+  if (!queued) return c.json({ error: { code: 'not_found', message: 'Queued message not found' } }, 404)
+  const result = await verifySessionAccess(queued.sessionId, hookContext(c), `${c.req.method} ${c.req.path}`)
+  if (!result.ok) return hookError(c, result)
   const row = await (prisma as any).chatQueuedMessage.findUnique({
     where: { id },
     include: {

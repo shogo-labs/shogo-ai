@@ -32,7 +32,22 @@ function sendJson(c: any, body: unknown, status: number = 200) {
 // Prisma client instance (injected)
 let prisma: PrismaClient | null = null
 
-let hooks: ProjectHooks = {}
+/**
+ * Optional route hooks that hooks files written before they existed may
+ * not declare on their interface.
+ */
+interface ResponseHooks {
+  /** Transform listed records before they are returned. */
+  afterList?: (items: any[], ctx: any) => Promise<any[] | void>
+  /** Transform a fetched record before it is returned. */
+  afterGet?: (item: any, ctx: any) => Promise<any | void>
+  /** Replace the default delete (e.g. to remove dependent rows in one transaction). */
+  performDelete?: (id: string, ctx: any) => Promise<void>
+}
+
+type RouteHooks = ProjectHooks & ResponseHooks
+
+let hooks: RouteHooks = {}
 
 /**
  * Set the Prisma client instance
@@ -44,7 +59,7 @@ export function setPrisma(client: PrismaClient) {
 /**
  * Set hooks for Project routes
  */
-export function setProjectHooks(h: ProjectHooks) {
+export function setProjectHooks(h: RouteHooks) {
   hooks = h
 }
 
@@ -69,7 +84,24 @@ function buildContext(c: any, body?: any) {
     query: Object.fromEntries(new URL(c.req.url).searchParams),
     userId: auth?.userId,
     tunnelAuthenticated: !!auth?.tunnelAuthenticated,
+    auth,
     prisma: getPrisma(),
+  }
+}
+
+/**
+ * HTTP status for a hook rejection. Hooks signal authorization failures
+ * with \`unauthorized\` / \`forbidden\` / \`not_found\` codes, and state
+ * conflicts with \`already_member\` / \`last_owner\`.
+ */
+function hookErrorStatus(error: { code?: string } | undefined): number {
+  switch (error?.code) {
+    case "unauthorized": return 401
+    case "forbidden": return 403
+    case "not_found": return 404
+    case "already_member":
+    case "last_owner": return 409
+    default: return 400
   }
 }
 
@@ -162,7 +194,7 @@ export function createProjectRoutes(): Hono {
       if (hooks.beforeList) {
         const result = await hooks.beforeList(ctx)
         if (result && !result.ok) {
-          return sendJson(c, { error: result.error }, 400)
+          return sendJson(c, { error: result.error }, hookErrorStatus(result.error))
         }
         if (result?.data) {
           where = result.data.where || where
@@ -182,7 +214,8 @@ export function createProjectRoutes(): Hono {
         prisma.project.count({ where }),
       ])
 
-      return sendJson(c, { ok: true, items, total })
+      const shaped = hooks.afterList ? (await hooks.afterList(items, ctx)) ?? items : items
+      return sendJson(c, { ok: true, items: shaped, total })
     } catch (error: any) {
       console.error("[Project] List error:", error)
       return sendJson(c, { error: { code: "list_failed", message: error.message } }, 500)
@@ -200,7 +233,7 @@ export function createProjectRoutes(): Hono {
       if (hooks.beforeGet) {
         const result = await hooks.beforeGet(id, ctx)
         if (result && !result.ok) {
-          return sendJson(c, { error: result.error }, result.error?.code === "not_found" ? 404 : 400)
+          return sendJson(c, { error: result.error }, hookErrorStatus(result.error))
         }
       }
 
@@ -212,7 +245,8 @@ export function createProjectRoutes(): Hono {
         return sendJson(c, { error: { code: "not_found", message: "Project not found" } }, 404)
       }
 
-      return sendJson(c, { ok: true, data: item })
+      const shaped = hooks.afterGet ? (await hooks.afterGet(item, ctx)) ?? item : item
+      return sendJson(c, { ok: true, data: shaped })
     } catch (error: any) {
       console.error("[Project] Get error:", error)
       return sendJson(c, { error: { code: "get_failed", message: error.message } }, 500)
@@ -230,7 +264,7 @@ export function createProjectRoutes(): Hono {
       if (hooks.beforeCreate) {
         const result = await hooks.beforeCreate(body, ctx)
         if (result && !result.ok) {
-          return sendJson(c, { error: result.error }, 400)
+          return sendJson(c, { error: result.error }, hookErrorStatus(result.error))
         }
         if (result?.data) {
           body = result.data
@@ -272,7 +306,7 @@ export function createProjectRoutes(): Hono {
       if (hooks.beforeUpdate) {
         const result = await hooks.beforeUpdate(id, body, ctx)
         if (result && !result.ok) {
-          return sendJson(c, { error: result.error }, 400)
+          return sendJson(c, { error: result.error }, hookErrorStatus(result.error))
         }
         if (result?.data) {
           body = result.data
@@ -313,13 +347,17 @@ export function createProjectRoutes(): Hono {
       if (hooks.beforeDelete) {
         const result = await hooks.beforeDelete(id, ctx)
         if (result && !result.ok) {
-          return sendJson(c, { error: result.error }, 400)
+          return sendJson(c, { error: result.error }, hookErrorStatus(result.error))
         }
       }
 
-      await prisma.project.delete({
-        where: { id },
-      })
+      if (hooks.performDelete) {
+        await hooks.performDelete(id, ctx)
+      } else {
+        await prisma.project.delete({
+          where: { id },
+        })
+      }
 
       // Apply afterDelete hook
       if (hooks.afterDelete) {
@@ -366,6 +404,8 @@ export interface HookContext {
   query: Record<string, string>
   userId?: string
   tunnelAuthenticated: boolean
+  /** Full auth principal from the auth middleware (via, workspaceId, projectId, ...). */
+  auth?: any
   prisma: any
 }
 
@@ -379,8 +419,12 @@ export interface ProjectHooks {
    * added to the where clause. This hook receives them and can override/extend them.
    */
   beforeList?: (ctx: HookContext) => Promise<HookResult<{ where?: any; include?: any; orderBy?: any }> | void>
+  /** Called with listed records before they are returned. Return a replacement array to reshape them. */
+  afterList?: (items: any[], ctx: HookContext) => Promise<any[] | void>
   /** Called before getting a single record. Can reject access. */
   beforeGet?: (id: string, ctx: HookContext) => Promise<HookResult | void>
+  /** Called with a fetched record before it is returned. Return a replacement to reshape it. */
+  afterGet?: (item: any, ctx: HookContext) => Promise<any | void>
   /** Called before creating a record. Can modify input or reject. */
   beforeCreate?: (input: any, ctx: HookContext) => Promise<HookResult<any> | void>
   /** Called after creating a record. Can perform side effects. */
@@ -391,6 +435,8 @@ export interface ProjectHooks {
   afterUpdate?: (record: any, ctx: HookContext) => Promise<void>
   /** Called before deleting a record. Can reject deletion. */
   beforeDelete?: (id: string, ctx: HookContext) => Promise<HookResult | void>
+  /** Replaces the default delete when set (e.g. to remove dependent rows in one transaction). */
+  performDelete?: (id: string, ctx: HookContext) => Promise<void>
   /** Called after deleting a record. Can perform cleanup. */
   afterDelete?: (id: string, ctx: HookContext) => Promise<void>
 }

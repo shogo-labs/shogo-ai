@@ -187,3 +187,187 @@ export async function groupNames(db: any, workspaceId: string, groupIds: string[
   const rows = await db.userGroup.findMany({ where: { workspaceId, id: { in: groupIds } }, select: { id: true, handle: true } })
   return new Map(rows.map((g: any) => [g.id, g.handle]))
 }
+
+/**
+ * Preview markdown. Mirrors `flattenMarkdownBlocks`, `inlineMarkdownSegments`,
+ * and `markdownToPlainText` in `apps/mobile/lib/team-chat-state.ts`. Direct
+ * message rows keep inline markers; notifications strip them, because a push
+ * notification can only show plain text.
+ */
+export interface InlineSegment {
+  text: string
+  bold?: boolean
+  italic?: boolean
+  strike?: boolean
+  code?: boolean
+}
+
+interface InlineStyle {
+  bold?: boolean
+  italic?: boolean
+  strike?: boolean
+  code?: boolean
+}
+
+/** Drop block syntax and collapse to one line, keeping inline markers. */
+export function flattenMarkdownBlocks(text: string): string {
+  let source = text.replace(/\r\n/g, '\n')
+  source = source.replace(/```[^\n]*\n([\s\S]*?)```/g, (_m, code: string) => code.replace(/\n+$/, ''))
+  source = source.replace(/~~~[^\n]*\n([\s\S]*?)~~~/g, (_m, code: string) => code.replace(/\n+$/, ''))
+  source = source.replace(/^[ \t]*```[^\n]*$/gm, '')
+  source = source.replace(/^[ \t]*~~~[^\n]*$/gm, '')
+  source = source.replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')
+  const lines: string[] = []
+  for (const raw of source.split('\n')) {
+    let line = raw.trim()
+    if (!line) continue
+    if (/^(-{3,}|\*{3,}|_{3,})$/.test(line)) continue
+    if (/^\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?$/.test(line)) continue
+    while (/^#{1,6}\s+/.test(line)) line = line.replace(/^#{1,6}\s+/, '')
+    while (/^>\s?/.test(line)) line = line.replace(/^>\s?/, '')
+    line = line.replace(/^(?:[-*+]|\d+[.)])\s+/, '')
+    const pipes = line.split('|').length - 1
+    if (line.startsWith('|') || pipes >= 2) {
+      line = line.replace(/^\|/, '').replace(/\|$/, '').split('|').map((cell) => cell.trim()).filter(Boolean).join(' ')
+    }
+    line = line.trim()
+    if (line) lines.push(line)
+  }
+  return lines.join(' ').replace(/[ \t]+/g, ' ').trim()
+}
+
+function styleFlags(style: InlineStyle): InlineStyle {
+  const out: InlineStyle = {}
+  if (style.bold) out.bold = true
+  if (style.italic) out.italic = true
+  if (style.strike) out.strike = true
+  if (style.code) out.code = true
+  return out
+}
+
+function isWordChar(ch: string | undefined): boolean {
+  return !!ch && /[\p{L}\p{N}_]/u.test(ch)
+}
+
+function markerAt(src: string, index: number): { token: string; style: InlineStyle } | null {
+  const prev = src[index - 1]
+  const rest = src.slice(index)
+  const candidates: Array<{ token: string; style: InlineStyle; underscore: boolean }> = [
+    { token: '***', style: { bold: true, italic: true }, underscore: false },
+    { token: '___', style: { bold: true, italic: true }, underscore: true },
+    { token: '**', style: { bold: true }, underscore: false },
+    { token: '__', style: { bold: true }, underscore: true },
+    { token: '~~', style: { strike: true }, underscore: false },
+    { token: '*', style: { italic: true }, underscore: false },
+    { token: '_', style: { italic: true }, underscore: true },
+  ]
+  for (const candidate of candidates) {
+    if (!rest.startsWith(candidate.token)) continue
+    const next = src[index + candidate.token.length]
+    if (next === undefined || /\s/.test(next)) continue
+    if ((candidate.token === '*' || candidate.token === '_') && next === candidate.token) continue
+    if (candidate.underscore && (isWordChar(prev) || isWordChar(next))) continue
+    return { token: candidate.token, style: candidate.style }
+  }
+  return null
+}
+
+function findClose(src: string, from: number, token: string): number {
+  let index = from
+  while (index < src.length) {
+    const at = src.indexOf(token, index)
+    if (at === -1) return -1
+    const before = src[at - 1]
+    if (before !== undefined && /\s/.test(before)) {
+      index = at + token.length
+      continue
+    }
+    if (token === '*' || token === '_') {
+      if (src[at + 1] === token) {
+        index = at + 2
+        continue
+      }
+      if (token === '_' && isWordChar(src[at + 1])) {
+        index = at + 1
+        continue
+      }
+    }
+    return at
+  }
+  return -1
+}
+
+function parseInline(src: string, style: InlineStyle, out: InlineSegment[]): void {
+  let index = 0
+  let plain = ''
+  const flush = () => {
+    if (!plain) return
+    const flags = styleFlags(style)
+    const last = out[out.length - 1]
+    if (last && !last.code && !flags.code && last.bold === flags.bold && last.italic === flags.italic && last.strike === flags.strike) {
+      last.text += plain
+    } else {
+      out.push({ text: plain, ...flags })
+    }
+    plain = ''
+  }
+  while (index < src.length) {
+    if (src[index] === '\\' && index + 1 < src.length && /[*_~`\\[\]]/.test(src[index + 1]!)) {
+      plain += src[index + 1]
+      index += 2
+      continue
+    }
+    if (src[index] === '`') {
+      const close = src.indexOf('`', index + 1)
+      if (close === -1) {
+        index++
+        continue
+      }
+      flush()
+      const code = src.slice(index + 1, close)
+      if (code) out.push({ text: code, code: true })
+      index = close + 1
+      continue
+    }
+    if (src[index] === '[') {
+      const link = /^\[([^\]]+)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/.exec(src.slice(index))
+      if (link) {
+        flush()
+        parseInline(link[1]!, style, out)
+        index += link[0].length
+        continue
+      }
+      if (src.indexOf(']', index + 1) === -1) {
+        index++
+        continue
+      }
+    }
+    const marker = markerAt(src, index)
+    if (marker) {
+      const close = findClose(src, index + marker.token.length, marker.token)
+      if (close === -1) {
+        index += marker.token.length
+        continue
+      }
+      flush()
+      parseInline(src.slice(index + marker.token.length, close), { ...style, ...marker.style }, out)
+      index = close + marker.token.length
+      continue
+    }
+    plain += src[index]
+    index++
+  }
+  flush()
+}
+
+/** Inline formatting spans. An unclosed marker is dropped instead of shown. */
+export function inlineMarkdownSegments(text: string): InlineSegment[] {
+  const out: InlineSegment[] = []
+  parseInline(text, {}, out)
+  return out
+}
+
+/** Block syntax flattened, then inline markers removed. For push notifications. */
+export function markdownToPlainText(text: string): string {
+  return inlineMarkdownSegments(flattenMarkdownBlocks(text)).map((segment) => segment.text).join('').replace(/\s+/g, ' ').trim()
+}

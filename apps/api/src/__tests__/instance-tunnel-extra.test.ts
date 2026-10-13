@@ -14,7 +14,7 @@ const runtimeStatus = mock((_projectId: string): { status: string; agentPort: nu
 const runtimeStart = mock(async (_projectId: string) => ({ status: 'running', agentPort: 9124 }))
 const getActiveProjects = mock((): string[] => ['active-1'])
 const wipeCloudKey = mock(async () => {})
-const deriveRuntimeToken = mock((projectId: string) => `runtime-token-${projectId}`)
+const deriveProjectRuntimeToken = mock(async (projectId: string): Promise<string> => `runtime-token-${projectId}`)
 
 // Toggle: when true, getRuntimeManager() throws (simulates "no manager
 // available" — exercises the outer catch in resolveLocalUrl + the
@@ -33,7 +33,7 @@ mock.module('../lib/runtime', () => ({
 }))
 
 mock.module('../lib/cloud-key-wipe', () => ({ wipeCloudKey }))
-mock.module('../lib/runtime-token', () => ({ deriveRuntimeToken }))
+mock.module('../lib/project-runtime-token', () => ({ deriveProjectRuntimeToken }))
 
 const originalFetch = globalThis.fetch
 const originalWebSocketDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'WebSocket')
@@ -104,7 +104,7 @@ beforeEach(() => {
   getActiveProjects.mockReset()
   getActiveProjects.mockImplementation(() => ['active-1'])
   wipeCloudKey.mockClear()
-  deriveRuntimeToken.mockClear()
+  deriveProjectRuntimeToken.mockClear()
   _testing.serverPublishedWsUrl = null
   _testing.wsReconnectAttempt = 0
   _testing.currentPollInterval = _testing.DEFAULT_POLL_INTERVAL_S

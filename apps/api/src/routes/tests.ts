@@ -12,7 +12,7 @@
  */
 
 import { Hono } from "hono"
-import { spawn, execSync } from "child_process"
+import { spawn, execSync } from "@shogo/shared-runtime/child-process"
 import { existsSync, readdirSync, statSync, readFileSync } from "fs"
 import { join, relative } from "path"
 

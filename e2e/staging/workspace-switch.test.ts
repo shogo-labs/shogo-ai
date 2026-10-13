@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
-import { test, expect, type Page, type BrowserContext } from "@playwright/test"
+import { test, expect, type Page, type BrowserContext } from "./fixtures"
 import { makeTestUser, signUpAndOnboard, type TestUser } from "./helpers"
 
 /**
@@ -9,9 +9,9 @@ import { makeTestUser, signUpAndOnboard, type TestUser } from "./helpers"
  * Exercises the workspace switcher end-to-end across the two chrome
  * layouts that key off `WEB_WIDE_MIN_WIDTH` (768px, see
  * apps/mobile/lib/native-phone-layout.ts):
- *   - Wide desktop (>=768px): the sidebar's `AccountMenu` popover
- *     (`WorkspaceMenuSection` with `isNative={false}`, "All workspaces"
- *     heading).
+ *   - Wide desktop (>=768px): the sidebar rail tile's `AccountMenu` popover
+ *     (`WorkspaceMenuSection` with `presentation="switcher"`: one row per
+ *     workspace plus "Create new workspace", no heading).
  *   - Narrow web (<768px): `MobileWorkspaceShell`'s chat drawer ->
  *     `MobileWorkspaceSwitcherRow` -> "Workspaces" sheet
  *     (`WorkspaceMenuSection` with `isNative={true}`).
@@ -67,6 +67,11 @@ async function waitForAccountTriggerNamed(page: Page, workspaceName: string, tim
   await expect(accountTrigger(page, workspaceName)).toBeVisible({ timeout })
 }
 
+/** Always rendered at the bottom of the wide switcher popover in cloud mode. */
+function switcherCreateRow(page: Page) {
+  return page.getByText("Create new workspace", { exact: true })
+}
+
 /**
  * gluestack's Popover trigger is a React Native Web Pressable that doesn't
  * always answer Playwright's synthetic click — the same issue documented on
@@ -77,7 +82,7 @@ async function openAccountPopover(page: Page, currentWorkspaceName: string) {
   const trigger = accountTrigger(page, currentWorkspaceName)
   await trigger.waitFor({ state: "visible", timeout: 20_000 })
 
-  const popoverOpen = () => page.getByText("All workspaces").isVisible().catch(() => false)
+  const popoverOpen = () => switcherCreateRow(page).isVisible().catch(() => false)
 
   await trigger.click()
   await page.waitForTimeout(400)
@@ -97,10 +102,14 @@ async function openAccountPopover(page: Page, currentWorkspaceName: string) {
 async function switchWorkspaceWide(page: Page, fromName: string, toName: string) {
   await waitForAccountTriggerNamed(page, fromName)
   await openAccountPopover(page, fromName)
-  await expect(page.getByText("All workspaces")).toBeVisible({ timeout: 10_000 })
+  await expect(switcherCreateRow(page)).toBeVisible({ timeout: 10_000 })
 
+  // The switch reloads the page from a timeout after the click. Arm the wait
+  // for that reload first: `waitForLoadState("load")` resolves immediately on
+  // the still-loaded old page and races the reload.
+  const reloaded = page.waitForEvent("load", { timeout: 30_000 })
   await page.getByText(toName, { exact: true }).first().click()
-  await page.waitForLoadState("load")
+  await reloaded
   await waitForAccountTriggerNamed(page, toName)
 }
 
@@ -152,9 +161,13 @@ async function switchWorkspaceNarrow(page: Page, fromName: string, toName: strin
     await mobileSwitcherRow(page, fromName).click()
   }
   await page.getByText("Workspaces", { exact: true }).first().waitFor({ state: "visible", timeout: 10_000 })
+  // Switching triggers a full reload from a timeout after the click. Arm the
+  // wait for it first (`waitForLoadState` would resolve on the old page and
+  // the next goto("/") would collide with the reload), then re-derive state
+  // from a clean "/".
+  const reloaded = page.waitForEvent("load", { timeout: 30_000 })
   await page.getByText(toName, { exact: true }).last().click()
-  // Switching triggers a full reload; re-derive state from a clean "/".
-  await page.waitForLoadState("load")
+  await reloaded
 
   await expectNarrowWorkspace(page, toName)
 }

@@ -45,6 +45,9 @@ export const ERROR_CODE_MESSAGES: Record<string, string> = {
   entitlement_expired: "Your on-demand billing entitlement has expired. Reactivate your subscription or license key to continue using on-demand usage.",
   // Overage is active, but the workspace's own spending cap is exhausted.
   overage_cap_reached: "You've reached your on-demand spending cap for this period. Raise your cap in Billing settings to continue.",
+  // An on-demand usage block is invoiced but unpaid (declined card, or the
+  // bank requires the customer to confirm the charge).
+  overage_payment_pending: "Your latest on-demand usage charge hasn't been paid yet. Pay or confirm the open invoice in Billing settings to continue.",
   session_expired: 'Your session has expired. Please refresh the page.',
   internal_error: 'Something went wrong on our end. Please try again.',
   shutting_down: 'A server update is in progress. Please retry in a few seconds.',
@@ -129,6 +132,58 @@ const STREAM_ERROR_MARKER_PATTERN = /\s*\[shogo:retryable=[^\]]*\]/gi
 
 export function stripInternalErrorMarkers(message: string): string {
   return message.replace(STREAM_ERROR_MARKER_PATTERN, '').trim()
+}
+
+/**
+ * A channel run's user message carries this part so the session can show who
+ * asked and where, instead of the wrapper prompt the model was given.
+ */
+export interface ChannelDispatch {
+  conversationId: string
+  conversationName: string | null
+  threadRootId: string | null
+  agentName: string
+  trigger: { authorName: string; text: string }
+  handedOffBy?: string
+  contextMode: string
+}
+
+function messageParts(message: { parts?: unknown }): unknown[] | null {
+  const parts = message?.parts
+  if (Array.isArray(parts)) return parts
+  if (typeof parts !== 'string' || !parts) return null
+  try {
+    const parsed = JSON.parse(parts)
+    return Array.isArray(parsed) ? parsed : null
+  } catch {
+    return null
+  }
+}
+
+/** The channel-dispatch card on a message, or null when it is an ordinary user message. */
+export function channelDispatchOf(message: { parts?: unknown } | null | undefined): ChannelDispatch | null {
+  const parts = message ? messageParts(message) : null
+  if (!parts) return null
+  const part = parts.find((entry) => !!entry && typeof entry === 'object' && (entry as { type?: unknown }).type === 'data-channel-dispatch') as
+    | { data?: unknown }
+    | undefined
+  const data = part?.data
+  if (!data || typeof data !== 'object') return null
+  const record = data as Record<string, unknown>
+  const trigger = record.trigger
+  if (typeof record.conversationId !== 'string' || typeof record.agentName !== 'string') return null
+  if (!trigger || typeof trigger !== 'object') return null
+  const asked = trigger as Record<string, unknown>
+  if (typeof asked.authorName !== 'string' || typeof asked.text !== 'string') return null
+  return {
+    conversationId: record.conversationId,
+    conversationName: typeof record.conversationName === 'string' && record.conversationName.trim() ? record.conversationName : null,
+    threadRootId: typeof record.threadRootId === 'string' && record.threadRootId ? record.threadRootId : null,
+    agentName: record.agentName,
+    trigger: { authorName: asked.authorName, text: asked.text },
+    ...(typeof record.handedOffBy === 'string' && record.handedOffBy ? { handedOffBy: record.handedOffBy } : {}),
+    contextMode: typeof record.contextMode === 'string' && record.contextMode ? record.contextMode : 'shared',
+  }
 }
 
 const GENERIC_REQUEST_FAILED = 'The request failed. Please tap Retry to try again.'

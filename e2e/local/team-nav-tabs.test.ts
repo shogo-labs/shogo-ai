@@ -49,9 +49,9 @@ test.describe("Team workspace: desktop rail and panels", () => {
     // The scripted agent answered the seeded DM while nobody was looking.
     await expect(rail(page).getByRole("tab", { name: /^DMs, \d+ unread$/ })).toBeVisible({ timeout: 30_000 })
     await expect(panel(page, "home-panel").getByText("Workspace agent")).toBeVisible()
-    // Home is the activity inbox: filter chips and the Unreads toggle.
-    await expect(panel(page, "home-panel").getByRole("button", { name: "All", exact: true })).toBeVisible()
-    await expect(panel(page, "home-panel").getByRole("button", { name: "Unreads only" })).toBeVisible()
+    // Home is this person's workspace-agent chats, not the activity inbox.
+    await expect(panel(page, "home-panel").getByRole("button", { name: "New chat" })).toBeVisible()
+    await expect(panel(page, "home-panel").getByRole("button", { name: "Unreads only" })).toHaveCount(0)
   })
 
   test("the rail is icons only, and a label appears beside an icon on hover or focus", async () => {
@@ -288,10 +288,9 @@ test.describe("Personal workspace: its own tab set", () => {
     for (const name of ["Channels", "DMs", "Agents", "Projects"]) {
       await expect(tab(page, name)).toHaveCount(0)
     }
-    // Home's list is the chats. The rail already names every page, so the panel
-    // does not repeat Meetings, Goals or Activity as links.
-    const chats = page.getByTestId("personal-chats-panel")
-    await expect(chats.getByRole("link", { name: "Chat", exact: true })).toBeVisible({ timeout: 30_000 })
+    // Home's list is this person's chats with the workspace agent.
+    const chats = page.getByTestId("workspace-chats-panel")
+    await expect(chats.getByText("Workspace agent")).toBeVisible({ timeout: 30_000 })
     for (const name of ["Meetings", "Goals", "Activity"]) {
       await expect(chats.getByRole("link", { name })).toHaveCount(0)
     }
@@ -313,38 +312,30 @@ test.describe("Personal workspace: its own tab set", () => {
     await expect(page.getByTestId("more-panel")).toHaveCount(0)
   })
 
-  test("Home returns to the main chat, with the other chats on the side", async ({ page }) => {
+  test("Home lists personal chats, and a new chat opens in the agent", async ({ page }) => {
     await signIn(page)
     await page.goto("/")
     await expect(rail(page)).toBeVisible({ timeout: 60_000 })
 
-    // Start a side chat from the panel: it opens, and is listed under "Other chats".
-    await page.getByRole("button", { name: "New side chat" }).click()
-    await expect(page).toHaveURL(/\/side-chats\/[^/?]+/, { timeout: 30_000 })
+    const chats = page.getByTestId("workspace-chats-panel")
+    await expect(chats.getByText("Workspace agent")).toBeVisible({ timeout: 30_000 })
+    await chats.getByRole("button", { name: "New chat" }).click()
+    await expect(page).toHaveURL(/\/agent\?.*chatSessionId=/, { timeout: 30_000 })
     await expect(tab(page, "Home")).toHaveAttribute("aria-selected", "true")
-    const sideChatUrl = page.url()
-    const chats = page.getByTestId("personal-chats-panel")
-    await expect(chats.getByRole("link", { name: /Workspace chat|^Chat · / }).first()).toBeVisible({ timeout: 30_000 })
+    const chatUrl = page.url()
 
-    // Home from a side chat goes back to the main chat.
+    // Home from a specific chat returns to the default chat.
     await tab(page, "Home").click()
-    await expect(page).not.toHaveURL(sideChatUrl)
+    await expect(page).not.toHaveURL(chatUrl)
     await expect(page).toHaveURL(/\/(\(app\))?\/?(\?.*)?$/)
-    await expect(chats.getByRole("link", { name: "Chat", exact: true })).toHaveAttribute("aria-current", "page")
-    await expect(chats.getByRole("link", { name: /Workspace chat|^Chat · / }).first()).toBeVisible()
 
-    // Home from another page does too, and keeps the chats beside it.
+    // Home from another page comes back to the chat, with history beside it.
     await tab(page, "Meetings").click()
     await expect(page).toHaveURL(/\/meetings/)
     await expect(chats).toHaveCount(0)
     await tab(page, "Home").click()
     await expect(page).not.toHaveURL(/\/meetings/)
     await expect(tab(page, "Home")).toHaveAttribute("aria-selected", "true")
-    await expect(chats.getByRole("link", { name: "Chat", exact: true })).toBeVisible()
-    await expect(chats.getByRole("link", { name: /Workspace chat|^Chat · / }).first()).toBeVisible()
-
-    // A listed side chat opens from the panel.
-    await chats.getByRole("link", { name: /Workspace chat|^Chat · / }).first().click()
-    await expect(page).toHaveURL(/\/side-chats\//)
+    await expect(chats.getByText("Workspace agent")).toBeVisible()
   })
 })

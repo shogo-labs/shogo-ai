@@ -26,6 +26,8 @@ import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test'
 import { mkdirSync, writeFileSync, existsSync, rmSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
+import { createHash } from 'crypto'
+import { spawnSync } from 'child_process'
 
 // ---------------------------------------------------------------------------
 // In-memory S3 store, shared by every CommandFactory below.
@@ -49,23 +51,29 @@ class StubS3Error extends Error {
   }
 }
 
+// Content-derived ETag, like S3's single-part ETag.
+function etagOf(buf: Buffer): string {
+  return `"${createHash('md5').update(buf).digest('hex')}"`
+}
+
 class MockS3Client {
   constructor(_opts: any) {}
   async send(cmd: any): Promise<any> {
-    const { __type, Bucket, Key, Body } = cmd
+    const { __type, Bucket, Key, Body, IfMatch, IfNoneMatch } = cmd
     s3Calls.push({ command: __type, bucket: Bucket, key: Key })
     switch (__type) {
       case 'HeadObject': {
         if (!s3Store.has(`${Bucket}/${Key}`)) {
           throw new StubS3Error('NotFound', 404)
         }
-        return {}
+        return { ETag: etagOf(s3Store.get(`${Bucket}/${Key}`)!) }
       }
       case 'GetObject': {
         const v = s3Store.get(`${Bucket}/${Key}`)
         if (!v) throw new StubS3Error('NoSuchKey', 404)
         return {
           ContentLength: v.length,
+          ETag: etagOf(v),
           Body: {
             transformToByteArray: async () => v,
             transformToString: async () => v.toString('utf-8'),
@@ -78,8 +86,12 @@ class MockS3Client {
           : typeof Body === 'string'
             ? Buffer.from(Body)
             : Buffer.from(Body)
+        // Enforce conditional writes exactly as S3 does: 412, object untouched.
+        const current = s3Store.get(`${Bucket}/${Key}`)
+        if (IfNoneMatch === '*' && current) throw new StubS3Error('PreconditionFailed', 412)
+        if (IfMatch && (!current || etagOf(current) !== IfMatch)) throw new StubS3Error('PreconditionFailed', 412)
         s3Store.set(`${Bucket}/${Key}`, buf)
-        return {}
+        return { ETag: etagOf(buf) }
       }
       default:
         throw new Error(`MockS3Client: unhandled command ${__type}`)
@@ -141,6 +153,9 @@ function mkSync(opts: Partial<ConstructorParameters<typeof S3Sync>[0]> = {}) {
     localDir: TEST_DIR,
     syncInterval: 0,
     watchEnabled: false,
+    // Most suites exercise archive mechanics, not durability lineage; the
+    // guard has its own suite below that opts back in.
+    allowUnconditionalWrite: true,
     ...opts,
   })
 }
@@ -1381,6 +1396,220 @@ describe('startWatcher event handling', () => {
       ;(sync as any).shouldExclude = orig
     }
     sync.stopWatcher()
+    sync.shutdown()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Lineage guard on project-src.tar.gz (the durable source backup)
+//
+// A runtime may only replace the archive it came from. Two runtimes for one
+// project, or a runtime that booted from starter source, must never overwrite
+// the other's backup (#1232 / #1241 class).
+// ---------------------------------------------------------------------------
+
+describe('project archive lineage guard', () => {
+  const KEY = 'test-bucket/test-prefix/project-src.tar.gz'
+  const guarded = (dir = TEST_DIR) =>
+    new S3Sync({
+      bucket: 'test-bucket',
+      prefix: 'test-prefix',
+      localDir: dir,
+      syncInterval: 0,
+      watchEnabled: false,
+    })
+  const seed = (name: string, body: string, dir = TEST_DIR) => {
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, name), body)
+  }
+  /** Put a real archive in S3 as some other runtime would. */
+  async function otherRuntimeWrites(body: string) {
+    const dir = join(TEST_DIR, '..', `other-${Math.random().toString(36).slice(2)}`)
+    seed('a.txt', body, dir)
+    const other = mkSync({ localDir: dir })
+    await other.uploadAll(false)
+    other.shutdown()
+    rmSync(dir, { recursive: true, force: true })
+  }
+  const conflictKeys = () => [...s3Store.keys()].filter((k) => k.includes('/conflict/'))
+
+  beforeEach(() => resetS3())
+
+  test('refuses to write before the stored lineage is known', async () => {
+    await otherRuntimeWrites('REAL')
+    const before = s3Store.get(KEY)!
+    seed('starter.txt', 'STARTER')
+
+    const sync = guarded()
+    const stats = await sync.uploadAll(false)
+
+    expect(s3Store.get(KEY)).toEqual(before)
+    expect(stats.errors.join()).toContain('lineage')
+    expect(s3Calls.filter((c) => c.command === 'PutObject' && c.key === 'test-prefix/project-src.tar.gz')).toHaveLength(1) // the seed only
+    sync.shutdown()
+  })
+
+  test('the refusal says WHY lineage is unknown', async () => {
+    seed('x.txt', 'x')
+
+    // never downloaded
+    const a = guarded()
+    expect((await a.uploadAll(false)).errors.join()).toContain('downloadAll() was never called')
+    a.shutdown()
+
+    // download failed
+    const b = guarded()
+    ;(b as any).client.send = async () => { throw new Error('network down') }
+    await b.downloadAll()
+    ;(b as any).stats.errors = []
+    const errs = (await b.uploadAll(false)).errors.join()
+    expect(errs).toContain('downloadAll() failed: network down')
+    b.shutdown()
+
+    // store returns no ETag
+    await otherRuntimeWrites('REAL')
+    const c = guarded()
+    const realSend = (c as any).client.send.bind((c as any).client)
+    ;(c as any).client.send = async (cmd: any) => {
+      const r = await realSend(cmd)
+      if (cmd.__type === 'GetObject') delete r.ETag
+      return r
+    }
+    await c.downloadAll()
+    await c.waitForDeps()
+    expect((await c.uploadAll(false)).errors.join()).toContain('returned no ETag on GetObject')
+    c.shutdown()
+  })
+
+  test('a download that FAILED leaves lineage unknown, so a later upload is refused', async () => {
+    await otherRuntimeWrites('REAL')
+    const before = s3Store.get(KEY)!
+    seed('starter.txt', 'STARTER')
+    const sync = guarded()
+    ;(sync as any).client.send = async () => { throw new Error('network down') }
+    await sync.downloadAll()
+    sync.shutdown()
+
+    const sync2 = guarded()
+    await sync2.uploadAll(false)
+    expect(s3Store.get(KEY)).toEqual(before)
+    sync2.shutdown()
+  })
+
+  test('after downloading, it may replace exactly the archive it read', async () => {
+    await otherRuntimeWrites('V1')
+    const sync = guarded()
+    await sync.downloadAll()
+    await sync.waitForDeps()
+    seed('edit.txt', 'V2')
+    const before = s3Store.get(KEY)!
+
+    const stats = await sync.uploadAll(false)
+
+    expect(stats.errors).toEqual([])
+    expect(s3Store.get(KEY)).not.toEqual(before)
+    sync.shutdown()
+  })
+
+  test('consecutive uploads keep working (lineage follows our own write)', async () => {
+    await otherRuntimeWrites('V1')
+    const sync = guarded()
+    await sync.downloadAll()
+    await sync.waitForDeps()
+    seed('one.txt', '1')
+    await sync.uploadAll(false)
+    const afterFirst = s3Store.get(KEY)!
+    seed('two.txt', '2')
+
+    const stats = await sync.uploadAll(false)
+
+    expect(stats.errors).toEqual([])
+    expect(s3Store.get(KEY)).not.toEqual(afterFirst)
+    sync.shutdown()
+  })
+
+  test('a project with no archive may create one, and only create it', async () => {
+    seed('new.txt', 'NEW')
+    const sync = guarded()
+    await sync.downloadAll() // finds nothing -> absent
+    const stats = await sync.uploadAll(false)
+    expect(stats.errors).toEqual([])
+    expect(s3Store.has(KEY)).toBe(true)
+    sync.shutdown()
+  })
+
+  test('RACE: another runtime wrote since we read — its archive survives and ours is parked', async () => {
+    await otherRuntimeWrites('V1')
+    const sync = guarded()
+    await sync.downloadAll()
+    await sync.waitForDeps()
+
+    await otherRuntimeWrites('WINNER') // a duplicate runtime writes after our read
+    const winner = s3Store.get(KEY)!
+    seed('ours.txt', 'LOSER')
+
+    const stats = await sync.uploadAll(false)
+
+    expect(s3Store.get(KEY)).toEqual(winner)
+    expect(stats.errors.join()).toContain('LINEAGE CONFLICT')
+    expect(conflictKeys()).toHaveLength(1)
+    sync.shutdown()
+  })
+
+  test('RACE on create: another runtime created the archive after we saw none', async () => {
+    seed('new.txt', 'MINE')
+    const sync = guarded()
+    await sync.downloadAll() // absent
+    await otherRuntimeWrites('THEIRS')
+    const theirs = s3Store.get(KEY)!
+
+    await sync.uploadAll(false)
+
+    expect(s3Store.get(KEY)).toEqual(theirs)
+    expect(conflictKeys()).toHaveLength(1)
+    sync.shutdown()
+  })
+
+  test('after losing a race it stops writing (no retry storm, no later overwrite)', async () => {
+    await otherRuntimeWrites('V1')
+    const sync = guarded()
+    await sync.downloadAll()
+    await sync.waitForDeps()
+    await otherRuntimeWrites('WINNER')
+    const winner = s3Store.get(KEY)!
+    seed('a.txt', 'x')
+    await sync.uploadAll(false)
+    seed('b.txt', 'y')
+    await sync.uploadAll(false)
+
+    expect(s3Store.get(KEY)).toEqual(winner)
+    expect(conflictKeys()).toHaveLength(1) // second attempt was refused, not re-parked
+    sync.shutdown()
+  })
+
+  test('snapshotProjectArchiveFromGit is guarded too and throws rather than pretending', async () => {
+    await otherRuntimeWrites('REAL')
+    const before = s3Store.get(KEY)!
+    seed('f.txt', 'x')
+    spawnSync('git', ['init', '-q'], { cwd: TEST_DIR })
+    spawnSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', 'add', '-A'], { cwd: TEST_DIR })
+    spawnSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'x'], { cwd: TEST_DIR })
+
+    const sync = guarded() // never downloaded
+    await expect(sync.snapshotProjectArchiveFromGit()).rejects.toThrow('not written')
+    expect(s3Store.get(KEY)).toEqual(before)
+    sync.shutdown()
+  })
+
+  test('allowUnconditionalWrite keeps seed-style callers working', async () => {
+    await otherRuntimeWrites('OLD')
+    seed('seed.txt', 'SEED')
+    const sync = new S3Sync({
+      bucket: 'test-bucket', prefix: 'test-prefix', localDir: TEST_DIR,
+      syncInterval: 0, watchEnabled: false, allowUnconditionalWrite: true,
+    })
+    const stats = await sync.uploadAll(false)
+    expect(stats.errors).toEqual([])
     sync.shutdown()
   })
 })

@@ -2,7 +2,7 @@
   "name": "shogo-ai",
   "private": true,
   "license": "AGPL-3.0-or-later",
-  "packageManager": "bun@1.4.2",
+  "packageManager": "bun@1.4.3",
   "workspaces": [
     "packages/*",
     "packages/sdk/examples/*",
@@ -52,6 +52,7 @@
     "check:schema-parity": "bun scripts/check-schema-parity.ts",
     "check:publication": "bun scripts/check-publication-drift.ts",
     "check:migrations": "bun scripts/check-migrations.ts",
+    "check:heartbeat-writes": "bun scripts/check-heartbeat-config-writes.ts",
     "check:desktop-schema-drift": "bun scripts/check-desktop-schema-drift.ts",
     "check:multiregion": "bun scripts/check-multiregion-cron-locks.ts",
     "check:ci-bun-install-token": "bun scripts/check-ci-bun-install-token.ts",
@@ -120,6 +121,7 @@
     "test:e2e:personal-shell-hidden-project": "SHOGO_LOCAL_MODE=true DATABASE_URL=file:./shogo.db bun test e2e/personal-shell-hidden-project.test.ts",
     "test:e2e:chat-queue": "SHOGO_LOCAL_MODE=true DATABASE_URL=file:./shogo.db bun test e2e/chat-queue-server.test.ts",
     "test:e2e:events": "cd e2e/events && for f in *.integration.test.ts; do bun --no-env-file test \"./$f\" || exit 1; done",
+    "test:e2e:rbac": "cd e2e/rbac && for f in *.e2e.test.ts; do bun --no-env-file test \"./$f\" || exit 1; done",
     "test:e2e:staging:composio-triggers": "npx playwright test --config e2e/playwright.config.ts composio-triggers",
     "test:notetaker:e2e": "npx playwright test --config apps/desktop/e2e/playwright.config.ts",
     "postinstall": "bun scripts/postinstall.ts"
@@ -162,6 +164,7 @@
   "patchedDependencies": {
     "react-native-css-interop@0.2.2": "patches/react-native-css-interop@0.2.2.patch",
     "@react-navigation/routers@7.5.3": "patches/@react-navigation%2Frouters@7.5.3.patch",
-    "@mariozechner/pi-ai@0.73.1": "patches/@mariozechner%2Fpi-ai@0.73.1.patch"
+    "@mariozechner/pi-ai@0.73.1": "patches/@mariozechner%2Fpi-ai@0.73.1.patch",
+    "@bacons/apple-targets@5.0.0": "patches/@bacons%2Fapple-targets@5.0.0.patch"
   }
 }

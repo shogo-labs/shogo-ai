@@ -39,7 +39,7 @@ async function authenticateUpgrade(req: Request, projectId: string): Promise<boo
     })
     if (!project) return false
     const membership = await prisma.member.findFirst({
-      where: { userId, workspaceId: project.workspaceId },
+      where: { userId, workspaceId: project.workspaceId, projectId: null },
       select: { id: true },
     })
     return !!membership

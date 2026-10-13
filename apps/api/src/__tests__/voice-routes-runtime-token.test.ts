@@ -261,19 +261,18 @@ describe('GET /api/voice/signed-url?projectId=X with x-runtime-token', () => {
     expect(mockPrisma.member.findFirst).not.toHaveBeenCalled()
   })
 
-  test('token for project A presented with projectId=B → 403 (scope mismatch)', async () => {
+  test('token for project A presented with projectId=B → 404 (scope mismatch)', async () => {
     // v1 semantics: the tokenA authenticates as project A (scope comes
     // from the token itself). `authorizeProject` then runs against the
-    // request's target (B from `?projectId=B`) and returns 403. Pre-v1
-    // this surfaced as 401 at the HMAC check; 403 is the more honest
-    // code — see runtime-token.md §9.
+    // request's target (B from `?projectId=B`) and returns 404, the same
+    // response as a missing project, so tokens cannot probe for projects.
     const app = createApp()
     const tokenA = deriveRuntimeToken(PROJECT_A)
     const res = await app.request(
       `/api/voice/signed-url?projectId=${PROJECT_B}`,
       { method: 'GET', headers: { 'x-runtime-token': tokenA } },
     )
-    expect(res.status).toBe(403)
+    expect(res.status).toBe(404)
   })
 
   test('shared-agent path (no projectId) with runtime-token → 403 (explicit rejection)', async () => {
@@ -427,24 +426,21 @@ describe('GET /api/voice/config/:projectId with x-runtime-token', () => {
     expect(body.elevenlabsAgentId).toBe('agent_test')
   })
 
-  test('token for A + path/query for B → 403 (scope mismatch caught downstream)', async () => {
+  test('token for A + path/query for B → 404 (scope mismatch caught downstream)', async () => {
     // With v1 self-identifying tokens: the token for A authenticates
     // the caller as A regardless of path/query hints. `authorizeProject`
     // is then invoked against the request's target project (B from the
-    // path) and rejects the cross-project access with 403.
-    // Pre-v1 this surfaced as 401 at the HMAC check — both outcomes
-    // block access, but 403 is the more honest code
-    // (see runtime-token.md §9).
+    // path) and rejects the cross-project access with 404.
     const app = createApp()
     const tokenA = deriveRuntimeToken(PROJECT_A)
     const res = await app.request(
       `/api/voice/config/${PROJECT_B}?projectId=${PROJECT_B}`,
       { headers: { 'x-runtime-token': tokenA } },
     )
-    expect(res.status).toBe(403)
+    expect(res.status).toBe(404)
   })
 
-  test('token scope mismatch: path projectId=B, query projectId=A → 403 forbidden', async () => {
+  test('token scope mismatch: path projectId=B, query projectId=A → 404 not_found', async () => {
     // Token authenticates (query matches), but `authorizeProject` is
     // called against the path param (B) and must reject because the
     // token only grants scope to A.
@@ -454,9 +450,9 @@ describe('GET /api/voice/config/:projectId with x-runtime-token', () => {
       `/api/voice/config/${PROJECT_B}?projectId=${PROJECT_A}`,
       { headers: { 'x-runtime-token': tokenA } },
     )
-    expect(res.status).toBe(403)
+    expect(res.status).toBe(404)
     const body: any = await res.json()
-    expect(body.error.code).toBe('forbidden')
+    expect(body.error.code).toBe('not_found')
   })
 })
 
@@ -480,7 +476,7 @@ describe('POST /api/voice/twilio/provision-number/:projectId with x-runtime-toke
     expect(res.status).not.toBe(403)
   })
 
-  test('token scope mismatch (path=B, query=A) → 403 forbidden', async () => {
+  test('token scope mismatch (path=B, query=A) → 404 not_found', async () => {
     const app = createApp()
     const tokenA = deriveRuntimeToken(PROJECT_A)
     const res = await app.request(
@@ -491,9 +487,9 @@ describe('POST /api/voice/twilio/provision-number/:projectId with x-runtime-toke
         body: '{}',
       },
     )
-    expect(res.status).toBe(403)
+    expect(res.status).toBe(404)
     const body: any = await res.json()
-    expect(body.error.code).toBe('forbidden')
+    expect(body.error.code).toBe('not_found')
   })
 
   /**
@@ -608,7 +604,7 @@ describe('POST /api/projects/:projectId/agents/sync — runtime token', () => {
     expect(body.created).toEqual(['architect'])
   })
 
-  test('valid token but mismatched projectId → 403 forbidden', async () => {
+  test('valid token but mismatched projectId → 404 not_found', async () => {
     const app = createApp()
     // Token signed for PROJECT_A; URL targets PROJECT_B.
     const token = deriveRuntimeToken(PROJECT_A)
@@ -623,9 +619,9 @@ describe('POST /api/projects/:projectId/agents/sync — runtime token', () => {
         body: JSON.stringify({ agents: {} }),
       },
     )
-    expect(res.status).toBe(403)
+    expect(res.status).toBe(404)
     const body: any = await res.json()
-    expect(body.error.code).toBe('forbidden')
+    expect(body.error.code).toBe('not_found')
   })
 
   test('missing token + missing session → 401 unauthorized', async () => {

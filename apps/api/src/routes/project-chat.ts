@@ -18,6 +18,7 @@ import { existsSync } from "fs"
 import { trace, SpanStatusCode } from "@opentelemetry/api"
 
 import { prisma } from "../lib/prisma"
+import { loadAccess } from "../lib/authz"
 import type { IRuntimeManager } from "../lib/runtime"
 import * as billingService from "../services/billing-runtime"
 import { getModelTier, resolveModelId } from "@shogo/model-catalog"
@@ -1272,23 +1273,17 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
         setProjectUser(projectId, billingUserId)
       }
 
-      // Validate the claimed user ID against workspace membership.
-      // Only forward a trusted X-User-Id if the user is actually a member
-      // of the project's workspace — prevents header spoofing.
+      // Validate the claimed user ID against project access.
+      // Only forward a trusted X-User-Id if the user can actually read
+      // this project — prevents header spoofing.
       let verifiedUserId: string | undefined
       if (billingUserId && billingUserId !== 'system') {
         try {
-          const member = await prisma.member.findFirst({
-            where: {
-              userId: billingUserId,
-              workspaceId: project.workspaceId,
-            },
-            select: { id: true },
-          })
-          if (member) {
+          const access = await loadAccess({ userId: billingUserId, via: 'session' }, { projectId })
+          if (access.permissions.has('project:read')) {
             verifiedUserId = billingUserId
           } else {
-            console.warn(`[ProjectChat] User ${billingUserId} is not a member of workspace ${project.workspaceId} — ignoring for Composio context`)
+            console.warn(`[ProjectChat] User ${billingUserId} cannot access project ${projectId} — ignoring for Composio context`)
           }
         } catch (err: any) {
           console.error(`[ProjectChat] Failed to verify user membership:`, err.message)
@@ -1446,7 +1441,7 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       }
 
       // Forward verified user ID for per-user integrations (e.g. Composio OAuth).
-      // Only set after validating workspace membership above.
+      // Only set after validating project access above.
       if (verifiedUserId) {
         headers["X-User-Id"] = verifiedUserId
       }
@@ -1490,7 +1485,10 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       // Metal guests currently hang rather than refuse — a 4h fetch timeout
       // never fires before the client aborts, so we never invalidate the
       // placement. A 90s budget is long enough for a healthy wake and short
-      // enough that a mute guest is detected.
+      // enough that a mute guest is detected. It bounds connect + response
+      // headers only: the timer is cleared once a metal turn starts streaming,
+      // because an abort signal on fetch also kills the body and would cut
+      // every turn longer than the budget.
       const FETCH_TIMEOUT_MS = metalChat
         ? parseInt(process.env.METAL_CHAT_FETCH_TIMEOUT_MS || '90000', 10)
         : parseInt(process.env.CHAT_UPSTREAM_FETCH_TIMEOUT_MS || '14400000', 10)
@@ -1506,7 +1504,12 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       // keeps the agent running in memory so the client can resume the stream.
       // trackUsageFromStream also needs the full stream for billing/persistence.
       const clientSignal = c.req.raw.signal
-      const fetchTimeoutSignal = AbortSignal.timeout(FETCH_TIMEOUT_MS)
+      const fetchTimeoutController = new AbortController()
+      const fetchTimeoutTimer = setTimeout(
+        () => fetchTimeoutController.abort(new DOMException('The operation timed out.', 'TimeoutError')),
+        FETCH_TIMEOUT_MS,
+      )
+      const fetchTimeoutSignal = fetchTimeoutController.signal
       // Normal chat requests intentionally survive a client disconnect so the
       // runtime can be resumed. Delegated tasks opt into cancellation by
       // sending X-Agent-Task-Id; their AbortController must reach the runtime.
@@ -1595,6 +1598,8 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
               response.status as any
             )
           }
+
+          if (metalChat) clearTimeout(fetchTimeoutTimer)
 
           // Stream the response back
           // Copy response headers
@@ -1985,6 +1990,10 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
    *
    * Matches the AI SDK's default resume URL pattern: ${api}/${chatId}/stream
    *
+   * Optional query: ?snapshot=1 — a client joining from the start gets the
+   * message so far as one `data-message-snapshot` chunk, not the replayed
+   * stream (forwarded to the runtime; see its `/stream` handler).
+   *
    * Optional query: ?fromSeq=N — replay only frames the runtime emitted after
    * sequence N. Combined with the runtime's `data-turn-start` /
    * `data-turn-complete` markers, this gives a client a delta resume so it
@@ -2009,8 +2018,11 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
         )
       }
 
-      const runtimePath = fromSeq !== undefined && fromSeq !== ""
-        ? `/agent/chat/${chatSessionId}/stream?fromSeq=${encodeURIComponent(fromSeq)}`
+      const runtimeQuery = new URLSearchParams()
+      if (fromSeq !== undefined && fromSeq !== "") runtimeQuery.set("fromSeq", fromSeq)
+      if (c.req.query("snapshot") === "1") runtimeQuery.set("snapshot", "1")
+      const runtimePath = runtimeQuery.toString()
+        ? `/agent/chat/${chatSessionId}/stream?${runtimeQuery}`
         : `/agent/chat/${chatSessionId}/stream`
 
       const response = await fetchFromRuntime(

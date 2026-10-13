@@ -18,6 +18,8 @@ export default defineConfig({
     'src/voice/index.ts',
     'src/voice/server.ts',
     'src/voice/react/index.ts',
+    'src/voice/react/conversation.ts',
+    'src/voice/react/visuals.ts',
     'src/voice/native/index.ts',
     'src/voice/route/index.ts',
     'src/voice/route/signed-url.ts',

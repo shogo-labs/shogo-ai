@@ -19,6 +19,7 @@
 
 import { Hono, type Context } from 'hono'
 import { prisma } from '../lib/prisma'
+import { loadAccess } from '../lib/authz'
 import { ConversationError } from '../services/conversation.service'
 import { resolveApiKey } from './api-keys'
 
@@ -67,8 +68,8 @@ async function authenticate(c: Context, params: Record<string, any>): Promise<Ac
       app: { installId: install.id, projectId: install.projectId, name: install.listing.title },
     }
   } else {
-    const member = await db.member.findFirst({ where: { workspaceId: key.workspaceId, userId: key.userId }, select: { id: true } })
-    if (!member) return fail(c, 403, 'not_in_workspace', 'The key owner is no longer a member of this workspace')
+    const access = await loadAccess({ userId: key.userId, via: 'apiKey', workspaceId: key.workspaceId }, { workspaceId: key.workspaceId })
+    if (!access.permissions.has('workspace:read')) return fail(c, 403, 'not_in_workspace', 'The key owner is no longer a member of this workspace')
     auth = { workspaceId: key.workspaceId, userId: key.userId, scopes: '*', app: null }
   }
   const requested = typeof params.workspaceId === 'string' && params.workspaceId ? params.workspaceId : c.req.header('x-shogo-workspace-id')
@@ -133,7 +134,7 @@ async function memberFor(workspaceId: string, who: unknown) {
   const value = typeof who === 'string' ? who.trim() : ''
   if (!value) return null
   return db.member.findFirst({
-    where: { workspaceId, OR: [{ userId: value }, { user: { email: value } }, { user: { email: value.toLowerCase() } }] },
+    where: { workspaceId, projectId: null, OR: [{ userId: value }, { user: { email: value } }, { user: { email: value.toLowerCase() } }] },
     select: { userId: true },
   })
 }
@@ -144,7 +145,7 @@ export function appActionsRoutes(): Hono {
   const membersList = method('members:read', async (c, auth) => {
     const withEmail = hasScope(auth, 'members:read.email')
     const rows = await db.member.findMany({
-      where: { workspaceId: auth.workspaceId },
+      where: { workspaceId: auth.workspaceId, projectId: null },
       include: { user: { select: { id: true, name: true, email: true } } },
       orderBy: { createdAt: 'asc' },
       take: 1_000,

@@ -29,12 +29,13 @@
  * permissioning a separate file inside each project's `.git/hooks/`).
  */
 
-import { spawn } from 'child_process'
+import { spawn } from '@shogo/shared-runtime/child-process'
 import { existsSync, mkdirSync } from 'fs'
 import { join } from 'path'
 import { Hono, type Context } from 'hono'
 import { prisma } from '../lib/prisma'
 import { authorizeProject } from '../middleware/auth'
+import type { Permission } from '@shogo/authz'
 import * as gitService from '../services/git.service'
 import { hydrateRepo } from '../services/git-repo-store'
 
@@ -152,7 +153,7 @@ function spawnSync(cmd: string, args: string[], cwd: string): void {
   // polluting the streaming path. Imported lazily so the streaming
   // CGI handlers can use the async `spawn` cleanly.
   // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { execFileSync } = require('child_process') as typeof import('child_process')
+  const { execFileSync } = require('@shogo/shared-runtime/child-process') as typeof import('@shogo/shared-runtime/child-process')
   execFileSync(cmd, args, { cwd, stdio: 'pipe' })
 }
 
@@ -445,7 +446,7 @@ export function gitHttpRoutes(config: GitHttpRoutesConfig) {
    * any failure path (401 with WWW-Authenticate, 403, 404, or 409 for
    * workingMode=external).
    */
-  async function authorize(c: Context, projectId: string): Promise<Response | null> {
+  async function authorize(c: Context, projectId: string, permission: Permission): Promise<Response | null> {
     const auth = c.get('auth')
     if (!auth?.isAuthenticated || !auth.userId) {
       // git's HTTP client expects a Basic challenge to invoke its askpass flow.
@@ -454,7 +455,7 @@ export function gitHttpRoutes(config: GitHttpRoutesConfig) {
         headers: { 'WWW-Authenticate': 'Basic realm="shogo"' },
       })
     }
-    const access = await authorizeProject(c, projectId)
+    const access = await authorizeProject(c, projectId, permission)
     if (!access.ok) {
       return new Response(access.message, {
         status: access.status,
@@ -486,10 +487,10 @@ export function gitHttpRoutes(config: GitHttpRoutesConfig) {
     if (!projectId) {
       return c.json({ error: { code: 'missing_project_id', message: 'projectId is required' } }, 400)
     }
-    const denied = await authorize(c, projectId)
+    const service = c.req.query('service')
+    const denied = await authorize(c, projectId, service === 'git-receive-pack' ? 'project:update' : 'project:read')
     if (denied) return denied
 
-    const service = c.req.query('service')
     if (!service || !ALLOWED_SERVICES.has(service)) {
       return c.json(
         { error: { code: 'invalid_service', message: 'service query must be git-upload-pack or git-receive-pack' } },
@@ -531,7 +532,7 @@ export function gitHttpRoutes(config: GitHttpRoutesConfig) {
       if (!projectId) {
         return c.json({ error: { code: 'missing_project_id', message: 'projectId is required' } }, 400)
       }
-      const denied = await authorize(c, projectId)
+      const denied = await authorize(c, projectId, service === 'git-receive-pack' ? 'project:update' : 'project:read')
       if (denied) return denied
 
       const workspacePath = join(workspacesDir, projectId)

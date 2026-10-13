@@ -98,6 +98,13 @@ import {
   type ChatTurnStatus,
 } from "./probe-turn-status"
 import {
+  externalPromptHasResponse,
+  LATE_TURN_MAX_WAIT_MS,
+  LATE_TURN_POLL_INTERVAL_MS,
+  pendingExternalPromptIndex,
+  pollForLateTurn,
+} from "./late-turn-attach"
+import {
   decideRetryAction,
   lastAssistantHasResumableWork,
 } from "./retry-triage"
@@ -115,6 +122,7 @@ import {
 import { useServerMessageQueue } from "./useServerMessageQueue"
 import {
   dropUnfinishedAssistantTail,
+  applyMessageSnapshot,
   withResumeReplayReset,
 } from "./resume-replay-transport"
 import { cn } from "@shogo/shared-ui/primitives"
@@ -306,31 +314,12 @@ const DEFAULT_CHAT_COMPOSER: WorkspaceExperienceComposer =
 // not plumb the live message list through context, so this constant
 // satisfies the type without flipping per token.
 const EMPTY_CONTEXT_MESSAGES: ChatMessage[] = []
-const DELEGATED_TASK_PROMPT_PREFIX =
-  "This is a delegated task from the user's task list:"
-const DELEGATED_TASK_POLL_INTERVAL_MS = 1_000
-const DELEGATED_TASK_MAX_WAIT_MS = 5 * 60 * 1_000
 
 function messageTimestamp(value: unknown): number {
   if (value instanceof Date) return value.getTime()
   if (typeof value === "number") return value
   const parsed = Date.parse(String(value ?? ""))
   return Number.isNaN(parsed) ? 0 : parsed
-}
-
-function latestDelegatedTaskPromptIndex(messages: readonly any[]): number {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index]
-    if (
-      message?.role === "user" &&
-      extractTextContent(message)
-        .trim()
-        .startsWith(DELEGATED_TASK_PROMPT_PREFIX)
-    ) {
-      return index
-    }
-  }
-  return -1
 }
 
 type SubagentProgressEvent =
@@ -586,6 +575,8 @@ export interface ChatPanelProps {
    * Desktop provides this via ContextAggregator; mobile passes nothing (no-op).
    */
   enrichMessage?: (text: string) => Promise<string>
+  /** When set, the composer is disabled and shows this text as its placeholder (e.g. read-only project access). */
+  readOnlyReason?: string
   /**
    * Phone transcript top inset. `"chrome"` (default) reserves room for
    * `MobileWorkspaceShell`'s floating menu/bell buttons. `"floating-agent"`
@@ -988,6 +979,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
   isActive = true,
   ideMode = false,
   enrichMessage,
+  readOnlyReason,
   phoneTranscriptTopPadding = "chrome",
 }: ChatPanelProps) {
   const composer = composerProp ?? DEFAULT_CHAT_COMPOSER
@@ -1940,14 +1932,20 @@ const ChatPanelContent = observer(function ChatPanelContent({
     // Anthropic TTFB).
     onChunk: bumpChatProgress,
     getClientTurnId,
+    // Reopening a live turn gets the message so far in one chunk instead of
+    // the whole stream replayed; `withResumeReplayReset` applies it below.
+    resumeSnapshot: true,
   })
   // Set once `useChat` has returned `setMessages`; see resume-replay-transport.ts.
   const beforeResumeReplayRef = useRef<() => void>(() => {})
+  const applyResumeSnapshotRef = useRef<(message: UIMessage) => void>(() => {})
   const chatTransport = useMemo(
     () =>
       transportConfig
-        ? withResumeReplayReset(new DefaultChatTransport(transportConfig), () =>
-            beforeResumeReplayRef.current(),
+        ? withResumeReplayReset(
+            new DefaultChatTransport(transportConfig),
+            () => beforeResumeReplayRef.current(),
+            (message) => applyResumeSnapshotRef.current(message),
           )
         : undefined,
     [transportConfig],
@@ -3038,6 +3036,8 @@ const ChatPanelContent = observer(function ChatPanelContent({
   })
   beforeResumeReplayRef.current = () =>
     setMessages((prev) => dropUnfinishedAssistantTail(prev))
+  applyResumeSnapshotRef.current = (message) =>
+    setMessages((prev) => applyMessageSnapshot(prev, message))
 
   // All resume paths share a single-flight guard. The history-load probe and
   // delegated-task reconciliation can finish at the same time when the app is
@@ -3597,24 +3597,17 @@ const ChatPanelContent = observer(function ChatPanelContent({
   isStreamingRef.current = isStreaming
   isTransportStreamingRef.current = isTransportStreaming
 
-  // A task started from the Tasks tab runs its turn on the server before this
-  // screen mounts. The first history-load probe can therefore legitimately
-  // see `unknown` while the worker is still preparing the runtime. Keep the
-  // task chat attached during that hand-off so the user sees the same live
-  // response as a normal chat send instead of only seeing it after reopening
-  // the project.
-  const delegatedTaskPromptIndex = useMemo(
-    () => latestDelegatedTaskPromptIndex(messages),
+  // A delegated task or a channel mention starts its turn outside this panel.
+  // The first history-load probe can therefore see `unknown` while a slot or
+  // a cold runtime is still in the way. Keep probing so the live reply shows
+  // up here instead of only after the session is opened again.
+  const externalPromptIndex = useMemo(
+    () => pendingExternalPromptIndex(messages),
     [messages],
   )
-  const delegatedTaskHasResponse = useMemo(
-    () =>
-      delegatedTaskPromptIndex >= 0 &&
-      messages.some(
-        (message: any, index) =>
-          index > delegatedTaskPromptIndex && message.role === "assistant",
-      ),
-    [delegatedTaskPromptIndex, messages],
+  const externalPromptHasReply = useMemo(
+    () => externalPromptHasResponse(messages, externalPromptIndex),
+    [externalPromptIndex, messages],
   )
 
   useEffect(() => {
@@ -3622,17 +3615,15 @@ const ChatPanelContent = observer(function ChatPanelContent({
       !isActive ||
       !currentSessionId ||
       !sessionMessages ||
-      delegatedTaskPromptIndex < 0 ||
-      delegatedTaskHasResponse ||
+      externalPromptIndex < 0 ||
+      externalPromptHasReply ||
       isStreaming
     )
       return
 
     let cancelled = false
-    let timer: ReturnType<typeof setTimeout> | null = null
-    const startedAt = Date.now()
 
-    const refreshPersistedTaskResponse = async () => {
+    const refreshPersistedResponse = async () => {
       if (cancelled || isStreamingRef.current) return
       await sessionMessages.loadPage(
         { sessionId: currentSessionId, agent: "technical" },
@@ -3644,15 +3635,8 @@ const ChatPanelContent = observer(function ChatPanelContent({
         (a: any, b: any) =>
           messageTimestamp(a.createdAt) - messageTimestamp(b.createdAt),
       )
-      const promptIndex = latestDelegatedTaskPromptIndex(loaded)
-      if (
-        promptIndex < 0 ||
-        !loaded.some(
-          (message: any, index) =>
-            index > promptIndex && message.role === "assistant",
-        )
-      )
-        return
+      const promptIndex = pendingExternalPromptIndex(loaded)
+      if (promptIndex < 0 || !externalPromptHasResponse(loaded, promptIndex)) return
 
       const aiMessages = loaded.map((message: any) => {
         const next: any = {
@@ -3675,9 +3659,8 @@ const ChatPanelContent = observer(function ChatPanelContent({
       setMessages(aiMessages)
     }
 
-    const poll = async () => {
-      if (cancelled || isStreamingRef.current) return
-      try {
+    void pollForLateTurn({
+      probe: () => {
         const turnUrl = buildChatTurnUrl(
           API_URL!,
           projectId,
@@ -3685,51 +3668,31 @@ const ChatPanelContent = observer(function ChatPanelContent({
           currentSessionId,
           chatWorkspaceId,
         )
-        const turnStatus = await probeChatTurnStatus({
+        return probeChatTurnStatus({
           url: turnUrl,
           fetch: expoFetch,
           headers: nativeHeaders ? nativeHeaders() : undefined,
           credentials: Platform.OS === "web" ? "include" : undefined,
         })
-        if (cancelled || isStreamingRef.current) return
-
-        if (shouldAttachLiveStream(turnStatus)) {
-          guardedAutoResumeStream("live-turn-probe")
-          return
-        }
-
-        // The worker may have completed between probes. Reconcile persisted
-        // history as well as the live turn status so a fast response is still
-        // shown without navigating away and back.
-        await refreshPersistedTaskResponse()
-      } catch (error) {
-        if (!cancelled) {
-          console.warn(
-            "[ChatPanel] delegated task reconciliation failed",
-            error,
-          )
-        }
-      }
-      if (
-        !cancelled &&
-        Date.now() - startedAt < DELEGATED_TASK_MAX_WAIT_MS &&
-        !isStreamingRef.current
-      ) {
-        timer = setTimeout(() => void poll(), DELEGATED_TASK_POLL_INTERVAL_MS)
-      }
-    }
-
-    void poll()
+      },
+      attach: () => guardedAutoResumeStream("live-turn-probe"),
+      reload: refreshPersistedResponse,
+      isCancelled: () => cancelled || isStreamingRef.current,
+      intervalMs: LATE_TURN_POLL_INTERVAL_MS,
+      maxWaitMs: LATE_TURN_MAX_WAIT_MS,
+      onError: (error) => {
+        if (!cancelled) console.warn("[ChatPanel] late turn probe failed", error)
+      },
+    })
     return () => {
       cancelled = true
-      if (timer) clearTimeout(timer)
     }
   }, [
     isActive,
     currentSessionId,
     sessionMessages,
-    delegatedTaskPromptIndex,
-    delegatedTaskHasResponse,
+    externalPromptIndex,
+    externalPromptHasReply,
     isStreaming,
     projectId,
     localAgentUrl,
@@ -7436,6 +7399,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
                     : "text-destructive",
                 )}
                 selectable
+                testID="chat-error-banner"
               >
                 {errorBannerText}
               </Text>
@@ -7450,6 +7414,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
               )}
               numberOfLines={2}
               selectable
+              testID="chat-error-banner"
             >
               {errorBannerText}
             </Text>
@@ -7848,9 +7813,11 @@ const ChatPanelContent = observer(function ChatPanelContent({
                   <ExecutionBadge />
                   <ChatInput
                     onSubmit={handleInputSubmit}
-                    disabled={!currentSessionId}
+                    disabled={!currentSessionId || !!readOnlyReason}
                     placeholder={
-                      !featureId
+                      readOnlyReason
+                        ? readOnlyReason
+                        : !featureId
                         ? "Message"
                         : hasPendingQuestion
                           ? questionPresentation === "sheet"

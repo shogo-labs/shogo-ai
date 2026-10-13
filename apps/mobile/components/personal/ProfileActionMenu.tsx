@@ -16,7 +16,6 @@ import { Modal, Pressable, ScrollView, Text, View } from 'react-native'
 import {
   Activity,
   Image as ImageIcon,
-  MessagesSquare,
   PenLine,
   Sparkles,
   X,
@@ -40,7 +39,6 @@ export function buildDefaultProfileActions(opts: {
   onPrefill: (content: string) => void
   onCustomizeAvatar: () => void
   onOpenActivity: () => void
-  onOpenSideChats?: () => void
 }): ProfileActionSheetAction[] {
   return [
     {
@@ -78,17 +76,6 @@ export function buildDefaultProfileActions(opts: {
       Icon: Activity,
       onPress: opts.onOpenActivity,
     },
-    ...(opts.onOpenSideChats
-      ? [
-          {
-            id: 'side-chats',
-            label: 'Side chats',
-            hint: 'Explore a tangent without derailing the main conversation',
-            Icon: MessagesSquare,
-            onPress: opts.onOpenSideChats,
-          },
-        ]
-      : []),
   ]
 }
 

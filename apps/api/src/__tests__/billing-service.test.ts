@@ -65,7 +65,17 @@ const walletStore = {
     const ws = args.where.workspaceId
     const existing = walletByWs.get(ws)
     if (!existing) return { count: 0 }
-    walletByWs.set(ws, { ...existing, ...args.data })
+    const matches = Object.entries(args.where).every(([k, v]) => (existing[k] ?? null) === v)
+    if (!matches) return { count: 0 }
+    const next: any = { ...existing }
+    for (const [k, v] of Object.entries(args.data)) {
+      if (v && typeof v === 'object' && 'increment' in (v as any)) {
+        next[k] = (next[k] ?? 0) + (v as any).increment
+      } else {
+        next[k] = v
+      }
+    }
+    walletByWs.set(ws, next)
     return { count: 1 }
   },
 }
@@ -262,6 +272,7 @@ const stripeCalls: StripeCall[] = []
 let stripeSubRetrieveImpl: ((id: string) => any) | null = null
 let stripeInvoicesPayImpl: ((id: string) => any) | null = null
 let stripeInvoiceItemsCreateImpl: ((args: any) => any) | null = null
+let stripeInvoiceRetrieveStatus = 'open'
 
 class FakeStripe {
   constructor(public key: string, public opts?: any) {}
@@ -293,12 +304,16 @@ class FakeStripe {
     },
     finalizeInvoice: async (id: string) => {
       stripeCalls.push({ method: 'invoices.finalizeInvoice', args: [id] })
-      return { id }
+      return { id, status: 'open' }
     },
-    pay: async (id: string) => {
-      stripeCalls.push({ method: 'invoices.pay', args: [id] })
+    retrieve: async (id: string) => {
+      stripeCalls.push({ method: 'invoices.retrieve', args: [id] })
+      return { id, status: stripeInvoiceRetrieveStatus }
+    },
+    pay: async (id: string, opts?: any) => {
+      stripeCalls.push({ method: 'invoices.pay', args: [id, opts] })
       if (stripeInvoicesPayImpl) return stripeInvoicesPayImpl(id)
-      return { id }
+      return { id, status: 'paid' }
     },
   }
 }
@@ -337,6 +352,9 @@ function seedWallet(ws: string, overrides: Partial<any> = {}) {
     overageBilledUsd: 0,
     overageEnabled: false,
     overageHardLimitUsd: null,
+    overagePaidBlocks: 0,
+    overageOutstandingInvoiceId: null,
+    overageOutstandingUsd: 0,
     anniversaryDay: now.getDate(),
     lastDailyReset: now,
     lastMonthlyReset: now,
@@ -348,19 +366,11 @@ function seedWallet(ws: string, overrides: Partial<any> = {}) {
 // Tests
 // ────────────────────────────────────────────────────────────────────
 
-describe('nextOverageBlockUsd', () => {
-  test('returns the trust-first ladder up to the cap', () => {
-    expect(billing.nextOverageBlockUsd(0)).toBe(100)
-    expect(billing.nextOverageBlockUsd(100)).toBe(200)
-    expect(billing.nextOverageBlockUsd(300)).toBe(300)
-    expect(billing.nextOverageBlockUsd(600)).toBe(400)
-    expect(billing.nextOverageBlockUsd(1000)).toBe(500)
-    expect(billing.nextOverageBlockUsd(1500)).toBe(500)
-    expect(billing.nextOverageBlockUsd(10_000)).toBe(500)
-  })
-
-  test('negative input clamps to zero so the ladder starts at $100', () => {
-    expect(billing.nextOverageBlockUsd(-50)).toBe(100)
+describe('overageBlockUsd', () => {
+  test('returns the paid-trust ladder up to the cap', () => {
+    expect([0, 1, 2, 3, 4, 5, 6, 7, 8, 50].map(billing.overageBlockUsd)).toEqual([
+      25, 25, 25, 25, 100, 200, 300, 400, 500, 500,
+    ])
   })
 })
 
@@ -494,12 +504,12 @@ describe('allocateMonthlyIncluded', () => {
     expect(wallet.overageEnabled).toBe(true)
   })
 
-  test('updates an existing wallet, resetting overage accumulators', async () => {
-    seedWallet('ws-1', { overageAccumulatedUsd: 20, overageBilledUsd: 100, overageEnabled: false })
+  test('updates an existing wallet, carrying unbilled overage into the new period', async () => {
+    seedWallet('ws-1', { overageAccumulatedUsd: 120, overageBilledUsd: 100, overageEnabled: false })
     const wallet = await billing.allocateMonthlyIncluded('ws-1', 'business', 2)
     expect(wallet.monthlyIncludedUsd).toBe(80)
     expect(wallet.overageEnabled).toBe(true)
-    expect(wallet.overageAccumulatedUsd).toBe(0)
+    expect(wallet.overageAccumulatedUsd).toBe(20)
     expect(wallet.overageBilledUsd).toBe(0)
   })
 
@@ -626,10 +636,29 @@ describe('hasBalance', () => {
   test('returns true when overage hard limit is unset (unlimited)', async () => {
     subsByWs.set('ws-1', [{ id: 's-1', workspaceId: 'ws-1', status: 'active', planId: 'pro', seats: 1 }])
     seedWallet('ws-1', {
-      dailyIncludedUsd: 0, dailyUsedThisMonthUsd: 30, overageAccumulatedUsd: 999,
+      dailyIncludedUsd: 0, dailyUsedThisMonthUsd: 30, overageAccumulatedUsd: 999, overageBilledUsd: 999,
       overageEnabled: true, overageHardLimitUsd: null,
     })
     expect(await billing.hasBalance('ws-1', 1000)).toBe(true)
+  })
+
+  test('pauses overage while an overage invoice is outstanding', async () => {
+    subsByWs.set('ws-1', [{ id: 's-1', workspaceId: 'ws-1', status: 'active', planId: 'pro', seats: 1 }])
+    seedWallet('ws-1', {
+      dailyIncludedUsd: 0, overageAccumulatedUsd: 25, overageBilledUsd: 25,
+      overageEnabled: true, overageHardLimitUsd: null,
+      overageOutstandingInvoiceId: 'in_open', overageOutstandingUsd: 25,
+    })
+    expect(await billing.checkUsageBalance('ws-1', 1000)).toEqual({ ok: false, reason: 'overage_payment_pending' })
+  })
+
+  test('pauses overage once a full block is unbilled', async () => {
+    subsByWs.set('ws-1', [{ id: 's-1', workspaceId: 'ws-1', status: 'active', planId: 'pro', seats: 1 }])
+    seedWallet('ws-1', {
+      dailyIncludedUsd: 0, overageAccumulatedUsd: 25, overageBilledUsd: 0,
+      overageEnabled: true, overageHardLimitUsd: null,
+    })
+    expect(await billing.checkUsageBalance('ws-1', 1000)).toEqual({ ok: false, reason: 'overage_payment_pending' })
   })
 
   // Regression for incident 2026-08-06: `overageEnabled` outlives the
@@ -931,63 +960,133 @@ describe('chargeOverageBlocks', () => {
     expect(n).toBe(0)
   })
 
-  test('no-op when unbilled overage is below the first block size', async () => {
-    seedWallet('ws-1', { overageAccumulatedUsd: 50, overageBilledUsd: 0 })
-    subsByWs.set('ws-1', [{ id: 's-1', workspaceId: 'ws-1', status: 'active', stripeCustomerId: 'cus_1' }])
-    const n = await billing.chargeOverageBlocks('ws-1')
-    expect(n).toBe(0)
+  const activeSub = { id: 's-1', workspaceId: 'ws-1', status: 'active', stripeCustomerId: 'cus_1', stripeSubscriptionId: 'sub_1' }
+
+  test('no-op when unbilled overage is below the starter block', async () => {
+    seedWallet('ws-1', { overageAccumulatedUsd: 24.99, overageBilledUsd: 0 })
+    subsByWs.set('ws-1', [activeSub])
+    expect(await billing.chargeOverageBlocks('ws-1')).toBe(0)
   })
 
   test('skips when no active Stripe customer found', async () => {
     seedWallet('ws-1', { overageAccumulatedUsd: 200, overageBilledUsd: 0 })
-    const n = await billing.chargeOverageBlocks('ws-1')
-    expect(n).toBe(0)
+    expect(await billing.chargeOverageBlocks('ws-1')).toBe(0)
   })
 
-  test('peels off a single $100 block when unbilled is between $100 and $200', async () => {
-    seedWallet('ws-1', { overageAccumulatedUsd: 150, overageBilledUsd: 0 })
-    subsByWs.set('ws-1', [{ id: 's-1', workspaceId: 'ws-1', status: 'active', stripeCustomerId: 'cus_1' }])
-    const n = await billing.chargeOverageBlocks('ws-1')
-    expect(n).toBe(1)
-    expect(stripeCalls.find((c) => c.method === 'invoiceItems.create')?.args[0].amount).toBe(100 * 100)
-    expect(walletByWs.get('ws-1').overageBilledUsd).toBe(100)
+  test('no-op while an earlier block is still outstanding', async () => {
+    seedWallet('ws-1', {
+      overageAccumulatedUsd: 80, overageBilledUsd: 25,
+      overageOutstandingInvoiceId: 'in_prev', overageOutstandingUsd: 25,
+    })
+    subsByWs.set('ws-1', [activeSub])
+    expect(await billing.chargeOverageBlocks('ws-1')).toBe(0)
+    expect(stripeCalls.find((c) => c.method === 'invoices.create')).toBeUndefined()
   })
 
-  test('bundles multiple ladder steps into one invoice', async () => {
-    // First two ladder blocks: $100 + $200 = $300
-    seedWallet('ws-1', { overageAccumulatedUsd: 350, overageBilledUsd: 0 })
-    subsByWs.set('ws-1', [{ id: 's-1', workspaceId: 'ws-1', status: 'active', stripeCustomerId: 'cus_1' }])
-    const n = await billing.chargeOverageBlocks('ws-1')
-    expect(n).toBe(2)
-    const item = stripeCalls.find((c) => c.method === 'invoiceItems.create')!
-    expect(item.args[0].amount).toBe(300 * 100)
-    expect(item.args[0].metadata.blockSizes).toBe('100,200')
-    expect(walletByWs.get('ws-1').overageBilledUsd).toBe(300)
+  test('invoices one $25 block against the subscription card and counts it once paid', async () => {
+    seedWallet('ws-1', { overageAccumulatedUsd: 60, overageBilledUsd: 0 })
+    subsByWs.set('ws-1', [activeSub])
+    stripeSubRetrieveImpl = (id) => ({ id, default_payment_method: 'pm_sub' })
+    expect(await billing.chargeOverageBlocks('ws-1')).toBe(1)
+
+    const create = stripeCalls.find((c) => c.method === 'invoices.create')!
+    expect(create.args[0].auto_advance).toBe(true)
+    expect(create.args[0].default_payment_method).toBe('pm_sub')
+    expect(stripeCalls.find((c) => c.method === 'invoiceItems.create')!.args[0].amount).toBe(25 * 100)
+    expect(stripeCalls.find((c) => c.method === 'invoices.pay')!.args[1]).toEqual({ payment_method: 'pm_sub', off_session: true })
+
+    const w = walletByWs.get('ws-1')
+    expect(w.overageBilledUsd).toBe(25)
+    expect(w.overagePaidBlocks).toBe(1)
+    expect(w.overageOutstandingInvoiceId).toBeNull()
   })
 
-  test('swallows pay() errors but still increments overageBilledUsd', async () => {
-    seedWallet('ws-1', { overageAccumulatedUsd: 120, overageBilledUsd: 0 })
-    subsByWs.set('ws-1', [{ id: 's-1', workspaceId: 'ws-1', status: 'active', stripeCustomerId: 'cus_1' }])
+  test('bills the larger block once enough blocks have been paid', async () => {
+    seedWallet('ws-1', { overageAccumulatedUsd: 150, overageBilledUsd: 0, overagePaidBlocks: 4 })
+    subsByWs.set('ws-1', [activeSub])
+    expect(await billing.chargeOverageBlocks('ws-1')).toBe(1)
+    expect(stripeCalls.find((c) => c.method === 'invoiceItems.create')!.args[0].amount).toBe(100 * 100)
+    expect(walletByWs.get('ws-1').overagePaidBlocks).toBe(5)
+  })
+
+  test('a failed payment leaves the block outstanding and does not advance trust', async () => {
+    seedWallet('ws-1', { overageAccumulatedUsd: 30, overageBilledUsd: 0 })
+    subsByWs.set('ws-1', [activeSub])
     stripeInvoicesPayImpl = () => { throw new Error('card_declined') }
-    const n = await billing.chargeOverageBlocks('ws-1')
-    expect(n).toBe(1)
-    expect(walletByWs.get('ws-1').overageBilledUsd).toBe(100)
+    expect(await billing.chargeOverageBlocks('ws-1')).toBe(1)
+    const w = walletByWs.get('ws-1')
+    expect(w.overageBilledUsd).toBe(25)
+    expect(w.overageOutstandingInvoiceId).toBe('in_1')
+    expect(w.overageOutstandingUsd).toBe(25)
+    expect(w.overagePaidBlocks).toBe(0)
   })
 
   test('returns 0 and swallows when stripe.invoiceItems.create throws', async () => {
     seedWallet('ws-1', { overageAccumulatedUsd: 120, overageBilledUsd: 0 })
-    subsByWs.set('ws-1', [{ id: 's-1', workspaceId: 'ws-1', status: 'active', stripeCustomerId: 'cus_1' }])
+    subsByWs.set('ws-1', [activeSub])
     stripeInvoiceItemsCreateImpl = () => { throw new Error('stripe outage') }
-    const n = await billing.chargeOverageBlocks('ws-1')
-    expect(n).toBe(0)
+    expect(await billing.chargeOverageBlocks('ws-1')).toBe(0)
     expect(walletByWs.get('ws-1').overageBilledUsd).toBe(0)
+  })
+})
+
+describe('markOverageInvoicePaid / releaseOverageInvoice', () => {
+  test('settles the matching outstanding invoice exactly once', async () => {
+    seedWallet('ws-1', { overageOutstandingInvoiceId: 'in_9', overageOutstandingUsd: 25, overagePaidBlocks: 3 })
+    expect(await billing.markOverageInvoicePaid('ws-1', 'in_9')).toBe(true)
+    expect(await billing.markOverageInvoicePaid('ws-1', 'in_9')).toBe(false)
+    const w = walletByWs.get('ws-1')
+    expect(w.overagePaidBlocks).toBe(4)
+    expect(w.overageOutstandingInvoiceId).toBeNull()
+    expect(billing.overageBlockUsd(w.overagePaidBlocks)).toBe(100)
+  })
+
+  test('ignores invoices that are not the outstanding one', async () => {
+    seedWallet('ws-1', { overageOutstandingInvoiceId: 'in_9', overageOutstandingUsd: 25 })
+    expect(await billing.markOverageInvoicePaid('ws-1', 'in_other')).toBe(false)
+    expect(walletByWs.get('ws-1').overageOutstandingInvoiceId).toBe('in_9')
+  })
+
+  test('voiding releases the pause without advancing trust', async () => {
+    seedWallet('ws-1', { overageOutstandingInvoiceId: 'in_9', overageOutstandingUsd: 25, overagePaidBlocks: 2 })
+    expect(await billing.releaseOverageInvoice('ws-1', 'in_9')).toBe(true)
+    const w = walletByWs.get('ws-1')
+    expect(w.overageOutstandingInvoiceId).toBeNull()
+    expect(w.overagePaidBlocks).toBe(2)
+  })
+})
+
+describe('reconcileOutstandingOverage', () => {
+  test('settles from Stripe when the invoice was paid, then throttles', async () => {
+    seedWallet('ws-rc1', { overageOutstandingInvoiceId: 'in_9', overageOutstandingUsd: 25, overagePaidBlocks: 0 })
+    stripeInvoiceRetrieveStatus = 'paid'
+    expect(await billing.reconcileOutstandingOverage('ws-rc1', 'in_9')).toBe(true)
+    expect(walletByWs.get('ws-rc1').overagePaidBlocks).toBe(1)
+    expect(walletByWs.get('ws-rc1').overageOutstandingInvoiceId).toBeNull()
+    stripeCalls.length = 0
+    expect(await billing.reconcileOutstandingOverage('ws-rc1', 'in_9')).toBe(false)
+    expect(stripeCalls.find((c) => c.method === 'invoices.retrieve')).toBeUndefined()
+  })
+
+  test('releases on void, leaves open invoices paused', async () => {
+    seedWallet('ws-rc2', { overageOutstandingInvoiceId: 'in_8', overageOutstandingUsd: 25, overagePaidBlocks: 2 })
+    stripeInvoiceRetrieveStatus = 'open'
+    expect(await billing.reconcileOutstandingOverage('ws-rc2', 'in_8')).toBe(false)
+    expect(walletByWs.get('ws-rc2').overageOutstandingInvoiceId).toBe('in_8')
+
+    seedWallet('ws-rc3', { overageOutstandingInvoiceId: 'in_7', overageOutstandingUsd: 25, overagePaidBlocks: 2 })
+    stripeInvoiceRetrieveStatus = 'void'
+    expect(await billing.reconcileOutstandingOverage('ws-rc3', 'in_7')).toBe(true)
+    expect(walletByWs.get('ws-rc3').overageOutstandingInvoiceId).toBeNull()
+    expect(walletByWs.get('ws-rc3').overagePaidBlocks).toBe(2)
+    stripeInvoiceRetrieveStatus = 'open'
   })
 })
 
 describe('reportOverageToStripe (deprecated shim)', () => {
   test('delegates to chargeOverageBlocks', async () => {
     seedWallet('ws-1', { overageAccumulatedUsd: 150, overageBilledUsd: 0 })
-    subsByWs.set('ws-1', [{ id: 's-1', workspaceId: 'ws-1', status: 'active', stripeCustomerId: 'cus_1' }])
+    subsByWs.set('ws-1', [{ id: 's-1', workspaceId: 'ws-1', status: 'active', stripeCustomerId: 'cus_1', stripeSubscriptionId: 'sub_1' }])
     await billing.reportOverageToStripe('ws-1', 25)
     expect(stripeCalls.find((c) => c.method === 'invoiceItems.create')).toBeTruthy()
   })

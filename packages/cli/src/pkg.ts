@@ -22,7 +22,7 @@
  * dependency-free (only `node:child_process`, `node:fs`, `node:path`).
  */
 
-import { execSync as nodeExecSync, spawn, type StdioOptions } from 'node:child_process'
+import { execSync as nodeExecSync, spawn, type StdioOptions } from './child-process'
 import { existsSync, readlinkSync, lstatSync } from 'node:fs'
 import { isAbsolute, join, resolve as resolvePath, dirname } from 'node:path'
 

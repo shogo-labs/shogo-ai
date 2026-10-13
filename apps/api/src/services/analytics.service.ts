@@ -102,6 +102,12 @@ function periodToDate(period: AnalyticsPeriod): Date {
   return periodToWindow(period).from
 }
 
+/** Start of a rolling `period` window that ends at `asOf` instead of now. */
+function periodStartAsOf(period: AnalyticsPeriod, asOf?: Date): Date {
+  const from = periodToDate(period)
+  return asOf ? new Date(from.getTime() - (Date.now() - asOf.getTime())) : from
+}
+
 /**
  * Build Prisma where clause fragments from scope.
  * Returns an object that can be spread into a where clause.
@@ -260,7 +266,7 @@ export async function getOverviewStats(scope: AnalyticsScope = {}) {
         where: {
           project: {
             workspace: {
-              members: { some: { userId: scope.userId } },
+              members: { some: { userId: scope.userId, projectId: null } },
             },
           },
         },
@@ -297,7 +303,7 @@ export async function getOverviewStats(scope: AnalyticsScope = {}) {
     // Workspace-level overview
     const [members, projects, chatSessions, usageEvents] = await Promise.all([
       prisma.member.count({
-        where: { workspaceId: scope.workspaceId },
+        where: { workspaceId: scope.workspaceId, projectId: null },
       }),
       prisma.project.count({
         where: { workspaceId: scope.workspaceId },
@@ -357,7 +363,7 @@ export async function getGrowthTimeSeries(
         orderBy: { createdAt: 'asc' },
       }),
       prisma.member.findMany({
-        where: { workspaceId: scope.workspaceId, createdAt: { gte: since } },
+        where: { workspaceId: scope.workspaceId, projectId: null, createdAt: { gte: since } },
         select: { createdAt: true },
         orderBy: { createdAt: 'asc' },
       }),
@@ -459,7 +465,7 @@ export async function getActivityTimeseries(
     // newUsers → platform: signups; workspace: new members
     scope.workspaceId
       ? prisma.member.findMany({
-          where: { workspaceId: scope.workspaceId, createdAt: { gte: from, lt: to } },
+          where: { workspaceId: scope.workspaceId, projectId: null, createdAt: { gte: from, lt: to } },
           select: { createdAt: true },
         })
       : prisma.user.findMany({
@@ -734,6 +740,7 @@ export async function getMemberInsights(
     prisma.member.findMany({
       where: {
         workspaceId,
+        projectId: null,
         ...(options.userId ? { userId: options.userId } : {}),
       },
       select: { userId: true },
@@ -2043,12 +2050,19 @@ export async function getChatAnalytics(
 /**
  * Get project analytics - status distribution, tier breakdown, most active.
  */
-export async function getProjectAnalytics(scope: AnalyticsScope = {}) {
+export async function getProjectAnalytics(
+  scope: AnalyticsScope = {},
+  options: { projectWhere?: Record<string, unknown> } = {},
+) {
   // Workspace-scoped calls back a user-facing `mostActive` project list
   // (`scoped-analytics.ts`), so hidden (companion builder-delegate)
   // projects are excluded there. The platform-wide admin call (no
   // `workspaceId`) intentionally keeps everything for operational visibility.
-  const where = scope.workspaceId ? { workspaceId: scope.workspaceId, hidden: false } : {}
+  // `projectWhere` narrows the list to the projects the caller can read.
+  const where = {
+    ...(scope.workspaceId ? { workspaceId: scope.workspaceId, hidden: false } : {}),
+    ...(options.projectWhere ? { AND: [options.projectWhere] } : {}),
+  }
 
   const projects = await prisma.project.findMany({
     where,
@@ -2248,10 +2262,13 @@ export interface FunnelResult {
 
 export async function getUserFunnel(
   period: AnalyticsPeriod = '30d',
-  excludeInternal = true
+  excludeInternal = true,
+  asOf?: Date,
 ): Promise<FunnelResult> {
-  const since = periodToDate(period)
-  const filter = excludeInternal ? `AND ${realUserEmailNotLike()}` : ''
+  const since = periodStartAsOf(period, asOf)
+  const filter =
+    (excludeInternal ? `AND ${realUserEmailNotLike()}` : '') +
+    (asOf ? ` AND u."createdAt" < ${isSqlite ? '?' : '$2'}` : '')
 
   const result = await prisma.$queryRawUnsafe<Record<keyof FunnelResult, unknown>[]>(
     isSqlite
@@ -2273,6 +2290,7 @@ export async function getUserFunnel(
       FROM "chat_messages" cm
       JOIN "chat_sessions" cs ON cs."id" = cm."sessionId"
       JOIN "projects" p ON p."id" = cs."contextId"
+      -- 'technical' excludes project_call prompts (role 'user', written by another agent).
       WHERE cm."role" = 'user' AND cm."agent" = 'technical' AND p."createdBy" IS NOT NULL
       GROUP BY cs."contextId", p."createdBy"
     ),
@@ -2312,6 +2330,7 @@ export async function getUserFunnel(
       FROM "chat_messages" cm
       JOIN "chat_sessions" cs ON cs."id" = cm."sessionId"
       JOIN "projects" p ON p."id" = cs."contextId"
+      -- 'technical' excludes project_call prompts (role 'user', written by another agent).
       WHERE cm."role" = 'user' AND cm."agent" = 'technical' AND p."createdBy" IS NOT NULL
       GROUP BY cs."contextId", p."createdBy"
     ),
@@ -2333,7 +2352,8 @@ export async function getUserFunnel(
     LEFT JOIN user_projects up ON up."userId" = ru."id"
     LEFT JOIN user_msg_totals umt ON umt."userId" = ru."id"
   `,
-    since
+    since,
+    ...(asOf ? [asOf] : []),
   )
 
   const row = result[0]
@@ -2374,15 +2394,15 @@ export interface UserActivity {
 
 export async function getUserActivityTable(
   period: AnalyticsPeriod = '30d',
-  options: { page?: number; limit?: number; sort?: string; excludeInternal?: boolean } = {}
+  options: { page?: number; limit?: number; sort?: string; excludeInternal?: boolean; asOf?: Date } = {}
 ): Promise<{ users: UserActivity[]; total: number; page: number; limit: number }> {
-  const since = periodToDate(period)
+  const since = periodStartAsOf(period, options.asOf)
   const page = options.page ?? 1
   const limit = Math.min(options.limit ?? 20, 100)
   const excludeInternal = options.excludeInternal ?? true
 
   const userWhere: Prisma.UserWhereInput = {
-    createdAt: { gte: since },
+    createdAt: { gte: since, ...(options.asOf ? { lt: options.asOf } : {}) },
     ...(excludeInternal ? realUserWhere() : {}),
   }
 
@@ -2710,7 +2730,7 @@ export async function getWorkspaceActivityTable(
 
   const [projectCounts, memberCounts, messageRows, toolRows] = await Promise.all([
     prisma.project.groupBy({ by: ['workspaceId'], where: { workspaceId: { in: ids } }, _count: true }),
-    prisma.member.groupBy({ by: ['workspaceId'], where: { workspaceId: { in: ids } }, _count: true }),
+    prisma.member.groupBy({ by: ['workspaceId'], where: { workspaceId: { in: ids }, projectId: null }, _count: true }),
     isSqlite
       ? prisma.$queryRawUnsafe<{ wid: string; count: number }[]>(`
           SELECT p."workspaceId" AS "wid", CAST(COUNT(cm."id") AS INTEGER) AS "count"
@@ -2905,9 +2925,13 @@ const ASSISTANT_TRUNCATE_LENGTH = 1000
 
 export async function getChatConversations(
   since: Date,
-  excludeInternal = true
+  excludeInternal = true,
+  until?: Date,
 ): Promise<{ conversations: ConversationThread[] }> {
   const filter = excludeInternal ? `AND ${realUserEmailNotLike()}` : ''
+  const untilParam = isSqlite ? '?' : '$2'
+  const chatUntil = until ? `AND cm."createdAt" < ${untilParam}` : ''
+  const proxyUntil = until ? `AND pt."createdAt" < ${untilParam}` : ''
 
   const rows = await prisma.$queryRawUnsafe<{
     sessionId: string
@@ -2944,7 +2968,7 @@ export async function getChatConversations(
     JOIN "users" u ON u."id" = p."createdBy"
     LEFT JOIN "marketplace_installs" mi ON mi."projectId" = p."id"
     LEFT JOIN "marketplace_listings" ml ON ml."id" = mi."listingId"
-    WHERE cm."createdAt" >= ? AND cm."agent" = 'technical' ${filter}
+    WHERE cm."createdAt" >= ? ${chatUntil} AND cm."agent" = 'technical' ${filter}
     ORDER BY "sessionId", "sentAt" ASC
   `
       : `
@@ -2967,44 +2991,45 @@ export async function getChatConversations(
     JOIN "users" u ON u."id" = p."createdBy"
     LEFT JOIN "marketplace_installs" mi ON mi."projectId" = p."id"
     LEFT JOIN "marketplace_listings" ml ON ml."id" = mi."listingId"
-    WHERE cm."createdAt" >= $1 AND cm."agent" = 'technical' ${filter}
+    WHERE cm."createdAt" >= $1 ${chatUntil} AND cm."agent" = 'technical' ${filter}
     UNION ALL
     SELECT
-      COALESCE(pt."chatSessionId", CONCAT('proxy:', pt."id")) AS "sessionId",
+      COALESCE(pt."chatSessionId", CONCAT('proxy:', pt."turnId")) AS "sessionId",
       u."name" AS "userName",
       COALESCE(pr."name", 'Proxy traffic') AS "projectName",
       NULL AS "templateId",
       pt."source" AS "source",
       'user' AS "role",
       LEFT(pt."userText", ${ASSISTANT_TRUNCATE_LENGTH}) AS "content",
-      pt."lastAt" AS "sentAt"
+      pt."createdAt" AS "sentAt"
     FROM "ai_analysis_turns" pt
     LEFT JOIN "users" u ON u."id" = pt."userId"
     LEFT JOIN "projects" pr ON pr."id" = pt."projectId"
     WHERE pt."source" <> 'cloud_chat'
-      AND pt."createdAt" >= $1
+      AND pt."createdAt" >= $1 ${proxyUntil}
       AND pt."userText" IS NOT NULL
       ${excludeInternal ? `AND (u."id" IS NULL OR (${realUserEmailNotLike()}))` : ''}
     UNION ALL
     SELECT
-      COALESCE(pt."chatSessionId", CONCAT('proxy:', pt."id")) AS "sessionId",
+      COALESCE(pt."chatSessionId", CONCAT('proxy:', pt."turnId")) AS "sessionId",
       u."name" AS "userName",
       COALESCE(pr."name", 'Proxy traffic') AS "projectName",
       NULL AS "templateId",
       pt."source" AS "source",
       'assistant' AS "role",
       RIGHT(pt."assistantText", ${ASSISTANT_TRUNCATE_LENGTH}) AS "content",
-      pt."lastAt" AS "sentAt"
+      pt."createdAt" AS "sentAt"
     FROM "ai_analysis_turns" pt
     LEFT JOIN "users" u ON u."id" = pt."userId"
     LEFT JOIN "projects" pr ON pr."id" = pt."projectId"
     WHERE pt."source" <> 'cloud_chat'
-      AND pt."createdAt" >= $1
+      AND pt."createdAt" >= $1 ${proxyUntil}
       AND pt."assistantText" IS NOT NULL
       ${excludeInternal ? `AND (u."id" IS NULL OR (${realUserEmailNotLike()}))` : ''}
     ORDER BY "sessionId", "sentAt" ASC
   `,
-    since
+    since,
+    ...(until ? [until] : []),
   )
 
   const grouped = new Map<string, ConversationThread>()
@@ -3041,10 +3066,13 @@ export interface SourceBreakdownEntry {
 
 export async function getSourceBreakdown(
   period: AnalyticsPeriod = '30d',
-  excludeInternal = true
+  excludeInternal = true,
+  asOf?: Date,
 ): Promise<{ sources: SourceBreakdownEntry[] }> {
-  const since = periodToDate(period)
-  const filter = excludeInternal ? `AND ${realUserEmailNotLike()}` : ''
+  const since = periodStartAsOf(period, asOf)
+  const filter =
+    (excludeInternal ? `AND ${realUserEmailNotLike()}` : '') +
+    (asOf ? ` AND u."createdAt" < ${isSqlite ? '?' : '$2'}` : '')
 
   const rows = await prisma.$queryRawUnsafe<{
     tag: string
@@ -3083,7 +3111,8 @@ export async function getSourceBreakdown(
     GROUP BY COALESCE(sa."sourceTag", 'unknown')
     ORDER BY "count" DESC
   `,
-    since
+    since,
+    ...(asOf ? [asOf] : []),
   )
 
   return {

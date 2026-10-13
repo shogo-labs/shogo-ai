@@ -53,7 +53,7 @@ import * as Clipboard from "expo-clipboard"
 import * as Haptics from "expo-haptics"
 import type { UIMessage } from "@ai-sdk/react"
 import { cn } from "@shogo/shared-ui/primitives"
-import { extractTextContent } from "@shogo/shared-app/chat"
+import { channelDispatchOf, extractTextContent } from "@shogo/shared-app/chat"
 import { MessageContent } from "./MessageContent"
 import {
   useMessageEditContext,
@@ -72,7 +72,10 @@ import {
 import { useIsNativePhoneLayout } from "../../../lib/native-phone-layout"
 import { useMobileWorkspaceChrome } from "../../layout/MobileWorkspaceChromeContext"
 import { AskUserAnswerCard } from "./AskUserAnswerCard"
+import { CanvasErrorCard } from "./CanvasErrorCard"
+import { ChannelDispatchCard } from "./ChannelDispatchCard"
 import { stripAskUserAnswerMarker } from "./askUserAnswers"
+import { parseCanvasErrorDebugPrompt } from "./canvasErrorPrompt"
 import type { AnsweredQuestion } from "./types"
 
 function showNativeUserMessageActions(opts: {
@@ -492,6 +495,40 @@ export const EditableUserMessage = memo(function EditableUserMessage({
   // check `node.contains(event.target)` against. ChatInput itself
   // is memoized and not forward-ref'd, so we can't get the same
   // handle from the component directly without an invasive change.
+  const dispatch = channelDispatchOf(message)
+  if (dispatch) {
+    return (
+      <View
+        className={cn(
+          usesCompactBubble ? "w-full items-end px-1" : "w-full",
+          className,
+        )}
+      >
+        <ChannelDispatchCard
+          dispatch={dispatch}
+          variant={usesCompactBubble ? "bubble" : "row"}
+        />
+      </View>
+    )
+  }
+
+  const canvasError = parseCanvasErrorDebugPrompt(extractTextContent(message))
+  if (canvasError) {
+    return (
+      <View
+        className={cn(
+          usesCompactBubble ? "w-full items-end px-1" : "w-full",
+          className,
+        )}
+      >
+        <CanvasErrorCard
+          prompt={canvasError}
+          variant={usesCompactBubble ? "bubble" : "row"}
+        />
+      </View>
+    )
+  }
+
   if (isEditing && ctx) {
     return (
       <View ref={containerRef} collapsable={false} className="w-full">

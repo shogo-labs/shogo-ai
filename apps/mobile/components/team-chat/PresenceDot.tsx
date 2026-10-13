@@ -21,12 +21,15 @@ export function PresenceDot({
   size = 8,
   badge = false,
   className,
+  ringClassName = 'border-background',
 }: {
   userId: string | null | undefined
   workspaceId?: string | null
   size?: number
   badge?: boolean
   className?: string
+  /** Ring color for a badge sitting on a surface other than the page background. */
+  ringClassName?: string
 }) {
   const status = usePresence(workspaceId, userId)
   if (!userId || (badge && status !== 'active' && status !== 'away')) return null
@@ -38,7 +41,7 @@ export function PresenceDot({
       className={cn(
         'rounded-full',
         status === 'active'
-          ? cn('bg-emerald-500', badge && 'border-2 border-background')
+          ? cn('bg-emerald-500', badge && 'border-2', badge && ringClassName)
           : 'border-[1.5px] border-muted-foreground bg-background',
         badge && 'absolute -bottom-0.5 -right-0.5',
         className,

@@ -21,6 +21,8 @@
  * so the live UI stream and the persisted/returned text stay consistent.
  */
 
+import { repairShareLinks } from './share-link-repair'
+
 // Sticky (`y`) so we can test for a match anchored exactly at a given index.
 // The host alternation is required, so the smallest possible match is the bare
 // host token (`localhost` / `127.0.0.1` / `0.0.0.0`); the scheme, port and path
@@ -124,18 +126,34 @@ export class LocalhostLinkRewriter {
   private readonly scanner: Scanner | null
   private buffer = ''
 
-  constructor(publicUrl?: string | null) {
+  /**
+   * `shareLinkTokens` is read live on every emit, so tokens minted mid-turn
+   * (by `share_file`) are repaired in text streamed after the tool returns.
+   */
+  constructor(
+    publicUrl?: string | null,
+    private readonly shareLinkTokens?: ReadonlySet<string>,
+  ) {
     const origin = normalizeOrigin(publicUrl)
     this.scanner = origin ? new Scanner(origin) : null
   }
 
-  /** Whether rewriting is active (a public URL was provided). */
+  /** Whether localhost rewriting is active (a public URL was provided). */
   get active(): boolean {
     return this.scanner !== null
   }
 
+  private get repairing(): boolean {
+    return (this.shareLinkTokens?.size ?? 0) > 0
+  }
+
+  private transform(text: string): string {
+    const rewritten = this.scanner ? this.scanner.process(text) : text
+    return this.shareLinkTokens ? repairShareLinks(rewritten, this.shareLinkTokens) : rewritten
+  }
+
   push(delta: string): string {
-    if (!this.scanner) return delta
+    if (!this.scanner && !this.repairing && !this.buffer) return delta
     this.buffer += delta
 
     let cut = -1
@@ -150,16 +168,11 @@ export class LocalhostLinkRewriter {
 
     const emittable = this.buffer.slice(0, cut + 1)
     this.buffer = this.buffer.slice(cut + 1)
-    return this.scanner.process(emittable)
+    return this.transform(emittable)
   }
 
   flush(): string {
-    if (!this.scanner) {
-      const rest = this.buffer
-      this.buffer = ''
-      return rest
-    }
-    const out = this.scanner.process(this.buffer)
+    const out = this.transform(this.buffer)
     this.buffer = ''
     return out
   }

@@ -12,13 +12,12 @@ const store = {
   resolvedWorkspaceId: null as null | string,
 
   // prisma.project.findUnique — keyed lookups used by authorizeLifecycleProject
-  // (workspaceId), resolveActingUserId (createdBy), and the attach route's
+  // (workspaceId), the project-token actor (createdBy), and the attach route's
   // best-effort mount (id/name/description of the attached project).
   projects: new Map<string, { workspaceId: string; createdBy?: string | null; id?: string; name?: string; description?: string | null }>(),
 
-  // prisma.member.findFirst — resolveActingUserId's workspace-token fallback
-  // (a merged-root runtime has no calling *project* to inherit createdBy
-  // from, so it falls back to the workspace's owner instead).
+  // prisma.member.findFirst — leftover fixture for membership lookups. Project
+  // create no longer falls back to the workspace owner.
   members: [] as Array<{ workspaceId: string; userId: string; role: string; createdAt: string }>,
 
   // project-lifecycle.service
@@ -71,6 +70,7 @@ mock.module('../../lib/k8s-auth', () => ({
 mock.module('../../lib/runtime-token', () => ({
   getSigningSecret: () => 'test-runtime-secret',
   verifyRuntimeToken: (_t: string, _p?: string) => store.runtimeVerify ?? { ok: false, reason: 'bad' },
+  deriveRuntimeToken: (projectId: string) => `rt_v1_${projectId}_mock`,
 }))
 
 mock.module('../../lib/workspace-runtime-token', () => ({
@@ -170,11 +170,13 @@ mock.module('../../lib/metal-warm-pool-controller', () => ({
 }))
 
 const app = (await import('../internal')).default
+const { _setRbacModeForTests } = await import('../../lib/authz')
 
 const SA = { Authorization: 'Bearer sa-token' }
 const JSON_H = { 'content-type': 'application/json' }
 
 beforeEach(() => {
+  _setRbacModeForTests('shadow')
   store.podIdentity = { serviceAccountName: 'runtime', namespace: 'shogo' }
   store.runtimeVerify = null
   store.workspaceVerify = null
@@ -204,7 +206,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
-  // Nothing global to restore — every dependency is module-mocked above.
+  _setRbacModeForTests(null)
 })
 
 // ─── GET /workspaces/:workspaceId/projects/graph ───────────────────────────
@@ -312,40 +314,38 @@ describe('POST /workspaces/:workspaceId/projects', () => {
     expect(store.createProjectCalledWith).toMatchObject({ actingUserId: 'creator-1' })
   })
 
-  // Regression: a merged-root (universal workspace) runtime authenticates
-  // with a *workspace* token, not a project token — `system_apply` /
-  // `project_create` from e.g. a multi-project pipeline's harness anchor
-  // hits this path. There is no calling project to inherit `createdBy`
-  // from, so before this fallback existed every such create 400'd with
-  // "userId is required", permanently breaking the harness's own
-  // `system_apply` tool. See resolveActingUserId in ../internal.ts.
-  test('201 for a workspace token falling back to the workspace owner', async () => {
+  // A workspace runtime has no project creator to inherit. It acts as the
+  // claimed user while enforcement is shadow/off, and never as the workspace
+  // owner. A signed ticket is required once enforcement is on.
+  test('201 for a workspace token using the claimed user, not the workspace owner', async () => {
     store.podIdentity = null
     store.workspaceVerify = { ok: true, workspaceId: 'ws-1' }
     store.members = [
-      { workspaceId: 'ws-1', userId: 'member-later', role: 'owner', createdAt: '2026-01-02T00:00:00.000Z' },
       { workspaceId: 'ws-1', userId: 'owner-1', role: 'owner', createdAt: '2026-01-01T00:00:00.000Z' },
-      { workspaceId: 'ws-OTHER', userId: 'owner-other', role: 'owner', createdAt: '2026-01-01T00:00:00.000Z' },
+    ]
+    const res = await app.request('/workspaces/ws-1/projects', {
+      method: 'POST',
+      headers: { ...JSON_H, 'x-runtime-token': 'wt' },
+      body: JSON.stringify({ name: 'X', userId: 'member-1' }),
+    })
+    expect(res.status).toBe(201)
+    expect(store.createProjectCalledWith).toMatchObject({ actingUserId: 'member-1' })
+  })
+
+  test('403 for a workspace token with no claimed user, even when the workspace has an owner', async () => {
+    store.podIdentity = null
+    store.workspaceVerify = { ok: true, workspaceId: 'ws-1' }
+    store.members = [
+      { workspaceId: 'ws-1', userId: 'owner-1', role: 'owner', createdAt: '2026-01-01T00:00:00.000Z' },
     ]
     const res = await app.request('/workspaces/ws-1/projects', {
       method: 'POST',
       headers: { ...JSON_H, 'x-runtime-token': 'wt' },
       body: JSON.stringify({ name: 'X' }),
     })
-    expect(res.status).toBe(201)
-    expect(store.createProjectCalledWith).toMatchObject({ actingUserId: 'owner-1' })
-  })
-
-  test('400 for a workspace token when the workspace has no owner member', async () => {
-    store.podIdentity = null
-    store.workspaceVerify = { ok: true, workspaceId: 'ws-1' }
-    store.members = []
-    const res = await app.request('/workspaces/ws-1/projects', {
-      method: 'POST',
-      headers: { ...JSON_H, 'x-runtime-token': 'wt' },
-      body: JSON.stringify({ name: 'X' }),
-    })
-    expect(res.status).toBe(400)
+    expect(res.status).toBe(403)
+    expect((await res.json()).error.code).toBe('requester_required')
+    expect(store.createProjectCalledWith).toBeNull()
   })
 
   test('402 when the lifecycle service rejects with instance_too_small', async () => {
@@ -555,6 +555,33 @@ describe('PATCH /projects/:projectId/config', () => {
       body: JSON.stringify({ settings: { techStackId: 'docker-compose' } }),
     })
     expect(res.status).toBe(402)
+  })
+})
+
+// ─── GET /projects/:projectId/app-runtime-token ─────────────────────────────
+
+describe('GET /projects/:projectId/app-runtime-token', () => {
+  test('returns the project token to its workspace runtime', async () => {
+    store.projects.set('proj-2', { workspaceId: 'ws-1' })
+    store.workspaceVerify = { ok: true, workspaceId: 'ws-1' }
+    const res = await app.request('/projects/proj-2/app-runtime-token', { headers: { 'x-runtime-token': 'wrt' } })
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ projectId: 'proj-2', token: 'rt_v1_proj-2_mock' })
+  })
+
+  test('401 for a workspace token from another workspace', async () => {
+    store.projects.set('proj-2', { workspaceId: 'ws-1' })
+    store.workspaceVerify = { ok: true, workspaceId: 'ws-OTHER' }
+    const res = await app.request('/projects/proj-2/app-runtime-token', { headers: { 'x-runtime-token': 'wrt' } })
+    expect(res.status).toBe(401)
+  })
+
+  test('401 for a sibling project token in the same workspace', async () => {
+    store.projects.set('proj-2', { workspaceId: 'ws-1' })
+    store.runtimeVerify = { ok: true, projectId: 'proj-1', format: 'v1' }
+    store.resolvedWorkspaceId = 'ws-1'
+    const res = await app.request('/projects/proj-2/app-runtime-token', { headers: { 'x-runtime-token': 'rt' } })
+    expect(res.status).toBe(401)
   })
 })
 

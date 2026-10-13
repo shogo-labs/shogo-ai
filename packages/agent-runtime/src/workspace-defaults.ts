@@ -68,11 +68,57 @@ export async function runWorkspaceInstall(
     )
     return existing
   }
-  const promise = pkg.installAsync(dir, opts).finally(() => {
+  const promise = installUntilPackageJsonSettles(dir, key, opts).finally(() => {
     inFlightInstalls.delete(key)
   })
   inFlightInstalls.set(key, promise)
   return promise
+}
+
+/** The install currently running for `dir`, if any. */
+export function inFlightWorkspaceInstall(dir: string): Promise<void> | undefined {
+  return inFlightInstalls.get(resolvePath(dir))
+}
+
+const MAX_INSTALL_PASSES = 3
+
+/**
+ * Install scripts run package code. In a workspace runtime they must not see
+ * the workspace token, and nothing in an install needs a runtime token.
+ */
+function installEnv(): NodeJS.ProcessEnv | undefined {
+  if (process.env.WORKSPACE_RUNTIME !== 'true') return undefined
+  const env = { ...process.env }
+  delete env.RUNTIME_AUTH_SECRET
+  return env
+}
+
+/**
+ * A joined caller may have seen a newer package.json than the one the
+ * in-flight install read (the pool pre-seed installs the template, then
+ * the host overlays the project's source mid-install). Every caller writes
+ * an install marker for the package.json it sees afterwards, so resolving
+ * after one pass would record deps that were never installed.
+ */
+async function installUntilPackageJsonSettles(
+  dir: string,
+  key: string,
+  opts: RunWorkspaceInstallOptions,
+): Promise<void> {
+  for (let pass = 1; ; pass++) {
+    const installedHash = computePackageJsonHash(key)
+    await pkg.installAsync(dir, { ...opts, env: installEnv() })
+    if (computePackageJsonHash(key) === installedHash) return
+    if (pass >= MAX_INSTALL_PASSES) {
+      console.warn(
+        `[workspace-defaults] package.json for ${key} kept changing during install — giving up after ${pass} passes`,
+      )
+      return
+    }
+    console.log(
+      `[workspace-defaults] package.json for ${key} changed during install — reinstalling (pass ${pass + 1})`,
+    )
+  }
 }
 
 /**
@@ -169,9 +215,6 @@ Long-lived facts and learnings are stored here.
 `,
   'config.json': JSON.stringify(
     {
-      heartbeatInterval: 1800,
-      heartbeatEnabled: false,
-      quietHours: { start: '23:00', end: '07:00', timezone: 'UTC' },
       channels: [],
       activeMode: 'canvas',
       model: {
@@ -921,7 +964,7 @@ export interface TechStackMeta {
     webEnabled?: boolean
     browserEnabled?: boolean
     shellEnabled?: boolean
-    heartbeatEnabled?: boolean
+    heartbeatToolsEnabled?: boolean
     imageGenEnabled?: boolean
     memoryEnabled?: boolean
     quickActionsEnabled?: boolean
@@ -1154,7 +1197,7 @@ export async function runTechStackSetup(dir: string, stackId: string): Promise<v
   if (!existsSync(destSetup)) return
 
   console.log(`[workspace-defaults] Running tech stack setup for "${stackId}"...`)
-  const { spawn } = await import('child_process')
+  const { spawn } = await import('@shogo/shared-runtime/child-process')
   await new Promise<void>((resolve, reject) => {
     const proc = spawn('bash', ['setup.sh'], {
       cwd: dir,

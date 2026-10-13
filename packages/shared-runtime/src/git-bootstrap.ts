@@ -27,7 +27,7 @@
  * lands in argv as a URL secret.
  */
 
-import { spawn } from 'child_process'
+import { spawn } from './child-process'
 import { existsSync } from 'fs'
 import { join } from 'path'
 import {

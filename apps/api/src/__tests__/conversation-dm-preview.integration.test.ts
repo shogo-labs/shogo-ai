@@ -60,6 +60,13 @@ describe('lastMessage on the conversation list', () => {
     }
   })
 
+  test('a direct message preview keeps inline markdown and drops block syntax', async () => {
+    const dm = await service.openDirectConversation(seed.workspaceId, seed.owner, [seed.member])
+    await post(dm.id, seed.owner, '## Done\n\n**shipped** the fix\n- see `main`')
+    const list = await service.listConversationsForUser(seed.workspaceId, seed.owner)
+    expect(list.find((c: any) => c.id === dm.id)!.lastMessage.preview).toBe('Done **shipped** the fix see `main`')
+  })
+
   test('a direct message with no messages has no preview', async () => {
     const dm = await service.openDirectConversation(seed.workspaceId, seed.member, [seed.viewer])
     const list = await service.listConversationsForUser(seed.workspaceId, seed.member)

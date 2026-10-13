@@ -17,7 +17,13 @@ mock.module('../middleware/auth', () => ({
 let members: Array<{ userId: string; workspaceId: string; role: string }> = []
 mock.module('../lib/prisma', () => ({
   prisma: {
+    user: { findUnique: async () => ({ role: 'user' }) },
     member: {
+      findMany: async (args: any) =>
+        members
+          .filter((m) => m.userId === args.where.userId)
+          .filter((m) => (args.where.OR ? args.where.OR.some((o: any) => o.workspaceId === m.workspaceId) : !args.where.workspaceId || args.where.workspaceId === m.workspaceId))
+          .map((m) => ({ role: m.role, workspaceId: m.workspaceId, projectId: null, isBillingAdmin: false })),
       findFirst: async (args: any) =>
         members.find((m) => m.userId === args.where.userId && m.workspaceId === args.where.workspaceId) ?? null,
     },

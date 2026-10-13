@@ -71,6 +71,31 @@ describe('createWriteFileTool', () => {
     expect(existsSync(join(TEST_DIR, 'upload.xlsx'))).toBe(false)
   })
 
+  test('writes a binary file from base64 and rewrites /tmp into .tmp', async () => {
+    const ctx = makeCtx()
+    const payload = Buffer.from('pdf-bytes')
+    const r = await run(ctx, 'write_file', {
+      path: '/tmp/report.pdf',
+      content: payload.toString('base64'),
+      encoding: 'base64',
+    })
+    expect(r.details.ok).toBe(true)
+    expect(r.details.path).toBe('.tmp/report.pdf')
+    expect(r.details.remappedFrom).toBe('/tmp/report.pdf')
+    expect(r.details.bytes).toBe(payload.length)
+    expect(readFileSync(join(TEST_DIR, '.tmp/report.pdf'))).toEqual(payload)
+  })
+
+  test('does not rewrite an absolute /tmp path that is already inside the workspace', async () => {
+    const ctx = makeCtx()
+    const absolute = join(TEST_DIR, 'inside.txt')
+    const r = await run(ctx, 'write_file', { path: absolute, content: 'stay' })
+    expect(r.details.ok).toBe(true)
+    expect(r.details.remappedFrom).toBeUndefined()
+    expect(readFileSync(absolute, 'utf8')).toBe('stay')
+    expect(existsSync(join(TEST_DIR, '.tmp'))).toBe(false)
+  })
+
   test('creates parent directories on the fly', async () => {
     const ctx = makeCtx()
     const r = await run(ctx, 'write_file', { path: 'a/b/c/deep.txt', content: 'deep' })

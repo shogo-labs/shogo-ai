@@ -34,7 +34,13 @@ import {
   isWorkspaceRuntimeEnabled,
   usePlatformConfig,
 } from "../../lib/platform-config";
-import { API_URL } from "../../lib/api";
+import { api, API_URL, createHttpClient } from "../../lib/api";
+import {
+  discardPendingSignupAttribution,
+  flushSignupAttribution,
+  getPendingSignupAttribution,
+  shouldRecordSignupAttribution,
+} from "../../lib/attribution";
 import { trackSignUp, trackLogin } from "../../lib/tracking";
 import { usePostHogIdentify, usePostHogSafe } from "../../contexts/posthog";
 import { DomainProvider, useWorkspaceCollection } from "../../contexts/domain";
@@ -322,6 +328,17 @@ function AppLayoutInner() {
         }
       }
     } catch {}
+
+    const queued = getPendingSignupAttribution();
+    if (!queued) return;
+    if (!shouldRecordSignupAttribution(queued, user.createdAt)) {
+      discardPendingSignupAttribution();
+      return;
+    }
+    const http = createHttpClient();
+    void flushSignupAttribution((body) => api.postSignupAttribution(http, body)).catch(
+      () => {},
+    );
   }, [isAuthenticated, user]);
 
   const suppressNarrowAppHeader =

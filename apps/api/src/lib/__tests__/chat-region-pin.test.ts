@@ -149,4 +149,27 @@ describe('pinChatToHomeRegion', () => {
     expect(res).toBeNull()
     expect(proxyCalls).toHaveLength(0)
   })
+
+  test('onForeignHome reports the home region for proxied and failed-closed requests only', async () => {
+    const seen: string[] = []
+    const onForeignHome = (r: string) => seen.push(r)
+    await pinChatToHomeRegion(makeCtx(), 'p_us', undefined, { onForeignHome })
+    await pinChatToHomeRegion(makeCtx(), 'p_nopeer', undefined, { onForeignHome })
+    await pinChatToHomeRegion(makeCtx(), 'p_eu', undefined, { onForeignHome })
+    await pinChatToHomeRegion(makeCtx(), 'p_legacy', undefined, { onForeignHome })
+    await pinChatToHomeRegion(makeCtx({ headers: { 'x-shogo-home-region-proxy': '1' } }), 'p_us', undefined, {
+      onForeignHome,
+    })
+    expect(seen).toEqual(['us-ashburn-1', 'unknown-region-9'])
+  })
+
+  test('onLocalHome fires only when this region is the known home', async () => {
+    let local = 0
+    const onLocalHome = () => void local++
+    await pinChatToHomeRegion(makeCtx(), 'p_eu', undefined, { onLocalHome })
+    await pinChatToHomeRegion(makeCtx(), 'p_us', undefined, { onLocalHome })
+    await pinChatToHomeRegion(makeCtx(), 'p_legacy', undefined, { onLocalHome })
+    await pinChatToHomeRegion(makeCtx(), 'p_missing', undefined, { onLocalHome })
+    expect(local).toBe(1)
+  })
 })

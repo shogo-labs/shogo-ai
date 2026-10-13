@@ -5,11 +5,11 @@
  *
  * Pure label/stats module for `WorkGroup` and the "Worked for X"
  * header. Tallies a run of work-tool parts into buckets (files
- * edited, files read, searches, fetches, commands), classifies the
- * run's `kind`, and builds the Cursor-style one-line label:
+ * edited, files read, searches, fetches, lookups, commands), classifies
+ * the run's `kind`, and builds the Cursor-style one-line label:
  *
- *   Explored 14 files, 9 searches, ran 4 commands
- *   Edited 11 files, explored 3 searches, 1 fetch, ran 13 commands
+ *   Explored 14 files, 9 searches, 4 lookups, ran 4 commands
+ *   Edited 11 files, explored 3 searches, 1 fetch, 2 lookups, ran 13 commands
  *   Editing 32 files, explored 1 search, ran 23 commands   (present tense)
  *   Ran 3 commands
  *
@@ -21,7 +21,7 @@
  * Pure module — no React imports. Safe to unit-test directly.
  */
 
-import { getToolSummary } from "../tools/summary"
+import { getToolSummary, LOOKUP_TOOL_NAMES } from "../tools/summary"
 import { computeLineDiff } from "./diff-utils"
 import type { GroupedMessagePart, MessagePart } from "./types"
 import type { ToolCallData } from "../tools/types"
@@ -35,6 +35,7 @@ export interface WorkCounts {
   readFiles: number
   searches: number
   fetches: number
+  lookups: number
   commands: number
 }
 
@@ -135,7 +136,14 @@ export function tallyWork(
   added: number
   removed: number
 } {
-  const counts: WorkCounts = { editedFiles: 0, readFiles: 0, searches: 0, fetches: 0, commands: 0 }
+  const counts: WorkCounts = {
+    editedFiles: 0,
+    readFiles: 0,
+    searches: 0,
+    fetches: 0,
+    lookups: 0,
+    commands: 0,
+  }
   const editedPaths = new Set<string>()
   let added = 0
   let removed = 0
@@ -160,6 +168,11 @@ export function tallyWork(
         added += diffCounts.added
         removed += diffCounts.removed
       }
+      continue
+    }
+
+    if (LOOKUP_TOOL_NAMES.has(tool.toolName)) {
+      counts.lookups++
       continue
     }
 
@@ -194,7 +207,14 @@ export function tallyWork(
 
 export function classifyWorkKind(counts: WorkCounts): WorkKind {
   if (counts.editedFiles > 0) return "edited"
-  if (counts.readFiles > 0 || counts.searches > 0 || counts.fetches > 0) return "explored"
+  if (
+    counts.readFiles > 0 ||
+    counts.searches > 0 ||
+    counts.fetches > 0 ||
+    counts.lookups > 0
+  ) {
+    return "explored"
+  }
   return "ran"
 }
 
@@ -220,6 +240,7 @@ export function buildWorkLabel(counts: WorkCounts, kind: WorkKind, tense: WorkTe
     const exploreParts: string[] = []
     if (counts.searches > 0) exploreParts.push(pluralize(counts.searches, "search", "searches"))
     if (counts.fetches > 0) exploreParts.push(pluralize(counts.fetches, "fetch", "fetches"))
+    if (counts.lookups > 0) exploreParts.push(pluralize(counts.lookups, "lookup"))
     if (exploreParts.length > 0) segs.push(`explored ${exploreParts.join(", ")}`)
     if (counts.commands > 0) segs.push(`ran ${pluralize(counts.commands, "command")}`)
     return segs.join(", ")
@@ -231,6 +252,7 @@ export function buildWorkLabel(counts: WorkCounts, kind: WorkKind, tense: WorkTe
     if (counts.readFiles > 0) exploreParts.push(pluralize(counts.readFiles, "file"))
     if (counts.searches > 0) exploreParts.push(pluralize(counts.searches, "search", "searches"))
     if (counts.fetches > 0) exploreParts.push(pluralize(counts.fetches, "fetch", "fetches"))
+    if (counts.lookups > 0) exploreParts.push(pluralize(counts.lookups, "lookup"))
     const bucket = exploreParts.length > 0 ? exploreParts.join(", ") : pluralize(0, "file")
     const segs: string[] = [`${lead} ${bucket}`]
     if (counts.commands > 0) segs.push(`ran ${pluralize(counts.commands, "command")}`)

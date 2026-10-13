@@ -24,7 +24,7 @@
  * tar dep just for one-shot installs. macOS, Linux, and Windows
  * (since 1803) all ship a usable `tar` on PATH.
  */
-import { spawn } from 'node:child_process';
+import { spawn } from './child-process.ts';
 import { createHash } from 'node:crypto';
 import {
   chmodSync,

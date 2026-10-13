@@ -1,20 +1,12 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * iOS: Home Screen and Lock Screen widgets read the snapshot from the App
- * Group, and the Live Activity follows the agent that needs you or is working.
+ * iOS: no glance sinks yet. The Home Screen widget (`targets/widgets`, via
+ * `@bacons/apple-targets`) and the Live Activity (`expo-widgets`) need their
+ * own App IDs, the `group.ai.shogo.app` App Group and App Store provisioning
+ * profiles before CI can sign them, so their config plugins are not in
+ * app.json. Without those native targets the sinks would write to nothing and
+ * the Live Activity calls would throw. Restore the sinks together with the
+ * plugins and the App Group entitlement.
  */
-import { ExtensionStorage } from '@bacons/apple-targets'
-import { GLANCE_APP_GROUP, createWidgetSink } from './glance-storage'
-import { registerGlanceSink } from './glance-publisher'
-import { liveActivitySink, liveActivityTokens, listenForPushToStartToken } from './live-activity/agent-live-activity'
-import { subscribePushToken } from './notifications/mobile-push-registration'
-
-const storage = new ExtensionStorage(GLANCE_APP_GROUP)
-
-registerGlanceSink(createWidgetSink(storage, () => ExtensionStorage.reloadWidget()))
-registerGlanceSink(liveActivitySink)
-
-// So the server can keep the activity current while the app is closed.
-listenForPushToStartToken()
-subscribePushToken((token) => void liveActivityTokens.setPushToken(token))
+export {}

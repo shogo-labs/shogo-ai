@@ -465,6 +465,12 @@ export function _sessionsForTest(): Map<string, PtySession> { return sessions }
 const isUtilityProcess = typeof (process as Partial<UtilityProcess>).parentPort !== 'undefined'
 
 if (isUtilityProcess) {
+  // Electron 37+ no longer crashes a utilityProcess on an unhandled rejection.
+  // Exit explicitly so a failed PTY host is restarted instead of running blind.
+  process.on('unhandledRejection', (reason) => {
+    console.error('[pty-host] unhandledRejection', reason)
+    process.exit(1)
+  })
   process.parentPort.on('message', (m: unknown) => {
     // `utilityProcess` wraps user payloads under `{ data: <payload> }`.
     // Transferred MessagePortMain instances arrive on `.ports` alongside.

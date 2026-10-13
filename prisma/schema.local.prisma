@@ -10,8 +10,9 @@
 // Migrate with:  bunx prisma migrate dev --schema=prisma/schema.local.prisma
 
 generator client {
-  provider = "prisma-client"
-  output   = "../apps/api/src/generated/prisma-sqlite"
+  provider        = "prisma-client"
+  output          = "../apps/api/src/generated/prisma-sqlite"
+  previewFeatures = ["partialIndexes"]
 }
 
 datasource db {
@@ -474,6 +475,9 @@ model Project {
   // so we store the string. Allowed values: anyone, authenticated, private,
   // password. Set by apps/api/src/routes/publish.ts.
   accessLevel        String    @default("anyone")
+  // Mirrors `ProjectVisibility` enum in schema.prisma. Allowed values:
+  // workspace, restricted.
+  visibility         String    @default("workspace")
   // SHA-256 hash (hex) of the published-site password, salted by subdomain.
   // Only set when accessLevel == "password". Canonical comment in
   // prisma/schema.prisma.
@@ -996,6 +1000,8 @@ model Member {
   workspace Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   project   Project?   @relation(fields: [projectId], references: [id], onDelete: Cascade)
 
+  @@unique([userId, workspaceId], map: "members_workspace_scope_key", where: raw("\"projectId\" IS NULL"))
+  @@unique([userId, projectId], map: "members_project_scope_key", where: raw("\"projectId\" IS NOT NULL"))
   @@index([userId])
   @@index([workspaceId])
   @@index([projectId])
@@ -1253,6 +1259,10 @@ model UsageWallet {
   overageHardLimitUsd          Float?
   overageAccumulatedUsd        Float     @default(0)
   overageBilledUsd             Float     @default(0)
+  overagePaidBlocks            Int       @default(0)
+  overageOutstandingInvoiceId  String?
+  overageOutstandingUsd        Float     @default(0)
+  overageOutstandingInvoiceUrl String?
   // JSON-encoded per-period alert dedupe ledger (Json? on PG). See
   // prisma/schema.prisma UsageWallet.alertsSentThisPeriod.
   alertsSentThisPeriod         String?
@@ -1347,6 +1357,9 @@ model ChatSession {
   contextId           String?
   // Set only for contextType == workspace (see schema.prisma).
   workspaceId         String?
+  // Owner of a personal workspace-agent chat. Null for project chats,
+  // scheduled/DM/Slack sessions, and chats created before ownership existed.
+  createdByUserId     String?
   phase               String?
   claudeCodeSessionId String?
   cachedMessageCount  Int      @default(0)
@@ -1383,6 +1396,7 @@ model ChatSession {
 
   @@index([contextType, contextId])
   @@index([workspaceId])
+  @@index([workspaceId, createdByUserId, lastActiveAt])
   @@index([activeTurnHeartbeatAt])
   @@map("chat_sessions")
 }

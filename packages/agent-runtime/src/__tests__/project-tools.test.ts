@@ -10,12 +10,14 @@ import { describe, test, expect, beforeEach, mock } from 'bun:test'
 import { mkdtempSync, rmSync, existsSync, readFileSync, mkdirSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
+import { runChatSessionId } from '@shogo/shared-runtime/project-call-chat'
 import * as realInternalApi from '../internal-api'
 
 // ─── internal-api fakes ─────────────────────────────────────────────────
 
 type Call = { fn: string; args: unknown[] }
 const calls: Call[] = []
+let internalApiCredentials = false
 
 const api = {
   graph: { ok: true, status: 200, data: [] as any[] } as any,
@@ -31,6 +33,7 @@ const api = {
 
 mock.module('../internal-api', () => ({
   ...realInternalApi,
+  hasInternalApiCredentials: () => internalApiCredentials,
   getWorkspaceProjectGraph: (workspaceId: string) => {
     calls.push({ fn: 'getWorkspaceProjectGraph', args: [workspaceId] })
     return api.graph
@@ -75,6 +78,7 @@ const {
   createProjectAttachTool,
   createProjectDetachTool,
   createProjectConfigureTool,
+  createCapabilitiesConfigureTool,
   createProjectCallTool,
   createSystemApplyTool,
   resolveProjectDir,
@@ -109,6 +113,7 @@ async function run(tool: { execute: (id: string, params: any) => Promise<any> },
 
 beforeEach(() => {
   calls.length = 0
+  internalApiCredentials = false
   workspaceDir = mkdtempSync(join(tmpdir(), 'project-tools-test-'))
   api.graph = { ok: true, status: 200, data: [] }
   api.create = { ok: true, status: 201, data: { id: 'proj-new', name: 'New', description: null, workingMode: 'managed', settings: null } }
@@ -271,6 +276,31 @@ describe('project_configure', () => {
     ])
   })
 
+  test('reports a paywall heartbeatError as a warning while the rest of the patch applies', async () => {
+    api.configure = {
+      ok: true,
+      status: 200,
+      data: {
+        id: 'proj-1', name: 'Renamed', description: null, settings: null, slackEnabled: false, agent: null,
+        heartbeatError: { code: 'paywall', message: 'Heartbeats require a paid plan.' },
+      },
+    }
+    const ctx = baseCtx({ projectId: 'proj-1' })
+    const out = await run(createProjectConfigureTool(ctx), { name: 'Renamed', heartbeatEnabled: true })
+    expect(out.ok).toBe(true)
+    expect(out.changed).toBe(true)
+    expect(out.project.name).toBe('Renamed')
+    expect(out.heartbeatError).toMatchObject({ code: 'paywall' })
+    expect(out.warning).toContain('Heartbeat settings were not applied')
+  })
+
+  test('has no warning when the heartbeat part was applied', async () => {
+    const ctx = baseCtx({ projectId: 'proj-1' })
+    const out = await run(createProjectConfigureTool(ctx), { heartbeatEnabled: true })
+    expect(out.heartbeatError).toBeUndefined()
+    expect(out.warning).toBeUndefined()
+  })
+
   test('targets another project by manifest key resolved through the lock', async () => {
     api.graph.data = [
       { id: 'caller-1', name: 'Caller', description: null, workingMode: 'managed', settings: null, attachments: [], agent: null },
@@ -307,6 +337,42 @@ describe('project_call', () => {
     expect(callArgs[0]).toBe('proj-2')
     expect(callArgs[1].runId).toBe(out.runId)
     expect(callArgs[1].callerProjectId).toBe('caller-1')
+  })
+
+  test('emits a preliminary result with the target chat before waiting for the call', async () => {
+    api.graph.data = [
+      { id: 'caller-1', name: 'Caller', description: null, workingMode: 'managed', settings: null, attachments: [], agent: null },
+      { id: 'proj-2', name: 'Worker', description: null, workingMode: 'managed', settings: null, attachments: [], agent: null },
+    ]
+    let resolveCall!: (value: any) => void
+    api.call = new Promise((resolve) => {
+      resolveCall = resolve
+    }) as any
+    const events: any[] = []
+    const pending = run(
+      createProjectCallTool(baseCtx({ uiWriter: { write: (event: any) => events.push(event) } })),
+      { project: 'proj-2', message: 'go', runId: 'run_fixed' },
+    )
+
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(events[0]).toEqual({
+      type: 'tool-output-available',
+      toolCallId: 'cid',
+      output: {
+        project: { id: 'proj-2', name: 'Worker' },
+        runId: 'run_fixed',
+        status: 'running',
+        wait: true,
+        chatSessionId: runChatSessionId('proj-2', 'run_fixed'),
+      },
+      dynamic: true,
+      preliminary: true,
+    })
+    expect(calls.find((call) => call.fn === 'callProjectAgent')).toBeDefined()
+
+    resolveCall({ ok: true, status: 200, data: { status: 'completed', reply: 'done', chatSessionId: 'chat-123' } })
+    await pending
   })
 
   test('reuses a caller-supplied runId', async () => {
@@ -451,6 +517,55 @@ describe('system_apply', () => {
     expect(calls.find((c) => c.fn === 'attachProject')).toBeUndefined()
   })
 
+  test('a lock binding the requester cannot see is not_accessible and is not recreated', async () => {
+    mkdirSync(join(workspaceDir, '.shogo'), { recursive: true })
+    writeFileSync(join(workspaceDir, '.shogo/system.lock.json'), JSON.stringify({
+      version: 1, name: 'hidden', bindings: { secret: 'proj-hidden' },
+    }))
+    api.graph.data = []
+    const manifest = `
+version: 1
+name: hidden
+projects:
+  - key: secret
+    name: Secret
+`
+    const out = await run(createSystemApplyTool(baseCtx()), { manifest })
+    expect(out.errors.some((l: string) => l.includes('not_accessible') && l.includes('proj-hidden'))).toBe(true)
+    expect(out.plan.some((l: string) => l.startsWith('not_accessible secret'))).toBe(true)
+    expect(calls.find((c) => c.fn === 'createProject')).toBeUndefined()
+    const lock = JSON.parse(readFileSync(join(workspaceDir, '.shogo/system.lock.json'), 'utf-8'))
+    expect(lock.bindings.secret).toBe('proj-hidden')
+  })
+
+  test('reports a heartbeat paywall as an error but still applies the rest of the configure', async () => {
+    api.create = { ok: true, status: 201, data: { id: 'proj-intake', name: 'Intake', description: null, workingMode: 'managed', settings: null } }
+    api.configure = {
+      ok: true,
+      status: 200,
+      data: {
+        id: 'proj-intake', name: 'Intake', description: null, settings: null, slackEnabled: false, agent: null,
+        heartbeatError: { code: 'paywall', message: 'Heartbeats require a paid plan.' },
+      },
+    }
+    const manifest = `
+version: 1
+name: issue-pipeline
+projects:
+  - key: intake
+    name: Intake
+    agent:
+      model: claude-haiku-4-5
+      heartbeat:
+        enabled: true
+        interval: 900
+`
+    const out = await run(createSystemApplyTool(baseCtx()), { manifest })
+    expect(out.applied.some((l: string) => l.includes('configure intake'))).toBe(true)
+    expect(out.errors.some((l: string) => l.includes('heartbeat not applied') && l.includes('paid plan'))).toBe(true)
+    expect(out.ok).toBe(false)
+  })
+
   test('skips writing files for a project not yet reachable on disk, and reports it instead of erroring', async () => {
     api.create = { ok: true, status: 201, data: { id: 'proj-intake', name: 'Intake', description: null, workingMode: 'managed', settings: null } }
     const ctx = baseCtx()
@@ -504,5 +619,100 @@ describe('system_apply', () => {
 `
     const out = await run(createSystemApplyTool(baseCtx()), { manifest, dryRun: true })
     expect(out.manual.join('\n')).toContain('create #ops by hand')
+  })
+})
+
+describe('capabilities_configure', () => {
+  test('reads the current state without writing', async () => {
+    const ctx = baseCtx({ onCapabilitiesChanged: () => { throw new Error('should not reload') } })
+    const out = await run(createCapabilitiesConfigureTool(ctx))
+    expect(out.changed).toBe(false)
+    expect(out.enabled).toContain('webEnabled')
+    expect(out.disabled).toContain('gitWorktreesEnabled')
+    expect(out.locked).toEqual([])
+    expect(calls.find((c) => c.fn === 'configureProject')).toBeUndefined()
+  })
+
+  test('writes through the project config API and reloads', async () => {
+    internalApiCredentials = true
+    let reloaded = 0
+    const ctx = baseCtx({ onCapabilitiesChanged: async () => { reloaded++ } })
+    const out = await run(createCapabilitiesConfigureTool(ctx), { changes: { channelsEnabled: false } })
+    expect(out.changed).toBe(true)
+    expect(out.applies).toBe('next turn')
+    expect(out.disabled).toContain('channelsEnabled')
+    expect(calls.find((c) => c.fn === 'configureProject')?.args).toEqual([
+      'caller-1',
+      { settings: { channelsEnabled: false } },
+    ])
+    expect(reloaded).toBe(1)
+    const saved = JSON.parse(readFileSync(join(workspaceDir, 'config.json'), 'utf-8'))
+    expect(saved.channelsEnabled).toBe(false)
+    expect(saved.webEnabled).toBe(true)
+  })
+
+  test('turning canvas off also sets activeMode to none', async () => {
+    internalApiCredentials = true
+    const ctx = baseCtx()
+    const out = await run(createCapabilitiesConfigureTool(ctx), { changes: { canvasEnabled: false } })
+    expect(out.changed).toBe(true)
+    expect(out.capabilities.canvasEnabled).toBe(false)
+    expect(calls.find((c) => c.fn === 'configureProject')?.args[1]).toEqual({
+      settings: { canvasEnabled: false, activeMode: 'none' },
+    })
+    const saved = JSON.parse(readFileSync(join(workspaceDir, 'config.json'), 'utf-8'))
+    expect(saved.canvasEnabled).toBe(false)
+    expect(saved.activeMode).toBe('none')
+  })
+
+  test('without API credentials, merges the patch into config.json and preserves other flags', async () => {
+    writeFileSync(join(workspaceDir, 'config.json'), JSON.stringify({
+      webEnabled: false,
+      model: { name: 'kept' },
+    }))
+    let reloaded = 0
+    const ctx = baseCtx({
+      config: {
+        ...(baseCtx().config),
+        webEnabled: false,
+      },
+      onCapabilitiesChanged: () => { reloaded++ },
+    })
+    const out = await run(createCapabilitiesConfigureTool(ctx), { changes: { imageGenEnabled: false } })
+    expect(out.changed).toBe(true)
+    expect(calls.find((c) => c.fn === 'configureProject')).toBeUndefined()
+    expect(reloaded).toBe(1)
+    const saved = JSON.parse(readFileSync(join(workspaceDir, 'config.json'), 'utf-8'))
+    expect(saved.imageGenEnabled).toBe(false)
+    expect(saved.webEnabled).toBe(false)
+    expect(saved.model).toEqual({ name: 'kept' })
+  })
+
+  test('rejects an unknown capability', async () => {
+    const out = await run(createCapabilitiesConfigureTool(baseCtx()), { changes: { notACapability: true } })
+    expect(out.code).toBe('unknown_capability')
+    expect(existsSync(join(workspaceDir, 'config.json'))).toBe(false)
+  })
+
+  test('rejects a capability locked by the personal profile', async () => {
+    internalApiCredentials = true
+    const ctx = baseCtx({
+      config: { ...(baseCtx().config), capabilityProfile: 'personal', shellEnabled: false },
+    })
+    const out = await run(createCapabilitiesConfigureTool(ctx), { changes: { shellEnabled: true } })
+    expect(out.code).toBe('capability_locked')
+    expect(calls.find((c) => c.fn === 'configureProject')).toBeUndefined()
+    expect(existsSync(join(workspaceDir, 'config.json'))).toBe(false)
+  })
+
+  test('a failed API write does not update the local cache', async () => {
+    internalApiCredentials = true
+    api.configure = { ok: false, status: 403, error: 'not allowed', code: 'forbidden' }
+    let reloaded = 0
+    const ctx = baseCtx({ onCapabilitiesChanged: () => { reloaded++ } })
+    const out = await run(createCapabilitiesConfigureTool(ctx), { changes: { shellEnabled: false } })
+    expect(out.code).toBe('forbidden')
+    expect(reloaded).toBe(0)
+    expect(existsSync(join(workspaceDir, 'config.json'))).toBe(false)
   })
 })

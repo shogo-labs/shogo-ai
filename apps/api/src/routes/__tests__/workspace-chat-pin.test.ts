@@ -77,6 +77,7 @@ mock.module('../../services/workspace-session.service', () => ({
     return row
   },
   assertWorkspaceSessionInWorkspace: async () => {},
+  assertWorkspaceSessionAccess: async () => {},
   detachProject: async (sessionId: string, projectId: string) => {
     store.detachCalls.push([sessionId, projectId])
     store.attached = store.attached.filter((a) => a.projectId !== projectId)
@@ -88,7 +89,7 @@ mock.module('../../services/workspace-session.service', () => ({
     return { id: 'sess-new', workspaceId, contextId: opts.anchorProjectId ?? null, attached: [] }
   },
   listWorkspaceSessions: async () => [],
-  getOrCreatePrimaryWorkspaceSession: async () => ({ id: 'sess-primary' }),
+  getOrCreateDefaultWorkspaceSession: async () => ({ id: 'sess-primary' }),
   pinWorkspaceSessionToProject: async (sessionId: string, projectId: string) => {
     store.pinCalls.push([sessionId, projectId])
     if (store.pinResult.changed) store.contextId = projectId

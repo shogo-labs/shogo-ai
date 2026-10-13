@@ -27,6 +27,7 @@ import { join } from 'node:path'
 const MANAGER_PATH = join(import.meta.dir, '..', 'lib', 'runtime', 'manager.ts')
 const KNATIVE_PATH = join(import.meta.dir, '..', 'lib', 'knative-project-manager.ts')
 const WARM_POOL_PATH = join(import.meta.dir, '..', 'lib', 'warm-pool-controller.ts')
+const WORKSPACE_ENV_PATH = join(import.meta.dir, '..', 'lib', 'runtime', 'build-workspace-env.ts')
 
 function readSource(path: string): string {
   return readFileSync(path, 'utf8')
@@ -34,13 +35,12 @@ function readSource(path: string): string {
 
 describe('TOOLS_PROXY_URL / AI_PROXY_URL convention', () => {
   test('desktop RuntimeManager builds proxy URLs via the centralized helpers', () => {
-    const src = readSource(MANAGER_PATH)
-    expect(src).toContain('buildToolsProxyUrl')
-    expect(src).toContain('buildAiProxyUrl')
-    expect(src).toMatch(
+    expect(readSource(MANAGER_PATH)).toMatch(
       /runtimeEnv\.TOOLS_PROXY_URL\s*=\s*buildToolsProxyUrl\(/,
     )
-    expect(src).toMatch(/buildAiProxyUrl\(/)
+    expect(readSource(WORKSPACE_ENV_PATH)).toMatch(
+      /env\.TOOLS_PROXY_URL\s*=\s*buildToolsProxyUrl\(apiBase\)/,
+    )
   })
 
   test('cloud KnativeProjectManager uses the same helpers', () => {
@@ -78,11 +78,12 @@ describe('TOOLS_PROXY_URL / AI_PROXY_URL convention', () => {
   // before handing off, otherwise trust resolution, heartbeat reports,
   // and subagent overrides silently fail in desktop mode.
   // ─────────────────────────────────────────────────────────────────
-  test('desktop RuntimeManager pins SHOGO_API_URL to the local apiBase', () => {
-    const src = readSource(MANAGER_PATH)
+  test('desktop workspace runtime env pins SHOGO_API_URL to the local apiBase', () => {
+    const src = readSource(WORKSPACE_ENV_PATH)
     // The exact assignment we expect — same `apiBase` the AI proxy URL
     // is built from, so the two can't drift to different hosts.
-    expect(src).toMatch(/runtimeEnv\.SHOGO_API_URL\s*=\s*apiBase/)
+    expect(src).toMatch(/env\.SHOGO_API_URL\s*=\s*apiBase/)
+    expect(src).toMatch(/env\.AI_PROXY_URL\s*=\s*`\$\{apiBase\}\/api\/ai\/v1`/)
   })
 
   test('cloud spawn-env builder pins SHOGO_API_URL to its local apiBase', () => {

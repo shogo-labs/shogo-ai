@@ -17,7 +17,7 @@ type ApiKeyRow = {
   devicePlatform: string | null; deviceAppVersion: string | null
   lastUsedAt: Date | null; lastSeenAt: Date | null; createdAt: Date
 }
-type MemberRow = { userId: string; workspaceId: string; createdAt: Date }
+type MemberRow = { userId: string; workspaceId: string; createdAt: Date; role?: string; projectId?: string | null }
 type WorkspaceRow = { id: string; name: string; slug: string }
 type UserRow = { id: string; name: string; email: string }
 
@@ -61,6 +61,17 @@ const prismaStub = {
       if (!r) return null
       return select ? project(r, select) : r
     },
+    findMany: async ({ where }: any) =>
+      members
+        .filter(m => m.userId === where.userId)
+        .filter(m => where.OR.some((c: any) =>
+          'workspaceId' in c
+            ? m.workspaceId === c.workspaceId && (m.projectId ?? null) === c.projectId
+            : (m.projectId ?? null) === c.projectId))
+        .map(m => ({ role: m.role ?? 'member', projectId: m.projectId ?? null, isBillingAdmin: false })),
+  },
+  user: {
+    findUnique: async () => ({ role: 'user' }),
   },
   workspace: {
     findUnique: async ({ where, select }: any) => {
@@ -97,6 +108,7 @@ const prismaStub = {
     findMany: async ({ where, select, orderBy }: any) => {
       let rows = apiKeys.filter(k => {
         if (where.workspaceId && k.workspaceId !== where.workspaceId) return false
+        if (where.userId && k.userId !== where.userId) return false
         if (where.revokedAt === null && k.revokedAt !== null) return false
         if (where.kind && k.kind !== where.kind) return false
         return true

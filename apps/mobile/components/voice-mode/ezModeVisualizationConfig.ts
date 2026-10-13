@@ -13,7 +13,7 @@
  * are independent.
  */
 
-import type { OrganicParticlesConfig } from '@shogo-ai/sdk/voice/react'
+import type { OrganicParticlesConfig } from '@shogo-ai/sdk/voice/react/visuals'
 
 export const EZ_MODE_PARTICLES_CONFIG: OrganicParticlesConfig = {
   count: 18000,

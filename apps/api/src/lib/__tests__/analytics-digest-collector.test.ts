@@ -337,6 +337,36 @@ describe('generateDigest', () => {
     expect(digest.id).toBe('digest-1')
   })
 
+  it('asOf dates the row and bounds every window to that run time', async () => {
+    const calls: Record<string, any[]> = {}
+    funnelImpl = async (...a: any[]) => {
+      calls.funnel = a
+      return { signups: 0, onboarded: 0, createdProject: 0, sentMessage: 0, engaged: 0, avgMinToFirstProject: null, avgMinToFirstMessage: null }
+    }
+    activityImpl = async (...a: any[]) => {
+      calls.activity = a
+      return { total: 0, users: [] }
+    }
+    sourcesImpl = async (...a: any[]) => {
+      calls.sources = a
+      return { sources: [] }
+    }
+    convosImpl = async (...a: any[]) => {
+      calls.convos = a
+      return { conversations: [] }
+    }
+
+    const asOf = new Date('2026-10-01T08:00:00.000Z')
+    await generateDigest(fakePrisma, { asOf })
+
+    expect(upsertCalls[0].where.date_period_region.date.toISOString()).toBe('2026-10-01T00:00:00.000Z')
+    expect(calls.funnel).toEqual(['30d', true, asOf])
+    expect(calls.activity[1].asOf).toBe(asOf)
+    expect(calls.sources).toEqual(['30d', true, asOf])
+    expect(calls.convos[0].toISOString()).toBe('2026-09-30T08:00:00.000Z')
+    expect(calls.convos[2]).toBe(asOf)
+  })
+
   it('runs AI analysis when conversations are present', async () => {
     convosImpl = async () => ({
       conversations: [{

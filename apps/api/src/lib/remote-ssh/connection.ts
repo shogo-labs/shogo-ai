@@ -13,7 +13,7 @@
 import { createHash } from 'node:crypto'
 import { createReadStream } from 'node:fs'
 import { mkdir, rm } from 'node:fs/promises'
-import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process'
+import { spawn, type ChildProcess, type SpawnOptions } from '@shogo/shared-runtime/child-process'
 import { dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
 import {

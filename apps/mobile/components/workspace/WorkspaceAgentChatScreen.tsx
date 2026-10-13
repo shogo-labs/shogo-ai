@@ -3,10 +3,10 @@
 
 /**
  * The workspace-scoped Agent Chat surface shared by personal and team
- * workspaces. It is the only root-route surface that creates or retrieves the
- * stable primary workspace session.
+ * workspaces. With no chat selected it opens the signed-in user's most
+ * recent personal chat, creating one when they have none.
  */
-import { useCallback, useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import { ActivityIndicator, Pressable, Text, View, useWindowDimensions } from "react-native"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
 import { useRouter } from "expo-router"
@@ -29,6 +29,7 @@ import { useActiveWorkspace } from "../../hooks/useActiveWorkspace"
 import { useWorkspaceExperience } from "../../hooks/useWorkspaceExperience"
 import { clearChatPrefill, useChatPrefill } from "../../hooks/useChatPrefill"
 import { api, type PersonalAgentProfile } from "../../lib/api"
+import { chatSessionEvents } from "../../lib/chat-session-events"
 import { ChatPanel } from "../chat/ChatPanel"
 import type { OpenProjectPaneRequest } from "../chat/ChatContext"
 import { ProjectSidePane } from "../team-chat/ProjectSidePane"
@@ -42,7 +43,7 @@ import { buildDefaultProfileActions } from "../personal/ProfileActionMenu"
 import type { BuddyState } from "../island/buddy/engine"
 import { useMobileWorkspaceChrome } from "../layout/MobileWorkspaceChromeContext"
 import {
-  publishPrimaryWorkspaceSession,
+  publishCurrentWorkspaceSession,
   publishWorkspaceSessionScopeChanged,
   subscribeWorkspaceSessionScopeChanged,
 } from "./workspace-agent-session-bus"
@@ -55,8 +56,15 @@ interface ProjectPaneState extends OpenProjectPaneRequest {
   nonce: number
 }
 
+export interface WorkspaceAgentChatScreenProps {
+  /** Open this workspace session instead of the primary one (e.g. a session a DM reply ran in). */
+  initialSessionId?: string
+  /** Rendered above the chat, e.g. the breadcrumb back to the conversation it was opened from. */
+  header?: ReactNode
+}
+
 export const WorkspaceAgentChatScreen = observer(
-  function WorkspaceAgentChatScreen() {
+  function WorkspaceAgentChatScreen({ initialSessionId, header }: WorkspaceAgentChatScreenProps = {}) {
     const router = useRouter()
     const { user } = useAuth()
     const http = useDomainHttp()
@@ -131,13 +139,15 @@ export const WorkspaceAgentChatScreen = observer(
         setAttachments([])
         setFocusedProjectId(null)
         const [session, nextProfile] = await Promise.all([
-          api.getPrimaryWorkspaceSession(http, workspace.id),
+          initialSessionId
+            ? Promise.resolve({ id: initialSessionId })
+            : api.getPrimaryWorkspaceSession(http, workspace.id),
           api.getAgentProfile(http, workspace.id),
         ])
         if (version !== loadVersion.current) return
         setProfile(nextProfile)
         setSessionId(session.id)
-        publishPrimaryWorkspaceSession(workspace.id, session.id)
+        publishCurrentWorkspaceSession(workspace.id, session.id)
       } catch (cause) {
         if (version !== loadVersion.current) return
         setError(
@@ -146,7 +156,7 @@ export const WorkspaceAgentChatScreen = observer(
             : "Could not load Workspace Agent Chat",
         )
       }
-    }, [http, workspace?.id])
+    }, [http, workspace?.id, initialSessionId])
 
     useEffect(() => {
       void loadWorkspaceChat()
@@ -228,13 +238,20 @@ export const WorkspaceAgentChatScreen = observer(
         setAvatarState("idle")
         return
       }
+      if (workspace?.id && sessionId) {
+        chatSessionEvents.emit({
+          workspaceId: workspace.id,
+          activeSessionId: sessionId,
+          refresh: true,
+        })
+      }
       avatarStreaming.current = false
       setAvatarState("finished")
       avatarFinishedTimer.current = setTimeout(() => {
         avatarFinishedTimer.current = null
         setAvatarState("idle")
       }, 1800)
-    }, [])
+    }, [sessionId, workspace?.id])
     useEffect(
       () => () => {
         if (avatarFinishedTimer.current) clearTimeout(avatarFinishedTimer.current)
@@ -278,7 +295,6 @@ export const WorkspaceAgentChatScreen = observer(
       onPrefill: prefill,
       onCustomizeAvatar: () => setBuddyLookSheetOpen(true),
       onOpenActivity: () => router.push("/(app)/activity" as any),
-      onOpenSideChats: () => router.push("/(app)/side-chats" as any),
     })
     const projectName = (projectId: string) =>
       projects.all.find((project: any) => project.id === projectId)?.name ??
@@ -429,7 +445,15 @@ export const WorkspaceAgentChatScreen = observer(
             compact
           />
         )}
+        {header ? (
+          // Opened from a team chat message: the trail back. On phones the
+          // floating header needs the same clearance the content below gets.
+          <View style={usesMobileWorkspaceChrome ? { paddingTop: insets.top + 112 } : undefined}>
+            {header}
+          </View>
+        ) : null}
         {usesMobileWorkspaceChrome &&
+        !header &&
         ((isPersonalWorkspace && showWelcome) ||
           gettingStarted.visible ||
           attachments.length > 0) ? (

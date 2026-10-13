@@ -1000,6 +1000,49 @@ function gate(
 // Path validation (replaces old assertWithinWorkspace)
 // ---------------------------------------------------------------------------
 
+/**
+ * `/tmp` is outside the workspace, so scratch writes there are rejected.
+ * Rewrite them into `<workspace>/.tmp`, which is gitignored and left out of
+ * sync and publish. Callers should tell the agent about `remappedFrom`.
+ */
+export function rewriteScratchPath(filePath: string): { path: string; remappedFrom?: string } {
+  const normalized = filePath.replace(/\\/g, '/')
+  if (normalized === '/tmp' || normalized.startsWith('/tmp/')) {
+    const rest = normalized.slice('/tmp'.length).replace(/^\/+/, '')
+    return { path: rest ? `.tmp/${rest}` : '.tmp', remappedFrom: filePath }
+  }
+  return { path: filePath }
+}
+
+function linkedFolderRoots(): string[] {
+  const raw = process.env.LINKED_FOLDERS
+  if (!raw) return []
+  try {
+    const parsed = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return []
+    return parsed.filter((p): p is string => typeof p === 'string' && p.length > 0)
+  } catch {
+    return []
+  }
+}
+
+/**
+ * Rewrite a `/tmp` scratch path into workspace `.tmp/` unless that path
+ * already resolves inside the workspace or a linked folder. On Linux the
+ * workspace itself often lives under `/tmp` (mkdtemp, CI), and those
+ * absolute paths are real project files, not scratch writes.
+ */
+export function scratchPathForWrite(
+  workspaceDir: string,
+  filePath: string,
+): { path: string; remappedFrom?: string } {
+  const rewritten = rewriteScratchPath(filePath)
+  if (!rewritten.remappedFrom) return rewritten
+  const roots = dedupeRoots([workspaceDir, ...linkedFolderRoots()].map((r) => resolve(r)))
+  if (isWithinAnyRoot(roots, resolve(filePath))) return { path: filePath }
+  return rewritten
+}
+
 export function assertWithinWorkspace(workspaceDir: string, filePath: string): string {
   const resolved = resolve(workspaceDir, filePath)
 

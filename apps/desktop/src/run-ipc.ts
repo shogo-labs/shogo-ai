@@ -35,7 +35,7 @@
  * `vite build --watch` running.
  */
 import { ipcMain, BrowserWindow } from 'electron'
-import { spawn, type ChildProcessByStdio } from 'child_process'
+import { spawn, type ChildProcessByStdio } from './child-process'
 import type { Readable } from 'stream'
 
 type RunChild = ChildProcessByStdio<null, Readable, Readable>

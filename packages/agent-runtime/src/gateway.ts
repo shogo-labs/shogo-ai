@@ -56,6 +56,7 @@ import {
 import { SqliteSessionPersistence } from './sqlite-session-persistence'
 import { BlockChunker } from './block-chunker'
 import { canvasModeStableGuides } from './canvas-v2-prompt'
+import { buildCapabilityStatusSection } from './capability-status-prompt'
 import { buildViewerContextPrompt, parseCanvasViewer } from './viewer-context'
 import { buildAccountContextPrompt, type AccountContext } from './account-context'
 import { CanvasFileWatcher } from './canvas-file-watcher'
@@ -92,7 +93,8 @@ import {
 } from './workspace-runtime-mode'
 import { initComposioSession, resetComposioSession, isComposioEnabled, isComposioInitialized } from './composio'
 import { createIntegrationCredentialWrapper } from './integration-credentials'
-import { deriveApiUrl, getInternalHeaders, postCostMetric, projectScopedId } from './internal-api'
+import { deriveApiUrl, getInternalHeaders, getProjectConfig, hasInternalApiCredentials, postCostMetric, projectScopedId } from './internal-api'
+import { mergeCapabilitySettingsIntoConfig } from '@shogo/shared-runtime/capability-settings'
 import { getRuntimeTrust } from './runtime-trust'
 import { refreshTrust } from './trust-resolver'
 import type { FilePart } from './file-attachment-utils'
@@ -112,7 +114,6 @@ import { loadWorkspaceCustomAgents } from './subagent'
 import { CommandRegistry } from './command-registry'
 import { releaseSessionBrowsers, reapOrphanChromium } from './browser-pool'
 import { TeamManager } from './team-manager'
-import { isInQuietHours } from './quiet-hours'
 import {
   RUNTIME_LOG_SUBDIR,
   BUILD_LOG_BASENAME,
@@ -123,6 +124,7 @@ import {
 import { shouldInjectPreviewUrl, buildPreviewUrlBlock } from './preview-url-context'
 import { detectLocalMode } from './preview-manager'
 import { LocalhostLinkRewriter, rewriteLocalhostLinks } from './preview-link-rewrite'
+import { extractShareLinkTokens, repairShareLinks } from './share-link-repair'
 
 const QUICK_ACTION_GUIDE = `## Quick Actions
 
@@ -421,9 +423,15 @@ export interface GatewayConfig {
    * Undefined behaves like `'team'` (see `capability-profiles.ts`).
    */
   capabilityProfile?: CapabilityProfileName
-  heartbeatInterval: number
-  heartbeatEnabled: boolean
-  quietHours: { start: string; end: string; timezone: string }
+  /**
+   * Whether the heartbeat tools (`heartbeat_configure`, `heartbeat_status`) and
+   * the devops guide are available to the agent. This is a capability toggle,
+   * NOT the schedule: whether heartbeats actually run (enabled, interval,
+   * quiet hours) lives in the `agent_configs` table and is read/written through
+   * the project config API. Default: on. The legacy `heartbeatEnabled` key in
+   * config.json is read as a fallback for projects that predate this field.
+   */
+  heartbeatToolsEnabled?: boolean
   channels: Array<{ type: string; config: Record<string, string>; model?: string }>
   /** Model configuration: provider + name (e.g. { provider: 'anthropic', name: 'claude-sonnet-4-5' }).
    *  `thinkingLevel` is the admin-configured reasoning effort for the selected
@@ -457,7 +465,7 @@ export interface GatewayConfig {
   browserExtensionToken?: string
   /** Whether shell/exec tool is enabled (default: true) */
   shellEnabled?: boolean
-  // heartbeat tools are gated by heartbeatEnabled (above)
+  // heartbeat tools are gated by heartbeatToolsEnabled (above)
   /** Whether image generation tool is enabled (default: true) */
   imageGenEnabled?: boolean
   /** Whether memory tools are enabled (default: true) */
@@ -480,8 +488,18 @@ export interface GatewayConfig {
    * BETA: per-chat git worktrees. When true, each chat session operates on
    * its own branch (`shogo/chat/<sessionId>`) checked out in an isolated
    * worktree; `main` only changes via the merge-on-done flow. Default off.
+   * Opt-in: anything other than `true` leaves it off.
    */
   gitWorktreesEnabled?: boolean
+  /**
+   * Instagram/TikTok lookups (`social_media`). Opt-in: anything other than
+   * `true` leaves the tool off. Each call spends paid EnsembleData units.
+   */
+  socialMediaEnabled?: boolean
+  /** When the master switch is on, Instagram lookups stay available unless this is `false`. */
+  socialInstagramEnabled?: boolean
+  /** When the master switch is on, TikTok lookups stay available unless this is `false`. */
+  socialTiktokEnabled?: boolean
 }
 
 /**
@@ -938,9 +956,7 @@ export class AgentGateway {
     const defaults: GatewayConfig = applyCapabilityProfile(
       {
         capabilityProfile: undefined,
-        heartbeatInterval: 1800,
-        heartbeatEnabled: false,
-        quietHours: { start: '23:00', end: '07:00', timezone: 'UTC' },
+        heartbeatToolsEnabled: undefined,
         channels: [],
         model: { provider: 'anthropic', name: 'claude-haiku-4-5' },
         maxSessionMessages: 30,
@@ -951,11 +967,6 @@ export class AgentGateway {
       },
       profileName,
     )
-    // BETA: per-chat git worktrees default. The warm-pool controller injects
-    // SHOGO_GIT_WORKTREES=1 at assignment when the project setting is on, so it
-    // acts as the boot default. An explicit value in config.json (written by
-    // PATCH /agent/config when the user toggles) always wins.
-    const worktreesEnvDefault = process.env.SHOGO_GIT_WORKTREES === '1'
     const configPath = resolveWorkspaceConfigFilePath(this.workspaceDir, 'config.json')
     if (configPath) {
       try {
@@ -972,12 +983,10 @@ export class AgentGateway {
             activeMode: raw.activeMode ?? defaults.activeMode,
             allowedModes: raw.allowedModes ?? defaults.allowedModes,
             shellEnabled: raw.shellEnabled,
-            heartbeatInterval: raw.heartbeat?.intervalMs
-              ? Math.round(raw.heartbeat.intervalMs / 1000)
-              : raw.heartbeatInterval ?? defaults.heartbeatInterval,
-            heartbeatEnabled: raw.heartbeat?.enabled ?? raw.heartbeatEnabled ?? defaults.heartbeatEnabled,
+            // Capability toggle only; the schedule lives in the database.
+            // `heartbeatEnabled` is the pre-split name of this flag.
+            heartbeatToolsEnabled: raw.heartbeatToolsEnabled ?? raw.heartbeatEnabled ?? undefined,
             channels: Array.isArray(raw.channels) ? raw.channels : [],
-            gitWorktreesEnabled: raw.gitWorktreesEnabled ?? worktreesEnvDefault,
           },
           profileName,
         )
@@ -985,7 +994,7 @@ export class AgentGateway {
         console.error('[AgentGateway] Failed to parse config.json:', error.message)
       }
     }
-    return { ...defaults, gitWorktreesEnabled: worktreesEnvDefault }
+    return defaults
   }
 
   /**
@@ -1030,6 +1039,16 @@ export class AgentGateway {
     console.log('[AgentGateway] Starting...')
     this.running = true
 
+    // Project.settings is the source of truth for capability toggles. Pull
+    // them before the first turn so a stale config.json cannot override the
+    // database. A failed pull keeps the last-known cache; opt-in tools stay
+    // off when there is no cache yet.
+    try {
+      await this.syncCapabilitiesFromApi()
+    } catch (err: any) {
+      console.warn(`[AgentGateway] capability sync failed: ${err?.message ?? err}`)
+    }
+
     migrateFromLegacySkills(this.workspaceDir)
     this.skills = loadAllSkills(this.workspaceDir)
     this.quickActions = loadQuickActions(this.workspaceDir)
@@ -1051,11 +1070,9 @@ export class AgentGateway {
       }
     }
 
-    if (this.config.heartbeatEnabled) {
-      console.log(
-        `[AgentGateway] Heartbeat enabled (externally scheduled, interval ${this.config.heartbeatInterval}s)`
-      )
-    }
+    // Heartbeats are scheduled externally from the database; load a copy for
+    // the status output (non-blocking, best effort).
+    void this.refreshHeartbeatSnapshot()
 
     // Start configured MCP servers (stdio + remote)
     if (this.config.mcpServers && Object.keys(this.config.mcpServers).length > 0) {
@@ -1538,27 +1555,62 @@ export class AgentGateway {
   // ---------------------------------------------------------------------------
 
 
-  private checkQuietHours(): boolean {
-    const { start, end, timezone } = this.config.quietHours
-    return isInQuietHours(start || null, end || null, timezone || null)
+  /**
+   * Cached copy of this project's schedule from the database, for the status
+   * output only. The scheduler (not the runtime) decides when heartbeats run.
+   */
+  private heartbeatSnapshot: {
+    enabled: boolean
+    intervalSeconds: number
+    quietHours: { start: string; end: string; timezone: string }
+  } = {
+    enabled: false,
+    intervalSeconds: 1800,
+    quietHours: { start: '', end: '', timezone: 'UTC' },
   }
 
-  async heartbeatTick(): Promise<string> {
+  /** Reload the cached schedule from the project config API (best effort). */
+  async refreshHeartbeatSnapshot(): Promise<void> {
+    const projectId = projectScopedId(this.projectId) ?? projectScopedId(process.env.WORKSPACE_ANCHOR_PROJECT_ID)
+    if (!projectId) return
+    try {
+      const res = await getProjectConfig(projectId)
+      const agent = res.ok ? res.data?.agent : null
+      if (!agent) return
+      this.heartbeatSnapshot = {
+        enabled: agent.heartbeatEnabled,
+        intervalSeconds: agent.heartbeatInterval,
+        quietHours: {
+          start: agent.quietHoursStart ?? '',
+          end: agent.quietHoursEnd ?? '',
+          timezone: agent.quietHoursTimezone ?? 'UTC',
+        },
+      }
+    } catch {
+      /* status falls back to defaults */
+    }
+  }
+
+  /**
+   * Run one heartbeat. Quiet hours are enforced by the API scheduler (the
+   * schedule lives in the database), so a tick that reaches here always runs.
+   *
+   * A workspace runtime serves several attached projects, so the caller says
+   * which one is due: `projectDir` is where its `HEARTBEAT.md` lives and
+   * `projectId` tells the agent which project the checklist belongs to.
+   * Defaults to the gateway's own workspace dir (single-project runtimes).
+   */
+  async heartbeatTick(opts: { projectId?: string; projectDir?: string } = {}): Promise<string> {
     this.lastHeartbeatTick = new Date()
 
-    const heartbeatPath = resolveWorkspaceConfigFilePath(this.workspaceDir, 'HEARTBEAT.md')
+    const projectDir = opts.projectDir ?? this.workspaceDir
+    const heartbeatPath = resolveWorkspaceConfigFilePath(projectDir, 'HEARTBEAT.md')
     if (!heartbeatPath) {
       return 'HEARTBEAT_OK'
     }
 
     const checklist = readFileSync(heartbeatPath, 'utf-8').trim()
     if (!checklist) {
-      return 'HEARTBEAT_OK'
-    }
-
-    if (this.checkQuietHours()) {
-      console.log('[AgentGateway] Heartbeat skipped (quiet hours)')
-      this.emitLog('Heartbeat skipped (quiet hours)')
       return 'HEARTBEAT_OK'
     }
 
@@ -1571,15 +1623,22 @@ export class AgentGateway {
       this.pendingEvents = []
     }
 
+    // In a workspace runtime the checklist belongs to one attached project,
+    // whose files live in a subfolder of the merged root.
+    const projectLine =
+      opts.projectId && projectDir !== this.workspaceDir
+        ? ` for project ${opts.projectId} (its files are under \`${opts.projectId}/\`)`
+        : ''
+
     const response = await this.agentTurn(
-      `[HEARTBEAT]\nYou are performing a scheduled heartbeat check. Review the following checklist and take action as needed. If everything is fine, respond with exactly "HEARTBEAT_OK". If something needs attention, describe the issue and any actions taken.\n\n${checklist}${pendingSection}`,
+      `[HEARTBEAT]\nYou are performing a scheduled heartbeat check${projectLine}. Review the following checklist and take action as needed. If everything is fine, respond with exactly "HEARTBEAT_OK". If something needs attention, describe the issue and any actions taken.\n\n${checklist}${pendingSection}`,
       'heartbeat',
       true
     )
 
     await this.hookEmitter.emit(
       HookEmitter.createEvent('heartbeat', 'tick', 'heartbeat', {
-        workspaceDir: this.workspaceDir,
+        workspaceDir: projectDir,
         response,
         hadAlert: response !== 'HEARTBEAT_OK',
       })
@@ -1592,7 +1651,7 @@ export class AgentGateway {
 
       await this.hookEmitter.emit(
         HookEmitter.createEvent('heartbeat', 'alert', 'heartbeat', {
-          workspaceDir: this.workspaceDir,
+          workspaceDir: projectDir,
           alertText: response,
         })
       )
@@ -1603,13 +1662,13 @@ export class AgentGateway {
 
     const heartbeatSummary = response === 'HEARTBEAT_OK' ? 'Routine check — all clear' : response.substring(0, 300)
     this.appendDailyMemory(`Heartbeat: ${response === 'HEARTBEAT_OK' ? 'All clear' : response.substring(0, 200)}`)
-    this.appendHeartbeatLog(heartbeatSummary)
+    this.appendHeartbeatLog(heartbeatSummary, projectDir)
 
     return response
   }
 
-  async triggerHeartbeat(): Promise<string> {
-    return this.heartbeatTick()
+  async triggerHeartbeat(opts: { projectId?: string; projectDir?: string } = {}): Promise<string> {
+    return this.heartbeatTick(opts)
   }
 
   queuePendingEvent(text: string): void {
@@ -2334,20 +2393,12 @@ export class AgentGateway {
       guideRegistry: this.currentGuideRegistry,
       listWorktreeStatuses: this.isWorktreesEnabled() ? () => this.listWorktreeStatuses() : undefined,
       toolMockFns: this.toolMocks.size > 0 ? this.toolMocks : undefined,
-      updateHeartbeatConfig: async (config) => {
-        const apiUrl = deriveApiUrl()
-        if (!apiUrl) return
-        const url = `${apiUrl}/api/internal/heartbeat/config/${this.projectId}`
-        const res = await fetch(url, {
-          method: 'PUT',
-          headers: getInternalHeaders(),
-          body: JSON.stringify(config),
-          signal: AbortSignal.timeout(10_000),
-        })
-        if (!res.ok) {
-          throw new Error(`Heartbeat config update failed: HTTP ${res.status}`)
-        }
-        this.reloadConfig()
+      // heartbeat_configure writes the schedule to the database through the
+      // project config API; refresh the cached copy the status output shows.
+      onHeartbeatConfigured: () => { void this.refreshHeartbeatSnapshot() },
+      onCapabilitiesChanged: async () => {
+        const synced = await this.syncCapabilitiesFromApi()
+        if (!synced) this.reloadConfig()
       },
 
     }
@@ -2724,7 +2775,8 @@ export class AgentGateway {
     const previewPublicUrl = (this.previewManager?.isLocalMode ?? detectLocalMode())
       ? ''
       : (process.env.PUBLIC_PREVIEW_URL ?? '')
-    let linkRewriter = new LocalhostLinkRewriter(previewPublicUrl)
+    const shareLinkTokens = this.shareLinkTokensFor(sessionId)
+    let linkRewriter = new LocalhostLinkRewriter(previewPublicUrl, shareLinkTokens)
 
     // Forward streamed assistant text (post-rewrite) to the chunker + UI,
     // opening a UI text block lazily on first non-empty content.
@@ -2754,7 +2806,7 @@ export class AgentGateway {
     const discardFailedStep = (retry: { attempt: number; maxAttempts?: number; reason: string; delayMs: number }) => {
       // Drop any text the rewriter was holding from the failed attempt and
       // reset its scanner state so the regenerated output starts clean.
-      linkRewriter = new LocalhostLinkRewriter(previewPublicUrl)
+      linkRewriter = new LocalhostLinkRewriter(previewPublicUrl, shareLinkTokens)
       if (uiWriter && uiTextId) {
         uiWriter.write({ type: 'text-end', id: uiTextId })
         uiTextId = null
@@ -3506,6 +3558,10 @@ export class AgentGateway {
           } else {
             console.log(`${this.logPrefix} Tool result: ${toolName}`, JSON.stringify(result).substring(0, 20))
           }
+          if (toolName === 'share_file' && !isError) {
+            const resultText = typeof result === 'string' ? result : JSON.stringify(result ?? '')
+            for (const token of extractShareLinkTokens([resultText])) shareLinkTokens.add(token)
+          }
           // Wait for onBeforeToolCall's flush gate so the client receives
           // tool-input-start in a separate HTTP chunk before we send the output.
           const gate = toolFlushGates.get(toolCallId)
@@ -3688,17 +3744,20 @@ export class AgentGateway {
       // public preview URL in the persisted history + returned text too (the
       // live UI stream is handled by linkRewriter above). No-op locally. Skips
       // code spans/fences and `curl` lines — see preview-link-rewrite.ts.
-      if (previewPublicUrl) {
+      // Mistyped share_file tokens are repaired the same way.
+      if (previewPublicUrl || shareLinkTokens.size > 0) {
+        const rewriteText = (text: string) =>
+          repairShareLinks(rewriteLocalhostLinks(text, previewPublicUrl), shareLinkTokens)
         for (const msg of result.newMessages) {
           if (msg.role !== 'assistant' || !Array.isArray(msg.content)) continue
           for (const block of msg.content as any[]) {
             if (block?.type === 'text' && typeof block.text === 'string') {
-              block.text = rewriteLocalhostLinks(block.text, previewPublicUrl)
+              block.text = rewriteText(block.text)
             }
           }
         }
         if (typeof result.text === 'string') {
-          result.text = rewriteLocalhostLinks(result.text, previewPublicUrl)
+          result.text = rewriteText(result.text)
         }
       }
 
@@ -3951,6 +4010,7 @@ export class AgentGateway {
 
     parts.push(CODE_AGENT_GENERAL_GUIDE)
     if (this.config.capabilityProfile === 'personal') parts.push(PERSONAL_COMPANION_GUIDE)
+    parts.push(buildCapabilityStatusSection(this.config))
     parts.push(OUTPUT_CONTRACT_GUIDE)
     if (this.config.browserEnabled !== false) {
       parts.push(BROWSER_TOOL_GUIDE)
@@ -3993,6 +4053,7 @@ export class AgentGateway {
 
     parts.push(CODE_AGENT_GENERAL_GUIDE)
     if (this.config.capabilityProfile === 'personal') parts.push(PERSONAL_COMPANION_GUIDE)
+    parts.push(buildCapabilityStatusSection(this.config))
     if (this.config.browserEnabled !== false) {
       parts.push(BROWSER_TOOL_GUIDE)
     }
@@ -4100,8 +4161,10 @@ export class AgentGateway {
 
     // 1. Mode-specific canvas/tool guides (changes only on mode switch)
     const activeMode = this.config.activeMode || 'canvas'
-    for (const [id, text] of canvasModeStableGuides(activeMode)) {
-      pushStable(id, text)
+    if (this.config.canvasEnabled !== false) {
+      for (const [id, text] of canvasModeStableGuides(activeMode)) {
+        pushStable(id, text)
+      }
     }
 
     // 2. General coding guide (always the same)
@@ -4125,9 +4188,10 @@ export class AgentGateway {
     const integrationsGuideOn = this.config.integrationsEnabled !== false
     const channelsGuideOn = this.config.channelsEnabled !== false
     const mediaGuideOn = this.config.imageGenEnabled !== false
-    const devopsGuideOn = this.config.heartbeatEnabled !== false
+    const devopsGuideOn = this.config.heartbeatToolsEnabled !== false
 
     this.currentGuideRegistry = buildGuideRegistry(this.promptOverrides)
+    pushStable('capability-status', buildCapabilityStatusSection(this.config))
     pushStable('capabilities-index', buildCapabilitiesIndex({
       integrations: integrationsGuideOn,
       channels: channelsGuideOn,
@@ -5064,8 +5128,8 @@ export class AgentGateway {
   // Memory
   // ---------------------------------------------------------------------------
 
-  private appendHeartbeatLog(summary: string): void {
-    const logPath = join(this.workspaceDir, 'HEARTBEAT_LOG.md')
+  private appendHeartbeatLog(summary: string, dir: string = this.workspaceDir): void {
+    const logPath = join(dir, 'HEARTBEAT_LOG.md')
     const timestamp = new Date().toISOString()
     const entry = `- [${timestamp}] ${summary}\n`
     const MAX_ENTRIES = 20
@@ -5198,10 +5262,10 @@ export class AgentGateway {
       currentTask: this._currentTask,
       lastTool: this._lastTool,
       heartbeat: {
-        enabled: this.config.heartbeatEnabled,
-        intervalSeconds: this.config.heartbeatInterval,
+        enabled: this.heartbeatSnapshot.enabled,
+        intervalSeconds: this.heartbeatSnapshot.intervalSeconds,
         lastTick: this.lastHeartbeatTick?.toISOString() ?? null,
-        quietHours: this.config.quietHours,
+        quietHours: this.heartbeatSnapshot.quietHours,
       },
       channels: channelStatuses,
       skills: [...fsSkills, ...configSkills],
@@ -5216,13 +5280,66 @@ export class AgentGateway {
   }
 
   reloadConfig(): void {
-    const prevEnabled = this.config.heartbeatEnabled
     this.config = this.loadConfig()
     this.skills = loadAllSkills(this.workspaceDir)
     this.quickActions = loadQuickActions(this.workspaceDir)
     setLoadedSkills(this.skills)
     this.configSkills = this.loadConfigSkills()
 
+  }
+
+  /**
+   * Pull capability toggles from `Project.settings` and write them into
+   * `config.json`. The database wins over a stale cache. When the API can't
+   * be reached, the file is left as-is.
+   *
+   * Workspace runtimes (no project id) and processes without internal-API
+   * credentials skip the pull. Tests pass `fetchConfig` to skip the
+   * credential check and the network.
+   *
+   * Returns true when the database was applied.
+   */
+  async syncCapabilitiesFromApi(
+    fetchConfig?: (projectId: string) => Promise<{ ok: boolean; data?: { settings?: unknown } | null }>,
+  ): Promise<boolean> {
+    const projectId = projectScopedId(this.projectId)
+    if (!projectId) return false
+    if (!fetchConfig && !hasInternalApiCredentials()) return false
+
+    let result: { ok: boolean; data?: { settings?: unknown } | null }
+    try {
+      result = fetchConfig
+        ? await fetchConfig(projectId)
+        : await getProjectConfig(projectId, 3_000)
+    } catch (err: any) {
+      console.warn(`[AgentGateway] capability sync failed: ${err?.message ?? err}`)
+      return false
+    }
+    if (!result.ok || !result.data) {
+      console.warn('[AgentGateway] capability sync skipped; keeping the last-known config.json')
+      return false
+    }
+
+    const configPath = resolveWorkspaceConfigFilePath(this.workspaceDir, 'config.json')
+      ?? join(this.workspaceDir, 'config.json')
+    let fileConfig: Record<string, unknown> = {}
+    if (existsSync(configPath)) {
+      try {
+        const parsed = JSON.parse(readFileSync(configPath, 'utf-8'))
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          fileConfig = parsed
+        }
+      } catch {
+        fileConfig = {}
+      }
+    }
+
+    const { config, changed } = mergeCapabilitySettingsIntoConfig(fileConfig, result.data.settings)
+    if (changed) {
+      writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8')
+    }
+    this.reloadConfig()
+    return true
   }
 
   // ── BETA: per-chat git worktrees ──────────────────────────────────────────
@@ -5505,6 +5622,21 @@ export class AgentGateway {
 
   /** Per-session waker for the active turn's retry backoff ("Retry now"). */
   private retryWakers = new Map<string, RetryWaker>()
+
+  /**
+   * Per-session tokens of every link `share_file` minted, so a token the model
+   * mistypes when quoting it (now or in a later turn) can be repaired.
+   */
+  private shareLinkTokens = new Map<string, Set<string>>()
+
+  private shareLinkTokensFor(sessionId: string): Set<string> {
+    let tokens = this.shareLinkTokens.get(sessionId)
+    if (!tokens) {
+      tokens = new Set()
+      this.shareLinkTokens.set(sessionId, tokens)
+    }
+    return tokens
+  }
 
   /**
    * Cut the active turn's retry backoff short so the dropped model call is

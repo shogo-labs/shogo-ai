@@ -11,7 +11,7 @@
  * - Automatic container cleanup (--rm)
  */
 
-import { execSync, spawn, type ChildProcess } from 'child_process'
+import { execSync, spawn, type ChildProcess } from '@shogo/shared-runtime/child-process'
 import { readFileSync, existsSync } from 'fs'
 import { join, isAbsolute, resolve, sep } from 'path'
 import { randomBytes } from 'crypto'

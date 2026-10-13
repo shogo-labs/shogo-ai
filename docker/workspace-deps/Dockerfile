@@ -27,7 +27,7 @@
 # packages/agent-runtime/Dockerfile.base: both re-run `bun install` over this
 # node_modules tree, and a newer Bun fails relinking an older Bun's layout
 # (EEXIST on the root workspace symlink).
-FROM oven/bun:1.4.2-debian
+FROM oven/bun:1.4.3-debian
 
 WORKDIR /app
 

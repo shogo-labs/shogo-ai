@@ -10,7 +10,8 @@ interface State {
   sessionRow: { contextType?: string; workspaceId?: string | null; contextId?: string | null; isPrimary?: boolean } | null
   updateManyCalls: any[]
   primarySession: any
-  primaryCreateErrorCode: string | null
+  listedSessions: any[]
+  findManySessionCalls: any[]
   createCalls: any[]
   upsertCalls: any[]
   deleteManyCount: number
@@ -24,7 +25,8 @@ const s: State = {
   sessionRow: null,
   updateManyCalls: [],
   primarySession: null,
-  primaryCreateErrorCode: null,
+  listedSessions: [],
+  findManySessionCalls: [],
   createCalls: [],
   upsertCalls: [],
   deleteManyCount: 0,
@@ -37,17 +39,6 @@ mock.module('../../lib/prisma', () => ({
     chatSession: {
       create: async (args: any) => {
         s.createCalls.push(args)
-        if (s.primaryCreateErrorCode) {
-          s.primarySession = {
-            id: 'sess-primary-raced',
-            workspaceId: args.data.workspaceId,
-            contextType: 'workspace',
-            isPrimary: true,
-            attachedProjects: [],
-          }
-          const error = Object.assign(new Error('unique constraint'), { code: s.primaryCreateErrorCode })
-          throw error
-        }
         const attached = args.data.attachedProjects?.create ?? []
         return {
           id: 'sess-1',
@@ -61,6 +52,10 @@ mock.module('../../lib/prisma', () => ({
       },
       findUnique: async (_args: any) => s.sessionRow,
       findFirst: async (_args: any) => s.primarySession,
+      findMany: async (args: any) => {
+        s.findManySessionCalls.push(args)
+        return s.listedSessions
+      },
       updateMany: async (args: any) => {
         s.updateManyCalls.push(args)
         const row = s.sessionRow
@@ -99,7 +94,8 @@ beforeEach(() => {
   s.sessionRow = null
   s.updateManyCalls = []
   s.primarySession = null
-  s.primaryCreateErrorCode = null
+  s.listedSessions = []
+  s.findManySessionCalls = []
   s.createCalls = []
   s.upsertCalls = []
   s.deleteManyCount = 0
@@ -170,10 +166,17 @@ describe('createWorkspaceSession', () => {
     expect(res.attached).toHaveLength(1)
   })
 
-  it('leaves the session unpinned without an anchor', async () => {
-    const res = await svc.createWorkspaceSession('ws-1', {})
+  it('leaves the session unpinned without an anchor and records the owner', async () => {
+    const res = await svc.createWorkspaceSession('ws-1', { createdByUserId: 'user-1' })
     expect(res.contextId).toBeNull()
     expect(s.createCalls[0].data.contextId).toBeNull()
+    expect(s.createCalls[0].data.createdByUserId).toBe('user-1')
+  })
+
+  it('does not stamp an owner on a project-anchored session', async () => {
+    s.projectsInWorkspace = new Set(['p1'])
+    await svc.createWorkspaceSession('ws-1', { anchorProjectId: 'p1', createdByUserId: 'user-1' })
+    expect(s.createCalls[0].data.createdByUserId).toBeNull()
   })
 
   it('pins to the anchor project and always attaches it read-write', async () => {
@@ -220,11 +223,10 @@ describe('pinWorkspaceSessionToProject', () => {
     expect(s.updateManyCalls).toHaveLength(0)
   })
 
-  it('never pins the primary workspace chat', async () => {
+  it('pins a legacy primary session when it is otherwise eligible', async () => {
     s.sessionRow = { contextType: 'workspace', workspaceId: 'ws-1', contextId: null, isPrimary: true }
     s.findManyAttached = [{ id: 'a', projectId: 'p1', attachMode: 'readwrite' }]
-    expect(await svc.pinWorkspaceSessionToProject('sess-1', 'p1')).toEqual({ pinned: false, changed: false })
-    expect(s.updateManyCalls).toHaveLength(0)
+    expect(await svc.pinWorkspaceSessionToProject('sess-1', 'p1')).toEqual({ pinned: true, changed: true })
   })
 
   it('does not pin a chat that spans other projects', async () => {
@@ -243,30 +245,53 @@ describe('pinWorkspaceSessionToProject', () => {
   })
 })
 
-describe('getOrCreatePrimaryWorkspaceSession', () => {
-  it('creates the stable primary chat when one does not exist', async () => {
-    const session = await svc.getOrCreatePrimaryWorkspaceSession('ws-personal')
-    expect(session.isPrimary).toBe(true)
+describe('getOrCreateDefaultWorkspaceSession', () => {
+  it('creates a personal chat when the caller has none', async () => {
+    const session = await svc.getOrCreateDefaultWorkspaceSession('ws-personal', 'user-1')
+    expect(session.isPrimary).toBeUndefined()
     expect(s.createCalls[0].data).toMatchObject({
       workspaceId: 'ws-personal',
       contextType: 'workspace',
+      createdByUserId: 'user-1',
       name: 'Chat',
-      isPrimary: true,
     })
+    expect(s.createCalls[0].data.isPrimary).toBeUndefined()
   })
 
-  it('reuses the existing primary chat', async () => {
-    s.primarySession = { id: 'sess-primary', isPrimary: true }
-    const session = await svc.getOrCreatePrimaryWorkspaceSession('ws-personal')
-    expect(session.id).toBe('sess-primary')
+  it('reuses the caller\'s most recent chat', async () => {
+    s.primarySession = { id: 'sess-recent', createdByUserId: 'user-1' }
+    const session = await svc.getOrCreateDefaultWorkspaceSession('ws-personal', 'user-1')
+    expect(session.id).toBe('sess-recent')
     expect(s.createCalls).toHaveLength(0)
   })
+})
 
-  it('returns the primary created by another API pod after a unique-index race', async () => {
-    s.primaryCreateErrorCode = 'P2002'
-    const session = await svc.getOrCreatePrimaryWorkspaceSession('ws-raced')
-    expect(session.id).toBe('sess-primary-raced')
-    expect(s.createCalls).toHaveLength(1)
+describe('listWorkspaceSessions', () => {
+  it('returns only the caller\'s chats', async () => {
+    s.listedSessions = [{ id: 'mine' }]
+    const sessions = await svc.listWorkspaceSessions('ws-1', 'user-1')
+    expect(sessions).toEqual([{ id: 'mine' }])
+    expect(s.findManySessionCalls[0].where).toMatchObject({
+      workspaceId: 'ws-1',
+      createdByUserId: 'user-1',
+      contextType: 'workspace',
+    })
+  })
+})
+
+describe('assertWorkspaceSessionAccess', () => {
+  it('allows the owner and ownerless sessions', async () => {
+    s.sessionRow = { contextType: 'workspace', workspaceId: 'ws-1', createdByUserId: 'user-1' }
+    await expect(svc.assertWorkspaceSessionAccess('ws-1', 'sess-1', 'user-1')).resolves.toBeUndefined()
+    s.sessionRow = { contextType: 'workspace', workspaceId: 'ws-1', createdByUserId: null }
+    await expect(svc.assertWorkspaceSessionAccess('ws-1', 'sess-1', 'user-2')).resolves.toBeUndefined()
+  })
+
+  it('hides a session owned by someone else', async () => {
+    s.sessionRow = { contextType: 'workspace', workspaceId: 'ws-1', createdByUserId: 'user-1' }
+    await expect(svc.assertWorkspaceSessionAccess('ws-1', 'sess-1', 'user-2')).rejects.toMatchObject({
+      code: 'session_not_found',
+    })
   })
 })
 

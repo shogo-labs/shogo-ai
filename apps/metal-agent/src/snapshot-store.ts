@@ -96,6 +96,14 @@ export interface SnapshotMeta {
    * before writable-state durability shipped.
    */
   dataEtag?: string
+  /** See AssignedVm.publishedDataLoaded. Absent on snapshots taken before it shipped. */
+  publishedDataLoaded?: boolean
+  /**
+   * ETag of the encrypted home-directory archive (`{projectId}/home-state.enc`)
+   * current when this snapshot was taken. Carried back into
+   * AssignedVm.homeParentEtag on resume.
+   */
+  homeEtag?: string
   /**
    * Workspace runtimes: `{memberId}/project-data.tar.gz` ETag per member, the
    * per-member counterpart of `dataEtag`. Carried into AssignedVm.memberData.

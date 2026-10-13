@@ -5,7 +5,7 @@
  * personal companion's primary chat on this device.
  *
  * There's no server-side "is this session brand new" signal worth adding
- * (`getOrCreatePrimaryWorkspaceSession` is idempotent and doesn't
+ * (`getOrCreateDefaultWorkspaceSession` is idempotent and doesn't
  * distinguish create-vs-fetch to callers, and threading that through would
  * make an otherwise-pure GET stateful) — a per-device, AsyncStorage-backed
  * "have I seen this" flag is simpler, survives reloads, and matches the

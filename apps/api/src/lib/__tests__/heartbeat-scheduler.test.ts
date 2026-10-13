@@ -57,8 +57,31 @@ let prisma: any
 let HeartbeatScheduler: any
 
 const createdWorkspaceIds: string[] = []
+const createdParentWorkspaceIds: string[] = []
 const createdProjectIds: string[] = []
 const createdSubscriptionIds: string[] = []
+const createdGrantIds: string[] = []
+
+type BillingMode = 'own' | 'parent' | 'grant' | 'none'
+
+async function createSubscription(workspaceId: string, planId: string) {
+  const subscriptionId = randomUUID()
+  await prisma.subscription.create({
+    data: {
+      id: subscriptionId,
+      workspaceId,
+      stripeSubscriptionId: `test-sub-${subscriptionId}`,
+      stripeCustomerId: `test-cus-${workspaceId}`,
+      planId,
+      seats: 1,
+      status: 'active',
+      billingInterval: 'monthly',
+      currentPeriodStart: new Date(Date.now() - 86_400_000),
+      currentPeriodEnd: new Date(Date.now() + 86_400_000),
+    },
+  })
+  createdSubscriptionIds.push(subscriptionId)
+}
 
 async function createTestFixtures(overrides: {
   heartbeatEnabled?: boolean
@@ -67,13 +90,36 @@ async function createTestFixtures(overrides: {
   quietHoursStart?: string | null
   quietHoursEnd?: string | null
   quietHoursTimezone?: string | null
+  /** Where the paid plan lives. Default `own` keeps existing cases on a direct subscription. */
+  billing?: BillingMode
+  grantPlanId?: string
 } = {}) {
+  const billing = overrides.billing ?? 'own'
   const workspaceId = randomUUID()
   const projectId = randomUUID()
   const slug = `test-ws-${workspaceId.slice(0, 8)}`
 
+  let parentWorkspaceId: string | undefined
+  if (billing === 'parent') {
+    parentWorkspaceId = randomUUID()
+    await prisma.workspace.create({
+      data: {
+        id: parentWorkspaceId,
+        name: 'Test Parent',
+        slug: `test-parent-${parentWorkspaceId.slice(0, 8)}`,
+      },
+    })
+    createdParentWorkspaceIds.push(parentWorkspaceId)
+    await createSubscription(parentWorkspaceId, 'business')
+  }
+
   await prisma.workspace.create({
-    data: { id: workspaceId, name: 'Test Workspace', slug },
+    data: {
+      id: workspaceId,
+      name: 'Test Workspace',
+      slug,
+      ...(parentWorkspaceId ? { parentWorkspaceId } : {}),
+    },
   })
   createdWorkspaceIds.push(workspaceId)
 
@@ -99,27 +145,30 @@ async function createTestFixtures(overrides: {
     },
   })
 
-  const subscriptionId = randomUUID()
-  await prisma.subscription.create({
-    data: {
-      id: subscriptionId,
-      workspaceId,
-      stripeSubscriptionId: `test-sub-${subscriptionId}`,
-      stripeCustomerId: `test-cus-${workspaceId}`,
-      planId: 'pro',
-      seats: 1,
-      status: 'active',
-      billingInterval: 'monthly',
-      currentPeriodStart: new Date(Date.now() - 86_400_000),
-      currentPeriodEnd: new Date(Date.now() + 86_400_000),
-    },
-  })
-  createdSubscriptionIds.push(subscriptionId)
+  if (billing === 'own') {
+    await createSubscription(workspaceId, 'pro')
+  }
+
+  if (billing === 'grant') {
+    const grantId = randomUUID()
+    await prisma.workspaceGrant.create({
+      data: {
+        id: grantId,
+        workspaceId,
+        planId: overrides.grantPlanId ?? 'business',
+        startsAt: new Date(Date.now() - 86_400_000),
+      },
+    })
+    createdGrantIds.push(grantId)
+  }
 
   return { workspaceId, projectId }
 }
 
 async function cleanup() {
+  for (const id of createdGrantIds) {
+    await prisma.workspaceGrant.deleteMany({ where: { id } }).catch(() => {})
+  }
   for (const id of createdSubscriptionIds) {
     await prisma.subscription.deleteMany({ where: { id } }).catch(() => {})
   }
@@ -130,9 +179,14 @@ async function cleanup() {
   for (const id of createdWorkspaceIds) {
     await prisma.workspace.deleteMany({ where: { id } }).catch(() => {})
   }
+  for (const id of createdParentWorkspaceIds) {
+    await prisma.workspace.deleteMany({ where: { id } }).catch(() => {})
+  }
   createdProjectIds.length = 0
   createdWorkspaceIds.length = 0
+  createdParentWorkspaceIds.length = 0
   createdSubscriptionIds.length = 0
+  createdGrantIds.length = 0
 }
 
 describe.skipIf(!POSTGRES_READY)('HeartbeatScheduler e2e', () => {
@@ -229,6 +283,97 @@ describe.skipIf(!POSTGRES_READY)('HeartbeatScheduler e2e', () => {
 
     expect(triggeredProjects).not.toContain(projectId)
 
+    scheduler.stop()
+  })
+
+  test('tick() claims a child workspace billed through its paid parent', async () => {
+    const { projectId } = await createTestFixtures({
+      heartbeatEnabled: true,
+      heartbeatInterval: 1800,
+      nextHeartbeatAt: new Date(Date.now() - 60_000),
+      billing: 'parent',
+    })
+
+    const triggeredProjects: string[] = []
+    const scheduler = new HeartbeatScheduler()
+    ;(scheduler as any).running = true
+    ;(scheduler as any).triggerAgent = async (pid: string) => {
+      triggeredProjects.push(pid)
+    }
+
+    await scheduler.tick()
+
+    expect(triggeredProjects).toContain(projectId)
+    scheduler.stop()
+  })
+
+  test('tick() claims a workspace whose paid plan comes only from a grant', async () => {
+    const { projectId } = await createTestFixtures({
+      heartbeatEnabled: true,
+      heartbeatInterval: 1800,
+      nextHeartbeatAt: new Date(Date.now() - 60_000),
+      billing: 'grant',
+    })
+
+    const triggeredProjects: string[] = []
+    const scheduler = new HeartbeatScheduler()
+    ;(scheduler as any).running = true
+    ;(scheduler as any).triggerAgent = async (pid: string) => {
+      triggeredProjects.push(pid)
+    }
+
+    await scheduler.tick()
+
+    expect(triggeredProjects).toContain(projectId)
+    scheduler.stop()
+  })
+
+  test('tick() skips a workspace with no subscription and no grant', async () => {
+    const dueAt = new Date(Date.now() - 60_000)
+    const { projectId } = await createTestFixtures({
+      heartbeatEnabled: true,
+      heartbeatInterval: 1800,
+      nextHeartbeatAt: dueAt,
+      billing: 'none',
+    })
+
+    const triggeredProjects: string[] = []
+    const scheduler = new HeartbeatScheduler()
+    ;(scheduler as any).running = true
+    ;(scheduler as any).triggerAgent = async (pid: string) => {
+      triggeredProjects.push(pid)
+    }
+
+    await scheduler.tick()
+
+    expect(triggeredProjects).not.toContain(projectId)
+    const config = await prisma.agentConfig.findUnique({ where: { projectId } })
+    expect(config.nextHeartbeatAt.getTime()).toBeCloseTo(dueAt.getTime(), -3)
+    scheduler.stop()
+  })
+
+  test('tick() skips a workspace whose only grant is a free plan', async () => {
+    const dueAt = new Date(Date.now() - 60_000)
+    const { projectId } = await createTestFixtures({
+      heartbeatEnabled: true,
+      heartbeatInterval: 1800,
+      nextHeartbeatAt: dueAt,
+      billing: 'grant',
+      grantPlanId: 'free',
+    })
+
+    const triggeredProjects: string[] = []
+    const scheduler = new HeartbeatScheduler()
+    ;(scheduler as any).running = true
+    ;(scheduler as any).triggerAgent = async (pid: string) => {
+      triggeredProjects.push(pid)
+    }
+
+    await scheduler.tick()
+
+    expect(triggeredProjects).not.toContain(projectId)
+    const config = await prisma.agentConfig.findUnique({ where: { projectId } })
+    expect(config.nextHeartbeatAt.getTime()).toBeCloseTo(dueAt.getTime(), -3)
     scheduler.stop()
   })
 

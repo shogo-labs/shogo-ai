@@ -15,7 +15,7 @@
  */
 
 import { Hono } from 'hono'
-import { spawn, execSync } from 'node:child_process'
+import { spawn, execSync } from '@shogo/shared-runtime/child-process'
 import { resolve } from 'node:path'
 import { MODEL_CATALOG, MODEL_ALIASES } from '@shogo/model-catalog'
 import { prisma } from '../lib/prisma'

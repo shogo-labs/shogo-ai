@@ -838,8 +838,17 @@ function onMessage(raw: { data?: HostMessage } | HostMessage): void {
   }
 }
 
-if (parentPort) parentPort.on('message', onMessage)
-else process.on('message', onMessage)
+if (parentPort) {
+  // Electron 37+ warns instead of crashing a utilityProcess on an unhandled
+  // rejection. Exit so the host manager can restart a broken extension host.
+  process.on('unhandledRejection', (reason) => {
+    console.error('[extension-host] unhandledRejection', reason)
+    process.exit(1)
+  })
+  parentPort.on('message', onMessage)
+} else {
+  process.on('message', onMessage)
+}
 
 
 

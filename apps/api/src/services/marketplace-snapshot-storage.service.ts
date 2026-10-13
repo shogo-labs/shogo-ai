@@ -54,7 +54,7 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, relative, resolve } from 'node:path'
-import { spawn } from 'node:child_process'
+import { spawn } from '@shogo/shared-runtime/child-process'
 import * as tar from 'tar'
 
 // Inlined to avoid a circular import with `marketplace-install.service`,

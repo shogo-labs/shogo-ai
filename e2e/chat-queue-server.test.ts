@@ -223,7 +223,7 @@ describe("server-side chat queue", () => {
     )
     // Generated CRUD routes normalize hook rejections to 400; the response
     // still carries the forbidden error code.
-    expect(foreignList.status).toBe(400)
+    expect(foreignList.status).toBe(403)
     expect((await foreignList.json() as any).error.code).toBe("forbidden")
 
     const busyPatch = await app.fetch(

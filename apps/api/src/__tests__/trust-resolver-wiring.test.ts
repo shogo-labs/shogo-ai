@@ -50,7 +50,7 @@ describe('trust resolver wiring — manager.ts', () => {
   test('LINKED_FOLDERS is still in the spawn env (immutable for runtime lifetime)', () => {
     // Sanity check that the test above didn't pass just because the
     // whole external branch was deleted by accident.
-    expect(src).toMatch(/LINKED_FOLDERS:\s*JSON\.stringify/)
+    expect(src).toMatch(/LINKED_FOLDERS\s*[:=]\s*JSON\.stringify/)
   })
 
   test('comment documents why TRUST_LEVEL is intentionally absent', () => {

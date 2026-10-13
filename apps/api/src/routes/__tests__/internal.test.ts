@@ -23,6 +23,9 @@ const store = {
   agentConfigFind: null as any,
   agentConfigFindThrow: null as null | Error,
   agentConfigUpdateOne: { ok: true } as any,
+  heartbeatError: null as null | { code: string; message: string },
+  heartbeatThrow: null as null | Error,
+  heartbeatCalls: [] as Array<{ projectId: string; patch: any; opts: any }>,
   override: null as any,
   experiment: null as any,
   overrideThrow: null as null | Error,
@@ -44,6 +47,24 @@ const store = {
   workspaceProjects: [] as Array<{ id: string; name: string; description: string | null; createdBy: string | null; hidden?: boolean }>,
   projectFindManyCalledWith: null as any,
 }
+
+// The route is a thin shim over the heartbeat config service; its real
+// scheduling behaviour is covered by heartbeat-config.service.test.ts.
+class MockHeartbeatConfigError extends Error {
+  constructor(public code: string, message: string) { super(message) }
+}
+mock.module('../../services/heartbeat-config.service', () => ({
+  HeartbeatConfigError: MockHeartbeatConfigError,
+  updateHeartbeatConfig: async (projectId: string, patch: any, opts: any) => {
+    store.heartbeatCalls.push({ projectId, patch, opts })
+    if (store.heartbeatThrow) throw store.heartbeatThrow
+    if (store.heartbeatError) throw new MockHeartbeatConfigError(store.heartbeatError.code, store.heartbeatError.message)
+    return {
+      config: { nextHeartbeatAt: patch.heartbeatEnabled === false ? null : new Date(Date.now() + 60_000) },
+      previousEnabled: false,
+    }
+  },
+}))
 
 mock.module('../../lib/k8s-auth', () => ({
   validatePodToken: async (_t: string) => store.podIdentity,
@@ -96,14 +117,20 @@ mock.module('../../lib/prisma', () => ({
         // Mimic Prisma: apply the `hidden` filter the route passes in so the
         // test can assert hidden projects never reach the response, exactly
         // as a real hidden:false where-clause would filter them at the DB.
-        const hiddenFilter = args?.where?.hidden
+        const clauses = args?.where?.AND ?? [args?.where ?? {}]
+        const hiddenFilter = clauses.find((w: any) => w && 'hidden' in w)?.hidden
         return store.workspaceProjects.filter((p) =>
           hiddenFilter === undefined ? true : Boolean(p.hidden) === hiddenFilter,
         )
       },
     },
+    user: {
+      findUnique: async () => ({ role: 'user' }),
+    },
     member: {
       findFirst: async () => store.workspaceMember,
+      findMany: async () =>
+        store.workspaceMember ? [{ role: 'member', projectId: null, isBillingAdmin: false }] : [],
     },
     agentConfig: {
       updateMany: async () => {
@@ -167,6 +194,9 @@ beforeEach(() => {
   store.previewVerify = { projectId: 'proj-1', exp: 1700000000 }
   store.warmPoolEnv = { foo: 'bar' }
   store.warmPoolThrow = null
+  store.heartbeatError = null
+  store.heartbeatThrow = null
+  store.heartbeatCalls = []
   store.prismaProject = { id: 'proj-99' }
   store.prismaProjectThrow = null
   store.prismaProjectFindUnique = null
@@ -213,7 +243,7 @@ describe('GET /workspaces/:workspaceId/projects', () => {
     expect(res.status).toBe(200)
     const json = await res.json() as { projects: Array<{ id: string }> }
     expect(json.projects.map((p) => p.id)).toEqual(['proj-visible'])
-    expect(store.projectFindManyCalledWith?.where).toMatchObject({ workspaceId: 'ws-1', hidden: false })
+    expect(store.projectFindManyCalledWith?.where?.AND?.[0]).toMatchObject({ workspaceId: 'ws-1', hidden: false })
   })
 })
 
@@ -387,13 +417,22 @@ describe('PUT /heartbeat/config/:projectId', () => {
     expect(res.status).toBe(401)
   })
   test('404 when agent config not found', async () => {
-    store.agentConfigFind = null
+    store.heartbeatError = { code: 'not_found', message: 'nope' }
     const res = await app.request('/heartbeat/config/p1', {
       method: 'PUT', headers: { ...SA, ...JSON_H }, body: JSON.stringify({ heartbeatEnabled: true }),
     })
     expect(res.status).toBe(404)
   })
-  test('200 enables and schedules next heartbeat', async () => {
+  test('402 when the workspace plan does not allow heartbeats', async () => {
+    store.heartbeatError = { code: 'paywall', message: 'upgrade to enable heartbeat' }
+    const res = await app.request('/heartbeat/config/p1', {
+      method: 'PUT', headers: { ...SA, ...JSON_H }, body: JSON.stringify({ heartbeatEnabled: true }),
+    })
+    expect(res.status).toBe(402)
+    const body = await res.json()
+    expect(body.error.code).toBe('paywall')
+  })
+  test('200 enables, schedules next heartbeat, and goes through the config service', async () => {
     const res = await app.request('/heartbeat/config/p1', {
       method: 'PUT', headers: { ...SA, ...JSON_H },
       body: JSON.stringify({
@@ -405,6 +444,10 @@ describe('PUT /heartbeat/config/:projectId', () => {
     const body = await res.json()
     expect(body.ok).toBe(true)
     expect(body.nextHeartbeatAt).toBeTruthy()
+    expect(store.heartbeatCalls).toHaveLength(1)
+    expect(store.heartbeatCalls[0].projectId).toBe('p1')
+    expect(store.heartbeatCalls[0].patch).toMatchObject({ heartbeatEnabled: true, heartbeatInterval: 120, quietHoursStart: '22:00' })
+    expect(store.heartbeatCalls[0].opts).toMatchObject({ alwaysReschedule: true })
   })
   test('200 disables and clears next heartbeat', async () => {
     const res = await app.request('/heartbeat/config/p1', {
@@ -414,23 +457,8 @@ describe('PUT /heartbeat/config/:projectId', () => {
     const body = await res.json()
     expect(body.nextHeartbeatAt).toBeNull()
   })
-  test('200 with empty-string quiet hours sets to null', async () => {
-    const res = await app.request('/heartbeat/config/p1', {
-      method: 'PUT', headers: { ...SA, ...JSON_H },
-      body: JSON.stringify({ quietHoursStart: '', quietHoursEnd: '', quietHoursTimezone: '' }),
-    })
-    expect(res.status).toBe(200)
-  })
-  test('rejects interval < 60 by not applying it', async () => {
-    store.agentConfigFind = { heartbeatEnabled: true, heartbeatInterval: 300 }
-    const res = await app.request('/heartbeat/config/p1', {
-      method: 'PUT', headers: { ...SA, ...JSON_H },
-      body: JSON.stringify({ heartbeatInterval: 10 }),
-    })
-    expect(res.status).toBe(200)
-  })
-  test('500 when prisma findUnique throws', async () => {
-    store.agentConfigFindThrow = new Error('db')
+  test('500 when the config service throws', async () => {
+    store.heartbeatThrow = new Error('db')
     const res = await app.request('/heartbeat/config/p1', {
       method: 'PUT', headers: { ...SA, ...JSON_H }, body: JSON.stringify({}),
     })
@@ -520,6 +548,24 @@ describe('POST /validate-runtime-token', () => {
     })
     const body = await res.json()
     expect(body).toEqual({ valid: true, projectId: 'p1', format: 'v1' })
+  })
+  test('200 valid workspace token returns workspaceId', async () => {
+    store.runtimeVerify = { ok: false, reason: 'malformed' }
+    store.workspaceVerify = { ok: true, workspaceId: 'ws-1' }
+    const res = await app.request('/validate-runtime-token', {
+      method: 'POST', headers: { ...SA, ...JSON_H }, body: JSON.stringify({ token: 'wrt_v1_ws-1_abc' }),
+    })
+    const body = await res.json()
+    expect(body).toEqual({ valid: true, workspaceId: 'ws-1', format: 'wrt_v1' })
+  })
+  test('rejects a workspace token the verifier does not accept', async () => {
+    store.runtimeVerify = { ok: false, reason: 'malformed' }
+    store.workspaceVerify = { ok: false, reason: 'bad_hmac' }
+    const res = await app.request('/validate-runtime-token', {
+      method: 'POST', headers: { ...SA, ...JSON_H }, body: JSON.stringify({ token: 'wrt_v1_ws-1_nope' }),
+    })
+    const body = await res.json()
+    expect(body).toEqual({ valid: false, reason: 'bad_hmac' })
   })
 })
 

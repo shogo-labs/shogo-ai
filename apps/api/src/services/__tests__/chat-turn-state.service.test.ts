@@ -6,10 +6,12 @@ import { describe, expect, mock, test } from 'bun:test'
 const update = mock(async () => ({}))
 const updateMany = mock(async () => ({ count: 1 }))
 const findMany = mock(async () => [])
+const findMessage = mock(async (): Promise<unknown> => null)
 
 mock.module('../../lib/prisma', () => ({
   prisma: {
     chatSession: { update, updateMany, findMany },
+    conversationMessage: { findFirst: findMessage },
   },
 }))
 
@@ -130,6 +132,55 @@ describe('chat-turn-state service', () => {
       }),
       orderBy: { activeTurnStartedAt: 'desc' },
     }))
+  })
+
+  test('points a turn at the team-chat reply it is posting', async () => {
+    const startedAt = new Date('2026-10-12T18:00:00.000Z')
+    findMany.mockResolvedValueOnce([
+      {
+        id: 'session-ops',
+        name: null,
+        inferredName: '#ops: check the deploy',
+        isPrimary: false,
+        activeTurnId: 'turn-ops',
+        activeTurnStartedAt: startedAt,
+        project: { id: 'project-devops', name: 'Shogo DevOps', hidden: true },
+      },
+    ] as never)
+    findMessage.mockResolvedValueOnce({
+      id: 'msg-newest',
+      conversationId: 'conv-ops',
+      threadRootId: 'thread-1',
+      conversation: { name: 'ops', slug: 'ops', kind: 'public' },
+    })
+
+    await expect(listActiveChatTurns('workspace-1')).resolves.toEqual([
+      {
+        chatSessionId: 'session-ops',
+        turnId: 'turn-ops',
+        sessionName: '#ops: check the deploy',
+        isPrimary: false,
+        projectId: 'project-devops',
+        projectName: 'Shogo DevOps',
+        projectHidden: true,
+        startedAt,
+        conversationId: 'conv-ops',
+        threadRootId: 'thread-1',
+        messageId: 'msg-newest',
+        conversationName: 'ops',
+        conversationKind: 'public',
+      },
+    ])
+    expect(findMessage).toHaveBeenCalledWith({
+      where: { agentSessionId: 'session-ops', authorType: 'agent', deletedAt: null },
+      orderBy: { createdAt: 'desc' },
+      select: {
+        id: true,
+        conversationId: true,
+        threadRootId: true,
+        conversation: { select: { name: true, slug: true, kind: true } },
+      },
+    })
   })
 
   test('uses a five-minute heartbeat window by default', async () => {

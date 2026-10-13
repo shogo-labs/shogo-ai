@@ -27,6 +27,7 @@ import { clampAspectRatio, DEFAULT_IMAGE_ASPECT } from "./image-sizing"
 import { useChatImageWidth } from "./use-chat-image-width"
 import { WorkedForGroup } from "./WorkedForGroup"
 import { PlanningStatusLine } from "./PlanningStatusLine"
+import { useDeferredBacklog } from "./use-deferred-backlog"
 import type { MessagePart, GroupedMessagePart } from "./types"
 import {
   groupWorkParts,
@@ -38,8 +39,7 @@ import { buildFallbackWorkedLabel } from "./workSummary"
 import { TASK_TOOL_NAMES, extractOrderedParts } from "./messageParts"
 import { useChatContextSafe } from "../ChatContext"
 import { resolveChatAttachmentUrl } from "../../../lib/chat-attachment-url"
-import { MarkdownText } from "../MarkdownText"
-import { useMobileWorkspaceChrome } from "../../layout/MobileWorkspaceChromeContext"
+import { ChatMarkdown } from "../ChatMarkdown"
 import { GenerateImageWidget } from "./GenerateImageWidget"
 import { FileDeliveryWidget } from "./FileDeliveryWidget"
 import { GeneratedImageGallery } from "./GeneratedImageGallery"
@@ -47,6 +47,7 @@ import { BrowserWidget } from "./BrowserWidget"
 import { ThinkingWidget } from "./ThinkingWidget"
 import { WriteFileWidget } from "./WriteFileWidget"
 import { EditFileWidget } from "./EditFileWidget"
+import { LOOKUP_TOOL_NAMES } from "../tools/summary"
 import type { PlanData } from "../PlanCard"
 import { PlanReferenceCard } from "./PlanReferenceCard"
 import { extractPlanFilepath } from "./plan-tool"
@@ -188,6 +189,7 @@ const TEAM_TOOL_NAMES = new Set(["team_create"])
 // by default, so it's NOT in this set — only tools that flow through
 // `InlineToolWidget` need to be flagged here.
 const MINIMAL_TOOL_NAMES = new Set([
+  ...LOOKUP_TOOL_NAMES,
   "Read",
   "read_file",
   "ReadLints",
@@ -199,6 +201,12 @@ const MINIMAL_TOOL_NAMES = new Set([
   "glob",
   "WebSearch",
   "WebFetch",
+  "web",
+  "memory_search",
+  "search_history",
+  "search_integrations",
+  "team_chat_search",
+  "meeting_search",
   "Delete",
   "exec_wait",
 ])
@@ -440,7 +448,6 @@ export const AssistantContent = memo(
   }: AssistantContentProps) {
     const chatContext = useChatContextSafe()
     const nativePhone = useIsNativePhoneLayout()
-    const usesMobileWorkspaceChrome = useMobileWorkspaceChrome()
 
     const [expandedTools, setExpandedTools] = useState<Set<string>>(new Set())
 
@@ -566,6 +573,7 @@ export const AssistantContent = memo(
     )
 
     const timing = useMemo(() => extractTurnTiming(message), [message])
+    const hiddenWork = useDeferredBacklog(workLog.length, isStreaming)
 
     const lastGroupId = useMemo(() => {
       const last = groupedParts[groupedParts.length - 1]
@@ -573,6 +581,14 @@ export const AssistantContent = memo(
         ? last.id
         : null
     }, [groupedParts])
+
+    // Only the turn's last part can still grow; earlier text parts are final
+    // and render as static markdown.
+    const streamingTextPartId = useMemo(() => {
+      if (!isStreaming) return null
+      const last = orderedParts[orderedParts.length - 1]
+      return last?.type === "text" ? last.id : null
+    }, [orderedParts, isStreaming])
 
     const showPlanningStatus = useMemo(
       () => shouldShowPlanningStatus(orderedParts, isStreaming),
@@ -613,17 +629,12 @@ export const AssistantContent = memo(
       if (part.type === "text") {
         return (
           <View key={part.id}>
-            <MarkdownText
-              className={
-                Platform.OS !== "web" || usesMobileWorkspaceChrome
-                  ? "text-foreground text-base leading-6"
-                  : "text-foreground text-xs prose-sm"
-              }
-              isStreaming={isStreaming}
+            <ChatMarkdown
+              isStreaming={part.id === streamingTextPartId}
               onFilePress={chatContext?.openFile}
             >
               {part.text}
-            </MarkdownText>
+            </ChatMarkdown>
           </View>
         )
       }
@@ -940,7 +951,10 @@ export const AssistantContent = memo(
             </View>
           </WorkedForGroup>
         )}
-        {isStreaming && workLog.map((part, index) => renderPart(part, index))}
+        {isStreaming &&
+          workLog
+            .slice(hiddenWork)
+            .map((part, index) => renderPart(part, hiddenWork + index))}
         {!isStreaming &&
           visibleImageWork.map(({ part, index }) => renderPart(part, index))}
         {finalSegment.map((part, index) =>

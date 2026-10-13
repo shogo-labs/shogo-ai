@@ -33,6 +33,46 @@ export interface ToolSummary {
   rest?: ToolSummary[]
 }
 
+/**
+ * Read-only built-in tools that should contribute to the generic
+ * "lookups" count in a work-group rather than being mistaken for file reads
+ * or shell commands.
+ */
+export const LOOKUP_TOOL_NAMES = new Set([
+  "ReadLints",
+  "read_lints",
+  "project_list",
+  "list_projects",
+  "template_list",
+  "worktree_list",
+  "team_chat_list",
+  "team_chat_read",
+  "team_directory",
+  "member_activity",
+  "channel_list",
+  "agent_profile_get",
+  "agent_status",
+  "agent_result",
+  "agent_list",
+  "task_get",
+  "task_list",
+  "goal_list",
+  "schedule_list",
+  "trigger_types_list",
+  "trigger_list",
+  "meeting_list",
+  "meeting_read",
+  "exec_list",
+  "terminal_read",
+  "memory_read",
+  "read_history",
+  "read_guide",
+  "heartbeat_status",
+  "impact_radius",
+  "detect_changes",
+  "review_context",
+])
+
 const TARGET_MAX = 40
 
 function basename(path: string): string {
@@ -811,6 +851,118 @@ export function getToolSummary(
     case "WebFetch": {
       const url = a.url as string | undefined
       return { verb: "Fetch", target: url ? (urlHost(url) ?? truncate(url)) : undefined }
+    }
+    case "web": {
+      const url = a.url as string | undefined
+      if (url) return { verb: "Fetch", target: urlHost(url) ?? truncate(url) }
+      const query = a.query as string | undefined
+      return {
+        verb: "Search the web for",
+        target: query ? truncate(query, 40) : undefined,
+      }
+    }
+    case "memory_search":
+    case "search_history":
+    case "search_integrations":
+    case "team_chat_search":
+    case "meeting_search": {
+      const query = a.query as string | undefined
+      return { verb: "Search for", target: query ? truncate(query, 30) : undefined }
+    }
+    case "project_list":
+    case "list_projects":
+      return { verb: "List", target: "projects" }
+    case "template_list":
+      return { verb: "List", target: "templates" }
+    case "worktree_list":
+      return { verb: "List", target: "chat worktrees" }
+    case "team_chat_list":
+      return { verb: "List", target: "channels" }
+    case "channel_list":
+      return { verb: "List", target: "connected channels" }
+    case "team_directory":
+      return { verb: "List", target: "team directory" }
+    case "agent_list":
+      return { verb: "List", target: "agents" }
+    case "task_list":
+      return { verb: "List", target: "tasks" }
+    case "goal_list":
+      return { verb: "List", target: "goals" }
+    case "schedule_list":
+      return { verb: "List", target: "schedules" }
+    case "trigger_types_list":
+      return {
+        verb: "List",
+        target: a.toolkit ? `${String(a.toolkit)} trigger types` : "trigger types",
+      }
+    case "trigger_list":
+      return {
+        verb: "List",
+        target: a.trigger_id ? `deliveries for ${String(a.trigger_id)}` : "triggers",
+      }
+    case "meeting_list":
+      return { verb: "List", target: "meetings" }
+    case "exec_list":
+      return { verb: "List", target: "running commands" }
+    case "team_chat_read": {
+      const channel = a.channel as string | undefined
+      const target = channel ? `#${channel.replace(/^#/, "")}` : undefined
+      return {
+        verb: "Read",
+        target: target && a.thread_id ? `${target} thread` : target,
+      }
+    }
+    case "member_activity": {
+      const user = a.user as string | undefined
+      return { verb: "Read", target: user ? `${user} activity` : undefined }
+    }
+    case "agent_profile_get":
+      return { verb: "Read", target: "agent profile" }
+    case "agent_status":
+      return {
+        verb: "Read",
+        target: a.instance_id ? `agent ${String(a.instance_id)}` : "agent status",
+      }
+    case "agent_result":
+      return {
+        verb: "Read",
+        target: a.instance_id ? `agent ${String(a.instance_id)} result` : "agent result",
+      }
+    case "task_get":
+      return { verb: "Read", target: a.task_id ? `task ${String(a.task_id)}` : "task" }
+    case "meeting_read":
+      return { verb: "Read", target: a.meeting_id ? `meeting ${String(a.meeting_id)}` : "meeting" }
+    case "memory_read":
+      return { verb: "Read", target: a.file ? String(a.file) : "memory" }
+    case "read_history":
+      return {
+        verb: "Read",
+        target: a.id ? `${a.kind ? `${String(a.kind)} ` : ""}${String(a.id)}` : "chat history",
+      }
+    case "read_guide":
+      return { verb: "Read", target: a.name ? `guide ${String(a.name)}` : "guide" }
+    case "terminal_read":
+      return {
+        verb: "Read",
+        target: a.terminalId ? `terminal ${String(a.terminalId)}` : "terminal output",
+      }
+    case "heartbeat_status":
+      return {
+        verb: "Read",
+        target: a.projectId ? `heartbeat for ${String(a.projectId)}` : "heartbeat status",
+      }
+    case "impact_radius": {
+      const files = a.files as unknown
+      const first = Array.isArray(files) && typeof files[0] === "string" ? files[0] : undefined
+      return { verb: "Check", target: first ? basename(first) : "impact radius" }
+    }
+    case "detect_changes":
+    case "review_context": {
+      const changedFiles = a.changed_files as unknown
+      const first = Array.isArray(changedFiles) && typeof changedFiles[0] === "string"
+        ? changedFiles[0]
+        : undefined
+      return { verb: "Check", target: first ? basename(first) : "changes" }
     }
     case "Bash":
     case "exec": {

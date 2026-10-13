@@ -2,8 +2,8 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { View, Text } from 'react-native'
-import * as Lucide from 'lucide-react-native'
 import { resolveIntegration } from '@shogo/shared-app'
+import { LucideByName } from '../../lib/lucide-catalog'
 
 interface IntegrationStripProps {
   tags: string[]
@@ -17,11 +17,6 @@ interface IntegrationStripProps {
  * Resolve a Lucide icon name (string) to its component. Returns null when
  * the name doesn't exist in lucide-react-native.
  */
-function getIcon(name: string): React.ComponentType<{ size?: number; color?: string }> | null {
-  const Icon = (Lucide as any)[name]
-  return Icon ?? null
-}
-
 /**
  * Shopify-style "Works with: Gmail, Slack, ..." horizontal strip. Tags
  * registered in `KNOWN_INTEGRATIONS` get a tinted icon chip; unknown
@@ -40,14 +35,13 @@ export function IntegrationStrip({ tags, knownOnly, max = 8 }: IntegrationStripP
       {visible.map((tag) => {
         const integration = resolveIntegration(tag)
         if (integration) {
-          const Icon = getIcon(integration.icon)
           const tint = integration.color ?? '#71717a'
           return (
             <View
               key={tag}
               className="flex-row items-center gap-1.5 rounded-full border border-border bg-card px-2.5 py-1"
             >
-              {Icon ? <Icon size={12} color={tint} /> : null}
+              <LucideByName name={integration.icon} size={12} color={tint} fallback={null} />
               <Text className="text-xs font-medium text-foreground">
                 {integration.label}
               </Text>

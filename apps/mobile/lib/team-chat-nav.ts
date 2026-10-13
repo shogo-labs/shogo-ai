@@ -18,23 +18,40 @@ export interface SessionOrigin {
 }
 
 export interface SessionRoute {
-  pathname: '/(app)/project-chat/[id]' | '/(app)/projects/[id]'
+  pathname: '/(app)/project-chat/[id]' | '/(app)/projects/[id]' | '/(app)/agent'
   params: Record<string, string>
 }
 
-export function sessionRoute(input: { projectId: string; sessionId: string; origin: SessionOrigin; wide: boolean }): SessionRoute {
+/**
+ * The route for an agent's session. A project agent's session is project chat; the workspace
+ * agent (`projectId` null) has no project, so its session opens in the workspace agent chat.
+ */
+export function sessionRoute(input: { projectId: string | null; sessionId: string; origin: SessionOrigin; wide: boolean }): SessionRoute {
   const { projectId, sessionId, origin, wide } = input
+  const originParams = {
+    fromConversation: origin.conversationId,
+    fromLabel: origin.conversationLabel,
+    fromKind: origin.conversationKind,
+    ...(origin.threadRootId ? { fromThread: origin.threadRootId } : {}),
+    fromAgent: origin.agentName,
+  }
+  if (!projectId) {
+    return { pathname: '/(app)/agent', params: { chatSessionId: sessionId, ...originParams } }
+  }
   return {
     pathname: wide ? '/(app)/projects/[id]' : '/(app)/project-chat/[id]',
-    params: {
-      id: projectId,
-      chatSessionId: sessionId,
-      fromConversation: origin.conversationId,
-      fromLabel: origin.conversationLabel,
-      fromKind: origin.conversationKind,
-      ...(origin.threadRootId ? { fromThread: origin.threadRootId } : {}),
-      fromAgent: origin.agentName,
-    },
+    params: { id: projectId, chatSessionId: sessionId, ...originParams },
+  }
+}
+
+/** The conversation, and the thread when the run happened in one. Same shape as the session breadcrumb. */
+export function conversationThreadRoute(conversationId: string, threadRootId?: string | null): {
+  pathname: '/(app)/c/[conversationId]'
+  params: Record<string, string>
+} {
+  return {
+    pathname: '/(app)/c/[conversationId]',
+    params: threadRootId ? { conversationId, thread: threadRootId } : { conversationId },
   }
 }
 

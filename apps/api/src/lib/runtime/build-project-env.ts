@@ -24,6 +24,11 @@ import { importCloudModule } from '../cloud-import'
 import { isDockerTechStack } from '../../../../../packages/core/src/tech-stack-registry'
 import { resolveExposedPorts } from '../project-ports'
 
+/** HKDF purpose label for the guest home-state key. Bump with the version. */
+export const HOME_STATE_KEY_PURPOSE = 'home-state:v1'
+/** Must match the key version the guest stamps into each archive header. */
+export const HOME_STATE_KEY_VERSION = '1'
+
 /**
  * Thrown when the project row is gone (typically deleted while a session was
  * still live). Authoritative and NOT retryable: there is no token to mint and no
@@ -139,13 +144,6 @@ export async function buildProjectEnv(
       // Per-project workspace mount override (default: true = mounted)
       if (settings?.mountWorkspace === false) {
         env.MOUNT_WORKSPACE = 'false'
-      }
-
-      // BETA: per-chat git worktrees (off by default). Injected so the
-      // runtime seeds config.json on cold boot; the live toggle path goes
-      // through PATCH /agent/config. Read in agent-runtime/src/server.ts.
-      if (settings?.gitWorktreesEnabled === true) {
-        env.SHOGO_GIT_WORKTREES = '1'
       }
 
       // Tech stack is sourced exclusively from project.settings.techStackId
@@ -275,6 +273,20 @@ export async function buildProjectEnv(
   const { deriveRuntimeToken, deriveWebhookToken } = await import('../runtime-token')
   env.RUNTIME_AUTH_SECRET = deriveRuntimeToken(projectId)
   env.WEBHOOK_TOKEN = deriveWebhookToken(projectId)
+
+  // Per-project key for the guest's encrypted home-directory archive
+  // (packages/agent-runtime/src/home-state.ts). The guest encrypts before the
+  // bytes leave the VM, so the metal host and object storage only ever hold
+  // ciphertext. Absent master key = no key = home persistence stays off.
+  if (opts?.forMetal) {
+    const { deriveProjectKey, isSecretCryptoConfigured } = await import('../secret-crypto')
+    if (isSecretCryptoConfigured()) {
+      env.HOME_STATE_KEY = deriveProjectKey(HOME_STATE_KEY_PURPOSE, projectId).toString('base64')
+      env.HOME_STATE_KEY_VERSION = HOME_STATE_KEY_VERSION
+    } else {
+      console.warn(`[${prefix}] SECRETS_ENCRYPTION_KEY unset — home-directory persistence disabled for ${projectId}`)
+    }
+  }
 
   // AI proxy URLs — the runtime needs to know where the proxy server is.
   // Metal microVMs (Firecracker on bare metal) run OUTSIDE the OKE cluster, so
@@ -489,6 +501,9 @@ export async function buildPublishedProjectEnv(
   // Writable-state durability is host-side (metal-agent) — the guest must not
   // try to reach the published-data bucket itself (no creds on metal).
   delete env.S3_PUBLISHED_DATA_BUCKET
+  // A published site never persists the agent's home directory.
+  delete env.HOME_STATE_KEY
+  delete env.HOME_STATE_KEY_VERSION
 
   if (opts?.alwaysOn) env.SHOGO_ALWAYS_ON = '1'
   else delete env.SHOGO_ALWAYS_ON

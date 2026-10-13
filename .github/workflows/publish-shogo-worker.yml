@@ -70,7 +70,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  BUN_VERSION: '1.4.2'
+  BUN_VERSION: '1.4.3'
   TARGETS: 'darwin-arm64 darwin-x64 linux-arm64 linux-x64'
 
 jobs:

@@ -10,7 +10,7 @@
  */
 
 import { statSync } from 'fs'
-import { posix } from 'path'
+import { join, posix } from 'path'
 
 export interface FileReadRecord {
   path: string
@@ -129,6 +129,40 @@ export class FileStateCache {
       return currentMtime !== record.mtime
     } catch {
       return true
+    }
+  }
+
+  /**
+   * Re-stat every tracked file. An `exec` (formatter, codegen, git) changes
+   * mtimes without going through write_file/edit_file, and the next edit
+   * would otherwise fail the stale-read guard even when old_string still
+   * matches. Dropping the cached content forces the next edit to read disk.
+   */
+  resyncMtimes(): void {
+    if (!this.workspaceDir) return
+    for (const [key, record] of this.reads) {
+      try {
+        const mtime = Math.floor(statSync(join(this.workspaceDir, key)).mtimeMs)
+        if (mtime !== record.mtime) {
+          this.reads.set(key, { ...record, mtime, content: undefined, readAt: Date.now() })
+        }
+      } catch {
+        // Missing file: leave the record so the next edit reports it.
+      }
+    }
+  }
+
+  /**
+   * Copy records another cache wrote after this one last saw them.
+   * Used to fold a subagent's edits back into the parent. Older snapshots
+   * are ignored so a clone taken at start cannot clobber later parent writes.
+   */
+  mergeNewerReads(other: FileStateCache): void {
+    for (const [key, value] of other.reads) {
+      const mine = this.reads.get(key)
+      if (!mine || value.readAt > mine.readAt) {
+        this.reads.set(key, { ...value })
+      }
     }
   }
 

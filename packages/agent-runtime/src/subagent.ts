@@ -36,7 +36,7 @@ const CORE_GATEWAY_TOOLS = new Set([
   'search_integrations', 'connect', 'disconnect',
   'quick_action',
   'project_list', 'project_create', 'project_attach', 'project_detach',
-  'project_configure', 'project_call', 'system_apply',
+  'project_configure', 'capabilities_configure', 'project_call', 'system_apply',
 ])
 
 // ---------------------------------------------------------------------------
@@ -1175,6 +1175,9 @@ export async function runSubagent(
       responseEmpty: true,
     }
   } finally {
+    if (parentCtx.fileStateCache && subCtx.fileStateCache) {
+      parentCtx.fileStateCache.mergeNewerReads(subCtx.fileStateCache)
+    }
     void disposeBrowserTool(ownBrowserTool)
   }
 }

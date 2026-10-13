@@ -143,6 +143,32 @@ describe('MetalWarmPool.adopt', () => {
     expect(reg.get('live-proj')?.pid).toBe(liveChild.pid)
   })
 
+  test('carries publishedDataLoaded across a restart, and its absence too', async () => {
+    const cfg = makeCfg()
+    const guest = Bun.serve({ port: 0, fetch: () => new Response('ok') })
+    cleanups.push(() => guest.stop(true))
+    const agentUrl = `http://localhost:${guest.port}`
+    const loadedChild = Bun.spawn(['sleep', '30'])
+    const unloadedChild = Bun.spawn(['sleep', '30'])
+    cleanups.push(() => loadedChild.kill('SIGKILL'))
+    cleanups.push(() => unloadedChild.kill('SIGKILL'))
+
+    const reg = new LiveRegistry(cfg.runDir)
+    reg.put({
+      ...entry(cfg, 'published:loaded', loadedChild.pid, agentUrl),
+      publishedSubdomain: 'loaded-site',
+      publishedDataLoaded: true,
+    })
+    reg.put({ ...entry(cfg, 'published:unloaded', unloadedChild.pid, agentUrl), publishedSubdomain: 'unloaded-site' })
+
+    const fakeMgr = { adoptVM: () => {}, reapHostOrphans: () => 0, procCount: () => 0 }
+    const pool = new MetalWarmPool(fakeMgr as any, cfg as any)
+    await pool.adopt()
+
+    expect(pool.getAssigned('published:loaded')?.publishedDataLoaded).toBe(true)
+    expect(pool.getAssigned('published:unloaded')?.publishedDataLoaded).toBeUndefined()
+  })
+
   test('adopts a live proc whose guest is unhealthy (never reaps a running VM)', async () => {
     const cfg = makeCfg()
 

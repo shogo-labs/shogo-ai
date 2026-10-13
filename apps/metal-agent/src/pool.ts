@@ -21,6 +21,7 @@
  *     suspend or evict a project that is actively serving.
  */
 
+import { createHash } from 'crypto'
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { CacheIndex, type CacheEntry } from './cache-index'
@@ -48,6 +49,7 @@ import {
 } from './workspace-archive'
 import {
   describePublishedDataArchive,
+  publishedDataConfigured,
   uploadPublishedDataArchive,
 } from './published-data-archive'
 import {
@@ -69,6 +71,7 @@ import {
 } from './repo-archive'
 import { readSerialTail } from './serial-watcher'
 import type { ArchiveRef } from './archive-ref'
+import { describeHomeStateArchive, uploadHomeStateGuarded } from './home-state-archive'
 
 /**
  * How long a presigned hydrate URL stays valid.
@@ -293,6 +296,14 @@ export interface AssignedVm {
    */
   publishedSubdomain?: string
   /**
+   * The guest's database descends from `{subdomain}/data.tar.gz`: the pool
+   * hydrated it at boot, or confirmed the bucket held none. Only such a VM may
+   * export, because every export overwrites the live site's data.
+   */
+  publishedDataLoaded?: boolean
+  /** sha256 of the last published-data archive this VM uploaded (memory only). */
+  publishedExportSha?: string
+  /**
    * Lineage of this VM's workspace — where its current source came from, so the
    * write side can tell whether it may overwrite the durable backup:
    *   'template' → a warm VM's pristine template (new project, or a cold boot
@@ -359,6 +370,23 @@ export interface AssignedVm {
   dataExportFailures?: number
   /** Epoch ms before which the periodic exporter should not retry. */
   dataExportRetryAfter?: number
+  /**
+   * ETag of the encrypted home-directory archive (`home-state.enc`) this VM's
+   * `~/.ssh`, `~/.oci`, ... descend from. Same role as `dataParentEtag`.
+   */
+  homeParentEtag?: string
+  /**
+   * Sticky: the home hydrate failed, so this VM is running on an empty home
+   * while a real archive may still exist. Its exports are refused outright.
+   */
+  homeUntrustedReason?: string
+  /**
+   * The guest answered 404: an older runtime, or no `HOME_STATE_KEY` was
+   * assigned. Permanent for this VM's life, so it is never asked again.
+   */
+  homeExportUnsupported?: boolean
+  /** Consecutive transient home-export failures, for log throttling. */
+  homeExportFailures?: number
   /**
    * ETag of the durable `.git` archive (`repo.git.tar.gz`) this VM's repo
    * descends from. Same role as `dataParentEtag`. Host-mediated: the guest
@@ -470,6 +498,10 @@ export interface SuspendedVm {
    * VM's next export can overwrite the data archive its database derives from.
    */
   dataEtag?: string
+  /** ETag of the encrypted home archive when this snapshot was taken. Carried into AssignedVm.homeParentEtag. */
+  homeEtag?: string
+  /** Carried back into AssignedVm.publishedDataLoaded on resume. */
+  publishedDataLoaded?: boolean
   /** Workspace runtimes: per-member `dataEtag`. Carried back into AssignedVm.memberData. */
   memberDataEtags?: Record<string, string>
   /** Workspace runtimes: per-member source backup ETag. Carried back into AssignedVm.memberData. */
@@ -557,10 +589,33 @@ const HYDRATE_BUDGET_CEILING_MS = 30 * 60_000
  * flagged this as a server-backed published microVM. Returns undefined for an
  * ordinary dev/preview VM (no PUBLISHED_SUBDOMAIN / SHOGO_PUBLISHED_MODE).
  */
+/**
+ * The project whose durable source a `published:{id}` runtime serves, or null
+ * for any other key.
+ *
+ * A published microVM is a read-only copy of its project: it boots from the
+ * project's own `{id}/project-src.tar.gz` and never writes source, `.git` or
+ * project-data archives (its live data is `{subdomain}/data.tar.gz`). Keyed by
+ * the runtime key instead, it restored `published:{id}/…` — archives only its
+ * own earlier boots ever wrote, from the template — so every cold boot served
+ * the starter app and backed it up again.
+ */
+export function publishedSourceId(runtimeKey: string): string | null {
+  return runtimeKey.startsWith('published:') ? runtimeKey.slice('published:'.length) || null : null
+}
+
 function publishedSubdomainFromEnv(env: Record<string, string>): string | undefined {
   const published = env.SHOGO_PUBLISHED_MODE === 'true' || env.SHOGO_PUBLISHED_MODE === '1'
   const subdomain = env.PUBLISHED_SUBDOMAIN
   return published && subdomain ? subdomain : undefined
+}
+
+/**
+ * Home-directory persistence is per project: workspace runtimes (`ws:` keys)
+ * span several projects, and a published site never carries the agent's home.
+ */
+function homeStateEligible(projectId: string, publishedSubdomain: string | undefined): boolean {
+  return !projectId.startsWith('ws:') && !publishedSubdomain
 }
 
 /** A workspace runtime's member project ids from its assign env; undefined when not given. */
@@ -627,6 +682,10 @@ export class MetalWarmPool {
    * or packing. In-memory only — a restart just costs one redundant export.
    */
   private dataTags = new Map<string, string>()
+  /** Home-state exports, serialized per project for the same reason as `dataFlight`. */
+  private homeFlight = new Singleflight<boolean>()
+  /** Last home-state change tag per project; the `dataTags` counterpart. */
+  private homeTags = new Map<string, string>()
   /** Invalidated CoW stores at the last gauge publish, so we log each new one once. */
   private lastCowInvalid = 0
   /** Caps concurrent heavy NVMe ops (snapshot / restore / store pull|push). */
@@ -947,6 +1006,7 @@ export class MetalWarmPool {
         alwaysOn: e.alwaysOn,
         runtimeToken: e.runtimeToken,
         publishedSubdomain: e.publishedSubdomain,
+        publishedDataLoaded: e.publishedDataLoaded,
         handle,
         assignedAt: e.assignedAt,
         lastTouchedAt: Date.now(),
@@ -961,6 +1021,8 @@ export class MetalWarmPool {
         backupParentEtag: e.backupParentEtag,
         dataParentEtag: e.dataParentEtag,
         dataUntrustedReason: e.dataUntrustedReason,
+        homeParentEtag: e.homeParentEtag,
+        homeUntrustedReason: e.homeUntrustedReason,
         memberData: e.memberData,
         repoParentEtag: e.repoParentEtag,
         repoUntrustedReason: e.repoUntrustedReason,
@@ -1018,10 +1080,13 @@ export class MetalWarmPool {
       alwaysOn: a.alwaysOn,
       runtimeToken: a.runtimeToken,
       publishedSubdomain: a.publishedSubdomain,
+      publishedDataLoaded: a.publishedDataLoaded,
       workspaceOrigin: a.workspaceOrigin,
       backupParentEtag: a.backupParentEtag,
       dataParentEtag: a.dataParentEtag,
       dataUntrustedReason: a.dataUntrustedReason,
+      homeParentEtag: a.homeParentEtag,
+      homeUntrustedReason: a.homeUntrustedReason,
       memberData: a.memberData,
       repoParentEtag: a.repoParentEtag,
       repoUntrustedReason: a.repoUntrustedReason,
@@ -1070,6 +1135,8 @@ export class MetalWarmPool {
         rootfsIdentity: e.rootfsIdentity,
         backupEtag: e.backupEtag,
         dataEtag: e.dataEtag,
+        homeEtag: e.homeEtag,
+        publishedDataLoaded: e.publishedDataLoaded,
         memberDataEtags: e.memberDataEtags,
         memberSourceEtags: e.memberSourceEtags,
         repoEtag: e.repoEtag,
@@ -1394,7 +1461,7 @@ export class MetalWarmPool {
     try {
       const h: { hydrated: boolean; parentEtag?: string; lastModified?: number | null } = projectId.startsWith('ws:')
         ? { hydrated: false }
-        : await this.hydrateFromBackup(projectId, vm.handle, env)
+        : await this.hydrateFromBackup(publishedSourceId(projectId) ?? projectId, vm.handle, env)
       if (h.hydrated) {
         a.workspaceOrigin = 'backup'
         a.backupParentEtag = h.parentEtag
@@ -1434,6 +1501,9 @@ export class MetalWarmPool {
     // user's data — the exact incident this subsystem exists to prevent.
     if (projectId.startsWith('ws:')) {
       await this.hydrateWorkspaceMemberData(a, env)
+    } else if (publishedSourceId(projectId)) {
+      // Live site data is the published-data overlay below; the project's dev
+      // database must not leak into the site.
     } else {
       try {
         const d = await this.hydrateProjectData(projectId, vm.handle, env)
@@ -1454,6 +1524,27 @@ export class MetalWarmPool {
       }
     }
 
+    // Restore the agent's encrypted home directory (~/.ssh, ~/.oci, ...).
+    // Best-effort like writable state, and for the same reason a failure marks
+    // the VM untrusted: it now has an empty home, which must never be exported
+    // over the real one.
+    if (homeStateEligible(projectId, publishedSubdomain)) {
+      try {
+        const h = await this.hydrateHomeState(projectId, vm.handle, env)
+        if (h === 'unsupported') a.homeExportUnsupported = true
+        else if (h.hydrated) a.homeParentEtag = h.parentEtag
+        this.writeLive(a)
+      } catch (err: any) {
+        metrics.inc(M.homeHydrateFailed)
+        this.distrustHome(a, `home-state hydrate failed at assign (${err?.message ?? err})`)
+        console.error(
+          `[pool] home-state hydrate failed for ${projectId} — booting with an empty home. ` +
+            `This VM is marked UNTRUSTED and will NOT overwrite the durable home archive:`,
+          err?.message ?? err,
+        )
+      }
+    }
+
     // Overlay the project's durable `.git`. git_only's per-turn artifact is
     // `repo.git.tar.gz`; metal guests cannot persist it themselves (no S3
     // creds), so the host hydrates it here — after source, before the guest
@@ -1465,7 +1556,11 @@ export class MetalWarmPool {
     // the hydrate leaves the replacement VM create-only against an archive
     // that already exists, so every later export is refused as a conflict.
     try {
-      const r = await this.hydrateRepo(projectId, vm.handle, env, sourceTimes)
+      // A published runtime never commits, and resetting its tree to a `.git`
+      // HEAD would replace the source it just restored.
+      const r = publishedSourceId(projectId)
+        ? { hydrated: false as const, parentEtag: undefined }
+        : await this.hydrateRepo(projectId, vm.handle, env, sourceTimes)
       if (r.hydrated) {
         a.repoParentEtag = r.parentEtag
         // A workspace runtime has no source backup of its own (members are
@@ -1495,9 +1590,14 @@ export class MetalWarmPool {
     // boots with accumulated end-user data (not a fresh DB). Host-side — the
     // guest holds no S3 creds. Best-effort: a fresh/first publish has no archive.
     // Applied last so a published site's live data wins over the dev snapshot.
+    // A failed hydrate leaves the VM unable to export, so its dev database can
+    // never overwrite the live archive.
     if (publishedSubdomain) {
-      await this.hydratePublishedData(publishedSubdomain, vm.handle, env).catch((err) =>
-        console.error(`[pool] published-data hydrate failed for ${publishedSubdomain} (fresh DB):`, err?.message ?? err),
+      await this.hydratePublishedData(a, publishedSubdomain, vm.handle, env).catch((err) =>
+        console.error(
+          `[pool] published-data hydrate failed for ${publishedSubdomain} (serving the source's database; exports disabled):`,
+          err?.message ?? err,
+        ),
       )
     }
     return a
@@ -1734,6 +1834,7 @@ export class MetalWarmPool {
    * legacy workspaces — a genuine template origin is never trusted this way.
    */
   private async saveBackupToStore(a: AssignedVm): Promise<SourceSaveResult> {
+    if (publishedSourceId(a.projectId)) return 'empty'
     const bytes = await this.fetchExport(a.handle, a.runtimeToken)
     if (!bytes) {
       console.log(`[pool] no source to back up for ${a.projectId} (empty/new workspace)`)
@@ -1751,6 +1852,8 @@ export class MetalWarmPool {
   }
 
   private async storeSource(a: AssignedVm, bytes: Uint8Array): Promise<'written' | 'quarantined' | 'lost'> {
+    // Its source is the project's archive, which is already durable.
+    if (publishedSourceId(a.projectId)) return 'written'
     const outcome = await this.uploadBackupGuarded(a.projectId, bytes, {
       parentEtag: a.backupParentEtag,
       // Only a resumed legacy snapshot (origin 'snapshot' with no stamped ETag)
@@ -2246,6 +2349,7 @@ export class MetalWarmPool {
   }
 
   private async saveRepoInner(a: AssignedVm): Promise<boolean> {
+    if (publishedSourceId(a.projectId)) return false
     if (a.repoHydratePending) return false
     const lineage = this.repoLineageOf(a)
     if (lineage.kind === 'untrusted') {
@@ -2268,6 +2372,7 @@ export class MetalWarmPool {
     bytes: Uint8Array,
     rootCommitAt: number | null,
   ): Promise<'written' | 'quarantined' | 'lost'> {
+    if (publishedSourceId(a.projectId)) return 'written'
     const outcome = await this.uploadRepoGuarded(a.projectId, bytes, {
       lineage: this.repoLineageOf(a),
       preserveOnRefusal: true,
@@ -2520,6 +2625,7 @@ export class MetalWarmPool {
    * refused, or there was nothing to persist.
    */
   async saveProjectDataToStore(a: AssignedVm, opts: DataSaveOpts = {}): Promise<boolean> {
+    if (publishedSourceId(a.projectId)) return false
     if (a.projectId.startsWith('ws:')) return this.saveWorkspaceMemberDataToStore(a, opts)
     const slot = this.projectDataSlot(a)
     return this.dataFlight.run(slot.flightKey, () => this.saveDataSlotInner(a, slot, opts))
@@ -2758,20 +2864,32 @@ export class MetalWarmPool {
   }
 
   private async hydratePublishedData(
+    a: AssignedVm,
     subdomain: string,
     handle: FcVmHandle,
     env: Record<string, string>,
   ): Promise<void> {
+    if (!this.publishedDataEnabled()) {
+      console.log(`[pool] published-data bucket not configured — ${subdomain} serves the source's database and never exports`)
+      return
+    }
     const ref = await this.publishedDataRef(subdomain)
     if (!ref) {
       console.log(`[pool] no published-data archive for ${subdomain} — booting fresh DB`)
-      return
+    } else {
+      // Goes through the same hydrate path as the other overlays: it extracts a
+      // tar over the workspace tree, so a data.tar.gz rooted at the writable
+      // paths (prisma/dev.db, uploads/) lands cleanly on the restored source.
+      await this.applyArchive(handle, env, ref, `${subdomain} published data`)
+      console.log(`[pool] hydrated published-data for ${subdomain} (${ref.bytes} bytes)`)
     }
-    // Goes through the same hydrate path as the other overlays: it extracts a
-    // tar over the workspace tree, so a data.tar.gz rooted at the writable
-    // paths (prisma/dev.db, uploads/) lands cleanly on the restored source.
-    await this.applyArchive(handle, env, ref, `${subdomain} published data`)
-    console.log(`[pool] hydrated published-data for ${subdomain} (${ref.bytes} bytes)`)
+    a.publishedDataLoaded = true
+    this.writeLive(a)
+  }
+
+  /** `protected` for tests. */
+  protected publishedDataEnabled(): boolean {
+    return publishedDataConfigured(this.cfg)
   }
 
   /** Describe a published subdomain's writable-state archive. `protected` for tests. */
@@ -2787,11 +2905,16 @@ export class MetalWarmPool {
    * idempotent; a no-op when the guest reports nothing writable yet.
    */
   async exportPublishedData(a: AssignedVm): Promise<boolean> {
-    if (!a.publishedSubdomain) return false
+    if (!a.publishedSubdomain || !a.publishedDataLoaded) return false
     const bytes = await this.fetchPublishedExport(a.handle, a.runtimeToken)
     if (!bytes) return false
+    // Re-uploading unchanged state every interval lets an idle copy keep
+    // overwriting whatever newer archive has landed since.
+    const sha = createHash('sha256').update(bytes).digest('hex')
+    if (sha === a.publishedExportSha) return false
     const uploaded = await this.uploadPublishedData(a.publishedSubdomain, bytes)
     if (uploaded) {
+      a.publishedExportSha = sha
       console.log(`[pool] exported published-data for ${a.publishedSubdomain} (${bytes.byteLength} bytes)`)
     }
     return uploaded
@@ -2879,6 +3002,203 @@ export class MetalWarmPool {
     return n
   }
 
+  // --- encrypted home-directory durability (~/.ssh, ~/.oci, ~/.kube, ...) ---
+  // The guest encrypts with a per-project key before handing bytes over, so
+  // everything here moves ciphertext. Lineage rules are writable state's.
+
+  /** Describe the durable home archive. `protected` for tests. */
+  protected homeStateRef(projectId: string): Promise<ArchiveRef | null> {
+    return describeHomeStateArchive(projectId, this.cfg, PRESIGN_TTL_SEC)
+  }
+
+  /** Guarded (conditional) upload of the home archive. `protected` for tests. */
+  protected uploadHomeGuarded(
+    projectId: string,
+    bytes: Uint8Array,
+    opts: { lineage: DataLineage; preserveOnRefusal?: boolean },
+  ): Promise<DataWriteOutcome> {
+    return uploadHomeStateGuarded(projectId, bytes, opts, this.cfg)
+  }
+
+  /**
+   * Cold-start restore of the home archive. Pushed, not pulled: it is small by
+   * construction (the guest caps it at 16 MiB), so none of the large-archive
+   * machinery in {@link applyArchive} applies.
+   *
+   * 'unsupported' = the guest has no home endpoint or no key; it will never
+   * export either, so nothing it does can touch the archive.
+   */
+  private async hydrateHomeState(
+    projectId: string,
+    handle: FcVmHandle,
+    env: Record<string, string>,
+  ): Promise<{ hydrated: boolean; parentEtag?: string } | 'unsupported'> {
+    const ref = await this.homeStateRef(projectId)
+    if (!ref) return { hydrated: false }
+    const bytes = await ref.load()
+    const token = env.RUNTIME_AUTH_SECRET
+    const res = await fetch(`${handle.agentUrl}/pool/hydrate-home`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      body: bytes,
+      signal: AbortSignal.timeout(this.cfg.hydrateTimeoutMs),
+    })
+    if (res.status === 404) {
+      console.log(`[pool] guest for ${projectId} cannot restore its home directory — durable archive left untouched`)
+      return 'unsupported'
+    }
+    if (!res.ok) throw new Error(`/pool/hydrate-home failed (${res.status}): ${await res.text()}`)
+    metrics.inc(M.homeHydrated)
+    console.log(`[pool] restored home directory for ${projectId} (${bytes.byteLength} bytes, etag=${ref.etag ?? 'none'})`)
+    return { hydrated: true, parentEtag: ref.etag ?? undefined }
+  }
+
+  /** Pull the guest's encrypted home archive. Same contract as {@link fetchDataExport}, plus 413. */
+  protected async fetchHomeExport(
+    handle: FcVmHandle,
+    token?: string,
+    knownTag?: string,
+  ): Promise<{ bytes: Uint8Array; tag: string | null } | 'unchanged' | 'unsupported' | 'too-large' | null> {
+    const res = await fetch(`${handle.agentUrl}/pool/export-home`, {
+      method: 'POST',
+      headers: {
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...(knownTag ? { 'If-None-Match': knownTag } : {}),
+      },
+      signal: AbortSignal.timeout(this.cfg.hydrateTimeoutMs),
+    })
+    if (res.status === 304) return 'unchanged'
+    if (res.status === 204) return null
+    if (res.status === 404) return 'unsupported'
+    if (res.status === 413) return 'too-large'
+    if (!res.ok) throw new Error(`/pool/export-home failed (${res.status}): ${await res.text()}`)
+    const buf = await res.arrayBuffer()
+    if (!buf.byteLength) return null
+    return { bytes: new Uint8Array(buf), tag: res.headers.get('etag') }
+  }
+
+  private trustedHomeEtag(a: AssignedVm): string | undefined {
+    return a.homeUntrustedReason ? undefined : a.homeParentEtag
+  }
+
+  private homeLineageOf(a: AssignedVm): DataLineage {
+    if (a.homeUntrustedReason) return { kind: 'untrusted', reason: a.homeUntrustedReason }
+    if (a.homeParentEtag) return { kind: 'descends', etag: a.homeParentEtag }
+    return { kind: 'create-only' }
+  }
+
+  private distrustHome(a: AssignedVm, reason: string): void {
+    if (a.homeUntrustedReason === reason) return
+    a.homeUntrustedReason = reason
+    this.writeLive(a)
+  }
+
+  /**
+   * Pull the guest's home archive and write it under the lineage guard.
+   * Serialized per project (periodic sweep vs suspend). `final` = the last
+   * export before the VM goes away, whose refused bytes are quarantined.
+   */
+  async saveHomeStateToStore(a: AssignedVm, opts: DataSaveOpts = {}): Promise<boolean> {
+    if (!homeStateEligible(a.projectId, a.publishedSubdomain) || a.homeExportUnsupported) return false
+    return this.homeFlight.run(a.projectId, () => this.saveHomeStateInner(a, opts))
+  }
+
+  private async saveHomeStateInner(a: AssignedVm, opts: DataSaveOpts): Promise<boolean> {
+    const lineage = this.homeLineageOf(a)
+    if (lineage.kind === 'untrusted' && !opts.final) {
+      metrics.inc(M.homeRefused)
+      return false
+    }
+
+    const exported = await this.fetchHomeExport(a.handle, a.runtimeToken, this.homeTags.get(a.projectId))
+    if (exported === 'unchanged') {
+      metrics.inc(M.homeUnchanged)
+      return false
+    }
+    if (exported === 'unsupported') {
+      a.homeExportUnsupported = true
+      metrics.inc(M.homeUnsupported)
+      console.log(`[pool] guest for ${a.projectId} does not persist its home directory (no endpoint or no key)`)
+      return false
+    }
+    if (exported === 'too-large') {
+      metrics.inc(M.homeTooLarge)
+      console.error(`[pool] home directory for ${a.projectId} is over the guest's limit — NOT persisted`)
+      return false
+    }
+    if (!exported) return false
+
+    const outcome = await this.uploadHomeGuarded(a.projectId, exported.bytes, {
+      lineage,
+      preserveOnRefusal: opts.final === true,
+    })
+    switch (outcome.status) {
+      case 'created':
+      case 'written':
+        a.homeParentEtag = outcome.etag ?? a.homeParentEtag
+        a.homeUntrustedReason = undefined
+        this.writeLive(a)
+        if (exported.tag) this.homeTags.set(a.projectId, exported.tag)
+        metrics.inc(opts.final ? M.homeUploadFinal : M.homeUploadPeriodic)
+        console.log(
+          `[pool] saved home directory for ${a.projectId} ` +
+            `(${exported.bytes.byteLength} bytes, ${outcome.status}, etag=${outcome.etag ?? 'none'})`,
+        )
+        return true
+      case 'conflict': {
+        metrics.inc(M.homeConflict)
+        const why =
+          outcome.reason === 'raced-create'
+            ? 'a durable home archive already exists and this VM cannot prove it descends from it'
+            : `its lineage (etag=${a.homeParentEtag ?? 'none'}) no longer matches the durable home archive`
+        this.distrustHome(a, why)
+        console.error(
+          `[pool] REFUSED to overwrite the durable home archive for ${a.projectId} — ${why}` +
+            (outcome.quarantineKey ? `; export preserved at ${outcome.quarantineKey}` : '') +
+            '.',
+        )
+        return false
+      }
+      case 'refused':
+        metrics.inc(M.homeRefused)
+        console.error(
+          `[pool] home directory for ${a.projectId} NOT persisted — ${outcome.reason}` +
+            (outcome.quarantineKey ? `; final export preserved at ${outcome.quarantineKey}` : '') +
+            '.',
+        )
+        return false
+      case 'too-large':
+        metrics.inc(M.homeTooLarge)
+        console.error(`[pool] home archive for ${a.projectId} is ${outcome.bytes} bytes, over ${outcome.limit} — NOT persisted`)
+        return false
+      case 'skipped':
+        return false
+    }
+  }
+
+  /**
+   * Export the home directory of every live VM. Driven by the writable-state
+   * export interval; an idle home costs one 304. Failures are logged sparsely
+   * and never stop the sweep.
+   */
+  async exportAllHomeState(): Promise<number> {
+    let n = 0
+    for (const a of this.assigned.values()) {
+      if (a.homeExportUnsupported || !homeStateEligible(a.projectId, a.publishedSubdomain)) continue
+      try {
+        if (await this.saveHomeStateToStore(a)) n++
+        a.homeExportFailures = 0
+      } catch (err: any) {
+        const fails = (a.homeExportFailures ?? 0) + 1
+        a.homeExportFailures = fails
+        if (fails <= 3 || fails % 10 === 0) {
+          console.error(`[pool] periodic home export for ${a.projectId} failed (attempt ${fails}):`, err?.message ?? err)
+        }
+      }
+    }
+    return n
+  }
+
   /**
    * Suspend an assigned project to a snapshot, freeing host RAM.
    * quiesce guest → snapshot (local NVMe) → push to durable store (if enabled).
@@ -2910,6 +3230,10 @@ export class MetalWarmPool {
       // so without this the user's data is gone.
       await this.saveProjectDataToStore(a, { final: true }).catch((err) =>
         console.error(`[pool] writable-state backup for ${a.projectId} failed:`, err?.message ?? err),
+      )
+
+      await this.saveHomeStateToStore(a, { final: true }).catch((err) =>
+        console.error(`[pool] home-directory backup for ${a.projectId} failed:`, err?.message ?? err),
       )
 
       await this.saveRepoToStore(a).catch((err) =>
@@ -2949,6 +3273,8 @@ export class MetalWarmPool {
         rootfsIdentity: this.bootRootfsIdentity(a),
         backupEtag: a.backupParentEtag,
         dataEtag: this.trustedDataEtag(a),
+        homeEtag: this.trustedHomeEtag(a),
+        publishedDataLoaded: a.publishedDataLoaded,
         memberDataEtags: this.trustedMemberDataEtags(a),
         memberSourceEtags: this.trustedMemberSourceEtags(a),
         repoEtag: this.trustedRepoEtag(a),
@@ -3023,6 +3349,8 @@ export class MetalWarmPool {
           dataDriveMiB: a.handle.dataDrive ? classConfig(this.cfg, a.handle.vmClass).dataDriveMiB : undefined,
           backupEtag: a.backupParentEtag,
           dataEtag: this.trustedDataEtag(a),
+          homeEtag: this.trustedHomeEtag(a),
+          publishedDataLoaded: a.publishedDataLoaded,
           memberDataEtags: this.trustedMemberDataEtags(a),
           memberSourceEtags: this.trustedMemberSourceEtags(a),
           repoEtag: this.trustedRepoEtag(a),
@@ -3071,6 +3399,8 @@ export class MetalWarmPool {
       workspaceDrive: s.snapshot.workspaceDrive,
       backupEtag: s.backupEtag,
       dataEtag: s.dataEtag,
+      homeEtag: s.homeEtag,
+      publishedDataLoaded: s.publishedDataLoaded,
       memberDataEtags: s.memberDataEtags,
       memberSourceEtags: s.memberSourceEtags,
       repoEtag: s.repoEtag,
@@ -3116,15 +3446,17 @@ export class MetalWarmPool {
       backupEtag?: string
       repoEtag?: string
       dataEtag?: string
+      homeEtag?: string
       memberDataEtags?: Record<string, string>
       memberSourceEtags?: Record<string, string>
     },
   ): Promise<string | null> {
     const norm = (e?: string | null) => (e ? e.replace(/"/g, '') : undefined)
     const checks: Array<[string, string | undefined, () => Promise<ArchiveRef | null>]> = [
-      ['source', stamps.backupEtag, () => this.sourceRef(projectId)],
+      ['source', stamps.backupEtag, () => this.sourceRef(publishedSourceId(projectId) ?? projectId)],
       ['repo', stamps.repoEtag, () => this.repoRef(projectId)],
       ['data', stamps.dataEtag, () => this.projectDataRef(projectId)],
+      ['home', stamps.homeEtag, () => this.homeStateRef(projectId)],
       ...Object.entries(stamps.memberDataEtags ?? {}).map(
         ([memberId, etag]): [string, string | undefined, () => Promise<ArchiveRef | null>] => [
           `member ${memberId} data`,
@@ -3259,6 +3591,8 @@ export class MetalWarmPool {
         rootfsIdentity: pulled.meta.rootfsIdentity,
         backupEtag: pulled.meta.backupEtag,
         dataEtag: pulled.meta.dataEtag,
+        homeEtag: pulled.meta.homeEtag,
+        publishedDataLoaded: pulled.meta.publishedDataLoaded,
         memberDataEtags: pulled.meta.memberDataEtags,
         memberSourceEtags: pulled.meta.memberSourceEtags,
         repoEtag: pulled.meta.repoEtag,
@@ -3313,6 +3647,9 @@ export class MetalWarmPool {
       // The resumed guest's database is the one frozen in the snapshot, which
       // descends from this archive — so its next export may overwrite it.
       dataParentEtag: s.dataEtag,
+      // Likewise the home directory frozen in the snapshot.
+      homeParentEtag: s.homeEtag,
+      publishedDataLoaded: s.publishedDataLoaded,
       memberData: resumedMemberData(s),
       repoParentEtag: s.repoEtag,
       stateSince: s.suspendedAt,
@@ -3715,6 +4052,9 @@ export class MetalWarmPool {
       await bounded(this.saveRepoToStore(a))
       await bounded(this.saveBackupToStore(a))
       await bounded(this.saveProjectDataToStore(a, { final: true }))
+      await bounded(this.saveHomeStateToStore(a, { final: true })).catch((err: any) =>
+        console.warn(`[pool] home-directory rescue for ${a.projectId} failed:`, err?.message ?? err),
+      )
       return true
     } catch (err: any) {
       console.warn(`[pool] guest export for ${a.projectId} failed, falling back to disk:`, err?.message ?? err)
@@ -4526,6 +4866,13 @@ export class MetalWarmPool {
           : []
       return untrusted.length ? `database not persisted — ${untrusted.join('; ')}` : null
     })
+
+    if (homeStateEligible(a.projectId, a.publishedSubdomain)) {
+      await run('home', async () => {
+        await this.saveHomeStateToStore(a, { final: true, reason: 'recycle' })
+        return a.homeUntrustedReason ? `home directory not persisted — ${a.homeUntrustedReason}` : null
+      })
+    }
 
     if (a.publishedSubdomain) {
       await run('published-data', async () => {

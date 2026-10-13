@@ -15,7 +15,7 @@ import { Hono } from "hono"
 import { readdir, readFile, stat } from "fs/promises"
 import { join, relative, extname } from "path"
 import { existsSync } from "fs"
-import { exec } from "child_process"
+import { exec } from "@shogo/shared-runtime/child-process"
 import { promisify } from "util"
 import { getMaxOutputTokens } from "@shogo/model-catalog"
 

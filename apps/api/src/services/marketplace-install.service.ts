@@ -15,6 +15,7 @@ import {
 } from './marketplace-snapshot-storage.service'
 import { createS3SyncForProject, getMinimumInstanceSize } from '@shogo/shared-runtime'
 import { trackEvent } from './loops.service'
+import { buildAgentConfigCreateData } from './heartbeat-config.service'
 import { canRunTechStackOnInstanceSize } from './billing.service'
 import type { AppConsentInput } from './app-install-grants.service'
 
@@ -42,7 +43,8 @@ async function pushWorkspaceToS3(
     return { status: 'skipped' }
   }
   const projectDir = join(getWorkspacesDir(), projectId)
-  const sync = createS3SyncForProject(projectDir, projectId)
+  // Installing replaces the stored workspace wholesale; there is no prior read to anchor a conditional write.
+  const sync = createS3SyncForProject(projectDir, projectId, { allowUnconditionalWrite: true })
   if (!sync) {
     return {
       status: 'failed',
@@ -249,17 +251,16 @@ export async function installAgent(params: {
 
     const ac = srcProject.agentConfig
     await tx.agentConfig.create({
-      data: {
-        projectId: project.id,
-        heartbeatInterval: ac?.heartbeatInterval ?? 1800,
-        heartbeatEnabled: ac?.heartbeatEnabled ?? false,
-        modelProvider: ac?.modelProvider ?? 'anthropic',
+      data: buildAgentConfigCreateData(project.id, {
+        heartbeatInterval: ac?.heartbeatInterval,
+        heartbeatEnabled: ac?.heartbeatEnabled,
+        modelProvider: ac?.modelProvider,
         modelName: ac?.modelName ?? 'claude-haiku-4-5',
-        channels: (ac?.channels as object) ?? [],
+        channels: ac?.channels,
         quietHoursStart: ac?.quietHoursStart ?? null,
         quietHoursEnd: ac?.quietHoursEnd ?? null,
         quietHoursTimezone: ac?.quietHoursTimezone ?? null,
-      },
+      }) as any,
     })
 
     return project

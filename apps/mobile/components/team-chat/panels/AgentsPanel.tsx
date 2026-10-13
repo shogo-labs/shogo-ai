@@ -13,6 +13,7 @@ import { cn } from '@shogo/shared-ui/primitives'
 import { useAgentActivity } from '../../../hooks/useAgentActivity'
 import type { Mentionables } from '../../../lib/team-chat-api'
 import { agentWorkingOn } from '../../../lib/agent-directory'
+import { openAgentWork } from '../../../lib/open-active-chat'
 import { useOpenAgentDm } from '../../../lib/use-open-agent-dm'
 import { AgentAvatar } from '../AgentAvatar'
 import { AgentProfileCard } from '../AgentProfileCard'
@@ -65,7 +66,7 @@ export function AgentsPanel({ onNavPress }: { onNavPress?: () => void }) {
             <View key={agent.key} className="flex-row items-center">
               <Pressable
                 accessibilityRole="button"
-                accessibilityLabel={`Message ${agent.name}${doing ? `, working on ${doing}` : ''}`}
+                accessibilityLabel={`Message ${agent.name}${doing ? `, ${doing.label}` : ''}`}
                 disabled={opening && openingKey === agent.key}
                 onPress={() => void message(agent)}
                 className={cn('min-w-0 flex-1 flex-row items-center gap-2.5 rounded-md px-2 py-1.5 active:bg-accent/50', opening && openingKey === agent.key && 'opacity-60')}
@@ -76,9 +77,22 @@ export function AgentsPanel({ onNavPress }: { onNavPress?: () => void }) {
                 </View>
                 <View className="min-w-0 flex-1">
                   <Text className="text-sm text-foreground" numberOfLines={1}>{agent.name}</Text>
-                  <Text className={cn('text-xs', doing ? 'text-primary' : 'text-muted-foreground')} numberOfLines={1}>
-                    {doing ? `Working on ${doing}` : agent.description || 'Idle'}
-                  </Text>
+                  {doing ? (
+                    <Pressable
+                      accessibilityRole="link"
+                      accessibilityLabel={`View what ${agent.name} is working on`}
+                      onPress={(event) => {
+                        event.stopPropagation()
+                        openAgentWork(router, doing.target)
+                        onNavPress?.()
+                      }}
+                      className="self-start rounded-sm active:opacity-70"
+                    >
+                      <Text className="text-xs text-primary underline" numberOfLines={1}>{doing.label}</Text>
+                    </Pressable>
+                  ) : (
+                    <Text className="text-xs text-muted-foreground" numberOfLines={1}>{agent.description || 'Idle'}</Text>
+                  )}
                 </View>
               </Pressable>
               <Pressable accessibilityRole="button" accessibilityLabel={`${agent.name} profile`} onPress={() => setProfile(agent)} className="rounded-md p-2 active:bg-accent/50">
