@@ -60,6 +60,7 @@ export const SHOGO_RUNTIME_EXCLUDES = [
   '.shogo/vite.watch.config.ts',
   '.shogo-pool-assignment',
   'node_modules/',
+  'chat-files/',
   'dist.staging/',
   'dist.publish.staging/',
   '.tmp/',

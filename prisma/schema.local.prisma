@@ -3316,12 +3316,37 @@ model ConversationAttachment {
   extractedText  String?
   createdAt      DateTime @default(now())
 
-  conversation Conversation         @relation(fields: [conversationId], references: [id], onDelete: Cascade)
-  message      ConversationMessage? @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  conversation Conversation                  @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  message      ConversationMessage?          @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  chunks       ConversationAttachmentChunk[]
 
   @@index([conversationId])
   @@index([messageId])
   @@map("conversation_attachments")
+}
+
+/// A slice of a chat file's extracted text, read by agents and ranked by search.
+model ConversationAttachmentChunk {
+  id             String   @id @default(uuid())
+  attachmentId   String
+  conversationId String
+  workspaceId    String
+  idx            Int
+  text           String
+  charStart      Int
+  charEnd        Int
+  /// Embedding model, set once the indexer has processed the chunk (even when it produced no vector).
+  model          String?
+  /// JSON array of numbers.
+  embedding      String?
+  createdAt      DateTime @default(now())
+
+  attachment ConversationAttachment @relation(fields: [attachmentId], references: [id], onDelete: Cascade)
+
+  @@index([attachmentId, idx])
+  @@index([conversationId])
+  @@index([workspaceId, createdAt])
+  @@map("conversation_attachment_chunks")
 }
 
 /// Per-workspace chat settings: custom status, Do Not Disturb, and notification defaults.

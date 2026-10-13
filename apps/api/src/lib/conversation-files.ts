@@ -109,6 +109,15 @@ export async function readConversationFile(key: string): Promise<ConversationFil
   return { kind: 'redirect', url: await getArtifactPresignedReadUrl(key, { expiresIn: 300 }) }
 }
 
+/** The file's bytes, following the presigned redirect in cloud mode. */
+export async function loadConversationFileBytes(key: string): Promise<Uint8Array> {
+  const file = await readConversationFile(key)
+  if (file.kind === 'bytes') return file.bytes
+  const res = await fetch(file.url, { signal: AbortSignal.timeout(60_000) })
+  if (!res.ok) throw new Error(`Could not read the file (${res.status})`)
+  return new Uint8Array(await res.arrayBuffer())
+}
+
 export async function deleteConversationFile(key: string): Promise<void> {
   if (isLocalMode()) {
     await rm(localPath(key), { force: true })

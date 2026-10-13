@@ -94,6 +94,30 @@ export interface MessageAttachment {
   url: string
 }
 
+export type ConversationFileKind = 'image' | 'document' | 'other'
+
+/** A file shared in a conversation, as the Files pane lists it. */
+export interface ConversationFile {
+  id: string
+  conversationId: string
+  messageId: string
+  threadRootId: string | null
+  name: string
+  mimeType: string
+  kind: ConversationFileKind
+  size: number
+  width: number | null
+  height: number | null
+  uploadedBy: { id: string | null; name: string }
+  createdAt: string
+  url: string
+}
+
+export interface ConversationFilePage {
+  files: ConversationFile[]
+  nextCursor: string | null
+}
+
 export interface ChatMessage {
   id: string
   conversationId: string
@@ -708,6 +732,18 @@ export function teamChatApi() {
       input: { text: string; threadRootId?: string | null; alsoSentToChannel?: boolean; clientMsgId: string; attachmentIds?: string[] },
     ): Promise<ChatMessage> {
       return (await http.post<{ message: ChatMessage }>(`${conv(id)}/messages`, input)).data.message
+    },
+    /** Files shared in a conversation, newest first. */
+    async files(
+      id: string,
+      opts: { q?: string; kind?: ConversationFileKind; cursor?: string; limit?: number } = {},
+    ): Promise<ConversationFilePage> {
+      const q = new URLSearchParams()
+      if (opts.q) q.set('q', opts.q)
+      if (opts.kind) q.set('kind', opts.kind)
+      if (opts.cursor) q.set('cursor', opts.cursor)
+      if (opts.limit) q.set('limit', String(opts.limit))
+      return (await http.get<ConversationFilePage>(`${conv(id)}/files?${q}`)).data
     },
     async markRead(id: string, seq?: number): Promise<{ lastReadSeq: number; unreadCount?: number }> {
       return (await http.post<{ lastReadSeq: number; unreadCount?: number }>(`${conv(id)}/read`, seq === undefined ? {} : { seq })).data

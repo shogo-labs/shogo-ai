@@ -4,7 +4,7 @@ import { useRef, useState } from 'react'
 import { ActivityIndicator, Alert, Modal, Platform, Pressable, ScrollView, Text, TextInput, View, type LayoutChangeEvent } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { useRouter } from 'expo-router'
-import { Archive, Bell, BellOff, Bot, Check, ChevronLeft, FileText, FolderOpen, Hash, Lock, LogOut, MoreHorizontal, Pencil, PanelRight, Pin, Radio, Sparkles, Star, UserCircle, UserPlus, Users, X } from 'lucide-react-native'
+import { Archive, Bell, BellOff, Bot, Check, ChevronLeft, FileText, FolderOpen, Hash, Lock, LogOut, MoreHorizontal, Paperclip, Pencil, PanelRight, Pin, Radio, Sparkles, Star, UserCircle, UserPlus, Users, X } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { LiquidGlassBackdrop } from '../ui/LiquidGlassBackdrop'
 import { CHROME_SIZE, GlassButton, GlassChip } from './FloatingChrome'
@@ -40,6 +40,7 @@ export interface ConversationHeaderProps {
   onBack?: () => void
   /** Show the agent's project beside the conversation. Only passed on wide screens. */
   onOpenProjectPane?: (projectId: string, name: string) => void
+  onOpenFiles?: () => void
   /** Open the channel doc. Passed for channels that support one. */
   onOpenDoc?: () => void
   onLayout?: (event: LayoutChangeEvent) => void
@@ -55,7 +56,7 @@ function confirm(title: string, message: string): Promise<boolean> {
   )
 }
 
-export function ConversationHeader({ conversation, mentionables, me, onChanged, onLeft, floating, onBack, onOpenProjectPane, onOpenDoc, onLayout }: ConversationHeaderProps) {
+export function ConversationHeader({ conversation, mentionables, me, onChanged, onLeft, floating, onBack, onOpenProjectPane, onOpenFiles, onOpenDoc, onLayout }: ConversationHeaderProps) {
   const insets = useSafeAreaInsets()
   const router = useRouter()
   const [detailsOpen, setDetailsOpen] = useState(false)
@@ -169,6 +170,9 @@ export function ConversationHeader({ conversation, mentionables, me, onChanged, 
       icon: (s) => <Pin size={s} className="text-muted-foreground" />,
       onPress: () => void api.pins(conversation.id).then(setPins).catch((err) => setError(err?.message ?? 'Could not load pins')),
     })
+  }
+  if (onOpenFiles && conversation.kind !== 'activity') {
+    actions.push({ key: 'files', label: 'Files', icon: (s) => <Paperclip size={s} className="text-muted-foreground" />, onPress: onOpenFiles })
   }
   actions.push({
     key: 'catchup',

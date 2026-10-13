@@ -414,7 +414,7 @@ export async function adoptHydratedRepo(
   let committedSha = headSha
   if (addPaths.length) {
     if (UNTRACK_DIRS.some((d) => existsSync(join(workspaceDir, d)))) ensureWorkspaceGitignore(workspaceDir)
-    const add = await git(['add', '-A', '--', ...addPaths, ':(exclude).shogo/local'])
+    const add = await git(['add', '-A', '--', ...addPaths, ':(exclude).shogo/local', ':(exclude)chat-files'])
     if (add.code !== 0) throw new Error(`git add exited ${add.code}: ${add.stderr.trim().slice(0, 300)}`)
     const staged = await git(['diff', '--cached', '--quiet'])
     if (staged.code === 1) {

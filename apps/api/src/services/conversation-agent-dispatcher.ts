@@ -472,8 +472,12 @@ export async function renderTranscript(workspaceId: string, history: any[], mark
     m.authorType === 'user' ? (m.authorUser?.name || m.authorUser?.email || m.blocks?.externalAuthor?.name || 'Someone')
       : m.authorType === 'agent' ? `${m.authorAgentRef?.name ?? 'Agent'} (agent)`
         : m.authorType === 'bot' ? 'Bot' : 'System'
+  const files = (m: any) => {
+    const list = (m.attachments ?? []).map((a: any) => `${a.name} (file id ${a.id})`)
+    return list.length ? ` [attached: ${list.join(', ')}]` : ''
+  }
   return history
-    .map((m) => `${author(m)}${m.id === markMessageId ? ' [mentions you]' : ''}: ${renderMentionsAsText(m.text, names)}`)
+    .map((m) => `${author(m)}${m.id === markMessageId ? ' [mentions you]' : ''}: ${renderMentionsAsText(m.text, names)}${files(m)}`)
     .join('\n')
 }
 
@@ -585,6 +589,11 @@ async function buildIsolatedPrompt(args: {
   return lines.join('\n')
 }
 
+const TRANSCRIPT_INCLUDE = {
+  authorUser: { select: { name: true, email: true } },
+  attachments: { select: { id: true, name: true } },
+}
+
 async function buildPrompt(args: {
   conversation: any
   trigger: any
@@ -605,17 +614,18 @@ async function buildPrompt(args: {
       where: { conversationId: conversation.id, OR: [{ id: threadRootId }, { threadRootId }], deletedAt: null },
       orderBy: { seq: 'desc' },
       take: CONTEXT_MESSAGES,
-      include: { authorUser: { select: { name: true, email: true } } },
+      include: TRANSCRIPT_INCLUDE,
     })
   } else {
     history = await db.conversationMessage.findMany({
       where: { conversationId: conversation.id, threadRootId: null, deletedAt: null, seq: { lte: trigger.seq } },
       orderBy: { seq: 'desc' },
       take: reusedSession ? 6 : CONTEXT_MESSAGES,
-      include: { authorUser: { select: { name: true, email: true } } },
+      include: TRANSCRIPT_INCLUDE,
     })
   }
-  history = history.reverse().filter((m) => m.text?.trim() && !(m.authorType === 'agent' && m.agentStatus === 'running'))
+  history = history.reverse().filter((m) =>
+    (m.text?.trim() || m.attachments?.length) && !(m.authorType === 'agent' && m.agentStatus === 'running'))
 
   if (reusedSession) {
     const lastAgentIdx = history.map((m) => m.authorType).lastIndexOf('agent')
@@ -636,6 +646,9 @@ async function buildPrompt(args: {
     'Reply to the latest message addressed to you. Write concise Markdown suitable for a chat message.',
     'Do real work with your tools when asked. The team sees only your final reply here; your full session is linked from it.',
     ...chainContext(conversation, trigger, threadRootId, chain),
+    ...(history.some((m) => m.attachments?.length)
+      ? ['Files attached below can be read or searched with fetch_chat_files (pass the file id); download one only when you need the raw file.']
+      : []),
     ...(await channelDocContext(conversation)),
     '',
     transcript,

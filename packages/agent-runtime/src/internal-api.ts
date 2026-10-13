@@ -1244,6 +1244,140 @@ export async function searchAgentChannels(
   })
 }
 
+// ─── Chat files ──────────────────────────────────────────────────────────────
+
+export interface AgentChatFile {
+  id: string
+  conversationId: string
+  messageId: string
+  name: string
+  mimeType: string
+  kind: 'image' | 'document' | 'other'
+  size: number
+  uploadedBy: string
+  createdAt: string
+  hasText: boolean
+  /** Folder under `chat-files/` that downloads from this conversation go to. */
+  folder: string
+}
+
+export interface AgentChatFileConversation {
+  id: string
+  kind: string
+  name: string
+  folder: string
+  fileCount: number
+  lastFileAt: string | null
+}
+
+export interface AgentChatFileHit {
+  fileId: string
+  name: string
+  mimeType: string
+  size: number
+  conversationId: string
+  messageId: string
+  charStart: number | null
+  snippet: string | null
+  score: number
+  match: 'semantic' | 'keyword' | 'name'
+  conversation: { id: string; kind: string; name: string } | null
+  folder: string
+}
+
+export interface AgentChatFileText {
+  fileId: string
+  name: string
+  mimeType: string
+  text: string | null
+  offset: number
+  totalChars: number
+  nextOffset: number | null
+}
+
+function fileParams(identity: AgentChannelIdentity, extra: Record<string, string | number | undefined>): URLSearchParams {
+  const params = new URLSearchParams()
+  if (identity.projectId) params.set('projectId', identity.projectId)
+  for (const [k, v] of Object.entries(extra)) if (v !== undefined && v !== '') params.set(k, String(v))
+  return params
+}
+
+export async function listAgentChatFiles(
+  workspaceId: string,
+  identity: AgentChannelIdentity,
+  options: { conversation?: string; query?: string; kind?: string; cursor?: string; limit?: number } = {},
+): Promise<CheckpointCallResult<{ conversations: AgentChatFileConversation[]; files: AgentChatFile[]; nextCursor: string | null }>> {
+  const params = fileParams(identity, {
+    conversation: options.conversation, q: options.query, kind: options.kind, cursor: options.cursor, limit: options.limit,
+  })
+  return personalFetch(channelsPath(workspaceId, `/files?${params}`), {
+    method: 'GET',
+    parse: (j) => ({ conversations: j?.conversations ?? [], files: j?.files ?? [], nextCursor: j?.nextCursor ?? null }),
+  })
+}
+
+export async function searchAgentChatFiles(
+  workspaceId: string,
+  identity: AgentChannelIdentity,
+  query: string,
+  options: { conversation?: string; limit?: number } = {},
+): Promise<CheckpointCallResult<{ results: AgentChatFileHit[]; semantic: boolean }>> {
+  const params = fileParams(identity, { q: query, conversation: options.conversation, limit: options.limit })
+  return personalFetch(channelsPath(workspaceId, `/files/search?${params}`), {
+    method: 'GET',
+    parse: (j) => ({ results: j?.results ?? [], semantic: !!j?.semantic }),
+  })
+}
+
+export async function readAgentChatFileText(
+  workspaceId: string,
+  identity: AgentChannelIdentity,
+  fileId: string,
+  options: { offset?: number; limit?: number } = {},
+): Promise<CheckpointCallResult<AgentChatFileText>> {
+  const params = fileParams(identity, { offset: options.offset, limit: options.limit })
+  return personalFetch(channelsPath(workspaceId, `/files/${encodeURIComponent(fileId)}/text?${params}`), { method: 'GET' })
+}
+
+export const MAX_CHAT_FILE_DOWNLOAD_BYTES = 50 * 1024 * 1024
+
+/** The raw file, with the name and folder the API chose for it. */
+export async function downloadAgentChatFile(
+  workspaceId: string,
+  identity: AgentChannelIdentity,
+  fileId: string,
+): Promise<CheckpointCallResult<{ bytes: Uint8Array; name: string; folder: string; mimeType: string }>> {
+  const apiUrl = deriveApiUrl()
+  if (!apiUrl) return { ok: false, status: 0, error: 'No API URL configured' }
+  const params = fileParams(identity, {})
+  try {
+    const res = await fetch(`${apiUrl}${channelsPath(workspaceId, `/files/${encodeURIComponent(fileId)}/content?${params}`)}`, {
+      headers: getInternalHeaders(),
+      signal: AbortSignal.timeout(120_000),
+    })
+    if (!res.ok) {
+      const err = (await res.json().catch(() => null) as any)?.error
+      return { ok: false, status: res.status, error: err?.message ?? `HTTP ${res.status}`, code: err?.code }
+    }
+    const declared = Number(res.headers.get('content-length') ?? 0)
+    if (declared > MAX_CHAT_FILE_DOWNLOAD_BYTES) return { ok: false, status: 413, error: 'File is larger than 50 MB', code: 'too_large' }
+    const bytes = new Uint8Array(await res.arrayBuffer())
+    if (bytes.byteLength > MAX_CHAT_FILE_DOWNLOAD_BYTES) return { ok: false, status: 413, error: 'File is larger than 50 MB', code: 'too_large' }
+    return {
+      ok: true,
+      status: res.status,
+      data: {
+        bytes,
+        name: decodeURIComponent(res.headers.get('x-file-name') ?? 'file'),
+        folder: decodeURIComponent(res.headers.get('x-file-folder') ?? 'files'),
+        mimeType: res.headers.get('content-type') ?? 'application/octet-stream',
+      },
+    }
+  } catch (err: any) {
+    return { ok: false, status: 0, error: err?.message ?? String(err) }
+  }
+}
+
 export async function listSchedules(
   workspaceId: string,
   goalId?: string,

@@ -17,6 +17,7 @@ import { withGlobalJobLock } from '../lib/global-job-lock'
 import { runDigestPass } from '../services/chat-digest'
 import { fireDueReminders, sendDueScheduledMessages } from '../services/chat-items'
 import { embeddingProvider, indexPendingMessages } from '../services/conversation-semantic'
+import { chunkPendingAttachments, embedPendingChunks } from '../services/conversation-file-index'
 
 const DIGEST_INTERVAL_MS = 10 * 60 * 1000
 const SCHEDULER_INTERVAL_MS = 15_000
@@ -37,10 +38,17 @@ export async function runChannelScheduler(): Promise<void> {
 }
 
 export async function runChannelIndexer(): Promise<void> {
-  if (!embeddingProvider()) return
   await withGlobalJobLock('channels-indexer', async () => {
+    // File chunks back reading and keyword search, so they're cut even without an embedding provider.
+    for (let i = 0; i < INDEXER_MAX_BATCHES; i++) {
+      if (!(await chunkPendingAttachments())) break
+    }
+    if (!embeddingProvider()) return
     for (let i = 0; i < INDEXER_MAX_BATCHES; i++) {
       if (!(await indexPendingMessages())) break
+    }
+    for (let i = 0; i < INDEXER_MAX_BATCHES; i++) {
+      if (!(await embedPendingChunks())) break
     }
   })
 }

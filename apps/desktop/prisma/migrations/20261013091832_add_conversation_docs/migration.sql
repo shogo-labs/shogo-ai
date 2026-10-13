@@ -50,4 +50,3 @@ CREATE INDEX "conversation_docs_workspaceId_idx" ON "conversation_docs"("workspa
 
 -- CreateIndex
 CREATE INDEX "conversation_doc_revisions_docId_createdAt_idx" ON "conversation_doc_revisions"("docId", "createdAt");
-

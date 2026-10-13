@@ -65,6 +65,11 @@ const INTENTIONAL_DIFFERENCES: Allow[] = [
     reason:
       'Float[] vector on PG; SQLite has no array type, so the desktop mirror stores it as a JSON string (decoded by ARRAY_FIELDS in apps/api/src/lib/prisma.ts).',
   },
+  {
+    key: 'ConversationAttachmentChunk.embedding',
+    reason:
+      'pgvector on PG; SQLite has no vector type, so the desktop mirror stores the optional embedding as a JSON string (decoded by the file indexer).',
+  },
   // Cloud-only fields -------------------------------------------------------
   {
     key: 'Workspace.homeRegion',

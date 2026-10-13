@@ -6573,7 +6573,7 @@ async function initializeEssentials(): Promise<void> {
         beforeStage: isLfsActive()
           ? async () => { await autoTrackLargeFiles(WORKSPACE_DIR) }
           : undefined,
-        stageExcludes: ['.shogo/local'],
+        stageExcludes: ['.shogo/local', 'chat-files'],
         onDegrade: (reason) => {
           console.warn(
             `[agent-runtime] cloud-sync degraded (mode=${cloudSyncMode}): ${reason}`,

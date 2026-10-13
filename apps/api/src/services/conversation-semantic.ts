@@ -22,6 +22,7 @@ import { MESSAGE_INCLUDE, serializeMessage, ConversationError } from './conversa
 import { searchMessages, type SearchResult } from './conversation-search'
 import { loadMentionNames, runWorkspaceAgentPrompt } from './conversation-agent-dispatcher'
 import { renderMentionsAsText, type MentionNames } from './conversation-mentions'
+import type { FileHit } from './conversation-file-index'
 
 const db = prisma as any
 const isLocalMode = () => process.env.SHOGO_LOCAL_MODE === 'true'
@@ -223,6 +224,8 @@ async function readableConversationIds(workspaceId: string, viewerId: string): P
 
 export interface SemanticResult extends SearchResult {
   score: number
+  /** Set when the match was a passage in a file attached to the message. */
+  fileMatch?: { fileId: string; name: string; snippet: string | null }
 }
 
 export async function semanticSearch(
@@ -245,21 +248,38 @@ export async function semanticSearch(
   const candidates = isLocalMode()
     ? await nearestSqlite(workspaceId, provider.model, conversationIds, queryVector)
     : await nearestPostgres(workspaceId, provider.model, conversationIds, queryVector, limit)
-  const scored = candidates
-    .filter((s) => s.score >= minScore)
-    .sort((a: any, b: any) => b.score - a.score)
+  // A passage deep inside a shared file counts for the message the file was sent with.
+  const { searchFiles } = await import('./conversation-file-index')
+  const files = await searchFiles({ kind: 'user', userId: viewerId }, workspaceId, text, {
+    limit, minScore, semanticOnly: true, queryVector,
+  }).catch(() => ({ results: [] as FileHit[] }))
+  const best = new Map<string, { score: number; file?: FileHit }>()
+  for (const s of candidates) if (s.score >= minScore) best.set(s.id, { score: s.score })
+  for (const f of files.results) {
+    const current = best.get(f.messageId)
+    if (!current || f.score > current.score) best.set(f.messageId, { score: f.score, file: f })
+  }
+  const scored = [...best.entries()]
+    .map(([id, s]) => ({ id, ...s }))
+    .sort((a, b) => b.score - a.score)
     .slice(0, limit)
   if (!scored.length) return { results: [], available: true }
 
   const rows = await db.conversationMessage.findMany({
-    where: { id: { in: scored.map((s: any) => s.id) } },
+    where: { id: { in: scored.map((s: any) => s.id) }, deletedAt: null },
     include: { ...MESSAGE_INCLUDE, conversation: { select: { id: true, kind: true, name: true, slug: true } } },
   })
   const byId = new Map(rows.map((r: any) => [r.id, r]))
   const results: SemanticResult[] = []
   for (const s of scored) {
     const row: any = byId.get(s.id)
-    if (row) results.push({ message: serializeMessage(row), conversation: row.conversation, score: s.score })
+    if (!row) continue
+    results.push({
+      message: serializeMessage(row),
+      conversation: row.conversation,
+      score: s.score,
+      ...(s.file ? { fileMatch: { fileId: s.file.fileId, name: s.file.name, snippet: s.file.snippet } } : {}),
+    })
   }
   return { results, available: true }
 }
@@ -307,10 +327,12 @@ export async function askWorkspace(workspaceId: string, viewerId: string, questi
     : { results: [] as SearchResult[] }
   const seen = new Set<string>()
   const sources: SearchResult[] = []
-  for (const r of [...semantic.results, ...keyword.results]) {
+  const passages = new Map<string, NonNullable<SemanticResult['fileMatch']>>()
+  for (const r of [...semantic.results, ...keyword.results] as SemanticResult[]) {
     if (seen.has(r.message.id) || sources.length >= ASK_SOURCES) continue
     seen.add(r.message.id)
     sources.push({ message: r.message, conversation: r.conversation })
+    if (r.fileMatch?.snippet) passages.set(r.message.id, r.fileMatch)
   }
   if (!sources.length) {
     return { answer: "I couldn't find anything in your conversations about that.", citations: [], semantic: semantic.available }
@@ -322,7 +344,9 @@ export async function askWorkspace(workspaceId: string, viewerId: string, questi
     const author = m.author?.name ?? (m.authorType === 'agent' ? `${(m.authorAgent as any)?.name ?? 'Agent'} (agent)` : 'Someone')
     const when = new Date(s.message.createdAt).toISOString().slice(0, 16).replace('T', ' ')
     const files = m.attachments.map((a: { name: string }) => ` [file: ${a.name}]`).join('')
-    return `[${i + 1}] ${author} in ${where(s.conversation)} at ${when} UTC: ${renderMentionsAsText(s.message.text, names).slice(0, 1500)}${files}`
+    const passage = passages.get(m.id)
+    const quoted = passage ? ` [from ${passage.name}: "${passage.snippet}"]` : ''
+    return `[${i + 1}] ${author} in ${where(s.conversation)} at ${when} UTC: ${renderMentionsAsText(s.message.text, names).slice(0, 1500)}${files}${quoted}`
   })
   const prompt = [
     'Answer my question using only the team chat messages below. Do not use tools.',

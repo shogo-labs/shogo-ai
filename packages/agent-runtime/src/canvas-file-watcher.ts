@@ -119,6 +119,8 @@ const IGNORED_PATH_PREFIXES = [
   '.shogo/agent-state.json',
   '.shogo/vite-watch.pid',
   '.shogo/vite.watch.config.ts',
+  // Downloaded team chat files (chat-files.ts): a cache, not source.
+  'chat-files',
   'dist',
   // Build-output-commit staging/rotation dirs. Must be ignored or
   // chokidar's recursive ReadDirectoryChangesW on Windows pins a handle

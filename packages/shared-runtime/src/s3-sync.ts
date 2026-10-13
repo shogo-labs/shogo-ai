@@ -474,6 +474,7 @@ export class S3Sync {
         '.expo',
         '.metro-cache',
         '.expo-shared',
+        'chat-files',
       ],
       syncInterval: config.syncInterval ?? 30000, // 30 seconds default
       watchEnabled: config.watchEnabled ?? true,
@@ -1094,6 +1095,7 @@ export class S3Sync {
       '.metro-cache',
       '.expo-shared',
       '.tmp',
+      'chat-files',
     ])
     if (filesToInclude.length === 0) return null
     await tar.create(
@@ -1214,6 +1216,7 @@ export class S3Sync {
       '.metro-cache',
       '.expo-shared',
       '.tmp',
+      'chat-files',
     ])
 
     if (filesToInclude.length === 0) {

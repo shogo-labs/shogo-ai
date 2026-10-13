@@ -217,7 +217,7 @@ const HOME_REGION_PARTITIONED: HomeRegionPartitioned[] = [
     fn: 'runChannelIndexer',
     file: 'apps/api/src/jobs/run-channel-workers.ts',
     reason:
-      'conversation_message_embeddings replicates. indexPendingMessages only embeds messages in conversations whose workspace is homed here (homeRegionWorkspaceWhere), so a message is embedded by one region and the messageId unique never collides across regions. The per-region lock only de-duplicates pods within a region.',
+      'conversation_message_embeddings and conversation_attachment_chunks replicate. indexPendingMessages, chunkPendingAttachments and embedPendingChunks only touch conversations whose workspace is homed here (homeRegionWorkspaceWhere), so each message or file is indexed by one region and the messageId unique never collides across regions. The per-region lock only de-duplicates pods within a region.',
     partitionKeyColumn: 'Workspace.homeRegion',
   },
   {

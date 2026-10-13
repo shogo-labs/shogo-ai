@@ -152,9 +152,10 @@ export async function extractAttachmentText(bytes: Uint8Array, mimeType: string,
 }
 
 /**
- * Extract and save an attachment's text. If the file is already attached
- * to a message, that message's search vector is dropped so the indexer
- * re-embeds it with the file text.
+ * Extract and save an attachment's text, then cut it into the chunks that
+ * file search and reading use. If the file is already attached to a message,
+ * that message's search vector is dropped so the indexer re-embeds it with
+ * the file text.
  */
 export async function extractAndStoreAttachmentText(
   attachmentId: string,
@@ -169,6 +170,9 @@ export async function extractAndStoreAttachmentText(
     data: { extractedText: text },
     select: { messageId: true },
   }).catch(() => null)
-  if (row?.messageId) await db.conversationMessageEmbedding.deleteMany({ where: { messageId: row.messageId } }).catch(() => {})
+  if (!row) return text
+  const { chunkAttachment } = await import('./conversation-file-index')
+  await chunkAttachment(attachmentId).catch(() => {})
+  if (row.messageId) await db.conversationMessageEmbedding.deleteMany({ where: { messageId: row.messageId } }).catch(() => {})
   return text
 }
