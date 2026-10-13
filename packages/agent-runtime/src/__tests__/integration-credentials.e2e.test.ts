@@ -1504,7 +1504,9 @@ describe('someone in the conversation approves, or the project has a delegate', 
     const root = await ask(gina, 'file an issue for the flake')
     const pending = await card(root)
     expect(pending.blocks.approval.toolName).toBe('exec')
-    expect(ui.find((c) => c.type === 'data-integration-approval-pending')?.data).toMatchObject({
+    // The card is in the DB before the runtime hears back from the API and emits this.
+    const pendingUi = await waitFor(async () => ui.find((c) => c.type === 'data-integration-approval-pending'), 5000)
+    expect(pendingUi.data).toMatchObject({
       provider: 'github',
       approvalId: pending.blocks.approval.requestId,
     })
