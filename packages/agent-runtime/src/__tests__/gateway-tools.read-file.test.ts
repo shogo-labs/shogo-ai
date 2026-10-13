@@ -81,6 +81,38 @@ describe('createReadFileTool', () => {
     expect(r.details.note).toContain('offset/limit')
   })
 
+  test('full read of a file over 2000 lines returns the first 2000, numbered, with a continuation hint', async () => {
+    const body = Array.from({ length: 5000 }, (_, i) => `line${i + 1}`).join('\n')
+    writeFileSync(join(TEST_DIR, 'huge.txt'), body)
+    const cache = new FileStateCache(TEST_DIR)
+    const ctx = makeCtx({ fileStateCache: cache })
+    const r = await run(ctx, 'read_file', { path: 'huge.txt' })
+    expect(r.details.truncated).toBe(true)
+    expect(r.details.totalLines).toBe(5000)
+    expect(r.details.endLine).toBe(2000)
+    expect(r.details.content.split('\n')).toHaveLength(2000)
+    expect(r.details.content.startsWith('1|line1\n')).toBe(true)
+    expect(r.details.note).toContain('offset: 2001')
+  })
+
+  test('full read is capped at 60K characters even under 2000 lines', async () => {
+    const body = Array.from({ length: 100 }, () => 'x'.repeat(1000)).join('\n')
+    writeFileSync(join(TEST_DIR, 'wide.txt'), body)
+    const ctx = makeCtx({ fileStateCache: new FileStateCache(TEST_DIR) })
+    const r = await run(ctx, 'read_file', { path: 'wide.txt' })
+    expect(r.details.truncated).toBe(true)
+    expect(r.details.content.length).toBeLessThanOrEqual(60_000)
+    expect(r.details.endLine).toBeLessThan(100)
+  })
+
+  test('a single line longer than the cap is cut rather than returning nothing', async () => {
+    writeFileSync(join(TEST_DIR, 'minified.js'), 'a'.repeat(200_000))
+    const ctx = makeCtx({ fileStateCache: new FileStateCache(TEST_DIR) })
+    const r = await run(ctx, 'read_file', { path: 'minified.js' })
+    expect(r.details.truncated).toBe(true)
+    expect(r.details.content.length).toBe(60_000)
+  })
+
   test('non-existent file returns error message', async () => {
     const ctx = makeCtx()
     const r = await run(ctx, 'read_file', { path: 'nope.txt' })

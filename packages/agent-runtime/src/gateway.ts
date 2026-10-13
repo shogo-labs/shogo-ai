@@ -44,6 +44,7 @@ import { microcompact } from './microcompact'
 import {
   type ContentReplacementState,
   createContentReplacementState,
+  resolveInLoopContextBudgetTokens,
   stableTransformContext,
 } from './stable-compaction'
 import { scrubOversizedImages } from './image-size-guard'
@@ -2694,6 +2695,7 @@ export class AgentGateway {
 
     // Multi-layer context compaction pipeline (Layers 1-4)
     const contextBudgetChars = (this.sessionManager.autocompactThreshold) * 4
+    const inLoopBudgetTokens = resolveInLoopContextBudgetTokens(this.sessionManager.autocompactThreshold)
     let history = this.sessionManager.buildHistory(sessionId)
     history = applyToolResultBudget(history, contextBudgetChars)
     const mc = microcompact(history)
@@ -3335,7 +3337,15 @@ export class AgentGateway {
             state = createContentReplacementState()
             this.contentReplacementStates.set(sessionId, state)
           }
-          const result = stableTransformContext(messages, state, contextBudgetChars)
+          const result = stableTransformContext(messages, state, contextBudgetChars, {
+            budgetTokens: inLoopBudgetTokens,
+          })
+          if (result.stats.checkpointCleared > 0) {
+            console.log(
+              `${this.logPrefix} In-loop checkpoint: cleared ${result.stats.checkpointCleared} older tool results ` +
+              `(budget ${inLoopBudgetTokens} tokens) for session ${sessionId}`,
+            )
+          }
           // Final guard: self-heal any oversized image blocks that may have
           // landed in history before this guard shipped (or that slipped past
           // emission-time checks). Deterministic, so it does not disturb the

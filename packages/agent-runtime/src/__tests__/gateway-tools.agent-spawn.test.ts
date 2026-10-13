@@ -388,3 +388,44 @@ describe('agent_spawn normal mode (type specified)', () => {
     expect(usage).toBeUndefined()
   })
 })
+
+describe('agent_spawn: what the parent model sees', () => {
+  async function runRaw(ctx: any, params: Record<string, any>) {
+    const result = await getTool(ctx, 'agent_spawn').execute('test-tool-call-id', params)
+    return { details: result.details, modelText: (result.content[0] as any).text as string }
+  }
+
+  test('fork result sends the capped report instead of the streamed transcript', async () => {
+    subagentResult = {
+      toolCalls: 2, iterations: 2, inputTokens: 10, outputTokens: 5, cacheReadTokens: 0, cacheWriteTokens: 0,
+      agentId: 'fork-report', effectiveModelId: 'claude-sonnet-4-5',
+      responseText: 'Scope: x\nResult: ' + 'r'.repeat(20_000),
+    }
+    const w = makeWriter()
+    const ctx = makeCtx({
+      agentManager: makeAgentManager(),
+      renderedSystemPrompt: 'sys',
+      sessionMessages: [{ role: 'user', content: 'hi' }],
+      uiWriter: w,
+    })
+    const { details, modelText } = await runRaw(ctx, { prompt: 'investigate' })
+    const seen = JSON.parse(modelText)
+    expect(seen.parts).toBeUndefined()
+    expect(seen.response.startsWith('Scope: x')).toBe(true)
+    expect(seen.response).toContain('chars of the subagent report truncated')
+    expect(seen.response.length).toBeLessThan(8_200)
+    expect(seen.mode).toBe('fork')
+    expect(Array.isArray(details.parts)).toBe(true)
+  })
+
+  test('sync spawn without a UI writer still gives the model the response text', async () => {
+    const am = makeAgentManager({
+      instanceResult: {
+        toolCalls: 1, iterations: 1, inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0,
+        agentId: 'a', effectiveModelId: 'claude-sonnet-4-5', responseText: 'Found 3 call sites in src/api.',
+      },
+    })
+    const { modelText } = await runRaw(makeCtx({ agentManager: am }), { type: 'explore', prompt: 'find callers' })
+    expect(JSON.parse(modelText).response).toBe('Found 3 call sites in src/api.')
+  })
+})

@@ -78,10 +78,10 @@ describe('getBuiltinSubagentConfig', () => {
     expect(getBuiltinSubagentConfig('mystery', {} as any, [])).toBeNull()
   })
 
-  it('explore is haiku + 5 turns + readonly tool set', () => {
+  it('explore is auto + 100 turns + readonly tool set', () => {
     const cfg = getBuiltinSubagentConfig('explore', {} as any, [])!
-    expect(cfg.model).toBe('claude-haiku-4-5')
-    expect(cfg.maxTurns).toBe(5)
+    expect(cfg.model).toBe('auto')
+    expect(cfg.maxTurns).toBe(100)
     expect(cfg.toolNames).toContain('read_file')
     expect(cfg.disallowedTools).toContain('task')
   })
@@ -462,6 +462,40 @@ describe('runSubagent — success paths', () => {
     expect(result.iterations).toBe(2)
     expect(result.responseEmpty).toBe(false)
     expect(events).toEqual(['start', 'model', 'end'])
+  })
+
+  it('routes explore through auto even when the parent is not in auto mode', async () => {
+    let observed: any = {}
+    runAgentLoopImpl = async (opts: any) => {
+      observed = opts
+      return { text: 'ok', toolCalls: [], iterations: 1, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, newMessages: [], effectiveModelId: opts.model }
+    }
+    const writes: any[] = []
+    const ctx = makeCtx({
+      uiWriter: { write: (e: any) => writes.push(e) },
+      autoTierOverride: {
+        economy: { id: 'tier-economy' },
+        standard: { id: 'tier-standard' },
+        premium: { id: 'tier-premium', provider: 'anthropic' },
+      },
+    })
+    const cfg = getBuiltinSubagentConfig('explore', ctx, [])!
+    await runSubagent(cfg, 'find where auth is handled', ctx, [])
+    expect(['tier-economy', 'tier-standard', 'tier-premium']).toContain(observed.model)
+    expect(observed.maxIterations).toBe(100)
+    expect(writes.some(e => e.type === 'data-routing-decision')).toBe(true)
+  })
+
+  it('an explicit model_tier still wins over explore auto routing', async () => {
+    let observed: any = {}
+    runAgentLoopImpl = async (opts: any) => {
+      observed = opts
+      return { text: 'ok', toolCalls: [], iterations: 1, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, newMessages: [], effectiveModelId: opts.model }
+    }
+    const cfg = { ...getBuiltinSubagentConfig('explore', makeCtx(), [])!, modelTier: 'capable' as const }
+    await runSubagent(cfg, 'p', makeCtx(), [])
+    expect(observed.model).not.toBe('auto')
+    expect(observed.model).toBe(resolveModelTier('capable', 'parent-model'))
   })
 
   it('reuses the parent provider hint when inheriting a DB-defined (UUID) model', async () => {

@@ -13,6 +13,7 @@
 import type { AgentTool } from '@mariozechner/pi-agent-core'
 import type { Message } from '@mariozechner/pi-ai'
 import { runAgentLoop } from './agent-loop'
+import { createStableLoopTransform } from './stable-compaction'
 import type { ToolContext } from './gateway-tools'
 import type { TeamManager, MailboxMessage, TaskInfo } from './team-manager'
 import { teammateStorage, type TeammateContext } from './teammate-context'
@@ -198,10 +199,12 @@ export function startTeammateLoop(
         const iterationsPerWake = config.maxTurnsPerWake || 50
         const MAX_TEAMMATE_CONTINUATIONS = 5
         let tmContinuations = 0
+        const tmModel = config.model || modelConfig?.name || 'claude-haiku-4-5-20251001'
+        const transformContext = createStableLoopTransform(tmModel)
 
         let result = await runAgentLoop({
           provider: config.provider || modelConfig?.provider || 'anthropic',
-          model: config.model || modelConfig?.name || 'claude-haiku-4-5-20251001',
+          model: tmModel,
           system: config.systemPrompt,
           prompt,
           history,
@@ -209,6 +212,7 @@ export function startTeammateLoop(
           maxIterations: iterationsPerWake,
           signal: workAbort.signal,
           thinkingLevel: 'low',
+          transformContext,
           onTextDelta: w ? (delta) => {
             if (!tmTextId) {
               tmTextId = `tm-text-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
@@ -271,7 +275,7 @@ export function startTeammateLoop(
 
           result = await runAgentLoop({
             provider: config.provider || modelConfig?.provider || 'anthropic',
-            model: config.model || modelConfig?.name || 'claude-haiku-4-5-20251001',
+            model: tmModel,
             system: config.systemPrompt,
             prompt: contPrompt,
             history: contHistory,
@@ -279,6 +283,7 @@ export function startTeammateLoop(
             maxIterations: iterationsPerWake,
             signal: workAbort.signal,
             thinkingLevel: 'low',
+            transformContext,
           })
           if (result.newMessages) {
             allMessages.push(...result.newMessages)

@@ -709,7 +709,7 @@ Old instructions.
       expect(config).toBeNull()
     })
 
-    test('explore agent is read-only with haiku model', () => {
+    test('explore agent is read-only with auto model', () => {
       // `search` only joins the explore toolset when the flag is on — the
       // prod-side (flag off) shape is asserted in
       // search-advertisement-contract.test.ts.
@@ -719,8 +719,8 @@ Old instructions.
         const tools = createTools(ctx)
         const config = getBuiltinSubagentConfig('explore', ctx, tools)
         expect(config).not.toBeNull()
-        expect(config!.model).toBe('claude-haiku-4-5')
-        expect(config!.maxTurns).toBe(5)
+        expect(config!.model).toBe('auto')
+        expect(config!.maxTurns).toBe(100)
         expect(config!.toolNames).toContain('read_file')
         expect(config!.toolNames).toContain('search')
         expect(config!.toolNames).not.toContain('write_file')

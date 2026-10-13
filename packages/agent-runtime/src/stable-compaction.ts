@@ -56,6 +56,8 @@
 import type { Message, ToolResultMessage, TextContent } from '@mariozechner/pi-ai'
 import { applyToolResultBudget, snipConsumedResults } from './session-manager.js'
 import { microcompact } from './microcompact.js'
+import { scrubOversizedImages } from './image-size-guard.js'
+import { getDynamicModel } from '@shogo/model-catalog'
 
 // ---------------------------------------------------------------------------
 // State
@@ -141,7 +143,107 @@ export interface StableTransformResult {
     newlyDecided: number
     newlyReplaced: number
     newlyPreserved: number
+    /** Tool results cleared by a mid-turn budget checkpoint on this call. */
+    checkpointCleared: number
   }
+}
+
+export interface StableTransformOptions {
+  /**
+   * Ceiling (estimated tokens) for the messages sent on one request. When a
+   * long agent turn grows past it, older tool results are cleared (see
+   * `checkpointOldToolResults`). Omit to disable the checkpoint.
+   */
+  budgetTokens?: number
+}
+
+/** Default in-loop context budget, independent of the model's window. */
+export const DEFAULT_INLOOP_CONTEXT_BUDGET_TOKENS = 180_000
+
+/**
+ * The in-loop budget: `AGENT_INLOOP_CONTEXT_BUDGET_TOKENS` (default 180K),
+ * capped at `ceilingTokens` (what the model can actually hold).
+ *
+ * A 1M-token window is not a reason to send 1M tokens: every step of an
+ * agent turn re-sends the whole context, so cost grows with its size even
+ * when cached.
+ */
+export function resolveInLoopContextBudgetTokens(ceilingTokens?: number): number {
+  const fromEnv = Number(process.env.AGENT_INLOOP_CONTEXT_BUDGET_TOKENS)
+  const configured = Number.isFinite(fromEnv) && fromEnv > 0 ? Math.floor(fromEnv) : DEFAULT_INLOOP_CONTEXT_BUDGET_TOKENS
+  return ceilingTokens && ceilingTokens > 0 ? Math.min(configured, ceilingTokens) : configured
+}
+
+/** A checkpoint compacts down to this fraction of the budget so it doesn't refire every call. */
+const CHECKPOINT_TARGET_RATIO = 0.5
+/** Results at or below this size aren't worth clearing. */
+const CHECKPOINT_MIN_RESULT_CHARS = 500
+const IMAGE_TOKEN_ESTIMATE = 1_600
+
+function estimateMessageTokens(msg: Message): number {
+  let chars = 0
+  let tokens = 0
+  const content = (msg as { content: unknown }).content
+  if (typeof content === 'string') {
+    chars += content.length
+  } else if (Array.isArray(content)) {
+    for (const block of content as Array<Record<string, any>>) {
+      if (block.type === 'image') tokens += IMAGE_TOKEN_ESTIMATE
+      else if (block.type === 'text') chars += block.text?.length ?? 0
+      else if (block.type === 'thinking') chars += block.thinking?.length ?? 0
+      else if (block.type === 'toolCall') chars += JSON.stringify(block.arguments ?? {}).length + (block.name?.length ?? 0)
+    }
+  }
+  return tokens + Math.ceil(chars / 4)
+}
+
+/** Index of the first message inside the last `PROTECTED_TURNS` assistant turns. */
+function protectedWindowStart(messages: Message[]): number {
+  let seen = 0
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === 'assistant' && ++seen === PROTECTED_TURNS) return i
+  }
+  return 0
+}
+
+/**
+ * Mid-turn budget checkpoint. When the estimated size of `messages` exceeds
+ * `budgetTokens`, replace the oldest tool results outside the protected
+ * window with a short placeholder until the estimate falls to half the
+ * budget. Each replacement is recorded in `state` (overriding an earlier
+ * "preserved" decision), so the prompt prefix changes once at the
+ * checkpoint and is byte-stable again from the next call on.
+ */
+function checkpointOldToolResults(
+  messages: Message[],
+  state: ContentReplacementState,
+  budgetTokens: number,
+): { messages: Message[]; cleared: number } {
+  let total = 0
+  for (const msg of messages) total += estimateMessageTokens(msg)
+  if (total <= budgetTokens) return { messages, cleared: 0 }
+
+  const target = budgetTokens * CHECKPOINT_TARGET_RATIO
+  const end = protectedWindowStart(messages)
+  const out = messages.slice()
+  let cleared = 0
+  for (let i = 0; i < end && total > target; i++) {
+    const msg = out[i]
+    if (msg.role !== 'toolResult') continue
+    const result = msg as ToolResultMessage
+    const before = estimateMessageTokens(result)
+    const text = extractText(result)
+    if (text.length <= CHECKPOINT_MIN_RESULT_CHARS && before * 4 <= CHECKPOINT_MIN_RESULT_CHARS) continue
+    const placeholder =
+      `[Earlier ${result.toolName || 'tool'} result cleared to keep the context small ` +
+      `(${text.length} chars). Re-run the tool if you need this output again.]`
+    state.replacements.set(result.toolCallId, placeholder)
+    state.seenAndPreserved.delete(result.toolCallId)
+    out[i] = { ...result, content: [{ type: 'text' as const, text: placeholder }] } as ToolResultMessage
+    total -= before - estimateMessageTokens(out[i])
+    cleared++
+  }
+  return cleared > 0 ? { messages: out, cleared } : { messages, cleared: 0 }
 }
 
 /**
@@ -162,6 +264,7 @@ export function stableTransformContext(
   messages: Message[],
   state: ContentReplacementState,
   contextBudgetChars: number,
+  options: StableTransformOptions = {},
 ): StableTransformResult {
   // Step 1: replay all frozen replacements. After this, any id in
   // state.replacements has its final, byte-stable content in place.
@@ -238,16 +341,39 @@ export function stableTransformContext(
     newlyDecided++
   }
 
+  const checkpoint = options.budgetTokens
+    ? checkpointOldToolResults(step3, state, options.budgetTokens)
+    : { messages: step3, cleared: 0 }
+
   return {
-    messages: step3,
+    messages: checkpoint.messages,
     stats: {
       totalToolResults,
       frozenCount: frozenIds.size,
       newlyDecided,
       newlyReplaced,
       newlyPreserved,
+      checkpointCleared: checkpoint.cleared,
     },
   }
+}
+
+/** Output + safety reserve subtracted from a model's window; matches SessionManager's defaults. */
+const CONTEXT_RESERVE_TOKENS = 16_384 + 15_000
+const DEFAULT_CONTEXT_WINDOW_TOKENS = 200_000
+
+/**
+ * A `transformContext` for agent loops that don't keep replacement state
+ * across turns (subagents, teammates). Each call to this factory gets its own
+ * state, so decisions stay prefix-stable for the lifetime of that loop. The
+ * budget is capped by the model's context window when the registry knows it.
+ */
+export function createStableLoopTransform(model?: string): (messages: Message[]) => Message[] {
+  const window = (model && getDynamicModel(model)?.contextWindow) || DEFAULT_CONTEXT_WINDOW_TOKENS
+  const budgetTokens = resolveInLoopContextBudgetTokens(window - CONTEXT_RESERVE_TOKENS)
+  const state = createContentReplacementState()
+  return (messages) =>
+    scrubOversizedImages(stableTransformContext(messages, state, budgetTokens * 4, { budgetTokens }).messages)
 }
 
 // ---------------------------------------------------------------------------

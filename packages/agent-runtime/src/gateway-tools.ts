@@ -759,7 +759,7 @@ function createPreviewProjectTool(ctx: ToolContext): AgentTool {
   }
 }
 
-const MAX_EXEC_OUTPUT_CHARS = 16000
+const MAX_EXEC_OUTPUT_CHARS = 8000
 
 function truncateExecOutput(text: string): string {
   if (!text || text.length <= MAX_EXEC_OUTPUT_CHARS) return text
@@ -1772,6 +1772,10 @@ function detectBinaryContent(buf: Buffer, absolutePath: string): { label: string
   return null
 }
 
+/** A read without offset/limit stops at whichever of these comes first. */
+const MAX_FULL_READ_LINES = 2000
+const MAX_FULL_READ_CHARS = 60_000
+
 function createReadFileTool(ctx: ToolContext): AgentTool {
   return {
     name: 'read_file',
@@ -1998,6 +2002,30 @@ function createReadFileTool(ctx: ToolContext): AgentTool {
           totalLines: lines.length,
           startLine: startLine + 1,
           endLine: Math.min(endLine, lines.length),
+        })
+      }
+
+      if (totalLineCount > MAX_FULL_READ_LINES || fullContent.length > MAX_FULL_READ_CHARS) {
+        const lines = fullContent.split('\n')
+        const kept: string[] = []
+        let chars = 0
+        for (const line of lines) {
+          const numbered = `${kept.length + 1}|${line}`
+          if (kept.length >= MAX_FULL_READ_LINES || chars + numbered.length + 1 > MAX_FULL_READ_CHARS) break
+          kept.push(numbered)
+          chars += numbered.length + 1
+        }
+        if (kept.length === 0) kept.push(`1|${lines[0].slice(0, MAX_FULL_READ_CHARS - 2)}`)
+        ctx.fileStateCache?.recordRead(filePath, mtime, totalLineCount, { offset: 1, limit: kept.length }, undefined)
+        return textResult({
+          content: kept.join('\n'),
+          totalLines: totalLineCount,
+          startLine: 1,
+          endLine: kept.length,
+          truncated: true,
+          note:
+            `File too large to read whole (${totalLineCount} lines, ${fullContent.length} chars); showing lines 1-${kept.length}. ` +
+            `Continue with offset: ${kept.length + 1}, or use the \`search\` tool to find the section you need.`,
         })
       }
 
@@ -6465,7 +6493,7 @@ function createAgentSpawnTool(ctx: ToolContext, allToolsGetter: () => AgentTool[
         }
 
         const accumulated = spawn?.getAccumulatedOutput()
-        return textResult({
+        return subagentToolResult({
           mode: 'fork',
           agent_id: result.agentId,
           toolCalls: result.toolCalls,
@@ -6473,7 +6501,7 @@ function createAgentSpawnTool(ctx: ToolContext, allToolsGetter: () => AgentTool[
           tokens: { input: result.inputTokens, output: result.outputTokens },
           parts: accumulated?.parts,
           model: accumulated?.model || subModel,
-        })
+        }, result.responseText)
       }
 
       // --- Normal mode: type is specified ---
@@ -6542,7 +6570,7 @@ function createAgentSpawnTool(ctx: ToolContext, allToolsGetter: () => AgentTool[
       }
 
       const accumulated = spawn?.getAccumulatedOutput()
-      return textResult({
+      return subagentToolResult({
         instance_id: instanceId,
         agent_id: result.agentId,
         status: inst.status,
@@ -6551,8 +6579,46 @@ function createAgentSpawnTool(ctx: ToolContext, allToolsGetter: () => AgentTool[
         tokens: { input: result.inputTokens, output: result.outputTokens },
         parts: accumulated?.parts,
         model: accumulated?.model || result.effectiveModelId || inst.model,
-      })
+      }, result.responseText)
     },
+  }
+}
+
+const MAX_SUBAGENT_RESPONSE_CHARS = 8000
+
+export function capSubagentResponse(text: string): string {
+  if (text.length <= MAX_SUBAGENT_RESPONSE_CHARS) return text
+  const headSize = Math.floor(MAX_SUBAGENT_RESPONSE_CHARS * 0.75)
+  const tailSize = MAX_SUBAGENT_RESPONSE_CHARS - headSize
+  return (
+    `${text.substring(0, headSize)}\n\n... [${text.length - MAX_SUBAGENT_RESPONSE_CHARS} chars of the subagent report truncated] ...\n\n` +
+    text.substring(text.length - tailSize)
+  )
+}
+
+/**
+ * Result of a completed subagent: `details` (the UI payload, including the
+ * streamed `parts` transcript) is kept whole, but the model only sees the
+ * capped final report and a per-tool call count. Re-sending the subagent's
+ * full transcript to the parent defeats the point of delegating.
+ */
+export function subagentToolResult(
+  details: Record<string, any>,
+  responseText: string | undefined,
+): AgentToolResult<any> {
+  const { parts, ...rest } = details
+  const toolCounts: Record<string, number> = {}
+  for (const p of (parts ?? []) as any[]) {
+    if (p?.type === 'tool' && p.tool?.toolName) toolCounts[p.tool.toolName] = (toolCounts[p.tool.toolName] ?? 0) + 1
+  }
+  const modelFacing = {
+    ...rest,
+    response: capSubagentResponse(responseText?.trim() || '(Subagent completed but returned no output.)'),
+    ...(Object.keys(toolCounts).length > 0 ? { tools_used: toolCounts } : {}),
+  }
+  return {
+    content: [{ type: 'text', text: JSON.stringify(modelFacing, null, 2) }],
+    details,
   }
 }
 
@@ -6868,7 +6934,7 @@ function createAgentResultTool(ctx: ToolContext): AgentTool {
         instance_id: inst.id,
         type: inst.type,
         status: inst.status,
-        response: responseText,
+        response: capSubagentResponse(responseText),
         toolCalls: r?.toolCalls ?? 0,
         // Rolling window (see MAX_RECENT_ACTIVITY) of the tools this
         // instance actually called, in order — lets the caller (and eval

@@ -38,6 +38,16 @@ export const WORKTREE_GUIDE = [
  * The `<fork-boilerplate>` tag doubles as both instructions and the recursive
  * fork detection marker (see `isInForkChild`).
  */
+/**
+ * Appended to every typed subagent's system prompt. The final report is all
+ * the parent sees of the run, and it stays in the parent's context for the
+ * rest of the session.
+ */
+export const SUBAGENT_REPORT_INSTRUCTION =
+  '## Final report\nYour final message is returned to the agent that delegated to you. ' +
+  'Keep it under 500 words unless the task asks for more: the findings or result, the relevant ' +
+  'file paths, and anything left unresolved. Do not repeat raw tool output or full file contents.'
+
 export function buildForkDirective(directive: string): string {
   return `<${FORK_BOILERPLATE_TAG}>
 STOP. READ THIS FIRST.
