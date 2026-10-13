@@ -72,8 +72,10 @@ import {
 import { useIsNativePhoneLayout } from "../../../lib/native-phone-layout"
 import { useMobileWorkspaceChrome } from "../../layout/MobileWorkspaceChromeContext"
 import { AskUserAnswerCard } from "./AskUserAnswerCard"
+import { CanvasErrorCard } from "./CanvasErrorCard"
 import { ChannelDispatchCard } from "./ChannelDispatchCard"
 import { stripAskUserAnswerMarker } from "./askUserAnswers"
+import { parseCanvasErrorDebugPrompt } from "./canvasErrorPrompt"
 import type { AnsweredQuestion } from "./types"
 
 function showNativeUserMessageActions(opts: {
@@ -504,6 +506,23 @@ export const EditableUserMessage = memo(function EditableUserMessage({
       >
         <ChannelDispatchCard
           dispatch={dispatch}
+          variant={usesCompactBubble ? "bubble" : "row"}
+        />
+      </View>
+    )
+  }
+
+  const canvasError = parseCanvasErrorDebugPrompt(extractTextContent(message))
+  if (canvasError) {
+    return (
+      <View
+        className={cn(
+          usesCompactBubble ? "w-full items-end px-1" : "w-full",
+          className,
+        )}
+      >
+        <CanvasErrorCard
+          prompt={canvasError}
           variant={usesCompactBubble ? "bubble" : "row"}
         />
       </View>

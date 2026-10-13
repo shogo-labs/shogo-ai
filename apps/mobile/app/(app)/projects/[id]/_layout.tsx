@@ -78,6 +78,7 @@ import {
 import { resolveChatScope } from "../../../../lib/chat-scope";
 import { useProjectChatTabs } from "../../../../lib/project-chat-tabs";
 import { stripAskUserAnswerMarker } from "../../../../components/chat/turns/askUserAnswers";
+import { buildCanvasErrorDebugPrompt } from "../../../../components/chat/turns/canvasErrorPrompt";
 import { consumePendingFiles } from "../../../../lib/pending-image-store";
 import {
   isPhoneLayout,
@@ -243,100 +244,6 @@ const CHAT_PANEL_WIDTH_STORAGE_KEY = "shogo:chatPanelWidth";
 const CANVAS_ERROR_DEDUP_MS = 10_000;
 /** How many recent runtime log entries to attach to a debug-with-EZ-Mode prompt. */
 const CANVAS_ERROR_LOG_TAIL = 30;
-/** Cap any single error / log line so the seed prompt stays bounded. */
-const CANVAS_ERROR_MAX_LINE = 1200;
-
-/**
- * Build the seed message that gets auto-sent into a fresh chat when the
- * user clicks "Debug" on a `[canvas-error]` toast.
- *
- * The prompt deliberately includes everything the agent would otherwise
- * have to hunt down: the iframe's current page, the phase (compile vs
- * runtime), the full error string, the breadcrumb of recent user actions
- * (clicks / navigations / form submits) leading up to the crash, and the
- * tail of the runtime log buffer (build output / console lines).
- *
- * The surface label is only included when the canvas actually exposes a
- * Shogo surface — workspace canvases (Vite/Expo apps with their own
- * router) don't, and the page route is the meaningful identifier there.
- */
-function buildCanvasErrorDebugPrompt(args: {
-  phase: "compile" | "runtime";
-  error: string;
-  /** Iframe `pathname + search + hash` at the moment of the error. */
-  route?: string;
-  /** Recent user-interaction breadcrumb from `canvas-bridge.js`, oldest first. */
-  recentActions?: ReadonlyArray<{
-    ts: number;
-    kind: string;
-    target?: string;
-    route?: string;
-  }>;
-  recentLogs: ReadonlyArray<{
-    source: string;
-    level: string;
-    text: string;
-    ts: number;
-  }>;
-}): string {
-  const { phase, error, route, recentActions, recentLogs } = args;
-  const truncate = (s: string, n: number) =>
-    s.length <= n ? s : `${s.slice(0, n - 1)}…`;
-  const phaseLabel = phase === "compile" ? "compile-time" : "runtime";
-  const pageLabel = route ? ` (page \`${route}\`)` : "";
-
-  const lines: string[] = [];
-  lines.push(
-    `🐞 The canvas just hit a ${phaseLabel} error${pageLabel}. Please diagnose the root cause and propose / apply a minimal fix.`
-  );
-  lines.push("");
-  lines.push("**Error**");
-  lines.push("```");
-  lines.push(truncate(error, CANVAS_ERROR_MAX_LINE));
-  lines.push("```");
-
-  if (recentActions && recentActions.length > 0) {
-    lines.push("");
-    lines.push(
-      `**Recent user actions** (last ${recentActions.length}, oldest first — most recent immediately before the error)`
-    );
-    lines.push("```");
-    for (const a of recentActions) {
-      const ts = Number.isFinite(a.ts)
-        ? new Date(a.ts).toISOString().slice(11, 23)
-        : "--:--:--.---";
-      const target = a.target ? ` ${a.target}` : "";
-      const onPage = a.route && a.route !== route ? ` @ ${a.route}` : "";
-      lines.push(
-        truncate(`${ts} ${a.kind}${target}${onPage}`, CANVAS_ERROR_MAX_LINE)
-      );
-    }
-    lines.push("```");
-  }
-
-  if (recentLogs.length > 0) {
-    lines.push("");
-    lines.push(
-      `**Recent runtime logs** (last ${recentLogs.length}, oldest first)`
-    );
-    lines.push("```");
-    for (const e of recentLogs) {
-      const ts = new Date(e.ts).toISOString().slice(11, 23);
-      lines.push(
-        `${ts} [${e.source}] ${
-          e.level !== "info" ? `${e.level.toUpperCase()} ` : ""
-        }${truncate(e.text, CANVAS_ERROR_MAX_LINE)}`
-      );
-    }
-    lines.push("```");
-  }
-
-  lines.push("");
-  lines.push(
-    "Read the relevant files, identify the offending change, and either propose a fix or apply it directly. Keep the change minimal and explain what went wrong."
-  );
-  return lines.join("\n");
-}
 
 export default observer(function ProjectLayout() {
   csMark("project:layout:render");

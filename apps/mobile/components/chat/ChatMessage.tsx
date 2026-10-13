@@ -13,9 +13,11 @@ import { cn } from "@shogo/shared-ui/primitives"
 import { MarkdownText } from "./MarkdownText"
 import { analyzeContent } from "./long-text-utils"
 import { LongTextPreviewCard } from "./LongTextPreviewCard"
-import { channelDispatchOf } from "@shogo/shared-app/chat"
+import { channelDispatchOf, extractTextContent } from "@shogo/shared-app/chat"
+import { CanvasErrorCard } from "./turns/CanvasErrorCard"
 import { ChannelDispatchCard } from "./turns/ChannelDispatchCard"
 import { stripAskUserAnswerMarker } from "./turns/askUserAnswers"
+import { parseCanvasErrorDebugPrompt } from "./turns/canvasErrorPrompt"
 
 export interface ChatMessageProps {
   message: {
@@ -41,6 +43,17 @@ export function ChatMessage({
     return (
       <View className="flex-row w-full justify-start">
         <ChannelDispatchCard dispatch={dispatch} />
+      </View>
+    )
+  }
+
+  const canvasError = isUser
+    ? parseCanvasErrorDebugPrompt(extractTextContent(message) || content)
+    : null
+  if (canvasError) {
+    return (
+      <View className="flex-row w-full justify-end">
+        <CanvasErrorCard prompt={canvasError} variant="bubble" />
       </View>
     )
   }
