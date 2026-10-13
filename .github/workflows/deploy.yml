@@ -1353,7 +1353,10 @@ jobs:
   staging-e2e-critical:
     name: Staging critical-path e2e
     needs: [deploy-staging]
-    if: needs.deploy-staging.result == 'success'
+    # always(): without a status function GitHub skips this job whenever any
+    # upstream build job was skipped (e.g. a commit that changes no images),
+    # and the prod staging-e2e-gate then never sees e2e/staging-critical.
+    if: always() && needs.deploy-staging.result == 'success'
     permissions:
       contents: read
       statuses: write
