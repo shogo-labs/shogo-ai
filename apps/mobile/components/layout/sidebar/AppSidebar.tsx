@@ -40,7 +40,6 @@ import {
   LayoutGrid,
   Activity,
   Target,
-  MessagesSquare,
   Search,
   ChevronDown,
   ChevronLeft,
@@ -115,7 +114,6 @@ import { DmsPanel } from "../../team-chat/panels/DmsPanel";
 import { AgentsPanel } from "../../team-chat/panels/AgentsPanel";
 import { ActivityFeed } from "../../activity/ActivityFeed";
 import { WideSidebar } from "./WideSidebar";
-import { PersonalChatsPanel } from "./PersonalChatsPanel";
 import { HomePanel, MorePanel } from "./TabPanels";
 import {
   MENU_ITEM_RADIO_ROLE,
@@ -1195,8 +1193,7 @@ export const AppSidebar = observer(function AppSidebar({
         return <MorePanel onNavPress={onNavPress} />;
       case "home":
       default:
-        if (experience.kind === "personal") return <PersonalChatsPanel onNavPress={onNavPress} />;
-        return <HomePanel onNavPress={onNavPress} isHomeRoute={/\/agent\/?$/.test(pathname)} />;
+        return <HomePanel onNavPress={onNavPress} />;
     }
   };
 
@@ -1378,14 +1375,10 @@ export const AppSidebar = observer(function AppSidebar({
       )}
 
       {/* ── Main Navigation (scrollable) ── */}
-      {(tab === "activity" || tab === "home") && experience.kind === "team" ? (
-        // The feed owns its scrolling and filters; Home is the same feed under a short header.
+      {tab === "activity" && experience.kind === "team" ? (
+        // The feed owns its scrolling and filters.
         <View className="flex-1">
-          {tab === "home" ? (
-            <HomePanel onNavPress={onNavPress} isHomeRoute={/\/agent\/?$/.test(pathname)} />
-          ) : (
-            <ActivityFeed compact />
-          )}
+          <ActivityFeed compact />
         </View>
       ) : (
       <ScrollView
@@ -1448,16 +1441,6 @@ export const AppSidebar = observer(function AppSidebar({
               collapsed={collapsed}
               shortcut={formatModKey("k")}
               onPress={handleSearchPress}
-            />
-          )}
-          {experience.showSideChatsNav && (
-            <NavItem
-              icon={MessagesSquare}
-              label="Side chats"
-              href="/(app)/side-chats"
-              active={pathname.includes("/side-chats")}
-              collapsed={collapsed}
-              onNavPress={onNavPress}
             />
           )}
         </View>

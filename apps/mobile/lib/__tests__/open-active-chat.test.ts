@@ -24,6 +24,14 @@ describe('openActiveChat', () => {
     ])
   })
 
+  test('a workspace session opens in the workspace agent, even when it was the old primary chat', () => {
+    const nav = router()
+    openActiveChat(nav as any, { chatSessionId: 'session-1', isPrimary: true })
+    expect(nav.pushes).toEqual([
+      { pathname: '/(app)/agent', params: { chatSessionId: 'session-1' } },
+    ])
+  })
+
   test('a project session still opens in the project', () => {
     const nav = router()
     openActiveChat(nav as any, { projectId: 'project-1', chatSessionId: 'session-1' })

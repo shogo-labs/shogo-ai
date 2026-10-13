@@ -1738,9 +1738,8 @@ export const api = {
   },
 
   /**
-   * Return the stable Workspace Agent Chat, creating it when needed.
-   * This is deliberately a dedicated endpoint rather than a list-then-find
-   * client flow so team workspaces receive the same idempotent primary chat.
+   * Return the caller's most recent personal workspace chat, creating one
+   * when they have none. The endpoint path is still `/sessions/primary`.
    */
   async getPrimaryWorkspaceSession(
     http: HttpClient,
@@ -1754,20 +1753,19 @@ export const api = {
   },
 
   /**
-   * List every workspace-scoped chat session (primary + "side chats").
-   * Personal workspaces get their primary session auto-created server-side
-   * on first list (see `routes/workspace-chat.ts`), so this always returns
-   * at least one session for a personal workspace.
+   * List the signed-in user's personal workspace-agent chats, newest first.
    */
   async listWorkspaceSessions(
     http: HttpClient,
     workspaceId: string,
-  ): Promise<Array<{ id: string; workspaceId: string; isPrimary?: boolean; name?: string | null; inferredName?: string | null; createdAt?: string; lastActiveAt?: string }>> {
+  ): Promise<Array<{ id: string; workspaceId: string; isPrimary?: boolean; isPinned?: boolean; isArchived?: boolean; name?: string | null; inferredName?: string | null; createdAt?: string; lastActiveAt?: string }>> {
     const res = await http.get<{
       sessions?: Array<{
         id: string
         workspaceId: string
         isPrimary?: boolean
+        isPinned?: boolean
+        isArchived?: boolean
         name?: string | null
         inferredName?: string | null
         createdAt?: string

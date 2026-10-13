@@ -1722,6 +1722,9 @@ model ChatSession {
   // cannot hold a workspace id, so workspace-scoped sessions carry the
   // workspace reference here and leave contextId null.
   workspaceId         String?
+  // Owner of a personal workspace-agent chat. Null for project chats,
+  // scheduled/DM/Slack sessions, and chats created before ownership existed.
+  createdByUserId     String?
   phase               String?
   claudeCodeSessionId String?
   cachedMessageCount  Int         @default(0)
@@ -1762,6 +1765,7 @@ model ChatSession {
 
   @@index([contextType, contextId])
   @@index([workspaceId])
+  @@index([workspaceId, createdByUserId, lastActiveAt])
   @@index([activeTurnHeartbeatAt])
   @@index([createdAt])
   @@map("chat_sessions")

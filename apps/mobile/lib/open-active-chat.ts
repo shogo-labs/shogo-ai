@@ -41,10 +41,10 @@ export function openAgentWork(router: Router, target: WorkTarget) {
 /**
  * Open the chat behind an Activity "running now" card. A turn that is an
  * agent reply in team chat opens that conversation (and its thread). Project
- * sessions open in the project surface; workspace sessions open as the primary
- * workspace chat or, for any other session, as a side chat.
+ * sessions open in the project surface; workspace sessions open in the
+ * workspace agent.
  *
- * The primary chat opens at `/agent`, not `/`: wide team workspaces render
+ * The workspace agent opens at `/agent`, not `/`: wide team workspaces render
  * the project builder at `/`.
  */
 export function openActiveChat(router: Router, chat: ActiveChatTarget) {
@@ -61,9 +61,9 @@ export function openActiveChat(router: Router, chat: ActiveChatTarget) {
     } as any)
     return
   }
-  if (!chat.chatSessionId || chat.isPrimary) {
+  if (!chat.chatSessionId) {
     router.push('/(app)/agent' as any)
     return
   }
-  router.push({ pathname: '/(app)/side-chats/[id]', params: { id: chat.chatSessionId } } as any)
+  router.push({ pathname: '/(app)/agent', params: { chatSessionId: chat.chatSessionId } } as any)
 }

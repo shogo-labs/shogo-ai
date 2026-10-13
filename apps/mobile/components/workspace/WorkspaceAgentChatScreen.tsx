@@ -3,8 +3,8 @@
 
 /**
  * The workspace-scoped Agent Chat surface shared by personal and team
- * workspaces. It is the only root-route surface that creates or retrieves the
- * stable primary workspace session.
+ * workspaces. With no chat selected it opens the signed-in user's most
+ * recent personal chat, creating one when they have none.
  */
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import { ActivityIndicator, Pressable, Text, View, useWindowDimensions } from "react-native"
@@ -29,6 +29,7 @@ import { useActiveWorkspace } from "../../hooks/useActiveWorkspace"
 import { useWorkspaceExperience } from "../../hooks/useWorkspaceExperience"
 import { clearChatPrefill, useChatPrefill } from "../../hooks/useChatPrefill"
 import { api, type PersonalAgentProfile } from "../../lib/api"
+import { chatSessionEvents } from "../../lib/chat-session-events"
 import { ChatPanel } from "../chat/ChatPanel"
 import type { OpenProjectPaneRequest } from "../chat/ChatContext"
 import { ProjectSidePane } from "../team-chat/ProjectSidePane"
@@ -42,7 +43,7 @@ import { buildDefaultProfileActions } from "../personal/ProfileActionMenu"
 import type { BuddyState } from "../island/buddy/engine"
 import { useMobileWorkspaceChrome } from "../layout/MobileWorkspaceChromeContext"
 import {
-  publishPrimaryWorkspaceSession,
+  publishCurrentWorkspaceSession,
   publishWorkspaceSessionScopeChanged,
   subscribeWorkspaceSessionScopeChanged,
 } from "./workspace-agent-session-bus"
@@ -137,23 +138,16 @@ export const WorkspaceAgentChatScreen = observer(
         setSessionId(null)
         setAttachments([])
         setFocusedProjectId(null)
-        if (initialSessionId) {
-          // A specific session (e.g. the one a DM reply ran in): not the primary
-          // one, so it is not published as such.
-          const nextProfile = await api.getAgentProfile(http, workspace.id)
-          if (version !== loadVersion.current) return
-          setProfile(nextProfile)
-          setSessionId(initialSessionId)
-          return
-        }
         const [session, nextProfile] = await Promise.all([
-          api.getPrimaryWorkspaceSession(http, workspace.id),
+          initialSessionId
+            ? Promise.resolve({ id: initialSessionId })
+            : api.getPrimaryWorkspaceSession(http, workspace.id),
           api.getAgentProfile(http, workspace.id),
         ])
         if (version !== loadVersion.current) return
         setProfile(nextProfile)
         setSessionId(session.id)
-        publishPrimaryWorkspaceSession(workspace.id, session.id)
+        publishCurrentWorkspaceSession(workspace.id, session.id)
       } catch (cause) {
         if (version !== loadVersion.current) return
         setError(
@@ -244,13 +238,20 @@ export const WorkspaceAgentChatScreen = observer(
         setAvatarState("idle")
         return
       }
+      if (workspace?.id && sessionId) {
+        chatSessionEvents.emit({
+          workspaceId: workspace.id,
+          activeSessionId: sessionId,
+          refresh: true,
+        })
+      }
       avatarStreaming.current = false
       setAvatarState("finished")
       avatarFinishedTimer.current = setTimeout(() => {
         avatarFinishedTimer.current = null
         setAvatarState("idle")
       }, 1800)
-    }, [])
+    }, [sessionId, workspace?.id])
     useEffect(
       () => () => {
         if (avatarFinishedTimer.current) clearTimeout(avatarFinishedTimer.current)
@@ -294,7 +295,6 @@ export const WorkspaceAgentChatScreen = observer(
       onPrefill: prefill,
       onCustomizeAvatar: () => setBuddyLookSheetOpen(true),
       onOpenActivity: () => router.push("/(app)/activity" as any),
-      onOpenSideChats: () => router.push("/(app)/side-chats" as any),
     })
     const projectName = (projectId: string) =>
       projects.all.find((project: any) => project.id === projectId)?.name ??

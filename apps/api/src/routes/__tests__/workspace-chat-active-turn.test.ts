@@ -193,12 +193,13 @@ class MockWorkspaceSessionError extends Error {
 mock.module('../../services/workspace-session.service', () => ({
   attachProject: async () => ({ attachMode: 'readwrite' }),
   assertWorkspaceSessionInWorkspace: async () => {},
+  assertWorkspaceSessionAccess: async () => {},
   detachProject: async () => true,
   getAttachedProjects: async () =>
     store.attachedProjectIds.map((projectId) => ({ projectId, attachMode: 'readwrite' })),
   createWorkspaceSession: async () => ({ id: 's-1' }),
   listWorkspaceSessions: async () => [],
-  getOrCreatePrimaryWorkspaceSession: async () => ({ id: 's-1' }),
+  getOrCreateDefaultWorkspaceSession: async () => ({ id: 's-1' }),
   pinWorkspaceSessionToProject: async () => ({ pinned: false, changed: false }),
   unpinWorkspaceSession: async () => {},
   upgradeProjectSessionToWorkspace: async (workspaceId: string, sessionId: string) => {

@@ -181,7 +181,7 @@ export function MobileWorkspaceShell({ children, enabled = true }: MobileWorkspa
     return label.toLowerCase().includes(sessionSearch.trim().toLowerCase());
   });
   const sideChats = filteredSessions
-    .filter((session) => !session.isPrimary && !session.isArchived)
+    .filter((session) => !session.isArchived)
     .sort((a, b) => {
       return (
         Number(!!b.isPinned) - Number(!!a.isPinned) ||
@@ -189,7 +189,7 @@ export function MobileWorkspaceShell({ children, enabled = true }: MobileWorkspa
       );
     });
   const archivedSideChats = filteredSessions
-    .filter((session) => !session.isPrimary && session.isArchived)
+    .filter((session) => session.isArchived)
     .sort((a, b) => {
       return (
         Number(!!b.isPinned) - Number(!!a.isPinned) ||
@@ -374,8 +374,8 @@ export function MobileWorkspaceShell({ children, enabled = true }: MobileWorkspa
       drawerProgress.setValue(0);
       setSessionsOpen(false);
       router.push({
-        pathname: "/(app)/side-chats/[id]",
-        params: { id: session.id },
+        pathname: "/(app)/agent",
+        params: { chatSessionId: session.id },
       } as any);
     } finally {
       setCreatingSession(false);
@@ -805,34 +805,17 @@ export function MobileWorkspaceShell({ children, enabled = true }: MobileWorkspa
                         New Project
                       </Text>
                     </Pressable>
-                  ) : (
-                    sessions
-                      .filter((session) => session.isPrimary)
-                      .map((session) => (
-                        <Pressable
-                          key={session.id}
-                          onPress={() => {
-                            closeSessions();
-                            router.replace("/(app)" as any);
-                          }}
-                          className="rounded-xl bg-primary/10 px-3 py-3 active:opacity-80"
-                        >
-                          <Text className="text-base font-semibold text-foreground">
-                            Main chat
-                          </Text>
-                        </Pressable>
-                      ))
-                  )}
+                  ) : null}
                   <View className="mt-4">
                     <WorkspaceSidebarSection
-                      label="Side chats"
+                      label="Chats"
                       expanded={sideChatsExpanded}
                       onExpandedChange={setSideChatsExpanded}
                       headerClassName="px-3"
                       action={
                         <Pressable
                           accessibilityRole="button"
-                          accessibilityLabel="Start a new side chat"
+                          accessibilityLabel="New chat"
                           disabled={creatingSession}
                           onPress={() => void createSideChat()}
                           className="h-11 w-11 items-center justify-center rounded-lg active:bg-muted disabled:opacity-50"
@@ -860,8 +843,8 @@ export function MobileWorkspaceShell({ children, enabled = true }: MobileWorkspa
                             onSelect={() => {
                               closeSessions();
                               router.push({
-                                pathname: "/(app)/side-chats/[id]",
-                                params: { id: session.id },
+                                pathname: "/(app)/agent",
+                                params: { chatSessionId: session.id },
                               } as any);
                             }}
                             onTogglePin={(id, next) =>
@@ -939,8 +922,8 @@ export function MobileWorkspaceShell({ children, enabled = true }: MobileWorkspa
                                   onSelect={() => {
                                     closeSessions();
                                     router.push({
-                                      pathname: "/(app)/side-chats/[id]",
-                                      params: { id: session.id },
+                                      pathname: "/(app)/agent",
+                                      params: { chatSessionId: session.id },
                                     } as any);
                                   }}
                                   onTogglePin={(id, next) =>

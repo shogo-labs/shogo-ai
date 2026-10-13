@@ -98,7 +98,7 @@ test.describe("personal agent mobile UX walkthrough", () => {
     await expect(
       page.getByRole("button", { name: "Close chat drawer" }),
     ).toBeVisible();
-    await expect(page.getByText("Side chats", { exact: true })).toBeVisible();
+    await expect(page.getByText("Chats", { exact: true })).toBeVisible();
 
     // The personal drawer should contain chat navigation, but never team
     // project navigation. This catches the unconditional Projects section in

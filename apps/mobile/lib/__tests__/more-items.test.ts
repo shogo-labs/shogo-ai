@@ -16,8 +16,8 @@ describe('moreItems', () => {
     expect(ids(moreItems({ kind: 'team', marketplace: false, canvasesHidden: true }))).toEqual([])
   })
 
-  test('a personal workspace has Side chats instead, and no Tasks or Marketplace', () => {
-    expect(ids(moreItems({ kind: 'personal', marketplace: true, canvasesHidden: true }))).toEqual(['side-chats'])
+  test('a personal workspace has no Tasks, Marketplace, or Side chats', () => {
+    expect(ids(moreItems({ kind: 'personal', marketplace: true, canvasesHidden: true }))).toEqual([])
   })
 
   test('Files appears only when canvas navigation is switched back on', () => {

@@ -106,6 +106,9 @@ export function createChatSessionForkRoutes(): Hono {
         session.project?.workspace?.members?.some((m: any) => m.userId === auth.userId) ||
         session.workspace?.members?.some((m: any) => m.userId === auth.userId)
       if (!hasAccess) return forbidden(c)
+      if (session.createdByUserId && session.createdByUserId !== auth.userId) {
+        return c.json({ error: { code: 'not_found', message: 'Chat session not found' } }, 404)
+      }
     }
 
     const targetMessage = await prisma.chatMessage.findUnique({ where: { id: messageId } })
@@ -145,6 +148,9 @@ export function createChatSessionForkRoutes(): Hono {
           contextType: session.contextType,
           contextId: session.contextId,
           workspaceId: session.workspaceId,
+          // A fork of a personal chat stays with the caller. Project-anchored
+          // sessions stay shared.
+          createdByUserId: session.contextId ? null : auth.userId,
           phase: session.phase,
         },
       })

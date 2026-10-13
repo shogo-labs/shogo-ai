@@ -34,7 +34,7 @@ describe('workspaceExperience', () => {
     expect(exp.showNewChat).toBe(false)
     expect(exp.showGoalsNav).toBe(true)
     expect(exp.showMeetingsNav).toBe(true)
-    expect(exp.showSideChatsNav).toBe(true)
+    expect(exp.showSideChatsNav).toBe(false)
     expect(exp.bottomTabs).toEqual(['chat', 'meetings', 'activity', 'goals', 'more'])
     expect(exp.primaryNav).toEqual(['chat', 'meetings', 'activity', 'goals'])
     expect(exp.primaryNav).toEqual(exp.bottomTabs.filter((id) => id !== 'more'))

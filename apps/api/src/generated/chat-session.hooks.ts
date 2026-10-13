@@ -56,9 +56,25 @@ export interface ChatSessionHooks {
 }
 
 /** The fields that decide which scope a chat session belongs to. */
-export const CHAT_SESSION_SCOPE_SELECT = { contextId: true, workspaceId: true } as const
+export const CHAT_SESSION_SCOPE_SELECT = {
+  contextId: true,
+  workspaceId: true,
+  createdByUserId: true,
+} as const
 
-export type ChatSessionScope = { contextId?: string | null; workspaceId?: string | null }
+export type ChatSessionScope = {
+  contextId?: string | null
+  workspaceId?: string | null
+  createdByUserId?: string | null
+}
+
+/** A chat with an owner is personal. Ownerless chats stay shared. */
+export function isForeignOwnedChat(
+  session: { createdByUserId?: string | null } | null | undefined,
+  userId: string | undefined,
+): boolean {
+  return Boolean(session?.createdByUserId && session.createdByUserId !== userId)
+}
 
 function withForbiddenMessage(denied: HookDenial | null, message: string): HookResult | null {
   if (!denied) return null
@@ -76,6 +92,9 @@ export async function authorizeChatSession(
   forbiddenMessage: string,
   writeOp?: string,
 ): Promise<HookResult> {
+  if (isForeignOwnedChat(session, ctx.userId)) {
+    return { ok: false, error: { code: "not_found", message: "Chat session not found" } }
+  }
   if (session.contextId) {
     const scope = { projectId: session.contextId }
     const denied = writeOp
@@ -102,10 +121,15 @@ export async function accessibleChatSessionsWhere(ctx: HookContext): Promise<Rec
     OR: [
       { project: await accessibleProjectsWhere(principal) },
       {
-        workspace: {
-          ...(pinned ? { id: principal.workspaceId ?? "" } : {}),
-          members: { some: { userId: ctx.userId, projectId: null } },
-        },
+        AND: [
+          {
+            workspace: {
+              ...(pinned ? { id: principal.workspaceId ?? "" } : {}),
+              members: { some: { userId: ctx.userId, projectId: null } },
+            },
+          },
+          { OR: [{ createdByUserId: ctx.userId }, { createdByUserId: null }] },
+        ],
       },
     ],
   }
@@ -217,6 +241,13 @@ export const chatSessionHooks: ChatSessionHooks = {
       input.contextType = 'general'
     }
 
+    // The client never chooses the owner. Personal workspace-agent chats
+    // belong to the caller. Project-anchored sessions stay shared.
+    delete input.createdByUserId
+    if (input.contextType === "workspace" && !input.contextId) {
+      input.createdByUserId = userId
+    }
+
     if ((input.contextId || input.workspaceId) && !ctx.tunnelAuthenticated) {
       const access = await authorizeChatSession(
         ctx,
@@ -243,6 +274,10 @@ export const chatSessionHooks: ChatSessionHooks = {
     }
 
     if (ctx.tunnelAuthenticated) return { ok: true }
+
+    // Ownership is assigned at creation. A client cannot move a chat to
+    // someone else or clear it and make a personal chat shared.
+    if (input && typeof input === "object") delete input.createdByUserId
 
     const op = `PATCH /api/chat-sessions/${id}`
     const access = await authorizeExistingSession(id, ctx, op)

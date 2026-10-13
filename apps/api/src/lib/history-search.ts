@@ -59,9 +59,16 @@ function chatScope(
   ids: string[],
   includeWorkspace: boolean,
   excludeSessionId?: string,
+  userId?: string | null,
 ): Record<string, unknown> | null {
+  // Personal workspace-agent chats belong to their creator. Ownerless
+  // workspace chats (project-anchored, scheduled, DM, Slack, legacy) stay
+  // visible. Callers without a user id are internal and see every chat.
+  const workspaceChat = userId
+    ? { contextType: 'workspace', workspaceId, OR: [{ createdByUserId: userId }, { createdByUserId: null }] }
+    : { contextType: 'workspace', workspaceId }
   const OR = [
-    ...(includeWorkspace ? [{ contextType: 'workspace', workspaceId }] : []),
+    ...(includeWorkspace ? [workspaceChat] : []),
     ...(ids.length ? [{ contextType: 'project', contextId: { in: ids } }] : []),
   ]
   if (OR.length === 0) return null
@@ -94,7 +101,7 @@ export async function searchWorkspaceHistory(options: HistorySearchOptions): Pro
   const scoped = Boolean(options.userId)
   const includeWorkspace = await canReadWorkspaceLevel(options.workspaceId, options.userId)
   const ids = await projectIds(options.workspaceId, options.userId)
-  const chats = chatScope(options.workspaceId, ids, includeWorkspace, options.excludeSessionId)
+  const chats = chatScope(options.workspaceId, ids, includeWorkspace, options.excludeSessionId, options.userId)
   const plans = planScope(options.workspaceId, ids, includeWorkspace, scoped)
   const results: HistorySearchResult[] = []
   if (chats && (!options.kind || options.kind === 'all' || options.kind === 'chat')) {
@@ -169,7 +176,7 @@ export async function renderWorkspaceTranscript(
 async function searchWorkspaceSession(sessionId: string, options: { workspaceId: string; userId?: string | null }) {
   const includeWorkspace = await canReadWorkspaceLevel(options.workspaceId, options.userId)
   const ids = await projectIds(options.workspaceId, options.userId)
-  const scope = chatScope(options.workspaceId, ids, includeWorkspace)
+  const scope = chatScope(options.workspaceId, ids, includeWorkspace, undefined, options.userId)
   if (!scope) return null
   return (prisma as any).chatSession.findFirst({
     where: { id: sessionId, ...scope },

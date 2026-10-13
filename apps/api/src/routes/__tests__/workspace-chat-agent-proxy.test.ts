@@ -24,6 +24,8 @@ const store = {
   resolveThrow: null as null | Error,
   fetchImpl: null as null | ((url: string, init?: RequestInit) => Promise<Response>),
   sessionWorkspaceMatches: true,
+  foreignSession: false,
+  defaultCalls: [] as Array<[string, string]>,
 }
 
 mock.module('../../services/workspace.service', () => ({
@@ -78,11 +80,20 @@ mock.module('../../services/workspace-session.service', () => ({
       throw new MockWorkspaceSessionError('session_not_in_workspace')
     }
   },
+  assertWorkspaceSessionAccess: async () => {
+    if (store.foreignSession) throw new MockWorkspaceSessionError('session_not_found')
+    if (!store.sessionWorkspaceMatches) {
+      throw new MockWorkspaceSessionError('session_not_in_workspace')
+    }
+  },
   detachProject: async () => true,
   getAttachedProjects: async () => [],
   createWorkspaceSession: async () => ({ id: 'sess-1' }),
-  listWorkspaceSessions: async () => [],
-  getOrCreatePrimaryWorkspaceSession: async () => ({ id: 'sess-1' }),
+  listWorkspaceSessions: async (_workspaceId: string, userId: string) => [{ id: `sess-${userId}` }],
+  getOrCreateDefaultWorkspaceSession: async (workspaceId: string, userId: string) => {
+    store.defaultCalls.push([workspaceId, userId])
+    return { id: `sess-${userId}` }
+  },
   pinWorkspaceSessionToProject: async () => ({ pinned: false, changed: false }),
   unpinWorkspaceSession: async () => {},
   upgradeProjectSessionToWorkspace: async () => null,
@@ -115,6 +126,8 @@ describe('GET/POST /api/workspaces/:workspaceId/agent-proxy/*', () => {
     store.resolveThrow = null
     store.fetchImpl = null
     store.sessionWorkspaceMatches = true
+    store.foreignSession = false
+    store.defaultCalls = []
     globalThis.fetch = ((url: any, init?: any) => {
       if (store.fetchImpl) return store.fetchImpl(String(url), init)
       return originalFetch(url, init)
@@ -145,8 +158,29 @@ describe('GET/POST /api/workspaces/:workspaceId/agent-proxy/*', () => {
     )
     expect(first.status).toBe(200)
     expect(second.status).toBe(200)
-    expect((await first.json() as any).session.id).toBe('sess-1')
-    expect((await second.json() as any).session.id).toBe('sess-1')
+    expect((await first.json() as any).session.id).toBe('sess-user-1')
+    expect((await second.json() as any).session.id).toBe('sess-user-1')
+    expect(store.defaultCalls).toEqual([['ws-1', 'user-1'], ['ws-1', 'user-1']])
+  })
+
+  test('gives each member a different default chat and hides the other member\'s session', async () => {
+    const app = buildApp()
+    store.userId = 'user-a'
+    const first = await app.fetch(
+      new Request('http://x/api/workspaces/ws-1/sessions/primary', { method: 'POST' }),
+    )
+    const listed = await app.fetch(new Request('http://x/api/workspaces/ws-1/sessions'))
+    store.userId = 'user-b'
+    const second = await app.fetch(
+      new Request('http://x/api/workspaces/ws-1/sessions/primary', { method: 'POST' }),
+    )
+    expect((await first.json() as any).session.id).toBe('sess-user-a')
+    expect((await second.json() as any).session.id).toBe('sess-user-b')
+    expect((await listed.json() as any).sessions).toEqual([{ id: 'sess-user-a' }])
+
+    store.foreignSession = true
+    const hidden = await app.fetch(new Request('http://x/api/workspaces/ws-1/sessions/sess-user-a/projects'))
+    expect(hidden.status).toBe(404)
   })
 
   test('does not expose a primary session outside the workspace', async () => {

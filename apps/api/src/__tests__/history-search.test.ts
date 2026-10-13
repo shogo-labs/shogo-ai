@@ -29,6 +29,7 @@ const allProjects = [
   { id: 'project-hidden', name: 'Hidden Builder Delegate', hidden: true },
 ]
 const projectFindManyCalls: any[] = []
+const chatFindManyCalls: any[] = []
 
 mock.module('../lib/prisma', () => ({
   prisma: {
@@ -45,7 +46,10 @@ mock.module('../lib/prisma', () => ({
       },
     },
     chatSession: {
-      findMany: async () => [chat],
+      findMany: async (args: any) => {
+        chatFindManyCalls.push(args)
+        return [chat]
+      },
       findFirst: async () => chat,
     },
     plan: { findMany: async () => [plan], findFirst: async () => plan },
@@ -60,6 +64,16 @@ describe('workspace history search', () => {
   test('searches chats and plans in one workspace', async () => {
     const result = await searchWorkspaceHistory({ workspaceId: 'workspace-1', userId: 'user-1', query: 'history' })
     expect(result.results.map((item) => item.kind)).toEqual(['chat', 'plan'])
+  })
+
+  test('limits workspace chats to the caller or chats with no owner', async () => {
+    chatFindManyCalls.length = 0
+    await searchWorkspaceHistory({ workspaceId: 'workspace-1', userId: 'user-1', query: 'history' })
+    const workspaceChat = chatFindManyCalls[0]?.where?.OR?.find((clause: any) => clause.contextType === 'workspace')
+    expect(workspaceChat).toMatchObject({
+      workspaceId: 'workspace-1',
+      OR: [{ createdByUserId: 'user-1' }, { createdByUserId: null }],
+    })
   })
 
   test('excludes hidden projects when resolving the workspace project scope', async () => {
