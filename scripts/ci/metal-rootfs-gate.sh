@@ -28,6 +28,7 @@
 #   check  <sha> <label>=<url>...             fetch every control plane, then decide
 #          env: METAL_REGISTER_TOKEN_<LABEL> (label upper-cased, - → _), or
 #               METAL_REGISTER_TOKEN for all
+#   paths                                     the runtime-chain paths, one per line
 # =============================================================================
 set -euo pipefail
 
@@ -196,5 +197,6 @@ case "${1:-}" in
   fetch) shift; [[ $# -eq 2 ]] || { log "usage: $0 fetch <label> <url>"; exit 2; }; cmd_fetch "$@" ;;
   decide) shift; [[ $# -ge 2 ]] || { log "usage: $0 decide <sha> <fleet-file>..."; exit 2; }; cmd_decide "$@" ;;
   check) shift; [[ $# -ge 2 ]] || { log "usage: $0 check <sha> <label>=<url>..."; exit 2; }; cmd_check "$@" ;;
-  *) log "usage: $0 {fetch|decide|check} ..."; exit 2 ;;
+  paths) printf '%s\n' "${RUNTIME_PATHS[@]}" ;;
+  *) log "usage: $0 {fetch|decide|check|paths} ..."; exit 2 ;;
 esac

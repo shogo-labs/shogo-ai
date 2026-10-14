@@ -23,17 +23,18 @@ import {
 } from 'lucide-react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { cn } from '@shogo/shared-ui/primitives'
+import { getRuntimeApiUrl } from '../../lib/runtime-env'
 
 function getApiBaseUrl(): string {
   const port = process.env.EXPO_PUBLIC_API_PORT ?? '8002'
   if (Platform.OS === 'web' && typeof window !== 'undefined') {
     const desktop = (window as any).shogoDesktop as { apiUrl?: string } | undefined
     if (desktop?.apiUrl) return desktop.apiUrl
-    const envUrl = process.env.EXPO_PUBLIC_API_URL
+    const envUrl = getRuntimeApiUrl()
     if (envUrl) return envUrl
     return `http://localhost:${port}`
   }
-  return process.env.EXPO_PUBLIC_API_URL || `http://localhost:${port}`
+  return getRuntimeApiUrl() || `http://localhost:${port}`
 }
 
 type LogLevel = 'INFO' | 'ERROR' | 'WARN' | 'DEBUG'

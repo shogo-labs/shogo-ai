@@ -2,6 +2,12 @@
 // Injects analytics scripts (GA4, FB Pixel, Rewardful) and web shell
 // attributes into the exported index.html. Runs as a post-export build step
 // because Expo's "single" output mode strips some +html.tsx customizations.
+//
+// Deployed studio images are promoted unchanged from staging to production,
+// so CI does not pass GA4/FB IDs here. Instead this leaves RUNTIME_ENV_MARKER
+// at the top of <head>, and the nginx entrypoint
+// (apps/mobile/docker/shogo-runtime-env.sh) replaces it with the
+// per-environment config and analytics tags at container start.
 
 const fs = require('fs')
 const path = require('path')
@@ -9,6 +15,7 @@ const path = require('path')
 const HTML_PATH = path.resolve(__dirname, '..', 'dist', 'index.html')
 const GA4_ID = process.env.EXPO_PUBLIC_GA4_ID || ''
 const FB_PIXEL_ID = process.env.EXPO_PUBLIC_FB_PIXEL_ID || ''
+const RUNTIME_ENV_MARKER = '<!--shogo-runtime-env-->'
 const GOOGLE_NOTRANSLATE_META = '<meta name="google" content="notranslate">'
 const THEME_BOOTSTRAP_SCRIPT = `<script data-shogo-theme-bootstrap>(function(){try{var preference=window.localStorage.getItem('theme-preference');var isDark=preference==='dark'||(preference!=='light'&&window.matchMedia('(prefers-color-scheme: dark)').matches);if(isDark)document.documentElement.classList.add('dark')}catch(e){}})();</script>`
 
@@ -52,6 +59,10 @@ html = html.replace(/<html([^>]*)>/, (_tag, attrs) => {
   }
   return `<html${nextAttrs}>`
 })
+
+if (!html.includes(RUNTIME_ENV_MARKER)) {
+  html = html.replace(/<head([^>]*)>/, (tag) => tag + RUNTIME_ENV_MARKER)
+}
 
 if (!html.includes('name="google" content="notranslate"')) {
   html = html.replace('</head>', `${GOOGLE_NOTRANSLATE_META}</head>`)

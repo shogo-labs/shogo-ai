@@ -3,6 +3,7 @@
 import Constants from 'expo-constants'
 import { Platform } from 'react-native'
 import { getEnvOverride } from './env-override'
+import { getRuntimeApiUrl } from './runtime-env'
 
 const API_PORT = process.env.EXPO_PUBLIC_API_PORT ?? '8002'
 
@@ -34,7 +35,7 @@ export const API_URL = (() => {
     const desktop = (window as Window & { shogoDesktop?: { apiUrl?: string } }).shogoDesktop
     if (desktop?.apiUrl) return desktop.apiUrl
 
-    const envUrl = process.env.EXPO_PUBLIC_API_URL
+    const envUrl = getRuntimeApiUrl()
     if (envUrl) return envUrl
     if (!origin.includes('localhost')) return origin
     return `http://localhost:${API_PORT}`
@@ -43,7 +44,7 @@ export const API_URL = (() => {
   const override = getEnvOverride()
   if (override) return override.url
 
-  const envUrl = process.env.EXPO_PUBLIC_API_URL
+  const envUrl = getRuntimeApiUrl()
   if (envUrl) return envUrl
 
   return nativeApiUrlWithoutEnv()

@@ -1,0 +1,305 @@
+# =============================================================================
+# Roll production back to a previous release (no rebuild, no migrations)
+# =============================================================================
+# Re-points the studio / api / docs Knative services and the pinned runtime
+# image at the `production-<sha>` images an earlier release already shipped,
+# using the same .github/scripts/apply-release-images.sh rollout path every
+# staging and production deploy runs. US goes first, then EU; a US failure
+# stops before EU is touched.
+#
+# What it does NOT do:
+#   - revert database migrations. The api container runs `prisma migrate
+#     deploy` on start, which only applies pending migrations, so the older
+#     api must tolerate the newer schema. Keep migrations backward-compatible
+#     (expand first, contract in a later release); see
+#     docs/runbooks/deploy-prod.md.
+#   - re-apply Kubernetes manifests, secrets or cluster config. Only images
+#     (and the studio's SHOGO_APP_VERSION) change.
+#
+# To roll forward again, re-run deploy.yml for the newer tag, or run this
+# workflow with the newer release.
+# =============================================================================
+
+name: Rollback Production
+
+on:
+  workflow_dispatch:
+    inputs:
+      release:
+        description: 'Release to roll back to: a v* tag (e.g. v1.14.1) or a full commit SHA that was deployed to production'
+        required: true
+        type: string
+      regions:
+        description: 'Regions to roll back (US always goes first)'
+        required: true
+        default: both
+        type: choice
+        options:
+          - both
+          - us
+          - eu
+      reason:
+        description: 'Why (shown in the run summary)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+# Shares nothing with deploy.yml's per-tag concurrency group; don't run a
+# rollback while a production deploy is mid-flight.
+concurrency:
+  group: rollback-production
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    name: Resolve release
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.resolve.outputs.sha }}
+      version: ${{ steps.resolve.outputs.version }}
+      regions: ${{ steps.resolve.outputs.regions }}
+    steps:
+      - name: Checkout (tags)
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Resolve release to a commit
+        id: resolve
+        env:
+          RELEASE: ${{ inputs.release }}
+          REGIONS: ${{ inputs.regions }}
+          REASON: ${{ inputs.reason }}
+        run: |
+          set -euo pipefail
+          RELEASE="$(echo "$RELEASE" | tr -d '[:space:]')"
+          if [[ "$RELEASE" =~ ^v[0-9] ]]; then
+            if ! SHA=$(git rev-list -n1 "refs/tags/${RELEASE}" 2>/dev/null); then
+              echo "::error::Tag ${RELEASE} does not exist."
+              exit 1
+            fi
+            VERSION="${RELEASE#v}"
+          elif [[ "$RELEASE" =~ ^[0-9a-f]{40}$ ]]; then
+            SHA="$RELEASE"
+            TAG=$(git tag --points-at "$SHA" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1 || true)
+            VERSION="${TAG#v}"
+          else
+            echo "::error::'${RELEASE}' is neither a v* tag nor a full 40-character commit SHA."
+            exit 1
+          fi
+
+          case "$REGIONS" in
+            both) MATRIX='[{"key":"us","environment":"production-us"},{"key":"eu","environment":"production-eu"}]' ;;
+            us)   MATRIX='[{"key":"us","environment":"production-us"}]' ;;
+            eu)   MATRIX='[{"key":"eu","environment":"production-eu"}]' ;;
+          esac
+
+          {
+            echo "sha=$SHA"
+            echo "version=$VERSION"
+            echo "regions=$MATRIX"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "## Production rollback"
+            echo ""
+            echo "- Target: \`${RELEASE}\` (\`${SHA}\`${VERSION:+, version ${VERSION}})"
+            echo "- Regions: ${REGIONS}"
+            echo "- Reason: ${REASON}"
+            echo "- Requested by: @${GITHUB_ACTOR}"
+            echo ""
+            echo "> Database migrations are NOT reverted."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::warning::Rolling production back to ${SHA}. Database migrations are not reverted."
+
+  rollback:
+    name: Roll back ${{ matrix.region.key }}
+    runs-on: ubuntu-latest
+    needs: [resolve]
+    timeout-minutes: 60
+    strategy:
+      # US strictly before EU, and stop if US fails.
+      max-parallel: 1
+      fail-fast: true
+      matrix:
+        region: ${{ fromJson(needs.resolve.outputs.regions) }}
+    environment: ${{ matrix.region.environment }}
+    env:
+      OCI_CLI_USER: ${{ secrets.OCI_USER_OCID }}
+      OCI_CLI_TENANCY: ${{ secrets.OCI_TENANCY_OCID }}
+      OCI_CLI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+      OCI_CLI_KEY_CONTENT: ${{ secrets.OCI_PRIVATE_KEY }}
+      OCI_CLI_REGION: ${{ vars.OCI_REGION }}
+      NS_SYSTEM: ${{ vars.NAMESPACE_SYSTEM }}
+      DOMAIN: ${{ vars.DOMAIN }}
+      OCIR_REGISTRY: ${{ vars.OCI_REGION }}.ocir.io/${{ vars.OCI_TENANCY_NAMESPACE }}
+      PRIMARY_REGISTRY: us-ashburn-1.ocir.io/${{ vars.OCI_TENANCY_NAMESPACE }}
+      IMAGE_TAG: production-${{ needs.resolve.outputs.sha }}
+    steps:
+      # Scripts come from the ref this workflow runs on (normally main), not
+      # from the release being rolled back to.
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install OCI CLI
+        run: pip install oci-cli --quiet
+
+      - name: Configure kubectl for OKE
+        run: |
+          mkdir -p ~/.kube
+          oci ce cluster create-kubeconfig \
+            --cluster-id ${{ vars.OKE_CLUSTER_OCID }} \
+            --region ${{ vars.OCI_REGION }} \
+            --token-version 2.0.0 \
+            --kube-endpoint PUBLIC_ENDPOINT
+          kubectl get nodes > /dev/null
+
+      - name: Login to OCIR
+        run: |
+          for host in "${OCIR_REGISTRY%%/*}" "${PRIMARY_REGISTRY%%/*}"; do
+            echo "${{ secrets.OCI_AUTH_TOKEN }}" | docker login "$host" \
+              -u "${{ vars.OCI_TENANCY_NAMESPACE }}/${{ secrets.OCI_USERNAME }}" \
+              --password-stdin
+          done
+
+      # Secondary regions normally already hold every production-<sha> the
+      # deploy replicated; copy any that are missing from the primary
+      # registry (same tenancy, so the same credentials read both).
+      - name: Ensure release images exist in ${{ vars.OCI_REGION }}
+        id: images
+        env:
+          CREDS: ${{ vars.OCI_TENANCY_NAMESPACE }}/${{ secrets.OCI_USERNAME }}:${{ secrets.OCI_AUTH_TOKEN }}
+        run: |
+          set -euo pipefail
+          exists() { docker buildx imagetools inspect "$1" >/dev/null 2>&1; }
+          for repo in shogo-api shogo-web shogo-docs shogo-runtime; do
+            ref="${OCIR_REGISTRY}/shogo/${repo}:${IMAGE_TAG}"
+            if exists "$ref"; then
+              echo "${repo}: present"
+            elif [ "$OCIR_REGISTRY" != "$PRIMARY_REGISTRY" ] && exists "${PRIMARY_REGISTRY}/shogo/${repo}:${IMAGE_TAG}"; then
+              if ! command -v skopeo >/dev/null; then
+                sudo apt-get update -qq && sudo apt-get install -y -qq skopeo
+              fi
+              echo "${repo}: copying from ${PRIMARY_REGISTRY}"
+              skopeo copy --all --src-creds "$CREDS" --dest-creds "$CREDS" \
+                "docker://${PRIMARY_REGISTRY}/shogo/${repo}:${IMAGE_TAG}" "docker://${ref}"
+            else
+              echo "${repo}: missing"
+              echo "${repo//-/_}_missing=true" >> "$GITHUB_OUTPUT"
+            fi
+          done
+
+      # api / web are always tagged for a production release (older releases
+      # rebuilt them on every tag; newer ones promote all four). Releases from
+      # before promotion only tagged the runtime when it changed, and docs may
+      # be absent; in those cases keep what the cluster already runs.
+      - name: Resolve target images
+        id: target
+        env:
+          API_MISSING: ${{ steps.images.outputs.shogo_api_missing }}
+          WEB_MISSING: ${{ steps.images.outputs.shogo_web_missing }}
+          DOCS_MISSING: ${{ steps.images.outputs.shogo_docs_missing }}
+          RUNTIME_MISSING: ${{ steps.images.outputs.shogo_runtime_missing }}
+        run: |
+          set -euo pipefail
+          if [ "${API_MISSING:-}" = "true" ] || [ "${WEB_MISSING:-}" = "true" ]; then
+            echo "::error::${IMAGE_TAG} has no api/web image in any registry (pruned by cleanup-ocir, or never deployed to production). Pick another release."
+            exit 1
+          fi
+          CUR_RUNTIME_TAG=$(kubectl get configmap shogo-runtime-version -n "$NS_SYSTEM" -o jsonpath='{.data.image_tag}')
+          if [ "${RUNTIME_MISSING:-}" = "true" ]; then
+            echo "::warning::No runtime image tagged ${IMAGE_TAG}; keeping the current runtime ${CUR_RUNTIME_TAG}"
+            RUNTIME_TAG="$CUR_RUNTIME_TAG"
+          else
+            RUNTIME_TAG="$IMAGE_TAG"
+          fi
+          DOCS_IMAGE=""
+          if [ "${DOCS_MISSING:-}" = "true" ]; then
+            echo "::warning::No docs image tagged ${IMAGE_TAG}; leaving docs as is"
+          else
+            DOCS_IMAGE="${OCIR_REGISTRY}/shogo/shogo-docs:${IMAGE_TAG}"
+          fi
+          {
+            echo "runtime_tag=${RUNTIME_TAG}"
+            echo "runtime_image=${OCIR_REGISTRY}/shogo/shogo-runtime:${RUNTIME_TAG}"
+            echo "api_image=${OCIR_REGISTRY}/shogo/shogo-api:${IMAGE_TAG}"
+            echo "web_image=${OCIR_REGISTRY}/shogo/shogo-web:${IMAGE_TAG}"
+            echo "docs_image=${DOCS_IMAGE}"
+          } | tee -a "$GITHUB_OUTPUT"
+
+      - name: Check node disk headroom (pre-rollout gate)
+        run: .github/scripts/check-node-disk-headroom.sh 80
+
+      - name: Apply release images
+        env:
+          RUNTIME_TAG: ${{ steps.target.outputs.runtime_tag }}
+          RUNTIME_IMAGE: ${{ steps.target.outputs.runtime_image }}
+          API_IMAGE: ${{ steps.target.outputs.api_image }}
+          WEB_IMAGE: ${{ steps.target.outputs.web_image }}
+          DOCS_IMAGE: ${{ steps.target.outputs.docs_image }}
+          APP_VERSION: ${{ needs.resolve.outputs.version }}
+          RETIRE_STALE_STUDIO: 'true'
+        run: .github/scripts/apply-release-images.sh
+
+      - name: Wait for rollout and health check
+        run: |
+          set -uo pipefail
+          # Same gate as deploy.yml: Ready alone isn't enough, because Knative
+          # keeps traffic on the previous revision while the latest crashloops.
+          wait_ksvc_ready() {
+            local name=$1 ns=$2 timeout_sec=${3:-600}
+            local target_gen lcre lread obs ready elapsed=0
+            target_gen=$(kubectl get ksvc "$name" -n "$ns" -o jsonpath='{.metadata.generation}')
+            echo "Waiting for ksvc/$name (gen=$target_gen) to roll out..."
+            while [ "$elapsed" -lt "$timeout_sec" ]; do
+              obs=$(kubectl get ksvc "$name" -n "$ns" -o jsonpath='{.status.observedGeneration}' 2>/dev/null || echo 0)
+              ready=$(kubectl get ksvc "$name" -n "$ns" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || true)
+              lcre=$(kubectl get ksvc "$name" -n "$ns" -o jsonpath='{.status.latestCreatedRevisionName}' 2>/dev/null || true)
+              lread=$(kubectl get ksvc "$name" -n "$ns" -o jsonpath='{.status.latestReadyRevisionName}' 2>/dev/null || true)
+              if [ "$obs" = "$target_gen" ] && [ "$ready" = "True" ] && [ -n "$lcre" ] && [ "$lcre" = "$lread" ]; then
+                echo "ksvc/$name rolled out to $lcre"
+                return 0
+              fi
+              sleep 10
+              elapsed=$((elapsed + 10))
+            done
+            echo "::error::ksvc/$name did not reach Ready within ${timeout_sec}s (gen=$target_gen obs=$obs ready=$ready latestCreated=$lcre latestReady=$lread)"
+            kubectl describe revision "$lcre" -n "$ns" || true
+            kubectl logs --tail=200 -l "serving.knative.dev/revision=$lcre" -n "$ns" --all-containers || true
+            return 1
+          }
+          for s in api studio; do
+            wait_ksvc_ready "$s" "$NS_SYSTEM" 600 || exit 1
+          done
+
+          for i in $(seq 1 20); do
+            KOURIER_IP=$(kubectl get svc kourier -n kourier-system -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "")
+            if [ -n "$KOURIER_IP" ]; then
+              STATUS=$(curl -sf -o /dev/null -w "%{http_code}" --connect-timeout 5 --max-time 15 -H "Host: ${DOMAIN}" "http://${KOURIER_IP}/api/health" 2>/dev/null) || STATUS="000"
+            else
+              STATUS=$(curl -sf -o /dev/null -w "%{http_code}" --connect-timeout 5 --max-time 15 "https://${DOMAIN}/api/health" 2>/dev/null) || STATUS="000"
+            fi
+            if [ "$STATUS" = "200" ]; then
+              echo "API healthy (attempt $i)"
+              exit 0
+            fi
+            echo "API not ready ($STATUS), retrying... ($i/20)"
+            sleep 10
+          done
+          echo "::error::API health check did not return 200 after 20 attempts"
+          exit 1
+
+      - name: Garbage-collect old api revisions
+        run: .github/scripts/gc-old-api-revisions.sh "$NS_SYSTEM"
+
+      - name: Summary
+        run: |
+          {
+            echo "### ${{ matrix.region.key }} rolled back"
+            echo "- api: \`${{ steps.target.outputs.api_image }}\`"
+            echo "- studio: \`${{ steps.target.outputs.web_image }}\`"
+            echo "- docs: \`${{ steps.target.outputs.docs_image || 'unchanged' }}\`"
+            echo "- runtime: \`${{ steps.target.outputs.runtime_image }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"

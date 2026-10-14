@@ -154,9 +154,13 @@ export class FakeLlmServer {
     return `http://127.0.0.1:${address.port}`
   }
 
-  async start(): Promise<void> {
+  /** `port` 0 picks a free one; a fixed port lets an already-running API be pointed at it. */
+  async start(port = 0): Promise<void> {
     this.server = http.createServer((req, res) => void this.handle(req, res))
-    await new Promise<void>((resolve) => this.server!.listen(0, '127.0.0.1', resolve))
+    await new Promise<void>((resolve, reject) => {
+      this.server!.once('error', reject)
+      this.server!.listen(port, '127.0.0.1', resolve)
+    })
   }
 
   async stop(): Promise<void> {

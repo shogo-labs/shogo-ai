@@ -32,6 +32,10 @@ ARG FB_PIXEL_ID=
 ARG SENTRY_AUTH_TOKEN=
 ARG SENTRY_ORG=shogo-ai
 ARG SENTRY_PROJECT=javascript-react
+# Deploy builds set this: one image serves staging AND production (the
+# environment is injected at container start), so the "is this a production
+# build" Sentry guard below can no longer key off EXPO_PUBLIC_APP_ENV.
+ARG REQUIRE_SENTRY_UPLOAD=false
 ENV EXPO_PUBLIC_API_URL=$EXPO_PUBLIC_API_URL
 ENV EXPO_PUBLIC_BUILD_HASH=$EXPO_PUBLIC_BUILD_HASH
 ENV EXPO_PUBLIC_APP_VERSION=$EXPO_PUBLIC_APP_VERSION
@@ -118,8 +122,8 @@ RUN if [ -n "$SENTRY_AUTH_TOKEN" ]; then \
       sentry-cli sourcemaps inject --release "$EXPO_PUBLIC_BUILD_HASH" ./dist && \
       sentry-cli sourcemaps upload --org "$SENTRY_ORG" --project "$SENTRY_PROJECT" --release "$EXPO_PUBLIC_BUILD_HASH" ./dist && \
       find ./dist -name '*.map' -delete; \
-    elif [ "${EXPO_PUBLIC_APP_ENV#production}" != "$EXPO_PUBLIC_APP_ENV" ]; then \
-      echo "ERROR: SENTRY_AUTH_TOKEN is empty on a production build (EXPO_PUBLIC_APP_ENV=$EXPO_PUBLIC_APP_ENV)." >&2; \
+    elif [ "$REQUIRE_SENTRY_UPLOAD" = "true" ] || [ "${EXPO_PUBLIC_APP_ENV#production}" != "$EXPO_PUBLIC_APP_ENV" ]; then \
+      echo "ERROR: SENTRY_AUTH_TOKEN is empty on a deploy build (REQUIRE_SENTRY_UPLOAD=$REQUIRE_SENTRY_UPLOAD, EXPO_PUBLIC_APP_ENV=$EXPO_PUBLIC_APP_ENV)." >&2; \
       echo "Refusing to ship a web bundle whose source maps never reach Sentry — production_web issues would be unsymbolicated and .map files would leak publicly. Configure SENTRY_AUTH_TOKEN (project:releases scope) for this deploy environment." >&2; \
       exit 1; \
     else \
@@ -155,7 +159,8 @@ ENV DNS_RESOLVER=kube-dns.kube-system.svc.cluster.local
 COPY --from=builder /app/apps/mobile/dist /usr/share/nginx/html
 
 COPY apps/mobile/nginx.conf /etc/nginx/nginx.conf.template
+COPY --chmod=0755 apps/mobile/docker/shogo-runtime-env.sh /usr/local/bin/shogo-runtime-env
 
 EXPOSE 80
 
-CMD ["/bin/sh", "-c", "envsubst '${API_UPSTREAM} ${API_HOST} ${DNS_RESOLVER}' < /etc/nginx/nginx.conf.template > /etc/nginx/conf.d/default.conf && nginx -g 'daemon off;'"]
+CMD ["/bin/sh", "-c", "shogo-runtime-env && envsubst '${API_UPSTREAM} ${API_HOST} ${DNS_RESOLVER}' < /etc/nginx/nginx.conf.template > /etc/nginx/conf.d/default.conf && nginx -g 'daemon off;'"]

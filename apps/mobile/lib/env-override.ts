@@ -9,6 +9,7 @@
  */
 import { Platform } from 'react-native'
 import * as SecureStore from 'expo-secure-store'
+import { getRuntimeApiUrl } from './runtime-env'
 
 export type EnvPreset = 'production' | 'staging'
 export type EnvOverrideKind = EnvPreset | 'custom'
@@ -107,7 +108,7 @@ export async function setEnvOverride(override: EnvOverride | null): Promise<void
 }
 
 export function getActiveEnvKey(): ActiveEnvKey {
-  return resolveActiveEnvKey(getEnvOverride(), process.env.EXPO_PUBLIC_API_URL)
+  return resolveActiveEnvKey(getEnvOverride(), getRuntimeApiUrl())
 }
 
 /**

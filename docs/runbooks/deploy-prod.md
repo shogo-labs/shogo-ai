@@ -53,6 +53,68 @@ If any of these fail, **stop and resolve before deploying**. A red
 `kubectl top nodes` value is the single best predictor of a roll
 that ends in a capacity-famine incident.
 
+## How a release ships: promote, don't rebuild
+
+Production never rebuilds images. A `v*` tag promotes the exact digests
+staging built for that commit and ran `e2e/staging-critical` against:
+
+1. Every staging deploy (push to `main`) leaves a complete `staging-<sha>`
+   tag set for `shogo-api`, `shogo-web`, `shogo-docs` and `shogo-runtime`.
+   Images the run built get the tag directly; unchanged ones are re-tagged
+   from what staging already runs ("Complete staging release tag set").
+2. On the tag push, `promote-images` re-tags `staging-<sha>` as
+   `production-<sha>` and `production-latest` (manifest-only, seconds).
+   `replicate-images` copies them to EU, and `deploy-us` / `deploy-eu` roll
+   out once `staging-e2e-gate` is green. The runtime only re-rolls when its
+   digest differs from what the region already pins.
+3. The tagged commit must have deployed to staging after this flow landed.
+   Otherwise `promote-images` fails with "No staging-<sha> image". Deploy
+   that commit to staging first, or (escape hatch) dispatch `deploy.yml`
+   with `environment=production` and `force_rebuild_production=true`.
+
+The metal fleet's guest image follows the same rule. After both regions
+deploy, `metal-runtime-image` asks the rootfs gate (`scripts/ci/metal-rootfs-gate.sh`)
+whether hosts need new guest code. If they do, it promotes the newest
+`staging-[docker-]multiarch-<C>` image whose runtime chain is identical to
+the release (`.github/scripts/promote-metal-runtime-image.sh`) as
+`production-[docker-]multiarch-<C>` and `-latest`. The tag keeps the sha
+the image was built from, because hosts verify it against the revision
+stamped inside. Only when no such image exists (or with
+`force_rebuild_production`) does it dispatch `runtime-multiarch.yml` to
+build the production image, which takes up to ~90 minutes. When the gate
+says no rebuild, no production multi-arch image is made for the release.
+So a manual `metal-agent-deploy.yml` rebuild for production must pass
+`runtime_image` explicitly.
+
+Because one image serves both environments, **never add an
+environment-specific build arg** to the image builds. The studio's
+per-environment values (`SHOGO_APP_ENV`, `SHOGO_APP_VERSION`, GA4 and
+Facebook Pixel IDs) are ksvc env vars, rendered into `index.html` at
+container start by `apps/mobile/docker/shogo-runtime-env.sh`.
+
+## Rolling back
+
+Run **Rollback Production** (`.github/workflows/rollback-production.yml`)
+with `release` set to the `v*` tag (or full SHA) to return to, `regions`, and
+a `reason`. It re-points studio / api / docs and the pinned runtime image at
+that release's `production-<sha>` images through the same
+`.github/scripts/apply-release-images.sh` path every deploy uses (prepull
+gate, stale studio revision GC, verified `RUNTIME_IMAGE`), US first, then EU.
+Nothing is rebuilt, so it takes minutes.
+
+It does **not** revert database migrations. The api container runs
+`prisma migrate deploy` on start, which only applies pending migrations, so
+the older api must work against the newer schema. That is why migrations
+must stay backward-compatible: add columns/tables first, and only drop or
+rename them in a later release, once no rollback target still needs them.
+
+Rollback targets survive image cleanup: `cleanup-ocir.yml` never deletes the
+images of the last 10 `v*` releases (`release_keep`), or any digest in use by
+any cluster.
+
+To roll forward again, re-run `deploy.yml` for the newer tag, or run the
+rollback workflow with the newer release.
+
 ## Pre-scale by 1 node (now automated — fallback only)
 
 > Normally you do **not** need to do this manually anymore: the standing

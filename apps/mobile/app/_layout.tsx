@@ -87,15 +87,13 @@ import { WhatsNewModal } from "../components/whats-new/WhatsNewModal";
 import { isIslandWindow } from "../components/island/types";
 import { EnvironmentBadge } from "../components/layout/EnvironmentBadge";
 import { getActiveEnvKey, telemetryEnvFor } from "../lib/env-override";
+import { getRuntimeAppEnv } from "../lib/runtime-env";
 
 import { isNoiseEvent } from "../lib/sentry-noise-filter";
 
 Sentry.init({
   dsn: sentryDsn,
-  environment: telemetryEnvFor(
-    getActiveEnvKey(),
-    process.env.EXPO_PUBLIC_APP_ENV || "development"
-  ),
+  environment: telemetryEnvFor(getActiveEnvKey(), getRuntimeAppEnv()),
   release: process.env.EXPO_PUBLIC_BUILD_HASH || "dev",
   tracesSampleRate: 0.2,
   enabled: !!sentryDsn,

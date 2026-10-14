@@ -21,5 +21,6 @@ describe('web html shell translation guard', () => {
     expect(postExportSource).toContain('translate="no"')
     expect(postExportSource).toContain('notranslate')
     expect(postExportSource).toContain('name="google" content="notranslate"')
+    expect(postExportSource).toContain('<!--shogo-runtime-env-->')
   })
 })

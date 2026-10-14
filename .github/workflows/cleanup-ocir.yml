@@ -5,11 +5,16 @@
 # storage growth. Each deploy pushes SHA-tagged images that are never deleted;
 # this workflow prunes images that satisfy ALL of the following:
 #   1. NOT currently referenced by any Knative Service / Revision / Deployment
-#      / DaemonSet / ReplicaSet / Pod / StatefulSet in the matching cluster
-#      (cross-referenced via kubectl).
+#      / DaemonSet / ReplicaSet / Pod / StatefulSet in ANY cluster
+#      (cross-referenced via kubectl). Staging and production-us share the
+#      us-ashburn-1 registry, and production runs digests staging built
+#      (deploy.yml promote-images), so per-cluster protection is not enough.
 #   2. NOT tagged with a string containing "latest".
-#   3. NOT one of the KEEP_COUNT most recent images for the repository.
-#   4. Older than KEEP_DAYS days.
+#   3. NOT the image of one of the last RELEASE_KEEP production releases
+#      (`production-<sha>` of the newest v* tags), so rollback-production.yml
+#      always has targets.
+#   4. NOT one of the KEEP_COUNT most recent images for the repository.
+#   5. Older than KEEP_DAYS days.
 #
 # Schedule runs default to dry-run. To enforce deletions on schedule, set the
 # repo variable OCIR_CLEANUP_ENFORCE=true. Manual dispatch can override either.
@@ -38,6 +43,11 @@ on:
         required: false
         default: '30'
         type: string
+      release_keep:
+        description: 'Number of most recent production releases whose images are always kept (rollback targets)'
+        required: false
+        default: '10'
+        type: string
       dry_run:
         description: 'Log deletions without actually deleting'
         required: false
@@ -45,10 +55,11 @@ on:
         type: boolean
 
 jobs:
-  cleanup:
-    name: Cleanup ${{ matrix.environment }}
+  # One run per cluster: every image digest anything in it references.
+  in-use:
+    name: In-use digests (${{ matrix.environment }})
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
 
     strategy:
       fail-fast: false
@@ -71,18 +82,14 @@ jobs:
       - name: Install OCI CLI and kubectl
         run: |
           pip install oci-cli --quiet
-          oci --version
           curl -sLO "https://dl.k8s.io/release/v1.32.1/bin/linux/amd64/kubectl"
           sudo install kubectl /usr/local/bin/kubectl
-          kubectl version --client
 
-      - name: Configure kubectl for OKE (cross-reference source)
-        id: kubeconfig
+      - name: Configure kubectl for OKE
         run: |
           if [ -z "${{ vars.OKE_CLUSTER_OCID }}" ]; then
-            echo "::warning::OKE_CLUSTER_OCID not set for ${{ matrix.environment }} — skipping cluster cross-reference (UNSAFE)"
-            echo "kube_ready=false" >> $GITHUB_OUTPUT
-            exit 0
+            echo "::error::OKE_CLUSTER_OCID not set for ${{ matrix.environment }}; refusing to report an empty in-use set"
+            exit 1
           fi
           mkdir -p ~/.kube
           oci ce cluster create-kubeconfig \
@@ -90,57 +97,128 @@ jobs:
             --region ${{ vars.OCI_REGION }} \
             --token-version 2.0.0 \
             --kube-endpoint PUBLIC_ENDPOINT
-          if kubectl get nodes >/dev/null 2>&1; then
-            echo "kube_ready=true" >> $GITHUB_OUTPUT
-            echo "Connected to ${{ matrix.environment }} cluster"
-          else
-            echo "::error::Could not reach ${{ matrix.environment }} cluster — refusing to delete (would be UNSAFE)"
-            exit 1
-          fi
+          kubectl get nodes >/dev/null
 
       - name: Collect in-use image references from cluster
-        id: in-use
-        if: steps.kubeconfig.outputs.kube_ready == 'true'
-        env:
-          NS_SYSTEM: ${{ vars.NAMESPACE_SYSTEM }}
-          NS_WORKSPACES: ${{ vars.NAMESPACE_WORKSPACES }}
         run: |
           set -euo pipefail
           IN_USE=$(mktemp)
 
-          # Knative-managed: services, configurations, revisions
-          kubectl get ksvc,configurations,revisions -A -o json 2>/dev/null \
-            | jq -r '.items[].spec.template.spec.containers[]?.image // empty,
-                     .items[].spec.containers[]?.image // empty' \
-            | sort -u >> "$IN_USE" || true
+          {
+            # Knative-managed: services, configurations, revisions
+            kubectl get ksvc,configurations,revisions -A -o json \
+              | jq -r '.items[].spec.template.spec.containers[]?.image // empty,
+                       .items[].spec.containers[]?.image // empty,
+                       .items[].status.containerStatuses[]?.imageDigest // empty'
 
-          # Standard workloads
-          kubectl get deployments,statefulsets,daemonsets,replicasets,jobs,cronjobs -A -o json 2>/dev/null \
-            | jq -r '.items[].spec.template.spec.containers[]?.image // empty,
-                     .items[].spec.jobTemplate.spec.template.spec.containers[]?.image // empty' \
-            | sort -u >> "$IN_USE" || true
+            # Standard workloads
+            kubectl get deployments,statefulsets,daemonsets,replicasets,jobs,cronjobs -A -o json \
+              | jq -r '.items[].spec.template.spec.containers[]?.image // empty,
+                       .items[].spec.jobTemplate.spec.template.spec.containers[]?.image // empty'
 
-          # Pods (catches anything not owned by a controller, plus actual running images)
-          kubectl get pods -A -o json 2>/dev/null \
-            | jq -r '.items[].spec.containers[]?.image // empty,
-                     .items[].status.containerStatuses[]?.imageID // empty,
-                     .items[].status.initContainerStatuses[]?.imageID // empty' \
-            | sort -u >> "$IN_USE" || true
+            # Pods (catches anything not owned by a controller, plus actual running images)
+            kubectl get pods -A -o json \
+              | jq -r '.items[].spec.containers[]?.image // empty,
+                       .items[].status.containerStatuses[]?.imageID // empty,
+                       .items[].status.initContainerStatuses[]?.imageID // empty'
+          } >> "$IN_USE"
 
-          # Normalize: strip whitespace, dedupe, extract digests
-          # An imageID looks like "docker-pullable://us-ashburn-1.ocir.io/.../shogo-runtime@sha256:abc..."
-          # — we want just the sha256 portion.
-          DIGESTS=$(mktemp)
-          grep -oE 'sha256:[a-f0-9]{64}' "$IN_USE" | sort -u > "$DIGESTS" || true
+          # Tag-only references (e.g. the runtime configmap pin) are resolved
+          # to digests by the cleanup job via in-use-refs.txt.
+          grep -oE 'sha256:[a-f0-9]{64}' "$IN_USE" | sort -u > in-use-digests.txt || true
+          {
+            grep -E '\.ocir\.io/' "$IN_USE" | grep -vE '@sha256:' || true
+            kubectl get configmap shogo-runtime-version -n "${{ vars.NAMESPACE_SYSTEM }}" \
+              -o jsonpath='{.data.image}' 2>/dev/null || true
+            echo
+          } | grep . | sort -u > in-use-refs.txt || true
 
-          DIGEST_COUNT=$(wc -l < "$DIGESTS" | tr -d ' ')
-          echo "Collected $DIGEST_COUNT distinct in-use image digests from ${{ matrix.environment }}"
-          echo "digest_file=$DIGESTS" >> $GITHUB_OUTPUT
-          echo "digest_count=$DIGEST_COUNT" >> $GITHUB_OUTPUT
+          echo "Collected $(wc -l < in-use-digests.txt | tr -d ' ') digests and $(grep -c . in-use-refs.txt || true) tag refs from ${{ matrix.environment }}"
 
-          # Sample to logs for debugging
-          echo "First 10 in-use digests:"
-          head -10 "$DIGESTS" || true
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: in-use-${{ matrix.environment }}
+          path: |
+            in-use-digests.txt
+            in-use-refs.txt
+          retention-days: 3
+
+  # One run per REGISTRY (not per cluster): us-ashburn-1 holds both staging
+  # and production-us images.
+  cleanup:
+    name: Cleanup ${{ matrix.environment }} registry
+    runs-on: ubuntu-latest
+    needs: [in-use]
+    timeout-minutes: 30
+
+    strategy:
+      fail-fast: false
+      matrix:
+        environment:
+          - production-us
+          - production-eu
+
+    environment: ${{ matrix.environment }}
+
+    env:
+      OCI_CLI_USER: ${{ secrets.OCI_USER_OCID }}
+      OCI_CLI_TENANCY: ${{ secrets.OCI_TENANCY_OCID }}
+      OCI_CLI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+      OCI_CLI_KEY_CONTENT: ${{ secrets.OCI_PRIVATE_KEY }}
+      OCI_CLI_REGION: ${{ vars.OCI_REGION }}
+
+    steps:
+      - name: Checkout release tags
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Install OCI CLI
+        run: pip install oci-cli --quiet
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: in-use-*
+          path: in-use
+
+      - name: Build protected digest set
+        id: in-use
+        env:
+          COMPARTMENT_ID: ${{ secrets.OCI_TENANCY_OCID }}
+          RELEASE_KEEP: ${{ github.event.inputs.release_keep || '10' }}
+          REGISTRY_HOST: ${{ vars.OCI_REGION }}.ocir.io
+        run: |
+          set -euo pipefail
+          DIGESTS="$RUNNER_TEMP/protected-digests.txt"
+          cat in-use/*/in-use-digests.txt | sort -u > "$DIGESTS"
+
+          # Resolve a tag in THIS registry to its digest (empty if absent).
+          digest_for() {
+            oci artifacts container image list \
+              --compartment-id "$COMPARTMENT_ID" \
+              --repository-name "$1" --version "$2" \
+              --query 'data.items[0].digest' --raw-output 2>/dev/null | grep -E '^sha256:' || true
+          }
+
+          # Tag-only cluster references (ksvc specs, runtime configmap pin).
+          { grep -hF "$REGISTRY_HOST/" in-use/*/in-use-refs.txt || true; } | sort -u | while read -r ref; do
+            path="${ref#*/}"; path="${path#*/}"   # shogo/<repo>:<tag>
+            repo="${path%%:*}"; tag="${path##*:}"
+            if [ "$repo" != "$path" ]; then digest_for "$repo" "$tag"; fi
+          done >> "$DIGESTS"
+
+          # Rollback targets: the last RELEASE_KEEP production releases.
+          for tag in $(git tag --sort=-version:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -"$RELEASE_KEEP"); do
+            sha=$(git rev-list -n1 "$tag")
+            for repo in shogo/shogo-api shogo/shogo-web shogo/shogo-docs shogo/shogo-runtime; do
+              digest_for "$repo" "production-${sha}"
+            done
+          done >> "$DIGESTS"
+
+          sort -u -o "$DIGESTS" "$DIGESTS"
+          echo "digest_file=$DIGESTS" >> "$GITHUB_OUTPUT"
+          echo "Protecting $(wc -l < "$DIGESTS" | tr -d ' ') digests (in use in any cluster, or one of the last ${RELEASE_KEEP} releases)"
 
       - name: Clean up old images
         env:
@@ -156,16 +234,9 @@ jobs:
               || (vars.OCIR_CLEANUP_ENFORCE == 'true' && 'false' || 'true')
             }}
           COMPARTMENT_ID: ${{ secrets.OCI_TENANCY_OCID }}
-          KUBE_READY: ${{ steps.kubeconfig.outputs.kube_ready }}
           IN_USE_DIGESTS: ${{ steps.in-use.outputs.digest_file }}
         run: |
           set -uo pipefail
-
-          if [ "$KUBE_READY" != "true" ] && [ "$DRY_RUN" != "true" ]; then
-            echo "::error::Cluster cross-reference unavailable AND dry_run=false — refusing to delete."
-            echo "::error::This would be unsafe: we cannot guarantee in-use images are protected."
-            exit 1
-          fi
 
           REPOS=(
             "shogo/shogo-api"
@@ -234,8 +305,8 @@ jobs:
                 continue
               fi
 
-              # Protection 2: currently referenced by something in the cluster
-              if [ "$KUBE_READY" = "true" ] && [ -n "$DIGEST" ] && grep -qx "$DIGEST" "$IN_USE_DIGESTS"; then
+              # Protection 2: in use by any cluster, or a recent release
+              if [ -n "$DIGEST" ] && grep -qx "$DIGEST" "$IN_USE_DIGESTS"; then
                 echo "  PROTECT[in-use]:    $DISPLAY_NAME ($DIGEST)"
                 P_INUSE=$((P_INUSE + 1))
                 TOTAL_PROTECTED_INUSE=$((TOTAL_PROTECTED_INUSE + 1))
@@ -281,7 +352,7 @@ jobs:
           echo "Summary for ${{ matrix.environment }}"
           echo "============================================"
           echo "  KEEP_COUNT=$KEEP_COUNT  KEEP_DAYS=$KEEP_DAYS  DRY_RUN=$DRY_RUN"
-          echo "  Cluster cross-reference: $KUBE_READY"
+          echo "  Cluster cross-reference: all clusters"
           echo "  Kept (recent):           $TOTAL_KEPT"
           echo "  Protected (latest tag):  $TOTAL_PROTECTED_LATEST"
           echo "  Protected (in-use):      $TOTAL_PROTECTED_INUSE"
@@ -303,5 +374,5 @@ jobs:
             echo "| Deleted                | $TOTAL_DELETED |"
             echo ""
             echo "- KEEP_COUNT=\`$KEEP_COUNT\`, KEEP_DAYS=\`$KEEP_DAYS\`, DRY_RUN=\`$DRY_RUN\`"
-            echo "- Cluster cross-reference: \`$KUBE_READY\`"
+            echo "- Cluster cross-reference: all clusters + last releases"
           } >> "$GITHUB_STEP_SUMMARY"
