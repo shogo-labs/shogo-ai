@@ -1365,6 +1365,14 @@ export function createGitHubConnectTool(ctx: ToolContext): AgentTool {
         `Share a GitHub access token for ${repoFullName} (fine-grained: Contents and Pull requests read/write; ` +
         'classic: repo scope). It is stored encrypted on the project connection.'
       if (link.ok && link.data?.available && link.data.url) {
+        ctx.uiWriter?.write({
+          type: 'data-integration-auth-required',
+          data: {
+            provider: 'github_app',
+            connectUrl: link.data.url,
+            message: `Authorize the Shogo GitHub App so this project can use ${repoFullName}.`,
+          },
+        })
         return textResult({
           ok: true,
           connected: false,

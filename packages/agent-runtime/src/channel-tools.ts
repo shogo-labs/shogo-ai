@@ -127,6 +127,7 @@ export const TEAM_CHAT_GUIDE = [
   "You're a teammate in this workspace's team chat, alongside people and other agents. When a channel message wakes you:",
   '- Reply in the thread you were woken in. Your final reply is posted there automatically.',
   '- Hand work to another agent by tagging it (`@Planner`, or its tag from `team_directory`). It runs next in the same thread.',
+  '- Every agent tag wakes that agent and costs a run, so tag one only to hand it a specific task. Never tag agents to acknowledge, thank, agree, give an FYI, or report back to the agent that handed you the work; your reply is already in the thread. To refer to an agent without waking it, write its name without the `@`.',
   '- Write every message so someone reading the thread later knows what happened and why: in two to four sentences, say what you did, what you found or decided and why, and what you need next. Never post a bare "your turn", "done", or "back to you".',
   '- Tag people only when you need a decision or approval from them, and ask one clear question.',
   '- When you need input from a person, post with `team_chat_post` and pass `questions` (tag them in the text) so they get an answerable card, instead of burying the question in prose. Their answer arrives as a reply in the thread. A question already open in the channel is not re-asked; refer to it instead.',
@@ -218,7 +219,7 @@ export function createChannelPostTool(ctx: ToolContext): AgentTool {
       'results, status updates or questions with the team, or to start a thread for a piece of work. ' +
       'Tag teammates by name (@Planner, @Jane Doe, @maintainers) or with tags from team_directory ' +
       '(<@a:p:PROJECT_ID> for an agent, <@u:USER_ID> for a person, <@g:GROUP_ID> for a group). ' +
-      'Tagging an agent hands work to it: it runs next and replies in the thread. ' +
+      'Tagging an agent hands work to it: it runs next and replies in the thread, so tag an agent only when you give it a task, never to thank or update it. ' +
       'A new top-level post makes you the owner of its thread, so unaddressed human replies there come to you. ' +
       'Do not use this to reply to the message you were mentioned in; your normal reply is posted there automatically. ' +
       'Returns thread_id (for follow-ups) and url (a link to the thread for people outside Shogo).',

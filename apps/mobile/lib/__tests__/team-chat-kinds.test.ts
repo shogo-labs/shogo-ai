@@ -3,7 +3,15 @@
 
 import { describe, expect, test } from 'bun:test'
 import type { ChatMessage } from '../team-chat-api'
-import { approvalOf, cardProgress, foldStatusRuns, isCollapsibleStatus, messageKind, statusCardOf, stepStates } from '../team-chat-kinds'
+import { approvalOf, cardProgress, connectRequestsOf, foldStatusRuns, isCollapsibleStatus, messageKind, statusCardOf, stepStates } from '../team-chat-kinds'
+
+describe('connect requests', () => {
+  test('reads the connect links an agent hit and drops malformed ones', () => {
+    const github = { provider: 'github_app', connectUrl: 'https://github.com/apps/shogo/installations/new?state=s', message: 'Authorize it' }
+    expect(connectRequestsOf({ blocks: { connect: [github, { provider: 'x', connectUrl: 'javascript:alert(1)' }, { connectUrl: 'https://a.test' }] } })).toEqual([github])
+    expect(connectRequestsOf({ blocks: null })).toEqual([])
+  })
+})
 
 function msg(id: number, partial: Partial<ChatMessage> = {}): ChatMessage {
   return {

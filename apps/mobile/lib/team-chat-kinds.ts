@@ -195,6 +195,22 @@ export interface AgentWork {
   toolCalls: number
 }
 
+/** An account the agent needs someone to connect before it can carry on. */
+export interface ConnectRequest {
+  provider: string
+  connectUrl: string
+  message?: string
+}
+
+export function connectRequestsOf(message: Pick<ChatMessage, 'blocks'>): ConnectRequest[] {
+  const list = (message.blocks as { connect?: unknown } | null)?.connect
+  if (!Array.isArray(list)) return []
+  return list.filter(
+    (c): c is ConnectRequest =>
+      !!c && typeof c === 'object' && typeof (c as ConnectRequest).provider === 'string' && /^https?:\/\//i.test(String((c as ConnectRequest).connectUrl)),
+  )
+}
+
 export function workOf(message: Pick<ChatMessage, 'blocks'>): AgentWork | null {
   const work = (message.blocks as { work?: AgentWork } | null)?.work
   return work && typeof work.chatMessageId === 'string' && typeof work.startedAt === 'number' ? work : null

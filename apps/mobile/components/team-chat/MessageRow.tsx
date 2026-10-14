@@ -22,7 +22,9 @@ import { AgentAvatar } from './AgentAvatar'
 import { AgentProfileCard } from './AgentProfileCard'
 import { ApprovalCardView, StatusCardView } from './AgentStatus'
 import { QuestionCardView } from './QuestionCard'
-import { approvalOf, isAskedOf, messageKind, questionRefsOf, questionsOf, statusCardOf, workOf } from '../../lib/team-chat-kinds'
+import { approvalOf, connectRequestsOf, isAskedOf, messageKind, questionRefsOf, questionsOf, statusCardOf, workOf } from '../../lib/team-chat-kinds'
+import { continueAfterConnect } from '../../lib/question-answer'
+import { IntegrationConnectCard } from '../chat/IntegrationConnectCard'
 import { AgentWorkedFor, AgentWorkingStatus } from './AgentWork'
 import { renderMentions, type MentionNames } from '../../lib/team-chat-state'
 import { useUserStatus } from '../../hooks/useChatPrefs'
@@ -287,6 +289,8 @@ function MessageRowImpl(props: MessageRowProps) {
   const onBehalfOf = message.authorType === 'agent' ? onBehalfOfName(message) : null
   const canOpenSession = message.authorType === 'agent' && !!message.agentSessionId && !!props.onOpenSession
   const work = !running && message.authorType === 'agent' ? workOf(message) : null
+  const connectRequests = !running && message.authorType === 'agent' ? connectRequestsOf(message) : []
+  const [continuedConnects, setContinuedConnects] = useState<string[]>([])
   const questions = !running && message.authorType === 'agent' ? questionsOf(message) : []
   const questionRefs = !running && message.authorType === 'agent' ? questionRefsOf(message) : []
   const openQuestion = questions.some((q) => q.status === 'open')
@@ -564,6 +568,23 @@ function MessageRowImpl(props: MessageRowProps) {
             {card ? <StatusCardView card={card} onOpenLink={openMessageLinkInApp} /> : null}
             {approval ? <ApprovalCardView approval={approval} messageId={message.id} canDecide={!message.pending} onDecide={(decision) => api.decideApproval(message.id, decision)} /> : null}
             {work ? <AgentWorkedFor messageId={message.id} work={work} /> : null}
+            {connectRequests.filter((c) => !continuedConnects.includes(c.provider)).map((c) => (
+              <View key={c.provider} className="mt-1.5 max-w-[520px] rounded-lg border border-border bg-card p-3" testID="connect-card">
+                <IntegrationConnectCard
+                  request={c}
+                  onContinue={(label) => {
+                    setContinuedConnects((prev) => [...prev, c.provider])
+                    void continueAfterConnect({
+                      conversationId: message.conversationId,
+                      messageId: message.id,
+                      threadRootId: message.threadRootId ?? null,
+                      agentProjectId: message.authorAgent?.projectId ?? null,
+                      label,
+                    }).catch(() => setContinuedConnects((prev) => prev.filter((p) => p !== c.provider)))
+                  }}
+                />
+              </View>
+            ))}
             {questions.length ? (
               <QuestionCardView
                 questions={questions}

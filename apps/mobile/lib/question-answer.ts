@@ -6,7 +6,7 @@
  * refresh of every list and badge happen the same way each time.
  */
 import { haptics } from './haptics'
-import { teamChatApi } from './team-chat-api'
+import { newClientMsgId, teamChatApi } from './team-chat-api'
 
 export type QuestionOutcome = { ok: true } | { ok: false; message: string }
 
@@ -37,6 +37,16 @@ async function run(messageId: string, questionId: string, send: () => Promise<un
 
 export function answerQuestion(messageId: string, questionId: string, input: { answer?: string; secret?: string }): Promise<QuestionOutcome> {
   return run(messageId, questionId, () => teamChatApi().answerQuestion(messageId, questionId, input))
+}
+
+/** Reply in the agent's thread that an account it needed is connected, which wakes it to carry on. */
+export async function continueAfterConnect(input: { conversationId: string; messageId: string; threadRootId: string | null; agentProjectId: string | null; label: string }): Promise<void> {
+  const tag = input.agentProjectId ? `<@a:p:${input.agentProjectId}>` : '<@a:ws>'
+  await teamChatApi().post(input.conversationId, {
+    text: `${tag} I connected ${input.label}. Please go ahead.`,
+    threadRootId: input.threadRootId ?? input.messageId,
+    clientMsgId: newClientMsgId(),
+  })
 }
 
 export function dismissQuestion(messageId: string, questionId: string): Promise<QuestionOutcome> {

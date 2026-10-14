@@ -47,6 +47,17 @@ describe('readAgentStream', () => {
     expect(failedTurn.failed).toBe(true)
   })
 
+  test('keeps connect requests, one per provider, so the thread can show a connect card', async () => {
+    const summary = await readAgentStream(chunkedResponse([
+      frame({ type: 'data-integration-auth-required', data: { provider: 'github', connectUrl: 'https://studio.test/old' } }),
+      frame({ type: 'data-integration-auth-required', data: { provider: 'github', connectUrl: 'https://studio.test/new', message: 'connect first' } }),
+      frame({ type: 'data-integration-auth-required', data: { provider: 'composio:linear' } }),
+      frame({ type: 'finish' }),
+    ]), () => {})
+    expect(summary.connect).toEqual([{ provider: 'github', connectUrl: 'https://studio.test/new', message: 'connect first' }])
+    expect((await readAgentStream(chunkedResponse([frame({ type: 'finish' })]), () => {})).connect).toBeUndefined()
+  })
+
   test('non-2xx responses surface the server error', async () => {
     const res = new Response(JSON.stringify({ error: { message: 'Project not found' } }), { status: 404 })
     expect(await readAgentStream(res, () => {})).toMatchObject({ failed: true, error: 'Project not found' })

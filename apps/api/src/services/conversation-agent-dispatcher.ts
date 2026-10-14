@@ -52,7 +52,7 @@ import {
 } from './conversation-agent-chain'
 import { resolveFriendlyMentions } from './conversation-directory'
 import { expirePendingApprovals, postApprovalCard, type ApprovalRequest } from './conversation-approvals'
-import type { AgentWork, StatusCard } from './conversation-message-kind'
+import type { AgentWork, IntegrationConnectRequest, StatusCard } from './conversation-message-kind'
 import { agentWorkOf } from './agent-work-log'
 import { docContextFor } from './conversation-doc.service'
 import { parseMuteCommand, pickResponder, type RelevanceCandidate } from './conversation-agent-relevance'
@@ -683,10 +683,16 @@ function chainContext(conversation: any, trigger: any, threadRootId: string | nu
   if (chain.runId) ids.push(`run id ${chain.runId}`)
   const lines = [`Team chat context: ${ids.join(', ')}.`]
   if (trigger.authorType === 'agent') {
-    lines.push(`${trigger.authorAgentRef?.name ?? 'Another agent'} (an agent) handed this to you.`)
+    const by = trigger.authorAgentRef?.name ?? 'Another agent'
+    lines.push(
+      `${by} (an agent) handed this to you. Your reply lands in this thread where everyone can read it, so do not tag ` +
+        `${by} just to report back, thank it or say you are done; tag it only if it has a next step to take.`,
+    )
   }
   lines.push(
-    'To hand work to another agent, tag them in your reply (e.g. @Planner); they run next in this thread. ' +
+    'Tagging an agent (e.g. @Planner) wakes it: it runs next in this thread. Tag an agent only to hand it a specific task ' +
+      'it has to do now. Never tag agents to acknowledge, agree, thank, give an FYI or sign off; to refer to one, write its ' +
+      'name without the @. Tag at most one agent per reply unless the work truly splits. ' +
       'Tag people only when you need a decision from them.',
     'Write your reply so someone reading the thread later understands it: in two to four sentences, say what you did, ' +
       'what you found or decided and why, and what you need next. No bare "your turn" or "done".',
@@ -820,6 +826,8 @@ export interface StreamSummary {
   /** What the agent said last, after its final tool call. Empty if the run ended on a tool. */
   finalText?: string
   toolCount?: number
+  /** Accounts the run needed someone to connect, one per provider. */
+  connect?: IntegrationConnectRequest[]
   failed: boolean
   error?: string
 }
@@ -849,6 +857,7 @@ export async function readAgentStream(
   let segments = 0
   let tool: string | null = null
   const tools: Array<{ id: string; name: string; done: boolean }> = []
+  const connect: IntegrationConnectRequest[] = []
   let failed = false
   let error: string | undefined
 
@@ -880,6 +889,14 @@ export async function readAgentStream(
       const request = chunk.data ?? chunk
       if (onPermission && typeof request?.id === 'string' && typeof request?.toolName === 'string') onPermission(request)
       return
+    } else if (type === 'data-integration-auth-required') {
+      const d = chunk.data ?? {}
+      if (typeof d.provider !== 'string' || typeof d.connectUrl !== 'string') return
+      const entry: IntegrationConnectRequest = { provider: d.provider, connectUrl: d.connectUrl, ...(typeof d.message === 'string' && d.message ? { message: d.message } : {}) }
+      const i = connect.findIndex((c) => c.provider === d.provider)
+      if (i >= 0) connect[i] = entry
+      else connect.push(entry)
+      return
     } else if (type === 'error') {
       failed = true
       error = String(chunk.errorText || chunk.error || 'The agent hit an error')
@@ -907,7 +924,14 @@ export async function readAgentStream(
   } finally {
     reader.releaseLock()
   }
-  return { text, finalText: afterTool ? '' : current.trim(), toolCount: tools.length, failed, error }
+  return {
+    text,
+    finalText: afterTool ? '' : current.trim(),
+    toolCount: tools.length,
+    ...(connect.length ? { connect } : {}),
+    failed,
+    error,
+  }
 }
 
 async function latestAssistantText(sessionId: string, after: Date): Promise<string | null> {
@@ -997,7 +1021,8 @@ export async function runAgentReply(args: RunAgentReplyArgs): Promise<string | n
   })
   const messageId = reply.messageId
   let work: AgentWork | null = null
-  const settle = (text: string, agentStatus: string) => finishAgentReply(reply, { text, agentStatus, work })
+  let connect: IntegrationConnectRequest[] = []
+  const settle = (text: string, agentStatus: string) => finishAgentReply(reply, { text, agentStatus, work, connect })
 
   const controller = new AbortController()
   running.set(messageId, controller)
@@ -1076,13 +1101,14 @@ export async function runAgentReply(args: RunAgentReplyArgs): Promise<string | n
       ? summary.finalText?.trim() ?? ''
       : summary.text.trim() || (await latestAssistantText(sessionId, startedAt)) || ''
     work = await agentWorkOf(sessionId, startedAt, summary.toolCount ?? 0).catch(() => null)
+    connect = summary.connect ?? []
     if (controller.signal.aborted) {
       await settle(finalText || latest.text.trim() || (work ? '' : '_Stopped._'), 'stopped')
     } else if (summary.failed && !finalText) {
       await settle(`I couldn't finish that: ${summary.error ?? 'the agent run failed'}`, 'error')
     } else if (summary.failed) {
       await settle(finalText, 'error')
-    } else if (!finalText && !work) {
+    } else if (!finalText && !work && !connect.length) {
       await settle('_No response._', 'done')
     } else if (!finalText) {
       // The run ended on a tool call: nothing more to say than what it did.

@@ -48,11 +48,20 @@ export interface AgentWork {
   toolCalls: number
 }
 
+/** An account the agent needs someone to connect before it can carry on (GitHub, a Composio app). */
+export interface IntegrationConnectRequest {
+  provider: string
+  connectUrl: string
+  message?: string
+}
+
 export interface MessageBlocks {
   type?: 'status_card' | 'approval_request'
   messageKind?: MessageKind
   card?: StatusCard
   work?: AgentWork
+  /** Connect links the agent hit during the run, shown as cards on its reply. */
+  connect?: IntegrationConnectRequest[]
   /** Questions this message asks people; see `conversation-questions`. */
   questions?: QuestionBlock[]
   /** Open questions asked again here; the card lives on the original message. */

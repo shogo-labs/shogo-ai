@@ -14,7 +14,10 @@ export interface IntegrationAuthRequest {
 const POLL_MS = 3_000
 const POLL_FOR_MS = 10 * 60_000
 
-const KNOWN_LABELS: Record<string, string> = { github: "GitHub" }
+const KNOWN_LABELS: Record<string, string> = { github: "GitHub", github_app: "GitHub" }
+
+/** Connects the project rather than the person's own account, so `/api/me/integrations` never shows it. */
+const PROJECT_LEVEL = new Set(["github_app"])
 
 /** "github" -> "GitHub", "composio:google_calendar" -> "Google Calendar", "mcp:linear" -> "Linear". */
 export function integrationLabel(provider: string): string {
@@ -76,7 +79,7 @@ export function IntegrationConnectCard({
   }
 
   useEffect(() => {
-    if (!opened || !API_URL) return
+    if (!opened || !API_URL || PROJECT_LEVEL.has(request.provider)) return
     const projectId = linkProjectId(request.connectUrl)
     const stopAt = Date.now() + POLL_FOR_MS
     let cancelled = false
@@ -99,7 +102,9 @@ export function IntegrationConnectCard({
   return (
     <View className="gap-2">
       <Text className="text-sm text-foreground">
-        {`This agent acts as you on ${label}. Connect your ${label} account and it will carry on.`}
+        {PROJECT_LEVEL.has(request.provider)
+          ? request.message || `Connect ${label} to this project and the agent will carry on.`
+          : `This agent acts as you on ${label}. Connect your ${label} account and it will carry on.`}
       </Text>
       <View className="flex-row flex-wrap gap-2">
         <Pressable
@@ -124,7 +129,7 @@ export function IntegrationConnectCard({
           </Pressable>
         ) : null}
       </View>
-      {opened ? (
+      {opened && !PROJECT_LEVEL.has(request.provider) ? (
         <Text className="text-xs text-muted-foreground">Waiting for you to finish connecting…</Text>
       ) : null}
     </View>
