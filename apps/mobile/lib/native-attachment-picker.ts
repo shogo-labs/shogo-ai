@@ -85,11 +85,6 @@ export function executeNativeAttachAction(
   }
 
   const pickLibrary = async () => {
-    const perm = await ImagePicker.requestMediaLibraryPermissionsAsync()
-    if (!perm.granted) {
-      onError("Allow photo access in Settings to attach images.")
-      return
-    }
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ["images"],
       allowsMultipleSelection: remaining > 1,
