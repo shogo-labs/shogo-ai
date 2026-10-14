@@ -46,6 +46,7 @@ import {
   isShogoDesktop,
 } from "./chatImageActions"
 import { useAgentImageSource } from "../../lib/agent-image-source"
+import { useEscapeToClose } from "../../lib/use-escape-to-close"
 
 export interface ImagePreviewModalProps {
   visible: boolean
@@ -291,6 +292,9 @@ export function ImagePreviewModal({
     if (visible) setLoadState("loading")
   }, [activeUrl, visible])
 
+  // Escape closes, the way Slack does.
+  useEscapeToClose(visible, onClose)
+
   const statusLabel = useMemo(() => {
     switch (copyState) {
       case "copying":
@@ -501,7 +505,7 @@ export function ImagePreviewModal({
                     currentIndex === 0 && "opacity-40",
                   )}
                   accessibilityRole="button"
-                  accessibilityLabel="Previous generated image"
+                  accessibilityLabel="Previous image"
                 >
                   <ChevronLeft
                     size={20}
@@ -529,7 +533,7 @@ export function ImagePreviewModal({
                     currentIndex === (gallery?.length ?? 1) - 1 && "opacity-40",
                   )}
                   accessibilityRole="button"
-                  accessibilityLabel="Next generated image"
+                  accessibilityLabel="Next image"
                 >
                   <ChevronRight
                     size={20}

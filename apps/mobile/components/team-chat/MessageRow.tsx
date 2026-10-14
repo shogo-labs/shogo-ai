@@ -25,6 +25,7 @@ import { QuestionCardView } from './QuestionCard'
 import { approvalOf, connectRequestsOf, isAskedOf, messageKind, questionRefsOf, questionsOf, statusCardOf, workOf } from '../../lib/team-chat-kinds'
 import { continueAfterConnect } from '../../lib/question-answer'
 import { IntegrationConnectCard } from '../chat/IntegrationConnectCard'
+import { ImagePreviewModal } from '../chat/ImagePreviewModal'
 import { AgentWorkedFor, AgentWorkingStatus } from './AgentWork'
 import { renderMentions, type MentionNames } from '../../lib/team-chat-state'
 import { hasReacted, reactionTooltip } from '../../lib/team-chat-reactions'
@@ -301,6 +302,13 @@ function MessageRowImpl(props: MessageRowProps) {
   const [showFullUpdate, setShowFullUpdate] = useState(false)
   const foldBody = askedOfMe && !showFullUpdate && (body?.length ?? 0) > LONG_UPDATE_CHARS
   const isWeb = Platform.OS === 'web'
+  // Clicking an image opens the same viewer the agent chat uses instead of
+  // handing the URL to the browser. The gallery is the message's own images,
+  // so a post with several can be stepped through.
+  const [lightboxIndex, setLightboxIndex] = useState<number | null>(null)
+  const imageAttachments = deleted ? [] : message.attachments.filter((a) => a.mimeType.startsWith('image/'))
+  const imageIndexById = new Map(imageAttachments.map((a, index) => [a.id, index]))
+  const activeLightboxImage = lightboxIndex === null ? null : imageAttachments[lightboxIndex] ?? null
   useEditRequest(message.id, () => {
     if (!mine || deleted || message.authorType !== 'user') return
     setDraft(message.text)
@@ -678,7 +686,13 @@ function MessageRowImpl(props: MessageRowProps) {
           <View className="mt-1.5 flex-row flex-wrap gap-2">
             {message.attachments.map((a) =>
               a.mimeType.startsWith('image/') ? (
-                <Pressable key={a.id} onPress={() => Linking.openURL(absoluteApiUrl(a.url))}>
+                <Pressable
+                  key={a.id}
+                  onPress={() => setLightboxIndex(imageIndexById.get(a.id) ?? 0)}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Open ${a.name}`}
+                  className={isWeb ? 'cursor-pointer' : undefined}
+                >
                   <Image
                     source={{ uri: absoluteApiUrl(a.url) }}
                     className="rounded-lg border border-border"
@@ -802,6 +816,18 @@ function MessageRowImpl(props: MessageRowProps) {
             </Pressable>
           </Pressable>
         </Modal>
+      )}
+      {lightboxIndex !== null && (
+        <ImagePreviewModal
+          visible
+          onClose={() => setLightboxIndex(null)}
+          url={absoluteApiUrl(activeLightboxImage?.url ?? '')}
+          gallery={imageAttachments.map((a) => ({ url: absoluteApiUrl(a.url), title: a.name, alt: a.name }))}
+          initialIndex={lightboxIndex}
+          mediaType={activeLightboxImage?.mimeType}
+          title={activeLightboxImage?.name ?? 'Image'}
+          alt={activeLightboxImage?.name ?? 'Image attachment'}
+        />
       )}
     </Pressable>
   )

@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
-import { describe, expect, mock, test } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from 'bun:test'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { Fragment, createElement, createRef, forwardRef, useImperativeHandle } from 'react'
+import { Linking } from 'react-native'
 import { createReactNativeMock } from '../../../test/react-native-mock'
 
 const sentTyping: string[] = []
@@ -182,6 +183,25 @@ mock.module('../../chat/AttachSourceSheet', () => ({ AttachSourceSheet: () => nu
 mock.module('../../chat/ContextTracker', () => ({ ContextTracker: () => null, formatTokenCount: (n: number) => String(n) }))
 mock.module('../../chat/ModelPickerMenu', () => ({ ModelPickerMenu: () => null, ComposerModelPicker: () => null, getNativeModelMenuWidth: () => 280 }))
 mock.module('../../chat/FileViewerModal', () => ({ FileViewerModal: () => null }))
+// The real viewer pulls in gesture-handler + glustack Portal; probe its props
+// instead so these assert the wiring, not the modal's internals.
+mock.module('../../chat/ImagePreviewModal', () => ({
+  ImagePreviewModal: ({ visible, url, gallery, initialIndex, title, onClose }: any) =>
+    visible
+      ? createElement(
+          'div',
+          {
+            role: 'dialog',
+            'data-testid': 'image-lightbox',
+            'data-url': url,
+            'data-index': String(initialIndex),
+            'data-count': String(gallery?.length ?? 0),
+            'data-title': title,
+          },
+          createElement('button', { 'aria-label': 'Close lightbox', onClick: onClose }),
+        )
+      : null,
+}))
 mock.module('../../chat/EnvironmentPicker', () => ({ EnvironmentPicker: () => null }))
 mock.module('../../voice-mode/ChatBridgeContext', () => ({ useChatBridgeOptional: () => null }))
 mock.module('../../chat/ChatContext', () => ({ useChatContextSafe: () => null }))
@@ -1190,5 +1210,105 @@ describe('#activity filters', () => {
     expect(screen.queryByText(/answered the ticket/)).toBeNull()
     expect(screen.getByLabelText('Agent: Workspace agent, Billing Bot')).toBeTruthy()
     expect(screen.getByText('2 agents')).toBeTruthy()
+  })
+})
+
+describe('MessageRow image attachments', () => {
+  const image = (id: string, name: string) => ({
+    id, name, mimeType: 'image/png', size: 2048, width: 800, height: 600, url: `/api/uploads/${id}`,
+  })
+  const file = (id: string, name: string) => ({
+    id, name, mimeType: 'application/pdf', size: 4096, width: null, height: null, url: `/api/uploads/${id}`,
+  })
+  const renderRow = (attachments: unknown[]) =>
+    render(<MessageRow message={message({ attachments })} grouped={false} me="u-me" names={names} canManage={false} {...handlers()} />)
+
+  let openURL: ReturnType<typeof spyOn>
+
+  beforeEach(() => {
+    openURL = spyOn(Linking, 'openURL').mockImplementation(() => Promise.resolve())
+  })
+  afterEach(() => {
+    openURL.mockRestore()
+  })
+
+  test('clicking an image opens the viewer instead of the browser, seeded with that image', () => {
+    renderRow([image('a1', 'shot-1.png'), image('a2', 'shot-2.png')])
+    expect(screen.queryByTestId('image-lightbox')).toBeNull()
+
+    fireEvent.click(screen.getByLabelText('Open shot-1.png'))
+
+    const lightbox = screen.getByTestId('image-lightbox')
+    expect(lightbox.getAttribute('data-url')).toBe('/api/uploads/a1')
+    expect(lightbox.getAttribute('data-index')).toBe('0')
+    expect(lightbox.getAttribute('data-count')).toBe('2')
+    expect(lightbox.getAttribute('data-title')).toBe('shot-1.png')
+    expect(openURL).not.toHaveBeenCalled()
+  })
+
+  test('a later image in the same message opens at its own index', () => {
+    renderRow([image('a1', 'one.png'), image('a2', 'two.png'), image('a3', 'three.png')])
+
+    fireEvent.click(screen.getByLabelText('Open two.png'))
+
+    const lightbox = screen.getByTestId('image-lightbox')
+    expect(lightbox.getAttribute('data-url')).toBe('/api/uploads/a2')
+    expect(lightbox.getAttribute('data-index')).toBe('1')
+    expect(lightbox.getAttribute('data-count')).toBe('3')
+    expect(openURL).not.toHaveBeenCalled()
+  })
+
+  test('files in the mix do not shift the gallery index', () => {
+    renderRow([file('f1', 'notes.pdf'), image('a1', 'one.png'), image('a2', 'two.png')])
+
+    fireEvent.click(screen.getByLabelText('Open two.png'))
+
+    const lightbox = screen.getByTestId('image-lightbox')
+    // Second image, not third attachment.
+    expect(lightbox.getAttribute('data-index')).toBe('1')
+    expect(lightbox.getAttribute('data-count')).toBe('2')
+  })
+
+  test('close dismisses the viewer', () => {
+    renderRow([image('a1', 'shot-1.png')])
+    fireEvent.click(screen.getByLabelText('Open shot-1.png'))
+    expect(screen.getByTestId('image-lightbox')).toBeTruthy()
+
+    fireEvent.click(screen.getByLabelText('Close lightbox'))
+
+    expect(screen.queryByTestId('image-lightbox')).toBeNull()
+  })
+
+  test('a single image opens without gallery controls', () => {
+    renderRow([image('a1', 'only.png')])
+
+    fireEvent.click(screen.getByLabelText('Open only.png'))
+
+    expect(screen.getByTestId('image-lightbox').getAttribute('data-count')).toBe('1')
+  })
+
+  test('non-image attachments still open their URL in the browser', () => {
+    renderRow([file('f1', 'notes.pdf')])
+
+    fireEvent.click(screen.getByText('notes.pdf'))
+
+    expect(openURL).toHaveBeenCalledWith('/api/uploads/f1')
+    expect(screen.queryByTestId('image-lightbox')).toBeNull()
+  })
+
+  test('a deleted message shows neither attachments nor the viewer', () => {
+    render(
+      <MessageRow
+        message={message({ attachments: [image('a1', 'shot-1.png')], deletedAt: '2026-09-29T11:00:00.000Z' })}
+        grouped={false}
+        me="u-me"
+        names={names}
+        canManage={false}
+        {...handlers()}
+      />,
+    )
+
+    expect(screen.queryByLabelText('Open shot-1.png')).toBeNull()
+    expect(screen.queryByTestId('image-lightbox')).toBeNull()
   })
 })
