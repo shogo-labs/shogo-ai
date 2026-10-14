@@ -15,14 +15,14 @@
 /* ── Streamdown overrides for chat markdown ── */
 
 /* Semantic markdown palette. Mirrors the native palette in
-   components/chat/MarkdownText.tsx: GitHub grays for structure, Notion red
+   components/chat/MarkdownText.tsx: GitHub grays for structure, orange
    for inline code, blue for links. Dark values apply under `.dark`. */
 .chat-md {
   --md-text: #1f2328;
   --md-heading: #111827;
   --md-muted: #59636e;
   --md-link: #0969da;
-  --md-code-text: #eb5757;
+  --md-code-text: #b45309;
   --md-code-bg: #f6f8fa;
   --md-border: #d1d9e0;
   --md-quote-border: #d1d9e0;
@@ -35,7 +35,7 @@
   --md-heading: #ffffff;
   --md-muted: #8b949e;
   --md-link: #4493f8;
-  --md-code-text: #ff7b72;
+  --md-code-text: #fb923c;
   --md-code-bg: #161b22;
   --md-border: #30363d;
   --md-quote-border: #30363d;

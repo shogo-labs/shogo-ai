@@ -20,7 +20,7 @@ import { useMobileWorkspaceChrome } from "../layout/MobileWorkspaceChromeContext
 
 /**
  * Semantic markdown palette. Light and dark values follow the GitHub gray
- * scale for structure, with Notion's red inline code as the one accent.
+ * scale for structure, with an orange for inline code as the one accent.
  * Keep in sync with the `.chat-md` variables in `global.css` (web path).
  */
 interface ThemeColors {
@@ -118,7 +118,7 @@ const lightColors: ThemeColors = {
   heading: "#111827",
   muted: "#59636e",
   link: "#0969da",
-  codeText: "#eb5757",
+  codeText: "#b45309",
   codeBg: "#f6f8fa",
   border: "#d1d9e0",
   quoteBorder: "#d1d9e0",
@@ -130,7 +130,7 @@ const darkColors: ThemeColors = {
   heading: "#ffffff",
   muted: "#8b949e",
   link: "#4493f8",
-  codeText: "#ff7b72",
+  codeText: "#fb923c",
   codeBg: "#161b22",
   border: "#30363d",
   quoteBorder: "#30363d",
