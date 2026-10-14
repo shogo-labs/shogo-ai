@@ -13,7 +13,7 @@
  *   LOCAL_LLM_ADVANCED_MODEL=fake-stream SHOGO_LOCAL_MODE=true bun --no-env-file apps/api/src/entry.ts
  *   EXPO_PUBLIC_LOCAL_MODE=true EXPO_PUBLIC_API_URL=http://localhost:8002 bun run web:dev
  *
- *   E2E_API_URL=http://localhost:8002 npx playwright test --config e2e/local/playwright.config.ts \
+ *   E2E_FAKE_LLM_STACK=1 E2E_API_URL=http://localhost:8002 npx playwright test --config e2e/local/playwright.config.ts \
  *     chat-resume-on-send --project chromium --retries 0
  *
  * Checks are soft, so one run lists every way a scenario goes wrong.
@@ -29,6 +29,13 @@ const FOLLOW_MS = Number(process.env.E2E_FOLLOW_MS || 10_000)
 const TRAIL_TOKENS = 80
 
 const soft = expect.configure({ soft: true })
+
+// The stack E2E_LOCAL_START_STACK brings up has no LOCAL_LLM_BASE_URL, so
+// turns started here never reach the fake model and produce no tokens.
+test.skip(
+  process.env.E2E_FAKE_LLM_STACK !== "1",
+  "needs an API started with LOCAL_LLM_BASE_URL pointing at the fake model (see the header); set E2E_FAKE_LLM_STACK=1",
+)
 
 test.setTimeout(240_000)
 
