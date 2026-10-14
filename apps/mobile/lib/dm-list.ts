@@ -41,6 +41,20 @@ export function filterDms(list: ConversationSummary[], filter: DmFilter): Conver
 }
 
 /**
+ * The DMs tab draws a "Starred" group above the rest, mirroring the channels
+ * panel. Starred rows move out of the main list rather than repeating there,
+ * and the active chip narrows both groups so a filter can't leave behind a
+ * starred row it excludes.
+ */
+export function splitStarredDms(
+  list: ConversationSummary[],
+  filter: DmFilter,
+): { starred: ConversationSummary[]; others: ConversationSummary[] } {
+  const dms = filterDms(list, filter)
+  return { starred: dms.filter((c) => c.starred), others: dms.filter((c) => !c.starred) }
+}
+
+/**
  * The strip of faces above the list: the most recent conversations, one
  * per person or agent. Group DMs have no single face, so they stay out.
  */

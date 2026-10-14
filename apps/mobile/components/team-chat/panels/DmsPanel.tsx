@@ -10,10 +10,10 @@ import { Pressable, ScrollView, Text, View } from 'react-native'
 import { Plus } from 'lucide-react-native'
 import { Avatar, cn } from '@shogo/shared-ui/primitives'
 import { AgentMark } from '../../activity/ActivityFeed'
-import { ConversationRow, CountPill, PanelLink, attentionCount, rowTitle } from '../ConversationRows'
+import { ConversationRow, CountPill, PanelLink, PanelSection, attentionCount, rowTitle } from '../ConversationRows'
 import { PresenceDot } from '../PresenceDot'
 import { useTeamChatNav } from '../TeamChatSidebarProvider'
-import { DM_FILTERS, filterDms, isAgentDm, recentContacts, type DmFilter } from '../../../lib/dm-list'
+import { DM_FILTERS, splitStarredDms, isAgentDm, recentContacts, type DmFilter } from '../../../lib/dm-list'
 import type { ConversationSummary } from '../../../lib/team-chat-api'
 
 // In the sidebar the panel sits inside the sidebar's own scroll view.
@@ -24,11 +24,14 @@ function Rows({ children, ...props }: any) {
 export function DmsPanel({ variant = 'panel' }: { variant?: 'panel' | 'screen' }) {
   const chat = useTeamChatNav()
   const [filter, setFilter] = useState<DmFilter>('all')
-  const rows = useMemo(() => filterDms(chat.list, filter), [chat.list, filter])
+  const { starred, others } = useMemo(() => splitStarredDms(chat.list, filter), [chat.list, filter])
   const contacts = useMemo(() => recentContacts(chat.list), [chat.list])
   if (!chat.enabled || !chat.workspaceId) return null
   const workspaceId = chat.workspaceId
   const screen = variant === 'screen'
+  const row = (c: ConversationSummary) => (
+    <ConversationRow key={c.id} conversation={c} workspaceId={workspaceId} active={chat.activeId === c.id} preview={screen} onPress={chat.openConversation} />
+  )
 
   return (
     <View className={cn(screen ? 'flex-1' : 'px-2')} testID="dms-panel">
@@ -55,10 +58,9 @@ export function DmsPanel({ variant = 'panel' }: { variant?: 'panel' | 'screen' }
       </ScrollView>
 
       <Rows className={cn(screen && 'flex-1')} {...(screen ? { contentContainerClassName: 'px-2 pb-28' } : { })}>
-        {rows.map((c) => (
-          <ConversationRow key={c.id} conversation={c} workspaceId={workspaceId} active={chat.activeId === c.id} preview={screen} onPress={chat.openConversation} />
-        ))}
-        {rows.length === 0 && (
+        {starred.length > 0 && <PanelSection label="Starred">{starred.map(row)}</PanelSection>}
+        {others.map(row)}
+        {starred.length === 0 && others.length === 0 && (
           <Text className="px-3 py-4 text-xs text-muted-foreground">{filter === 'unreads' ? "You're all caught up." : 'No conversations yet.'}</Text>
         )}
         <PanelLink icon={Plus} label="New message" onPress={() => chat.startCreate('message')} />

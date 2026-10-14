@@ -3,7 +3,7 @@
 
 import { describe, expect, test } from 'bun:test'
 import type { ConversationSummary, Participant } from '../team-chat-api'
-import { directConversations, filterDms, recentContacts } from '../dm-list'
+import { directConversations, filterDms, recentContacts, splitStarredDms } from '../dm-list'
 
 const person = (id: string): Participant => ({ type: 'user', id, name: id, image: null })
 const agent = (projectId: string): Participant => ({ type: 'agent', projectId, name: projectId })
@@ -59,6 +59,43 @@ describe('filterDms', () => {
 
   test('All is the whole list', () => {
     expect(filterDms(list, 'all')).toEqual(directConversations(list))
+  })
+})
+
+describe('splitStarredDms', () => {
+  const withStar = [
+    convo({ id: 'eby', starred: true, lastMessageAt: '2026-10-01T10:00:00Z' }),
+    convo({ id: 'reviewer', lastMessageAt: '2026-10-01T11:00:00Z', participants: [agent('p1')] }),
+    convo({ id: 'ana', starred: true, lastMessageAt: '2026-10-01T12:00:00Z', participants: [person('ana')] }),
+    convo({ id: 'general', kind: 'public', name: 'general', participants: [] }),
+  ]
+
+  test('starred rows move out of the main list instead of repeating there', () => {
+    const { starred, others } = splitStarredDms(withStar, 'all')
+    expect(ids(starred)).toEqual(['ana', 'eby'])
+    expect(ids(others)).toEqual(['reviewer'])
+  })
+
+  test('the active chip narrows both groups', () => {
+    expect(ids(splitStarredDms(withStar, 'people').starred)).toEqual(['ana', 'eby'])
+    expect(ids(splitStarredDms(withStar, 'people').others)).toEqual([])
+    expect(ids(splitStarredDms(withStar, 'agents').starred)).toEqual([])
+    expect(ids(splitStarredDms(withStar, 'agents').others)).toEqual(['reviewer'])
+  })
+
+  test('channels and archived conversations stay out of both groups', () => {
+    const { starred, others } = splitStarredDms(
+      [...withStar, convo({ id: 'chan', kind: 'private', name: 'private', participants: [], starred: true }), convo({ id: 'old', starred: true, archivedAt: '2026-10-02T00:00:00Z' })],
+      'all',
+    )
+    expect(ids(starred)).toEqual(['ana', 'eby'])
+    expect(ids(others)).toEqual(['reviewer'])
+  })
+
+  test('nothing starred leaves the main list whole', () => {
+    const { starred, others } = splitStarredDms(list, 'all')
+    expect(starred).toEqual([])
+    expect(ids(others)).toEqual(ids(directConversations(list)))
   })
 })
 
