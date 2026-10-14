@@ -225,6 +225,21 @@ function isGeneratedImagePart(part: GroupedMessagePart): boolean {
   )
 }
 
+const INSTALL_TOOL_NAMES = new Set(["connect", "tool_install", "mcp_install"])
+
+/** Parts that stay visible after the turn folds under "Worked for X": images and cards the user acts on. */
+function isPinnedWorkPart(part: GroupedMessagePart): boolean {
+  if (isGeneratedImagePart(part)) return true
+  if (part.type !== "tool") return false
+  const { toolName, state, result } = part.tool
+  if (INSTALL_TOOL_NAMES.has(toolName) && state === "success") {
+    const installResult = parseToolInstallResult(result)
+    return installResult?.authStatus === "needs_auth" && !!installResult.authUrl
+  }
+  if (toolName === "ask_user") return askUserStreamVariant(result) === "bar"
+  return toolName === "create_plan" || toolName === "update_plan"
+}
+
 interface GroupSlotProps {
   items: MessagePart[]
   id: string
@@ -596,7 +611,7 @@ export const AssistantContent = memo(
     )
 
     const collapsibleWorkParts = useMemo(
-      () => workLog.filter((part) => !isGeneratedImagePart(part)),
+      () => workLog.filter((part) => !isPinnedWorkPart(part)),
       [workLog],
     )
 
@@ -919,16 +934,18 @@ export const AssistantContent = memo(
     // labels ticking as work happens; the collapse only settles once the
     // turn completes.
     const collapsedWorkLog = workLog.flatMap((part, index) =>
-      isGeneratedImagePart(part) ? [] : [{ part, index }],
+      isPinnedWorkPart(part) ? [] : [{ part, index }],
     )
-    const visibleImageWork = workLog.flatMap((part, index) =>
-      isGeneratedImagePart(part) ? [{ part, index }] : [],
+    const pinnedWork = workLog.flatMap((part, index) =>
+      isPinnedWorkPart(part) ? [{ part, index }] : [],
     )
 
     if (bare && !isStreaming) {
       return (
         <View className={cn("gap-y-1", className)}>
-          {collapsedWorkLog.map(({ part, index }) => renderPart(part, index))}
+          {workLog.map((part, index) =>
+            isGeneratedImagePart(part) ? null : renderPart(part, index),
+          )}
         </View>
       )
     }
@@ -956,7 +973,7 @@ export const AssistantContent = memo(
             .slice(hiddenWork)
             .map((part, index) => renderPart(part, hiddenWork + index))}
         {!isStreaming &&
-          visibleImageWork.map(({ part, index }) => renderPart(part, index))}
+          pinnedWork.map(({ part, index }) => renderPart(part, index))}
         {finalSegment.map((part, index) =>
           renderPart(part, workLog.length + index),
         )}
