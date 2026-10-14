@@ -634,26 +634,38 @@ export async function createSharedFileLink(
 // the "Project lifecycle" section. Same CheckpointCallResult envelope.
 // ---------------------------------------------------------------------------
 
+/** Proxy timeout statuses (Cloudflare 524, gateway 502/504) that arrive as HTML, not API JSON. */
+const PROXY_TIMEOUT_STATUSES = new Set([502, 504, 524])
+
 async function lifecycleFetch<T>(
   path: string,
-  init: RequestInit & { parse?: (json: any) => T; timeoutMs?: number },
+  init: RequestInit & {
+    parse?: (json: any) => T
+    timeoutMs?: number
+    /** Ask the API to pad a long wait with whitespace pings; the real status then arrives as `httpStatus` in the body. */
+    keepalive?: boolean
+  },
 ): Promise<CheckpointCallResult<T>> {
   const apiUrl = deriveApiUrl()
   if (!apiUrl) return { ok: false, status: 0, error: 'No API URL configured' }
-  const { parse, timeoutMs, ...rest } = init
+  const { parse, timeoutMs, keepalive, ...rest } = init
   try {
     const res = await fetch(`${apiUrl}${path}`, {
-      headers: getInternalHeaders(),
+      headers: { ...getInternalHeaders(), ...(keepalive ? { 'X-Shogo-Keepalive': '1' } : {}) },
       signal: AbortSignal.timeout(timeoutMs ?? 20_000),
       ...rest,
     })
     const json = (await res.json().catch(() => null)) as any
-    if (!res.ok) {
+    const status = typeof json?.httpStatus === 'number' ? json.httpStatus : res.status
+    if (status < 200 || status >= 300) {
+      if (json === null && PROXY_TIMEOUT_STATUSES.has(status)) {
+        return { ok: false, status, error: `The API gateway timed out (HTTP ${status})`, code: 'timeout' }
+      }
       const err = json?.error
       const message = typeof err === 'string' ? err : err?.message
-      return { ok: false, status: res.status, error: message ?? `HTTP ${res.status}`, code: err?.code }
+      return { ok: false, status, error: message ?? `HTTP ${status}`, code: err?.code }
     }
-    return { ok: true, status: res.status, data: parse ? parse(json) : (json as T) }
+    return { ok: true, status, data: parse ? parse(json) : (json as T) }
   } catch (err: any) {
     const timedOut = err?.name === 'TimeoutError' || err?.name === 'AbortError'
     return { ok: false, status: 0, error: err?.message ?? String(err), code: timedOut ? 'timeout' : undefined }
@@ -1770,18 +1782,126 @@ export interface AgentCallResult {
   chatSessionId?: string
 }
 
+interface TrackedAgentCall {
+  status: 'running' | 'completed' | 'failed'
+  reply?: string | null
+  sessionId?: string
+  chatSessionId?: string
+  error?: { code?: string; message: string }
+}
+
+const AGENT_CALL_POLL_WAIT_MS = 60_000
+const AGENT_CALL_POLL_MAX_FAILURES = 3
+const TRACKED_CALL_UNSUPPORTED_RECHECK_MS = 5 * 60_000
+
+/** true once the API proved it serves `GET .../agent-call/:runId`; a timestamp while it doesn't. */
+let trackedCallSupport: true | { unsupportedUntil: number } | undefined
+
+async function apiSupportsTrackedCalls(callPath: string, runId: string): Promise<boolean> {
+  if (trackedCallSupport === true) return true
+  if (trackedCallSupport && Date.now() < trackedCallSupport.unsupportedUntil) return false
+  const probe = await lifecycleFetch(`${callPath}/${encodeURIComponent(runId)}?waitMs=0`, { method: 'GET', timeoutMs: 10_000 })
+  if (probe.ok || probe.code === 'agent_call_unknown') {
+    trackedCallSupport = true
+    return true
+  }
+  if (probe.status === 404) {
+    trackedCallSupport = { unsupportedUntil: Date.now() + TRACKED_CALL_UNSUPPORTED_RECHECK_MS }
+    return false
+  }
+  return true
+}
+
+/** Test seam: forget whether the API supports tracked calls. */
+export function resetTrackedCallSupport(): void {
+  trackedCallSupport = undefined
+}
+
+/**
+ * `wait: true` never holds one request open for the whole turn: metal runtimes
+ * reach the API through Cloudflare, which 524s any request silent for ~100s.
+ * Instead the call is started in the background (`wait: false, track: true`)
+ * and the outcome is long-polled in ≤60s windows, each padded with keep-alive
+ * pings. APIs that predate tracked calls get the old single blocking POST.
+ */
 export async function callProjectAgent(
   targetProjectId: string,
   req: AgentCallRequest,
 ): Promise<CheckpointCallResult<AgentCallResult>> {
   const timeoutMs = Math.min(Math.max(req.timeoutMs ?? 5 * 60_000, 10_000), 20 * 60_000)
-  return lifecycleFetch(`/api/internal/projects/${encodeURIComponent(targetProjectId)}/agent-call`, {
+  const callPath = `/api/internal/projects/${encodeURIComponent(targetProjectId)}/agent-call`
+  if (req.wait === false) {
+    return lifecycleFetch(callPath, {
+      method: 'POST',
+      body: JSON.stringify({ ...req, timeoutMs }),
+      parse: (j) => j as AgentCallResult,
+      timeoutMs: 20_000,
+    })
+  }
+
+  const runId = req.runId?.trim() || `run_${crypto.randomUUID().replace(/-/g, '').slice(0, 12)}`
+  if (!(await apiSupportsTrackedCalls(callPath, runId))) {
+    return lifecycleFetch(callPath, {
+      method: 'POST',
+      body: JSON.stringify({ ...req, runId, timeoutMs }),
+      parse: (j) => j as AgentCallResult,
+      // The API adds its own 5s grace on top of the runtime's wait budget.
+      timeoutMs: timeoutMs + 10_000,
+    })
+  }
+
+  const started = await lifecycleFetch<AgentCallResult & { tracked?: boolean }>(callPath, {
     method: 'POST',
-    body: JSON.stringify({ ...req, timeoutMs }),
-    parse: (j) => j as AgentCallResult,
-    // The API adds its own 5s grace on top of the runtime's wait budget.
-    timeoutMs: req.wait === false ? 20_000 : timeoutMs + 10_000,
+    body: JSON.stringify({ ...req, runId, timeoutMs, wait: false, track: true }),
+    timeoutMs: 20_000,
   })
+  if (!started.ok || !started.data) return started
+  // An API without tracking already started the turn untracked; its reply lands in the project chat.
+  if (started.data.tracked !== true) return { ...started, data: { ...started.data, runId } }
+
+  const deadline = Date.now() + timeoutMs
+  let failures = 0
+  for (;;) {
+    const remaining = deadline - Date.now()
+    if (remaining <= 0) {
+      return {
+        ok: false,
+        status: 504,
+        code: 'agent_call_timeout',
+        error: `The target agent did not reply within ${Math.round(timeoutMs / 1000)}s.`,
+      }
+    }
+    const waitMs = Math.min(AGENT_CALL_POLL_WAIT_MS, remaining)
+    const poll = await lifecycleFetch<TrackedAgentCall>(`${callPath}/${encodeURIComponent(runId)}?waitMs=${waitMs}`, {
+      method: 'GET',
+      keepalive: true,
+      timeoutMs: waitMs + 20_000,
+    })
+    if (!poll.ok || !poll.data) {
+      const transient = poll.ok || poll.status === 0 || poll.status >= 500 || poll.code === 'timeout'
+      if (!transient || ++failures >= AGENT_CALL_POLL_MAX_FAILURES) return { ...poll, ok: false, data: undefined }
+      await new Promise((resolve) => setTimeout(resolve, Math.min(2_000, Math.max(0, deadline - Date.now()))))
+      continue
+    }
+    failures = 0
+    const record = poll.data
+    if (record.status === 'completed') {
+      return {
+        ok: true,
+        status: 200,
+        data: {
+          status: 'completed',
+          reply: record.reply ?? undefined,
+          runId,
+          sessionId: record.sessionId ?? started.data.sessionId,
+          chatSessionId: record.chatSessionId ?? started.data.chatSessionId,
+        },
+      }
+    }
+    if (record.status === 'failed') {
+      return { ok: false, status: 502, error: record.error?.message ?? 'Project agent call failed', code: record.error?.code }
+    }
+  }
 }
 
 export async function postCostMetric(payload: AgentCostMetricPayload): Promise<void> {

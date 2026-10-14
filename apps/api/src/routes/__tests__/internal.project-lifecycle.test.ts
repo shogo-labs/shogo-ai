@@ -171,6 +171,7 @@ mock.module('../../lib/metal-warm-pool-controller', () => ({
 
 const app = (await import('../internal')).default
 const { _setRbacModeForTests } = await import('../../lib/authz')
+const agentCallStore = await import('../../lib/agent-call-store')
 
 const SA = { Authorization: 'Bearer sa-token' }
 const JSON_H = { 'content-type': 'application/json' }
@@ -686,5 +687,64 @@ describe('POST /projects/:projectId/agent-call', () => {
     } finally {
       globalThis.fetch = originalFetch
     }
+  })
+
+  test('X-Shogo-Keepalive: answers 200 and carries the real status as httpStatus', async () => {
+    store.projects.set('proj-2', { workspaceId: 'ws-1' })
+    store.resolution = { ok: true, kind: 'cloud', url: 'http://pod.internal:8080' }
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ error: { code: 'agent_turn_failed', message: 'boom' } }), { status: 500 })) as any
+    try {
+      const res = await app.request('/projects/proj-2/agent-call', {
+        method: 'POST',
+        headers: { ...SA, ...JSON_H, 'X-Shogo-Keepalive': '1' },
+        body: JSON.stringify({ message: 'hi', runId: 'run-ka' }),
+      })
+      expect(res.status).toBe(200)
+      const body = JSON.parse(await res.text())
+      expect(body.httpStatus).toBe(500)
+      expect(body.error.code).toBe('agent_turn_failed')
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+})
+
+// ─── GET /projects/:projectId/agent-call/:runId ─────────────────────────────
+
+describe('GET /projects/:projectId/agent-call/:runId', () => {
+  beforeEach(() => agentCallStore._testing.records.clear())
+
+  test('401 with no credentials', async () => {
+    store.projects.set('proj-2', { workspaceId: 'ws-1' })
+    const res = await app.request('/projects/proj-2/agent-call/run-1')
+    expect(res.status).toBe(401)
+  })
+
+  test('404 agent_call_unknown for an untracked run', async () => {
+    store.projects.set('proj-2', { workspaceId: 'ws-1' })
+    const res = await app.request('/projects/proj-2/agent-call/run-x?waitMs=0', { headers: SA })
+    expect(res.status).toBe(404)
+    expect((await res.json()).error.code).toBe('agent_call_unknown')
+  })
+
+  test('returns a completed record at once', async () => {
+    store.projects.set('proj-2', { workspaceId: 'ws-1' })
+    await agentCallStore.putAgentCall('proj-2', { runId: 'run-c', status: 'completed', reply: 'done', startedAt: 1, updatedAt: 2 })
+    const res = await app.request('/projects/proj-2/agent-call/run-c?waitMs=60000', { headers: SA })
+    expect(res.status).toBe(200)
+    expect(await res.json()).toMatchObject({ status: 'completed', reply: 'done' })
+  })
+
+  test('a running call waits waitMs and then returns running', async () => {
+    store.projects.set('proj-2', { workspaceId: 'ws-1' })
+    await agentCallStore.putAgentCall('proj-2', { runId: 'run-r', status: 'running', startedAt: 1, updatedAt: 1 })
+    const t0 = Date.now()
+    const res = await app.request('/projects/proj-2/agent-call/run-r?waitMs=50', { headers: { ...SA, 'X-Shogo-Keepalive': '1' } })
+    expect(res.status).toBe(200)
+    const body = JSON.parse(await res.text())
+    expect(body).toMatchObject({ httpStatus: 200, status: 'running' })
+    expect(Date.now() - t0).toBeGreaterThanOrEqual(40)
   })
 })

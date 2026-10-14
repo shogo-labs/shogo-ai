@@ -1,0 +1,70 @@
+# SigNoz alert: chat time-to-first-token high
+#
+# Apply with `bun scripts/signoz-apply-alerts.ts`. Schema notes: see the module
+# README.
+#
+# Why: this is the number the user actually feels — from sending a message to
+# seeing anything render. `chat.ttft_ms` covers runtime resolve/wake, the
+# runtime accepting the turn (including its own wait for the agent gateway),
+# and the model's first token. A p95 above 15s for 15 minutes means a large
+# share of turns are sitting on a blank screen; the `chat.phase_ms` breakdown
+# says which part grew.
+
+alert: ChatTtftHigh
+alertType: METRIC_BASED_ALERT
+ruleType: threshold_rule
+schemaVersion: v2alpha1
+version: v5
+condition:
+  compositeQuery:
+    panelType: graph
+    queryType: builder
+    unit: ms
+    queries:
+      - type: builder_query
+        spec:
+          name: A
+          signal: metrics
+          aggregations:
+            - metricName: chat.ttft_ms.bucket
+              spaceAggregation: p95
+          legend: chat_ttft_p95_ms
+          stepInterval: 60s
+  selectedQueryName: A
+  thresholds:
+    kind: basic
+    spec:
+      - name: warning
+        op: above
+        matchType: on_average
+        target: 15000
+        channels: [platform-oncall]
+evaluation:
+  kind: rolling
+  spec:
+    evalWindow: 15m
+    frequency: 1m
+labels:
+  severity: warning
+  team: platform
+  incident_class: chat
+notificationSettings:
+  renotify:
+    enabled: true
+    interval: 12h
+    alertStates: [firing]
+annotations:
+  summary: "Chat time-to-first-token p95 above 15s for 15+ minutes"
+  description: |
+    p95 time from a chat message reaching the API to the first rendered frame
+    is above 15s.
+
+    Triage on the "Chat latency & metal wake" dashboard:
+    1. "Chat TTFT breakdown p95": resolve grew → runtime wakes (see the wake
+       panels and MetalResumedWakeSlow / MetalColdBootRatioHigh); gateway_wait
+       grew → runtimes are up but the agent gateway is slow to start;
+       model grew → AI provider / proxy latency, not infrastructure.
+    2. "Chat TTFT p95 by how the runtime was woken": cached/reused high too means
+       it is not a wake problem.
+    3. API logs: `[ChatLatency] slow first token` lines carry the full breakdown;
+       `chat.first_token` spans link to the request trace.

@@ -18,6 +18,7 @@
  */
 
 import { config } from './config'
+import { currentIdleWindow, setIdleDirective, type IdleDirective } from './idle-policy'
 import { metrics } from './metrics'
 import type { MetalWarmPool } from './pool'
 import { getRootfsRevision, getRootfsSha, maybeRebuildRootfs, maybeSelfUpdate, type DesiredAgent } from './self-update'
@@ -82,6 +83,8 @@ function payload(pool: MetalWarmPool) {
       localCount: cap.localCount,
     },
     metrics: metrics.snapshot().counters,
+    // Only meaningful when the reaper runs; the control plane's hysteresis reads `directiveTier`.
+    idle: config.idleSuspendMs > 0 ? currentIdleWindow(s.assigned.length) : undefined,
     ts: Date.now(),
   }
 }
@@ -90,6 +93,8 @@ interface RegisterResponse {
   ok?: boolean
   /** Version this host should be running (pull-based deploy). */
   desired?: DesiredAgent | null
+  /** Idle-suspend window for this host (see idle-policy.ts). */
+  idleSuspend?: IdleDirective | null
 }
 
 async function announce(pool: MetalWarmPool): Promise<RegisterResponse | null> {
@@ -152,6 +157,7 @@ export function startRegistration(pool: MetalWarmPool): () => void {
     if (stopped) return
     const res = await announce(pool)
     if (res) console.log(`[metal-agent] registered (heartbeat every ${config.registerIntervalMs}ms)`)
+    if (res?.idleSuspend) setIdleDirective(res.idleSuspend)
     // Pull-based deploy: converge to the version the control plane wants. Applies
     // only on a real change; a graceful restart follows (live microVMs survive).
     if (res?.desired) {

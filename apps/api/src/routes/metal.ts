@@ -21,9 +21,26 @@ import { getMetalPlacementRegistry } from '../lib/metal-placement-registry'
 import {
   registerMetalHost,
   getMetalWarmPoolController,
+  metalIdleDirectiveFor,
   workspaceRuntimeKey,
   type MetalHostRegistration,
 } from '../lib/metal-warm-pool-controller'
+
+function parseTier(v: unknown): 'relaxed' | 'aggressive' | undefined {
+  return v === 'aggressive' || v === 'relaxed' ? v : undefined
+}
+
+function parseHostIdle(raw: any): MetalHostRegistration['idle'] {
+  if (!raw || typeof raw !== 'object') return undefined
+  const tier = parseTier(raw.tier)
+  if (!tier) return undefined
+  return {
+    tier,
+    idleMs: Number(raw.idleMs ?? 0),
+    reason: String(raw.reason ?? 'unknown'),
+    directiveTier: parseTier(raw.directiveTier),
+  }
+}
 
 function expectedToken(): string | undefined {
   return process.env.METAL_REGISTER_TOKEN || process.env.SHOGO_INTERNAL_SECRET
@@ -117,7 +134,19 @@ export function metalRoutes(): Hono {
           }
         : undefined,
       metrics: body.metrics && typeof body.metrics === 'object' ? body.metrics : undefined,
+      idle: parseHostIdle(body.idle),
     })
+
+    // Idle-suspend window for this host, from its region's utilization. Absent on
+    // a registry/compute failure, which the host treats like a stale directive.
+    let idleSuspend = null
+    try {
+      // Hysteresis keys off the last tier WE handed out, not the host's effective
+      // one: a host forced aggressive by its own guard must not hold the region there.
+      idleSuspend = await metalIdleDirectiveFor(String(body.region ?? 'unknown'), parseHostIdle(body.idle)?.directiveTier)
+    } catch (err) {
+      console.warn(`[metal] idle directive failed for ${body.hostId}:`, (err as any)?.message ?? err)
+    }
 
     // Pull-based deploy: tell the host which agent version it should be running.
     // Best-effort — a DB blip must never break the liveness heartbeat, so the
@@ -129,7 +158,7 @@ export function metalRoutes(): Hono {
       console.warn(`[metal] resolveDesiredForHost failed for ${body.hostId}:`, (err as any)?.message ?? err)
     }
 
-    return c.json({ ok: true, desired })
+    return c.json({ ok: true, desired, idleSuspend })
   })
 
   // POST /api/internal/metal/release — publish a node-agent release to a

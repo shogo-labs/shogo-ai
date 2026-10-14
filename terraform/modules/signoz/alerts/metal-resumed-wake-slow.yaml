@@ -1,0 +1,73 @@
+# SigNoz alert: metal resumed wake slow
+#
+# Apply with `bun scripts/signoz-apply-alerts.ts`. Schema notes: see the module
+# README.
+#
+# Why: a resume from a local NVMe snapshot restores in well under a second and
+# an S3 pull in a few. `metal.wake_total_ms{mode="resumed"}` is the whole API
+# side of that wake (lease, placement, env, budget, host /assign), so a p95
+# above 5s means resumes themselves have regressed: the heavy semaphore is
+# queueing (host.heavy_wait), S3 pulls are slow (host.store_pull), or a
+# rehydrate after restore is doing real work. Cold boots are deliberately
+# excluded — they have their own alert (MetalColdBootRatioHigh).
+
+alert: MetalResumedWakeSlow
+alertType: METRIC_BASED_ALERT
+ruleType: threshold_rule
+schemaVersion: v2alpha1
+version: v5
+condition:
+  compositeQuery:
+    panelType: graph
+    queryType: builder
+    unit: ms
+    queries:
+      - type: builder_query
+        spec:
+          name: A
+          signal: metrics
+          aggregations:
+            - metricName: metal.wake_total_ms.bucket
+              spaceAggregation: p95
+          filter:
+            expression: "mode = 'resumed'"
+          legend: resumed_wake_p95_ms
+          stepInterval: 60s
+  selectedQueryName: A
+  thresholds:
+    kind: basic
+    spec:
+      - name: warning
+        op: above
+        matchType: on_average
+        target: 5000
+        channels: [platform-oncall]
+evaluation:
+  kind: rolling
+  spec:
+    evalWindow: 15m
+    frequency: 1m
+labels:
+  severity: warning
+  team: platform
+  incident_class: metal
+notificationSettings:
+  renotify:
+    enabled: true
+    interval: 12h
+    alertStates: [firing]
+annotations:
+  summary: "Metal resumed-wake p95 above 5s for 15+ minutes"
+  description: |
+    Snapshot resumes (not cold boots) are taking more than 5s at p95.
+
+    Triage on the "Chat latency & metal wake" dashboard:
+    1. "Wake phases p95": which phase grew? host.heavy_wait = queued behind
+       METAL_HEAVY_CONCURRENCY; host.store_pull = S3; host.restore = Firecracker;
+       host.rehydrate / host.repair_drift = post-restore archive work;
+       api.lease / api.placement_wait = control-plane contention.
+    2. Find a slow trace: `metal.get_pod_url` spans carry `wake.api.*_ms`,
+       `wake.host.*_ms`, `resolve.host` and `resolve.stale_reason`.
+    3. One host or all? Group the phases panel by host via the spans.
+
+    Runbook: docs/runbooks/metal-fleet.md

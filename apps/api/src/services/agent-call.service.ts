@@ -25,6 +25,7 @@
 import { randomUUID } from 'node:crypto'
 import type { Context } from 'hono'
 import { PROJECT_CALL_MESSAGE_AGENT, runChatSessionId } from '@shogo/shared-runtime/project-call-chat'
+import { putAgentCall } from '../lib/agent-call-store'
 
 export { runChatSessionId } from '@shogo/shared-runtime/project-call-chat'
 
@@ -38,6 +39,8 @@ export interface AgentCallRequest {
   wait?: boolean
   /** Reply timeout in ms when waiting (default 5 min, max 20 min). */
   timeoutMs?: number
+  /** With `wait: false`, record the outcome so `GET .../agent-call/:runId` can poll it. */
+  track?: boolean
   callerProjectId?: string
   /** Signed requester ticket for the callee, so it can act as the person behind the call. */
   requesterTicket?: string
@@ -185,7 +188,9 @@ function detachedContext(c: Context): Context {
  * runtime keeps matches the chat. Persistence failures never fail the call.
  *
  * With `wait: false` the API keeps the call going in the background and saves
- * the reply when it lands; the caller gets a 202 straight away.
+ * the reply when it lands; the caller gets a 202 straight away. Add
+ * `track: true` to also record the outcome in the agent-call store, where
+ * `GET .../agent-call/:runId` can poll it from any API replica.
  */
 export async function callProjectAgentAsChat(
   c: Context,
@@ -193,6 +198,9 @@ export async function callProjectAgentAsChat(
   workspaceId: string,
   req: AgentCallRequest,
 ): Promise<AgentCallOutcome> {
+  if (req.message && req.message.trim() && req.wait === false && req.track) {
+    return startTrackedCall(c, projectId, workspaceId, req)
+  }
   if (!req.message || !req.message.trim() || req.sessionId) {
     return callProjectAgent(c, projectId, workspaceId, req)
   }
@@ -225,6 +233,75 @@ export async function callProjectAgentAsChat(
   const reply = replyOf(outcome)
   if (reply) await saveCallReply(chatSessionId, reply)
   return { status: outcome.status, body: withChat(outcome.body) }
+}
+
+async function startTrackedCall(
+  c: Context,
+  projectId: string,
+  workspaceId: string,
+  req: AgentCallRequest,
+): Promise<AgentCallOutcome> {
+  const runId = req.runId?.trim() || randomUUID()
+  let chatSessionId: string | undefined
+  if (!req.sessionId) {
+    const candidate = runChatSessionId(projectId, runId)
+    if (await ensureCallSession(projectId, candidate, await callerName(req.callerProjectId), req.message)) {
+      chatSessionId = candidate
+    }
+  }
+  const sessionId = req.sessionId ?? chatSessionId
+  const startedAt = Date.now()
+  await putAgentCall(projectId, { status: 'running', runId, sessionId, chatSessionId, startedAt, updatedAt: startedAt })
+
+  const detached = detachedContext(c)
+  void callProjectAgent(detached, projectId, workspaceId, {
+    ...req,
+    runId,
+    sessionId,
+    wait: true,
+    timeoutMs: 20 * 60_000,
+  })
+    .then(async (outcome) => {
+      const ok = outcome.status >= 200 && outcome.status < 300
+      const reply = ok && typeof outcome.body?.reply === 'string' ? outcome.body.reply : null
+      if (reply?.trim() && chatSessionId) await saveCallReply(chatSessionId, reply)
+      const err = outcome.body?.error
+      await putAgentCall(projectId, {
+        status: ok ? 'completed' : 'failed',
+        runId,
+        reply,
+        sessionId: (typeof outcome.body?.sessionId === 'string' ? outcome.body.sessionId : undefined) ?? sessionId,
+        chatSessionId,
+        ...(ok
+          ? {}
+          : {
+              error: {
+                code: typeof err === 'object' && err ? err.code : undefined,
+                message:
+                  (typeof err === 'string' ? err : err?.message) ?? `Project agent call failed (HTTP ${outcome.status})`,
+              },
+            }),
+        startedAt,
+        updatedAt: Date.now(),
+      })
+    })
+    .catch(async (err) => {
+      console.warn('[AgentCall] tracked background call failed:', err?.message ?? err)
+      await putAgentCall(projectId, {
+        status: 'failed',
+        runId,
+        sessionId,
+        chatSessionId,
+        error: { code: 'agent_call_failed', message: err?.message ?? String(err) },
+        startedAt,
+        updatedAt: Date.now(),
+      }).catch(() => {})
+    })
+
+  return {
+    status: 202,
+    body: { status: 'accepted', tracked: true, runId, ...(sessionId ? { sessionId } : {}), ...(chatSessionId ? { chatSessionId } : {}) },
+  }
 }
 
 let runtimeUrlOverride: ((projectId: string) => Promise<string | null> | string | null) | null = null

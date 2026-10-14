@@ -72,6 +72,17 @@ describe('metalRoutes', () => {
     expect(body.hosts.detail[0].hostId).toBe('ash-1')
   })
 
+  it('returns the idle-suspend directive for the host region', async () => {
+    const quiet = (await (await req('/register', { method: 'POST', body: REG, token: 'secret-tok' })).json()) as any
+    expect(quiet.idleSuspend).toMatchObject({ tier: 'relaxed', fleetUtilPct: 0 })
+    expect(quiet.idleSuspend.idleMs).toBeGreaterThan(0)
+
+    const busy = { ...REG, load: { ...REG.load, assigned: 1000 } }
+    const hot = (await (await req('/register', { method: 'POST', body: busy, token: 'secret-tok' })).json()) as any
+    expect(hot.idleSuspend.tier).toBe('aggressive')
+    expect(hot.idleSuspend.idleMs).toBeLessThan(quiet.idleSuspend.idleMs)
+  })
+
   it('fails closed when no token is configured', async () => {
     delete process.env.METAL_REGISTER_TOKEN
     const res = await req('/register', { method: 'POST', body: REG, token: 'anything' })

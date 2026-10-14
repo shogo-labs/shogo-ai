@@ -53,6 +53,7 @@ import {
 } from './agent-attribution'
 
 import { spawn } from './child-process'
+import { excludePathspecs } from './git-pathspec'
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -415,7 +416,10 @@ export class GitWorkspaceSync {
       }
 
       // Stage everything (respects `.gitignore`).
-      const excludes = this.cfg.stageExcludes.map((p) => `:(exclude)${p}`)
+      const excludes = await excludePathspecs(
+        this.cfg.stageExcludes,
+        async (p) => (await spawnGit(['check-ignore', '-q', '--', p], workspaceDir, commitEnv)).exitCode === 0,
+      )
       await this.runGit(
         spawnGit,
         excludes.length ? ['add', '-A', '--', '.', ...excludes] : ['add', '-A'],

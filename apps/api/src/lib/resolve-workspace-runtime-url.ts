@@ -25,6 +25,12 @@
 import type { IProjectRuntime, IRuntimeManager } from './runtime/types'
 import { withWorkspaceSpawnLease } from './runtime/workspace-spawn-lease'
 import { isMetalEnabled as defaultIsMetalEnabled } from './metal-eligibility'
+import { metrics } from '@opentelemetry/api'
+
+const spawnLeaseWait = metrics.getMeter('shogo-metal-pool').createHistogram('metal.wake_phase_ms', {
+  description: 'Per-phase wall time of a runtime wake; api.* phases run in the API, host.* phases on the metal host',
+  unit: 'ms',
+})
 
 export type WorkspacePodMode = 'k8s' | 'metal' | 'host'
 
@@ -264,12 +270,14 @@ export async function resolveWorkspaceRuntimeUrl(
         return getMetalWarmPoolController().getMetalWorkspaceUrl(id, ids, resolverOpts)
       })
     const leaseKey = opts.anchorProjectId ? `proj:${opts.anchorProjectId}` : workspaceId
-    const url = await spawnLease(leaseKey, () =>
-      resolver(workspaceId, attachedProjectIds, {
+    const leaseStartedAt = performance.now()
+    const url = await spawnLease(leaseKey, () => {
+      spawnLeaseWait.record(performance.now() - leaseStartedAt, { phase: 'api.spawn_lease', mode: 'workspace' })
+      return resolver(workspaceId, attachedProjectIds, {
         anchorProjectId: opts.anchorProjectId,
         readonlyProjectIds: opts.readonlyProjectIds,
-      }),
-    )
+      })
+    })
     if (!opts.background) {
       try {
         const { getWorkspaceKeepWarm } = await import('./workspace-keep-warm')

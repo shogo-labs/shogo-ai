@@ -292,3 +292,44 @@ describe('reapIdle gates on real guest activity, not lastTouchedAt', () => {
     expect(await pool.isBusy('mute')).toBe(false)
   })
 })
+
+describe('reapIdle under the two-tier window', () => {
+  let dir: string
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'metal-idle-tier-'))
+  })
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  test('a relaxed window keeps VMs the aggressive one would suspend', async () => {
+    const pool = makePool(dir)
+    const RELAXED = 100 * IDLE_MS
+    pool.seed('idle-for-a-while', { lastRealActivityAt: Date.now() - 10 * IDLE_MS })
+
+    expect(await pool.reapIdle(RELAXED, { tier: 'relaxed' })).toEqual([])
+    expect(await pool.reapIdle(IDLE_MS, { tier: 'aggressive' })).toEqual(['idle-for-a-while'])
+  })
+
+  test('suspends longest-idle first and caps a pass', async () => {
+    const pool = makePool(dir)
+    const now = Date.now()
+    pool.seed('idle-5', { lastRealActivityAt: now - 5 * IDLE_MS })
+    pool.seed('idle-50', { lastRealActivityAt: now - 50 * IDLE_MS })
+    pool.seed('idle-20', { lastRealActivityAt: now - 20 * IDLE_MS })
+    pool.seed('active', { lastRealActivityAt: now })
+
+    expect(await pool.reapIdle(IDLE_MS, { maxPerPass: 2 })).toEqual(['idle-50', 'idle-20'])
+    expect(await pool.reapIdle(IDLE_MS, { maxPerPass: 2 })).toEqual(['idle-5'])
+    expect(pool.peek('active')).toBeDefined()
+  })
+
+  test('a mid-stream VM does not take a slot from the cap', async () => {
+    const pool = makePool(dir)
+    const now = Date.now()
+    pool.seed('streaming', { lastRealActivityAt: now - 100 * IDLE_MS, activeStreams: 1 })
+    pool.seed('quiet', { lastRealActivityAt: now - 10 * IDLE_MS })
+
+    expect(await pool.reapIdle(IDLE_MS, { maxPerPass: 1 })).toEqual(['quiet'])
+  })
+})

@@ -382,6 +382,17 @@ describe('pool host-mediated repo persist', () => {
       expect(a.workspaceOrigin).toBe('template')
     })
 
+    test('members restored from backup make it backup-origin even when the repo hydrate fails', async () => {
+      const { pool, run } = assignWorkspace({ url: 'https://store/ws/repo.git.tar.gz', bytes: 10, etag: '"ws-r1"' })
+      ;(pool as any).sourceRef = async () => ({ url: 'https://store/p1/project-src.tar.gz', bytes: 10, etag: '"p1-src"' })
+      ;(pool as any).hydrateRepo = async () => {
+        throw new Error('/pool/repo-hydrated failed (500)')
+      }
+      const a = await run
+      expect(a.repoUntrustedReason).toBeDefined()
+      expect(a.workspaceOrigin).toBe('backup')
+    })
+
     test('stays create-only when no durable repo exists yet', async () => {
       const { pool, seen, run } = assignWorkspace(null)
       const a = await run

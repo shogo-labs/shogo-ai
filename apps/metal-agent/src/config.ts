@@ -210,6 +210,23 @@ export const config = {
   idleSuspendMs: parseInt(env('METAL_IDLE_SUSPEND_MS', '0'), 10),
   /** How often the reaper scans assigned VMs for idleness. */
   reapIntervalMs: parseInt(env('METAL_REAP_INTERVAL_MS', '15000'), 10),
+  /**
+   * Most VMs one reaper pass suspends, longest-idle first. Each suspend is a
+   * backup + snapshot; when the window drops from relaxed to aggressive, a host
+   * holding hours of idle tail would otherwise spend one pass on all of it.
+   * 0 = no cap.
+   */
+  reapMaxPerPass: parseInt(env('METAL_REAP_MAX_PER_PASS', '20'), 10),
+  /** The control plane's per-host VM cap (its METAL_MAX_VMS_PER_HOST). */
+  maxVmsPerHost: parseInt(env('METAL_MAX_VMS_PER_HOST', '80'), 10),
+  /** Above this % of `maxVmsPerHost` assigned, use the aggressive idle window regardless of region. */
+  idleHostGuardPct: parseInt(env('METAL_IDLE_HOST_GUARD_PCT', '80'), 10),
+  /**
+   * Back up source of a VM resident this long with user activity since its last
+   * backup (pool.exportAllSource). Matters once the relaxed idle window keeps
+   * VMs up for hours. 0 disables.
+   */
+  sourceBackupIntervalMs: parseInt(env('METAL_SOURCE_BACKUP_INTERVAL_MS', '1800000'), 10),
 
   /**
    * Guest serial-log error watcher. In-guest failures (TLS "certificate is not

@@ -1695,8 +1695,12 @@ app.post('/agent/channels/disconnect', async (c) => {
 // Accepts AI SDK v3 format: { messages: [{ role, parts: [{ type: 'text', text }] }] }
 // Returns an AI SDK UI message stream so the frontend can use useChat().
 app.post('/agent/chat', async (c) => {
+  // Reported to the API as x-shogo-gateway-wait-ms: the part of a slow first
+  // message spent here, after the VM was up, waiting for the agent to start.
+  let gatewayWaitMs = 0
   if (!agentGateway || gatewayReadyPromise) {
     if (gatewayReadyPromise) {
+      const waitStartedAt = performance.now()
       const timeout = new Promise<never>((_, reject) =>
         setTimeout(() => reject(new Error('Gateway startup timeout')), 30_000)
       )
@@ -1704,7 +1708,10 @@ app.post('/agent/chat', async (c) => {
         await Promise.race([gatewayReadyPromise, timeout])
       } catch {
         return c.json({ error: 'Agent gateway still starting, please retry' }, 503)
+      } finally {
+        gatewayWaitMs = Math.round(performance.now() - waitStartedAt)
       }
+      if (gatewayWaitMs > 1000) console.log(`[AgentChat] waited ${gatewayWaitMs}ms for the agent gateway to start`)
     }
     if (!agentGateway) {
       return c.json({ error: 'Agent gateway not running' }, 503)
@@ -2138,6 +2145,7 @@ app.post('/agent/chat', async (c) => {
     const responseHeaders = new Headers(response.headers)
     responseHeaders.set('X-Turn-Id', turnId)
     responseHeaders.set('X-Chat-Session-Id', chatSessionKey)
+    responseHeaders.set('x-shogo-gateway-wait-ms', String(gatewayWaitMs))
     return new Response(wrappedStream, {
       status: response.status,
       headers: responseHeaders,

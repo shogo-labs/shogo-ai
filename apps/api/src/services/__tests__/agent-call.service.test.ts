@@ -41,6 +41,7 @@ mock.module('../../lib/tunnel-relay', () => ({
 }))
 
 const svc = await import('../agent-call.service')
+const agentCallStore = await import('../../lib/agent-call-store')
 
 // ─── fixtures ────────────────────────────────────────────────────────────────
 
@@ -323,5 +324,63 @@ describe('callProjectAgentAsChat — chat persistence', () => {
     for (let i = 0; i < 50 && !messages.some((m) => m.role === 'assistant'); i++) await new Promise((r) => setTimeout(r, 5))
     expect(forwarded.wait).toBe(true)
     expect(messages.find((m) => m.role === 'assistant')?.content).toBe('later reply')
+  })
+
+  describe('track=true', () => {
+    beforeEach(() => agentCallStore._testing.records.clear())
+
+    async function settled(runId: string) {
+      for (let i = 0; i < 100; i++) {
+        const rec = await agentCallStore.getAgentCall('proj-1', runId)
+        if (rec && rec.status !== 'running') return rec
+        await new Promise((r) => setTimeout(r, 5))
+      }
+      return agentCallStore.getAgentCall('proj-1', runId)
+    }
+
+    it('records running, then completed with the reply and chat id', async () => {
+      let release!: () => void
+      const gate = new Promise<void>((r) => { release = r })
+      globalThis.fetch = (async () => {
+        await gate
+        return new Response(JSON.stringify({ status: 'completed', reply: 'tracked reply' }), { status: 200 })
+      }) as any
+
+      const out = await svc.callProjectAgentAsChat(FAKE_CTX, 'proj-1', 'ws-1', { message: 'job', runId: 'run-t1', wait: false, track: true })
+      const chatId = svc.runChatSessionId('proj-1', 'run-t1')
+      expect(out.status).toBe(202)
+      expect(out.body).toMatchObject({ status: 'accepted', tracked: true, runId: 'run-t1', chatSessionId: chatId })
+      expect((await agentCallStore.getAgentCall('proj-1', 'run-t1'))?.status).toBe('running')
+
+      release()
+      const rec = await settled('run-t1')
+      expect(rec).toMatchObject({ status: 'completed', reply: 'tracked reply', chatSessionId: chatId })
+      expect(messages.find((m) => m.role === 'assistant')?.content).toBe('tracked reply')
+    })
+
+    it('records failed with the runtime error', async () => {
+      globalThis.fetch = (async () =>
+        new Response(JSON.stringify({ error: { code: 'agent_turn_failed', message: 'boom' } }), { status: 500 })) as any
+      await svc.callProjectAgentAsChat(FAKE_CTX, 'proj-1', 'ws-1', { message: 'job', runId: 'run-t2', wait: false, track: true })
+      const rec = await settled('run-t2')
+      expect(rec).toMatchObject({ status: 'failed', error: { code: 'agent_turn_failed', message: 'boom' } })
+    })
+
+    it('tracks calls with an explicit sessionId too, without creating a chat', async () => {
+      let forwarded: any = null
+      globalThis.fetch = (async (_url: any, init: any) => {
+        forwarded = JSON.parse(init.body)
+        return new Response(JSON.stringify({ status: 'completed', reply: 'ok' }), { status: 200 })
+      }) as any
+      const out = await svc.callProjectAgentAsChat(FAKE_CTX, 'proj-1', 'ws-1', {
+        message: 'job', runId: 'run-t3', sessionId: 'custom', wait: false, track: true,
+      })
+      expect(out.body).toMatchObject({ tracked: true, sessionId: 'custom' })
+      expect(out.body.chatSessionId).toBeUndefined()
+      const rec = await settled('run-t3')
+      expect(rec).toMatchObject({ status: 'completed', sessionId: 'custom' })
+      expect(forwarded).toMatchObject({ sessionId: 'custom', wait: true })
+      expect(sessions.size).toBe(0)
+    })
   })
 })

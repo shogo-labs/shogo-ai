@@ -23,6 +23,7 @@
  */
 
 import { spawn } from './child-process'
+import { excludePathspecs } from './git-pathspec'
 import { existsSync, mkdirSync, createReadStream, createWriteStream, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'fs'
 import { unlink } from 'fs/promises'
 import { tmpdir } from 'os'
@@ -414,7 +415,11 @@ export async function adoptHydratedRepo(
   let committedSha = headSha
   if (addPaths.length) {
     if (UNTRACK_DIRS.some((d) => existsSync(join(workspaceDir, d)))) ensureWorkspaceGitignore(workspaceDir)
-    const add = await git(['add', '-A', '--', ...addPaths, ':(exclude).shogo/local', ':(exclude)chat-files'])
+    const excludes = await excludePathspecs(
+      ['.shogo/local', 'chat-files'],
+      async (p) => (await git(['check-ignore', '-q', '--', p])).code === 0,
+    )
+    const add = await git(['add', '-A', '--', ...addPaths, ...excludes])
     if (add.code !== 0) throw new Error(`git add exited ${add.code}: ${add.stderr.trim().slice(0, 300)}`)
     const staged = await git(['diff', '--cached', '--quiet'])
     if (staged.code === 1) {

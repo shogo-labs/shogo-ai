@@ -46,6 +46,27 @@ export class Singleflight<T = unknown> {
   }
 }
 
+/**
+ * Runs calls for the same key one after another (every call runs, unlike
+ * Singleflight). For writes where a joiner must not be handed a result computed
+ * from older state than its own.
+ */
+export class KeyedMutex {
+  private tails = new Map<string, Promise<unknown>>()
+
+  async run<R>(key: string, fn: () => Promise<R>): Promise<R> {
+    const prev = this.tails.get(key) ?? Promise.resolve()
+    const p = prev.catch(() => {}).then(fn)
+    const tail = p.catch(() => {})
+    this.tails.set(key, tail)
+    try {
+      return await p
+    } finally {
+      if (this.tails.get(key) === tail) this.tails.delete(key)
+    }
+  }
+}
+
 export class Semaphore {
   private permits: number
   private queue: Array<() => void> = []
@@ -82,9 +103,14 @@ export class Semaphore {
     this.permits++
   }
 
-  /** Run `fn` holding one permit; releases even if `fn` throws. */
-  async run<R>(fn: () => Promise<R>): Promise<R> {
+  /**
+   * Run `fn` holding one permit; releases even if `fn` throws. `onAcquired`
+   * receives how long the caller queued for the permit.
+   */
+  async run<R>(fn: () => Promise<R>, onAcquired?: (waitMs: number) => void): Promise<R> {
+    const t0 = onAcquired ? performance.now() : 0
     await this.acquire()
+    onAcquired?.(performance.now() - t0)
     try {
       return await fn()
     } finally {

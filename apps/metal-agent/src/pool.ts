@@ -25,7 +25,8 @@ import { createHash } from 'crypto'
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { CacheIndex, type CacheEntry } from './cache-index'
-import { Semaphore, Singleflight } from './concurrency'
+import { KeyedMutex, Semaphore, Singleflight } from './concurrency'
+import { PhaseTimer, type StaleReason } from './phase-timer'
 import { HydrateProxy } from './hydrate-proxy'
 import { classConfig, config, isVmClassSupported, VM_CLASSES, type VmClass } from './config'
 import { allocatedBytes, diskUsage, type DiskUsage } from './disk'
@@ -242,6 +243,8 @@ export interface AssignedVm {
    * first request.
    */
   lastRealActivityAt?: number
+  /** Wall-clock of the last periodic source backup (in memory only; see exportAllSource). */
+  lastPeriodicSourceBackupAt?: number
   /**
    * Active agent message streams the guest reported at the last activity poll.
    * `> 0` means a live generation is in flight, so the idle reaper must not
@@ -663,6 +666,8 @@ export class MetalWarmPool {
   private inFlight = new Set<string>()
   /** Collapses concurrent open (assign|resume) calls for the same project. */
   private openFlight = new Singleflight<OpenResult | null>()
+  /** Why the most recent resume attempt for a project declined its snapshot; read by open(). */
+  private lastStaleReason = new Map<string, StaleReason>()
   /** Collapses concurrent suspend calls for the same project. */
   private suspendFlight = new Singleflight<SuspendedVm>()
   private recycleFlight = new Singleflight<RecycleReport>()
@@ -676,6 +681,12 @@ export class MetalWarmPool {
   private dataFlight = new Singleflight<boolean>()
   /** Same serialization for host-mediated `.git` exports (poll vs suspend). */
   private repoFlight = new Singleflight<boolean>()
+  /**
+   * Source backups (periodic vs suspend/rescue/recycle), one at a time per
+   * runtime. Every caller exports its own bytes: the suspend-time export must
+   * run after a periodic one, not race it to the same lineage precondition.
+   */
+  private sourceLock = new KeyedMutex()
   /**
    * Last writable-state change tag the guest reported, per project. Echoed back
    * on the next export so an unchanged project answers 304 without snapshotting
@@ -1264,11 +1275,18 @@ export class MetalWarmPool {
     bind?: { workspaceId?: string; attachedProjectIds?: string[] },
   ): Promise<OpenResult> {
     const r = await this.openFlight.run(projectId, async () => {
+      const timer = new PhaseTimer()
+      const done = (res: Omit<OpenResult, 'phases' | 'totalMs'>): OpenResult => ({
+        ...res,
+        phases: timer.phases(),
+        totalMs: timer.totalMs(),
+      })
       // Idempotent: if the project is already live here, hand back the same VM
       // rather than restoring a duplicate from the store (which a re-/assign
       // for a live project — e.g. a control-plane replica routing to the placed
       // host — would otherwise trigger).
       const live = this.assigned.get(projectId)
+      const liveT0 = performance.now()
       if (live) {
         // Only hand back the tracked VM if its firecracker process is still
         // alive AND the guest still answers HTTP. A dead process (crash, OOM-kill,
@@ -1307,7 +1325,8 @@ export class MetalWarmPool {
           }
           // `reused`: re-attached an already-running VM (no boot, no resume).
           // The control plane records this as a warm hit, not a cold miss.
-          return { handle: live.handle, mode: 'assigned' as const, reused: true }
+          timer.add('live_check', performance.now() - liveT0)
+          return done({ handle: live.handle, mode: 'assigned', reused: true })
         }
         const mute = this.mgr.isRunning(live.handle)
         if (mute) {
@@ -1322,18 +1341,22 @@ export class MetalWarmPool {
           )
         }
         await this.discardDeadVm(live, mute ? 'health-gate: guest mute' : 'health-gate: fc process gone')
+        timer.add('live_check', performance.now() - liveT0)
       }
-      if (await this.canResume(projectId)) {
+      let staleReason: StaleReason | undefined
+      if (await timer.time('can_resume', () => this.canResume(projectId))) {
         try {
-          const res = await this.resume(projectId, env)
+          const res = await this.resume(projectId, env, timer)
           if (res)
-            return {
+            return done({
               handle: res.assigned.handle,
-              mode: 'resumed' as const,
+              mode: 'resumed',
               source: res.source,
               readyMs: res.readyMs,
-            }
+            })
+          staleReason = this.lastStaleReason.get(projectId) ?? 'no_snapshot'
         } catch (err: any) {
+          staleReason = 'resume_error'
           // A resume can throw on an unrestorable snapshot (e.g. the dm CoW
           // store went missing). Never surface that as a hard open failure —
           // drop the unusable LOCAL entry and fall through to a cold boot so the
@@ -1344,9 +1367,12 @@ export class MetalWarmPool {
           )
           this.evictLocal(projectId)
         }
+      } else {
+        staleReason = 'no_snapshot'
       }
-      const a = await this.assign(projectId, env, bind)
-      return { handle: a.handle, mode: 'assigned' as const }
+      this.lastStaleReason.delete(projectId)
+      const a = await this.assign(projectId, env, bind, timer)
+      return done({ handle: a.handle, mode: 'assigned', staleReason })
     })
     // Always-on: paid tiers (control plane sets SHOGO_ALWAYS_ON) must never be
     // idle-suspended by the reaper. Re-assert on EVERY open — this is the one
@@ -1374,6 +1400,7 @@ export class MetalWarmPool {
     projectId: string,
     env: Record<string, string> = {},
     bind?: { workspaceId?: string; attachedProjectIds?: string[] },
+    timer = new PhaseTimer(),
   ): Promise<AssignedVm> {
     let vmClass = vmClassFromEnv(env)
     if (vmClass !== 'standard' && !isVmClassSupported(this.cfg, vmClass)) {
@@ -1392,16 +1419,28 @@ export class MetalWarmPool {
       vmClass = 'standard'
     }
     if (projectId.startsWith('ws:')) {
-      await this.flushMembersHeldElsewhere(projectId, workspaceMemberIdsFromEnv(env) ?? [])
-      env = await this.withConfirmedNewMembers(env)
+      await timer.time('flush_members', () => this.flushMembersHeldElsewhere(projectId, workspaceMemberIdsFromEnv(env) ?? []))
+      env = await timer.time('confirm_members', () => this.withConfirmedNewMembers(env))
     }
     let vm = this.claim(vmClass)
-    if (!vm) vm = await this.heavy.run(() => this.bootOne(false, vmClass))
+    if (!vm) {
+      const t0 = performance.now()
+      let waited = 0
+      vm = await this.heavy.run(
+        () => this.bootOne(false, vmClass),
+        (ms) => {
+          waited = ms
+          timer.add('heavy_wait', ms)
+        },
+      )
+      timer.add('boot', performance.now() - t0 - waited)
+    }
 
     // The claimed/booted VM is now off the pool and not yet in `assigned`. If
     // the guest /pool/assign call fails or times out we must stop it, or its FC
     // process leaks (tracked by no map). Guard the whole in-flight window.
     this.inFlight.add(vm.handle.id)
+    const guestAssignT0 = performance.now()
     try {
       const res = await fetch(`${vm.handle.agentUrl}/pool/assign`, {
         method: 'POST',
@@ -1419,6 +1458,7 @@ export class MetalWarmPool {
       throw err
     } finally {
       this.inFlight.delete(vm.handle.id)
+      timer.add('guest_assign', performance.now() - guestAssignT0)
     }
 
     const now = Date.now()
@@ -1461,7 +1501,9 @@ export class MetalWarmPool {
     try {
       const h: { hydrated: boolean; parentEtag?: string; lastModified?: number | null } = projectId.startsWith('ws:')
         ? { hydrated: false }
-        : await this.hydrateFromBackup(publishedSourceId(projectId) ?? projectId, vm.handle, env)
+        : await timer.time('hydrate_source', () =>
+            this.hydrateFromBackup(publishedSourceId(projectId) ?? projectId, vm.handle, env),
+          )
       if (h.hydrated) {
         a.workspaceOrigin = 'backup'
         a.backupParentEtag = h.parentEtag
@@ -1478,7 +1520,14 @@ export class MetalWarmPool {
 
     if (projectId.startsWith('ws:')) {
       try {
-        sourceTimes = await this.hydrateWorkspaceMembers(a, env)
+        sourceTimes = await timer.time('hydrate_members', () => this.hydrateWorkspaceMembers(a, env))
+        // Members restored from their durable backups are real source even if
+        // the merged-root repo hydrate below fails. Left at 'template', every
+        // suspend evicted the snapshot and every wake cold-booted.
+        if (Object.values(a.memberData ?? {}).some((m) => m.sourceParentEtag)) {
+          a.workspaceOrigin = 'backup'
+          this.writeLive(a)
+        }
       } catch (err: any) {
         console.error(`[pool] workspace member hydrate failed for ${projectId}:`, err?.message ?? err)
         this.assigned.delete(projectId)
@@ -1500,13 +1549,13 @@ export class MetalWarmPool {
     // untrusted is what stops that empty database from being exported over the
     // user's data — the exact incident this subsystem exists to prevent.
     if (projectId.startsWith('ws:')) {
-      await this.hydrateWorkspaceMemberData(a, env)
+      await timer.time('hydrate_data', () => this.hydrateWorkspaceMemberData(a, env))
     } else if (publishedSourceId(projectId)) {
       // Live site data is the published-data overlay below; the project's dev
       // database must not leak into the site.
     } else {
       try {
-        const d = await this.hydrateProjectData(projectId, vm.handle, env)
+        const d = await timer.time('hydrate_data', () => this.hydrateProjectData(projectId, vm.handle, env))
         if (d.hydrated) {
           a.dataParentEtag = d.parentEtag
           this.writeLive(a)
@@ -1530,7 +1579,7 @@ export class MetalWarmPool {
     // over the real one.
     if (homeStateEligible(projectId, publishedSubdomain)) {
       try {
-        const h = await this.hydrateHomeState(projectId, vm.handle, env)
+        const h = await timer.time('hydrate_home', () => this.hydrateHomeState(projectId, vm.handle, env))
         if (h === 'unsupported') a.homeExportUnsupported = true
         else if (h.hydrated) a.homeParentEtag = h.parentEtag
         this.writeLive(a)
@@ -1560,7 +1609,7 @@ export class MetalWarmPool {
       // HEAD would replace the source it just restored.
       const r = publishedSourceId(projectId)
         ? { hydrated: false as const, parentEtag: undefined }
-        : await this.hydrateRepo(projectId, vm.handle, env, sourceTimes)
+        : await timer.time('hydrate_repo', () => this.hydrateRepo(projectId, vm.handle, env, sourceTimes))
       if (r.hydrated) {
         a.repoParentEtag = r.parentEtag
         // A workspace runtime has no source backup of its own (members are
@@ -1593,7 +1642,7 @@ export class MetalWarmPool {
     // A failed hydrate leaves the VM unable to export, so its dev database can
     // never overwrite the live archive.
     if (publishedSubdomain) {
-      await this.hydratePublishedData(a, publishedSubdomain, vm.handle, env).catch((err) =>
+      await timer.time('hydrate_published', () => this.hydratePublishedData(a, publishedSubdomain, vm.handle, env)).catch((err) =>
         console.error(
           `[pool] published-data hydrate failed for ${publishedSubdomain} (serving the source's database; exports disabled):`,
           err?.message ?? err,
@@ -1835,12 +1884,14 @@ export class MetalWarmPool {
    */
   private async saveBackupToStore(a: AssignedVm): Promise<SourceSaveResult> {
     if (publishedSourceId(a.projectId)) return 'empty'
-    const bytes = await this.fetchExport(a.handle, a.runtimeToken)
-    if (!bytes) {
-      console.log(`[pool] no source to back up for ${a.projectId} (empty/new workspace)`)
-      return 'empty'
-    }
-    return this.storeSource(a, bytes)
+    return this.sourceLock.run(a.projectId, async () => {
+      const bytes = await this.fetchExport(a.handle, a.runtimeToken)
+      if (!bytes) {
+        console.log(`[pool] no source to back up for ${a.projectId} (empty/new workspace)`)
+        return 'empty'
+      }
+      return this.storeSource(a, bytes)
+    })
   }
 
   /**
@@ -1991,6 +2042,10 @@ export class MetalWarmPool {
 
   /** Back up each member's source. Returns the members whose latest source is NOT the durable backup. */
   private async saveWorkspaceMembersToStore(a: AssignedVm): Promise<Array<{ projectId: string; reason: string }>> {
+    return this.sourceLock.run(a.projectId, () => this.saveWorkspaceMembersUnlocked(a))
+  }
+
+  private async saveWorkspaceMembersUnlocked(a: AssignedVm): Promise<Array<{ projectId: string; reason: string }>> {
     const failed: Array<{ projectId: string; reason: string }> = []
     const { ids } = await this.workspaceMembersForBackup(a)
     for (const projectId of ids) {
@@ -2983,6 +3038,40 @@ export class MetalWarmPool {
     return n
   }
 
+  /**
+   * Back up source for VMs that have been resident a while. Source is otherwise
+   * only exported at suspend, and under the relaxed idle window a VM can stay
+   * up for hours: a host loss in that time would cost every edit since it was
+   * placed. Only VMs with user activity since their last backup are exported,
+   * so an idle tail costs nothing.
+   */
+  async exportAllSource(now = Date.now()): Promise<number> {
+    const every = this.cfg.sourceBackupIntervalMs ?? 0
+    if (every <= 0) return 0
+    let n = 0
+    for (const a of [...this.assigned.values()]) {
+      if (publishedSourceId(a.projectId) || a.repoHydratePending) continue
+      if (this.suspendFlight.has(a.projectId) || this.recycleFlight.has(a.projectId)) continue
+      const since = a.lastPeriodicSourceBackupAt ?? a.assignedAt
+      if (now - since < every) continue
+      if ((a.lastRealActivityAt ?? 0) <= since) continue
+      a.lastPeriodicSourceBackupAt = now
+      try {
+        if (a.projectId.startsWith('ws:')) {
+          const failed = await this.saveWorkspaceMembersToStore(a)
+          if (failed.length === 0) n++
+        } else if ((await this.saveBackupToStore(a)) === 'written') {
+          n++
+        }
+        metrics.inc(M.sourceBackupPeriodic)
+      } catch (err: any) {
+        metrics.inc(M.sourceBackupPeriodicFailed)
+        console.error(`[pool] periodic source backup for ${a.projectId} failed:`, err?.message ?? err)
+      }
+    }
+    return n
+  }
+
   /** Exponential backoff for a failing guest, capped at 30 minutes. */
   private dataExportBackoffMs(failures: number): number {
     const base = this.cfg.projectDataExportIntervalMs
@@ -3440,51 +3529,90 @@ export class MetalWarmPool {
    * compared (legacy snapshots), and an unreachable store does not block a
    * resume.
    */
-  protected async snapshotBehindStore(
-    projectId: string,
-    stamps: {
-      backupEtag?: string
-      repoEtag?: string
-      dataEtag?: string
-      homeEtag?: string
-      memberDataEtags?: Record<string, string>
-      memberSourceEtags?: Record<string, string>
-    },
-  ): Promise<string | null> {
+  protected async snapshotBehindStore(projectId: string, stamps: SnapshotStamps): Promise<string | null> {
+    return (await this.snapshotDrift(projectId, stamps))[0]?.detail ?? null
+  }
+
+  /**
+   * Every archive that has moved past the snapshot, in check order. Member
+   * archives are also written by sibling runtimes that mount the same project
+   * (a workspace session and its project previews), so member data drift is
+   * routine rather than a sign this snapshot's VM died unsuspended.
+   */
+  protected async snapshotDrift(projectId: string, stamps: SnapshotStamps): Promise<SnapshotDrift[]> {
     const norm = (e?: string | null) => (e ? e.replace(/"/g, '') : undefined)
-    const checks: Array<[string, string | undefined, () => Promise<ArchiveRef | null>]> = [
-      ['source', stamps.backupEtag, () => this.sourceRef(publishedSourceId(projectId) ?? projectId)],
-      ['repo', stamps.repoEtag, () => this.repoRef(projectId)],
-      ['data', stamps.dataEtag, () => this.projectDataRef(projectId)],
-      ['home', stamps.homeEtag, () => this.homeStateRef(projectId)],
-      ...Object.entries(stamps.memberDataEtags ?? {}).map(
-        ([memberId, etag]): [string, string | undefined, () => Promise<ArchiveRef | null>] => [
-          `member ${memberId} data`,
-          etag,
-          () => this.projectDataRef(memberId),
-        ],
-      ),
-      ...Object.entries(stamps.memberSourceEtags ?? {}).map(
-        ([memberId, etag]): [string, string | undefined, () => Promise<ArchiveRef | null>] => [
-          `member ${memberId} source`,
-          etag,
-          () => this.sourceRef(memberId),
-        ],
-      ),
+    type Check = { kind: StaleReason; what: string; stamped?: string; memberId?: string; ref: () => Promise<ArchiveRef | null> }
+    const checks: Check[] = [
+      { kind: 'source', what: 'source', stamped: stamps.backupEtag, ref: () => this.sourceRef(publishedSourceId(projectId) ?? projectId) },
+      { kind: 'repo', what: 'repo', stamped: stamps.repoEtag, ref: () => this.repoRef(projectId) },
+      { kind: 'data', what: 'data', stamped: stamps.dataEtag, ref: () => this.projectDataRef(projectId) },
+      { kind: 'home', what: 'home', stamped: stamps.homeEtag, ref: () => this.homeStateRef(projectId) },
+      ...Object.entries(stamps.memberDataEtags ?? {}).map(([memberId, etag]): Check => ({
+        kind: 'member_data',
+        what: `member ${memberId} data`,
+        stamped: etag,
+        memberId,
+        ref: () => this.projectDataRef(memberId),
+      })),
+      ...Object.entries(stamps.memberSourceEtags ?? {}).map(([memberId, etag]): Check => ({
+        kind: 'member_source',
+        what: `member ${memberId} source`,
+        stamped: etag,
+        memberId,
+        ref: () => this.sourceRef(memberId),
+      })),
     ]
-    for (const [what, stamped, ref] of checks) {
-      if (!stamped) continue
-      let current: string | undefined
-      try {
-        current = norm((await ref())?.etag)
-      } catch {
-        continue
-      }
-      if (current && current !== norm(stamped)) {
-        return `${what} archive (etag=${current}) is newer than the snapshot's (etag=${norm(stamped)})`
+    const results = await Promise.all(
+      checks
+        .filter((c) => c.stamped)
+        .map(async (c): Promise<SnapshotDrift | null> => {
+          let current: string | undefined
+          try {
+            current = norm((await c.ref())?.etag)
+          } catch {
+            return null
+          }
+          if (!current || current === norm(c.stamped)) return null
+          return {
+            kind: c.kind,
+            memberId: c.memberId,
+            detail: `${c.what} archive (etag=${current}) is newer than the snapshot's (etag=${norm(c.stamped)})`,
+          }
+        }),
+    )
+    return results.filter((d): d is SnapshotDrift => d !== null)
+  }
+
+  /**
+   * Drift a resume can repair in place by re-applying just that archive, as a
+   * cold boot would, instead of discarding the whole snapshot. Writable state
+   * only: the guest's sidecars are still quiesced from the snapshot, and the
+   * archive overlays a database and uploads without touching source or `.git`.
+   */
+  private repairableDrift(projectId: string, drift: SnapshotDrift[]): boolean {
+    return drift.every(
+      (d) =>
+        d.kind === 'member_data' ||
+        (d.kind === 'data' && !projectId.startsWith('ws:') && !publishedSourceId(projectId)),
+    )
+  }
+
+  private async repairDrift(a: AssignedVm, env: Record<string, string>, drift: SnapshotDrift[]): Promise<void> {
+    for (const d of drift) {
+      if (d.kind === 'member_data' && d.memberId) {
+        await this.hydrateMemberData(a, env, d.memberId, `/app/workspace/${d.memberId}`)
+      } else if (d.kind === 'data') {
+        try {
+          const r = await this.hydrateProjectData(a.projectId, a.handle, env)
+          if (r.hydrated) a.dataParentEtag = r.parentEtag
+        } catch (err: any) {
+          this.distrustData(a, `writable-state re-hydrate failed at resume (${err?.message ?? err})`)
+          console.error(`[pool] writable-state re-hydrate failed for ${a.projectId} at resume:`, err?.message ?? err)
+        }
       }
     }
-    return null
+    metrics.inc(M.snapshotDriftRepaired)
+    this.writeLive(a)
   }
 
   /**
@@ -3498,9 +3626,17 @@ export class MetalWarmPool {
   async resume(
     projectId: string,
     env: Record<string, string> = {},
+    timer = new PhaseTimer(),
   ): Promise<{ assigned: AssignedVm; apiMs: number; readyMs: number; source: 'local' | 'store' } | null> {
     let s = this.suspended.get(projectId)
     let source: 'local' | 'store' = 'local'
+    let repair: SnapshotDrift[] = []
+    const skipStale = (reason: StaleReason) => {
+      metrics.inc(M.staleSnapshotSkipped)
+      metrics.inc(`${M.staleSnapshotSkippedByReason}{reason="${reason}"}`)
+      this.lastStaleReason.set(projectId, reason)
+    }
+    this.lastStaleReason.delete(projectId)
 
     // Rootfs-identity gate for the hot local copy (mirrors the durable pull()).
     // A snapshot from a different golden rootfs would restore stale guest code,
@@ -3511,15 +3647,20 @@ export class MetalWarmPool {
         `[pool] local snapshot for ${projectId} is stale (rootfs ${s.rootfsIdentity} != ` +
           `${this.classRootfsIdentity(s.snapshot.vmClass ?? 'standard')}) — evicting and cold-booting for fresh guest code`,
       )
+      this.lastStaleReason.set(projectId, 'rootfs')
       this.evictLocal(projectId)
       s = undefined
     }
 
     if (s) {
-      const behind = await this.snapshotBehindStore(projectId, s)
-      if (behind) {
-        metrics.inc(M.staleSnapshotSkipped)
-        console.warn(`[pool] local snapshot for ${projectId} is behind durable storage — ${behind}; evicting it`)
+      const local = s
+      const drift = await timer.time('stale_check', () => this.snapshotDrift(projectId, local))
+      if (drift.length && this.repairableDrift(projectId, drift)) {
+        repair = drift
+        console.log(`[pool] local snapshot for ${projectId} drifted (${drift.map((d) => d.detail).join('; ')}) — resuming and re-applying`)
+      } else if (drift.length) {
+        skipStale(drift[0].kind)
+        console.warn(`[pool] local snapshot for ${projectId} is behind durable storage — ${drift[0].detail}; evicting it`)
         this.evictLocal(projectId)
         s = undefined
       }
@@ -3530,14 +3671,15 @@ export class MetalWarmPool {
         metrics.inc(M.resumeColdMiss)
         return null
       }
-      const meta = await this.store.head(projectId)
-      const behind = meta ? await this.snapshotBehindStore(projectId, meta) : null
-      if (behind) {
-        metrics.inc(M.staleSnapshotSkipped)
-        console.warn(`[pool] durable snapshot for ${projectId} is behind durable storage — ${behind}; cold-booting instead`)
+      const meta = await timer.time('store_head', () => this.store.head(projectId))
+      const drift = meta ? await timer.time('stale_check', () => this.snapshotDrift(projectId, meta)) : []
+      if (drift.length && !this.repairableDrift(projectId, drift)) {
+        skipStale(drift[0].kind)
+        console.warn(`[pool] durable snapshot for ${projectId} is behind durable storage — ${drift[0].detail}; cold-booting instead`)
         metrics.inc(M.resumeColdMiss)
         return null
       }
+      repair = drift
       // The durable store has no local entry to read a class off of yet, so the
       // freshness check validates against whatever class THIS open/resume call
       // was told to expect (env.SHOGO_RUNTIME_CLASS, same source of truth the
@@ -3546,11 +3688,19 @@ export class MetalWarmPool {
       // docker-class project, degrades safely to an unnecessary cold boot
       // rather than any risk of restoring against the wrong golden image.
       const requestedClass = vmClassFromEnv(env)
-      const pulled = await this.heavy.run(() =>
-        this.store.pull(projectId, this.cfg.snapDir, this.classRootfsIdentity(requestedClass)),
+      const pullT0 = performance.now()
+      let pullWait = 0
+      const pulled = await this.heavy.run(
+        () => this.store.pull(projectId, this.cfg.snapDir, this.classRootfsIdentity(requestedClass)),
+        (ms) => {
+          pullWait = ms
+          timer.add('heavy_wait', ms)
+        },
       )
+      timer.add('store_pull', performance.now() - pullT0 - pullWait)
       if (!pulled) {
         metrics.inc(M.resumeColdMiss)
+        if (meta) this.lastStaleReason.set(projectId, 'rootfs')
         return null // absent or stale → cold boot
       }
       await assertArtifacts(pulled.files)
@@ -3601,8 +3751,16 @@ export class MetalWarmPool {
     }
 
     const t0 = performance.now()
-    const handle = await this.heavy.run(() => this.mgr.restoreVM(s!.snapshot))
-    const apiMs = performance.now() - t0
+    let restoreWait = 0
+    const handle = await this.heavy.run(
+      () => this.mgr.restoreVM(s!.snapshot),
+      (ms) => {
+        restoreWait = ms
+        timer.add('heavy_wait', ms)
+      },
+    )
+    const apiMs = performance.now() - t0 - restoreWait
+    timer.add('restore', apiMs)
     // restoreVM self-cleans a partial restore; but a VM that restores yet never
     // becomes healthy (or fails rehydrate) is untracked here — stop it so the FC
     // process doesn't leak before open() falls back to a cold boot.
@@ -3610,6 +3768,7 @@ export class MetalWarmPool {
     let readyMs: number
     try {
       readyMs = await this.waitForHealth(handle, () => this.mgr.isRunning(handle))
+      timer.add('health', readyMs)
     } catch (err) {
       await this.mgr.stopVM(handle).catch(() => {})
       throw err
@@ -3662,14 +3821,20 @@ export class MetalWarmPool {
     // stale until a cold boot — the root cause of the "provider connection
     // errors" incidents. Best-effort: a guest that predates /pool/refresh-env
     // 404s and keeps serving with its prior env.
-    await this.refreshGuestEnv(handle, projectId, env).catch((err) =>
-      console.error(
-        `[pool] env refresh for ${projectId} failed (serving with prior env):`,
-        err?.message ?? err,
-      ),
-    )
+    await timer
+      .time('refresh_env', () => this.refreshGuestEnv(handle, projectId, env))
+      .catch((err) =>
+        console.error(
+          `[pool] env refresh for ${projectId} failed (serving with prior env):`,
+          err?.message ?? err,
+        ),
+      )
+    // Before the rehydrate hook, while the sidecars are still quiesced.
+    if (repair.length) await timer.time('repair_drift', () => this.repairDrift(a, env, repair))
     // After the env refresh, so restarted sidecars start with the fresh env.
-    await this.callGuestHook(handle.agentUrl, 'rehydrate', this.cfg.rehydrateTimeoutMs, a.runtimeToken)
+    await timer.time('rehydrate', () =>
+      this.callGuestHook(handle.agentUrl, 'rehydrate', this.cfg.rehydrateTimeoutMs, a.runtimeToken),
+    )
     metrics.inc(source === 'local' ? M.resumeLocalHits : M.resumeStoreHits)
     return { assigned: a, apiMs, readyMs: apiMs + readyMs, source }
   }
@@ -3924,28 +4089,37 @@ export class MetalWarmPool {
    * Suspend assigned VMs that have been idle past the threshold. Driven by the
    * reaper timer in server.ts. Returns the projectIds that were suspended.
    */
-  async reapIdle(idleMs = this.cfg.idleSuspendMs): Promise<string[]> {
+  async reapIdle(
+    idleMs = this.cfg.idleSuspendMs,
+    opts: { maxPerPass?: number; tier?: string } = {},
+  ): Promise<string[]> {
     if (idleMs <= 0) return []
     const now = Date.now()
+    const idleFor = (a: AssignedVm) => now - (a.lastRealActivityAt ?? a.assignedAt)
     // Always-on projects (paid tiers) are never idle-suspended — the parity for
     // Knative's min-scale=1. They still resume fine if the agent restarts, but
     // during normal operation they stay resident.
     // Gate on guest-observed activity, not lastTouchedAt: see
     // `AssignedVm.lastRealActivityAt`. Falling back to assignedAt keeps a VM
     // that has never reported activity on a window measured from placement.
-    const stale = [...this.assigned.values()].filter(
-      (a) => !a.alwaysOn && now - (a.lastRealActivityAt ?? a.assignedAt) >= idleMs,
-    )
+    // A long-running generation can outlast the idle window without any new
+    // external request bumping lastTouchedAt, so also skip any VM the last
+    // activity poll saw mid-stream — never snapshot away an active agent
+    // message. (The reaper timer polls activity immediately before this.)
+    const stale = [...this.assigned.values()]
+      .filter((a) => !a.alwaysOn && idleFor(a) >= idleMs && (a.activeStreams ?? 0) === 0)
+      .sort((x, y) => idleFor(y) - idleFor(x))
+    const cap = opts.maxPerPass ?? this.cfg.reapMaxPerPass ?? 0
+    if (cap > 0 && stale.length > cap) {
+      metrics.inc(M.idleReapDeferred, stale.length - cap)
+      stale.length = cap
+    }
     const done: string[] = []
     for (const a of stale) {
-      // A long-running generation can outlast the idle window without any new
-      // external request bumping lastTouchedAt, so also skip any VM the last
-      // activity poll saw mid-stream — never snapshot away an active agent
-      // message. (The reaper timer polls activity immediately before this.)
-      if ((a.activeStreams ?? 0) > 0) continue
       try {
         await this.suspend(a.projectId)
         done.push(a.projectId)
+        metrics.inc(`${M.idleSuspendedByTier}{tier="${opts.tier ?? 'static'}"}`)
       } catch (err: any) {
         console.error(`[pool] idle-suspend failed for ${a.projectId}:`, err?.message ?? err)
       }
@@ -4989,6 +5163,23 @@ export class MetalWarmPool {
   }
 }
 
+/** The durable-archive ETags a snapshot was taken against. */
+export interface SnapshotStamps {
+  backupEtag?: string
+  repoEtag?: string
+  dataEtag?: string
+  homeEtag?: string
+  memberDataEtags?: Record<string, string>
+  memberSourceEtags?: Record<string, string>
+}
+
+/** One durable archive that has moved past a snapshot. */
+export interface SnapshotDrift {
+  kind: StaleReason
+  memberId?: string
+  detail: string
+}
+
 export interface OpenResult {
   handle: FcVmHandle
   mode: 'assigned' | 'resumed'
@@ -4997,4 +5188,10 @@ export interface OpenResult {
   /** `mode:'assigned'` re-attached an already-running VM rather than a fresh
    * cold claim. Reported to the control plane so it records a warm hit. */
   reused?: boolean
+  /** Wall-clock ms per open phase (see PhaseTimer). */
+  phases?: Record<string, number>
+  /** Wall-clock ms for the whole open, including phases not broken out. */
+  totalMs?: number
+  /** Cold boot only: why no snapshot was resumed. */
+  staleReason?: StaleReason
 }

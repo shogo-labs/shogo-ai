@@ -29,6 +29,7 @@ import { injectE2eFault } from './e2e-faults'
 import { ControlFirewall } from './control-firewall'
 import { type GuardedInterval, guardedInterval } from './guarded-interval'
 import { HYDRATE_STREAM_PREFIX } from './hydrate-proxy'
+import { currentIdleWindow } from './idle-policy'
 import { M, metrics } from './metrics'
 import { MetalWarmPool } from './pool'
 import { PortForward } from './port-forward'
@@ -157,6 +158,9 @@ const server = Bun.serve({
           readyMs: r.readyMs,
           reused: r.reused,
           vmClass: r.handle.vmClass,
+          phases: r.phases,
+          totalMs: r.totalMs,
+          staleReason: r.staleReason,
         })
       }
 
@@ -355,6 +359,8 @@ if (config.serialWatch) {
 // Idle reaper: fold real guest traffic into idleness (activity poll), then
 // quiesce + snapshot assigned VMs that have gone quiet (free host RAM).
 let reaper: GuardedInterval | null = null
+let lastIdleTier: string | undefined
+let lastIdleReason: string | undefined
 if (config.idleSuspendMs > 0) {
   console.log(`[metal-agent] idle-suspend on: idleMs=${config.idleSuspendMs} scan=${config.reapIntervalMs}ms store=${config.snapStore}`)
   // Guarded: a pass is sequential and each suspend backs up source + writable
@@ -390,7 +396,16 @@ if (config.idleSuspendMs > 0) {
         if (ids.length) console.log(`[metal-agent] watchdog recycled: ${ids.join(', ')}`)
       })
       .catch((err) => console.error('[metal-agent] api watchdog error:', err?.message ?? err))
-      .then(() => pool.reapIdle())
+      .then(() => {
+        const w = currentIdleWindow(pool.status().assigned.length)
+        if (w.tier !== lastIdleTier || w.reason !== lastIdleReason) {
+          console.log(`[metal-agent] idle window: ${w.tier} ${w.idleMs}ms (${w.reason})`)
+          lastIdleTier = w.tier
+          lastIdleReason = w.reason
+        }
+        metrics.gauge(M.idleWindowMs, w.idleMs)
+        return pool.reapIdle(w.idleMs, { tier: w.tier })
+      })
       .then((ids) => {
         for (const id of ids) {
           fwd.remove(id)
@@ -493,6 +508,9 @@ if (config.projectDataExportIntervalMs > 0) {
         }),
         pool.exportAllHomeState().then((n) => {
           if (n) console.log(`[metal-agent] exported home directory for ${n} project(s)`)
+        }),
+        pool.exportAllSource().then((n) => {
+          if (n) console.log(`[metal-agent] backed up source for ${n} long-resident project(s)`)
         }),
       ]),
   )

@@ -188,6 +188,20 @@ export const M = {
   rescueDisk: 'metal_rescue_disk_extract_total',
   rescueFailed: 'metal_rescue_failed_quarantined_total',
   staleSnapshotSkipped: 'metal_stale_snapshot_skipped_total',
+  // Same events labelled `{reason="repo"|"member_data"|...}` (see StaleReason).
+  staleSnapshotSkippedByReason: 'metal_stale_snapshot_skipped_by_reason_total',
+  // Resumes that kept a snapshot whose writable-state archives had moved on,
+  // re-applying just those archives instead of cold-booting.
+  snapshotDriftRepaired: 'metal_snapshot_drift_repaired_total',
+  // Idle suspends labelled `{tier="relaxed"|"aggressive"|"static"}`, and VMs
+  // past the window left for a later pass by METAL_REAP_MAX_PER_PASS.
+  idleSuspendedByTier: 'metal_idle_suspended_by_tier_total',
+  idleReapDeferred: 'metal_idle_reap_deferred_total',
+  idleWindowMs: 'metal_idle_window_ms',
+  // Source backups taken mid-residency (pool.exportAllSource), separate from
+  // the one every suspend takes.
+  sourceBackupPeriodic: 'metal_source_backup_periodic_total',
+  sourceBackupPeriodicFailed: 'metal_source_backup_periodic_failed_total',
   // Host-mediated `.git` durability (see pool.saveRepoToStore).
   repoConflict: 'metal_repo_conflict_total',
   repoPromoted: 'metal_repo_unlinked_promoted_total',

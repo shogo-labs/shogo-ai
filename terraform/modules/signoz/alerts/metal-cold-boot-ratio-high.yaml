@@ -1,0 +1,94 @@
+# SigNoz alert: metal cold-boot ratio high
+#
+# Apply with `bun scripts/signoz-apply-alerts.ts`. Schema notes: see the module
+# README.
+#
+# Why: when a runtime that already has a snapshot cold-boots instead of
+# resuming, the user waits 20s+ instead of ~1s. That is what happened in
+# 2026-10: every workspace runtime stayed template-origin, its snapshot was
+# evicted on suspend, and perpetual member-data drift discarded the rest, so
+# nearly every wake was a cold boot while `metal.wake_latency_ms` (resumes
+# only) looked healthy. This watches the mix: cold boots (`assigned`) as a
+# share of all wakes that needed work (`resumed` + `assigned`).
+#
+# Brand-new projects legitimately cold-boot, so the threshold is a share, not a
+# count, and sustained over 30 minutes.
+
+alert: MetalColdBootRatioHigh
+alertType: METRIC_BASED_ALERT
+ruleType: threshold_rule
+schemaVersion: v2alpha1
+version: v5
+condition:
+  compositeQuery:
+    panelType: graph
+    queryType: builder
+    queries:
+      - type: builder_query
+        spec:
+          name: A
+          signal: metrics
+          disabled: true
+          aggregations:
+            - metricName: metal.wake_total_ms.count
+              timeAggregation: rate
+              spaceAggregation: sum
+          filter:
+            expression: "mode = 'assigned'"
+          stepInterval: 300s
+      - type: builder_query
+        spec:
+          name: B
+          signal: metrics
+          disabled: true
+          aggregations:
+            - metricName: metal.wake_total_ms.count
+              timeAggregation: rate
+              spaceAggregation: sum
+          filter:
+            expression: "mode IN ('assigned', 'resumed')"
+          stepInterval: 300s
+      - type: builder_formula
+        spec:
+          name: F1
+          expression: A / B
+          legend: cold_boot_ratio
+  selectedQueryName: F1
+  thresholds:
+    kind: basic
+    spec:
+      - name: warning
+        op: above
+        matchType: on_average
+        target: 0.4
+        channels: [platform-oncall]
+evaluation:
+  kind: rolling
+  spec:
+    evalWindow: 30m
+    frequency: 5m
+labels:
+  severity: warning
+  team: platform
+  incident_class: metal
+notificationSettings:
+  renotify:
+    enabled: true
+    interval: 12h
+    alertStates: [firing]
+annotations:
+  summary: "Over 40% of metal wakes are cold boots (30m)"
+  description: |
+    More than 40% of runtime wakes that needed work were cold boots rather than
+    snapshot resumes.
+
+    Triage on the "Chat latency & metal wake" dashboard:
+    1. "Cold boots by stale reason": which check is discarding snapshots?
+       repo/source/member_source = archive moved on (a lineage or backup bug);
+       rootfs = a golden-rootfs rebuild invalidated every snapshot (expected
+       briefly after a runtime-image release); no_snapshot = never suspended
+       cleanly (look for durable-push refusals / template-origin runtimes).
+    2. "Resume outcomes per host": is it one host (local cache lost) or fleet-wide?
+    3. `metal.get_pod_url` spans carry `resolve.stale_reason` per wake.
+
+    Runbook: docs/runbooks/metal-fleet.md

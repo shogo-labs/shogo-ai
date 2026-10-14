@@ -15,7 +15,9 @@
 import { Hono } from "hono"
 import { resolve } from "path"
 import { existsSync } from "fs"
-import { trace, SpanStatusCode } from "@opentelemetry/api"
+import { context, propagation, trace, SpanStatusCode } from "@opentelemetry/api"
+import { ChatLatency } from "../lib/chat-latency"
+import { captureWake } from "../lib/wake-capture"
 
 import { prisma } from "../lib/prisma"
 import { loadAccess } from "../lib/authz"
@@ -1123,6 +1125,7 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
     return chatTracer.startActiveSpan("chat.proxy", {
       attributes: { "project.id": projectId },
     }, async (chatSpan) => {
+    const latency = new ChatLatency("project", chatSpan)
     try {
       const project = await validateProject(projectId)
       if (!project) {
@@ -1186,7 +1189,9 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
           attributes: { "project.id": projectId },
         }, async (podSpan) => {
           try {
-            const url = await getProjectUrl(projectId)
+            const { value: url, wake } = await captureWake(() => getProjectUrl(projectId))
+            latency.resolved(wake)
+            podSpan.setAttribute("wake.mode", wake?.mode ?? "none")
             podSpan.setAttribute("pod.url", url)
             podSpan.setAttribute("pod.resolve_ms", Date.now() - podStartTime)
             podSpan.setStatus({ code: SpanStatusCode.OK })
@@ -1527,11 +1532,26 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
         }
 
         try {
-          const response = await fetch(`${podUrl}${chatEndpoint}`, {
-            method: "POST",
-            headers,
-            body,
-            signal: fetchSignal,
+          const response = await chatTracer.startActiveSpan("chat.upstream_connect", {
+            attributes: { attempt },
+          }, async (connectSpan) => {
+            try {
+              propagation.inject(context.active(), headers)
+              const r = await fetch(`${podUrl}${chatEndpoint}`, {
+                method: "POST",
+                headers,
+                body,
+                signal: fetchSignal,
+              })
+              connectSpan.setAttribute("http.status_code", r.status)
+              return r
+            } catch (err: any) {
+              connectSpan.recordException(err)
+              connectSpan.setStatus({ code: SpanStatusCode.ERROR, message: err?.message })
+              throw err
+            } finally {
+              connectSpan.end()
+            }
           })
 
           // The TCP connection succeeded — reset the connection-error
@@ -1600,6 +1620,7 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
           }
 
           if (metalChat) clearTimeout(fetchTimeoutTimer)
+          latency.upstreamHeaders(response)
 
           // Stream the response back
           // Copy response headers
@@ -1683,6 +1704,7 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
                     trackingChunks.push(value)
                     trackingNotify?.()
                     trackingNotify = null
+                    latency.observe(value)
                     try { controller.enqueue(value) } catch {
                       if (clientEnqueueErrors === 0) {
                         console.log(`[ProjectChat:Stream] Client disconnected at chunk #${chunkCount} — stream continues for tracking/persistence`)

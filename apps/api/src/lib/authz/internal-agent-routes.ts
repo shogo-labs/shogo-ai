@@ -21,6 +21,7 @@ export const INTERNAL_AGENT_ROUTES: Readonly<Record<string, string>> = {
   'GET /projects/:projectId/config': 'project:read',
   'PATCH /projects/:projectId/config': 'project:update|project.settings:manage',
   'POST /projects/:projectId/agent-call': 'project:update',
+  'GET /projects/:projectId/agent-call/:runId': 'project:update',
 }
 
 const AGENT_SURFACES: readonly RegExp[] = [
@@ -31,7 +32,7 @@ const AGENT_SURFACES: readonly RegExp[] = [
   /^\/chat-sessions\/:chatSessionId\/transcript$/,
   /^\/projects\/:projectId\/attachments(?:\/:attachedProjectId)?$/,
   /^\/projects\/:projectId\/config$/,
-  /^\/projects\/:projectId\/agent-call$/,
+  /^\/projects\/:projectId\/agent-call(?:\/:runId)?$/,
 ]
 
 /** True for internal routes an agent uses to list or change projects. */

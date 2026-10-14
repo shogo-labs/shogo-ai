@@ -17,9 +17,12 @@
 
 import { join, resolve } from 'path'
 
-import { Hono } from 'hono'
+import { Hono, type Context } from 'hono'
+import { context, propagation, SpanStatusCode, trace } from '@opentelemetry/api'
 
 import type { IRuntimeManager } from '../lib/runtime'
+import { ChatLatency } from '../lib/chat-latency'
+import { captureWake } from '../lib/wake-capture'
 import { prisma } from '../lib/prisma'
 import * as billingService from '../services/billing-runtime'
 import { getModelTier, resolveModelId } from '@shogo/model-catalog'
@@ -127,6 +130,8 @@ async function loadRuntimeArgs(
   await assertWorkspaceSessionAccess(workspaceId, sessionId, userId)
   return readWorkspaceSessionRuntimeArgs(workspaceId, sessionId)
 }
+
+const chatTracer = trace.getTracer('shogo-api-chat')
 
 export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
   const router = new Hono()
@@ -569,7 +574,31 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
   // disconnect never aborts the runtime, and trackUsageFromStream for
   // persistence + server-side auto-resume + billing close. Runtime
   // resolution always uses the merged-root workspace runtime.
-  router.post('/workspaces/:workspaceId/chat', async (c) => {
+  router.post('/workspaces/:workspaceId/chat', (c) =>
+    chatTracer.startActiveSpan(
+      'chat.proxy',
+      { attributes: { 'workspace.id': c.req.param('workspaceId'), 'chat.route': 'workspace' } },
+      async (span) => {
+        try {
+          const res = await handleWorkspaceChat(c, new ChatLatency('workspace', span))
+          span.setAttribute('chat.status', res.status)
+          if (res.status >= 500) span.setStatus({ code: SpanStatusCode.ERROR, message: `status ${res.status}` })
+          return res
+        } catch (err: any) {
+          span.recordException(err)
+          span.setStatus({ code: SpanStatusCode.ERROR, message: err?.message })
+          throw err
+        } finally {
+          span.end()
+        }
+      },
+    ),
+  )
+
+  async function handleWorkspaceChat(
+    c: Context<any, '/workspaces/:workspaceId/chat'>,
+    latency: ChatLatency,
+  ): Promise<Response> {
     const auth = await authorize(c)
     if ('res' in auth) return auth.res
     const workspaceId = c.req.param('workspaceId')
@@ -741,7 +770,26 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
     const billingProjectId: string | null = attachedProjectIds[0] ?? null
 
     // Resolve the unconditional merged-root workspace runtime.
-    const runtimeRes = await resolveOr501(c, workspaceId, attachedProjectIds, 'WorkspaceChat', runtimeExtra, auth.kind)
+    const runtimeRes = await chatTracer.startActiveSpan(
+      'chat.get_pod_url',
+      { attributes: { 'workspace.id': workspaceId } },
+      async (podSpan) => {
+        try {
+          const { value, wake } = await captureWake(() =>
+            resolveOr501(c, workspaceId, attachedProjectIds, 'WorkspaceChat', runtimeExtra, auth.kind),
+          )
+          latency.resolved(wake)
+          podSpan.setAttribute('wake.mode', wake?.mode ?? 'none')
+          return value
+        } catch (err: any) {
+          podSpan.recordException(err)
+          podSpan.setStatus({ code: SpanStatusCode.ERROR, message: err?.message })
+          throw err
+        } finally {
+          podSpan.end()
+        }
+      },
+    )
     if ('res' in runtimeRes) return runtimeRes.res
     let podUrl = runtimeRes.url
 
@@ -811,12 +859,29 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
           return new Response(null, { status: 499 })
         }
         try {
-          const upstream = await fetch(`${podUrl}/agent/chat`, {
-            method: 'POST',
-            headers,
-            body,
-            signal: fetchSignal,
-          })
+          const upstream = await chatTracer.startActiveSpan(
+            'chat.upstream_connect',
+            { attributes: { attempt } },
+            async (connectSpan) => {
+              try {
+                propagation.inject(context.active(), headers)
+                const r = await fetch(`${podUrl}/agent/chat`, {
+                  method: 'POST',
+                  headers,
+                  body,
+                  signal: fetchSignal,
+                })
+                connectSpan.setAttribute('http.status_code', r.status)
+                return r
+              } catch (err: any) {
+                connectSpan.recordException(err)
+                connectSpan.setStatus({ code: SpanStatusCode.ERROR, message: err?.message })
+                throw err
+              } finally {
+                connectSpan.end()
+              }
+            },
+          )
 
           if (!upstream.ok) {
             const errorText = await upstream.text()
@@ -857,6 +922,7 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
             )
           }
 
+          latency.upstreamHeaders(upstream)
           // Copy response headers (minus hop-by-hop), add CORS + expose the
           // turn-ledger headers so the browser can read them cross-origin.
           const responseHeaders = new Headers()
@@ -931,6 +997,7 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
                     trackingNotify?.()
                     trackingNotify = null
                     streamTrace.mark('upstream', value.byteLength)
+                    latency.observe(value)
                     try {
                       controller.enqueue(value)
                     } catch {
@@ -1095,7 +1162,7 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
           )
       }
     }
-  })
+  }
 
   // Resume an active workspace turn stream (AI SDK resume URL pattern:
   // ${chatPostUrl}/${sessionId}/stream). Optional ?fromSeq=N for delta replay,

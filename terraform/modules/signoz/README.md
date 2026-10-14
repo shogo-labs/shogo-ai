@@ -69,6 +69,14 @@ they're managed separately as YAML/JSON files under this directory:
   100% the host cannot start a microVM and every /assign there fails.
 - `alerts/metal-wake-latency-high.yaml` — warns when metal wake p95
   exceeds 15s for 10+ minutes (sleep/wake degraded to cold-start feel).
+- `alerts/metal-resumed-wake-slow.yaml` — warns when snapshot resumes
+  (`metal.wake_total_ms{mode="resumed"}`, the API's whole /assign time) pass
+  5s at p95 for 15+ minutes.
+- `alerts/metal-cold-boot-ratio-high.yaml` — warns when cold boots exceed 40%
+  of wakes that needed work for 30+ minutes (snapshots being discarded or
+  never taken; the 2026-10 20s-wake regression).
+- `alerts/chat-ttft-high.yaml` — warns when chat time-to-first-token
+  (`chat.ttft_ms`) passes 15s at p95 for 15+ minutes.
 - `alerts/metal-host-disk-pressure.yaml` — warns when a metal host's
   NVMe cache stays above 85% for 10+ minutes (GC not keeping up; wakes
   degrade to slower S3 pulls).
@@ -91,6 +99,12 @@ they're managed separately as YAML/JSON files under this directory:
   used%, wake-latency quantiles, assignment source mix, hit-rate, and
   host-error/no-host rates. Feeds off the `metal.*` OTel series from the
   API plus the per-host gauges folded from each agent heartbeat.
+- `dashboards/chat-latency.json` — chat time-to-first-token by route and wake
+  mode with its resolve/headers/gateway/model breakdown, wake end-to-end and
+  per-phase timings (API and host), cold boots by stale reason, and the
+  two-tier idle policy (region utilization, tier per host, suspends by tier,
+  periodic source backups). Schema v6 builder queries, checked against
+  `/api/v5/query_range`; import with `POST /api/v2/dashboards`.
 
 ### Applying alerts
 

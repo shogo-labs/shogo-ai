@@ -7,6 +7,7 @@ import {
   MetalWarmPoolController,
   NoMetalHostError,
   isAssignTimeout,
+  parseHostCounterName,
   workspaceRuntimeKey,
 } from '../metal-warm-pool-controller'
 import {
@@ -755,5 +756,27 @@ describe('control-plane auth headers', () => {
     expect(captured.length).toBeGreaterThan(1)
     const bare = captured.filter((c) => !c.headers.Authorization).map((c) => c.url)
     expect(bare).toEqual([])
+  })
+})
+
+describe('parseHostCounterName', () => {
+  it('passes a bare counter through', () => {
+    expect(parseHostCounterName('metal_resume_cold_miss_total')).toEqual({ counter: 'metal_resume_cold_miss_total' })
+  })
+
+  it('lifts prometheus-style labels into attributes', () => {
+    expect(parseHostCounterName('metal_stale_snapshot_skipped_by_reason_total{reason="member_data"}')).toEqual({
+      counter: 'metal_stale_snapshot_skipped_by_reason_total',
+      reason: 'member_data',
+    })
+    expect(parseHostCounterName('metal_control_unauthenticated_total{path="/vms",reason="missing"}')).toEqual({
+      counter: 'metal_control_unauthenticated_total',
+      path: '/vms',
+      reason: 'missing',
+    })
+  })
+
+  it('never lets a label overwrite the counter or host identity', () => {
+    expect(parseHostCounterName('x{counter="y",host_id="h",reason="r"}')).toEqual({ counter: 'x', reason: 'r' })
   })
 })

@@ -59,6 +59,8 @@ import { resolveConnectionAuth } from '../services/github-auth'
 import { CREDENTIAL_APPROVAL_HEADER } from '../services/integration-credentials/approvals'
 import { handOffRequesterTicket, REQUESTER_TICKET_HEADER, verifyRequesterTicket, type RequesterTicket } from '../lib/requester-ticket'
 import { signResumeToken } from '../services/integration-credentials/resume'
+import { waitForAgentCall } from '../lib/agent-call-store'
+import { keepAliveJson, KEEPALIVE_HEADER, wantsKeepAlive } from '../lib/keepalive-json'
 
 /** Where a connect link handed out in this turn should pick the conversation back up. */
 type CredentialUseSource = 'shared' | 'personal' | 'delegate' | 'approved'
@@ -2025,6 +2027,10 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
    * given a `WEBHOOK_TOKEN`, so the external `/agent/hooks/*` path can't be
    * reused here. `wait=true` blocks for the reply (bounded by `timeoutMs`,
    * default 5 min, max 20 min); otherwise the runtime acks with 202.
+   * `wait=false, track=true` records the outcome for
+   * `GET .../agent-call/:runId`. Callers behind Cloudflare send
+   * `X-Shogo-Keepalive: 1` to get whitespace pings while a `wait=true` call
+   * is pending (see `keepAliveJson`).
    */
   app.post('/projects/:projectId/agent-call', async (c) => {
     const projectId = c.req.param('projectId')
@@ -2057,15 +2063,47 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     const agentCallSvc = await loadAgentCall?.()
     if (!agentCallSvc) return unavailable(c, 'Cross-project agent calls')
     const { callProjectAgentAsChat } = agentCallSvc
-    const outcome = await callProjectAgentAsChat(c, projectId, authz.workspaceId, {
+    const wait = body.wait !== false
+    const work = callProjectAgentAsChat(c, projectId, authz.workspaceId, {
       message: body.message,
       runId: typeof body.runId === 'string' ? body.runId : undefined,
       sessionId: typeof body.sessionId === 'string' ? body.sessionId : undefined,
-      wait: body.wait !== false,
+      wait,
       timeoutMs: typeof body.timeoutMs === 'number' ? body.timeoutMs : undefined,
+      track: body.track === true,
       callerProjectId,
       ...(requesterTicket ? { requesterTicket } : {}),
     })
+    if (wait && wantsKeepAlive(c.req.header(KEEPALIVE_HEADER))) return keepAliveJson(work)
+    const outcome = await work
+    return c.json(outcome.body, outcome.status as any)
+  })
+
+  /**
+   * GET /api/internal/projects/:projectId/agent-call/:runId?waitMs=
+   *
+   * Long-poll a call started with `wait=false, track=true`. Returns as soon as
+   * the call is `completed` / `failed`, or the `running` record after
+   * `waitMs` (default 60s, max 90s). With `X-Shogo-Keepalive: 1` the wait is
+   * padded with whitespace pings so Cloudflare does not cut it off.
+   */
+  app.get('/projects/:projectId/agent-call/:runId', async (c) => {
+    const projectId = c.req.param('projectId')
+    const runId = c.req.param('runId')
+    const authz = await authorizeLifecycleProject(c, projectId)
+    if (!authz) return c.json({ error: 'Unauthorized' }, 401)
+    const denied = await enforceProjectPermission(c, authz.identity, authz.workspaceId, projectId, 'project:update')
+    if (denied) return denied
+
+    const requested = Number(c.req.query('waitMs'))
+    const waitMs = Number.isFinite(requested) ? Math.min(Math.max(requested, 0), 90_000) : 60_000
+    const work = waitForAgentCall(projectId, runId, waitMs, { signal: c.req.raw.signal }).then((record) =>
+      record
+        ? { status: 200, body: record }
+        : { status: 404, body: { error: { code: 'agent_call_unknown', message: `No tracked call ${runId} for this project.` } } },
+    )
+    if (wantsKeepAlive(c.req.header(KEEPALIVE_HEADER))) return keepAliveJson(work)
+    const outcome = await work
     return c.json(outcome.body, outcome.status as any)
   })
   return app
