@@ -89,8 +89,8 @@ test.describe("dark mode surfaces", () => {
     await page.goto("/")
     const sidebar = page.getByRole("navigation", { name: "App sidebar" })
     await sidebar.waitFor({ state: "visible", timeout: 30_000 })
-    const chat = sidebar.getByRole("link", { name: "Chat", exact: true }).getByText("Chat", { exact: true })
-    expectDarkReadable("sidebar", await surfaceOf(chat), { opaque: false })
+    const heading = sidebar.getByText("Workspace agent", { exact: true })
+    expectDarkReadable("sidebar", await surfaceOf(heading), { opaque: false })
     await attach(page, "sidebar", sidebar)
   })
 

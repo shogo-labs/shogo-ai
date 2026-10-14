@@ -49,7 +49,7 @@ async function waitForIdle(page: Page) {
 
 async function openProject(page: Page, api: APIRequestContext) {
   await page.goto("/")
-  await page.getByRole("link", { name: "Chat", exact: true }).waitFor({
+  await page.getByRole("navigation", { name: "App sidebar" }).waitFor({
     state: "visible",
     timeout: 20_000,
   })
