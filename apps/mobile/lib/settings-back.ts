@@ -31,3 +31,21 @@ export function leaveSettings(
   }
   router.replace(SETTINGS_WIDE_FALLBACK_HREF)
 }
+
+/**
+ * Way out of Chat preferences (`/c/settings`).
+ *
+ * That page is a workspace page, but the workspace sidebar is hidden for any
+ * path containing "/settings" (see `(app)/_layout.tsx`), so it is the one `/c`
+ * page with no chrome to leave by. History-back is the right answer when it
+ * exists — it returns to the channels panel or chat it was opened from — and a
+ * cold deep link has none, so fall back to the workspace rather than the
+ * account settings page's projects list.
+ */
+export function leaveChatPreferences(router: SettingsBackRouter): void {
+  if (router.canGoBack()) {
+    router.back()
+    return
+  }
+  router.replace(APP_HOME_HREF)
+}

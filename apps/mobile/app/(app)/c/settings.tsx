@@ -7,6 +7,8 @@
  */
 import { useEffect, useState } from 'react'
 import { Platform, Pressable, ScrollView, Switch, Text, TextInput, View } from 'react-native'
+import { useRouter } from 'expo-router'
+import { ArrowLeft } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { useActiveWorkspace } from '../../../hooks/useActiveWorkspace'
 import { useWorkspaceExperience } from '../../../hooks/useWorkspaceExperience'
@@ -16,6 +18,7 @@ import { useCustomEmojiFeed } from '../../../hooks/useCustomEmoji'
 import { CustomEmojiCard, UserGroupsCard } from '../../../components/team-chat/WorkspaceChatAdmin'
 import type { NotifyLevel } from '../../../lib/team-chat-api'
 import { expiryFrom, type ClearAfter } from '../../../lib/team-chat-state'
+import { leaveChatPreferences } from '../../../lib/settings-back'
 
 const STATUS_PRESETS = [
   { emoji: '📅', text: 'In a meeting', minutes: 60 },
@@ -95,6 +98,7 @@ function useDesktopPermission(): [string, () => void] {
 }
 
 export default function TeamChatSettings() {
+  const router = useRouter()
   const workspace = useActiveWorkspace()
   const experience = useWorkspaceExperience()
   const workspaceId: string | null = experience.kind === 'team' ? workspace?.id ?? null : null
@@ -153,6 +157,15 @@ export default function TeamChatSettings() {
   return (
     <ScrollView className="flex-1 bg-background" contentContainerStyle={{ paddingBottom: 48 }}>
       <View className="w-full self-center px-6 pt-6" style={{ maxWidth: 720 }}>
+        <Pressable
+          onPress={() => leaveChatPreferences(router)}
+          hitSlop={8}
+          className="-ml-2 mb-3 h-9 w-9 items-center justify-center rounded-full border border-border bg-background active:bg-muted"
+          accessibilityRole="button"
+          accessibilityLabel="Go back"
+        >
+          <ArrowLeft size={20} className="text-foreground" />
+        </Pressable>
         <View className="flex-row items-center">
           <Text className="flex-1 text-2xl font-semibold text-foreground">Chat preferences</Text>
           {saving ? <Text className="text-xs text-muted-foreground">Saving…</Text> : null}
