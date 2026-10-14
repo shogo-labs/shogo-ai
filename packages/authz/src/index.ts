@@ -10,6 +10,7 @@ export {
   canAssignWorkspaceRole,
   canAssignProjectRole,
   canManageWorkspaceMember,
+  canManageWorkspaceOwner,
   canManageProjectMember,
   type AccessFacts,
   type EffectiveAccess,

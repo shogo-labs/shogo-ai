@@ -92,6 +92,51 @@ describe('workspace role grants', () => {
   })
 })
 
+describe('owner rows are peer-managed', () => {
+  test('a super admin without an owner seat cannot promote to owner', async () => {
+    const target = await wsMember('member')
+    const res = await call(app, as(w.users.superAdmin), 'PATCH', `/api/members/${target.memberId}`, { role: 'owner' })
+    expect(res.status).toBe(403)
+    expect((await db.member.findUnique({ where: { id: target.memberId } }))?.role).toBe('member')
+  })
+
+  test('a super admin without an owner seat cannot demote or remove an owner', async () => {
+    const coOwner = await wsMember('owner')
+    expect((await call(app, as(w.users.superAdmin), 'PATCH', `/api/members/${coOwner.memberId}`, { role: 'admin' })).status).toBe(403)
+    expect((await call(app, as(w.users.superAdmin), 'DELETE', `/api/members/${coOwner.memberId}`)).status).toBe(403)
+    expect((await db.member.findUnique({ where: { id: coOwner.memberId } }))?.role).toBe('owner')
+  })
+
+  test('everything below the owner role is unaffected for a super admin', async () => {
+    const target = await wsMember('member')
+    expect((await call(app, as(w.users.superAdmin), 'PATCH', `/api/members/${target.memberId}`, { role: 'admin' })).status).toBe(200)
+    expect((await call(app, as(w.users.superAdmin), 'DELETE', `/api/members/${target.memberId}`)).status).toBe(200)
+  })
+
+  test('an owner promotes a member to owner, and demotes or removes a co-owner', async () => {
+    const promoted = await wsMember('member')
+    expect((await call(app, as(w.users.owner), 'PATCH', `/api/members/${promoted.memberId}`, { role: 'owner' })).status).toBe(200)
+    expect((await db.member.findUnique({ where: { id: promoted.memberId } }))?.role).toBe('owner')
+
+    const coOwner = await wsMember('owner')
+    expect((await call(app, as(w.users.owner), 'PATCH', `/api/members/${coOwner.memberId}`, { role: 'admin' })).status).toBe(200)
+
+    const removed = await wsMember('owner')
+    expect((await call(app, as(w.users.owner), 'DELETE', `/api/members/${removed.memberId}`)).status).toBe(200)
+  })
+
+  test('a super admin who also holds an owner seat may manage owners', async () => {
+    const ws = await db.workspace.create({
+      data: { name: 'Owned', slug: `owned-${crypto.randomUUID().slice(0, 8)}`, kind: 'team' },
+    })
+    await db.member.create({ data: { userId: w.users.superAdmin, workspaceId: ws.id, role: 'owner' } })
+    const other = await db.member.create({
+      data: { userId: await newUser(), workspaceId: ws.id, role: 'owner' },
+    })
+    expect((await call(app, as(w.users.superAdmin), 'PATCH', `/api/members/${other.id}`, { role: 'admin' })).status).toBe(200)
+  })
+})
+
 describe('last-owner invariant', () => {
   test('the only owner cannot leave or demote themselves', async () => {
     const ws = await db.workspace.create({ data: { name: 'Solo', slug: `solo-${crypto.randomUUID().slice(0, 8)}`, kind: 'team' } })

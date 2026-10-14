@@ -98,6 +98,10 @@ import {
 } from "../../lib/billing-config";
 import { usePlatformConfig } from "../../lib/platform-config";
 import { openWebAppSession } from "../../lib/openWebAppSession";
+import {
+  canManageMemberRow,
+  roleOptionsFor,
+} from "../../lib/workspace-member-role";
 import { usePostHogSafe } from "../../contexts/posthog";
 import { EVENTS, trackEvent } from "../../lib/analytics";
 import { useCloudBillingSummary } from "../../hooks/useCloudBillingSummary";
@@ -1688,12 +1692,17 @@ const PeopleTab = observer(function PeopleTab() {
     }
   };
 
-  const { can } = usePermissions({ workspaceId: currentWorkspace?.id });
+  const { can, workspaceRole } = usePermissions({
+    workspaceId: currentWorkspace?.id,
+  });
   const canManageMembers = can("workspace.members:manage");
-  const canManageOwners = can("workspace.owners:manage");
+  const isOwner = workspaceRole === "owner";
   const canViewMemberAnalytics = can("workspace.analytics:read");
-  const canManageMember = (member: { role?: string }) =>
-    canManageMembers && (member.role !== "owner" || canManageOwners);
+  const canManageMember = (member: { role?: string; userId?: string }) =>
+    canManageMemberRow(
+      { canManageMembers, isOwner, isSelf: member.userId === user?.id },
+      member.role
+    );
 
   const projects = useProjectCollection();
   const projectGuests = useMemo(() => {
@@ -1775,7 +1784,23 @@ const PeopleTab = observer(function PeopleTab() {
       await actions.updateMemberRole(memberId, newRole, user?.id || "");
       setMenuState(null);
       await loadPeopleData();
-    } catch {}
+    } catch (err) {
+      setMenuState(null);
+      toast.show({
+        placement: "top",
+        duration: 5000,
+        render: ({ id }: { id: string }) => (
+          <Toast nativeID={id} variant="outline" action="error">
+            <ToastTitle>Could not change the role</ToastTitle>
+            <ToastDescription>
+              {err instanceof Error && err.message
+                ? err.message
+                : "Please try again."}
+            </ToastDescription>
+          </Toast>
+        ),
+      });
+    }
   };
 
   const handleRemoveMember = useCallback(
@@ -1965,7 +1990,7 @@ const PeopleTab = observer(function PeopleTab() {
       {filteredMembers.map((member: any) => {
         const isCurrentUser = member.userId === user?.id;
         const canSeeInsight = canViewMemberAnalytics || isCurrentUser;
-        const canEditMember = canManageMember(member) && !isCurrentUser;
+        const canEditMember = canManageMember(member);
         const insight = memberInsightMap.get(member.userId);
         const avatarColor = ROLE_COLORS[member.role] || "bg-primary";
         const resolved = userMap[member.userId];
@@ -2926,10 +2951,7 @@ const PeopleTab = observer(function PeopleTab() {
                 <Text className="text-base font-semibold text-foreground mb-1">
                   Select role
                 </Text>
-                {(canManageOwners
-                  ? (["owner", "admin", "member", "viewer"] as const)
-                  : (["admin", "member", "viewer"] as const)
-                ).map((r) => {
+                {roleOptionsFor({ isOwner }).map((r) => {
                   const activeMember = workspaceMembers.find(
                     (m: any) => m.id === menuState?.memberId
                   );

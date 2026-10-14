@@ -103,18 +103,27 @@ export function permissionList(access: EffectiveAccess): Permission[] {
 }
 
 /**
+ * Owner rows are peer-managed: only a member whose own workspace role is
+ * `owner` may grant the owner role, change an owner's role, or remove an
+ * owner. The permission set alone is not enough — a super admin who does not
+ * hold the owner seat in this workspace cannot touch owner rows.
+ */
+export function canManageWorkspaceOwner(actor: EffectiveAccess): boolean {
+  return actor.workspaceRole === 'owner'
+}
+
+/**
  * No-escalation rule for workspace roles: an actor may grant (or revoke) a
  * role only when they hold `workspace.members:manage` and the role is at or
- * below their own. Granting or touching `owner` additionally requires
- * `workspace.owners:manage`.
+ * below their own. Granting `owner` follows the peer rule above.
  */
 export function canAssignWorkspaceRole(
   actor: EffectiveAccess,
   role: WorkspaceRole,
 ): boolean {
+  if (role === 'owner') return canManageWorkspaceOwner(actor)
   if (actor.isSuperAdmin) return true
   if (!actor.permissions.has('workspace.members:manage')) return false
-  if (role === 'owner') return actor.permissions.has('workspace.owners:manage')
   return workspaceRoleRank(role) <= workspaceRoleRank(actor.workspaceRole)
 }
 

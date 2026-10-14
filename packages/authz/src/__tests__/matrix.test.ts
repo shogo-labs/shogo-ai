@@ -13,6 +13,7 @@ import {
   canAssignWorkspaceRole,
   canManageProjectMember,
   canManageWorkspaceMember,
+  canManageWorkspaceOwner,
   governsAllProjects,
   permissionList,
   resolveAccess,
@@ -208,7 +209,22 @@ describe('managing existing members', () => {
     expect(canManageWorkspaceMember(ws('member'), 'viewer')).toBe(false)
     expect(canManageWorkspaceMember(ws('admin'), null)).toBe(true)
     expect(canManageWorkspaceMember(ws('member'), null)).toBe(false)
-    expect(canManageWorkspaceMember(resolveAccess({ isSuperAdmin: true }), 'owner')).toBe(true)
+  })
+
+  test('owner rows are peer-managed: the seat, not the permission, decides', () => {
+    const superAdmin = resolveAccess({ isSuperAdmin: true })
+    expect(canManageWorkspaceOwner(superAdmin)).toBe(false)
+    expect(canAssignWorkspaceRole(superAdmin, 'owner')).toBe(false)
+    expect(canManageWorkspaceMember(superAdmin, 'owner')).toBe(false)
+
+    // A super admin who also holds an owner seat in the workspace may.
+    const superAdminOwner = resolveAccess({ isSuperAdmin: true, workspaceRole: 'owner' })
+    expect(canManageWorkspaceOwner(superAdminOwner)).toBe(true)
+    expect(canManageWorkspaceMember(superAdminOwner, 'owner')).toBe(true)
+
+    // Everything below the owner role still follows the permission set.
+    expect(canAssignWorkspaceRole(superAdmin, 'admin')).toBe(true)
+    expect(canManageWorkspaceMember(superAdmin, 'admin')).toBe(true)
   })
 
   test('project: project admins manage up to admin, editors nobody', () => {
