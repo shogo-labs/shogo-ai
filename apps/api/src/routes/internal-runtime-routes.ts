@@ -1194,16 +1194,19 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
   /**
    * GET /api/internal/projects/:projectId/integrations/policies
    *
-   * The project's saved "acts as" policies. The runtime only consults the
-   * resolver for providers listed here; everything else keeps its default
-   * behavior.
+   * The project's "acts as" policies: what it saved, plus GitHub's default
+   * when it saved none and GitHub is available here. The runtime only
+   * consults the resolver for providers listed here; everything else keeps
+   * its default behavior.
    */
   app.get('/projects/:projectId/integrations/policies', async (c) => {
     const projectId = c.req.param('projectId')
     if (!projectId) return c.json({ error: 'Missing projectId' }, 400)
     if (!(await validateAuth(c, projectId))) return c.json({ error: 'Unauthorized' }, 401)
-    const { listPolicies } = await import('../services/integration-credentials')
-    return c.json({ ok: true, policies: await listPolicies(projectId) })
+    const { getPolicy, listPolicies } = await import('../services/integration-credentials')
+    const policies = await listPolicies(projectId)
+    if (loadGitHub && !policies.some((p) => p.provider === 'github')) policies.unshift(await getPolicy(projectId, 'github'))
+    return c.json({ ok: true, policies })
   })
 
   /**

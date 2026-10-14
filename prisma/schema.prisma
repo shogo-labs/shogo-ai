@@ -80,6 +80,7 @@ model User {
   conversationMessages ConversationMessage[]
   integrationConnections UserIntegrationConnection[]
   integrationGrants    UserIntegrationGrant[]
+  integrationWorkspaceGrants UserIntegrationWorkspaceGrant[]
   identityLinks        UserIdentityLink[]
 
   @@index([createdAt])
@@ -217,6 +218,7 @@ model Workspace {
   liveSessionMeters      LiveSessionMeter[]
   storageUsage           StorageUsage?
   starredProjects        StarredProject[]
+  integrationGrants      UserIntegrationWorkspaceGrant[]
   agentTasks             AgentTask[]
   agentSchedules         AgentSchedule[]
   workspaceEvents        WorkspaceEvent[]
@@ -1111,6 +1113,8 @@ model UserIntegrationGrant {
   userId    String
   projectId String
   provider  String
+  /// allow | deny. Overrides the person's workspace grant for this one project.
+  effect    String    @default("allow")
   createdAt DateTime  @default(now())
   revokedAt DateTime?
 
@@ -1120,6 +1124,28 @@ model UserIntegrationGrant {
   @@unique([userId, projectId, provider])
   @@index([projectId])
   @@map("user_integration_grants")
+}
+
+/// A person's consent for agents across one workspace to act as them on a
+/// provider, when they are the one asking. Per-project UserIntegrationGrant
+/// rows override it either way.
+model UserIntegrationWorkspaceGrant {
+  id          String    @id @default(uuid())
+  userId      String
+  workspaceId String
+  provider    String
+  /// own (agents they created) | all (every agent in the workspace) | selected (only per-project grants)
+  scope       String    @default("own")
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  revokedAt   DateTime?
+
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, workspaceId, provider])
+  @@index([workspaceId])
+  @@map("user_integration_workspace_grants")
 }
 
 model StarredProject {

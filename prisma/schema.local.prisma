@@ -62,6 +62,7 @@ model User {
   conversationMessages ConversationMessage[]
   integrationConnections UserIntegrationConnection[]
   integrationGrants    UserIntegrationGrant[]
+  integrationWorkspaceGrants UserIntegrationWorkspaceGrant[]
   identityLinks           UserIdentityLink[]
 
   @@map("users")
@@ -165,6 +166,7 @@ model Workspace {
   liveSessionMeters      LiveSessionMeter[]
   storageUsage           StorageUsage?
   starredProjects        StarredProject[]
+  integrationGrants      UserIntegrationWorkspaceGrant[]
   agentTasks             AgentTask[]
   agentSchedules         AgentSchedule[]
   workspaceEvents        WorkspaceEvent[]
@@ -957,6 +959,7 @@ model UserIntegrationGrant {
   userId    String
   projectId String
   provider  String
+  effect    String    @default("allow")
   createdAt DateTime  @default(now())
   revokedAt DateTime?
 
@@ -966,6 +969,24 @@ model UserIntegrationGrant {
   @@unique([userId, projectId, provider])
   @@index([projectId])
   @@map("user_integration_grants")
+}
+
+model UserIntegrationWorkspaceGrant {
+  id          String    @id @default(uuid())
+  userId      String
+  workspaceId String
+  provider    String
+  scope       String    @default("own")
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  revokedAt   DateTime?
+
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, workspaceId, provider])
+  @@index([workspaceId])
+  @@map("user_integration_workspace_grants")
 }
 
 model StarredProject {

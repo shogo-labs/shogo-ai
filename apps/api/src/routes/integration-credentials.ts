@@ -14,30 +14,49 @@
  *
  * User-scoped:
  * - GET    /me/integrations                 - personal connections and grants
+ * - GET    /me/integrations/:provider/access?projectId= - whether that agent can act as me
  * - DELETE /me/integrations/grants/:grantId - revoke one project's access
  * - DELETE /me/integrations/:provider       - disconnect (revokes every grant for it)
+ *
+ * The caller's own grant for a workspace (under /workspaces so writes route
+ * to the workspace's home region):
+ * - GET    /workspaces/:workspaceId/integrations/:provider/my-access - scope + every agent's access
+ * - PUT    same                                                      - { scope }: own | all | selected
+ * - DELETE same                                                      - stop every agent there
+ * - PUT    /workspaces/:workspaceId/integrations/:provider/my-access/agents/:projectId
+ *          - { allowed: true | false | null } (null: back to the workspace scope)
  */
 
 import { Hono } from 'hono'
 import type { Context } from 'hono'
+import { accessibleProjectsWhere, loadAccess } from '../lib/authz'
 import { getFrontendUrl } from '../lib/cloud-urls'
 import { prisma } from '../lib/prisma'
 import {
   canActForProject,
   canEditCredentialPolicies,
+  clearProjectGrant,
   deletePersonalConnection,
   getCredentialProvider,
   getPolicy,
+  getWorkspaceGrant,
   grantAccess,
+  hasActiveGrant,
   isValidProviderId,
+  isWorkspaceGrantScope,
+  isWorkspaceMember,
   listPolicies,
   listUserIntegrations,
+  listWorkspaceAgentAccess,
   personalAccountFor,
   personalConnectUrl,
   PolicyValidationError,
   revokeGrant,
+  revokeWorkspaceGrant,
   savePolicy,
   setDelegate,
+  setWorkspaceGrant,
+  WORKSPACE_GRANT_SCOPES,
   CHAIN_STEPS,
   type ActorFallback,
   type ActorMode,
@@ -64,7 +83,37 @@ function authUserId(c: Context): string | null {
   return auth.userId
 }
 
-/** Who may change what an agent acts as: workspace owners and admins, and the project's creator. */
+/** What the consent page offers: a workspace scope, or just the agent the link came from. */
+type ConsentScope = 'own' | 'all' | 'project'
+
+/**
+ * Record what someone allowed from an agent's consent link. A workspace
+ * scope always covers the agent they consented from, even one they didn't
+ * create.
+ */
+async function applyConsent(
+  userId: string,
+  projectId: string,
+  provider: string,
+  scope: string,
+  usesGrants: boolean,
+): Promise<void> {
+  if (usesGrants && (scope === 'own' || scope === 'all')) {
+    const project = await prisma.project.findUnique({ where: { id: projectId }, select: { workspaceId: true } })
+    if (project && (await isWorkspaceMember(userId, project.workspaceId))) {
+      await setWorkspaceGrant(userId, project.workspaceId, provider, scope)
+      if (!(await hasActiveGrant(userId, projectId, provider))) await grantAccess(userId, projectId, provider)
+      return
+    }
+  }
+  await grantAccess(userId, projectId, provider)
+}
+
+/** A provider whose personal connections are gated by grants (not Composio, which keeps its own). */
+function grantedProvider(provider: string) {
+  const adapter = isValidProviderId(provider) ? getCredentialProvider(provider) : null
+  return adapter?.supportsPersonal && adapter.personal ? adapter : null
+}
 
 function page(title: string, body: string): string {
   return (
@@ -73,6 +122,8 @@ function page(title: string, body: string): string {
     `body{font-family:-apple-system,system-ui,sans-serif;max-width:440px;margin:64px auto;padding:0 20px;color:#111}` +
     `h1{font-size:20px}p{line-height:1.5;color:#444}button,a.btn{font:inherit;padding:10px 16px;border-radius:10px;border:1px solid #ddd;background:#fff;cursor:pointer;text-decoration:none;color:#111;display:inline-block}` +
     `button.primary{background:#111;color:#fff;border-color:#111}.row{display:flex;gap:8px;margin-top:20px}` +
+    `fieldset{border:1px solid #e5e5e5;border-radius:10px;padding:8px 14px;margin:16px 0 0}legend{padding:0 4px;color:#444}` +
+    `label{display:block;margin:8px 0}` +
     `</style></head><body>${body}</body></html>`
   )
 }
@@ -263,7 +314,10 @@ export function integrationCredentialRoutes(config: IntegrationCredentialRoutesC
     if (!adapter?.supportsPersonal) {
       return c.html(page('Not available', '<h1>Not available</h1><p>This integration only uses the project account.</p>'), 404)
     }
-    const project = await prisma.project.findUnique({ where: { id: projectId }, select: { name: true } })
+    const project = await prisma.project.findUnique({
+      where: { id: projectId },
+      select: { name: true, workspaceId: true, workspace: { select: { name: true } } },
+    })
     const label = adapter.label(provider)
     const connected = adapter.personal ? !!(await getPersonalConnection(userId, provider)) : true
     // Only carry the resume token for the person it was made for.
@@ -271,15 +325,44 @@ export function integrationCredentialRoutes(config: IntegrationCredentialRoutesC
     const resumeFor = verifyResumeToken(resume)?.userId === userId ? resume : undefined
     const state = signPersonalConnectState({ userId, provider, projectId, ...(resumeFor ? { resume: resumeFor } : {}) })
     const action = c.req.path
+    const agentName = project?.name ?? 'this agent'
+    const offerWorkspace = !!adapter.personal && !!project && (await isWorkspaceMember(userId, project.workspaceId))
+    if (!offerWorkspace) {
+      return c.html(
+        page(
+          `Allow ${agentName} to use ${label}`,
+          `<h1>Let ${escapeHtml(agentName)} act as you on ${escapeHtml(label)}?</h1>` +
+            `<p>When you ask this agent to do something on ${escapeHtml(label)}, it will do it with your account, ` +
+            `so issues, comments, and pull requests show you as the author. Other people's requests use their own accounts.</p>` +
+            `<p>You can revoke this any time in Settings → Integrations.</p>` +
+            `<form method="post" action="${escapeHtml(action)}">` +
+            `<input type="hidden" name="state" value="${escapeHtml(state)}">` +
+            `<input type="hidden" name="scope" value="project">` +
+            `<div class="row"><button class="primary" type="submit">${connected ? 'Allow' : `Allow and connect ${escapeHtml(label)}`}</button>` +
+            `<a class="btn" href="${escapeHtml(getFrontendUrl())}">Cancel</a></div></form>`,
+        ),
+      )
+    }
+    const workspaceName = project.workspace?.name ?? 'this workspace'
+    const current = await getWorkspaceGrant(userId, project.workspaceId, provider)
+    const selected: ConsentScope = current && current.scope !== 'selected' ? current.scope : 'own'
+    const option = (value: ConsentScope, text: string) =>
+      `<label><input type="radio" name="scope" value="${value}"${selected === value ? ' checked' : ''}> ${escapeHtml(text)}</label>`
     return c.html(
       page(
-        `Allow ${project?.name ?? 'this agent'} to use ${label}`,
-        `<h1>Let ${escapeHtml(project?.name ?? 'this agent')} act as you on ${escapeHtml(label)}?</h1>` +
-          `<p>When you ask this agent to do something on ${escapeHtml(label)}, it will do it with your account, ` +
-          `so issues, comments, and pull requests show you as the author. Other people's requests use their own accounts.</p>` +
-          `<p>You can revoke this any time in Settings → Integrations.</p>` +
+        `Let agents use your ${label} account`,
+        `<h1>Let agents act as you on ${escapeHtml(label)}?</h1>` +
+          `<p>When you ask an agent to do something on ${escapeHtml(label)}, it will do it with your account, ` +
+          `so commits, issues, and pull requests show you as the author. Agents only use your account for your own requests; ` +
+          `other people's requests use their own accounts.</p>` +
           `<form method="post" action="${escapeHtml(action)}">` +
           `<input type="hidden" name="state" value="${escapeHtml(state)}">` +
+          `<fieldset><legend>Which agents in ${escapeHtml(workspaceName)}?</legend>` +
+          option('own', 'Agents I create') +
+          option('all', `Every agent in ${workspaceName}`) +
+          option('project', `Only ${agentName}`) +
+          `</fieldset>` +
+          `<p>You can change this, or pick agents one by one, any time in Settings → Integrations.</p>` +
           `<div class="row"><button class="primary" type="submit">${connected ? 'Allow' : `Allow and connect ${escapeHtml(label)}`}</button>` +
           `<a class="btn" href="${escapeHtml(getFrontendUrl())}">Cancel</a></div></form>`,
       ),
@@ -300,7 +383,9 @@ export function integrationCredentialRoutes(config: IntegrationCredentialRoutesC
     const adapter = getCredentialProvider(provider)
     if (!adapter?.supportsPersonal) return c.html(page('Not available', '<h1>Not available</h1>'), 404)
 
-    await grantAccess(userId, projectId, provider)
+    // Pages rendered before workspace grants existed post no scope: they meant this agent.
+    const scope = typeof form.scope === 'string' ? form.scope : 'project'
+    await applyConsent(userId, projectId, provider, scope, !!adapter.personal)
     const existing = adapter.personal ? await getPersonalConnection(userId, provider) : null
     const needsAccount = adapter.personal ? !existing : true
     if (needsAccount && adapter.beginConnect) {
@@ -346,6 +431,103 @@ export function integrationCredentialRoutes(config: IntegrationCredentialRoutesC
     if (!isValidProviderId(provider)) return c.json({ error: { code: 'invalid_request', message: 'Unknown integration' } }, 400)
     await deletePersonalConnection(userId, provider)
     return c.json({ ok: true })
+  })
+
+  router.get('/me/integrations/:provider/access', async (c) => {
+    const userId = authUserId(c)
+    if (!userId) return c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401)
+    const provider = c.req.param('provider')
+    const projectId = c.req.query('projectId')
+    if (!isValidProviderId(provider) || !projectId) {
+      return c.json({ error: { code: 'invalid_request', message: 'provider and projectId are required' } }, 400)
+    }
+    const adapter = getCredentialProvider(provider)
+    if (!adapter?.supportsPersonal) return c.json({ ok: true, connected: false, allowed: false })
+    if (!(await loadAccess({ userId, via: 'session' }, { projectId })).permissions.has('project:read')) {
+      return c.json({ error: { code: 'forbidden', message: 'No access to this project' } }, 403)
+    }
+    const account = await personalAccountFor(projectId, provider, userId)
+    const connected = adapter.personal ? !!(await getPersonalConnection(userId, provider)) : !!account
+    return c.json({ ok: true, connected, allowed: !!account, login: account?.login ?? null })
+  })
+
+  router.get('/workspaces/:workspaceId/integrations/:provider/my-access', async (c) => {
+    const userId = authUserId(c)
+    if (!userId) return c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401)
+    const workspaceId = c.req.param('workspaceId')
+    const provider = c.req.param('provider')
+    const adapter = grantedProvider(provider)
+    if (!adapter) return c.json({ error: { code: 'invalid_request', message: 'This integration has no per-agent access' } }, 400)
+    if (!(await isWorkspaceMember(userId, workspaceId))) {
+      return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
+    }
+    const [connection, grant, agents] = await Promise.all([
+      getPersonalConnection(userId, provider),
+      getWorkspaceGrant(userId, workspaceId, provider),
+      accessibleProjectsWhere({ userId, via: 'session' }, workspaceId).then((visible) =>
+        listWorkspaceAgentAccess(userId, workspaceId, provider, visible),
+      ),
+    ])
+    return c.json({
+      ok: true,
+      label: adapter.label(provider),
+      scopes: WORKSPACE_GRANT_SCOPES,
+      connected: !!connection,
+      login: connection?.externalLogin ?? null,
+      scope: grant?.scope ?? null,
+      agents,
+    })
+  })
+
+  router.put('/workspaces/:workspaceId/integrations/:provider/my-access', async (c) => {
+    const userId = authUserId(c)
+    if (!userId) return c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401)
+    const workspaceId = c.req.param('workspaceId')
+    const provider = c.req.param('provider')
+    if (!grantedProvider(provider)) {
+      return c.json({ error: { code: 'invalid_request', message: 'This integration has no per-agent access' } }, 400)
+    }
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>
+    if (!isWorkspaceGrantScope(body.scope)) {
+      return c.json({ error: { code: 'invalid_request', message: `scope must be one of ${WORKSPACE_GRANT_SCOPES.join(', ')}` } }, 400)
+    }
+    if (!(await isWorkspaceMember(userId, workspaceId))) {
+      return c.json({ error: { code: 'forbidden', message: 'Not a member of this workspace' } }, 403)
+    }
+    await setWorkspaceGrant(userId, workspaceId, provider, body.scope)
+    return c.json({ ok: true, scope: body.scope })
+  })
+
+  router.delete('/workspaces/:workspaceId/integrations/:provider/my-access', async (c) => {
+    const userId = authUserId(c)
+    if (!userId) return c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401)
+    const provider = c.req.param('provider')
+    if (!isValidProviderId(provider)) return c.json({ error: { code: 'invalid_request', message: 'Unknown integration' } }, 400)
+    await revokeWorkspaceGrant(userId, c.req.param('workspaceId'), provider)
+    return c.json({ ok: true })
+  })
+
+  router.put('/workspaces/:workspaceId/integrations/:provider/my-access/agents/:projectId', async (c) => {
+    const userId = authUserId(c)
+    if (!userId) return c.json({ error: { code: 'unauthorized', message: 'Authentication required' } }, 401)
+    const workspaceId = c.req.param('workspaceId')
+    const provider = c.req.param('provider')
+    const projectId = c.req.param('projectId')
+    if (!grantedProvider(provider)) {
+      return c.json({ error: { code: 'invalid_request', message: 'This integration has no per-agent access' } }, 400)
+    }
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>
+    if (body.allowed !== true && body.allowed !== false && body.allowed !== null) {
+      return c.json({ error: { code: 'invalid_request', message: 'allowed must be true, false, or null' } }, 400)
+    }
+    const project = await prisma.project.findUnique({ where: { id: projectId }, select: { workspaceId: true } })
+    const canRead =
+      project?.workspaceId === workspaceId &&
+      (await loadAccess({ userId, via: 'session' }, { projectId })).permissions.has('project:read')
+    if (!canRead) return c.json({ error: { code: 'not_found', message: 'No such agent in this workspace' } }, 404)
+    if (body.allowed === null) await clearProjectGrant(userId, projectId, provider)
+    else await grantAccess(userId, projectId, provider, body.allowed ? 'allow' : 'deny')
+    return c.json({ ok: true, allowed: await hasActiveGrant(userId, projectId, provider) })
   })
 
   return router

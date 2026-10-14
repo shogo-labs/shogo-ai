@@ -42,15 +42,24 @@ function linkProjectId(connectUrl: string): string | null {
 
 interface MyIntegrations {
   connections?: Array<{ provider: string }>
-  grants?: Array<{ provider: string; projectId: string; revokedAt?: string | null }>
 }
 
+interface AgentAccess {
+  connected?: boolean
+  allowed?: boolean
+}
+
+/** Connected, and (for a link from an agent) that agent acts as me, whether by its own or a workspace-wide consent. */
 async function isConnected(provider: string, projectId: string | null): Promise<boolean> {
-  const { data: body } = await createHttpClient().get<MyIntegrations>("/api/me/integrations")
-  const connected = (body?.connections ?? []).some((c) => c.provider === provider)
-  const granted =
-    !projectId || (body?.grants ?? []).some((g) => g.provider === provider && g.projectId === projectId && !g.revokedAt)
-  return connected && granted
+  const http = createHttpClient()
+  if (projectId) {
+    const { data } = await http.get<AgentAccess>(
+      `/api/me/integrations/${encodeURIComponent(provider)}/access?projectId=${encodeURIComponent(projectId)}`,
+    )
+    return !!data?.connected && !!data?.allowed
+  }
+  const { data: body } = await http.get<MyIntegrations>("/api/me/integrations")
+  return (body?.connections ?? []).some((c) => c.provider === provider)
 }
 
 /**

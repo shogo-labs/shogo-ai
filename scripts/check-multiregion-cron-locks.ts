@@ -364,7 +364,12 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
   {
     key: 'UserIntegrationGrant.(projectId,provider,userId)',
     category: 'single_tenant_upsert',
-    reason: 'integration-credentials/store.ts grantAccess upserts the user\'s own consent row from their consent POST or OAuth callback.',
+    reason: 'integration-credentials/store.ts grantAccess upserts the user\'s own consent row from their consent POST, OAuth callback, or per-agent settings PUT.',
+  },
+  {
+    key: 'UserIntegrationWorkspaceGrant.(provider,userId,workspaceId)',
+    category: 'single_tenant_upsert',
+    reason: 'integration-credentials/store.ts setWorkspaceGrant upserts the user\'s own workspace consent row from their consent POST or /api/workspaces/:workspaceId/integrations settings PUT.',
   },
   {
     key: 'StarredProject.(projectId,userId)',

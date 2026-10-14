@@ -44,6 +44,7 @@ import { api, API_URL } from '../../lib/api'
 import { openAuthFlow, preCreateAuthWindow } from '@shogo/ui-kit/platform'
 import { SlackProjectsModal, type SlackProjectRow } from './SlackProjectsModal'
 import { TeamChatModeCard } from '../team-chat/TeamChatModeCard'
+import { MyAccountAccessCard } from './MyAccountAccessCard'
 import { isLocalMode } from '../../lib/platform-config'
 import { isCloudWorkspace } from '../../lib/workspace-route'
 import {
@@ -428,6 +429,8 @@ export function IntegrationsTab() {
       </View>
 
       {workspaceId && <TeamChatModeCard workspaceId={workspaceId} />}
+
+      {workspaceId && <MyAccountAccessCard workspaceId={workspaceId} />}
 
       {/* Shogo Agent for Slack — a single workspace-level install, kept
           separate from the Composio OAuth list below since it's Slack's

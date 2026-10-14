@@ -91,6 +91,8 @@ const GITHUB_USERS: Record<string, { id: number; login: string; name: string }> 
   ghs_shared_f: { id: 4, login: 'acme-approvals-shared', name: 'Acme Approvals Shared' },
   gho_frank: { id: 404, login: 'frank-gh', name: 'Frank' },
   gho_gina: { id: 505, login: 'gina-gh', name: 'Gina' },
+  gho_hana: { id: 606, login: 'hana-gh', name: 'Hana' },
+  ghs_shared_w: { id: 5, login: 'studio-shared', name: 'Studio Shared' },
 }
 
 interface GitHubCall { method: string; path: string; token: string | null; body: any }
@@ -1692,5 +1694,189 @@ describe('someone in the conversation approves, or the project has a delegate', 
       requesterName: 'Gina',
       origin: 'chat',
     })
+  })
+})
+
+describe('one consent for a whole workspace', () => {
+  let workspaceId: string
+  let hana: string // connected her GitHub; creates agents
+  let ivan: string // teammate with no GitHub of his own
+  let outsider: string
+  let hanaBot: string // Hana's agent, with a shared project connection
+  let hanaDraft: string // Hana's agent, no connection of its own
+  let ivanBot: string // Ivan's agent, no connection of its own
+
+  const tools = (userId: string | null, projectId: string) => turnTools(userId, { runtimeProjectId: projectId })
+  const ghToken = async (userId: string | null, projectId: string) =>
+    /token=(\S+)/.exec((await tools(userId, projectId).exec('gh issue create --title x')).text)?.[1]
+
+  async function api(user: string, method: string, path: string, body?: unknown) {
+    const res = await browser(user, `/api${path}`, {
+      method,
+      ...(body !== undefined ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : {}),
+    })
+    return { status: res.status, json: (await res.json().catch(() => null)) as any }
+  }
+  const myAccess = () => `/workspaces/${workspaceId}/integrations/github/my-access`
+
+  /** Opens an agent's consent link and allows it with `scope`. */
+  async function consent(userId: string, projectId: string, scope: string) {
+    const path = `/api/projects/${projectId}/integrations/github/connect`
+    const html = await (await browser(userId, path)).text()
+    const state = html.match(/name="state" value="([^"]+)"/)![1]!
+    const res = await browser(userId, path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ state, scope }).toString(),
+    })
+    expect(res.status).toBe(200)
+    clearCredentialPolicyCache()
+    return html
+  }
+
+  beforeAll(async () => {
+    const ws = await db.workspace.create({ data: { name: 'Studio', slug: `studio-${Date.now()}`, kind: 'team' } })
+    workspaceId = ws.id
+    const mk = async (name: string, inWorkspace = true) => {
+      const user = await db.user.create({ data: { name, email: `${name.toLowerCase()}-${Date.now()}@studio.test` } })
+      if (inWorkspace) await db.member.create({ data: { userId: user.id, workspaceId, role: 'member' } })
+      return user.id as string
+    }
+    hana = await mk('Hana')
+    ivan = await mk('Ivan')
+    outsider = await mk('Olga', false)
+    const project = async (name: string, createdBy: string) =>
+      (await db.project.create({ data: { name, workspaceId, createdBy } })).id as string
+    hanaBot = await project('Hana Bot', hana)
+    hanaDraft = await project('Hana Draft', hana)
+    ivanBot = await project('Ivan Bot', ivan)
+    await db.gitHubConnection.create({
+      data: {
+        projectId: hanaBot,
+        repoOwner: 'acme',
+        repoName: 'studio',
+        repoFullName: 'acme/studio',
+        authType: 'token',
+        encryptedToken: encryptSecret('ghs_shared_w'),
+        tokenLogin: 'studio-shared',
+      },
+    })
+    await savePersonalConnection(hana, 'github', { externalId: '606', externalLogin: 'hana-gh', accessToken: 'gho_hana' })
+  })
+
+  test('before any consent: the project account where there is one, and no token (as before) where there is none', async () => {
+    const shared = await tools(hana, hanaBot).exec('gh issue create --title x')
+    expect(shared.text).toContain('token=ghs_shared_w')
+    expect(shared.text).not.toContain('on behalf of')
+    const none = await tools(hana, hanaDraft).exec('gh issue create --title x')
+    expect(none.details?.code).toBeUndefined()
+    expect(none.text).toContain('token=none')
+    expect(await db.integrationCredentialAudit.count({ where: { projectId: hanaDraft } })).toBe(0)
+  })
+
+  test('"agents I create" is offered first; one Allow covers every agent Hana makes, only when she asks', async () => {
+    const html = await consent(hana, hanaBot, 'own')
+    expect(html).toContain('Which agents in Studio?')
+    expect(html).toMatch(/value="own" checked/)
+    expect(html).toContain('Only Hana Bot')
+
+    expect(await ghToken(hana, hanaBot)).toBe('gho_hana')
+    expect(await ghToken(hana, hanaDraft)).toBe('gho_hana')
+    const later = (await db.project.create({ data: { name: 'Hana Later', workspaceId, createdBy: hana } })).id
+    expect(await ghToken(hana, later)).toBe('gho_hana')
+
+    // Not her agent, not her request, or nobody's request: never her token.
+    expect(await ghToken(hana, ivanBot)).toBe('none')
+    expect(await ghToken(ivan, hanaBot)).toBe('ghs_shared_w')
+    expect(await ghToken(ivan, hanaDraft)).toBe('none')
+    expect(await ghToken(null, hanaBot)).toBe('ghs_shared_w')
+
+    expect(await db.userIntegrationWorkspaceGrant.findMany({ where: { userId: hana }, select: { scope: true, revokedAt: true } }))
+      .toEqual([{ scope: 'own', revokedAt: null }])
+    expect(await db.userIntegrationGrant.count({ where: { userId: hana } })).toBe(0)
+  })
+
+  test('allowing from a teammate\'s agent link also covers that agent', async () => {
+    await consent(hana, ivanBot, 'own')
+    expect(await ghToken(hana, ivanBot)).toBe('gho_hana')
+    expect(await ghToken(ivan, ivanBot)).toBe('none')
+    expect(await db.userIntegrationGrant.findMany({ where: { userId: hana, revokedAt: null }, select: { projectId: true, effect: true } }))
+      .toEqual([{ projectId: ivanBot, effect: 'allow' }])
+  })
+
+  test('settings list every agent; per-agent switches and scope changes take effect on the next call', async () => {
+    const listed = await api(hana, 'GET', myAccess())
+    expect(listed.status).toBe(200)
+    expect(listed.json).toMatchObject({ connected: true, login: 'hana-gh', scope: 'own', scopes: ['own', 'all', 'selected'] })
+    const byName = (agents: any[]) => Object.fromEntries(agents.map((a) => [a.name, [a.allowed, a.override]]))
+    expect(byName(listed.json.agents)).toEqual({
+      'Hana Bot': [true, null],
+      'Hana Draft': [true, null],
+      'Hana Later': [true, null],
+      'Ivan Bot': [true, 'allow'],
+    })
+
+    expect((await api(hana, 'PUT', `${myAccess()}/agents/${hanaDraft}`, { allowed: false })).json).toMatchObject({ allowed: false })
+    expect(await ghToken(hana, hanaDraft)).toBe('none')
+
+    // A new scope resets per-agent choices.
+    expect((await api(hana, 'PUT', myAccess(), { scope: 'all' })).status).toBe(200)
+    const ivanLater = (await db.project.create({ data: { name: 'Ivan Later', workspaceId, createdBy: ivan } })).id
+    expect(await ghToken(hana, hanaDraft)).toBe('gho_hana')
+    expect(await ghToken(hana, ivanLater)).toBe('gho_hana')
+    expect(await ghToken(ivan, ivanLater)).toBe('none')
+
+    await api(hana, 'PUT', myAccess(), { scope: 'selected' })
+    expect(await ghToken(hana, hanaBot)).toBe('ghs_shared_w')
+    expect(await ghToken(hana, ivanBot)).toBe('none')
+    await api(hana, 'PUT', `${myAccess()}/agents/${ivanBot}`, { allowed: true })
+    expect(await ghToken(hana, ivanBot)).toBe('gho_hana')
+    expect(await ghToken(hana, hanaDraft)).toBe('none')
+    await api(hana, 'PUT', `${myAccess()}/agents/${ivanBot}`, { allowed: null })
+    expect(await ghToken(hana, ivanBot)).toBe('none')
+
+    await api(hana, 'PUT', myAccess(), { scope: 'own' })
+  })
+
+  test('the settings routes are the caller\'s own and check what they touch', async () => {
+    expect((await api(hana, 'PUT', myAccess(), { scope: 'everything' })).status).toBe(400)
+    expect((await api(outsider, 'GET', myAccess())).status).toBe(403)
+    expect((await api(outsider, 'PUT', myAccess(), { scope: 'all' })).status).toBe(403)
+    expect((await api(hana, 'PUT', `${myAccess()}/agents/${seeded.foreignProjectId}`, { allowed: true })).status).toBe(404)
+    expect((await api(hana, 'PUT', `${myAccess()}/agents/${hanaBot}`, { allowed: 'yes' })).status).toBe(400)
+    expect((await api(hana, 'GET', `/workspaces/${workspaceId}/integrations/composio:jira/my-access`)).status).toBe(400)
+
+    // Ivan's settings say nothing about Hana's consent.
+    const ivans = await api(ivan, 'GET', myAccess())
+    expect(ivans.json).toMatchObject({ connected: false, scope: null })
+    expect(ivans.json.agents.every((a: any) => a.allowed === false)).toBe(true)
+  })
+
+  test('the connect card can ask whether an agent acts as me; /me/integrations shows workspace consents', async () => {
+    const access = (user: string, projectId: string) => api(user, 'GET', `/me/integrations/github/access?projectId=${projectId}`)
+    expect((await access(hana, hanaDraft)).json).toMatchObject({ connected: true, allowed: true, login: 'hana-gh' })
+    expect((await access(hana, ivanBot)).json).toMatchObject({ connected: true, allowed: false })
+    expect((await access(ivan, ivanBot)).json).toMatchObject({ connected: false, allowed: false })
+    expect((await access(outsider, hanaBot)).status).toBe(403)
+
+    const mine = (await api(hana, 'GET', '/me/integrations')).json
+    expect(mine.workspaceGrants).toEqual([expect.objectContaining({ provider: 'github', workspaceId, workspaceName: 'Studio', scope: 'own' })])
+  })
+
+  test('leaving the workspace stops it; revoking or disconnecting stops every agent there', async () => {
+    await db.member.deleteMany({ where: { userId: hana, workspaceId } })
+    expect(await ghToken(hana, hanaDraft)).toBe('none')
+    await db.member.create({ data: { userId: hana, workspaceId, role: 'member' } })
+    expect(await ghToken(hana, hanaDraft)).toBe('gho_hana')
+
+    expect((await api(hana, 'DELETE', myAccess())).status).toBe(200)
+    expect(await ghToken(hana, hanaDraft)).toBe('none')
+    expect(await ghToken(hana, hanaBot)).toBe('ghs_shared_w')
+
+    await api(hana, 'PUT', myAccess(), { scope: 'all' })
+    expect(await ghToken(hana, ivanBot)).toBe('gho_hana')
+    expect((await browser(hana, '/api/me/integrations/github', { method: 'DELETE' })).status).toBe(200)
+    expect(await db.userIntegrationWorkspaceGrant.count({ where: { userId: hana, revokedAt: null } })).toBe(0)
+    expect(await ghToken(hana, ivanBot)).toBe('none')
   })
 })

@@ -29,7 +29,7 @@ import * as githubService from '../services/github.service';
 import { runtimeGitHubWorkspace, type GitHubWorkspace } from '../services/github-workspace';
 import { createAuthorizeUrl, handleAuthorizeCallback } from '../services/github-authorize';
 import { getFrontendUrl } from '../lib/cloud-urls';
-import { grantAccess } from '../services/integration-credentials';
+import { grantAccess, hasActiveGrant } from '../services/integration-credentials';
 import { isPersonalConnectState, verifyPersonalConnectState } from '../services/integration-credentials/connect-state';
 import { ensureDefaultCredentialProviders, githubAdapter } from '../services/integration-credentials/defaults';
 import { resumeAfterConnect } from '../services/integration-credentials/resume';
@@ -441,7 +441,9 @@ export function githubRoutes(config: GitHubRoutesConfig = {}) {
         const adapter = githubAdapter();
         if (!adapter) throw new Error('GitHub is not available on this server');
         const { login } = await adapter.completeConnect({ userId: personal.userId, code });
-        if (personal.projectId) await grantAccess(personal.userId, personal.projectId, 'github');
+        if (personal.projectId && !(await hasActiveGrant(personal.userId, personal.projectId, 'github'))) {
+          await grantAccess(personal.userId, personal.projectId, 'github');
+        }
         const resumed = await resumeAfterConnect({ userId: personal.userId, resume: personal.resume, label: 'GitHub', login })
           .catch((err) => {
             console.error('[GitHub] Resume after connect failed:', err?.message ?? err);

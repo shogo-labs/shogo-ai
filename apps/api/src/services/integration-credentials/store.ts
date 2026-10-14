@@ -11,8 +11,8 @@ import {
   ACTOR_FALLBACKS,
   ACTOR_MODES,
   CHAIN_STEPS,
-  DEFAULT_POLICY,
   chainFallback,
+  defaultPolicy,
   chainMode,
   legacyChain,
   type ActorFallback,
@@ -79,7 +79,7 @@ function withSummaries(
 }
 
 function toPolicy(provider: string, row: any | null): CredentialPolicy {
-  if (!row) return { provider, ...DEFAULT_POLICY }
+  if (!row) return { provider, ...defaultPolicy(provider), isDefault: true }
   const fallback = asFallback(row.fallback)
   return withSummaries(
     provider,
@@ -224,6 +224,10 @@ export async function deletePersonalConnection(userId: string, provider: string)
     where: { userId, provider, revokedAt: null },
     data: { revokedAt: new Date() },
   })
+  await db.userIntegrationWorkspaceGrant.updateMany({
+    where: { userId, provider, revokedAt: null },
+    data: { revokedAt: new Date() },
+  })
 }
 
 /**
@@ -251,19 +255,165 @@ export async function setDelegate(projectId: string, provider: string, userId: s
   return toPolicy(provider, row)
 }
 
-export async function hasActiveGrant(userId: string, projectId: string, provider: string): Promise<boolean> {
-  const row = await db.userIntegrationGrant.findUnique({
-    where: { userId_projectId_provider: { userId, projectId, provider } },
-    select: { revokedAt: true },
-  })
-  return !!row && !row.revokedAt
+/**
+ * Which of a workspace's agents a person's workspace grant covers:
+ *   own      - agents they created
+ *   all      - every agent in the workspace
+ *   selected - none by default; only agents allowed one by one
+ */
+export type WorkspaceGrantScope = 'own' | 'all' | 'selected'
+export const WORKSPACE_GRANT_SCOPES: readonly WorkspaceGrantScope[] = ['own', 'all', 'selected']
+
+export function isWorkspaceGrantScope(value: unknown): value is WorkspaceGrantScope {
+  return WORKSPACE_GRANT_SCOPES.includes(value as WorkspaceGrantScope)
 }
 
-export async function grantAccess(userId: string, projectId: string, provider: string): Promise<void> {
+export type GrantEffect = 'allow' | 'deny'
+
+function scopeCovers(scope: string, createdByUser: boolean): boolean {
+  return scope === 'all' || (scope === 'own' && createdByUser)
+}
+
+export async function isWorkspaceMember(userId: string, workspaceId: string): Promise<boolean> {
+  const row = await db.member.findFirst({ where: { userId, workspaceId, projectId: null }, select: { id: true } })
+  return !!row
+}
+
+/**
+ * Whether `userId` lets this project's agent act as them on `provider`. A
+ * per-project allow or deny wins; otherwise their workspace grant decides,
+ * and only while they're still a member of that workspace.
+ */
+export async function hasActiveGrant(userId: string, projectId: string, provider: string): Promise<boolean> {
+  const override = await db.userIntegrationGrant.findUnique({
+    where: { userId_projectId_provider: { userId, projectId, provider } },
+    select: { effect: true, revokedAt: true },
+  })
+  if (override && !override.revokedAt) return override.effect !== 'deny'
+  const project = await db.project.findUnique({ where: { id: projectId }, select: { workspaceId: true, createdBy: true } })
+  if (!project) return false
+  const grant = await db.userIntegrationWorkspaceGrant.findUnique({
+    where: { userId_workspaceId_provider: { userId, workspaceId: project.workspaceId, provider } },
+    select: { scope: true, revokedAt: true },
+  })
+  if (!grant || grant.revokedAt || !scopeCovers(grant.scope, project.createdBy === userId)) return false
+  return isWorkspaceMember(userId, project.workspaceId)
+}
+
+export async function grantAccess(
+  userId: string,
+  projectId: string,
+  provider: string,
+  effect: GrantEffect = 'allow',
+): Promise<void> {
   await db.userIntegrationGrant.upsert({
     where: { userId_projectId_provider: { userId, projectId, provider } },
-    create: { userId, projectId, provider },
-    update: { revokedAt: null },
+    create: { userId, projectId, provider, effect },
+    update: { effect, revokedAt: null },
+  })
+}
+
+/** Drop a per-project allow or deny so the workspace grant decides again. */
+export async function clearProjectGrant(userId: string, projectId: string, provider: string): Promise<void> {
+  await db.userIntegrationGrant.updateMany({
+    where: { userId, projectId, provider, revokedAt: null },
+    data: { revokedAt: new Date() },
+  })
+}
+
+async function clearWorkspaceOverrides(userId: string, workspaceId: string, provider: string): Promise<void> {
+  await db.userIntegrationGrant.updateMany({
+    where: { userId, provider, revokedAt: null, project: { workspaceId } },
+    data: { revokedAt: new Date() },
+  })
+}
+
+/**
+ * Let agents in a workspace act as `userId` on `provider`. Changing the
+ * scope resets per-agent choices in that workspace so the new scope is what
+ * people see; saving the same scope again keeps them.
+ */
+export async function setWorkspaceGrant(
+  userId: string,
+  workspaceId: string,
+  provider: string,
+  scope: WorkspaceGrantScope,
+): Promise<void> {
+  const current = await db.userIntegrationWorkspaceGrant.findUnique({
+    where: { userId_workspaceId_provider: { userId, workspaceId, provider } },
+    select: { scope: true, revokedAt: true },
+  })
+  const unchanged = !!current && !current.revokedAt && current.scope === scope
+  await db.userIntegrationWorkspaceGrant.upsert({
+    where: { userId_workspaceId_provider: { userId, workspaceId, provider } },
+    create: { userId, workspaceId, provider, scope },
+    update: { scope, revokedAt: null },
+  })
+  if (!unchanged) await clearWorkspaceOverrides(userId, workspaceId, provider)
+}
+
+/** Stop every agent in the workspace from acting as `userId` on `provider`. */
+export async function revokeWorkspaceGrant(userId: string, workspaceId: string, provider: string): Promise<void> {
+  await db.userIntegrationWorkspaceGrant.updateMany({
+    where: { userId, workspaceId, provider, revokedAt: null },
+    data: { revokedAt: new Date() },
+  })
+  await clearWorkspaceOverrides(userId, workspaceId, provider)
+}
+
+export async function getWorkspaceGrant(
+  userId: string,
+  workspaceId: string,
+  provider: string,
+): Promise<{ scope: WorkspaceGrantScope } | null> {
+  const row = await db.userIntegrationWorkspaceGrant.findUnique({
+    where: { userId_workspaceId_provider: { userId, workspaceId, provider } },
+    select: { scope: true, revokedAt: true },
+  })
+  if (!row || row.revokedAt || !isWorkspaceGrantScope(row.scope)) return null
+  return { scope: row.scope }
+}
+
+export interface WorkspaceAgentAccess {
+  projectId: string
+  name: string
+  createdByMe: boolean
+  /** Whether this agent acts as the person when they ask it to. */
+  allowed: boolean
+  /** Set when a per-agent choice overrides the workspace scope. */
+  override: GrantEffect | null
+}
+
+/**
+ * The workspace's agents matching `visibleWhere` (the projects the person
+ * can read) and whether each may act as `userId` on `provider`.
+ */
+export async function listWorkspaceAgentAccess(
+  userId: string,
+  workspaceId: string,
+  provider: string,
+  visibleWhere: Record<string, unknown> = {},
+): Promise<WorkspaceAgentAccess[]> {
+  const [projects, grant, overrides] = await Promise.all([
+    db.project.findMany({
+      where: { AND: [{ workspaceId }, visibleWhere] },
+      select: { id: true, name: true, createdBy: true },
+      orderBy: { name: 'asc' },
+    }),
+    getWorkspaceGrant(userId, workspaceId, provider),
+    db.userIntegrationGrant.findMany({
+      where: { userId, provider, revokedAt: null, project: { workspaceId } },
+      select: { projectId: true, effect: true },
+    }),
+  ])
+  const overrideFor = new Map<string, GrantEffect>(
+    overrides.map((o: { projectId: string; effect: string }) => [o.projectId, o.effect === 'deny' ? 'deny' : 'allow']),
+  )
+  return projects.map((p: { id: string; name: string; createdBy: string | null }) => {
+    const createdByMe = p.createdBy === userId
+    const override = overrideFor.get(p.id) ?? null
+    const allowed = override ? override === 'allow' : !!grant && scopeCovers(grant.scope, createdByMe)
+    return { projectId: p.id, name: p.name, createdByMe, allowed, override }
   })
 }
 
@@ -278,14 +428,26 @@ export async function revokeGrant(userId: string, grantId: string): Promise<bool
 export interface UserIntegrationsSummary {
   connections: Array<{ provider: string; externalLogin: string | null; connectedAt: string }>
   grants: Array<{ id: string; provider: string; projectId: string; projectName: string | null; grantedAt: string }>
+  workspaceGrants: Array<{
+    provider: string
+    workspaceId: string
+    workspaceName: string | null
+    scope: WorkspaceGrantScope
+    grantedAt: string
+  }>
 }
 
 export async function listUserIntegrations(userId: string): Promise<UserIntegrationsSummary> {
-  const [connections, grants] = await Promise.all([
+  const [connections, grants, workspaceGrants] = await Promise.all([
     db.userIntegrationConnection.findMany({ where: { userId }, orderBy: { provider: 'asc' } }),
     db.userIntegrationGrant.findMany({
-      where: { userId, revokedAt: null },
+      where: { userId, revokedAt: null, effect: 'allow' },
       include: { project: { select: { name: true } } },
+      orderBy: { createdAt: 'desc' },
+    }),
+    db.userIntegrationWorkspaceGrant.findMany({
+      where: { userId, revokedAt: null },
+      include: { workspace: { select: { name: true } } },
       orderBy: { createdAt: 'desc' },
     }),
   ])
@@ -302,5 +464,14 @@ export async function listUserIntegrations(userId: string): Promise<UserIntegrat
       projectName: g.project?.name ?? null,
       grantedAt: new Date(g.createdAt).toISOString(),
     })),
+    workspaceGrants: workspaceGrants
+      .filter((g: any) => isWorkspaceGrantScope(g.scope))
+      .map((g: any) => ({
+        provider: g.provider,
+        workspaceId: g.workspaceId,
+        workspaceName: g.workspace?.name ?? null,
+        scope: g.scope,
+        grantedAt: new Date(g.createdAt).toISOString(),
+      })),
   }
 }

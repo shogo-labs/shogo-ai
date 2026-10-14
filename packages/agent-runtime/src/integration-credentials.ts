@@ -340,12 +340,15 @@ export function withIntegrationCredentials(tool: AgentTool, ctx: CredentialWrapp
           }
           return blockedResult(meta.provider, resolved) as any
         }
-        used = resolved
-        scope.actingAs = resolved.actingAs
-        if (meta.provider === 'github' && resolved.credential.token) {
-          scope.githubEnv = githubCliEnvFromCredentials(resolved.credential)?.env
+        // An empty credential means "run as if there were no policy".
+        if (Object.keys(resolved.credential ?? {}).length > 0) {
+          used = resolved
+          scope.actingAs = resolved.actingAs
+          if (meta.provider === 'github' && resolved.credential.token) {
+            scope.githubEnv = githubCliEnvFromCredentials(resolved.credential)?.env
+          }
+          if (resolved.credential.entityId) scope.composioEntityId = resolved.credential.entityId
         }
-        if (resolved.credential.entityId) scope.composioEntityId = resolved.credential.entityId
       }
     }
     const result = await runInCredentialScope(scope, () => tool.execute(toolCallId, params, signal, onUpdate))

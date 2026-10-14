@@ -19,15 +19,15 @@ mock.module('react-native', () =>
   } as any),
 )
 
-let mine: { connections: any[]; grants: any[] }
+let access: { connected: boolean; allowed: boolean }
 let polls = 0
 mock.module('../../../lib/api', () => ({
   API_URL: 'https://api.test',
   createHttpClient: () => ({
     get: async (path: string) => {
-      expect(path).toBe('/api/me/integrations')
+      expect(path).toBe('/api/me/integrations/github/access?projectId=proj-1')
       polls += 1
-      return { data: mine, status: 200, headers: new Headers() }
+      return { data: access, status: 200, headers: new Headers() }
     },
   }),
 }))
@@ -37,7 +37,7 @@ const { IntegrationConnectCard, integrationLabel } = await import('../Integratio
 const LINK = 'https://studio.test/api/projects/proj-1/integrations/github/connect?resume=tok'
 
 beforeEach(() => {
-  mine = { connections: [], grants: [] }
+  access = { connected: false, allowed: false }
   polls = 0
 })
 
@@ -47,7 +47,7 @@ afterEach(() => {
 })
 
 describe('IntegrationConnectCard', () => {
-  test('opens the link, waits until the account is connected and allowed for this project, then continues once', async () => {
+  test('opens the link, waits until the account is connected and this agent acts as them, then continues once', async () => {
     const continued: string[] = []
     render(
       <IntegrationConnectCard
@@ -64,13 +64,13 @@ describe('IntegrationConnectCard', () => {
     await waitFor(() => expect(polls).toBeGreaterThan(1))
     expect(continued).toEqual([])
 
-    // Connected, but this project isn't allowed yet: keep waiting.
-    mine = { connections: [{ provider: 'github' }], grants: [{ provider: 'github', projectId: 'other', revokedAt: null }] }
+    // Connected, but this agent isn't allowed yet: keep waiting.
+    access = { connected: true, allowed: false }
     const seen = polls
     await waitFor(() => expect(polls).toBeGreaterThan(seen + 1))
     expect(continued).toEqual([])
 
-    mine.grants.push({ provider: 'github', projectId: 'proj-1', revokedAt: null })
+    access = { connected: true, allowed: true }
     await waitFor(() => expect(continued).toEqual(['GitHub']))
     fireEvent.click(screen.getByLabelText("I've connected, continue"))
     await new Promise((r) => setTimeout(r, 20))

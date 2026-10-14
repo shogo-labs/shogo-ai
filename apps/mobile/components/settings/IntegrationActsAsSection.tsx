@@ -241,7 +241,7 @@ export function IntegrationActsAsSection({ projectId, provider = "github" }: { p
       </View>
       <Text className="mt-2 text-xs text-muted-foreground">
         {asRequester
-          ? `Issues, comments, and pull requests are created with the ${label} account of whoever asked the agent, so they show up as the author.`
+          ? `Issues, comments, and pull requests are created with the ${label} account of whoever asked the agent, so they show up as the author. Each person chooses which agents may act as them in Settings → Integrations.`
           : `Everything the agent does on ${label} uses this project's connection.`}
       </Text>
       {!canEdit ? (

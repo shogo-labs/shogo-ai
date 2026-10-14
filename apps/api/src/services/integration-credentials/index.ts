@@ -18,16 +18,27 @@ import type { ChainStep, CredentialOp, CredentialProvider, CredentialSource, Res
 
 export * from './types'
 export {
+  clearProjectGrant,
   deletePersonalConnection,
   getPolicy,
+  getWorkspaceGrant,
   grantAccess,
+  hasActiveGrant,
   isValidProviderId,
+  isWorkspaceGrantScope,
+  isWorkspaceMember,
   listPolicies,
   listUserIntegrations,
+  listWorkspaceAgentAccess,
   PolicyValidationError,
   revokeGrant,
+  revokeWorkspaceGrant,
   savePolicy,
   setDelegate,
+  setWorkspaceGrant,
+  WORKSPACE_GRANT_SCOPES,
+  type WorkspaceAgentAccess,
+  type WorkspaceGrantScope,
 } from './store'
 
 const providers: CredentialProvider[] = []
@@ -90,6 +101,9 @@ export interface ResolveArgs {
   origin?: unknown
 }
 
+/** No credential to hand out: the tool runs the way it would with no policy at all. */
+const AS_WITHOUT_POLICY: ResolveResult = { ok: true, source: 'shared', actingAs: 'project account', credential: {} }
+
 async function sharedResult(adapter: CredentialProvider, ctx: ResolveContext): Promise<ResolveResult> {
   const credential = await adapter.shared(ctx)
   if (!credential) {
@@ -104,15 +118,13 @@ async function sharedResult(adapter: CredentialProvider, ctx: ResolveContext): P
 
 export async function resolveIntegrationCredential(args: ResolveArgs): Promise<ResolveResult> {
   const result = await walkChain(args)
-  if (result.ok) await recordCredentialUse(args, result)
+  if (result.ok && Object.keys(result.credential).length > 0) await recordCredentialUse(args, result)
   return result
 }
 
 async function walkChain(args: ResolveArgs): Promise<ResolveResult> {
   const adapter = getCredentialProvider(args.provider)
-  if (!adapter) {
-    return { ok: true, source: 'shared', actingAs: 'project account', credential: {} }
-  }
+  if (!adapter) return AS_WITHOUT_POLICY
   const project = await prisma.project.findUnique({ where: { id: args.projectId }, select: { workspaceId: true } })
   if (!project) return { ok: false, code: 'not_connected', message: 'Project not found.' }
 
@@ -180,7 +192,7 @@ async function walkChain(args: ResolveArgs): Promise<ResolveResult> {
       if (adapter.supportsShared === false) continue
       const shared = await sharedResult(adapter, ctx)
       if (shared.ok) {
-        const onBehalfOf = requester ? await requesterDisplayName(requester) : null
+        const onBehalfOf = requester && !policy.isDefault ? await requesterDisplayName(requester) : null
         return onBehalfOf ? { ...shared, onBehalfOf } : shared
       }
       sharedMissing = shared
@@ -189,7 +201,7 @@ async function walkChain(args: ResolveArgs): Promise<ResolveResult> {
     if (step === 'deny') break
   }
 
-  if (sharedMissing && !chain.includes('deny')) return sharedMissing
+  if (sharedMissing && !chain.includes('deny')) return policy.isDefault ? AS_WITHOUT_POLICY : sharedMissing
   return {
     ok: false,
     code: requester ? 'denied' : 'requester_unknown',
