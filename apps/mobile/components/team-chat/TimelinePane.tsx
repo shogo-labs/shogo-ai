@@ -245,7 +245,7 @@ export function TimelinePane(props: TimelinePaneProps) {
   const composerRef = useRef<ComposerHandle>(null)
   const rootRef = useRef<View>(null)
 
-  const onReact = useCallback((m: ChatMessage, emoji: string) => void timeline.react(m.id, emoji).catch(() => {}), [timeline.react])
+  const onReact = useCallback((m: ChatMessage, emoji: string, on?: boolean) => void timeline.react(m.id, emoji, on).catch(() => {}), [timeline.react])
   const onEdit = useCallback((m: ChatMessage, text: string) => timeline.edit(m.id, text), [timeline.edit])
   const onDelete = useCallback(async (m: ChatMessage) => {
     if (await confirmDelete()) await timeline.remove(m.id).catch(() => {})

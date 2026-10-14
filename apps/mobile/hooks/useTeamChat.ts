@@ -436,8 +436,8 @@ export function useConversationTimeline(
     await api.remove(messageId)
   }, [])
 
-  const react = useCallback(async (messageId: string, emoji: string) => {
-    const reactions = await api.react(messageId, emoji)
+  const react = useCallback(async (messageId: string, emoji: string, on?: boolean) => {
+    const reactions = await api.react(messageId, emoji, on)
     if (scope && conversationId) {
       setState((s) => applyTimelineEvent(s, { type: 'reaction.changed', conversationId, messageId, reactions }, scope))
     }

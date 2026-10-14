@@ -343,6 +343,12 @@ function message(overrides: Record<string, unknown> = {}): any {
 }
 
 const names = { users: new Map([['u-ana', 'Ana Lopez']]), agents: new Map([['p:proj-1', 'Billing Bot']]) }
+
+/** Members beyond the one reactor the `names` fixture names, for the "who reacted" cases. */
+const reactors = {
+  users: new Map([['u-ana', 'Ana Lopez'], ['u-bob', 'Bob Chen'], ['u-cid', 'Cid Rao'], ['u-dee', 'Dee Park']]),
+  agents: new Map<string, string>(),
+}
 const handlers = () => ({
   onReact: mock(() => {}), onEdit: mock(async () => {}), onDelete: mock(() => {}), onStopAgent: mock(() => {}),
   onRetry: mock(() => {}), onDiscard: mock(() => {}), onReply: mock(() => {}), onOpenSession: mock(() => {}),
@@ -616,8 +622,36 @@ describe('MessageRow', () => {
     fireEvent.click(screen.getByLabelText('More reactions'))
     fireEvent.change(screen.getByLabelText('Search emoji'), { target: { value: 'rocket' } })
     fireEvent.click(screen.getByLabelText('rocket'))
-    expect(h.onReact).toHaveBeenCalledWith(expect.objectContaining({ id: 'm1' }), '🚀')
+    expect(h.onReact).toHaveBeenCalledWith(expect.objectContaining({ id: 'm1' }), '🚀', true)
     expect(shim('emoji-picker')).toBeNull()
+  })
+
+  test('clicking a reaction you already have removes it', () => {
+    const h = handlers()
+    render(<MessageRow message={message({ reactions: [{ emoji: '👍', count: 1, userIds: ['u-me'] }] })} grouped={false} me="u-me" names={names} canManage={false} {...h} />)
+    fireEvent.click(screen.getByLabelText('You reacted with 👍'))
+    expect(h.onReact).toHaveBeenCalledWith(expect.objectContaining({ id: 'm1' }), '👍', false)
+  })
+
+  test('clicking a reaction you do not have yet adds it', () => {
+    const h = handlers()
+    render(<MessageRow message={message({ reactions: [{ emoji: '👍', count: 1, userIds: ['u-ana'] }] })} grouped={false} me="u-me" names={names} canManage={false} {...h} />)
+    fireEvent.click(screen.getByLabelText('Ana Lopez reacted with 👍'))
+    expect(h.onReact).toHaveBeenCalledWith(expect.objectContaining({ id: 'm1' }), '👍', true)
+  })
+
+  test('the reaction chip names who reacted on hover, in the viewer\u2019s terms', () => {
+    const reactions = [{ emoji: '👍', count: 3, userIds: ['u-me', 'u-ana', 'u-gone'] }]
+    render(<MessageRow message={message({ reactions })} grouped={false} me="u-me" names={reactors} canManage={false} />)
+    const label = 'You, Ana Lopez and Someone reacted with 👍'
+    expect(screen.getByLabelText(label).querySelector('[title]')?.getAttribute('title')).toBe(label)
+  })
+
+  test('a crowded reaction collapses the tail instead of listing everyone', () => {
+    const reactions = [{ emoji: '🎉', count: 5, userIds: ['u-ana', 'u-bob', 'u-cid', 'u-dee', 'u-me'] }]
+    render(<MessageRow message={message({ reactions })} grouped={false} me="u-me" names={reactors} canManage={false} />)
+    const label = 'Ana Lopez, Bob Chen and 3 others reacted with 🎉'
+    expect(screen.getByLabelText(label).querySelector('[title]')?.getAttribute('title')).toBe(label)
   })
 })
 

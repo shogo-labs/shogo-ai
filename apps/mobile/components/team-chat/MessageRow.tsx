@@ -27,6 +27,8 @@ import { continueAfterConnect } from '../../lib/question-answer'
 import { IntegrationConnectCard } from '../chat/IntegrationConnectCard'
 import { AgentWorkedFor, AgentWorkingStatus } from './AgentWork'
 import { renderMentions, type MentionNames } from '../../lib/team-chat-state'
+import { hasReacted, reactionTooltip } from '../../lib/team-chat-reactions'
+import { WebTooltip } from '../chat/WebTooltip'
 import { useUserStatus } from '../../hooks/useChatPrefs'
 import { PresenceDot } from './PresenceDot'
 import { toggleSaved, useIsSaved } from '../../hooks/useChatItems'
@@ -67,7 +69,8 @@ export interface MessageRowProps {
   workspaceId?: string
   inThread?: boolean
   onReply?: (message: ChatMessage) => void
-  onReact: (message: ChatMessage, emoji: string) => void
+  /** Add (`on: true`) or remove (`on: false`) a reaction; omit to let the handler toggle. */
+  onReact: (message: ChatMessage, emoji: string, on?: boolean) => void
   onEdit: (message: ChatMessage, text: string) => Promise<void>
   onDelete: (message: ChatMessage) => void
   onStopAgent: (message: ChatMessage) => void
@@ -323,10 +326,15 @@ function MessageRowImpl(props: MessageRowProps) {
   }
   const canAct = !deleted && !message.pending && message.authorType !== 'system'
 
+  /** Clicking a reaction you already have removes it; otherwise it adds it. */
+  const toggleReact = (emoji: string) => {
+    props.onReact(message, emoji, !hasReacted(message.reactions, emoji, props.me))
+  }
+
   const openActions = () => {
     if (deleted || message.pending) return
     const options: Array<{ label: string; run: () => void; destructive?: boolean }> = [
-      ...QUICK_REACTIONS.slice(0, 4).map((emoji) => ({ label: emoji, run: () => props.onReact(message, emoji) })),
+      ...QUICK_REACTIONS.slice(0, 4).map((emoji) => ({ label: emoji, run: () => toggleReact(emoji) })),
       { label: 'Add reaction…', run: () => setPickerOpen(true) },
     ]
     if (props.onReply && !inThread) options.push({ label: 'Reply in thread', run: () => props.onReply!(message) })
@@ -711,19 +719,22 @@ function MessageRowImpl(props: MessageRowProps) {
         {!deleted && message.reactions.length > 0 && (
           <View className="mt-1 flex-row flex-wrap gap-1">
             {message.reactions.map((r) => {
-              const reacted = !!me && r.userIds.includes(me)
+              const reacted = hasReacted(message.reactions, r.emoji, me)
+              const who = reactionTooltip(r.emoji, r.userIds, me, names)
               return (
                 <Pressable
                   key={r.emoji}
-                  onPress={() => props.onReact(message, r.emoji)}
-                  accessibilityLabel={`${r.emoji} ${r.count}`}
+                  onPress={() => toggleReact(r.emoji)}
+                  accessibilityLabel={who}
                   className={cn(
                     'flex-row items-center gap-1 rounded-full border px-2 py-0.5',
                     reacted ? 'border-primary/50 bg-primary/10' : 'border-border bg-card',
                   )}
                 >
-                  <ReactionGlyph emoji={r.emoji} />
-                  <Text className={cn('text-[11px]', reacted ? 'text-primary' : 'text-muted-foreground')}>{r.count}</Text>
+                  <WebTooltip label={who}>
+                    <ReactionGlyph emoji={r.emoji} />
+                    <Text className={cn('text-[11px]', reacted ? 'text-primary' : 'text-muted-foreground')}>{r.count}</Text>
+                  </WebTooltip>
                 </Pressable>
               )
             })}
@@ -746,7 +757,7 @@ function MessageRowImpl(props: MessageRowProps) {
       {isWeb && active && !deleted && !message.pending && !editing && (
         <View className="absolute right-3 -top-3 flex-row items-center rounded-lg border border-border bg-card px-1 py-0.5 shadow-sm">
           {QUICK_REACTIONS.slice(0, 3).map((emoji) => (
-            <Pressable key={emoji} onPress={() => props.onReact(message, emoji)} className="rounded px-1.5 py-1 hover:bg-muted">
+            <Pressable key={emoji} onPress={() => toggleReact(emoji)} className="rounded px-1.5 py-1 hover:bg-muted">
               <Text className="text-sm">{emoji}</Text>
             </Pressable>
           ))}
@@ -785,7 +796,7 @@ function MessageRowImpl(props: MessageRowProps) {
                 workspaceId={props.workspaceId}
                 onPick={(code) => {
                   setPickerOpen(false)
-                  props.onReact(message, code)
+                  toggleReact(code)
                 }}
               />
             </Pressable>
