@@ -8,6 +8,7 @@
 import { ActivityIndicator, Image, Pressable, Text, View } from 'react-native'
 import { Headphones, Mic, MicOff, MonitorOff, MonitorUp, PhoneOff, Video, VideoOff, Volume2, X } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
+import { WebTooltip } from '../chat/WebTooltip'
 import { useConversationHuddle } from '../../hooks/useHuddles'
 import {
   clearHuddleError,
@@ -103,8 +104,10 @@ export function HuddleButton({ conversation, me, label, floating }: { conversati
       accessibilityLabel={action}
       className={cn('flex-row items-center gap-1 rounded-md p-1.5 active:bg-muted hover:bg-muted', huddle && !inThis && 'bg-emerald-500/10')}
     >
-      <Headphones size={16} className={iconClass} />
-      {huddle && !inThis ? <Text className="text-xs font-medium text-emerald-600">{huddle.participants.length}</Text> : null}
+      <WebTooltip label={action}>
+        <Headphones size={16} className={iconClass} />
+        {huddle && !inThis ? <Text className="text-xs font-medium text-emerald-600">{huddle.participants.length}</Text> : null}
+      </WebTooltip>
     </Pressable>
   )
 }

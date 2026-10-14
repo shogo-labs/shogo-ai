@@ -5,6 +5,7 @@ import type { ReactNode } from 'react'
 import { Pressable, View, type StyleProp, type ViewStyle } from 'react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { LiquidGlassBackdrop } from '../ui/LiquidGlassBackdrop'
+import { WebTooltip } from '../chat/WebTooltip'
 
 /** Height of the round buttons and title pill. */
 export const CHROME_SIZE = 44
@@ -20,7 +21,9 @@ export function GlassButton({ label, onPress, children }: { label: string; onPre
     >
       <LiquidGlassBackdrop style={{ borderRadius: CHROME_SIZE / 2 }} />
       {/* On web a bare SVG icon would paint under the absolutely positioned glass. */}
-      <View className="items-center justify-center">{children}</View>
+      <View className="items-center justify-center">
+        <WebTooltip label={label}>{children}</WebTooltip>
+      </View>
     </Pressable>
   )
 }

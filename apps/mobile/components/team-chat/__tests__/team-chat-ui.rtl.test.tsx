@@ -858,6 +858,32 @@ describe('ConversationHeader channel editing', () => {
     expect(updates).toEqual([{ id: 'c9', patch: { topic: null } }])
   })
 
+  test('every header icon names itself on hover, matching its accessible label', () => {
+    render(<ConversationHeader conversation={channel()} mentionables={null} me="u-me" onChanged={() => {}} onLeft={() => {}} />)
+    for (const label of ['Edit channel', 'Notification settings', 'Star', 'Pinned messages', 'Members', 'Leave channel', 'Archive']) {
+      const tooltip = screen.getByLabelText(label).querySelector('[title]')
+      expect(tooltip?.getAttribute('title')).toBe(label)
+    }
+  })
+
+  test('the floating phone header names its icons too', () => {
+    render(
+      <ConversationHeader
+        conversation={channel()}
+        mentionables={null}
+        me="u-me"
+        onChanged={() => {}}
+        onLeft={() => {}}
+        floating
+        onBack={() => {}}
+      />,
+    )
+    for (const label of ['Back', 'More actions']) {
+      const tooltip = screen.getByLabelText(label).querySelector('[title]')
+      expect(tooltip?.getAttribute('title')).toBe(label)
+    }
+  })
+
   test('the floating phone header goes back and keeps every action in its sheet', async () => {
     updates.length = 0
     const onBack = mock(() => {})

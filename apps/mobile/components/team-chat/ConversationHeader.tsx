@@ -9,6 +9,7 @@ import { cn } from '@shogo/shared-ui/primitives'
 import { LiquidGlassBackdrop } from '../ui/LiquidGlassBackdrop'
 import { CHROME_SIZE, GlassButton, GlassChip } from './FloatingChrome'
 import { MarkdownText } from '../chat/MarkdownText'
+import { WebTooltip } from '../chat/WebTooltip'
 import {
   conversationTitle,
   isAgentDm,
@@ -500,7 +501,7 @@ interface HeaderAction {
 function HeaderButton({ label, onPress, children }: { label: string; onPress: () => void; children: React.ReactNode }) {
   return (
     <Pressable onPress={onPress} accessibilityRole="button" accessibilityLabel={label} className="rounded-md p-1.5 active:bg-muted hover:bg-muted">
-      {children}
+      <WebTooltip label={label}>{children}</WebTooltip>
     </Pressable>
   )
 }
