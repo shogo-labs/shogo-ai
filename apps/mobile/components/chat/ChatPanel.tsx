@@ -126,7 +126,9 @@ import {
   withResumeReplayReset,
 } from "./resume-replay-transport"
 import { cn } from "@shogo/shared-ui/primitives"
+import { useBillingData } from "@shogo/shared-app/hooks"
 import { API_URL, api, createHttpClient } from "../../lib/api"
+import { usePlatformConfig } from "../../lib/platform-config"
 import { workspaceProjectFilter } from "../../lib/project-load"
 import {
   getActiveWorkspaceId,
@@ -527,7 +529,7 @@ export interface ChatPanelProps {
     platformFeatures?: any
     componentBuilder?: any
   }
-  /** Billing data — optional on mobile; if not provided, defaults to basic mode */
+  /** Billing data; when omitted, ChatPanel loads it for `workspaceId` itself. */
   billingData?: {
     hasActiveSubscription: boolean
     hasAdvancedModelAccess?: boolean
@@ -1040,10 +1042,24 @@ const ChatPanelContent = observer(function ChatPanelContent({
 
   const router = useRouter()
 
-  const hasActiveSubscription = billingData?.hasActiveSubscription ?? false
-  const hasAdvancedModelAccess =
-    billingData?.hasAdvancedModelAccess ?? hasActiveSubscription
-  const refetchUsageWallet = billingData?.refetchUsageWallet ?? (() => {})
+  // Surfaces that don't pass `billingData` (workspace agent chat, project chat
+  // view, side chat) would otherwise lock every non-economy model.
+  const { features: platformFeatureFlags } = usePlatformConfig()
+  const ownBillingData = useBillingData(
+    !billingData && platformFeatureFlags.billing ? workspaceId : undefined,
+  )
+  const hasActiveSubscription = billingData
+    ? billingData.hasActiveSubscription
+    : platformFeatureFlags.billing
+      ? ownBillingData.hasActiveSubscription
+      : true
+  const hasAdvancedModelAccess = billingData
+    ? (billingData.hasAdvancedModelAccess ?? billingData.hasActiveSubscription)
+    : platformFeatureFlags.billing
+      ? ownBillingData.hasAdvancedModelAccess
+      : true
+  const refetchUsageWallet =
+    billingData?.refetchUsageWallet ?? ownBillingData.refetchUsageWallet
 
   const handleUpgradeClick = useCallback(() => {
     router.push("/(app)/billing" as any)
