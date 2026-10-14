@@ -152,14 +152,16 @@ export interface PanelSectionProps {
   onAdd?: () => void
   /** Hide the chevron and keep the section open. */
   fixed?: boolean
+  /** Start closed, for groups that are rarely needed. */
+  defaultCollapsed?: boolean
   children: ReactNode
 }
 
 /** A collapsible, labelled group of rows with an optional "+" action. */
-export function PanelSection({ label, addLabel, onAdd, fixed, children }: PanelSectionProps) {
+export function PanelSection({ label, addLabel, onAdd, fixed, defaultCollapsed, children }: PanelSectionProps) {
   const comfortable = usePhoneLayout()
   const density = densityFor(comfortable)
-  const [expanded, setExpanded] = useState(true)
+  const [expanded, setExpanded] = useState(!defaultCollapsed)
   const Chevron = expanded ? ChevronDown : ChevronRight
   return (
     <View className={comfortable ? 'mb-2' : 'mb-2 mt-3'}>
