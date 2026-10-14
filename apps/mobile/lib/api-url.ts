@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import Constants from 'expo-constants'
 import { Platform } from 'react-native'
+import { getEnvOverride } from './env-override'
 
 const API_PORT = process.env.EXPO_PUBLIC_API_PORT ?? '8002'
 
@@ -38,6 +39,9 @@ export const API_URL = (() => {
     if (!origin.includes('localhost')) return origin
     return `http://localhost:${API_PORT}`
   }
+
+  const override = getEnvOverride()
+  if (override) return override.url
 
   const envUrl = process.env.EXPO_PUBLIC_API_URL
   if (envUrl) return envUrl

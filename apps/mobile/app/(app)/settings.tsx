@@ -106,6 +106,7 @@ import { ComputerAndFilesPanel } from "../../components/settings/ComputerAndFile
 import { ComputeTab } from "../../components/settings/ComputeTab";
 import { LocalCloudBillingTab } from "../../components/settings/LocalCloudBillingTab";
 import { UpdatesTab } from "../../components/settings/UpdatesTab";
+import { EnvironmentVersionTrigger } from "../../components/settings/EnvironmentPicker";
 import { IntegrationsTab } from "../../components/settings/IntegrationsTab";
 import { AutomationsTab } from "../../components/settings/AutomationsTab";
 import { WorkspaceModelsTab } from "../../components/settings/WorkspaceModelsTab";
@@ -4593,6 +4594,9 @@ export function WorkspaceAccountActions({
           <LogOutIcon size={18} className="text-destructive" />
           <Text className="text-sm font-medium text-destructive">Sign out</Text>
         </Pressable>
+      ) : null}
+      {showSignOut ? (
+        <EnvironmentVersionTrigger className={cn(sidebar ? "mt-4 px-2.5 py-1" : "py-1")} />
       ) : null}
       <CreateWorkspaceModal
         visible={createWorkspaceOpen}

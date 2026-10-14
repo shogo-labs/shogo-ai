@@ -4,10 +4,11 @@ import { type ReactNode, useEffect, useRef } from 'react'
 import { Platform } from 'react-native'
 import { PostHogProvider as PHProvider, usePostHog } from 'posthog-react-native'
 import { useAuth } from './auth'
+import { getActiveEnvKey, telemetryEnvFor } from '../lib/env-override'
 
 const apiKey = process.env.EXPO_PUBLIC_POSTHOG_API_KEY
 const host = process.env.EXPO_PUBLIC_POSTHOG_HOST || 'https://us.i.posthog.com'
-const appEnv = process.env.EXPO_PUBLIC_APP_ENV || 'development'
+const appEnv = telemetryEnvFor(getActiveEnvKey(), process.env.EXPO_PUBLIC_APP_ENV || 'development')
 const isWeb = Platform.OS === 'web'
 
 export function PostHogProvider({ children }: { children: ReactNode }) {

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { useRouter, useLocalSearchParams } from 'expo-router'
-import { useColorScheme, Alert, Platform } from 'react-native'
+import { useColorScheme, Alert, Platform, View } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { useAuth } from '../../contexts/auth'
 import { EmailNotVerifiedError } from '@shogo/shared-app/auth'
@@ -13,6 +13,7 @@ import { api, createHttpClient, API_URL } from '../../lib/api'
 import { getPasswordResetRedirectUrl } from '../../lib/password-reset-redirect'
 import { LoginScreen } from '@shogo/shared-ui/screens'
 import { LoginShowcase } from '../../components/auth/LoginShowcase'
+import { EnvironmentVersionTrigger } from '../../components/settings/EnvironmentPicker'
 import * as AppleAuthentication from 'expo-apple-authentication'
 import * as Crypto from 'expo-crypto'
 
@@ -223,6 +224,11 @@ export default function SignInScreen() {
           Platform.OS === 'web' ? <LoginShowcase colorScheme={resolvedColorScheme} /> : undefined
         }
       />
+      {Platform.OS !== 'web' ? (
+        <View pointerEvents="box-none" className="absolute bottom-2 left-0 right-0 items-center">
+          <EnvironmentVersionTrigger className="px-3 py-1" />
+        </View>
+      ) : null}
     </SafeAreaView>
   )
 }
