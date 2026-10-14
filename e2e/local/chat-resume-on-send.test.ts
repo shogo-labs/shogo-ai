@@ -36,7 +36,8 @@ let llm: FakeLlmServer
 let context: BrowserContext
 let baseURL: string
 let workspaceId: string
-let projectId: string
+/** Project of each chat: a project has exactly one chat (its pinned workspace session). */
+const projectOf = new Map<string, string>()
 
 test.beforeAll(async ({ browser }, info) => {
   test.setTimeout(300_000)
@@ -53,15 +54,6 @@ test.beforeAll(async ({ browser }, info) => {
   const workspace = list.find((w) => w?.kind === "team") ?? list[0]
   if (!workspace?.id) throw new Error(`no workspace: ${JSON.stringify(workspaces).slice(0, 300)}`)
   workspaceId = workspace.id
-  const created = await apiJson<any>("POST", "/api/projects", {
-    name: `Resume on send ${Date.now()}`,
-    workspaceId,
-    tier: "starter",
-    status: "draft",
-    accessLevel: "anyone",
-  })
-  projectId = created?.data?.id ?? created?.id
-  if (!projectId) throw new Error(`project create failed: ${JSON.stringify(created).slice(0, 300)}`)
 })
 
 test.afterAll(async () => {
@@ -89,13 +81,34 @@ async function apiJson<T>(method: string, route: string, body?: unknown): Promis
   }
 }
 
+/**
+ * A new project, opened once so the app creates its chat, then closed again.
+ * Returns that chat's session id.
+ */
 async function createChat(name: string): Promise<string> {
-  const res = await apiJson<any>("POST", `/api/local/projects/${encodeURIComponent(projectId)}/workspace-sessions`, {
-    inferredName: name,
+  const created = await apiJson<any>("POST", "/api/projects", {
+    name: `${name} ${Date.now()}`,
+    workspaceId,
+    tier: "starter",
+    status: "draft",
+    accessLevel: "anyone",
   })
-  const id = res?.session?.id
-  if (!id) throw new Error(`chat create failed: ${JSON.stringify(res).slice(0, 300)}`)
-  return id
+  const projectId: string | undefined = created?.data?.id ?? created?.id
+  if (!projectId) throw new Error(`project create failed: ${JSON.stringify(created).slice(0, 300)}`)
+  const page = await context.newPage()
+  await page.goto(`/projects/${encodeURIComponent(projectId)}`)
+  await expect(composer(page)).toBeVisible({ timeout: 120_000 })
+  const deadline = Date.now() + 60_000
+  let sessionId: string | undefined
+  while (!sessionId && Date.now() < deadline) {
+    const res = await apiJson<any>("GET", `/api/chat-sessions?contextId=${encodeURIComponent(projectId)}`)
+    sessionId = (res?.items ?? []).find((s: any) => s.contextType === "workspace" && s.workspaceId)?.id
+    if (!sessionId) await page.waitForTimeout(500)
+  }
+  await page.close()
+  if (!sessionId) throw new Error(`project ${projectId} never got a chat`)
+  projectOf.set(sessionId, projectId)
+  return sessionId
 }
 
 function chatUrl(): string {
@@ -141,14 +154,34 @@ async function serverTurn(sessionId: string): Promise<string> {
 const composer = (page: Page) => page.getByTestId("project-composer-input").filter({ visible: true }).first()
 
 async function openChat(page: Page, sessionId: string): Promise<void> {
-  await page.goto(`/projects/${encodeURIComponent(projectId)}?chatSessionId=${encodeURIComponent(sessionId)}`)
+  await page.goto(`/projects/${encodeURIComponent(projectOf.get(sessionId)!)}`)
   const switchToText = page.getByText("Switch to text input", { exact: true })
   if (await switchToText.isVisible().catch(() => false)) await switchToText.click()
   await expect(composer(page)).toBeVisible({ timeout: 120_000 })
 }
 
+const DEBUG_T0 = Date.now()
+
+/** E2E_DEBUG_CHAT=1 logs each window's chat requests (send, /turn probe, /stream attach, stop). */
+function logChatTraffic(page: Page, name: string): void {
+  if (!process.env.E2E_DEBUG_CHAT) return
+  const t0 = DEBUG_T0
+  page.on("response", (res) => {
+    const url = res.url()
+    if (!/\/chat(\/|\?|$)|chat-queued-messages|chat-messages/.test(url)) return
+    const line = `[${name} +${Date.now() - t0}ms] ${res.request().method()} ${url.replace(API, "")} -> ${res.status()}`
+    if (/\/turn$/.test(url)) void res.text().then((body) => console.log(`${line} ${body.slice(0, 200)}`), () => console.log(line))
+    else console.log(line)
+  })
+  page.on("console", (msg) => {
+    if (/ChatPanel|resume|probe/i.test(msg.text())) console.log(`[${name} console] ${msg.text().slice(0, 200)}`)
+  })
+}
+
+let windowCount = 0
 async function newWindow(sessionId: string): Promise<Page> {
   const page = await context.newPage()
+  logChatTraffic(page, `w${++windowCount}`)
   await openChat(page, sessionId)
   return page
 }
@@ -351,11 +384,17 @@ async function expectStopStopsTheRunningTurn(page: Page, sessionId: string, runn
   }
   soft(cancelledMs, `${label}: Stop cancelled the turn that was running ("${running}") at the model`).not.toBeNull()
   await page.waitForTimeout(1500)
+  // The server may already be running the queued message before the model sees it.
+  if (queued && !llm.turn(queued) && (await serverTurn(sessionId)) === "active") {
+    await llm.waitForTurn(queued, 5000).catch(() => undefined)
+  }
   if (queued && llm.turn(queued) && !llm.turn(queued)!.finishedAt) {
     // A queued message may start once the stopped turn ends; if it does the window must show it.
     await expectFollows(page, queued, `${label}, the queued message started after Stop`)
   } else {
-    soft(await stopShown(page), `${label}: Stop button gone after Stop`).toBe(false)
+    const q = queued ? llm.turn(queued) : undefined
+    const state = `server turn ${await serverTurn(sessionId)}; queued "${queued ?? "-"}" ${q ? (q.finishedAt ? "finished" : "running") : "not started"}`
+    soft(await stopShown(page), `${label}: Stop button gone after Stop (${state})`).toBe(false)
   }
   await expectIdle(page, `${label}, after Stop`, 60_000)
   await page.waitForTimeout(1000)
@@ -377,15 +416,26 @@ test.describe("chat resumes a live turn it is not attached to", () => {
     expect(status).toBe(200)
     await llm.waitForTokens(lead, 60, 30_000)
 
-    // Nothing tells this window a turn started. Record whether it noticed on its own.
-    const noticed = await expectFollows(page, lead, "open window, before sending anything")
-
     const ghost = watchForGhostStop(page, [lead])
     await send(page, `${marker("long", "ob", 60)} follow-up`)
     await expectQueuedBehindLiveTurn(page, sid, lead, leadN, "ob", 60, "open window sends during a turn started elsewhere")
     const ghosts = await ghost.stop()
     soft(ghosts, "moments the window showed Stop while hiding the running turn").toEqual([])
-    test.info().annotations.push({ type: "noticed-on-its-own-ms", description: String(noticed) })
+    await page.close()
+  })
+
+  test("window already open when a turn starts elsewhere; the user comes back to the window", async () => {
+    const sid = await createChat("open before turn, focus")
+    const page = await newWindow(sid)
+    const lead = "ka"
+    await startTurnElsewhere(sid, `${marker("long", lead, 900, { ms: 25 })} elsewhere`)
+    await llm.waitForTokens(lead, 60, 30_000)
+    // Nothing pushes a turn started elsewhere to an idle window; coming back to it must.
+    await page.evaluate(() => window.dispatchEvent(new Event("focus")))
+    await expectFollows(page, lead, "after the user comes back to the window")
+    await llm.waitForTokens(lead, 900, 60_000).catch(() => undefined)
+    await expectComplete(page, lead, 900, "after coming back")
+    await expectIdle(page, "after coming back")
     await page.close()
   })
 
@@ -471,8 +521,9 @@ test.describe("chat resumes a live turn it is not attached to", () => {
     const sid = await createChat("stream drops")
     const page = await newWindow(sid)
     const lead = "da"
-    const leadN = 2400
-    await send(page, `${marker("long", lead, leadN, { ms: 25 })} go`)
+    // Long enough to still be running after the window spends up to a minute giving up.
+    const leadN = 6000
+    await send(page, `${marker("long", lead, leadN, { ms: 15 })} go`)
     await llm.waitForTokens(lead, 80, 30_000)
     await expectFollows(page, lead, "own turn before the drop")
 
@@ -486,6 +537,7 @@ test.describe("chat resumes a live turn it is not attached to", () => {
     soft(llm.wasCancelled(lead), "the drop cancelled the turn on the server").toBe(false)
     soft(await serverTurn(sid), "the server is still running the turn after the window gave up").toBe("active")
     await page.waitForTimeout(1000)
+    await page.screenshot({ path: test.info().outputPath("after-giving-up.png") })
 
     await send(page, `${marker("long", "db", 60)} follow-up`)
     await expectQueuedBehindLiveTurn(page, sid, lead, leadN, "db", 60, "after the window gave up on its stream")
@@ -502,13 +554,10 @@ test.describe("chat resumes a live turn it is not attached to", () => {
     await llm.waitForTokens(lead, 60, 30_000)
     await expectFollows(page, lead, "before switching")
 
-    await page.evaluate(
-      ({ pid, other }) => {
-        window.history.pushState({}, "", `/projects/${pid}?chatSessionId=${other}`)
-        window.dispatchEvent(new PopStateEvent("popstate"))
-      },
-      { pid: projectId, other },
-    )
+    await page.evaluate((path) => {
+      window.history.pushState({}, "", path)
+      window.dispatchEvent(new PopStateEvent("popstate"))
+    }, `/projects/${projectOf.get(other)}`)
     await page.waitForTimeout(1500)
     await page.goBack()
     await expect(composer(page)).toBeVisible()
@@ -608,6 +657,13 @@ test.describe("two windows on one chat", () => {
     const lead = "ua"
     await startTurnElsewhere(sid, `${marker("long", lead, 900, { ms: 25 })} elsewhere`)
     await llm.waitForTokens(lead, 60, 30_000)
+    const sampler = process.env.E2E_DEBUG_CHAT
+      ? setInterval(async () => {
+          try {
+            console.log(`[A screen +${Date.now() - DEBUG_T0}ms] ua ${await maxOnScreen(a, "ua")} ub ${await maxOnScreen(a, "ub")} uc ${await maxOnScreen(a, "uc")} stop ${await stopShown(a)}`)
+          } catch {}
+        }, 1000)
+      : undefined
     await send(a, `${marker("long", "ub", 60)} from A`)
     await a.waitForTimeout(500)
     await send(b, `${marker("long", "uc", 60)} from B`)
@@ -621,12 +677,14 @@ test.describe("two windows on one chat", () => {
     for (let i = 1; i < order.length; i++) {
       soft((order[i].startedAt ?? 0) >= (order[i - 1].finishedAt ?? Infinity) - 50, `"${order[i].tag}" started before "${order[i - 1].tag}" finished`).toBe(true)
     }
-    for (const page of [a, b]) {
-      await expectComplete(page, lead, 900, "both windows")
-      await expectComplete(page, "ub", 60, "both windows")
-      await expectComplete(page, "uc", 60, "both windows")
-      await expectIdle(page, "both windows")
+    if (process.env.E2E_DEBUG_CHAT) console.log("turns", order.map((t) => `${t.tag} ${t.startedAt - DEBUG_T0}..${(t.finishedAt ?? 0) - DEBUG_T0}`).join(", "))
+    for (const [name, page] of [["window A", a], ["window B", b]] as const) {
+      await expectComplete(page, lead, 900, name)
+      await expectComplete(page, "ub", 60, name)
+      await expectComplete(page, "uc", 60, name)
+      await expectIdle(page, name)
     }
+    if (sampler) clearInterval(sampler)
     await a.close()
     await b.close()
   })

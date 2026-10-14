@@ -55,6 +55,7 @@ import {
   removePoolTemplateDist,
   writePoolPreseedManifest,
 } from './workspace-pool-adopt'
+import { LiveTurnGate } from './live-turn-wait'
 import {
   createRuntimeApp, traceOperation,
   initializeS3Sync,
@@ -1283,6 +1284,7 @@ function startWorkspaceDepsInstall(opts: { afterS3Restore?: boolean } = {}): Pro
 // =============================================================================
 
 const streamBufferStore = new StreamBufferStore()
+const liveTurnGate = new LiveTurnGate(streamBufferStore)
 
 // Hono app, CORS, auth middleware, /health, /pool/activity, /pool/assign are
 // provided by createRuntimeApp(). Agent-specific routes follow below.
@@ -1924,6 +1926,16 @@ app.post('/agent/chat', async (c) => {
   // Create a buffer that lives independently of the HTTP connection.
   // The agent writes into this buffer via a background consumer so that
   // a client disconnect (e.g. page refresh) does NOT cancel the agent.
+  // A busy chat finishes its live turn first; see live-turn-wait.ts.
+  if (liveTurnGate.isBusy(chatSessionKey)) {
+    console.log(`[AgentChat] Session ${chatSessionKey} has a live turn; waiting for it before starting the next`)
+    const { waitedMs, stopped } = await liveTurnGate.waitUntilFree(chatSessionKey)
+    if (stopped) {
+      console.log(`[AgentChat] Session ${chatSessionKey} was stopped after ${waitedMs}ms; not starting the waiting turn`)
+      return c.json({ error: 'The chat was stopped before this message started', code: 'turn_stopped' }, 409)
+    }
+    console.log(`[AgentChat] Session ${chatSessionKey} free after ${waitedMs}ms`)
+  }
   console.log(`[AgentChat] Creating stream buffer for session: ${chatSessionKey}`)
   const bufWriter = streamBufferStore.create(chatSessionKey)
   const turnId = bufWriter.turnId
@@ -2570,6 +2582,7 @@ app.post('/agent/stop', async (c) => {
     )
   }
   const stopSessionKey = rawStopSessionKey
+  liveTurnGate.markStopped(stopSessionKey)
   const aborted = agentGateway.abortCurrentTurn(stopSessionKey)
 
   // The main turn signal does not reach subagents because each has its own

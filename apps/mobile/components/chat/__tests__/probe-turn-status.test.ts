@@ -144,3 +144,50 @@ describe("probeChatTurnStatus", () => {
     expect(fetch.calls[0].init.credentials).toBe("include")
   })
 })
+
+describe("probeChatTurnStatus retries", () => {
+  /** Fails `failures` times (5xx or a throw), then answers with `status`. */
+  function flakyFetch(failures: number, how: "5xx" | "throw", status: number, body?: unknown) {
+    let calls = 0
+    const fn = (async () => {
+      calls++
+      if (calls <= failures) {
+        if (how === "throw") throw new Error("ECONNRESET")
+        return { ok: false, status: 503, async json() { return null } } as any
+      }
+      return { ok: status >= 200 && status < 300, status, async json() { return body } } as any
+    }) as unknown as typeof globalThis.fetch
+    return Object.assign(fn, { calls: () => calls })
+  }
+
+  test("a failed probe is retried and finds the live turn", async () => {
+    const fetch = flakyFetch(1, "5xx", 200, { status: "active" })
+    expect(await probeChatTurnStatus({ url: "http://x/turn", fetch, retryDelaysMs: [1] })).toBe("active")
+    expect(fetch.calls()).toBe(2)
+  })
+
+  test("a thrown fetch is retried too", async () => {
+    const fetch = flakyFetch(2, "throw", 200, { status: "active" })
+    expect(await probeChatTurnStatus({ url: "http://x/turn", fetch, retryDelaysMs: [1, 1] })).toBe("active")
+  })
+
+  test("404 is an answer, not retried", async () => {
+    const fetch = flakyFetch(0, "5xx", 404, { status: "unknown" })
+    expect(await probeChatTurnStatus({ url: "http://x/turn", fetch, retryDelaysMs: [1, 1] })).toBe("unknown")
+    expect(fetch.calls()).toBe(1)
+  })
+
+  test("gives up as 'unknown' once retries run out", async () => {
+    const fetch = flakyFetch(5, "5xx", 200, { status: "active" })
+    expect(await probeChatTurnStatus({ url: "http://x/turn", fetch, retryDelaysMs: [1, 1] })).toBe("unknown")
+    expect(fetch.calls()).toBe(3)
+  })
+
+  test("an aborted probe is not retried", async () => {
+    const controller = new AbortController()
+    controller.abort()
+    const fetch = flakyFetch(5, "throw", 200, { status: "active" })
+    expect(await probeChatTurnStatus({ url: "http://x/turn", fetch, signal: controller.signal, retryDelaysMs: [1, 1] })).toBe("unknown")
+    expect(fetch.calls()).toBe(1)
+  })
+})

@@ -50,6 +50,13 @@ export interface ProbeTurnStatusOptions {
    * The probe is cheap (~50 bytes JSON) but should not outlive its caller.
    */
   signal?: AbortSignal
+  /**
+   * Delays before each retry when the probe itself fails (network error,
+   * 5xx). A 404/204 (no buffer) is an answer and is not retried. Without
+   * retries one dropped request on open strands the window idle over a
+   * live turn.
+   */
+  retryDelaysMs?: readonly number[]
 }
 
 /**
@@ -83,6 +90,17 @@ export function normalizeTurnStatus(raw: unknown): ChatTurnStatus {
 export async function probeChatTurnStatus(
   opts: ProbeTurnStatusOptions,
 ): Promise<ChatTurnStatus> {
+  const delays = opts.retryDelaysMs ?? []
+  for (let attempt = 0; ; attempt++) {
+    const result = await probeOnce(opts)
+    if (result !== "error") return result
+    if (attempt >= delays.length || opts.signal?.aborted) return "unknown"
+    await new Promise((resolve) => setTimeout(resolve, delays[attempt]))
+    if (opts.signal?.aborted) return "unknown"
+  }
+}
+
+async function probeOnce(opts: ProbeTurnStatusOptions): Promise<ChatTurnStatus | "error"> {
   const fetchFn = opts.fetch ?? globalThis.fetch
   try {
     const res = await fetchFn(opts.url, {
@@ -94,12 +112,12 @@ export async function probeChatTurnStatus(
 
     // 404 ⇒ runtime has no buffer for this session — treat as unknown.
     if (res.status === 404 || res.status === 204) return "unknown"
-    if (!res.ok) return "unknown"
+    if (!res.ok) return "error"
 
     const body = (await res.json().catch(() => null)) as { status?: unknown } | null
     return normalizeTurnStatus(body?.status)
   } catch {
     // Network error, abort, or otherwise — fall back to "no live turn".
-    return "unknown"
+    return "error"
   }
 }
