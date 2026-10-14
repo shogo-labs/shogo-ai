@@ -120,9 +120,10 @@ describe('promote-metal-runtime-image.sh', () => {
     publish(c4)
     const { outputs, creates } = run(c4)
     expect(outputs).toEqual({ source: 'promoted', image: `${REPO}:production-multiarch-${c4}`, revision: c4 })
+    // --prefer-index=false: an exact copy, so the promoted tag keeps the staging digest.
     expect(creates).toEqual([
-      `--tag ${REPO}:production-multiarch-${c4} --tag ${REPO}:production-multiarch-latest ${REPO}:staging-multiarch-${c4}`,
-      `--tag ${REPO}:production-docker-multiarch-${c4} --tag ${REPO}:production-docker-multiarch-latest ${REPO}:staging-docker-multiarch-${c4}`,
+      `--prefer-index=false --tag ${REPO}:production-multiarch-${c4} --tag ${REPO}:production-multiarch-latest ${REPO}:staging-multiarch-${c4}`,
+      `--prefer-index=false --tag ${REPO}:production-docker-multiarch-${c4} --tag ${REPO}:production-docker-multiarch-latest ${REPO}:staging-docker-multiarch-${c4}`,
     ])
   })
 

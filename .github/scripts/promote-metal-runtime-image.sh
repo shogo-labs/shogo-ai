@@ -74,11 +74,11 @@ if [ "${DRY_RUN:-false}" = "true" ]; then
   echo "::notice::Would promote staging-multiarch-${SOURCE} (runtime chain identical to ${SHA:0:12})"
 else
   echo "::notice::Promoting staging-multiarch-${SOURCE} (runtime chain identical to ${SHA:0:12})"
-  docker buildx imagetools create \
+  docker buildx imagetools create --prefer-index=false \
     --tag "${REPO}:production-multiarch-${SOURCE}" \
     --tag "${REPO}:production-multiarch-latest" \
     "${REPO}:staging-multiarch-${SOURCE}"
-  docker buildx imagetools create \
+  docker buildx imagetools create --prefer-index=false \
     --tag "${REPO}:production-docker-multiarch-${SOURCE}" \
     --tag "${REPO}:production-docker-multiarch-latest" \
     "${REPO}:staging-docker-multiarch-${SOURCE}"

@@ -822,7 +822,7 @@ jobs:
             echo "|---|---|"
           } >> "$GITHUB_STEP_SUMMARY"
           for repo in $REPOS; do
-            docker buildx imagetools create \
+            docker buildx imagetools create --prefer-index=false \
               --tag "${OCIR_REGISTRY}/shogo/${repo}:${DST_TAG}" \
               --tag "${OCIR_REGISTRY}/shogo/${repo}:production-latest" \
               "${OCIR_REGISTRY}/shogo/${repo}:${SRC_TAG}"
@@ -1109,7 +1109,7 @@ jobs:
             elif [ -z "$src" ]; then
               echo "::warning::$repo: nothing deployed to carry forward; ${dst} will not exist and this commit cannot be promoted"
             else
-              docker buildx imagetools create --tag "$dst" "$src"
+              docker buildx imagetools create --prefer-index=false --tag "$dst" "$src"
               echo "$repo: ${src} -> ${dst}"
             fi
           }
