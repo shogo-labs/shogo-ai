@@ -109,6 +109,52 @@ export function getToolNamespace(name: string): string | null {
   return null
 }
 
+const COMPOSIO_SLUG_PATTERN = /^[A-Z][A-Z0-9]*(_[A-Z0-9]+)+$/
+const NATIVE_INTEGRATION_PREFIXES = ["github_"]
+
+const TOOLKIT_DISPLAY_NAMES: Record<string, string> = {
+  github: "GitHub",
+  gitlab: "GitLab",
+  googlecalendar: "Google Calendar",
+  googledrive: "Google Drive",
+  googledocs: "Google Docs",
+  googlesheets: "Google Sheets",
+  gmail: "Gmail",
+  hubspot: "HubSpot",
+  linkedin: "LinkedIn",
+  youtube: "YouTube",
+  clickup: "ClickUp",
+}
+
+/**
+ * Third-party integration tool calls: MCP (`mcp__server__tool`), Composio
+ * slugs (`GITHUB_RUN_GRAPH_QL_QUERY`), and native integration gateway tools
+ * (`github_merge_pr`).
+ */
+export function isIntegrationTool(name: string): boolean {
+  return getIntegrationToolkit(name) !== null
+}
+
+/** Raw lowercase toolkit id for an integration tool, or null if it isn't one. */
+export function getIntegrationToolkit(name: string): string | null {
+  if (name.startsWith("mcp__")) return getToolNamespace(name)?.toLowerCase() ?? null
+  if (COMPOSIO_SLUG_PATTERN.test(name)) return name.split("_")[0].toLowerCase()
+  for (const prefix of NATIVE_INTEGRATION_PREFIXES) {
+    if (name.startsWith(prefix)) return prefix.slice(0, -1)
+  }
+  return null
+}
+
+export function formatToolkitName(toolkit: string): string {
+  const known = TOOLKIT_DISPLAY_NAMES[toolkit.toLowerCase()]
+  if (known) return known
+  return toolkit
+    .split(/[-_\s]+/)
+    .filter(Boolean)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+    .join(" ")
+}
+
 export const GRADIENT_CONFIG = {
   maxItems: 5,
   opacities: [1, 0.85, 0.7, 0.55, 0.4] as const,

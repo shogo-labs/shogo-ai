@@ -12,6 +12,7 @@
  *   Edited 11 files, explored 3 searches, 1 fetch, 2 lookups, ran 13 commands
  *   Editing 32 files, explored 1 search, ran 23 commands   (present tense)
  *   Ran 3 commands
+ *   Used 3 GitHub tools
  *
  * The leading verb reflects `tense` ("Edited"/"Editing"); the
  * trailing "explored …" / "ran …" segments are always past tense —
@@ -24,9 +25,9 @@
 import { getToolSummary, LOOKUP_TOOL_NAMES } from "../tools/summary"
 import { computeLineDiff } from "./diff-utils"
 import type { GroupedMessagePart, MessagePart } from "./types"
-import type { ToolCallData } from "../tools/types"
+import { formatToolkitName, getIntegrationToolkit, type ToolCallData } from "../tools/types"
 
-export type WorkKind = "edited" | "explored" | "ran"
+export type WorkKind = "edited" | "explored" | "ran" | "used"
 export type WorkTense = "present" | "past"
 
 export interface WorkCounts {
@@ -37,6 +38,10 @@ export interface WorkCounts {
   fetches: number
   lookups: number
   commands: number
+  /** Integration/MCP tool calls (Composio, `mcp__*`, native `github_*`). */
+  integrations: number
+  /** Distinct raw toolkit ids behind `integrations`, sorted. */
+  integrationToolkits: string[]
 }
 
 export interface WorkSummary {
@@ -143,8 +148,11 @@ export function tallyWork(
     fetches: 0,
     lookups: 0,
     commands: 0,
+    integrations: 0,
+    integrationToolkits: [],
   }
   const editedPaths = new Set<string>()
+  const toolkits = new Set<string>()
   let added = 0
   let removed = 0
 
@@ -168,6 +176,13 @@ export function tallyWork(
         added += diffCounts.added
         removed += diffCounts.removed
       }
+      continue
+    }
+
+    const toolkit = getIntegrationToolkit(tool.toolName)
+    if (toolkit) {
+      counts.integrations++
+      toolkits.add(toolkit)
       continue
     }
 
@@ -202,6 +217,7 @@ export function tallyWork(
   }
 
   counts.editedFiles = editedPaths.size
+  counts.integrationToolkits = [...toolkits].sort()
   return { counts, added, removed }
 }
 
@@ -215,11 +231,19 @@ export function classifyWorkKind(counts: WorkCounts): WorkKind {
   ) {
     return "explored"
   }
+  if (counts.integrations > 0 && counts.commands === 0) return "used"
   return "ran"
 }
 
 function pluralize(n: number, singular: string, plural: string = `${singular}s`): string {
   return `${n} ${n === 1 ? singular : plural}`
+}
+
+/** `3 GitHub tools` for a single toolkit, `4 integration tools` when mixed. */
+function integrationBucket(counts: WorkCounts): string {
+  const toolkit =
+    counts.integrationToolkits.length === 1 ? formatToolkitName(counts.integrationToolkits[0]) : "integration"
+  return pluralize(counts.integrations, `${toolkit} tool`)
 }
 
 /**
@@ -243,6 +267,7 @@ export function buildWorkLabel(counts: WorkCounts, kind: WorkKind, tense: WorkTe
     if (counts.lookups > 0) exploreParts.push(pluralize(counts.lookups, "lookup"))
     if (exploreParts.length > 0) segs.push(`explored ${exploreParts.join(", ")}`)
     if (counts.commands > 0) segs.push(`ran ${pluralize(counts.commands, "command")}`)
+    if (counts.integrations > 0) segs.push(`used ${integrationBucket(counts)}`)
     return segs.join(", ")
   }
 
@@ -256,11 +281,18 @@ export function buildWorkLabel(counts: WorkCounts, kind: WorkKind, tense: WorkTe
     const bucket = exploreParts.length > 0 ? exploreParts.join(", ") : pluralize(0, "file")
     const segs: string[] = [`${lead} ${bucket}`]
     if (counts.commands > 0) segs.push(`ran ${pluralize(counts.commands, "command")}`)
+    if (counts.integrations > 0) segs.push(`used ${integrationBucket(counts)}`)
     return segs.join(", ")
   }
 
+  if (kind === "used") {
+    return `${past ? "Used" : "Using"} ${integrationBucket(counts)}`
+  }
+
   const lead = past ? "Ran" : "Running"
-  return `${lead} ${pluralize(counts.commands, "command")}`
+  const segs: string[] = [`${lead} ${pluralize(counts.commands, "command")}`]
+  if (counts.integrations > 0) segs.push(`used ${integrationBucket(counts)}`)
+  return segs.join(", ")
 }
 
 export function summarizeWork(items: ReadonlyArray<MessagePart>, tense: WorkTense): WorkSummary {

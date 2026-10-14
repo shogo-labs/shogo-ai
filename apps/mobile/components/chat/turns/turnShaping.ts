@@ -7,7 +7,8 @@
  * for one assistant message into the shape the chat UI renders:
  *
  *   1. `groupWorkParts` — collapse consecutive "work" tool calls
- *      (reads, searches, fetches, edits, writes, shell commands) into
+ *      (reads, searches, fetches, edits, writes, shell commands,
+ *      integration/MCP calls) into
  *      a single `work-group`, and collapse consecutive same-name
  *      calls that aren't work tools (repeated MCP/skill calls) into
  *      a `tool-group`. Hidden legacy notification calls are removed;
@@ -35,7 +36,7 @@
 
 import type { UIMessage } from "@ai-sdk/react";
 import type { MessagePart, GroupedMessagePart } from "./types";
-import { type ToolCallData } from "../tools/types";
+import { type ToolCallData, isIntegrationTool } from "../tools/types";
 import { getToolSummary } from "../tools/summary";
 
 // Verbs (from tools/summary.ts) that classify a tool call as a
@@ -119,7 +120,10 @@ function isShellRunCommand(tool: ToolCallData): boolean {
 
 function isWorkTool(tool: ToolCallData): boolean {
   return (
-    isExplorationTool(tool) || isEditingTool(tool) || isShellRunCommand(tool)
+    isExplorationTool(tool) ||
+    isEditingTool(tool) ||
+    isShellRunCommand(tool) ||
+    isIntegrationTool(tool.toolName)
   );
 }
 

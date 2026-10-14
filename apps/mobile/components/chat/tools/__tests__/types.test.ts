@@ -11,7 +11,45 @@ import {
   getToolCategory,
   getToolKeyArg,
   getToolNamespace,
+  isIntegrationTool,
+  getIntegrationToolkit,
+  formatToolkitName,
 } from "../types"
+
+describe("isIntegrationTool / getIntegrationToolkit", () => {
+  test("MCP tools use the server segment as the toolkit", () => {
+    expect(isIntegrationTool("mcp__shogo__store_get")).toBe(true)
+    expect(getIntegrationToolkit("mcp__Linear__list_issues")).toBe("linear")
+  })
+
+  test("Composio slugs use the first segment as the toolkit", () => {
+    expect(isIntegrationTool("GITHUB_RUN_GRAPH_QL_QUERY")).toBe(true)
+    expect(getIntegrationToolkit("GOOGLECALENDAR_CREATE_EVENT")).toBe("googlecalendar")
+  })
+
+  test("native github_* gateway tools", () => {
+    expect(getIntegrationToolkit("github_merge_pr")).toBe("github")
+    expect(getIntegrationToolkit("github_create_pr")).toBe("github")
+  })
+
+  test("built-in tools are not integrations", () => {
+    for (const name of ["Read", "exec", "Bash", "WebSearch", "team_chat_post", "Skill", "TodoWrite", "mcp__", "LOUD"]) {
+      expect(isIntegrationTool(name)).toBe(false)
+    }
+  })
+})
+
+describe("formatToolkitName", () => {
+  test("known toolkits use their brand casing", () => {
+    expect(formatToolkitName("github")).toBe("GitHub")
+    expect(formatToolkitName("googlecalendar")).toBe("Google Calendar")
+  })
+
+  test("unknown toolkits fall back to title case", () => {
+    expect(formatToolkitName("linear")).toBe("Linear")
+    expect(formatToolkitName("chrome-devtools")).toBe("Chrome Devtools")
+  })
+})
 
 describe("getToolCategory", () => {
   test("mcp prefix", () => {

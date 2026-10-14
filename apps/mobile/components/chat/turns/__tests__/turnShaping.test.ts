@@ -181,8 +181,8 @@ describe("groupWorkParts", () => {
 
   test("repeated same-name non-work tool calls collapse into a tool-group", () => {
     const parts = [
-      tool("mcp__shogo__store_get", { model: "a" }),
-      tool("mcp__shogo__store_get", { model: "b" }),
+      tool("Skill", { name: "a" }),
+      tool("Skill", { name: "b" }),
     ];
     const grouped = groupWorkParts(parts);
     expect(grouped).toHaveLength(1);
@@ -193,18 +193,60 @@ describe("groupWorkParts", () => {
   });
 
   test("a lone non-work tool call (below MIN_GROUP_SIZE) passes through as a single tool part", () => {
-    const parts = [tool("mcp__shogo__store_get", { model: "a" })];
+    const parts = [tool("Skill", { name: "a" })];
     const grouped = groupWorkParts(parts);
     expect(grouped).toHaveLength(1);
     expect(grouped[0].type).toBe("tool");
   });
 
   test("different-name non-work tools don't merge into the same tool-group", () => {
-    const parts = [tool("mcp__a__x", {}), tool("mcp__b__y", {})];
+    const parts = [tool("Skill", {}), tool("team_chat_post", {})];
     const grouped = groupWorkParts(parts);
     expect(grouped).toHaveLength(2);
     expect(grouped[0].type).toBe("tool");
     expect(grouped[1].type).toBe("tool");
+  });
+
+  test("MCP tool calls are work, including different servers in one run", () => {
+    const parts = [
+      tool("mcp__shogo__store_get", { model: "a" }),
+      tool("mcp__a__x", {}),
+      tool("mcp__b__y", {}),
+    ];
+    const grouped = groupWorkParts(parts);
+    expect(grouped).toHaveLength(1);
+    expect(grouped[0].type).toBe("work-group");
+    if (grouped[0].type === "work-group") {
+      expect(grouped[0].items).toHaveLength(3);
+    }
+  });
+
+  test("Composio and native github_* calls group with reasoning riding along", () => {
+    const parts = [
+      tool("github_merge_pr", { pr: 1324 }),
+      reasoning("needs the merge queue"),
+      tool("GITHUB_MERGE_A_PULL_REQUEST", {}),
+      reasoning("get the node id"),
+      tool("GITHUB_RUN_GRAPH_QL_QUERY", { query: "{ repository }" }),
+      reasoning("enqueue it"),
+      tool("GITHUB_RUN_GRAPH_QL_QUERY", { query: "mutation { enqueuePullRequest }" }),
+    ];
+    const grouped = groupWorkParts(parts);
+    expect(grouped).toHaveLength(1);
+    expect(grouped[0].type).toBe("work-group");
+    if (grouped[0].type === "work-group") {
+      expect(grouped[0].items).toHaveLength(7);
+    }
+  });
+
+  test("integration calls join the surrounding read/exec work run", () => {
+    const parts = [
+      tool("Read", { path: "/a.ts" }),
+      tool("GITHUB_RUN_GRAPH_QL_QUERY", {}),
+      tool("exec", { command: "bun test" }),
+    ];
+    const grouped = groupWorkParts(parts);
+    expect(grouped.map((p) => p.type)).toEqual(["work-group"]);
   });
 });
 
