@@ -20,7 +20,7 @@ import type { ArchiveRef } from './archive-ref'
 import { config } from './config'
 import { M, metrics } from './metrics'
 import { MetalWarmPool, type AssignedVm, type RepoExport } from './pool'
-import type { RepoLineage, RepoWriteOutcome } from './repo-archive'
+import type { RepoBody, RepoLineage, RepoWriteOutcome } from './repo-archive'
 import type { FcVmHandle, FirecrackerVMManager } from './firecracker-vm-manager'
 import type { SnapshotMeta, SnapshotStore } from './snapshot-store'
 import type { BackupWriteOutcome } from './workspace-archive'
@@ -78,10 +78,10 @@ class TestPool extends MetalWarmPool {
   }
   protected override async uploadRepoGuarded(
     _p: string,
-    bytes: Uint8Array,
+    bytes: RepoBody,
     _o: { lineage: RepoLineage; preserveOnRefusal?: boolean },
   ): Promise<RepoWriteOutcome> {
-    this.repoUploads.push(bytes)
+    this.repoUploads.push(bytes instanceof Uint8Array ? bytes : new Uint8Array(await bytes.arrayBuffer()))
     return this.repoOutcome
   }
   protected override async uploadBackupGuarded(_p: string, bytes: Uint8Array): Promise<BackupWriteOutcome> {

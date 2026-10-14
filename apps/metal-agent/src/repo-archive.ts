@@ -30,11 +30,23 @@ import {
   type DataWriteOutcome,
   planDataWrite,
 } from './project-data-archive'
-import { conditionalPutObject, type S3Target } from './s3-conditional'
+import type { BunFile } from 'bun'
+import { conditionalPutObject, copyObject, type S3Target } from './s3-conditional'
 import { workspaceS3 } from './workspace-archive'
 
 export type RepoLineage = DataLineage
 export type RepoWriteOutcome = DataWriteOutcome
+
+/**
+ * A `.git` archive to upload: in memory, or spooled to disk by the exporter.
+ * Large repos must stay on disk — buffering a multi-GB archive in the agent's
+ * heap stalls every other request the agent serves.
+ */
+export type RepoBody = Uint8Array | BunFile
+
+export function repoBodySize(body: RepoBody): number {
+  return body instanceof Uint8Array ? body.byteLength : body.size
+}
 
 /** A durable `.git` archive plus the ETag that anchors its lineage. */
 export interface RepoArchive {
@@ -120,17 +132,19 @@ export async function statRepoArchive(
 export async function preserveRepoArchive(projectId: string, cfg: MetalConfig): Promise<string | null> {
   const s3 = workspaceS3(cfg)
   if (!s3) return null
-  const current = s3.client.file(repoArchiveKey(projectId))
-  if (!(await current.exists())) return null
+  const target = repoS3Target(cfg)
+  if (!target) return null
+  const sourceKey = repoArchiveKey(projectId)
+  if (!(await s3.client.file(sourceKey).exists())) return null
   const rand = Math.random().toString(36).slice(2, 8)
   const key = `conflict/${projectId}/${Date.now()}-${rand}-superseded-repo.tar.gz`
-  await s3.client.write(key, new Uint8Array(await current.arrayBuffer()), { type: 'application/gzip' })
+  await copyObject({ target, sourceKey, destKey: key, timeoutMs: 120_000 })
   return key
 }
 
 async function quarantine(
   projectId: string,
-  bytes: Uint8Array,
+  bytes: RepoBody,
   cfg: MetalConfig,
 ): Promise<string | null> {
   const s3 = workspaceS3(cfg)
@@ -142,12 +156,13 @@ async function quarantine(
 
 export async function uploadRepoArchiveGuarded(
   projectId: string,
-  bytes: Uint8Array,
+  bytes: RepoBody,
   opts: { lineage: RepoLineage; preserveOnRefusal?: boolean },
   cfg: MetalConfig,
 ): Promise<RepoWriteOutcome> {
-  if (bytes.byteLength > REPO_MAX_BYTES) {
-    return { status: 'too-large', bytes: bytes.byteLength, limit: REPO_MAX_BYTES }
+  const size = repoBodySize(bytes)
+  if (size > REPO_MAX_BYTES) {
+    return { status: 'too-large', bytes: size, limit: REPO_MAX_BYTES }
   }
 
   const plan = planDataWrite(opts.lineage)
