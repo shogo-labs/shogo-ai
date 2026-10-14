@@ -89,6 +89,40 @@ describe('normalizing agent input', () => {
     expect(card.links).toEqual([{ label: 'PR', url: 'https://github.com/a/b/pull/1' }, { label: 'https://x.dev', url: 'https://x.dev' }])
   })
 
+  test('a link may name a file in the agent workspace when the caller can open it', () => {
+    const fileUrl = (path: string) => `https://studio.test/projects/p1?file=${encodeURIComponent(path)}`
+    const links = [
+      { label: 'Plan', url: 'plans/2026-10-14-plan.md' },
+      { url: './notes/today.md' },
+      { url: '../secrets.env' },
+      { url: '/etc/passwd' },
+      { url: 'file:///etc/passwd' },
+    ]
+    expect(kinds.normalizeCard({ title: 'Plan', links }, { fileUrl })!.links).toEqual([
+      { label: 'Plan', url: 'https://studio.test/projects/p1?file=plans%2F2026-10-14-plan.md' },
+      { label: 'today.md', url: 'https://studio.test/projects/p1?file=notes%2Ftoday.md' },
+    ])
+    expect(kinds.normalizeCard({ title: 'Plan', links })!.links).toBeUndefined()
+  })
+
+  test('attached files are validated, hashed here, capped, and linked to the project', () => {
+    const fileUrl = (path: string) => `https://studio.test/projects/p1?file=${encodeURIComponent(path)}`
+    const sha = (s: string) => new Bun.CryptoHasher('sha256').update(s).digest('hex')
+    const long = 'x'.repeat(kinds.MAX_ARTIFACT_CHARS + 10)
+    const out = kinds.normalizeArtifacts([
+      { path: 'plans/a.md', content: '# A', sha256: 'f'.repeat(64) },
+      { path: 'plans/a.md', content: 'dup' },
+      { path: '../secrets.env', content: 'nope' },
+      { path: 'big.md', content: long },
+      { path: 'cut.md', content: 'partial', truncated: true, sha256: 'a'.repeat(64) },
+      { path: 'b.md', content: 'B' },
+      { path: 'c.md', content: 'C' },
+    ], { fileUrl })
+    expect(out.map((a) => a.path)).toEqual(['plans/a.md', 'cut.md', 'b.md'])
+    expect(out[0]).toEqual({ path: 'plans/a.md', name: 'a.md', sha256: sha('# A'), content: '# A', url: fileUrl('plans/a.md') })
+    expect(out[1]).toMatchObject({ truncated: true, sha256: 'a'.repeat(64) })
+  })
+
   test('the markdown rendering shows progress, criteria, links and the summary', () => {
     const md = kinds.cardToMarkdown({
       title: 'Fix totals',
@@ -180,8 +214,16 @@ describe('posting and updating a card', () => {
       messageId: first.row.id, workspaceId: seed.workspaceId, projectId: seed.projectId, text: 'Waiting on CI',
     })
     expect(message.blocks.card.title).toBe('Fix totals')
+    expect(message.blocks.note).toBe('Waiting on CI')
     expect(message.text).toContain('**Fix totals**')
     expect(message.text.endsWith('Waiting on CI')).toBe(true)
+
+    const moved = await outbound.updateAgentMessage({
+      messageId: first.row.id, workspaceId: seed.workspaceId, projectId: seed.projectId,
+      card: kinds.normalizeCard({ title: 'Fix totals', steps: ['Triage'], status: 'done' })!,
+    })
+    expect(moved.message.blocks.note).toBe('Waiting on CI')
+    expect(moved.message.text.endsWith('Waiting on CI')).toBe(true)
   })
 
   test('only the agent that wrote a message can update it, and not while it is streaming', async () => {

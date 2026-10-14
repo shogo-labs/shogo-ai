@@ -55,7 +55,18 @@ import {
 import { getDocForAgent, updateDocAsAgent } from '../services/conversation-doc.service'
 import { afterMessagePosted } from '../services/conversation-pipeline'
 import { AgentMessageError, postAgentMessage, updateAgentMessage } from '../services/chat-providers/outbound'
-import { blocksForKind, cardToMarkdown, normalizeCard, normalizeKind, normalizeQuestionDrafts, questionsOf, questionsToMarkdown } from '../services/conversation-message-kind'
+import {
+  approvalWithoutContext,
+  artifactRefs,
+  blocksForKind,
+  composeAgentText,
+  normalizeArtifacts,
+  normalizeCard,
+  normalizeKind,
+  normalizeQuestionDrafts,
+  questionsOf,
+  questionsToMarkdown,
+} from '../services/conversation-message-kind'
 import { answerQuestion, attachQuestions, dismissQuestion, listQuestions, readQuestionSecret } from '../services/conversation-questions'
 import { registerQuestionDesigner } from '../services/conversation-question-designer'
 import { listInstallations } from '../services/chat-providers/installations'
@@ -793,6 +804,11 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
         userId,
         answer: typeof body.answer === 'string' ? body.answer : undefined,
         secret: typeof body.secret === 'string' ? body.secret : undefined,
+        seenArtifacts: Array.isArray(body.seenArtifacts)
+          ? body.seenArtifacts
+              .filter((a: any) => a && typeof a.path === 'string' && typeof a.sha256 === 'string')
+              .map((a: any) => ({ path: a.path, sha256: a.sha256 }))
+          : undefined,
       })
       const { secretCipher: _secret, ...question } = result.question
       return c.json({ message: result.message, question, reply: result.reply.message })
@@ -950,6 +966,12 @@ async function renderForAgent(rows: any[]) {
 
 function docUrl(conversationId: string): string {
   return `${getFrontendUrl()}/c/${encodeURIComponent(conversationId)}?doc=1`
+}
+
+/** Opens a file from an agent's workspace in its project's IDE. A workspace-wide agent has no project, so none. */
+function projectFileUrl(projectId: string | null): ((path: string) => string) | undefined {
+  if (!projectId) return undefined
+  return (path) => `${getFrontendUrl()}/projects/${encodeURIComponent(projectId)}?${new URLSearchParams({ tab: 'ide', file: path })}`
 }
 
 export function agentChannelRoutes(routeConfig: AgentChannelRoutesConfig): Hono {
@@ -1246,18 +1268,21 @@ export function agentChannelRoutes(routeConfig: AgentChannelRoutesConfig): Hono 
     try {
       const threadRootId = typeof body.threadRootId === 'string' ? body.threadRootId : null
       const agentChain = await postChain(auth.workspaceId, projectId, body, threadRootId)
-      const card = body.card === undefined || body.card === null ? null : normalizeCard(body.card)
+      const card = body.card === undefined || body.card === null ? null : normalizeCard(body.card, { fileUrl: projectFileUrl(projectId) })
       if (body.card !== undefined && body.card !== null && !card) {
         return c.json({ error: { code: 'invalid_card', message: 'A status card needs a title' } }, 400)
       }
       const questions = normalizeQuestionDrafts(body.questions)
+      const artifacts = normalizeArtifacts(body.artifacts, { fileUrl: projectFileUrl(projectId) })
       // A card is routine by default; agents mark it a decision or alert when it needs a person.
       const kind = normalizeKind(body.kind) ?? (questions.length ? 'decision' : card ? 'status' : null)
-      const note = String(body.text ?? '')
-      const blocks = blocksForKind({ kind, card })
+      const note = await resolveFriendlyMentions(auth.workspaceId, String(body.text ?? ''), projectId)
+      const structured = !!card || artifacts.length > 0
+      const blocks = blocksForKind({ kind, card, artifacts, ...(structured ? { note } : {}) })
+      const text = structured ? composeAgentText({ card, note, artifacts }) : note
       const result = await postAgentMessage({
         conversationId: conversation.id,
-        text: await resolveFriendlyMentions(auth.workspaceId, card ? [cardToMarkdown(card), note.trim()].filter(Boolean).join('\n\n') : note, projectId),
+        text,
         agent: { projectId, name: await agentDisplayName(auth.workspaceId, projectId) },
         threadRootId,
         agentChain,
@@ -1273,6 +1298,7 @@ export function agentChannelRoutes(routeConfig: AgentChannelRoutesConfig): Hono 
           .catch((err) => console.warn('[AgentChannels] questions failed:', (err as Error).message))
       }
       void afterMessagePosted(result, { actorUserId: null, origin: 'agent' })
+      const unbacked = approvalWithoutContext({ interactions: questions.map((q) => q.interaction), artifacts, card, text })
       return c.json({
         message: {
           id: result.message.id,
@@ -1280,6 +1306,8 @@ export function agentChannelRoutes(routeConfig: AgentChannelRoutesConfig): Hono 
           threadRootId: rootId,
           runId: agentChain?.runId ?? null,
           url: `${getFrontendUrl()}/c/${encodeURIComponent(conversation.id)}?thread=${encodeURIComponent(rootId)}`,
+          ...(artifacts.length ? { artifacts: artifactRefs(artifacts) } : {}),
+          ...(unbacked ? { needsContext: true } : {}),
         },
       }, 201)
     } catch (err) {
@@ -1295,15 +1323,16 @@ export function agentChannelRoutes(routeConfig: AgentChannelRoutesConfig): Hono 
     const projectId = await agentIdentity(auth, body.projectId)
     const limited = await rateLimited(c, `agent:${auth.workspaceId}:${projectId ?? 'ws'}`, CHAT_RATE_LIMITS.agentPost)
     if (limited) return limited
-    const card = body.card === undefined || body.card === null ? null : normalizeCard(body.card)
+    const card = body.card === undefined || body.card === null ? null : normalizeCard(body.card, { fileUrl: projectFileUrl(projectId) })
     if (body.card !== undefined && body.card !== null && !card) {
       return c.json({ error: { code: 'invalid_card', message: 'A status card needs a title' } }, 400)
     }
     const questions = normalizeQuestionDrafts(body.questions)
+    const artifacts = normalizeArtifacts(body.artifacts, { fileUrl: projectFileUrl(projectId) })
     try {
       const text = typeof body.text === 'string' ? await resolveFriendlyMentions(auth.workspaceId, body.text, projectId) : undefined
       let message: any
-      if (text !== undefined || card || normalizeKind(body.kind)) {
+      if (text !== undefined || card || artifacts.length || normalizeKind(body.kind)) {
         ;({ message } = await updateAgentMessage({
           messageId: c.req.param('messageId'),
           workspaceId: auth.workspaceId,
@@ -1311,6 +1340,7 @@ export function agentChannelRoutes(routeConfig: AgentChannelRoutesConfig): Hono 
           text,
           kind: normalizeKind(body.kind),
           card,
+          artifacts,
         }))
       }
       if (questions.length) {

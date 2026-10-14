@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { describe, expect, test } from 'bun:test'
-import { messageLink, parseMessageLink } from '../team-chat-links'
+import { messageLink, parseMessageLink, parseProjectFileLink } from '../team-chat-links'
 import { activeEmojiQuery, emojiForShortcode, replaceFinishedShortcode, searchEmoji, EMOJI_GROUPS } from '../emoji-data'
 import { applyListEvent, firstUnreadIndex } from '../team-chat-state'
 
@@ -23,6 +23,13 @@ describe('message links', () => {
     expect(parseMessageLink('https://studio.shogo.ai/c/c1', hosts)).toBeNull()
     expect(parseMessageLink('https://studio.shogo.ai/projects/p1?msg=m1', hosts)).toBeNull()
     expect(parseMessageLink('not a url', hosts)).toBeNull()
+  })
+
+  test('project file links open the file in the project', () => {
+    expect(parseProjectFileLink('https://studio.shogo.ai/projects/p1?tab=ide&file=plans%2F2026-10-14-plan.md', hosts))
+      .toEqual({ projectId: 'p1', path: 'plans/2026-10-14-plan.md' })
+    expect(parseProjectFileLink('https://studio.shogo.ai/projects/p1?tab=ide', hosts)).toBeNull()
+    expect(parseProjectFileLink('https://evil.example/projects/p1?file=a.md', hosts)).toBeNull()
   })
 })
 

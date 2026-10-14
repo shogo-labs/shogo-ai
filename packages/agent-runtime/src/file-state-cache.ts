@@ -25,6 +25,7 @@ export interface FileReadRecord {
 export class FileStateCache {
   private reads = new Map<string, FileReadRecord>()
   private editedThisTurn = new Set<string>()
+  private writtenThisTurn = new Set<string>()
   private workspaceDir?: string
 
   constructor(workspaceDir?: string) {
@@ -75,9 +76,22 @@ export class FileStateCache {
     return [...this.editedThisTurn]
   }
 
-  /** Clear the per-turn edit set. Called at the start of each top-level turn. */
+  /** Mark any file written this turn, lintable or not (plans, reports), oldest first. */
+  markWrittenThisTurn(path: string): void {
+    const key = this.normalizeKey(path)
+    this.writtenThisTurn.delete(key)
+    this.writtenThisTurn.add(key)
+  }
+
+  /** Files written in the current turn, most recent last. */
+  getWrittenThisTurn(): string[] {
+    return [...this.writtenThisTurn]
+  }
+
+  /** Clear the per-turn edit sets. Called at the start of each top-level turn. */
   resetTurn(): void {
     this.editedThisTurn.clear()
+    this.writtenThisTurn.clear()
   }
 
   recordRead(
@@ -164,6 +178,7 @@ export class FileStateCache {
         this.reads.set(key, { ...value })
       }
     }
+    for (const key of other.writtenThisTurn) this.markWrittenThisTurn(key)
   }
 
   /** Invalidate a cached entry (call after writes/edits/deletes). */

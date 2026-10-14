@@ -474,6 +474,7 @@ const LINTABLE_EXTENSION_RE = /\.(ts|tsx|js|jsx|py)$/
  */
 function markEditedIfLintable(ctx: ToolContext, filePath: string): void {
   if (!ctx.fileStateCache) return
+  ctx.fileStateCache.markWrittenThisTurn(filePath)
   if (!LINTABLE_EXTENSION_RE.test(filePath)) return
   ctx.fileStateCache.markEditedThisTurn(filePath)
 }

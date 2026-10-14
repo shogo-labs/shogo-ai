@@ -35,6 +35,56 @@ export function statusCardOf(message: Pick<ChatMessage, 'blocks'>): StatusCard |
   return blocks.card
 }
 
+/** A file the agent attached, copied into the message when it posted. */
+export interface MessageArtifact {
+  path: string
+  name: string
+  sha256: string
+  content: string
+  truncated?: boolean
+  url?: string
+}
+
+export interface ArtifactRef {
+  path: string
+  sha256: string
+}
+
+export function artifactsOf(message: Pick<ChatMessage, 'blocks'>): MessageArtifact[] {
+  const list = (message.blocks as { artifacts?: unknown } | null)?.artifacts
+  if (!Array.isArray(list)) return []
+  return list.filter(
+    (a): a is MessageArtifact =>
+      !!a && typeof a === 'object' && typeof (a as MessageArtifact).path === 'string' && typeof (a as MessageArtifact).sha256 === 'string' && typeof (a as MessageArtifact).content === 'string',
+  )
+}
+
+export function artifactRefs(artifacts: MessageArtifact[]): ArtifactRef[] {
+  return artifacts.map((a) => ({ path: a.path, sha256: a.sha256 }))
+}
+
+export const shortVersion = (sha256: string) => sha256.slice(0, 7)
+
+/** Attached files that changed after this answer was given. */
+export function changedSinceAnswer(q: Question, artifacts: MessageArtifact[]): MessageArtifact[] {
+  const seen = q.answer?.artifacts
+  if (!seen?.length) return []
+  return artifacts.filter((a) => !seen.some((s) => s.path === a.path && s.sha256 === a.sha256))
+}
+
+/** An open Approve / Not yet / Discuss question with nothing to read: no attached file and no link. */
+export function needsContext(message: Pick<ChatMessage, 'blocks' | 'text'>): boolean {
+  if (!questionsOf(message).some((q) => q.status === 'open' && q.interaction === 'confirm')) return false
+  if (artifactsOf(message).length || statusCardOf(message)?.links?.length) return false
+  return !/https?:\/\//i.test(message.text ?? '')
+}
+
+/** What the agent wrote under its card. */
+export function cardNoteOf(message: Pick<ChatMessage, 'blocks'>): string | null {
+  const note = (message.blocks as { note?: unknown } | null)?.note
+  return typeof note === 'string' && note.trim() ? note : null
+}
+
 export type ApprovalStatus = 'pending' | 'approved' | 'denied' | 'expired'
 
 /** An action an agent is waiting for a person to approve. */
@@ -74,7 +124,7 @@ export interface Question {
   hint?: 'number' | 'url'
   secretName?: string
   status: QuestionStatus
-  answer?: { text: string; by: { userId: string; name: string }; at: string }
+  answer?: { text: string; by: { userId: string; name: string }; at: string; artifacts?: ArtifactRef[] }
   closedReason?: string
   closedAt?: string
   source: 'agent' | 'inferred'

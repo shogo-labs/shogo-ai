@@ -9,7 +9,7 @@
  */
 import { useEffect, useMemo, useState } from 'react'
 import { Platform, Pressable, Text, TextInput, View } from 'react-native'
-import { Check, KeyRound, MessageCircleQuestion, Search, X } from 'lucide-react-native'
+import { AlertTriangle, Check, KeyRound, MessageCircleQuestion, Search, X } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { ChatMarkdown } from '../chat/ChatMarkdown'
 import { GlassCard } from '../ui/GlassCard'
@@ -17,7 +17,15 @@ import { DrawnCheckmark } from '../ui/DrawnCheckmark'
 import { answerQuestion, dismissQuestion } from '../../lib/question-answer'
 import { renderMentions, type MentionNames } from '../../lib/team-chat-state'
 import { teamChatApi } from '../../lib/team-chat-api'
-import { isAskedOf, questionOptions, type Question } from '../../lib/team-chat-kinds'
+import {
+  artifactRefs,
+  changedSinceAnswer,
+  isAskedOf,
+  questionOptions,
+  shortVersion,
+  type MessageArtifact,
+  type Question,
+} from '../../lib/team-chat-kinds'
 
 const AMBER = '#f59e0b'
 
@@ -41,6 +49,9 @@ export function QuestionCardView({
   names,
   canAnswer = true,
   agentName,
+  artifacts = [],
+  needsContext = false,
+  onAskForContext,
 }: {
   questions: Question[]
   messageId: string
@@ -50,6 +61,11 @@ export function QuestionCardView({
   /** False while the message is still being sent. */
   canAnswer?: boolean
   agentName?: string
+  /** Files attached to the message; an answer is recorded against these versions. */
+  artifacts?: MessageArtifact[]
+  /** An approval with nothing to read. */
+  needsContext?: boolean
+  onAskForContext?: () => Promise<void>
 }) {
   const open = questions.filter((q) => q.status === 'open')
   const forMe = open.some((q) => isAskedOf(q, me))
@@ -64,7 +80,18 @@ export function QuestionCardView({
       <View className="gap-3 p-3">
         {questions.map((q, i) => (
           <View key={q.id} className={cn('gap-2', i > 0 && 'border-t border-border/60 pt-3')}>
-            <QuestionItem q={q} messageId={messageId} workspaceId={workspaceId} me={me} names={names} canAnswer={canAnswer} agentName={agentName} />
+            <QuestionItem
+              q={q}
+              messageId={messageId}
+              workspaceId={workspaceId}
+              me={me}
+              names={names}
+              canAnswer={canAnswer}
+              agentName={agentName}
+              artifacts={artifacts}
+              needsContext={needsContext && q.interaction === 'confirm'}
+              onAskForContext={onAskForContext}
+            />
           </View>
         ))}
       </View>
@@ -80,6 +107,9 @@ function QuestionItem({
   names,
   canAnswer,
   agentName,
+  artifacts,
+  needsContext,
+  onAskForContext,
 }: {
   q: Question
   messageId: string
@@ -88,18 +118,23 @@ function QuestionItem({
   names: MentionNames
   canAnswer: boolean
   agentName?: string
+  artifacts: MessageArtifact[]
+  needsContext: boolean
+  onAskForContext?: () => Promise<void>
 }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [sent, setSent] = useState<string | null>(null)
+  const [askedForContext, setAskedForContext] = useState(false)
   const asked = isAskedOf(q, me)
   const isOpen = q.status === 'open'
+  const changed = changedSinceAnswer(q, artifacts)
 
   const send = async (input: { answer?: string; secret?: string }, shown: string) => {
     if (busy) return
     setBusy(true)
     setError(null)
-    const outcome = await answerQuestion(messageId, q.id, input)
+    const outcome = await answerQuestion(messageId, q.id, { ...input, seenArtifacts: artifactRefs(artifacts) })
     if (outcome.ok) setSent(shown)
     else setError(outcome.message)
     setBusy(false)
@@ -110,6 +145,18 @@ function QuestionItem({
     setError(null)
     const outcome = await dismissQuestion(messageId, q.id)
     if (!outcome.ok) setError(outcome.message)
+    setBusy(false)
+  }
+  const askForContext = async () => {
+    if (busy || !onAskForContext) return
+    setBusy(true)
+    setError(null)
+    try {
+      await onAskForContext()
+      setAskedForContext(true)
+    } catch (err: any) {
+      setError(err?.message ?? 'Could not send that')
+    }
     setBusy(false)
   }
 
@@ -131,10 +178,50 @@ function QuestionItem({
       </View>
       <ChatMarkdown isStreaming={false}>{renderMentions(q.prompt, names)}</ChatMarkdown>
 
+      {isOpen && needsContext ? (
+        <View className="gap-1.5 rounded-lg border border-amber-500/40 bg-amber-500/10 p-2" testID="question-needs-context">
+          <View className="flex-row items-center gap-1.5">
+            <AlertTriangle size={12} className="text-amber-700 dark:text-amber-400" />
+            <Text className="text-xs font-semibold text-amber-700 dark:text-amber-400">Needs context</Text>
+          </View>
+          <Text className="text-xs text-foreground">{`${agentName ?? 'The agent'} is asking for approval but attached nothing to read: no plan, file or link.`}</Text>
+          {asked && canAnswer && onAskForContext ? (
+            askedForContext ? (
+              <Text className="text-[11px] text-muted-foreground" testID="question-context-requested">Asked for it in the thread</Text>
+            ) : (
+              <Pressable
+                onPress={() => void askForContext()}
+                disabled={busy}
+                accessibilityRole="button"
+                className={cn('self-start rounded-md border border-amber-500/50 px-2.5 py-1 active:bg-amber-500/20', busy && 'opacity-60')}
+                testID="question-ask-context"
+              >
+                <Text className="text-xs font-medium text-amber-800 dark:text-amber-300">Ask for the plan</Text>
+              </Pressable>
+            )
+          ) : null}
+        </View>
+      ) : null}
+
       {!isOpen ? (
-        <View className="flex-row items-start gap-1.5" testID={`question-${q.status}`}>
-          {q.status === 'answered' ? <Check size={13} className="mt-0.5 text-emerald-600" /> : <X size={13} className="mt-0.5 text-muted-foreground" />}
-          <Text className={cn('min-w-0 flex-1 text-xs', q.status === 'answered' ? 'text-emerald-700 dark:text-emerald-400' : 'text-muted-foreground')}>{closedLabel(q)}</Text>
+        <View className="gap-1" testID={`question-${q.status}`}>
+          <View className="flex-row items-start gap-1.5">
+            {q.status === 'answered' ? <Check size={13} className="mt-0.5 text-emerald-600" /> : <X size={13} className="mt-0.5 text-muted-foreground" />}
+            <Text className={cn('min-w-0 flex-1 text-xs', q.status === 'answered' ? 'text-emerald-700 dark:text-emerald-400' : 'text-muted-foreground')}>{closedLabel(q)}</Text>
+          </View>
+          {q.answer?.artifacts?.length ? (
+            <Text className="ml-5 text-[11px] text-muted-foreground" testID="question-answer-versions">
+              {`For ${q.answer.artifacts.map((a) => `${a.path} · ${shortVersion(a.sha256)}`).join(', ')}`}
+            </Text>
+          ) : null}
+          {changed.length ? (
+            <View className="ml-5 flex-row items-center gap-1.5" testID="question-artifact-changed">
+              <AlertTriangle size={11} className="text-amber-700 dark:text-amber-400" />
+              <Text className="min-w-0 flex-1 text-[11px] font-medium text-amber-700 dark:text-amber-400">
+                {`${changed.map((a) => a.name).join(', ')} changed after this answer; it does not cover the new version.`}
+              </Text>
+            </View>
+          ) : null}
         </View>
       ) : sent ? (
         <View className="flex-row items-center gap-2" testID="question-sent">

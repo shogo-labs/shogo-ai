@@ -3,7 +3,48 @@
 
 import { describe, expect, test } from 'bun:test'
 import type { ChatMessage } from '../team-chat-api'
-import { approvalOf, cardProgress, foldStatusRuns, isCollapsibleStatus, messageKind, statusCardOf, stepStates } from '../team-chat-kinds'
+import {
+  approvalOf,
+  artifactsOf,
+  cardProgress,
+  changedSinceAnswer,
+  foldStatusRuns,
+  isCollapsibleStatus,
+  messageKind,
+  needsContext,
+  statusCardOf,
+  stepStates,
+  type Question,
+} from '../team-chat-kinds'
+
+describe('attached plans', () => {
+  const confirm = (extra: Partial<Question> = {}): Question => ({
+    id: 'q1', to: { userIds: ['u1'], via: 'mention' }, header: 'Proceed?', prompt: 'Approve?', interaction: 'confirm',
+    status: 'open', source: 'agent', ...extra,
+  })
+  const plan = { path: 'plans/p.md', name: 'p.md', sha256: 'a'.repeat(64), content: '# Plan' }
+
+  test('an open approval with no file, card link or URL needs context', () => {
+    const bare = msg(1, { text: 'Plan is ready.', blocks: { questions: [confirm()] } })
+    expect(needsContext(bare)).toBe(true)
+    expect(needsContext({ ...bare, blocks: { questions: [confirm()], artifacts: [plan] } })).toBe(false)
+    expect(artifactsOf({ blocks: { questions: [confirm()], artifacts: [plan] } })).toEqual([plan])
+    expect(needsContext({ ...bare, text: 'See https://github.com/a/b/pull/1' })).toBe(false)
+    expect(needsContext({ ...bare, blocks: { questions: [confirm({ status: 'answered' })] } })).toBe(false)
+    expect(needsContext({ ...bare, blocks: { questions: [confirm({ interaction: 'text' })] } })).toBe(false)
+  })
+
+  test('an answer covers the version it was given for', () => {
+    const answered = confirm({
+      status: 'answered',
+      answer: { text: 'Approve', by: { userId: 'u1', name: 'Ana' }, at: '2026-10-14T04:00:00.000Z', artifacts: [{ path: plan.path, sha256: plan.sha256 }] },
+    })
+    expect(changedSinceAnswer(answered, [plan])).toEqual([])
+    const revised = { ...plan, sha256: 'b'.repeat(64) }
+    expect(changedSinceAnswer(answered, [revised])).toEqual([revised])
+    expect(changedSinceAnswer(confirm(), [revised])).toEqual([])
+  })
+})
 
 function msg(id: number, partial: Partial<ChatMessage> = {}): ChatMessage {
   return {

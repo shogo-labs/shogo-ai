@@ -274,6 +274,73 @@ describe('questions an agent passes itself', () => {
   })
 })
 
+describe('approving an attached plan', () => {
+  const sha = (s: string) => new Bun.CryptoHasher('sha256').update(s).digest('hex')
+  const planV1 = '# Plan\n\n1. Fix the coupon total\n2. Add a test\n'
+  const planV2 = '# Plan\n\n1. Fix the coupon total\n2. Add a test\n3. Also refactor checkout\n'
+
+  async function postApproval(slug: string, body: Record<string, unknown> = {}) {
+    return call(null, 'POST', internal(`/${slug}/messages`), {
+      text: `<@u:${seed.member}> Plan is ready.`,
+      questions: [{ header: 'Proceed?', prompt: 'Do you approve this plan?', interaction: 'confirm' }],
+      ...body,
+    })
+  }
+
+  test('the plan is frozen on the message and the approval is tied to the version read', async () => {
+    await freshChannel()
+    const slug = `questions-${channelCount}`
+    const posted = await postApproval(slug, { artifacts: [{ path: 'plans/2026-10-14-plan.md', content: planV1, sha256: 'ignored' }] })
+    expect(posted.status).toBe(201)
+    expect(posted.json.message.artifacts).toEqual([{ path: 'plans/2026-10-14-plan.md', sha256: sha(planV1) }])
+    expect(posted.json.message.needsContext).toBeUndefined()
+
+    const id = posted.json.message.id as string
+    const row = await waitFor(async () => {
+      const r = await reread(id)
+      return r?.blocks?.questions?.length ? r : null
+    })
+    expect(row.blocks.artifacts[0]).toMatchObject({
+      path: 'plans/2026-10-14-plan.md', name: '2026-10-14-plan.md', content: planV1, sha256: sha(planV1),
+      url: expect.stringContaining(`/projects/${agent.projectId}?tab=ide&file=plans%2F2026-10-14-plan.md`),
+    })
+    expect(row.blocks.note).toBe(`<@u:${seed.member}> Plan is ready.`)
+    expect(row.text).toContain('📄 [2026-10-14-plan.md]')
+
+    // The agent revises the plan while the person is reading the first version.
+    await call(null, 'PATCH', internal(`/messages/${id}`), { artifacts: [{ path: 'plans/2026-10-14-plan.md', content: planV2 }] })
+    const q = row.blocks.questions[0]
+    const stale = await call(seed.member, 'POST', `/conversation-messages/${id}/questions/${q.id}/answer`, {
+      answer: 'Approve', seenArtifacts: [{ path: 'plans/2026-10-14-plan.md', sha256: sha(planV1) }],
+    })
+    expect(stale.status).toBe(409)
+    expect(stale.json.error.code).toBe('artifact_changed')
+
+    const res = await call(seed.member, 'POST', `/conversation-messages/${id}/questions/${q.id}/answer`, {
+      answer: 'Approve', seenArtifacts: [{ path: 'plans/2026-10-14-plan.md', sha256: sha(planV2) }],
+    })
+    expect(res.status).toBe(200)
+    expect(res.json.question.answer.artifacts).toEqual([{ path: 'plans/2026-10-14-plan.md', sha256: sha(planV2) }])
+    expect(res.json.reply.text).toContain(`\`plans/2026-10-14-plan.md\` version \`${sha(planV2).slice(0, 7)}\``)
+    const after = await reread(id)
+    expect(after.blocks.note).toBe(`<@u:${seed.member}> Plan is ready.`)
+  })
+
+  test('an approval with nothing to read is flagged, here and in the inbox', async () => {
+    await freshChannel()
+    const slug = `questions-${channelCount}`
+    const posted = await postApproval(slug)
+    expect(posted.json.message.needsContext).toBe(true)
+    await waitFor(async () => ((await reread(posted.json.message.id))?.blocks?.questions?.length ? true : null))
+    const inbox = await call(seed.member, 'GET', `/workspaces/${seed.workspaceId}/questions`)
+    const item = inbox.json.questions.find((i: any) => i.messageId === posted.json.message.id)
+    expect(item).toMatchObject({ needsContext: true, artifacts: [] })
+
+    const linked = await postApproval(slug, { text: `<@u:${seed.member}> Plan: https://github.com/a/b/pull/1` })
+    expect(linked.json.message.needsContext).toBeUndefined()
+  })
+})
+
 describe('answering', () => {
   test('from the app: settles the card, posts in the thread, wakes the agent, one activity line', async () => {
     const channel = await freshChannel()

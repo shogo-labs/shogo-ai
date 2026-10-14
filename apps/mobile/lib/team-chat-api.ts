@@ -9,7 +9,7 @@ import type { BuddyLook } from '@shogo/shared-app/buddy-look'
 import { Platform } from 'react-native'
 import { API_URL, createHttpClient } from './api'
 import { authClient } from './auth-client'
-import type { Question } from './team-chat-kinds'
+import type { ArtifactRef, MessageArtifact, Question } from './team-chat-kinds'
 import type { UploadPart } from './upload-part'
 import { routeUrl } from './workspace-route'
 
@@ -276,6 +276,9 @@ export interface QuestionListItem {
   /** For the viewer, or open to anyone. */
   mine: boolean
   canAnswer: boolean
+  /** Files attached to the question's message. Missing from older servers. */
+  artifacts?: MessageArtifact[]
+  needsContext?: boolean
 }
 
 export interface QuestionInbox {
@@ -804,7 +807,11 @@ export function teamChatApi() {
       return (await http.get<QuestionInbox>(`${ws(workspaceId)}/questions?${q}`)).data
     },
     /** Answer an agent's question; posts the answer in its thread. The first answer wins; later ones throw. */
-    async answerQuestion(messageId: string, questionId: string, input: { answer?: string; secret?: string }): Promise<{ message: ChatMessage; question: Question; reply: ChatMessage }> {
+    async answerQuestion(
+      messageId: string,
+      questionId: string,
+      input: { answer?: string; secret?: string; seenArtifacts?: ArtifactRef[] },
+    ): Promise<{ message: ChatMessage; question: Question; reply: ChatMessage }> {
       return (await http.post<{ message: ChatMessage; question: Question; reply: ChatMessage }>(`${msg(messageId)}/questions/${encodeURIComponent(questionId)}/answer`, input)).data
     },
     async dismissQuestion(messageId: string, questionId: string): Promise<{ message: ChatMessage; question: Question }> {

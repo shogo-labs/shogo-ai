@@ -49,6 +49,26 @@ function ownHosts(): Set<string> {
   return hosts
 }
 
+export interface ProjectFileLinkTarget {
+  projectId: string
+  path: string
+}
+
+/** The project file a link opens (`/projects/<id>?tab=ide&file=<path>`), when it's on one of this app's hosts. */
+export function parseProjectFileLink(href: string, hosts: Set<string> = ownHosts()): ProjectFileLinkTarget | null {
+  let url: URL
+  try {
+    url = new URL(href)
+  } catch {
+    return null
+  }
+  if (!hosts.has(url.host)) return null
+  const match = url.pathname.match(/^\/projects\/([^/]+)\/?$/)
+  const path = url.searchParams.get('file')
+  if (!match || !path) return null
+  return { projectId: decodeURIComponent(match[1]!), path }
+}
+
 /** The message a link points to, when it's a message link on one of this app's hosts. */
 export function parseMessageLink(href: string, hosts: Set<string> = ownHosts()): MessageLinkTarget | null {
   let url: URL

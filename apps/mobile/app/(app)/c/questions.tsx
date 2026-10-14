@@ -16,6 +16,9 @@ import { useOpenQuestions, type QuestionTab } from '../../../hooks/useOpenQuesti
 import { mentionNames } from '../../../lib/team-chat-state'
 import type { QuestionListItem } from '../../../lib/team-chat-api'
 import { QuestionCardView } from '../../../components/team-chat/QuestionCard'
+import { ArtifactCard } from '../../../components/team-chat/ArtifactCard'
+import { openMessageLinkInApp } from '../../../components/team-chat/MessageRow'
+import { askForContext } from '../../../lib/question-answer'
 import { AgentAvatar } from '../../../components/team-chat/AgentAvatar'
 
 const TABS: Array<{ id: QuestionTab; label: string }> = [
@@ -146,6 +149,9 @@ export default function QuestionsInbox() {
               <Text className="flex-1 text-xs text-muted-foreground" numberOfLines={1}>{`in ${where(item)}`}</Text>
               <Text className="text-xs text-muted-foreground">{relativeTime(item.question.lastAskedAt ?? item.askedAt)}</Text>
             </Pressable>
+            {item.question.status === 'open'
+              ? (item.artifacts ?? []).map((a) => <ArtifactCard key={a.path} artifact={a} onOpenLink={openMessageLinkInApp} />)
+              : null}
             <QuestionCardView
               questions={[item.question]}
               messageId={item.messageId}
@@ -154,6 +160,14 @@ export default function QuestionsInbox() {
               names={names}
               canAnswer={item.canAnswer}
               agentName={item.agent.name}
+              artifacts={item.artifacts ?? []}
+              needsContext={!!item.needsContext}
+              onAskForContext={() => askForContext({
+                conversationId: item.conversationId,
+                messageId: item.messageId,
+                threadRootId: item.threadRootId,
+                agentProjectId: item.agent.projectId,
+              })}
             />
           </View>
         )}

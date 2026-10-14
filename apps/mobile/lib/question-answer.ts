@@ -6,7 +6,8 @@
  * refresh of every list and badge happen the same way each time.
  */
 import { haptics } from './haptics'
-import { teamChatApi } from './team-chat-api'
+import { newClientMsgId, teamChatApi } from './team-chat-api'
+import type { ArtifactRef } from './team-chat-kinds'
 
 export type QuestionOutcome = { ok: true } | { ok: false; message: string }
 
@@ -35,8 +36,22 @@ async function run(messageId: string, questionId: string, send: () => Promise<un
   return { ok: true }
 }
 
-export function answerQuestion(messageId: string, questionId: string, input: { answer?: string; secret?: string }): Promise<QuestionOutcome> {
+export function answerQuestion(
+  messageId: string,
+  questionId: string,
+  input: { answer?: string; secret?: string; seenArtifacts?: ArtifactRef[] },
+): Promise<QuestionOutcome> {
   return run(messageId, questionId, () => teamChatApi().answerQuestion(messageId, questionId, input))
+}
+
+/** Reply in the question's thread asking the agent to attach what it wants approved; the question stays open. */
+export async function askForContext(input: { conversationId: string; messageId: string; threadRootId: string | null; agentProjectId: string | null }): Promise<void> {
+  const tag = input.agentProjectId ? `<@a:p:${input.agentProjectId}>` : '<@a:ws>'
+  await teamChatApi().post(input.conversationId, {
+    text: `${tag} Please attach the plan or spec you want approved (pass it in \`attach\`) so I can read it before I decide.`,
+    threadRootId: input.threadRootId ?? input.messageId,
+    clientMsgId: newClientMsgId(),
+  })
 }
 
 export function dismissQuestion(messageId: string, questionId: string): Promise<QuestionOutcome> {

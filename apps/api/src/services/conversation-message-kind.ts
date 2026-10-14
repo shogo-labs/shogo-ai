@@ -18,6 +18,8 @@
  * stays the agent's own prose.
  */
 
+import { createHash } from 'crypto'
+
 export const MESSAGE_KINDS = ['status', 'result', 'decision', 'alert'] as const
 export type MessageKind = (typeof MESSAGE_KINDS)[number]
 
@@ -52,6 +54,10 @@ export interface MessageBlocks {
   type?: 'status_card' | 'approval_request'
   messageKind?: MessageKind
   card?: StatusCard
+  /** The agent's own words under its card; `text` repeats them after the card's rendering. */
+  note?: string
+  /** Copies of files the agent wants read with this message, frozen when posted. */
+  artifacts?: MessageArtifact[]
   work?: AgentWork
   /** Questions this message asks people; see `conversation-questions`. */
   questions?: QuestionBlock[]
@@ -85,6 +91,108 @@ export interface QuestionAnswer {
   text: string
   by: { userId: string | null; name: string }
   at: string
+  /** The versions of the message's artifacts on screen when this was answered. */
+  artifacts?: ArtifactRef[]
+}
+
+// ─── Artifacts ───────────────────────────────────────────────────────────────
+
+/** A file from the agent's workspace, copied into the message so people read exactly what it means. */
+export interface MessageArtifact {
+  /** Workspace-relative path. */
+  path: string
+  name: string
+  /** sha256 of the full file, hex. */
+  sha256: string
+  /** The file's text, cut at MAX_ARTIFACT_CHARS. */
+  content: string
+  truncated?: boolean
+  /** Opens the live file in the agent's project. */
+  url?: string
+}
+
+export interface ArtifactRef {
+  path: string
+  sha256: string
+}
+
+export const MAX_ARTIFACTS = 3
+export const MAX_ARTIFACT_CHARS = 60_000
+const SHA256_RE = /^[0-9a-f]{64}$/
+
+export function artifactsOf(blocks: unknown): MessageArtifact[] {
+  const list = (blocks as MessageBlocks | null | undefined)?.artifacts
+  return Array.isArray(list) ? list.filter((a) => a && typeof a.path === 'string' && typeof a.sha256 === 'string' && typeof a.content === 'string') : []
+}
+
+/**
+ * Validate files an agent runtime sent with a post: `{ path, content, sha256? }`.
+ * The hash is recomputed here from the content when the whole file came through.
+ */
+export function normalizeArtifacts(value: unknown, opts: { fileUrl?: (path: string) => string } = {}): MessageArtifact[] {
+  if (!Array.isArray(value)) return []
+  const out: MessageArtifact[] = []
+  for (const raw of value) {
+    if (!raw || typeof raw !== 'object') continue
+    const v = raw as Record<string, unknown>
+    const path = typeof v.path === 'string' ? workspaceFilePath(v.path) : null
+    if (!path || typeof v.content !== 'string' || out.some((a) => a.path === path)) continue
+    const truncated = v.truncated === true || v.content.length > MAX_ARTIFACT_CHARS
+    const content = v.content.slice(0, MAX_ARTIFACT_CHARS)
+    const given = typeof v.sha256 === 'string' && SHA256_RE.test(v.sha256) ? v.sha256 : null
+    // A cut copy can't be hashed here; only the runtime saw the whole file.
+    const sha256 = truncated ? given : createHash('sha256').update(v.content).digest('hex')
+    if (!sha256) continue
+    out.push({
+      path,
+      name: path.split('/').pop()!,
+      sha256,
+      content,
+      ...(truncated ? { truncated: true } : {}),
+      ...(opts.fileUrl ? { url: opts.fileUrl(path) } : {}),
+    })
+    if (out.length >= MAX_ARTIFACTS) break
+  }
+  return out
+}
+
+export function artifactRefs(artifacts: MessageArtifact[]): ArtifactRef[] {
+  return artifacts.map((a) => ({ path: a.path, sha256: a.sha256 }))
+}
+
+/** True when the artifacts someone saw are the ones on the message now. */
+export function sameArtifacts(seen: ArtifactRef[], current: MessageArtifact[]): boolean {
+  return seen.length === current.length && current.every((a) => seen.some((s) => s.path === a.path && s.sha256 === a.sha256))
+}
+
+/** Markdown for providers and transcripts that can't render artifact cards. */
+export function artifactsToMarkdown(artifacts: MessageArtifact[]): string {
+  return artifacts
+    .map((a) => `📄 ${a.url ? `[${a.name}](${a.url})` : `**${a.name}**`} · version \`${a.sha256.slice(0, 7)}\``)
+    .join('\n')
+}
+
+/** True for a request to approve something that gives people nothing to read: no file, no link. */
+export function approvalWithoutContext(input: {
+  /** Open questions only. */
+  interactions: QuestionInteraction[]
+  artifacts: MessageArtifact[]
+  card?: StatusCard | null
+  text: string
+}): boolean {
+  if (!input.interactions.includes('confirm')) return false
+  if (input.artifacts.length || input.card?.links?.length) return false
+  return !/https?:\/\//i.test(input.text)
+}
+
+export function needsContext(blocks: unknown, text: string): boolean {
+  const b = blocks as MessageBlocks | null | undefined
+  return approvalWithoutContext({
+    interactions: questionsOf(b).filter((q) => q.status === 'open').map((q) => q.interaction),
+    artifacts: artifactsOf(b),
+    card: b?.card,
+    text,
+  })
 }
 
 export interface QuestionBlock {
@@ -267,8 +375,32 @@ function cleanStrings(value: unknown, max: number, len: number): string[] | unde
   return out.length ? out : undefined
 }
 
-/** Validate a card from an agent's tool call; null when it isn't usable. */
-export function normalizeCard(value: unknown): StatusCard | null {
+/** `plans/x.md` from a relative path inside the agent's workspace; null for URLs, absolute paths and `..`. */
+export function workspaceFilePath(value: string): string | null {
+  const path = value.trim().replace(/\\/g, '/').replace(/^(\.\/)+/, '')
+  if (!path || path.length > 500 || path.startsWith('/') || /^[a-z][a-z0-9+.-]*:/i.test(path)) return null
+  const parts = path.split('/')
+  if (parts.some((p) => p === '..' || p === '')) return null
+  return path
+}
+
+function cardLink(l: unknown, fileUrl?: (path: string) => string): { label: string; url: string } | null {
+  if (!l || typeof l !== 'object') return null
+  const raw = (l as { url?: unknown }).url
+  if (typeof raw !== 'string') return null
+  const label = typeof (l as { label?: unknown }).label === 'string' ? ((l as { label: string }).label).trim() : ''
+  if (/^https?:\/\//i.test(raw)) return { label: (label || raw).slice(0, 80), url: raw.slice(0, 500) }
+  const path = fileUrl ? workspaceFilePath(raw) : null
+  if (!path) return null
+  return { label: (label || path.split('/').pop()!).slice(0, 80), url: fileUrl!(path).slice(0, 1000) }
+}
+
+/**
+ * Validate a card from an agent's tool call; null when it isn't usable.
+ * With `fileUrl`, a link may name a file in the agent's workspace (`plans/x.md`)
+ * and is turned into a link that opens it; without it such links are dropped.
+ */
+export function normalizeCard(value: unknown, opts: { fileUrl?: (path: string) => string } = {}): StatusCard | null {
   if (!value || typeof value !== 'object') return null
   const v = value as Record<string, unknown>
   const title = typeof v.title === 'string' ? v.title.trim().slice(0, MAX_TITLE) : ''
@@ -277,8 +409,8 @@ export function normalizeCard(value: unknown): StatusCard | null {
   const steps = cleanStrings(v.steps, MAX_STEPS, MAX_STEP_LEN)
   const links = Array.isArray(v.links)
     ? v.links
-        .filter((l): l is { label?: unknown; url: string } => !!l && typeof (l as any).url === 'string' && /^https?:\/\//i.test((l as any).url))
-        .map((l) => ({ label: (typeof l.label === 'string' && l.label.trim() ? l.label.trim() : l.url).slice(0, 80), url: l.url.slice(0, 500) }))
+        .map((l) => cardLink(l, opts.fileUrl))
+        .filter((l): l is { label: string; url: string } => l !== null)
         .slice(0, MAX_LINKS)
     : []
   const step = typeof v.step === 'number' && Number.isFinite(v.step) && steps ? Math.max(0, Math.min(Math.floor(v.step), steps.length)) : undefined
@@ -318,13 +450,33 @@ export function cardToMarkdown(card: StatusCard): string {
   return lines.join('\n\n')
 }
 
+/** A message's text: the card's rendering, the agent's note, then its artifacts, for clients that only read text. */
+export function composeAgentText(input: { card?: StatusCard | null; note?: string; artifacts?: MessageArtifact[] }): string {
+  return [
+    input.card ? cardToMarkdown(input.card) : '',
+    input.note?.trim() ?? '',
+    input.artifacts?.length ? artifactsToMarkdown(input.artifacts) : '',
+  ].filter(Boolean).join('\n\n')
+}
+
 /** `blocks` for an agent message with the given kind and card; undefined when it has neither. */
-export function blocksForKind(input: { kind?: MessageKind | null; card?: StatusCard | null; existing?: unknown }): MessageBlocks | undefined {
+export function blocksForKind(input: {
+  kind?: MessageKind | null
+  card?: StatusCard | null
+  note?: string
+  artifacts?: MessageArtifact[]
+  existing?: unknown
+}): MessageBlocks | undefined {
   const base = input.existing && typeof input.existing === 'object' ? { ...(input.existing as MessageBlocks) } : {}
   if (input.kind) base.messageKind = input.kind
+  if (input.artifacts?.length) base.artifacts = input.artifacts
   if (input.card) {
     base.type = 'status_card'
     base.card = input.card
+  }
+  if (input.note !== undefined) {
+    if (input.note.trim()) base.note = input.note.trim()
+    else delete base.note
   }
   return Object.keys(base).length ? base : undefined
 }

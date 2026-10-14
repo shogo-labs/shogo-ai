@@ -14,7 +14,8 @@ import { cn } from '@shogo/shared-ui/primitives'
 import { ChatMarkdown } from '../chat/ChatMarkdown'
 import { SidebarContextMenu, type SidebarMenuEntry } from '../layout/SidebarContextMenu'
 import { absoluteApiUrl, teamChatApi, type ChatMessage, type LinkUnfurl } from '../../lib/team-chat-api'
-import { messageLink, parseMessageLink } from '../../lib/team-chat-links'
+import { askForContext } from '../../lib/question-answer'
+import { messageLink, parseMessageLink, parseProjectFileLink } from '../../lib/team-chat-links'
 import { activityTarget } from '../../lib/activity-target'
 import { formatFullTime, formatShortTime, formatTime } from '../../lib/team-chat-time'
 import { EmojiPicker } from './EmojiPicker'
@@ -22,7 +23,8 @@ import { AgentAvatar } from './AgentAvatar'
 import { AgentProfileCard } from './AgentProfileCard'
 import { ApprovalCardView, StatusCardView } from './AgentStatus'
 import { QuestionCardView } from './QuestionCard'
-import { approvalOf, isAskedOf, messageKind, questionRefsOf, questionsOf, statusCardOf, workOf } from '../../lib/team-chat-kinds'
+import { approvalOf, artifactsOf, cardNoteOf, isAskedOf, messageKind, needsContext, questionRefsOf, questionsOf, statusCardOf, workOf } from '../../lib/team-chat-kinds'
+import { ArtifactCard } from './ArtifactCard'
 import { AgentWorkedFor, AgentWorkingStatus } from './AgentWork'
 import { renderMentions, type MentionNames } from '../../lib/team-chat-state'
 import { useUserStatus } from '../../hooks/useChatPrefs'
@@ -80,8 +82,18 @@ export interface MessageRowProps {
   highlighted?: boolean
 }
 
-/** Message links open in place; everything else goes to the browser. */
+/** Message and project-file links open in place; everything else goes to the browser. */
 export function openMessageLinkInApp(href: string): boolean {
+  const file = parseProjectFileLink(href)
+  if (file) {
+    void import('expo-router').then(({ router }) =>
+      router.push({
+        pathname: '/(app)/projects/[id]',
+        params: { id: file.projectId, tab: 'ide', file: file.path, tabNonce: String(Date.now()) },
+      } as any),
+    )
+    return true
+  }
   const target = parseMessageLink(href)
   if (!target) return false
   void import('expo-router').then(({ router }) =>
@@ -282,6 +294,10 @@ function MessageRowImpl(props: MessageRowProps) {
   const running = message.authorType === 'agent' && message.agentStatus === 'running'
   const body = running ? streaming?.text ?? '' : message.text
   const card = !running && message.authorType === 'agent' ? statusCardOf(message) : null
+  const artifacts = !running && message.authorType === 'agent' ? artifactsOf(message) : []
+  // With a card or attached files, `text` repeats them; show the agent's own words instead.
+  const structured = !!card || artifacts.length > 0
+  const cardNote = structured ? cardNoteOf(message) : null
   const approval = !running && message.authorType === 'agent' ? approvalOf(message) : null
   const kind = message.authorType === 'agent' ? messageKind(message) : null
   const onBehalfOf = message.authorType === 'agent' ? onBehalfOfName(message) : null
@@ -562,6 +578,12 @@ function MessageRowImpl(props: MessageRowProps) {
         ) : (
           <>
             {card ? <StatusCardView card={card} onOpenLink={openMessageLinkInApp} /> : null}
+            {cardNote ? (
+              <View className="mt-1" testID="status-card-note">
+                <ChatMarkdown isStreaming={false} onLinkPress={openMessageLinkInApp}>{renderMentions(cardNote, names)}</ChatMarkdown>
+              </View>
+            ) : null}
+            {artifacts.map((a) => <ArtifactCard key={a.path} artifact={a} onOpenLink={openMessageLinkInApp} />)}
             {approval ? <ApprovalCardView approval={approval} messageId={message.id} canDecide={!message.pending} onDecide={(decision) => api.decideApproval(message.id, decision)} /> : null}
             {work ? <AgentWorkedFor messageId={message.id} work={work} /> : null}
             {questions.length ? (
@@ -573,6 +595,14 @@ function MessageRowImpl(props: MessageRowProps) {
                 names={names}
                 canAnswer={!message.pending}
                 agentName={message.authorAgent?.name}
+                artifacts={artifacts}
+                needsContext={needsContext(message)}
+                onAskForContext={() => askForContext({
+                  conversationId: message.conversationId,
+                  messageId: message.id,
+                  threadRootId: message.threadRootId ?? null,
+                  agentProjectId: message.authorAgent?.projectId ?? null,
+                })}
               />
             ) : null}
             {questionRefs.map((ref) => (
@@ -589,12 +619,12 @@ function MessageRowImpl(props: MessageRowProps) {
               </Pressable>
             ))}
             {/* While an agent works the row shows its status; its closing message appears when it is done. */}
-            {!card && !approval && !!body && !(running && message.authorType === 'agent') && foldBody ? (
+            {!structured && !approval && !!body && !(running && message.authorType === 'agent') && foldBody ? (
               <Pressable onPress={() => setShowFullUpdate(true)} accessibilityRole="button" className="mt-1 self-start" testID="show-full-update">
                 <Text className="text-xs font-medium text-primary">Show full update</Text>
               </Pressable>
             ) : null}
-            {!card && !approval && !!body && !foldBody && !(running && message.authorType === 'agent') && (() => {
+            {!structured && !approval && !!body && !foldBody && !(running && message.authorType === 'agent') && (() => {
               const jumbo = running ? null : jumboEmojiCodes(body, customEmoji)
               return (
                 <View className={cn(message.pending && 'opacity-60')}>

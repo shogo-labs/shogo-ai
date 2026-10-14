@@ -14,7 +14,17 @@ import { prisma } from '../../lib/prisma'
 import { renderMentionsAsText } from '../conversation-mentions'
 import { agentIconUrl, conversationAudience, type PostMessageResult } from '../conversation.service'
 import type { AgentChain } from '../conversation-agent-chain'
-import { blocksForKind, cardToMarkdown, normalizeKind, type AgentWork, type MessageBlocks, type MessageKind, type StatusCard } from '../conversation-message-kind'
+import {
+  artifactsOf,
+  blocksForKind,
+  composeAgentText,
+  normalizeKind,
+  type AgentWork,
+  type MessageArtifact,
+  type MessageBlocks,
+  type MessageKind,
+  type StatusCard,
+} from '../conversation-message-kind'
 import { getChatProvider } from './registry'
 import { installationForWorkspace } from './installations'
 import { shogoProvider } from './shogo'
@@ -308,6 +318,7 @@ export async function updateAgentMessage(input: {
   text?: string
   kind?: MessageKind | null
   card?: StatusCard | null
+  artifacts?: MessageArtifact[]
 }): Promise<{ message: any; row: any }> {
   let row = await db.conversationMessage.findUnique({ where: { id: input.messageId } })
   if (!row || row.deletedAt || row.workspaceId !== input.workspaceId) throw new AgentMessageError(404, 'not_found', 'Message not found')
@@ -320,12 +331,16 @@ export async function updateAgentMessage(input: {
   if (row.agentStatus === 'running') throw new AgentMessageError(409, 'running', 'That message is still being written')
 
   const card = input.card ?? null
-  const blocks = blocksForKind({ kind: input.kind ?? normalizeKind(existing?.messageKind), card, existing })
-  let text = input.text ?? row.text
-  // A card message's text is always its rendering, plus an optional note under it.
   const shown = card ?? (existing?.type === 'status_card' ? existing.card ?? null : null)
-  if (shown && (card || input.text !== undefined)) {
-    text = [cardToMarkdown(shown), input.text?.trim()].filter(Boolean).join('\n\n')
+  const wasStructured = existing?.type === 'status_card' || artifactsOf(existing).length > 0
+  const artifacts = input.artifacts?.length ? input.artifacts : artifactsOf(existing)
+  const structured = !!shown || artifacts.length > 0
+  const note = structured ? input.text ?? existing?.note ?? (wasStructured ? undefined : row.text) : undefined
+  const blocks = blocksForKind({ kind: input.kind ?? normalizeKind(existing?.messageKind), card, note, artifacts: input.artifacts, existing })
+  let text = input.text ?? row.text
+  // A card or artifact message's text is always rendered from its parts, so the note survives edits to the rest.
+  if (structured && (card || input.text !== undefined || input.artifacts?.length)) {
+    text = composeAgentText({ card: shown, note, artifacts })
   }
   if (!String(text ?? '').trim()) throw new AgentMessageError(400, 'empty', 'Nothing to update')
 

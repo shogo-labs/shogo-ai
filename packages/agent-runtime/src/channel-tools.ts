@@ -7,12 +7,14 @@
  * (the workspace agent, or the project's agent in a project runtime).
  */
 
+import { isAbsolute } from 'path'
 import { Type } from '@sinclair/typebox'
 import type { AgentTool } from '@mariozechner/pi-agent-core'
 import type { ToolContext } from './gateway-tools'
 import { textResult } from './gateway-tools'
 import { resolveRuntimeIdentity } from './workspace-runtime-mode'
 import { downloadedPath, pruneChatFiles, saveChatFile } from './chat-files'
+import { collectArtifacts, workspaceRelative } from './channel-artifacts'
 import {
   getMemberActivity,
   getTeamDirectory,
@@ -50,7 +52,10 @@ const CARD_SCHEMA = Type.Object(
     steps: Type.Optional(Type.Array(Type.String(), { description: 'Ordered steps, e.g. ["Triage", "Fix", "Review", "Merge"].' })),
     step: Type.Optional(Type.Number({ description: 'Index (from 0) of the step in progress.' })),
     criteria: Type.Optional(Type.Array(Type.String(), { description: 'What has to be true for this to be done. A reviewer works from these.' })),
-    links: Type.Optional(Type.Array(Type.Object({ label: Type.Optional(Type.String()), url: Type.String() }), { description: 'Artifacts: PR, preview URL, ticket.' })),
+    links: Type.Optional(Type.Array(Type.Object({
+      label: Type.Optional(Type.String()),
+      url: Type.String({ description: 'A web URL, or the path of a file in your workspace (e.g. "plans/2026-10-14-plan.md"), which people open in your project.' }),
+    }), { description: 'Artifacts: PR, preview URL, ticket, or a file you wrote such as a plan or report.' })),
     summary: Type.Optional(Type.String({ description: 'The outcome, once finished.' })),
   },
   { description: 'A status card: one message you keep up to date with team_chat_update instead of posting every step.' },
@@ -95,6 +100,54 @@ type QuestionInput = {
   secret_name?: string
 }
 
+/** Card links to files under the workspace go to the API as workspace-relative paths. */
+export function cardForApi(card: AgentStatusCard | undefined, workspaceDir: string | undefined): AgentStatusCard | undefined {
+  if (!card?.links?.length || !workspaceDir) return card
+  return {
+    ...card,
+    links: card.links.map((l) => {
+      if (typeof l?.url !== 'string' || !isAbsolute(l.url)) return l
+      const rel = workspaceRelative(workspaceDir, l.url)
+      return rel ? { ...l, url: rel } : l
+    }),
+  }
+}
+
+const ATTACH_SCHEMA = Type.Array(Type.String(), {
+  description:
+    'Files from your workspace to show with this message (e.g. ["plans/2026-10-14-plan.md"]). Their text is copied ' +
+    'into the message so people read it in place, and an approval is recorded against that exact version. ' +
+    'When you ask for a decision without naming any, the documents you wrote this turn are attached.',
+})
+
+function attachmentsFor(
+  ctx: ToolContext,
+  input: { attach?: string[]; card?: AgentStatusCard; decision: boolean },
+): ReturnType<typeof collectArtifacts> {
+  return collectArtifacts({
+    workspaceDir: ctx.workspaceDir,
+    attach: input.attach,
+    card: input.card,
+    writtenThisTurn: ctx.fileStateCache?.getWrittenThisTurn(),
+    decision: input.decision,
+  })
+}
+
+/** What the agent hears back about attachments, so it can fix a missing or wrong one. */
+function attachmentReport(collected: ReturnType<typeof collectArtifacts>, needsContext = false): Record<string, unknown> {
+  return {
+    ...(collected.artifacts.length ? { attached: collected.artifacts.map((a) => a.path), ...(collected.auto ? { attached_automatically: true } : {}) } : {}),
+    ...(collected.errors.length ? { attach_errors: collected.errors } : {}),
+    ...(needsContext
+      ? {
+          warning:
+            'You asked for approval but gave people nothing to read: no attached file and no link. The card is flagged ' +
+            '"Needs context". Update this message with team_chat_update and `attach` (the plan or spec you want approved).',
+        }
+      : {}),
+  }
+}
+
 function questionsForApi(questions: QuestionInput[] | undefined) {
   if (!Array.isArray(questions) || !questions.length) return undefined
   return questions.map(({ question, secret_name, ...rest }) => ({ ...rest, prompt: question, secretName: secret_name }))
@@ -127,6 +180,7 @@ export const TEAM_CHAT_GUIDE = [
   "You're a teammate in this workspace's team chat, alongside people and other agents. When a channel message wakes you:",
   '- Reply in the thread you were woken in. Your final reply is posted there automatically.',
   '- Hand work to another agent by tagging it (`@Planner`, or its tag from `team_directory`). It runs next in the same thread.',
+  '- Every agent tag wakes that agent and costs a run, so tag one only to hand it a specific task. Never tag agents to acknowledge, thank, agree, give an FYI, or report back to the agent that handed you the work; your reply is already in the thread. To refer to an agent without waking it, write its name without the `@`.',
   '- Write every message so someone reading the thread later knows what happened and why: in two to four sentences, say what you did, what you found or decided and why, and what you need next. Never post a bare "your turn", "done", or "back to you".',
   '- Tag people only when you need a decision or approval from them, and ask one clear question.',
   '- When you need input from a person, post with `team_chat_post` and pass `questions` (tag them in the text) so they get an answerable card, instead of burying the question in prose. Their answer arrives as a reply in the thread. A question already open in the channel is not re-asked; refer to it instead.',
@@ -144,7 +198,7 @@ export const TEAM_CHAT_GUIDE = [
   'Every post you make has a kind. People only get notified for `decision` and `alert`, so choose honestly:',
   '- `status`: routine progress. Prefer one status card you update in place over many separate posts.',
   '- `result`: finished work someone will want to open (a PR, a preview link, a report).',
-  '- `decision`: you need a person to choose or approve. Ask one clear question (as `questions`) and say what happens on each answer.',
+  '- `decision`: you need a person to choose or approve. Ask one clear question (as `questions`) and say what happens on each answer. When they are approving something you wrote (a plan, spec or report), pass it in `attach` so it is shown on the message and the approval is tied to that version. If you change the file afterwards, update the message with `attach` again: an earlier approval does not cover the new version.',
   '- `alert`: something is broken or blocked and you cannot continue alone.',
   'For work that takes more than a few steps, post one `card` at the top of your thread (title, steps, the criteria that mean it is done), then change it with `team_chat_update` as you go and finish by setting `status: "done"` with a short `summary`. Do not post a new message for each step.',
 ].join('\n')
@@ -218,7 +272,7 @@ export function createChannelPostTool(ctx: ToolContext): AgentTool {
       'results, status updates or questions with the team, or to start a thread for a piece of work. ' +
       'Tag teammates by name (@Planner, @Jane Doe, @maintainers) or with tags from team_directory ' +
       '(<@a:p:PROJECT_ID> for an agent, <@u:USER_ID> for a person, <@g:GROUP_ID> for a group). ' +
-      'Tagging an agent hands work to it: it runs next and replies in the thread. ' +
+      'Tagging an agent hands work to it: it runs next and replies in the thread, so tag an agent only when you give it a task, never to thank or update it. ' +
       'A new top-level post makes you the owner of its thread, so unaddressed human replies there come to you. ' +
       'Do not use this to reply to the message you were mentioned in; your normal reply is posted there automatically. ' +
       'Returns thread_id (for follow-ups) and url (a link to the thread for people outside Shogo).',
@@ -231,15 +285,21 @@ export function createChannelPostTool(ctx: ToolContext): AgentTool {
       kind: Type.Optional(KIND_SCHEMA),
       card: Type.Optional(CARD_SCHEMA),
       questions: Type.Optional(QUESTIONS_SCHEMA),
+      attach: Type.Optional(ATTACH_SCHEMA),
     }),
     execute: async (_id, params) => {
       const workspaceId = workspaceIdOf(ctx)
       if (!workspaceId) return noWorkspace()
       const input = params as {
         channel: string; text?: string; thread_id?: string; owner?: boolean; run_id?: string
-        kind?: AgentMessageKind; card?: AgentStatusCard; questions?: QuestionInput[]
+        kind?: AgentMessageKind; card?: AgentStatusCard; questions?: QuestionInput[]; attach?: string[]
       }
       if (!input.text?.trim() && !input.card) return textResult({ error: 'text or card is required', code: 'invalid_input' })
+      const collected = attachmentsFor(ctx, {
+        attach: input.attach,
+        card: input.card,
+        decision: input.kind === 'decision' || !!input.questions?.length,
+      })
       const result = await postAgentChannelMessage(workspaceId, input.channel.replace(/^#/, ''), {
         text: input.text ?? '',
         threadRootId: input.thread_id,
@@ -248,12 +308,13 @@ export function createChannelPostTool(ctx: ToolContext): AgentTool {
         owner: input.owner,
         runId: input.run_id,
         kind: input.kind,
-        card: input.card,
+        card: cardForApi(input.card, ctx.workspaceDir),
         questions: questionsForApi(input.questions),
+        artifacts: collected.artifacts.length ? collected.artifacts : undefined,
       })
       if (result.ok && result.data) {
-        const { threadId, ...rest } = result.data
-        return textResult({ ok: true, ...rest, thread_id: threadId })
+        const { threadId, needsContext, ...rest } = result.data
+        return textResult({ ok: true, ...rest, thread_id: threadId, ...attachmentReport(collected, needsContext) })
       }
       return apiError(result, 'Could not post the message')
     },
@@ -276,22 +337,28 @@ export function createChannelUpdateTool(ctx: ToolContext): AgentTool {
       kind: Type.Optional(KIND_SCHEMA),
       card: Type.Optional(CARD_SCHEMA),
       questions: Type.Optional(QUESTIONS_SCHEMA),
+      attach: Type.Optional(ATTACH_SCHEMA),
     }),
     execute: async (_id, params) => {
       const workspaceId = workspaceIdOf(ctx)
       if (!workspaceId) return noWorkspace()
-      const input = params as { message_id: string; text?: string; kind?: AgentMessageKind; card?: AgentStatusCard; questions?: QuestionInput[] }
-      if (input.text === undefined && !input.card && !input.kind && !input.questions?.length) {
-        return textResult({ error: 'Pass text, card, kind or questions to change', code: 'invalid_input' })
+      const input = params as {
+        message_id: string; text?: string; kind?: AgentMessageKind; card?: AgentStatusCard; questions?: QuestionInput[]; attach?: string[]
       }
+      if (input.text === undefined && !input.card && !input.kind && !input.questions?.length && !input.attach?.length) {
+        return textResult({ error: 'Pass text, card, kind, questions or attach to change', code: 'invalid_input' })
+      }
+      // Attaching replaces what the message already shows, so only new questions pull in this turn's documents.
+      const collected = attachmentsFor(ctx, { attach: input.attach, card: input.card, decision: !!input.questions?.length })
       const result = await updateAgentChannelMessage(workspaceId, input.message_id, {
         identity: channelIdentity(ctx),
         text: input.text,
         kind: input.kind,
-        card: input.card,
+        card: cardForApi(input.card, ctx.workspaceDir),
         questions: questionsForApi(input.questions),
+        artifacts: collected.artifacts.length ? collected.artifacts : undefined,
       })
-      return result.ok ? textResult({ ok: true, ...result.data }) : apiError(result, 'Could not update the message')
+      return result.ok ? textResult({ ok: true, ...result.data, ...attachmentReport(collected) }) : apiError(result, 'Could not update the message')
     },
   }
 }

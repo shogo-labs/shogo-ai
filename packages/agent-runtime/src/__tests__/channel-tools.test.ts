@@ -137,6 +137,26 @@ describe('channel tools call the internal agent-channel API', () => {
     expect(JSON.parse(String(calls[1].init?.body)).kind).toBe('decision')
   })
 
+  test('card links to files under the workspace are sent as workspace-relative paths', async () => {
+    reply = { message: { id: 'card-1', conversationId: 'c1', threadRootId: 'card-1', runId: null } }
+    const card = {
+      title: 'Plan',
+      links: [
+        { label: 'Plan', url: '/tmp/channel-tools/plans/2026-10-14-plan.md' },
+        { url: 'plans/notes.md' },
+        { url: '/etc/passwd' },
+        { label: 'PR', url: 'https://github.com/a/b/pull/1' },
+      ],
+    }
+    await tool('team_chat_post').execute('t', { channel: 'eng', card, kind: 'decision' })
+    expect(JSON.parse(String(calls[0].init?.body)).card.links).toEqual([
+      { label: 'Plan', url: 'plans/2026-10-14-plan.md' },
+      { url: 'plans/notes.md' },
+      { url: '/etc/passwd' },
+      { label: 'PR', url: 'https://github.com/a/b/pull/1' },
+    ])
+  })
+
   test('team_chat_update edits a message in place as this agent', async () => {
     reply = { message: { id: 'card-1', conversationId: 'c1' } }
     const card = { title: 'Fix totals', status: 'done', summary: 'Merged.' }

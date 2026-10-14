@@ -35,11 +35,17 @@ import {
 } from './conversation.service'
 import { createInboxItems, unreadInboxCount } from './chat-inbox'
 import {
+  artifactRefs,
+  artifactsOf,
   kindOf,
+  needsContext,
   questionOptions,
   questionsOf,
   questionRefsOf,
   questionsToMarkdown,
+  sameArtifacts,
+  type ArtifactRef,
+  type MessageArtifact,
   type MessageBlocks,
   type QuestionAnswer,
   type QuestionBlock,
@@ -494,6 +500,8 @@ export async function closeQuestion(input: {
   answer?: QuestionAnswer
   reason?: string
   secretCipher?: string
+  /** The artifact versions the person had on screen; the answer is refused if the message now carries others. */
+  seenArtifacts?: ArtifactRef[]
   now?: Date
 }): Promise<{ message: any; question: QuestionBlock; row: any }> {
   const key = `${input.messageId}:${input.questionId}`
@@ -507,12 +515,17 @@ export async function closeQuestion(input: {
       const by = current.answer ? ` by ${current.answer.by.name}` : ''
       throw new AgentMessageError(409, 'already_answered', `Already ${current.status}${by}`)
     }
+    const artifacts = artifactsOf(row.blocks)
+    if (input.seenArtifacts && !sameArtifacts(input.seenArtifacts, artifacts)) {
+      throw new AgentMessageError(409, 'artifact_changed', 'The attached file changed while you were reading. Review the new version, then answer again.')
+    }
     const now = input.now ?? new Date()
+    const answer = input.answer && artifacts.length ? { ...input.answer, artifacts: artifactRefs(artifacts) } : input.answer
     const question: QuestionBlock = {
       ...current,
       status: input.status,
       closedAt: now.toISOString(),
-      ...(input.answer ? { answer: input.answer } : {}),
+      ...(answer ? { answer } : {}),
       ...(input.reason ? { closedReason: clip(input.reason, 200) } : {}),
       ...(input.secretCipher ? { secretCipher: input.secretCipher } : {}),
     }
@@ -566,6 +579,8 @@ export interface AnswerInput {
   answer?: string
   /** For `secret` questions; stored encrypted and never posted. */
   secret?: string
+  /** The artifact versions on screen when the person answered; see `closeQuestion`. */
+  seenArtifacts?: ArtifactRef[]
   origin?: 'app' | 'slack' | 'teams'
 }
 
@@ -608,15 +623,19 @@ export async function answerQuestion(input: AnswerInput): Promise<{ message: any
     status: 'answered',
     answer: { text: answerText, by, at: now.toISOString() },
     secretCipher,
+    seenArtifacts: input.seenArtifacts,
     now,
   })
 
   const where = question.interaction === 'secret'
     ? `\n\n_Read it with \`team_chat_question_secret\` (message \`${row.id}\`, question \`${question.id}\`)._`
     : ''
+  const versions = closed.question.answer?.artifacts?.length
+    ? `\n\n_Answered for ${closed.question.answer.artifacts.map((a) => `\`${a.path}\` version \`${a.sha256.slice(0, 7)}\``).join(', ')}._`
+    : ''
   const reply = await postMessage({
     conversationId: row.conversationId,
-    text: `${agentTag(row)} **${question.header}:** ${answerText}${where}`,
+    text: `${agentTag(row)} **${question.header}:** ${answerText}${where}${versions}`,
     authorType: 'user',
     authorUserId: input.userId,
     threadRootId: row.threadRootId ?? row.id,
@@ -673,6 +692,9 @@ export interface QuestionListItem {
   /** For this person (or open to anyone). */
   mine: boolean
   canAnswer: boolean
+  /** Files attached to the question's message, so it can be answered from the inbox with them in view. */
+  artifacts: MessageArtifact[]
+  needsContext: boolean
 }
 
 export interface QuestionListOptions {
@@ -744,6 +766,8 @@ export async function listQuestions(workspaceId: string, userId: string, opts: Q
         askedAt: new Date(askedAt(q, row)).toISOString(),
         mine,
         canAnswer: role !== 'viewer' && q.status === 'open' && canAnswer(q, userId),
+        artifacts: artifactsOf(row.blocks),
+        needsContext: needsContext(row.blocks, row.text ?? ''),
       })
     }
   }

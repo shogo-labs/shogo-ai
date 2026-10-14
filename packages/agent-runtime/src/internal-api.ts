@@ -1005,6 +1005,14 @@ export interface AgentStatusCard {
   summary?: string
 }
 
+/** A file's text copied into a message; see `channel-artifacts`. */
+export interface AgentArtifact {
+  path: string
+  content: string
+  sha256: string
+  truncated?: boolean
+}
+
 /** A question for the people an agent tags; see the API's `QuestionDraft`. */
 export interface AgentQuestion {
   header: string
@@ -1056,8 +1064,16 @@ export async function postAgentChannelMessage(
     kind?: AgentMessageKind
     card?: AgentStatusCard
     questions?: AgentQuestion[]
+    artifacts?: AgentArtifact[]
   },
-): Promise<CheckpointCallResult<{ id: string; conversationId: string; threadId: string; runId: string | null; url: string | null }>> {
+): Promise<CheckpointCallResult<{
+  id: string
+  conversationId: string
+  threadId: string
+  runId: string | null
+  url: string | null
+  needsContext: boolean
+}>> {
   return personalFetch(channelsPath(workspaceId, `/${encodeURIComponent(channel)}/messages`), {
     method: 'POST',
     body: JSON.stringify({
@@ -1070,6 +1086,7 @@ export async function postAgentChannelMessage(
       kind: input.kind,
       card: input.card,
       questions: input.questions,
+      artifacts: input.artifacts,
     }),
     parse: (j) => ({
       id: j?.message?.id,
@@ -1077,6 +1094,7 @@ export async function postAgentChannelMessage(
       threadId: j?.message?.threadRootId ?? j?.message?.id,
       runId: j?.message?.runId ?? null,
       url: j?.message?.url ?? null,
+      needsContext: j?.message?.needsContext === true,
     }),
   })
 }
@@ -1085,11 +1103,25 @@ export async function postAgentChannelMessage(
 export async function updateAgentChannelMessage(
   workspaceId: string,
   messageId: string,
-  input: { identity: AgentChannelIdentity; text?: string; kind?: AgentMessageKind; card?: AgentStatusCard; questions?: AgentQuestion[] },
+  input: {
+    identity: AgentChannelIdentity
+    text?: string
+    kind?: AgentMessageKind
+    card?: AgentStatusCard
+    questions?: AgentQuestion[]
+    artifacts?: AgentArtifact[]
+  },
 ): Promise<CheckpointCallResult<{ id: string; conversationId: string }>> {
   return personalFetch(channelsPath(workspaceId, `/messages/${encodeURIComponent(messageId)}`), {
     method: 'PATCH',
-    body: JSON.stringify({ text: input.text, kind: input.kind, card: input.card, questions: input.questions, projectId: input.identity.projectId }),
+    body: JSON.stringify({
+      text: input.text,
+      kind: input.kind,
+      card: input.card,
+      questions: input.questions,
+      artifacts: input.artifacts,
+      projectId: input.identity.projectId,
+    }),
     parse: (j) => ({ id: j?.message?.id, conversationId: j?.message?.conversationId }),
   })
 }
