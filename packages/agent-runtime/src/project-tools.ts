@@ -36,6 +36,7 @@ import type { ToolContext } from './gateway-tools'
 import { textResult } from './gateway-tools'
 import { capabilityState, effectiveCapabilityValue, lockedCapabilityKeys } from './capability-status-prompt'
 import { resolveWorkspaceConfigFilePath } from './workspace-defaults'
+import { isMetalRuntime } from './remote-tools'
 import { availableModelsHint, isAvailableModel } from './available-models'
 import {
   attachProject as apiAttachProject,
@@ -117,7 +118,7 @@ export function resolveProjectDir(ctx: ToolContext, projectId: string): string |
 }
 
 /** Resolve a project reference (id, exact name, or manifest key via lock) to an id. */
-async function resolveProjectRef(
+export async function resolveProjectRef(
   ctx: ToolContext,
   ref: string,
 ): Promise<{ id: string; name: string } | { error: string; code: string }> {
@@ -262,9 +263,11 @@ export function createProjectCreateTool(ctx: ToolContext): AgentTool {
         attachment,
         mounted,
         projectDir: resolveProjectDir(ctx, created.data.id),
-        note: mounted
-          ? `Project files are reachable at ${resolveProjectDir(ctx, created.data.id) ?? '<sibling folder>'}. Write its AGENTS.md next.`
-          : 'Attachment recorded. Files become reachable on the next runtime start; use project_call to talk to it meanwhile, or system_apply to write its files.',
+        note: isMetalRuntime()
+          ? `Write its files with write_file / edit_file and \`project: "${created.data.id}"\` (they run in that project's own runtime). Write its AGENTS.md next.`
+          : mounted
+            ? `Project files are reachable at ${resolveProjectDir(ctx, created.data.id) ?? '<sibling folder>'}. Write its AGENTS.md next.`
+            : 'Attachment recorded. Files become reachable on the next runtime start; use project_call to talk to it meanwhile, or system_apply to write its files.',
       })
     },
   }
@@ -278,8 +281,9 @@ export function createProjectAttachTool(ctx: ToolContext): AgentTool {
   return {
     name: 'project_attach',
     label: 'Attach Project',
-    description:
-      'Attach an existing workspace project to the current project so its files appear as a sibling folder (readwrite lets you edit its prompts; readonly is for inspection). Idempotent; re-running with a different mode changes the mode.',
+    description: isMetalRuntime()
+      ? 'Attach an existing workspace project to the current project (readwrite lets you edit it; readonly is for inspection). Its files are not mounted here: work in it with `connect_project` and the `project` parameter of the file and shell tools. Idempotent; re-running with a different mode changes the mode.'
+      : 'Attach an existing workspace project to the current project so its files appear as a sibling folder (readwrite lets you edit its prompts; readonly is for inspection). Idempotent; re-running with a different mode changes the mode.',
     parameters: Type.Object({
       project: Type.String({ description: 'Project id, exact name, or manifest key.' }),
       mode: Type.Optional(Type.Union([Type.Literal('readwrite'), Type.Literal('readonly')], { description: 'Default readwrite.' })),

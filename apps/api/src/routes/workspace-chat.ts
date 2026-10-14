@@ -48,6 +48,7 @@ import {
   type AttachMode,
 } from '../services/workspace-session.service'
 import { resolveWorkspaceRuntimeUrl, WorkspaceRuntimeNotEnabledError } from '../lib/resolve-workspace-runtime-url'
+import { isMetalEnabled } from '../lib/metal-eligibility'
 import { readWorkspaceSessionRuntimeArgs, type WorkspaceSessionRuntimeArgs } from '../lib/workspace-runtime-args'
 import { deriveWorkspaceRuntimeToken } from '../lib/workspace-runtime-token'
 import { requesterTicketHeader, workspaceTicketKey } from '../lib/requester-ticket'
@@ -91,6 +92,19 @@ function mapSessionError(c: any, err: unknown) {
     return c.json({ error: { code: err.code, message: err.message } }, status)
   }
   throw err
+}
+
+/**
+ * Metal keeps each project online only in its own `ws:proj:<id>` runtime, so
+ * attachments are durable records only: they never mount into, or restart, a
+ * session runtime.
+ */
+function isMetalSingleRuntime(): boolean {
+  return process.env.SHOGO_LOCAL_MODE !== 'true' && isMetalEnabled()
+}
+
+function runtimeMembers(attachedProjectIds: string[]): string[] {
+  return isMetalSingleRuntime() ? [] : attachedProjectIds
 }
 
 /**
@@ -149,6 +163,7 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
     opts: { keepAnchorRuntime?: boolean } = {},
   ) => {
     const args = await loadRuntimeArgs(workspaceId, sessionId, userId)
+    if (isMetalSingleRuntime()) return null
     const manager: any = runtimeManager
     if (args.extra.anchorProjectId) {
       if (!opts.keepAnchorRuntime) await stopAnchorRuntime(args.extra.anchorProjectId, manager)
@@ -156,7 +171,7 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
       await manager.stopWorkspace(workspaceId)
     }
     return resolveWorkspaceRuntimeUrl(workspaceId, {
-      attachedProjectIds: args.attachedProjectIds,
+      attachedProjectIds: runtimeMembers(args.attachedProjectIds),
       logTag: 'WorkspaceScopeRefresh',
       runtimeManager,
       ...args.extra,
@@ -213,7 +228,7 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
     }
     try {
       const resolved = await resolveWorkspaceRuntimeUrl(workspaceId, {
-        attachedProjectIds,
+        attachedProjectIds: runtimeMembers(attachedProjectIds),
         logTag,
         runtimeManager,
         alwaysEnabled: config.alwaysEnabled,
@@ -254,7 +269,7 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
     extra?: { anchorProjectId?: string; localFolders?: string[]; readonlyProjectIds?: string[] },
   ): Promise<Response> {
     const resolved = await resolveWorkspaceRuntimeUrl(workspaceId, {
-      attachedProjectIds,
+      attachedProjectIds: runtimeMembers(attachedProjectIds),
       logTag: 'WorkspaceRuntime',
       runtimeManager,
       alwaysEnabled: config.alwaysEnabled,
@@ -479,12 +494,16 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
       )
     }
 
-    const resolved = await resolveWorkspaceRuntimeUrl(workspaceId, {
-      attachedProjectIds,
-      logTag: 'WorkspacePreview',
-      runtimeManager,
-      ...runtimeExtra,
-    })
+    // On metal only the project's own runtime serves `/p/<projectId>/`.
+    const resolved =
+      isMetalSingleRuntime() && runtimeExtra.anchorProjectId !== projectId
+        ? await (await import('../lib/resolve-pod-url')).resolveProjectPodUrl(projectId, { logTag: 'WorkspacePreview' })
+        : await resolveWorkspaceRuntimeUrl(workspaceId, {
+            attachedProjectIds: runtimeMembers(attachedProjectIds),
+            logTag: 'WorkspacePreview',
+            runtimeManager,
+            ...runtimeExtra,
+          })
 
     return c.json({
       projectId,
@@ -550,7 +569,7 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
     // pod warms while the user keeps composing. Swallow the disabled-flag
     // case (prewarm is best-effort); log everything else.
     void resolveWorkspaceRuntimeUrl(workspaceId, {
-      attachedProjectIds,
+      attachedProjectIds: runtimeMembers(attachedProjectIds),
       logTag: 'WorkspacePrewarm',
       runtimeManager,
       ...runtimeExtra,
@@ -747,7 +766,7 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
             await syncPinnedSessionAttachments(anchorProjectId, sessionId)
             // Restart so the new members are admitted as allowed roots, then
             // re-read the (now larger) attached set for the resolve below.
-            await stopAnchorRuntime(anchorProjectId, runtimeManager)
+            if (!isMetalSingleRuntime()) await stopAnchorRuntime(anchorProjectId, runtimeManager)
             const reload = await loadRuntimeArgs(workspaceId, sessionId, auth.userId)
             attachedProjectIds = reload.attachedProjectIds
             runtimeExtra = reload.extra
@@ -899,7 +918,7 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
               // Re-resolve in case the runtime port/host changed mid-retry.
               try {
                 const refreshed = await resolveWorkspaceRuntimeUrl(workspaceId, {
-                  attachedProjectIds,
+                  attachedProjectIds: runtimeMembers(attachedProjectIds),
                   logTag: 'WorkspaceChat',
                   runtimeManager,
                   ...runtimeExtra,
@@ -1118,7 +1137,7 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
             const delay = Math.min(BASE_DELAY_MS * Math.pow(2, attempt - 1), MAX_DELAY_MS)
             try {
               const refreshed = await resolveWorkspaceRuntimeUrl(workspaceId, {
-                attachedProjectIds,
+                attachedProjectIds: runtimeMembers(attachedProjectIds),
                 logTag: 'WorkspaceChat',
                 runtimeManager,
                 ...runtimeExtra,

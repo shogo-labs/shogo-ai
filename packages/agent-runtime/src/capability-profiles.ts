@@ -99,7 +99,7 @@ export const PROFILE_TOOL_GROUPS: Record<string, string[]> = {
 export const CORE_TOOL_NAMES = [
   'ask_user', 'skill', 'quick_action', 'generate_image',
   'search_history', 'read_history', 'read_guide', 'worktree_list',
-  'project_list', 'project_create', 'project_call', 'project_configure', 'capabilities_configure',
+  'project_list', 'project_create', 'project_call', 'project_configure', 'capabilities_configure', 'connect_project',
   'agent_profile_get', 'agent_profile_set', 'goal_create', 'goal_update', 'goal_log', 'goal_list',
   'schedule_create', 'schedule_list', 'schedule_update', 'schedule_delete', 'set_status',
   'trigger_types_list', 'trigger_create', 'trigger_list', 'trigger_update', 'trigger_delete', 'trigger_test',

@@ -88,9 +88,20 @@ export const M = {
   // has mounted. Backups follow the guest; before that, a member missing from
   // the host's list was never backed up at all.
   workspaceMemberDrift: 'metal_workspace_member_drift_total',
-  // A project was exported from one live VM so another runtime opening it
-  // started from those files instead of an older backup (or the starter).
-  memberFlushedForOpen: 'metal_member_flushed_for_open_total',
+  // Single-runtime rule: a project is online only in its own runtime
+  // (pool.ownMemberIds). Each of these should read zero once the API and every
+  // VM from before the rule are gone.
+  //   `foreignMembersStripped`    — member ids dropped from an assign/resume env
+  //                                 (an API replica still sending the old lists).
+  //   `foreignMemberMountRefused` — a live mount of a foreign member (409).
+  //   `foreignMemberBackupSkipped`— a backup found a foreign member in a legacy
+  //                                 VM and left it to the drain.
+  //   `foreignMemberDrained`      — `{outcome="exported"|"conflict"|"empty"|"failed"}`
+  //                                 per member pool.drainForeignMembers took off.
+  foreignMembersStripped: 'metal_foreign_members_stripped_total',
+  foreignMemberMountRefused: 'metal_foreign_member_mount_refused_total',
+  foreignMemberBackupSkipped: 'metal_foreign_member_backup_skipped_total',
+  foreignMemberDrained: 'metal_foreign_member_drained_total',
   // Writable-state durability (database + uploads; see
   // pool.saveProjectDataToStore).
   //   `dataConflict`  — a conditional write's precondition failed, so the

@@ -7,7 +7,7 @@
  * object-store credentials (only bucket names), so they must never run their
  * own S3 sync.
  */
-export function isHostMediatedDurability(): boolean {
-  const v = process.env.SHOGO_DURABILITY_HOST_MEDIATED
+export function isHostMediatedDurability(env: NodeJS.ProcessEnv = process.env): boolean {
+  const v = env.SHOGO_DURABILITY_HOST_MEDIATED
   return v === '1' || v === 'true'
 }

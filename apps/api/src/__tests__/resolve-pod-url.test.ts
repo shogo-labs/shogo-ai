@@ -112,15 +112,15 @@ describe('resolveProjectPodUrl — anchored workspace runtime', () => {
     expect(startProjectWorkspace).toHaveBeenCalledTimes(1)
   })
 
-  test('uses the anchored metal driver before the k8s driver', async () => {
+  test('uses the anchored metal driver before the k8s driver, mounting only the project itself', async () => {
     const metalResolver = mock(async (
       workspaceId: string,
       projectIds: string[],
       options?: { anchorProjectId?: string },
     ) => {
       expect(workspaceId).toBe('workspace-1')
-      expect(projectIds).toEqual(['project-1', 'project-2'])
-      expect(options).toEqual({ anchorProjectId: 'project-1', readonlyProjectIds: ['project-2'] })
+      expect(projectIds).toEqual(['project-1'])
+      expect(options).toEqual({ anchorProjectId: 'project-1', readonlyProjectIds: [] })
       return 'http://metal-runtime'
     })
     const opts = testOptions({

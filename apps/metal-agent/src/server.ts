@@ -31,7 +31,7 @@ import { type GuardedInterval, guardedInterval } from './guarded-interval'
 import { HYDRATE_STREAM_PREFIX } from './hydrate-proxy'
 import { currentIdleWindow } from './idle-policy'
 import { M, metrics } from './metrics'
-import { MetalWarmPool } from './pool'
+import { ForeignMemberError, MetalWarmPool } from './pool'
 import { PortForward } from './port-forward'
 import { reportPlacement, startRegistration } from './register'
 import { getRootfsRevision, getRootfsSha } from './self-update'
@@ -204,8 +204,26 @@ const server = Bun.serve({
         if (!runtimeKey || typeof body?.projectId !== 'string' || typeof body?.destDir !== 'string') {
           return Response.json({ error: 'runtime key, projectId, and destDir are required' }, { status: 400 })
         }
-        const result = await pool.mountWorkspaceMember(runtimeKey, body.projectId, body.destDir)
-        return Response.json({ ok: true, ...result })
+        try {
+          const result = await pool.mountWorkspaceMember(runtimeKey, body.projectId, body.destDir)
+          return Response.json({ ok: true, ...result })
+        } catch (err) {
+          if (err instanceof ForeignMemberError) {
+            return Response.json({ error: 'foreign_member', message: err.message }, { status: 409 })
+          }
+          throw err
+        }
+      }
+
+      if (path === '/drain-foreign-members' && req.method === 'POST') {
+        const results = await pool.drainForeignMembers()
+        return Response.json({ hostId: config.hostId, results })
+      }
+
+      if (path === '/members/holders' && req.method === 'POST') {
+        const { projectId } = await json(req)
+        if (typeof projectId !== 'string' || !projectId) return Response.json({ error: 'projectId required' }, { status: 400 })
+        return Response.json({ hostId: config.hostId, holders: await pool.memberHolders(projectId) })
       }
 
       if (path.startsWith('/runtimes/') && path.includes('/members/') && req.method === 'DELETE') {

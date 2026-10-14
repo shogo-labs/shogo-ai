@@ -868,9 +868,12 @@ export async function defaultRewarmDeps(): Promise<RewarmDeps> {
       const { readWorkspaceSessionRuntimeArgs } = await import('./workspace-runtime-args')
       const { resolveWorkspaceRuntimeUrl } = await import('./resolve-workspace-runtime-url')
       const args = await readWorkspaceSessionRuntimeArgs(c.workspaceId, c.sessionId)
+      // Metal runtimes never mount foreign projects; only the anchor (if any)
+      // is a member, which the resolver adds itself.
       const resolved = await resolveWorkspaceRuntimeUrl(c.workspaceId, {
-        attachedProjectIds: args.attachedProjectIds,
         ...args.extra,
+        attachedProjectIds: [],
+        readonlyProjectIds: [],
         logTag: 'MetalRewarm',
         background: true,
       })

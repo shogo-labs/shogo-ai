@@ -37,6 +37,7 @@ const CORE_GATEWAY_TOOLS = new Set([
   'quick_action',
   'project_list', 'project_create', 'project_attach', 'project_detach',
   'project_configure', 'capabilities_configure', 'project_call', 'system_apply',
+  'connect_project',
 ])
 
 // ---------------------------------------------------------------------------

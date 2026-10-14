@@ -159,6 +159,7 @@ import {
   type GitHubWorkspaceOpInput,
 } from './github-workspace-git'
 import { isHostMediatedDurability } from './host-durability'
+import { executeRemoteTool } from './remote-tools'
 import { clearGitHubCliEnvCache } from './github-cli-credentials'
 import { HistoryIndex } from './history-index'
 import { WORKTREE_BRANCH_PREFIX } from '@shogo/shared-runtime'
@@ -4698,6 +4699,18 @@ app.post('/agent/tools/execute', async (c) => {
   const mcpMgr = agentGateway.getMcpClientManager()
   const result = await mcpMgr.callTool(tool, args || {})
   return c.json(result, result.ok ? 200 : 404)
+})
+
+// Remote tool channel (remote-tools.ts): another project of this workspace runs
+// one allow-listed tool against THIS project's root. Reached only through the
+// API (RBAC + wake); auth is the `/agent` runtime-token guard.
+app.post('/agent/remote/tool', async (c) => {
+  if (!agentGateway) {
+    return c.json({ ok: false, error: 'Agent gateway not running' }, 503)
+  }
+  const body = await c.req.json().catch(() => null)
+  const outcome = await executeRemoteTool(agentGateway.getRemoteTools(), body)
+  return c.json(outcome.body, outcome.status)
 })
 
 app.get('/agent/tools/schemas', (c) => {

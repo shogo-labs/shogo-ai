@@ -147,6 +147,7 @@ describe('buildWorkspaceEnv', () => {
       const docker = await buildWorkspaceEnv('ws-1', ['p1'], {
         ...seams,
         forMetal: true,
+        anchorProjectId: 'p1',
         _loadWorkspace: async () => ({ name: 'My WS', composioScope: 'workspace', instanceSize: 'xlarge' }),
         _loadProjects: async (ids: string[]) =>
           ids.map((id) => ({ id, name: id, settings: { techStackId: 'docker-compose' } })),
@@ -157,6 +158,7 @@ describe('buildWorkspaceEnv', () => {
       const standard = await buildWorkspaceEnv('ws-1', ['p1'], {
         ...seams,
         forMetal: true,
+        anchorProjectId: 'p1',
         _loadWorkspace: async () => ({ name: 'My WS', composioScope: 'workspace', instanceSize: 'micro' }),
         _loadProjects: async (ids: string[]) =>
           ids.map((id) => ({ id, name: id, settings: { techStackId: 'react-app' } })),
@@ -205,6 +207,41 @@ describe('buildWorkspaceEnv', () => {
     expect(metal.SHOGO_DURABILITY_HOST_MEDIATED).toBe('1')
     const k8s = await buildWorkspaceEnv('ws-1', ['p1'], seams as any)
     expect(k8s.SHOGO_DURABILITY_HOST_MEDIATED).toBeUndefined()
+  })
+
+  describe('metal single-runtime invariant', () => {
+    const catalogSeams = {
+      ...seams,
+      _loadAvailableProjects: async () => [
+        { id: 'anchor', name: 'Anchor' },
+        { id: 'p1', name: 'alpha-api' },
+        { id: 'p2', name: 'beta-web' },
+      ],
+    }
+
+    it('mounts only the anchor but still lists every workspace project', async () => {
+      const env = await buildWorkspaceEnv('ws-1', ['anchor', 'p1', 'p2'], {
+        ...catalogSeams,
+        forMetal: true,
+        anchorProjectId: 'anchor',
+        readonlyProjectIds: ['p2'],
+      } as any)
+      expect(env.WORKSPACE_PROJECT_IDS).toBe('anchor')
+      expect(env.WORKSPACE_READONLY_PROJECT_IDS).toBeUndefined()
+      expect(Object.keys(JSON.parse(env.AI_PROXY_TOKENS))).toEqual(['anchor'])
+      expect(JSON.parse(env.WORKSPACE_AVAILABLE_PROJECTS).map((p: { id: string }) => p.id)).toEqual(['anchor', 'p1', 'p2'])
+    })
+
+    it('mounts nothing into a workspace-session runtime', async () => {
+      const env = await buildWorkspaceEnv('ws-1', ['p1', 'p2'], { ...catalogSeams, forMetal: true } as any)
+      expect(env.WORKSPACE_PROJECT_IDS).toBe('')
+      expect(JSON.parse(env.WORKSPACE_AVAILABLE_PROJECTS)).toHaveLength(3)
+    })
+
+    it('keeps every member off metal', async () => {
+      const env = await buildWorkspaceEnv('ws-1', ['anchor', 'p1'], { ...catalogSeams, anchorProjectId: 'anchor' } as any)
+      expect(env.WORKSPACE_PROJECT_IDS).toBe('anchor,p1')
+    })
   })
 
   it('handles a workspace with no attached projects', async () => {
@@ -386,13 +423,23 @@ describe('buildWorkspaceEnv', () => {
     it('sets PUBLIC_PREVIEW_URL to the anchor preview origin and maps every member under /p/<id>/', async () => {
       const env = await buildWorkspaceEnv('ws-1', ['anchor', 'p2'], {
         ...previewSeams,
-        forMetal: true,
         anchorProjectId: 'anchor',
       } as any)
       expect(env.PUBLIC_PREVIEW_URL).toBe('https://anchor.preview.staging.shogo.ai')
       expect(JSON.parse(env.WORKSPACE_PREVIEW_URLS)).toEqual({
         anchor: 'https://anchor.preview.staging.shogo.ai/p/anchor/',
         p2: 'https://anchor.preview.staging.shogo.ai/p/p2/',
+      })
+    })
+
+    it('on metal maps only the anchor: attachments are not served by this runtime', async () => {
+      const env = await buildWorkspaceEnv('ws-1', ['anchor', 'p2'], {
+        ...previewSeams,
+        forMetal: true,
+        anchorProjectId: 'anchor',
+      } as any)
+      expect(JSON.parse(env.WORKSPACE_PREVIEW_URLS)).toEqual({
+        anchor: 'https://anchor.preview.staging.shogo.ai/p/anchor/',
       })
     })
 

@@ -5134,6 +5134,34 @@ export class AgentGateway {
     return this.mcpClientManager
   }
 
+  private remoteTools: { config: GatewayConfig; tools: ReturnType<typeof createTools> } | null = null
+  private remoteCommandRegistry = new CommandRegistry()
+
+  /**
+   * Tools for `/agent/remote/tool`: another project's runtime running one of
+   * this project's tools. Rooted at this project's own folder (the anchor in
+   * a workspace runtime), with no session, UI stream or file-read cache. One
+   * command registry spans all remote calls so exec_wait finds earlier runs.
+   */
+  getRemoteTools(): ReturnType<typeof createTools> {
+    if (this.remoteTools?.config === this.config) return this.remoteTools.tools
+    const ctx: ToolContext = {
+      workspaceDir: defaultShellCwd(this.workspaceDir),
+      channels: this.channels,
+      config: this.config,
+      projectId: process.env.WORKSPACE_ANCHOR_PROJECT_ID || this.projectId,
+      workspaceId: process.env.WORKSPACE_ID,
+      sandbox: this.config.sandbox,
+      mainSessionIds: this.config.mainSessionIds,
+      permissionEngine: this.permissionEngine ?? undefined,
+      indexEngine: this.indexEngine ?? undefined,
+      commandRegistry: this.remoteCommandRegistry,
+    }
+    const tools = filterDisabledCapabilityTools(createTools(ctx), this.config)
+    this.remoteTools = { config: this.config, tools }
+    return tools
+  }
+
   async disconnectChannel(type: string): Promise<void> {
     const adapter = this.channels.get(type)
     if (adapter) {

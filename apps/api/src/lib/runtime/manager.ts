@@ -43,6 +43,7 @@ import type {
 import { getShogoCloudUrl, buildToolsProxyUrl } from '../cloud-urls'
 import { parseProjectSettings } from '../project-settings'
 import { buildWorkspaceEnv } from './build-workspace-env'
+import { isMetalEnabled } from '../metal-eligibility'
 import { createSSHConnection, type SSHConnection } from '../remote-ssh/connection'
 import { SSHAskpassBroker } from '../remote-ssh/askpass'
 import { RemoteRuntimeManager } from '../remote-ssh/remote-runtime'
@@ -1566,6 +1567,12 @@ export class ShogoErrorBoundary extends Component<Props, State> {
     await attachmentSvc.syncPinnedSessionAttachments(anchorProjectId).catch(() => {})
     const attachments = await attachmentSvc.listAttachments(anchorProjectId)
     const localFolders = await attachmentSvc.getAnchorLocalFolders(anchorProjectId)
+    // Metal never mounts other projects into an anchor runtime: each project
+    // is online only in its own `ws:proj:<id>`. The attachment rows stay
+    // durable; they just stop driving mounts.
+    if (process.env.SHOGO_LOCAL_MODE !== 'true' && isMetalEnabled()) {
+      return { workspaceId: anchor.workspaceId, attachedProjectIds: [], localFolders, readonlyProjectIds: [] }
+    }
     const attachedProjectIds = attachments.map((a) => a.attachedProjectId)
     const readonlyProjectIds = attachments
       .filter((a) => a.attachMode === 'readonly')

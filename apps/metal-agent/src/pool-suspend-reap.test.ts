@@ -124,7 +124,13 @@ function makePool() {
   } as unknown as SnapshotStore
 
   const pool = new TestPool(mgr, cfg, store)
-  for (const m of ['saveBackupToStore', 'saveWorkspaceMembersToStore', 'saveProjectDataToStore', 'saveRepoToStore']) {
+  for (const m of [
+    'saveBackupToStore',
+    'drainForeignMembersOf',
+    'saveWorkspaceMembersToStore',
+    'saveProjectDataToStore',
+    'saveRepoToStore',
+  ]) {
     ;(pool as any)[m] = async () => undefined
   }
   return { pool, alive, pushed, snapshotted, release: () => release() }

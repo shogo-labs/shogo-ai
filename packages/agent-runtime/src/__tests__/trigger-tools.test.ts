@@ -10,7 +10,9 @@ mock.module('../gateway-tools', () => ({
   textResult: (details: unknown) => ({ details }),
 }))
 
+const realInternalApi = await import('../internal-api')
 mock.module('../internal-api', () => ({
+  ...realInternalApi,
   listTriggerTypes: async (...args: any[]) => {
     calls.push({ name: 'listTriggerTypes', args })
     return {

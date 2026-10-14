@@ -35,6 +35,8 @@ import {
 } from '../services/workspace-session.service'
 import { memberCallFailure, resolveWhileStarting } from '../lib/workspace-member-call'
 import { resolveWorkspaceRuntimeUrl } from '../lib/resolve-workspace-runtime-url'
+import { isMetalEnabled } from '../lib/metal-eligibility'
+import { remoteToolPermission } from '../lib/remote-tool-policy'
 import { deriveWorkspaceRuntimeToken } from '../lib/workspace-runtime-token'
 import { getRuntimeManager } from '../lib/runtime/manager'
 import { resolve as resolvePath } from 'path'
@@ -57,7 +59,13 @@ import { signSharedFileToken } from '../lib/shared-file-token'
 import { withShogoPrFooter } from '@shogo/shared-runtime/agent-attribution'
 import { resolveConnectionAuth } from '../services/github-auth'
 import { CREDENTIAL_APPROVAL_HEADER } from '../services/integration-credentials/approvals'
-import { handOffRequesterTicket, REQUESTER_TICKET_HEADER, verifyRequesterTicket, type RequesterTicket } from '../lib/requester-ticket'
+import {
+  handOffRequesterTicket,
+  REQUESTER_TICKET_HEADER,
+  verifyRequesterTicket,
+  verifyRequesterTicketInWorkspace,
+  type RequesterTicket,
+} from '../lib/requester-ticket'
 import { signResumeToken } from '../services/integration-credentials/resume'
 import { waitForAgentCall } from '../lib/agent-call-store'
 import { keepAliveJson, KEEPALIVE_HEADER, wantsKeepAlive } from '../lib/keepalive-json'
@@ -174,6 +182,24 @@ function hideInaccessibleEdges<T extends { id: string; attachments?: Array<{ att
     ...p,
     attachments: (p.attachments ?? []).filter((edge) => ids.has(edge.attachedProjectId)),
   }))
+}
+
+/** Metal never mounts a project into a runtime other than its own `ws:proj:<id>`. */
+function metalMountingRemoved(): boolean {
+  return process.env.SHOGO_LOCAL_MODE !== 'true' && isMetalEnabled()
+}
+
+function mountingRemovedResponse(c: Context, extra: Record<string, unknown> = {}) {
+  return c.json(
+    {
+      error: {
+        code: 'mounting_removed',
+        message: 'Projects are no longer mounted into other runtimes; use the project parameter / connect_project to reach them.',
+      },
+      ...extra,
+    },
+    410,
+  )
 }
 
 function unavailable(c: Context, capability: string) {
@@ -901,6 +927,7 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
         projectId,
         body?.attachMode === 'readonly' ? 'readonly' : 'readwrite',
       )
+      if (metalMountingRemoved()) return mountingRemovedResponse(c, { attached: attachedRow, project })
       const attached = await getAttachedProjects(sessionId)
       const attachedIds = attached.map((row) => row.projectId)
       const readonlyIds = attached.filter((row) => row.attachMode === 'readonly').map((row) => row.projectId)
@@ -949,6 +976,7 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     }
     try {
       const removed = await detachProject(sessionId, projectId)
+      if (metalMountingRemoved()) return mountingRemovedResponse(c, { removed })
       const attached = await getAttachedProjects(sessionId)
       const attachedIds = attached.map((row) => row.projectId)
       const readonlyIds = attached.filter((row) => row.attachMode === 'readonly').map((row) => row.projectId)
@@ -1889,6 +1917,7 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     try {
       const svc = await import('../services/project-attachment.service')
       const attachment = await svc.attachProjectToProject(projectId, body.attachedProjectId, attachMode)
+      if (metalMountingRemoved()) return mountingRemovedResponse(c, { attachment, mounted: false })
 
       let mounted = false
       try {
@@ -2078,6 +2107,75 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
       ...(requesterTicket ? { requesterTicket } : {}),
     })
     if (wait && wantsKeepAlive(c.req.header(KEEPALIVE_HEADER))) return keepAliveJson(work)
+    const outcome = await work
+    return c.json(outcome.body, outcome.status as any)
+  })
+
+  /**
+   * POST /api/internal/projects/:projectId/remote-tool
+   *   body: { tool, args?, callerProjectId?, timeoutMs? }
+   *
+   * Run one tool against another project in the caller's workspace. The
+   * target is woken in its own runtime and the call is forwarded to its
+   * `/agent/remote/tool`; status and JSON body pass through. Read-only tools
+   * need `project:read` on the target, everything else `project:update`.
+   */
+  app.post('/projects/:projectId/remote-tool', async (c) => {
+    const projectId = c.req.param('projectId')
+    const authz = await authorizeLifecycleProject(c, projectId)
+    if (!authz) {
+      const identity = await authenticate(c)
+      const target = identity
+        ? ((await prisma.project.findUnique({ where: { id: projectId }, select: { workspaceId: true } })) as { workspaceId: string } | null)
+        : null
+      if (target) {
+        return c.json(
+          { error: { code: 'cross_workspace', message: 'The target project is in a different workspace.' } },
+          403,
+        )
+      }
+      return c.json({ error: 'Unauthorized' }, 401)
+    }
+
+    const ticketHeader = c.req.header(REQUESTER_TICKET_HEADER)
+    if (ticketHeader && !(await verifyRequesterTicketInWorkspace(ticketHeader, authz.workspaceId))) {
+      return c.json({ error: { code: 'invalid_requester_ticket', message: 'The requester ticket is invalid or expired.' } }, 401)
+    }
+
+    const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null
+    if (!body || typeof body.tool !== 'string' || !body.tool.trim()) {
+      return c.json({ error: { code: 'bad_request', message: 'tool is required' } }, 400)
+    }
+    if (body.args !== undefined && (typeof body.args !== 'object' || body.args === null || Array.isArray(body.args))) {
+      return c.json({ error: { code: 'bad_request', message: 'args must be an object' } }, 400)
+    }
+    const tool = body.tool.trim()
+    const denied = await enforceProjectPermission(
+      c, authz.identity, authz.workspaceId, projectId, remoteToolPermission(tool),
+    )
+    if (denied) return denied
+
+    const callerProjectId =
+      authz.identity.kind === 'project'
+        ? authz.identity.projectId
+        : typeof body.callerProjectId === 'string' ? body.callerProjectId : undefined
+
+    let requesterTicket: string | undefined
+    const callerTicket = callerProjectId ? verifyRequesterTicket(ticketHeader, callerProjectId) : null
+    if (callerTicket && callerProjectId !== projectId) {
+      requesterTicket = handOffRequesterTicket(callerTicket, projectId) ?? undefined
+    }
+
+    const agentCallSvc = await loadAgentCall?.()
+    if (!agentCallSvc) return unavailable(c, 'Remote project tools')
+    const work = agentCallSvc.callProjectRemoteTool(c, projectId, authz.workspaceId, {
+      tool,
+      args: (body.args as Record<string, unknown> | undefined) ?? {},
+      callerProjectId,
+      timeoutMs: typeof body.timeoutMs === 'number' ? body.timeoutMs : undefined,
+      ...(requesterTicket ? { requesterTicket } : {}),
+    })
+    if (wantsKeepAlive(c.req.header(KEEPALIVE_HEADER))) return keepAliveJson(work)
     const outcome = await work
     return c.json(outcome.body, outcome.status as any)
   })

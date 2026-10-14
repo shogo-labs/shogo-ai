@@ -28,9 +28,13 @@ class TestPool extends MetalWarmPool {
   data: Outcome<any> = { status: 'written', etag: '"d"' }
   dataExport: any = { bytes: new Uint8Array([1]), tag: 't1' }
   guestMembers: string[] | null = null
+  removed: string[] = []
 
   protected override async guestMountedMembers(): Promise<string[] | null> {
     return this.guestMembers
+  }
+  protected override async removeGuestMember(a: AssignedVm, projectId: string): Promise<void> {
+    this.removed.push(`${a.projectId} ${projectId}`)
   }
   protected override async fetchExport(): Promise<Uint8Array | null> {
     return new Uint8Array([1])
@@ -188,18 +192,35 @@ describe('pool.recycle', () => {
     expect(pool.events).toEqual([])
   })
 
-  test('workspace runtimes back up every member and each member database', async () => {
+  test('workspace runtimes back up their own member and its database', async () => {
     const pool = makePool()
-    pool.add('ws:proj:m1', { workspaceMemberIds: ['m1', 'm2'] })
+    pool.add('ws:proj:m1', { workspaceMemberIds: ['m1'] })
     const r = await pool.recycle('ws:proj:m1')
     expect(r.aborted).toBe(false)
-    expect(pool.events).toEqual([
-      'repo ws:proj:m1',
-      'source m1',
-      'source m2',
-      'data m1',
-      'data m2',
-    ])
+    expect(pool.events).toEqual(['repo ws:proj:m1', 'source m1', 'data m1'])
+    expect(r.steps.find((s) => s.step === 'foreign_members')).toEqual({ step: 'foreign_members', ok: true })
+    expect(pool.removed).toEqual([])
+  })
+
+  test("a legacy VM's foreign member is drained before the backups, then only the own member is backed up", async () => {
+    const pool = makePool()
+    const a = pool.add('ws:proj:m1', { workspaceMemberIds: ['m1', 'm2'] })
+    const r = await pool.recycle('ws:proj:m1')
+    expect(r.aborted).toBe(false)
+    expect(pool.events).toEqual(['source m2', 'data m2', 'repo ws:proj:m1', 'source m1', 'data m1'])
+    expect(pool.removed).toEqual(['ws:proj:m1 m2'])
+    expect(a.workspaceMemberIds).toEqual(['m1'])
+  })
+
+  test('a foreign member whose export lands nowhere durable aborts and stays mounted', async () => {
+    const pool = makePool()
+    pool.add('ws:proj:m1', { workspaceMemberIds: ['m1', 'm2'] })
+    pool.source = { status: 'skipped' }
+    const r = await pool.recycle('ws:proj:m1')
+    expect(r.aborted).toBe(true)
+    expect(r.steps.find((s) => s.step === 'foreign_members')).toMatchObject({ ok: false, detail: expect.stringMatching(/^m2: .*not durable/) })
+    expect(pool.removed).toEqual([])
+    expect(stopped).toEqual([])
   })
 
   test('a failing workspace member aborts and names the member', async () => {
@@ -216,15 +237,24 @@ describe('pool.recycle', () => {
     pool.add('ws:proj:m1')
     const r = await pool.recycle('ws:proj:m1')
     expect(r.aborted).toBe(true)
-    expect(r.steps[0]).toMatchObject({ step: 'members', ok: false })
+    expect(r.steps.find((s) => s.step === 'members')).toMatchObject({ ok: false })
     expect(stopped).toEqual([])
   })
 
-  test('the guest supplies members the host lost track of', async () => {
+  test('a workspace session runtime holds no members, so it recycles without any', async () => {
     const pool = makePool()
     pool.add('ws:team')
-    pool.guestMembers = ['site']
     const r = await pool.recycle('ws:team')
+    expect(r.aborted).toBe(false)
+    expect(r.steps.find((s) => s.step === 'members')).toBeUndefined()
+    expect(pool.events).toEqual(['repo ws:team'])
+  })
+
+  test('the guest supplies the own member the host lost track of', async () => {
+    const pool = makePool()
+    pool.add('ws:proj:site')
+    pool.guestMembers = ['site']
+    const r = await pool.recycle('ws:proj:site')
     expect(r.aborted).toBe(false)
     expect(pool.events).toContain('source site')
     expect(pool.events).toContain('data site')

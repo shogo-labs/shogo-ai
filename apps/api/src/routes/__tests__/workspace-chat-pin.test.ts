@@ -10,7 +10,7 @@
  *   bun test ./apps/api/src/routes/__tests__/workspace-chat-pin.test.ts
  */
 
-import { beforeEach, describe, expect, mock, test } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
 
 const store = {
   contextId: null as string | null,
@@ -211,5 +211,45 @@ describe('POST /api/workspaces/:workspaceId/sessions/:sessionId/projects', () =>
     await post('/workspaces/ws-1/sessions/sess-1/projects', { projectId: 'p1', pinAsAnchor: true })
     expect(store.unpinCalls).toEqual([])
     expect(store.contextId).toBe('p1')
+  })
+})
+
+describe('on metal, session attachments are records only', () => {
+  const saved = process.env.SHOGO_METAL_ENABLED
+
+  beforeEach(() => {
+    process.env.SHOGO_METAL_ENABLED = 'true'
+  })
+
+  afterEach(() => {
+    if (saved === undefined) delete process.env.SHOGO_METAL_ENABLED
+    else process.env.SHOGO_METAL_ENABLED = saved
+  })
+
+  test('attach records the project without restarting or resolving any runtime', async () => {
+    const res = await post('/workspaces/ws-1/sessions/sess-1/projects', { projectId: 'p1' })
+    expect(res.status).toBe(201)
+    expect(store.attached.map((a) => a.projectId)).toEqual(['p1'])
+    expect(store.stopCalls).toEqual([])
+    expect(store.stopWorkspaceCalls).toEqual([])
+    expect(store.resolveCalls).toEqual([])
+  })
+
+  test('detach removes the record without restarting any runtime', async () => {
+    store.attached = [{ id: 'csp-p1', projectId: 'p1', attachMode: 'readwrite' }]
+    const res = await buildApp().fetch(
+      new Request('http://x/api/workspaces/ws-1/sessions/sess-1/projects/p1', { method: 'DELETE' }),
+    )
+    expect(res.status).toBe(200)
+    expect(store.detachCalls).toEqual([['sess-1', 'p1']])
+    expect(store.stopWorkspaceCalls).toEqual([])
+    expect(store.resolveCalls).toEqual([])
+  })
+
+  test('prewarm of a session runtime passes no members', async () => {
+    store.attached = [{ id: 'csp-p1', projectId: 'p1', attachMode: 'readwrite' }]
+    const res = await post('/workspaces/ws-1/runtime/prewarm', { sessionId: 'sess-1' })
+    expect(res.status).toBe(202)
+    expect(store.resolveCalls[0].attachedProjectIds).toEqual([])
   })
 })

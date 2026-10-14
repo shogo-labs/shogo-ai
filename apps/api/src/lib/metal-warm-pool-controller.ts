@@ -461,6 +461,22 @@ export class NoMetalHostError extends Error {
   }
 }
 
+/** A live mount of a project into a runtime other than its own `ws:proj:<id>`. */
+export class ForeignMemberMountError extends Error {
+  readonly code = 'mounting_removed'
+  constructor(readonly runtimeKey: string, readonly projectId: string) {
+    super(`refusing to mount project ${projectId} into ${runtimeKey}: projects are only online in their own runtime`)
+    this.name = 'ForeignMemberMountError'
+  }
+}
+
+export interface MetalHostDrainReport {
+  hostId: string
+  ok: boolean
+  results?: Array<{ runtimeKey: string; projectId: string; outcome: string; detail?: string }>
+  error?: string
+}
+
 interface AssignResult {
   url: string
   mode?: 'assigned' | 'resumed'
@@ -741,13 +757,19 @@ export class MetalWarmPoolController {
     // differ even when the projects share a workspace, so they must never
     // share the workspace-session VM/cache/placement key.
     const key = workspaceRuntimeKey(workspaceId, opts.anchorProjectId)
+    // A project is online only in its own runtime: the member set is the
+    // anchor alone (or nothing for a workspace-session runtime).
+    const members = opts.anchorProjectId ? [opts.anchorProjectId] : []
+    if (attachedProjectIds.some((id) => !members.includes(id))) {
+      console.warn(`[MetalPool] ${key}: ignoring foreign members ${attachedProjectIds.filter((id) => !members.includes(id)).join(',')}`)
+    }
     return this.resolveRuntime(key, () =>
-      buildWorkspaceEnv(workspaceId, attachedProjectIds, {
+      buildWorkspaceEnv(workspaceId, members, {
         forMetal: true,
         anchorProjectId: opts.anchorProjectId,
-        readonlyProjectIds: opts.readonlyProjectIds,
+        readonlyProjectIds: [],
       }),
-      { workspaceId, attachedProjectIds, anchorProjectId: opts.anchorProjectId },
+      { workspaceId, attachedProjectIds: members, anchorProjectId: opts.anchorProjectId },
     )
   }
 
@@ -763,15 +785,16 @@ export class MetalWarmPoolController {
     destDir: string,
   ): Promise<Record<string, unknown>> {
     const runtimeKey = `ws:${workspaceId}`
+    if (action === 'mount') {
+      // `ws:<workspaceId>` owns no project, so every mount into it is foreign.
+      throw new ForeignMemberMountError(runtimeKey, projectId)
+    }
     const hostId = this.projectHost.get(runtimeKey)
     const host = hostId ? this.hosts.get(hostId) : undefined
     if (!host) throw new Error(`No Metal host placement for workspace ${workspaceId}`)
-    const path =
-      action === 'mount'
-        ? `/runtimes/${encodeURIComponent(runtimeKey)}/members`
-        : `/runtimes/${encodeURIComponent(runtimeKey)}/members/${encodeURIComponent(projectId)}`
+    const path = `/runtimes/${encodeURIComponent(runtimeKey)}/members/${encodeURIComponent(projectId)}`
     const response = await this.fetchImpl(`http://${host.meshIp}:${host.agentPort}${path}`, {
-      method: action === 'mount' ? 'POST' : 'DELETE',
+      method: 'DELETE',
       headers: this.agentHeaders(),
       body: JSON.stringify({ projectId, destDir }),
       signal: AbortSignal.timeout(10 * 60_000),
@@ -1442,6 +1465,59 @@ export class MetalWarmPoolController {
       }),
     )
     return out
+  }
+
+  /**
+   * Which runtimes on the fleet currently hold `projectId` as a mounted
+   * member. A host that does not answer is skipped.
+   */
+  async memberHolders(projectId: string): Promise<Array<{ hostId: string; runtimeKey: string }>> {
+    const hosts = await this.liveHostsShared()
+    const out: Array<{ hostId: string; runtimeKey: string }> = []
+    await Promise.all(
+      hosts.map(async (h) => {
+        try {
+          const res = await this.fetchImpl(`http://${h.meshIp}:${h.agentPort}/members/holders`, {
+            method: 'POST',
+            headers: this.agentHeaders(),
+            body: JSON.stringify({ projectId }),
+            signal: AbortSignal.timeout(5000),
+          })
+          if (!res.ok) return
+          const body = (await res.json()) as { hostId?: string; holders?: string[] }
+          for (const runtimeKey of body.holders ?? []) out.push({ hostId: body.hostId ?? h.hostId, runtimeKey })
+        } catch {
+          /* skip a host that didn't answer */
+        }
+      }),
+    )
+    return out
+  }
+
+  /** Ask every live host to unmount members that are not the runtime's own project. */
+  async drainForeignMembers(): Promise<MetalHostDrainReport[]> {
+    const hosts = await this.liveHostsShared()
+    return Promise.all(
+      hosts.map(async (h): Promise<MetalHostDrainReport> => {
+        try {
+          const res = await this.fetchImpl(`http://${h.meshIp}:${h.agentPort}/drain-foreign-members`, {
+            method: 'POST',
+            headers: this.agentHeaders(),
+            body: '{}',
+            signal: AbortSignal.timeout(10 * 60_000),
+          })
+          const body = (await res.json().catch(() => ({}))) as {
+            hostId?: string
+            results?: MetalHostDrainReport['results']
+            error?: string
+          }
+          if (!res.ok) return { hostId: body.hostId ?? h.hostId, ok: false, error: body.error ?? `HTTP ${res.status}` }
+          return { hostId: body.hostId ?? h.hostId, ok: true, results: body.results ?? [] }
+        } catch (err) {
+          return { hostId: h.hostId, ok: false, error: (err as any)?.message ?? String(err) }
+        }
+      }),
+    )
   }
 
   private async assignOnHost(

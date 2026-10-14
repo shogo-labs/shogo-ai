@@ -30,6 +30,7 @@
 
 import { existsSync } from 'fs'
 import { join } from 'path'
+import { isMetalRuntime, remoteProjectsGuidance } from './remote-tools'
 
 export type WorkingMode = 'managed' | 'external'
 
@@ -306,12 +307,17 @@ export function renderWorkspaceManifestMarkdown(
     mounts.filter((m) => m.kind === 'external').map((m) => [m.projectId, m.path] as const),
   )
   const folderMounts = mounts.filter((m) => m.kind === 'folder')
+  const metal = isMetalRuntime()
   const lines: string[] = [
     '# Workspace',
     '',
     `This is a **multi-project workspace** runtime (workspace \`${workspaceId}\`).`,
-    'Each top-level UUID-named folder below is a separate project you can',
-    'read and edit. Treat them as sibling repos under one root.',
+    ...(metal
+      ? ['The folder below is the current project.', remoteProjectsGuidance()]
+      : [
+          'Each top-level UUID-named folder below is a separate project you can',
+          'read and edit. Treat them as sibling repos under one root.',
+        ]),
     '',
   ]
   lines.push(...renderCurrentProjectSection(anchorProjectId, projects))
@@ -349,7 +355,9 @@ export function renderWorkspaceManifestMarkdown(
   lines.push('## Available projects')
   lines.push('')
   lines.push(
-    'Projects below are available but not necessarily mounted. Use the `list_projects` tool to refresh this catalog, and use `mount_project` only when you need to inspect or change a project.',
+    metal
+      ? 'Use the `list_projects` tool to see the other projects of this workspace, and reach one with `connect_project` and the `project` parameter.'
+      : 'Projects below are available but not necessarily mounted. Use the `list_projects` tool to refresh this catalog, and use `mount_project` only when you need to inspect or change a project.',
   )
   lines.push('')
   lines.push(

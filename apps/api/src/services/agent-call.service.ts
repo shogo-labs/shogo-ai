@@ -304,6 +304,73 @@ async function startTrackedCall(
   }
 }
 
+export interface RemoteToolRequest {
+  tool: string
+  args: Record<string, unknown>
+  callerProjectId?: string
+  /** Signed requester ticket for the target, so its tool can act as the person behind the call. */
+  requesterTicket?: string
+  timeoutMs?: number
+}
+
+/**
+ * Run one tool on the target project's own runtime (`/agent/remote/tool`).
+ * Resolving here is what brings the target online: it wakes `ws:proj:<id>`
+ * and never mounts the project anywhere else. Never throws.
+ */
+export async function callProjectRemoteTool(
+  c: Context,
+  projectId: string,
+  workspaceId: string,
+  req: RemoteToolRequest,
+): Promise<AgentCallOutcome> {
+  const timeoutMs = Math.min(Math.max(req.timeoutMs ?? 5 * 60_000, 10_000), 20 * 60_000)
+  let runtimeUrl: string
+  try {
+    const overridden = runtimeUrlOverride ? await runtimeUrlOverride(projectId) : null
+    if (overridden) {
+      runtimeUrl = overridden
+    } else {
+      const { resolveProjectPodUrl } = await import('../lib/resolve-pod-url')
+      runtimeUrl = (await resolveProjectPodUrl(projectId, { logTag: 'RemoteTool' })).url
+    }
+  } catch (err: any) {
+    const { WorkspaceCapacityError, describeCapacityRefusal } = await import('../lib/workspace-compute-budget')
+    if (err instanceof WorkspaceCapacityError) {
+      const described = await describeCapacityRefusal(err).catch(() => null)
+      return {
+        status: 409,
+        body: {
+          error: 'workspace_capacity',
+          message:
+            described?.message ??
+            'Your workspace is out of room for running projects. Stop a project or upgrade your instance size.',
+          capacity: described,
+        },
+      }
+    }
+    console.warn(`[RemoteTool] could not resolve runtime for ${projectId}: ${err?.message ?? err}`)
+    return {
+      status: 502,
+      body: { error: { code: 'target_unavailable', message: `Project ${projectId} runtime is unavailable: ${err?.message ?? err}` } },
+    }
+  }
+
+  return forwardToProjectRuntime(
+    c,
+    projectId,
+    workspaceId,
+    '/agent/remote/tool',
+    JSON.stringify({ tool: req.tool, args: req.args, callerProjectId: req.callerProjectId }),
+    {
+      runtimeUrl,
+      timeoutMs,
+      ...(req.requesterTicket ? { headers: { 'X-Requester-Ticket': req.requesterTicket } } : {}),
+      timeoutMessage: `The target project did not finish ${req.tool} within ${Math.round(timeoutMs / 1000)}s.`,
+    },
+  )
+}
+
 let runtimeUrlOverride: ((projectId: string) => Promise<string | null> | string | null) | null = null
 
 /** Test seam: resolve project runtime URLs directly (null falls through to the real resolver). */
@@ -323,7 +390,13 @@ export async function forwardToProjectRuntime(
   workspaceId: string,
   agentPath: string,
   forwardBody: string,
-  opts: { timeoutMs: number; timeoutMessage?: string; headers?: Record<string, string> },
+  opts: {
+    timeoutMs: number
+    timeoutMessage?: string
+    headers?: Record<string, string>
+    /** Already-resolved runtime URL; skips the resolver below. */
+    runtimeUrl?: string
+  },
 ): Promise<AgentCallOutcome> {
   const extraHeaders = opts.headers ?? {}
   try {
@@ -331,7 +404,7 @@ export async function forwardToProjectRuntime(
     const runtimeToken = await deriveProjectRuntimeToken(projectId, { workspaceId })
 
     let runtimeUrl: string
-    const overridden = runtimeUrlOverride ? await runtimeUrlOverride(projectId) : null
+    const overridden = opts.runtimeUrl ?? (runtimeUrlOverride ? await runtimeUrlOverride(projectId) : null)
     if (overridden) {
       runtimeUrl = overridden
     } else if (process.env.SHOGO_LOCAL_MODE === 'true') {

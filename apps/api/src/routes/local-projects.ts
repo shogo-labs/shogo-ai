@@ -33,6 +33,7 @@ import { cpSync } from 'fs'
 import { dirname, isAbsolute, join, resolve, sep } from 'path'
 import os from 'os'
 import { prisma } from '../lib/prisma'
+import { isMetalEnabled } from '../lib/metal-eligibility'
 import { parseProjectSettings } from '../lib/project-settings'
 import {
   attachProjectToProject,
@@ -141,6 +142,15 @@ async function restartAnchorRuntime(anchorProjectId: string, hint: string): Prom
         `[local-projects] anchor restart (${hint}) for ${anchorProjectId} failed: ${err?.message ?? err}`,
       )
     })
+}
+
+/**
+ * Metal never mounts attached projects into the anchor runtime (each project
+ * is online only in its own `ws:proj:<id>`), so attaching there is a durable
+ * record only and must not restart the anchor.
+ */
+function attachmentsMount(): boolean {
+  return process.env.SHOGO_LOCAL_MODE === 'true' || !isMetalEnabled()
 }
 
 function restartAnchorRuntimeBackground(anchorProjectId: string, hint: string): void {
@@ -1294,6 +1304,7 @@ export function localProjectsRoutes(): Hono {
 
     try {
       const attachment = await attachProjectToProject(projectId, attachedProjectId, attachMode)
+      if (!attachmentsMount()) return c.json({ attachment, mounted: false }, 201)
       restartAnchorRuntimeBackground(projectId, 'attach')
       return c.json({ attachment }, 201)
     } catch (err) {
@@ -1312,7 +1323,7 @@ export function localProjectsRoutes(): Hono {
     const attachedProjectId = c.req.param('attachedProjectId')
 
     const removed = await detachProjectFromProject(projectId, attachedProjectId)
-    if (removed) restartAnchorRuntimeBackground(projectId, 'detach')
+    if (removed && attachmentsMount()) restartAnchorRuntimeBackground(projectId, 'detach')
     return c.json({ ok: true, removed })
   })
 

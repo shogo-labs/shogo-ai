@@ -140,6 +140,17 @@ export async function buildWorkspaceEnv(
   if (!workspaceId) {
     throw new Error('[buildWorkspaceEnv] workspaceId is required')
   }
+  // Metal: a runtime only ever mounts its own anchor project. Other workspace
+  // projects stay visible via WORKSPACE_AVAILABLE_PROJECTS and are reached
+  // through the remote-tool channel.
+  if (opts.forMetal) {
+    const dropped = attachedProjectIds.filter((id) => id !== opts.anchorProjectId)
+    if (dropped.length > 0) {
+      console.warn(`[${prefix}] metal workspace ${workspaceId}: not mounting foreign members ${dropped.join(',')}`)
+    }
+    attachedProjectIds = opts.anchorProjectId ? [opts.anchorProjectId] : []
+    opts = { ...opts, readonlyProjectIds: [] }
+  }
 
   const env: Record<string, string> = {
     WORKSPACE_ID: workspaceId,

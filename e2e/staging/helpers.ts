@@ -532,6 +532,36 @@ export async function runtimeFaultViaApi(
   return { ok: res.ok() && body?.ok === true, body }
 }
 
+export interface RuntimeHolder {
+  hostId: string
+  runtimeKey: string
+}
+
+/**
+ * Every runtime across the fleet that currently holds `projectId`
+ * (`GET /api/internal/e2e/runtime-holders`). On metal a project is online only
+ * in its own runtime, so a healthy answer is exactly `ws:proj:<projectId>`.
+ * Returns null when the backdoor is unavailable (no secret, or the endpoint is
+ * disabled / not deployed) — callers should `test.skip` in that case.
+ */
+export async function runtimeHoldersViaApi(
+  page: Page,
+  projectId: string,
+): Promise<{ projectId: string; holders: RuntimeHolder[] } | null> {
+  const secret = process.env.SHOGO_E2E_BOOTSTRAP_SECRET
+  if (!secret) return null
+  const res = await page.request
+    .get(`${bootstrapApiBase()}/api/internal/e2e/runtime-holders`, {
+      headers: { "x-e2e-bootstrap-secret": secret },
+      params: { projectId },
+      timeout: 30_000,
+    })
+    .catch(() => null)
+  if (!res || [401, 404, 503].includes(res.status())) return null
+  if (!res.ok()) throw new Error(`runtime-holders failed: HTTP ${res.status()} ${await res.text().catch(() => "")}`)
+  return (await res.json()) as { projectId: string; holders: RuntimeHolder[] }
+}
+
 export async function suspendRuntimeViaApi(page: Page, projectId: string): Promise<boolean> {
   const secret = process.env.SHOGO_E2E_BOOTSTRAP_SECRET
   const base = bootstrapApiBase()

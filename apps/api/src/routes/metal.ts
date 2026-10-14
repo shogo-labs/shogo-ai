@@ -287,6 +287,29 @@ export function metalE2eRoutes(): Hono {
     }
   })
 
+  // GET /api/internal/e2e/runtime-holders?projectId= — which runtimes on the
+  // fleet currently hold the project as a mounted member.
+  app.get('/runtime-holders', async (c) => {
+    const prod = process.env.NODE_ENV === 'production'
+    const enabled = !prod || process.env.SHOGO_E2E_BOOTSTRAP_ENABLED === '1'
+    if (!enabled) {
+      return c.json({ ok: false, error: 'e2e_bootstrap_disabled' }, 503)
+    }
+    const expected = process.env.SHOGO_E2E_BOOTSTRAP_SECRET
+    if (!expected || c.req.header('x-e2e-bootstrap-secret') !== expected) {
+      return c.json({ ok: false, error: 'unauthorized' }, 401)
+    }
+    const projectId = c.req.query('projectId')?.trim()
+    if (!projectId) return c.json({ ok: false, error: 'projectId_required' }, 400)
+    try {
+      const holders = await getMetalWarmPoolController().memberHolders(projectId)
+      return c.json({ projectId, holders })
+    } catch (err: any) {
+      console.error('[e2e-bootstrap] runtime-holders failed', err)
+      return c.json({ ok: false, error: 'holders_failed', message: err?.message ?? 'unknown' }, 500)
+    }
+  })
+
   return app
 }
 

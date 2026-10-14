@@ -6172,6 +6172,20 @@ app.post('/api/admin/metal/rewarm/:action', async (c) => {
   }
 })
 
+// POST /api/admin/metal/drain-foreign-members — unmount every project that is
+// mounted into a runtime other than its own `ws:proj:<id>`, on every live host.
+// Returns { ok, hosts: [{ hostId, ok, results?, error? }] }.
+app.post('/api/admin/metal/drain-foreign-members', async (c) => {
+  try {
+    const { getMetalWarmPoolController } = await import('./lib/metal-warm-pool-controller')
+    const hosts = await getMetalWarmPoolController().drainForeignMembers()
+    console.log(`[admin-audit] ${JSON.stringify({ event: 'admin.metal.drain_foreign_members', actorId: rewarmActor(c).id, actorEmail: rewarmActor(c).email, hosts: hosts.length })}`)
+    return c.json({ ok: hosts.every((h) => h.ok), hosts })
+  } catch (err: any) {
+    return c.json({ ok: false, error: err?.message ?? 'drain failed' }, 500)
+  }
+})
+
 // POST /api/admin/runtimes/recycle — restart a stuck runtime from a clean cold
 // boot without touching code, schema, database or data. Body:
 // { projectId?, workspaceId?, force?, reason?, coldBoot? }. See

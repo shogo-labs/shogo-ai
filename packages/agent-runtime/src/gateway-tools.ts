@@ -16,7 +16,17 @@ import { join, resolve, extname, dirname, relative, sep } from 'path'
 import { execSync } from '@shogo/shared-runtime/child-process'
 import { fileURLToPath } from 'node:url'
 import { isProtectedFile, PROTECTED_FILE_REJECTION } from './protected-files'
-import { createProjectTools } from './project-tools'
+import { createProjectTools, resolveProjectRef } from './project-tools'
+import {
+  REMOTE_READONLY_TOOLS,
+  REMOTE_TOOL_ALLOWLIST,
+  RemoteToolError,
+  callRemoteTool,
+  currentRuntimeProjectId,
+  isMetalRuntime,
+  isRemotableTool,
+  remoteProjectsGuidance,
+} from './remote-tools'
 import { availableModelsHint, isAvailableModel } from './available-models'
 import { createWorkspaceAgentTools } from './workspace-agent-tools'
 import { createTriggerTools } from './trigger-tools'
@@ -605,12 +615,16 @@ async function mountWorkspaceProject(
 }
 
 function createListProjectsTool(ctx: ToolContext): AgentTool {
+  const metal = isMetalRuntime()
   return {
     name: 'list_projects',
     label: 'List Projects',
-    description:
-      'List the projects you can access in this Shogo workspace and show which ones are currently mounted. ' +
-      'Use this before mounting when the request names a project ambiguously or asks about project availability.',
+    description: metal
+      ? 'List the projects you can access in this Shogo workspace. Other projects are not mounted here; ' +
+        'reach one with `connect_project` and the `project` parameter of the file and shell tools. ' +
+        'Use this when the request names a project ambiguously or asks about project availability.'
+      : 'List the projects you can access in this Shogo workspace and show which ones are currently mounted. ' +
+        'Use this before mounting when the request names a project ambiguously or asks about project availability.',
     parameters: Type.Object({}),
     execute: async () => {
       if (!workspaceMetaToolEnabled(ctx))
@@ -622,17 +636,22 @@ function createListProjectsTool(ctx: ToolContext): AgentTool {
         ...(ctx.userId ? { userId: ctx.userId } : {}),
         ...(ctx.sessionId ? { sessionId: ctx.sessionId } : {}),
       })
-      return textResult(await workspaceMetaFetch(ctx, `/api/internal/workspaces/${encodeURIComponent(workspaceId!)}/projects?${qs}`))
+      const result = await workspaceMetaFetch(ctx, `/api/internal/workspaces/${encodeURIComponent(workspaceId!)}/projects?${qs}`)
+      if (!metal || !result || typeof result !== 'object' || Array.isArray(result)) return textResult(result)
+      return textResult({ ...result, remoteAccess: remoteProjectsGuidance() })
     },
   }
 }
 
 function createMountProjectTool(ctx: ToolContext): AgentTool {
+  const metal = isMetalRuntime()
   return {
     name: 'mount_project',
     label: 'Mount Project',
-    description:
-      'Mount one available Shogo project into the workspace runtime. Mount read-only when you only need to inspect it; use readwrite when the user asks for edits or commands.',
+    description: metal
+      ? 'Connect to another Shogo project of this workspace (same as connect_project). Projects are not mounted on this runtime; ' +
+        'after connecting, pass `project` to the file and shell tools to work inside it.'
+      : 'Mount one available Shogo project into the workspace runtime. Mount read-only when you only need to inspect it; use readwrite when the user asks for edits or commands.',
     parameters: Type.Object({
       projectId: Type.String({
         description: 'The exact project id returned by list_projects.',
@@ -640,6 +659,7 @@ function createMountProjectTool(ctx: ToolContext): AgentTool {
       mode: Type.Optional(Type.Union([Type.Literal('readwrite'), Type.Literal('readonly')])),
     }),
     execute: async (_toolCallId, params: any) => {
+      if (metal) return connectRemoteProject(ctx, String(params?.projectId ?? ''))
       if (!workspaceMetaToolEnabled(ctx))
         return textResult({
           error: 'This tool is only available in a workspace runtime.',
@@ -652,15 +672,24 @@ function createMountProjectTool(ctx: ToolContext): AgentTool {
 }
 
 function createUnmountProjectTool(ctx: ToolContext): AgentTool {
+  const metal = isMetalRuntime()
   return {
     name: 'unmount_project',
     label: 'Unmount Project',
-    description:
-      'Unmount a project from the workspace runtime after work is complete or when switching away. Never unmount a project that is needed for the current follow-up.',
+    description: metal
+      ? 'No-op on this runtime: other projects are reached remotely with the `project` parameter, never mounted, so there is nothing to unmount.'
+      : 'Unmount a project from the workspace runtime after work is complete or when switching away. Never unmount a project that is needed for the current follow-up.',
     parameters: Type.Object({
       projectId: Type.String({ description: 'The exact mounted project id.' }),
     }),
     execute: async (_toolCallId, params: any) => {
+      if (metal) {
+        return textResult({
+          ok: true,
+          projectId: params?.projectId,
+          message: 'Nothing to unmount: other projects are reached remotely with the `project` parameter, not mounted here.',
+        })
+      }
       if (!workspaceMetaToolEnabled(ctx))
         return textResult({
           error: 'This tool is only available in a workspace runtime.',
@@ -681,6 +710,147 @@ function createUnmountProjectTool(ctx: ToolContext): AgentTool {
         ),
       )
     },
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Remote tool channel (remote-tools.ts): `project` on the remotable tools
+// ---------------------------------------------------------------------------
+
+const REMOTE_PROJECT_PARAM_DESCRIPTION =
+  'Run this tool in another project of this workspace (project id or name). Omit for the current project.'
+
+type RemoteTarget = { local: true } | { local: false; id: string; name: string } | { error: string; code: string }
+
+const REMOTE_TARGET_TTL_MS = 60_000
+const remoteTargetCache = new Map<string, { target: RemoteTarget; expiresAt: number }>()
+
+/** Test seam: forget resolved project references. */
+export function resetRemoteTargetCache(): void {
+  remoteTargetCache.clear()
+}
+
+/**
+ * Where a `project` argument points: the current project (by id, or by name
+ * once resolved through the workspace graph, the same lookup project_call
+ * uses) runs locally; any other project goes over the remote channel.
+ */
+async function resolveRemoteTarget(ctx: ToolContext, ref: string): Promise<RemoteTarget> {
+  const trimmed = ref.trim()
+  const self = currentRuntimeProjectId(ctx.projectId)
+  const isSelf = (id: string) => id === self || id === ctx.projectId
+  if (!trimmed || isSelf(trimmed)) return { local: true }
+  const key = `${resolveWorkspaceId(ctx) ?? ''}:${trimmed}`
+  const hit = remoteTargetCache.get(key)
+  if (hit && hit.expiresAt > Date.now()) return hit.target
+  const resolved = await resolveProjectRef(ctx, trimmed)
+  if ('error' in resolved) return resolved
+  const target: RemoteTarget = isSelf(resolved.id) ? { local: true } : { local: false, id: resolved.id, name: resolved.name }
+  remoteTargetCache.set(key, { target, expiresAt: Date.now() + REMOTE_TARGET_TTL_MS })
+  return target
+}
+
+function remoteFailure(err: unknown, project: { id: string; name: string }): AgentToolResult<any> {
+  const message = err instanceof Error ? err.message : String(err)
+  const code = err instanceof RemoteToolError ? err.code : undefined
+  const status = err instanceof RemoteToolError ? err.status : undefined
+  return textResult({
+    error: message,
+    ...(code ? { code } : {}),
+    ...(status ? { status } : {}),
+    project,
+    ...(code === 'tool_not_remotable' || status === 403
+      ? { hint: 'The requester may only have read access to that project, or the tool cannot run remotely.' }
+      : {}),
+  })
+}
+
+/**
+ * Add the optional `project` parameter to a remotable tool. Without it the
+ * tool runs exactly as before; with another project it runs in that
+ * project's own runtime and returns that runtime's result.
+ */
+export function withRemoteProject(tool: AgentTool, ctx: ToolContext): AgentTool {
+  if (!isRemotableTool(tool.name)) return tool
+  const base = tool.parameters as unknown as { properties?: Record<string, any> }
+  return {
+    ...tool,
+    parameters: Type.Object({
+      ...(base.properties ?? {}),
+      project: Type.Optional(Type.String({ description: REMOTE_PROJECT_PARAM_DESCRIPTION })),
+    }),
+    execute: async (toolCallId, params, signal, onUpdate) => {
+      const project = (params as Record<string, unknown> | undefined)?.project
+      if (project === undefined || project === null) return tool.execute(toolCallId, params, signal, onUpdate)
+      const { project: _project, ...args } = params as Record<string, unknown>
+      if (typeof project !== 'string') return textResult({ error: '`project` must be a project id or name.' })
+      const target = await resolveRemoteTarget(ctx, project)
+      if ('error' in target) return textResult({ error: target.error, code: target.code })
+      if (target.local) return tool.execute(toolCallId, args as any, signal, onUpdate)
+      try {
+        return await callRemoteTool(target.id, tool.name, args)
+      } catch (err) {
+        return remoteFailure(err, { id: target.id, name: target.name })
+      }
+    },
+  }
+}
+
+const REMOTE_WAKE_COMMAND = 'pwd && ls -la'
+
+async function connectRemoteProject(ctx: ToolContext, ref: string): Promise<AgentToolResult<any>> {
+  if (!ref.trim()) return textResult({ error: 'project is required' })
+  const target = await resolveRemoteTarget(ctx, ref)
+  if ('error' in target) return textResult({ error: target.error, code: target.code })
+  const toolList = REMOTE_TOOL_ALLOWLIST.join(', ')
+  if (target.local) {
+    return textResult({
+      ok: true,
+      current: true,
+      message: 'That is the current project; its tools already run here, so omit `project`.',
+    })
+  }
+  const project = { id: target.id, name: target.name }
+  let readOnly = false
+  let listing: string | undefined
+  try {
+    const result = await callRemoteTool(target.id, 'exec', { command: REMOTE_WAKE_COMMAND })
+    const details = result.details as { stdout?: string } | undefined
+    listing = typeof details?.stdout === 'string' ? details.stdout : undefined
+  } catch (err) {
+    if (!(err instanceof RemoteToolError) || err.status !== 403) return remoteFailure(err, project)
+    // Read-only access: exec is refused, but a read-only tool still wakes it.
+    try {
+      await callRemoteTool(target.id, 'exec_list', {})
+      readOnly = true
+    } catch (inner) {
+      return remoteFailure(inner, project)
+    }
+  }
+  const tools = readOnly ? REMOTE_READONLY_TOOLS.join(', ') : toolList
+  const text = [
+    `Connected to project "${target.name}" (${target.id}); it is reachable${readOnly ? ' (read-only)' : ''}.`,
+    `Pass \`project: "${target.id}"\` to ${tools} to run them inside it. Paths are relative to its root, and each remote exec starts at that root.`,
+    ...(listing ? ['', listing] : []),
+  ].join('\n')
+  return {
+    content: [{ type: 'text', text }],
+    details: { ok: true, project, reachable: true, readOnly, tools: readOnly ? [...REMOTE_READONLY_TOOLS] : [...REMOTE_TOOL_ALLOWLIST] },
+  }
+}
+
+function createConnectProjectTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'connect_project',
+    label: 'Connect Project',
+    description:
+      'Connect to another project of this workspace so you can work in it. Wakes its runtime, checks that it is reachable, ' +
+      `and lists the tools that accept a \`project\` parameter (${REMOTE_TOOL_ALLOWLIST.join(', ')}). ` +
+      "Use project_call instead to hand a task to that project's agent.",
+    parameters: Type.Object({
+      project: Type.String({ description: 'Project id or exact name (see project_list / list_projects).' }),
+    }),
+    execute: async (_toolCallId, params: any) => connectRemoteProject(ctx, String(params?.project ?? '')),
   }
 }
 
@@ -7877,24 +8047,27 @@ function createSocialMediaTool(ctx: ToolContext): AgentTool {
 export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTool[] {
   const pe = ctx.permissionEngine
   const g = (tool: AgentTool, cat: import('./types').PermissionCategory) => applyPermissionGate(tool, cat, pe)
+  // Inside the gate, so this runtime's permission rules also cover calls it
+  // sends to another project.
+  const r = (tool: AgentTool) => withRemoteProject(tool, ctx)
 
   const tools: AgentTool[] = [
-    g(createExecTool(ctx), 'shell'),
-    g(createExecWaitTool(ctx), 'shell'),
-    g(createExecListTool(ctx), 'shell'),
+    g(r(createExecTool(ctx)), 'shell'),
+    g(r(createExecWaitTool(ctx)), 'shell'),
+    g(r(createExecListTool(ctx)), 'shell'),
     g(createGitHubPullRequestTool(ctx), 'network'),
     g(createGitHubMergePullRequestTool(ctx), 'network'),
     g(createGitHubConnectTool(ctx), 'network'),
     createExposePortTool(ctx),
-    g(createReadFileTool(ctx), 'file_read'),
-    g(createWriteFileTool(ctx), 'file_write'),
-    g(createEditFileTool(ctx), 'file_write'),
-    g(createDeleteFileTool(ctx), 'file_delete'),
+    g(r(createReadFileTool(ctx)), 'file_read'),
+    g(r(createWriteFileTool(ctx)), 'file_write'),
+    g(r(createEditFileTool(ctx)), 'file_write'),
+    g(r(createDeleteFileTool(ctx)), 'file_delete'),
     // search is disabled while local indexing is off (reindex-on-query hangs).
     // Re-enable with SHOGO_SEARCH_ENABLED=1 (also pre-warms the index — see gateway.ts start()).
     // isSearchEnabled() is the same gate every prompt/guide uses to decide
     // whether to advertise `search`, so the prompt surface matches registration.
-    ...(isSearchEnabled() ? [g(createSearchTool(ctx), 'file_read')] : []),
+    ...(isSearchEnabled() ? [g(r(createSearchTool(ctx)), 'file_read')] : []),
     g(createImpactRadiusTool(ctx), 'file_read'),
     g(createDetectChangesTool(ctx), 'file_read'),
     g(createReviewContextTool(ctx), 'file_read'),
@@ -7967,6 +8140,7 @@ export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTo
     const projectTools = createProjectTools(ctx)
     tools.push(...projectTools.readonly)
     for (const t of projectTools.mutating) tools.push(g(t, 'project'))
+    tools.push(createConnectProjectTool(ctx))
   }
 
   // Workspace runtimes expose universal profile/goal primitives. Project

@@ -44,6 +44,7 @@
 
 import { describeObject, type ArchiveRef } from './archive-ref'
 import type { MetalConfig } from './config'
+import { conditionalPutObject, type S3Target } from './s3-conditional'
 
 /** A durable source archive plus the S3 ETag that anchors its lineage. */
 export interface WorkspaceArchive {
@@ -105,6 +106,19 @@ export function workspaceS3(cfg: MetalConfig): { client: import('bun').S3Client 
     secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
   })
   return { client }
+}
+
+/**
+ * Signing target for conditional writes, which Bun's S3Client cannot send.
+ * Same bucket and credentials as {@link workspaceS3}.
+ */
+function workspaceS3Target(cfg: MetalConfig): S3Target | null {
+  const bucket = process.env.S3_WORKSPACES_BUCKET || cfg.snapStoreBucket
+  const accessKeyId = process.env.AWS_ACCESS_KEY_ID
+  const secretAccessKey = process.env.AWS_SECRET_ACCESS_KEY
+  if (!bucket || !accessKeyId || !secretAccessKey) return null
+  const endpoint = cfg.s3Endpoint || `https://s3.${cfg.s3Region}.amazonaws.com`
+  return { bucket, accessKeyId, secretAccessKey, endpoint, region: cfg.s3Region }
 }
 
 /** Durable key for a project's source backup — mirrors the Knative s3-sync layout. */
@@ -376,16 +390,41 @@ export async function uploadWorkspaceArchiveGuarded(
     incomingSize: bytes.byteLength,
   })
 
+  // Compare-and-swap against the object the decision was made on: a writer that
+  // raced in between the HEAD above and this PUT must not be overwritten.
+  const writeDurable = async (): Promise<{ etag: string | null } | 'raced'> => {
+    const target = workspaceS3Target(cfg)
+    if (!target) {
+      await s3.client.write(key, bytes, { type: 'application/gzip' })
+      return { etag: await statEtag(file) }
+    }
+    const res = await conditionalPutObject({
+      target,
+      key,
+      body: bytes,
+      contentType: 'application/gzip',
+      precondition: exists && currentEtag ? { ifMatch: currentEtag } : { ifNoneMatch: '*' },
+    })
+    if (res.status === 'precondition-failed' || res.status === 'conflict') return 'raced'
+    return { etag: res.etag ?? (await statEtag(file)) }
+  }
+  const racedQuarantine = async (): Promise<BackupWriteOutcome> => {
+    const qkey = quarantineKey(projectId)
+    await s3.client.write(qkey, bytes, { type: 'application/gzip' })
+    return { status: 'conflict', quarantineKey: qkey, currentEtag, reason: 'lineage' }
+  }
+  const written = async (status: 'created' | 'written' | 'adopted'): Promise<BackupWriteOutcome> => {
+    const res = await writeDurable()
+    return res === 'raced' ? racedQuarantine() : { status, etag: res.etag }
+  }
+
   switch (action) {
     case 'create':
-      await s3.client.write(key, bytes, { type: 'application/gzip' })
-      return { status: 'created', etag: await statEtag(file) }
+      return written('created')
     case 'overwrite':
-      await s3.client.write(key, bytes, { type: 'application/gzip' })
-      return { status: 'written', etag: await statEtag(file) }
+      return written('written')
     case 'adopt':
-      await s3.client.write(key, bytes, { type: 'application/gzip' })
-      return { status: 'adopted', etag: await statEtag(file) }
+      return written('adopted')
     case 'promote': {
       // Keep the placeholder we are about to replace. It should be worthless —
       // that is the whole basis for allowing this write — but "template-shaped"
@@ -395,8 +434,8 @@ export async function uploadWorkspaceArchiveGuarded(
       // taking the object with it.
       const supersededKey = quarantineKey(projectId)
       await s3.client.write(supersededKey, await file.arrayBuffer(), { type: 'application/gzip' })
-      await s3.client.write(key, bytes, { type: 'application/gzip' })
-      return { status: 'promoted', etag: await statEtag(file), supersededKey }
+      const res = await writeDurable()
+      return res === 'raced' ? racedQuarantine() : { status: 'promoted', etag: res.etag, supersededKey }
     }
     case 'quarantine': {
       // The writer either does NOT descend from the current backup, or its

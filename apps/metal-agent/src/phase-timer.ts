@@ -42,5 +42,6 @@ export type StaleReason =
   | 'home'
   | 'member_data'
   | 'member_source'
+  | 'foreign_members'
   | 'resume_error'
   | 'no_snapshot'

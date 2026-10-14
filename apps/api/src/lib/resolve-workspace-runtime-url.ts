@@ -270,12 +270,15 @@ export async function resolveWorkspaceRuntimeUrl(
         return getMetalWarmPoolController().getMetalWorkspaceUrl(id, ids, resolverOpts)
       })
     const leaseKey = opts.anchorProjectId ? `proj:${opts.anchorProjectId}` : workspaceId
+    // On metal a project is online only in its own `ws:proj:<id>` runtime;
+    // other runtimes reach it through the remote-tool channel, never a mount.
+    const metalMembers = opts.anchorProjectId ? [opts.anchorProjectId] : []
     const leaseStartedAt = performance.now()
     const url = await spawnLease(leaseKey, () => {
       spawnLeaseWait.record(performance.now() - leaseStartedAt, { phase: 'api.spawn_lease', mode: 'workspace' })
-      return resolver(workspaceId, attachedProjectIds, {
+      return resolver(workspaceId, metalMembers, {
         anchorProjectId: opts.anchorProjectId,
-        readonlyProjectIds: opts.readonlyProjectIds,
+        readonlyProjectIds: [],
       })
     })
     if (!opts.background) {

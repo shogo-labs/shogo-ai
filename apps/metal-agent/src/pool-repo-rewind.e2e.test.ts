@@ -284,28 +284,39 @@ describe('the host deadline on the repo adopt', () => {
 
 describe('workspace runtimes', () => {
   const ANCHOR = 'ws:proj:m1'
-  const WS_ENV = { ...ENV, WORKSPACE_PROJECT_IDS: 'm1,m2' }
+  const WS_ENV = { ...ENV, WORKSPACE_PROJECT_IDS: 'm1' }
 
-  async function seedWorkspace() {
-    const repo = await repoArchiveOf({ 'm1/App.tsx': 'm1 v1\n', 'm2/App.tsx': 'm2 v3\n' })
+  async function seedWorkspace(sourceAt = T0 + 2 * HOUR) {
+    const repo = await repoArchiveOf({ 'm1/App.tsx': 'm1 v1\n' })
     s3.put(`${ANCHOR}/repo.git.tar.gz`, repo.bytes, T0 + HOUR)
-    const m1Etag = s3.put('m1/project-src.tar.gz', tarOf({ 'App.tsx': 'm1 v2 (newer than the repo)\n' }), T0 + 2 * HOUR)
-    const m2Etag = s3.put('m2/project-src.tar.gz', tarOf({ 'App.tsx': 'm2 v2\n' }), T0)
-    return { repo, m1Etag, m2Etag }
+    const m1Etag = s3.put('m1/project-src.tar.gz', tarOf({ 'App.tsx': 'm1 v2 (newer than the repo)\n' }), sourceAt)
+    return { repo, m1Etag }
   }
 
-  test('only members whose source is newer than the merged repo keep their tree', async () => {
+  test('a member whose source is newer than the merged repo keeps its tree', async () => {
     const guest = newGuest('current')
     const pool = makePool(guest)
-    const { repo, m1Etag, m2Etag } = await seedWorkspace()
+    const { repo, m1Etag } = await seedWorkspace()
 
     const a = await pool.assign(ANCHOR, WS_ENV)
 
     expect(git(guest.ws, 'rev-parse', 'HEAD^')).toBe(repo.sha)
     expect(guest.read('m1/App.tsx')).toBe('m1 v2 (newer than the repo)\n')
-    expect(guest.read('m2/App.tsx')).toBe('m2 v3\n')
     expect(a.memberData?.m1).toMatchObject({ sourceParentEtag: m1Etag, sourceLinked: true })
-    expect(a.memberData?.m2).toMatchObject({ sourceParentEtag: m2Etag, sourceLinked: true })
+  })
+
+  test('a member older than the merged repo is reset to its HEAD, and a legacy foreign member is never hydrated', async () => {
+    const guest = newGuest('current')
+    const pool = makePool(guest)
+    await seedWorkspace(T0)
+    s3.put('m2/project-src.tar.gz', tarOf({ 'App.tsx': 'm2 v2\n' }), T0)
+
+    const a = await pool.assign(ANCHOR, { ...WS_ENV, WORKSPACE_PROJECT_IDS: 'm1,m2' })
+
+    expect(guest.read('m1/App.tsx')).toBe('m1 v1\n')
+    expect(existsSync(join(guest.ws, 'm2'))).toBe(false)
+    expect(a.workspaceMemberIds).toEqual(['m1'])
+    expect(a.memberData?.m2).toBeUndefined()
   })
 
   test('a member backup another writer moved on is quarantined, not overwritten', async () => {
@@ -314,21 +325,20 @@ describe('workspace runtimes', () => {
     await seedWorkspace()
     const a = await pool.assign(ANCHOR, WS_ENV)
 
-    // Another host (or region) holding m2 saves real work meanwhile.
-    s3.put('m2/project-src.tar.gz', tarOf({ 'App.tsx': 'm2 v4 from the other writer\n' }))
+    // Another writer (another host, or a VM from before the single-runtime rule) saves meanwhile.
+    s3.put('m1/project-src.tar.gz', tarOf({ 'App.tsx': 'm1 v4 from the other writer\n' }))
 
     const failed = await (pool as any).saveWorkspaceMembersToStore(a as AssignedVm)
-    expect(failed.map((f: { projectId: string }) => f.projectId)).toEqual(['m2'])
-    expect(untar(s3.body('m1/project-src.tar.gz')!)['App.tsx']).toBe('m1 v2 (newer than the repo)\n')
-    expect(untar(s3.body('m2/project-src.tar.gz')!)['App.tsx']).toBe('m2 v4 from the other writer\n')
-    expect(s3.keys('conflict/m2/')).toHaveLength(1)
+    expect(failed).toEqual([{ projectId: 'm1', reason: 'not promoted (conflict)' }])
+    expect(untar(s3.body('m1/project-src.tar.gz')!)['App.tsx']).toBe('m1 v4 from the other writer\n')
+    expect(s3.keys('conflict/m1/')).toHaveLength(1)
 
-    // m1's lineage moved to its own write, so the next save still descends.
-    expect(await (pool as any).saveWorkspaceMembersToStore(a)).toEqual([{ projectId: 'm2', reason: 'not promoted (conflict)' }])
-    expect(s3.keys('conflict/m1/')).toHaveLength(0)
+    // A quarantine never re-anchors lineage, so the next save is refused too.
+    expect(await (pool as any).saveWorkspaceMembersToStore(a)).toEqual([{ projectId: 'm1', reason: 'not promoted (conflict)' }])
+    expect(s3.keys('conflict/m1/')).toHaveLength(2)
   })
 
-  test("suspend and resume carry each member's source lineage", async () => {
+  test("suspend and resume carry the member's source lineage", async () => {
     const guest = newGuest('current')
     const pool = makePool(guest)
     await seedWorkspace()
@@ -354,18 +364,17 @@ describe('workspace runtimes', () => {
     await (pool as any).saveWorkspaceMembersToStore(a)
     await pool.suspend(ANCHOR)
 
-    s3.put('m2/project-src.tar.gz', tarOf({ 'App.tsx': 'm2 v4 from the other writer\n' }))
+    s3.put('m1/project-src.tar.gz', tarOf({ 'App.tsx': 'm1 v4 from the other writer\n' }))
 
     expect(await pool.resume(ANCHOR, WS_ENV)).toBeNull()
   })
 
-  test('an uncertain adopt distrusts every member, and none of them is overwritten', async () => {
+  test('an uncertain adopt distrusts the member, and it is not overwritten', async () => {
     const guest = newGuest('legacy', { gitReady: false })
     const pool = makePool(guest, { hydrateTimeoutMs: 200, slackMs: 100 })
-    const repo = await repoArchiveOf({ 'm1/App.tsx': 'm1 repo\n', 'm2/App.tsx': 'm2 repo\n' })
+    const repo = await repoArchiveOf({ 'm1/App.tsx': 'm1 repo\n' })
     s3.put(`${ANCHOR}/repo.git.tar.gz`, repo.bytes, T0 + HOUR)
     s3.put('m1/project-src.tar.gz', tarOf({ 'App.tsx': 'm1 src\n' }), T0)
-    s3.put('m2/project-src.tar.gz', tarOf({ 'App.tsx': 'm2 src\n' }), T0)
 
     const a = await pool.assign(ANCHOR, WS_ENV)
     guest.releaseGitLayer()
@@ -373,9 +382,7 @@ describe('workspace runtimes', () => {
     expect(guest.read('m1/App.tsx')).toBe('m1 repo\n')
 
     expect(a.memberData?.m1?.sourceUntrustedReason).toMatch(/did not answer/)
-    expect(a.memberData?.m2?.sourceUntrustedReason).toMatch(/did not answer/)
     await (pool as any).saveWorkspaceMembersToStore(a)
     expect(untar(s3.body('m1/project-src.tar.gz')!)['App.tsx']).toBe('m1 src\n')
-    expect(untar(s3.body('m2/project-src.tar.gz')!)['App.tsx']).toBe('m2 src\n')
   })
 })

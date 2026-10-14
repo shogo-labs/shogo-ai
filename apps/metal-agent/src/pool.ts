@@ -197,6 +197,20 @@ export function repoKeepPaths(sourceTimes: Record<string, number | null>, repoLa
     .sort()
 }
 
+/**
+ * Members a snapshot was stamped with that its runtime may not hold. Such a
+ * snapshot is from before the single-runtime rule and would bring them back
+ * online, so it is never resumed.
+ */
+function foreignStampedMembers(
+  runtimeKey: string,
+  s: Pick<SuspendedVm, 'memberDataEtags' | 'memberSourceEtags'>,
+): string[] {
+  const own = ownMemberIds(runtimeKey)
+  const ids = new Set([...Object.keys(s.memberDataEtags ?? {}), ...Object.keys(s.memberSourceEtags ?? {})])
+  return [...ids].filter((id) => !own.includes(id)).sort()
+}
+
 /** Rebuild per-member lineage from the ETags a snapshot was stamped with. */
 function resumedMemberData(s: Pick<SuspendedVm, 'memberDataEtags' | 'memberSourceEtags'>): Record<string, MemberDataState> | undefined {
   const ids = new Set([...Object.keys(s.memberDataEtags ?? {}), ...Object.keys(s.memberSourceEtags ?? {})])
@@ -519,6 +533,15 @@ export interface RecycleStep {
   detail?: string
 }
 
+/** One foreign member `drainForeignMembers()` took off a workspace VM. */
+export interface ForeignMemberDrainResult {
+  runtimeKey: string
+  projectId: string
+  /** `conflict`: the export was quarantined; `failed`: the member is still mounted. */
+  outcome: 'exported' | 'conflict' | 'empty' | 'failed'
+  detail?: string
+}
+
 /** What `recycle()` did. `aborted` means nothing was removed. */
 export interface RecycleReport {
   runtimeKey: string
@@ -696,6 +719,71 @@ function workspaceMemberIdsFromEnv(env: Record<string, string>): string[] | unde
   return typeof env.WORKSPACE_PROJECT_IDS === 'string'
     ? env.WORKSPACE_PROJECT_IDS.split(',').map((id) => id.trim()).filter(Boolean)
     : undefined
+}
+
+/**
+ * The only projects a runtime may hold online. A project is live in exactly
+ * one VM — its own `ws:proj:<id>` — so that VM's single member is itself, and a
+ * workspace session runtime (`ws:<workspaceId>`) holds none; other runtimes
+ * reach a project through the remote tool channel. Two VMs holding one project
+ * both wrote its backups, and each write made the other's snapshot stale.
+ */
+export function ownMemberIds(runtimeKey: string): string[] {
+  if (runtimeKey.startsWith('ws:proj:')) {
+    const id = runtimeKey.slice('ws:proj:'.length)
+    return id ? [id] : []
+  }
+  return []
+}
+
+/** A mount that would put a project online in a runtime other than its own. */
+export class ForeignMemberError extends Error {
+  constructor(
+    readonly runtimeKey: string,
+    readonly projectId: string,
+  ) {
+    super(
+      `refusing to mount ${projectId} into ${runtimeKey}: a project is only online in its own runtime ` +
+        `(ws:proj:${projectId})`,
+    )
+  }
+}
+
+/** Assign-env keys holding member id lists the pool or guest acts on. */
+const MEMBER_ID_ENV_KEYS = ['WORKSPACE_PROJECT_IDS', 'WORKSPACE_NEW_PROJECT_IDS', 'WORKSPACE_READONLY_PROJECT_IDS'] as const
+
+/**
+ * Drop every member id a `ws:` runtime may not hold from its assign env and
+ * bind. Strips rather than fails so an API replica still sending the old
+ * member lists keeps opening runtimes during a rollout.
+ */
+export function restrictToOwnMembers<B extends { attachedProjectIds?: string[] } | undefined>(
+  runtimeKey: string,
+  env: Record<string, string>,
+  bind?: B,
+): { env: Record<string, string>; bind?: B; foreign: string[] } {
+  if (!runtimeKey.startsWith('ws:')) return { env, bind, foreign: [] }
+  const own = ownMemberIds(runtimeKey)
+  const foreign = new Set<string>()
+  const keep = (ids: string[]) =>
+    ids.filter((id) => {
+      if (own.includes(id)) return true
+      foreign.add(id)
+      return false
+    })
+  let out = env
+  for (const key of MEMBER_ID_ENV_KEYS) {
+    if (typeof env[key] !== 'string') continue
+    const ids = env[key].split(',').map((id) => id.trim()).filter(Boolean)
+    const kept = keep(ids)
+    if (kept.length !== ids.length) out = { ...out, [key]: kept.join(',') }
+  }
+  let outBind = bind
+  if (bind?.attachedProjectIds) {
+    const kept = keep(bind.attachedProjectIds)
+    if (kept.length !== bind.attachedProjectIds.length) outBind = { ...bind, attachedProjectIds: kept }
+  }
+  return { env: out, bind: outBind, foreign: [...foreign] }
 }
 
 /**
@@ -1106,6 +1194,7 @@ export class MetalWarmPool {
         homeParentEtag: e.homeParentEtag,
         homeUntrustedReason: e.homeUntrustedReason,
         memberData: e.memberData,
+        workspaceMemberIds: e.workspaceMemberIds,
         repoParentEtag: e.repoParentEtag,
         repoUntrustedReason: e.repoUntrustedReason,
         sourceUntrustedReason: e.sourceUntrustedReason,
@@ -1170,6 +1259,7 @@ export class MetalWarmPool {
       homeParentEtag: a.homeParentEtag,
       homeUntrustedReason: a.homeUntrustedReason,
       memberData: a.memberData,
+      workspaceMemberIds: a.workspaceMemberIds,
       repoParentEtag: a.repoParentEtag,
       repoUntrustedReason: a.repoUntrustedReason,
       sourceUntrustedReason: a.sourceUntrustedReason,
@@ -1261,16 +1351,36 @@ export class MetalWarmPool {
     console.error(`[pool] guest serial tail (${reason}) project=${a.projectId} vm=${a.handle.id}:\n${tail}`)
   }
 
+  /** {@link restrictToOwnMembers}, logging and counting whatever it had to strip. */
+  private ownMembersOnly<B extends { attachedProjectIds?: string[] } | undefined>(
+    runtimeKey: string,
+    env: Record<string, string>,
+    bind?: B,
+  ): { env: Record<string, string>; bind?: B } {
+    const r = restrictToOwnMembers(runtimeKey, env, bind)
+    if (r.foreign.length) {
+      metrics.inc(M.foreignMembersStripped, r.foreign.length)
+      console.error(
+        `[pool] refusing foreign workspace members for ${runtimeKey}: ${r.foreign.join(',')} ` +
+          `(a project is only online in its own runtime)`,
+      )
+    }
+    return { env: r.env, bind: r.bind }
+  }
+
   /** Mount a project archive into an already-running workspace microVM. */
   async mountWorkspaceMember(
     runtimeKey: string,
     projectId: string,
     destDir: string,
   ): Promise<{ hydrated: boolean }> {
+    if (!ownMemberIds(runtimeKey).includes(projectId)) {
+      metrics.inc(M.foreignMemberMountRefused)
+      throw new ForeignMemberError(runtimeKey, projectId)
+    }
     const assigned = this.assigned.get(runtimeKey)
     if (!assigned) throw new Error(`workspace runtime ${runtimeKey} is not assigned`)
     const env: Record<string, string> = assigned.runtimeToken ? { RUNTIME_AUTH_SECRET: assigned.runtimeToken } : {}
-    await this.flushMembersHeldElsewhere(runtimeKey, [projectId])
     const ref = await this.sourceRef(projectId)
     if (ref) {
       await this.applyArchive(assigned.handle, env, ref, `${projectId} workspace member`, destDir)
@@ -1305,10 +1415,37 @@ export class MetalWarmPool {
   ): Promise<{ exported: boolean }> {
     const assigned = this.assigned.get(runtimeKey)
     if (!assigned) return { exported: false }
+    const r = await this.evictMember(assigned, projectId, destDir)
+    return { exported: r.outcome === 'exported' }
+  }
+
+  /**
+   * Export a member under its lineage, save its writable state, then remove it
+   * from the guest. The guest deletes the member's folder, so a source export
+   * that landed nowhere durable (neither the backup nor a quarantine key)
+   * throws and leaves the member mounted.
+   */
+  private async evictMember(
+    assigned: AssignedVm,
+    projectId: string,
+    destDir: string,
+  ): Promise<{ outcome: 'exported' | 'conflict' | 'empty'; detail?: string }> {
     const bytes = await this.fetchExport(assigned.handle, assigned.runtimeToken, destDir)
-    let exported = false
+    let outcome: 'exported' | 'conflict' | 'empty' = 'empty'
+    let detail: string | undefined
     if (bytes) {
-      exported = (await this.storeMemberSource(assigned, projectId, bytes)).ok
+      const stored = await this.storeMemberSource(assigned, projectId, bytes)
+      if (stored.ok) {
+        outcome = 'exported'
+        detail = stored.outcome.status
+      } else if (stored.outcome.status === 'conflict' && stored.outcome.quarantineKey) {
+        outcome = 'conflict'
+        detail = `quarantined at ${stored.outcome.quarantineKey}`
+      } else {
+        throw new Error(
+          `source export of ${projectId} from ${assigned.projectId} is not durable (${stored.outcome.status}); left mounted`,
+        )
+      }
     }
     const slot = this.memberDataSlot(assigned, projectId, destDir)
     await this.dataFlight
@@ -1316,22 +1453,82 @@ export class MetalWarmPool {
       .catch((err) =>
         console.error(`[pool] writable-state backup for unmounted member ${projectId} failed:`, err?.message ?? err),
       )
-    const response = await fetch(
-      `${assigned.handle.agentUrl}/internal/workspace/members/${encodeURIComponent(projectId)}`,
-      {
-        method: 'DELETE',
-        headers: assigned.runtimeToken ? { 'x-runtime-token': assigned.runtimeToken } : {},
-        signal: AbortSignal.timeout(10_000),
-      },
-    )
-    if (!response.ok) {
-      throw new Error(`workspace member unmount failed (${response.status}): ${await response.text().catch(() => '')}`)
-    }
+    await this.removeGuestMember(assigned, projectId)
     assigned.workspaceMemberIds = (assigned.workspaceMemberIds ?? []).filter((id) => id !== projectId)
     if (assigned.memberData) delete assigned.memberData[projectId]
     this.dataTags.delete(slot.flightKey)
     this.writeLive(assigned)
-    return { exported }
+    return { outcome, detail }
+  }
+
+  /** Unmount a member in the guest, which deletes its folder. `protected` for tests. */
+  protected async removeGuestMember(a: AssignedVm, projectId: string): Promise<void> {
+    const response = await fetch(`${a.handle.agentUrl}/internal/workspace/members/${encodeURIComponent(projectId)}`, {
+      method: 'DELETE',
+      headers: a.runtimeToken ? { 'x-runtime-token': a.runtimeToken } : {},
+      signal: AbortSignal.timeout(10_000),
+    })
+    if (!response.ok) {
+      throw new Error(`workspace member unmount failed (${response.status}): ${await response.text().catch(() => '')}`)
+    }
+  }
+
+  /**
+   * Take every foreign member (see {@link ownMemberIds}) off every running
+   * workspace VM on this host: export it under its lineage (written, or
+   * quarantined on a mismatch), save its writable state, and unmount it. For
+   * VMs that predate the single-runtime rule; new assigns never mount one.
+   */
+  async drainForeignMembers(): Promise<ForeignMemberDrainResult[]> {
+    const results: ForeignMemberDrainResult[] = []
+    for (const a of [...this.assigned.values()]) {
+      if (!a.projectId.startsWith('ws:') || !this.mgr.isRunning(a.handle)) continue
+      // Those drain themselves before their final backups.
+      if (this.suspendFlight.has(a.projectId) || this.recycleFlight.has(a.projectId)) continue
+      results.push(...(await this.drainForeignMembersOf(a)))
+    }
+    return results
+  }
+
+  private async drainForeignMembersOf(a: AssignedVm, listTimeoutMs?: number): Promise<ForeignMemberDrainResult[]> {
+    return this.sourceLock.run(a.projectId, async () => {
+      const own = ownMemberIds(a.projectId)
+      const mounted = (await this.guestMountedMembers(a, listTimeoutMs)) ?? []
+      const foreign = [...new Set([...(a.workspaceMemberIds ?? []), ...mounted])].filter((id) => !own.includes(id))
+      const results: ForeignMemberDrainResult[] = []
+      for (const projectId of foreign) {
+        let r: ForeignMemberDrainResult
+        try {
+          r = { runtimeKey: a.projectId, projectId, ...(await this.evictMember(a, projectId, `/app/workspace/${projectId}`)) }
+        } catch (err: any) {
+          r = { runtimeKey: a.projectId, projectId, outcome: 'failed', detail: err?.message ?? String(err) }
+        }
+        metrics.inc(`${M.foreignMemberDrained}{outcome="${r.outcome}"}`)
+        const line = `[pool] drained foreign member ${projectId} from ${a.projectId}: ${r.outcome}${r.detail ? ` (${r.detail})` : ''}`
+        if (r.outcome === 'failed') console.error(line)
+        else console.log(line)
+        results.push(r)
+      }
+      return results
+    })
+  }
+
+  /**
+   * Runtimes on this host that hold `projectId` online: its own runtime, plus
+   * any workspace VM that tracks or has mounted it. One entry is the invariant.
+   */
+  async memberHolders(projectId: string): Promise<string[]> {
+    const own = `ws:proj:${projectId}`
+    const vms = [...this.assigned.values()]
+    const held = await Promise.all(
+      vms.map(async (a) => {
+        if (a.projectId === own || a.projectId === projectId) return true
+        if (!a.projectId.startsWith('ws:')) return false
+        if (a.workspaceMemberIds?.includes(projectId)) return true
+        return ((await this.guestMountedMembers(a, 3_000)) ?? []).includes(projectId)
+      }),
+    )
+    return vms.filter((_, i) => held[i]).map((a) => a.projectId).sort()
   }
 
   /**
@@ -1345,6 +1542,7 @@ export class MetalWarmPool {
     env: Record<string, string> = {},
     bind?: { workspaceId?: string; attachedProjectIds?: string[] },
   ): Promise<OpenResult> {
+    ;({ env, bind } = this.ownMembersOnly(projectId, env, bind))
     const r = await this.openFlight.run(projectId, async () => {
       const timer = new PhaseTimer()
       const done = (res: Omit<OpenResult, 'phases' | 'totalMs'>): OpenResult => ({
@@ -1473,6 +1671,7 @@ export class MetalWarmPool {
     bind?: { workspaceId?: string; attachedProjectIds?: string[] },
     timer = new PhaseTimer(),
   ): Promise<AssignedVm> {
+    ;({ env, bind } = this.ownMembersOnly(projectId, env, bind))
     let vmClass = vmClassFromEnv(env)
     if (vmClass !== 'standard' && !isVmClassSupported(this.cfg, vmClass)) {
       // Fail closed to 'standard' rather than boot a docker-class VM off a
@@ -1490,7 +1689,6 @@ export class MetalWarmPool {
       vmClass = 'standard'
     }
     if (projectId.startsWith('ws:')) {
-      await timer.time('flush_members', () => this.flushMembersHeldElsewhere(projectId, workspaceMemberIdsFromEnv(env) ?? []))
       env = await timer.time('confirm_members', () => this.withConfirmedNewMembers(env))
     }
     let vm = this.claim(vmClass)
@@ -2046,20 +2244,33 @@ export class MetalWarmPool {
   }
 
   /**
-   * The members to back up: the host's list plus anything the guest has
-   * mounted that the host lost track of. A resume or a reused open rebuilds the
-   * host's list from the caller's env, which never includes projects mounted
-   * live, so the guest is the authority on what is on its disk.
+   * The members to back up: the runtime's own members (see {@link ownMemberIds})
+   * that the host tracks or the guest has mounted. A resume or a reused open
+   * rebuilds the host's list from the caller's env, so the guest is the
+   * authority on what is on its disk — but a foreign member it reports (a VM
+   * from before the single-runtime rule) is never tracked or exported here:
+   * `drainForeignMembers` takes it off under its own lineage.
    */
   private async workspaceMembersForBackup(
     a: AssignedVm,
     timeoutMs?: number,
   ): Promise<{ ids: string[]; guestConfirmed: boolean }> {
+    const own = ownMemberIds(a.projectId)
     const known = a.workspaceMemberIds ?? []
     const mounted = await this.guestMountedMembers(a, timeoutMs)
-    if (!mounted) return { ids: known, guestConfirmed: false }
-    const untracked = mounted.filter((id) => !known.includes(id))
-    const notMounted = known.filter((id) => !mounted.includes(id))
+    const foreign = [...new Set([...known, ...(mounted ?? [])])].filter((id) => !own.includes(id))
+    if (foreign.length) {
+      metrics.inc(M.foreignMemberBackupSkipped, foreign.length)
+      console.error(
+        `[pool] not backing up foreign workspace members ${foreign.join(',')} of ${a.projectId} ` +
+          `(a project is only online in its own runtime; POST /drain-foreign-members exports and unmounts them)`,
+      )
+    }
+    const ownKnown = known.filter((id) => own.includes(id))
+    if (!mounted) return { ids: ownKnown, guestConfirmed: false }
+    const ownMounted = mounted.filter((id) => own.includes(id))
+    const untracked = ownMounted.filter((id) => !ownKnown.includes(id))
+    const notMounted = ownKnown.filter((id) => !ownMounted.includes(id))
     if (untracked.length || notMounted.length) {
       metrics.inc(M.workspaceMemberDrift)
       console.warn(
@@ -2072,45 +2283,7 @@ export class MetalWarmPool {
       a.workspaceMemberIds = [...known, ...untracked]
       this.writeLive(a)
     }
-    return { ids: [...known, ...untracked], guestConfirmed: true }
-  }
-
-  /**
-   * Before `runtimeKey` hydrates `memberIds` from the store, export each one
-   * from any other live VM on this host that holds it, so the new runtime
-   * starts from those files rather than an older backup or, for a project
-   * with no backup yet, the starter. Without this, opening a project in Studio
-   * while a team-chat VM had it mounted gave Studio a fresh starter while the
-   * real work stayed in the other VM. Best effort: never fails the open, and
-   * later writes from either VM stay under the lineage guard.
-   */
-  private async flushMembersHeldElsewhere(runtimeKey: string, memberIds: string[]): Promise<void> {
-    if (!memberIds.length) return
-    const others = [...this.assigned.values()].filter(
-      (o) => o.projectId !== runtimeKey && o.projectId.startsWith('ws:') && this.mgr.isRunning(o.handle),
-    )
-    await Promise.all(
-      others.map(async (other) => {
-        const { ids } = await this.workspaceMembersForBackup(other, 3_000)
-        for (const memberId of memberIds.filter((id) => ids.includes(id))) {
-          try {
-            const bytes = await this.fetchExport(other.handle, other.runtimeToken, `/app/workspace/${memberId}`)
-            if (!bytes) continue
-            const { ok, outcome } = await this.storeMemberSource(other, memberId, bytes)
-            if (ok) metrics.inc(M.memberFlushedForOpen)
-            console.log(
-              `[pool] ${ok ? 'flushed' : `could not flush (${outcome.status})`} ${memberId} from ${other.projectId} ` +
-                `before ${runtimeKey} hydrates it (${bytes.byteLength} bytes)`,
-            )
-          } catch (err: any) {
-            console.warn(
-              `[pool] could not flush ${memberId} from ${other.projectId} before ${runtimeKey} hydrates it:`,
-              err?.message ?? err,
-            )
-          }
-        }
-      }),
-    )
+    return { ids: [...ownKnown, ...untracked], guestConfirmed: true }
   }
 
   /** Back up each member's source. Returns the members whose latest source is NOT the durable backup. */
@@ -2161,9 +2334,15 @@ export class MetalWarmPool {
     const state = this.memberDataState(a, memberId)
     const outcome = await this.uploadBackupGuarded(memberId, bytes, {
       parentEtag: state.sourceParentEtag,
-      // Lineage from before member source was tracked (an adopted or resumed VM
-      // from older code) is unknown rather than mismatched; keep trusting it.
-      adoptWhenUnknown: !state.sourceLinked && !state.sourceParentEtag,
+      // Unknown lineage is trusted only for the runtime's own project restored
+      // from a snapshot that predates member stamping. A member this VM merely
+      // found mounted in the guest has no lineage at all, and adopting it is how
+      // a second VM overwrote a project's backup from a stale copy.
+      adoptWhenUnknown:
+        ownMemberIds(a.projectId).includes(memberId) &&
+        a.workspaceOrigin === 'snapshot' &&
+        !state.sourceLinked &&
+        !state.sourceParentEtag,
       untrusted: !!state.sourceUntrustedReason,
     })
     switch (outcome.status) {
@@ -2838,7 +3017,8 @@ export class MetalWarmPool {
   async saveWorkspaceMemberDataToStore(a: AssignedVm, opts: DataSaveOpts = {}): Promise<boolean> {
     let wrote = false
     let firstError: unknown
-    for (const memberId of a.workspaceMemberIds ?? []) {
+    const own = ownMemberIds(a.projectId)
+    for (const memberId of (a.workspaceMemberIds ?? []).filter((id) => own.includes(id))) {
       const slot = this.memberDataSlot(a, memberId)
       try {
         if (await this.dataFlight.run(slot.flightKey, () => this.saveDataSlotInner(a, slot, opts))) wrote = true
@@ -3445,6 +3625,11 @@ export class MetalWarmPool {
       // DIFFERENT metal machine (snapshot miss) still cold-hydrates real source.
       // Best-effort — the snapshot below is the primary cross-host resume path.
       if (a.projectId.startsWith('ws:')) {
+        // A legacy VM's foreign members are only in this guest; once suspended,
+        // its snapshot is never resumed (see foreignStampedMembers).
+        await this.drainForeignMembersOf(a, 3_000).catch((err) =>
+          console.error(`[pool] draining foreign members of ${a.projectId} failed:`, err?.message ?? err),
+        )
         await this.saveWorkspaceMembersToStore(a)
       } else {
         await this.saveBackupToStore(a).catch((err) =>
@@ -3767,6 +3952,7 @@ export class MetalWarmPool {
     env: Record<string, string> = {},
     timer = new PhaseTimer(),
   ): Promise<{ assigned: AssignedVm; apiMs: number; readyMs: number; source: 'local' | 'store' } | null> {
+    ;({ env } = this.ownMembersOnly(projectId, env))
     let s = this.suspended.get(projectId)
     let source: 'local' | 'store' = 'local'
     let repair: SnapshotDrift[] = []
@@ -3792,6 +3978,18 @@ export class MetalWarmPool {
     }
 
     if (s) {
+      const foreign = foreignStampedMembers(projectId, s)
+      if (foreign.length) {
+        skipStale('foreign_members')
+        console.warn(
+          `[pool] local snapshot for ${projectId} holds foreign workspace members ${foreign.join(',')}; evicting it`,
+        )
+        this.evictLocal(projectId)
+        s = undefined
+      }
+    }
+
+    if (s) {
       const local = s
       const drift = await timer.time('stale_check', () => this.snapshotDrift(projectId, local))
       if (drift.length && this.repairableDrift(projectId, drift)) {
@@ -3811,6 +4009,15 @@ export class MetalWarmPool {
         return null
       }
       const meta = await timer.time('store_head', () => this.store.head(projectId))
+      const foreign = meta ? foreignStampedMembers(projectId, meta) : []
+      if (foreign.length) {
+        skipStale('foreign_members')
+        console.warn(
+          `[pool] durable snapshot for ${projectId} holds foreign workspace members ${foreign.join(',')}; cold-booting instead`,
+        )
+        metrics.inc(M.resumeColdMiss)
+        return null
+      }
       const drift = meta ? await timer.time('stale_check', () => this.snapshotDrift(projectId, meta)) : []
       if (drift.length && !this.repairableDrift(projectId, drift)) {
         skipStale(drift[0].kind)
@@ -5127,11 +5334,15 @@ export class MetalWarmPool {
     const isWorkspace = a.projectId.startsWith('ws:')
 
     if (isWorkspace) {
+      await run('foreign_members', async () => {
+        const failed = (await this.drainForeignMembersOf(a, 3_000)).filter((r) => r.outcome === 'failed')
+        return failed.length ? failed.map((r) => `${r.projectId}: ${r.detail}`).join('; ') : null
+      })
       // A resume learns the members from the caller's env; unless the guest can
       // confirm what it has mounted, an empty list means every member backup
       // below would silently cover nothing.
       const members = await this.workspaceMembersForBackup(a)
-      if (!members.guestConfirmed && !members.ids.length) {
+      if (!members.guestConfirmed && !members.ids.length && ownMemberIds(a.projectId).length) {
         steps.push({ step: 'members', ok: false, detail: 'workspace member list unknown; member backups would be skipped' })
       }
     }

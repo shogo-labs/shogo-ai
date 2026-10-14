@@ -41,11 +41,13 @@ const CLOUD_ATTACH_404 =
 export const QUARANTINE: QuarantineEntry[] = [
   ...[
     "attach B to A via the Folders panel",
-    "agent in A sees only the anchor-scoped merged root (A + B)",
+    "agent in A can reach B",
     "cross-project READ: agent reads a file in B",
-    "cross-project WRITE: agent edits a file in B (readwrite attach)",
-    "readonly enforcement: attach C read-only, edits are refused",
-    "detach B; after restart B is gone from the merged tree",
+    "cross-project WRITE: agent edits a file in B",
+    "the edit is visible in B's own runtime",
+    "A's own top-level listing has no B folder",
+    "read-only attach of C: the mode is shown (and enforced on local desktop)",
+    "detach B; the attachment is gone",
     "link a local folder via the stubbed picker",
   ].map((title) => ({
     file: "workspace-attachments.test.ts",

@@ -71,6 +71,8 @@ const KNOWN_PATHS = new Set([
   '/destroy',
   '/recycle',
   '/resize',
+  '/drain-foreign-members',
+  '/members/holders',
 ])
 
 /**
