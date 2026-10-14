@@ -1,12 +1,17 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
-import { Platform } from 'react-native'
+import { AppState, Platform } from 'react-native'
 import Constants from 'expo-constants'
 import * as Notifications from 'expo-notifications'
 import { useEffect } from 'react'
 import { api, createHttpClient } from '../api'
-import { ensureNotificationPermission } from './chat-notifier'
+import * as Sentry from '@sentry/react-native'
+import {
+  ensureNotificationPermission,
+  getNotificationPermissionState,
+  subscribeNotificationPermissionGranted,
+} from './chat-notifier'
 import { getNotifyOnTurnComplete } from './preferences'
 
 let registeredDevice: { userId: string; pushToken: string; agentTurns: boolean } | null = null
@@ -23,6 +28,11 @@ function notifyPushToken(token: string | null) {
   pushTokenListeners.forEach((l) => l(token))
 }
 let registrationInFlight: Promise<void> | null = null
+
+function reportRegistrationProblem(message: string) {
+  console.warn(`[push] ${message}`)
+  Sentry.addBreadcrumb({ category: 'push', level: 'warning', message })
+}
 
 async function unregisterRegisteredDevice(): Promise<void> {
   const device = registeredDevice
@@ -53,22 +63,39 @@ async function registerCurrentDevice(userId: string, agentTurns: boolean) {
     await unregisterRegisteredDevice()
   }
 
-  if (!(await ensureNotificationPermission())) return
+  if (!(await ensureNotificationPermission())) {
+    reportRegistrationProblem('Notification permission not granted; this device will not get pushes')
+    return
+  }
 
   const projectId = Constants.expoConfig?.extra?.eas?.projectId
-  const tokenResponse = await Notifications.getExpoPushTokenAsync(
-    projectId ? { projectId } : undefined,
-  )
-  const pushToken = tokenResponse.data
-  if (!pushToken) return
+  let pushToken: string | undefined
+  try {
+    const tokenResponse = await Notifications.getExpoPushTokenAsync(
+      projectId ? { projectId } : undefined,
+    )
+    pushToken = tokenResponse.data
+  } catch (err) {
+    reportRegistrationProblem(`Could not get an Expo push token: ${(err as Error).message}`)
+    return
+  }
+  if (!pushToken) {
+    reportRegistrationProblem('Expo returned an empty push token')
+    return
+  }
   if (registeredDevice?.userId === userId && registeredDevice.pushToken === pushToken && registeredDevice.agentTurns === agentTurns) return
 
   const http = createHttpClient()
-  await api.registerMobilePushSubscription(http, {
-    pushToken,
-    platform: Platform.OS,
-    agentTurns,
-  })
+  try {
+    await api.registerMobilePushSubscription(http, {
+      pushToken,
+      platform: Platform.OS,
+      agentTurns,
+    })
+  } catch (err) {
+    reportRegistrationProblem(`Could not register this device for pushes: ${(err as Error).message}`)
+    return
+  }
   registeredDevice = { userId, pushToken, agentTurns }
   notifyPushToken(pushToken)
 }
@@ -92,10 +119,25 @@ export function useMobilePushRegistration(userId: string | null, agentTurns = tr
       registrationInFlight = request.finally(() => {
         registrationInFlight = null
       })
-      await registrationInFlight.catch(() => {})
+      await registrationInFlight.catch((err) => {
+        reportRegistrationProblem(`Push registration failed: ${(err as Error).message}`)
+      })
     }
     void register()
+    // Permission granted later (from the settings button, or in iOS Settings)
+    // registers the device then instead of waiting for the next sign-in.
+    const unsubscribe = userId ? subscribeNotificationPermissionGranted(() => void register()) : () => {}
+    const appState = AppState.addEventListener('change', (state) => {
+      if (state !== 'active' || !userId || registeredDevice) return
+      void getNotificationPermissionState().then((s) => {
+        if (s === 'granted') void register()
+      })
+    })
 
-    return () => { cancelled = true }
+    return () => {
+      cancelled = true
+      unsubscribe()
+      appState.remove()
+    }
   }, [agentTurns, userId])
 }

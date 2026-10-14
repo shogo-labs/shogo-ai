@@ -3,8 +3,8 @@
 /**
  * Mention, DM, and thread-reply notifications for channel messages.
  *
- * People active in the workspace on any device get an in-app/desktop alert
- * over the realtime socket instead of a phone push; everyone else gets a push.
+ * Every open client gets an alert over the realtime socket; people not active
+ * in the workspace on any device also get a phone push.
  */
 
 import { prisma } from '../lib/prisma'
@@ -205,14 +205,15 @@ export async function notifyForMessage(result: PostMessageResult): Promise<Notif
 
   for (const { userId, reason, silenced } of recipients) {
     if (silenced) continue
-    if (presence[userId] === 'active') {
-      publishConversationEvent(
-        conversation.workspaceId,
-        { type: 'notification', ...data, reason, title, body },
-        [userId],
-      )
-      continue
-    }
+    // Every open client gets the alert and decides locally whether to show it
+    // (a backgrounded tab with permission still can). The push is only for
+    // when no device is in active use.
+    publishConversationEvent(
+      conversation.workspaceId,
+      { type: 'notification', ...data, reason, title, body },
+      [userId],
+    )
+    if (presence[userId] === 'active') continue
     // An approval waits on a person, so it is never folded into the last push
     // for the channel, and its notification carries Approve and Deny buttons.
     if (approval) {
@@ -289,10 +290,8 @@ export async function notifyQuestion(input: {
   }
   for (const userId of input.userIds) {
     if (isSilenced(settings.get(userId), now)) continue
-    if (presence[userId] === 'active') {
-      publishConversationEvent(conversation.workspaceId, { type: 'notification', ...data, title: input.title, body }, [userId])
-      continue
-    }
+    publishConversationEvent(conversation.workspaceId, { type: 'notification', ...data, title: input.title, body }, [userId])
+    if (presence[userId] === 'active') continue
     void sendPush(userId, { title: input.title, body, type: 'agent-question', channelId: 'messages', audience: 'chat', data })
   }
 }

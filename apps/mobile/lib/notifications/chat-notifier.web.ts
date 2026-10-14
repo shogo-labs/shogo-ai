@@ -12,6 +12,7 @@ import type {
   ChannelNotificationPayload,
   ChatNotificationClickData,
   ChatNotificationPayload,
+  NotificationPermissionState,
 } from './chat-notifier'
 
 type ShogoDesktopBridge = {
@@ -52,22 +53,44 @@ export async function isUserInactive(): Promise<boolean> {
   }
 }
 
-let permissionCache: NotificationPermission | null = null
+function toState(permission: NotificationPermission): NotificationPermissionState {
+  if (permission === 'granted') return 'granted'
+  if (permission === 'denied') return 'denied'
+  return 'prompt'
+}
 
+/**
+ * Only reports whether alerts can show. It never asks: browsers ignore or
+ * hide a permission prompt that isn't triggered by a click, so asking is
+ * left to `requestNotificationPermissionFromGesture`.
+ */
 export async function ensureNotificationPermission(): Promise<boolean> {
   // On desktop, the OS handles permissions; Electron's Notification API
   // doesn't require a browser-style permission prompt.
   if (getDesktop()) return true
   if (typeof window === 'undefined' || typeof Notification === 'undefined') return false
-  if (permissionCache === null) permissionCache = Notification.permission
-  if (permissionCache === 'granted') return true
-  if (permissionCache === 'denied') return false
+  return Notification.permission === 'granted'
+}
+
+export function subscribeNotificationPermissionGranted(_listener: () => void): () => void {
+  return () => {}
+}
+
+export async function getNotificationPermissionState(): Promise<NotificationPermissionState> {
+  if (getDesktop()) return 'granted'
+  if (typeof window === 'undefined' || typeof Notification === 'undefined') return 'unsupported'
+  return toState(Notification.permission)
+}
+
+export async function requestNotificationPermissionFromGesture(): Promise<NotificationPermissionState> {
+  if (getDesktop()) return 'granted'
+  if (typeof window === 'undefined' || typeof Notification === 'undefined') return 'unsupported'
+  if (Notification.permission !== 'default') return toState(Notification.permission)
   try {
-    permissionCache = await Notification.requestPermission()
+    return toState(await Notification.requestPermission())
   } catch {
-    return false
+    return toState(Notification.permission)
   }
-  return permissionCache === 'granted'
 }
 
 export function setActiveChatNotificationContext(

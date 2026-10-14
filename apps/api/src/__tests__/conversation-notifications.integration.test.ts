@@ -123,6 +123,13 @@ describe('delivery', () => {
     expect(events[0].event.reason).toBe('mention')
   })
 
+  test('users who are not active get both a push and a socket alert for any open client', async () => {
+    await notified(await post({ authorUserId: seed.owner, text: `${userMentionToken(seed.member)} when you're back` }))
+    expect(pushes.filter((p) => p.userId === seed.member)).toHaveLength(1)
+    expect(events).toHaveLength(1)
+    expect(events[0].audience).toEqual([seed.member])
+  })
+
   test('rapid messages in one conversation coalesce into a single push', async () => {
     await notified(await post({ authorUserId: seed.owner, text: `${userMentionToken(seed.viewer)} one` }))
     await notified(await post({ authorUserId: seed.owner, text: `${userMentionToken(seed.viewer)} two` }))

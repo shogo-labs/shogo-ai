@@ -53,12 +53,21 @@ async function sendExpoMessages(
     return
   }
 
-  // Expo reports invalid/uninstalled device tokens per message. Remove them
-  // so future completions do not keep attempting delivery to dead devices.
+  // Expo reports errors per message. Uninstalled devices are removed so future
+  // completions stop trying them; anything else (e.g. InvalidCredentials when
+  // the APNs key is missing from EAS) is logged, since the push silently never
+  // arrives otherwise.
   const payload = typeof resp.json === 'function'
-    ? await resp.json().catch(() => null) as { data?: Array<{ status?: string; details?: { error?: string } }> } | null
+    ? await resp.json().catch(() => null) as { data?: Array<{ status?: string; message?: string; details?: { error?: string } }> } | null
     : null
-  const invalidTokens = (payload?.data ?? [])
+  const tickets = payload?.data ?? []
+  tickets.forEach((ticket, index) => {
+    if (ticket.status !== 'error' || ticket.details?.error === 'DeviceNotRegistered') return
+    console.error(
+      `[Push] Expo rejected message ${index}: ${ticket.details?.error ?? 'unknown'}${ticket.message ? ` - ${ticket.message}` : ''}`,
+    )
+  })
+  const invalidTokens = tickets
     .map((receipt, index) => receipt.status === 'error' && receipt.details?.error === 'DeviceNotRegistered' ? tokensToClean[index] : null)
     .filter((token): token is string => Boolean(token))
   if (invalidTokens.length > 0) {

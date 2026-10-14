@@ -343,22 +343,29 @@ describe('chat-notifier.web — ensureNotificationPermission', () => {
     expect(requested).toBe(0)
   })
 
-  test('requests permission on browser when default, caches granted', async () => {
+  test('never prompts outside a click: default permission reports false without asking', async () => {
     installEnv({
       document: makeFakeDocument(),
       withNotification: true,
       initialPermission: 'default',
-      requestPermissionResult: 'granted',
     })
-    const mod = await freshModule()
-    expect(await mod.ensureNotificationPermission()).toBe(true)
-
-    // Calling again should hit the cache — swap requestPermission to throw
-    // if hit again.
     const Ctor = (globalThis as any).Notification as FakeNotificationCtor
     Ctor.requestPermission = async () => {
-      throw new Error('should not be re-requested')
+      throw new Error('should not be requested')
     }
+    const mod = await freshModule()
+    expect(await mod.ensureNotificationPermission()).toBe(false)
+  })
+
+  test('picks up a grant made later without a stale cache', async () => {
+    installEnv({
+      document: makeFakeDocument(),
+      withNotification: true,
+      initialPermission: 'default',
+    })
+    const mod = await freshModule()
+    expect(await mod.ensureNotificationPermission()).toBe(false)
+    ;((globalThis as any).Notification as FakeNotificationCtor).permission = 'granted'
     expect(await mod.ensureNotificationPermission()).toBe(true)
   })
 
@@ -370,6 +377,47 @@ describe('chat-notifier.web — ensureNotificationPermission', () => {
     })
     const mod = await freshModule()
     expect(await mod.ensureNotificationPermission()).toBe(false)
+  })
+})
+
+describe('chat-notifier.web — permission state and click-driven request', () => {
+  beforeEach(() => uninstallEnv())
+  afterEach(() => uninstallEnv())
+
+  test('maps browser permission to state', async () => {
+    installEnv({ document: makeFakeDocument(), withNotification: true, initialPermission: 'default' })
+    const mod = await freshModule()
+    expect(await mod.getNotificationPermissionState()).toBe('prompt')
+    ;((globalThis as any).Notification as FakeNotificationCtor).permission = 'denied'
+    expect(await mod.getNotificationPermissionState()).toBe('denied')
+  })
+
+  test('reports unsupported without the Notification API', async () => {
+    installEnv({ document: makeFakeDocument(), withNotification: false })
+    const mod = await freshModule()
+    expect(await mod.getNotificationPermissionState()).toBe('unsupported')
+  })
+
+  test('requests from a gesture when undecided', async () => {
+    installEnv({
+      document: makeFakeDocument(),
+      withNotification: true,
+      initialPermission: 'default',
+      requestPermissionResult: 'granted',
+    })
+    const mod = await freshModule()
+    expect(await mod.requestNotificationPermissionFromGesture()).toBe('granted')
+    expect(await mod.ensureNotificationPermission()).toBe(true)
+  })
+
+  test('does not re-ask once denied', async () => {
+    installEnv({ document: makeFakeDocument(), withNotification: true, initialPermission: 'denied' })
+    const Ctor = (globalThis as any).Notification as FakeNotificationCtor
+    Ctor.requestPermission = async () => {
+      throw new Error('should not be requested')
+    }
+    const mod = await freshModule()
+    expect(await mod.requestNotificationPermissionFromGesture()).toBe('denied')
   })
 })
 

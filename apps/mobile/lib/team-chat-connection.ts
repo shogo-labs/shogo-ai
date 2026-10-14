@@ -21,10 +21,28 @@ function createSocket(url: string) {
 
 function watchPresence(connection: TeamChatConnection): () => void {
   if (Platform.OS === 'web') {
-    if (typeof document === 'undefined') return () => {}
-    const onVisibility = () => connection.setPresence(document.visibilityState === 'hidden' ? 'away' : 'active')
-    document.addEventListener('visibilitychange', onVisibility)
-    return () => document.removeEventListener('visibilitychange', onVisibility)
+    if (typeof document === 'undefined' || typeof window === 'undefined') return () => {}
+    // An unfocused window counts as away, so a browser left open behind other
+    // apps doesn't stop phone pushes.
+    let focused = document.hasFocus()
+    const update = () => connection.setPresence(focused && document.visibilityState !== 'hidden' ? 'active' : 'away')
+    const onFocus = () => {
+      focused = true
+      update()
+    }
+    const onBlur = () => {
+      focused = false
+      update()
+    }
+    update()
+    document.addEventListener('visibilitychange', update)
+    window.addEventListener('focus', onFocus)
+    window.addEventListener('blur', onBlur)
+    return () => {
+      document.removeEventListener('visibilitychange', update)
+      window.removeEventListener('focus', onFocus)
+      window.removeEventListener('blur', onBlur)
+    }
   }
   const sub = AppState.addEventListener('change', (state) => connection.setPresence(state === 'active' ? 'active' : 'away'))
   return () => sub.remove()

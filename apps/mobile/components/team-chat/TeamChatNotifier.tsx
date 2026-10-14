@@ -2,11 +2,12 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * Shows desktop/OS alerts for mentions, DMs, and thread replies while the
- * app is open. The server sends these over the realtime socket instead of a
- * phone push when you're active; the conversation on screen stays quiet.
+ * app is open. The server sends these over the realtime socket to every open
+ * client (and a phone push when you aren't active anywhere); the conversation
+ * on screen stays quiet.
  */
 import { useEffect, useRef } from 'react'
-import { AppState } from 'react-native'
+import { AppState, Platform } from 'react-native'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { useWorkspaceExperience } from '../../hooks/useWorkspaceExperience'
 import { useActiveConversationId } from '../../hooks/useTeamChat'
@@ -35,6 +36,8 @@ export function TeamChatNotifier() {
 
   useTeamChatEvents(workspaceId, (event) => {
     if (event.type !== 'notification') return
+    // A backgrounded phone gets the server push instead; a local alert too would double it.
+    if (Platform.OS !== 'web' && !foreground.current) return
     void (async () => {
       const onScreen = activeRef.current === event.conversationId && foreground.current && !(await isUserInactive())
       if (onScreen) return

@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * Fire a system notification when a chat turn finishes streaming AND the user
- * is not currently active in the app. Platform-agnostic — dispatches through
+ * Fire a system notification when a chat turn finishes streaming in a chat the
+ * user isn't looking at. On web that also requires the tab to be hidden or
+ * unfocused; on native the foreground counts too. Dispatches through
  * the platform-split `chat-notifier` module (web / electron / native).
  *
  * The "stream ended" edge is detected exactly like the post-stream settle
@@ -12,6 +13,7 @@
  */
 
 import { useEffect, useRef } from 'react'
+import { Platform } from 'react-native'
 
 import {
   ensureNotificationPermission,
@@ -76,6 +78,15 @@ export function shouldAttemptNotification(a: ShouldAttemptArgs): boolean {
   return true
 }
 
+/**
+ * Web only alerts while the tab is hidden or unfocused. Native alerts in the
+ * foreground too: its notification handler already hides the banner when
+ * this exact chat is on screen.
+ */
+export function requiresInactivity(platform: string): boolean {
+  return platform === 'web'
+}
+
 export function useNotifyOnTurnComplete(args: UseNotifyOnTurnCompleteArgs): void {
   const wasStreamingRef = useRef(false)
   // Latest args in a ref so the effect body never re-runs just because the
@@ -106,7 +117,7 @@ export function useNotifyOnTurnComplete(args: UseNotifyOnTurnCompleteArgs): void
 
     void (async () => {
       try {
-        if (!(await isUserInactive())) return
+        if (requiresInactivity(Platform.OS) && !(await isUserInactive())) return
         if (!(await ensureNotificationPermission())) return
         await notifyChatFinished({
           sessionId: snapshot.sessionId as string,

@@ -169,6 +169,8 @@ import {
   cn,
 } from "@shogo/shared-ui/primitives";
 import { useNotifyOnTurnComplete as useNotifyOnTurnCompletePref } from "../../lib/notifications/preferences";
+import { useNotificationPermission } from "../../lib/notifications/useNotificationPermission";
+import type { NotificationPermissionState } from "../../lib/notifications/chat-notifier";
 import { useRequireBiometricApproval } from "../../lib/approval-lock";
 import { useDualPlan } from "../../lib/dual-plan-preference";
 
@@ -985,20 +987,70 @@ const WorkspaceSettingsTab = observer(function WorkspaceSettingsTab() {
 // ACCOUNT TAB
 // ============================================================================
 
+function notificationPermissionCopy(
+  state: NotificationPermissionState | null
+): { status: string; action: "request" | "settings" | null } {
+  switch (state) {
+    case "granted":
+      return { status: "On for this device.", action: null };
+    case "prompt":
+      return {
+        status: "Not turned on yet. Shogo can't show any alerts on this device.",
+        action: "request",
+      };
+    case "denied":
+      return Platform.OS === "web"
+        ? {
+            status:
+              "Blocked by your browser. Allow notifications for this site in the browser's site settings.",
+            action: null,
+          }
+        : {
+            status: "Turned off in Settings. Shogo can't show any alerts on this device.",
+            action: "settings",
+          };
+    case "unsupported":
+      return { status: "This browser or device can't show notifications.", action: null };
+    default:
+      return { status: "Checking…", action: null };
+  }
+}
+
 function NotificationsCard() {
   const [notifyOnTurn, setNotifyOnTurn] = useNotifyOnTurnCompletePref();
   const [requireBiometric, setRequireBiometric] = useRequireBiometricApproval();
+  const permission = useNotificationPermission();
+  const copy = notificationPermissionCopy(permission.state);
   return (
     <Card>
       <CardContent className="p-0">
         <View className="px-6 py-5 flex-row items-center justify-between">
           <View className="flex-1 mr-4">
             <Text className="text-sm font-semibold text-foreground">
+              Notifications on this device
+            </Text>
+            <Text className="text-sm text-muted-foreground mt-0.5">
+              {copy.status}
+            </Text>
+          </View>
+          {copy.action === "request" ? (
+            <Button size="sm" onPress={() => void permission.request()}>
+              Turn on
+            </Button>
+          ) : copy.action === "settings" ? (
+            <Button size="sm" variant="outline" onPress={permission.openSettings}>
+              Open Settings
+            </Button>
+          ) : null}
+        </View>
+        <View className="px-6 py-5 flex-row items-center justify-between border-t border-border">
+          <View className="flex-1 mr-4">
+            <Text className="text-sm font-semibold text-foreground">
               Notify when a reply is ready
             </Text>
             <Text className="text-sm text-muted-foreground mt-0.5">
-              Send a system notification when a chat turn finishes while Shogo
-              isn't in the foreground. Applies on desktop, web, and mobile.
+              Send a system notification when a chat turn finishes and you
+              aren't looking at that chat. Applies on desktop, web, and mobile.
             </Text>
           </View>
           <Switch

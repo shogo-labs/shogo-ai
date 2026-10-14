@@ -25,6 +25,7 @@ import type {
   ChannelNotificationPayload,
   ChatNotificationClickData,
   ChatNotificationPayload,
+  NotificationPermissionState,
 } from './chat-notifier'
 
 let handlerConfigured = false
@@ -132,33 +133,78 @@ export async function isUserInactive(): Promise<boolean> {
   return AppState.currentState !== 'active'
 }
 
-let permissionCache: boolean | null = null
+// Only a grant is cached: a denial can be reversed in iOS Settings while the
+// app is running, so it has to be checked again next time.
+let permissionGranted = false
+const permissionGrantedListeners = new Set<() => void>()
+
+/** Called whenever permission turns out to be granted, e.g. after the user allows it in Settings. */
+export function subscribeNotificationPermissionGranted(listener: () => void): () => void {
+  permissionGrantedListeners.add(listener)
+  return () => permissionGrantedListeners.delete(listener)
+}
+
+async function markGranted() {
+  await ensureAndroidChannel()
+  if (permissionGranted) return
+  permissionGranted = true
+  permissionGrantedListeners.forEach((l) => l())
+}
+
+async function requestPermission(): Promise<boolean> {
+  const next = await Notifications.requestPermissionsAsync({
+    ios: {
+      allowAlert: true,
+      allowSound: true,
+      allowBadge: false,
+    },
+  })
+  if (next.granted) await markGranted()
+  return next.granted
+}
 
 export async function ensureNotificationPermission(): Promise<boolean> {
-  if (permissionCache !== null) return permissionCache
+  if (permissionGranted) return true
   try {
     const current = await Notifications.getPermissionsAsync()
     if (current.granted) {
-      await ensureAndroidChannel()
-      permissionCache = true
+      await markGranted()
       return true
     }
     if (!current.canAskAgain) {
-      permissionCache = false
+      console.warn('[notifications] Permission denied; it can only be turned on in Settings')
       return false
     }
-    const next = await Notifications.requestPermissionsAsync({
-      ios: {
-        allowAlert: true,
-        allowSound: true,
-        allowBadge: false,
-      },
-    })
-    permissionCache = next.granted
-    if (next.granted) await ensureAndroidChannel()
-    return next.granted
-  } catch {
+    const granted = await requestPermission()
+    if (!granted) console.warn('[notifications] Permission request was declined')
+    return granted
+  } catch (err) {
+    console.warn('[notifications] Permission check failed:', (err as Error).message)
     return false
+  }
+}
+
+export async function getNotificationPermissionState(): Promise<NotificationPermissionState> {
+  try {
+    const current = await Notifications.getPermissionsAsync()
+    if (current.granted) {
+      await markGranted()
+      return 'granted'
+    }
+    permissionGranted = false
+    return current.canAskAgain ? 'prompt' : 'denied'
+  } catch {
+    return 'unsupported'
+  }
+}
+
+export async function requestNotificationPermissionFromGesture(): Promise<NotificationPermissionState> {
+  const state = await getNotificationPermissionState()
+  if (state !== 'prompt') return state
+  try {
+    return (await requestPermission()) ? 'granted' : await getNotificationPermissionState()
+  } catch {
+    return 'unsupported'
   }
 }
 

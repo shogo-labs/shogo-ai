@@ -154,6 +154,19 @@ describe('sendPushToInstance', () => {
     expect(instanceDeleteManyArgs).toEqual({ where: { pushToken: { in: ['dead-desktop-token'] } } })
     expect(mobileDeleteManyArgs).toBeNull()
   })
+
+  it('logs other per-message Expo errors and keeps the token', async () => {
+    findManyImpl = async () => [{ pushToken: 'tok-a' }]
+    fetchSpy.mockImplementation(async () => new Response(JSON.stringify({
+      data: [{ status: 'error', message: 'Could not find APNs credentials', details: { error: 'InvalidCredentials' } }],
+    }), { status: 200 }))
+
+    await sendPushToInstance('instance-1', { type: 'wake' })
+
+    expect(errorSpy).toHaveBeenCalled()
+    expect(String(errorSpy.mock.calls.at(-1)?.[0])).toContain('InvalidCredentials')
+    expect(instanceDeleteManyArgs).toBeNull()
+  })
 })
 
 describe('sendPushToUser', () => {

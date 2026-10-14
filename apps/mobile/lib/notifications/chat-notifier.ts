@@ -51,6 +51,26 @@ export async function ensureNotificationPermission(): Promise<boolean> {
   return false
 }
 
+/**
+ * `prompt` means asking will show the system prompt; `denied` means only the
+ * browser or OS settings can turn notifications back on.
+ */
+export type NotificationPermissionState = 'granted' | 'prompt' | 'denied' | 'unsupported'
+
+export async function getNotificationPermissionState(): Promise<NotificationPermissionState> {
+  return 'unsupported'
+}
+
+/** Native only: called when notification permission becomes granted. */
+export function subscribeNotificationPermissionGranted(_listener: () => void): () => void {
+  return () => {}
+}
+
+/** Browsers only show the prompt when this runs inside a click handler. */
+export async function requestNotificationPermissionFromGesture(): Promise<NotificationPermissionState> {
+  return 'unsupported'
+}
+
 export function setActiveChatNotificationContext(
   _context: { sessionId: string; projectId: string } | null,
 ): void {
