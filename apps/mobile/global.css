@@ -14,10 +14,76 @@
 
 /* ── Streamdown overrides for chat markdown ── */
 
-/* Base text color — inherits the theme-aware foreground so all
-   prose elements (p, h1-h6, li, td, th, strong, em) respect dark mode. */
+/* Semantic markdown palette. Mirrors the native palette in
+   components/chat/MarkdownText.tsx: GitHub grays for structure, Notion red
+   for inline code, blue for links. Dark values apply under `.dark`. */
 .chat-md {
-  color: rgb(var(--color-foreground));
+  --md-text: #1f2328;
+  --md-heading: #111827;
+  --md-muted: #59636e;
+  --md-link: #0969da;
+  --md-code-text: #eb5757;
+  --md-code-bg: #f6f8fa;
+  --md-border: #d1d9e0;
+  --md-quote-border: #d1d9e0;
+  --md-table-header-bg: #f6f8fa;
+  color: var(--md-text);
+}
+
+.dark .chat-md {
+  --md-text: #e6edf3;
+  --md-heading: #ffffff;
+  --md-muted: #8b949e;
+  --md-link: #4493f8;
+  --md-code-text: #ff7b72;
+  --md-code-bg: #161b22;
+  --md-border: #30363d;
+  --md-quote-border: #30363d;
+  --md-table-header-bg: #161b22;
+}
+
+.chat-md [data-streamdown="heading-1"],
+.chat-md [data-streamdown="heading-2"],
+.chat-md [data-streamdown="heading-3"],
+.chat-md [data-streamdown="heading-4"],
+.chat-md [data-streamdown="heading-5"],
+.chat-md [data-streamdown="heading-6"],
+.chat-md [data-streamdown="strong"],
+.chat-md strong {
+  color: var(--md-heading) !important;
+}
+
+.chat-md [data-streamdown="link"],
+.chat-md a {
+  color: var(--md-link) !important;
+}
+
+.chat-md [data-streamdown="inline-code"] {
+  color: var(--md-code-text) !important;
+  background-color: var(--md-code-bg) !important;
+}
+
+.chat-md del,
+.chat-md s {
+  color: var(--md-muted) !important;
+}
+
+.chat-md [data-streamdown="blockquote"] {
+  border-left: 3px solid var(--md-quote-border) !important;
+  padding-left: 12px !important;
+}
+
+.chat-md [data-streamdown="horizontal-rule"] {
+  border-color: var(--md-border) !important;
+}
+
+.chat-md [data-streamdown="table-header"] {
+  background-color: var(--md-table-header-bg) !important;
+}
+
+.chat-md [data-streamdown="table-cell"],
+.chat-md [data-streamdown="table-header-cell"] {
+  border-color: var(--md-border) !important;
 }
 
 /* Code block container — flat, minimal chrome */

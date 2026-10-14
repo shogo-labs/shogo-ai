@@ -18,11 +18,21 @@ import { linkifyBareUrls, linkifyFilePaths, pathFromFileHref } from "./file-link
 import { usePhoneLayout } from "../../lib/native-phone-layout";
 import { useMobileWorkspaceChrome } from "../layout/MobileWorkspaceChromeContext";
 
+/**
+ * Semantic markdown palette. Light and dark values follow the GitHub gray
+ * scale for structure, with Notion's red inline code as the one accent.
+ * Keep in sync with the `.chat-md` variables in `global.css` (web path).
+ */
 interface ThemeColors {
   text: ColorValue;
-  code: ColorValue;
+  heading: ColorValue;
+  muted: ColorValue;
   link: ColorValue;
+  codeText: ColorValue;
+  codeBg: ColorValue;
   border: ColorValue;
+  quoteBorder: ColorValue;
+  tableHeaderBg: ColorValue;
 }
 
 export type MarkdownVariant = "default" | "thinking";
@@ -104,32 +114,84 @@ const thinkingStyles: MarkedStyles = {
 };
 
 const lightColors: ThemeColors = {
-  text: "#1a1a1a",
-  code: "#f5f5f5",
-  link: "#2563eb",
-  border: "#e0e0e0",
+  text: "#1f2328",
+  heading: "#111827",
+  muted: "#59636e",
+  link: "#0969da",
+  codeText: "#eb5757",
+  codeBg: "#f6f8fa",
+  border: "#d1d9e0",
+  quoteBorder: "#d1d9e0",
+  tableHeaderBg: "#f6f8fa",
 };
 
 const darkColors: ThemeColors = {
-  text: "#f0f0f0",
-  code: "#2a2a2a",
-  link: "#93c5fd",
-  border: "#525252",
+  text: "#e6edf3",
+  heading: "#ffffff",
+  muted: "#8b949e",
+  link: "#4493f8",
+  codeText: "#ff7b72",
+  codeBg: "#161b22",
+  border: "#30363d",
+  quoteBorder: "#30363d",
+  tableHeaderBg: "#161b22",
 };
 
+// Thinking blocks are de-emphasized, so the palette is desaturated and the
+// text stays a step below the main body.
 const lightThinkingColors: ThemeColors = {
   text: "#737373",
-  code: "#f0f0f0",
+  heading: "#525252",
+  muted: "#a3a3a3",
   link: "#6b9bd2",
+  codeText: "#737373",
+  codeBg: "#f0f0f0",
   border: "#e0e0e0",
+  quoteBorder: "#e0e0e0",
+  tableHeaderBg: "#f5f5f5",
 };
 
 const darkThinkingColors: ThemeColors = {
   text: "#a0a0a0",
-  code: "#252525",
+  heading: "#c4c4c4",
+  muted: "#737373",
   link: "#7ba8d4",
+  codeText: "#a0a0a0",
+  codeBg: "#252525",
   border: "#444444",
+  quoteBorder: "#444444",
+  tableHeaderBg: "#2a2a2a",
 };
+
+/**
+ * Layers semantic colors onto a size preset. The library reads `theme.colors`
+ * for defaults, but element overrides win, so each element gets an explicit
+ * color here.
+ */
+function withColors(sizes: MarkedStyles, c: ThemeColors): MarkedStyles {
+  return {
+    ...sizes,
+    text: { ...sizes.text, color: c.text },
+    strong: { ...sizes.strong, color: c.heading },
+    em: { ...sizes.em, color: c.text },
+    link: { ...sizes.link, color: c.link },
+    strikethrough: { ...sizes.strikethrough, color: c.muted },
+    li: { ...sizes.li, color: c.text },
+    h1: { ...sizes.h1, color: c.heading },
+    h2: { ...sizes.h2, color: c.heading },
+    h3: { ...sizes.h3, color: c.heading },
+    h4: { ...sizes.h4, color: c.heading },
+    codespan: { ...sizes.codespan, color: c.codeText, backgroundColor: c.codeBg },
+    blockquote: {
+      ...sizes.blockquote,
+      borderLeftWidth: 3,
+      borderLeftColor: c.quoteBorder,
+      paddingLeft: 12,
+    },
+    hr: { ...sizes.hr, borderBottomColor: c.border },
+    table: { ...sizes.table, borderColor: c.border },
+  };
+}
 
 /**
  * Same per-column width as `react-native-marked`'s `getTableWidthArr`
@@ -148,6 +210,7 @@ const MARKED_TABLE_COLUMN_WIDTH_RATIO = 1.3 / 3;
 class NativePhoneMarkdownRenderer extends Renderer {
   constructor(
     private readonly tableWidth: number,
+    private readonly tableHeaderBg: ColorValue,
     private readonly onFilePress?: (path: string) => void,
     private readonly onLinkPress?: (href: string) => boolean,
   ) {
@@ -221,7 +284,12 @@ class NativePhoneMarkdownRenderer extends Renderer {
         contentContainerStyle={tableStyle}
       >
         <View style={[tableStyle, borderStyle]}>
-          <View style={[{ flexDirection: "row" }, rowStyle]}>
+          <View
+            style={[
+              { flexDirection: "row", backgroundColor: this.tableHeaderBg },
+              rowStyle,
+            ]}
+          >
             {header.map((headerCell, index) => (
               <View
                 key={`header-${index}`}
@@ -299,26 +367,48 @@ export const MarkdownText = memo(function MarkdownText({
       : isThinking
       ? lightThinkingColors
       : lightColors;
-  const styles = isThinking
+  const sizeStyles = isThinking
     ? thinkingStyles
     : isPhoneLayout || usesMobileWorkspaceChrome
     ? phoneChatStyles
     : baseStyles;
+  const styles = useMemo(
+    () => withColors(sizeStyles, colors),
+    [sizeStyles, colors],
+  );
+  // Library defaults for anything not styled above (e.g. image placeholders).
+  const libraryTheme = useMemo(
+    () => ({
+      colors: {
+        text: colors.text,
+        code: colors.codeBg,
+        link: colors.link,
+        border: colors.border,
+      },
+    }),
+    [colors],
+  );
 
   const value = useMemo(() => {
     const fileLinked = onFilePress ? linkifyFilePaths(children || "") : children || "";
     return linkifyBareUrls(fileLinked);
   }, [children, onFilePress]);
   const renderer = useMemo(
-    () => new NativePhoneMarkdownRenderer(width, onFilePress, onLinkPress),
-    [width, onFilePress, onLinkPress],
+    () =>
+      new NativePhoneMarkdownRenderer(
+        width,
+        colors.tableHeaderBg,
+        onFilePress,
+        onLinkPress,
+      ),
+    [width, colors.tableHeaderBg, onFilePress, onLinkPress],
   );
 
   return (
     <Markdown
       value={value}
       styles={styles}
-      theme={{ colors }}
+      theme={libraryTheme}
       renderer={renderer}
       flatListProps={{
         scrollEnabled: false,
