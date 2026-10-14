@@ -648,7 +648,7 @@ export async function runImport(
       modelProvider: ac?.modelProvider,
       // Map the bundle's portable model slug back to this instance's canonical
       // id (a DB model's UUID when one matches by apiModel).
-      modelName: (await fromPortableModelName(ac?.modelName)) ?? 'claude-haiku-4-5',
+      modelName: (await fromPortableModelName(ac?.modelName)) ?? 'auto',
       channels: channelsValue,
       // PG-only fields — included only when present in the bundle
       quietHoursStart: (ac as any)?.quietHoursStart,

@@ -58,13 +58,13 @@ A single file with all agent configuration sections:
 - Each task is a concrete action the agent performs on its heartbeat
 
 ## config
-- model: { provider: "anthropic", name: "claude-sonnet-4-5" }
+- model: { provider: "anthropic", name: "auto" }
 - activeMode: "canvas"
 
 ## settings
 - heartbeatInterval: 1800-7200 depending on use case
 - heartbeatEnabled: true (the schedule is seeded into the database from here, not config.json)
-- modelProvider: "anthropic", modelName: "claude-sonnet-4-5"
+- modelProvider: "anthropic", modelName: "auto"
 
 ## integrations
 - 2-5 recommended integrations (category name from Composio, e.g. "github", "slack", "stripe")
@@ -158,7 +158,7 @@ function writeTemplateToDisk(
       heartbeatInterval: 3600,
       heartbeatEnabled: true,
       modelProvider: 'anthropic',
-      modelName: 'claude-sonnet-4-5',
+      modelName: 'auto',
     },
     integrations,
   }
@@ -176,7 +176,7 @@ function writeTemplateToDisk(
   // config.json — write from the config object or build a default
   const configObj = config ?? {
     channels: [],
-    model: { provider: 'anthropic', name: 'claude-sonnet-4-6' },
+    model: { provider: 'anthropic', name: 'auto' },
     activeMode: 'canvas',
   }
   writeFileSync(join(shogoDir, 'config.json'), JSON.stringify(configObj, null, 2) + '\n')

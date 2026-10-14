@@ -246,7 +246,8 @@ export const projectHooks: ProjectHooks = {
    * Auto-create an AgentConfig row for every new project so the heartbeat
    * scheduler can manage it. When a templateId is present the row is
    * populated from the template's settings; otherwise sensible defaults
-   * (heartbeat disabled, economy model) are used.
+   * (heartbeat disabled, Auto model routing) are used. `auto` is the only
+   * model a new project pins; concrete ids come from templates or the user.
    */
   afterCreate: async (record, ctx) => {
     if ((ctx as any)._restrictAfterCreate) {
@@ -262,7 +263,7 @@ export const projectHooks: ProjectHooks = {
     let heartbeatEnabled = false
     let heartbeatInterval = 1800
     let modelProvider = 'anthropic'
-    let modelName = 'claude-sonnet-4-6'
+    let modelName = 'auto'
 
     if (record.templateId) {
       const template = getAgentTemplateById(record.templateId)
@@ -282,12 +283,12 @@ export const projectHooks: ProjectHooks = {
         const hasAdvanced = await billingService.hasAdvancedModelAccess(record.workspaceId)
         if (!hasAdvanced) {
           modelProvider = 'anthropic'
-          modelName = 'claude-haiku-4-5'
+          modelName = 'auto'
         }
       } catch {
-        // On billing check failure, fall back to economy to avoid broken first-run
+        // On billing check failure, fall back to Auto routing to avoid broken first-run
         modelProvider = 'anthropic'
-        modelName = 'claude-haiku-4-5'
+        modelName = 'auto'
       }
     }
 

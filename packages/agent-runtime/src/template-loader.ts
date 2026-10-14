@@ -60,7 +60,7 @@ export function loadDirTemplates(): AgentTemplate[] {
           heartbeatInterval: 3600,
           heartbeatEnabled: true,
           modelProvider: 'anthropic',
-          modelName: 'claude-sonnet-4-5',
+          modelName: 'auto',
         },
         skills,
         files,

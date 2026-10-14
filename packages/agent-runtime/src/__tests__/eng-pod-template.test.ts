@@ -128,7 +128,7 @@ describe('eng-pod in the template catalog', () => {
     expect(t).toBeTruthy()
     expect(t.name).toBe('Engineering Team in a Channel')
     expect(t.skills).toContain('task-source-github-issues')
-    expect(t.settings.modelName).toBe('claude-sonnet-4-6')
+    expect(t.settings.modelName).toBe('auto')
     expect(t.settings.heartbeatEnabled).toBe(false)
     expect(t.files['AGENTS.md']).toContain('Coordinator')
   })

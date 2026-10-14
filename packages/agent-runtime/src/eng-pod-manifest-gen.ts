@@ -26,7 +26,7 @@ import { collectFiles } from './issue-pipeline-manifest-gen'
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const TEMPLATE_DIR = join(__dirname, '..', 'templates', 'eng-pod')
 
-const MODEL = 'claude-sonnet-4-6'
+const MODEL = 'auto'
 const PROVIDER = 'anthropic'
 
 export const COORDINATOR_KEY = 'coordinator'

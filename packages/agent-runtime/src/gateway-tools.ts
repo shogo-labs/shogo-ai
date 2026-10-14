@@ -17,6 +17,7 @@ import { execSync } from '@shogo/shared-runtime/child-process'
 import { fileURLToPath } from 'node:url'
 import { isProtectedFile, PROTECTED_FILE_REJECTION } from './protected-files'
 import { createProjectTools } from './project-tools'
+import { availableModelsHint, isAvailableModel } from './available-models'
 import { createWorkspaceAgentTools } from './workspace-agent-tools'
 import { createTriggerTools } from './trigger-tools'
 import { createMeetingTools } from './meeting-tools'
@@ -9342,8 +9343,7 @@ function createChannelConnectTool(ctx: ToolContext): AgentTool {
       }),
       model: Type.Optional(
         Type.String({
-          description:
-            'AI model ID for this channel (e.g. "claude-sonnet-4-6", "claude-haiku-4-5-20251001"). Economy-tier models work on all plans; standard/premium require Pro. Defaults to "claude-haiku-4-5-20251001".',
+          description: `AI model for this channel. Defaults to "auto". ${availableModelsHint()} Economy-tier models work on all plans; standard/premium require Pro.`,
         }),
       ),
     }),
@@ -9358,7 +9358,10 @@ function createChannelConnectTool(ctx: ToolContext): AgentTool {
         model?: string
       }
 
-      const channelModel = model || 'claude-haiku-4-5-20251001'
+      if (model && !isAvailableModel(model)) {
+        return textResult({ error: `Model "${model}" is not available in this workspace. ${availableModelsHint()}` })
+      }
+      const channelModel = model || 'auto'
       const resolvedChannelModel = resolveModelId(channelModel)
       const channelTier = getModelTier(resolvedChannelModel)
 

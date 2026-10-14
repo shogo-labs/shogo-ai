@@ -36,6 +36,7 @@ import type { ToolContext } from './gateway-tools'
 import { textResult } from './gateway-tools'
 import { capabilityState, effectiveCapabilityValue, lockedCapabilityKeys } from './capability-status-prompt'
 import { resolveWorkspaceConfigFilePath } from './workspace-defaults'
+import { availableModelsHint, isAvailableModel } from './available-models'
 import {
   attachProject as apiAttachProject,
   callProjectAgent as apiCallProjectAgent,
@@ -333,7 +334,7 @@ export function createProjectConfigureTool(ctx: ToolContext): AgentTool {
       project: Type.Optional(Type.String({ description: 'Project id, name, or manifest key. Default: current project.' })),
       name: Type.Optional(Type.String()),
       description: Type.Optional(Type.String()),
-      model: Type.Optional(Type.String({ description: 'Default model id/alias for the agent (e.g. "claude-haiku-4-5").' })),
+      model: Type.Optional(Type.String({ description: `Default model for the agent. Defaults to "auto" (recommended). ${availableModelsHint()}` })),
       provider: Type.Optional(Type.String({ description: 'Model provider (usually inferred).' })),
       heartbeatEnabled: Type.Optional(Type.Boolean()),
       heartbeatInterval: Type.Optional(Type.Number({ description: 'Seconds, minimum 60.' })),
@@ -355,6 +356,9 @@ export function createProjectConfigureTool(ctx: ToolContext): AgentTool {
       }
       if (p.heartbeatInterval !== undefined && p.heartbeatInterval < 60) {
         return textResult({ error: 'heartbeatInterval must be at least 60 seconds' })
+      }
+      if (p.model !== undefined && !isAvailableModel(p.model)) {
+        return textResult({ error: `Model "${p.model}" is not available in this workspace. ${availableModelsHint()}` })
       }
 
       const agent: Record<string, unknown> = {}
@@ -661,6 +665,16 @@ export function createSystemApplyTool(ctx: ToolContext): AgentTool {
       const parsed = parseSystemManifest(source)
       if (!parsed.ok || !parsed.manifest) return textResult({ error: 'Manifest is invalid', issues: parsed.errors })
       const manifest = parsed.manifest
+
+      const unavailable = manifest.projects
+        .filter((pr) => pr.agent?.model !== undefined && !isAvailableModel(pr.agent.model))
+        .map((pr) => `${pr.key}: ${pr.agent?.model}`)
+      if (unavailable.length > 0) {
+        return textResult({
+          error: `Manifest uses models not available in this workspace (${unavailable.join(', ')}). ${availableModelsHint()}`,
+          code: 'model_unavailable',
+        })
+      }
 
       const graphRes = await apiGetWorkspaceProjectGraph(workspaceId)
       if (!graphRes.ok || !graphRes.data) return apiFailure(graphRes)

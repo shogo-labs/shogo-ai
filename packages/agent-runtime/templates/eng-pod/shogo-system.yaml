@@ -15,7 +15,7 @@ projects:
     description: Fixes the bug, shows it working in a live preview, opens the pull request and asks for the merge.
     techStackId: react-app
     agent:
-      model: claude-sonnet-4-6
+      model: auto
       provider: anthropic
       heartbeat:
         enabled: false
@@ -61,7 +61,7 @@ projects:
     name: Engineering Team — Reviewer
     description: Judges the pull request against the acceptance criteria from the hand-off alone, without the discussion.
     agent:
-      model: claude-sonnet-4-6
+      model: auto
       provider: anthropic
       heartbeat:
         enabled: false
@@ -116,7 +116,7 @@ projects:
     name: Engineering Team — Coordinator
     description: "Turns reports in #eng into tickets and one task card per thread, and hands the work to the builder."
     agent:
-      model: claude-sonnet-4-6
+      model: auto
       provider: anthropic
       heartbeat:
         enabled: false

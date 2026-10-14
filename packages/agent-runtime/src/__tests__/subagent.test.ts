@@ -86,9 +86,10 @@ describe('getBuiltinSubagentConfig', () => {
     expect(cfg.disallowedTools).toContain('task')
   })
 
-  it('browser_qa uses an OpenAI provider', () => {
+  it('browser_qa routes through Auto rather than a pinned model', () => {
     const cfg = getBuiltinSubagentConfig('browser_qa', {} as any, [])!
-    expect(cfg.provider).toBe('openai')
+    expect(cfg.model).toBe('auto')
+    expect(cfg.provider).toBeUndefined()
   })
 })
 
@@ -178,12 +179,19 @@ describe('resolveModelTier', () => {
     expect(resolveModelTier('default', 'parent-model')).toBe('parent-model')
   })
 
-  it('returns the fast tier model', () => {
-    expect(resolveModelTier('fast', 'parent-model')).toBe('claude-haiku-4-5')
+  it('maps fast to the economy Auto tier from the admin override', () => {
+    expect(resolveModelTier('fast', 'parent-model', { economy: { id: 'economy-model' } })).toBe('economy-model')
   })
 
-  it('returns the capable tier model', () => {
-    expect(resolveModelTier('capable', 'parent-model')).toBe('claude-sonnet-4-6')
+  it('maps capable to the premium Auto tier from the admin override', () => {
+    expect(resolveModelTier('capable', 'parent-model', { premium: { id: 'premium-model' } })).toBe('premium-model')
+  })
+
+  it('falls back to the package Auto tier map when no override is set', () => {
+    const fast = resolveModelTier('fast', 'parent-model')
+    expect(fast).toBeTruthy()
+    expect(fast).not.toBe('parent-model')
+    expect(fast).not.toBe('auto')
   })
 
   it('falls back to parent for unrecognized tiers', () => {

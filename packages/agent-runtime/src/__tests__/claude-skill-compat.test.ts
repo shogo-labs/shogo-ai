@@ -745,14 +745,13 @@ Old instructions.
       expect(config).toBeNull()
     })
 
-    test('browser_qa agent is canvas-first with browser + web + file tools and gpt-6-luna model', () => {
+    test('browser_qa agent is canvas-first with browser + web + file tools and auto model', () => {
       const ctx = createCtx()
       const tools = createTools(ctx)
       const config = getBuiltinSubagentConfig('browser_qa', ctx, tools)
       expect(config).not.toBeNull()
       expect(config!.name).toBe('browser_qa')
-      expect(config!.model).toBe('gpt-6-luna')
-      expect(config!.provider).toBe('openai')
+      expect(config!.model).toBe('auto')
       expect(config!.maxTurns).toBe(200)
       expect(config!.toolNames).toEqual(['browser', 'web', 'read_file', 'write_file', 'edit_file'])
       expect(config!.disallowedTools).toContain('task')

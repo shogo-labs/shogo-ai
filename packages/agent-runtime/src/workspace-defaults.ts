@@ -219,7 +219,7 @@ Long-lived facts and learnings are stored here.
       activeMode: 'canvas',
       model: {
         provider: 'anthropic',
-        name: 'claude-sonnet-4-6',
+        name: 'auto',
       },
     },
     null,
@@ -395,7 +395,7 @@ export function seedPersonalCompanionTemplate(dir: string): boolean {
     ...(pristineConfig ? templateConfig : {}),
     model: config.model ?? {
       provider: templateConfig.modelProvider ?? 'anthropic',
-      name: templateConfig.modelName ?? 'claude-sonnet-4-5',
+      name: templateConfig.modelName ?? 'auto',
     },
   }
   if (JSON.stringify(config) !== JSON.stringify(merged)) {

@@ -333,6 +333,13 @@ describe('configureProject — heartbeat paywall', () => {
     expect(result.agent?.heartbeatEnabled).toBe(false)
   })
 
+  it('creates a new agent config with auto when no model is given', async () => {
+    paidAnswer = true
+    const p = seedProject({ workspaceId: 'ws_paid' })
+    await configureProject(p.id, { agent: { heartbeatEnabled: true, heartbeatInterval: 900 } })
+    expect(agentConfigs.get(p.id)!.modelName).toBe('auto')
+  })
+
   it('allows enabling the heartbeat on a paid workspace', async () => {
     paidAnswer = true
     const p = seedProject({ workspaceId: 'ws_paid' })

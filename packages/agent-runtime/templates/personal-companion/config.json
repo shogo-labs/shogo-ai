@@ -8,5 +8,5 @@
   },
   "channels": [],
   "modelProvider": "anthropic",
-  "modelName": "claude-sonnet-4-5"
+  "modelName": "auto"
 }

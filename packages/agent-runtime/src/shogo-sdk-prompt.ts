@@ -17,7 +17,17 @@
  * (see `code-agent-prompt.ts`). One cross-reference line points there.
  */
 
-export const SHOGO_SDK_GUIDE = `## Shogo SDK (\`@shogo-ai/sdk\`)
+import { isAutoModel } from '@shogo/model-catalog'
+import { getAvailableModels } from './available-models'
+
+/**
+ * Placeholder for the concrete model id shown in the SDK examples. It is
+ * filled from the workspace's model list (see `getShogoSdkGuide`), so the
+ * guide never names a model the API does not offer.
+ */
+const EXAMPLE_LLM_MODEL_PLACEHOLDER = '__EXAMPLE_LLM_MODEL__'
+
+const SHOGO_SDK_GUIDE_TEMPLATE = `## Shogo SDK (\`@shogo-ai/sdk\`)
 
 The Shogo SDK is the zero-boilerplate client for apps built on top of the Shogo runtime. It gives the **user's app** turnkey access to auth, a typed database, transactional email, per-user memory, an LLM gateway, and a voice/chat layer — all behind a single \`createClient({ apiUrl })\` call.
 
@@ -47,7 +57,7 @@ const client = createClient({
 
 // All three of these are wired with no further config inside a pod:
 client.voice.telephony            // HostedRuntimeTokenClient
-client.llm!('claude-sonnet-4-5')  // Vercel AI SDK provider via Shogo Cloud
+client.llm!('${EXAMPLE_LLM_MODEL_PLACEHOLDER}')  // Vercel AI SDK provider via Shogo Cloud
 getServerToolsClient()            // installed integration tools
 \`\`\`
 
@@ -164,7 +174,7 @@ import { streamText } from 'ai'
 import { shogo } from '@/lib/shogo' // pod singleton — RUNTIME_AUTH_SECRET auto-detected
 
 const result = streamText({
-  model: shogo.llm!('claude-sonnet-4-5'),
+  model: shogo.llm!('${EXAMPLE_LLM_MODEL_PLACEHOLDER}'),
   prompt: 'Explain quantum entanglement.',
 })
 for await (const chunk of result.textStream) process.stdout.write(chunk)
@@ -211,3 +221,14 @@ The hook wraps \`@elevenlabs/react\` (or \`@elevenlabs/react-native\`) and gives
 - NEVER reach for the SDK to do agent-side work (file IO, search, exec). Use your built-in tools — the SDK is for code that ships in the user's app.
 - In a pod (\`RUNTIME_AUTH_SECRET\` present in env), do NOT pass \`shogoApiKey\` to \`createClient\`. The runtime token already authenticates voice, tools, AND \`client.llm\`; setting both warns at runtime and is a code smell.
 - For installed managed integration tools (Jira, Slack, Gmail, etc.), use \`@shogo-ai/sdk/tools\` per the "Installed Integrations" section above — that subsection has the canonical pattern and is the source of truth for tools usage.`
+
+/**
+ * The SDK guide with its example model id taken from the workspace's model
+ * list. If the list is not loaded or empty, the example is a placeholder that
+ * tells the agent to look the ids up from `GET /ai/v1/models`.
+ */
+export function getShogoSdkGuide(): string {
+  const first = getAvailableModels().find((m) => !isAutoModel(m.id))
+  const example = first?.id ?? '<model id from GET /ai/v1/models>'
+  return SHOGO_SDK_GUIDE_TEMPLATE.replaceAll(EXAMPLE_LLM_MODEL_PLACEHOLDER, example)
+}

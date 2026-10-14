@@ -423,7 +423,7 @@ export function getBuiltinSubagentConfig(
         systemPrompt: BROWSER_SUBAGENT_PROMPT,
         toolNames: ['browser', 'web', 'read_file', 'write_file'],
         disallowedTools: ['task', 'skill'],
-        model: 'claude-haiku-4-5',
+        model: AUTO_MODEL_ID,
         maxTurns: 200,
       }
     case 'browser_qa':
@@ -433,8 +433,7 @@ export function getBuiltinSubagentConfig(
         systemPrompt: BROWSER_QA_SUBAGENT_PROMPT,
         toolNames: ['browser', 'web', 'read_file', 'write_file', 'edit_file'],
         disallowedTools: ['task', 'skill'],
-        model: 'gpt-6-luna',
-        provider: 'openai',
+        model: AUTO_MODEL_ID,
         maxTurns: 200,
       }
     // case 'integration':
@@ -463,7 +462,7 @@ export function getBuiltinSubagentConfig(
         systemPrompt: MEDIA_SUBAGENT_PROMPT,
         toolNames: ['generate_image', 'transcribe_audio', 'read_file', 'write_file'],
         disallowedTools: ['task', 'skill'],
-        model: 'claude-haiku-4-5',
+        model: AUTO_MODEL_ID,
         maxTurns: 5,
       }
     case 'devops':
@@ -590,6 +589,7 @@ import {
   formatRoutingLog,
   autoTierIds,
   autoTierProviderHints,
+  type AutoTierOverride,
   type RoutingDecision,
   type ModelRouterOptions,
   type SpawnClassificationInput,
@@ -597,16 +597,22 @@ import {
 import { AUTO_MODEL_ID, inferProviderFromModel, isAutoModel } from '@shogo/model-catalog'
 import { createStableLoopTransform } from './stable-compaction'
 import { SUBAGENT_REPORT_INSTRUCTION } from './subagent-prompts'
+import { resolveAutoTierModelId } from './available-models'
 
-const MODEL_TIER_MAP: Record<ModelTierName, string> = {
-  fast: 'claude-haiku-4-5',
-  default: '', // sentinel — uses parent model
-  capable: 'claude-sonnet-4-6',
-}
-
-export function resolveModelTier(tier: ModelTierName | undefined, parentModel: string): string {
+/**
+ * Concrete model for a shorthand tier. `fast` is the economy Auto tier and
+ * `capable` the premium one, so tiers follow the admin's Auto tier map rather
+ * than pinned ids. `default` keeps the parent model.
+ */
+export function resolveModelTier(
+  tier: ModelTierName | undefined,
+  parentModel: string,
+  autoTierOverride?: AutoTierOverride,
+): string {
   if (!tier || tier === 'default') return parentModel
-  return MODEL_TIER_MAP[tier] || parentModel
+  const autoTier = tier === 'fast' ? 'economy' : tier === 'capable' ? 'premium' : undefined
+  if (!autoTier) return parentModel
+  return autoTierOverride?.[autoTier]?.id || resolveAutoTierModelId(autoTier)
 }
 
 // ---------------------------------------------------------------------------
@@ -993,7 +999,7 @@ export async function runSubagent(
         projectId,
         undefined,
         config.provider,
-        builtinConfig?.model || resolveModelTier(config.modelTier, parentCtx.effectiveModel || parentCtx.config.model.name),
+        builtinConfig?.model || resolveModelTier(config.modelTier, parentCtx.effectiveModel || parentCtx.config.model.name, parentCtx.autoTierOverride),
         builtinConfig?.provider || config.provider,
         bucketKey,
       )
@@ -1022,6 +1028,8 @@ export async function runSubagent(
   // model_tier was set by the main agent, use the router to pick the
   // cheapest model capable of handling this sub-agent's task.
   let model: string
+  // Provider for a model picked from a tier, which may differ from the parent's.
+  let tierProvider: string | undefined
   let routingDecision: RoutingDecision | undefined
   let routerOptions: ModelRouterOptions | undefined
 
@@ -1049,7 +1057,8 @@ export async function runSubagent(
     // Override won — skip tier shorthand resolution to honor the user's choice.
     model = parentModel
   } else {
-    model = resolveModelTier(config.modelTier, parentModel)
+    model = resolveModelTier(config.modelTier, parentModel, parentCtx.autoTierOverride)
+    if (model !== parentModel) tierProvider = inferProviderFromModel(model, provider)
   }
 
   try { callbacks?.onModelResolved?.(model) } catch { /* non-fatal */ }
@@ -1059,7 +1068,7 @@ export async function runSubagent(
       ? parentCtx.effectiveProvider
       : useAutoRouting
         ? (autoProviderHints[runModel] ?? inferProviderFromModel(runModel, provider))
-        : provider
+        : (tierProvider ?? provider)
     const result = await runAgentLoop({
       provider: runProvider,
       model: runModel,

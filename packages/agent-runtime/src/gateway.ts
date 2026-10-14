@@ -84,7 +84,8 @@ import {
   type AutoTierOverride,
 } from './model-router'
 import { CODE_AGENT_GENERAL_GUIDE, OUTPUT_CONTRACT_GUIDE } from './code-agent-prompt'
-import { SHOGO_SDK_GUIDE } from './shogo-sdk-prompt'
+import { getShogoSdkGuide } from './shogo-sdk-prompt'
+import { refreshAvailableModels } from './available-models'
 import { UI_UX_DESIGN_GUIDE } from './ui-ux-guide-prompt'
 import { MCPClientManager, type MCPServerConfig, type RemoteMCPServerConfig } from './mcp-client'
 import { WorkspaceLSPManager, resolveBin, WorktreeManager } from '@shogo/shared-runtime'
@@ -437,7 +438,7 @@ export interface GatewayConfig {
    */
   heartbeatToolsEnabled?: boolean
   channels: Array<{ type: string; config: Record<string, string>; model?: string }>
-  /** Model configuration: provider + name (e.g. { provider: 'anthropic', name: 'claude-sonnet-4-5' }).
+  /** Model configuration: provider + name (e.g. { provider: 'anthropic', name: 'auto' }).
    *  `thinkingLevel` is the admin-configured reasoning effort for the selected
    *  model (set by the client when picking a model); it overrides the env
    *  default in `resolveThinkingLevel`. */
@@ -974,7 +975,7 @@ export class AgentGateway {
         capabilityProfile: undefined,
         heartbeatToolsEnabled: undefined,
         channels: [],
-        model: { provider: 'anthropic', name: 'claude-haiku-4-5' },
+        model: { provider: 'anthropic', name: 'auto' },
         maxSessionMessages: 30,
         activeMode: teamDefaults.activeMode,
         allowedModes: teamDefaults.allowedModes,
@@ -2494,6 +2495,9 @@ export class AgentGateway {
     }
 
 
+    // Tool descriptions list the workspace's models, so refresh the list first
+    // (cached for a few minutes; a no-op without AI_PROXY_URL).
+    await refreshAvailableModels()
     const baseTools = createTools(toolContext)
 
     const mcpTools = this.mcpClientManager.getTools()
@@ -4205,7 +4209,7 @@ export class AgentGateway {
     // Toggleable so projects that don't ship a Shogo app (pure-chat agents,
     // SWE benches, etc.) can drop ~2k tokens from the cached prefix.
     if (this.config.sdkGuideEnabled !== false) {
-      pushStable('shogo-sdk-guide', SHOGO_SDK_GUIDE)
+      pushStable('shogo-sdk-guide', getShogoSdkGuide())
     }
 
     // 3. Capabilities Index — compact pointers to on-demand guides served by read_guide tool.

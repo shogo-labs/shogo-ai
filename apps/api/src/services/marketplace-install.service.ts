@@ -255,7 +255,7 @@ export async function installAgent(params: {
         heartbeatInterval: ac?.heartbeatInterval,
         heartbeatEnabled: ac?.heartbeatEnabled,
         modelProvider: ac?.modelProvider,
-        modelName: ac?.modelName ?? 'claude-haiku-4-5',
+        modelName: ac?.modelName ?? 'auto',
         channels: ac?.channels,
         quietHoursStart: ac?.quietHoursStart ?? null,
         quietHoursEnd: ac?.quietHoursEnd ?? null,

@@ -272,7 +272,7 @@ export async function configureProject(
       where: { projectId },
       create: buildAgentConfigCreateData(projectId, {
         modelProvider: a.modelProvider ?? 'anthropic',
-        modelName: a.modelName ?? 'claude-sonnet-4-6',
+        modelName: a.modelName ?? 'auto',
         channels: [],
       }) as any,
       update: modelData,

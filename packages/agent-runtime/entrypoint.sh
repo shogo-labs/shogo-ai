@@ -56,7 +56,7 @@ if [ ! -f "$WORKSPACE_DIR/config.json" ]; then
   log_timing "Creating default workspace config..."
   cat > "$WORKSPACE_DIR/config.json" << 'EOF'
 {
-  "model": { "provider": "anthropic", "name": "claude-sonnet-4-6" },
+  "model": { "provider": "anthropic", "name": "auto" },
   "activeMode": "none",
   "heartbeat": { "enabled": false, "intervalMs": 300000 },
   "channels": [],
