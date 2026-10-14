@@ -773,7 +773,11 @@ export class MetalWarmPoolController {
     const response = await this.fetchImpl(`http://${host.meshIp}:${host.agentPort}${path}`, {
       method: action === 'mount' ? 'POST' : 'DELETE',
       headers: this.agentHeaders(),
-      body: JSON.stringify({ projectId, destDir }),
+      body: JSON.stringify({
+        projectId,
+        destDir,
+        ...(action === 'mount' ? { remote: true } : {}),
+      }),
       signal: AbortSignal.timeout(10 * 60_000),
     })
     const body = await response.json().catch(() => ({}))

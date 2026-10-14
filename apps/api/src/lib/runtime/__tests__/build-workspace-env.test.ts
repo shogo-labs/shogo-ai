@@ -144,15 +144,21 @@ describe('buildWorkspaceEnv', () => {
   it('sizes the metal VM from the tier and the members\' stacks', async () => {
     setDockerClassOverride(true)
     try {
-      const docker = await buildWorkspaceEnv('ws-1', ['p1'], {
+      const dockerOpts = {
         ...seams,
         forMetal: true,
         _loadWorkspace: async () => ({ name: 'My WS', composioScope: 'workspace', instanceSize: 'xlarge' }),
         _loadProjects: async (ids: string[]) =>
           ids.map((id) => ({ id, name: id, settings: { techStackId: 'docker-compose' } })),
-      } as any)
+      }
+      const docker = await buildWorkspaceEnv('ws-1', ['p1'], { ...dockerOpts, anchorProjectId: 'p1' } as any)
       expect(docker.SHOGO_VM_VCPUS).toBe('8')
       expect(docker.SHOGO_VM_MEM_MIB).toBe('16384')
+
+      // The workspace agent's VM runs no member stacks; they run in their own VMs.
+      const agent = await buildWorkspaceEnv('ws-1', ['p1'], dockerOpts as any)
+      expect(agent.SHOGO_RUNTIME_CLASS).toBeUndefined()
+      expect(agent.SHOGO_VM_MEM_MIB).not.toBe('16384')
 
       const standard = await buildWorkspaceEnv('ws-1', ['p1'], {
         ...seams,
@@ -205,6 +211,28 @@ describe('buildWorkspaceEnv', () => {
     expect(metal.SHOGO_DURABILITY_HOST_MEDIATED).toBe('1')
     const k8s = await buildWorkspaceEnv('ws-1', ['p1'], seams as any)
     expect(k8s.SHOGO_DURABILITY_HOST_MEDIATED).toBeUndefined()
+  })
+
+  describe('remote workspace members on metal', () => {
+    it('mounts the workspace agent members remotely, with no local copy', async () => {
+      const env = await buildWorkspaceEnv('ws-1', ['p1', 'p2'], { ...seams, forMetal: true } as any)
+      expect(env.WORKSPACE_PROJECT_IDS).toBe('')
+      expect(env.WORKSPACE_REMOTE_PROJECT_IDS).toBe('p1,p2')
+    })
+
+    it('leaves a project-anchored runtime and non-metal runtimes with local members', async () => {
+      const anchored = await buildWorkspaceEnv('ws-1', ['p1', 'p2'], {
+        ...seams,
+        forMetal: true,
+        anchorProjectId: 'p1',
+      } as any)
+      expect(anchored.WORKSPACE_PROJECT_IDS).toBe('p1,p2')
+      expect(anchored.WORKSPACE_REMOTE_PROJECT_IDS).toBeUndefined()
+
+      const k8s = await buildWorkspaceEnv('ws-1', ['p1'], seams as any)
+      expect(k8s.WORKSPACE_PROJECT_IDS).toBe('p1')
+      expect(k8s.WORKSPACE_REMOTE_PROJECT_IDS).toBeUndefined()
+    })
   })
 
   it('handles a workspace with no attached projects', async () => {

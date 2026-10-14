@@ -24,6 +24,7 @@ import { join, resolve } from 'node:path'
 import {
   isWorkspaceRuntimeMode,
   workspaceAttachedProjectIds,
+  workspaceRemoteProjectIds,
   workspaceAvailableProjectsManifest,
   workspaceProjectsManifest,
   parseWorkspaceMounts,
@@ -41,6 +42,11 @@ export interface WorkspaceMember extends WorkspaceProjectEntry {
   mountPath: string
   realPath?: string
   readonly: boolean
+  /**
+   * The project's files stay in its own runtime; nothing is on this disk.
+   * File tools and `exec({ projectId })` reach it through the API.
+   */
+  remote: boolean
 }
 
 export interface MountWorkspaceMemberInput {
@@ -51,6 +57,8 @@ export interface MountWorkspaceMemberInput {
   realPath?: string
   /** A project can be mounted read-only for cross-project inspection. */
   readonly?: boolean
+  /** Register the member without a local copy (metal remote members). */
+  remote?: boolean
 }
 
 interface RegistryState {
@@ -137,6 +145,16 @@ function writeManifest(): void {
           (project.description ? ` — ${project.description}` : ''),
       )
     }
+    if (mounted.some((m) => m.remote)) {
+      lines.push(
+        '',
+        "Mounted projects are live: they stay in the project's own runtime, with the same files, dev server, and git",
+        "checkout the project's own agent sees, so a change either of you makes is visible to the other immediately.",
+        'Use file tools with `<id>/...` paths (for example `read_file <id>/src/App.tsx`). For commands, call `exec`',
+        'with `projectId: "<id>"`; its shell starts in the project folder. Plain `exec` runs in this workspace',
+        'runtime, which has no project files.',
+      )
+    }
     if (folderMounts.length > 0) {
       lines.push('', '## Linked folders', '', 'Host folders the user linked to this workspace, mounted as top-level folders:', '')
       for (const m of folderMounts) lines.push(`- \`${m.mount}/\` — \`${m.path}\``)
@@ -200,10 +218,57 @@ export function initWorkspaceMembers(): void {
       mountPath: root,
       realPath: realPathForMount(id),
       readonly: false,
+      remote: false,
+    })
+  }
+  const readonlyIds = new Set(
+    (process.env.WORKSPACE_READONLY_PROJECT_IDS ?? '').split(',').map((s) => s.trim()).filter(Boolean),
+  )
+  for (const id of workspaceRemoteProjectIds()) {
+    if (state.members.has(id) || !safeId(id)) continue
+    const fromCatalog = names.get(id) ?? state.available.find((p) => p.id === id)
+    state.members.set(id, {
+      id,
+      name: fromCatalog?.name ?? id,
+      description: fromCatalog?.description ?? null,
+      mounted: true,
+      mountPath: memberPath(id),
+      readonly: readonlyIds.has(id),
+      remote: true,
     })
   }
   state.initialized = true
   writeManifest()
+}
+
+/** The mounted member `id` when it lives in its own runtime, else null. */
+export function remoteWorkspaceMember(id: string): WorkspaceMember | null {
+  if (!state.initialized) initWorkspaceMembers()
+  const member = state.members.get(id)
+  return member?.remote ? { ...member } : null
+}
+
+/**
+ * The remote member a workspace-relative path points into (its first
+ * segment), or null when the path is local.
+ */
+export function remoteMemberForPath(path: string): WorkspaceMember | null {
+  if (typeof path !== 'string' || !path) return null
+  let rel = path.replace(/\\/g, '/')
+  const root = state.workspaceDir.replace(/\\/g, '/').replace(/\/+$/, '')
+  if (rel === root) return null
+  if (rel.startsWith(`${root}/`)) rel = rel.slice(root.length + 1)
+  else if (rel.startsWith('/')) return null
+  rel = rel.replace(/^(\.\/)+/, '')
+  const first = rel.split('/')[0]
+  return first ? remoteWorkspaceMember(first) : null
+}
+
+/** Keep the env lists other modules read in step with the registry. */
+function syncMemberEnv(): void {
+  const members = [...state.members.values()]
+  process.env.WORKSPACE_PROJECT_IDS = members.filter((m) => !m.remote).map((m) => m.id).join(',')
+  process.env.WORKSPACE_REMOTE_PROJECT_IDS = members.filter((m) => m.remote).map((m) => m.id).join(',')
 }
 
 export function isWorkspaceMembersInitialized(): boolean {
@@ -227,15 +292,35 @@ export async function mountWorkspaceMember(input: MountWorkspaceMemberInput): Pr
       if (input.readonly !== undefined && existing.readonly !== input.readonly) {
         const root = existing.realPath || existing.mountPath
         existing.readonly = input.readonly
-        updateWorkspaceFolders({
-          readonlyRemove: input.readonly ? [] : [root],
-          readonlyAdd: input.readonly ? [root] : [],
-        })
+        if (!existing.remote) {
+          updateWorkspaceFolders({
+            readonlyRemove: input.readonly ? [] : [root],
+            readonlyAdd: input.readonly ? [root] : [],
+          })
+        }
         writeManifest()
       }
       return { ...existing }
     }
     const mountPath = memberPath(input.id)
+    const known = state.available.find((p) => p.id === input.id)
+
+    if (input.remote) {
+      const member: WorkspaceMember = {
+        id: input.id,
+        name: input.name || known?.name || input.id,
+        description: input.description ?? known?.description ?? null,
+        mounted: true,
+        mountPath,
+        readonly: input.readonly === true,
+        remote: true,
+      }
+      state.members.set(input.id, member)
+      syncMemberEnv()
+      writeManifest()
+      return { ...member }
+    }
+
     const realPath = realPathForMount(input.id, input.realPath)
 
     if (realPath && resolve(realPath) !== resolve(mountPath) && !existsSync(mountPath)) {
@@ -265,7 +350,6 @@ export async function mountWorkspaceMember(input: MountWorkspaceMemberInput): Pr
       }
     }
 
-    const known = state.available.find((p) => p.id === input.id)
     const member: WorkspaceMember = {
       id: input.id,
       name: input.name || known?.name || input.id,
@@ -274,6 +358,7 @@ export async function mountWorkspaceMember(input: MountWorkspaceMemberInput): Pr
       mountPath,
       realPath: realPathForMount(input.id, realPath),
       readonly: input.readonly === true,
+      remote: false,
     }
     state.members.set(input.id, member)
     const allowedRoot = member.realPath || member.mountPath
@@ -281,7 +366,7 @@ export async function mountWorkspaceMember(input: MountWorkspaceMemberInput): Pr
       add: [allowedRoot],
       readonlyAdd: member.readonly ? [allowedRoot] : [],
     })
-    process.env.WORKSPACE_PROJECT_IDS = [...state.members.keys()].join(',')
+    syncMemberEnv()
     writeManifest()
     return { ...member }
   })
@@ -293,6 +378,11 @@ export async function unmountWorkspaceMember(projectId: string): Promise<boolean
     const member = state.members.get(projectId)
     if (!member) return false
     state.members.delete(projectId)
+    if (member.remote) {
+      syncMemberEnv()
+      writeManifest()
+      return true
+    }
     const sync = state.syncs.get(projectId)
     if (sync) {
       try { await (sync as any).flushAndShutdown?.({ timeoutMs: 10_000, forceProjectArchive: true }) } catch {}
@@ -313,7 +403,7 @@ export async function unmountWorkspaceMember(projectId: string): Promise<boolean
     } catch {
       // A concurrent API/runtime refresh may already have removed it.
     }
-    process.env.WORKSPACE_PROJECT_IDS = [...state.members.keys()].join(',')
+    syncMemberEnv()
     writeManifest()
     return true
   })

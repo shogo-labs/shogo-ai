@@ -22,7 +22,8 @@ import { createWorkspaceAgentTools } from './workspace-agent-tools'
 import { createTriggerTools } from './trigger-tools'
 import { createMeetingTools } from './meeting-tools'
 import { createChannelTools } from './channel-tools'
-import { isWorkspaceRuntimeMode, resolveRuntimeIdentity, workspaceAttachedProjectIds } from './workspace-runtime-mode'
+import { isWorkspaceAgentRuntime, isWorkspaceRuntimeMode, resolveRuntimeIdentity, workspaceAttachedProjectIds } from './workspace-runtime-mode'
+import { listWorkspaceMembers, remoteMemberForPath, remoteWorkspaceMember } from './workspace-members'
 import { isSearchEnabled } from './search-flag'
 import { isInQuietHours } from './quiet-hours'
 import { disabledToolNamesForProfile } from './capability-profiles'
@@ -574,6 +575,91 @@ function isRetryableWorkspaceFailure(err: unknown): boolean {
 
 const MOUNT_RETRY_BACKOFF_MS = [200, 500]
 
+/** Exec's soft timeout plus a cold project runtime; the API allows the same. */
+const REMOTE_MEMBER_TOOL_TIMEOUT_MS = 10 * 60_000
+
+/** Run a member tool in a mounted project's own runtime, through the API. */
+async function runRemoteMemberTool(
+  ctx: ToolContext,
+  projectId: string,
+  name: string,
+  params: Record<string, unknown>,
+): Promise<AgentToolResult<any>> {
+  const workspaceId = resolveWorkspaceId(ctx)
+  const path =
+    `/api/internal/workspaces/${encodeURIComponent(workspaceId || '')}` +
+    `/sessions/${encodeURIComponent(ctx.sessionId || '')}` +
+    `/members/${encodeURIComponent(projectId)}/tools/${encodeURIComponent(name)}`
+  try {
+    const response = await workspaceMetaFetch(
+      ctx,
+      path,
+      { method: 'POST', body: JSON.stringify({ params }) },
+      REMOTE_MEMBER_TOOL_TIMEOUT_MS,
+    )
+    const result = response?.result
+    if (!result || !Array.isArray(result.content)) {
+      return textResult({ error: `The project runtime returned no result for ${name}.`, projectId })
+    }
+    return result as AgentToolResult<any>
+  } catch (err: any) {
+    return textResult({ error: err?.message || `${name} failed in project ${projectId}`, projectId })
+  }
+}
+
+const REMOTE_RUN_ID = /^p:([^:]+):(.+)$/
+
+/** Sessions that have a shell in a project's runtime, so unmount can end it. */
+const remoteShells = new Set<string>()
+const remoteShellKey = (ctx: ToolContext, projectId: string) => `${ctx.sessionId ?? ''}\n${projectId}`
+
+/** Kill this session's background runs in the project's runtime. Best effort. */
+async function releaseRemoteShell(ctx: ToolContext, projectId: string): Promise<void> {
+  const key = remoteShellKey(ctx, projectId)
+  if (!remoteShells.delete(key)) return
+  const workspaceId = resolveWorkspaceId(ctx)
+  await workspaceMetaFetch(
+    ctx,
+    `/api/internal/workspaces/${encodeURIComponent(workspaceId || '')}` +
+      `/sessions/${encodeURIComponent(ctx.sessionId || '')}` +
+      `/members/${encodeURIComponent(projectId)}/tools/session`,
+    { method: 'DELETE' },
+    30_000,
+  ).catch((err) => console.warn(`[gateway-tools] could not release shell in ${projectId}:`, err?.message ?? err))
+}
+
+/** Prefix run ids from a project's runtime so exec_wait can route back to it. */
+function tagRemoteRunIds(result: AgentToolResult<any>, projectId: string): AgentToolResult<any> {
+  const details = result.details
+  if (!details || typeof details !== 'object') return result
+  const tag = (id: unknown) => (typeof id === 'string' && !REMOTE_RUN_ID.test(id) ? `p:${projectId}:${id}` : id)
+  const next: any = { ...details, projectId }
+  if ('run_id' in next) next.run_id = tag(next.run_id)
+  if (Array.isArray(next.processes)) {
+    next.processes = next.processes.map((p: any) => (p && typeof p === 'object' ? { ...p, runId: tag(p.runId) } : p))
+  }
+  return textResult(next)
+}
+
+/**
+ * Send a file tool call whose path is inside a project that lives in its own
+ * runtime (a remote member) to that runtime; everything else runs here.
+ */
+function withRemoteMemberPaths(tool: AgentTool, ctx: ToolContext): AgentTool {
+  return {
+    ...tool,
+    execute: async (toolCallId, params, ...rest: any[]) => {
+      const path = (params as { path?: unknown })?.path
+      const member = typeof path === 'string' ? remoteMemberForPath(path) : null
+      if (!member) return (tool.execute as any)(toolCallId, params, ...rest)
+      if (member.readonly && tool.name !== 'read_file') {
+        return textResult({ error: `Project ${member.id} is mounted read-only. Remount it readwrite to change it.` })
+      }
+      return runRemoteMemberTool(ctx, member.id, tool.name, params as Record<string, unknown>)
+    },
+  }
+}
+
 async function mountWorkspaceProject(
   ctx: ToolContext,
   projectId: string,
@@ -666,6 +752,8 @@ function createUnmountProjectTool(ctx: ToolContext): AgentTool {
           error: 'This tool is only available in a workspace runtime.',
         })
       const workspaceId = resolveWorkspaceId(ctx)
+      // While still mounted: the API only reaches a project's runtime for a mounted member.
+      await releaseRemoteShell(ctx, params.projectId)
       return textResult(
         await workspaceMetaFetch(
           ctx,
@@ -698,6 +786,35 @@ function createUnmountProjectTool(ctx: ToolContext): AgentTool {
  * so this tool is what actually triggers that on-demand build via the
  * runtime's own `POST /p/<projectId>/preview/start`.
  */
+/**
+ * A remote member previews from its own runtime. Mount it (or re-confirm the
+ * mount) and hand back the URL the API resolves for it. Null when the project
+ * is, or mounts as, a local member.
+ */
+async function remotePreview(ctx: ToolContext, projectId: string): Promise<AgentToolResult<any> | null> {
+  const existing = listWorkspaceMembers().find((m) => m.id === projectId)
+  if (existing && !existing.remote) return null
+  const noUrl = {
+    noFallbackUrl: true,
+    guidance: 'There is no working localhost/fallback link. Tell the user this failed — do not construct or offer any other URL.',
+  }
+  try {
+    const mounted = await mountWorkspaceProject(ctx, projectId, existing?.readonly ? 'readonly' : 'readwrite')
+    if (typeof mounted?.previewUrl === 'string' && mounted.previewUrl) {
+      return textResult({
+        ok: true,
+        projectId,
+        url: mounted.previewUrl,
+        note: "Served by the project's own runtime; it starts the preview when the URL is opened.",
+      })
+    }
+    if (!remoteWorkspaceMember(projectId)) return null
+    return textResult({ error: `No preview URL is available for project ${projectId}.`, ...noUrl })
+  } catch (error: any) {
+    return textResult({ error: error?.message || 'preview failed', ...noUrl })
+  }
+}
+
 function createPreviewProjectTool(ctx: ToolContext): AgentTool {
   return {
     name: 'preview_project',
@@ -722,6 +839,8 @@ function createPreviewProjectTool(ctx: ToolContext): AgentTool {
         })
       const projectId = String(params?.projectId || '')
       if (!projectId) return textResult({ error: 'projectId is required' })
+      const remote = isWorkspaceAgentRuntime() ? await remotePreview(ctx, projectId) : null
+      if (remote) return remote
       const port = process.env.PORT || '8080'
       const startPreview = () =>
         fetch(`http://localhost:${port}/p/${encodeURIComponent(projectId)}/preview/start`, {
@@ -879,10 +998,40 @@ function buildSoftTimeoutResult(entry: CommandEntry, softTimeoutMs: number): Age
   })
 }
 
+/**
+ * `projectId` on exec/exec_list: the workspace agent's way into a mounted
+ * project's own runtime. Project runtimes never see the parameter.
+ */
+const EXEC_PROJECT_ID_DESCRIPTION =
+  "Pass `projectId` to run the command inside that mounted project's own runtime, where its files, dev server, " +
+  'and git checkout live; that shell starts in the project folder and keeps its own working directory. Without it, ' +
+  'the command runs in the workspace runtime, which has no project files.'
+
+/**
+ * Resolve exec's `projectId` to a remote member, or the error to return.
+ * Null means run locally.
+ */
+function execRemoteTarget(projectId: unknown): { id: string } | { error: AgentToolResult<any> } | null {
+  if (projectId === undefined || projectId === null || projectId === '') return null
+  const id = String(projectId)
+  const member = remoteWorkspaceMember(id)
+  if (member) {
+    if (member.readonly) {
+      return { error: textResult({ error: `Project ${id} is mounted read-only, so commands can't run in it. Remount it readwrite first.` }) }
+    }
+    return { id }
+  }
+  if (listWorkspaceMembers().some((m) => m.id === id)) {
+    return { error: textResult({ error: `Project ${id} is mounted on this runtime's disk at ${id}/. Run exec without projectId (cd into ${id}/ first).` }) }
+  }
+  return { error: textResult({ error: `Project ${id} is not mounted. Call mount_project first, then pass projectId again.` }) }
+}
+
 function createExecTool(ctx: ToolContext): AgentTool {
+  const projectScoped = isWorkspaceAgentRuntime()
   return {
     name: 'exec',
-    description: `Run a shell command. The shell remembers your working directory across calls — do NOT prepend cd to commands, the cwd from your last exec call is preserved automatically. The result includes the current cwd. Destructive commands are blocked. Quote file paths containing spaces. Use && to chain dependent commands, ; for independent ones. Never use interactive flags (-i). Prefer read_file over cat/head/tail, and the \`search\` tool over grep/rg for finding code. Tokens saved to .env are auto-loaded. Soft timeout: if the command does not finish within \`timeout\` ms (default ${DEFAULT_EXEC_SOFT_TIMEOUT_MS}), this tool returns \`{ status: "running", run_id, pid, ... }\` while the command keeps running in the background. You can then call \`exec_wait(run_id)\` to keep waiting, or \`exec("kill <pid>")\` to terminate it and move on.`,
+    description: `Run a shell command. The shell remembers your working directory across calls — do NOT prepend cd to commands, the cwd from your last exec call is preserved automatically. The result includes the current cwd. Destructive commands are blocked. Quote file paths containing spaces. Use && to chain dependent commands, ; for independent ones. Never use interactive flags (-i). Prefer read_file over cat/head/tail, and the \`search\` tool over grep/rg for finding code. Tokens saved to .env are auto-loaded. Soft timeout: if the command does not finish within \`timeout\` ms (default ${DEFAULT_EXEC_SOFT_TIMEOUT_MS}), this tool returns \`{ status: "running", run_id, pid, ... }\` while the command keeps running in the background. You can then call \`exec_wait(run_id)\` to keep waiting, or \`exec("kill <pid>")\` to terminate it and move on.${projectScoped ? ` ${EXEC_PROJECT_ID_DESCRIPTION}` : ''}`,
     label: 'Execute Command',
     parameters: Type.Object({
       command: Type.String({ description: 'Shell command to execute' }),
@@ -893,11 +1042,29 @@ function createExecTool(ctx: ToolContext): AgentTool {
             'If exceeded, the command keeps running in the background and you receive a run_id to wait on or kill.',
         }),
       ),
+      ...(projectScoped
+        ? {
+            projectId: Type.Optional(
+              Type.String({ description: 'Mounted project id to run the command in. Omit to run in the workspace runtime.' }),
+            ),
+          }
+        : {}),
     }),
     execute: async (_toolCallId, params) => {
-      const { command, timeout = DEFAULT_EXEC_SOFT_TIMEOUT_MS } = params as {
+      const { command, timeout = DEFAULT_EXEC_SOFT_TIMEOUT_MS, projectId } = params as {
         command: string
         timeout?: number
+        projectId?: string
+      }
+
+      if (projectScoped) {
+        const target = execRemoteTarget(projectId)
+        if (target && 'error' in target) return target.error
+        if (target) {
+          remoteShells.add(remoteShellKey(ctx, target.id))
+          const result = await runRemoteMemberTool(ctx, target.id, 'exec', { command, timeout })
+          return tagRemoteRunIds(result, target.id)
+        }
       }
       const attributedCommand = injectCommitTrailer(command, {
         ...process.env,
@@ -1523,6 +1690,19 @@ function createExecWaitTool(ctx: ToolContext): AgentTool {
         pattern?: string
       }
 
+      const remoteRun = isWorkspaceAgentRuntime() ? REMOTE_RUN_ID.exec(run_id ?? '') : null
+      if (remoteRun) {
+        const [, remoteProjectId, remoteRunId] = remoteRun
+        const target = execRemoteTarget(remoteProjectId)
+        if (target && 'error' in target) return target.error
+        const result = await runRemoteMemberTool(ctx, remoteProjectId!, 'exec_wait', {
+          run_id: remoteRunId,
+          ...(timeout_ms !== undefined ? { timeout_ms } : {}),
+          ...(pattern !== undefined ? { pattern } : {}),
+        })
+        return tagRemoteRunIds(result, remoteProjectId!)
+      }
+
       const registry = ctx.commandRegistry
       if (!registry) {
         return textResult({
@@ -1651,6 +1831,7 @@ function createExecWaitTool(ctx: ToolContext): AgentTool {
 }
 
 function createExecListTool(ctx: ToolContext): AgentTool {
+  const projectScoped = isWorkspaceAgentRuntime()
   return {
     name: 'exec_list',
     description:
@@ -1659,10 +1840,22 @@ function createExecListTool(ctx: ToolContext): AgentTool {
       'not finished or been killed). Each entry has a run_id, the command, its pid, ' +
       'and how long it has been running. Use `exec_wait(run_id)` to poll one or ' +
       '`exec("kill <pid>")` to stop it. Entries flagged `stale: true` were started ' +
-      'before the runtime restarted and can no longer be polled.',
+      'before the runtime restarted and can no longer be polled.' +
+      (projectScoped
+        ? " Pass `projectId` to list the commands you started in that mounted project's runtime (kill them with exec and the same projectId)."
+        : ''),
     label: 'List Running Commands',
-    parameters: Type.Object({}),
-    execute: async () => {
+    parameters: Type.Object(
+      projectScoped
+        ? { projectId: Type.Optional(Type.String({ description: 'Mounted project id whose runtime to list.' })) }
+        : {},
+    ),
+    execute: async (_toolCallId, params) => {
+      if (projectScoped) {
+        const target = execRemoteTarget((params as { projectId?: string } | undefined)?.projectId)
+        if (target && 'error' in target) return target.error
+        if (target) return tagRemoteRunIds(await runRemoteMemberTool(ctx, target.id, 'exec_list', {}), target.id)
+      }
       const registry = ctx.commandRegistry
       if (!registry) {
         return textResult({
@@ -7874,9 +8067,43 @@ function createSocialMediaTool(ctx: ToolContext): AgentTool {
 }
 
 /** All gateway tools (unified set). Includes base tools + agent_* orchestration tools. */
+/**
+ * Tools a workspace agent may run in this runtime for a project it has
+ * mounted (`/agent/workspace/tools/:name`). Read-only members never get
+ * the writing ones; the API enforces that before proxying.
+ */
+export const MEMBER_TOOL_NAMES: ReadonlySet<string> = new Set([
+  'read_file',
+  'write_file',
+  'edit_file',
+  'exec',
+  'exec_wait',
+  'exec_list',
+])
+
+/** One `MEMBER_TOOL_NAMES` tool, gated exactly as `createTools` gates it. */
+export function createMemberTool(name: string, ctx: ToolContext): AgentTool | null {
+  const pe = ctx.permissionEngine
+  const g = (tool: AgentTool, cat: import('./types').PermissionCategory) => applyPermissionGate(tool, cat, pe)
+  let tool: AgentTool
+  switch (name) {
+    case 'read_file': tool = g(createReadFileTool(ctx), 'file_read'); break
+    case 'write_file': tool = g(createWriteFileTool(ctx), 'file_write'); break
+    case 'edit_file': tool = g(createEditFileTool(ctx), 'file_write'); break
+    case 'exec': tool = g(createExecTool(ctx), 'shell'); break
+    case 'exec_wait': tool = g(createExecWaitTool(ctx), 'shell'); break
+    case 'exec_list': tool = g(createExecListTool(ctx), 'shell'); break
+    default: return null
+  }
+  return pe ? withActionRules(tool, pe) : tool
+}
+
 export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTool[] {
   const pe = ctx.permissionEngine
   const g = (tool: AgentTool, cat: import('./types').PermissionCategory) => applyPermissionGate(tool, cat, pe)
+  const remotePaths = isWorkspaceAgentRuntime()
+    ? (tool: AgentTool) => withRemoteMemberPaths(tool, ctx)
+    : (tool: AgentTool) => tool
 
   const tools: AgentTool[] = [
     g(createExecTool(ctx), 'shell'),
@@ -7886,9 +8113,9 @@ export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTo
     g(createGitHubMergePullRequestTool(ctx), 'network'),
     g(createGitHubConnectTool(ctx), 'network'),
     createExposePortTool(ctx),
-    g(createReadFileTool(ctx), 'file_read'),
-    g(createWriteFileTool(ctx), 'file_write'),
-    g(createEditFileTool(ctx), 'file_write'),
+    g(remotePaths(createReadFileTool(ctx)), 'file_read'),
+    g(remotePaths(createWriteFileTool(ctx)), 'file_write'),
+    g(remotePaths(createEditFileTool(ctx)), 'file_write'),
     g(createDeleteFileTool(ctx), 'file_delete'),
     // search is disabled while local indexing is off (reindex-on-query hangs).
     // Re-enable with SHOGO_SEARCH_ENABLED=1 (also pre-warms the index — see gateway.ts start()).

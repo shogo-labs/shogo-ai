@@ -22,7 +22,8 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, statSy
 import { join, dirname, resolve } from 'path'
 import { fileURLToPath } from 'url'
 import type { Message, ImageContent } from '@mariozechner/pi-ai'
-import type { StreamFn, AgentTool } from '@mariozechner/pi-agent-core'
+import type { StreamFn, AgentTool, AgentToolResult } from '@mariozechner/pi-agent-core'
+import { randomUUID } from 'node:crypto'
 import { Type } from '@sinclair/typebox'
 import type { ChannelAdapter, IncomingMessage, AgentStatus, ChannelStatus, StreamChunkConfig, SandboxConfig } from './types'
 import { loadAllSkills, migrateFromLegacySkills, matchSkill, buildSkillsPromptSection, type Skill } from './skills'
@@ -34,7 +35,7 @@ import { TRIGGERS_GUIDE, triggerToolsAvailable } from './trigger-tools'
 import { runAgentLoop, classifyRetryability, RetryWaker, type LoopDetectorConfig } from './agent-loop'
 import { LONG_RETRY_MS, recordRetryEpisode, recordRetryLong, recordRetryNoProgress, recordRetryNow } from './retry-telemetry'
 import type { ToolContext } from './gateway-tools'
-import { createTools, textResult, filterDisabledCapabilityTools, filterSubagentOnlyTools, expectedCoreToolsForAgentMode, createModeUnavailableTool, type RestrictedMode } from './gateway-tools'
+import { createTools, createMemberTool, textResult, filterDisabledCapabilityTools, filterSubagentOnlyTools, expectedCoreToolsForAgentMode, createModeUnavailableTool, type RestrictedMode } from './gateway-tools'
 import { DEFAULT_CLOUD_SECURITY_PREFERENCE, PermissionEngine, parseSecurityPolicy } from './permission-engine'
 import { buildExposedPortsPrompt } from './exposed-ports-prompt'
 import { HookEmitter, loadAllHooks, workspaceHooksSignature } from './hooks'
@@ -697,6 +698,8 @@ export class AgentGateway {
   private shellCwd = new Map<string, string>()
   /** Per-session backgrounded command registry — soft-timed-out exec runs */
   private commandRegistries = new Map<string, import('./command-registry').CommandRegistry>()
+  /** Shell state for workspace agents running tools here on a mounted project. */
+  private memberSessions = new Map<string, { cwd?: string; registry: CommandRegistry; files: FileStateCache }>()
   /**
    * Admin-configured Auto-mode tier overrides, parsed once from the injected
    * `AGENT_AUTO_TIER_MAP` env var. Undefined keeps the hardcoded defaults.
@@ -1502,6 +1505,10 @@ export class AgentGateway {
       try { reg.killAll() } catch { /* already gone */ }
     }
     this.commandRegistries.clear()
+    for (const state of this.memberSessions.values()) {
+      try { state.registry.killAll() } catch { /* already gone */ }
+    }
+    this.memberSessions.clear()
 
     this.sessionManager.destroy()
     this.sessionPersistence?.close()
@@ -2146,6 +2153,58 @@ export class AgentGateway {
    */
   killSessionProcess(sessionId: string, runId: string): boolean {
     return this.getOrCreateCommandRegistry(sessionId).kill(runId)
+  }
+
+  /**
+   * Run a member-allowlisted file/exec tool here for a workspace agent that
+   * has this project mounted. Each calling session gets its own shell cwd,
+   * background runs, and read tracking, apart from this project's own agent.
+   */
+  async runMemberTool(
+    name: string,
+    params: Record<string, unknown>,
+    callerSession: string,
+  ): Promise<AgentToolResult<any>> {
+    const key = `member:${callerSession}`
+    let state = this.memberSessions.get(key)
+    if (!state) {
+      state = { registry: new CommandRegistry(), files: new FileStateCache(this.workspaceDir) }
+      this.memberSessions.set(key, state)
+    }
+    const s = state
+    const initialCwd = this.initialShellCwd(this.workspaceDir)
+    const ctx: ToolContext = {
+      workspaceDir: this.workspaceDir,
+      channels: this.channels,
+      config: this.config,
+      projectId: this.projectId,
+      workspaceId: process.env.WORKSPACE_ID,
+      sessionId: key,
+      sandbox: this.config.sandbox,
+      mainSessionIds: this.config.mainSessionIds,
+      permissionEngine: this.permissionEngine ?? undefined,
+      canvasFileWatcher: this.canvasFileWatcher,
+      fileStateCache: s.files,
+      shellState: {
+        getCwd: () => s.cwd || initialCwd,
+        setCwd: (cwd: string) => { s.cwd = cwd },
+        initialCwd,
+      },
+      commandRegistry: s.registry,
+    }
+    const tool = createMemberTool(name, ctx)
+    if (!tool) throw new Error(`Unsupported tool: ${name}`)
+    return tool.execute(`member-${randomUUID()}`, params as any)
+  }
+
+  /** Kill a workspace agent's background runs here and forget its shell. */
+  releaseMemberSession(callerSession: string): boolean {
+    const key = `member:${callerSession}`
+    const state = this.memberSessions.get(key)
+    if (!state) return false
+    state.registry.killAll()
+    this.memberSessions.delete(key)
+    return true
   }
 
   /** Tear down per-session bookkeeping. Kills any backgrounded shell runs and releases browsers. */

@@ -35,6 +35,7 @@ import {
 } from '../services/workspace-session.service'
 import { memberCallFailure, resolveWhileStarting } from '../lib/workspace-member-call'
 import { resolveWorkspaceRuntimeUrl } from '../lib/resolve-workspace-runtime-url'
+import { importCloudModule } from '../lib/cloud-import'
 import { deriveWorkspaceRuntimeToken } from '../lib/workspace-runtime-token'
 import { getRuntimeManager } from '../lib/runtime/manager'
 import { resolve as resolvePath } from 'path'
@@ -112,6 +113,15 @@ export interface RuntimeInternalRoutesOptions {
   /** Cloud-only GitHub App operations; omitted from the slim desktop bundle. */
   loadGitHub?: () => Promise<GitHubService>
 }
+
+/** Tools the workspace agent may run in a mounted project's runtime. */
+const MEMBER_TOOLS = new Set(['read_file', 'write_file', 'edit_file', 'exec', 'exec_wait', 'exec_list'])
+/** The subset a read-only mount still allows. */
+const MEMBER_READ_TOOLS = new Set(['read_file'])
+/** Long enough for exec's soft timeout plus a cold project VM. */
+const MEMBER_TOOL_TIMEOUT_MS = 10 * 60_000
+const MEMBER_TOOL_WAKE_MS = 90_000
+const MEMBER_TOOL_RETRY_MS = 2_000
 
 export function numberOr(value: unknown, fallback: number): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback
@@ -923,7 +933,19 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
           hostRealPath: hostPath,
         },
       )
-      return c.json({ ok: true, attached: attachedRow, project, runtime: runtimeBody })
+      // A remote member previews from its own runtime, not under this one's /p/<id>/.
+      let previewUrl: string | undefined
+      if ((runtimeBody as { remote?: unknown } | undefined)?.remote === true && process.env.SHOGO_LOCAL_MODE !== 'true') {
+        try {
+          const { getPreviewUrl } = await importCloudModule<typeof import('../lib/knative-project-manager')>(
+            './knative-project-manager',
+          )
+          previewUrl = getPreviewUrl(project.id)
+        } catch (err: any) {
+          console.warn(`[WorkspaceMembers] no preview URL for remote member ${project.id}:`, err?.message ?? err)
+        }
+      }
+      return c.json({ ok: true, attached: attachedRow, project, runtime: runtimeBody, ...(previewUrl ? { previewUrl } : {}) })
     } catch (error: any) {
       const failure = memberCallFailure(error, 'mount')
       console.error(
@@ -966,6 +988,110 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
         error?.message ?? error,
       )
       return c.json(failure.body, failure.status)
+    }
+  })
+
+  // ---------------------------------------------------------------------------
+  // Workspace agent → mounted project's own runtime (remote members)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * The mounted project for a workspace agent session, or the error to return.
+   * Project-anchored runtimes present the same workspace token, so the session
+   * itself is the check: only a workspace agent session (no anchor project in
+   * `contextId`) with the project attached may reach into it.
+   */
+  async function workspaceAgentMember(
+    c: Context,
+    workspaceId: string,
+    sessionId: string,
+    projectId: string,
+  ): Promise<{ attachMode: string } | Response> {
+    const session = (await prisma.chatSession.findUnique({
+      where: { id: sessionId },
+      select: { contextType: true, contextId: true, workspaceId: true } as any,
+    })) as { contextType?: string; contextId?: string | null; workspaceId?: string | null } | null
+    if (!session || session.contextType !== 'workspace' || session.workspaceId !== workspaceId || session.contextId) {
+      return c.json({ error: { code: 'not_workspace_agent', message: 'Only the workspace agent can run tools in a mounted project' } }, 403)
+    }
+    const attached = (await getAttachedProjects(sessionId)).find((row) => row.projectId === projectId)
+    if (!attached) {
+      return c.json({ error: { code: 'not_mounted', message: `Project ${projectId} is not mounted. Call mount_project first.` } }, 404)
+    }
+    return { attachMode: attached.attachMode }
+  }
+
+  async function callMemberRuntime(projectId: string, workspaceId: string, path: string, init: RequestInit) {
+    const { resolveProjectPodUrl } = await import('../lib/resolve-pod-url')
+    const { deriveProjectRuntimeToken } = await import('../lib/project-runtime-token')
+    const headers = new Headers(init.headers)
+    headers.set('Content-Type', 'application/json')
+    headers.set('x-runtime-token', await deriveProjectRuntimeToken(projectId, { workspaceId }))
+    const deadline = Date.now() + MEMBER_TOOL_WAKE_MS
+    for (;;) {
+      const { url } = await resolveWhileStarting(() => resolveProjectPodUrl(projectId, { logTag: 'WorkspaceMemberTool' }))
+      const response = await fetch(`${url}${path}`, { ...init, headers })
+      // A 503 here is the runtime still coming up behind a resolved URL.
+      if (response.status !== 503 || Date.now() >= deadline) return response
+      await new Promise((r) => setTimeout(r, MEMBER_TOOL_RETRY_MS))
+    }
+  }
+
+  app.post('/workspaces/:workspaceId/sessions/:sessionId/members/:projectId/tools/:name', async (c) => {
+    const workspaceId = c.req.param('workspaceId')
+    const sessionId = c.req.param('sessionId')
+    const projectId = c.req.param('projectId')
+    const name = c.req.param('name')
+    if (!(await authorizeWorkspaceRuntimeRequest(c, workspaceId))) return c.json({ error: 'Unauthorized' }, 401)
+    if (!MEMBER_TOOLS.has(name)) return c.json({ error: { code: 'unsupported_tool', message: `Unsupported tool: ${name}` } }, 400)
+    const member = await workspaceAgentMember(c, workspaceId, sessionId, projectId)
+    if (member instanceof Response) return member
+    if (member.attachMode === 'readonly' && !MEMBER_READ_TOOLS.has(name)) {
+      return c.json({ error: { code: 'readonly_member', message: `Project ${projectId} is mounted read-only; ${name} is not allowed. Remount it readwrite to change it.` } }, 403)
+    }
+    const body = await c.req.json().catch(() => ({}))
+    const params = body && typeof body.params === 'object' && body.params ? body.params : {}
+    try {
+      const response = await callMemberRuntime(projectId, workspaceId, `/agent/workspace/tools/${encodeURIComponent(name)}`, {
+        method: 'POST',
+        headers: { 'x-member-session': sessionId },
+        body: JSON.stringify(params),
+        signal: AbortSignal.timeout(MEMBER_TOOL_TIMEOUT_MS),
+      })
+      const result = await response.json().catch(() => ({}))
+      if (!response.ok) {
+        return c.json({ error: result?.error || `project runtime HTTP ${response.status}` }, response.status === 503 ? 503 : 502)
+      }
+      return c.json(result)
+    } catch (error: any) {
+      const failure = memberCallFailure(error, 'mount')
+      console.error(`[WorkspaceMemberTool] ${name} in ${projectId} for session ${sessionId} failed (${failure.status}):`, error?.message ?? error)
+      return c.json(
+        failure.status === 503
+          ? { error: 'The project runtime is still starting. Try again in a minute.', code: 'runtime_starting' }
+          : failure.body,
+        failure.status,
+      )
+    }
+  })
+
+  app.delete('/workspaces/:workspaceId/sessions/:sessionId/members/:projectId/tools/session', async (c) => {
+    const workspaceId = c.req.param('workspaceId')
+    const sessionId = c.req.param('sessionId')
+    const projectId = c.req.param('projectId')
+    if (!(await authorizeWorkspaceRuntimeRequest(c, workspaceId))) return c.json({ error: 'Unauthorized' }, 401)
+    const member = await workspaceAgentMember(c, workspaceId, sessionId, projectId)
+    if (member instanceof Response) return member
+    try {
+      const response = await callMemberRuntime(
+        projectId,
+        workspaceId,
+        `/agent/workspace/tools/sessions/${encodeURIComponent(sessionId)}`,
+        { method: 'DELETE', signal: AbortSignal.timeout(30_000) },
+      )
+      return c.json(await response.json().catch(() => ({ ok: response.ok })), response.ok ? 200 : 502)
+    } catch (error: any) {
+      return c.json({ error: error?.message ?? 'release failed' }, 502)
     }
   })
 

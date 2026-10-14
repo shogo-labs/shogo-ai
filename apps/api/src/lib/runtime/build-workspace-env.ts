@@ -50,7 +50,6 @@ import { getSandboxExecOverride } from '../sandbox-exec-setting'
 import { parseProjectSettings } from '../project-settings'
 import { resolveExposedPorts } from '../project-ports'
 import { importCloudModule } from '../cloud-import'
-
 function metalVmSizeEnv(size: { vcpus: number; memMiB: number }): Record<string, string> {
   return { SHOGO_VM_VCPUS: String(size.vcpus), SHOGO_VM_MEM_MIB: String(size.memMiB) }
 }
@@ -141,10 +140,17 @@ export async function buildWorkspaceEnv(
     throw new Error('[buildWorkspaceEnv] workspaceId is required')
   }
 
+  // A metal workspace agent's members stay in their own runtimes: none are
+  // on this VM's disk, so nothing below provisions, seeds, or sizes for them.
+  const remoteMembers = !!opts.forMetal && !opts.anchorProjectId
+  const localProjectIds = remoteMembers ? [] : attachedProjectIds
   const env: Record<string, string> = {
     WORKSPACE_ID: workspaceId,
     WORKSPACE_RUNTIME: 'true',
-    WORKSPACE_PROJECT_IDS: attachedProjectIds.join(','),
+    WORKSPACE_PROJECT_IDS: localProjectIds.join(','),
+  }
+  if (remoteMembers) {
+    env.WORKSPACE_REMOTE_PROJECT_IDS = attachedProjectIds.join(',')
   }
   if (opts.anchorProjectId) {
     env.WORKSPACE_ANCHOR_PROJECT_ID = opts.anchorProjectId
@@ -222,7 +228,8 @@ export async function buildWorkspaceEnv(
     // the right starter. Not TECH_STACK_ID: that would seed one stack into the
     // merged root, which holds sibling project folders rather than one app.
     const techStacks: Record<string, string> = {}
-    for (const row of rows) {
+    const localRows = rows.filter((r) => localProjectIds.includes(r.id))
+    for (const row of localRows) {
       const stackId = parseProjectSettings(row.settings)?.techStackId
       if (typeof stackId === 'string' && stackId) techStacks[row.id] = stackId
     }
@@ -270,7 +277,7 @@ export async function buildWorkspaceEnv(
     // member's exposed ports. Without it the runtime's port bridge refuses
     // the per-port preview and tunnel even though the API allows them.
     const exposedPorts = new Set<number>()
-    for (const row of rows) {
+    for (const row of localRows) {
       const settings = parseProjectSettings(row.settings)
       const stackId = settings?.techStackId as string | undefined
       for (const p of resolveExposedPorts(stackId, settings)) exposedPorts.add(p.port)
@@ -373,7 +380,7 @@ export async function buildWorkspaceEnv(
   if (opts._provisionProjectDatabase) {
     const dbStart = Date.now()
     const dbUrls: Record<string, string> = {}
-    for (const projectId of attachedProjectIds) {
+    for (const projectId of localProjectIds) {
       try {
         const url = await opts._provisionProjectDatabase(projectId, workspaceId)
         if (typeof url === 'string' && url.length > 0) dbUrls[projectId] = url

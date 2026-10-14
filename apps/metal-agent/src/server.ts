@@ -204,7 +204,9 @@ const server = Bun.serve({
         if (!runtimeKey || typeof body?.projectId !== 'string' || typeof body?.destDir !== 'string') {
           return Response.json({ error: 'runtime key, projectId, and destDir are required' }, { status: 400 })
         }
-        const result = await pool.mountWorkspaceMember(runtimeKey, body.projectId, body.destDir)
+        const result = await pool.mountWorkspaceMember(runtimeKey, body.projectId, body.destDir, {
+          remote: body.remote === true,
+        })
         return Response.json({ ok: true, ...result })
       }
 

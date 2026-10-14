@@ -347,6 +347,12 @@ export interface AssignedVm {
   /** Mounted member ids for a merged-root workspace runtime. */
   workspaceMemberIds?: string[]
   /**
+   * Members mounted as pointers to their own runtime (`WORKSPACE_REMOTE_PROJECT_IDS`
+   * or a `remote` mount). Nothing of theirs is on this VM's disk, so they are
+   * never hydrated, exported, or backed up from here.
+   */
+  remoteMemberIds?: string[]
+  /**
    * Set for a SERVER-BACKED published microVM (assign env `SHOGO_PUBLISHED_MODE`
    * + `PUBLISHED_SUBDOMAIN`). Marks this VM as owning a live site's writable
    * state, so the pool hydrates `{subdomain}/data.tar.gz` into it on cold boot
@@ -696,6 +702,12 @@ function workspaceMemberIdsFromEnv(env: Record<string, string>): string[] | unde
   return typeof env.WORKSPACE_PROJECT_IDS === 'string'
     ? env.WORKSPACE_PROJECT_IDS.split(',').map((id) => id.trim()).filter(Boolean)
     : undefined
+}
+
+/** Members the assign env marks as living in their own runtime; undefined when none. */
+function remoteMemberIdsFromEnv(env: Record<string, string>): string[] | undefined {
+  const ids = (env.WORKSPACE_REMOTE_PROJECT_IDS ?? '').split(',').map((id) => id.trim()).filter(Boolean)
+  return ids.length ? ids : undefined
 }
 
 /**
@@ -1261,14 +1273,20 @@ export class MetalWarmPool {
     console.error(`[pool] guest serial tail (${reason}) project=${a.projectId} vm=${a.handle.id}:\n${tail}`)
   }
 
-  /** Mount a project archive into an already-running workspace microVM. */
+  /**
+   * Mount a project into an already-running workspace microVM: a copy of its
+   * archive, or with `remote` a pointer to the project's own runtime that
+   * puts nothing on this VM's disk.
+   */
   async mountWorkspaceMember(
     runtimeKey: string,
     projectId: string,
     destDir: string,
-  ): Promise<{ hydrated: boolean }> {
+    opts: { remote?: boolean } = {},
+  ): Promise<{ hydrated: boolean; remote?: boolean }> {
     const assigned = this.assigned.get(runtimeKey)
     if (!assigned) throw new Error(`workspace runtime ${runtimeKey} is not assigned`)
+    if (opts.remote) return this.mountRemoteMember(assigned, projectId)
     const env: Record<string, string> = assigned.runtimeToken ? { RUNTIME_AUTH_SECRET: assigned.runtimeToken } : {}
     await this.flushMembersHeldElsewhere(runtimeKey, [projectId])
     const ref = await this.sourceRef(projectId)
@@ -1297,6 +1315,40 @@ export class MetalWarmPool {
     return { hydrated: !!ref }
   }
 
+  private async mountRemoteMember(a: AssignedVm, projectId: string): Promise<{ hydrated: boolean; remote: boolean }> {
+    const headers: Record<string, string> = a.runtimeToken ? { 'x-runtime-token': a.runtimeToken } : {}
+    // Already on disk as a copy (mounted before the rollout): leave it as is,
+    // so its unsaved work stays under this VM's backup.
+    const existing = (await this.guestMemberEntries(a))?.find((m) => m.id === projectId)
+    if (existing && !existing.remote) return { hydrated: false, remote: false }
+
+    const response = await fetch(`${a.handle.agentUrl}/internal/workspace/members`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...headers },
+      body: JSON.stringify({ id: projectId, remote: true }),
+      signal: AbortSignal.timeout(this.cfg.hydrateTimeoutMs),
+    })
+    if (!response.ok) {
+      throw new Error(`workspace member mount failed (${response.status}): ${await response.text().catch(() => '')}`)
+    }
+    const body = (await response.json().catch(() => ({}))) as { member?: { remote?: unknown } }
+    if (body?.member?.remote !== true) {
+      // A guest that predates remote members made an empty local folder; an
+      // empty folder must never be exported over the project's real backup.
+      await fetch(`${a.handle.agentUrl}/internal/workspace/members/${encodeURIComponent(projectId)}`, {
+        method: 'DELETE',
+        headers,
+        signal: AbortSignal.timeout(10_000),
+      }).catch(() => {})
+      throw new Error('workspace runtime does not support remote members; recycle it to pick up the new image')
+    }
+    a.workspaceMemberIds = (a.workspaceMemberIds ?? []).filter((id) => id !== projectId)
+    if (a.memberData) delete a.memberData[projectId]
+    a.remoteMemberIds = [...new Set([...(a.remoteMemberIds ?? []), projectId])]
+    this.writeLive(a)
+    return { hydrated: false, remote: true }
+  }
+
   /** Export and remove a member from a running workspace microVM. */
   async unmountWorkspaceMember(
     runtimeKey: string,
@@ -1305,6 +1357,25 @@ export class MetalWarmPool {
   ): Promise<{ exported: boolean }> {
     const assigned = this.assigned.get(runtimeKey)
     if (!assigned) return { exported: false }
+    // remoteMemberIds isn't persisted across an agent restart; the guest knows.
+    const remote =
+      assigned.remoteMemberIds?.includes(projectId) ||
+      !!(await this.guestMemberEntries(assigned))?.some((m) => m.id === projectId && m.remote)
+    if (remote) {
+      const response = await fetch(
+        `${assigned.handle.agentUrl}/internal/workspace/members/${encodeURIComponent(projectId)}`,
+        {
+          method: 'DELETE',
+          headers: assigned.runtimeToken ? { 'x-runtime-token': assigned.runtimeToken } : {},
+          signal: AbortSignal.timeout(10_000),
+        },
+      )
+      if (!response.ok) {
+        throw new Error(`workspace member unmount failed (${response.status}): ${await response.text().catch(() => '')}`)
+      }
+      assigned.remoteMemberIds = (assigned.remoteMemberIds ?? []).filter((id) => id !== projectId)
+      return { exported: false }
+    }
     const bytes = await this.fetchExport(assigned.handle, assigned.runtimeToken, destDir)
     let exported = false
     if (bytes) {
@@ -1391,7 +1462,13 @@ export class MetalWarmPool {
             // Merge, never replace: the caller's attachments omit projects
             // mounted live into this VM, and dropping them here meant their
             // work was never backed up.
-            live.workspaceMemberIds = [...new Set([...(live.workspaceMemberIds ?? []), ...bind.attachedProjectIds])]
+            const remote = live.remoteMemberIds ?? []
+            live.workspaceMemberIds = [
+              ...new Set([
+                ...(live.workspaceMemberIds ?? []),
+                ...bind.attachedProjectIds.filter((id) => !remote.includes(id)),
+              ]),
+            ]
             this.writeLive(live)
           }
           // `reused`: re-attached an already-running VM (no boot, no resume).
@@ -1547,6 +1624,7 @@ export class MetalWarmPool {
       bootRootfsIdentity: this.classRootfsIdentity(vm.handle.vmClass),
       runtimeToken: env.RUNTIME_AUTH_SECRET,
       workspaceMemberIds: workspaceMemberIdsFromEnv(env),
+      remoteMemberIds: remoteMemberIdsFromEnv(env),
       publishedSubdomain,
       // Provisional: a warm VM boots from the template. Promoted to 'backup'
       // below iff hydrate applies real source; a hydrate that CAN'T confirm the
@@ -2029,20 +2107,35 @@ export class MetalWarmPool {
     return 'lost'
   }
 
-  /** Project ids the guest reports mounted; null when it can't say. */
-  protected async guestMountedMembers(a: AssignedVm, timeoutMs = 10_000): Promise<string[] | null> {
+  /** Every member the guest reports mounted, local or remote; null when it can't say. */
+  protected async guestMemberEntries(
+    a: AssignedVm,
+    timeoutMs = 10_000,
+  ): Promise<Array<{ id: string; remote: boolean }> | null> {
     try {
       const res = await fetch(`${a.handle.agentUrl}/internal/workspace/members`, {
         headers: a.runtimeToken ? { 'x-runtime-token': a.runtimeToken } : {},
         signal: AbortSignal.timeout(timeoutMs),
       })
       if (!res.ok) return null
-      const body = (await res.json()) as { mounted?: Array<{ id?: unknown }> }
+      const body = (await res.json()) as { mounted?: Array<{ id?: unknown; remote?: unknown }> }
       if (!Array.isArray(body?.mounted)) return null
-      return body.mounted.map((m) => m?.id).filter((id): id is string => typeof id === 'string' && id.length > 0)
+      return body.mounted
+        .filter((m) => typeof m?.id === 'string' && m.id.length > 0)
+        .map((m) => ({ id: m.id as string, remote: m.remote === true }))
     } catch {
       return null
     }
+  }
+
+  /**
+   * Project ids the guest reports mounted ON ITS DISK; null when it can't say.
+   * Remote members live in their own runtime, so there is nothing here to
+   * back up for them.
+   */
+  protected async guestMountedMembers(a: AssignedVm, timeoutMs = 10_000): Promise<string[] | null> {
+    const entries = await this.guestMemberEntries(a, timeoutMs)
+    return entries ? entries.filter((m) => !m.remote).map((m) => m.id) : null
   }
 
   /**
@@ -2055,7 +2148,8 @@ export class MetalWarmPool {
     a: AssignedVm,
     timeoutMs?: number,
   ): Promise<{ ids: string[]; guestConfirmed: boolean }> {
-    const known = a.workspaceMemberIds ?? []
+    const remote = a.remoteMemberIds ?? []
+    const known = (a.workspaceMemberIds ?? []).filter((id) => !remote.includes(id))
     const mounted = await this.guestMountedMembers(a, timeoutMs)
     if (!mounted) return { ids: known, guestConfirmed: false }
     const untracked = mounted.filter((id) => !known.includes(id))
@@ -3933,6 +4027,7 @@ export class MetalWarmPool {
       // adopt-on-restart keep working after a resume, not just after an assign.
       runtimeToken: env.RUNTIME_AUTH_SECRET || undefined,
       workspaceMemberIds: workspaceMemberIdsFromEnv(env),
+      remoteMemberIds: remoteMemberIdsFromEnv(env),
       // Carry the published marker so a resumed server-backed site keeps
       // exporting its writable state (the resume env re-asserts it).
       publishedSubdomain: publishedSubdomainFromEnv(env),

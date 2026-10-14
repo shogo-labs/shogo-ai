@@ -194,7 +194,9 @@ import {
   unmountWorkspaceMember,
   listWorkspaceMembers,
   listAvailableWorkspaceProjects,
+  remoteWorkspaceMember,
 } from './workspace-members'
+import { MEMBER_TOOL_NAMES } from './gateway-tools'
 import { userMessage } from './pi-adapter'
 import { fileURLToPath } from 'url'
 import { WebChatAdapter } from './channels/webchat'
@@ -2738,6 +2740,8 @@ const workspacePreviewManagers = new Map<string, PreviewManager>()
 function effectiveWorkspaceProjectIds(): string[] {
   const ids = [...WORKSPACE_RUNTIME_PROJECT_IDS]
   for (const member of listWorkspaceMembers()) {
+    // A remote member is served by its own runtime, never from this disk.
+    if (member.remote) continue
     if (!ids.includes(member.id)) ids.push(member.id)
   }
   return ids
@@ -3743,6 +3747,7 @@ app.post('/internal/workspace/members', async (c) => {
       description: typeof body.description === 'string' ? body.description : undefined,
       realPath: typeof body.realPath === 'string' ? body.realPath : undefined,
       readonly: body.readonly === true,
+      remote: body.remote === true,
     })
     return c.json({ ok: true, member })
   } catch (error: any) {
@@ -3756,6 +3761,36 @@ app.delete('/internal/workspace/members/:projectId', async (c) => {
   }
   const removed = await unmountWorkspaceMember(c.req.param('projectId'))
   return c.json({ ok: true, removed })
+})
+
+/**
+ * Run one file/exec tool in this runtime for a workspace agent that has this
+ * project mounted (`exec({ projectId })`, `read_file <id>/...`). The API
+ * proxies here after checking the caller's session has the project mounted.
+ * `x-member-session` keys the caller's shell state, separate from this
+ * project's own agent.
+ */
+app.post('/agent/workspace/tools/:name', async (c) => {
+  if (!verifyWorkspaceMemberAuth(c)) return c.json({ error: 'Unauthorized' }, 401)
+  if (!agentGateway) return c.json({ error: 'Agent gateway not running' }, 503)
+  const name = c.req.param('name')
+  if (!MEMBER_TOOL_NAMES.has(name)) return c.json({ error: `Unsupported tool: ${name}` }, 400)
+  const callerSession = c.req.header('x-member-session')?.trim()
+  if (!callerSession) return c.json({ error: 'x-member-session is required' }, 400)
+  const params = await c.req.json().catch(() => null)
+  if (!params || typeof params !== 'object') return c.json({ error: 'JSON body required' }, 400)
+  try {
+    const result = await agentGateway.runMemberTool(name, params, callerSession)
+    return c.json({ result })
+  } catch (error: any) {
+    return c.json({ error: error?.message ?? 'tool failed' }, 500)
+  }
+})
+
+app.delete('/agent/workspace/tools/sessions/:session', (c) => {
+  if (!verifyWorkspaceMemberAuth(c)) return c.json({ error: 'Unauthorized' }, 401)
+  if (!agentGateway) return c.json({ ok: true, released: false })
+  return c.json({ ok: true, released: agentGateway.releaseMemberSession(c.req.param('session')) })
 })
 
 app.post('/agent/hooks/wake', async (c) => {
@@ -5238,10 +5273,18 @@ app.get('/agent/ports/listening', async (c) => {
 
 {
   const projectNotAttached = (c: any, projectId: string) =>
-    c.json(
-      { error: 'project_not_attached', message: `Project ${projectId} is not attached to this workspace runtime` },
-      404,
-    )
+    remoteWorkspaceMember(projectId)
+      ? c.json(
+          {
+            error: 'project_runs_elsewhere',
+            message: `Project ${projectId} runs in its own runtime. Call preview_project for its preview URL.`,
+          },
+          404,
+        )
+      : c.json(
+          { error: 'project_not_attached', message: `Project ${projectId} is not attached to this workspace runtime` },
+          404,
+        )
 
   app.get('/p/:projectId/preview/status', (c) => {
     const projectId = c.req.param('projectId')

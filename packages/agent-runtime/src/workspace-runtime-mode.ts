@@ -38,6 +38,28 @@ export function isWorkspaceRuntimeMode(env: NodeJS.ProcessEnv = process.env): bo
   return env.WORKSPACE_RUNTIME === 'true'
 }
 
+/**
+ * True only for the workspace agent's own runtime (`ws:<workspaceId>`).
+ * Project-anchored runtimes (`ws:proj:<id>`) also boot with
+ * `WORKSPACE_RUNTIME=true`, so `isWorkspaceRuntimeMode` alone admits them.
+ */
+export function isWorkspaceAgentRuntime(env: NodeJS.ProcessEnv = process.env): boolean {
+  return isWorkspaceRuntimeMode(env) && !env.WORKSPACE_ANCHOR_PROJECT_ID
+}
+
+/**
+ * Members that live in their own project runtime rather than on this
+ * runtime's disk (metal, `WORKSPACE_REMOTE_PROJECT_IDS`). File tools and
+ * `exec({ projectId })` reach them through the API.
+ */
+export function workspaceRemoteProjectIds(env: NodeJS.ProcessEnv = process.env): string[] {
+  if (!isWorkspaceAgentRuntime(env)) return []
+  return (env.WORKSPACE_REMOTE_PROJECT_IDS ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0)
+}
+
 /** The workspace id this runtime serves, if any (workspace mode only). */
 export function workspaceRuntimeId(env: NodeJS.ProcessEnv = process.env): string | null {
   if (!isWorkspaceRuntimeMode(env)) return null
