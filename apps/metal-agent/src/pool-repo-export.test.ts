@@ -27,13 +27,15 @@ const HANDLE = { id: 'vm-1', agentUrl: 'http://10.0.0.9:8080', guestIp: '10.0.0.
 
 class SweepPool extends MetalWarmPool {
   exports = 0
+  uploads = 0
   failExport: Error | null = null
+  payload = new Uint8Array([1, 2, 3])
   outcome: RepoWriteOutcome = { status: 'written', etag: '"e"' }
 
   protected override async fetchRepoExport(_handle: FcVmHandle, _token?: string): Promise<RepoExport | null> {
     this.exports++
     if (this.failExport) throw this.failExport
-    return { bytes: new Uint8Array([1, 2, 3]), rootCommitAt: null }
+    return { bytes: this.payload, rootCommitAt: null }
   }
 
   protected override async uploadRepoGuarded(
@@ -41,6 +43,7 @@ class SweepPool extends MetalWarmPool {
     _bytes: RepoBody,
     _opts: { lineage: RepoLineage; preserveOnRefusal?: boolean },
   ): Promise<RepoWriteOutcome> {
+    this.uploads++
     return this.outcome
   }
 
@@ -117,17 +120,33 @@ describe('exportAllRepos', () => {
     expect(pool.exports).toBe(1)
 
     a.repoHeadSha = 'bbb'
+    pool.payload = new Uint8Array([4, 5, 6])
     expect(await pool.exportAllRepos()).toBe(1)
     expect(pool.exports).toBe(2)
     expect(a.repoExportedHeadSha).toBe('bbb')
   })
 
-  test('a guest that reports no HEAD is exported every sweep', async () => {
+  test('a guest that reports no HEAD is exported every sweep, but unchanged bytes are not re-uploaded', async () => {
     const pool = makePool(SweepPool, dir)
     pool.add('p1', { repoParentEtag: '"old"' })
-    await pool.exportAllRepos()
-    await pool.exportAllRepos()
+    expect(await pool.exportAllRepos()).toBe(1)
+    expect(await pool.exportAllRepos()).toBe(0)
     expect(pool.exports).toBe(2)
+    expect(pool.uploads).toBe(1)
+
+    pool.payload = new Uint8Array([9])
+    expect(await pool.exportAllRepos()).toBe(1)
+    expect(pool.uploads).toBe(2)
+  })
+
+  test('unchanged bytes under a new HEAD are not re-uploaded, and the HEAD counts as durable', async () => {
+    const pool = makePool(SweepPool, dir)
+    const a = pool.add('p1', { repoParentEtag: '"old"', repoHeadSha: 'aaa' })
+    await pool.exportAllRepos()
+    a.repoHeadSha = 'bbb'
+    expect(await pool.exportAllRepos()).toBe(0)
+    expect(pool.uploads).toBe(1)
+    expect(a.repoExportedHeadSha).toBe('bbb')
   })
 
   test('a quarantined export also counts as handled for that HEAD', async () => {
@@ -140,6 +159,15 @@ describe('exportAllRepos', () => {
     expect(a.repoExportedHeadSha).toBe('aaa')
   })
 
+  test('a quarantined export is not quarantined again with the same bytes', async () => {
+    const pool = makePool(SweepPool, dir)
+    pool.outcome = { status: 'conflict', quarantineKey: 'conflict/p1/x', reason: 'lineage' }
+    pool.add('p1', { repoParentEtag: '"old"' })
+    await pool.exportAllRepos()
+    await pool.exportAllRepos()
+    expect(pool.uploads).toBe(1)
+  })
+
   test('a lost export is retried on the next sweep', async () => {
     const pool = makePool(SweepPool, dir)
     pool.outcome = { status: 'skipped' }
@@ -147,7 +175,9 @@ describe('exportAllRepos', () => {
     await pool.exportAllRepos()
     await pool.exportAllRepos()
     expect(pool.exports).toBe(2)
+    expect(pool.uploads).toBe(2)
     expect(a.repoExportedHeadSha).toBeUndefined()
+    expect(a.repoExportSha).toBeUndefined()
   })
 
   test('failures back off exponentially and reset on success', async () => {
@@ -197,9 +227,11 @@ describe('spoolResponse', () => {
       },
     })
     const path = join(dir, 'out')
-    expect(await spoolResponse(new Response(body), path, 10_000)).toBe(1500)
+    const spooled = await spoolResponse(new Response(body), path, 10_000)
+    expect(spooled.size).toBe(1500)
     const written = new Uint8Array(await Bun.file(path).arrayBuffer())
     expect(written.byteLength).toBe(1500)
+    expect(spooled.sha256).toBe(new Bun.CryptoHasher('sha256').update(written).digest('hex'))
     expect(written[999]).toBe(1)
     expect(written[1000]).toBe(2)
   })
@@ -252,6 +284,21 @@ describe('fetchRepoExport spools to disk', () => {
     expect(pool.uploaded[0].size).toBe(10)
     expect(pool.uploaded[0].path!.startsWith(pool.spoolDir)).toBe(true)
     expect(readdirSync(pool.spoolDir)).toEqual([])
+  })
+
+  test('an identical spooled export is not uploaded again', async () => {
+    reply = () => new Response('repo-bytes')
+    const pool = makePool(SpoolPool, dir)
+    const a = pool.add('p1', { handle: handle(), repoParentEtag: '"old"' })
+
+    expect(await pool.saveRepoToStore(a)).toBe(true)
+    expect(await pool.saveRepoToStore(a)).toBe(false)
+    expect(pool.uploaded).toHaveLength(1)
+    expect(readdirSync(pool.spoolDir)).toEqual([])
+
+    reply = () => new Response('repo-bytes-2')
+    expect(await pool.saveRepoToStore(a)).toBe(true)
+    expect(pool.uploaded).toHaveLength(2)
   })
 
   test('an empty export uploads nothing and leaves no spool file', async () => {

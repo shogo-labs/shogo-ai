@@ -31,7 +31,8 @@ import {
   planDataWrite,
 } from './project-data-archive'
 import type { BunFile } from 'bun'
-import { conditionalPutObject, copyObject, type S3Target } from './s3-conditional'
+import { createHash } from 'crypto'
+import { conditionalPutObject, copyObject, sha256HexFile, type S3Target } from './s3-conditional'
 import { workspaceS3 } from './workspace-archive'
 
 export type RepoLineage = DataLineage
@@ -46,6 +47,11 @@ export type RepoBody = Uint8Array | BunFile
 
 export function repoBodySize(body: RepoBody): number {
   return body instanceof Uint8Array ? body.byteLength : body.size
+}
+
+export function repoBodySha256(body: RepoBody): Promise<string> {
+  if (body instanceof Uint8Array) return Promise.resolve(createHash('sha256').update(body).digest('hex'))
+  return sha256HexFile(body)
 }
 
 /** A durable `.git` archive plus the ETag that anchors its lineage. */

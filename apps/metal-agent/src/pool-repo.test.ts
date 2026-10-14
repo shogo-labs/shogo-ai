@@ -156,6 +156,7 @@ describe('pool host-mediated repo persist', () => {
       expect(a.repoParentEtag).toBe('"promoted"')
 
       pool.outcomes = []
+      pool.exportBytes = new Uint8Array([4, 5, 6])
       await pool.saveRepoToStore(a)
       expect(pool.uploads[2].opts.lineage).toEqual({ kind: 'descends', etag: '"promoted"' })
     })

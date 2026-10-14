@@ -66,6 +66,7 @@ import {
   describeRepoArchive,
   preserveRepoArchive,
   REPO_MAX_BYTES,
+  repoBodySha256,
   repoBodySize,
   statRepoArchive,
   uploadRepoArchiveGuarded,
@@ -112,6 +113,8 @@ const REPO_BORN_ON_BOOT_SLACK_MS = 10 * 60_000
 export interface RepoExport {
   bytes: RepoBody
   rootCommitAt: number | null
+  /** sha256 of `bytes`, when the exporter computed it while reading. */
+  sha256?: string
   /** Removes the export's spool file, if it has one. Idempotent. */
   dispose?: () => void
 }
@@ -132,21 +135,28 @@ const REPO_EXPORT_MIN_BACKOFF_MS = 60_000
 
 /**
  * Write a response body to `path`, failing once it passes `maxBytes`. Chunks
- * go straight to disk so a large export never sits whole in the heap.
+ * go straight to disk so a large export never sits whole in the heap, and are
+ * hashed on the way through so the caller never has to re-read the file.
  */
-export async function spoolResponse(res: Response, path: string, maxBytes: number): Promise<number> {
+export async function spoolResponse(
+  res: Response,
+  path: string,
+  maxBytes: number,
+): Promise<{ size: number; sha256: string }> {
   const declared = Number(res.headers.get('content-length'))
   if (Number.isFinite(declared) && declared > maxBytes) {
     await res.body?.cancel().catch(() => {})
     throw new ExportTooLargeError(declared, maxBytes)
   }
   const writer = Bun.file(path).writer()
+  const hash = createHash('sha256')
   let size = 0
   try {
     if (res.body) {
       for await (const chunk of res.body) {
         size += chunk.byteLength
         if (size > maxBytes) throw new ExportTooLargeError(size, maxBytes)
+        hash.update(chunk)
         writer.write(chunk)
         await writer.flush()
       }
@@ -154,7 +164,7 @@ export async function spoolResponse(res: Response, path: string, maxBytes: numbe
   } finally {
     await writer.end()
   }
-  return size
+  return { size, sha256: hash.digest('hex') }
 }
 
 /** The guest answered `/pool/repo-hydrated` with an error, so it did not adopt. */
@@ -475,6 +485,11 @@ export interface AssignedVm {
    * quarantined). The periodic sweep skips the VM while HEAD still matches.
    */
   repoExportedHeadSha?: string
+  /**
+   * sha256 of the last `.git` archive this VM made durable (written or
+   * quarantined). An export with the same bytes is skipped. Memory only.
+   */
+  repoExportSha?: string
   /** Periodic `.git` export failed; the sweep leaves it alone until then. */
   repoExportRetryAt?: number
   /** Consecutive periodic `.git` export failures, for backoff. */
@@ -1688,6 +1703,7 @@ export class MetalWarmPool {
       a.repoHydratePending = false
       a.repoHeadSha = undefined
       a.repoExportedHeadSha = undefined
+      a.repoExportSha = undefined
       this.writeLive(a)
     }
 
@@ -2441,14 +2457,14 @@ export class MetalWarmPool {
     if (!res.ok) throw new Error(`/pool/export-repo failed (${res.status}): ${await res.text()}`)
     const path = this.exportSpoolPath(handle.id, 'repo')
     const dispose = () => rmSync(path, { force: true })
-    let size: number
+    let spooled: { size: number; sha256: string }
     try {
-      size = await spoolResponse(res, path, REPO_MAX_BYTES)
+      spooled = await spoolResponse(res, path, REPO_MAX_BYTES)
     } catch (err) {
       dispose()
       throw err
     }
-    if (!size) {
+    if (!spooled.size) {
       dispose()
       return null
     }
@@ -2456,6 +2472,7 @@ export class MetalWarmPool {
     return {
       bytes: Bun.file(path),
       rootCommitAt: Number.isFinite(rootCommitAt) && rootCommitAt > 0 ? rootCommitAt : null,
+      sha256: spooled.sha256,
       dispose,
     }
   }
@@ -2501,8 +2518,20 @@ export class MetalWarmPool {
     }
     if (!exported) return false
     try {
+      // A guest that reports no HEAD is exported every sweep, so the HEAD skip
+      // never fires for it. The bytes it sends are already durable when they
+      // match this VM's last upload.
+      const sha = exported.sha256 ?? (await repoBodySha256(exported.bytes))
+      if (sha === a.repoExportSha) {
+        metrics.inc(M.repoExportUnchanged)
+        if (head && a.repoHeadSha === head) a.repoExportedHeadSha = head
+        return false
+      }
       const out = await this.storeRepoBytes(a, exported.bytes, exported.rootCommitAt)
-      if (out !== 'lost' && head && a.repoHeadSha === head) a.repoExportedHeadSha = head
+      if (out !== 'lost') {
+        a.repoExportSha = sha
+        if (head && a.repoHeadSha === head) a.repoExportedHeadSha = head
+      }
       return out === 'written'
     } finally {
       exported.dispose?.()
