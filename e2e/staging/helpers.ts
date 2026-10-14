@@ -642,7 +642,14 @@ export async function recycleRuntimeViaApi(
   }
 }
 
-export async function signUpAndUpgradeToPro(page: Page, user: TestUser): Promise<void> {
+/**
+ * `"bootstrap"` subscriptions have a synthetic Stripe customer
+ * (`e2e_bootstrap_cus_*`), so anything that calls Stripe for that customer
+ * (e.g. the customer portal) only works after a real `"checkout"`.
+ */
+export type ProUpgradeMethod = "bootstrap" | "checkout"
+
+export async function signUpAndUpgradeToPro(page: Page, user: TestUser): Promise<ProUpgradeMethod> {
   await signUpAndOnboard(page, user)
 
   // Try the API bootstrap first — this works against any environment
@@ -651,7 +658,7 @@ export async function signUpAndUpgradeToPro(page: Page, user: TestUser): Promise
     // Give the client a moment to revalidate billing state on the next
     // navigation; most callers go to /billing or / right after.
     await page.waitForTimeout(500)
-    return
+    return "bootstrap"
   }
 
   // Fall back to the UI-driven Stripe Checkout flow. Against live keys
@@ -699,4 +706,5 @@ export async function signUpAndUpgradeToPro(page: Page, user: TestUser): Promise
 
   await page.getByTestId("hosted-payment-submit-button").click()
   await page.waitForURL((url) => !url.toString().includes("stripe.com"), { timeout: 30_000 })
+  return "checkout"
 }

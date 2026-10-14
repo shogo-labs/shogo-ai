@@ -7,6 +7,7 @@ import {
   NO_BUILD_PROJECT_PROMPT,
   signUpAndUpgradeToPro,
   waitForAgentResponse,
+  type ProUpgradeMethod,
 } from "./helpers"
 
 /**
@@ -31,10 +32,11 @@ test.describe("Pro Feature Gating", () => {
   test.describe.configure({ mode: "serial" })
 
   let page: Page
+  let upgradeMethod: ProUpgradeMethod
 
   test.beforeAll(async ({ browser }) => {
     page = await browser.newPage()
-    await signUpAndUpgradeToPro(page, TEST_USER)
+    upgradeMethod = await signUpAndUpgradeToPro(page, TEST_USER)
   })
 
   test.afterAll(async () => {
@@ -108,6 +110,7 @@ test.describe("Pro Feature Gating", () => {
   // ── Manage Subscription ──────────────────────────────────────────
 
   test("Manage button opens Stripe customer portal", async () => {
+    test.skip(upgradeMethod === "bootstrap", "a bootstrapped subscription has no real Stripe customer to open a portal for")
     await page.goto("/billing")
     await page.waitForSelector("text=Billing", { timeout: 10_000 })
 
