@@ -53,6 +53,7 @@ describe('getModelTier', () => {
 
   test('haiku models return economy tier', () => {
     expect(getModelTier('claude-haiku-4-5-20251001')).toBe('economy')
+    expect(getModelTier('claude-haiku-5-5')).toBe('economy')
   })
 
   test('sonnet models return standard tier', () => {
@@ -126,6 +127,7 @@ describe('inferProviderFromModel', () => {
   test('claude models → anthropic', () => {
     expect(inferProviderFromModel('claude-sonnet-4-6')).toBe('anthropic')
     expect(inferProviderFromModel('claude-haiku-4-5-20251001')).toBe('anthropic')
+    expect(inferProviderFromModel('claude-haiku-5-5')).toBe('anthropic')
   })
 
   test('gpt models → openai', () => {
@@ -162,6 +164,16 @@ describe('inferProviderFromModel', () => {
 describe('resolveModelId', () => {
   test('canonical IDs pass through unchanged', () => {
     expect(resolveModelId('claude-sonnet-4-6')).toBe('claude-sonnet-4-6')
+  })
+
+  test('shared haiku aliases resolve to the current-gen haiku model', () => {
+    expect(resolveModelId('claude-haiku-5-5')).toBe('claude-haiku-5-5')
+    expect(resolveModelId('claude-haiku')).toBe('claude-haiku-5-5')
+    expect(resolveModelId('haiku')).toBe('claude-haiku-5-5')
+  })
+
+  test('the versioned haiku 4.5 alias still resolves to the 4.5 id', () => {
+    expect(resolveModelId('claude-haiku-4-5')).toBe('claude-haiku-4-5-20251001')
   })
 
   test('basic resolves to a concrete model', () => {
@@ -233,6 +245,7 @@ describe('getModelFamily', () => {
 
   test('haiku models return haiku family', () => {
     expect(getModelFamily('claude-haiku-4-5-20251001')).toBe('haiku')
+    expect(getModelFamily('claude-haiku-5-5')).toBe('haiku')
   })
 
   test('gpt models return gpt family', () => {

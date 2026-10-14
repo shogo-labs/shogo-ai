@@ -29,7 +29,7 @@ export type ModelKind = 'chat' | 'live'
 export type BillingModel =
   | 'gpt-5.4-nano' | 'haiku' | 'gpt-5.4-mini' | 'sonnet' | 'opus' | 'claude-fable-5-1'
   | 'gpt-6-astra' | 'gpt-6-sol' | 'gpt-6-luna' | 'gpt-5.6-sol' | 'gpt-5.6-terra' | 'gpt-5.6-luna' | 'gpt-live-1'
-  | 'claude-opus-5-5'
+  | 'claude-opus-5-5' | 'claude-haiku-5-5'
 export type AgentMode = 'basic' | 'advanced'
 
 /**
@@ -166,6 +166,23 @@ export const MODEL_CATALOG = {
     // Not yet run through the subagent-smoke eval — unrated until verified
     // (see `ModelCapabilities` doc comment above).
   },
+  'claude-haiku-5-5': {
+    id: 'claude-haiku-5-5',
+    provider: 'anthropic',
+    apiModel: 'claude-haiku-5-5',
+    displayName: 'Claude Haiku 5.5',
+    shortDisplayName: 'Haiku 5.5',
+    tier: 'economy',
+    family: 'haiku',
+    generation: 'current',
+    // Dedicated bucket — 10x cheaper than the shared `haiku` bucket (Haiku 4.5
+    // rates) and tiered above 100k input tokens, so it cannot reuse it.
+    billingModel: 'claude-haiku-5-5',
+    contextWindow: 1_000_000,
+    maxOutputTokens: 128_000,
+    // Released 2026-10-07. Not yet run through the subagent-smoke eval —
+    // unrated until verified (see `ModelCapabilities` doc comment above).
+  },
   'claude-haiku-4-5-20251001': {
     id: 'claude-haiku-4-5-20251001',
     provider: 'anthropic',
@@ -174,7 +191,11 @@ export const MODEL_CATALOG = {
     shortDisplayName: 'Haiku 4.5',
     tier: 'economy',
     family: 'haiku',
-    generation: 'current',
+    // Superseded by Haiku 5.5 as the current-gen economy model on 2026-10-13 —
+    // kept addressable by its own id but no longer claims the shared
+    // `haiku`/`claude-haiku` aliases (see aliases.ts), same handoff pattern
+    // used for every prior Haiku release.
+    generation: 'legacy',
     billingModel: 'haiku',
     maxOutputTokens: 64_000,
     capabilities: { subagentOrchestration: 'reliable' },

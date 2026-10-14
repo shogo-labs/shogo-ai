@@ -46,6 +46,15 @@ describe('resolveModelId', () => {
   it('resolves an alias to its canonical', () => {
     expect(resolveModelId(FIRST_ALIAS)).toBe(MODEL_ALIASES[FIRST_ALIAS])
   })
+  it('resolves the shared haiku aliases to the current-gen haiku model', () => {
+    expect(resolveModelId('claude-haiku-5-5')).toBe('claude-haiku-5-5')
+    expect(resolveModelId('claude-haiku')).toBe('claude-haiku-5-5')
+    expect(resolveModelId('haiku')).toBe('claude-haiku-5-5')
+  })
+  it('keeps the versioned haiku 4.5 alias pinned to the 4.5 id', () => {
+    expect(resolveModelId('claude-haiku-4-5')).toBe('claude-haiku-4-5-20251001')
+    expect(resolveModelId('claude-haiku-4-5-20251001')).toBe('claude-haiku-4-5-20251001')
+  })
   it('resolves "basic" agent mode', () => {
     expect(resolveModelId('basic')).toBe(resolveAgentModeDefault('basic' as any))
   })
@@ -227,6 +236,33 @@ describe('calculateDollarCost', () => {
     const haikuModel = Object.entries(MODEL_CATALOG).find(([_, e]) => e.billingModel === 'haiku')?.[0]
     if (!haikuModel) return
     expect(calculateDollarCost(haikuModel, 1_000_000, 0)).toBeCloseTo(MODEL_DOLLAR_COSTS.haiku.inputPerMillion, 6)
+  })
+  it('uses claude-haiku-5-5 pricing for the new haiku model', () => {
+    expect(calculateDollarCost('claude-haiku-5-5', 1_000_000, 0)).toBeCloseTo(
+      MODEL_DOLLAR_COSTS['claude-haiku-5-5'].inputPerMillion, 6,
+    )
+    expect(calculateDollarCost('claude-haiku-5-5', 0, 1_000_000)).toBeCloseTo(
+      MODEL_DOLLAR_COSTS['claude-haiku-5-5'].outputPerMillion, 6,
+    )
+  })
+  it('bills claude-haiku-5-5 at the published ≤100k rates', () => {
+    expect(MODEL_DOLLAR_COSTS['claude-haiku-5-5']).toEqual({
+      inputPerMillion: 0.10,
+      cacheWritePerMillion: 0.125,
+      cachedInputPerMillion: 0.01,
+      outputPerMillion: 0.50,
+    })
+    expect(calculateDollarCost('claude-haiku-5-5', 100_000, 0)).toBeCloseTo(0.01, 6)
+  })
+  it('does not model the claude-haiku-5-5 >100k step-up (flat bucket shape)', () => {
+    // Anthropic steps all four haiku-5-5 buckets up 5x above 100k input tokens
+    // ($0.50 in / $2.50 out / $0.625 cache-write / $0.05 cache-read per MTok).
+    // `MODEL_DOLLAR_COSTS` is one flat rate per bucket with no size axis, so a
+    // >100k call is billed at the ≤100k rate and the recorded cost understates
+    // the provider invoice. Pinned here so the gap stays visible instead of
+    // being assumed away; widening the cost shape to express tiers is a
+    // separate change (see PR notes).
+    expect(calculateDollarCost('claude-haiku-5-5', 400_000, 0)).toBeCloseTo(0.04, 6)
   })
 })
 

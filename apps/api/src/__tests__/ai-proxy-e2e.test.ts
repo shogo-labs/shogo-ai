@@ -116,13 +116,14 @@ describe('AI Proxy E2E — ai-chat example flow', () => {
     expect(modelIds).toContain('claude-opus-5-5')
     expect(modelIds).toContain('claude-sonnet-5')
     expect(modelIds).toContain('claude-fable-5-1')
-    expect(modelIds).toContain('claude-haiku-4-5-20251001')
+    expect(modelIds).toContain('claude-haiku-5-5')
     expect(modelIds).toContain('gpt-6-astra')
     expect(modelIds).toContain('gpt-6-sol')
     expect(modelIds).toContain('gpt-6-luna')
     expect(modelIds).toContain('gpt-5.6-terra')
 
     // Legacy catalog entries are routable but no longer listed by default.
+    expect(modelIds).not.toContain('claude-haiku-4-5-20251001')
     expect(modelIds).not.toContain('claude-3-haiku-20240307')
     expect(modelIds).not.toContain('gpt-4o')
     expect(modelIds).not.toContain('gpt-5.6-luna')
@@ -392,7 +393,7 @@ describe('AI Proxy E2E — ai-chat example flow', () => {
     }
   }, 30_000)
 
-  test('short alias claude-haiku resolves to Haiku 4.5', async () => {
+  test('short alias claude-haiku resolves to Haiku 5.5', async () => {
     const res = await app.fetch(
       new Request('http://localhost/api/ai/v1/chat/completions', {
         method: 'POST',
@@ -401,7 +402,7 @@ describe('AI Proxy E2E — ai-chat example flow', () => {
           Authorization: `Bearer ${proxyToken}`,
         },
         body: JSON.stringify({
-          model: 'claude-haiku', // Should resolve to claude-haiku-4-5-20251001
+          model: 'claude-haiku', // Should resolve to claude-haiku-5-5
           messages: [{ role: 'user', content: 'hi' }],
           max_tokens: 5,
         }),

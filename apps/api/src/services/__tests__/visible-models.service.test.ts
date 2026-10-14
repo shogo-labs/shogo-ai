@@ -131,9 +131,11 @@ describe('resolveVisibleCatalogModels — unseeded DB (first-run fallback)', () 
     expect(ids).toContain('claude-opus-5-5')
     expect(ids).toContain('claude-sonnet-5')
     expect(ids).toContain('gpt-6-luna')
+    expect(ids).toContain('claude-haiku-5-5')
     // Legacy catalog entries are a routing-only fallback, not listed.
     expect(ids).not.toContain('claude-3-haiku-20240307')
     expect(ids).not.toContain('claude-opus-5')
+    expect(ids).not.toContain('claude-haiku-4-5-20251001')
     expect(ids).not.toContain('gpt-4o-mini')
     expect(ids).not.toContain('gpt-5.4-nano')
     expect(ids).not.toContain('gpt-5.6-luna')
@@ -246,13 +248,13 @@ describe('resolveVisibleModelsForWorkspace', () => {
     ALLOWED_IDS = null
     const resolved = await resolveVisibleModelsForWorkspace('ws-1')
     expect(resolved.catalogModels.length).toBeGreaterThan(1)
-    expect(resolved.catalogModels.some((m) => m.id === 'claude-haiku-4-5-20251001')).toBe(true)
+    expect(resolved.catalogModels.some((m) => m.id === 'claude-haiku-5-5')).toBe(true)
   })
 
   test('narrows the platform set to the workspace allowlist', async () => {
-    ALLOWED_IDS = new Set(['claude-haiku-4-5-20251001'])
+    ALLOWED_IDS = new Set(['claude-haiku-5-5'])
     const resolved = await resolveVisibleModelsForWorkspace('ws-1')
-    expect(resolved.catalogModels.map((m) => m.id)).toEqual(['claude-haiku-4-5-20251001'])
+    expect(resolved.catalogModels.map((m) => m.id)).toEqual(['claude-haiku-5-5'])
   })
 
   test('an empty allowlist hides every model', async () => {

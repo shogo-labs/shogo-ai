@@ -1,5 +1,6 @@
 {
   "contextFloors": {
+    "claude-haiku-5-5": { "maxEffectiveContext": 30000 },
     "claude-haiku-4-5-20251001": { "maxEffectiveContext": 30000 },
     "claude-3-haiku-20240307": { "maxEffectiveContext": 20000 },
     "gpt-5.4-mini": { "maxEffectiveContext": 30000 },

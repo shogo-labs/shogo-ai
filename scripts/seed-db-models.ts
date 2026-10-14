@@ -275,6 +275,39 @@ async function seedSonnet46(): Promise<void> {
   console.log('[seed-db-models] Upserted Sonnet 4.6 (apiModel=claude-sonnet-4-6)')
 }
 
+async function seedHaiku55(): Promise<void> {
+  const common = {
+    displayName: 'Claude Haiku 5.5',
+    shortDisplayName: 'Haiku 5.5',
+    tier: 'economy',
+    family: 'haiku',
+    generation: 'current',
+    maxOutputTokens: 128_000,
+    enabled: true,
+    // Takes over the shared `haiku`/`claude-haiku` aliases from Haiku 4.5
+    // (see aliases.ts) — same last-write-wins handoff as every prior Haiku release.
+    aliases: ['claude-haiku-5-5', 'claude-haiku', 'haiku'],
+    // Not yet run through the subagent-smoke eval — leave capabilities unset
+    // (unrated) until verified, per the ModelCapabilities doc comment.
+    capabilities: null,
+    // Anthropic-published rates (platform.claude.com/docs/en/models/haiku-5-5/overview,
+    // launched 2026-10-07). Values are for prompts ≤100k tokens; above 100k
+    // all buckets step up 5x (see MODEL_DOLLAR_COSTS['claude-haiku-5-5']).
+    // cacheWritePerMillion is the 5-minute cache-write rate.
+    inputPerMillion: 0.10,
+    cachedInputPerMillion: 0.01,
+    cacheWritePerMillion: 0.125,
+    outputPerMillion: 0.50,
+    updatedBy: SEED_USER,
+  }
+  await upsertModel(
+    { provider: 'anthropic', apiModel: 'claude-haiku-5-5' },
+    { providerId: null, sortOrder: 0, ...common },
+    omit(common, ['enabled']),
+  )
+  console.log('[seed-db-models] Upserted Haiku 5.5 (apiModel=claude-haiku-5-5)')
+}
+
 async function seedFable51(): Promise<void> {
   const common = {
     displayName: 'Claude Fable 5.1',
@@ -734,6 +767,7 @@ export async function main(): Promise<void> {
   await seedSonnet5()
   await seedFable51()
   await seedSonnet46()
+  await seedHaiku55()
   await seedMimo()
   await seedDeepSeek()
   await seedGptLive1()

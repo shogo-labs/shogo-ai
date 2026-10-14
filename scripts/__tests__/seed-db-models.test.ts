@@ -17,9 +17,6 @@ const seeded: Row[] = []
 /** Current native models left out of the seed, and why. */
 const NOT_SEEDED: Record<string, string> = {
   'gpt-audio': "billed on a placeholder 'opus' bucket until audio tokens get their own; not shipped broadly",
-  'claude-haiku-4-5-20251001':
-    'basic-mode / channel / router-economy default, resolved from the static catalog; ' +
-    'not user-selectable on DB-defined deployments — seed it if it should be',
 }
 
 const catalogEntry = (row: Row) =>
