@@ -918,7 +918,11 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
                   detail: errorText.slice(0, 200),
                 },
               },
-              upstream.status as any,
+              // The caller already passed authorize(); a runtime that refuses the
+              // API's own token is an upstream failure, and passing its 401/403
+              // through reads as "this user is not allowed" (event deliveries
+              // treat that as terminal and disable the trigger).
+              (upstream.status === 401 || upstream.status === 403 ? 502 : upstream.status) as any,
             )
           }
 

@@ -352,6 +352,19 @@ export async function assertChatHealthy(page: Page): Promise<void> {
   }
 }
 
+/**
+ * First prompt for specs that only need a project to exist. A vague prompt
+ * ("Simple test agent for file uploads") reads as a feature request: the agent
+ * builds a whole app and runs browser QA on it, outlasting the turn budget.
+ */
+export const NO_BUILD_PROJECT_PROMPT =
+  "Do not build or change anything. Just reply with the single word OK."
+
+/** First prompt for specs that need a real (but trivial) app to preview or publish. */
+export const MINIMAL_APP_PROMPT =
+  "Create the simplest possible starter app: a single page that shows the word Hello. " +
+  "Do not add any extra pages, components, features, or backend, and do not run browser QA."
+
 export async function createProjectAndWait(page: Page, prompt: string) {
   extendTestTimeout(90_000)
   watchChatHealth(page)
@@ -460,7 +473,16 @@ export async function bootstrapProSubscriptionViaApi(
     // not set). Caller should fall back.
     return false
   }
-  if (!res.ok()) return false
+  if (res.status() === 401) {
+    throw new Error(
+      "SHOGO_E2E_BOOTSTRAP_SECRET is set but the API rejected it — it must match the " +
+        "target environment's e2e-bootstrap secret",
+    )
+  }
+  if (!res.ok()) {
+    console.warn(`[e2e] Pro bootstrap failed (HTTP ${res.status()}): ${await res.text().catch(() => "")}`)
+    return false
+  }
   const body = await res.json().catch(() => ({ ok: false }))
   return body?.ok === true
 }

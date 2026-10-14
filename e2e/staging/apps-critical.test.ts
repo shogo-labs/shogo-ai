@@ -73,7 +73,8 @@ test.describe("Workspace automations and apps API", () => {
     expect(fired.status, JSON.stringify(fired.json)).toBe(202)
     await expect(async () => {
       const res = await api(page, "GET", `/api/workspaces/${workspaceId}/triggers/${triggerId}/deliveries`)
-      expect(res.json?.deliveries?.[0]?.status).toBe("ok")
+      const delivery = res.json?.deliveries?.[0]
+      expect(delivery?.status, JSON.stringify(delivery)).toBe("ok")
     }).toPass({ timeout: 180_000, intervals: [3_000] })
   })
 

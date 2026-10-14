@@ -4,6 +4,7 @@ import { test, expect, type Page } from "./fixtures"
 import {
   createProjectAndWait,
   makeTestUser,
+  NO_BUILD_PROJECT_PROMPT,
   signUpAndUpgradeToPro,
 } from "./helpers"
 
@@ -88,7 +89,7 @@ test.describe("Usage Tracking", () => {
   })
 
   test("agent interaction is charged against the rolling windows", async () => {
-    await createProjectAndWait(page, "Quick usage tracking test")
+    await createProjectAndWait(page, NO_BUILD_PROJECT_PROMPT)
 
     // Usage events land asynchronously after the turn finishes.
     let plan: WorkspacePlan | undefined

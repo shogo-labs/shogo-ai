@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { test, expect, type Page } from "./fixtures"
-import { makeTestUser, waitForAgentResponse } from "./helpers"
+import { makeTestUser, MINIMAL_APP_PROMPT, waitForAgentResponse } from "./helpers"
 import {
   INITIAL_BUILD_TIMEOUT_MS,
   LOCALHOST_RE,
@@ -59,7 +59,7 @@ test.describe("Agent publish (Pro)", () => {
   test("agent publishes to {subdomain}.shogo.one and returns a live URL", async () => {
     test.setTimeout(480_000)
 
-    await createProject(page, "A tiny single-page app that says hello, for publish testing")
+    await createProject(page, MINIMAL_APP_PROMPT)
     await waitForAgentResponse(page, INITIAL_BUILD_TIMEOUT_MS)
 
     const subdomain = `e2e-pub-${Date.now().toString(36)}`
@@ -108,7 +108,7 @@ test.describe("Agent publish (Pro)", () => {
     // Keep the description neutral (no "publish"/"subdomain" hints) so the agent
     // does not proactively publish during the initial build — we want the
     // explicit instruction below to be an unambiguous FIRST publish.
-    await createProject(page, "A tiny single-page app that shows a greeting")
+    await createProject(page, MINIMAL_APP_PROMPT)
     await waitForAgentResponse(page, INITIAL_BUILD_TIMEOUT_MS)
 
     // A distinctive subdomain the agent would NOT name-derive from "hello".
@@ -140,7 +140,7 @@ test.describe("Agent publish (Pro)", () => {
     // Project A reserves the subdomain. The subdomain reservation happens in
     // the DB at publish time regardless of whether the static asset has fully
     // propagated, so this is independent of CDN/bucket timing.
-    await createProject(page, "A tiny single-page greeting app")
+    await createProject(page, MINIMAL_APP_PROMPT)
     await waitForAgentResponse(page, INITIAL_BUILD_TIMEOUT_MS)
     const textA = await publishToSubdomain(page, subdomain)
     // The subdomain reservation lands in the DB at the start of publish (before
@@ -152,7 +152,7 @@ test.describe("Agent publish (Pro)", () => {
     ).toContain(subdomain)
 
     // Project B tries to grab the same subdomain — must be rejected.
-    await createProject(page, "A tiny single-page counter app")
+    await createProject(page, MINIMAL_APP_PROMPT)
     await waitForAgentResponse(page, INITIAL_BUILD_TIMEOUT_MS)
     const textB = await publishToSubdomain(page, subdomain)
 

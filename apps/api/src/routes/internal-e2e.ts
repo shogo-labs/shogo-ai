@@ -155,17 +155,21 @@ app.post('/bootstrap-subscription', async (c) => {
         400,
       )
     }
+    // Onboarding gives every user a personal space AND a team workspace, and
+    // projects (and so every Pro spec) live in the team one.
     const user = await prisma.user.findUnique({
       where: { email },
       select: {
         members: {
           where: { workspaceId: { not: null }, projectId: null },
-          select: { workspaceId: true },
-          take: 1,
+          select: { workspaceId: true, workspace: { select: { kind: true } } },
+          orderBy: { createdAt: 'asc' },
         },
       },
     })
-    const wid = user?.members[0]?.workspaceId ?? null
+    const members = user?.members ?? []
+    const wid =
+      (members.find((m) => m.workspace?.kind === 'team') ?? members[0])?.workspaceId ?? null
     if (!wid) {
       return c.json(
         { ok: false, error: 'workspace_not_found_for_user', email },

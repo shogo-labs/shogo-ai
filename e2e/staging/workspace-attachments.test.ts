@@ -5,6 +5,7 @@ import {
   makeTestUser,
   signUpAndOnboard,
   createProjectAndWait,
+  NO_BUILD_PROJECT_PROMPT,
   waitForAgentResponse,
   type TestUser,
 } from "./helpers"
@@ -225,9 +226,9 @@ test.describe("Workspace Attachments (Folders panel → merged runtime)", () => 
   // ── Setup: three projects in the same workspace ────────────────────────────
 
   test("create anchor A and attach targets B, C", async () => {
-    projectA = await createProjectReturningId(page, "Anchor project A for attachment tests")
-    projectB = await createProjectReturningId(page, "Target project B with a readme")
-    projectC = await createProjectReturningId(page, "Target project C read-only")
+    projectA = await createProjectReturningId(page, NO_BUILD_PROJECT_PROMPT)
+    projectB = await createProjectReturningId(page, NO_BUILD_PROJECT_PROMPT)
+    projectC = await createProjectReturningId(page, NO_BUILD_PROJECT_PROMPT)
     expect(projectA).not.toBe(projectB)
     expect(projectB).not.toBe(projectC)
   })
@@ -400,7 +401,7 @@ test.describe("Workspace Attachments — local folder (stubbed bridge)", () => {
   })
 
   test("link a local folder via the stubbed picker", async () => {
-    projectId = await createProjectReturningId(page, "Project that links a local folder")
+    projectId = await createProjectReturningId(page, NO_BUILD_PROJECT_PROMPT)
     await page.goto(`/projects/${projectId}`)
     await openFoldersPanel(page)
 

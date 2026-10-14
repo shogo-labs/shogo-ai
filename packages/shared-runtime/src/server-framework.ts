@@ -580,6 +580,7 @@ export async function createRuntimeApp(config: RuntimeAppConfig): Promise<Runtim
       workspaceId &&
       candidate.startsWith(`wrt_v1_${workspaceId}_`),
     )
+    let apiVerdict: string = 'not_checked'
     if (isProjectToken || isWorkspaceToken) {
       const result = await validateRuntimeTokenViaApi(candidate)
       if (isProjectToken && result.valid && result.projectId === state.currentProjectId) {
@@ -588,6 +589,7 @@ export async function createRuntimeApp(config: RuntimeAppConfig): Promise<Runtim
       if (isWorkspaceToken && result.valid && result.workspaceId === workspaceId) {
         return null
       }
+      apiVerdict = result.valid ? `valid_for:${result.workspaceId ?? result.projectId}` : 'invalid'
     }
 
     // Fallback: validate preview JWT via API callback (browser → pod path,
@@ -600,7 +602,27 @@ export async function createRuntimeApp(config: RuntimeAppConfig): Promise<Runtim
       }
     }
 
+    logRuntimeAuthRejection(candidate, workspaceId, apiVerdict)
     return c.json({ error: 'Unauthorized — missing or invalid runtime token' }, 401)
+  }
+
+  // Identity only, never token material: enough to tell a guest bound to the
+  // wrong workspace from a signing-secret mismatch. Throttled because callers
+  // retry a refused turn for minutes.
+  let lastAuthRejectionLogAt = 0
+  function logRuntimeAuthRejection(candidate: string, workspaceId: string | undefined, apiVerdict: string): void {
+    const now = Date.now()
+    if (now - lastAuthRejectionLogAt < 60_000) return
+    lastAuthRejectionLogAt = now
+    const scope = candidate.match(/^(w?rt_v1_[^_]+)_/)?.[1] ?? (candidate ? 'unrecognized' : 'none')
+    console.warn(`[${config.name}] runtime auth rejected ${JSON.stringify({
+      tokenScope: scope,
+      workspaceId: workspaceId ?? null,
+      currentProjectId: state.currentProjectId,
+      poolMode: IS_POOL_MODE,
+      poolAssigned: state.poolAssigned,
+      apiVerdict,
+    })}`)
   }
 
   const publicPaths = new Set([

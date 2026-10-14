@@ -6,6 +6,7 @@ import {
   signUpAndOnboard,
   createProjectAndWait,
   interactionModeOption,
+  NO_BUILD_PROJECT_PROMPT,
   selectInteractionMode,
   sendChatMessage,
   waitForAgentResponse,
@@ -41,7 +42,7 @@ test.describe("Interaction Modes (Agent / Plan / Ask)", () => {
   })
 
   test("create a project for interaction mode testing", async () => {
-    await createProjectAndWait(page, "Simple test agent for interaction modes")
+    await createProjectAndWait(page, NO_BUILD_PROJECT_PROMPT)
     expect(page.url()).toMatch(/\/projects\//)
   })
 

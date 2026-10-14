@@ -378,6 +378,21 @@ describe('POST /bootstrap-subscription — workspace resolution', () => {
     )
   })
 
+  test('email lookup upgrades the team workspace, not the personal space', async () => {
+    userFindUnique.mockImplementation(async () => ({
+      members: [
+        { workspaceId: 'ws-personal', workspace: { kind: 'personal' } },
+        { workspaceId: 'ws-team', workspace: { kind: 'team' } },
+      ],
+    }))
+    const res = await authedPost(
+      '/api/internal/e2e/bootstrap-subscription',
+      bootstrapBody({ workspaceId: undefined, userEmail: 'e2e-pr12345@mailnull.com' }),
+    )
+    expect(res.status).toBe(200)
+    expect((await res.json()).workspaceId).toBe('ws-team')
+  })
+
   test('404 workspace_not_found_for_user when user has no matching workspace', async () => {
     userFindUnique.mockImplementation(async () => ({ members: [] }))
     const res = await authedPost(

@@ -840,6 +840,19 @@ jobs:
           kubectl create namespace ${{ env.NS_SYSTEM }} --dry-run=client -o yaml | kubectl apply -f -
           kubectl create namespace ${{ env.NS_WORKSPACES }} --dry-run=client -o yaml | kubectl apply -f -
 
+      # Hosted e2e backdoor (apps/api/src/routes/internal-e2e.ts), staging only.
+      # e2e-hosted.yml sends the same repo secret.
+      - name: Create or update e2e bootstrap secret
+        if: needs.resolve-config.outputs.environment == 'staging'
+        env:
+          E2E_BOOTSTRAP_SECRET: ${{ secrets.SHOGO_E2E_BOOTSTRAP_SECRET }}
+        run: |
+          if [ -z "$E2E_BOOTSTRAP_SECRET" ]; then exit 0; fi
+          kubectl create secret generic e2e-bootstrap \
+            --namespace=${{ env.NS_SYSTEM }} \
+            --from-literal=secret="$E2E_BOOTSTRAP_SECRET" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
       - name: Create or update API secrets
         run: |
           SECRET_ARGS=(
