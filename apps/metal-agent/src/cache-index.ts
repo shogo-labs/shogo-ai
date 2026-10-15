@@ -70,6 +70,10 @@ export interface CacheEntry {
    * ETag of the durable `.git` archive current when this snapshot was taken.
    */
   repoEtag?: string
+  /** Lineage of the snapshotted workspace; gates the template anti-clobber check on a deferred push. */
+  workspaceOrigin?: 'template' | 'backup' | 'snapshot'
+  /** Taken on a staged rootfs and promoted at activation: the durable copy is still to be pushed. */
+  durablePending?: boolean
   v: 1
 }
 

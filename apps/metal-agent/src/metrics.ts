@@ -63,6 +63,10 @@ export const M = {
   tapCapacity: 'metal_tap_capacity',
   tapUsedPct: 'metal_tap_used_pct',
   gcStaleReclaimed: 'metal_gc_stale_reclaimed_total',
+  // Rootfs switch-over: pre-warmed snapshots made current at activation, and
+  // idle VMs on a superseded rootfs backed up and stopped instead of snapshotted.
+  stagedSnapshotsPromoted: 'metal_staged_snapshots_promoted_total',
+  suspendRetiredStale: 'metal_suspend_retired_stale_total',
   resumeLocalHits: 'metal_resume_local_hits_total',
   resumeStoreHits: 'metal_resume_store_hits_total',
   resumeColdMiss: 'metal_resume_cold_miss_total',

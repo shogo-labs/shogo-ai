@@ -56,6 +56,8 @@ export interface FcVmConfig {
    * this gets byte-identical behavior to before VM classes existed.
    */
   vmClass?: VmClass
+  /** Golden image to provision the rootfs from instead of the class base (the staged rootfs). */
+  rootfsBase?: string
 }
 
 export interface FcVmHandle {
@@ -413,7 +415,7 @@ export class FirecrackerVMManager {
     // to 'standard' by isVmClassSupported()/callers, so it never reaches here
     // with a non-default base — provision() always uses cfg.baseRootfs in dm
     // mode regardless of what's passed.
-    const rootfs = this.rootfs.provision(id, cc.baseRootfs)
+    const rootfs = this.rootfs.provision(id, cfg.rootfsBase ?? cc.baseRootfs)
     let dataDrive: string | undefined
     let workspaceDrive: string | undefined
     // From here on any throw must NOT leak the FC process / tap / rootfs: a

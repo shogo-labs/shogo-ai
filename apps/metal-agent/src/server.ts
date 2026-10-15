@@ -31,10 +31,11 @@ import { type GuardedInterval, guardedInterval } from './guarded-interval'
 import { HYDRATE_STREAM_PREFIX } from './hydrate-proxy'
 import { currentIdleWindow } from './idle-policy'
 import { M, metrics } from './metrics'
-import { ForeignMemberError, MetalWarmPool } from './pool'
+import { ForeignMemberError, MetalWarmPool, StagedRootfsUnavailableError, type SuspendOutcome } from './pool'
 import { PortForward } from './port-forward'
-import { reportPlacement, startRegistration } from './register'
-import { getRootfsRevision, getRootfsSha } from './self-update'
+import { announceRestarting, reportPlacement, startRegistration } from './register'
+import { RequestDrain } from './request-drain'
+import { getRootfsRevision, getRootfsSha, getStagedRootfs } from './self-update'
 import { SerialWatcher } from './serial-watcher'
 const pool = new MetalWarmPool()
 // Pre-mesh data path: DNAT a public host port to each assigned guest and hand
@@ -86,10 +87,47 @@ function logUnauthenticated(pathLabel: string, reason: string, peerIp: string | 
   console.warn(`[metal-agent] control auth ${verb}: path=${pathLabel} reason=${reason} peer=${peerIp ?? 'unknown'}`)
 }
 
+/**
+ * Tell the control plane where a stopped project stands, and build the
+ * /stop and /suspend reply. A suspend keeps the project cached here; a retire
+ * (stale rootfs) leaves nothing local and asks for a re-warm.
+ */
+function stoppedResponse(projectId: string, outcome: SuspendOutcome) {
+  if (outcome.kind === 'retired') {
+    reportPlacement('cold', projectId, { refresh: 'stale-rootfs' })
+    return { ok: true, suspended: false, retired: true }
+  }
+  // A pre-warmed snapshot doesn't change what serves the project's next open.
+  if (!outcome.staged) reportPlacement('suspended', projectId)
+  return {
+    ok: true,
+    suspended: true,
+    staged: outcome.staged,
+    snapshotRootfsIdentity: outcome.s.rootfsIdentity,
+    memBytes: outcome.s.snapshot.bytesMem,
+  }
+}
+
+/** How long a restart waits for in-flight control calls before exiting anyway. */
+const DRAIN_TIMEOUT_MS = 10_000
+const drain = new RequestDrain()
+
 const server = Bun.serve({
   hostname: config.listenHost,
   port: config.listenPort,
-  async fetch(req, srv) {
+  fetch(req, srv) {
+    const path = new URL(req.url).pathname
+    // Reads stay served while draining, and a guest's hydrate stream must:
+    // an /assign still in flight is waiting on it.
+    const exempt =
+      req.method === 'GET' || path === '/status' || path === '/touch' || path.startsWith(HYDRATE_STREAM_PREFIX)
+    return drain.run(() => handle(req, srv), { exempt })
+  },
+})
+
+type PeerLookup = { requestIP(req: Request): { address: string } | null }
+
+async function handle(req: Request, srv: PeerLookup): Promise<Response> {
     const url = new URL(req.url)
     const path = url.pathname
     try {
@@ -121,6 +159,7 @@ const server = Bun.serve({
           agentVersion: config.agentVersion,
           rootfsSha: getRootfsSha(),
           rootfsRevision: getRootfsRevision(),
+          stagedRootfs: getStagedRootfs(),
         })
       }
       if (path === '/vms') return Response.json(pool.status())
@@ -136,16 +175,20 @@ const server = Bun.serve({
       }
 
       if (path === '/assign' && req.method === 'POST') {
-        const { projectId, workspaceId, attachedProjectIds, anchorProjectId, env } = await json(req)
+        const { projectId, workspaceId, attachedProjectIds, anchorProjectId, env, rootfs } = await json(req)
         if (!projectId && !workspaceId) return Response.json({ error: 'projectId or workspaceId required' }, { status: 400 })
         // An anchored project preview must receive its own merged-root VM.
         // A workspace-only key is reserved for workspace-session runtimes.
         const runtimeKey = workspaceId
           ? (anchorProjectId ? `ws:proj:${anchorProjectId}` : `ws:${workspaceId}`)
           : projectId
+        const bind = workspaceId ? { workspaceId, attachedProjectIds } : undefined
         // Resume-or-assign under one singleflight key (no double cold-boot on a
         // concurrent burst). A stale/cold miss falls through to a fresh assign.
-        const r = await pool.open(runtimeKey, env ?? {}, workspaceId ? { workspaceId, attachedProjectIds } : undefined)
+        // `rootfs: 'staged'` is the switch-over pre-warm (see pool.openStaged).
+        const r =
+          rootfs === 'staged' ? await pool.openStaged(runtimeKey, env ?? {}, bind) : await pool.open(runtimeKey, env ?? {}, bind)
+        if (r.mode === 'prewarmed') return Response.json(r)
         const url = await fwd.ensure(runtimeKey, r.handle.guestIp)
         // vmClass reflects what was ACTUALLY booted, which may be 'standard'
         // even for a docker-class request if this host doesn't support the
@@ -161,6 +204,7 @@ const server = Bun.serve({
           phases: r.phases,
           totalMs: r.totalMs,
           staleReason: r.staleReason,
+          bootRootfsIdentity: r.bootRootfsIdentity,
         })
       }
 
@@ -176,10 +220,9 @@ const server = Bun.serve({
       if (path === '/suspend' && req.method === 'POST') {
         const { projectId } = await json(req)
         if (!projectId) return Response.json({ error: 'projectId required' }, { status: 400 })
-        const s = await pool.suspend(projectId)
+        const outcome = await pool.suspendOrRetire(projectId)
         fwd.remove(projectId)
-        reportPlacement('suspended', projectId) // still cached locally here
-        return Response.json({ ok: true, memBytes: s.snapshot.bytesMem })
+        return Response.json(stoppedResponse(projectId, outcome))
       }
 
       if (path === '/resume' && req.method === 'POST') {
@@ -255,10 +298,9 @@ const server = Bun.serve({
         // active agent message. Report busy so the control plane leaves it in the
         // user's open set and retries the eviction on a later (idle) open.
         if (await pool.isBusy(projectId)) return Response.json({ ok: true, busy: true, suspended: false })
-        const s = await pool.suspend(projectId)
+        const outcome = await pool.suspendOrRetire(projectId)
         fwd.remove(projectId)
-        reportPlacement('suspended', projectId)
-        return Response.json({ ok: true, suspended: true, memBytes: s.snapshot.bytesMem })
+        return Response.json(stoppedResponse(projectId, outcome))
       }
 
       if (path === '/destroy' && req.method === 'POST') {
@@ -309,10 +351,12 @@ const server = Bun.serve({
 
       return new Response('not found', { status: 404 })
     } catch (err: any) {
+      if (err instanceof StagedRootfsUnavailableError) {
+        return Response.json({ error: err.code, message: err.message }, { status: 409 })
+      }
       return Response.json({ error: err?.message ?? String(err) }, { status: 500 })
     }
-  },
-})
+}
 
 console.log(`[metal-agent] listening on http://${config.listenHost}:${server.port}`)
 console.log(
@@ -344,6 +388,14 @@ pool.start().then(
     } catch (err: any) {
       console.error('[metal-agent] startup orphan reclaim failed:', err?.message ?? err)
     }
+    // Snapshots promoted at a rootfs activation were never pushed durably
+    // while staged; do it now, in the background.
+    pool.pushPendingDurable().then(
+      (n) => {
+        if (n) console.log(`[metal-agent] pushed ${n} promoted snapshot(s) to the durable store`)
+      },
+      (err) => console.error('[metal-agent] promoted-snapshot push failed:', err?.message ?? err),
+    )
   },
   (err) => console.error('[metal-agent] pool warmup failed:', err?.message ?? err),
 )
@@ -422,14 +474,20 @@ if (config.idleSuspendMs > 0) {
           lastIdleReason = w.reason
         }
         metrics.gauge(M.idleWindowMs, w.idleMs)
-        return pool.reapIdle(w.idleMs, { tier: w.tier })
+        const retired: string[] = []
+        return pool.reapIdle(w.idleMs, { tier: w.tier, retired }).then((ids) => ({ ids, retired }))
       })
-      .then((ids) => {
+      .then(({ ids, retired }) => {
         for (const id of ids) {
           fwd.remove(id)
           reportPlacement('suspended', id)
         }
+        for (const id of retired) {
+          fwd.remove(id)
+          reportPlacement('cold', id, { refresh: 'stale-rootfs' })
+        }
         if (ids.length) console.log(`[metal-agent] idle-suspended: ${ids.join(', ')}`)
+        if (retired.length) console.log(`[metal-agent] idle-retired (stale rootfs): ${retired.join(', ')}`)
       }),
   )
 }
@@ -540,6 +598,10 @@ if (config.projectDataExportIntervalMs > 0) {
 // rules in place (the next instance re-adopts them via pool.adopt()), and only
 // release warm/idle pool VMs. A kill of the assigned VMs here would defeat the
 // whole point — the user would see a cold resume on every deploy.
+//
+// Zero downtime for control calls too: tell the control plane we're restarting
+// (it then retries instead of failing an open), refuse new mutating calls with
+// a retryable 503, and let the in-flight ones finish before exiting.
 process.on('SIGTERM', async () => {
   console.log('[metal-agent] SIGTERM: graceful restart — keeping assigned microVMs + forwards alive')
   stopRegistration()
@@ -548,6 +610,16 @@ process.on('SIGTERM', async () => {
   if (gc) clearInterval(gc)
   if (pubDataExporter) clearInterval(pubDataExporter)
   projectDataExporter?.stop()
+  await announceRestarting(pool).catch(() => {})
+  const inFlight = drain.active
+  const drained = await drain.drain(DRAIN_TIMEOUT_MS)
+  if (inFlight) {
+    console.log(
+      `[metal-agent] ${drained ? 'drained' : 'timed out draining'} ${inFlight} in-flight request(s)` +
+        (drained ? '' : ` (${drain.active} still running)`),
+    )
+  }
+  server.stop(false)
   await pool.prepareForRestart().catch(() => {})
   process.exit(0)
 })

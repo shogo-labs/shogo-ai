@@ -28,6 +28,7 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, r
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { config } from './config'
+import { computeRootfsIdentity } from './snapshot-store'
 
 export interface DesiredAgent {
   version: string
@@ -174,23 +175,172 @@ export function shouldRebuildRootfs(
   desired: DesiredAgent | null | undefined,
   lastBuilt: string | null,
   enabled: boolean,
+  staged: string | null = null,
 ): boolean {
   if (!enabled) return false
   if (!desired?.version || !desired?.rebuildRootfs) return false
-  return desired.version !== lastBuilt
+  return desired.version !== lastBuilt && desired.version !== staged
+}
+
+// --- staged rootfs -------------------------------------------------------------
+//
+// A rebuild no longer replaces the live image. It builds `<base>.staged` next to
+// it and the host keeps serving on the current image while the control plane
+// boots projects on the staged one and snapshots them (pre-warm). The switch
+// happens on `activateRootfs` from the heartbeat: rename the staged file over the
+// base, promote the pre-warmed snapshots, restart. A rename keeps size and mtime,
+// so the staged file's identity is exactly the identity the host has after the
+// switch, which is what makes the pre-warmed snapshots fresh on the new image.
+
+export const STAGED_SUFFIX = '.staged'
+const STAGED_MARKER = 'ROOTFS_STAGED'
+/** A host that staged a rootfs but never heard `activateRootfs` switches on its own after this. */
+export const SELF_ACTIVATE_AFTER_MS = 3 * 60 * 60_000
+
+export function stagedRootfsPath(base: string): string {
+  return `${base}${STAGED_SUFFIX}`
+}
+
+export interface StagedRootfs {
+  /** Release the staged image was built for. */
+  version: string
+  /** Identity of each staged image (`computeRootfsIdentity` of the staged file). */
+  identities: { standard: string; docker?: string }
+  runtimeRevision?: string
+  stagedAt: number
+}
+
+function readStagedMarkerIn(dir: string): StagedRootfs | null {
+  try {
+    const m = JSON.parse(readFileSync(join(dir, STAGED_MARKER), 'utf8')) as StagedRootfs
+    return m?.version && m.identities?.standard ? m : null
+  } catch {
+    return null
+  }
+}
+
+/** The staged rootfs this host is holding, or null. A marker whose image is gone is ignored. */
+export function getStagedRootfs(): StagedRootfs | null {
+  const m = readStagedMarkerIn(config.agentDir)
+  if (!m) return null
+  return existsSync(stagedRootfsPath(config.baseRootfs)) ? m : null
+}
+
+function writeStagedMarker(m: StagedRootfs): void {
+  mkdirSync(config.agentDir, { recursive: true })
+  writeFileSync(join(config.agentDir, STAGED_MARKER), JSON.stringify(m))
+}
+
+function clearStagedMarker(): void {
+  rmSync(join(config.agentDir, STAGED_MARKER), { force: true })
+}
+
+/** Pool callbacks the staging lifecycle needs; kept as hooks so this module never imports the pool. */
+export interface RootfsHooks {
+  /** A new staged image replaced the old one: drop staged snapshots that are not for `identities`. */
+  onStaged?(identities: StagedRootfs['identities']): void
+  /** About to switch: move pre-warmed snapshots for `identities` into the current cache. */
+  promote?(identities: StagedRootfs['identities']): number
+}
+
+export type ActivationDecision = 'activate' | 'self-activate' | 'wait' | 'refuse'
+
+/**
+ * Pure decision: switch to the staged rootfs now? On the control plane's word
+ * for exactly this version, or on our own once it has been staged for
+ * SELF_ACTIVATE_AFTER_MS (an old or broken control plane must never strand a
+ * release). An `activateRootfs` for any other version is refused, so a late
+ * activation for a superseded build can never switch to it.
+ */
+export function rootfsActivationDecision(
+  staged: StagedRootfs | null,
+  activate: string | null | undefined,
+  now: number,
+): ActivationDecision {
+  if (!staged) return activate ? 'refuse' : 'wait'
+  if (activate === staged.version) return 'activate'
+  if (now - staged.stagedAt >= SELF_ACTIVATE_AFTER_MS) return 'self-activate'
+  return activate ? 'refuse' : 'wait'
 }
 
 /**
- * Rebuild the golden rootfs when the desired release asks for it and we have not
- * already built it for that version — WITHOUT requiring an agent code-version
- * change. Single-flighted against maybeSelfUpdate (shares `updating`). On
- * success, stamps ROOTFS_SHA and graceful-restarts so the warm pool re-warms on
- * the new base (live microVMs keep running on the old inode via dm/loop and are
- * re-adopted). Never throws. Returns true when a rebuild+restart was kicked off.
+ * Rename each staged image over its live base. The standard image goes last:
+ * it carries the marker that says the switch happened, so a crash in between
+ * leaves a host that retries rather than one that half-switched silently.
  */
-export async function maybeRebuildRootfs(desired?: DesiredAgent | null): Promise<boolean> {
+export function activateStagedImages(baseRootfs: string, dockerBaseRootfs?: string): void {
+  if (dockerBaseRootfs && existsSync(stagedRootfsPath(dockerBaseRootfs))) {
+    renameSync(stagedRootfsPath(dockerBaseRootfs), dockerBaseRootfs)
+  }
+  renameSync(stagedRootfsPath(baseRootfs), baseRootfs)
+}
+
+let lastRefusedActivation: string | null = null
+
+/**
+ * Switch to the staged rootfs when `rootfsActivationDecision` says so: rename
+ * the staged images into place, promote the pre-warmed snapshots, stamp
+ * ROOTFS_SHA, graceful restart. Live microVMs keep their own rootfs copies and
+ * are re-adopted, so nothing running is touched. Never throws. Returns true
+ * when a switch + restart was kicked off.
+ */
+export async function maybeActivateRootfs(
+  activate: string | null | undefined,
+  hooks: RootfsHooks = {},
+  now = Date.now(),
+): Promise<boolean> {
   if (updating) return false
-  if (!shouldRebuildRootfs(desired, readRootfsMarker(), config.selfUpdate)) return false
+  const staged = getStagedRootfs()
+  const decision = rootfsActivationDecision(staged, activate, now)
+  if (decision === 'wait') return false
+  if (decision === 'refuse') {
+    if (activate !== lastRefusedActivation) {
+      lastRefusedActivation = activate ?? null
+      console.warn(
+        `[self-update] refusing activateRootfs=${activate}: staged rootfs is ${staged?.version ?? 'none'}`,
+      )
+    }
+    return false
+  }
+  updating = true
+  try {
+    const s = staged!
+    if (decision === 'self-activate') {
+      console.warn(
+        `[self-update] rootfs ${s.version} staged ${Math.round((now - s.stagedAt) / 60_000)}m ago with no ` +
+          `activateRootfs from the control plane — switching on our own`,
+      )
+    }
+    // Rename first: promoted snapshots on a host whose rename then failed would
+    // look stale to the current image and be reclaimed.
+    activateStagedImages(config.baseRootfs, config.dockerClass.baseRootfs || undefined)
+    const promoted = hooks.promote?.(s.identities) ?? 0
+    writeRootfsMarker(s.version)
+    clearStagedMarker()
+    console.log(
+      `[self-update] activated rootfs ${s.version} (${promoted} pre-warmed snapshot(s) promoted) — restarting metal-agent...`,
+    )
+    spawn('systemctl', ['restart', 'metal-agent'], { detached: true, stdio: 'ignore' }).unref()
+    return true
+  } catch (err: any) {
+    console.error('[self-update] rootfs activation failed (will retry):', err?.message ?? err)
+    return false
+  } finally {
+    updating = false
+  }
+}
+
+/**
+ * Build the golden rootfs for a rebuild-flagged release and STAGE it (see the
+ * staged-rootfs section above) — WITHOUT requiring an agent code-version change
+ * and without restarting. Single-flighted against maybeSelfUpdate (shares
+ * `updating`). On success, writes the ROOTFS_STAGED marker; a newer release
+ * that arrives while one is staged rebuilds the staged image over it. Never
+ * throws. Returns true when a new image was staged.
+ */
+export async function maybeRebuildRootfs(desired?: DesiredAgent | null, hooks: RootfsHooks = {}): Promise<boolean> {
+  if (updating) return false
+  if (!shouldRebuildRootfs(desired, readRootfsMarker(), config.selfUpdate, getStagedRootfs()?.version ?? null)) return false
   // Same settle window as code updates: don't rebuild while still adopting live
   // microVMs right after boot.
   const sinceStart = Date.now() - START_MS
@@ -206,10 +356,12 @@ export async function maybeRebuildRootfs(desired?: DesiredAgent | null): Promise
       `[self-update] rebuilding golden rootfs for release ${desired!.version} (version unchanged) ` +
         `from ${desired!.runtimeImage ?? '$RUNTIME_IMAGE'}`,
     )
-    await rebuildRootfs(config.agentDir, desired!)
-    writeRootfsMarker(desired!.version)
-    console.log('[self-update] rootfs rebuilt — restarting metal-agent to re-warm the pool on the new base...')
-    spawn('systemctl', ['restart', 'metal-agent'], { detached: true, stdio: 'ignore' }).unref()
+    const staged = await stageRootfs(config.agentDir, desired!)
+    hooks.onStaged?.(staged.identities)
+    console.log(
+      `[self-update] rootfs for ${staged.version} staged (identity ${staged.identities.standard}) — ` +
+        'serving on the current image until activateRootfs',
+    )
     return true
   } catch (err: any) {
     // Leave the marker unset so the next heartbeat retries; keep serving on the
@@ -297,12 +449,11 @@ async function applyUpdate(d: DesiredAgent): Promise<void> {
       }
     }
 
-    if (d.rebuildRootfs) {
+    if (d.rebuildRootfs && shouldRebuildRootfs(d, readRootfsMarker(), true, getStagedRootfs()?.version ?? null)) {
       try {
-        await rebuildRootfs(stage, d)
-        // Stamp the marker so the standalone path (maybeRebuildRootfs) doesn't
-        // rebuild again for this same version after the restart.
-        writeRootfsMarker(d.version)
+        // Staged, not switched: the restart below only swaps agent code. The
+        // marker stops the standalone path rebuilding this version again.
+        await stageRootfs(stage, d)
       } catch (err: any) {
         console.error('[self-update] rootfs rebuild failed (agent code still updated):', err?.message ?? err)
       }
@@ -344,37 +495,50 @@ async function downloadS3(url: string): Promise<Buffer> {
 }
 
 /**
- * Rebuild the golden runtime rootfs from the bundled build script when the
- * release marks a rootfs change. `baseDir` holds the bundle layout (an extracted
- * update stage, or the persisted install dir for a standalone rebuild). Needs
- * the script in the bundle + OCIR creds/runtime image already on the host
- * (RUNTIME_IMAGE + DOCKER_CONFIG in the agent's env, as provisioning arranges).
+ * Build the golden runtime rootfs from the bundled build script when the
+ * release marks a rootfs change, into `<base>.staged` beside the live image.
+ * `baseDir` holds the bundle layout (an extracted update stage, or the
+ * persisted install dir for a standalone rebuild). Needs the script in the
+ * bundle + OCIR creds/runtime image already on the host (RUNTIME_IMAGE +
+ * DOCKER_CONFIG in the agent's env, as provisioning arranges).
  *
- * Builds to a sibling temp file and atomically renames over the live rootfs, so
- * VMs currently booted off the old base are never disturbed (their open fd / dm
- * table keeps the old inode until released); new VMs pick up the new base after
- * the restart the caller performs.
+ * The live image is never touched here; `maybeActivateRootfs` renames the
+ * staged one into place later.
  */
-async function rebuildRootfs(baseDir: string, desired: DesiredAgent): Promise<void> {
+async function stageRootfs(baseDir: string, desired: DesiredAgent): Promise<StagedRootfs> {
   const script = join(baseDir, 'scripts', 'metal-agent', 'build-runtime-rootfs.sh')
   if (!existsSync(script)) throw new Error('build-runtime-rootfs.sh not in bundle')
+  // The previous marker no longer describes the staged file once a rebuild starts.
+  clearStagedMarker()
+  const out = stagedRootfsPath(config.baseRootfs)
   await buildRootfsImage({
     script,
-    out: config.baseRootfs,
+    out,
     runtimeImage: desired.runtimeImage,
     runtimeRevision: desired.runtimeRevision,
   })
+  const identities: StagedRootfs['identities'] = { standard: computeRootfsIdentity(config, out) }
   // A host that opted into the docker class (METAL_DOCKER_ROOTFS) also rebuilds
   // that rootfs from the docker-tagged image, with dockerd's starter installed.
   if (config.dockerClass.baseRootfs) {
+    const dockerOut = stagedRootfsPath(config.dockerClass.baseRootfs)
     await buildRootfsImage({
       script,
-      out: config.dockerClass.baseRootfs,
+      out: dockerOut,
       runtimeImage: dockerRuntimeImage(desired.runtimeImage),
       runtimeRevision: desired.runtimeRevision,
       extraEnv: { DOCKER_CLASS: '1' },
     })
+    identities.docker = computeRootfsIdentity(config, dockerOut)
   }
+  const staged: StagedRootfs = {
+    version: desired.version,
+    identities,
+    runtimeRevision: desired.runtimeRevision,
+    stagedAt: Date.now(),
+  }
+  writeStagedMarker(staged)
+  return staged
 }
 
 /** `repo:env-multiarch-sha` -> `repo:env-docker-multiarch-sha`. */
