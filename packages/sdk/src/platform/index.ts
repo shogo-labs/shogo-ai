@@ -58,6 +58,8 @@ export interface PlatformConfig {
     agentShell: boolean
     /** Independently controls the narrow/native Workspace Agent shell rollout. */
     mobileAgentShell: boolean
+    /** Channel boards, cards and My work. */
+    workBoards: boolean
   }
 }
 
@@ -71,6 +73,7 @@ export interface FeatureFlagOverrides {
   personalShell: boolean | null
   agentShell: boolean | null
   mobileAgentShell: boolean | null
+  workBoards: boolean | null
 }
 
 export interface EzModeVoiceProviderOverride {
@@ -85,6 +88,7 @@ export type FeatureFlagPatch = Partial<{
   personalShell: boolean | null
   agentShell: boolean | null
   mobileAgentShell: boolean | null
+  workBoards: boolean | null
 }>
 
 /** API keys come in two flavours:
@@ -1232,6 +1236,7 @@ export class PlatformApi {
       personalShell: null,
       agentShell: null,
       mobileAgentShell: null,
+      workBoards: null,
     }
   }
 
@@ -1251,6 +1256,7 @@ export class PlatformApi {
           personalShell: null,
           agentShell: null,
           mobileAgentShell: null,
+          workBoards: null,
         },
       }
     )

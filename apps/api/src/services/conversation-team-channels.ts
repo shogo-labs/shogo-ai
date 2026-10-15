@@ -46,6 +46,8 @@ export interface TeamChannelUpsert {
   removeAgentProjectIds?: Array<string | null>
   userEmails?: string[]
   groupHandles?: string[]
+  /** The person the agent is working for. A channel created for them gets them as its owner. */
+  onBehalfOfUserId?: string
 }
 
 export class TeamChannelError extends Error {
@@ -134,9 +136,20 @@ export async function upsertTeamChannel(
   let conversation = await db.conversation.findFirst({ where: { workspaceId, slug, kind: { in: ['public', 'private'] } } })
   const created = !conversation
   if (!conversation) {
+    const requester = input.onBehalfOfUserId
+      ? await db.member.findFirst({ where: { workspaceId, projectId: null, userId: input.onBehalfOfUserId }, select: { userId: true } })
+      : null
     conversation = await db.conversation.create({
-      data: { workspaceId, kind, name: slug, slug, topic: input.topic?.trim() || null, systemManagedBy: managedBy ?? null },
+      data: {
+        workspaceId, kind, name: slug, slug, topic: input.topic?.trim() || null,
+        systemManagedBy: managedBy ?? null, createdById: requester?.userId ?? null,
+      },
     })
+    if (requester) {
+      await db.conversationMember.create({
+        data: { conversationId: conversation.id, memberType: 'user', userId: requester.userId, role: 'owner' },
+      })
+    }
     changes.push('created')
   } else {
     if (managedBy && conversation.systemManagedBy !== managedBy) {

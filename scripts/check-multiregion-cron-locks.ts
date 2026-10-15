@@ -729,6 +729,29 @@ const ACCEPTED_UNIQUE_KEYS: UniqueKeyRule[] = [
       'Channel create (POST /api/workspaces/:workspaceId/conversations, path-resolved to the home region) picks a free slug; #general/#activity seeding is find-then-create with a raced-create fallback in the same region.',
   },
   {
+    key: 'Board.(slug,workspaceId)',
+    category: 'request_scoped',
+    reason:
+      'Board create (POST /api/workspaces/:workspaceId/boards or system_apply through the internal API, path-resolved to the home region) picks a free slug. No cron writer.',
+  },
+  {
+    key: 'WorkItem.(key,workspaceId)',
+    category: 'request_scoped',
+    reason:
+      'Card keys come from an atomic increment of Board.itemCounter inside the create transaction on the workspace home region. Trigger intake runs in the delivering region for workspaces homed there. No cron writer.',
+  },
+  {
+    key: 'WorkItemLink.(kind,refId,workItemId)',
+    category: 'request_scoped',
+    reason:
+      'Links are upserted by the request (message post, tool call, agent run end) that touches the card, on the workspace home region; a raced duplicate re-reads the existing row.',
+  },
+  {
+    key: 'WorkItemSubscription.(userId,workItemId)',
+    category: 'request_scoped',
+    reason: 'Follow/unfollow on a card is a user request upsert on the workspace home region. No cron writer.',
+  },
+  {
     key: 'Conversation.(dmKey,workspaceId)',
     category: 'single_tenant_upsert',
     reason:

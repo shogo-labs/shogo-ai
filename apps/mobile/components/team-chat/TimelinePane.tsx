@@ -25,6 +25,8 @@ import { MentionNudgeCard } from './MentionNudgeCard'
 import { CHROME_SIZE, GlassButton, GlassChip } from './FloatingChrome'
 import { usePhoneChromeOverlay } from '../layout/PhoneChromeOverlay'
 import { GlassBlurTarget } from '../ui/LiquidGlassBackdrop'
+import { MakeCardSheet } from '../boards/MakeCardSheet'
+import type { WorkItem } from '../../lib/work-boards-api'
 
 const api = teamChatApi()
 /** Pages of 200 to load back when jumping to an older message before opening it on its own. */
@@ -53,6 +55,8 @@ export interface TimelinePaneProps {
   floating?: boolean
   /** Height of the floating header drawn over this pane. */
   topInset?: number
+  /** Open a card made from a message here. "Make a card" only shows when this is set. */
+  onOpenCard?: (item: WorkItem) => void
 }
 
 /** Files dropped anywhere on a web pane go to the composer. */
@@ -124,6 +128,14 @@ export function TimelinePane(props: TimelinePaneProps) {
   const insets = useSafeAreaInsets()
   const [threadHeaderHeight, setThreadHeaderHeight] = useState(0)
   const [footerHeight, setFooterHeight] = useState(0)
+  const [cardFrom, setCardFrom] = useState<ChatMessage | null>(null)
+  const [cardNotice, setCardNotice] = useState<string | null>(null)
+  useEffect(() => {
+    if (!cardNotice) return
+    const t = setTimeout(() => setCardNotice(null), 4000)
+    return () => clearTimeout(t)
+  }, [cardNotice])
+  const canMakeCards = !!props.onOpenCard && (conversation.kind === 'public' || conversation.kind === 'private') && conversation.canReply
   const showActivityFilters = conversation.kind === 'activity' && !threadRootId
   const channelList = useConversationList(showActivityFilters ? workspaceId : null)
   const [activityFilter, setActivityFilter] = useState<ActivityFilterState>(EMPTY_ACTIVITY_FILTER)
@@ -310,7 +322,7 @@ export function TimelinePane(props: TimelinePaneProps) {
   const dragging = useFileDrop(rootRef, showComposer && canPostHere, (files) => composerRef.current?.addFiles(files))
 
   const crumbs = threadCrumbs({ kind: conversation.kind, label: conversationTitle(conversation) })
-  const typingText = typingLabel(typing)
+  const typingText = cardNotice ?? typingLabel(typing)
   const listInsets = floating
     ? { top: (showActivityFilters ? 0 : topInset) + threadHeaderHeight, bottom: footerHeight }
     : undefined
@@ -339,6 +351,7 @@ export function TimelinePane(props: TimelinePaneProps) {
       onOpenSession={props.onOpenSession}
       onOpenProjectPane={props.onOpenProjectPane}
       onMarkUnread={threadRootId || !conversation.joined ? undefined : onMarkUnread}
+      onMakeCard={canMakeCards ? setCardFrom : undefined}
       unreadAfterSeq={filtering ? null : unread?.afterSeq ?? null}
       unreadUpToSeq={unread?.upToSeq}
       unreadNotLoaded={filtering ? false : unreadNotLoaded}
@@ -381,6 +394,19 @@ export function TimelinePane(props: TimelinePaneProps) {
       ))}
     </ScrollView>
   ) : null
+  const makeCardSheet = cardFrom ? (
+    <MakeCardSheet
+      workspaceId={workspaceId}
+      conversationId={conversation.id}
+      message={cardFrom}
+      onClose={() => setCardFrom(null)}
+      onError={setCardNotice}
+      onCreated={(item) => {
+        setCardNotice(`Made ${item.key}`)
+        props.onOpenCard?.(item)
+      }}
+    />
+  ) : null
   const composer = (
     <>
       {mentionNudge && (
@@ -417,6 +443,7 @@ export function TimelinePane(props: TimelinePaneProps) {
     return (
       <View className="flex-1" ref={rootRef}>
         {filterBar}
+        {makeCardSheet}
         <GlassBlurTarget>
           {timeline.error && !timeline.state.messages.length ? (
             <View className="flex-1 items-center justify-center gap-2 px-8">
@@ -501,6 +528,7 @@ export function TimelinePane(props: TimelinePaneProps) {
         </View>
       )}
       {filterBar}
+      {makeCardSheet}
       {timeline.error && !timeline.state.messages.length ? (
         <View className="flex-1 items-center justify-center gap-2 px-8">
           <Text className="text-center text-sm text-muted-foreground">{timeline.error}</Text>

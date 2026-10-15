@@ -108,6 +108,25 @@ describe('trigger tools', () => {
     expect(result.note).toContain('cannot be read again')
   })
 
+  test('a work_item target sends the card mapping as workItemTarget', async () => {
+    await execute(tools.createTriggerCreateTool(ctx), {
+      name: 'New Zendesk tickets',
+      event_type: 'composio.zendesk.ZENDESK_NEW_TICKET',
+      target: 'work_item',
+      card: { board: 'Tickets', channel: 'support', title: '{{ticket.subject}}', priority: 'ticket.priority', fields: { customer: 'ticket.requester.name' }, dedupe_key: '{{ticket.id}}' },
+    })
+    expect(calls[0].args[1]).toMatchObject({
+      target: 'work_item',
+      workItemTarget: {
+        board: 'Tickets',
+        channel: 'support',
+        dedupeKey: '{{ticket.id}}',
+        mapping: { title: '{{ticket.subject}}', priority: 'ticket.priority', fields: { customer: 'ticket.requester.name' } },
+      },
+    })
+    expect(calls[0].args[1].prompt).toBeUndefined()
+  })
+
   test('list, update, delete and test map to the internal API', async () => {
     await execute(tools.createTriggerTypesListTool(ctx), { toolkit: 'github' })
     await execute(tools.createTriggerListTool(ctx), {})

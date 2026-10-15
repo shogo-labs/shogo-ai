@@ -1,0 +1,52 @@
+# GENERATED FILE — do not hand-edit. Source: packages/agent-runtime/src/work-templates.ts
+# Regenerate with: bun run packages/agent-runtime/src/work-templates-gen.ts
+#
+# A board template: add `board` to a team channel in shogo-system.yaml
+# (or call work_template_add), then run system_apply.
+id: sales-pipeline
+name: Sales Pipeline
+summary: Deals from lead to won or lost, with amount, close date and next step.
+channel: sales
+board:
+  name: Pipeline
+  itemType: deal
+  keyPrefix: DEAL
+  description: Every open deal. A deal without a next step and a date is stale.
+  columns:
+    - name: Lead
+      category: backlog
+      slaHours: 48
+    - name: Qualified
+      category: active
+    - name: Proposal
+      category: active
+    - name: Negotiation
+      category: review
+    - name: Won
+      category: done
+    - name: Lost
+      category: dismissed
+  fields:
+    - key: company
+      label: Company
+      type: text
+      required: true
+    - key: amount
+      label: Amount
+      type: money
+    - key: closeDate
+      label: Expected close
+      type: date
+    - key: nextStep
+      label: Next step
+      type: text
+    - key: lostReason
+      label: Lost reason
+      type: select
+      options:
+        - price
+        - timing
+        - competitor
+        - no decision
+        - fit
+  postToChannel: done_only

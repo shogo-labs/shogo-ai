@@ -30,62 +30,61 @@ enum UserRole {
 }
 
 model User {
-  id                  String   @id @default(cuid())
-  name                String?
-  email               String   @unique
-  emailVerified       Boolean  @default(false)
-  image               String?
-  role                UserRole @default(user)
+  id                          String   @id @default(cuid())
+  name                        String?
+  email                       String   @unique
+  emailVerified               Boolean  @default(false)
+  image                       String?
+  role                        UserRole @default(user)
   // Granular admin permission scopes (e.g. "analytics:read", "creators:read").
   // Layered on top of `role`: a super_admin implicitly holds every scope, so
   // this list only matters for non-super_admin users granted partial admin
   // access. Validated against the catalog in apps/api/src/lib/admin-scopes.ts.
-  adminScopes         String[] @default([])
-  onboardingCompleted Boolean  @default(false)
+  adminScopes                 String[] @default([])
+  onboardingCompleted         Boolean  @default(false)
   lastSeenAnnouncementVersion String?
-  onboardingIntent    String?
+  onboardingIntent            String?
   // JSON-encoded Shogo buddy look ({ topper, face, bolts, blush }). Stored as
   // text so the PostgreSQL and SQLite tracks share one read/write path.
-  buddyLook           String?
+  buddyLook                   String?
   // Write-ownership region for this user's identity-scoped rows (the user row
   // itself, notifications, etc.). Identity writes are routed to this region so
   // a given user is only ever written in one place, keeping active-active
   // logical replication conflict-free for identity data. Set to the creating
   // region's REGION_ID on signup; null is treated as the primary region by the
   // router. Cloud-only (single-region desktop ignores it).
-  homeRegion          String?
-  createdAt           DateTime @default(now())
-  updatedAt           DateTime @updatedAt
+  homeRegion                  String?
+  createdAt                   DateTime @default(now())
+  updatedAt                   DateTime @updatedAt
 
   // Relations
-  sessions             Session[]
-  accounts             Account[]
-  members              Member[]
-  notifications        Notification[]
-  agentTasks            AgentTask[]
-  agentSchedules       AgentSchedule[]
-  starredProjects      StarredProject[]
-  signupAttribution    SignupAttribution?
-  apiKeys              ApiKey[]
-  creatorProfile       CreatorProfile?
-  creatorFollows       CreatorFollow[]      @relation("UserFollows")
-  affiliate            Affiliate?
-  affiliateAttribution AffiliateAttribution?
-  projectAuthSignIns   ProjectAuthSignIn[]
-  mobilePushSubscriptions MobilePushSubscription[]
-  appInstalls          AppInstall[]
-  slackUserLinks       SlackUserLink[]
-  chatIdentityLinks    ChatIdentityLink[]
-  conversationMemberships ConversationMember[]
-  conversationMessages ConversationMessage[]
-  integrationConnections UserIntegrationConnection[]
-  integrationGrants    UserIntegrationGrant[]
+  sessions                   Session[]
+  accounts                   Account[]
+  members                    Member[]
+  notifications              Notification[]
+  agentTasks                 AgentTask[]
+  agentSchedules             AgentSchedule[]
+  starredProjects            StarredProject[]
+  signupAttribution          SignupAttribution?
+  apiKeys                    ApiKey[]
+  creatorProfile             CreatorProfile?
+  creatorFollows             CreatorFollow[]                 @relation("UserFollows")
+  affiliate                  Affiliate?
+  affiliateAttribution       AffiliateAttribution?
+  projectAuthSignIns         ProjectAuthSignIn[]
+  mobilePushSubscriptions    MobilePushSubscription[]
+  appInstalls                AppInstall[]
+  slackUserLinks             SlackUserLink[]
+  chatIdentityLinks          ChatIdentityLink[]
+  conversationMemberships    ConversationMember[]
+  conversationMessages       ConversationMessage[]
+  integrationConnections     UserIntegrationConnection[]
+  integrationGrants          UserIntegrationGrant[]
   integrationWorkspaceGrants UserIntegrationWorkspaceGrant[]
-  identityLinks        UserIdentityLink[]
+  identityLinks              UserIdentityLink[]
 
   @@index([createdAt])
   @@index([homeRegion])
-
   @@map("users")
 }
 
@@ -165,46 +164,46 @@ enum GoalEventKind {
 }
 
 model Workspace {
-  id            String       @id @default(uuid())
-  name          String
-  kind          WorkspaceKind @default(team)
-  slug          String       @unique
-  description   String?
-  ssoSettings   Json?
-  instanceSize  InstanceSize @default(micro)
+  id                String        @id @default(uuid())
+  name              String
+  kind              WorkspaceKind @default(team)
+  slug              String        @unique
+  description       String?
+  ssoSettings       Json?
+  instanceSize      InstanceSize  @default(micro)
   // Whether Composio OAuth connections are stored at workspace scope
   // (one auth per toolkit shared across every project) or project
   // scope (each project gets its own isolated connections). New
   // workspaces default to "workspace"; existing workspaces are
   // back-filled to "project" by the matching migration so behavior
   // for already-connected accounts is preserved.
-  composioScope String       @default("workspace")
+  composioScope     String        @default("workspace")
   // Whether proxy requests and responses may be retained for product
   // analysis and training. "default" and "enabled" both capture (on for
   // every plan, including enterprise); only "disabled" opts the workspace out.
-  trainingDataMode String    @default("default")
+  trainingDataMode  String        @default("default")
   // Write-ownership region for this workspace. All writes to workspace-scoped
   // rows (members, projects, billing, storage_usage, usage_wallets, etc.) are
   // routed to this region so they are only ever written in one place — this is
   // what keeps active-active logical replication conflict-free for tenant data.
   // Set to the creating region's REGION_ID on create; null is treated as the
   // primary region by the router. Cloud-only (single-region desktop ignores it).
-  homeRegion    String?
+  homeRegion        String?
   // Optional parent workspace. When set, this workspace is a "child" that
   // pools the parent's plan, usage wallet, and seats (no subscription/wallet
   // of its own). Only Business/Enterprise workspaces may have children.
   parentWorkspaceId String?
   // Team chat surface: "off" | "native" | "external" | "bridged". Null means
   // the default for the workspace kind (native for team, off for personal).
-  chatMode      String?
+  chatMode          String?
   // External chat provider for "external" / "bridged": "slack" | "teams" | "google_chat".
-  chatProvider  String?
-  createdAt     DateTime     @default(now())
-  updatedAt     DateTime     @updatedAt
+  chatProvider      String?
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
 
   // Relations
-  parent                 Workspace?   @relation("WorkspaceHierarchy", fields: [parentWorkspaceId], references: [id], onDelete: SetNull)
-  children               Workspace[]  @relation("WorkspaceHierarchy")
+  parent                 Workspace?                      @relation("WorkspaceHierarchy", fields: [parentWorkspaceId], references: [id], onDelete: SetNull)
+  children               Workspace[]                     @relation("WorkspaceHierarchy")
   projects               Project[]
   members                Member[]
   billingAccounts        BillingAccount[]
@@ -245,6 +244,8 @@ model Workspace {
   proxyTurns             ProxyTurn[]
   conversations          Conversation[]
   chatInstallations      ChatInstallation[]
+  boards                 Board[]
+  workItems              WorkItem[]
 
   @@index([createdAt])
   @@index([homeRegion])
@@ -253,9 +254,9 @@ model Workspace {
 }
 
 model ProxyTurn {
-  id                String   @id @default(uuid())
-  firstAt           DateTime @default(now())
-  lastAt            DateTime @default(now())
+  id                String    @id @default(uuid())
+  firstAt           DateTime  @default(now())
+  lastAt            DateTime  @default(now())
   source            String
   workspaceId       String
   projectId         String?
@@ -263,24 +264,24 @@ model ProxyTurn {
   chatSessionId     String?
   turnKey           String
   resolvedModel     String?
-  llmCalls          Int      @default(0)
-  inputTokens       Int      @default(0)
-  outputTokens      Int      @default(0)
-  cachedInputTokens Int      @default(0)
-  cacheWriteTokens  Int      @default(0)
-  reasoningTokens   Int      @default(0)
-  errorCount        Int      @default(0)
-  userText          String?  @db.Text
-  assistantText     String?  @db.Text
-  toolNames         String[] @default([])
+  llmCalls          Int       @default(0)
+  inputTokens       Int       @default(0)
+  outputTokens      Int       @default(0)
+  cachedInputTokens Int       @default(0)
+  cacheWriteTokens  Int       @default(0)
+  reasoningTokens   Int       @default(0)
+  errorCount        Int       @default(0)
+  userText          String?   @db.Text
+  assistantText     String?   @db.Text
+  toolNames         String[]  @default([])
   archivePrefix     String?
   feedback          String?
   revertedAt        DateTime?
-  hadError          Boolean  @default(false)
-  truncated         Boolean  @default(false)
+  hadError          Boolean   @default(false)
+  truncated         Boolean   @default(false)
   userFollowupKind  String?
-  createdAt         DateTime @default(now())
-  updatedAt         DateTime @updatedAt
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
 
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
@@ -323,7 +324,7 @@ model Goal {
   createdAt      DateTime   @default(now())
   updatedAt      DateTime   @updatedAt
 
-  workspace  Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  workspace  Workspace       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   events     GoalEvent[]
   agentTasks AgentTask[]
   schedules  AgentSchedule[]
@@ -334,29 +335,29 @@ model Goal {
 }
 
 model AgentSchedule {
-  id                  String    @id @default(uuid())
-  workspaceId         String
-  goalId              String?
-  userId              String
-  name                String
-  prompt              String
-  cronExpression      String
-  timezone            String    @default("UTC")
-  enabled             Boolean   @default(true)
-  nextRunAt           DateTime
-  lastRunAt           DateTime?
-  lastRunStatus       String?
-  lastRunSummary      String?
-  lastError           String?
-  chatSessionId       String?
+  id                   String    @id @default(uuid())
+  workspaceId          String
+  goalId               String?
+  userId               String
+  name                 String
+  prompt               String
+  cronExpression       String
+  timezone             String    @default("UTC")
+  enabled              Boolean   @default(true)
+  nextRunAt            DateTime
+  lastRunAt            DateTime?
+  lastRunStatus        String?
+  lastRunSummary       String?
+  lastError            String?
+  chatSessionId        String?
   /// Conversation that receives each run's summary.
   notifyConversationId String?
   /// Thread in that conversation the summary is posted under; top level when null.
-  notifyThreadRootId  String?
-  runningAt           DateTime?
-  consecutiveFailures Int       @default(0)
-  createdAt           DateTime  @default(now())
-  updatedAt           DateTime  @updatedAt
+  notifyThreadRootId   String?
+  runningAt            DateTime?
+  consecutiveFailures  Int       @default(0)
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
 
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   goal      Goal?     @relation(fields: [goalId], references: [id], onDelete: Cascade)
@@ -434,6 +435,8 @@ model EventSubscription {
   prompt               String?
   notifyConversationId String?
   notifyThreadRootId   String?
+  /// For `work_item` targets: { boardId, columnId?, mapping, dedupeKey? }.
+  workItemTarget       Json?
   webhookUrl           String?
   /// AES-GCM encrypted HMAC secret for `webhook` targets.
   webhookSecret        String?
@@ -526,25 +529,25 @@ enum InstanceSize {
 }
 
 model Project {
-  id                 String           @id @default(uuid())
+  id                 String            @id @default(uuid())
   name               String
-  hidden             Boolean          @default(false)
+  hidden             Boolean           @default(false)
   description        String?
   workspaceId        String
-  tier               ProjectTier      @default(starter)
-  status             ProjectStatus    @default(draft)
-  schemas            String[]         @default([])
+  tier               ProjectTier       @default(starter)
+  status             ProjectStatus     @default(draft)
+  schemas            String[]          @default([])
   createdBy          String?
-  createdAt          DateTime         @default(now())
-  updatedAt          DateTime         @updatedAt
+  createdAt          DateTime          @default(now())
+  updatedAt          DateTime          @updatedAt
   folderId           String?
-  publishedSubdomain String?          @unique
+  publishedSubdomain String?           @unique
   publishedAt        DateTime?
   // Tracks where in the publish pipeline this project currently is.
   // Updated by apps/api/src/routes/publish.ts at each step so a stuck
   // or cancelled HTTP request still leaves a recoverable trail in the
   // DB. `failed` carries the last error code in `publishError`.
-  publishStatus      PublishStatus    @default(idle)
+  publishStatus      PublishStatus     @default(idle)
   publishError       String?
   publishStatusAt    DateTime?
   // The exact git commit + annotated tag that the current publish points
@@ -556,8 +559,8 @@ model Project {
   // When true, the published Knative service runs at min-scale=1 (never
   // scales to zero) so visitors never hit a cold start. Gated by plan/seat
   // allotment (see billing.service.ts canEnableAlwaysOn + publish.ts).
-  publishedAlwaysOn  Boolean          @default(false)
-  accessLevel        AccessLevel      @default(anyone)
+  publishedAlwaysOn  Boolean           @default(false)
+  accessLevel        AccessLevel       @default(anyone)
   // Who inside the workspace can open this project (RBAC). `restricted`
   // limits access to workspace owners/admins plus explicit project
   // Members. See packages/authz/src/resolve.ts.
@@ -583,18 +586,18 @@ model Project {
   // at one or more folders on the user's machine (see ProjectFolder); the
   // Vite/Metro runtime + auto-checkpoints are disabled by default to match
   // VS Code / Cursor expectations.
-  workingMode    String  @default("managed")
-  runtimeEnabled Boolean @default(true)
+  workingMode        String            @default("managed")
+  runtimeEnabled     Boolean           @default(true)
   // Workspace-level Slack routing considers every project enabled by
   // default (opt-out) once a workspace admin installs the Slack app —
   // installing is itself the deliberate opt-in. Admins can disable
   // individual projects from Settings → Integrations → Shogo Agent for
   // Slack, or from a project's own Channels panel.
-  slackEnabled   Boolean @default(true)
+  slackEnabled       Boolean           @default(true)
   // VS Code Workspace Trust model. `restricted` blocks write/exec tools
   // until the user explicitly trusts the folder. Managed projects are
   // implicitly trusted (they live in our sandbox).
-  trustLevel     String  @default("trusted")
+  trustLevel         String            @default("trusted")
 
   // External-trigger routing: when set, /api/projects/:id/agent-proxy/*
   // requests are relayed through the paired Instance's tunnel instead of
@@ -629,13 +632,13 @@ model Project {
   cloudSyncMode CloudSyncMode @default(git_only)
 
   // Relations
-  workspace              Workspace               @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  folder                 Folder?                 @relation(fields: [folderId], references: [id], onDelete: SetNull)
+  workspace              Workspace                       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  folder                 Folder?                         @relation(fields: [folderId], references: [id], onDelete: SetNull)
   members                Member[]
   inviteLinks            InviteLink[]
   featureSessions        FeatureSession[]
   chatSessions           ChatSession[]
-  plans                 Plan[]
+  plans                  Plan[]
   usageEvents            UsageEvent[]
   liveSessionMeters      LiveSessionMeter[]
   checkpoints            ProjectCheckpoint[]
@@ -655,17 +658,17 @@ model Project {
   voiceConfig            VoiceProjectConfig?
   agents                 ProjectAgent[]
   projectFolders         ProjectFolder[]
-  preferredInstance      Instance?               @relation("ProjectPreferredInstance", fields: [preferredInstanceId], references: [id], onDelete: SetNull)
+  preferredInstance      Instance?                       @relation("ProjectPreferredInstance", fields: [preferredInstanceId], references: [id], onDelete: SetNull)
   authConfig             ProjectAuthConfig?
   authSignIns            ProjectAuthSignIn[]
   attachedSessions       ChatSessionProject[]
-  slackWorkspaceDefaults SlackWorkspaceInstallation[] @relation("SlackWorkspaceDefaultProject")
-  slackUserDefaults      SlackUserLink[]             @relation("SlackUserDefaultProject")
-  slackUserRecent        SlackUserLink[]             @relation("SlackUserLastUsedProject")
-  slackChannelDefaults   SlackChannelSettings[]      @relation("SlackChannelDefaultProject")
+  slackWorkspaceDefaults SlackWorkspaceInstallation[]    @relation("SlackWorkspaceDefaultProject")
+  slackUserDefaults      SlackUserLink[]                 @relation("SlackUserDefaultProject")
+  slackUserRecent        SlackUserLink[]                 @relation("SlackUserLastUsedProject")
+  slackChannelDefaults   SlackChannelSettings[]          @relation("SlackChannelDefaultProject")
   slackRoutingRules      SlackProjectRoutingRule[]
-  attachments            ProjectAttachment[]     @relation("ProjectAttachmentAnchor")
-  attachedTo             ProjectAttachment[]     @relation("ProjectAttachmentTarget")
+  attachments            ProjectAttachment[]             @relation("ProjectAttachmentAnchor")
+  attachedTo             ProjectAttachment[]             @relation("ProjectAttachmentTarget")
   customDomains          CustomDomain[]
   agentTasks             AgentTask[]
 
@@ -731,51 +734,51 @@ model ProjectFolder {
 /// resolve the custom hostname to the right object-storage prefix.
 /// See apps/api/src/lib/cloudflare-custom-hostnames.ts.
 model CustomDomain {
-  id        String             @id @default(uuid())
-  projectId String
+  id                 String             @id @default(uuid())
+  projectId          String
   /// Fully-qualified custom hostname, lowercased (e.g. "app.acme.com").
-  hostname  String             @unique
-  status    CustomDomainStatus @default(pending)
+  hostname           String             @unique
+  status             CustomDomainStatus @default(pending)
   /// Cloudflare custom_hostname id (zone-scoped). Null until the CF record
   /// is created; used for status polling + teardown.
   cfCustomHostnameId String?
   /// Mirror of Cloudflare's `ssl.status` (e.g. pending_validation,
   /// pending_issuance, active) for display in the publish panel.
-  sslStatus String?
+  sslStatus          String?
   /// Last validation error surfaced by Cloudflare; cleared on success.
-  lastError String?
+  lastError          String?
   /// Links an apex domain to its `www` companion (and vice versa) so the
   /// two are listed, verified, and deleted as one unit. Null for a
   /// standalone domain (e.g. a deeper subdomain like `app.acme.com`).
-  groupId String?
+  groupId            String?
   /// Within a group, exactly one row is the canonical (primary) hostname;
   /// the other 308-redirects to it at the edge. Standalone domains are
   /// trivially their own primary.
-  primary Boolean @default(true)
+  primary            Boolean            @default(true)
   /// When the hostname + cert first reached `active`.
-  verifiedAt DateTime?
+  verifiedAt         DateTime?
   /// Issuing CA Cloudflare assigned (`google` | `lets_encrypt` | `ssl_com`).
   /// Surfaced in the panel and used to spot a slow CA (SSL.com has wedged
   /// `processing` for >30m, which the re-trigger path heals).
-  certAuthority String?
+  certAuthority      String?
   /// When the reconciler last polled Cloudflare + checked DNS for this row.
   /// Drives "stale" opportunistic refreshes on read.
-  lastCheckedAt DateTime?
+  lastCheckedAt      DateTime?
   /// When validation/issuance was last re-triggered (manual button or the
   /// reconciler's auto-heal). Gates cooldowns + auto-retrigger backoff.
-  lastRetriggerAt DateTime?
+  lastRetriggerAt    DateTime?
   /// How many times issuance has been re-triggered (auto-heal is capped).
-  retriggerCount Int @default(0)
+  retriggerCount     Int                @default(0)
   /// Last server-side DNS check verdict: the customer's CNAME + DCV TXT are
   /// all correct. Gates the manual "Retrigger" button + auto-heal.
-  dnsOk Boolean?
+  dnsOk              Boolean?
   /// Compact JSON snapshot of the latest status detail (validation records,
   /// DNS check, DNS instructions, cert authority) so reads are DB-only and
   /// always informative without re-hitting Cloudflare. Stored as a JSON
   /// string for SQLite (desktop) parity.
-  diagnostics String?
-  createdAt  DateTime  @default(now())
-  updatedAt  DateTime  @updatedAt
+  diagnostics        String?
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
 
   project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
 
@@ -819,9 +822,9 @@ model ProjectAuthConfig {
 /// apps/api/src/auth.ts and updated on each subsequent sign-in. Powers
 /// the Users panel under Studio Settings -> Auth & Database.
 model ProjectAuthSignIn {
-  id           String   @id @default(uuid())
-  projectId    String
-  userId       String
+  id            String   @id @default(uuid())
+  projectId     String
+  userId        String
   firstSignInAt DateTime @default(now())
   lastSignInAt  DateTime @default(now())
   signInCount   Int      @default(1)
@@ -950,25 +953,25 @@ model ProjectCheckpoint {
 }
 
 model GitHubConnection {
-  id             String    @id @default(uuid())
-  projectId      String    @unique
+  id             String         @id @default(uuid())
+  projectId      String         @unique
   repoOwner      String
   repoName       String
   repoFullName   String // owner/repo for convenience
-  defaultBranch  String    @default("main")
+  defaultBranch  String         @default("main")
   branch         String? // Branch the workspace is on, when not the default branch
   authType       GitHubAuthType @default(app)
   installationId Int? // GitHub App installation ID (authType = app)
   encryptedToken String? // secret-crypto blob of a user access token (authType = token)
   tokenLogin     String? // GitHub login the token belongs to (authType = token)
   repoId         Int? // GitHub repository ID
-  isPrivate      Boolean   @default(true)
-  syncEnabled    Boolean   @default(true)
+  isPrivate      Boolean        @default(true)
+  syncEnabled    Boolean        @default(true)
   lastPushAt     DateTime?
   lastPullAt     DateTime?
   lastSyncError  String?
-  createdAt      DateTime  @default(now())
-  updatedAt      DateTime  @updatedAt
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
 
   // Relations
   project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
@@ -988,28 +991,28 @@ model GitHubConnection {
 /// what happens when the requester has no usable personal connection:
 /// `ask` (send them a connect link), `shared`, or `deny`.
 model IntegrationCredentialPolicy {
-  id           String   @id @default(uuid())
-  projectId    String
+  id             String    @id @default(uuid())
+  projectId      String
   /// "github", "composio:<toolkit>", or "mcp:<serverId>"
-  provider     String
-  writeMode    String   @default("shared")
-  readMode     String   @default("shared")
-  fallback     String   @default("ask")
+  provider       String
+  writeMode      String    @default("shared")
+  readMode       String    @default("shared")
+  fallback       String    @default("ask")
   /// JSON list of steps tried in order for writes and reads, e.g.
   /// ["requester","ask","shared"]. Null on rows written before lists existed;
   /// those are read from writeMode/readMode/fallback.
-  writeChain   String?
-  readChain    String?
+  writeChain     String?
+  readChain      String?
   /// Whose personal connection backs `shared` for providers with no project
   /// connection of their own (Composio).
-  sharedUserId String?
+  sharedUserId   String?
   /// Who opted in to have runs with no person act as them (the `delegate`
   /// step). Set only by that person; cleared by them or an admin.
   delegateUserId String?
   delegatedAt    DateTime?
-  updatedBy    String?
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  updatedBy      String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
 
   project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
 
@@ -1205,22 +1208,22 @@ enum ProjectVisibility {
 /// Workspace-level Slack app installation. The bot token is encrypted at rest
 /// and is shared by the base agent for all projects enabled for Slack.
 model SlackWorkspaceInstallation {
-  id                   String   @id @default(uuid())
-  workspaceId          String   @unique
-  slackTeamId          String   @unique
-  slackTeamName        String?
-  botAccessTokenEncrypted String @db.Text
-  botUserId            String?
-  installerUserId      String?
-  defaultProjectId     String?
-  createdAt            DateTime @default(now())
-  updatedAt            DateTime @updatedAt
+  id                      String   @id @default(uuid())
+  workspaceId             String   @unique
+  slackTeamId             String   @unique
+  slackTeamName           String?
+  botAccessTokenEncrypted String   @db.Text
+  botUserId               String?
+  installerUserId         String?
+  defaultProjectId        String?
+  createdAt               DateTime @default(now())
+  updatedAt               DateTime @updatedAt
 
-  workspace             Workspace   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  defaultProject        Project?    @relation("SlackWorkspaceDefaultProject", fields: [defaultProjectId], references: [id], onDelete: SetNull)
-  userLinks             SlackUserLink[]
-  channelSettings       SlackChannelSettings[]
-  routingRules          SlackProjectRoutingRule[]
+  workspace       Workspace                 @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  defaultProject  Project?                  @relation("SlackWorkspaceDefaultProject", fields: [defaultProjectId], references: [id], onDelete: SetNull)
+  userLinks       SlackUserLink[]
+  channelSettings SlackChannelSettings[]
+  routingRules    SlackProjectRoutingRule[]
 
   @@index([defaultProjectId])
   @@map("slack_workspace_installations")
@@ -1228,12 +1231,12 @@ model SlackWorkspaceInstallation {
 
 /// Per-team mapping between a Slack identity and a Shogo user identity.
 model SlackUserLink {
-  id                      String   @id @default(uuid())
-  slackTeamId             String
-  slackUserId             String
-  shogoUserId             String
+  id                       String   @id @default(uuid())
+  slackTeamId              String
+  slackUserId              String
+  shogoUserId              String
   personalDefaultProjectId String?
-  lastUsedProjectId       String?
+  lastUsedProjectId        String?
   /// Thread continuity for casual (not explicitly Slack-threaded) DM chat —
   /// see `dispatchSlackMessage` in apps/api/src/routes/slack-agent.ts. Lets
   /// consecutive plain top-level messages in the user's DM with the bot
@@ -1244,15 +1247,15 @@ model SlackUserLink {
   /// explicit "agent: ..." / "start a new agent" command; left alone (not
   /// updated) when the user manually replies inside a specific Slack
   /// thread, so that one-off branch doesn't hijack the default flow.
-  activeDmChannelId       String?
-  activeDmThreadTs        String?
-  createdAt               DateTime @default(now())
-  updatedAt               DateTime @updatedAt
+  activeDmChannelId        String?
+  activeDmThreadTs         String?
+  createdAt                DateTime @default(now())
+  updatedAt                DateTime @updatedAt
 
-  installation             SlackWorkspaceInstallation @relation(fields: [slackTeamId], references: [slackTeamId], onDelete: Cascade)
-  shogoUser               User       @relation(fields: [shogoUserId], references: [id], onDelete: Cascade)
-  personalDefaultProject   Project?   @relation("SlackUserDefaultProject", fields: [personalDefaultProjectId], references: [id], onDelete: SetNull)
-  lastUsedProject          Project?   @relation("SlackUserLastUsedProject", fields: [lastUsedProjectId], references: [id], onDelete: SetNull)
+  installation           SlackWorkspaceInstallation @relation(fields: [slackTeamId], references: [slackTeamId], onDelete: Cascade)
+  shogoUser              User                       @relation(fields: [shogoUserId], references: [id], onDelete: Cascade)
+  personalDefaultProject Project?                   @relation("SlackUserDefaultProject", fields: [personalDefaultProjectId], references: [id], onDelete: SetNull)
+  lastUsedProject        Project?                   @relation("SlackUserLastUsedProject", fields: [lastUsedProjectId], references: [id], onDelete: SetNull)
 
   @@unique([slackTeamId, slackUserId])
   @@index([shogoUserId])
@@ -1263,15 +1266,15 @@ model SlackUserLink {
 
 /// Per-channel project default configured by `@Shogo settings`.
 model SlackChannelSettings {
-  id              String   @id @default(uuid())
-  slackTeamId     String
-  slackChannelId  String
+  id               String   @id @default(uuid())
+  slackTeamId      String
+  slackChannelId   String
   defaultProjectId String?
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
 
-  installation    SlackWorkspaceInstallation @relation(fields: [slackTeamId], references: [slackTeamId], onDelete: Cascade)
-  defaultProject  Project?   @relation("SlackChannelDefaultProject", fields: [defaultProjectId], references: [id], onDelete: SetNull)
+  installation   SlackWorkspaceInstallation @relation(fields: [slackTeamId], references: [slackTeamId], onDelete: Cascade)
+  defaultProject Project?                   @relation("SlackChannelDefaultProject", fields: [defaultProjectId], references: [id], onDelete: SetNull)
 
   @@unique([slackTeamId, slackChannelId])
   @@index([defaultProjectId])
@@ -1280,15 +1283,15 @@ model SlackChannelSettings {
 
 /// Admin-managed keyword to project mapping for the Slack base agent.
 model SlackProjectRoutingRule {
-  id              String   @id @default(uuid())
-  slackTeamId     String
-  keyword         String
-  projectId       String
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  id          String   @id @default(uuid())
+  slackTeamId String
+  keyword     String
+  projectId   String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 
-  installation    SlackWorkspaceInstallation @relation(fields: [slackTeamId], references: [slackTeamId], onDelete: Cascade)
-  project         Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  installation SlackWorkspaceInstallation @relation(fields: [slackTeamId], references: [slackTeamId], onDelete: Cascade)
+  project      Project                    @relation(fields: [projectId], references: [id], onDelete: Cascade)
 
   @@unique([slackTeamId, keyword])
   @@index([projectId])
@@ -1408,26 +1411,26 @@ model Notification {
 }
 
 model AgentTask {
-  id             String          @id @default(uuid())
-  userId         String
-  workspaceId    String
-  goalId         String?
-  projectId      String?
-  chatSessionId  String?
-  title          String
-  notes          String?
-  dueAt          DateTime?
-  status         AgentTaskStatus @default(draft)
-  currentStep    String?
-  resultSummary  String?
-  errorMessage   String?
+  id                   String          @id @default(uuid())
+  userId               String
+  workspaceId          String
+  goalId               String?
+  projectId            String?
+  chatSessionId        String?
+  title                String
+  notes                String?
+  dueAt                DateTime?
+  status               AgentTaskStatus @default(draft)
+  currentStep          String?
+  resultSummary        String?
+  errorMessage         String?
   /// Conversation that receives the task's result.
   notifyConversationId String?
-  queuedAt       DateTime?
-  startedAt      DateTime?
-  completedAt    DateTime?
-  createdAt      DateTime        @default(now())
-  updatedAt      DateTime        @updatedAt
+  queuedAt             DateTime?
+  startedAt            DateTime?
+  completedAt          DateTime?
+  createdAt            DateTime        @default(now())
+  updatedAt            DateTime        @updatedAt
 
   user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
   workspace   Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
@@ -1519,30 +1522,30 @@ enum BillingInterval {
 }
 
 model UsageWallet {
-  id                           String   @id @default(uuid())
-  workspaceId                  String   @unique
-  monthlyIncludedUsd           Float    @default(0)
-  dailyIncludedUsd             Float    @default(0)
-  monthlyIncludedAllocationUsd Float    @default(0)
-  dailyUsedThisMonthUsd        Float    @default(0)
-  overageEnabled               Boolean  @default(true)
+  id                           String    @id @default(uuid())
+  workspaceId                  String    @unique
+  monthlyIncludedUsd           Float     @default(0)
+  dailyIncludedUsd             Float     @default(0)
+  monthlyIncludedAllocationUsd Float     @default(0)
+  dailyUsedThisMonthUsd        Float     @default(0)
+  overageEnabled               Boolean   @default(true)
   overageHardLimitUsd          Float?
-  overageAccumulatedUsd        Float    @default(0)
+  overageAccumulatedUsd        Float     @default(0)
   // USD already invoiced this period in trust blocks ($25 to start, growing
   // to $500 as blocks get paid; see `overageBlockUsd`). When
   // `overageAccumulatedUsd` crosses the next block past this value, a new
   // invoice is created mid-cycle and this field bumps.
   // Resets to 0 each monthly allocation reset.
-  overageBilledUsd             Float    @default(0)
+  overageBilledUsd             Float     @default(0)
   // Lifetime count of overage block invoices that actually got paid. Drives
   // the trust ladder in `overageBlockUsd` and never resets.
-  overagePaidBlocks            Int      @default(0)
+  overagePaidBlocks            Int       @default(0)
   // The single overage block invoice that is invoiced but not yet paid.
   // While set, further overage is paused (`overage_payment_pending`).
   // Cleared by a conditional update on payment so the sync pay path and the
   // `invoice.payment_succeeded` webhook can't double-count one invoice.
   overageOutstandingInvoiceId  String?
-  overageOutstandingUsd        Float    @default(0)
+  overageOutstandingUsd        Float     @default(0)
   // Stripe's hosted page for the outstanding invoice: where the customer pays
   // it or confirms a bank-required authentication (3-D Secure).
   overageOutstandingInvoiceUrl String?
@@ -1563,11 +1566,11 @@ model UsageWallet {
   // opened. See `usage-plans.ts` (FIVE_HOUR_MS / SEVEN_DAY_MS) and
   // `ROLLING_WINDOW_LIMITS`.
   fiveHourWindowStart          DateTime?
-  fiveHourUsedUsd              Float    @default(0)
+  fiveHourUsedUsd              Float     @default(0)
   weeklyWindowStart            DateTime?
-  weeklyUsedUsd                Float    @default(0)
-  createdAt                    DateTime @default(now())
-  updatedAt                    DateTime @updatedAt
+  weeklyUsedUsd                Float     @default(0)
+  createdAt                    DateTime  @default(now())
+  updatedAt                    DateTime  @updatedAt
 
   // Relations
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
@@ -1636,8 +1639,8 @@ model WorkspaceGrant {
   createdAt          DateTime  @default(now())
   updatedAt          DateTime  @updatedAt
 
-  workspace    Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  licenseKeys  LicenseKey[]
+  workspace   Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  licenseKeys LicenseKey[]
 
   @@index([workspaceId, expiresAt])
   @@map("workspace_grants")
@@ -1659,9 +1662,9 @@ model WorkspaceGrant {
 /// `updateMany({ where: { codeHash, redeemedAt: null } })` so the row
 /// lock serializes concurrent redemptions atomically.
 model LicenseKey {
-  id                    String         @id @default(uuid())
+  id                    String    @id @default(uuid())
   /// sha-256 hex of the canonical (uppercased, trimmed) plaintext code.
-  codeHash              String         @unique
+  codeHash              String    @unique
   /// First 12 plaintext chars (e.g. `SHGO-PRO-XXX`). For admin lookup
   /// and CSV reconciliation only — never enough entropy to redeem.
   codePrefix            String
@@ -1671,9 +1674,9 @@ model LicenseKey {
   /// `basic|pro|business|enterprise` (mirrors `WorkspaceGrant.planId`).
   planId                String
   /// Optional extra USD credit stacked into the generated grant.
-  monthlyIncludedUsd    Float          @default(0)
+  monthlyIncludedUsd    Float     @default(0)
   /// Optional extra free seats stacked into the generated grant.
-  freeSeats             Int            @default(0)
+  freeSeats             Int       @default(0)
   /// Length of the conferred grant in days. `null` = perpetual.
   durationDays          Int?
   /// If set, the key itself becomes invalid after this instant even if
@@ -1681,14 +1684,14 @@ model LicenseKey {
   expiresAt             DateTime?
   /// Set atomically on the first successful redemption.
   redeemedAt            DateTime?
-  redeemedByWorkspaceId String?        @unique
+  redeemedByWorkspaceId String?   @unique
   redeemedByUserId      String?
   /// `WorkspaceGrant.id` minted by the redemption, for audit + revoke.
-  redeemedGrantId       String?        @unique
+  redeemedGrantId       String?   @unique
   note                  String?
   createdByUserId       String?
-  createdAt             DateTime       @default(now())
-  updatedAt             DateTime       @updatedAt
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
 
   redeemedGrant WorkspaceGrant? @relation(fields: [redeemedGrantId], references: [id], onDelete: SetNull)
 
@@ -1739,29 +1742,29 @@ model StorageUsage {
 // =============================================================================
 
 model ChatSession {
-  id                  String      @id @default(uuid())
-  name                String?
-  inferredName        String
-  contextType         ContextType
-  contextId           String?
+  id                    String      @id @default(uuid())
+  name                  String?
+  inferredName          String
+  contextType           ContextType
+  contextId             String?
   // Set only for contextType == workspace. The project FK on contextId
   // cannot hold a workspace id, so workspace-scoped sessions carry the
   // workspace reference here and leave contextId null.
-  workspaceId         String?
+  workspaceId           String?
   // Owner of a personal workspace-agent chat. Null for project chats,
   // scheduled/DM/Slack sessions, and chats created before ownership existed.
-  createdByUserId     String?
-  phase               String?
-  claudeCodeSessionId String?
-  cachedMessageCount  Int         @default(0)
-  contextUsageTokens  Int         @default(0)
-  contextWindowTokens Int         @default(0)
-  isPrimary           Boolean     @default(false)
-  isPinned            Boolean     @default(false)
-  isArchived          Boolean     @default(false)
-  createdAt           DateTime    @default(now())
-  updatedAt           DateTime    @default(now()) @updatedAt
-  lastActiveAt        DateTime    @default(now())
+  createdByUserId       String?
+  phase                 String?
+  claudeCodeSessionId   String?
+  cachedMessageCount    Int         @default(0)
+  contextUsageTokens    Int         @default(0)
+  contextWindowTokens   Int         @default(0)
+  isPrimary             Boolean     @default(false)
+  isPinned              Boolean     @default(false)
+  isArchived            Boolean     @default(false)
+  createdAt             DateTime    @default(now())
+  updatedAt             DateTime    @default(now()) @updatedAt
+  lastActiveAt          DateTime    @default(now())
   // Set while an agent turn is in flight. The turn id makes completion
   // updates conditional so an older stream cannot clear a newer turn.
   // The heartbeat is refreshed while the stream runs; activity treats a
@@ -1774,10 +1777,10 @@ model ChatSession {
   // is on, each chat runs on its own branch in an isolated worktree. These
   // mirror the runtime worktree lifecycle for the UI (branch chip + merge
   // state). null when the feature is off / no worktree has been created.
-  worktreeBranch      String?
+  worktreeBranch String?
   // active | merging | merged
-  worktreeStatus      String?
-  worktreePath        String?
+  worktreeStatus String?
+  worktreePath   String?
 
   // Relations - contextId can reference FeatureSession or Project
   project          Project?             @relation(fields: [contextId], references: [id], onDelete: Cascade)
@@ -1888,19 +1891,19 @@ model ChatMessage {
 /// A prompt submitted while another turn is active. Queue rows are durable so
 /// the API can dispatch them after the client disconnects or restarts.
 model ChatQueuedMessage {
-  id            String      @id @default(uuid())
-  sessionId     String
-  userId        String
-  position      Int         @default(0)
-  status        String      @default("pending")
-  content       String      @db.Text
-  parts         String?     @db.Text
-  body          String      @db.Text
-  error         String?     @db.Text
-  createdAt     DateTime    @default(now())
-  updatedAt     DateTime    @default(now()) @updatedAt
+  id        String   @id @default(uuid())
+  sessionId String
+  userId    String
+  position  Int      @default(0)
+  status    String   @default("pending")
+  content   String   @db.Text
+  parts     String?  @db.Text
+  body      String   @db.Text
+  error     String?  @db.Text
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
 
-  session       ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  session ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
 
   @@index([sessionId, status, position])
   @@index([sessionId, createdAt])
@@ -2540,15 +2543,15 @@ model ModelDefinition {
   capabilities     Json? // { subagentOrchestration?: "reliable"|"flaky"|"unsupported", supportsAudioInput?: boolean }
 
   // User-facing picker metadata.
-  description    String? // Short blurb shown in the model picker info panel.
-  contextWindow  Int? // Total context window in tokens (distinct from maxOutputTokens).
+  description     String? // Short blurb shown in the model picker info panel.
+  contextWindow   Int? // Total context window in tokens (distinct from maxOutputTokens).
   reasoningEffort String? // "off" | "minimal" | "low" | "medium" | "high" | "xhigh"
 
   // Per-1M-token USD list prices (raw; markup applied at billing time).
-  inputPerMillion       Float @default(0)
-  cachedInputPerMillion Float @default(0)
-  cacheWritePerMillion  Float @default(0)
-  outputPerMillion      Float @default(0)
+  inputPerMillion       Float  @default(0)
+  cachedInputPerMillion Float  @default(0)
+  cacheWritePerMillion  Float  @default(0)
+  outputPerMillion      Float  @default(0)
   usdPerMinute          Float?
 
   createdAt DateTime @default(now())
@@ -2764,10 +2767,10 @@ model Instance {
   createdAt     DateTime       @default(now())
   updatedAt     DateTime       @updatedAt
 
-  workspace         Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  remoteActions     RemoteAction[]
-  pushSubscriptions PushSubscription[]
-  preferredByProjects Project[]        @relation("ProjectPreferredInstance")
+  workspace           Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  remoteActions       RemoteAction[]
+  pushSubscriptions   PushSubscription[]
+  preferredByProjects Project[]          @relation("ProjectPreferredInstance")
 
   @@unique([workspaceId, userId, hostname])
   @@index([workspaceId])
@@ -2821,18 +2824,18 @@ model PushSubscription {
 }
 
 model MobilePushSubscription {
-  id        String   @id @default(cuid())
-  userId    String
-  pushToken String   @unique
-  platform  String
+  id                           String   @id @default(cuid())
+  userId                       String
+  pushToken                    String   @unique
+  platform                     String
   /// Also deliver agent turn and task completion pushes (team chat pushes always go).
-  agentTurns Boolean @default(true)
+  agentTurns                   Boolean  @default(true)
   /// APNs token that lets the server start the agent Live Activity on this iPhone (iOS 17.2+).
   liveActivityPushToStartToken String?
   /// APNs token for the Live Activity running now on this iPhone, to update or end it.
-  liveActivityToken String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  liveActivityToken            String?
+  createdAt                    DateTime @default(now())
+  updatedAt                    DateTime @updatedAt
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -2841,14 +2844,14 @@ model MobilePushSubscription {
 }
 
 model AppInstall {
-  id          String    @id @default(cuid())
-  deviceId    String    @unique
+  id          String   @id @default(cuid())
+  deviceId    String   @unique
   platform    String
   appVersion  String?
   osVersion   String?
   deviceModel String?
   userId      String?
-  firstSeenAt DateTime  @default(now())
+  firstSeenAt DateTime @default(now())
   lastSeenAt  DateTime
 
   user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
@@ -3082,9 +3085,9 @@ model MarketplaceListing {
   // reviewedBy are populated on both approve and reject so we have an
   // auditable per-listing trail without standing up a separate review-event
   // table. See marketplace-audit.service for how findings flow in.
-  rejectionReason String?
-  reviewedAt      DateTime?
-  reviewedBy      String?
+  rejectionReason      String?
+  reviewedAt           DateTime?
+  reviewedBy           String?
   createdAt            DateTime      @default(now())
   updatedAt            DateTime      @updatedAt
 
@@ -3451,23 +3454,23 @@ model VoiceCallMeter {
 // Meters GPT-Live sessions. A session emits cumulative duration snapshots,
 // so this row is the idempotency boundary for final usage billing.
 model LiveSessionMeter {
-  id              String    @id @default(cuid())
-  sessionId       String    @unique
-  workspaceId     String
-  projectId       String?
-  memberId        String
-  model           String
-  backendModel    String?
-  transport       String
-  seconds         Float     @default(0)
-  rawUsd          Float     @default(0)
-  billedUsd       Float     @default(0)
-  usageConfirmed  Boolean   @default(false)
-  billed          Boolean   @default(false)
-  startedAt       DateTime?
-  endedAt         DateTime?
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
+  id             String    @id @default(cuid())
+  sessionId      String    @unique
+  workspaceId    String
+  projectId      String?
+  memberId       String
+  model          String
+  backendModel   String?
+  transport      String
+  seconds        Float     @default(0)
+  rawUsd         Float     @default(0)
+  billedUsd      Float     @default(0)
+  usageConfirmed Boolean   @default(false)
+  billed         Boolean   @default(false)
+  startedAt      DateTime?
+  endedAt        DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
 
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   project   Project?  @relation(fields: [projectId], references: [id], onDelete: SetNull)
@@ -3772,37 +3775,37 @@ enum ContentProgramStatus {
 /// getOrCreateSharedConnectAccountId in stripe-connect.service.ts. (The
 /// column keeps its legacy `Custom`-era name; the account type is Express.)
 model Affiliate {
-  id                    String          @id @default(cuid())
-  userId                String          @unique
-  code                  String          @unique
-  parentAffiliateId     String?
+  id                       String               @id @default(cuid())
+  userId                   String               @unique
+  code                     String               @unique
+  parentAffiliateId        String?
   /// 1 = top of tree (no parent). Denormalized for fast upline walks.
-  depth                 Int             @default(1)
-  status                AffiliateStatus @default(active)
-  stripeCustomAccountId String?
-  payoutStatus          PayoutStatus    @default(not_setup)
+  depth                    Int                  @default(1)
+  status                   AffiliateStatus      @default(active)
+  stripeCustomAccountId    String?
+  payoutStatus             PayoutStatus         @default(not_setup)
   payoutDetailsSubmittedAt DateTime?
   /// Sum of all `paid` commission amounts ever, in cents. Audit-only.
-  totalEarningsCents    Int             @default(0)
+  totalEarningsCents       Int                  @default(0)
   /// Sum of `pending` + `approved` commissions in cents, kept in sync by
   /// the service. Used by the mobile dashboard without recomputing.
-  pendingPayoutCents    Int             @default(0)
+  pendingPayoutCents       Int                  @default(0)
   /// Sum of `paid` commissions in cents. Differs from totalEarnings only
   /// when clawbacks adjust the running total.
-  totalPaidOutCents     Int             @default(0)
+  totalPaidOutCents        Int                  @default(0)
   /// Optional per-affiliate commission-rate override (basis points;
   /// 2000 = 20.00%). When set, it replaces the `AffiliateCommissionTier`
   /// rate for THIS affiliate's direct (L1) referrals and is applied as a
   /// flat rate — the tier's `durationDays` window and `secondaryRateBps`
   /// step-down are ignored at L1. Null = use the tier rate (default).
   /// Only affects level 1; deeper upline levels always use tier rates.
-  commissionRateBps     Int?
+  commissionRateBps        Int?
   /// Optional per-creator content-CPM override (cents paid per 1,000 NEW
   /// views). When set, it replaces the platform/per-platform CPM for THIS
   /// affiliate's content earnings — the content analogue of
   /// `commissionRateBps`. Null = use the platform `affiliate.content.*`
   /// PlatformSetting (default).
-  contentCpmCents       Int?
+  contentCpmCents          Int?
   /// Optional per-creator per-video lifetime earnings cap (cents). When set,
   /// any single connected video/post stops accruing content-CPM commissions
   /// once its cumulative `source='content'` earnings reach this amount — the
@@ -3810,26 +3813,26 @@ model Affiliate {
   /// Null = fall back to the platform `affiliate.content.perVideoCapCents`
   /// PlatformSetting, which itself defaults to no cap. See
   /// `resolvePerVideoCapCents` and `AffiliatePost.paidCents`.
-  contentPerVideoCapCents Int?
+  contentPerVideoCapCents  Int?
   /// Set when the user accepted the affiliate terms during enroll.
-  termsAcceptedAt       DateTime?
+  termsAcceptedAt          DateTime?
   /// Video-creator (content CPM) program application gate. Both EARNING
   /// (the poller only accrues for approved affiliates) and PAYOUT of
   /// `source='content'` commissions require `approved`. Flips to `pending`
   /// when the affiliate applies (requires >= 1 verified handle); a super
   /// admin then approves/rejects on the per-creator admin page.
-  contentProgramStatus   ContentProgramStatus @default(none)
-  contentAppliedAt       DateTime?
-  contentReviewedAt      DateTime?
+  contentProgramStatus     ContentProgramStatus @default(none)
+  contentAppliedAt         DateTime?
+  contentReviewedAt        DateTime?
   /// User id of the admin who approved/rejected the content application.
-  contentReviewedBy      String?
-  contentRejectionReason String?
-  createdAt             DateTime        @default(now())
-  updatedAt             DateTime        @updatedAt
+  contentReviewedBy        String?
+  contentRejectionReason   String?
+  createdAt                DateTime             @default(now())
+  updatedAt                DateTime             @updatedAt
 
-  user         User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
-  parent       Affiliate?             @relation("AffiliateUpline", fields: [parentAffiliateId], references: [id], onDelete: SetNull)
-  children     Affiliate[]            @relation("AffiliateUpline")
+  user           User                     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  parent         Affiliate?               @relation("AffiliateUpline", fields: [parentAffiliateId], references: [id], onDelete: SetNull)
+  children       Affiliate[]              @relation("AffiliateUpline")
   clicks         AffiliateClick[]
   attributions   AffiliateAttribution[]
   commissions    AffiliateCommission[]
@@ -3989,10 +3992,10 @@ model AffiliatePayout {
 /// `durationDays` caps the recurring window per level (null = forever);
 /// default 365 matches Rewardful's 12-month policy.
 model AffiliateCommissionTier {
-  id           String  @id @default(cuid())
-  level        Int     @unique
-  rateBps      Int
-  durationDays Int?
+  id               String  @id @default(cuid())
+  level            Int     @unique
+  rateBps          Int
+  durationDays     Int?
   /// Optional step-down rate (basis points) applied AFTER `durationDays`
   /// expires (e.g. 1000 = 10.00% forever once the 365-day window ends).
   /// Null preserves legacy behavior: the level stops earning after its
@@ -4000,7 +4003,7 @@ model AffiliateCommissionTier {
   secondaryRateBps Int?
   /// Optional display label for the admin UI (e.g. "Direct referral",
   /// "L2 upline"). Free-form; ignored by the commission engine.
-  label        String?
+  label            String?
 
   @@map("affiliate_commission_tiers")
 }
@@ -4131,38 +4134,39 @@ enum ConversationAuthorType {
 /// A channel, DM, or group DM inside a workspace. `lastSeq` is the
 /// per-conversation message counter; clients resume realtime streams from it.
 model Conversation {
-  id            String           @id @default(uuid())
-  workspaceId   String
-  kind          ConversationKind @default(public)
-  name          String?
-  slug          String?
-  topic         String?
+  id              String           @id @default(uuid())
+  workspaceId     String
+  kind            ConversationKind @default(public)
+  name            String?
+  slug            String?
+  topic           String?
   /// Sorted participant key for DMs and group DMs so reopening one is idempotent.
-  dmKey         String?
-  createdById   String?
-  lastSeq       Int              @default(0)
-  lastMessageAt DateTime?
-  archivedAt    DateTime?
+  dmKey           String?
+  createdById     String?
+  lastSeq         Int              @default(0)
+  lastMessageAt   DateTime?
+  archivedAt      DateTime?
   /// "shogo" for native channels, else the external provider this channel mirrors.
-  provider      String           @default("shogo")
+  provider        String           @default("shogo")
   /// Channel / conversation / space id on the external provider.
-  externalId    String?
+  externalId      String?
   /// Project whose agent system declares this channel (`teamChannels` in its
   /// shogo-system.yaml). Such a channel can't be deleted — `system_apply` would
   /// recreate it — until the manifest drops it and the next apply clears this.
   systemManagedBy String?
-  createdAt     DateTime         @default(now())
-  updatedAt     DateTime         @updatedAt
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
 
-  workspace   Workspace                @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  members     ConversationMember[]
-  messages    ConversationMessage[]
-  attachments ConversationAttachment[]
+  workspace         Workspace                @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  members           ConversationMember[]
+  messages          ConversationMessage[]
+  attachments       ConversationAttachment[]
   pins              ConversationPin[]
   drafts            ConversationDraft[]
   scheduledMessages ScheduledMessage[]
   huddles           Huddle[]
   doc               ConversationDoc?
+  boards            Board[]
 
   @@unique([workspaceId, slug])
   @@unique([workspaceId, dmKey])
@@ -4257,27 +4261,27 @@ model ChatIdentityLink {
 /// A human or agent participant. Agents are identified by project (the
 /// project's agent) or by the workspace agent when both ids are null.
 model ConversationMember {
-  id             String                 @id @default(uuid())
-  conversationId String
-  memberType     ConversationMemberType @default(user)
-  userId         String?
-  projectId      String?
-  projectAgentId String?
-  role           String                 @default("member")
-  lastReadSeq    Int                    @default(0)
-  lastReadAt     DateTime?
-  notifyLevel    String                 @default("default")
-  muted          Boolean                @default(false)
-  starred        Boolean                @default(false)
+  id               String                 @id @default(uuid())
+  conversationId   String
+  memberType       ConversationMemberType @default(user)
+  userId           String?
+  projectId        String?
+  projectAgentId   String?
+  role             String                 @default("member")
+  lastReadSeq      Int                    @default(0)
+  lastReadAt       DateTime?
+  notifyLevel      String                 @default("default")
+  muted            Boolean                @default(false)
+  starred          Boolean                @default(false)
   /// When an agent member replies: "mention", "keyword", "all", or "auto" (only when relevant).
-  agentTrigger   String                 @default("mention")
-  agentKeywords  String?
+  agentTrigger     String                 @default("mention")
+  agentKeywords    String?
   /// Silenced with `@agent mute`: its channel triggers stay quiet, but a direct @mention still works.
-  agentMuted     Boolean                @default(false)
+  agentMuted       Boolean                @default(false)
   /// "shared" agents read the thread; "isolated" ones (e.g. a reviewer) get only the hand-off, criteria and links.
-  agentContextMode String               @default("shared")
-  createdAt      DateTime               @default(now())
-  updatedAt      DateTime               @updatedAt
+  agentContextMode String                 @default("shared")
+  createdAt        DateTime               @default(now())
+  updatedAt        DateTime               @updatedAt
 
   conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
   user         User?        @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -4321,8 +4325,8 @@ model ConversationMessage {
   createdAt         DateTime               @default(now())
   updatedAt         DateTime               @updatedAt
 
-  conversation Conversation             @relation(fields: [conversationId], references: [id], onDelete: Cascade)
-  authorUser   User?                    @relation(fields: [authorUserId], references: [id], onDelete: SetNull)
+  conversation Conversation                  @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  authorUser   User?                         @relation(fields: [authorUserId], references: [id], onDelete: SetNull)
   mentions     ConversationMention[]
   reactions    ConversationReaction[]
   attachments  ConversationAttachment[]
@@ -4374,7 +4378,7 @@ model ConversationReaction {
 
 /// Uploaded file. Created before the message is sent, then attached.
 model ConversationAttachment {
-  id             String    @id @default(uuid())
+  id             String   @id @default(uuid())
   conversationId String
   messageId      String?
   uploaderUserId String
@@ -4384,8 +4388,8 @@ model ConversationAttachment {
   size           Int
   width          Int?
   height         Int?
-  extractedText  String?   @db.Text
-  createdAt      DateTime  @default(now())
+  extractedText  String?  @db.Text
+  createdAt      DateTime @default(now())
 
   conversation Conversation                  @relation(fields: [conversationId], references: [id], onDelete: Cascade)
   message      ConversationMessage?          @relation(fields: [messageId], references: [id], onDelete: Cascade)
@@ -4398,19 +4402,19 @@ model ConversationAttachment {
 
 /// A slice of a chat file's extracted text, read by agents and ranked by search.
 model ConversationAttachmentChunk {
-  id             String   @id @default(uuid())
+  id             String                 @id @default(uuid())
   attachmentId   String
   conversationId String
   workspaceId    String
   idx            Int
-  text           String   @db.Text
+  text           String                 @db.Text
   charStart      Int
   charEnd        Int
   /// Embedding model, set once the indexer has processed the chunk (even when it produced no vector).
   model          String?
   /// pgvector. Read and written with raw SQL.
   embedding      Unsupported("vector")?
-  createdAt      DateTime @default(now())
+  createdAt      DateTime               @default(now())
 
   attachment ConversationAttachment @relation(fields: [attachmentId], references: [id], onDelete: Cascade)
 
@@ -4537,20 +4541,20 @@ model ConversationDraft {
 }
 
 model ScheduledMessage {
-  id                String    @id @default(uuid())
+  id                String   @id @default(uuid())
   workspaceId       String
   conversationId    String
   userId            String
   threadRootId      String?
-  alsoSentToChannel Boolean   @default(false)
+  alsoSentToChannel Boolean  @default(false)
   text              String
   sendAt            DateTime
   /// pending | sent | cancelled | failed
-  status            String    @default("pending")
+  status            String   @default("pending")
   sentMessageId     String?
   error             String?
-  createdAt         DateTime  @default(now())
-  updatedAt         DateTime  @updatedAt
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
 
   conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
 
@@ -4643,16 +4647,228 @@ model UserGroupMember {
 }
 
 model ConversationMessageEmbedding {
-  id          String   @id @default(uuid())
-  messageId   String   @unique
+  id          String                 @id @default(uuid())
+  messageId   String                 @unique
   workspaceId String
   model       String
   /// pgvector. Read and written with raw SQL; null for messages with nothing to embed.
   embedding   Unsupported("vector")?
-  createdAt   DateTime @default(now())
+  createdAt   DateTime               @default(now())
 
   message ConversationMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
 
   @@index([workspaceId, createdAt])
   @@map("conversation_message_embeddings")
+}
+
+// =============================================================================
+// WORK BOARDS
+// =============================================================================
+
+/// A Kanban board. A channel can hold several; boards with no channel are
+/// workspace-level. `managedBy: "manifest"` boards are declared in a project's
+/// shogo-system.yaml (`teamChannels[].boards`) and owned by `system_apply`.
+model Board {
+  id                      String    @id @default(uuid())
+  workspaceId             String
+  conversationId          String?
+  name                    String
+  slug                    String
+  /// Prefix for card keys, e.g. "SUP" for SUP-42.
+  keyPrefix               String
+  /// Last card number handed out; card numbers stay with the card when it moves.
+  itemCounter             Int       @default(0)
+  /// Tab order within the channel.
+  position                Int       @default(0)
+  /// task | problem | ticket | deal | candidate | approval | content | custom
+  itemType                String    @default("task")
+  description             String?
+  /// Card field definitions: [{ key, label, type, options?, required? }].
+  fieldsSchema            Json?
+  /// all | done_only | none — which card events post to the channel.
+  postToChannel           String    @default("all")
+  requiresHumanReview     Boolean   @default(false)
+  /// "workspace" or "project:<id>".
+  defaultAssigneeAgentRef String?
+  /// user | manifest
+  managedBy               String    @default("user")
+  /// Project whose shogo-system.yaml declares this board.
+  systemManagedBy         String?
+  templateId              String?
+  createdById             String?
+  archivedAt              DateTime?
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
+
+  workspace    Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  conversation Conversation? @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+  columns      BoardColumn[]
+  items        WorkItem[]
+
+  @@unique([workspaceId, slug])
+  @@index([conversationId, position])
+  @@map("boards")
+}
+
+model BoardColumn {
+  id        String   @id @default(uuid())
+  boardId   String
+  name      String
+  position  Int      @default(0)
+  /// backlog | active | waiting | review | done | dismissed
+  category  String   @default("active")
+  wipLimit  Int?
+  /// Agent that picks up cards moved here: "workspace" or "project:<id>".
+  agentRef  String?
+  /// Cards older than this in the column count as breaching SLA.
+  slaHours  Float?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  board Board      @relation(fields: [boardId], references: [id], onDelete: Cascade)
+  items WorkItem[]
+
+  @@index([boardId, position])
+  @@map("board_columns")
+}
+
+/// A card. Its conversation lives in a thread in the board's channel
+/// (`conversationId` + `threadRootMessageId`); everything else it touches is
+/// recorded as a WorkItemLink.
+model WorkItem {
+  id                  String    @id @default(uuid())
+  workspaceId         String
+  boardId             String
+  columnId            String
+  /// Sort order inside the column.
+  position            Float     @default(0)
+  /// e.g. "SUP-42". Unique in the workspace and kept across board moves.
+  key                 String
+  number              Int
+  title               String
+  description         String?   @db.Text
+  fields              Json?
+  /// urgent | high | medium | low | none
+  priority            String    @default("none")
+  assigneeUserId      String?
+  /// "workspace" or "project:<id>".
+  assigneeAgentRef    String?
+  dueAt               DateTime?
+  goalId              String?
+  projectId           String?
+  conversationId      String?
+  threadRootMessageId String?
+  /// manual | message | trigger | agent | api | problem
+  source              String    @default("manual")
+  externalRef         String?
+  eventSubscriptionId String?
+  /// Dedupe key for trigger and problem intake.
+  fingerprint         String?
+  /// Rolling summary of the card's whole history, for agent context.
+  historySummary      String?   @db.Text
+  historySummaryAt    DateTime?
+  createdById         String?
+  createdByAgentRef   String?
+  /// When the card entered its current column (drives SLA and staleness).
+  columnEnteredAt     DateTime  @default(now())
+  lastActivityAt      DateTime  @default(now())
+  completedAt         DateTime?
+  archivedAt          DateTime?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  workspace     Workspace              @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  board         Board                  @relation(fields: [boardId], references: [id], onDelete: Cascade)
+  column        BoardColumn            @relation(fields: [columnId], references: [id], onDelete: Cascade)
+  events        WorkItemEvent[]
+  links         WorkItemLink[]
+  subscriptions WorkItemSubscription[]
+  occurrences   ProblemOccurrence[]
+
+  @@unique([workspaceId, key])
+  @@index([boardId, columnId, position])
+  @@index([workspaceId, assigneeUserId])
+  @@index([workspaceId, assigneeAgentRef])
+  @@index([workspaceId, fingerprint])
+  @@index([threadRootMessageId])
+  @@map("work_items")
+}
+
+model WorkItemEvent {
+  id            String   @id @default(uuid())
+  workItemId    String
+  workspaceId   String
+  /// created | updated | moved | assigned | commented | linked | archived | restored | regressed | occurrence
+  type          String
+  actorUserId   String?
+  actorAgentRef String?
+  /// Chat session that made the change, when an agent did.
+  sessionId     String?
+  eventData     Json?
+  createdAt     DateTime @default(now())
+
+  workItem WorkItem @relation(fields: [workItemId], references: [id], onDelete: Cascade)
+
+  @@index([workItemId, createdAt])
+  @@index([workspaceId, createdAt])
+  @@map("work_item_events")
+}
+
+/// A conversation a card has been part of, beyond its own thread.
+model WorkItemLink {
+  id              String   @id @default(uuid())
+  workItemId      String
+  workspaceId     String
+  /// message | thread | chat_session | agent_task | external_thread | pr | doc
+  kind            String
+  refId           String
+  conversationId  String?
+  /// origin | mention | agent_run | tool_call | escalation | manual | sync
+  reason          String
+  addedByUserId   String?
+  addedByAgentRef String?
+  snippet         String?
+  url             String?
+  createdAt       DateTime @default(now())
+
+  workItem WorkItem @relation(fields: [workItemId], references: [id], onDelete: Cascade)
+
+  @@unique([workItemId, kind, refId])
+  @@index([kind, refId])
+  @@map("work_item_links")
+}
+
+model WorkItemSubscription {
+  id         String   @id @default(uuid())
+  workItemId String
+  userId     String
+  createdAt  DateTime @default(now())
+
+  workItem WorkItem @relation(fields: [workItemId], references: [id], onDelete: Cascade)
+
+  @@unique([workItemId, userId])
+  @@index([userId])
+  @@map("work_item_subscriptions")
+}
+
+/// One sighting of the error behind a `problem` card.
+model ProblemOccurrence {
+  id                String   @id @default(uuid())
+  workItemId        String
+  workspaceId       String
+  fingerprint       String
+  environment       String?
+  release           String?
+  message           String?  @db.Text
+  stack             String?  @db.Text
+  url               String?
+  userRef           String?
+  occurrenceContext Json?
+  occurredAt        DateTime @default(now())
+
+  workItem WorkItem @relation(fields: [workItemId], references: [id], onDelete: Cascade)
+
+  @@index([workItemId, occurredAt])
+  @@index([workspaceId, fingerprint])
+  @@map("problem_occurrences")
 }

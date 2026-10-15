@@ -27,6 +27,8 @@ export interface PlatformConfig {
     agentShell: boolean
     /** Independently controls the narrow/native Workspace Agent shell. */
     mobileAgentShell: boolean
+    /** Channel boards, cards and My work. */
+    workBoards: boolean
   }
 }
 
@@ -46,6 +48,7 @@ const CLOUD_CONFIG: PlatformConfig = {
     personalShell: true,
     agentShell: false,
     mobileAgentShell: false,
+    workBoards: false,
   },
 }
 
@@ -65,6 +68,7 @@ const LOCAL_CONFIG: PlatformConfig = {
     personalShell: true,
     agentShell: true,
     mobileAgentShell: true,
+    workBoards: true,
   },
 }
 

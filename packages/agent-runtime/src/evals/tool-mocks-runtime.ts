@@ -29,12 +29,22 @@
  */
 
 import type { ToolMockInstallBody, ToolMockMap, ToolMockSpec } from './tool-mocks'
+import { existsSync, readFileSync, writeFileSync } from 'fs'
+import { resolve } from 'path'
+import { createBoardTools } from '../board-tools'
+import type { ToolContext } from '../gateway-tools'
+import { isSafeRelativePath, manifestHints, parseSystemManifest } from '../system-manifest'
+import { CompanyWorld, type WorldSeed } from './company-sim/world'
+
+export type SyntheticToolDef = { description: string; paramKeys: string[]; parameters?: unknown }
 
 export type CompiledMocks = {
   fns: Record<string, (params: Record<string, any>) => Promise<any>>
-  syntheticDefs: Record<string, { description: string; paramKeys: string[] }>
+  syntheticDefs: Record<string, SyntheticToolDef>
   hiddenTools: Set<string>
   defaults: { delayMs: number; jitterMs: number }
+  /** The company simulation, when the install body carried a `sim` seed. */
+  world: CompanyWorld | null
 }
 
 /**
@@ -70,9 +80,9 @@ export function resolveToolClassDelay(toolName: string, params: Record<string, a
  */
 export function normalizeInstallBody(
   raw: ToolMockInstallBody | ToolMockMap | Record<string, any>,
-): { mocks: ToolMockMap; defaults?: { delayMs?: number; jitterMs?: number } } {
+): { mocks: ToolMockMap; defaults?: { delayMs?: number; jitterMs?: number }; sim?: WorldSeed } {
   if (raw && typeof raw === 'object' && 'mocks' in (raw as any)) {
-    return { mocks: (raw as any).mocks ?? {}, defaults: (raw as any).defaults }
+    return { mocks: (raw as any).mocks ?? {}, defaults: (raw as any).defaults, sim: (raw as any).sim }
   }
   return { mocks: (raw as ToolMockMap) ?? {} }
 }
@@ -89,9 +99,13 @@ export function compileInstallBody(
     randomFn?: () => number
     /** Override the sleep impl for tests (default `setTimeout`). */
     sleepFn?: (ms: number) => Promise<void>
+    /** Real schemas for simulated tools (board_*, team_chat_*), keyed by tool name. */
+    simSchemas?: Record<string, { description: string; parameters: unknown }>
+    /** Workspace the simulated system_apply and template tools read and write shogo-system.yaml in. */
+    workspaceDir?: string
   } = {},
 ): CompiledMocks {
-  const { mocks, defaults } = normalizeInstallBody(raw)
+  const { mocks, defaults, sim } = normalizeInstallBody(raw)
   const baseDelay = typeof defaults?.delayMs === 'number' ? defaults.delayMs : 1200
   const jitter    = typeof defaults?.jitterMs === 'number' ? defaults.jitterMs : 400
 
@@ -118,7 +132,7 @@ export function compileInstallBody(
   }
 
   const fns: Record<string, (params: Record<string, any>) => Promise<any>> = {}
-  const syntheticDefs: Record<string, { description: string; paramKeys: string[] }> = {}
+  const syntheticDefs: Record<string, SyntheticToolDef> = {}
   const hiddenTools = new Set<string>()
 
   for (const [toolName, spec] of Object.entries(mocks)) {
@@ -165,5 +179,69 @@ export function compileInstallBody(
     }
   }
 
-  return { fns, syntheticDefs, hiddenTools, defaults: { delayMs: baseDelay, jitterMs: jitter } }
+  // The simulation answers its tools statefully; per-eval mocks for the
+  // same names are replaced so the world stays the one source of truth.
+  let world: CompanyWorld | null = null
+  if (sim) {
+    world = new CompanyWorld(sim)
+    const w = world
+    for (const name of w.toolNames()) {
+      fns[name] = async (params: Record<string, any>) => w.handle(name, params)
+      const real = opts.simSchemas?.[name]
+      const sys = sim.systemTools?.find((t) => t.name === name)
+      if (real) syntheticDefs[name] = { description: real.description, paramKeys: [], parameters: real.parameters }
+      else if (sys) syntheticDefs[name] = { description: sys.description, paramKeys: sys.paramKeys }
+    }
+    for (const name of w.hiddenTools()) hiddenTools.add(name)
+    if (sim.admin && opts.workspaceDir) {
+      Object.assign(fns, manifestToolFns(w, opts.workspaceDir))
+      for (const name of ['work_template_list', 'work_template_add']) {
+        const real = opts.simSchemas?.[name]
+        if (real) syntheticDefs[name] = { description: real.description, paramKeys: [], parameters: real.parameters }
+      }
+    }
+  }
+
+  return { fns, syntheticDefs, hiddenTools, defaults: { delayMs: baseDelay, jitterMs: jitter }, world }
+}
+
+/**
+ * system_apply and project_list against the simulated workspace, plus the
+ * real template tools. The template tools only edit shogo-system.yaml, so
+ * they run for real; system_apply parses that file and applies it to the
+ * world.
+ */
+function manifestToolFns(world: CompanyWorld, workspaceDir: string): Record<string, (params: Record<string, any>) => Promise<any>> {
+  const tools = createBoardTools({ workspaceDir, channels: new Map(), workspaceId: 'ws-sim', config: { channels: [] } } as unknown as ToolContext)
+  const real = (name: string) => async (params: Record<string, any>) => {
+    const t = tools.find((x) => x.name === name)!
+    const out = await t.execute(`sim-${name}`, params as any)
+    return (out as { details?: unknown }).details ?? out
+  }
+  return {
+    work_template_list: real('work_template_list'),
+    project_list: async () => ({
+      workspaceId: 'ws-sim',
+      currentProjectId: null,
+      projects: world.snapshot().agents.map((a) => ({
+        id: `proj-${a.key}`, name: a.name, description: null, manifestKey: a.key, isCurrent: false, onDisk: false, attachments: [],
+        agent: { capabilities: a.capabilities, ...(a.heartbeatInterval ? { heartbeat: { enabled: true, interval: a.heartbeatInterval } } : {}) },
+      })),
+    }),
+    work_template_add: real('work_template_add'),
+    system_apply: async (params: Record<string, any>) => {
+      const rel = typeof params.manifestPath === 'string' && params.manifestPath ? params.manifestPath : 'shogo-system.yaml'
+      if (!isSafeRelativePath(rel)) return { error: `Unsafe manifestPath "${rel}"` }
+      const abs = resolve(workspaceDir, rel)
+      let source: string
+      if (typeof params.manifest === 'string' && params.manifest.trim()) source = params.manifest
+      else if (existsSync(abs)) source = readFileSync(abs, 'utf-8')
+      else return { error: `No manifest at ${rel} and none given inline.`, code: 'manifest_missing' }
+      const parsed = parseSystemManifest(source)
+      if (!parsed.ok || !parsed.manifest) return { error: 'Manifest is invalid', issues: parsed.errors, hints: manifestHints(parsed.errors) }
+      const dryRun = params.dryRun === true || params.dryRun === 'true'
+      if (!dryRun && typeof params.manifest === 'string' && params.manifest.trim()) writeFileSync(abs, params.manifest)
+      return world.applyManifest(parsed.manifest, dryRun)
+    },
+  }
 }

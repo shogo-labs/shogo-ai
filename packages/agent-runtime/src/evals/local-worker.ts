@@ -52,6 +52,12 @@ export async function startLocalWorker(
 
   console.log(`  Starting local worker ${id} (${name}) on port ${port}...`)
 
+  const occupied = !opts?.workspaceDir && await fetch(`http://localhost:${port}/health`, { signal: AbortSignal.timeout(1_000) })
+    .then(() => true, () => false)
+  if (occupied) {
+    throw new Error(`Port ${port} already has a server; another eval run would share it. Set a different EVAL_BASE_PORT.`)
+  }
+
   mkdirSync(dir, { recursive: true })
   mkdirSync(join(dir, 'project'), { recursive: true })
 

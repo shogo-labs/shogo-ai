@@ -105,13 +105,42 @@ function runtimeInternalPaths(): Map<string, string> {
         path += src[i]
         i++
       }
+      // The generic workspace passthrough (`…/${id}${path}`) has no static
+      // path of its own; the callers are checked by `agentBoardsPaths` below.
+      const passthrough = src.slice(from, i).includes('${path}')
       from = i
-      if (path.includes('...')) continue
+      if (path.includes('...') || passthrough) continue
       path = path.replace(/:[A-Za-z]+/g, ':param').replace(/(\/[^/:]+):param$/, '$1').replace(/\/$/, '')
       found.set(path, relative(AGENT_RUNTIME_SRC, file))
     }
   }
   return found
+}
+
+/**
+ * `agentBoardsRequest(ws, METHOD, '/agent-…', …)` builds its URL from the
+ * literal path each caller passes, so the scan above can't see those routes.
+ * Resolve every call's path under the workspace prefix and require that every
+ * call has a literal path, so none can slip past the check.
+ */
+function agentBoardsPaths(): { found: Map<string, string>; calls: number; unresolved: string[] } {
+  const found = new Map<string, string>()
+  const unresolved: string[] = []
+  let calls = 0
+  let literals = 0
+  const callRe = /(?<!function )agentBoardsRequest(?:<[^>]*>)?\(/g
+  const literalRe = /agentBoardsRequest(?:<[^>]*>)?\(\s*[^,]+,\s*'[A-Z]+',\s*(['`])(\/[^'`]*)\1/g
+  for (const file of sourceFiles(AGENT_RUNTIME_SRC)) {
+    const src = readFileSync(file, 'utf-8')
+    calls += [...src.matchAll(callRe)].length
+    for (const m of src.matchAll(literalRe)) {
+      literals++
+      const path = m[2]!.replace(/\$\{[^}]*\}/g, ':param')
+      found.set(`/api/internal/workspaces/:param${path}`, relative(AGENT_RUNTIME_SRC, file))
+    }
+  }
+  if (literals < calls) unresolved.push(`${calls - literals} agentBoardsRequest call(s) without a literal path`)
+  return { found, calls, unresolved }
 }
 
 function normalizeRoutePath(path: string): string {
@@ -152,7 +181,9 @@ describe('local API route parity', () => {
   test('every internal path the agent-runtime calls is served by the local composer', async () => {
     const app = await composeLocalApp()
     const served = new Set(app.routes.map((route) => normalizeRoutePath(route.path)))
-    const called = runtimeInternalPaths()
+    const boards = agentBoardsPaths()
+    expect(boards.unresolved, 'agentBoardsRequest calls must use literal paths').toEqual([])
+    const called = new Map([...runtimeInternalPaths(), ...boards.found])
     expect(called.size).toBeGreaterThan(10)
 
     const missing = [...called]

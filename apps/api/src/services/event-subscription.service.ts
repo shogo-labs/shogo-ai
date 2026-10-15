@@ -36,7 +36,7 @@ const db = prisma as any
 
 export const MAX_SUBSCRIPTIONS_PER_WORKSPACE = 100
 const MAX_FILTER_KEYS = 20
-const TARGETS = ['agent', 'project', 'webhook'] as const
+const TARGETS = ['agent', 'project', 'webhook', 'work_item'] as const
 const PROJECT_MODES = ['agent', 'hook'] as const
 
 export class EventSubscriptionError extends Error {
@@ -108,6 +108,75 @@ async function validateWebhookUrl(url: unknown): Promise<string> {
     if (error instanceof WebhookUrlError) invalid(error.message)
     throw error
   }
+}
+
+export interface WorkItemTargetInput {
+  /** Board id, slug or name. */
+  board?: unknown
+  /** Channel name or id, when two channels have boards with the same name. */
+  channel?: unknown
+  column?: unknown
+  /** Card field → template. `{{path}}` fills from the payload; a bare path keeps the value's type. */
+  mapping?: unknown
+  /** Template whose value groups repeat events onto one open card. */
+  dedupeKey?: unknown
+}
+
+const MAPPING_KEYS = ['title', 'description', 'priority', 'externalRef', 'dueAt', 'message', 'stack', 'environment', 'release', 'url'] as const
+const MAX_TEMPLATE_CHARS = 2_000
+
+function template(value: unknown, field: string): string | undefined {
+  if (value === undefined || value === null || value === '') return undefined
+  if (typeof value !== 'string') invalid(`workItemTarget.${field} must be a template string`)
+  if (value.length > MAX_TEMPLATE_CHARS) invalid(`workItemTarget.${field} is too long`)
+  return value
+}
+
+/** Resolve and check a card target; stored as { boardId, columnId?, mapping, dedupeKey? }. */
+async function validateWorkItemTarget(workspaceId: string, ownerUserId: string | null, raw: unknown) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) invalid('workItemTarget is required for work_item targets', 'invalid_body')
+  const input = raw as WorkItemTargetInput
+  if (typeof input.board !== 'string' || !input.board.trim()) invalid('workItemTarget.board is required')
+  const { resolveBoard, assertUserCanWork } = await import('./work-boards.service')
+  let conversationId: string | undefined
+  if (typeof input.channel === 'string' && input.channel.trim()) {
+    const ref = input.channel.trim().replace(/^#/, '')
+    const channel = await db.conversation.findFirst({ where: { workspaceId, OR: [{ id: ref }, { name: ref }] }, select: { id: true } })
+    if (!channel) throw new EventSubscriptionError(404, 'not_found', `Channel "${input.channel}" not found`)
+    conversationId = channel.id
+  }
+  let board: any
+  try {
+    board = await resolveBoard(workspaceId, input.board, conversationId)
+    if (ownerUserId) await assertUserCanWork(board, ownerUserId)
+  } catch (error: any) {
+    throw new EventSubscriptionError(error?.status === 403 ? 403 : 404, error?.code ?? 'not_found', error?.message ?? 'Board not found')
+  }
+  let columnId: string | null = null
+  if (input.column !== undefined && input.column !== null && input.column !== '') {
+    const ref = String(input.column).toLowerCase()
+    const column = board.columns.find((c: any) => c.id === input.column || c.name.toLowerCase() === ref || c.category === ref)
+    if (!column) invalid(`Column "${input.column}" is not on ${board.name}`)
+    columnId = column.id
+  }
+  const rawMapping = (input.mapping && typeof input.mapping === 'object' && !Array.isArray(input.mapping) ? input.mapping : {}) as Record<string, unknown>
+  const mapping: Record<string, unknown> = {}
+  for (const key of MAPPING_KEYS) {
+    const t = template(rawMapping[key], `mapping.${key}`)
+    if (t !== undefined) mapping[key] = t
+  }
+  if (rawMapping.fields !== undefined) {
+    if (!rawMapping.fields || typeof rawMapping.fields !== 'object' || Array.isArray(rawMapping.fields)) invalid('workItemTarget.mapping.fields must be an object of field → template')
+    const fields: Record<string, string> = {}
+    for (const [k, v] of Object.entries(rawMapping.fields as Record<string, unknown>).slice(0, 50)) {
+      const t = template(v, `mapping.fields.${k}`)
+      if (t !== undefined) fields[k] = t
+    }
+    mapping.fields = fields
+  }
+  if (!mapping.title) invalid('workItemTarget.mapping.title is required, e.g. "{{ticket.subject}}"')
+  const dedupeKey = template(input.dedupeKey, 'dedupeKey') ?? null
+  return { boardId: board.id, columnId, mapping, dedupeKey }
 }
 
 async function requireWorkspaceProject(workspaceId: string, projectId: unknown): Promise<string> {
@@ -216,6 +285,7 @@ export interface CreateSubscriptionInput {
   notifyConversationId?: string | null
   notifyThreadRootId?: string | null
   webhookUrl?: string | null
+  workItemTarget?: unknown
   triggerConfig?: Record<string, unknown> | null
   enabled?: boolean
   /** Set by app installs; such subscriptions follow the install's lifecycle. */
@@ -250,6 +320,7 @@ export async function createSubscription(input: CreateSubscriptionInput): Promis
     webhookUrl = await validateWebhookUrl(input.webhookUrl)
     webhookSecret = newWebhookSecret()
   }
+  const workItemTarget = target === 'work_item' ? await validateWorkItemTarget(input.workspaceId, input.ownerUserId, input.workItemTarget) : null
   const runsAgent = target === 'agent' || (target === 'project' && targetMode === 'agent')
   if (runsAgent && !prompt) invalid('prompt is required: say what the agent should do when the event fires', 'invalid_body')
   const identity = await resolveIdentityFields(input, {
@@ -300,6 +371,7 @@ export async function createSubscription(input: CreateSubscriptionInput): Promis
         notifyThreadRootId: input.notifyThreadRootId ?? null,
         webhookUrl,
         webhookSecret: webhookSecret ? encryptSecret(webhookSecret) : null,
+        workItemTarget,
         ...identity,
       },
     })
@@ -334,6 +406,7 @@ export interface UpdateSubscriptionInput {
   notifyThreadRootId?: string | null
   webhookUrl?: string
   rotateWebhookSecret?: boolean
+  workItemTarget?: unknown
   actsAs?: unknown
   actorIdPath?: unknown
   actorEmailPath?: unknown
@@ -376,6 +449,10 @@ export async function updateSubscription(
       webhookSecret = newWebhookSecret()
       data.webhookSecret = encryptSecret(webhookSecret)
     }
+  }
+  if (patch.workItemTarget !== undefined) {
+    if (current.target !== 'work_item') invalid('workItemTarget only applies to work_item targets')
+    data.workItemTarget = await validateWorkItemTarget(workspaceId, current.ownerUserId, patch.workItemTarget)
   }
   const identityTouched = [patch.actsAs, patch.actorIdPath, patch.actorEmailPath, patch.trustActorEmail].some((v) => v !== undefined)
   if (identityTouched || 'targetMode' in data) {

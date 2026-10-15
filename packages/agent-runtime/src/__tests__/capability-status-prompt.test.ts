@@ -34,7 +34,9 @@ describe('buildCapabilityStatusSection', () => {
     expect(enabled).toContain('gitWorktreesEnabled')
     expect(enabled).toContain('socialMediaEnabled')
     const disabled = text.split('\n').find((line) => line.startsWith('Disabled:')) ?? ''
-    expect(disabled).toBe('Disabled: none')
+    expect(disabled).not.toContain('gitWorktreesEnabled')
+    expect(disabled).not.toContain('socialMediaEnabled')
+    expect(disabled).toContain('boardAdminEnabled')
   })
 
   test('personal profile locks shell and canvas out of the enabled and disabled lists', () => {
@@ -46,6 +48,8 @@ describe('buildCapabilityStatusSection', () => {
     expect(enabled).not.toContain('canvasEnabled')
     expect(disabled).not.toContain('shellEnabled')
     expect(disabled).not.toContain('canvasEnabled')
-    expect(capabilityState({ capabilityProfile: 'personal' }).locked).toEqual(['canvasEnabled', 'shellEnabled'])
+    expect(capabilityState({ capabilityProfile: 'personal' }).locked).toEqual([
+      'canvasEnabled', 'shellEnabled', 'teamChatEnabled', 'boardAdminEnabled', 'companyOpsEnabled',
+    ])
   })
 })

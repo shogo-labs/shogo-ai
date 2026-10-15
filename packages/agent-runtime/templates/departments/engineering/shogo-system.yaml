@@ -1,0 +1,103 @@
+# GENERATED FILE — do not hand-edit. Source: packages/agent-runtime/src/work-templates.ts
+# Regenerate with: bun run packages/agent-runtime/src/work-templates-gen.ts
+version: 1
+name: Engineering department
+description: "An #engineering channel with Bugs and Problems boards and an engineering agent that triages and investigates."
+projects:
+  - key: engineering-agent
+    name: Engineering Agent
+    description: Triages bugs, investigates production problems, and links fixes.
+    agent:
+      model: auto
+      heartbeat:
+        enabled: true
+        interval: 3600
+      capabilities:
+        boardsEnabled: true
+        boardAdminEnabled: false
+        teamChatEnabled: true
+        companyOpsEnabled: false
+        problemsEnabled: true
+    files:
+      AGENTS.md: |
+        # Engineering Agent
+
+        You work in #engineering. Triages bugs, investigates production problems, and links fixes.
+
+        ## Boards
+        - **Bugs** (BUG-): Bugs reported by people or escalated from #support. Triage sets severity and an owner within a day.
+        - **Problems** (PRB-): Errors and regressions reported by monitoring. Repeats of the same fingerprint update the open card.
+
+        ## What you do
+        - Triage Reported bugs within a day: set severity and area, find duplicates, and suggest an owner.
+        - For a new Problem, read its occurrences, find the likely cause, and write it in the thread.
+        - Link the pull request to the card (work_item_link) and move it to In review when one is open.
+        - For the full reproduce, plan, implement, review pipeline, apply the issue-pipeline template.
+
+        ## How you work a card
+        - Start with `work_item_get` and read the thread before acting.
+        - Work in the card thread, not the main channel.
+        - Before you stop, move the card and set `history_summary`: where it stands, what you did, what is next.
+
+        ## Never
+        - Do not mark a bug Verified; a person verifies the fix.
+        - Do not move a sev1 to Won't fix.
+      HEARTBEAT.md: |
+        # Heartbeat
+
+        1. board_health for #engineering. Escalate any sev1 or Problem with no owner to #engineering with an alert.
+        2. Check cards in In review for merged pull requests.
+    integrations:
+      - github
+      - sentry
+      - linear
+teamChannels:
+  - name: engineering
+    topic: Bugs and production problems.
+    members:
+      - project: engineering-agent
+        agentTrigger: mention
+    boards:
+      - name: Bugs
+        itemType: task
+        keyPrefix: BUG
+        description: "Bugs reported by people or escalated from #support. Triage sets severity and an owner within a day."
+        columns:
+          - name: Reported
+            category: backlog
+            slaHours: 24
+          - name: Triaged
+            category: backlog
+          - name: Fixing
+            category: active
+            wipLimit: 6
+          - name: In review
+            category: review
+          - name: Verified
+            category: done
+          - name: Won't fix
+            category: dismissed
+        fields:
+          - key: severity
+            label: Severity
+            type: select
+            options:
+              - sev1
+              - sev2
+              - sev3
+              - sev4
+            required: true
+          - key: area
+            label: Area
+            type: text
+          - key: pr
+            label: Pull request
+            type: url
+        requiresHumanReview: true
+        defaultAgent: engineering-agent
+      - name: Problems
+        itemType: problem
+        keyPrefix: PRB
+        description: Errors and regressions reported by monitoring. Repeats of the same fingerprint update the open card.
+        postToChannel: all
+        defaultAgent: engineering-agent

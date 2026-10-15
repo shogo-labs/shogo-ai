@@ -1,0 +1,133 @@
+# GENERATED FILE — do not hand-edit. Source: packages/agent-runtime/src/work-templates.ts
+# Regenerate with: bun run packages/agent-runtime/src/work-templates-gen.ts
+version: 1
+name: Finance department
+description: "A #finance channel with Approvals and Collections boards and an agent that checks requests and chases invoices."
+projects:
+  - key: finance-agent
+    name: Finance Agent
+    description: Checks spend requests against budget and policy, and chases overdue invoices.
+    agent:
+      model: auto
+      heartbeat:
+        enabled: true
+        interval: 3600
+      capabilities:
+        boardsEnabled: true
+        boardAdminEnabled: false
+        teamChatEnabled: true
+        companyOpsEnabled: false
+    files:
+      AGENTS.md: |
+        # Finance Agent
+
+        You work in #finance. Checks spend requests against budget and policy, and chases overdue invoices.
+
+        ## Boards
+        - **Approvals** (APR-): Purchase requests and vendor invoices. A person approves; agents check the budget and paperwork first.
+        - **Collections** (COL-): One card per overdue invoice. Reminders at 7, 14 and 30 days; escalate to the account owner after 30.
+
+        ## What you do
+        - For each request, check the amount, vendor and receipt, compare with the cost center budget, and move it to Needs approval with a one-line recommendation.
+        - Flag duplicates: same vendor and amount within 30 days.
+        - Draft collection reminders at 7, 14 and 30 days overdue; escalate after 30 by tagging the account owner.
+
+        ## How you work a card
+        - Start with `work_item_get` and read the thread before acting.
+        - Work in the card thread, not the main channel.
+        - Before you stop, move the card and set `history_summary`: where it stands, what you did, what is next.
+
+        ## Never
+        - Never approve spend or mark an invoice Paid yourself.
+        - Keep amounts and customers in #finance.
+      HEARTBEAT.md: |
+        # Heartbeat
+
+        1. board_health for #finance. Ask the approver about requests in Needs approval past 2 days.
+        2. Move Reminded collections past 7 days back to Overdue for the next reminder.
+    integrations:
+      - quickbooks
+      - stripe
+teamChannels:
+  - name: finance
+    topic: Spend approvals and collections.
+    private: true
+    members:
+      - project: finance-agent
+        agentTrigger: mention
+    boards:
+      - name: Approvals
+        itemType: approval
+        keyPrefix: APR
+        description: Purchase requests and vendor invoices. A person approves; agents check the budget and paperwork first.
+        columns:
+          - name: Requested
+            category: backlog
+            slaHours: 24
+          - name: Checking
+            category: active
+          - name: Needs approval
+            category: review
+            slaHours: 48
+          - name: Approved
+            category: done
+          - name: Rejected
+            category: dismissed
+        fields:
+          - key: amount
+            label: Amount
+            type: money
+            required: true
+          - key: vendor
+            label: Vendor
+            type: text
+          - key: costCenter
+            label: Cost center
+            type: select
+            options:
+              - engineering
+              - sales
+              - marketing
+              - operations
+              - people
+              - g&a
+          - key: receipt
+            label: Receipt or invoice
+            type: url
+        requiresHumanReview: true
+        postToChannel: done_only
+        defaultAgent: finance-agent
+      - name: Collections
+        itemType: task
+        keyPrefix: COL
+        description: One card per overdue invoice. Reminders at 7, 14 and 30 days; escalate to the account owner after 30.
+        columns:
+          - name: Overdue
+            category: backlog
+            slaHours: 24
+          - name: Reminded
+            category: waiting
+            slaHours: 168
+          - name: Escalated
+            category: active
+          - name: Paid
+            category: done
+          - name: Written off
+            category: dismissed
+        fields:
+          - key: customer
+            label: Customer
+            type: text
+            required: true
+          - key: invoice
+            label: Invoice
+            type: text
+            required: true
+          - key: amount
+            label: Amount due
+            type: money
+            required: true
+          - key: dueDate
+            label: Due date
+            type: date
+        defaultAgent: finance-agent

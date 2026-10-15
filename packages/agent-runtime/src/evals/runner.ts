@@ -662,6 +662,17 @@ export async function runEval(
     ? [...cfg.pipelineToolCalls, ...toolCalls]
     : undefined
 
+  let sim: EvalResult['sim']
+  if (eval_.sim) {
+    try {
+      const res = await fetch(cfg.agentEndpoint.replace(/\/agent\/chat\/?$/, '/agent/tool-mocks/sim-state'), { signal: AbortSignal.timeout(15_000) })
+      if (res.ok) sim = await res.json() as EvalResult['sim']
+      else errors.push(`sim-state: HTTP ${res.status}`)
+    } catch (e: any) {
+      errors.push(`sim-state: ${e.message}`)
+    }
+  }
+
   // Score criteria
   const evalBase: EvalResult = {
     eval: eval_,
@@ -685,6 +696,7 @@ export async function runEval(
     loopDetected,
     hitMaxTurns,
     responseEmpty,
+    sim,
   }
 
   // For intention criteria we transparently swap `toolCalls` to the

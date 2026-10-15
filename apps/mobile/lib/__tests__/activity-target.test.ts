@@ -44,6 +44,16 @@ describe('activityTarget', () => {
       pathname: '/(app)/agent',
       params: { chatSessionId: 's2' },
     })
+    expect(activityTarget(activity('work.done', { workItemId: 'w1', conversationId: 'c1', boardId: 'b1' }))).toEqual({
+      type: 'route',
+      pathname: '/(app)/c/[conversationId]',
+      params: { conversationId: 'c1', card: 'w1', board: 'b1' },
+    })
+    expect(activityTarget(activity('work.created', { workItemId: 'w2' }))).toEqual({
+      type: 'route',
+      pathname: '/(app)/work',
+      params: { card: 'w2' },
+    })
     expect(activityTarget(activity('goal.event', { goalId: 'g1' }))).toEqual({
       type: 'route',
       pathname: '/(app)/goals/[id]',

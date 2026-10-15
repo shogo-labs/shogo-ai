@@ -1,0 +1,664 @@
+# GENERATED FILE — do not hand-edit. Source: packages/agent-runtime/src/work-templates.ts
+# Regenerate with: bun run packages/agent-runtime/src/work-templates-gen.ts
+version: 1
+name: SaaS startup
+description: Support, Sales, Marketing, Engineering, People and Finance.
+projects:
+  - key: support-agent
+    name: Support Agent
+    description: Triages new tickets, drafts replies, and escalates bugs to engineering.
+    agent:
+      model: auto
+      heartbeat:
+        enabled: true
+        interval: 3600
+      capabilities: &a1
+        boardsEnabled: true
+        boardAdminEnabled: false
+        teamChatEnabled: true
+        companyOpsEnabled: false
+    files:
+      AGENTS.md: |
+        # Support Agent
+
+        You work in #support. Triages new tickets, drafts replies, and escalates bugs to engineering.
+
+        ## Boards
+        - **Tickets** (SUP-): Every customer request. Reply in the card thread; move to Waiting on customer when the ball is in their court.
+
+        ## What you do
+        - Triage every card in New within its SLA: set priority, the customer and plan fields, and an owner.
+        - Draft the reply in the card thread. Answer directly only for how-to questions covered by the docs.
+        - When a ticket is a bug, move it to the Engineering Bugs board with work_item_move and say why in the thread.
+        - Move a card to Waiting on customer when you are waiting on them, and back to Open when they reply.
+
+        ## How you work a card
+        - Start with `work_item_get` and read the thread before acting.
+        - Work in the card thread, not the main channel.
+        - Before you stop, move the card and set `history_summary`: where it stands, what you did, what is next.
+
+        ## Never
+        - Do not promise refunds, credits or dates; tag a person for those.
+        - Do not close a ticket the customer has not confirmed is solved.
+      HEARTBEAT.md: |
+        # Heartbeat
+
+        1. board_health for #support. Triage anything in New past its SLA.
+        2. For cards in Waiting on customer over 3 days, post a friendly follow-up draft in the thread.
+        3. Post nothing if nothing needs attention.
+    integrations:
+      - zendesk
+      - intercom
+      - gmail
+  - key: sales-agent
+    name: Sales Agent
+    description: Qualifies leads, keeps next steps current, and flags renewals at risk.
+    agent:
+      model: auto
+      heartbeat:
+        enabled: true
+        interval: 3600
+      capabilities: *a1
+    files:
+      AGENTS.md: |
+        # Sales Agent
+
+        You work in #sales. Qualifies leads, keeps next steps current, and flags renewals at risk.
+
+        ## Boards
+        - **Pipeline** (DEAL-): Every open deal. A deal without a next step and a date is stale.
+        - **Renewals** (REN-): Contracts up for renewal. Open a card 90 days before the renewal date.
+
+        ## What you do
+        - Qualify new leads: fill company and amount, and move to Qualified or Lost with a reason.
+        - Every open deal needs a next step and an expected close date. Ask the owner in the thread when one is missing.
+        - Open a Renewals card 90 days before each renewal date and flag risk from recent support tickets.
+        - Draft follow-up emails in the card thread; a person sends them.
+
+        ## How you work a card
+        - Start with `work_item_get` and read the thread before acting.
+        - Work in the card thread, not the main channel.
+        - Before you stop, move the card and set `history_summary`: where it stands, what you did, what is next.
+
+        ## Never
+        - Do not change amounts or close dates someone else set without saying so in the thread.
+        - Do not send email to customers yourself.
+      HEARTBEAT.md: |
+        # Heartbeat
+
+        1. board_health for #sales. Ask the owner about any deal with no activity in 7 days.
+        2. Move renewals with an open urgent support ticket to At risk and tag the owner.
+    integrations:
+      - hubspot
+      - salesforce
+      - gmail
+  - key: marketing-agent
+    name: Marketing Agent
+    description: Drafts content, keeps the calendar dated, and reports campaign results.
+    agent:
+      model: auto
+      heartbeat:
+        enabled: true
+        interval: 3600
+      capabilities: *a1
+    files:
+      AGENTS.md: |
+        # Marketing Agent
+
+        You work in #marketing. Drafts content, keeps the calendar dated, and reports campaign results.
+
+        ## Boards
+        - **Content** (CNT-): Everything we publish. A card needs a publish date before it leaves Drafting.
+        - **Campaigns** (CMP-): Launches, promotions and events. Close a card only after its results are posted.
+
+        ## What you do
+        - Turn ideas into outlines and first drafts in the card thread when a card moves to Drafting.
+        - Make sure every card in Drafting or later has a publish date.
+        - When a campaign moves to Measuring, collect its results and post them in the thread.
+
+        ## How you work a card
+        - Start with `work_item_get` and read the thread before acting.
+        - Work in the card thread, not the main channel.
+        - Before you stop, move the card and set `history_summary`: where it stands, what you did, what is next.
+
+        ## Never
+        - Never publish or schedule anything yourself; a person approves in Review.
+      HEARTBEAT.md: |
+        # Heartbeat
+
+        1. board_health for #marketing. Ask about cards in Review over 2 days.
+        2. Flag Scheduled cards whose publish date has passed.
+  - key: engineering-agent
+    name: Engineering Agent
+    description: Triages bugs, investigates production problems, and links fixes.
+    agent:
+      model: auto
+      heartbeat:
+        enabled: true
+        interval: 3600
+      capabilities:
+        boardsEnabled: true
+        boardAdminEnabled: false
+        teamChatEnabled: true
+        companyOpsEnabled: false
+        problemsEnabled: true
+    files:
+      AGENTS.md: |
+        # Engineering Agent
+
+        You work in #engineering. Triages bugs, investigates production problems, and links fixes.
+
+        ## Boards
+        - **Bugs** (BUG-): Bugs reported by people or escalated from #support. Triage sets severity and an owner within a day.
+        - **Problems** (PRB-): Errors and regressions reported by monitoring. Repeats of the same fingerprint update the open card.
+
+        ## What you do
+        - Triage Reported bugs within a day: set severity and area, find duplicates, and suggest an owner.
+        - For a new Problem, read its occurrences, find the likely cause, and write it in the thread.
+        - Link the pull request to the card (work_item_link) and move it to In review when one is open.
+        - For the full reproduce, plan, implement, review pipeline, apply the issue-pipeline template.
+
+        ## How you work a card
+        - Start with `work_item_get` and read the thread before acting.
+        - Work in the card thread, not the main channel.
+        - Before you stop, move the card and set `history_summary`: where it stands, what you did, what is next.
+
+        ## Never
+        - Do not mark a bug Verified; a person verifies the fix.
+        - Do not move a sev1 to Won't fix.
+      HEARTBEAT.md: |
+        # Heartbeat
+
+        1. board_health for #engineering. Escalate any sev1 or Problem with no owner to #engineering with an alert.
+        2. Check cards in In review for merged pull requests.
+    integrations:
+      - github
+      - sentry
+      - linear
+  - key: people-agent
+    name: People Agent
+    description: Screens applicants against the role, schedules interviews, and runs onboarding.
+    agent:
+      model: auto
+      heartbeat:
+        enabled: true
+        interval: 3600
+      capabilities: *a1
+    files:
+      AGENTS.md: |
+        # People Agent
+
+        You work in #people. Screens applicants against the role, schedules interviews, and runs onboarding.
+
+        ## Boards
+        - **Candidates** (CAN-): One card per candidate. Decisions are made by people; agents screen and schedule.
+        - **Onboarding** (ONB-): Opened when someone joins the workspace. Done when they have access, a buddy, and first-week goals.
+
+        ## What you do
+        - Screen new applicants against the role requirements and write a short summary with evidence from the resume.
+        - Recommend Screen or Rejected; a person decides. Never use age, gender, ethnicity or other protected attributes.
+        - For each onboarding card, list the accounts, equipment and first-week goals, and check them off in the thread.
+
+        ## How you work a card
+        - Start with `work_item_get` and read the thread before acting.
+        - Work in the card thread, not the main channel.
+        - Before you stop, move the card and set `history_summary`: where it stands, what you did, what is next.
+
+        ## Never
+        - Do not move a candidate to Offer, Hired or Rejected yourself.
+        - Keep candidate details in #people; do not post them elsewhere.
+      HEARTBEAT.md: |
+        # Heartbeat
+
+        1. board_health for #people. Summarise applicants waiting past the screening SLA.
+        2. Nudge the buddy on onboarding cards with no activity in 2 days.
+    integrations:
+      - greenhouse
+      - google-calendar
+  - key: finance-agent
+    name: Finance Agent
+    description: Checks spend requests against budget and policy, and chases overdue invoices.
+    agent:
+      model: auto
+      heartbeat:
+        enabled: true
+        interval: 3600
+      capabilities: *a1
+    files:
+      AGENTS.md: |
+        # Finance Agent
+
+        You work in #finance. Checks spend requests against budget and policy, and chases overdue invoices.
+
+        ## Boards
+        - **Approvals** (APR-): Purchase requests and vendor invoices. A person approves; agents check the budget and paperwork first.
+        - **Collections** (COL-): One card per overdue invoice. Reminders at 7, 14 and 30 days; escalate to the account owner after 30.
+
+        ## What you do
+        - For each request, check the amount, vendor and receipt, compare with the cost center budget, and move it to Needs approval with a one-line recommendation.
+        - Flag duplicates: same vendor and amount within 30 days.
+        - Draft collection reminders at 7, 14 and 30 days overdue; escalate after 30 by tagging the account owner.
+
+        ## How you work a card
+        - Start with `work_item_get` and read the thread before acting.
+        - Work in the card thread, not the main channel.
+        - Before you stop, move the card and set `history_summary`: where it stands, what you did, what is next.
+
+        ## Never
+        - Never approve spend or mark an invoice Paid yourself.
+        - Keep amounts and customers in #finance.
+      HEARTBEAT.md: |
+        # Heartbeat
+
+        1. board_health for #finance. Ask the approver about requests in Needs approval past 2 days.
+        2. Move Reminded collections past 7 days back to Overdue for the next reminder.
+    integrations:
+      - quickbooks
+      - stripe
+teamChannels:
+  - name: support
+    topic: Customer tickets. Every request is a card on Tickets.
+    members:
+      - project: support-agent
+        agentTrigger: mention
+    boards:
+      - name: Tickets
+        itemType: ticket
+        keyPrefix: SUP
+        description: Every customer request. Reply in the card thread; move to Waiting on customer when the ball is in their court.
+        columns:
+          - name: New
+            category: backlog
+            slaHours: 4
+          - name: Open
+            category: active
+            wipLimit: 15
+            slaHours: 24
+          - name: Waiting on customer
+            category: waiting
+          - name: Solved
+            category: done
+        fields:
+          - key: customer
+            label: Customer
+            type: text
+            required: true
+          - key: plan
+            label: Plan
+            type: select
+            options:
+              - free
+              - pro
+              - enterprise
+          - key: channel
+            label: Came in via
+            type: select
+            options:
+              - email
+              - chat
+              - phone
+              - social
+        postToChannel: done_only
+        defaultAgent: support-agent
+  - name: sales
+    topic: Deals and renewals. Every deal is a card on Pipeline.
+    members:
+      - project: sales-agent
+        agentTrigger: mention
+    boards:
+      - name: Pipeline
+        itemType: deal
+        keyPrefix: DEAL
+        description: Every open deal. A deal without a next step and a date is stale.
+        columns:
+          - name: Lead
+            category: backlog
+            slaHours: 48
+          - name: Qualified
+            category: active
+          - name: Proposal
+            category: active
+          - name: Negotiation
+            category: review
+          - name: Won
+            category: done
+          - name: Lost
+            category: dismissed
+        fields:
+          - key: company
+            label: Company
+            type: text
+            required: true
+          - key: amount
+            label: Amount
+            type: money
+          - key: closeDate
+            label: Expected close
+            type: date
+          - key: nextStep
+            label: Next step
+            type: text
+          - key: lostReason
+            label: Lost reason
+            type: select
+            options:
+              - price
+              - timing
+              - competitor
+              - no decision
+              - fit
+        postToChannel: done_only
+        defaultAgent: sales-agent
+      - name: Renewals
+        itemType: deal
+        keyPrefix: REN
+        description: Contracts up for renewal. Open a card 90 days before the renewal date.
+        columns:
+          - name: Upcoming
+            category: backlog
+          - name: In conversation
+            category: active
+          - name: At risk
+            category: waiting
+          - name: Renewed
+            category: done
+          - name: Churned
+            category: dismissed
+        fields:
+          - key: company
+            label: Company
+            type: text
+            required: true
+          - key: arr
+            label: ARR
+            type: money
+          - key: renewalDate
+            label: Renewal date
+            type: date
+            required: true
+          - key: risk
+            label: Risk
+            type: select
+            options:
+              - low
+              - medium
+              - high
+        defaultAgent: sales-agent
+  - name: marketing
+    topic: Content calendar and campaigns.
+    members:
+      - project: marketing-agent
+        agentTrigger: mention
+    boards:
+      - name: Content
+        itemType: content
+        keyPrefix: CNT
+        description: Everything we publish. A card needs a publish date before it leaves Drafting.
+        columns:
+          - name: Ideas
+            category: backlog
+          - name: Drafting
+            category: active
+            wipLimit: 5
+          - name: Review
+            category: review
+            slaHours: 48
+          - name: Scheduled
+            category: waiting
+          - name: Published
+            category: done
+        fields:
+          - key: format
+            label: Format
+            type: select
+            options:
+              - blog
+              - newsletter
+              - social
+              - video
+              - case study
+          - key: publishDate
+            label: Publish date
+            type: date
+          - key: link
+            label: Link
+            type: url
+        requiresHumanReview: true
+        defaultAgent: marketing-agent
+      - name: Campaigns
+        itemType: task
+        keyPrefix: CMP
+        description: Launches, promotions and events. Close a card only after its results are posted.
+        columns:
+          - name: Brief
+            category: backlog
+          - name: Building
+            category: active
+          - name: Live
+            category: active
+          - name: Measuring
+            category: review
+          - name: Done
+            category: done
+        fields:
+          - key: goal
+            label: Goal
+            type: text
+          - key: budget
+            label: Budget
+            type: money
+          - key: launchDate
+            label: Launch date
+            type: date
+        defaultAgent: marketing-agent
+  - name: engineering
+    topic: Bugs and production problems.
+    members:
+      - project: engineering-agent
+        agentTrigger: mention
+    boards:
+      - name: Bugs
+        itemType: task
+        keyPrefix: BUG
+        description: "Bugs reported by people or escalated from #support. Triage sets severity and an owner within a day."
+        columns:
+          - name: Reported
+            category: backlog
+            slaHours: 24
+          - name: Triaged
+            category: backlog
+          - name: Fixing
+            category: active
+            wipLimit: 6
+          - name: In review
+            category: review
+          - name: Verified
+            category: done
+          - name: Won't fix
+            category: dismissed
+        fields:
+          - key: severity
+            label: Severity
+            type: select
+            options:
+              - sev1
+              - sev2
+              - sev3
+              - sev4
+            required: true
+          - key: area
+            label: Area
+            type: text
+          - key: pr
+            label: Pull request
+            type: url
+        requiresHumanReview: true
+        defaultAgent: engineering-agent
+      - name: Problems
+        itemType: problem
+        keyPrefix: PRB
+        description: Errors and regressions reported by monitoring. Repeats of the same fingerprint update the open card.
+        postToChannel: all
+        defaultAgent: engineering-agent
+  - name: people
+    topic: Hiring and onboarding.
+    private: true
+    members:
+      - project: people-agent
+        agentTrigger: mention
+    boards:
+      - name: Candidates
+        itemType: candidate
+        keyPrefix: CAN
+        description: One card per candidate. Decisions are made by people; agents screen and schedule.
+        columns:
+          - name: Applied
+            category: backlog
+            slaHours: 72
+          - name: Screen
+            category: active
+          - name: Interview
+            category: active
+          - name: Offer
+            category: review
+          - name: Hired
+            category: done
+          - name: Rejected
+            category: dismissed
+        fields:
+          - key: role
+            label: Role
+            type: text
+            required: true
+          - key: source
+            label: Source
+            type: select
+            options:
+              - inbound
+              - referral
+              - sourced
+              - agency
+          - key: resume
+            label: Resume
+            type: url
+        postToChannel: none
+        requiresHumanReview: true
+        defaultAgent: people-agent
+      - name: Onboarding
+        itemType: task
+        keyPrefix: ONB
+        description: Opened when someone joins the workspace. Done when they have access, a buddy, and first-week goals.
+        columns:
+          - name: Starting soon
+            category: backlog
+          - name: Setting up
+            category: active
+            slaHours: 48
+          - name: First week
+            category: active
+          - name: Onboarded
+            category: done
+        fields:
+          - key: startDate
+            label: Start date
+            type: date
+          - key: buddy
+            label: Buddy
+            type: user
+          - key: team
+            label: Team
+            type: text
+        defaultAgent: people-agent
+  - name: finance
+    topic: Spend approvals and collections.
+    private: true
+    members:
+      - project: finance-agent
+        agentTrigger: mention
+    boards:
+      - name: Approvals
+        itemType: approval
+        keyPrefix: APR
+        description: Purchase requests and vendor invoices. A person approves; agents check the budget and paperwork first.
+        columns:
+          - name: Requested
+            category: backlog
+            slaHours: 24
+          - name: Checking
+            category: active
+          - name: Needs approval
+            category: review
+            slaHours: 48
+          - name: Approved
+            category: done
+          - name: Rejected
+            category: dismissed
+        fields:
+          - key: amount
+            label: Amount
+            type: money
+            required: true
+          - key: vendor
+            label: Vendor
+            type: text
+          - key: costCenter
+            label: Cost center
+            type: select
+            options:
+              - engineering
+              - sales
+              - marketing
+              - operations
+              - people
+              - g&a
+          - key: receipt
+            label: Receipt or invoice
+            type: url
+        requiresHumanReview: true
+        postToChannel: done_only
+        defaultAgent: finance-agent
+      - name: Collections
+        itemType: task
+        keyPrefix: COL
+        description: One card per overdue invoice. Reminders at 7, 14 and 30 days; escalate to the account owner after 30.
+        columns:
+          - name: Overdue
+            category: backlog
+            slaHours: 24
+          - name: Reminded
+            category: waiting
+            slaHours: 168
+          - name: Escalated
+            category: active
+          - name: Paid
+            category: done
+          - name: Written off
+            category: dismissed
+        fields:
+          - key: customer
+            label: Customer
+            type: text
+            required: true
+          - key: invoice
+            label: Invoice
+            type: text
+            required: true
+          - key: amount
+            label: Amount due
+            type: money
+            required: true
+          - key: dueDate
+            label: Due date
+            type: date
+        defaultAgent: finance-agent
+triggers:
+  - key: onboard-new-members
+    name: Onboarding card for each new member
+    event: member.joined
+    target: work_item
+    card:
+      board: Onboarding
+      channel: people
+      title: Onboard {{member.name}}
+      description: "{{member.name}} joined the workspace as {{member.role}}."
+      dedupeKey: "{{member.userId}}"

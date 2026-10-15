@@ -11,6 +11,7 @@ export type ActivityChannelFilter =
   | 'agent_messages'
   | 'questions'
   | 'tasks'
+  | 'work'
   | 'schedules'
   | 'goals'
   | 'publishes'
@@ -21,6 +22,7 @@ export const ACTIVITY_CHANNEL_FILTERS: Array<{ id: ActivityChannelFilter; label:
   { id: 'agent_messages', label: 'Agent messages' },
   { id: 'questions', label: 'Questions' },
   { id: 'tasks', label: 'Tasks' },
+  { id: 'work', label: 'Work' },
   { id: 'schedules', label: 'Schedules' },
   { id: 'goals', label: 'Goals' },
   { id: 'publishes', label: 'Publishes' },
@@ -30,6 +32,7 @@ export const ACTIVITY_CHANNEL_FILTERS: Array<{ id: ActivityChannelFilter; label:
 const PREFIX: Partial<Record<ActivityChannelFilter, string>> = {
   questions: 'question.',
   tasks: 'task.',
+  work: 'work.',
   schedules: 'schedule.',
 }
 

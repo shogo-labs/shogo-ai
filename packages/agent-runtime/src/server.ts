@@ -3963,15 +3963,18 @@ app.post('/agent/session/reset', async (c) => {
 })
 
 // Tool mocks — used by eval runner to install deterministic tool responses
+let simWorld: import('./evals/company-sim/world').CompanyWorld | null = null
 app.post('/agent/tool-mocks', async (c) => {
   if (!agentGateway) {
     return c.json({ error: 'Agent gateway not running' }, 503)
   }
   const raw = await c.req.json()
   const { compileInstallBody } = await import('./evals/tool-mocks-runtime')
-  const compiled = compileInstallBody(raw)
+  const simSchemas = raw?.sim ? (await import('./evals/company-sim/tool-defs')).simToolSchemas() : undefined
+  const compiled = compileInstallBody(raw, { simSchemas, workspaceDir: WORKSPACE_DIR })
   agentGateway.setToolMocks(compiled.fns, compiled.syntheticDefs, compiled.hiddenTools)
-  return c.json({ ok: true, mockedTools: Object.keys(compiled.fns), defaults: compiled.defaults })
+  simWorld = compiled.world
+  return c.json({ ok: true, mockedTools: Object.keys(compiled.fns), defaults: compiled.defaults, sim: !!compiled.world })
 })
 
 app.delete('/agent/tool-mocks', (c) => {
@@ -3979,7 +3982,14 @@ app.delete('/agent/tool-mocks', (c) => {
     return c.json({ error: 'Agent gateway not running' }, 503)
   }
   agentGateway.clearToolMocks()
+  simWorld = null
   return c.json({ ok: true })
+})
+
+// Final state of the company simulation installed with the mocks, for graders.
+app.get('/agent/tool-mocks/sim-state', (c) => {
+  if (!simWorld) return c.json({ error: 'No simulation installed' }, 404)
+  return c.json(simWorld.snapshot())
 })
 
 app.post('/agent/workspace/seed', async (c) => {

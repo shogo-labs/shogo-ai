@@ -97,6 +97,8 @@ export interface WorkerSetupOptions {
   promptProfile?: string
   evalLabel?: string
   mocks?: Record<string, unknown>
+  /** Company simulation seed, installed with the mocks. */
+  sim?: unknown
   verbose?: boolean
 }
 
@@ -107,7 +109,9 @@ export interface WorkerSetupOptions {
 export const MODEL_MAP: Record<string, string> = { ...MODEL_ALIASES }
 
 export const PRICING: Record<string, { input: number; output: number; cacheRead: number; cacheWrite: number }> = {
-  haiku: { input: 0.0000008, output: 0.000004, cacheRead: 0.00000008, cacheWrite: 0.000001 },
+  // `haiku` resolves to Haiku 5.5 — keep in sync with MODEL_DOLLAR_COSTS.
+  haiku: { input: 0.0000001, output: 0.0000005, cacheRead: 0.00000001, cacheWrite: 0.000000125 },
+  'claude-haiku-5-5': { input: 0.0000001, output: 0.0000005, cacheRead: 0.00000001, cacheWrite: 0.000000125 },
   sonnet: { input: 0.000003, output: 0.000015, cacheRead: 0.0000003, cacheWrite: 0.00000375 },
   opus: { input: 0.000005, output: 0.000025, cacheRead: 0.0000005, cacheWrite: 0.00000625 },
   'gpt-5.4-mini': { input: 0.0000011, output: 0.0000044, cacheRead: 0.00000011, cacheWrite: 0.00000138 },
@@ -503,7 +507,7 @@ export async function configureWorkerForTask(
     }
   }
 
-  if (opts.mocks) {
+  if (opts.mocks || opts.sim) {
     if (opts.verbose) console.log(`      [setup] Installing tool mocks...`)
     try {
       // Belt-and-suspenders isolation between evals: explicitly DELETE any
@@ -517,7 +521,7 @@ export async function configureWorkerForTask(
       await fetch(`${base}/agent/tool-mocks`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mocks: opts.mocks }),
+        body: JSON.stringify({ mocks: opts.mocks ?? {}, ...(opts.sim ? { sim: opts.sim, defaults: { delayMs: 0 } } : {}) }),
       })
     } catch (e: any) {
       console.warn(`      [setup] Mock install failed: ${e.message}`)

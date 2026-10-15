@@ -194,7 +194,8 @@ export type PresenceStatus = 'active' | 'away' | 'offline'
 
 export interface Mentionables {
   people: Array<{ id: string; name: string; email: string; image: string | null; role: string }>
-  agents: Array<{ key: string; projectId: string | null; name: string; description: string | null; image: string | null; buddyLook?: BuddyLook | null }>
+  /** `boards` is false for agents with the Boards capability off; they can't be given cards. */
+  agents: Array<{ key: string; projectId: string | null; name: string; description: string | null; image: string | null; buddyLook?: BuddyLook | null; boards?: boolean }>
   statuses?: Record<string, UserStatus>
   groups?: UserGroup[]
 }
@@ -401,6 +402,7 @@ export type TeamChatEvent =
   | { type: 'groups.changed' }
   | { type: 'agent.updated'; projectId: string | null }
   | { type: 'emoji.changed' }
+  | { type: 'board.changed'; boardId: string; conversationId?: string; action: string; itemId?: string }
   | { type: 'huddle.updated'; conversationId: string; huddle: Huddle | null }
   | {
       type: 'huddle.ring'

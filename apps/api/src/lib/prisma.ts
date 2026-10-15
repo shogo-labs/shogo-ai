@@ -65,6 +65,8 @@ const JSON_OBJECT_FIELDS = new Set([
   'payload', 'filter', 'triggerConfig', 'appManifest', 'actor',
   // Integration credential approvals and audit
   'origin',
+  // Work boards
+  'fieldsSchema', 'fields', 'eventData', 'occurrenceContext', 'workItemTarget',
 ])
 
 // In SQLite mode, String[] fields are stored as JSON strings, and

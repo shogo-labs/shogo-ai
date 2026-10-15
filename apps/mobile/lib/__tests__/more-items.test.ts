@@ -12,6 +12,11 @@ describe('moreItems', () => {
     expect(ids(moreItems({ kind: 'team', marketplace: true, canvasesHidden: true, tasksHidden: false }))).toEqual(['tasks', 'marketplace'])
   })
 
+  test('My work follows the work boards flag, in team workspaces only', () => {
+    expect(ids(moreItems({ kind: 'team', marketplace: false, canvasesHidden: true, workBoards: true }))).toEqual(['work'])
+    expect(ids(moreItems({ kind: 'personal', marketplace: false, canvasesHidden: true, workBoards: true }))).toEqual([])
+  })
+
   test('Marketplace follows the platform feature flag', () => {
     expect(ids(moreItems({ kind: 'team', marketplace: false, canvasesHidden: true }))).toEqual([])
   })

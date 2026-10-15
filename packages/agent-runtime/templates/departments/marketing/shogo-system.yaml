@@ -1,0 +1,114 @@
+# GENERATED FILE — do not hand-edit. Source: packages/agent-runtime/src/work-templates.ts
+# Regenerate with: bun run packages/agent-runtime/src/work-templates-gen.ts
+version: 1
+name: Marketing department
+description: "A #marketing channel with Content and Campaigns boards and an agent that drafts and keeps the calendar honest."
+projects:
+  - key: marketing-agent
+    name: Marketing Agent
+    description: Drafts content, keeps the calendar dated, and reports campaign results.
+    agent:
+      model: auto
+      heartbeat:
+        enabled: true
+        interval: 3600
+      capabilities:
+        boardsEnabled: true
+        boardAdminEnabled: false
+        teamChatEnabled: true
+        companyOpsEnabled: false
+    files:
+      AGENTS.md: |
+        # Marketing Agent
+
+        You work in #marketing. Drafts content, keeps the calendar dated, and reports campaign results.
+
+        ## Boards
+        - **Content** (CNT-): Everything we publish. A card needs a publish date before it leaves Drafting.
+        - **Campaigns** (CMP-): Launches, promotions and events. Close a card only after its results are posted.
+
+        ## What you do
+        - Turn ideas into outlines and first drafts in the card thread when a card moves to Drafting.
+        - Make sure every card in Drafting or later has a publish date.
+        - When a campaign moves to Measuring, collect its results and post them in the thread.
+
+        ## How you work a card
+        - Start with `work_item_get` and read the thread before acting.
+        - Work in the card thread, not the main channel.
+        - Before you stop, move the card and set `history_summary`: where it stands, what you did, what is next.
+
+        ## Never
+        - Never publish or schedule anything yourself; a person approves in Review.
+      HEARTBEAT.md: |
+        # Heartbeat
+
+        1. board_health for #marketing. Ask about cards in Review over 2 days.
+        2. Flag Scheduled cards whose publish date has passed.
+teamChannels:
+  - name: marketing
+    topic: Content calendar and campaigns.
+    members:
+      - project: marketing-agent
+        agentTrigger: mention
+    boards:
+      - name: Content
+        itemType: content
+        keyPrefix: CNT
+        description: Everything we publish. A card needs a publish date before it leaves Drafting.
+        columns:
+          - name: Ideas
+            category: backlog
+          - name: Drafting
+            category: active
+            wipLimit: 5
+          - name: Review
+            category: review
+            slaHours: 48
+          - name: Scheduled
+            category: waiting
+          - name: Published
+            category: done
+        fields:
+          - key: format
+            label: Format
+            type: select
+            options:
+              - blog
+              - newsletter
+              - social
+              - video
+              - case study
+          - key: publishDate
+            label: Publish date
+            type: date
+          - key: link
+            label: Link
+            type: url
+        requiresHumanReview: true
+        defaultAgent: marketing-agent
+      - name: Campaigns
+        itemType: task
+        keyPrefix: CMP
+        description: Launches, promotions and events. Close a card only after its results are posted.
+        columns:
+          - name: Brief
+            category: backlog
+          - name: Building
+            category: active
+          - name: Live
+            category: active
+          - name: Measuring
+            category: review
+          - name: Done
+            category: done
+        fields:
+          - key: goal
+            label: Goal
+            type: text
+          - key: budget
+            label: Budget
+            type: money
+          - key: launchDate
+            label: Launch date
+            type: date
+        defaultAgent: marketing-agent

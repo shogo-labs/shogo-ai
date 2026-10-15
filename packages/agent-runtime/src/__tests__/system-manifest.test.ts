@@ -7,6 +7,7 @@
 import { describe, test, expect } from 'bun:test'
 import {
   parseSystemManifest,
+  manifestHints,
   isSafeRelativePath,
   resolveBindings,
   computeSystemDiff,
@@ -131,6 +132,20 @@ describe('parseSystemManifest', () => {
 function live(overrides: Partial<LiveProject> = {}): LiveProject {
   return { id: 'id', name: 'name', description: null, attachments: [], agent: null, ...overrides }
 }
+
+describe('manifestHints', () => {
+  test('gives a valid example for each section that failed', () => {
+    const bad = parseSystemManifest('version: 1\nname: X\nprojects: []\ntriggers:\n  - name: t\n    on: member_joined\nteamChannels:\n  - name: s\n    boards: [{ title: T }]\n')
+    expect(bad.ok).toBe(false)
+    const hints = manifestHints(bad.errors)
+    expect(hints).toHaveLength(3)
+
+    const examples = hints.slice(1).map((h) => h.split('\n').slice(1).join('\n')).join('\n')
+    const good = parseSystemManifest(`version: 1\nname: X\nprojects:\n  - key: support-agent\n    name: Support Agent\n${examples}\n`)
+    expect(good.errors).toEqual([])
+    expect(good.manifest?.triggers[0]).toMatchObject({ event: 'member.joined', target: 'work_item', card: { board: 'Onboarding' } })
+  })
+})
 
 describe('resolveBindings', () => {
   test('binds the anchor key to the caller regardless of lock/name', () => {
@@ -445,6 +460,17 @@ describe('teamChannels', () => {
     expect(m.manifest!.teamChannels[0].members).toEqual([{ project: 'a', agentTrigger: 'auto', contextMode: 'shared' }])
   })
 
+  test('a manifest can declare only a channel', () => {
+    const m = parseSystemManifest({ version: 1, name: 'x', teamChannels: [{ name: 'sales', private: true }] })
+    expect(m.errors).toEqual([])
+    const diff = computeSystemDiff(m.manifest!, [], undefined, {
+      callerProjectId: 'p-ws',
+      teamChannels: { channels: [], groups: {} },
+    })
+    expect(diff.create).toEqual([])
+    expect(diff.teamChannels).toMatchObject([{ action: 'create', name: 'sales', private: true }])
+  })
+
   test('rejects unknown project keys, duplicate channels, and keyword triggers without keywords', () => {
     const bad = parseSystemManifest({
       version: 1,
@@ -569,5 +595,160 @@ describe('teamChannels', () => {
       teamChannels: { channels: [], groups: { maintainers: [] } },
     })
     expect(diff.teamChannels[0].agents.map((a) => a.projectId)).toEqual([null, null])
+  })
+})
+
+// ─── boards, triggers, capabilities ──────────────────────────────────────
+
+describe('boards, triggers and agent capabilities', () => {
+  const SUPPORT_YAML = `
+version: 1
+name: support
+projects:
+  - key: support-agent
+    name: Support Agent
+    agent:
+      capabilities:
+        boardsEnabled: true
+        boardAdminEnabled: false
+teamChannels:
+  - name: support
+    members:
+      - project: support-agent
+    boards:
+      - name: Tickets
+        itemType: ticket
+        keyPrefix: sup
+        requiresHumanReview: true
+        defaultAgent: support-agent
+        columns:
+          - { name: New, category: backlog, slaHours: 4 }
+          - { name: Open, category: active, wipLimit: 10 }
+          - { name: Waiting on customer, category: waiting }
+          - { name: Solved, category: done }
+        fields:
+          - { key: customer, type: text }
+          - { key: plan, type: select, options: [free, pro, enterprise] }
+triggers:
+  - key: zendesk-tickets
+    name: New Zendesk tickets
+    event: composio.zendesk.ZENDESK_NEW_TICKET
+    target: work_item
+    card:
+      board: Tickets
+      channel: support
+      title: "{{ticket.subject}}"
+      dedupeKey: "{{ticket.id}}"
+`
+  const manifest = () => {
+    const r = parseSystemManifest(SUPPORT_YAML)
+    if (!r.ok) throw new Error(r.errors.join('\n'))
+    return r.manifest!
+  }
+  const live: LiveProject[] = [
+    { id: 'p-caller', name: 'Workspace', description: null, attachments: [{ attachedProjectId: 'p-sup', attachMode: 'readwrite' }], agent: null },
+    { id: 'p-sup', name: 'Support Agent', description: null, attachments: [], agent: null, capabilities: { boardsEnabled: true, boardAdminEnabled: false } },
+  ]
+  const lock: SystemLock = { version: 1, name: 'support', bindings: { 'support-agent': 'p-sup' } }
+  const channels = { channels: [{ name: 'support', topic: null, private: false, agents: [{ projectId: 'p-sup', agentTrigger: 'mention', agentKeywords: null }], userEmails: [] }], groups: {} }
+  const liveBoard = (over: Record<string, unknown> = {}): any => ({
+    id: 'b1', name: 'Tickets', channelName: 'support', itemType: 'ticket', keyPrefix: 'SUP', description: null,
+    fieldsSchema: [{ key: 'customer', type: 'text' }, { key: 'plan', type: 'select', options: ['free', 'pro', 'enterprise'] }],
+    postToChannel: 'all', requiresHumanReview: true, defaultAssigneeAgentRef: 'project:p-sup', archivedAt: null,
+    columns: [
+      { id: 'c1', name: 'New', position: 0, category: 'backlog', wipLimit: null, agentRef: null, slaHours: 4 },
+      { id: 'c2', name: 'Open', position: 1, category: 'active', wipLimit: 10, agentRef: null, slaHours: null },
+      { id: 'c3', name: 'Waiting on customer', position: 2, category: 'waiting', wipLimit: null, agentRef: null, slaHours: null },
+      { id: 'c4', name: 'Solved', position: 3, category: 'done', wipLimit: null, agentRef: null, slaHours: null },
+    ],
+    ...over,
+  })
+
+  test('parses boards, triggers and capabilities, uppercasing key prefixes', () => {
+    const m = manifest()
+    expect(m.teamChannels[0].boards[0].keyPrefix).toBe('SUP')
+    expect(m.triggers[0].target).toBe('work_item')
+    expect(m.projects[0].agent?.capabilities).toEqual({ boardsEnabled: true, boardAdminEnabled: false })
+  })
+
+  test('rejects bad references', () => {
+    const bad = (patch: string) => parseSystemManifest(SUPPORT_YAML.replace('defaultAgent: support-agent', patch))
+    expect(bad('defaultAgent: nobody').errors.join()).toContain('defaultAgent "nobody"')
+    expect(parseSystemManifest(SUPPORT_YAML.replace('boardAdminEnabled: false', 'flyingEnabled: true')).errors.join()).toContain('unknown capability "flyingEnabled"')
+    expect(parseSystemManifest(SUPPORT_YAML.replace('board: Tickets', 'board: Nope')).errors.join()).toContain('declares no board "Nope"')
+    expect(parseSystemManifest(SUPPORT_YAML.replace('target: work_item', 'target: agent')).ok).toBe(false)
+  })
+
+  test('creates boards and triggers on an empty workspace', () => {
+    const diff = computeSystemDiff(manifest(), live, lock, { callerProjectId: 'p-caller', teamChannels: channels, boards: [], triggers: [] })
+    expect(diff.boards).toHaveLength(1)
+    expect(diff.boards[0]).toMatchObject({ action: 'create', channel: 'support', name: 'Tickets', values: { item_type: 'ticket', key_prefix: 'SUP', default_agent: 'support-agent', requires_human_review: true } })
+    expect(diff.boards[0].values.columns).toHaveLength(4)
+    expect(diff.triggers).toEqual([expect.objectContaining({ action: 'create', key: 'zendesk-tickets' })])
+    expect(summarizeDiff(diff)).toContain('create board #support Tickets: ticket board, 4 columns')
+    expect(diff.empty).toBe(false)
+  })
+
+  test('applied state gives an empty diff', () => {
+    const m = manifest()
+    const created = computeSystemDiff(m, live, lock, { callerProjectId: 'p-caller', teamChannels: channels, boards: [], triggers: [] })
+    const lockAfter: SystemLock = { ...lock, triggers: { 'zendesk-tickets': { id: 't1', hash: created.triggers[0].hash! } } }
+    const triggers = [{ id: 't1', name: 'New Zendesk tickets', eventType: 'composio.zendesk.ZENDESK_NEW_TICKET', target: 'work_item', targetProjectId: null }]
+    const diff = computeSystemDiff(m, live, lockAfter, { callerProjectId: 'p-caller', teamChannels: channels, boards: [liveBoard()], triggers })
+    expect(diff.boards).toEqual([])
+    expect(diff.triggers).toEqual([])
+    expect(diff.configure).toEqual([])
+    expect(diff.empty).toBe(true)
+  })
+
+  test('adds a missing column after its neighbour, updates changed ones, and never deletes', () => {
+    const board = liveBoard({
+      columns: [
+        { id: 'c1', name: 'New', position: 0, category: 'backlog', wipLimit: null, agentRef: null, slaHours: 8 },
+        { id: 'c2', name: 'Open', position: 1, category: 'active', wipLimit: 10, agentRef: null, slaHours: null },
+        { id: 'c4', name: 'Solved', position: 2, category: 'done', wipLimit: null, agentRef: null, slaHours: null },
+        { id: 'c5', name: 'Escalated', position: 3, category: 'active', wipLimit: null, agentRef: null, slaHours: null },
+      ],
+    })
+    const diff = computeSystemDiff(manifest(), live, lock, { callerProjectId: 'p-caller', teamChannels: channels, boards: [board], triggers: [] })
+    const op = diff.boards[0]
+    expect(op.action).toBe('update')
+    expect(op.columns).toContainEqual({ action: 'create', column: 'Waiting on customer', after: 'Open', values: { name: 'Waiting on customer', category: 'waiting' } })
+    expect(op.columns).toContainEqual({ action: 'update', column: 'New', values: { sla_hours: 4 } })
+    expect(op.columns.some((c) => c.column === 'Escalated')).toBe(false)
+    expect(diff.manual.join()).toContain('column "Escalated" is not in the manifest')
+  })
+
+  test('an archived board is restored, and agent refs compare through bindings', () => {
+    const diff = computeSystemDiff(manifest(), live, lock, {
+      callerProjectId: 'p-caller', teamChannels: channels, triggers: [],
+      boards: [liveBoard({ archivedAt: '2026-10-01T00:00:00Z', defaultAssigneeAgentRef: 'workspace' })],
+    })
+    expect(diff.boards[0].action).toBe('restore')
+    expect(diff.boards[0].values.default_agent).toBe('support-agent')
+  })
+
+  test('a changed trigger updates; a changed event replaces; an undeclared locked trigger is deleted', () => {
+    const m = manifest()
+    const triggers = [{ id: 't1', name: 'New Zendesk tickets', eventType: 'composio.zendesk.ZENDESK_NEW_TICKET', target: 'work_item', targetProjectId: null }, { id: 't9', name: 'Old', eventType: 'member.joined', target: 'agent', targetProjectId: null }]
+    const stale: SystemLock = { ...lock, triggers: { 'zendesk-tickets': { id: 't1', hash: 'old' }, old: { id: 't9', hash: 'x' } } }
+    const diff = computeSystemDiff(m, live, stale, { callerProjectId: 'p-caller', teamChannels: channels, boards: [liveBoard()], triggers })
+    expect(diff.triggers.map((t) => [t.key, t.action])).toEqual([['zendesk-tickets', 'update'], ['old', 'delete']])
+    const moved = computeSystemDiff(m, live, stale, { callerProjectId: 'p-caller', teamChannels: channels, boards: [liveBoard()], triggers: [{ ...triggers[0], eventType: 'composio.zendesk.OTHER' }] })
+    expect(moved.triggers[0].action).toBe('replace')
+  })
+
+  test('changed capabilities configure the project', () => {
+    const changed = live.map((p) => p.id === 'p-sup' ? { ...p, capabilities: { boardsEnabled: false } } : p)
+    const diff = computeSystemDiff(manifest(), changed, lock, { callerProjectId: 'p-caller', teamChannels: channels, boards: [liveBoard()], triggers: [] })
+    expect(diff.configure).toEqual([{ kind: 'configure', key: 'support-agent', projectId: 'p-sup', patch: { settings: { boardsEnabled: true, boardAdminEnabled: false } } }])
+    expect(summarizeDiff(diff)).toContain('configure support-agent: boardsEnabled, boardAdminEnabled')
+  })
+
+  test('without board access, boards and triggers become manual steps', () => {
+    const diff = computeSystemDiff(manifest(), live, lock, { callerProjectId: 'p-caller', teamChannels: channels, boardsUnavailable: 'board management is off', triggersUnavailable: 'trigger changes are off' })
+    expect(diff.boards).toEqual([])
+    expect(diff.manual.join('\n')).toContain('boards: board management is off; set up #support Tickets by hand')
+    expect(diff.manual.join('\n')).toContain('triggers: trigger changes are off; create New Zendesk tickets by hand')
   })
 })

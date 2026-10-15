@@ -100,21 +100,7 @@ function questionsForApi(questions: QuestionInput[] | undefined) {
   return questions.map(({ question, secret_name, ...rest }) => ({ ...rest, prompt: question, secretName: secret_name }))
 }
 
-export const CHANNEL_TOOL_NAMES = [
-  'team_chat_list',
-  'team_chat_read',
-  'team_chat_post',
-  'team_chat_update',
-  'team_chat_search',
-  'team_chat_dm',
-  'team_chat_add_member',
-  'fetch_chat_files',
-  'team_chat_doc_read',
-  'team_chat_doc_update',
-  'team_directory',
-  'member_activity',
-  'team_chat_question_secret',
-] as const
+export { CHANNEL_TOOL_NAMES } from './work-tool-names'
 
 /** True when this runtime registers the team chat tools (non-personal workspace runtimes). */
 export function teamChatToolsAvailable(capabilityProfile?: string): boolean {
@@ -135,6 +121,7 @@ export const TEAM_CHAT_GUIDE = [
   '- Use `team_chat_dm` to escalate something urgent to one person instead of tagging a whole channel.',
   '- If someone asks you to message a teammate for them, use `team_chat_dm` with `for_requester: true`; then reply to the requester with the returned link.',
   '- Use `team_chat_add_member` to put someone in a channel, e.g. when welcoming a new teammate.',
+  '- Asked to create a channel, or to change one (private, topic, agent members)? Do it yourself; never send the person to the UI. Add or edit it under `teamChannels` in shogo-system.yaml and run `system_apply` (dry run, then apply). The person who asked is added as the new channel\'s owner. Without `system_apply`, ask the workspace agent in the channel to do it.',
   '- Files shared in your channels and DMs: use `fetch_chat_files`. Search them by meaning with `query`, read a document\'s text with `file_id`, and pass `download: true` only when you need the raw file on disk (images, spreadsheets to run code on, archives); it is saved under `chat-files/`.',
   '- Each channel can have a doc: a shared markdown page for its plans, decisions and checklists. Read it with `team_chat_doc_read`; record settled decisions and long content there with `team_chat_doc_update` (prefer `patch_section` or `append` over rewriting it), then mention the change briefly in your reply.',
   '- Asked what a teammate worked on ("what did Sam do today?")? Use `member_activity`. Only owners and admins may ask; if the API refuses, say so plainly and do not guess from channel history. Answer only the person who asked, in the conversation where they asked. Never post someone\'s activity summary into a channel.',

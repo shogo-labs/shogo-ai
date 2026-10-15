@@ -1094,6 +1094,27 @@ export async function updateAgentChannelMessage(
   })
 }
 
+/**
+ * Work boards on the internal API (`agent-boards` and `agent-work-items`).
+ * `path` starts at the workspace, e.g. `/agent-boards/pipeline/items`.
+ */
+export async function agentBoardsRequest<T = any>(
+  workspaceId: string,
+  method: 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE',
+  path: string,
+  options: { body?: Record<string, unknown>; query?: Record<string, string | number | boolean | undefined | null> } = {},
+): Promise<CheckpointCallResult<T>> {
+  const params = new URLSearchParams()
+  for (const [k, v] of Object.entries(options.query ?? {})) {
+    if (v !== undefined && v !== null && v !== '') params.set(k, String(v))
+  }
+  const qs = params.toString()
+  return personalFetch<T>(`/api/internal/workspaces/${encodeURIComponent(workspaceId)}${path}${qs ? `?${qs}` : ''}`, {
+    method,
+    ...(options.body ? { body: JSON.stringify(options.body) } : {}),
+  })
+}
+
 /** The value a person entered for one of this agent's `secret` questions. */
 export async function readAgentQuestionSecret(
   workspaceId: string,
@@ -1230,6 +1251,8 @@ export async function upsertTeamChannel(
     groupHandles?: string[]
     /** Project whose manifest declares the channel; it stays undeletable while declared. */
     system?: string
+    /** The person this run works for; a newly created channel gets them as its owner. */
+    onBehalfOfUserId?: string
   },
 ): Promise<CheckpointCallResult<{ created: boolean; changes: string[]; channel: { id: string; name: string } }>> {
   return personalFetch(channelsPath(workspaceId, `/team-channels/${encodeURIComponent(name)}`), {
@@ -1490,7 +1513,7 @@ export interface EventTrigger {
   filter: Record<string, unknown> | null
   ownerUserId: string | null
   source: string
-  target: 'agent' | 'project' | 'webhook'
+  target: 'agent' | 'project' | 'webhook' | 'work_item'
   targetProjectId: string | null
   targetMode: string | null
   prompt: string | null
@@ -1506,13 +1529,14 @@ export interface EventTriggerCreateRequest {
   name: string
   eventType: string
   filter?: Record<string, unknown> | null
-  target?: 'agent' | 'project' | 'webhook'
+  target?: 'agent' | 'project' | 'webhook' | 'work_item'
   targetProjectId?: string
   targetMode?: 'agent' | 'hook'
   prompt?: string
   notifyConversationId?: string | null
   notifyThreadRootId?: string | null
   webhookUrl?: string
+  workItemTarget?: Record<string, unknown>
   triggerConfig?: Record<string, unknown>
   enabled?: boolean
 }
@@ -1528,6 +1552,7 @@ export interface EventTriggerUpdateRequest {
   notifyThreadRootId?: string | null
   webhookUrl?: string
   rotateWebhookSecret?: boolean
+  workItemTarget?: Record<string, unknown>
 }
 
 function triggersPath(workspaceId: string, suffix = ''): string {

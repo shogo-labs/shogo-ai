@@ -30,7 +30,9 @@ a tool you've turned off, and it won't be told the tool exists.
 
 ## The capabilities
 
-All capabilities default to **on**. Set a flag to `false` to disable it.
+Most capabilities default to **on**; set a flag to `false` to disable it. Opt-in
+ones (Git worktrees, Social media, and some of the
+[work capabilities](#work-capabilities)) default to off.
 
 | Capability | Flag | Gates (tools) | Also trims from prompt |
 |------------|------|---------------|------------------------|
@@ -44,6 +46,29 @@ All capabilities default to **on**. Set a flag to `false` to disable it.
 | Channels | `channelsEnabled` | `channel_connect`, `channel_disconnect`, `channel_list`, `send_message` | `channel` line + Action Tools bullet |
 | Integrations | `integrationsEnabled` | `search_integrations`, `connect`, `disconnect` | `integrations` line + Action Tools bullet |
 | Canvas | `canvasEnabled` / `activeMode: "none"` | canvas tools | Canvas file reference + preview context |
+
+### Work capabilities
+
+These cover how an agent works with your team in workspace channels and on
+[boards](/features/boards). They only apply to team agents; a personal agent
+never gets team chat, board management, or company operations.
+
+| Capability | Flag | Default | Gates (tools) |
+|------------|------|---------|---------------|
+| Team chat | `teamChatEnabled` | on | `team_chat_*`, `team_directory`, `member_activity`, `fetch_chat_files` |
+| Boards | `boardsEnabled` | on | `board_list`, `board_summary`, `board_health`, `work_item_*` |
+| Board management | `boardAdminEnabled` | opt-in | `board_create`, `board_update`, `board_archive`, `board_reorder`, `column_*`, `work_template_list`, `work_template_add`, and board changes in `system_apply` |
+| Triggers | `workTriggersEnabled` | on | `trigger_create`, `trigger_update`, `trigger_delete`, `trigger_test` (listing triggers always works) |
+| Company operations | `companyOpsEnabled` | opt-in | No tools. Adds heartbeat board sweeps, nudges, and digests to the prompt. Needs Heartbeat and Boards on. |
+| Problems | `problemsEnabled` | opt-in | `problem_report`, `problem_occurrences`. Needs Boards on. |
+
+The workspace agent has board management, company operations, and problems
+turned on by default, since it's the one setting up and running the boards.
+Set any of them to `false` to turn it off.
+
+Turning off Boards also turns off board management and problems, since they
+work on boards. If a capability is on but something it needs is off, the agent
+is told which one, so it can ask you to turn it on.
 
 ### Prompt-only toggles
 

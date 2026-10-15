@@ -16,6 +16,8 @@ import { assertNativeChat } from './chat-mode'
 import type { AgentChain } from './conversation-agent-chain'
 import { publicBlocks } from './conversation-message-kind'
 import { normalizeBuddyLook, type BuddyLook } from '../../../../packages/shared-app/src/buddy-look'
+import { normalizeCapabilitySettings } from '@shogo/shared-runtime/capability-settings'
+import { parseProjectSettings } from '../lib/project-settings'
 
 const db = prisma as any
 
@@ -1433,7 +1435,7 @@ export async function listMentionables(workspaceId: string, userId: string) {
     }),
     db.project.findMany({
       where: { AND: [{ workspaceId }, readable] },
-      select: { id: true, name: true, description: true, buddyLook: true },
+      select: { id: true, name: true, description: true, buddyLook: true, settings: true },
       orderBy: { updatedAt: 'desc' },
       take: 200,
     }),
@@ -1449,9 +1451,11 @@ export async function listMentionables(workspaceId: string, userId: string) {
   return {
     people,
     agents: [
-      { key: 'ws', projectId: null, name: profile?.name || 'Shogo', description: 'Workspace agent', image: profile?.avatarUrl ?? null, buddyLook: storedAgentBuddyLook(profile?.buddyLook) },
+      { key: 'ws', projectId: null, name: profile?.name || 'Shogo', description: 'Workspace agent', image: profile?.avatarUrl ?? null, buddyLook: storedAgentBuddyLook(profile?.buddyLook), boards: true },
       ...projects.map((p: any) => ({
         key: `p:${p.id}`, projectId: p.id, name: p.name, description: p.description ?? null, image: null, buddyLook: storedAgentBuddyLook(p.buddyLook),
+        /** Whether the agent can work cards (its Boards capability). */
+        boards: normalizeCapabilitySettings(parseProjectSettings(p.settings)).boardsEnabled,
       })),
     ],
   }

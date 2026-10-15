@@ -104,6 +104,8 @@ import { ADVERSARIAL_EVALS } from './test-cases-adversarial'
 import { CROSS_CUTTING_EVALS } from './test-cases-cross-cutting'
 import { SUBAGENT_COORDINATION_EVALS } from './test-cases-subagent-coordination'
 import { TEAMMATE_COORDINATION_EVALS } from './test-cases-teammate-coordination'
+import { COMPANY_SIM_EVALS } from './test-cases-company-sim'
+import { COMPANY_OPS_EVALS } from './test-cases-company-ops'
 import { KNOWLEDGE_GRAPH_EVALS } from './test-cases-knowledge-graph'
 import { TOKEN_BUDGET_EVALS } from './test-cases-token-budget'
 import { PLAN_EVALS } from './test-cases-plans'
@@ -394,6 +396,8 @@ function getEvals(track: string): AgentEval[] {
     case 'cross-cutting': return CROSS_CUTTING_EVALS
     case 'subagent-coordination': return SUBAGENT_COORDINATION_EVALS
     case 'teammate-coordination': return TEAMMATE_COORDINATION_EVALS
+    case 'company-sim': return COMPANY_SIM_EVALS
+    case 'company-ops': return COMPANY_OPS_EVALS
     case 'knowledge-graph': return KNOWLEDGE_GRAPH_EVALS
     case 'token-budget': return TOKEN_BUDGET_EVALS
     case 'plan': return PLAN_EVALS
@@ -914,6 +918,7 @@ async function runEvalOnWorker(
     promptProfile: promptProfileArg,
     evalLabel,
     mocks: buildMockPayload(ev.toolMocks),
+    sim: ev.sim,
     verbose: verboseFlag,
   }, k8sFlag ? getWorkerBaseUrl(worker) : undefined)
 

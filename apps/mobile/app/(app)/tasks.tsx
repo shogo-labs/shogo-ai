@@ -2,10 +2,10 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ActivityIndicator, Alert, Keyboard, Pressable, RefreshControl, ScrollView, Text, TextInput, View } from 'react-native'
+import { ActivityIndicator, Alert, Keyboard, Pressable, RefreshControl, ScrollView, Text, TextInput, View, useWindowDimensions } from 'react-native'
 import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router'
 import { observer } from 'mobx-react-lite'
-import { Check, CheckCircle2, CircleAlert, Clock3, Folder, ListTodo, LoaderCircle, Play, Plus, Search, Trash2, X, XCircle } from 'lucide-react-native'
+import { Check, CheckCircle2, CircleAlert, Clock3, Folder, KanbanSquare, List, ListTodo, LoaderCircle, Play, Plus, Search, Trash2, X, XCircle } from 'lucide-react-native'
 import { useProjectCollection, type IProject } from '../../contexts/domain'
 import { useResolvedTheme } from '../../contexts/theme'
 import { useIsRemoteSource } from '@shogo/shared-app/domain'
@@ -16,6 +16,12 @@ import { NativePhoneSheet } from '../../components/phone/NativePhoneSheet'
 import { PhoneListEmpty } from '../../components/phone/PhoneListRow'
 import { readableAgentTaskError, taskStatusLabel } from '../../lib/agent-task-ui'
 import { getPinnedProjectIds } from '../../lib/project-prefs-store'
+import { TASK_LANES, taskDropAction, taskLane } from '../../lib/agent-task-board'
+import { Lane } from '../../components/boards/Lane'
+import { DraggableCard } from '../../components/boards/drag'
+
+/** Wide enough for five lanes side by side. */
+const TASK_BOARD_MIN_WIDTH = 900
 
 function statusClass(status: AgentTaskStatus) {
   switch (status) {
@@ -95,6 +101,11 @@ const TasksScreen = observer(function TasksScreen() {
   const [projectSearchOpen, setProjectSearchOpen] = useState(false)
   const [saving, setSaving] = useState(false)
   const [busyTaskId, setBusyTaskId] = useState<string | null>(null)
+  const { width } = useWindowDimensions()
+  const boardFits = width >= TASK_BOARD_MIN_WIDTH
+  const [view, setView] = useState<'board' | 'list'>('board')
+  const showBoard = boardFits && view === 'board'
+  const [dragging, setDragging] = useState<string | null>(null)
   const loadInFlight = useRef<Promise<void> | null>(null)
   const taskOffsets = useRef(new Map<string, number>())
   const taskListRef = useRef<ScrollView>(null)
@@ -316,6 +327,70 @@ const TasksScreen = observer(function TasksScreen() {
     )
   }
 
+  const renderTaskTile = (task: AgentTask) => {
+    const busy = busyTaskId === task.id
+    return (
+      <Pressable
+        onPress={() => (task.chatSessionId ? openChat(task) : undefined)}
+        accessibilityRole="button"
+        accessibilityLabel={task.title}
+        testID={`task-tile-${task.id}`}
+        className={`gap-1.5 rounded-md border bg-card p-2.5 hover:border-primary/40 ${requestedTaskId === task.id ? 'border-primary' : 'border-border'} ${dragging === task.id ? 'opacity-40' : ''}`}
+      >
+        <Text className="text-sm text-foreground" numberOfLines={3}>{task.title}</Text>
+        {task.currentStep ? <Text className="text-xs text-muted-foreground" numberOfLines={2}>{task.currentStep}</Text> : null}
+        {task.errorMessage ? <Text className="text-xs text-destructive" numberOfLines={2}>{readableAgentTaskError(task.errorMessage)}</Text> : null}
+        <View className="flex-row items-center gap-1.5">
+          {task.status === 'draft' ? (
+            <Pressable onPress={() => void mutateTask(task, 'start')} disabled={busy} accessibilityLabel="Start agent" className="flex-row items-center gap-1 rounded bg-primary px-2 py-0.5">
+              <Play size={11} color={primaryActionColor} />
+              <Text className="text-[11px] font-medium text-primary-foreground">Start</Text>
+            </Pressable>
+          ) : null}
+          {task.status === 'queued' || task.status === 'running' ? (
+            <Pressable onPress={() => void mutateTask(task, 'cancel')} disabled={busy} accessibilityLabel="Cancel task" className="rounded bg-muted px-2 py-0.5">
+              <Text className="text-[11px] text-foreground">Cancel</Text>
+            </Pressable>
+          ) : null}
+          {task.status === 'cancelled' ? <Text className="text-[11px] text-muted-foreground">Cancelled</Text> : null}
+          <View className="flex-1" />
+          <Pressable onPress={() => confirmDeleteTask(task)} disabled={busy} accessibilityLabel="Delete task" className="rounded p-1 hover:bg-muted">
+            <Trash2 size={12} className="text-muted-foreground" />
+          </Pressable>
+        </View>
+      </Pressable>
+    )
+  }
+
+  const taskBoard = (
+    <ScrollView horizontal className="flex-1" contentContainerClassName="gap-3 px-4 pb-6" testID="task-board">
+      {TASK_LANES.map((lane) => {
+        const laneTasks = tasks.filter((t) => taskLane(t.status) === lane.id)
+        return (
+          <Lane
+            key={lane.id}
+            title={lane.label}
+            count={laneTasks.length}
+            dragging={!!dragging}
+            testID={`task-lane-${lane.id}`}
+            onDropCard={(id) => {
+              setDragging(null)
+              const task = tasks.find((t) => t.id === id)
+              const action = task ? taskDropAction(task.status, lane.id) : null
+              if (task && action) void mutateTask(task, action)
+            }}
+          >
+            {laneTasks.map((task) => (
+              <DraggableCard key={task.id} id={task.id} onDragStart={setDragging} onDragEnd={() => setDragging(null)}>
+                {renderTaskTile(task)}
+              </DraggableCard>
+            ))}
+          </Lane>
+        )
+      })}
+    </ScrollView>
+  )
+
   const projectPickerGroups = useMemo(() => {
     const pinnedIds = new Set(getPinnedProjectIds())
     const query = projectQuery.trim().toLowerCase()
@@ -378,6 +453,16 @@ const TasksScreen = observer(function TasksScreen() {
                 <Text className="text-[28px] font-semibold tracking-[-0.6px] text-foreground">Tasks</Text>
                 <Text className="mt-1 text-[15px] leading-5 text-muted-foreground">Plan work, then hand it to your agent when you’re ready.</Text>
               </View>
+              {boardFits ? (
+                <View className="h-11 flex-row overflow-hidden rounded-full border border-border" accessibilityRole="tablist">
+                  <Pressable onPress={() => setView('board')} accessibilityRole="tab" aria-selected={view === 'board'} accessibilityLabel="Board view" className={`items-center justify-center px-3.5 ${view === 'board' ? 'bg-muted' : ''}`}>
+                    <KanbanSquare size={16} className={view === 'board' ? 'text-foreground' : 'text-muted-foreground'} />
+                  </Pressable>
+                  <Pressable onPress={() => setView('list')} accessibilityRole="tab" aria-selected={view === 'list'} accessibilityLabel="List view" className={`items-center justify-center px-3.5 ${view === 'list' ? 'bg-muted' : ''}`}>
+                    <List size={16} className={view === 'list' ? 'text-foreground' : 'text-muted-foreground'} />
+                  </Pressable>
+                </View>
+              ) : null}
               <Pressable
                 onPress={() => { resetCreate(); setShowCreate(true) }}
                 accessibilityLabel="Create task"
@@ -398,10 +483,11 @@ const TasksScreen = observer(function TasksScreen() {
               </View>
             </View>
           </View>
-          {activeTasks.length > 0 ? <View className="mb-3 flex-row items-center justify-between px-4"><Text className="text-[16px] font-semibold text-foreground">Open work</Text><Text className="text-[13px] font-medium text-muted-foreground">{activeTasks.length}</Text></View> : null}
-          {activeTasks.map(renderTask)}
-          {finishedTasks.length > 0 ? <View className="mb-3 mt-5 flex-row items-center justify-between px-4"><Text className="text-[16px] font-semibold text-foreground">Recent activity</Text><Text className="text-[13px] font-medium text-muted-foreground">{finishedTasks.length}</Text></View> : null}
-          {finishedTasks.map(renderTask)}
+          {showBoard && tasks.length > 0 ? taskBoard : null}
+          {!showBoard && activeTasks.length > 0 ? <View className="mb-3 flex-row items-center justify-between px-4"><Text className="text-[16px] font-semibold text-foreground">Open work</Text><Text className="text-[13px] font-medium text-muted-foreground">{activeTasks.length}</Text></View> : null}
+          {!showBoard && activeTasks.map(renderTask)}
+          {!showBoard && finishedTasks.length > 0 ? <View className="mb-3 mt-5 flex-row items-center justify-between px-4"><Text className="text-[16px] font-semibold text-foreground">Recent activity</Text><Text className="text-[13px] font-medium text-muted-foreground">{finishedTasks.length}</Text></View> : null}
+          {!showBoard && finishedTasks.map(renderTask)}
           {tasks.length === 0 ? <PhoneListEmpty icon={<ListTodo size={44} className="text-muted-foreground" />} title="No tasks yet" message="Create a task from Home or a project, then start the agent when you are ready." action={<Pressable onPress={() => { resetCreate(); setShowCreate(true) }} className="rounded-lg bg-primary px-4 py-2"><Text className="font-semibold text-primary-foreground">Create task</Text></Pressable>} /> : null}
         </ScrollView>
       )}

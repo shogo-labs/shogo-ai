@@ -237,6 +237,61 @@ describe('filterDisabledCapabilityTools', () => {
   })
 })
 
+describe('work capabilities', () => {
+  function teamNames(config: GatewayConfig): Set<string> {
+    const ctx = { ...makeCtx(config), workspaceId: 'workspace-1' }
+    return new Set(filterDisabledCapabilityTools(createTools(ctx), config).map(t => t.name))
+  }
+
+  test('defaults: team chat, card work and triggers on; board structure and problems off', () => {
+    const n = teamNames(makeConfig())
+    for (const t of ['team_chat_post', 'board_list', 'work_item_create', 'work_item_get', 'trigger_create']) expect(n.has(t)).toBe(true)
+    for (const t of ['board_create', 'column_delete', 'problem_report']) expect(n.has(t)).toBe(false)
+  })
+
+  test('opt-ins turn on board structure and problem tools', () => {
+    const n = teamNames(makeConfig({ boardAdminEnabled: true, problemsEnabled: true }))
+    for (const t of ['board_create', 'board_archive', 'column_create', 'problem_report', 'problem_occurrences']) expect(n.has(t)).toBe(true)
+  })
+
+  test('boardsEnabled: false removes every board tool, even with the opt-ins on', () => {
+    const n = teamNames(makeConfig({ boardsEnabled: false, boardAdminEnabled: true, problemsEnabled: true }))
+    expect([...n].some(t => t.startsWith('board_') || t.startsWith('work_item_') || t.startsWith('column_') || t.startsWith('problem_'))).toBe(false)
+    expect(n.has('team_chat_post')).toBe(true)
+  })
+
+  test('teamChatEnabled: false removes team chat tools but not boards', () => {
+    const n = teamNames(makeConfig({ teamChatEnabled: false }))
+    expect([...n].some(t => t.startsWith('team_chat_'))).toBe(false)
+    expect(n.has('team_directory')).toBe(false)
+    expect(n.has('work_item_create')).toBe(true)
+  })
+
+  test('workTriggersEnabled: false keeps reading triggers but not changing them', () => {
+    const n = teamNames(makeConfig({ workTriggersEnabled: false }))
+    expect(n.has('trigger_list')).toBe(true)
+    expect(n.has('trigger_types_list')).toBe(true)
+    for (const t of ['trigger_create', 'trigger_update', 'trigger_delete', 'trigger_test']) expect(n.has(t)).toBe(false)
+  })
+
+  test('the workspace agent (workspace runtime with no anchor) gets the opt-ins by default', () => {
+    const prev = { mode: process.env.WORKSPACE_RUNTIME, anchor: process.env.WORKSPACE_ANCHOR_PROJECT_ID }
+    process.env.WORKSPACE_RUNTIME = 'true'
+    delete process.env.WORKSPACE_ANCHOR_PROJECT_ID
+    try {
+      const n = teamNames(makeConfig())
+      expect(n.has('board_create')).toBe(true)
+      expect(n.has('problem_report')).toBe(true)
+      const off = teamNames(makeConfig({ boardAdminEnabled: false }))
+      expect(off.has('board_create')).toBe(false)
+    } finally {
+      if (prev.mode === undefined) delete process.env.WORKSPACE_RUNTIME
+      else process.env.WORKSPACE_RUNTIME = prev.mode
+      if (prev.anchor !== undefined) process.env.WORKSPACE_ANCHOR_PROJECT_ID = prev.anchor
+    }
+  })
+})
+
 describe('filterSubagentOnlyTools', () => {
   // Regression test for a Sep 2026 bug: personal-companion workspaces have
   // the entire `orchestration` group disabled (no `agent_spawn`), so if

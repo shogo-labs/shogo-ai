@@ -1,0 +1,40 @@
+# GENERATED FILE — do not hand-edit. Source: packages/agent-runtime/src/work-templates.ts
+# Regenerate with: bun run packages/agent-runtime/src/work-templates-gen.ts
+#
+# A board template: add `board` to a team channel in shogo-system.yaml
+# (or call work_template_add), then run system_apply.
+id: okrs
+name: OKRs
+summary: The quarter's key results, each with an owner and a status that is updated weekly.
+channel: operations
+board:
+  name: OKRs
+  itemType: custom
+  keyPrefix: OKR
+  description: One card per key result. Update the confidence field every week.
+  columns:
+    - name: Not started
+      category: backlog
+    - name: On track
+      category: active
+    - name: At risk
+      category: waiting
+    - name: Achieved
+      category: done
+    - name: Missed
+      category: dismissed
+  fields:
+    - key: objective
+      label: Objective
+      type: text
+      required: true
+    - key: target
+      label: Target
+      type: text
+    - key: confidence
+      label: Confidence
+      type: select
+      options:
+        - high
+        - medium
+        - low

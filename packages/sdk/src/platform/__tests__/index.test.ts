@@ -115,7 +115,7 @@ describe('PlatformApi.getConfig', () => {
       features: {
         billing: false, admin: false, oauth: true, analytics: false,
         publishing: false, marketplace: true, ezMode: false, ezModeVoiceProvider: 'elevenlabs', phoneChannel: false,
-        personalShell: true, agentShell: false, mobileAgentShell: false,
+        personalShell: true, agentShell: false, mobileAgentShell: false, workBoards: null,
       },
     }
     http.setGet('/api/config', expected)
@@ -457,7 +457,7 @@ describe('PlatformApi.getFeatureFlags', () => {
   test('happy: returns data', async () => {
     const { api, http } = mkApi()
     const f: FeatureFlagOverrides = {
-      marketplace: true, ezMode: null, phoneChannel: false, personalShell: null, agentShell: true, mobileAgentShell: false,
+      marketplace: true, ezMode: null, phoneChannel: false, personalShell: null, agentShell: true, mobileAgentShell: false, workBoards: null,
     }
     http.setGet('/api/admin/settings/features', f)
     expect(await api.getFeatureFlags()).toEqual(f)
@@ -465,7 +465,7 @@ describe('PlatformApi.getFeatureFlags', () => {
   test('fallback: all-null when data missing', async () => {
     const { api } = mkApi()
     expect(await api.getFeatureFlags()).toEqual({
-      marketplace: null, ezMode: null, phoneChannel: null, personalShell: null, agentShell: null, mobileAgentShell: null,
+      marketplace: null, ezMode: null, phoneChannel: null, personalShell: null, agentShell: null, mobileAgentShell: null, workBoards: null,
     })
   })
 })
@@ -476,7 +476,7 @@ describe('PlatformApi.putFeatureFlags', () => {
     const r = {
       ok: true,
       flags: {
-        marketplace: true, ezMode: null, phoneChannel: null, personalShell: null, agentShell: null, mobileAgentShell: null,
+        marketplace: true, ezMode: null, phoneChannel: null, personalShell: null, agentShell: null, mobileAgentShell: null, workBoards: null,
       } as FeatureFlagOverrides,
     }
     http.setRequest('PUT', '/api/admin/settings/features', r)
@@ -488,7 +488,7 @@ describe('PlatformApi.putFeatureFlags', () => {
     expect(await api.putFeatureFlags({})).toEqual({
       ok: false,
       flags: {
-          marketplace: null, ezMode: null, phoneChannel: null, personalShell: null, agentShell: null, mobileAgentShell: null,
+          marketplace: null, ezMode: null, phoneChannel: null, personalShell: null, agentShell: null, mobileAgentShell: null, workBoards: null,
       },
     })
   })

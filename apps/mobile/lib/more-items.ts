@@ -4,7 +4,7 @@
 // Leaf import: the `@shogo/shared-app` barrel also loads the domain SDK.
 import { CANVAS_NAV_HIDDEN, TASKS_NAV_HIDDEN } from '../../../packages/shared-app/src/hooks/useWorkspaceExperience'
 
-export type MoreIcon = 'tasks' | 'marketplace' | 'files'
+export type MoreIcon = 'tasks' | 'work' | 'marketplace' | 'files'
 
 export interface MoreItem {
   id: string
@@ -14,9 +14,10 @@ export interface MoreItem {
   href: string
 }
 
-export function moreItems(opts: { kind: 'personal' | 'team'; marketplace: boolean; canvasesHidden?: boolean; tasksHidden?: boolean }): MoreItem[] {
+export function moreItems(opts: { kind: 'personal' | 'team'; marketplace: boolean; canvasesHidden?: boolean; tasksHidden?: boolean; workBoards?: boolean }): MoreItem[] {
   const items: MoreItem[] = []
   if (opts.kind === 'team') {
+    if (opts.workBoards) items.push({ id: 'work', icon: 'work', title: 'My work', subtitle: 'Your cards across every board', href: '/(app)/work' })
     if (!(opts.tasksHidden ?? TASKS_NAV_HIDDEN)) items.push({ id: 'tasks', icon: 'tasks', title: 'Tasks', subtitle: 'Work assigned to you and to your agents', href: '/(app)/tasks' })
     if (opts.marketplace) {
       items.push({ id: 'marketplace', icon: 'marketplace', title: 'Marketplace', subtitle: 'Find agents and templates', href: '/(app)/marketplace' })

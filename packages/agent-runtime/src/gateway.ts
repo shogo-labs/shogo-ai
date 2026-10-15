@@ -57,7 +57,8 @@ import {
 import { SqliteSessionPersistence } from './sqlite-session-persistence'
 import { BlockChunker } from './block-chunker'
 import { canvasModeStableGuides } from './canvas-v2-prompt'
-import { buildCapabilityStatusSection } from './capability-status-prompt'
+import { buildCapabilityStatusSection, resolveRuntimeCapabilities } from './capability-status-prompt'
+import { BOARDS_GUIDE, COMPANY_OPS_GUIDE } from './board-tools'
 import { buildViewerContextPrompt, parseCanvasViewer } from './viewer-context'
 import { buildAccountContextPrompt, type AccountContext } from './account-context'
 import { CanvasFileWatcher } from './canvas-file-watcher'
@@ -505,6 +506,18 @@ export interface GatewayConfig {
   socialInstagramEnabled?: boolean
   /** When the master switch is on, TikTok lookups stay available unless this is `false`. */
   socialTiktokEnabled?: boolean
+  /** Team chat tools (`team_chat_*`, `team_directory`, `member_activity`, `fetch_chat_files`). Default on. */
+  teamChatEnabled?: boolean
+  /** Working cards on boards (`board_list/summary/health`, `work_item_*`). Default on. */
+  boardsEnabled?: boolean
+  /** Board structure (`board_create/update/archive/reorder`, `column_*`). Opt-in. */
+  boardAdminEnabled?: boolean
+  /** Creating and changing triggers (`trigger_create/update/delete/test`). Default on. */
+  workTriggersEnabled?: boolean
+  /** Board sweeps, digests and escalation on heartbeat (company-ops skill). Opt-in. */
+  companyOpsEnabled?: boolean
+  /** Problem tools (`problem_occurrences`, `problem_report`). Opt-in. */
+  problemsEnabled?: boolean
 }
 
 /**
@@ -571,7 +584,7 @@ export class AgentGateway {
   /** Tool execute overrides for eval mocking (tool name -> mock fn) */
   private toolMocks = new Map<string, (params: Record<string, any>) => any>()
   /** Synthetic tool definitions for mocked MCP tools that don't exist in the base tool set */
-  private syntheticTools = new Map<string, { description: string; paramKeys: string[] }>()
+  private syntheticTools = new Map<string, { description: string; paramKeys: string[]; parameters?: unknown }>()
   /** Tools that have mock responses but should not appear until promoted via connect */
   private hiddenMockTools = new Set<string>()
   /** Hidden mocks promoted to visible after connect is called during a turn */
@@ -887,7 +900,7 @@ export class AgentGateway {
    */
   setToolMocks(
     mocks: Record<string, (params: Record<string, any>) => any | Promise<any>>,
-    syntheticDefs?: Record<string, { description: string; paramKeys: string[] }>,
+    syntheticDefs?: Record<string, { description: string; paramKeys: string[]; parameters?: unknown }>,
     hiddenTools?: Set<string>,
   ): void {
     this.toolMocks.clear()
@@ -2647,7 +2660,7 @@ export class AgentGateway {
           name,
           description: synDef?.description || `External integration tool: ${name}`,
           label: name.replace(/__/g, ' > ').replace(/_/g, ' '),
-          parameters: Type.Object(paramProps),
+          parameters: (synDef?.parameters as any) ?? Type.Object(paramProps),
           execute: async (_id: string, params: any) => runMockAndUnwrap(mockFn, params),
         }
         staticTools.push(syntheticTool)
@@ -4283,8 +4296,13 @@ export class AgentGateway {
       pushStable('quick-action-guide', QUICK_ACTION_GUIDE)
     }
 
+    const workCaps = resolveRuntimeCapabilities(this.config as unknown as Record<string, unknown>)
     if (teamChatToolsAvailable(this.config.capabilityProfile)) {
-      pushStable('team-chat-guide', TEAM_CHAT_GUIDE)
+      if (workCaps.teamChatEnabled) pushStable('team-chat-guide', TEAM_CHAT_GUIDE)
+      if (workCaps.boardsEnabled) pushStable('boards-guide', BOARDS_GUIDE)
+      if (workCaps.companyOpsEnabled && workCaps.boardsEnabled && workCaps.heartbeatToolsEnabled) {
+        pushStable('company-ops-guide', COMPANY_OPS_GUIDE)
+      }
     }
 
     if (triggerToolsAvailable()) {

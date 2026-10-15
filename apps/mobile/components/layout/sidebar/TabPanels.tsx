@@ -6,7 +6,7 @@
  */
 import { Pressable, Text, View } from 'react-native'
 import { useRouter } from 'expo-router'
-import { Bookmark, ChevronRight, FileText, ListTodo, Store } from 'lucide-react-native'
+import { Bookmark, ChevronRight, FileText, KanbanSquare, ListTodo, Store } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { useWorkspaceExperience } from '../../../hooks/useWorkspaceExperience'
 // Leaf import: the `@shogo/shared-app` barrel also loads the domain SDK.
@@ -20,6 +20,7 @@ import { WorkspaceChatsPanel } from './WorkspaceChatsPanel'
 
 const MORE_ICONS: Record<MoreIcon, React.ElementType> = {
   tasks: ListTodo,
+  work: KanbanSquare,
   marketplace: Store,
   files: FileText,
 }
@@ -35,11 +36,14 @@ export interface HomePanelProps {
 export function HomePanel({ onNavPress }: HomePanelProps) {
   const router = useRouter()
   const chat = useTeamChatNav()
+  const experience = useWorkspaceExperience()
+  const { features } = usePlatformConfig()
 
   return (
     <View testID="home-panel">
       <View className="px-2 pb-1">
         {!TASKS_NAV_HIDDEN && <NavItem icon={ListTodo} label="Tasks" href="/(app)/tasks" onNavPress={onNavPress} />}
+        {features.workBoards && experience.kind === 'team' && <NavItem icon={KanbanSquare} label="My work" href="/(app)/work" onNavPress={onNavPress} />}
         {chat.enabled && (
           <PanelLink
             icon={Bookmark}
@@ -61,7 +65,7 @@ export function MorePanel({ onNavPress, variant = 'panel' }: { onNavPress?: () =
   const router = useRouter()
   const experience = useWorkspaceExperience()
   const { features } = usePlatformConfig()
-  const items = moreItems({ kind: experience.kind, marketplace: !!features.marketplace && experience.showMarketplace })
+  const items = moreItems({ kind: experience.kind, marketplace: !!features.marketplace && experience.showMarketplace, workBoards: !!features.workBoards })
   const screen = variant === 'screen'
   return (
     <View className={cn(screen ? 'px-2' : 'px-2 pt-1')} testID="more-panel">

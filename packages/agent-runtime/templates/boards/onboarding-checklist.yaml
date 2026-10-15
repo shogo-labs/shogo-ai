@@ -1,0 +1,34 @@
+# GENERATED FILE — do not hand-edit. Source: packages/agent-runtime/src/work-templates.ts
+# Regenerate with: bun run packages/agent-runtime/src/work-templates-gen.ts
+#
+# A board template: add `board` to a team channel in shogo-system.yaml
+# (or call work_template_add), then run system_apply.
+id: onboarding-checklist
+name: Onboarding Checklist
+summary: A card per new teammate covering accounts, equipment and first-week goals.
+channel: people
+board:
+  name: Onboarding
+  itemType: task
+  keyPrefix: ONB
+  description: Opened when someone joins the workspace. Done when they have access, a buddy, and first-week goals.
+  columns:
+    - name: Starting soon
+      category: backlog
+    - name: Setting up
+      category: active
+      slaHours: 48
+    - name: First week
+      category: active
+    - name: Onboarded
+      category: done
+  fields:
+    - key: startDate
+      label: Start date
+      type: date
+    - key: buddy
+      label: Buddy
+      type: user
+    - key: team
+      label: Team
+      type: text

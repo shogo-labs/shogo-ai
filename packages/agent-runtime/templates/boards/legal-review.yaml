@@ -1,0 +1,51 @@
+# GENERATED FILE — do not hand-edit. Source: packages/agent-runtime/src/work-templates.ts
+# Regenerate with: bun run packages/agent-runtime/src/work-templates-gen.ts
+#
+# A board template: add `board` to a team channel in shogo-system.yaml
+# (or call work_template_add), then run system_apply.
+id: legal-review
+name: Legal Review
+summary: Contracts and policies through review, redlines and signature.
+channel: legal
+board:
+  name: Contracts
+  itemType: approval
+  keyPrefix: LGL
+  description: NDAs, MSAs, DPAs and policy changes. Agents summarise and flag; a person approves.
+  columns:
+    - name: Requested
+      category: backlog
+      slaHours: 48
+    - name: Reviewing
+      category: active
+    - name: Redlines out
+      category: waiting
+    - name: Ready to sign
+      category: review
+    - name: Signed
+      category: done
+    - name: Dropped
+      category: dismissed
+  fields:
+    - key: counterparty
+      label: Counterparty
+      type: text
+      required: true
+    - key: contractType
+      label: Type
+      type: select
+      options:
+        - NDA
+        - MSA
+        - DPA
+        - SOW
+        - policy
+        - other
+    - key: value
+      label: Contract value
+      type: money
+    - key: document
+      label: Document
+      type: url
+  requiresHumanReview: true
+  postToChannel: done_only

@@ -48,6 +48,7 @@ import {
 } from './workspace-agent'
 import { workspaceMeetingRoutes } from './workspace-meetings'
 import { agentChannelRoutes, type AgentChannelAuthContext } from './conversations'
+import { agentBoardRoutes } from './work-boards'
 import {
   createInternalAuthorizers,
   logAuthReject,
@@ -681,6 +682,21 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
         // A project-scoped token pins the author. A workspace runtime may speak as a project of this
         // workspace it claims to be (a project with attachments runs as a workspace runtime anchored on
         // itself); with no claim it speaks as the workspace agent.
+        const projectId = identity?.kind === 'project' ? identity.projectId : undefined
+        return { workspaceId, projectId }
+      },
+    }),
+  )
+
+  app.route(
+    '/',
+    agentBoardRoutes({
+      authorize: async (c) => {
+        const workspaceId = c.req.param('workspaceId')
+        if (!(await authorizeWorkspaceScope(c, workspaceId))) {
+          return c.json({ error: 'Unauthorized' }, 401)
+        }
+        const identity = await authenticate(c)
         const projectId = identity?.kind === 'project' ? identity.projectId : undefined
         return { workspaceId, projectId }
       },

@@ -9,7 +9,7 @@ import { createElement, memo, useCallback, useEffect, useRef, useState, type Rea
 import { ActionSheetIOS, Alert, Image, Linking, Modal, Platform, Pressable, Text, TextInput, View } from 'react-native'
 import { useRouter } from 'expo-router'
 import * as Clipboard from 'expo-clipboard'
-import { AlarmClock, AlertCircle, Bookmark, Check, CircleDot, CornerDownRight, FileText, Link2, Loader2, MessageSquare, MoreHorizontal, Pencil, Pin, SmilePlus, Square, Trash2 } from 'lucide-react-native'
+import { AlarmClock, AlertCircle, Bookmark, Check, CircleDot, CornerDownRight, FileText, KanbanSquare, Link2, Loader2, MessageSquare, MoreHorizontal, Pencil, Pin, SmilePlus, Square, Trash2 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { ChatMarkdown } from '../chat/ChatMarkdown'
 import { SidebarContextMenu, type SidebarMenuEntry } from '../layout/SidebarContextMenu'
@@ -82,6 +82,8 @@ export interface MessageRowProps {
   onOpenProjectPane?: (projectId: string, name: string) => void
   /** Move the read line back to just before this message. */
   onMarkUnread?: (message: ChatMessage) => void
+  /** Turn this message into a card on one of the channel's boards. */
+  onMakeCard?: (message: ChatMessage) => void
   /** Briefly emphasized after opening a link to it. */
   highlighted?: boolean
 }
@@ -351,6 +353,7 @@ function MessageRowImpl(props: MessageRowProps) {
     options.push({ label: saved ? 'Remove from saved' : 'Save for later', run: save })
     if (props.workspaceId) options.push({ label: 'Remind me in 1 hour', run: () => remind(REMIND_OPTIONS[1].at()) })
     if (props.canPin) options.push({ label: message.pinned ? 'Unpin' : 'Pin to conversation', run: pin })
+    if (props.onMakeCard && canAct) options.push({ label: 'Make a card', run: () => props.onMakeCard!(message) })
     if (mine && message.authorType === 'user') options.push({ label: 'Edit', run: () => { setDraft(message.text); setEditing(true) } })
     if (mine || canManage) options.push({ label: 'Delete', run: () => props.onDelete(message), destructive: true })
     if (Platform.OS === 'ios') {
@@ -381,6 +384,7 @@ function MessageRowImpl(props: MessageRowProps) {
         }
       }
       if (props.canPin) items.push({ label: message.pinned ? 'Unpin' : 'Pin to conversation', icon: icon(Pin, message.pinned ? 'text-amber-600' : undefined), onSelect: pin })
+      if (props.onMakeCard) items.push({ label: 'Make a card', icon: icon(KanbanSquare), onSelect: () => props.onMakeCard!(message) })
     }
     if (mine && message.authorType === 'user') items.push({ label: 'Edit message', icon: icon(Pencil), onSelect: startEditing })
     if (mine || canManage) {

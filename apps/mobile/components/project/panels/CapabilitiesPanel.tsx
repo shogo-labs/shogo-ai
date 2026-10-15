@@ -27,6 +27,12 @@ import {
   Package,
   GitBranch,
   Share2,
+  Users,
+  KanbanSquare,
+  Wrench,
+  Webhook,
+  Building2,
+  Bug,
 } from 'lucide-react-native'
 import {
   useNativePhoneWindow,
@@ -77,6 +83,12 @@ export interface CapabilitySettings {
   socialMediaEnabled: boolean
   socialInstagramEnabled: boolean
   socialTiktokEnabled: boolean
+  teamChatEnabled: boolean
+  boardsEnabled: boolean
+  boardAdminEnabled: boolean
+  workTriggersEnabled: boolean
+  companyOpsEnabled: boolean
+  problemsEnabled: boolean
 }
 
 interface CapabilityDef {
@@ -92,6 +104,10 @@ interface CapabilityDef {
   badgeLabel?: string
   warning?: string
   examples?: string[]
+  /** Grouped under a section header; ungrouped capabilities come first. */
+  section?: 'work'
+  /** Off unless turned on; shows an Opt-in badge. */
+  optIn?: boolean
 }
 
 type AgentMode = 'none' | 'canvas'
@@ -238,6 +254,75 @@ const CAPABILITIES: CapabilityDef[] = [
       '"Read @nasa\'s Instagram bio and recent posts"',
       '"Which of @duolingo\'s latest TikToks got the most likes?"',
     ],
+  },
+  {
+    key: 'teamChatEnabled',
+    section: 'work',
+    label: 'Team Chat',
+    description: 'Read and post in workspace channels and DMs',
+    detail: 'Lets the agent work alongside the team in channels: read and search messages, post and update status cards, DM people, edit channel docs, and look up who is who. Separate from Channels above, which connects outside apps like Telegram or email.',
+    disabledDescription: 'Cannot read or post in team chat',
+    icon: Users,
+    toolNames: ['team_chat_list', 'team_chat_read', 'team_chat_post', 'team_chat_update', 'team_chat_search', 'team_chat_dm', 'team_chat_add_member', 'team_chat_doc_read', 'team_chat_doc_update', 'team_directory', 'member_activity', 'fetch_chat_files'],
+  },
+  {
+    key: 'boardsEnabled',
+    section: 'work',
+    label: 'Boards',
+    description: 'Work cards on channel boards',
+    detail: 'Lets the agent create, update, move and comment on cards, read a card\'s full history, and report on boards. With this off the agent cannot be assigned cards or own a column.',
+    disabledDescription: 'Cannot work board cards',
+    icon: KanbanSquare,
+    toolNames: ['board_list', 'board_summary', 'board_health', 'work_item_list', 'work_item_create', 'work_item_get', 'work_item_update', 'work_item_move', 'work_item_comment', 'work_item_bulk_update', 'work_item_history', 'work_item_link'],
+    examples: [
+      '"Make a card for this and assign it to me"',
+      '"Move SUP-42 to Waiting on customer and summarize where it stands"',
+    ],
+  },
+  {
+    key: 'boardAdminEnabled',
+    section: 'work',
+    optIn: true,
+    label: 'Board Management',
+    description: 'Create boards and change their columns',
+    detail: 'Lets the agent add, rename, reorder and archive boards and edit their columns, and lets system_apply change the boards in shogo-system.yaml. On by default for the workspace agent.',
+    disabledDescription: 'Cannot change board structure',
+    icon: Wrench,
+    toolNames: ['board_create', 'board_update', 'board_archive', 'board_reorder', 'column_create', 'column_update', 'column_delete', 'work_template_list', 'work_template_add'],
+    examples: ['"Add a Renewals board to #sales"', '"Put a Legal review column between Proposal and Won"'],
+  },
+  {
+    key: 'workTriggersEnabled',
+    section: 'work',
+    label: 'Triggers',
+    description: 'Create and change event triggers',
+    detail: 'Lets the agent set up triggers that run an agent, call a webhook, or create a card when something happens in a connected app. With this off it can still list existing triggers.',
+    disabledDescription: 'Can only read triggers',
+    icon: Webhook,
+    toolNames: ['trigger_create', 'trigger_update', 'trigger_delete', 'trigger_test'],
+  },
+  {
+    key: 'companyOpsEnabled',
+    section: 'work',
+    optIn: true,
+    label: 'Company Operations',
+    description: 'Keep boards moving on heartbeat',
+    detail: 'On each heartbeat the agent checks board health, nudges owners of stale or late cards, and posts daily digests per channel and a weekly summary. Needs Heartbeat and Boards on. On by default for the workspace agent.',
+    disabledDescription: 'No board sweeps or digests',
+    icon: Building2,
+    toolNames: [],
+    badgeLabel: 'Skill',
+  },
+  {
+    key: 'problemsEnabled',
+    section: 'work',
+    optIn: true,
+    label: 'Problems',
+    description: 'Track errors as problem cards',
+    detail: 'Lets the agent report errors to a problem board, where repeats group into one card and reopen it as a regression, and read a problem\'s occurrences while investigating.',
+    disabledDescription: 'No problem tracking',
+    icon: Bug,
+    toolNames: ['problem_report', 'problem_occurrences'],
   },
 ]
 
@@ -822,14 +907,20 @@ export function CapabilitiesConfigPane({
 
         {advancedOpen && (
           <View className="gap-2 pt-1" style={comfortable ? { width: stackWidth } : undefined}>
-            {CAPABILITIES.map((cap) => {
+            {CAPABILITIES.map((cap, index) => {
               const enabled = capabilities[cap.key]
               const isExpanded = expandedCap === cap.key
               const Icon = cap.icon
+              const startsSection = cap.section === 'work' && CAPABILITIES[index - 1]?.section !== 'work'
 
               return (
+                <View key={cap.key}>
+                {startsSection && (
+                  <Text className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground pt-3 pb-1">
+                    Work
+                  </Text>
+                )}
                 <View
-                  key={cap.key}
                   className={cn(
                     'border rounded-lg overflow-hidden',
                     enabled ? 'border-border' : 'border-border/50',
@@ -852,9 +943,9 @@ export function CapabilitiesConfigPane({
                       <View className="flex-1 min-w-0">
                         <View className="flex-row items-center gap-2">
                           <Text className="text-sm font-medium text-foreground flex-1" numberOfLines={1}>{cap.label}</Text>
-                          {cap.badgeLabel === 'Beta' ? (
+                          {cap.badgeLabel === 'Beta' || cap.optIn ? (
                             <View className="px-1.5 py-0.5 rounded bg-amber-500/15">
-                              <Text className="text-[9px] font-semibold uppercase tracking-wide text-amber-600">Beta</Text>
+                              <Text className="text-[9px] font-semibold uppercase tracking-wide text-amber-600">{cap.optIn ? 'Opt-in' : 'Beta'}</Text>
                             </View>
                           ) : (
                             <Text className="text-[10px] text-muted-foreground">
@@ -1007,6 +1098,7 @@ export function CapabilitiesConfigPane({
                       )}
                     </View>
                   )}
+                </View>
                 </View>
               )
             })}

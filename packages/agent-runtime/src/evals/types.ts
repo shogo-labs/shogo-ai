@@ -47,6 +47,8 @@ export type EvalCategory =
   | 'teammate-coordination'
   | 'plan'
   | 'workspace-attachments'
+  | 'company-sim'
+  | 'company-ops'
 
 export type ValidationPhase = 'intention' | 'execution' | 'interaction'
 
@@ -97,6 +99,8 @@ export interface AgentEval {
    *  the runner sends the next response as a follow-up user message.
    *  Responses are consumed in order; if exhausted, subsequent ask_user calls get no response. */
   askUserResponses?: string[]
+  /** Company simulation seed: board, chat and system tools answer from one stateful world (see company-sim/). */
+  sim?: import('./company-sim/world').WorldSeed
 }
 
 export interface ConversationTurn {
@@ -282,6 +286,8 @@ export interface EvalResult {
    * frame. Captured by the runner so evals can assert on loop/iteration/empty
    * outcomes that are otherwise invisible (the runner used to drop these).
    */
+  /** Final state of the company simulation, when the eval ran one. */
+  sim?: import('./company-sim/world').WorldSnapshot
   loopDetected?: boolean
   hitMaxTurns?: boolean
   responseEmpty?: boolean

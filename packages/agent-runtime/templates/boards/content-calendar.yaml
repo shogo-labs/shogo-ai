@@ -1,0 +1,44 @@
+# GENERATED FILE — do not hand-edit. Source: packages/agent-runtime/src/work-templates.ts
+# Regenerate with: bun run packages/agent-runtime/src/work-templates-gen.ts
+#
+# A board template: add `board` to a team channel in shogo-system.yaml
+# (or call work_template_add), then run system_apply.
+id: content-calendar
+name: Content Calendar
+summary: Posts, articles and newsletters from idea to published, with a publish date.
+channel: marketing
+board:
+  name: Content
+  itemType: content
+  keyPrefix: CNT
+  description: Everything we publish. A card needs a publish date before it leaves Drafting.
+  columns:
+    - name: Ideas
+      category: backlog
+    - name: Drafting
+      category: active
+      wipLimit: 5
+    - name: Review
+      category: review
+      slaHours: 48
+    - name: Scheduled
+      category: waiting
+    - name: Published
+      category: done
+  fields:
+    - key: format
+      label: Format
+      type: select
+      options:
+        - blog
+        - newsletter
+        - social
+        - video
+        - case study
+    - key: publishDate
+      label: Publish date
+      type: date
+    - key: link
+      label: Link
+      type: url
+  requiresHumanReview: true

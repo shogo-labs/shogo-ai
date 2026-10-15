@@ -577,6 +577,12 @@ export default observer(function ProjectLayout() {
       socialMediaEnabled: projectSettings.socialMediaEnabled === true,
       socialInstagramEnabled: projectSettings.socialInstagramEnabled !== false,
       socialTiktokEnabled: projectSettings.socialTiktokEnabled !== false,
+      teamChatEnabled: projectSettings.teamChatEnabled !== false,
+      boardsEnabled: projectSettings.boardsEnabled !== false,
+      workTriggersEnabled: projectSettings.workTriggersEnabled !== false,
+      boardAdminEnabled: projectSettings.boardAdminEnabled === true,
+      companyOpsEnabled: projectSettings.companyOpsEnabled === true,
+      problemsEnabled: projectSettings.problemsEnabled === true,
     }),
     [projectSettings]
   );

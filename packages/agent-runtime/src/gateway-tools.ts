@@ -32,6 +32,9 @@ import { createWorkspaceAgentTools } from './workspace-agent-tools'
 import { createTriggerTools } from './trigger-tools'
 import { createMeetingTools } from './meeting-tools'
 import { createChannelTools } from './channel-tools'
+import { createBoardTools } from './board-tools'
+import { BOARD_ADMIN_TOOL_NAMES, BOARD_TOOL_NAMES, CHANNEL_TOOL_NAMES, PROBLEM_TOOL_NAMES } from './work-tool-names'
+import { resolveRuntimeCapabilities } from './capability-status-prompt'
 import { isWorkspaceRuntimeMode, resolveRuntimeIdentity, workspaceAttachedProjectIds } from './workspace-runtime-mode'
 import { isSearchEnabled } from './search-flag'
 import { isInQuietHours } from './quiet-hours'
@@ -8150,7 +8153,10 @@ export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTo
     tools.push(...createTriggerTools(ctx))
     // Meetings are private to the personal workspace; the API rejects team workspaces.
     if (ctx.config.capabilityProfile === 'personal') tools.push(...createMeetingTools(ctx))
-    else tools.push(...createChannelTools(ctx))
+    else {
+      tools.push(...createChannelTools(ctx))
+      tools.push(...createBoardTools(ctx))
+    }
   }
 
   if (process.env.WORKSPACE_RUNTIME === 'true') {
@@ -8665,6 +8671,18 @@ export const TOOL_GROUP_MAP: Record<string, string[]> = {
   audio: ['transcribe_audio'],
 }
 
+/**
+ * Tools behind the work capabilities. Kept out of `TOOL_GROUP_MAP` so a
+ * skill's declared tool list cannot pull them in by group name.
+ */
+export const WORK_TOOL_GROUPS = {
+  team_chat: [...CHANNEL_TOOL_NAMES],
+  boards: [...BOARD_TOOL_NAMES],
+  board_admin: [...BOARD_ADMIN_TOOL_NAMES],
+  triggers: ['trigger_create', 'trigger_update', 'trigger_delete', 'trigger_test'],
+  problems: [...PROBLEM_TOOL_NAMES],
+} as const
+
 export const ALL_TOOL_NAMES = [
   'exec',
   'exec_wait',
@@ -8754,6 +8772,12 @@ export function filterDisabledCapabilityTools(tools: AgentTool[], config: import
   if (config.quickActionsEnabled === false) disabled.add('quick_action')
   if (config.channelsEnabled === false) for (const n of TOOL_GROUP_MAP.messaging) disabled.add(n)
   if (config.integrationsEnabled === false) for (const n of TOOL_GROUP_MAP.integrations) disabled.add(n)
+  const work = resolveRuntimeCapabilities(config as unknown as Record<string, unknown>)
+  if (!work.teamChatEnabled) for (const n of WORK_TOOL_GROUPS.team_chat) disabled.add(n)
+  if (!work.boardsEnabled) for (const n of [...WORK_TOOL_GROUPS.boards, ...WORK_TOOL_GROUPS.board_admin, ...WORK_TOOL_GROUPS.problems]) disabled.add(n)
+  if (!work.boardAdminEnabled) for (const n of WORK_TOOL_GROUPS.board_admin) disabled.add(n)
+  if (!work.workTriggersEnabled) for (const n of WORK_TOOL_GROUPS.triggers) disabled.add(n)
+  if (!work.problemsEnabled) for (const n of WORK_TOOL_GROUPS.problems) disabled.add(n)
   // BETA: worktree awareness tool only exists when per-chat worktrees are on (off by default).
   if (config.gitWorktreesEnabled !== true) disabled.add('worktree_list')
   // Social lookups are opt-in, and a platform that is off must not be callable.
@@ -8761,11 +8785,12 @@ export function filterDisabledCapabilityTools(tools: AgentTool[], config: import
 
   const memoryOff = config.memoryEnabled === false
   if (disabled.size === 0 && !memoryOff) return tools
-  return tools.filter((t) => {
+  const kept = tools.filter((t) => {
     if (disabled.has(t.name)) return false
     if (memoryOff && t.name.startsWith('memory_')) return false
     return true
   })
+  return kept.length === tools.length ? tools : kept
 }
 
 /**

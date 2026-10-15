@@ -1020,7 +1020,8 @@ export function agentChannelRoutes(routeConfig: AgentChannelRoutesConfig): Hono 
     if (auth instanceof Response) return auth
     const body = await readJson(c)
     try {
-      const result = await upsertTeamChannel(auth.workspaceId, { ...body, name: c.req.param('name') }, systemKey(body.system))
+      const onBehalfOfUserId = typeof body.onBehalfOfUserId === 'string' && body.onBehalfOfUserId.trim() ? body.onBehalfOfUserId.trim() : undefined
+      const result = await upsertTeamChannel(auth.workspaceId, { ...body, name: c.req.param('name'), onBehalfOfUserId }, systemKey(body.system))
       return c.json(result, result.created ? 201 : 200)
     } catch (err) {
       if (err instanceof TeamChannelError) return c.json({ error: { code: err.code, message: err.message } }, err.status)

@@ -1,0 +1,50 @@
+# GENERATED FILE — do not hand-edit. Source: packages/agent-runtime/src/work-templates.ts
+# Regenerate with: bun run packages/agent-runtime/src/work-templates-gen.ts
+#
+# A board template: add `board` to a team channel in shogo-system.yaml
+# (or call work_template_add), then run system_apply.
+id: finance-approvals
+name: Finance Approvals
+summary: Spend and invoice approvals with an amount, a cost center and a human sign-off.
+channel: finance
+board:
+  name: Approvals
+  itemType: approval
+  keyPrefix: APR
+  description: Purchase requests and vendor invoices. A person approves; agents check the budget and paperwork first.
+  columns:
+    - name: Requested
+      category: backlog
+      slaHours: 24
+    - name: Checking
+      category: active
+    - name: Needs approval
+      category: review
+      slaHours: 48
+    - name: Approved
+      category: done
+    - name: Rejected
+      category: dismissed
+  fields:
+    - key: amount
+      label: Amount
+      type: money
+      required: true
+    - key: vendor
+      label: Vendor
+      type: text
+    - key: costCenter
+      label: Cost center
+      type: select
+      options:
+        - engineering
+        - sales
+        - marketing
+        - operations
+        - people
+        - g&a
+    - key: receipt
+      label: Receipt or invoice
+      type: url
+  requiresHumanReview: true
+  postToChannel: done_only

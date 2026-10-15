@@ -770,6 +770,11 @@ const FEATURE_FLAG_DEFINITIONS: Array<{
     label: 'Mobile Workspace Agent Shell',
     hint: 'Independent narrow-web and native shell rollout. Requires the workspace runtime and can be rolled back without changing the wide-screen shell.',
   },
+  {
+    key: 'workBoards',
+    label: 'Work Boards',
+    hint: 'Kanban boards in channels, card threads and history, and My work. Off hides the board tabs and My work; agents keep their board tools.',
+  },
 ]
 
 function FeatureFlagsCard() {
@@ -780,6 +785,7 @@ function FeatureFlagsCard() {
     personalShell: null,
     agentShell: null,
     mobileAgentShell: null,
+    workBoards: null,
   })
   const [effective, setEffective] = useState<Record<keyof FeatureFlagOverrides, boolean | null>>({
     marketplace: null,
@@ -788,6 +794,7 @@ function FeatureFlagsCard() {
     personalShell: null,
     agentShell: null,
     mobileAgentShell: null,
+    workBoards: null,
   })
   const [loading, setLoading] = useState(true)
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
@@ -808,6 +815,7 @@ function FeatureFlagsCard() {
           personalShell: cfg.features?.personalShell ?? null,
           agentShell: cfg.features?.agentShell ?? null,
           mobileAgentShell: cfg.features?.mobileAgentShell ?? null,
+          workBoards: cfg.features?.workBoards ?? null,
         })
       })
       .catch((err) => console.error('[FeatureFlags] load failed:', err))
@@ -831,6 +839,7 @@ function FeatureFlagsCard() {
           personalShell: cfg.features?.personalShell ?? null,
           agentShell: cfg.features?.agentShell ?? null,
           mobileAgentShell: cfg.features?.mobileAgentShell ?? null,
+          workBoards: cfg.features?.workBoards ?? null,
         })
       } catch {}
       setSaveStatus('saved')

@@ -336,5 +336,6 @@ export {
   Icon as XCircle,
   Icon as Y,
   Icon as Zap,
+  Icon as KanbanSquare,
 }
 export default Icon

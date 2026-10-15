@@ -9,6 +9,9 @@
  * replaces the thread pane. `?doc=1` shows the channel doc: beside the
  * timeline on wide screens (replacing the other panes), in its place on narrow.
  * `?files=1` lists the conversation's files in the same pane.
+ * `?board=<id>` shows one of the channel's boards in place of the timeline;
+ * `?card=<id>` opens a card beside it on wide screens (taking over from the
+ * other panes) and in its place on narrow ones.
  */
 import { useCallback, useEffect, useState } from 'react'
 import { ActivityIndicator, AppState, KeyboardAvoidingView, Platform, Pressable, Text, View, useWindowDimensions } from 'react-native'
@@ -36,6 +39,12 @@ import { FilesPane } from '../../../components/team-chat/FilesPane'
 import { SidePaneResizeHandle, useSidePaneWidth } from '../../../components/team-chat/SidePaneResizer'
 import { DocPane } from '../../../components/team-chat/DocPane'
 import { ChannelTabs, channelSupportsDoc } from '../../../components/team-chat/ChannelTabs'
+import { BoardKanban } from '../../../components/boards/BoardKanban'
+import { CardPane } from '../../../components/boards/CardPane'
+import { NewBoardSheet } from '../../../components/boards/NewBoardSheet'
+import { useChannelBoards } from '../../../hooks/useWorkBoards'
+import { usePlatformConfig } from '../../../lib/platform-config'
+import type { WorkItem } from '../../../lib/work-boards-api'
 import { usePhoneChromeOverlay } from '../../../components/layout/PhoneChromeOverlay'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 
@@ -45,6 +54,7 @@ const THREAD_PANE_DEFAULT = 420
 const THREAD_PANE_MIN = 320
 const PROJECT_PANE_MIN = 420
 const DOC_PANE_MIN = 380
+const CARD_PANE_DEFAULT = 460
 /** Room left for the main timeline so a pane can never cover the conversation. */
 const MAIN_TIMELINE_MIN = 480
 
@@ -53,13 +63,24 @@ function first(value: string | string[] | undefined): string | undefined {
 }
 
 export default function ConversationScreen() {
-  const params = useLocalSearchParams<{ conversationId: string; thread?: string; msg?: string; project?: string; files?: string; doc?: string }>()
+  const params = useLocalSearchParams<{
+    conversationId: string
+    thread?: string
+    msg?: string
+    project?: string
+    files?: string
+    doc?: string
+    board?: string
+    card?: string
+  }>()
   const conversationId = first(params.conversationId) ?? null
   const threadRootId = first(params.thread) ?? null
   const linkedMessageId = first(params.msg) ?? null
   const projectPaneId = first(params.project) ?? null
   const filesOpen = first(params.files) === '1'
   const docParam = first(params.doc) === '1'
+  const boardParam = first(params.board) ?? null
+  const cardId = first(params.card) ?? null
   const router = useRouter()
   const workspace = useActiveWorkspace()
   const me = useMyUserId()
@@ -69,6 +90,8 @@ export default function ConversationScreen() {
   const [focused, setFocused] = useState(true)
   const [foreground, setForeground] = useState(AppState.currentState === 'active')
   const [headerHeight, setHeaderHeight] = useState(0)
+  const [tabsHeight, setTabsHeight] = useState(0)
+  const [addingBoard, setAddingBoard] = useState(false)
   const chrome = usePhoneChromeOverlay()
   const insets = useSafeAreaInsets()
 
@@ -88,6 +111,15 @@ export default function ConversationScreen() {
     minWidth: PROJECT_PANE_MIN,
     maxWidth: maxPaneWidth,
   })
+  const cardPane = useSidePaneWidth({
+    storageKey: 'shogo.teamChat.cardPaneWidth',
+    defaultWidth: CARD_PANE_DEFAULT,
+    minWidth: THREAD_PANE_MIN,
+    maxWidth: maxPaneWidth,
+  })
+  const { features } = usePlatformConfig()
+  const boardsOn = !!features.workBoards
+  const channelBoards = useChannelBoards(workspaceId, conversationId, boardsOn && !!conversation && channelSupportsDoc(conversation))
   const docPane = useSidePaneWidth({
     storageKey: 'shogo.teamChat.docPaneWidth',
     defaultWidth: Math.max(DOC_PANE_MIN, Math.round(width * 0.45)),
@@ -175,10 +207,19 @@ export default function ConversationScreen() {
     [router],
   )
   const openDoc = useCallback(
-    () => router.setParams({ doc: '1', files: undefined, thread: undefined, project: undefined } as any),
+    () => router.setParams({ doc: '1', board: undefined, files: undefined, thread: undefined, project: undefined, card: undefined } as any),
     [router],
   )
-  const closeDoc = useCallback(() => router.setParams({ doc: undefined } as any), [router])
+  const closeDoc = useCallback(() => router.setParams({ doc: undefined, board: undefined } as any), [router])
+  const openBoard = useCallback(
+    (boardId: string) => router.setParams({ board: boardId, doc: undefined, files: undefined } as any),
+    [router],
+  )
+  const openCard = useCallback(
+    (item: Pick<WorkItem, 'id'>) => router.setParams({ card: item.id, thread: undefined, project: undefined, files: undefined, doc: undefined } as any),
+    [router],
+  )
+  const closeCard = useCallback(() => router.setParams({ card: undefined } as any), [router])
   const openSession = useCallback(
     (message: ChatMessage) => {
       // The workspace agent has no project; its session opens in the workspace agent chat.
@@ -232,14 +273,16 @@ export default function ConversationScreen() {
 
   const visible = focused && foreground
   const supportsDoc = channelSupportsDoc(conversation)
-  const docOpen = supportsDoc && docParam
+  const boardId = supportsDoc && boardsOn ? boardParam : null
+  const docOpen = supportsDoc && docParam && !boardId
   const showDocPane = sidePane && docOpen
   const showDocFull = !sidePane && docOpen
   const showFilesPane = sidePane && filesOpen
   const showFilesFull = !sidePane && filesOpen
-  const showProjectPane = sidePane && !!projectPaneId && !showDocPane && !showFilesPane
-  const showThreadPane = !!threadRootId && !showProjectPane && !showDocPane && !showDocFull && !showFilesPane && !showFilesFull
-  const showMain = !showDocFull && !showFilesFull && (sidePane || !threadRootId)
+  const showCardPane = !!cardId && !showDocFull && !showFilesFull
+  const showProjectPane = sidePane && !!projectPaneId && !showDocPane && !showFilesPane && !showCardPane
+  const showThreadPane = !!threadRootId && !showCardPane && !showProjectPane && !showDocPane && !showDocFull && !showFilesPane && !showFilesFull
+  const showMain = !showDocFull && !showFilesFull && (sidePane || (!threadRootId && !cardId))
   const projectPaneName =
     (projectPaneId &&
       (conversation.members.find((m) => m.type === 'agent' && m.projectId === projectPaneId)?.name ??
@@ -267,9 +310,30 @@ export default function ConversationScreen() {
       onLayout={floating ? (e) => setHeaderHeight(Math.round(e.nativeEvent.layout.height)) : undefined}
     />
   )
-  const tabs = supportsDoc && !floating ? (
-    <ChannelTabs conversation={conversation} docOpen={docOpen} onOpenDoc={openDoc} onShowMessages={closeDoc} />
+  const boards = channelBoards.boards
+  const tabsBar = supportsDoc && (!floating || boards.length > 0 || !!boardId) ? (
+    <ChannelTabs
+      conversation={conversation}
+      docOpen={docOpen}
+      onOpenDoc={openDoc}
+      onShowMessages={closeDoc}
+      boards={boards}
+      activeBoardId={boardId}
+      onOpenBoard={openBoard}
+      onAddBoard={boardsOn && conversation.canPost && !conversation.archivedAt ? () => setAddingBoard(true) : undefined}
+    />
   ) : null
+  // A floating phone header draws over the content, so the tabs float with it.
+  const tabs = tabsBar && floating ? (
+    <View
+      className="absolute left-0 right-0 z-20 bg-background"
+      style={{ top: headerHeight }}
+      onLayout={(e) => setTabsHeight(Math.round(e.nativeEvent.layout.height))}
+    >
+      {tabsBar}
+    </View>
+  ) : tabsBar
+  const topInset = headerHeight + (tabsBar && floating ? tabsHeight : 0)
 
   const huddleLabel =
     conversation.kind === 'dm' || conversation.kind === 'group_dm'
@@ -290,7 +354,7 @@ export default function ConversationScreen() {
     </>
   )
   const huddleBanner = floating ? (
-    <View pointerEvents="box-none" className="absolute left-0 right-0 z-20" style={{ top: headerHeight }}>
+    <View pointerEvents="box-none" className="absolute left-0 right-0 z-20" style={{ top: topInset }}>
       {banners}
     </View>
   ) : (
@@ -305,21 +369,35 @@ export default function ConversationScreen() {
             {header}
             {tabs}
             {huddleBanner}
-            <TimelinePane
-              key={conversation.id}
-              workspaceId={workspaceId}
-              conversation={conversation}
-              me={me}
-              mentionables={mentionables}
-              visible={visible && !((threadRootId || filesOpen || docOpen) && !sidePane)}
-              highlightMessageId={threadRootId ? null : linkedMessageId}
-              onOpenThread={openThread}
-              onOpenSession={openSession}
-              onOpenProjectPane={openProjectPaneCb}
-              onJoin={onJoin}
-              floating={floating}
-              topInset={headerHeight}
-            />
+            {boardId ? (
+              <View className="flex-1" style={floating ? { paddingTop: topInset } : undefined}>
+                <BoardKanban
+                  key={boardId}
+                  boardId={boardId}
+                  workspaceId={workspaceId}
+                  mentionables={mentionables}
+                  selectedItemId={cardId}
+                  onOpenCard={openCard}
+                />
+              </View>
+            ) : (
+              <TimelinePane
+                key={conversation.id}
+                workspaceId={workspaceId}
+                conversation={conversation}
+                me={me}
+                mentionables={mentionables}
+                visible={visible && !((threadRootId || cardId || filesOpen || docOpen) && !sidePane)}
+                highlightMessageId={threadRootId ? null : linkedMessageId}
+                onOpenThread={openThread}
+                onOpenSession={openSession}
+                onOpenProjectPane={openProjectPaneCb}
+                onJoin={onJoin}
+                onOpenCard={boardsOn ? openCard : undefined}
+                floating={floating}
+                topInset={topInset}
+              />
+            )}
           </View>
         )}
         {showThreadPane && (
@@ -347,8 +425,36 @@ export default function ConversationScreen() {
               visible={visible}
               highlightMessageId={linkedMessageId}
               onOpenSession={openSession}
+              onOpenCard={boardsOn ? openCard : undefined}
               onClose={closeThread}
               floating={floating}
+            />
+          </View>
+        )}
+        {showCardPane && cardId && (
+          <View
+            className={sidePane ? 'relative shrink-0 border-l border-border' : 'flex-1'}
+            style={sidePane ? { width: cardPane.width } : floating ? { paddingTop: insets.top, paddingBottom: chrome.bottom } : undefined}
+          >
+            {sidePane && (
+              <SidePaneResizeHandle
+                width={cardPane.width}
+                minWidth={THREAD_PANE_MIN}
+                maxWidth={maxPaneWidth}
+                onResize={cardPane.setWidth}
+                onResizeEnd={cardPane.commit}
+                onReset={cardPane.reset}
+              />
+            )}
+            <CardPane
+              key={cardId}
+              itemId={cardId}
+              workspaceId={workspaceId}
+              me={me}
+              mentionables={mentionables}
+              conversation={conversation}
+              visible={visible}
+              onClose={closeCard}
             />
           </View>
         )}
@@ -415,6 +521,18 @@ export default function ConversationScreen() {
           </View>
         )}
       </View>
+      {addingBoard ? (
+        <NewBoardSheet
+          workspaceId={workspaceId}
+          conversationId={conversation.id}
+          onClose={() => setAddingBoard(false)}
+          onCreated={(board) => {
+            setAddingBoard(false)
+            channelBoards.setBoards((list) => (list.some((b) => b.id === board.id) ? list : [...list, board]))
+            openBoard(board.id)
+          }}
+        />
+      ) : null}
     </KeyboardAvoidingView>
   )
 }

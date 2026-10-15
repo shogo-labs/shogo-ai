@@ -48,6 +48,17 @@ export function activityTarget(blocks: Record<string, unknown> | null | undefine
     return { type: 'route', pathname: '/(app)/agent', params: { chatSessionId } }
   }
 
+  if (kind.startsWith('work.')) {
+    const card = text(blocks.workItemId)
+    if (!card) return null
+    const conversationId = text(blocks.conversationId)
+    if (!conversationId) return { type: 'route', pathname: '/(app)/work', params: { card } }
+    const params: Record<string, string> = { conversationId, card }
+    const board = text(blocks.boardId)
+    if (board) params.board = board
+    return { type: 'route', pathname: '/(app)/c/[conversationId]', params }
+  }
+
   if (kind === 'goal.event') {
     const id = text(blocks.goalId)
     return id ? { type: 'route', pathname: '/(app)/goals/[id]', params: { id } } : null

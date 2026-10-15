@@ -28,6 +28,7 @@ import { workspaceChatRoutes } from './routes/workspace-chat'
 import { workspaceAgentRoutes, sessionAuthorize } from './routes/workspace-agent'
 import { workspaceMeetingRoutes, sharedMeetingRoutes } from './routes/workspace-meetings'
 import { conversationRoutes } from './routes/conversations'
+import { workBoardRoutes } from './routes/work-boards'
 import { AGENT_REPLY_TIMEOUT_MS, configureConversationAgentDispatcher, settleOrphanedAgentReplies } from './services/conversation-agent-dispatcher'
 import { registerBuiltInChatProviders } from './services/chat-providers'
 import { chatProviderRoutes } from './routes/chat-providers'
@@ -968,6 +969,8 @@ app.get('/api/config', async (c) => {
     // have been explicitly enabled; local design work stays opt-in by default.
     agentShell: localMode,
     mobileAgentShell: localMode,
+    // Boards are dogfooded on staging first: WORK_BOARDS_ENABLED or the admin flag turns them on.
+    workBoards: localMode || process.env.WORK_BOARDS_ENABLED === 'true',
   }
 
   // Super-admin overrides from PlatformSetting (absence = use default).
@@ -985,6 +988,7 @@ app.get('/api/config', async (c) => {
             'feature.personal_shell',
             'feature.agent_shell',
             'feature.mobile_agent_shell',
+            'feature.work_boards',
           ],
         },
       },
@@ -1003,6 +1007,7 @@ app.get('/api/config', async (c) => {
       if (row.key === 'feature.personal_shell') overrides.personalShell = bool
       if (row.key === 'feature.agent_shell') overrides.agentShell = bool
       if (row.key === 'feature.mobile_agent_shell') overrides.mobileAgentShell = bool
+      if (row.key === 'feature.work_boards') overrides.workBoards = bool
     }
   } catch (err) {
     console.error('[config] Failed to load feature flag overrides:', err)
@@ -1595,6 +1600,7 @@ configureConversationAgentDispatcher({ runtimeManager: getRuntimeManager() })
 void settleOrphanedAgentReplies(AGENT_REPLY_TIMEOUT_MS + 60_000).catch((err) => console.warn('[Channels] could not settle interrupted replies:', err?.message ?? err))
 registerBuiltInChatProviders()
 app.route('/api', conversationRoutes({ resolveUserId: getAuthUserId }))
+app.route('/api', workBoardRoutes({ resolveUserId: getAuthUserId }))
 app.route('/api', chatProviderRoutes({ resolveUserId: getAuthUserId }))
 app.route('/api', createAgentTaskRoutes({ runtimeManager: getRuntimeManager() }))
 // Resume queued agent tasks after API restarts and keep dueAt-backed work
@@ -6739,6 +6745,7 @@ const FEATURE_FLAG_KEYS = {
   personalShell: 'feature.personal_shell',
   agentShell: 'feature.agent_shell',
   mobileAgentShell: 'feature.mobile_agent_shell',
+  workBoards: 'feature.work_boards',
 } as const
 
 type FeatureFlagName = keyof typeof FEATURE_FLAG_KEYS
@@ -6757,6 +6764,7 @@ app.get('/api/admin/settings/features', async (c) => {
       personalShell: null,
       agentShell: null,
       mobileAgentShell: null,
+      workBoards: null,
     }
     for (const row of rows) {
       const bool = row.value === 'true'
@@ -6803,6 +6811,7 @@ app.put('/api/admin/settings/features', async (c) => {
       personalShell: null,
       agentShell: null,
       mobileAgentShell: null,
+      workBoards: null,
     }
     for (const row of rows) {
       const bool = row.value === 'true'
