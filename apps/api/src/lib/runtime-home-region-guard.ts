@@ -22,6 +22,7 @@
  * lookup fails.
  */
 
+import type { Context } from 'hono'
 import { RAW_REGION_ID, REGION_PEERS } from './region'
 
 export class RuntimeNotInHomeRegionError extends Error {
@@ -38,6 +39,25 @@ export class RuntimeNotInHomeRegionError extends Error {
     )
     this.name = 'RuntimeNotInHomeRegionError'
   }
+}
+
+/**
+ * 409 for a request that reached a region which may not run its workspace's
+ * runtime. Routes that resolve a runtime are proxied to the home region
+ * first, so this only answers callers nothing pinned.
+ */
+export function runtimeNotInHomeRegionResponse(c: Context, err: RuntimeNotInHomeRegionError): Response {
+  return c.json(
+    {
+      error: {
+        code: err.code,
+        message: `This workspace is served from ${err.homeRegion}; retry against that region.`,
+        homeRegion: err.homeRegion,
+        region: err.region,
+      },
+    },
+    409,
+  )
 }
 
 export interface RuntimeHomeRegionGuardDeps {

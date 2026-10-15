@@ -5,9 +5,11 @@
  */
 
 import { afterEach, describe, expect, test } from 'bun:test'
+import { Hono } from 'hono'
 import {
   assertRuntimeInHomeRegion,
   RuntimeNotInHomeRegionError,
+  runtimeNotInHomeRegionResponse,
 } from '../runtime-home-region-guard'
 
 const homes: Record<string, string | null> = {
@@ -77,5 +79,27 @@ describe('assertRuntimeInHomeRegion', () => {
     process.env.RUNTIME_HOME_REGION_GUARD = 'off'
     await expect(assertRuntimeInHomeRegion('ws_us', EU)).resolves.toBeUndefined()
     expect(lookups).toEqual([])
+  })
+})
+
+describe('runtimeNotInHomeRegionResponse', () => {
+  test('answers a refused runtime with a 409 naming the home region', async () => {
+    const app = new Hono()
+    app.get('/x', () => {
+      throw new RuntimeNotInHomeRegionError('ws_eu', 'eu-frankfurt-1', 'us-ashburn-1')
+    })
+    app.onError((err, c) =>
+      err instanceof RuntimeNotInHomeRegionError ? runtimeNotInHomeRegionResponse(c, err) : c.text('500', 500),
+    )
+    const res = await app.request('/x')
+    expect(res.status).toBe(409)
+    expect(await res.json()).toEqual({
+      error: {
+        code: 'runtime_not_in_home_region',
+        message: 'This workspace is served from eu-frankfurt-1; retry against that region.',
+        homeRegion: 'eu-frankfurt-1',
+        region: 'us-ashburn-1',
+      },
+    })
   })
 })

@@ -48,6 +48,7 @@ import {
   type AttachMode,
 } from '../services/workspace-session.service'
 import { resolveWorkspaceRuntimeUrl, WorkspaceRuntimeNotEnabledError } from '../lib/resolve-workspace-runtime-url'
+import { pinWorkspaceRoutesToHomeRegion, WORKSPACE_RUNTIME_ROUTE_PATTERNS } from '../lib/chat-region-pin'
 import { isMetalEnabled } from '../lib/metal-eligibility'
 import { readWorkspaceSessionRuntimeArgs, type WorkspaceSessionRuntimeArgs } from '../lib/workspace-runtime-args'
 import { deriveWorkspaceRuntimeToken } from '../lib/workspace-runtime-token'
@@ -150,6 +151,12 @@ const chatTracer = trace.getTracer('shogo-api-chat')
 export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
   const router = new Hono()
   const { resolveUserId, runtimeManager } = config
+
+  // The workspace runtime only exists in the workspace's home region; serve
+  // these routes there instead of tripping the home-region guard here.
+  for (const path of WORKSPACE_RUNTIME_ROUTE_PATTERNS) {
+    router.use(path, pinWorkspaceRoutesToHomeRegion())
+  }
 
   /**
    * Attachment rows affect the runtime's allowed roots, which are parsed at

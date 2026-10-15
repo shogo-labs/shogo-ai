@@ -24,6 +24,7 @@ import { runtimeRoutes } from './routes/runtime'
 import { filesRoutes } from './routes/files'
 import { projectChatRoutes, trackUsageFromStream } from './routes/project-chat'
 import { pinChatToHomeRegion, pinProjectRoutesToHomeRegion } from './lib/chat-region-pin'
+import { RuntimeNotInHomeRegionError, runtimeNotInHomeRegionResponse } from './lib/runtime-home-region-guard'
 import { workspaceChatRoutes } from './routes/workspace-chat'
 import { workspaceAgentRoutes, sessionAuthorize } from './routes/workspace-agent'
 import { workspaceMeetingRoutes, sharedMeetingRoutes } from './routes/workspace-meetings'
@@ -646,6 +647,10 @@ app.use('*', bodyLimit({ maxSize: 500 * 1024 * 1024 }))
 app.onError((err, c) => {
   if (err instanceof HTTPException) {
     return err.getResponse()
+  }
+  if (err instanceof RuntimeNotInHomeRegionError) {
+    console.warn(`[API] ${c.req.method} ${c.req.path}: ${err.message}`)
+    return runtimeNotInHomeRegionResponse(c, err)
   }
   console.error(`[API] Unhandled route error on ${c.req.method} ${c.req.path}:`, err.message)
   // Don't expose internal error details in production

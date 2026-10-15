@@ -59,7 +59,7 @@ mock.module('../region-peer-proxy', () => ({
   isProxiedRequest: (c: any) => c.req.header('x-shogo-home-region-proxy') === '1',
 }))
 
-const { pinChatToHomeRegion } = await import('../chat-region-pin')
+const { pinChatToHomeRegion, pinWorkspaceToHomeRegion } = await import('../chat-region-pin')
 
 // --- context double --------------------------------------------------------
 function makeCtx(opts: { method?: string; path?: string; headers?: Record<string, string> } = {}) {
@@ -171,5 +171,30 @@ describe('pinChatToHomeRegion', () => {
     await pinChatToHomeRegion(makeCtx(), 'p_legacy', undefined, { onLocalHome })
     await pinChatToHomeRegion(makeCtx(), 'p_missing', undefined, { onLocalHome })
     expect(local).toBe(1)
+  })
+})
+
+describe('pinWorkspaceToHomeRegion', () => {
+  const wsCtx = () => makeCtx({ path: '/api/workspaces/ws_us/chat/s1/turn' })
+
+  test('proxies a workspace homed in a peer region', async () => {
+    const res = await pinWorkspaceToHomeRegion(wsCtx(), 'ws_us')
+    expect(proxyCalls).toEqual([{ region: 'us-ashburn-1' }])
+    expect(res).toBe(proxyResponse)
+  })
+
+  test('handles locally for the home region, legacy null rows and unknown workspaces', async () => {
+    expect(await pinWorkspaceToHomeRegion(wsCtx(), 'ws_eu')).toBeNull()
+    expect(await pinWorkspaceToHomeRegion(wsCtx(), 'ws_legacy')).toBeNull()
+    expect(await pinWorkspaceToHomeRegion(wsCtx(), 'ws_missing')).toBeNull()
+    expect(proxyCalls).toHaveLength(0)
+  })
+
+  test('does not re-proxy, and fails closed when the home region has no peer', async () => {
+    expect(await pinWorkspaceToHomeRegion(makeCtx({ headers: { 'x-shogo-home-region-proxy': '1' } }), 'ws_us')).toBeNull()
+    const res = (await pinWorkspaceToHomeRegion(wsCtx(), 'ws_nopeer')) as any
+    expect(proxyCalls).toHaveLength(0)
+    expect(res.status).toBe(503)
+    expect(res.__json?.error?.code).toBe('home_region_unavailable')
   })
 })

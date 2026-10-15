@@ -243,7 +243,7 @@ const RESOLVER_FILES: Record<string, string> = {
   'routes/publish.ts': 'route-pin: publish routes under /api/projects/:projectId/ (#1237 proxies bodies to home)',
   'routes/runtime.ts': 'route-pin: runtime routes under /api/projects/:projectId/runtime',
   'routes/slack-agent.ts': 'guard: background resolve via resolveWorkspaceRuntimeUrl',
-  'routes/workspace-chat.ts': 'guard: workspace chat resolves via resolveWorkspaceRuntimeUrl',
+  'routes/workspace-chat.ts': 'route-pin: pinWorkspaceRoutesToHomeRegion on every route (asserted below)',
   'services/agent-call.service.ts': 'guard: agent-to-agent calls resolve via the resolver layer',
   'services/github-workspace.ts': 'guard: resolves via the resolver layer',
 }
@@ -292,7 +292,7 @@ const EDGE_REGION = 'edge-1'
 
 const homeSeen: string[] = []
 const homeApp = new Hono()
-homeApp.all('/api/projects/:projectId/*', (c) => {
+homeApp.all('/api/*', (c) => {
   homeSeen.push(`${c.req.method} ${new URL(c.req.url).pathname}`)
   return c.text('SERVED_BY_HOME')
 })
@@ -317,7 +317,8 @@ mock.module('../lib/prisma', () => ({
   },
 }))
 
-const { pinProjectRoutesToHomeRegion } = await import('../lib/chat-region-pin')
+const { pinProjectRoutesToHomeRegion, pinWorkspaceRoutesToHomeRegion, WORKSPACE_RUNTIME_ROUTE_PATTERNS } =
+  await import('../lib/chat-region-pin')
 const { isProjectReservedTopLevelPath } = await import('../middleware/auth')
 
 /** Every `/api/projects/:projectId/...` registration in server.ts (any handler shape). */
@@ -334,6 +335,13 @@ edgeApp.use(
   '/api/projects/:projectId/*',
   pinProjectRoutesToHomeRegion({ skip: isProjectReservedTopLevelPath }),
 )
+const workspaceEdge = new Hono()
+for (const path of WORKSPACE_RUNTIME_ROUTE_PATTERNS) workspaceEdge.use(path, pinWorkspaceRoutesToHomeRegion())
+workspaceEdge.all('/workspaces/:workspaceId/*', (c) => {
+  edgeReached.push(`${c.req.method} ${new URL(c.req.url).pathname}`)
+  return c.text('SERVED_BY_EDGE')
+})
+edgeApp.route('/api', workspaceEdge)
 // Stand-in for every real handler: reaching it means a runtime would have been resolved here.
 edgeApp.all('/api/projects/:projectId/*', (c) => {
   edgeReached.push(`${c.req.method} ${new URL(c.req.url).pathname}`)
@@ -349,9 +357,39 @@ afterAll(() => {
 function concretePath(pattern: string): string {
   return pattern
     .replace(':projectId', 'p_home')
+    .replace(':workspaceId', 'ws_home')
     .replace(/:(\w+)/g, 'x1')
     .replace(/\*/g, 'a/b')
 }
+
+describe('every workspace-chat.ts route is served by the home region', () => {
+  const workspaceChatSrc = readFileSync(join(SRC, 'routes/workspace-chat.ts'), 'utf8')
+  const routes: Route[] = []
+  for (const m of stripComments(workspaceChatSrc).matchAll(
+    /router\.(get|post|put|patch|delete|all)\(\s*(['"`])(\/workspaces\/:workspaceId\/[^'"`]*)\2/g,
+  )) {
+    routes.push({ method: m[1], path: m[3] })
+  }
+
+  test('the sweep discovered the workspace-chat routes', () => {
+    expect(routes.length).toBeGreaterThan(15)
+  })
+
+  for (const r of routes) {
+    const method = r.method === 'all' ? 'GET' : r.method.toUpperCase()
+    const path = `/api${concretePath(r.path)}`
+    test(`${method} ${r.path}`, async () => {
+      homeSeen.length = 0
+      edgeReached.length = 0
+      const init: RequestInit = { method }
+      if (method !== 'GET') init.body = '{}'
+      const res = await fetch(`http://127.0.0.1:${edgeServer.port}${path}`, init)
+      expect(await res.text()).toBe('SERVED_BY_HOME')
+      expect(edgeReached).toEqual([])
+      expect(homeSeen).toEqual([`${method} ${path}`])
+    })
+  }
+})
 
 describe('every /api/projects/:projectId/* route in server.ts is served by the home region', () => {
   test('the sweep discovered the project routes', () => {
