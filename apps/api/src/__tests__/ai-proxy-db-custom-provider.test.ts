@@ -51,6 +51,9 @@ const OPUS5_UUID = '22222222-3333-4444-5555-666666666666'
 // shape as Opus 5/Sonnet 5 above: a new current-gen Anthropic model whose
 // apiModel supports adaptive thinking but whose id does not.
 const FABLE51_UUID = '33333333-4444-5555-6666-777777777777'
+// Claude Haiku 5.5, addressed by its DB UUID — same shape again (2026-10-15
+// staging: every turn 400'd on the legacy thinking block).
+const HAIKU55_UUID = '44444444-5555-6666-7777-888888888888'
 
 // ─── Mutable DB rows the registry loads through the mocked prisma ──────────
 let MODELS: any[] = []
@@ -241,6 +244,26 @@ function seed() {
       cachedInputPerMillion: 0.25,
       cacheWritePerMillion: 12.5,
       outputPerMillion: 50,
+    },
+    {
+      id: HAIKU55_UUID,
+      provider: 'anthropic',
+      providerId: null,
+      apiModel: 'claude-haiku-5-5',
+      displayName: 'Claude Haiku 5.5 (DB)',
+      shortDisplayName: 'Haiku 5.5',
+      tier: 'economy',
+      family: 'haiku',
+      generation: 'current',
+      maxOutputTokens: 128000,
+      enabled: true,
+      sortOrder: 6,
+      aliases: [],
+      capabilities: null,
+      inputPerMillion: 0.1,
+      cachedInputPerMillion: 0.01,
+      cacheWritePerMillion: 0.125,
+      outputPerMillion: 0.5,
     },
     // UUID-addressed GPT: native OpenAI, routed through the Responses API.
     {
@@ -890,6 +913,17 @@ describe('ai-proxy DB-defined model routing', () => {
     expect(body.thinking).toEqual({ type: 'adaptive', display: 'summarized' })
     expect(body.thinking.budget_tokens).toBeUndefined()
     expect(body.output_config?.effort).toBe('high')
+  })
+
+  test('rewrites budget-based thinking to adaptive for a UUID-addressed Haiku 5.5', async () => {
+    const res = await postAnthropic(buildApp(), HAIKU55_UUID, {
+      thinking: { type: 'enabled', budget_tokens: 2048 },
+    })
+    expect(res.status).toBe(200)
+    const body = lastForwardedBody()
+    expect(body.model).toBe('claude-haiku-5-5')
+    expect(body.thinking).toEqual({ type: 'adaptive', display: 'summarized' })
+    expect(body.output_config?.effort).toBe('low')
   })
 
   test('Responses API rewrites a UUID-addressed GPT to its apiModel', async () => {

@@ -2383,6 +2383,7 @@ function apiModelSupportsAdaptiveThinking(apiModel: string): boolean {
     apiModel.includes('sonnet-4-6') ||
     apiModel.includes('sonnet-4.6') ||
     apiModel.includes('sonnet-5') ||
+    apiModel.includes('haiku-5') ||
     apiModel.includes('fable-5-1') ||
     apiModel.includes('fable-5.1')
   )
