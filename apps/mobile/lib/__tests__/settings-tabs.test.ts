@@ -11,8 +11,14 @@ import {
 describe("settings tabs", () => {
   test("uses one label catalog for navigation and account sheets", () => {
     const labels = new Map(SETTINGS_TABS.map((tab) => [tab.id, tab.label]))
-    expect(labels.get("costs")).toBe("Cost Optimizer")
-    expect(settingsNavItems(["costs"])[0]?.label).toBe(labels.get("costs"))
+    expect(labels.get("billing")).toBe("Billing")
+    expect(settingsNavItems(["billing"])[0]?.label).toBe(labels.get("billing"))
+  })
+
+  test("usage and cost optimizer live on the Analytics screen, not in settings", () => {
+    const ids = SETTINGS_TABS.map((tab) => tab.id)
+    expect(ids).not.toContain("analytics")
+    expect(ids).not.toContain("costs")
   })
 
   test("applies cloud, local, billing, and iOS visibility rules", () => {

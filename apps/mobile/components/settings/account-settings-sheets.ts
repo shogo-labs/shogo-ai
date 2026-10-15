@@ -29,8 +29,6 @@ const SHEET_TAB_IDS = new Set<SheetTabId>([
   "automations",
   "remote-control",
   "billing",
-  "analytics",
-  "costs",
   "security",
 ]);
 

@@ -30,6 +30,10 @@ import { workspaceAgentRoutes, sessionAuthorize } from './routes/workspace-agent
 import { workspaceMeetingRoutes, sharedMeetingRoutes } from './routes/workspace-meetings'
 import { conversationRoutes } from './routes/conversations'
 import { workBoardRoutes } from './routes/work-boards'
+// Analytics routes are plain in-repo modules (Prisma only), so they mount in
+// local mode too. Loading them via server-cloud-deps left local 404ing.
+import { scopedAnalyticsRoutes } from './routes/scoped-analytics'
+import { costAnalyticsRoutes } from './routes/cost-analytics'
 import { AGENT_REPLY_TIMEOUT_MS, configureConversationAgentDispatcher, settleOrphanedAgentReplies } from './services/conversation-agent-dispatcher'
 import { registerBuiltInChatProviders } from './services/chat-providers'
 import { chatProviderRoutes } from './routes/chat-providers'
@@ -229,8 +233,6 @@ const licenseKeyAdminRoutes: any = cloud.licenseKeyAdminRoutes ?? emptyRouter
 const licenseKeyRoutes: any = cloud.licenseKeyRoutes ?? emptyRouter
 const affiliateRoutes: any = cloud.affiliateRoutes ?? emptyRouter
 const marketplaceRoutes: any = cloud.marketplaceRoutes ?? emptyRouter
-const scopedAnalyticsRoutes: any = cloud.scopedAnalyticsRoutes ?? emptyRouter
-const costAnalyticsRoutes: any = cloud.costAnalyticsRoutes ?? emptyRouter
 const integrationRoutes: any = cloud.integrationRoutes ?? emptyRouter
 const evalOutputRoutes: any = cloud.evalOutputRoutes ?? emptyRouter
 const projectExportImportRoutes: any = cloud.projectExportImportRoutes ?? emptyRouter

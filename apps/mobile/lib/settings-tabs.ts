@@ -2,10 +2,8 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import {
-  BarChart3,
   Boxes,
   Building2,
-  Coins,
   CreditCard,
   Laptop,
   Monitor,
@@ -32,8 +30,6 @@ export type SettingsTabId =
   | "computer-files"
   | "billing"
   | "compute"
-  | "analytics"
-  | "costs"
   | "appearance"
   | "updates";
 
@@ -93,8 +89,6 @@ export const SETTINGS_TABS: readonly SettingsTabDefinition[] = [
     desktopOnly: true,
   },
   { id: "billing", label: "Billing", Icon: CreditCard, group: "plan" },
-  { id: "analytics", label: "Usage", Icon: BarChart3, group: "plan" },
-  { id: "costs", label: "Cost Optimizer", Icon: Coins, group: "plan" },
   {
     id: "compute",
     label: "Compute",

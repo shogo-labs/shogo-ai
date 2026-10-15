@@ -263,7 +263,7 @@ export const CommandPalette = observer(function CommandPalette({
         label: 'Workspace Analytics',
         description: 'View usage metrics and spend',
         icon: BarChart3,
-        href: '/(app)/settings?tab=analytics',
+        href: '/(app)/analytics',
         category: 'settings',
         keywords: ['analytics', 'usage', 'spend', 'metrics', 'stats'],
       },

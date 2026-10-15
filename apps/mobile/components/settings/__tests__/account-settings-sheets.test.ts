@@ -15,10 +15,11 @@ describe("accountSettingsSheetGroups", () => {
     });
     const tabs = groups.flatMap((group) => group.tabs);
     expect(groups.map((group) => group.title)).toEqual(["Settings", "Plan"]);
-    expect(tabs.find((tab) => tab.id === "analytics")?.label).toBe("Usage");
-    expect(tabs.find((tab) => tab.id === "analytics")?.label).toBe(
-      accountSettingsSheetTitle("analytics")
+    expect(tabs.find((tab) => tab.id === "billing")?.label).toBe(
+      accountSettingsSheetTitle("billing")
     );
+    expect(tabs.map((tab) => tab.id)).not.toContain("analytics");
+    expect(tabs.map((tab) => tab.id)).not.toContain("costs");
   });
 
   test("hides cloud-only tabs in local mode", () => {

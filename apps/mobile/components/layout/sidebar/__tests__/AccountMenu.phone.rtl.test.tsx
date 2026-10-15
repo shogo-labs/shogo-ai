@@ -171,8 +171,9 @@ describe("AccountMenuBody native grouping", () => {
     expect(screen.getByLabelText("Integrations")).toBeTruthy()
     expect(screen.getByLabelText("Remote Control")).toBeTruthy()
     expect(screen.getByLabelText("Billing")).toBeTruthy()
-    expect(screen.getByLabelText("Usage")).toBeTruthy()
-    expect(screen.getByLabelText("Cost Optimizer")).toBeTruthy()
+    // Usage and Cost Optimizer moved to the Analytics screen (More tab).
+    expect(screen.queryByLabelText("Usage")).toBeNull()
+    expect(screen.queryByLabelText("Cost Optimizer")).toBeNull()
     expect(screen.getByLabelText("Profile")).toBeTruthy()
     expect(screen.getByLabelText("API Keys")).toBeTruthy()
     expect(screen.getByLabelText("Appearance")).toBeTruthy()

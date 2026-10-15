@@ -6,7 +6,7 @@
  */
 import { Pressable, Text, View } from 'react-native'
 import { useRouter } from 'expo-router'
-import { Bookmark, ChevronRight, FileText, KanbanSquare, ListTodo, Store } from 'lucide-react-native'
+import { BarChart3, Bookmark, ChevronRight, FileText, KanbanSquare, ListTodo, Store } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { useWorkspaceExperience } from '../../../hooks/useWorkspaceExperience'
 // Leaf import: the `@shogo/shared-app` barrel also loads the domain SDK.
@@ -19,6 +19,7 @@ import { NavItem } from './NavItem'
 import { WorkspaceChatsPanel } from './WorkspaceChatsPanel'
 
 const MORE_ICONS: Record<MoreIcon, React.ElementType> = {
+  analytics: BarChart3,
   tasks: ListTodo,
   work: KanbanSquare,
   marketplace: Store,
