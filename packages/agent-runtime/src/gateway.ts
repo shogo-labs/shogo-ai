@@ -84,7 +84,16 @@ import {
   type SpawnClassificationInput,
   type AutoTierOverride,
 } from './model-router'
-import { CODE_AGENT_GENERAL_GUIDE, OUTPUT_CONTRACT_GUIDE } from './code-agent-prompt'
+import { buildCodeAgentGeneralGuide, OUTPUT_CONTRACT_GUIDE } from './code-agent-prompt'
+import {
+  applyInteractionModePrompt,
+  autoFloorTierFor,
+  filterToolsForMode,
+  PLAN_DELIVERY_NUDGE,
+  planWrittenInsteadOfCreated,
+} from './plan-mode-prompt'
+import { restrictToReadOnlyTools } from './read-only-command'
+import { isSearchEnabled } from './search-flag'
 import { getShogoSdkGuide } from './shogo-sdk-prompt'
 import { refreshAvailableModels } from './available-models'
 import { UI_UX_DESIGN_GUIDE } from './ui-ux-guide-prompt'
@@ -2257,32 +2266,7 @@ export class AgentGateway {
 
     console.log(`[Gateway][_agentTurnInner] building system prompt — interactionMode: ${interactionMode}, sessionId: ${sessionId}`)
     // Interaction mode system prompt injection
-    if (interactionMode === 'plan') {
-      const planModePrompt = [
-        '## PLAN MODE ACTIVE',
-        '',
-        'Plan mode is active. You MUST NOT edit source files, run mutating commands, or otherwise change the workspace before the user clicks Build. This supersedes all other instructions.',
-        'Exception: you may create or update the plan artifact using create_plan/update_plan; those tools only write under .shogo/plans/ for user review.',
-        '',
-        'Your job:',
-        '1. Research the user\'s request using read-only tools (read_file, search, web, etc.)',
-        '2. If you need more information, ask clarifying questions using ask_user',
-        '3. If the request is too broad, ask 1-2 narrowing questions using ask_user',
-        '4. If there are multiple valid approaches, ask the user which they prefer',
-        '5. When you have enough context, call create_plan with a structured plan',
-        '6. If the user asks to modify, refine, or extend an existing plan, use update_plan with the plan\'s filepath instead of creating a new one',
-        '7. The plan should be concise, specific, and actionable — cite file paths and code snippets',
-        '8. Do NOT make any changes until the user confirms the plan',
-      ].join('\n')
-      systemPrompt = planModePrompt + '\n\n---\n\n' + systemPrompt
-    } else if (interactionMode === 'ask') {
-      const askModePrompt = [
-        '## ASK MODE ACTIVE',
-        '',
-        'Ask mode is active. You are in a read-only conversational mode. Answer the user\'s questions directly using your knowledge and conversation context. You have no tools available. Do not attempt to make changes, run commands, or take any actions. Just provide helpful, informative answers.',
-      ].join('\n')
-      systemPrompt = askModePrompt + '\n\n---\n\n' + systemPrompt
-    }
+    systemPrompt = applyInteractionModePrompt(systemPrompt, interactionMode, { searchEnabled: isSearchEnabled() })
 
     if (this.config.coordinatorMode) {
       const { COORDINATOR_SYSTEM_PROMPT } = await import('./coordinator-prompt')
@@ -2318,6 +2302,7 @@ export class AgentGateway {
       routingDecision = selectModelForSpawn(classInput, {
         ceilingModel: autoTiers[ceilingTier],
         availableModels: autoTiers,
+        floorTier: autoFloorTierFor(interactionMode),
       })
       modelId = routingDecision.selectedModel
       autoSelectedTier =
@@ -2544,25 +2529,13 @@ export class AgentGateway {
 
     // Interaction mode tool restrictions
     let restrictedMode: RestrictedMode | null = null
-    if (interactionMode === 'ask') {
-      restrictedMode = 'ask'
-      assembledTools = []
-    } else if (interactionMode === 'plan') {
-      restrictedMode = 'plan'
-      const PLAN_MODE_ALLOWED = new Set([
-        'read_file', 'search',
-        'web',
-        'memory_read', 'memory_search', 'search_history', 'read_history',
-        'ask_user', 'todo_write', 'create_plan', 'update_plan',
-        'skill',
-      ])
-      assembledTools = assembledTools.filter(t => PLAN_MODE_ALLOWED.has(t.name))
-    }
+    if (interactionMode === 'ask' || interactionMode === 'plan') restrictedMode = interactionMode
+    assembledTools = filterToolsForMode(assembledTools, interactionMode)
 
     if (this.config.coordinatorMode) {
       restrictedMode = restrictedMode ?? 'coordinator'
       const { COORDINATOR_READONLY_TOOLS } = await import('./coordinator-prompt')
-      assembledTools = assembledTools.filter(t => COORDINATOR_READONLY_TOOLS.has(t.name))
+      assembledTools = restrictToReadOnlyTools(assembledTools, COORDINATOR_READONLY_TOOLS)
     }
 
     // WS7: in agent (edit) mode, guarantee the core tools are always callable.
@@ -3770,6 +3743,31 @@ export class AgentGateway {
         contResult.toolCalls = [...result.toolCalls, ...contResult.toolCalls]
         result = contResult
       }
+      // A plan written into the reply never reaches the user's plan card or Build
+      // button; give the model one bounded chance to deliver it through create_plan.
+      if (
+        !result.loopBreak &&
+        !result.error &&
+        !result.usageLimit &&
+        !turnAbort.signal.aborted &&
+        planWrittenInsteadOfCreated(interactionMode, result.toolCalls.map((t) => t.name), result.text)
+      ) {
+        console.warn(`${this.logPrefix} Plan mode: plan written in chat without create_plan; asking once to deliver it (session ${sessionId})`)
+        const contResult = await runAgentLoop({
+          ...loopOptions,
+          history: [...history, ...accumulatedNewMessages],
+          prompt: PLAN_DELIVERY_NUDGE,
+          images: undefined,
+        })
+        accumulatedNewMessages.push(...contResult.newMessages)
+        contResult.inputTokens += result.inputTokens
+        contResult.outputTokens += result.outputTokens
+        contResult.cacheReadTokens += result.cacheReadTokens
+        contResult.cacheWriteTokens += result.cacheWriteTokens
+        contResult.iterations += result.iterations
+        contResult.toolCalls = [...result.toolCalls, ...contResult.toolCalls]
+        result = contResult
+      }
       if (result.usageLimit && uiWriter) {
         uiWriter.write({
           type: 'data-usage-limit',
@@ -4053,7 +4051,7 @@ export class AgentGateway {
       parts.push(workspaceTree)
     }
 
-    parts.push(CODE_AGENT_GENERAL_GUIDE)
+    parts.push(buildCodeAgentGeneralGuide({ searchEnabled: isSearchEnabled() }))
     if (this.config.capabilityProfile === 'personal') parts.push(PERSONAL_COMPANION_GUIDE)
     parts.push(buildCapabilityStatusSection(this.config))
     parts.push(OUTPUT_CONTRACT_GUIDE)
@@ -4096,7 +4094,7 @@ export class AgentGateway {
       parts.push(workspaceTree)
     }
 
-    parts.push(CODE_AGENT_GENERAL_GUIDE)
+    parts.push(buildCodeAgentGeneralGuide({ searchEnabled: isSearchEnabled() }))
     if (this.config.capabilityProfile === 'personal') parts.push(PERSONAL_COMPANION_GUIDE)
     parts.push(buildCapabilityStatusSection(this.config))
     if (this.config.browserEnabled !== false) {
@@ -4213,7 +4211,7 @@ export class AgentGateway {
     }
 
     // 2. General coding guide (always the same)
-    pushStable('code-agent-guide', CODE_AGENT_GENERAL_GUIDE)
+    pushStable('code-agent-guide', buildCodeAgentGeneralGuide({ searchEnabled: isSearchEnabled() }))
     if (this.config.capabilityProfile === 'personal') {
       pushStable('personal-companion-mode', PERSONAL_COMPANION_GUIDE)
     }

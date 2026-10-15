@@ -299,6 +299,7 @@ export {
   Icon as Target,
   Icon as Terminal,
   Icon as TestTube,
+  Icon as TextSelect,
   Icon as ThumbsDown,
   Icon as ThumbsUp,
   Icon as Ticket,

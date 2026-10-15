@@ -122,7 +122,8 @@ const PHASE_1: AgentEval = {
         if (createIdx <= 0) return false
         const priorTools = r.toolCalls.slice(0, createIdx)
         return priorTools.some(tc =>
-          tc.name === 'read_file' || tc.name === 'search' || tc.name === 'web'
+          tc.name === 'read_file' || tc.name === 'search' || tc.name === 'web' ||
+          tc.name === 'exec'
         )
       },
     },
@@ -313,7 +314,8 @@ function makePlanCreationEval(spec: PlanCreationSpec): AgentEval {
         if (createIdx <= 0) return false
         const priorTools = r.toolCalls.slice(0, createIdx)
         return priorTools.some(tc =>
-          tc.name === 'read_file' || tc.name === 'search' || tc.name === 'web'
+          tc.name === 'read_file' || tc.name === 'search' || tc.name === 'web' ||
+          tc.name === 'exec'
         )
       },
     })

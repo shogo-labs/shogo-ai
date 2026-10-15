@@ -6,6 +6,7 @@
   "type": "module",
   "description": "Shogo Code - OSS desktop IDE distribution workspace.",
   "scripts": {
+    "test": "bun run --cwd extensions/shogo-core test && bun test scripts/__tests__",
     "phase1:check": "node scripts/phase1-check.mjs",
     "phase2:check": "node scripts/phase2-check.mjs",
     "phase3:check": "node scripts/phase3-check.mjs",

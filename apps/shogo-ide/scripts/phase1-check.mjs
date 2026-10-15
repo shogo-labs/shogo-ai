@@ -48,6 +48,7 @@ requireFile('extensions/shogo-core/media/shogo.svg')
 requireFile('scripts/print-code-oss-clone-command.mjs')
 requireFile('scripts/apply-code-oss-patches.mjs')
 requireFile('patches/code-oss/remove-built-in-chat.patch')
+requireFile('patches/code-oss/shogo-chat-explorer-drop.patch')
 
 if (packageJson) {
   assert(packageJson.name === '@shogo/shogo-ide', 'apps/shogo-ide package must be named @shogo/shogo-ide')

@@ -1,4 +1,4 @@
-import * as vscode from 'vscode'
+import type { ShogoContextOutbox } from './contextOutbox'
 
 export type ShogoContextKind = 'selection' | 'active-file' | 'workspace' | 'git-diff' | 'diagnostics'
 
@@ -57,10 +57,6 @@ export interface ExtensionServices {
     getHealth(): Promise<AgentHealth>
     sendChat(request: ChatRequest): Promise<ChatResponse>
   }
-  contextStore: {
-    list(): ShogoContextItem[]
-    addSelection(editor: vscode.TextEditor): ShogoContextItem | null
-    addActiveFile(editor: vscode.TextEditor): ShogoContextItem | null
-    clear(): void
-  }
+  /** References waiting for the chat iframe to acknowledge them. */
+  contextOutbox: ShogoContextOutbox
 }

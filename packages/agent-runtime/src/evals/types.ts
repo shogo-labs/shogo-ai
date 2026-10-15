@@ -46,6 +46,7 @@ export type EvalCategory =
   | 'subagent-coordination'
   | 'teammate-coordination'
   | 'plan'
+  | 'root-cause'
   | 'workspace-attachments'
   | 'company-sim'
   | 'company-ops'

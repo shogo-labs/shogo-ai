@@ -2,8 +2,9 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
-const workspaceRoot = resolve(new URL('..', import.meta.url).pathname)
+const workspaceRoot = resolve(fileURLToPath(new URL('..', import.meta.url)))
 const generatedDir = join(workspaceRoot, 'hardening', 'generated')
 
 function readJson(relativePath) {

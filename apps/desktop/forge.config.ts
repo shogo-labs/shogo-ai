@@ -52,6 +52,8 @@ const OPTIONAL_RESOURCES = [
   // "Update available — Refresh" toast never shows on Desktop.
   './resources/static',
   './resources/tree-sitter-wasm',
+  // ripgrep for the agent's grep tool; the compiled runtime finds it via SHOGO_RG_PATH.
+  './resources/ripgrep',
   './resources/sherpa-onnx',
   './resources/shogo-sysaudio',
   './resources/shogo-hotkey',

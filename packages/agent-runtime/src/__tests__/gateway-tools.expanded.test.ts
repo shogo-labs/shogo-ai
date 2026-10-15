@@ -598,6 +598,26 @@ describe('create_plan / update_plan', () => {
     expect(planEvent.data.name).toBe('Refactor Auth')
   })
 
+  test('create_plan points out missing root-cause sections in a code plan', async () => {
+    const text = (out: any) => (typeof out === 'string' ? out : (out.text ?? ''))
+    const bare = await exec(makeCtx(), 'create_plan', {
+      name: 'Fix Timeout',
+      overview: 'Use the configured timeout.',
+      plan: '## Changes\n- `src/http/client.ts`: read settings().requestTimeoutMs',
+      todos: [{ id: 'fix', content: 'fix' }],
+    })
+    expect(text(bare)).toContain('has no "## Root cause" or "## Options considered" section')
+    expect(text(bare)).toContain('update_plan')
+
+    const complete = await exec(makeCtx(), 'create_plan', {
+      name: 'Fix Timeout',
+      overview: 'Use the configured timeout.',
+      plan: '## Root cause\n`src/http/client.ts:24`\n## Options considered\n1. a\n## Changes\n- b',
+      todos: [{ id: 'fix', content: 'fix' }],
+    })
+    expect(text(complete)).not.toContain('has no')
+  })
+
   test('update_plan rejects invalid filepath', async () => {
     const out = await exec(makeCtx(), 'update_plan', { filepath: 'not-a-plan.txt' })
     const s = typeof out === 'string' ? out : (out.text ?? '')
