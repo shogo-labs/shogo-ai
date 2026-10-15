@@ -217,13 +217,13 @@ mock.module('../../services/project-attachment.service', () => ({
   },
 }))
 
-type FetchResponder = (url: string) => Response | Promise<Response>
+type FetchResponder = (url: string, init?: RequestInit) => Response | Promise<Response>
 let fetchResponder: FetchResponder | null = null
 const originalFetch = globalThis.fetch
 beforeAll(() => {
-  globalThis.fetch = (async (input: any) => {
+  globalThis.fetch = (async (input: any, init?: RequestInit) => {
     if (!fetchResponder) throw new Error('No fetch responder configured')
-    return fetchResponder(String(input))
+    return fetchResponder(String(input), init)
   }) as any
 })
 afterAll(() => {
@@ -273,11 +273,11 @@ function controllableRuntimeStream() {
 
 const tick = (ms = 50) => new Promise((resolve) => setTimeout(resolve, ms))
 
-function sendChat(app: Hono, sessionId: string) {
+function sendChat(app: Hono, sessionId: string, extra: Record<string, unknown> = {}) {
   return app.fetch(new Request('http://x/api/workspaces/ws-1/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'X-Chat-Session-Id': sessionId },
-    body: JSON.stringify({ chatSessionId: sessionId }),
+    body: JSON.stringify({ chatSessionId: sessionId, ...extra }),
   }))
 }
 
@@ -340,6 +340,36 @@ describe('workspace chat active turn', () => {
 
     runtime.finish()
     await res.text()
+  })
+
+  for (const variant of [
+    { name: 'forwards a focused project that is attached', attached: ['p-1'], forwarded: 'p-1' },
+    { name: 'drops a focused project that is no longer attached', attached: [] as string[], forwarded: undefined },
+  ]) {
+    test(variant.name, async () => {
+      store.attachedProjectIds = variant.attached
+      seedSession('s-1')
+      const runtime = controllableRuntimeStream()
+      let forwardedBody: any = null
+      fetchResponder = (_url, init) => {
+        forwardedBody = JSON.parse(String(init?.body))
+        return runtime.response
+      }
+
+      const res = await sendChat(buildApp(), 's-1', { focusedProjectId: 'p-1' })
+      expect(res.status).toBe(200)
+      expect(forwardedBody.focusedProjectId).toBe(variant.forwarded)
+
+      runtime.finish()
+      await res.text()
+    })
+  }
+
+  test('rejects a focused project that is not a string', async () => {
+    seedSession('s-1')
+    const res = await sendChat(buildApp(), 's-1', { focusedProjectId: 42 })
+    expect(res.status).toBe(400)
+    expect((await res.json()).error.code).toBe('invalid_focused_project')
   })
 
   test('a failed send does not clear another tab\'s live turn', async () => {

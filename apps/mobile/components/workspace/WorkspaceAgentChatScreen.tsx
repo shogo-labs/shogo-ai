@@ -7,7 +7,7 @@
  * recent personal chat, creating one when they have none.
  */
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
-import { ActivityIndicator, Pressable, Text, View, useWindowDimensions } from "react-native"
+import { ActivityIndicator, AppState, Pressable, Text, View, useWindowDimensions } from "react-native"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
 import { useRouter } from "expo-router"
 import { observer } from "mobx-react-lite"
@@ -98,6 +98,7 @@ export const WorkspaceAgentChatScreen = observer(
     )
     const [scopeError, setScopeError] = useState<string | null>(null)
     const loadVersion = useRef(0)
+    const reloadAttachments = useRef<(() => void) | null>(null)
     const avatarFinishedTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
     const avatarStreaming = useRef(false)
     const crossTabPrefill = useChatPrefill()
@@ -196,11 +197,23 @@ export const WorkspaceAgentChatScreen = observer(
           if (changedSessionId === sessionId) void loadAttachments()
         },
       )
+      // The scope bus only reaches this tab; detaches from another tab or
+      // device are picked up when the app returns to the foreground.
+      const appState = AppState.addEventListener("change", (state) => {
+        if (state === "active") void loadAttachments()
+      })
+      reloadAttachments.current = () => void loadAttachments()
       return () => {
         cancelled = true
         unsubscribe()
+        appState.remove()
+        reloadAttachments.current = null
       }
     }, [http, projects, sessionId, workspace?.id])
+
+    const handleChatError = useCallback((chatError: Error | null) => {
+      if (chatError) reloadAttachments.current?.()
+    }, [])
 
     useEffect(() => {
       if (
@@ -550,6 +563,7 @@ export const WorkspaceAgentChatScreen = observer(
             chatScope="workspace"
             chatSessionId={sessionId}
             onChatSessionChange={setSessionId}
+            onChatError={handleChatError}
             onStreamingChange={handleStreamingChange}
             composer={experience.composer}
             presentation="agent"

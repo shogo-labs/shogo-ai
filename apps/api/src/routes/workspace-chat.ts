@@ -685,23 +685,27 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
       return mapSessionError(c, err)
     }
 
-    // A focused project is a per-turn hint, never a scope expansion. Reject
-    // forged/stale ids before forwarding to the runtime so the signal can only
-    // select from projects already attached to this chat session.
+    // A focused project is a per-turn hint, never a scope expansion, so it may
+    // only select from projects attached to this chat session. Clients cache
+    // the attachment list and can lag behind detaches made elsewhere; an id
+    // that is no longer attached is dropped rather than failing the turn.
     if (parsedBody.focusedProjectId !== undefined && parsedBody.focusedProjectId !== null) {
-      if (
-        typeof parsedBody.focusedProjectId !== 'string' ||
-        !attachedProjectIds.includes(parsedBody.focusedProjectId)
-      ) {
+      if (typeof parsedBody.focusedProjectId !== 'string') {
         return c.json(
           {
             error: {
-              code: 'focused_project_not_attached',
-              message: 'The focused project must be attached to this workspace chat session.',
+              code: 'invalid_focused_project',
+              message: 'focusedProjectId must be a string.',
             },
           },
           400,
         )
+      }
+      if (!attachedProjectIds.includes(parsedBody.focusedProjectId)) {
+        console.warn(
+          `[WorkspaceChat] Dropping focusedProjectId ${parsedBody.focusedProjectId} not attached to session ${sessionId}`,
+        )
+        delete parsedBody.focusedProjectId
       }
     } else {
       delete parsedBody.focusedProjectId
