@@ -18,6 +18,11 @@
 #
 # To roll forward again, re-run deploy.yml for the newer tag, or run this
 # workflow with the newer release.
+#
+# dry_run: resolve the release, check its images exist in each region, and
+# show current -> target images, the disk gate and the migrations the target
+# release doesn't know about, without copying, patching or deleting anything.
+# Run it before a real rollback (and periodically, so the path stays proven).
 # =============================================================================
 
 name: Rollback Production
@@ -42,14 +47,20 @@ on:
         description: 'Why (shown in the run summary)'
         required: true
         type: string
+      dry_run:
+        description: 'Plan only: show what would change in each region, change nothing'
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
 
 # Shares nothing with deploy.yml's per-tag concurrency group; don't run a
-# rollback while a production deploy is mid-flight.
+# rollback while a production deploy is mid-flight. Dry runs never wait on (or
+# hold up) a real rollback.
 concurrency:
-  group: rollback-production
+  group: rollback-production${{ inputs.dry_run && '-dry-run' || '' }}
   cancel-in-progress: false
 
 jobs:
@@ -73,6 +84,7 @@ jobs:
           RELEASE: ${{ inputs.release }}
           REGIONS: ${{ inputs.regions }}
           REASON: ${{ inputs.reason }}
+          DRY_RUN: ${{ inputs.dry_run }}
         run: |
           set -euo pipefail
           RELEASE="$(echo "$RELEASE" | tr -d '[:space:]')"
@@ -103,7 +115,11 @@ jobs:
             echo "regions=$MATRIX"
           } >> "$GITHUB_OUTPUT"
           {
-            echo "## Production rollback"
+            if [ "$DRY_RUN" = "true" ]; then
+              echo "## Production rollback (dry run: nothing will change)"
+            else
+              echo "## Production rollback"
+            fi
             echo ""
             echo "- Target: \`${RELEASE}\` (\`${SHA}\`${VERSION:+, version ${VERSION}})"
             echo "- Regions: ${REGIONS}"
@@ -112,17 +128,19 @@ jobs:
             echo ""
             echo "> Database migrations are NOT reverted."
           } >> "$GITHUB_STEP_SUMMARY"
-          echo "::warning::Rolling production back to ${SHA}. Database migrations are not reverted."
+          if [ "$DRY_RUN" != "true" ]; then
+            echo "::warning::Rolling production back to ${SHA}. Database migrations are not reverted."
+          fi
 
   rollback:
-    name: Roll back ${{ matrix.region.key }}
+    name: ${{ inputs.dry_run && 'Plan rollback' || 'Roll back' }} ${{ matrix.region.key }}
     runs-on: ubuntu-latest
     needs: [resolve]
     timeout-minutes: 60
     strategy:
-      # US strictly before EU, and stop if US fails.
-      max-parallel: 1
-      fail-fast: true
+      # US strictly before EU, and stop if US fails. A dry run plans both.
+      max-parallel: ${{ inputs.dry_run && 2 || 1 }}
+      fail-fast: ${{ !inputs.dry_run }}
       matrix:
         region: ${{ fromJson(needs.resolve.outputs.regions) }}
     environment: ${{ matrix.region.environment }}
@@ -171,14 +189,21 @@ jobs:
         id: images
         env:
           CREDS: ${{ vars.OCI_TENANCY_NAMESPACE }}/${{ secrets.OCI_USERNAME }}:${{ secrets.OCI_AUTH_TOKEN }}
+          DRY_RUN: ${{ inputs.dry_run }}
         run: |
           set -euo pipefail
           exists() { docker buildx imagetools inspect "$1" >/dev/null 2>&1; }
+          COPY_NEEDED=""
           for repo in shogo-api shogo-web shogo-docs shogo-runtime; do
             ref="${OCIR_REGISTRY}/shogo/${repo}:${IMAGE_TAG}"
             if exists "$ref"; then
               echo "${repo}: present"
             elif [ "$OCIR_REGISTRY" != "$PRIMARY_REGISTRY" ] && exists "${PRIMARY_REGISTRY}/shogo/${repo}:${IMAGE_TAG}"; then
+              COPY_NEEDED="${COPY_NEEDED:+$COPY_NEEDED }${repo}"
+              if [ "$DRY_RUN" = "true" ]; then
+                echo "${repo}: would copy from ${PRIMARY_REGISTRY}"
+                continue
+              fi
               if ! command -v skopeo >/dev/null; then
                 sudo apt-get update -qq && sudo apt-get install -y -qq skopeo
               fi
@@ -190,6 +215,7 @@ jobs:
               echo "${repo//-/_}_missing=true" >> "$GITHUB_OUTPUT"
             fi
           done
+          echo "copy_needed=${COPY_NEEDED}" >> "$GITHUB_OUTPUT"
 
       # api / web are always tagged for a production release (older releases
       # rebuilt them on every tag; newer ones promote all four). Releases from
@@ -232,7 +258,21 @@ jobs:
       - name: Check node disk headroom (pre-rollout gate)
         run: .github/scripts/check-node-disk-headroom.sh 80
 
+      - name: Plan (dry run)
+        if: inputs.dry_run
+        env:
+          TARGET_SHA: ${{ needs.resolve.outputs.sha }}
+          RUNTIME_IMAGE: ${{ steps.target.outputs.runtime_image }}
+          API_IMAGE: ${{ steps.target.outputs.api_image }}
+          WEB_IMAGE: ${{ steps.target.outputs.web_image }}
+          DOCS_IMAGE: ${{ steps.target.outputs.docs_image }}
+          COPY_NEEDED: ${{ steps.images.outputs.copy_needed }}
+        run: |
+          echo "### ${{ matrix.region.key }}: rollback plan" >> "$GITHUB_STEP_SUMMARY"
+          .github/scripts/plan-rollback.sh
+
       - name: Apply release images
+        if: ${{ !inputs.dry_run }}
         env:
           RUNTIME_TAG: ${{ steps.target.outputs.runtime_tag }}
           RUNTIME_IMAGE: ${{ steps.target.outputs.runtime_image }}
@@ -244,6 +284,7 @@ jobs:
         run: .github/scripts/apply-release-images.sh
 
       - name: Wait for rollout and health check
+        if: ${{ !inputs.dry_run }}
         run: |
           set -uo pipefail
           # Same gate as deploy.yml: Ready alone isn't enough, because Knative
@@ -292,9 +333,11 @@ jobs:
           exit 1
 
       - name: Garbage-collect old api revisions
+        if: ${{ !inputs.dry_run }}
         run: .github/scripts/gc-old-api-revisions.sh "$NS_SYSTEM"
 
       - name: Summary
+        if: ${{ !inputs.dry_run }}
         run: |
           {
             echo "### ${{ matrix.region.key }} rolled back"

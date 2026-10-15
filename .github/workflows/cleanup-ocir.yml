@@ -9,12 +9,17 @@
 #      (cross-referenced via kubectl). Staging and production-us share the
 #      us-ashburn-1 registry, and production runs digests staging built
 #      (deploy.yml promote-images), so per-cluster protection is not enough.
-#   2. NOT tagged with a string containing "latest".
-#   3. NOT the image of one of the last RELEASE_KEEP production releases
+#   2. NOT the runtime image a metal host's rootfs was baked from (revisions
+#      reported by each control plane's /api/internal/metal/fleet), nor the
+#      image new metal hosts are provisioned from.
+#   3. NOT tagged with a string containing "latest".
+#   4. NOT the image of one of the last RELEASE_KEEP production releases
 #      (`production-<sha>` of the newest v* tags), so rollback-production.yml
 #      always has targets.
-#   4. NOT one of the KEEP_COUNT most recent images for the repository.
-#   5. Older than KEEP_DAYS days.
+#   5. NOT one of the KEEP_COUNT most recent images for the repository.
+#   6. Older than KEEP_DAYS days.
+#   7. NOT a platform manifest of a kept multi-arch index.
+# The deletion logic lives in .github/scripts/ocir-cleanup.sh.
 #
 # Schedule runs default to dry-run. To enforce deletions on schedule, set the
 # repo variable OCIR_CLEANUP_ENFORCE=true. Manual dispatch can override either.
@@ -24,6 +29,10 @@
 # digest at admission time and pinned it; the cleanup then deleted those
 # digests once a newer push moved the tag, breaking running revisions on
 # next pod restart. See the staging incident postmortem (2026-05-04).
+#
+# Until 2026-10 every run listed zero images (the repos live in a child
+# compartment and the listing wasn't scoped to the subtree), so nothing has
+# ever been pruned. Review a dry run before enforcing.
 # =============================================================================
 
 name: Cleanup OCIR Images
@@ -135,6 +144,48 @@ jobs:
 
           echo "Collected $(wc -l < in-use-digests.txt | tr -d ' ') digests and $(grep -c . in-use-refs.txt || true) tag refs from ${{ matrix.environment }}"
 
+      - name: Checkout rootfs gate script
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          path: src
+          sparse-checkout: scripts/ci/metal-rootfs-gate.sh
+          sparse-checkout-cone-mode: false
+
+      # Metal hosts aren't in any cluster: each bakes its rootfs from a
+      # `<env>-[docker-]multiarch-<rev>` image and reports <rev> to its control
+      # plane. Keep those images, and the one new hosts are provisioned from,
+      # so a host that rebuilds or joins can still pull them. An image pinned
+      # by a release the fleet hasn't baked yet is younger than KEEP_DAYS.
+      - name: Collect metal fleet runtime images
+        if: vars.METAL_CONTROL_PLANE_URL != ''
+        env:
+          CP_URL: ${{ vars.METAL_CONTROL_PLANE_URL }}
+          METAL_REGISTER_TOKEN: ${{ secrets.METAL_REGISTER_TOKEN }}
+          INSECURE_TLS: ${{ vars.METAL_RELEASE_INSECURE_TLS }}
+          REGISTRY: ${{ vars.METAL_RUNTIME_REGISTRY || format('us-ashburn-1.ocir.io/{0}', vars.OCI_TENANCY_NAMESPACE) }}
+          NS_SYSTEM: ${{ vars.NAMESPACE_SYSTEM }}
+        run: |
+          set -euo pipefail
+          FLEET=$(bash src/scripts/ci/metal-rootfs-gate.sh fetch "${{ matrix.environment }}" "$CP_URL")
+          if [ "$(jq -r '.ok' <<<"$FLEET")" != "true" ]; then
+            echo "::error::Can't read the metal fleet for ${{ matrix.environment }} ($(jq -r '.error' <<<"$FLEET")); refusing to report an incomplete in-use set"
+            exit 1
+          fi
+          REPO="${REGISTRY%/}/shogo/shogo-runtime"
+          {
+            jq -r '.hosts[].rootfsRevision // empty' <<<"$FLEET" | sort -u | while read -r rev; do
+              for prefix in production staging; do
+                echo "${REPO}:${prefix}-multiarch-${rev}"
+                echo "${REPO}:${prefix}-docker-multiarch-${rev}"
+              done
+            done
+            kubectl get ksvc api -n "$NS_SYSTEM" -o json 2>/dev/null \
+              | jq -r '.spec.template.spec.containers[0].env[]? | select(.name == "METAL_FLEET_RUNTIME_IMAGE") | .value // empty' \
+              | while read -r img; do echo "$img"; echo "${img/multiarch/docker-multiarch}"; done
+          } | sort -u | tee metal-refs.txt
+          cat metal-refs.txt >> in-use-refs.txt
+          echo "Protecting $(grep -c . metal-refs.txt || true) metal runtime image refs from ${{ matrix.environment }} ($(jq '.hosts | length' <<<"$FLEET") hosts)"
+
       - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: in-use-${{ matrix.environment }}
@@ -194,10 +245,12 @@ jobs:
           cat in-use/*/in-use-digests.txt | sort -u > "$DIGESTS"
 
           # Resolve a tag in THIS registry to its digest (empty if absent).
+          # Repos live in a child compartment of the tenancy, and the filter
+          # flag is --image-version (--version prints the CLI version).
           digest_for() {
             oci artifacts container image list \
-              --compartment-id "$COMPARTMENT_ID" \
-              --repository-name "$1" --version "$2" \
+              --compartment-id "$COMPARTMENT_ID" --compartment-id-in-subtree true \
+              --repository-name "$1" --image-version "$2" \
               --query 'data.items[0].digest' --raw-output 2>/dev/null | grep -E '^sha256:' || true
           }
 
@@ -224,155 +277,14 @@ jobs:
         env:
           KEEP_COUNT: ${{ github.event.inputs.keep_count || '20' }}
           KEEP_DAYS: ${{ github.event.inputs.keep_days || '30' }}
-          # Default DRY_RUN to TRUE on schedule. Set repo var OCIR_CLEANUP_ENFORCE=true
-          # to opt scheduled runs into enforcement. Manual dispatch always honours
-          # the input.
-          DRY_RUN: |
-            ${{
-              github.event_name == 'workflow_dispatch'
-                && github.event.inputs.dry_run
-              || (vars.OCIR_CLEANUP_ENFORCE == 'true' && 'false' || 'true')
-            }}
+          # Scheduled runs are dry runs unless repo var OCIR_CLEANUP_ENFORCE=true.
+          # Manual dispatch honours the input. The script deletes only when this
+          # is exactly "false".
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run || (vars.OCIR_CLEANUP_ENFORCE == 'true' && 'false' || 'true') }}
           COMPARTMENT_ID: ${{ secrets.OCI_TENANCY_OCID }}
-          IN_USE_DIGESTS: ${{ steps.in-use.outputs.digest_file }}
-        run: |
-          set -uo pipefail
-
-          REPOS=(
-            "shogo/shogo-api"
-            "shogo/shogo-web"
-            "shogo/shogo-runtime"
-            "shogo/shogo-docs"
-            "shogo/shogo-runtime-base"
-            "shogo/agent-runtime"
-          )
-
-          NOW_EPOCH=$(date +%s)
-          MIN_AGE_SEC=$((KEEP_DAYS * 86400))
-
-          TOTAL_DELETED=0
-          TOTAL_KEPT=0
-          TOTAL_PROTECTED_LATEST=0
-          TOTAL_PROTECTED_INUSE=0
-          TOTAL_PROTECTED_AGE=0
-
-          for REPO in "${REPOS[@]}"; do
-            echo ""
-            echo "============================================"
-            echo "Repository: $REPO"
-            echo "============================================"
-
-            IMAGES_JSON=$(oci artifacts container image list \
-              --compartment-id "$COMPARTMENT_ID" \
-              --repository-name "$REPO" \
-              --sort-by TIMECREATED \
-              --sort-order DESC \
-              --all \
-              --output json 2>&1) || true
-
-            IMAGE_COUNT=$(echo "$IMAGES_JSON" | jq '.data.items | length' 2>/dev/null)
-
-            if [ -z "$IMAGE_COUNT" ] || [ "$IMAGE_COUNT" = "0" ] || [ "$IMAGE_COUNT" = "null" ]; then
-              echo "  No images found (repository may not exist in this region). Skipping."
-              continue
-            fi
-
-            echo "  Total images: $IMAGE_COUNT"
-
-            KEPT=0
-            DELETED=0
-            P_LATEST=0
-            P_INUSE=0
-            P_AGE=0
-
-            for i in $(seq 0 $((IMAGE_COUNT - 1))); do
-              IMAGE_ID=$(echo "$IMAGES_JSON" | jq -r ".data.items[$i].id")
-              DISPLAY_NAME=$(echo "$IMAGES_JSON" | jq -r ".data.items[$i].\"display-name\"")
-              TIME_CREATED=$(echo "$IMAGES_JSON" | jq -r ".data.items[$i].\"time-created\"")
-              VERSION=$(echo "$IMAGES_JSON" | jq -r ".data.items[$i].version // empty")
-              # display-name is typically "<repo>:<tag>@<digest>" or similar; extract the sha
-              DIGEST=$(echo "$DISPLAY_NAME" | grep -oE 'sha256:[a-f0-9]{64}' | head -1)
-              # Fall back to the API field (some image rows expose it as `digest`)
-              if [ -z "$DIGEST" ]; then
-                DIGEST=$(echo "$IMAGES_JSON" | jq -r ".data.items[$i].digest // empty")
-              fi
-
-              # Protection 1: anything tagged with "latest" (pipeline contract)
-              if echo "$VERSION" | grep -q "latest"; then
-                echo "  PROTECT[latest-tag]: $DISPLAY_NAME"
-                P_LATEST=$((P_LATEST + 1))
-                TOTAL_PROTECTED_LATEST=$((TOTAL_PROTECTED_LATEST + 1))
-                continue
-              fi
-
-              # Protection 2: in use by any cluster, or a recent release
-              if [ -n "$DIGEST" ] && grep -qx "$DIGEST" "$IN_USE_DIGESTS"; then
-                echo "  PROTECT[in-use]:    $DISPLAY_NAME ($DIGEST)"
-                P_INUSE=$((P_INUSE + 1))
-                TOTAL_PROTECTED_INUSE=$((TOTAL_PROTECTED_INUSE + 1))
-                continue
-              fi
-
-              # Protection 3: youngest KEEP_COUNT
-              if [ "$KEPT" -lt "$KEEP_COUNT" ]; then
-                echo "  KEEP[recent $((KEPT + 1))/$KEEP_COUNT]: $DISPLAY_NAME ($TIME_CREATED)"
-                KEPT=$((KEPT + 1))
-                TOTAL_KEPT=$((TOTAL_KEPT + 1))
-                continue
-              fi
-
-              # Protection 4: must also be older than KEEP_DAYS to be eligible
-              # TIME_CREATED is RFC3339; convert to epoch (date -d works on GNU date)
-              CREATED_EPOCH=$(date -d "$TIME_CREATED" +%s 2>/dev/null || echo "0")
-              AGE_SEC=$((NOW_EPOCH - CREATED_EPOCH))
-              if [ "$CREATED_EPOCH" -gt 0 ] && [ "$AGE_SEC" -lt "$MIN_AGE_SEC" ]; then
-                echo "  PROTECT[age<${KEEP_DAYS}d]: $DISPLAY_NAME ($TIME_CREATED, age=$((AGE_SEC / 86400))d)"
-                P_AGE=$((P_AGE + 1))
-                TOTAL_PROTECTED_AGE=$((TOTAL_PROTECTED_AGE + 1))
-                continue
-              fi
-
-              if [ "$DRY_RUN" = "true" ]; then
-                echo "  DRY-RUN DELETE:     $DISPLAY_NAME ($TIME_CREATED, age=$((AGE_SEC / 86400))d)"
-              else
-                echo "  DELETE:             $DISPLAY_NAME ($TIME_CREATED, age=$((AGE_SEC / 86400))d)"
-                oci artifacts container image delete \
-                  --image-id "$IMAGE_ID" \
-                  --force 2>&1 || echo "    WARNING: Failed to delete $DISPLAY_NAME"
-              fi
-              DELETED=$((DELETED + 1))
-              TOTAL_DELETED=$((TOTAL_DELETED + 1))
-            done
-
-            echo "  --- kept=$KEPT deleted=$DELETED protected: latest=$P_LATEST in-use=$P_INUSE age=$P_AGE"
-          done
-
-          echo ""
-          echo "============================================"
-          echo "Summary for ${{ matrix.environment }}"
-          echo "============================================"
-          echo "  KEEP_COUNT=$KEEP_COUNT  KEEP_DAYS=$KEEP_DAYS  DRY_RUN=$DRY_RUN"
-          echo "  Cluster cross-reference: all clusters"
-          echo "  Kept (recent):           $TOTAL_KEPT"
-          echo "  Protected (latest tag):  $TOTAL_PROTECTED_LATEST"
-          echo "  Protected (in-use):      $TOTAL_PROTECTED_INUSE"
-          echo "  Protected (age):         $TOTAL_PROTECTED_AGE"
-          echo "  Deleted:                 $TOTAL_DELETED"
-          if [ "$DRY_RUN" = "true" ]; then
-            echo "  Mode: DRY RUN (no images were actually deleted)"
-          fi
-
-          {
-            echo "## Cleanup ${{ matrix.environment }}"
-            echo ""
-            echo "| Metric | Count |"
-            echo "|---|---|"
-            echo "| Kept (recent)          | $TOTAL_KEPT |"
-            echo "| Protected (latest tag) | $TOTAL_PROTECTED_LATEST |"
-            echo "| Protected (in-use)     | $TOTAL_PROTECTED_INUSE |"
-            echo "| Protected (age)        | $TOTAL_PROTECTED_AGE |"
-            echo "| Deleted                | $TOTAL_DELETED |"
-            echo ""
-            echo "- KEEP_COUNT=\`$KEEP_COUNT\`, KEEP_DAYS=\`$KEEP_DAYS\`, DRY_RUN=\`$DRY_RUN\`"
-            echo "- Cluster cross-reference: all clusters + last releases"
-          } >> "$GITHUB_STEP_SUMMARY"
+          REGISTRY_HOST: ${{ vars.OCI_REGION }}.ocir.io
+          OCIR_NAMESPACE: ${{ vars.OCI_TENANCY_NAMESPACE }}
+          OCIR_USERNAME: ${{ secrets.OCI_USERNAME }}
+          OCIR_TOKEN: ${{ secrets.OCI_AUTH_TOKEN }}
+          PROTECTED_DIGESTS: ${{ steps.in-use.outputs.digest_file }}
+        run: .github/scripts/ocir-cleanup.sh

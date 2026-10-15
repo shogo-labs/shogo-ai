@@ -108,12 +108,51 @@ the older api must work against the newer schema. That is why migrations
 must stay backward-compatible: add columns/tables first, and only drop or
 rename them in a later release, once no rollback target still needs them.
 
+Run it with `dry_run` first. A dry run resolves the release, checks its
+images exist in each region, and shows current versus target images per
+service, the node disk gate, and every applied migration the target release
+doesn't have (the older api will run against them). It blocks on unfinished
+migrations, because the older api's `prisma migrate deploy` would refuse to
+start. It copies, patches and deletes nothing, and it doesn't share a
+concurrency group with real rollbacks.
+
 Rollback targets survive image cleanup: `cleanup-ocir.yml` never deletes the
 images of the last 10 `v*` releases (`release_keep`), or any digest in use by
 any cluster.
 
 To roll forward again, re-run `deploy.yml` for the newer tag, or run the
 rollback workflow with the newer release.
+
+### What a rollback does not touch: the metal fleet
+
+The rollback only moves the Kubernetes side. The metal fleet keeps running
+whatever it already has:
+
+- **The node agent** stays on the release its channel pointer names. To move
+  it back, dispatch `metal-agent-deploy.yml` from the older tag (`--ref vX.Y.Z`)
+  with the same environment; hosts converge on their next heartbeat.
+- **The guest rootfs** (the runtime code inside each microVM) stays as baked.
+  Rolling it back means a rootfs rebuild from the older
+  `production-multiarch-<sha>` image (`metal-agent-deploy.yml` with
+  `rebuild_rootfs` and `runtime_image`), which invalidates every snapshot on
+  every host, so every project cold-starts afterwards. Don't do it as part of
+  a routine rollback.
+
+So after a rollback, the older api talks to newer agent and guest code. Keep
+the api ↔ agent and api ↔ guest protocols backward-compatible the same way
+as migrations: an api must keep working with agents and guests from at
+least one release ahead (new fields optional, no removed endpoints or
+renamed messages until the release after). If a release breaks that, say so
+in its release notes, since rolling back across it also needs an agent
+rollback and a rootfs rebuild.
+
+### Who can deploy production
+
+The `production-us` and `production-eu` environments only accept runs from
+`main` and `v*` tags (GitHub → Settings → Environments → Deployment branches
+and tags). So deploys, dry runs (`deploy.yml` with `dry_run`), rollbacks and
+image cleanup must be dispatched from `main` or a release tag. A dry run
+from `main` plans `main`'s head.
 
 ## Pre-scale by 1 node (now automated — fallback only)
 
