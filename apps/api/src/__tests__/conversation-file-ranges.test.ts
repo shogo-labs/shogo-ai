@@ -9,7 +9,7 @@
  * is exercised in-process so the test does not need Postgres.
  */
 
-import { describe, expect, mock, test } from 'bun:test'
+import { beforeEach, describe, expect, mock, test } from 'bun:test'
 import { Hono } from 'hono'
 
 const FILE_BYTES = new Uint8Array([0, 1, 2, 3, 4, 5, 6, 7, 8, 9])
@@ -22,9 +22,12 @@ const attachment = {
   size: FILE_BYTES.byteLength,
 }
 
+/** The row the route reads; a test swaps in another file type. */
+let attachmentRow = attachment
+
 const prismaMock = {
   conversationAttachment: {
-    findUnique: mock(async ({ where }: any) => (where.id === attachment.id ? attachment : null)),
+    findUnique: mock(async ({ where }: any) => (where.id === attachmentRow.id ? attachmentRow : null)),
   },
   conversation: {
     findUnique: mock(async () => ({ workspaceId: 'ws-1' })),
@@ -58,6 +61,12 @@ const token = realFiles.signAttachmentToken(attachment.id)
 
 const getFile = (headers?: Record<string, string>, query = `?t=${token}`) =>
   app.request(`/api/conversation-files/${attachment.id}${query}`, { headers })
+
+const dispositionOf = async (query: string) => (await getFile(undefined, query)).headers.get('content-disposition')
+
+beforeEach(() => {
+  attachmentRow = attachment
+})
 
 describe('GET /conversation-files/:id byte ranges', () => {
   test('advertises range support and serves the whole clip without a Range header', async () => {
@@ -127,5 +136,58 @@ describe('GET /conversation-files/:id byte ranges', () => {
     expect(noToken.status).toBe(403)
     const badToken = await getFile(undefined, '?t=deadbeef.abc')
     expect(badToken.status).toBe(403)
+  })
+})
+
+describe('GET /conversation-files/:id?dl=1', () => {
+  const picture = { ...attachment, name: 'Whiteboard.png', mimeType: 'image/png' }
+  const pdf = { ...attachment, name: 'Root Cause Analysis.pdf', mimeType: 'application/pdf' }
+  const archive = { ...attachment, name: 'handover.zip', mimeType: 'application/zip' }
+
+  test('saves a picture the card is displaying, rather than opening it', async () => {
+    attachmentRow = picture
+    expect(await dispositionOf(`?t=${token}`)).toContain('inline')
+
+    const saved = await dispositionOf(`?t=${token}&dl=1`)
+    expect(saved).toContain('attachment')
+    expect(saved).not.toContain('inline')
+    expect(saved).toContain("filename*=UTF-8''Whiteboard.png")
+
+    // Still the file itself, served whole.
+    const response = await getFile(undefined, `?t=${token}&dl=1`)
+    expect(response.status).toBe(200)
+    expect(new Uint8Array(await response.arrayBuffer())).toEqual(FILE_BYTES)
+  })
+
+  test('saves a PDF, which the timeline also previews inline', async () => {
+    attachmentRow = pdf
+    expect(await dispositionOf(`?t=${token}`)).toContain('inline')
+    const saved = await dispositionOf(`?t=${token}&dl=1`)
+    expect(saved).toContain('attachment')
+    expect(saved).toContain(encodeURIComponent('Root Cause Analysis.pdf'))
+  })
+
+  test('leaves a file that already downloaded alone, without stacking dispositions', async () => {
+    attachmentRow = archive
+    const plain = await dispositionOf(`?t=${token}`)
+    expect(plain).toContain('attachment')
+    const asked = await dispositionOf(`?t=${token}&dl=1`)
+    expect(asked).toContain('attachment')
+    expect(asked!.match(/attachment/g)).toHaveLength(1)
+  })
+
+  test('only a `1` asks for a download', async () => {
+    attachmentRow = picture
+    for (const value of ['0', 'true', '']) {
+      expect(await dispositionOf(`?t=${token}&dl=${value}`)).toContain('inline')
+    }
+  })
+
+  test('does not let the param stand in for the token', async () => {
+    attachmentRow = picture
+    for (const query of ['?dl=1', '?t=deadbeef.abc&dl=1']) {
+      const response = await getFile(undefined, query)
+      expect(response.status).toBe(403)
+    }
   })
 })

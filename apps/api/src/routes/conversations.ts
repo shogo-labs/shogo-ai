@@ -878,9 +878,14 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
     }
     if (!allowed) return c.json({ error: { code: 'forbidden', message: 'No access to this file' } }, 403)
     try {
-      const file = await readConversationFile(row.storageKey)
+      // `?dl=1` is the download action on an attachment card. Pictures, video,
+      // audio and PDFs are served `inline` so they can be previewed in place,
+      // so following one of those links would open the file rather than save
+      // it — this is what makes the card's download actually download.
+      const download = c.req.query('dl') === '1'
+      const file = await readConversationFile(row.storageKey, download ? { downloadName: row.name } : undefined)
       if (file.kind === 'redirect') return c.redirect(file.url, 302)
-      const inline = /^(image|video|audio)\//.test(row.mimeType) || row.mimeType === 'application/pdf'
+      const inline = !download && (/^(image|video|audio)\//.test(row.mimeType) || row.mimeType === 'application/pdf')
       const disposition = `${inline ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(row.name)}`
       const baseHeaders = {
         'Content-Type': row.mimeType,

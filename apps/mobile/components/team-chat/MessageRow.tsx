@@ -9,7 +9,7 @@ import { createElement, memo, useCallback, useEffect, useRef, useState, type Rea
 import { ActionSheetIOS, Alert, Image, Linking, Modal, Platform, Pressable, Text, TextInput, View } from 'react-native'
 import { useRouter } from 'expo-router'
 import * as Clipboard from 'expo-clipboard'
-import { AlarmClock, AlertCircle, Bookmark, Check, CircleDot, CornerDownRight, FileText, KanbanSquare, Link2, Loader2, MessageSquare, MoreHorizontal, Pencil, Pin, SmilePlus, Square, Trash2 } from 'lucide-react-native'
+import { AlarmClock, AlertCircle, Bookmark, Check, CircleDot, CornerDownRight, KanbanSquare, Link2, Loader2, MessageSquare, MoreHorizontal, Pencil, Pin, SmilePlus, Square, Trash2 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { ChatMarkdown } from '../chat/ChatMarkdown'
 import { SidebarContextMenu, type SidebarMenuEntry } from '../layout/SidebarContextMenu'
@@ -30,6 +30,7 @@ import { AgentWorkedFor, AgentWorkingStatus } from './AgentWork'
 import { renderMentions, type MentionNames } from '../../lib/team-chat-state'
 import { isVoiceNote } from '../../lib/voice-note'
 import { VoiceNotePlayer } from './VoiceNotePlayer'
+import { DownloadBadge, FileAttachmentCard } from './FileAttachmentCard'
 import { hasReacted, reactionTooltip } from '../../lib/team-chat-reactions'
 import { WebTooltip } from '../chat/WebTooltip'
 import { useUserStatus } from '../../hooks/useChatPrefs'
@@ -137,12 +138,6 @@ function TimeTooltip({ iso, align = 'center', children }: { iso: string; align?:
         )
       : null,
   )
-}
-
-function formatBytes(size: number): string {
-  if (size < 1024) return `${size} B`
-  if (size < 1024 * 1024) return `${Math.round(size / 1024)} KB`
-  return `${(size / (1024 * 1024)).toFixed(1)} MB`
 }
 
 function initials(name: string): string {
@@ -702,33 +697,32 @@ function MessageRowImpl(props: MessageRowProps) {
                   name={a.name}
                 />
               ) : a.mimeType.startsWith('image/') ? (
-                <Pressable
-                  key={a.id}
-                  onPress={() => setLightboxIndex(imageIndexById.get(a.id) ?? 0)}
-                  accessibilityRole="button"
-                  accessibilityLabel={`Open ${a.name}`}
-                  className={isWeb ? 'cursor-pointer' : undefined}
-                >
-                  <Image
-                    source={{ uri: absoluteApiUrl(a.url) }}
-                    className="rounded-lg border border-border"
-                    style={{ width: 220, height: a.width && a.height ? Math.min(260, (220 * a.height) / a.width) : 160 }}
-                    resizeMode="cover"
-                    accessibilityLabel={a.name}
-                  />
-                </Pressable>
+                <View key={a.id} className="relative">
+                  <Pressable
+                    onPress={() => setLightboxIndex(imageIndexById.get(a.id) ?? 0)}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Open ${a.name}`}
+                    className={isWeb ? 'cursor-pointer' : undefined}
+                  >
+                    <Image
+                      source={{ uri: absoluteApiUrl(a.url) }}
+                      className="rounded-lg border border-border"
+                      style={{ width: 220, height: a.width && a.height ? Math.min(260, (220 * a.height) / a.width) : 160 }}
+                      resizeMode="cover"
+                      accessibilityLabel={a.name}
+                    />
+                  </Pressable>
+                  <DownloadBadge url={absoluteApiUrl(a.url)} name={a.name} />
+                </View>
               ) : (
-                <Pressable
+                <FileAttachmentCard
                   key={a.id}
-                  onPress={() => Linking.openURL(absoluteApiUrl(a.url))}
-                  className="flex-row items-center gap-2 rounded-lg border border-border bg-card px-3 py-2 active:bg-muted"
-                >
-                  <FileText size={16} className="text-muted-foreground" />
-                  <View>
-                    <Text className="text-xs font-medium text-foreground" numberOfLines={1}>{a.name}</Text>
-                    <Text className="text-[10px] text-muted-foreground">{formatBytes(a.size)}</Text>
-                  </View>
-                </Pressable>
+                  name={a.name}
+                  mimeType={a.mimeType}
+                  size={a.size}
+                  url={absoluteApiUrl(a.url)}
+                  onOpen={() => void Linking.openURL(absoluteApiUrl(a.url))}
+                />
               ),
             )}
           </View>

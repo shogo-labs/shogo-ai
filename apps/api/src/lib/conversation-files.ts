@@ -173,9 +173,24 @@ export type ConversationFileRead =
   | { kind: 'redirect'; url: string }
   | { kind: 'bytes'; bytes: Uint8Array }
 
-export async function readConversationFile(key: string): Promise<ConversationFileRead> {
+/**
+ * Read a stored file. `downloadName` asks for it to be saved rather than
+ * displayed: local storage can be told with a header on the way out, but cloud
+ * storage serves the bytes itself, so there the disposition has to be part of
+ * the signed URL instead.
+ */
+export async function readConversationFile(
+  key: string,
+  options: { downloadName?: string | null } = {},
+): Promise<ConversationFileRead> {
   if (isLocalMode()) return { kind: 'bytes', bytes: await readFile(localPath(key)) }
-  return { kind: 'redirect', url: await getArtifactPresignedReadUrl(key, { expiresIn: 300 }) }
+  const responseContentDisposition = options.downloadName
+    ? `attachment; filename*=UTF-8''${encodeURIComponent(options.downloadName)}`
+    : undefined
+  return {
+    kind: 'redirect',
+    url: await getArtifactPresignedReadUrl(key, { expiresIn: 300, responseContentDisposition }),
+  }
 }
 
 /** The file's bytes, following the presigned redirect in cloud mode. */
