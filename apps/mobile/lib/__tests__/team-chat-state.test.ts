@@ -260,6 +260,27 @@ describe('mentions', () => {
     expect(insertMention('ask @bil', { start: 4, query: 'bil' }, billing)).toEqual({ text: 'ask @Billing Bot ', cursor: 17 })
   })
 
+  test('flags users who are not in the channel, and lists them after everyone else', () => {
+    const inChannel = new Set(['me', 'u3'])
+    const candidates = mentionCandidates(mentionables, 'me', inChannel)
+    const ana = candidates.find((c) => c.display === 'Ana')!
+    const anaLopez = candidates.find((c) => c.display === 'Ana Lopez')!
+    const billing = candidates.find((c) => c.display === 'Billing Bot')!
+    expect(ana.inChannel).toBe(true)
+    expect(anaLopez.inChannel).toBe(false)
+    expect(billing.inChannel).toBeUndefined() // not a user candidate: the flag doesn't apply
+
+    // Tie-broken by membership: Ana (member) before Ana Lopez (not a member).
+    expect(filterCandidates(candidates, 'ana').map((c) => c.display)).toEqual(['Ana', 'Ana Lopez'])
+    // With no query, every non-member user sorts after the rest, in their original order.
+    expect(filterCandidates(candidates, '').map((c) => c.display)).toEqual(['Shogo', 'Billing Bot', 'Ana', 'here', 'channel', 'Ana Lopez'])
+  })
+
+  test('omitting channel membership leaves every candidate unflagged', () => {
+    const candidates = mentionCandidates(mentionables, 'me')
+    expect(candidates.every((c) => c.inChannel === undefined)).toBe(true)
+  })
+
   test('encodes picked names to tokens (longest names first) and renders them back', () => {
     const candidates = mentionCandidates(mentionables, 'me')
     const picked = candidates.filter((c) => ['Ana', 'Ana Lopez', 'Billing Bot'].includes(c.display))

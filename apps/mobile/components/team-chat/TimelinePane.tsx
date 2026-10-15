@@ -12,13 +12,16 @@ import { cn } from '@shogo/shared-ui/primitives'
 import { conversationTitle, teamChatApi, type ChatMessage, type ConversationDetail, type Mentionables } from '../../lib/team-chat-api'
 import { mentionNames } from '../../lib/team-chat-state'
 import { ACTIVITY_CHANNEL_FILTERS, EMPTY_ACTIVITY_FILTER, isActivityFilterActive, matchesActivityFilters, type ActivityFilterState } from '../../lib/activity-channel-filters'
-import { TIMELINE_SOFT_LIMIT, useConversationList, useConversationTimeline, useMarkReadWhileVisible, useTypingUsers } from '../../hooks/useTeamChat'
+import { TIMELINE_SOFT_LIMIT, useConversationList, useConversationTimeline, useMarkReadWhileVisible, useTypingUsers, type SendInput } from '../../hooks/useTeamChat'
 import { requestEditMessage } from '../../hooks/useChatShortcuts'
 import { threadCrumbs } from '../../lib/team-chat-nav'
+import { nonMemberMentionIds } from '../../lib/team-chat-mention-nudge'
+import { dismissMentionNudgeForever, getMentionNudgeDismissed } from '../../lib/mention-nudge-preference'
 import { Breadcrumb } from './SessionBreadcrumb'
 import { ActivityFilterPicker } from './ActivityFilterPicker'
 import { MessageList } from './MessageList'
 import { Composer, type ComposerHandle } from './Composer'
+import { MentionNudgeCard } from './MentionNudgeCard'
 import { CHROME_SIZE, GlassButton, GlassChip } from './FloatingChrome'
 import { usePhoneChromeOverlay } from '../layout/PhoneChromeOverlay'
 import { GlassBlurTarget } from '../ui/LiquidGlassBackdrop'
@@ -264,6 +267,34 @@ export function TimelinePane(props: TimelinePaneProps) {
   }, [timeline.state.messages, me])
 
   const isChannel = conversation.kind === 'public' || conversation.kind === 'private'
+
+  // Flags @-mentions of non-members in the composer, and offers to add
+  // anyone the sender just mentioned who isn't in the channel (never for
+  // DMs: there's no "member" concept to flag against).
+  const channelMemberIds = useMemo(
+    () => (isChannel ? new Set(conversation.members.flatMap((m) => (m.type === 'user' ? [m.userId] : []))) : null),
+    [isChannel, conversation.members],
+  )
+  const [mentionNudge, setMentionNudge] = useState<{ ids: string[]; busy: boolean; error: string | null } | null>(null)
+  useEffect(() => setMentionNudge(null), [conversation.id, threadRootId])
+  const handleSend = useCallback(async (input: SendInput) => {
+    setMentionNudge(null)
+    const sent = await timeline.send(input)
+    if (!sent || !channelMemberIds || getMentionNudgeDismissed()) return
+    const ids = nonMemberMentionIds(input.text, channelMemberIds, me)
+    if (ids.length) setMentionNudge({ ids, busy: false, error: null })
+  }, [timeline.send, channelMemberIds, me])
+  const addMentioned = useCallback(async () => {
+    if (!mentionNudge) return
+    setMentionNudge((n) => (n ? { ...n, busy: true, error: null } : n))
+    try {
+      await api.addMembers(conversation.id, mentionNudge.ids)
+      setMentionNudge(null)
+    } catch (err) {
+      setMentionNudge((n) => (n ? { ...n, busy: false, error: err instanceof Error ? err.message : 'Could not add them' } : n))
+    }
+  }, [mentionNudge, conversation.id])
+
   const placeholder = threadRootId
     ? 'Reply in thread…'
     : isChannel
@@ -351,19 +382,35 @@ export function TimelinePane(props: TimelinePaneProps) {
     </ScrollView>
   ) : null
   const composer = (
-    <Composer
-      ref={composerRef}
-      workspaceId={workspaceId}
-      conversationId={conversation.id}
-      threadRootId={threadRootId}
-      placeholder={placeholder}
-      mentionables={mentionables}
-      me={me}
-      disabled={!canPostHere}
-      disabledReason={disabledReason}
-      onSend={timeline.send}
-      onEditLast={onEditLast}
-    />
+    <>
+      {mentionNudge && (
+        <MentionNudgeCard
+          names={mentionNudge.ids.map((id) => names.users.get(id) ?? 'Someone')}
+          busy={mentionNudge.busy}
+          error={mentionNudge.error}
+          onAdd={() => void addMentioned()}
+          onDismiss={() => setMentionNudge(null)}
+          onDontShowAgain={() => {
+            void dismissMentionNudgeForever()
+            setMentionNudge(null)
+          }}
+        />
+      )}
+      <Composer
+        ref={composerRef}
+        workspaceId={workspaceId}
+        conversationId={conversation.id}
+        threadRootId={threadRootId}
+        placeholder={placeholder}
+        mentionables={mentionables}
+        me={me}
+        disabled={!canPostHere}
+        disabledReason={disabledReason}
+        onSend={handleSend}
+        onEditLast={onEditLast}
+        channelMemberIds={channelMemberIds}
+      />
+    </>
   )
 
   if (floating) {

@@ -253,6 +253,8 @@ export interface ComposerCompletionItem {
   key: string;
   label: string;
   subtitle?: string | null;
+  /** Short right-aligned flag, e.g. "Not in channel". */
+  trailing?: string | null;
   icon?: ReactNode;
   /** Replaces the typed trigger + query; a space is added after it. */
   insert: string;
@@ -2212,6 +2214,16 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
                       numberOfLines={1}
                     >
                       {item.subtitle}
+                    </Text>
+                  ) : (
+                    <View className="flex-1" />
+                  )}
+                  {item.trailing ? (
+                    <Text
+                      className="text-[10px] font-medium text-muted-foreground"
+                      numberOfLines={1}
+                    >
+                      {item.trailing}
                     </Text>
                   ) : null}
                 </Pressable>

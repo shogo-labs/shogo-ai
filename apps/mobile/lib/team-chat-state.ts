@@ -278,9 +278,20 @@ export interface MentionCandidate {
   userId?: string
   /** For an agent: its project (null for the workspace agent). */
   projectId?: string | null
+  /** For a user candidate, when the open conversation's membership is known: false if they are not in it. */
+  inChannel?: boolean
 }
 
-export function mentionCandidates(mentionables: Mentionables | null, meId: string | null): MentionCandidate[] {
+/**
+ * `channelMemberIds`, when given, marks each person candidate `inChannel`
+ * so the composer can flag "Not in channel" and list members first —
+ * only meaningful for a channel (public/private), so pass it only there.
+ */
+export function mentionCandidates(
+  mentionables: Mentionables | null,
+  meId: string | null,
+  channelMemberIds?: Set<string> | null,
+): MentionCandidate[] {
   if (!mentionables) return []
   const agents = mentionables.agents.map<MentionCandidate>((a) => ({
     kind: 'agent',
@@ -291,7 +302,14 @@ export function mentionCandidates(mentionables: Mentionables | null, meId: strin
   }))
   const people = mentionables.people
     .filter((p) => p.id !== meId)
-    .map<MentionCandidate>((p) => ({ kind: 'user', display: p.name, token: `<@u:${p.id}>`, subtitle: p.email, userId: p.id }))
+    .map<MentionCandidate>((p) => ({
+      kind: 'user',
+      display: p.name,
+      token: `<@u:${p.id}>`,
+      subtitle: p.email,
+      userId: p.id,
+      inChannel: channelMemberIds ? channelMemberIds.has(p.id) : undefined,
+    }))
   const groups = (mentionables.groups ?? []).map<MentionCandidate>((g) => ({
     kind: 'group',
     display: g.handle,
@@ -313,9 +331,14 @@ export function activeMentionQuery(text: string, cursor: number): { start: numbe
   return { start: before.length - match[2].length - 1, query: match[2] }
 }
 
+/** Within equal relevance, a person not in the channel sorts after everyone else. */
+function notInChannelRank(c: MentionCandidate): number {
+  return c.inChannel === false ? 1 : 0
+}
+
 export function filterCandidates(candidates: MentionCandidate[], query: string, limit = 8): MentionCandidate[] {
   const q = query.toLowerCase()
-  if (!q) return candidates.slice(0, limit)
+  if (!q) return [...candidates].sort((a, b) => notInChannelRank(a) - notInChannelRank(b)).slice(0, limit)
   const scored = candidates
     .map((c) => {
       const name = c.display.toLowerCase()
@@ -323,7 +346,7 @@ export function filterCandidates(candidates: MentionCandidate[], query: string, 
       return { c, score }
     })
     .filter((x) => x.score >= 0)
-    .sort((a, b) => a.score - b.score)
+    .sort((a, b) => a.score - b.score || notInChannelRank(a.c) - notInChannelRank(b.c))
   return scored.slice(0, limit).map((x) => x.c)
 }
 

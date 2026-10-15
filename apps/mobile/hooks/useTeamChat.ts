@@ -363,8 +363,8 @@ export function useConversationTimeline(
     })
   }, [conversationId, threadRootId])
 
-  const sendWithClientId = useCallback(async (clientMsgId: string, input: SendInput) => {
-    if (!conversationId) return
+  const sendWithClientId = useCallback(async (clientMsgId: string, input: SendInput): Promise<boolean> => {
+    if (!conversationId) return false
     try {
       const message = await api.post(conversationId, {
         text: input.text,
@@ -374,13 +374,16 @@ export function useConversationTimeline(
         attachmentIds: input.attachmentIds,
       })
       if (scope) setState((s) => applyTimelineEvent(s, { type: 'message.created', conversationId, message }, scope))
+      return true
     } catch {
       setState((s) => failOptimistic(s, clientMsgId))
+      return false
     }
   }, [conversationId, threadRootId, scope])
 
-  const send = useCallback(async (input: SendInput) => {
-    if (!conversationId || !workspaceId) return
+  /** Resolves true once the message has actually posted (not merely queued). */
+  const send = useCallback(async (input: SendInput): Promise<boolean> => {
+    if (!conversationId || !workspaceId) return false
     const clientMsgId = newClientMsgId()
     const optimistic: ChatMessage = {
       id: `pending-${clientMsgId}`,
@@ -407,7 +410,7 @@ export function useConversationTimeline(
       createdAt: new Date().toISOString(),
     }
     setState((s) => addOptimistic(s, optimistic))
-    await sendWithClientId(clientMsgId, input)
+    return sendWithClientId(clientMsgId, input)
   }, [conversationId, workspaceId, threadRootId, me, user, sendWithClientId])
 
   const retry = useCallback(async (message: ChatMessage) => {

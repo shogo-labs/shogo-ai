@@ -60,6 +60,8 @@ export interface ComposerProps {
   onSend: (input: SendInput) => Promise<void> | void
   /** ↑ in an empty composer; return true if a message was opened for editing. */
   onEditLast?: () => boolean
+  /** This conversation's members, for a channel only: flags @-mention candidates who aren't in it. */
+  channelMemberIds?: Set<string> | null
 }
 
 export interface ComposerHandle {
@@ -94,7 +96,10 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   const sendAtRef = useRef<Date | null>(null)
   const customEmoji = useCustomEmoji(workspaceId)
 
-  const candidates = useMemo(() => mentionCandidates(mentionables, me), [mentionables, me])
+  const candidates = useMemo(
+    () => mentionCandidates(mentionables, me, props.channelMemberIds),
+    [mentionables, me, props.channelMemberIds],
+  )
   const byToken = useMemo(() => new Map(candidates.map((c) => [c.token, c])), [candidates])
   const picksFrom = useCallback(
     (refs: ChatReference[] | undefined) =>
@@ -112,6 +117,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
             key: c.token,
             label: c.display,
             subtitle: c.subtitle,
+            trailing: c.kind === 'user' && c.inChannel === false ? 'Not in channel' : undefined,
             icon: <MentionIcon candidate={c} workspaceId={workspaceId} />,
             insert: `@${c.display}`,
             reference: mentionReference(c),

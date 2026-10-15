@@ -79,6 +79,24 @@ describe('recipients', () => {
     expect(await notified(result)).toEqual([])
   })
 
+  test('mentioning a workspace member who is not in this channel never notifies them, public or private', async () => {
+    for (const kind of ['public', 'private'] as const) {
+      const channel = await service.createChannel({ workspaceId: seed.workspaceId, userId: seed.owner, name: `no-${kind}-${kind}`, kind })
+      const result = await service.postMessage({
+        conversationId: channel.id, authorType: 'user', authorUserId: seed.owner,
+        text: `${userMentionToken(seed.member)} can you look?`,
+      })
+      expect(await notified(result)).toEqual([])
+
+      await service.addUserMembers(channel.id, seed.owner, [seed.member])
+      const afterJoining = await service.postMessage({
+        conversationId: channel.id, authorType: 'user', authorUserId: seed.owner,
+        text: `${userMentionToken(seed.member)} thanks for joining`,
+      })
+      expect(await notified(afterJoining)).toEqual([`${seed.member}:mention`])
+    }
+  })
+
   test('muted channels still deliver direct mentions but not @channel; notify level none silences both', async () => {
     await db.conversationMember.updateMany({ where: { conversationId: generalId, userId: seed.member }, data: { muted: true } })
     expect(await notified(await post({ authorUserId: seed.owner, text: '<!channel> standup' }))).toEqual([`${seed.viewer}:broadcast`])

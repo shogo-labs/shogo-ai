@@ -13,7 +13,7 @@ import { sendPushToUser } from '../lib/push-notifications'
 import { collectMentionIds, groupNames, markdownToPlainText, renderMentionsAsText } from './conversation-mentions'
 import { registerAfterPostHook } from './conversation-pipeline'
 import {
-  agentDisplayName, getWorkspaceRole, isOpenKind, onReactionAdded,
+  agentDisplayName, onReactionAdded,
   type PostMessageResult, type ReactionAddedEvent,
 } from './conversation.service'
 import { getPresence } from './conversation-presence'
@@ -99,8 +99,10 @@ export async function resolveRecipients(result: PostMessageResult): Promise<Noti
     if (m.targetType !== 'user') continue
     const member = byUser.get(m.userId)
     if (member?.level === 'none') continue
-    if (!member && !isOpenKind(conversation.kind)) continue
-    if (!member && !(await getWorkspaceRole(conversation.workspaceId, m.userId))) continue
+    // Mentioning someone who isn't in this channel never notifies them, public or
+    // private: channel notifications are scoped to members, same as Slack. The
+    // composer instead offers to add them (see team-chat-mention-nudge.ts).
+    if (!member) continue
     add(m.userId, 'mention')
   }
 
