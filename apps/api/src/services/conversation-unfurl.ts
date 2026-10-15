@@ -22,6 +22,11 @@ export interface Unfurl {
 const MAX_LINKS = 3
 const CACHE_TTL_MS = 60 * 60 * 1000
 const CACHE_MAX = 500
+/** Metadata can sit far into the document: YouTube's head alone is past 512KB. */
+const FETCH_BYTES = 1024 * 1024
+const FETCH_TIMEOUT_MS = 8_000
+/** Nothing an unfurl needs lives after `</head>`. */
+const HEAD_END = '</head>'
 const cache = new Map<string, { at: number; value: Unfurl | null }>()
 
 type Fetcher = typeof safeFetchText
@@ -64,11 +69,39 @@ function meta(html: string, keys: string[]): string | null {
   return null
 }
 
+function hostOf(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./, '')
+  } catch {
+    return ''
+  }
+}
+
+function documentTitle(html: string): string | null {
+  return /<title[^>]*>([^<]*)<\/title>/i.exec(html)?.[1]?.trim() || null
+}
+
+/** Sign-in walls, consent interstitials and bare error pages. */
+const FILLER_TITLE =
+  /^(sign ?in|log ?in|sign ?up|just a moment|attention required|access denied|request access|you need access|unsupported browser)\b|^(page not found|not found|404|403|error|forbidden)$/i
+
+/**
+ * A card whose title only repeats the site's own name tells the reader nothing
+ * the link did not already say.
+ */
+function saysNothing(title: string, siteName: string, url: string): boolean {
+  if (FILLER_TITLE.test(title.trim())) return true
+  const host = hostOf(url)
+  const bare = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '')
+  const mine = bare(title)
+  return mine === bare(siteName) || mine === bare(host) || mine === bare(host.split('.')[0] ?? '')
+}
+
 export function parseUnfurl(url: string, html: string): Unfurl | null {
-  const head = html.slice(0, 200_000)
-  const title = meta(head, ['og:title', 'twitter:title']) ?? (/<title[^>]*>([^<]*)<\/title>/i.exec(head)?.[1]?.trim() || null)
+  const declared = meta(html, ['og:title', 'twitter:title'])
+  const title = declared ?? documentTitle(html)
   if (!title) return null
-  let image = meta(head, ['og:image', 'og:image:url', 'twitter:image'])
+  let image = meta(html, ['og:image', 'og:image:url', 'twitter:image'])
   if (image) {
     try {
       image = new URL(image, url).toString()
@@ -77,13 +110,18 @@ export function parseUnfurl(url: string, html: string): Unfurl | null {
       image = null
     }
   }
-  const description = meta(head, ['og:description', 'twitter:description', 'description'])
+  const siteName = meta(html, ['og:site_name']) ?? hostOf(url)
+  // A page that declares no rich-preview metadata *and* names itself only with
+  // its own name is a wall, not a document. Restricted Google Docs are the case
+  // that matters: an anonymous crawler is handed "Sign in - Google Accounts".
+  if (!declared && !image && saysNothing(title, siteName, url)) return null
+  const description = meta(html, ['og:description', 'twitter:description', 'description'])
   return {
     url,
     title: decodeEntities(title).slice(0, 200),
     description: description ? description.slice(0, 400) : null,
     image,
-    siteName: meta(head, ['og:site_name']) ?? new URL(url).hostname.replace(/^www\./, ''),
+    siteName,
   }
 }
 
@@ -92,7 +130,7 @@ export async function unfurlUrl(url: string): Promise<Unfurl | null> {
   if (hit && Date.now() - hit.at < CACHE_TTL_MS) return hit.value
   let value: Unfurl | null = null
   try {
-    const res = await fetcher(url)
+    const res = await fetcher(url, { maxBytes: FETCH_BYTES, timeoutMs: FETCH_TIMEOUT_MS, stopAt: HEAD_END })
     if (res.status < 400 && /text\/html|application\/xhtml/i.test(res.contentType)) value = parseUnfurl(res.url, res.body)
   } catch {
     value = null
