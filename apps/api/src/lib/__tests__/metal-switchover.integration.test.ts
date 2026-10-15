@@ -488,6 +488,41 @@ describe('rootfs switch-over (simulated fleet)', () => {
     expect(fleet.stops).toEqual([])
   })
 
+  test('a pre-warm cut off by an API deploy is resumed, not activated half-done', async () => {
+    fleet.suspended('ws:proj:p1', 'h1')
+    fleet.suspended('ws:proj:p2', 'h2')
+    fleet.stage('h1', 'v2')
+    fleet.stage('h2', 'v2')
+    expect(await actions()).toEqual(['prewarm-started'])
+    const first = await fleet.jobDone()
+    expect(first.counts).toEqual({ warmed: 2 })
+    // The replica running it died: its status still says running, but nobody holds the lease.
+    await fleet.store.setStatus({ ...first, state: 'running', finishedAt: undefined })
+    const boots = fleet.boots.length
+    fleet.advance(MIN)
+
+    expect(await actions()).toEqual(['prewarm-resumed'])
+    expect(await fleet.heartbeat('h1')).toBeUndefined()
+    const resumed = await fleet.jobDone()
+    expect(resumed.jobId).not.toBe(first.jobId)
+    expect(resumed.counts).toEqual({ 'already-warm': 2 })
+    expect(fleet.boots.length).toBe(boots)
+
+    expect(await actions()).toEqual(['activated'])
+    expect(await fleet.heartbeat('h1')).toBe('v2')
+  })
+
+  test('a pre-warm interrupted past the timeout activates', async () => {
+    fleet.suspended('ws:proj:p1', 'h1')
+    fleet.stage('h1', 'v2')
+    fleet.stage('h2', 'v2')
+    await actions()
+    const first = await fleet.jobDone()
+    await fleet.store.setStatus({ ...first, state: 'running', finishedAt: undefined })
+    fleet.advance(SWITCHOVER.prewarmTimeoutMs)
+    expect(await actions()).toEqual(['activated'])
+  })
+
   test('a host that cannot pre-warm activates its region straight away', async () => {
     fleet.suspended('ws:proj:p1', 'h1')
     fleet.stage('h1', 'v2', { prewarm: false })

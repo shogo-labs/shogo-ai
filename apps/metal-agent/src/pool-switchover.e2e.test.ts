@@ -193,6 +193,29 @@ describe('activation', () => {
     expect(r.host.guestFor(woke.handle)!.read('src/App.tsx')).toBe('v2 (edited before the pre-warm)\n')
   }, 30_000)
 
+  test('a GC sweep between promotion and the restart keeps the promoted snapshots', async () => {
+    const r = rig()
+    const pool = await r.agent()
+    await pool.open('p1', ENV)
+    await pool.suspend('p1')
+    const B = r.stage()
+    await pool.openStaged('p1', ENV)
+    await pool.suspendOrRetire('p1')
+    await pool.open('p2', ENV)
+    await pool.suspend('p2')
+
+    activateStagedImages(r.baseRootfs)
+    expect(pool.promoteStagedSnapshots([B])).toBe(1)
+    // The draining agent's last sweep: the old-image snapshot goes, the promoted one stays.
+    const gc = await pool.gcSweep()
+    expect(gc.staleReclaimed).toEqual(['p2'])
+    expect(pool.getProjectStatus('p1')).toMatchObject({ state: 'suspended', rootfsFresh: true, snapshotRootfsIdentity: B })
+
+    const next = await r.agent()
+    expect(next.getProjectStatus('p1')).toMatchObject({ state: 'suspended', rootfsFresh: true, snapshotRootfsIdentity: B })
+    expect((await next.open('p1', ENV)).mode).toBe('resumed')
+  }, 30_000)
+
   test('a runtime not pre-warmed loses its old-image snapshot at activation and cold-boots on the new image', async () => {
     const r = rig()
     r.s3.put(SRC, tarOf({ 'src/App.tsx': 'v1\n' }))

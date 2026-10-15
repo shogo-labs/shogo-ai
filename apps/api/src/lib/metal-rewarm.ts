@@ -740,6 +740,7 @@ export interface SwitchoverTickResult {
     | 'activating'
     | 'staged-mixed'
     | 'prewarm-started'
+    | 'prewarm-resumed'
     | 'prewarming'
     | 'prewarm-superseded'
     | 'busy'
@@ -842,6 +843,25 @@ export async function switchoverTick(
       continue
     }
 
+    const startPrewarm = async (resumed: boolean) => {
+      const res = await start({ reason: `pre-warm rootfs ${version.slice(0, 12)} in ${region}`, region, target: 'staged' })
+      if (!res.started || !res.jobId) {
+        out.push({ region, action: 'busy', stagedVersion: version })
+        return
+      }
+      await store.set(
+        `prewarm:${region}`,
+        JSON.stringify({ version, jobId: res.jobId, startedAt: now } satisfies PrewarmRecord),
+        SWITCHOVER_TTL_S,
+      )
+      deps.log(
+        resumed
+          ? `[MetalRewarm] region ${region}: pre-warm ${pw?.jobId} was interrupted, resuming as ${res.jobId} (${res.total} runtimes)`
+          : `[MetalRewarm] region ${region}: staged rootfs ${version.slice(0, 12)} on every host, pre-warm ${res.jobId} (${res.total} runtimes)`,
+      )
+      out.push({ region, action: resumed ? 'prewarm-resumed' : 'prewarm-started', stagedVersion: version, detail: res.jobId })
+    }
+
     if (pw?.version !== version) {
       // A pre-warm for an older staged build is pointless now: its snapshots
       // were dropped when the host rebuilt. Cancel it; the next tick starts ours.
@@ -850,18 +870,15 @@ export async function switchoverTick(
         out.push({ region, action: 'prewarm-superseded', stagedVersion: version, detail: `cancelled ${pw.jobId}` })
         continue
       }
-      const res = await start({ reason: `pre-warm rootfs ${version.slice(0, 12)} in ${region}`, region, target: 'staged' })
-      if (!res.started || !res.jobId) {
-        out.push({ region, action: 'busy', stagedVersion: version })
-        continue
-      }
-      await store.set(
-        `prewarm:${region}`,
-        JSON.stringify({ version, jobId: res.jobId, startedAt: now } satisfies PrewarmRecord),
-        SWITCHOVER_TTL_S,
-      )
-      deps.log(`[MetalRewarm] region ${region}: staged rootfs ${version.slice(0, 12)} on every host, pre-warm ${res.jobId} (${res.total} runtimes)`)
-      out.push({ region, action: 'prewarm-started', stagedVersion: version, detail: res.jobId })
+      await startPrewarm(false)
+      continue
+    }
+
+    // The job dies with its API replica (any deploy). Runtimes it already
+    // warmed answer `prewarmed` straight away, so a fresh job picks up where
+    // it stopped; the timeout above still bounds the whole pre-warm.
+    if (status?.jobId === pw.jobId && status.state === 'interrupted') {
+      await startPrewarm(true)
       continue
     }
 

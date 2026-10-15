@@ -913,10 +913,7 @@ export class MetalWarmPool {
     store?: SnapshotStore,
   ) {
     this.store = store ?? createSnapshotStore(cfg)
-    this.rootfsIds = {
-      standard: computeRootfsIdentity(cfg),
-      docker: computeRootfsIdentity(cfg, classConfig(cfg, 'docker').baseRootfs),
-    }
+    this.rootfsIds = this.readRootfsIds()
     this.rootfsId = this.rootfsIds.standard
     this.index = new CacheIndex(cfg.snapDir)
     this.stagedIndex = new CacheIndex(join(cfg.snapDir, 'staged'))
@@ -1133,6 +1130,13 @@ export class MetalWarmPool {
   }
 
   /** Current golden-rootfs identity for `vmClass` (see `rootfsIds`). */
+  private readRootfsIds(): Record<VmClass, string> {
+    return {
+      standard: computeRootfsIdentity(this.cfg),
+      docker: computeRootfsIdentity(this.cfg, classConfig(this.cfg, 'docker').baseRootfs),
+    }
+  }
+
   private classRootfsIdentity(vmClass: VmClass): string {
     return this.rootfsIds[vmClass] ?? this.rootfsIds.standard
   }
@@ -5426,12 +5430,17 @@ export class MetalWarmPool {
   /**
    * Activation: make staged snapshots taken on `identities` the projects'
    * current ones, replacing (and deleting) the old-rootfs snapshot each one
-   * supersedes. Called right before the staged image is renamed over the base
-   * and the agent restarts, so the restarted pool rehydrates them as current.
+   * supersedes. Called right after the staged image is renamed over the base
+   * and before the agent restarts, so the restarted pool rehydrates them as current.
    * Their durable push was deferred while staged; `pushPendingDurable` does it
    * after the restart. Staged snapshots for any other identity are dropped.
    */
   promoteStagedSnapshots(identities: string[]): number {
+    // The base on disk is already the new image. This process keeps running
+    // (drain, a last GC sweep) until the restart, and must judge freshness
+    // against that image, or it reclaims the snapshots it just promoted.
+    this.rootfsIds = this.readRootfsIds()
+    this.rootfsId = this.rootfsIds.standard
     let n = 0
     for (const s of [...this.stagedSuspended.values()]) {
       if (!s.rootfsIdentity || !identities.includes(s.rootfsIdentity) || this.assigned.has(s.projectId)) {
