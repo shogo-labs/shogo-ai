@@ -100,6 +100,12 @@ describe('routePath', () => {
     expect(routeUrl('https://example.com/api/projects', API)).toBe('https://example.com/api/projects')
   })
 
+  test('team chat file links keep their token through the relay', async () => {
+    signedIn()
+    await activate('ws-acme')
+    expect(routePath('/api/conversation-files/att-1?t=abc.def')).toBe('/api/cloud/ws-acme/conversation-files/att-1?t=abc.def')
+  })
+
   test('the cloud list survives a reload, so early requests route correctly', async () => {
     signedIn()
     _resetWorkspaceRouteForTests()

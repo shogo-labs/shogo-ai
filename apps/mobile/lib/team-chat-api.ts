@@ -863,9 +863,13 @@ export function teamChatApi() {
   }
 }
 
-/** Server file links are root-relative; resolve them against the API origin. */
+/**
+ * Server file links are root-relative; resolve them against the API origin.
+ * `<img>` loads bypass the fetch router, so a cloud workspace's links are
+ * routed here or they'd hit the desktop's local API.
+ */
 export function absoluteApiUrl(url: string): string {
-  return url.startsWith('/') && API_URL ? `${API_URL}${url}` : url
+  return url.startsWith('/') && API_URL ? routeUrl(`${API_URL}${url}`, API_URL) : url
 }
 
 export function nativeCookieHeader(): Record<string, string> {
