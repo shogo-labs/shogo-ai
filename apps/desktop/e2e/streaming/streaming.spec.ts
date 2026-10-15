@@ -17,7 +17,7 @@ import {
   createChatSession,
   startBackgroundTurn,
   expandWorkedSections,
-  launchDesktop,
+  launchTarget,
   leaveChat,
   queuedCount,
   reloadApp,
@@ -77,7 +77,7 @@ let h: Harness
 
 test.beforeAll(async () => {
   test.setTimeout(600_000)
-  h = await launchDesktop()
+  h = await launchTarget()
 })
 
 test.afterAll(async () => {

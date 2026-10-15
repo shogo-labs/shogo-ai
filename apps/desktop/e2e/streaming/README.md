@@ -65,3 +65,26 @@ Overridable with environment variables: `SHOGO_E2E_FIRST_TOKEN_MS` (1500),
 
 The island and a second window as observers of the same chat (see the island sync plan), and
 switching between chats through the sidebar.
+
+## Plain browser target and React render profile
+
+Electron isn't required. `SHOGO_E2E_TARGET=web` runs the same scenarios in Chromium against a
+throwaway local-mode API (SQLite, fake model) and this checkout's Metro web bundle, on free ports,
+without touching a dev stack you already run:
+
+```
+SHOGO_E2E_TARGET=web PLAYWRIGHT_E2E=1 npx playwright test --config e2e/playwright.config.ts streaming.spec.ts
+```
+
+`render-profile.spec.ts` counts React re-renders in the chat panel during a long, tool-heavy turn
+(on an empty chat and after several turns of history). It installs a fake DevTools hook before React
+loads, so no app code changes are needed:
+
+```
+SHOGO_E2E_TARGET=web SHOGO_E2E_REACT_PROFILE=1 PLAYWRIGHT_E2E=1 \
+  npx playwright test --config e2e/playwright.config.ts render-profile.spec.ts
+```
+
+The report (`test-results/streaming-e2e/render-profile.json`) lists, per component: renders, self
+time, renders with unchanged props and state ("wasted"), which props and which context fields
+changed, and which components started each commit.
