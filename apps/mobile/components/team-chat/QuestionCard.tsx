@@ -41,6 +41,8 @@ export function QuestionCardView({
   names,
   canAnswer = true,
   agentName,
+  outlined = true,
+  onOpen,
 }: {
   questions: Question[]
   messageId: string
@@ -50,6 +52,9 @@ export function QuestionCardView({
   /** False while the message is still being sent. */
   canAnswer?: boolean
   agentName?: string
+  outlined?: boolean
+  /** Tapping the question's header or prompt opens the message it was asked in. */
+  onOpen?: () => void
 }) {
   const open = questions.filter((q) => q.status === 'open')
   const forMe = open.some((q) => isAskedOf(q, me))
@@ -57,14 +62,14 @@ export function QuestionCardView({
     <GlassCard
       style={{ marginTop: 4, marginBottom: 4, maxWidth: 560 }}
       radius={16}
-      accent={forMe ? `${AMBER}80` : undefined}
+      accent={forMe && outlined ? `${AMBER}80` : undefined}
       tint={forMe ? `${AMBER}14` : undefined}
       testID="question-card"
     >
       <View className="gap-3 p-3">
         {questions.map((q, i) => (
           <View key={q.id} className={cn('gap-2', i > 0 && 'border-t border-border/60 pt-3')}>
-            <QuestionItem q={q} messageId={messageId} workspaceId={workspaceId} me={me} names={names} canAnswer={canAnswer} agentName={agentName} />
+            <QuestionItem q={q} messageId={messageId} workspaceId={workspaceId} me={me} names={names} canAnswer={canAnswer} agentName={agentName} onOpen={onOpen} />
           </View>
         ))}
       </View>
@@ -80,6 +85,7 @@ function QuestionItem({
   names,
   canAnswer,
   agentName,
+  onOpen,
 }: {
   q: Question
   messageId: string
@@ -88,6 +94,7 @@ function QuestionItem({
   names: MentionNames
   canAnswer: boolean
   agentName?: string
+  onOpen?: () => void
 }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -113,7 +120,7 @@ function QuestionItem({
     setBusy(false)
   }
 
-  return (
+  const heading = (
     <>
       <View className="flex-row items-center gap-2">
         <View className={cn('flex-row items-center gap-1 rounded px-1.5 py-0.5', isOpen ? 'bg-amber-500/20' : 'bg-muted')}>
@@ -130,6 +137,18 @@ function QuestionItem({
         {isOpen && (q.askCount ?? 1) > 1 ? <Text className="text-[11px] text-muted-foreground">{`· asked ${q.askCount} times`}</Text> : null}
       </View>
       <ChatMarkdown isStreaming={false}>{renderMentions(q.prompt, names)}</ChatMarkdown>
+    </>
+  )
+
+  return (
+    <>
+      {onOpen ? (
+        <Pressable onPress={onOpen} accessibilityRole="link" accessibilityLabel="Open in conversation" className="gap-2 rounded-md active:opacity-70">
+          {heading}
+        </Pressable>
+      ) : (
+        heading
+      )}
 
       {!isOpen ? (
         <View className="flex-row items-start gap-1.5" testID={`question-${q.status}`}>

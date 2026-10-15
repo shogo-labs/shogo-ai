@@ -154,6 +154,8 @@ export default function QuestionsInbox() {
               names={names}
               canAnswer={item.canAnswer}
               agentName={item.agent.name}
+              outlined={false}
+              onOpen={() => openThread(item)}
             />
           </View>
         )}
