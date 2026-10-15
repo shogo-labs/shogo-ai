@@ -30,7 +30,12 @@ import { resolveChatScope } from "../../lib/chat-scope"
 import type { IslandPermissionDecision, IslandPlanSummary } from "../../lib/desktop-island"
 import type { PlanData } from "../chat/PlanCard"
 import { probeChatTurnStatus, shouldAttachLiveStream } from "../chat/probe-turn-status"
-import { dropUnfinishedAssistantTail, withResumeReplayReset } from "../chat/resume-replay-transport"
+import {
+  applyMessageSnapshot,
+  dropUnfinishedAssistantTail,
+  foldSnapshotContinuation,
+  withResumeReplayReset,
+} from "../chat/resume-replay-transport"
 import { derivePendingQuestion, type PendingQuestion } from "../chat/turns/pendingQuestion"
 import { buildAskUserAnswerMessage } from "../chat/turns/askUserAnswers"
 import { useServerMessageQueue } from "../chat/useServerMessageQueue"
@@ -260,12 +265,15 @@ export function useOwnedIslandSession(
     resumeSnapshot: true,
   })
   const beforeReplayRef = useRef<() => void>(() => {})
+  const applySnapshotRef = useRef<(message: UIMessage) => void>(() => {})
+  const snapshotIdRef = useRef<string | null>(null)
   const transport = useMemo(
     () =>
       transportConfig
         ? withResumeReplayReset(
             new DefaultChatTransport(transportConfig),
             () => beforeReplayRef.current(),
+            (message) => applySnapshotRef.current(message),
           )
         : undefined,
     [transportConfig],
@@ -297,6 +305,14 @@ export function useOwnedIslandSession(
     onFinish: () => setPermission(null),
   })
   beforeReplayRef.current = () => setMessages((prev) => dropUnfinishedAssistantTail(prev))
+  applySnapshotRef.current = (message) => {
+    snapshotIdRef.current = message.id
+    setMessages((prev) => applyMessageSnapshot(prev, message))
+  }
+  const displayMessages = useMemo(
+    () => foldSnapshotContinuation(messages, snapshotIdRef.current),
+    [messages],
+  )
   const isStreaming = status === "submitted" || status === "streaming"
 
   const resume = useCallback(() => {
@@ -509,7 +525,7 @@ export function useOwnedIslandSession(
     projectId,
     sessionId,
     owned: true,
-    messages,
+    messages: displayMessages,
     isStreaming,
     isLoading,
     permission,

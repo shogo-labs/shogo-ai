@@ -122,7 +122,9 @@ import {
 } from "./resume-stream-single-flight"
 import { useServerMessageQueue } from "./useServerMessageQueue"
 import {
+  applyMessageSnapshot,
   dropUnfinishedAssistantTail,
+  foldSnapshotContinuation,
   withResumeReplayReset,
 } from "./resume-replay-transport"
 import { cn } from "@shogo/shared-ui/primitives"
@@ -1955,17 +1957,22 @@ const ChatPanelContent = observer(function ChatPanelContent({
     onChunk: bumpChatProgress,
     getClientTurnId,
     // Reopening a live turn gets the message so far in one chunk instead of
-    // the whole stream replayed; `withResumeReplayReset` rebuilds the message from it.
+    // the whole stream replayed; `withResumeReplayReset` applies it below.
     resumeSnapshot: true,
   })
   // Set once `useChat` has returned `setMessages`; see resume-replay-transport.ts.
   const beforeResumeReplayRef = useRef<() => void>(() => {})
+  const applyResumeSnapshotRef = useRef<(message: UIMessage) => void>(() => {})
+  // The installed snapshot's id; `displayMessages` folds the SDK's
+  // continuation message into it (see `foldSnapshotContinuation`).
+  const resumeSnapshotIdRef = useRef<string | null>(null)
   const chatTransport = useMemo(
     () =>
       transportConfig
         ? withResumeReplayReset(
             new DefaultChatTransport(transportConfig),
             () => beforeResumeReplayRef.current(),
+            (message) => applyResumeSnapshotRef.current(message),
           )
         : undefined,
     [transportConfig],
@@ -3064,6 +3071,10 @@ const ChatPanelContent = observer(function ChatPanelContent({
   })
   beforeResumeReplayRef.current = () =>
     setMessages((prev) => dropUnfinishedAssistantTail(prev))
+  applyResumeSnapshotRef.current = (message) => {
+    resumeSnapshotIdRef.current = message.id
+    setMessages((prev) => applyMessageSnapshot(prev, message))
+  }
 
   // All resume paths share a single-flight guard. The history-load probe and
   // delegated-task reconciliation can finish at the same time when the app is
@@ -3555,7 +3566,10 @@ const ChatPanelContent = observer(function ChatPanelContent({
   }, [currentSessionId, messages, optimisticUserInput])
 
   const displayMessages = useMemo((): UIMessage[] => {
-    const effectiveMessages = stoppedMessages ?? messages
+    const effectiveMessages = foldSnapshotContinuation(
+      stoppedMessages ?? messages,
+      resumeSnapshotIdRef.current,
+    )
     const currentOptimisticInput =
       optimisticUserInput?.sessionId === currentSessionId
         ? optimisticUserInput

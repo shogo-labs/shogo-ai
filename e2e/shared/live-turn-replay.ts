@@ -24,6 +24,8 @@ const TURN_GLOB = "**/api/{projects,workspaces}/*/chat/*/turn"
 const STREAM_GLOB = "**/api/{projects,workspaces}/*/chat/*/stream*"
 
 export const REPLAY_TAIL = "replay-tail-marker"
+/** In the first step's text, so a snapshot replay carries it inside the snapshot. */
+export const REPLAY_HEAD = "replay-head-marker"
 const TURN_ID = "turn_live"
 const HELD_STREAM_MS = 90_000
 
@@ -84,6 +86,7 @@ export function liveTurnReplay({ stepFrames, answerLines }: LiveTurnReplayOption
     push({ type: "tool-input-available", toolCallId: call, toolName: "edit_file", input: { path: `src/file${step}.tsx` } })
     push({ type: "tool-output-available", toolCallId: call, output: `edited src/file${step}.tsx` })
     push({ type: "text-start", id: `t${step}` })
+    if (step === 0) push({ type: "text-delta", id: "t0", delta: `${REPLAY_HEAD} ` })
     for (let i = 0; i < 40; i++) push({ type: "text-delta", id: `t${step}`, delta: `s${step}w${i} ` })
     push({ type: "text-end", id: `t${step}` })
     push({ type: "data-usage", data: { inputTokens: 1000 + step, outputTokens: 50, contextWindowTokens: 200_000, estimatedContextTokens: 1000 + step } })
@@ -291,6 +294,10 @@ export async function expectLiveTurnRendersAfterReopen(
   expect(crashes, `chat panel render crashes:\n${crashes.join("\n")}`).toEqual([])
   expect(sawError, "chat panel showed its error/recovering screen").toBe(false)
   expect(tailVisible, `the live turn did not render within ${budgetMs}ms of reopening`).toBe(true)
+  await expect(
+    page.getByText(REPLAY_HEAD, { exact: false }).first(),
+    "the start of the live turn is missing (a snapshot hidden behind the rest of the turn)",
+  ).toBeVisible()
   // Give a remount loop time to show itself before counting replays.
   await page.waitForTimeout(3_000)
   expect(crashes, `chat panel render crashes:\n${crashes.join("\n")}`).toEqual([])
