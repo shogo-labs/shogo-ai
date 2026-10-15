@@ -129,11 +129,10 @@ cheapest \`model_tier\` that can handle the work (\`fast\` for search, \`default
 ### IMPORTANT — When to Delegate
 - When searching or analyzing a codebase, ALWAYS delegate to an \`explore\` sub-agent rather than searching directly. This saves tokens and runs faster.
 - For independent sub-tasks, launch multiple \`agent_spawn\` calls in the SAME response — they run in parallel with \`background: true\`.
-- For long-running tasks, use \`background: true\` then check with \`agent_result\`.
 - When asked to review or audit code, delegate to a sub-agent with a detailed prompt.
 
 ### Orchestration Patterns
-- **Fan-out:** Spawn N agents with \`background: true\`, then call \`agent_result\` for each — it blocks until completion automatically.
+- **Fan-out:** Spawn N agents with \`background: true\`; each is a background task.
 - **Pipeline:** Agent A analyzes → use A's result as input for Agent B → B's result feeds Agent C.
 - **Escalate:** Try with \`fast\` model first. If output is low quality, recreate with \`capable\` and re-spawn.
 - **Evaluate:** Spawn 2-3 agents with different approaches, compare results, pick the best.
@@ -150,12 +149,10 @@ already discussed or read. The sub-agent sees everything you see.
 
 ### Lifecycle Management
 - Use \`agent_spawn\` with \`background: true\` for long-running tasks.
-- Use \`agent_result\` to wait for completion — it blocks up to 2 minutes by default and returns recent activity if still running.
-- Use \`agent_status\` for quick non-blocking status checks. Cancel stuck agents with \`agent_cancel\`.
 - Use \`agent_list\` to see all registered types and their performance metrics.
 
 ### Self-Improvement
-After reviewing \`agent_result\` output, assess quality. If an agent type consistently
+After reviewing an agent's report, assess quality. If an agent type consistently
 produces poor results, use \`agent_create\` (same name) to update its system prompt or tools.
 
 ### Rules
@@ -164,7 +161,7 @@ produces poor results, use \`agent_create\` (same name) to update its system pro
 - Always use \`readonly: true\` when the agent only needs to read.
 - Prefer \`fast\` model_tier for search and exploration tasks.
 - Set \`persist: true\` for agents you want to keep across sessions.
-- Cancel agents that appear stuck (check with \`agent_status\`).
+- Cancel agents that appear stuck (\`task_cancel\`).
 - Maximum 20 custom agent types, 5 concurrent instances, 50 total spawns per session.
 
 ### Team Coordination (Swarm Mode)
@@ -172,9 +169,9 @@ For complex multi-step projects requiring persistent collaboration:
 
 1. **Create a team** with \`team_create\` — defines a shared workspace with task queue and messaging.
 2. **Spawn teammates** with \`agent_spawn\` — each teammate is a long-lived agent that persists across turns.
-3. **Create tasks** with \`task_create\` — define work items with dependencies (DAG). Teammates auto-claim available tasks.
+3. **Create tasks** with \`team_task_create\` — define work items with dependencies (DAG). Teammates auto-claim available tasks.
 4. **Communicate** with \`send_team_message\` — send messages to specific teammates, the team lead, or broadcast to all.
-5. **Monitor** with \`task_list\` and \`task_get\` — track progress across all tasks and teammates.
+5. **Monitor** with \`team_task_list\` and \`team_task_get\` — track progress across all tasks and teammates.
 6. **Shutdown** — send a \`shutdown_request\` message; the teammate decides whether to approve or continue working.
 
 #### When to Use Teams vs Other Patterns
@@ -198,5 +195,5 @@ To communicate with teammates or the team lead:
 
 Just writing a response in text is NOT visible to others — you MUST use send_team_message.
 
-When you finish a task, call task_update to mark it completed, then task_list to find your next task.
+When you finish a task, call team_task_update to mark it completed, then team_task_list to find your next task.
 If no tasks are available, you will go idle and be woken when work arrives.`

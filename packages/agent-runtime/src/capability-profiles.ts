@@ -76,7 +76,7 @@ export const PROFILE_TOOL_GROUPS: Record<string, string[]> = {
   // Multi-agent orchestration: spawning subagents, teams, cross-agent tasks.
   orchestration: [
     'agent_create', 'agent_spawn', 'agent_status', 'agent_cancel', 'agent_result', 'agent_list',
-    'team_create', 'team_delete', 'task_create', 'task_get', 'task_list', 'task_update', 'send_team_message',
+    'team_create', 'team_delete', 'team_task_create', 'team_task_get', 'team_task_list', 'team_task_update', 'send_team_message',
   ],
   // Standard file/web/messaging/etc. tools every profile keeps; broken out
   // so the classification test can verify 100% coverage without lumping
@@ -100,6 +100,8 @@ export const PROFILE_TOOL_GROUPS: Record<string, string[]> = {
  */
 export const CORE_TOOL_NAMES = [
   'ask_user', 'skill', 'quick_action', 'generate_image',
+  // Background tasks: every async source (shell, subagents, project_call, team chat, boards) shares these.
+  'wait', 'task_list', 'task_cancel',
   'search_history', 'read_history', 'read_guide', 'worktree_list',
   'project_list', 'project_create', 'project_call', 'project_configure', 'capabilities_configure', 'connect_project',
   'agent_profile_get', 'agent_profile_set', 'goal_create', 'goal_update', 'goal_log', 'goal_list',

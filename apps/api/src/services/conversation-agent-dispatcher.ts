@@ -53,6 +53,7 @@ import { resolveFriendlyMentions } from './conversation-directory'
 import { expirePendingApprovals, postApprovalCard, type ApprovalRequest } from './conversation-approvals'
 import type { AgentWork, IntegrationConnectRequest, StatusCard } from './conversation-message-kind'
 import { agentWorkOf } from './agent-work-log'
+import { emitTaskEvent, replyEvent, replyTargetRef } from './background-tasks.service'
 import { docContextFor } from './conversation-doc.service'
 import { parseMuteCommand, pickResponder, type RelevanceCandidate } from './conversation-agent-relevance'
 
@@ -357,13 +358,20 @@ function replyThreadRoot(conversation: any, trigger: any): string | null {
  * mentions in it. Runs the mentioned agents as the next hop of the chain,
  * billed to the person who started it, unless a chain limit trips.
  */
-export async function dispatchAgentsFromAgentMessage(result: Pick<PostMessageResult, 'row' | 'conversation' | 'duplicate'>): Promise<AgentTarget[]> {
-  const { row, conversation } = result
+/** Agents an agent's post hands work to: the ones `dispatchAgentsFromAgentMessage` would start. */
+export async function agentPostTargets(result: Pick<PostMessageResult, 'row' | 'conversation' | 'duplicate'>): Promise<AgentTarget[]> {
+  const { row } = result
   if (result.duplicate || row.authorType !== 'agent') return []
   const chain = readChain(row.agentChain)
   if (!chain?.originUserId || !mentionedAgents(row.text).length) return []
-  const targets = await selectAgentTargets(result, { fromAgent: true })
+  return selectAgentTargets(result, { fromAgent: true })
+}
+
+export async function dispatchAgentsFromAgentMessage(result: Pick<PostMessageResult, 'row' | 'conversation' | 'duplicate'>): Promise<AgentTarget[]> {
+  const { row, conversation } = result
+  const targets = await agentPostTargets(result)
   if (!targets.length) return []
+  const chain = readChain(row.agentChain)!
 
   const turns = await agentTurnsSinceHuman(conversation.id, replyThreadRoot(conversation, row))
   const started: AgentTarget[] = []
@@ -373,10 +381,14 @@ export async function dispatchAgentsFromAgentMessage(result: Pick<PostMessageRes
     const limit = chainLimitHit(next)
     if (limit) {
       tripped ??= limit
+      await emitTaskEvent('agent_reply', replyTargetRef(row.id, target.projectId), {
+        status: 'failed',
+        summary: `not started: paused ${pausedReason(limit)}`,
+      })
       continue
     }
     started.push(target)
-    void runAgentReply({ conversation, trigger: row, target, userId: chain.originUserId, chain: next })
+    void runAgentReply({ conversation, trigger: row, target, userId: chain.originUserId!, chain: next })
       .catch((err) => console.error('[ChannelAgent] chained reply failed:', err))
   }
   if (tripped) await postChainPaused(conversation, row, chain, tripped)
@@ -986,7 +998,10 @@ export interface RunAgentReplyArgs {
 
 export async function runAgentReply(args: RunAgentReplyArgs): Promise<string | null> {
   const { conversation, trigger, target, userId } = args
-  if (!(await inWorkspace(conversation.workspaceId, [target])).length) return null
+  if (!(await inWorkspace(conversation.workspaceId, [target])).length) {
+    await emitTaskEvent('agent_reply', replyTargetRef(trigger.id, target.projectId), { status: 'failed', summary: 'that agent is not in this workspace' })
+    return null
+  }
   const threadRootId = replyThreadRoot(conversation, trigger)
   const chain = args.chain ?? nextChain(humanChain(trigger, userId, await rootChain(trigger.threadRootId)), target, 0)
   const name = await agentName(conversation.workspaceId, target)
@@ -1012,7 +1027,10 @@ export async function runAgentReply(args: RunAgentReplyArgs): Promise<string | n
   const messageId = reply.messageId
   let work: AgentWork | null = null
   let connect: IntegrationConnectRequest[] = []
-  const settle = (text: string, agentStatus: string) => finishAgentReply(reply, { text, agentStatus, work, connect })
+  const settle = async (text: string, agentStatus: string) => {
+    await finishAgentReply(reply, { text, agentStatus, work, connect })
+    await emitTaskEvent('agent_reply', replyTargetRef(trigger.id, target.projectId), replyEvent(agentStatus, text))
+  }
 
   const controller = new AbortController()
   running.set(messageId, controller)

@@ -1506,12 +1506,49 @@ model ChatQueuedMessage {
   error     String?
   createdAt DateTime @default(now())
   updatedAt DateTime @default(now()) @updatedAt
+  /// "user" for prompts; "task_notification" for a wake after background tasks finished.
+  kind      String   @default("user")
 
   session ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
 
   @@index([sessionId, status, position])
   @@index([sessionId, createdAt])
   @@map("chat_queued_messages")
+}
+
+/// Async work an agent session can wait on or be woken by. The runtime keeps
+/// its own tasks (shell, subagents) in memory; rows here are the ones the API
+/// observes (a project call, a tagged agent's reply, a card) plus local tasks
+/// the runtime handed over to wake an idle session. `consumed` means the agent
+/// already saw the result, so no wake is sent for it.
+model BackgroundTask {
+  id            String    @id
+  chatSessionId String
+  /// project_call | agent_reply | work_item | shell | subagent
+  source        String
+  /// What events match: `projectId:runId`, `triggerMessageId:projectId|ws`, a work item id.
+  targetRef     String
+  title         String
+  /// running | completed | failed | cancelled
+  status        String    @default("running")
+  output        String    @default("")
+  summary       String?
+  /// Regex that completes the task when its output matches (cards).
+  until         String?
+  /// Notification text for a wake, when the runtime formatted it.
+  note          String?
+  notify        Boolean   @default(true)
+  consumed      Boolean   @default(false)
+  notifiedAt    DateTime?
+  finishedAt    DateTime?
+  expiresAt     DateTime
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @default(now()) @updatedAt
+
+  @@index([source, targetRef, status])
+  @@index([chatSessionId, status])
+  @@index([expiresAt])
+  @@map("background_tasks")
 }
 
 /// A user's thumbs up/down reaction to one assistant `ChatMessage` (one

@@ -8,6 +8,7 @@
 // overrides, resume with history, sync wait via inst.promise, error tails.
 
 import { describe, test, expect, mock } from 'bun:test'
+import { TaskRegistry } from '../task-registry'
 
 let subagentResult: any = {
   toolCalls: 3,
@@ -235,7 +236,8 @@ describe('agent_spawn normal mode (type specified)', () => {
   test('background mode returns running status immediately', async () => {
     const am = makeAgentManager({ instanceId: 'bg-inst-99' })
     const w = makeWriter()
-    const ctx = makeCtx({ agentManager: am, uiWriter: w })
+    const registry = new TaskRegistry()
+    const ctx = makeCtx({ agentManager: am, uiWriter: w, commandRegistry: registry })
     const r = await exec(ctx, 'agent_spawn', {
       type: 'general-purpose',
       prompt: 'long running task',
@@ -243,7 +245,9 @@ describe('agent_spawn normal mode (type specified)', () => {
     })
     expect(r.instance_id).toBe('bg-inst-99')
     expect(r.status).toBe('running')
-    expect(String(r.hint)).toContain('agent_status')
+    expect(r.task_id).toMatch(/^t_/)
+    expect(registry.get('bg-inst-99')?.id).toBe(r.task_id)
+    expect(String(r.hint)).toContain('wait({ task_ids: [task_id] })')
   })
 
   test('instance lost after spawn returns error', async () => {

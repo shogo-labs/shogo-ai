@@ -196,6 +196,33 @@ describe('agent-to-agent hand-offs', () => {
     expect(invocations[0].userId).toBe(seed.owner)
     expect(invocations[0].prompt).toContain('run id run-nightly')
   })
+
+  test('a tracked tool post returns a background task per tagged agent that settles with its reply', async () => {
+    await channel('tracked')
+    scripts[planner] = () => 'Plan is ready.'
+    agentAuth = { projectId: analyst }
+    const session = await db.chatSession.create({ data: { inferredName: 'Chat', contextType: 'project', contextId: analyst } })
+    const res = await call(null, 'POST', `/internal/workspaces/${seed.workspaceId}/agent-channels/tracked/messages`, {
+      text: `${tag(planner)} plan the fix.`,
+      sessionId: session.id,
+      trackReplies: true,
+    })
+    expect(res.status).toBe(201)
+    expect(res.json.message.tasks).toHaveLength(1)
+    const task = res.json.message.tasks[0]
+    expect(task).toMatchObject({ title: '@Planner reply', status: 'running' })
+
+    const settled = await waitFor(async () => {
+      const row = await db.backgroundTask.findUnique({ where: { id: task.task_id } })
+      return row?.status === 'completed' ? row : null
+    })
+    expect(settled.source).toBe('agent_reply')
+    expect(settled.chatSessionId).toBe(session.id)
+    expect(settled.output).toContain('Plan is ready.')
+    const { _testing } = await import('../services/background-tasks.service')
+    _testing.clearTimers()
+    await settle()
+  })
 })
 
 describe('thread owners', () => {

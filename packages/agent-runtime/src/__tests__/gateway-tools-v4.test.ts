@@ -144,7 +144,7 @@ describe('resolveToolNames', () => {
 
   test('dedupes across overlapping group + individual', () => {
     const r = resolveToolNames(['shell', 'exec', 'shell'])
-    expect(r.sort()).toEqual(['exec', 'exec_wait', 'terminal_exec', 'terminal_read'])
+    expect(r.sort()).toEqual(['exec', 'exec_wait', 'task_cancel', 'task_list', 'terminal_exec', 'terminal_read', 'wait'])
   })
 
   test('empty input returns empty list', () => {
@@ -480,7 +480,7 @@ describe('createTools', () => {
     for (const n of ['agent_create', 'agent_spawn', 'agent_status', 'agent_cancel', 'agent_result', 'agent_list']) {
       expect(names.has(n), `agent tool ${n}`).toBe(true)
     }
-    for (const n of ['team_create', 'team_delete', 'task_create', 'task_get', 'task_list', 'task_update']) {
+    for (const n of ['team_create', 'team_delete', 'team_task_create', 'team_task_get', 'team_task_list', 'team_task_update']) {
       expect(names.has(n), `team/task tool ${n}`).toBe(true)
     }
   })

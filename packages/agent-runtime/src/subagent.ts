@@ -27,7 +27,7 @@ import { createBrowserTool, disposeBrowserTool, textResult } from './gateway-too
 // ---------------------------------------------------------------------------
 
 const CORE_GATEWAY_TOOLS = new Set([
-  'exec', 'exec_wait', 'read_file', 'write_file', 'edit_file', 'web', 'browser',
+  'exec', 'exec_wait', 'wait', 'task_list', 'task_cancel', 'read_file', 'write_file', 'edit_file', 'web', 'browser',
   'delete_file', 'search', 'impact_radius', 'detect_changes', 'review_context',
   'todo_write', 'ask_user', 'skill',
   'memory_read', 'memory_search',

@@ -63,7 +63,7 @@ describe('createExecTool', () => {
     const result = await run(ctx, 'exec', { command: 'true' })
     expect(result.exitCode).toBe(0)
     expect(result.cwd).toBe(TEST_DIR)
-    expect(result.run_id).toMatch(/^cmd_/)
+    expect(result.run_id).toMatch(/^t_/)
     expect(typeof result.durationMs).toBe('number')
     expect(result.durationMs).toBeGreaterThanOrEqual(0)
   })
@@ -72,7 +72,7 @@ describe('createExecTool', () => {
     const ctx = makeCtx({ commandRegistry: new CommandRegistry() })
     const result = await run(ctx, 'exec', { command: 'false' })
     expect(result.exitCode).toBe(1)
-    expect(result.run_id).toMatch(/^cmd_/)
+    expect(result.run_id).toMatch(/^t_/)
   })
 
   test('sudo is not blocked by the exec tool', async () => {
@@ -93,10 +93,11 @@ describe('createExecTool', () => {
     const ctx = makeCtx({ commandRegistry: registry })
     const result = await run(ctx, 'exec', { command: 'sleep 5', timeout: 50 })
     expect(result.status).toBe('running')
-    expect(result.run_id).toMatch(/^cmd_/)
+    expect(result.run_id).toMatch(/^t_/)
     expect(result.pid).toBeGreaterThan(0)
     expect(typeof result.hint).toBe('string')
-    expect(result.hint).toContain(result.run_id)
+    expect(result.hint).toContain('wait')
+    expect(result.task_id).toBe(result.run_id)
     try { registry.get(result.run_id)?.handle.kill('SIGKILL') } catch { /* ignore */ }
   })
 

@@ -54,6 +54,7 @@ export const SHOGO_RUNTIME_EXCLUDES = [
   '.tech-stack',
   '.shogo/local/',
   '.shogo/logs/',
+  '.shogo/tasks/',
   '.shogo/install-marker',
   '.shogo/build-output*',
   '.shogo/vite-watch.pid',

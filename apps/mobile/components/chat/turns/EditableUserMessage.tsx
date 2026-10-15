@@ -53,7 +53,7 @@ import * as Clipboard from "expo-clipboard"
 import * as Haptics from "expo-haptics"
 import type { UIMessage } from "@ai-sdk/react"
 import { cn } from "@shogo/shared-ui/primitives"
-import { channelDispatchOf, extractTextContent } from "@shogo/shared-app/chat"
+import { channelDispatchOf, extractTextContent, taskNotificationOf } from "@shogo/shared-app/chat"
 import { MessageContent } from "./MessageContent"
 import {
   useMessageEditContext,
@@ -74,6 +74,7 @@ import { useMobileWorkspaceChrome } from "../../layout/MobileWorkspaceChromeCont
 import { AskUserAnswerCard } from "./AskUserAnswerCard"
 import { CanvasErrorCard } from "./CanvasErrorCard"
 import { ChannelDispatchCard } from "./ChannelDispatchCard"
+import { TaskNotificationRow } from "./TaskNotificationRow"
 import { stripAskUserAnswerMarker } from "./askUserAnswers"
 import { parseCanvasErrorDebugPrompt } from "./canvasErrorPrompt"
 import type { AnsweredQuestion } from "./types"
@@ -495,6 +496,15 @@ export const EditableUserMessage = memo(function EditableUserMessage({
   // check `node.contains(event.target)` against. ChatInput itself
   // is memoized and not forward-ref'd, so we can't get the same
   // handle from the component directly without an invasive change.
+  const taskNotification = taskNotificationOf(message)
+  if (taskNotification) {
+    return (
+      <View className={cn("w-full", className)}>
+        <TaskNotificationRow notification={taskNotification} />
+      </View>
+    )
+  }
+
   const dispatch = channelDispatchOf(message)
   if (dispatch) {
     return (

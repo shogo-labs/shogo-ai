@@ -59,6 +59,7 @@ type QueueRow = {
   content: string
   parts: string | null
   body: string
+  kind?: string | null
 }
 
 function parseJson<T>(value: string | null | undefined, fallback: T): T {
@@ -240,6 +241,39 @@ async function dispatchRow(row: QueueRow): Promise<void> {
   })
 }
 
+const WAKE_PAUSED =
+  'Paused: background tasks finished several times in a row without anyone writing. Send a message to continue.'
+
+function isTaskWakeMessage(parts: string | null | undefined): boolean {
+  return parseJson<Array<{ type?: string }>>(parts, []).some((p) => p?.type === 'data-task-notification')
+}
+
+/**
+ * Why a queued task wake should not run: every task in it was already seen
+ * (`consumed`), or the session has auto-woken too many times in a row.
+ */
+async function taskWakeSkipReason(row: QueueRow): Promise<'consumed' | string | null> {
+  const body = parseJson<QueueBody & { taskNotification?: { taskIds?: unknown } }>(row.body, {})
+  const ids = Array.isArray(body.taskNotification?.taskIds)
+    ? (body.taskNotification!.taskIds as unknown[]).filter((id): id is string => typeof id === 'string')
+    : []
+  if (ids.length) {
+    const unseen = await (prisma as any).backgroundTask.count({ where: { id: { in: ids }, consumed: false } })
+    if (unseen === 0) return 'consumed'
+  }
+  const { MAX_CONSECUTIVE_WAKES } = await import('./background-tasks.service')
+  const recent = await (prisma as any).chatMessage.findMany({
+    where: { sessionId: row.sessionId, role: 'user' },
+    orderBy: { createdAt: 'desc' },
+    take: MAX_CONSECUTIVE_WAKES,
+    select: { parts: true },
+  })
+  if (recent.length >= MAX_CONSECUTIVE_WAKES && recent.every((m: { parts: string | null }) => isTaskWakeMessage(m.parts))) {
+    return WAKE_PAUSED
+  }
+  return null
+}
+
 /**
  * Claim and start the oldest pending message for a session.
  *
@@ -252,7 +286,21 @@ async function dispatchRow(row: QueueRow): Promise<void> {
 export async function dispatchNext(chatSessionId: string): Promise<boolean> {
   if (!(await isHomeRegionSession(chatSessionId))) return false
   if (!(await isSessionIdle(chatSessionId))) return false
-  const row = await claimNext(chatSessionId)
+  let row = await claimNext(chatSessionId)
+  // Wakes whose tasks the agent already saw (a turn started in between) are dropped.
+  while (row && row.kind === 'task_notification') {
+    const skip = await taskWakeSkipReason(row)
+    if (!skip) break
+    if (skip === 'consumed') {
+      await (prisma as any).chatQueuedMessage.delete({ where: { id: row.id } }).catch(() => {})
+    } else {
+      await (prisma as any).chatQueuedMessage.updateMany({
+        where: { id: row.id, status: 'dispatching' },
+        data: { status: 'failed', error: skip },
+      }).catch(() => {})
+    }
+    row = await claimNext(chatSessionId)
+  }
   if (!row) return false
 
   try {

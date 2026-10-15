@@ -1056,8 +1056,13 @@ export async function postAgentChannelMessage(
     kind?: AgentMessageKind
     card?: AgentStatusCard
     questions?: AgentQuestion[]
+    /** Return a background task per agent this post hands work to. */
+    trackReplies?: boolean
   },
-): Promise<CheckpointCallResult<{ id: string; conversationId: string; threadId: string; runId: string | null; url: string | null }>> {
+): Promise<CheckpointCallResult<{
+  id: string; conversationId: string; threadId: string; runId: string | null; url: string | null
+  tasks?: Array<{ task_id: string; title: string; status: 'running' }>
+}>> {
   return personalFetch(channelsPath(workspaceId, `/${encodeURIComponent(channel)}/messages`), {
     method: 'POST',
     body: JSON.stringify({
@@ -1070,6 +1075,7 @@ export async function postAgentChannelMessage(
       kind: input.kind,
       card: input.card,
       questions: input.questions,
+      trackReplies: input.trackReplies || undefined,
     }),
     parse: (j) => ({
       id: j?.message?.id,
@@ -1077,6 +1083,7 @@ export async function postAgentChannelMessage(
       threadId: j?.message?.threadRootId ?? j?.message?.id,
       runId: j?.message?.runId ?? null,
       url: j?.message?.url ?? null,
+      ...(Array.isArray(j?.message?.tasks) ? { tasks: j.message.tasks } : {}),
     }),
   })
 }
@@ -1817,10 +1824,14 @@ export interface AgentCallRequest {
   /** Reply timeout in ms when waiting (default 5 min, max 20 min). */
   timeoutMs?: number
   callerProjectId?: string
+  /** With `wait: false`, record the outcome so it can be waited on as a background task. */
+  track?: boolean
 }
 
 export interface AgentCallResult {
   status: 'completed' | 'accepted'
+  /** The API records the outcome under `runId` (wait: false, track: true). */
+  tracked?: boolean
   reply?: string
   runId?: string
   sessionId?: string
@@ -1948,6 +1959,95 @@ export async function callProjectAgent(
       return { ok: false, status: 502, error: record.error?.message ?? 'Project agent call failed', code: record.error?.code }
     }
   }
+}
+
+// ─── Background tasks ────────────────────────────────────────────────────────
+
+export type BackgroundTaskSource = 'project_call' | 'agent_reply' | 'work_item'
+
+export interface BackgroundTaskState {
+  id: string
+  source: string
+  title: string
+  status: 'running' | 'completed' | 'failed' | 'cancelled'
+  output?: string
+  result?: { summary?: string; exitCode?: number } | null
+  matched?: boolean
+  startedAt?: string
+}
+
+/** A finished local task (shell, subagent) whose session is idle and should be woken. */
+export interface TaskNotificationPayload {
+  id: string
+  source: string
+  title: string
+  status: string
+  text: string
+}
+
+const tasksPath = '/api/internal/tasks'
+
+export async function createBackgroundTask(input: {
+  id: string
+  chatSessionId: string
+  source: BackgroundTaskSource
+  targetRef: string
+  title: string
+  until?: string
+}): Promise<CheckpointCallResult<BackgroundTaskState>> {
+  return lifecycleFetch(tasksPath, {
+    method: 'POST',
+    body: JSON.stringify(input),
+    parse: (j) => j.task as BackgroundTaskState,
+    timeoutMs: 10_000,
+  })
+}
+
+export async function getBackgroundTask(
+  id: string,
+  opts: { waitMs?: number; until?: string } = {},
+): Promise<CheckpointCallResult<BackgroundTaskState>> {
+  const waitMs = Math.max(0, Math.min(opts.waitMs ?? 0, 25_000))
+  const query = new URLSearchParams({ waitMs: String(waitMs) })
+  if (opts.until) query.set('until', opts.until)
+  return lifecycleFetch(`${tasksPath}/${encodeURIComponent(id)}?${query}`, {
+    method: 'GET',
+    parse: (j) => j.task as BackgroundTaskState,
+    keepalive: waitMs > 0,
+    timeoutMs: waitMs + 15_000,
+  })
+}
+
+export async function cancelBackgroundTask(id: string): Promise<CheckpointCallResult<BackgroundTaskState>> {
+  return lifecycleFetch(`${tasksPath}/${encodeURIComponent(id)}/cancel`, {
+    method: 'POST',
+    parse: (j) => j.task as BackgroundTaskState,
+    timeoutMs: 10_000,
+  })
+}
+
+export async function consumeBackgroundTasks(ids: string[]): Promise<CheckpointCallResult<{ consumed: number }>> {
+  return lifecycleFetch(`${tasksPath}/consume`, {
+    method: 'POST',
+    body: JSON.stringify({ ids }),
+    timeoutMs: 10_000,
+  })
+}
+
+export async function listBackgroundTasks(chatSessionId: string): Promise<CheckpointCallResult<{ tasks: BackgroundTaskState[] }>> {
+  return lifecycleFetch(`${tasksPath}?chatSessionId=${encodeURIComponent(chatSessionId)}`, { method: 'GET', timeoutMs: 10_000 })
+}
+
+/** Hand finished local tasks to the API so it wakes the (idle) session with one queued message. */
+export async function notifyTaskCompletions(
+  chatSessionId: string,
+  tasks: TaskNotificationPayload[],
+): Promise<CheckpointCallResult<{ queued: boolean }>> {
+  return lifecycleFetch(`${tasksPath}/notify`, {
+    method: 'POST',
+    body: JSON.stringify({ chatSessionId, tasks }),
+    timeoutMs: 10_000,
+  })
 }
 
 export async function postCostMetric(payload: AgentCostMetricPayload): Promise<void> {

@@ -2223,5 +2223,133 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
     const outcome = await work
     return c.json(outcome.body, outcome.status as any)
   })
+
+  // ─── Background tasks ──────────────────────────────────────────────────────
+  //
+  // Tasks a runtime's agent waits on or is woken by (see
+  // background-tasks.service). Every route is scoped to the chat session the
+  // task belongs to, authorized like that session's runtime.
+
+  async function authorizeChatSession(c: Context, chatSessionId: string): Promise<boolean> {
+    const session = (await prisma.chatSession.findUnique({
+      where: { id: chatSessionId },
+      select: { contextType: true, contextId: true, workspaceId: true },
+    })) as { contextType: string; contextId: string | null; workspaceId: string | null } | null
+    if (!session) return false
+    const projectId = session.contextType === 'project' ? session.contextId ?? undefined : undefined
+    let workspaceId = session.workspaceId
+    if (!workspaceId && projectId) {
+      const project = (await prisma.project.findUnique({ where: { id: projectId }, select: { workspaceId: true } })) as { workspaceId: string } | null
+      workspaceId = project?.workspaceId ?? null
+    }
+    const identity = await authenticate(c)
+    if (!identity) return false
+    if (identity.kind === 'sa') return true
+    if (identity.kind === 'workspace') return !!workspaceId && identity.workspaceId === workspaceId
+    return !!projectId && identity.projectId === projectId
+  }
+
+  const tasksSvc = () => import('../services/background-tasks.service')
+
+  async function taskOr404(c: Context, id: string) {
+    const { getTask } = await tasksSvc()
+    const row = await getTask(id)
+    if (!row || !(await authorizeChatSession(c, row.chatSessionId))) return null
+    return row
+  }
+
+  function taskError(c: Context, err: unknown) {
+    const e = err as { status?: number; code?: string; message?: string }
+    if (e?.status === 400 || e?.status === 404) return c.json({ error: { code: e.code, message: e.message } }, e.status)
+    throw err
+  }
+
+  /** POST /api/internal/tasks  body: { id, chatSessionId, source, targetRef, title, until? } */
+  app.post('/tasks', async (c) => {
+    const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null
+    const chatSessionId = typeof body?.chatSessionId === 'string' ? body.chatSessionId : ''
+    if (!chatSessionId) return c.json({ error: { code: 'bad_request', message: 'chatSessionId is required' } }, 400)
+    if (!(await authorizeChatSession(c, chatSessionId))) return c.json({ error: 'Unauthorized' }, 401)
+    const { createTask, viewOf } = await tasksSvc()
+    try {
+      const row = await createTask({
+        id: String(body!.id ?? ''),
+        chatSessionId,
+        source: String(body!.source ?? ''),
+        targetRef: String(body!.targetRef ?? ''),
+        title: String(body!.title ?? ''),
+        until: typeof body!.until === 'string' ? body!.until : null,
+      })
+      return c.json({ task: viewOf(row) }, 201)
+    } catch (err) {
+      return taskError(c, err)
+    }
+  })
+
+  /** GET /api/internal/tasks?chatSessionId= — running tasks for a session (the dock). */
+  app.get('/tasks', async (c) => {
+    const chatSessionId = c.req.query('chatSessionId') ?? ''
+    if (!chatSessionId || !(await authorizeChatSession(c, chatSessionId))) return c.json({ error: 'Unauthorized' }, 401)
+    const { listTasks, viewOf } = await tasksSvc()
+    return c.json({ tasks: (await listTasks(chatSessionId)).map((row) => viewOf(row)) })
+  })
+
+  /** POST /api/internal/tasks/consume  body: { ids } — the agent saw these results. */
+  app.post('/tasks/consume', async (c) => {
+    const body = (await c.req.json().catch(() => null)) as { ids?: unknown } | null
+    const ids = Array.isArray(body?.ids) ? body!.ids.filter((id): id is string => typeof id === 'string') : []
+    const { getTask, consumeTasks } = await tasksSvc()
+    const allowed: string[] = []
+    const checked = new Map<string, boolean>()
+    for (const id of ids.slice(0, 200)) {
+      const row = await getTask(id)
+      if (!row) continue
+      if (!checked.has(row.chatSessionId)) checked.set(row.chatSessionId, await authorizeChatSession(c, row.chatSessionId))
+      if (checked.get(row.chatSessionId)) allowed.push(id)
+    }
+    return c.json({ consumed: await consumeTasks(allowed) })
+  })
+
+  /** POST /api/internal/tasks/notify  body: { chatSessionId, tasks: [{ id, source, title, status, text }] } */
+  app.post('/tasks/notify', async (c) => {
+    const body = (await c.req.json().catch(() => null)) as { chatSessionId?: unknown; tasks?: unknown } | null
+    const chatSessionId = typeof body?.chatSessionId === 'string' ? body.chatSessionId : ''
+    if (!chatSessionId || !(await authorizeChatSession(c, chatSessionId))) return c.json({ error: 'Unauthorized' }, 401)
+    const { notifyLocalTasks } = await tasksSvc()
+    const tasks = Array.isArray(body?.tasks) ? (body!.tasks as any[]) : []
+    const n = await notifyLocalTasks(chatSessionId, tasks)
+    return c.json({ queued: n > 0 })
+  })
+
+  /** GET /api/internal/tasks/:id?waitMs=&until= — long-poll one task. */
+  app.get('/tasks/:id', async (c) => {
+    const row = await taskOr404(c, c.req.param('id'))
+    if (!row) return c.json({ error: { code: 'task_unknown', message: 'No such task.' } }, 404)
+    const { waitForTask, viewOf, MAX_WAIT_MS } = await tasksSvc()
+    const requested = Number(c.req.query('waitMs'))
+    const waitMs = Number.isFinite(requested) ? Math.min(Math.max(requested, 0), MAX_WAIT_MS) : 0
+    const work = waitForTask(row.id, { waitMs, until: c.req.query('until') || null, signal: c.req.raw.signal })
+      .then((outcome) => outcome
+        ? { status: 200, body: { task: viewOf(outcome.row, outcome.matched) } }
+        : { status: 404, body: { error: { code: 'task_unknown', message: 'No such task.' } } })
+      .catch((err) => {
+        const e = err as { status?: number; code?: string; message?: string }
+        if (e?.status === 400) return { status: 400, body: { error: { code: e.code, message: e.message } } }
+        throw err
+      })
+    if (waitMs > 0 && wantsKeepAlive(c.req.header(KEEPALIVE_HEADER))) return keepAliveJson(work)
+    const outcome = await work
+    return c.json(outcome.body, outcome.status as any)
+  })
+
+  /** POST /api/internal/tasks/:id/cancel — stop tracking (and notifying about) a task. */
+  app.post('/tasks/:id/cancel', async (c) => {
+    const row = await taskOr404(c, c.req.param('id'))
+    if (!row) return c.json({ error: { code: 'task_unknown', message: 'No such task.' } }, 404)
+    const { cancelTask, viewOf } = await tasksSvc()
+    const updated = await cancelTask(row.id)
+    return c.json({ task: updated ? viewOf(updated) : null })
+  })
+
   return app
 }

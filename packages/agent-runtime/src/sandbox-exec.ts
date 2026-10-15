@@ -620,6 +620,8 @@ export interface CommandHandle {
   /** True once the child has exited. */
   exited: () => boolean
   startedAt: number
+  /** Subscribe to raw output chunks as they arrive. Returns an unsubscribe function. */
+  onData?: (listener: (chunk: string, stream: 'stdout' | 'stderr') => void) => () => void
 }
 
 export type SandboxExecAsyncOptions = SandboxExecOptions
@@ -640,6 +642,7 @@ export function sandboxExecAsync(opts: SandboxExecAsyncOptions): CommandHandle {
   const recentOutputBuf = new RecentOutputBuffer()
 
   let child: ChildProcess
+  let ownGroup = false
   let containerName: string | undefined
 
   if (useSandbox) {
@@ -682,11 +685,13 @@ export function sandboxExecAsync(opts: SandboxExecAsyncOptions): CommandHandle {
     const env = buildExecEnv(opts.workspaceDir, { extraEnv: opts.extraEnv })
     const finalCommand = rewriteBunxOnWindows(opts.command)
 
+    ownGroup = process.platform !== 'win32'
     if (shell) {
       child = spawn(shell, ['-c', finalCommand], {
         cwd: opts.workspaceDir,
         env,
         stdio: ['ignore', 'pipe', 'pipe'],
+        detached: ownGroup,
       })
     } else {
       child = spawn(finalCommand, {
@@ -694,6 +699,7 @@ export function sandboxExecAsync(opts: SandboxExecAsyncOptions): CommandHandle {
         env,
         shell: true,
         stdio: ['ignore', 'pipe', 'pipe'],
+        detached: ownGroup,
       })
     }
   }
@@ -701,15 +707,24 @@ export function sandboxExecAsync(opts: SandboxExecAsyncOptions): CommandHandle {
   let killed = false
   let exited = false
 
+  const dataListeners = new Set<(chunk: string, stream: 'stdout' | 'stderr') => void>()
+  const emitData = (chunk: string, stream: 'stdout' | 'stderr') => {
+    for (const listener of dataListeners) {
+      try { listener(chunk, stream) } catch { /* listener errors never affect the child */ }
+    }
+  }
+
   child.stdout?.setEncoding('utf-8')
   child.stderr?.setEncoding('utf-8')
   child.stdout?.on('data', (chunk: string) => {
     stdoutBuf.push(chunk)
     recentOutputBuf.push(chunk)
+    emitData(chunk, 'stdout')
   })
   child.stderr?.on('data', (chunk: string) => {
     stderrBuf.push(chunk)
     recentOutputBuf.push(chunk)
+    emitData(chunk, 'stderr')
   })
 
   // Suppress unhandled-error events; we surface failures via the `done`
@@ -721,8 +736,13 @@ export function sandboxExecAsync(opts: SandboxExecAsyncOptions): CommandHandle {
   function sendKill(signal: 'SIGTERM' | 'SIGKILL'): void {
     killed = true
     try {
-      child.kill(signal)
-    } catch { /* already gone */ }
+      // The shell's children (`bun run dev` → `bun server.ts`) share its
+      // process group; signalling only the shell would orphan them.
+      if (ownGroup && child.pid) process.kill(-child.pid, signal)
+      else child.kill(signal)
+    } catch {
+      try { child.kill(signal) } catch { /* already gone */ }
+    }
 
     // For sandboxed runs the SIGTERM to the docker CLI may not always
     // propagate to the container — issue an explicit `docker kill` as
@@ -779,6 +799,10 @@ export function sandboxExecAsync(opts: SandboxExecAsyncOptions): CommandHandle {
     },
     exited: () => exited,
     startedAt,
+    onData: (listener) => {
+      dataListeners.add(listener)
+      return () => { dataListeners.delete(listener) }
+    },
   }
 }
 

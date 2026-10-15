@@ -1397,6 +1397,31 @@ app.post('/agent/chat/:chatSessionId/processes/:runId/kill', (c) => {
   return c.json({ ok: true, processes: agentGateway.listSessionProcesses(c.req.param('chatSessionId')) })
 })
 
+// Every task still running for a chat thread (shell, subagents, project calls,
+// tagged agents, cards). Seeds the dock and backs its idle polling; live
+// updates arrive via `data-task-update` frames during a turn.
+app.get('/agent/chat/:chatSessionId/tasks', async (c) => {
+  if (!agentGateway) return c.json({ error: 'Agent gateway not running' }, 503)
+  const tasks = await agentGateway.listSessionTasks(c.req.param('chatSessionId'))
+  return c.json({ tasks })
+})
+
+app.post('/agent/chat/:chatSessionId/tasks/:taskId/cancel', async (c) => {
+  if (!agentGateway) return c.json({ error: 'Agent gateway not running' }, 503)
+  const sessionId = c.req.param('chatSessionId')
+  if (!agentGateway.killSessionProcess(sessionId, c.req.param('taskId'))) {
+    return c.json({ error: 'unknown task_id' }, 404)
+  }
+  return c.json({ ok: true, tasks: await agentGateway.listSessionTasks(sessionId) })
+})
+
+app.get('/agent/chat/:chatSessionId/tasks/:taskId/output', (c) => {
+  if (!agentGateway) return c.json({ error: 'Agent gateway not running' }, 503)
+  const output = agentGateway.readSessionTaskOutput(c.req.param('chatSessionId'), c.req.param('taskId'))
+  if (!output) return c.json({ error: 'unknown task_id' }, 404)
+  return c.json(output)
+})
+
 // Read agent config
 app.get('/agent/config', (c) => {
   const configPath = join(WORKSPACE_DIR, 'config.json')
@@ -1848,6 +1873,10 @@ app.post('/agent/chat', async (c) => {
   const chatSessionKey = rawChatSessionKey
   const sessionManager = agentGateway!.getSessionManager()
   sessionManager.getOrCreate(chatSessionKey)
+  const wokenByTasks: unknown = body.taskNotification?.taskIds
+  if (Array.isArray(wokenByTasks)) {
+    agentGateway!.acknowledgeTaskNotification(chatSessionKey, wokenByTasks.filter((id): id is string => typeof id === 'string'))
+  }
   if (typeof body.chatSessionName === 'string' && body.chatSessionName.trim()) {
     sessionManager.setSessionMetadata(chatSessionKey, { title: body.chatSessionName.trim().slice(0, 200) })
   }
@@ -2584,6 +2613,8 @@ app.post('/agent/stop', async (c) => {
   const stopSessionKey = rawStopSessionKey
   liveTurnGate.markStopped(stopSessionKey)
   const aborted = agentGateway.abortCurrentTurn(stopSessionKey)
+  // Background tasks keep running after Stop but must not restart the agent.
+  agentGateway.muteSessionTasks(stopSessionKey)
 
   // The main turn signal does not reach subagents because each has its own
   // AbortController. Scope their cancellation to this chat: a project runtime
@@ -3952,8 +3983,7 @@ app.post('/agent/session/reset', async (c) => {
     return c.json({ error: 'Agent gateway not running' }, 503)
   }
   const body = await c.req.json().catch(() => ({})) as { evalLabel?: string }
-  const sm = agentGateway.getSessionManager()
-  sm.clearHistory('chat')
+  agentGateway.clearSessionHistory('chat')
   agentGateway.reloadConfig()
   agentGateway.setActiveMode('canvas')
   agentGateway.setEvalLabel(body.evalLabel ?? null)

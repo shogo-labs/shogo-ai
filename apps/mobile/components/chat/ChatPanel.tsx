@@ -210,7 +210,7 @@ import { ChatDock } from "./dock/ChatDock"
 import { PlanDockPanel } from "./dock/panels/PlanDockPanel"
 import { PendingPlanComposerBar } from "./PendingPlanComposerBar"
 import { ChecklistDockPanel } from "./dock/panels/ChecklistDockPanel"
-import { RunningDockPanel } from "./dock/panels/RunningDockPanel"
+import { RunningDockPanel, type TaskWaitState } from "./dock/panels/RunningDockPanel"
 import { BrowserDockPanel } from "./dock/panels/BrowserDockPanel"
 import { WorktreeDockPanel } from "./dock/panels/WorktreeDockPanel"
 import { ChangesDockPanel } from "./dock/panels/ChangesDockPanel"
@@ -1765,17 +1765,19 @@ const ChatPanelContent = observer(function ChatPanelContent({
       const headers: Record<string, string> = nativeHeaders
         ? nativeHeaders()
         : {}
-      const res = await fetchFn(
-        `${base}/agent/chat/${currentSessionId}/processes`,
-        {
-          headers,
-          credentials: Platform.OS === "web" ? "include" : undefined,
-        } as any,
-      )
+      const init = {
+        headers,
+        credentials: Platform.OS === "web" ? "include" : undefined,
+      } as any
+      let res = await fetchFn(`${base}/agent/chat/${currentSessionId}/tasks`, init)
+      // Runtimes that predate tasks only list shell processes.
+      if (res.status === 404) {
+        res = await fetchFn(`${base}/agent/chat/${currentSessionId}/processes`, init)
+      }
       if (res.ok) {
         const data = await res.json()
-        if (Array.isArray(data?.processes))
-          setRunningProcesses(data.processes as RunningProcess[])
+        const list = data?.tasks ?? data?.processes
+        if (Array.isArray(list)) setRunningProcesses(list as RunningProcess[])
       }
     } catch {
       // Non-critical — the panel just won't seed until the next live frame.
@@ -1794,21 +1796,27 @@ const ChatPanelContent = observer(function ChatPanelContent({
         const headers: Record<string, string> = nativeHeaders
           ? nativeHeaders()
           : {}
-        const res = await fetchFn(
-          `${base}/agent/chat/${currentSessionId}/processes/${runId}/kill`,
-          {
-            method: "POST",
-            headers,
-            credentials: Platform.OS === "web" ? "include" : undefined,
-          } as any,
+        const init = {
+          method: "POST",
+          headers,
+          credentials: Platform.OS === "web" ? "include" : undefined,
+        } as any
+        let res = await fetchFn(
+          `${base}/agent/chat/${currentSessionId}/tasks/${encodeURIComponent(runId)}/cancel`,
+          init,
         )
+        if (res.status === 404) {
+          res = await fetchFn(
+            `${base}/agent/chat/${currentSessionId}/processes/${runId}/kill`,
+            init,
+          )
+        }
         if (res.ok) {
           const data = await res.json()
-          if (Array.isArray(data?.processes))
+          const list = data?.tasks ?? data?.processes
+          if (Array.isArray(list))
             setRunningProcesses(
-              (data.processes as RunningProcess[]).filter(
-                (p) => p.runId !== runId,
-              ),
+              (list as RunningProcess[]).filter((p) => p.runId !== runId),
             )
           else
             setRunningProcesses((prev) => prev.filter((p) => p.runId !== runId))
@@ -1826,8 +1834,35 @@ const ChatPanelContent = observer(function ChatPanelContent({
     [localAgentUrl, projectId, currentSessionId, nativeHeaders, expoFetch],
   )
 
+  const loadTaskOutput = useCallback(
+    async (taskId: string): Promise<string | null> => {
+      const base =
+        localAgentUrl ||
+        (projectId ? `${API_URL}/api/projects/${projectId}/agent-proxy` : null)
+      if (!base || !currentSessionId) return null
+      try {
+        const fetchFn = expoFetch ?? globalThis.fetch
+        const headers: Record<string, string> = nativeHeaders ? nativeHeaders() : {}
+        const res = await fetchFn(
+          `${base}/agent/chat/${currentSessionId}/tasks/${encodeURIComponent(taskId)}/output`,
+          { headers, credentials: Platform.OS === "web" ? "include" : undefined } as any,
+        )
+        if (!res.ok) return null
+        const data = await res.json()
+        return typeof data?.output === "string" ? data.output : null
+      } catch {
+        return null
+      }
+    },
+    [localAgentUrl, projectId, currentSessionId, nativeHeaders, expoFetch],
+  )
+
+  // The agent blocked in `wait` (live `data-task-wait` frames during a turn).
+  const [taskWait, setTaskWait] = useState<TaskWaitState | null>(null)
+
   // Seed the process list whenever the active thread changes.
   useEffect(() => {
+    setTaskWait(null)
     if (!currentSessionId) {
       setRunningProcesses([])
       return
@@ -2465,10 +2500,28 @@ const ChatPanelContent = observer(function ChatPanelContent({
 
       // Live background-process list. The runtime emits the full running list
       // on every change, so we replace state wholesale (no reconciliation).
-      if (dataPart.type === "data-process-update") {
+      if (dataPart.type === "data-task-update") {
+        const tasks = (dataPart as any).data?.tasks
+        if (Array.isArray(tasks)) {
+          setRunningProcesses(tasks as RunningProcess[])
+        }
+      } else if (dataPart.type === "data-process-update") {
         const procs = (dataPart as any).data?.processes
         if (Array.isArray(procs)) {
           setRunningProcesses(procs as RunningProcess[])
+        }
+      }
+      if (dataPart.type === "data-task-wait") {
+        const d = (dataPart as any).data
+        if (d?.active) {
+          setTaskWait({
+            taskIds: Array.isArray(d.taskIds) ? d.taskIds : [],
+            until: typeof d.until === "string" ? d.until : undefined,
+            timeoutMs: typeof d.timeoutMs === "number" ? d.timeoutMs : 30_000,
+            startedAt: typeof d.startedAt === "number" ? d.startedAt : Date.now(),
+          })
+        } else {
+          setTaskWait(null)
         }
       }
 
@@ -3778,6 +3831,37 @@ const ChatPanelContent = observer(function ChatPanelContent({
     )
     return () => timers.forEach(clearTimeout)
   }, [isTransportStreaming, isActive])
+
+  // A `wait` ends with its turn at the latest.
+  useEffect(() => {
+    if (!isStreaming) setTaskWait(null)
+  }, [isStreaming])
+
+  // While idle with tasks that will wake the agent, keep the list fresh; when
+  // one of them finishes, the API queues a wake turn, so look for it.
+  const notifyTaskIds = runningProcesses
+    .filter((p) => p.notify && !p.stale)
+    .map((p) => p.id ?? p.runId)
+    .join("\0")
+  const previousNotifyTaskIdsRef = useRef(notifyTaskIds)
+  useEffect(() => {
+    const previous = previousNotifyTaskIdsRef.current
+    previousNotifyTaskIdsRef.current = notifyTaskIds
+    if (isStreaming || !isActive) return
+    const finished = previous
+      .split("\0")
+      .filter((id) => id && !notifyTaskIds.split("\0").includes(id))
+    if (finished.length === 0) return
+    const timers = [3000, 7000].map((delay) =>
+      setTimeout(() => void attachToLiveTurnIfAnyRef.current(), delay),
+    )
+    return () => timers.forEach(clearTimeout)
+  }, [notifyTaskIds, isStreaming, isActive])
+  useEffect(() => {
+    if (isStreaming || !isActive || !notifyTaskIds) return
+    const timer = setInterval(() => void fetchRunningProcesses(), 5000)
+    return () => clearInterval(timer)
+  }, [notifyTaskIds, isStreaming, isActive, fetchRunningProcesses])
 
   // A delegated task or a channel mention starts its turn outside this panel.
   // The first history-load probe can therefore see `unknown` while a slot or
@@ -7731,6 +7815,9 @@ const ChatPanelContent = observer(function ChatPanelContent({
             killingProcesses={killingProcesses}
             subagents={activeSubagentsList}
             recentTools={recentToolsList}
+            waiting={taskWait}
+            agentIdle={!isStreaming}
+            loadOutput={loadTaskOutput}
           />
           <BrowserDockPanel />
           <WorktreeDockPanel

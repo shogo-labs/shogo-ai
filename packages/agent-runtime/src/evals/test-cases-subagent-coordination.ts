@@ -22,6 +22,7 @@ import {
   responseContains,
   toolCallsJson,
   toolCallArgsContain,
+  resultCollectionCalls,
 } from './eval-helpers'
 
 // ---------------------------------------------------------------------------
@@ -95,9 +96,10 @@ function spawnedInParallel(r: EvalResult): boolean {
     .filter(tc => tc.name === 'agent_spawn')
   if (spawnCalls.length < 2) return false
 
+  const collected = new Set(resultCollectionCalls(r))
   const resultCalls = r.toolCalls
     .map((tc, i) => ({ ...tc, idx: i }))
-    .filter(tc => tc.name === 'agent_result')
+    .filter(tc => collected.has(r.toolCalls[tc.idx]!))
 
   if (resultCalls.length === 0) {
     const indices = spawnCalls.map(s => s.idx)
@@ -543,12 +545,12 @@ const PHASE_2: AgentEval = {
     },
     {
       id: 'collected-results',
-      description: 'agent_result called for each spawned agent',
+      description: 'A result collected for each spawned agent',
       points: 5,
       phase: 'intention',
       validate: (r) => {
         const spawns = agentSpawnCount(r)
-        const results = toolCallCount(r, 'agent_result')
+        const results = resultCollectionCalls(r).length
         return spawns > 0 && results >= spawns
       },
     },
@@ -654,7 +656,8 @@ const PHASE_3: AgentEval = {
       validate: (r) => {
         const calls = r.toolCalls.map((tc, i) => ({ ...tc, idx: i }))
         const spawns = calls.filter(tc => tc.name === 'agent_spawn')
-        const results = calls.filter(tc => tc.name === 'agent_result')
+        const collected = new Set(resultCollectionCalls(r))
+        const results = calls.filter(tc => collected.has(r.toolCalls[tc.idx]!))
         if (spawns.length < 2 || results.length < 1) return false
         const firstResult = results[0].idx
         const secondSpawn = spawns[1].idx

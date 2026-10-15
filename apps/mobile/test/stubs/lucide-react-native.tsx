@@ -32,6 +32,7 @@ const Icon = forwardRef(function LucideIcon(
 
 export {
   Icon as Activity,
+  Icon as Hourglass,
   Icon as AudioLines,
   Icon as MousePointer2,
   Icon as Table2,

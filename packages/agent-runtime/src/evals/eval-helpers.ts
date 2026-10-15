@@ -7,7 +7,7 @@
  * rather than re-declaring the same helpers.
  */
 
-import type { EvalResult } from './types'
+import type { EvalResult, ToolCallRecord } from './types'
 import { readFileSync, readdirSync, statSync, existsSync } from 'fs'
 import { join } from 'path'
 
@@ -160,6 +160,19 @@ export function delegatedTo(result: EvalResult, subagentType: string): boolean {
 /** True if `toolName` was NOT called in the final turn. */
 export function didNotUseToolInFinalTurn(result: EvalResult, toolName: string): boolean {
   return !result.finalTurnToolCalls.some(t => t.name === toolName)
+}
+
+/**
+ * Calls that collect a background task's result: `wait` on task ids, or the
+ * legacy `agent_result` / `task_result` that older transcripts still use.
+ */
+export function resultCollectionCalls(result: EvalResult): ToolCallRecord[] {
+  return result.toolCalls.filter((t) => {
+    if (t.name === 'agent_result' || t.name === 'task_result') return true
+    if (t.name !== 'wait') return false
+    const ids = (t.input as { task_ids?: unknown })?.task_ids
+    return Array.isArray(ids) && ids.length > 0
+  })
 }
 
 /** Count of calls to `toolName` across all turns. */

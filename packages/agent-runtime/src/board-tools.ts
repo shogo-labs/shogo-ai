@@ -15,6 +15,7 @@ import { Type, type TSchema } from '@sinclair/typebox'
 import type { AgentTool } from '@mariozechner/pi-agent-core'
 import type { ToolContext } from './gateway-tools'
 import { textResult } from './gateway-tools'
+import { trackRemoteTask } from './remote-tasks'
 import { channelIdentity } from './channel-tools'
 import { resolveRuntimeIdentity } from './workspace-runtime-mode'
 import { agentBoardsRequest } from './internal-api'
@@ -91,6 +92,23 @@ function defineTool(
       return textResult({ error: result.error ?? `${spec.label} failed`, code: result.code, status: result.status })
     },
   }
+}
+
+/**
+ * A card read or write returns the card as a task: waiting on it with `until`
+ * (e.g. "Done") blocks until the card gets there, and wakes this session if it
+ * gets there later. Nothing is tracked until the agent waits on it.
+ */
+async function withCardTask(ctx: ToolContext, r: { ok: boolean; data?: any }) {
+  const item = r.data?.item
+  if (!r.ok || !item?.id || !ctx.commandRegistry || !ctx.sessionId) return r
+  const task = await trackRemoteTask(ctx.commandRegistry, ctx.sessionId, {
+    source: 'work_item',
+    targetRef: item.id,
+    title: [item.key, item.title].filter(Boolean).join(' ') || item.id,
+    lazy: true,
+  }).catch(() => undefined)
+  return task ? { ...r, data: { ...r.data, task_id: task.task_id } } : r
 }
 
 /** Board responses carry every column; agents need names, categories and limits. */
@@ -246,9 +264,10 @@ function itemGet(ctx: ToolContext) {
     label: 'Get Card',
     description:
       'Everything needed to pick up a card: its fields, column, assignee, the rolling history summary, the latest thread messages, conversations it was mentioned in elsewhere, and earlier agent runs on it. ' +
-      'Call this first when you are handed a card, then continue from where the last person or agent stopped.',
+      'Call this first when you are handed a card, then continue from where the last person or agent stopped. ' +
+      'Returns task_id for the card: wait on it with until (e.g. "Done") to block until the card gets there.',
     parameters: Type.Object({ item: ITEM_REF }),
-  }, (ws, p) => agentBoardsRequest(ws, 'GET', `/agent-work-items/${enc(p.item)}`, { query: { projectId: identity(ctx).projectId } }))
+  }, async (ws, p) => withCardTask(ctx, await agentBoardsRequest(ws, 'GET', `/agent-work-items/${enc(p.item)}`, { query: { projectId: identity(ctx).projectId } })))
 }
 
 function itemUpdate(ctx: ToolContext) {
@@ -273,7 +292,7 @@ function itemUpdate(ctx: ToolContext) {
   }, async (ws, p) => {
     const { item, ...rest } = p
     const r = await agentBoardsRequest(ws, 'PATCH', `/agent-work-items/${enc(item)}`, { body: { ...rest, ...identity(ctx) } })
-    return r.ok ? { ...r, data: { item: compactItem(r.data?.item) } } : r
+    return withCardTask(ctx, r.ok ? { ...r, data: { item: compactItem(r.data?.item) } } : r)
   })
 }
 
@@ -294,7 +313,7 @@ function itemMove(ctx: ToolContext) {
   }, async (ws, p) => {
     const { item, ...rest } = p
     const r = await agentBoardsRequest(ws, 'POST', `/agent-work-items/${enc(item)}/move`, { body: { ...rest, ...identity(ctx) } })
-    return r.ok ? { ...r, data: { item: compactItem(r.data?.item), warnings: r.data?.warnings ?? [] } } : r
+    return withCardTask(ctx, r.ok ? { ...r, data: { item: compactItem(r.data?.item), warnings: r.data?.warnings ?? [] } } : r)
   })
 }
 

@@ -47,6 +47,9 @@ export const CONCURRENT_SAFE_TOOLS = new Set([
   'agent_cancel',
   'exec_wait',
   'exec_list',
+  'wait',
+  'task_list',
+  'task_cancel',
 ])
 
 export function isConcurrencySafe(toolName: string): boolean {

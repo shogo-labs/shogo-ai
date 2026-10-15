@@ -43,7 +43,10 @@ import { Type, type Static } from '@sinclair/typebox'
 import type { AgentTool, AgentToolResult } from '@mariozechner/pi-agent-core'
 import { sandboxExec, sandboxExecAsync, shouldSandbox, type CommandHandle } from './sandbox-exec'
 import { commandTargetsGateway, gatewayKillRefusal } from './gateway-self-protect'
+import { checkSelfDetach, selfDetachRefusal } from './exec-detach'
 import { CommandRegistry, type CommandEntry } from './command-registry'
+import type { TaskEntry } from './task-registry'
+import { tailLines } from './task-output'
 import {
   resolveRunDir as resolveScreenshotRunDir,
   nextScreenshotPath as nextScreenshotFilePath,
@@ -261,8 +264,8 @@ export interface ToolContext {
     setCwd: (cwd: string) => void
     initialCwd?: string
   }
-  /** Tracks backgrounded shell commands that soft-timed-out so exec_wait can retrieve them */
-  commandRegistry?: import('./command-registry').CommandRegistry
+  /** Background tasks of this session (shell, subagents, remote tasks) — backs `wait` / `task_list` / `task_cancel`. */
+  commandRegistry?: import('./task-registry').TaskRegistry
   /** On-demand guide registry populated by buildGuideRegistry() */
   guideRegistry?: Map<string, string>
   /** Eval mock functions — propagated to subagents so mocked tools work in delegated calls */
@@ -791,12 +794,65 @@ export function withRemoteProject(tool: AgentTool, ctx: ToolContext): AgentTool 
       if ('error' in target) return textResult({ error: target.error, code: target.code })
       if (target.local) return tool.execute(toolCallId, args as any, signal, onUpdate)
       try {
-        return await callRemoteTool(target.id, tool.name, args, signal)
+        const result = await callRemoteTool(target.id, tool.name, args, signal)
+        return tool.name === 'exec' ? mirrorRemoteExecTask(ctx, target, args, result) : result
       } catch (err) {
         return remoteFailure(err, { id: target.id, name: target.name })
       }
     },
   }
+}
+
+/**
+ * A remote `exec` that is still running becomes a local task whose status is
+ * polled from the other project's runtime, so `wait`, `task_list`, the dock
+ * and wake-ups treat it like any other background task.
+ */
+function mirrorRemoteExecTask(
+  ctx: ToolContext,
+  target: { id: string; name: string },
+  args: Record<string, unknown>,
+  result: AgentToolResult<any>,
+): AgentToolResult<any> {
+  const details = result.details as Record<string, any> | undefined
+  const registry = ctx.commandRegistry
+  const taskId = details?.task_id ?? details?.run_id
+  if (!registry || details?.status !== 'running' || typeof taskId !== 'string') return result
+  const pid = typeof details.pid === 'number' ? details.pid : undefined
+  const client: import('./task-registry').RemoteTaskClient = {
+    get: async (id, opts = {}) => {
+      const res = await callRemoteTool(target.id, 'exec_wait', {
+        run_id: id,
+        timeout_ms: Math.max(0, opts.waitMs ?? 0),
+        ...(opts.until ? { pattern: opts.until } : {}),
+      })
+      const d = (res.details ?? {}) as Record<string, any>
+      const output = [d.stdout, d.stderr].filter((v) => typeof v === 'string' && v).join('\n')
+      if (d.status === 'running') return { id, status: 'running', output }
+      if (d.status === 'pattern_matched') return { id, status: 'running', output, matched: true }
+      if (d.status === 'stale' || (d.error && d.exitCode === undefined)) {
+        return { id, status: 'failed', output, result: { summary: String(d.error ?? 'remote task lost') } }
+      }
+      const exitCode = typeof d.exitCode === 'number' ? d.exitCode : 1
+      return { id, status: exitCode === 0 ? 'completed' : 'failed', output, result: { exitCode, summary: `exit code ${exitCode}` } }
+    },
+    cancel: async () => {
+      if (pid) await callRemoteTool(target.id, 'exec', { command: `kill ${pid}` })
+    },
+    consume: async () => {},
+  }
+  const entry = registry.registerRemote({
+    id: taskId,
+    source: 'shell',
+    title: `[${target.name}] ${String(args.command ?? '')}`,
+    client,
+  })
+  return textResult({
+    ...details,
+    task_id: entry.id,
+    output_file: taskOutputPath(ctx, entry),
+    hint: BACKGROUND_TASK_HINT,
+  })
 }
 
 const REMOTE_WAKE_COMMAND = 'pwd && ls -la'
@@ -1016,6 +1072,7 @@ function buildCompletedExecResult({ ctx, entry, finalResult }: BuildExecResultOp
   // The command may have rewritten files the agent already read (formatters,
   // generators). Re-stat them so the next edit is not rejected as stale.
   ctx.fileStateCache?.resyncMtimes()
+  if (entry.backgrounded) ctx.commandRegistry?.markConsumed([entry.id])
   return textResult({
     cwd: newCwd,
     exitCode: finalResult.exitCode,
@@ -1026,20 +1083,22 @@ function buildCompletedExecResult({ ctx, entry, finalResult }: BuildExecResultOp
     cwdReset: meta?.cwdReset || undefined,
     killed: finalResult.killed || undefined,
     run_id: entry.runId,
+    ...(entry.backgrounded ? { task_id: entry.id, output_file: taskOutputPath(ctx, entry) } : {}),
   })
 }
 
-function buildSoftTimeoutResult(entry: CommandEntry, softTimeoutMs: number): AgentToolResult<any> {
+/** Workspace-relative output file of a task, as shown to the model. */
+function taskOutputPath(ctx: ToolContext, entry: { outputFile?: string }): string | undefined {
+  return ctx.commandRegistry?.displayPath(entry.outputFile) ?? entry.outputFile
+}
+
+function buildSoftTimeoutResult(ctx: ToolContext, entry: CommandEntry, softTimeoutMs: number | null): AgentToolResult<any> {
   const elapsedMs = Date.now() - entry.handle.startedAt
-  const killTarget =
-    entry.handle.sandboxed && entry.handle.containerName
-      ? `docker kill ${entry.handle.containerName}`
-      : process.platform === 'win32'
-        ? `taskkill /F /PID ${entry.handle.pid}`
-        : `kill ${entry.handle.pid}`
   return textResult({
     status: 'running',
+    task_id: entry.id,
     run_id: entry.runId,
+    output_file: taskOutputPath(ctx, entry),
     pid: entry.handle.pid,
     sandboxed: entry.handle.sandboxed || undefined,
     container_name: entry.handle.containerName,
@@ -1047,15 +1106,21 @@ function buildSoftTimeoutResult(entry: CommandEntry, softTimeoutMs: number): Age
     stdout: truncateExecOutput(entry.handle.stdout().trim()),
     stderr: truncateExecOutput(entry.handle.stderr().trim()),
     hint:
-      `Command still running after ${Math.round(softTimeoutMs / 1000)}s. ` +
-      `Call exec_wait('${entry.runId}') to wait more, or run \`exec("${killTarget}")\` to terminate and move on.`,
+      (softTimeoutMs === null
+        ? 'Started in the background. '
+        : `Still running after ${Math.round(softTimeoutMs / 1000)}s; it keeps running in the background. `) +
+      BACKGROUND_TASK_HINT,
   })
 }
+
+/** One rule for every async tool result. */
+export const BACKGROUND_TASK_HINT =
+  'Call wait({ task_ids: [task_id] }) to block on it, or end your turn and you will get a [Task update] when it finishes.'
 
 function createExecTool(ctx: ToolContext): AgentTool {
   return {
     name: 'exec',
-    description: `Run a shell command. The shell remembers your working directory across calls — do NOT prepend cd to commands, the cwd from your last exec call is preserved automatically. The result includes the current cwd. Destructive commands are blocked. Quote file paths containing spaces. Use && to chain dependent commands, ; for independent ones. Never use interactive flags (-i). Prefer read_file over cat/head/tail, and the \`search\` tool over grep/rg for finding code. Tokens saved to .env are auto-loaded. Soft timeout: if the command does not finish within \`timeout\` ms (default ${DEFAULT_EXEC_SOFT_TIMEOUT_MS}), this tool returns \`{ status: "running", run_id, pid, ... }\` while the command keeps running in the background. You can then call \`exec_wait(run_id)\` to keep waiting, or \`exec("kill <pid>")\` to terminate it and move on.`,
+    description: `Run a shell command. The shell remembers your working directory across calls — do NOT prepend cd to commands, the cwd from your last exec call is preserved automatically. The result includes the current cwd. Destructive commands are blocked. Quote file paths containing spaces. Use && to chain dependent commands, ; for independent ones. Never use interactive flags (-i). Prefer read_file over cat/head/tail, and the \`search\` tool over grep/rg for finding code. Tokens saved to .env are auto-loaded. Long-running commands become background tasks: set \`background: true\` to start one immediately (never detach it yourself with \`&\` or \`nohup\`; those are refused), and any command still running after \`timeout\` ms (default ${DEFAULT_EXEC_SOFT_TIMEOUT_MS}) is handed back as \`{ status: "running", task_id, output_file }\` while it keeps running.`,
     label: 'Execute Command',
     parameters: Type.Object({
       command: Type.String({ description: 'Shell command to execute' }),
@@ -1063,14 +1128,20 @@ function createExecTool(ctx: ToolContext): AgentTool {
         Type.Number({
           description:
             `Soft timeout in milliseconds (default: ${DEFAULT_EXEC_SOFT_TIMEOUT_MS}). ` +
-            'If exceeded, the command keeps running in the background and you receive a run_id to wait on or kill.',
+            'If exceeded, the command keeps running as a background task.',
+        }),
+      ),
+      background: Type.Optional(
+        Type.Boolean({
+          description: 'Start as a background task and return immediately with a task_id (servers, watchers, long builds/tests).',
         }),
       ),
     }),
     execute: async (_toolCallId, params) => {
-      const { command, timeout = DEFAULT_EXEC_SOFT_TIMEOUT_MS } = params as {
+      const { command, timeout = DEFAULT_EXEC_SOFT_TIMEOUT_MS, background = false } = params as {
         command: string
         timeout?: number
+        background?: boolean
       }
       const attributedCommand = injectCommitTrailer(command, {
         ...process.env,
@@ -1105,6 +1176,9 @@ function createExecTool(ctx: ToolContext): AgentTool {
           error: gatewayKillRefusal(gatewayGuard.reason ?? 'kill targets the runtime'),
         })
       }
+
+      const detach = checkSelfDetach(command)
+      if (detach.detached) return textResult({ error: selfDetachRefusal(detach) })
 
       // Desktop auto-redirect: when the user asks the agent to run a
       // dev server / long-lived process, route through terminalExec
@@ -1213,7 +1287,12 @@ function createExecTool(ctx: ToolContext): AgentTool {
       // completes within the soft timeout (defensive against races where the
       // model decided to wait while we were already returning).
       const registry = ctx.commandRegistry ?? new CommandRegistry()
-      const entry = registry.register(attributedCommand, handle)
+      const entry = registry.register(attributedCommand, handle, { cwd: currentCwd })
+
+      if (background) {
+        registry.markBackgrounded(entry.id)
+        return buildSoftTimeoutResult(ctx, entry, null)
+      }
 
       const softTimeoutMs = Math.max(0, timeout)
       const SOFT_TIMEOUT = Symbol('soft-timeout')
@@ -1228,7 +1307,7 @@ function createExecTool(ctx: ToolContext): AgentTool {
 
       if (winner === SOFT_TIMEOUT) {
         registry.markBackgrounded(entry.runId)
-        return buildSoftTimeoutResult(entry, softTimeoutMs)
+        return buildSoftTimeoutResult(ctx, entry, softTimeoutMs)
       }
 
       return buildCompletedExecResult({ ctx, entry, finalResult: winner })
@@ -1703,12 +1782,16 @@ function createExecWaitTool(ctx: ToolContext): AgentTool {
         })
       }
 
-      const entry = registry.get(run_id)
-      if (!entry) {
+      const found = registry.get(run_id)
+      if (!found) {
         return textResult({
           error: `Unknown run_id: ${run_id}. The run may have been cleaned up (entries are kept ~10 min after completion).`,
         })
       }
+      if (!found.handle) {
+        return createWaitTool(ctx).execute(_toolCallId, { task_ids: [found.id], timeout_ms, until: pattern })
+      }
+      const entry = found as CommandEntry
 
       // Stale entries were restored from a persisted snapshot after a runtime
       // restart — the underlying OS child is gone and cannot be polled.
@@ -1815,7 +1898,7 @@ function createExecWaitTool(ctx: ToolContext): AgentTool {
             finalResult: entry.finalResult,
           })
         }
-        return buildSoftTimeoutResult(entry, softTimeoutMs)
+        return buildSoftTimeoutResult(ctx, entry, softTimeoutMs)
       }
 
       return buildCompletedExecResult({ ctx, entry, finalResult: winner })
@@ -1843,6 +1926,196 @@ function createExecListTool(ctx: ToolContext): AgentTool {
         })
       }
       return textResult({ processes: registry.listRunning() })
+    },
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Background tasks: wait / task_list / task_cancel
+// ---------------------------------------------------------------------------
+
+const DEFAULT_WAIT_TIMEOUT_MS = 30_000
+const MAX_WAIT_TIMEOUT_MS = 10 * 60 * 1000
+
+function taskView(ctx: ToolContext, entry: TaskEntry) {
+  return {
+    task_id: entry.id,
+    source: entry.source,
+    title: entry.title,
+    status: entry.status,
+    elapsed_ms: (entry.finishedAt ?? Date.now()) - entry.startedAt,
+    output_file: taskOutputPath(ctx, entry),
+  }
+}
+
+/** Final result of a finished task, the same shape for every source. */
+function finishedTaskResult(ctx: ToolContext, entry: TaskEntry): Record<string, unknown> {
+  const registry = ctx.commandRegistry!
+  const base: Record<string, unknown> = {
+    ...taskView(ctx, entry),
+    exit_code: entry.result?.exitCode,
+  }
+  if (entry.handle && entry.finalResult) {
+    const meta = execRunMetadata.get(entry.handle)
+    if (meta) finalizeCwdAfterExec(ctx, meta)
+    ctx.fileStateCache?.resyncMtimes()
+    base.stdout = truncateExecOutput(entry.finalResult.stdout.trim())
+    const stderr = entry.finalResult.stderr.trim()
+    if (stderr) base.stderr = truncateExecOutput(stderr)
+  } else {
+    base.output = truncateExecOutput(stripAnsiForPattern(registry.readOutput(entry)).trim())
+  }
+  return base
+}
+
+function createWaitTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'wait',
+    description:
+      'Wait for background tasks. Returns as soon as any task in `task_ids` finishes, `until` (a regex) matches its output, ' +
+      `or \`timeout_ms\` elapses (default ${DEFAULT_WAIT_TIMEOUT_MS}). With no task_ids it waits on every running task in this conversation ` +
+      '(returning at once with any that finished since you last heard), and only sleeps for timeout_ms when there are none. ' +
+      'Every task writes its full output to output_file, which you can read_file or search.',
+    label: 'Wait',
+    parameters: Type.Object({
+      task_ids: Type.Optional(Type.Array(Type.String(), { description: 'Task ids to wait on (default: every running task)' })),
+      timeout_ms: Type.Optional(
+        Type.Number({ description: `Max milliseconds to wait (default ${DEFAULT_WAIT_TIMEOUT_MS}, max ${MAX_WAIT_TIMEOUT_MS}). 0 = check without blocking.` }),
+      ),
+      until: Type.Optional(Type.String({ description: 'Regex; return early once a task\'s output matches (e.g. "ready on port")' })),
+    }),
+    execute: async (toolCallId, params, signal) => {
+      const { timeout_ms = DEFAULT_WAIT_TIMEOUT_MS, until } = params as {
+        task_ids?: string[]
+        timeout_ms?: number
+        until?: string
+      }
+      let task_ids = (params as { task_ids?: string[] }).task_ids ?? []
+      if (task_ids.length === 0 && ctx.commandRegistry) {
+        task_ids = [
+          ...ctx.commandRegistry.peekNotifications().map((n) => n.taskId),
+          ...ctx.commandRegistry.listRunning().map((t) => t.id),
+        ]
+      }
+      const timeoutMs = Math.min(Math.max(0, timeout_ms), MAX_WAIT_TIMEOUT_MS)
+      const startedAt = Date.now()
+
+      let regex: RegExp | undefined
+      if (until) {
+        try {
+          regex = new RegExp(until, 'm')
+        } catch (err: any) {
+          return textResult({ error: `Invalid until regex: ${err?.message || String(err)}` })
+        }
+      }
+
+      if (task_ids.length === 0) {
+        await new Promise<void>((resolve) => {
+          if (timeoutMs === 0 || signal?.aborted) return resolve()
+          const t = setTimeout(resolve, timeoutMs)
+          signal?.addEventListener('abort', () => { clearTimeout(t); resolve() }, { once: true })
+        })
+        return textResult({ status: 'slept', elapsed_ms: Date.now() - startedAt })
+      }
+
+      const registry = ctx.commandRegistry
+      if (!registry) return textResult({ error: 'Background tasks are not available in this context.' })
+
+      const unknown = task_ids.filter((id) => !registry.get(id))
+      if (unknown.length === task_ids.length) {
+        return textResult({
+          error: `Unknown task id${unknown.length > 1 ? 's' : ''}: ${unknown.join(', ')}. Finished tasks are kept ~10 min; call task_list to see current tasks.`,
+        })
+      }
+
+      const ids = task_ids.filter((id) => registry.get(id))
+      const emitWait = (active: boolean) => {
+        try {
+          ctx.uiWriter?.write({
+            type: 'data-task-wait',
+            data: { toolCallId, taskIds: ids.map((id) => registry.get(id)!.id), until, timeoutMs, startedAt, active },
+            transient: true,
+          } as any)
+        } catch { /* writer closed */ }
+      }
+
+      if (timeoutMs > 0) emitWait(true)
+      let outcome: Awaited<ReturnType<typeof registry.wait>>
+      try {
+        outcome = await registry.wait(ids, { timeoutMs, until: regex, signal })
+      } finally {
+        if (timeoutMs > 0) emitWait(false)
+      }
+
+      if (outcome.kind === 'finished' && outcome.task) {
+        return textResult({
+          ...finishedTaskResult(ctx, outcome.task),
+          ...(unknown.length ? { unknown_task_ids: unknown } : {}),
+          still_running: ids
+            .map((id) => registry.get(id)!)
+            .filter((e) => e.id !== outcome.task!.id && e.status === 'running')
+            .map((e) => e.id),
+        })
+      }
+
+      if (outcome.kind === 'matched' && outcome.task) {
+        return textResult({
+          ...taskView(ctx, outcome.task),
+          matched: outcome.matched,
+          output: truncateExecOutput(tailLines(stripAnsiForPattern(registry.readOutput(outcome.task)), 60, 8000)),
+        })
+      }
+
+      return textResult({
+        status: 'timeout',
+        waited_ms: Date.now() - startedAt,
+        tasks: ids.map((id) => taskView(ctx, registry.get(id)!)),
+        ...(unknown.length ? { unknown_task_ids: unknown } : {}),
+        hint: 'Still running. Wait again, or end your turn and you will get a [Task update] when it finishes.',
+      })
+    },
+  }
+}
+
+function createTaskListTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'task_list',
+    description: 'List the background tasks of this conversation (running and recently finished) with their status and output_file.',
+    label: 'List Tasks',
+    parameters: Type.Object({}),
+    execute: async () => {
+      const registry = ctx.commandRegistry
+      if (!registry) return textResult({ tasks: [] })
+      await registry.refreshRemote()
+      return textResult({
+        tasks: registry.listAll().map((t) => ({
+          task_id: t.id,
+          source: t.source,
+          title: t.title,
+          status: t.stale ? 'unknown (runtime restarted)' : t.status,
+          elapsed_ms: t.elapsedMs,
+          output_file: t.outputFile,
+        })),
+      })
+    },
+  }
+}
+
+function createTaskCancelTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'task_cancel',
+    description: 'Cancel a background task you started (stops the command, subagent, or tracking).',
+    label: 'Cancel Task',
+    parameters: Type.Object({
+      task_id: Type.String({ description: 'Task id to cancel' }),
+    }),
+    execute: async (_id, params) => {
+      const { task_id } = params as { task_id: string }
+      const registry = ctx.commandRegistry
+      const entry = registry?.get(task_id)
+      if (!registry || !entry) return textResult({ error: `Unknown task id: ${task_id}` })
+      registry.kill(entry.id)
+      return textResult({ ok: true, task_id: entry.id, status: registry.get(entry.id)?.status ?? 'cancelled' })
     },
   }
 }
@@ -6559,7 +6832,7 @@ function createAgentSpawnTool(ctx: ToolContext, allToolsGetter: () => AgentTool[
   return {
     name: 'agent_spawn',
     description:
-      'Launch an instance of a registered or built-in agent type. Returns an instance_id. Use background: true for async execution, then check with agent_status/agent_result. Built-in types: explore, general-purpose, code-reviewer, integration, channel, media, devops, browser, browser_qa. IMPORTANT: `integration` is for discovery / install / uninstall ONLY. Once a tool is installed, it is bound to YOU — call it directly by name (e.g. JIRA_LIST_BOARDS({})). Do NOT spawn the integration subagent to execute installed tools; it does not have them bound. Omit type to use fork mode (inherits your full context — ideal for context-heavy tasks).',
+      'Launch an instance of a registered or built-in agent type. Waits for its report, or with background: true runs it as a background task. Built-in types: explore, general-purpose, code-reviewer, integration, channel, media, devops, browser, browser_qa. IMPORTANT: `integration` is for discovery / install / uninstall ONLY. Once a tool is installed, it is bound to YOU — call it directly by name (e.g. JIRA_LIST_BOARDS({})). Do NOT spawn the integration subagent to execute installed tools; it does not have them bound. Omit type to use fork mode (inherits your full context — ideal for context-heavy tasks).',
     label: 'Spawn Agent',
     parameters: Type.Object({
       type: Type.Optional(
@@ -6707,18 +6980,49 @@ function createAgentSpawnTool(ctx: ToolContext, allToolsGetter: () => AgentTool[
       const w = ctx.uiWriter
       const spawn = buildSpawnCallbacks(w, toolCallId)
 
-      const spawnResult = am.spawn(type, prompt, ctx, allToolsGetter(), spawn?.callbacks, { history })
-      if (!spawnResult.ok) return textResult({ error: spawnResult.error })
+      let instanceRef: string | undefined
+      const task = background && ctx.commandRegistry
+        ? ctx.commandRegistry.registerTask({
+            source: 'subagent',
+            title: `${type}: ${prompt.replace(/\s+/g, ' ').trim().slice(0, 80)}`,
+            backgrounded: true,
+            cancel: () => { if (instanceRef) am.cancel(instanceRef) },
+          })
+        : undefined
+      const callbacks = task ? withTaskOutput(spawn?.callbacks, task) : spawn?.callbacks
+
+      const spawnResult = am.spawn(type, prompt, ctx, allToolsGetter(), callbacks, { history })
+      if (!spawnResult.ok) {
+        if (task) {
+          task.entry.consumed = true
+          task.finish('failed', { summary: spawnResult.error })
+        }
+        return textResult({ error: spawnResult.error })
+      }
 
       const instanceId = spawnResult.instanceId
+      instanceRef = instanceId
       scLog(`[screencast] agent_spawn -> instanceId=${instanceId} type=${type}`)
       spawn?.setInstanceId(instanceId)
 
       if (background) {
+        const inst = am.getInstance(instanceId)
+        if (task && inst) {
+          ctx.commandRegistry!.addAlias(instanceId, task.entry.id)
+          void inst.promise.then((result) => {
+            const report = result.responseText?.trim() || '(Subagent returned no output.)'
+            task.append(`\n\n=== Final report ===\n${report}\n`)
+            const status = inst.status === 'cancelled'
+              ? 'cancelled'
+              : inst.status === 'failed' || result.responseEmpty ? 'failed' : 'completed'
+            task.finish(status, { summary: report.slice(0, 200) })
+          })
+        }
         return textResult({
-          instance_id: instanceId,
           status: 'running',
-          hint: 'Use agent_status or agent_result to check progress',
+          ...(task ? { task_id: task.entry.id, output_file: taskOutputPath(ctx, task.entry) } : {}),
+          instance_id: instanceId,
+          hint: task ? `Started in the background. ${BACKGROUND_TASK_HINT}` : 'Running in the background.',
         })
       }
 
@@ -6762,6 +7066,26 @@ function createAgentSpawnTool(ctx: ToolContext, allToolsGetter: () => AgentTool[
         parts: accumulated?.parts,
         model: accumulated?.model || result.effectiveModelId || inst.model,
       }, result.responseText)
+    },
+  }
+}
+
+/** Mirror a background subagent's text and tool calls into its task output file. */
+function withTaskOutput(
+  callbacks: SubagentStreamCallbacks | undefined,
+  task: import('./task-registry').TaskHandle,
+): SubagentStreamCallbacks {
+  return {
+    ...callbacks,
+    onTextDelta: (delta: string) => {
+      task.append(delta)
+      callbacks?.onTextDelta?.(delta)
+    },
+    onBeforeToolCall: async (toolName: string, args: any, toolCallId: string) => {
+      let input = ''
+      try { input = JSON.stringify(args).slice(0, 200) } catch { /* non-serializable */ }
+      task.append(`\n[tool] ${toolName} ${input}\n`)
+      await callbacks?.onBeforeToolCall?.(toolName, args, toolCallId)
     },
   }
 }
@@ -7091,6 +7415,7 @@ function createAgentResultTool(ctx: ToolContext): AgentTool {
       }
 
       const r = inst.result
+      ctx.commandRegistry?.markConsumed([inst.id])
 
       const w = ctx.uiWriter
       if (w && r && (r.inputTokens > 0 || r.outputTokens > 0)) {
@@ -7269,9 +7594,9 @@ function createTeamDeleteTool(ctx: ToolContext): AgentTool {
   }
 }
 
-function createTaskCreateTool(ctx: ToolContext): AgentTool {
+function createTeamTaskCreateTool(ctx: ToolContext): AgentTool {
   return {
-    name: 'task_create',
+    name: 'team_task_create',
     description: "Create a task in the team's shared task queue. Teammates will automatically claim available tasks when idle.",
     label: 'Create Task',
     parameters: Type.Object({
@@ -7332,9 +7657,9 @@ function createTaskCreateTool(ctx: ToolContext): AgentTool {
   }
 }
 
-function createTaskGetTool(ctx: ToolContext): AgentTool {
+function createTeamTaskGetTool(ctx: ToolContext): AgentTool {
   return {
-    name: 'task_get',
+    name: 'team_task_get',
     description: 'Get detailed information about a specific task including its dependencies.',
     label: 'Get Task',
     parameters: Type.Object({
@@ -7351,9 +7676,9 @@ function createTaskGetTool(ctx: ToolContext): AgentTool {
   }
 }
 
-function createTaskListTool(ctx: ToolContext): AgentTool {
+function createTeamTaskListTool(ctx: ToolContext): AgentTool {
   return {
-    name: 'task_list',
+    name: 'team_task_list',
     description: "List all tasks in the team's queue with their status, owner, and dependencies.",
     label: 'List Tasks',
     parameters: Type.Object({}),
@@ -7375,9 +7700,9 @@ function createTaskListTool(ctx: ToolContext): AgentTool {
   }
 }
 
-function createTaskUpdateTool(ctx: ToolContext): AgentTool {
+function createTeamTaskUpdateTool(ctx: ToolContext): AgentTool {
   return {
-    name: 'task_update',
+    name: 'team_task_update',
     description: "Update a task's status, description, owner, or dependencies. Use to mark tasks in_progress or completed.",
     label: 'Update Task',
     parameters: Type.Object({
@@ -8058,6 +8383,9 @@ export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTo
     g(r(createExecTool(ctx)), 'shell'),
     g(r(createExecWaitTool(ctx)), 'shell'),
     g(r(createExecListTool(ctx)), 'shell'),
+    createWaitTool(ctx),
+    createTaskListTool(ctx),
+    createTaskCancelTool(ctx),
     g(createGitHubPullRequestTool(ctx), 'network'),
     g(createGitHubMergePullRequestTool(ctx), 'network'),
     g(createGitHubConnectTool(ctx), 'network'),
@@ -8125,10 +8453,10 @@ export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTo
   // Team coordination tools
   tools.push(createTeamCreateTool(ctx))
   tools.push(createTeamDeleteTool(ctx))
-  tools.push(createTaskCreateTool(ctx))
-  tools.push(createTaskGetTool(ctx))
-  tools.push(createTaskListTool(ctx))
-  tools.push(createTaskUpdateTool(ctx))
+  tools.push(createTeamTaskCreateTool(ctx))
+  tools.push(createTeamTaskGetTool(ctx))
+  tools.push(createTeamTaskListTool(ctx))
+  tools.push(createTeamTaskUpdateTool(ctx))
   tools.push(createSendTeamMessageTool(ctx))
 
   // BETA: per-chat git worktrees — cross-chat awareness tool
@@ -8184,7 +8512,23 @@ export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTo
     for (let i = 0; i < tools.length; i++) tools[i] = withActionRules(tools[i], pe)
   }
 
+  for (const tool of tools) {
+    if (HIDDEN_LEGACY_TOOLS.has(tool.name)) markHiddenTool(tool)
+  }
+
   return tools
+}
+
+/**
+ * Superseded by `wait` / `task_list` / `task_cancel`. Still executable so old
+ * transcripts and remote callers keep working, but never advertised to the model.
+ */
+export const HIDDEN_LEGACY_TOOLS: ReadonlySet<string> = new Set(['exec_wait', 'exec_list', 'agent_status', 'agent_result'])
+
+/** Keep a tool executable but leave it out of the tool list sent to the model. */
+export function markHiddenTool<T extends AgentTool>(tool: T): T {
+  ;(tool as T & { hidden?: boolean }).hidden = true
+  return tool
 }
 
 // ---------------------------------------------------------------------------
@@ -8653,7 +8997,7 @@ export function createModeUnavailableTool(name: string, mode: RestrictedMode): A
  * individually resolvable via a skill's declared tool list.
  */
 export const TOOL_GROUP_MAP: Record<string, string[]> = {
-  shell: ['exec', 'exec_wait', 'terminal_exec', 'terminal_read'],
+  shell: ['exec', 'exec_wait', 'wait', 'task_list', 'task_cancel', 'terminal_exec', 'terminal_read'],
   filesystem: ['read_file', 'write_file', 'edit_file', 'read_lints'],
   files: ['delete_file', 'search', 'read_file', 'write_file', 'edit_file', 'read_lints', 'share_file'],
   search: ['search', 'impact_radius'],
@@ -8686,6 +9030,9 @@ export const WORK_TOOL_GROUPS = {
 export const ALL_TOOL_NAMES = [
   'exec',
   'exec_wait',
+  'wait',
+  'task_list',
+  'task_cancel',
   'read_file',
   'write_file',
   'edit_file',

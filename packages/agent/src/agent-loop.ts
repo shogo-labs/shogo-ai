@@ -106,8 +106,8 @@ export interface AgentLoopOptions {
   onToolCall?: (name: string, input: any) => void
   /** Called at each iteration */
   onIteration?: (iteration: number) => void
-  /** Called after an iteration with the live transcript, before the next model step. */
-  onIterationMessages?: (messages: Message[]) => void
+  /** Messages to add before the next model step (e.g. finished background tasks). They extend the turn. */
+  takeInjectedMessages?: () => Message[]
   /** Called after tool results with only messages not reported by an earlier callback. */
   onProgress?: (messages: Message[]) => void
   /** Called with incremental text as the model streams */
@@ -342,7 +342,7 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
     thinkingLevel = 'medium',
     onToolCall,
     onIteration,
-    onIterationMessages,
+    takeInjectedMessages,
     onProgress,
     onTextDelta,
     onThinkingStart,
@@ -426,6 +426,9 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
         ...stallOpts,
       })
     }
+  }
+  if (orchestrated.tools.some(isHiddenTool)) {
+    effectiveStreamFn = withoutHiddenTools(effectiveStreamFn ?? streamSimple)
   }
 
   const agent = new Agent({
@@ -528,7 +531,7 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
         const turnToolResults = (event as any).toolResults
         lastTurnHadToolCalls = Array.isArray(turnToolResults) && turnToolResults.length > 0
         onIteration?.(iterations)
-        onIterationMessages?.(agent.state.messages)
+        for (const message of takeInjectedMessages?.() ?? []) agent.steer(message)
         const iterationMessages = agent.state.messages.slice(historyLength)
         if (iterationMessages.length > lastProgressMessageCount - historyLength) {
           const newProgress = iterationMessages.slice(lastProgressMessageCount - historyLength)
@@ -1224,4 +1227,14 @@ function isContextOverflowError(err: any): boolean {
   ) || msg.includes('prompt is too long')
     || msg.includes('maximum context length')
     || msg.includes('request too large')
+}
+
+/** Tools flagged `hidden` stay executable but are never advertised to the model. */
+export function isHiddenTool(tool: AgentTool): boolean {
+  return (tool as AgentTool & { hidden?: boolean }).hidden === true
+}
+
+function withoutHiddenTools(streamFn: StreamFn): StreamFn {
+  return (model, context, opts) =>
+    streamFn(model, { ...context, tools: context.tools?.filter((t) => !isHiddenTool(t as AgentTool)) }, opts)
 }

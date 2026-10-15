@@ -368,6 +368,33 @@ async function recordEvent(item: { id: string; workspaceId: string }, type: stri
       eventData: data ?? undefined,
     },
   })
+  const line = cardEventLine(type, data)
+  if (line) {
+    const { emitTaskEvent } = await import('./background-tasks.service')
+    await emitTaskEvent('work_item', item.id, { line })
+  }
+}
+
+/** One line per card event, for agents waiting on the card (`until` matches against these). */
+function cardEventLine(type: string, data?: Record<string, any>): string | null {
+  switch (type) {
+    case 'moved': {
+      const to = data?.to
+      return to ? `moved to ${to.column}${to.category ? ` (${to.category})` : ''}` : 'moved'
+    }
+    case 'assigned':
+      return `assigned to ${data?.label ?? 'someone'}`
+    case 'updated':
+      return `updated ${(data?.changed ?? []).join(', ')}`.trim()
+    case 'commented':
+      return `comment: ${String(data?.text ?? '').slice(0, 500)}`
+    case 'archived':
+    case 'restored':
+    case 'created':
+      return type
+    default:
+      return null
+  }
 }
 
 /** An agent's tool call on a card links the session that made it. */

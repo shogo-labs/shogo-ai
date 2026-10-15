@@ -446,8 +446,9 @@ describe('gateway-tools', () => {
       // + github_merge_pr + github_connect + expose_port + social_media.
       // (`notify_user_error` was removed along with the noisy error toast UI.)
       // `social_media` is registered here and then hidden unless the project
-      // opts in (`filterDisabledCapabilityTools`).
-      expect(createTools(createCtx())).toHaveLength(69)
+      // opts in (`filterDisabledCapabilityTools`). Plus the background task
+      // tools: wait, task_list, task_cancel.
+      expect(createTools(createCtx())).toHaveLength(72)
       expect(createTools(createCtx()).find((t) => t.name === 'heartbeat_configure')).toBeDefined()
       expect(createTools(createCtx()).find((t) => t.name === 'heartbeat_status')).toBeDefined()
       expect(createTools(createCtx()).find((t) => t.name === 'memory_search')).toBeDefined()

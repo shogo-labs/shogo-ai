@@ -67,7 +67,8 @@ import { CHAT_RATE_LIMITS, takeRateLimit } from '../lib/chat-limits'
 import { getFrontendUrl } from '../lib/cloud-urls'
 import { adoptSlackRouting } from '../services/chat-providers/slack-adopt'
 import { catchUp, registerConversationActivity } from '../services/conversation-activity'
-import { respondToPermission, stopAgentReply } from '../services/conversation-agent-dispatcher'
+import { agentPostTargets, respondToPermission, stopAgentReply } from '../services/conversation-agent-dispatcher'
+import { createReplyTasks } from '../services/background-tasks.service'
 import { decideApproval, listPendingApprovals } from '../services/conversation-approvals'
 import { liveActivityApprovalAnswered } from '../services/approval-live-activity'
 import { loadWorkLog } from '../services/agent-work-log'
@@ -1355,6 +1356,10 @@ export function agentChannelRoutes(routeConfig: AgentChannelRoutesConfig): Hono 
         await attachQuestions({ messageId: result.row.id, drafts: questions, source: 'agent' })
           .catch((err) => console.warn('[AgentChannels] questions failed:', (err as Error).message))
       }
+      // Created before dispatch, so a fast reply cannot finish ahead of its task.
+      const tasks = body.trackReplies === true && typeof body.sessionId === 'string' && !result.duplicate
+        ? await trackedReplies(auth.workspaceId, body.sessionId, result)
+        : []
       void afterMessagePosted(result, { actorUserId: null, origin: 'agent' })
       return c.json({
         message: {
@@ -1363,12 +1368,26 @@ export function agentChannelRoutes(routeConfig: AgentChannelRoutesConfig): Hono 
           threadRootId: rootId,
           runId: agentChain?.runId ?? null,
           url: `${getFrontendUrl()}/c/${encodeURIComponent(conversation.id)}?thread=${encodeURIComponent(rootId)}`,
+          ...(tasks.length ? { tasks } : {}),
         },
       }, 201)
     } catch (err) {
       return errorResponse(c, err)
     }
   })
+
+  /** Background tasks for the agents a post hands work to, so the poster can wait for their replies. */
+  async function trackedReplies(workspaceId: string, chatSessionId: string, result: any) {
+    try {
+      const targets = await agentPostTargets(result)
+      if (!targets.length) return []
+      const agents = await Promise.all(targets.map(async (t) => ({ projectId: t.projectId, name: await agentDisplayName(workspaceId, t.projectId) })))
+      return await createReplyTasks(chatSessionId, result.row.id, agents)
+    } catch (err) {
+      console.warn('[AgentChannels] reply tracking failed:', (err as Error).message)
+      return []
+    }
+  }
 
   /** An agent edits one of its own messages in place: its text, kind, or status card. */
   router.patch(`${base}/messages/:messageId`, async (c) => {

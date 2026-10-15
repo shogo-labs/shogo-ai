@@ -209,6 +209,8 @@ const MINIMAL_TOOL_NAMES = new Set([
   "meeting_search",
   "Delete",
   "exec_wait",
+  "wait",
+  "task_cancel",
 ])
 const GROUP_FALLING_EDGE_DELAY_MS = 1500
 

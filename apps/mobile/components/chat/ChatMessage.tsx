@@ -13,9 +13,10 @@ import { cn } from "@shogo/shared-ui/primitives"
 import { MarkdownText } from "./MarkdownText"
 import { analyzeContent } from "./long-text-utils"
 import { LongTextPreviewCard } from "./LongTextPreviewCard"
-import { channelDispatchOf, extractTextContent } from "@shogo/shared-app/chat"
+import { channelDispatchOf, extractTextContent, taskNotificationOf } from "@shogo/shared-app/chat"
 import { CanvasErrorCard } from "./turns/CanvasErrorCard"
 import { ChannelDispatchCard } from "./turns/ChannelDispatchCard"
+import { TaskNotificationRow } from "./turns/TaskNotificationRow"
 import { stripAskUserAnswerMarker } from "./turns/askUserAnswers"
 import { parseCanvasErrorDebugPrompt } from "./turns/canvasErrorPrompt"
 
@@ -38,6 +39,10 @@ export function ChatMessage({
     ? stripAskUserAnswerMarker(message.content)
     : message.content
   const isLongText = isUser && content ? analyzeContent(content).isLong : false
+  const taskNotification = isUser ? taskNotificationOf(message) : null
+  if (taskNotification) {
+    return <TaskNotificationRow notification={taskNotification} />
+  }
   const dispatch = isUser ? channelDispatchOf(message) : null
   if (dispatch) {
     return (

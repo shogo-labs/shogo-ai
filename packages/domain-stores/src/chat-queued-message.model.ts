@@ -28,6 +28,7 @@ export const ChatQueuedMessageModel = types
     error: types.optional(types.string, ""),
     createdAt: types.optional(types.number, 0),
     updatedAt: types.optional(types.number, 0),
+    kind: types.optional(types.string, "user"),
     session: types.safeReference(types.late(() => ChatSessionModel)),
   })
   .views(self => ({

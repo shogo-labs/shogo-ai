@@ -11,6 +11,7 @@ import { Type } from '@sinclair/typebox'
 import type { AgentTool } from '@mariozechner/pi-agent-core'
 import type { ToolContext } from './gateway-tools'
 import { textResult } from './gateway-tools'
+import { mirrorApiTasks } from './remote-tasks'
 import { resolveRuntimeIdentity } from './workspace-runtime-mode'
 import { downloadedPath, pruneChatFiles, saveChatFile } from './chat-files'
 import {
@@ -209,7 +210,7 @@ export function createChannelPostTool(ctx: ToolContext): AgentTool {
       'Tagging an agent hands work to it: it runs next and replies in the thread, so tag an agent only when you give it a task, never to thank or update it. ' +
       'A new top-level post makes you the owner of its thread, so unaddressed human replies there come to you. ' +
       'Do not use this to reply to the message you were mentioned in; your normal reply is posted there automatically. ' +
-      'Returns thread_id (for follow-ups) and url (a link to the thread for people outside Shogo).',
+      'Returns thread_id (for follow-ups), url (a link to the thread for people outside Shogo), and a background task per agent you tagged.',
     parameters: Type.Object({
       channel: Type.String({ description: 'Channel name (without #) or conversation id.' }),
       text: Type.Optional(Type.String({ description: 'Markdown message text. With a card, a note shown under it.' })),
@@ -238,10 +239,23 @@ export function createChannelPostTool(ctx: ToolContext): AgentTool {
         kind: input.kind,
         card: input.card,
         questions: questionsForApi(input.questions),
+        trackReplies: !!ctx.commandRegistry && !!ctx.sessionId,
       })
       if (result.ok && result.data) {
-        const { threadId, ...rest } = result.data
-        return textResult({ ok: true, ...rest, thread_id: threadId })
+        const { threadId, tasks, ...rest } = result.data
+        const tracked = tasks?.length && ctx.commandRegistry ? mirrorApiTasks(ctx.commandRegistry, 'agent_reply', tasks) : []
+        return textResult({
+          ok: true,
+          ...rest,
+          thread_id: threadId,
+          ...(tracked.length
+            ? {
+                tasks: tracked.map((t, i) => ({ ...t, title: tasks![i].title })),
+                task_ids: tracked.map((t) => t.task_id),
+                hint: 'Each tagged agent replies in the thread. Call wait({ task_ids }) to block on them, or end your turn and you will get a [Task update] when they reply.',
+              }
+            : {}),
+        })
       }
       return apiError(result, 'Could not post the message')
     },

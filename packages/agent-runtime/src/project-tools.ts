@@ -32,7 +32,8 @@ import {
   type CapabilitySettings,
 } from '@shogo/shared-runtime/capability-settings'
 import type { ToolContext } from './gateway-tools'
-import { textResult } from './gateway-tools'
+import { BACKGROUND_TASK_HINT, textResult } from './gateway-tools'
+import { trackRemoteTask } from './remote-tasks'
 import { capabilityState, effectiveCapabilityValue, lockedCapabilityKeys, resolveRuntimeCapabilities } from './capability-status-prompt'
 import { resolveWorkspaceConfigFilePath } from './workspace-defaults'
 import { isMetalRuntime } from './remote-tools'
@@ -588,7 +589,7 @@ export function createProjectCallTool(ctx: ToolContext): AgentTool {
     description: [
       'Send a message to another project\'s agent and (by default) wait for its reply. This is how one module of a multi-project system invokes the next: intake calls analyst, planner calls implementer, and so on.',
       'Always pass the same `runId` for every hop of one piece of work; a new one is minted and returned when omitted. The callee runs in its own session `run:<runId>` and every cost metric it emits is stamped with that runId, so the run can be traced across projects.',
-      'Use `wait: false` for long jobs and let the callee report back via project_call to you, or poll its outputs.',
+      'Use `wait: false` for long jobs: the call runs in the background as a task and its reply arrives like any other task result.',
     ].join(' '),
     parameters: Type.Object({
       project: Type.String({ description: 'Target project id, exact name, or manifest key.' }),
@@ -618,12 +619,14 @@ export function createProjectCallTool(ctx: ToolContext): AgentTool {
         dynamic: true,
         preliminary: true,
       })
+      const background = p.wait === false
       const res = await apiCallProjectAgent(target.id, {
         message: p.message,
         runId,
-        wait: p.wait !== false,
+        wait: !background,
         timeoutMs: p.timeoutMs,
         callerProjectId: ctx.projectId,
+        ...(background ? { track: true } : {}),
       })
       if (!res.ok || !res.data) {
         return textResult({
@@ -640,6 +643,23 @@ export function createProjectCallTool(ctx: ToolContext): AgentTool {
                 ? 'The requester is not allowed to do that.'
                 : undefined,
         })
+      }
+      if (background && res.data.tracked && ctx.commandRegistry && ctx.sessionId) {
+        const task = await trackRemoteTask(ctx.commandRegistry, ctx.sessionId, {
+          source: 'project_call',
+          targetRef: `${target.id}:${runId}`,
+          title: `${target.name}: ${p.message.replace(/\s+/g, ' ').slice(0, 80)}`,
+        })
+        if (task) {
+          return textResult({
+            ok: true,
+            project: { id: target.id, name: target.name },
+            runId,
+            ...task,
+            chatSessionId: res.data.chatSessionId ?? res.data.sessionId,
+            hint: BACKGROUND_TASK_HINT,
+          })
+        }
       }
       const reply = res.data.reply ?? null
       const urls = reply

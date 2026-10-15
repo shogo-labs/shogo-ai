@@ -54,8 +54,8 @@ export const LOOKUP_TOOL_NAMES = new Set([
   "agent_status",
   "agent_result",
   "agent_list",
-  "task_get",
-  "task_list",
+  "team_task_get",
+  "team_task_list",
   "goal_list",
   "schedule_list",
   "trigger_types_list",
@@ -63,6 +63,7 @@ export const LOOKUP_TOOL_NAMES = new Set([
   "meeting_list",
   "meeting_read",
   "exec_list",
+  "task_list",
   "terminal_read",
   "memory_read",
   "read_history",
@@ -884,7 +885,7 @@ export function getToolSummary(
       return { verb: "List", target: "team directory" }
     case "agent_list":
       return { verb: "List", target: "agents" }
-    case "task_list":
+    case "team_task_list":
       return { verb: "List", target: "tasks" }
     case "goal_list":
       return { verb: "List", target: "goals" }
@@ -904,6 +905,10 @@ export function getToolSummary(
       return { verb: "List", target: "meetings" }
     case "exec_list":
       return { verb: "List", target: "running commands" }
+    case "task_list":
+      return { verb: "List", target: "background tasks" }
+    case "task_cancel":
+      return { verb: "Cancel", target: a.task_id ? `task ${String(a.task_id)}` : "task" }
     case "team_chat_read": {
       const channel = a.channel as string | undefined
       const target = channel ? `#${channel.replace(/^#/, "")}` : undefined
@@ -928,7 +933,7 @@ export function getToolSummary(
         verb: "Read",
         target: a.instance_id ? `agent ${String(a.instance_id)} result` : "agent result",
       }
-    case "task_get":
+    case "team_task_get":
       return { verb: "Read", target: a.task_id ? `task ${String(a.task_id)}` : "task" }
     case "meeting_read":
       return { verb: "Read", target: a.meeting_id ? `meeting ${String(a.meeting_id)}` : "meeting" }
@@ -972,6 +977,14 @@ export function getToolSummary(
       // once the exec resolves; `parseShellCommand` handles that via the
       // optional `state` arg.
       return parseShellCommand(command, state)
+    }
+    case "wait": {
+      const ids = Array.isArray(a.task_ids) ? a.task_ids.filter((id) => typeof id === "string") : []
+      const ms = typeof a.timeout_ms === "number" ? a.timeout_ms : 30_000
+      const verb = state && state !== "streaming" ? "Waited for" : "Waiting for"
+      if (ids.length === 0) return { verb, target: formatDuration(ms) }
+      const tasks = ids.length === 1 ? `task ${String(ids[0])}` : `${ids.length} tasks`
+      return { verb, target: typeof a.until === "string" && a.until ? `${tasks} to show "${truncate(a.until, 24)}"` : tasks }
     }
     case "exec_wait": {
       const ms = typeof a.timeout_ms === "number" ? a.timeout_ms : 30_000

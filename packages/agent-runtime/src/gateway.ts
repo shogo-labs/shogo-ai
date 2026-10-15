@@ -99,7 +99,7 @@ import {
 } from './workspace-runtime-mode'
 import { initComposioSession, resetComposioSession, isComposioEnabled, isComposioInitialized } from './composio'
 import { createIntegrationCredentialWrapper } from './integration-credentials'
-import { deriveApiUrl, getInternalHeaders, getProjectConfig, hasInternalApiCredentials, postCostMetric, projectScopedId } from './internal-api'
+import { deriveApiUrl, getInternalHeaders, getProjectConfig, hasInternalApiCredentials, notifyTaskCompletions, postCostMetric, projectScopedId } from './internal-api'
 import { mergeCapabilitySettingsIntoConfig } from '@shogo/shared-runtime/capability-settings'
 import { getRuntimeTrust } from './runtime-trust'
 import { refreshTrust } from './trust-resolver'
@@ -114,10 +114,13 @@ import { defaultShellCwd, workspaceKind } from './workspace-runtime-mode'
 import { applyCapabilityProfile, CAPABILITY_PROFILES, type CapabilityProfileName } from './capability-profiles'
 import { FileStateCache } from './file-state-cache'
 import { SUBAGENT_GUIDE, WORKTREE_GUIDE } from './subagent-prompts'
+import { BACKGROUND_TASKS_GUIDE } from './background-tasks-guide'
 import { buildGuideRegistry, buildCapabilitiesIndex } from './guide-registry'
 import { AgentManager } from './agent-manager'
 import { loadWorkspaceCustomAgents } from './subagent'
-import { CommandRegistry } from './command-registry'
+import { TaskRegistry, formatTaskNotification } from './task-registry'
+import { cleanupTaskOutputs, taskOutputDir, taskOutputRoot } from './task-output'
+import { createApiTaskClient } from './remote-tasks'
 import { releaseSessionBrowsers, reapOrphanChromium } from './browser-pool'
 import { TeamManager } from './team-manager'
 import {
@@ -253,6 +256,12 @@ const AUTO_TIER_ORDER: AutoTierCeiling[] = ['economy', 'standard', 'premium']
 // transient cloud configuration error can recover without requiring a new
 // chat session.
 const AUTO_TIER_CEILING_TTL_MS = 5 * 60 * 1000
+/** Finished tasks arriving this close together wake an idle session once. */
+const TASK_WAKE_COALESCE_MS = 2_000
+/** How often an idle session polls tasks mirrored from another project's runtime. */
+const REMOTE_TASK_POLL_MS = 10_000
+/** How often a running turn refreshes remote tasks so their results can be injected mid-turn. */
+const TURN_REMOTE_REFRESH_MS = 10_000
 
 function lowerAutoTier(tier: AutoTierCeiling): AutoTierCeiling | null {
   const index = AUTO_TIER_ORDER.indexOf(tier)
@@ -709,7 +718,7 @@ export class AgentGateway {
   /** Per-session shell cwd tracking — persists cd across exec calls */
   private shellCwd = new Map<string, string>()
   /** Per-session backgrounded command registry — soft-timed-out exec runs */
-  private commandRegistries = new Map<string, import('./command-registry').CommandRegistry>()
+  private commandRegistries = new Map<string, TaskRegistry>()
   /**
    * Admin-configured Auto-mode tier overrides, parsed once from the injected
    * `AGENT_AUTO_TIER_MAP` env var. Undefined keeps the hardcoded defaults.
@@ -1078,6 +1087,10 @@ export class AgentGateway {
     } catch (err: any) {
       console.warn(`[AgentGateway] capability sync failed: ${err?.message ?? err}`)
     }
+
+    try {
+      cleanupTaskOutputs(taskOutputRoot(this.workspaceDir))
+    } catch { /* best effort */ }
 
     migrateFromLegacySkills(this.workspaceDir)
     this.skills = loadAllSkills(this.workspaceDir)
@@ -1515,6 +1528,10 @@ export class AgentGateway {
       try { reg.killAll() } catch { /* already gone */ }
     }
     this.commandRegistries.clear()
+    for (const timer of this.taskWakeTimers.values()) clearTimeout(timer)
+    this.taskWakeTimers.clear()
+    for (const poller of this.remoteTaskPollers.values()) clearInterval(poller)
+    this.remoteTaskPollers.clear()
 
     this.sessionManager.destroy()
     this.sessionPersistence?.close()
@@ -2089,15 +2106,7 @@ export class AgentGateway {
     return {
       sessionKey: sessionId,
       workspaceDir: this.workspaceDir,
-      clearHistory: () => {
-        this.sessionManager.clearHistory(sessionId)
-        // History wipe = prefix rewrite. Drop per-session compaction state
-        // so fresh decisions are taken against the new (empty) history.
-        this.contentReplacementStates.delete(sessionId)
-        this.turnCounters.delete(sessionId)
-        // Kill any backgrounded shell commands; they belong to the wiped session.
-        this.disposeSessionState(sessionId)
-      },
+      clearHistory: () => this.clearSessionHistory(sessionId),
       getMessages: () => [...session.messages],
       reloadConfig: () => this.reloadConfig(),
       setModelOverride: (model: string) => {
@@ -2114,43 +2123,140 @@ export class AgentGateway {
   // Backgrounded shell command bookkeeping (per-session)
   // ---------------------------------------------------------------------------
 
-  private getOrCreateCommandRegistry(sessionId: string): CommandRegistry {
+  private getOrCreateCommandRegistry(sessionId: string): TaskRegistry {
     let reg = this.commandRegistries.get(sessionId)
     if (!reg) {
-      reg = new CommandRegistry()
+      const registry = new TaskRegistry({
+        outputDir: taskOutputDir(this.workspaceDir, sessionId),
+        workspaceDir: this.workspaceDir,
+        remote: hasInternalApiCredentials() ? createApiTaskClient() : undefined,
+      })
+      reg = registry
 
       // Re-seed from the persisted snapshot so a thread reopened after a
-      // runtime restart still shows the processes it started. These are stale
-      // (the OS children belonged to the dead gateway) and are flagged as such.
+      // runtime restart still shows its tasks. Local ones are stale (the OS
+      // children belonged to the dead gateway); API-tracked ones stay live.
       const persisted = this.sessionManager.get(sessionId)?.metadata?.runningProcesses
       if (Array.isArray(persisted) && persisted.length > 0) {
-        reg.restoreStale(persisted)
+        registry.restoreStale(persisted)
       }
 
       // Persist the running list on every change so it survives reconnect and
-      // restart via .shogo/sessions.db (synced to S3). Process start/exit is
+      // restart via .shogo/sessions.db (synced to S3). Task start/exit is
       // rare relative to message volume, so this write is cheap.
-      reg.onChange((running) => {
-        this.sessionManager.setSessionMetadata(sessionId, {
-          runningProcesses: running.map((p) => ({
-            runId: p.runId,
-            command: p.command,
-            pid: p.pid,
-            sandboxed: p.sandboxed,
-            containerName: p.containerName,
-            startedAt: p.startedAt,
-          })),
-        })
+      registry.onChange(() => {
+        this.sessionManager.setSessionMetadata(sessionId, { runningProcesses: registry.snapshot() })
       })
+      registry.onNotification(() => this.scheduleTaskWake(sessionId))
 
-      this.commandRegistries.set(sessionId, reg)
+      this.commandRegistries.set(sessionId, registry)
     }
     return reg
   }
 
-  /** List the background shell processes still running for a chat thread. */
+  // ---------------------------------------------------------------------------
+  // Idle wake: a task finished while no turn is running
+  // ---------------------------------------------------------------------------
+
+  private taskWakeTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  private remoteTaskPollers = new Map<string, ReturnType<typeof setInterval>>()
+
+  /**
+   * Coalesce finished-task notes for an idle session and hand them to the API,
+   * which queues one wake message. While a turn runs, notes are injected into
+   * it instead (takeInjectedMessages) and the turn's end re-schedules this.
+   * API-tracked tasks are skipped: the API wakes the session for those itself.
+   */
+  private scheduleTaskWake(sessionId: string): void {
+    if (this.turnAbortControllers.has(sessionId) || this.taskWakeTimers.has(sessionId)) return
+    const timer = setTimeout(() => {
+      this.taskWakeTimers.delete(sessionId)
+      void this.flushTaskWake(sessionId)
+    }, TASK_WAKE_COALESCE_MS)
+    ;(timer as any).unref?.()
+    this.taskWakeTimers.set(sessionId, timer)
+  }
+
+  private async flushTaskWake(sessionId: string): Promise<void> {
+    const reg = this.commandRegistries.get(sessionId)
+    if (!reg || this.turnAbortControllers.has(sessionId)) return
+    const notes = reg.peekNotifications().filter((n) => !reg.get(n.taskId)?.apiTracked && !reg.get(n.taskId)?.reported)
+    if (notes.length === 0) return
+    if (!hasInternalApiCredentials()) return
+    const res = await notifyTaskCompletions(sessionId, notes.map((n) => ({
+      id: n.taskId,
+      source: n.source,
+      title: n.title,
+      status: n.status,
+      text: formatTaskNotification(n),
+    })))
+    if (res.ok) reg.markReported(notes.map((n) => n.taskId))
+    else console.warn(`${this.logPrefix} Task wake for ${sessionId} failed: ${res.error ?? res.status}`)
+  }
+
+  /**
+   * Tasks mirrored from another project's runtime have no API row to wake the
+   * session, so while idle the gateway polls them itself.
+   */
+  private ensureRemoteTaskPoller(sessionId: string): void {
+    const reg = this.commandRegistries.get(sessionId)
+    const needsPolling = (e: { apiTracked?: boolean }) => !e.apiTracked
+    if (!reg || this.remoteTaskPollers.has(sessionId) || !reg.hasRunningRemote(needsPolling)) return
+    const poller = setInterval(() => {
+      if (!reg.hasRunningRemote(needsPolling)) {
+        clearInterval(poller)
+        this.remoteTaskPollers.delete(sessionId)
+        return
+      }
+      if (this.turnAbortControllers.has(sessionId)) return
+      void reg.refreshWhere(needsPolling)
+    }, REMOTE_TASK_POLL_MS)
+    ;(poller as any).unref?.()
+    this.remoteTaskPollers.set(sessionId, poller)
+  }
+
+  /**
+   * A queued wake message is starting a turn: its text already carries these
+   * tasks' results, so they must not be injected again.
+   */
+  acknowledgeTaskNotification(sessionId: string, taskIds: string[]): void {
+    const reg = this.commandRegistries.get(sessionId)
+    if (reg && taskIds.length > 0) reg.markConsumed(taskIds)
+  }
+
+  /** List the tasks still running for a chat thread. */
   listSessionProcesses(sessionId: string): import('./command-registry').RunningProcess[] {
     return this.getOrCreateCommandRegistry(sessionId).listVisible()
+  }
+
+  /** Running tasks for the dock, with API-tracked ones refreshed first. */
+  async listSessionTasks(sessionId: string): Promise<import('./task-registry').RunningProcess[]> {
+    const reg = this.getOrCreateCommandRegistry(sessionId)
+    if (reg.hasRunningRemote()) await reg.refreshRemote()
+    return reg.listVisible()
+  }
+
+  /** Last part of a task's output, for the dock's output viewer. */
+  readSessionTaskOutput(sessionId: string, taskId: string): { taskId: string; outputFile?: string; output: string } | null {
+    const reg = this.commandRegistries.get(sessionId)
+    const entry = reg?.get(taskId)
+    if (!reg || !entry) return null
+    const output = reg.readOutput(entry)
+    return {
+      taskId: entry.id,
+      outputFile: reg.displayPath(entry.outputFile),
+      output: output.length > 64_000 ? output.slice(-64_000) : output,
+    }
+  }
+
+  /** Stop: running tasks keep going but no longer wake the agent. */
+  muteSessionTasks(sessionId: string): void {
+    this.commandRegistries.get(sessionId)?.muteRunning()
+    const timer = this.taskWakeTimers.get(sessionId)
+    if (timer) {
+      clearTimeout(timer)
+      this.taskWakeTimers.delete(sessionId)
+    }
   }
 
   /**
@@ -2161,6 +2267,16 @@ export class AgentGateway {
     return this.getOrCreateCommandRegistry(sessionId).kill(runId)
   }
 
+  /** Wipe a session's history and everything tied to it, including its background tasks. */
+  clearSessionHistory(sessionId: string): void {
+    this.sessionManager.clearHistory(sessionId)
+    // History wipe = prefix rewrite. Drop per-session compaction state
+    // so fresh decisions are taken against the new (empty) history.
+    this.contentReplacementStates.delete(sessionId)
+    this.turnCounters.delete(sessionId)
+    this.disposeSessionState(sessionId)
+  }
+
   /** Tear down per-session bookkeeping. Kills any backgrounded shell runs and releases browsers. */
   private disposeSessionState(sessionId: string): void {
     const reg = this.commandRegistries.get(sessionId)
@@ -2168,6 +2284,12 @@ export class AgentGateway {
       reg.killAll()
       this.commandRegistries.delete(sessionId)
     }
+    const wake = this.taskWakeTimers.get(sessionId)
+    if (wake) clearTimeout(wake)
+    this.taskWakeTimers.delete(sessionId)
+    const poller = this.remoteTaskPollers.get(sessionId)
+    if (poller) clearInterval(poller)
+    this.remoteTaskPollers.delete(sessionId)
     void releaseSessionBrowsers(sessionId)
   }
 
@@ -2900,23 +3022,43 @@ export class AgentGateway {
     // tool progress) are `transient`: the client consumes them in `onData`,
     // and the AI SDK would otherwise append each one to `message.parts`.
     let unsubscribeProcesses: (() => void) | undefined
+    let remoteRefreshTimer: ReturnType<typeof setInterval> | undefined
+    if (sessionId) {
+      const wake = this.taskWakeTimers.get(sessionId)
+      if (wake) {
+        clearTimeout(wake)
+        this.taskWakeTimers.delete(sessionId)
+      }
+      const reg = this.getOrCreateCommandRegistry(sessionId)
+      // Remote tasks finish on the API's side; refresh them so the loop can
+      // inject their results mid-turn like any local task.
+      if (reg.hasRunningRemote()) void reg.refreshRemote()
+      remoteRefreshTimer = setInterval(() => {
+        if (reg.hasRunningRemote()) void reg.refreshRemote()
+      }, TURN_REMOTE_REFRESH_MS)
+      ;(remoteRefreshTimer as any).unref?.()
+    }
     if (uiWriter && sessionId) {
       const reg = this.getOrCreateCommandRegistry(sessionId)
-      const visibleRunIds = (processes: readonly { runId: string }[]) =>
-        processes.map((process) => process.runId).join('\0')
+      const visibleKey = (tasks: readonly { runId: string; status: string }[]) =>
+        tasks.map((task) => `${task.runId}:${task.status}`).join('\0')
+      const writeTasks = (tasks: ReturnType<typeof reg.listVisible>) => {
+        uiWriter.write({ type: 'data-task-update', data: { tasks }, transient: true } as any)
+        uiWriter.write({ type: 'data-process-update', data: { processes: tasks }, transient: true } as any)
+      }
       // Push the current list immediately so a reconnecting client re-syncs.
-      const initialProcesses = reg.listVisible()
-      let lastVisibleRunIds = visibleRunIds(initialProcesses)
+      const initialTasks = reg.listVisible()
+      let lastVisibleKey = visibleKey(initialTasks)
       try {
-        uiWriter.write({ type: 'data-process-update', data: { processes: initialProcesses }, transient: true } as any)
+        writeTasks(initialTasks)
       } catch { /* writer may already be closed */ }
       unsubscribeProcesses = reg.onChange(() => {
-        const processes = reg.listVisible()
-        const nextVisibleRunIds = visibleRunIds(processes)
-        if (nextVisibleRunIds === lastVisibleRunIds) return
-        lastVisibleRunIds = nextVisibleRunIds
+        const tasks = reg.listVisible()
+        const nextKey = visibleKey(tasks)
+        if (nextKey === lastVisibleKey) return
+        lastVisibleKey = nextKey
         try {
-          uiWriter.write({ type: 'data-process-update', data: { processes }, transient: true } as any)
+          writeTasks(tasks)
         } catch { /* writer closed — onChange teardown happens in finally */ }
       })
     }
@@ -3372,16 +3514,15 @@ export class AgentGateway {
         onToolCall: (name, input) => {
           console.log(`${this.logPrefix} Tool call: ${name}`, JSON.stringify(input).substring(0, 20))
         },
-        onIterationMessages: (liveMessages) => {
+        takeInjectedMessages: () => {
           const notes = commandRegistry?.consumeCompletionNotes() ?? []
-          if (notes.length === 0) return
-          const note = {
+          if (notes.length === 0) return []
+          return [{
             role: 'user',
-            content: `[Shogo process update]\n${notes.join('\n')}\nContinue the current task using this result.`,
+            content: notes.join('\n\n'),
             timestamp: Date.now(),
             __shogoBackgroundNote: true,
-          } as unknown as Message & { __shogoBackgroundNote: boolean }
-          liveMessages.push(note)
+          } as unknown as Message]
         },
         onProgress: (progressMessages) => {
           const durableMessages = progressMessages.filter((message) => {
@@ -3976,6 +4117,12 @@ export class AgentGateway {
       }
       toolHeartbeatTimers.clear()
       unsubscribeProcesses?.()
+      if (remoteRefreshTimer) clearInterval(remoteRefreshTimer)
+      if (sessionId && this.commandRegistries.has(sessionId)) {
+        // Notes that arrived after the loop's last iteration wake the session instead.
+        if (this.commandRegistries.get(sessionId)!.hasPendingNotifications()) this.scheduleTaskWake(sessionId)
+        this.ensureRemoteTaskPoller(sessionId)
+      }
     }
   }
 
@@ -4060,6 +4207,7 @@ export class AgentGateway {
     if (this.config.browserEnabled !== false) {
       parts.push(BROWSER_TOOL_GUIDE)
     }
+    parts.push(BACKGROUND_TASKS_GUIDE)
     parts.push(SUBAGENT_GUIDE)
     if (this.config.gitWorktreesEnabled) parts.push(WORKTREE_GUIDE)
 
@@ -4119,6 +4267,7 @@ export class AgentGateway {
       }
     }
 
+    parts.push(BACKGROUND_TASKS_GUIDE)
     parts.push(SUBAGENT_GUIDE)
     if (this.config.gitWorktreesEnabled) parts.push(WORKTREE_GUIDE)
 
@@ -4214,6 +4363,7 @@ export class AgentGateway {
 
     // 2. General coding guide (always the same)
     pushStable('code-agent-guide', CODE_AGENT_GENERAL_GUIDE)
+    pushStable('background-tasks-guide', BACKGROUND_TASKS_GUIDE)
     if (this.config.capabilityProfile === 'personal') {
       pushStable('personal-companion-mode', PERSONAL_COMPANION_GUIDE)
     }
@@ -4676,7 +4826,7 @@ export class AgentGateway {
 
     sections.push(
       '',
-      'Use `send_team_message`, `task_create`, `task_update`, `task_list`, `team_delete` and other team tools to interact with this team.',
+      'Use `send_team_message`, `team_task_create`, `team_task_update`, `team_task_list`, `team_delete` and other team tools to interact with this team.',
     )
 
     return sections.join('\n')
@@ -5153,7 +5303,7 @@ export class AgentGateway {
   }
 
   private remoteTools: { config: GatewayConfig; tools: ReturnType<typeof createTools> } | null = null
-  private remoteCommandRegistry = new CommandRegistry()
+  private remoteCommandRegistry = new TaskRegistry()
 
   /**
    * Tools for `/agent/remote/tool`: another project's runtime running one of

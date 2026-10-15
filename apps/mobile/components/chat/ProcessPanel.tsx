@@ -23,6 +23,16 @@ export interface RunningProcess {
   containerName?: string
   startedAt: number
   stale?: boolean
+  /** Task id (same as runId). */
+  id?: string
+  /** shell | subagent | project_call | agent_reply | work_item */
+  source?: string
+  title?: string
+  status?: string
+  outputFile?: string
+  /** The agent is woken when it finishes. */
+  notify?: boolean
+  remote?: boolean
 }
 
 export interface ProcessPanelProps {

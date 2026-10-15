@@ -210,7 +210,7 @@ describe('filterDisabledCapabilityTools', () => {
       'system_apply',
       'agent_spawn',
       'team_create',
-      'task_create',
+      'team_task_create',
       'list_projects',
     ]) {
       expect(n.has(tool)).toBe(false)

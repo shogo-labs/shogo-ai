@@ -194,7 +194,7 @@ describe('CommandRegistry completion notes', () => {
     await Promise.resolve()
 
     expect(reg.consumeCompletionNotes()).toEqual([
-      `Background command "bun test" (${entry.runId}) exited with code 7.`,
+      `[Task update] bun test (${entry.runId}) failed (exit code 7).`,
     ])
   })
 

@@ -60,6 +60,18 @@ function getLocal(k: string): AgentCallRecord | undefined {
 }
 
 export async function putAgentCall(projectId: string, record: AgentCallRecord): Promise<void> {
+  await storeAgentCall(projectId, record)
+  if (record.status !== 'running') {
+    const { emitTaskEvent } = await import('../services/background-tasks.service')
+    await emitTaskEvent('project_call', `${projectId}:${record.runId}`, {
+      status: record.status === 'completed' ? 'completed' : 'failed',
+      line: record.reply?.trim() || record.error?.message,
+      summary: record.status === 'completed' ? 'replied' : record.error?.message,
+    })
+  }
+}
+
+async function storeAgentCall(projectId: string, record: AgentCallRecord): Promise<void> {
   const k = key(projectId, record.runId)
   const r = redisOrNull()
   if (!r) {
