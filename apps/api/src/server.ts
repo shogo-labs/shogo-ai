@@ -974,8 +974,8 @@ app.get('/api/config', async (c) => {
     // have been explicitly enabled; local design work stays opt-in by default.
     agentShell: localMode,
     mobileAgentShell: localMode,
-    // Boards are dogfooded on staging first: WORK_BOARDS_ENABLED or the admin flag turns them on.
-    workBoards: localMode || process.env.WORK_BOARDS_ENABLED === 'true',
+    // Kill switch: a super-admin can turn boards off instance-wide without a deploy.
+    workBoards: true,
   }
 
   // Super-admin overrides from PlatformSetting (absence = use default).
