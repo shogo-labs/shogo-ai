@@ -101,7 +101,22 @@ export interface MessageAttachment {
   durationMs?: number | null
   /** Voice notes only: waveform levels 0-100, space separated. */
   peaks?: string | null
+  /** A small sample of the file's content, if the server could read it. Built
+   *  during the upload's background extraction, so it may arrive later than the
+   *  message itself (as a `message.updated`). */
+  preview?: AttachmentPreview | null
 }
+
+/**
+ * Mirrors `AttachmentPreview` in `apps/api/src/services/conversation-file-preview.ts`.
+ * `v` is the shape version: a preview from a different version is dropped by the
+ * server, and anything unrecognised here renders as no preview.
+ */
+export type AttachmentPreview =
+  | { v: 1; kind: 'text'; lines: string[]; pages?: number }
+  | { v: 1; kind: 'code'; lines: string[]; lang?: string }
+  | { v: 1; kind: 'slides'; title: string; bullets: string[]; count: number }
+  | { v: 1; kind: 'table'; rows: string[][]; sheet?: string; truncated: boolean }
 
 export type ConversationFileKind = 'image' | 'document' | 'other'
 

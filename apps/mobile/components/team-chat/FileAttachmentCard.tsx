@@ -9,9 +9,11 @@
  * download sits in the top-right corner of the card, always visible — a
  * hover-only control would be unreachable on a phone, and this app runs on one.
  *
- * Previews are not drawn here yet: a real first-page image needs a server-side
- * conversion step, which is tracked separately. Pictures keep the inline
- * thumbnail they already had and gain the same download badge.
+ * Under the header sits a short sample of the file's content
+ * (`AttachmentPreviewBody`): the opening lines of a document or PDF, slide 1 of
+ * a deck, the first rows of a spreadsheet. It is absent for anything the server
+ * could not read, in which case the card is exactly the file-and-type card
+ * above and nothing else.
  */
 
 import { useCallback, useState } from 'react'
@@ -21,6 +23,8 @@ import { cn } from '@shogo/shared-ui/primitives'
 import { downloadAttachment } from '../../lib/attachment-download'
 import { fileTypeMeta } from '../../lib/file-type'
 import { formatFileSize } from '../../lib/composer-attachments'
+import type { AttachmentPreview } from '../../lib/team-chat-api'
+import { AttachmentPreviewBody } from './AttachmentPreviewBody'
 
 export interface FileAttachmentCardProps {
   /** File name as uploaded, which is also the name it is saved under. */
@@ -29,6 +33,8 @@ export interface FileAttachmentCardProps {
   size?: number | null
   /** Absolute URL of the stored file. */
   url: string
+  /** A sample of the file's content, when the server managed to read it. */
+  preview?: AttachmentPreview | null
   /** Tapping the card body, to keep whatever previewing it had. */
   onOpen?: () => void
   className?: string
@@ -67,9 +73,12 @@ export function DownloadBadge({ url, name, className }: { url: string; name: str
   )
 }
 
-export function FileAttachmentCard({ name, mimeType, size, url, onOpen, className }: FileAttachmentCardProps) {
+export function FileAttachmentCard({ name, mimeType, size, url, preview, onOpen, className }: FileAttachmentCardProps) {
   const meta = fileTypeMeta(name, mimeType)
-  const subtitle = typeof size === 'number' && size > 0 ? `${meta.label} · ${formatFileSize(size)}` : meta.label
+  const pages = preview?.kind === 'text' && preview.pages && preview.pages > 1 ? `${preview.pages} pages` : null
+  const subtitle = [meta.label, pages, typeof size === 'number' && size > 0 ? formatFileSize(size) : null]
+    .filter(Boolean)
+    .join(' · ')
 
   return (
     <View
@@ -101,6 +110,7 @@ export function FileAttachmentCard({ name, mimeType, size, url, onOpen, classNam
           </Text>
         </View>
       </Pressable>
+      <AttachmentPreviewBody preview={preview} />
       <DownloadBadge url={url} name={name} />
     </View>
   )

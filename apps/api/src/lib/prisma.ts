@@ -61,6 +61,10 @@ const JSON_OBJECT_FIELDS = new Set([
   'capabilities',
   // ConversationMessage structured content and agent author reference
   'blocks', 'authorAgentRef', 'agentChain',
+  // ConversationAttachment display preview (Json? on PG, JSON String on SQLite).
+  // Deliberately NOT 'preview': ChatInboxItem.preview is a plain String, and this
+  // set is global, so a shared name would JSON-parse inbox previews on read.
+  'previewData',
   // Workspace event platform
   'payload', 'filter', 'triggerConfig', 'appManifest', 'actor',
   // Integration credential approvals and audit

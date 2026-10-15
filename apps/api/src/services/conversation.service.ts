@@ -15,6 +15,7 @@ import { flattenMarkdownBlocks, loadNamesForTexts, parseMentions, renderMentions
 import { assertNativeChat } from './chat-mode'
 import type { AgentChain } from './conversation-agent-chain'
 import { publicBlocks } from './conversation-message-kind'
+import { publicPreview } from './conversation-file-preview'
 import { normalizeBuddyLook, type BuddyLook } from '../../../../packages/shared-app/src/buddy-look'
 import { normalizeCapabilitySettings } from '@shogo/shared-runtime/capability-settings'
 import { parseProjectSettings } from '../lib/project-settings'
@@ -163,7 +164,7 @@ export const MESSAGE_INCLUDE = {
   attachments: {
     select: {
       id: true, name: true, mimeType: true, size: true, width: true, height: true,
-      durationMs: true, peaks: true, storageKey: true,
+      durationMs: true, peaks: true, storageKey: true, previewData: true,
     },
   },
   pin: { select: { pinnedById: true, createdAt: true } },
@@ -220,6 +221,7 @@ export function serializeMessage(row: any) {
           id: a.id, name: a.name, mimeType: a.mimeType, size: a.size,
           width: a.width ?? null, height: a.height ?? null, url: attachmentUrl(a),
           durationMs: a.durationMs ?? null, peaks: a.peaks ?? null,
+          preview: publicPreview(a.previewData),
         })),
     pinned: !deleted && row.pin ? { byId: row.pin.pinnedById, at: row.pin.createdAt } : null,
     editedAt: row.editedAt ?? null,
@@ -229,6 +231,23 @@ export function serializeMessage(row: any) {
 }
 
 export type SerializedMessage = ReturnType<typeof serializeMessage>
+
+/**
+ * Re-send a message after something it carries was filled in later. Used when a
+ * shared file's text extraction finishes after the message went out: the first
+ * `message.created` had no preview, so the client receives it here and patches
+ * the attachment in place.
+ */
+export async function refreshAttachmentPreview(messageId: string): Promise<void> {
+  const row = await db.conversationMessage.findUnique({ where: { id: messageId }, include: MESSAGE_INCLUDE })
+  if (!row) return
+  const conversation = await db.conversation.findUnique({
+    where: { id: row.conversationId },
+    select: { id: true, kind: true, workspaceId: true },
+  })
+  if (!conversation) return
+  await publish(conversation, { type: 'message.updated', message: serializeMessage(row) })
+}
 
 export function serializeConversation(row: any, extra: Record<string, unknown> = {}) {
   return {

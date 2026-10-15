@@ -4395,6 +4395,10 @@ model ConversationAttachment {
   /// recording because the server cannot decode audio to derive them.
   peaks          String?
   extractedText  String?  @db.Text
+  /// Display-ready preview of the file's content, built during extraction: a few
+  /// lines of text, slide 1 of a deck, or the first rows of a sheet. Capped at
+  /// ~2 KB. Null until extraction runs, and for files nothing can be read from.
+  previewData    Json?
   createdAt      DateTime @default(now())
 
   conversation Conversation                  @relation(fields: [conversationId], references: [id], onDelete: Cascade)

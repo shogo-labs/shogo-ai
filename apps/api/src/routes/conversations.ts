@@ -80,6 +80,7 @@ import { getChannelMetrics } from '../services/conversation-metrics'
 import { searchMessages } from '../services/conversation-search'
 import { askWorkspace, semanticSearch } from '../services/conversation-semantic'
 import { canExtract, extractAndStoreAttachmentText } from '../services/conversation-file-text'
+import { publicPreview } from '../services/conversation-file-preview'
 import { loadVisibleFile, type FilePrincipal } from '../services/conversation-file-access'
 import { readFileText, searchFiles } from '../services/conversation-file-index'
 import {
@@ -685,6 +686,9 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
           id: row.id, name: row.name, mimeType: row.mimeType, size: row.size,
           width: row.width, height: row.height, url: conversationFileUrl(row),
           durationMs: row.durationMs, peaks: row.peaks,
+          // Extraction has not run yet, so this is null on a fresh upload; the
+          // message (or a later `message.updated`) carries the real preview.
+          preview: publicPreview(row.previewData),
         },
       }, 201)
     } catch (err) {

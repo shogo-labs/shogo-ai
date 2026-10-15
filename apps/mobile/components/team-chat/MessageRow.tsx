@@ -721,6 +721,7 @@ function MessageRowImpl(props: MessageRowProps) {
                   mimeType={a.mimeType}
                   size={a.size}
                   url={absoluteApiUrl(a.url)}
+                  preview={a.preview}
                   onOpen={() => void Linking.openURL(absoluteApiUrl(a.url))}
                 />
               ),

@@ -3350,6 +3350,8 @@ model ConversationAttachment {
   /// recording because the server cannot decode audio to derive them.
   peaks          String?
   extractedText  String?
+  /// Display-ready preview of the file's content (Json? on PG, JSON-encoded here).
+  previewData    String?
   createdAt      DateTime @default(now())
 
   conversation Conversation                  @relation(fields: [conversationId], references: [id], onDelete: Cascade)
