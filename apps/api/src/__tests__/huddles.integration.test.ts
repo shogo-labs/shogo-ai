@@ -352,3 +352,81 @@ describe('LiveKit webhooks', () => {
     await huddles.leaveHuddle(conv.id, seed.owner)
   })
 })
+describe('huddle presence badge', () => {
+  const announcements = () => events.filter((e) => e.event.type === 'huddle.presence')
+  const forUser = (userId: string) => announcements().filter((e) => e.event.userId === userId)
+
+  // `huddleUserIds` is workspace-wide, so a huddle left live by an earlier test
+  // would keep its participants "in a huddle" for the next one.
+  beforeEach(async () => {
+    await db.huddleParticipant.deleteMany({})
+    await db.huddle.deleteMany({ where: { workspaceId: seed.workspaceId } })
+  })
+
+  test('joining announces the badge to the whole workspace', async () => {
+    const conv = await channel(`huddle-badge-${crypto.randomUUID().slice(0, 6)}`)
+    await huddles.joinHuddle(conv.id, seed.owner)
+
+    expect(announcements().at(-1).event).toMatchObject({ type: 'huddle.presence', userId: seed.owner, inHuddle: true })
+    // Workspace-wide, like presence: the badge has to show wherever the name does.
+    expect(announcements().at(-1).audience).toBeNull()
+    expect([...(await huddles.huddleUserIds(seed.workspaceId, [seed.owner]))]).toEqual([seed.owner])
+  })
+
+  test('leaving clears only the person who left', async () => {
+    const conv = await channel(`huddle-badge-${crypto.randomUUID().slice(0, 6)}`)
+    await huddles.joinHuddle(conv.id, seed.owner)
+    await huddles.joinHuddle(conv.id, seed.member)
+    events = []
+
+    await huddles.leaveHuddle(conv.id, seed.owner)
+
+    expect(forUser(seed.owner).at(-1).event).toMatchObject({ userId: seed.owner, inHuddle: false })
+    expect(forUser(seed.member)).toHaveLength(0)
+    expect([...(await huddles.huddleUserIds(seed.workspaceId, [seed.member]))]).toEqual([seed.member])
+  })
+
+  test('the last person out still clears their own badge', async () => {
+    const conv = await channel(`huddle-badge-${crypto.randomUUID().slice(0, 6)}`)
+    await huddles.joinHuddle(conv.id, seed.owner)
+    await huddles.joinHuddle(conv.id, seed.member)
+    events = []
+
+    await huddles.leaveHuddle(conv.id, seed.owner)
+    await huddles.leaveHuddle(conv.id, seed.member)
+
+    expect(forUser(seed.member).at(-1).event).toMatchObject({ userId: seed.member, inHuddle: false })
+    expect(await huddles.huddleUserIds(seed.workspaceId, [seed.owner, seed.member])).toEqual(new Set())
+  })
+
+  test('someone in two huddles keeps the badge when one of them ends', async () => {
+    const a = await channel(`huddle-two-a-${crypto.randomUUID().slice(0, 6)}`)
+    const b = await channel(`huddle-two-b-${crypto.randomUUID().slice(0, 6)}`)
+    await huddles.joinHuddle(a.id, seed.owner)
+    await huddles.joinHuddle(b.id, seed.owner)
+    events = []
+
+    await huddles.leaveHuddle(a.id, seed.owner)
+
+    // The state is re-read after the mutation, so leaving one huddle does not
+    // claim they are off every call.
+    expect(forUser(seed.owner).at(-1).event).toMatchObject({ userId: seed.owner, inHuddle: true })
+    expect([...(await huddles.huddleUserIds(seed.workspaceId, [seed.owner]))]).toEqual([seed.owner])
+  })
+
+  test('a LiveKit drop clears the badge too', async () => {
+    const conv = await channel(`huddle-badge-${crypto.randomUUID().slice(0, 6)}`)
+    const joined = await huddles.joinHuddle(conv.id, seed.owner)
+    await huddles.joinHuddle(conv.id, seed.member)
+    const row = await db.huddle.findUnique({ where: { id: joined.huddle.id } })
+    events = []
+
+    liveRooms.set(row.roomName, [seed.member])
+    await huddles.handleLiveKitWebhook(
+      await signedWebhook({ event: 'participant_left', room: { name: row.roomName }, participant: { identity: seed.owner } }),
+    )
+
+    expect(forUser(seed.owner).at(-1).event).toMatchObject({ userId: seed.owner, inHuddle: false })
+  })
+})
+

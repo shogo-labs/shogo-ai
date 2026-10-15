@@ -9,6 +9,7 @@ import { act, cleanup, renderHook } from '@testing-library/react'
 
 const calls: Array<{ workspaceId: string; ids: string[] }> = []
 let server: Record<string, string> = {}
+let huddleServer: string[] = []
 let emit: (event: any) => void = () => {}
 let socketState = 'open'
 
@@ -21,7 +22,10 @@ mock.module('../../lib/team-chat-api', () => ({
   teamChatApi: () => ({
     presence: async (workspaceId: string, ids: string[]) => {
       calls.push({ workspaceId, ids: [...ids].sort() })
-      return Object.fromEntries(ids.map((id) => [id, server[id] ?? 'offline']))
+      return {
+        presence: Object.fromEntries(ids.map((id) => [id, server[id] ?? 'offline'])),
+        huddle: huddleServer.filter((id) => ids.includes(id)),
+      }
     },
   }),
 }))
@@ -33,7 +37,7 @@ mock.module('../../lib/team-chat-connection', () => ({
   },
 }))
 
-const { _resetPresenceForTests, usePresence, usePresenceFeed } = await import('../usePresence')
+const { _resetPresenceForTests, useInHuddle, usePresence, usePresenceFeed } = await import('../usePresence')
 
 const settle = () => act(() => new Promise((r) => setTimeout(r, 80)))
 
@@ -41,6 +45,7 @@ beforeEach(() => {
   _resetPresenceForTests()
   calls.length = 0
   server = { pat: 'active', sam: 'away' }
+  huddleServer = []
   socketState = 'open'
 })
 afterEach(cleanup)
@@ -81,5 +86,49 @@ describe('usePresence', () => {
     await settle()
     expect(calls).toHaveLength(2)
     expect(result.current).toBe('offline')
+  })
+})
+
+describe('useInHuddle', () => {
+  test('reports who is in a huddle from the same batch as presence', async () => {
+    huddleServer = ['sam']
+    const { result } = renderHook(() => {
+      usePresenceFeed('ws-1')
+      return [useInHuddle('ws-1', 'pat'), useInHuddle('ws-1', 'sam')]
+    })
+    await settle()
+    expect(calls).toEqual([{ workspaceId: 'ws-1', ids: ['pat', 'sam'] }])
+    expect(result.current).toEqual([false, true])
+  })
+
+  test('live huddle events flip the badge without refetching', async () => {
+    const { result } = renderHook(() => {
+      usePresenceFeed('ws-1')
+      return useInHuddle('ws-1', 'sam')
+    })
+    await settle()
+    expect(result.current).toBe(false)
+    act(() => emit({ type: 'huddle.presence', userId: 'sam', inHuddle: true }))
+    expect(result.current).toBe(true)
+    act(() => emit({ type: 'huddle.presence', userId: 'sam', inHuddle: false }))
+    expect(result.current).toBe(false)
+    expect(calls).toHaveLength(1)
+  })
+
+  test('a refresh clears a badge for a huddle that ended while we were away', async () => {
+    huddleServer = ['sam']
+    socketState = 'connecting'
+    const { result, rerender } = renderHook(() => {
+      usePresenceFeed('ws-1')
+      return useInHuddle('ws-1', 'sam')
+    })
+    await settle()
+    expect(result.current).toBe(true)
+    huddleServer = []
+    socketState = 'open'
+    rerender()
+    await settle()
+    expect(calls).toHaveLength(2)
+    expect(result.current).toBe(false)
   })
 })

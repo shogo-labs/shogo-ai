@@ -126,6 +126,40 @@ async function announce(conversationId: string): Promise<HuddleView | null> {
   return huddle
 }
 
+/**
+ * Who in this workspace is in a live huddle right now.
+ *
+ * Answers "is this person on a call", not "which call" — the roster and which
+ * conversation it belongs to stay in `huddle.updated`. Used both by the
+ * `/presence` batch and by the change notifications below.
+ */
+export async function huddleUserIds(workspaceId: string, userIds: string[]): Promise<Set<string>> {
+  if (!userIds.length) return new Set()
+  const rows = await db.huddleParticipant.findMany({
+    where: { userId: { in: userIds }, leftAt: null, huddle: { workspaceId, endedAt: null } },
+    select: { userId: true },
+  })
+  return new Set<string>(rows.map((r: any) => r.userId))
+}
+
+/**
+ * Tell the workspace these people's huddle badge may have changed.
+ *
+ * Published workspace-wide, exactly like `presence`: the badge has to appear
+ * wherever their name does, including conversations the viewer is not in.
+ * Re-reads the state after the caller's mutation instead of assuming, so
+ * `inHuddle: false` is only ever sent for someone who really is in no huddle
+ * (they may be in a second one elsewhere).
+ */
+async function publishHuddlePresence(workspaceId: string, userIds: string[]): Promise<void> {
+  const ids = [...new Set(userIds.filter(Boolean))]
+  if (!ids.length) return
+  const inHuddle = await huddleUserIds(workspaceId, ids)
+  for (const userId of ids) {
+    publishConversationEvent(workspaceId, { type: 'huddle.presence', userId, inHuddle: inHuddle.has(userId) })
+  }
+}
+
 function formatDuration(ms: number): string {
   const minutes = Math.round(ms / 60_000)
   if (minutes < 1) return 'less than a minute'
@@ -174,6 +208,7 @@ async function finishStartMessage(huddle: any, endedAt: Date): Promise<void> {
 /** End a huddle. Safe to call more than once; only the first call does anything. */
 async function endHuddle(huddleId: string): Promise<boolean> {
   const endedAt = new Date()
+  const open = await db.huddleParticipant.findMany({ where: { huddleId, leftAt: null }, select: { userId: true } })
   const { count } = await db.huddle.updateMany({ where: { id: huddleId, endedAt: null }, data: { endedAt, activeKey: null } })
   if (!count) return false
   await db.huddleParticipant.updateMany({ where: { huddleId, leftAt: null }, data: { leftAt: endedAt } })
@@ -183,6 +218,7 @@ async function endHuddle(huddleId: string): Promise<boolean> {
     if (config) void deleteRoom(config, huddle.roomName)
     await finishStartMessage(huddle, endedAt)
     await announce(huddle.conversationId)
+    await publishHuddlePresence(huddle.workspaceId, open.map((p: any) => p.userId))
   }
   return true
 }
@@ -267,6 +303,7 @@ async function reconcile(row: any): Promise<void> {
     data: { leftAt: new Date() },
   })
   if (!(await endIfEmpty(row.id))) await announce(row.conversationId)
+  await publishHuddlePresence(row.workspaceId, stale.map((p: any) => p.userId))
 }
 
 function assertHuddleable(conversation: any, userMemberCount: number): void {
@@ -377,17 +414,23 @@ export async function joinHuddle(conversationId: string, userId: string): Promis
       image: user?.image ?? null,
     })
     const huddle = (await announce(conversationId)) ?? (await serialize(await activeHuddleRow(conversationId)))
+    await publishHuddlePresence(conversation.workspaceId, [userId])
     return { huddle, token, url: config.url }
   }
   throw new ConversationError(409, 'huddle_busy', 'The huddle changed while joining. Try again.')
 }
 
 export async function leaveHuddle(conversationId: string, userId: string): Promise<HuddleView | null> {
-  await loadAccess(conversationId, userId)
+  const { conversation } = await loadAccess(conversationId, userId)
   const row = await activeHuddleRow(conversationId)
   if (!row) return null
   if (!(await closeStays(row.id, userId))) return serialize(row)
-  if (await endIfEmpty(row.id)) return null
+  const ended = await endIfEmpty(row.id)
+  // Published here rather than in `endHuddle`: when this was the last person,
+  // their roster row is already closed by now, so `endHuddle` sees nobody open
+  // and would leave their badge up.
+  await publishHuddlePresence(conversation.workspaceId, [userId])
+  if (ended) return null
   return announce(conversationId)
 }
 
@@ -433,6 +476,7 @@ export async function applyLiveKitEvent(input: HuddleLiveKitEvent): Promise<void
     if (row.participants.some((p: any) => p.userId === identity)) return
     await db.huddleParticipant.create({ data: { huddleId: row.id, userId: identity } })
     await announce(row.conversationId)
+    await publishHuddlePresence(row.workspaceId, [identity])
     return
   }
 
@@ -443,6 +487,7 @@ export async function applyLiveKitEvent(input: HuddleLiveKitEvent): Promise<void
   if (live?.has(identity)) return
   if (!(await closeStays(row.id, identity))) return
   if (!(await endIfEmpty(row.id))) await announce(row.conversationId)
+  await publishHuddlePresence(row.workspaceId, [identity])
 }
 
 export const HUDDLE_FORWARD_PATH = '/api/internal/huddles/livekit'

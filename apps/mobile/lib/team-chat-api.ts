@@ -383,7 +383,8 @@ export type TeamChatEvent =
   | { type: 'member.joined' | 'member.left'; conversationId: string; userId?: string; userIds?: string[] }
   | { type: 'read'; conversationId: string; userId: string; seq: number; unreadCount?: number }
   | { type: 'typing'; conversationId: string; threadRootId: string | null; userId: string; name: string }
-  | { type: 'presence'; userId: string; status: PresenceStatus }
+  | { type: 'presence'; userId: string; status: PresenceStatus }  | { type: 'huddle.presence'; userId: string; inHuddle: boolean }
+
   | {
       type: 'notification'
       conversationId: string | null
@@ -725,14 +726,20 @@ export function teamChatApi() {
     async pendingApprovals(workspaceId: string): Promise<PendingApproval[]> {
       return (await http.get<{ approvals: PendingApproval[] }>(`${ws(workspaceId)}/approvals/pending`)).data.approvals
     },
-    /** Batched: ~400 ids would push the URL past the server's header limit. */
-    async presence(workspaceId: string, userIds: string[]): Promise<Record<string, PresenceStatus>> {
+    /**
+     * Batched: ~400 ids would push the URL past the server's header limit.
+     * `huddle` is the subset of these ids currently in a huddle.
+     */
+    async presence(workspaceId: string, userIds: string[]): Promise<{ presence: Record<string, PresenceStatus>; huddle: string[] }> {
       const out: Record<string, PresenceStatus> = {}
+      const huddle = new Set<string>()
       for (let i = 0; i < userIds.length; i += 200) {
         const ids = userIds.slice(i, i + 200).map(encodeURIComponent).join(',')
-        Object.assign(out, (await http.get<{ presence: Record<string, PresenceStatus> }>(`${ws(workspaceId)}/presence?userIds=${ids}`)).data.presence)
+        const res = (await http.get<{ presence: Record<string, PresenceStatus>; huddle?: string[] }>(`${ws(workspaceId)}/presence?userIds=${ids}`)).data
+        Object.assign(out, res.presence)
+        for (const id of res.huddle ?? []) huddle.add(id)
       }
-      return out
+      return { presence: out, huddle: [...huddle] }
     },
     async get(id: string): Promise<ConversationDetail> {
       return (await http.get<{ conversation: ConversationDetail }>(conv(id))).data.conversation

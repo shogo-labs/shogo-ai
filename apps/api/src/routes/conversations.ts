@@ -71,6 +71,7 @@ import { loadWorkLog } from '../services/agent-work-log'
 import { chainForAgentPost, rootChain, setThreadOwner } from '../services/conversation-agent-chain'
 import { loadAgentCard, loadTeamDirectory, resolveFriendlyMentions, setAgentBuddyLook } from '../services/conversation-directory'
 import { listTeamChannels, syncTeamChannelOwnership, TeamChannelError, upsertTeamChannel } from '../services/conversation-team-channels'
+import { huddleUserIds } from '../services/huddle.service'
 import { getPresence } from '../services/conversation-presence'
 import { getChannelMetrics } from '../services/conversation-metrics'
 import { searchMessages } from '../services/conversation-search'
@@ -336,7 +337,11 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
     const auth = await requireWorkspace(c)
     if (auth instanceof Response) return auth
     const ids = (c.req.query('userIds') ?? '').split(',').map((s) => s.trim()).filter(Boolean).slice(0, 500)
-    return c.json({ presence: await getPresence(auth.workspaceId, ids) })
+    const [presence, inHuddle] = await Promise.all([
+      getPresence(auth.workspaceId, ids),
+      huddleUserIds(auth.workspaceId, ids),
+    ])
+    return c.json({ presence, huddle: [...inHuddle] })
   })
 
   router.get('/workspaces/:workspaceId/conversations/search', async (c) => {
