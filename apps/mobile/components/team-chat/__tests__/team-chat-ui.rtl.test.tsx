@@ -249,7 +249,7 @@ type ComposerHandle = import('../Composer').ComposerHandle
 const { PhoneLayoutOverrideProvider } = await import('../../../lib/native-phone-layout')
 const { MessageRow } = await import('../MessageRow')
 const { MessageList } = await import('../MessageList')
-const { ConversationHeader } = await import('../ConversationHeader')
+const { ConversationHeader, splitHeaderActions } = await import('../ConversationHeader')
 const { TimelinePane } = await import('../TimelinePane')
 
 const mentionables = {
@@ -1002,6 +1002,33 @@ describe('ConversationHeader channel editing', () => {
       fireEvent.click(screen.getByLabelText('Save channel'))
     })
     expect(updates).toEqual([{ id: 'c9', patch: { topic: 'Ship it' } }])
+  })
+})
+
+describe('desktop header overflow', () => {
+  // The desktop channel header's actions, in the order the header builds them.
+  const actions = ['agent-profile', 'edit', 'notify', 'star', 'pins', 'files', 'catchup', 'members', 'leave', 'archive', 'delete'].map((key) => ({ key }))
+  const keys = (list: Array<{ key: string }>) => list.map((a) => a.key)
+
+  test('an unmeasured or wide header keeps every action inline', () => {
+    expect(splitHeaderActions(actions, 0)).toEqual({ inline: actions, overflow: [] })
+    expect(splitHeaderActions(actions, 1100)).toEqual({ inline: actions, overflow: [] })
+  })
+
+  test('More appears only once the actions no longer fit', () => {
+    // 196px of fixed room plus 36px per icon: all 11 actions need 592px.
+    expect(splitHeaderActions(actions, 592).overflow).toEqual([])
+    expect(splitHeaderActions(actions, 591).overflow.length).toBeGreaterThan(0)
+  })
+
+  test('a narrow header keeps the most useful actions inline and moves the rest under More', () => {
+    const { inline, overflow } = splitHeaderActions(actions, 480)
+    expect(keys(inline)).toEqual(['notify', 'star', 'pins', 'files', 'catchup', 'members'])
+    expect(keys(overflow)).toEqual(['agent-profile', 'edit', 'leave', 'archive', 'delete'])
+  })
+
+  test('below the compact width only More remains, with every action under it', () => {
+    expect(splitHeaderActions(actions, 240)).toEqual({ inline: [], overflow: actions })
   })
 })
 

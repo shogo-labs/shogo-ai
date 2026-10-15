@@ -505,9 +505,9 @@ export function TimelinePane(props: TimelinePaneProps) {
   return (
     <View className="flex-1" ref={rootRef}>
       {threadRootId && (
-        <View className="flex-row items-center border-b border-border px-4 py-2.5">
+        <View className="flex-row items-center border-b border-border bg-background px-4 py-2.5">
           <Breadcrumb
-            className="flex-1 flex-row flex-wrap items-center gap-x-1"
+            className="min-w-0 flex-1 flex-row flex-wrap items-center gap-x-1"
             items={crumbs.map((c) => ({
               key: c.key,
               label: c.label,

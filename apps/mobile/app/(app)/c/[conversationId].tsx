@@ -84,7 +84,10 @@ export default function ConversationScreen() {
   const router = useRouter()
   const workspace = useActiveWorkspace()
   const me = useMyUserId()
-  const { width } = useWindowDimensions()
+  const { width: windowWidth } = useWindowDimensions()
+  // Measured width of the conversation area, which is the window minus the app's sidebar. Falls back to the window until the first layout.
+  const [containerWidth, setContainerWidth] = useState(0)
+  const width = containerWidth || windowWidth
   const [conversation, setConversation] = useState<ConversationDetail | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [focused, setFocused] = useState(true)
@@ -363,9 +366,9 @@ export default function ConversationScreen() {
 
   return (
     <KeyboardAvoidingView className="flex-1 bg-background" behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-      <View className="flex-1 flex-row">
+      <View className="flex-1 flex-row" onLayout={(e) => setContainerWidth(Math.round(e.nativeEvent.layout.width))}>
         {showMain && (
-          <View className="min-w-0 flex-1">
+          <View className="min-w-0 flex-1 overflow-hidden">
             {header}
             {tabs}
             {huddleBanner}
@@ -402,7 +405,7 @@ export default function ConversationScreen() {
         )}
         {showThreadPane && (
           <View
-            className={sidePane ? 'relative shrink-0 border-l border-border' : 'flex-1'}
+            className={sidePane ? 'relative shrink-0 border-l border-border bg-background' : 'flex-1 bg-background'}
             style={sidePane ? { width: threadPane.width } : undefined}
           >
             {sidePane && (
@@ -433,7 +436,7 @@ export default function ConversationScreen() {
         )}
         {showCardPane && cardId && (
           <View
-            className={sidePane ? 'relative shrink-0 border-l border-border' : 'flex-1'}
+            className={sidePane ? 'relative shrink-0 border-l border-border bg-background' : 'flex-1 bg-background'}
             style={sidePane ? { width: cardPane.width } : floating ? { paddingTop: insets.top, paddingBottom: chrome.bottom } : undefined}
           >
             {sidePane && (
@@ -459,7 +462,7 @@ export default function ConversationScreen() {
           </View>
         )}
         {showProjectPane && projectPaneId && (
-          <View className="relative shrink-0 border-l border-border" style={{ width: projectPane.width }}>
+          <View className="relative shrink-0 border-l border-border bg-background" style={{ width: projectPane.width }}>
             <SidePaneResizeHandle
               width={projectPane.width}
               minWidth={PROJECT_PANE_MIN}
@@ -473,7 +476,7 @@ export default function ConversationScreen() {
         )}
         {(showFilesPane || showFilesFull) && (
           <View
-            className={showFilesPane ? 'relative shrink-0 border-l border-border' : 'flex-1'}
+            className={showFilesPane ? 'relative shrink-0 border-l border-border bg-background' : 'flex-1 bg-background'}
             style={showFilesPane ? { width: threadPane.width } : { paddingTop: floating ? insets.top : 0 }}
           >
             {showFilesPane && (
@@ -497,7 +500,7 @@ export default function ConversationScreen() {
           </View>
         )}
         {showDocPane && (
-          <View className="relative shrink-0 border-l border-border" style={{ width: docPane.width }}>
+          <View className="relative shrink-0 border-l border-border bg-background" style={{ width: docPane.width }}>
             <SidePaneResizeHandle
               width={docPane.width}
               minWidth={DOC_PANE_MIN}

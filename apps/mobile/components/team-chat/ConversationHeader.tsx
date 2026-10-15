@@ -32,6 +32,35 @@ import { HuddleButton } from './Huddle'
 
 const api = teamChatApi()
 
+/** One inline header icon: a 16px icon with `p-1.5` padding, plus the row gap. */
+const HEADER_SLOT = 36
+/** Room kept for the leading avatar, the title's minimum width, the huddle button and their gaps. */
+const HEADER_FIXED = 24 + 8 + 120 + 8 + 28 + 8
+/** Narrower than this, the desktop header shows only the title, the huddle button and "More". */
+const HEADER_COMPACT = 260
+/** Actions that stay inline first, in this order. Anything else goes under "More" when space runs out. */
+const INLINE_PRIORITY = ['catchup', 'notify', 'star', 'pins', 'files', 'members']
+
+/**
+ * Splits the desktop header actions into the ones that fit inline and the rest,
+ * which move under "More". A `rowWidth` of 0 means the row is not measured yet,
+ * so everything stays inline.
+ */
+export function splitHeaderActions<T extends { key: string }>(actions: T[], rowWidth: number): { inline: T[]; overflow: T[] } {
+  if (rowWidth <= 0) return { inline: actions, overflow: [] }
+  if (rowWidth < HEADER_COMPACT) return { inline: [], overflow: actions }
+  const slotsIn = (width: number) => Math.max(0, Math.floor((width - HEADER_FIXED) / HEADER_SLOT))
+  if (actions.length <= slotsIn(rowWidth)) return { inline: actions, overflow: [] }
+  // The More button takes one slot itself.
+  const slots = slotsIn(rowWidth - HEADER_SLOT)
+  const rank = (key: string) => {
+    const i = INLINE_PRIORITY.indexOf(key)
+    return i === -1 ? INLINE_PRIORITY.length : i
+  }
+  const kept = new Set([...actions].sort((a, b) => rank(a.key) - rank(b.key)).slice(0, slots).map((a) => a.key))
+  return { inline: actions.filter((a) => kept.has(a.key)), overflow: actions.filter((a) => !kept.has(a.key)) }
+}
+
 export interface ConversationHeaderProps {
   conversation: ConversationDetail
   mentionables: Mentionables | null
@@ -80,6 +109,17 @@ export function ConversationHeader({ conversation, mentionables, me, onChanged, 
   const [editOpen, setEditOpen] = useState(false)
   const [deleteOpen, setDeleteOpen] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // Desktop only: the width of the action row and the header's height, which places the More menu.
+  const [actionRowWidth, setActionRowWidth] = useState(0)
+  const [headerHeight, setHeaderHeight] = useState(0)
+  const [moreOpen, setMoreOpen] = useState(false)
+  // iOS can't present a modal while the More menu's modal is dismissing.
+  const afterMore = useRef<(() => unknown) | null>(null)
+  const fromMore = (fn: () => unknown) => {
+    setMoreOpen(false)
+    if (Platform.OS === 'ios') afterMore.current = fn
+    else void fn()
+  }
   const isChannel = conversation.kind === 'public' || conversation.kind === 'private' || conversation.kind === 'activity'
   const canRename = conversation.canManage && (conversation.kind === 'public' || conversation.kind === 'private') && !conversation.archivedAt
   const canEditTopic = conversation.kind !== 'activity' && !conversation.archivedAt && (conversation.canPost || conversation.canManage)
@@ -480,11 +520,13 @@ export function ConversationHeader({ conversation, mentionables, me, onChanged, 
     )
   }
 
+  const { inline, overflow } = splitHeaderActions(actions, actionRowWidth)
+
   return (
-    <View className="border-b border-border px-4 py-2.5">
-      <View className="flex-row items-center gap-2">
+    <View className="border-b border-border px-4 py-2.5" onLayout={(e) => setHeaderHeight(Math.round(e.nativeEvent.layout.height))}>
+      <View className="flex-row items-center gap-2 overflow-hidden" onLayout={(e) => setActionRowWidth(Math.round(e.nativeEvent.layout.width))}>
         {leading}
-        <Text className="flex-shrink text-base font-semibold text-foreground" numberOfLines={1}>
+        <Text className="min-w-0 flex-shrink text-base font-semibold text-foreground" numberOfLines={1}>
           {title}
         </Text>
         {peerId && peerPresence ? <Text className="text-xs text-muted-foreground">{presenceLabel(peerPresence)}</Text> : null}
@@ -500,11 +542,16 @@ export function ConversationHeader({ conversation, mentionables, me, onChanged, 
         ) : null}
         <View className="flex-1" />
         <HuddleButton conversation={conversation} me={me} label={title} />
-        {actions.map((a) => (
+        {inline.map((a) => (
           <HeaderButton key={a.key} label={a.label} onPress={() => void a.onPress()}>
             {a.icon(16)}
           </HeaderButton>
         ))}
+        {overflow.length > 0 ? (
+          <HeaderButton label="More actions" onPress={() => setMoreOpen(true)}>
+            <MoreHorizontal size={16} className="text-muted-foreground" />
+          </HeaderButton>
+        ) : null}
       </View>
       {conversation.topic ? (
         <Pressable
@@ -523,6 +570,39 @@ export function ConversationHeader({ conversation, mentionables, me, onChanged, 
         </Pressable>
       ) : null}
       {error && <Text className="mt-1 text-xs text-destructive">{error}</Text>}
+      <Modal
+        visible={moreOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setMoreOpen(false)}
+        onDismiss={() => {
+          const fn = afterMore.current
+          afterMore.current = null
+          if (fn) void fn()
+        }}
+      >
+        <Pressable className="flex-1" onPress={() => setMoreOpen(false)}>
+          <Pressable
+            className="absolute right-4 min-w-52 rounded-xl border border-border bg-card p-1 shadow-lg"
+            style={{ top: headerHeight }}
+            onPress={() => {}}
+            testID="header-more-menu"
+          >
+            {overflow.map((a) => (
+              <Pressable
+                key={a.key}
+                onPress={() => fromMore(a.onPress)}
+                accessibilityRole="menuitem"
+                accessibilityLabel={a.label}
+                className="flex-row items-center gap-3 rounded-md px-3 py-2 active:bg-muted hover:bg-muted"
+              >
+                {a.icon(16)}
+                <Text className={cn('flex-1 text-sm', a.danger ? 'text-destructive' : 'text-foreground')}>{a.label}</Text>
+              </Pressable>
+            ))}
+          </Pressable>
+        </Pressable>
+      </Modal>
       {modals}
     </View>
   )
