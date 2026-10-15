@@ -219,6 +219,30 @@ mock.module('../../chat/EnvironmentPicker', () => ({ EnvironmentPicker: () => nu
 mock.module('../../voice-mode/ChatBridgeContext', () => ({ useChatBridgeOptional: () => null }))
 mock.module('../../chat/ChatContext', () => ({ useChatContextSafe: () => null }))
 mock.module('../../../hooks/useWorkspaceExperience', () => ({ useWorkspaceExperience: () => ({ kind: 'team' }) }))
+// A voice note records and plays through expo-audio on a device; this is a DOM test.
+mock.module('expo-audio', () => ({
+  RecordingPresets: { LOW_QUALITY: {}, HIGH_QUALITY: {} },
+  requestRecordingPermissionsAsync: async () => ({ granted: false }),
+  setAudioModeAsync: async () => {},
+  useAudioRecorder: () => ({
+    prepareToRecordAsync: async () => {},
+    record: () => {},
+    stop: async () => {},
+    getStatus: () => ({ durationMillis: 0, metering: -160, isRecording: false }),
+    currentTime: 0,
+    uri: null,
+  }),
+  useAudioRecorderState: () => ({ isRecording: false, durationMillis: 0, metering: -160 }),
+  createAudioPlayer: () => ({
+    addListener: () => ({ remove: () => {} }),
+    replace: () => {},
+    play: () => {},
+    pause: () => {},
+    seekTo: async () => {},
+    setPlaybackRate: () => {},
+    remove: () => {},
+  }),
+}))
 
 const { Composer } = await import('../Composer')
 type ComposerHandle = import('../Composer').ComposerHandle
@@ -1317,6 +1341,10 @@ describe('MessageRow image attachments', () => {
   const file = (id: string, name: string) => ({
     id, name, mimeType: 'application/pdf', size: 4096, width: null, height: null, url: `/api/uploads/${id}`,
   })
+  const voiceNote = (id: string) => ({
+    id, name: 'Voice note.m4a', mimeType: 'audio/mp4', size: 12_000, width: null, height: null,
+    url: `/api/uploads/${id}`, durationMs: 12_000, peaks: '20 40 100 60',
+  })
   const renderRow = (attachments: unknown[]) =>
     render(<MessageRow message={message({ attachments })} grouped={false} me="u-me" names={names} canManage={false} {...handlers()} />)
 
@@ -1391,6 +1419,17 @@ describe('MessageRow image attachments', () => {
 
     expect(openURL).toHaveBeenCalledWith('/api/uploads/f1')
     expect(screen.queryByTestId('image-lightbox')).toBeNull()
+  })
+
+  test('a voice note renders a player, not a file row that opens a URL', () => {
+    renderRow([voiceNote('v1')])
+
+    expect(screen.getByLabelText('Play Voice note.m4a')).toBeDefined()
+    expect(screen.getByText('0:12')).toBeDefined()
+    // The waveform is scrubbable, and clicking the row does not leave the app.
+    expect(screen.getByLabelText('Seek Voice note.m4a')).toBeDefined()
+    expect(openURL).not.toHaveBeenCalled()
+    expect(screen.queryByText('Voice note.m4a')).toBeNull()
   })
 
   test('a deleted message shows neither attachments nor the viewer', () => {

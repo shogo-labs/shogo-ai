@@ -35,6 +35,12 @@ export interface ComposerAttachedFile {
   name: string;
   type: string;
   size: number;
+  /** Voice notes: the recorder's local file on native, so the upload can skip base64. */
+  uri?: string;
+  /** Voice notes: clip length in ms. */
+  durationMs?: number;
+  /** Voice notes: waveform levels 0-100, space separated. */
+  peaks?: string;
 }
 
 export type ComposerFileIcon = ComponentType<{
@@ -232,6 +238,45 @@ export function useComposerAttachments({
     [maxFileSizeBytes, maxFiles, reportError],
   );
 
+  /**
+   * Stage an attachment the caller already built — a voice note, whose bytes
+   * never existed as a `File`. Same limits as a picked file.
+   */
+  const addAttachment = useCallback(
+    (attachment: {
+      dataUrl: string;
+      name: string;
+      type: string;
+      size: number;
+      uri?: string;
+      durationMs?: number;
+      peaks?: string;
+    }) => {
+      if (!attachment.dataUrl && !attachment.uri) return;
+      if (attachment.size > maxFileSizeBytes) {
+        reportError(
+          `File "${attachment.name}" exceeds ${maxFileSizeBytes / (1024 * 1024)}MB limit`,
+        );
+        return;
+      }
+      setPendingFiles((previous) => {
+        if (previous.length >= maxFiles) {
+          reportError(`Maximum ${maxFiles} files allowed`);
+          return previous;
+        }
+        setFileError(null);
+        return [
+          ...previous,
+          {
+            ...attachment,
+            id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+          },
+        ];
+      });
+    },
+    [maxFileSizeBytes, maxFiles, reportError],
+  );
+
   const handleWebFileChange = useCallback(
     (event: { target?: { files?: FileList | null; value?: string } }) => {
       const files = event.target?.files;
@@ -389,6 +434,7 @@ export function useComposerAttachments({
     handleRemoveFile,
     applyPickedFiles,
     processFiles,
+    addAttachment,
     handleWebFileChange,
     addPastedText,
     handleRemovePastedText,

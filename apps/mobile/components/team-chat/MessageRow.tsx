@@ -28,6 +28,8 @@ import { IntegrationConnectCard } from '../chat/IntegrationConnectCard'
 import { ImagePreviewModal } from '../chat/ImagePreviewModal'
 import { AgentWorkedFor, AgentWorkingStatus } from './AgentWork'
 import { renderMentions, type MentionNames } from '../../lib/team-chat-state'
+import { isVoiceNote } from '../../lib/voice-note'
+import { VoiceNotePlayer } from './VoiceNotePlayer'
 import { hasReacted, reactionTooltip } from '../../lib/team-chat-reactions'
 import { WebTooltip } from '../chat/WebTooltip'
 import { useUserStatus } from '../../hooks/useChatPrefs'
@@ -689,7 +691,16 @@ function MessageRowImpl(props: MessageRowProps) {
         {!deleted && message.attachments.length > 0 && (
           <View className="mt-1.5 flex-row flex-wrap gap-2">
             {message.attachments.map((a) =>
-              a.mimeType.startsWith('image/') ? (
+              isVoiceNote(a) ? (
+                <VoiceNotePlayer
+                  key={a.id}
+                  attachmentId={a.id}
+                  url={absoluteApiUrl(a.url)}
+                  durationMs={a.durationMs}
+                  peaks={a.peaks}
+                  name={a.name}
+                />
+              ) : a.mimeType.startsWith('image/') ? (
                 <Pressable
                   key={a.id}
                   onPress={() => setLightboxIndex(imageIndexById.get(a.id) ?? 0)}

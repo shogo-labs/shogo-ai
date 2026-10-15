@@ -90,6 +90,15 @@ export const reactNativeMockBase = {
   // (the REAL, un-mocked file) instead of a clean override. Keeping every
   // transitive export in this ONE base object sidesteps that entirely.
   useColorScheme: () => 'light',
+  // Reached through `expo-audio` once a graph imports the voice-note player's
+  // engine; a component graph that touches it must not fall through to the
+  // real module.
+  LogBox: {
+    ignoreLogs: () => {},
+    ignoreAllLogs: () => {},
+    warn: () => {},
+    error: () => {},
+  },
   Easing: {
     linear: (t: number) => t,
     ease: (t: number) => t,

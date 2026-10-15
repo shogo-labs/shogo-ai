@@ -208,6 +208,32 @@ describe('conversation list', () => {
     expect(update.list[0]!.lastMessage?.preview).toBe('ship it @someone')
   })
 
+  test('a voice note with no text previews as a voice note, not as blank', () => {
+    const list = [conv({ id: 'dm', kind: 'dm' })]
+    const voiceNote = {
+      id: 'att-1',
+      name: 'Voice note.m4a',
+      mimeType: 'audio/mp4',
+      size: 12_000,
+      width: null,
+      height: null,
+      url: '/api/conversation-files/att-1',
+      durationMs: 12_000,
+      peaks: '20 40 60',
+    }
+    const update = applyListEvent(
+      list,
+      {
+        type: 'message.created',
+        conversationId: 'dm',
+        message: msg({ id: 'v', seq: 6, conversationId: 'dm', authorUserId: 'u2', text: '', attachments: [voiceNote] }),
+      },
+      'me',
+      null,
+    )
+    expect(update.list[0]!.lastMessage).toMatchObject({ preview: '🎤 Voice note · 0:12', authorId: 'u2' })
+  })
+
   test('messages from others bump unread and mentions; my own and the open conversation stay read', () => {
     const list = [conv({ id: 'c1' }), conv({ id: 'c2' })]
     let update = applyListEvent(list, { type: 'message.created', conversationId: 'c1', message: msg({ id: 'm', seq: 6, authorUserId: 'u2', text: 'hey <@u:me>' }) }, 'me', null)

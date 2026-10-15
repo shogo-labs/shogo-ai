@@ -3343,6 +3343,12 @@ model ConversationAttachment {
   size           Int
   width          Int?
   height         Int?
+  /// Voice notes only: length of the clip in milliseconds, so a player can
+  /// show the total before the audio has loaded.
+  durationMs     Int?
+  /// Voice notes only: waveform levels, 0-100, space separated. Sampled while
+  /// recording because the server cannot decode audio to derive them.
+  peaks          String?
   extractedText  String?
   createdAt      DateTime @default(now())
 

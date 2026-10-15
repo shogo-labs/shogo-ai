@@ -17,6 +17,9 @@ import {
   buildConversationFileKey,
   conversationFileUrl,
   loadConversationFileBytes,
+  parseAttachmentDurationMs,
+  parseAttachmentPeaks,
+  parseByteRange,
   putConversationFile,
   readConversationFile,
   verifyAttachmentToken,
@@ -670,6 +673,8 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
           size: file.size,
           width: width ?? null,
           height: height ?? null,
+          durationMs: parseAttachmentDurationMs(form?.get('durationMs')),
+          peaks: parseAttachmentPeaks(form?.get('peaks')),
         },
       })
       if (canExtract(mimeType, name, file.size)) {
@@ -679,6 +684,7 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
         attachment: {
           id: row.id, name: row.name, mimeType: row.mimeType, size: row.size,
           width: row.width, height: row.height, url: conversationFileUrl(row),
+          durationMs: row.durationMs, peaks: row.peaks,
         },
       }, 201)
     } catch (err) {
@@ -875,12 +881,37 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
       const file = await readConversationFile(row.storageKey)
       if (file.kind === 'redirect') return c.redirect(file.url, 302)
       const inline = /^(image|video|audio)\//.test(row.mimeType) || row.mimeType === 'application/pdf'
-      return new Response(file.bytes as any, {
+      const disposition = `${inline ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(row.name)}`
+      const baseHeaders = {
+        'Content-Type': row.mimeType,
+        'Content-Disposition': disposition,
+        'Cache-Control': 'private, max-age=300',
+        'Accept-Ranges': 'bytes',
+      }
+      // Served locally the whole file is in memory, so a range is a slice of
+      // it. Cloud mode redirects to S3 above, which handles ranges itself.
+      const bytes = file.bytes as Uint8Array
+      const range = parseByteRange(c.req.header('range'), bytes.byteLength)
+      if (range.kind === 'unsatisfiable') {
+        return new Response(null, {
+          status: 416,
+          headers: { ...baseHeaders, 'Content-Range': `bytes */${bytes.byteLength}` },
+        })
+      }
+      if (range.kind === 'range') {
+        return new Response(bytes.slice(range.start, range.end + 1) as any, {
+          status: 206,
+          headers: {
+            ...baseHeaders,
+            'Content-Length': String(range.end - range.start + 1),
+            'Content-Range': `bytes ${range.start}-${range.end}/${bytes.byteLength}`,
+          },
+        })
+      }
+      return new Response(bytes as any, {
         headers: {
-          'Content-Type': row.mimeType,
-          'Content-Length': String(file.bytes.byteLength),
-          'Content-Disposition': `${inline ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(row.name)}`,
-          'Cache-Control': 'private, max-age=300',
+          ...baseHeaders,
+          'Content-Length': String(bytes.byteLength),
         },
       })
     } catch {

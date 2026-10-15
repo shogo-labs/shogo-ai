@@ -97,6 +97,10 @@ export interface MessageAttachment {
   width: number | null
   height: number | null
   url: string
+  /** Voice notes only: clip length in ms, so a player can show the total up front. */
+  durationMs?: number | null
+  /** Voice notes only: waveform levels 0-100, space separated. */
+  peaks?: string | null
 }
 
 export type ConversationFileKind = 'image' | 'document' | 'other'
@@ -871,9 +875,16 @@ export function teamChatApi() {
         }).catch(() => {})
       } catch {}
     },
-    async upload(id: string, file: UploadPart | File): Promise<MessageAttachment> {
+    async upload(
+      id: string,
+      file: UploadPart | File,
+      /** Voice-note metadata: the server can't decode audio, so it comes from the recorder. */
+      audio?: { durationMs?: number | null; peaks?: string | null },
+    ): Promise<MessageAttachment> {
       const form = new FormData()
       form.append('file', file as any)
+      if (audio?.durationMs) form.append('durationMs', String(Math.round(audio.durationMs)))
+      if (audio?.peaks) form.append('peaks', audio.peaks)
       const res = await fetch(`${API_URL}${conv(id)}/attachments`, {
         method: 'POST',
         body: form,

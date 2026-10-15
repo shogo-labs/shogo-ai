@@ -26,7 +26,9 @@ import { PHONE_DENSITY } from '../../lib/phone-density'
 import type { Mentionables } from '../../lib/team-chat-api'
 import { teamChatApi } from '../../lib/team-chat-api'
 import { sendTyping } from '../../lib/team-chat-connection'
-import { bytesPart, type UploadPart } from '../../lib/upload-part'
+import { bytesPart, localFilePart, type UploadPart } from '../../lib/upload-part'
+import { useVoiceNoteRecorder } from '../../lib/use-voice-note'
+import { RecordingBar } from './RecordingBar'
 import {
   activeMentionQuery,
   decodeMentions,
@@ -226,7 +228,14 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         if (files?.length) {
           setUploading(true)
           try {
-            const uploaded = await Promise.all(files.map(async (f) => api.upload(conversationId, await uploadable(f))))
+            const uploaded = await Promise.all(
+              files.map(async (f) =>
+                api.upload(conversationId, await uploadable(f), {
+                  durationMs: f.durationMs ?? null,
+                  peaks: f.peaks ?? null,
+                }),
+              ),
+            )
             attachmentIds = uploaded.map((a) => a.id)
           } catch (err) {
             setError(err instanceof Error ? err.message : 'Upload failed')
@@ -247,6 +256,44 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     sendAtRef.current = at
     inputRef.current?.submit()
   }, [])
+
+  // ---- voice notes ----------------------------------------------------------
+  const recorder = useVoiceNoteRecorder()
+  const [recordingError, setRecordingError] = useState<string | null>(null)
+  // Files staged from a recording, so "send" hands them to the shared uploader.
+  const onVoiceStart = useCallback(async () => {
+    setError(null)
+    setNotice(null)
+    setRecordingError(null)
+    try {
+      await recorder.start()
+    } catch (err: any) {
+      setRecordingError(err?.message ?? 'Could not start recording')
+    }
+  }, [recorder])
+
+  const onVoiceCancel = useCallback(() => {
+    recorder.cancel()
+  }, [recorder])
+
+  const onVoiceStop = useCallback(async () => {
+    try {
+      const note = await recorder.stop()
+      if (!note) return
+      inputRef.current?.addAttachment({
+        dataUrl: note.dataUrl,
+        uri: note.uri,
+        name: `Voice note.${note.mimeType === 'audio/mp4' ? 'm4a' : 'webm'}`,
+        type: note.mimeType,
+        // Base64 is 4/3 of the bytes; only used for the size guard.
+        size: note.dataUrl ? Math.round((note.dataUrl.length * 3) / 4) : 0,
+        durationMs: note.durationMs,
+        peaks: note.peaks,
+      })
+    } catch (err: any) {
+      setRecordingError(err?.message ?? 'Could not finish the recording')
+    }
+  }, [recorder])
 
   const insertEmoji = useCallback((code: string) => {
     setEmojiOpen(false)
@@ -332,26 +379,37 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
 
   return (
     <View style={phoneLayout ? { paddingBottom: nativePhoneComposerRestPad(chrome.overlay) } : undefined}>
-      <ChatInput
-        key={draftKey}
-        ref={inputRef}
-        onSubmit={onSubmit}
-        placeholder={props.placeholder}
-        presentation="agent"
-        agentControls={false}
-        submitting={uploading}
-        completions={completions}
-        transformText={replaceFinishedShortcode}
-        onTextChange={onTextChange}
-        onKeyPress={onKeyPress}
-        restoreDraftRequest={restore?.draftKey === draftKey ? restore : null}
-        maxFileSizeBytes={MAX_FILE_BYTES}
-        leadingControls={leadingControls}
-        trailingControls={trailingControls}
-        plusMenuExtras={plusMenuExtras}
-        inputTestID="team-composer-input"
-        inputAccessibilityLabel="Message"
-      />
+      {recorder.isRecording ? (
+        <RecordingBar
+          level={recorder.level}
+          elapsedMs={recorder.elapsedMs}
+          onCancel={onVoiceCancel}
+          onFinish={onVoiceStop}
+        />
+      ) : (
+        <ChatInput
+          key={draftKey}
+          ref={inputRef}
+          onSubmit={onSubmit}
+          placeholder={props.placeholder}
+          presentation="agent"
+          agentControls={false}
+          submitting={uploading}
+          completions={completions}
+          transformText={replaceFinishedShortcode}
+          onTextChange={onTextChange}
+          onKeyPress={onKeyPress}
+          restoreDraftRequest={restore?.draftKey === draftKey ? restore : null}
+          maxFileSizeBytes={MAX_FILE_BYTES}
+          leadingControls={leadingControls}
+          trailingControls={trailingControls}
+          plusMenuExtras={plusMenuExtras}
+          onVoiceStart={onVoiceStart}
+          voiceStartLabel="Record a voice note"
+          inputTestID="team-composer-input"
+          inputAccessibilityLabel="Message"
+        />
+      )}
       <View className="px-4">
         {emojiOpen && <EmojiPicker workspaceId={workspaceId} onPick={insertEmoji} className="mb-2" />}
         {laterOpen && canSendLater && (
@@ -372,6 +430,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
           </View>
         ) : null}
         {uploading ? <Text className="mb-2 text-xs text-muted-foreground">Uploading…</Text> : null}
+        {recordingError ? <Text className="mb-2 text-xs text-destructive">{recordingError}</Text> : null}
         {notice && !error ? <Text className="mb-2 text-xs text-muted-foreground">{notice}</Text> : null}
         {error ? <Text className="mb-2 text-xs text-destructive">{error}</Text> : null}
       </View>
@@ -382,6 +441,9 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
 /** Composer attachments are data URLs; the upload endpoint takes a file. */
 async function uploadable(file: FileAttachment): Promise<File | UploadPart> {
   const type = file.type || 'application/octet-stream'
+  // A voice note recorded on a phone is already a file on disk; streaming it
+  // avoids base64ing a few megabytes through the JS thread.
+  if (file.uri && Platform.OS !== 'web') return localFilePart(file.uri, file.name, type)
   const base64 = file.dataUrl.slice(file.dataUrl.indexOf(',') + 1)
   const bytes = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0))
   if (Platform.OS === 'web') return new File([bytes], file.name, { type })

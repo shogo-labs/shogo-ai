@@ -7,6 +7,7 @@
  */
 import type { ChatMessage, ConversationSummary, Mentionables, TeamChatEvent } from './team-chat-api'
 import { normalizeRichTextPaste } from './rich-text-paste'
+import { voiceNotePreview } from './voice-note'
 
 // ─── Timeline ────────────────────────────────────────────────────────────────
 
@@ -198,7 +199,15 @@ export function applyListEvent(
         lastSeq: Math.max(c.lastSeq, message.seq),
         lastMessageAt: visibleInChannel ? message.createdAt : c.lastMessageAt,
         lastMessage: visibleInChannel && (c.kind === 'dm' || c.kind === 'group_dm')
-          ? { preview: inlinePreview(message.text, { users: new Map(), agents: new Map() }, 140), authorId: message.authorUserId, authorType: message.authorType, createdAt: message.createdAt }
+          ? {
+              // A voice note carries no text, so fall back to what it is.
+              preview:
+                inlinePreview(message.text, { users: new Map(), agents: new Map() }, 140) ||
+                voiceNotePreview(message.attachments),
+              authorId: message.authorUserId,
+              authorType: message.authorType,
+              createdAt: message.createdAt,
+            }
           : c.lastMessage,
         lastReadSeq: caughtUp ? Math.max(c.lastReadSeq, message.seq) : c.lastReadSeq,
         unreadCount: caughtUp ? 0 : c.joined && visibleInChannel ? c.unreadCount + 1 : c.unreadCount,

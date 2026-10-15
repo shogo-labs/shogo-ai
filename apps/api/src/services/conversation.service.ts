@@ -10,7 +10,7 @@
 import { prisma } from '../lib/prisma'
 import { accessibleProjectsWhere, loadAccess as loadAuthzAccess } from '../lib/authz'
 import { publishConversationEvent } from '../lib/conversation-bus'
-import { deleteConversationFile } from '../lib/conversation-files'
+import { deleteConversationFile, previewForAttachments } from '../lib/conversation-files'
 import { flattenMarkdownBlocks, loadNamesForTexts, parseMentions, renderMentionsAsText, type AgentTarget, type ParsedMention } from './conversation-mentions'
 import { assertNativeChat } from './chat-mode'
 import type { AgentChain } from './conversation-agent-chain'
@@ -161,7 +161,10 @@ export const MESSAGE_INCLUDE = {
   authorUser: { select: USER_SELECT },
   reactions: { select: { emoji: true, userId: true } },
   attachments: {
-    select: { id: true, name: true, mimeType: true, size: true, width: true, height: true, storageKey: true },
+    select: {
+      id: true, name: true, mimeType: true, size: true, width: true, height: true,
+      durationMs: true, peaks: true, storageKey: true,
+    },
   },
   pin: { select: { pinnedById: true, createdAt: true } },
 }
@@ -216,6 +219,7 @@ export function serializeMessage(row: any) {
       : (row.attachments ?? []).map((a: any) => ({
           id: a.id, name: a.name, mimeType: a.mimeType, size: a.size,
           width: a.width ?? null, height: a.height ?? null, url: attachmentUrl(a),
+          durationMs: a.durationMs ?? null, peaks: a.peaks ?? null,
         })),
     pinned: !deleted && row.pin ? { byId: row.pin.pinnedById, at: row.pin.createdAt } : null,
     editedAt: row.editedAt ?? null,
@@ -508,14 +512,18 @@ export async function lastMessagePreviews(conversationIds: string[], workspaceId
   if (!latest.length) return out
   const rows = await db.conversationMessage.findMany({
     where: { OR: latest.map((l: any) => ({ conversationId: l.conversationId, seq: l._max.seq })), deletedAt: null },
-    select: { conversationId: true, text: true, authorUserId: true, authorType: true, createdAt: true },
+    select: {
+      conversationId: true, text: true, authorUserId: true, authorType: true, createdAt: true,
+      attachments: { select: { mimeType: true, name: true, durationMs: true } },
+    },
   })
   const names = {
     ...(await loadNamesForTexts(db, workspaceId, rows.map((r: any) => r.text ?? ''))),
     workspaceAgentName: await agentDisplayName(workspaceId, null),
   }
   for (const row of rows as any[]) {
-    const preview = flattenMarkdownBlocks(renderMentionsAsText(row.text ?? '', names)).slice(0, LAST_MESSAGE_PREVIEW_CHARS)
+    const text = flattenMarkdownBlocks(renderMentionsAsText(row.text ?? '', names)).slice(0, LAST_MESSAGE_PREVIEW_CHARS)
+    const preview = text || previewForAttachments(row.attachments)
     out.set(row.conversationId, { preview, authorId: row.authorUserId ?? null, authorType: row.authorType, createdAt: row.createdAt })
   }
   return out
