@@ -30,8 +30,8 @@ const TRAIL_TOKENS = 80
 
 const soft = expect.configure({ soft: true })
 
-// The stack E2E_LOCAL_START_STACK brings up has no LOCAL_LLM_BASE_URL, so
-// turns started here never reach the fake model and produce no tokens.
+// Needs the API pointed at the fake model, which would change every other
+// local spec; CI runs it in its own job (ci.yml "E2E (chat resume)").
 test.skip(
   process.env.E2E_FAKE_LLM_STACK !== "1",
   "needs an API started with LOCAL_LLM_BASE_URL pointing at the fake model (see the header); set E2E_FAKE_LLM_STACK=1",
@@ -55,6 +55,16 @@ test.beforeAll(async ({ browser }, info) => {
   const signIn = await context.request.post(`${API}/api/local/auto-sign-in`)
   if (!signIn.ok()) throw new Error(`auto-sign-in failed (${signIn.status()}): ${await signIn.text()}`)
   await context.request.post(`${API}/api/onboarding/complete`)
+
+  // A stack without LOCAL_LLM_BASE_URL on this port only shows up as every
+  // scenario timing out on zero tokens; say so up front instead.
+  const models = await apiJson<any>("GET", "/api/local/models")
+  if (!models?.ok || !(models.models ?? []).some((m: any) => m?.id === "fake-stream")) {
+    throw new Error(
+      `the API is not using the fake model on :${LLM_PORT} (GET /api/local/models: ${JSON.stringify(models).slice(0, 200)}); ` +
+        `start it with LOCAL_LLM_BASE_URL=http://127.0.0.1:${LLM_PORT} LOCAL_LLM_BASIC_MODEL=fake-stream LOCAL_LLM_ADVANCED_MODEL=fake-stream`,
+    )
+  }
 
   const workspaces = await apiJson<any>("GET", "/api/workspaces")
   const list: any[] = workspaces?.items ?? workspaces?.data ?? workspaces ?? []
