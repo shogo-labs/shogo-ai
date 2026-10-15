@@ -53,8 +53,49 @@ concurrency:
   cancel-in-progress: ${{ github.event_name != 'push' }}
 
 jobs:
+  # A merge-queue PR lands on main as the exact commit its merge_group run
+  # already tested. The push run for that commit then only refreshes the
+  # main-scoped caches PR runs restore from; it skips tests, typechecks and
+  # lint. Direct pushes (no merge_group run) and tags still run everything.
+  queue-verified:
+    name: Already tested in the merge queue?
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+    outputs:
+      verified: ${{ steps.check.outputs.verified }}
+    steps:
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          IS_MAIN_PUSH: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        run: |
+          verified=false
+          if [[ "$IS_MAIN_PUSH" == "true" ]]; then
+            run_id="$(
+              gh api \
+                "repos/${REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${SHA}&event=merge_group&status=completed&per_page=20" |
+              jq -r --arg sha "$SHA" '[.workflow_runs[] | select(.head_sha == $sha)] | sort_by(.run_number) | last | .id // ""'
+            )"
+            if [[ -n "$run_id" ]]; then
+              required="$(
+                gh api "repos/${REPOSITORY}/actions/runs/${run_id}/jobs?per_page=100" --paginate |
+                jq -r '.jobs[] | select(.name == "Lint, Typecheck, Test") | .conclusion' | tail -1
+              )"
+              if [[ "$required" == "success" ]]; then
+                verified=true
+                echo "Merge-queue run ${run_id} already passed ${SHA}; this run only refreshes caches."
+              fi
+            fi
+          fi
+          echo "verified=${verified}" >> "$GITHUB_OUTPUT"
+
   typecheck:
     name: Typecheck & static checks
+    needs: queue-verified
     # Set CI_LINUX_RUNNER=ubuntu-24.04-8core when an 8-vCPU larger runner is
     # provisioned. The fallback keeps this workflow valid for public repos
     # without larger-runner entitlement.
@@ -190,13 +231,14 @@ jobs:
           key: ci-prepared-v2-${{ runner.os }}-bun${{ steps.setup-bun.outputs.bun-version }}-${{ hashFiles('bun.lock', 'package.json', 'apps/*/package.json', 'packages/*/package.json', 'packages/sdk/examples/*/package.json', 'scripts/package.json', 'templates/runtime-template/package.json', 'prisma/schema*.prisma', 'packages/*/src/**', 'packages/*/tsup.config.*', 'packages/sdk/bin/**', 'templates/runtime-template/src/**', 'templates/runtime-template/vite.config.*', 'packages/agent-runtime/templates/sales-bdr-pipeline/src/**', 'packages/agent-runtime/templates/sales-bdr-pipeline/.shogo/**', 'packages/agent-runtime/templates/sales-bdr-pipeline/template.json', 'scripts/postinstall.ts', 'scripts/db-generate-all.ts', 'scripts/materialize-runtime-template.ts', 'packages/agent-runtime/scripts/build-template-dists.ts') }}
 
       - name: Typecheck
+        if: needs.queue-verified.outputs.verified != 'true'
         env:
           TYPECHECK_SCOPE: required
           TYPECHECK_EXCLUDE: apps/mobile
         run: bun run typecheck
 
       - name: Save TypeScript build info
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.ts-cache.outputs.cache-hit != 'true'
+        if: (github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.ts-cache.outputs.cache-hit != 'true') && needs.queue-verified.outputs.verified != 'true'
         uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
           # Never cache node_modules: some packages ship a .tsbuildinfo, and
@@ -208,9 +250,11 @@ jobs:
           key: tsbuild-typecheck-${{ hashFiles('bun.lock', 'tsconfig*.json', 'apps/*/tsconfig*.json', 'packages/*/tsconfig*.json', 'packages/sdk/examples/*/tsconfig*.json', 'scripts/tsconfig*.json') }}
 
       - name: Lint
+        if: needs.queue-verified.outputs.verified != 'true'
         run: bun run lint
 
       - name: Check CI `bun install` steps authenticate ripgrep-prebuilt
+        if: needs.queue-verified.outputs.verified != 'true'
         # Guards against the `@vscode/ripgrep` 403 flake — see
         # scripts/check-ci-bun-install-token.ts for the full writeup.
         # Runs before any `bun install` in THIS job could 403, but its
@@ -219,21 +263,26 @@ jobs:
         run: bun run check:ci-bun-install-token
 
       - name: Check hosted e2e quarantine entries are owned and unexpired
+        if: needs.queue-verified.outputs.verified != 'true'
         run: bun run check:e2e-quarantine
 
       - name: Verify SDK license isolation (no AGPL leak)
+        if: needs.queue-verified.outputs.verified != 'true'
         # Fails if @shogo-ai/sdk (MIT) declares or imports any @shogo/*
         # AGPL workspace package from a published code path. See
         # packages/sdk/scripts/verify-license-isolation.mjs for details.
         run: bun run --filter @shogo-ai/sdk verify:license-isolation
 
       - name: Check replication publication is self-maintaining
+        if: needs.queue-verified.outputs.verified != 'true'
         run: bun run check:publication
 
       - name: Check generated What's New catalog
+        if: needs.queue-verified.outputs.verified != 'true'
         run: bun run check:whats-new
 
       - name: Check multi-region cron locks + unique-key classification
+        if: needs.queue-verified.outputs.verified != 'true'
         # Guards against the 2026-05-21 analytics_digests poison-pill class
         # of failure: an in-process cron upserting on a non-PK unique index
         # in every API replica in every region, where logical replication's
@@ -263,6 +312,7 @@ jobs:
         run: bun run check:multiregion
 
       - name: Replay desktop SQLite migrations against an empty DB
+        if: needs.queue-verified.outputs.verified != 'true'
         # Guards against the "shipped a migration without its prerequisite"
         # failure mode — e.g. an ALTER TABLE whose CREATE TABLE was never
         # mirrored from prisma/migrations/ into apps/desktop/prisma/migrations/.
@@ -273,6 +323,7 @@ jobs:
         run: bun run check:migrations
 
       - name: Check heartbeat schedule has a single writer
+        if: needs.queue-verified.outputs.verified != 'true'
         # `agent_configs.heartbeatEnabled/heartbeatInterval/nextHeartbeatAt`
         # must only be written via heartbeat-config.service.ts. Direct writes
         # left rows "enabled" with a null nextHeartbeatAt, so staging agents
@@ -280,6 +331,7 @@ jobs:
         run: bun run check:heartbeat-writes
 
       - name: Check desktop SQLite migrations match schema.local.prisma
+        if: needs.queue-verified.outputs.verified != 'true'
         # Catches the OTHER half of the v1.7.8 bug class: schema.local.prisma
         # has a model (CreatorProfile, MarketplaceListing, ...) but the
         # migration tree never CREATE TABLEs it, so a follow-up ALTER lands
@@ -297,6 +349,7 @@ jobs:
 
   typecheck-mobile:
     name: Typecheck (mobile)
+    needs: queue-verified
     runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-latest' }}
     permissions:
       contents: read
@@ -368,10 +421,11 @@ jobs:
         run: bun run build:packages
 
       - name: Typecheck mobile
+        if: needs.queue-verified.outputs.verified != 'true'
         run: bun run --cwd apps/mobile typecheck
 
       - name: Save mobile TypeScript build info
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.ts-mobile-cache.outputs.cache-hit != 'true'
+        if: (github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.ts-mobile-cache.outputs.cache-hit != 'true') && needs.queue-verified.outputs.verified != 'true'
         uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
           # Never cache node_modules: some packages ship a .tsbuildinfo, and
@@ -387,6 +441,8 @@ jobs:
     # personal/team workspaces, folder projects) against a throwaway SQLite
     # DB. These specs previously only ran on developer machines.
     name: ${{ matrix.name }}
+    needs: queue-verified
+    if: needs.queue-verified.outputs.verified != 'true'
     runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-latest' }}
     strategy:
       fail-fast: false
@@ -482,6 +538,7 @@ jobs:
 
   typecheck-known-failures:
     name: Typecheck (known failures, non-blocking)
+    needs: queue-verified
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     continue-on-error: true
@@ -541,12 +598,14 @@ jobs:
         run: bun run build:packages
 
       - name: Typecheck known failures
+        if: needs.queue-verified.outputs.verified != 'true'
         env:
           TYPECHECK_SCOPE: expected-failures
         run: bun run typecheck
 
   test:
     name: Test (${{ matrix.name }})
+    needs: queue-verified
     runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-latest' }}
     permissions:
       contents: read
@@ -709,7 +768,7 @@ jobs:
         run: bun run packages/agent-runtime/scripts/build-template-dists.ts sales-bdr-pipeline
 
       - name: Desktop bundle + launcher assertions
-        if: matrix.desktop_bundle
+        if: (matrix.desktop_bundle) && needs.queue-verified.outputs.verified != 'true'
         # test-web-bundle.ts / test-sync-web.ts / test-forge-config.ts are
         # hand-rolled assertion scripts rather than `bun test` files, so
         # `bun run test` never picked them up and nothing ran them in CI —
@@ -727,15 +786,15 @@ jobs:
         run: bun run --cwd apps/desktop test:desktop-bundle:ci
 
       - name: Test
-        if: matrix.shard != ''
+        if: (matrix.shard != '') && needs.queue-verified.outputs.verified != 'true'
         run: bun run test -- --packages "${{ matrix.packages }}" --shard "${{ matrix.shard }}"
 
       - name: Test remaining packages and e2e
-        if: matrix.include_e2e
+        if: (matrix.include_e2e) && needs.queue-verified.outputs.verified != 'true'
         run: bun run test -- --packages "${{ matrix.packages }}" --include-e2e
 
       - name: Test unsharded packages
-        if: matrix.shard == '' && matrix.include_e2e == false
+        if: (matrix.shard == '' && matrix.include_e2e == false) && needs.queue-verified.outputs.verified != 'true'
         run: bun run test -- --packages "${{ matrix.packages }}"
 
   # The RBAC suites run on SQLite in the `test` job; this job reruns them on
@@ -743,6 +802,8 @@ jobs:
   # project visibility column) and PG query semantics are exercised too.
   rbac-postgres:
     name: RBAC (Postgres)
+    needs: queue-verified
+    if: needs.queue-verified.outputs.verified != 'true'
     runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-latest' }}
     permissions:
       contents: read
@@ -883,7 +944,7 @@ jobs:
 
   test-windows:
     name: Test (Windows path handling)
-    needs: windows-changes
+    needs: [queue-verified, windows-changes]
     if: needs.windows-changes.outputs.relevant == 'true'
     runs-on: windows-latest
     permissions:
@@ -960,6 +1021,7 @@ jobs:
           key: ci-prepared-v2-${{ runner.os }}-bun${{ steps.setup-bun.outputs.bun-version }}-${{ hashFiles('bun.lock', 'package.json', 'apps/*/package.json', 'packages/*/package.json', 'packages/sdk/examples/*/package.json', 'scripts/package.json', 'templates/runtime-template/package.json', 'prisma/schema*.prisma', 'packages/*/src/**', 'packages/*/tsup.config.*', 'packages/sdk/bin/**', 'templates/runtime-template/src/**', 'templates/runtime-template/vite.config.*', 'packages/agent-runtime/templates/sales-bdr-pipeline/src/**', 'packages/agent-runtime/templates/sales-bdr-pipeline/.shogo/**', 'packages/agent-runtime/templates/sales-bdr-pipeline/template.json', 'scripts/postinstall.ts', 'scripts/db-generate-all.ts', 'scripts/materialize-runtime-template.ts', 'packages/agent-runtime/scripts/build-template-dists.ts') }}
 
       - name: Path-boundary, merged-root and release-version tests
+        if: needs.queue-verified.outputs.verified != 'true'
         shell: bash
         # LINKED_FOLDERS / SHOGO_LOCAL_MODE are unset explicitly: when these
         # tests run under a Shogo agent the inherited values silently change
@@ -981,6 +1043,7 @@ jobs:
           bun --no-env-file test apps/api/src/__tests__/runtime-manager-startWorkspace.test.ts apps/api/src/lib/runtime/__tests__/local-bundle-integrity.test.ts
 
       - name: Terminal PTY tests (ConPTY + PowerShell)
+        if: needs.queue-verified.outputs.verified != 'true'
         shell: bash
         # Real PowerShell sessions through Bun's ConPTY-backed
         # Bun.spawn({ terminal }), which needs Bun >= 1.4 on Windows.
@@ -995,6 +1058,8 @@ jobs:
   # shellcheck findings (SC2086 etc.) are deliberately out of scope.
   workflow-lint:
     name: Lint workflows
+    needs: queue-verified
+    if: needs.queue-verified.outputs.verified != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -1011,19 +1076,32 @@ jobs:
 
   ci:
     name: Lint, Typecheck, Test
-    needs: [windows-changes, typecheck, typecheck-mobile, test, rbac-postgres, test-windows, workflow-lint]
+    needs: [queue-verified, windows-changes, typecheck, typecheck-mobile, test, rbac-postgres, test-windows, workflow-lint]
     runs-on: ubuntu-latest
     if: always()
     steps:
       - name: Check upstream job results
+        env:
+          VERIFIED: ${{ needs.queue-verified.outputs.verified }}
+          QUEUE_VERIFIED: ${{ needs.queue-verified.result }}
+          WINDOWS_CHANGES: ${{ needs.windows-changes.result }}
+          TYPECHECK: ${{ needs.typecheck.result }}
+          TYPECHECK_MOBILE: ${{ needs.typecheck-mobile.result }}
+          TEST: ${{ needs.test.result }}
+          RBAC_POSTGRES: ${{ needs.rbac-postgres.result }}
+          TEST_WINDOWS: ${{ needs.test-windows.result }}
+          WORKFLOW_LINT: ${{ needs.workflow-lint.result }}
         run: |
-          echo "windows-changes: ${{ needs.windows-changes.result }}"
-          echo "typecheck: ${{ needs.typecheck.result }}"
-          echo "typecheck-mobile: ${{ needs.typecheck-mobile.result }}"
-          echo "test: ${{ needs.test.result }}"
-          echo "rbac-postgres: ${{ needs.rbac-postgres.result }}"
-          echo "test-windows: ${{ needs.test-windows.result }}"
-          echo "workflow-lint: ${{ needs.workflow-lint.result }}"
-          if [ "${{ needs.windows-changes.result }}" != "success" ] || [ "${{ needs.typecheck.result }}" != "success" ] || [ "${{ needs.typecheck-mobile.result }}" != "success" ] || [ "${{ needs.test.result }}" != "success" ] || [ "${{ needs.rbac-postgres.result }}" != "success" ] || [ "${{ needs.workflow-lint.result }}" != "success" ] || { [ "${{ needs.test-windows.result }}" != "success" ] && [ "${{ needs.test-windows.result }}" != "skipped" ]; }; then
+          echo "queue-verified: ${QUEUE_VERIFIED} (verified=${VERIFIED})"
+          echo "windows-changes: ${WINDOWS_CHANGES}"
+          echo "typecheck: ${TYPECHECK}"
+          echo "typecheck-mobile: ${TYPECHECK_MOBILE}"
+          echo "test: ${TEST}"
+          echo "rbac-postgres: ${RBAC_POSTGRES}"
+          echo "test-windows: ${TEST_WINDOWS}"
+          echo "workflow-lint: ${WORKFLOW_LINT}"
+          # Jobs a queue-verified push skips outright; anywhere else they must pass.
+          skippable() { [ "$1" == "success" ] || { [ "$VERIFIED" == "true" ] && [ "$1" == "skipped" ]; }; }
+          if [ "$QUEUE_VERIFIED" != "success" ] || [ "$WINDOWS_CHANGES" != "success" ] || [ "$TYPECHECK" != "success" ] || [ "$TYPECHECK_MOBILE" != "success" ] || [ "$TEST" != "success" ] || ! skippable "$RBAC_POSTGRES" || ! skippable "$WORKFLOW_LINT" || { [ "$TEST_WINDOWS" != "success" ] && [ "$TEST_WINDOWS" != "skipped" ]; }; then
             exit 1
           fi

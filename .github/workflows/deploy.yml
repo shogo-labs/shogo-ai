@@ -104,6 +104,28 @@ jobs:
             echo "Dry run changes nothing; not waiting for CI."
             exit 0
           fi
+          # A merge-queue commit lands on main as the exact SHA the queue
+          # already tested, so its merge_group run counts; the push run that
+          # follows only warms caches (ci.yml queue-verified).
+          queued="$(
+            gh api \
+              "repos/${REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${SHA}&event=merge_group&status=completed&per_page=20" |
+            jq -r --arg sha "$SHA" '
+              [.workflow_runs[] | select(.head_sha == $sha)] | sort_by(.run_number) | last | .id // ""
+            '
+          )"
+          if [[ -n "$queued" ]]; then
+            required="$(
+              gh api "repos/${REPOSITORY}/actions/runs/${queued}/jobs?per_page=100" --paginate |
+              jq -r '.jobs[] | select(.name == "Lint, Typecheck, Test") | .conclusion' | tail -1
+            )"
+            if [[ "$required" == "success" ]]; then
+              echo "Merge-queue CI run ${queued} passed for ${SHA}."
+              exit 0
+            fi
+            echo "Merge-queue CI run ${queued} for ${SHA}: required job ${required:-missing}; waiting for the push run."
+          fi
+
           deadline=$((SECONDS + 1800))
           while (( SECONDS < deadline )); do
             run="$(
