@@ -25,6 +25,7 @@ import {
 import { mentionNames, renderMentions } from '../../lib/team-chat-state'
 import { useUserStatus } from '../../hooks/useChatPrefs'
 import { usePresence } from '../../hooks/usePresence'
+import { resolveAvatarUrl } from '../../lib/chat-attachment-url'
 import { PresenceDot, presenceLabel } from './PresenceDot'
 import { AgentAvatar } from './AgentAvatar'
 import { HuddleButton } from './Huddle'
@@ -89,7 +90,7 @@ export function ConversationHeader({ conversation, mentionables, me, onChanged, 
   const named = others.length ? others : conversation.members
   const participants: Participant[] = named.map((m) => (m.type === 'agent'
     ? { type: 'agent', projectId: m.projectId, name: m.name }
-    : { type: 'user', id: m.userId, name: m.name, image: m.image, ...(m.userId === me ? { self: true } : {}) }))
+    : { type: 'user', id: m.userId, name: m.name, image: resolveAvatarUrl(m.image), ...(m.userId === me ? { self: true } : {}) }))
   const title = isChannel ? conversation.name ?? 'channel' : conversationTitle({ kind: conversation.kind, name: conversation.name, participants })
   const dmPeer = conversation.kind === 'dm' ? participants.find((p) => p.type === 'user') : undefined
   // Presence next to your own note would be your own status, so drop it.

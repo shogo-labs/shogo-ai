@@ -13,6 +13,7 @@ import { AgentMark } from '../../activity/ActivityFeed'
 import { ConversationRow, CountPill, PanelLink, PanelSection, attentionCount, rowTitle } from '../ConversationRows'
 import { PresenceDot } from '../PresenceDot'
 import { useTeamChatNav } from '../TeamChatSidebarProvider'
+import { resolveAvatarUrl } from '../../../lib/chat-attachment-url'
 import { DM_FILTERS, splitStarredDms, isAgentDm, recentContacts, type DmFilter } from '../../../lib/dm-list'
 import { isSelfDm, teamChatApi, type ConversationSummary } from '../../../lib/team-chat-api'
 
@@ -96,7 +97,7 @@ function Contact({ conversation: c, workspaceId, onPress }: { conversation: Conv
         {isAgentDm(c) ? (
           <AgentMark size={48} />
         ) : (
-          <Avatar fallback={name.slice(0, 1).toUpperCase()} src={peer?.type === 'user' ? peer.image : null} size="lg" />
+          <Avatar fallback={name.slice(0, 1).toUpperCase()} src={peer?.type === 'user' ? resolveAvatarUrl(peer.image) : null} size="lg" />
         )}
         {peer?.type === 'user' && <PresenceDot userId={peer.id} workspaceId={workspaceId} badge size={12} />}
         {unread > 0 && (

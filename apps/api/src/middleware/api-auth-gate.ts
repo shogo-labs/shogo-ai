@@ -68,6 +68,13 @@ function isTokenGatedChatAttachmentPath(path: string): boolean {
   return path.startsWith('/api/chat-attachments/')
 }
 
+// Profile picture bytes, served to an <img> / RN <Image> that can present no
+// ambient credentials. The token in `?t=` is the credential and is verified
+// in-route (routes/local-user.ts), so session gating must not run.
+export function isTokenGatedUserAvatarPath(path: string): boolean {
+  return path.startsWith('/api/user-avatar/')
+}
+
 /** True when the global gate lets `path` through without a session. */
 export function isGatePublicPath(path: string): boolean {
   if (PUBLIC_PREFIXES.some((p) => path.startsWith(p))) return true
@@ -75,6 +82,7 @@ export function isGatePublicPath(path: string): boolean {
   if (isAllowedUnauthWebchatProxyPath(path)) return true
   if (isTokenGatedThumbnailPath(path)) return true
   if (isTokenGatedChatAttachmentPath(path)) return true
+  if (isTokenGatedUserAvatarPath(path)) return true
   // Heartbeat sync is called by the runtime with x-runtime-token auth
   if (path.endsWith('/heartbeat/sync')) return true
   // Voice provider webhooks (signature-verified in-handler). These have

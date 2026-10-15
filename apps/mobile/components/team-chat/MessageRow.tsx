@@ -34,6 +34,7 @@ import { hasReacted, reactionTooltip } from '../../lib/team-chat-reactions'
 import { WebTooltip } from '../chat/WebTooltip'
 import { useUserStatus } from '../../hooks/useChatPrefs'
 import { PresenceDot } from './PresenceDot'
+import { resolveAvatarUrl } from '../../lib/chat-attachment-url'
 import { toggleSaved, useIsSaved } from '../../hooks/useChatItems'
 import { customEmojiFor, jumboEmojiCodes, useCustomEmoji } from '../../hooks/useCustomEmoji'
 import { useEditRequest } from '../../hooks/useChatShortcuts'
@@ -173,7 +174,7 @@ function Avatar({ message, onPress }: { message: ChatMessage; onPress?: () => vo
   return (
     <View className="relative">
       {message.author?.image ? (
-        <Image source={{ uri: message.author.image }} className="h-8 w-8 rounded-lg" accessibilityIgnoresInvertColors />
+        <Image source={{ uri: resolveAvatarUrl(message.author.image) ?? undefined }} className="h-8 w-8 rounded-lg" accessibilityIgnoresInvertColors />
       ) : (
         <View className="h-8 w-8 items-center justify-center rounded-lg bg-secondary">
           <Text className="text-xs font-semibold text-secondary-foreground">{initials(name)}</Text>
@@ -231,7 +232,7 @@ function UnfurlCards({ message }: { message: ChatMessage }) {
             {u.description ? <Text className="mt-0.5 text-xs text-muted-foreground" numberOfLines={3}>{u.description}</Text> : null}
           </View>
           {u.image ? (
-            <Image source={{ uri: u.image }} className="h-16 w-16 rounded" resizeMode="cover" accessibilityIgnoresInvertColors />
+            <Image source={{ uri: resolveAvatarUrl(u.image) ?? undefined }} className="h-16 w-16 rounded" resizeMode="cover" accessibilityIgnoresInvertColors />
           ) : null}
         </Pressable>
       ))}

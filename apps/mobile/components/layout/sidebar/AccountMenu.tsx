@@ -22,6 +22,7 @@ import { densityFor } from "../../../lib/phone-density";
 import { isNativePlatform } from "../../../lib/native-phone-layout";
 import { NativeAccountItems } from "./NativeAccountItems";
 import { NativeAccountPersonalGroups } from "./NativeAccountPersonalGroups";
+import { resolveAvatarUrl } from "../../../lib/chat-attachment-url";
 import { NativeAccountSettingsSection } from "./NativeAccountSettingsSection";
 import { AccountNavLinks } from "./AccountNavLinks";
 import { type UserMenuProps } from "./UserMenuContent";
@@ -149,7 +150,7 @@ export function AccountMenu({
       {!collapsed && !isNative && (
         <Avatar
           fallback={getInitials(user?.name)}
-          src={user?.image}
+          src={resolveAvatarUrl(user?.image)}
           size="sm"
         />
       )}

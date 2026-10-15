@@ -22,6 +22,7 @@ import { EVENTS, trackEvent } from '../../lib/analytics'
 import { PAUSE_OPTIONS, pauseState } from '../../lib/profile-menu'
 import { usePlatformConfig } from '../../lib/platform-config'
 import { expiryFrom } from '../../lib/team-chat-state'
+import { resolveAvatarUrl } from '../../lib/chat-attachment-url'
 import { PresenceDot, presenceLabel } from '../team-chat/PresenceDot'
 import { useTeamChatNav } from '../team-chat/TeamChatSidebarProvider'
 import { ThemeChoiceList } from './sidebar/ThemeChoiceList'
@@ -99,7 +100,7 @@ export function ProfileMenu({ placement = 'bottom right', size = 'md', testID = 
           className="relative items-center justify-center active:opacity-80"
           style={{ width: dimension, height: dimension }}
         >
-          <Avatar fallback={initials(user?.name)} src={user?.image} size={size === 'sm' ? 'sm' : 'md'} />
+          <Avatar fallback={initials(user?.name)} src={resolveAvatarUrl(user?.image)} size={size === 'sm' ? 'sm' : 'md'} />
           {chat.enabled && status ? (
             <PresenceDot
               userId={user?.id}
@@ -157,7 +158,7 @@ export function ProfileMenuContent({ model }: { model: ProfileMenuModel }) {
   return (
     <View role="menu" className="py-1" testID="profile-menu">
       <View className="flex-row items-center gap-3 px-3 py-3">
-        <Avatar fallback={initials(user?.name)} src={user?.image} size="md" />
+        <Avatar fallback={initials(user?.name)} src={resolveAvatarUrl(user?.image)} size="md" />
         <View className="min-w-0 flex-1">
           <Text className="text-sm font-semibold text-foreground" numberOfLines={1}>{user?.name || 'You'}</Text>
           {chat.enabled ? (

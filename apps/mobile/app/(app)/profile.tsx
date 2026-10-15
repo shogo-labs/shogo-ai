@@ -39,6 +39,7 @@ import { usePlatformConfig } from '../../lib/platform-config'
 import { api } from '../../lib/api'
 import { ROLE_LABELS, isWorkspaceRole } from '@shogo/authz'
 import { usePermissions } from '../../hooks/usePermissions'
+import { ProfilePhoto } from '../../components/settings/ProfilePhoto'
 import {
   type AnalyticsPeriod,
   type UsageLogData,
@@ -173,6 +174,7 @@ export default observer(function ProfilePage() {
           <CardDescription className={isNativePhone ? "text-sm" : undefined}>Your account details</CardDescription>
         </CardHeader>
         <CardContent className="gap-4">
+          <ProfilePhoto isPhone={isNativePhone} />
           <View className={cn("flex-row gap-3", isNativePhone ? "items-start" : "items-center")}>
             <Mail size={isNativePhone ? 20 : 16} className="text-muted-foreground" />
             {isNativePhone ? (

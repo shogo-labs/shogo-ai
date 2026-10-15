@@ -17,6 +17,7 @@ import { ActivityIndicator, Image, Pressable, ScrollView, View } from 'react-nat
 import { ChevronDown, ChevronUp, Lock } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { useDomainHttp } from '../../contexts/domain'
+import { resolveAvatarUrl } from '../../lib/chat-attachment-url'
 import { api } from '../../lib/api'
 import {
   compactNumber,
@@ -97,7 +98,7 @@ function Cell({ width, align, children }: { width: number; align?: 'right'; chil
 function MemberAvatar({ row }: { row: TeamWorkRow }) {
   const initial = (row.name || row.email || '?').trim().charAt(0).toUpperCase()
   return row.image ? (
-    <Image source={{ uri: row.image }} className="h-6 w-6 rounded-full" />
+    <Image source={{ uri: resolveAvatarUrl(row.image) ?? undefined }} className="h-6 w-6 rounded-full" />
   ) : (
     <View className="h-6 w-6 rounded-full bg-primary/10 items-center justify-center">
       <Text className="text-[10px] font-semibold text-primary">{initial}</Text>

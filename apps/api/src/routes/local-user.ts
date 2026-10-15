@@ -5,6 +5,23 @@ import { Hono } from 'hono'
 import { prisma } from '../lib/prisma'
 import { normalizeAdminScopes } from '../lib/admin-scopes'
 import { parseBuddyLook, type BuddyLook } from '../../../../packages/shared-app/src/buddy-look'
+import {
+  AVATAR_CONTENT_KEY_PATTERN,
+  AVATAR_MAX_BYTES,
+  avatarStorageKey,
+  avatarTokenPayload,
+  avatarUrl,
+  isSafeAvatarUserId,
+  mimeForAvatarContentKey,
+  parseAvatarUrl,
+  validateAvatarUpload,
+} from '../lib/user-avatar'
+import {
+  deleteConversationFile,
+  putConversationFile,
+  readConversationFile,
+  verifyConversationFileToken,
+} from '../lib/conversation-files'
 
 type AuthContext = {
   userId?: string
@@ -33,6 +50,28 @@ function compareAnnouncementVersions(a: string, b: string): number {
   const [aMajor, aMinor] = a.split('.').map(Number)
   const [bMajor, bMinor] = b.split('.').map(Number)
   return aMajor - bMajor || aMinor - bMinor
+}
+
+/**
+ * Best-effort removal of the blob a replaced or cleared picture pointed at.
+ *
+ * Never throws. By the time this runs the user's photo has already changed, and
+ * a failed cleanup is not worth failing the request over — blobs are
+ * content-addressed, so the worst case is one orphaned file.
+ */
+async function deleteReplacedAvatar(
+  userId: string,
+  previousImage: string | null | undefined,
+  nextContentKey: string | null,
+): Promise<void> {
+  const previous = parseAvatarUrl(previousImage)
+  if (!previous || previous.userId !== userId) return
+  if (previous.contentKey === nextContentKey) return
+  try {
+    await deleteConversationFile(avatarStorageKey(userId, previous.contentKey))
+  } catch (error: any) {
+    console.warn('[UserAvatar] Could not delete the replaced picture:', error?.message ?? error)
+  }
 }
 
 /**
@@ -332,6 +371,113 @@ export function userProfileRoutes(): Hono {
       return c.json({
         error: { code: 'activity_failed', message: error?.message || 'Failed to fetch activity' },
       }, 500)
+    }
+  })
+
+  /**
+   * Replaces the signed-in user's profile picture.
+   *
+   * Multipart `file`, like the custom-emoji upload: on iOS/Android the client
+   * sends `localFilePart`, which is the only file shape the native global fetch
+   * can encode. The URL is both built and written here — the client never
+   * supplies it — so an arbitrary string cannot end up in the one column every
+   * message payload carries.
+   */
+  router.post('/me/avatar', async (c) => {
+    const userId = userIdFrom(c)
+    if (!userId) {
+      return c.json({ error: { code: 'unauthorized', message: 'Not authenticated' } }, 401)
+    }
+
+    const form = await c.req.formData().catch(() => null)
+    const file = form?.get('file')
+    if (!file || typeof file === 'string') {
+      return c.json({
+        error: { code: 'invalid_file', message: 'Attach an image in the "file" field' },
+      }, 400)
+    }
+    if (file.size > AVATAR_MAX_BYTES) {
+      return c.json({
+        error: { code: 'file_too_large', message: 'Images must be 1 MB or smaller' },
+      }, 413)
+    }
+
+    const result = validateAvatarUpload(new Uint8Array(await file.arrayBuffer()))
+    if (!result.ok) {
+      return c.json({ error: { code: result.code, message: result.message } }, 400)
+    }
+
+    const previous = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { image: true },
+    })
+
+    await putConversationFile(
+      avatarStorageKey(userId, result.contentKey),
+      result.bytes,
+      result.mime,
+    )
+
+    const image = avatarUrl(userId, result.contentKey)
+    await prisma.user.update({ where: { id: userId }, data: { image } })
+    await deleteReplacedAvatar(userId, previous?.image, result.contentKey)
+
+    return c.json({ ok: true, data: { image } })
+  })
+
+  /** Clears the picture, so the UI falls back to initials. */
+  router.delete('/me/avatar', async (c) => {
+    const userId = userIdFrom(c)
+    if (!userId) {
+      return c.json({ error: { code: 'unauthorized', message: 'Not authenticated' } }, 401)
+    }
+
+    const previous = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { image: true },
+    })
+    await prisma.user.update({ where: { id: userId }, data: { image: null } })
+    await deleteReplacedAvatar(userId, previous?.image, null)
+
+    return c.json({ ok: true, data: { image: null } })
+  })
+
+  /**
+   * Serves a profile picture.
+   *
+   * Deliberately outside the session gate (see `isTokenGatedUserAvatarPath`):
+   * this is fetched by a plain `<img>` / RN `<Image>` that can present no
+   * ambient credentials, so the token in `?t=` is the credential. Because the
+   * URL is content-addressed, the bytes can also be cached hard.
+   */
+  router.get('/user-avatar/:userId', async (c) => {
+    const userId = c.req.param('userId')
+    const contentKey = c.req.query('k') ?? ''
+    if (!isSafeAvatarUserId(userId) || !AVATAR_CONTENT_KEY_PATTERN.test(contentKey)) {
+      return c.json({ error: { code: 'invalid_request', message: 'Invalid avatar link' } }, 400)
+    }
+    if (!verifyConversationFileToken(avatarTokenPayload(userId, contentKey), c.req.query('t'))) {
+      return c.json({ error: { code: 'forbidden', message: 'Invalid avatar link' } }, 403)
+    }
+
+    const mime = mimeForAvatarContentKey(contentKey)
+    if (!mime) {
+      return c.json({ error: { code: 'invalid_request', message: 'Invalid avatar link' } }, 400)
+    }
+
+    try {
+      const file = await readConversationFile(avatarStorageKey(userId, contentKey))
+      if (file.kind === 'redirect') return c.redirect(file.url, 302)
+      return new Response(file.bytes as any, {
+        headers: {
+          'Content-Type': mime,
+          'Content-Length': String(file.bytes.byteLength),
+          'Cache-Control': 'private, max-age=86400, immutable',
+          'X-Content-Type-Options': 'nosniff',
+        },
+      })
+    } catch {
+      return c.json({ error: { code: 'not_found', message: 'Avatar not found' } }, 404)
     }
   })
 
