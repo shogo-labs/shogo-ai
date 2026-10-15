@@ -619,7 +619,12 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
     if (userId instanceof Response) return userId
     const body = await readJson(c)
     try {
-      return c.json(await markRead(c.req.param('conversationId'), userId, typeof body.seq === 'number' ? body.seq : undefined))
+      return c.json(await markRead(
+        c.req.param('conversationId'),
+        userId,
+        typeof body.seq === 'number' ? body.seq : undefined,
+        { advance: body.advance === true },
+      ))
     } catch (err) {
       return errorResponse(c, err)
     }

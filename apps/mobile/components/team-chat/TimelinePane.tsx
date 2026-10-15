@@ -10,7 +10,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { ChevronLeft, Upload, X } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { conversationTitle, teamChatApi, type ChatMessage, type ConversationDetail, type Mentionables } from '../../lib/team-chat-api'
-import { mentionNames } from '../../lib/team-chat-state'
+import { mentionNames, newestReadableSeq } from '../../lib/team-chat-state'
 import { ACTIVITY_CHANNEL_FILTERS, EMPTY_ACTIVITY_FILTER, isActivityFilterActive, matchesActivityFilters, type ActivityFilterState } from '../../lib/activity-channel-filters'
 import { TIMELINE_SOFT_LIMIT, useConversationList, useConversationTimeline, useMarkReadWhileVisible, useTypingUsers, type SendInput } from '../../hooks/useTeamChat'
 import { requestEditMessage } from '../../hooks/useChatShortcuts'
@@ -149,13 +149,7 @@ export function TimelinePane(props: TimelinePaneProps) {
       conversations: new Map(channelList.list.map((c) => [c.id, c.slug ?? c.name ?? 'channel'])),
     }
   }, [mentionables, showActivityFilters, channelList.list])
-  const newestSeq = useMemo(() => {
-    for (let i = timeline.state.messages.length - 1; i >= 0; i--) {
-      const m = timeline.state.messages[i]!
-      if (!m.pending && !m.threadRootId) return m.seq
-    }
-    return 0
-  }, [timeline.state.messages])
+  const newestSeq = useMemo(() => newestReadableSeq(timeline.state.messages), [timeline.state.messages])
   // What was unread when the reader opened this conversation; messages arriving later aren't "new".
   const [unread, setUnread] = useState<{ afterSeq: number; upToSeq: number } | null>(() =>
     !threadRootId && conversation.joined && conversation.lastSeq > conversation.lastReadSeq

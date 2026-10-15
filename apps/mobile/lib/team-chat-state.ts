@@ -30,6 +30,22 @@ export function belongsToScope(message: ChatMessage, scope: TimelineScope): bool
   return !message.threadRootId || message.alsoSentToChannel
 }
 
+/**
+ * The newest message seq that counts as "read" for the channel view, i.e. the
+ * same rule `belongsToScope` uses to decide what renders in the main feed: a
+ * thread reply only counts if it was also sent to the channel. Used to mark
+ * the channel read while visible -- otherwise a thread reply that *is* on
+ * screen in the channel never gets its seq marked read, and its badge can
+ * never clear.
+ */
+export function newestReadableSeq(messages: ChatMessage[]): number {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i]!
+    if (!m.pending && (!m.threadRootId || m.alsoSentToChannel)) return m.seq
+  }
+  return 0
+}
+
 function sortMessages(messages: ChatMessage[]): ChatMessage[] {
   return [...messages].sort((a, b) => {
     if (a.pending && !b.pending) return 1

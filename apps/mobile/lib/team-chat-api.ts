@@ -801,8 +801,11 @@ export function teamChatApi() {
       if (opts.limit) q.set('limit', String(opts.limit))
       return (await http.get<ConversationFilePage>(`${conv(id)}/files?${q}`)).data
     },
-    async markRead(id: string, seq?: number): Promise<{ lastReadSeq: number; unreadCount?: number }> {
-      return (await http.post<{ lastReadSeq: number; unreadCount?: number }>(`${conv(id)}/read`, seq === undefined ? {} : { seq })).data
+    async markRead(id: string, seq?: number, opts?: { advance?: boolean }): Promise<{ lastReadSeq: number; unreadCount?: number }> {
+      const body: Record<string, unknown> = {}
+      if (seq !== undefined) body.seq = seq
+      if (opts?.advance) body.advance = true
+      return (await http.post<{ lastReadSeq: number; unreadCount?: number }>(`${conv(id)}/read`, body)).data
     },
     async message(messageId: string): Promise<ChatMessage> {
       return (await http.get<{ message: ChatMessage }>(msg(messageId))).data.message

@@ -1420,14 +1420,29 @@ export async function setReaction(messageId: string, userId: string, emoji: stri
   return summary
 }
 
-/** Set the read position. An explicit `seq` may move it backwards ("mark unread"). */
-export async function markRead(conversationId: string, userId: string, seq?: number) {
+/**
+ * Set the read position for a conversation member.
+ *
+ * `seq` is clamped to the conversation's current `lastSeq`. An explicit `seq`
+ * normally moves the marker to exactly that value — including backwards,
+ * which is how "mark as unread" works.
+ *
+ * `advance: true` is for the "I'm reading, keep my position up to date" caller
+ * (`useMarkReadWhileVisible`). It never moves the marker backwards: two such
+ * requests can race over the network and arrive out of order, and without
+ * this the one carrying the smaller `seq` would silently undo progress the
+ * other already recorded, resurrecting a badge the user had already cleared.
+ */
+export async function markRead(conversationId: string, userId: string, seq?: number, opts?: { advance?: boolean }) {
   const access = await loadAccess(conversationId, userId)
   if (!access.membership) return { lastReadSeq: 0 }
   const lastSeq = access.conversation.lastSeq
   const target = seq !== undefined && Number.isFinite(seq)
     ? Math.min(Math.max(0, Math.floor(seq)), lastSeq)
     : lastSeq
+  if (opts?.advance && target <= access.membership.lastReadSeq) {
+    return { lastReadSeq: access.membership.lastReadSeq, unreadCount: access.membership.lastReadSeq >= lastSeq ? 0 : undefined }
+  }
   const updated = await db.conversationMember.update({
     where: { id: access.membership.id },
     data: { lastReadSeq: target, lastReadAt: new Date() },

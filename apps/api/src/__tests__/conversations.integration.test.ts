@@ -166,6 +166,35 @@ describe('messages', () => {
     expect(marked.unreadCount).toBe(2)
   })
 
+  test('advance:true never regresses the read marker, even if an older request arrives late', async () => {
+    const g = await general()
+    const m1 = await call(seed.member, 'POST', `/conversations/${g.id}/messages`, { text: 'first' })
+    const m2 = await call(seed.member, 'POST', `/conversations/${g.id}/messages`, { text: `second <@u:${seed.owner}>` })
+
+    // Two "I'm reading, keep my position current" requests race over the
+    // network. The one carrying the smaller seq (fired first, client-side)
+    // can still have its response land second -- ordinary HTTP reordering.
+    const newer = await call(seed.owner, 'POST', `/conversations/${g.id}/read`, { seq: m2.json.message.seq, advance: true })
+    expect(newer.json).toEqual({ lastReadSeq: m2.json.message.seq, unreadCount: 0 })
+
+    const stale = await call(seed.owner, 'POST', `/conversations/${g.id}/read`, { seq: m1.json.message.seq, advance: true })
+    expect(stale.json.lastReadSeq).toBe(m2.json.message.seq) // unchanged, not regressed
+    expect(stale.json.unreadCount).toBe(0) // still fully caught up
+
+    const row = (await call(seed.owner, 'GET', `/workspaces/${seed.workspaceId}/conversations`))
+      .json.conversations.find((c: any) => c.id === g.id)
+    expect(row.unreadCount).toBe(0) // the badge does not pop back
+    expect(row.mentionCount).toBe(0)
+  })
+
+  test('without advance, an explicit seq still sets the marker exactly -- "mark unread" keeps working', async () => {
+    const g = await general()
+    const m = await call(seed.member, 'POST', `/conversations/${g.id}/messages`, { text: 'x' })
+    await call(seed.owner, 'POST', `/conversations/${g.id}/read`, {})
+    const unread = await call(seed.owner, 'POST', `/conversations/${g.id}/read`, { seq: m.json.message.seq - 1 })
+    expect(unread.json).toEqual({ lastReadSeq: m.json.message.seq - 1, unreadCount: 1 })
+  })
+
   test('clientMsgId makes sends idempotent', async () => {
     const g = await general()
     const a = await call(seed.owner, 'POST', `/conversations/${g.id}/messages`, { text: 'once', clientMsgId: 'c-1' })

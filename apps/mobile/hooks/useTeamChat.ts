@@ -465,7 +465,7 @@ export function useMarkReadWhileVisible(conversationId: string | null | undefine
     if (!conversationId || !visible || paused || newestSeq <= lastSent.current) return
     const timer = setTimeout(() => {
       lastSent.current = newestSeq
-      api.markRead(conversationId, newestSeq).catch(() => {})
+      api.markRead(conversationId, newestSeq, { advance: true }).catch(() => {})
     }, 400)
     return () => clearTimeout(timer)
   }, [conversationId, newestSeq, visible, paused])

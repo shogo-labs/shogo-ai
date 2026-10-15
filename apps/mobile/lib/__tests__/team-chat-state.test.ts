@@ -27,6 +27,7 @@ import {
   mentionCandidates,
   mentionNames,
   mergePage,
+  newestReadableSeq,
   renderMentions,
   startsGroup,
   stepConversation,
@@ -121,6 +122,28 @@ describe('timeline', () => {
     state = applyTimelineEvent(state, { type: 'message.created', conversationId: 'c1', message: msg({ id: 'x', seq: 2 }) }, scope)
     state = applyTimelineEvent(state, { type: 'message.created', conversationId: 'c1', message: msg({ id: 'r1', seq: 3, threadRootId: 'm1' }) }, scope)
     expect(state.messages.map((m) => m.id)).toEqual(['m1', 'r1'])
+  })
+
+  test('newestReadableSeq ignores thread-only replies but counts ones also sent to the channel', () => {
+    expect(newestReadableSeq([])).toBe(0)
+    expect(newestReadableSeq([msg({ id: 'm1', seq: 5 })])).toBe(5)
+    // A thread reply that never reached the channel doesn't count: marking the
+    // channel read shouldn't silently also advance past something unseen.
+    expect(newestReadableSeq([
+      msg({ id: 'm1', seq: 5 }),
+      msg({ id: 'r1', seq: 6, threadRootId: 'm1' }),
+    ])).toBe(5)
+    // ...but one marked "also send to channel" *does* render in the channel
+    // feed, so reading the channel has to count it too.
+    expect(newestReadableSeq([
+      msg({ id: 'm1', seq: 5 }),
+      msg({ id: 'r1', seq: 6, threadRootId: 'm1', alsoSentToChannel: true }),
+    ])).toBe(6)
+    // A pending (not yet confirmed) send is never "read" yet.
+    expect(newestReadableSeq([
+      msg({ id: 'm1', seq: 5 }),
+      { ...msg({ id: 'tmp', seq: 0 }), pending: true },
+    ])).toBe(5)
   })
 
   test('optimistic sends are replaced by the server copy and failures are marked', () => {
