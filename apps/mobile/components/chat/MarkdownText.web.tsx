@@ -6,6 +6,7 @@ import { Streamdown, defaultUrlTransform } from "streamdown"
 import "streamdown/styles.css"
 import { useMobileWorkspaceChrome } from "../layout/MobileWorkspaceChromeContext"
 import { usePhoneLayoutOverride } from "../../lib/native-phone-layout"
+import { normalizeRichTextPaste } from "../../lib/rich-text-paste"
 import {
   FILE_HREF_PREFIX,
   linkifyBareUrls,
@@ -92,7 +93,8 @@ export const MarkdownText = memo(
     const cls = className ? `${baseClassName} ${className}` : baseClassName
     const source = children || ""
     const body = useMemo(() => {
-      const fileLinked = onFilePress ? linkifyFilePaths(source) : source
+      const normalized = normalizeRichTextPaste(source)
+      const fileLinked = onFilePress ? linkifyFilePaths(normalized) : normalized
       return linkifyBareUrls(fileLinked)
     }, [onFilePress, source])
     const components = useMemo(

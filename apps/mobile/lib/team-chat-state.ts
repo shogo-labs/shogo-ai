@@ -6,6 +6,7 @@
  * composer / display.
  */
 import type { ChatMessage, ConversationSummary, Mentionables, TeamChatEvent } from './team-chat-api'
+import { normalizeRichTextPaste } from './rich-text-paste'
 
 // ─── Timeline ────────────────────────────────────────────────────────────────
 
@@ -443,7 +444,7 @@ interface InlineStyle {
  * Mirrors `flattenMarkdownBlocks` in the API's `conversation-mentions`.
  */
 export function flattenMarkdownBlocks(text: string): string {
-  let source = text.replace(/\r\n/g, '\n')
+  let source = normalizeRichTextPaste(text).replace(/\r\n/g, '\n')
   source = source.replace(/```[^\n]*\n([\s\S]*?)```/g, (_m, code: string) => code.replace(/\n+$/, ''))
   source = source.replace(/~~~[^\n]*\n([\s\S]*?)~~~/g, (_m, code: string) => code.replace(/\n+$/, ''))
   source = source.replace(/^[ \t]*```[^\n]*$/gm, '')
