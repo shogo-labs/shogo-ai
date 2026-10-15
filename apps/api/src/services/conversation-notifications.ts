@@ -10,7 +10,8 @@
 import { prisma } from '../lib/prisma'
 import { publishConversationEvent } from '../lib/conversation-bus'
 import { sendPushToUser } from '../lib/push-notifications'
-import { collectMentionIds, groupNames, markdownToPlainText, renderMentionsAsText } from './conversation-mentions'
+import { markdownToPlainText, renderMentionsAsText } from './conversation-mentions'
+import { loadMentionNames } from './conversation-agent-dispatcher'
 import { registerAfterPostHook } from './conversation-pipeline'
 import {
   agentDisplayName, onReactionAdded,
@@ -154,22 +155,24 @@ export async function resolveRecipients(result: PostMessageResult): Promise<Noti
     .map(([userId, reason]) => ({ userId, reason, silenced: isSilenced(settings.get(userId), now) }))
 }
 
+/**
+ * Preview text for a notification: mention tokens resolved to names, then
+ * flattened to plain text.
+ *
+ * `renderMentionsAsText` falls back to `@someone` / `@group` / `@agent` /
+ * `#channel` for every token whose id it was not handed, so a preview built
+ * without the name lookup shows placeholders instead of the people tagged.
+ */
+async function notificationText(text: string, workspaceId: string): Promise<string> {
+  return markdownToPlainText(renderMentionsAsText(text, await loadMentionNames(workspaceId, [text])))
+}
+
 async function describe(result: PostMessageResult) {
   const { row, conversation } = result
   const author = row.authorType === 'agent'
     ? row.authorAgentRef?.name ?? (await agentDisplayName(conversation.workspaceId, row.authorAgentRef?.projectId ?? null))
     : row.authorUser?.name || row.authorUser?.email || row.blocks?.externalAuthor?.name || 'Someone'
-  const ids = collectMentionIds([row.text])
-  const [users, projects] = await Promise.all([
-    ids.userIds.length ? db.user.findMany({ where: { id: { in: ids.userIds } }, select: { id: true, name: true, email: true } }) : [],
-    ids.projectIds.length ? db.project.findMany({ where: { id: { in: ids.projectIds } }, select: { id: true, name: true } }) : [],
-  ])
-  const text = markdownToPlainText(renderMentionsAsText(row.text ?? '', {
-    users: new Map(users.map((u: any) => [u.id, u.name || u.email])),
-    projects: new Map(projects.map((p: any) => [p.id, p.name])),
-    groups: await groupNames(db, conversation.workspaceId, ids.groupIds),
-    workspaceAgentName: await agentDisplayName(conversation.workspaceId, null),
-  }))
+  const text = await notificationText(row.text ?? '', conversation.workspaceId)
   const attachments = row.attachments?.length ? `📎 ${row.attachments.length} file${row.attachments.length > 1 ? 's' : ''}` : ''
   const body = (text || attachments || 'New message').slice(0, BODY_CHARS)
   const where = isDirect(conversation.kind) ? null : `#${conversation.slug ?? conversation.name ?? 'channel'}`
@@ -253,7 +256,7 @@ export async function notifyForReaction({ message, conversation, reactorId, emoj
   if (existing) return
   const reactor = await db.user.findUnique({ where: { id: reactorId }, select: { name: true, email: true } })
   const who = reactor?.name || reactor?.email || 'Someone'
-  const preview = markdownToPlainText(renderMentionsAsText(message.text ?? '')) || 'your message'
+  const preview = (await notificationText(message.text ?? '', conversation.workspaceId)) || 'your message'
   await createInboxItems([{
     workspaceId: conversation.workspaceId,
     userId: authorId,
@@ -282,7 +285,7 @@ export async function notifyQuestion(input: {
   const settings = await getSettingsRows(conversation.workspaceId, input.userIds)
   const presence = await getPresence(conversation.workspaceId, input.userIds)
   const now = new Date()
-  const body = markdownToPlainText(renderMentionsAsText(input.body)).slice(0, BODY_CHARS)
+  const body = (await notificationText(input.body, conversation.workspaceId)).slice(0, BODY_CHARS)
   const data = {
     conversationId: conversation.id,
     messageId: row.id,

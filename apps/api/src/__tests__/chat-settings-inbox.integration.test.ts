@@ -24,7 +24,7 @@ const { userMentionToken } = await import('../services/conversation-mentions')
 const db = prisma as any
 let seed: SeededWorkspace
 let generalId: string
-let pushes: Array<{ userId: string }> = []
+let pushes: Array<{ userId: string; title?: string; body?: string }> = []
 
 async function post(input: Record<string, unknown>) {
   return service.postMessage({ conversationId: generalId, authorType: 'user', ...input } as any)
@@ -48,7 +48,9 @@ beforeAll(async () => {
 beforeEach(async () => {
   pushes = []
   presence._resetPresenceForTests()
-  notifications._setPushSenderForTests(async (userId) => { pushes.push({ userId }) })
+  notifications._setPushSenderForTests(async (userId, payload) => {
+    pushes.push({ userId, title: payload.title, body: payload.body })
+  })
   await db.conversationMember.updateMany({ where: { conversationId: generalId }, data: { muted: false, notifyLevel: 'default' } })
   await db.chatUserSettings.deleteMany({})
   await db.chatInboxItem.deleteMany({})
@@ -159,6 +161,30 @@ describe('inbox', () => {
     const { items } = await inbox.listInbox(seed.workspaceId, seed.member)
     expect(items.map((i: any) => i.kind)).toEqual(['reaction'])
     expect(items[0].title).toBe('owner reacted 🎉 to your message')
+  })
+
+  test('a reaction preview names the people tagged in the message, not "someone"', async () => {
+    const { row } = await post({
+      authorUserId: seed.member,
+      text: `${userMentionToken(seed.viewer)} ${userMentionToken(seed.owner)} can you two look?`,
+    })
+    await service.setReaction(row.id, seed.owner, '👍', true)
+    await Bun.sleep(30)
+    const { items } = await inbox.listInbox(seed.workspaceId, seed.member)
+    const reaction = items.find((i: any) => i.kind === 'reaction')
+    expect(reaction.preview).toBe('@viewer @owner can you two look?')
+  })
+
+  test('a question alert names the people it tagged', async () => {
+    const { row } = await post({ authorUserId: seed.member, text: 'pick one' })
+    await notifications.notifyQuestion({
+      conversation: { id: generalId, workspaceId: seed.workspaceId },
+      row,
+      userIds: [seed.owner],
+      title: 'member asked you: pick one',
+      body: `${userMentionToken(seed.viewer)} which one wins?`,
+    })
+    expect(pushes[0].body).toBe('@viewer which one wins?')
   })
 })
 
