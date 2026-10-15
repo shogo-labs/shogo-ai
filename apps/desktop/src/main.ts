@@ -19,6 +19,7 @@ initSentry()
 
 import { app, BrowserWindow, protocol, net, session, ipcMain, Menu, shell, Notification, dialog, powerMonitor, systemPreferences, desktopCapturer } from 'electron'
 import { ensureMediaAccess, ensureMicAccess, MAC_MIC_SETTINGS_URL, type MicAccess } from './media-permissions'
+import { attachRendererLogForwarding } from './renderer-log-forwarding'
 import type { DictationHotkeyService } from './dictation-hotkey'
 import { normalizeDictationConfig } from './dictation-protocol'
 import {
@@ -208,7 +209,12 @@ app.on('second-instance', () => {
 const IS_DEV = !app.isPackaged
 
 let islandWindow: IslandWindow | null = null
+// Renderer console warnings/errors and renderer crashes only reach DevTools
+// otherwise. Only Shogo's own windows are attached: preview views load
+// third-party pages whose console output must not land in main.log. Uses
+// writeLog directly (not console.*) to avoid echoing to stdout a second time.
 const windowManager = new WindowManager({
+  onWindowCreated: (window) => attachRendererLogForwarding(window.webContents, writeLog),
   onWindowClosed: (window) => {
     closeAllForWindow(window)
     // The island is itself a BrowserWindow, so `window-all-closed` never
@@ -1997,7 +2003,10 @@ app.whenReady().then(async () => {
   createWindow()
   void loadDictation().then((service) => service.start(readConfig().dictation))
   islandWindow = new IslandWindow(windowManager, {
-    loadApp: (window) => loadAppWindow(window, '/island'),
+    loadApp: (window) => {
+      attachRendererLogForwarding(window.webContents, writeLog)
+      loadAppWindow(window, '/island')
+    },
     ...(isCloudMode
       ? {}
       : {

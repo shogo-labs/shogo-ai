@@ -28,6 +28,8 @@ import { useChatImageWidth } from "./use-chat-image-width"
 import { WorkedForGroup } from "./WorkedForGroup"
 import { PlanningStatusLine } from "./PlanningStatusLine"
 import { useDeferredBacklog } from "./use-deferred-backlog"
+import { useThrottledWhileStreaming } from "./use-throttled-while-streaming"
+import { useDelayedFalse } from "./use-delayed-false"
 import type { MessagePart, GroupedMessagePart } from "./types"
 import {
   groupWorkParts,
@@ -67,108 +69,6 @@ import { FileViewerModal } from "../FileViewerModal"
 import { ChatImageContextMenu, ImagePreviewModal } from "../ImagePreviewModal"
 import { downloadImage, isShogoDesktop } from "../chatImageActions"
 import { useAgentImageSource } from "../../../lib/agent-image-source"
-
-/**
- * Throttle a streaming value so heavy downstream work (markdown parsing, part
- * extraction, JSX reconciliation for tool widgets) only fires at ~`intervalMs`
- * cadence instead of on every token. When `throttle` flips false (stream
- * ended), the latest value is flushed synchronously so the final snapshot is
- * always pixel-correct.
- *
- * The component's render function still runs on every parent re-render (cheap),
- * but any `useMemo`/`memo` keyed on the returned throttled value gets its
- * cached result back, which is where the per-token 50–260ms cost was
- * concentrated (Streamdown re-parsing the full message text per character).
- */
-const STREAMING_THROTTLE_MS = 50
-
-/**
- * Hold a boolean's previous `true` for `delayMs` after it transitions to
- * `false`. Rising edges (`false` → `true`) are instantaneous, so a fresh
- * tool call relights the "streaming" state immediately, but the falling
- * edge waits — preventing the Editing… / Exploring… header from
- * flickering to its summary form during the brief gap between
- * consecutive tool calls in the same agent turn.
- */
-function useDelayedFalse(value: boolean, delayMs: number): boolean {
-  const [stable, setStable] = useState(value)
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-
-  useEffect(() => {
-    if (value) {
-      if (timerRef.current !== null) {
-        clearTimeout(timerRef.current)
-        timerRef.current = null
-      }
-      if (!stable) setStable(true)
-      return
-    }
-    if (!stable) return
-    if (timerRef.current !== null) return
-    timerRef.current = setTimeout(() => {
-      timerRef.current = null
-      setStable(false)
-    }, delayMs)
-  }, [value, delayMs, stable])
-
-  useEffect(
-    () => () => {
-      if (timerRef.current !== null) {
-        clearTimeout(timerRef.current)
-      }
-    },
-    [],
-  )
-
-  return stable
-}
-
-function useThrottledWhileStreaming<T>(value: T, isStreaming: boolean): T {
-  const [throttled, setThrottled] = useState<T>(value)
-  const lastEmitAtRef = useRef(0)
-  const pendingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const latestValueRef = useRef(value)
-  latestValueRef.current = value
-
-  useEffect(() => {
-    if (!isStreaming) {
-      if (pendingTimerRef.current !== null) {
-        clearTimeout(pendingTimerRef.current)
-        pendingTimerRef.current = null
-      }
-      lastEmitAtRef.current = performance.now()
-      setThrottled(value)
-      return
-    }
-
-    const now = performance.now()
-    const elapsed = now - lastEmitAtRef.current
-    if (elapsed >= STREAMING_THROTTLE_MS) {
-      lastEmitAtRef.current = now
-      setThrottled(value)
-      return
-    }
-
-    if (pendingTimerRef.current === null) {
-      pendingTimerRef.current = setTimeout(() => {
-        pendingTimerRef.current = null
-        lastEmitAtRef.current = performance.now()
-        setThrottled(latestValueRef.current)
-      }, STREAMING_THROTTLE_MS - elapsed)
-    }
-  }, [value, isStreaming])
-
-  useEffect(
-    () => () => {
-      if (pendingTimerRef.current !== null) {
-        clearTimeout(pendingTimerRef.current)
-      }
-    },
-    [],
-  )
-
-  return throttled
-}
 
 export interface AssistantContentProps {
   message: UIMessage

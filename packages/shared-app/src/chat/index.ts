@@ -8,6 +8,7 @@ export {
   formatToolName,
   getToolCategory,
   ERROR_CODE_MESSAGES,
+  RENDER_FELL_BEHIND_MESSAGE,
   channelDispatchOf,
 } from './message-helpers'
 export type { ChannelDispatch } from './message-helpers'

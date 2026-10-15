@@ -7,7 +7,7 @@
  *   bun test apps/desktop/e2e/streaming/streaming-fixtures.test.ts
  */
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
-import { FakeLlmServer, expectedTokens, marker, token } from './fake-llm-server'
+import { FakeLlmServer, bigWriteLine, bigWritePath, expectedTokens, marker, token } from './fake-llm-server'
 import { checkSequence, isCleanPrefix, isExactRun, maxDivergenceMs, renderLag } from './stream-probe'
 
 const tools = [{ type: 'function', function: { name: 'read_file', parameters: {} } }]
@@ -82,6 +82,33 @@ describe('FakeLlmServer', () => {
 
     expect(llm.sentAt('t')).toHaveLength(30)
     expect(llm.requestsFor('t').map((t) => t.round)).toEqual([0, 1, 2])
+  })
+
+  test('bigwrite streams one write_file as `lines` argument deltas, then the tokens', async () => {
+    const writeTools = [{ type: 'function', function: { name: 'write_file', parameters: {} } }]
+    const call = async (messages: unknown[]) => {
+      const res = await fetch(`${llm.url}/v1/chat/completions`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ model: 'fake-stream', stream: true, messages, tools: writeTools }),
+      })
+      return parseSse(await res.text())
+    }
+    const user = { role: 'user', content: `${marker('bigwrite', 'bw', 12, { ms: 1, lines: 300 })} go` }
+    const r0 = await call([user])
+    const deltas = r0.flatMap((c) => c.delta.tool_calls ?? [])
+    expect(deltas[0].function.name).toBe('write_file')
+    expect(deltas.length).toBe(300 + 3)
+    expect(r0.at(-1)!.finish_reason).toBe('tool_calls')
+    const args = JSON.parse(deltas.map((c: any) => c.function.arguments).join(''))
+    expect(args.path).toBe(bigWritePath('bw'))
+    expect(args.content.split('\n')).toHaveLength(301)
+    expect(args.content.split('\n')[299]).toBe(bigWriteLine('bw', 300))
+
+    const asst = { role: 'assistant', content: null, tool_calls: [{ id: 'call_bw_write', type: 'function', function: { name: 'write_file', arguments: '{}' } }] }
+    const r1 = await call([user, asst, { role: 'tool', tool_call_id: 'call_bw_write', content: 'ok' }])
+    expect(tokensIn(textOf(r1), 'bw')).toEqual(Array.from({ length: 12 }, (_, i) => i + 1))
+    expect(r1.at(-1)!.finish_reason).toBe('stop')
   })
 
   test('hold sends no tokens until released', async () => {

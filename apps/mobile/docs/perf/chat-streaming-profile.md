@@ -542,7 +542,7 @@ D. **[medium]** Throttle `create_plan` arg propagation. The plan
    viable options:
    - Pass a stable, throttled reference into `Streamdown` so the memo can
      bail out on intermediate ticks. The throttle already exists in
-     [`useThrottledWhileStreaming`](../../components/chat/turns/AssistantContent.tsx#L59),
+     [`useThrottledWhileStreaming`](../../components/chat/turns/use-throttled-while-streaming.ts),
      but `MarkdownText` receives the *unthrottled* `text` from
      `extractOrderedParts(throttledMessage)`. Verify the throttled value
      does flow all the way down to `MarkdownText.children`.

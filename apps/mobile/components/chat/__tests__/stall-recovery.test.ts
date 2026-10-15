@@ -20,31 +20,46 @@ import {
   decideStallRecovery,
   getStallRecoveryEffects,
   markStuckToolsInterrupted,
-  shouldAutoRecoverStalledTurn,
+  decideStreamEndRecovery,
+  MAX_RENDER_RECOVERY_RUNS,
 } from "../stall-recovery"
 
-describe("decideStallRecovery", () => {
-  test("does not replay a turn that already failed with React update-depth", () => {
+describe("decideStreamEndRecovery", () => {
+  const base = { recoveredTurnId: null, renderDepthErrorTurnId: null, userInitiatedStop: false }
+
+  test("a turn that failed with React update-depth gets render-error recovery, not the stall replay", () => {
     expect(
-      shouldAutoRecoverStalledTurn({
-        stalledTurnId: "turn-185",
-        recoveredTurnId: null,
-        renderDepthErrorTurnId: "turn-185",
-        userInitiatedStop: false,
-      }),
-    ).toBe(false)
+      decideStreamEndRecovery({ ...base, stalledTurnId: "turn-185", renderDepthErrorTurnId: "turn-185" }),
+    ).toBe("render-error")
+  })
+
+  test("render-error recovery runs at most twice per turn (re-attach, then reload)", () => {
+    const input = { ...base, stalledTurnId: "turn-185", renderDepthErrorTurnId: "turn-185" }
+    expect(decideStreamEndRecovery({ ...input, renderRecoveryRuns: 1 })).toBe("render-error")
+    expect(decideStreamEndRecovery({ ...input, renderRecoveryRuns: MAX_RENDER_RECOVERY_RUNS })).toBe("none")
   })
 
   test("still auto-recovers an ordinary transport stall once", () => {
+    expect(decideStreamEndRecovery({ ...base, stalledTurnId: "turn-network" })).toBe("stall")
     expect(
-      shouldAutoRecoverStalledTurn({
-        stalledTurnId: "turn-network",
-        recoveredTurnId: null,
-        renderDepthErrorTurnId: null,
-        userInitiatedStop: false,
-      }),
-    ).toBe(true)
+      decideStreamEndRecovery({ ...base, stalledTurnId: "turn-network", recoveredTurnId: "turn-network" }),
+    ).toBe("none")
   })
+
+  test("no turn or a user Stop never recovers", () => {
+    expect(decideStreamEndRecovery({ ...base, stalledTurnId: null })).toBe("none")
+    expect(
+      decideStreamEndRecovery({
+        ...base,
+        stalledTurnId: "turn-185",
+        renderDepthErrorTurnId: "turn-185",
+        userInitiatedStop: true,
+      }),
+    ).toBe("none")
+  })
+})
+
+describe("decideStallRecovery", () => {
 
   test("active turn -> reconnect (agent still running, transport drop)", () => {
     // Regardless of which attempt we're on, an active server turn always

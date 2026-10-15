@@ -7,6 +7,8 @@
  * Used by both web and mobile chat implementations.
  */
 
+import { classifyChatError } from './chat-error-telemetry'
+
 /**
  * Extract text content from a UIMessage.
  * Handles both legacy content-string format and v3 parts-array format.
@@ -188,8 +190,13 @@ export function channelDispatchOf(message: { parts?: unknown } | null | undefine
 
 const GENERIC_REQUEST_FAILED = 'The request failed. Please tap Retry to try again.'
 
+/** Shown instead of React's raw "Maximum update depth exceeded" (#185) text. */
+export const RENDER_FELL_BEHIND_MESSAGE =
+  "The chat view fell behind on a very large response. Your agent's work is saved — reloading the conversation…"
+
 export function formatErrorMessage(rawMessage: string): string {
   const cleaned = stripInternalErrorMarkers(rawMessage)
+  if (classifyChatError(new Error(cleaned)) === 'render') return RENDER_FELL_BEHIND_MESSAGE
   try {
     const parsed = JSON.parse(cleaned)
     if (parsed?.error?.code && ERROR_CODE_MESSAGES[parsed.error.code]) {

@@ -20,6 +20,11 @@
  *       calls the model again, which continues with the next segment. Add
  *       holdAt=R to wait for release(tag) before round R's segment starts
  *       (R=0 is the first request), and gap=ms to delay each continuation.
+ *   [[e2e:bigwrite:tag=a1:n=50:lines=6000]]
+ *       First request: one `write_file` whose arguments stream as `lines`
+ *       deltas written in a single burst (a large tool input arriving in one
+ *       network read). The continuation after the tool ran streams the n
+ *       tokens.
  *
  * Every token is `t<tag>w<NNNN>` so any view can be checked for gaps,
  * repeats and reordering just by parsing its text (see stream-probe.ts).
@@ -30,7 +35,7 @@
 import http from 'node:http'
 import type { AddressInfo } from 'node:net'
 
-export type Script = 'long' | 'hold' | 'tool' | 'plain'
+export type Script = 'long' | 'hold' | 'tool' | 'bigwrite' | 'plain'
 
 /** One request the app made to the model. */
 export interface FakeTurn {
@@ -51,16 +56,23 @@ export interface FakeTurn {
 }
 
 interface Marker {
-  script: 'long' | 'hold' | 'tool'
+  script: 'long' | 'hold' | 'tool' | 'bigwrite'
   tag: string
   n: number
   ms: number
   rounds: number
   holdAt: number | null
   gap: number
+  lines: number
 }
 
-const MARKER = /\[\[e2e:(long|hold|tool)((?::[a-zA-Z]+=[\w-]+)*)\]\]/
+const MARKER = /\[\[e2e:(long|hold|tool|bigwrite)((?::[a-zA-Z]+=[\w-]+)*)\]\]/
+
+/** Path the `bigwrite` script writes; relative to the project workspace. */
+export const bigWritePath = (tag: string): string => `e2e-big-${tag}.md`
+/** Line `i` (1-based) of the `bigwrite` file. */
+export const bigWriteLine = (tag: string, i: number): string =>
+  `line ${String(i).padStart(5, '0')} of ${tag}: lorem ipsum dolor sit amet, consectetur adipiscing elit`
 
 /** Tool the fake model calls. `read_file` works on a missing path too: an error result still continues the turn. */
 const TOOL_PREFERENCE = ['read_file', 'list_files', 'ls']
@@ -72,15 +84,16 @@ const TOOL_PREFERENCE = ['read_file', 'list_files', 'ls']
 const toolArgs = (_tag: string, round: number): Record<string, unknown> => ({ path: 'AGENTS.md', offset: 1, limit: round + 1 })
 
 export function marker(
-  script: 'long' | 'hold' | 'tool',
+  script: 'long' | 'hold' | 'tool' | 'bigwrite',
   tag: string,
   n: number,
-  options: { ms?: number; rounds?: number; holdAt?: number; gap?: number } = {},
+  options: { ms?: number; rounds?: number; holdAt?: number; gap?: number; lines?: number } = {},
 ): string {
   const parts = [`tag=${tag}`, `n=${n}`, `ms=${options.ms ?? 10}`]
   if (options.rounds !== undefined) parts.push(`rounds=${options.rounds}`)
   if (options.holdAt !== undefined) parts.push(`holdAt=${options.holdAt}`)
   if (options.gap !== undefined) parts.push(`gap=${options.gap}`)
+  if (options.lines !== undefined) parts.push(`lines=${options.lines}`)
   return `[[e2e:${script}:${parts.join(':')}]]`
 }
 
@@ -107,9 +120,10 @@ function parseMarker(text: string): Marker | null {
     tag: params.tag ?? 'x',
     n: Number(params.n ?? 100),
     ms: Number(params.ms ?? 10),
-    rounds: script === 'tool' ? Math.max(1, Number(params.rounds ?? 1)) : 0,
+    rounds: script === 'tool' ? Math.max(1, Number(params.rounds ?? 1)) : script === 'bigwrite' ? 1 : 0,
     holdAt: script === 'hold' ? 0 : params.holdAt !== undefined ? Number(params.holdAt) : null,
     gap: Number(params.gap ?? 0),
+    lines: Number(params.lines ?? 5000),
   }
 }
 
@@ -331,10 +345,30 @@ export class FakeLlmServer {
       clearInterval(ping)
     }
 
+    if (parsed.script === 'bigwrite' && round === 0) {
+      if (!toolNames.includes('write_file')) {
+        res.write(chunk({ content: ` [e2e: write_file not offered; tools were: ${toolNames.join(',')}]` }))
+        finish('stop')
+        return
+      }
+      const id = `call_${parsed.tag}_write`
+      res.write(chunk({ tool_calls: [{ index: 0, id, type: 'function', function: { name: 'write_file', arguments: '' } }] }))
+      res.write(chunk({ tool_calls: [{ index: 0, function: { arguments: `{"path":${JSON.stringify(bigWritePath(parsed.tag))},"content":"` } }] }))
+      // No awaits: the whole argument stream is buffered and leaves in as few
+      // network reads as the socket allows.
+      for (let i = 1; i <= parsed.lines; i++) {
+        res.write(chunk({ tool_calls: [{ index: 0, function: { arguments: `${JSON.stringify(bigWriteLine(parsed.tag, i)).slice(1, -1)}\\n` } }] }))
+      }
+      res.write(chunk({ tool_calls: [{ index: 0, function: { arguments: '"}' } }] }))
+      turn.toolCalled = 'write_file'
+      finish('tool_calls')
+      return
+    }
+
     // This request's slice of the n tokens.
     const segments = parsed.rounds + 1
     const per = Math.floor(parsed.n / segments)
-    const first = round * per + 1
+    const first = parsed.script === 'bigwrite' ? 1 : round * per + 1
     const last = round >= parsed.rounds ? parsed.n : (round + 1) * per
 
     // Absolute schedule, so a slow consumer can't stretch the whole stream.

@@ -9,6 +9,7 @@ import {
   formatToolName,
   getToolCategory,
   ERROR_CODE_MESSAGES,
+  RENDER_FELL_BEHIND_MESSAGE,
 } from '../message-helpers'
 
 describe('extractTextContent', () => {
@@ -140,6 +141,21 @@ describe('formatErrorMessage', () => {
 
   it('returns raw message when not JSON and no pattern match', () => {
     expect(formatErrorMessage('Some random error')).toBe('Some random error')
+  })
+
+  it('never shows React render-depth errors verbatim', () => {
+    for (const raw of [
+      'Minified React error #185; visit https://react.dev/errors/185 for the full message',
+      'Maximum update depth exceeded. This can happen when a component repeatedly calls setState',
+      '[ChatPanel] Stream error: Error: Minified React error #185',
+    ]) {
+      expect(formatErrorMessage(raw)).toBe(RENDER_FELL_BEHIND_MESSAGE)
+    }
+    expect(RENDER_FELL_BEHIND_MESSAGE).not.toMatch(/react|#185|depth/i)
+  })
+
+  it('does not misclassify unrelated errors mentioning "update"', () => {
+    expect(formatErrorMessage('Update failed: disk full')).toBe('Update failed: disk full')
   })
 })
 

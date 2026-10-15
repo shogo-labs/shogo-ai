@@ -50,6 +50,10 @@ export interface Harness {
   workspaceId: string
   /** Renderer console errors and uncaught exceptions from every app window since launch. */
   rendererErrors: string[]
+  /** The run's temporary Electron profile. */
+  userData: string
+  /** The desktop main process log (main.log) this run writes. */
+  mainLogPath: string
   /** `[StreamTrace]` summaries the API and runtime printed (set SHOGO_STREAM_TRACE=1). */
   streamTraces(): Array<Record<string, any>>
   close(): Promise<void>
@@ -292,7 +296,11 @@ export async function launchDesktop(): Promise<Harness> {
     const rendererErrors: string[] = []
     watchErrors(page, rendererErrors)
     app.on('window', (w) => watchErrors(w, rendererErrors))
-    return { app, page, llm, devUrl: metro.url, apiUrl, projectId, projectPath, sessionId: opened.sessionId, workspaceId: opened.workspaceId, rendererErrors, streamTraces: () => traceLines.flatMap((l) => { try { return [JSON.parse(l)] } catch { return [] } }), close }
+    // Mirrors main.ts: Windows logs under the profile, macOS/Linux under ~/Library/Logs/Shogo.
+    const mainLogPath = process.platform === 'win32'
+      ? path.join(userData, 'logs', 'main.log')
+      : path.join(os.homedir(), 'Library', 'Logs', 'Shogo', 'main.log')
+    return { app, page, llm, devUrl: metro.url, apiUrl, projectId, projectPath, sessionId: opened.sessionId, workspaceId: opened.workspaceId, rendererErrors, userData, mainLogPath, streamTraces: () => traceLines.flatMap((l) => { try { return [JSON.parse(l)] } catch { return [] } }), close }
   } catch (err) {
     await close()
     throw err

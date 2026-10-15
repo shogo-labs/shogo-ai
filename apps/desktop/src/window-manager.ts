@@ -22,6 +22,7 @@ export interface AppWindowRecord {
 }
 
 interface WindowManagerOptions {
+  onWindowCreated?: (window: BrowserWindow, record: AppWindowRecord) => void
   onWindowClosed?: (window: BrowserWindow, record: AppWindowRecord) => void
 }
 
@@ -191,6 +192,7 @@ export class WindowManager {
     if (kind === 'main' && this.primaryWindowId === null) {
       this.primaryWindowId = window.id
     }
+    this.options.onWindowCreated?.(window, record)
 
     window.once('ready-to-show', () => {
       if (!window.isDestroyed()) window.show()

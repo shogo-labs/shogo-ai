@@ -9,6 +9,7 @@
  * first. Numbers for each scenario land in test-results/streaming-e2e/*.json.
  */
 import { expect, test } from '@playwright/test'
+import fs from 'node:fs'
 import {
   BOGUS_FALLBACKS,
   REPORT_DIR,
@@ -204,6 +205,60 @@ test('tool-call turn', async () => {
   expect.soft(worstDuplication(probe), 'duplicated tokens on screen while streaming').toBe(0)
   // The Stop button went away before the reply was fully on screen.
   expect.soft(settled.settledAfterMs, 'ms the reply kept growing after the turn showed as finished').toBeLessThanOrEqual(300)
+})
+
+// ── Large tool inputs (#1083) ──────────────────────────────────────────────
+
+test('large write_file input burst on a slow renderer', async () => {
+  // A ~500 KB write_file argument streamed as thousands of deltas in one
+  // burst, with the renderer's CPU throttled so every render outlasts the
+  // publication window — the shape that used to end the stream with React
+  // #185 and strand the user on a Retry banner.
+  const tag = 'bw1'
+  const total = 40
+  const lines = Number(process.env.SHOGO_E2E_BIGWRITE_LINES ?? 6000)
+  const cdp = await h.page.context().newCDPSession(h.page)
+  await cdp.send('Emulation.setCPUThrottlingRate', { rate: num('SHOGO_E2E_CPU_THROTTLE', 6) })
+  const errorsBefore = h.rendererErrors.length
+  try {
+    await beginProbe(h.page, tag)
+    await send(h.page, `${marker('bigwrite', tag, total, { lines })} go`)
+    await h.llm.waitForTokens(tag, total, 240_000)
+    await waitIdle(h.page, 180_000)
+  } finally {
+    await cdp.send('Emulation.setCPUThrottlingRate', { rate: 1 }).catch(() => undefined)
+    await cdp.detach().catch(() => undefined)
+  }
+  const settled = await settleTokens(h.page, tag)
+  const sections = await expandWorkedSections(h.page, tag)
+  const sequence = await visibleTokens(h.page, tag)
+  const requests = h.llm.requestsFor(tag).map((t) => ({ round: t.round, tool: t.toolCalled, tokens: t.sentAt.length }))
+  const newErrors = h.rendererErrors.slice(errorsBefore)
+  writeReport('large-tool-input', { lines, requests, sections, settledAfterMs: settled.settledAfterMs, newErrors })
+
+  expect.soft(requests.map((r) => r.tool), 'write_file ran, then the reply').toEqual(['write_file', undefined])
+  expect.soft(newErrors.filter((e) => /Maximum update depth|#185/.test(e)), 'React update-depth errors').toEqual([])
+  expect.soft(isExactRun(sequence, total), `reply after the write: ${JSON.stringify(checkSequence(sequence))}`).toBe(true)
+  expect.soft(await pageShows(h.page, 'Connection interrupted'), 'no interrupted-stream banner').toBe(false)
+  expect.soft(await pageShows(h.page, 'Maximum update depth'), 'raw React error text on screen').toBe(false)
+  // The finished turn folds the write into its "Edited N file(s)" summary; `lines` lines plus the trailing newline.
+  expect.soft(await pageShows(h.page, 'Edited 1 file'), 'the write_file summary is shown').toBe(true)
+  expect.soft(await pageShows(h.page, `+${lines + 1}`), 'the summary counts every written line').toBe(true)
+})
+
+test('renderer console errors are written to main.log', async () => {
+  const markerText = `e2e-main-log-marker-${Date.now()}`
+  await h.page.evaluate((text) => console.error(text), markerText)
+  const found = await timeUntil(() => {
+    try {
+      return fs.readFileSync(h.mainLogPath, 'utf8').includes(markerText)
+    } catch {
+      return false
+    }
+  }, 10_000)
+  expect(found, `"${markerText}" in ${h.mainLogPath}`).not.toBeNull()
+  const line = fs.readFileSync(h.mainLogPath, 'utf8').split('\n').find((l) => l.includes(markerText)) ?? ''
+  expect(line).toMatch(/\[ERROR\] \[renderer:\d+\] console\.error: e2e-main-log-marker-/)
 })
 
 // ── Queued messages ────────────────────────────────────────────────────────

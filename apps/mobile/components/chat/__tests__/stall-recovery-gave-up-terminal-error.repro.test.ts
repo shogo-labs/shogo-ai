@@ -30,14 +30,19 @@
  *      → ChatPanel captures `chat_stall_recovery_gave_up` with turnStatus
  *      "unknown" and replaces the banner with the stall "tap Retry" message.
  *
+ * FIXED (#1083): the #185 stream end now launches the render-error recovery
+ * and marks the turn recovered, so the later stream end that still carries
+ * the stale turn id launches nothing.
+ *
  * Run: bun test apps/mobile/components/chat/__tests__/stall-recovery-gave-up-terminal-error.repro.test.ts
  */
 import { afterEach, describe, expect, test } from "bun:test"
 import { StreamBufferStore } from "../../../../../packages/core/src/stream-buffer"
 import { probeChatTurnStatus, type ChatTurnStatus } from "../probe-turn-status"
 import {
+  decideStreamEndRecovery,
   getStallRecoveryEffects,
-  shouldAutoRecoverStalledTurn,
+  type StreamEndRecovery,
 } from "../stall-recovery"
 
 const SESSION = "1e8018bd-1bd8-4b70-a4bf-6fb6cd92de96"
@@ -73,6 +78,7 @@ function makePanelRefs() {
     turnCompleted: false,
     renderDepthErrorTurnId: null as string | null,
     recoveredTurnId: null as string | null,
+    renderRecoveryRuns: new Map<string, number>(),
     userInitiatedStop: false,
   }
 }
@@ -93,22 +99,21 @@ const onTurnStart = (r: Refs, turnId: string) => {
 const onRenderDepthError = (r: Refs) => {
   r.renderDepthErrorTurnId = r.currentTurnId
 }
-// isStreaming falling edge (ChatPanel ~3746); returns true if recovery launches
-const onStreamEnd = (r: Refs): boolean => {
-  if (!r.currentTurnId || r.turnCompleted) return false
+// isStreaming falling edge (ChatPanel ~3746); returns the recovery it launches
+const onStreamEnd = (r: Refs): StreamEndRecovery => {
+  if (!r.currentTurnId || r.turnCompleted) return "none"
   const stalledTurnId = r.currentTurnId
-  if (
-    shouldAutoRecoverStalledTurn({
-      stalledTurnId,
-      recoveredTurnId: r.recoveredTurnId,
-      renderDepthErrorTurnId: r.renderDepthErrorTurnId,
-      userInitiatedStop: r.userInitiatedStop,
-    })
-  ) {
-    r.recoveredTurnId = stalledTurnId
-    return true
-  }
-  return false
+  const runs = r.renderRecoveryRuns.get(stalledTurnId) ?? 0
+  const recovery = decideStreamEndRecovery({
+    stalledTurnId,
+    recoveredTurnId: r.recoveredTurnId,
+    renderDepthErrorTurnId: r.renderDepthErrorTurnId,
+    renderRecoveryRuns: runs,
+    userInitiatedStop: r.userInitiatedStop,
+  })
+  if (recovery !== "none") r.recoveredTurnId = stalledTurnId
+  if (recovery === "render-error") r.renderRecoveryRuns.set(stalledTurnId, runs + 1)
+  return recovery
 }
 
 /** attemptStallRecovery loop (ChatPanel ~6142), minus backoff sleeps. */
@@ -134,7 +139,7 @@ afterEach(() => {
 })
 
 describe("REPRODUCTION JAVASCRIPT-REACT-5Z: usage-limit send after a #185 turn reports a false stall give-up", () => {
-  test("stale turn id + evicted buffer → give-up captured with turnStatus 'unknown'", async () => {
+  test("FIXED: the #185 turn is recovered once, so a later stale-turn stream end launches nothing", async () => {
     let now = 1_000_000
     Date.now = () => now
     const store = new StreamBufferStore()
@@ -148,8 +153,8 @@ describe("REPRODUCTION JAVASCRIPT-REACT-5Z: usage-limit send after a #185 turn r
 
     // 11:37:01 — client render loop (#185) kills the stream before turn-complete.
     onRenderDepthError(refs)
-    expect(onStreamEnd(refs)).toBe(false) // correctly gated: no recovery for #185
-    writer.complete()                      // server finishes the turn anyway
+    expect(onStreamEnd(refs)).toBe("render-error") // snapshot re-attach / reload, never the replay
+    writer.complete()                               // server finishes the turn anyway
 
     // ~70s later the completed buffer is past its 30s grace and swept.
     now += 70_000
@@ -159,19 +164,20 @@ describe("REPRODUCTION JAVASCRIPT-REACT-5Z: usage-limit send after a #185 turn r
     // 11:38:49 — user sends again; API returns 402 usage_limit_reached JSON.
     // No data-turn-start / data-turn-complete ever arrives.
     onStreamStart(refs)
-    // (onError fires with the usage_limit_reached body — not #185, so no gate.)
-    const launched = onStreamEnd(refs)
-
     expect(refs.currentTurnId).toBe(PREV_TURN) // stale id from the previous turn
-    expect(launched).toBe(true)                // BUG: recovery launched for a 402
+    expect(onStreamEnd(refs)).toBe("none")      // no false stall recovery over the billing error
 
+    store.dispose()
+  })
+
+  test("the old gate's failure mode: stall recovery on an evicted buffer gives up with 'unknown'", async () => {
+    const store = new StreamBufferStore()
     const result = await runStallRecovery(turnEndpointFetch(store))
     expect(result.outcome).toBe("give-up")
     expect(result.captures).toEqual([
       { message: "chat_stall_recovery_gave_up", tags: { turnStatus: "unknown" }, attempt: MAX_ATTEMPTS },
     ])
-    expect(result.showRetryBanner).toBe(true) // stall "tap Retry" banner shown over a billing error
-
+    expect(result.showRetryBanner).toBe(true)
     store.dispose()
   })
 

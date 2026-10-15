@@ -15,6 +15,7 @@ import { FileEdit, Loader2, CheckCircle2, XCircle, ChevronRight, ChevronDown } f
 import type { ToolCallData } from "../tools/types"
 import { getBasename, getLanguageLabel } from "./file-lang-map"
 import { computeLineDiff } from "./diff-utils"
+import { countLines, fileToolWidgetPropsEqual } from "./streaming-tool-args"
 import { useChatContextSafe } from "../ChatContext"
 
 export interface EditFileWidgetProps {
@@ -30,38 +31,6 @@ function extractEditData(tool: ToolCallData) {
   const newString = (tool.args?.new_string ?? "") as string
   const replaceAll = tool.args?.replace_all as boolean | undefined
   return { path: path || "unknown", oldString, newString, replaceAll }
-}
-
-function stableStringify(val: unknown): string {
-  if (val === null || val === undefined) return ""
-  if (typeof val === "string") return val
-  try { return JSON.stringify(val) } catch { return "" }
-}
-
-// See WriteFileWidget.tsx for rationale on the terminal-state fast path.
-function toolWidgetPropsEqual(
-  prev: EditFileWidgetProps,
-  next: EditFileWidgetProps,
-) {
-  if (
-    prev.isExpanded !== next.isExpanded ||
-    prev.onToggle !== next.onToggle ||
-    prev.className !== next.className
-  ) {
-    return false
-  }
-  if (prev.tool.state !== next.tool.state) return false
-  if (prev.tool.error !== next.tool.error) return false
-  if (
-    prev.tool.id === next.tool.id &&
-    next.tool.state !== "streaming"
-  ) {
-    return true
-  }
-  return (
-    stableStringify(prev.tool.args) === stableStringify(next.tool.args) &&
-    stableStringify(prev.tool.result) === stableStringify(next.tool.result)
-  )
 }
 
 export const EditFileWidget = memo(function EditFileWidget({
@@ -82,21 +51,22 @@ export const EditFileWidget = memo(function EditFileWidget({
   const basename = getBasename(path)
   const langLabel = getLanguageLabel(path)
 
+  // The line diff is quadratic in the edit size; skip it until the
+  // arguments stop streaming.
+  const isStreaming = tool.state === "streaming"
   const diffLines = useMemo(
-    () => computeLineDiff(oldString, newString),
-    [oldString, newString],
+    () => (isStreaming ? [] : computeLineDiff(oldString, newString)),
+    [oldString, newString, isStreaming],
   )
 
-  const added = diffLines.filter(l => l.type === "added").length
-  const removed = diffLines.filter(l => l.type === "removed").length
+  const added = isStreaming ? countLines(newString) : diffLines.filter(l => l.type === "added").length
+  const removed = isStreaming ? countLines(oldString) : diffLines.filter(l => l.type === "removed").length
 
   const StateIcon = {
     streaming: Loader2,
     success: CheckCircle2,
     error: XCircle,
   }[tool.state]
-
-  const isStreamingNoContent = tool.state === "streaming" && !oldString && !newString
 
   return (
     <View className={cn("overflow-hidden", className)}>
@@ -165,14 +135,14 @@ export const EditFileWidget = memo(function EditFileWidget({
       {/* Expanded diff view */}
       {isExpanded && (
         <View className="border-l border-border/40 ml-2 pl-2 py-1.5">
-          {isStreamingNoContent && (
+          {isStreaming && (
             <View className="flex-row items-center gap-1.5 py-1">
               <Loader2 className="w-3 h-3 text-primary animate-spin" size={12} />
               <Text className="text-[10px] text-muted-foreground">Editing…</Text>
             </View>
           )}
 
-          {(oldString || newString) && (
+          {!isStreaming && (oldString || newString) && (
             <ScrollView nestedScrollEnabled className="bg-background/50 rounded max-h-64">
               {diffLines.map((line, i) => (
                 <View
@@ -222,6 +192,6 @@ export const EditFileWidget = memo(function EditFileWidget({
       )}
     </View>
   )
-}, toolWidgetPropsEqual)
+}, fileToolWidgetPropsEqual)
 
 export default EditFileWidget

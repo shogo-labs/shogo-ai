@@ -15,7 +15,8 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { useChat, type UIMessage } from "@ai-sdk/react"
+import type { UIMessage } from "@ai-sdk/react"
+import { usePacedChat } from "../chat/use-paced-chat"
 import { DefaultChatTransport } from "ai"
 import { appendQueuedUserMessage } from "../chat/queued-user-message"
 import { buildChatTurnUrl, useChatTransportConfig } from "@shogo/shared-app/chat"
@@ -283,11 +284,11 @@ export function useOwnedIslandSession(
   const [error, setError] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(true)
 
-  const { messages, sendMessage, status, setMessages, stop, resumeStream } = useChat({
+  const { messages, sendMessage, status, setMessages, stop, resumeStream } = usePacedChat({
     transport,
     id: sessionId,
     resume: false,
-    experimental_throttle: 120,
+    publishWaitMs: 120,
     onData: (part: any) => {
       if (part?.type !== "data-permission-request" || !part.data) return
       const req = part.data
