@@ -10,7 +10,7 @@
  * team-chat-agents.test.ts. `E2E_LOCAL_START_STACK=1` sets both up.
  */
 import { expect, test, type Page } from "@playwright/test"
-import { LOCAL_API_BASE } from "./helpers"
+import { coveredBy, LOCAL_API_BASE } from "./helpers"
 import { activateTeamWorkspace, api, cleanupTeamNav, seedTeamNav, signIn, type TeamNavSeed } from "./team-nav-seed"
 
 const rail = (page: Page) => page.getByRole("navigation", { name: "Workspace tabs" })
@@ -90,6 +90,35 @@ test.describe("Team workspace: desktop rail and panels", () => {
       await expect(page.getByTestId("rail-tooltip")).toHaveText(name)
       await page.mouse.move(700, 450)
       await expect(page.getByTestId("rail-tooltip")).toHaveCount(0)
+    }
+  })
+
+  test("a label is painted over the panel, and over the card once the panel is hidden", async () => {
+    // Panel state left by earlier tests is unknown, so land on a known one: a
+    // click that only collapsed the panel has to be repeated to reopen it.
+    await tab(page, "DMs").click()
+    if (!(await panel(page, "dms-panel").isVisible())) await tab(page, "DMs").click()
+    await expect(panel(page, "dms-panel")).toBeVisible()
+
+    try {
+      // Panel open: the label reaches over the panel next to the rail.
+      await tab(page, "Agents").hover()
+      const bubble = page.getByTestId("rail-tooltip")
+      await expect(bubble).toHaveText("Agents")
+      expect(await coveredBy(bubble)).toBeNull()
+
+      // Panel hidden: the label reaches over the content card instead. The card
+      // is a later sibling of the whole sidebar column, so it used to be painted
+      // over the rail's tooltips — only the gap between them still showed one.
+      await tab(page, "DMs").click()
+      await expect(panel(page, "dms-panel")).toHaveCount(0)
+      await tab(page, "Agents").hover()
+      await expect(bubble).toHaveText("Agents")
+      expect(await coveredBy(bubble)).toBeNull()
+    } finally {
+      await page.mouse.move(700, 450)
+      if (!(await panel(page, "dms-panel").isVisible())) await tab(page, "DMs").click()
+      await expect(panel(page, "dms-panel")).toBeVisible()
     }
   })
 

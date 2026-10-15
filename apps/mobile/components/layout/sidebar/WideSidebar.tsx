@@ -82,7 +82,12 @@ export function WideSidebar({ workspaceId, tabs, kind, showAdmin, switcher, invi
   }
 
   return (
-    <View className="h-full flex-row">
+    // Painted above the content card beside it. Every react-native-web View is
+    // `position: relative; z-index: 0`, so without a level of its own this column
+    // and the card are equal siblings, and the card — later in tree order — covers
+    // whatever the rail draws outside its 64px width (its hover labels; only the
+    // gap between the two still showed a sliver of one while the panel was closed).
+    <View className="relative z-10 h-full flex-row">
       <IconRail tabs={available} active={tab} badges={badges} onSelect={select} showAdmin={showAdmin} switcher={switcher} invites={invites} onSearch={onSearch} />
       {panelShown && (
         <View className="my-1.5 ml-1.5 w-64 overflow-hidden rounded-l-xl border-y border-l border-r border-sidebar-border bg-sidebar-panel">
