@@ -32,6 +32,7 @@ mock.module(resolve(here, '../PresenceDot'), () => ({ PresenceDot: () => null })
 mock.module(resolve(here, '../InlineMarkdown'), () => ({ InlineMarkdown: ({ children }: any) => children }))
 mock.module(resolve(here, '../../../hooks/useChatItems'), () => ({ useHasDraft: () => false }))
 mock.module(resolve(here, '../../../lib/team-chat-api'), () => ({
+  absoluteApiUrl: (url: string) => url,
   conversationTitle: (c: any) => c.name ?? 'DM',
   isSelfDm: () => false,
 }))

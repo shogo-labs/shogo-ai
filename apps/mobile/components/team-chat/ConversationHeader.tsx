@@ -4,7 +4,7 @@ import { useRef, useState } from 'react'
 import { ActivityIndicator, Alert, Modal, Platform, Pressable, ScrollView, Text, TextInput, View, type LayoutChangeEvent } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { useRouter } from 'expo-router'
-import { Archive, Bell, BellOff, Bot, Check, ChevronLeft, FileText, FolderOpen, Hash, Lock, LogOut, MoreHorizontal, NotebookText, Paperclip, Pencil, PanelRight, Pin, Radio, Sparkles, Star, Trash2, UserCircle, UserPlus, Users, X } from 'lucide-react-native'
+import { Archive, Bell, BellOff, Bot, Check, ChevronLeft, FileText, FolderOpen, Hash, Lock, LogOut, MoreHorizontal, Paperclip, Pencil, PanelRight, Pin, Radio, Sparkles, Star, Trash2, UserCircle, UserPlus, Users, X } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { LiquidGlassBackdrop } from '../ui/LiquidGlassBackdrop'
 import { CHROME_SIZE, GlassButton, GlassChip } from './FloatingChrome'
@@ -13,7 +13,6 @@ import { WebTooltip } from '../chat/WebTooltip'
 import {
   conversationTitle,
   isAgentDm,
-  isSelfDm,
   teamChatApi,
   type CatchUpResult,
   type ChatMessage,
@@ -28,6 +27,7 @@ import { usePresence } from '../../hooks/usePresence'
 import { resolveAvatarUrl } from '../../lib/chat-attachment-url'
 import { PresenceDot, presenceLabel } from './PresenceDot'
 import { AgentAvatar } from './AgentAvatar'
+import { UserAvatar } from './UserAvatar'
 import { HuddleButton } from './Huddle'
 
 const api = teamChatApi()
@@ -133,11 +133,14 @@ export function ConversationHeader({ conversation, mentionables, me, onChanged, 
     : { type: 'user', id: m.userId, name: m.name, image: resolveAvatarUrl(m.image), ...(m.userId === me ? { self: true } : {}) }))
   const title = isChannel ? conversation.name ?? 'channel' : conversationTitle({ kind: conversation.kind, name: conversation.name, participants })
   const dmPeer = conversation.kind === 'dm' ? participants.find((p) => p.type === 'user') : undefined
+  // Your own note is the one direct message whose leading slot is you: nobody
+  // is across from you, so the header shows your face instead of an icon.
+  const selfPeer = dmPeer?.type === 'user' && dmPeer.self === true ? dmPeer : null
   // Presence next to your own note would be your own status, so drop it.
   const peerId = dmPeer?.type === 'user' && dmPeer.self !== true ? dmPeer.id : null
   const peerStatus = useUserStatus(conversation.workspaceId, peerId)
   const peerPresence = usePresence(conversation.workspaceId, peerId)
-  const Icon = conversation.kind === 'activity' ? Radio : conversation.kind === 'private' ? Lock : isChannel ? Hash : isAgentDm({ kind: conversation.kind, participants }) ? Bot : isSelfDm({ kind: conversation.kind, participants }) ? NotebookText : Users
+  const Icon = conversation.kind === 'activity' ? Radio : conversation.kind === 'private' ? Lock : isChannel ? Hash : isAgentDm({ kind: conversation.kind, participants }) ? Bot : Users
 
   const run = async (fn: () => Promise<unknown>) => {
     try {
@@ -277,6 +280,8 @@ export function ConversationHeader({ conversation, mentionables, me, onChanged, 
     <View className="w-4 items-center">
       <PresenceDot userId={peerId} workspaceId={conversation.workspaceId} size={9} />
     </View>
+  ) : selfPeer ? (
+    <UserAvatar name={selfPeer.name} image={selfPeer.image} size={20} />
   ) : agentPeer?.type === 'agent' ? (
     <AgentAvatar name={agentName} projectId={agentProjectId} workspaceId={conversation.workspaceId} size={20} />
   ) : (

@@ -30,6 +30,7 @@ mock.module('react-native', () =>
 )
 mock.module('@shogo/shared-ui/primitives', () => ({ cn: (...a: unknown[]) => a.filter(Boolean).join(' ') }))
 mock.module('../../../lib/team-chat-api', () => ({
+  absoluteApiUrl: (url: string) => url,
   teamChatApi: () => ({
     openAgentDm: async (workspaceId: string, projectId: string | null) => {
       agentDms.push({ workspaceId, projectId })

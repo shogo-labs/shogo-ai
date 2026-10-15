@@ -12,11 +12,12 @@
  */
 import { useState } from 'react'
 import { ActivityIndicator, Pressable, ScrollView, Text, TextInput, View } from 'react-native'
-import { Check, NotebookText } from 'lucide-react-native'
+import { Check } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { teamChatApi, type ConversationSummary, type Mentionables } from '../../lib/team-chat-api'
 import { AgentAvatar } from './AgentAvatar'
 import { PresenceDot } from './PresenceDot'
+import { UserAvatar } from './UserAvatar'
 
 export type NewMessageFilter = 'all' | 'people' | 'agents'
 
@@ -131,7 +132,7 @@ export function NewMessagePicker({
             >
               <View className="h-5 w-5" />
               <View className="w-3.5 items-center">
-                <NotebookText size={14} className="text-muted-foreground" />
+                <UserAvatar name={selfRecipient.name} image={selfRecipient.image} size={14} />
               </View>
               <View className="min-w-0 flex-1">
                 <Text className="text-sm text-foreground" numberOfLines={1}>{selfRecipient.name} (you)</Text>

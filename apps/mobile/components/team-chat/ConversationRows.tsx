@@ -7,7 +7,7 @@
  */
 import { useState, type ReactNode } from 'react'
 import { Pressable, Text, View } from 'react-native'
-import { Bot, ChevronDown, ChevronRight, Hash, Lock, NotebookText, Pencil, Plus, Radio, Users } from 'lucide-react-native'
+import { Bot, ChevronDown, ChevronRight, Hash, Lock, Pencil, Plus, Radio, Users } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { densityFor } from '../../lib/phone-density'
 import { usePhoneLayout } from '../../lib/native-phone-layout'
@@ -15,6 +15,7 @@ import { conversationTitle, isSelfDm, type ConversationSummary } from '../../lib
 import { useHasDraft } from '../../hooks/useChatItems'
 import { PresenceDot } from './PresenceDot'
 import { InlineMarkdown } from './InlineMarkdown'
+import { UserAvatar } from './UserAvatar'
 
 export function conversationHref(id: string): string {
   return `/(app)/c/${encodeURIComponent(id)}`
@@ -29,7 +30,6 @@ export function iconFor(c: ConversationSummary) {
   if (c.kind === 'private') return Lock
   if (c.kind === 'public') return Hash
   if (hasAgent(c)) return Bot
-  if (isSelfDm(c)) return NotebookText
   return Users
 }
 
@@ -74,8 +74,13 @@ export function ConversationRow({ conversation: c, workspaceId, active = false, 
   const unread = !active && c.unreadCount > 0 && !c.muted && c.joined
   const title = rowTitle(c)
   const peers = c.kind === 'dm' ? c.participants ?? [] : []
-  // Your own note-to-self has no one to be present, so it keeps the icon.
-  const dmPeer = peers.length === 1 && peers[0]!.type === 'user' && !isSelfDm(c) ? peers[0]!.id : null
+  // A direct message names the other person and says whether they are around.
+  // The one row that names you is the note-to-self, and nobody sits across from
+  // you there, so it shows your own face in that same leading slot.
+  const peer = peers.length === 1 ? peers[0]! : null
+  const self = peer?.type === 'user' && peer.self === true ? peer : null
+  const dmPeer = peer?.type === 'user' && !isSelfDm(c) ? peer.id : null
+  const iconSize = comfortable ? density.icon.nav : 12
   const mentions = !active ? c.mentionCount : 0
   return (
     <Pressable
@@ -94,13 +99,17 @@ export function ConversationRow({ conversation: c, workspaceId, active = false, 
             : 'hover:bg-sidebar-accent/60 active:bg-sidebar-accent/60',
       )}
     >
-      {dmPeer ? (
-        <View style={{ width: comfortable ? density.icon.nav : 12 }} className="items-center">
+      {self ? (
+        <View style={{ width: iconSize }} className="items-center">
+          <UserAvatar name={self.name} image={self.image} size={iconSize} />
+        </View>
+      ) : dmPeer ? (
+        <View style={{ width: iconSize }} className="items-center">
           <PresenceDot userId={dmPeer} workspaceId={workspaceId} />
         </View>
       ) : (
         <Icon
-          size={comfortable ? density.icon.nav : 12}
+          size={iconSize}
           className={
             comfortable
               ? active || unread
