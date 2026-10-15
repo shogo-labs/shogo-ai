@@ -142,18 +142,23 @@ export async function callRemoteTool(
   targetProjectId: string,
   tool: string,
   args: Record<string, unknown>,
+  signal?: AbortSignal,
 ): Promise<AgentToolResult<any>> {
   const apiUrl = deriveApiUrl()
   if (!apiUrl) throw new RemoteToolError('No API URL configured', 0)
+  const timeout = AbortSignal.timeout(REMOTE_TOOL_REQUEST_TIMEOUT_MS)
   let res: Response
   try {
     res = await fetch(`${apiUrl}/api/internal/projects/${encodeURIComponent(targetProjectId)}/remote-tool`, {
       method: 'POST',
       headers: getInternalHeaders(),
       body: JSON.stringify({ tool, args: clampRemoteArgs(tool, args) }),
-      signal: AbortSignal.timeout(REMOTE_TOOL_REQUEST_TIMEOUT_MS),
+      signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
     })
   } catch (err: any) {
+    if (signal?.aborted && !timeout.aborted) {
+      throw new RemoteToolError(`Remote ${tool} in project ${targetProjectId} was cancelled`, 0, 'aborted')
+    }
     const timedOut = err?.name === 'TimeoutError' || err?.name === 'AbortError'
     throw new RemoteToolError(
       timedOut

@@ -127,6 +127,40 @@ describe('remote tool routing (unit)', () => {
     }
   })
 
+  test('stopping the turn cancels an in-flight remote call', async () => {
+    const saved = snapshotEnv()
+    const originalFetch = globalThis.fetch
+    try {
+      process.env.PROJECT_ID = PROJECT_A
+      process.env.WORKSPACE_ID = WORKSPACE_ID
+      process.env.SHOGO_API_URL = 'http://api.test'
+      delete process.env.WORKSPACE_ANCHOR_PROJECT_ID
+      resetRemoteTargetCache()
+      let remoteStarted!: () => void
+      const started = new Promise<void>((resolve) => { remoteStarted = resolve })
+      globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input)
+        if (url.endsWith('/projects/graph')) return Response.json({ projects: GRAPH })
+        remoteStarted()
+        return new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => reject(init.signal!.reason), { once: true })
+        })
+      }) as typeof fetch
+
+      const exec = toolNamed(createTools(toolCtx('/tmp/remote-abort-unit')), 'exec')
+      const turn = new AbortController()
+      const pending = exec.execute('e1', { command: 'sleep 600', project: PROJECT_B }, turn.signal)
+      await started
+      turn.abort()
+      const result = await pending
+      expect(result.details).toMatchObject({ code: 'aborted', project: { id: PROJECT_B } })
+    } finally {
+      globalThis.fetch = originalFetch
+      restoreEnv(saved)
+      resetRemoteTargetCache()
+    }
+  })
+
   test('executeRemoteTool: 400 / 403 / 404 / strips project / 500', async () => {
     const seen: unknown[] = []
     const fake = (name: string, impl?: () => Promise<any>): AgentTool => ({

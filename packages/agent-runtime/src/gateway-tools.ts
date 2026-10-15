@@ -791,7 +791,7 @@ export function withRemoteProject(tool: AgentTool, ctx: ToolContext): AgentTool 
       if ('error' in target) return textResult({ error: target.error, code: target.code })
       if (target.local) return tool.execute(toolCallId, args as any, signal, onUpdate)
       try {
-        return await callRemoteTool(target.id, tool.name, args)
+        return await callRemoteTool(target.id, tool.name, args, signal)
       } catch (err) {
         return remoteFailure(err, { id: target.id, name: target.name })
       }
@@ -801,7 +801,7 @@ export function withRemoteProject(tool: AgentTool, ctx: ToolContext): AgentTool 
 
 const REMOTE_WAKE_COMMAND = 'pwd && ls -la'
 
-async function connectRemoteProject(ctx: ToolContext, ref: string): Promise<AgentToolResult<any>> {
+async function connectRemoteProject(ctx: ToolContext, ref: string, signal?: AbortSignal): Promise<AgentToolResult<any>> {
   if (!ref.trim()) return textResult({ error: 'project is required' })
   const target = await resolveRemoteTarget(ctx, ref)
   if ('error' in target) return textResult({ error: target.error, code: target.code })
@@ -817,14 +817,14 @@ async function connectRemoteProject(ctx: ToolContext, ref: string): Promise<Agen
   let readOnly = false
   let listing: string | undefined
   try {
-    const result = await callRemoteTool(target.id, 'exec', { command: REMOTE_WAKE_COMMAND })
+    const result = await callRemoteTool(target.id, 'exec', { command: REMOTE_WAKE_COMMAND }, signal)
     const details = result.details as { stdout?: string } | undefined
     listing = typeof details?.stdout === 'string' ? details.stdout : undefined
   } catch (err) {
     if (!(err instanceof RemoteToolError) || err.status !== 403) return remoteFailure(err, project)
     // Read-only access: exec is refused, but a read-only tool still wakes it.
     try {
-      await callRemoteTool(target.id, 'exec_list', {})
+      await callRemoteTool(target.id, 'exec_list', {}, signal)
       readOnly = true
     } catch (inner) {
       return remoteFailure(inner, project)
@@ -853,7 +853,7 @@ function createConnectProjectTool(ctx: ToolContext): AgentTool {
     parameters: Type.Object({
       project: Type.String({ description: 'Project id or exact name (see project_list / list_projects).' }),
     }),
-    execute: async (_toolCallId, params: any) => connectRemoteProject(ctx, String(params?.project ?? '')),
+    execute: async (_toolCallId, params: any, signal) => connectRemoteProject(ctx, String(params?.project ?? ''), signal),
   }
 }
 
