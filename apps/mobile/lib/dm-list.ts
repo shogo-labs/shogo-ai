@@ -5,6 +5,7 @@
  * first, with chips to narrow it.
  */
 import type { ConversationSummary } from './team-chat-api'
+import { isSelfDm } from './team-chat-api'
 
 export type DmFilter = 'all' | 'unreads' | 'people' | 'agents'
 
@@ -56,10 +57,11 @@ export function splitStarredDms(
 
 /**
  * The strip of faces above the list: the most recent conversations, one
- * per person or agent. Group DMs have no single face, so they stay out.
+ * per person or agent. Group DMs have no single face, and a note-to-self
+ * isn't a person to reach, so both stay out.
  */
 export function recentContacts(list: ConversationSummary[], limit = 10): ConversationSummary[] {
   return directConversations(list)
-    .filter((c) => c.kind === 'dm' && (c.participants ?? []).length === 1)
+    .filter((c) => c.kind === 'dm' && !isSelfDm(c) && (c.participants ?? []).length === 1)
     .slice(0, limit)
 }

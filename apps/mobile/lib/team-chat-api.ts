@@ -33,7 +33,7 @@ export function nativeChatVisible(mode: ChatModeValue | null | undefined): boole
 export type AgentStatus = 'running' | 'done' | 'error' | 'stopped'
 
 export type Participant =
-  | { type: 'user'; id: string; name: string; image: string | null }
+  | { type: 'user'; id: string; name: string; image: string | null; /** Your own row, in the note-to-self conversation. */ self?: boolean }
   | { type: 'agent'; projectId: string | null; name: string | null }
 
 export interface ConversationSummary {
@@ -509,7 +509,13 @@ export const mentionToken = {
 
 export function conversationTitle(c: Pick<ConversationSummary, 'kind' | 'name' | 'participants'>): string {
   if (c.kind === 'dm' || c.kind === 'group_dm') {
-    const names = (c.participants ?? []).map((p) => p.name ?? 'Agent').filter(Boolean)
+    const names = (c.participants ?? [])
+      .map((p) => {
+        const name = p.name ?? 'Agent'
+        // A note-to-self lists you, so say which row is you.
+        return p.type === 'user' && p.self ? `${name} (you)` : name
+      })
+      .filter(Boolean)
     return names.length ? names.join(', ') : 'Direct message'
   }
   return c.name ?? 'channel'
@@ -517,6 +523,11 @@ export function conversationTitle(c: Pick<ConversationSummary, 'kind' | 'name' |
 
 export function isAgentDm(c: Pick<ConversationSummary, 'kind' | 'participants'>): boolean {
   return c.kind === 'dm' && (c.participants ?? []).some((p) => p.type === 'agent')
+}
+
+/** The note-to-self conversation: a direct message whose only member is you. */
+export function isSelfDm(c: Pick<ConversationSummary, 'kind' | 'participants'>): boolean {
+  return c.kind === 'dm' && (c.participants ?? []).some((p) => p.type === 'user' && p.self === true)
 }
 
 export function teamChatApi() {
@@ -540,6 +551,11 @@ export function teamChatApi() {
     async openAgentDm(workspaceId: string, projectId: string | null) {
       return (await http.post<{ conversation: ConversationSummary }>(`${ws(workspaceId)}/dms`, { agent: { projectId } }))
         .data.conversation
+    },
+    /** The note-to-self conversation. Same endpoint: you are the only member. */
+    async openSelfDm(workspaceId: string, userId: string) {
+      return (await http.post<{ conversation: ConversationSummary }>(`${ws(workspaceId)}/dms`, { userIds: [userId] })).data
+        .conversation
     },
     async search(
       workspaceId: string,

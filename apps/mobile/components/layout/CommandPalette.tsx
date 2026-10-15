@@ -44,6 +44,7 @@ import {
   MessageCircleQuestion,
   Sparkles,
   Radio,
+  NotebookText,
 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { useProjectCollection } from '../../contexts/domain'
@@ -52,7 +53,7 @@ import { useIsNativePhoneLayout } from '../../lib/native-phone-layout'
 import { useWorkspaceExperience } from '../../hooks/useWorkspaceExperience'
 import { useActiveWorkspace } from '../../hooks/useActiveWorkspace'
 import { useConversationList, useMentionables, useMyUserId } from '../../hooks/useTeamChat'
-import { conversationTitle, teamChatApi, type ConversationSummary } from '../../lib/team-chat-api'
+import { conversationTitle, isSelfDm, teamChatApi, type ConversationSummary } from '../../lib/team-chat-api'
 
 // ─── Types ────────────────────────────────────────────────
 
@@ -78,6 +79,7 @@ function chatIcon(c: ConversationSummary): React.ElementType {
   if (c.kind === 'private') return Lock
   if (c.kind === 'public') return Hash
   if ((c.participants ?? []).some((p) => p.type === 'agent')) return Bot
+  if (isSelfDm(c)) return NotebookText
   return MessageSquare
 }
 
@@ -102,11 +104,11 @@ function useChatCommands(query: string, visible: boolean): CommandItem[] {
         return {
           id: `chat-${c.id}`,
           label,
-          description: channel ? (c.topic || 'Channel') : 'Direct message',
+          description: channel ? (c.topic || 'Channel') : isSelfDm(c) ? 'Your notes' : 'Direct message',
           icon: chatIcon(c),
           href: `/(app)/c/${encodeURIComponent(c.id)}`,
           category: 'chat',
-          keywords: [c.name, c.slug, ...(c.participants ?? []).map((p) => p.name)].filter(Boolean).map((k) => String(k).toLowerCase()),
+          keywords: [c.name, c.slug, ...(c.participants ?? []).map((p) => p.name), isSelfDm(c) ? 'note to self' : null].filter(Boolean).map((k) => String(k).toLowerCase()),
           at: c.lastMessageAt ? Date.parse(c.lastMessageAt) : 0,
         }
       })

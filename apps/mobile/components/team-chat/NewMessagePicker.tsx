@@ -12,7 +12,7 @@
  */
 import { useState } from 'react'
 import { ActivityIndicator, Pressable, ScrollView, Text, TextInput, View } from 'react-native'
-import { Check } from 'lucide-react-native'
+import { Check, NotebookText } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { teamChatApi, type ConversationSummary, type Mentionables } from '../../lib/team-chat-api'
 import { AgentAvatar } from './AgentAvatar'
@@ -42,13 +42,16 @@ const FILTERS: Array<{ id: NewMessageFilter; label: string }> = [
 
 export function filterRecipients(mentionables: Mentionables | null, me: string | null, query: string) {
   const q = query.trim().toLowerCase()
-  const people = (mentionables?.people ?? []).filter(
-    (p) => p.id !== me && (!q || p.name.toLowerCase().includes(q) || p.email.toLowerCase().includes(q)),
-  )
+  const all = mentionables?.people ?? []
+  const matches = (p: { name: string; email: string }) => !q || p.name.toLowerCase().includes(q) || p.email.toLowerCase().includes(q)
+  const people = all.filter((p) => p.id !== me && matches(p))
   const agents = (mentionables?.agents ?? []).filter(
     (a) => !q || a.name.toLowerCase().includes(q) || (a.description ?? '').toLowerCase().includes(q),
   )
-  return { people, agents }
+  // Yourself, listed apart from People: it's not a teammate to pick, it's the
+  // note-to-self conversation.
+  const mine = all.find((p) => p.id === me)
+  return { people, agents, selfRecipient: mine && matches(mine) ? mine : null }
 }
 
 export function NewMessagePicker({
@@ -67,9 +70,10 @@ export function NewMessagePicker({
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  const { people, agents } = filterRecipients(mentionables, me, query)
+  const { people, agents, selfRecipient } = filterRecipients(mentionables, me, query)
   const showPeople = filter !== 'agents'
   const showAgents = filter !== 'people'
+  const showSelf = showPeople && !!selfRecipient
 
   const submit = async (fn: () => Promise<ConversationSummary>) => {
     if (busy) return
@@ -85,7 +89,7 @@ export function NewMessagePicker({
   }
 
   const toggle = (id: string) => setSelected((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]))
-  const empty = (!showPeople || !people.length) && (!showAgents || !agents.length)
+  const empty = (!showPeople || (!people.length && !showSelf)) && (!showAgents || !agents.length)
 
   return (
     <View className={className} testID="new-message-picker">
@@ -115,6 +119,28 @@ export function NewMessagePicker({
       </View>
 
       <ScrollView className={listClassName} keyboardShouldPersistTaps="handled">
+        {showSelf && selfRecipient && (
+          <>
+            {filter === 'all' && <SectionLabel>You</SectionLabel>}
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`${selfRecipient.name} (you), message yourself`}
+              disabled={busy}
+              onPress={() => void submit(() => teamChatApi().openSelfDm(workspaceId, selfRecipient.id))}
+              className="min-h-12 flex-row items-center gap-3 rounded-md px-2 py-2 active:bg-muted hover:bg-muted"
+            >
+              <View className="h-5 w-5" />
+              <View className="w-3.5 items-center">
+                <NotebookText size={14} className="text-muted-foreground" />
+              </View>
+              <View className="min-w-0 flex-1">
+                <Text className="text-sm text-foreground" numberOfLines={1}>{selfRecipient.name} (you)</Text>
+                <Text className="text-xs text-muted-foreground" numberOfLines={1}>Message yourself — notes only you can see</Text>
+              </View>
+            </Pressable>
+          </>
+        )}
+
         {showPeople && people.length > 0 && (
           <>
             {filter === 'all' && <SectionLabel>People</SectionLabel>}

@@ -98,6 +98,7 @@ mock.module('../../../lib/team-chat-api', () => ({
   newClientMsgId: () => 'client-msg-1',
   conversationTitle: () => 'DM',
   isAgentDm: (c: any) => c.kind === 'dm' && (c.participants ?? []).some((p: any) => p.type === 'agent'),
+  isSelfDm: (c: any) => c.kind === 'dm' && (c.participants ?? []).some((p: any) => p.type === 'user' && p.self === true),
   teamChatApi: () => ({
     pin: async (id: string, pinned: boolean) => { pins.push({ id, pinned }) },
     workLog: (id: string) => { workLogs.push(id); return workLogResult() },

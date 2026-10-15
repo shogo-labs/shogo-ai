@@ -24,14 +24,17 @@ mock.module('lucide-react-native', () => {
   const Icon = () => createElement('span')
   return {
     Bell: Icon, Bot: Icon, ChevronDown: Icon, ChevronRight: Icon, Hash: Icon, Keyboard: Icon, Lock: Icon,
-    Pencil: Icon, Plus: Icon, Radio: Icon, Search: Icon, Users: Icon,
+    NotebookText: Icon, Pencil: Icon, Plus: Icon, Radio: Icon, Search: Icon, Users: Icon,
   }
 })
 mock.module(resolve(here, '../TeamChatSidebarProvider'), () => ({ useTeamChatNav: () => chat }))
 mock.module(resolve(here, '../PresenceDot'), () => ({ PresenceDot: () => null }))
 mock.module(resolve(here, '../InlineMarkdown'), () => ({ InlineMarkdown: ({ children }: any) => children }))
 mock.module(resolve(here, '../../../hooks/useChatItems'), () => ({ useHasDraft: () => false }))
-mock.module(resolve(here, '../../../lib/team-chat-api'), () => ({ conversationTitle: (c: any) => c.name ?? 'DM' }))
+mock.module(resolve(here, '../../../lib/team-chat-api'), () => ({
+  conversationTitle: (c: any) => c.name ?? 'DM',
+  isSelfDm: () => false,
+}))
 
 const { ChannelsPanel } = await import('../panels/ChannelsPanel')
 

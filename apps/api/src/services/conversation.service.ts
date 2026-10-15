@@ -402,18 +402,34 @@ async function participantNames(workspaceId: string, conversationIds: string[], 
     : null
   const byConversation = new Map<string, any[]>()
   for (const r of rows) {
-    if (r.memberType === 'user' && r.userId === viewerId) continue
     const list = byConversation.get(r.conversationId) ?? []
     list.push(r.memberType === 'agent'
       ? { type: 'agent', projectId: r.projectId ?? null, name: r.projectId ? projectNames.get(r.projectId) ?? 'Agent' : workspaceAgentName }
-      : { type: 'user', id: r.user?.id ?? r.userId, name: r.user?.name || r.user?.email || 'Unknown', image: r.user?.image ?? null })
+      : {
+          type: 'user',
+          id: r.user?.id ?? r.userId,
+          name: r.user?.name || r.user?.email || 'Unknown',
+          image: r.user?.image ?? null,
+          ...(r.userId === viewerId ? { self: true } : {}),
+        })
     byConversation.set(r.conversationId, list)
+  }
+  // You are not one of the people in your own direct message — except in a
+  // note-to-self, where you are the only one and the row still needs a name
+  // and a face. Drop the viewer only when someone else is left to name it.
+  for (const [conversationId, list] of byConversation) {
+    if (list.length < 2) continue
+    const others = list.filter((p: any) => !(p.type === 'user' && p.self))
+    if (others.length) byConversation.set(conversationId, others)
   }
   return { byConversation, orphanedDirectIds }
 }
 
 export async function listConversationsForUser(workspaceId: string, userId: string) {
   const [general] = await ensureDefaultConversations(workspaceId)
+  // Gives every existing member their note-to-self on the next list load, so
+  // the workspace creator and older accounts need no separate backfill.
+  await ensureSelfConversation(workspaceId, userId)
   const memberships = await db.conversationMember.findMany({
     where: { userId, conversation: { workspaceId } },
   })
@@ -905,6 +921,21 @@ export async function openAgentConversation(workspaceId: string, userId: string,
     await db.conversationMember.create({
       data: { conversationId, memberType: 'agent', projectId: target.projectId, agentTrigger: 'all' },
     })
+  })
+}
+
+/**
+ * Everyone has a direct message with themselves — the scratchpad Slack calls
+ * "You", for notes you don't want to send anyone. Idempotent and keyed on
+ * `u:<userId>`, so provisioning twice costs one indexed lookup.
+ */
+export async function ensureSelfConversation(workspaceId: string, userId: string) {
+  const dmKey = `u:${userId}`
+  const existing = await db.conversation.findFirst({ where: { workspaceId, dmKey } })
+  if (existing) return existing
+  if (!(await getWorkspaceRole(workspaceId, userId))) return null
+  return findOrCreateDirect(workspaceId, dmKey, 'dm', userId, async (conversationId) => {
+    await db.conversationMember.create({ data: { conversationId, memberType: 'user', userId } })
   })
 }
 

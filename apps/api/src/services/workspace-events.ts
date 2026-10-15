@@ -147,6 +147,11 @@ export async function onWorkspaceMemberJoined(input: {
   void import('./conversation-activity')
     .then((m) => m.recordMemberJoined(input.workspaceId, input.userId))
     .catch(() => {})
+  // Everyone gets their note-to-self up front, so "You" is waiting in the DMs
+  // list from the first visit instead of appearing once it's first opened.
+  void import('./conversation.service')
+    .then((m) => m.ensureSelfConversation(input.workspaceId, input.userId))
+    .catch(() => {})
   try {
     const user = await db.user.findUnique({ where: { id: input.userId }, select: { name: true, email: true } })
     await emitWorkspaceEvent({

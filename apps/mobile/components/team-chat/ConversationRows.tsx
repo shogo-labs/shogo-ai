@@ -7,11 +7,11 @@
  */
 import { useState, type ReactNode } from 'react'
 import { Pressable, Text, View } from 'react-native'
-import { Bot, ChevronDown, ChevronRight, Hash, Lock, Pencil, Plus, Radio, Users } from 'lucide-react-native'
+import { Bot, ChevronDown, ChevronRight, Hash, Lock, NotebookText, Pencil, Plus, Radio, Users } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { densityFor } from '../../lib/phone-density'
 import { usePhoneLayout } from '../../lib/native-phone-layout'
-import { conversationTitle, type ConversationSummary } from '../../lib/team-chat-api'
+import { conversationTitle, isSelfDm, type ConversationSummary } from '../../lib/team-chat-api'
 import { useHasDraft } from '../../hooks/useChatItems'
 import { PresenceDot } from './PresenceDot'
 import { InlineMarkdown } from './InlineMarkdown'
@@ -29,6 +29,7 @@ export function iconFor(c: ConversationSummary) {
   if (c.kind === 'private') return Lock
   if (c.kind === 'public') return Hash
   if (hasAgent(c)) return Bot
+  if (isSelfDm(c)) return NotebookText
   return Users
 }
 
@@ -73,7 +74,8 @@ export function ConversationRow({ conversation: c, workspaceId, active = false, 
   const unread = !active && c.unreadCount > 0 && !c.muted && c.joined
   const title = rowTitle(c)
   const peers = c.kind === 'dm' ? c.participants ?? [] : []
-  const dmPeer = peers.length === 1 && peers[0]!.type === 'user' ? peers[0]!.id : null
+  // Your own note-to-self has no one to be present, so it keeps the icon.
+  const dmPeer = peers.length === 1 && peers[0]!.type === 'user' && !isSelfDm(c) ? peers[0]!.id : null
   const mentions = !active ? c.mentionCount : 0
   return (
     <Pressable

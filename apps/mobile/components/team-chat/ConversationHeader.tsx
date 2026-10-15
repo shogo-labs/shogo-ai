@@ -4,7 +4,7 @@ import { useRef, useState } from 'react'
 import { ActivityIndicator, Alert, Modal, Platform, Pressable, ScrollView, Text, TextInput, View, type LayoutChangeEvent } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { useRouter } from 'expo-router'
-import { Archive, Bell, BellOff, Bot, Check, ChevronLeft, FileText, FolderOpen, Hash, Lock, LogOut, MoreHorizontal, Paperclip, Pencil, PanelRight, Pin, Radio, Sparkles, Star, Trash2, UserCircle, UserPlus, Users, X } from 'lucide-react-native'
+import { Archive, Bell, BellOff, Bot, Check, ChevronLeft, FileText, FolderOpen, Hash, Lock, LogOut, MoreHorizontal, NotebookText, Paperclip, Pencil, PanelRight, Pin, Radio, Sparkles, Star, Trash2, UserCircle, UserPlus, Users, X } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { LiquidGlassBackdrop } from '../ui/LiquidGlassBackdrop'
 import { CHROME_SIZE, GlassButton, GlassChip } from './FloatingChrome'
@@ -13,6 +13,7 @@ import { WebTooltip } from '../chat/WebTooltip'
 import {
   conversationTitle,
   isAgentDm,
+  isSelfDm,
   teamChatApi,
   type CatchUpResult,
   type ChatMessage,
@@ -81,15 +82,21 @@ export function ConversationHeader({ conversation, mentionables, me, onChanged, 
   const isChannel = conversation.kind === 'public' || conversation.kind === 'private' || conversation.kind === 'activity'
   const canRename = conversation.canManage && (conversation.kind === 'public' || conversation.kind === 'private') && !conversation.archivedAt
   const canEditTopic = conversation.kind !== 'activity' && !conversation.archivedAt && (conversation.canPost || conversation.canManage)
-  const participants: Participant[] = conversation.members
-    .filter((m) => m.type === 'agent' || m.userId !== me)
-    .map((m) => (m.type === 'agent' ? { type: 'agent', projectId: m.projectId, name: m.name } : { type: 'user', id: m.userId, name: m.name, image: m.image }))
+  // You are not one of the people in your own direct message — except in a
+  // note-to-self, where you are the only one and the header still needs a
+  // name and a face. Keep your row only when nothing else would name it.
+  const others = conversation.members.filter((m) => m.type === 'agent' || m.userId !== me)
+  const named = others.length ? others : conversation.members
+  const participants: Participant[] = named.map((m) => (m.type === 'agent'
+    ? { type: 'agent', projectId: m.projectId, name: m.name }
+    : { type: 'user', id: m.userId, name: m.name, image: m.image, ...(m.userId === me ? { self: true } : {}) }))
   const title = isChannel ? conversation.name ?? 'channel' : conversationTitle({ kind: conversation.kind, name: conversation.name, participants })
   const dmPeer = conversation.kind === 'dm' ? participants.find((p) => p.type === 'user') : undefined
-  const peerId = dmPeer?.type === 'user' ? dmPeer.id : null
+  // Presence next to your own note would be your own status, so drop it.
+  const peerId = dmPeer?.type === 'user' && dmPeer.self !== true ? dmPeer.id : null
   const peerStatus = useUserStatus(conversation.workspaceId, peerId)
   const peerPresence = usePresence(conversation.workspaceId, peerId)
-  const Icon = conversation.kind === 'activity' ? Radio : conversation.kind === 'private' ? Lock : isChannel ? Hash : isAgentDm({ kind: conversation.kind, participants }) ? Bot : Users
+  const Icon = conversation.kind === 'activity' ? Radio : conversation.kind === 'private' ? Lock : isChannel ? Hash : isAgentDm({ kind: conversation.kind, participants }) ? Bot : isSelfDm({ kind: conversation.kind, participants }) ? NotebookText : Users
 
   const run = async (fn: () => Promise<unknown>) => {
     try {

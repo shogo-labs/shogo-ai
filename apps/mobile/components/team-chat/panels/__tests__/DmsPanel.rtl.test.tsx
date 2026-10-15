@@ -17,13 +17,13 @@ mock.module("react-native", () =>
   }),
 )
 mock.module("@shogo/shared-ui/primitives", () => ({ cn: (...args: unknown[]) => args.filter(Boolean).join(" "), Avatar: () => createElement("span") }))
-mock.module("lucide-react-native", () => ({ Plus: () => createElement("span") }))
+mock.module("lucide-react-native", () => ({ NotebookText: () => createElement("span"), Plus: () => createElement("span") }))
 mock.module(resolve(import.meta.dir, "../../../activity/ActivityFeed"), () => ({ AgentMark: () => createElement("span") }))
 mock.module(resolve(import.meta.dir, "../../PresenceDot"), () => ({ PresenceDot: () => createElement("span") }))
 mock.module(resolve(import.meta.dir, "../../ConversationRows"), () => ({
   ConversationRow: ({ conversation }: any) => createElement("div", { "data-testid": `row-${conversation.id}` }),
   PanelSection: ({ label, children }: any) => createElement("section", { "data-section": label }, createElement("h3", null, label), children),
-  PanelLink: ({ label }: any) => createElement("span", null, label),
+  PanelLink: ({ label, onPress }: any) => createElement("button", { onClick: onPress }, label),
   CountPill: () => createElement("span"),
   attentionCount: () => 0,
   rowTitle: (c: any) => c.name ?? c.id,
@@ -119,5 +119,34 @@ describe("DmsPanel", () => {
     expect(screen.queryByTestId("row-ana")).toBeNull()
     expect(screen.queryByText("Starred")).toBeNull()
     expect(screen.getByText("You're all caught up.")).toBeTruthy()
+  })
+
+  test("offers a note-to-self link that opens the conversation with yourself", () => {
+    const opened: any[] = []
+    chat.openConversation = (c: any) => opened.push(c)
+    chat.me = "me"
+    // The server marks your own participant row; a note has you as its only member.
+    chat.list = [
+      convo({ id: "mine", lastMessageAt: null, participants: [{ type: "user", id: "me", name: "Me Myself", image: null, self: true }] }),
+      convo({ id: "ana" }),
+    ]
+    render(createElement(DmsPanel, {}))
+
+    fireEvent.click(screen.getByText("Note to self"))
+
+    expect(opened.map((c) => c.id)).toEqual(["mine"])
+  })
+
+  test("your own note also appears in the list, like any other conversation", () => {
+    chat.list = [
+      convo({ id: "mine", lastMessageAt: null, participants: [{ type: "user", id: "me", name: "Me Myself", image: null, self: true }] }),
+      convo({ id: "ana" }),
+    ]
+    render(createElement(DmsPanel, {}))
+
+    // Reachable from the link and as a row, matching how Slack lists "You".
+    expect(screen.getByText("Note to self")).toBeTruthy()
+    expect(screen.getByTestId("row-mine")).toBeTruthy()
+    expect(screen.getByTestId("row-ana")).toBeTruthy()
   })
 })
