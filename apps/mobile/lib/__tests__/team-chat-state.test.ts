@@ -159,6 +159,13 @@ describe('timeline', () => {
 })
 
 describe('conversation list', () => {
+  test('a deleted channel drops out of the list without a refetch', () => {
+    const list = [conv({ id: 'keep', kind: 'public' }), conv({ id: 'gone', kind: 'public' })]
+    const update = applyListEvent(list, { type: 'conversation.deleted', conversationId: 'gone' }, 'me', 'gone')
+    expect(update.list.map((c) => c.id)).toEqual(['keep'])
+    expect(update.refetch).toBe(false)
+  })
+
   test('a doc update marks the channel as having a doc', () => {
     const list = [conv({ id: 'ch', kind: 'public' })]
     const event = { type: 'doc.updated' as const, conversationId: 'ch', version: 1, title: '', locked: false, updatedBy: null }

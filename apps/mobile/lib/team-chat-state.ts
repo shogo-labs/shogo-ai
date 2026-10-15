@@ -211,6 +211,8 @@ export function applyListEvent(
         refetch: false,
       }
     }
+    case 'conversation.deleted':
+      return { list: list.filter((c) => c.id !== event.conversationId), refetch: false }
     case 'conversation.created':
     case 'conversation.updated':
     case 'member.joined':

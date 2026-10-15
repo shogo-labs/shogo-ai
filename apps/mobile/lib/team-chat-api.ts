@@ -76,6 +76,10 @@ export interface ConversationDetail extends Omit<ConversationSummary, 'unreadCou
   /** Can reply in threads (true in #activity even though top-level posts are system-only). */
   canReply: boolean
   canManage: boolean
+  /** This user may permanently delete the channel (older servers omit it). */
+  canDelete?: boolean
+  /** An agent system's manifest declares this channel, so it can't be deleted until it stops. */
+  systemManaged?: boolean
   members: ConversationMember[]
 }
 
@@ -374,6 +378,7 @@ export type TeamChatEvent =
   | { type: 'agent.delta'; conversationId: string; messageId: string; text: string; tool: string | null; tools?: Array<{ name: string; done: boolean }> }
   | { type: 'conversation.created'; conversationId: string; conversation: ConversationSummary }
   | { type: 'conversation.updated'; conversationId: string; conversation: ConversationSummary }
+  | { type: 'conversation.deleted'; conversationId: string }
   | { type: 'member.joined' | 'member.left'; conversationId: string; userId?: string; userIds?: string[] }
   | { type: 'read'; conversationId: string; userId: string; seq: number; unreadCount?: number }
   | { type: 'typing'; conversationId: string; threadRootId: string | null; userId: string; name: string }
@@ -716,6 +721,10 @@ export function teamChatApi() {
     },
     async update(id: string, patch: { name?: string; topic?: string | null; archived?: boolean }) {
       return (await http.patch<{ conversation: ConversationDetail }>(conv(id), patch)).data.conversation
+    },
+    /** Permanently delete a channel with all its messages and files. */
+    async delete(id: string) {
+      await http.delete(conv(id))
     },
     async join(id: string) {
       await http.post(`${conv(id)}/join`, {})

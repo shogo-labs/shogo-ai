@@ -115,10 +115,16 @@ async function workspaceUserIds(workspaceId: string, emails: string[], groupHand
   return [...ids]
 }
 
-/** Create or update one channel and its members. Returns what changed. */
+/**
+ * Create or update one channel and its members. Returns what changed.
+ * `managedBy` is the project whose manifest declares the channel; it is
+ * recorded so the channel can't be deleted while declared. That is
+ * bookkeeping, so it never shows up in `changes`.
+ */
 export async function upsertTeamChannel(
   workspaceId: string,
   input: TeamChannelUpsert,
+  managedBy?: string,
 ): Promise<{ channel: TeamChannelSnapshot; created: boolean; changes: string[] }> {
   const slug = slugify(input.name ?? '')
   if (!slug) throw new TeamChannelError(400, 'invalid_name', 'Channel name is required')
@@ -129,10 +135,13 @@ export async function upsertTeamChannel(
   const created = !conversation
   if (!conversation) {
     conversation = await db.conversation.create({
-      data: { workspaceId, kind, name: slug, slug, topic: input.topic?.trim() || null },
+      data: { workspaceId, kind, name: slug, slug, topic: input.topic?.trim() || null, systemManagedBy: managedBy ?? null },
     })
     changes.push('created')
   } else {
+    if (managedBy && conversation.systemManagedBy !== managedBy) {
+      conversation = await db.conversation.update({ where: { id: conversation.id }, data: { systemManagedBy: managedBy } })
+    }
     const data: Record<string, unknown> = {}
     if (conversation.archivedAt) data.archivedAt = null
     if (input.topic !== undefined && (input.topic?.trim() || null) !== conversation.topic) data.topic = input.topic?.trim() || null
@@ -204,4 +213,46 @@ export async function upsertTeamChannel(
     } as any, await conversationAudience(conversation))
   }
   return { channel: await snapshot(conversation), created, changes }
+}
+
+/**
+ * Make the system marks match `system`'s manifest. Every channel it declares
+ * is marked, so nobody deletes it out from under the system (this also covers
+ * channels that already existed and needed no upsert). Every channel it
+ * marked but no longer declares is released and can be deleted again.
+ * `system_apply` calls this on every apply with all the names it declares.
+ */
+export async function syncTeamChannelOwnership(
+  workspaceId: string,
+  system: string,
+  declared: string[],
+): Promise<{ claimed: string[]; released: string[] }> {
+  const slugs = [...new Set(declared.map((name) => slugify(name ?? '')).filter(Boolean))]
+  const [toClaim, toRelease] = await Promise.all([
+    slugs.length
+      ? db.conversation.findMany({
+          where: {
+            workspaceId,
+            kind: { in: ['public', 'private'] },
+            slug: { in: slugs },
+            OR: [{ systemManagedBy: null }, { systemManagedBy: { not: system } }],
+          },
+        })
+      : [],
+    db.conversation.findMany({ where: { workspaceId, systemManagedBy: system, slug: { notIn: slugs } } }),
+  ])
+  const changed = [
+    ...toClaim.map((c: any) => ({ id: c.id, systemManagedBy: system })),
+    ...toRelease.map((c: any) => ({ id: c.id, systemManagedBy: null })),
+  ]
+  for (const { id, systemManagedBy } of changed) {
+    const updated = await db.conversation.update({ where: { id }, data: { systemManagedBy } })
+    publishConversationEvent(workspaceId, {
+      type: 'conversation.updated',
+      conversationId: updated.id,
+      conversation: serializeConversation(updated),
+    } as any, await conversationAudience(updated))
+  }
+  const names = (rows: any[]) => rows.map((c) => c.slug ?? c.name)
+  return { claimed: names(toClaim), released: names(toRelease) }
 }

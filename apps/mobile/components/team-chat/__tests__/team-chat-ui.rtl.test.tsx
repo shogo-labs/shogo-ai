@@ -14,15 +14,23 @@ const uploaded: string[] = []
 const updates: Array<{ id: string; patch: unknown }> = []
 const decisions: Array<{ id: string; decision: string }> = []
 let decisionError: string | null = null
+const deletes: string[] = []
+let deleteError: string | null = null
 
 mock.module('react-native', () =>
   createReactNativeMock({
     Platform: { OS: 'web', select: (s: any) => s.web ?? s.default },
+    // A press goes to the innermost Pressable only, as in React Native — not
+    // on to a modal's backdrop that closes it.
     Pressable: ({ accessibilityLabel, children, onPress, onHoverIn, onHoverOut, onPointerEnter, onPointerLeave, onContextMenu, disabled, testID }: any) =>
       createElement(
         'div',
         {
-          role: 'button', 'aria-label': accessibilityLabel, onClick: onPress, onMouseEnter: onHoverIn, onMouseLeave: onHoverOut,
+          role: 'button', 'aria-label': accessibilityLabel, onMouseEnter: onHoverIn, onMouseLeave: onHoverOut,
+          onClick: (e: any) => {
+            e.stopPropagation()
+            onPress?.(e)
+          },
           onPointerEnter, onPointerLeave, onContextMenu, disabled, 'data-testid': testID,
         },
         children,
@@ -100,6 +108,10 @@ mock.module('../../../lib/team-chat-api', () => ({
     update: async (id: string, patch: unknown) => {
       updates.push({ id, patch })
       return {}
+    },
+    delete: async (id: string) => {
+      if (deleteError) throw new Error(deleteError)
+      deletes.push(id)
     },
     decideApproval: async (id: string, decision: string) => {
       if (decisionError) throw Object.assign(new Error('failed'), { response: { data: { error: { message: decisionError } } } })
@@ -965,6 +977,90 @@ describe('ConversationHeader channel editing', () => {
       fireEvent.click(screen.getByLabelText('Save channel'))
     })
     expect(updates).toEqual([{ id: 'c9', patch: { topic: 'Ship it' } }])
+  })
+})
+
+describe('deleting a channel', () => {
+  const channel = (overrides: Record<string, unknown> = {}): any => ({
+    id: 'c9', workspaceId: 'ws', kind: 'public', name: 'design', slug: 'design', topic: null, lastSeq: 0, lastMessageAt: null,
+    archivedAt: null, createdAt: '2026-09-29T10:00:00.000Z', joined: true, starred: false, muted: false, notifyLevel: 'default',
+    lastReadSeq: 0, canPost: true, canReply: true, canManage: true, canDelete: true, systemManaged: false, members: [], ...overrides,
+  })
+  const reset = () => {
+    deletes.length = 0
+    updates.length = 0
+    deleteError = null
+  }
+
+  test('only deletes once the channel name is typed, then leaves the channel', async () => {
+    reset()
+    const onDeleted = mock(() => {})
+    const onChanged = mock(() => {})
+    render(<ConversationHeader conversation={channel()} mentionables={null} me="u-me" onChanged={onChanged} onLeft={() => {}} onDeleted={onDeleted} />)
+    fireEvent.click(screen.getByLabelText('Delete channel'))
+    expect(screen.getByText('Delete #design?')).toBeTruthy()
+
+    const confirm = screen.getByLabelText('Delete permanently')
+    expect(confirm.hasAttribute('disabled')).toBe(true)
+    await act(async () => {
+      fireEvent.click(confirm)
+    })
+    expect(deletes).toEqual([])
+
+    fireEvent.change(screen.getByLabelText('Channel name to confirm'), { target: { value: 'desig' } })
+    expect(screen.getByLabelText('Delete permanently').hasAttribute('disabled')).toBe(true)
+    fireEvent.change(screen.getByLabelText('Channel name to confirm'), { target: { value: ' #Design ' } })
+    expect(screen.getByLabelText('Delete permanently').hasAttribute('disabled')).toBe(false)
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText('Delete permanently'))
+    })
+    expect(deletes).toEqual(['c9'])
+    expect(onDeleted).toHaveBeenCalled()
+    expect(onChanged).not.toHaveBeenCalled()
+  })
+
+  test('offers archiving instead', async () => {
+    reset()
+    const onChanged = mock(() => {})
+    render(<ConversationHeader conversation={channel()} mentionables={null} me="u-me" onChanged={onChanged} onLeft={() => {}} />)
+    fireEvent.click(screen.getByLabelText('Delete channel'))
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText('Archive instead'))
+    })
+    expect(updates).toEqual([{ id: 'c9', patch: { archived: true } }])
+    expect(deletes).toEqual([])
+    expect(onChanged).toHaveBeenCalled()
+  })
+
+  test('keeps the dialog open and shows why when the server refuses', async () => {
+    reset()
+    deleteError = 'Only channel owners and workspace admins can do that'
+    render(<ConversationHeader conversation={channel()} mentionables={null} me="u-me" onChanged={() => {}} onLeft={() => {}} />)
+    fireEvent.click(screen.getByLabelText('Delete channel'))
+    fireEvent.change(screen.getByLabelText('Channel name to confirm'), { target: { value: 'design' } })
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText('Delete permanently'))
+    })
+    expect(screen.getByText('Only channel owners and workspace admins can do that')).toBeTruthy()
+    expect(screen.getByText('Delete #design?')).toBeTruthy()
+  })
+
+  test('explains instead of deleting a channel an agent system declares', () => {
+    reset()
+    render(<ConversationHeader conversation={channel({ canDelete: false, systemManaged: true })} mentionables={null} me="u-me" onChanged={() => {}} onLeft={() => {}} />)
+    fireEvent.click(screen.getByLabelText('Delete channel'))
+    expect(screen.getByText(/Remove it from teamChannels there and run system_apply/)).toBeTruthy()
+    expect(screen.queryByLabelText('Delete permanently')).toBeNull()
+    expect(screen.queryByLabelText('Channel name to confirm')).toBeNull()
+  })
+
+  test('is not offered to people who cannot delete it, or by older servers', () => {
+    reset()
+    render(<ConversationHeader conversation={channel({ canManage: false, canDelete: false })} mentionables={null} me="u-me" onChanged={() => {}} onLeft={() => {}} />)
+    expect(screen.queryByLabelText('Delete channel')).toBeNull()
+    cleanup()
+    render(<ConversationHeader conversation={channel({ canDelete: undefined, systemManaged: undefined })} mentionables={null} me="u-me" onChanged={() => {}} onLeft={() => {}} />)
+    expect(screen.queryByLabelText('Delete channel')).toBeNull()
   })
 })
 

@@ -29,6 +29,7 @@ import {
   agentDisplayName,
   addUserMembers,
   createChannel,
+  deleteConversation,
   deleteMessage,
   editMessage,
   getConversationForUser,
@@ -69,7 +70,7 @@ import { liveActivityApprovalAnswered } from '../services/approval-live-activity
 import { loadWorkLog } from '../services/agent-work-log'
 import { chainForAgentPost, rootChain, setThreadOwner } from '../services/conversation-agent-chain'
 import { loadAgentCard, loadTeamDirectory, resolveFriendlyMentions, setAgentBuddyLook } from '../services/conversation-directory'
-import { listTeamChannels, TeamChannelError, upsertTeamChannel } from '../services/conversation-team-channels'
+import { listTeamChannels, syncTeamChannelOwnership, TeamChannelError, upsertTeamChannel } from '../services/conversation-team-channels'
 import { getPresence } from '../services/conversation-presence'
 import { getChannelMetrics } from '../services/conversation-metrics'
 import { searchMessages } from '../services/conversation-search'
@@ -462,6 +463,17 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
         kind: body.kind === 'public' || body.kind === 'private' ? body.kind : undefined,
       })
       return c.json({ conversation: serializeConversation(updated) })
+    } catch (err) {
+      return errorResponse(c, err)
+    }
+  })
+
+  router.delete('/conversations/:conversationId', async (c) => {
+    const userId = await requireUser(c)
+    if (userId instanceof Response) return userId
+    try {
+      await deleteConversation(c.req.param('conversationId'), userId)
+      return c.json({ ok: true })
     } catch (err) {
       return errorResponse(c, err)
     }
@@ -996,17 +1008,37 @@ export function agentChannelRoutes(routeConfig: AgentChannelRoutesConfig): Hono 
     return c.json(await listTeamChannels(auth.workspaceId))
   })
 
+  /**
+   * The project whose manifest a team-channel write comes from (`system`,
+   * sent by `system_apply`). Runtimes that predate it send none, and their
+   * channels stay unmarked rather than marked under a key nothing releases.
+   */
+  const systemKey = (raw: unknown) => (typeof raw === 'string' && raw.trim() ? raw.trim().slice(0, 200) : undefined)
+
   router.put(`${base}/team-channels/:name`, async (c) => {
     const auth = await config.authorize(c)
     if (auth instanceof Response) return auth
     const body = await readJson(c)
     try {
-      const result = await upsertTeamChannel(auth.workspaceId, { ...body, name: c.req.param('name') })
+      const result = await upsertTeamChannel(auth.workspaceId, { ...body, name: c.req.param('name') }, systemKey(body.system))
       return c.json(result, result.created ? 201 : 200)
     } catch (err) {
       if (err instanceof TeamChannelError) return c.json({ error: { code: err.code, message: err.message } }, err.status)
       return errorResponse(c, err)
     }
+  })
+
+  /** `system_apply` sends every channel its manifest declares: those are protected, the rest it had declared are released. */
+  router.post(`${base}/team-channels/ownership`, async (c) => {
+    const auth = await config.authorize(c)
+    if (auth instanceof Response) return auth
+    const body = await readJson(c)
+    const system = systemKey(body.system)
+    const declared = Array.isArray(body.declared) ? body.declared.filter((n: unknown): n is string => typeof n === 'string') : null
+    if (!system || !declared) {
+      return c.json({ error: { code: 'invalid', message: 'system and a declared list of channel names are required' } }, 400)
+    }
+    return c.json(await syncTeamChannelOwnership(auth.workspaceId, system, declared))
   })
 
   /** Chain for an agent's tool post: joins the reply it's running in, and inherits the thread's run id. */

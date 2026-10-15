@@ -29,6 +29,7 @@ const api = {
   call: { ok: true, status: 200, data: { status: 'completed', reply: 'done', sessionId: 'run:abc' } } as any,
   teamChannels: { ok: true, status: 200, data: { channels: [], groups: {} } } as any,
   upsertChannel: { ok: true, status: 201, data: { created: true, changes: ['created'], channel: { id: 'conv-1', name: 'ops' } } } as any,
+  ownership: { ok: true, status: 200, data: { claimed: [], released: [] } } as any,
 }
 
 mock.module('../internal-api', () => ({
@@ -69,6 +70,10 @@ mock.module('../internal-api', () => ({
   upsertTeamChannel: (workspaceId: string, name: string, input: any) => {
     calls.push({ fn: 'upsertTeamChannel', args: [workspaceId, name, input] })
     return api.upsertChannel
+  },
+  syncTeamChannelOwnership: (workspaceId: string, system: string, declared: string[]) => {
+    calls.push({ fn: 'syncTeamChannelOwnership', args: [workspaceId, system, declared] })
+    return api.ownership
   },
 }))
 
@@ -124,6 +129,7 @@ beforeEach(() => {
   api.call = { ok: true, status: 200, data: { status: 'completed', reply: 'done', sessionId: 'run:abc' } }
   api.teamChannels = { ok: true, status: 200, data: { channels: [], groups: {} } }
   api.upsertChannel = { ok: true, status: 201, data: { created: true, changes: ['created'], channel: { id: 'conv-1', name: 'ops' } } }
+  api.ownership = { ok: true, status: 200, data: { claimed: [], released: [] } }
 })
 
 // ─── project_list ─────────────────────────────────────────────────────────
@@ -608,8 +614,43 @@ projects:
       removeAgentProjectIds: [],
       userEmails: ['lead@example.com'],
       groupHandles: [],
+      system: 'caller-1',
     }])
     expect(calls.findIndex((c) => c.fn === 'createProject')).toBeLessThan(calls.findIndex((c) => c.fn === 'upsertTeamChannel'))
+  })
+
+  test('protects every declared channel and releases the ones the manifest dropped', async () => {
+    api.ownership = { ok: true, status: 200, data: { claimed: ['ops'], released: ['old-standup'] } }
+    const manifest = `${MANIFEST_YAML}teamChannels:
+  - name: ops
+  - name: '#support'
+`
+    const ctx = baseCtx()
+    await run(createSystemApplyTool(ctx), { manifest, dryRun: true })
+    expect(calls.find((c) => c.fn === 'syncTeamChannelOwnership')).toBeUndefined()
+
+    const out = await run(createSystemApplyTool(ctx), { manifest })
+    expect(out.ok).toBe(true)
+    const sync = calls.find((c) => c.fn === 'syncTeamChannelOwnership')!
+    expect(sync.args[0]).toBe('ws-1')
+    expect(sync.args[1]).toBe('caller-1')
+    expect(sync.args[2]).toHaveLength(2)
+    expect(out.applied).toContain('release channel #old-standup')
+    expect(out.applied.some((l: string) => l.includes('#ops') && l.startsWith('release'))).toBe(false)
+  })
+
+  test('a manifest with no channels left releases everything it had declared', async () => {
+    api.ownership = { ok: true, status: 200, data: { claimed: [], released: ['ops'] } }
+    const out = await run(createSystemApplyTool(baseCtx()), { manifest: MANIFEST_YAML })
+    expect(calls.find((c) => c.fn === 'syncTeamChannelOwnership')!.args).toEqual(['ws-1', 'caller-1', []])
+    expect(out.applied).toContain('release channel #ops')
+  })
+
+  test('an API without the ownership endpoint does not fail the apply', async () => {
+    api.ownership = { ok: false, status: 404, error: 'Not found' }
+    const out = await run(createSystemApplyTool(baseCtx()), { manifest: MANIFEST_YAML })
+    expect(out.ok).toBe(true)
+    expect(out.skipped.join('\n')).toContain('channel ownership: Not found')
   })
 
   test('reports channels as manual steps when team chat is unreachable', async () => {

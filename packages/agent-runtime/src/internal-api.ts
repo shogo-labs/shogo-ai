@@ -1228,12 +1228,33 @@ export async function upsertTeamChannel(
     removeAgentProjectIds?: string[]
     userEmails?: string[]
     groupHandles?: string[]
+    /** Project whose manifest declares the channel; it stays undeletable while declared. */
+    system?: string
   },
 ): Promise<CheckpointCallResult<{ created: boolean; changes: string[]; channel: { id: string; name: string } }>> {
   return personalFetch(channelsPath(workspaceId, `/team-channels/${encodeURIComponent(name)}`), {
     method: 'PUT',
     body: JSON.stringify(input),
     parse: (j) => ({ created: !!j?.created, changes: j?.changes ?? [], channel: j?.channel }),
+  })
+}
+
+/**
+ * Tell the server every channel `system`'s manifest declares. Those can't be
+ * deleted by people; channels it declared before but no longer does can be.
+ */
+export async function syncTeamChannelOwnership(
+  workspaceId: string,
+  system: string,
+  declared: string[],
+): Promise<CheckpointCallResult<{ claimed: string[]; released: string[] }>> {
+  return personalFetch(channelsPath(workspaceId, '/team-channels/ownership'), {
+    method: 'POST',
+    body: JSON.stringify({ system, declared }),
+    parse: (j) => ({
+      claimed: Array.isArray(j?.claimed) ? j.claimed : [],
+      released: Array.isArray(j?.released) ? j.released : [],
+    }),
   })
 }
 

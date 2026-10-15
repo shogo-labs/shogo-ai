@@ -137,6 +137,9 @@ export default function ConversationScreen() {
 
   useTeamChatEvents(workspaceId, (event) => {
     if (!conversationId) return
+    if (event.type === 'conversation.deleted' && event.conversationId === conversationId) {
+      return setError('This channel was deleted.')
+    }
     if (event.type === 'ready') return void load()
     if (
       (event.type === 'conversation.updated' || event.type === 'member.joined' || event.type === 'member.left') &&
@@ -255,6 +258,7 @@ export default function ConversationScreen() {
       me={me}
       onChanged={onChanged}
       onLeft={() => router.replace('/(app)/c' as any)}
+      onDeleted={() => router.replace('/(app)/c' as any)}
       floating={floating}
       onBack={goBack}
       onOpenProjectPane={openProjectPaneCb}

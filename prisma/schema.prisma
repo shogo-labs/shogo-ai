@@ -4147,6 +4147,10 @@ model Conversation {
   provider      String           @default("shogo")
   /// Channel / conversation / space id on the external provider.
   externalId    String?
+  /// Project whose agent system declares this channel (`teamChannels` in its
+  /// shogo-system.yaml). Such a channel can't be deleted — `system_apply` would
+  /// recreate it — until the manifest drops it and the next apply clears this.
+  systemManagedBy String?
   createdAt     DateTime         @default(now())
   updatedAt     DateTime         @updatedAt
 

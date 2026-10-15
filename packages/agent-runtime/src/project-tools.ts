@@ -49,6 +49,7 @@ import {
   hasInternalApiCredentials,
   listTeamChannels,
   projectScopedId,
+  syncTeamChannelOwnership,
   upsertTeamChannel,
   type ProjectGraphNode,
 } from './internal-api'
@@ -858,10 +859,17 @@ export function createSystemApplyTool(ctx: ToolContext): AgentTool {
           removeAgentProjectIds: op.removeAgents.map((r) => r.projectId),
           userEmails: op.userEmails,
           groupHandles: op.groupHandles,
+          system: ctx.projectId,
         })
         if (!res.ok) report.errors.push(`channel #${op.name}: ${res.error ?? 'failed'}${res.code ? ` (${res.code})` : ''}`)
         else report.applied.push(`${res.data?.created ? 'create' : 'update'} channel #${op.name}`)
       }
+      // Declared channels can't be deleted out from under the system; ones this
+      // manifest no longer declares can be again. Protection is bookkeeping, so
+      // only releases are reported. Not fatal: an older API lacks the endpoint.
+      const ownership = await syncTeamChannelOwnership(workspaceId, ctx.projectId, manifest.teamChannels.map((ch) => ch.name))
+      if (!ownership.ok) report.skipped.push(`channel ownership: ${ownership.error ?? 'failed'}`)
+      else for (const name of ownership.data?.released ?? []) report.applied.push(`release channel #${name}`)
 
       // 6. Lock.
       const finalBindings: Record<string, string> = {}

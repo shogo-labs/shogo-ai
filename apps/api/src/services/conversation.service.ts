@@ -10,6 +10,7 @@
 import { prisma } from '../lib/prisma'
 import { accessibleProjectsWhere, loadAccess as loadAuthzAccess } from '../lib/authz'
 import { publishConversationEvent } from '../lib/conversation-bus'
+import { deleteConversationFile } from '../lib/conversation-files'
 import { flattenMarkdownBlocks, parseMentions, renderMentionsAsText, type AgentTarget, type ParsedMention } from './conversation-mentions'
 import { assertNativeChat } from './chat-mode'
 import type { AgentChain } from './conversation-agent-chain'
@@ -572,6 +573,8 @@ export async function getConversationForUser(conversationId: string, userId: str
     canPost: canPost(access),
     canReply: canPost(access, { threadReply: true }),
     canManage: canManage(access),
+    canDelete: deleteBlocker(access) === null,
+    systemManaged: !!access.conversation.systemManagedBy,
     members,
   })
 }
@@ -715,6 +718,75 @@ export async function leaveConversation(conversationId: string, userId: string) 
   const audience = await conversationAudience(access.conversation)
   await db.conversationMember.delete({ where: { id: access.membership.id } })
   publishConversationEvent(access.conversation.workspaceId, { type: 'member.left', conversationId, userId }, audience)
+}
+
+/**
+ * Why `access` can't delete this conversation, or null when it can. Only
+ * channels; #general is permanent; a mirrored channel belongs to its provider;
+ * and a channel an agent system declares would come back on its next apply.
+ */
+export function deleteBlocker(access: ConversationAccess): ConversationError | null {
+  const conv = access.conversation
+  if (conv.kind !== 'public' && conv.kind !== 'private') return new ConversationError(400, 'invalid', 'Only channels can be deleted')
+  if (conv.slug === DEFAULT_CHANNEL_SLUG) return new ConversationError(400, 'invalid', '#general cannot be deleted')
+  if (conv.provider && conv.provider !== 'shogo') {
+    return new ConversationError(400, 'invalid', 'This channel mirrors another chat app; delete it there')
+  }
+  if (!canManage(access)) return new ConversationError(403, 'forbidden', 'Only channel owners and workspace admins can do that')
+  if (conv.systemManagedBy) {
+    return new ConversationError(
+      409,
+      'system_managed',
+      `#${conv.name} is declared by an agent system. Remove it from teamChannels in shogo-system.yaml and run system_apply, then delete it.`,
+      { managedBy: conv.systemManagedBy },
+    )
+  }
+  return null
+}
+
+async function systemManagedError(conv: any): Promise<ConversationError> {
+  const managedBy: string = conv.systemManagedBy
+  const project = await db.project.findUnique({ where: { id: managedBy }, select: { name: true } }).catch(() => null)
+  const owner = project ? `the agent system in "${project.name}"` : 'an agent system'
+  return new ConversationError(
+    409,
+    'system_managed',
+    `#${conv.name} is declared by ${owner}. Remove it from teamChannels in that shogo-system.yaml and run system_apply, then delete it.`,
+    { managedBy, projectName: project?.name ?? null },
+  )
+}
+
+/**
+ * Permanently delete a channel and everything in it: messages, threads,
+ * files, pins, drafts, scheduled posts, huddles and its doc all cascade.
+ * References without a foreign key go in the same transaction — schedules,
+ * triggers and tasks that posted results here stop posting instead of failing,
+ * and the channel's reminders and inbox items are removed. Stored file bytes
+ * are deleted afterwards, best effort.
+ */
+export async function deleteConversation(conversationId: string, userId: string): Promise<void> {
+  const access = await loadAccess(conversationId, userId)
+  const blocker = deleteBlocker(access)
+  if (blocker?.code === 'system_managed') throw await systemManagedError(access.conversation)
+  if (blocker) throw blocker
+  const conv = access.conversation
+  const audience = await conversationAudience(conv)
+  const files = await db.conversationAttachment.findMany({ where: { conversationId }, select: { storageKey: true } })
+  const unlinkNotify = { notifyConversationId: null, notifyThreadRootId: null }
+  await db.$transaction([
+    db.agentSchedule.updateMany({ where: { notifyConversationId: conversationId }, data: unlinkNotify }),
+    db.eventSubscription.updateMany({ where: { notifyConversationId: conversationId }, data: unlinkNotify }),
+    db.agentTask.updateMany({ where: { notifyConversationId: conversationId }, data: { notifyConversationId: null } }),
+    db.integrationCredentialApproval.updateMany({ where: { conversationId }, data: { conversationId: null, messageId: null } }),
+    db.chatReminder.deleteMany({ where: { conversationId } }),
+    db.chatInboxItem.deleteMany({ where: { conversationId } }),
+    db.conversation.delete({ where: { id: conversationId } }),
+  ])
+  console.info(`[conversations] user ${userId} deleted #${conv.name} (${conversationId}) in workspace ${conv.workspaceId}`)
+  publishConversationEvent(conv.workspaceId, { type: 'conversation.deleted', conversationId }, audience)
+  const results = await Promise.allSettled(files.map((f: { storageKey: string }) => deleteConversationFile(f.storageKey)))
+  const failed = results.filter((r) => r.status === 'rejected').length
+  if (failed) console.warn(`[conversations] ${failed} of ${files.length} stored file(s) of deleted ${conversationId} could not be removed`)
 }
 
 export async function addUserMembers(conversationId: string, actorId: string, userIds: string[]) {
