@@ -48,7 +48,7 @@ import {
   MetalPlacementRegistry,
   _setMetalPlacementRegistry,
 } from '../metal-placement-registry'
-import { MetalWarmPoolController } from '../metal-warm-pool-controller'
+import { MetalWarmPoolController, _setAgentRestartRetry } from '../metal-warm-pool-controller'
 import { metalRoutes } from '../../routes/metal'
 
 // --- deterministic PRNG -------------------------------------------------------
@@ -426,8 +426,11 @@ beforeAll(() => {
   process.env.METAL_REGISTER_TOKEN = TOKEN
   // The controller logs every failed/kept assign; thousands of simulated events drown the output.
   console.warn = () => {}
+  // A down agent here stays down: retrying it as a restart only adds wall time.
+  _setAgentRestartRetry({ shortMs: 0, longMs: 0 })
 })
 afterAll(() => {
+  _setAgentRestartRetry(null)
   console.warn = origWarn
   if (origToken === undefined) delete process.env.METAL_REGISTER_TOKEN
   else process.env.METAL_REGISTER_TOKEN = origToken

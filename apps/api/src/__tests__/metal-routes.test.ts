@@ -127,3 +127,60 @@ describe('metalRoutes', () => {
     expect(((await after.json()) as any).hosts.detail[0].load.taps).toBeUndefined()
   })
 })
+
+describe('metalRoutes switch-over', () => {
+  const orig = process.env.METAL_REGISTER_TOKEN
+  let store: InstanceType<typeof import('../lib/metal-rewarm').MemoryRewarmStore>
+  beforeEach(async () => {
+    process.env.METAL_REGISTER_TOKEN = 'secret-tok'
+    _setMetalWarmPoolController(new MetalWarmPoolController(async () => ({}), (async () => new Response()) as any))
+    const { MemoryRewarmStore, _setRewarmStore } = await import('../lib/metal-rewarm')
+    store = new MemoryRewarmStore()
+    _setRewarmStore(store)
+  })
+  afterEach(async () => {
+    if (orig === undefined) delete process.env.METAL_REGISTER_TOKEN
+    else process.env.METAL_REGISTER_TOKEN = orig
+    _setMetalWarmPoolController(null)
+    ;(await import('../lib/metal-rewarm'))._setRewarmStore(null)
+  })
+
+  const staged = (version: string) => ({ version, identities: { standard: `sz1-mt-${version}` }, stagedAt: 1 })
+
+  it('records the staged rootfs and restart flag, and tells a host to activate only its own staged version', async () => {
+    const first = (await (
+      await req('/register', { method: 'POST', body: { ...REG, stagedRootfs: staged('v2'), restarting: true }, token: 'secret-tok' })
+    ).json()) as any
+    expect(first.activateRootfs).toBeUndefined()
+
+    const { getMetalWarmPoolController } = await import('../lib/metal-warm-pool-controller')
+    const host = (await getMetalWarmPoolController().getFleetStatus()).hosts.find((h) => h.hostId === 'ash-1')!
+    expect(host.stagedRootfs).toMatchObject({ version: 'v2', identities: { standard: 'sz1-mt-v2' } })
+    expect(host.restarting).toBe(true)
+
+    await store.set('activate:us', 'v2')
+    const now = (await (
+      await req('/register', { method: 'POST', body: { ...REG, stagedRootfs: staged('v2') }, token: 'secret-tok' })
+    ).json()) as any
+    expect(now.activateRootfs).toBe('v2')
+
+    const other = (await (
+      await req('/register', { method: 'POST', body: { ...REG, stagedRootfs: staged('v3') }, token: 'secret-tok' })
+    ).json()) as any
+    expect(other.activateRootfs).toBeUndefined()
+  })
+
+  it('queues a refresh for a VM retired off a superseded rootfs', async () => {
+    const { getRefreshStatus } = await import('../lib/metal-rewarm')
+    await req('/placement', { method: 'POST', body: { hostId: 'ash-1', projectId: 'ws:proj:p1', event: 'cold' }, token: 'secret-tok' })
+    expect((await getRefreshStatus(store)).queued).toBe(0)
+
+    const res = await req('/placement', {
+      method: 'POST',
+      body: { hostId: 'ash-1', projectId: 'ws:proj:p1', event: 'cold', refresh: 'stale-rootfs' },
+      token: 'secret-tok',
+    })
+    expect(res.status).toBe(200)
+    expect((await getRefreshStatus(store)).queued).toBe(1)
+  })
+})

@@ -6152,8 +6152,17 @@ app.post('/api/admin/metal/rewarm', async (c) => {
 
 app.get('/api/admin/metal/rewarm', async (c) => {
   try {
-    const { getRewarmStatus } = await import('./lib/metal-rewarm')
-    return c.json({ ok: true, data: await getRewarmStatus() })
+    const { getRewarmStatus, getSwitchoverStatus, getRefreshStatus } = await import('./lib/metal-rewarm')
+    const { getMetalWarmPoolController } = await import('./lib/metal-warm-pool-controller')
+    const hosts = (await getMetalWarmPoolController().getFleetStatus().catch(() => null))?.hosts ?? []
+    const regions = [...new Set(hosts.map((h) => h.region))]
+    return c.json({
+      ok: true,
+      data: await getRewarmStatus(),
+      switchover: await getSwitchoverStatus(undefined, regions),
+      refresh: await getRefreshStatus(),
+      staged: hosts.map((h) => ({ hostId: h.hostId, region: h.region, rootfsSha: h.rootfsSha, stagedRootfs: h.stagedRootfs ?? null, restarting: h.restarting ?? false })),
+    })
   } catch (err: any) {
     return c.json({ ok: false, error: err?.message ?? 'unavailable' }, 500)
   }

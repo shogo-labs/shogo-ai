@@ -17,7 +17,8 @@
 
 import { Hono } from 'hono'
 import { resolveDesiredForHost, setFleetChannelRelease, type AgentRelease } from '../lib/metal-agent-release'
-import { getMetalPlacementRegistry } from '../lib/metal-placement-registry'
+import { getMetalPlacementRegistry, type StagedRootfsReport } from '../lib/metal-placement-registry'
+import { activateRootfsFor, enqueueRefresh } from '../lib/metal-rewarm'
 import {
   registerMetalHost,
   getMetalWarmPoolController,
@@ -39,6 +40,20 @@ function parseHostIdle(raw: any): MetalHostRegistration['idle'] {
     idleMs: Number(raw.idleMs ?? 0),
     reason: String(raw.reason ?? 'unknown'),
     directiveTier: parseTier(raw.directiveTier),
+  }
+}
+
+function parseStagedRootfs(raw: any): StagedRootfsReport | undefined {
+  if (!raw || typeof raw !== 'object' || !raw.version || !raw.identities?.standard) return undefined
+  return {
+    version: String(raw.version),
+    identities: {
+      standard: String(raw.identities.standard),
+      ...(raw.identities.docker ? { docker: String(raw.identities.docker) } : {}),
+    },
+    stagedAt: raw.stagedAt != null ? Number(raw.stagedAt) : undefined,
+    prewarm: raw.prewarm != null ? Boolean(raw.prewarm) : undefined,
+    stagedSnapshots: raw.stagedSnapshots != null ? Number(raw.stagedSnapshots) : undefined,
   }
 }
 
@@ -135,6 +150,8 @@ export function metalRoutes(): Hono {
         : undefined,
       metrics: body.metrics && typeof body.metrics === 'object' ? body.metrics : undefined,
       idle: parseHostIdle(body.idle),
+      stagedRootfs: parseStagedRootfs(body.stagedRootfs),
+      restarting: body.restarting === true ? true : undefined,
     })
 
     // Idle-suspend window for this host, from its region's utilization. Absent on
@@ -158,7 +175,16 @@ export function metalRoutes(): Hono {
       console.warn(`[metal] resolveDesiredForHost failed for ${body.hostId}:`, (err as any)?.message ?? err)
     }
 
-    return c.json({ ok: true, desired, idleSuspend })
+    // Switch-over: once the region's pre-warm finishes, a host holding that
+    // staged rootfs is told to activate it.
+    let activateRootfs: string | undefined
+    try {
+      activateRootfs = await activateRootfsFor(String(body.region ?? 'unknown'), parseStagedRootfs(body.stagedRootfs)?.version)
+    } catch (err) {
+      console.warn(`[metal] activateRootfsFor failed for ${body.hostId}:`, (err as any)?.message ?? err)
+    }
+
+    return c.json({ ok: true, desired, idleSuspend, ...(activateRootfs ? { activateRootfs } : {}) })
   })
 
   // POST /api/internal/metal/release — publish a node-agent release to a
@@ -195,7 +221,7 @@ export function metalRoutes(): Hono {
     if (!authOk(c.req.header('authorization'))) {
       return c.json({ ok: false, error: 'unauthorized' }, 401)
     }
-    let body: { hostId?: string; projectId?: string; event?: string }
+    let body: { hostId?: string; projectId?: string; event?: string; refresh?: string }
     try {
       body = await c.req.json()
     } catch {
@@ -218,6 +244,13 @@ export function metalRoutes(): Hono {
       await registry
         .clearPlacement(String(body.projectId), body.hostId ? String(body.hostId) : undefined)
         .catch(() => {})
+      // A VM retired off a superseded rootfs: re-warm it on the current one.
+      if (body.refresh === 'stale-rootfs' && String(body.projectId).startsWith('ws:')) {
+        await enqueueRefresh(String(body.projectId), {
+          hostId: body.hostId ? String(body.hostId) : undefined,
+          reason: 'stale-rootfs',
+        }).catch((err) => console.warn(`[metal/placement] enqueueRefresh ${body.projectId} failed:`, err?.message ?? err))
+      }
     }
     return c.json({ ok: true })
   })

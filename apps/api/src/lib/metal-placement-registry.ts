@@ -57,7 +57,24 @@ export interface HostScalars {
   }
   /** NVMe cache scalars from the heartbeat (Phase 5). */
   disk?: { totalBytes: number; freeBytes: number; usedPct: number; cacheBytes: number; localCount: number }
+  /** A rebuilt rootfs built beside the live one, waiting for activation. Drives the switch-over pre-warm. */
+  stagedRootfs?: StagedRootfsReport
+  /** The host's last heartbeat came from an agent about to restart (control port briefly down). */
+  restarting?: boolean
   lastSeenAt: number
+}
+
+/** A host's staged rootfs, as reported in its heartbeat (metal-agent self-update.ts). */
+export interface StagedRootfsReport {
+  /** Release the staged image was built for. */
+  version: string
+  /** Rootfs identity of each staged image; equal to the host's identity after activation. */
+  identities: { standard: string; docker?: string }
+  stagedAt?: number
+  /** False when the host can't boot on the staged image: activate without a pre-warm. */
+  prewarm?: boolean
+  /** Pre-warmed snapshots the host holds on the staged image. */
+  stagedSnapshots?: number
 }
 
 export interface Placement {

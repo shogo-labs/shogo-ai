@@ -85,6 +85,12 @@ export interface ResolveWorkspaceRuntimeOpts {
    * recorded as an open and does not enter the keep-warm MRU.
    */
   background?: boolean
+  /**
+   * Metal only: boot on the host's STAGED rootfs (switch-over pre-warm, see
+   * metal-rewarm.ts). The host keeps the project's current snapshot; this
+   * boot's suspend lands in its staged slot. Implies `background`.
+   */
+  rootfs?: 'staged'
 
   /** @deprecated Workspace runtimes are always enabled. */
   _isEnabled?: () => boolean
@@ -109,7 +115,7 @@ export interface ResolveWorkspaceRuntimeOpts {
   _metalResolver?: (
     workspaceId: string,
     attachedProjectIds: string[],
-    opts?: { anchorProjectId?: string; readonlyProjectIds?: string[] },
+    opts?: { anchorProjectId?: string; readonlyProjectIds?: string[]; rootfs?: 'staged' },
   ) => Promise<string>
   _hostStart?: (
     workspaceId: string,
@@ -264,7 +270,7 @@ export async function resolveWorkspaceRuntimeUrl(
       (async (
         id: string,
         ids: string[],
-        resolverOpts?: { anchorProjectId?: string; readonlyProjectIds?: string[] },
+        resolverOpts?: { anchorProjectId?: string; readonlyProjectIds?: string[]; rootfs?: 'staged' },
       ) => {
         const { getMetalWarmPoolController } = await import('./metal-warm-pool-controller')
         return getMetalWarmPoolController().getMetalWorkspaceUrl(id, ids, resolverOpts)
@@ -279,9 +285,10 @@ export async function resolveWorkspaceRuntimeUrl(
       return resolver(workspaceId, metalMembers, {
         anchorProjectId: opts.anchorProjectId,
         readonlyProjectIds: [],
+        ...(opts.rootfs ? { rootfs: opts.rootfs } : {}),
       })
     })
-    if (!opts.background) {
+    if (!opts.background && !opts.rootfs) {
       try {
         const { getWorkspaceKeepWarm } = await import('./workspace-keep-warm')
         getWorkspaceKeepWarm().recordOpened(leaseKey, url)
