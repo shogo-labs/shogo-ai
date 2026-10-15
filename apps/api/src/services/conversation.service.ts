@@ -11,7 +11,7 @@ import { prisma } from '../lib/prisma'
 import { accessibleProjectsWhere, loadAccess as loadAuthzAccess } from '../lib/authz'
 import { publishConversationEvent } from '../lib/conversation-bus'
 import { deleteConversationFile } from '../lib/conversation-files'
-import { flattenMarkdownBlocks, parseMentions, renderMentionsAsText, type AgentTarget, type ParsedMention } from './conversation-mentions'
+import { flattenMarkdownBlocks, loadNamesForTexts, parseMentions, renderMentionsAsText, type AgentTarget, type ParsedMention } from './conversation-mentions'
 import { assertNativeChat } from './chat-mode'
 import type { AgentChain } from './conversation-agent-chain'
 import { publicBlocks } from './conversation-message-kind'
@@ -462,7 +462,7 @@ export async function listConversationsForUser(workspaceId: string, userId: stri
   }
   const mentionCounts = await unreadMentionCounts(userId, memberships)
   const unread = await unreadCounts(userId, conversations, membershipByConv)
-  const lastMessages = await lastMessagePreviews(directIds)
+  const lastMessages = await lastMessagePreviews(directIds, workspaceId)
   const docs = await docUpdatedAts(conversations.map((c: any) => c.id))
 
   return conversations.map((c: any) => {
@@ -497,7 +497,7 @@ export interface LastMessage {
  * line. One grouped query finds the newest seq per conversation, one more
  * reads those rows, so cost does not grow with message history.
  */
-export async function lastMessagePreviews(conversationIds: string[]): Promise<Map<string, LastMessage>> {
+export async function lastMessagePreviews(conversationIds: string[], workspaceId: string): Promise<Map<string, LastMessage>> {
   const out = new Map<string, LastMessage>()
   if (!conversationIds.length) return out
   const latest = await db.conversationMessage.groupBy({
@@ -510,8 +510,12 @@ export async function lastMessagePreviews(conversationIds: string[]): Promise<Ma
     where: { OR: latest.map((l: any) => ({ conversationId: l.conversationId, seq: l._max.seq })), deletedAt: null },
     select: { conversationId: true, text: true, authorUserId: true, authorType: true, createdAt: true },
   })
+  const names = {
+    ...(await loadNamesForTexts(db, workspaceId, rows.map((r: any) => r.text ?? ''))),
+    workspaceAgentName: await agentDisplayName(workspaceId, null),
+  }
   for (const row of rows as any[]) {
-    const preview = flattenMarkdownBlocks(renderMentionsAsText(row.text ?? '')).slice(0, LAST_MESSAGE_PREVIEW_CHARS)
+    const preview = flattenMarkdownBlocks(renderMentionsAsText(row.text ?? '', names)).slice(0, LAST_MESSAGE_PREVIEW_CHARS)
     out.set(row.conversationId, { preview, authorId: row.authorUserId ?? null, authorType: row.authorType, createdAt: row.createdAt })
   }
   return out

@@ -15,8 +15,7 @@ import { homeRegionWorkspaceWhere } from '../lib/region'
 import { finishAgentReply, startAgentReply, streamAgentReply } from './chat-providers/outbound'
 import {
   agentKey,
-  collectMentionIds,
-  groupNames,
+  loadNamesForTexts,
   mentionedAgents,
   renderMentionsAsText,
   type AgentTarget,
@@ -450,20 +449,11 @@ async function createSession(conversation: any, target: AgentTarget, label: stri
  */
 /** Display names for every mention token in `texts`. */
 export async function loadMentionNames(workspaceId: string, texts: string[]): Promise<MentionNames> {
-  const ids = collectMentionIds(texts)
-  const [users, projects, conversations, workspaceAgentName] = await Promise.all([
-    ids.userIds.length ? db.user.findMany({ where: { id: { in: ids.userIds } }, select: { id: true, name: true, email: true } }) : [],
-    ids.projectIds.length ? db.project.findMany({ where: { id: { in: ids.projectIds } }, select: { id: true, name: true } }) : [],
-    ids.conversationIds.length ? db.conversation.findMany({ where: { id: { in: ids.conversationIds } }, select: { id: true, name: true } }) : [],
+  const [names, workspaceAgentName] = await Promise.all([
+    loadNamesForTexts(db, workspaceId, texts),
     agentName(workspaceId, { projectId: null }),
   ])
-  return {
-    users: new Map<string, string>(users.map((u: any) => [u.id, u.name || u.email])),
-    projects: new Map<string, string>(projects.map((p: any) => [p.id, p.name])),
-    conversations: new Map<string, string>(conversations.map((c: any) => [c.id, c.name ?? 'channel'])),
-    groups: await groupNames(db, workspaceId, ids.groupIds),
-    workspaceAgentName,
-  }
+  return { ...names, workspaceAgentName }
 }
 
 export async function renderTranscript(workspaceId: string, history: any[], markMessageId?: string): Promise<string> {

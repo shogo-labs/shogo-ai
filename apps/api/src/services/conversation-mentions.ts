@@ -208,6 +208,30 @@ export async function groupNames(db: any, workspaceId: string, groupIds: string[
 }
 
 /**
+ * Names for every token in `texts`, in one lookup per kind regardless of how
+ * many texts are passed. Feed the result to `renderMentionsAsText`, or every
+ * token renders as its fallback (`@someone`, `#channel`).
+ *
+ * `workspaceAgentName` is left to the caller: the agent is a workspace setting
+ * rather than an id lookup, and callers already have their own way to read it.
+ */
+export async function loadNamesForTexts(db: any, workspaceId: string, texts: string[]): Promise<MentionNames> {
+  const ids = collectMentionIds(texts)
+  const [users, projects, conversations, groups] = await Promise.all([
+    ids.userIds.length ? db.user.findMany({ where: { id: { in: ids.userIds } }, select: { id: true, name: true, email: true } }) : [],
+    ids.projectIds.length ? db.project.findMany({ where: { id: { in: ids.projectIds } }, select: { id: true, name: true } }) : [],
+    ids.conversationIds.length ? db.conversation.findMany({ where: { id: { in: ids.conversationIds } }, select: { id: true, name: true } }) : [],
+    groupNames(db, workspaceId, ids.groupIds),
+  ])
+  return {
+    users: new Map<string, string>(users.map((u: any) => [u.id, u.name || u.email])),
+    projects: new Map<string, string>(projects.map((p: any) => [p.id, p.name])),
+    conversations: new Map<string, string>(conversations.map((c: any) => [c.id, c.name ?? 'channel'])),
+    groups,
+  }
+}
+
+/**
  * Preview markdown. Mirrors `flattenMarkdownBlocks`, `inlineMarkdownSegments`,
  * and `markdownToPlainText` in `apps/mobile/lib/team-chat-state.ts`. Direct
  * message rows keep inline markers; notifications strip them, because a push

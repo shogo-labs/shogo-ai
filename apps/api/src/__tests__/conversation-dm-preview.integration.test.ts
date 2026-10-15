@@ -14,6 +14,7 @@ const { dir } = setupChannelsTestDb()
 const { prisma } = await import('../lib/prisma')
 const bus = await import('../lib/conversation-bus')
 const service = await import('../services/conversation.service')
+const { agentMentionToken, userMentionToken } = await import('../services/conversation-mentions')
 
 const db = prisma as any
 let seed: SeededWorkspace
@@ -71,5 +72,13 @@ describe('lastMessage on the conversation list', () => {
     const dm = await service.openDirectConversation(seed.workspaceId, seed.member, [seed.viewer])
     const list = await service.listConversationsForUser(seed.workspaceId, seed.member)
     expect(list.find((c: any) => c.id === dm.id)!.lastMessage).toBeUndefined()
+  })
+
+  test('a preview names the people and agents the message tags', async () => {
+    const dm = await service.openDirectConversation(seed.workspaceId, seed.owner, [seed.member])
+    await post(dm.id, seed.owner, `${userMentionToken(seed.viewer)} and ${agentMentionToken(seed.projectId)} please review`)
+
+    const list = await service.listConversationsForUser(seed.workspaceId, seed.owner)
+    expect(list.find((c: any) => c.id === dm.id)!.lastMessage.preview).toBe('@viewer and @Billing Bot please review')
   })
 })
