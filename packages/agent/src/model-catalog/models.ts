@@ -106,6 +106,13 @@ export interface ModelEntry {
   contextWindow?: number
   /** Reasoning effort applied when this model runs (drives `thinkingLevel`). */
   reasoningEffort?: ReasoningEffort
+  /**
+   * Anthropic thinking API shape. `adaptive` models reject the legacy
+   * budget-based `thinking.type: "enabled"` block with a 400. Required on
+   * every Anthropic entry (enforced by thinking.test.ts) so a new model
+   * can't ship without someone deciding it.
+   */
+  thinkingApi?: 'adaptive' | 'budget'
 }
 
 export interface ImageModelEntry {
@@ -125,6 +132,7 @@ export const MODEL_CATALOG = {
     id: 'claude-opus-5-5',
     provider: 'anthropic',
     apiModel: 'claude-opus-5-5',
+    thinkingApi: 'adaptive',
     displayName: 'Claude Opus 5.5',
     shortDisplayName: 'Opus 5.5',
     tier: 'premium',
@@ -142,6 +150,7 @@ export const MODEL_CATALOG = {
     id: 'claude-sonnet-5',
     provider: 'anthropic',
     apiModel: 'claude-sonnet-5',
+    thinkingApi: 'adaptive',
     displayName: 'Claude Sonnet 5',
     shortDisplayName: 'Sonnet 5',
     tier: 'premium',
@@ -156,6 +165,7 @@ export const MODEL_CATALOG = {
     id: 'claude-fable-5-1',
     provider: 'anthropic',
     apiModel: 'claude-fable-5-1',
+    thinkingApi: 'adaptive',
     displayName: 'Claude Fable 5.1',
     shortDisplayName: 'Fable 5.1',
     tier: 'premium',
@@ -170,6 +180,7 @@ export const MODEL_CATALOG = {
     id: 'claude-haiku-5-5',
     provider: 'anthropic',
     apiModel: 'claude-haiku-5-5',
+    thinkingApi: 'adaptive',
     displayName: 'Claude Haiku 5.5',
     shortDisplayName: 'Haiku 5.5',
     tier: 'economy',
@@ -187,6 +198,7 @@ export const MODEL_CATALOG = {
     id: 'claude-haiku-4-5-20251001',
     provider: 'anthropic',
     apiModel: 'claude-haiku-4-5-20251001',
+    thinkingApi: 'budget',
     displayName: 'Claude Haiku 4.5',
     shortDisplayName: 'Haiku 4.5',
     tier: 'economy',
@@ -206,6 +218,7 @@ export const MODEL_CATALOG = {
     id: 'claude-opus-5',
     provider: 'anthropic',
     apiModel: 'claude-opus-5',
+    thinkingApi: 'adaptive',
     displayName: 'Claude Opus 5',
     shortDisplayName: 'Opus 5',
     tier: 'premium',
@@ -224,6 +237,7 @@ export const MODEL_CATALOG = {
     id: 'claude-opus-4-7',
     provider: 'anthropic',
     apiModel: 'claude-opus-4-7',
+    thinkingApi: 'adaptive',
     displayName: 'Claude Opus 4.7',
     shortDisplayName: 'Opus 4.7',
     tier: 'premium',
@@ -237,6 +251,7 @@ export const MODEL_CATALOG = {
     id: 'claude-sonnet-4-6',
     provider: 'anthropic',
     apiModel: 'claude-sonnet-4-6',
+    thinkingApi: 'adaptive',
     displayName: 'Claude Sonnet 4.6',
     shortDisplayName: 'Sonnet 4.6',
     tier: 'standard',
@@ -250,6 +265,7 @@ export const MODEL_CATALOG = {
     id: 'claude-opus-4-6',
     provider: 'anthropic',
     apiModel: 'claude-opus-4-6',
+    thinkingApi: 'adaptive',
     displayName: 'Claude Opus 4.6',
     shortDisplayName: 'Opus 4.6',
     tier: 'premium',
@@ -262,6 +278,7 @@ export const MODEL_CATALOG = {
     id: 'claude-sonnet-4-5-20250929',
     provider: 'anthropic',
     apiModel: 'claude-sonnet-4-5-20250929',
+    thinkingApi: 'budget',
     displayName: 'Claude Sonnet 4.5',
     shortDisplayName: 'Sonnet 4.5',
     tier: 'standard',
@@ -274,6 +291,7 @@ export const MODEL_CATALOG = {
     id: 'claude-opus-4-5-20251101',
     provider: 'anthropic',
     apiModel: 'claude-opus-4-5-20251101',
+    thinkingApi: 'budget',
     displayName: 'Claude Opus 4.5',
     shortDisplayName: 'Opus 4.5',
     tier: 'premium',
@@ -286,6 +304,7 @@ export const MODEL_CATALOG = {
     id: 'claude-opus-4-1-20250805',
     provider: 'anthropic',
     apiModel: 'claude-opus-4-1-20250805',
+    thinkingApi: 'budget',
     displayName: 'Claude Opus 4.1',
     shortDisplayName: 'Opus 4.1',
     tier: 'premium',
@@ -298,6 +317,7 @@ export const MODEL_CATALOG = {
     id: 'claude-sonnet-4-20250514',
     provider: 'anthropic',
     apiModel: 'claude-sonnet-4-20250514',
+    thinkingApi: 'budget',
     displayName: 'Claude Sonnet 4',
     shortDisplayName: 'Sonnet 4',
     tier: 'standard',
@@ -310,6 +330,7 @@ export const MODEL_CATALOG = {
     id: 'claude-3-7-sonnet-20250219',
     provider: 'anthropic',
     apiModel: 'claude-3-7-sonnet-20250219',
+    thinkingApi: 'budget',
     displayName: 'Claude 3.7 Sonnet',
     shortDisplayName: 'Sonnet 3.7',
     tier: 'standard',
@@ -322,6 +343,7 @@ export const MODEL_CATALOG = {
     id: 'claude-opus-4-20250514',
     provider: 'anthropic',
     apiModel: 'claude-opus-4-20250514',
+    thinkingApi: 'budget',
     displayName: 'Claude Opus 4',
     shortDisplayName: 'Opus 4',
     tier: 'premium',
@@ -334,6 +356,7 @@ export const MODEL_CATALOG = {
     id: 'claude-3-haiku-20240307',
     provider: 'anthropic',
     apiModel: 'claude-3-haiku-20240307',
+    thinkingApi: 'budget',
     displayName: 'Claude 3 Haiku',
     shortDisplayName: 'Haiku 3',
     tier: 'economy',
