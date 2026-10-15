@@ -123,7 +123,6 @@ import {
 import { useServerMessageQueue } from "./useServerMessageQueue"
 import {
   dropUnfinishedAssistantTail,
-  applyMessageSnapshot,
   withResumeReplayReset,
 } from "./resume-replay-transport"
 import { cn } from "@shogo/shared-ui/primitives"
@@ -1919,6 +1918,12 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // Set just before the stall watchdog calls `stop()`, so `onFinish` can
   // keep a timeout banner instead of wiping error state (silent dropped turns).
   const stallWatchdogTrippedRef = useRef(false)
+  // Set while the stream on screen came from `resumeStream()` rather than a
+  // send. A joined turn can end and the next one start between the probe and
+  // the reconnect, so the reply shown may belong to a different message; the
+  // saved history replaces it once the turn is over (see `onFinish`).
+  const joinedStreamRef = useRef(false)
+  const refreshHistoryRef = useRef<() => void>(() => {})
 
   // Workspace-scoped chat routes to `/api/workspaces/:workspaceId/chat`
   // instead of the per-project endpoint. Only set when this panel is
@@ -1950,19 +1955,17 @@ const ChatPanelContent = observer(function ChatPanelContent({
     onChunk: bumpChatProgress,
     getClientTurnId,
     // Reopening a live turn gets the message so far in one chunk instead of
-    // the whole stream replayed; `withResumeReplayReset` applies it below.
+    // the whole stream replayed; `withResumeReplayReset` rebuilds the message from it.
     resumeSnapshot: true,
   })
   // Set once `useChat` has returned `setMessages`; see resume-replay-transport.ts.
   const beforeResumeReplayRef = useRef<() => void>(() => {})
-  const applyResumeSnapshotRef = useRef<(message: UIMessage) => void>(() => {})
   const chatTransport = useMemo(
     () =>
       transportConfig
         ? withResumeReplayReset(
             new DefaultChatTransport(transportConfig),
             () => beforeResumeReplayRef.current(),
-            (message) => applyResumeSnapshotRef.current(message),
           )
         : undefined,
     [transportConfig],
@@ -2844,6 +2847,14 @@ const ChatPanelContent = observer(function ChatPanelContent({
       const contentLength =
         (message as any).content?.length ?? message.parts?.length ?? 0
 
+      if (joinedStreamRef.current) {
+        joinedStreamRef.current = false
+        // The reply row is still being written when the stream ends.
+        for (const delayMs of [600, 2500]) {
+          setTimeout(() => refreshHistoryRef.current(), delayMs)
+        }
+      }
+
       // Push a `turn-end` event to the EZ Mode bridge so the translator
       // overlay (voice or text) can summarise the outcome for the user.
       // De-dupe by message id so retries / React strict-mode double-invokes
@@ -3053,8 +3064,6 @@ const ChatPanelContent = observer(function ChatPanelContent({
   })
   beforeResumeReplayRef.current = () =>
     setMessages((prev) => dropUnfinishedAssistantTail(prev))
-  applyResumeSnapshotRef.current = (message) =>
-    setMessages((prev) => applyMessageSnapshot(prev, message))
 
   // All resume paths share a single-flight guard. The history-load probe and
   // delegated-task reconciliation can finish at the same time when the app is
@@ -3071,7 +3080,10 @@ const ChatPanelContent = observer(function ChatPanelContent({
     return runResumeStreamSingleFlight(
       resumeStreamInFlightRef.current,
       currentSessionId,
-      resumeStream,
+      () => {
+        joinedStreamRef.current = true
+        return resumeStream()
+      },
     )
   }, [currentSessionId, resumeStream])
 
@@ -3180,7 +3192,9 @@ const ChatPanelContent = observer(function ChatPanelContent({
   const isStreaming =
     (isTransportStreaming || streamAutoRecovering) && stoppedMessages === null
 
-  const reloadAndAttachLiveTurnRef = useRef<() => void>(() => {})
+  const reloadAndAttachLiveTurnRef = useRef<
+    (opts?: { settle?: boolean }) => void
+  >(() => {})
   const resumeQueuedTurn = useCallback(
     (queuedUserMessage?: UIMessage) => {
       // A message already on screen means this window showed that turn some
@@ -3666,13 +3680,32 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // own it merges into the previous reply. Reload history first (it has the
   // turn's user message), which then probes and attaches (Effect 1).
   const [liveTurnReloadNonce, setLiveTurnReloadNonce] = useState(0)
-  const reloadAndAttachLiveTurn = useCallback(() => {
+  // Set while a reload is chasing a turn believed to be running. If that turn
+  // ends before the reload's probe, the history may hold its reply mid-write,
+  // so Effect 1 loads once more.
+  const liveTurnExpectedRef = useRef(false)
+  const liveTurnReloadNonceRef = useRef(0)
+  // The nonce of a reload that only refreshes the history; Effect 1 skips its
+  // probe so these never count against the auto-resume circuit breaker.
+  const historyOnlyNonceRef = useRef(-1)
+  const reloadAndAttachLiveTurn = useCallback(
+    (opts?: { settle?: boolean }) => {
+      const sessionId = currentSessionIdRef.current
+      if (!sessionId) return
+      liveTurnExpectedRef.current = opts?.settle !== false
+      cacheRefreshedAtRef.current.delete(sessionId)
+      setLiveTurnReloadNonce(++liveTurnReloadNonceRef.current)
+    },
+    [],
+  )
+  reloadAndAttachLiveTurnRef.current = reloadAndAttachLiveTurn
+  refreshHistoryRef.current = () => {
     const sessionId = currentSessionIdRef.current
     if (!sessionId) return
     cacheRefreshedAtRef.current.delete(sessionId)
-    setLiveTurnReloadNonce((n) => n + 1)
-  }, [])
-  reloadAndAttachLiveTurnRef.current = reloadAndAttachLiveTurn
+    historyOnlyNonceRef.current = ++liveTurnReloadNonceRef.current
+    setLiveTurnReloadNonce(liveTurnReloadNonceRef.current)
+  }
   const attachToLiveTurnIfAny = useCallback(async () => {
     const sessionId = currentSessionIdRef.current
     if (!sessionId || isStreamingRef.current || isSendingMessageRef.current) {
@@ -4317,11 +4350,23 @@ const ChatPanelContent = observer(function ChatPanelContent({
         })
 
         const cached = cachedMessagesRef.current
+        const textLength = (m: any): number => {
+          const fromParts = (m?.parts ?? []).reduce(
+            (n: number, p: any) =>
+              n + (p?.type === "text" && typeof p.text === "string" ? p.text.length : 0),
+            0,
+          )
+          return fromParts || (typeof m?.content === "string" ? m.content.length : 0)
+        }
+        // A reply read while the server was still writing it keeps its id and
+        // only grows, so compare its text too.
         const changed =
           !cached ||
           cached.length !== aiMessages.length ||
           cached[cached.length - 1]?.id !==
-            aiMessages[aiMessages.length - 1]?.id
+            aiMessages[aiMessages.length - 1]?.id ||
+          textLength(cached[cached.length - 1]) !==
+            textLength(aiMessages[aiMessages.length - 1])
 
         if (changed) {
           cachedMessagesRef.current = aiMessages
@@ -4364,6 +4409,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
         // message list (the original "I see the same message twice"
         // shape, just from a different angle).
         if (myGeneration !== loadGenerationRef.current) return
+        if (liveTurnReloadNonce === historyOnlyNonceRef.current) return
         const turnUrl = buildChatTurnUrl(
           API_URL!,
           projectId,
@@ -4380,8 +4426,15 @@ const ChatPanelContent = observer(function ChatPanelContent({
         }).then((turnStatus) => {
           if (myGeneration !== loadGenerationRef.current) return
           lastLiveTurnCheckAtRef.current = Date.now()
+          const expectedLive = liveTurnExpectedRef.current
+          liveTurnExpectedRef.current = false
           if (shouldAttachLiveStream(turnStatus)) {
             guardedAutoResumeStream("live-turn-probe")
+          } else if (expectedLive) {
+            setTimeout(
+              () => reloadAndAttachLiveTurnRef.current({ settle: false }),
+              750,
+            )
           }
         })
       })
@@ -4977,6 +5030,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
           ? bodyExtra.clientTurnId
           : undefined
       pendingClientTurnIdRef.current = clientTurnId
+      joinedStreamRef.current = false
       try {
         await sendMessage(messagePayload, { body: bodyExtra })
       } catch (err) {

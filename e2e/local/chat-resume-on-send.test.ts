@@ -199,6 +199,12 @@ let windowCount = 0
 async function newWindow(sessionId: string): Promise<Page> {
   const page = await context.newPage()
   logChatTraffic(page, `w${++windowCount}`)
+  // E2E_CPU_THROTTLE=4 slows each window's CPU to match a shared CI runner.
+  const throttle = Number(process.env.E2E_CPU_THROTTLE || 0)
+  if (throttle > 1) {
+    const cdp = await context.newCDPSession(page)
+    await cdp.send("Emulation.setCPUThrottlingRate", { rate: throttle })
+  }
   await openChat(page, sessionId)
   return page
 }
