@@ -182,6 +182,37 @@ describe("WideSidebar", () => {
     expect(onSearch).toHaveBeenCalledTimes(1)
   })
 
+  describe("a page-owned panel (Settings)", () => {
+    const settingsPanel = (hide: () => void) => (
+      <div data-testid="settings-nav">
+        settings
+        <button onClick={hide}>hide settings</button>
+      </div>
+    )
+
+    test("replaces the tab panel and selects no rail tab", () => {
+      renderSidebar({ panelOverride: settingsPanel })
+      expect(screen.getByTestId("settings-nav")).toBeTruthy()
+      expect(screen.queryByTestId("panel")).toBeNull()
+      expect(screen.getByRole("tab", { name: "Home" }).getAttribute("aria-selected")).toBe("false")
+    })
+
+    test("a rail tab click leaves the page for that tab's route", () => {
+      renderSidebar({ panelOverride: settingsPanel })
+      fireEvent.click(screen.getByRole("tab", { name: "Channels" }))
+      expect(push).toHaveBeenCalledWith("/(app)/c")
+      fireEvent.click(screen.getByRole("tab", { name: "Activity" }))
+      expect(push).toHaveBeenLastCalledWith("/(app)/activity")
+    })
+
+    test("the override's own hide control collapses it to the rail", () => {
+      renderSidebar({ panelOverride: settingsPanel })
+      fireEvent.click(screen.getByText("hide settings"))
+      expect(screen.queryByTestId("settings-nav")).toBeNull()
+      expect(screen.getByRole("tab", { name: "Home" })).toBeTruthy()
+    })
+  })
+
   describe("a personal workspace's Home", () => {
     const personal = (extra: Record<string, unknown> = {}) => {
       chat = { enabled: false, list: [], counts: { channels: 0, dms: 0, inbox: 0 } }

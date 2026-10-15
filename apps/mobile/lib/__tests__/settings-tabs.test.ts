@@ -5,10 +5,28 @@ import { describe, expect, test } from "bun:test"
 import {
   SETTINGS_TABS,
   settingsNavItems,
+  settingsTabFromParam,
   visibleSettingsTabs,
 } from "../settings-tabs"
 
 describe("settings tabs", () => {
+  test("team activity is its own plan tab, placed just before Usage", () => {
+    const ids = SETTINGS_TABS.map((tab) => tab.id)
+    const team = SETTINGS_TABS.find((tab) => tab.id === "team-activity")
+    expect(team?.label).toBe("Team activity")
+    expect(team?.group).toBe("plan")
+    expect(ids.indexOf("team-activity")).toBe(ids.indexOf("analytics") - 1)
+    expect(visibleSettingsTabs({ localMode: true, showBilling: false }).map((tab) => tab.id)).toContain("team-activity")
+    expect(visibleSettingsTabs({ localMode: false, showBilling: true }).map((tab) => tab.id)).toContain("team-activity")
+  })
+
+  test("the ?tab= param selects a known tab and falls back to Workspace", () => {
+    expect(settingsTabFromParam("people")).toBe("people")
+    expect(settingsTabFromParam(["team-activity", "billing"])).toBe("team-activity")
+    expect(settingsTabFromParam("nope")).toBe("workspace")
+    expect(settingsTabFromParam(undefined)).toBe("workspace")
+  })
+
   test("uses one label catalog for navigation and account sheets", () => {
     const labels = new Map(SETTINGS_TABS.map((tab) => [tab.id, tab.label]))
     expect(labels.get("costs")).toBe("Cost Optimizer")

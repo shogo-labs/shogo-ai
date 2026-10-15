@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import {
+  Activity,
   BarChart3,
   Boxes,
   Building2,
@@ -32,6 +33,7 @@ export type SettingsTabId =
   | "computer-files"
   | "billing"
   | "compute"
+  | "team-activity"
   | "analytics"
   | "costs"
   | "appearance"
@@ -93,6 +95,12 @@ export const SETTINGS_TABS: readonly SettingsTabDefinition[] = [
     desktopOnly: true,
   },
   { id: "billing", label: "Billing", Icon: CreditCard, group: "plan" },
+  {
+    id: "team-activity",
+    label: "Team activity",
+    Icon: Activity,
+    group: "plan",
+  },
   { id: "analytics", label: "Usage", Icon: BarChart3, group: "plan" },
   { id: "costs", label: "Cost Optimizer", Icon: Coins, group: "plan" },
   {
@@ -124,6 +132,16 @@ export function settingsTab(id: SettingsTabId): SettingsTabDefinition {
   const tab = SETTINGS_TAB_BY_ID.get(id);
   if (!tab) throw new Error(`Unknown settings tab: ${id}`);
   return tab;
+}
+
+/**
+ * The tab a `?tab=` route param selects. Unknown or missing values fall back
+ * to Workspace, the first tab. The URL is the source of truth for the active
+ * tab, so the page and the wide sidebar panel both read it through this.
+ */
+export function settingsTabFromParam(value: string | string[] | undefined): SettingsTabId {
+  const raw = Array.isArray(value) ? value[0] : value;
+  return SETTINGS_TABS.some((tab) => tab.id === raw) ? (raw as SettingsTabId) : "workspace";
 }
 
 export function settingsNavItems(

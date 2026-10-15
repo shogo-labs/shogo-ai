@@ -85,7 +85,8 @@ export function RailTooltip({ label, children }: { label: string; children: Reac
 
 export interface IconRailProps {
   tabs: SidebarTabId[]
-  active: SidebarTabId
+  /** null when a page owns the panel (Settings), so no rail tab is selected. */
+  active: SidebarTabId | null
   badges: Partial<Record<SidebarTabId, number>>
   onSelect: (tab: SidebarTabId) => void
   showAdmin?: boolean

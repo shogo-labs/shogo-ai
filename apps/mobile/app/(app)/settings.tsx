@@ -26,6 +26,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { observer } from "mobx-react-lite";
 import {
   ArrowLeft as ArrowLeftIcon,
+  Activity as ActivityIcon,
   Building2 as Building2Icon,
   Users as UsersIcon,
   Boxes as BoxesIcon,
@@ -150,9 +151,9 @@ import {
 } from "../../lib/switch-workspace";
 
 import {
-  SETTINGS_TABS,
   settingsNavItems,
   settingsTab,
+  settingsTabFromParam,
   type SettingsTabId,
 } from "../../lib/settings-tabs";
 import { leaveSettings } from "../../lib/settings-back";
@@ -196,6 +197,7 @@ const SETTINGS_ICON_MAP = {
   UserPlus: UserPlusIcon,
   Mail: MailIcon,
   BarChart3: BarChart3Icon,
+  Activity: ActivityIcon,
   MessageSquare: MessageSquareIcon,
   Zap: ZapIcon,
   CreditCard: CreditCardIcon,
@@ -226,6 +228,7 @@ const SETTINGS_TAB_ICON_NAME: Record<TabId, keyof typeof SETTINGS_ICON_MAP> = {
   "computer-files": "Laptop",
   billing: "CreditCard",
   compute: "Server",
+  "team-activity": "Activity",
   analytics: "BarChart3",
   costs: "Coins",
   appearance: "Paintbrush",
@@ -234,19 +237,17 @@ const SETTINGS_TAB_ICON_NAME: Record<TabId, keyof typeof SETTINGS_ICON_MAP> = {
 
 export type TabId = SettingsTabId;
 
-const ALL_TAB_IDS: TabId[] = SETTINGS_TABS.map(({ id }) => id);
-
 /** Tablet/desktop split: matches `SettingsPage` `isWide` (sidebar layout). */
 const SETTINGS_WIDE_BREAKPOINT = WEB_WIDE_MIN_WIDTH;
-const HIDE_COMPUTE_PURCHASES_ON_IOS = Platform.OS === "ios";
+export const HIDE_COMPUTE_PURCHASES_ON_IOS = Platform.OS === "ios";
 
 // Whether we're running inside the Electron desktop shell. Deliberately NOT
-// the same as the `localMode` passed into TabBar/SettingsSidebar below:
+// the same as the `localMode` passed into TabBar/SettingsNavPanel below:
 // `localMode` reflects the connected API's app-mode (self-hosted vs Shogo
 // Cloud), while a cloud-connected desktop install still needs the Updates
 // tab since it's the Electron auto-updater's home regardless of which
 // backend the app talks to. See `desktopOnly` in lib/settings-tabs.ts.
-const IS_DESKTOP_CLIENT =
+export const IS_DESKTOP_CLIENT =
   Platform.OS === "web" &&
   typeof window !== "undefined" &&
   !!(window as any).shogoDesktop?.isDesktop;
@@ -268,6 +269,7 @@ const MOBILE_NAV_ITEMS: NavItem[] = settingsNavItems([
   "appearance",
   ...(!HIDE_COMPUTE_PURCHASES_ON_IOS ? ["compute" as TabId] : []),
   "billing",
+  "team-activity",
   "analytics",
   "costs",
   ...(IS_DESKTOP_CLIENT ? ["updates" as TabId] : []),
@@ -283,6 +285,7 @@ const LOCAL_NAV_ITEMS: NavItem[] = settingsNavItems([
   "security",
   ...(IS_DESKTOP_CLIENT ? ["computer-files" as TabId] : []),
   "billing",
+  "team-activity",
   "analytics",
   "costs",
   ...(IS_DESKTOP_CLIENT ? ["updates" as TabId] : []),
@@ -336,153 +339,6 @@ function TabBar({
           </Pressable>
         );
       })}
-    </ScrollView>
-  );
-}
-
-interface SidebarItem {
-  id: TabId;
-  label: string;
-  avatar?: string;
-}
-
-interface SidebarSection {
-  id: string;
-  label?: string;
-  items: SidebarItem[];
-}
-
-function SettingsSidebar({
-  activeTab,
-  onTabChange,
-  workspaceName,
-  userName,
-  onExit,
-  showBilling = true,
-  localMode = false,
-}: {
-  activeTab: TabId;
-  onTabChange: (tab: TabId) => void;
-  workspaceName: string;
-  userName: string;
-  onExit: () => void;
-  showBilling?: boolean;
-  localMode?: boolean;
-}) {
-  const { ArrowLeft } = useSettingsIcons();
-  const tabItem = (id: TabId): SidebarItem => ({
-    id,
-    label: settingsTab(id).label,
-  });
-
-  const workspaceItems: SidebarItem[] = [
-    ...(!(localMode || !showBilling)
-      ? [tabItem("people"), tabItem("models")]
-      : []),
-    tabItem("integrations"),
-    tabItem("automations"),
-    tabItem("remote-control"),
-    ...(showBilling
-      ? [
-          ...(!HIDE_COMPUTE_PURCHASES_ON_IOS ? [tabItem("compute")] : []),
-          tabItem("billing"),
-          tabItem("analytics"),
-          tabItem("costs"),
-        ]
-      : [tabItem("billing"), tabItem("analytics"), tabItem("costs")]),
-  ];
-
-  const sections: SidebarSection[] = [
-    {
-      id: "workspace",
-      items: workspaceItems,
-    },
-    {
-      id: "account",
-      label: settingsTab("account").label,
-      items: [
-        {
-          ...tabItem("account"),
-          label: userName || settingsTab("account").label,
-        },
-        tabItem("appearance"),
-        ...(!showBilling ? [tabItem("security")] : []),
-        ...(!showBilling && IS_DESKTOP_CLIENT ? [tabItem("computer-files")] : []),
-        ...(IS_DESKTOP_CLIENT ? [tabItem("updates")] : []),
-      ],
-    },
-  ];
-
-  return (
-    <ScrollView
-      className="w-[232px]"
-      contentContainerClassName="px-3 pb-5 pt-5"
-      showsVerticalScrollIndicator={false}
-    >
-      <Pressable
-        onPress={onExit}
-        className="mb-5 flex-row items-center gap-1.5 self-start rounded-lg px-2 py-1.5 active:bg-muted"
-      >
-        <ArrowLeft size={14} className="text-muted-foreground" />
-        <Text className="text-sm text-muted-foreground">Go back</Text>
-      </Pressable>
-      <WorkspaceAccountActions
-        onSelectTab={onTabChange}
-        showActions={false}
-        showSignOut={false}
-        variant="sidebar"
-      />
-
-      {sections.map((section, sectionIdx) => (
-        <View key={section.id} className={sectionIdx > 0 ? "mt-6" : ""}>
-          {section.label && (
-            <Text className="mb-2 px-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-              {section.label}
-            </Text>
-          )}
-          <View className="gap-0.5">
-            {section.items.map((item) => {
-              const isActive = activeTab === item.id;
-              return (
-                <Pressable
-                  key={item.id}
-                  onPress={() => onTabChange(item.id)}
-                  className={cn(
-                    "flex-row items-center gap-2 rounded-lg px-2.5 py-2.5",
-                    isActive
-                      ? "border border-primary/20 bg-primary/5"
-                      : "active:bg-muted"
-                  )}
-                >
-                  {item.avatar && (
-                    <View className="h-5 w-5 rounded bg-primary items-center justify-center">
-                      <Text className="text-[10px] font-semibold text-primary-foreground">
-                        {item.avatar}
-                      </Text>
-                    </View>
-                  )}
-                  <Text
-                    className={cn(
-                      "text-sm flex-1",
-                      isActive
-                        ? "text-foreground font-medium"
-                        : "text-muted-foreground"
-                    )}
-                    numberOfLines={1}
-                  >
-                    {item.label}
-                  </Text>
-                </Pressable>
-              );
-            })}
-          </View>
-        </View>
-      ))}
-      <WorkspaceAccountActions
-        onSelectTab={onTabChange}
-        showWorkspace={false}
-        variant="sidebar"
-      />
     </ScrollView>
   );
 }
@@ -4093,14 +3949,6 @@ function WorkspaceAnalyticsTab() {
         </Text>
       </View>
 
-      {/* Who is doing what: team table + dashboard for admins, own stats for members */}
-      {workspaceId ? (
-        <WorkspaceActivitySection
-          workspaceId={workspaceId}
-          isBusinessOrHigher={isBusinessOrHigher}
-        />
-      ) : null}
-
       {/* Progress cards */}
       <View className="flex-row flex-wrap gap-3">
         {(["fiveHour", "weekly"] as const).map((key) => {
@@ -4242,6 +4090,41 @@ function WorkspaceAnalyticsTab() {
         />
       )}
     </View>
+  );
+}
+
+// ============================================================================
+// TEAM ACTIVITY TAB
+// ============================================================================
+
+/** Who is doing what: team table + dashboard for admins, own stats for members. */
+function TeamActivityTab() {
+  const workspace = useActiveWorkspace();
+  const workspaceId = workspace?.id;
+  const { localMode } = usePlatformConfig();
+  const { subscription } = useBillingData(workspaceId);
+
+  const planId = subscription?.planId?.toLowerCase() ?? "";
+  const isBusinessOrHigher =
+    localMode ||
+    planId.startsWith("business") ||
+    planId.startsWith("enterprise");
+
+  if (!workspaceId) {
+    return (
+      <View className="py-12 items-center">
+        <Text className="text-sm text-muted-foreground">
+          No workspace selected
+        </Text>
+      </View>
+    );
+  }
+
+  return (
+    <WorkspaceActivitySection
+      workspaceId={workspaceId}
+      isBusinessOrHigher={isBusinessOrHigher}
+    />
   );
 }
 
@@ -4667,6 +4550,7 @@ export const SettingsContent = observer(function SettingsContent({
         !HIDE_COMPUTE_PURCHASES_ON_IOS && <ComputeTab />}
       {activeTab === "billing" &&
         (isLocal ? <LocalCloudBillingTab /> : <BillingTab />)}
+      {activeTab === "team-activity" && <TeamActivityTab />}
       {activeTab === "analytics" && <WorkspaceAnalyticsTab />}
       {activeTab === "costs" && <WorkspaceCostTab />}
       {activeTab === "updates" && <UpdatesTab />}
@@ -4686,15 +4570,17 @@ export default observer(function SettingsPage({
   const { width, height } = useWindowDimensions();
   const isWide = width >= SETTINGS_WIDE_BREAKPOINT;
   const isNativePhone = isNativePhoneIntegrationsLayout(width, height);
-  const { user } = useAuth();
   const workspaces = useWorkspaceCollection();
-  const currentWorkspace = useActiveWorkspace();
   const { features, localMode } = usePlatformConfig();
 
-  const [activeTab, setActiveTab] = useState<TabId>(() => {
-    const requested = params.tab as TabId;
-    return ALL_TAB_IDS.includes(requested) ? requested : "workspace";
-  });
+  // The URL is the source of truth for the active tab. The wide sidebar's
+  // settings panel lives in the app layout and reads the same param, so both
+  // stay in sync without shared state.
+  const activeTab: TabId = settingsTabFromParam(params.tab);
+  const setActiveTab = useCallback(
+    (tab: TabId) => router.setParams({ tab } as any),
+    [router]
+  );
 
   useEffect(() => {
     const requestedWorkspace = params.workspace;
@@ -4721,8 +4607,6 @@ export default observer(function SettingsPage({
       setActiveTab("workspace");
   }, [activeTab, features.billing, localMode]);
 
-  const workspaceName = currentWorkspace?.name || "";
-  const userName = user?.name || "";
   const activeTabLabel = settingsTab(activeTab).label;
   const exitSettings = () => {
     if (onClose) {
@@ -4732,57 +4616,43 @@ export default observer(function SettingsPage({
     leaveSettings(router, isNativePhone);
   };
 
+  // Wide: the app sidebar (rail + SettingsNavPanel) sits beside this page, so
+  // the page is just its scrolling main area.
   if (isWide) {
     return (
-      <View
-        className="flex-1 flex-row bg-muted/30"
-        style={{ paddingTop: insets.top }}
+      <ScrollView
+        className="flex-1"
+        contentContainerClassName="px-8 py-8 xl:px-12"
+        contentContainerStyle={{
+          paddingBottom: Math.max(insets.bottom + 40, 60),
+        }}
+        showsVerticalScrollIndicator={false}
       >
-        <View className="border-r border-border/70 bg-card">
-          <SettingsSidebar
+        <View className="w-full max-w-[1080px] self-center">
+          <View className="mb-6 flex-row items-end justify-between border-b border-border/70 pb-5">
+            <View>
+              <Text className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                Settings
+              </Text>
+              <Text className="mt-1 text-2xl font-semibold text-foreground">
+                {activeTabLabel}
+              </Text>
+            </View>
+            <Pressable
+              onPress={() => Linking.openURL(DOCS_URL)}
+              className="flex-row items-center gap-1.5 rounded-lg px-2 py-1.5 active:bg-muted"
+            >
+              <ExternalLink size={14} className="text-muted-foreground" />
+              <Text className="text-sm text-muted-foreground">Docs</Text>
+            </Pressable>
+          </View>
+          <SettingsContent
             activeTab={activeTab}
-            onTabChange={setActiveTab}
-            workspaceName={workspaceName}
-            userName={userName}
-            onExit={exitSettings}
-            showBilling={features.billing}
-            localMode={localMode}
+            localMode={localMode || !features.billing}
+            onSelectTab={setActiveTab}
           />
         </View>
-        <ScrollView
-          className="flex-1"
-          contentContainerClassName="px-8 py-8 xl:px-12"
-          contentContainerStyle={{
-            paddingBottom: Math.max(insets.bottom + 40, 60),
-          }}
-          showsVerticalScrollIndicator={false}
-        >
-          <View className="w-full max-w-[1080px] self-center">
-            <View className="mb-6 flex-row items-end justify-between border-b border-border/70 pb-5">
-              <View>
-                <Text className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                  Settings
-                </Text>
-                <Text className="mt-1 text-2xl font-semibold text-foreground">
-                  {activeTabLabel}
-                </Text>
-              </View>
-              <Pressable
-                onPress={() => Linking.openURL(DOCS_URL)}
-                className="flex-row items-center gap-1.5 rounded-lg px-2 py-1.5 active:bg-muted"
-              >
-                <ExternalLink size={14} className="text-muted-foreground" />
-                <Text className="text-sm text-muted-foreground">Docs</Text>
-              </Pressable>
-            </View>
-            <SettingsContent
-              activeTab={activeTab}
-              localMode={localMode || !features.billing}
-              onSelectTab={setActiveTab}
-            />
-          </View>
-        </ScrollView>
-      </View>
+      </ScrollView>
     );
   }
 

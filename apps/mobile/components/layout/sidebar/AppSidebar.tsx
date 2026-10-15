@@ -123,6 +123,7 @@ import {
 import { AccountMenu, WorkspaceHeaderButton, type AccountMenuProps } from "./AccountMenu";
 import { CreateWorkspaceModal } from "./CreateWorkspaceModal";
 import { InboxPanel } from "./InboxPanel";
+import { SettingsNavPanel } from "../../settings/SettingsNavPanel";
 import { useHasAdminAccess } from "../../../hooks/useHasAdminAccess";
 import { useWorkspacePlans } from "../../../hooks/useWorkspacePlans";
 import { usePooledWorkspaceCreation } from "../../../hooks/usePooledWorkspaceCreation";
@@ -1224,6 +1225,31 @@ export const AppSidebar = observer(function AppSidebar({
   />
   );
 
+  /** The workspace menu button at the left of a wide panel header. */
+  const workspaceHeaderButton = (
+    <WorkspaceHeaderButton
+      user={user}
+      onSignOut={handleSignOut}
+      onNavigate={(href) => {
+        router.push(href as any);
+        onNavPress();
+      }}
+      isSuperAdmin={hasAdminAccess}
+      isWide={isWide}
+      workspaces={allWorkspaces}
+      currentWorkspace={currentWorkspace}
+      billingData={billingData}
+      workspacePlan={workspacePlan}
+      allPlans={allPlans}
+      showBilling={features.billing}
+      onSwitchWorkspace={handleSwitchWorkspace}
+      onCreateWorkspace={handleCreateWorkspace}
+      hasPersonalWorkspace={hasPersonalWorkspace}
+      onCreatePersonalWorkspace={handleCreatePersonalWorkspace}
+      localMode={localMode}
+    />
+  );
+
   /**
    * The sidebar for one tab. `tab` is null in the narrow drawer, which keeps a
    * single scrolling list; the wide layout passes the selected rail tab.
@@ -1252,27 +1278,7 @@ export const AppSidebar = observer(function AppSidebar({
       {/* ── Panel header (wide): the tab's name, search, hide panel ── */}
       {tab !== null && (
         <View className="h-14 flex-row items-center justify-between px-3">
-          <WorkspaceHeaderButton
-            user={user}
-            onSignOut={handleSignOut}
-            onNavigate={(href) => {
-              router.push(href as any);
-              onNavPress();
-            }}
-            isSuperAdmin={hasAdminAccess}
-            isWide={isWide}
-            workspaces={allWorkspaces}
-            currentWorkspace={currentWorkspace}
-            billingData={billingData}
-            workspacePlan={workspacePlan}
-            allPlans={allPlans}
-            showBilling={features.billing}
-            onSwitchWorkspace={handleSwitchWorkspace}
-            onCreateWorkspace={handleCreateWorkspace}
-            hasPersonalWorkspace={hasPersonalWorkspace}
-            onCreatePersonalWorkspace={handleCreatePersonalWorkspace}
-            localMode={localMode}
-          />
+          {workspaceHeaderButton}
           <View className="flex-row items-center gap-1">
             {tab === "projects" && (
               <Pressable
@@ -1593,6 +1599,26 @@ export const AppSidebar = observer(function AppSidebar({
     </TeamChatSidebarProvider>
   );
 
+  // On the Settings page the wide panel is the settings navigation instead of
+  // the tab lists. Exact match only: /c/settings is team chat preferences.
+  const isSettingsRoute =
+    pathname === "/settings" || pathname === "/(app)/settings";
+  const renderSettingsPanel = (onHidePanel: () => void) => (
+    <View className="flex-1">
+      <View className="h-14 flex-row items-center justify-between px-3">
+        {workspaceHeaderButton}
+        <Pressable
+          onPress={onHidePanel}
+          accessibilityLabel="Hide panel"
+          className="h-8 w-8 items-center justify-center rounded-md active:bg-muted"
+        >
+          <PanelLeftClose size={16} className="text-muted-foreground" />
+        </Pressable>
+      </View>
+      <SettingsNavPanel />
+    </View>
+  );
+
   if (isWide) {
     return withTeamChat(
       <WideSidebar
@@ -1611,6 +1637,7 @@ export const AppSidebar = observer(function AppSidebar({
         onSearch={experience.kind === "personal" ? handleSearchPress : undefined}
         onSelectTab={handleSelectTab}
         renderPanel={renderSidebar}
+        panelOverride={isSettingsRoute ? renderSettingsPanel : undefined}
       />,
     );
   }

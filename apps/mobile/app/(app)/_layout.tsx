@@ -13,6 +13,7 @@
  *  - List pages (wide): sidebar visible, NO header (sidebar provides nav)
  *  - Project detail (wide): workspace rail and conversation sidebar frame
  *    the project's own dense editor/IDE surface
+ *  - Settings page (wide): sidebar visible; its panel is the settings nav
  *  - Billing page (wide): NO sidebar (standalone full-width page)
  *  - All pages (narrow): hamburger header + drawer sidebar
  *
@@ -175,10 +176,6 @@ function AppLayoutInner() {
   const isNewConversationPage =
     !isWide && !isIdeEmbed && /\/c\/new\/?$/.test(pathname);
 
-  const isSettingsPage =
-    pathname === "/settings" ||
-    pathname === "/(app)/settings" ||
-    pathname.includes("/settings");
   const isBillingPage =
     pathname === "/billing" || pathname === "/(app)/billing";
   // The notifications inbox provides its own header (back + mark-all-read), so
@@ -507,11 +504,7 @@ function AppLayoutInner() {
     return null;
   }
 
-  const showSidebar =
-    isWide &&
-    !isIdeEmbed &&
-    !isSettingsPage &&
-    !isBillingPage;
+  const showSidebar = isWide && !isIdeEmbed && !isBillingPage;
   const nativeEdgeToEdgeChrome =
     isFloatingConversation ||
     isNewConversationPage ||
