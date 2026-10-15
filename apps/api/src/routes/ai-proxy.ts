@@ -60,6 +60,7 @@ import {
   isLiveModel,
   isOpenRouterModel,
   stripOpenRouterPrefix,
+  supportsAdaptiveThinking,
   type Provider,
   type ImageProvider,
   type AgentMode,
@@ -619,6 +620,16 @@ export async function fetchAnthropicWithRetry(
  */
 export function relayStatusForProviderError(status: number): number {
   return status === 401 ? 502 : status
+}
+
+/**
+ * Log a provider's non-2xx response before relaying it. The runtime shows the
+ * user a generic "please try again" for these, so the server log is the only
+ * place the upstream reason (e.g. Anthropic's 400 on an unsupported thinking
+ * shape) is visible.
+ */
+export function logUpstreamError(upstream: string, status: number, model: string | undefined, body: string): void {
+  console.error(`[AI Proxy] ${upstream} upstream error (${status}, model=${model ?? 'unknown'}): ${body.slice(0, 500)}`)
 }
 
 /**
@@ -2358,36 +2369,6 @@ function splitSystemBlocksForCaching(parsed: any): void {
   parsed.system = newSystem
 }
 
-/**
- * Anthropic model ids (with or without a date suffix) that require the
- * *adaptive* thinking API (`thinking.type: "adaptive"` + `output_config.effort`)
- * and reject the legacy budget-based `thinking.type: "enabled"` shape. Mirrors
- * pi-ai's `supportsAdaptiveThinking` (patches/@mariozechner%2Fpi-ai@0.73.1.patch)
- * — a model landing in ONE of these lists without the other is exactly the
- * 2026-08-16 production incident: `claude-opus-5`/`claude-sonnet-5` were added
- * to pi-ai's list (and the model catalog) but not here, so a UUID-addressed
- * Opus 5/Sonnet 5 turn kept the legacy `thinking.type: "enabled"` block and
- * Anthropic 400'd it before any tokens were generated. When adding a new
- * "current"-generation Anthropic model that supports adaptive thinking, add it
- * to BOTH lists.
- */
-function apiModelSupportsAdaptiveThinking(apiModel: string): boolean {
-  return (
-    apiModel.includes('opus-4-6') ||
-    apiModel.includes('opus-4.6') ||
-    apiModel.includes('opus-4-7') ||
-    apiModel.includes('opus-4.7') ||
-    apiModel.includes('opus-4-8') ||
-    apiModel.includes('opus-4.8') ||
-    apiModel.includes('opus-5') ||
-    apiModel.includes('sonnet-4-6') ||
-    apiModel.includes('sonnet-4.6') ||
-    apiModel.includes('sonnet-5') ||
-    apiModel.includes('fable-5-1') ||
-    apiModel.includes('fable-5.1')
-  )
-}
-
 /** Map a budget-based thinking allocation to an adaptive effort bucket. */
 function budgetTokensToEffort(budgetTokens: number | undefined): 'low' | 'medium' | 'high' {
   if (!budgetTokens || budgetTokens < 4096) return 'low'
@@ -2423,7 +2404,7 @@ function budgetTokensToEffort(budgetTokens: number | undefined): 'low' | 'medium
 function normalizeThinkingForModel(parsed: any, apiModel: string): void {
   const thinking = parsed?.thinking
   if (!thinking || typeof thinking !== 'object') return
-  if (!apiModelSupportsAdaptiveThinking(apiModel)) return
+  if (!supportsAdaptiveThinking(apiModel)) return
 
   if (thinking.type === 'enabled') {
     const effort = budgetTokensToEffort(thinking.budget_tokens)
@@ -3256,6 +3237,7 @@ export function aiProxyRoutes() {
     // user as an endless "Back online — resuming…" loop that never completes.
     if (!response.ok) {
       const errorBody = await response.text()
+      logUpstreamError('Shogo Cloud (anthropic)', response.status, parsed.model, errorBody)
       return new Response(errorBody, {
         status: response.status,
         headers: { 'Content-Type': response.headers.get('Content-Type') || 'application/json' },
@@ -4141,6 +4123,7 @@ export function aiProxyRoutes() {
         })
         if (!response.ok) {
           const errorText = await response.text()
+          logUpstreamError('Local LLM', response.status, resolvedModel, errorText)
           capture?.recordResponse({ status: response.status, body: { error: errorText }, format: 'json', errorType: 'upstream_error' })
           return c.json(
             { type: 'error', error: { type: 'api_error', message: `Local LLM error (${response.status}): ${errorText}` } },
@@ -4219,6 +4202,7 @@ export function aiProxyRoutes() {
         })
         if (!response.ok) {
           const errorText = await response.text()
+          logUpstreamError('OpenAI', response.status, resolvedModel, errorText)
           capture?.recordResponse({ status: response.status, body: { error: errorText }, format: 'json', errorType: 'upstream_error' })
           return c.json(
             { type: 'error', error: { type: 'api_error', message: `OpenAI error (${response.status}): ${errorText}` } },
@@ -4320,6 +4304,7 @@ export function aiProxyRoutes() {
 
       if (!response.ok) {
         const errorBody = await response.text()
+        logUpstreamError('Anthropic', response.status, parsed.model, errorBody)
         capture?.recordResponse({ status: response.status, body: { error: errorBody }, format: 'json', errorType: 'upstream_error' })
         return new Response(errorBody, {
           status: relayStatusForProviderError(response.status),

@@ -74,6 +74,8 @@ export {
   type CapabilityRating,
 } from './helpers'
 
+export { ADAPTIVE_THINKING_MODEL_MARKERS, supportsAdaptiveThinking } from './thinking'
+
 export {
   registerDynamicModels,
   rememberProviderHint,

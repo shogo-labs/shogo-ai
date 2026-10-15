@@ -51,6 +51,9 @@ const OPUS5_UUID = '22222222-3333-4444-5555-666666666666'
 // shape as Opus 5/Sonnet 5 above: a new current-gen Anthropic model whose
 // apiModel supports adaptive thinking but whose id does not.
 const FABLE51_UUID = '33333333-4444-5555-6666-777777777777'
+// Claude Haiku 5.5, addressed by its DB UUID — same shape again (2026-10-15
+// staging: every turn 400'd on the legacy thinking block).
+const HAIKU55_UUID = '44444444-5555-6666-7777-888888888888'
 
 // ─── Mutable DB rows the registry loads through the mocked prisma ──────────
 let MODELS: any[] = []
@@ -242,6 +245,26 @@ function seed() {
       cacheWritePerMillion: 12.5,
       outputPerMillion: 50,
     },
+    {
+      id: HAIKU55_UUID,
+      provider: 'anthropic',
+      providerId: null,
+      apiModel: 'claude-haiku-5-5',
+      displayName: 'Claude Haiku 5.5 (DB)',
+      shortDisplayName: 'Haiku 5.5',
+      tier: 'economy',
+      family: 'haiku',
+      generation: 'current',
+      maxOutputTokens: 128000,
+      enabled: true,
+      sortOrder: 6,
+      aliases: [],
+      capabilities: null,
+      inputPerMillion: 0.1,
+      cachedInputPerMillion: 0.01,
+      cacheWritePerMillion: 0.125,
+      outputPerMillion: 0.5,
+    },
     // UUID-addressed GPT: native OpenAI, routed through the Responses API.
     {
       id: GPT_UUID,
@@ -348,6 +371,7 @@ beforeAll(() => {
 afterAll(() => { globalThis.fetch = originalFetch })
 
 // ─── Imports AFTER mocks ──────────────────────────────────────────────────
+const { MODEL_CATALOG } = await import('@shogo/model-catalog')
 const { Hono } = await import('hono')
 const { aiProxyRoutes, __resetReasoningNoneCacheForTests } = await import('../routes/ai-proxy')
 const { generateProxyToken } = await import('../lib/ai-proxy-token')
@@ -858,7 +882,7 @@ describe('ai-proxy DB-defined model routing', () => {
   // ── The 2026-08-16 production incident ─────────────────────────────────────
   // `claude-opus-5`/`claude-sonnet-5` support adaptive thinking (added to the
   // model catalog and pi-ai's allowlist in 1395fd620) but the proxy's OWN
-  // mirrored allowlist (apiModelSupportsAdaptiveThinking) was never updated to
+  // mirrored allowlist (now the shared supportsAdaptiveThinking) was never updated to
   // match, so a UUID-addressed Opus 5 turn kept the legacy budget-based
   // `thinking.type: "enabled"` block all the way to Anthropic, which 400'd it
   // ("thinking.type.enabled is not supported for this model") before
@@ -879,7 +903,7 @@ describe('ai-proxy DB-defined model routing', () => {
 
   // Same regression, for the newly-added Fable 5.1 — guards against Fable 5.1
   // landing in the model catalog / pi-ai patch without also landing in this
-  // proxy's own mirrored allowlist (apiModelSupportsAdaptiveThinking).
+  // proxy's own mirrored allowlist (now the shared supportsAdaptiveThinking).
   test('rewrites budget-based thinking to adaptive for a UUID-addressed Fable 5.1', async () => {
     const res = await postAnthropic(buildApp(), FABLE51_UUID, {
       thinking: { type: 'enabled', budget_tokens: 20000 },
@@ -890,6 +914,33 @@ describe('ai-proxy DB-defined model routing', () => {
     expect(body.thinking).toEqual({ type: 'adaptive', display: 'summarized' })
     expect(body.thinking.budget_tokens).toBeUndefined()
     expect(body.output_config?.effort).toBe('high')
+  })
+
+  test('rewrites budget-based thinking to adaptive for a UUID-addressed Haiku 5.5', async () => {
+    const res = await postAnthropic(buildApp(), HAIKU55_UUID, {
+      thinking: { type: 'enabled', budget_tokens: 2048 },
+    })
+    expect(res.status).toBe(200)
+    const body = lastForwardedBody()
+    expect(body.model).toBe('claude-haiku-5-5')
+    expect(body.thinking).toEqual({ type: 'adaptive', display: 'summarized' })
+    expect(body.output_config?.effort).toBe('low')
+  })
+
+  test('logs the upstream body when Anthropic rejects a pass-through request', async () => {
+    const upstream = JSON.stringify({ type: 'error', error: { type: 'invalid_request_error', message: 'nope' } })
+    fetchQueue.push(new Response(upstream, { status: 400, headers: { 'Content-Type': 'application/json' } }))
+    const errors: string[] = []
+    const error = console.error
+    console.error = (...args: unknown[]) => { errors.push(args.join(' ')) }
+    try {
+      const res = await postAnthropic(buildApp(), HAIKU55_UUID)
+      expect(res.status).toBe(400)
+      expect(await res.text()).toBe(upstream)
+    } finally {
+      console.error = error
+    }
+    expect(errors.some((line) => line.includes('Anthropic upstream error (400, model=claude-haiku-5-5)') && line.includes('nope'))).toBe(true)
   })
 
   test('Responses API rewrites a UUID-addressed GPT to its apiModel', async () => {
@@ -1022,6 +1073,58 @@ describe('ai-proxy DB-defined model routing', () => {
 // cloud (which resolves the model id and holds the key) — exactly like
 // chat-completions and anthropic-messages. Without it GPT reasoning never
 // reaches the client in cloud-proxy mode.
+// Every Anthropic catalog model, DB-seeded under a UUID the way production
+// addresses it, so a newly added model is covered without anyone writing a
+// per-model test (the gap behind both the Opus 5 and Haiku 5.5 incidents).
+describe('thinking shape for every UUID-addressed Anthropic catalog model', () => {
+  const entries = (Object.values(MODEL_CATALOG) as Array<Record<string, any>>).filter((m) => m.provider === 'anthropic')
+  const uuidFor = (i: number) => `cafe${String(i).padStart(4, '0')}-0000-4000-8000-000000000000`
+
+  beforeEach(async () => {
+    entries.forEach((entry, i) => {
+      MODELS.push({
+        id: uuidFor(i),
+        provider: 'anthropic',
+        providerId: null,
+        apiModel: entry.apiModel,
+        displayName: `${entry.displayName} (catalog DB)`,
+        shortDisplayName: entry.shortDisplayName,
+        tier: entry.tier,
+        family: entry.family,
+        generation: entry.generation,
+        maxOutputTokens: entry.maxOutputTokens,
+        enabled: true,
+        sortOrder: 100 + i,
+        aliases: [],
+        capabilities: null,
+        inputPerMillion: 1,
+        cachedInputPerMillion: 0.1,
+        cacheWritePerMillion: 1.25,
+        outputPerMillion: 5,
+      })
+    })
+    await invalidateModelRegistry()
+  })
+
+  test.each(entries.map((entry, i) => [entry.apiModel, i, entry.thinkingApi] as const))(
+    '%s',
+    async (apiModel, i, thinkingApi) => {
+      const res = await postAnthropic(buildApp(), uuidFor(i), {
+        thinking: { type: 'enabled', budget_tokens: 20000 },
+      })
+      expect(res.status).toBe(200)
+      const body = lastForwardedBody()
+      expect(body.model).toBe(apiModel)
+      if (thinkingApi === 'adaptive') {
+        expect(body.thinking).toEqual({ type: 'adaptive', display: 'summarized' })
+        expect(body.output_config?.effort).toBe('high')
+      } else {
+        expect(body.thinking).toEqual({ type: 'enabled', budget_tokens: 20000 })
+      }
+    },
+  )
+})
+
 describe('ai-proxy Responses API — cloud-proxy forwarding', () => {
   const ORIG = {
     localMode: process.env.SHOGO_LOCAL_MODE,
