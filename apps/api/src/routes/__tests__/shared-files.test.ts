@@ -137,4 +137,74 @@ describe('shared file routes', () => {
     globalThis.fetch = (async () => new Response('missing', { status: 404 })) as typeof fetch
     expect((await app.fetch(new Request(`http://api.test/f/${token()}`))).status).toBe(404)
   })
+
+  function retryingApp(invalidated: string[]) {
+    return sharedFileRoutes({
+      pinChatToHomeRegion: async () => null,
+      resolveAgentProxyPodUrl: async () => ({ ok: true, kind: 'pod', url: 'http://runtime' }),
+      deriveProjectRuntimeToken: async () => 'runtime-secret',
+      invalidateRuntimeUrl: async (projectId) => { invalidated.push(projectId) },
+      sleep: async () => {},
+    })
+  }
+
+  it('re-resolves and retries when the runtime is not yet bound to the workspace', async () => {
+    const statuses = [401, 503, 200]
+    let calls = 0
+    globalThis.fetch = (async () => {
+      const status = statuses[calls++]
+      return status === 200
+        ? new Response('PDF bytes', { status, headers: { 'content-type': 'application/pdf' } })
+        : new Response('{"error":"Unauthorized — missing or invalid runtime token"}', { status })
+    }) as typeof fetch
+    const invalidated: string[] = []
+
+    const response = await retryingApp(invalidated).fetch(new Request(`http://api.test/api/f/${token()}`))
+
+    expect(response.status).toBe(200)
+    expect(await response.text()).toBe('PDF bytes')
+    expect(calls).toBe(3)
+    expect(invalidated).toEqual(['project-1', 'project-1'])
+  })
+
+  it('returns a retryable 503, not "File not found", when the runtime stays unavailable', async () => {
+    let calls = 0
+    globalThis.fetch = (async () => {
+      calls++
+      return new Response('unavailable', { status: 503 })
+    }) as typeof fetch
+
+    const response = await retryingApp([]).fetch(new Request(`http://api.test/api/f/${token()}`))
+
+    expect(response.status).toBe(503)
+    expect(response.headers.get('retry-after')).toBe('5')
+    expect((await response.json()).error.code).toBe('runtime_unavailable')
+    expect(calls).toBe(4)
+  })
+
+  it('does not retry a permanent runtime refusal', async () => {
+    let calls = 0
+    globalThis.fetch = (async () => {
+      calls++
+      return new Response('{"error":"Path is a directory"}', { status: 400 })
+    }) as typeof fetch
+
+    const response = await retryingApp([]).fetch(new Request(`http://api.test/api/f/${token()}`))
+
+    expect(response.status).toBe(404)
+    expect(calls).toBe(1)
+  })
+
+  it('retries a connection error to a runtime that is seconds from ready', async () => {
+    let calls = 0
+    globalThis.fetch = (async () => {
+      if (calls++ === 0) throw new Error('ECONNREFUSED')
+      return new Response('PDF bytes', { status: 200, headers: { 'content-type': 'application/pdf' } })
+    }) as typeof fetch
+
+    const response = await retryingApp([]).fetch(new Request(`http://api.test/api/f/${token()}`))
+
+    expect(response.status).toBe(200)
+    expect(calls).toBe(2)
+  })
 })

@@ -7,6 +7,30 @@ import { deriveProjectRuntimeToken } from '../lib/project-runtime-token'
 import { resolveAgentProxyPodUrl } from '../lib/agent-proxy-resolver'
 import { relayAgentProxyViaTunnel } from '../lib/tunnel-relay'
 import { verifySharedFileToken } from '../lib/shared-file-token'
+import { importCloudModule } from '../lib/cloud-import'
+import { isMetalEnabled } from '../lib/metal-eligibility'
+
+// Kept short: a long in-request retry holds an API slot per download, and a
+// pileup of those under cold starts is what OOM-killed API pods before (see
+// project-chat.ts). The caller can retry a 503 itself.
+const RUNTIME_RETRY_DELAYS_MS = [500, 1500, 3000]
+
+/**
+ * Runtime answers worth one more try against a freshly resolved URL. A 401/403
+ * means the runtime at that URL is not (yet) bound to this workspace — a
+ * warm-pool assign race or a stale cached URL — since the API just derived
+ * the token itself.
+ */
+function isTransientRuntimeStatus(status: number): boolean {
+  return status === 401 || status === 403 || status === 408 || status === 429 || status >= 500
+}
+
+async function invalidateMetalRuntimeUrl(projectId: string): Promise<void> {
+  if (!isMetalEnabled()) return
+  const { getMetalWarmPoolController, workspaceRuntimeKey } =
+    await importCloudModule<typeof import('../lib/metal-warm-pool-controller')>('../lib/metal-warm-pool-controller')
+  getMetalWarmPoolController().invalidateUrlCache(workspaceRuntimeKey('', projectId))
+}
 
 const DOWNLOAD_LIMIT = 120
 const DOWNLOAD_WINDOW_MS = 60_000
@@ -76,6 +100,13 @@ export interface SharedFileRouteDeps {
   resolveAgentProxyPodUrl?: typeof resolveAgentProxyPodUrl
   deriveProjectRuntimeToken?: typeof deriveProjectRuntimeToken
   relayAgentProxyViaTunnel?: typeof relayAgentProxyViaTunnel
+  invalidateRuntimeUrl?: (projectId: string) => Promise<void>
+  sleep?: (ms: number) => Promise<void>
+}
+
+function runtimeUnavailable(c: any): Response {
+  c.header('Retry-After', '5')
+  return c.json({ error: { code: 'runtime_unavailable', message: 'The file runtime is unavailable, please retry' } }, 503)
 }
 
 export function sharedFileRoutes(deps: SharedFileRouteDeps = {}): Hono {
@@ -84,6 +115,8 @@ export function sharedFileRoutes(deps: SharedFileRouteDeps = {}): Hono {
   const resolveRuntime = deps.resolveAgentProxyPodUrl ?? resolveAgentProxyPodUrl
   const deriveToken = deps.deriveProjectRuntimeToken ?? deriveProjectRuntimeToken
   const relayTunnel = deps.relayAgentProxyViaTunnel ?? relayAgentProxyViaTunnel
+  const invalidateRuntimeUrl = deps.invalidateRuntimeUrl ?? invalidateMetalRuntimeUrl
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)))
 
   // Minted links use `/api/f/`: on the public studio origin only `/api/*`
   // reaches the API, while bare `/f/` falls through to the web app. `/f/` stays
@@ -104,54 +137,60 @@ export function sharedFileRoutes(deps: SharedFileRouteDeps = {}): Hono {
     const pinned = await pinHome(c, payload.projectId)
     if (pinned) return pinned
 
-    try {
-      const resolution = await resolveRuntime(payload.projectId)
-      if (!resolution.ok) {
-        return c.json({ error: { code: 'runtime_unavailable', message: 'The file runtime is unavailable' } }, 503)
+    const agentPath = `/agent/workspace/download/${encodeRuntimePath(payload.path)}`
+    let lastFailure = ''
+    for (let attempt = 0; attempt <= RUNTIME_RETRY_DELAYS_MS.length; attempt++) {
+      if (attempt > 0) {
+        await invalidateRuntimeUrl(payload.projectId).catch(() => {})
+        await sleep(RUNTIME_RETRY_DELAYS_MS[attempt - 1])
+        if (c.req.raw.signal?.aborted) return new Response(null, { status: 499 })
       }
-
-      const runtimeToken = await deriveToken(payload.projectId, {
-        workspaceId: payload.workspaceId,
-      })
-      const agentPath = `/agent/workspace/download/${encodeRuntimePath(payload.path)}`
-
-      if (resolution.kind === 'tunnel') {
-        const upstream = await relayTunnel({
-          c,
-          instanceId: resolution.instanceId,
-          workspaceId: resolution.workspaceId,
-          projectId: payload.projectId,
-          agentPath,
-          cleanPath: agentPath,
-          method: 'GET',
-          headers: { 'x-runtime-token': runtimeToken },
-        })
-        if (!upstream.ok) {
-          return c.json({ error: { code: 'not_found', message: 'File not found' } }, upstream.status === 404 ? 404 : 503)
+      try {
+        const resolution = await resolveRuntime(payload.projectId)
+        if (!resolution.ok) {
+          lastFailure = `resolve ${resolution.status} ${resolution.body.error.code}`
+          continue
         }
-        return new Response(upstream.body, {
-          status: upstream.status,
-          headers: downloadHeaders(payload.path, upstream.headers),
-        })
-      }
 
-      const runtimeUrl = `${resolution.url.replace(/\/+$/, '')}${agentPath}`
-      const upstream = await fetch(runtimeUrl, {
-        method: 'GET',
-        headers: { 'x-runtime-token': runtimeToken },
-        signal: c.req.raw.signal,
-      })
-      if (!upstream.ok) {
-        return c.json({ error: { code: 'not_found', message: 'File not found' } }, upstream.status === 404 ? 404 : 503)
+        const runtimeToken = await deriveToken(payload.projectId, {
+          workspaceId: payload.workspaceId,
+        })
+        const upstream = resolution.kind === 'tunnel'
+          ? await relayTunnel({
+              c,
+              instanceId: resolution.instanceId,
+              workspaceId: resolution.workspaceId,
+              projectId: payload.projectId,
+              agentPath,
+              cleanPath: agentPath,
+              method: 'GET',
+              headers: { 'x-runtime-token': runtimeToken },
+            })
+          : await fetch(`${resolution.url.replace(/\/+$/, '')}${agentPath}`, {
+              method: 'GET',
+              headers: { 'x-runtime-token': runtimeToken },
+              signal: c.req.raw.signal,
+            })
+
+        if (upstream.ok) {
+          return new Response(upstream.body, {
+            status: upstream.status,
+            headers: downloadHeaders(payload.path, upstream.headers),
+          })
+        }
+        await upstream.body?.cancel().catch(() => {})
+        if (!isTransientRuntimeStatus(upstream.status)) {
+          return c.json({ error: { code: 'not_found', message: 'File not found' } }, 404)
+        }
+        lastFailure = `runtime ${upstream.status}`
+      } catch (error: any) {
+        if (c.req.raw.signal?.aborted) return new Response(null, { status: 499 })
+        lastFailure = error?.message || String(error)
       }
-      return new Response(upstream.body, {
-        status: upstream.status,
-        headers: downloadHeaders(payload.path, upstream.headers),
-      })
-    } catch (error: any) {
-      console.error(`[SharedFiles] Download failed for ${payload.projectId}:`, error?.message || error)
-      return c.json({ error: { code: 'runtime_unavailable', message: 'The file runtime is unavailable' } }, 503)
     }
+
+    console.error(`[SharedFiles] Download failed for ${payload.projectId}: ${lastFailure}`)
+    return runtimeUnavailable(c)
   }
 
   return app
