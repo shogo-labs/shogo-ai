@@ -121,6 +121,19 @@ interface RepoBundleExport {
   rootCommitAt: number | null
 }
 
+/** The guest refused a bundle export because its LFS objects could not be pushed. */
+export class RepoBundleLfsPushError extends Error {}
+
+/** Guests before `code` was added only send the message. */
+function isLfsPushFailure(body: string): boolean {
+  try {
+    const parsed = JSON.parse(body) as { code?: unknown; error?: unknown }
+    return parsed.code === 'lfs-push-failed' || (typeof parsed.error === 'string' && parsed.error.startsWith('lfs push failed'))
+  } catch {
+    return false
+  }
+}
+
 /** How often a project's unreferenced bundles are swept, at most. */
 const REPO_BUNDLE_SWEEP_INTERVAL_MS = 6 * 60 * 60 * 1000
 
@@ -3020,7 +3033,8 @@ export class MetalWarmPool {
   /**
    * The incremental writer. Returns null when the legacy tarball path should
    * run instead: no manifest exists yet and the guest cannot read or write
-   * bundles. A project with a manifest never falls back.
+   * bundles, or cannot push the LFS objects a bundle would leave out. A
+   * project with a manifest never falls back.
    */
   private async storeRepoBundles(a: AssignedVm): Promise<RepoPersist | null> {
     const current = await this.repoManifest(a.projectId)
@@ -3028,7 +3042,19 @@ export class MetalWarmPool {
     // Past the compaction threshold the export is a full base, which restarts the chain.
     const compact = !!current && needsCompaction(current.manifest.bundles)
     const since = current && !compact ? Object.values(current.manifest.refs) : null
-    const exported = await this.exportRepoBundle(a, since)
+    let exported: RepoBundleExport | null
+    try {
+      exported = await this.exportRepoBundle(a, since)
+    } catch (err) {
+      // The tarball still carries `.git/lfs/objects`; a bundle cannot, so the
+      // project stays unmigrated until its LFS push succeeds.
+      if (!current && err instanceof RepoBundleLfsPushError) {
+        metrics.inc(M.repoBundleLfsFallback)
+        console.warn(`[pool] keeping ${a.projectId} on the repo tarball: ${err.message}`)
+        return null
+      }
+      throw err
+    }
     if (!exported) {
       if (current) {
         throw new Error(`guest cannot export incremental repo for ${a.projectId}; refusing the tarball fallback`)
@@ -3085,7 +3111,12 @@ export class MetalWarmPool {
       signal: AbortSignal.timeout(this.cfg.hydrateTimeoutMs),
     })
     if (res.status === 404) return null
-    if (!res.ok) throw new Error(`/pool/export-repo-bundle failed (${res.status}): ${await res.text()}`)
+    if (!res.ok) {
+      const text = await res.text()
+      const message = `/pool/export-repo-bundle failed (${res.status}): ${text}`
+      if (res.status === 503 && isLfsPushFailure(text)) throw new RepoBundleLfsPushError(message)
+      throw new Error(message)
+    }
     return (await res.json()) as RepoBundleExport
   }
 

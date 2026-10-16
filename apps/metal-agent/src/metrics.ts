@@ -227,6 +227,8 @@ export const M = {
   repoManifestConflict: 'metal_repo_manifest_conflict_total',
   repoBundleCompactions: 'metal_repo_bundle_compactions_total',
   repoBundlesGced: 'metal_repo_bundle_gc_deleted_total',
+  // Unmigrated projects kept on the tarball because the guest's LFS push failed.
+  repoBundleLfsFallback: 'metal_repo_bundle_lfs_fallback_total',
   repoExportUnchanged: 'metal_repo_export_unchanged_total',
   // Guest-side failures scraped from the per-VM serial console by serial-watcher.
   // These are the ONLY fleet-wide signal for in-guest breakage that survives a

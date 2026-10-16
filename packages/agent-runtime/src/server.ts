@@ -3284,10 +3284,10 @@ app.post('/pool/export-repo-bundle', async (c) => {
     await flushGitBeforeExport(destinationDir)
     if (isLfsActive()) {
       const lfsCfg = lfsRemoteConfigFromEnv(WORKSPACE_DIR)
-      // Bundles never carry LFS objects. Falling back to a tar that does
-      // would not be an option, so a failed push fails the export.
+      // Bundles never carry LFS objects, so a failed push fails the export.
+      // The host keeps an unmigrated project on the tarball, which does.
       if (lfsCfg && !(await lfsPushAll(lfsCfg))) {
-        return c.json({ error: 'lfs push failed; repo bundle not exported' }, 503)
+        return c.json({ error: 'lfs push failed; repo bundle not exported', code: 'lfs-push-failed' }, 503)
       }
     }
 

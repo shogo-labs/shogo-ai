@@ -28,6 +28,7 @@ export const ChatSessionModel = types
     contextType: types.enumeration("ContextType", ["feature", "project", "general", "workspace"]),
     contextId: types.optional(types.string, ""),
     workspaceId: types.optional(types.string, ""),
+    createdByUserId: types.optional(types.string, ""),
     phase: types.optional(types.string, ""),
     claudeCodeSessionId: types.optional(types.string, ""),
     cachedMessageCount: types.optional(types.number, 0),

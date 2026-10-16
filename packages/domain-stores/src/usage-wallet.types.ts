@@ -17,6 +17,10 @@ export interface UsageWalletType {
   overageHardLimitUsd?: number
   overageAccumulatedUsd: number
   overageBilledUsd: number
+  overagePaidBlocks: number
+  overageOutstandingInvoiceId?: string
+  overageOutstandingUsd: number
+  overageOutstandingInvoiceUrl?: string
   alertsSentThisPeriod?: Record<string, unknown>
   stripeMeteredItemId?: string
   anniversaryDay: number
@@ -40,6 +44,10 @@ export interface UsageWalletCreateInput {
   overageHardLimitUsd?: number
   overageAccumulatedUsd?: number
   overageBilledUsd?: number
+  overagePaidBlocks?: number
+  overageOutstandingInvoiceId?: string
+  overageOutstandingUsd?: number
+  overageOutstandingInvoiceUrl?: string
   alertsSentThisPeriod?: Record<string, unknown>
   stripeMeteredItemId?: string
   anniversaryDay: number
@@ -61,6 +69,10 @@ export interface UsageWalletUpdateInput {
   overageHardLimitUsd?: number
   overageAccumulatedUsd?: number
   overageBilledUsd?: number
+  overagePaidBlocks?: number
+  overageOutstandingInvoiceId?: string
+  overageOutstandingUsd?: number
+  overageOutstandingInvoiceUrl?: string
   alertsSentThisPeriod?: Record<string, unknown>
   stripeMeteredItemId?: string
   anniversaryDay?: number

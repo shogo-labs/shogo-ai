@@ -16,6 +16,7 @@ import { join } from 'path'
 import { config } from './config'
 import {
   MetalWarmPool,
+  RepoBundleLfsPushError,
   REPO_STAGING_DIR,
   RepoHydrateRefusedError,
   repoKeepPaths,
@@ -443,6 +444,7 @@ describe('pool host-mediated repo persist', () => {
       ;(pool as any).repoManifest = async () => (prevManifest ? { manifest: prevManifest, etag: '"m1"', lastModified: null } : null)
       ;(pool as any).exportRepoBundle = async (_a: AssignedVm, since: string[] | null) => {
         exportCalls.push({ since })
+        if (exportResult instanceof Error) throw exportResult
         return exportResult
       }
       ;(pool as any).uploadRepoBundleGuarded = async (_p: string, entry: { sha256: string }) => {
@@ -653,6 +655,62 @@ describe('pool host-mediated repo persist', () => {
         expect(pool.uploads).toHaveLength(1)
       } finally {
         restore()
+      }
+    })
+
+    test('a failed LFS push keeps a project with no manifest on the tarball', async () => {
+      const pool = makePool(dir)
+      const restore = writer(pool, new RepoBundleLfsPushError('lfs push failed'))
+      try {
+        const a = pool.add('p1', { repoParentEtag: undefined })
+        expect(await pool.saveRepoToStore(a)).toBe(true)
+        expect(exportCalls).toHaveLength(1)
+        expect(manifestWrites).toHaveLength(0)
+        expect(pool.uploads).toHaveLength(1)
+      } finally {
+        restore()
+      }
+    })
+
+    test('a failed LFS push never sends a migrated project back to the tarball', async () => {
+      const pool = makePool(dir)
+      prevManifest = parseRepoManifest({
+        v: 1,
+        head,
+        refs: { 'refs/heads/main': oldTip },
+        config: '',
+        rootCommitAt: null,
+        bundles: [baseEntry],
+      })
+      const restore = writer(pool, new RepoBundleLfsPushError('lfs push failed'))
+      try {
+        const a = pool.add('p1', { repoParentEtag: '"m1"' })
+        await expect(pool.saveRepoToStore(a)).rejects.toThrow(RepoBundleLfsPushError)
+        expect(manifestWrites).toHaveLength(0)
+        expect(pool.uploads).toHaveLength(0)
+      } finally {
+        restore()
+      }
+    })
+
+    test('the guest LFS refusal is told apart from other export failures', async () => {
+      let answer = Response.json({ error: 'lfs push failed; repo bundle not exported' }, { status: 503 })
+      const guest = Bun.serve({ port: 0, fetch: () => answer.clone() })
+      try {
+        const pool = makePool(dir)
+        const a = pool.add('p1', { handle: { ...HANDLE, agentUrl: `http://127.0.0.1:${guest.port}` } })
+        const exportBundle = () => (MetalWarmPool.prototype as any).exportRepoBundle.call(pool, a, null)
+        await expect(exportBundle()).rejects.toThrow(RepoBundleLfsPushError)
+
+        answer = Response.json({ error: 'push failed', code: 'lfs-push-failed' }, { status: 503 })
+        await expect(exportBundle()).rejects.toThrow(RepoBundleLfsPushError)
+
+        answer = Response.json({ error: 'git bundle create failed' }, { status: 503 })
+        const other = await exportBundle().catch((err: unknown) => err)
+        expect(other).toBeInstanceOf(Error)
+        expect(other).not.toBeInstanceOf(RepoBundleLfsPushError)
+      } finally {
+        guest.stop(true)
       }
     })
   })
