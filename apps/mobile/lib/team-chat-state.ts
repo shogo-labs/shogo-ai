@@ -8,7 +8,7 @@
 import type { ChatMessage, ConversationSummary, Mentionables, TeamChatEvent } from './team-chat-api'
 import { normalizeRichTextPaste } from './rich-text-paste'
 import { voiceNotePreview } from './voice-note'
-import { MENTION_HREF_PREFIX } from '../components/chat/file-links'
+import { MENTION_HREF_PREFIX, mentionHref } from '../components/chat/file-links'
 
 // ─── Timeline ────────────────────────────────────────────────────────────────
 
@@ -445,21 +445,25 @@ export function renderMentions(text: string, names: MentionNames): string {
     .replace(/<@g:([^>]+)>/g, (_m, id) => `**@${names.groups?.get(id) ?? 'group'}**`)
 }
 
-function mentionLink(label: string): string {
-  return `[${label.replace(/[[\]\\]/g, '\\$&')}](${MENTION_HREF_PREFIX})`
+function mentionLink(label: string, href: string): string {
+  return `[${label.replace(/[[\]\\]/g, '\\$&')}](${href})`
 }
 
 /**
  * Render wire tokens as mention links that `MarkdownText` draws as highlighted
  * tags. Only for markdown renderers; plain-text callers use `renderMentions`.
+ *
+ * A person or agent mention carries its target in the href so a tap can open
+ * that profile. `@here` / `@channel` / `#channel` / user groups have no
+ * profile to open and keep the bare prefix.
  */
 export function renderMentionsMarkdown(text: string, names: MentionNames): string {
   return text
-    .replace(/<@u:([^>]+)>/g, (_m, id) => mentionLink(`@${names.users.get(id) ?? 'someone'}`))
-    .replace(/<@a:(ws|p:[^>]+)>/g, (_m, key) => mentionLink(`@${names.agents.get(key) ?? 'agent'}`))
-    .replace(/<!(here|channel)>/g, (_m, which) => mentionLink(`@${which}`))
-    .replace(/<#c:([^>]+)>/g, (_m, id) => mentionLink(`#${names.conversations?.get(id) ?? 'channel'}`))
-    .replace(/<@g:([^>]+)>/g, (_m, id) => mentionLink(`@${names.groups?.get(id) ?? 'group'}`))
+    .replace(/<@u:([^>]+)>/g, (_m, id) => mentionLink(`@${names.users.get(id) ?? 'someone'}`, mentionHref('u', id)))
+    .replace(/<@a:(ws|p:[^>]+)>/g, (_m, key) => mentionLink(`@${names.agents.get(key) ?? 'agent'}`, mentionHref('a', key)))
+    .replace(/<!(here|channel)>/g, (_m, which) => mentionLink(`@${which}`, MENTION_HREF_PREFIX))
+    .replace(/<#c:([^>]+)>/g, (_m, id) => mentionLink(`#${names.conversations?.get(id) ?? 'channel'}`, MENTION_HREF_PREFIX))
+    .replace(/<@g:([^>]+)>/g, (_m, id) => mentionLink(`@${names.groups?.get(id) ?? 'group'}`, MENTION_HREF_PREFIX))
 }
 
 /** Mention tokens as plain `@name` labels, leaving the message's own markdown alone. */

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
-import React, { memo, useMemo, type AnchorHTMLAttributes, type MouseEvent, type ReactNode } from "react"
+import React, { memo, useMemo, type AnchorHTMLAttributes, type KeyboardEvent, type MouseEvent, type ReactNode } from "react"
 import { useWindowDimensions } from "react-native"
 import { Streamdown, defaultUrlTransform } from "streamdown"
 import "streamdown/styles.css"
@@ -12,7 +12,9 @@ import {
   isMentionHref,
   linkifyBareUrls,
   linkifyFilePaths,
+  mentionTargetFromHref,
   pathFromFileHref,
+  type MentionTarget,
 } from "./file-links"
 
 export interface MarkdownTextProps {
@@ -25,6 +27,8 @@ export interface MarkdownTextProps {
   isStreaming?: boolean
   /** Opens a workspace file when the text mentions its path. */
   onFilePress?: (path: string) => void
+  /** Opens a person's or agent's profile when their @-mention is tapped. */
+  onMentionPress?: (target: MentionTarget) => void
 }
 
 const linkSafetyOff = { enabled: false as const }
@@ -40,6 +44,7 @@ function markdownPropsEqual(prev: MarkdownTextProps, next: MarkdownTextProps) {
   if (prev.isStreaming !== next.isStreaming) return false
   if (prev.className !== next.className) return false
   if (prev.onFilePress !== next.onFilePress) return false
+  if (prev.onMentionPress !== next.onMentionPress) return false
   const a = prev.children || ""
   const b = next.children || ""
   return a.length === b.length && a === b
@@ -78,11 +83,33 @@ function FileAwareLink({
   )
 }
 
-function MentionHighlight({ children }: { children?: ReactNode }) {
+function MentionHighlight({
+  children,
+  target,
+  onPress,
+}: {
+  children?: ReactNode
+  target?: MentionTarget | null
+  onPress?: (target: MentionTarget) => void
+}) {
+  const pressableTarget = target && onPress ? target : null
+  const open = onPress
   return (
     <span
       data-testid="chat-mention"
       className="rounded bg-yellow-200 px-0.5 font-semibold text-yellow-950 dark:bg-yellow-400/30 dark:text-yellow-100"
+      role={pressableTarget ? "button" : undefined}
+      tabIndex={pressableTarget ? 0 : undefined}
+      onClick={pressableTarget ? () => open!(pressableTarget) : undefined}
+      onKeyDown={
+        pressableTarget
+          ? (event: KeyboardEvent<HTMLSpanElement>) => {
+              if (event.key !== "Enter" && event.key !== " ") return
+              event.preventDefault()
+              open!(pressableTarget)
+            }
+          : undefined
+      }
     >
       {children}
     </span>
@@ -90,7 +117,7 @@ function MentionHighlight({ children }: { children?: ReactNode }) {
 }
 
 export const MarkdownText = memo(
-  function MarkdownText({ children, className, isStreaming, onFilePress }: MarkdownTextProps) {
+  function MarkdownText({ children, className, isStreaming, onFilePress, onMentionPress }: MarkdownTextProps) {
     const usesMobileWorkspaceChrome = useMobileWorkspaceChrome()
     const phoneLayoutOverride = usePhoneLayoutOverride()
     const { width } = useWindowDimensions()
@@ -113,12 +140,17 @@ export const MarkdownText = memo(
       () => ({
         a: (props: AnchorHTMLAttributes<HTMLAnchorElement> & { node?: unknown }) =>
           isMentionHref(props.href) ? (
-            <MentionHighlight>{props.children}</MentionHighlight>
+            <MentionHighlight
+              target={mentionTargetFromHref(props.href)}
+              onPress={onMentionPress}
+            >
+              {props.children}
+            </MentionHighlight>
           ) : (
             <FileAwareLink {...props} onFilePress={onFilePress} />
           ),
       }),
-      [onFilePress],
+      [onFilePress, onMentionPress],
     )
     return (
       <Streamdown

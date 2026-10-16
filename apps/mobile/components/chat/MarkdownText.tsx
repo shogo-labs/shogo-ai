@@ -14,7 +14,14 @@ import {
   type TextStyle,
   type ViewStyle,
 } from "react-native";
-import { isMentionHref, linkifyBareUrls, linkifyFilePaths, pathFromFileHref } from "./file-links";
+import {
+  isMentionHref,
+  linkifyBareUrls,
+  linkifyFilePaths,
+  mentionTargetFromHref,
+  pathFromFileHref,
+  type MentionTarget,
+} from "./file-links";
 import { normalizeRichTextPaste } from "../../lib/rich-text-paste";
 import { usePhoneLayout } from "../../lib/native-phone-layout";
 import { useMobileWorkspaceChrome } from "../layout/MobileWorkspaceChromeContext";
@@ -49,6 +56,8 @@ export interface MarkdownTextProps {
   onFilePress?: (path: string) => void;
   /** Return true to handle a link in the app instead of opening it in a browser. */
   onLinkPress?: (href: string) => boolean;
+  /** Opens a person's or agent's profile when their @-mention is tapped. */
+  onMentionPress?: (target: MentionTarget) => void;
 }
 
 const baseStyles: MarkedStyles = {
@@ -225,6 +234,7 @@ class NativePhoneMarkdownRenderer extends Renderer {
     private readonly mentionColors: { bg: ColorValue; text: ColorValue },
     private readonly onFilePress?: (path: string) => void,
     private readonly onLinkPress?: (href: string) => boolean,
+    private readonly onMentionPress?: (target: MentionTarget) => void,
   ) {
     super();
   }
@@ -236,21 +246,34 @@ class NativePhoneMarkdownRenderer extends Renderer {
     title?: string,
   ): ReactNode {
     if (isMentionHref(href)) {
+      const mentionStyle = [
+        styles,
+        {
+          textDecorationLine: "none" as const,
+          fontWeight: "600" as const,
+          color: this.mentionColors.text,
+          backgroundColor: this.mentionColors.bg,
+          borderRadius: 4,
+        },
+      ];
+      const target = this.onMentionPress ? mentionTargetFromHref(href) : null;
+      const openMention = this.onMentionPress;
+      if (!target || !openMention) {
+        return (
+          <Text selectable testID="chat-mention" key={this.getKey()} style={mentionStyle}>
+            {children}
+          </Text>
+        );
+      }
       return (
         <Text
           selectable
           testID="chat-mention"
+          accessibilityRole="button"
+          accessibilityLabel={typeof children === "string" ? children : undefined}
           key={this.getKey()}
-          style={[
-            styles,
-            {
-              textDecorationLine: "none",
-              fontWeight: "600",
-              color: this.mentionColors.text,
-              backgroundColor: this.mentionColors.bg,
-              borderRadius: 4,
-            },
-          ]}
+          onPress={() => openMention(target)}
+          style={mentionStyle}
         >
           {children}
         </Text>
@@ -375,6 +398,7 @@ function markdownPropsEqual(prev: MarkdownTextProps, next: MarkdownTextProps) {
   if (prev.isStreaming !== next.isStreaming) return false;
   if (prev.onFilePress !== next.onFilePress) return false;
   if (prev.onLinkPress !== next.onLinkPress) return false;
+  if (prev.onMentionPress !== next.onMentionPress) return false;
   const a = prev.children || "";
   const b = next.children || "";
   return a.length === b.length && a === b;
@@ -385,6 +409,7 @@ export const MarkdownText = memo(function MarkdownText({
   variant = "default",
   onFilePress,
   onLinkPress,
+  onMentionPress,
 }: MarkdownTextProps) {
   const { colorScheme } = useColorScheme();
   const { width } = useWindowDimensions();
@@ -439,8 +464,9 @@ export const MarkdownText = memo(function MarkdownText({
         mentionColors,
         onFilePress,
         onLinkPress,
+        onMentionPress,
       ),
-    [width, colors.tableHeaderBg, mentionColors, onFilePress, onLinkPress],
+    [width, colors.tableHeaderBg, mentionColors, onFilePress, onLinkPress, onMentionPress],
   );
 
   return (

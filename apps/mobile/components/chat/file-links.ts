@@ -18,8 +18,39 @@ export const FILE_HREF_PREFIX = "/shogo-file?path="
 /** Href that marks a markdown link as an @-mention, drawn as a highlight rather than a link. */
 export const MENTION_HREF_PREFIX = "/shogo-mention"
 
+/**
+ * Who an @-mention points at: a person, an agent, or a user group. The id
+ * rides in the href so a tap can open that target's profile; a mention with
+ * no target (`@here`, `@channel`, `#channel`) keeps the bare prefix.
+ */
+export type MentionTargetKind = "u" | "a" | "g"
+
+export interface MentionTarget {
+  kind: MentionTargetKind
+  id: string
+}
+
 export function isMentionHref(href: string | undefined | null): boolean {
   return typeof href === "string" && href.startsWith(MENTION_HREF_PREFIX)
+}
+
+/** Agent keys are `ws` or `p:<projectId>`, so the id is always escaped. */
+export function mentionHref(kind: MentionTargetKind, id: string): string {
+  return `${MENTION_HREF_PREFIX}/${kind}/${encodeURIComponent(id)}`
+}
+
+/** The target an @-mention points at, or null for a bare or malformed href. */
+export function mentionTargetFromHref(
+  href: string | undefined | null,
+): MentionTarget | null {
+  if (!isMentionHref(href)) return null
+  const match = /^\/(u|a|g)\/([^/?#]+)$/.exec(href!.slice(MENTION_HREF_PREFIX.length))
+  if (!match) return null
+  try {
+    return { kind: match[1] as MentionTargetKind, id: decodeURIComponent(match[2]!) }
+  } catch {
+    return null
+  }
 }
 
 const UUID_RE =

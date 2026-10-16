@@ -166,6 +166,19 @@ export function validateTimezone(tz: string): boolean {
   }
 }
 
+/**
+ * The clock time in `timezone` as `HH:MM` (24h), or null when the zone is
+ * missing or unknown. Used to show a teammate their own local time, so the
+ * reader's clock never decides what their day looks like.
+ */
+export function timeInZone(now: Date, timezone: string | null | undefined): string | null {
+  if (!timezone || !validateTimezone(timezone)) return null
+  const minutes = minutesInZone(now, timezone)
+  const h = Math.floor(minutes / 60)
+  const m = minutes % 60
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`
+}
+
 export async function updateChatSettings(
   workspaceId: string,
   userId: string,

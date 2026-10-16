@@ -11,6 +11,7 @@
  * never sent to the server or cached with the timeline.
  */
 import { EphemeralNotice } from './EphemeralNotice'
+import type { MentionTarget } from '../chat/file-links'
 import type { MentionNames } from '../../lib/team-chat-state'
 
 export interface MentionNudgeCardProps {
@@ -22,6 +23,8 @@ export interface MentionNudgeCardProps {
   createdAt: string
   busy?: boolean
   error?: string | null
+  /** Tapping the mentioned person's name in the warning. */
+  onMentionPress?: (target: MentionTarget) => void
   onAdd: () => void
   onDismiss: () => void
   onDontShowAgain: () => void
@@ -35,6 +38,7 @@ export function MentionNudgeCard({
   createdAt,
   busy,
   error,
+  onMentionPress,
   onAdd,
   onDismiss,
   onDontShowAgain,
@@ -50,6 +54,7 @@ export function MentionNudgeCard({
       workspaceId={workspaceId}
       ephemeralLabel
       error={error}
+      onMentionPress={onMentionPress}
       actions={[
         { label: 'Add them', busyLabel: 'Adding…', busy, primary: true, onPress: onAdd, accessibilityLabel: 'Add them to this channel' },
         { label: 'Dismiss', onPress: onDismiss, accessibilityLabel: 'Dismiss' },
