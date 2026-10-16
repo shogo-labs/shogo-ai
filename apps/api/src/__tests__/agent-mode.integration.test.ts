@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * Which model a channel run asks for: auto routing, unless the project's agent was given a model.
+ * Which model a channel run asks for: auto routing, unless the project's agent was given a model
+ * or, for the workspace agent, a workspace admin set a default.
  */
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { rmSync } from 'fs'
@@ -12,6 +13,8 @@ const { dir } = setupChannelsTestDb()
 
 const { prisma } = await import('../lib/prisma')
 const { agentModeFor, settleOrphanedAgentReplies } = await import('../services/conversation-agent-dispatcher')
+const { setAgentDefaultModel } = await import('../services/workspace-agent.service')
+const { invalidateWorkspaceModels } = await import('../services/workspace-models.service')
 
 const db = prisma as any
 let seed: SeededWorkspace
@@ -36,6 +39,25 @@ describe('agentModeFor', () => {
   test('a model someone picked is used', async () => {
     await db.agentConfig.update({ where: { projectId: seed.projectId }, data: { modelName: 'claude-sonnet-4-6' } })
     expect(await agentModeFor(seed.projectId)).toBe('claude-sonnet-4-6')
+  })
+
+  test('the workspace agent uses the admin-set workspace default', async () => {
+    expect(await agentModeFor(null, seed.workspaceId)).toBe('auto')
+    await setAgentDefaultModel(seed.workspaceId, 'claude-sonnet-4-6')
+    expect(await agentModeFor(null, seed.workspaceId)).toBe('claude-sonnet-4-6')
+    // A project agent keeps its own model, not the workspace agent's default.
+    await db.agentConfig.update({ where: { projectId: seed.projectId }, data: { modelName: 'claude-haiku-4-5' } })
+    expect(await agentModeFor(seed.projectId, seed.workspaceId)).toBe('auto')
+  })
+
+  test('a default the workspace no longer allows falls back to auto', async () => {
+    await db.workspaceModelVisibility.create({ data: { workspaceId: seed.workspaceId, modelId: 'gpt-5.4-nano' } })
+    invalidateWorkspaceModels(seed.workspaceId)
+    expect(await agentModeFor(null, seed.workspaceId)).toBe('auto')
+    await db.workspaceModelVisibility.deleteMany({ where: { workspaceId: seed.workspaceId } })
+    invalidateWorkspaceModels(seed.workspaceId)
+    await setAgentDefaultModel(seed.workspaceId, null)
+    expect(await agentModeFor(null, seed.workspaceId)).toBe('auto')
   })
 })
 

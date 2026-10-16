@@ -175,10 +175,6 @@ function AppLayoutInner() {
   const isNewConversationPage =
     !isWide && !isIdeEmbed && /\/c\/new\/?$/.test(pathname);
 
-  const isSettingsPage =
-    pathname === "/settings" ||
-    pathname === "/(app)/settings" ||
-    pathname.includes("/settings");
   const isBillingPage =
     pathname === "/billing" || pathname === "/(app)/billing";
   // The notifications inbox provides its own header (back + mark-all-read), so
@@ -507,11 +503,7 @@ function AppLayoutInner() {
     return null;
   }
 
-  const showSidebar =
-    isWide &&
-    !isIdeEmbed &&
-    !isSettingsPage &&
-    !isBillingPage;
+  const showSidebar = isWide && !isIdeEmbed && !isBillingPage;
   const nativeEdgeToEdgeChrome =
     isFloatingConversation ||
     isNewConversationPage ||

@@ -14,6 +14,7 @@ import { useOpenAgentDm } from '../../lib/use-open-agent-dm'
 import { useAgentLook } from '../../hooks/useTeamChat'
 import { ShogoBuddy } from '../island/buddy/ShogoBuddy'
 import { BuddyLookSheet } from '../personal/BuddyLookSheet'
+import { AgentDefaultModelCard } from '../settings/AgentDefaultModelCard'
 import { AgentProfileBody, useAgentCard } from './AgentProfileBody'
 import { buddyAvatarColor } from './BuddyAvatar'
 import { useAgentLookEditor } from './useAgentLookEditor'
@@ -95,6 +96,7 @@ export function AgentProfileScreen({ workspaceId, agentKey }: { workspaceId: str
               />
             </View>
           ) : null}
+          {!projectId ? <AgentDefaultModelCard workspaceId={workspaceId} /> : null}
         </View>
       </ScrollView>
 

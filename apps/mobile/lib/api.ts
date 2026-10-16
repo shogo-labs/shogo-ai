@@ -1797,6 +1797,23 @@ export const api = {
     return res.data.profile
   },
 
+  /** Model the workspace agent uses when tagged in team chat (`null` = Auto). */
+  async getAgentDefaultModel(http: HttpClient, workspaceId: string) {
+    const res = await http.get<{ defaultModel: string | null; canManage: boolean }>(
+      `/api/workspaces/${encodeURIComponent(workspaceId)}/agent-default-model`,
+    )
+    return { defaultModel: res.data?.defaultModel ?? null, canManage: !!res.data?.canManage }
+  },
+
+  /** Workspace owners/admins only; pass `null` to go back to Auto. */
+  async setAgentDefaultModel(http: HttpClient, workspaceId: string, defaultModel: string | null) {
+    const res = await http.request<{ defaultModel: string | null; canManage: boolean }>(
+      `/api/workspaces/${encodeURIComponent(workspaceId)}/agent-default-model`,
+      { method: 'PUT', body: { defaultModel } },
+    )
+    return res.data?.defaultModel ?? null
+  },
+
   async listWorkspaceGoals(
     http: HttpClient,
     workspaceId: string,

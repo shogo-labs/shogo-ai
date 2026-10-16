@@ -250,6 +250,8 @@ model WorkspaceAgentProfile {
   personality     String?
   statusText      String?
   statusUpdatedAt DateTime?
+  // Model used when the agent is tagged in a channel or thread; null = Auto. Set by workspace admins.
+  defaultModel    String?
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
 

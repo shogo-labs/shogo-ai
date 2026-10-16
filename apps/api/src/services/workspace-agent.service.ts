@@ -60,6 +60,25 @@ export async function updateAgentProfile(
   })
 }
 
+/** Model the workspace agent uses when tagged in team chat; null = Auto. */
+export async function getAgentDefaultModel(workspaceId: string): Promise<string | null> {
+  const row = await prisma.workspaceAgentProfile.findUnique({
+    where: { workspaceId },
+    select: { defaultModel: true },
+  })
+  return row?.defaultModel?.trim() || null
+}
+
+export async function setAgentDefaultModel(workspaceId: string, model: string | null): Promise<string | null> {
+  const defaultModel = model?.trim() || null
+  await prisma.workspaceAgentProfile.upsert({
+    where: { workspaceId },
+    create: { workspaceId, name: 'Shogo', tagline: 'Your personal AI companion', defaultModel },
+    update: { defaultModel },
+  })
+  return defaultModel
+}
+
 /**
  * Store an uploaded agent-avatar image for local mode. Cloud mode injects the
  * S3-backed implementation at the route boundary so the local API never
