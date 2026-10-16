@@ -151,6 +151,9 @@ jobs:
           done
           [[ $miss -eq 0 ]] || { echo "::error::Set the METAL_RELEASE_* variables/secrets on the '${{ inputs.environment || 'staging' }}' environment."; exit 1; }
 
+      - name: Refuse builds that cannot read incremental repo manifests
+        run: bash scripts/ci/check-repo-bundle-reader.sh
+
       - name: Build immutable agent bundle
         id: bundle
         run: |

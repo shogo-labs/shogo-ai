@@ -100,6 +100,14 @@ import {
   wrapSseStreamWithKeepalive,
 } from '@shogo/shared-runtime'
 import { traceStream } from '@shogo/shared-runtime/stream-trace'
+import {
+  buildRepoBundle,
+  materializeRepoFromBundles,
+  parseRepoManifest,
+  readRepoSnapshotFields,
+  type RepoManifest,
+  type RepoSnapshotFields,
+} from '@shogo/shared-runtime/repo-bundles'
 import { getModelTier, resolveModelId, calculateDollarCost } from '@shogo/model-catalog'
 import {
   seedWorkspaceDefaults,
@@ -3191,7 +3199,10 @@ app.post('/pool/repo-hydrated', async (c) => {
   // ends up with a stray `.git` inside its working tree.
   // `deadline` tells the host this guest honours `timeoutMs` and `keepPaths`;
   // an older one resets the whole tree whenever it gets round to it.
-  if (body?.probe === true) return c.json({ ok: true, supported: true, deadline: true })
+  // `bundles` means this guest can restore the incremental repo format
+  // (`/pool/repo-bundles-hydrate`). The host must not fall back to the legacy
+  // tarball when a manifest exists, so it refuses instead of guessing.
+  if (body?.probe === true) return c.json({ ok: true, supported: true, deadline: true, bundles: true })
   let stagingDir: string
   try {
     stagingDir = resolvePoolWorkspaceDir(body?.stagingDir)
@@ -3244,6 +3255,132 @@ app.post('/pool/repo-hydrated', async (c) => {
     return c.json({ error: err?.message ?? 'repo adopt failed' }, 500)
   } finally {
     sync?.resume()
+  }
+})
+
+// Incremental durable repo (packages/shared-runtime/src/repo-bundles.ts).
+//
+// The host drives both directions and stores the manifest itself; the guest
+// never holds store credentials. Export builds the next bundle relative to the
+// tips the host last recorded, and serves it by digest. Restore downloads each
+// bundle from a host-presigned URL and rebuilds the staging `.git`, which the
+// existing `/pool/repo-hydrated` adoption then swaps in unchanged.
+
+function sameRepoSnapshot(a: RepoSnapshotFields, b: RepoSnapshotFields): boolean {
+  return JSON.stringify(a) === JSON.stringify(b)
+}
+
+app.post('/pool/export-repo-bundle', async (c) => {
+  sweepSpool()
+  let body: { dir?: unknown; since?: unknown; full?: unknown }
+  try {
+    body = (await c.req.json().catch(() => ({}))) as typeof body
+    const destinationDir = resolvePoolWorkspaceDir(body?.dir)
+    const full = body?.full === true
+    const since: string[] | null = full || body?.since == null ? null : (body.since as unknown[]).map((s) => {
+      if (typeof s !== 'string' || !/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(s)) throw new Error('since must be object ids')
+      return s
+    })
+    await flushGitBeforeExport(destinationDir)
+    if (isLfsActive()) {
+      const lfsCfg = lfsRemoteConfigFromEnv(WORKSPACE_DIR)
+      // Bundles never carry LFS objects. Falling back to a tar that does
+      // would not be an option, so a failed push fails the export.
+      if (lfsCfg && !(await lfsPushAll(lfsCfg))) {
+        return c.json({ error: 'lfs push failed; repo bundle not exported' }, 503)
+      }
+    }
+
+    // Snapshot refs before and after building. Refs that moved in between
+    // could leave the manifest pointing at objects the bundle lacks, so
+    // retry against the newer state.
+    let built: Awaited<ReturnType<typeof buildRepoBundle>> = null
+    let snapshot = await readRepoSnapshotFields(destinationDir)
+    for (let attempt = 0; ; attempt++) {
+      built = await buildRepoBundle(destinationDir, { previous: since, workDir: spoolDir() })
+      const after = await readRepoSnapshotFields(destinationDir)
+      if (sameRepoSnapshot(snapshot, after)) {
+        snapshot = after
+        break
+      }
+      if (built) rmSync(built.path, { force: true })
+      built = null
+      snapshot = after
+      if (attempt >= 2) return c.json({ error: 'repo refs kept moving during export; retry' }, 409)
+    }
+
+    return c.json({
+      bundle: built?.entry ?? null,
+      head: snapshot.head,
+      refs: snapshot.refs,
+      config: snapshot.config,
+      rootCommitAt: repoRootCommitAt(destinationDir),
+    })
+  } catch (err: any) {
+    console.error('[pool/export-repo-bundle] failed:', err?.message ?? err)
+    return c.json({ error: err?.message ?? 'export-repo-bundle failed' }, 500)
+  }
+})
+
+app.get('/pool/export-repo-bundle/:sha256', async (c) => {
+  const sha = c.req.param('sha256')
+  if (!/^[0-9a-f]{64}$/.test(sha)) return c.json({ error: 'sha256 must be 64 hex digits' }, 400)
+  const path = join(spoolDir(), `${sha}.bundle`)
+  if (!existsSync(path)) return c.json({ error: 'bundle not built for this export' }, 404)
+  return spooledFileResponse(path, { 'Content-Type': 'application/octet-stream' })
+})
+
+app.post('/pool/repo-bundles-hydrate', async (c) => {
+  sweepSpool()
+  const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null
+  if (!body || typeof body !== 'object') return c.json({ error: 'expected a JSON body' }, 400)
+  let stagingDir: string
+  try {
+    stagingDir = resolvePoolWorkspaceDir(body.stagingDir)
+  } catch (error: any) {
+    return c.json({ error: error?.message ?? 'invalid staging dir' }, 400)
+  }
+  if (stagingDir === WORKSPACE_DIR) return c.json({ error: 'stagingDir is required' }, 400)
+
+  let manifest: RepoManifest
+  try {
+    manifest = parseRepoManifest(body.manifest)
+  } catch (error: any) {
+    return c.json({ error: error?.message ?? 'invalid manifest' }, 400)
+  }
+
+  // The host's URL list must match the manifest chain exactly, in order.
+  const items = Array.isArray(body.bundles) ? (body.bundles as Array<{ sha256?: unknown; url?: unknown }>) : null
+  if (!items || items.length !== manifest.bundles.length) {
+    return c.json({ error: 'bundles must list every manifest bundle, in order' }, 400)
+  }
+  for (const [i, item] of items.entries()) {
+    if (item?.sha256 !== manifest.bundles[i].sha256 || typeof item.url !== 'string' || !/^https?:\/\//.test(item.url)) {
+      return c.json({ error: `bundle ${i} does not match the manifest` }, 400)
+    }
+  }
+
+  const timeoutMs = Number(body.timeoutMs)
+  const downloadMs = Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 15 * 60_000
+  const downloaded: string[] = []
+  try {
+    rmSync(stagingDir, { recursive: true, force: true })
+    await materializeRepoFromBundles(stagingDir, manifest, async (entry) => {
+      const item = items[manifest.bundles.indexOf(entry)]
+      const res = await fetch(item.url as string, { signal: AbortSignal.timeout(downloadMs) })
+      if (!res.ok) throw new Error(`bundle ${entry.sha256} download failed (${res.status})`)
+      const path = spoolPath(`repo-bundle-${entry.sha256}.bundle`)
+      await Bun.write(path, res)
+      downloaded.push(path)
+      return path
+    })
+    return c.json({ ok: true, bundles: manifest.bundles.length })
+  } catch (err: any) {
+    rmSync(stagingDir, { recursive: true, force: true })
+    console.error('[pool/repo-bundles-hydrate] failed:', redactUrls(String(err?.message ?? err)))
+    return c.json({ error: redactUrls(String(err?.message ?? 'repo bundle restore failed')) }, 500)
+  } finally {
+    for (const path of downloaded) rmSync(path, { force: true })
   }
 })
 

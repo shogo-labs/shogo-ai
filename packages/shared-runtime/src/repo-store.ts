@@ -24,7 +24,7 @@
 
 import { spawn } from './child-process'
 import { excludePathspecs } from './git-pathspec'
-import { existsSync, mkdirSync, createReadStream, createWriteStream, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, mkdtempSync, createReadStream, createWriteStream, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'fs'
 import { unlink } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
@@ -42,6 +42,13 @@ import {
   PutObjectCommand,
   HeadObjectCommand,
 } from '@aws-sdk/client-s3'
+import {
+  bundleObjectName,
+  materializeRepoFromBundles,
+  parseRepoManifest,
+  REPO_MANIFEST_NAME,
+  type RepoManifest,
+} from './repo-bundles'
 
 type Logger = Pick<Console, 'log' | 'warn' | 'error'>
 
@@ -68,6 +75,40 @@ function makeClient(cfg: RepoStoreConfig): S3Client {
 
 function repoKey(projectId: string): string {
   return `${projectId}/repo.git.tar.gz`
+}
+
+function repoManifestKey(projectId: string): string {
+  return `${projectId}/${REPO_MANIFEST_NAME}`
+}
+
+/** True when an S3 error means the object does not exist (not a transport failure). */
+function isS3NotFound(err: any): boolean {
+  const code = err?.name ?? err?.Code ?? err?.code
+  if (code === 'NoSuchKey' || code === 'NotFound') return true
+  if (err?.$metadata?.httpStatusCode === 404) return true
+  return /NoSuchKey|NotFound/.test(String(err?.message ?? ''))
+}
+
+/**
+ * Read and validate the project's incremental repo manifest. Returns null only
+ * when it is genuinely absent. Any other failure throws: an unreadable manifest
+ * must never be mistaken for "no manifest", or a reader would fall back to a
+ * tarball that is stale once the manifest has moved on.
+ */
+async function readRepoManifest(client: S3Client, cfg: RepoStoreConfig): Promise<RepoManifest | null> {
+  let res: { Body?: unknown }
+  try {
+    res = await client.send(new GetObjectCommand({ Bucket: cfg.bucket, Key: repoManifestKey(cfg.projectId) }))
+  } catch (err: any) {
+    if (isS3NotFound(err)) return null
+    throw err
+  }
+  if (!res.Body) throw new Error('repo manifest has an empty body')
+  const chunks: Buffer[] = []
+  for await (const chunk of res.Body as AsyncIterable<Buffer | string>) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
+  }
+  return parseRepoManifest(JSON.parse(Buffer.concat(chunks).toString('utf8')))
 }
 
 function run(cmd: string, args: string[], opts: { cwd?: string; env?: NodeJS.ProcessEnv } = {}): Promise<void> {
@@ -621,6 +662,18 @@ export async function persistRepoToStore(
     return { ok: true, changed: false, reason: 'no-local-git' }
   }
   const client = makeClient(cfg)
+  // Once a project is on incremental bundles, the tarball is legacy and
+  // read-only. This pod cannot write bundles, so overwriting the tarball here
+  // would only add a lineage the manifest readers ignore. Refuse, visibly.
+  try {
+    if (await readRepoManifest(client, cfg)) {
+      logger.warn(`[repo-store] refusing tarball persist for ${cfg.projectId}: repo manifest exists`)
+      return { ok: false, changed: false, reason: 'repo-manifest-present' }
+    }
+  } catch (err: any) {
+    logger.warn(`[repo-store] manifest check failed for ${cfg.projectId}: ${err?.message ?? err}`)
+    return { ok: false, changed: false, reason: `manifest-unreadable: ${err?.message ?? err}` }
+  }
   const tmpFile = join(tmpdir(), `repo-${cfg.projectId}-${randomUUID()}.tar.gz`)
   try {
     const packed = await packRepoArchive(workspaceDir, tmpFile, opts)
@@ -649,6 +702,49 @@ export async function persistRepoToStore(
 }
 
 /**
+ * Rebuild `<workspaceDir>/.git` from the manifest's bundle chain. The repo is
+ * materialized in a private stage directory inside the workspace first, so a
+ * failed or corrupt chain never leaves a half-built `.git` behind.
+ */
+async function restoreRepoFromBundles(
+  workspaceDir: string,
+  cfg: RepoStoreConfig,
+  client: S3Client,
+  manifest: RepoManifest,
+): Promise<{ ok: boolean; restored: boolean; reason?: string }> {
+  const logger = cfg.logger ?? console
+  if (!existsSync(workspaceDir)) mkdirSync(workspaceDir, { recursive: true })
+  const stage = join(workspaceDir, `.repo-stage-${randomUUID()}`)
+  const bundleDir = mkdtempSync(join(tmpdir(), `repo-bundles-${cfg.projectId}-`))
+  try {
+    await materializeRepoFromBundles(stage, manifest, async (entry) => {
+      const res = await client.send(
+        new GetObjectCommand({ Bucket: cfg.bucket, Key: `${cfg.projectId}/${bundleObjectName(entry.sha256)}` }),
+      )
+      if (!res.Body) throw new Error(`bundle ${entry.sha256} has an empty body`)
+      const path = join(bundleDir, `${entry.sha256}.bundle`)
+      await pipeline(res.Body as Readable, createWriteStream(path))
+      return path
+    })
+    renameSync(join(stage, '.git'), join(workspaceDir, '.git'))
+    rmSync(stage, { recursive: true, force: true })
+    try {
+      await run('git', ['reset', '--hard', 'HEAD'], { cwd: workspaceDir })
+    } catch {
+      /* unborn HEAD — leave tree as-is */
+    }
+    logger.log(`[repo-store] restored durable repo for ${cfg.projectId} from ${manifest.bundles.length} bundle(s)`)
+    return { ok: true, restored: true }
+  } catch (err: any) {
+    rmSync(stage, { recursive: true, force: true })
+    logger.warn(`[repo-store] bundle restore failed for ${cfg.projectId}: ${err?.message ?? err}`)
+    return { ok: false, restored: false, reason: err?.message ?? 'bundle-restore-failed' }
+  } finally {
+    rmSync(bundleDir, { recursive: true, force: true })
+  }
+}
+
+/**
  * Restore `<workspaceDir>/.git` from object storage and reconstruct the
  * working tree (`git reset --hard HEAD`). No-op when `.git` is already
  * present (warm reuse) or no durable object exists yet (brand-new / legacy
@@ -663,6 +759,17 @@ export async function restoreRepoFromStore(
     return { ok: true, restored: false, reason: 'already-local' }
   }
   const client = makeClient(cfg)
+  // The manifest wins over the legacy tarball. An unreadable manifest fails
+  // closed rather than restoring a tarball that may be behind it.
+  let manifest: RepoManifest | null
+  try {
+    manifest = await readRepoManifest(client, cfg)
+  } catch (err: any) {
+    logger.warn(`[repo-store] manifest read failed for ${cfg.projectId}: ${err?.message ?? err}`)
+    return { ok: false, restored: false, reason: `manifest-unreadable: ${err?.message ?? err}` }
+  }
+  if (manifest) return restoreRepoFromBundles(workspaceDir, cfg, client, manifest)
+
   let body: Readable
   try {
     const res = await client.send(new GetObjectCommand({ Bucket: cfg.bucket, Key: repoKey(cfg.projectId) }))

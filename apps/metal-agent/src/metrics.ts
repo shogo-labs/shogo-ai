@@ -222,6 +222,11 @@ export const M = {
   repoPromoted: 'metal_repo_unlinked_promoted_total',
   repoRefused: 'metal_repo_refused_untrusted_total',
   repoTooLarge: 'metal_repo_too_large_total',
+  repoBundleBytes: 'metal_repo_bundle_bytes_total',
+  repoBundleFull: 'metal_repo_bundle_full_total',
+  repoManifestConflict: 'metal_repo_manifest_conflict_total',
+  repoBundleCompactions: 'metal_repo_bundle_compactions_total',
+  repoBundlesGced: 'metal_repo_bundle_gc_deleted_total',
   repoExportUnchanged: 'metal_repo_export_unchanged_total',
   // Guest-side failures scraped from the per-VM serial console by serial-watcher.
   // These are the ONLY fleet-wide signal for in-guest breakage that survives a

@@ -26,7 +26,12 @@
  */
 
 import { spawn } from '@shogo/shared-runtime/child-process'
-import { existsSync, mkdirSync, createWriteStream, rmSync } from 'fs'
+import {
+  materializeRepoFromBundles,
+  parseRepoManifest,
+  type RepoManifest,
+} from '@shogo/shared-runtime/repo-bundles'
+import { existsSync, mkdirSync, createWriteStream, renameSync, rmSync } from 'fs'
 import { unlink } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
@@ -57,6 +62,35 @@ function repoKey(projectId: string): string {
   return `${projectId}/repo.git.tar.gz`
 }
 
+/**
+ * Incremental format (packages/shared-runtime/src/repo-bundles.ts). Once the
+ * manifest exists it is authoritative: the legacy tarball is never read in
+ * preference to it.
+ */
+function manifestKey(projectId: string): string {
+  return `${projectId}/repo/manifest.json`
+}
+
+/** Whether an S3 error means the key is simply absent (not a read failure). */
+function isNotFound(err: any): boolean {
+  return (
+    err?.name === 'NoSuchKey' ||
+    err?.name === 'NotFound' ||
+    err?.$metadata?.httpStatusCode === 404 ||
+    /NoSuchKey|NotFound/.test(String(err?.message ?? ''))
+  )
+}
+
+async function streamToString(body: Readable): Promise<string> {
+  const chunks: Buffer[] = []
+  for await (const chunk of body) chunks.push(Buffer.from(chunk))
+  return Buffer.concat(chunks).toString('utf-8')
+}
+
+function bundleKey(projectId: string, sha256: string): string {
+  return `${projectId}/repo/bundles/${sha256}.bundle`
+}
+
 function bucket(): string | undefined {
   return process.env.S3_WORKSPACES_BUCKET
 }
@@ -71,6 +105,64 @@ function run(cmd: string, args: string[], opts: { cwd?: string } = {}): Promise<
       code === 0 ? resolve() : reject(new Error(`${cmd} exited ${code}: ${stderr.slice(0, 500)}`)),
     )
   })
+}
+
+/**
+ * Hydrate from the manifest and its bundles. Returns null only when the project
+ * has no manifest, so the caller can use the legacy tarball. A manifest that
+ * exists but cannot be read or verified fails closed, never falling back.
+ */
+async function hydrateFromManifest(
+  s3: S3Client,
+  b: string,
+  projectId: string,
+  workspacePath: string,
+  hasLocal: boolean,
+): Promise<GitRepoStoreResult | null> {
+  let manifest: RepoManifest
+  let etag: string | undefined
+  try {
+    const res = await s3.send(new GetObjectCommand({ Bucket: b, Key: manifestKey(projectId) }))
+    if (!res.Body) return { ok: false, changed: false, reason: 'manifest-empty-body' }
+    manifest = parseRepoManifest(JSON.parse(await streamToString(res.Body as Readable)))
+    etag = res.ETag
+  } catch (err: any) {
+    if (isNotFound(err)) return null
+    return { ok: false, changed: false, reason: `manifest unreadable: ${err?.message ?? err}` }
+  }
+
+  if (hasLocal && etag && localRepoEtag.get(projectId) === etag) {
+    return { ok: true, changed: false, reason: 'already-local-fresh' }
+  }
+
+  // Build the repo beside the workspace, so the final swap stays on one filesystem.
+  const stage = `${workspacePath}-repo-stage-${randomUUID()}`
+  const bundleDir = join(tmpdir(), `repo-bundles-${projectId}-${randomUUID()}`)
+  try {
+    mkdirSync(bundleDir, { recursive: true })
+    await materializeRepoFromBundles(stage, manifest, async (entry) => {
+      const res = await s3.send(new GetObjectCommand({ Bucket: b, Key: bundleKey(projectId, entry.sha256) }))
+      if (!res.Body) throw new Error(`bundle ${entry.sha256} has no body`)
+      const file = join(bundleDir, `${entry.sha256}.bundle`)
+      await pipeline(res.Body as Readable, createWriteStream(file))
+      return file
+    })
+    if (!existsSync(workspacePath)) mkdirSync(workspacePath, { recursive: true })
+    rmSync(join(workspacePath, '.git'), { recursive: true, force: true })
+    renameSync(join(stage, '.git'), join(workspacePath, '.git'))
+    try {
+      await run('git', ['reset', '--hard', 'HEAD'], { cwd: workspacePath })
+    } catch {
+      /* unborn HEAD or detached state — leave tree as-is */
+    }
+    if (etag) localRepoEtag.set(projectId, etag)
+    return { ok: true, changed: true }
+  } catch (err: any) {
+    return { ok: false, changed: false, reason: err?.message ?? 'bundle-restore-failed' }
+  } finally {
+    rmSync(stage, { recursive: true, force: true })
+    rmSync(bundleDir, { recursive: true, force: true })
+  }
 }
 
 export interface GitRepoStoreResult {
@@ -109,6 +201,9 @@ export async function hydrateRepo(
     // No object storage: serve whatever's on disk (e.g. local dev).
     return { ok: true, changed: false, reason: hasLocal ? 'already-local' : 'no-object-storage' }
   }
+
+  const fromManifest = await hydrateFromManifest(s3, b, projectId, workspacePath, hasLocal)
+  if (fromManifest) return fromManifest
 
   // Cheap freshness probe: if our warm local copy matches the durable
   // object's current ETag, serve it without re-downloading.
