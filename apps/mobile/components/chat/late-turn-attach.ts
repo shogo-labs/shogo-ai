@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * Whether a loaded session should keep probing /turn. A delegated task and a
- * channel dispatch both start their turn outside this panel, so the first
- * probe can legitimately see no turn yet.
+ * Whether a loaded session should keep probing /turn. A delegated task, a
+ * channel dispatch and a project call all start their turn outside this
+ * panel, so the first probe can legitimately see no turn yet.
  */
 
-import { channelDispatchOf, extractTextContent } from '@shogo/shared-app/chat'
+import { channelDispatchOf, extractTextContent, projectCallOf } from '@shogo/shared-app/chat'
 import type { ChatTurnStatus } from './probe-turn-status'
 
 export const LATE_TURN_POLL_INTERVAL_MS = 1_000
@@ -20,13 +20,13 @@ function isDelegatedTaskPrompt(message: any): boolean {
 
 /**
  * Latest user message whose reply is produced somewhere else (a delegated
- * task, or a channel agent run). -1 when the history has neither.
+ * task, a channel agent run, or a project call). -1 when the history has none.
  */
 export function pendingExternalPromptIndex(messages: readonly any[]): number {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index]
     if (message?.role !== 'user') continue
-    if (isDelegatedTaskPrompt(message) || channelDispatchOf(message)) return index
+    if (isDelegatedTaskPrompt(message) || channelDispatchOf(message) || projectCallOf(message)) return index
   }
   return -1
 }

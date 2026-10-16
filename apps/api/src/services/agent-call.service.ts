@@ -107,7 +107,13 @@ async function callChatDb(): Promise<any> {
   return prisma as any
 }
 
-async function ensureCallSession(projectId: string, sessionId: string, name: string, message: string): Promise<boolean> {
+async function ensureCallSession(
+  projectId: string,
+  sessionId: string,
+  name: string,
+  message: string,
+  runId: string,
+): Promise<boolean> {
   try {
     const db = await callChatDb()
     const label = oneLine(`${name}: ${message}`, 120)
@@ -121,7 +127,11 @@ async function ensureCallSession(projectId: string, sessionId: string, name: str
         sessionId,
         role: 'user',
         content: message,
-        parts: JSON.stringify([{ type: 'text', text: message }]),
+        // The marker lets an open chat keep watching for the call's turn.
+        parts: JSON.stringify([
+          { type: 'text', text: message },
+          { type: 'data-project-call', data: { runId, callerName: name } },
+        ]),
         // Not 'technical': funnels treat that pair (role user + agent technical)
         // as a person. The list hook still returns this row in the technical thread.
         agent: PROJECT_CALL_MESSAGE_AGENT,
@@ -206,7 +216,7 @@ export async function callProjectAgentAsChat(
   }
   const runId = req.runId?.trim() || randomUUID()
   const chatSessionId = runChatSessionId(projectId, runId)
-  const persisted = await ensureCallSession(projectId, chatSessionId, await callerName(req.callerProjectId), req.message)
+  const persisted = await ensureCallSession(projectId, chatSessionId, await callerName(req.callerProjectId), req.message, runId)
   if (!persisted) return callProjectAgent(c, projectId, workspaceId, { ...req, runId })
 
   const call = { ...req, runId, sessionId: chatSessionId }
@@ -245,7 +255,7 @@ async function startTrackedCall(
   let chatSessionId: string | undefined
   if (!req.sessionId) {
     const candidate = runChatSessionId(projectId, runId)
-    if (await ensureCallSession(projectId, candidate, await callerName(req.callerProjectId), req.message)) {
+    if (await ensureCallSession(projectId, candidate, await callerName(req.callerProjectId), req.message, runId)) {
       chatSessionId = candidate
     }
   }

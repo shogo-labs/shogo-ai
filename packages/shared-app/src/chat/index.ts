@@ -9,10 +9,11 @@ export {
   getToolCategory,
   ERROR_CODE_MESSAGES,
   channelDispatchOf,
+  projectCallOf,
   taskNotificationOf,
   parseTaskUpdates,
 } from './message-helpers'
-export type { ChannelDispatch, TaskNotification, TaskUpdateLine } from './message-helpers'
+export type { ChannelDispatch, ProjectCallPrompt, TaskNotification, TaskUpdateLine } from './message-helpers'
 
 export {
   buildChatStreamErrorReport,

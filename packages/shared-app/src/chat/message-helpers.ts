@@ -186,6 +186,32 @@ export function channelDispatchOf(message: { parts?: unknown } | null | undefine
   }
 }
 
+/**
+ * A `project_call` request recorded into the callee's chat carries this part;
+ * the callee's reply is produced by the call, not by this chat.
+ */
+export interface ProjectCallPrompt {
+  runId: string
+  callerName: string | null
+}
+
+/** The project-call marker on a message, or null when it has none. */
+export function projectCallOf(message: { parts?: unknown } | null | undefined): ProjectCallPrompt | null {
+  const parts = message ? messageParts(message) : null
+  if (!parts) return null
+  const part = parts.find((entry) => !!entry && typeof entry === 'object' && (entry as { type?: unknown }).type === 'data-project-call') as
+    | { data?: unknown }
+    | undefined
+  const data = part?.data
+  if (!data || typeof data !== 'object') return null
+  const record = data as Record<string, unknown>
+  if (typeof record.runId !== 'string' || !record.runId) return null
+  return {
+    runId: record.runId,
+    callerName: typeof record.callerName === 'string' && record.callerName.trim() ? record.callerName : null,
+  }
+}
+
 /** One finished background task in a wake message. */
 export interface TaskUpdateLine {
   taskId: string

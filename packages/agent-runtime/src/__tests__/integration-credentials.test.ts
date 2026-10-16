@@ -208,6 +208,7 @@ describe('project_call turns', () => {
     const calls: any[][] = []
     const self = {
       activePipelineRuns: new Map(),
+      unattendedSessions: new Set(),
       agentTurn: async (...args: any[]) => {
         calls.push(args)
         return 'done'
@@ -226,5 +227,23 @@ describe('project_call turns', () => {
 
     await (AgentGateway.prototype as any).processPipelineCall.call(self, { message: 'no person' })
     expect(calls[1]![9]).toBeUndefined()
+  })
+
+  test('a streamed call reaches the turn, which stays unattended for permission asks', async () => {
+    const { AgentGateway } = await import('../gateway')
+    const writer = { write: () => {} }
+    let unattendedDuringTurn = false
+    const self = {
+      activePipelineRuns: new Map(),
+      unattendedSessions: new Set<string>(),
+      agentTurn: async (_prompt: string, sessionId: string, ...rest: any[]) => {
+        expect(rest[2]).toBe(writer)
+        unattendedDuringTurn = self.unattendedSessions.has(sessionId)
+        return 'done'
+      },
+    }
+    await (AgentGateway.prototype as any).processPipelineCall.call(self, { message: 'go', sessionId: 'chat-1', writer })
+    expect(unattendedDuringTurn).toBe(true)
+    expect(self.unattendedSessions.size).toBe(0)
   })
 })

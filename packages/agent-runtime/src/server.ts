@@ -13,12 +13,11 @@
  * with an Agent Gateway that makes the configured agent "alive."
  */
 
-import { createUIMessageStream, createUIMessageStreamResponse } from 'ai'
 import { resolve, dirname, join, extname, basename } from 'path'
 import { tmpdir } from 'os'
 import { emitLogToSink } from '@shogo-ai/sdk/logger'
 import { sanitizeRuntimeLineForSignoz } from './signoz-safe-log'
-import { getStreamFinishReason } from './stream-finish'
+import { createBufferedTurns, type PipelineCallOptions, type PipelineCallResult } from './buffered-turn'
 import { shouldFlushGitBeforeExport } from './git-export-policy'
 import {
   existsSync,
@@ -65,7 +64,6 @@ import {
   initializePostgresBackup,
   configureAIProxy,
   StreamBufferStore,
-  encodeTurnCompleteFrame,
   isMacOSJunkName,
   isBinaryBuffer,
   isBinaryFilePath,
@@ -101,7 +99,7 @@ import {
   type CloudSyncMode,
   wrapSseStreamWithKeepalive,
 } from '@shogo/shared-runtime'
-import { createStreamTrace, traceStream } from '@shogo/shared-runtime/stream-trace'
+import { traceStream } from '@shogo/shared-runtime/stream-trace'
 import { getModelTier, resolveModelId, calculateDollarCost } from '@shogo/model-catalog'
 import {
   seedWorkspaceDefaults,
@@ -1285,6 +1283,12 @@ function startWorkspaceDepsInstall(opts: { afterS3Restore?: boolean } = {}): Pro
 
 const streamBufferStore = new StreamBufferStore()
 const liveTurnGate = new LiveTurnGate(streamBufferStore)
+const bufferedTurns = createBufferedTurns({
+  store: streamBufferStore,
+  gate: liveTurnGate,
+  onStreamStart: () => trackStreamStart(),
+  onStreamEnd: () => trackStreamEnd(),
+})
 
 // Hono app, CORS, auth middleware, /health, /pool/activity, /pool/assign are
 // provided by createRuntimeApp(). Agent-specific routes follow below.
@@ -1952,9 +1956,6 @@ app.post('/agent/chat', async (c) => {
   const chatUserId = c.req.header('X-User-Id') || body.userId || undefined
   const requesterTicket = c.req.header('X-Requester-Ticket') || undefined
 
-  // Create a buffer that lives independently of the HTTP connection.
-  // The agent writes into this buffer via a background consumer so that
-  // a client disconnect (e.g. page refresh) does NOT cancel the agent.
   // A busy chat finishes its live turn first; see live-turn-wait.ts.
   if (liveTurnGate.isBusy(chatSessionKey)) {
     console.log(`[AgentChat] Session ${chatSessionKey} has a live turn; waiting for it before starting the next`)
@@ -1965,235 +1966,93 @@ app.post('/agent/chat', async (c) => {
     }
     console.log(`[AgentChat] Session ${chatSessionKey} free after ${waitedMs}ms`)
   }
-  console.log(`[AgentChat] Creating stream buffer for session: ${chatSessionKey}`)
-  const bufWriter = streamBufferStore.create(chatSessionKey)
-  const turnId = bufWriter.turnId
+  const turn = bufferedTurns.start(chatSessionKey, async (writer) => {
+    await agentGateway!.processChatMessageStream(userText || '', writer, {
+      modelOverride,
+      modelProvider,
+      fileParts: userFileParts.length > 0 ? userFileParts : undefined,
+      userId: chatUserId,
+      requesterTicket,
+      interactionMode,
+      confirmedPlan,
+      dualPlan,
+      chatSessionId: chatSessionKey,
+    })
 
-  trackStreamStart()
-  // Tracks whether an explicit `data-turn-complete` terminal frame has been
-  // emitted for this turn. The client's auto-resuming fetch keeps reconnecting
-  // to `/stream?fromSeq=N` until it parses this frame; if the turn ends
-  // abnormally (bg-reader transport error, process abort race) before the
-  // try/catch below writes one, the buffer would be marked `completed` with NO
-  // terminal frame and the client would replay the tail forever — pinning
-  // `useChat().status` at `streaming` and wedging the composer on Stop/Queue.
-  // The bgReader `finally` synthesizes one when this stays false.
-  let terminalFrameWritten = false
-  const stream = createUIMessageStream({
-    execute: async ({ writer }) => {
-      let turnSucceeded = false
-      // Periodic seq heartbeat. The client uses this to know how many
-      // buffered chunks it has already received so it can resume with
-      // `?fromSeq=N` on a premature disconnect without re-rendering text
-      // it has already seen. Transient: the AI SDK would otherwise append
-      // a message part every 250ms for the whole turn.
-      const seqHeartbeat = setInterval(() => {
-        const seq = bufWriter.lastSeq
-        if (seq <= 0) return
+    const usage = agentGateway!.consumeLastTurnUsage()
+    if (usage) {
+      const dollarCost = calculateDollarCost(
+        usage.model,
+        usage.inputTokens,
+        usage.outputTokens,
+        usage.cacheReadTokens,
+        usage.cacheWriteTokens,
+      )
+      writer.write({
+        type: 'data-usage',
+        data: { ...usage, dollarCost },
+      } as any)
+    }
+    return { aborted: !!usage?.wasAborted }
+  }, {
+    afterSuccess: () => {
+      // Per-turn git sync: in `dual_shadow` / `git_only` modes, sync
+      // the workspace once the agent finishes its turn. This is the
+      // natural ProjectCheckpoint granularity — one row per assistant
+      // turn. In `git_only` (pod-owned) the commit is local and the
+      // sync's afterCommit persists `.git` to object storage and records
+      // the ProjectCheckpoint row via the internal API endpoint (see
+      // persistAndRecordCheckpoint above). In `dual_shadow` it pushes to
+      // the API origin, whose post-receive hook writes the row.
+      //
+      // We deliberately do NOT hook the S3Sync filesystem watcher
+      // for git: that fires per file event and would commit 5–50
+      // times per turn (every tool call, every edit). The
+      // turn-complete site is the same boundary the checkpoints
+      // system has always used.
+      //
+      // `triggerSync(false)` is debounced internally (~1.5s) and
+      // returns immediately, so this is a fire-and-forget that
+      // doesn't add latency to the turn-complete response.
+      // `gitLayerReady` is already settled except right after a deferred
+      // local bootstrap (desktop), where it lands within ~1s of assign.
+      void gitLayerReady.then(() => {
+        if (!gitSyncInstance) return
         try {
-          writer.write({
-            type: 'data-turn-seq',
-            data: { turnId, seq },
-            transient: true,
-          } as any)
-        } catch {
-          clearInterval(seqHeartbeat)
+          // Offload large/binary assets first (updates .git/info/exclude
+          // synchronously so the debounced push below stays source-only).
+          triggerLargeFileSync()
+          gitSyncInstance.triggerSync(false)
+        } catch (err: any) {
+          console.warn('[agent-runtime] gitSync triggerSync at turn-complete threw:', err?.message ?? err)
         }
-      }, 250)
-      try {
-        // Mark the start of this durable turn so a reconnecting client
-        // can correlate replay frames against the right turn id.
-        writer.write({
-          type: 'data-turn-start',
-          data: {
-            turnId,
-            chatSessionId: chatSessionKey,
-            startedAt: Date.now(),
-          },
-        } as any)
-        writer.write({ type: 'start-step' })
-        await agentGateway!.processChatMessageStream(userText || '', writer, {
-          modelOverride,
-          modelProvider,
-          fileParts: userFileParts.length > 0 ? userFileParts : undefined,
-          userId: chatUserId,
-          requesterTicket,
-          interactionMode,
-          confirmedPlan,
-          dualPlan,
-          chatSessionId: chatSessionKey,
-        })
+      })
 
-        const usage = agentGateway!.consumeLastTurnUsage()
-        if (usage) {
-          const dollarCost = calculateDollarCost(
-            usage.model,
-            usage.inputTokens,
-            usage.outputTokens,
-            usage.cacheReadTokens,
-            usage.cacheWriteTokens,
-          )
-          writer.write({
-            type: 'data-usage',
-            data: { ...usage, dollarCost },
-          } as any)
-        }
-
-        writer.write({ type: 'finish-step' })
-        // Explicit terminal marker the client uses to differentiate "really
-        // done" from "stream EOF mid-turn". Anything past this point on the
-        // wire is purely framing noise and should be ignored by clients.
-        //
-        // When the user clicked Stop, the agent loop unwinds with
-        // `result.abortReason === 'external'` and the gateway sets
-        // `usage.wasAborted`. We tag the terminal frame `status: 'aborted'`
-        // so project-chat (and other consumers) can distinguish a
-        // user-initiated stop from a clean turn end and bill the partial
-        // usage that was just emitted.
-        writer.write({
-          type: 'data-turn-complete',
-          data: {
-            turnId,
-            chatSessionId: chatSessionKey,
-            status: usage?.wasAborted ? 'aborted' : 'completed',
-            lastSeq: bufWriter.lastSeq,
-            completedAt: Date.now(),
-          },
-        } as any)
-        terminalFrameWritten = true
-        writer.write({ type: 'finish', finishReason: getStreamFinishReason(!!usage?.wasAborted) })
-        turnSucceeded = true
-
-        // Per-turn git sync: in `dual_shadow` / `git_only` modes, sync
-        // the workspace once the agent finishes its turn. This is the
-        // natural ProjectCheckpoint granularity — one row per assistant
-        // turn. In `git_only` (pod-owned) the commit is local and the
-        // sync's afterCommit persists `.git` to object storage and records
-        // the ProjectCheckpoint row via the internal API endpoint (see
-        // persistAndRecordCheckpoint above). In `dual_shadow` it pushes to
-        // the API origin, whose post-receive hook writes the row.
-        //
-        // We deliberately do NOT hook the S3Sync filesystem watcher
-        // for git: that fires per file event and would commit 5–50
-        // times per turn (every tool call, every edit). The
-        // turn-complete site is the same boundary the checkpoints
-        // system has always used.
-        //
-        // `triggerSync(false)` is debounced internally (~1.5s) and
-        // returns immediately, so this is a fire-and-forget that
-        // doesn't add latency to the turn-complete response.
-        // `gitLayerReady` is already settled except right after a deferred
-        // local bootstrap (desktop), where it lands within ~1s of assign.
-        void gitLayerReady.then(() => {
-          if (!gitSyncInstance) return
-          try {
-            // Offload large/binary assets first (updates .git/info/exclude
-            // synchronously so the debounced push below stays source-only).
-            triggerLargeFileSync()
-            gitSyncInstance.triggerSync(false)
-          } catch (err: any) {
-            console.warn('[agent-runtime] gitSync triggerSync at turn-complete threw:', err?.message ?? err)
-          }
-        })
-
-        // BETA: per-chat git worktrees. When this session runs in an isolated
-        // worktree, the agent's edits live on its branch (not the main tree),
-        // so the main gitSync above no-ops. Commit the worktree (and, for a
-        // conflict-resolution turn, finish the merge) here.
-        if (agentGateway?.isWorktreeSession(chatSessionKey)) {
-          void finalizeWorktreeTurn(chatSessionKey).catch((err: any) =>
-            console.warn('[agent-runtime] finalizeWorktreeTurn at turn-complete threw:', err?.message ?? err),
-          )
-        }
-      } catch (error: any) {
-        writer.write({
-          type: 'data-turn-complete',
-          data: {
-            turnId,
-            chatSessionId: chatSessionKey,
-            status: 'failed',
-            error: error?.message || 'Agent chat error',
-            lastSeq: bufWriter.lastSeq,
-            completedAt: Date.now(),
-          },
-        } as any)
-        terminalFrameWritten = true
-        writer.write({ type: 'error', errorText: error.message || 'Agent chat error' } as any)
-      } finally {
-        clearInterval(seqHeartbeat)
-        trackStreamEnd()
-        if (!turnSucceeded) {
-          // Best-effort marker so the snapshot reflects the failure state
-          // for the grace window.
-        }
+      // BETA: per-chat git worktrees. When this session runs in an isolated
+      // worktree, the agent's edits live on its branch (not the main tree),
+      // so the main gitSync above no-ops. Commit the worktree (and, for a
+      // conflict-resolution turn, finish the merge) here.
+      if (agentGateway?.isWorktreeSession(chatSessionKey)) {
+        void finalizeWorktreeTurn(chatSessionKey).catch((err: any) =>
+          console.warn('[agent-runtime] finalizeWorktreeTurn at turn-complete threw:', err?.message ?? err),
+        )
       }
     },
   })
 
-  const response = createUIMessageStreamResponse({ stream })
-  if (response.body) {
-    // Consume the agent's stream in the background, feeding chunks into
-    // the buffer. This reader is NOT tied to the HTTP response — the agent
-    // keeps running even if the client disconnects.
-    const bgReader = response.body.getReader()
-    const streamTrace = createStreamTrace(`runtime-chat:${chatSessionKey.slice(0, 8)}`, ['buffered', 'replay', 'keepalive'])
-    ;(async () => {
-      try {
-        while (true) {
-          const { done, value } = await bgReader.read()
-          if (done) break
-          bufWriter.append(value)
-          streamTrace.mark('buffered', value.byteLength)
-        }
-        console.log(`[AgentChat] Background stream completed for session: ${chatSessionKey} (turn ${turnId}, seq=${bufWriter.lastSeq})`)
-      } catch (err: any) {
-        console.log(`[AgentChat] Background stream error for session: ${chatSessionKey}:`, err?.message || err)
-      } finally {
-        // Guarantee a terminal frame in the buffer. If the turn ended without
-        // the try/catch above writing one (bg-reader transport error, abort
-        // race, or any path that tore the agent stream before the terminal
-        // marker), synthesize one now — WHILE the buffer is still `active`, so
-        // `append` assigns it a seq and it reaches both live subscribers and
-        // future `?fromSeq=N` replays. Without this, the client's
-        // auto-resuming fetch never sees `data-turn-complete`, replays the
-        // tail forever, and the composer stays wedged in `streaming`.
-        if (!terminalFrameWritten) {
-          try {
-            bufWriter.append(
-              encodeTurnCompleteFrame({
-                turnId,
-                chatSessionId: chatSessionKey,
-                status: 'failed',
-                error: 'stream ended without terminal frame',
-                lastSeq: bufWriter.lastSeq,
-                completedAt: Date.now(),
-              }),
-            )
-            terminalFrameWritten = true
-            console.log(`[AgentChat] Synthesized terminal frame for session: ${chatSessionKey} (turn ${turnId})`)
-          } catch (sErr: any) {
-            console.warn(`[AgentChat] Failed to synthesize terminal frame for ${chatSessionKey}:`, sErr?.message || sErr)
-          }
-        }
-        bufWriter.complete()
-      }
-    })()
-
-    // The client reads from a replay stream backed by the buffer.
-    // If this client disconnects, only the replay subscriber is removed;
-    // the background reader + agent keep running.
-    const replayStream = traceStream(streamTrace, 'replay', streamBufferStore.createReplayStream(chatSessionKey)!)
-    const wrappedStream = traceStream(streamTrace, 'keepalive', wrapSseStreamWithKeepalive(replayStream, 15_000), true)
-    const responseHeaders = new Headers(response.headers)
-    responseHeaders.set('X-Turn-Id', turnId)
-    responseHeaders.set('X-Chat-Session-Id', chatSessionKey)
-    responseHeaders.set('x-shogo-gateway-wait-ms', String(gatewayWaitMs))
-    return new Response(wrappedStream, {
-      status: response.status,
-      headers: responseHeaders,
-    })
-  }
-  return response
+  // The client reads from a replay stream backed by the buffer.
+  // If this client disconnects, only the replay subscriber is removed;
+  // the background reader + agent keep running.
+  const replayStream = traceStream(turn.streamTrace, 'replay', streamBufferStore.createReplayStream(chatSessionKey)!)
+  const wrappedStream = traceStream(turn.streamTrace, 'keepalive', wrapSseStreamWithKeepalive(replayStream, 15_000), true)
+  const responseHeaders = new Headers(turn.headers)
+  responseHeaders.set('X-Turn-Id', turn.turnId)
+  responseHeaders.set('X-Chat-Session-Id', chatSessionKey)
+  responseHeaders.set('x-shogo-gateway-wait-ms', String(gatewayWaitMs))
+  return new Response(wrappedStream, {
+    status: turn.status,
+    headers: responseHeaders,
+  })
 })
 
 // Reconnect to an active (or recently completed) stream.
@@ -3865,7 +3724,7 @@ app.post('/agent/pipeline/call', async (c) => {
   }
 
   if (body.wait === false) {
-    agentGateway.processPipelineCall(opts).then(
+    runPipelineCall(opts).then(
       (r: { reply: string; sessionId: string; runId?: string }) =>
         console.log(`[agent-runtime] pipeline call complete (run=${r.runId ?? '-'}):`, r.reply.substring(0, 200)),
       (err: any) => console.error('[agent-runtime] pipeline call failed:', err?.message ?? err),
@@ -3874,12 +3733,16 @@ app.post('/agent/pipeline/call', async (c) => {
   }
 
   try {
-    const result = await agentGateway.processPipelineCall(opts)
+    const result = await runPipelineCall(opts)
     return c.json({ status: 'completed', ...result })
   } catch (err: any) {
     return c.json({ error: { code: 'agent_turn_failed', message: err?.message ?? String(err) } }, 500)
   }
 })
+
+function runPipelineCall(opts: PipelineCallOptions): Promise<PipelineCallResult> {
+  return bufferedTurns.runPipelineCall((call) => agentGateway!.processPipelineCall(call), opts)
+}
 
 /**
  * POST /agent/events

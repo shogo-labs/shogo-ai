@@ -2081,6 +2081,8 @@ export class AgentGateway {
     callerProjectId?: string
     /** The calling turn's person, handed off by the API for this project. */
     requesterTicket?: string
+    /** Streams the turn so a chat open on this session can watch it live. */
+    writer?: { write(chunk: Record<string, any>): void }
   }): Promise<{ reply: string; sessionId: string; runId?: string }> {
     const runId = opts.runId?.trim() || undefined
     const sessionId = opts.sessionId?.trim() || (runId ? `run:${runId}` : 'pipeline')
@@ -2091,15 +2093,24 @@ export class AgentGateway {
     const prompt = header ? `${header}\n${opts.message}` : opts.message
 
     if (runId) this.activePipelineRuns.set(sessionId, runId)
+    this.unattendedSessions.add(sessionId)
     try {
       const reply = await this.agentTurn(
-        prompt, sessionId, false, undefined, undefined, undefined, undefined, 'agent', false, opts.requesterTicket,
+        prompt, sessionId, false, undefined, opts.writer, undefined, undefined, 'agent', false, opts.requesterTicket,
       )
       return { reply, sessionId, runId }
     } finally {
       this.activePipelineRuns.delete(sessionId)
+      this.unattendedSessions.delete(sessionId)
     }
   }
+
+  /**
+   * Sessions whose turn nobody started from a chat (pipeline calls). Their
+   * turn may stream to a watcher, but permission asks still fail closed:
+   * no one is there to answer them.
+   */
+  private unattendedSessions = new Set<string>()
 
   private buildSlashContext(sessionId: string): SlashCommandContext {
     const session = this.sessionManager.getOrCreate(sessionId)
@@ -2485,7 +2496,7 @@ export class AgentGateway {
     if (this.permissionEngine) {
       this.permissionEngine.resetTurn()
       this.permissionEngine.setSseCallback(
-        uiWriter ? (event) => uiWriter.write(event) : undefined
+        uiWriter && !this.unattendedSessions.has(sessionId) ? (event) => uiWriter.write(event) : undefined
       )
     }
 

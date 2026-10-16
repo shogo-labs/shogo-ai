@@ -10,6 +10,7 @@ import {
   getToolCategory,
   ERROR_CODE_MESSAGES,
   parseTaskUpdates,
+  projectCallOf,
   taskNotificationOf,
 } from '../message-helpers'
 
@@ -233,5 +234,21 @@ describe('taskNotificationOf', () => {
   it('is null for ordinary messages', () => {
     expect(taskNotificationOf({ parts: [{ type: 'text', text: 'hi' }] })).toBeNull()
     expect(taskNotificationOf(null)).toBeNull()
+  })
+})
+
+describe('projectCallOf', () => {
+  it('reads the run and caller of a project-call request', () => {
+    const parts = JSON.stringify([
+      { type: 'text', text: 'do it' },
+      { type: 'data-project-call', data: { runId: 'run_1', callerName: 'Planner' } },
+    ])
+    expect(projectCallOf({ parts })).toEqual({ runId: 'run_1', callerName: 'Planner' })
+  })
+
+  it('is null without a run id or marker', () => {
+    expect(projectCallOf({ parts: [{ type: 'data-project-call', data: { callerName: 'Planner' } }] })).toBeNull()
+    expect(projectCallOf({ parts: [{ type: 'text', text: 'hi' }] })).toBeNull()
+    expect(projectCallOf(null)).toBeNull()
   })
 })

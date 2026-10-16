@@ -274,6 +274,10 @@ describe('callProjectAgentAsChat — chat persistence', () => {
       ['user', 'project_call', 'do it'],
       ['assistant', 'technical', 'all done'],
     ])
+    expect(JSON.parse(messages[0].parts)).toEqual([
+      { type: 'text', text: 'do it' },
+      { type: 'data-project-call', data: { runId: 'run-1', callerName: 'Caller' } },
+    ])
     expect(sessions.get(chatId).cachedMessageCount).toBe(2)
   })
 
