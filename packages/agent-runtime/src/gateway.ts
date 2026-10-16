@@ -4465,7 +4465,7 @@ export class AgentGateway {
         if (workspaceAgentToolsRegistered({ workspaceId: process.env.WORKSPACE_ID })) {
           actionLines.push(
             '- For work tied to the clock (a reminder at 9am, a Monday digest, a daily inbox sweep), create a named goal schedule with `schedule_create`; use `heartbeat_configure` only for the general heartbeat sweep.',
-            '- To follow work that is already running (a card you handed to an agent, a background command or agent, a project call), do not schedule check-ins: watch its task and act on the `[Task update]` the moment it finishes, as in Background Tasks. When the user asks you to "loop", "keep an eye on it" or "check back at each phase", that is what they mean; tell them you will react as soon as each piece finishes.',
+            '- To follow work that is already running (a card you handed to an agent, a background command or agent, a project call), do not schedule check-ins: watch its task and act on the `[Task update]` the moment it finishes, as in Background Tasks. When the user asks you to "loop", "keep an eye on it" or "check back at each phase", that is what they mean; tell them you will react as soon as each piece finishes. If a schedule you made earlier follows such work (an hourly loop over handed-off cards), turn it off and say so; do not keep it as a backstop.',
           )
         } else {
           actionLines.push('- For recurring reminders, digests, check-ins, or autonomous routines, use `heartbeat_configure`.')

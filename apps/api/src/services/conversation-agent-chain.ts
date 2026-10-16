@@ -22,10 +22,16 @@ export function envInt(name: string, fallback: number): number {
   return Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback
 }
 
-export const MAX_AGENT_CHAIN_DEPTH = envInt('SHOGO_AGENT_CHAIN_MAX_DEPTH', 12)
+/*
+ * These limits are a backstop for runaway loops, not how agents decide to
+ * stop: agents are told when a tag needs no reply (TEAM_CHAT_GUIDE, the reply
+ * prompt's chain context) and evals hold them to it. Keep them well above what
+ * real work needs (a build/review loop runs several rounds).
+ */
+export const MAX_AGENT_CHAIN_DEPTH = envInt('SHOGO_AGENT_CHAIN_MAX_DEPTH', 24)
 export const MAX_AGENT_TURNS_PER_THREAD = envInt('SHOGO_AGENT_CHAIN_MAX_THREAD_TURNS', 40)
 /** Consecutive turns allowed between the same two agents (A→B→A→B). */
-export const MAX_AGENT_PING_PONG_TURNS = envInt('SHOGO_AGENT_CHAIN_MAX_PING_PONG', 4)
+export const MAX_AGENT_PING_PONG_TURNS = envInt('SHOGO_AGENT_CHAIN_MAX_PING_PONG', 12)
 const MAX_HOPS_KEPT = 32
 
 export interface AgentChain {

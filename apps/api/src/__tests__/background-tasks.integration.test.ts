@@ -311,6 +311,114 @@ describe('wake', () => {
   })
 })
 
+describe('card hand-off: the watcher hears once the thread goes quiet', () => {
+  const until = 'moved to [^\\n]*\\((review|waiting|done|dismissed)\\)|(^|\\n)agent (stopped|failed)'
+  let n = 0
+
+  /** A card held by the seeded agent ("Billing Bot"), watched by the workspace agent's session. */
+  async function handedOffCard() {
+    const name = `handoff-${++n}`
+    await call('POST', `/workspaces/${seed.workspaceId}/conversations`, { name }, { 'x-user': seed.member })
+    const agent = (method: string, path: string, body?: unknown) =>
+      call(method, `/internal/workspaces/${seed.workspaceId}${path}`, body, { 'x-project': seed.projectId })
+    const board = await agent('POST', '/agent-boards', {
+      channel: `#${name}`, name,
+      columns: [{ name: 'Doing', category: 'active' }, { name: 'Review', category: 'review' }, { name: 'Done', category: 'done' }],
+    })
+    const card = await agent('POST', `/agent-boards/${board.json.board.slug}/items`, { title: 'Sim kernel', assignee_agent: `project:${seed.projectId}` })
+    const item = await db.workItem.findUnique({ where: { id: card.json.item.id } })
+    const session = await db.chatSession.create({ data: { inferredName: 'Workspace', contextType: 'workspace', workspaceId: seed.workspaceId, createdByUserId: seed.owner } })
+    const watch = await tasks.createTask({ id: tasks.newTaskId(), chatSessionId: session.id, source: 'work_item', targetRef: item.id, title: card.json.item.key, until })
+    let seq = 1_000 * n
+    const startedAt = new Date(Date.now() - 1_000)
+    /** An agent reply in the card thread; `running` until `finish` settles it. */
+    const reply = async (projectId: string | null, text = '') => db.conversationMessage.create({
+      data: {
+        conversationId: item.conversationId, workspaceId: seed.workspaceId, seq: ++seq, threadRootId: item.threadRootMessageId,
+        authorType: 'agent', authorAgentRef: { projectId, name: projectId ? 'Agent' : 'Shogo' }, agentStatus: 'running', text,
+      },
+    })
+    const { noteCardRunEnded } = await import('../services/work-boards.service')
+    const finish = async (row: any, text: string, projectId: string | null = seed.projectId) => {
+      await db.conversationMessage.update({ where: { id: row.id }, data: { text, agentStatus: 'done', seq: ++seq } })
+      await noteCardRunEnded({ threadRootId: item.threadRootMessageId, projectId, messageId: row.id, agentStatus: 'done', startedAt })
+    }
+    const move = (column: string) => agent('POST', `/agent-work-items/${card.json.item.key}/move`, { column })
+    return { item, session, watch, reply, finish, move }
+  }
+
+  test('a move during the run is held, then delivered with the reply when the run ends without a tag', async () => {
+    const c = await handedOffCard()
+    const run = await c.reply(seed.projectId)
+    await c.move('Review')
+    const held = await tasks.getTask(c.watch.id)
+    expect(held!.status).toBe('completed')
+    expect(held!.heldUntil).toBeTruthy()
+    tasks._testing.clearTimers()
+    expect(await tasks.enqueueTaskWake(c.session.id)).toBe(false)
+
+    await c.finish(run, 'Kernel done, 42 tests pass. Moved to Review.')
+    const released = await tasks.getTask(c.watch.id)
+    expect(released!.heldUntil).toBeNull()
+    expect(released!.output).toContain('moved to Review (review)')
+    expect(released!.output).toContain('Kernel done, 42 tests pass.')
+    tasks._testing.clearTimers()
+    expect(await tasks.enqueueTaskWake(c.session.id)).toBe(true)
+  })
+
+  test('handing the card on keeps it held until the next agent finishes without a tag', async () => {
+    const c = await handedOffCard()
+    const reviewer = 'reviewer-proj'
+    const run = await c.reply(seed.projectId)
+    await c.move('Review')
+    await c.finish(run, `Ready for review. <@a:p:${reviewer}> please check the kernel.`)
+    expect((await tasks.getTask(c.watch.id))!.heldUntil).toBeTruthy()
+
+    const review = await c.reply(reviewer)
+    await c.finish(review, 'Reviewed: approved, two nits filed.', reviewer)
+    const released = await tasks.getTask(c.watch.id)
+    expect(released!.heldUntil).toBeNull()
+    expect(released!.output).toContain('Reviewed: approved')
+  })
+
+  test('a tag back to the watcher is folded into its card update, not run in the thread', async () => {
+    const { watchesThreadCard } = await import('../services/work-boards.service')
+    const c = await handedOffCard()
+    expect(await watchesThreadCard(c.item.threadRootMessageId, { projectId: null })).toBe(true)
+    expect(await watchesThreadCard(c.item.threadRootMessageId, { projectId: 'reviewer-proj' })).toBe(false)
+
+    const run = await c.reply(seed.projectId)
+    await c.move('Review')
+    await c.finish(run, '<@a:ws> kernel is in Review, 42 tests pass.')
+    const released = await tasks.getTask(c.watch.id)
+    expect(released!.heldUntil).toBeNull()
+    expect(released!.output).toContain('kernel is in Review')
+    const wsReplies = await db.conversationMessage.count({ where: { threadRootId: c.item.threadRootMessageId, authorType: 'agent', id: { not: run.id } } })
+    expect(wsReplies).toBe(0)
+  })
+
+  test('a paused chain releases the held update even though the run tagged another agent', async () => {
+    const c = await handedOffCard()
+    const run = await c.reply(seed.projectId)
+    await c.move('Review')
+    await db.conversationMessage.create({
+      data: { conversationId: c.item.conversationId, workspaceId: seed.workspaceId, seq: 999_000 + n, threadRootId: c.item.threadRootMessageId, authorType: 'system', text: 'Paused after 24 agent hand-offs. Reply here to continue.' },
+    })
+    await c.finish(run, '<@a:p:reviewer-proj> over to you.')
+    expect((await tasks.getTask(c.watch.id))!.heldUntil).toBeNull()
+  })
+
+  test('a hold that runs out wakes the watcher anyway', async () => {
+    const c = await handedOffCard()
+    await c.reply(seed.projectId)
+    await c.move('Review')
+    tasks._testing.clearTimers()
+    expect(await tasks.enqueueTaskWake(c.session.id)).toBe(false)
+    await db.backgroundTask.update({ where: { id: c.watch.id }, data: { heldUntil: new Date(Date.now() - 1_000) } })
+    expect(await tasks.enqueueTaskWake(c.session.id)).toBe(true)
+  })
+})
+
 describe('internal routes', () => {
   test('a runtime creates, long-polls, consumes and cancels tasks of its own sessions only', async () => {
     const chatSessionId = await newSession()

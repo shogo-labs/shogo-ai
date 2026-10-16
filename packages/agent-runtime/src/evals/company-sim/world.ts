@@ -26,6 +26,26 @@ import { boardTemplateArgs } from '../../work-templates'
 import { diffBoards, type LiveBoard, type SystemManifest } from '../../system-manifest'
 import { nextCronFire, parseCron } from './cron'
 import { Workforce, WORKFORCE_SIM_TOOLS, type SimRun, type WorkforceSeed, type WorkforceSnapshot } from './workers'
+import { spawnSync } from 'node:child_process'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { dirname, join } from 'node:path'
+
+/** `exec` in a simulated project: the command runs over a scratch copy of that project's files. */
+function execIn(files: Map<string, string>, command: string): Result {
+  if (!command.trim()) return { error: 'command is required', code: 'invalid' }
+  const cwd = mkdtempSync(join(tmpdir(), 'sim-project-'))
+  try {
+    for (const [path, content] of files) {
+      mkdirSync(dirname(join(cwd, path)), { recursive: true })
+      writeFileSync(join(cwd, path), content)
+    }
+    const r = spawnSync('bash', ['-c', command], { cwd, encoding: 'utf8', timeout: 10_000 })
+    return { ok: true, exitCode: r.status ?? 1, stdout: (r.stdout ?? '').slice(0, 8000), stderr: (r.stderr ?? '').slice(0, 2000) }
+  } finally {
+    rmSync(cwd, { recursive: true, force: true })
+  }
+}
 
 export type Arm = 'A' | 'B' | 'C'
 export type Category = 'backlog' | 'active' | 'waiting' | 'review' | 'done' | 'dismissed'
@@ -73,7 +93,11 @@ export interface SimItem {
 }
 export interface SimMessage { id: string; channel: string; author: string; text: string; at: string; threadId?: string; kind?: string }
 export interface SimChannel { name: string; private?: boolean; topic?: string; members?: string[] }
-export interface SimAgent { key: string; name: string; capabilities: Record<string, boolean>; heartbeatInterval?: number; files: string[] }
+export interface SimAgent {
+  key: string; name: string; capabilities: Record<string, boolean>; heartbeatInterval?: number; files: string[]
+  /** Seeded file contents, readable with `read_file` + `project`. */
+  contents?: Record<string, string>
+}
 export interface SimTrigger { key: string; name: string; event: string; target: string; card?: Record<string, unknown>; enabled: boolean }
 
 /** A record store behind Composio-shaped tools, e.g. a helpdesk's tickets. */
@@ -169,8 +193,8 @@ export const BOARD_SIM_TOOLS = [
 ] as const
 export const ADMIN_SIM_TOOLS = ['board_create', 'board_update', 'board_archive', 'column_create', 'column_update', 'column_delete'] as const
 export const CHAT_SIM_TOOLS = ['team_chat_list', 'team_chat_read', 'team_chat_post', 'team_chat_search', 'team_chat_dm', 'team_directory'] as const
-/** File tools that can target another project (`project`); simulated agents' files live in the world. */
-export const PROJECT_FILE_TOOLS = ['write_file', 'edit_file', 'read_file'] as const
+/** Tools that can target another project (`project`); simulated agents' files live in the world. */
+export const PROJECT_FILE_TOOLS = ['write_file', 'edit_file', 'read_file', 'exec', 'connect_project'] as const
 /** Timers the agent can set when the eval runs its wakes. */
 export const TIMER_SIM_TOOLS = ['schedule_create', 'schedule_update', 'schedule_list', 'schedule_delete', 'heartbeat_configure', 'heartbeat_status'] as const
 
@@ -218,7 +242,13 @@ export class CompanyWorld {
     this.channels = structuredClone(seed.channels)
     this.boards = structuredClone(seed.boards)
     this.admin = !!seed.admin
-    this.agents = structuredClone(seed.agents ?? [])
+    this.agents = structuredClone(seed.agents ?? []).map(({ contents, ...a }) => {
+      if (contents) {
+        this.agentFiles.set(a.key, new Map(Object.entries(contents)))
+        a.files = [...new Set([...a.files, ...Object.keys(contents)])]
+      }
+      return a
+    })
     this.triggers = structuredClone(seed.triggers ?? [])
     this.systems = structuredClone(seed.systems ?? {})
     this.systemTools = seed.systemTools ?? []
@@ -410,6 +440,15 @@ export class CompanyWorld {
         this.messages.push(msg)
         return msg
       },
+      writeFiles: (agentKey: string, files: Record<string, string>) => {
+        const mine = this.agentFiles.get(agentKey) ?? new Map<string, string>()
+        this.agentFiles.set(agentKey, mine)
+        const agent = this.agents.find((a) => a.key === agentKey)
+        for (const [path, content] of Object.entries(files)) {
+          mine.set(path, content)
+          if (agent && !agent.files.includes(path)) agent.files.push(path)
+        }
+      },
     }
   }
 
@@ -550,10 +589,12 @@ export class CompanyWorld {
     const ref = String(p.project)
     const agent = this.agents.find((a) => [a.key, a.name, `proj-${a.key}`].some((n) => n.toLowerCase() === ref.toLowerCase()))
     if (!agent) return { error: `No project "${ref}" in this workspace. Projects: ${this.agents.map((a) => a.key).join(', ') || 'none'}`, code: 'not_found' }
-    const path = String(p.path ?? p.file_path ?? '').replace(/^\.?\//, '')
-    if (!path) return { error: 'path is required', code: 'invalid' }
     const files = this.agentFiles.get(agent.key) ?? new Map<string, string>()
     this.agentFiles.set(agent.key, files)
+    if (tool === 'connect_project') return { ok: true, project: agent.key, connected: true }
+    if (tool === 'exec') return execIn(files, String(p.command ?? ''))
+    const path = String(p.path ?? p.file_path ?? '').replace(/^\.?\//, '')
+    if (!path) return { error: 'path is required', code: 'invalid' }
     const current = files.get(path)
     if (tool === 'read_file') {
       return current === undefined ? { error: `File not found: ${path}`, code: 'not_found' } : { ok: true, content: current, bytes: current.length }

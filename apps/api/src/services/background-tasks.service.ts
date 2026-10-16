@@ -39,6 +39,12 @@ export const MAX_CONSECUTIVE_WAKES = 3
  * per card, so this only stops a runaway session.
  */
 export const MAX_CONSECUTIVE_CARD_WAKES = 40
+/**
+ * Longest a finished card watch waits for agents still working the card's
+ * thread. Outlasts a channel agent run (`AGENT_REPLY_TIMEOUT_MS`), so it only
+ * fires when a run hangs or ends without reporting back.
+ */
+export const CARD_HOLD_MS = 31 * 60_000
 
 export interface BackgroundTaskRow {
   id: string
@@ -54,6 +60,7 @@ export interface BackgroundTaskRow {
   notify: boolean
   consumed: boolean
   notifiedAt: Date | null
+  heldUntil?: Date | null
   finishedAt: Date | null
   expiresAt: Date
   createdAt: Date
@@ -304,8 +311,54 @@ async function settle(row: BackgroundTaskRow, status: Exclude<BackgroundTaskStat
     data: { status, summary: summary ?? status, finishedAt: new Date() },
   })
   signal(row.id)
-  if (updated.notify && !updated.consumed) scheduleTaskWake(updated.chatSessionId)
+  if (!updated.notify || updated.consumed) return updated
+  if (updated.source === 'work_item' && (await cardThreadBusy(updated.targetRef))) return holdTasks([updated]).then(() => updated)
+  scheduleTaskWake(updated.chatSessionId)
   return updated
+}
+
+/** An agent is mid-run in the card's thread, so whatever it does next (a tag, a move) is still coming. */
+async function cardThreadBusy(itemId: string): Promise<boolean> {
+  const item = await db.workItem.findUnique({ where: { id: itemId }, select: { threadRootMessageId: true } }).catch(() => null)
+  if (!item?.threadRootMessageId) return false
+  const running = await db.conversationMessage.findFirst({
+    where: { threadRootId: item.threadRootMessageId, authorType: 'agent', agentStatus: 'running', deletedAt: null },
+    select: { id: true },
+  }).catch(() => null)
+  return !!running
+}
+
+/**
+ * Finished card watches waiting for the card's thread to go quiet, plus any
+ * that finished `since` and have not woken their session yet.
+ */
+export async function heldCardTasks(itemId: string, since?: Date): Promise<BackgroundTaskRow[]> {
+  return db.backgroundTask.findMany({
+    where: {
+      source: 'work_item', targetRef: itemId, status: { not: 'running' }, notifiedAt: null, consumed: false, notify: true,
+      OR: [{ heldUntil: { not: null } }, ...(since ? [{ finishedAt: { gte: since } }] : [])],
+    },
+    take: 50,
+  })
+}
+
+/** Hold (or keep holding) finished watches for another `CARD_HOLD_MS`; the hold's end wakes them regardless. */
+export async function holdTasks(rows: BackgroundTaskRow[]): Promise<void> {
+  if (!rows.length) return
+  await db.backgroundTask.updateMany({
+    where: { id: { in: rows.map((r) => r.id) } },
+    data: { heldUntil: new Date(Date.now() + CARD_HOLD_MS) },
+  })
+  for (const session of new Set(rows.map((r) => r.chatSessionId))) scheduleHoldExpiry(session)
+}
+
+/** The thread went quiet: wake the watchers, with what the last agent said when there is one. */
+export async function releaseTasks(rows: BackgroundTaskRow[], line?: string): Promise<void> {
+  for (const row of rows) {
+    const output = line ? capOutput(row.output ? `${row.output}\n${line}` : line) : row.output
+    await db.backgroundTask.update({ where: { id: row.id }, data: { heldUntil: null, output } })
+  }
+  for (const session of new Set(rows.map((r) => r.chatSessionId))) scheduleTaskWake(session)
 }
 
 async function applyEvent(row: BackgroundTaskRow, event: TaskEvent): Promise<BackgroundTaskRow> {
@@ -421,6 +474,20 @@ export function scheduleTaskWake(chatSessionId: string, delayMs = WAKE_COALESCE_
   wakeTimers.set(chatSessionId, timer)
 }
 
+const holdTimers = new Map<string, ReturnType<typeof setTimeout>>()
+
+/** A held watch whose thread never reported back still wakes its session when the hold runs out. */
+function scheduleHoldExpiry(chatSessionId: string): void {
+  const existing = holdTimers.get(chatSessionId)
+  if (existing) clearTimeout(existing)
+  const timer = setTimeout(() => {
+    holdTimers.delete(chatSessionId)
+    scheduleTaskWake(chatSessionId)
+  }, CARD_HOLD_MS + WAKE_COALESCE_MS)
+  ;(timer as any).unref?.()
+  holdTimers.set(chatSessionId, timer)
+}
+
 async function wakeUserFor(session: { id: string; createdByUserId?: string | null; workspaceId?: string | null; contextType?: string; contextId?: string | null }): Promise<string | null> {
   if (session.createdByUserId) return session.createdByUserId
   const queued = await db.chatQueuedMessage.findFirst({ where: { sessionId: session.id }, orderBy: { createdAt: 'desc' }, select: { userId: true } })
@@ -446,7 +513,10 @@ export async function enqueueTaskWake(chatSessionId: string): Promise<boolean> {
   })
   if (!session) return false
   const tasks: BackgroundTaskRow[] = await db.backgroundTask.findMany({
-    where: { chatSessionId, status: { not: 'running' }, notify: true, consumed: false, notifiedAt: null },
+    where: {
+      chatSessionId, status: { not: 'running' }, notify: true, consumed: false, notifiedAt: null,
+      OR: [{ heldUntil: null }, { heldUntil: { lte: new Date() } }],
+    },
     orderBy: { finishedAt: 'asc' },
     take: 20,
   })
@@ -490,8 +560,11 @@ export async function enqueueTaskWake(chatSessionId: string): Promise<boolean> {
 export const _testing = {
   waiters,
   wakeTimers,
+  holdTimers,
   clearTimers() {
     for (const t of wakeTimers.values()) clearTimeout(t)
     wakeTimers.clear()
+    for (const t of holdTimers.values()) clearTimeout(t)
+    holdTimers.clear()
   },
 }

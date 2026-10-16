@@ -455,6 +455,14 @@ describe('team chat prompt section', () => {
     expect(TEAM_CHAT_GUIDE).toContain('you own that thread')
   })
 
+  test('teaches agents to stop a tag loop themselves', () => {
+    expect(TEAM_CHAT_GUIDE).toContain('### Knowing when to stop')
+    expect(TEAM_CHAT_GUIDE).toContain('A reply with no agent tag ends the exchange')
+    expect(TEAM_CHAT_GUIDE).toContain('stop handing it back')
+    expect(TEAM_CHAT_GUIDE).toContain('Agents do not need to tag you when they finish')
+    expect(TEAM_CHAT_GUIDE).toContain('turn off any schedule of yours that checks on that work')
+  })
+
   test('explains message kinds and the status card', () => {
     for (const kind of ['status', 'result', 'decision', 'alert']) expect(TEAM_CHAT_GUIDE).toContain(`\`${kind}\``)
     expect(TEAM_CHAT_GUIDE).toContain('team_chat_update')

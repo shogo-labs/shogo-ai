@@ -32,6 +32,8 @@ export interface Beat {
   waitsOn?: WaitsOn
   /** Where a `finish` moves the card; defaults to review on human-review boards, else done. */
   to?: 'review' | 'done'
+  /** Files the beat leaves in the agent's project (path → content), e.g. the report a finish commits. */
+  files?: Record<string, string>
 }
 
 export interface SimWorkerScript {
@@ -129,6 +131,7 @@ export interface WorkforceHost {
   moveTo(item: SimItem, category: Category, author: string, prefer?: RegExp): void
   comment(item: SimItem, author: string, text: string): void
   post(msg: Omit<SimMessage, 'id' | 'at'>): SimMessage
+  writeFiles(agentKey: string, files: Record<string, string>): void
 }
 
 export const WORKFORCE_SIM_TOOLS = ['wait', 'task_list', 'project_create', 'project_call'] as const
@@ -347,6 +350,7 @@ export class Workforce {
     const author = this.agentName(run.agent)
     const text = beat.text.replaceAll('{key}', item.key).replaceAll('{title}', item.title).replaceAll('{me}', this.host.me)
     const board = this.host.boardOf(item)
+    if (beat.files) this.host.writeFiles(run.agent, beat.files)
     switch (beat.action) {
       case 'start':
         if (this.host.categoryOf(item) !== 'active') this.host.moveTo(item, 'active', author)

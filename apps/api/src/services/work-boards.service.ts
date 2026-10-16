@@ -1762,7 +1762,7 @@ export function registerWorkBoardHooks(): void {
  * records `agent_stopped`, so the assigner is not left waiting on a card
  * nobody is working.
  */
-export async function noteCardRunEnded(run: { threadRootId: string | null; projectId: string | null; messageId: string; agentStatus: string }): Promise<void> {
+export async function noteCardRunEnded(run: CardRun): Promise<void> {
   if (!run.threadRootId) return
   const item = await db.workItem.findFirst({
     where: { threadRootMessageId: run.threadRootId, archivedAt: null },
@@ -1770,18 +1770,142 @@ export async function noteCardRunEnded(run: { threadRootId: string | null; proje
   })
   if (!item) return
   const agentRef = agentRefFor(run.projectId)
-  if ((item.assigneeAgentRef ?? item.column.agentRef) !== agentRef) return
-  if (run.agentStatus === 'error') {
-    const failed = await db.conversationMessage.findUnique({ where: { id: run.messageId } })
-    if (failed) await sendToNeedsAttention(item, failed)
-    return
+  if ((item.assigneeAgentRef ?? item.column.agentRef) === agentRef) {
+    if (run.agentStatus === 'error') {
+      const failed = await db.conversationMessage.findUnique({ where: { id: run.messageId } })
+      if (failed) await sendToNeedsAttention(item, failed)
+    } else if (item.column.category === 'backlog' || item.column.category === 'active') {
+      await recordEvent(item, 'agent_stopped', { agentRef }, {
+        column: item.column.name,
+        messageId: run.messageId,
+        ...(run.agentStatus === 'stopped' ? { reason: 'stopped by a person' } : {}),
+      })
+    }
   }
-  if (item.column.category !== 'backlog' && item.column.category !== 'active') return
-  await recordEvent(item, 'agent_stopped', { agentRef }, {
-    column: item.column.name,
-    messageId: run.messageId,
-    ...(run.agentStatus === 'stopped' ? { reason: 'stopped by a person' } : {}),
+  await settleCardWatchers(item, run)
+}
+
+export interface CardRun {
+  threadRootId: string | null
+  projectId: string | null
+  messageId: string
+  agentStatus: string
+  /** When the run started; its posts in the thread since then are what it handed on. */
+  startedAt?: Date
+}
+
+/** Agent key (`agentKey`) of the agent a chat session belongs to. */
+function sessionAgentKey(session: { contextType?: string; contextId?: string | null } | null): string | null {
+  if (!session) return null
+  return session.contextType === 'project' && session.contextId ? `p:${session.contextId}` : 'ws'
+}
+
+/** Live watches on a card (running, or finished and not yet delivered), by the agent watching. */
+async function cardWatchers(itemId: string, since?: Date): Promise<Map<string, any[]>> {
+  const rows = await db.backgroundTask.findMany({
+    where: {
+      source: 'work_item', targetRef: itemId, consumed: false, notifiedAt: null,
+      OR: [{ status: 'running' }, { heldUntil: { not: null } }, ...(since ? [{ finishedAt: { gte: since } }] : [])],
+    },
+    take: 50,
   })
+  const byAgent = new Map<string, any[]>()
+  if (!rows.length) return byAgent
+  const sessions = await db.chatSession.findMany({
+    where: { id: { in: [...new Set(rows.map((r: any) => r.chatSessionId))] } },
+    select: { id: true, contextType: true, contextId: true },
+  })
+  const keyOf = new Map<string, string | null>(sessions.map((s: any) => [s.id, sessionAgentKey(s)]))
+  for (const row of rows) {
+    const key = keyOf.get(row.chatSessionId)
+    if (!key) continue
+    byAgent.set(key, [...(byAgent.get(key) ?? []), row])
+  }
+  return byAgent
+}
+
+/**
+ * True when `target` watches the card this thread belongs to. A tag to it from
+ * the thread is not run there: it is folded into the watcher's card update
+ * when the run that tagged it ends (`settleCardWatchers`).
+ */
+export async function watchesThreadCard(threadRootId: string | null, target: { projectId: string | null }): Promise<boolean> {
+  if (!threadRootId) return false
+  const item = await db.workItem.findFirst({ where: { threadRootMessageId: threadRootId, archivedAt: null }, select: { id: true } })
+  if (!item) return false
+  return (await cardWatchers(item.id)).has(agentKeyOf(target))
+}
+
+function agentKeyOf(target: { projectId: string | null }): string {
+  return target.projectId ? `p:${target.projectId}` : 'ws'
+}
+
+/**
+ * A run in the card thread ended. Watchers hear about the card once the thread
+ * goes quiet, not on every move: while the run handed the card on to another
+ * agent (or another agent is still running in the thread) their finished
+ * watches stay held, and the last run's reply is added when they are released.
+ * A tag back to a watcher wakes it with its card update instead of a thread
+ * run; when the card has no update yet, the tag runs as usual.
+ */
+async function settleCardWatchers(item: any, run: CardRun): Promise<void> {
+  const since = run.startedAt ?? new Date(Date.now() - 60_000)
+  const watchers = await cardWatchers(item.id, since)
+  if (!watchers.size) return
+  const { mentionedAgents, renderMentionsAsText } = await import('./conversation-mentions')
+  const self = agentKeyOf({ projectId: run.projectId })
+  const posts = (await db.conversationMessage.findMany({
+    where: {
+      threadRootId: run.threadRootId, authorType: 'agent', deletedAt: null,
+      OR: [{ id: run.messageId }, { createdAt: { gte: since } }],
+    },
+    orderBy: { seq: 'asc' },
+    take: 50,
+  })).filter((m: any) => (m.authorAgentRef?.projectId ?? null) === run.projectId)
+  const tagged = new Map<string, { target: { projectId: string | null }; post: any }>()
+  for (const post of posts) {
+    for (const target of mentionedAgents(post.text ?? '')) {
+      if (agentKeyOf(target) !== self) tagged.set(agentKeyOf(target), { target, post })
+    }
+  }
+
+  const names = new Map<string, string>()
+  for (const t of tagged.values()) if (t.target.projectId) names.set(t.target.projectId, await agentDisplayName(item.workspaceId, t.target.projectId))
+  const author = await agentDisplayName(item.workspaceId, run.projectId)
+  const workspaceAgentName = await agentDisplayName(item.workspaceId, null)
+  const lineFor = (post: any) => {
+    const text = renderMentionsAsText(String(post?.text ?? ''), { projects: names, workspaceAgentName }).trim()
+    return text ? `${author}: ${text.length > 1500 ? `${text.slice(0, 1500)}…` : text}` : undefined
+  }
+
+  const { heldCardTasks, holdTasks, releaseTasks } = await import('./background-tasks.service')
+  const held = await heldCardTasks(item.id, since)
+  for (const [key, rows] of watchers) {
+    const hand = tagged.get(key)
+    if (!hand) continue
+    tagged.delete(key)
+    const waiting = held.filter((r: any) => rows.some((w: any) => w.id === r.id))
+    if (waiting.length) {
+      await releaseTasks(waiting, lineFor(hand.post))
+    } else {
+      const { startDeferredReply } = await import('./conversation-agent-dispatcher')
+      await startDeferredReply(hand.post, hand.target).catch((err: Error) =>
+        console.error('[Boards] tag to card watcher failed:', err.message))
+    }
+    for (const r of waiting) held.splice(held.indexOf(r), 1)
+  }
+  if (!held.length) return
+
+  const paused = await db.conversationMessage.findFirst({
+    where: { threadRootId: run.threadRootId, authorType: 'system', createdAt: { gte: since }, text: { startsWith: 'Paused ' } },
+    select: { id: true },
+  })
+  const busy = await db.conversationMessage.findFirst({
+    where: { threadRootId: run.threadRootId, authorType: 'agent', agentStatus: 'running', deletedAt: null, id: { not: run.messageId } },
+    select: { id: true },
+  })
+  if ((tagged.size && !paused) || busy) await holdTasks(held)
+  else await releaseTasks(held, lineFor(posts[posts.length - 1]))
 }
 
 function safeJson(text: string): any {

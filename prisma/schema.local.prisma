@@ -1540,6 +1540,9 @@ model BackgroundTask {
   notify        Boolean   @default(true)
   consumed      Boolean   @default(false)
   notifiedAt    DateTime?
+  /// A finished card watch waits while agents are still working the card's
+  /// thread; its wake goes out when the thread goes quiet or at this time.
+  heldUntil     DateTime?
   finishedAt    DateTime?
   expiresAt     DateTime
   createdAt     DateTime  @default(now())

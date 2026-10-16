@@ -43,6 +43,7 @@ import {
   MAX_AGENT_PING_PONG_TURNS,
   MAX_AGENT_TURNS_PER_THREAD,
   nextChain,
+  pingPongRun,
   readChain,
   rootChain,
   threadOwner,
@@ -377,7 +378,23 @@ export async function agentPostTargets(result: Pick<PostMessageResult, 'row' | '
 
 export async function dispatchAgentsFromAgentMessage(result: Pick<PostMessageResult, 'row' | 'conversation' | 'duplicate'>): Promise<AgentTarget[]> {
   const { row, conversation } = result
-  const targets = await agentPostTargets(result)
+  const { watchesThreadCard } = await import('./work-boards.service')
+  const threadRootId = replyThreadRoot(conversation, row)
+  const targets: AgentTarget[] = []
+  for (const target of await agentPostTargets(result)) {
+    if (!(await watchesThreadCard(threadRootId, target))) targets.push(target)
+  }
+  return startChained(conversation, row, targets)
+}
+
+/** A card-thread post's tag to the card's watcher, run once the run that wrote it ended without a card update to fold it into. */
+export async function startDeferredReply(row: any, target: AgentTarget): Promise<AgentTarget[]> {
+  const conversation = await db.conversation.findUnique({ where: { id: row.conversationId } })
+  if (!conversation || !readChain(row.agentChain)?.originUserId) return []
+  return startChained(conversation, row, [target])
+}
+
+async function startChained(conversation: any, row: any, targets: AgentTarget[]): Promise<AgentTarget[]> {
   if (!targets.length) return []
   const chain = readChain(row.agentChain)!
 
@@ -697,7 +714,20 @@ function chainContext(conversation: any, trigger: any, threadRootId: string | nu
     lines.push(
       `${by} (an agent) handed this to you. Your reply lands in this thread where everyone can read it, so do not tag ` +
         `${by} just to report back, thank it or say you are done; tag it only if it has a next step to take.`,
+      'Agents tagging each other can loop. Act only if this message gives you work you have not done or information ' +
+        'that changes it. If it only acknowledges, thanks, agrees, repeats what you already said or reports work that ' +
+        'needs nothing from you, reply in one line and tag nobody: that ends the exchange.',
     )
+    const rounds = pingPongRun(chain.hops)
+    if (chain.turns > 1) {
+      lines.push(
+        `So far: ${chain.turns} agent replies in this thread since a person last wrote` +
+          (rounds >= 3 ? `, the last ${rounds} alternating between you and ${by}` : '') + '. ' +
+          'If the recent replies did not move the work forward (the same question, objection or fix again), do not ' +
+          'hand it back again, even with clearer instructions: say where it is stuck and tag the person who asked ' +
+          '(with @; a name without it notifies nobody) for a decision.',
+      )
+    }
   }
   lines.push(
     'Tagging an agent (e.g. @Planner) wakes it: it runs next in this thread. Tag an agent only to hand it a specific task ' +
@@ -1035,11 +1065,17 @@ export async function runAgentReply(args: RunAgentReplyArgs): Promise<string | n
   const messageId = reply.messageId
   let work: AgentWork | null = null
   let connect: IntegrationConnectRequest[] = []
+  let endedAs: string | null = null
   const settle = async (text: string, agentStatus: string) => {
+    endedAs = agentStatus
     await finishAgentReply(reply, { text, agentStatus, work, connect })
     await emitTaskEvent('agent_reply', replyTargetRef(trigger.id, target.projectId), replyEvent(agentStatus, text))
+  }
+  // After the reply's own tags are dispatched, so a card watcher knows whether the work was handed on.
+  const noteRunEnded = async () => {
+    if (!endedAs) return
     const { noteCardRunEnded } = await import('./work-boards.service')
-    await noteCardRunEnded({ threadRootId, projectId: target.projectId, messageId, agentStatus })
+    await noteCardRunEnded({ threadRootId, projectId: target.projectId, messageId, agentStatus: endedAs, startedAt })
       .catch((err: Error) => console.error('[ChannelAgent] card run-end note failed:', err.message))
   }
 
@@ -1154,6 +1190,7 @@ export async function runAgentReply(args: RunAgentReplyArgs): Promise<string | n
     release?.()
     // Once the run ends nothing is waiting on an approval card any more.
     if (approvalCards.length) await expirePendingApprovals(approvalCards)
+    await noteRunEnded()
   }
 }
 

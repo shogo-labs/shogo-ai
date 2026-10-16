@@ -274,6 +274,7 @@ export function createProjectCreateTool(ctx: ToolContext): AgentTool {
       'Create a new Shogo project in this workspace. Each project is a module: its own AGENTS.md, .shogo/agents/*.md, skills, database, canvas UI, heartbeat and history.',
       'By default the new project is attached read-write to the current one so you can write its prompt files and call its agent with project_call.',
       'Pass `techStackId` (e.g. "react-app") for a project that needs a UI/dashboard; omit it for a prompt-only agent project.',
+      'In the AGENTS.md you write for it, do not tell it to tag you (or any agent) when it finishes: cards it moves and calls it answers already notify you, and agents that are told to tag back tend to loop.',
     ].join(' '),
     parameters: Type.Object({
       name: Type.String({ description: 'Display name (unique within the workspace is strongly recommended).' }),

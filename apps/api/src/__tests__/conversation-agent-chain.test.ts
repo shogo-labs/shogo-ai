@@ -24,9 +24,9 @@ const C = { projectId: 'c' }
 
 describe('chain limits', () => {
   test('defaults', () => {
-    expect(MAX_AGENT_CHAIN_DEPTH).toBe(12)
+    expect(MAX_AGENT_CHAIN_DEPTH).toBe(24)
     expect(MAX_AGENT_TURNS_PER_THREAD).toBe(40)
-    expect(MAX_AGENT_PING_PONG_TURNS).toBe(4)
+    expect(MAX_AGENT_PING_PONG_TURNS).toBe(12)
   })
 
   test('a person starts at depth 0; each hop is one deeper and records the agent', () => {
@@ -65,9 +65,10 @@ describe('chain limits', () => {
     expect(pingPongRun(['c', 'a', 'b', 'a', 'b'])).toBe(4)
     expect(pingPongRun(['a', 'b', 'c', 'b', 'c'])).toBe(4)
     expect(pingPongRun(['a', 'b', 'c', 'a', 'b', 'c'])).toBe(2)
-    const chain = { rootMessageId: 'r', originUserId: 'u', depth: 1, hops: ['p:a', 'p:b', 'p:a', 'p:b'], turns: 4 }
+    const hops = Array.from({ length: MAX_AGENT_PING_PONG_TURNS }, (_, i) => (i % 2 ? 'p:b' : 'p:a'))
+    const chain = { rootMessageId: 'r', originUserId: 'u', depth: 1, hops, turns: hops.length }
     expect(chainLimitHit(chain)).toBeNull()
-    expect(chainLimitHit(nextChain(chain, A, 4))).toBe('ping_pong')
+    expect(chainLimitHit(nextChain(chain, hops.length % 2 ? B : A, hops.length))).toBe('ping_pong')
   })
 
   test('readChain accepts stored JSON (object or SQLite string) and rejects junk', () => {
