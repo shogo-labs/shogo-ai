@@ -124,6 +124,21 @@ test.describe("Billing & Upgrade Flow", () => {
     await expect(businessCard.getByText("Seats").first()).toBeVisible()
   })
 
+  test("free plan: 7-day trial CTA is offered on Basic, Pro and Business", async () => {
+    await navigateToBilling(page)
+
+    // A first-time upgrade can start a 7-day trial ($0 today, card required).
+    // Enterprise is sales-led and has no trial.
+    for (const plan of ["basic", "pro", "business"] as const) {
+      await expect(
+        page.getByTestId(`plan-card-${plan}`).getByText("Start 7-day free trial"),
+      ).toBeVisible()
+    }
+    await expect(
+      page.getByTestId("plan-card-enterprise").getByText("Start 7-day free trial"),
+    ).toHaveCount(0)
+  })
+
   // ── Phase 3: Stripe Checkout (Reach-Only) ────────────────────────
   //
   // Stripe Checkout's Adaptive-Pricing UI now leads with a payment-method
@@ -136,6 +151,7 @@ test.describe("Billing & Upgrade Flow", () => {
   test("upgrade button redirects to Stripe Checkout", async () => {
     await navigateToBilling(page)
 
+    // The regular paid button (not the trial button) starts a non-trial checkout.
     const upgradeButtons = page.getByText("Upgrade to Pro")
     await upgradeButtons.last().click()
 
