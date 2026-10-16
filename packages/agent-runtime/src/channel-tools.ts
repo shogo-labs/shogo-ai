@@ -28,6 +28,8 @@ import {
   addAgentChannelMembers,
   readAgentQuestionSecret,
   listAgentChatFiles,
+  listRunningAgents,
+  stopRunningAgents,
   readAgentChatFileText,
   searchAgentChatFiles,
   type AgentChannelIdentity,
@@ -135,6 +137,7 @@ export const TEAM_CHAT_GUIDE = [
   '- When the last few turns with another agent did not move the work forward (the same objection, the same fix, the same question), stop handing it back, even with clearer instructions ("one more round" is how loops continue). Say where it is stuck and tag the person who asked for a decision.',
   '- Agents do not need to tag you when they finish: cards you hand off and runs you start already tell you (a `[Task update]`), and a finishing agent\'s tag on a card you watch is folded into that update. Do not write "tag me when done" into the AGENTS.md of agents you create. If a person asks for it anyway, pass it on (it costs nothing) and say the update comes either way. What makes hand-offs slow is a timer: turn off any schedule of yours that checks on that work, yourself and in the same turn, then tell the person. Do not keep it "as a backstop" or offer to turn it off later; it only delays cards and reviews them twice.',
   '- Tagged by an agent on work you handed it? Its card or task update already reached you or is about to; act on that once and do not reply to the tag separately.',
+  '- If you have `agent_run_stop`: when a person asks you to stop an agent, or agents are looping in a thread, find the run with `agent_runs_list` and stop it with `agent_run_stop` instead of posting "please stop".',
   '',
   '### Keep the channel readable',
   'Every post you make has a kind. People only get notified for `decision` and `alert`, so choose honestly:',
@@ -635,6 +638,86 @@ export function createQuestionSecretTool(ctx: ToolContext): AgentTool {
       return result.ok ? textResult({ ok: true, ...result.data }) : apiError(result, 'Could not read the secret')
     },
   }
+}
+
+export function createAgentRunsListTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'agent_runs_list',
+    label: 'List Running Agents',
+    description:
+      'List the agents working right now in team chat: replying in a channel or thread, or working a card. Only runs ' +
+      'in channels the person who asked can see are listed. Each run has a message_id to pass to agent_run_stop, and ' +
+      'can_stop says whether that person may stop it.',
+    parameters: Type.Object({
+      channel: Type.Optional(Type.String({ description: 'Only runs in this channel (name without # or conversation id).' })),
+      thread: Type.Optional(Type.String({ description: 'Only runs in this thread (its root message id).' })),
+    }),
+    execute: async (_id, params) => {
+      const workspaceId = workspaceIdOf(ctx)
+      if (!workspaceId) return noWorkspace()
+      const input = params as { channel?: string; thread?: string }
+      const result = await listRunningAgents(workspaceId, {
+        channel: input.channel?.replace(/^#/, ''),
+        threadRootId: input.thread,
+        sessionId: ctx.sessionId,
+      })
+      if (!result.ok) return apiError(result, 'Could not list running agents')
+      return textResult({
+        ok: true,
+        runs: (result.data ?? []).map((r) => ({
+          message_id: r.messageId,
+          agent: r.agent,
+          channel: r.channel.name ?? r.channel.id,
+          thread_id: r.threadRootId,
+          started_at: r.startedAt,
+          preview: r.preview,
+          can_stop: r.canStop,
+        })),
+      })
+    },
+  }
+}
+
+export function createAgentRunStopTool(ctx: ToolContext): AgentTool {
+  return {
+    name: 'agent_run_stop',
+    label: 'Stop Running Agent',
+    description:
+      'Stop an agent that is working right now, the same as a person pressing Stop on its reply. Pass message_id ' +
+      '(from agent_runs_list) to stop one run, or channel and thread to stop every agent running in that thread. ' +
+      'A stopped reply does not wake the agents it tagged, so this also ends an agent loop. Stop only when the person ' +
+      'asks you to, or when agents are looping, then tell that person which agents you stopped.',
+    parameters: Type.Object({
+      message_id: Type.Optional(Type.String({ description: 'The running reply to stop.' })),
+      channel: Type.Optional(Type.String({ description: 'With thread: the channel (name without # or conversation id).' })),
+      thread: Type.Optional(Type.String({ description: 'With channel: root message id of the thread whose agents to stop.' })),
+    }),
+    execute: async (_id, params) => {
+      const workspaceId = workspaceIdOf(ctx)
+      if (!workspaceId) return noWorkspace()
+      const input = params as { message_id?: string; channel?: string; thread?: string }
+      if (!input.message_id && !(input.channel && input.thread)) {
+        return textResult({ error: 'Pass message_id, or channel and thread.', code: 'invalid_input' })
+      }
+      const result = await stopRunningAgents(workspaceId, {
+        ...(input.message_id
+          ? { messageId: input.message_id }
+          : { channel: input.channel!.replace(/^#/, ''), threadRootId: input.thread }),
+        sessionId: ctx.sessionId,
+      })
+      if (!result.ok || !result.data) return apiError(result, 'Could not stop the agent')
+      return textResult({
+        ok: true,
+        stopped: result.data.stopped.map((r) => ({ message_id: r.messageId, agent: r.agent, channel: r.channel.name ?? r.channel.id, thread_id: r.threadRootId })),
+        skipped: result.data.skipped.map((s) => ({ message_id: s.messageId, reason: s.reason })),
+      })
+    },
+  }
+}
+
+/** Seeing and stopping other agents' runs: the workspace agent only. */
+export function createAgentRunTools(ctx: ToolContext): AgentTool[] {
+  return [createAgentRunsListTool(ctx), createAgentRunStopTool(ctx)]
 }
 
 export function createChannelTools(ctx: ToolContext): AgentTool[] {

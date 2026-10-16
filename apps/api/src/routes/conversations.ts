@@ -98,6 +98,7 @@ import { listGroups } from '../services/chat-customization'
 import { mountConversationExtras } from './conversation-extras'
 import { mountHuddleRoutes } from './huddles'
 import { agentChatEnabled, assertNativeChat, getWorkspaceChatConfig, setWorkspaceChatConfig } from '../services/chat-mode'
+import { REQUESTER_TICKET_HEADER, verifyRequesterTicketInWorkspace } from '../lib/requester-ticket'
 import type { ConversationSocketData } from '../realtime/conversation-socket'
 
 const db = prisma as any
@@ -1524,6 +1525,151 @@ export function agentChannelRoutes(routeConfig: AgentChannelRoutesConfig): Hono 
     } catch (err) {
       return errorResponse(c, err)
     }
+  })
+
+  // ─── Running agents ──────────────────────────────────────────────────────
+  // The workspace agent sees and stops agent runs for the person who asked,
+  // with exactly the rights that person has over the Stop button.
+
+  /** The person behind the call, or a 403 when the caller is not the workspace agent or carries no signed requester. */
+  async function stopRequester(c: any, auth: AgentChannelAuthContext, claimedProjectId: unknown): Promise<string | Response> {
+    const projectCaller = typeof auth.projectId === 'string'
+      || (auth.projectId === undefined && typeof claimedProjectId === 'string' && !!claimedProjectId)
+    if (projectCaller) {
+      return c.json({ error: { code: 'workspace_agent_only', message: 'Only the workspace agent can see and stop other agents' } }, 403)
+    }
+    const ticket = await verifyRequesterTicketInWorkspace(c.req.header(REQUESTER_TICKET_HEADER), auth.workspaceId).catch(() => null)
+    if (!ticket) {
+      return c.json({ error: { code: 'requester_required', message: 'A signed requester is required to see or stop agents' } }, 403)
+    }
+    return ticket.userId
+  }
+
+  type Access = Awaited<ReturnType<typeof loadAccess>>
+
+  async function accessOrNull(conversationId: string, userId: string, cache: Map<string, Access | null>): Promise<Access | null> {
+    if (!cache.has(conversationId)) cache.set(conversationId, await loadAccess(conversationId, userId).catch(() => null))
+    return cache.get(conversationId) ?? null
+  }
+
+  /** A channel (name or id) the requester can read. */
+  async function requesterConversation(workspaceId: string, ref: string, userId: string, cache: Map<string, Access | null>) {
+    const key = ref.replace(/^#/, '')
+    const byId = await db.conversation.findUnique({ where: { id: key } }).catch(() => null)
+    const conversation = byId && byId.workspaceId === workspaceId
+      ? byId
+      : await db.conversation.findFirst({ where: { workspaceId, slug: key.toLowerCase() } })
+    if (!conversation) return null
+    const access = await accessOrNull(conversation.id, userId, cache)
+    return access ? { conversation, access } : null
+  }
+
+  const RUN_NOT_VISIBLE = { error: { code: 'not_found', message: 'Channel not found or not visible to the person who asked' } }
+  const inThread = (threadRootId: string) => ({ OR: [{ threadRootId }, { id: threadRootId }] })
+  const optionalString = (value: unknown) => (typeof value === 'string' && value.trim() ? value.trim() : undefined)
+
+  function runView(row: any, access: Access) {
+    return {
+      messageId: row.id,
+      agent: row.authorAgentRef?.name ?? 'Agent',
+      projectId: row.authorAgentRef?.projectId ?? null,
+      channel: { id: row.conversationId, name: row.conversation?.name ?? null, kind: row.conversation?.kind ?? null },
+      threadRootId: row.threadRootId ?? null,
+      startedAt: row.createdAt,
+      preview: String(row.text ?? '').trim().slice(-200),
+      canStop: access.role !== 'viewer',
+    }
+  }
+
+  router.get(`${base}/running-agents`, async (c) => {
+    const auth = await config.authorize(c)
+    if (auth instanceof Response) return auth
+    const userId = await stopRequester(c, auth, c.req.query('projectId'))
+    if (userId instanceof Response) return userId
+    const cache = new Map<string, Access | null>()
+    const channel = optionalString(c.req.query('channel'))
+    const threadRootId = optionalString(c.req.query('threadRootId'))
+    const sessionId = optionalString(c.req.query('sessionId'))
+    let conversationId: string | undefined
+    if (channel) {
+      const target = await requesterConversation(auth.workspaceId, channel, userId, cache)
+      if (!target) return c.json(RUN_NOT_VISIBLE, 404)
+      conversationId = target.conversation.id
+    }
+    const rows = await db.conversationMessage.findMany({
+      where: {
+        workspaceId: auth.workspaceId,
+        authorType: 'agent',
+        agentStatus: 'running',
+        deletedAt: null,
+        ...(conversationId ? { conversationId } : {}),
+        ...(threadRootId ? inThread(threadRootId) : {}),
+      },
+      include: { conversation: { select: { name: true, kind: true } } },
+      orderBy: { createdAt: 'desc' },
+      take: 200,
+    })
+    const runs = []
+    for (const row of rows) {
+      if (sessionId && row.agentSessionId === sessionId) continue
+      const access = await accessOrNull(row.conversationId, userId, cache)
+      if (access) runs.push(runView(row, access))
+      if (runs.length >= 50) break
+    }
+    return c.json({ runs })
+  })
+
+  /** Stop one agent reply (`messageId`), or every agent running in a thread (`channel` + `threadRootId`). */
+  router.post(`${base}/running-agents/stop`, async (c) => {
+    const auth = await config.authorize(c)
+    if (auth instanceof Response) return auth
+    const body = await readJson(c)
+    const userId = await stopRequester(c, auth, body.projectId)
+    if (userId instanceof Response) return userId
+    const cache = new Map<string, Access | null>()
+    const messageId = optionalString(body.messageId)
+    const channel = optionalString(body.channel)
+    const threadRootId = optionalString(body.threadRootId)
+    const sessionId = optionalString(body.sessionId)
+    const include = { conversation: { select: { name: true, kind: true } } }
+    let rows: any[]
+    if (messageId) {
+      const row = await db.conversationMessage.findUnique({ where: { id: messageId }, include })
+      const access = row && row.workspaceId === auth.workspaceId && row.authorType === 'agent'
+        ? await accessOrNull(row.conversationId, userId, cache)
+        : null
+      if (!access) return c.json({ error: { code: 'not_found', message: 'Agent reply not found' } }, 404)
+      if (access.role === 'viewer') return c.json({ error: { code: 'forbidden', message: 'Viewers cannot stop agents' } }, 403)
+      rows = [row]
+    } else if (channel && threadRootId) {
+      const target = await requesterConversation(auth.workspaceId, channel, userId, cache)
+      if (!target) return c.json(RUN_NOT_VISIBLE, 404)
+      if (target.access.role === 'viewer') return c.json({ error: { code: 'forbidden', message: 'Viewers cannot stop agents' } }, 403)
+      rows = await db.conversationMessage.findMany({
+        where: { conversationId: target.conversation.id, authorType: 'agent', agentStatus: 'running', deletedAt: null, ...inThread(threadRootId) },
+        include,
+        take: 50,
+      })
+    } else {
+      return c.json({ error: { code: 'invalid_input', message: 'Pass messageId, or channel and threadRootId' } }, 400)
+    }
+    const stopped: ReturnType<typeof runView>[] = []
+    const skipped: Array<{ messageId: string; reason: 'not_running' | 'self' }> = []
+    for (const row of rows) {
+      if (row.agentStatus !== 'running') {
+        skipped.push({ messageId: row.id, reason: 'not_running' })
+        continue
+      }
+      if (sessionId && row.agentSessionId === sessionId) {
+        skipped.push({ messageId: row.id, reason: 'self' })
+        continue
+      }
+      const access = await accessOrNull(row.conversationId, userId, cache)
+      if (!access) continue
+      await stopAgentReply(row, userId)
+      stopped.push(runView(row, access))
+    }
+    return c.json({ stopped, skipped })
   })
 
   return router

@@ -8,7 +8,7 @@ import { join, resolve, sep } from 'path'
 import { createTools, type ToolContext } from '../gateway-tools'
 import { downloadedPath, pruneChatFiles, safeSegment } from '../chat-files'
 import { CORE_TOOL_NAMES } from '../capability-profiles'
-import { CHANNEL_TOOL_NAMES, createChannelTools, TEAM_CHAT_GUIDE, teamChatToolsAvailable } from '../channel-tools'
+import { CHANNEL_TOOL_NAMES, createAgentRunTools, createChannelTools, TEAM_CHAT_GUIDE, teamChatToolsAvailable } from '../channel-tools'
 
 function ctx(overrides: Partial<ToolContext> = {}, capabilityProfile?: 'personal' | 'team'): ToolContext {
   return {
@@ -79,6 +79,72 @@ describe('registration', () => {
       expect(personal).not.toContain(name)
       expect(CORE_TOOL_NAMES as readonly string[]).toContain(name)
     }
+  })
+
+  test('a project-anchored runtime cannot see or stop other agents', () => {
+    process.env.WORKSPACE_ANCHOR_PROJECT_ID = 'anchor-1'
+    try {
+      const anchored = createTools(ctx({}, 'team')).map((t) => t.name)
+      expect(anchored).toContain('team_chat_post')
+      expect(anchored).not.toContain('agent_runs_list')
+      expect(anchored).not.toContain('agent_run_stop')
+    } finally {
+      delete process.env.WORKSPACE_ANCHOR_PROJECT_ID
+    }
+  })
+})
+
+describe('running agents', () => {
+  const runTool = (name: string, context = ctx({ sessionId: 'sess-ws' })) => {
+    const found = createAgentRunTools(context).find((t) => t.name === name)
+    if (!found) throw new Error(`missing ${name}`)
+    return found
+  }
+  const run = {
+    messageId: 'm-run', agent: 'Builder', projectId: 'p-b', channel: { id: 'c1', name: 'eng', kind: 'public' },
+    threadRootId: 'root-1', startedAt: '2026-10-16T20:00:00Z', preview: 'working', canStop: true,
+  }
+
+  test('agent_runs_list filters by channel and thread and leaves out its own session', async () => {
+    reply = { runs: [run] }
+    const result = payload(await runTool('agent_runs_list').execute('t', { channel: '#eng', thread: 'root-1' }))
+    expect(result.runs).toEqual([{
+      message_id: 'm-run', agent: 'Builder', channel: 'eng', thread_id: 'root-1', started_at: run.startedAt, preview: 'working', can_stop: true,
+    }])
+    const url = new URL(calls[0].url)
+    expect(url.pathname).toBe('/api/internal/workspaces/ws-1/agent-channels/running-agents')
+    expect(Object.fromEntries(url.searchParams)).toEqual({ channel: 'eng', threadRootId: 'root-1', sessionId: 'sess-ws' })
+  })
+
+  test('agent_run_stop stops one run, or a whole thread, and sends its session so it never stops itself', async () => {
+    reply = { stopped: [run], skipped: [{ messageId: 'm-self', reason: 'self' }] }
+    const one = payload(await runTool('agent_run_stop').execute('t', { message_id: 'm-run' }))
+    expect(one).toEqual({
+      ok: true,
+      stopped: [{ message_id: 'm-run', agent: 'Builder', channel: 'eng', thread_id: 'root-1' }],
+      skipped: [{ message_id: 'm-self', reason: 'self' }],
+    })
+    expect(calls[0].init?.method).toBe('POST')
+    expect(new URL(calls[0].url).pathname).toBe('/api/internal/workspaces/ws-1/agent-channels/running-agents/stop')
+    expect(JSON.parse(String(calls[0].init?.body))).toEqual({ messageId: 'm-run', sessionId: 'sess-ws' })
+
+    await runTool('agent_run_stop').execute('t', { channel: '#eng', thread: 'root-1' })
+    expect(JSON.parse(String(calls[1].init?.body))).toEqual({ channel: 'eng', threadRootId: 'root-1', sessionId: 'sess-ws' })
+  })
+
+  test('agent_run_stop needs a target, and passes API refusals through', async () => {
+    const none = payload(await runTool('agent_run_stop').execute('t', { channel: 'eng' }))
+    expect(none.code).toBe('invalid_input')
+    expect(calls).toHaveLength(0)
+
+    status = 403
+    reply = { error: { code: 'requester_required', message: 'A signed requester is required to see or stop agents' } }
+    const refused = payload(await runTool('agent_run_stop').execute('t', { message_id: 'm-run' }))
+    expect(refused).toMatchObject({ code: 'requester_required', status: 403 })
+  })
+
+  test('the guide points at the stop tools for loops and requests', () => {
+    expect(TEAM_CHAT_GUIDE).toContain('agent_run_stop')
   })
 })
 

@@ -80,6 +80,8 @@ interface DispatcherConfig {
   invoke?: (args: InvokeArgs) => Promise<Response>
   /** Test seam: replaces the permission-response call. */
   respondToPermission?: (input: { projectId: string; requestId: string; decision: 'allow_once' | 'deny' }) => Promise<boolean>
+  /** Test seam: replaces the call that stops the runtime turn behind a reply. */
+  stopRuntimeTurn?: (input: { workspaceId: string; projectId: string | null; sessionId: string; userId: string }) => Promise<void>
   /**
    * Waits between retries of a retryable 503, in milliseconds. The last entry
    * is reused. Defaults to 2s, 4s, 8s, then 15s.
@@ -1218,9 +1220,11 @@ async function afterReplySettled(conversation: any, messageId: string, mentions:
 }
 
 /**
- * Stop an in-flight agent reply. Aborts locally when this pod owns the run;
- * otherwise asks the chat route to stop the backing session, which ends the
- * stream on whichever pod is reading it.
+ * Stop an agent reply completely. Aborting this pod's reader settles the
+ * reply, but the chat route deliberately keeps the runtime turn alive when its
+ * reader goes away, so the runtime is always told to stop the session too: that
+ * ends the turn and its subagents on whichever pod runs it. Nothing the session
+ * was watching may wake it again afterwards.
  */
 export async function stopAgentReply(message: {
   id: string
@@ -1228,23 +1232,33 @@ export async function stopAgentReply(message: {
   agentSessionId: string | null
   authorAgentRef: { projectId?: string | null } | null
 }, userId: string): Promise<void> {
-  const controller = running.get(message.id)
-  if (controller) {
-    controller.abort(new Error('stopped'))
-    return
+  running.get(message.id)?.abort(new Error('stopped'))
+  const sessionId = message.agentSessionId
+  if (!sessionId) return
+  const { silenceSessionTasks } = await import('./background-tasks.service')
+  await silenceSessionTasks(sessionId).catch((err: Error) => console.warn('[ChannelAgent] silencing stopped session failed:', err.message))
+  const input = { workspaceId: message.workspaceId, projectId: message.authorAgentRef?.projectId ?? null, sessionId, userId }
+  try {
+    await (config.stopRuntimeTurn ?? stopRuntimeTurn)(input)
+  } catch (err) {
+    console.warn(`[ChannelAgent] runtime stop for ${sessionId} failed:`, (err as Error).message)
   }
-  if (!message.agentSessionId) return
-  const projectId = message.authorAgentRef?.projectId ?? null
+}
+
+const RUNTIME_STOP_TIMEOUT_MS = 10_000
+
+async function stopRuntimeTurn(input: { workspaceId: string; projectId: string | null; sessionId: string; userId: string }): Promise<void> {
   const headers = {
     'Content-Type': 'application/json',
-    'X-Chat-Session-Id': message.agentSessionId,
-    'X-Channel-User-Id': userId,
+    'X-Chat-Session-Id': input.sessionId,
+    'X-Channel-User-Id': input.userId,
   }
-  const body = JSON.stringify({ chatSessionId: message.agentSessionId })
-  if (projectId) {
+  const body = JSON.stringify({ chatSessionId: input.sessionId })
+  const signal = AbortSignal.timeout(RUNTIME_STOP_TIMEOUT_MS)
+  if (input.projectId) {
     const { projectChatRoutes } = await import('../routes/project-chat')
     await projectChatRoutes({ runtimeManager: config.runtimeManager }).fetch(
-      new Request(`http://internal/projects/${encodeURIComponent(projectId)}/chat/stop`, { method: 'POST', headers, body }),
+      new Request(`http://internal/projects/${encodeURIComponent(input.projectId)}/chat/stop`, { method: 'POST', headers, body, signal }),
     )
     return
   }
@@ -1254,7 +1268,7 @@ export async function stopAgentReply(message: {
     alwaysEnabled: true,
     resolveUserId: async (c: any) => c.req.header('X-Channel-User-Id') || null,
   }).fetch(
-    new Request(`http://internal/workspaces/${encodeURIComponent(message.workspaceId)}/chat/stop`, { method: 'POST', headers, body }),
+    new Request(`http://internal/workspaces/${encodeURIComponent(input.workspaceId)}/chat/stop`, { method: 'POST', headers, body, signal }),
   )
 }
 

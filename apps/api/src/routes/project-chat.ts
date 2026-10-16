@@ -1005,6 +1005,18 @@ export async function trackUsageFromStream(
   }
 }
 
+/** A stopped chat of this project is not woken again by the work it was watching. Never fails the stop. */
+async function silenceStoppedSession(chatSessionId: string, projectId: string): Promise<void> {
+  try {
+    const session = await (prisma as any).chatSession.findUnique({ where: { id: chatSessionId }, select: { contextId: true } })
+    if (session?.contextId !== projectId) return
+    const { silenceSessionTasks } = await import("../services/background-tasks.service")
+    await silenceSessionTasks(chatSessionId)
+  } catch (error) {
+    console.warn(`[ProjectChat] Failed to silence stopped chat ${chatSessionId}:`, error)
+  }
+}
+
 // =============================================================================
 // Routes
 // =============================================================================
@@ -2177,6 +2189,9 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
       try { parsed = JSON.parse(body || "{}") } catch { /* noop */ }
       const chatSessionId =
         c.req.header("X-Chat-Session-Id") || parsed?.chatSessionId || parsed?.sessionId
+      if (typeof chatSessionId === "string" && chatSessionId) {
+        await silenceStoppedSession(chatSessionId, projectId)
+      }
       if (typeof chatSessionId === "string" && chatSessionId && response.ok) {
         await clearActiveTurn({ id: chatSessionId, contextId: projectId }).catch((error) =>
           console.warn(`[ProjectChat] Failed to clear stopped chat ${chatSessionId}:`, error),

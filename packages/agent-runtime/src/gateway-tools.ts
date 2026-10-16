@@ -31,7 +31,7 @@ import { availableModelsHint, isAvailableModel } from './available-models'
 import { createWorkspaceAgentTools } from './workspace-agent-tools'
 import { createTriggerTools } from './trigger-tools'
 import { createMeetingTools } from './meeting-tools'
-import { createChannelTools } from './channel-tools'
+import { createAgentRunTools, createChannelTools } from './channel-tools'
 import { createBoardTools } from './board-tools'
 import { BOARD_ADMIN_TOOL_NAMES, BOARD_TOOL_NAMES, CHANNEL_TOOL_NAMES, PROBLEM_TOOL_NAMES } from './work-tool-names'
 import { resolveRuntimeCapabilities } from './capability-status-prompt'
@@ -8555,6 +8555,8 @@ export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTo
     if (ctx.config.capabilityProfile === 'personal') tools.push(...createMeetingTools(ctx))
     else {
       tools.push(...createChannelTools(ctx))
+      // A project-anchored runtime speaks as that project's agent, not the workspace agent.
+      if (!process.env.WORKSPACE_ANCHOR_PROJECT_ID) tools.push(...createAgentRunTools(ctx))
       tools.push(...createBoardTools(ctx))
     }
   }

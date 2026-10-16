@@ -1387,6 +1387,12 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
         body: body || '{}',
       }, runtimeExtra)
       const result = await response.json()
+      if (sessionId) {
+        const { silenceSessionTasks } = await import('../services/background-tasks.service')
+        await silenceSessionTasks(sessionId).catch((error) =>
+          console.warn(`[WorkspaceChat] Failed to silence stopped chat ${sessionId}:`, error),
+        )
+      }
       if (sessionId && response.ok) {
         await clearActiveTurn({
           id: sessionId,

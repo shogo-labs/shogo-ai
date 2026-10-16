@@ -1192,6 +1192,42 @@ export async function addAgentChannelMembers(
   })
 }
 
+export interface RunningAgent {
+  messageId: string
+  agent: string
+  projectId: string | null
+  channel: { id: string; name: string | null; kind: string | null }
+  threadRootId: string | null
+  startedAt: string
+  preview: string
+  canStop: boolean
+}
+
+export async function listRunningAgents(
+  workspaceId: string,
+  filter: { channel?: string; threadRootId?: string; sessionId?: string } = {},
+): Promise<CheckpointCallResult<RunningAgent[]>> {
+  const params = new URLSearchParams()
+  if (filter.channel) params.set('channel', filter.channel)
+  if (filter.threadRootId) params.set('threadRootId', filter.threadRootId)
+  if (filter.sessionId) params.set('sessionId', filter.sessionId)
+  return personalFetch(channelsPath(workspaceId, `/running-agents?${params}`), {
+    method: 'GET',
+    parse: (j) => (j?.runs ?? []) as RunningAgent[],
+  })
+}
+
+export async function stopRunningAgents(
+  workspaceId: string,
+  input: { messageId?: string; channel?: string; threadRootId?: string; sessionId?: string },
+): Promise<CheckpointCallResult<{ stopped: RunningAgent[]; skipped: Array<{ messageId: string; reason: string }> }>> {
+  return personalFetch(channelsPath(workspaceId, '/running-agents/stop'), {
+    method: 'POST',
+    body: JSON.stringify(input),
+    parse: (j) => ({ stopped: j?.stopped ?? [], skipped: j?.skipped ?? [] }),
+  })
+}
+
 /** A channel's shared markdown doc (see the API's `conversation-doc.service`). */
 export interface AgentChannelDoc {
   id: string

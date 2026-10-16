@@ -284,6 +284,21 @@ export async function cancelTask(id: string): Promise<BackgroundTaskRow | null> 
   return updated
 }
 
+/**
+ * A stopped session stays stopped: nothing it was watching may wake it again.
+ * The watched work itself (another agent, a card, a project call) carries on.
+ * Wakes already queued for these tasks are dropped when the queue reaches them.
+ */
+export async function silenceSessionTasks(chatSessionId: string): Promise<number> {
+  for (const timers of [wakeTimers, holdTimers]) {
+    const timer = timers.get(chatSessionId)
+    if (timer) clearTimeout(timer)
+    timers.delete(chatSessionId)
+  }
+  const res = await db.backgroundTask.updateMany({ where: { chatSessionId, consumed: false }, data: { consumed: true } })
+  return res.count
+}
+
 /** The agent saw these results (it waited, or they were injected into a turn): never wake for them. */
 export async function consumeTasks(ids: string[]): Promise<number> {
   const clean = ids.filter((id) => typeof id === 'string' && id.length <= 64).slice(0, 200)

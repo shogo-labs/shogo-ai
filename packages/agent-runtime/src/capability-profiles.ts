@@ -113,6 +113,8 @@ export const CORE_TOOL_NAMES = [
   'team_chat_list', 'team_chat_read', 'team_chat_post', 'team_chat_update', 'team_chat_search', 'team_chat_dm', 'team_chat_add_member',
   'fetch_chat_files', 'team_chat_doc_read', 'team_chat_doc_update', 'team_directory', 'member_activity',
   'team_chat_question_secret',
+  // Team chat, workspace agent only (not a project-anchored runtime).
+  'agent_runs_list', 'agent_run_stop',
   // Work boards; registered for non-personal workspace runtimes and gated by the work capabilities.
   ...BOARD_TOOL_NAMES, ...BOARD_ADMIN_TOOL_NAMES, ...PROBLEM_TOOL_NAMES,
 ]
