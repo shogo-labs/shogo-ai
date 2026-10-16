@@ -316,6 +316,15 @@ export function wrapToolsWithOrchestration(
           return wrapped.slice(start, end)
         }
       }
+      // `find` is the dispatch path. Delegate to the inner list's own `find`
+      // so a proxied input can resolve tools it deliberately omits from
+      // iteration (e.g. mode-unavailable stubs that return a helpful error).
+      if (prop === 'find') {
+        return (predicate: (t: AgentTool, i: number) => unknown, thisArg?: unknown) => {
+          const hit = target.find((t, i) => predicate.call(thisArg, getOrWrap(t), i))
+          return hit === undefined ? undefined : getOrWrap(hit)
+        }
+      }
       if (typeof prop === 'string' && PROXIED_PROPS.has(prop)) {
         const wrapped = Array.from(target).map(getOrWrap)
         return (wrapped as any)[prop].bind(wrapped)

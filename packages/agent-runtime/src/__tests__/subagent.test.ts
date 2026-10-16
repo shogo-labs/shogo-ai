@@ -697,6 +697,26 @@ describe('runSubagent — success paths', () => {
     expect(calledMock).toBe(true)
     expect(observed.find(t => t.name === 'read_file')).toBeDefined()
   })
+
+  it('awaits async mocks and handles their passthrough', async () => {
+    const ctx = makeCtx({
+      toolMockFns: new Map<string, (p: any) => Promise<unknown>>([
+        ['exec', async (p) => (p.command === 'gh pr list' ? { prs: [] } : '__passthrough')],
+      ]),
+    })
+    const results: any[] = []
+    runAgentLoopImpl = async (opts: any) => {
+      const tool = opts.tools.find((t: any) => t.name === 'exec')
+      results.push(await tool.execute('tc1', { command: 'gh pr list' }))
+      results.push(await tool.execute('tc2', { command: 'ls' }))
+      return { text: 'ok', toolCalls: [], iterations: 1, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, newMessages: [], effectiveModelId: 'm' }
+    }
+    const allTools = [{ name: 'exec', execute: async () => 'real' } as any]
+    const cfg = { name: 'c', description: 'd', systemPrompt: 's', toolNames: ['exec'] } as any
+    await runSubagent(cfg, 'p', ctx, allTools)
+    expect(results[0].details).toEqual({ prs: [] })
+    expect(results[1]).toBe('real')
+  })
 })
 
 // --- runSubagentsParallel -------------------------------------------------

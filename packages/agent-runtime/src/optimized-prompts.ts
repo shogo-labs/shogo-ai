@@ -269,24 +269,24 @@ full-featured than managed integrations.
 **To bring a GitHub repository into a project (import, clone, or "hook up" a repo), use \`github_connect\`, never a manual \`git clone\`.** It checks the repo out in the project's own runtime (where the preview runs) and stores the credential on the project's encrypted GitHub connection. Call it without a token first and give the user both options it returns: authorize the Shogo GitHub App with the link, or share an access token. If they share a token, call \`github_connect\` again with it. Once connected, \`gh\` and \`git push/pull\` in \`exec\` authenticate automatically.
 
 1. Run the command immediately, e.g. \`exec({ command: "gh issue list" })\`, \`gh issue create --title "..." --body "..."\`, \`gh pr list\`, \`gh run list\`. Use \`github_create_pr\` for PR creation after pushing the source branch.
-2. If \`gh\` reports it is not authenticated and the work is for a project's repository, connect it with \`github_connect\` (offering both options) and retry. For one-off work outside a project, ask the user for a token and save it to workspace \`.env\` as \`GITHUB_TOKEN\`; workspace \`.env\` is auto-loaded into \`exec\`.
+2. If \`gh\` reports it is not authenticated and the work is for a project's repository, connect it with \`github_connect\` (offering both options) and retry. A token passed to \`github_connect\` is stored on the project's connection; do not also write it to \`.env\`. Only for one-off work outside a project's repository, save the user's token to workspace \`.env\` as \`GITHUB_TOKEN\`; workspace \`.env\` is auto-loaded into \`exec\`.
+   If the user pastes a GitHub token without naming a repository, \`github_connect\` still needs \`repo\` (owner/name): ask which repository it is for, or, if they only want \`gh\` access outside a project, use the \`.env\` path above.
 3. Composio GitHub OAuth is a last resort only when the user explicitly refuses a PAT and still wants GitHub access.
 
-Other CLIs (GitLab, AWS, Stripe, OCI) still require a token/key the user provides before you run them:
+Other pre-installed CLIs (AWS, Stripe) require a token/key the user provides before you run them:
 
 | Service      | CLI      | Token env var                                  | Example commands                           |
 |--------------|----------|------------------------------------------------|--------------------------------------------|
-| GitHub       | gh       | GITHUB_TOKEN (only if \`gh auth status\` fails) | gh issue list, gh issue create, gh pr list |
-| GitLab       | glab     | GITLAB_TOKEN                                   | glab mr list, glab issue list              |
 | AWS          | aws      | AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY       | aws s3 ls, aws ec2 describe-instances      |
 | Stripe       | stripe   | STRIPE_API_KEY                                 | stripe customers list, stripe charges list |
-| Oracle Cloud | oci      | OCI_CLI_AUTH=api_key + config in ~/.oci/        | oci compute instance list                  |
 
-**How to configure a token (GitHub PAT, GitLab, AWS, Stripe, OCI):**
+The GitLab (\`glab\`) and Oracle Cloud (\`oci\`) CLIs are NOT installed. For those services, call their REST APIs with \`curl\` using a token saved in \`.env\`.
+
+**How to configure a token for these CLIs (not GitHub — see above):**
 1. Save the token to the workspace \`.env\` file using \`write_file\`:
-   \`write_file({ path: ".env", content: "GITHUB_TOKEN=ghp_xxx\\n" })\`
+   \`write_file({ path: ".env", content: "STRIPE_API_KEY=sk_xxx\\n" })\`
 2. The \`.env\` is automatically loaded into all \`exec\` commands — no extra steps needed.
-3. Use the CLI directly: \`exec({ command: "gh issue list" })\`
+3. Use the CLI directly: \`exec({ command: "stripe customers list" })\`
 
 **NEVER pass tokens as inline env vars in commands** (e.g. \`GITHUB_TOKEN=xxx gh pr list\`).
 Always save to \`.env\` first. When the user provides multiple tokens, write them all to

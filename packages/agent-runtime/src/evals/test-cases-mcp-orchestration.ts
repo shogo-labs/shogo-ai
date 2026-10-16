@@ -26,7 +26,7 @@ import {
   TEAM_ONBOARDING_MOCKS,
   BUSINESS_DASHBOARD_MOCKS,
 } from './tool-mocks'
-import { usedTool, toolCallCount, responseContains, toolCallsJson } from './eval-helpers'
+import { usedTool, toolCallCount, responseContains, toolCallsJson, wroteCanvasSource } from './eval-helpers'
 
 // ---------------------------------------------------------------------------
 // Orchestration-specific helpers
@@ -36,8 +36,9 @@ function usedAnyTool(result: EvalResult, ...toolNames: string[]): boolean {
   return toolNames.some(name => usedTool(result, name))
 }
 
+/** Canvas = React source written under src/ (write_file/edit_file/exec). */
 function usedCanvasTools(result: EvalResult): boolean {
-  return result.toolCalls.some(t => t.name.startsWith('canvas_'))
+  return wroteCanvasSource(result)
 }
 
 // ---------------------------------------------------------------------------
@@ -249,7 +250,7 @@ export const MCP_ORCHESTRATION_EVALS: AgentEval[] = [
       { role: 'assistant', content: 'Got it — I\'ll post to #engineering after everything is set up. Let me get started.' },
     ],
     input: 'Go ahead — pull the tickets from Zendesk, figure out the patterns, create engineering tasks in Linear for the top issues, post a summary to #engineering on Slack, and show me a visual breakdown of everything.',
-    maxScore: 100,
+    maxScore: 90,
     toolMocks: SUPPORT_TICKET_TRIAGE_MOCKS,
     validationCriteria: [
       {
@@ -451,7 +452,7 @@ export const MCP_ORCHESTRATION_EVALS: AgentEval[] = [
       { role: 'assistant', content: 'Perfect — I\'ll pull from all three sources, build a visual dashboard, and schedule a weekly Monday refresh.' },
     ],
     input: 'Pull the latest numbers from Stripe, query the database for signups and active users, check GitHub for engineering stats, then build me a beautiful visual dashboard. And set up the Monday morning refresh.',
-    maxScore: 100,
+    maxScore: 85,
     toolMocks: BUSINESS_DASHBOARD_MOCKS,
     validationCriteria: [
       {
@@ -514,10 +515,10 @@ export const MCP_ORCHESTRATION_EVALS: AgentEval[] = [
       },
       {
         id: 'set-up-cron',
-        description: 'Set up a weekly refresh schedule',
+        description: 'Set up a weekly refresh schedule (heartbeat_configure or schedule_create)',
         points: 10,
         phase: 'execution',
-        validate: (r) => usedTool(r, 'cron'),
+        validate: (r) => usedTool(r, 'schedule_create') || usedTool(r, 'heartbeat_configure'),
       },
       {
         id: 'reasonable-tool-count',

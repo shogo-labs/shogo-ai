@@ -16,9 +16,26 @@ export function deriveApiUrl(): string | null {
       return `${url.protocol}//${url.host}`
     } catch { /* invalid URL */ }
   }
+  // The cluster-DNS fallback only resolves inside Kubernetes. Elsewhere (a
+  // standalone/local runtime with no API configured) return null so callers
+  // fail fast with NO_API_URL_ERROR instead of an ENOTFOUND DNS lookup.
+  if (!isInKubernetes()) return null
   const systemNs = process.env.SYSTEM_NAMESPACE || 'shogo-system'
   return `http://api.${systemNs}.svc.cluster.local`
 }
+
+function isInKubernetes(): boolean {
+  if (process.env.KUBERNETES_SERVICE_HOST) return true
+  try {
+    return existsSync(SA_TOKEN_PATH)
+  } catch {
+    return false
+  }
+}
+
+/** Error returned by internal-API calls when `deriveApiUrl()` is null. */
+export const NO_API_URL_ERROR =
+  'Not available in this environment: no Shogo API is configured (SHOGO_API_URL is unset).'
 
 /**
  * Public-facing API URL for URLs that end up in browser-facing contexts
@@ -281,7 +298,7 @@ async function checkpointFetch<T>(
   init: RequestInit & { parse?: (json: any) => T },
 ): Promise<CheckpointCallResult<T>> {
   const apiUrl = deriveApiUrl()
-  if (!apiUrl) return { ok: false, status: 0, error: 'No API URL configured' }
+  if (!apiUrl) return { ok: false, status: 0, error: NO_API_URL_ERROR }
   try {
     const res = await fetch(`${apiUrl}${path}`, {
       headers: getInternalHeaders(),
@@ -568,7 +585,7 @@ async function publishFetch<T>(
   timeoutMs = 120_000,
 ): Promise<CheckpointCallResult<T>> {
   const apiUrl = deriveApiUrl()
-  if (!apiUrl) return { ok: false, status: 0, error: 'No API URL configured' }
+  if (!apiUrl) return { ok: false, status: 0, error: NO_API_URL_ERROR }
   try {
     const res = await fetch(`${apiUrl}${path}`, {
       headers: getInternalHeaders(),
@@ -647,7 +664,7 @@ async function lifecycleFetch<T>(
   },
 ): Promise<CheckpointCallResult<T>> {
   const apiUrl = deriveApiUrl()
-  if (!apiUrl) return { ok: false, status: 0, error: 'No API URL configured' }
+  if (!apiUrl) return { ok: false, status: 0, error: NO_API_URL_ERROR }
   const { parse, timeoutMs, keepalive, ...rest } = init
   try {
     const res = await fetch(`${apiUrl}${path}`, {
@@ -779,7 +796,7 @@ async function personalFetch<T>(
   init: RequestInit & { parse?: (json: any) => T } = {},
 ): Promise<CheckpointCallResult<T>> {
   const apiUrl = deriveApiUrl()
-  if (!apiUrl) return { ok: false, status: 0, error: 'No API URL configured' }
+  if (!apiUrl) return { ok: false, status: 0, error: NO_API_URL_ERROR }
   const { parse, ...rest } = init
   try {
     const res = await fetch(`${apiUrl}${path}`, {
@@ -1438,7 +1455,7 @@ export async function downloadAgentChatFile(
   fileId: string,
 ): Promise<CheckpointCallResult<{ bytes: Uint8Array; name: string; folder: string; mimeType: string }>> {
   const apiUrl = deriveApiUrl()
-  if (!apiUrl) return { ok: false, status: 0, error: 'No API URL configured' }
+  if (!apiUrl) return { ok: false, status: 0, error: NO_API_URL_ERROR }
   const params = fileParams(identity, {})
   try {
     const res = await fetch(`${apiUrl}${channelsPath(workspaceId, `/files/${encodeURIComponent(fileId)}/content?${params}`)}`, {
@@ -1639,7 +1656,7 @@ export async function uploadAgentAvatar(
   contentType = 'image/png',
 ): Promise<CheckpointCallResult<PersonalProfile>> {
   const apiUrl = deriveApiUrl()
-  if (!apiUrl) return { ok: false, status: 0, error: 'No API URL configured' }
+  if (!apiUrl) return { ok: false, status: 0, error: NO_API_URL_ERROR }
   try {
     const res = await fetch(
       `${apiUrl}/api/internal/workspaces/${encodeURIComponent(workspaceId)}/agent-avatar`,

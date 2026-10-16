@@ -10,12 +10,12 @@
  * - Skill discovery via search_integrations (skills alongside managed integrations)
  * - Skill installation via connect with "skill:" prefix
  * - Skill creation via write_file with correct frontmatter
- * - Skill editing via read_file + write_file
- * - Skill deletion via delete_file
+ * - Skill editing via read + edit/write (any route)
+ * - Skill deletion via delete_file or exec rm
  * - Full lifecycle: search → install → read → execute
  */
 
-import type { AgentEval } from './types'
+import type { AgentEval, EvalResult } from './types'
 import {
   SKILL_SEARCH_MIXED_MOCKS,
   SKILL_INSTALL_MOCKS,
@@ -28,7 +28,53 @@ import {
   responseContains,
   toolCallsJson,
   toolCallArgsContain,
+  deletedFileAnyRoute,
+  execCommands,
+  execIsSearch,
+  fileWrites,
+  readFileAnyRoute,
+  readWorkspaceFile,
+  wroteFileAnyRoute,
 } from './eval-helpers'
+
+// ---------------------------------------------------------------------------
+// Grading helpers
+// ---------------------------------------------------------------------------
+
+/** Used the `skill` tool on `name` (install, or invoke — which loads its instructions). */
+function usedSkillTool(r: EvalResult, name: string, actions = ['install', 'invoke']): boolean {
+  return r.toolCalls.some(t => {
+    if (t.name !== 'skill') return false
+    const input = t.input as Record<string, unknown>
+    const action = String(input.action ?? 'invoke')
+    return actions.includes(action) && JSON.stringify(input).toLowerCase().includes(name)
+  })
+}
+
+/** Installed a skill via `connect({ name: "skill:<name>" })` or the `skill` tool. */
+function installedSkill(r: EvalResult, name: string): boolean {
+  return toolCallArgsContain(r, 'connect', `skill:${name}`) || usedSkillTool(r, name)
+}
+
+/** Loaded a skill's instructions: read its SKILL.md (any route) or invoked it via the `skill` tool. */
+function readSkill(r: EvalResult, name: string): boolean {
+  return readFileAnyRoute(r, (p) => p.includes(name)) || usedSkillTool(r, name, ['invoke'])
+}
+
+const isSkillPath = (p: string) => p.includes('.shogo/skills/') || /(^|\/)skills\//.test(p)
+
+/** Content written to skill files via write_file (full content) or exec heredoc. */
+function skillFileWrites(r: EvalResult): string[] {
+  return fileWrites(r).filter(w => isSkillPath(w.path) && w.via !== 'edit_file').map(w => w.content)
+}
+
+const STANDUP_SKILL = '.shogo/skills/standup-collect/SKILL.md'
+
+/** The standup skill after this turn: the workspace file, else every write to it. */
+function standupSkillAfter(r: EvalResult): string {
+  return readWorkspaceFile(r, STANDUP_SKILL) ||
+    fileWrites(r).filter(w => w.path.includes('standup')).map(w => w.content).join('\n')
+}
 
 // ---------------------------------------------------------------------------
 // Test Cases
@@ -123,24 +169,24 @@ export const SKILL_SYSTEM_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'used-tool-install',
-        description: 'Used connect to install the skill',
+        description: 'Installed the skill (connect with skill: prefix, or the skill tool)',
         points: 25,
         phase: 'intention',
-        validate: (r) => usedToolAnywhere(r, 'connect'),
+        validate: (r) => usedToolAnywhere(r, 'connect') || usedSkillTool(r, 'github'),
       },
       {
         id: 'install-with-skill-prefix',
-        description: 'connect called with skill: prefix',
+        description: 'Targeted the github-ops skill (connect "skill:github-ops" or skill tool)',
         points: 25,
         phase: 'execution',
-        validate: (r) => toolCallArgsContain(r, 'connect', 'skill:'),
+        validate: (r) => installedSkill(r, 'github-ops'),
       },
       {
         id: 'read-skill-after-install',
-        description: 'Agent read the skill file after install',
+        description: 'Agent loaded the skill instructions (read SKILL.md or skill invoke)',
         points: 20,
         phase: 'execution',
-        validate: (r) => toolCallArgsContain(r, 'read_file', 'github-ops'),
+        validate: (r) => readSkill(r, 'github-ops'),
       },
       {
         id: 'response-confirms-install',
@@ -195,67 +241,41 @@ Facilitate daily standup updates:
     validationCriteria: [
       {
         id: 'used-write-file',
-        description: 'Used write_file targeting .shogo/skills/ directory',
+        description: 'Wrote a .md skill file under .shogo/skills/ (write_file or shell)',
         points: 25,
         phase: 'intention',
-        validate: (r) => r.toolCalls
-          .filter(t => t.name === 'write_file')
-          .some(t => {
-            const input = t.input as Record<string, any>
-            return typeof input.path === 'string' && (input.path.includes('.shogo/skills/') || input.path.includes('skills/')) && input.path.endsWith('.md')
-          }),
+        validate: (r) => wroteFileAnyRoute(r, (p) => isSkillPath(p) && p.endsWith('.md')),
       },
       {
         id: 'has-name-field',
         description: 'Written content has name: in frontmatter',
         points: 15,
         phase: 'execution',
-        validate: (r) => r.toolCalls
-          .filter(t => t.name === 'write_file')
-          .some(t => {
-            const input = t.input as Record<string, any>
-            const content = typeof input.content === 'string' ? input.content : ''
-            return content.includes('name:') && content.includes('---')
-          }),
+        validate: (r) => skillFileWrites(r).some(c => c.includes('name:') && c.includes('---')),
       },
       {
         id: 'has-trigger-field',
         description: 'Written content has trigger: with pipe-separated phrases',
         points: 15,
         phase: 'execution',
-        validate: (r) => r.toolCalls
-          .filter(t => t.name === 'write_file')
-          .some(t => {
-            const input = t.input as Record<string, any>
-            const content = typeof input.content === 'string' ? input.content : ''
-            return content.includes('trigger:') && content.includes('|')
-          }),
+        validate: (r) => skillFileWrites(r).some(c => c.includes('trigger:') && c.includes('|')),
       },
       {
         id: 'has-markdown-body',
         description: 'Written content has a markdown body with instructions',
         points: 15,
         phase: 'execution',
-        validate: (r) => r.toolCalls
-          .filter(t => t.name === 'write_file')
-          .some(t => {
-            const input = t.input as Record<string, any>
-            const content = typeof input.content === 'string' ? input.content : ''
-            const parts = content.split('---')
-            return parts.length >= 3 && parts[2].trim().length > 20
-          }),
+        validate: (r) => skillFileWrites(r).some(c => {
+          const parts = c.split('---')
+          return parts.length >= 3 && parts[2].trim().length > 20
+        }),
       },
       {
         id: 'path-in-skills-dir',
         description: 'File written to .shogo/skills/ directory',
         points: 15,
         phase: 'execution',
-        validate: (r) => r.toolCalls
-          .filter(t => t.name === 'write_file')
-          .some(t => {
-            const input = t.input as Record<string, any>
-            return typeof input.path === 'string' && (input.path.includes('.shogo/skills/') || input.path.includes('skills/'))
-          }),
+        validate: (r) => wroteFileAnyRoute(r, isSkillPath),
       },
       {
         id: 'response-explains-skill',
@@ -309,56 +329,45 @@ Facilitate daily standup updates:
     validationCriteria: [
       {
         id: 'read-skill-first',
-        description: 'Used read_file to read the skill before editing',
+        description: 'Read the skill before editing (read_file or shell)',
         points: 20,
         phase: 'intention',
-        validate: (r) => toolCallArgsContain(r, 'read_file', 'standup'),
+        validate: (r) => readFileAnyRoute(r, (p) => p.includes('standup')),
       },
       {
         id: 'used-write-file',
-        description: 'Used write_file to update the skill',
+        description: 'Updated the skill file (edit_file, write_file, or shell)',
         points: 25,
         phase: 'intention',
-        validate: (r) => toolCallArgsContain(r, 'write_file', 'standup'),
+        validate: (r) => wroteFileAnyRoute(r, (p) => p.includes('standup')),
       },
       {
         id: 'has-valid-frontmatter',
-        description: 'Updated content still has valid frontmatter',
+        description: 'Updated skill still has valid frontmatter',
         points: 15,
         phase: 'execution',
-        validate: (r) => r.toolCalls
-          .filter(t => t.name === 'write_file')
-          .some(t => {
-            const input = t.input as Record<string, any>
-            const content = typeof input.content === 'string' ? input.content : ''
-            return content.includes('---') && content.includes('name:') && content.includes('trigger:')
-          }),
+        validate: (r) => {
+          if (!wroteFileAnyRoute(r, (p) => p.includes('standup'))) return false
+          const content = standupSkillAfter(r)
+          return content.trimStart().startsWith('---') && content.includes('name:') && content.includes('trigger:')
+        },
       },
       {
         id: 'trigger-includes-morning-update',
         description: 'Updated trigger includes "morning update"',
         points: 15,
         phase: 'execution',
-        validate: (r) => r.toolCalls
-          .filter(t => t.name === 'write_file')
-          .some(t => {
-            const input = t.input as Record<string, any>
-            const content = typeof input.content === 'string' ? input.content.toLowerCase() : ''
-            return content.includes('morning update')
-          }),
+        validate: (r) => {
+          const trigger = standupSkillAfter(r).split('\n').find(l => /^\s*trigger:/.test(l)) ?? ''
+          return trigger.toLowerCase().includes('morning update')
+        },
       },
       {
         id: 'body-mentions-general',
         description: 'Updated body mentions #general channel',
         points: 15,
         phase: 'execution',
-        validate: (r) => r.toolCalls
-          .filter(t => t.name === 'write_file')
-          .some(t => {
-            const input = t.input as Record<string, any>
-            const content = typeof input.content === 'string' ? input.content.toLowerCase() : ''
-            return content.includes('#general') || content.includes('general')
-          }),
+        validate: (r) => standupSkillAfter(r).toLowerCase().includes('general'),
       },
       {
         id: 'reasonable-tool-count',
@@ -392,17 +401,17 @@ Facilitate daily standup updates:
     validationCriteria: [
       {
         id: 'installed-skill',
-        description: 'Installed the skill via connect with skill: prefix',
+        description: 'Installed the skill (connect with skill: prefix, or the skill tool)',
         points: 25,
         phase: 'intention',
-        validate: (r) => usedToolAnywhere(r, 'connect') && toolCallArgsContain(r, 'connect', 'skill:'),
+        validate: (r) => installedSkill(r, 'health-check'),
       },
       {
         id: 'read-skill-instructions',
-        description: 'Read the installed skill file to learn its instructions',
+        description: 'Loaded the installed skill instructions (read SKILL.md or skill invoke)',
         points: 20,
         phase: 'execution',
-        validate: (r) => toolCallArgsContain(r, 'read_file', 'health-check'),
+        validate: (r) => readSkill(r, 'health-check'),
       },
       {
         id: 'followed-instructions-web',
@@ -471,19 +480,23 @@ Facilitate daily standup updates.`,
     validationCriteria: [
       {
         id: 'verified-skill-exists',
-        description: 'Used exec or read_file to confirm the skill exists',
+        description: 'Confirmed the skill exists (read it, or listed/searched the skills dir)',
         points: 20,
         phase: 'intention',
         validate: (r) =>
-          toolCallArgsContain(r, 'read_file', 'reminder') ||
-          toolCallArgsContain(r, 'exec', 'skills'),
+          readFileAnyRoute(r, (p) => p.includes('reminder')) ||
+          execCommands(r).some(c => execIsSearch(c) && /skills|reminder/.test(c)),
       },
       {
         id: 'used-delete-file',
-        description: 'Used delete_file targeting skills/reminder-manage.md',
+        description: 'Deleted the reminder-manage skill (delete_file or exec rm — delete_file only works under files/)',
         points: 40,
         phase: 'execution',
-        validate: (r) => toolCallArgsContain(r, 'delete_file', 'reminder-manage'),
+        validate: (r) => {
+          const deleted = deletedFileAnyRoute(r, '.shogo/skills/reminder-manage/SKILL.md')
+          if (!r.workspaceDir) return deleted
+          return deleted && !readWorkspaceFile(r, '.shogo/skills/reminder-manage/SKILL.md')
+        },
       },
       {
         id: 'response-confirms-deletion',
@@ -499,12 +512,8 @@ Facilitate daily standup updates.`,
         points: 20,
         phase: 'execution',
         validate: (r) => {
-          const deleteCalls = r.toolCalls.filter(t => t.name === 'delete_file')
-          return deleteCalls.every(t => {
-            const input = t.input as Record<string, any>
-            const path = typeof input.path === 'string' ? input.path : ''
-            return path.includes('reminder-manage')
-          })
+          if (r.workspaceDir && !readWorkspaceFile(r, STANDUP_SKILL)) return false
+          return !deletedFileAnyRoute(r, STANDUP_SKILL) && !deletedFileAnyRoute(r, '.shogo/skills/x')
         },
       },
     ],

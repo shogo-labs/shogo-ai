@@ -69,6 +69,7 @@ export const MCP_VACATION_PLANNER_EVALS: AgentEval[] = [
     level: 5,
     input: 'I want a vacation planning dashboard for a trip to Bali, April 21 - May 2. I\'d like to stay at an Airbnb in a natural setting close to organic restaurants, preferably in the Ubud area. Can you find real Airbnb listings and build an interactive dashboard?',
     maxScore: 100,
+    useRuntimeTemplate: true,
     toolMocks: AIRBNB_VACATION_PLANNER_MOCKS,
     validationCriteria: [
       {
@@ -200,6 +201,7 @@ export const MCP_VACATION_PLANNER_EVALS: AgentEval[] = [
     ],
     input: 'These are great but some are too expensive. Can you filter to only show listings under $70 per night? Also make sure each listing card has a button that opens the actual Airbnb page.',
     maxScore: 100,
+    useRuntimeTemplate: true,
     toolMocks: AIRBNB_VACATION_PLANNER_MOCKS,
     validationCriteria: [
       {

@@ -4,7 +4,7 @@
 import { describe, expect, test } from 'bun:test'
 import { buildViewerContextPrompt, parseCanvasViewer, DESKTOP_HINT_WIDTH, PHONE_HINT_WIDTH } from '../viewer-context'
 import { CANVAS_MOBILE_PREVIEW_GUIDE, canvasModeStableGuides } from '../canvas-v2-prompt'
-import { CODE_AGENT_GENERAL_GUIDE } from '../code-agent-prompt'
+import { buildCodeAgentGeneralGuide } from '../code-agent-prompt'
 
 describe('parseCanvasViewer', () => {
   test('accepts a phone payload from the mobile client', () => {
@@ -74,7 +74,7 @@ describe('canvasModeStableGuides', () => {
   })
 
   test('the always-on coding guide requires mobile-first canvas UI without being asked', () => {
-    expect(CODE_AGENT_GENERAL_GUIDE).toContain('Mobile-first by default')
-    expect(CODE_AGENT_GENERAL_GUIDE).toContain('do not wait for the user')
+    expect(buildCodeAgentGeneralGuide()).toContain('Mobile-first by default')
+    expect(buildCodeAgentGeneralGuide()).toContain('do not wait for the user')
   })
 })

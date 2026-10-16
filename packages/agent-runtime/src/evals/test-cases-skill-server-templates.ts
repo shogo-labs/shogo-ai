@@ -165,14 +165,13 @@ function makeSkillServerMocks(models: string[], sampleData: Record<string, any[]
     })
   }
 
+  // exec is real (built-in mock); local calls hit the workspace's real server.
   return {
-    exec: {
-      type: 'static',
-      response: { stdout: '', stderr: '', exitCode: 0 },
-    },
     web: {
       type: 'pattern',
       patterns: [
+        { match: { url: 'localhost' }, response: '__passthrough' },
+        { match: { url: '127.0.0.1' }, response: '__passthrough' },
         ...webPatterns,
         {
           match: { url: 'health' },

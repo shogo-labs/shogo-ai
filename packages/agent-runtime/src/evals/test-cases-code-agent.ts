@@ -127,7 +127,7 @@ export const CODE_AGENT_EVALS: AgentEval[] = [
         validate: (r) => codeAgentUsedTool(r, 'Write', 'Edit', 'MultiEdit'),
       },
     ],
-    maxScore: 12,
+    maxScore: 10,
   },
 
   // ----- Template selection: Todo app -----

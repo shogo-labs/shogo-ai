@@ -289,6 +289,10 @@ export function buildExecEnv(
   const workspaceEnv = loadWorkspaceEnv(workspaceDir)
   const merged: NodeJS.ProcessEnv = { ...base, ...workspaceEnv }
   delete merged.PROJECTS_DATABASE_URL
+  // PORT is stripped above, but commands still need the runtime's own port
+  // to curl the preview API (`localhost:$RUNTIME_PORT/api/...`). Same value
+  // project processes get (see resolveProjectProcessEnv in preview-manager).
+  merged.RUNTIME_PORT = runtimePort()
   merged.DATABASE_URL = projectScopedDatabaseUrl(
     workspaceDir,
     workspaceEnv.DATABASE_URL,
@@ -300,6 +304,11 @@ export function buildExecEnv(
     }
   }
   return merged
+}
+
+/** The agent runtime's HTTP port (server.ts binds `PORT`, default 8080). */
+export function runtimePort(env: NodeJS.ProcessEnv = process.env): string {
+  return env.PORT || env.RUNTIME_PORT || '8080'
 }
 
 function appendDockerEnv(dockerArgs: string[], env: Record<string, string> | undefined): void {

@@ -22,7 +22,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, statSy
 import { join, dirname, resolve } from 'path'
 import { fileURLToPath } from 'url'
 import type { Message, ImageContent } from '@mariozechner/pi-ai'
-import type { StreamFn, AgentTool } from '@mariozechner/pi-agent-core'
+import type { StreamFn, AgentTool, AgentToolResult } from '@mariozechner/pi-agent-core'
 import { Type } from '@sinclair/typebox'
 import type { ChannelAdapter, IncomingMessage, AgentStatus, ChannelStatus, StreamChunkConfig, SandboxConfig } from './types'
 import { loadAllSkills, migrateFromLegacySkills, matchSkill, buildSkillsPromptSection, type Skill } from './skills'
@@ -34,7 +34,7 @@ import { TRIGGERS_GUIDE, triggerToolsAvailable } from './trigger-tools'
 import { runAgentLoop, classifyRetryability, RetryWaker, type LoopDetectorConfig } from './agent-loop'
 import { LONG_RETRY_MS, recordRetryEpisode, recordRetryLong, recordRetryNoProgress, recordRetryNow } from './retry-telemetry'
 import type { ToolContext } from './gateway-tools'
-import { createTools, textResult, filterDisabledCapabilityTools, filterSubagentOnlyTools, expectedCoreToolsForAgentMode, createModeUnavailableTool, type RestrictedMode } from './gateway-tools'
+import { createTools, textResult, filterDisabledCapabilityTools, filterSubagentOnlyTools, expectedCoreToolsForAgentMode, createModeUnavailableTool, workspaceAgentToolsRegistered, type RestrictedMode } from './gateway-tools'
 import { DEFAULT_CLOUD_SECURITY_PREFERENCE, PermissionEngine, parseSecurityPolicy } from './permission-engine'
 import { buildExposedPortsPrompt } from './exposed-ports-prompt'
 import { HookEmitter, loadAllHooks, workspaceHooksSignature } from './hooks'
@@ -84,7 +84,9 @@ import {
   type SpawnClassificationInput,
   type AutoTierOverride,
 } from './model-router'
-import { CODE_AGENT_GENERAL_GUIDE, OUTPUT_CONTRACT_GUIDE } from './code-agent-prompt'
+import { buildCodeAgentGeneralGuide, OUTPUT_CONTRACT_GUIDE } from './code-agent-prompt'
+import { isSearchEnabled } from './search-flag'
+import { smartTruncateJson } from './response-transforms'
 import { getShogoSdkGuide } from './shogo-sdk-prompt'
 import { refreshAvailableModels } from './available-models'
 import { UI_UX_DESIGN_GUIDE } from './ui-ux-guide-prompt'
@@ -547,6 +549,7 @@ export interface GatewayConfig {
 async function runMockAndUnwrap(
   mockFn: (params: Record<string, any>) => any | Promise<any>,
   params: Record<string, any>,
+  integrationToolName?: string,
 ): Promise<any> {
   const result = await mockFn(params)
   if (result === '__passthrough') return result
@@ -554,7 +557,30 @@ async function runMockAndUnwrap(
     const { __multipart: _m, ...rest } = result as any
     return rest
   }
+  if (integrationToolName) return capIntegrationMockResult(integrationToolName, result)
   return textResult(result)
+}
+
+/** Composio action slugs, e.g. `GMAIL_SEND_EMAIL`. */
+const COMPOSIO_SLUG_RE = /^[A-Z][A-Z0-9]*_[A-Z0-9_]+$/
+
+/**
+ * Apply the real Composio result-size cap (see the execute path in
+ * composio.ts) to a mocked integration result, so eval mocks can't hand the
+ * model a payload the production path would never return. Keep the limit and
+ * annotation in sync with composio.ts.
+ */
+export function capIntegrationMockResult(toolName: string, data: unknown): AgentToolResult<any> {
+  const maxChars = Math.max(4000, Number(process.env.COMPOSIO_MAX_RESULT_CHARS) || 25000)
+  const { result: raw, truncated } = smartTruncateJson(data, maxChars)
+  if (!truncated) return textResult(data)
+  const slug = toolName.toUpperCase()
+  const isGoogleDoc = slug.includes('GOOGLEDOCS') || slug.includes('GOOGLE_DOCS')
+  const docHint = isGoogleDoc
+    ? ` This is a Google Doc: to read the COMPLETE document (including its ending/conclusion), export it via GOOGLEDRIVE_DOWNLOAD_FILE or GOOGLEDRIVE_EXPORT_FILE using the same document id — that returns the full body. Do NOT summarize the document's decision or conclusion from this truncated copy.`
+    : ''
+  const annotation = `\n\n[⚠️ TRUNCATED — this response was cut from ${JSON.stringify(data).length} to ${raw.length} chars and is INCOMPLETE. Do not treat it as the whole result or answer as if you have seen the end. To get the full value, re-fetch the source directly: page through with a smaller range, or export/download the underlying file.${docHint} For large datasets, use the skill server pattern: create a Prisma schema in .shogo/server/schema.prisma, ingest the data via a script, then query and display with canvas code.]`
+  return textResult(raw + annotation)
 }
 
 export class AgentGateway {
@@ -962,7 +988,7 @@ export class AgentGateway {
         description: synDef?.description || `External integration tool: ${toolName}`,
         label: toolName.replace(/__/g, ' > ').replace(/_/g, ' '),
         parameters: Type.Object(paramProps),
-        execute: async (_id: string, params: any) => runMockAndUnwrap(mockFn, params),
+        execute: async (_id: string, params: any) => runMockAndUnwrap(mockFn, params, toolName),
       })
       this.hiddenMockTools.delete(toolName)
     }
@@ -2285,6 +2311,7 @@ export class AgentGateway {
     // so fresh decisions are taken against the new (empty) history.
     this.contentReplacementStates.delete(sessionId)
     this.turnCounters.delete(sessionId)
+    this.shellCwd.delete(sessionId)
     this.disposeSessionState(sessionId)
   }
 
@@ -2398,7 +2425,7 @@ export class AgentGateway {
         'Exception: you may create or update the plan artifact using create_plan/update_plan; those tools only write under .shogo/plans/ for user review.',
         '',
         'Your job:',
-        '1. Research the user\'s request using read-only tools (read_file, search, web, etc.)',
+        `1. Research the user's request using read-only tools (read_file, ${isSearchEnabled() ? 'search, ' : ''}web, etc.)`,
         '2. If you need more information, ask clarifying questions using ask_user',
         '3. If the request is too broad, ask 1-2 narrowing questions using ask_user',
         '4. If there are multiple valid approaches, ask the user which they prefer',
@@ -2683,7 +2710,7 @@ export class AgentGateway {
     } else if (interactionMode === 'plan') {
       restrictedMode = 'plan'
       const PLAN_MODE_ALLOWED = new Set([
-        'read_file', 'search',
+        'read_file', ...(isSearchEnabled() ? ['search'] : []),
         'web',
         'memory_read', 'memory_search', 'search_history', 'read_history',
         'ask_user', 'todo_write', 'create_plan', 'update_plan',
@@ -2771,6 +2798,7 @@ export class AgentGateway {
               const { __multipart: _m, ...rest } = result as any
               return rest
             }
+            if (COMPOSIO_SLUG_RE.test(tool.name)) return capIntegrationMockResult(tool.name, result)
             return textResult(result)
           },
         }
@@ -2794,7 +2822,7 @@ export class AgentGateway {
           description: synDef?.description || `External integration tool: ${name}`,
           label: name.replace(/__/g, ' > ').replace(/_/g, ' '),
           parameters: (synDef?.parameters as any) ?? Type.Object(paramProps),
-          execute: async (_id: string, params: any) => runMockAndUnwrap(mockFn, params),
+          execute: async (_id: string, params: any) => runMockAndUnwrap(mockFn, params, name),
         }
         staticTools.push(syntheticTool)
       }
@@ -4211,7 +4239,7 @@ export class AgentGateway {
       parts.push(workspaceTree)
     }
 
-    parts.push(CODE_AGENT_GENERAL_GUIDE)
+    parts.push(buildCodeAgentGeneralGuide())
     if (this.config.capabilityProfile === 'personal') parts.push(PERSONAL_COMPANION_GUIDE)
     parts.push(buildCapabilityStatusSection(this.config))
     parts.push(OUTPUT_CONTRACT_GUIDE)
@@ -4255,7 +4283,7 @@ export class AgentGateway {
       parts.push(workspaceTree)
     }
 
-    parts.push(CODE_AGENT_GENERAL_GUIDE)
+    parts.push(buildCodeAgentGeneralGuide())
     if (this.config.capabilityProfile === 'personal') parts.push(PERSONAL_COMPANION_GUIDE)
     parts.push(buildCapabilityStatusSection(this.config))
     if (this.config.browserEnabled !== false) {
@@ -4373,7 +4401,7 @@ export class AgentGateway {
     }
 
     // 2. General coding guide (always the same)
-    pushStable('code-agent-guide', CODE_AGENT_GENERAL_GUIDE)
+    pushStable('code-agent-guide', buildCodeAgentGeneralGuide())
     pushStable('background-tasks-guide', BACKGROUND_TASKS_GUIDE)
     if (this.config.capabilityProfile === 'personal') {
       pushStable('personal-companion-mode', PERSONAL_COMPANION_GUIDE)
@@ -4434,7 +4462,9 @@ export class AgentGateway {
         actionLines.push('- For managed integrations (Google, Slack, GitHub, etc.) and MCP servers alike, call `search_integrations` then `connect`. The result\'s `source` tag (`managed` | `mcp` | `skill`) tells you which path was taken.')
       }
       if (devopsGuideOn) {
-        actionLines.push('- For recurring reminders, digests, check-ins, or autonomous routines in a workspace, create a named goal schedule with `schedule_create`; use `heartbeat_configure` only for the general heartbeat sweep.')
+        actionLines.push(workspaceAgentToolsRegistered({ workspaceId: process.env.WORKSPACE_ID })
+          ? '- For recurring reminders, digests, check-ins, or autonomous routines in a workspace, create a named goal schedule with `schedule_create`; use `heartbeat_configure` only for the general heartbeat sweep.'
+          : '- For recurring reminders, digests, check-ins, or autonomous routines, use `heartbeat_configure`.')
       }
       actionLines.push(
         '- If you need a missing detail such as timezone or channel name, call `ask_user` instead of asking only in prose.',
@@ -4878,11 +4908,11 @@ export class AgentGateway {
       'Saving that file triggers a fast restart (no regenerate, no db push)',
       'so changes are live in under a second.',
       '',
-      'If you ever see a route 404 or need to force a refresh, use the `server_sync` tool:',
+      'If you ever see a route 404 or need to force a refresh, delegate to the `devops` subagent, which has the `server_sync` tool:',
       '```',
-      'server_sync({})',
+      'agent_spawn({ type: "devops", prompt: "Run server_sync and report the phase, active routes, and schema models" })',
       '```',
-      'It returns the current phase, active routes, and schema models.',
+      'It reports the current phase, active routes, and schema models.',
       '',
       '**Do NOT** manually run `prisma generate`, `shogo generate`, or `npm run db:generate` — it is all automatic.',
     ].join('\n')
@@ -5068,7 +5098,9 @@ export class AgentGateway {
     if (fileEntries.length > 0) {
       lines.push(
         'The user has uploaded the following files to the workspace `files/` directory.',
-        'Use `search` to search content, or `read_file` with path `files/<name>` to read them.',
+        isSearchEnabled()
+          ? 'Use `search` to search content, or `read_file` with path `files/<name>` to read them.'
+          : 'Use `read_file` with path `files/<name>` to read them, or `exec` with `rg -n "<text>" files` to search their content.',
         '',
       )
       for (const entry of fileEntries.slice(0, 50)) {

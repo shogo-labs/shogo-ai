@@ -11,6 +11,7 @@ import {
   postCheckpointRecord,
   postCostMetric,
   projectScopedId,
+  NO_API_URL_ERROR,
   type AgentCostMetricPayload,
   type CheckpointRecordPayload,
 } from '../internal-api'
@@ -22,6 +23,7 @@ const ENV_KEYS = [
   'SYSTEM_NAMESPACE',
   'SHOGO_PUBLIC_API_URL',
   'RUNTIME_AUTH_SECRET',
+  'KUBERNETES_SERVICE_HOST',
 ]
 
 const saved: Record<string, string | undefined> = {}
@@ -61,17 +63,36 @@ describe('deriveApiUrl', () => {
   })
 
   it('ignores an invalid AI_PROXY_URL and falls through', () => {
+    process.env.KUBERNETES_SERVICE_HOST = '10.0.0.1'
     process.env.AI_PROXY_URL = 'not a url'
     expect(deriveApiUrl()).toBe('http://api.shogo-system.svc.cluster.local')
   })
 
   it('uses SYSTEM_NAMESPACE for the in-cluster fallback', () => {
+    process.env.KUBERNETES_SERVICE_HOST = '10.0.0.1'
     process.env.SYSTEM_NAMESPACE = 'staging'
     expect(deriveApiUrl()).toBe('http://api.staging.svc.cluster.local')
   })
 
   it('defaults the namespace to shogo-system', () => {
+    process.env.KUBERNETES_SERVICE_HOST = '10.0.0.1'
     expect(deriveApiUrl()).toBe('http://api.shogo-system.svc.cluster.local')
+  })
+
+  it('returns null outside Kubernetes when nothing is configured (no cluster-DNS fallback)', () => {
+    expect(deriveApiUrl()).toBeNull()
+  })
+
+  it('internal-API tools fail fast with a clear error outside Kubernetes', async () => {
+    const fetchSpy = spyOn(globalThis, 'fetch')
+    try {
+      const res = await createProject('w1', { name: 'x' } as any)
+      expect(res.ok).toBe(false)
+      expect(res.error).toBe(NO_API_URL_ERROR)
+      expect(fetchSpy).not.toHaveBeenCalled()
+    } finally {
+      fetchSpy.mockRestore()
+    }
   })
 })
 
@@ -168,7 +189,10 @@ describe('getInternalHeaders', () => {
 })
 
 describe('postCostMetric', () => {
-  beforeEach(clearEnv)
+  beforeEach(() => {
+    clearEnv()
+    process.env.SHOGO_API_URL = 'http://api.test'
+  })
   afterEach(restoreEnv)
 
   const payload: AgentCostMetricPayload = {
@@ -184,17 +208,25 @@ describe('postCostMetric', () => {
     success: true,
   }
 
-  it('is a no-op when deriveApiUrl returns null (we stub it via env strip + spy)', async () => {
-    // deriveApiUrl never returns null in current code, but the early-return
-    // guard still has to be exercised. We patch via env: no env vars + stub
-    // out fetch to detect any call.
+  it('is a no-op when no API URL is configured outside Kubernetes', async () => {
+    delete process.env.SHOGO_API_URL
     const fetchSpy = spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response('', { status: 200 }),
     )
     try {
       await postCostMetric(payload)
-      // It WILL call fetch against the default in-cluster URL — that's fine.
-      // We're verifying the call happens, exercising the happy path.
+      expect(fetchSpy).not.toHaveBeenCalled()
+    } finally {
+      fetchSpy.mockRestore()
+    }
+  })
+
+  it('posts the metric when an API URL is configured', async () => {
+    const fetchSpy = spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response('', { status: 200 }),
+    )
+    try {
+      await postCostMetric(payload)
       expect(fetchSpy).toHaveBeenCalledTimes(1)
       const [, init] = fetchSpy.mock.calls[0]
       expect((init as RequestInit).method).toBe('POST')
@@ -250,7 +282,10 @@ describe('projectScopedId', () => {
 })
 
 describe('postCheckpointRecord', () => {
-  beforeEach(clearEnv)
+  beforeEach(() => {
+    clearEnv()
+    process.env.SHOGO_API_URL = 'http://api.test'
+  })
   afterEach(restoreEnv)
 
   const payload: CheckpointRecordPayload = {

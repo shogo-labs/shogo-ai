@@ -23,6 +23,11 @@ import {
   toolCallsJson,
   toolCallArgsContain,
   resultCollectionCalls,
+  fileWrites,
+  listWorkspaceFiles,
+  readWorkspaceFile,
+  searchCalls,
+  thisPhase,
 } from './eval-helpers'
 
 // ---------------------------------------------------------------------------
@@ -46,20 +51,27 @@ function backgroundSpawnCount(r: EvalResult): number {
   ).length
 }
 
+/**
+ * Files matching `pathSubstr` that exist on disk or were written by any
+ * route (write_file/edit_file/exec), by the main agent or a subagent.
+ */
+function writtenFiles(r: EvalResult, pathSubstr: string): Array<{ path: string; content: string }> {
+  const out = new Map<string, string>()
+  for (const w of fileWrites(r)) {
+    if (w.path.includes(pathSubstr)) out.set(w.path, `${out.get(w.path) ?? ''}\n${w.content}`)
+  }
+  for (const p of listWorkspaceFiles(r)) {
+    if (p.includes(pathSubstr)) out.set(p, `${out.get(p) ?? ''}\n${readWorkspaceFile(r, p)}`)
+  }
+  return [...out].map(([path, content]) => ({ path, content }))
+}
+
 function fileWasWritten(r: EvalResult, pathSubstr: string): boolean {
-  return r.toolCalls.some(tc =>
-    (tc.name === 'write_file' || tc.name === 'edit_file') &&
-    JSON.stringify(tc.input).includes(pathSubstr),
-  )
+  return writtenFiles(r, pathSubstr).length > 0
 }
 
 function writeContentContains(r: EvalResult, pathSubstr: string, contentSubstr: string): boolean {
-  return r.toolCalls
-    .filter(tc => tc.name === 'write_file' || tc.name === 'edit_file')
-    .some(tc => {
-      const input = JSON.stringify(tc.input)
-      return input.includes(pathSubstr) && input.toLowerCase().includes(contentSubstr.toLowerCase())
-    })
+  return writtenFiles(r, pathSubstr).some(f => f.content.toLowerCase().includes(contentSubstr.toLowerCase()))
 }
 
 function allTextLower(r: EvalResult): string {
@@ -472,11 +484,12 @@ const PHASE_1: AgentEval = {
     },
     {
       id: 'read-tools-provided',
-      description: 'Agents include read_file and grep in tool lists',
+      description: 'Agents include read tools (read_file plus search or exec) in tool lists',
       points: 4,
       phase: 'intention',
       validate: (r) =>
-        agentCreateIncludesTool(r, 'read_file') && agentCreateIncludesTool(r, 'grep'),
+        agentCreateIncludesTool(r, 'read_file') &&
+        (agentCreateIncludesTool(r, 'search') || agentCreateIncludesTool(r, 'exec')),
     },
     {
       id: 'explored-data-first',
@@ -484,11 +497,9 @@ const PHASE_1: AgentEval = {
       points: 4,
       phase: 'intention',
       validate: (r) => {
-        const readIdx = r.toolCalls.findIndex(tc =>
-          tc.name === 'read_file' && JSON.stringify(tc.input).includes('data/'),
-        )
         const createIdx = r.toolCalls.findIndex(tc => AGENT_TOOLS.includes(tc.name))
-        return readIdx >= 0 && createIdx >= 0 && readIdx < createIdx
+        if (createIdx < 0) return false
+        return searchCalls(r, r.toolCalls.slice(0, createIdx)).some(tc => JSON.stringify(tc.input).includes('data'))
       },
     },
     {
@@ -556,16 +567,10 @@ const PHASE_2: AgentEval = {
     },
     {
       id: 'reports-created',
-      description: 'Report files created in reports/ directory',
+      description: '3+ report files exist in reports/ (written by any route or subagent)',
       points: 8,
       phase: 'execution',
-      validate: (r) => {
-        const reportFiles = r.toolCalls.filter(tc =>
-          tc.name === 'write_file' &&
-          JSON.stringify(tc.input).includes('reports/'),
-        )
-        return reportFiles.length >= 3
-      },
+      validate: (r) => writtenFiles(r, 'reports/').filter(f => f.content.trim().length > 0).length >= 3,
     },
     {
       id: 'reports-reference-data',
@@ -627,7 +632,8 @@ const PHASE_3: AgentEval = {
       description: 'First agent_spawn prompt references customer and engineering analysis',
       points: 6,
       phase: 'intention',
-      validate: (r) => {
+      validate: (all) => {
+        const r = thisPhase(all)
         const spawns = r.toolCalls.filter(tc => tc.name === 'agent_spawn')
         if (spawns.length < 1) return false
         const firstPrompt = JSON.stringify(spawns[0].input).toLowerCase()
@@ -640,7 +646,8 @@ const PHASE_3: AgentEval = {
       description: "Second agent_spawn prompt references the first agent's output",
       points: 8,
       phase: 'intention',
-      validate: (r) => {
+      validate: (all) => {
+        const r = thisPhase(all)
         const spawns = r.toolCalls.filter(tc => tc.name === 'agent_spawn')
         if (spawns.length < 2) return false
         const secondPrompt = JSON.stringify(spawns[1].input).toLowerCase()
@@ -653,7 +660,8 @@ const PHASE_3: AgentEval = {
       description: 'Second agent spawned AFTER first completes',
       points: 6,
       phase: 'intention',
-      validate: (r) => {
+      validate: (all) => {
+        const r = thisPhase(all)
         const calls = r.toolCalls.map((tc, i) => ({ ...tc, idx: i }))
         const spawns = calls.filter(tc => tc.name === 'agent_spawn')
         const collected = new Set(resultCollectionCalls(r))

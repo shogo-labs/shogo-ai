@@ -9,12 +9,32 @@
 
 import type { AgentEval, EvalResult } from './types'
 import { WEEKLY_REPORT_MOCKS } from './tool-mocks'
-import { usedTool, usedToolAnywhere, responseContains, toolCallsJson, usedGhCli } from './eval-helpers'
+import { usedTool, usedToolAnywhere, responseContains, toolCallsJson, usedGhCli, wroteCanvasSource } from './eval-helpers'
 
 function subagentWasSpawned(r: EvalResult): boolean {
-  return r.toolCalls.some(tc =>
-    tc.name === 'task' || tc.name === 'agent_spawn',
-  )
+  return r.toolCalls.some(tc => tc.name === 'agent_spawn')
+}
+
+/**
+ * Delegation is only worth it for real fan-out. Pass if the agent spawned a
+ * sub-agent, or if it gathered the data itself in at most `maxDataCalls`
+ * Jira/GitHub calls (spinning up a sub-agent for a 1–2 call lookup is waste).
+ */
+function delegatedOrSmallJob(r: EvalResult, maxDataCalls = 2): boolean {
+  if (subagentWasSpawned(r)) return true
+  const dataCalls = r.toolCalls.filter(tc => {
+    if (tc.viaSubagent) return false
+    if (/^(JIRA|GITHUB)_/.test(tc.name)) return true
+    const cmd = (tc.input as Record<string, unknown>)?.command
+    return (tc.name === 'exec' || tc.name === 'terminal_exec') && typeof cmd === 'string' && /(^|[\s;&|(])gh\s/.test(cmd)
+  })
+  return dataCalls.length > 0 && dataCalls.length <= maxDataCalls
+}
+
+/** Jira is usable: connected via `connect`, or already bound (JIRA_* tools called directly). */
+function hasJira(r: EvalResult): boolean {
+  return (usedToolAnywhere(r, 'connect') && toolCallsJson(r).includes('jira')) ||
+    r.toolCalls.some(tc => tc.name.startsWith('JIRA_'))
 }
 
 function dynamicAgentCreated(r: EvalResult): boolean {
@@ -25,8 +45,9 @@ function usedIntegrationTool(r: EvalResult, ...toolNames: string[]): boolean {
   return toolNames.some(name => usedTool(r, name))
 }
 
+/** Canvas = React source written under src/ (write_file/edit_file/exec). */
 function usedCanvasTools(r: EvalResult): boolean {
-  return r.toolCalls.some(t => t.name.startsWith('canvas_'))
+  return wroteCanvasSource(r)
 }
 
 function allTextLower(r: EvalResult): string {
@@ -52,17 +73,17 @@ export const SUBAGENT_AB_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'used-subagent',
-        description: 'Agent delegated work to sub-agents',
+        description: 'Delegated to sub-agents (or gathered the data itself in ≤2 calls)',
         points: 5,
         phase: 'intention',
-        validate: (r) => subagentWasSpawned(r),
+        validate: (r) => delegatedOrSmallJob(r),
       },
       {
         id: 'installed-jira',
-        description: 'Agent installed the Jira integration',
+        description: 'Jira available: installed via connect or used the pre-bound JIRA_* tools',
         points: 5,
         phase: 'intention',
-        validate: (r) => usedToolAnywhere(r, 'connect') && toolCallsJson(r).includes('jira'),
+        validate: (r) => hasJira(r),
       },
       {
         id: 'queried-jira',
@@ -127,10 +148,10 @@ export const SUBAGENT_AB_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'used-subagent',
-        description: 'Agent delegated to a sub-agent',
+        description: 'Delegated to a sub-agent (or gathered the data itself in ≤2 calls)',
         points: 4,
         phase: 'intention',
-        validate: (r) => subagentWasSpawned(r),
+        validate: (r) => delegatedOrSmallJob(r),
       },
       {
         id: 'used-gh-cli',
@@ -188,17 +209,17 @@ export const SUBAGENT_AB_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'used-subagent',
-        description: 'Agent delegated analysis to sub-agents',
+        description: 'Delegated analysis to sub-agents (or gathered the data itself in ≤2 calls)',
         points: 4,
         phase: 'intention',
-        validate: (r) => subagentWasSpawned(r),
+        validate: (r) => delegatedOrSmallJob(r),
       },
       {
         id: 'installed-jira',
-        description: 'Agent installed Jira integration',
+        description: 'Jira available: installed via connect or used the pre-bound JIRA_* tools',
         points: 4,
         phase: 'intention',
-        validate: (r) => usedToolAnywhere(r, 'connect') && toolCallsJson(r).includes('jira'),
+        validate: (r) => hasJira(r),
       },
       {
         id: 'queried-sprint',
@@ -255,10 +276,10 @@ export const SUBAGENT_AB_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'used-subagent',
-        description: 'Agent used sub-agents for data gathering',
+        description: 'Used sub-agents for data gathering (or gathered the data itself in ≤2 calls)',
         points: 4,
         phase: 'intention',
-        validate: (r) => subagentWasSpawned(r),
+        validate: (r) => delegatedOrSmallJob(r),
       },
       {
         id: 'queried-both',
@@ -307,13 +328,14 @@ export const SUBAGENT_AB_EVALS: AgentEval[] = [
     input: 'Build a team metrics dashboard on a canvas. Show: PRs merged this week, tickets completed, story points velocity, and a breakdown of who contributed what. Pull data from both our Jira and GitHub.',
     toolMocks: WEEKLY_REPORT_MOCKS,
     initialMode: 'canvas' as const,
+    useRuntimeTemplate: true,
     validationCriteria: [
       {
         id: 'used-subagent',
-        description: 'Agent used sub-agents for data gathering',
+        description: 'Used sub-agents for data gathering (or gathered the data itself in ≤2 calls)',
         points: 4,
         phase: 'intention',
-        validate: (r) => subagentWasSpawned(r),
+        validate: (r) => delegatedOrSmallJob(r),
       },
       {
         id: 'installed-jira',
@@ -322,7 +344,7 @@ export const SUBAGENT_AB_EVALS: AgentEval[] = [
         phase: 'intention',
         validate: (r) => {
           const json = toolCallsJson(r)
-          const jira = usedToolAnywhere(r, 'connect') && json.includes('jira')
+          const jira = hasJira(r)
           const github = usedGhCli(r) || json.includes('github')
           return jira && github
         },

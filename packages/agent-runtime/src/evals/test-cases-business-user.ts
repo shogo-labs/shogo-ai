@@ -549,11 +549,10 @@ const PHASE_2: AgentEval = {
       points: 4,
       phase: 'execution',
       validate: (r) => {
-        const code = allCanvasCode(r)
-        const json = toolCallsJson(r)
-        const hasNames = (code.match(/['"][A-Z][a-z]+/g) || []).length >= 5 ||
-                         (json.match(/['"][A-Z][a-z]+/g) || []).length >= 5
-        return hasNames
+        // Case-sensitive: allCanvasCode/toolCallsJson are lower-cased.
+        const raw = JSON.stringify(r.toolCalls) + '\n' + readAllSrcCodeFromDisk(r)
+        const names = new Set(raw.match(/\b[A-Z][a-z]+ [A-Z][a-z]+\b/g) || [])
+        return names.size >= 5
       },
     },
     // Full-stack wiring

@@ -77,6 +77,61 @@ export function listSrcFilePathsFromDisk(result: EvalResult): string[] {
   return out
 }
 
+/** A canvas source file: `.ts(x)`/`.js(x)` under `src/` (or the legacy `canvas/` dir). */
+export function isCanvasSourcePath(path: string): boolean {
+  return /(^|\/)(src|canvas)\/.+\.(tsx?|jsx?)$/.test(path)
+}
+
+/** True if the agent wrote/edited a canvas source file via any route. */
+export function wroteCanvasSource(result: EvalResult): boolean {
+  return fileWrites(result).some(w => isCanvasSourcePath(w.path))
+}
+
+/**
+ * Canvas v2 means writing React source under `src/`. Passes only if the
+ * agent actually built canvas code that way AND never reached for a
+ * retired v1 `canvas_*` tool, so it can't be earned by doing nothing.
+ */
+export function builtCanvasV2Only(result: EvalResult): boolean {
+  return wroteCanvasSource(result) && !result.toolCalls.some(t => t.name.startsWith('canvas_'))
+}
+
+/**
+ * Workspace-relative paths of every file in the eval's live workspace
+ * (skipping node_modules, .git and src/generated). Use to check outcomes
+ * like "reports exist" regardless of which tool — or which subagent —
+ * wrote them.
+ */
+export function listWorkspaceFiles(result: EvalResult, maxDepth = 8): string[] {
+  const dir = result.workspaceDir
+  if (!dir || !existsSync(dir)) return []
+  const out: string[] = []
+  const walk = (d: string, rel: string, depth: number) => {
+    if (depth > maxDepth) return
+    let entries: string[]
+    try {
+      entries = readdirSync(d)
+    } catch {
+      return
+    }
+    for (const name of entries) {
+      if (name === 'node_modules' || name === '.git' || (rel === 'src' && name === 'generated')) continue
+      const full = join(d, name)
+      const relPath = rel ? `${rel}/${name}` : name
+      let isDir = false
+      try {
+        isDir = statSync(full).isDirectory()
+      } catch {
+        continue
+      }
+      if (isDir) walk(full, relPath, depth + 1)
+      else out.push(relPath)
+    }
+  }
+  walk(dir, '', 0)
+  return out
+}
+
 /**
  * Concatenates the content of all `.ts`/`.tsx`/`.js`/`.jsx` files under
  * `src/` in the eval's live workspace (skipping `src/generated`). Disk-state
@@ -166,6 +221,14 @@ export function didNotUseToolInFinalTurn(result: EvalResult, toolName: string): 
  * Calls that collect a background task's result: `wait` on task ids, or the
  * legacy `agent_result` / `task_result` that older transcripts still use.
  */
+/**
+ * The result narrowed to this pipeline phase's own calls. Intention criteria
+ * otherwise see every phase, which breaks ordering checks like "the second spawn".
+ */
+export function thisPhase(result: EvalResult): EvalResult {
+  return result.phaseToolCalls ? { ...result, toolCalls: result.phaseToolCalls } : result
+}
+
 export function resultCollectionCalls(result: EvalResult): ToolCallRecord[] {
   return result.toolCalls.filter((t) => {
     if (t.name === 'agent_result' || t.name === 'task_result') return true
@@ -199,6 +262,20 @@ export function responseContains(result: EvalResult, ...terms: string[]): boolea
 export function anyTurnResponseContains(result: EvalResult, ...terms: string[]): boolean {
   const text = (result.allResponseText || result.responseText).toLowerCase()
   return terms.every(t => text.includes(t.toLowerCase()))
+}
+
+/**
+ * True if the agent set up a recurring reminder by any reasonable route:
+ * heartbeat, a schedule, or a recurring calendar event (RRULE / recurrence).
+ * One-off calendar events don't count.
+ */
+export function configuredRecurringReminder(result: EvalResult): boolean {
+  if (usedToolAnywhere(result, 'heartbeat_configure') || usedToolAnywhere(result, 'schedule_create')) return true
+  return result.toolCalls.some(t =>
+    /CALENDAR.*(CREATE|INSERT|UPDATE).*EVENT|create_event|calendar_.*create/i.test(t.name) &&
+    !t.error &&
+    /rrule|recurrence|recurring/i.test(JSON.stringify(t.input)),
+  )
 }
 
 /** JSON-stringified tool calls for ad-hoc substring searches. */
@@ -249,16 +326,285 @@ export function usedGhCli(result: EvalResult, subcommand?: string): boolean {
   return execCommandContains(result, subcommand ? `gh ${subcommand}` : 'gh ')
 }
 
-/** True if any `write_file` tool call targets `.env` and its content contains `key`. */
+/**
+ * True if any write route (`write_file`, `edit_file`, or an exec redirect /
+ * heredoc / `tee`) targets `.env` and the written content contains `key`.
+ */
 export function wroteEnvFile(result: EvalResult, key: string): boolean {
-  return result.toolCalls
-    .filter(t => t.name === 'write_file')
-    .some(t => {
-      const input = t.input as Record<string, any>
-      const path = typeof input.path === 'string' ? input.path : ''
-      const content = typeof input.content === 'string' ? input.content : ''
-      return (path === '.env' || path.endsWith('/.env')) && content.includes(key)
-    })
+  return fileWrites(result).some(w =>
+    pathMatches(w.path, (p) => p === '.env' || p.endsWith('/.env')) && w.content.includes(key),
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Route-agnostic file access (read / search / write)
+//
+// A competent engineer reads a file with `read_file` *or* `cat`, locates code
+// with `search` *or* `rg`, and writes with `write_file` *or* a heredoc. Grade
+// the outcome, not the tool name — except in evals that deliberately test
+// tool choice (e.g. discipline-use-read-not-cat).
+// ---------------------------------------------------------------------------
+
+/** A path matcher: exact/suffix string, RegExp, or predicate on the normalised path. */
+export type PathMatcher = string | RegExp | ((path: string) => boolean)
+
+function normalisePath(p: string): string {
+  return p.trim().replace(/^['"]|['"]$/g, '').replace(/^\.\//, '').replace(/\/+$/, '')
+}
+
+/**
+ * True if `path` matches `matcher`. String matchers match the exact path,
+ * any path ending in `/<matcher>`, or a relative path that is a suffix of the
+ * matcher (the agent may have `cd`'d into a subdirectory first).
+ */
+export function pathMatches(path: string, matcher: PathMatcher): boolean {
+  const p = normalisePath(path)
+  if (!p) return false
+  if (typeof matcher === 'function') return matcher(p)
+  if (matcher instanceof RegExp) return matcher.test(p)
+  const m = normalisePath(matcher)
+  return p === m || p.endsWith(`/${m}`) || (!p.startsWith('/') && m.endsWith(`/${p}`))
+}
+
+/** Every shell command the agent ran via `exec` / `terminal_exec`, in order. */
+export function execCommands(result: EvalResult, calls: ToolCallRecord[] = result.toolCalls): string[] {
+  return calls
+    .filter(t => t.name === 'exec' || t.name === 'terminal_exec')
+    .map(t => (t.input as Record<string, unknown>)?.command)
+    .filter((c): c is string => typeof c === 'string')
+}
+
+/**
+ * Removes heredoc bodies from a command so their content isn't mistaken for
+ * commands. Returns the stripped command plus each heredoc body keyed by the
+ * line index that opened it.
+ */
+function stripHeredocs(command: string): { lines: string[]; bodies: Map<number, string> } {
+  const src = command.split('\n')
+  const lines: string[] = []
+  const bodies = new Map<number, string>()
+  for (let i = 0; i < src.length; i++) {
+    const line = src[i]
+    const m = line.match(/<<-?\s*(['"]?)([A-Za-z_][\w-]*)\1/)
+    lines.push(line)
+    if (!m) continue
+    const delim = m[2]
+    const body: string[] = []
+    let j = i + 1
+    while (j < src.length && src[j].trim() !== delim) body.push(src[j++])
+    bodies.set(lines.length - 1, body.join('\n'))
+    i = j
+  }
+  return { lines, bodies }
+}
+
+/**
+ * Splits a compound shell command into simple commands on `;`, `&&`, `||`,
+ * `|` and newlines (heredoc bodies are dropped). Quoting is not parsed — this
+ * is a grading heuristic, not a shell.
+ */
+export function splitShellCommand(command: string): string[] {
+  const { lines } = stripHeredocs(command)
+  return lines
+    .flatMap(l => l.split(/&&|\|\||[;|]/))
+    .map(s => s.trim())
+    .filter(Boolean)
+}
+
+/** Tokenises a simple command, dropping `sudo`, `env`, and leading `VAR=value` assignments. */
+function commandTokens(segment: string): string[] {
+  const tokens = segment.match(/'[^']*'|"[^"]*"|\S+/g) ?? []
+  let i = 0
+  while (i < tokens.length && (tokens[i] === 'sudo' || tokens[i] === 'env' || /^[A-Za-z_]\w*=/.test(tokens[i]))) i++
+  return tokens.slice(i).map(t => t.replace(/^['"]|['"]$/g, ''))
+}
+
+const READ_COMMANDS = new Set(['cat', 'head', 'tail', 'less', 'more', 'bat', 'batcat', 'nl'])
+
+/** Paths an exec command reads (cat/head/tail/less/more/bat/nl/`sed -n`). */
+export function execReadPaths(command: string): string[] {
+  const out: string[] = []
+  for (const seg of splitShellCommand(command)) {
+    const [cmd, ...rest] = commandTokens(seg)
+    if (!cmd) continue
+    const base = cmd.split('/').pop()!
+    const isSedPrint = base === 'sed' && rest.some(a => /^-[a-z]*n/.test(a)) && !rest.some(a => /^-[a-z]*i/.test(a))
+    if (!READ_COMMANDS.has(base) && !isSedPrint) continue
+    // `cat > file` / `cat >> file` is a write, not a read.
+    if (base === 'cat' && /(^|\s)>>?/.test(seg)) continue
+    let skipNext = false
+    for (const arg of rest) {
+      if (skipNext) { skipNext = false; continue }
+      if (/^-[nc]$/.test(arg) && (base === 'head' || base === 'tail')) { skipNext = true; continue }
+      if (arg.startsWith('-') || arg.startsWith('>') || arg.startsWith('<') || arg.startsWith('&')) continue
+      if (isSedPrint && /^\d|^\/|^\$|p$/.test(arg) && !arg.includes('.')) continue
+      out.push(normalisePath(arg))
+    }
+  }
+  return out
+}
+
+/** Every path the agent read via `read_file` or an exec read command. */
+export function readPaths(result: EvalResult, calls: ToolCallRecord[] = result.toolCalls): string[] {
+  const out: string[] = []
+  for (const t of calls) {
+    if (t.name === 'read_file') {
+      const p = (t.input as Record<string, unknown>)?.path
+      if (typeof p === 'string') out.push(normalisePath(p))
+    }
+  }
+  for (const cmd of execCommands(result, calls)) out.push(...execReadPaths(cmd))
+  return out
+}
+
+/**
+ * True if the agent read a file matching `matcher` via `read_file` OR exec
+ * (`cat`/`head`/`tail`/`sed -n`/`less`/`bat`). With no matcher, true if the
+ * agent read any file at all.
+ */
+export function readFileAnyRoute(result: EvalResult, matcher?: PathMatcher, calls?: ToolCallRecord[]): boolean {
+  const paths = readPaths(result, calls)
+  return matcher === undefined ? paths.length > 0 : paths.some(p => pathMatches(p, matcher))
+}
+
+const SEARCH_COMMANDS = new Set(['rg', 'grep', 'egrep', 'fgrep', 'ag', 'ack', 'find', 'fd', 'ls', 'tree'])
+
+/** True if `command` contains a search/explore step (rg/grep/find/ls/tree/git grep/…). */
+export function execIsSearch(command: string): boolean {
+  return splitShellCommand(command).some(seg => {
+    const [cmd, sub] = commandTokens(seg)
+    if (!cmd) return false
+    const base = cmd.split('/').pop()!
+    return SEARCH_COMMANDS.has(base) || (base === 'git' && (sub === 'grep' || sub === 'ls-files'))
+  })
+}
+
+/** True if `command` contains a code search step (rg/grep/ag/ack/git grep) — not just listing. */
+export function execIsGrep(command: string): boolean {
+  return splitShellCommand(command).some(seg => {
+    const [cmd, sub] = commandTokens(seg)
+    if (!cmd) return false
+    const base = cmd.split('/').pop()!
+    return ['rg', 'grep', 'egrep', 'fgrep', 'ag', 'ack'].includes(base) || (base === 'git' && sub === 'grep')
+  })
+}
+
+/** Calls that searched or explored the codebase: `search`, `read_file`, or an exec search command. */
+export function searchCalls(result: EvalResult, calls: ToolCallRecord[] = result.toolCalls): ToolCallRecord[] {
+  return calls.filter(t => {
+    if (t.name === 'search' || t.name === 'read_file') return true
+    if (t.name !== 'exec' && t.name !== 'terminal_exec') return false
+    const cmd = (t.input as Record<string, unknown>)?.command
+    return typeof cmd === 'string' && (execIsSearch(cmd) || execReadPaths(cmd).length > 0)
+  })
+}
+
+/** True if the agent searched/explored the codebase via any route. */
+export function searchedAnyRoute(result: EvalResult, calls?: ToolCallRecord[]): boolean {
+  return searchCalls(result, calls).length > 0
+}
+
+export interface FileWrite {
+  path: string
+  /** Full content for whole-file writes, `new_string` for edits, heredoc/echo text for exec. */
+  content: string
+  via: 'write_file' | 'edit_file' | 'exec'
+}
+
+/** Files an exec command writes via redirection (`>`/`>>`, heredocs) or `tee`. */
+export function execFileWrites(command: string): Array<{ path: string; content: string }> {
+  const { lines, bodies } = stripHeredocs(command)
+  const out: Array<{ path: string; content: string }> = []
+  lines.forEach((line, idx) => {
+    const body = bodies.get(idx)
+    for (const seg of line.split(/&&|\|\||[;|]/)) {
+      const targets: string[] = []
+      const redirect = /(?:^|[^0-9&<>])>>?\s*(['"]?)([^\s'";&|<>]+)\1/g
+      let m: RegExpExecArray | null
+      while ((m = redirect.exec(seg))) targets.push(m[2])
+      const tee = seg.match(/(?:^|\s)tee\s+((?:-\w+\s+)*)(['"]?)([^\s'";&|<>]+)\2/)
+      if (tee) targets.push(tee[3])
+      for (const raw of targets) {
+        const path = normalisePath(raw)
+        if (!path || path.startsWith('&') || path === '/dev/null' || path.startsWith('/dev/')) continue
+        out.push({ path, content: body ?? seg })
+      }
+    }
+  })
+  return out
+}
+
+/** Every file write the agent made via `write_file`, `edit_file`, or exec. */
+export function fileWrites(result: EvalResult, calls: ToolCallRecord[] = result.toolCalls): FileWrite[] {
+  const out: FileWrite[] = []
+  for (const t of calls) {
+    const input = (t.input ?? {}) as Record<string, unknown>
+    const path = typeof input.path === 'string' ? input.path : ''
+    if (t.name === 'write_file' && path) {
+      out.push({ path: normalisePath(path), content: String(input.content ?? ''), via: 'write_file' })
+    } else if (t.name === 'edit_file' && path) {
+      const content = typeof input.new_string === 'string' ? input.new_string
+        : typeof input.newString === 'string' ? input.newString
+        : JSON.stringify(input.edits ?? input)
+      out.push({ path: normalisePath(path), content, via: 'edit_file' })
+    } else if ((t.name === 'exec' || t.name === 'terminal_exec') && typeof input.command === 'string') {
+      for (const w of execFileWrites(input.command)) out.push({ ...w, via: 'exec' })
+    }
+  }
+  return out
+}
+
+/** True if the agent wrote a file matching `matcher` via any route (optionally containing `contains`). */
+export function wroteFileAnyRoute(result: EvalResult, matcher: PathMatcher, contains?: string | RegExp, calls?: ToolCallRecord[]): boolean {
+  return fileWrites(result, calls).some(w => {
+    if (!pathMatches(w.path, matcher)) return false
+    if (contains === undefined) return true
+    return typeof contains === 'string' ? w.content.includes(contains) : contains.test(w.content)
+  })
+}
+
+/** Concatenated content the agent wrote to files matching `matcher`, via any route. */
+export function writtenContent(result: EvalResult, matcher: PathMatcher, calls?: ToolCallRecord[]): string {
+  return fileWrites(result, calls).filter(w => pathMatches(w.path, matcher)).map(w => w.content).join('\n')
+}
+
+/**
+ * True if `secret` appears in an exec command other than a write of it into
+ * `.env` (e.g. `GITHUB_TOKEN=… gh …`, `curl -H "Authorization: Bearer …"`).
+ * `echo KEY=… >> .env` / `cat >> .env <<EOF` save the secret where it
+ * belongs and don't count as inlining.
+ */
+export function execInlinesSecret(result: EvalResult, secret: string): boolean {
+  const isEnv = (p: string) => p === '.env' || p.endsWith('/.env')
+  return execCommands(result).some(cmd => {
+    if (!cmd.includes(secret)) return false
+    const { lines } = stripHeredocs(cmd)
+    // Per pipeline, so `echo K=… >> .env && curl -H "…"` still counts as inlining.
+    return lines.some(line => line.split(/&&|\|\||;/).some(seg =>
+      seg.includes(secret) && !execFileWrites(seg).some(w => isEnv(w.path)),
+    ))
+  })
+}
+
+/** True if the agent deleted a file matching `matcher` via `delete_file` or exec `rm`. */
+export function deletedFileAnyRoute(result: EvalResult, matcher: PathMatcher): boolean {
+  for (const t of result.toolCalls) {
+    if (t.name !== 'delete_file') continue
+    const p = (t.input as Record<string, unknown>)?.path
+    if (typeof p === 'string' && pathMatches(p, matcher)) return true
+  }
+  return execCommands(result).some(cmd =>
+    splitShellCommand(cmd).some(seg => {
+      const [c, ...args] = commandTokens(seg)
+      if (c !== 'rm' && c !== 'trash') return false
+      return args.filter(a => !a.startsWith('-')).some(a => {
+        if (pathMatches(a, matcher)) return true
+        // `rm -rf dir` deletes everything under dir.
+        const dir = normalisePath(a)
+        return typeof matcher === 'string' && (normalisePath(matcher).startsWith(`${dir}/`) || normalisePath(matcher).includes(`/${dir}/`))
+      })
+    }),
+  )
 }
 
 // ---------------------------------------------------------------------------

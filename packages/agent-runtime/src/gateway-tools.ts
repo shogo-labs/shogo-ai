@@ -525,6 +525,14 @@ function resolveWorkspaceId(ctx: ToolContext): string | undefined {
   return resolveRuntimeIdentity().workspaceId || ctx.workspaceId
 }
 
+/**
+ * Whether the workspace profile/goal/schedule tools (`schedule_create`, …)
+ * are registered. Prompts that mention them must use the same check.
+ */
+export function workspaceAgentToolsRegistered(ctx: Pick<ToolContext, 'workspaceId'>): boolean {
+  return Boolean(resolveWorkspaceId(ctx as ToolContext))
+}
+
 function workspaceMetaToolEnabled(ctx: ToolContext): boolean {
   return resolveRuntimeIdentity().mode === 'workspace' && Boolean(resolveWorkspaceId(ctx))
 }
@@ -1132,7 +1140,7 @@ export const BACKGROUND_TASK_HINT =
 function createExecTool(ctx: ToolContext): AgentTool {
   return {
     name: 'exec',
-    description: `Run a shell command. The shell remembers your working directory across calls — do NOT prepend cd to commands, the cwd from your last exec call is preserved automatically. The result includes the current cwd. Destructive commands are blocked. Quote file paths containing spaces. Use && to chain dependent commands, ; for independent ones. Never use interactive flags (-i). Prefer read_file over cat/head/tail, and the \`search\` tool over grep/rg for finding code. Tokens saved to .env are auto-loaded. Long-running commands become background tasks: set \`background: true\` to start one immediately (never detach it yourself with \`&\` or \`nohup\`; those are refused), and any command still running after \`timeout\` ms (default ${DEFAULT_EXEC_SOFT_TIMEOUT_MS}) is handed back as \`{ status: "running", task_id, output_file }\` while it keeps running.`,
+    description: `Run a shell command. The shell remembers your working directory across calls — do NOT prepend cd to commands, the cwd from your last exec call is preserved automatically. The result includes the current cwd. Destructive commands are blocked. Quote file paths containing spaces. Use && to chain dependent commands, ; for independent ones. Never use interactive flags (-i). Prefer read_file over cat/head/tail${isSearchEnabled() ? ', and the \`search\` tool over grep/rg for finding code' : '; use rg (ripgrep) to find code'}. Tokens saved to .env are auto-loaded. Long-running commands become background tasks: set \`background: true\` to start one immediately (never detach it yourself with \`&\` or \`nohup\`; those are refused), and any command still running after \`timeout\` ms (default ${DEFAULT_EXEC_SOFT_TIMEOUT_MS}) is handed back as \`{ status: "running", task_id, output_file }\` while it keeps running.`,
     label: 'Execute Command',
     parameters: Type.Object({
       command: Type.String({ description: 'Shell command to execute' }),
@@ -1555,7 +1563,10 @@ export function createGitHubConnectTool(ctx: ToolContext): AgentTool {
       'Pass `branch` to work on a branch other than the default ("clone X and switch to branch Y" is one call); on a project ' +
       'that is already connected, calling it with `branch` and no token just switches branches. ' +
       'The project\'s tech stack is detected from the repository and its preview restarts on it. ' +
-      'This replaces cloning by hand: do not `git clone` a repository into a project or write the token to `.env`.',
+      'This replaces cloning by hand: do not `git clone` a repository into a project. A token passed here is stored on the ' +
+      'project\'s connection, so do not also write it to `.env`. `repo` is required: if the user pasted a token without naming ' +
+      'a repository, ask which one (owner/name). A token for one-off `gh` work outside a project\'s repository goes in workspace ' +
+      '`.env` as GITHUB_TOKEN instead.',
     parameters: Type.Object({
       repo: Type.String({ description: 'Repository as owner/name or a github.com URL' }),
       token: Type.Optional(Type.String({ description: 'GitHub access token the user shared, to connect with it' })),
@@ -2255,7 +2266,7 @@ function createReadFileTool(ctx: ToolContext): AgentTool {
   return {
     name: 'read_file',
     description:
-      'Read a file from the agent workspace. Prefer this over `exec` with `cat`/`head`/`tail`. Supports partial reads via offset and limit to handle large files without consuming the full context window. `offset` is a 1-based line number (e.g. offset: 380) or a [start, end] tuple (e.g. offset: [380, 420]); `limit` is a line count (e.g. limit: 40). When using offset/limit, output includes line numbers in N|content format. For large files (500+ lines), prefer offset/limit, or use the `search` tool to find the relevant section first. When called on an image file (.png, .jpg, .jpeg, .gif, .webp, .bmp, .avif, .heic, .ico), the image is returned as multimodal image content for vision-capable models to view or describe; offset/limit are ignored for images, and images larger than 20 MB are rejected.',
+      `Read a file from the agent workspace. Prefer this over \`exec\` with \`cat\`/\`head\`/\`tail\`. Supports partial reads via offset and limit to handle large files without consuming the full context window. \`offset\` is a 1-based line number (e.g. offset: 380) or a [start, end] tuple (e.g. offset: [380, 420]); \`limit\` is a line count (e.g. limit: 40). When using offset/limit, output includes line numbers in N|content format. For large files (500+ lines), prefer offset/limit, or ${isSearchEnabled() ? 'use the `search` tool' : 'run `rg -n` via `exec`'} to find the relevant section first. When called on an image file (.png, .jpg, .jpeg, .gif, .webp, .bmp, .avif, .heic, .ico), the image is returned as multimodal image content for vision-capable models to view or describe; offset/limit are ignored for images, and images larger than 20 MB are rejected.`,
     label: 'Read File',
     parameters: Type.Object({
       path: Type.String({ description: 'File path relative to workspace' }),
@@ -2511,7 +2522,7 @@ function createReadFileTool(ctx: ToolContext): AgentTool {
       }
       if (totalLineCount > 500) {
         result.totalLines = totalLineCount
-        result.note = `Large file (${totalLineCount} lines). Use offset/limit to read specific sections (e.g. offset: 380, limit: 40), or the \`search\` tool to find the code you need. Reading the whole file wastes context.`
+        result.note = `Large file (${totalLineCount} lines). Use offset/limit to read specific sections (e.g. offset: 380, limit: 40), or ${isSearchEnabled() ? 'the `search` tool' : '`rg -n` via `exec`'} to find the code you need. Reading the whole file wastes context.`
       }
       return textResult(result)
     },
@@ -2533,7 +2544,7 @@ function appendImpactHint(ctx: ToolContext, filePath: string, result: Record<str
         `This file is referenced by ${impact.impactedFiles.length} other file(s): ${impact.impactedFiles
           .slice(0, 5)
           .join(', ')}${impact.impactedFiles.length > 5 ? ` and ${impact.impactedFiles.length - 5} more` : ''}. ` +
-        'Use impact_radius for full analysis.'
+        'For a full blast-radius analysis, delegate to the explore or code-reviewer subagent (they have impact_radius).'
     }
   } catch {
     /* best-effort — do not fail the write */
@@ -2790,6 +2801,29 @@ function findOrphanedFetchesInContent(content: string, activeRoutes: string[]): 
 }
 
 /**
+ * First path segments of the routes registered in the project's
+ * `custom-routes.ts` (mounted under `/api/`), so fetches to custom routes
+ * aren't reported as orphaned. Comments are stripped first: the template
+ * file documents example routes in comments that aren't actually mounted.
+ */
+function customRouteSegments(workspaceDir: string): string[] {
+  const file = ['custom-routes.ts', 'custom-routes.tsx'].map((f) => join(workspaceDir, f)).find((f) => existsSync(f))
+  if (!file) return []
+  let source: string
+  try {
+    source = readFileSync(file, 'utf-8')
+  } catch {
+    return []
+  }
+  const code = source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1')
+  const segments = new Set<string>()
+  for (const m of code.matchAll(/\.(?:get|post|put|patch|delete|all|route|use)\(\s*[`"']\/([^`"'/\s?:*$]+)/g)) {
+    segments.add(m[1])
+  }
+  return [...segments]
+}
+
+/**
  * Path filter: should this file be checked for canvas-API contract
  * violations? Only `.ts(x)` / `.js(x)` files inside `src/` or `canvas/`
  * (not the generated CRUD output, which by definition matches the routes
@@ -2834,7 +2868,7 @@ function appendCanvasApiContractHint(ctx: ToolContext, filePath: string, content
     return
   }
 
-  const orphaned = findOrphanedFetchesInContent(content, activeRoutes)
+  const orphaned = findOrphanedFetchesInContent(content, [...activeRoutes, ...customRouteSegments(ctx.workspaceDir)])
   if (orphaned.length === 0) return
 
   base.canvasApiContract = {
@@ -2843,13 +2877,14 @@ function appendCanvasApiContractHint(ctx: ToolContext, filePath: string, content
     warning:
       `This file fetches ${orphaned.length} route(s) that don't exist on the server: ${orphaned.join(', ')}. ` +
       `Either add a matching Prisma model in prisma/schema.prisma (which gives you /api/{model-plural} CRUD ` +
-      `automatically after \`shogo generate\`), or register a custom Hono route in server.tsx (e.g. ` +
-      `\`app.get('${orphaned[0]}', async (c) => ...)\`). Otherwise the fetch will return a 404 at runtime.`,
+      `automatically after \`shogo generate\`), or register a custom Hono route in custom-routes.ts, which is ` +
+      `mounted under /api (e.g. \`app.get('${orphaned[0].replace(/^\/api/, '')}', async (c) => ...)\`). Do not add ` +
+      `routes to server.tsx — it is regenerated. Otherwise the fetch will return a 404 at runtime.`,
   }
 }
 
 function findOrphanedFetches(workspaceDir: string, activeRoutes: string[]): { route: string; file: string }[] {
-  const routeSet = new Set(activeRoutes.map((r) => r.toLowerCase()))
+  const routeSet = new Set([...activeRoutes, ...customRouteSegments(workspaceDir)].map((r) => r.toLowerCase()))
   // Each call site needs its own RegExp instance because the global flag
   // makes the regex stateful (`lastIndex`) — sharing the constant across
   // concurrent scans would skip matches.
@@ -6627,7 +6662,7 @@ function createConnectTool(ctx: ToolContext): AgentTool {
     description:
       'Install (connect) an integration so its tools become available. Auto-routes by name: tries Composio managed OAuth first (Google, Slack, GitHub, etc. — no credentials needed), falls back to the MCP catalog (postgres, etc.), then to a remote URL if provided. Files and shell commands are built in (read_file, write_file, edit_file, exec) — do not connect filesystem or computer-use. Use `source: "mcp"` to skip Composio. Use `skill:<name>` to install a bundled skill. Pair with search_integrations to discover names.\n\n' +
       'When to call connect vs. when not to: only call connect when the user has asked for an ACTION you can\'t perform without that integration (send a calendar invite, post to Slack, query a Postgres database, etc.). Do NOT call connect when the user is asking to "show", "list", "compare", "describe", or "preview" data you can already produce with `web`, `read_file`, or in-context information — installing an integration the user did not ask for forces them through an OAuth dance for no reason and is one of the most disliked agent behaviors. If you\'re unsure whether the user wants the action or just an explanation, ask one clarifying question via `ask_user` before calling connect.\n\n' +
-      'GitHub issues, pull requests, Actions, releases, and repo metadata: do NOT call connect. Use the pre-installed `gh` CLI via exec for listing and issue operations (`gh issue list`, `gh issue create`, `gh pr list`, `gh run list`). Use the `github_create_pr` tool to create a PR so Shogo can add attribution and use the GitHub App when connected. To bring a repository into a project, use `github_connect`. If gh is not authenticated, save a PAT to `.env` as GITHUB_TOKEN and retry. Only connect({ name: "github" }) if the user explicitly asks for the Composio GitHub OAuth integration.',
+      'GitHub issues, pull requests, Actions, releases, and repo metadata: do NOT call connect. Use the pre-installed `gh` CLI via exec for listing and issue operations (`gh issue list`, `gh issue create`, `gh pr list`, `gh run list`). Use the `github_create_pr` tool to create a PR so Shogo can add attribution and use the GitHub App when connected. To bring a repository into a project, use `github_connect`. If gh is not authenticated: for a project\'s repository, use `github_connect` (pass the user\'s token if they shared one); only for one-off work outside a project\'s repository, save the PAT to workspace `.env` as GITHUB_TOKEN and retry. Only connect({ name: "github" }) if the user explicitly asks for the Composio GitHub OAuth integration.',
     label: 'Connect Integration',
     parameters: Type.Object({
       name: Type.String({
@@ -6883,13 +6918,12 @@ function createAgentSpawnTool(ctx: ToolContext, allToolsGetter: () => AgentTool[
       ),
       resume: Type.Optional(
         Type.String({
-          description: 'Instance ID to resume (sends follow-up to existing agent)',
+          description: 'Instance ID to resume (sends follow-up to existing agent). type may be omitted; the instance keeps its own type.',
         }),
       ),
     }),
     execute: async (toolCallId, params) => {
       const {
-        type,
         prompt,
         model_tier,
         max_turns,
@@ -6904,6 +6938,19 @@ function createAgentSpawnTool(ctx: ToolContext, allToolsGetter: () => AgentTool[
         readonly?: boolean
         background?: boolean
         resume?: string
+      }
+      let type = (params as { type?: string }).type
+
+      // Resuming an instance without restating its type continues that
+      // instance; it must not fall through to fork mode.
+      if (!type && resume) {
+        const existing = ctx.agentManager?.getInstance(resume)
+        if (!existing) {
+          return textResult({
+            error: `Cannot resume "${resume}": no agent instance with that ID exists in this session. Pass the instance_id returned by a previous agent_spawn call, or omit resume to start a new agent.`,
+          })
+        }
+        type = existing.type
       }
 
       // --- Fork mode: type is omitted ---
@@ -8450,7 +8497,9 @@ export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTo
     createCreatePlanTool(ctx),
     createUpdatePlanTool(ctx),
     createQuickActionTool(ctx),
-    g(createTerminalExecTool(ctx), 'shell'),
+    // terminal_exec drives the desktop app's visible terminal; it can only
+    // work when the desktop bridge is wired (TERMINAL_EXEC_URL → ctx.terminalExec).
+    ...(ctx.terminalExec ? [g(createTerminalExecTool(ctx), 'shell')] : []),
     createTerminalReadTool(ctx),
     createReadGuideTool(ctx),
   ]
@@ -8496,7 +8545,7 @@ export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTo
 
   // Workspace runtimes expose universal profile/goal primitives. Project
   // runtimes omit them so the existing builder tool contract is unchanged.
-  if (resolveWorkspaceId(ctx)) {
+  if (workspaceAgentToolsRegistered(ctx)) {
     tools.push(...createWorkspaceAgentTools(ctx))
     tools.push(...createTriggerTools(ctx))
     // Meetings are private to the personal workspace; the API rejects team workspaces.

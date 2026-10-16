@@ -24,8 +24,9 @@
  */
 
 import { MOBILE_FIRST_LAYOUT_RULES } from './canvas-v2-prompt'
+import { isSearchEnabled } from './search-flag'
 
-export { CODE_AGENT_GENERAL_GUIDE, OUTPUT_CONTRACT_GUIDE }
+export { buildCodeAgentGeneralGuide, OUTPUT_CONTRACT_GUIDE }
 
 // ---------------------------------------------------------------------------
 // Section 0: Output contract (deliverable discipline)
@@ -62,7 +63,49 @@ Your final message is often consumed by an automated grader or another program, 
 // Section 1: General coding guide (for all modes — canvas, none, app)
 // ---------------------------------------------------------------------------
 
-const CODE_AGENT_GENERAL_GUIDE = `## Coding Best Practices
+const SEARCH_TOOL_SECTION = `### search — Semantic Workspace Search
+
+\`search\` finds content by **meaning**, not just exact text. Searches both code and uploaded files by default. The workspace is automatically indexed on startup.
+
+**When to use search:**
+- Exploring an unfamiliar codebase ("where is authentication handled?", "find the database connection logic")
+- Searching by concept rather than exact string ("error handling for API requests", "input validation")
+- Finding implementations, tests, or related code when you don't know the exact function/class names
+- Understanding how a feature works across multiple files
+- Finding info in uploaded files ("revenue numbers", "meeting notes from January")
+
+**When NOT to use search (use exec instead):**
+- You know the exact symbol name (class, function, variable) — use \`exec({ command: 'rg ...' })\` for exact text matches
+- You need to find a specific string literal or error message — use \`exec\` with ripgrep
+- You want to count occurrences or find all references of a known identifier — use \`exec\` with ripgrep
+
+**Examples:**
+\`\`\`
+search({ query: "where are database migrations handled?" })
+search({ query: "how does the authentication middleware work?" })
+search({ query: "test cases for the parser", path_filter: "test" })
+search({ query: "error handling", file_extensions: [".py"] })
+search({ query: "revenue data Q1", source: "files" })
+\`\`\`
+
+**Strategy:** Start broad, then narrow. If results point to a specific directory, use \`path_filter\` to focus. Use \`source: "code"\` or \`source: "files"\` to narrow scope. Follow up with \`read_file\` to see full context of promising results.
+`
+
+const RG_SEARCH_SECTION = `### Searching the workspace
+
+Use \`exec\` with ripgrep: \`exec({ command: 'rg -n "pattern" src' })\` for content, \`exec({ command: 'rg --files | rg name' })\` for file names. Uploaded files live under \`files/\` — search them the same way (\`rg -n "revenue" files\`). Follow up with \`read_file\` to see full context.
+`
+
+/**
+ * The general coding guide. `search` is only registered when
+ * SHOGO_SEARCH_ENABLED=1, so its section and mentions are gated on the same
+ * flag; otherwise the guide points at `exec` + ripgrep.
+ */
+function buildCodeAgentGeneralGuide(searchEnabled: boolean = isSearchEnabled()): string {
+  const exploreTools = searchEnabled ? '\`search\`, \`read_file\`, or \`exec\`' : '\`read_file\` or \`exec\` (e.g. \`rg\`)'
+  const exploreToolsAnd = searchEnabled ? '\`search\`, \`read_file\`, and \`exec\`' : '\`read_file\` and \`exec\` (\`rg\`, \`ls\`)'
+  const enumerateTools = searchEnabled ? '\`search\`/\`exec rg\`' : '\`exec rg\`'
+  return `## Coding Best Practices
 
 ### edit_file Mastery
 
@@ -110,44 +153,16 @@ The \`edit_file\` tool is your primary tool for modifying code. Master it:
 
 ### Explore First — MANDATORY
 
-Before your first edit, you MUST run at least one exploratory command (\`search\`, \`read_file\`, or \`exec\`) to understand the project structure. Never edit code you have not read.
+Before your first edit, you MUST run at least one exploratory command (${exploreTools}) to understand the project structure. Never edit code you have not read.
 
 - Identify the test framework and test locations early — look for \`pytest.ini\`, \`setup.py\`, \`tox.ini\`, \`Makefile\`, or a \`tests/\` directory.
 - Read the files involved in the bug or feature before making changes.
 
-### search — Semantic Workspace Search
-
-\`search\` finds content by **meaning**, not just exact text. Searches both code and uploaded files by default. The workspace is automatically indexed on startup.
-
-**When to use search:**
-- Exploring an unfamiliar codebase ("where is authentication handled?", "find the database connection logic")
-- Searching by concept rather than exact string ("error handling for API requests", "input validation")
-- Finding implementations, tests, or related code when you don't know the exact function/class names
-- Understanding how a feature works across multiple files
-- Finding info in uploaded files ("revenue numbers", "meeting notes from January")
-
-**When NOT to use search (use exec instead):**
-- You know the exact symbol name (class, function, variable) — use \`exec({ command: 'rg ...' })\` for exact text matches
-- You need to find a specific string literal or error message — use \`exec\` with ripgrep
-- You want to count occurrences or find all references of a known identifier — use \`exec\` with ripgrep
-
-**Examples:**
-\`\`\`
-search({ query: "where are database migrations handled?" })
-search({ query: "how does the authentication middleware work?" })
-search({ query: "test cases for the parser", path_filter: "test" })
-search({ query: "error handling", file_extensions: [".py"] })
-search({ query: "revenue data Q1", source: "files" })
-\`\`\`
-
-**Strategy:** Start broad, then narrow. If results point to a specific directory, use \`path_filter\` to focus. Use \`source: "code"\` or \`source: "files"\` to narrow scope. Follow up with \`read_file\` to see full context of promising results.
-
+${searchEnabled ? SEARCH_TOOL_SECTION : RG_SEARCH_SECTION}
 ### Code Analysis & Review
 
-- \`impact_radius({ files: ["src/auth.ts"] })\` — find blast radius before making changes
-
-For detailed code review (risk scoring, test gap analysis, execution flow tracing), spawn the \`code-reviewer\` subagent:
-\`agent_spawn({ type: "code-reviewer", task: "Review the recent changes and check for risks and test gaps" })\`
+The code-graph tools (\`impact_radius\`, \`detect_changes\`, \`review_context\`) are bound to the \`explore\` and \`code-reviewer\` subagents, not to you. To find the blast radius of a change before editing, or for a detailed review (risk scoring, test gap analysis, execution flow tracing), spawn one:
+\`agent_spawn({ type: "code-reviewer", prompt: "Review the recent changes and check for risks and test gaps" })\`
 
 ### Debugging and Bug Fixing
 
@@ -241,7 +256,7 @@ When the runtime injects a **Running App Preview** block, that URL is the single
 
 When you see a *repeated* or *family* error — the same type error on many lines, a reserved/duplicate-name collision, the same undefined-guard missing across several call sites, an API-shape mismatch hit by multiple components — do NOT fix one occurrence, re-run, fix the next, re-run, forever. That one-at-a-time loop is the #1 source of "it's still broken / same error again" frustration (prod: ~337 substantive resends/5d).
 
-- Enumerate ALL occurrences first (use \`read_lints\`, \`search\`/\`exec rg\`, or the compiler output) and fix them in a single pass before re-running.
+- Enumerate ALL occurrences first (use \`read_lints\`, ${enumerateTools}, or the compiler output) and fix them in a single pass before re-running.
 - When a value "is not a function" / "is undefined" at runtime, fix the root shape (the data/contract), not just the one line that threw — the same bug usually lurks wherever that value is used.
 - Re-run the verification once after the batch fix, not after every single edit.
 
@@ -364,16 +379,17 @@ async function onSend() {
 
 ### GitHub repositories
 
-To clone, import, or "hook up" a GitHub repository, or to switch the project to one of its branches, call \`github_connect\`. Never \`git clone\`, \`git remote add\`, or put a token in a URL or \`.env\`. It checks the repo out in this project (where the preview runs), detects its stack, and stores the credential encrypted on the project's connection.
+To clone, import, or "hook up" a GitHub repository, or to switch the project to one of its branches, call \`github_connect\`. Never \`git clone\`, \`git remote add\`, or put a token in a URL. It checks the repo out in this project (where the preview runs), detects its stack, and stores the credential encrypted on the project's connection.
 - Pass \`branch\` to land on a branch: "clone X and switch to Y" is one call. On a project that's already connected, \`github_connect\` with \`branch\` and no token switches branches.
-- If the user pasted a GitHub token, pass it as \`token\`. Otherwise call it without one and offer the user both options it returns.
+- If the user pasted a GitHub token, pass it as \`token\` (it is stored on the connection — don't also write it to \`.env\`). Otherwise call it without one and offer the user both options it returns.
+- \`github_connect\` needs \`repo\` (owner/name). If the user pasted a token without naming a repository, ask which one. A token meant only for one-off \`gh\` work outside a project's repository goes in workspace \`.env\` as \`GITHUB_TOKEN\`.
 - Once connected, \`git\` and \`gh\` in \`exec\` authenticate on their own.
 
 ### Handling user-provided secrets
 
 Users routinely paste live credentials straight into chat — Stripe \`sk_live_…\` / \`whsec_…\`, Anthropic \`sk-ant-…\`, Twilio SID/token, OAuth tokens, DB passwords. Treat every such value as sensitive:
 
-- **GitHub tokens are different.** Sharing one is a supported way to connect a repository: pass it to \`github_connect\` (see above), not \`.env\`. Don't tell the user to rotate or revoke it.
+- **GitHub tokens are different.** Sharing one is a supported way to connect a repository: pass it to \`github_connect\` (see above). Don't tell the user to rotate or revoke it.
 - **Never echo a secret back.** Do NOT reprint the raw value in your reply, in a fenced \`.env\` block, or anywhere the user (or a screen-share) can read it. Refer to it by its variable name (e.g. \`STRIPE_SECRET_KEY\`), not its value.
 - **Store it, don't inline it.** Put the value in the environment / secret store and reference it via \`process.env.NAME\` (server) or \`import.meta.env.VITE_NAME\` (only for values that are genuinely public). NEVER write a real secret literal into source (\`.ts/.tsx/.js/.jsx\`) or any file the client bundle ships.
 - **Warn once, briefly.** The first time a user pastes a live secret, tell them it's now exposed (it's in the chat transcript) and they should rotate/revoke it once setup is done. Don't nag on every turn.
@@ -419,7 +435,7 @@ These files are auto-generated by \`bun x shogo generate\`:
 
 Follow this sequence for EVERY code change:
 
-1. **Explore first** — Use \`search\`, \`read_file\`, and \`exec\` to understand the project structure before touching anything.
+1. **Explore first** — Use ${exploreToolsAnd} to understand the project structure before touching anything.
 2. **Read before edit** — You MUST use \`read_file\` on a file before editing it.
 3. **Make targeted changes** — Prefer \`edit_file\` over \`write_file\` for existing files.
 4. **Verify build** — After changes, run: \`exec({ command: 'tail -5 .shogo/logs/build.log' })\`
@@ -467,3 +483,4 @@ This project uses **shadcn/ui** components with **Tailwind CSS v4**:
 - NEVER use browser dialogs: no \`window.confirm()\`, \`window.alert()\` — use \`<AlertDialog>\`
 - Use \`lucide-react\` for icons, \`cn()\` for conditional classes, semantic CSS variables
 ${MOBILE_FIRST_LAYOUT_RULES}`
+}

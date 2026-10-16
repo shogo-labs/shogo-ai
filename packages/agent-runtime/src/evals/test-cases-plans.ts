@@ -8,6 +8,7 @@ import {
   toolCallsJson,
   planToolArgsContain,
   planTodoCount,
+  searchCalls,
 } from './eval-helpers'
 
 // ---------------------------------------------------------------------------
@@ -121,9 +122,7 @@ const PHASE_1: AgentEval = {
         const createIdx = r.toolCalls.findIndex(tc => tc.name === 'create_plan')
         if (createIdx <= 0) return false
         const priorTools = r.toolCalls.slice(0, createIdx)
-        return priorTools.some(tc =>
-          tc.name === 'read_file' || tc.name === 'search' || tc.name === 'web'
-        )
+        return searchCalls(r, priorTools).length > 0 || priorTools.some(tc => tc.name === 'web')
       },
     },
   ],
@@ -312,9 +311,7 @@ function makePlanCreationEval(spec: PlanCreationSpec): AgentEval {
         const createIdx = r.toolCalls.findIndex(tc => tc.name === 'create_plan')
         if (createIdx <= 0) return false
         const priorTools = r.toolCalls.slice(0, createIdx)
-        return priorTools.some(tc =>
-          tc.name === 'read_file' || tc.name === 'search' || tc.name === 'web'
-        )
+        return searchCalls(r, priorTools).length > 0 || priorTools.some(tc => tc.name === 'web')
       },
     })
   }

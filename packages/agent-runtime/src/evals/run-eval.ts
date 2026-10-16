@@ -58,7 +58,7 @@ function isOpenRouterModel(id: string): boolean {
   return typeof id === 'string' && id.startsWith(OPENROUTER_MODEL_PREFIX)
 }
 import { getOpenRouterPricing, type PerTokenPricing } from './openrouter-pricing'
-import { resetWorkspaceDefaults, seedLSPConfig, seedRuntimeTemplate, seedSkillServer } from '../workspace-defaults'
+import { resetWorkspaceDefaults, seedLSPConfig, seedRuntimeTemplate } from '../workspace-defaults'
 import { COMPLEX_EVALS } from './test-cases-complex'
 import { MEMORY_EVALS } from './test-cases-memory'
 import { PERSONALITY_EVALS } from './test-cases-personality'
@@ -770,6 +770,23 @@ function archiveWorkspaceAsTemplate(
   return destDir
 }
 
+/**
+ * `.shogo/` survives between evals for its install marker and the databases
+ * the runtime holds open. Everything one eval leaves for the agent to find
+ * (skills, logs, task output, plans, a stale STACK.md) has to go, or the next
+ * eval reads another eval's skills, crash logs and transcripts.
+ */
+const PER_EVAL_SHOGO_ENTRIES = [
+  'skills', 'logs', 'tasks', 'plans', 'reports', 'design',
+  'STACK.md', 'build-output.json', 'build-output-history.json', 'build-output-fingerprint',
+]
+
+function clearPerEvalShogoState(shogoDir: string): void {
+  for (const entry of PER_EVAL_SHOGO_ENTRIES) {
+    try { rmSync(join(shogoDir, entry), { recursive: true, force: true }) } catch {}
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Eval execution on a worker
 // ---------------------------------------------------------------------------
@@ -801,13 +818,10 @@ async function runEvalOnWorker(
     if (verboseFlag) console.log(`      [setup] Pipeline phase ${ev.pipelinePhase} — keeping workspace`)
 
     // Idempotent: seed template/skill-server if this phase needs them (no-ops if already present)
-    if (ev.useRuntimeTemplate) {
+    // The project server is part of the runtime template, so skill-server evals need it too.
+    if (ev.useRuntimeTemplate || ev.useSkillServer) {
       seedRuntimeTemplate(worker.dir)
       if (verboseFlag) console.log(`      [setup] Seeded runtime template (idempotent)`)
-    }
-    if (ev.useSkillServer) {
-      seedSkillServer(worker.dir)
-      if (verboseFlag) console.log(`      [setup] Seeded skill server scaffold (idempotent)`)
     }
 
     const overlay = ev.pipelineFiles ?? {}
@@ -887,16 +901,13 @@ async function runEvalOnWorker(
         }
       } catch {}
     }
+    clearPerEvalShogoState(shogoPath)
     resetWorkspaceDefaults(worker.dir)
     seedLSPConfig(worker.dir)
 
-    if (ev.useRuntimeTemplate) {
+    if (ev.useRuntimeTemplate || ev.useSkillServer) {
       seedRuntimeTemplate(worker.dir)
       if (verboseFlag) console.log(`      [setup] Seeded runtime template`)
-    }
-    if (ev.useSkillServer) {
-      seedSkillServer(worker.dir)
-      if (verboseFlag) console.log(`      [setup] Seeded skill server scaffold`)
     }
 
     if (verboseFlag) console.log(`      [setup] Seeding workspace files...`)
@@ -970,212 +981,222 @@ async function runEvalOnWorker(
       console.log(`      ${'Grand total'.padEnd(maxLabel)}    :                ~${bd.grandEstTokens.toLocaleString().padStart(6)} tok`)
     }
 
-    if (result.score > 0) {
-      // Force the skill server to regenerate + restart with the latest schema
-      // before probing routes. This eliminates file-watcher timing races.
-      if (ev.useSkillServer) {
+    // Force the skill server to regenerate + restart with the latest schema
+    // before probing routes. This eliminates file-watcher timing races.
+    if (ev.useSkillServer) {
+      try {
+        if (verboseFlag) console.log(`      [runtime] Syncing skill server...`)
+        const syncRes = await fetch(`${getWorkerBaseUrl(worker)}/agent/skill-server/sync`, {
+          method: 'POST',
+          signal: AbortSignal.timeout(180_000),
+        })
+        const text = await syncRes.text()
         try {
-          if (verboseFlag) console.log(`      [runtime] Syncing skill server...`)
-          const syncRes = await fetch(`${getWorkerBaseUrl(worker)}/agent/skill-server/sync`, {
-            method: 'POST',
-            signal: AbortSignal.timeout(180_000),
-          })
-          const text = await syncRes.text()
-          try {
-            const syncBody = JSON.parse(text) as { ok: boolean; phase: string; error?: string }
-            if (verboseFlag) console.log(`      [runtime] Skill server sync: ok=${syncBody.ok} phase=${syncBody.phase}${syncBody.error ? ` error=${syncBody.error}` : ''}`)
-          } catch {
-            if (verboseFlag) console.log(`      [runtime] Skill server sync: HTTP ${syncRes.status} (non-JSON: ${text.slice(0, 200)})`)
-          }
-        } catch (err: any) {
-          console.warn(`      [runtime] Skill server sync failed: ${err.message}`)
+          const syncBody = JSON.parse(text) as { ok: boolean; phase: string; error?: string }
+          if (verboseFlag) console.log(`      [runtime] Skill server sync: ok=${syncBody.ok} phase=${syncBody.phase}${syncBody.error ? ` error=${syncBody.error}` : ''}`)
+        } catch {
+          if (verboseFlag) console.log(`      [runtime] Skill server sync: HTTP ${syncRes.status} (non-JSON: ${text.slice(0, 200)})`)
         }
+      } catch (err: any) {
+        console.warn(`      [runtime] Skill server sync failed: ${err.message}`)
+      }
+    }
+
+    let runtimeResults: RuntimeCheckResults | null = null
+    // For workers where the workspace lives behind isolation (k8s
+    // pod), run the checks **inside** the worker via the
+    // agent-runtime's `/agent/runtime-checks` HTTP endpoint. The
+    // host's `worker.dir` is just the seed surface; node_modules /
+    // src/generated / @prisma/client only exist inside the
+    // container, so on-host filesystem checks would always report
+    // "missing" and pollute the result with false positives.
+    // Tenant-isolation probe is opt-in per eval via a `tenant-probe:<route>` tag.
+    const tenantProbe = (() => {
+      const tag = ev.tags?.find(t => t.startsWith('tenant-probe:'))
+      if (!tag) return undefined
+      const route = tag.slice('tenant-probe:'.length).trim()
+      return route ? { route } : undefined
+    })()
+
+    const useRemoteChecks = k8sFlag
+    if (useRemoteChecks) {
+      try {
+        const res = await fetch(`${getWorkerBaseUrl(worker)}/agent/runtime-checks`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ canvasExpectedPort: CONTAINER_SKILL_PORT, evalId: ev.id, verbose: verboseFlag, tenantProbe }),
+          signal: AbortSignal.timeout(120_000),
+        })
+        const body = await res.json() as { ok: boolean; results: RuntimeCheckResults | null; error?: string }
+        if (body.ok) runtimeResults = body.results
+        else if (verboseFlag) console.log(`      [runtime] Remote runtime checks failed: ${body.error}`)
+      } catch (err: any) {
+        console.warn(`      [runtime] Remote runtime checks error: ${err.message}`)
+      }
+    } else {
+      // Docker forwards `SKILL_SERVER_BASE_PORT + id` on the host to the
+      // container's API server (3001). For --local with a single worker,
+      // that also happens to equal CONTAINER_SKILL_PORT (4100 + 0's legacy
+      // alias historically collapsed to 3001), but `local-worker.ts` sets
+      // each worker's own `SKILL_SERVER_PORT` to `SKILL_SERVER_BASE_PORT +
+      // worker.id` and PreviewManager binds to that directly (no docker
+      // port mapping to normalize away). With `--local --workers > 1`,
+      // hardcoding CONTAINER_SKILL_PORT here would probe the wrong port
+      // for every worker but worker 0, so always use the per-worker port.
+      const hostSkillPort = SKILL_SERVER_BASE_PORT + worker.id
+      runtimeResults = await runRuntimeChecks({
+        workspaceDir: worker.dir,
+        apiServerPort: hostSkillPort,
+        canvasExpectedPort: localFlag ? hostSkillPort : CONTAINER_SKILL_PORT,
+        evalId: ev.id,
+        verbose: verboseFlag,
+        runtimePort: worker.port,
+        tenantProbe,
+      })
+    }
+    if (runtimeResults) {
+      result.runtimeChecks = runtimeResults
+      result.runtimeWarnings = result.runtimeWarnings || []
+
+      // Execution criteria may read runtimeChecks, which only exist now.
+      for (const cr of result.criteriaResults) {
+        if (cr.passed || (cr.criterion.phase ?? 'intention') !== 'execution') continue
+        try {
+          if (cr.criterion.validate(result)) {
+            cr.passed = true
+            cr.pointsEarned = cr.criterion.points
+            result.score += cr.criterion.points
+          }
+        } catch {}
       }
 
-      let runtimeResults: RuntimeCheckResults | null = null
-      // For workers where the workspace lives behind isolation (k8s
-      // pod), run the checks **inside** the worker via the
-      // agent-runtime's `/agent/runtime-checks` HTTP endpoint. The
-      // host's `worker.dir` is just the seed surface; node_modules /
-      // src/generated / @prisma/client only exist inside the
-      // container, so on-host filesystem checks would always report
-      // "missing" and pollute the result with false positives.
-      // Tenant-isolation probe is opt-in per eval via a `tenant-probe:<route>` tag.
-      const tenantProbe = (() => {
-        const tag = ev.tags?.find(t => t.startsWith('tenant-probe:'))
-        if (!tag) return undefined
-        const route = tag.slice('tenant-probe:'.length).trim()
-        return route ? { route } : undefined
-      })()
+      const isFullstack = ev.useSkillServer === true
 
-      const useRemoteChecks = k8sFlag
-      if (useRemoteChecks) {
-        try {
-          const res = await fetch(`${getWorkerBaseUrl(worker)}/agent/runtime-checks`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ canvasExpectedPort: CONTAINER_SKILL_PORT, evalId: ev.id, verbose: verboseFlag, tenantProbe }),
-            signal: AbortSignal.timeout(120_000),
-          })
-          const body = await res.json() as { ok: boolean; results: RuntimeCheckResults | null; error?: string }
-          if (body.ok) runtimeResults = body.results
-          else if (verboseFlag) console.log(`      [runtime] Remote runtime checks failed: ${body.error}`)
-        } catch (err: any) {
-          console.warn(`      [runtime] Remote runtime checks error: ${err.message}`)
-        }
-      } else {
-        // Docker forwards `SKILL_SERVER_BASE_PORT + id` on the host to the
-        // container's API server (3001). For --local with a single worker,
-        // that also happens to equal CONTAINER_SKILL_PORT (4100 + 0's legacy
-        // alias historically collapsed to 3001), but `local-worker.ts` sets
-        // each worker's own `SKILL_SERVER_PORT` to `SKILL_SERVER_BASE_PORT +
-        // worker.id` and PreviewManager binds to that directly (no docker
-        // port mapping to normalize away). With `--local --workers > 1`,
-        // hardcoding CONTAINER_SKILL_PORT here would probe the wrong port
-        // for every worker but worker 0, so always use the per-worker port.
-        const hostSkillPort = SKILL_SERVER_BASE_PORT + worker.id
-        runtimeResults = await runRuntimeChecks({
-          workspaceDir: worker.dir,
-          apiServerPort: hostSkillPort,
-          canvasExpectedPort: localFlag ? hostSkillPort : CONTAINER_SKILL_PORT,
-          evalId: ev.id,
-          verbose: verboseFlag,
-          runtimePort: worker.port,
-          tenantProbe,
+      const runtimeCriteria: { id: string; desc: string; pts: number; passed: boolean; skip?: boolean }[] = [
+        {
+          id: 'runtime-server-healthy',
+          desc: 'Skill server boots and responds to /health',
+          pts: 2,
+          passed: runtimeResults.serverHealthy === true,
+          skip: runtimeResults.serverHealthy === null,
+        },
+        {
+          id: 'runtime-crud-functional',
+          desc: 'Can list and create records via API',
+          pts: 2,
+          passed: runtimeResults.canListModels && runtimeResults.canCreateRecord,
+          skip: runtimeResults.serverHealthy === null || !runtimeResults.workspaceIntegrity?.schemaHasModels,
+        },
+        {
+          id: 'runtime-canvas-port',
+          desc: 'Canvas references the correct skill server port',
+          pts: 1,
+          passed: runtimeResults.canvasPortCorrect === true,
+          skip: runtimeResults.canvasPortCorrect === null,
+        },
+        {
+          id: 'runtime-canvas-compiles',
+          desc: 'Canvas app source files transpile without syntax errors',
+          pts: 3,
+          passed: runtimeResults.canvasCompiles === true,
+          skip: runtimeResults.canvasCompiles === null,
+        },
+      ]
+
+      // Opt-in hardening checks, gated by eval tags so existing evals are
+      // unaffected. These power the agent-hardening reproductions.
+      if (ev.tags?.includes('expect-preview-reachable')) {
+        runtimeCriteria.push({
+          id: 'runtime-preview-reachable',
+          desc: 'Preview/runtime port answers GET /',
+          pts: 2,
+          passed: runtimeResults.previewReachable === true,
+          skip: runtimeResults.previewReachable == null,
         })
       }
-      if (runtimeResults) {
-        result.runtimeChecks = runtimeResults
-        result.runtimeWarnings = result.runtimeWarnings || []
-
-        const isFullstack = ev.useSkillServer === true
-
-        const runtimeCriteria: { id: string; desc: string; pts: number; passed: boolean; skip?: boolean }[] = [
-          {
-            id: 'runtime-server-healthy',
-            desc: 'Skill server boots and responds to /health',
-            pts: 2,
-            passed: runtimeResults.serverHealthy === true,
-            skip: runtimeResults.serverHealthy === null,
-          },
-          {
-            id: 'runtime-crud-functional',
-            desc: 'Can list and create records via API',
-            pts: 2,
-            passed: runtimeResults.canListModels && runtimeResults.canCreateRecord,
-            skip: runtimeResults.serverHealthy === null || !runtimeResults.workspaceIntegrity?.schemaHasModels,
-          },
-          {
-            id: 'runtime-canvas-port',
-            desc: 'Canvas references the correct skill server port',
-            pts: 1,
-            passed: runtimeResults.canvasPortCorrect === true,
-            skip: runtimeResults.canvasPortCorrect === null,
-          },
-          {
-            id: 'runtime-canvas-compiles',
-            desc: 'Canvas app source files transpile without syntax errors',
-            pts: 3,
-            passed: runtimeResults.canvasCompiles === true,
-            skip: runtimeResults.canvasCompiles === null,
-          },
-        ]
-
-        // Opt-in hardening checks, gated by eval tags so existing evals are
-        // unaffected. These power the agent-hardening reproductions.
-        if (ev.tags?.includes('expect-preview-reachable')) {
-          runtimeCriteria.push({
-            id: 'runtime-preview-reachable',
-            desc: 'Preview/runtime port answers GET /',
-            pts: 2,
-            passed: runtimeResults.previewReachable === true,
-            skip: runtimeResults.previewReachable == null,
-          })
-        }
-        if (ev.tags?.includes('expect-no-residual')) {
-          runtimeCriteria.push({
-            id: 'runtime-no-residual-rows',
-            desc: 'Agent left no residual DB rows (clean test teardown)',
-            pts: 3,
-            passed: (runtimeResults.residualRecordCount ?? 0) === 0,
-            skip: runtimeResults.serverHealthy !== true,
-          })
-        }
-        if (ev.tags?.includes('expect-tenant-isolation')) {
-          runtimeCriteria.push({
-            id: 'runtime-tenant-isolation',
-            desc: 'Unauthenticated request is rejected (tenant middleware intact)',
-            pts: 3,
-            passed: runtimeResults.tenantIsolationOk === true,
-            skip: runtimeResults.tenantIsolationOk == null,
-          })
-        }
-
-        let runtimeBonus = 0
-        let runtimeMaxBonus = 0
-        for (const rc of runtimeCriteria) {
-          if (rc.skip) continue
-          runtimeMaxBonus += rc.pts
-          const earned = rc.passed ? rc.pts : 0
-          runtimeBonus += earned
-          result.criteriaResults.push({
-            criterion: { id: rc.id, description: rc.desc, points: rc.pts, phase: 'execution', validate: () => rc.passed },
-            passed: rc.passed,
-            pointsEarned: earned,
-          })
-        }
-
-        result.score += runtimeBonus
-        result.maxScore += runtimeMaxBonus
-
-        // For fullstack evals (useSkillServer), runtime failures are penalties
-        // that deduct from the static score — a broken server can't pass.
-        const hasModels = runtimeResults.workspaceIntegrity?.schemaHasModels === true
-        if (isFullstack && hasModels) {
-          let penalty = 0
-          if (runtimeResults.serverHealthy === false) {
-            penalty += Math.ceil(ev.maxScore * 0.25)
-          }
-          if (!runtimeResults.canListModels || !runtimeResults.canCreateRecord) {
-            penalty += Math.ceil(ev.maxScore * 0.15)
-          }
-          if (penalty > 0) {
-            result.score = Math.max(0, result.score - penalty)
-            result.runtimeWarnings.push(`Runtime penalty: −${penalty} pts (server/CRUD failures)`)
-          }
-        }
-
-        // Canvas-API contract: penalise when the UI fetches routes that don't
-        // exist. Each unique orphaned route costs 2 pts, capped at 20% of maxScore.
-        const orphaned = runtimeResults.canvasOrphanedFetches ?? []
-        if (orphaned.length > 0) {
-          const uniqueOrphaned = new Set(orphaned.map(r => r.toLowerCase()))
-          const rawPenalty = uniqueOrphaned.size * 2
-          const contractPenalty = Math.min(rawPenalty, Math.ceil(ev.maxScore * 0.2))
-          result.score = Math.max(0, result.score - contractPenalty)
-          result.runtimeWarnings.push(`Canvas-API contract penalty: −${contractPenalty} pts (${uniqueOrphaned.size} orphaned route${uniqueOrphaned.size !== 1 ? 's' : ''})`)
-        }
-
-        result.percentage = result.maxScore > 0 ? (result.score / result.maxScore) * 100 : 0
-        result.passed = result.percentage >= 70 && result.triggeredAntiPatterns.length === 0
-
-        if (runtimeResults.serverHealthy === false) {
-          result.runtimeWarnings.push('API server health check failed')
-        }
-        if (runtimeResults.canvasPortCorrect === false) {
-          result.runtimeWarnings.push('Canvas references wrong API server port')
-        }
-        if (runtimeResults.canvasCompiles === false) {
-          const errCount = runtimeResults.canvasCompileErrors.length
-          result.runtimeWarnings.push(`Canvas compilation failed (${errCount} error${errCount !== 1 ? 's' : ''})`)
-        }
-
-        const warns = result.runtimeWarnings.length
-        if (warns > 0) {
-          console.log(`[${evalLabel}] Runtime: ${warns} warning(s) — ${result.runtimeWarnings.join(', ')}`)
-        }
-        console.log(`[${evalLabel}] Runtime score: +${runtimeBonus}/${runtimeMaxBonus} → ${result.score}/${result.maxScore} (${result.percentage.toFixed(1)}%) ${result.passed ? 'PASS' : 'FAIL'}`)
+      if (ev.tags?.includes('expect-no-residual')) {
+        runtimeCriteria.push({
+          id: 'runtime-no-residual-rows',
+          desc: 'Agent left no residual DB rows (clean test teardown)',
+          pts: 3,
+          passed: (runtimeResults.residualRecordCount ?? 0) === 0,
+          skip: runtimeResults.serverHealthy !== true,
+        })
       }
+      if (ev.tags?.includes('expect-tenant-isolation')) {
+        runtimeCriteria.push({
+          id: 'runtime-tenant-isolation',
+          desc: 'Unauthenticated request is rejected (tenant middleware intact)',
+          pts: 3,
+          passed: runtimeResults.tenantIsolationOk === true,
+          skip: runtimeResults.tenantIsolationOk == null,
+        })
+      }
+
+      let runtimeBonus = 0
+      let runtimeMaxBonus = 0
+      for (const rc of runtimeCriteria) {
+        if (rc.skip) continue
+        runtimeMaxBonus += rc.pts
+        const earned = rc.passed ? rc.pts : 0
+        runtimeBonus += earned
+        result.criteriaResults.push({
+          criterion: { id: rc.id, description: rc.desc, points: rc.pts, phase: 'execution', validate: () => rc.passed },
+          passed: rc.passed,
+          pointsEarned: earned,
+        })
+      }
+
+      result.score += runtimeBonus
+      result.maxScore += runtimeMaxBonus
+
+      // For fullstack evals (useSkillServer), runtime failures are penalties
+      // that deduct from the static score — a broken server can't pass.
+      const hasModels = runtimeResults.workspaceIntegrity?.schemaHasModels === true
+      if (isFullstack && hasModels) {
+        let penalty = 0
+        if (runtimeResults.serverHealthy === false) {
+          penalty += Math.ceil(ev.maxScore * 0.25)
+        }
+        if (!runtimeResults.canListModels || !runtimeResults.canCreateRecord) {
+          penalty += Math.ceil(ev.maxScore * 0.15)
+        }
+        if (penalty > 0) {
+          result.score = Math.max(0, result.score - penalty)
+          result.runtimeWarnings.push(`Runtime penalty: −${penalty} pts (server/CRUD failures)`)
+        }
+      }
+
+      // Canvas-API contract: penalise when the UI fetches routes that don't
+      // exist. Each unique orphaned route costs 2 pts, capped at 20% of maxScore.
+      const orphaned = runtimeResults.canvasOrphanedFetches ?? []
+      if (orphaned.length > 0) {
+        const uniqueOrphaned = new Set(orphaned.map(r => r.toLowerCase()))
+        const rawPenalty = uniqueOrphaned.size * 2
+        const contractPenalty = Math.min(rawPenalty, Math.ceil(ev.maxScore * 0.2))
+        result.score = Math.max(0, result.score - contractPenalty)
+        result.runtimeWarnings.push(`Canvas-API contract penalty: −${contractPenalty} pts (${uniqueOrphaned.size} orphaned route${uniqueOrphaned.size !== 1 ? 's' : ''})`)
+      }
+
+      result.percentage = result.maxScore > 0 ? (result.score / result.maxScore) * 100 : 0
+      result.passed = result.percentage >= 70 && result.triggeredAntiPatterns.length === 0
+
+      if (runtimeResults.serverHealthy === false) {
+        result.runtimeWarnings.push('API server health check failed')
+      }
+      if (runtimeResults.canvasPortCorrect === false) {
+        result.runtimeWarnings.push('Canvas references wrong API server port')
+      }
+      if (runtimeResults.canvasCompiles === false) {
+        const errCount = runtimeResults.canvasCompileErrors.length
+        result.runtimeWarnings.push(`Canvas compilation failed (${errCount} error${errCount !== 1 ? 's' : ''})`)
+      }
+
+      const warns = result.runtimeWarnings.length
+      if (warns > 0) {
+        console.log(`[${evalLabel}] Runtime: ${warns} warning(s) — ${result.runtimeWarnings.join(', ')}`)
+      }
+      console.log(`[${evalLabel}] Runtime score: +${runtimeBonus}/${runtimeMaxBonus} → ${result.score}/${result.maxScore} (${result.percentage.toFixed(1)}%) ${result.passed ? 'PASS' : 'FAIL'}`)
     }
 
     if (saveWorkspacesFlag && opts?.runDir) {

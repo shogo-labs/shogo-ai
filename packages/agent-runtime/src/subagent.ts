@@ -413,7 +413,10 @@ export function getBuiltinSubagentConfig(
         name: 'code-reviewer',
         description: 'Code review agent — analyzes changes, risk scores, test gaps, and execution flows',
         systemPrompt: CODE_REVIEWER_SYSTEM_PROMPT,
-        toolNames: ['read_file', 'search', 'exec', 'impact_radius', 'detect_changes', 'review_context'],
+        toolNames: [
+          'read_file', ...(isSearchEnabled() ? ['search'] : []), 'exec',
+          'impact_radius', 'detect_changes', 'review_context',
+        ],
         disallowedTools: ['task', 'skill'],
         maxTurns: 10,
       }
@@ -957,9 +960,13 @@ export async function runSubagent(
       return {
         ...tool,
         execute: async (_id: string, params: any, signal?: AbortSignal, onUpdate?: any) => {
-          const result = mockFn(params)
+          const result = await mockFn(params)
           if (result === '__passthrough') return realExecute(_id, params, signal, onUpdate)
-          return textResult(typeof result === 'string' ? result : result)
+          if (result && typeof result === 'object' && (result as any).__multipart === true) {
+            const { __multipart: _m, ...rest } = result as any
+            return rest
+          }
+          return textResult(result)
         },
       }
     })

@@ -3,7 +3,8 @@
 /**
  * Knowledge Graph & Impact Analysis Eval Test Cases
  *
- * Tests the agent's ability to use the workspace knowledge graph for:
+ * Tests the agent's ability to analyze code relationships (via the knowledge
+ * graph tools in explore/code-reviewer subagents, or by searching directly):
  * - impact_radius tool to analyze blast radius before making changes
  * - search tool with graph-enhanced results
  * - Understanding file relationships from impact hints on write/edit
@@ -16,13 +17,67 @@
  * 5. Agent should understand cross-file references in documentation
  */
 
-import type { AgentEval } from './types'
+import type { AgentEval, EvalResult } from './types'
 import {
   usedTool,
-  neverUsedTool,
   responseContains,
   toolCallArgsContain,
+  delegatedTo,
+  execCommands,
+  execIsGrep,
+  fileWrites,
+  readFileAnyRoute,
+  readWorkspaceFile,
+  searchCalls,
+  searchedAnyRoute,
+  wroteFileAnyRoute,
 } from './eval-helpers'
+
+// ---------------------------------------------------------------------------
+// Grading helpers
+//
+// impact_radius / detect_changes / review_context are bound to the explore
+// and code-reviewer subagents, not the main agent. So these evals grade the
+// answer's correctness and accept any sound route to it: those tools (inside
+// a subagent), delegating to explore/code-reviewer, or reading/searching the
+// dependents directly.
+// ---------------------------------------------------------------------------
+
+const GRAPH_TOOLS = ['impact_radius', 'detect_changes', 'review_context']
+
+/** Delegated the analysis to a subagent that has the graph tools. */
+function delegatedAnalysis(r: EvalResult): boolean {
+  return delegatedTo(r, 'explore') || delegatedTo(r, 'code-reviewer') || delegatedTo(r, 'code_reviewer')
+}
+
+/** Analyzed the code via graph tools, delegation, or searching/reading it. */
+function analyzedCode(r: EvalResult): boolean {
+  return GRAPH_TOOLS.some(t => usedTool(r, t)) || delegatedAnalysis(r) || searchedAnyRoute(r)
+}
+
+/** Searched for (or asked a subagent about) `symbols` — e.g. who imports `crypto`. */
+function lookedFor(r: EvalResult, ...symbols: string[]): boolean {
+  const hit = (text: string) => symbols.some(s => text.toLowerCase().includes(s.toLowerCase()))
+  if (GRAPH_TOOLS.some(t => r.toolCalls.some(c => c.name === t && hit(JSON.stringify(c.input))))) return true
+  if (r.toolCalls.some(c => c.name === 'agent_spawn' && hit(JSON.stringify(c.input)))) return true
+  return searchCalls(r).some(c => c.name !== 'read_file' && hit(JSON.stringify(c.input)))
+}
+
+/** Inspected what changed: graph change tools, a reviewer subagent, or git diff/log/status. */
+function inspectedChanges(r: EvalResult): boolean {
+  return usedTool(r, 'detect_changes') || usedTool(r, 'review_context') || usedTool(r, 'impact_radius') ||
+    delegatedAnalysis(r) || execCommands(r).some(c => /\bgit\s+(diff|log|status|show)\b/.test(c))
+}
+
+/** Response names a risk assessment in any common vocabulary. */
+function mentionsRisk(r: EvalResult): boolean {
+  return /\brisk|severity|critical|breaking|high[- ]impact|blast radius/i.test(r.responseText)
+}
+
+/** Wrote to source/docs (not memory/notes). */
+function wroteWorkspaceSource(r: EvalResult): boolean {
+  return fileWrites(r).some(w => /^(src|files)\//.test(w.path))
+}
 
 // ---------------------------------------------------------------------------
 // Workspace fixtures
@@ -131,24 +186,26 @@ export const KNOWLEDGE_GRAPH_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'used-impact-radius',
-        description: 'Used impact_radius tool to check blast radius',
+        description: 'Analyzed the blast radius (impact_radius, delegation to explore/code-reviewer, or searching/reading dependents)',
         points: 30,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'impact_radius'),
+        validate: (r) => usedTool(r, 'impact_radius') || delegatedAnalysis(r) ||
+          (lookedFor(r, 'crypto', 'hashPassword', 'generateToken') ||
+            (readFileAnyRoute(r, 'src/auth.ts') && readFileAnyRoute(r, 'src/api/register.ts'))),
       },
       {
         id: 'impact-targets-crypto',
-        description: 'impact_radius was called with src/crypto.ts',
+        description: 'The analysis targeted src/crypto.ts / its exports',
         points: 15,
         phase: 'execution',
-        validate: (r) => toolCallArgsContain(r, 'impact_radius', 'crypto'),
+        validate: (r) => toolCallArgsContain(r, 'impact_radius', 'crypto') || lookedFor(r, 'crypto', 'hashPassword'),
       },
       {
         id: 'mentions-auth',
         description: 'Response mentions src/auth.ts as affected',
         points: 15,
         phase: 'execution',
-        validate: (r) => responseContains(r, 'auth'),
+        validate: (r) => responseContains(r, 'auth.ts'),
       },
       {
         id: 'mentions-register',
@@ -159,21 +216,17 @@ export const KNOWLEDGE_GRAPH_EVALS: AgentEval[] = [
       },
       {
         id: 'did-not-write-yet',
-        description: 'Did NOT modify files before analyzing impact',
+        description: 'Did NOT modify source files (the user asked for analysis first)',
         points: 15,
         phase: 'execution',
-        validate: (r) => {
-          const impactIdx = r.toolCalls.findIndex(t => t.name === 'impact_radius')
-          const writeIdx = r.toolCalls.findIndex(t => t.name === 'write_file' || t.name === 'edit_file')
-          return impactIdx >= 0 && (writeIdx < 0 || impactIdx < writeIdx)
-        },
+        validate: (r) => analyzedCode(r) && !wroteWorkspaceSource(r),
       },
       {
         id: 'comprehensive-analysis',
-        description: 'Response provides a comprehensive list of affected areas',
+        description: 'Response covers the transitive impact (login flow via auth.ts)',
         points: 10,
         phase: 'execution',
-        validate: (r) => responseContains(r, 'hash') || responseContains(r, 'password'),
+        validate: (r) => responseContains(r, 'login'),
       },
     ],
   },
@@ -193,24 +246,24 @@ export const KNOWLEDGE_GRAPH_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'used-impact-or-search',
-        description: 'Used impact_radius or search to find dependencies',
+        description: 'Found dependents (impact_radius, delegation, or searching for UserModel)',
         points: 25,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'impact_radius') || usedTool(r, 'search'),
+        validate: (r) => usedTool(r, 'impact_radius') || delegatedAnalysis(r) || lookedFor(r, 'UserModel', 'models/user'),
       },
       {
         id: 'read-user-model',
         description: 'Read the user model file to understand the class',
         points: 15,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'read_file') || usedTool(r, 'search'),
+        validate: (r) => readFileAnyRoute(r, 'src/models/user.ts') || lookedFor(r, 'UserModel') || delegatedAnalysis(r),
       },
       {
         id: 'identifies-auth-dependency',
         description: 'Identifies src/auth.ts as a dependent',
         points: 20,
         phase: 'execution',
-        validate: (r) => responseContains(r, 'auth'),
+        validate: (r) => responseContains(r, 'auth.ts'),
       },
       {
         id: 'identifies-register-dependency',
@@ -244,17 +297,19 @@ export const KNOWLEDGE_GRAPH_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'searched-code',
-        description: 'Used search to search code files',
+        description: 'Searched the code (search tool, shell grep/find, or delegation)',
         points: 20,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'search'),
+        validate: (r) => searchedAnyRoute(r) || delegatedAnalysis(r),
       },
       {
         id: 'searched-files',
-        description: 'Used search to search user files/docs',
+        description: 'Also covered the docs under files/ (search tool, reading them, or a workspace-wide grep)',
         points: 20,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'search'),
+        validate: (r) => usedTool(r, 'search') || delegatedAnalysis(r) ||
+          readFileAnyRoute(r, (p) => p.startsWith('files/') || p.includes('/files/')) ||
+          execCommands(r).some(c => execIsGrep(c) && /files|\s\.(\s|$)|-r/.test(c)),
       },
       {
         id: 'found-auth-code',
@@ -301,55 +356,42 @@ export const KNOWLEDGE_GRAPH_EVALS: AgentEval[] = [
         description: 'Read the target files before editing',
         points: 15,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'read_file'),
+        validate: (r) => readFileAnyRoute(r, 'src/models/user.ts') || readFileAnyRoute(r, 'src/auth.ts'),
       },
       {
         id: 'edited-user-model',
         description: 'Edited the UserModel to add lastLoginAt field',
         points: 25,
         phase: 'execution',
-        validate: (r) => toolCallArgsContain(r, 'edit_file', 'lastLoginAt') ||
-          toolCallArgsContain(r, 'write_file', 'lastLoginAt'),
+        validate: (r) => /lastLoginAt/.test(readWorkspaceFile(r, 'src/models/user.ts')) ||
+          wroteFileAnyRoute(r, 'src/models/user.ts', 'lastLoginAt'),
       },
       {
         id: 'edited-auth',
         description: 'Edited auth.ts to set lastLoginAt on login',
         points: 25,
         phase: 'execution',
-        validate: (r) => {
-          const authEdits = r.toolCalls.filter(t =>
-            (t.name === 'edit_file' || t.name === 'write_file') &&
-            String((t.input as any)?.path ?? '').includes('auth')
-          )
-          return authEdits.length > 0
-        },
+        validate: (r) => /lastLoginAt/.test(readWorkspaceFile(r, 'src/auth.ts')) ||
+          wroteFileAnyRoute(r, 'src/auth.ts', 'lastLoginAt'),
       },
       {
         id: 'both-files-updated',
         description: 'Both user model and auth files were modified',
         points: 20,
         phase: 'execution',
-        validate: (r) => {
-          const writtenPaths = r.toolCalls
-            .filter(t => t.name === 'edit_file' || t.name === 'write_file')
-            .map(t => String((t.input as any)?.path ?? ''))
-          return writtenPaths.some(p => p.includes('user')) &&
-            writtenPaths.some(p => p.includes('auth'))
-        },
+        validate: (r) => wroteFileAnyRoute(r, 'src/models/user.ts') && wroteFileAnyRoute(r, 'src/auth.ts'),
       },
       {
         id: 'no-broken-imports',
-        description: 'Did not break existing import statements',
+        description: 'auth.ts still imports hashPassword and UserModel after the edit',
         points: 15,
         phase: 'execution',
         validate: (r) => {
-          const authWrites = r.toolCalls
-            .filter(t => (t.name === 'edit_file' || t.name === 'write_file') &&
-              String((t.input as any)?.path ?? '').includes('auth'))
-          if (authWrites.length === 0) return false
-          const lastContent = String((authWrites[authWrites.length - 1].input as any)?.content ??
-            (authWrites[authWrites.length - 1].input as any)?.new_string ?? '')
-          return !lastContent.includes('undefined') || lastContent.includes('import')
+          if (!wroteFileAnyRoute(r, 'src/auth.ts')) return false
+          const auth = readWorkspaceFile(r, 'src/auth.ts')
+          if (!auth) return true
+          return /import\s*\{[^}]*hashPassword[^}]*\}\s*from\s*["']\.\/crypto["']/.test(auth) &&
+            /import\s*\{[^}]*UserModel[^}]*\}\s*from\s*["']\.\/models\/user["']/.test(auth)
         },
       },
     ],
@@ -370,10 +412,11 @@ export const KNOWLEDGE_GRAPH_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'used-impact-or-search',
-        description: 'Used impact_radius or search to find related docs',
+        description: 'Found related docs (impact_radius, delegation, or searching/reading the docs)',
         points: 25,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'impact_radius') || usedTool(r, 'search'),
+        validate: (r) => usedTool(r, 'impact_radius') || delegatedAnalysis(r) || lookedFor(r, 'security-checklist', 'security checklist', 'checklist') ||
+          readFileAnyRoute(r, 'files/auth-flow.md'),
       },
       {
         id: 'found-auth-flow-reference',
@@ -388,9 +431,10 @@ export const KNOWLEDGE_GRAPH_EVALS: AgentEval[] = [
         points: 20,
         phase: 'intention',
         validate: (r) =>
-          toolCallArgsContain(r, 'read_file', 'security') ||
+          readFileAnyRoute(r, 'files/security-checklist.md') ||
           usedTool(r, 'search') ||
-          usedTool(r, 'impact_radius'),
+          usedTool(r, 'impact_radius') ||
+          delegatedAnalysis(r),
       },
       {
         id: 'provides-actionable-info',
@@ -417,17 +461,17 @@ export const KNOWLEDGE_GRAPH_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'used-detect-changes',
-        description: 'Used detect_changes or review_context tool',
+        description: 'Inspected the changes (detect_changes/review_context, a code-reviewer/explore subagent, or git diff/log/status)',
         points: 30,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'detect_changes') || usedTool(r, 'review_context'),
+        validate: (r) => inspectedChanges(r),
       },
       {
         id: 'mentions-risk',
-        description: 'Response mentions risk or risk score',
+        description: 'Response gives a risk assessment (risk / severity / critical / breaking)',
         points: 20,
         phase: 'execution',
-        validate: (r) => responseContains(r, 'risk'),
+        validate: (r) => mentionsRisk(r),
       },
       {
         id: 'mentions-test-gaps',
@@ -441,8 +485,7 @@ export const KNOWLEDGE_GRAPH_EVALS: AgentEval[] = [
         description: 'Read files or used search/impact tools for additional context',
         points: 15,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'read_file') || usedTool(r, 'search') ||
-          usedTool(r, 'impact_radius') || usedTool(r, 'detect_changes') || usedTool(r, 'review_context'),
+        validate: (r) => analyzedCode(r),
       },
       {
         id: 'comprehensive-response',
@@ -469,10 +512,10 @@ export const KNOWLEDGE_GRAPH_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'used-review-context',
-        description: 'Used review_context or detect_changes tool',
+        description: 'Inspected the changes (review_context/detect_changes, a code-reviewer/explore subagent, or git diff/log/status)',
         points: 30,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'review_context') || usedTool(r, 'detect_changes'),
+        validate: (r) => inspectedChanges(r),
       },
       {
         id: 'mentions-affected-files',
@@ -494,7 +537,7 @@ export const KNOWLEDGE_GRAPH_EVALS: AgentEval[] = [
         description: 'Mentions risk scores or impact',
         points: 15,
         phase: 'execution',
-        validate: (r) => responseContains(r, 'risk') || responseContains(r, 'impact'),
+        validate: (r) => mentionsRisk(r) || responseContains(r, 'impact'),
       },
       {
         id: 'comprehensive-review',

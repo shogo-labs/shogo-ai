@@ -398,6 +398,22 @@ function checkWorkspaceIntegrity(workspaceDir: string, verbose?: boolean): Works
 // Canvas-API contract check
 // ---------------------------------------------------------------------------
 
+/** First path segments of the routes hand-written in `custom-routes.ts`, which is mounted under /api too. */
+function customRouteSegments(workspaceDir: string): string[] {
+  const segments: string[] = []
+  for (const rel of ['custom-routes.ts', 'custom-routes.tsx', 'src/custom-routes.ts', 'server/custom-routes.ts']) {
+    const path = join(workspaceDir, rel)
+    if (!existsSync(path)) continue
+    try {
+      const content = readFileSync(path, 'utf-8')
+      for (const m of content.matchAll(/\.(?:get|post|put|patch|delete|all|route|on)\(\s*[`"']\/([^`"'/?:\s]+)/g)) {
+        segments.push(m[1])
+      }
+    } catch {}
+  }
+  return segments
+}
+
 function checkCanvasApiContract(
   workspaceDir: string,
   discoveredRoutes: string[],
@@ -412,7 +428,7 @@ function checkCanvasApiContract(
 
   const fetchUrlPattern = /fetch\(\s*[`"'](?:https?:\/\/localhost:\d+)?\/api\/([^`"'/\s?]+)/g
   const orphaned: string[] = []
-  const routeSet = new Set(discoveredRoutes.map(r => r.toLowerCase()))
+  const routeSet = new Set([...discoveredRoutes, ...customRouteSegments(workspaceDir)].map(r => r.toLowerCase()))
 
   for (const filePath of allFiles) {
     try {

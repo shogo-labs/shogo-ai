@@ -7,8 +7,20 @@
  * Memory is stored as markdown files in the workspace/memory/ directory.
  */
 
-import type { AgentEval } from './types'
-import { usedTool } from './eval-helpers'
+import type { AgentEval, EvalResult } from './types'
+import { usedTool, wroteFileAnyRoute, writtenContent } from './eval-helpers'
+
+/** MEMORY.md or anything under memory/ (via write_file, edit_file, or exec). */
+const isMemoryPath = (p: string) => /(^|\/)MEMORY\.md$/i.test(p) || /(^|\/)memory\//.test(p)
+
+function wroteMemory(r: EvalResult): boolean {
+  return wroteFileAnyRoute(r, isMemoryPath)
+}
+
+/** Lower-cased text the agent wrote into memory files. */
+function memoryText(r: EvalResult): string {
+  return writtenContent(r, isMemoryPath).toLowerCase()
+}
 
 export const MEMORY_EVALS: AgentEval[] = [
   {
@@ -21,10 +33,10 @@ export const MEMORY_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'used-write-file',
-        description: 'Used write_file to store the preference in MEMORY.md',
+        description: 'Wrote the preference in MEMORY.md (write_file, edit_file, or shell)',
         points: 40,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'write_file'),
+        validate: (r) => wroteMemory(r),
       },
       {
         id: 'wrote-color',
@@ -32,7 +44,7 @@ export const MEMORY_EVALS: AgentEval[] = [
         points: 20,
         phase: 'execution',
         validate: (r) => {
-          const json = JSON.stringify(r.toolCalls).toLowerCase()
+          const json = memoryText(r)
           return json.includes('blue') || json.includes('color')
         },
       },
@@ -42,7 +54,7 @@ export const MEMORY_EVALS: AgentEval[] = [
         points: 20,
         phase: 'execution',
         validate: (r) => {
-          const json = JSON.stringify(r.toolCalls).toLowerCase()
+          const json = memoryText(r)
           return json.includes('dark mode') || json.includes('dark')
         },
       },
@@ -104,10 +116,10 @@ export const MEMORY_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'did-not-write-memory',
-        description: 'Did NOT use write_file for a one-off question',
+        description: 'Did NOT write memory for a one-off question',
         points: 50,
         phase: 'intention',
-        validate: (r) => !usedTool(r, 'write_file'),
+        validate: (r) => !wroteMemory(r),
       },
       {
         id: 'answered-question',
@@ -133,10 +145,10 @@ export const MEMORY_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'used-write-file',
-        description: 'Used write_file to persist project context to MEMORY.md',
+        description: 'Wrote project context to MEMORY.md (write_file, edit_file, or shell)',
         points: 35,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'write_file'),
+        validate: (r) => wroteMemory(r),
       },
       {
         id: 'wrote-project-name',
@@ -144,7 +156,7 @@ export const MEMORY_EVALS: AgentEval[] = [
         points: 15,
         phase: 'execution',
         validate: (r) => {
-          const json = JSON.stringify(r.toolCalls).toLowerCase()
+          const json = memoryText(r)
           return json.includes('phoenix')
         },
       },
@@ -154,7 +166,7 @@ export const MEMORY_EVALS: AgentEval[] = [
         points: 15,
         phase: 'execution',
         validate: (r) => {
-          const json = JSON.stringify(r.toolCalls).toLowerCase()
+          const json = memoryText(r)
           return json.includes('react') && json.includes('aws')
         },
       },
@@ -163,7 +175,7 @@ export const MEMORY_EVALS: AgentEval[] = [
         description: 'Memory content includes deploy schedule (Tuesday)',
         points: 15,
         phase: 'execution',
-        validate: (r) => JSON.stringify(r.toolCalls).toLowerCase().includes('tuesday'),
+        validate: (r) => memoryText(r).includes('tuesday'),
       },
       {
         id: 'response-confirms',
@@ -189,10 +201,10 @@ export const MEMORY_EVALS: AgentEval[] = [
     validationCriteria: [
       {
         id: 'used-write-file',
-        description: 'Used write_file to persist routing rules to MEMORY.md',
+        description: 'Wrote routing rules to MEMORY.md (write_file, edit_file, or shell)',
         points: 35,
         phase: 'intention',
-        validate: (r) => usedTool(r, 'write_file'),
+        validate: (r) => wroteMemory(r),
       },
       {
         id: 'wrote-urgent-channel',
@@ -200,7 +212,7 @@ export const MEMORY_EVALS: AgentEval[] = [
         points: 20,
         phase: 'execution',
         validate: (r) => {
-          const json = JSON.stringify(r.toolCalls).toLowerCase()
+          const json = memoryText(r)
           return json.includes('incidents') && json.includes('urgent')
         },
       },
@@ -210,7 +222,7 @@ export const MEMORY_EVALS: AgentEval[] = [
         points: 20,
         phase: 'execution',
         validate: (r) => {
-          const json = JSON.stringify(r.toolCalls).toLowerCase()
+          const json = memoryText(r)
           return json.includes('ops@company.com') || (json.includes('email') && json.includes('weekly'))
         },
       },
@@ -235,6 +247,16 @@ export const MEMORY_EVALS: AgentEval[] = [
     level: 2,
     input: 'Convert 1,500 USD to EUR at today\'s exchange rate.',
     maxScore: 100,
+    toolMocks: {
+      web: {
+        type: 'pattern',
+        patterns: [
+          { match: { query: 'eur' }, response: { organic: [{ title: 'USD to EUR exchange rate today', link: 'https://www.xe.com/currencyconverter/convert/?From=USD&To=EUR', snippet: '1 USD = 0.9214 EUR. Mid-market rate, updated a few minutes ago.' }] } },
+          { match: { url: 'usd' }, response: { content: '<html><body><h1>USD to EUR</h1><p>1 USD = 0.9214 EUR (mid-market rate)</p></body></html>', status: 200 } },
+        ],
+        default: { results: [], organic: [], message: 'No results found.' },
+      },
+    },
     validationCriteria: [
       {
         id: 'used-web-fetch',
@@ -245,10 +267,10 @@ export const MEMORY_EVALS: AgentEval[] = [
       },
       {
         id: 'did-not-write-memory',
-        description: 'Did NOT use write_file for ephemeral conversion',
+        description: 'Did NOT write memory for an ephemeral conversion',
         points: 30,
         phase: 'intention',
-        validate: (r) => !usedTool(r, 'write_file'),
+        validate: (r) => !wroteMemory(r),
       },
       {
         id: 'response-has-amount',

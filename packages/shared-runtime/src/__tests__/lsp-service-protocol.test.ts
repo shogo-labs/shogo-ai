@@ -197,6 +197,24 @@ describe('TSLanguageServer processBuffer / readOutputStream', () => {
     lsp.stop()
   })
 
+  test('diagnostics for a deleted project file are dropped', async () => {
+    const { lsp, fake } = await bootServer()
+    const kept = join(TEST_DIR, 'kept.ts')
+    const deleted = join(TEST_DIR, 'deleted.ts')
+    writeFileSync(kept, '')
+    writeFileSync(deleted, '')
+    const diagnostic = { range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } }, message: 'bad', severity: 1 }
+    for (const path of [kept, deleted]) {
+      fake.pushStdout(framed({ jsonrpc: '2.0', method: 'textDocument/publishDiagnostics', params: { uri: `file://${path}`, diagnostics: [diagnostic] } }))
+    }
+    await new Promise(r => setTimeout(r, 5))
+    rmSync(deleted)
+    const all = lsp.getDiagnostics()
+    expect(all.has(`file://${kept}`)).toBe(true)
+    expect(all.has(`file://${deleted}`)).toBe(false)
+    lsp.stop()
+  })
+
   test('stderr text is logged (just verify it does not crash readErrorStream)', async () => {
     const { lsp, fake } = await bootServer()
     fake.pushStderr('warning: something happened\n')

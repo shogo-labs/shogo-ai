@@ -27,7 +27,7 @@ import {
   STRIPE_REVENUE_MOCKS,
   PR_REVIEW_MOCKS,
 } from './tool-mocks'
-import { usedTool, usedToolAnywhere, neverUsedTool, toolCallCount, responseContains, toolCallsJson, usedGhCli } from './eval-helpers'
+import { usedTool, usedToolAnywhere, neverUsedTool, toolCallCount, responseContains, toolCallsJson, usedGhCli, builtCanvasV2Only, execCommands, fileWrites, readFileAnyRoute } from './eval-helpers'
 
 // ---------------------------------------------------------------------------
 // Shared V2 config — activeMode: 'canvas'
@@ -89,28 +89,24 @@ function wroteSchema(r: EvalResult): boolean {
   })
 }
 
-function neverUsedV1CanvasTools(_r: EvalResult): boolean {
-  return true
+function neverUsedV1CanvasTools(r: EvalResult): boolean {
+  return builtCanvasV2Only(r)
 }
 
 function wroteMemoryFile(r: EvalResult): boolean {
-  return r.toolCalls.some(t => {
-    if (t.name !== 'write_file') return false
-    const path = String((t.input as any).path ?? '')
-    return path.includes('memory') || path.includes('.shogo') || path.includes('notes') || path.includes('log')
-  })
+  return fileWrites(r).some(w => /memory|\.shogo|notes|log/i.test(w.path))
 }
 
 function usedVerification(r: EvalResult): boolean {
-  return usedTool(r, 'read_file') || usedTool(r, 'read_lint')
+  return usedTool(r, 'read_lints') || readFileAnyRoute(r) ||
+    execCommands(r).some(c => /\b(tsc|typecheck|curl)\b/.test(c))
 }
 
-// Merge skill-server passthrough mocks with eval-specific mocks
+// Complex evals run on the runtime template, so exec stays real: without an
+// eval-specific exec mock the built-in one runs commands for real and keeps
+// only account CLIs (gh, aws, stripe, …) mocked.
 function withSkillServerMocks(evalMocks: ToolMockMap): ToolMockMap {
-  return {
-    ...evalMocks,
-    exec: evalMocks.exec ?? { type: 'static', response: 'Done.' },
-  }
+  return { ...evalMocks }
 }
 
 // ---------------------------------------------------------------------------
@@ -191,14 +187,14 @@ export const COMPLEX_EVALS: AgentEval[] = [
       },
       {
         id: 'never-used-v1-tools',
-        description: 'Never used V1 canvas tools',
+        description: 'Built the canvas as src/ code, never via retired v1 canvas_* tools',
         points: 5,
         phase: 'execution',
         validate: (r) => neverUsedV1CanvasTools(r),
       },
       {
         id: 'used-verification',
-        description: 'Used read_file or read_lint to verify',
+        description: 'Verified the work (read back, read_lints, tsc, or curl)',
         points: 15,
         phase: 'execution',
         validate: (r) => usedVerification(r),
@@ -284,14 +280,14 @@ export const COMPLEX_EVALS: AgentEval[] = [
       },
       {
         id: 'used-verification',
-        description: 'Used read_file or read_lint to verify',
+        description: 'Verified the work (read back, read_lints, tsc, or curl)',
         points: 15,
         phase: 'execution',
         validate: (r) => usedVerification(r),
       },
       {
         id: 'never-used-v1-tools',
-        description: 'Never used V1 canvas tools',
+        description: 'Built the canvas as src/ code, never via retired v1 canvas_* tools',
         points: 5,
         phase: 'execution',
         validate: (r) => neverUsedV1CanvasTools(r),
@@ -387,14 +383,14 @@ export const COMPLEX_EVALS: AgentEval[] = [
       },
       {
         id: 'used-verification',
-        description: 'Used read_file or read_lint to verify',
+        description: 'Verified the work (read back, read_lints, tsc, or curl)',
         points: 15,
         phase: 'execution',
         validate: (r) => usedVerification(r),
       },
       {
         id: 'never-used-v1-tools',
-        description: 'Never used V1 canvas tools',
+        description: 'Built the canvas as src/ code, never via retired v1 canvas_* tools',
         points: 5,
         phase: 'execution',
         validate: (r) => neverUsedV1CanvasTools(r),
@@ -484,14 +480,14 @@ export const COMPLEX_EVALS: AgentEval[] = [
       },
       {
         id: 'never-used-v1-tools',
-        description: 'Never used V1 canvas tools',
+        description: 'Built the canvas as src/ code, never via retired v1 canvas_* tools',
         points: 5,
         phase: 'execution',
         validate: (r) => neverUsedV1CanvasTools(r),
       },
       {
         id: 'used-verification',
-        description: 'Used read_file or read_lint to verify',
+        description: 'Verified the work (read back, read_lints, tsc, or curl)',
         points: 15,
         phase: 'execution',
         validate: (r) => usedVerification(r),
@@ -670,14 +666,14 @@ export const COMPLEX_EVALS: AgentEval[] = [
       },
       {
         id: 'never-used-v1-tools',
-        description: 'Never used V1 canvas tools',
+        description: 'Built the canvas as src/ code, never via retired v1 canvas_* tools',
         points: 5,
         phase: 'execution',
         validate: (r) => neverUsedV1CanvasTools(r),
       },
       {
         id: 'used-verification',
-        description: 'Used read_file or read_lint to verify',
+        description: 'Verified the work (read back, read_lints, tsc, or curl)',
         points: 15,
         phase: 'execution',
         validate: (r) => usedVerification(r),
@@ -776,14 +772,14 @@ export const COMPLEX_EVALS: AgentEval[] = [
       },
       {
         id: 'used-verification',
-        description: 'Used read_file or read_lint to verify',
+        description: 'Verified the work (read back, read_lints, tsc, or curl)',
         points: 10,
         phase: 'execution',
         validate: (r) => usedVerification(r),
       },
       {
         id: 'never-used-v1-tools',
-        description: 'Never used V1 canvas tools',
+        description: 'Built the canvas as src/ code, never via retired v1 canvas_* tools',
         points: 5,
         phase: 'execution',
         validate: (r) => neverUsedV1CanvasTools(r),
@@ -812,7 +808,7 @@ export const COMPLEX_EVALS: AgentEval[] = [
     useRuntimeTemplate: true,
     workspaceFiles: { 'config.json': V2_CONFIG },
     input: 'I manage 3 repos under the acme-corp GitHub org: acme-corp/frontend, acme-corp/backend, and acme-corp/infra. Use `gh pr list -R` for each repo to pull open PRs. Build me a unified PR review queue in React with a table showing: repo name, PR title, author, CI status, and age. Add action buttons for "Approve" and "Request Changes" with proper click handlers. For any PR that\'s been open more than 2 days with no review, send a Discord alert using send_message (channel: #pr-alerts). Set up a Prisma schema for tracking PR reviews. Verify the code.',
-    maxScore: 100,
+    maxScore: 95,
     toolMocks: withSkillServerMocks(PR_REVIEW_MOCKS),
     validationCriteria: [
       {
@@ -877,14 +873,14 @@ export const COMPLEX_EVALS: AgentEval[] = [
       },
       {
         id: 'used-verification',
-        description: 'Used read_file or read_lint to verify',
+        description: 'Verified the work (read back, read_lints, tsc, or curl)',
         points: 10,
         phase: 'execution',
         validate: (r) => usedVerification(r),
       },
       {
         id: 'never-used-v1-tools',
-        description: 'Never used V1 canvas tools',
+        description: 'Built the canvas as src/ code, never via retired v1 canvas_* tools',
         points: 5,
         phase: 'execution',
         validate: (r) => neverUsedV1CanvasTools(r),

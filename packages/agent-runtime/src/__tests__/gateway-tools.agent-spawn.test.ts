@@ -322,6 +322,54 @@ describe('agent_spawn normal mode (type specified)', () => {
     expect(r.instance_id).toBe('resume-inst')
   })
 
+  test('resume without type resumes the instance using its own type (not fork mode)', async () => {
+    const history = [{ role: 'user', content: 'previous' }]
+    let spawnedType: string | null = null
+    let capturedHistory: any = null
+    const instances: Record<string, any> = {
+      'prior-explore': { id: 'prior-explore', type: 'explore', status: 'completed', model: 'm', promise: Promise.resolve({}) },
+      'resumed-inst': {
+        id: 'resumed-inst', type: 'explore', status: 'completed', model: 'm',
+        promise: Promise.resolve({
+          toolCalls: 1, iterations: 1, inputTokens: 5, outputTokens: 5,
+          cacheReadTokens: 0, cacheWriteTokens: 0, agentId: 'a', effectiveModelId: 'm',
+        }),
+      },
+    }
+    const am: any = {
+      spawn: (t: string, _p: string, _ctx: any, _tools: any, _cb: any, opts: any) => {
+        spawnedType = t
+        capturedHistory = opts?.history
+        return { ok: true, instanceId: 'resumed-inst' }
+      },
+      getInstance: (id: string) => instances[id] ?? null,
+      getInstanceMessages: (id: string) => (id === 'prior-explore' ? history : null),
+      getConfig: () => undefined,
+    }
+    subagentResult = { ...subagentResult, agentId: 'SHOULD-NOT-FORK' }
+    const ctx = makeCtx({
+      agentManager: am,
+      renderedSystemPrompt: 'sys',
+      sessionMessages: [{ role: 'user', content: 'x' }],
+    })
+    const r = await exec(ctx, 'agent_spawn', { prompt: 'continue', resume: 'prior-explore' })
+    expect(r.mode).toBeUndefined()
+    expect(spawnedType as unknown as string).toBe('explore')
+    expect(capturedHistory).toEqual(history)
+    expect(r.instance_id).toBe('resumed-inst')
+  })
+
+  test('resume without type for an unknown instance errors instead of forking', async () => {
+    const ctx = makeCtx({
+      agentManager: { ...makeAgentManager(), getInstance: () => null },
+      renderedSystemPrompt: 'sys',
+      sessionMessages: [{ role: 'user', content: 'x' }],
+    })
+    const r = await exec(ctx, 'agent_spawn', { prompt: 'continue', resume: 'nope' })
+    expect(r.mode).toBeUndefined()
+    expect(String(r.error)).toContain('Cannot resume "nope"')
+  })
+
   test('model_tier / max_turns / readonly overrides applied to config', async () => {
     let mutatedConfig: any = null
     const am: any = {

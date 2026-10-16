@@ -860,8 +860,33 @@ export function seedRuntimeTemplate(dir: string): boolean {
     },
   })
 
+  materializeWorkspaceSdkPin(dir, templatePath)
   console.log('[workspace-defaults] Seeded runtime template into workspace')
   return true
+}
+
+/**
+ * A dev checkout's template pins `@shogo-ai/sdk` to `workspace:*`, which no
+ * `bun install` outside the monorepo can resolve. Rewrite it to the sibling
+ * `packages/sdk` version, as `migrateLegacyShogoSdkPin` does for existing
+ * workspaces. Shipped templates are already materialized, so this no-ops.
+ */
+function materializeWorkspaceSdkPin(dir: string, templatePath: string): void {
+  const pkgPath = join(dir, 'package.json')
+  let raw: string
+  let pkgJson: { dependencies?: Record<string, string> }
+  try {
+    raw = readFileSync(pkgPath, 'utf-8')
+    pkgJson = JSON.parse(raw)
+  } catch { return }
+  if (!pkgJson.dependencies?.['@shogo-ai/sdk']?.startsWith('workspace:')) return
+  let version: string | undefined
+  try {
+    version = JSON.parse(readFileSync(join(templatePath, '..', '..', 'packages', 'sdk', 'package.json'), 'utf-8')).version
+  } catch { return }
+  if (typeof version !== 'string') return
+  pkgJson.dependencies['@shogo-ai/sdk'] = `^${version}`
+  writeFileSync(pkgPath, JSON.stringify(pkgJson, null, 2) + (raw.endsWith('\n') ? '\n' : ''))
 }
 
 // ---------------------------------------------------------------------------

@@ -37,6 +37,56 @@ export interface LocalWorkerConfig {
 const _processes = new Map<number, Subprocess>()
 
 // ---------------------------------------------------------------------------
+// Credential isolation
+// ---------------------------------------------------------------------------
+
+/**
+ * Host variables that would let the agent's shell act as the developer
+ * running the evals. Tokens are already redacted from `exec`, but these
+ * point CLIs and git at the developer's own logins.
+ */
+const HOST_CREDENTIAL_VARS = [
+  'SSH_AUTH_SOCK',
+  'GH_TOKEN', 'GITHUB_TOKEN', 'GH_ENTERPRISE_TOKEN', 'GITHUB_ENTERPRISE_TOKEN',
+  'GITLAB_TOKEN', 'GLAB_TOKEN',
+  'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN', 'AWS_PROFILE',
+  'STRIPE_API_KEY', 'STRIPE_SECRET_KEY',
+]
+
+/**
+ * Point gh, git, aws, stripe, gcloud and friends at empty config so a
+ * local eval worker runs logged out, the way a fresh cloud workspace does.
+ * Without this, `gh` in an eval uses the developer's keychain login.
+ */
+export function isolatedCredentialEnv(root: string): Record<string, string> {
+  mkdirSync(join(root, 'config', 'gh'), { recursive: true })
+  mkdirSync(join(root, 'aws'), { recursive: true })
+  const gitconfig = join(root, 'gitconfig')
+  writeFileSync(gitconfig, [
+    '[user]',
+    '\tname = Shogo Eval',
+    '\temail = eval@shogo.local',
+    '[credential]',
+    '\thelper =',
+    '[init]',
+    '\tdefaultBranch = main',
+    '',
+  ].join('\n'))
+  return {
+    XDG_CONFIG_HOME: join(root, 'config'),
+    GH_CONFIG_DIR: join(root, 'config', 'gh'),
+    AWS_CONFIG_FILE: join(root, 'aws', 'config'),
+    AWS_SHARED_CREDENTIALS_FILE: join(root, 'aws', 'credentials'),
+    CLOUDSDK_CONFIG: join(root, 'config', 'gcloud'),
+    AZURE_CONFIG_DIR: join(root, 'config', 'azure'),
+    GIT_CONFIG_GLOBAL: gitconfig,
+    GIT_CONFIG_NOSYSTEM: '1',
+    GIT_TERMINAL_PROMPT: '0',
+    GIT_SSH_COMMAND: 'ssh -F /dev/null -o IdentitiesOnly=yes -o IdentityFile=/dev/null -o BatchMode=yes',
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Worker lifecycle
 // ---------------------------------------------------------------------------
 
@@ -83,7 +133,13 @@ export async function startLocalWorker(
     AGENT_MODEL: config.model,
     SKILL_SERVER_PORT: String(skillPort),
     SECURITY_POLICY: encodeSecurityPolicy({ mode: 'full_autonomy' }),
+    // Cloud runtimes run in UTC; the developer's own timezone would leak into
+    // the system prompt and answer questions the evals expect the agent to ask.
+    TZ: 'UTC',
   }
+
+  Object.assign(env, isolatedCredentialEnv(resolve(tmpdir(), `${name}-creds`)))
+  for (const key of HOST_CREDENTIAL_VARS) delete env[key]
 
   if (config.envOverrides) {
     Object.assign(env, config.envOverrides)

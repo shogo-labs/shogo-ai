@@ -22,7 +22,7 @@
  *     least one result with `source: 'managed'`.
  */
 
-import type { AgentEval } from './types'
+import type { AgentEval, EvalResult } from './types'
 import type { ToolMockMap } from './tool-mocks'
 import {
   usedToolAnywhere,
@@ -143,20 +143,33 @@ const REMOTE_MCP_MOCKS: ToolMockMap = {
  * server (skipping Composio). The mock returns `source: 'mcp'` so the
  * eval validator can confirm the override path was taken.
  */
+const GMAIL_FORCED_MCP_URL = 'http://localhost:8765/mcp'
+
 const GMAIL_FORCED_MCP_MOCKS: ToolMockMap = {
   connect: {
-    type: 'static',
+    type: 'pattern',
     description: 'Install (connect) an integration so its tools become available.',
     paramKeys: ['name', 'source', 'env', 'url', 'headers'],
-    response: {
-      ok: true,
-      source: 'mcp',
-      server: 'gmail',
-      toolCount: 1,
-      tools: [{ name: 'mcp_gmail_search', description: 'Custom MCP gmail server' }],
-      message: 'Installed MCP server "gmail" with 1 tool(s).',
-    },
+    patterns: [
+      {
+        match: { url: 're:^https?://' },
+        response: {
+          ok: true,
+          source: 'mcp',
+          server: 'gmail',
+          toolCount: 1,
+          tools: [{ name: 'mcp_gmail_search', description: 'Custom MCP gmail server' }],
+          message: 'Installed MCP server "gmail" with 1 tool(s).',
+        },
+      },
+    ],
+    // A custom (non-catalog) MCP server can't start without an endpoint.
+    default: { ok: false, error: 'No catalog MCP server named "gmail". To add a custom MCP server pass its `url` (HTTP/SSE endpoint).' },
   },
+}
+
+function connectArgs(r: EvalResult): Array<Record<string, unknown>> {
+  return r.toolCalls.filter(t => t.name === 'connect').map(t => (t.input ?? {}) as Record<string, unknown>)
 }
 
 /**
@@ -321,30 +334,37 @@ export const UNIFIED_CONNECT_EVALS: AgentEval[] = [
     category: 'mcp-discovery',
     level: 3,
     input:
-      'I have a custom local MCP server I built that uses the name "gmail". Install it as an MCP server (not the managed Composio one).',
+      `I have a custom local MCP server I built that uses the name "gmail". It's running at ${GMAIL_FORCED_MCP_URL}. Install it as an MCP server (not the managed Composio one).`,
     maxScore: 100,
     toolMocks: GMAIL_FORCED_MCP_MOCKS,
     validationCriteria: [
       {
         id: 'called-connect',
         description: 'Called the unified `connect` tool',
-        points: 30,
+        points: 20,
         phase: 'intention',
         validate: (r) => usedToolAnywhere(r, 'connect'),
       },
       {
         id: 'passed-source-mcp',
         description: 'connect args include source="mcp"',
-        points: 40,
+        points: 35,
         phase: 'intention',
-        validate: (r) => toolCallArgsContain(r, 'connect', 'mcp'),
+        validate: (r) => connectArgs(r).some(a => a.source === 'mcp'),
       },
       {
         id: 'connect-with-gmail-name',
         description: 'connect args include name="gmail"',
-        points: 30,
+        points: 20,
         phase: 'intention',
-        validate: (r) => toolCallArgsContain(r, 'connect', 'gmail'),
+        validate: (r) => connectArgs(r).some(a => String(a.name ?? '').toLowerCase() === 'gmail'),
+      },
+      {
+        id: 'passed-server-url',
+        description: 'connect args include the server URL from the prompt',
+        points: 25,
+        phase: 'execution',
+        validate: (r) => connectArgs(r).some(a => JSON.stringify(a).includes('localhost:8765')),
       },
     ],
     antiPatterns: ['Calls connect without source: "mcp" (would auto-route to Composio)'],

@@ -184,6 +184,26 @@ describe('buildExecEnv — agent shell env', () => {
     expect(env.GIT_AUTHOR_NAME).toBe('shogo-ai[bot]')
     expect(env.GIT_AUTHOR_EMAIL).toBe('1+shogo-ai[bot]@users.noreply.github.com')
   })
+
+  test('exposes the runtime port as RUNTIME_PORT while still stripping PORT', () => {
+    const prevPort = process.env.PORT
+    const prevRuntimePort = process.env.RUNTIME_PORT
+    try {
+      process.env.PORT = '38554'
+      delete process.env.RUNTIME_PORT
+      const env = sandbox.buildExecEnv('/work/proj')
+      expect(env.PORT).toBeUndefined()
+      expect(env.RUNTIME_PORT).toBe('38554')
+
+      delete process.env.PORT
+      expect(sandbox.buildExecEnv('/work/proj').RUNTIME_PORT).toBe('8080')
+    } finally {
+      if (prevPort === undefined) delete process.env.PORT
+      else process.env.PORT = prevPort
+      if (prevRuntimePort === undefined) delete process.env.RUNTIME_PORT
+      else process.env.RUNTIME_PORT = prevRuntimePort
+    }
+  })
 })
 
 describe('sandboxExecAsync (non-sandbox)', () => {

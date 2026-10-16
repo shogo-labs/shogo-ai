@@ -11,11 +11,12 @@
  * 4. Display results via canvas code or concise summary
  */
 
-import type { AgentEval } from './types'
+import type { AgentEval, EvalResult } from './types'
 import {
   DATA_PROCESSING_LARGE_ISSUES_MOCKS,
   DATA_PROCESSING_LARGE_CALENDAR_MOCKS,
   DATA_PROCESSING_TOP_N_MOCKS,
+  TOP_COMMENTED_ISSUES,
 } from './tool-mocks'
 import {
   usedTool,
@@ -24,37 +25,48 @@ import {
   responseContains,
   toolCallArgsContain,
   usedGhCli,
+  execCommands,
+  fileWrites,
+  readWorkspaceFile,
+  writtenContent,
 } from './eval-helpers'
 
-function wroteSchemaFile(r: { toolCalls: Array<{ name: string; input: unknown }> }): boolean {
-  return r.toolCalls.some(t =>
-    t.name === 'write_file' &&
-    String((t.input as any)?.path ?? '').includes('schema.prisma'),
-  )
+const isSchemaPath = (p: string) => p.endsWith('schema.prisma')
+
+/** Final schema on disk plus everything written to it (any route). */
+function schemaText(r: EvalResult): string {
+  return `${readWorkspaceFile(r, 'prisma/schema.prisma')}\n${writtenContent(r, isSchemaPath)}`.toLowerCase()
 }
 
-function wroteCanvasFile(r: { toolCalls: Array<{ name: string; input: unknown }> }): boolean {
-  return r.toolCalls.some(t => {
-    if (t.name !== 'write_file') return false
-    const path = String((t.input as any)?.path ?? '')
-    return /^src\/.*\.(tsx?|jsx?)$/.test(path) || path.startsWith('canvas/')
-  })
+function wroteSchemaFile(r: EvalResult): boolean {
+  return fileWrites(r).some(w => isSchemaPath(w.path))
 }
 
-function wroteScript(r: { toolCalls: Array<{ name: string; input: unknown }> }): boolean {
-  return r.toolCalls.some(t =>
-    t.name === 'write_file' &&
-    /script|ingest|process|import/i.test(String((t.input as any)?.path ?? '')),
-  ) || r.toolCalls.some(t => t.name === 'exec')
+function wroteCanvasFile(r: EvalResult): boolean {
+  return fileWrites(r).some(w => /^src\/.*\.(tsx?|jsx?)$/.test(w.path) || w.path.startsWith('canvas/'))
 }
 
-function schemaContainsModel(r: { toolCalls: Array<{ name: string; input: unknown }> }, modelName: string): boolean {
-  return r.toolCalls.some(t => {
-    if (t.name !== 'write_file') return false
-    const path = String((t.input as any)?.path ?? '')
-    const content = String((t.input as any)?.content ?? '')
-    return path.includes('schema.prisma') && content.toLowerCase().includes(`model ${modelName.toLowerCase()}`)
-  })
+/**
+ * Loaded the data into the skill server: POSTed to its /api (web or curl),
+ * or wrote/ran an ingest script.
+ */
+function wroteScript(r: EvalResult): boolean {
+  const posted = r.toolCalls.some(t => t.name === 'web' && /post/i.test(JSON.stringify(t.input)) && JSON.stringify(t.input).includes('/api/')) ||
+    execCommands(r).some(c => /\bcurl\b/.test(c) && /-X\s*POST|--data|-d\s/.test(c) && c.includes('/api/'))
+  const script = fileWrites(r).some(w => /script|ingest|process|import|seed|load/i.test(w.path) && /\.(ts|js|mjs|py|sh)$/.test(w.path))
+  const ranScript = execCommands(r).some(c => /\b(bun|node|tsx|python3?|deno)\s+(run\s+)?\S*(ingest|seed|import|load|process)\S*/i.test(c))
+  return posted || script || ranScript
+}
+
+function schemaContainsModel(r: EvalResult, modelName: string): boolean {
+  return schemaText(r).includes(`model ${modelName.toLowerCase()}`)
+}
+
+/** Listed issues: gh issue list / search issues / api …/issues, or the integration tool. */
+function listedIssues(r: EvalResult): boolean {
+  return usedGhCli(r, 'issue') ||
+    execCommands(r).some(c => /(^|[\s;&|(])gh\s+(search\s+issues|api\s+[^;&|]*issues)/.test(c)) ||
+    usedTool(r, 'GITHUB_LIST_REPOSITORY_ISSUES')
 }
 
 // ---------------------------------------------------------------------------
@@ -81,14 +93,14 @@ export const DATA_PROCESSING_EVALS: AgentEval[] = [
         description: 'Fetched GitHub issues via gh CLI or connect',
         points: 10,
         phase: 'execution',
-        validate: (r) => usedGhCli(r, 'issue') || usedToolAnywhere(r, 'connect'),
+        validate: (r) => listedIssues(r) || usedToolAnywhere(r, 'connect'),
       },
       {
         id: 'called-list-issues',
         description: 'Listed issues with gh or GITHUB_LIST_REPOSITORY_ISSUES',
         points: 10,
         phase: 'execution',
-        validate: (r) => usedGhCli(r, 'issue') || usedTool(r, 'GITHUB_LIST_REPOSITORY_ISSUES'),
+        validate: (r) => listedIssues(r),
       },
       {
         id: 'created-prisma-schema',
@@ -224,14 +236,14 @@ export const DATA_PROCESSING_EVALS: AgentEval[] = [
         description: 'Fetched GitHub issues via gh CLI or connect',
         points: 10,
         phase: 'execution',
-        validate: (r) => usedGhCli(r, 'issue') || usedToolAnywhere(r, 'connect'),
+        validate: (r) => listedIssues(r) || usedToolAnywhere(r, 'connect'),
       },
       {
         id: 'called-list-issues',
         description: 'Listed issues with gh or GITHUB_LIST_REPOSITORY_ISSUES',
         points: 10,
         phase: 'execution',
-        validate: (r) => usedGhCli(r, 'issue') || usedTool(r, 'GITHUB_LIST_REPOSITORY_ISSUES'),
+        validate: (r) => listedIssues(r),
       },
       {
         id: 'created-prisma-schema',
@@ -245,12 +257,7 @@ export const DATA_PROCESSING_EVALS: AgentEval[] = [
         description: 'Schema model includes a comments/commentCount field',
         points: 10,
         phase: 'execution',
-        validate: (r) => r.toolCalls.some(t => {
-          if (t.name !== 'write_file') return false
-          const path = String((t.input as any)?.path ?? '')
-          const content = String((t.input as any)?.content ?? '').toLowerCase()
-          return path.includes('schema.prisma') && (content.includes('comments') || content.includes('commentcount'))
-        }),
+        validate: (r) => /\bcomment(s|count|_count|scount)?\s+int\b/.test(schemaText(r)),
       },
       {
         id: 'ingested-data',
@@ -272,13 +279,13 @@ export const DATA_PROCESSING_EVALS: AgentEval[] = [
       },
       {
         id: 'response-has-results',
-        description: 'Final response includes issue data',
+        description: 'Final response lists the actual most-commented issues (≥7 of the true top 10)',
         points: 10,
         phase: 'execution',
-        validate: (r) =>
-          responseContains(r, 'issue') ||
-          responseContains(r, 'comment') ||
-          wroteCanvasFile(r),
+        validate: (r) => {
+          const text = r.responseText
+          return TOP_COMMENTED_ISSUES.filter(([n]) => new RegExp(`#?\\b${n}\\b`).test(text)).length >= 7
+        },
       },
       {
         id: 'did-not-use-binding-transform',

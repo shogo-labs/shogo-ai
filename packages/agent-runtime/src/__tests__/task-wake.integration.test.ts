@@ -194,4 +194,12 @@ describe('task wake', () => {
     expect(() => process.kill(pid, 0)).toThrow()
     expect(await gw.listSessionTasks('cleared')).toHaveLength(0)
   }, 15_000)
+
+  test('clearing a session\'s history resets its shell directory', async () => {
+    const gw = await startGateway([buildTextResponse('ok')])
+    const shellCwd = (gw as any).shellCwd as Map<string, string>
+    shellCwd.set('cd-session', '/tmp')
+    gw.clearSessionHistory('cd-session')
+    expect(shellCwd.has('cd-session')).toBe(false)
+  })
 })

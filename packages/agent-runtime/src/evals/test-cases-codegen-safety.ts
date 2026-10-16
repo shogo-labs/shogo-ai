@@ -92,7 +92,7 @@ export const CODEGEN_SAFETY_EVALS: AgentEval[] = [
       },
     ],
     antiPatterns: ['Tool loop or repeated identical calls'],
-    maxScore: 15,
+    maxScore: 10,
   },
   {
     id: 'codegen-safety-phase2-regenerate',
@@ -126,6 +126,6 @@ export const CODEGEN_SAFETY_EVALS: AgentEval[] = [
       },
     ],
     antiPatterns: ['Regeneration overwrote custom server.tsx code'],
-    maxScore: 15,
+    maxScore: 10,
   },
 ]

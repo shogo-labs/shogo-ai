@@ -261,6 +261,11 @@ export interface EvalResult {
    * per-phase from cumulative state.
    */
   pipelineToolCalls?: ToolCallRecord[]
+  /**
+   * This phase's calls only, even in intention criteria (whose `toolCalls`
+   * is the pipeline view). For ordering checks like "the first spawn".
+   */
+  phaseToolCalls?: ToolCallRecord[]
   criteriaResults: CriterionResult[]
   triggeredAntiPatterns: string[]
   timing: {

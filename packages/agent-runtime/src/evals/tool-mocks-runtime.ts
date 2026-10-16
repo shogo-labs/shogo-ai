@@ -39,7 +39,7 @@ import { CompanyWorld, type WorldSeed } from './company-sim/world'
 export type SyntheticToolDef = { description: string; paramKeys: string[]; parameters?: unknown }
 
 export type CompiledMocks = {
-  fns: Record<string, (params: Record<string, any>) => Promise<any>>
+  fns: Record<string, (params: Record<string, any>) => any | Promise<any>>
   syntheticDefs: Record<string, SyntheticToolDef>
   hiddenTools: Set<string>
   defaults: { delayMs: number; jitterMs: number }
@@ -72,6 +72,31 @@ export function resolveToolClassDelay(toolName: string, params: Record<string, a
   if (/_LIST_|_SEARCH_|_RETRIEVE_|_GET_|_FETCH_/.test(toolName)) return 1800
   if (/_CREATE_|_UPDATE_|_PAUSE_|_DELETE_|_REPLY|_SEND_/.test(toolName)) return 700
   return null
+}
+
+/**
+ * Pattern-mock matching for one `match` entry. When the call carries the
+ * named param as a string (e.g. exec `command`), the substring must appear
+ * in that param — so `{ command: 'stripe' }` matches `stripe customers list`
+ * but not a `curl` whose JSON happens to contain `"timeout"`-style noise.
+ * Patterns whose key isn't a param of the call (e.g. `{ url: 'acme' }` on a
+ * `web({ query })` search) keep matching against the whole params JSON.
+ */
+export function matchesParam(params: Record<string, any> | undefined, paramsStr: string, key: string, substr: unknown): boolean {
+  const raw = String(substr)
+  const value = params?.[key]
+  // `re:<pattern>` matches a case-insensitive regex against that param only
+  // (never the whole JSON), e.g. `{ command: 're:(^|[\\s;&|(])gh\\s' }`.
+  if (raw.startsWith('re:')) {
+    if (typeof value !== 'string') return false
+    try {
+      return new RegExp(raw.slice(3), 'i').test(value)
+    } catch {
+      return false
+    }
+  }
+  const haystack = typeof value === 'string' ? value.toLowerCase() : paramsStr
+  return haystack.includes(raw.toLowerCase())
 }
 
 /**
@@ -131,7 +156,7 @@ export function compileInstallBody(
     return Math.max(0, jittered)
   }
 
-  const fns: Record<string, (params: Record<string, any>) => Promise<any>> = {}
+  const fns: Record<string, (params: Record<string, any>) => any | Promise<any>> = {}
   const syntheticDefs: Record<string, SyntheticToolDef> = {}
   const hiddenTools = new Set<string>()
 
@@ -141,9 +166,9 @@ export function compileInstallBody(
       const stat = s as Extract<ToolMockSpec, { type: 'static' }>
       const resp = stat.response
       const specDelay = typeof stat.delayMs === 'number' ? stat.delayMs : undefined
-      fns[toolName] = async (params: Record<string, any>) => {
-        await sleep(pickDelayMs(toolName, params, undefined, specDelay))
-        return resp
+      fns[toolName] = (params: Record<string, any>) => {
+        if (resp === '__passthrough') return resp
+        return sleep(pickDelayMs(toolName, params, undefined, specDelay)).then(() => resp)
       }
     } else if ((s as any).type === 'pattern') {
       const pat = s as Extract<ToolMockSpec, { type: 'pattern' }>
@@ -151,20 +176,24 @@ export function compileInstallBody(
       const defaultResp = pat.default ?? { ok: true }
       const specDelay = typeof pat.delayMs === 'number' ? pat.delayMs : undefined
       const defaultDelay = typeof pat.defaultDelayMs === 'number' ? pat.defaultDelayMs : undefined
-      fns[toolName] = async (params: Record<string, any>) => {
-        const paramsStr = JSON.stringify(params).toLowerCase()
+      fns[toolName] = (params: Record<string, any>) => {
+        const paramsStr = JSON.stringify(params ?? {}).toLowerCase()
+        let response = defaultResp
+        let delay = defaultDelay
         for (const p of patterns) {
-          const allMatch = Object.values(p.match).every(
-            (substr: any) => paramsStr.includes(String(substr).toLowerCase())
+          const allMatch = Object.entries(p.match).every(
+            ([key, substr]: [string, any]) => matchesParam(params, paramsStr, key, substr),
           )
           if (allMatch) {
-            const perPatternDelay = typeof p.delayMs === 'number' ? p.delayMs : undefined
-            await sleep(pickDelayMs(toolName, params, perPatternDelay, specDelay))
-            return p.response
+            response = p.response
+            delay = typeof p.delayMs === 'number' ? p.delayMs : undefined
+            break
           }
         }
-        await sleep(pickDelayMs(toolName, params, defaultDelay, specDelay))
-        return defaultResp
+        // Passthrough resolves synchronously (the real tool supplies its own
+        // latency); callers that don't await the mock still see the sentinel.
+        if (response === '__passthrough') return response
+        return sleep(pickDelayMs(toolName, params, delay, specDelay)).then(() => response)
       }
     }
 

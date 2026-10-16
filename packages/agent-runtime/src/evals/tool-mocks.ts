@@ -102,6 +102,168 @@ export type ToolMockInstallBody = {
 }
 
 // ---------------------------------------------------------------------------
+// Relative fixture dates
+//
+// Fixtures that hard-code a date go stale: "last week's issues" from a fixed
+// month in the past look ancient to an agent that knows today's date. These
+// compute timestamps relative to when the eval module loads.
+// ---------------------------------------------------------------------------
+
+const DAY_MS = 86_400_000
+const pad2 = (n: number) => String(n).padStart(2, '0')
+
+/** ISO-8601 UTC timestamp `n` days before now at `hour:minute` UTC. */
+export function daysAgo(n: number, hour = 10, minute = 0): string {
+  const d = new Date(Date.now() - n * DAY_MS)
+  d.setUTCHours(hour, minute, 0, 0)
+  return d.toISOString().replace('.000Z', 'Z')
+}
+
+/** ISO-8601 UTC timestamp `n` days from now at `hour:minute` UTC. */
+export function daysFromNow(n: number, hour = 10, minute = 0): string {
+  return daysAgo(-n, hour, minute)
+}
+
+/** `YYYY-MM-DD` for `n` days before now (negative = future). */
+export function dateDaysAgo(n: number): string {
+  return daysAgo(n).slice(0, 10)
+}
+
+/** Local wall-clock timestamp `YYYY-MM-DDTHH:MM:00<offset>` for today (+`dayOffset`). */
+export function todayAt(hour: number, minute = 0, offset = '-08:00', dayOffset = 0): string {
+  return `${dateDaysAgo(-dayOffset)}T${pad2(hour)}:${pad2(minute)}:00${offset}`
+}
+
+/**
+ * Re-anchors a fixture date written relative to `anchor` (the fixture's
+ * notional "today", `YYYY-MM-DD`) so that `anchor` becomes today. Keeps the
+ * literal's format — time of day, `Z`/offset suffix, or date-only — so a
+ * fixture's relative spacing ("yesterday 14:15", "3 days ago") survives.
+ */
+export function shiftFixtureDate(iso: string, anchor: string): string {
+  const m = iso.match(/^(\d{4})-(\d{2})-(\d{2})/)
+  const a = anchor.match(/^(\d{4})-(\d{2})-(\d{2})/)
+  if (!m || !a) return iso
+  const now = new Date()
+  const todayUtc = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())
+  const delta = todayUtc - Date.UTC(+a[1], +a[2] - 1, +a[3])
+  const shifted = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3]) + delta)
+  return `${shifted.toISOString().slice(0, 10)}${iso.slice(10)}`
+}
+
+/** `shiftFixtureDate` bound to one fixture's anchor date. */
+export function fixtureClock(anchor: string): (iso: string) => string {
+  return (iso) => shiftFixtureDate(iso, anchor)
+}
+
+// ---------------------------------------------------------------------------
+// Shell / CLI mocks
+//
+// Exec mocks pass unmatched commands through to the real shell (`ls`, `cat`,
+// `bun test` behave normally) but keep third-party CLIs that touch real
+// accounts — gh, aws, stripe, glab, oci, … — fully mocked. Any eval whose
+// prompt could lead the agent to run `gh` must use `cliExecMock()` (or rely
+// on the built-in exec mock) so no real credentials are ever exercised.
+// ---------------------------------------------------------------------------
+
+export type ExecMockPattern = { match: Record<string, string>; response: any; delayMs?: number }
+
+/** Shape of a real `exec` tool result. */
+export function execResult(stdout: string, exitCode = 0, stderr = ''): { stdout: string; stderr: string; exitCode: number } {
+  return { stdout, stderr, exitCode }
+}
+
+/**
+ * `re:` matcher for a shell command that invokes `words` as a command (e.g.
+ * `cmdRe('gh', 'pr')` matches `cd x && gh pr list` but not `echo high pr`).
+ */
+export function cmdRe(...words: string[]): string {
+  return `re:(?:^|[\\s;&|(\`/])${words.join('\\s+')}(?=$|[\\s;&|)\`'"])`
+}
+
+export interface GhCliMockOptions {
+  /** Whether `gh` behaves as logged in (the eval supplies a token or pre-auth). Default false. */
+  authenticated?: boolean
+  login?: string
+  prList?: string
+  issueList?: string
+  runList?: string
+  repoList?: string
+}
+
+const GH_NOT_AUTHED = 'To get started with GitHub CLI, please run:  gh auth login\nAlternatively, populate the GH_TOKEN environment variable with a GitHub API authentication token.'
+
+/** Pattern arms that fully mock the GitHub CLI (and curl to api.github.com). */
+export function ghCliPatterns(opts: GhCliMockOptions = {}): ExecMockPattern[] {
+  const login = opts.login ?? 'octocat'
+  const version: ExecMockPattern = {
+    match: { command: `re:(?:^|[\\s;&|(/])gh\\s+(--version|version)\\b` },
+    response: execResult('gh version 2.62.0 (2024-11-14)\nhttps://github.com/cli/cli/releases/tag/v2.62.0'),
+  }
+  if (!opts.authenticated) {
+    return [
+      version,
+      { match: { command: cmdRe('gh', 'auth', 'status') }, response: execResult('', 1, 'You are not logged into any GitHub hosts. To log in, run: gh auth login') },
+      { match: { command: cmdRe('gh') }, response: execResult('', 4, GH_NOT_AUTHED) },
+      { match: { command: 're:\\bcurl\\b[\\s\\S]*api\\.github\\.com' }, response: execResult('{\n  "message": "Requires authentication",\n  "documentation_url": "https://docs.github.com/rest",\n  "status": "401"\n}') },
+    ]
+  }
+  const prList = opts.prList ?? `12\tFix login redirect loop\tfeature/login-fix\tOPEN\t${daysAgo(1)}\n11\tAdd dark mode toggle\tfeature/dark-mode\tOPEN\t${daysAgo(2)}\n9\tBump dependencies\tchore/deps\tOPEN\t${daysAgo(4)}`
+  const issueList = opts.issueList ?? `31\tOPEN\tLogin page returns 500 on bad password\tbug\t${daysAgo(1)}\n28\tOPEN\tMissing favicon on settings page\tbug\t${daysAgo(3)}\n25\tOPEN\tAdd CSV export\tenhancement\t${daysAgo(6)}`
+  const runList = opts.runList ?? `completed\tsuccess\tCI\tCI\tmain\tpush\t9812\t3m22s\t${daysAgo(0, 9)}\ncompleted\tfailure\tCI\tCI\tfeature/dark-mode\tpull_request\t9807\t1m45s\t${daysAgo(1)}`
+  const repoList = opts.repoList ?? `${login}/web-app\tCustomer-facing web app\tprivate\t${daysAgo(1)}\n${login}/api\tBackend API\tprivate\t${daysAgo(2)}\n${login}/docs\tDocumentation site\tpublic\t${daysAgo(9)}`
+  return [
+    version,
+    { match: { command: cmdRe('gh', 'auth', 'status') }, response: execResult(`github.com\n  ✓ Logged in to github.com account ${login} (GH_TOKEN)\n  - Active account: true\n  - Git operations protocol: https\n  - Token scopes: 'repo', 'read:org', 'workflow'`) },
+    { match: { command: cmdRe('gh', 'auth') }, response: execResult('') },
+    { match: { command: cmdRe('gh', 'pr', 'list') }, response: execResult(prList) },
+    { match: { command: cmdRe('gh', 'pr', 'view') }, response: execResult(`title:\tFix login redirect loop\nstate:\tOPEN\nauthor:\t${login}\nnumber:\t12\n--\nStops the redirect loop after SSO login.`) },
+    { match: { command: cmdRe('gh', 'pr') }, response: execResult(prList) },
+    { match: { command: cmdRe('gh', 'issue', 'list') }, response: execResult(issueList) },
+    { match: { command: cmdRe('gh', 'issue') }, response: execResult(issueList) },
+    { match: { command: cmdRe('gh', 'run') }, response: execResult(runList) },
+    { match: { command: cmdRe('gh', 'workflow') }, response: execResult('CI\tactive\t1001\nDeploy\tactive\t1002') },
+    { match: { command: cmdRe('gh', 'repo', 'view') }, response: execResult(JSON.stringify({ nameWithOwner: `${login}/web-app`, description: 'Customer-facing web app', defaultBranchRef: { name: 'main' }, isPrivate: true })) },
+    { match: { command: cmdRe('gh', 'repo') }, response: execResult(repoList) },
+    { match: { command: `re:(?:^|[\\s;&|(/])gh\\s+api\\s+['"]?/?user['"]?(?=$|[\\s;&|)])` }, response: execResult(JSON.stringify({ login, id: 583231, name: 'The Octocat', public_repos: 3 })) },
+    { match: { command: cmdRe('gh', 'api') }, response: execResult('[]') },
+    { match: { command: cmdRe('gh') }, response: execResult('') },
+    { match: { command: 're:\\bcurl\\b[\\s\\S]*api\\.github\\.com[\\s\\S]*/pulls' }, response: execResult(JSON.stringify([{ number: 12, title: 'Fix login redirect loop', state: 'open', user: { login }, created_at: daysAgo(1) }, { number: 11, title: 'Add dark mode toggle', state: 'open', user: { login }, created_at: daysAgo(2) }])) },
+    { match: { command: 're:\\bcurl\\b[\\s\\S]*api\\.github\\.com[\\s\\S]*/issues' }, response: execResult(JSON.stringify([{ number: 31, title: 'Login page returns 500 on bad password', state: 'open', labels: [{ name: 'bug' }], created_at: daysAgo(1) }])) },
+    { match: { command: 're:\\bcurl\\b[\\s\\S]*api\\.github\\.com' }, response: execResult('[]') },
+  ]
+}
+
+/**
+ * Catch-all arms for other account-touching CLIs. Eval-specific arms placed
+ * before these win; anything else gets a realistic "not configured" error
+ * rather than running against a real account.
+ */
+export function otherCliCatchAllPatterns(): ExecMockPattern[] {
+  return [
+    { match: { command: cmdRe('aws') }, response: execResult('', 253, '\nUnable to locate credentials. You can configure credentials by running "aws configure".') },
+    { match: { command: cmdRe('stripe') }, response: execResult('', 1, 'You have not configured API keys yet. Running `stripe login` or setting STRIPE_API_KEY will configure your API keys.') },
+    { match: { command: cmdRe('glab') }, response: execResult('', 1, 'glab: no token found. Set GITLAB_TOKEN or run `glab auth login`.') },
+    { match: { command: cmdRe('oci') }, response: execResult('', 1, 'ERROR: Could not find config file at /root/.oci/config\nRun `oci setup config` to create one.') },
+    { match: { command: cmdRe('gcloud') }, response: execResult('', 1, 'ERROR: (gcloud) You do not currently have an active account selected.') },
+    { match: { command: cmdRe('az') }, response: execResult('', 1, "ERROR: Please run 'az login' to setup account.") },
+    { match: { command: 're:\\bcurl\\b[\\s\\S]*api\\.stripe\\.com' }, response: execResult(JSON.stringify({ error: { type: 'invalid_request_error', message: 'You did not provide an API key.' } })) },
+  ]
+}
+
+/**
+ * Exec mock: eval-specific `patterns` first, then the GitHub CLI mock, then
+ * catch-alls for other account CLIs; everything else runs for real.
+ */
+export function cliExecMock(opts: { patterns?: ExecMockPattern[]; gh?: GhCliMockOptions; default?: any } = {}): ToolMockSpec {
+  return {
+    type: 'pattern',
+    patterns: [...(opts.patterns ?? []), ...ghCliPatterns(opts.gh), ...otherCliCatchAllPatterns()],
+    default: opts.default ?? '__passthrough',
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Default mock responses (safe fallbacks)
 // ---------------------------------------------------------------------------
 
@@ -110,13 +272,10 @@ const DEFAULT_WEB_FETCH: ToolMockSpec = {
   patterns: [
     { match: { url: 'localhost' }, response: '__passthrough' },
     { match: { url: '127.0.0.1' }, response: '__passthrough' },
+    // Fetches of unknown URLs 404; searches with no fixture find nothing.
+    { match: { url: 're:^https?://' }, response: { content: '<html><head><title>404 Not Found</title></head><body><h1>Not Found</h1><p>The requested URL was not found on this server.</p></body></html>', status: 404, bytes: 140 } },
   ],
-  default: {
-    content: '<html><body><h1>Mock Page</h1><p>This is a mocked web page for eval testing.</p></body></html>',
-    status: 200,
-    bytes: 120,
-    url: 'https://example.com',
-  },
+  default: { results: [], organic: [], message: 'No results found.' },
 }
 
 
@@ -229,13 +388,24 @@ export const COMPETITIVE_INTEL_MOCKS: ToolMockMap = {
   },
 }
 
+const GH_ISSUE_FIXTURES = [
+  { number: 42, title: 'App crashes on login with SSO', labels: ['bug', 'critical'] },
+  { number: 38, title: 'Memory leak in websocket handler', labels: ['bug'] },
+  { number: 35, title: 'API rate limiting returns 500 instead of 429', labels: ['bug'] },
+  { number: 31, title: 'Dashboard charts fail to render on Safari', labels: ['bug'] },
+  { number: 29, title: 'Add dark mode support', labels: ['enhancement'] },
+]
+
 export const GH_CLI_EXEC_MOCK: ToolMockMap = {
-  exec: {
-    type: 'pattern',
-    paramKeys: ['command'],
+  exec: cliExecMock({
+    gh: { authenticated: true, login: 'acme' },
     patterns: [
       {
-        match: { command: 'gh issue' },
+        match: { command: 're:(?:^|[\\s;&|(/])gh\\s+(search\\s+issues|api\\s+[^;&|]*issues)' },
+        response: execResult(JSON.stringify(GH_ISSUE_FIXTURES.map(i => ({ number: i.number, title: i.title, state: 'open', repository_url: 'https://api.github.com/repos/acme/web-app', labels: i.labels.map(name => ({ name })) })))),
+      },
+      {
+        match: { command: cmdRe('gh', 'issue') },
         response: {
           stdout: '#42\tApp crashes on login with SSO\tOPEN\tbug, critical\n#38\tMemory leak in websocket handler\tOPEN\tbug\n#35\tAPI rate limiting returns 500 instead of 429\tOPEN\tbug\n#31\tDashboard charts fail to render on Safari\tOPEN\tbug\n#29\tAdd dark mode support\tOPEN\tenhancement',
           stderr: '',
@@ -243,7 +413,7 @@ export const GH_CLI_EXEC_MOCK: ToolMockMap = {
         },
       },
       {
-        match: { command: 'gh pr' },
+        match: { command: cmdRe('gh', 'pr') },
         response: {
           stdout: '#234\tfeat: implement JWT auth middleware (PROJ-101)\tMERGED\talice\n#235\tfeat: password reset email with Resend (PROJ-102)\tMERGED\tbob\n#236\tfix: checkout total rounding error (PROJ-103)\tMERGED\tcharlie\n#237\tfeat: redesign settings page (PROJ-104)\tMERGED\tdana\n#42\tFix critical auth bypass\tOPEN\talice\n#41\tAdd logging middleware\tOPEN\tbob',
           stderr: '',
@@ -251,30 +421,22 @@ export const GH_CLI_EXEC_MOCK: ToolMockMap = {
         },
       },
       {
-        match: { command: 'gh run' },
+        match: { command: cmdRe('gh', 'run') },
         response: {
           stdout: 'completed\tsuccess\tCI\tmain\t3m22s\ncompleted\tfailure\tCI\tfeature/dark-mode\t1m45s',
           stderr: '',
           exitCode: 0,
         },
       },
-      {
-        match: { command: 'gh auth' },
-        response: {
-          stdout: 'github.com\n  ✓ Logged in to github.com account acme (keyring)\n  - Active account: true',
-          stderr: '',
-          exitCode: 0,
-        },
-      },
     ],
-    default: { stdout: '', stderr: '', exitCode: 0 },
-  },
+  }),
 }
 
 // ---------------------------------------------------------------------------
 // Fixture: GitHub Issue Triage Board (Case 2)
 // ---------------------------------------------------------------------------
 
+const fxGithubTriage = fixtureClock('2026-02-20')
 export const GITHUB_TRIAGE_MOCKS: ToolMockMap = {
   ...GH_CLI_EXEC_MOCK,
   search_integrations: {
@@ -309,14 +471,14 @@ export const GITHUB_TRIAGE_MOCKS: ToolMockMap = {
     description: 'List issues in a GitHub repository. Returns an array of issues with title, labels, assignee, and state.',
     paramKeys: ['owner', 'repo', 'state', 'labels', 'per_page'],
     response: [
-      { number: 42, title: 'App crashes on login with SSO', labels: ['bug', 'critical', 'P0'], assignee: 'alice', state: 'open', created_at: '2026-02-18T10:00:00Z', updated_at: '2026-02-20T08:30:00Z' },
-      { number: 38, title: 'Memory leak in websocket handler', labels: ['bug', 'critical'], assignee: null, state: 'open', created_at: '2026-02-17T14:00:00Z', updated_at: '2026-02-19T16:00:00Z' },
-      { number: 35, title: 'API rate limiting returns 500 instead of 429', labels: ['bug', 'high'], assignee: 'bob', state: 'open', created_at: '2026-02-15T09:00:00Z', updated_at: '2026-02-18T11:00:00Z' },
-      { number: 31, title: 'Dashboard charts fail to render on Safari', labels: ['bug', 'high'], assignee: null, state: 'open', created_at: '2026-02-14T12:00:00Z', updated_at: '2026-02-17T10:00:00Z' },
-      { number: 29, title: 'Add dark mode support', labels: ['enhancement', 'medium'], assignee: 'carol', state: 'open', created_at: '2026-02-12T08:00:00Z', updated_at: '2026-02-16T09:00:00Z' },
-      { number: 27, title: 'Implement webhook retry logic', labels: ['enhancement', 'medium'], assignee: null, state: 'open', created_at: '2026-02-10T11:00:00Z', updated_at: '2026-02-15T14:00:00Z' },
-      { number: 25, title: 'Update API documentation for v3 endpoints', labels: ['documentation', 'low'], assignee: 'dave', state: 'open', created_at: '2026-02-08T15:00:00Z', updated_at: '2026-02-14T10:00:00Z' },
-      { number: 22, title: 'Add TypeScript examples to README', labels: ['documentation', 'low'], assignee: null, state: 'open', created_at: '2026-02-06T09:00:00Z', updated_at: '2026-02-12T08:00:00Z' },
+      { number: 42, title: 'App crashes on login with SSO', labels: ['bug', 'critical', 'P0'], assignee: 'alice', state: 'open', created_at: fxGithubTriage('2026-02-18T10:00:00Z'), updated_at: fxGithubTriage('2026-02-20T08:30:00Z') },
+      { number: 38, title: 'Memory leak in websocket handler', labels: ['bug', 'critical'], assignee: null, state: 'open', created_at: fxGithubTriage('2026-02-17T14:00:00Z'), updated_at: fxGithubTriage('2026-02-19T16:00:00Z') },
+      { number: 35, title: 'API rate limiting returns 500 instead of 429', labels: ['bug', 'high'], assignee: 'bob', state: 'open', created_at: fxGithubTriage('2026-02-15T09:00:00Z'), updated_at: fxGithubTriage('2026-02-18T11:00:00Z') },
+      { number: 31, title: 'Dashboard charts fail to render on Safari', labels: ['bug', 'high'], assignee: null, state: 'open', created_at: fxGithubTriage('2026-02-14T12:00:00Z'), updated_at: fxGithubTriage('2026-02-17T10:00:00Z') },
+      { number: 29, title: 'Add dark mode support', labels: ['enhancement', 'medium'], assignee: 'carol', state: 'open', created_at: fxGithubTriage('2026-02-12T08:00:00Z'), updated_at: fxGithubTriage('2026-02-16T09:00:00Z') },
+      { number: 27, title: 'Implement webhook retry logic', labels: ['enhancement', 'medium'], assignee: null, state: 'open', created_at: fxGithubTriage('2026-02-10T11:00:00Z'), updated_at: fxGithubTriage('2026-02-15T14:00:00Z') },
+      { number: 25, title: 'Update API documentation for v3 endpoints', labels: ['documentation', 'low'], assignee: 'dave', state: 'open', created_at: fxGithubTriage('2026-02-08T15:00:00Z'), updated_at: fxGithubTriage('2026-02-14T10:00:00Z') },
+      { number: 22, title: 'Add TypeScript examples to README', labels: ['documentation', 'low'], assignee: null, state: 'open', created_at: fxGithubTriage('2026-02-06T09:00:00Z'), updated_at: fxGithubTriage('2026-02-12T08:00:00Z') },
     ],
   },
 }
@@ -445,18 +607,19 @@ export const API_HEALTH_MOCKS: ToolMockMap = {
 // Fixture: Sentry Error Triage (Case 5)
 // ---------------------------------------------------------------------------
 
+const fxSentryTriage = fixtureClock('2026-02-21')
 export const SENTRY_TRIAGE_MOCKS: ToolMockMap = {
   SENTRY_LIST_ISSUES: {
     type: 'static',
     description: 'List error issues from Sentry. Returns an array of issues with title, count, level, firstSeen, lastSeen, and status.',
     paramKeys: ['project', 'query', 'sort'],
     response: [
-      { id: 'SENTRY-1001', title: 'TypeError: Cannot read property "user" of undefined', count: 1234, userCount: 412, level: 'error', firstSeen: '2026-02-10T08:00:00Z', lastSeen: '2026-02-21T09:30:00Z', status: 'unresolved' },
-      { id: 'SENTRY-1002', title: 'ReferenceError: "config" is not defined in worker.ts', count: 892, userCount: 234, level: 'error', firstSeen: '2026-02-12T11:00:00Z', lastSeen: '2026-02-21T08:45:00Z', status: 'unresolved' },
-      { id: 'SENTRY-1003', title: 'NetworkError: Failed to fetch /api/v2/sync', count: 567, userCount: 189, level: 'warning', firstSeen: '2026-02-14T09:00:00Z', lastSeen: '2026-02-21T07:15:00Z', status: 'unresolved' },
-      { id: 'SENTRY-1004', title: 'TimeoutError: Database query exceeded 30s limit', count: 445, userCount: 156, level: 'error', firstSeen: '2026-02-15T16:00:00Z', lastSeen: '2026-02-20T22:00:00Z', status: 'unresolved' },
-      { id: 'SENTRY-1005', title: 'ValidationError: Invalid email format in registration', count: 234, userCount: 234, level: 'warning', firstSeen: '2026-02-16T13:00:00Z', lastSeen: '2026-02-21T06:00:00Z', status: 'unresolved' },
-      { id: 'SENTRY-1006', title: 'MemoryError: Heap allocation failed in image processor', count: 123, userCount: 45, level: 'fatal', firstSeen: '2026-02-18T10:00:00Z', lastSeen: '2026-02-20T18:30:00Z', status: 'unresolved' },
+      { id: 'SENTRY-1001', title: 'TypeError: Cannot read property "user" of undefined', count: 1234, userCount: 412, level: 'error', firstSeen: fxSentryTriage('2026-02-10T08:00:00Z'), lastSeen: fxSentryTriage('2026-02-21T09:30:00Z'), status: 'unresolved' },
+      { id: 'SENTRY-1002', title: 'ReferenceError: "config" is not defined in worker.ts', count: 892, userCount: 234, level: 'error', firstSeen: fxSentryTriage('2026-02-12T11:00:00Z'), lastSeen: fxSentryTriage('2026-02-21T08:45:00Z'), status: 'unresolved' },
+      { id: 'SENTRY-1003', title: 'NetworkError: Failed to fetch /api/v2/sync', count: 567, userCount: 189, level: 'warning', firstSeen: fxSentryTriage('2026-02-14T09:00:00Z'), lastSeen: fxSentryTriage('2026-02-21T07:15:00Z'), status: 'unresolved' },
+      { id: 'SENTRY-1004', title: 'TimeoutError: Database query exceeded 30s limit', count: 445, userCount: 156, level: 'error', firstSeen: fxSentryTriage('2026-02-15T16:00:00Z'), lastSeen: fxSentryTriage('2026-02-20T22:00:00Z'), status: 'unresolved' },
+      { id: 'SENTRY-1005', title: 'ValidationError: Invalid email format in registration', count: 234, userCount: 234, level: 'warning', firstSeen: fxSentryTriage('2026-02-16T13:00:00Z'), lastSeen: fxSentryTriage('2026-02-21T06:00:00Z'), status: 'unresolved' },
+      { id: 'SENTRY-1006', title: 'MemoryError: Heap allocation failed in image processor', count: 123, userCount: 45, level: 'fatal', firstSeen: fxSentryTriage('2026-02-18T10:00:00Z'), lastSeen: fxSentryTriage('2026-02-20T18:30:00Z'), status: 'unresolved' },
     ],
   },
 }
@@ -465,6 +628,7 @@ export const SENTRY_TRIAGE_MOCKS: ToolMockMap = {
 // Fixture: Meeting Prep Command Center (Case 6)
 // ---------------------------------------------------------------------------
 
+const fxMeetingPrep = fixtureClock('2026-02-21')
 export const MEETING_PREP_MOCKS: ToolMockMap = {
   search_integrations: {
     type: 'pattern',
@@ -500,8 +664,8 @@ export const MEETING_PREP_MOCKS: ToolMockMap = {
       {
         id: 'evt-001',
         summary: 'Q1 Planning Review',
-        start: { dateTime: '2026-02-21T10:00:00-08:00' },
-        end: { dateTime: '2026-02-21T11:00:00-08:00' },
+        start: { dateTime: fxMeetingPrep('2026-02-21T10:00:00-08:00') },
+        end: { dateTime: fxMeetingPrep('2026-02-21T11:00:00-08:00') },
         attendees: [
           { email: 'sarah@acme.com', displayName: 'Sarah Chen', responseStatus: 'accepted' },
           { email: 'mike@acme.com', displayName: 'Mike Torres', responseStatus: 'accepted' },
@@ -512,8 +676,8 @@ export const MEETING_PREP_MOCKS: ToolMockMap = {
       {
         id: 'evt-002',
         summary: 'Partnership Review',
-        start: { dateTime: '2026-02-21T13:00:00-08:00' },
-        end: { dateTime: '2026-02-21T13:45:00-08:00' },
+        start: { dateTime: fxMeetingPrep('2026-02-21T13:00:00-08:00') },
+        end: { dateTime: fxMeetingPrep('2026-02-21T13:45:00-08:00') },
         attendees: [
           { email: 'jane@partnerco.io', displayName: 'Jane Park', responseStatus: 'accepted' },
         ],
@@ -523,8 +687,8 @@ export const MEETING_PREP_MOCKS: ToolMockMap = {
       {
         id: 'evt-003',
         summary: 'Product Demo for Investors',
-        start: { dateTime: '2026-02-21T15:30:00-08:00' },
-        end: { dateTime: '2026-02-21T16:30:00-08:00' },
+        start: { dateTime: fxMeetingPrep('2026-02-21T15:30:00-08:00') },
+        end: { dateTime: fxMeetingPrep('2026-02-21T16:30:00-08:00') },
         attendees: [
           { email: 'investor@vcfirm.com', displayName: 'David Kim', responseStatus: 'tentative' },
         ],
@@ -654,19 +818,20 @@ export const STRIPE_REVENUE_MOCKS: ToolMockMap = {
 // Fixture: Multi-Repo PR Review Queue (Case 8)
 // ---------------------------------------------------------------------------
 
+const fxPrDataByRepo = fixtureClock('2026-02-21')
 const PR_DATA_BY_REPO: Record<string, any[]> = {
   frontend: [
-    { number: 142, title: 'Fix navigation layout on mobile', user: { login: 'alice' }, labels: ['bug'], created_at: '2026-02-19T10:00:00Z', pull_request: { url: 'https://api.github.com/repos/org/frontend/pulls/142' }, draft: false, ci_status: 'success' },
-    { number: 139, title: 'Add dark mode toggle', user: { login: 'bob' }, labels: ['enhancement'], created_at: '2026-02-21T05:00:00Z', pull_request: { url: 'https://api.github.com/repos/org/frontend/pulls/139' }, draft: false, ci_status: 'pending' },
-    { number: 135, title: 'Refactor auth flow to use new SDK', user: { login: 'carol' }, labels: ['refactor'], created_at: '2026-02-17T08:00:00Z', pull_request: { url: 'https://api.github.com/repos/org/frontend/pulls/135' }, draft: false, ci_status: 'failure' },
+    { number: 142, title: 'Fix navigation layout on mobile', user: { login: 'alice' }, labels: ['bug'], created_at: fxPrDataByRepo('2026-02-19T10:00:00Z'), pull_request: { url: 'https://api.github.com/repos/org/frontend/pulls/142' }, draft: false, ci_status: 'success' },
+    { number: 139, title: 'Add dark mode toggle', user: { login: 'bob' }, labels: ['enhancement'], created_at: fxPrDataByRepo('2026-02-21T05:00:00Z'), pull_request: { url: 'https://api.github.com/repos/org/frontend/pulls/139' }, draft: false, ci_status: 'pending' },
+    { number: 135, title: 'Refactor auth flow to use new SDK', user: { login: 'carol' }, labels: ['refactor'], created_at: fxPrDataByRepo('2026-02-17T08:00:00Z'), pull_request: { url: 'https://api.github.com/repos/org/frontend/pulls/135' }, draft: false, ci_status: 'failure' },
   ],
   backend: [
-    { number: 89, title: 'Implement API rate limiting middleware', user: { login: 'dave' }, labels: ['feature'], created_at: '2026-02-20T09:00:00Z', pull_request: { url: 'https://api.github.com/repos/org/backend/pulls/89' }, draft: false, ci_status: 'success' },
-    { number: 87, title: 'Database migration v12 — add indexes', user: { login: 'eve' }, labels: ['database'], created_at: '2026-02-21T04:00:00Z', pull_request: { url: 'https://api.github.com/repos/org/backend/pulls/87' }, draft: false, ci_status: 'success' },
+    { number: 89, title: 'Implement API rate limiting middleware', user: { login: 'dave' }, labels: ['feature'], created_at: fxPrDataByRepo('2026-02-20T09:00:00Z'), pull_request: { url: 'https://api.github.com/repos/org/backend/pulls/89' }, draft: false, ci_status: 'success' },
+    { number: 87, title: 'Database migration v12 — add indexes', user: { login: 'eve' }, labels: ['database'], created_at: fxPrDataByRepo('2026-02-21T04:00:00Z'), pull_request: { url: 'https://api.github.com/repos/org/backend/pulls/87' }, draft: false, ci_status: 'success' },
   ],
   infra: [
-    { number: 56, title: 'Bump Terraform provider to 5.x', user: { login: 'frank' }, labels: ['infrastructure'], created_at: '2026-02-18T14:00:00Z', pull_request: { url: 'https://api.github.com/repos/org/infra/pulls/56' }, draft: false, ci_status: 'success' },
-    { number: 54, title: 'Add Datadog monitoring for new services', user: { login: 'grace' }, labels: ['monitoring'], created_at: '2026-02-20T18:00:00Z', pull_request: { url: 'https://api.github.com/repos/org/infra/pulls/54' }, draft: false, ci_status: 'pending' },
+    { number: 56, title: 'Bump Terraform provider to 5.x', user: { login: 'frank' }, labels: ['infrastructure'], created_at: fxPrDataByRepo('2026-02-18T14:00:00Z'), pull_request: { url: 'https://api.github.com/repos/org/infra/pulls/56' }, draft: false, ci_status: 'success' },
+    { number: 54, title: 'Add Datadog monitoring for new services', user: { login: 'grace' }, labels: ['monitoring'], created_at: fxPrDataByRepo('2026-02-20T18:00:00Z'), pull_request: { url: 'https://api.github.com/repos/org/infra/pulls/54' }, draft: false, ci_status: 'pending' },
   ],
 }
 
@@ -682,6 +847,7 @@ const PR_PATTERN_SPEC: ToolMockSpec = {
   default: [],
 }
 
+const fxPrReview = fixtureClock('2026-02-25')
 export const PR_REVIEW_MOCKS: ToolMockMap = {
   ...GH_CLI_EXEC_MOCK,
   search_integrations: {
@@ -717,7 +883,7 @@ export const PR_REVIEW_MOCKS: ToolMockMap = {
     type: 'static',
     description: 'Create a review on a pull request (approve, request changes).',
     paramKeys: ['owner', 'repo', 'pull_number', 'event', 'body'],
-    response: { id: 'review-001', state: 'APPROVED', submitted_at: '2026-02-25T12:00:00Z' },
+    response: { id: 'review-001', state: 'APPROVED', submitted_at: fxPrReview('2026-02-25T12:00:00Z') },
   },
   send_message: {
     type: 'static',
@@ -784,7 +950,7 @@ export const CONNECT_AND_USE_MOCKS: ToolMockMap = {
     response: {
       query: 'filesystem',
       results: [
-        { name: 'Filesystem MCP Server', qualifiedName: '@modelcontextprotocol/server-filesystem', description: 'Secure file operations with configurable access controls.', installCommand: 'connect({ name: "filesystem", source: "mcp" })', source: 'mcp' },
+        { name: 'filesystem', displayName: 'Filesystem', qualifiedName: '@modelcontextprotocol/server-filesystem', description: 'Read and write files on the host system. Useful for agents that manage local documents or configs.', installCommand: 'connect({ name: "filesystem", source: "mcp" })', source: 'mcp' },
       ],
       message: 'Found 1 result(s): 1 MCP server(s). Use connect to add one.',
     },
@@ -806,8 +972,10 @@ export const CONNECT_AND_USE_MOCKS: ToolMockMap = {
       message: 'Installed MCP server "filesystem" with 4 tool(s). They are now available for use.',
     },
   },
+  // Hidden until `connect` installs the filesystem server.
   mcp_filesystem_list_directory: {
     type: 'static',
+    hidden: true,
     description: 'List directory contents',
     paramKeys: ['path'],
     response: { entries: [{ name: 'report.csv', type: 'file', size: 2048 }, { name: 'data', type: 'directory' }] },
@@ -869,8 +1037,10 @@ export const MCP_SELF_EXTEND_FIGMA_MOCKS: ToolMockMap = {
 
 // ---------------------------------------------------------------------------
 // Fixture: MCP Discovery — Self-Extend Database (MCP Case 6)
-// Discovery-only: no post-install postgres tools mocked. Agent must recognize
-// it needs DB access and go through search → install with connection config.
+// Discovery-only: the MongoDB server from the real catalog (src/mcp-catalog.ts).
+// Its post-install tools aren't mocked; connect only succeeds when the
+// connection string is passed as MDB_MCP_CONNECTION_STRING (or anywhere in
+// the call), like the real server's required env.
 // ---------------------------------------------------------------------------
 
 export const MCP_SELF_EXTEND_DATABASE_MOCKS: ToolMockMap = {
@@ -879,28 +1049,34 @@ export const MCP_SELF_EXTEND_DATABASE_MOCKS: ToolMockMap = {
     description: 'Search across managed OAuth integrations, skills, and MCP servers.',
     paramKeys: ['query', 'limit', 'source'],
     response: {
-      query: 'postgres database',
+      query: 'mongodb database',
       results: [
-        { name: 'Postgres MCP Server', qualifiedName: '@modelcontextprotocol/server-postgres', description: 'Query PostgreSQL databases with read-only access. Supports schema inspection and parameterized queries.', installCommand: 'connect({ name: "postgres", source: "mcp" })', source: 'mcp' },
+        { name: 'mongodb', displayName: 'MongoDB', qualifiedName: 'mongodb-mcp-server', description: 'Query and manage MongoDB databases — run queries, list collections, aggregate data, and manage indexes.', installCommand: 'connect({ name: "mongodb", source: "mcp", env: { MDB_MCP_CONNECTION_STRING: "..." } })', requiredEnv: { MDB_MCP_CONNECTION_STRING: 'MongoDB connection string (e.g. mongodb+srv://user:pass@cluster.mongodb.net/db)' }, source: 'mcp' },
       ],
       message: 'Found 1 result(s): 1 MCP server(s). Use connect to add one.',
     },
   },
   connect: {
-    type: 'static',
+    type: 'pattern',
     description: 'Install and start an MCP server, making its tools available immediately.',
-    paramKeys: ['name', 'env', 'url', 'headers'],
-    response: {
-      ok: true,
-      server: 'postgres',
-      toolCount: 3,
-      tools: [
-        { name: 'mcp_postgres_query', description: 'Execute a read-only SQL query against the database' },
-        { name: 'mcp_postgres_list_tables', description: 'List all tables in the database' },
-        { name: 'mcp_postgres_describe_table', description: 'Get column definitions for a table' },
-      ],
-      message: 'Installed MCP server "postgres" with 3 tool(s). They are now available for use.',
-    },
+    paramKeys: ['name', 'source', 'env', 'url', 'headers'],
+    patterns: [
+      {
+        match: { env: 'mongodb://' },
+        response: {
+          ok: true,
+          server: 'mongodb',
+          toolCount: 3,
+          tools: [
+            { name: 'mcp_mongodb_find', description: 'Run a find query against a collection' },
+            { name: 'mcp_mongodb_list_collections', description: 'List collections in the database' },
+            { name: 'mcp_mongodb_aggregate', description: 'Run an aggregation pipeline' },
+          ],
+          message: 'Installed MCP server "mongodb" with 3 tool(s). They are now available for use.',
+        },
+      },
+    ],
+    default: { ok: false, error: 'MCP server "mongodb" failed to start: missing required env MDB_MCP_CONNECTION_STRING.' },
   },
 }
 
@@ -908,7 +1084,27 @@ export const MCP_SELF_EXTEND_DATABASE_MOCKS: ToolMockMap = {
 // Fixture: MCP Discovery — Multi-Server Orchestration (MCP Case 7)
 // ---------------------------------------------------------------------------
 
+const fxMcpMultiServer = fixtureClock('2026-02-21')
+const MCP_MULTI_SERVER_PRS = [
+  { number: 42, title: 'Fix critical auth bypass', author: 'alice', labels: ['security', 'urgent'], created_at: fxMcpMultiServer('2026-02-20T08:00:00Z'), mergeable: true },
+  { number: 41, title: 'Add logging middleware', author: 'bob', labels: ['enhancement'], created_at: fxMcpMultiServer('2026-02-21T10:00:00Z'), mergeable: true },
+  { number: 40, title: 'Update dependencies', author: 'dependabot', labels: ['dependencies'], created_at: fxMcpMultiServer('2026-02-19T06:00:00Z'), mergeable: false },
+]
 export const MCP_MULTI_SERVER_MOCKS: ToolMockMap = {
+  // `gh pr list` is an equally valid route to the PRs.
+  exec: cliExecMock({
+    patterns: [
+      {
+        match: { command: 're:(?:^|[\\s;&|(/])gh\\s+pr\\s+list[^;&|]*--json' },
+        response: execResult(JSON.stringify(MCP_MULTI_SERVER_PRS.map(p => ({ number: p.number, title: p.title, author: { login: p.author }, labels: p.labels.map(name => ({ name })), createdAt: p.created_at, mergeable: p.mergeable ? 'MERGEABLE' : 'CONFLICTING' })))),
+      },
+    ],
+    gh: {
+      authenticated: true,
+      login: 'acme-corp',
+      prList: MCP_MULTI_SERVER_PRS.map(p => `${p.number}\t${p.title}\t${p.labels.join(',')}\tOPEN\t${p.created_at}`).join('\n'),
+    },
+  }),
   search_integrations: {
     type: 'pattern',
     description: 'Search across managed OAuth integrations, skills, and MCP servers.',
@@ -972,11 +1168,7 @@ export const MCP_MULTI_SERVER_MOCKS: ToolMockMap = {
     type: 'static',
     description: 'List open pull requests',
     paramKeys: ['owner', 'repo'],
-    response: [
-      { number: 42, title: 'Fix critical auth bypass', author: 'alice', labels: ['security', 'urgent'], created_at: '2026-02-20T08:00:00Z', mergeable: true },
-      { number: 41, title: 'Add logging middleware', author: 'bob', labels: ['enhancement'], created_at: '2026-02-21T10:00:00Z', mergeable: true },
-      { number: 40, title: 'Update dependencies', author: 'dependabot', labels: ['dependencies'], created_at: '2026-02-19T06:00:00Z', mergeable: false },
-    ],
+    response: MCP_MULTI_SERVER_PRS,
   },
   mcp_slack_send_message: {
     type: 'static',
@@ -1041,6 +1233,7 @@ export const MCP_DISCOVERY_PERSONALITY_MOCKS: ToolMockMap = {
 // Services: Calendar + Postgres (metrics) + web research
 // ---------------------------------------------------------------------------
 
+const fxInvestorMeetingPrep = fixtureClock('2026-02-23')
 export const INVESTOR_MEETING_PREP_MOCKS: ToolMockMap = {
   GOOGLECALENDAR_FIND_EVENT: {
     type: 'static',
@@ -1050,8 +1243,8 @@ export const INVESTOR_MEETING_PREP_MOCKS: ToolMockMap = {
       {
         id: 'evt-003',
         summary: 'Product Demo for Investors',
-        start: { dateTime: '2026-02-23T15:30:00-08:00' },
-        end: { dateTime: '2026-02-23T16:30:00-08:00' },
+        start: { dateTime: fxInvestorMeetingPrep('2026-02-23T15:30:00-08:00') },
+        end: { dateTime: fxInvestorMeetingPrep('2026-02-23T16:30:00-08:00') },
         attendees: [
           { email: 'david@vcfirm.com', displayName: 'David Kim', responseStatus: 'accepted' },
           { email: 'me@acme.com', displayName: 'You', responseStatus: 'accepted' },
@@ -1062,8 +1255,8 @@ export const INVESTOR_MEETING_PREP_MOCKS: ToolMockMap = {
       {
         id: 'evt-001',
         summary: 'Team Standup',
-        start: { dateTime: '2026-02-23T09:30:00-08:00' },
-        end: { dateTime: '2026-02-23T09:45:00-08:00' },
+        start: { dateTime: fxInvestorMeetingPrep('2026-02-23T09:30:00-08:00') },
+        end: { dateTime: fxInvestorMeetingPrep('2026-02-23T09:45:00-08:00') },
         attendees: [],
         location: 'Zoom',
         description: 'Daily standup',
@@ -1134,15 +1327,16 @@ export const INVESTOR_MEETING_PREP_MOCKS: ToolMockMap = {
 // Services: Sentry + GitHub (deploys) + Datadog (metrics) + Slack
 // ---------------------------------------------------------------------------
 
+const fxProductionIncident = fixtureClock('2026-02-22')
 export const PRODUCTION_INCIDENT_MOCKS: ToolMockMap = {
   SENTRY_LIST_ISSUES: {
     type: 'static',
     description: 'List error issues from Sentry.',
     paramKeys: ['project', 'query', 'sort'],
     response: [
-      { id: 'SENTRY-2001', title: 'TypeError: Cannot read property "session" of null', count: 1843, userCount: 672, level: 'error', firstSeen: '2026-02-22T14:32:00Z', lastSeen: '2026-02-22T15:01:00Z', status: 'unresolved', tags: { url: '/api/v2/auth/verify', handler: 'authMiddleware.ts:42' } },
-      { id: 'SENTRY-2002', title: 'HTTP 500: Internal Server Error on /api/v2/users/me', count: 956, userCount: 445, level: 'error', firstSeen: '2026-02-22T14:35:00Z', lastSeen: '2026-02-22T15:00:00Z', status: 'unresolved', tags: { url: '/api/v2/users/me', handler: 'userController.ts:18' } },
-      { id: 'SENTRY-2003', title: 'TimeoutError: Redis connection timed out', count: 234, userCount: 98, level: 'warning', firstSeen: '2026-02-22T14:40:00Z', lastSeen: '2026-02-22T14:58:00Z', status: 'unresolved', tags: { service: 'session-store' } },
+      { id: 'SENTRY-2001', title: 'TypeError: Cannot read property "session" of null', count: 1843, userCount: 672, level: 'error', firstSeen: fxProductionIncident('2026-02-22T14:32:00Z'), lastSeen: fxProductionIncident('2026-02-22T15:01:00Z'), status: 'unresolved', tags: { url: '/api/v2/auth/verify', handler: 'authMiddleware.ts:42' } },
+      { id: 'SENTRY-2002', title: 'HTTP 500: Internal Server Error on /api/v2/users/me', count: 956, userCount: 445, level: 'error', firstSeen: fxProductionIncident('2026-02-22T14:35:00Z'), lastSeen: fxProductionIncident('2026-02-22T15:00:00Z'), status: 'unresolved', tags: { url: '/api/v2/users/me', handler: 'userController.ts:18' } },
+      { id: 'SENTRY-2003', title: 'TimeoutError: Redis connection timed out', count: 234, userCount: 98, level: 'warning', firstSeen: fxProductionIncident('2026-02-22T14:40:00Z'), lastSeen: fxProductionIncident('2026-02-22T14:58:00Z'), status: 'unresolved', tags: { service: 'session-store' } },
     ],
   },
   GITHUB_LIST_RECENT_DEPLOYS: {
@@ -1150,9 +1344,9 @@ export const PRODUCTION_INCIDENT_MOCKS: ToolMockMap = {
     description: 'List recent deployments/merged PRs.',
     paramKeys: ['owner', 'repo', 'limit'],
     response: [
-      { sha: 'a1b2c3d', message: 'Refactor auth middleware to use new session store', author: 'bob', mergedAt: '2026-02-22T14:15:00Z', pr: '#187', labels: ['refactor', 'auth'] },
-      { sha: 'e4f5g6h', message: 'Update Redis client to v5.0', author: 'bob', mergedAt: '2026-02-22T14:10:00Z', pr: '#186', labels: ['dependencies'] },
-      { sha: 'i7j8k9l', message: 'Add billing webhook endpoint', author: 'carol', mergedAt: '2026-02-22T11:00:00Z', pr: '#185', labels: ['feature'] },
+      { sha: 'a1b2c3d', message: 'Refactor auth middleware to use new session store', author: 'bob', mergedAt: fxProductionIncident('2026-02-22T14:15:00Z'), pr: '#187', labels: ['refactor', 'auth'] },
+      { sha: 'e4f5g6h', message: 'Update Redis client to v5.0', author: 'bob', mergedAt: fxProductionIncident('2026-02-22T14:10:00Z'), pr: '#186', labels: ['dependencies'] },
+      { sha: 'i7j8k9l', message: 'Add billing webhook endpoint', author: 'carol', mergedAt: fxProductionIncident('2026-02-22T11:00:00Z'), pr: '#185', labels: ['feature'] },
     ],
   },
   DATADOG_QUERY_METRICS: {
@@ -1201,6 +1395,7 @@ export const PRODUCTION_INCIDENT_MOCKS: ToolMockMap = {
 // Services: Zendesk + Linear + Slack
 // ---------------------------------------------------------------------------
 
+const fxSupportTicketTriage = fixtureClock('2026-02-21')
 export const SUPPORT_TICKET_TRIAGE_MOCKS: ToolMockMap = {
   search_integrations: {
     type: 'pattern',
@@ -1280,18 +1475,18 @@ export const SUPPORT_TICKET_TRIAGE_MOCKS: ToolMockMap = {
     paramKeys: ['status', 'created_after', 'sort_by', 'limit'],
     response: {
       tickets: [
-        { id: 'ZD-4501', subject: 'Can\'t log in after password reset', status: 'open', priority: 'high', created_at: '2026-02-20T09:00:00Z', requester: 'enterprise-user@bigcorp.com', tags: ['login', 'auth', 'password-reset'], description: 'After resetting my password via the email link, I get "Invalid session" when trying to log in. Tried 3 browsers.' },
-        { id: 'ZD-4502', subject: 'Login stuck on loading screen', status: 'open', priority: 'high', created_at: '2026-02-20T11:00:00Z', requester: 'user2@startup.io', tags: ['login', 'auth'], description: 'After entering credentials the page just spins forever. Started happening yesterday.' },
-        { id: 'ZD-4503', subject: 'SSO login broken for our team', status: 'open', priority: 'urgent', created_at: '2026-02-19T16:00:00Z', requester: 'admin@enterprise.co', tags: ['login', 'sso', 'auth'], description: 'None of our 50 team members can log in via SAML SSO. Getting "SAML assertion expired" error.' },
-        { id: 'ZD-4504', subject: 'Password reset email never arrives', status: 'open', priority: 'normal', created_at: '2026-02-21T08:00:00Z', requester: 'user4@gmail.com', tags: ['login', 'password-reset', 'email'], description: 'Requested password reset 3 times, no email received. Checked spam.' },
-        { id: 'ZD-4505', subject: 'Dashboard takes 30+ seconds to load', status: 'open', priority: 'high', created_at: '2026-02-18T14:00:00Z', requester: 'pm@midmarket.com', tags: ['performance', 'dashboard'], description: 'Dashboard page takes 30-40 seconds to fully render. Used to be under 3 seconds.' },
-        { id: 'ZD-4506', subject: 'Charts not loading on dashboard', status: 'open', priority: 'normal', created_at: '2026-02-19T10:00:00Z', requester: 'analyst@acme.com', tags: ['performance', 'dashboard', 'charts'], description: 'The analytics charts show "Failed to load" error. Other parts of dashboard work fine.' },
-        { id: 'ZD-4507', subject: 'Dashboard crashes when filtering by date range', status: 'open', priority: 'normal', created_at: '2026-02-20T15:00:00Z', requester: 'user7@company.com', tags: ['performance', 'dashboard', 'crash'], description: 'Selecting a custom date range causes the whole page to go blank.' },
-        { id: 'ZD-4508', subject: 'Charged twice for this month', status: 'open', priority: 'urgent', created_at: '2026-02-21T09:00:00Z', requester: 'billing@startup.io', tags: ['billing', 'duplicate-charge'], description: 'We were charged $299 twice on Feb 1st. Invoice numbers INV-2026-0201 and INV-2026-0201b.' },
-        { id: 'ZD-4509', subject: 'Can\'t update credit card', status: 'open', priority: 'normal', created_at: '2026-02-19T13:00:00Z', requester: 'admin@smallbiz.com', tags: ['billing', 'payment'], description: 'Settings > Billing > Update card button does nothing when clicked.' },
-        { id: 'ZD-4510', subject: 'API returns stale data after update', status: 'open', priority: 'high', created_at: '2026-02-20T10:00:00Z', requester: 'dev@integration.io', tags: ['api', 'cache', 'data-integrity'], description: 'After updating a record via PUT /api/v2/records/:id, GET returns the old data for ~5 minutes.' },
-        { id: 'ZD-4511', subject: 'Webhook deliveries failing since Tuesday', status: 'open', priority: 'high', created_at: '2026-02-18T16:00:00Z', requester: 'dev@partner.com', tags: ['api', 'webhooks'], description: 'Our webhook endpoint stopped receiving events. Dashboard shows all deliveries as "failed" since Feb 18.' },
-        { id: 'ZD-4512', subject: 'Would love a CSV export feature', status: 'open', priority: 'low', created_at: '2026-02-17T11:00:00Z', requester: 'pm@agency.com', tags: ['feature-request', 'export'], description: 'It would be great to export report data as CSV for our quarterly reviews.' },
+        { id: 'ZD-4501', subject: 'Can\'t log in after password reset', status: 'open', priority: 'high', created_at: fxSupportTicketTriage('2026-02-20T09:00:00Z'), requester: 'enterprise-user@bigcorp.com', tags: ['login', 'auth', 'password-reset'], description: 'After resetting my password via the email link, I get "Invalid session" when trying to log in. Tried 3 browsers.' },
+        { id: 'ZD-4502', subject: 'Login stuck on loading screen', status: 'open', priority: 'high', created_at: fxSupportTicketTriage('2026-02-20T11:00:00Z'), requester: 'user2@startup.io', tags: ['login', 'auth'], description: 'After entering credentials the page just spins forever. Started happening yesterday.' },
+        { id: 'ZD-4503', subject: 'SSO login broken for our team', status: 'open', priority: 'urgent', created_at: fxSupportTicketTriage('2026-02-19T16:00:00Z'), requester: 'admin@enterprise.co', tags: ['login', 'sso', 'auth'], description: 'None of our 50 team members can log in via SAML SSO. Getting "SAML assertion expired" error.' },
+        { id: 'ZD-4504', subject: 'Password reset email never arrives', status: 'open', priority: 'normal', created_at: fxSupportTicketTriage('2026-02-21T08:00:00Z'), requester: 'user4@gmail.com', tags: ['login', 'password-reset', 'email'], description: 'Requested password reset 3 times, no email received. Checked spam.' },
+        { id: 'ZD-4505', subject: 'Dashboard takes 30+ seconds to load', status: 'open', priority: 'high', created_at: fxSupportTicketTriage('2026-02-18T14:00:00Z'), requester: 'pm@midmarket.com', tags: ['performance', 'dashboard'], description: 'Dashboard page takes 30-40 seconds to fully render. Used to be under 3 seconds.' },
+        { id: 'ZD-4506', subject: 'Charts not loading on dashboard', status: 'open', priority: 'normal', created_at: fxSupportTicketTriage('2026-02-19T10:00:00Z'), requester: 'analyst@acme.com', tags: ['performance', 'dashboard', 'charts'], description: 'The analytics charts show "Failed to load" error. Other parts of dashboard work fine.' },
+        { id: 'ZD-4507', subject: 'Dashboard crashes when filtering by date range', status: 'open', priority: 'normal', created_at: fxSupportTicketTriage('2026-02-20T15:00:00Z'), requester: 'user7@company.com', tags: ['performance', 'dashboard', 'crash'], description: 'Selecting a custom date range causes the whole page to go blank.' },
+        { id: 'ZD-4508', subject: 'Charged twice for this month', status: 'open', priority: 'urgent', created_at: fxSupportTicketTriage('2026-02-21T09:00:00Z'), requester: 'billing@startup.io', tags: ['billing', 'duplicate-charge'], description: 'We were charged $299 twice on Feb 1st. Invoice numbers INV-2026-0201 and INV-2026-0201b.' },
+        { id: 'ZD-4509', subject: 'Can\'t update credit card', status: 'open', priority: 'normal', created_at: fxSupportTicketTriage('2026-02-19T13:00:00Z'), requester: 'admin@smallbiz.com', tags: ['billing', 'payment'], description: 'Settings > Billing > Update card button does nothing when clicked.' },
+        { id: 'ZD-4510', subject: 'API returns stale data after update', status: 'open', priority: 'high', created_at: fxSupportTicketTriage('2026-02-20T10:00:00Z'), requester: 'dev@integration.io', tags: ['api', 'cache', 'data-integrity'], description: 'After updating a record via PUT /api/v2/records/:id, GET returns the old data for ~5 minutes.' },
+        { id: 'ZD-4511', subject: 'Webhook deliveries failing since Tuesday', status: 'open', priority: 'high', created_at: fxSupportTicketTriage('2026-02-18T16:00:00Z'), requester: 'dev@partner.com', tags: ['api', 'webhooks'], description: 'Our webhook endpoint stopped receiving events. Dashboard shows all deliveries as "failed" since Feb 18.' },
+        { id: 'ZD-4512', subject: 'Would love a CSV export feature', status: 'open', priority: 'low', created_at: fxSupportTicketTriage('2026-02-17T11:00:00Z'), requester: 'pm@agency.com', tags: ['feature-request', 'export'], description: 'It would be great to export report data as CSV for our quarterly reviews.' },
       ],
       count: 12,
       next_page: null,
@@ -1414,6 +1609,7 @@ export const TEAM_ONBOARDING_MOCKS: ToolMockMap = {
 // Services: Stripe + Postgres (usage) + GitHub (velocity)
 // ---------------------------------------------------------------------------
 
+const fxBusinessDashboard = fixtureClock('2026-02-21')
 export const BUSINESS_DASHBOARD_MOCKS: ToolMockMap = {
   search_integrations: {
     type: 'pattern',
@@ -1544,10 +1740,10 @@ export const BUSINESS_DASHBOARD_MOCKS: ToolMockMap = {
     response: {
       summary: { merged_this_week: 14, avg_cycle_time_hours: 18.5, open_prs: 7, avg_review_time_hours: 4.2 },
       recent: [
-        { number: 89, title: 'Implement API rate limiting', author: 'dave', merged_at: '2026-02-21T16:00:00Z', additions: 342, deletions: 28 },
-        { number: 87, title: 'Add database indexes for search', author: 'eve', merged_at: '2026-02-21T11:00:00Z', additions: 45, deletions: 3 },
-        { number: 86, title: 'Fix memory leak in WS handler', author: 'alice', merged_at: '2026-02-20T14:00:00Z', additions: 12, deletions: 67 },
-        { number: 85, title: 'Upgrade auth library to v4', author: 'bob', merged_at: '2026-02-20T10:00:00Z', additions: 156, deletions: 203 },
+        { number: 89, title: 'Implement API rate limiting', author: 'dave', merged_at: fxBusinessDashboard('2026-02-21T16:00:00Z'), additions: 342, deletions: 28 },
+        { number: 87, title: 'Add database indexes for search', author: 'eve', merged_at: fxBusinessDashboard('2026-02-21T11:00:00Z'), additions: 45, deletions: 3 },
+        { number: 86, title: 'Fix memory leak in WS handler', author: 'alice', merged_at: fxBusinessDashboard('2026-02-20T14:00:00Z'), additions: 12, deletions: 67 },
+        { number: 85, title: 'Upgrade auth library to v4', author: 'bob', merged_at: fxBusinessDashboard('2026-02-20T10:00:00Z'), additions: 156, deletions: 203 },
       ],
     },
   },
@@ -1635,6 +1831,7 @@ export const AIRBNB_VACATION_PLANNER_MOCKS: ToolMockMap = {
 // Full Composio flow: search_integrations → connect → SEARCH_TOOLS → MANAGE_CONNECTIONS → MULTI_EXECUTE
 // ---------------------------------------------------------------------------
 
+const fxComposioGoogleCalendar = fixtureClock('2026-02-23')
 export const COMPOSIO_GOOGLE_CALENDAR_MOCKS: ToolMockMap = {
   search_integrations: {
     type: 'pattern',
@@ -1691,14 +1888,14 @@ GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS: {
     response: {
       data: {
         summary_view: [
-          { title: 'Team Standup', start: '2026-02-23T09:00:00-08:00', end: '2026-02-23T09:15:00-08:00', calendar: 'Work' },
-          { title: 'Product Review', start: '2026-02-23T11:00:00-08:00', end: '2026-02-23T12:00:00-08:00', calendar: 'Work' },
-          { title: 'Lunch with Sarah', start: '2026-02-23T12:30:00-08:00', end: '2026-02-23T13:30:00-08:00', calendar: 'Personal' },
-          { title: '1:1 with Manager', start: '2026-02-24T10:00:00-08:00', end: '2026-02-24T10:30:00-08:00', calendar: 'Work' },
-          { title: 'Sprint Planning', start: '2026-02-24T14:00:00-08:00', end: '2026-02-24T15:00:00-08:00', calendar: 'Work' },
-          { title: 'Engineering All-Hands', start: '2026-02-25T11:00:00-08:00', end: '2026-02-25T12:00:00-08:00', calendar: 'Work' },
-          { title: 'Dentist Appointment', start: '2026-02-26T15:00:00-08:00', end: '2026-02-26T16:00:00-08:00', calendar: 'Personal' },
-          { title: 'Friday Demo', start: '2026-02-27T14:00:00-08:00', end: '2026-02-27T15:00:00-08:00', calendar: 'Work' },
+          { title: 'Team Standup', start: fxComposioGoogleCalendar('2026-02-23T09:00:00-08:00'), end: fxComposioGoogleCalendar('2026-02-23T09:15:00-08:00'), calendar: 'Work' },
+          { title: 'Product Review', start: fxComposioGoogleCalendar('2026-02-23T11:00:00-08:00'), end: fxComposioGoogleCalendar('2026-02-23T12:00:00-08:00'), calendar: 'Work' },
+          { title: 'Lunch with Sarah', start: fxComposioGoogleCalendar('2026-02-23T12:30:00-08:00'), end: fxComposioGoogleCalendar('2026-02-23T13:30:00-08:00'), calendar: 'Personal' },
+          { title: '1:1 with Manager', start: fxComposioGoogleCalendar('2026-02-24T10:00:00-08:00'), end: fxComposioGoogleCalendar('2026-02-24T10:30:00-08:00'), calendar: 'Work' },
+          { title: 'Sprint Planning', start: fxComposioGoogleCalendar('2026-02-24T14:00:00-08:00'), end: fxComposioGoogleCalendar('2026-02-24T15:00:00-08:00'), calendar: 'Work' },
+          { title: 'Engineering All-Hands', start: fxComposioGoogleCalendar('2026-02-25T11:00:00-08:00'), end: fxComposioGoogleCalendar('2026-02-25T12:00:00-08:00'), calendar: 'Work' },
+          { title: 'Dentist Appointment', start: fxComposioGoogleCalendar('2026-02-26T15:00:00-08:00'), end: fxComposioGoogleCalendar('2026-02-26T16:00:00-08:00'), calendar: 'Personal' },
+          { title: 'Friday Demo', start: fxComposioGoogleCalendar('2026-02-27T14:00:00-08:00'), end: fxComposioGoogleCalendar('2026-02-27T15:00:00-08:00'), calendar: 'Work' },
         ],
         total_events: 8,
       },
@@ -1964,6 +2161,7 @@ export const COMPOSIO_NOTFOUND_ERROR_MOCKS: ToolMockMap = {
 // Full discovery flow + write_file to save skill
 // ---------------------------------------------------------------------------
 
+const fxComposioGithubPrSkillSave = fixtureClock('2026-02-21')
 export const COMPOSIO_GITHUB_PR_SKILL_SAVE_MOCKS: ToolMockMap = {
   ...GH_CLI_EXEC_MOCK,
   search_integrations: {
@@ -1997,9 +2195,9 @@ GITHUB_LIST_PULL_REQUESTS: {
     hidden: true,
     response: {
       data: [
-        { number: 42, title: 'Fix critical auth bypass', author: 'alice', state: 'open', labels: ['security', 'urgent'], created_at: '2026-02-20T08:00:00Z' },
-        { number: 41, title: 'Add logging middleware', author: 'bob', state: 'open', labels: ['enhancement'], created_at: '2026-02-21T10:00:00Z' },
-        { number: 40, title: 'Update dependencies', author: 'dependabot', state: 'open', labels: ['dependencies'], created_at: '2026-02-19T06:00:00Z' },
+        { number: 42, title: 'Fix critical auth bypass', author: 'alice', state: 'open', labels: ['security', 'urgent'], created_at: fxComposioGithubPrSkillSave('2026-02-20T08:00:00Z') },
+        { number: 41, title: 'Add logging middleware', author: 'bob', state: 'open', labels: ['enhancement'], created_at: fxComposioGithubPrSkillSave('2026-02-21T10:00:00Z') },
+        { number: 40, title: 'Update dependencies', author: 'dependabot', state: 'open', labels: ['dependencies'], created_at: fxComposioGithubPrSkillSave('2026-02-19T06:00:00Z') },
       ],
       successful: true,
     },
@@ -2079,13 +2277,14 @@ export const AIRBNB_SKILL_SAVE_MOCKS: ToolMockMap = {
 // Tools already installed from turn 1, agent creates an event in turn 2
 // ---------------------------------------------------------------------------
 
+const fxComposioCalendarFollowup = fixtureClock('2026-02-24')
 export const COMPOSIO_CALENDAR_FOLLOWUP_MOCKS: ToolMockMap = {
 GOOGLECALENDAR_CREATE_EVENT: {
     type: 'static',
     description: 'Create a new calendar event.',
     paramKeys: ['summary', 'start', 'end'],
     response: {
-      data: { id: 'evt-new-001', summary: 'Team Sync', start: '2026-02-24T14:00:00-08:00', end: '2026-02-24T15:00:00-08:00', status: 'confirmed', htmlLink: 'https://calendar.google.com/event?eid=evt-new-001' },
+      data: { id: 'evt-new-001', summary: 'Team Sync', start: fxComposioCalendarFollowup('2026-02-24T14:00:00-08:00'), end: fxComposioCalendarFollowup('2026-02-24T15:00:00-08:00'), status: 'confirmed', htmlLink: 'https://calendar.google.com/event?eid=evt-new-001' },
       successful: true,
     },
   },
@@ -2115,6 +2314,7 @@ GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS: {
 // Both Gmail and Calendar via Composio in one session
 // ---------------------------------------------------------------------------
 
+const fxComposioGmailCalendarMulti = fixtureClock('2026-02-24')
 export const COMPOSIO_GMAIL_CALENDAR_MULTI_MOCKS: ToolMockMap = {
   search_integrations: {
     type: 'pattern',
@@ -2197,8 +2397,8 @@ GMAIL_FETCH_EMAILS: {
     hidden: true,
     response: {
       data: [
-        { from: 'john@example.com', subject: 'Re: Budget proposal for Q2', date: '2026-02-25T10:30:00Z', snippet: 'Hey, I reviewed the budget numbers. The Q2 allocation looks good but we need to discuss the marketing spend. Can we meet tomorrow?' },
-        { from: 'john@example.com', subject: 'Budget spreadsheet attached', date: '2026-02-24T14:00:00Z', snippet: 'Here is the updated budget spreadsheet with the Q1 actuals filled in. Let me know if the projections make sense.' },
+        { from: 'john@example.com', subject: 'Re: Budget proposal for Q2', date: fxComposioGmailCalendarMulti('2026-02-25T10:30:00Z'), snippet: 'Hey, I reviewed the budget numbers. The Q2 allocation looks good but we need to discuss the marketing spend. Can we meet tomorrow?' },
+        { from: 'john@example.com', subject: 'Budget spreadsheet attached', date: fxComposioGmailCalendarMulti('2026-02-24T14:00:00Z'), snippet: 'Here is the updated budget spreadsheet with the Q1 actuals filled in. Let me know if the projections make sense.' },
       ],
       successful: true,
     },
@@ -2216,7 +2416,7 @@ GOOGLECALENDAR_CREATE_EVENT: {
     paramKeys: ['summary', 'start', 'end'],
     hidden: true,
     response: {
-      data: { id: 'evt-budget-001', summary: 'Budget Review Meeting', start: '2026-02-27T15:00:00-08:00', end: '2026-02-27T16:00:00-08:00', status: 'confirmed' },
+      data: { id: 'evt-budget-001', summary: 'Budget Review Meeting', start: fxComposioGmailCalendarMulti('2026-02-27T15:00:00-08:00'), end: fxComposioGmailCalendarMulti('2026-02-27T16:00:00-08:00'), status: 'confirmed' },
       successful: true,
     },
   },
@@ -2236,6 +2436,7 @@ GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS: {
 // User says "show my GitHub issues" → agent should search for integration, NOT seed fake data
 // ---------------------------------------------------------------------------
 
+const fxRealDataGithubIssues = fixtureClock('2026-02-20')
 export const REAL_DATA_GITHUB_ISSUES_MOCKS: ToolMockMap = {
   ...GH_CLI_EXEC_MOCK,
   search_integrations: {
@@ -2279,11 +2480,11 @@ GITHUB_LIST_REPOSITORY_ISSUES: {
     response: {
       data: {
         issues: [
-          { number: 142, title: 'Login page CSS broken on mobile', state: 'open', labels: ['bug', 'frontend'], assignee: 'alice', created_at: '2026-02-20T10:00:00Z' },
-          { number: 138, title: 'API rate limiter not working for batch endpoints', state: 'open', labels: ['bug', 'backend'], assignee: 'bob', created_at: '2026-02-18T14:30:00Z' },
-          { number: 135, title: 'Add dark mode support', state: 'open', labels: ['enhancement'], assignee: null, created_at: '2026-02-15T09:00:00Z' },
-          { number: 131, title: 'Memory leak in WebSocket handler', state: 'open', labels: ['bug', 'critical'], assignee: 'carol', created_at: '2026-02-12T16:45:00Z' },
-          { number: 127, title: 'Upgrade TypeScript to 5.4', state: 'open', labels: ['chore'], assignee: 'dave', created_at: '2026-02-10T11:00:00Z' },
+          { number: 142, title: 'Login page CSS broken on mobile', state: 'open', labels: ['bug', 'frontend'], assignee: 'alice', created_at: fxRealDataGithubIssues('2026-02-20T10:00:00Z') },
+          { number: 138, title: 'API rate limiter not working for batch endpoints', state: 'open', labels: ['bug', 'backend'], assignee: 'bob', created_at: fxRealDataGithubIssues('2026-02-18T14:30:00Z') },
+          { number: 135, title: 'Add dark mode support', state: 'open', labels: ['enhancement'], assignee: null, created_at: fxRealDataGithubIssues('2026-02-15T09:00:00Z') },
+          { number: 131, title: 'Memory leak in WebSocket handler', state: 'open', labels: ['bug', 'critical'], assignee: 'carol', created_at: fxRealDataGithubIssues('2026-02-12T16:45:00Z') },
+          { number: 127, title: 'Upgrade TypeScript to 5.4', state: 'open', labels: ['chore'], assignee: 'dave', created_at: fxRealDataGithubIssues('2026-02-10T11:00:00Z') },
         ],
         total_count: 5,
       },
@@ -2311,7 +2512,8 @@ export const REAL_DATA_UPLOADED_CSV_MOCKS: ToolMockMap = {
         },
       },
     ],
-    default: { content: '', path: 'unknown' },
+    // Every other path (src/App.tsx, package.json, …) reads the real workspace.
+    default: '__passthrough',
   },
   search: {
     type: 'static',
@@ -2330,6 +2532,7 @@ export const REAL_DATA_UPLOADED_CSV_MOCKS: ToolMockMap = {
 // User says "pull my expenses from Google Sheets" → agent should use Composio
 // ---------------------------------------------------------------------------
 
+const fxRealDataGoogleSheets = fixtureClock('2026-02-15')
 export const REAL_DATA_GOOGLE_SHEETS_MOCKS: ToolMockMap = {
   search_integrations: {
     type: 'pattern',
@@ -2403,11 +2606,11 @@ export const REAL_DATA_GOOGLE_SHEETS_MOCKS: ToolMockMap = {
       data: {
         values: [
           ['Date', 'Description', 'Amount', 'Category'],
-          ['2026-02-01', 'AWS hosting', '342.50', 'Infrastructure'],
-          ['2026-02-03', 'Figma Pro', '15.00', 'Design'],
-          ['2026-02-07', 'Team dinner', '245.00', 'Team'],
-          ['2026-02-10', 'Zoom subscription', '14.99', 'Software'],
-          ['2026-02-15', 'Flight to SF', '389.00', 'Travel'],
+          [fxRealDataGoogleSheets('2026-02-01'), 'AWS hosting', '342.50', 'Infrastructure'],
+          [fxRealDataGoogleSheets('2026-02-03'), 'Figma Pro', '15.00', 'Design'],
+          [fxRealDataGoogleSheets('2026-02-07'), 'Team dinner', '245.00', 'Team'],
+          [fxRealDataGoogleSheets('2026-02-10'), 'Zoom subscription', '14.99', 'Software'],
+          [fxRealDataGoogleSheets('2026-02-15'), 'Flight to SF', '389.00', 'Travel'],
         ],
       },
       successful: true,
@@ -2665,6 +2868,7 @@ export const UNIFIED_SEARCH_MIXED_MOCKS: ToolMockMap = {
 // and posts a summary to Slack.
 // ---------------------------------------------------------------------------
 
+const fxJiraSlackInstallUse = fixtureClock('2026-02-25')
 export const JIRA_SLACK_INSTALL_USE_MOCKS: ToolMockMap = {
   search_integrations: {
     type: 'pattern',
@@ -2739,9 +2943,9 @@ JIRA_GET_ISSUES: {
     response: {
       data: {
         issues: [
-          { key: 'ENG-401', summary: 'Auth tokens not refreshing on mobile', priority: 'Critical', status: 'Open', assignee: 'alice', created: '2026-02-25' },
-          { key: 'ENG-398', summary: 'Payment webhook silently failing for Stripe EU', priority: 'Critical', status: 'Open', assignee: 'bob', created: '2026-02-24' },
-          { key: 'ENG-395', summary: 'Dashboard 500 error when filtering by date range', priority: 'Critical', status: 'In Progress', assignee: 'carol', created: '2026-02-23' },
+          { key: 'ENG-401', summary: 'Auth tokens not refreshing on mobile', priority: 'Critical', status: 'Open', assignee: 'alice', created: fxJiraSlackInstallUse('2026-02-25') },
+          { key: 'ENG-398', summary: 'Payment webhook silently failing for Stripe EU', priority: 'Critical', status: 'Open', assignee: 'bob', created: fxJiraSlackInstallUse('2026-02-24') },
+          { key: 'ENG-395', summary: 'Dashboard 500 error when filtering by date range', priority: 'Critical', status: 'In Progress', assignee: 'carol', created: fxJiraSlackInstallUse('2026-02-23') },
         ],
       },
       successful: true,
@@ -2760,6 +2964,7 @@ SLACK_SENDS_A_MESSAGE_TO_A_SLACK_CHANNEL: {
 // Fixture: Composio Google Calendar — installed tool provides real data
 // ---------------------------------------------------------------------------
 
+const fxCanvasApiBind = fixtureClock('2026-02-27')
 export const CANVAS_API_BIND_MOCKS: ToolMockMap = {
   search_integrations: {
     type: 'static',
@@ -2792,8 +2997,8 @@ GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS: {
     response: {
       data: {
         items: [
-          { id: 'evt-1', summary: 'Team Standup', start: { dateTime: '2026-02-27T09:00:00-08:00' }, end: { dateTime: '2026-02-27T09:15:00-08:00' } },
-          { id: 'evt-2', summary: 'Product Review', start: { dateTime: '2026-02-27T11:00:00-08:00' }, end: { dateTime: '2026-02-27T12:00:00-08:00' } },
+          { id: 'evt-1', summary: 'Team Standup', start: { dateTime: fxCanvasApiBind('2026-02-27T09:00:00-08:00') }, end: { dateTime: fxCanvasApiBind('2026-02-27T09:15:00-08:00') } },
+          { id: 'evt-2', summary: 'Product Review', start: { dateTime: fxCanvasApiBind('2026-02-27T11:00:00-08:00') }, end: { dateTime: fxCanvasApiBind('2026-02-27T12:00:00-08:00') } },
         ],
       },
       successful: true,
@@ -2806,6 +3011,7 @@ GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS: {
 // Tests the complete agent flow from having no tools to displaying live data.
 // ---------------------------------------------------------------------------
 
+const fxToolLifecycleFull = fixtureClock('2026-02-25')
 export const TOOL_LIFECYCLE_FULL_MOCKS: ToolMockMap = {
   ...GH_CLI_EXEC_MOCK,
   search_integrations: {
@@ -2839,9 +3045,9 @@ GITHUB_LIST_REPOSITORY_ISSUES: {
     response: {
       data: {
         items: [
-          { number: 42, title: 'Fix auth bypass vulnerability', state: 'open', labels: ['security', 'critical'], assignee: 'alice', created_at: '2026-02-25T10:00:00Z' },
-          { number: 38, title: 'Add dark mode support', state: 'open', labels: ['enhancement'], assignee: 'bob', created_at: '2026-02-24T14:00:00Z' },
-          { number: 35, title: 'Memory leak in dashboard', state: 'open', labels: ['bug'], assignee: null, created_at: '2026-02-23T08:00:00Z' },
+          { number: 42, title: 'Fix auth bypass vulnerability', state: 'open', labels: ['security', 'critical'], assignee: 'alice', created_at: fxToolLifecycleFull('2026-02-25T10:00:00Z') },
+          { number: 38, title: 'Add dark mode support', state: 'open', labels: ['enhancement'], assignee: 'bob', created_at: fxToolLifecycleFull('2026-02-24T14:00:00Z') },
+          { number: 35, title: 'Memory leak in dashboard', state: 'open', labels: ['bug'], assignee: null, created_at: fxToolLifecycleFull('2026-02-23T08:00:00Z') },
         ],
       },
       successful: true,
@@ -2864,6 +3070,7 @@ const GCAL_SEARCH_HIT = {
   composioToolkit: 'googlecalendar',
 } as const
 
+const fxToolBindAtInstall = fixtureClock('2026-02-27')
 export const TOOL_BIND_AT_INSTALL_MOCKS: ToolMockMap = {
   // Mock search_integrations so models that prefer "search → connect" (rather
   // than guessing the qualifiedName and connecting directly) can still
@@ -2903,9 +3110,9 @@ export const TOOL_BIND_AT_INSTALL_MOCKS: ToolMockMap = {
     response: {
       data: {
         items: [
-          { id: 'evt-1', summary: 'Team Standup', start: { dateTime: '2026-02-27T09:00:00-08:00' }, end: { dateTime: '2026-02-27T09:15:00-08:00' } },
-          { id: 'evt-2', summary: 'Product Review', start: { dateTime: '2026-02-27T11:00:00-08:00' }, end: { dateTime: '2026-02-27T12:00:00-08:00' } },
-          { id: 'evt-3', summary: '1:1 with Manager', start: { dateTime: '2026-02-27T14:00:00-08:00' }, end: { dateTime: '2026-02-27T14:30:00-08:00' } },
+          { id: 'evt-1', summary: 'Team Standup', start: { dateTime: fxToolBindAtInstall('2026-02-27T09:00:00-08:00') }, end: { dateTime: fxToolBindAtInstall('2026-02-27T09:15:00-08:00') } },
+          { id: 'evt-2', summary: 'Product Review', start: { dateTime: fxToolBindAtInstall('2026-02-27T11:00:00-08:00') }, end: { dateTime: fxToolBindAtInstall('2026-02-27T12:00:00-08:00') } },
+          { id: 'evt-3', summary: '1:1 with Manager', start: { dateTime: fxToolBindAtInstall('2026-02-27T14:00:00-08:00') }, end: { dateTime: fxToolBindAtInstall('2026-02-27T14:30:00-08:00') } },
         ],
       },
       successful: true,
@@ -3140,7 +3347,12 @@ const BUILTIN_MOCKS: ToolMockMap = {
   web: DEFAULT_WEB_FETCH,
   send_message: DEFAULT_SEND_MESSAGE,
   browser: { type: 'static', response: { ok: true, snapshot: '<html>Mock browser snapshot</html>' } },
-  ask_user: { type: 'static', response: { answered: true, choice: 'Proceed with defaults' } },
+  // Like the real tool: the question is shown and the answer arrives as the
+  // next user message (runner.ts sends `askUserResponses` when defined).
+  ask_user: { type: 'static', response: { status: 'pending', message: 'Question shown to the user; wait for their reply.' } },
+  // Real shell for everything except account-touching CLIs (gh, aws, stripe, …).
+  exec: cliExecMock(),
+  terminal_exec: cliExecMock(),
 }
 
 // ---------------------------------------------------------------------------
@@ -3149,6 +3361,7 @@ const BUILTIN_MOCKS: ToolMockMap = {
 // then build a canvas dashboard with deploy status, branch, and trend chart.
 // ---------------------------------------------------------------------------
 
+const fxCicdPipeline = fixtureClock('2026-02-27')
 export const CICD_PIPELINE_MOCKS: ToolMockMap = {
   search_integrations: {
     type: 'pattern',
@@ -3218,16 +3431,16 @@ export const CICD_PIPELINE_MOCKS: ToolMockMap = {
     response: {
       data: {
         workflow_runs: [
-          { id: 9001, name: 'Deploy Production', head_branch: 'main', head_sha: 'a1b2c3d', status: 'completed', conclusion: 'success', created_at: '2026-02-27T14:30:00Z', run_started_at: '2026-02-27T14:30:12Z', updated_at: '2026-02-27T14:33:45Z', html_url: 'https://github.com/acme/app/actions/runs/9001' },
-          { id: 8998, name: 'Deploy Production', head_branch: 'main', head_sha: 'e4f5g6h', status: 'completed', conclusion: 'failure', created_at: '2026-02-27T10:15:00Z', run_started_at: '2026-02-27T10:15:08Z', updated_at: '2026-02-27T10:18:22Z', html_url: 'https://github.com/acme/app/actions/runs/8998' },
-          { id: 8995, name: 'Deploy Staging', head_branch: 'feature/auth-v2', head_sha: 'i7j8k9l', status: 'completed', conclusion: 'success', created_at: '2026-02-26T16:45:00Z', run_started_at: '2026-02-26T16:45:05Z', updated_at: '2026-02-26T16:48:30Z', html_url: 'https://github.com/acme/app/actions/runs/8995' },
-          { id: 8990, name: 'Deploy Production', head_branch: 'main', head_sha: 'm0n1o2p', status: 'completed', conclusion: 'success', created_at: '2026-02-26T11:00:00Z', run_started_at: '2026-02-26T11:00:10Z', updated_at: '2026-02-26T11:04:15Z', html_url: 'https://github.com/acme/app/actions/runs/8990' },
-          { id: 8987, name: 'Deploy Staging', head_branch: 'fix/memory-leak', head_sha: 'q3r4s5t', status: 'completed', conclusion: 'success', created_at: '2026-02-25T09:30:00Z', run_started_at: '2026-02-25T09:30:08Z', updated_at: '2026-02-25T09:33:50Z', html_url: 'https://github.com/acme/app/actions/runs/8987' },
-          { id: 8984, name: 'Deploy Production', head_branch: 'main', head_sha: 'u6v7w8x', status: 'completed', conclusion: 'failure', created_at: '2026-02-24T15:20:00Z', run_started_at: '2026-02-24T15:20:15Z', updated_at: '2026-02-24T15:24:02Z', html_url: 'https://github.com/acme/app/actions/runs/8984' },
-          { id: 8980, name: 'Deploy Production', head_branch: 'main', head_sha: 'y9z0a1b', status: 'completed', conclusion: 'success', created_at: '2026-02-24T10:00:00Z', run_started_at: '2026-02-24T10:00:06Z', updated_at: '2026-02-24T10:03:42Z', html_url: 'https://github.com/acme/app/actions/runs/8980' },
-          { id: 8976, name: 'Deploy Staging', head_branch: 'feature/dashboard', head_sha: 'c2d3e4f', status: 'completed', conclusion: 'success', created_at: '2026-02-23T17:10:00Z', run_started_at: '2026-02-23T17:10:10Z', updated_at: '2026-02-23T17:13:28Z', html_url: 'https://github.com/acme/app/actions/runs/8976' },
-          { id: 8972, name: 'Deploy Production', head_branch: 'main', head_sha: 'g5h6i7j', status: 'completed', conclusion: 'success', created_at: '2026-02-22T13:45:00Z', run_started_at: '2026-02-22T13:45:12Z', updated_at: '2026-02-22T13:48:55Z', html_url: 'https://github.com/acme/app/actions/runs/8972' },
-          { id: 8968, name: 'Deploy Production', head_branch: 'main', head_sha: 'k8l9m0n', status: 'in_progress', conclusion: null, created_at: '2026-02-21T11:30:00Z', run_started_at: '2026-02-21T11:30:05Z', updated_at: '2026-02-21T11:31:00Z', html_url: 'https://github.com/acme/app/actions/runs/8968' },
+          { id: 9001, name: 'Deploy Production', head_branch: 'main', head_sha: 'a1b2c3d', status: 'completed', conclusion: 'success', created_at: fxCicdPipeline('2026-02-27T14:30:00Z'), run_started_at: fxCicdPipeline('2026-02-27T14:30:12Z'), updated_at: fxCicdPipeline('2026-02-27T14:33:45Z'), html_url: 'https://github.com/acme/app/actions/runs/9001' },
+          { id: 8998, name: 'Deploy Production', head_branch: 'main', head_sha: 'e4f5g6h', status: 'completed', conclusion: 'failure', created_at: fxCicdPipeline('2026-02-27T10:15:00Z'), run_started_at: fxCicdPipeline('2026-02-27T10:15:08Z'), updated_at: fxCicdPipeline('2026-02-27T10:18:22Z'), html_url: 'https://github.com/acme/app/actions/runs/8998' },
+          { id: 8995, name: 'Deploy Staging', head_branch: 'feature/auth-v2', head_sha: 'i7j8k9l', status: 'completed', conclusion: 'success', created_at: fxCicdPipeline('2026-02-26T16:45:00Z'), run_started_at: fxCicdPipeline('2026-02-26T16:45:05Z'), updated_at: fxCicdPipeline('2026-02-26T16:48:30Z'), html_url: 'https://github.com/acme/app/actions/runs/8995' },
+          { id: 8990, name: 'Deploy Production', head_branch: 'main', head_sha: 'm0n1o2p', status: 'completed', conclusion: 'success', created_at: fxCicdPipeline('2026-02-26T11:00:00Z'), run_started_at: fxCicdPipeline('2026-02-26T11:00:10Z'), updated_at: fxCicdPipeline('2026-02-26T11:04:15Z'), html_url: 'https://github.com/acme/app/actions/runs/8990' },
+          { id: 8987, name: 'Deploy Staging', head_branch: 'fix/memory-leak', head_sha: 'q3r4s5t', status: 'completed', conclusion: 'success', created_at: fxCicdPipeline('2026-02-25T09:30:00Z'), run_started_at: fxCicdPipeline('2026-02-25T09:30:08Z'), updated_at: fxCicdPipeline('2026-02-25T09:33:50Z'), html_url: 'https://github.com/acme/app/actions/runs/8987' },
+          { id: 8984, name: 'Deploy Production', head_branch: 'main', head_sha: 'u6v7w8x', status: 'completed', conclusion: 'failure', created_at: fxCicdPipeline('2026-02-24T15:20:00Z'), run_started_at: fxCicdPipeline('2026-02-24T15:20:15Z'), updated_at: fxCicdPipeline('2026-02-24T15:24:02Z'), html_url: 'https://github.com/acme/app/actions/runs/8984' },
+          { id: 8980, name: 'Deploy Production', head_branch: 'main', head_sha: 'y9z0a1b', status: 'completed', conclusion: 'success', created_at: fxCicdPipeline('2026-02-24T10:00:00Z'), run_started_at: fxCicdPipeline('2026-02-24T10:00:06Z'), updated_at: fxCicdPipeline('2026-02-24T10:03:42Z'), html_url: 'https://github.com/acme/app/actions/runs/8980' },
+          { id: 8976, name: 'Deploy Staging', head_branch: 'feature/dashboard', head_sha: 'c2d3e4f', status: 'completed', conclusion: 'success', created_at: fxCicdPipeline('2026-02-23T17:10:00Z'), run_started_at: fxCicdPipeline('2026-02-23T17:10:10Z'), updated_at: fxCicdPipeline('2026-02-23T17:13:28Z'), html_url: 'https://github.com/acme/app/actions/runs/8976' },
+          { id: 8972, name: 'Deploy Production', head_branch: 'main', head_sha: 'g5h6i7j', status: 'completed', conclusion: 'success', created_at: fxCicdPipeline('2026-02-22T13:45:00Z'), run_started_at: fxCicdPipeline('2026-02-22T13:45:12Z'), updated_at: fxCicdPipeline('2026-02-22T13:48:55Z'), html_url: 'https://github.com/acme/app/actions/runs/8972' },
+          { id: 8968, name: 'Deploy Production', head_branch: 'main', head_sha: 'k8l9m0n', status: 'in_progress', conclusion: null, created_at: fxCicdPipeline('2026-02-21T11:30:00Z'), run_started_at: fxCicdPipeline('2026-02-21T11:30:05Z'), updated_at: fxCicdPipeline('2026-02-21T11:31:00Z'), html_url: 'https://github.com/acme/app/actions/runs/8968' },
         ],
         total_count: 10,
       },
@@ -3241,6 +3454,17 @@ export const CICD_PIPELINE_MOCKS: ToolMockMap = {
 // Fixture: Data Processing — Massive GitHub issues (~1M chars)
 // Agent must use skill server to ingest/trim data
 // ---------------------------------------------------------------------------
+
+/** The 10 most-commented open issues in the massive acme/app fixture, most first. */
+export const TOP_COMMENTED_ISSUES: ReadonlyArray<readonly [number, number]> = [
+  [18, 212], [42, 198], [88, 187], [103, 176], [150, 169], [203, 158], [244, 151], [310, 143], [378, 137], [452, 131],
+]
+const TOP_COMMENTED = new Map(TOP_COMMENTED_ISSUES)
+
+/** Deterministic comment count for issue `n` (hot issues above, the rest < 60). */
+function massiveIssueCommentCount(n: number): number {
+  return TOP_COMMENTED.get(n) ?? (n * 37) % 60
+}
 
 function generateMassiveIssuesMock(): any {
   const titles = ['Fix SSO login flow', 'Memory leak in WS handler', 'Add dark mode toggle', 'Upgrade React to v19', 'Fix pagination in search results',
@@ -3258,10 +3482,10 @@ function generateMassiveIssuesMock(): any {
     assignee: { login: `user${i % 10}`, id: 1000 + i, avatar_url: `https://avatars.githubusercontent.com/u/${1000 + i}?v=4`, type: 'User', site_admin: false, gravatar_id: '', html_url: `https://github.com/user${i % 10}` },
     assignees: Array.from({ length: 3 }, (_, j) => ({ login: `user${(i + j) % 10}`, id: 1000 + i + j, avatar_url: `https://avatars.githubusercontent.com/u/${1000 + i + j}?v=4`, type: 'User' })),
     milestone: { number: (i % 3) + 1, title: `v${2 + (i % 3)}.0`, description: 'Major release with breaking changes and new features planned for Q2', state: 'open', open_issues: 42, closed_issues: 18 },
-    created_at: `2026-0${1 + (i % 3)}-${String(1 + (i % 28)).padStart(2, '0')}T10:00:00Z`,
-    updated_at: '2026-03-01T14:30:00Z',
-    closed_at: i % 4 === 0 ? '2026-03-01T15:00:00Z' : null,
-    comments: Math.floor(Math.random() * 200),
+    created_at: daysAgo(3 + (i % 84)),
+    updated_at: daysAgo(1, 14, 30),
+    closed_at: i % 4 === 0 ? daysAgo(1, 15) : null,
+    comments: massiveIssueCommentCount(i + 1),
     html_url: `https://github.com/acme/app/issues/${i + 1}`,
     events_url: `https://api.github.com/repos/acme/app/issues/${i + 1}/events`,
     comments_url: `https://api.github.com/repos/acme/app/issues/${i + 1}/comments`,
@@ -3293,8 +3517,8 @@ function generateMassiveCalendarMock(): any {
     id: `event_${i}`,
     summary: summaries[i % summaries.length],
     description: `Detailed event description for event ${i}. Agenda items include: review of Q2 goals, discussion of blockers, team updates, and action items from last meeting. Attendees should prepare status updates and any concerns to raise. `.repeat(60),
-    start: { dateTime: `2026-03-${String(1 + (i % 28)).padStart(2, '0')}T${9 + (i % 8)}:00:00-08:00`, timeZone: 'America/Los_Angeles' },
-    end: { dateTime: `2026-03-${String(1 + (i % 28)).padStart(2, '0')}T${10 + (i % 8)}:00:00-08:00`, timeZone: 'America/Los_Angeles' },
+    start: { dateTime: todayAt(9 + (i % 8), 0, '-08:00', (i % 28) - 7), timeZone: 'America/Los_Angeles' },
+    end: { dateTime: todayAt(10 + (i % 8), 0, '-08:00', (i % 28) - 7), timeZone: 'America/Los_Angeles' },
     location: ['Conference Room A', 'Conference Room B', 'Zoom', 'Google Meet', null][i % 5],
     organizer: { email: `organizer${i % 5}@example.com`, displayName: `Organizer ${i % 5}`, self: i % 5 === 0 },
     attendees: Array.from({ length: 8 }, (_, j) => ({
@@ -3311,14 +3535,14 @@ function generateMassiveCalendarMock(): any {
     iCalUID: `event_${i}@google.com`,
     etag: `"${3000000 + i}"`,
     kind: 'calendar#event',
-    created: `2026-02-${String(1 + (i % 28)).padStart(2, '0')}T10:00:00.000Z`,
-    updated: '2026-03-20T14:30:00.000Z',
+    created: daysAgo(30 + (i % 28)).replace('Z', '.000Z'),
+    updated: daysAgo(2, 14, 30).replace('Z', '.000Z'),
     sequence: 0,
     reminders: { useDefault: true, overrides: [{ method: 'email', minutes: 30 }, { method: 'popup', minutes: 10 }] },
     conferenceData: { entryPoints: [{ entryPointType: 'video', uri: `https://meet.google.com/abc-${i}`, label: `meet.google.com/abc-${i}` }], conferenceSolution: { name: 'Google Meet', key: { type: 'hangoutsMeet' } } },
     hangoutLink: `https://meet.google.com/abc-${i}`,
     recurringEventId: i % 3 === 0 ? `recurring_${i % 10}` : undefined,
-    originalStartTime: i % 3 === 0 ? { dateTime: `2026-03-01T${9 + (i % 8)}:00:00-08:00` } : undefined,
+    originalStartTime: i % 3 === 0 ? { dateTime: todayAt(9 + (i % 8), 0, '-08:00', -7) } : undefined,
     extendedProperties: { private: { notes: `Internal notes for event ${i}` } },
   }))
 
@@ -3337,8 +3561,46 @@ function generateMassiveCalendarMock(): any {
   }
 }
 
+/**
+ * `gh` over the same ~500-issue acme/app fixture, so the CLI route is just as
+ * large as the integration route. `--json` output honours `comments` (an
+ * array of comment objects, like the real gh), and `gh api …/issues` returns
+ * REST objects whose `comments` is a count.
+ */
+function massiveIssuesGhExecMock(): ToolMockSpec {
+  const all = generateMassiveIssuesMock().data.items as any[]
+  const open = all.filter(i => i.state === 'open')
+  const ghJson = (withComments: boolean) => execResult(JSON.stringify(open.map(i => ({
+    number: i.number,
+    title: i.title,
+    state: 'OPEN',
+    labels: i.labels.map((l: any) => ({ name: l.name, color: l.color, description: l.description })),
+    assignees: i.assignees.map((a: any) => ({ login: a.login })),
+    author: { login: i.assignee.login },
+    body: String(i.body).slice(0, 900),
+    createdAt: i.created_at,
+    updatedAt: i.updated_at,
+    url: i.html_url,
+    ...(withComments
+      ? { comments: Array.from({ length: i.comments }, (_, k) => ({ author: { login: `user${k % 10}` }, body: k % 3 ? '+1, seeing this too' : 'Any update on this?' })) }
+      : {}),
+  }))))
+  const text = open.map(i => `${i.number}\tOPEN\t${i.title}\t${i.labels.map((l: any) => l.name).join(', ')}\t${i.created_at}`).join('\n')
+  return cliExecMock({
+    gh: { authenticated: true, login: 'acme' },
+    patterns: [
+      { match: { command: 're:(?:^|[\\s;&|(/])gh\\s+issue\\s+list[^;&|]*--json\\s+[^;&|]*comments' }, response: ghJson(true) },
+      { match: { command: 're:(?:^|[\\s;&|(/])gh\\s+(issue\\s+list|search\\s+issues)[^;&|]*--json' }, response: ghJson(false) },
+      { match: { command: 're:(?:^|[\\s;&|(/])gh\\s+api\\s+[^;&|]*issues' }, response: execResult(JSON.stringify(open)) },
+      { match: { command: 're:\\bcurl\\b[\\s\\S]*api\\.github\\.com[\\s\\S]*/issues' }, response: execResult(JSON.stringify(open)) },
+      { match: { command: cmdRe('gh', 'issue', 'list') }, response: execResult(text) },
+      { match: { command: cmdRe('gh', 'search', 'issues') }, response: execResult(text) },
+    ],
+  })
+}
+
 export const DATA_PROCESSING_LARGE_ISSUES_MOCKS: ToolMockMap = {
-  ...GH_CLI_EXEC_MOCK,
+  exec: massiveIssuesGhExecMock(),
   search_integrations: {
     type: 'static',
     paramKeys: ['query'],
@@ -3414,18 +3676,10 @@ export const DATA_PROCESSING_LARGE_CALENDAR_MOCKS: ToolMockMap = {
   },
 }
 
+// The workspace's real skill server answers /api calls (built-in web mock
+// passes localhost through), so no canned web responses here.
 export const DATA_PROCESSING_TOP_N_MOCKS: ToolMockMap = {
   ...DATA_PROCESSING_LARGE_ISSUES_MOCKS,
-  web: {
-    type: 'static',
-    paramKeys: ['url', 'query'],
-    response: {
-      content: JSON.stringify(Array.from({ length: 10 }, (_, i) => ({
-        id: `issue_${i}`, number: (i + 1) * 10, title: `High-comment issue #${(i + 1) * 10}`, comments: 200 - i * 15, state: 'open',
-      }))),
-      status: 200,
-    },
-  },
 }
 
 // ---------------------------------------------------------------------------
@@ -3604,6 +3858,7 @@ export const SKILL_LIFECYCLE_MOCKS: ToolMockMap = {
 // then synthesize a weekly report of what was built.
 // ---------------------------------------------------------------------------
 
+const fxWeeklyReport = fixtureClock('2026-04-04')
 export const WEEKLY_REPORT_MOCKS: ToolMockMap = {
   ...GH_CLI_EXEC_MOCK,
   search_integrations: {
@@ -3658,16 +3913,16 @@ export const WEEKLY_REPORT_MOCKS: ToolMockMap = {
     paramKeys: ['jql', 'project', 'maxResults'],
     response: {
       issues: [
-        { key: 'PROJ-101', summary: 'Implement user authentication flow', status: 'Done', assignee: 'alice@acme.com', storyPoints: 5, completedDate: '2026-03-30', type: 'Story', labels: ['backend', 'auth'] },
-        { key: 'PROJ-102', summary: 'Add password reset email template', status: 'Done', assignee: 'bob@acme.com', storyPoints: 3, completedDate: '2026-03-31', type: 'Story', labels: ['backend', 'email'] },
-        { key: 'PROJ-103', summary: 'Fix checkout total calculation bug', status: 'Done', assignee: 'charlie@acme.com', storyPoints: 2, completedDate: '2026-03-28', type: 'Bug', labels: ['payments'] },
-        { key: 'PROJ-104', summary: 'Redesign settings page UI', status: 'Done', assignee: 'dana@acme.com', storyPoints: 5, completedDate: '2026-04-01', type: 'Story', labels: ['frontend', 'design'] },
-        { key: 'PROJ-105', summary: 'Set up CI/CD pipeline for staging', status: 'Done', assignee: 'alice@acme.com', storyPoints: 3, completedDate: '2026-03-29', type: 'Task', labels: ['devops'] },
+        { key: 'PROJ-101', summary: 'Implement user authentication flow', status: 'Done', assignee: 'alice@acme.com', storyPoints: 5, completedDate: fxWeeklyReport('2026-03-30'), type: 'Story', labels: ['backend', 'auth'] },
+        { key: 'PROJ-102', summary: 'Add password reset email template', status: 'Done', assignee: 'bob@acme.com', storyPoints: 3, completedDate: fxWeeklyReport('2026-03-31'), type: 'Story', labels: ['backend', 'email'] },
+        { key: 'PROJ-103', summary: 'Fix checkout total calculation bug', status: 'Done', assignee: 'charlie@acme.com', storyPoints: 2, completedDate: fxWeeklyReport('2026-03-28'), type: 'Bug', labels: ['payments'] },
+        { key: 'PROJ-104', summary: 'Redesign settings page UI', status: 'Done', assignee: 'dana@acme.com', storyPoints: 5, completedDate: fxWeeklyReport('2026-04-01'), type: 'Story', labels: ['frontend', 'design'] },
+        { key: 'PROJ-105', summary: 'Set up CI/CD pipeline for staging', status: 'Done', assignee: 'alice@acme.com', storyPoints: 3, completedDate: fxWeeklyReport('2026-03-29'), type: 'Task', labels: ['devops'] },
         { key: 'PROJ-106', summary: 'Migrate user table to new schema', status: 'In Review', assignee: 'bob@acme.com', storyPoints: 8, completedDate: null, type: 'Story', labels: ['backend', 'database'] },
         { key: 'PROJ-107', summary: 'Add rate limiting to API endpoints', status: 'In Progress', assignee: 'charlie@acme.com', storyPoints: 5, completedDate: null, type: 'Story', labels: ['backend', 'security'] },
         { key: 'PROJ-108', summary: 'Write integration tests for payments', status: 'In Progress', assignee: 'dana@acme.com', storyPoints: 3, completedDate: null, type: 'Task', labels: ['testing'] },
         { key: 'PROJ-109', summary: 'Update API documentation', status: 'To Do', assignee: 'alice@acme.com', storyPoints: 2, completedDate: null, type: 'Task', labels: ['docs'] },
-        { key: 'PROJ-110', summary: 'Investigate memory leak in worker process', status: 'Done', assignee: 'charlie@acme.com', storyPoints: 3, completedDate: '2026-03-31', type: 'Bug', labels: ['backend', 'performance'] },
+        { key: 'PROJ-110', summary: 'Investigate memory leak in worker process', status: 'Done', assignee: 'charlie@acme.com', storyPoints: 3, completedDate: fxWeeklyReport('2026-03-31'), type: 'Bug', labels: ['backend', 'performance'] },
       ],
       total: 10,
     },
@@ -3681,8 +3936,8 @@ export const WEEKLY_REPORT_MOCKS: ToolMockMap = {
         id: 42,
         name: 'Sprint 42 — Auth & Payments',
         state: 'active',
-        startDate: '2026-03-24',
-        endDate: '2026-04-04',
+        startDate: fxWeeklyReport('2026-03-24'),
+        endDate: fxWeeklyReport('2026-04-04'),
         goal: 'Complete user auth flow and fix payment bugs',
         completedIssues: 6,
         totalIssues: 10,
@@ -3698,14 +3953,14 @@ export const WEEKLY_REPORT_MOCKS: ToolMockMap = {
     paramKeys: ['state', 'base', 'sort', 'per_page'],
     response: {
       pullRequests: [
-        { number: 234, title: 'feat: implement JWT auth middleware (PROJ-101)', author: 'alice', state: 'merged', mergedAt: '2026-03-30T14:22:00Z', base: 'main', additions: 342, deletions: 12, changedFiles: 8, reviewers: ['bob'] },
-        { number: 235, title: 'feat: password reset email with Resend (PROJ-102)', author: 'bob', state: 'merged', mergedAt: '2026-03-31T10:05:00Z', base: 'main', additions: 156, deletions: 4, changedFiles: 5, reviewers: ['alice'] },
-        { number: 236, title: 'fix: checkout total rounding error (PROJ-103)', author: 'charlie', state: 'merged', mergedAt: '2026-03-28T16:30:00Z', base: 'main', additions: 23, deletions: 8, changedFiles: 2, reviewers: ['dana'] },
-        { number: 237, title: 'feat: redesign settings page with new design system (PROJ-104)', author: 'dana', state: 'merged', mergedAt: '2026-04-01T09:15:00Z', base: 'main', additions: 487, deletions: 201, changedFiles: 12, reviewers: ['alice', 'charlie'] },
-        { number: 238, title: 'chore: configure GitHub Actions CI/CD (PROJ-105)', author: 'alice', state: 'merged', mergedAt: '2026-03-29T11:45:00Z', base: 'main', additions: 98, deletions: 0, changedFiles: 3, reviewers: ['bob'] },
-        { number: 239, title: 'fix: memory leak in background worker (PROJ-110)', author: 'charlie', state: 'merged', mergedAt: '2026-03-31T17:00:00Z', base: 'main', additions: 45, deletions: 32, changedFiles: 3, reviewers: ['alice'] },
+        { number: 234, title: 'feat: implement JWT auth middleware (PROJ-101)', author: 'alice', state: 'merged', mergedAt: fxWeeklyReport('2026-03-30T14:22:00Z'), base: 'main', additions: 342, deletions: 12, changedFiles: 8, reviewers: ['bob'] },
+        { number: 235, title: 'feat: password reset email with Resend (PROJ-102)', author: 'bob', state: 'merged', mergedAt: fxWeeklyReport('2026-03-31T10:05:00Z'), base: 'main', additions: 156, deletions: 4, changedFiles: 5, reviewers: ['alice'] },
+        { number: 236, title: 'fix: checkout total rounding error (PROJ-103)', author: 'charlie', state: 'merged', mergedAt: fxWeeklyReport('2026-03-28T16:30:00Z'), base: 'main', additions: 23, deletions: 8, changedFiles: 2, reviewers: ['dana'] },
+        { number: 237, title: 'feat: redesign settings page with new design system (PROJ-104)', author: 'dana', state: 'merged', mergedAt: fxWeeklyReport('2026-04-01T09:15:00Z'), base: 'main', additions: 487, deletions: 201, changedFiles: 12, reviewers: ['alice', 'charlie'] },
+        { number: 238, title: 'chore: configure GitHub Actions CI/CD (PROJ-105)', author: 'alice', state: 'merged', mergedAt: fxWeeklyReport('2026-03-29T11:45:00Z'), base: 'main', additions: 98, deletions: 0, changedFiles: 3, reviewers: ['bob'] },
+        { number: 239, title: 'fix: memory leak in background worker (PROJ-110)', author: 'charlie', state: 'merged', mergedAt: fxWeeklyReport('2026-03-31T17:00:00Z'), base: 'main', additions: 45, deletions: 32, changedFiles: 3, reviewers: ['alice'] },
         { number: 240, title: 'feat: migrate user table schema (PROJ-106)', author: 'bob', state: 'open', mergedAt: null, base: 'main', additions: 210, deletions: 85, changedFiles: 6, reviewers: ['charlie'] },
-        { number: 241, title: 'refactor: extract shared validation utils', author: 'dana', state: 'merged', mergedAt: '2026-03-30T13:00:00Z', base: 'main', additions: 112, deletions: 67, changedFiles: 7, reviewers: ['bob'] },
+        { number: 241, title: 'refactor: extract shared validation utils', author: 'dana', state: 'merged', mergedAt: fxWeeklyReport('2026-03-30T13:00:00Z'), base: 'main', additions: 112, deletions: 67, changedFiles: 7, reviewers: ['bob'] },
       ],
       total: 8,
     },
@@ -3716,7 +3971,7 @@ export const WEEKLY_REPORT_MOCKS: ToolMockMap = {
       {
         match: { pull_number: '234' },
         response: {
-          number: 234, title: 'feat: implement JWT auth middleware (PROJ-101)', author: 'alice', state: 'merged', mergedAt: '2026-03-30T14:22:00Z',
+          number: 234, title: 'feat: implement JWT auth middleware (PROJ-101)', author: 'alice', state: 'merged', mergedAt: fxWeeklyReport('2026-03-30T14:22:00Z'),
           body: 'Implements the full JWT authentication middleware with token refresh, session management, and role-based access control.\n\n## Changes\n- Added auth middleware\n- JWT token generation and validation\n- Session storage in Redis\n- Role-based route guards',
           additions: 342, deletions: 12, changedFiles: 8,
           reviews: [{ author: 'bob', state: 'APPROVED', body: 'LGTM, clean implementation.' }],
@@ -3734,6 +3989,7 @@ export const WEEKLY_REPORT_MOCKS: ToolMockMap = {
 // Fixture: Business User Mega Eval — Pixel & Co. digital agency
 // ---------------------------------------------------------------------------
 
+const fxBusinessUser = fixtureClock('2026-04-02')
 export const BUSINESS_USER_MOCKS: ToolMockMap = {
   channel_connect: {
     type: 'static',
@@ -3752,7 +4008,7 @@ export const BUSINESS_USER_MOCKS: ToolMockMap = {
       { match: { url: 'digital forge' }, response: { content: '<html><body><h1>Digital Forge</h1><p>Full-stack digital agency. Services: web apps, mobile apps, DevOps consulting, AI integration. Pricing: retainers from $8,000/month. Recent work: built inventory management SaaS for 3 warehouse clients, launched AI chatbot for RetailMax.</p></body></html>', status: 200 } },
       { match: { url: 'creative dynamics' }, response: { content: '<html><body><h1>Creative Dynamics</h1><p>Creative-first agency specializing in e-commerce. Services: Shopify development, UX audits, conversion optimization, content strategy. Pricing: Shopify builds from $5,000, CRO audits $3,000. Recent work: Shopify Plus migration for Luxe Candles, UX redesign for FitGear.</p></body></html>', status: 200 } },
     ],
-    default: { content: '<html><body><p>Search results for your query.</p></body></html>', status: 200 },
+    default: { results: [], organic: [], message: 'No results found.' },
   },
   search_integrations: {
     type: 'pattern',
@@ -3807,11 +4063,11 @@ export const BUSINESS_USER_MOCKS: ToolMockMap = {
     hidden: true,
     response: {
       repos: [
-        { name: 'pixelco-website', description: 'Company marketing site', language: 'TypeScript', updatedAt: '2026-03-30', openIssues: 3 },
-        { name: 'acme-ecommerce', description: 'Acme Corp e-commerce redesign', language: 'TypeScript', updatedAt: '2026-04-01', openIssues: 7 },
-        { name: 'bloom-skincare', description: 'Bloom Skincare Shopify theme', language: 'Liquid', updatedAt: '2026-03-28', openIssues: 1 },
-        { name: 'fitgear-app', description: 'FitGear mobile companion app', language: 'React Native', updatedAt: '2026-03-25', openIssues: 12 },
-        { name: 'internal-tools', description: 'Internal dashboards and utilities', language: 'TypeScript', updatedAt: '2026-03-15', openIssues: 0 },
+        { name: 'pixelco-website', description: 'Company marketing site', language: 'TypeScript', updatedAt: fxBusinessUser('2026-03-30'), openIssues: 3 },
+        { name: 'acme-ecommerce', description: 'Acme Corp e-commerce redesign', language: 'TypeScript', updatedAt: fxBusinessUser('2026-04-01'), openIssues: 7 },
+        { name: 'bloom-skincare', description: 'Bloom Skincare Shopify theme', language: 'Liquid', updatedAt: fxBusinessUser('2026-03-28'), openIssues: 1 },
+        { name: 'fitgear-app', description: 'FitGear mobile companion app', language: 'React Native', updatedAt: fxBusinessUser('2026-03-25'), openIssues: 12 },
+        { name: 'internal-tools', description: 'Internal dashboards and utilities', language: 'TypeScript', updatedAt: fxBusinessUser('2026-03-15'), openIssues: 0 },
       ],
     },
   },
@@ -3820,9 +4076,9 @@ export const BUSINESS_USER_MOCKS: ToolMockMap = {
     hidden: true,
     patterns: [
       { match: { repo: 'acme' }, response: { pullRequests: [
-        { number: 142, title: 'fix: checkout page 500 error on invalid coupon', author: 'james-dev', state: 'open', base: 'main', additions: 23, deletions: 8, changedFiles: 2, createdAt: '2026-04-01T09:00:00Z' },
-        { number: 141, title: 'feat: add wishlist functionality', author: 'sarah-dev', state: 'open', base: 'main', additions: 340, deletions: 12, changedFiles: 8, createdAt: '2026-03-31T14:00:00Z' },
-        { number: 140, title: 'fix: product image lazy loading broken on Safari', author: 'mike-dev', state: 'merged', mergedAt: '2026-03-30T16:00:00Z', base: 'main', additions: 15, deletions: 5, changedFiles: 1 },
+        { number: 142, title: 'fix: checkout page 500 error on invalid coupon', author: 'james-dev', state: 'open', base: 'main', additions: 23, deletions: 8, changedFiles: 2, createdAt: fxBusinessUser('2026-04-01T09:00:00Z') },
+        { number: 141, title: 'feat: add wishlist functionality', author: 'sarah-dev', state: 'open', base: 'main', additions: 340, deletions: 12, changedFiles: 8, createdAt: fxBusinessUser('2026-03-31T14:00:00Z') },
+        { number: 140, title: 'fix: product image lazy loading broken on Safari', author: 'mike-dev', state: 'merged', mergedAt: fxBusinessUser('2026-03-30T16:00:00Z'), base: 'main', additions: 15, deletions: 5, changedFiles: 1 },
       ], total: 3 } },
     ],
     default: { pullRequests: [], total: 0 },
@@ -3839,9 +4095,9 @@ export const BUSINESS_USER_MOCKS: ToolMockMap = {
     hidden: true,
     response: {
       events: [
-        { id: 'evt-1', summary: 'Acme Corp - Sprint Review', start: '2026-04-02T10:00:00', end: '2026-04-02T11:00:00', attendees: ['maya@pixelandco.com', 'john@acmecorp.com'] },
-        { id: 'evt-2', summary: 'Team Standup', start: '2026-04-02T09:00:00', end: '2026-04-02T09:30:00', attendees: ['maya@pixelandco.com', 'team@pixelandco.com'] },
-        { id: 'evt-3', summary: 'New Lead Call - Luxe Candles', start: '2026-04-02T14:00:00', end: '2026-04-02T14:45:00', attendees: ['maya@pixelandco.com', 'rachel@luxecandles.com'] },
+        { id: 'evt-1', summary: 'Acme Corp - Sprint Review', start: fxBusinessUser('2026-04-02T10:00:00'), end: fxBusinessUser('2026-04-02T11:00:00'), attendees: ['maya@pixelandco.com', 'john@acmecorp.com'] },
+        { id: 'evt-2', summary: 'Team Standup', start: fxBusinessUser('2026-04-02T09:00:00'), end: fxBusinessUser('2026-04-02T09:30:00'), attendees: ['maya@pixelandco.com', 'team@pixelandco.com'] },
+        { id: 'evt-3', summary: 'New Lead Call - Luxe Candles', start: fxBusinessUser('2026-04-02T14:00:00'), end: fxBusinessUser('2026-04-02T14:45:00'), attendees: ['maya@pixelandco.com', 'rachel@luxecandles.com'] },
       ],
     },
   },
@@ -3850,14 +4106,6 @@ export const BUSINESS_USER_MOCKS: ToolMockMap = {
     description: 'Create a Google Calendar event.',
     hidden: true,
     response: { ok: true, eventId: 'evt-created-1', htmlLink: 'https://calendar.google.com/mock/event' },
-  },
-  task: {
-    type: 'static',
-    response: { ok: true, result: 'Sub-agent analysis complete. Key findings have been compiled.' },
-  },
-  task_status: {
-    type: 'static',
-    response: { status: 'completed', result: 'Task finished successfully.' },
   },
 }
 
@@ -4049,6 +4297,7 @@ export const CONTENT_CREATOR_MOCKS: ToolMockMap = {
 // ---------------------------------------------------------------------------
 
 /** Business-user baseline plus city research fixtures for expansion evals. */
+const fxNonprofit = fixtureClock('2026-04-02')
 export const NONPROFIT_MOCKS: ToolMockMap = {
   ...BUSINESS_USER_MOCKS,
   // Override the calendar fixture so BrightPath's calendar doesn't return
@@ -4062,9 +4311,9 @@ export const NONPROFIT_MOCKS: ToolMockMap = {
     hidden: true,
     response: {
       events: [
-        { id: 'evt-npo-1', summary: 'Site coordinator weekly check-in', start: '2026-04-02T09:00:00', end: '2026-04-02T09:45:00', attendees: ['amara@brightpath.org', 'sites@brightpath.org'] },
-        { id: 'evt-npo-2', summary: 'Q2 grant deadline — TEA innovation grant', start: '2026-04-15T17:00:00', end: '2026-04-15T17:30:00', attendees: ['amara@brightpath.org', 'grants@brightpath.org'] },
-        { id: 'evt-npo-3', summary: 'Volunteer orientation — Spring cohort', start: '2026-04-08T18:00:00', end: '2026-04-08T19:30:00', attendees: ['amara@brightpath.org', 'volunteers@brightpath.org'] },
+        { id: 'evt-npo-1', summary: 'Site coordinator weekly check-in', start: fxNonprofit('2026-04-02T09:00:00'), end: fxNonprofit('2026-04-02T09:45:00'), attendees: ['amara@brightpath.org', 'sites@brightpath.org'] },
+        { id: 'evt-npo-2', summary: 'Q2 grant deadline — TEA innovation grant', start: fxNonprofit('2026-04-15T17:00:00'), end: fxNonprofit('2026-04-15T17:30:00'), attendees: ['amara@brightpath.org', 'grants@brightpath.org'] },
+        { id: 'evt-npo-3', summary: 'Volunteer orientation — Spring cohort', start: fxNonprofit('2026-04-08T18:00:00'), end: fxNonprofit('2026-04-08T19:30:00'), attendees: ['amara@brightpath.org', 'volunteers@brightpath.org'] },
       ],
     },
   },
@@ -4229,6 +4478,166 @@ export const JIRA_INSTALL_FLOW_MOCKS: ToolMockMap = {
   },
 }
 
+// ---------------------------------------------------------------------------
+// Integration tools that connect mocks advertise
+//
+// When a `connect` mock's response lists a tool, the gateway promotes that
+// tool's (hidden) mock after install. A listed tool with no mock is a lie the
+// agent can't recover from — it calls the tool and gets "not found". These
+// fixtures cover the commonly advertised ones; anything else gets an honest
+// stub from `withAdvertisedToolStubs`.
+// ---------------------------------------------------------------------------
+
+export const COMMON_INTEGRATION_TOOL_FIXTURES: ToolMockMap = {
+  SLACK_LIST_CHANNELS: {
+    type: 'static',
+    description: 'List Slack channels in the workspace.',
+    paramKeys: ['limit', 'types'],
+    hidden: true,
+    response: {
+      successful: true,
+      data: {
+        channels: [
+          { id: 'C01GENERAL', name: 'general', is_private: false, num_members: 42 },
+          { id: 'C02ENG', name: 'engineering', is_private: false, num_members: 18 },
+          { id: 'C03SUPPORT', name: 'support', is_private: false, num_members: 9 },
+          { id: 'C04ALERTS', name: 'alerts', is_private: false, num_members: 12 },
+        ],
+      },
+    },
+  },
+  GOOGLESHEETS_LIST_SPREADSHEETS: {
+    type: 'static',
+    description: 'List Google Sheets spreadsheets the user can access.',
+    paramKeys: ['query', 'max_results'],
+    hidden: true,
+    response: {
+      successful: true,
+      data: {
+        files: [
+          { id: '1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgVE2upms', name: 'Expenses', modifiedTime: daysAgo(1) },
+          { id: '1QmZ8x3L0aPq9EXAMPLEbudget2bVnR7tKw', name: 'Team Budget', modifiedTime: daysAgo(12) },
+        ],
+      },
+    },
+  },
+  GOOGLECALENDAR_LIST_CALENDARS: {
+    type: 'static',
+    description: 'List the calendars on the user\'s calendar list.',
+    paramKeys: ['max_results'],
+    hidden: true,
+    response: {
+      successful: true,
+      data: {
+        items: [
+          { id: 'primary', summary: 'Work', primary: true, timeZone: 'America/Los_Angeles', accessRole: 'owner' },
+          { id: 'en.usa#holiday@group.v.calendar.google.com', summary: 'Holidays in United States', timeZone: 'America/Los_Angeles', accessRole: 'reader' },
+        ],
+      },
+    },
+  },
+  GOOGLECALENDAR_EVENTS_LIST: {
+    type: 'static',
+    description: 'List events on a Google Calendar within a time range.',
+    paramKeys: ['calendarId', 'timeMin', 'timeMax', 'maxResults', 'q'],
+    hidden: true,
+    response: {
+      successful: true,
+      data: {
+        items: [
+          { id: 'evt_standup', summary: 'Team Standup', start: { dateTime: todayAt(9) }, end: { dateTime: todayAt(9, 15) }, attendees: [{ email: 'team@acme.com' }] },
+          { id: 'evt_review', summary: 'Product Review', start: { dateTime: todayAt(11) }, end: { dateTime: todayAt(12) }, attendees: [{ email: 'pm@acme.com' }] },
+          { id: 'evt_1on1', summary: '1:1 with Manager', start: { dateTime: todayAt(14) }, end: { dateTime: todayAt(14, 30) }, attendees: [{ email: 'manager@acme.com' }] },
+        ],
+      },
+    },
+  },
+  GOOGLECALENDAR_DELETE_EVENT: {
+    type: 'static',
+    description: 'Delete an event from a Google Calendar.',
+    paramKeys: ['calendar_id', 'event_id'],
+    hidden: true,
+    response: { successful: true, data: {} },
+  },
+  STRIPE_LIST_CUSTOMERS: {
+    type: 'static',
+    description: 'List Stripe customers.',
+    paramKeys: ['limit', 'email'],
+    hidden: true,
+    response: {
+      successful: true,
+      data: {
+        object: 'list',
+        data: [
+          { id: 'cus_QX1a2b3c', object: 'customer', email: 'john@example.com', name: 'John Doe', created: Math.floor(Date.parse(daysAgo(40)) / 1000) },
+          { id: 'cus_QX4d5e6f', object: 'customer', email: 'jane@example.com', name: 'Jane Smith', created: Math.floor(Date.parse(daysAgo(22)) / 1000) },
+          { id: 'cus_QX7g8h9i', object: 'customer', email: 'bob@example.com', name: 'Bob Wilson', created: Math.floor(Date.parse(daysAgo(5)) / 1000) },
+        ],
+        has_more: false,
+      },
+    },
+  },
+  METAADS_UPDATE_CAMPAIGN: {
+    type: 'static',
+    description: 'Update a Meta Ads campaign (status, budget, name).',
+    paramKeys: ['campaign_id', 'status', 'daily_budget', 'name'],
+    hidden: true,
+    response: { successful: true, data: { success: true } },
+  },
+}
+
+function advertisedTools(spec: ToolMockSpec | undefined): string[] {
+  if (!spec) return []
+  const responses = spec.type === 'static' ? [spec.response] : [...spec.patterns.map(p => p.response), spec.default]
+  const out = new Set<string>()
+  for (const r of responses) {
+    const tools = (r as { tools?: unknown } | undefined)?.tools
+    if (!Array.isArray(tools)) continue
+    for (const t of tools) {
+      const name = typeof t === 'string' ? t : (t as { name?: unknown })?.name
+      if (typeof name === 'string' && name) out.add(name)
+    }
+  }
+  return [...out]
+}
+
+/** Tool names a map's `connect` mock says it installed. */
+export function connectAdvertisedTools(map: ToolMockMap): string[] {
+  return advertisedTools(map.connect)
+}
+
+/**
+ * Fills in a hidden mock for every tool `connect` advertises but the map
+ * doesn't define: a fixture from `COMMON_INTEGRATION_TOOL_FIXTURES` when one
+ * exists, else an honest empty result (reads return nothing, writes return
+ * a created id) rather than fabricated data.
+ */
+export function withAdvertisedToolStubs(map: ToolMockMap): ToolMockMap {
+  const missing = connectAdvertisedTools(map).filter(n => !(n in map))
+  if (missing.length === 0) return map
+  const out: ToolMockMap = { ...map }
+  for (const name of missing) {
+    const fixture = COMMON_INTEGRATION_TOOL_FIXTURES[name]
+    if (fixture) {
+      out[name] = fixture
+      continue
+    }
+    const upper = name.toUpperCase()
+    const isRead = /(_LIST|_SEARCH|_FIND|_FETCH|_QUERY|_GET|_READ|_RETRIEVE|_DESCRIBE)(_|$)/.test(upper)
+    out[name] = {
+      type: 'static',
+      description: `External integration tool: ${name}`,
+      hidden: true,
+      response: isRead
+        ? (/_GET|_RETRIEVE|_DESCRIBE|_READ/.test(upper) && !/_LIST|_SEARCH|_FIND/.test(upper)
+          ? { successful: false, error: 'Not found' }
+          : { successful: true, data: { items: [] } })
+        : { successful: true, data: { id: `${name.toLowerCase()}_1` } },
+    }
+  }
+  return out
+}
+
 /**
  * Build the mock payload for an eval. Merges built-in tool mocks with
  * the eval's specific `toolMocks`. Only MCP tools explicitly listed in
@@ -4239,7 +4648,7 @@ export function buildMockPayload(
   evalToolMocks?: ToolMockMap,
 ): ToolMockMap {
   if (!evalToolMocks) return BUILTIN_MOCKS
-  return { ...BUILTIN_MOCKS, ...evalToolMocks }
+  return withAdvertisedToolStubs({ ...BUILTIN_MOCKS, ...evalToolMocks })
 }
 
 /**

@@ -31,6 +31,13 @@ import {
   responseContains,
   toolCallsJson,
   toolCallArgsContain,
+  execCommands,
+  fileWrites,
+  pathMatches,
+  readFileAnyRoute,
+  readWorkspaceFile,
+  wroteFileAnyRoute,
+  writtenContent,
 } from './eval-helpers'
 
 // ---------------------------------------------------------------------------
@@ -61,14 +68,7 @@ const V2_CONFIG = JSON.stringify({
  * call targeting the schema.
  */
 function schemaEditsContent(r: EvalResult): string {
-  return r.toolCalls
-    .filter((t) => t.name === 'write_file' || t.name === 'edit_file')
-    .filter((t) => String((t.input as any).path ?? '').includes('schema.prisma'))
-    .map((t) => {
-      const input = t.input as any
-      return String(input.content ?? input.new_string ?? input.new_str ?? '')
-    })
-    .join('\n')
+  return writtenContent(r, (p) => p.endsWith('schema.prisma'))
 }
 
 function wroteSchema(r: EvalResult, ...requiredModels: string[]): boolean {
@@ -90,24 +90,14 @@ function schemaContainsFields(r: EvalResult, ...fields: string[]): boolean {
   return fields.every((f) => content.includes(f.toLowerCase()))
 }
 
+const isCanvasPath = (p: string) => /^src\/.*\.(tsx?|jsx?)$/.test(p) || /^canvas\/[^/]+\.ts$/.test(p)
+
 function wroteCanvasFile(r: EvalResult): boolean {
-  return r.toolCalls.some(t => {
-    if (t.name !== 'write_file') return false
-    const path = String((t.input as any).path ?? '')
-    return /^src\/.*\.(tsx?|jsx?)$/.test(path) || /^canvas\/[^/]+\.ts$/.test(path)
-  })
+  return fileWrites(r).some(w => w.via !== 'edit_file' && isCanvasPath(w.path))
 }
 
 function allCanvasCode(r: EvalResult): string {
-  return r.toolCalls
-    .filter(t => t.name === 'write_file' || t.name === 'edit_file')
-    .filter(t => {
-      const path = String((t.input as any).path ?? '')
-      return /^src\/.*\.(tsx?|jsx?)$/.test(path) || /^canvas\/[^/]+\.ts$/.test(path)
-    })
-    .map(t => String((t.input as any).content ?? (t.input as any).new_string ?? ''))
-    .join('\n')
-    .toLowerCase()
+  return writtenContent(r, isCanvasPath).toLowerCase()
 }
 
 /** True if agent called connect for a specific integration (or any). */
@@ -150,27 +140,18 @@ function canvasFetchesFromApi(r: EvalResult): boolean {
 }
 
 function wroteSkillFile(r: EvalResult, ...keywords: string[]): boolean {
-  const write = r.toolCalls
-    .filter((t) => t.name === 'write_file')
-    .find((t) => {
-      const path = String((t.input as any).path ?? '').toLowerCase()
-      return path.includes('skills/') && path.endsWith('.md')
-    })
-  if (!write) return false
-  if (keywords.length === 0) return true
-  const content = String((write.input as any).content ?? '').toLowerCase()
+  const content = writtenContent(r, (p) => p.toLowerCase().includes('skills/') && p.toLowerCase().endsWith('.md')).toLowerCase()
+  if (!wroteFileAnyRoute(r, (p) => p.toLowerCase().includes('skills/') && p.toLowerCase().endsWith('.md'))) return false
   return keywords.every((k) => content.includes(k.toLowerCase()))
 }
 
+/** Read the file (read_file or exec cat/head/…) before the first write to it. */
 function readFileBeforeEdit(r: EvalResult, pathSubstring: string): boolean {
   const editIdx = r.toolCalls.findIndex(
-    (t) => (t.name === 'edit_file' || t.name === 'write_file') &&
-      String((t.input as any).path ?? '').includes(pathSubstring),
+    (t) => fileWrites(r, [t]).some(w => w.path.includes(pathSubstring)),
   )
   if (editIdx === -1) return false
-  return r.toolCalls.slice(0, editIdx).some(
-    (t) => t.name === 'read_file' && String((t.input as any).path ?? '').includes(pathSubstring),
-  )
+  return readFileAnyRoute(r, (p) => p.includes(pathSubstring), r.toolCalls.slice(0, editIdx))
 }
 
 // ---------------------------------------------------------------------------
@@ -202,6 +183,10 @@ function makeSkillServerMocks(models: string[], sampleData: Record<string, any[]
     web: {
       type: 'pattern',
       patterns: [
+        // The real workspace server answers local calls; these fixtures only
+        // cover non-local URLs.
+        { match: { url: 'localhost' }, response: '__passthrough' },
+        { match: { url: '127.0.0.1' }, response: '__passthrough' },
         ...webPatterns,
         { match: { url: 'health' }, response: { content: JSON.stringify({ ok: true }), status: 200 } },
       ],
@@ -260,7 +245,7 @@ const CI_ANALYZER_EVAL: AgentEval = {
   maxScore: 30,
   toolMocks: CI_ANALYZER_MOCKS,
   validationCriteria: [
-    { id: 'read-data', description: 'Read the exported GitHub workflow data', points: 4, phase: 'intention', validate: (r) => r.toolCalls.some(t => t.name === 'read_file' && String((t.input as any).path ?? '').includes('github_workflow')) },
+    { id: 'read-data', description: 'Read the exported GitHub workflow data', points: 4, phase: 'intention', validate: (r) => readFileAnyRoute(r, (p) => p.includes('github_workflow')) || execCommands(r).some(c => c.includes('github_workflow_runs.json')) },
     { id: 'wrote-schema', description: 'Wrote schema.prisma with at least 2 models', points: 4, phase: 'execution', validate: (r) => wroteSchemaWithAnyModels(r, 2) },
     { id: 'schema-fields', description: 'Schema contains failure-related fields', points: 3, phase: 'execution', validate: (r) => schemaContainsFields(r, 'status') && (schemaContainsFields(r, 'category') || schemaContainsFields(r, 'type') || schemaContainsFields(r, 'conclusion')) },
     { id: 'posted-data', description: 'POSTed categorized data to skill server', points: 4, phase: 'execution', validate: (r) => postedToSkillServer(r) },
@@ -349,15 +334,30 @@ const INCIDENT_TRIAGE_EVAL: AgentEval = {
   maxScore: 30,
   toolMocks: INCIDENT_TRIAGE_MOCKS,
   validationCriteria: [
-    { id: 'wrote-schema-both', description: 'Wrote schema with Alert + Incident models', points: 4, phase: 'execution', validate: (r) => wroteSchemaWithAnyModels(r, 2) },
-    { id: 'schema-correlation-fields', description: 'Schema has severity, timestamp, and correlation fields', points: 3, phase: 'execution', validate: (r) => schemaContainsFields(r, 'severity') && (schemaContainsFields(r, 'timestamp') || schemaContainsFields(r, 'time') || schemaContainsFields(r, 'createdat') || schemaContainsFields(r, 'at')) },
-    { id: 'posted-alerts', description: 'POSTed alerts to skill server', points: 4, phase: 'execution', validate: (r) => postedToSkillServer(r, 'alert') },
-    { id: 'created-incident', description: 'Created at least 1 incident in skill server', points: 3, phase: 'execution', validate: (r) => postedToSkillServer(r, 'incident') },
-    { id: 'root-cause-analysis', description: 'Response includes root cause or causal chain', points: 4, phase: 'execution', validate: (r) => responseContains(r, 'root cause') || responseContains(r, 'disk') || (responseContains(r, 'database') && responseContains(r, 'connection')) },
-    { id: 'built-canvas-timeline', description: 'Built canvas with timeline or ordered list', points: 3, phase: 'execution', validate: (r) => wroteCanvasFile(r) },
-    { id: 'canvas-wired', description: 'Canvas fetches data from skill server API', points: 3, phase: 'execution', validate: (r) => canvasFetchesFromApi(r) },
-    { id: 'canvas-severity', description: 'Canvas shows incident severity', points: 3, phase: 'execution', validate: (r) => { const c = allCanvasCode(r); return c.includes('critical') || c.includes('severity') || c.includes('warning') } },
-    { id: 'wrote-skill', description: 'Created a reusable triage skill', points: 3, phase: 'execution', validate: (r) => wroteSkillFile(r) },
+    { id: 'root-cause-analysis', description: 'Identifies the disk-full db-primary as the likely root cause', points: 8, phase: 'execution', validate: (r) => responseContains(r, 'disk') && /root cause|caus|trigger|origin|started|led to|because/i.test(r.responseText) },
+    { id: 'causal-chain', description: 'Links the DB problem to pool exhaustion and the API slowdown/CPU', points: 6, phase: 'execution', validate: (r) => /connection pool|pool exhaust/i.test(r.responseText) && /cpu|response time|latenc|slow|\/api\/orders/i.test(r.responseText) },
+    {
+      id: 'timeline',
+      description: 'Shows a timeline (response or a written view) covering the alert times',
+      points: 6,
+      phase: 'execution',
+      validate: (r) => {
+        const text = `${r.responseText}\n${fileWrites(r).map(w => w.content).join('\n')}`
+        return ['14:01', '14:02', '14:03', '14:05', '14:08'].filter(t => text.includes(t)).length >= 4
+      },
+    },
+    {
+      id: 'reusable-triage-setup',
+      description: 'Set up something reusable for next time (skill, runbook, dashboard, or data model)',
+      points: 6,
+      phase: 'execution',
+      validate: (r) =>
+        wroteSkillFile(r) ||
+        wroteFileAnyRoute(r, (p) => /\.md$/i.test(p) && /triage|incident|runbook|playbook/i.test(p)) ||
+        wroteCanvasFile(r) ||
+        wroteSchemaWithAnyModels(r, 1),
+    },
+    { id: 'no-clarification-first', description: 'Analyzed the alerts without asking for more info first', points: 4, phase: 'intention', validate: (r) => !usedTool(r, 'ask_user') },
   ],
   antiPatterns: ['Unnecessary clarification questions instead of building', 'Tool loop or repeated identical calls'],
 }
@@ -454,12 +454,14 @@ const EMAIL_SLACK_RECON_MOCKS: ToolMockMap = {
   },
   GMAIL_FETCH_EMAILS: {
     type: 'static',
+    hidden: true,
     description: 'Fetch recent emails from Gmail.',
     paramKeys: ['max_results', 'query'],
     response: { emails: NOISY_EMAILS, total: NOISY_EMAILS.length },
   },
   SLACK_LIST_MESSAGES: {
     type: 'static',
+    hidden: true,
     description: 'List recent messages from Slack channels.',
     paramKeys: ['channel', 'limit'],
     response: { messages: NOISY_SLACK_MESSAGES, total: NOISY_SLACK_MESSAGES.length },
@@ -478,16 +480,37 @@ const EMAIL_SLACK_RECON_EVAL: AgentEval = {
   maxScore: 30,
   toolMocks: EMAIL_SLACK_RECON_MOCKS,
   validationCriteria: [
-    { id: 'used-tool-search', description: 'Used search_integrations to discover integrations', points: 2, phase: 'intention', validate: (r) => usedToolAnywhere(r, 'search_integrations') },
+    { id: 'used-tool-search', description: 'Discovered the Gmail/Slack integrations (search_integrations or connect)', points: 2, phase: 'intention', validate: (r) => usedToolAnywhere(r, 'search_integrations') || installedIntegration(r) },
     { id: 'installed-integrations', description: 'Installed Gmail and Slack via connect before using them', points: 2, phase: 'intention', validate: (r) => installedIntegration(r, 'gmail') && installedIntegration(r, 'slack') },
     { id: 'called-both', description: 'Called both Gmail and Slack integration tools', points: 4, phase: 'execution', validate: (r) => usedTool(r, 'GMAIL_FETCH_EMAILS') && usedTool(r, 'SLACK_LIST_MESSAGES') },
-    { id: 'wrote-schema', description: 'Wrote schema.prisma with action-item model', points: 3, phase: 'execution', validate: (r) => wroteSchemaWithAnyModels(r, 1) },
-    { id: 'schema-fields', description: 'Schema has source, urgency, requester fields', points: 3, phase: 'execution', validate: (r) => schemaContainsFields(r, 'source') || (schemaContainsFields(r, 'urgency') || schemaContainsFields(r, 'priority')) },
-    { id: 'posted-filtered', description: 'POSTed filtered data to skill server', points: 4, phase: 'execution', validate: (r) => postedToSkillServer(r) },
-    { id: 'built-canvas', description: 'Built canvas with prioritized view', points: 3, phase: 'execution', validate: (r) => wroteCanvasFile(r) },
-    { id: 'canvas-wired', description: 'Canvas fetches data from skill server API', points: 3, phase: 'execution', validate: (r) => canvasFetchesFromApi(r) },
-    { id: 'canvas-urgency', description: 'Canvas distinguishes urgency or sources', points: 3, phase: 'execution', validate: (r) => { const c = allCanvasCode(r); return c.includes('urgent') || c.includes('priority') || c.includes('email') || c.includes('slack') || c.includes('action') } },
-    { id: 'wrote-skill', description: 'Created a reusable skill file', points: 3, phase: 'execution', validate: (r) => wroteSkillFile(r) },
+    {
+      id: 'found-actionable-items',
+      description: 'Surfaced the real action items (overdue invoice, sign-offs, board deck, contract renewal, blocked PR, churn risk)',
+      points: 9,
+      phase: 'execution',
+      validate: (r) => {
+        const t = r.responseText.toLowerCase()
+        const items = [
+          /4521|overdue invoice|invoice/.test(t),
+          /sign-off|integration timeline|sarah/.test(t),
+          /board deck|lisa|burn rate/.test(t),
+          /contract renewal|jenny|april 1/.test(t),
+          /api spec|mike/.test(t),
+          /auth pr|alice|blocked/.test(t),
+          /csv export|mediumco|churn/.test(t),
+        ]
+        return items.filter(Boolean).length >= 4
+      },
+    },
+    { id: 'filtered-noise', description: 'Did not surface newsletters/spam/chit-chat as action items', points: 4, phase: 'execution', validate: (r) => !/techcrunch|90% off|huge sale|coffee place|watching the game/i.test(r.responseText) },
+    { id: 'waiting-time', description: 'Shows who is waiting and for how long', points: 4, phase: 'execution', validate: (r) => /\b\d+\s*(day|hour|hr|d\b|h\b)|waiting (since|for)|since (mon|tue|wed|thu|fri|sat|sun|march|mar)/i.test(r.responseText) },
+    {
+      id: 'recurring-setup',
+      description: 'Set it up to check regularly (skill, heartbeat/schedule, or a dashboard)',
+      points: 5,
+      phase: 'execution',
+      validate: (r) => wroteSkillFile(r) || usedTool(r, 'heartbeat_configure') || usedTool(r, 'schedule_create') || wroteCanvasFile(r),
+    },
   ],
   antiPatterns: ['Unnecessary clarification questions instead of building', 'Tool loop or repeated identical calls'],
 }
@@ -610,15 +633,38 @@ const DATA_PIPELINE_EVAL: AgentEval = {
   maxScore: 30,
   toolMocks: DATA_PIPELINE_MOCKS,
   validationCriteria: [
-    { id: 'read-script', description: 'Read the script before editing', points: 3, phase: 'execution', validate: (r) => readFileBeforeEdit(r, 'process_sales') },
-    { id: 'edited-script', description: 'Edited process_sales.py (not full rewrite)', points: 3, phase: 'execution', validate: (r) => toolCallArgsContain(r, 'edit_file', 'process_sales') },
-    { id: 'fix-column-rename', description: 'Fix addresses the revenue → total_revenue rename', points: 3, phase: 'execution', validate: (r) => { const edits = r.toolCalls.filter(t => t.name === 'edit_file' || t.name === 'write_file'); const json = JSON.stringify(edits.map(t => t.input)).toLowerCase(); return json.includes('total_revenue') } },
-    { id: 'ran-script', description: 'Ran the fixed script via exec', points: 4, phase: 'execution', validate: (r) => r.toolCalls.some(t => t.name === 'exec' && String((t.input as any).command ?? '').includes('python')) },
-    { id: 'wrote-schema', description: 'Wrote schema.prisma for results', points: 3, phase: 'execution', validate: (r) => wroteSchemaWithAnyModels(r, 1) },
-    { id: 'posted-data', description: 'POSTed aggregated data to skill server', points: 4, phase: 'execution', validate: (r) => postedToSkillServer(r) },
-    { id: 'built-canvas', description: 'Built canvas showing sales metrics', points: 3, phase: 'execution', validate: (r) => wroteCanvasFile(r) },
-    { id: 'canvas-wired', description: 'Canvas fetches data from skill server API', points: 4, phase: 'execution', validate: (r) => canvasFetchesFromApi(r) },
-    { id: 'wrote-skill', description: 'Created a reusable skill or mentioned recurring execution', points: 3, phase: 'execution', validate: (r) => wroteSkillFile(r) || responseContains(r, 'recurring') || responseContains(r, 'schedule') || responseContains(r, 'heartbeat') || responseContains(r, 'cron') },
+    { id: 'read-script', description: 'Read the script before editing (read_file or shell)', points: 3, phase: 'execution', validate: (r) => readFileBeforeEdit(r, 'process_sales') },
+    { id: 'edited-script', description: 'Fixed process_sales.py in place', points: 3, phase: 'execution', validate: (r) => wroteFileAnyRoute(r, 'process_sales.py') },
+    { id: 'fix-column-rename', description: 'Fix addresses the revenue → total_revenue rename', points: 4, phase: 'execution', validate: (r) => (writtenContent(r, 'process_sales.py') + readWorkspaceFile(r, 'process_sales.py')).includes('total_revenue') },
+    { id: 'ran-script', description: 'Ran the fixed script', points: 4, phase: 'execution', validate: (r) => execCommands(r).some(c => /\bpython3?\b[^|;&]*process_sales/.test(c)) },
+    {
+      id: 'produced-results',
+      description: "Produced this week's numbers (sales_summary.json on disk, or totals reported)",
+      points: 6,
+      phase: 'execution',
+      validate: (r) => {
+        const out = readWorkspaceFile(r, 'sales_summary.json')
+        if (/total_revenue|by_region/.test(out)) return true
+        return /\$?\d{1,3}(,\d{3})+(\.\d+)?/.test(r.responseText) && responseContains(r, 'revenue')
+      },
+    },
+    {
+      id: 'hardened-script',
+      description: 'Script now tolerates the dirty data (blank values, whitespace, header drift)',
+      points: 6,
+      phase: 'execution',
+      validate: (r) => {
+        const code = readWorkspaceFile(r, 'process_sales.py') || writtenContent(r, 'process_sales.py')
+        const signals = [
+          /\.strip\(\)/.test(code),
+          /\btry\s*:/.test(code) && /\bexcept\b/.test(code),
+          /\.get\(\s*['"](total_)?revenue['"]/.test(code) || /fieldnames/.test(code),
+          /if\s+not\s+\w+|==\s*['"]{2}|is\s+None/.test(code),
+        ]
+        return signals.filter(Boolean).length >= 2
+      },
+    },
+    { id: 'explained-cause', description: 'Explained the root cause (revenue column renamed to total_revenue)', points: 4, phase: 'execution', validate: (r) => responseContains(r, 'total_revenue') || (responseContains(r, 'column') && responseContains(r, 'renam')) },
   ],
   antiPatterns: ['Unnecessary clarification questions instead of building', 'Tool loop or repeated identical calls'],
 }
@@ -762,9 +808,9 @@ const BRIEFING_EVAL: AgentEval = {
   maxScore: 30,
   toolMocks: BRIEFING_MOCKS,
   validationCriteria: [
-    { id: 'read-github-data', description: 'Read the exported GitHub activity data', points: 2, phase: 'intention', validate: (r) => r.toolCalls.some(t => t.name === 'read_file' && String((t.input as any).path ?? '').includes('github_activity')) },
+    { id: 'read-github-data', description: 'Read the exported GitHub activity data', points: 2, phase: 'intention', validate: (r) => readFileAnyRoute(r, (p) => p.includes('github_activity')) || execCommands(r).some(c => c.includes('github_activity.json')) },
     { id: 'installed-email-slack', description: 'Installed Gmail and/or Slack via connect', points: 2, phase: 'intention', validate: (r) => installedIntegration(r, 'gmail') || installedIntegration(r, 'slack') },
-    { id: 'used-all-three', description: 'Read GitHub file + used Gmail + Slack integrations', points: 4, phase: 'execution', validate: (r) => r.toolCalls.some(t => t.name === 'read_file' && String((t.input as any).path ?? '').includes('github')) && usedTool(r, 'GMAIL_FETCH_EMAILS') && usedTool(r, 'SLACK_LIST_MESSAGES') },
+    { id: 'used-all-three', description: 'Read GitHub file + used Gmail + Slack integrations', points: 4, phase: 'execution', validate: (r) => (readFileAnyRoute(r, (p) => p.includes('github')) || execCommands(r).some(c => c.includes('github_activity.json'))) && usedTool(r, 'GMAIL_FETCH_EMAILS') && usedTool(r, 'SLACK_LIST_MESSAGES') },
     { id: 'wrote-schema', description: 'Wrote schema for briefing data', points: 3, phase: 'execution', validate: (r) => wroteSchemaWithAnyModels(r, 1) },
     { id: 'posted-filtered', description: 'POSTed filtered/categorized data to skill server', points: 3, phase: 'execution', validate: (r) => postedToSkillServer(r) },
     { id: 'organized-by-category', description: 'Response organizes by category (dev/investors/customers)', points: 4, phase: 'execution', validate: (r) => { const t = r.responseText.toLowerCase(); const cats = [t.includes('engineer') || t.includes('ship') || t.includes('dev'), t.includes('investor') || t.includes('board') || t.includes('fund'), t.includes('customer') || t.includes('support') || t.includes('churn')]; return cats.filter(Boolean).length >= 2 } },
@@ -784,65 +830,39 @@ const BRIEFING_EVAL: AgentEval = {
 // Shared anti-pattern helpers for custom server detection
 // ---------------------------------------------------------------------------
 
+const isCustomRoutesPath = (p: string) => /(^|\/)custom-routes\.tsx?$/i.test(p)
+
 /**
- * True if the agent edited the project's root `server.tsx` (the approved
- * convention for custom routes after the skill-server unification).
- *
- * Historically the convention was `.shogo/server/custom-routes.ts`. That
- * path no longer exists — custom routes live alongside generated ones in
- * the root `server.tsx`, which is regenerated in-place by `shogo generate`.
+ * True if the agent wrote/edited the project-root `custom-routes.ts` — the
+ * Hono app mounted under `/api/` for non-CRUD routes. `server.tsx` is
+ * regenerated by the SDK and must not be edited.
  */
 function wroteCustomRoutes(r: EvalResult): boolean {
-  return r.toolCalls
-    .filter(t => t.name === 'write_file' || t.name === 'edit_file')
-    .some(t => {
-      const path = String((t.input as any).path ?? '').toLowerCase()
-      return path === 'server.tsx' || path.endsWith('/server.tsx') || path.endsWith('\\server.tsx')
-    })
+  return fileWrites(r).some(w => isCustomRoutesPath(w.path))
 }
 
-/** Content of the root server.tsx written/edited by the agent. */
+/** custom-routes.ts content: everything the agent wrote to it plus the final file on disk. */
 function customRoutesCode(r: EvalResult): string {
-  return r.toolCalls
-    .filter(t => t.name === 'write_file' || t.name === 'edit_file')
-    .filter(t => {
-      const path = String((t.input as any).path ?? '').toLowerCase()
-      return path === 'server.tsx' || path.endsWith('/server.tsx') || path.endsWith('\\server.tsx')
-    })
-    .map(t => {
-      const input = t.input as any
-      return String(
-        input.content ?? input.new_str ?? input.new_string ?? input.code_edit ?? input.replace ?? '',
-      )
-    })
-    .join('\n')
-    .toLowerCase()
+  if (!wroteCustomRoutes(r)) return ''
+  const disk = readWorkspaceFile(r, 'custom-routes.ts') || readWorkspaceFile(r, 'custom-routes.tsx')
+  return `${writtenContent(r, isCustomRoutesPath)}\n${disk}`.toLowerCase()
 }
 
 /** True if the agent wrote a custom server file (server.ts, server.tsx, etc.) at the project root. */
 function wroteCustomServer(r: EvalResult): boolean {
-  return r.toolCalls
-    .filter(t => t.name === 'write_file' || t.name === 'edit_file')
-    .some(t => {
-      const path = String((t.input as any).path ?? '').toLowerCase()
-      return /^server\.(ts|tsx|js|mjs)$/.test(path) ||
-        /^src\/server\.(ts|tsx|js|mjs)$/.test(path) ||
-        /^api\/.*\.(ts|tsx|js|mjs)$/.test(path)
-    })
+  return fileWrites(r).some(w => {
+    const path = w.path.toLowerCase()
+    return /^server\.(ts|tsx|js|mjs)$/.test(path) ||
+      /^src\/server\.(ts|tsx|js|mjs)$/.test(path) ||
+      /^api\/.*\.(ts|tsx|js|mjs)$/.test(path)
+  })
 }
 
 /** True if any written file (excluding custom-routes.ts) imports Hono, Express, Fastify, or Koa. */
 function wroteCustomHttpServer(r: EvalResult): boolean {
-  const allCode = r.toolCalls
-    .filter(t => t.name === 'write_file' || t.name === 'edit_file')
-    .filter(t => {
-      const path = String((t.input as any).path ?? '').toLowerCase()
-      return !/custom-routes\.tsx?$/.test(path)
-    })
-    .map(t => {
-      const input = t.input as Record<string, any>
-      return String(input.content ?? input.new_string ?? '')
-    })
+  const allCode = fileWrites(r)
+    .filter(w => !isCustomRoutesPath(w.path) && /\.(m?[jt]sx?)$/.test(w.path))
+    .map(w => w.content)
     .join('\n')
     .toLowerCase()
   return /import.*from\s+['"]hono['"]/.test(allCode) ||
@@ -1131,6 +1151,8 @@ const CUSTOM_ROUTES_PROXY_MOCKS: ToolMockMap = {
   web: {
     type: 'pattern',
     patterns: [
+      { match: { url: 'localhost' }, response: '__passthrough' },
+      { match: { url: '127.0.0.1' }, response: '__passthrough' },
       { match: { url: 'health' }, response: { content: JSON.stringify({ ok: true }), status: 200 } },
       { match: { url: 'weather' }, response: { content: JSON.stringify({ temp: 72, condition: 'sunny', city: 'London' }), status: 200 } },
       { match: { url: '/api/' }, response: { content: JSON.stringify({ ok: true }), status: 200 } },
@@ -1158,7 +1180,7 @@ const CUSTOM_ROUTES_PROXY_EVAL: AgentEval = {
   validationCriteria: [
     {
       id: 'edited-custom-routes',
-      description: 'Edited the project server.tsx (not created a new server)',
+      description: 'Added the route in custom-routes.ts (not server.tsx or a new server)',
       points: 6,
       phase: 'execution',
       validate: (r) => wroteCustomRoutes(r),
@@ -1175,12 +1197,12 @@ const CUSTOM_ROUTES_PROXY_EVAL: AgentEval = {
     },
     {
       id: 'custom-routes-imports-hono',
-      description: 'Custom routes file imports Hono',
+      description: 'Custom routes file defines the route on its Hono app',
       points: 2,
       phase: 'execution',
       validate: (r) => {
         const code = customRoutesCode(r)
-        return code.includes('hono')
+        return code.includes('hono') || /\b(app|routes?|router)\.(get|all|on)\(/.test(code)
       },
     },
     {
@@ -1244,6 +1266,8 @@ const CRUD_PLUS_CUSTOM_ROUTES_MOCKS: ToolMockMap = {
   web: {
     type: 'pattern',
     patterns: [
+      { match: { url: 'localhost' }, response: '__passthrough' },
+      { match: { url: '127.0.0.1' }, response: '__passthrough' },
       { match: { url: 'health' }, response: { content: JSON.stringify({ ok: true }), status: 200 } },
       { match: { url: 'enrich' }, response: { content: JSON.stringify({ ok: true, data: { company: 'Acme Corp', industry: 'SaaS', employees: 150, funding: 'Series B' } }), status: 200 } },
       { match: { url: 'contact' }, response: { content: JSON.stringify({ ok: true, items: [{ id: 'c1', name: 'Jane Smith', email: 'jane@example.com', company: 'Acme Corp', status: 'lead' }] }), status: 200 } },

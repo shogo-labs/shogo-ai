@@ -28,6 +28,7 @@ import {
   readWorkspaceFile,
   readAllSrcCodeFromDisk,
   listSrcFilePathsFromDisk,
+  configuredRecurringReminder,
 } from './eval-helpers'
 
 // ---------------------------------------------------------------------------
@@ -375,10 +376,10 @@ const PHASE_1: AgentEval = {
     },
     {
       id: 'heartbeat-configured',
-      description: 'Configured heartbeat or recurring reminder',
+      description: 'Configured a recurring reminder (heartbeat, schedule, or recurring calendar event)',
       points: 6,
       phase: 'intention',
-      validate: (r) => usedToolAnywhere(r, 'heartbeat_configure'),
+      validate: (r) => configuredRecurringReminder(r),
     },
     {
       id: 'friday-schedule',
