@@ -43,7 +43,7 @@ import {
   NATIVE_PHONE_ICON_STROKE,
   NATIVE_PHONE_SHEET_COMPACT_RATIO,
 } from "../../lib/native-phone-layout";
-import { chatColumn, chatColumnStyle } from "../../lib/chat-column";
+import { composerColumnStyle } from "../../lib/chat-column";
 import { useIsInsideChatColumn } from "./ChatColumn";
 import {
   Popover,
@@ -1809,17 +1809,13 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
     setReferences((prev) => prev.filter((ref) => referenceKey(ref) !== key));
   }, []);
   const insideChatColumn = useIsInsideChatColumn();
-  const outerColumnStyle: ViewStyle | undefined =
-    flush || insideChatColumn
-      ? undefined
-      : useProminentComposer
-      ? chatColumnStyle({ presentation, phone: true })
-      : {
-          paddingHorizontal: chatColumn({
-            presentation,
-            phone: isPhoneChrome,
-          }).gutter,
-        };
+  const outerColumnStyle: ViewStyle | undefined = composerColumnStyle({
+    presentation,
+    phone: isPhoneChrome,
+    prominent: useProminentComposer,
+    flush,
+    insideChatColumn,
+  });
   return (
     <View
       // Vertical padding only. Horizontal placement comes from the shared

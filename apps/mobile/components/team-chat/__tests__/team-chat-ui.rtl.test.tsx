@@ -151,6 +151,8 @@ mock.module('../../../hooks/useChatShortcuts', () => ({
   requestEditMessage: () => {},
 }))
 const activityTimeline: { messages: any[]; channels: any[] } = { messages: [], channels: [] }
+/** People typing in the pane's scope; agents come from the running messages. */
+const typingUsers: Array<{ id: string; name: string }> = []
 const { resolveAgentLook } = await import('@shogo/shared-app/buddy-look')
 mock.module('../../../hooks/useTeamChat', () => ({
   TIMELINE_SOFT_LIMIT: 600,
@@ -173,7 +175,7 @@ mock.module('../../../hooks/useTeamChat', () => ({
     trimOld: () => {},
   }),
   useMarkReadWhileVisible: () => {},
-  useTypingUsers: () => [],
+  useTypingUsers: () => typingUsers,
 }))
 const routed: any[] = []
 mock.module('expo-router', () => ({ useRouter: () => ({ push: (r: any) => routed.push(r) }) }))
@@ -430,7 +432,15 @@ describe('MessageRow', () => {
     // A running agent shows its status; what it is writing appears once it is done.
     expect(screen.queryByText('Checking invoices')).toBeNull()
     expect(shim('group')!.textContent).toBe('1:true')
-    fireEvent.click(screen.getByLabelText('Stop agent'))
+    // The planning line is gone; the typing indicator reports the run instead.
+    expect(document.querySelector('[data-rn-shim="planning"]')).toBeNull()
+    // Stop sits in the header beside the AGENT tag, not beside the streamed work.
+    const stop = screen.getByLabelText('Stop agent')
+    expect(stop.parentElement?.textContent).toContain('AGENT')
+    // Open session sits beside Stop; the live status itself is not pressable.
+    expect(screen.getByLabelText('Open the session this agent is working in').parentElement).toBe(stop.parentElement)
+    expect(shim('group')!.closest('[aria-label="Open the session this agent is working in"]')).toBeNull()
+    fireEvent.click(stop)
     expect(h.onStopAgent).toHaveBeenCalled()
     expect(screen.queryByText('Open full session')).toBeNull()
 
@@ -439,6 +449,34 @@ describe('MessageRow', () => {
     )
     fireEvent.click(screen.getByText('Open full session'))
     expect(h.onOpenSession).toHaveBeenCalled()
+  })
+
+  test('a grouped running reply has no header, so Open session and Stop sit on a line of their own', () => {
+    const h = handlers()
+    const running = message({
+      id: 'm5', authorType: 'agent', author: null, authorUserId: null,
+      authorAgent: { projectId: 'proj-1', name: 'Billing Bot' },
+      text: '', agentStatus: 'running', agentSessionId: 's1', threadRootId: 'm1',
+    })
+    render(
+      <MessageRow message={running} grouped me="u-me" names={names} canManage={false} inThread streaming={{ text: '', tool: 'exec' }} {...h} />,
+    )
+    const stop = screen.getByLabelText('Stop agent')
+    expect(stop.parentElement?.textContent).toBe('Open sessionStop')
+    fireEvent.click(stop)
+    expect(h.onStopAgent).toHaveBeenCalled()
+  })
+
+  test('a running reply without a session offers Stop but no Open session', () => {
+    const h = handlers()
+    const running = message({
+      id: 'm6', authorType: 'agent', author: null, authorUserId: null,
+      authorAgent: { projectId: 'proj-1', name: 'Billing Bot' },
+      text: '', agentStatus: 'running', agentSessionId: null, threadRootId: 'm1',
+    })
+    render(<MessageRow message={running} grouped={false} me="u-me" names={names} canManage={false} inThread {...h} />)
+    expect(screen.getByLabelText('Stop agent')).toBeTruthy()
+    expect(screen.queryByLabelText('Open the session this agent is working in')).toBeNull()
   })
 
   test('an agent reply uses the project chat markdown renderer', () => {
@@ -515,7 +553,7 @@ describe('MessageRow', () => {
 
     rerender(<MessageRow message={{ ...reply, agentStatus: 'running', text: '' }} grouped={false} me="u-me" names={names} canManage={false} {...h} />)
     expect(shim('worked-for')).toBeNull()
-    expect(shim('planning')).toBeTruthy()
+    expect(shim('planning')).toBeNull()
   })
 
   test('failed sends offer retry and discard; threads show reply counts', () => {
@@ -1140,7 +1178,7 @@ describe('agent work', () => {
     workLogResult = async () => ({ parts: [], startedAt: 0, completedAt: 1, toolCalls: 0 })
   })
 
-  test('the running status opens the session the agent is working in', () => {
+  test('Open session in the header opens the session the agent is working in', () => {
     const h = handlers()
     const running = { ...reply(), agentStatus: 'running', text: '' }
     render(<MessageRow message={running} grouped={false} me="u-me" names={names} canManage={false} {...h} />)
@@ -1148,7 +1186,7 @@ describe('agent work', () => {
     expect(h.onOpenSession).toHaveBeenCalledWith(expect.objectContaining({ id: 'm1', agentSessionId: 's1' }))
   })
 
-  test('the workspace agent (no project) opens its session from the running status too', () => {
+  test('the workspace agent (no project) opens its session from Open session too', () => {
     const h = handlers()
     const running = { ...reply(), authorAgent: { projectId: null, name: 'Workspace agent' }, agentStatus: 'running', text: '' }
     render(<MessageRow message={running} grouped={false} me="u-me" names={names} canManage={false} {...h} />)
@@ -1156,12 +1194,14 @@ describe('agent work', () => {
     expect(h.onOpenSession).toHaveBeenCalledWith(expect.objectContaining({ id: 'm1', agentSessionId: 's1' }))
   })
 
-  test('before any tool runs the row says the agent is planning; once tools run it shows them', () => {
+  test('a running reply has no planning line, before or during tools; the typing indicator reports the run', () => {
     const running = { ...reply(), agentStatus: 'running', text: '' }
     const { rerender } = render(<MessageRow message={running} grouped={false} me="u-me" names={names} canManage={false} {...handlers()} />)
-    expect(shim('planning')).toBeTruthy()
+    expect(shim('planning')).toBeNull()
+    expect(shim('group')).toBeNull()
     rerender(<MessageRow message={running} grouped={false} me="u-me" names={names} canManage={false} streaming={{ text: '', tool: 'exec', tools: [{ name: 'exec', done: false }] }} {...handlers()} />)
     expect(shim('group')).toBeTruthy()
+    expect(shim('planning')).toBeNull()
   })
 })
 
@@ -1358,6 +1398,66 @@ describe('#activity filters', () => {
     expect(screen.queryByText(/answered the ticket/)).toBeNull()
     expect(screen.getByLabelText('Agent: Workspace agent, Billing Bot')).toBeTruthy()
     expect(screen.getByText('2 agents')).toBeTruthy()
+  })
+})
+
+describe('typing indicator in a channel', () => {
+  const channel = {
+    id: 'c-eng', workspaceId: 'ws', kind: 'public', name: 'eng', slug: 'eng',
+    topic: null, lastSeq: 2, lastMessageAt: null, archivedAt: null, createdAt: '2026-09-29T10:00:00.000Z',
+    joined: true, starred: false, muted: false, notifyLevel: 'all', lastReadSeq: 2,
+    canPost: true, canReply: true, canManage: false, members: [],
+  }
+  const runningReply = (id: string, projectId: string, name: string) =>
+    message({
+      id, seq: 2, authorType: 'agent', author: null, authorUserId: null,
+      authorAgent: { projectId, name }, text: '', agentStatus: 'running', agentSessionId: `s-${id}`, threadRootId: null,
+    })
+  const renderChannel = () =>
+    render(
+      <TimelinePane
+        workspaceId="ws"
+        conversation={channel as any}
+        me="u-me"
+        mentionables={{ ...mentionables, agents: [] }}
+        visible
+      />,
+    )
+
+  beforeEach(() => {
+    typingUsers.length = 0
+    activityTimeline.messages = []
+  })
+  afterEach(() => {
+    cleanup()
+    typingUsers.length = 0
+    activityTimeline.messages = []
+  })
+
+  test('a running agent reply shows the agent as typing', () => {
+    activityTimeline.messages = [runningReply('r1', 'proj-1', 'Billing Bot')]
+    renderChannel()
+    expect(screen.getByText('Billing Bot is typing…')).toBeTruthy()
+  })
+
+  test('two running replies from one agent list it once', () => {
+    activityTimeline.messages = [runningReply('r1', 'proj-1', 'Billing Bot'), runningReply('r2', 'proj-1', 'Billing Bot')]
+    renderChannel()
+    expect(screen.getByText('Billing Bot is typing…')).toBeTruthy()
+  })
+
+  test('a person and an agent with the same name are both listed', () => {
+    typingUsers.push({ id: 'pat', name: 'Billing Bot' })
+    activityTimeline.messages = [runningReply('r1', 'proj-1', 'Billing Bot')]
+    renderChannel()
+    expect(screen.getByText('Billing Bot and Billing Bot are typing…')).toBeTruthy()
+  })
+
+  test('four typists name the first two and count the rest', () => {
+    typingUsers.push({ id: 'pat', name: 'Pat' }, { id: 'lee', name: 'Lee' })
+    activityTimeline.messages = [runningReply('r1', 'proj-1', 'Billing Bot'), runningReply('r2', 'proj-2', 'Support Bot')]
+    renderChannel()
+    expect(screen.getByText('Pat, Lee and 2 others are typing…')).toBeTruthy()
   })
 })
 

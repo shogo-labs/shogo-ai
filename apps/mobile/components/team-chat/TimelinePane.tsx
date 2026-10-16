@@ -11,6 +11,8 @@ import { ChevronLeft, Upload, X } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { conversationTitle, teamChatApi, type ChatMessage, type ConversationDetail, type Mentionables } from '../../lib/team-chat-api'
 import { mentionNames, newestReadableSeq } from '../../lib/team-chat-state'
+import { runningAgentTypists, typingLabel } from '../../lib/team-chat-typing'
+import { useComposerColumnStyle } from '../chat/composer/useComposerColumnStyle'
 import { ACTIVITY_CHANNEL_FILTERS, EMPTY_ACTIVITY_FILTER, isActivityFilterActive, matchesActivityFilters, type ActivityFilterState } from '../../lib/activity-channel-filters'
 import { TIMELINE_SOFT_LIMIT, useConversationList, useConversationTimeline, useMarkReadWhileVisible, useTypingUsers, type SendInput } from '../../hooks/useTeamChat'
 import { requestEditMessage } from '../../hooks/useChatShortcuts'
@@ -115,13 +117,6 @@ function confirmDelete(): Promise<boolean> {
   )
 }
 
-function typingLabel(names: string[]): string | null {
-  if (!names.length) return null
-  if (names.length === 1) return `${names[0]} is typing…`
-  if (names.length === 2) return `${names[0]} and ${names[1]} are typing…`
-  return 'Several people are typing…'
-}
-
 export function TimelinePane(props: TimelinePaneProps) {
   const { workspaceId, conversation, threadRootId = null, me, mentionables, visible, floating = false, topInset = 0 } = props
   const chrome = usePhoneChromeOverlay()
@@ -141,6 +136,8 @@ export function TimelinePane(props: TimelinePaneProps) {
   const [activityFilter, setActivityFilter] = useState<ActivityFilterState>(EMPTY_ACTIVITY_FILTER)
   const timeline = useConversationTimeline(workspaceId, conversation.id, threadRootId)
   const typing = useTypingUsers(workspaceId, conversation.id, threadRootId)
+  // The typing row shares the composer's edges, so it lines up with the input box.
+  const typingColumnStyle = useComposerColumnStyle({ presentation: 'agent' })
   const names = useMemo(() => {
     const base = mentionNames(mentionables)
     if (!showActivityFilters) return base
@@ -316,7 +313,7 @@ export function TimelinePane(props: TimelinePaneProps) {
   const dragging = useFileDrop(rootRef, showComposer && canPostHere, (files) => composerRef.current?.addFiles(files))
 
   const crumbs = threadCrumbs({ kind: conversation.kind, label: conversationTitle(conversation) })
-  const typingText = cardNotice ?? typingLabel(typing)
+  const typingText = cardNotice ?? typingLabel([...typing, ...runningAgentTypists(timeline.state.messages)])
   const listInsets = floating
     ? { top: (showActivityFilters ? 0 : topInset) + threadHeaderHeight, bottom: footerHeight }
     : undefined
@@ -481,9 +478,11 @@ export function TimelinePane(props: TimelinePaneProps) {
           testID="floating-composer"
         >
           {typingText ? (
-            <GlassChip className="mb-2 ml-4 self-start px-3 py-1">
-              <Text className="text-xs text-muted-foreground">{typingText}</Text>
-            </GlassChip>
+            <View pointerEvents="box-none" className="mb-2" style={typingColumnStyle}>
+              <GlassChip className="self-start px-3 py-1">
+                <Text className="text-xs text-muted-foreground">{typingText}</Text>
+              </GlassChip>
+            </View>
           ) : null}
           {!showComposer ? (
             <GlassChip className="mx-4 mb-3 flex-row items-center justify-between gap-2 py-1.5 pl-4 pr-1.5">
@@ -533,7 +532,7 @@ export function TimelinePane(props: TimelinePaneProps) {
       ) : (
         list
       )}
-      <View className="h-5 justify-center px-4">
+      <View className="h-5 justify-center" style={typingColumnStyle}>
         {typingText && <Text className="text-xs text-muted-foreground">{typingText}</Text>}
       </View>
       {!showComposer ? (

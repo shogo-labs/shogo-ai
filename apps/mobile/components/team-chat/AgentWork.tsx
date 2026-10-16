@@ -3,19 +3,18 @@
 /**
  * What an agent is doing, and did, behind its channel message.
  *
- * A channel reply shows only the agent's closing words. While it works the row shows the same
- * live status project chat does (`WorkGroup` labels that tick, `PlanningStatusLine` between
- * steps). Once it has finished, "Worked for X" folds the turn away and expands to the work log,
+ * A channel reply shows only the agent's closing words. While it works the row shows its live
+ * tool activity (`WorkGroup` labels that tick); the "X is typing…" indicator reports that it is
+ * running. Once it has finished, "Worked for X" folds the turn away and expands to the work log,
  * rendered by project chat's own `AssistantContent`.
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Text, View } from 'react-native'
-import { PlanningStatusLine } from '../chat/turns/PlanningStatusLine'
 import { WorkGroup } from '../chat/turns/WorkGroup'
 import { WorkedForGroup } from '../chat/turns/WorkedForGroup'
 import { AssistantContent } from '../chat/turns/AssistantContent'
-import { groupWorkParts, shouldShowPlanningStatus } from '../chat/turns/turnShaping'
+import { groupWorkParts } from '../chat/turns/turnShaping'
 import { buildFallbackWorkedLabel } from '../chat/turns/workSummary'
 import type { MessagePart } from '../chat/turns/types'
 import { getToolCategory } from '../chat/tools/types'
@@ -58,7 +57,6 @@ export function AgentWorkingStatus({ tools }: { tools: Array<{ name: string; don
           />
         ) : null,
       )}
-      {shouldShowPlanningStatus(parts, true) ? <PlanningStatusLine /> : null}
     </View>
   )
 }

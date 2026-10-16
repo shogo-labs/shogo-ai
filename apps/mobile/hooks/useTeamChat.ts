@@ -479,7 +479,7 @@ export function useTypingUsers(
   workspaceId: string | null | undefined,
   conversationId: string | null | undefined,
   threadRootId: string | null = null,
-): string[] {
+): Array<{ id: string; name: string }> {
   const [typing, setTyping] = useState<Record<string, { name: string; at: number }>>({})
   // The server broadcasts typing to the whole workspace, typist included.
   const me = useWorkspaceUser(workspaceId)?.id ?? null
@@ -507,5 +507,5 @@ export function useTypingUsers(
     return () => clearInterval(timer)
   }, [])
   useEffect(() => setTyping({}), [conversationId, threadRootId])
-  return Object.values(typing).map((v) => v.name)
+  return Object.entries(typing).map(([id, v]) => ({ id, name: v.name }))
 }

@@ -9,7 +9,7 @@ import { createElement, memo, useCallback, useEffect, useRef, useState, type Rea
 import { ActionSheetIOS, Alert, Image, Linking, Modal, Platform, Pressable, Text, TextInput, View } from 'react-native'
 import { useRouter } from 'expo-router'
 import * as Clipboard from 'expo-clipboard'
-import { AlarmClock, AlertCircle, Bookmark, Check, CircleDot, CornerDownRight, KanbanSquare, Link2, Loader2, MessageSquare, MoreHorizontal, Pencil, Pin, SmilePlus, Square, Trash2 } from 'lucide-react-native'
+import { AlarmClock, AlertCircle, Bookmark, Check, CircleDot, CornerDownRight, ExternalLink, KanbanSquare, Link2, Loader2, MessageSquare, MoreHorizontal, Pencil, Pin, SmilePlus, Square, Trash2 } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { ChatMarkdown } from '../chat/ChatMarkdown'
 import { SidebarContextMenu, type SidebarMenuEntry } from '../layout/SidebarContextMenu'
@@ -292,6 +292,29 @@ function MessageRowImpl(props: MessageRowProps) {
   const kind = message.authorType === 'agent' ? messageKind(message) : null
   const onBehalfOf = message.authorType === 'agent' ? onBehalfOfName(message) : null
   const canOpenSession = message.authorType === 'agent' && !!message.agentSessionId && !!props.onOpenSession
+  // Open and Stop live in the header beside the AGENT tag and time, never beside the streamed work.
+  const runningControls = running ? (
+    <>
+      {canOpenSession ? (
+        <Pressable
+          onPress={() => props.onOpenSession!(message)}
+          accessibilityLabel="Open the session this agent is working in"
+          className="flex-row items-center gap-1 rounded-md border border-border px-2 py-0.5 active:bg-muted"
+        >
+          <ExternalLink size={10} className="text-muted-foreground" />
+          <Text className="text-[11px] text-muted-foreground">Open session</Text>
+        </Pressable>
+      ) : null}
+      <Pressable
+        onPress={() => props.onStopAgent(message)}
+        accessibilityLabel="Stop agent"
+        className="flex-row items-center gap-1 rounded-md border border-border px-2 py-0.5 active:bg-muted"
+      >
+        <Square size={10} className="text-muted-foreground" />
+        <Text className="text-[11px] text-muted-foreground">Stop</Text>
+      </Pressable>
+    </>
+  ) : null
   const work = !running && message.authorType === 'agent' ? workOf(message) : null
   const connectRequests = !running && message.authorType === 'agent' ? connectRequestsOf(message) : []
   const [continuedConnects, setContinuedConnects] = useState<string[]>([])
@@ -530,8 +553,14 @@ function MessageRowImpl(props: MessageRowProps) {
             <TimeTooltip iso={message.createdAt}>
               {(h) => <Text className={cn('text-[11px] text-muted-foreground', h && 'underline')}>{formatTime(message.createdAt)}</Text>}
             </TimeTooltip>
+            {runningControls}
           </View>
         )}
+
+        {/* A grouped reply has no header, so a running one gets a header line carrying only its controls. */}
+        {grouped && runningControls ? (
+          <View className="flex-row items-baseline gap-2">{runningControls}</View>
+        ) : null}
 
         {message.pinned && !deleted && (
           <View className="flex-row items-center gap-1">
@@ -649,24 +678,9 @@ function MessageRowImpl(props: MessageRowProps) {
             })()}
             {!running && <UnfurlCards message={message} />}
             {running && (
-              <View className="mt-1 flex-row items-center gap-2">
-                {/* The live status opens the session the agent is writing in. */}
-                <Pressable
-                  disabled={!canOpenSession}
-                  onPress={() => props.onOpenSession!(message)}
-                  accessibilityLabel="Open the session this agent is working in"
-                  className="rounded-md active:bg-muted"
-                >
-                  <AgentWorkingStatus tools={streaming?.tools ?? (streaming?.tool ? [{ name: streaming.tool, done: false }] : [])} />
-                </Pressable>
-                <Pressable
-                  onPress={() => props.onStopAgent(message)}
-                  accessibilityLabel="Stop agent"
-                  className="flex-row items-center gap-1 rounded-md border border-border px-2 py-0.5 active:bg-muted"
-                >
-                  <Square size={10} className="text-muted-foreground" />
-                  <Text className="text-[11px] text-muted-foreground">Stop</Text>
-                </Pressable>
+              // Display only: navigation is the header's Open session button, so the status takes no hover or press.
+              <View className="mt-1" pointerEvents="none" testID="agent-working-status">
+                <AgentWorkingStatus tools={streaming?.tools ?? (streaming?.tool ? [{ name: streaming.tool, done: false }] : [])} />
               </View>
             )}
             {message.authorType === 'agent' && message.agentStatus === 'error' && (
