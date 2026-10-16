@@ -642,14 +642,20 @@ describe("parseShellCommand — fallback", () => {
 })
 
 describe("getToolSummary — fallback", () => {
-  test("unknown tool falls back to tool name + key arg", () => {
+  test("unknown MCP tool falls back to a humanized name + key arg", () => {
     const summary = getToolSummary("mcp__foo__bar", { name: "baz" })
-    expect(summary.verb).toBe("mcp__foo__bar")
+    expect(summary.verb).toBe("Foo: Bar")
     expect(summary.target).toBe("baz")
   })
 
   test("unknown tool with no useful args", () => {
-    expect(getToolSummary("custom_tool")).toEqual({ verb: "custom_tool" })
+    expect(getToolSummary("custom_tool")).toEqual({ verb: "Custom tool" })
+  })
+
+  test("generic runtime tool such as team_chat_post reads as 'Team chat post'", () => {
+    expect(getToolSummary("team_chat_post", { channel: "general", text: "hi" })).toEqual({
+      verb: "Team chat post",
+    })
   })
 })
 

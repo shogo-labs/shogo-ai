@@ -8,7 +8,8 @@
  *
  *   1. `groupWorkParts` — collapse consecutive "work" tool calls
  *      (reads, searches, fetches, edits, writes, shell commands,
- *      integration/MCP calls) into
+ *      integration/MCP calls, and generic tools with no custom card
+ *      such as `team_chat_post`) into
  *      a single `work-group`, and collapse consecutive same-name
  *      calls that aren't work tools (repeated MCP/skill calls) into
  *      a `tool-group`. Hidden legacy notification calls are removed;
@@ -37,7 +38,7 @@
 import type { UIMessage } from "@ai-sdk/react";
 import type { MessagePart, GroupedMessagePart } from "./types";
 import { type ToolCallData, isIntegrationTool } from "../tools/types";
-import { getToolSummary } from "../tools/summary";
+import { getToolSummary, LOOKUP_TOOL_NAMES } from "../tools/summary";
 
 // Verbs (from tools/summary.ts) that classify a tool call as a
 // read-only "exploration" action for the purposes of grouping. Note
@@ -118,12 +119,41 @@ function isShellRunCommand(tool: ToolCallData): boolean {
   return !EXPLORATION_VERBS.has(verb);
 }
 
+/**
+ * Tools with a dedicated card in `AssistantContent` that are not already
+ * covered by `UNGROUPABLE_TOOLS` or the work-tool rules below. They keep
+ * their own card instead of joining a work-group.
+ */
+const CUSTOM_RENDER_TOOLS = new Set(["generate_image", "share_file"]);
+
+/**
+ * A tool call with no dedicated card and no bespoke grouping, e.g.
+ * `team_chat_post`, `Skill`, `Delete`, or an unknown MCP tool. These render
+ * as minimal rows and fold into the surrounding work-group like reads and
+ * edits do.
+ */
+export function isGenericTool(tool: ToolCallData): boolean {
+  const name = tool.toolName;
+  if (
+    UNGROUPABLE_TOOLS.has(name) ||
+    HIDDEN_TOOLS.has(name) ||
+    CUSTOM_RENDER_TOOLS.has(name)
+  ) {
+    return false;
+  }
+  if (name === "exec" || name === "Bash") return false;
+  if (isEditingTool(tool) || isIntegrationTool(name)) return false;
+  if (LOOKUP_TOOL_NAMES.has(name)) return false;
+  return !isExplorationTool(tool);
+}
+
 function isWorkTool(tool: ToolCallData): boolean {
   return (
     isExplorationTool(tool) ||
     isEditingTool(tool) ||
     isShellRunCommand(tool) ||
-    isIntegrationTool(tool.toolName)
+    isIntegrationTool(tool.toolName) ||
+    isGenericTool(tool)
   );
 }
 

@@ -74,7 +74,7 @@ describe("groupWorkParts", () => {
     }
   });
 
-  test("collapses read-only runtime tools into the surrounding work-group", () => {
+  test("collapses read-only runtime tools and generic tools like team_chat_post into one work-group", () => {
     const parts = [
       tool("read_file", { path: "/a.ts" }),
       tool("project_list"),
@@ -84,11 +84,44 @@ describe("groupWorkParts", () => {
       tool("team_chat_post", { channel: "general", text: "done" }),
     ];
     const grouped = groupWorkParts(parts);
-    expect(grouped.map((part) => part.type)).toEqual(["work-group", "tool"]);
+    expect(grouped.map((part) => part.type)).toEqual(["work-group"]);
     if (grouped[0].type === "work-group") {
-      expect(grouped[0].items).toHaveLength(5);
+      expect(grouped[0].items).toHaveLength(6);
     }
-    expect(grouped[1].type).toBe("tool");
+  });
+
+  test("generic tools fold into the surrounding work run instead of standing alone", () => {
+    const parts = [
+      tool("Read", { path: "/a.ts" }),
+      tool("Skill", { name: "a" }),
+      tool("Delete", { file_path: "/tmp/x" }),
+      tool("mcp__linear__list_issues", {}),
+    ];
+    const grouped = groupWorkParts(parts);
+    expect(grouped.map((part) => part.type)).toEqual(["work-group"]);
+    if (grouped[0].type === "work-group") {
+      expect(grouped[0].items).toHaveLength(4);
+    }
+  });
+
+  test("repeated generic tools no longer collapse into a same-name tool-group", () => {
+    const parts = [
+      tool("team_chat_post", { channel: "a", text: "1" }),
+      tool("team_chat_post", { channel: "a", text: "2" }),
+    ];
+    const grouped = groupWorkParts(parts);
+    expect(grouped).toHaveLength(1);
+    expect(grouped[0].type).toBe("work-group");
+  });
+
+  test("tools with a custom card (share_file) break a work run rather than joining it", () => {
+    const parts = [
+      tool("Read", { path: "/a.ts" }),
+      tool("share_file", { path: "/out.pdf" }),
+      tool("Read", { path: "/b.ts" }),
+    ];
+    const grouped = groupWorkParts(parts);
+    expect(grouped.map((part) => part.type)).toEqual(["work-group", "tool", "work-group"]);
   });
 
   test("reasoning rides along transparently inside a work run", () => {
@@ -181,8 +214,8 @@ describe("groupWorkParts", () => {
 
   test("repeated same-name non-work tool calls collapse into a tool-group", () => {
     const parts = [
-      tool("Skill", { name: "a" }),
-      tool("Skill", { name: "b" }),
+      tool("share_file", { path: "/a.pdf" }),
+      tool("share_file", { path: "/b.pdf" }),
     ];
     const grouped = groupWorkParts(parts);
     expect(grouped).toHaveLength(1);
@@ -193,14 +226,14 @@ describe("groupWorkParts", () => {
   });
 
   test("a lone non-work tool call (below MIN_GROUP_SIZE) passes through as a single tool part", () => {
-    const parts = [tool("Skill", { name: "a" })];
+    const parts = [tool("share_file", { path: "/a.pdf" })];
     const grouped = groupWorkParts(parts);
     expect(grouped).toHaveLength(1);
     expect(grouped[0].type).toBe("tool");
   });
 
-  test("different-name non-work tools don't merge into the same tool-group", () => {
-    const parts = [tool("Skill", {}), tool("team_chat_post", {})];
+  test("different-name custom-card tools don't merge into the same tool-group", () => {
+    const parts = [tool("share_file", {}), tool("generate_image", { prompt: "x" })];
     const grouped = groupWorkParts(parts);
     expect(grouped).toHaveLength(2);
     expect(grouped[0].type).toBe("tool");

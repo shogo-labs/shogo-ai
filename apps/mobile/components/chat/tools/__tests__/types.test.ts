@@ -14,7 +14,31 @@ import {
   isIntegrationTool,
   getIntegrationToolkit,
   formatToolkitName,
+  humanizeToolName,
 } from "../types"
+
+describe("humanizeToolName", () => {
+  test("snake_case built-in and runtime tools become sentence case", () => {
+    expect(humanizeToolName("team_chat_post")).toBe("Team chat post")
+    expect(humanizeToolName("custom_tool")).toBe("Custom tool")
+    expect(humanizeToolName("Skill")).toBe("Skill")
+  })
+
+  test("camelCase names split into words", () => {
+    expect(humanizeToolName("teamChatPost")).toBe("Team chat post")
+  })
+
+  test("MCP tools read as 'Server: Action'", () => {
+    expect(humanizeToolName("mcp__linear__list_issues")).toBe("Linear: List issues")
+    expect(humanizeToolName("mcp__chrome-devtools__click")).toBe("Chrome Devtools: Click")
+    expect(humanizeToolName("mcp__linear")).toBe("Linear")
+  })
+
+  test("Composio slugs and native github_* tools use the brand toolkit name", () => {
+    expect(humanizeToolName("GITHUB_CREATE_ISSUE")).toBe("GitHub: Create issue")
+    expect(humanizeToolName("github_merge_pr")).toBe("GitHub: Merge pr")
+  })
+})
 
 describe("isIntegrationTool / getIntegrationToolkit", () => {
   test("MCP tools use the server segment as the toolkit", () => {

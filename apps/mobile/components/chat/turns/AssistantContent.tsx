@@ -47,7 +47,6 @@ import { BrowserWidget } from "./BrowserWidget"
 import { ThinkingWidget } from "./ThinkingWidget"
 import { WriteFileWidget } from "./WriteFileWidget"
 import { EditFileWidget } from "./EditFileWidget"
-import { LOOKUP_TOOL_NAMES } from "../tools/summary"
 import type { PlanData } from "../PlanCard"
 import { PlanReferenceCard } from "./PlanReferenceCard"
 import { extractPlanFilepath } from "./plan-tool"
@@ -183,35 +182,6 @@ export interface AssistantContentProps {
 
 const TEAM_TOOL_NAMES = new Set(["team_create"])
 
-// "Low-information" tools that render as a chrome-less, hover-highlighted
-// row with a human-readable label (e.g. "Read package.json"). Bash/exec
-// has its own dedicated widget (`ExecWidget`) which is already minimal
-// by default, so it's NOT in this set — only tools that flow through
-// `InlineToolWidget` need to be flagged here.
-const MINIMAL_TOOL_NAMES = new Set([
-  ...LOOKUP_TOOL_NAMES,
-  "Read",
-  "read_file",
-  "ReadLints",
-  "read_lints",
-  "Grep",
-  "grep",
-  "search",
-  "Glob",
-  "glob",
-  "WebSearch",
-  "WebFetch",
-  "web",
-  "memory_search",
-  "search_history",
-  "search_integrations",
-  "team_chat_search",
-  "meeting_search",
-  "Delete",
-  "exec_wait",
-  "wait",
-  "task_cancel",
-])
 const GROUP_FALLING_EDGE_DELAY_MS = 1500
 
 function isItemActive(item: MessagePart): boolean {
@@ -882,18 +852,7 @@ export const AssistantContent = memo(
           )
         }
 
-        if (MINIMAL_TOOL_NAMES.has(part.tool.toolName)) {
-          return (
-            <InlineToolWidget
-              key={part.id}
-              tool={part.tool}
-              variant="minimal"
-              isExpanded={expandedTools.has(part.id)}
-              onToggle={getToggle(part.id)}
-            />
-          )
-        }
-
+        // Generic fallback: minimal row (InlineToolWidget's default variant).
         return (
           <InlineToolWidget
             key={part.id}

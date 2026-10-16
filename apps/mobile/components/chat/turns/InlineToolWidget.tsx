@@ -49,11 +49,11 @@ export interface InlineToolWidgetProps {
   onToggle?: () => void
   className?: string
   /**
-   * `boxed` (default) keeps the bordered/muted card chrome used by MCP /
-   * Skill / unknown tools. `minimal` strips the chrome down to plain
-   * clickable text and renders a human-readable verb/target via
-   * `getToolSummary` — used for the allow-list of "low-information"
-   * tools (read_file, read_lints, Grep, etc.).
+   * `minimal` (default) strips the chrome down to plain clickable text and
+   * renders a human-readable verb/target via `getToolSummary`. This is the
+   * row used for every generic tool (team_chat_post, Skill, MCP, etc.) as
+   * well as the low-information tools (read_file, Grep, ...). `boxed` keeps
+   * the bordered/muted card chrome and is opt-in.
    */
   variant?: InlineToolVariant
 }
@@ -103,7 +103,7 @@ function InlineToolWidgetImpl({
   isExpanded: controlledExpanded,
   onToggle,
   className,
-  variant = "boxed",
+  variant = "minimal",
 }: InlineToolWidgetProps) {
   const [internalExpanded, setInternalExpanded] = useState(false)
   const isExpanded = controlledExpanded ?? internalExpanded

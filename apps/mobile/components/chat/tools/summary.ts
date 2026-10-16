@@ -11,7 +11,7 @@
  * Pure module — no React / RN imports. Safe to unit-test directly.
  */
 
-import { getToolKeyArg, type ToolExecutionState } from "./types"
+import { getToolKeyArg, humanizeToolName, type ToolExecutionState } from "./types"
 
 export type RestSep = "&&" | "||" | ";"
 
@@ -992,11 +992,10 @@ export function getToolSummary(
       return { verb, target: formatDuration(ms) }
     }
     default: {
-      // Last-resort fallback — keep the raw tool name as the verb and use
-      // the existing key-arg helper for the target. Callers in the
-      // allow-list shouldn't hit this branch.
+      // Generic fallback for tools with no bespoke summary: a humanized
+      // name ("team_chat_post" -> "Team chat post") plus the key arg.
       const target = getToolKeyArg(toolName, args) ?? undefined
-      return { verb: toolName, target: target ?? undefined }
+      return { verb: humanizeToolName(toolName), target }
     }
   }
 }
