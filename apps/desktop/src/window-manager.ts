@@ -3,7 +3,7 @@
 
 import { app, BrowserWindow, shell, type WebContents } from 'electron'
 import path from 'path'
-import { getApiPort } from './local-server'
+import { getApiPort, getApiUrl } from './local-server'
 
 export type AppWindowKind = 'main' | 'app' | 'code-workbench'
 
@@ -212,9 +212,48 @@ export class WindowManager {
   }
 }
 
+/**
+ * Chat file links served by the local API, direct or relayed from a cloud
+ * workspace (`/api/cloud/<ws>/...`). They need the desktop's session, which the
+ * system browser does not have.
+ */
+const IN_APP_FILE_PATH = /^\/api\/(cloud\/[^/]+\/)?(conversation-files|chat-attachments)\//
+
+/** True for a chat file link on the local API origin. Other URLs are not. */
+export function isInAppFileUrl(url: string, apiUrl: string): boolean {
+  let target: URL
+  let api: URL
+  try {
+    target = new URL(url)
+    api = new URL(apiUrl)
+  } catch {
+    return false
+  }
+  return target.origin === api.origin && IN_APP_FILE_PATH.test(target.pathname)
+}
+
+/** Opens a file in a sandboxed window with no preload bridge. */
+function fileViewerWindowOptions() {
+  return {
+    width: 1000,
+    height: 800,
+    autoHideMenuBar: true,
+    title: 'Shogo',
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      preload: undefined,
+    },
+  }
+}
+
 /** Keeps app windows on the app origin; external links open in the browser. */
 export function installAppNavigationGuards(webContents: WebContents): void {
   webContents.setWindowOpenHandler(({ url }) => {
+    if (isInAppFileUrl(url, getApiUrl())) {
+      return { action: 'allow', overrideBrowserWindowOptions: fileViewerWindowOptions() }
+    }
     if (url.startsWith('http://') || url.startsWith('https://')) {
       shell.openExternal(url)
     }
@@ -231,4 +270,8 @@ export function installAppNavigationGuards(webContents: WebContents): void {
       }
     }
   })
+
+  // File viewers get the same rules, so their own links can't open more
+  // unchecked windows.
+  webContents.on('did-create-window', (child) => installAppNavigationGuards(child.webContents))
 }
