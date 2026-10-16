@@ -330,7 +330,38 @@ describe('mentions', () => {
     // Tie-broken by membership: Ana (member) before Ana Lopez (not a member).
     expect(filterCandidates(candidates, 'ana').map((c) => c.display)).toEqual(['Ana', 'Ana Lopez'])
     // With no query, every non-member user sorts after the rest, in their original order.
-    expect(filterCandidates(candidates, '').map((c) => c.display)).toEqual(['Shogo', 'Billing Bot', 'Ana', 'here', 'channel', 'Ana Lopez'])
+    expect(filterCandidates(candidates, '').map((c) => c.display)).toEqual(['Ana', 'Ana Lopez', 'here', 'channel', 'Shogo', 'Billing Bot'])
+  })
+
+  test('people always rank above groups, specials and agents, even when the agent matches better', () => {
+    const many: Mentionables = {
+      people: [{ id: 'u9', name: 'Eby Paul Daniel', email: 'eby@x.com', image: null, role: 'member' }],
+      agents: Array.from({ length: 9 }, (_, i) => ({
+        key: `p:e${i}`,
+        projectId: `e${i}`,
+        name: `Email Agent ${i}`,
+        description: null,
+        image: null,
+      })),
+    }
+    const candidates = mentionCandidates(many, 'me')
+
+    // "e" is a prefix match for both the person and the agents, but the person still comes first,
+    // then the specials, and the agents fill the rest of the 8 slots.
+    const result = filterCandidates(candidates, 'e')
+    expect(result.map((c) => c.display)).toEqual([
+      'Eby Paul Daniel',
+      'here',
+      'channel',
+      'Email Agent 0',
+      'Email Agent 1',
+      'Email Agent 2',
+      'Email Agent 3',
+      'Email Agent 4',
+    ])
+
+    // With a tight limit, the agents are what gets cut, never the person.
+    expect(filterCandidates(candidates, 'e', 1).map((c) => c.display)).toEqual(['Eby Paul Daniel'])
   })
 
   test('omitting channel membership leaves every candidate unflagged', () => {
