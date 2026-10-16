@@ -21,6 +21,7 @@ import {
   RefreshCw,
   Languages,
   AlertTriangle,
+  X,
 } from "lucide-react-native"
 import { MarkdownText } from "../../chat/MarkdownText"
 import { AgentClient, type AgentPlanSummary } from "@shogo-ai/sdk/agent"
@@ -39,11 +40,14 @@ function errorMessage(err: unknown, fallback: string): string {
 
 interface PlansPanelProps {
   visible: boolean
-  projectId: string
+  /** Required unless `agentUrl` is given (e.g. the project-less workspace runtime). */
+  projectId?: string
   agentUrl?: string | null
   selectedModel?: string
   requestedPlanPath?: { filepath: string | null; nonce: number } | null
   onBuildPlan?: (plan: PlanData, modelId: string) => void
+  /** Renders a close button in the header when the panel is hosted in a dismissible pane. */
+  onClose?: () => void
 }
 
 function formatDate(iso: string): string {
@@ -122,7 +126,7 @@ function normalizePlanFilepath(filepath?: string | null): string | undefined {
   return `.shogo/plans/${filename}`
 }
 
-export function PlansPanel({ visible, projectId, agentUrl, selectedModel, requestedPlanPath, onBuildPlan }: PlansPanelProps) {
+export function PlansPanel({ visible, projectId, agentUrl, selectedModel, requestedPlanPath, onBuildPlan, onClose }: PlansPanelProps) {
   const isNative = Platform.OS !== "web"
   const planHitClass = isNative ? "h-11 w-11" : "h-8 w-8"
   const planTabPadClass = isNative ? "py-2.5" : "py-2"
@@ -174,6 +178,17 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
   }, [selectedPlan, selectedModel])
 
   const baseUrl = agentUrl || `${API_URL}/api/projects/${projectId}/agent-proxy`
+
+  const closeButton = onClose ? (
+    <Pressable
+      onPress={onClose}
+      accessibilityRole="button"
+      accessibilityLabel="Close plans panel"
+      className={cn("items-center justify-center rounded-lg active:bg-muted", planHitClass)}
+    >
+      <X className="text-muted-foreground" size={planIconMd} />
+    </Pressable>
+  ) : null
 
   const agentClient = useMemo(
     () =>
@@ -459,6 +474,7 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
               <Trash2 className="text-destructive" size={planIconMd} />
             </Pressable>
           )}
+          {closeButton}
         </View>
 
         {/* Tab strip — only when a summary exists or is in flight */}
@@ -639,6 +655,7 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
           <Pressable onPress={fetchPlans} className={isNative ? "h-10 w-10 items-center justify-center rounded-lg" : "h-8 w-8 items-center justify-center rounded-lg"}>
             <RefreshCw className="text-muted-foreground" size={isNative ? 18 : 14} />
           </Pressable>
+          {closeButton}
         </View>
       </View>
 

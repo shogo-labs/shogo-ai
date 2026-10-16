@@ -28,10 +28,13 @@ import { pickTeamWorkspace } from "../../lib/team-workspace"
 import { useActiveWorkspace } from "../../hooks/useActiveWorkspace"
 import { useWorkspaceExperience } from "../../hooks/useWorkspaceExperience"
 import { clearChatPrefill, useChatPrefill } from "../../hooks/useChatPrefill"
-import { api, type PersonalAgentProfile } from "../../lib/api"
+import { API_URL, api, type PersonalAgentProfile } from "../../lib/api"
 import { chatSessionEvents } from "../../lib/chat-session-events"
 import { ChatPanel } from "../chat/ChatPanel"
 import type { OpenProjectPaneRequest } from "../chat/ChatContext"
+import type { PlanData } from "../chat/PlanCard"
+import { PlanStreamProvider } from "../chat/PlanStreamContext"
+import { PlansPanel } from "../project/panels/PlansPanel"
 import { ProjectSidePane } from "../team-chat/ProjectSidePane"
 import type { RestoreDraftRequest } from "../chat/ChatInput"
 import { NativePhoneSheet } from "../phone/NativePhoneSheet"
@@ -56,6 +59,18 @@ interface ProjectPaneState extends OpenProjectPaneRequest {
   nonce: number
 }
 
+interface PlanPaneState {
+  filepath: string | null
+  /** Changes on every open so the Plans panel re-selects the requested plan. */
+  nonce: number
+}
+
+interface BuildPlanRequest {
+  plan: PlanData
+  modelId: string
+  nonce: number
+}
+
 export interface WorkspaceAgentChatScreenProps {
   /** Open this workspace session instead of the primary one (e.g. a session a DM reply ran in). */
   initialSessionId?: string
@@ -73,8 +88,10 @@ export const WorkspaceAgentChatScreen = observer(
     const experience = useWorkspaceExperience()
     const usesMobileWorkspaceChrome = useMobileWorkspaceChrome()
     const insets = useSafeAreaInsets()
-    const { width } = useWindowDimensions()
+    const { width, height } = useWindowDimensions()
     const [projectPane, setProjectPane] = useState<ProjectPaneState | null>(null)
+    const [planPane, setPlanPane] = useState<PlanPaneState | null>(null)
+    const [buildPlanRequest, setBuildPlanRequest] = useState<BuildPlanRequest | null>(null)
     const [profile, setProfile] = useState<PersonalAgentProfile | null>(null)
     const [sessionId, setSessionId] = useState<string | null>(null)
     const [prefillRequest, setPrefillRequest] =
@@ -117,6 +134,8 @@ export const WorkspaceAgentChatScreen = observer(
       avatarStreaming.current = false
       setAvatarState("idle")
       setProjectPane(null)
+      setPlanPane(null)
+      setBuildPlanRequest(null)
       if (avatarFinishedTimer.current) {
         clearTimeout(avatarFinishedTimer.current)
         avatarFinishedTimer.current = null
@@ -165,9 +184,26 @@ export const WorkspaceAgentChatScreen = observer(
 
     const hasSidePane = width >= PROJECT_SIDE_PANE_MIN_WIDTH && !usesMobileWorkspaceChrome
     const openProjectPane = useCallback((request: OpenProjectPaneRequest) => {
+      setPlanPane(null)
       setProjectPane({ ...request, nonce: Date.now() })
     }, [])
     const closeProjectPane = useCallback(() => setProjectPane(null), [])
+    const openPlanPane = useCallback((filepath?: string | null) => {
+      setProjectPane(null)
+      setPlanPane({ filepath: filepath ?? null, nonce: Date.now() })
+    }, [])
+    const closePlanPane = useCallback(() => setPlanPane(null), [])
+    const handleBuildPlan = useCallback(
+      (plan: PlanData, modelId: string) => {
+        setBuildPlanRequest({ plan, modelId, nonce: Date.now() })
+        // The phone sheet covers the chat; get out of the way so the build is visible.
+        if (!hasSidePane) setPlanPane(null)
+      },
+      [hasSidePane],
+    )
+    const handleBuildPlanConsumed = useCallback((nonce: number) => {
+      setBuildPlanRequest((current) => (current?.nonce === nonce ? null : current))
+    }, [])
 
     useEffect(() => {
       if (!workspace?.id || !sessionId) {
@@ -440,8 +476,19 @@ export const WorkspaceAgentChatScreen = observer(
     }
 
     const activePane = hasSidePane ? projectPane : null
+    const workspaceAgentUrl = `${API_URL}/api/workspaces/${workspace.id}/agent-proxy`
+    const plansPanel = planPane ? (
+      <PlansPanel
+        visible
+        agentUrl={workspaceAgentUrl}
+        requestedPlanPath={planPane}
+        onBuildPlan={handleBuildPlan}
+        onClose={closePlanPane}
+      />
+    ) : null
 
     return (
+      <PlanStreamProvider>
       <View className="flex-1 flex-row bg-background">
       <View className="min-w-0 flex-1 bg-background">
         {usesMobileWorkspaceChrome ? (
@@ -568,6 +615,9 @@ export const WorkspaceAgentChatScreen = observer(
             composer={experience.composer}
             presentation="agent"
             onOpenProjectPane={hasSidePane ? openProjectPane : undefined}
+            onOpenPlan={isPersonalWorkspace ? undefined : openPlanPane}
+            buildPlanRequest={buildPlanRequest}
+            onBuildPlanConsumed={handleBuildPlanConsumed}
             prefillRequest={prefillRequest}
             onPrefillConsumed={handlePrefillConsumed}
             className="flex-1"
@@ -699,7 +749,22 @@ export const WorkspaceAgentChatScreen = observer(
           </View>
         </NativePhoneSheet>
         <BuddyLookSheet visible={buddyLookSheetOpen} onClose={() => setBuddyLookSheetOpen(false)} />
+        {!hasSidePane ? (
+          <NativePhoneSheet
+            visible={!!planPane}
+            onClose={closePlanPane}
+            grabber={false}
+            testID="workspace-plan-sheet"
+          >
+            <View style={{ height: Math.round(height * 0.8) }}>{plansPanel}</View>
+          </NativePhoneSheet>
+        ) : null}
       </View>
+      {hasSidePane && plansPanel ? (
+        <View className="w-[45%] min-w-[420px] border-l border-border" testID="workspace-plan-pane">
+          {plansPanel}
+        </View>
+      ) : null}
       {activePane ? (
         <View className="w-[45%] min-w-[420px] border-l border-border" testID="workspace-project-pane">
           <ProjectSidePane
@@ -714,6 +779,7 @@ export const WorkspaceAgentChatScreen = observer(
         </View>
       ) : null}
       </View>
+      </PlanStreamProvider>
     )
   },
 )
