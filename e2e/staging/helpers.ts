@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { request as playwrightRequest, test, type Page } from "@playwright/test"
+import { recordTestUser } from "./test-accounts"
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -14,9 +15,11 @@ export interface TestUser {
 
 export function makeTestUser(prefix: string): TestUser {
   const ts = Date.now()
+  const email = `e2e-${prefix.toLowerCase()}-${ts}@mailnull.com`
+  recordTestUser(email)
   return {
     name: `E2E ${prefix} ${ts}`,
-    email: `e2e-${prefix.toLowerCase()}-${ts}@mailnull.com`,
+    email,
     password: `E2E${prefix}Test2026!`,
   }
 }

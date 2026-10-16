@@ -42,6 +42,7 @@ import {
   getUsageWallet,
 } from '../services/billing.service'
 import { prisma, SubscriptionStatus, BillingInterval } from '../lib/prisma'
+import { deleteE2eTestUsers, isE2eTestEmail } from '../services/e2e-test-accounts'
 
 const app = new Hono()
 
@@ -144,7 +145,7 @@ app.post('/bootstrap-subscription', async (c) => {
         400,
       )
     }
-    if (!email.startsWith('e2e-') || !email.endsWith('@mailnull.com')) {
+    if (!isE2eTestEmail(email)) {
       return c.json(
         {
           ok: false,
@@ -335,6 +336,48 @@ app.post('/recycle-runtime', async (c) => {
       { ok: false, error: 'recycle_failed', message: err?.message ?? 'unknown' },
       500,
     )
+  }
+})
+
+/**
+ * POST /api/internal/e2e/delete-test-user
+ *
+ * Body: { userEmail: string }   // must be an e2e-*@mailnull.com address
+ *
+ * Deletes the e2e user and every workspace only e2e users belong to, tearing
+ * down each of their projects' runtimes first. Called by the Playwright
+ * fixtures when a worker finishes, so test accounts never outlive their run.
+ * An unknown email is a no-op (the run may have failed before signup).
+ */
+app.post('/delete-test-user', async (c) => {
+  if (!bootstrapEnabled()) {
+    return c.json({ ok: false, error: 'e2e_bootstrap_disabled' }, 503)
+  }
+  if (!secretMatches(c.req.header('x-e2e-bootstrap-secret'))) {
+    return c.json({ ok: false, error: 'unauthorized' }, 401)
+  }
+
+  let body: { userEmail?: string }
+  try {
+    body = await c.req.json()
+  } catch {
+    return c.json({ ok: false, error: 'invalid_json' }, 400)
+  }
+  const email = body.userEmail?.trim().toLowerCase()
+  if (!email || !isE2eTestEmail(email)) {
+    return c.json({ ok: false, error: 'userEmail_must_be_e2e_address' }, 400)
+  }
+
+  const user = await prisma.user.findUnique({ where: { email }, select: { id: true } })
+  if (!user) return c.json({ ok: true, users: 0, workspaces: 0, projects: 0, failed: [] })
+
+  try {
+    const result = await deleteE2eTestUsers([user.id])
+    return c.json({ ok: result.failed.length === 0, ...result }, result.failed.length ? 500 : 200)
+  } catch (err: any) {
+    // eslint-disable-next-line no-console
+    console.error('[e2e-bootstrap] delete-test-user failed', err)
+    return c.json({ ok: false, error: 'delete_failed', message: err?.message ?? 'unknown' }, 500)
   }
 })
 

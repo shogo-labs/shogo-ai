@@ -596,3 +596,34 @@ describe('GET /subscription-state', () => {
     expect(getSubscriptionMock).toHaveBeenCalledWith('ws-Z')
   })
 })
+
+describe('POST /delete-test-user', () => {
+  const path = '/api/internal/e2e/delete-test-user'
+
+  test('401 with the wrong secret', async () => {
+    const res = await authedPost(path, JSON.stringify({ userEmail: 'e2e-a-1@mailnull.com' }), 'wrong')
+    expect(res.status).toBe(401)
+  })
+
+  test('503 in production without the override', async () => {
+    process.env.NODE_ENV = 'production'
+    const res = await authedPost(path, JSON.stringify({ userEmail: 'e2e-a-1@mailnull.com' }))
+    expect(res.status).toBe(503)
+  })
+
+  test('400 for anything but an e2e-*@mailnull.com address, without a lookup', async () => {
+    for (const userEmail of ['dev@shogo.ai', 'someone@mailnull.com', 'e2e-x@gmail.com', '']) {
+      const res = await authedPost(path, JSON.stringify({ userEmail }))
+      expect(res.status).toBe(400)
+      expect((await res.json()).error).toBe('userEmail_must_be_e2e_address')
+    }
+    expect(userFindUnique).not.toHaveBeenCalled()
+  })
+
+  test('200 no-op for an e2e address that never signed up', async () => {
+    const res = await authedPost(path, JSON.stringify({ userEmail: '  E2E-A-1@mailnull.com ' }))
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ ok: true, users: 0, workspaces: 0, projects: 0, failed: [] })
+    expect(userFindUnique.mock.calls[0][0].where.email).toBe('e2e-a-1@mailnull.com')
+  })
+})
