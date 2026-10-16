@@ -99,7 +99,7 @@ if [ "$RETIRE_STALE_STUDIO" = "true" ]; then
     echo "No stale studio revisions to delete."
   else
     echo "Deleting stale studio revisions:"; echo "$STALE"
-    echo "$STALE" | xargs -r -n1 kubectl delete revision -n "$NS_SYSTEM"
+    echo "$STALE" | xargs -r -n1 kubectl delete revision -n "$NS_SYSTEM" --ignore-not-found
   fi
 fi
 

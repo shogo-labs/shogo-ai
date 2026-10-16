@@ -21,9 +21,11 @@
 #      production `force_rebuild_production` dispatch)
 #   5. Promote - Re-tag staging-<sha> as production-<sha> (production)
 #   6. Replicate Images - Copy images to EU OCIR (production)
-#   7. Deploy US - Primary region (runs migrations)
-#   8. Deploy EU - Secondary region
-#   9. Metal - Promote the staging multi-arch guest image when the rootfs gate
+#   7. Staging rollout - Deploy + critical-path e2e (deploy-staging.yml),
+#      the only serialized part of a staging run
+#   8. Deploy US - Primary region (runs migrations)
+#   9. Deploy EU - Secondary region
+#  10. Metal - Promote the staging multi-arch guest image when the rootfs gate
 #      says the fleet needs it, then publish the metal-agent stable release
 #
 # Rollback without rebuilding: .github/workflows/rollback-production.yml.
@@ -72,8 +74,11 @@ on:
         default: false
         type: boolean
 
+# Production runs are serialized per ref here. Staging runs get a group of
+# their own so builds for successive commits overlap; the staging-rollout job
+# holds the lock that keeps deploy + e2e for one commit together.
 concurrency:
-  group: deploy-v2-${{ github.ref_name }}-${{ inputs.environment || (github.ref_type == 'tag' && 'production' || 'staging') }}${{ inputs.dry_run && '-dry-run' || '' }}
+  group: ${{ (inputs.environment || (github.ref_type == 'tag' && 'production' || 'staging')) == 'production' && format('deploy-v2-{0}-production{1}', github.ref_name, inputs.dry_run && '-dry-run' || '') || format('deploy-v2-staging-build-{0}', github.run_id) }}
   cancel-in-progress: false
 
 # =============================================================================
@@ -700,8 +705,10 @@ jobs:
           platforms: linux/arm64
           push: true
           provenance: false
+          # Staging builds run concurrently across commits, so staging's
+          # `-latest` is moved by the locked rollout (deploy-staging.yml).
           tags: |
-            ${{ needs.resolve-config.outputs.ocir_registry }}/shogo/${{ matrix.image_name }}:${{ steps.tag-prefix.outputs.prefix }}-latest
+            ${{ steps.tag-prefix.outputs.prefix == 'production' && format('{0}/shogo/{1}:production-latest', needs.resolve-config.outputs.ocir_registry, matrix.image_name) || '' }}
             ${{ needs.resolve-config.outputs.ocir_registry }}/shogo/${{ matrix.image_name }}:${{ steps.tag-prefix.outputs.prefix }}-${{ github.sha }}
           # Images must stay environment-agnostic: production promotes the
           # staging-built digests unchanged (see promote-images). Per-env web
@@ -797,7 +804,7 @@ jobs:
   # Stage 2.2: Promote staging images to production (production only)
   # ===========================================================================
   # Production does not rebuild: it ships the exact digests staging built and
-  # ran its critical-path e2e against for this commit. deploy-staging's
+  # ran its critical-path e2e against for this commit. deploy-staging.yml's
   # "Complete staging release tag set" guarantees every staging-deployed SHA
   # has `staging-<sha>` for all four services; this re-tags them as
   # `production-<sha>` (+ `production-latest`) in the shared US registry.
@@ -939,10 +946,14 @@ jobs:
   # For staging: single deploy.
   # ===========================================================================
 
-  # --- Staging deploy (single region) ---
-  deploy-staging:
-    name: Deploy to OKE (staging)
-    runs-on: ubuntu-latest
+  # --- Staging deploy (single region) + critical-path e2e ---
+  # The only part of a staging run that is serialized. A newer run waiting
+  # here replaces (cancels) any older one still waiting, so staging rolls
+  # forward to the newest built commit. Its images are already built, but a
+  # cancelled commit gets no staging tag set or e2e status, so it can't be
+  # promoted to production.
+  staging-rollout:
+    name: Staging rollout
     needs: [setup, resolve-config, detect-changes, build-base-image, build-and-push]
     if: |
       always() &&
@@ -952,513 +963,33 @@ jobs:
       needs.detect-changes.result == 'success' &&
       (needs.build-base-image.result == 'success' || needs.build-base-image.result == 'skipped') &&
       (needs.build-and-push.result == 'success' || needs.build-and-push.result == 'skipped')
-    environment: ${{ needs.resolve-config.outputs.environment }}
-
-    env:
-      OCI_CLI_USER: ${{ secrets.OCI_USER_OCID }}
-      OCI_CLI_TENANCY: ${{ secrets.OCI_TENANCY_OCID }}
-      OCI_CLI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
-      OCI_CLI_KEY_CONTENT: ${{ secrets.OCI_PRIVATE_KEY }}
-      OCI_CLI_REGION: ${{ vars.OCI_REGION }}
-      ENVIRONMENT: ${{ needs.resolve-config.outputs.environment }}
-      NS_SYSTEM: ${{ needs.resolve-config.outputs.namespace_system }}
-      NS_WORKSPACES: ${{ needs.resolve-config.outputs.namespace_workspaces }}
-      DOMAIN: ${{ needs.resolve-config.outputs.domain }}
-      DOCS_DOMAIN: ${{ needs.resolve-config.outputs.docs_domain }}
-      IMAGE_TAG: ${{ needs.resolve-config.outputs.environment }}-${{ github.sha }}
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - name: Install OCI CLI
-        run: pip install oci-cli --quiet
-
-      - name: Configure kubectl for OKE
-        run: |
-          mkdir -p ~/.kube
-          oci ce cluster create-kubeconfig \
-            --cluster-id ${{ needs.resolve-config.outputs.oke_cluster_ocid }} \
-            --region ${{ vars.OCI_REGION }} \
-            --token-version 2.0.0 \
-            --kube-endpoint PUBLIC_ENDPOINT
-          kubectl get nodes > /dev/null
-
-      - name: Create namespaces if not exist
-        run: |
-          kubectl create namespace ${{ env.NS_SYSTEM }} --dry-run=client -o yaml | kubectl apply -f -
-          kubectl create namespace ${{ env.NS_WORKSPACES }} --dry-run=client -o yaml | kubectl apply -f -
-
-      # Hosted e2e backdoor (apps/api/src/routes/internal-e2e.ts), staging only.
-      # e2e-hosted.yml sends the same repo secret.
-      - name: Create or update e2e bootstrap secret
-        if: needs.resolve-config.outputs.environment == 'staging'
-        env:
-          E2E_BOOTSTRAP_SECRET: ${{ secrets.SHOGO_E2E_BOOTSTRAP_SECRET }}
-        run: |
-          if [ -z "$E2E_BOOTSTRAP_SECRET" ]; then exit 0; fi
-          kubectl create secret generic e2e-bootstrap \
-            --namespace=${{ env.NS_SYSTEM }} \
-            --from-literal=secret="$E2E_BOOTSTRAP_SECRET" \
-            --dry-run=client -o yaml | kubectl apply -f -
-
-      - name: Create or update API secrets
-        run: |
-          SECRET_ARGS=(
-            --from-literal=ANTHROPIC_API_KEY="${{ secrets.ANTHROPIC_API_KEY }}"
-          )
-          if [ -n "${{ secrets.BETTER_AUTH_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=BETTER_AUTH_SECRET="${{ secrets.BETTER_AUTH_SECRET }}"); fi
-          if [ -n "${{ secrets.STRIPE_SECRET_KEY }}" ]; then SECRET_ARGS+=(--from-literal=STRIPE_SECRET_KEY="${{ secrets.STRIPE_SECRET_KEY }}"); fi
-          if [ -n "${{ secrets.STRIPE_WEBHOOK_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=STRIPE_WEBHOOK_SECRET="${{ secrets.STRIPE_WEBHOOK_SECRET }}"); fi
-          if [ -n "${{ secrets.STRIPE_CONNECT_WEBHOOK_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=STRIPE_CONNECT_WEBHOOK_SECRET="${{ secrets.STRIPE_CONNECT_WEBHOOK_SECRET }}"); fi
-          if [ -n "${{ secrets.GH_APP_ID }}" ]; then SECRET_ARGS+=(--from-literal=GH_APP_ID="${{ secrets.GH_APP_ID }}"); fi
-          if [ -n "${{ secrets.GH_APP_CLIENT_ID }}" ]; then SECRET_ARGS+=(--from-literal=GH_APP_CLIENT_ID="${{ secrets.GH_APP_CLIENT_ID }}"); fi
-          if [ -n "${{ secrets.GH_APP_CLIENT_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=GH_APP_CLIENT_SECRET="${{ secrets.GH_APP_CLIENT_SECRET }}"); fi
-          if [ -n "${{ secrets.GH_APP_PRIVATE_KEY }}" ]; then SECRET_ARGS+=(--from-literal=GH_APP_PRIVATE_KEY="${{ secrets.GH_APP_PRIVATE_KEY }}"); fi
-          if [ -n "${{ secrets.GH_APP_WEBHOOK_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=GH_APP_WEBHOOK_SECRET="${{ secrets.GH_APP_WEBHOOK_SECRET }}"); fi
-          if [ -n "${{ secrets.GH_APP_SLUG }}" ]; then SECRET_ARGS+=(--from-literal=GH_APP_SLUG="${{ secrets.GH_APP_SLUG }}"); fi
-          if [ -n "${{ secrets.GOOGLE_CLIENT_ID }}" ]; then SECRET_ARGS+=(--from-literal=GOOGLE_CLIENT_ID="${{ secrets.GOOGLE_CLIENT_ID }}"); fi
-          if [ -n "${{ secrets.GOOGLE_CLIENT_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=GOOGLE_CLIENT_SECRET="${{ secrets.GOOGLE_CLIENT_SECRET }}"); fi
-          if [ -n "${{ secrets.SERPER_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=SERPER_API_KEY="${{ secrets.SERPER_API_KEY }}"); fi
-          if [ -n "${{ secrets.COMPOSIO_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=COMPOSIO_API_KEY="${{ secrets.COMPOSIO_API_KEY }}"); fi
-          if [ -n "${{ secrets.COMPOSIO_PROJECT_ID }}" ]; then SECRET_ARGS+=(--from-literal=COMPOSIO_PROJECT_ID="${{ secrets.COMPOSIO_PROJECT_ID }}"); fi
-          if [ -n "${{ secrets.OPENAI_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=OPENAI_API_KEY="${{ secrets.OPENAI_API_KEY }}"); fi
-          if [ -n "${{ secrets.GOOGLE_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=GOOGLE_API_KEY="${{ secrets.GOOGLE_API_KEY }}"); fi
-          if [ -n "${{ secrets.OPENROUTER_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=OPENROUTER_API_KEY="${{ secrets.OPENROUTER_API_KEY }}"); fi
-          if [ -n "${{ secrets.LOAD_TEST_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=LOAD_TEST_SECRET="${{ secrets.LOAD_TEST_SECRET }}"); fi
-          if [ -n "${{ secrets.SMTP_PASSWORD }}" ]; then SECRET_ARGS+=(--from-literal=SMTP_PASSWORD="${{ secrets.SMTP_PASSWORD }}"); fi
-          if [ -n "${{ secrets.LOOPS_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=LOOPS_API_KEY="${{ secrets.LOOPS_API_KEY }}"); fi
-          if [ -n "${{ secrets.ELEVENLABS_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=ELEVENLABS_API_KEY="${{ secrets.ELEVENLABS_API_KEY }}"); fi
-          if [ -n "${{ secrets.ELEVENLABS_VOICE_MODE_AGENT_ID }}" ]; then SECRET_ARGS+=(--from-literal=ELEVENLABS_VOICE_MODE_AGENT_ID="${{ secrets.ELEVENLABS_VOICE_MODE_AGENT_ID }}"); fi
-          if [ -n "${{ secrets.ELEVENLABS_WEBHOOK_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=ELEVENLABS_WEBHOOK_SECRET="${{ secrets.ELEVENLABS_WEBHOOK_SECRET }}"); fi
-          if [ -n "${{ secrets.LIVEKIT_URL }}" ]; then SECRET_ARGS+=(--from-literal=LIVEKIT_URL="${{ secrets.LIVEKIT_URL }}"); fi
-          if [ -n "${{ secrets.LIVEKIT_API_KEY }}" ]; then SECRET_ARGS+=(--from-literal=LIVEKIT_API_KEY="${{ secrets.LIVEKIT_API_KEY }}"); fi
-          if [ -n "${{ secrets.LIVEKIT_API_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=LIVEKIT_API_SECRET="${{ secrets.LIVEKIT_API_SECRET }}"); fi
-          if [ -n "${{ secrets.TWILIO_ACCOUNT_SID }}" ]; then SECRET_ARGS+=(--from-literal=TWILIO_ACCOUNT_SID="${{ secrets.TWILIO_ACCOUNT_SID }}"); fi
-          if [ -n "${{ secrets.TWILIO_AUTH_TOKEN }}" ]; then SECRET_ARGS+=(--from-literal=TWILIO_AUTH_TOKEN="${{ secrets.TWILIO_AUTH_TOKEN }}"); fi
-          # Shared secret with shogo-website/functions/r/[code].ts for
-          # the affiliate click-tracking internal call. See
-          # docs/affiliate-mlm-rollout.md.
-          if [ -n "${{ secrets.SHOGO_INTERNAL_SECRET }}" ]; then SECRET_ARGS+=(--from-literal=SHOGO_INTERNAL_SECRET="${{ secrets.SHOGO_INTERNAL_SECRET }}"); fi
-          # AES-256-GCM master key for encrypting model-provider API keys at
-          # rest (apps/api/src/lib/secret-crypto.ts). Must be identical across
-          # all regions that share the primary DB so encrypted ModelProvider
-          # rows decrypt everywhere. See docs/github-environments-setup.md.
-          if [ -n "${{ secrets.SECRETS_ENCRYPTION_KEY }}" ]; then SECRET_ARGS+=(--from-literal=SECRETS_ENCRYPTION_KEY="${{ secrets.SECRETS_ENCRYPTION_KEY }}"); fi
-
-          kubectl create secret generic api-secrets \
-            --namespace=${{ env.NS_SYSTEM }} \
-            "${SECRET_ARGS[@]}" \
-            --dry-run=client -o yaml | kubectl apply -f -
-
-          kubectl create secret generic anthropic-credentials \
-            --namespace=${{ env.NS_WORKSPACES }} \
-            --from-literal=api-key="${{ secrets.ANTHROPIC_API_KEY }}" \
-            --dry-run=client -o yaml | kubectl apply -f -
-
-          if [ -n "${{ secrets.BETTER_AUTH_SECRET }}" ]; then
-            kubectl create secret generic preview-secrets \
-              --namespace=${{ env.NS_WORKSPACES }} \
-              --from-literal=BETTER_AUTH_SECRET="${{ secrets.BETTER_AUTH_SECRET }}" \
-              --dry-run=client -o yaml | kubectl apply -f -
-          fi
-
-          if [ -n "${{ secrets.SIGNOZ_INGESTION_KEY }}" ]; then
-            kubectl create secret generic signoz-credentials \
-              --namespace=${{ env.NS_SYSTEM }} \
-              --from-literal=SIGNOZ_INGESTION_KEY="${{ secrets.SIGNOZ_INGESTION_KEY }}" \
-              --dry-run=client -o yaml | kubectl apply -f -
-            kubectl create secret generic signoz-credentials \
-              --namespace=${{ env.NS_WORKSPACES }} \
-              --from-literal=SIGNOZ_INGESTION_KEY="${{ secrets.SIGNOZ_INGESTION_KEY }}" \
-              --dry-run=client -o yaml | kubectl apply -f -
-          fi
-
-          # Kourier TLS secret for Knative HTTPS termination (Cloudflare origin cert)
-          if [ -n "${{ secrets.KOURIER_TLS_CERT }}" ] && [ -n "${{ secrets.KOURIER_TLS_KEY }}" ]; then
-            kubectl create namespace kourier-system 2>/dev/null || true
-            kubectl create secret tls kourier-tls \
-              --namespace=kourier-system \
-              --cert=<(echo "${{ secrets.KOURIER_TLS_CERT }}") \
-              --key=<(echo "${{ secrets.KOURIER_TLS_KEY }}") \
-              --dry-run=client -o yaml | kubectl apply -f -
-          fi
-
-      - name: Save current Knative service images
-        id: save-images
-        run: |
-          get_image() {
-            kubectl get ksvc "$1" -n "$2" -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo ""
-          }
-          echo "web_image=$(get_image studio ${{ env.NS_SYSTEM }})" >> $GITHUB_OUTPUT
-          echo "api_image=$(get_image api ${{ env.NS_SYSTEM }})" >> $GITHUB_OUTPUT
-          echo "docs_image=$(get_image docs ${{ env.NS_SYSTEM }})" >> $GITHUB_OUTPUT
-
-      # Images built by this run get the new tag; everything else carries
-      # forward what this cluster already runs. Must run before "Apply
-      # Kubernetes manifests" resets the ksvc images to :<env>-latest.
-      - name: Resolve release images
-        id: release
-        env:
-          OCIR_REGISTRY: ${{ needs.resolve-config.outputs.ocir_registry }}
-          PROMOTE: 'false'
-          API_CHANGED: ${{ needs.detect-changes.outputs.api_changed }}
-          WEB_CHANGED: ${{ needs.detect-changes.outputs.web_changed }}
-          DOCS_CHANGED: ${{ needs.detect-changes.outputs.docs_changed }}
-          RUNTIME_CHANGED: ${{ needs.detect-changes.outputs.runtime_changed }}
-          PREV_WEB_IMAGE: ${{ steps.save-images.outputs.web_image }}
-          PREV_API_IMAGE: ${{ steps.save-images.outputs.api_image }}
-          PREV_DOCS_IMAGE: ${{ steps.save-images.outputs.docs_image }}
-        run: .github/scripts/resolve-release-images.sh
-
-      # Every staging-deployed SHA gets a complete `staging-<sha>` tag set so a
-      # production tag on this commit can be promoted without rebuilding (see
-      # promote-images). Images built by this run already carry the tag; the
-      # rest are pointed at the digest staging keeps running. Manifest-only,
-      # so it takes seconds.
-      - name: Complete staging release tag set
-        env:
-          OCIR_REGISTRY: ${{ needs.resolve-config.outputs.ocir_registry }}
-        run: |
-          set -euo pipefail
-          echo "${{ secrets.OCI_AUTH_TOKEN }}" | docker login "${{ vars.OCI_REGION }}.ocir.io" \
-            -u "${{ vars.OCI_TENANCY_NAMESPACE }}/${{ secrets.OCI_USERNAME }}" --password-stdin
-          carry_forward() {
-            local repo=$1 changed=$2 src=$3
-            local dst="${OCIR_REGISTRY}/shogo/${repo}:${{ env.IMAGE_TAG }}"
-            if [ "$changed" = "true" ] || [ "$src" = "$dst" ]; then
-              echo "$repo: built by this run"
-            elif [ -z "$src" ]; then
-              echo "::warning::$repo: nothing deployed to carry forward; ${dst} will not exist and this commit cannot be promoted"
-            else
-              docker buildx imagetools create --prefer-index=false --tag "$dst" "$src"
-              echo "$repo: ${src} -> ${dst}"
-            fi
-          }
-          carry_forward shogo-api "${{ steps.release.outputs.api_changed }}" "${{ steps.release.outputs.api_image }}"
-          carry_forward shogo-web "${{ steps.release.outputs.web_changed }}" "${{ steps.release.outputs.web_image }}"
-          carry_forward shogo-docs "${{ steps.release.outputs.docs_changed }}" "${{ steps.release.outputs.docs_image }}"
-          carry_forward shogo-runtime "${{ steps.release.outputs.runtime_changed }}" "${{ steps.release.outputs.runtime_image }}"
-
-      # Pre-rollout gate (2026-06-02 EU incident class): refuse to apply
-      # manifests / patch ksvcs into a disk-starved cluster. A node above the
-      # disk threshold (or already under DiskPressure) cannot bring up a new
-      # revision — the kubelet evicts/GCs instead — so the rollout would only
-      # fail 10 minutes later with ProgressDeadlineExceeded. Fail fast with an
-      # actionable message instead.
-      - name: Check node disk headroom (pre-rollout gate)
-        run: .github/scripts/check-node-disk-headroom.sh 80
-
-      # pgvector must exist before the api pods start: their entrypoint runs
-      # `prisma migrate deploy` as `shogo`, which can't create untrusted
-      # extensions. This has to precede `Apply Kubernetes manifests`, whose
-      # ksvc points at the mutable `:<env>-latest` tag and so can start the
-      # new image right away. See k8s/cnpg/ensure-extensions.sql.
-      - name: Ensure Postgres extensions
-        run: |
-          set -euo pipefail
-          PRIMARY=$(kubectl get pods -n ${{ env.NS_SYSTEM }} \
-            -l "cnpg.io/cluster=platform-pg,cnpg.io/instanceRole=primary" \
-            -o jsonpath='{.items[0].metadata.name}')
-          if [ -z "$PRIMARY" ]; then
-            echo "::error::No primary pod found for platform-pg cluster in ${{ env.NS_SYSTEM }}"
-            exit 1
-          fi
-          kubectl exec -i -n ${{ env.NS_SYSTEM }} "$PRIMARY" -c postgres -- \
-            psql -U postgres -d shogo -v ON_ERROR_STOP=1 < k8s/cnpg/ensure-extensions.sql \
-            || { echo "::error::Could not install Postgres extensions on staging"; exit 1; }
-
-      - name: Apply Kubernetes manifests
-        run: |
-          # Render RUNTIME_IMAGE into the api ksvc at apply time, mirroring the
-          # image-prepuller's RUNTIME_IMAGE_PLACEHOLDER substitution. The
-          # overlay ships the placeholder token, never a real (or
-          # `:<env>-bootstrap`) value, so `kubectl apply` itself can never stamp
-          # a non-existent runtime image onto the api ksvc and then rely on a
-          # later imperative patch to undo it. That undo-gap bricked India on
-          # 2026-05-27 when a mid-deploy abort left the placeholder live. The
-          # immutable :<env>-<sha> tag comes from "Resolve release images";
-          # apply-release-images.sh re-verifies it downstream as
-          # defense-in-depth.
-          # The studio image is environment-agnostic; production overlays
-          # also carry release-version / GA4 / Facebook Pixel placeholders
-          # (staging has none).
-          export RUNTIME_IMAGE="${{ steps.release.outputs.runtime_image }}"
-          export APP_VERSION="${{ needs.resolve-config.outputs.app_version }}"
-          export GA4_MEASUREMENT_ID="${{ secrets.GA4_MEASUREMENT_ID }}"
-          export FB_PIXEL_ID="${{ secrets.FB_PIXEL_ID }}"
-          echo "Rendering manifests with RUNTIME_IMAGE=${RUNTIME_IMAGE}"
-          .github/scripts/render-overlay.sh "${{ env.ENVIRONMENT }}" > /tmp/manifests.yaml
-          kubectl apply -f /tmp/manifests.yaml
-          # Node-level inotify quota bump — DaemonSet lives in kube-system,
-          # outside the kustomize overlay (kustomize blocks reaching into
-          # ../../base/ from an overlay). See k8s/base/inotify-tuner.yaml
-          # for context.
-          kubectl apply -f k8s/base/inotify-tuner.yaml
-
-      - name: Ensure docs DomainMapping
-        run: |
-          if [ -n "${{ env.DOCS_DOMAIN }}" ]; then
-            kubectl apply -f - <<'EOF' || true
-          apiVersion: serving.knative.dev/v1beta1
-          kind: DomainMapping
-          metadata:
-            name: ${{ env.DOCS_DOMAIN }}
-            namespace: ${{ env.NS_SYSTEM }}
-          spec:
-            ref:
-              name: docs
-              kind: Service
-              apiVersion: serving.knative.dev/v1
-          EOF
-          fi
-
-      - name: Ensure Kourier TLS configuration
-        run: |
-          kubectl set env deployment/net-kourier-controller -n knative-serving \
-            CERTS_SECRET_NAMESPACE=kourier-system \
-            CERTS_SECRET_NAME=kourier-tls || true
-
-      - name: Ensure Kourier connection draining and stream timeouts
-        run: |
-          kubectl patch configmap config-kourier -n knative-serving --type merge \
-            -p '{"data":{"drain-time-seconds":"15","stream-idle-timeout":"0s"}}' || true
-
-      - name: Ensure Knative max revision timeout for long-running agent turns
-        run: |
-          kubectl patch configmap config-defaults -n knative-serving --type merge \
-            -p '{"data":{"max-revision-timeout-seconds":"3600","revision-idle-timeout-seconds":"0"}}' || true
-
-      # Durable guardrail (run 26873062665, 2026-06-03): bound runtime-image
-      # accumulation on nodes. Each deploy pulls a new ~8 GB runtime image;
-      # with retain-since-create-time at the old 48h default, every superseded
-      # revision kept its image referenced (un-reclaimable by the kubelet) for
-      # two days. Stacked images pushed India's nodes past the kubelet
-      # DiskPressure threshold and aborted the deploy at the pre-rollout disk
-      # gate. Enforcing tightened GC on EVERY deploy (instead of the previous
-      # apply-once / manual k8s/knative/config-gc.yaml, which silently drifts)
-      # lets the kubelet reclaim unreferenced images within hours. Keep these
-      # values in sync with k8s/knative/config-gc.yaml.
-      - name: Ensure Knative revision GC bounds runtime-image accumulation
-        run: |
-          kubectl patch configmap config-gc -n knative-serving --type merge \
-            -p '{"data":{"max-non-active-revisions":"2","retain-since-create-time":"6h","retain-since-last-active-time":"30m","min-non-active-revisions":"1"}}' || true
-
-      # Knative docs: when raising max-revision-timeout-seconds, the
-      # activator's terminationGracePeriodSeconds should be at least as
-      # long, so in-flight requests aren't disrupted on activator drain.
-      # We're also taking the activator out of the request path for
-      # project pods (target-burst-capacity=0), so this is mostly
-      # belt-and-suspenders.
-      - name: Ensure Knative activator drain window matches max revision timeout
-        run: |
-          kubectl patch deployment activator -n knative-serving --type merge \
-            -p '{"spec":{"template":{"spec":{"terminationGracePeriodSeconds":3600}}}}' || true
-
-      - name: Ensure OCI LB idle timeout for SSE streaming
-        run: |
-          kubectl annotate svc kourier -n kourier-system \
-            service.beta.kubernetes.io/oci-load-balancer-connection-idle-timeout="1800" \
-            --overwrite || true
-
-      - name: Verify configured node pool matches running nodes
-        env:
-          NODE_POOL_OCID: ${{ needs.resolve-config.outputs.node_pool_ocid }}
-        run: |
-          if [ -z "$NODE_POOL_OCID" ]; then
-            echo "NODE_POOL_OCID not set, skipping verification"
-            exit 0
-          fi
-          # OKE node displayName is `oke-<cluster-hash>-<nodepool-hash>-<svchash>-N`.
-          # Cross-check that the configured NODE_POOL_OCID's hash appears in
-          # at least one node's displayName. If not, the cluster-autoscaler
-          # would silently sit inert (the staging incident on 2026-05-04).
-          POOL_HASH=$(echo "$NODE_POOL_OCID" | rev | cut -c1-11 | rev)
-          NODE_NAMES=$(kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.labels.displayName}{"\n"}{end}' 2>/dev/null || true)
-          if [ -z "$NODE_NAMES" ]; then
-            echo "::warning::Could not list nodes for pool verification — skipping"
-            exit 0
-          fi
-          if ! echo "$NODE_NAMES" | grep -q "$POOL_HASH"; then
-            echo "::error::Configured NODE_POOL_OCID (.../${POOL_HASH}) does not match any running node displayName."
-            echo "::error::Running nodes:"
-            echo "$NODE_NAMES" | sed 's/^/  /'
-            echo "::error::This means the cluster-autoscaler would silently fail to scale up. Update the GitHub Actions"
-            echo "::error::variable NODE_POOL_OCID for environment ${{ env.ENVIRONMENT }} to the correct node-pool OCID."
-            exit 1
-          fi
-          echo "Node pool OCID matches running nodes (hash=$POOL_HASH)"
-
-      - name: Deploy Cluster Autoscaler
-        env:
-          NODE_POOL_OCID: ${{ needs.resolve-config.outputs.node_pool_ocid }}
-        run: |
-          if [ -z "$NODE_POOL_OCID" ]; then
-            echo "NODE_POOL_OCID not set, skipping"
-          else
-            # Standing-headroom floor: see the production "Deploy Cluster
-            # Autoscaler" step. MIN>=2 default prevents the old scale-to-1
-            # regression; keep vars in sync with terraform system_pool_min/max.
-            NODE_POOL_MIN="${{ vars.NODE_POOL_MIN || '2' }}"
-            NODE_POOL_MAX="${{ vars.NODE_POOL_MAX || '10' }}"
-            sed -e "s|NODE_POOL_MIN_PLACEHOLDER|$NODE_POOL_MIN|g" \
-                -e "s|NODE_POOL_MAX_PLACEHOLDER|$NODE_POOL_MAX|g" \
-                -e "s|NODE_POOL_OCID_PLACEHOLDER|$NODE_POOL_OCID|g" \
-                k8s/base/cluster-autoscaler.yaml | kubectl apply -f -
-            # Force a reload so a stale OCID rolls out immediately, not next pod restart
-            kubectl rollout restart deployment/cluster-autoscaler -n kube-system || true
-            kubectl rollout status deployment/cluster-autoscaler -n kube-system --timeout=180s || true
-            kubectl get pods -n kube-system -l app=cluster-autoscaler
-          fi
-
-      # See the matching production step for context — a 5-minute
-      # CronJob that catches the 2026-05-27 incident classes (placeholder
-      # env leak, BackOff warm-pool pod, zero-Ready ksvcs) and fails the
-      # K8s job to fire the existing alerting hook. Same monitor, same
-      # base manifest, sed-substituted to the staging namespaces.
-      - name: Deploy warm-pool monitor
-        run: |
-          sed -e "s|namespace: shogo-staging-system|namespace: ${{ env.NS_SYSTEM }}|g" \
-              -e "s|value: shogo-staging-system|value: ${{ env.NS_SYSTEM }}|g" \
-              -e "s|value: shogo-staging-workspaces|value: ${{ env.NS_WORKSPACES }}|g" \
-              k8s/base/warm-pool-monitor.yaml | kubectl apply -f -
-
-      # Same rollout path production and rollback-production.yml use: pin the
-      # runtime image, block on the prepull gate, patch the ksvcs, retire stale
-      # studio revisions, re-pin RUNTIME_IMAGE on the api ksvc. Running it on
-      # every main push is what keeps the rollback path exercised.
-      - name: Apply release images
-        env:
-          RUNTIME_TAG: ${{ steps.release.outputs.runtime_tag }}
-          RUNTIME_IMAGE: ${{ steps.release.outputs.runtime_image }}
-          API_IMAGE: ${{ steps.release.outputs.api_image }}
-          WEB_IMAGE: ${{ steps.release.outputs.web_image }}
-          DOCS_IMAGE: ${{ steps.release.outputs.docs_image }}
-          RETIRE_STALE_STUDIO: ${{ steps.release.outputs.web_changed }}
-        run: .github/scripts/apply-release-images.sh
-
-      # sync-api-env.sh `set -euo pipefail`s, ADDs missing env vars instead
-      # of skipping, and verifies the post-patch value via a fresh
-      # `kubectl get` (see its header for the postmortem).
-      - name: Sync API environment variables
-        run: |
-          .github/scripts/sync-api-env.sh "${{ env.NS_SYSTEM }}" BETTER_AUTH_URL "https://${{ env.DOMAIN }}"
-
-      - name: Wait for rollout
-        run: |
-          # `kubectl wait --for=condition=ready ksvc/...` is NOT sufficient
-          # on its own: a Knative Service's Ready condition stays True even
-          # while its latest revision crashloops, because Knative keeps
-          # traffic on the previously-Ready revision. The staging API was
-          # stuck in exactly this state for ~6 weeks (api-00271 served
-          # traffic while api-00272..00282 silently crashlooped) before
-          # this gate was tightened. We must additionally check that the
-          # controller has observed our patch (observedGeneration ==
-          # metadata.generation) and that the latest created revision IS
-          # the latest Ready one.
-          wait_ksvc_ready() {
-            local name=$1 ns=$2 timeout_sec=${3:-600}
-            local target_gen lcre lread obs ready elapsed=0
-            target_gen=$(kubectl get ksvc "$name" -n "$ns" -o jsonpath='{.metadata.generation}')
-            echo "Waiting for ksvc/$name (gen=$target_gen) to roll out..."
-            while [ "$elapsed" -lt "$timeout_sec" ]; do
-              obs=$(kubectl get ksvc "$name" -n "$ns" -o jsonpath='{.status.observedGeneration}' 2>/dev/null || echo 0)
-              ready=$(kubectl get ksvc "$name" -n "$ns" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || true)
-              lcre=$(kubectl get ksvc "$name" -n "$ns" -o jsonpath='{.status.latestCreatedRevisionName}' 2>/dev/null || true)
-              lread=$(kubectl get ksvc "$name" -n "$ns" -o jsonpath='{.status.latestReadyRevisionName}' 2>/dev/null || true)
-              if [ "$obs" = "$target_gen" ] && [ "$ready" = "True" ] && [ -n "$lcre" ] && [ "$lcre" = "$lread" ]; then
-                echo "ksvc/$name rolled out to $lcre"
-                return 0
-              fi
-              sleep 10
-              elapsed=$((elapsed + 10))
-            done
-            echo "::error::ksvc/$name did not reach Ready within ${timeout_sec}s (gen=$target_gen obs=$obs ready=$ready latestCreated=$lcre latestReady=$lread)"
-            echo "::group::revision describe"
-            kubectl describe revision "$lcre" -n "$ns" || true
-            echo "::endgroup::"
-            echo "::group::revision logs"
-            kubectl logs --tail=200 -l "serving.knative.dev/revision=$lcre" -n "$ns" --all-containers || true
-            echo "::endgroup::"
-            return 1
-          }
-          for s in studio api docs; do
-            wait_ksvc_ready "$s" "${{ env.NS_SYSTEM }}" 600
-          done
-
-      # (removed) Knative warm-pool health gate: the project/warm-pool Knative
-      # substrate is vestigial under metal-only prod — its ksvcs churn between
-      # RevisionMissing/OutOfDate and were failing the deploy even though the
-      # api ksvc itself rolled out healthy. Metal is authoritative for project
-      # runtimes now, so this gate no longer reflects serving health.
-
-      # Prevent the multi-reconciler race that amplified the 2026-05-27
-      # US incident: an obsolete api-* revision kept pods alive (min-scale=2)
-      # and its warm-pool controller fought the new revision's controller,
-      # each tearing down the other's warm pods. GC obsolete revisions so
-      # only the latest controller is reconciling.
-      - name: Garbage-collect old api revisions
-        run: |
-          .github/scripts/gc-old-api-revisions.sh "${{ env.NS_SYSTEM }}"
-
-      - name: Restart image prepuller
-        if: steps.release.outputs.runtime_changed == 'true'
-        run: |
-          if ! kubectl get daemonset/image-prepuller -n ${{ env.NS_SYSTEM }} &>/dev/null; then exit 0; fi
-          STUCK=$(kubectl get pods -n ${{ env.NS_SYSTEM }} -l app.kubernetes.io/name=image-prepuller --field-selector=status.phase!=Running -o name 2>/dev/null || true)
-          if [ -n "$STUCK" ]; then
-            echo "$STUCK" | xargs -r kubectl delete -n ${{ env.NS_SYSTEM }} --force --grace-period=0 2>/dev/null || true
-            sleep 5
-          fi
-          kubectl rollout restart daemonset/image-prepuller -n ${{ env.NS_SYSTEM }}
-          kubectl rollout status daemonset/image-prepuller -n ${{ env.NS_SYSTEM }} --timeout=300s || echo "Prepuller rollout timeout"
-
-      - name: Post-deploy health check
-        run: |
-          echo "Waiting 30s for revisions to propagate..."
-          sleep 30
-          HEALTHY=false
-          for i in $(seq 1 20); do
-            STATUS=$(curl -sf -o /dev/null -w "%{http_code}" --connect-timeout 5 --max-time 15 "https://${{ env.DOMAIN }}/api/health" 2>/dev/null) || STATUS="000"
-            if [ "$STATUS" = "200" ]; then
-              echo "API healthy (attempt $i)"
-              HEALTHY=true
-              break
-            fi
-            echo "API not ready (HTTP $STATUS), retrying... ($i/20)"
-            sleep 10
-          done
-          if [ "$HEALTHY" != "true" ]; then
-            echo "::error::API health check did not return 200 after 20 attempts"
-            exit 1
-          fi
-
-  # --- Staging: critical-path e2e against what was just deployed ---
-  # deploy.yml's concurrency group holds the next staging deploy until this
-  # run finishes, so staging is guaranteed to be serving github.sha here.
-  # Publishes the e2e/staging-critical commit status read by
-  # staging-e2e-gate below. To retry a flaky failure, re-run this job
-  # before anything newer lands on main.
-  staging-e2e-critical:
-    name: Staging critical-path e2e
-    needs: [deploy-staging]
-    # always(): without a status function GitHub skips this job whenever any
-    # upstream build job was skipped (e.g. a commit that changes no images),
-    # and the prod staging-e2e-gate then never sees e2e/staging-critical.
-    if: always() && needs.deploy-staging.result == 'success'
+    concurrency:
+      group: deploy-v2-staging-rollout
+      cancel-in-progress: false
     permissions:
       contents: read
+      actions: read
       statuses: write
-    uses: ./.github/workflows/e2e-hosted.yml
+    uses: ./.github/workflows/deploy-staging.yml
     with:
-      target: staging
-      suite: critical
-      report_status: true
+      environment: ${{ needs.resolve-config.outputs.environment }}
+      namespace_system: ${{ needs.resolve-config.outputs.namespace_system }}
+      namespace_workspaces: ${{ needs.resolve-config.outputs.namespace_workspaces }}
+      domain: ${{ needs.resolve-config.outputs.domain }}
+      docs_domain: ${{ needs.resolve-config.outputs.docs_domain }}
+      app_version: ${{ needs.resolve-config.outputs.app_version }}
+      ocir_registry: ${{ needs.resolve-config.outputs.ocir_registry }}
+      oke_cluster_ocid: ${{ needs.resolve-config.outputs.oke_cluster_ocid }}
+      node_pool_ocid: ${{ needs.resolve-config.outputs.node_pool_ocid }}
+      api_changed: ${{ needs.detect-changes.outputs.api_changed }}
+      web_changed: ${{ needs.detect-changes.outputs.web_changed }}
+      docs_changed: ${{ needs.detect-changes.outputs.docs_changed }}
+      runtime_changed: ${{ needs.detect-changes.outputs.runtime_changed }}
     secrets: inherit
 
   # --- Production: require a green staging critical-path e2e on this SHA ---
-  # A v* tag normally points at a main commit whose staging deploy (and
-  # staging-e2e-critical) may still be running, so wait for it. Fail fast if
+  # A v* tag normally points at a main commit whose staging rollout (deploy +
+  # critical-path e2e) may still be running, so wait for it. Fail fast if
   # no main deploy for this SHA exists (e.g. it was superseded in the deploy
   # queue): deploy that commit to staging first or tag a commit that was.
   staging-e2e-gate:
@@ -1984,7 +1515,7 @@ jobs:
               -e "s|value: shogo-staging-workspaces|value: ${{ env.NS_WORKSPACES }}|g" \
               k8s/base/warm-pool-monitor.yaml | kubectl apply -f -
 
-      # Shared with deploy-staging and rollback-production.yml: pin the runtime
+      # Shared with deploy-staging.yml and rollback-production.yml: pin the runtime
       # image, block on the prepull gate (run 26865807851, 2026-06-02), patch
       # the ksvcs, retire stale studio revisions (2026-07-18 EU CSS-404), and
       # re-pin + verify RUNTIME_IMAGE on the api ksvc (2026-05-27 502s).
@@ -2808,7 +2339,7 @@ jobs:
               -e "s|value: shogo-staging-workspaces|value: ${{ env.NS_WORKSPACES }}|g" \
               k8s/base/warm-pool-monitor.yaml | kubectl apply -f -
 
-      # Shared with deploy-staging and rollback-production.yml: pin the runtime
+      # Shared with deploy-staging.yml and rollback-production.yml: pin the runtime
       # image, block on the prepull gate (run 26865807851, 2026-06-02), patch
       # the ksvcs, retire stale studio revisions (2026-07-18 EU CSS-404), and
       # re-pin + verify RUNTIME_IMAGE on the api ksvc (2026-05-27 502s).

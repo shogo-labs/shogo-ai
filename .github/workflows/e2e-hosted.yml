@@ -6,7 +6,7 @@
 #   1. Nightly at 08:00 UTC against staging (smoke signal on the current
 #      main branch since the last deploy).
 #   2. On demand via workflow_dispatch — pick `staging` or `production`.
-#   3. From deploy.yml right after every staging deploy (`workflow_call`,
+#   3. From deploy-staging.yml right after every staging deploy (`workflow_call`,
 #      suite=critical, report_status=true). That run publishes the
 #      `e2e/staging-critical` commit status, which deploy.yml's
 #      `staging-e2e-gate` requires before a `v*` tag may deploy production.
@@ -55,7 +55,7 @@ on:
 permissions: {}
 
 concurrency:
-  # The deploy-gating call is already serialized by deploy.yml's concurrency;
+  # The deploy-gating call is already serialized by deploy.yml's staging-rollout lock;
   # sharing a group with nightly/manual runs would let a queued run cancel it.
   group: e2e-hosted-${{ inputs.target || 'staging' }}-${{ inputs.report_status && github.run_id || 'standalone' }}
   cancel-in-progress: false
