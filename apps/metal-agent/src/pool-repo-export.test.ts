@@ -32,6 +32,10 @@ class SweepPool extends MetalWarmPool {
   payload = new Uint8Array([1, 2, 3])
   outcome: RepoWriteOutcome = { status: 'written', etag: '"e"' }
 
+  protected override async guestHasRepoBundles(): Promise<boolean> {
+    return false
+  }
+
   protected override async fetchRepoExport(_handle: FcVmHandle, _token?: string): Promise<RepoExport | null> {
     this.exports++
     if (this.failExport) throw this.failExport

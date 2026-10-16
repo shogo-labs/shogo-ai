@@ -109,15 +109,6 @@ const PRESIGN_TTL_SEC = 30 * 60
  */
 export const REPO_STAGING_DIR = '.shogo/local/repo-staging'
 
-/**
- * Writer gate for the incremental repo format. Off by default. It only decides
- * which projects migrate: once a project has a manifest it stays on the
- * manifest whatever the flag says.
- */
-export function repoBundlesEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  return env.METAL_REPO_BUNDLES === 'on'
-}
-
 /** Outcome of one bundle-format persist. `unchanged` means durable already. */
 type RepoPersist = 'written' | 'unchanged' | 'quarantined' | 'lost' | 'empty'
 
@@ -3028,12 +3019,12 @@ export class MetalWarmPool {
 
   /**
    * The incremental writer. Returns null when the legacy tarball path should
-   * run instead: the flag is off and no manifest exists, or the guest predates
-   * `/pool/export-repo-bundle`. A project with a manifest never falls back.
+   * run instead: no manifest exists yet and the guest cannot read or write
+   * bundles. A project with a manifest never falls back.
    */
   private async storeRepoBundles(a: AssignedVm): Promise<RepoPersist | null> {
     const current = await this.repoManifest(a.projectId)
-    if (!current && !repoBundlesEnabled()) return null
+    if (!current && !(await this.guestHasRepoBundles(a))) return null
     // Past the compaction threshold the export is a full base, which restarts the chain.
     const compact = !!current && needsCompaction(current.manifest.bundles)
     const since = current && !compact ? Object.values(current.manifest.refs) : null
@@ -3064,6 +3055,28 @@ export class MetalWarmPool {
    * Ask the guest for the next bundle. `since` holds the tips the manifest
    * records; null asks for a full base.
    */
+  /**
+   * Whether this VM's guest advertises bundle support in the repo-hydrated
+   * probe. Only a capable guest may migrate a project, since every later
+   * restore of that project needs the same capability. A failed probe is not
+   * cached, so it is retried on the next save.
+   */
+  protected async guestHasRepoBundles(a: AssignedVm): Promise<boolean> {
+    const known = this.repoBundleCapable.get(a)
+    if (known !== undefined) return known
+    let capable: boolean
+    try {
+      const env: Record<string, string> = a.runtimeToken ? { RUNTIME_AUTH_SECRET: a.runtimeToken } : {}
+      const probe = await this.callRepoHydrated(a.handle, env, { probe: true }, Math.min(this.cfg.hydrateTimeoutMs, 10_000))
+      capable = probe?.bundles === true
+    } catch (err: any) {
+      console.warn(`[pool] repo bundle probe failed for ${a.projectId}: ${err?.message ?? err}`)
+      return false
+    }
+    this.repoBundleCapable.set(a, capable)
+    return capable
+  }
+
   protected async exportRepoBundle(a: AssignedVm, since: string[] | null): Promise<RepoBundleExport | null> {
     const res = await fetch(`${a.handle.agentUrl}/pool/export-repo-bundle`, {
       method: 'POST',
@@ -3159,6 +3172,7 @@ export class MetalWarmPool {
 
   /** Last sweep per project, so a busy writer does not list the bucket on every save. */
   private repoBundleSweptAt = new Map<string, number>()
+  private repoBundleCapable = new WeakMap<AssignedVm, boolean>()
 
   private promoteUnlinkedManifest(a: AssignedVm, manifest: RepoManifest): Promise<boolean> {
     return this.promoteUnlinkedWith(a, manifest.rootCommitAt, {

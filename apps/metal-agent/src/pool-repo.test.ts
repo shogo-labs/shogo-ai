@@ -41,6 +41,10 @@ class TestPool extends MetalWarmPool {
   preserved: string[] = []
   preserveKey: string | null = 'conflict/p1/superseded-repo.tar.gz'
 
+  protected override async guestHasRepoBundles(): Promise<boolean> {
+    return false
+  }
+
   protected override async statDurableRepo() {
     this.statCalls++
     return this.durable
@@ -423,6 +427,7 @@ describe('pool host-mediated repo persist', () => {
 
     let prevManifest: RepoManifest | null
     let exportCalls: Array<{ since: string[] | null }>
+    let guestCapable = true
     let bundleUploads: string[]
     let manifestWrites: Array<{ manifest: RepoManifest; lineage: RepoLineage }>
     let manifestOutcome: RepoWriteOutcome
@@ -431,6 +436,7 @@ describe('pool host-mediated repo persist', () => {
     function writer(pool: TestPool, exportResult: any) {
       // Keep the background sweep out of the writer tests; it has its own coverage.
       ;(pool as any).scheduleRepoBundleSweep = () => {}
+      ;(pool as any).guestHasRepoBundles = async () => guestCapable
       exportCalls = []
       bundleUploads = []
       manifestWrites = []
@@ -464,14 +470,10 @@ describe('pool host-mediated repo persist', () => {
     })
 
     beforeEach(() => {
-      process.env.METAL_REPO_BUNDLES = 'on'
+      guestCapable = true
       prevManifest = null
       manifestOutcome = { status: 'created', etag: '"m1"' }
       bundleFetchBytes = ENTRY_BASE_BYTES
-    })
-
-    afterEach(() => {
-      delete process.env.METAL_REPO_BUNDLES
     })
 
     test('a project with no manifest gets a full base, then its manifest is created', async () => {
@@ -612,14 +614,42 @@ describe('pool host-mediated repo persist', () => {
       }
     })
 
-    test('with the flag off and no manifest the tarball path is unchanged', async () => {
-      delete process.env.METAL_REPO_BUNDLES
+    test('bundle support comes from the repo-hydrated probe and is cached per VM', async () => {
+      let answer: unknown = { ok: true, supported: true, deadline: true, bundles: true }
+      const probes: unknown[] = []
+      const guest = Bun.serve({
+        port: 0,
+        fetch: async (req) => {
+          probes.push(await req.json())
+          return typeof answer === 'string' ? new Response(answer) : Response.json(answer)
+        },
+      })
+      try {
+        const pool = makePool(dir)
+        const handle = { ...HANDLE, agentUrl: `http://127.0.0.1:${guest.port}` }
+        const probe = (a: AssignedVm) => (MetalWarmPool.prototype as any).guestHasRepoBundles.call(pool, a)
+        const capable = pool.add('p1', { handle })
+        expect(await probe(capable)).toBe(true)
+        expect(await probe(capable)).toBe(true)
+        expect(probes).toEqual([{ probe: true }])
+
+        answer = 'ok'
+        const legacy = pool.add('p2', { handle })
+        expect(await probe(legacy)).toBe(false)
+      } finally {
+        guest.stop(true)
+      }
+    })
+
+    test('a guest without bundle support and no manifest keeps the tarball path', async () => {
+      guestCapable = false
       const pool = makePool(dir)
       const restore = writer(pool, exportOf(baseEntry))
       try {
         const a = pool.add('p1', { repoParentEtag: undefined })
         expect(await pool.saveRepoToStore(a)).toBe(true)
         expect(exportCalls).toHaveLength(0)
+        expect(manifestWrites).toHaveLength(0)
         expect(pool.uploads).toHaveLength(1)
       } finally {
         restore()

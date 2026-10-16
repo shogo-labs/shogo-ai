@@ -30,6 +30,10 @@ class TestPool extends MetalWarmPool {
   guestMembers: string[] | null = null
   removed: string[] = []
 
+  protected override async guestHasRepoBundles(): Promise<boolean> {
+    return false
+  }
+
   protected override async guestMountedMembers(): Promise<string[] | null> {
     return this.guestMembers
   }
