@@ -77,6 +77,34 @@ describe('exec background hand-off', () => {
     expect(res.hint).toContain('keeps running in the background')
     registry.kill(res.task_id)
   })
+
+  test('Stop hands a foreground command back as a task instead of blocking until its timeout', async () => {
+    const ctx = { ...makeCtx(registry), projectId: '' }
+    const ac = new AbortController()
+    setTimeout(() => ac.abort(), 100)
+    const startedAt = Date.now()
+    const res = (await createTools(ctx).find((t) => t.name === 'exec')!
+      .execute('call-1', { command: 'sleep 30', timeout: 600_000 }, ac.signal)).details as any
+    expect(Date.now() - startedAt).toBeLessThan(5_000)
+    expect(res.status).toBe('running')
+    expect(registry.get(res.task_id)?.status).toBe('running')
+    registry.kill(res.task_id)
+  })
+})
+
+describe('exec_wait', () => {
+  test('Stop ends the wait', async () => {
+    const ctx = { ...makeCtx(registry), projectId: '' }
+    const started = await run(ctx, 'exec', { command: 'sleep 30', background: true })
+    const ac = new AbortController()
+    setTimeout(() => ac.abort(), 100)
+    const startedAt = Date.now()
+    const res = (await createTools(ctx).find((t) => t.name === 'exec_wait')!
+      .execute('call-1', { run_id: started.task_id, pattern: 'never printed', timeout_ms: 600_000 }, ac.signal)).details as any
+    expect(Date.now() - startedAt).toBeLessThan(5_000)
+    expect(res.status).toBe('running')
+    registry.kill(started.task_id)
+  })
 })
 
 describe('wait', () => {

@@ -962,9 +962,9 @@ function gate(
   const originalExecute = tool.execute
   const gated: AgentTool = {
     ...tool,
-    execute: async (toolCallId: string, params: any) => {
+    execute: async (toolCallId: string, params: any, signal?: AbortSignal, onUpdate?: any) => {
       const check = evaluate(tool.name, params ?? {})
-      if (!check) return originalExecute(toolCallId, params)
+      if (!check) return originalExecute(toolCallId, params, signal, onUpdate)
 
       if (check.action === 'deny') {
         return textResult({
@@ -989,7 +989,7 @@ function gate(
         }
       }
 
-      return originalExecute(toolCallId, params)
+      return originalExecute(toolCallId, params, signal, onUpdate)
     },
   }
   ;(gated as any)[GATED] = true

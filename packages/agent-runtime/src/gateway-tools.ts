@@ -1025,6 +1025,18 @@ export function containerToHost(containerPath: string, workspaceDir: string): st
 /** Default soft timeout for exec / exec_wait — after this we hand control back. */
 const DEFAULT_EXEC_SOFT_TIMEOUT_MS = 30_000
 
+/** Resolves with `value` once `signal` aborts (never, without one). */
+function onAbort<T>(signal: AbortSignal | undefined, value: T): { promise: Promise<T>; dispose: () => void } {
+  if (!signal) return { promise: new Promise<T>(() => {}), dispose: () => {} }
+  if (signal.aborted) return { promise: Promise.resolve(value), dispose: () => {} }
+  let listener: () => void = () => {}
+  const promise = new Promise<T>((resolve) => {
+    listener = () => resolve(value)
+    signal.addEventListener('abort', listener, { once: true })
+  })
+  return { promise, dispose: () => signal.removeEventListener('abort', listener) }
+}
+
 interface ExecRunMetadata {
   cwdFileHost: string
   isSandboxed: boolean
@@ -1137,7 +1149,7 @@ function createExecTool(ctx: ToolContext): AgentTool {
         }),
       ),
     }),
-    execute: async (_toolCallId, params) => {
+    execute: async (_toolCallId, params, signal) => {
       const { command, timeout = DEFAULT_EXEC_SOFT_TIMEOUT_MS, background = false } = params as {
         command: string
         timeout?: number
@@ -1265,7 +1277,11 @@ function createExecTool(ctx: ToolContext): AgentTool {
       // a soft timeout and hand the agent a run_id if it overruns.
       // GH_TOKEN is the App installation token when the project is connected,
       // so `gh` comments and git commits are the bot rather than a user PAT.
-      const githubEnv = await githubCliEnvForProject(ctx.projectId)
+      const STOPPED = Symbol('stopped')
+      const stoppedBeforeSpawn = onAbort(signal, STOPPED)
+      const githubEnv = await Promise.race([githubCliEnvForProject(ctx.projectId), stoppedBeforeSpawn.promise])
+      stoppedBeforeSpawn.dispose()
+      if (githubEnv === STOPPED) return textResult({ error: 'Stopped before the command started.' })
       const handle = sandboxExecAsync({
         command: wrappedCommand,
         workspaceDir: ctx.workspaceDir,
@@ -1302,12 +1318,14 @@ function createExecTool(ctx: ToolContext): AgentTool {
         ;(timer as any)?.unref?.()
       })
 
-      const winner = await Promise.race([handle.done, timeoutPromise])
+      const stopped = onAbort(signal, STOPPED)
+      const winner = await Promise.race([handle.done, timeoutPromise, stopped.promise])
       if (timer) clearTimeout(timer)
+      stopped.dispose()
 
-      if (winner === SOFT_TIMEOUT) {
+      if (winner === SOFT_TIMEOUT || winner === STOPPED) {
         registry.markBackgrounded(entry.runId)
-        return buildSoftTimeoutResult(ctx, entry, softTimeoutMs)
+        return buildSoftTimeoutResult(ctx, entry, winner === STOPPED ? null : softTimeoutMs)
       }
 
       return buildCompletedExecResult({ ctx, entry, finalResult: winner })
@@ -1764,7 +1782,7 @@ function createExecWaitTool(ctx: ToolContext): AgentTool {
         }),
       ),
     }),
-    execute: async (_toolCallId, params) => {
+    execute: async (_toolCallId, params, signal) => {
       const {
         run_id,
         timeout_ms = DEFAULT_EXEC_SOFT_TIMEOUT_MS,
@@ -1789,7 +1807,7 @@ function createExecWaitTool(ctx: ToolContext): AgentTool {
         })
       }
       if (!found.handle) {
-        return createWaitTool(ctx).execute(_toolCallId, { task_ids: [found.id], timeout_ms, until: pattern })
+        return createWaitTool(ctx).execute(_toolCallId, { task_ids: [found.id], timeout_ms, until: pattern }, signal)
       }
       const entry = found as CommandEntry
 
@@ -1863,11 +1881,13 @@ function createExecWaitTool(ctx: ToolContext): AgentTool {
         : new Promise<never>(() => {}) // never resolves
 
       const endWait = registry.beginWait(run_id)
+      const stopped = onAbort(signal, SOFT_TIMEOUT)
       let winner: { exitCode: number; stdout: string; stderr: string; killed: boolean } | typeof SOFT_TIMEOUT | typeof PATTERN_HIT
       try {
-        winner = await Promise.race([entry.handle.done, timeoutPromise, patternPromise])
+        winner = await Promise.race([entry.handle.done, timeoutPromise, patternPromise, stopped.promise])
       } finally {
         endWait()
+        stopped.dispose()
       }
       if (timer) clearTimeout(timer)
       if (patternTimer) clearTimeout(patternTimer)

@@ -342,6 +342,25 @@ describe('withPermissionGate', () => {
     expect(result.details).toBe('ok')
   })
 
+  test('forwards the abort signal and onUpdate so Stop reaches the tool', async () => {
+    const eng = newEngine({ preference: { mode: 'full_autonomy' } })
+    let received: any[] = []
+    const tool: any = {
+      name: 'echo',
+      description: 'd',
+      parameters: {},
+      execute: async (...args: any[]) => {
+        received = args
+        return { content: [{ type: 'text', text: 'ok' }], details: 'ok' }
+      },
+    }
+    const signal = new AbortController().signal
+    const onUpdate = () => {}
+    await withPermissionGate(tool, 'shell', eng).execute('cid-2b', { command: 'ls' }, signal, onUpdate)
+    expect(received[2]).toBe(signal)
+    expect(received[3]).toBe(onUpdate)
+  })
+
   test('returns an error result when the user declines an "ask" approval', async () => {
     const eng = newEngine({ preference: { mode: 'strict' } })
     const tool: any = {
