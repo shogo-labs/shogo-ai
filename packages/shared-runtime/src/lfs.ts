@@ -19,7 +19,7 @@
  *     graph still shows the files).
  *
  * Auth: every `git lfs` invocation passes the runtime bearer via
- * `-c http.extraHeader=...` and the LFS endpoint via `-c lfs.url=...`, so
+ * `-c http.<api-origin>/.extraHeader=...` and the LFS endpoint via `-c lfs.url=...`, so
  * neither the token nor an environment-specific URL is ever persisted into
  * `.git/config` (which rides along in the durable `.git` tarball).
  *
@@ -336,11 +336,18 @@ async function ensureCloudRemote(cfg: LfsRemoteConfig): Promise<string> {
   return remote
 }
 
-/** Per-invocation `-c` overrides: explicit LFS url + bearer auth (never persisted). */
-function lfsConfigArgs(cfg: LfsRemoteConfig): string[] {
+/**
+ * Per-invocation `-c` overrides: explicit LFS url + bearer auth (never persisted).
+ *
+ * The bearer is scoped to the API origin. Unscoped, git-lfs also sends it on
+ * the presigned object-storage transfers, which reject any `Authorization`
+ * header that is not their own signature. The API has no locks endpoint.
+ */
+export function lfsConfigArgs(cfg: LfsRemoteConfig): string[] {
   const lfsUrl = buildLfsEndpointUrl(cfg.cloudApiUrl, cfg.projectId)
-  const header = `http.extraHeader=Authorization: Bearer ${cfg.runtimeAuthSecret}`
-  return ['-c', `lfs.url=${lfsUrl}`, '-c', header]
+  const apiOrigin = `${new URL(cfg.cloudApiUrl).origin}/`
+  const header = `http.${apiOrigin}.extraHeader=Authorization: Bearer ${cfg.runtimeAuthSecret}`
+  return ['-c', `lfs.url=${lfsUrl}`, '-c', header, '-c', 'lfs.locksverify=false']
 }
 
 /**
