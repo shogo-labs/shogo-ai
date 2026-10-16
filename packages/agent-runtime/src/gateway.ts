@@ -5925,6 +5925,17 @@ export class AgentGateway {
     return !!waker
   }
 
+  /**
+   * Work that means this runtime is not idle: agent turns running now (chat,
+   * schedule, heartbeat, channel) and background tasks that will wake the
+   * agent when they finish. Hosts check this before evicting the runtime.
+   */
+  getActiveWork(): { turns: number; tasks: number } {
+    let tasks = 0
+    for (const reg of this.commandRegistries.values()) tasks += reg.pendingNotifyCount()
+    return { turns: this.turnLocks.size, tasks }
+  }
+
   abortCurrentTurn(sessionId: string): boolean {
     // Release the lock so a new user message on this session can start
     // immediately instead of queueing behind the aborted turn's

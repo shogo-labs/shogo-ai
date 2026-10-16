@@ -95,6 +95,8 @@ const RUNTIME_IDLE_MS = 15 * 60 * 1000;
  * live chat stream out from under the user.
  */
 const STREAM_ACTIVE_WINDOW_MS = 30 * 1000;
+/** Budget for asking a runtime whether it has work in progress before evicting it. */
+const ACTIVITY_PROBE_TIMEOUT_MS = 3000;
 
 /** Restart backoff bounds. */
 const RESTART_BACKOFF_BASE_MS = 1_000;
@@ -480,6 +482,8 @@ interface InternalRuntime {
    */
   lastStdoutAt: number;
   lastUsedAt: number;
+  /** RUNTIME_AUTH_SECRET the current process was spawned with (extraEnv may override the derived one). */
+  runtimeToken?: string;
   restarts: number;
   /** Consecutive non-clean exits since the last healthy run. */
   consecutiveFailures: number;
@@ -865,12 +869,25 @@ export class WorkerRuntimeManager implements RuntimeResolver {
       .filter((r) => r.projectId !== keepProjectId && now - r.lastUsedAt >= STREAM_ACTIVE_WINDOW_MS)
       .sort((a, b) => a.lastUsedAt - b.lastUsedAt);
 
-    let overBy = running.length - cap;
+    void this.evictLru(cap, running.length, candidates, now);
+  }
+
+  private async evictLru(cap: number, runningCount: number, candidates: InternalRuntime[], now: number): Promise<void> {
+    let overBy = runningCount - cap;
     for (const victim of candidates) {
       if (overBy <= 0) break;
+      const work = await this.activeWork(victim);
+      if (victim.status !== 'running' || this.runtimes.get(victim.projectId) !== victim) continue;
+      if (work) {
+        this.log.log(
+          `[WorkerRuntimeManager] maxRuntimes=${cap}: not evicting ${victim.projectId} ` +
+            `(${work.turns} turn(s), ${work.tasks} task(s) active)`,
+        );
+        continue;
+      }
       const idleMs = now - victim.lastUsedAt;
       this.log.log(
-        `[WorkerRuntimeManager] maxRuntimes=${cap} exceeded (${running.length} running) — ` +
+        `[WorkerRuntimeManager] maxRuntimes=${cap} exceeded (${runningCount} running) — ` +
           `LRU-evicting ${victim.projectId} (idle ${Math.round(idleMs / 1000)}s)`,
       );
       void this.stop(victim.projectId, 'SIGTERM', 'lru-evict').catch((err: any) => {
@@ -884,7 +901,7 @@ export class WorkerRuntimeManager implements RuntimeResolver {
     if (overBy > 0) {
       this.log.log(
         `[WorkerRuntimeManager] maxRuntimes=${cap} still exceeded by ${overBy} after eviction pass — ` +
-          `remaining over-cap slots are mid-stream; will retry on next spawn / idle reap`,
+          `remaining over-cap slots are active; will retry on next spawn / idle reap`,
       );
     }
   }
@@ -1325,6 +1342,7 @@ export class WorkerRuntimeManager implements RuntimeResolver {
     }
 
     const env = this.buildEnv(slot, resolved.path);
+    slot.runtimeToken = env.RUNTIME_AUTH_SECRET;
     // A previous run's list would name PIDs the OS may have reused.
     if (env.SHOGO_EXEC_PIDS_FILE) {
       try { rmSync(env.SHOGO_EXEC_PIDS_FILE, { force: true }); } catch { /* best-effort */ }
@@ -1904,11 +1922,24 @@ export class WorkerRuntimeManager implements RuntimeResolver {
     // `SHOGO_LOCAL_MODE=true` where reaping a "stale" runtime really
     // means killing the in-flight chat stream of the only user.
     if (!Number.isFinite(idleMs) || idleMs <= 0) return;
-    slot.idleTimer = setTimeout(() => {
+    slot.idleTimer = setTimeout(async () => {
+      slot.idleTimer = null;
       const since = Date.now() - slot.lastUsedAt;
       if (since < idleMs) {
         // Got touched between scheduling and firing — re-arm.
         this.armIdleTimer(slot);
+        return;
+      }
+      // Touch signals can miss work that isn't proxied through the host
+      // (schedules, heartbeats, background tasks), so ask the runtime itself.
+      const work = await this.activeWork(slot);
+      if (this.runtimes.get(slot.projectId) !== slot || slot.status !== 'running' || slot.idleTimer) return;
+      if (work) {
+        this.log.log(
+          `[WorkerRuntimeManager] not idle-evicting ${slot.projectId}: ` +
+            `${work.turns} turn(s), ${work.tasks} task(s), ${work.streams} stream(s) active`,
+        );
+        this.touch(slot.projectId);
         return;
       }
       this.log.log(`[WorkerRuntimeManager] idle-evicting ${slot.projectId} after ${Math.round(since / 1000)}s`);
@@ -1916,6 +1947,34 @@ export class WorkerRuntimeManager implements RuntimeResolver {
         this.log.warn(`[WorkerRuntimeManager] idle stop failed: ${err?.message ?? err}`);
       });
     }, idleMs);
+  }
+
+  /**
+   * True while the runtime reports work in progress: agent turns (chat,
+   * schedule, heartbeat), background tasks that will wake the agent, or open
+   * chat streams. Unknown (no runtime, unreachable, older runtime) is false.
+   */
+  async hasActiveWork(projectId: string): Promise<boolean> {
+    const slot = this.runtimes.get(projectId);
+    return !!slot && !!(await this.activeWork(slot));
+  }
+
+  private async activeWork(
+    slot: InternalRuntime,
+  ): Promise<{ turns: number; tasks: number; streams: number } | null> {
+    if (slot.status !== 'running' || !slot.agentPort) return null;
+    try {
+      const resp = await fetch(`http://127.0.0.1:${slot.agentPort}/pool/activity`, {
+        headers: slot.runtimeToken ? { 'x-runtime-token': slot.runtimeToken } : {},
+        signal: AbortSignal.timeout(ACTIVITY_PROBE_TIMEOUT_MS),
+      });
+      if (!resp.ok) return null;
+      const a = (await resp.json()) as { activeTurns?: number; activeTasks?: number; activeStreams?: number };
+      const work = { turns: a.activeTurns ?? 0, tasks: a.activeTasks ?? 0, streams: a.activeStreams ?? 0 };
+      return work.turns + work.tasks + work.streams > 0 ? work : null;
+    } catch {
+      return null;
+    }
   }
 
   private async allocatePort(): Promise<number> {

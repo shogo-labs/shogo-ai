@@ -61,6 +61,10 @@ export interface RuntimeAppConfig {
     activeSessions: number
     lastActivityAt: number | null
     activeStreams?: number
+    /** Agent turns running now, including ones not started over HTTP (heartbeat, channels). */
+    activeTurns?: number
+    /** Background tasks that will wake the agent when they finish. */
+    activeTasks?: number
     /** Current git HEAD; metal host uses a change to trigger repo.git.tar.gz export. */
     repoHeadSha?: string | null
     /** Per-project API sidecar state; the metal host recycles a runtime stuck unhealthy. */
@@ -718,6 +722,8 @@ export async function createRuntimeApp(config: RuntimeAppConfig): Promise<Runtim
       lastActivityAt: lastActivity,
       idleSeconds: streams > 0 ? 0 : Math.floor((now - lastActivity) / 1000),
       activeStreams: streams,
+      activeTurns: activityStats.activeTurns ?? 0,
+      activeTasks: activityStats.activeTasks ?? 0,
       activeSessions: activityStats.activeSessions,
       lastRequestAt: state.lastRequestAt,
       lastSessionActivityAt: lastSessionActivity,

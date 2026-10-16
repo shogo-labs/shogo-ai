@@ -455,17 +455,16 @@ export class RuntimeManager implements IRuntimeManager {
       // call from the agent, so cloud's 15-min reaper now only fires
       // on a genuinely-idle slot.
       //
-      // We used to disable the reaper outright in local mode (`idleMs: 0`),
-      // but that let runtimes accumulate forever — every project the
-      // heartbeat or UI ever touched left a permanent ~700MB agent-runtime
-      // tree, with nothing to reclaim it. We instead use a generous local
-      // window (default 45 min via RUNTIME_LOCAL_IDLE_MS) so genuinely-idle
-      // projects are eventually reaped while the touch hooks keep active
-      // chat streams alive. Set RUNTIME_LOCAL_IDLE_MS=0 to opt back into
-      // the old never-reap behaviour.
+      // Local runtimes are not idle-reaped by default: workspace runtimes
+      // run schedules, heartbeats and long background tasks that never pass
+      // through the touch hooks, and a wall-clock reaper kept killing them
+      // mid-run. Accumulation is bounded by `maxRuntimes` and the workspace
+      // preview/background caps instead, all of which skip runtimes that
+      // report active work. Set RUNTIME_LOCAL_IDLE_MS to a window in ms to
+      // reap idle local runtimes again.
       idleMs:
         process.env.SHOGO_LOCAL_MODE === 'true'
-          ? parseInt(process.env.RUNTIME_LOCAL_IDLE_MS || String(45 * 60 * 1000), 10)
+          ? parseInt(process.env.RUNTIME_LOCAL_IDLE_MS || '0', 10)
           : undefined,
       // Hard ceiling on concurrent runtimes. Without this the worker only
       // ever reaped on idle, so a busy multi-project session (or a disabled
@@ -2875,6 +2874,10 @@ export class ShogoErrorBoundary extends Component<Props, State> {
     })
     if (liveBackground.length <= cap) return
     for (const key of liveBackground.slice(cap)) {
+      if (await this.hasActiveWork(key)) {
+        console.log(`[RuntimeManager] Workspace background LRU: keeping ${key} over cap=${cap} (work in progress)`)
+        continue
+      }
       console.log(`[RuntimeManager] Workspace background LRU: evicting ${key} (cap=${cap})`)
       try {
         await this.stop(key, 'background-lru')
@@ -2907,12 +2910,26 @@ export class ShogoErrorBoundary extends Component<Props, State> {
     if (livePreviews.length <= cap) return
     // Evict the tail (oldest opens) beyond the cap.
     for (const key of livePreviews.slice(cap)) {
+      if (await this.hasActiveWork(key)) {
+        console.log(`[RuntimeManager] Workspace preview LRU: keeping ${key} over cap=${cap} (work in progress)`)
+        continue
+      }
       console.log(`[RuntimeManager] Workspace preview LRU: evicting ${key} (cap=${cap})`)
       try {
         await this.stop(key, 'preview-lru')
       } catch (err: any) {
         console.warn(`[RuntimeManager] LRU evict stop(${key}) failed: ${err?.message ?? err}`)
       }
+    }
+  }
+
+  /** Whether the runtime reports in-flight turns, background tasks or streams. */
+  private async hasActiveWork(key: string): Promise<boolean> {
+    if (!this.agentManagedProjects.has(key)) return false
+    try {
+      return await this.agentManager.hasActiveWork(key)
+    } catch {
+      return false
     }
   }
 

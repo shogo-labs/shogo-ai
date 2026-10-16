@@ -73,7 +73,7 @@ mock.module('../lib/project-user-context', () => ({
   getProjectUser: () => undefined,
 }))
 
-const { recordUsage } = await import('../routes/ai-proxy')
+const { recordUsage, runtimeTouchKeys } = await import('../routes/ai-proxy')
 
 const WORKSPACE_SENTINEL_PAYLOAD = {
   projectId: 'workspace',
@@ -107,5 +107,22 @@ describe("recordUsage — 'workspace' sentinel (project-less workspace runtime)"
     for (const call of consumeUsageCalls) {
       expect(call.projectId).not.toBe('workspace')
     }
+  })
+})
+
+describe('runtimeTouchKeys', () => {
+  test("a 'workspace' sentinel token touches the workspace runtime only", () => {
+    expect(runtimeTouchKeys(WORKSPACE_SENTINEL_PAYLOAD)).toEqual(['ws:ws-personal-1'])
+  })
+
+  test('a project token touches both the workspace runtime and the project', () => {
+    expect(runtimeTouchKeys({ ...WORKSPACE_SENTINEL_PAYLOAD, projectId: 'proj-1' }))
+      .toEqual(['ws:ws-personal-1', 'proj-1'])
+  })
+
+  test('api-key and system tokens touch nothing', () => {
+    expect(runtimeTouchKeys({ ...WORKSPACE_SENTINEL_PAYLOAD, projectId: 'api-key' })).toEqual([])
+    expect(runtimeTouchKeys({ ...WORKSPACE_SENTINEL_PAYLOAD, projectId: 'system' })).toEqual([])
+    expect(runtimeTouchKeys(null)).toEqual([])
   })
 })

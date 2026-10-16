@@ -2500,6 +2500,20 @@ function isNonProjectSentinel(projectId: string | undefined | null): boolean {
 }
 
 /**
+ * Runtime keys whose idle clocks a model call from this token should reset.
+ * Workspace runtimes are keyed `ws:<workspaceId>` and carry either the
+ * 'workspace' sentinel or their first attached project's token, so the
+ * project key alone never reaches them.
+ */
+export function runtimeTouchKeys(payload: ProxyTokenPayload | null): string[] {
+  if (!payload?.projectId || payload.projectId === 'api-key' || payload.projectId === 'system') return []
+  const keys: string[] = []
+  if (payload.workspaceId) keys.push(`ws:${payload.workspaceId}`)
+  if (!isNonProjectSentinel(payload.projectId)) keys.push(payload.projectId)
+  return keys
+}
+
+/**
  * Resolve the internal (non-billable) usage tag for a request, if any.
  *
  * Security: only the server's own proxy-JWT (`authKind === 'proxy-jwt'`) is
@@ -3014,9 +3028,11 @@ export function aiProxyRoutes() {
    * id, so there's no project-keyed local runtime to touch here. Skip.
    */
   function touchRuntimeFor(payload: ProxyTokenPayload | null): void {
-    if (!payload || !payload.projectId || isNonProjectSentinel(payload.projectId)) return
+    const keys = runtimeTouchKeys(payload)
+    if (keys.length === 0) return
     try {
-      getRuntimeManager().touch(payload.projectId)
+      const manager = getRuntimeManager()
+      for (const key of keys) manager.touch(key)
     } catch {
       // RuntimeManager isn't local, isn't constructed yet, or threw —
       // never block an auth on the touch hook.

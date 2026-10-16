@@ -873,10 +873,13 @@ const { app, state, logTiming } = await createRuntimeApp({
       (max: number, s: any) => Math.max(max, now - (s.idleSeconds ?? 0) * 1000),
       state.poolAssignedAt ?? state.serverStartTime
     )
+    const work = agentGateway?.getActiveWork?.() ?? { turns: 0, tasks: 0 }
     return {
       activeSessions: stats.length,
       lastActivityAt: lastSessionActivity,
       activeStreams,
+      activeTurns: work.turns,
+      activeTasks: work.tasks,
       repoHeadSha: cachedRepoHeadSha,
       previewHealth: safePreviewHealth(),
     }
