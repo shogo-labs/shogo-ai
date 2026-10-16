@@ -11,6 +11,7 @@
 import { Pressable, Text, View } from 'react-native'
 import { Eye } from 'lucide-react-native'
 import { ChatMarkdown } from '../chat/ChatMarkdown'
+import type { MentionTarget } from '../chat/file-links'
 import { formatTime } from '../../lib/team-chat-time'
 import { renderMentionsMarkdown, type MentionNames } from '../../lib/team-chat-state'
 import { AgentAvatar } from './AgentAvatar'
@@ -35,6 +36,8 @@ export interface EphemeralNoticeProps {
   ephemeralLabel?: boolean
   actions?: EphemeralNoticeAction[]
   error?: string | null
+  /** Tapping a mention of a person or agent in `text`. */
+  onMentionPress?: (target: MentionTarget) => void
   testID?: string
 }
 
@@ -46,6 +49,7 @@ export function EphemeralNotice({
   ephemeralLabel,
   actions = [],
   error,
+  onMentionPress,
   testID = 'ephemeral-notice',
 }: EphemeralNoticeProps) {
   return (
@@ -63,7 +67,7 @@ export function EphemeralNotice({
             <Text className="text-sm font-semibold text-foreground">Shogo</Text>
             <Text className="text-[11px] text-muted-foreground">{formatTime(createdAt)}</Text>
           </View>
-          <ChatMarkdown isStreaming={false}>{renderMentionsMarkdown(text, names)}</ChatMarkdown>
+          <ChatMarkdown isStreaming={false} onMentionPress={onMentionPress}>{renderMentionsMarkdown(text, names)}</ChatMarkdown>
           {error ? <Text className="mt-1 text-[11px] text-destructive">{error}</Text> : null}
           {actions.length ? (
             <View className="mt-2 flex-row flex-wrap gap-2">

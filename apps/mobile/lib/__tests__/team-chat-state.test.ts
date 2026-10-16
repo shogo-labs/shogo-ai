@@ -34,6 +34,7 @@ import {
   stepConversation,
   trimToNewest,
 } from '../team-chat-state'
+import { mentionHref, mentionTargetFromHref } from '../../components/chat/file-links'
 
 function msg(partial: Partial<ChatMessage> & { id: string; seq: number }): ChatMessage {
   return {
@@ -378,8 +379,8 @@ describe('mentions', () => {
       '**@Ana Lopez** and **@Ana**, ask **@Billing Bot**. email@Ana stays **@here** **@Shogo** **@someone**',
     )
     expect(renderMentionsMarkdown(`${wire} <!here> <@a:ws> <@u:gone>`, mentionNames(mentionables))).toBe(
-      '[@Ana Lopez](/shogo-mention) and [@Ana](/shogo-mention), ask [@Billing Bot](/shogo-mention). email@Ana stays ' +
-        '[@here](/shogo-mention) [@Shogo](/shogo-mention) [@someone](/shogo-mention)',
+      '[@Ana Lopez](/shogo-mention/u/u2) and [@Ana](/shogo-mention/u/u3), ask [@Billing Bot](/shogo-mention/a/p%3Ap1). email@Ana stays ' +
+        '[@here](/shogo-mention) [@Shogo](/shogo-mention/a/ws) [@someone](/shogo-mention/u/gone)',
     )
   })
 })
@@ -541,7 +542,32 @@ describe('renderMentionsMarkdown', () => {
       conversations: new Map([['c1', 'general']]),
     }
     expect(renderMentionsMarkdown('<@u:u1> in <#c:c1> and <#c:gone>', names)).toBe(
-      '[@Ana \\[ops\\]](/shogo-mention) in [#general](/shogo-mention) and [#channel](/shogo-mention)',
+      '[@Ana \\[ops\\]](/shogo-mention/u/u1) in [#general](/shogo-mention) and [#channel](/shogo-mention)',
     )
+  })
+
+  test('carries the person or agent so a tap can open their profile', () => {
+    const names = {
+      users: new Map([['u1', 'Ana']]),
+      agents: new Map([['p:p1', 'Billing Bot']]),
+    }
+    const rendered = renderMentionsMarkdown('<@u:u1> and <@a:p:p1>', names)
+    expect(mentionTargetFromHref(mentionHref('u', 'u1'))).toEqual({ kind: 'u', id: 'u1' })
+    // The agent key holds a colon, so it has to survive the round trip.
+    expect(rendered).toBe('[@Ana](/shogo-mention/u/u1) and [@Billing Bot](/shogo-mention/a/p%3Ap1)')
+    const hrefs = [...rendered.matchAll(/\]\(([^)]+)\)/g)].map((m) => m[1])
+    expect(hrefs.map((h) => mentionTargetFromHref(h))).toEqual([
+      { kind: 'u', id: 'u1' },
+      { kind: 'a', id: 'p:p1' },
+    ])
+  })
+
+  test('a target-less mention still renders, and reports no target', () => {
+    const names = { users: new Map(), agents: new Map(), conversations: new Map([['c1', 'general']]) }
+    const rendered = renderMentionsMarkdown('<!here> <#c:c1>', names)
+    expect(rendered).toBe('[@here](/shogo-mention) [#general](/shogo-mention)')
+    for (const href of [...rendered.matchAll(/\]\(([^)]+)\)/g)].map((m) => m[1])) {
+      expect(mentionTargetFromHref(href)).toBeNull()
+    }
   })
 })
