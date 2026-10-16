@@ -1,16 +1,17 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
- * Destination-first onboarding, shared by cloud and local/desktop. Every
- * account already owns a Personal space and a Team workspace (created by the
- * signup hook, or seeded by local bootstrap), so this flow creates nothing
- * new: it asks where the user wants to start, lets team-first users name the
- * workspace, invite people and describe what they want to build, then lands
- * them there.
+ * Onboarding shared by cloud and local/desktop. Every account already owns a
+ * Personal space and a Team workspace (created by the signup hook, or seeded
+ * by local bootstrap), so this flow creates nothing new: it lets the user name
+ * the workspace, invite people and describe what they want to build, then
+ * lands them there.
  *
- *   personal -> SettingUp -> companion chat (seeded prompt)
  *   team     -> team-setup -> build-prompt -> SettingUp -> workspace agent chat | builder home
  *   joined   -> joined -> SettingUp -> the workspace they were invited to
+ *
+ * There is no personal-vs-team choice. Users who were invited into a team
+ * workspace go straight to it.
  *
  * Local mode prepends two machine-specific steps: `name` (only while the
  * seeded user still has the placeholder name) and `ai-config` (Shogo Cloud
@@ -35,11 +36,9 @@ import { buildBuildBriefMessage } from '../../chat/turns/buildBrief'
 import { EVENTS, trackEvent } from '../../../lib/analytics'
 import { safeGetItem, safeRemoveItem } from '../../../lib/safe-storage'
 import { setActiveWorkspaceId } from '../../../lib/workspace-store'
-import { setChatPrefill } from '../../../hooks/useChatPrefill'
 import { OnboardingStepper, type StepDef } from '../OnboardingStepper'
 import { NameInput } from '../steps/NameInput'
 import { AIConfigForm } from '../steps/AIConfigForm'
-import { DestinationStep, type Destination } from './DestinationStep'
 import { TeamSetupStep } from './TeamSetupStep'
 import { parseEmailDraft } from './email-draft'
 import { JoinedStep } from './JoinedStep'
@@ -50,8 +49,6 @@ import {
   shouldShowDesktopPermissionSteps,
   useDesktopPermissionSteps,
 } from '../desktop/useDesktopPermissionSteps'
-
-const PERSONAL_SEED_PROMPT = 'Help me plan my week.'
 
 /** Names the local bootstrap seeds before the user has told us theirs. */
 const PLACEHOLDER_USER_NAMES = new Set(['', 'local', 'local user'])
@@ -112,7 +109,6 @@ export const CloudOnboarding = observer(function CloudOnboarding({ localMode = f
   const [loaded, setLoaded] = useState(false)
   const [loadAttempt, setLoadAttempt] = useState(0)
   const [retryingLoad, setRetryingLoad] = useState(false)
-  const [destination, setDestination] = useState<Destination | null>(null)
   const [activeIndex, setActiveIndex] = useState(0)
   // Fixed at mount so the step list doesn't shift once the name is saved.
   const [askName] = useState(() => localMode && isPlaceholder(PLACEHOLDER_USER_NAMES, user?.name))
@@ -154,6 +150,9 @@ export const CloudOnboarding = observer(function CloudOnboarding({ localMode = f
   const joinedTeamWorkspace = allWorkspaces.find(
     (w) => w.kind !== 'personal' && roleFor(w.id) && roleFor(w.id) !== 'owner',
   )
+  // Everyone lands in a team workspace. Invited users land in the one they joined.
+  type Destination = 'team' | 'joined'
+  const destination: Destination = joinedTeamWorkspace ? 'joined' : 'team'
 
   // Load workspaces + memberships, backfilling either own workspace if the
   // signup hook didn't create it (older accounts, or the hook failed).
@@ -210,13 +209,10 @@ export const CloudOnboarding = observer(function CloudOnboarding({ localMode = f
   useEffect(() => {
     if (!loaded) return
     if (ownTeamWorkspace && !teamName) setTeamName(ownTeamWorkspace.name)
-    if (destination) return
-    if (joinedTeamWorkspace) setDestination('joined')
-    else if (Platform.OS === 'web' && safeGetItem('pending_template_id')) setDestination('team')
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loaded, ownTeamWorkspace?.id, joinedTeamWorkspace?.id])
+  }, [loaded, ownTeamWorkspace?.id])
 
-  const intent: OnboardingIntent | null = destination ? (destination === 'personal' ? 'personal' : 'team') : null
+  const intent: OnboardingIntent = 'team'
   const analyticsContext = useMemo(
     () => ({ mode: localMode ? 'local' : 'cloud', destination, intent }),
     [localMode, destination, intent],
@@ -232,21 +228,14 @@ export const CloudOnboarding = observer(function CloudOnboarding({ localMode = f
   const displayTeamName = teamName.trim() || ownTeamWorkspace?.name || 'your workspace'
   const draftInvalid = parseEmailDraft(emailDraft).invalid
 
-  const targetWorkspaceId =
-    destination === 'personal'
-      ? personalWorkspace?.id
-      : destination === 'joined'
-        ? joinedTeamWorkspace?.id
-        : ownTeamWorkspace?.id
+  const targetWorkspaceId = destination === 'joined' ? joinedTeamWorkspace?.id : ownTeamWorkspace?.id
 
   const settingUpMessage =
-    destination === 'personal'
-      ? 'Opening your companion…'
-      : destination === 'joined'
-        ? `Opening ${joinedTeamWorkspace?.name ?? 'your team'}…`
-        : buildPrompt.trim()
-          ? 'Starting your workspace agent…'
-          : `Opening ${displayTeamName}…`
+    destination === 'joined'
+      ? `Opening ${joinedTeamWorkspace?.name ?? 'your team'}…`
+      : buildPrompt.trim()
+        ? 'Starting your workspace agent…'
+        : `Opening ${displayTeamName}…`
 
   const navigateToWorkspace = useCallback(
     (workspaceId: string | undefined) => {
@@ -286,7 +275,6 @@ export const CloudOnboarding = observer(function CloudOnboarding({ localMode = f
         return
       }
 
-      if (destination === 'personal') setChatPrefill(PERSONAL_SEED_PROMPT)
       trackEvent(posthog, EVENTS.ONBOARDING_COMPLETED, {
         ...analyticsContext,
         build_prompt: false,
@@ -449,20 +437,6 @@ export const CloudOnboarding = observer(function CloudOnboarding({ localMode = f
       })
     }
     list.push(...permissionSteps.steps)
-    list.push({
-      id: 'destination',
-      title: `Welcome, ${firstName}. Where do you want to start?`,
-      subtitle: 'You have a Personal space and a Team workspace. Start wherever you like—you can switch between them anytime.',
-      canContinue: !!destination,
-      primaryLabel: destination === 'personal' ? 'Open my companion' : 'Continue',
-      body: (
-        <DestinationStep
-          value={destination}
-          onChange={setDestination}
-          joinedWorkspaceName={joinedTeamWorkspace?.name}
-        />
-      ),
-    })
     if (destination === 'team') {
       list.push(
         {
@@ -573,9 +547,6 @@ export const CloudOnboarding = observer(function CloudOnboarding({ localMode = f
     const step = steps[activeIndex]
     if (!step || step.busy || step.canContinue === false) return
     if (step.id === 'name' && !(await saveName())) return
-    if (step.id === 'destination') {
-      trackEvent(posthog, EVENTS.ONBOARDING_INTENT_SELECTED, analyticsContext)
-    }
     if (step.id === 'team-setup' && !(await saveTeamSetup())) return
     if (isDesktopPermissionStep(step.id)) await permissionSteps.onLeave(step.id, 'continued')
     advance()

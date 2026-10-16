@@ -34,7 +34,7 @@ export const STRIPE_CARDS = {
  * Signs up a new account at /sign-in, then walks through the cloud onboarding
  * flow into the Team workspace:
  *
- *   destination (Team workspace) → team setup → build prompt (skip) → home
+ *   team setup → build prompt (skip) → home
  *
  * Leaves the browser on the home screen with "What are we building" visible.
  */
@@ -75,24 +75,19 @@ export async function signUp(page: Page, user: TestUser): Promise<void> {
 }
 
 /**
- * Walks cloud onboarding (destination-first, CloudOnboarding) to its last team
- * step, "What do you want to build?". Picks the Team workspace (projects live
- * there) and keeps the prefilled team name. The CTAs are Pressables rather
- * than <button>s, so they are matched by visible text.
+ * Walks cloud onboarding (CloudOnboarding) to its last team step, "What do you
+ * want to build?". There is no personal-vs-team choice: a new account goes
+ * straight to team setup. The team name stays prefilled. The CTAs are
+ * Pressables rather than <button>s, so they are matched by visible text.
  *
  * Returns false when the account is already onboarded.
  */
 export async function onboardToBuildPrompt(page: Page): Promise<boolean> {
-  const teamDestination = page.getByRole("radio", { name: "My Team workspace" })
   try {
-    await teamDestination.waitFor({ timeout: 20_000 })
+    await page.getByText("Set up your team workspace").waitFor({ timeout: 20_000 })
   } catch {
     return false
   }
-  await teamDestination.click()
-  await page.getByText("Continue", { exact: true }).click()
-
-  await page.getByText("Set up your team workspace").waitFor({ timeout: 20_000 })
   await page.getByText("Continue", { exact: true }).click()
 
   await page.getByText("What do you want to build?", { exact: true }).first().waitFor({ timeout: 20_000 })
