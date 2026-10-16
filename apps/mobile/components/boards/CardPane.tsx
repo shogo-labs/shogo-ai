@@ -8,7 +8,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { ActivityIndicator, Platform, Pressable, ScrollView, Text, TextInput, View } from 'react-native'
 import { useRouter } from 'expo-router'
-import { Archive, Bell, BellOff, Bot, ExternalLink, MessageSquare, X } from 'lucide-react-native'
+import { Archive, Bell, BellOff, Bot, ExternalLink, MessageSquare, Pencil, X } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import { teamChatApi, type ConversationDetail, type Mentionables } from '../../lib/team-chat-api'
 import {
@@ -23,6 +23,7 @@ import {
 import { agentName, assigneeName, assigneeOptionId, assigneeOptions } from '../../lib/board-layout'
 import { describeEvent, when } from '../../lib/work-history'
 import { useWorkItem } from '../../hooks/useWorkBoards'
+import { MarkdownText } from '../chat/MarkdownText'
 import { TimelinePane } from '../team-chat/TimelinePane'
 import { OptionSheet } from './OptionSheet'
 import { PRIORITY_DOT } from './priority'
@@ -49,6 +50,8 @@ export function CardPane({ itemId, workspaceId, me, mentionables, conversation, 
   const [tab, setTab] = useState<Tab>('thread')
   const [sheet, setSheet] = useState<Sheet>(null)
   const [notice, setNotice] = useState<string | null>(null)
+  const [editingDescription, setEditingDescription] = useState(false)
+  const [descriptionDraft, setDescriptionDraft] = useState('')
 
   const patch = useCallback(async (change: ItemPatch) => {
     if (!detail) return
@@ -84,6 +87,15 @@ export function CardPane({ itemId, workspaceId, me, mentionables, conversation, 
   }
 
   const { item, board } = detail
+  const startEditingDescription = () => {
+    setDescriptionDraft(item.description ?? '')
+    setEditingDescription(true)
+  }
+  const saveDescription = () => {
+    setEditingDescription(false)
+    const next = descriptionDraft.trim()
+    if (next !== (item.description ?? '').trim()) void patch({ description: next || null })
+  }
   const columns = board.columns ?? []
   const fieldEntries = Object.entries(item.fields ?? {}).filter(([, v]) => v !== null && v !== undefined && v !== '')
   return (
@@ -144,19 +156,40 @@ export function CardPane({ itemId, workspaceId, me, mentionables, conversation, 
           />
           {item.dueAt ? <Chip label={`Due ${new Date(item.dueAt).toLocaleDateString()}`} hint="Due" /> : null}
         </View>
-        <EditableText
-          key={`desc:${item.id}`}
-          value={item.description ?? ''}
-          multiline
-          placeholder="Add a description"
-          className="text-sm text-foreground"
-          label="Description"
-          onSave={(description) => patch({ description: description || null })}
-        />
+        <View className="gap-1">
+          <View className="flex-row items-center justify-between">
+            <Text className="text-[11px] font-medium uppercase text-muted-foreground">Description</Text>
+            {editingDescription ? null : (
+              <Pressable accessibilityRole="button" accessibilityLabel="Edit description" onPress={startEditingDescription} className="rounded-md p-1 hover:bg-muted active:bg-muted">
+                <Pencil size={13} className="text-muted-foreground" />
+              </Pressable>
+            )}
+          </View>
+          {editingDescription ? (
+            <TextInput
+              value={descriptionDraft}
+              onChangeText={setDescriptionDraft}
+              onBlur={saveDescription}
+              multiline
+              autoFocus
+              placeholder="Add a description"
+              placeholderTextColor="#8a8a8a"
+              accessibilityLabel="Description"
+              className="rounded-md px-1 py-1 text-sm text-foreground focus:bg-muted/50"
+              style={Platform.OS === 'web' ? ({ outlineStyle: 'none' } as any) : undefined}
+            />
+          ) : item.description?.trim() ? (
+            <MarkdownText>{item.description}</MarkdownText>
+          ) : (
+            <Pressable accessibilityRole="button" accessibilityLabel="Add a description" onPress={startEditingDescription} className="rounded-md px-1 py-1 hover:bg-muted/50">
+              <Text className="text-sm text-muted-foreground">Add a description</Text>
+            </Pressable>
+          )}
+        </View>
         {item.historySummary ? (
           <View className="rounded-md bg-muted/60 p-2.5">
             <Text className="mb-1 text-[11px] font-medium uppercase text-muted-foreground">Summary</Text>
-            <Text className="text-sm text-foreground">{item.historySummary}</Text>
+            <MarkdownText>{item.historySummary}</MarkdownText>
           </View>
         ) : null}
         {fieldEntries.length ? (
@@ -265,14 +298,13 @@ function TabButton({ label, active, onPress }: { label: string; active: boolean;
   )
 }
 
-/** Text that saves when it loses focus (or on Enter for single-line fields). */
-function EditableText({ value, onSave, className, label, placeholder, multiline }: {
+/** Single-line text that saves when it loses focus (or on Enter). */
+function EditableText({ value, onSave, className, label, placeholder }: {
   value: string
   onSave: (value: string) => void
   className: string
   label: string
   placeholder?: string
-  multiline?: boolean
 }) {
   const [draft, setDraft] = useState(value)
   useEffect(() => setDraft(value), [value])
@@ -285,8 +317,7 @@ function EditableText({ value, onSave, className, label, placeholder, multiline 
       value={draft}
       onChangeText={setDraft}
       onBlur={commit}
-      onSubmitEditing={multiline ? undefined : commit}
-      multiline={multiline}
+      onSubmitEditing={commit}
       placeholder={placeholder}
       placeholderTextColor="#8a8a8a"
       accessibilityLabel={label}
