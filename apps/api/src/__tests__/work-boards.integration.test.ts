@@ -261,6 +261,37 @@ describe('cards', () => {
   })
 })
 
+describe('working agents', () => {
+  test('a card lists the agent replies running in its thread until they settle', async () => {
+    const board = await createBoard({ conversationId: channelId, name: 'Live status' })
+    const card = (await call(seed.member, 'POST', `/boards/${board.id}/items`, { title: 'Agent on it' })).json.item
+    const viewCard = async () => {
+      const view = await call(seed.member, 'GET', `/boards/${board.id}`)
+      return view.json.items.find((i: any) => i.id === card.id)
+    }
+    expect((await viewCard()).working).toEqual([])
+
+    // Allocate the seq the way the service does, so later messages in the channel do not collide with it.
+    const bumped = await db.conversation.update({ where: { id: channelId }, data: { lastSeq: { increment: 1 } }, select: { lastSeq: true } })
+    const reply = await db.conversationMessage.create({
+      data: {
+        conversationId: channelId,
+        workspaceId: seed.workspaceId,
+        seq: bumped.lastSeq,
+        threadRootId: card.threadRootMessageId,
+        authorType: 'agent',
+        authorAgentRef: { projectId: seed.projectId, name: 'Support bot' },
+        text: '',
+        agentStatus: 'running',
+      },
+    })
+    expect((await viewCard()).working).toEqual([{ messageId: reply.id, name: 'Support bot' }])
+
+    await db.conversationMessage.update({ where: { id: reply.id }, data: { agentStatus: 'done', text: 'Fixed' } })
+    expect((await viewCard()).working).toEqual([])
+  })
+})
+
 describe('agent routes', () => {
   test('an agent sets up a board in a channel by name and works a card end to end', async () => {
     const created = await agent('POST', '/agent-boards', {

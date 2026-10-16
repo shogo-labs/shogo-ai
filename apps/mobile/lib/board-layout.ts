@@ -5,8 +5,8 @@
  * applied before the server confirms it, and the badges a column or card
  * shows for its health issues.
  */
-import type { Mentionables } from './team-chat-api'
-import { agentRefProjectId, type BoardColumn, type BoardView, type HealthIssue, type WorkItem } from './work-boards-api'
+import type { ChatMessage, Mentionables } from './team-chat-api'
+import { agentRefProjectId, type BoardColumn, type BoardView, type HealthIssue, type WorkingAgent, type WorkItem } from './work-boards-api'
 
 export function itemsByColumn(view: Pick<BoardView, 'board' | 'items'>): Map<string, WorkItem[]> {
   const out = new Map<string, WorkItem[]>(view.board.columns.map((c) => [c.id, []]))
@@ -51,6 +51,31 @@ export function applyMove(items: WorkItem[], move: MoveIntent): { items: WorkIte
   }
   const next = items.map((i) => (i.id === move.itemId ? { ...i, columnId: move.columnId, position } : i))
   return { items: next, request: at >= 0 ? { column: move.columnId, before: move.beforeId! } : { column: move.columnId } }
+}
+
+/**
+ * A team chat message as it arrives live. When it is an agent reply in a
+ * card's thread, the card's `working` list gains it while it runs and loses it
+ * once it settles. Returns null when no card changed.
+ */
+export function applyAgentMessage(view: BoardView, message: Pick<ChatMessage, 'id' | 'authorType' | 'threadRootId' | 'agentStatus' | 'authorAgent'>): BoardView | null {
+  if (message.authorType !== 'agent' || !message.threadRootId) return null
+  const card = view.items.find((i) => i.threadRootMessageId === message.threadRootId)
+  if (!card) return null
+  const current = card.working ?? []
+  const running = message.agentStatus === 'running'
+  const tracked = current.some((w) => w.messageId === message.id)
+  if (running === tracked) return null
+  const working = running
+    ? [...current, { messageId: message.id, name: message.authorAgent?.name ?? 'Agent' }]
+    : current.filter((w) => w.messageId !== message.id)
+  return { ...view, items: view.items.map((i) => (i.id === card.id ? { ...i, working } : i)) }
+}
+
+/** "Billing Bot is working", or "2 agents working" when several replies run in one card. */
+export function workingLabel(working: WorkingAgent[]): string {
+  if (working.length === 1) return `${working[0]!.name} is working`
+  return `${working.length} agents working`
 }
 
 export interface ColumnBadges {

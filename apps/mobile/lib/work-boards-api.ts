@@ -75,6 +75,12 @@ export interface Board {
   itemCount?: number
 }
 
+/** An agent reply still running in a card's thread. */
+export interface WorkingAgent {
+  messageId: string
+  name: string
+}
+
 export interface WorkItem {
   id: string
   key: string
@@ -101,6 +107,8 @@ export interface WorkItem {
   createdAt: string
   column?: { id: string; name: string; category: ColumnCategory }
   board?: { id: string; name: string; slug: string; conversationId: string | null; itemType: ItemType }
+  /** Agent replies running in the card's thread right now (board views only). */
+  working?: WorkingAgent[]
 }
 
 export interface HealthIssue {

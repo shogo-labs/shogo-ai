@@ -155,6 +155,19 @@ describe('BoardKanban', () => {
     await waitFor(() => expect(calls.find((c) => c.method === 'POST')?.body).toEqual({ title: 'Refund for order 1182', column: 'c1' }))
   })
 
+  test('a card shows a spinner and the agent name while its reply runs', async () => {
+    routes['GET /api/boards/b1'] = () => ({
+      board,
+      items: [item('1', 'c1', 1), item('2', 'c2', 1, { working: [{ messageId: 'm1', name: 'Support bot' }] })],
+      health: { issues: [] },
+    })
+    render(createElement(BoardKanban, { boardId: 'b1', workspaceId: 'ws', mentionables: mentionables as any, onOpenCard: () => {} }))
+    await screen.findByTestId('board-card-SUP-2')
+    const working = document.querySelector('[data-rn-shim="board-card-working-SUP-2"]')
+    expect(working!.textContent).toContain('Support bot is working')
+    expect(document.querySelector('[data-rn-shim="board-card-working-SUP-1"]')).toBeNull()
+  })
+
   test('pressing a card opens it', async () => {
     const opened: string[] = []
     render(createElement(BoardKanban, { boardId: 'b1', workspaceId: 'ws', mentionables: mentionables as any, onOpenCard: (i: any) => opened.push(i.id) }))

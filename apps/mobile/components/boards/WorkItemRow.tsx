@@ -8,6 +8,7 @@ import type { Mentionables } from '../../lib/team-chat-api'
 import type { WorkItem } from '../../lib/work-boards-api'
 import { age, assigneeName } from '../../lib/board-layout'
 import { PRIORITY_DOT } from './priority'
+import { WorkingIndicator } from './WorkingIndicator'
 
 export function WorkItemRow({ item, mentionables, showBoard, selected, cursor, open, onPress, onToggle }: {
   item: WorkItem
@@ -60,6 +61,7 @@ export function WorkItemRow({ item, mentionables, showBoard, selected, cursor, o
           <Text className="text-[11px] text-muted-foreground" numberOfLines={1}>{item.column.name}</Text>
         </View>
       ) : null}
+      <WorkingIndicator working={item.working} showLabel={false} testID={`work-row-working-${item.key}`} />
       <View className="hidden w-32 flex-row items-center gap-1 md:flex">
         {item.assigneeAgentRef ? <Bot size={11} className="text-muted-foreground" /> : null}
         <Text className="text-xs text-muted-foreground" numberOfLines={1}>{who ?? 'Unassigned'}</Text>

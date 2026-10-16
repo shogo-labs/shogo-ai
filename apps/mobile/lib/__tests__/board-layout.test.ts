@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
 import { describe, expect, test } from 'bun:test'
-import { age, applyMove, assigneeName, assigneeOptionId, assigneeOptions, columnBadges, issuesByItem, itemsByColumn } from '../board-layout'
-import type { Mentionables } from '../team-chat-api'
-import type { BoardColumn, WorkItem } from '../work-boards-api'
+import { age, applyAgentMessage, applyMove, assigneeName, assigneeOptionId, assigneeOptions, columnBadges, issuesByItem, itemsByColumn, workingLabel } from '../board-layout'
+import type { AgentStatus, ChatMessage, Mentionables } from '../team-chat-api'
+import type { BoardColumn, BoardView, WorkItem } from '../work-boards-api'
 
 function column(id: string, extra: Partial<BoardColumn> = {}): BoardColumn {
   return { id, name: id, position: 0, category: 'active', wipLimit: null, agentRef: null, slaHours: null, ...extra }
@@ -98,6 +98,49 @@ describe('assignees', () => {
       ],
     })
     expect(options.map((o) => o.id)).toEqual(['none', 'a:project:p1'])
+  })
+})
+
+describe('working agents', () => {
+  const view = {
+    board: { id: 'b', columns: [column('todo')] } as any,
+    items: [card('a', 'todo', 1, { threadRootMessageId: 'root-a' }), card('b', 'todo', 2, { threadRootMessageId: 'root-b' })],
+    health: { issues: [] },
+  } as BoardView
+  const reply = (id: string, agentStatus: AgentStatus, extra: Partial<Pick<ChatMessage, 'authorType' | 'threadRootId' | 'authorAgent'>> = {}) => ({
+    id, authorType: 'agent' as const, threadRootId: 'root-a', agentStatus, authorAgent: { projectId: 'p1', name: 'Support bot' }, ...extra,
+  })
+
+  test('a running reply shows on its card and settles off it', () => {
+    const started = applyAgentMessage(view, reply('m1', 'running'))!
+    expect(started.items.find((i) => i.id === 'a')!.working).toEqual([{ messageId: 'm1', name: 'Support bot' }])
+    expect(started.items.find((i) => i.id === 'b')!.working).toBeUndefined()
+
+    const settled = applyAgentMessage(started, reply('m1', 'done'))!
+    expect(settled.items.find((i) => i.id === 'a')!.working).toEqual([])
+  })
+
+  test('several running replies on one card are all listed', () => {
+    const first = applyAgentMessage(view, reply('m1', 'running'))!
+    const both = applyAgentMessage(first, reply('m2', 'running', { authorAgent: { projectId: 'p2', name: 'Billing bot' } }))!
+    expect(both.items.find((i) => i.id === 'a')!.working!.map((w) => w.name)).toEqual(['Support bot', 'Billing bot'])
+  })
+
+  test('no change means no new view', () => {
+    const started = applyAgentMessage(view, reply('m1', 'running'))!
+    expect(applyAgentMessage(started, reply('m1', 'running'))).toBeNull()
+    expect(applyAgentMessage(view, reply('m9', 'done'))).toBeNull()
+  })
+
+  test('messages that are not agent replies in a card thread are ignored', () => {
+    expect(applyAgentMessage(view, reply('m1', 'running', { authorType: 'user' }))).toBeNull()
+    expect(applyAgentMessage(view, reply('m1', 'running', { threadRootId: 'other-thread' }))).toBeNull()
+    expect(applyAgentMessage(view, reply('m1', 'running', { threadRootId: null }))).toBeNull()
+  })
+
+  test('the label names one agent or counts several', () => {
+    expect(workingLabel([{ messageId: 'm1', name: 'Billing Bot' }])).toBe('Billing Bot is working')
+    expect(workingLabel([{ messageId: 'm1', name: 'A' }, { messageId: 'm2', name: 'B' }])).toBe('2 agents working')
   })
 })
 

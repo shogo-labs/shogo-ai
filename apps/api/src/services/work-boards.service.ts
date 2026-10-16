@@ -1405,7 +1405,28 @@ export async function getBoardView(board: any, opts: { includeArchived?: boolean
     orderBy: [{ position: 'asc' }],
     take: MAX_ITEMS_PER_BOARD_VIEW,
   })
-  return { board: serializeBoard(board), items: items.map(serializeItem), health: healthFor(board, items) }
+  const working = await runningCardReplies(items.map((i: any) => i.threadRootMessageId).filter(Boolean))
+  return {
+    board: serializeBoard(board),
+    items: items.map((i: any) => ({ ...serializeItem(i), working: working.get(i.threadRootMessageId) ?? [] })),
+    health: healthFor(board, items),
+  }
+}
+
+/** Agent replies still running in these card threads, grouped by thread root. */
+async function runningCardReplies(threadRootIds: string[]): Promise<Map<string, Array<{ messageId: string; name: string }>>> {
+  const byThread = new Map<string, Array<{ messageId: string; name: string }>>()
+  if (!threadRootIds.length) return byThread
+  const rows = await db.conversationMessage.findMany({
+    where: { threadRootId: { in: threadRootIds }, authorType: 'agent', agentStatus: 'running', deletedAt: null },
+    select: { id: true, threadRootId: true, authorAgentRef: true },
+    orderBy: { seq: 'asc' },
+  })
+  for (const r of rows as any[]) {
+    if (!r.threadRootId) continue
+    byThread.set(r.threadRootId, [...(byThread.get(r.threadRootId) ?? []), { messageId: r.id, name: r.authorAgentRef?.name ?? 'Agent' }])
+  }
+  return byThread
 }
 
 export interface InboxFilter {

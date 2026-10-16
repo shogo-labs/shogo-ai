@@ -18,6 +18,7 @@ import { OptionSheet } from './OptionSheet'
 import { Lane } from './Lane'
 import { PRIORITY_DOT } from './priority'
 import { WorkItemRow } from './WorkItemRow'
+import { WorkingIndicator } from './WorkingIndicator'
 
 const api = workBoardsApi()
 
@@ -267,6 +268,7 @@ export function CardTile({ item, issues, mentionables, selected, faded, onPress,
   onLongPress: () => void
 }) {
   const who = assigneeName(item, mentionables)
+  const working = item.working
   const occurrences = typeof item.fields?.occurrences === 'number' ? (item.fields.occurrences as number) : null
   return (
     <Pressable
@@ -279,7 +281,7 @@ export function CardTile({ item, issues, mentionables, selected, faded, onPress,
       testID={`board-card-${item.key}`}
       className={cn(
         'gap-1.5 rounded-md border bg-card p-2.5 hover:border-primary/40',
-        selected ? 'border-primary' : 'border-border',
+        selected ? 'border-primary' : working?.length ? 'border-primary/40' : 'border-border',
         faded && 'opacity-40',
       )}
     >
@@ -287,6 +289,7 @@ export function CardTile({ item, issues, mentionables, selected, faded, onPress,
         {item.priority !== 'none' ? <View className={cn('h-2 w-2 rounded-full', PRIORITY_DOT[item.priority])} accessibilityLabel={`${item.priority} priority`} /> : null}
         <Text className="text-[11px] text-muted-foreground">{item.key}</Text>
         <View className="flex-1" />
+        <WorkingIndicator working={working} testID={`board-card-working-${item.key}`} className="shrink" />
         {occurrences ? <Text className="text-[11px] text-muted-foreground">×{occurrences}</Text> : null}
       </View>
       <Text className="text-sm text-foreground" numberOfLines={3}>{item.title}</Text>
