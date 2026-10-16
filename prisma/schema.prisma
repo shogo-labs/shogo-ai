@@ -4603,6 +4603,9 @@ model ScheduledMessage {
   status            String   @default("pending")
   sentMessageId     String?
   error             String?
+  /// Set on a held reply to an agent's question card: the message that asked.
+  /// Hidden from the person's scheduled list; its text is rebuilt when it sends.
+  questionMessageId String?
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
 
@@ -4610,6 +4613,7 @@ model ScheduledMessage {
 
   @@index([status, sendAt])
   @@index([userId, status])
+  @@index([questionMessageId, userId, status])
   @@map("scheduled_messages")
 }
 

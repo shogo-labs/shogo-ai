@@ -812,7 +812,11 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
     }
   })
 
-  /** Answer a question an agent asked; the answer is posted in the thread as this person. */
+  /**
+   * Answer a question an agent asked. The answer goes to the thread as this
+   * person, together with their other answers on the card (`relay: 'held'`
+   * until they've closed the rest or gone idle).
+   */
   router.post('/conversation-messages/:messageId/questions/:questionId/answer', async (c) => {
     const userId = await requireUser(c)
     if (userId instanceof Response) return userId
@@ -828,7 +832,7 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
         secret: typeof body.secret === 'string' ? body.secret : undefined,
       })
       const { secretCipher: _secret, ...question } = result.question
-      return c.json({ message: result.message, question, reply: result.reply.message })
+      return c.json({ message: result.message, question, relay: result.relay, reply: result.reply?.message ?? null })
     } catch (err) {
       if (err instanceof AgentMessageError) return c.json({ error: { code: err.code, message: err.message } }, err.status)
       return errorResponse(c, err)

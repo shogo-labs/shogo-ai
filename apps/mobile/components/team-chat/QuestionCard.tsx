@@ -4,8 +4,9 @@
  * An agent's questions as a card on its message, so an ask buried in a long
  * update is the first thing the person it is for sees. Each question answers
  * the way it was asked: tap an option, Approve / Not yet / Discuss, a short
- * answer, a teammate, or a masked secret only the asking agent can read. The
- * answer goes into the message's thread, tagging the agent.
+ * answer, a teammate, or a masked secret only the asking agent can read. A
+ * person's answers go into the message's thread together, tagging the agent
+ * once, after they've closed the rest of the card (or gone idle).
  */
 import { useEffect, useMemo, useState } from 'react'
 import { Platform, Pressable, Text, TextInput, View } from 'react-native'
@@ -13,7 +14,6 @@ import { Check, KeyRound, MessageCircleQuestion, Search, X } from 'lucide-react-
 import { cn } from '@shogo/shared-ui/primitives'
 import { ChatMarkdown } from '../chat/ChatMarkdown'
 import { GlassCard } from '../ui/GlassCard'
-import { DrawnCheckmark } from '../ui/DrawnCheckmark'
 import { answerQuestion, dismissQuestion } from '../../lib/question-answer'
 import { renderMentionsMarkdown, type MentionNames } from '../../lib/team-chat-state'
 import { teamChatApi } from '../../lib/team-chat-api'
@@ -31,6 +31,18 @@ function closedLabel(q: Question): string {
   if (q.status === 'answered' && q.answer) return `${q.answer.by.name}: ${q.answer.text}`
   if (q.status === 'superseded') return q.closedReason ? `No longer needed: ${q.closedReason}` : 'No longer needed'
   return q.closedReason ? `Dismissed: ${q.closedReason}` : 'Dismissed'
+}
+
+/**
+ * A closed question. The person's own answer says where it is: held while
+ * their other answers on the card wait to go to the agent together, or sent
+ * once they have.
+ */
+function closedLine(q: Question, me: string | null, waiting: boolean, agentName?: string): string {
+  const mine = q.status === 'answered' && !!q.answer && q.answer.by.userId === me
+  if (mine && q.answer && !q.answer.relayedAt && waiting) return `${q.answer.text}, sends to ${agentName ?? 'the agent'} when you finish the rest`
+  if (mine && q.answer && q.answer.relayedAt) return `${q.answer.text}, sent to ${agentName ?? 'the agent'}`
+  return closedLabel(q)
 }
 
 export function QuestionCardView({
@@ -57,6 +69,8 @@ export function QuestionCardView({
   onOpen?: () => void
 }) {
   const open = questions.filter((q) => q.status === 'open')
+  // Whether the viewer still has questions open here, so their answers are held rather than sent.
+  const waiting = open.some((q) => isAskedOf(q, me))
   const forMe = open.some((q) => isAskedOf(q, me))
   return (
     <GlassCard
@@ -69,7 +83,7 @@ export function QuestionCardView({
       <View className="gap-3 p-3">
         {questions.map((q, i) => (
           <View key={q.id} className={cn('gap-2', i > 0 && 'border-t border-border/60 pt-3')}>
-            <QuestionItem q={q} messageId={messageId} workspaceId={workspaceId} me={me} names={names} canAnswer={canAnswer} agentName={agentName} onOpen={onOpen} />
+            <QuestionItem q={q} messageId={messageId} workspaceId={workspaceId} me={me} names={names} canAnswer={canAnswer} waiting={waiting} agentName={agentName} onOpen={onOpen} />
           </View>
         ))}
       </View>
@@ -84,6 +98,7 @@ function QuestionItem({
   me,
   names,
   canAnswer,
+  waiting,
   agentName,
   onOpen,
 }: {
@@ -93,22 +108,22 @@ function QuestionItem({
   me: string | null
   names: MentionNames
   canAnswer: boolean
+  /** The viewer has other questions open on this card. */
+  waiting: boolean
   agentName?: string
   onOpen?: () => void
 }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [sent, setSent] = useState<string | null>(null)
   const asked = isAskedOf(q, me)
   const isOpen = q.status === 'open'
 
-  const send = async (input: { answer?: string; secret?: string }, shown: string) => {
+  const send = async (input: { answer?: string; secret?: string }) => {
     if (busy) return
     setBusy(true)
     setError(null)
     const outcome = await answerQuestion(messageId, q.id, input)
-    if (outcome.ok) setSent(shown)
-    else setError(outcome.message)
+    if (!outcome.ok) setError(outcome.message)
     setBusy(false)
   }
   const dismiss = async () => {
@@ -153,12 +168,7 @@ function QuestionItem({
       {!isOpen ? (
         <View className="flex-row items-start gap-1.5" testID={`question-${q.status}`}>
           {q.status === 'answered' ? <Check size={13} className="mt-0.5 text-emerald-600" /> : <X size={13} className="mt-0.5 text-muted-foreground" />}
-          <Text className={cn('min-w-0 flex-1 text-xs', q.status === 'answered' ? 'text-emerald-700 dark:text-emerald-400' : 'text-muted-foreground')}>{closedLabel(q)}</Text>
-        </View>
-      ) : sent ? (
-        <View className="flex-row items-center gap-2" testID="question-sent">
-          <DrawnCheckmark size={24} tone="success" />
-          <Text className="text-sm font-medium text-emerald-700 dark:text-emerald-400">{`${sent}, sent to ${agentName ?? 'the agent'}`}</Text>
+          <Text className={cn('min-w-0 flex-1 text-xs', q.status === 'answered' ? 'text-emerald-700 dark:text-emerald-400' : 'text-muted-foreground')}>{closedLine(q, me, waiting, agentName)}</Text>
         </View>
       ) : asked && canAnswer ? (
         <>
@@ -186,20 +196,20 @@ function AnswerInput({
   busy: boolean
   workspaceId?: string
   agentName?: string
-  onSend: (input: { answer?: string; secret?: string }, shown: string) => Promise<void>
+  onSend: (input: { answer?: string; secret?: string }) => Promise<void>
 }) {
   const options = questionOptions(q)
   const [picked, setPicked] = useState<string[]>([])
   const [other, setOther] = useState<boolean>(q.interaction === 'text' || q.interaction === 'secret')
   const [text, setText] = useState('')
 
-  if (q.interaction === 'person') return <PersonPicker workspaceId={workspaceId} busy={busy} onPick={(answer) => void onSend({ answer }, answer)} />
+  if (q.interaction === 'person') return <PersonPicker workspaceId={workspaceId} busy={busy} onPick={(answer) => void onSend({ answer })} />
 
   const submitText = () => {
     const value = text.trim()
     if (!value) return
-    if (q.interaction === 'secret') void onSend({ secret: value }, `Provided ${q.secretName ?? 'the secret'}`)
-    else void onSend({ answer: value }, value)
+    if (q.interaction === 'secret') void onSend({ secret: value })
+    else void onSend({ answer: value })
   }
 
   return (
@@ -215,7 +225,7 @@ function AnswerInput({
                 disabled={busy}
                 onPress={() => {
                   if (q.multiSelect) setPicked((p) => (on ? p.filter((x) => x !== o.label) : [...p, o.label]))
-                  else void onSend({ answer: o.label }, o.label)
+                  else void onSend({ answer: o.label })
                 }}
                 accessibilityRole="button"
                 accessibilityState={{ selected: on }}
@@ -241,7 +251,7 @@ function AnswerInput({
       ) : null}
       {q.multiSelect && picked.length ? (
         <Pressable
-          onPress={() => void onSend({ answer: picked.join(', ') }, picked.join(', '))}
+          onPress={() => void onSend({ answer: picked.join(', ') })}
           disabled={busy}
           accessibilityRole="button"
           className={cn('self-start rounded-lg bg-primary px-3.5 py-2', busy && 'opacity-60')}

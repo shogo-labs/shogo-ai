@@ -378,7 +378,11 @@ describe('answering', () => {
     expect(res.status).toBe(200)
     expect(res.json.question.answer.text).toBe('Provided `ENSEMBLEDATA_API_TOKEN`')
     expect(res.json.question.secretCipher).toBeUndefined()
-    expect(res.json.reply.text).not.toContain('ed_live_123456')
+    // The budget is still open, so the answer waits for it.
+    expect(res.json).toMatchObject({ relay: 'held', reply: null })
+    const [held] = await db.scheduledMessage.findMany({ where: { questionMessageId: row.id, userId: seed.member, status: 'pending' } })
+    expect(held.text).toContain('team_chat_question_secret')
+    expect(held.text).not.toContain('ed_live_123456')
     expect(JSON.stringify(res.json.message)).not.toContain('ed_live_123456')
 
     const listed = await call(seed.member, 'GET', `/conversations/${channel}/messages`)
@@ -415,6 +419,96 @@ describe('answering', () => {
 
     const late = await handleQuestionPress({ provider: 'slack', tenantId: tenant, externalUserId: 'U-MEMBER', value })
     expect(late.ok).toBe(false)
+  })
+})
+
+describe('several questions on one card', () => {
+  const tag = () => `<@a:p:${agent.projectId}>`
+  const answer = (user: string, messageId: string, questionId: string, text: string) =>
+    call(user, 'POST', `/conversation-messages/${messageId}/questions/${questionId}/answer`, { answer: text })
+  const dismiss = (user: string, messageId: string, questionId: string) =>
+    call(user, 'POST', `/conversation-messages/${messageId}/questions/${questionId}/dismiss`)
+  const repliesTo = (messageId: string, userId?: string) =>
+    db.conversationMessage.findMany({ where: { threadRootId: messageId, authorType: 'user', ...(userId ? { authorUserId: userId } : {}) }, orderBy: { seq: 'asc' } })
+  const agentRuns = () => invocations.filter((i) => i.projectId === agent.projectId).length
+
+  async function threeQuestions() {
+    const channel = await freshChannel()
+    const row = await agentSays(channel, fixture('three numbered questions, nobody tagged').text)
+    expect(row.blocks.questions).toHaveLength(3)
+    return { row, qs: row.blocks.questions as Array<{ id: string; header: string }> }
+  }
+
+  test('answering every question sends one reply and wakes the agent once', async () => {
+    const { row, qs } = await threeQuestions()
+    const first = await answer(seed.member, row.id, qs[0].id, 'A')
+    const second = await answer(seed.member, row.id, qs[1].id, 'B')
+    expect(first.json).toMatchObject({ relay: 'held', reply: null })
+    expect(second.json).toMatchObject({ relay: 'held', reply: null })
+    expect(await repliesTo(row.id)).toHaveLength(0)
+
+    const last = await answer(seed.member, row.id, qs[2].id, 'Approve')
+    expect(last.json.relay).toBe('sent')
+    expect(last.json.reply.text).toBe([tag(), `- **${qs[0].header}:** A`, `- **${qs[1].header}:** B`, `- **${qs[2].header}:** Approve`].join('\n'))
+
+    const replies = await repliesTo(row.id)
+    expect(replies).toHaveLength(1)
+    await waitFor(async () => (agentRuns() ? true : null))
+    await Bun.sleep(300)
+    expect(agentRuns()).toBe(1)
+
+    const relays = await db.scheduledMessage.findMany({ where: { questionMessageId: row.id } })
+    expect(relays.map((r: any) => [r.status, r.sentMessageId])).toEqual([['sent', replies[0].id]])
+    const settled = (await reread(row.id)).blocks.questions
+    expect(settled.every((q: any) => q.answer?.relayedAt)).toBe(true)
+  })
+
+  test('after the idle window, the scheduler sends what was answered so far', async () => {
+    const chatItems = await import('../services/chat-items')
+    const { row, qs } = await threeQuestions()
+    await answer(seed.member, row.id, qs[0].id, 'A')
+    const [held] = await db.scheduledMessage.findMany({ where: { questionMessageId: row.id, status: 'pending' } })
+    expect(held.sendAt.getTime()).toBeGreaterThan(Date.now())
+    expect((await chatItems.listScheduled(seed.workspaceId, seed.member)).some((s: any) => s.id === held.id)).toBe(false)
+
+    expect(await chatItems.sendDueScheduledMessages()).toBe(0)
+    await db.scheduledMessage.update({ where: { id: held.id }, data: { sendAt: new Date(Date.now() - 1000) } })
+    expect(await chatItems.sendDueScheduledMessages()).toBe(1)
+
+    const replies = await repliesTo(row.id)
+    expect(replies.map((r: any) => r.text)).toEqual([`${tag()} **${qs[0].header}:** A`])
+    await waitFor(async () => (agentRuns() ? true : null))
+
+    // A later answer starts a new relay with only what's new.
+    const next = await answer(seed.member, row.id, qs[1].id, 'B')
+    expect(next.json.relay).toBe('held')
+    const [again] = await db.scheduledMessage.findMany({ where: { questionMessageId: row.id, status: 'pending' } })
+    expect(again.text).toBe(`${tag()} **${qs[1].header}:** B`)
+  })
+
+  test('dismissing the rest sends the held answers right away', async () => {
+    const { row, qs } = await threeQuestions()
+    await answer(seed.member, row.id, qs[0].id, 'A')
+    expect((await dismiss(seed.member, row.id, qs[1].id)).status).toBe(200)
+    expect(await repliesTo(row.id)).toHaveLength(0)
+    expect((await dismiss(seed.member, row.id, qs[2].id)).status).toBe(200)
+
+    const replies = await repliesTo(row.id)
+    expect(replies.map((r: any) => r.text)).toEqual([`${tag()} **${qs[0].header}:** A`])
+    expect(await db.scheduledMessage.count({ where: { questionMessageId: row.id, status: 'pending' } })).toBe(0)
+  })
+
+  test('two people answering the same card each get their own reply', async () => {
+    const { row, qs } = await threeQuestions()
+    expect((await answer(seed.owner, row.id, qs[0].id, 'A')).json.relay).toBe('held')
+    expect((await answer(seed.member, row.id, qs[1].id, 'B')).json.relay).toBe('held')
+    expect((await answer(seed.member, row.id, qs[2].id, 'Approve')).json.relay).toBe('sent')
+
+    const mine = await repliesTo(row.id, seed.member)
+    expect(mine.map((r: any) => r.text)).toEqual([[tag(), `- **${qs[1].header}:** B`, `- **${qs[2].header}:** Approve`].join('\n')])
+    // Nothing is left open for the owner either, so theirs goes too.
+    const theirs = await repliesTo(row.id, seed.owner)
+    expect(theirs.map((r: any) => r.text)).toEqual([`${tag()} **${qs[0].header}:** A`])
   })
 })
 

@@ -63,6 +63,21 @@ const PREVIEW_CHARS = 280
 
 const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max - 1)}…` : text)
 
+const chains = new Map<string, Promise<unknown>>()
+
+/** Runs `fn` after any earlier call with the same key in this process has finished. */
+function serialized<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  const next = (chains.get(key) ?? Promise.resolve()).catch(() => {}).then(fn)
+  chains.set(key, next)
+  void next.catch(() => {}).finally(() => {
+    if (chains.get(key) === next) chains.delete(key)
+  })
+  return next
+}
+
+/** Question blocks are rewritten whole, so writes to one message take turns. */
+const blocksKey = (messageId: string) => `blocks:${messageId}`
+
 export interface OpenQuestion {
   row: any
   question: QuestionBlock
@@ -411,12 +426,14 @@ export async function attachQuestions(input: {
 
 /** A repeat of an open question: count it on the original instead of opening another card. */
 async function bumpAsk(messageId: string, questionId: string, now: Date): Promise<void> {
-  const row = await db.conversationMessage.findUnique({ where: { id: messageId } })
-  if (!row) return
-  const questions = questionsOf(row.blocks).map((q) =>
-    q.id === questionId ? { ...q, askCount: (q.askCount ?? 1) + 1, lastAskedAt: now.toISOString() } : q,
-  )
-  await updateMessageInternal(row.id, { blocks: { ...(row.blocks ?? {}), questions } })
+  await serialized(blocksKey(messageId), async () => {
+    const row = await db.conversationMessage.findUnique({ where: { id: messageId } })
+    if (!row) return
+    const questions = questionsOf(row.blocks).map((q) =>
+      q.id === questionId ? { ...q, askCount: (q.askCount ?? 1) + 1, lastAskedAt: now.toISOString() } : q,
+    )
+    await updateMessageInternal(row.id, { blocks: { ...(row.blocks ?? {}), questions } })
+  })
 }
 
 /** Mark a message as looked at, so the designer doesn't run on it again. */
@@ -500,25 +517,28 @@ export async function closeQuestion(input: {
   if (closing.has(key)) throw new AgentMessageError(409, 'already_answered', 'Someone is already answering this')
   closing.add(key)
   try {
-    const row = await db.conversationMessage.findUnique({ where: { id: input.messageId } })
-    const current = row && !row.deletedAt ? questionsOf(row.blocks).find((q) => q.id === input.questionId) : null
-    if (!row || !current) throw new AgentMessageError(404, 'not_found', 'Question not found')
-    if (current.status !== 'open') {
-      const by = current.answer ? ` by ${current.answer.by.name}` : ''
-      throw new AgentMessageError(409, 'already_answered', `Already ${current.status}${by}`)
-    }
-    const now = input.now ?? new Date()
-    const question: QuestionBlock = {
-      ...current,
-      status: input.status,
-      closedAt: now.toISOString(),
-      ...(input.answer ? { answer: input.answer } : {}),
-      ...(input.reason ? { closedReason: clip(input.reason, 200) } : {}),
-      ...(input.secretCipher ? { secretCipher: input.secretCipher } : {}),
-    }
-    const questions = questionsOf(row.blocks).map((q) => (q.id === question.id ? question : q))
-    const blocks: MessageBlocks = { ...(row.blocks ?? {}), questions }
-    const message = await writeBlocks(row, blocks)
+    const { row, question, questions, blocks, message } = await serialized(blocksKey(input.messageId), async () => {
+      const row = await db.conversationMessage.findUnique({ where: { id: input.messageId } })
+      const current = row && !row.deletedAt ? questionsOf(row.blocks).find((q) => q.id === input.questionId) : null
+      if (!row || !current) throw new AgentMessageError(404, 'not_found', 'Question not found')
+      if (current.status !== 'open') {
+        const by = current.answer ? ` by ${current.answer.by.name}` : ''
+        throw new AgentMessageError(409, 'already_answered', `Already ${current.status}${by}`)
+      }
+      const now = input.now ?? new Date()
+      const question: QuestionBlock = {
+        ...current,
+        status: input.status,
+        closedAt: now.toISOString(),
+        ...(input.answer ? { answer: input.answer } : {}),
+        ...(input.reason ? { closedReason: clip(input.reason, 200) } : {}),
+        ...(input.secretCipher ? { secretCipher: input.secretCipher } : {}),
+      }
+      const questions = questionsOf(row.blocks).map((q) => (q.id === question.id ? question : q))
+      const blocks: MessageBlocks = { ...(row.blocks ?? {}), questions }
+      const message = await writeBlocks(row, blocks)
+      return { row, question, questions, blocks, message }
+    })
     const conversation = await db.conversation.findUnique({ where: { id: row.conversationId } })
     if (conversation) await onQuestionClosed({ ...row, blocks }, conversation, question, questions)
     return { message, question, row: { ...row, blocks } }
@@ -538,6 +558,7 @@ export async function supersedeQuestions(questionIds: string[], conversationId: 
     try {
       await closeQuestion({ messageId: target.row.id, questionId: id, status: 'superseded', reason })
       closed++
+      await settleRelays(target.row.id).catch((err) => console.warn('[Questions] relay settle failed:', (err as Error).message))
     } catch (err) {
       if (!(err instanceof AgentMessageError)) throw err
     }
@@ -569,12 +590,156 @@ export interface AnswerInput {
   origin?: 'app' | 'slack' | 'teams'
 }
 
+// ─── Relaying answers ────────────────────────────────────────────────────────
+
+/** How long a person's answers wait for the rest of the card before going to the agent anyway. */
+export const QUESTION_ANSWER_IDLE_MS = envInt('SHOGO_QUESTION_ANSWER_IDLE_SECONDS', 120) * 1000
+
+/** `sent`: the answers went to the agent. `held`: they wait for the rest of the card. */
+export type RelayStatus = 'sent' | 'held'
+
+type RelayOrigin = 'app' | 'slack' | 'teams'
+
+function unrelayedAnswers(questions: QuestionBlock[], userId: string): QuestionBlock[] {
+  return questions.filter((q) => q.status === 'answered' && q.answer?.by.userId === userId && !q.answer.relayedAt)
+}
+
+function stillWaitingOn(questions: QuestionBlock[], userId: string): boolean {
+  return questions.some((q) => q.status === 'open' && canAnswer(q, userId))
+}
+
+/** One reply for everything a person answered on a card, tagging the agent that asked. */
+export function relayText(row: any, answered: QuestionBlock[]): string {
+  const answer = (q: QuestionBlock) => `**${q.header}:** ${q.answer?.text ?? ''}`
+  const body = answered.length === 1
+    ? `${agentTag(row)} ${answer(answered[0])}`
+    : [agentTag(row), ...answered.map((q) => `- ${answer(q)}`)].join('\n')
+  const secrets = answered
+    .filter((q) => q.interaction === 'secret')
+    .map((q) => `_Read it with \`team_chat_question_secret\` (message \`${row.id}\`, question \`${q.id}\`)._`)
+  return [body, ...secrets].join('\n\n')
+}
+
+async function markRelayed(messageId: string, userId: string, questionIds: string[], now: Date): Promise<void> {
+  await serialized(blocksKey(messageId), async () => {
+    const row = await db.conversationMessage.findUnique({ where: { id: messageId }, select: { id: true, blocks: true } })
+    if (!row) return
+    const ids = new Set(questionIds)
+    const questions = questionsOf(row.blocks).map((q) =>
+      ids.has(q.id) && q.answer && q.answer.by.userId === userId ? { ...q, answer: { ...q.answer, relayedAt: now.toISOString() } } : q,
+    )
+    await updateMessageInternal(row.id, { blocks: { ...(row.blocks ?? {}), questions } })
+  })
+}
+
 /**
- * A person answers a question. The card settles, and the answer is posted in
- * the thread as that person, tagging the agent that asked, so the agent wakes
- * through the normal channel pipeline.
+ * Pass a person's answers on a card to the agent that asked. While they still
+ * have open questions there, the reply is held (a pending `ScheduledMessage`
+ * the channel scheduler sends after `QUESTION_ANSWER_IDLE_MS`); once none are
+ * left, everything they answered goes in one reply and the agent wakes once.
  */
-export async function answerQuestion(input: AnswerInput): Promise<{ message: any; question: QuestionBlock; reply: PostMessageResult }> {
+async function relayAnswers(input: {
+  messageId: string
+  userId: string
+  origin?: RelayOrigin
+  /** Send now even if questions remain (the idle window ran out). */
+  force?: boolean
+  /** A held relay already claimed by the scheduler. */
+  claimedId?: string
+  /** False when settling someone else's relay: leave its idle window alone. */
+  touch?: boolean
+  now?: Date
+}): Promise<{ status: RelayStatus; reply?: PostMessageResult }> {
+  // One relay at a time per person and card, so a hold and a send can't cross.
+  return serialized(`relay:${input.messageId}:${input.userId}`, async () => {
+    const now = input.now ?? new Date()
+    const row = await db.conversationMessage.findUnique({ where: { id: input.messageId } })
+    const pending = input.claimedId
+      ? null
+      : await db.scheduledMessage.findFirst({ where: { questionMessageId: input.messageId, userId: input.userId, status: 'pending' } })
+    const questions = row && !row.deletedAt ? questionsOf(row.blocks) : []
+    const answered = unrelayedAnswers(questions, input.userId)
+
+    if (row && !row.deletedAt && !input.force && stillWaitingOn(questions, input.userId)) {
+      if (!answered.length || input.touch === false) return { status: 'held' }
+      const data = { text: relayText(row, answered), sendAt: new Date(now.getTime() + QUESTION_ANSWER_IDLE_MS) }
+      if (pending) {
+        await db.scheduledMessage.update({ where: { id: pending.id }, data })
+      } else {
+        await db.scheduledMessage.create({
+          data: {
+            workspaceId: row.workspaceId,
+            conversationId: row.conversationId,
+            userId: input.userId,
+            threadRootId: row.threadRootId ?? row.id,
+            questionMessageId: row.id,
+            ...data,
+          },
+        })
+      }
+      return { status: 'held' }
+    }
+
+    // Another pod's scheduler may have claimed it first; whatever is still unrelayed goes now.
+    if (pending) await db.scheduledMessage.updateMany({ where: { id: pending.id, status: 'pending' }, data: { status: 'sent' } })
+    const relayId = input.claimedId ?? pending?.id ?? null
+    if (!row || row.deletedAt || !answered.length) {
+      if (relayId) await db.scheduledMessage.update({ where: { id: relayId }, data: { status: 'cancelled' } }).catch(() => {})
+      return { status: 'sent' }
+    }
+
+    const reply = await postMessage({
+      conversationId: row.conversationId,
+      text: relayText(row, answered),
+      authorType: 'user',
+      authorUserId: input.userId,
+      threadRootId: row.threadRootId ?? row.id,
+      // Idempotent: a second relay of the same answers (another pod, a retry) lands on this one.
+      clientMsgId: `question-relay:${row.id}:${input.userId}:${answered.map((q) => q.id).sort().join(',')}`,
+    })
+    await markRelayed(row.id, input.userId, answered.map((q) => q.id), now)
+    if (relayId) await db.scheduledMessage.update({ where: { id: relayId }, data: { sentMessageId: reply.row.id, error: null } }).catch(() => {})
+    if (!reply.duplicate) {
+      const { afterMessagePosted } = await import('./conversation-pipeline')
+      void afterMessagePosted(reply, { actorUserId: input.userId, origin: input.origin ?? 'app' })
+    }
+    return { status: 'sent', reply }
+  })
+}
+
+/**
+ * After a question on a card closes: relay for whoever closed it, and send
+ * any other held relay that no longer waits on anything.
+ */
+async function settleRelays(messageId: string, actor?: { userId: string; origin?: RelayOrigin }): Promise<{ status: RelayStatus; reply?: PostMessageResult }> {
+  const held = await db.scheduledMessage.findMany({
+    where: { questionMessageId: messageId, status: 'pending' },
+    select: { userId: true },
+  })
+  let mine: { status: RelayStatus; reply?: PostMessageResult } = { status: 'sent' }
+  if (actor) mine = await relayAnswers({ messageId, userId: actor.userId, origin: actor.origin })
+  for (const userId of new Set<string>(held.map((h: any) => h.userId))) {
+    if (userId === actor?.userId) continue
+    await relayAnswers({ messageId, userId, touch: false }).catch((err) => {
+      console.warn('[Questions] relay settle failed:', (err as Error).message)
+    })
+  }
+  return mine
+}
+
+/** A held relay whose idle window ran out, already claimed by the scheduler. */
+export async function sendHeldRelay(relay: { id: string; questionMessageId: string; userId: string }): Promise<PostMessageResult | null> {
+  const result = await relayAnswers({ messageId: relay.questionMessageId, userId: relay.userId, force: true, claimedId: relay.id })
+  return result.reply ?? null
+}
+
+/**
+ * A person answers a question. The card settles, and the answer goes to the
+ * agent that asked as a thread reply from that person, tagging the agent so it
+ * wakes through the normal channel pipeline. Answers to one card are relayed
+ * together (see `relayAnswers`), so N questions wake the agent once.
+ */
+export async function answerQuestion(input: AnswerInput): Promise<{ message: any; question: QuestionBlock; relay: RelayStatus; reply?: PostMessageResult }> {
   const row = await db.conversationMessage.findUnique({ where: { id: input.messageId } })
   const question = row && !row.deletedAt ? questionsOf(row.blocks).find((q) => q.id === input.questionId) : null
   if (!row || !question) throw new AgentMessageError(404, 'not_found', 'Question not found')
@@ -611,19 +776,8 @@ export async function answerQuestion(input: AnswerInput): Promise<{ message: any
     now,
   })
 
-  const where = question.interaction === 'secret'
-    ? `\n\n_Read it with \`team_chat_question_secret\` (message \`${row.id}\`, question \`${question.id}\`)._`
-    : ''
-  const reply = await postMessage({
-    conversationId: row.conversationId,
-    text: `${agentTag(row)} **${question.header}:** ${answerText}${where}`,
-    authorType: 'user',
-    authorUserId: input.userId,
-    threadRootId: row.threadRootId ?? row.id,
-  })
-  const { afterMessagePosted } = await import('./conversation-pipeline')
-  void afterMessagePosted(reply, { actorUserId: input.userId, origin: input.origin ?? 'app' })
-  return { message: closed.message, question: closed.question, reply }
+  const relay = await settleRelays(row.id, { userId: input.userId, origin: input.origin })
+  return { message: closed.message, question: closed.question, relay: relay.status, reply: relay.reply }
 }
 
 /** Dismiss an open question; anyone who could answer it may. */
@@ -637,7 +791,12 @@ export async function dismissQuestion(input: { messageId: string; questionId: st
     throw new AgentMessageError(403, 'forbidden', 'This question is for someone else')
   }
   const user = await db.user.findUnique({ where: { id: input.userId }, select: { name: true, email: true } }).catch(() => null)
-  return closeQuestion({ messageId: row.id, questionId: question.id, status: 'dismissed', reason: `dismissed by ${user?.name || user?.email || 'someone'}` })
+  const closed = await closeQuestion({ messageId: row.id, questionId: question.id, status: 'dismissed', reason: `dismissed by ${user?.name || user?.email || 'someone'}` })
+  // Dismissing the last question sends whatever was answered alongside it.
+  await settleRelays(row.id, { userId: input.userId }).catch((err) => {
+    console.warn('[Questions] relay after dismiss failed:', (err as Error).message)
+  })
+  return closed
 }
 
 /** The secret a person entered, for the agent that asked and no one else. */
@@ -756,12 +915,15 @@ const STALE_DAYS = Math.round(QUESTION_STALE_MS / (24 * 60 * 60_000))
 
 async function closeStale(list: Array<{ messageId: string; questionId: string }>): Promise<void> {
   for (const item of list) {
-    await closeQuestion({ ...item, status: 'dismissed', reason: `no answer in ${STALE_DAYS} days` }).catch((err) => {
-      if (!(err instanceof AgentMessageError)) console.warn('[Questions] stale close failed:', (err as Error).message)
-    })
+    await closeQuestion({ ...item, status: 'dismissed', reason: `no answer in ${STALE_DAYS} days` })
+      .then(() => settleRelays(item.messageId))
+      .catch((err) => {
+        if (!(err instanceof AgentMessageError)) console.warn('[Questions] stale close failed:', (err as Error).message)
+      })
   }
 }
 
 export function _resetQuestionsForTests(): void {
   closing.clear()
+  chains.clear()
 }

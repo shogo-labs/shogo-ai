@@ -94,6 +94,8 @@ export interface QuestionAnswer {
   text: string
   by: { userId: string | null; name: string }
   at: string
+  /** When the answer was posted to the agent; answers to one card go in one reply. */
+  relayedAt?: string
 }
 
 export interface QuestionBlock {

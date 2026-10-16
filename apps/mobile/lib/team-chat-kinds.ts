@@ -74,7 +74,7 @@ export interface Question {
   hint?: 'number' | 'url'
   secretName?: string
   status: QuestionStatus
-  answer?: { text: string; by: { userId: string; name: string }; at: string }
+  answer?: { text: string; by: { userId: string; name: string }; at: string; relayedAt?: string }
   closedReason?: string
   closedAt?: string
   source: 'agent' | 'inferred'

@@ -859,9 +859,13 @@ export function teamChatApi() {
       if (opts.scope) q.set('scope', opts.scope)
       return (await http.get<QuestionInbox>(`${ws(workspaceId)}/questions?${q}`)).data
     },
-    /** Answer an agent's question; posts the answer in its thread. The first answer wins; later ones throw. */
-    async answerQuestion(messageId: string, questionId: string, input: { answer?: string; secret?: string }): Promise<{ message: ChatMessage; question: Question; reply: ChatMessage }> {
-      return (await http.post<{ message: ChatMessage; question: Question; reply: ChatMessage }>(`${msg(messageId)}/questions/${encodeURIComponent(questionId)}/answer`, input)).data
+    /**
+     * Answer an agent's question. The first answer wins; later ones throw. The
+     * person's answers on a card go to its thread together: `relay` is `held`
+     * while they still have questions open there, and `reply` is null then.
+     */
+    async answerQuestion(messageId: string, questionId: string, input: { answer?: string; secret?: string }): Promise<{ message: ChatMessage; question: Question; relay: 'sent' | 'held'; reply: ChatMessage | null }> {
+      return (await http.post<{ message: ChatMessage; question: Question; relay: 'sent' | 'held'; reply: ChatMessage | null }>(`${msg(messageId)}/questions/${encodeURIComponent(questionId)}/answer`, input)).data
     },
     async dismissQuestion(messageId: string, questionId: string): Promise<{ message: ChatMessage; question: Question }> {
       return (await http.post<{ message: ChatMessage; question: Question }>(`${msg(messageId)}/questions/${encodeURIComponent(questionId)}/dismiss`, {})).data

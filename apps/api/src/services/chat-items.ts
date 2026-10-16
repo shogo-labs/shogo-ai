@@ -213,7 +213,7 @@ export async function scheduleMessage(input: {
 
 export async function listScheduled(workspaceId: string, userId: string) {
   const rows = await db.scheduledMessage.findMany({
-    where: { workspaceId, userId, status: { in: ['pending', 'failed'] } },
+    where: { workspaceId, userId, status: { in: ['pending', 'failed'] }, questionMessageId: null },
     orderBy: { sendAt: 'asc' },
     take: 200,
     include: { conversation: true },
@@ -223,7 +223,7 @@ export async function listScheduled(workspaceId: string, userId: string) {
 
 async function ownScheduled(id: string, userId: string) {
   const row = await db.scheduledMessage.findUnique({ where: { id } })
-  if (!row || row.userId !== userId) throw new ConversationError(404, 'not_found', 'Scheduled message not found')
+  if (!row || row.userId !== userId || row.questionMessageId) throw new ConversationError(404, 'not_found', 'Scheduled message not found')
   return row
 }
 
@@ -268,6 +268,19 @@ export async function sendDueScheduledMessages(now = new Date()): Promise<number
   for (const row of due) {
     const { count } = await db.scheduledMessage.updateMany({ where: { id: row.id, status: 'pending' }, data: { status: 'sent' } })
     if (!count) continue
+    if (row.questionMessageId) {
+      // Answers to an agent's question card that waited out the idle window.
+      try {
+        const { sendHeldRelay } = await import('./conversation-questions')
+        if (await sendHeldRelay(row)) sent++
+      } catch (err: any) {
+        await db.scheduledMessage.update({
+          where: { id: row.id },
+          data: { status: 'failed', error: String(err?.message ?? 'Could not send').slice(0, 500) },
+        })
+      }
+      continue
+    }
     try {
       const access = await requirePost(row.conversationId, row.userId, { threadReply: !!row.threadRootId })
       if (!access.membership && access.conversation.kind === 'public') await joinConversation(row.conversationId, row.userId)
