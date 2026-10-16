@@ -168,8 +168,7 @@ import { MessageList } from "./MessageList"
 import type { ContextBreakdownData } from "./ContextBreakdownPanel"
 import {
   ChatInput,
-  DEFAULT_MODEL_PRO,
-  DEFAULT_MODEL_FREE,
+  DEFAULT_MODEL,
   type InteractionMode,
   type FileAttachment,
   type ChatReference,
@@ -1441,7 +1440,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
   const [isInitialLoadComplete, setIsInitialLoadComplete] = useState(false)
   const prevSessionIdRef = useRef<string | null>(currentSessionId)
   const [internalSelectedModel, setInternalSelectedModel] =
-    useState<string>(DEFAULT_MODEL_FREE)
+    useState<string>(DEFAULT_MODEL)
   const isModelControlled = controlledSelectedModel !== undefined
   // Gate reconciliation until the persisted preference has loaded, so the
   // reconciler never runs against the initial slug default (not a catalog UUID
@@ -1452,14 +1451,10 @@ const ChatPanelContent = observer(function ChatPanelContent({
   useEffect(() => {
     if (isModelControlled) return
     loadModelPreference(projectId).then((stored) => {
-      if (stored) {
-        setInternalSelectedModel(stored)
-      } else if (hasAdvancedModelAccess) {
-        setInternalSelectedModel(DEFAULT_MODEL_PRO)
-      }
+      if (stored) setInternalSelectedModel(stored)
       setModelPrefLoaded(true)
     })
-  }, [hasAdvancedModelAccess, isModelControlled, projectId])
+  }, [isModelControlled, projectId])
 
   const selectedModel = isModelControlled
     ? controlledSelectedModel
@@ -1483,7 +1478,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
   // its own selection.
   useReconcileStaleModelSelection(
     internalSelectedModel,
-    hasAdvancedModelAccess ? DEFAULT_MODEL_PRO : DEFAULT_MODEL_FREE,
+    DEFAULT_MODEL,
     handleModelChange,
     !isModelControlled && modelPrefLoaded,
   )

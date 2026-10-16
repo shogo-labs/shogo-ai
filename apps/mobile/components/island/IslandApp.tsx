@@ -12,7 +12,7 @@ import { useOpenQuestionCount } from "../../hooks/useOpenQuestions"
 import { API_URL } from "../../lib/api"
 import { loadModelPreference } from "../../lib/agent-mode-preference"
 import type { ChatSendInteractionMode } from "../../lib/chat-send-body"
-import { DEFAULT_MODEL_FREE, DEFAULT_MODEL_PRO } from "../chat/ChatInput"
+import { DEFAULT_MODEL } from "../chat/ChatInput"
 import { buddyStateForSnapshot } from "./buddy/buddy-state"
 import { IslandBuddy, type IslandBuddyEntrance } from "./buddy/IslandBuddy"
 import { normalizeBuddyLook } from "./buddy/look"
@@ -117,8 +117,7 @@ function usePrefersReducedMotion(): boolean {
   return reduced
 }
 
-function useModelId(projectId: string | null, hasAdvancedModelAccess: boolean): string {
-  const fallback = hasAdvancedModelAccess ? DEFAULT_MODEL_PRO : DEFAULT_MODEL_FREE
+function useModelId(projectId: string | null): string {
   const [stored, setStored] = useState<string | null>(null)
   useEffect(() => {
     let cancelled = false
@@ -127,7 +126,7 @@ function useModelId(projectId: string | null, hasAdvancedModelAccess: boolean): 
       cancelled = true
     }
   }, [projectId])
-  return stored ?? fallback
+  return stored ?? DEFAULT_MODEL
 }
 
 async function writeProjectFile(projectId: string, path: string, content: string): Promise<void> {
@@ -259,7 +258,7 @@ export const IslandApp = observer(function IslandApp({
     view.name === "chat" || view.name === "project"
       ? view.projectName
       : (orderedSessions[0]?.projectName ?? sortedProjects.find((p) => p.id === currentProjectId)?.name ?? "Project")
-  const modelId = useModelId(currentProjectId, usage.hasAdvancedModelAccess)
+  const modelId = useModelId(currentProjectId)
 
   const canAutoCollapse = useCallback(
     () =>

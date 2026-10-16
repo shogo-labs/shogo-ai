@@ -68,6 +68,9 @@ mock.module('@shogo/model-catalog', () => ({
   calculateDollarCost: () => 0,
   getModelBillingModel: (id: string) => id,
   resolveAgentModeDefault: (mode: string) => mode,
+  AUTO_MODEL_ID: 'auto',
+  isAutoModel: (id: string) => id === 'auto',
+  inferProviderFromModel: (_id: string, fallback: string) => fallback,
 }))
 
 mock.module('../../services/cost-analytics.service', () => ({

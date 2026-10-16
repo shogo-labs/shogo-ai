@@ -119,6 +119,7 @@ import {
   PROMINENT_COMPOSER_RADIUS,
   PROMINENT_COMPOSER_TOOLBAR_Z_INDEX,
 } from "./useProminentComposerExpansion";
+import { AUTO_MODEL_ID } from "@shogo/model-catalog";
 import { useChatBridgeOptional } from "../voice-mode/ChatBridgeContext";
 import { AgentClient, type AgentHistoryResult } from "@shogo-ai/sdk/agent";
 import { agentFetch } from "../../lib/agent-fetch";
@@ -129,8 +130,7 @@ import {
   useTypingPlaceholder,
 } from "../../hooks/useTypingPlaceholder";
 
-export const DEFAULT_MODEL_PRO = "claude-sonnet-4-6";
-export const DEFAULT_MODEL_FREE = "claude-haiku-4-5-20251001";
+export const DEFAULT_MODEL: string = AUTO_MODEL_ID;
 
 import { EnvironmentPicker } from "./EnvironmentPicker";
 import {
@@ -773,9 +773,7 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
     inputValueRef.current = inputValue;
   }, [inputValue]);
 
-  const [internalModel, setInternalModel] = useState<string>(
-    effectiveIsPro ? DEFAULT_MODEL_PRO : DEFAULT_MODEL_FREE
-  );
+  const [internalModel, setInternalModel] = useState<string>(DEFAULT_MODEL);
   const currentModelId = controlledModel ?? internalModel;
 
   const handleModelChange = useCallback(

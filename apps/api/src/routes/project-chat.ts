@@ -23,7 +23,8 @@ import { prisma } from "../lib/prisma"
 import { loadAccess } from "../lib/authz"
 import type { IRuntimeManager } from "../lib/runtime"
 import * as billingService from "../services/billing-runtime"
-import { getModelTier, resolveModelId } from "@shogo/model-catalog"
+import { AUTO_MODEL_ID, isAutoModel, resolveModelId } from "@shogo/model-catalog"
+import { isModelAccessibleForWorkspace } from "../lib/model-access"
 import { wrapSseStreamWithKeepalive } from "@shogo/shared-runtime/sse-keepalive"
 import { stampModelProvider } from "../lib/stamp-model-provider"
 import { stampWorkspacePlan } from "../lib/stamp-workspace-plan"
@@ -1260,15 +1261,12 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
         // Local LLM models are user-configured and are not cloud-tiered. Do
         // not replace Auto/local routing with the cloud Claude fallback.
         const localLlmConfigured = process.env.SHOGO_LOCAL_MODE === 'true'
-        if (!localLlmConfigured) {
-          const resolved = resolveModelId(parsedBody.agentMode)
-          const tier = getModelTier(resolved)
-          if (tier !== 'economy') {
-            const hasAdvanced = await billingService.hasAdvancedModelAccess(project.workspaceId)
-            if (!hasAdvanced) {
-              parsedBody.agentMode = 'claude-haiku-4-5-20251001'
-            }
-          }
+        if (
+          !localLlmConfigured &&
+          !isAutoModel(parsedBody.agentMode) &&
+          !(await isModelAccessibleForWorkspace(project.workspaceId, resolveModelId(parsedBody.agentMode)))
+        ) {
+          parsedBody.agentMode = AUTO_MODEL_ID
         }
         // Resolve the model's native provider from the registry and stamp it on
         // the forwarded body. Runs after any tier-downgrade so the provider

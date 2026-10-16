@@ -27,7 +27,7 @@ import { MarkdownText } from "../../chat/MarkdownText"
 import { AgentClient, type AgentPlanSummary } from "@shogo-ai/sdk/agent"
 import { agentFetch } from "../../../lib/agent-fetch"
 import { API_URL } from "../../../lib/api"
-import { DEFAULT_MODEL_PRO } from "../../chat/ChatInput"
+import { DEFAULT_MODEL } from "../../chat/ChatInput"
 import type { PlanData } from "../../chat/PlanCard"
 import { PlanBuildActions } from "../../chat/PlanBuildActions"
 import { usePlanStreamSafe } from "../../chat/PlanStreamContext"
@@ -140,7 +140,7 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
   const [planContent, setPlanContent] = useState<string | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
   const [searchQuery, setSearchQuery] = useState("")
-  const [buildMode, setBuildMode] = useState<string>(selectedModel || DEFAULT_MODEL_PRO)
+  const [buildMode, setBuildMode] = useState<string>(selectedModel || DEFAULT_MODEL)
   const [buildStarted, setBuildStarted] = useState(false)
   const [activeTab, setActiveTab] = useState<"technical" | "summary">("technical")
   // Mirror of the global Dual Plan preference — singleton-backed so any
@@ -173,7 +173,7 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
       prev === "__streaming__" && selectedPlan !== "__streaming__"
 
     if (enteredFromList || switchedBetweenPlans || leftStreamingToFile) {
-      setBuildMode(selectedModel || DEFAULT_MODEL_PRO)
+      setBuildMode(selectedModel || DEFAULT_MODEL)
     }
   }, [selectedPlan, selectedModel])
 

@@ -106,10 +106,7 @@ import {
 } from "../../../../components/voice-mode/ChatBridgeContext";
 import { EzModeChatPanel } from "../../../../components/voice-mode/EzModeChatPanel";
 import type { InteractionMode } from "../../../../components/chat/ChatInput";
-import {
-  DEFAULT_MODEL_PRO,
-  DEFAULT_MODEL_FREE,
-} from "../../../../components/chat/ChatInput";
+import { DEFAULT_MODEL } from "../../../../components/chat/ChatInput";
 import {
   loadModelPreference,
   saveModelPreference,
@@ -1146,9 +1143,7 @@ export default observer(function ProjectLayout() {
   const hasAdvancedModelAccess = features.billing
     ? billingData.hasAdvancedModelAccess
     : true;
-  const [selectedModel, setSelectedModel] = useState<string>(() =>
-    hasAdvancedModelAccess ? DEFAULT_MODEL_PRO : DEFAULT_MODEL_FREE
-  );
+  const [selectedModel, setSelectedModel] = useState<string>(DEFAULT_MODEL);
   // Gate stale-selection reconciliation until the persisted preference has
   // loaded — otherwise the reconciler fires against the initial slug default
   // (not a catalog UUID id), resets to Auto, and persists that, wiping the
@@ -1179,9 +1174,7 @@ export default observer(function ProjectLayout() {
     let cancelled = false;
     loadModelPreference(projectId).then((stored) => {
       if (cancelled) return;
-      const next =
-        stored ??
-        (hasAdvancedModelAccess ? DEFAULT_MODEL_PRO : DEFAULT_MODEL_FREE);
+      const next = stored ?? DEFAULT_MODEL;
       globalModelPrefRef.current = next;
       setSelectedModel(next);
       setModelPrefLoaded(true);
@@ -1215,7 +1208,7 @@ export default observer(function ProjectLayout() {
     return () => {
       cancelled = true;
     };
-  }, [hasAdvancedModelAccess, projectId, agentUrl, visibleModels]);
+  }, [projectId, agentUrl, visibleModels]);
 
   const handleModelChange = useCallback(
     async (modelId: string) => {
@@ -1259,10 +1252,7 @@ export default observer(function ProjectLayout() {
   // back to the last-used global choice.
   const handleResolveSessionModel = useCallback(
     (modelId: string | null) => {
-      const next =
-        modelId ??
-        globalModelPrefRef.current ??
-        (hasAdvancedModelAccess ? DEFAULT_MODEL_PRO : DEFAULT_MODEL_FREE);
+      const next = modelId ?? globalModelPrefRef.current ?? DEFAULT_MODEL;
       if (selectedModelRef.current === next) return;
       setSelectedModel(next);
       if (!agentUrl) return;
@@ -1290,7 +1280,7 @@ export default observer(function ProjectLayout() {
         sessionModelSyncedRef.current = null;
       });
     },
-    [agentUrl, projectId, hasAdvancedModelAccess]
+    [agentUrl, projectId]
   );
 
   // Reset a pre-UUID stored selection (an old slug that's now only a server
@@ -1299,7 +1289,7 @@ export default observer(function ProjectLayout() {
   // and re-synced to the runtime.
   useReconcileStaleModelSelection(
     selectedModel,
-    hasAdvancedModelAccess ? DEFAULT_MODEL_PRO : DEFAULT_MODEL_FREE,
+    DEFAULT_MODEL,
     handleModelChange,
     modelPrefLoaded
   );

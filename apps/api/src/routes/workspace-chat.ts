@@ -25,7 +25,8 @@ import { ChatLatency } from '../lib/chat-latency'
 import { captureWake, type WakeInfo } from '../lib/wake-capture'
 import { prisma } from '../lib/prisma'
 import * as billingService from '../services/billing-runtime'
-import { getModelTier, resolveModelId } from '@shogo/model-catalog'
+import { AUTO_MODEL_ID, isAutoModel, resolveModelId } from '@shogo/model-catalog'
+import { isModelAccessibleForWorkspace } from '../lib/model-access'
 import { wrapSseStreamWithKeepalive } from '@shogo/shared-runtime/sse-keepalive'
 import { createStreamTrace, traceStream } from '@shogo/shared-runtime/stream-trace'
 import { stampModelProvider } from '../lib/stamp-model-provider'
@@ -786,13 +787,15 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
       stampModelProvider(parsedBody)
       body = JSON.stringify(parsedBody)
     } else if (parsedBody.agentMode) {
-      // Model-tier guard: downgrade non-economy models for workspaces without
-      // advanced access (server-side enforcement, same as project chat).
-      const resolvedModel = resolveModelId(parsedBody.agentMode)
-      if (getModelTier(resolvedModel) !== 'economy') {
-        if (!(await billingService.hasAdvancedModelAccess(workspaceId))) {
-          parsedBody.agentMode = 'claude-haiku-4-5-20251001'
-        }
+      // Model-tier guard: models the workspace's plan doesn't cover fall back
+      // to Auto, whose tiers are already entitlement-capped (same as project
+      // chat). The access check reads DB tiers, so economy DB models such as
+      // Hoshi pass through.
+      if (
+        !isAutoModel(parsedBody.agentMode) &&
+        !(await isModelAccessibleForWorkspace(workspaceId, resolveModelId(parsedBody.agentMode)))
+      ) {
+        parsedBody.agentMode = AUTO_MODEL_ID
       }
       // Resolve the model's native provider from the registry and stamp it on
       // the forwarded body (after any tier-downgrade) so a UUID-addressed DB

@@ -34,8 +34,7 @@ import {
 import { ComposerPlusSection } from '../../components/chat/ComposerPlusMenu'
 import {
   ChatInput,
-  DEFAULT_MODEL_PRO,
-  DEFAULT_MODEL_FREE,
+  DEFAULT_MODEL,
   type FileAttachment,
   type InteractionMode,
 } from '../../components/chat/ChatInput'
@@ -274,7 +273,7 @@ export const HomeScreen = observer(function HomeScreen({
   })
 
   const [interactionMode, setInteractionMode] = useState<InteractionMode>('agent')
-  const [selectedModel, setSelectedModel] = useState<string>(DEFAULT_MODEL_FREE)
+  const [selectedModel, setSelectedModel] = useState<string>(DEFAULT_MODEL)
   // Gate stale-selection reconciliation until the persisted preference has
   // loaded. Otherwise the reconciler runs against the initial slug default
   // (which isn't a catalog UUID id), resets to Auto, and persists that — which
@@ -396,14 +395,10 @@ export const HomeScreen = observer(function HomeScreen({
 
   useEffect(() => {
     loadModelPreference().then((stored) => {
-      if (stored) {
-        setSelectedModel(stored)
-      } else if (hasAdvancedModelAccess) {
-        setSelectedModel(DEFAULT_MODEL_PRO)
-      }
+      if (stored) setSelectedModel(stored)
       setModelPrefLoaded(true)
     })
-  }, [hasAdvancedModelAccess])
+  }, [])
 
   // Deep-link: auto-install a marketplace listing referred from the
   // marketing site. The storage slot is still named
@@ -462,7 +457,7 @@ export const HomeScreen = observer(function HomeScreen({
   // loads.
   useReconcileStaleModelSelection(
     selectedModel,
-    hasAdvancedModelAccess ? DEFAULT_MODEL_PRO : DEFAULT_MODEL_FREE,
+    DEFAULT_MODEL,
     handleHomeModelChange,
     modelPrefLoaded,
   )

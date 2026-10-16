@@ -32,7 +32,7 @@ mock.module(resolve(import.meta.dir, "../../../chat/MarkdownText"), () => ({
 }))
 
 mock.module(resolve(import.meta.dir, "../../../chat/ChatInput"), () => ({
-  DEFAULT_MODEL_PRO: "test-model",
+  DEFAULT_MODEL: "test-model",
 }))
 
 mock.module(resolve(import.meta.dir, "../../../chat/PlanBuildActions"), () => ({
