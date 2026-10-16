@@ -76,6 +76,7 @@ import { CanvasErrorCard } from "./CanvasErrorCard"
 import { ChannelDispatchCard } from "./ChannelDispatchCard"
 import { TaskNotificationRow } from "./TaskNotificationRow"
 import { stripAskUserAnswerMarker } from "./askUserAnswers"
+import { stripBuildBriefMarker } from "./buildBrief"
 import { parseCanvasErrorDebugPrompt } from "./canvasErrorPrompt"
 import type { AnsweredQuestion } from "./types"
 
@@ -195,7 +196,7 @@ export const EditableUserMessage = memo(function EditableUserMessage({
   const containerRef = useRef<View>(null)
 
   const originalText = useMemo(
-    () => stripAskUserAnswerMarker(extractTextContent(message)),
+    () => stripBuildBriefMarker(stripAskUserAnswerMarker(extractTextContent(message))),
     [message],
   )
   const originalFiles = useMemo(

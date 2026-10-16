@@ -34,11 +34,22 @@ export const STRIPE_CARDS = {
  * Signs up a new account at /sign-in, then walks through the cloud onboarding
  * flow into the Team workspace:
  *
- *   destination (Team workspace) → team setup → agent picker (skip) → home
+ *   destination (Team workspace) → team setup → build prompt (skip) → home
  *
  * Leaves the browser on the home screen with "What are we building" visible.
  */
 export async function signUpAndOnboard(page: Page, user: TestUser): Promise<void> {
+  await signUp(page, user)
+  if (await onboardToBuildPrompt(page)) {
+    await page.getByText("I'll explore first", { exact: true }).click()
+  }
+
+  // ── Home screen ────────────────────────────────────────────────────────────
+  await page.waitForSelector("text=What are we building", { timeout: 30_000 })
+}
+
+/** Signs up a new account at /sign-in and waits to leave the sign-in page. */
+export async function signUp(page: Page, user: TestUser): Promise<void> {
   watchChatHealth(page)
   // ── Sign up ────────────────────────────────────────────────────────────────
   await page.goto("/sign-in")
@@ -61,31 +72,36 @@ export async function signUpAndOnboard(page: Page, user: TestUser): Promise<void
   await page.waitForURL((url) => !url.pathname.startsWith("/sign-in"), {
     timeout: 30_000,
   })
+}
 
-  // ── Onboarding (destination-first, CloudOnboarding) ───────────────────────
-  // Cloud onboarding asks where to start: Personal space or Team workspace.
-  // Projects live in the Team workspace, so pick it, keep the prefilled team
-  // name, and open the workspace without installing an agent. The CTAs are
-  // Pressables rather than <button>s, so they are matched by visible text.
+/**
+ * Walks cloud onboarding (destination-first, CloudOnboarding) to its last team
+ * step, "What do you want to build?". Picks the Team workspace (projects live
+ * there) and keeps the prefilled team name. The CTAs are Pressables rather
+ * than <button>s, so they are matched by visible text.
+ *
+ * Returns false when the account is already onboarded.
+ */
+export async function onboardToBuildPrompt(page: Page): Promise<boolean> {
   const teamDestination = page.getByRole("radio", { name: "My Team workspace" })
   try {
     await teamDestination.waitFor({ timeout: 20_000 })
   } catch {
-    // Account is already onboarded.
+    return false
   }
-  if (await teamDestination.isVisible()) {
-    await teamDestination.click()
-    await page.getByText("Continue", { exact: true }).click()
+  await teamDestination.click()
+  await page.getByText("Continue", { exact: true }).click()
 
-    await page.getByText("Set up your team workspace").waitFor({ timeout: 20_000 })
-    await page.getByText("Continue", { exact: true }).click()
+  await page.getByText("Set up your team workspace").waitFor({ timeout: 20_000 })
+  await page.getByText("Continue", { exact: true }).click()
 
-    await page.getByText("Start with an agent").waitFor({ timeout: 20_000 })
-    await page.getByText(/^Open /).last().click()
-  }
+  await page.getByText("What do you want to build?", { exact: true }).first().waitFor({ timeout: 20_000 })
+  return true
+}
 
-  // ── Home screen ────────────────────────────────────────────────────────────
-  await page.waitForSelector("text=What are we building", { timeout: 30_000 })
+/** The onboarding "What do you want to build?" input. */
+export function buildPromptInput(page: Page) {
+  return page.getByTestId("onboarding-build-prompt-input")
 }
 
 /**

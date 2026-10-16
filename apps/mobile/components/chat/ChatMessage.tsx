@@ -18,6 +18,7 @@ import { CanvasErrorCard } from "./turns/CanvasErrorCard"
 import { ChannelDispatchCard } from "./turns/ChannelDispatchCard"
 import { TaskNotificationRow } from "./turns/TaskNotificationRow"
 import { stripAskUserAnswerMarker } from "./turns/askUserAnswers"
+import { stripBuildBriefMarker } from "./turns/buildBrief"
 import { parseCanvasErrorDebugPrompt } from "./turns/canvasErrorPrompt"
 
 export interface ChatMessageProps {
@@ -36,7 +37,7 @@ export function ChatMessage({
 }: ChatMessageProps) {
   const isUser = message.role === "user"
   const content = isUser
-    ? stripAskUserAnswerMarker(message.content)
+    ? stripBuildBriefMarker(stripAskUserAnswerMarker(message.content))
     : message.content
   const isLongText = isUser && content ? analyzeContent(content).isLong : false
   const taskNotification = isUser ? taskNotificationOf(message) : null

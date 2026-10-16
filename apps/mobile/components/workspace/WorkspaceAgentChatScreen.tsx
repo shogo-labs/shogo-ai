@@ -74,12 +74,15 @@ interface BuildPlanRequest {
 export interface WorkspaceAgentChatScreenProps {
   /** Open this workspace session instead of the primary one (e.g. a session a DM reply ran in). */
   initialSessionId?: string
+  /** Sent as the first message when the opened session is still empty. */
+  initialMessage?: string
   /** Rendered above the chat, e.g. the breadcrumb back to the conversation it was opened from. */
   header?: ReactNode
 }
 
 export const WorkspaceAgentChatScreen = observer(
-  function WorkspaceAgentChatScreen({ initialSessionId, header }: WorkspaceAgentChatScreenProps = {}) {
+  function WorkspaceAgentChatScreen({ initialSessionId, initialMessage, header }: WorkspaceAgentChatScreenProps = {}) {
+    const [capturedInitialMessage] = useState(() => initialMessage)
     const router = useRouter()
     const { user } = useAuth()
     const http = useDomainHttp()
@@ -620,6 +623,7 @@ export const WorkspaceAgentChatScreen = observer(
             onBuildPlanConsumed={handleBuildPlanConsumed}
             prefillRequest={prefillRequest}
             onPrefillConsumed={handlePrefillConsumed}
+            initialMessage={capturedInitialMessage}
             className="flex-1"
             isActive
             phoneTranscriptTopPadding={

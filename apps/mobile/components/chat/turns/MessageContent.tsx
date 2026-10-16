@@ -36,6 +36,7 @@ import { useAgentImageSource } from "../../../lib/agent-image-source"
 import { clampAspectRatio, DEFAULT_IMAGE_ASPECT } from "./image-sizing"
 import { useChatImageWidth } from "./use-chat-image-width"
 import { stripAskUserAnswerMarker } from "./askUserAnswers"
+import { stripBuildBriefMarker } from "./buildBrief"
 
 export interface MessageContentProps {
   message: UIMessage
@@ -422,7 +423,7 @@ export function MessageContent({
   const files = extractFileParts(message)
   const isUser = message.role === "user"
   const content = isUser
-    ? stripAskUserAnswerMarker(extractTextContent(message))
+    ? stripBuildBriefMarker(stripAskUserAnswerMarker(extractTextContent(message)))
     : extractTextContent(message)
   const userBubble = isUser && variant === "userBubble"
   // Only show the preview card when there's genuinely long typed text and no

@@ -4,6 +4,7 @@
  * The workspace agent chat. Home links here; on phones it renders inside the mobile workspace shell.
  * `?chatSessionId=<id>` opens that workspace session instead of the primary one (a team chat DM
  * reply opens the session it ran in), with the trail back to the conversation it came from.
+ * `?initialMessage=<text>` sends that message once the session loads, if it has no messages yet.
  */
 import { useLocalSearchParams } from 'expo-router'
 import { WorkspaceAgentChatScreen } from '../../components/workspace/WorkspaceAgentChatScreen'
@@ -23,6 +24,7 @@ export default function AgentChatRoute() {
     fromKind?: string | string[]
     fromThread?: string | string[]
     fromAgent?: string | string[]
+    initialMessage?: string | string[]
   }>()
   const chatSessionId = firstParam(params.chatSessionId)
   const header = firstParam(params.fromConversation) ? <SessionBreadcrumb params={params} /> : undefined
@@ -30,6 +32,7 @@ export default function AgentChatRoute() {
     <WorkspaceAgentChatScreen
       key={`${workspace?.id ?? 'workspace-loading'}:${chatSessionId ?? ''}`}
       initialSessionId={chatSessionId}
+      initialMessage={firstParam(params.initialMessage)}
       header={header}
     />
   )

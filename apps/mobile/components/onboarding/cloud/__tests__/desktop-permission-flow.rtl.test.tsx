@@ -31,7 +31,6 @@ const saveLocalAccessPrefs = mock(async (_http: unknown, _patch: unknown) => ({}
 const finishCalls = mock(async () => ({}))
 mock.module('../../../../lib/api', () => ({
   ...apiStub,
-  getOnboardingMessage: (t: string) => t,
   api: new Proxy(
     { saveLocalAccessPrefs },
     {
@@ -82,7 +81,7 @@ mock.module('../DestinationStep', () => ({
 }))
 mock.module('../TeamSetupStep', () => ({ TeamSetupStep: () => null }))
 mock.module('../JoinedStep', () => ({ JoinedStep: () => null }))
-mock.module('../AgentPickerStep', () => ({ AgentPickerStep: () => null }))
+mock.module('../BuildPromptStep', () => ({ BuildPromptStep: () => null }))
 mock.module('../SettingUp', () => ({ SettingUp: () => <div data-testid="setting-up" /> }))
 
 const { CloudOnboarding } = await import('../CloudOnboarding')
