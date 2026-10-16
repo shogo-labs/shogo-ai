@@ -22,7 +22,7 @@
  * on top everywhere — OS-level limits are the real enforcement.
  */
 import { spawnSync } from './child-process.ts';
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 export interface RuntimeResourceLimits {
@@ -219,6 +219,21 @@ export function tryAttachJobObject(opts: {
 // ─── RSS watchdog (macOS always; Windows / Linux fallback) ───────────
 
 /**
+ * Read the PIDs the agent runtime publishes at SHOGO_EXEC_PIDS_FILE: a JSON
+ * `{ "pids": number[] }` of its live `exec` shells. Missing or malformed files
+ * read as no PIDs.
+ */
+export function readExecPidsFile(path: string): number[] {
+  try {
+    const parsed = JSON.parse(readFileSync(path, 'utf-8')) as { pids?: unknown };
+    if (!Array.isArray(parsed.pids)) return [];
+    return parsed.pids.filter((p): p is number => Number.isInteger(p) && (p as number) > 0);
+  } catch {
+    return [];
+  }
+}
+
+/**
  * Sum the resident-set size (KB) of the process group led by `pid`.
  *
  *   - POSIX: `ps -o rss= -g <pgid>` (pid is the group leader because the
@@ -226,20 +241,30 @@ export function tryAttachJobObject(opts: {
  *   - Windows: a PowerShell pass that sums WorkingSet64 of `pid` and all of its
  *     descendants (walking Win32_Process.ParentProcessId).
  *
+ * `excludePids` (Windows only) prunes those subtrees from the walk. The agent
+ * runtime's `exec` shells are listed there: they are the user's workload and
+ * the runtime budgets them itself (see SHOGO_EXEC_MEMORY_MB). On POSIX they
+ * are already outside the sum, because each exec shell leads its own group.
+ *
  * Returns `null` when sampling fails (process gone, tool missing) so the
  * watchdog treats it as "no reading" rather than "0".
  */
-export function samplePgidRssKb(pid: number, platform: NodeJS.Platform = process.platform): number | null {
+export function samplePgidRssKb(
+  pid: number,
+  platform: NodeJS.Platform = process.platform,
+  excludePids: readonly number[] = [],
+): number | null {
   try {
     if (platform === 'win32') {
+      const exclude = excludePids.filter((p) => Number.isInteger(p) && p > 0 && p !== pid);
       const script =
         `$ErrorActionPreference='SilentlyContinue';` +
-        `$root=${pid};` +
+        `$root=${pid};$exclude=@(${exclude.join(',')});` +
         `$all=Get-CimInstance Win32_Process;` +
         `$seen=@{};$stack=New-Object System.Collections.Stack;$stack.Push($root);$sum=0;` +
         `while($stack.Count -gt 0){$id=$stack.Pop();if($seen[$id]){continue};$seen[$id]=$true;` +
         `foreach($p in $all){if($p.ProcessId -eq $id){$sum+=$p.WorkingSetSize};` +
-        `if($p.ParentProcessId -eq $id){$stack.Push($p.ProcessId)}}};` +
+        `if($p.ParentProcessId -eq $id -and $exclude -notcontains $p.ProcessId){$stack.Push($p.ProcessId)}}};` +
         `[math]::Floor($sum/1024)`;
       const r = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
         encoding: 'utf-8',
@@ -282,6 +307,8 @@ export interface RssWatchdogOptions {
   intervalMs?: number;
   /** Consecutive over-ceiling samples required before onBreach fires. */
   strikes?: number;
+  /** PIDs whose subtrees are left out of each sample (see {@link samplePgidRssKb}). */
+  excludePids?: () => readonly number[];
   logger?: Logger;
   /** Called with the observed RSS (MB) when the ceiling is breached. */
   onBreach: (rssMB: number) => void;
@@ -296,6 +323,7 @@ export class RssWatchdog {
   private readonly platform: NodeJS.Platform;
   private readonly intervalMs: number;
   private readonly strikes: number;
+  private readonly excludePids?: () => readonly number[];
   private readonly logger?: Logger;
   private readonly onBreach: (rssMB: number) => void;
 
@@ -305,6 +333,7 @@ export class RssWatchdog {
     this.platform = opts.platform ?? process.platform;
     this.intervalMs = opts.intervalMs ?? parseInt(process.env.RUNTIME_RSS_WATCHDOG_MS || '15000', 10);
     this.strikes = opts.strikes ?? parseInt(process.env.RUNTIME_RSS_WATCHDOG_STRIKES || '2', 10);
+    this.excludePids = opts.excludePids;
     this.logger = opts.logger;
     this.onBreach = opts.onBreach;
   }
@@ -321,7 +350,7 @@ export class RssWatchdog {
 
   private sample(): void {
     if (this.fired) return;
-    const kb = samplePgidRssKb(this.pid, this.platform);
+    const kb = samplePgidRssKb(this.pid, this.platform, this.excludePids?.() ?? []);
     if (kb == null) { this.consecutive = 0; return; }
     const rssMB = Math.floor(kb / 1024);
     if (rssMB <= this.ceilingMB) { this.consecutive = 0; return; }

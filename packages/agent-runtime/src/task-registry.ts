@@ -42,7 +42,7 @@ export interface TaskResult {
   summary: string
 }
 
-type ShellFinalResult = { exitCode: number; stdout: string; stderr: string; killed: boolean }
+type ShellFinalResult = { exitCode: number; stdout: string; stderr: string; killed: boolean; killReason?: string }
 
 export interface TaskEntry {
   id: string
@@ -264,7 +264,10 @@ export class TaskRegistry {
       const status: TaskStatus = result.killed && entry.status === 'cancelled'
         ? 'cancelled'
         : result.exitCode === 0 ? 'completed' : 'failed'
-      this.settle(entry, status, { exitCode: result.exitCode, summary: `exit code ${result.exitCode}` })
+      this.settle(entry, status, {
+        exitCode: result.exitCode,
+        summary: result.killReason ?? `exit code ${result.exitCode}`,
+      })
     }).catch(() => {
       unsubscribe?.()
       this.settle(entry, 'failed', { summary: 'process error' })

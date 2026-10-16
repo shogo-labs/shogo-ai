@@ -33,7 +33,7 @@
  */
 import { type ChildProcess, spawn, spawnSync } from './child-process.ts';
 import { createHmac, randomBytes } from 'node:crypto';
-import { existsSync, mkdirSync, readdirSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, rmSync } from 'node:fs';
 import { createConnection } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -42,6 +42,7 @@ import {
   RssWatchdog,
   applyHeapEnvCap,
   attachDirectCgroup,
+  readExecPidsFile,
   resolveResourceLimits,
   tryAttachJobObject,
   wrapSpawnForCgroup,
@@ -1324,6 +1325,10 @@ export class WorkerRuntimeManager implements RuntimeResolver {
     }
 
     const env = this.buildEnv(slot, resolved.path);
+    // A previous run's list would name PIDs the OS may have reused.
+    if (env.SHOGO_EXEC_PIDS_FILE) {
+      try { rmSync(env.SHOGO_EXEC_PIDS_FILE, { force: true }); } catch { /* best-effort */ }
+    }
     const cwd = this.resolveCwd(slot);
     const baseSpawn = this.spawnCommand(resolved.path);
 
@@ -1534,9 +1539,11 @@ export class WorkerRuntimeManager implements RuntimeResolver {
 
     // macOS always, or a fallback from the branches above: sample RSS and
     // restart the group on sustained breach.
+    const execPidsFile = this.execPidsFile(slot);
     slot.limitWatchdog = new RssWatchdog({
       pid,
       ceilingMB: limits.memoryMB,
+      excludePids: () => readExecPidsFile(execPidsFile),
       logger: this.log,
       onBreach: (rssMB) => this.handleLimitBreach(slot, rssMB, limits.memoryMB),
     });
@@ -1697,9 +1704,20 @@ export class WorkerRuntimeManager implements RuntimeResolver {
     // and Bun below the RSS ceiling so a JS OOM (recoverable) trips before the
     // OS-level cap/watchdog kills the whole group. OS limits are the real cap.
     const limits = this.resolveLimits();
-    if (limits) applyHeapEnvCap(env, limits.memoryMB);
+    if (limits) {
+      applyHeapEnvCap(env, limits.memoryMB);
+      // Commands the agent runs are the user's workload, not runtime overhead:
+      // the runtime publishes their PIDs so the watchdog leaves them out, and
+      // budgets them itself, stopping the largest command instead of the turn.
+      env.SHOGO_EXEC_PIDS_FILE = this.execPidsFile(slot);
+      env.SHOGO_EXEC_MEMORY_MB ??= String(limits.memoryMB);
+    }
 
     return env;
+  }
+
+  private execPidsFile(slot: InternalRuntime): string {
+    return join(tmpdir(), 'shogo-exec-pids', `${slot.projectId.replace(/[^\w.-]/g, '_')}.json`);
   }
 
   private killViteWatch(slot: InternalRuntime): void {

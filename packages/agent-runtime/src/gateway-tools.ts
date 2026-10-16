@@ -1078,6 +1078,7 @@ interface BuildExecResultOpts {
     stdout: string
     stderr: string
     killed: boolean
+    killReason?: string
   }
 }
 
@@ -1102,6 +1103,7 @@ function buildCompletedExecResult({ ctx, entry, finalResult }: BuildExecResultOp
     sandboxed: entry.handle.sandboxed || undefined,
     cwdReset: meta?.cwdReset || undefined,
     killed: finalResult.killed || undefined,
+    killedReason: finalResult.killReason,
     run_id: entry.runId,
     ...(entry.backgrounded ? { task_id: entry.id, output_file: taskOutputPath(ctx, entry) } : {}),
   })
@@ -1993,6 +1995,7 @@ function finishedTaskResult(ctx: ToolContext, entry: TaskEntry): Record<string, 
     base.stdout = truncateExecOutput(entry.finalResult.stdout.trim())
     const stderr = entry.finalResult.stderr.trim()
     if (stderr) base.stderr = truncateExecOutput(stderr)
+    if (entry.finalResult.killReason) base.killed_reason = entry.finalResult.killReason
   } else {
     base.output = truncateExecOutput(stripAnsiForPattern(registry.readOutput(entry)).trim())
   }

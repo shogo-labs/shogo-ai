@@ -11,11 +11,12 @@
  * - Automatic container cleanup (--rm)
  */
 
-import { execSync, spawn, type ChildProcess } from '@shogo/shared-runtime/child-process'
+import { execSync, spawn, spawnSync, type ChildProcess } from '@shogo/shared-runtime/child-process'
 import { readFileSync, existsSync } from 'fs'
 import { join, isAbsolute, resolve, sep } from 'path'
 import { randomBytes } from 'crypto'
 import type { SandboxConfig } from './types'
+import { trackExecProcess } from './exec-memory-guard'
 
 // ---------------------------------------------------------------------------
 // Windows shell resolution — use Git Bash when available so Unix commands
@@ -622,8 +623,11 @@ export interface CommandHandle {
    * observable by exec_wait.
    */
   recentOutput: () => string
-  /** Resolves once the child process has exited (cleanly or killed). */
-  done: Promise<{ exitCode: number; stdout: string; stderr: string; killed: boolean }>
+  /**
+   * Resolves once the child process has exited (cleanly or killed).
+   * `killReason` is set when Shogo stopped it (e.g. out of memory).
+   */
+  done: Promise<{ exitCode: number; stdout: string; stderr: string; killed: boolean; killReason?: string }>
   /** Send a termination signal. SIGTERM is graceful, SIGKILL is forceful. */
   kill: (signal?: 'SIGTERM' | 'SIGKILL') => void
   /** True once the child has exited. */
@@ -714,6 +718,7 @@ export function sandboxExecAsync(opts: SandboxExecAsyncOptions): CommandHandle {
   }
 
   let killed = false
+  let killReason: string | undefined
   let exited = false
 
   const dataListeners = new Set<(chunk: string, stream: 'stdout' | 'stderr') => void>()
@@ -736,14 +741,41 @@ export function sandboxExecAsync(opts: SandboxExecAsyncOptions): CommandHandle {
     emitData(chunk, 'stderr')
   })
 
+  const untrack = !useSandbox && child.pid
+    ? trackExecProcess({
+        pid: child.pid,
+        killForMemory: (note) => {
+          if (exited) return
+          killReason = note
+          const text = `\n${note}\n`
+          stderrBuf.push(text)
+          recentOutputBuf.push(text)
+          emitData(text, 'stderr')
+          sendKill('SIGKILL')
+        },
+      })
+    : () => {}
+
   // Suppress unhandled-error events; we surface failures via the `done`
   // promise's exitCode field instead of throwing.
   child.on('error', (err) => {
+    untrack()
     stderrBuf.push(`\n[shogo] spawn error: ${err.message}\n`)
   })
 
   function sendKill(signal: 'SIGTERM' | 'SIGKILL'): void {
     killed = true
+    // Windows has no process groups and TerminateProcess stops only the shell,
+    // leaving what it launched running. Walk the tree while the shell is alive.
+    if (!useSandbox && !ownGroup && process.platform === 'win32' && child.pid && !exited) {
+      try {
+        spawnSync('taskkill', ['/F', '/T', '/PID', String(child.pid)], {
+          stdio: 'ignore',
+          windowsHide: true,
+          timeout: 10_000,
+        })
+      } catch { /* fall through to child.kill */ }
+    }
     try {
       // The shell's children (`bun run dev` → `bun server.ts`) share its
       // process group; signalling only the shell would orphan them.
@@ -776,9 +808,10 @@ export function sandboxExecAsync(opts: SandboxExecAsyncOptions): CommandHandle {
     ;(escalate as any)?.unref?.()
   }
 
-  const done = new Promise<{ exitCode: number; stdout: string; stderr: string; killed: boolean }>((resolve) => {
+  const done = new Promise<{ exitCode: number; stdout: string; stderr: string; killed: boolean; killReason?: string }>((resolve) => {
     child.on('exit', (code, signal) => {
       exited = true
+      untrack()
       const exitCode = typeof code === 'number'
         ? code
         : (signal ? 128 + (signalNumber(signal) ?? 0) : 1)
@@ -787,6 +820,7 @@ export function sandboxExecAsync(opts: SandboxExecAsyncOptions): CommandHandle {
         stdout: stdoutBuf.toString(),
         stderr: stderrBuf.toString(),
         killed,
+        ...(killReason ? { killReason } : {}),
       })
     })
   })
