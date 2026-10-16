@@ -187,6 +187,42 @@ describe('messages', () => {
     expect(row.mentionCount).toBe(0)
   })
 
+  test('a mention in a thread-only reply never badges the channel, so reading can clear it', async () => {
+    const g = await general()
+    const rowOf = async (user: string) =>
+      (await call(user, 'GET', `/workspaces/${seed.workspaceId}/conversations`))
+        .json.conversations.find((c: any) => c.id === g.id)
+
+    const root = await call(seed.member, 'POST', `/conversations/${g.id}/messages`, { text: 'thread root' })
+    await call(seed.owner, 'POST', `/conversations/${g.id}/read`, {})
+
+    // In the channel view, so it badges -- and the reader can reach it.
+    const visible = await call(seed.member, 'POST', `/conversations/${g.id}/messages`, {
+      text: `also here <@u:${seed.owner}>`, threadRootId: root.json.message.id, alsoSentToChannel: true,
+    })
+    // Thread-only, with a higher seq than anything the channel view shows. The read marker can
+    // never advance past it from the channel, so counting it would strand the badge permanently.
+    await call(seed.member, 'POST', `/conversations/${g.id}/messages`, {
+      text: `thread only <@u:${seed.owner}>`, threadRootId: root.json.message.id,
+    })
+
+    const waiting = await rowOf(seed.owner)
+    expect(waiting.unreadCount).toBe(1)
+    expect(waiting.mentionCount).toBe(1) // the channel-visible one only
+
+    const read = await call(seed.owner, 'POST', `/conversations/${g.id}/read`, {
+      seq: visible.json.message.seq, advance: true,
+    })
+    expect(read.json).toEqual({ lastReadSeq: visible.json.message.seq, unreadCount: 0 })
+    expect((await rowOf(seed.owner)).mentionCount).toBe(0)
+
+    // Reading again must not resurrect it -- the badge would otherwise pop back on the next refresh.
+    await call(seed.owner, 'POST', `/conversations/${g.id}/read`, { seq: visible.json.message.seq, advance: true })
+    const after = await rowOf(seed.owner)
+    expect(after.unreadCount).toBe(0)
+    expect(after.mentionCount).toBe(0)
+  })
+
   test('without advance, an explicit seq still sets the marker exactly -- "mark unread" keeps working', async () => {
     const g = await general()
     const m = await call(seed.member, 'POST', `/conversations/${g.id}/messages`, { text: 'x' })

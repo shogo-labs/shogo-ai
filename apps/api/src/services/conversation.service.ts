@@ -548,6 +548,15 @@ export async function lastMessagePreviews(conversationIds: string[], workspaceId
   return out
 }
 
+/**
+ * A message is "in the channel view" when it's top-level, or a thread reply also sent to the
+ * channel. Every unread-shaped count must use this same rule. A thread-only reply still bumps
+ * `Conversation.lastSeq`, but the reader's `lastReadSeq` can only advance to the newest message
+ * the channel view actually shows — so any count that included a thread-only reply could never
+ * be cleared, and the badge would return on the next list refresh.
+ */
+const inChannelView = () => ({ OR: [{ threadRootId: null }, { alsoSentToChannel: true }] })
+
 /** Unread messages in the channel view: thread replies only count when also sent to the channel. */
 async function unreadCounts(userId: string, conversations: any[], membershipByConv: Map<string, any>) {
   const counts = new Map<string, number>()
@@ -561,7 +570,7 @@ async function unreadCounts(userId: string, conversations: any[], membershipByCo
     where: {
       OR: behind.map((c: any) => ({ conversationId: c.id, seq: { gt: membershipByConv.get(c.id).lastReadSeq } })),
       AND: [
-        { OR: [{ threadRootId: null }, { alsoSentToChannel: true }] },
+        inChannelView(),
         { OR: [{ authorUserId: null }, { authorUserId: { not: userId } }] },
       ],
       deletedAt: null,
@@ -583,7 +592,14 @@ async function unreadMentionCounts(userId: string, memberships: any[]): Promise<
     where: {
       targetUserId: userId,
       ...(oldest ? { createdAt: { gte: oldest } } : {}),
-      message: { conversationId: { in: memberships.map((m: any) => m.conversationId) }, deletedAt: null },
+      message: {
+        conversationId: { in: memberships.map((m: any) => m.conversationId) },
+        deletedAt: null,
+        // Same rule as `unreadCounts`: a mention only badges the channel when the message is in
+        // the channel view. A thread-only mention is delivered through the inbox (`kind: 'thread'`)
+        // and a push instead — badging the channel for it strands a badge reading can't clear.
+        ...inChannelView(),
+      },
     },
     select: { message: { select: { conversationId: true, seq: true } } },
     orderBy: { createdAt: 'desc' },
@@ -1480,7 +1496,7 @@ export async function markRead(conversationId: string, userId: string, seq?: num
       seq: { gt: target },
       deletedAt: null,
       AND: [
-        { OR: [{ threadRootId: null }, { alsoSentToChannel: true }] },
+        inChannelView(),
         { OR: [{ authorUserId: null }, { authorUserId: { not: userId } }] },
       ],
     },
