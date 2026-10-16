@@ -15,6 +15,13 @@
  */
 export const FILE_HREF_PREFIX = "/shogo-file?path="
 
+/** Href that marks a markdown link as an @-mention, drawn as a highlight rather than a link. */
+export const MENTION_HREF_PREFIX = "/shogo-mention"
+
+export function isMentionHref(href: string | undefined | null): boolean {
+  return typeof href === "string" && href.startsWith(MENTION_HREF_PREFIX)
+}
+
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 

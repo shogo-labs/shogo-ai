@@ -2492,7 +2492,7 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
                       <Text
                         key={idx}
                         className={cn(
-                          "rounded bg-primary/20",
+                          "rounded bg-yellow-300/70 dark:bg-yellow-400/35",
                           mobileChatText
                             ? "text-base leading-6"
                             : "text-sm leading-5"

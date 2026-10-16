@@ -27,7 +27,7 @@ import { continueAfterConnect } from '../../lib/question-answer'
 import { IntegrationConnectCard } from '../chat/IntegrationConnectCard'
 import { ImagePreviewModal } from '../chat/ImagePreviewModal'
 import { AgentWorkedFor, AgentWorkingStatus } from './AgentWork'
-import { renderMentions, type MentionNames } from '../../lib/team-chat-state'
+import { renderMentions, renderMentionsMarkdown, type MentionNames } from '../../lib/team-chat-state'
 import { isVoiceNote } from '../../lib/voice-note'
 import { VoiceNotePlayer } from './VoiceNotePlayer'
 import { DownloadBadge, FileAttachmentCard } from './FileAttachmentCard'
@@ -444,7 +444,7 @@ function MessageRowImpl(props: MessageRowProps) {
       >
         <View className="mt-1.5 h-1.5 w-1.5 rounded-full bg-primary/60" />
         <View className="min-w-0 flex-1">
-          <ChatMarkdown isStreaming={false}>{renderMentions(message.text, names)}</ChatMarkdown>
+          <ChatMarkdown isStreaming={false}>{renderMentionsMarkdown(message.text, names)}</ChatMarkdown>
           {detail ? (
             <Text className="mt-0.5 text-xs text-muted-foreground" numberOfLines={2}>{renderMentions(detail, names)}</Text>
           ) : null}
@@ -642,7 +642,7 @@ function MessageRowImpl(props: MessageRowProps) {
                       {jumbo.map((code, i) => <ReactionGlyph key={`${code}-${i}`} emoji={code} size={32} />)}
                     </View>
                   ) : (
-                    <ChatMarkdown isStreaming={running} onLinkPress={openMessageLinkInApp}>{renderMentions(body, names)}</ChatMarkdown>
+                    <ChatMarkdown isStreaming={running} onLinkPress={openMessageLinkInApp}>{renderMentionsMarkdown(body, names)}</ChatMarkdown>
                   )}
                 </View>
               )

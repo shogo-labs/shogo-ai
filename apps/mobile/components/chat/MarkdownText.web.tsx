@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Copyright (C) 2026 Shogo Technologies, Inc.
-import React, { memo, useMemo, type AnchorHTMLAttributes, type MouseEvent } from "react"
+import React, { memo, useMemo, type AnchorHTMLAttributes, type MouseEvent, type ReactNode } from "react"
 import { useWindowDimensions } from "react-native"
 import { Streamdown, defaultUrlTransform } from "streamdown"
 import "streamdown/styles.css"
@@ -9,6 +9,7 @@ import { usePhoneLayoutOverride } from "../../lib/native-phone-layout"
 import { normalizeRichTextPaste } from "../../lib/rich-text-paste"
 import {
   FILE_HREF_PREFIX,
+  isMentionHref,
   linkifyBareUrls,
   linkifyFilePaths,
   pathFromFileHref,
@@ -77,6 +78,17 @@ function FileAwareLink({
   )
 }
 
+function MentionHighlight({ children }: { children?: ReactNode }) {
+  return (
+    <span
+      data-testid="chat-mention"
+      className="rounded bg-yellow-200 px-0.5 font-semibold text-yellow-950 dark:bg-yellow-400/30 dark:text-yellow-100"
+    >
+      {children}
+    </span>
+  )
+}
+
 export const MarkdownText = memo(
   function MarkdownText({ children, className, isStreaming, onFilePress }: MarkdownTextProps) {
     const usesMobileWorkspaceChrome = useMobileWorkspaceChrome()
@@ -98,14 +110,14 @@ export const MarkdownText = memo(
       return linkifyBareUrls(fileLinked)
     }, [onFilePress, source])
     const components = useMemo(
-      () =>
-        onFilePress
-          ? {
-              a: (props: AnchorHTMLAttributes<HTMLAnchorElement> & { node?: unknown }) => (
-                <FileAwareLink {...props} onFilePress={onFilePress} />
-              ),
-            }
-          : undefined,
+      () => ({
+        a: (props: AnchorHTMLAttributes<HTMLAnchorElement> & { node?: unknown }) =>
+          isMentionHref(props.href) ? (
+            <MentionHighlight>{props.children}</MentionHighlight>
+          ) : (
+            <FileAwareLink {...props} onFilePress={onFilePress} />
+          ),
+      }),
       [onFilePress],
     )
     return (
@@ -117,7 +129,9 @@ export const MarkdownText = memo(
         controls={false}
         components={components}
         urlTransform={(url, key, node) =>
-          url.startsWith(FILE_HREF_PREFIX) ? url : defaultUrlTransform(url, key, node)
+          url.startsWith(FILE_HREF_PREFIX) || isMentionHref(url)
+            ? url
+            : defaultUrlTransform(url, key, node)
         }
       >
         {body}

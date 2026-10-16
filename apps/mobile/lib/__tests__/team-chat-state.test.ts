@@ -29,6 +29,7 @@ import {
   mergePage,
   newestReadableSeq,
   renderMentions,
+  renderMentionsMarkdown,
   startsGroup,
   stepConversation,
   trimToNewest,
@@ -345,6 +346,10 @@ describe('mentions', () => {
     expect(renderMentions(`${wire} <!here> <@a:ws> <@u:gone>`, mentionNames(mentionables))).toBe(
       '**@Ana Lopez** and **@Ana**, ask **@Billing Bot**. email@Ana stays **@here** **@Shogo** **@someone**',
     )
+    expect(renderMentionsMarkdown(`${wire} <!here> <@a:ws> <@u:gone>`, mentionNames(mentionables))).toBe(
+      '[@Ana Lopez](/shogo-mention) and [@Ana](/shogo-mention), ask [@Billing Bot](/shogo-mention). email@Ana stays ' +
+        '[@here](/shogo-mention) [@Shogo](/shogo-mention) [@someone](/shogo-mention)',
+    )
   })
 })
 
@@ -460,6 +465,9 @@ describe('group mentions', () => {
     const group = mentionCandidates(m, null).find((c) => c.kind === 'group')!
     expect(group).toMatchObject({ display: 'design', token: '<@g:g1>', subtitle: 'Design · 2 people' })
     expect(renderMentions('<@g:g1> and <@g:gone>', mentionNames(m))).toBe('**@design** and **@group**')
+    expect(renderMentionsMarkdown('<@g:g1> and <@g:gone>', mentionNames(m))).toBe(
+      '[@design](/shogo-mention) and [@group](/shogo-mention)',
+    )
   })
 })
 
@@ -491,5 +499,18 @@ describe('stepConversation', () => {
     expect(stepConversation(list, 'b', 1, true)?.id).toBe('e')
     expect(stepConversation(list, 'e', 1, true)?.id).toBe('b')
     expect(stepConversation([conv('a'), conv('b')], 'a', 1, true)).toBeNull()
+  })
+})
+
+describe('renderMentionsMarkdown', () => {
+  test('renders channel mentions and escapes brackets in names', () => {
+    const names = {
+      users: new Map([['u1', 'Ana [ops]']]),
+      agents: new Map(),
+      conversations: new Map([['c1', 'general']]),
+    }
+    expect(renderMentionsMarkdown('<@u:u1> in <#c:c1> and <#c:gone>', names)).toBe(
+      '[@Ana \\[ops\\]](/shogo-mention) in [#general](/shogo-mention) and [#channel](/shogo-mention)',
+    )
   })
 })

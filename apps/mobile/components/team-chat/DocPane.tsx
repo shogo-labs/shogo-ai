@@ -40,7 +40,7 @@ import { describeAuthor } from '../../lib/channel-doc-state'
 import { applyFormat, insertAt, splitTaskSegments, toggleTask, type DocFormat, type Selection } from '../../lib/doc-markdown'
 import { teamChatApi, type ChannelDocRevision, type ConversationDetail, type Mentionables } from '../../lib/team-chat-api'
 import { docLink } from '../../lib/team-chat-links'
-import { mentionNames, renderMentions } from '../../lib/team-chat-state'
+import { mentionNames, renderMentionsMarkdown } from '../../lib/team-chat-state'
 import { relativeTime } from '../../lib/activity-feed'
 
 const api = teamChatApi()
@@ -304,7 +304,7 @@ function DocView({
     <View className="gap-1" testID="doc-view">
       {segments.map((s, i) =>
         s.type === 'markdown' ? (
-          <MarkdownText key={`m${i}`}>{renderMentions(s.text, names)}</MarkdownText>
+          <MarkdownText key={`m${i}`}>{renderMentionsMarkdown(s.text, names)}</MarkdownText>
         ) : (
           <Pressable
             key={`t${s.line}`}
@@ -320,7 +320,7 @@ function DocView({
               {s.checked ? <SquareCheck size={16} className="text-primary" /> : <Square size={16} className="text-muted-foreground" />}
             </View>
             <View className={cn('min-w-0 flex-1', s.checked && 'opacity-60')}>
-              <MarkdownText>{renderMentions(s.checked ? `~~${s.text}~~` : s.text, names)}</MarkdownText>
+              <MarkdownText>{renderMentionsMarkdown(s.checked ? `~~${s.text}~~` : s.text, names)}</MarkdownText>
             </View>
           </Pressable>
         ),

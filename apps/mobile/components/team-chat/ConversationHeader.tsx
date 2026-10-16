@@ -21,7 +21,7 @@ import {
   type MembershipNotifyLevel,
   type Participant,
 } from '../../lib/team-chat-api'
-import { mentionNames, renderMentions } from '../../lib/team-chat-state'
+import { mentionNames, renderMentionsMarkdown } from '../../lib/team-chat-state'
 import { useUserStatus } from '../../hooks/useChatPrefs'
 import { usePresence } from '../../hooks/usePresence'
 import { resolveAvatarUrl } from '../../lib/chat-attachment-url'
@@ -306,7 +306,7 @@ export function ConversationHeader({ conversation, mentionables, me, onChanged, 
             </View>
             <ScrollView>
               {catchUp?.summary ? (
-                <MarkdownText>{renderMentions(catchUp.summary, mentionNames(mentionables))}</MarkdownText>
+                <MarkdownText>{renderMentionsMarkdown(catchUp.summary, mentionNames(mentionables))}</MarkdownText>
               ) : (
                 <Text className="text-sm text-muted-foreground">You're all caught up. Nothing new since you last read.</Text>
               )}
@@ -345,7 +345,7 @@ export function ConversationHeader({ conversation, mentionables, me, onChanged, 
                       </Pressable>
                     ) : null}
                   </View>
-                  <MarkdownText>{renderMentions(m.text, mentionNames(mentionables))}</MarkdownText>
+                  <MarkdownText>{renderMentionsMarkdown(m.text, mentionNames(mentionables))}</MarkdownText>
                 </View>
               )) : (
                 <Text className="text-sm text-muted-foreground">Nothing pinned yet. Hover a message and use the pin button to keep it here.</Text>

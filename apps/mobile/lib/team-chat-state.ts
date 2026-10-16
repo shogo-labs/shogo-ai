@@ -8,6 +8,7 @@
 import type { ChatMessage, ConversationSummary, Mentionables, TeamChatEvent } from './team-chat-api'
 import { normalizeRichTextPaste } from './rich-text-paste'
 import { voiceNotePreview } from './voice-note'
+import { MENTION_HREF_PREFIX } from '../components/chat/file-links'
 
 // ─── Timeline ────────────────────────────────────────────────────────────────
 
@@ -421,6 +422,23 @@ export function renderMentions(text: string, names: MentionNames): string {
     .replace(/<!(here|channel)>/g, (_m, which) => `**@${which}**`)
     .replace(/<#c:([^>]+)>/g, (_m, id) => `**#${names.conversations?.get(id) ?? 'channel'}**`)
     .replace(/<@g:([^>]+)>/g, (_m, id) => `**@${names.groups?.get(id) ?? 'group'}**`)
+}
+
+function mentionLink(label: string): string {
+  return `[${label.replace(/[[\]\\]/g, '\\$&')}](${MENTION_HREF_PREFIX})`
+}
+
+/**
+ * Render wire tokens as mention links that `MarkdownText` draws as highlighted
+ * tags. Only for markdown renderers; plain-text callers use `renderMentions`.
+ */
+export function renderMentionsMarkdown(text: string, names: MentionNames): string {
+  return text
+    .replace(/<@u:([^>]+)>/g, (_m, id) => mentionLink(`@${names.users.get(id) ?? 'someone'}`))
+    .replace(/<@a:(ws|p:[^>]+)>/g, (_m, key) => mentionLink(`@${names.agents.get(key) ?? 'agent'}`))
+    .replace(/<!(here|channel)>/g, (_m, which) => mentionLink(`@${which}`))
+    .replace(/<#c:([^>]+)>/g, (_m, id) => mentionLink(`#${names.conversations?.get(id) ?? 'channel'}`))
+    .replace(/<@g:([^>]+)>/g, (_m, id) => mentionLink(`@${names.groups?.get(id) ?? 'group'}`))
 }
 
 /** Mention tokens as plain `@name` labels, leaving the message's own markdown alone. */

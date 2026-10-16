@@ -15,7 +15,7 @@ import { ChatMarkdown } from '../chat/ChatMarkdown'
 import { GlassCard } from '../ui/GlassCard'
 import { DrawnCheckmark } from '../ui/DrawnCheckmark'
 import { answerQuestion, dismissQuestion } from '../../lib/question-answer'
-import { renderMentions, type MentionNames } from '../../lib/team-chat-state'
+import { renderMentionsMarkdown, type MentionNames } from '../../lib/team-chat-state'
 import { teamChatApi } from '../../lib/team-chat-api'
 import { isAskedOf, questionOptions, type Question } from '../../lib/team-chat-kinds'
 
@@ -136,7 +136,7 @@ function QuestionItem({
         ) : null}
         {isOpen && (q.askCount ?? 1) > 1 ? <Text className="text-[11px] text-muted-foreground">{`· asked ${q.askCount} times`}</Text> : null}
       </View>
-      <ChatMarkdown isStreaming={false}>{renderMentions(q.prompt, names)}</ChatMarkdown>
+      <ChatMarkdown isStreaming={false}>{renderMentionsMarkdown(q.prompt, names)}</ChatMarkdown>
     </>
   )
 

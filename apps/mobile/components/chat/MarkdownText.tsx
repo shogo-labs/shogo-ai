@@ -14,7 +14,7 @@ import {
   type TextStyle,
   type ViewStyle,
 } from "react-native";
-import { linkifyBareUrls, linkifyFilePaths, pathFromFileHref } from "./file-links";
+import { isMentionHref, linkifyBareUrls, linkifyFilePaths, pathFromFileHref } from "./file-links";
 import { normalizeRichTextPaste } from "../../lib/rich-text-paste";
 import { usePhoneLayout } from "../../lib/native-phone-layout";
 import { useMobileWorkspaceChrome } from "../layout/MobileWorkspaceChromeContext";
@@ -34,6 +34,8 @@ interface ThemeColors {
   border: ColorValue;
   quoteBorder: ColorValue;
   tableHeaderBg: ColorValue;
+  mentionBg: ColorValue;
+  mentionText: ColorValue;
 }
 
 export type MarkdownVariant = "default" | "thinking";
@@ -124,6 +126,8 @@ const lightColors: ThemeColors = {
   border: "#d1d9e0",
   quoteBorder: "#d1d9e0",
   tableHeaderBg: "#f6f8fa",
+  mentionBg: "#fef08a",
+  mentionText: "#422006",
 };
 
 const darkColors: ThemeColors = {
@@ -136,6 +140,8 @@ const darkColors: ThemeColors = {
   border: "#30363d",
   quoteBorder: "#30363d",
   tableHeaderBg: "#161b22",
+  mentionBg: "rgba(250, 204, 21, 0.3)",
+  mentionText: "#fef9c3",
 };
 
 // Thinking blocks are de-emphasized, so the palette is desaturated and the
@@ -150,6 +156,8 @@ const lightThinkingColors: ThemeColors = {
   border: "#e0e0e0",
   quoteBorder: "#e0e0e0",
   tableHeaderBg: "#f5f5f5",
+  mentionBg: "#fef08a",
+  mentionText: "#422006",
 };
 
 const darkThinkingColors: ThemeColors = {
@@ -162,6 +170,8 @@ const darkThinkingColors: ThemeColors = {
   border: "#444444",
   quoteBorder: "#444444",
   tableHeaderBg: "#2a2a2a",
+  mentionBg: "rgba(250, 204, 21, 0.3)",
+  mentionText: "#fef9c3",
 };
 
 /**
@@ -212,6 +222,7 @@ class NativePhoneMarkdownRenderer extends Renderer {
   constructor(
     private readonly tableWidth: number,
     private readonly tableHeaderBg: ColorValue,
+    private readonly mentionColors: { bg: ColorValue; text: ColorValue },
     private readonly onFilePress?: (path: string) => void,
     private readonly onLinkPress?: (href: string) => boolean,
   ) {
@@ -224,6 +235,27 @@ class NativePhoneMarkdownRenderer extends Renderer {
     styles?: TextStyle,
     title?: string,
   ): ReactNode {
+    if (isMentionHref(href)) {
+      return (
+        <Text
+          selectable
+          testID="chat-mention"
+          key={this.getKey()}
+          style={[
+            styles,
+            {
+              textDecorationLine: "none",
+              fontWeight: "600",
+              color: this.mentionColors.text,
+              backgroundColor: this.mentionColors.bg,
+              borderRadius: 4,
+            },
+          ]}
+        >
+          {children}
+        </Text>
+      );
+    }
     const path = pathFromFileHref(href);
     if (path && this.onFilePress) {
       const open = this.onFilePress;
@@ -395,15 +427,20 @@ export const MarkdownText = memo(function MarkdownText({
     const fileLinked = onFilePress ? linkifyFilePaths(normalized) : normalized;
     return linkifyBareUrls(fileLinked);
   }, [children, onFilePress]);
+  const mentionColors = useMemo(
+    () => ({ bg: colors.mentionBg, text: colors.mentionText }),
+    [colors.mentionBg, colors.mentionText],
+  );
   const renderer = useMemo(
     () =>
       new NativePhoneMarkdownRenderer(
         width,
         colors.tableHeaderBg,
+        mentionColors,
         onFilePress,
         onLinkPress,
       ),
-    [width, colors.tableHeaderBg, onFilePress, onLinkPress],
+    [width, colors.tableHeaderBg, mentionColors, onFilePress, onLinkPress],
   );
 
   return (
