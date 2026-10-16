@@ -252,7 +252,7 @@ export function conversationRoutes(config: ConversationRoutesConfig): Hono {
         scope,
       })
       const role = await getWorkspaceRole(auth.workspaceId, auth.userId)
-      // Pending approvals filter on a JSON path, which SQLite (local mode) can't; questions still load.
+      // Approvals are best-effort here so a failure never hides the questions.
       const approvals = status === 'answered' || role === 'viewer'
         ? []
         : await listPendingApprovals(auth.workspaceId, auth.userId).catch(() => [])

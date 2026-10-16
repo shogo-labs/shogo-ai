@@ -2,9 +2,48 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 
 import { describe, expect, test } from 'bun:test'
-import { toPendingApproval } from '../conversation-approvals'
+import { pendingBlocksWhere, toPendingApproval } from '../conversation-approvals'
 
 const NOW = new Date('2026-10-06T12:00:00Z')
+
+describe('pendingBlocksWhere', () => {
+  test('postgres filters the json path', () => {
+    expect(pendingBlocksWhere(false)).toEqual({ blocks: { path: ['approval', 'status'], equals: 'pending' } })
+  })
+
+  test('sqlite matches the serialized text, never a json path', () => {
+    const where = JSON.stringify(pendingBlocksWhere(true))
+    expect(where).not.toContain('path')
+    expect(where).toContain('"contains":"\\"type\\":\\"approval_request\\""')
+    expect(where).toContain('"contains":"\\"status\\":\\"pending\\""')
+  })
+
+  test('the sqlite substrings match how blocks are stored', () => {
+    // The sqlite wrapper stores blocks with JSON.stringify (no whitespace).
+    const stored = JSON.stringify({
+      messageKind: 'decision',
+      type: 'approval_request',
+      approval: { requestId: 'r1', status: 'pending' },
+    })
+    expect(stored).toContain('"type":"approval_request"')
+    expect(stored).toContain('"status":"pending"')
+    const decided = JSON.stringify({ type: 'approval_request', approval: { requestId: 'r1', status: 'approved' } })
+    expect(decided).not.toContain('"status":"pending"')
+  })
+
+  test('defaults to the local mode env flag', () => {
+    const prev = process.env.SHOGO_LOCAL_MODE
+    try {
+      process.env.SHOGO_LOCAL_MODE = 'true'
+      expect(pendingBlocksWhere()).toEqual(pendingBlocksWhere(true))
+      delete process.env.SHOGO_LOCAL_MODE
+      expect(pendingBlocksWhere()).toEqual(pendingBlocksWhere(false))
+    } finally {
+      if (prev === undefined) delete process.env.SHOGO_LOCAL_MODE
+      else process.env.SHOGO_LOCAL_MODE = prev
+    }
+  })
+})
 
 const card = (patch: Record<string, unknown> = {}, approval: Record<string, unknown> = {}) => ({
   id: 'm1',
