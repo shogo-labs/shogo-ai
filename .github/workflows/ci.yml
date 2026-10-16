@@ -1074,9 +1074,27 @@ jobs:
           bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.7/scripts/download-actionlint.bash) 1.7.7
           ./actionlint -color
 
+  # Builds the metal agent from an isolated copy of what hosts receive, so an
+  # import reaching outside apps/metal-agent/src fails here instead of
+  # crash-looping every host after deploy.
+  metal-agent-bundle:
+    name: Metal agent bundle
+    needs: queue-verified
+    if: needs.queue-verified.outputs.verified != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: '1.4.3'
+      - run: bash scripts/ci/check-metal-agent-bundle.sh
+
   ci:
     name: Lint, Typecheck, Test
-    needs: [queue-verified, windows-changes, typecheck, typecheck-mobile, test, rbac-postgres, test-windows, workflow-lint]
+    needs: [queue-verified, windows-changes, typecheck, typecheck-mobile, test, rbac-postgres, test-windows, workflow-lint, metal-agent-bundle]
     runs-on: ubuntu-latest
     if: always()
     steps:
@@ -1091,6 +1109,7 @@ jobs:
           RBAC_POSTGRES: ${{ needs.rbac-postgres.result }}
           TEST_WINDOWS: ${{ needs.test-windows.result }}
           WORKFLOW_LINT: ${{ needs.workflow-lint.result }}
+          METAL_AGENT_BUNDLE: ${{ needs.metal-agent-bundle.result }}
         run: |
           echo "queue-verified: ${QUEUE_VERIFIED} (verified=${VERIFIED})"
           echo "windows-changes: ${WINDOWS_CHANGES}"
@@ -1100,8 +1119,9 @@ jobs:
           echo "rbac-postgres: ${RBAC_POSTGRES}"
           echo "test-windows: ${TEST_WINDOWS}"
           echo "workflow-lint: ${WORKFLOW_LINT}"
+          echo "metal-agent-bundle: ${METAL_AGENT_BUNDLE}"
           # Jobs a queue-verified push skips outright; anywhere else they must pass.
           skippable() { [ "$1" == "success" ] || { [ "$VERIFIED" == "true" ] && [ "$1" == "skipped" ]; }; }
-          if [ "$QUEUE_VERIFIED" != "success" ] || [ "$WINDOWS_CHANGES" != "success" ] || [ "$TYPECHECK" != "success" ] || [ "$TYPECHECK_MOBILE" != "success" ] || [ "$TEST" != "success" ] || ! skippable "$RBAC_POSTGRES" || ! skippable "$WORKFLOW_LINT" || { [ "$TEST_WINDOWS" != "success" ] && [ "$TEST_WINDOWS" != "skipped" ]; }; then
+          if [ "$QUEUE_VERIFIED" != "success" ] || [ "$WINDOWS_CHANGES" != "success" ] || [ "$TYPECHECK" != "success" ] || [ "$TYPECHECK_MOBILE" != "success" ] || [ "$TEST" != "success" ] || ! skippable "$RBAC_POSTGRES" || ! skippable "$WORKFLOW_LINT" || ! skippable "$METAL_AGENT_BUNDLE" || { [ "$TEST_WINDOWS" != "success" ] && [ "$TEST_WINDOWS" != "skipped" ]; }; then
             exit 1
           fi

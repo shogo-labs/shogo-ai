@@ -187,6 +187,15 @@ jobs:
           echo "sha256=$SHA" >> "$GITHUB_OUTPUT"
           echo "Built $OUT version=$VERSION sha256=$SHA ($(stat -c%s "$OUT") bytes)"
 
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: '1.4.3'
+
+      - name: Refuse bundles whose imports do not resolve on a host
+        env:
+          FILE: ${{ steps.bundle.outputs.file }}
+        run: bash scripts/ci/check-metal-agent-bundle.sh "$FILE"
+
       - name: Upload bundle to object storage
         id: upload
         env:

@@ -23,7 +23,7 @@ import {
   type RepoExport,
 } from './pool'
 import type { RepoLineage, RepoWriteOutcome } from './repo-archive'
-import { parseRepoManifest, type RepoManifest } from '../../../packages/shared-runtime/src/repo-bundles'
+import { parseRepoManifest, type RepoManifest } from './vendor/repo-bundles'
 import type { FirecrackerVMManager } from './firecracker-vm-manager'
 import type { SnapshotStore } from './snapshot-store'
 

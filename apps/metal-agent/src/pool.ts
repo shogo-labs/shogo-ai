@@ -88,7 +88,7 @@ import {
   parseRepoManifest,
   type RepoManifest,
   type RepoManifestBundle,
-} from '../../../packages/shared-runtime/src/repo-bundles'
+} from './vendor/repo-bundles'
 import { readSerialTail } from './serial-watcher'
 import { stagedRootfsPath } from './self-update'
 import type { ArchiveRef } from './archive-ref'

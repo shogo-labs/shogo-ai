@@ -29,7 +29,7 @@ import {
   parseRepoManifest,
   type RepoManifest,
   type RepoManifestBundle,
-} from '../../../packages/shared-runtime/src/repo-bundles'
+} from './vendor/repo-bundles'
 import type { MetalConfig } from './config'
 import {
   type DataLineage,

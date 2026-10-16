@@ -19,7 +19,7 @@ import {
   uploadRepoManifestGuarded,
   type RepoObjectStore,
 } from './repo-archive'
-import type { RepoManifest } from '../../../packages/shared-runtime/src/repo-bundles'
+import type { RepoManifest } from './vendor/repo-bundles'
 import type { ConditionalPutResult } from './s3-conditional'
 
 const cfg = {} as MetalConfig
