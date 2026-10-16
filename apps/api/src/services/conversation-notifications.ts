@@ -14,7 +14,7 @@ import { markdownToPlainText, renderMentionsAsText } from './conversation-mentio
 import { loadMentionNames } from './conversation-agent-dispatcher'
 import { registerAfterPostHook } from './conversation-pipeline'
 import {
-  agentDisplayName, onReactionAdded,
+  agentDisplayName, getWorkspaceRole, isOpenKind, onReactionAdded,
   type PostMessageResult, type ReactionAddedEvent,
 } from './conversation.service'
 import { getPresence } from './conversation-presence'
@@ -267,6 +267,82 @@ export async function notifyForReaction({ message, conversation, reactorId, emoj
     title: `${who} reacted ${emoji} to your message`,
     preview: preview.slice(0, BODY_CHARS),
   }])
+}
+
+const USER_TOKEN_RE = /<@u:([A-Za-z0-9_-]+)>/g
+
+function mentionedUserIds(text: string): Set<string> {
+  return new Set([...text.matchAll(USER_TOKEN_RE)].map((m) => m[1]!))
+}
+
+/** The doc's lines that mention `userId`, as plain text for a preview. */
+async function docMentionPreview(workspaceId: string, content: string, userId: string): Promise<string> {
+  const token = `<@u:${userId}>`
+  const lines = content.split('\n').filter((l) => l.includes(token)).slice(0, 3).join('\n')
+  return markdownToPlainText(renderMentionsAsText(lines, await loadMentionNames(workspaceId, [lines]))).slice(0, BODY_CHARS)
+}
+
+/**
+ * Tell people newly mentioned in a channel doc (present now, absent before
+ * the save). Like a message mention it cuts through mute but not a channel
+ * set to "nothing", and in private channels only members hear about it.
+ */
+export async function notifyForDocMentions(input: {
+  conversation: any
+  previous: string
+  next: string
+  actorUserId: string | null
+  actorName: string
+  docTitle: string
+}): Promise<NotificationRecipient[]> {
+  const { conversation, previous, next, actorUserId, actorName } = input
+  const before = mentionedUserIds(previous)
+  const added = [...mentionedUserIds(next)].filter((id) => !before.has(id) && id !== actorUserId)
+  if (!added.length) return []
+
+  const members = await db.conversationMember.findMany({
+    where: { conversationId: conversation.id, memberType: 'user', userId: { in: added } },
+    select: { userId: true, notifyLevel: true },
+  })
+  const memberLevel = new Map<string, string | null>(members.map((m: any) => [m.userId, m.notifyLevel ?? null]))
+  const settings = await getSettingsRows(conversation.workspaceId, added)
+  const now = new Date()
+  const recipients: NotificationRecipient[] = []
+  for (const userId of added) {
+    if (memberLevel.get(userId) === 'none') continue
+    if (!memberLevel.has(userId)) {
+      if (!isOpenKind(conversation.kind)) continue
+      if (!(await getWorkspaceRole(conversation.workspaceId, userId))) continue
+    }
+    recipients.push({ userId, reason: 'mention', silenced: isSilenced(settings.get(userId), now) })
+  }
+  if (!recipients.length) return []
+
+  const where = `#${conversation.slug ?? conversation.name ?? 'channel'}`
+  const title = `${actorName} mentioned you in the ${where} doc`
+  const presence = await getPresence(conversation.workspaceId, recipients.map((r) => r.userId))
+  const data = { conversationId: conversation.id, messageId: null, threadRootId: null, workspaceId: conversation.workspaceId, target: 'doc' }
+  for (const r of recipients) {
+    const body = (await docMentionPreview(conversation.workspaceId, next, r.userId)) || input.docTitle || 'Open the doc'
+    await createInboxItems([{
+      workspaceId: conversation.workspaceId,
+      userId: r.userId,
+      kind: 'mention',
+      conversationId: conversation.id,
+      messageId: null,
+      actorUserId,
+      target: 'doc',
+      title,
+      preview: body,
+    }])
+    if (r.silenced) continue
+    if (presence[r.userId] === 'active') {
+      publishConversationEvent(conversation.workspaceId, { type: 'notification', ...data, reason: 'mention', title, body }, [r.userId])
+    } else {
+      void sendPush(r.userId, { title, body, type: 'channel-message', channelId: 'messages', audience: 'chat', data: { ...data, reason: 'mention' } })
+    }
+  }
+  return recipients
 }
 
 /**

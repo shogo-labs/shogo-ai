@@ -173,7 +173,7 @@ export async function notifyChannelMessage(p: ChannelNotificationPayload): Promi
       } catch {
         // ignore
       }
-      fireClick({ conversationId: p.conversationId, threadRootId: p.threadRootId })
+      fireClick({ conversationId: p.conversationId, threadRootId: p.threadRootId, ...(p.target ? { target: p.target } : {}) })
       try {
         n.close()
       } catch {

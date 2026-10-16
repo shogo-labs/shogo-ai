@@ -9,6 +9,8 @@
  *   <!here> <!channel> everyone active / everyone in the conversation
  *   <#c:CONVERSATION_ID> a channel reference
  *   <@g:GROUP_ID>      a user group (@team); expands to its members
+ *   <#p:PROJECT_ID>    a project reference (channel docs)
+ *   <!date:2026-10-13> a date, or <!date:2026-10-13T09:30Z> a moment (channel docs)
  *
  * Clients render tokens as chips; the server resolves them to names when text
  * leaves the app (agent prompts, notifications, Slack).
@@ -26,7 +28,25 @@ export interface AgentTarget {
 }
 
 const TOKEN_RE = /<@u:([A-Za-z0-9_-]+)>|<@a:ws>|<@a:p:([A-Za-z0-9_-]+)>|<!(here|channel)>|<@g:([A-Za-z0-9_-]+)>/g
-const ANY_TOKEN_RE = /<@u:([A-Za-z0-9_-]+)>|<@a:ws>|<@a:p:([A-Za-z0-9_-]+)>|<!(here|channel)>|<#c:([A-Za-z0-9_-]+)>|<@g:([A-Za-z0-9_-]+)>/g
+const ANY_TOKEN_RE = /<@u:([A-Za-z0-9_-]+)>|<@a:ws>|<@a:p:([A-Za-z0-9_-]+)>|<!(here|channel)>|<#c:([A-Za-z0-9_-]+)>|<@g:([A-Za-z0-9_-]+)>|<#p:([A-Za-z0-9_-]+)>|<!date:(\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}Z)?)>/g
+
+const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
+const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December']
+
+/**
+ * A date token's value as unambiguous text, e.g. "Tuesday, October 13, 2026"
+ * or "Tuesday, October 13, 2026 09:30 UTC". Mirrors `absoluteDateText` in
+ * `apps/mobile/lib/doc-tokens.ts`.
+ */
+export function absoluteDateText(value: string): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2})Z)?$/.exec(value)
+  if (!m) return value
+  const [, y, mo, d, h, mi] = m
+  const date = new Date(Date.UTC(+y, +mo - 1, +d))
+  if (date.getUTCMonth() !== +mo - 1 || date.getUTCDate() !== +d) return value
+  const day = `${WEEKDAYS[date.getUTCDay()]}, ${MONTHS[+mo - 1]} ${+d}, ${y}`
+  return h ? `${day} ${h}:${mi} UTC` : day
+}
 
 export function userMentionToken(userId: string): string {
   return `<@u:${userId}>`
@@ -80,7 +100,9 @@ export interface MentionNames {
 
 /** Replace tokens with readable `@Name` / `#channel` text. */
 export function renderMentionsAsText(text: string, names: MentionNames = {}): string {
-  return text.replace(ANY_TOKEN_RE, (token, userId, projectId, broadcast, conversationId, groupId) => {
+  return text.replace(ANY_TOKEN_RE, (token, userId, projectId, broadcast, conversationId, groupId, projectRef, date) => {
+    if (date) return absoluteDateText(date)
+    if (projectRef) return names.projects?.get(projectRef) ?? 'a project'
     if (userId) return `@${names.users?.get(userId) ?? 'someone'}`
     if (groupId) return `@${names.groups?.get(groupId) ?? 'group'}`
     if (projectId) return `@${names.projects?.get(projectId) ?? 'agent'}`
@@ -103,9 +125,10 @@ export function collectMentionIds(texts: string[]): {
   const conversationIds = new Set<string>()
   const groupIds = new Set<string>()
   for (const text of texts) {
-    for (const [, userId, projectId, , conversationId, groupId] of text.matchAll(ANY_TOKEN_RE)) {
+    for (const [, userId, projectId, , conversationId, groupId, projectRef] of text.matchAll(ANY_TOKEN_RE)) {
       if (userId) userIds.add(userId)
       if (projectId) projectIds.add(projectId)
+      if (projectRef) projectIds.add(projectRef)
       if (conversationId) conversationIds.add(conversationId)
       if (groupId) groupIds.add(groupId)
     }

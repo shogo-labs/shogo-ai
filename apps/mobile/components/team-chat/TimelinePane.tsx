@@ -429,6 +429,7 @@ export function TimelinePane(props: TimelinePaneProps) {
         onSend={handleSend}
         onEditLast={onEditLast}
         channelMemberIds={channelMemberIds}
+        membersOnly={conversation.kind === 'private'}
       />
     </>
   )

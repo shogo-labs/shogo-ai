@@ -14,6 +14,7 @@ import { useMentionables } from '../../../hooks/useTeamChat'
 import { useLater } from '../../../hooks/useChatItems'
 import type { ConversationRef } from '../../../lib/team-chat-api'
 import { mentionNames, renderMentions, scheduleOptions } from '../../../lib/team-chat-state'
+import { conversationRouteParams } from '../../../lib/team-chat-links'
 
 type Tab = 'saved' | 'reminders' | 'scheduled'
 
@@ -45,12 +46,11 @@ export default function TeamChatLater() {
   const [tab, setTab] = useState<Tab>('saved')
   const [snoozing, setSnoozing] = useState<string | null>(null)
 
-  const open = (conversationId: string | null, messageId?: string | null, threadRootId?: string | null) => {
+  const open = (conversationId: string | null, messageId?: string | null, threadRootId?: string | null, target?: string | null) => {
     if (!conversationId) return
-    const thread = threadRootId ?? messageId
     router.push({
       pathname: '/(app)/c/[conversationId]',
-      params: thread ? { conversationId, thread } : { conversationId },
+      params: conversationRouteParams({ conversationId, messageId, threadRootId, target }),
     } as any)
   }
 
@@ -133,7 +133,7 @@ export default function TeamChatLater() {
               <View className={cn('mb-2 rounded-md border px-4 py-3', overdue ? 'border-primary/40 bg-primary/5' : 'border-border')}>
                 <View className="flex-row items-center gap-2">
                   <AlarmClock size={14} className={overdue ? 'text-primary' : 'text-muted-foreground'} />
-                  <Pressable className="flex-1" onPress={() => open(item.conversationId, item.messageId)} disabled={!item.conversationId}>
+                  <Pressable className="flex-1" onPress={() => open(item.conversationId, item.messageId, null, item.target)} disabled={!item.conversationId}>
                     <Text className="text-sm text-foreground" numberOfLines={2}>{plain(item.text, names)}</Text>
                     <Text className="text-xs text-muted-foreground">{overdue ? 'Due ' : ''}{when(item.remindAt)}</Text>
                   </Pressable>

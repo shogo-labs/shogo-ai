@@ -162,6 +162,8 @@ import {
   useComposerLayoutMode,
   useProminentComposerHeight,
 } from "./composer";
+import { CompletionMenu } from "./CompletionMenu";
+import { completionMenuKey } from "../../lib/completion-menu-keys";
 
 export type InteractionMode = "agent" | "plan" | "ask";
 
@@ -260,14 +262,22 @@ export interface ComposerCompletionItem {
   key: string;
   label: string;
   subtitle?: string | null;
-  /** Short right-aligned flag, e.g. "Not in channel". */
-  trailing?: string | null;
   icon?: ReactNode;
   /** Replaces the typed trigger + query; a space is added after it. */
   insert: string;
   /** Tracked like an "@" reference: drawn as a pill and sent with the message. */
   reference?: ChatReference;
   onSelect?: () => void;
+  /** Header shown above this row. */
+  section?: string;
+  /** Right-aligned hint, e.g. "Not in channel". */
+  trailing?: string | null;
+  /** Opens this category (passed back to `items`) instead of inserting. */
+  drill?: string;
+  /** Goes back up from the open category. */
+  back?: boolean;
+  /** Removes the typed trigger and runs `onSelect` without inserting (e.g. open a picker). */
+  removeTrigger?: boolean;
 }
 
 /**
@@ -278,13 +288,17 @@ export interface ComposerCompletionSource {
   id: string;
   /** The trigger token ending at `caret`, if one is being typed. */
   detect: (text: string, caret: number) => { start: number; query: string } | null;
-  items: (query: string) => ComposerCompletionItem[];
+  /** `drill` is the category opened from a row with `drill`, or null at the top. */
+  items: (query: string, drill: string | null) => ComposerCompletionItem[];
+  footer?: (query: string, drill: string | null) => string | null;
 }
 
 export interface ChatInputHandle {
   focus: () => void;
   /** Insert text at the caret, padded with spaces. */
   insertText: (text: string) => void;
+  /** Insert text at the caret and track it as a reference (e.g. a date picked after the menu closed). */
+  insertReference: (text: string, reference: ChatReference) => void;
   /** Same as pressing send. */
   submit: () => void;
   /** Stage files (web `File`s, e.g. dropped elsewhere on the screen). */
@@ -933,15 +947,18 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
     query: string;
   } | null>(null);
   const [completionIndex, setCompletionIndex] = useState(0);
+  // The category opened from a "drill" row; reset whenever the menu closes.
+  const [completionDrill, setCompletionDrill] = useState<string | null>(null);
   // Escape hides a completion menu until its trigger token is gone.
   const dismissedCompletionStartRef = useRef<number | null>(null);
   const completionRef = useRef(completion);
   completionRef.current = completion;
   const caretRef = useRef<number | null>(null);
   const completionItems = useMemo(
-    () => (completion ? completion.source.items(completion.query) : []),
-    [completion]
+    () => (completion ? completion.source.items(completion.query, completionDrill) : []),
+    [completion, completionDrill]
   );
+  const completionFooter = completion?.source.footer?.(completion.query, completionDrill) ?? null;
 
   const updateCompletion = useCallback(
     (text: string, caret: number) => {
@@ -967,6 +984,7 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
         prev.query === next.query
       )
         return;
+      if (!next || !prev || prev.source !== next.source || prev.start !== next.start) setCompletionDrill(null);
       completionRef.current = next;
       setCompletion(next);
       setCompletionIndex(0);
@@ -1360,10 +1378,28 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
     (item: ComposerCompletionItem) => {
       const active = completionRef.current;
       if (!active) return;
+      if (item.drill || item.back) {
+        setCompletionDrill(item.back ? null : item.drill!);
+        setCompletionIndex(0);
+        textInputRef.current?.focus();
+        return;
+      }
       cancelPendingTextChangeFlush();
       const base = inputValueRef.current;
       const start = Math.max(0, Math.min(active.start, base.length));
       const end = Math.max(start, Math.min(active.end, base.length));
+      if (item.removeTrigger) {
+        const next = base.slice(0, start) + base.slice(end);
+        inputValueRef.current = next;
+        setInputValue(next);
+        completionRef.current = null;
+        setCompletion(null);
+        setCompletionDrill(null);
+        caretRef.current = start;
+        onTextChange?.(next, referencesRef.current);
+        item.onSelect?.();
+        return;
+      }
       const insert = `${item.insert} `;
       const next = base.slice(0, start) + insert + base.slice(end);
       inputValueRef.current = next;
@@ -1379,6 +1415,7 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
       item.onSelect?.();
       completionRef.current = null;
       setCompletion(null);
+      setCompletionDrill(null);
       placeCaret(start + insert.length);
       onTextChange?.(next, nextRefs);
     },
@@ -1399,6 +1436,19 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
       onTextChange?.(next, referencesRef.current);
     },
     [cancelPendingTextChangeFlush, onTextChange, placeCaret]
+  );
+
+  const insertReference = useCallback(
+    (insert: string, reference: ChatReference) => {
+      const refs = referencesRef.current;
+      if (!refs.some((r) => referenceKey(r) === referenceKey(reference))) {
+        const nextRefs = [...refs, reference];
+        referencesRef.current = nextRefs;
+        setReferences(nextRefs);
+      }
+      insertText(insert);
+    },
+    [insertText]
   );
 
   // Keep references in sync with what's actually visible: if the user edits or
@@ -1798,11 +1848,12 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
     () => ({
       focus: () => textInputRef.current?.focus(),
       insertText,
+      insertReference,
       submit: () => handleSubmitRef.current(),
       addFiles: (files: File[]) => processFiles(files),
       addAttachment: (attachment: FileAttachment & { size: number }) => addAttachment(attachment),
     }),
-    [insertText, processFiles, addAttachment]
+    [insertText, insertReference, processFiles, addAttachment]
   );
 
   const removeReference = useCallback((key: string) => {
@@ -2202,48 +2253,15 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
         )}
 
         {completion && completionItems.length > 0 && (
-          <View
+          <CompletionMenu
             testID={`composer-completions-${completion.source.id}`}
-            className="absolute bottom-full left-0 right-0 mb-1 max-h-[280px] rounded-md border border-border bg-popover shadow-md z-50"
-          >
-            <ScrollView keyboardShouldPersistTaps="handled">
-              {completionItems.map((item, i) => (
-                <Pressable
-                  key={item.key}
-                  onPress={() => selectCompletion(item)}
-                  className={cn(
-                    "w-full flex-row items-center gap-2 px-3 py-1.5",
-                    i === completionIndex ? "bg-accent" : "active:bg-accent"
-                  )}
-                >
-                  {item.icon ? (
-                    <View className="w-4 items-center">{item.icon}</View>
-                  ) : null}
-                  <Text className="text-xs text-foreground" numberOfLines={1}>
-                    {item.label}
-                  </Text>
-                  {item.subtitle ? (
-                    <Text
-                      className="flex-1 text-[10px] text-muted-foreground"
-                      numberOfLines={1}
-                    >
-                      {item.subtitle}
-                    </Text>
-                  ) : (
-                    <View className="flex-1" />
-                  )}
-                  {item.trailing ? (
-                    <Text
-                      className="text-[10px] font-medium text-muted-foreground"
-                      numberOfLines={1}
-                    >
-                      {item.trailing}
-                    </Text>
-                  ) : null}
-                </Pressable>
-              ))}
-            </ScrollView>
-          </View>
+            rows={completionItems}
+            selectedIndex={completionIndex}
+            onSelect={(i) => selectCompletion(completionItems[i])}
+            onHover={setCompletionIndex}
+            footer={completionFooter}
+            placement="above"
+          />
         )}
 
         {/* Main input container */}
@@ -2552,30 +2570,32 @@ const ChatInputImpl = forwardRef<ChatInputHandle, ChatInputProps>(function ChatI
                     completion &&
                     completionItems.length > 0
                   ) {
-                    const key = e.nativeEvent.key;
-                    const count = completionItems.length;
-                    if (key === "ArrowDown") {
-                      e.preventDefault();
-                      setCompletionIndex((i) => (i + 1) % count);
+                    const result = completionMenuKey(e.nativeEvent.key, {
+                      index: completionIndex,
+                      count: completionItems.length,
+                      canGoBack: completionDrill !== null,
+                      queryEmpty: completion.query === "",
+                    });
+                    if (result.type !== "none") e.preventDefault();
+                    if (result.type === "move") {
+                      setCompletionIndex(result.index);
                       return;
                     }
-                    if (key === "ArrowUp") {
-                      e.preventDefault();
-                      setCompletionIndex((i) => (i - 1 + count) % count);
-                      return;
-                    }
-                    if (key === "Enter" || key === "Tab") {
-                      e.preventDefault();
-                      const item =
-                        completionItems[Math.min(completionIndex, count - 1)];
+                    if (result.type === "select") {
+                      const item = completionItems[result.index];
                       if (item) selectCompletion(item);
                       return;
                     }
-                    if (key === "Escape") {
-                      e.preventDefault();
+                    if (result.type === "back") {
+                      setCompletionDrill(null);
+                      setCompletionIndex(0);
+                      return;
+                    }
+                    if (result.type === "close") {
                       dismissedCompletionStartRef.current = completion.start;
                       completionRef.current = null;
                       setCompletion(null);
+                      setCompletionDrill(null);
                       return;
                     }
                   }

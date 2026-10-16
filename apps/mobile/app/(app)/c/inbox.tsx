@@ -13,6 +13,7 @@ import { useActiveWorkspace } from '../../../hooks/useActiveWorkspace'
 import { useWorkspaceExperience } from '../../../hooks/useWorkspaceExperience'
 import { useInbox } from '../../../hooks/useChatPrefs'
 import type { InboxItem, InboxKind } from '../../../lib/team-chat-api'
+import { conversationRouteParams } from '../../../lib/team-chat-links'
 
 const ICONS: Record<InboxKind, typeof AtSign> = {
   mention: AtSign,
@@ -62,10 +63,9 @@ export default function TeamChatInbox() {
   const open = (item: InboxItem) => {
     if (!item.readAt) void markRead([item.id])
     if (!item.conversationId) return
-    const thread = item.threadRootId ?? item.messageId
     router.push({
       pathname: '/(app)/c/[conversationId]',
-      params: thread ? { conversationId: item.conversationId, thread } : { conversationId: item.conversationId },
+      params: conversationRouteParams({ ...item, conversationId: item.conversationId }),
     } as any)
   }
 

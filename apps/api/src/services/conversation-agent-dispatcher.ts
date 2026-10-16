@@ -55,7 +55,7 @@ import { expirePendingApprovals, postApprovalCard, type ApprovalRequest } from '
 import type { AgentWork, IntegrationConnectRequest, StatusCard } from './conversation-message-kind'
 import { agentWorkOf } from './agent-work-log'
 import { emitTaskEvent, replyEvent, replyTargetRef } from './background-tasks.service'
-import { docContextFor } from './conversation-doc.service'
+import { DOC_TOKEN_GUIDE, docContextFor } from './conversation-doc.service'
 import { parseMuteCommand, pickResponder, type RelevanceCandidate } from './conversation-agent-relevance'
 
 const db = prisma as any
@@ -139,6 +139,8 @@ export interface InvokeArgs {
   userId: string
   prompt: string
   signal: AbortSignal
+  /** The channel the run replies in. */
+  conversationId?: string
 }
 
 const running = new Map<string, AbortController>()
@@ -698,9 +700,13 @@ async function channelDocContext(conversation: any): Promise<string[]> {
     `Channel doc${doc.title ? ` "${doc.title}"` : ''} (version ${doc.version}): the channel's shared document. Treat it as the ` +
       'source of truth for plans, decisions and checklists. Update it with team_chat_doc_update when you settle ' +
       'something the team should keep (prefer mode "patch_section" or "append" over rewriting it).',
+    DOC_TOKEN_GUIDE,
     '<channel_doc>',
     body,
     '</channel_doc>',
+    ...(doc.references.length
+      ? ['References in the doc:', ...doc.references.map((r) => `- ${r.token} = ${r.text}`)]
+      : []),
   ]
 }
 
@@ -1123,6 +1129,7 @@ export async function runAgentReply(args: RunAgentReplyArgs): Promise<string | n
       userId,
       prompt,
       signal: controller.signal,
+      conversationId: conversation.id,
     }, async () => {
       await streamAgentReply(reply, { text: 'Starting up…', tool: null, tools: [] })
     })

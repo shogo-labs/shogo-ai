@@ -44,6 +44,8 @@ mock.module('../../lib/prisma', () => withPrismaExports({
     },
     user: { findUnique: async () => ({ id: 'creator', name: 'Casey', email: 'c@example.com' }) },
     conversationMember: { findMany: async () => [] },
+    chatUserSettings: { findMany: async () => [] },
+    conversation: { findMany: async () => [] },
   },
 }))
 

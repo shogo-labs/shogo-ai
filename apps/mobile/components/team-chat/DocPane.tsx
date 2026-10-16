@@ -2,46 +2,32 @@
 // Copyright (C) 2026 Shogo Technologies, Inc.
 /**
  * The channel doc: one shared markdown document per channel, shown beside
- * the timeline on wide screens and in its place on phones. View mode renders
- * markdown with tappable task items; edit mode is a markdown editor with a
- * formatting toolbar that autosaves. Unrelated to project canvases.
+ * the timeline on wide screens and in its place on phones. Edited in place
+ * with a rich text editor (chips for people, agents, channels, projects and
+ * dates) that autosaves. Unrelated to project canvases.
  */
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ActivityIndicator, Modal, Pressable, ScrollView, Text, TextInput, View } from 'react-native'
+import { useRouter } from 'expo-router'
+import { useColorScheme } from 'nativewind'
 import * as Clipboard from 'expo-clipboard'
-import {
-  AtSign,
-  Bold,
-  Check,
-  Code,
-  Copy,
-  FileText,
-  Heading1,
-  Heading2,
-  History,
-  Italic,
-  Link2,
-  List,
-  ListOrdered,
-  ListTodo,
-  Lock,
-  LockOpen,
-  Pencil,
-  Quote,
-  Square,
-  SquareCheck,
-  Strikethrough,
-  X,
-} from 'lucide-react-native'
-import { cn } from '@shogo/shared-ui/primitives'
+import { Check, Copy, FileText, History, Lock, LockOpen, X } from 'lucide-react-native'
 import { MarkdownText } from '../chat/MarkdownText'
 import { useConversationDoc } from '../../hooks/useConversationDoc'
 import { describeAuthor } from '../../lib/channel-doc-state'
-import { applyFormat, insertAt, splitTaskSegments, toggleTask, type DocFormat, type Selection } from '../../lib/doc-markdown'
+import { normalizeDocMarkdown } from '../../lib/doc-lexical'
+import { localTimeZone, parseDocToken } from '../../lib/doc-tokens'
+import { privateMemberIds } from '../../lib/mention-menu'
 import { teamChatApi, type ChannelDocRevision, type ConversationDetail, type Mentionables } from '../../lib/team-chat-api'
 import { docLink } from '../../lib/team-chat-links'
 import { mentionNames, renderMentionsMarkdown } from '../../lib/team-chat-state'
 import { relativeTime } from '../../lib/activity-feed'
+import DocEditor from './doc-editor/DocEditor'
+import type { DocChipPress, DocEditorData, DocEditorHandle } from './doc-editor/types'
+import { AgentProfileCard } from './AgentProfileCard'
+import { DateChipCard } from './DateChipCard'
+import { DatePickerModal } from './DatePickerModal'
+import { PersonProfileCard } from './PersonProfileCard'
 
 const api = teamChatApi()
 
@@ -49,67 +35,105 @@ export interface DocPaneProps {
   conversation: ConversationDetail
   workspaceId: string
   mentionables: Mentionables | null
+  me?: string | null
   onClose: () => void
+  /** Show a project beside the conversation (wide screens); otherwise projects open full screen. */
+  onOpenProjectPane?: (projectId: string, name: string) => void
 }
 
-const TOOLBAR: Array<{ format: DocFormat; label: string; Icon: typeof Bold }> = [
-  { format: 'h1', label: 'Heading', Icon: Heading1 },
-  { format: 'h2', label: 'Subheading', Icon: Heading2 },
-  { format: 'bold', label: 'Bold', Icon: Bold },
-  { format: 'italic', label: 'Italic', Icon: Italic },
-  { format: 'strike', label: 'Strikethrough', Icon: Strikethrough },
-  { format: 'bullet', label: 'Bulleted list', Icon: List },
-  { format: 'numbered', label: 'Numbered list', Icon: ListOrdered },
-  { format: 'task', label: 'Checklist', Icon: ListTodo },
-  { format: 'quote', label: 'Quote', Icon: Quote },
-  { format: 'code', label: 'Code', Icon: Code },
-  { format: 'link', label: 'Link', Icon: Link2 },
-]
+type DatePickerState = { mode: 'insert' } | { mode: 'edit'; nodeKey: string; value: string }
 
-export function DocPane({ conversation, workspaceId, mentionables, onClose }: DocPaneProps) {
+export function DocPane({ conversation, workspaceId, mentionables, me = null, onClose, onOpenProjectPane }: DocPaneProps) {
+  const router = useRouter()
+  const { colorScheme } = useColorScheme()
   const { state, doc, dirty, edit, flush, resolve, setLocked, restore } = useConversationDoc(workspaceId, conversation.id)
-  const [editing, setEditing] = useState(false)
-  const [selection, setSelection] = useState<Selection>({ start: 0, end: 0 })
   const [historyOpen, setHistoryOpen] = useState(false)
-  const [mentionOpen, setMentionOpen] = useState(false)
   const [copied, setCopied] = useState(false)
   const [actionError, setActionError] = useState<string | null>(null)
-  const pendingSelection = useRef<Selection | null>(null)
+  const [chip, setChip] = useState<DocChipPress | null>(null)
+  const [datePicker, setDatePicker] = useState<DatePickerState | null>(null)
+  const editorRef = useRef<DocEditorHandle>(null)
+  /** Normalised markdown the editor is showing, to tell remote changes from our own echoes. */
+  const shown = useRef<string | null>(null)
+  const serverContent = state.server?.content ?? ''
+  const serverContentRef = useRef(serverContent)
+  serverContentRef.current = serverContent
   const names = mentionNames(mentionables)
   const exists = !!state.server
   const canEdit = state.canEdit && !conversation.archivedAt
+  const channelLabel = conversation.name ? `#${conversation.name}` : 'channel'
+
+  const editorData = useMemo<DocEditorData>(
+    () => ({
+      people: mentionables?.people ?? [],
+      agents: mentionables?.agents ?? [],
+      channels: mentionables?.channels ?? [],
+      projects: mentionables?.projects ?? [],
+      statuses: mentionables?.statuses,
+      meId: me,
+      memberIds: privateMemberIds(conversation),
+      membersOnly: conversation.kind === 'private',
+      timeZone: localTimeZone(),
+    }),
+    [mentionables, me, conversation],
+  )
 
   useEffect(() => () => void flush(), [flush])
-  useEffect(() => {
-    if (!canEdit && editing) setEditing(false)
-  }, [canEdit, editing])
   useEffect(() => {
     if (!copied) return
     const t = setTimeout(() => setCopied(false), 1500)
     return () => clearTimeout(t)
   }, [copied])
 
-  const format = (f: DocFormat) => {
-    const result = applyFormat(doc.content, selection, f)
-    pendingSelection.current = result.selection
-    setSelection(result.selection)
-    edit({ content: result.text })
-  }
-  const insertMention = (name: string) => {
-    const result = insertAt(doc.content, selection, `@${name} `)
-    pendingSelection.current = result.selection
-    setSelection(result.selection)
-    edit({ content: result.text })
-    setMentionOpen(false)
-  }
-  const toggle = (line: number) => {
-    if (!canEdit) return
-    edit({ content: toggleTask(doc.content, line) })
-  }
-  const done = () => {
-    setEditing(false)
-    void flush()
-  }
+  // Someone else's save (or a restore, or "view theirs"): show it, unless it's what we already show.
+  useEffect(() => {
+    if (!state.loaded || state.draft) return
+    const target = normalizeDocMarkdown(serverContent)
+    if (shown.current === null || target === shown.current) {
+      shown.current = target
+      return
+    }
+    shown.current = target
+    editorRef.current?.setMarkdown(serverContent)
+  }, [state.loaded, state.draft, serverContent])
+
+  const onEditorChange = useCallback(
+    (markdown: string) => {
+      shown.current = markdown
+      const base = serverContentRef.current
+      // Formatting-only differences from the saved doc aren't edits.
+      edit({ content: markdown === normalizeDocMarkdown(base) ? base : markdown })
+    },
+    [edit],
+  )
+
+  const onChipPress = useCallback((press: DocChipPress) => {
+    const ref = parseDocToken(press.token)
+    if (!ref) return
+    if (ref.kind === 'channel') {
+      router.push({ pathname: '/(app)/c/[conversationId]', params: { conversationId: ref.id } } as any)
+      return
+    }
+    if (ref.kind === 'project') {
+      const project = mentionables?.projects?.find((p) => p.id === ref.id)
+      if (onOpenProjectPane) onOpenProjectPane(ref.id, project?.name ?? 'Project')
+      else router.push({ pathname: '/(app)/projects/[id]', params: { id: ref.id } } as any)
+      return
+    }
+    setChip(press)
+  }, [router, mentionables, onOpenProjectPane])
+
+  const onPickDate = useCallback(
+    (value: string) => {
+      const picker = datePicker
+      setDatePicker(null)
+      const token = `<!date:${value}>`
+      if (picker?.mode === 'edit') editorRef.current?.replaceToken(picker.nodeKey, token)
+      else editorRef.current?.insertToken(token)
+    },
+    [datePicker],
+  )
+
   const copyLink = () => void Clipboard.setStringAsync(docLink(conversation.id)).then(() => setCopied(true)).catch(() => {})
   const runAction = async (fn: () => Promise<unknown>) => {
     try {
@@ -128,16 +152,20 @@ export function DocPane({ conversation, workspaceId, mentionables, onClose }: Do
         ? `Edited by ${describeAuthor(state.server.updatedBy)} · ${relativeTime(new Date(state.server.updatedAt).getTime()) || 'now'}`
         : null
 
+  const chipRef = chip ? parseDocToken(chip.token) : null
+  const chipPerson = chipRef?.kind === 'user' ? mentionables?.people.find((p) => p.id === chipRef.id) : undefined
+  const chipAgent = chipRef?.kind === 'agent' ? mentionables?.agents.find((a) => a.projectId === chipRef.projectId) : undefined
+
   return (
     <View className="flex-1 bg-background" testID="channel-doc-pane">
       <View className="flex-row items-center gap-2 border-b border-border px-4 py-2.5">
         <FileText size={16} className="text-muted-foreground" />
         <View className="min-w-0 flex-1">
-          {editing ? (
+          {canEdit ? (
             <TextInput
               value={doc.title}
               onChangeText={(title) => edit({ title })}
-              placeholder="Untitled doc"
+              placeholder={`${channelLabel} doc`}
               placeholderTextColor="#8a8a8a"
               accessibilityLabel="Doc title"
               maxLength={200}
@@ -145,7 +173,7 @@ export function DocPane({ conversation, workspaceId, mentionables, onClose }: Do
             />
           ) : (
             <Text className="text-base font-semibold text-foreground" numberOfLines={1}>
-              {doc.title || `#${conversation.name ?? 'channel'} doc`}
+              {doc.title || `${channelLabel} doc`}
             </Text>
           )}
           {status ? (
@@ -159,17 +187,6 @@ export function DocPane({ conversation, workspaceId, mentionables, onClose }: Do
             <Lock size={10} className="text-muted-foreground" />
             <Text className="text-[10px] font-medium uppercase text-muted-foreground">Locked</Text>
           </View>
-        ) : null}
-        {canEdit && (exists || editing) ? (
-          editing ? (
-            <PaneButton label="Done editing" onPress={done}>
-              <Check size={16} className="text-primary" />
-            </PaneButton>
-          ) : (
-            <PaneButton label="Edit doc" onPress={() => setEditing(true)}>
-              <Pencil size={16} className="text-muted-foreground" />
-            </PaneButton>
-          )
         ) : null}
         {exists ? (
           <PaneButton label="Version history" onPress={() => setHistoryOpen(true)}>
@@ -205,8 +222,7 @@ export function DocPane({ conversation, workspaceId, mentionables, onClose }: Do
             <BannerButton
               label="Copy mine"
               onPress={() => {
-                const mine = doc.content
-                void Clipboard.setStringAsync(mine).catch(() => {})
+                void Clipboard.setStringAsync(doc.content).catch(() => {})
                 resolve('theirs')
               }}
             />
@@ -221,110 +237,91 @@ export function DocPane({ conversation, workspaceId, mentionables, onClose }: Do
         <View className="flex-1 items-center justify-center">
           <ActivityIndicator />
         </View>
-      ) : editing ? (
-        <View className="flex-1">
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} className="max-h-11 grow-0 border-b border-border" contentContainerClassName="items-center gap-0.5 px-2 py-1">
-            {TOOLBAR.map(({ format: f, label, Icon }) => (
-              <PaneButton key={f} label={label} onPress={() => format(f)}>
-                <Icon size={16} className="text-muted-foreground" />
-              </PaneButton>
-            ))}
-            <PaneButton label="Mention" onPress={() => setMentionOpen(true)}>
-              <AtSign size={16} className="text-muted-foreground" />
-            </PaneButton>
-          </ScrollView>
-          <TextInput
-            value={doc.content}
-            onChangeText={(content) => edit({ content })}
-            selection={pendingSelection.current ?? undefined}
-            onSelectionChange={(e) => {
-              pendingSelection.current = null
-              setSelection(e.nativeEvent.selection)
-            }}
-            multiline
-            autoFocus
-            textAlignVertical="top"
-            placeholder={'Write notes, decisions, checklists…\n\nMarkdown works: # headings, **bold**, - [ ] tasks'}
-            placeholderTextColor="#8a8a8a"
-            accessibilityLabel="Doc content"
-            className="flex-1 px-4 py-3 font-mono text-sm leading-6 text-foreground"
-          />
-        </View>
-      ) : !exists && !doc.content ? (
+      ) : !exists && !canEdit ? (
         <View className="flex-1 items-center justify-center gap-3 px-8">
           <FileText size={28} className="text-muted-foreground" />
           <Text className="text-center text-base font-semibold text-foreground">No doc yet</Text>
           <Text className="text-center text-sm text-muted-foreground">
             Keep the channel's plans, decisions, and checklists in one place everyone (and every agent) can read.
           </Text>
-          {canEdit ? (
-            <Pressable onPress={() => setEditing(true)} accessibilityRole="button" accessibilityLabel="Create doc" className="rounded-md bg-primary px-3 py-1.5">
-              <Text className="text-sm font-medium text-primary-foreground">Create doc</Text>
-            </Pressable>
-          ) : null}
         </View>
       ) : (
-        <ScrollView className="flex-1" contentContainerClassName="px-4 py-3">
-          <DocView content={doc.content} names={names} canToggle={canEdit} onToggle={toggle} />
-        </ScrollView>
+        <View className="min-h-0 flex-1">
+          <DocEditor
+            ref={editorRef}
+            markdown={doc.content}
+            editable={canEdit}
+            workspaceId={workspaceId}
+            data={editorData}
+            dark={colorScheme === 'dark'}
+            onChange={onEditorChange}
+            onChipPress={onChipPress}
+            onRequestDatePicker={() => setDatePicker({ mode: 'insert' })}
+            dom={{ useExpoDOMWebView: false, style: { flex: 1, backgroundColor: 'transparent' }, keyboardDisplayRequiresUserAction: false }}
+          />
+        </View>
       )}
 
       {historyOpen ? (
         <HistoryModal
           conversationId={conversation.id}
           canRestore={canEdit}
+          names={names}
           onClose={() => setHistoryOpen(false)}
           onRestore={(id) =>
             runAction(async () => {
               await restore(id)
               setHistoryOpen(false)
-              setEditing(false)
             })
           }
         />
       ) : null}
-      {mentionOpen ? <MentionModal mentionables={mentionables} onPick={insertMention} onClose={() => setMentionOpen(false)} /> : null}
-    </View>
-  )
-}
 
-function DocView({
-  content,
-  names,
-  canToggle,
-  onToggle,
-}: {
-  content: string
-  names: ReturnType<typeof mentionNames>
-  canToggle: boolean
-  onToggle: (line: number) => void
-}) {
-  const segments = splitTaskSegments(content)
-  return (
-    <View className="gap-1" testID="doc-view">
-      {segments.map((s, i) =>
-        s.type === 'markdown' ? (
-          <MarkdownText key={`m${i}`}>{renderMentionsMarkdown(s.text, names)}</MarkdownText>
-        ) : (
-          <Pressable
-            key={`t${s.line}`}
-            disabled={!canToggle}
-            onPress={() => onToggle(s.line)}
-            accessibilityRole="checkbox"
-            accessibilityState={{ checked: s.checked }}
-            accessibilityLabel={s.text}
-            className="flex-row items-start gap-2 py-0.5"
-            style={{ paddingLeft: s.indent * 16 }}
-          >
-            <View className="pt-0.5">
-              {s.checked ? <SquareCheck size={16} className="text-primary" /> : <Square size={16} className="text-muted-foreground" />}
-            </View>
-            <View className={cn('min-w-0 flex-1', s.checked && 'opacity-60')}>
-              <MarkdownText>{renderMentionsMarkdown(s.checked ? `~~${s.text}~~` : s.text, names)}</MarkdownText>
-            </View>
-          </Pressable>
-        ),
-      )}
+      {chip && chipRef?.kind === 'date' ? (
+        <DateChipCard
+          workspaceId={workspaceId}
+          conversationId={conversation.id}
+          value={chipRef.value}
+          context={doc.title || `${channelLabel} doc`}
+          editable={chip.editable}
+          onClose={() => setChip(null)}
+          onEdit={() => {
+            setDatePicker({ mode: 'edit', nodeKey: chip.nodeKey, value: chipRef.value })
+            setChip(null)
+          }}
+          onRemove={() => {
+            editorRef.current?.replaceToken(chip.nodeKey, null)
+            setChip(null)
+          }}
+        />
+      ) : null}
+      {chip && chipPerson ? (
+        <PersonProfileCard
+          workspaceId={workspaceId}
+          person={chipPerson}
+          status={mentionables?.statuses?.[chipPerson.id]}
+          me={me}
+          onClose={() => setChip(null)}
+        />
+      ) : null}
+      {chip && chipRef?.kind === 'agent' ? (
+        <AgentProfileCard
+          workspaceId={workspaceId}
+          projectId={chipRef.projectId}
+          name={chipAgent?.name ?? 'Agent'}
+          iconUrl={chipAgent?.image}
+          onClose={() => setChip(null)}
+          onOpenChannel={(id) => router.push({ pathname: '/(app)/c/[conversationId]', params: { conversationId: id } } as any)}
+          onOpenProjectPane={onOpenProjectPane}
+        />
+      ) : null}
+      <DatePickerModal
+        visible={!!datePicker}
+        initial={datePicker?.mode === 'edit' ? datePicker.value : null}
+        title={datePicker?.mode === 'edit' ? 'Change date' : 'Insert a date'}
+        onCancel={() => setDatePicker(null)}
+        onPick={onPickDate}
+      />
     </View>
   )
 }
@@ -332,11 +329,13 @@ function DocView({
 function HistoryModal({
   conversationId,
   canRestore,
+  names,
   onClose,
   onRestore,
 }: {
   conversationId: string
   canRestore: boolean
+  names: ReturnType<typeof mentionNames>
   onClose: () => void
   onRestore: (revisionId: string) => void
 }) {
@@ -369,7 +368,7 @@ function HistoryModal({
           {selected ? (
             <>
               <ScrollView className="max-h-[60vh] rounded-md border border-border p-3">
-                <MarkdownText>{selected.content || '_Empty_'}</MarkdownText>
+                <MarkdownText>{selected.content ? renderMentionsMarkdown(selected.content, names) : '_Empty_'}</MarkdownText>
               </ScrollView>
               {canRestore ? (
                 <View className="mt-3 flex-row justify-end">
@@ -404,38 +403,6 @@ function HistoryModal({
               {revisions && !revisions.length ? <Text className="text-sm text-muted-foreground">No history yet.</Text> : null}
             </ScrollView>
           )}
-        </Pressable>
-      </Pressable>
-    </Modal>
-  )
-}
-
-function MentionModal({ mentionables, onPick, onClose }: { mentionables: Mentionables | null; onPick: (name: string) => void; onClose: () => void }) {
-  const [filter, setFilter] = useState('')
-  const q = filter.trim().toLowerCase()
-  const entries = [
-    ...(mentionables?.people ?? []).map((p) => ({ key: `u:${p.id}`, name: p.name })),
-    ...(mentionables?.agents ?? []).map((a) => ({ key: `a:${a.key}`, name: a.name })),
-  ].filter((e) => !q || e.name.toLowerCase().includes(q))
-  return (
-    <Modal visible transparent animationType="fade" onRequestClose={onClose}>
-      <Pressable className="flex-1 items-center justify-center bg-black/40 p-6" onPress={onClose}>
-        <Pressable className="max-h-[70%] w-full max-w-sm rounded-xl bg-card p-4" onPress={() => {}}>
-          <TextInput
-            value={filter}
-            onChangeText={setFilter}
-            autoFocus
-            placeholder="Mention a person or agent"
-            placeholderTextColor="#8a8a8a"
-            className="mb-2 rounded-md border border-border px-3 py-2 text-sm text-foreground"
-          />
-          <ScrollView>
-            {entries.map((e) => (
-              <Pressable key={e.key} onPress={() => onPick(e.name)} className="rounded-md px-2 py-1.5 active:bg-muted hover:bg-muted">
-                <Text className="text-sm text-foreground">{e.name}</Text>
-              </Pressable>
-            ))}
-          </ScrollView>
         </Pressable>
       </Pressable>
     </Modal>

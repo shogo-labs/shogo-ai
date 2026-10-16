@@ -20,6 +20,7 @@ import { readableAgentTaskError } from '../../lib/agent-task-ui'
 import { ACTIVITY_FILTERS, buildFeed, relativeTime, type ActivityEntry, type ActivityFilter } from '../../lib/activity-feed'
 import type { AgentTask } from '../../lib/api'
 import type { InboxKind } from '../../lib/team-chat-api'
+import { conversationRouteParams } from '../../lib/team-chat-links'
 
 const KIND_ICON: Record<InboxKind, typeof AtSign> = {
   mention: AtSign,
@@ -74,10 +75,9 @@ export function ActivityFeed({ compact = false }: ActivityFeedProps) {
       const item = entry.inbox
       if (!item.readAt) void inbox.markRead([item.id])
       if (!item.conversationId) return
-      const thread = item.threadRootId ?? item.messageId
       router.push({
         pathname: '/(app)/c/[conversationId]',
-        params: thread ? { conversationId: item.conversationId, thread } : { conversationId: item.conversationId },
+        params: conversationRouteParams({ ...item, conversationId: item.conversationId }),
       } as any)
       return
     }

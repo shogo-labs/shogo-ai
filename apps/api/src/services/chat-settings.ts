@@ -26,6 +26,8 @@ export interface ChatSettings {
   dndUntil: string | null
   quietHours: string | null
   timezone: string | null
+  /** Job title shown on the person card. */
+  title: string | null
   notifyDefault: NotifyLevel
   keywords: string[]
   emailDigest: 'off' | 'daily'
@@ -45,6 +47,7 @@ const DEFAULTS: ChatSettings = {
   dndUntil: null,
   quietHours: null,
   timezone: null,
+  title: null,
   notifyDefault: 'mentions',
   keywords: [],
   emailDigest: 'off',
@@ -76,6 +79,7 @@ export function serializeSettings(row: any, now = new Date()): ChatSettings {
     dndUntil: row.dndUntil && new Date(row.dndUntil) > now ? iso(row.dndUntil) : null,
     quietHours: row.quietHours ?? null,
     timezone: row.timezone ?? null,
+    title: row.title ?? null,
     notifyDefault: (NOTIFY_LEVELS as readonly string[]).includes(row.notifyDefault) ? row.notifyDefault : 'mentions',
     keywords: parseKeywords(row.keywords),
     emailDigest: row.emailDigest === 'daily' ? 'daily' : 'off',
@@ -193,6 +197,7 @@ export async function updateChatSettings(
     if (tz && !validateTimezone(tz)) throw new ConversationError(400, 'invalid_settings', 'Unknown timezone')
     data.timezone = tz
   }
+  if ('title' in patch) data.title = str(patch.title, 80, 'title')
   if ('notifyDefault' in patch) {
     if (!(NOTIFY_LEVELS as readonly unknown[]).includes(patch.notifyDefault)) {
       throw new ConversationError(400, 'invalid_settings', 'notifyDefault must be all, mentions, or none')

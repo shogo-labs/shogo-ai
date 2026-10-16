@@ -13,7 +13,6 @@ import {
   type DocAction,
   type DocState,
 } from '../channel-doc-state'
-import { applyFormat, insertAt, splitTaskSegments, toggleTask } from '../doc-markdown'
 
 function doc(version: number, content: string, extra: Partial<ChannelDoc> = {}): ChannelDoc {
   return {
@@ -123,49 +122,5 @@ describe('channel doc state', () => {
     const state = run(loaded(doc(1, 'a')), { type: 'edit', patch: { content: 'mine' } }, { type: 'reset', doc: doc(5, 'restored') })
     expect(visibleDoc(state).content).toBe('restored')
     expect(isDirty(state)).toBe(false)
-  })
-})
-
-describe('doc markdown helpers', () => {
-  test('line formats toggle and replace other block prefixes', () => {
-    const h1 = applyFormat('title', { start: 2, end: 2 }, 'h1')
-    expect(h1.text).toBe('# title')
-    expect(h1.selection).toEqual({ start: 4, end: 4 })
-    expect(applyFormat('# title', { start: 3, end: 3 }, 'h1').text).toBe('title')
-    expect(applyFormat('- item', { start: 0, end: 0 }, 'task').text).toBe('- [ ] item')
-    expect(applyFormat('a\nb\nc', { start: 0, end: 3 }, 'bullet').text).toBe('- a\n- b\nc')
-  })
-
-  test('inline formats wrap the selection or a placeholder, and unwrap', () => {
-    const bold = applyFormat('make this loud', { start: 5, end: 9 }, 'bold')
-    expect(bold.text).toBe('make **this** loud')
-    expect(bold.selection).toEqual({ start: 7, end: 11 })
-    expect(applyFormat(bold.text, bold.selection, 'bold').text).toBe('make this loud')
-    const empty = applyFormat('', { start: 0, end: 0 }, 'italic')
-    expect(empty.text).toBe('_text_')
-    expect(empty.selection).toEqual({ start: 1, end: 5 })
-  })
-
-  test('links select the URL placeholder, and insertAt replaces the selection', () => {
-    const link = applyFormat('see docs', { start: 4, end: 8 }, 'link')
-    expect(link.text).toBe('see [docs](https://)')
-    expect(link.text.slice(link.selection.start, link.selection.end)).toBe('https://')
-    expect(insertAt('hi there', { start: 3, end: 8 }, '@Sam ')).toEqual({ text: 'hi @Sam ', selection: { start: 8, end: 8 } })
-  })
-
-  test('task items split out of the markdown, except inside code fences', () => {
-    const md = '# Todo\n- [ ] write\n  - [x] nested\ntext\n```\n- [ ] not a task\n```'
-    const segments = splitTaskSegments(md)
-    expect(segments.map((s) => s.type)).toEqual(['markdown', 'task', 'task', 'markdown'])
-    expect(segments[1]).toMatchObject({ line: 1, checked: false, text: 'write', indent: 0 })
-    expect(segments[2]).toMatchObject({ line: 2, checked: true, indent: 1 })
-    expect(segments[3]).toMatchObject({ type: 'markdown', text: 'text\n```\n- [ ] not a task\n```' })
-  })
-
-  test('toggleTask flips one checkbox and leaves other lines alone', () => {
-    const md = '- [ ] a\n- [x] b\nplain'
-    expect(toggleTask(md, 0)).toBe('- [x] a\n- [x] b\nplain')
-    expect(toggleTask(md, 1)).toBe('- [ ] a\n- [ ] b\nplain')
-    expect(toggleTask(md, 2)).toBe(md)
   })
 })

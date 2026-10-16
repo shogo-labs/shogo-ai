@@ -35,6 +35,21 @@ export function messageLink(target: MessageLinkTarget, base = linkBase()): strin
   return `${base}/c/${encodeURIComponent(target.conversationId)}?${q}`
 }
 
+/**
+ * Route params for opening a conversation at something in it: the doc, a
+ * thread, or a message (shown in its thread).
+ */
+export function conversationRouteParams(t: {
+  conversationId: string
+  messageId?: string | null
+  threadRootId?: string | null
+  target?: string | null
+}): Record<string, string> {
+  if (t.target === 'doc') return { conversationId: t.conversationId, doc: '1' }
+  const thread = t.threadRootId ?? t.messageId
+  return thread ? { conversationId: t.conversationId, thread } : { conversationId: t.conversationId }
+}
+
 /** Link that opens a channel with its doc showing. */
 export function docLink(conversationId: string, base = linkBase()): string {
   return `${base}/c/${encodeURIComponent(conversationId)}?doc=1`

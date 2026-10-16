@@ -18,6 +18,11 @@ const { conversationRoutes, agentChannelRoutes } = await import('../routes/conve
 const bus = await import('../lib/conversation-bus')
 const dispatcher = await import('../services/conversation-agent-dispatcher')
 const docs = await import('../services/conversation-doc.service')
+const inbox = await import('../services/chat-inbox')
+const items = await import('../services/chat-items')
+const settings = await import('../services/chat-settings')
+const mentions = await import('../services/conversation-mentions')
+const { listMentionables } = await import('../services/conversation.service')
 
 const db = prisma as any
 let seed: SeededWorkspace
@@ -245,5 +250,127 @@ describe('patchSection', () => {
     const md = '# Doc\n\n## A\n\nold a\n\n### A.1\n\nnested\n\n## B\n\nkeep b'
     expect(docs.patchSection(md, 'a', 'new a')).toBe('# Doc\n\n## A\n\nnew a\n\n## B\n\nkeep b')
     expect(docs.patchSection('', 'Notes', 'hi')).toBe('## Notes\n\nhi\n')
+  })
+
+  test('finds a heading by its raw token or by the date as agents read it', () => {
+    const md = '## Week of <!date:2026-10-19>\n\nold\n\n## Later\n\nkeep'
+    const rendered = `Week of ${mentions.absoluteDateText('2026-10-19')}`
+    expect(docs.patchSection(md, rendered, 'new')).toBe('## Week of <!date:2026-10-19>\n\nnew\n\n## Later\n\nkeep')
+    expect(docs.patchSection(md, 'Week of <!date:2026-10-19>', 'raw')).toContain('raw\n\n## Later')
+  })
+})
+
+describe('doc mentions, dates and references', () => {
+  const internal = (path: string) => `/internal/workspaces/${seed.workspaceId}/agent-channels${path}`
+  const docMentions = async (userId: string) =>
+    (await inbox.listInbox(seed.workspaceId, userId)).items.filter((i: any) => i.target === 'doc')
+
+  test('people newly mentioned in a doc get one inbox item that opens the doc', async () => {
+    const id = await newChannel('oncall')
+    await call(seed.owner, 'PUT', `/conversations/${id}/doc`, {
+      title: 'DevOps Schedule',
+      content: `- <!date:2026-10-19> <@u:${seed.member}>\n- <!date:2026-10-26> <@u:${seed.owner}>`,
+      baseVersion: 0,
+    })
+    const first = await waitFor(async () => (await docMentions(seed.member)).find((i: any) => i.conversationId === id))
+    expect(first).toMatchObject({ kind: 'mention', messageId: null, target: 'doc' })
+    expect(first.title).toContain('#oncall')
+    expect(first.preview).toContain('member')
+    expect((await docMentions(seed.owner)).filter((i: any) => i.conversationId === id)).toHaveLength(0)
+
+    await call(seed.owner, 'PUT', `/conversations/${id}/doc`, {
+      content: `- <!date:2026-10-19> <@u:${seed.member}> (swap?)\n- <!date:2026-10-26> <@u:${seed.owner}>`,
+      baseVersion: 1,
+    })
+    await new Promise((r) => setTimeout(r, 100))
+    expect((await docMentions(seed.member)).filter((i: any) => i.conversationId === id)).toHaveLength(1)
+  })
+
+  test('outsiders and people who cannot see a private channel are not notified', async () => {
+    const priv = await newChannel('leads-only', 'private')
+    await call(seed.owner, 'PUT', `/conversations/${priv}/doc`, {
+      content: `<@u:${seed.member}> <@u:${seed.outsider}>`,
+      baseVersion: 0,
+    })
+    await new Promise((r) => setTimeout(r, 150))
+    expect((await docMentions(seed.member)).filter((i: any) => i.conversationId === priv)).toHaveLength(0)
+    expect((await docMentions(seed.outsider)).filter((i: any) => i.conversationId === priv)).toHaveLength(0)
+  })
+
+  test('agents write @Names as tokens and read back a legend of references', async () => {
+    const id = await newChannel('agent-schedule')
+    const res = await call(null, 'PUT', internal('/agent-schedule/doc'), {
+      mode: 'replace',
+      content: '## Week of <!date:2026-10-19>\n\n- @member on call',
+    })
+    expect(res.status).toBe(200)
+    expect(res.json.doc.content).toContain(`<@u:${seed.member}> on call`)
+    expect(res.json.doc.content).toContain('<!date:2026-10-19>')
+    const member = await waitFor(async () => (await docMentions(seed.member)).find((i: any) => i.conversationId === id))
+    expect(member.title).toContain('Billing Bot')
+
+    const read = await call(null, 'GET', internal('/agent-schedule/doc'))
+    expect(read.json.doc.references).toEqual(expect.arrayContaining([
+      { token: `<@u:${seed.member}>`, text: expect.stringContaining('member') },
+      { token: '<!date:2026-10-19>', text: mentions.absoluteDateText('2026-10-19') },
+    ]))
+  })
+
+  test('agents woken in the channel see the token guide and the references legend', async () => {
+    const id = await newChannel('legend')
+    await call(seed.owner, 'PUT', `/conversations/${id}/doc`, { content: `Ship <!date:2026-11-02> with <@u:${seed.member}>`, baseVersion: 0 })
+    await call(seed.member, 'POST', `/conversations/${id}/messages`, { text: `<@a:p:${seed.projectId}> what's the plan?` })
+    const invocation = await waitFor(async () => invocations[0])
+    expect(invocation.prompt).toContain('References in the doc:')
+    expect(invocation.prompt).toContain(mentions.absoluteDateText('2026-11-02'))
+    expect(invocation.prompt).toContain('<!date:')
+  })
+
+  test('a reminder set from a doc date links back to the doc and fires into the inbox', async () => {
+    const id = await newChannel('launch')
+    const remindAt = new Date(Date.now() + 60_000).toISOString()
+    const reminder = await items.createReminder({
+      workspaceId: seed.workspaceId,
+      userId: seed.member,
+      text: 'Launch doc: Mon, Oct 19',
+      remindAt,
+      conversationId: id,
+      target: 'doc',
+    })
+    expect(reminder).toMatchObject({ conversationId: id, target: 'doc' })
+    await items.fireDueReminders(new Date(Date.now() + 120_000))
+    const fired = (await inbox.listInbox(seed.workspaceId, seed.member)).items.find((i: any) => i.kind === 'reminder' && i.conversationId === id)
+    expect(fired).toMatchObject({ target: 'doc' })
+
+    const priv = await newChannel('hidden-launch', 'private')
+    await expect(items.createReminder({
+      workspaceId: seed.workspaceId, userId: seed.member, text: 'x', remindAt, conversationId: priv, target: 'doc',
+    })).rejects.toThrow()
+  })
+
+  test('mentionables list visible channels and projects, and people carry title and time zone', async () => {
+    await newChannel('visible-room')
+    const priv = await newChannel('owner-room', 'private')
+    await settings.updateChatSettings(seed.workspaceId, seed.member, { title: 'SRE lead', timezone: 'Europe/London' })
+    const m = await listMentionables(seed.workspaceId, seed.member)
+    expect(m.channels.some((c: any) => c.name === 'visible-room')).toBe(true)
+    expect(m.channels.some((c: any) => c.id === priv)).toBe(false)
+    expect(m.projects.some((p: any) => p.id === seed.projectId)).toBe(true)
+    expect(m.people.find((p: any) => p.id === seed.member)).toMatchObject({ title: 'SRE lead', timezone: 'Europe/London' })
+    const owner = await listMentionables(seed.workspaceId, seed.owner)
+    expect(owner.channels.some((c: any) => c.id === priv)).toBe(true)
+  })
+})
+
+describe('doc tokens as plain text', () => {
+  test('dates read as absolute text and projects by name', () => {
+    expect(mentions.absoluteDateText('2026-10-19')).toMatch(/Oct(ober)? 19, 2026/)
+    expect(mentions.absoluteDateText('2026-10-19T14:30Z')).toMatch(/14:30|2:30/)
+    const names = { projects: new Map([['p1', 'Billing Bot']]) } as any
+    expect(mentions.renderMentionsAsText('Ship <#p:p1> by <!date:2026-10-19>', names)).toBe(
+      `Ship Billing Bot by ${mentions.absoluteDateText('2026-10-19')}`,
+    )
+    expect(mentions.renderMentionsAsText('<#p:gone>', { projects: new Map() } as any)).toBe('a project')
+    expect(mentions.collectMentionIds(['<#p:p1> <@a:p:p2>']).projectIds.sort()).toEqual(['p1', 'p2'])
   })
 })

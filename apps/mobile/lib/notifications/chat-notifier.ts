@@ -23,7 +23,7 @@ export interface ChatNotificationPayload {
 export type ChatNotificationClickData =
   | { taskId: string; sessionId?: string; projectId?: string; conversationId?: undefined }
   | { sessionId: string; projectId: string; taskId?: string; conversationId?: undefined }
-  | { conversationId: string; threadRootId?: string | null; taskId?: undefined }
+  | { conversationId: string; threadRootId?: string | null; target?: 'doc' | null; taskId?: undefined }
   /** A tap on the agents notification: open that agent (`shogo://agents/<key>`). */
   | { agentKey: string; conversationId?: undefined; taskId?: undefined }
 
@@ -31,6 +31,8 @@ export interface ChannelNotificationPayload {
   conversationId: string
   messageId: string
   threadRootId: string | null
+  /** "doc" opens the conversation's doc. */
+  target?: 'doc' | null
   title: string
   body: string
 }

@@ -107,6 +107,7 @@ export default function TeamChatSettings() {
   const [text, setText] = useState('')
   const [clearAfter, setClearAfter] = useState<ClearAfter>(null)
   const [keywords, setKeywords] = useState('')
+  const [title, setTitle] = useState('')
   const [quietStart, setQuietStart] = useState('22:00')
   const [quietEnd, setQuietEnd] = useState('08:00')
   const [perm, requestPerm] = useDesktopPermission()
@@ -118,12 +119,13 @@ export default function TeamChatSettings() {
     setEmoji(settings.statusEmoji ?? '')
     setText(settings.statusText ?? '')
     setKeywords(settings.keywords.join(', '))
+    setTitle(settings.title ?? '')
     if (settings.quietHours) {
       const [a, b] = settings.quietHours.split('-')
       setQuietStart(a)
       setQuietEnd(b)
     }
-  }, [settings?.statusEmoji, settings?.statusText, settings?.keywords.join(','), settings?.quietHours])
+  }, [settings?.statusEmoji, settings?.statusText, settings?.keywords.join(','), settings?.quietHours, settings?.title])
 
   if (experience.resolved && experience.kind !== 'team') {
     return (
@@ -171,6 +173,28 @@ export default function TeamChatSettings() {
           {saving ? <Text className="text-xs text-muted-foreground">Saving…</Text> : null}
         </View>
         {error ? <Text className="mt-2 text-sm text-destructive">{error}</Text> : null}
+
+        <Card title="Profile">
+          <Text className="mb-2 text-xs font-medium text-muted-foreground">Title</Text>
+          <TextInput
+            value={title}
+            onChangeText={(v) => setTitle(v.slice(0, 80))}
+            onBlur={() => title.trim() !== (settings?.title ?? '') && void update({ title: title.trim() || null })}
+            onSubmitEditing={() => void update({ title: title.trim() || null })}
+            placeholder="e.g. Platform engineer"
+            placeholderTextColor="#8a8a8a"
+            accessibilityLabel="Title"
+            className="rounded-md border border-border px-3 py-2 text-sm text-foreground"
+          />
+          <View className="mt-3 flex-row items-center gap-2">
+            <Text className="flex-1 text-xs text-muted-foreground">
+              Time zone: {settings?.timezone ?? 'not set'}. People see your local time on your profile card.
+            </Text>
+            {settings && localTimezone() && settings.timezone !== localTimezone() ? (
+              <Chip label={`Use ${localTimezone()}`} onPress={() => void update({ timezone: localTimezone() })} />
+            ) : null}
+          </View>
+        </Card>
 
         <Card title="Status">
           <View className="flex-row items-center gap-2">

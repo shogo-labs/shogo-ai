@@ -18,16 +18,29 @@
  * Agents are keyed by project name ("workspace" for the workspace agent). The
  * first rule whose `when` regex matches the latest message wins; a rule without
  * `when` always matches. `{{origin}}` becomes a mention of the person the run is
- * billed to. The file is re-read on every reply so a test can rewrite it.
+ * billed to, and `{{doc}}` the channel doc's stored text. A rule with `doc`
+ * also edits the channel doc as the agent before replying, the way the
+ * `channel_doc_update` tool does:
+ *
+ *   { "when": "schedule", "doc": { "mode": "append", "content": "- @Ada on <!date:2026-10-19>" }, "reply": "Added." }
+ *
+ * The file is re-read on every reply so a test can rewrite it.
  */
 
 import { readFileSync } from 'fs'
 import { prisma } from '../lib/prisma'
 import type { InvokeArgs } from './conversation-agent-dispatcher'
+import { docContextFor, updateDocAsAgent } from './conversation-doc.service'
 
 const db = prisma as any
 
-interface ScriptRule { when?: string; reply: string }
+interface ScriptDocUpdate {
+  mode?: 'replace' | 'append' | 'patch_section'
+  content: string
+  section?: string
+  title?: string
+}
+interface ScriptRule { when?: string; reply: string; doc?: ScriptDocUpdate }
 interface AgentScript { delayMs?: number; agents?: Record<string, ScriptRule[]> }
 
 export function scriptedAgentInvokeFromEnv(env = process.env): ((args: InvokeArgs) => Promise<Response>) | null {
@@ -49,7 +62,21 @@ async function scriptedReply(path: string, args: InvokeArgs): Promise<Response> 
     : 'workspace'
   const latest = args.prompt.trim().split('\n').pop() ?? ''
   const rule = (script.agents?.[name] ?? []).find((r) => !r.when || new RegExp(r.when, 'i').test(latest))
-  const text = (rule?.reply ?? `${name} has no scripted reply.`).replaceAll('{{origin}}', `<@u:${args.userId}>`)
+  let text = (rule?.reply ?? `${name} has no scripted reply.`).replaceAll('{{origin}}', `<@u:${args.userId}>`)
+  const conversation = args.conversationId
+    ? await db.conversation.findUnique({ where: { id: args.conversationId } })
+    : null
+  if (rule?.doc && conversation) {
+    try {
+      await updateDocAsAgent(conversation, args.projectId, { mode: rule.doc.mode ?? 'replace', ...rule.doc })
+    } catch (err: any) {
+      text = `I couldn't update the doc: ${err?.message ?? err}`
+    }
+  }
+  if (text.includes('{{doc}}')) {
+    const doc = conversation ? await docContextFor(conversation.id) : null
+    text = text.replaceAll('{{doc}}', doc?.content ?? '(no doc)')
+  }
   return streamText(text, script.delayMs ?? 150, args.signal)
 }
 

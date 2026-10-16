@@ -397,7 +397,8 @@ export function createChannelDocReadTool(ctx: ToolContext): AgentTool {
     description:
       "Read a team chat channel's doc: its shared markdown page of plans, decisions and checklists. Returns the " +
       'title, content and version (pass version as base_version when you replace the whole doc), or doc: null when ' +
-      'the channel has none yet.',
+      'the channel has none yet. Content can hold reference tokens (<@u:ID> a person, <#p:ID> a project, ' +
+      '<!date:YYYY-MM-DD> a date, …); `references` lists what each one reads as.',
     parameters: Type.Object({
       channel: Type.String({ description: 'Channel name (without #) or conversation id.' }),
     }),
@@ -420,7 +421,9 @@ export function createChannelDocUpdateTool(ctx: ToolContext): AgentTool {
       'replaces the body under one heading (or adds that section), "append" adds to the end, and "replace" rewrites ' +
       'the whole doc and needs base_version from team_chat_doc_read. Prefer patch_section or append so you do not ' +
       'overwrite teammates. Everyone in the channel sees the change live and can restore an earlier version. ' +
-      'Fails with code doc_conflict if someone saved since you read it: read again and retry.',
+      'Fails with code doc_conflict if someone saved since you read it: read again and retry. Keep reference tokens ' +
+      'such as <@u:ID> exactly as they are; write @Full Name to mention someone (they are notified) and ' +
+      '<!date:YYYY-MM-DD> (or <!date:YYYY-MM-DDTHH:MMZ> in UTC) for dates, which people see as date chips.',
     parameters: Type.Object({
       channel: Type.String({ description: 'Channel name (without #) or conversation id.' }),
       mode: Type.Union([Type.Literal('patch_section'), Type.Literal('append'), Type.Literal('replace')], {

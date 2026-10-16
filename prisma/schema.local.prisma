@@ -3439,6 +3439,8 @@ model ChatUserSettings {
   /// Daily quiet hours in `timezone`, as "HH:MM-HH:MM".
   quietHours      String?
   timezone        String?
+  /// Job title shown on the person card.
+  title           String?
   /// Channel default when a membership's notifyLevel is "default": "all", "mentions", or "none".
   notifyDefault   String    @default("mentions")
   /// Comma-separated words that notify like a mention.
@@ -3568,6 +3570,8 @@ model ChatReminder {
   remindAt       DateTime
   messageId      String?
   conversationId String?
+  /// What the reminder points at inside the conversation: null (the message or channel) or "doc".
+  target         String?
   /// pending | fired | done | cancelled
   status         String    @default("pending")
   firedAt        DateTime?
@@ -3588,6 +3592,8 @@ model ChatInboxItem {
   kind           String
   conversationId String?
   messageId      String?
+  /// null for a message or channel, "doc" for the channel doc.
+  target         String?
   actorUserId    String?
   title          String
   preview        String

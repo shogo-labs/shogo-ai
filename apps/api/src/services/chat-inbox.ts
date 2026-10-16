@@ -21,6 +21,8 @@ export interface InboxItemInput {
   conversationId?: string | null
   messageId?: string | null
   actorUserId?: string | null
+  /** "doc" when the item points at the conversation's doc rather than a message. */
+  target?: string | null
   title: string
   preview: string
 }
@@ -33,6 +35,7 @@ export function serializeInboxItem(row: any, conversation?: any) {
     messageId: row.messageId ?? null,
     threadRootId: row.threadRootId ?? null,
     actorUserId: row.actorUserId ?? null,
+    target: row.target ?? null,
     title: row.title,
     preview: row.preview,
     readAt: row.readAt ? new Date(row.readAt).toISOString() : null,

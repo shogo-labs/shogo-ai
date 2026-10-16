@@ -1521,7 +1521,7 @@ export async function markRead(conversationId: string, userId: string, seq?: num
 
 export async function listMentionables(workspaceId: string, userId: string) {
   const readable = await accessibleProjectsWhere({ userId, via: 'session' }, workspaceId)
-  const [members, projects, profile] = await Promise.all([
+  const [members, projects, profile, settings, channels] = await Promise.all([
     db.member.findMany({
       where: { workspaceId, projectId: null },
       include: { user: { select: USER_SELECT } },
@@ -1533,16 +1533,36 @@ export async function listMentionables(workspaceId: string, userId: string) {
       take: 200,
     }),
     db.workspaceAgentProfile.findUnique({ where: { workspaceId }, select: { name: true, avatarUrl: true, buddyLook: true } }).catch(() => null),
+    db.chatUserSettings.findMany({ where: { workspaceId }, select: { userId: true, title: true, timezone: true } }),
+    db.conversation.findMany({
+      where: {
+        workspaceId,
+        archivedAt: null,
+        OR: [{ kind: 'public' }, { kind: 'private', members: { some: { userId } } }],
+      },
+      select: { id: true, name: true, kind: true },
+      orderBy: { name: 'asc' },
+      take: 500,
+    }),
   ])
+  const settingsByUser = new Map<string, { title: string | null; timezone: string | null }>(
+    settings.map((s: any) => [s.userId, { title: s.title ?? null, timezone: s.timezone ?? null }]),
+  )
   const seen = new Set<string>()
   const people = []
   for (const m of members) {
     if (!m.user || seen.has(m.user.id)) continue
     seen.add(m.user.id)
-    people.push({ id: m.user.id, name: m.user.name || m.user.email, email: m.user.email, image: m.user.image ?? null, role: m.role })
+    const s = settingsByUser.get(m.user.id)
+    people.push({
+      id: m.user.id, name: m.user.name || m.user.email, email: m.user.email, image: m.user.image ?? null, role: m.role,
+      title: s?.title ?? null, timezone: s?.timezone ?? null,
+    })
   }
   return {
     people,
+    channels: channels.map((c: any) => ({ id: c.id, name: c.name, kind: c.kind })),
+    projects: projects.map((p: any) => ({ id: p.id, name: p.name, description: p.description ?? null })),
     agents: [
       { key: 'ws', projectId: null, name: profile?.name || 'Shogo', description: 'Workspace agent', image: profile?.avatarUrl ?? null, buddyLook: storedAgentBuddyLook(profile?.buddyLook), boards: true },
       ...projects.map((p: any) => ({

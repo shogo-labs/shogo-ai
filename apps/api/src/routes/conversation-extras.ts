@@ -292,6 +292,8 @@ export function mountConversationExtras(router: Hono, h: ExtrasHelpers): void {
         remindAt: body.remindAt,
         command: typeof body.command === 'string' ? body.command : undefined,
         messageId: typeof body.messageId === 'string' ? body.messageId : null,
+        conversationId: typeof body.conversationId === 'string' ? body.conversationId : null,
+        target: typeof body.target === 'string' ? body.target : null,
       })
       return c.json({ reminder }, 201)
     } catch (err) {

@@ -8,7 +8,7 @@
  */
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
 import { Image, Platform, Pressable, Text, View } from 'react-native'
-import { AlarmClock, Check, Clock, Smile, Users } from 'lucide-react-native'
+import { AlarmClock, Bell, Bot, CalendarDays, Check, Clock, Folder, Hash, Smile, Users } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
 import {
   ChatInput,
@@ -31,14 +31,25 @@ import { useVoiceNoteRecorder } from '../../lib/use-voice-note'
 import { RecordingBar } from './RecordingBar'
 import {
   activeMentionQuery,
+  candidateText,
+  dateCandidate,
   decodeMentions,
   encodeMentions,
-  filterCandidates,
   isRemindCommand,
-  mentionCandidates,
   scheduleOptions,
   type MentionCandidate,
 } from '../../lib/team-chat-state'
+import {
+  COMPOSER_CATEGORIES,
+  allMentionCandidates,
+  buildMentionMenu,
+  candidateForToken,
+  mentionMenuData,
+  recentMentions,
+  rememberMention,
+  type MentionCategory,
+} from '../../lib/mention-menu'
+import { DatePickerModal } from './DatePickerModal'
 import type { SendInput } from '../../hooks/useTeamChat'
 import { useDraft } from '../../hooks/useChatItems'
 import { useCustomEmoji } from '../../hooks/useCustomEmoji'
@@ -64,6 +75,8 @@ export interface ComposerProps {
   onEditLast?: () => boolean
   /** This conversation's members, for a channel only: flags @-mention candidates who aren't in it. */
   channelMemberIds?: Set<string> | null
+  /** Only members are notified (private channels), so the @ menu says so. */
+  membersOnly?: boolean
 }
 
 export interface ComposerHandle {
@@ -72,13 +85,30 @@ export interface ComposerHandle {
 }
 
 function mentionReference(c: MentionCandidate): ChatReference {
-  return { type: 'mention', id: c.token, name: c.display, label: `@${c.display}` }
+  return { type: 'mention', id: c.token, name: c.display, label: candidateText(c) }
+}
+
+const CATEGORY_ICONS: Record<MentionCategory, typeof Users> = {
+  people: Users,
+  agents: Bot,
+  groups: Users,
+  channels: Hash,
+  projects: Folder,
+  dates: CalendarDays,
+  notify: Bell,
 }
 
 function MentionIcon({ candidate, workspaceId }: { candidate: MentionCandidate; workspaceId: string }) {
   if (candidate.kind === 'agent') return <AgentAvatar name={candidate.display} projectId={candidate.projectId ?? null} workspaceId={workspaceId} size={20} />
   if (candidate.kind === 'user') return <PresenceDot userId={candidate.userId} />
-  return <Users size={14} className="text-muted-foreground" />
+  const Icon =
+    candidate.kind === 'channel' ? Hash : candidate.kind === 'project' ? Folder : candidate.kind === 'date' ? CalendarDays : candidate.kind === 'special' ? Bell : Users
+  return <Icon size={14} className="text-muted-foreground" />
+}
+
+function CategoryIcon({ category }: { category: MentionCategory }) {
+  const Icon = CATEGORY_ICONS[category]
+  return <Icon size={14} className="text-muted-foreground" />
 }
 
 export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Composer(props, ref) {
@@ -98,14 +128,19 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   const sendAtRef = useRef<Date | null>(null)
   const customEmoji = useCustomEmoji(workspaceId)
 
-  const candidates = useMemo(
-    () => mentionCandidates(mentionables, me, props.channelMemberIds),
-    [mentionables, me, props.channelMemberIds],
+  const [datePickerOpen, setDatePickerOpen] = useState(false)
+  const menuData = useMemo(
+    () => mentionMenuData(mentionables, me, { memberIds: props.channelMemberIds, membersOnly: props.membersOnly }),
+    [mentionables, me, props.channelMemberIds, props.membersOnly],
   )
+  const candidates = useMemo(() => allMentionCandidates(menuData), [menuData])
   const byToken = useMemo(() => new Map(candidates.map((c) => [c.token, c])), [candidates])
   const picksFrom = useCallback(
     (refs: ChatReference[] | undefined) =>
-      (refs ?? []).flatMap((r) => (r.type === 'mention' && byToken.has(r.id) ? [byToken.get(r.id)!] : [])),
+      (refs ?? []).flatMap((r) => {
+        const c = r.type === 'mention' ? candidateForToken(r.id, byToken) : null
+        return c ? [c] : []
+      }),
     [byToken],
   )
 
@@ -114,16 +149,47 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       {
         id: 'mentions',
         detect: activeMentionQuery,
-        items: (query) =>
-          filterCandidates(candidates, query).map((c) => ({
-            key: c.token,
-            label: c.display,
-            subtitle: c.subtitle,
-            trailing: c.kind === 'user' && c.inChannel === false ? 'Not in channel' : undefined,
-            icon: <MentionIcon candidate={c} workspaceId={workspaceId} />,
-            insert: `@${c.display}`,
-            reference: mentionReference(c),
-          })),
+        items: (query, drill) => {
+          const data = { ...menuData, recent: recentMentions(workspaceId), now: new Date() }
+          return buildMentionMenu(data, COMPOSER_CATEGORIES, query, drill as MentionCategory | null).rows.map((row) => {
+            if (row.type === 'item' && row.candidate) {
+              const c = row.candidate
+              return {
+                key: row.key,
+                label: c.display,
+                subtitle: c.subtitle,
+                section: row.section,
+                trailing: row.trailing,
+                icon: <MentionIcon candidate={c} workspaceId={workspaceId} />,
+                insert: candidateText(c),
+                reference: mentionReference(c),
+                onSelect: () => rememberMention(workspaceId, c.token),
+              }
+            }
+            if (row.type === 'pick-date') {
+              return {
+                key: row.key,
+                label: row.label,
+                section: row.section,
+                icon: <CategoryIcon category="dates" />,
+                insert: '',
+                removeTrigger: true,
+                onSelect: () => setDatePickerOpen(true),
+              }
+            }
+            return {
+              key: row.key,
+              label: row.label,
+              subtitle: row.subtitle,
+              section: row.section,
+              icon: row.type === 'back' ? undefined : <CategoryIcon category={row.category} />,
+              insert: '',
+              drill: row.drill,
+              back: row.type === 'back',
+            }
+          })
+        },
+        footer: (query, drill) => buildMentionMenu(menuData, COMPOSER_CATEGORIES, query, drill as MentionCategory | null).footer,
       },
       {
         id: 'emoji',
@@ -148,8 +214,14 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         },
       },
     ],
-    [candidates, customEmoji],
+    [menuData, workspaceId, customEmoji],
   )
+
+  const insertDate = useCallback((value: string) => {
+    setDatePickerOpen(false)
+    const c = dateCandidate(value)
+    inputRef.current?.insertReference(candidateText(c), mentionReference(c))
+  }, [])
 
   const draft = useDraft(conversationId, threadRootId)
   const saveDraft = draft.save
@@ -434,6 +506,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         {notice && !error ? <Text className="mb-2 text-xs text-muted-foreground">{notice}</Text> : null}
         {error ? <Text className="mb-2 text-xs text-destructive">{error}</Text> : null}
       </View>
+      <DatePickerModal visible={datePickerOpen} onCancel={() => setDatePickerOpen(false)} onPick={insertDate} />
     </View>
   )
 })

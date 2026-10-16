@@ -10,6 +10,7 @@
 
 import { useEffect } from 'react'
 import { useRouter } from 'expo-router'
+import { conversationRouteParams } from '../team-chat-links'
 
 import {
   consumeColdStartNotification,
@@ -24,9 +25,7 @@ function buildChatHref(data: ChatNotificationClickData) {
   if (data.conversationId) {
     return {
       pathname: '/(app)/c/[conversationId]' as const,
-      params: data.threadRootId
-        ? { conversationId: data.conversationId, thread: data.threadRootId }
-        : { conversationId: data.conversationId },
+      params: conversationRouteParams({ conversationId: data.conversationId, threadRootId: data.threadRootId, target: data.target }),
     }
   }
   if (data.taskId) {

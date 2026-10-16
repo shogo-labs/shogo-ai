@@ -304,6 +304,7 @@ function serializeReminder(row: any) {
     status: row.status,
     messageId: row.messageId ?? null,
     conversationId: row.conversationId ?? null,
+    target: row.target ?? null,
     firedAt: row.firedAt ? new Date(row.firedAt).toISOString() : null,
     createdAt: new Date(row.createdAt).toISOString(),
   }
@@ -316,8 +317,13 @@ export async function createReminder(input: {
   remindAt?: unknown
   command?: string
   messageId?: string | null
+  /** A conversation to link back to, e.g. the channel whose doc holds the date. */
+  conversationId?: string | null
+  /** What in that conversation the reminder points at: "doc" opens its doc. */
+  target?: string | null
 }) {
   if (!(await getWorkspaceRole(input.workspaceId, input.userId))) throw new ConversationError(403, 'forbidden', 'No access')
+  const target = input.target === 'doc' ? 'doc' : null
   let text = (input.text ?? '').trim()
   let remindAt: Date | null = input.remindAt ? new Date(input.remindAt as any) : null
   if (input.command) {
@@ -338,6 +344,12 @@ export async function createReminder(input: {
     }
     conversationId = msg.conversationId
     if (!text) text = (msg.text ?? '').replace(/<[@#!][^>]*>/g, '').trim().slice(0, 200) || 'this message'
+  } else if (input.conversationId) {
+    const access = await loadAccess(input.conversationId, input.userId)
+    if (!canRead(access) || access.conversation.workspaceId !== input.workspaceId) {
+      throw new ConversationError(403, 'forbidden', 'No access to this conversation')
+    }
+    conversationId = input.conversationId
   }
   if (!text) throw new ConversationError(400, 'invalid_reminder', 'What should I remind you about?')
   if (!remindAt || Number.isNaN(remindAt.getTime()) || remindAt.getTime() <= Date.now()) {
@@ -351,6 +363,7 @@ export async function createReminder(input: {
       remindAt,
       messageId: input.messageId ?? null,
       conversationId,
+      target: input.messageId ? null : target,
     },
   })
   return serializeReminder(row)
@@ -413,6 +426,7 @@ export async function fireDueReminders(now = new Date()): Promise<number> {
       kind: 'reminder',
       conversationId: row.conversationId,
       messageId: row.messageId,
+      target: row.target ?? null,
       title,
       preview: row.text,
     }])
@@ -424,6 +438,7 @@ export async function fireDueReminders(now = new Date()): Promise<number> {
       messageId: row.messageId,
       threadRootId: null,
       workspaceId: row.workspaceId,
+      ...(row.target ? { target: row.target } : {}),
     }
     if (presence[row.userId] === 'active') {
       publishConversationEvent(row.workspaceId, { type: 'notification', ...data, reason: 'reminder', title, body: row.text }, [row.userId])

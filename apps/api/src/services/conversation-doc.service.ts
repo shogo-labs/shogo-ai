@@ -22,6 +22,9 @@ import {
   type ConversationAccess,
 } from './conversation.service'
 import { publishConversationEvent } from '../lib/conversation-bus'
+import { absoluteDateText, collectMentionIds, groupNames, renderMentionsAsText } from './conversation-mentions'
+import { resolveFriendlyMentions } from './conversation-directory'
+import { notifyForDocMentions } from './conversation-notifications'
 
 const db = prisma as any
 
@@ -109,6 +112,48 @@ export async function getDoc(conversationId: string, userId: string) {
   }
 }
 
+export interface DocReference {
+  token: string
+  /** What a reader sees for it, e.g. "@Sam Lee" or "Monday, October 19, 2026". */
+  text: string
+}
+
+const REFERENCE_TOKEN_RE = /<@u:[A-Za-z0-9_-]+>|<@a:ws>|<@a:p:[A-Za-z0-9_-]+>|<#c:[A-Za-z0-9_-]+>|<#p:[A-Za-z0-9_-]+>|<@g:[A-Za-z0-9_-]+>|<!date:[0-9TZ:-]+>/g
+
+/**
+ * The reference tokens in a doc with what each one reads as, so agents can
+ * understand the doc and keep the tokens intact when they edit it.
+ */
+export async function docReferences(workspaceId: string, content: string): Promise<DocReference[]> {
+  const tokens = [...new Set(content.match(REFERENCE_TOKEN_RE) ?? [])]
+  if (!tokens.length) return []
+  const ids = collectMentionIds([content])
+  const [users, projects, conversations, groups, workspaceAgentName] = await Promise.all([
+    ids.userIds.length ? db.user.findMany({ where: { id: { in: ids.userIds } }, select: { id: true, name: true, email: true } }) : [],
+    ids.projectIds.length ? db.project.findMany({ where: { id: { in: ids.projectIds }, workspaceId }, select: { id: true, name: true } }) : [],
+    ids.conversationIds.length
+      ? db.conversation.findMany({ where: { id: { in: ids.conversationIds }, workspaceId }, select: { id: true, name: true } })
+      : [],
+    groupNames(db, workspaceId, ids.groupIds),
+    agentDisplayName(workspaceId, null),
+  ])
+  const names = {
+    users: new Map<string, string>(users.map((u: any) => [u.id, u.name || u.email])),
+    projects: new Map<string, string>(projects.map((p: any) => [p.id, p.name])),
+    conversations: new Map<string, string>(conversations.map((c: any) => [c.id, c.name ?? 'channel'])),
+    groups,
+    workspaceAgentName,
+  }
+  return tokens.map((token) => ({ token, text: renderMentionsAsText(token, names) }))
+}
+
+/** How agents should treat tokens when they read and write docs. */
+export const DOC_TOKEN_GUIDE =
+  'Docs can contain reference tokens such as <@u:ID> (a person), <@a:ws> / <@a:p:ID> (an agent), <#c:ID> (a channel), ' +
+  '<#p:ID> (a project) and <!date:YYYY-MM-DD> or <!date:YYYY-MM-DDTHH:MMZ> (a date, or a UTC moment). People see them ' +
+  'as chips. Keep existing tokens exactly as they are when you edit. To mention someone, write @ and their full name; ' +
+  'to add a date, write a date token.'
+
 /**
  * Doc for an agent; null when the channel has none. `conversation` must
  * already be resolved as visible to the agent (`resolveAgentConversation`).
@@ -116,17 +161,20 @@ export async function getDoc(conversationId: string, userId: string) {
 export async function getDocForAgent(conversation: any) {
   assertDocKind(conversation)
   const row = await db.conversationDoc.findUnique({ where: { conversationId: conversation.id } })
-  return row ? serializeDoc(row) : null
+  if (!row) return null
+  return { ...(await serializeDoc(row)), references: await docReferences(conversation.workspaceId, row.content) }
 }
 
 /** Doc text for prompt context, without access checks (callers already run inside the channel). */
-export async function docContextFor(conversationId: string): Promise<{ title: string; content: string; version: number } | null> {
+export async function docContextFor(
+  conversationId: string,
+): Promise<{ title: string; content: string; version: number; references: DocReference[] } | null> {
   const row = await db.conversationDoc.findUnique({
     where: { conversationId },
-    select: { title: true, content: true, version: true },
+    select: { title: true, content: true, version: true, workspaceId: true },
   })
   if (!row || !row.content.trim()) return null
-  return row
+  return { title: row.title, content: row.content, version: row.version, references: await docReferences(row.workspaceId, row.content) }
 }
 
 export async function listRevisions(conversationId: string, userId: string) {
@@ -246,6 +294,7 @@ async function writeDoc(conversation: any, actor: DocActor, input: SaveDocInput)
   const author = actorFields(actor)
   let row: any
   let created = false
+  let previous = ''
 
   if (baseVersion === 0) {
     const existing = await db.conversationDoc.findUnique({ where: { conversationId: conversation.id }, select: { id: true } })
@@ -260,6 +309,8 @@ async function writeDoc(conversation: any, actor: DocActor, input: SaveDocInput)
       throw err
     }
   } else {
+    const before = await db.conversationDoc.findUnique({ where: { conversationId: conversation.id }, select: { content: true } })
+    previous = before?.content ?? ''
     const { count } = await db.conversationDoc.updateMany({
       where: { conversationId: conversation.id, version: baseVersion },
       data: { title, content, version: { increment: 1 }, ...author },
@@ -272,6 +323,14 @@ async function writeDoc(conversation: any, actor: DocActor, input: SaveDocInput)
   const doc = await serializeDoc(row)
   await publishDocUpdated(conversation, doc)
   await postDocNotice(conversation, doc, created)
+  await notifyForDocMentions({
+    conversation,
+    previous,
+    next: content,
+    actorUserId: actor.type === 'user' ? actor.userId : null,
+    actorName: doc.updatedBy?.name ?? 'Someone',
+    docTitle: doc.title,
+  }).catch((err) => console.error('[ConversationDoc] mention notifications failed:', (err as Error).message))
   return doc
 }
 
@@ -302,8 +361,11 @@ export interface AgentDocUpdate {
 /** Replace the body under the heading named `section`, or append a new section when it is missing. */
 export function patchSection(markdown: string, section: string, body: string): string {
   const lines = markdown.split('\n')
-  const wanted = section.trim().replace(/^#+\s*/, '').toLowerCase()
-  const start = lines.findIndex((l) => /^#{1,6}\s/.test(l) && l.replace(/^#+\s*/, '').trim().toLowerCase() === wanted)
+  const heading = (text: string) => text.replace(/^#+\s*/, '').trim().toLowerCase()
+  // A heading may hold a date token; agents can name it by the token or by the date it reads as.
+  const readable = (text: string) => heading(text.replace(/<!date:([^>]+)>/g, (_m, v) => absoluteDateText(v)))
+  const wanted = heading(section)
+  const start = lines.findIndex((l) => /^#{1,6}\s/.test(l) && (heading(l) === wanted || readable(l) === readable(section)))
   if (start === -1) {
     const sep = markdown.trim() ? '\n\n' : ''
     return `${markdown.replace(/\s+$/, '')}${sep}## ${section.trim()}\n\n${body.trim()}\n`
@@ -327,6 +389,7 @@ export async function updateDocAsAgent(conversation: any, projectId: string | nu
 
   const current = await db.conversationDoc.findUnique({ where: { conversationId } })
   if (current?.locked) throw new ConversationError(403, 'forbidden', 'This doc is locked; only channel managers can edit it')
+  update = { ...update, content: await resolveFriendlyMentions(conversation.workspaceId, update.content, projectId) }
   const base = current?.content ?? ''
   const baseVersion = current?.version ?? 0
   if (update.mode === 'replace' && update.baseVersion !== undefined && update.baseVersion !== baseVersion) {

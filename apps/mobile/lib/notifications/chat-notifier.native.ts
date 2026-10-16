@@ -237,6 +237,7 @@ function parseClickData(raw: unknown): ChatNotificationClickData | null {
     return {
       conversationId: data.conversationId,
       threadRootId: typeof data.threadRootId === 'string' ? data.threadRootId : null,
+      target: data.target === 'doc' ? 'doc' : null,
     }
   }
   if (typeof data.sessionId === 'string' && typeof data.projectId === 'string') {
@@ -258,7 +259,7 @@ export async function notifyChannelMessage(p: ChannelNotificationPayload): Promi
       content: {
         title: p.title,
         body: p.body,
-        data: { conversationId: p.conversationId, threadRootId: p.threadRootId },
+        data: { conversationId: p.conversationId, threadRootId: p.threadRootId, target: p.target ?? null },
         sound: 'default',
         ...(Platform.OS === 'android' ? { channelId: 'messages' } : {}),
       },

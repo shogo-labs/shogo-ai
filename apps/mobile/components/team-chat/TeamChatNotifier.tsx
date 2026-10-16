@@ -46,6 +46,7 @@ export function TeamChatNotifier() {
         conversationId: event.conversationId ?? 'inbox',
         messageId: event.messageId ?? `reminder-${Date.now()}`,
         threadRootId: event.threadRootId,
+        target: event.target ?? null,
         title: event.title,
         body: event.body,
       })
