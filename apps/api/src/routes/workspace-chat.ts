@@ -18,11 +18,11 @@
 import { join, resolve } from 'path'
 
 import { Hono, type Context } from 'hono'
-import { context, propagation, SpanStatusCode, trace } from '@opentelemetry/api'
+import { context, metrics, propagation, SpanStatusCode, trace } from '@opentelemetry/api'
 
 import type { IRuntimeManager } from '../lib/runtime'
 import { ChatLatency } from '../lib/chat-latency'
-import { captureWake } from '../lib/wake-capture'
+import { captureWake, type WakeInfo } from '../lib/wake-capture'
 import { prisma } from '../lib/prisma'
 import * as billingService from '../services/billing-runtime'
 import { getModelTier, resolveModelId } from '@shogo/model-catalog'
@@ -160,6 +160,17 @@ async function loadRuntimeArgs(
 }
 
 const chatTracer = trace.getTracer('shogo-api-chat')
+const prewarmHistogram = metrics.getMeter('shogo-api-chat').createHistogram('runtime.prewarm_ms', {
+  description: 'Workspace runtime prewarm: request → runtime resolved (claimed, resumed or cold-booted), labelled by caller and how it woke',
+  unit: 'ms',
+})
+
+/** Metric label values must stay bounded; anything else reads as `unknown`. */
+const PREWARM_SOURCES = new Set(['onboarding', 'home_draft'])
+
+export function prewarmSource(raw: unknown): string {
+  return typeof raw === 'string' && PREWARM_SOURCES.has(raw) ? raw : 'unknown'
+}
 
 export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
   const router = new Hono()
@@ -598,17 +609,42 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
     // Fire-and-forget: don't await so the client gets a snappy 202 and the
     // pod warms while the user keeps composing. Swallow the disabled-flag
     // case (prewarm is best-effort); log everything else.
-    void resolveWorkspaceRuntimeUrl(workspaceId, {
-      attachedProjectIds: runtimeMembers(attachedProjectIds),
-      logTag: 'WorkspacePrewarm',
-      runtimeManager,
-      ...runtimeExtra,
-    }).catch((err) => {
-      console.error(
-        `[WorkspaceChat] Background prewarm failed for ${workspaceId}:`,
-        err?.message ?? err,
-      )
+    const source = prewarmSource(body?.source)
+    const startedAt = performance.now()
+    const span = chatTracer.startSpan('workspace.runtime.prewarm', {
+      attributes: { 'workspace.id': workspaceId, 'prewarm.source': source },
     })
+    const record = (outcome: 'ok' | 'error', substrate: string, wake?: WakeInfo) => {
+      const ms = Math.round(performance.now() - startedAt)
+      const attrs = {
+        source,
+        substrate,
+        outcome,
+        'wake.mode': wake?.mode ?? 'none',
+        'wake.source': wake?.source ?? 'none',
+      }
+      prewarmHistogram.record(ms, attrs)
+      span.setAttributes({ ...attrs, 'prewarm.ms': ms })
+    }
+    void captureWake(() =>
+      resolveWorkspaceRuntimeUrl(workspaceId, {
+        attachedProjectIds: runtimeMembers(attachedProjectIds),
+        logTag: 'WorkspacePrewarm',
+        runtimeManager,
+        ...runtimeExtra,
+      }),
+    )
+      .then(({ value, wake }) => record('ok', value.mode, wake))
+      .catch((err) => {
+        record('error', 'unknown')
+        span.recordException(err)
+        span.setStatus({ code: SpanStatusCode.ERROR, message: err?.message })
+        console.error(
+          `[WorkspaceChat] Background prewarm failed for ${workspaceId}:`,
+          err?.message ?? err,
+        )
+      })
+      .finally(() => span.end())
 
     return c.json({ success: true, workspaceId, status: 'warming' }, 202)
   })

@@ -230,6 +230,16 @@ export const CloudOnboarding = observer(function CloudOnboarding({ localMode = f
 
   const targetWorkspaceId = destination === 'joined' ? joinedTeamWorkspace?.id : ownTeamWorkspace?.id
 
+  // Start claiming / booting the workspace agent's runtime now, so it is warm
+  // by the time the user finishes the remaining steps and sends a first turn.
+  const prewarmedWorkspaceId = useRef<string | null>(null)
+  useEffect(() => {
+    if (!loaded || !targetWorkspaceId) return
+    if (prewarmedWorkspaceId.current === targetWorkspaceId) return
+    prewarmedWorkspaceId.current = targetWorkspaceId
+    void api.prewarmWorkspaceRuntime(http, targetWorkspaceId, { source: 'onboarding' })
+  }, [loaded, targetWorkspaceId, http])
+
   const settingUpMessage =
     destination === 'joined'
       ? `Opening ${joinedTeamWorkspace?.name ?? 'your team'}…`

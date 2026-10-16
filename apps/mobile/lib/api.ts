@@ -1934,11 +1934,12 @@ export const api = {
    * Best-effort: warm the merged-root workspace runtime. Mirrors
    * prewarmProjectRuntime. Pass the workspace session id (and/or explicit
    * attach project ids) so the runtime mounts the right subfolders.
+   * `source` labels the warm in the server's `runtime.prewarm_ms` metric.
    */
   async prewarmWorkspaceRuntime(
     http: HttpClient,
     workspaceId: string,
-    opts: { sessionId?: string; attachProjectIds?: string[] } = {},
+    opts: { sessionId?: string; attachProjectIds?: string[]; source?: 'onboarding' | 'home_draft' } = {},
   ): Promise<void> {
     try {
       await http.post(`/api/workspaces/${encodeURIComponent(workspaceId)}/runtime/prewarm`, opts)
