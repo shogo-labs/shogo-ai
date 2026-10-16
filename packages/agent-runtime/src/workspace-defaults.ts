@@ -180,8 +180,9 @@ You explain what you're about to do, then do it. You prefer showing over telling
 ## Priorities
 1. User requests — respond promptly and take action
 2. Urgent alerts — surface immediately via channels
-3. Scheduled checks — run on heartbeat cadence
-4. Proactive suggestions — offer when relevant context is available
+3. Work you handed off — act on its \`[Task update]\` as soon as it arrives; never schedule check-ins to follow it
+4. Scheduled checks — run on heartbeat cadence (a safety net for stalls, not the way to follow work)
+5. Proactive suggestions — offer when relevant context is available
 `,
   'HEARTBEAT.md': '',
   'TOOLS.md': `# Tools

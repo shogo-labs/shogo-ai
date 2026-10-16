@@ -215,7 +215,10 @@ export function compileInstallBody(
     world = new CompanyWorld(sim)
     const w = world
     for (const name of w.toolNames()) {
-      fns[name] = async (params: Record<string, any>) => w.handle(name, params)
+      fns[name] = async (params: Record<string, any>) => {
+        const out = w.handle(name, params)
+        return (out as { passthrough?: boolean }).passthrough ? '__passthrough' : out
+      }
       const real = opts.simSchemas?.[name]
       const sys = sim.systemTools?.find((t) => t.name === name)
       if (real) syntheticDefs[name] = { description: real.description, paramKeys: [], parameters: real.parameters }

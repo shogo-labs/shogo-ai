@@ -63,10 +63,15 @@ export interface TrackedTask {
   output_file?: string
 }
 
+/** Starters for lazy tasks, so a later eager track of the same target can activate it. */
+const lazyStarters = new WeakMap<TaskRegistry, Map<string, (until?: string) => Promise<void>>>()
+
 /**
  * Register an API-tracked task for this session. With `lazy`, the API row is
  * only created when the agent first waits on it (cards: reading one should not
- * start tracking it). Returns undefined when this runtime cannot reach the API.
+ * start tracking it). Without it, tracking starts now and `until` settles the
+ * task when an event line matches. Returns undefined when this runtime cannot
+ * reach the API.
  */
 export async function trackRemoteTask(
   registry: TaskRegistry,
@@ -77,17 +82,29 @@ export async function trackRemoteTask(
     title: string
     id?: string
     lazy?: boolean
+    until?: string
   },
 ): Promise<TrackedTask | undefined> {
   if (!hasInternalApiCredentials() && !process.env.SHOGO_API_URL) return undefined
   const existing = registry.get(opts.id ?? opts.targetRef)
   if (existing?.status === 'running' && existing.source === opts.source) {
+    if (existing.dormant && !opts.lazy) {
+      const start = lazyStarters.get(registry)?.get(existing.id)
+      if (start) {
+        try {
+          await start(opts.until)
+        } catch {
+          return undefined
+        }
+      }
+      registry.activate(existing.id)
+    }
     return { task_id: existing.id, status: 'running', output_file: registry.displayPath(existing.outputFile) }
   }
   const id = opts.id ?? newTaskId()
 
   if (!opts.lazy) {
-    const created = await createBackgroundTask({ id, chatSessionId: sessionId, source: opts.source, targetRef: opts.targetRef, title: opts.title })
+    const created = await createBackgroundTask({ id, chatSessionId: sessionId, source: opts.source, targetRef: opts.targetRef, title: opts.title, until: opts.until })
     if (!created.ok) return undefined
   }
 
@@ -98,6 +115,11 @@ export async function trackRemoteTask(
     const res = await createBackgroundTask({ id, chatSessionId: sessionId, source: opts.source, targetRef: opts.targetRef, title: opts.title, until })
     if (!res.ok) throw new Error(res.error ?? 'could not start tracking the task')
     created = true
+  }
+  if (opts.lazy) {
+    let starters = lazyStarters.get(registry)
+    if (!starters) lazyStarters.set(registry, (starters = new Map()))
+    starters.set(id, ensure)
   }
   const client: RemoteTaskClient = opts.lazy
     ? {

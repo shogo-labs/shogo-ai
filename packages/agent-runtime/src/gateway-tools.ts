@@ -10496,11 +10496,11 @@ function resolveHeartbeatProjectId(ctx: ToolContext, requested?: string): string
   )
 }
 
-function createHeartbeatConfigureTool(ctx: ToolContext): AgentTool {
+export function createHeartbeatConfigureTool(ctx: ToolContext): AgentTool {
   return {
     name: 'heartbeat_configure',
     description:
-      'Configure the heartbeat system: enable/disable, set interval, and quiet hours. The schedule is stored in the central scheduler database (not config.json). Heartbeats require a paid plan; on a free plan this returns a paywall error. Defaults to the current project.',
+      'Configure the heartbeat system: enable/disable, set interval, and quiet hours. The heartbeat is a periodic sweep (HEARTBEAT.md) for things nothing else reports, such as inboxes and stale cards; work an agent hands off or starts reports back through [Task update], so never shorten the interval to follow it. The schedule is stored in the central scheduler database (not config.json). Heartbeats require a paid plan; on a free plan this returns a paywall error. Defaults to the current project.',
     label: 'Configure Heartbeat',
     parameters: Type.Object({
       enabled: Type.Optional(Type.Boolean({ description: 'Enable or disable heartbeat' })),
@@ -10586,7 +10586,7 @@ function createHeartbeatConfigureTool(ctx: ToolContext): AgentTool {
   }
 }
 
-function createHeartbeatStatusTool(ctx: ToolContext): AgentTool {
+export function createHeartbeatStatusTool(ctx: ToolContext): AgentTool {
   return {
     name: 'heartbeat_status',
     description:

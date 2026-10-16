@@ -283,10 +283,10 @@ const PHASE_1: AgentEval = {
     },
     {
       id: 'heartbeat-configured',
-      description: 'Configured heartbeat for daily countdowns',
+      description: 'Configured a heartbeat or schedule for daily countdowns',
       points: 6,
       phase: 'intention',
-      validate: (r) => usedToolAnywhere(r, 'heartbeat_configure'),
+      validate: (r) => usedToolAnywhere(r, 'heartbeat_configure') || usedToolAnywhere(r, 'schedule_create'),
     },
     {
       id: 'events-mentioned',

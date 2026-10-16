@@ -111,15 +111,23 @@ export async function settleOrphanedAgentReplies(minAgeMs = 0): Promise<number> 
       deletedAt: null,
       ...(home ? { conversation: { workspace: home } } : {}),
     },
-    select: { id: true },
+    select: { id: true, threadRootId: true, authorAgentRef: true },
     take: 500,
   })
-  const ids = stale.map((m: { id: string }) => m.id).filter((id: string) => !running.has(id))
+  const orphans = stale.filter((m: { id: string }) => !running.has(m.id))
+  const ids = orphans.map((m: { id: string }) => m.id)
   if (!ids.length) return 0
   const { count } = await db.conversationMessage.updateMany({
     where: { id: { in: ids }, agentStatus: 'running' },
     data: { agentStatus: 'error', text: 'This reply was interrupted because the server restarted. Mention the agent again to retry.' },
   })
+  const { noteCardRunEnded } = await import('./work-boards.service')
+  for (const m of orphans) {
+    if (!m.threadRootId) continue
+    const projectId = (m.authorAgentRef as { projectId?: string | null } | null)?.projectId ?? null
+    await noteCardRunEnded({ threadRootId: m.threadRootId, projectId, messageId: m.id, agentStatus: 'error' })
+      .catch((err: Error) => console.error('[ChannelAgent] orphaned card run note failed:', err.message))
+  }
   return count
 }
 
@@ -1030,6 +1038,9 @@ export async function runAgentReply(args: RunAgentReplyArgs): Promise<string | n
   const settle = async (text: string, agentStatus: string) => {
     await finishAgentReply(reply, { text, agentStatus, work, connect })
     await emitTaskEvent('agent_reply', replyTargetRef(trigger.id, target.projectId), replyEvent(agentStatus, text))
+    const { noteCardRunEnded } = await import('./work-boards.service')
+    await noteCardRunEnded({ threadRootId, projectId: target.projectId, messageId, agentStatus })
+      .catch((err: Error) => console.error('[ChannelAgent] card run-end note failed:', err.message))
   }
 
   const controller = new AbortController()

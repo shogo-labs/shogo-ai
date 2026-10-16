@@ -11,7 +11,7 @@ projects:
       model: auto
       heartbeat:
         enabled: true
-        interval: 3600
+        interval: 14400
       capabilities: &a1
         boardsEnabled: true
         boardAdminEnabled: false
@@ -51,7 +51,7 @@ projects:
       model: auto
       heartbeat:
         enabled: true
-        interval: 3600
+        interval: 14400
       capabilities: *a1
     files:
       AGENTS.md: |
@@ -91,7 +91,7 @@ projects:
       model: auto
       heartbeat:
         enabled: true
-        interval: 3600
+        interval: 14400
       capabilities: *a1
     files:
       AGENTS.md: |
@@ -131,7 +131,7 @@ projects:
       model: auto
       heartbeat:
         enabled: true
-        interval: 3600
+        interval: 14400
       capabilities: *a1
     files:
       AGENTS.md: |

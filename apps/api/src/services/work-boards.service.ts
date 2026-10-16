@@ -158,7 +158,7 @@ export function serializeItem(i: any) {
     createdByAgentRef: i.createdByAgentRef ?? null,
     createdAt: i.createdAt,
     updatedAt: i.updatedAt,
-    ...(i.column ? { column: { id: i.column.id, name: i.column.name, category: i.column.category } } : {}),
+    ...(i.column ? { column: { id: i.column.id, name: i.column.name, category: i.column.category, ...(i.column.agentRef ? { agentRef: i.column.agentRef } : {}) } } : {}),
     ...(i.board ? { board: { id: i.board.id, name: i.board.name, slug: i.board.slug, conversationId: i.board.conversationId ?? null, itemType: i.board.itemType } } : {}),
   }
 }
@@ -388,6 +388,10 @@ function cardEventLine(type: string, data?: Record<string, any>): string | null 
       return `updated ${(data?.changed ?? []).join(', ')}`.trim()
     case 'commented':
       return `comment: ${String(data?.text ?? '').slice(0, 500)}`
+    case 'agent_stopped':
+      return `agent stopped with the card still in ${data?.column ?? 'its column'}${data?.reason ? ` (${data.reason})` : ''}`
+    case 'agent_failed':
+      return 'agent failed on the card'
     case 'archived':
     case 'restored':
     case 'created':
@@ -1751,7 +1755,50 @@ export function registerWorkBoardHooks(): void {
   })
 }
 
+/**
+ * An agent's run in a card thread finished. When that agent holds the card and
+ * left it where it was, whoever is watching the card hears about it: a failed
+ * run goes to "needs attention", and a run that ended without moving the card
+ * records `agent_stopped`, so the assigner is not left waiting on a card
+ * nobody is working.
+ */
+export async function noteCardRunEnded(run: { threadRootId: string | null; projectId: string | null; messageId: string; agentStatus: string }): Promise<void> {
+  if (!run.threadRootId) return
+  const item = await db.workItem.findFirst({
+    where: { threadRootMessageId: run.threadRootId, archivedAt: null },
+    include: { column: true, board: { include: BOARD_INCLUDE } },
+  })
+  if (!item) return
+  const agentRef = agentRefFor(run.projectId)
+  if ((item.assigneeAgentRef ?? item.column.agentRef) !== agentRef) return
+  if (run.agentStatus === 'error') {
+    const failed = await db.conversationMessage.findUnique({ where: { id: run.messageId } })
+    if (failed) await sendToNeedsAttention(item, failed)
+    return
+  }
+  if (item.column.category !== 'backlog' && item.column.category !== 'active') return
+  await recordEvent(item, 'agent_stopped', { agentRef }, {
+    column: item.column.name,
+    messageId: run.messageId,
+    ...(run.agentStatus === 'stopped' ? { reason: 'stopped by a person' } : {}),
+  })
+}
+
+function safeJson(text: string): any {
+  try {
+    return JSON.parse(text)
+  } catch {
+    return null
+  }
+}
+
 async function sendToNeedsAttention(item: any, failed: any) {
+  const earlier = await db.workItemEvent.findMany({
+    where: { workItemId: item.id, type: 'agent_failed', createdAt: { gt: new Date(Date.now() - 10 * 60_000) } },
+    select: { eventData: true },
+  })
+  const messageIdOf = (data: any) => (typeof data === 'string' ? safeJson(data) : data)?.messageId
+  if (earlier.some((e: any) => messageIdOf(e.eventData) === failed.id)) return
   await recordEvent(item, 'agent_failed', { agentRef: agentRefFor(failed.authorAgentRef?.projectId ?? null) }, { messageId: failed.id })
   const column = item.board.columns.find((c: any) => c.category === 'waiting' && /attention/i.test(c.name))
     ?? item.board.columns.find((c: any) => c.category === 'waiting')

@@ -3885,6 +3885,21 @@ app.get('/agent/tool-mocks/sim-state', (c) => {
   return c.json(simWorld.snapshot())
 })
 
+// Let simulated time pass between eval turns; scripted teammates act on the way.
+app.post('/agent/tool-mocks/sim-advance', async (c) => {
+  if (!simWorld) return c.json({ error: 'No simulation installed' }, 404)
+  const { hours } = await c.req.json().catch(() => ({})) as { hours?: number }
+  if (typeof hours !== 'number' || !(hours > 0)) return c.json({ error: 'hours must be a positive number' }, 400)
+  simWorld.advance(hours)
+  return c.json({ ok: true, now: simWorld.snapshot().now })
+})
+
+// Let simulated time pass until the agent would next be woken; returns that wake's message, or wake: null.
+app.post('/agent/tool-mocks/sim-next-wake', (c) => {
+  if (!simWorld) return c.json({ error: 'No simulation installed' }, 404)
+  return c.json({ ok: true, wake: simWorld.nextWake() })
+})
+
 app.post('/agent/workspace/seed', async (c) => {
   const body = await c.req.json<{ files: Record<string, string> }>()
   if (!body?.files || typeof body.files !== 'object') {

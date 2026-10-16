@@ -5,7 +5,8 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import type { ToolContext } from '../gateway-tools'
 import { createTools } from '../gateway-tools'
 import { CORE_TOOL_NAMES } from '../capability-profiles'
-import { BOARD_ADMIN_TOOL_NAMES, BOARD_TOOL_NAMES, createBoardTools, PROBLEM_TOOL_NAMES } from '../board-tools'
+import { BOARD_ADMIN_TOOL_NAMES, BOARD_TOOL_NAMES, createBoardTools, HANDOFF_WATCH_UNTIL, isHandedOff, PROBLEM_TOOL_NAMES } from '../board-tools'
+import { TaskRegistry } from '../task-registry'
 
 function ctx(overrides: Partial<ToolContext> = {}, capabilityProfile?: 'personal' | 'team'): ToolContext {
   return {
@@ -186,6 +187,59 @@ describe('board tools', () => {
     const out = await run('board_list', {}, ctx({ workspaceId: undefined }))
     expect(out.code).toBe('no_workspace')
     expect(calls).toHaveLength(0)
+  })
+})
+
+describe('handed-off cards are watched', () => {
+  const ENGINEER = 'project:proj-eng'
+  const handedOff = { ...ITEM, assigneeAgentRef: ENGINEER, column: { name: 'Backlog', category: 'backlog' } }
+
+  function withRegistry() {
+    const registry = new TaskRegistry()
+    return { registry, context: ctx({ commandRegistry: registry } as Partial<ToolContext>) }
+  }
+
+  test('assigning another agent starts tracking at once with the hand-off pattern', async () => {
+    const { registry, context } = withRegistry()
+    reply = { item: handedOff }
+    const out = await run('work_item_create', { board: 'Tickets', title: 'Refund not received', assignee_agent: 'proj-eng' }, context)
+    expect(out.watching).toBe(true)
+    const track = calls.find((c) => c.url.endsWith('/api/internal/tasks'))
+    expect(track?.body).toMatchObject({ source: 'work_item', targetRef: 'i1', until: HANDOFF_WATCH_UNTIL })
+    expect(registry.get(out.task_id)?.dormant).toBeUndefined()
+  })
+
+  test('reading a card stays lazy, and handing it off later activates the same task', async () => {
+    const { registry, context } = withRegistry()
+    reply = { item: { ...ITEM, assigneeAgentRef: null } }
+    const read = await run('work_item_get', { item: 'SUP-42' }, context)
+    expect(read.watching).toBeUndefined()
+    expect(calls.some((c) => c.url.endsWith('/api/internal/tasks'))).toBe(false)
+    expect(registry.get(read.task_id)?.dormant).toBe(true)
+
+    reply = { item: handedOff }
+    const moved = await run('work_item_update', { item: 'SUP-42', assignee_agent: 'proj-eng' }, context)
+    expect(moved.task_id).toBe(read.task_id)
+    expect(moved.watching).toBe(true)
+    expect(calls.find((c) => c.url.endsWith('/api/internal/tasks'))?.body).toMatchObject({ until: HANDOFF_WATCH_UNTIL })
+    expect(registry.get(read.task_id)?.dormant).toBeUndefined()
+  })
+
+  test('a card the agent holds itself, or one already in review, is not watched', () => {
+    expect(isHandedOff({ assignee_agent: 'project:proj-1', category: 'active' }, 'project:proj-1')).toBe(false)
+    expect(isHandedOff({ assignee_agent: ENGINEER, category: 'review' }, 'workspace')).toBe(false)
+    expect(isHandedOff({ assignee_agent: null, column_agent: ENGINEER, category: 'active' }, 'workspace')).toBe(true)
+    expect(isHandedOff({ assignee_agent: null, category: 'active' }, 'workspace')).toBe(false)
+  })
+
+  test('the hand-off pattern matches the API card event lines that need the assigner', () => {
+    const until = new RegExp(HANDOFF_WATCH_UNTIL, 'i')
+    for (const line of ['moved to Review (review)', 'moved to Needs attention (waiting)', 'moved to Done (done)', 'agent stopped with the card still in In progress', 'agent failed on the card']) {
+      expect(until.test(`assigned to Engineer\n${line}`)).toBe(true)
+    }
+    for (const line of ['moved to In progress (active)', 'comment: waiting on review (review) soon', 'assigned to Engineer']) {
+      expect(until.test(line)).toBe(false)
+    }
   })
 })
 

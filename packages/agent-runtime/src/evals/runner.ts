@@ -599,6 +599,38 @@ export async function runEval(
     return lastExecResp
   }
 
+  let userTurn = 0
+  /** Let simulated time pass before the next user turn, when the eval asks for it. */
+  async function advanceSim(): Promise<void> {
+    const hours = eval_.simAdvanceHours?.[userTurn++]
+    if (!eval_.sim || !hours) return
+    try {
+      const res = await fetch(cfg.agentEndpoint.replace(/\/agent\/chat\/?$/, '/agent/tool-mocks/sim-advance'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ hours }),
+        signal: AbortSignal.timeout(15_000),
+      })
+      if (!res.ok) errors.push(`sim-advance: HTTP ${res.status}`)
+    } catch (e: any) {
+      errors.push(`sim-advance: ${e.message}`)
+    }
+  }
+
+  async function nextSimWake(): Promise<import('./company-sim/world').SimWake | null> {
+    try {
+      const res = await fetch(cfg.agentEndpoint.replace(/\/agent\/chat\/?$/, '/agent/tool-mocks/sim-next-wake'), {
+        method: 'POST',
+        signal: AbortSignal.timeout(15_000),
+      })
+      if (!res.ok) { errors.push(`sim-next-wake: HTTP ${res.status}`); return null }
+      return ((await res.json()) as { wake: import('./company-sim/world').SimWake | null }).wake
+    } catch (e: any) {
+      errors.push(`sim-next-wake: ${e.message}`)
+      return null
+    }
+  }
+
   try {
     const messages: Array<{ role: string; parts: Array<{ type: string; text: string }> }> = []
 
@@ -615,6 +647,7 @@ export async function runEval(
       for (let i = 0; i < history.length; i++) {
         const turn = history[i]
         if (turn.role === 'user') {
+          await advanceSim()
           messages.push({ role: 'user', parts: [{ type: 'text', text: turn.content }] })
           const nextTurn = history[i + 1]
           if (nextTurn?.role === 'assistant') {
@@ -644,6 +677,7 @@ export async function runEval(
     }
 
     // Final eval turn
+    await advanceSim()
     messages.push({ role: 'user', parts: [{ type: 'text', text: eval_.input }] })
     const response = await sendTurn(messages, cfg)
     responseText = response.text
@@ -670,6 +704,23 @@ export async function runEval(
       }
     } catch (e: any) {
       errors.push(`ask_user follow-up error: ${e.message}`)
+    }
+
+    // Wakes after the user's turn: [Task update]s, schedules and heartbeats, as production sends them.
+    if (eval_.sim?.wakes) {
+      const max = eval_.sim.wakes.maxWakes ?? 12
+      for (let n = 0; n < max; n++) {
+        const wake = await nextSimWake()
+        if (!wake) break
+        if (cfg.verbose) console.log(`      [wake ${n + 1}] ${wake.at} ${wake.kind}: ${wake.text.split('\n')[0].slice(0, 100)}`)
+        messages.push({ role: 'user', parts: [{ type: 'text', text: wake.text }] })
+        const wakeResp = await sendTurn(messages, cfg)
+        messages.push({ role: 'assistant', parts: [{ type: 'text', text: wakeResp.text }] })
+        toolCalls.push(...wakeResp.toolCalls)
+        perTurnToolCalls.push(wakeResp.toolCalls)
+        perTurnResponseText.push(wakeResp.text)
+        accumulate(wakeResp)
+      }
     }
   } catch (err: any) {
     errors.push(err.message)

@@ -49,6 +49,8 @@ export type EvalCategory =
   | 'workspace-attachments'
   | 'company-sim'
   | 'company-ops'
+  | 'orchestration'
+  | 'reactive'
 
 export type ValidationPhase = 'intention' | 'execution' | 'interaction'
 
@@ -101,6 +103,11 @@ export interface AgentEval {
   askUserResponses?: string[]
   /** Company simulation seed: board, chat and system tools answer from one stateful world (see company-sim/). */
   sim?: import('./company-sim/world').WorldSeed
+  /**
+   * Simulated hours to let pass before each user turn (history user turns in
+   * order, then the final turn). Scripted teammates act while time passes.
+   */
+  simAdvanceHours?: number[]
 }
 
 export interface ConversationTurn {

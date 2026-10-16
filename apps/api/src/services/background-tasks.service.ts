@@ -24,6 +24,8 @@ const db = prisma as any
 export type BackgroundTaskStatus = 'running' | 'completed' | 'failed' | 'cancelled'
 
 export const TASK_TTL_MS = 24 * 60 * 60 * 1000
+/** A card can sit with an agent for days across a phase of work. */
+export const CARD_TASK_TTL_MS = 7 * TASK_TTL_MS
 const OUTPUT_CAP = 64_000
 const TAIL_CHARS = 2_000
 const WAKE_COALESCE_MS = 2_000
@@ -31,6 +33,12 @@ const WAIT_POLL_MS = 2_000
 export const MAX_WAIT_MS = 30_000
 /** Wakes in a row without a person writing in between; past this the session waits for them. */
 export const MAX_CONSECUTIVE_WAKES = 3
+/**
+ * The same cap for wakes that only report cards. Managing handed-off cards is
+ * a long run of wakes by design; card hand-offs are separately rate-limited
+ * per card, so this only stops a runaway session.
+ */
+export const MAX_CONSECUTIVE_CARD_WAKES = 40
 
 export interface BackgroundTaskRow {
   id: string
@@ -142,7 +150,7 @@ async function expireStale(chatSessionId?: string): Promise<void> {
   const now = new Date()
   await db.backgroundTask.updateMany({
     where: { status: 'running', expiresAt: { lt: now }, ...(chatSessionId ? { chatSessionId } : {}) },
-    data: { status: 'failed', summary: 'Stopped tracking after 24 hours.', finishedAt: now, notify: false },
+    data: { status: 'failed', summary: 'Stopped tracking: it ran past its time limit.', finishedAt: now, notify: false },
   }).catch(() => {})
   await db.backgroundTask.deleteMany({
     where: { expiresAt: { lt: new Date(now.getTime() - TASK_TTL_MS) } },
@@ -178,7 +186,7 @@ export async function createTask(input: CreateTaskInput): Promise<BackgroundTask
       targetRef: input.targetRef.trim().slice(0, 500),
       title: String(input.title || input.source).slice(0, 300),
       until: input.until ?? null,
-      expiresAt: new Date(Date.now() + TASK_TTL_MS),
+      expiresAt: new Date(Date.now() + (input.source === 'work_item' ? CARD_TASK_TTL_MS : TASK_TTL_MS)),
     },
   })
   return (await settleIfAlreadyDone(row)) ?? row

@@ -257,18 +257,24 @@ async function taskWakeSkipReason(row: QueueRow): Promise<'consumed' | string | 
   const ids = Array.isArray(body.taskNotification?.taskIds)
     ? (body.taskNotification!.taskIds as unknown[]).filter((id): id is string => typeof id === 'string')
     : []
+  let cardsOnly = false
   if (ids.length) {
-    const unseen = await (prisma as any).backgroundTask.count({ where: { id: { in: ids }, consumed: false } })
-    if (unseen === 0) return 'consumed'
+    const tasks: Array<{ consumed: boolean; source: string }> = await (prisma as any).backgroundTask.findMany({
+      where: { id: { in: ids } },
+      select: { consumed: true, source: true },
+    })
+    if (!tasks.some((t) => !t.consumed)) return 'consumed'
+    cardsOnly = tasks.every((t) => t.source === 'work_item')
   }
-  const { MAX_CONSECUTIVE_WAKES } = await import('./background-tasks.service')
+  const { MAX_CONSECUTIVE_WAKES, MAX_CONSECUTIVE_CARD_WAKES } = await import('./background-tasks.service')
+  const limit = cardsOnly ? MAX_CONSECUTIVE_CARD_WAKES : MAX_CONSECUTIVE_WAKES
   const recent = await (prisma as any).chatMessage.findMany({
     where: { sessionId: row.sessionId, role: 'user' },
     orderBy: { createdAt: 'desc' },
-    take: MAX_CONSECUTIVE_WAKES,
+    take: limit,
     select: { parts: true },
   })
-  if (recent.length >= MAX_CONSECUTIVE_WAKES && recent.every((m: { parts: string | null }) => isTaskWakeMessage(m.parts))) {
+  if (recent.length >= limit && recent.every((m: { parts: string | null }) => isTaskWakeMessage(m.parts))) {
     return WAKE_PAUSED
   }
   return null

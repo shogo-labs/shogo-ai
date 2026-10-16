@@ -462,7 +462,8 @@ export const BOARD_TEMPLATES: BoardTemplate[] = [
 // ---------------------------------------------------------------------------
 
 const WORKER = { boardsEnabled: true, boardAdminEnabled: false, teamChatEnabled: true, companyOpsEnabled: false }
-const HOURLY = 3600
+// Cards wake their agents directly; the heartbeat only sweeps for what slipped through.
+const SWEEP_INTERVAL = 4 * 3600
 
 export const DEPARTMENTS: DepartmentBundle[] = [
   {
@@ -491,7 +492,7 @@ export const DEPARTMENTS: DepartmentBundle[] = [
         'Post nothing if nothing needs attention.',
       ],
       capabilities: WORKER,
-      heartbeatInterval: HOURLY,
+      heartbeatInterval: SWEEP_INTERVAL,
     },
     integrations: ['zendesk', 'intercom', 'gmail'],
   },
@@ -520,7 +521,7 @@ export const DEPARTMENTS: DepartmentBundle[] = [
         'Move renewals with an open urgent support ticket to At risk and tag the owner.',
       ],
       capabilities: WORKER,
-      heartbeatInterval: HOURLY,
+      heartbeatInterval: SWEEP_INTERVAL,
     },
     integrations: ['hubspot', 'salesforce', 'gmail'],
   },
@@ -545,7 +546,7 @@ export const DEPARTMENTS: DepartmentBundle[] = [
         'Flag Scheduled cards whose publish date has passed.',
       ],
       capabilities: WORKER,
-      heartbeatInterval: HOURLY,
+      heartbeatInterval: SWEEP_INTERVAL,
     },
   },
   {
@@ -570,7 +571,7 @@ export const DEPARTMENTS: DepartmentBundle[] = [
         'Check cards in In review for merged pull requests.',
       ],
       capabilities: { ...WORKER, problemsEnabled: true },
-      heartbeatInterval: HOURLY,
+      heartbeatInterval: SWEEP_INTERVAL,
     },
     integrations: ['github', 'sentry', 'linear'],
   },
@@ -598,7 +599,7 @@ export const DEPARTMENTS: DepartmentBundle[] = [
         'Nudge the buddy on onboarding cards with no activity in 2 days.',
       ],
       capabilities: WORKER,
-      heartbeatInterval: HOURLY,
+      heartbeatInterval: SWEEP_INTERVAL,
     },
     triggers: [
       {
@@ -638,7 +639,7 @@ export const DEPARTMENTS: DepartmentBundle[] = [
         'Move Reminded collections past 7 days back to Overdue for the next reminder.',
       ],
       capabilities: WORKER,
-      heartbeatInterval: HOURLY,
+      heartbeatInterval: SWEEP_INTERVAL,
     },
     integrations: ['quickbooks', 'stripe'],
   },
@@ -662,7 +663,7 @@ export const DEPARTMENTS: DepartmentBundle[] = [
         'On Mondays, start the OKR check-in if it has not run this week.',
       ],
       capabilities: WORKER,
-      heartbeatInterval: HOURLY,
+      heartbeatInterval: SWEEP_INTERVAL,
     },
   },
   {
@@ -683,7 +684,7 @@ export const DEPARTMENTS: DepartmentBundle[] = [
       limits: ['You are not a lawyer: never tell anyone a contract is safe to sign.', 'Never move a card to Signed.'],
       heartbeat: ['board_health for #legal. Ask about contracts in Redlines out over 5 days.'],
       capabilities: WORKER,
-      heartbeatInterval: HOURLY,
+      heartbeatInterval: SWEEP_INTERVAL,
     },
     integrations: ['docusign', 'google-drive'],
   },

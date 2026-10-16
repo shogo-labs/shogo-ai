@@ -3997,7 +3997,7 @@ export const BUSINESS_USER_MOCKS: ToolMockMap = {
   },
   heartbeat_configure: {
     type: 'static',
-    response: { ok: true, enabled: true, intervalSeconds: 3600, quietHoursStart: '19:00', quietHoursEnd: '09:00' },
+    response: { ok: true, enabled: true, intervalSeconds: 1800, quietHoursStart: '19:00', quietHoursEnd: '09:00' },
   },
   web: {
     type: 'pattern',

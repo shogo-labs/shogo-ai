@@ -95,20 +95,45 @@ function defineTool(
 }
 
 /**
+ * Event lines (see cardEventLine in the API) that mean a handed-off card needs
+ * its assigner: it reached review, waiting, done or dismissed, or the
+ * assignee's run ended without moving it.
+ */
+export const HANDOFF_WATCH_UNTIL = 'moved to [^\\n]*\\((review|waiting|done|dismissed)\\)|(^|\\n)agent (stopped|failed)'
+
+const OPEN_CATEGORIES = new Set(['backlog', 'active'])
+
+/** The card sits with another agent (its assignee, or its column's agent) that still has work to do on it. */
+export function isHandedOff(item: { assignee_agent?: string | null; column_agent?: string | null; category?: string | null }, selfRef: string): boolean {
+  const holder = item.assignee_agent ?? item.column_agent
+  return !!holder && holder !== selfRef && OPEN_CATEGORIES.has(item.category ?? 'backlog')
+}
+
+function selfAgentRef(ctx: ToolContext): string {
+  const projectId = channelIdentity(ctx).projectId
+  return projectId ? `project:${projectId}` : 'workspace'
+}
+
+/**
  * A card read or write returns the card as a task: waiting on it with `until`
  * (e.g. "Done") blocks until the card gets there, and wakes this session if it
- * gets there later. Nothing is tracked until the agent waits on it.
+ * gets there later. A card this agent hands to another agent is watched right
+ * away (`handoff`), so the assigner is woken when it comes back; any other card
+ * is tracked only once the agent waits on it.
  */
-async function withCardTask(ctx: ToolContext, r: { ok: boolean; data?: any }) {
+async function withCardTask(ctx: ToolContext, r: { ok: boolean; data?: any }, opts: { handoff?: boolean } = {}) {
   const item = r.data?.item
   if (!r.ok || !item?.id || !ctx.commandRegistry || !ctx.sessionId) return r
+  const watch = !!opts.handoff && isHandedOff(item, selfAgentRef(ctx))
   const task = await trackRemoteTask(ctx.commandRegistry, ctx.sessionId, {
     source: 'work_item',
     targetRef: item.id,
     title: [item.key, item.title].filter(Boolean).join(' ') || item.id,
-    lazy: true,
+    lazy: !watch,
+    ...(watch ? { until: HANDOFF_WATCH_UNTIL } : {}),
   }).catch(() => undefined)
-  return task ? { ...r, data: { ...r.data, task_id: task.task_id } } : r
+  if (!task) return r
+  return { ...r, data: { ...r.data, task_id: task.task_id, ...(watch ? { watching: true } : {}) } }
 }
 
 /** Board responses carry every column; agents need names, categories and limits. */
@@ -150,6 +175,7 @@ function compactItem(i: any) {
     priority: i.priority,
     assignee_user: i.assigneeUserId,
     assignee_agent: i.assigneeAgentRef,
+    ...(i.column?.agentRef ? { column_agent: i.column.agentRef } : {}),
     due_at: i.dueAt,
     ...(i.fields && Object.keys(i.fields).length ? { fields: i.fields } : {}),
     thread_id: i.threadRootMessageId,
@@ -188,7 +214,7 @@ function boardHealthTool(ctx: ToolContext) {
   return defineTool(ctx, {
     name: 'board_health',
     label: 'Board Health',
-    description: 'What needs attention across boards: SLA breaches, columns over their WIP limit, stale cards, unassigned active cards, overdue cards, and cards waiting in "Needs attention". Run this on heartbeat to decide whom to nudge.',
+    description: 'What needs attention across boards: SLA breaches, columns over their WIP limit, stale cards, unassigned active cards, overdue cards, and cards waiting in "Needs attention". Use it in a heartbeat sweep or a status report to catch what slipped through; cards you handed off already report back on their own.',
     parameters: Type.Object({ channel: Type.Optional(CHANNEL), board: Type.Optional(BOARD_REF), stale_hours: Type.Optional(Type.Number({ description: 'Hours without activity that make a card stale (default 72).' })) }),
   }, (ws, p) => agentBoardsRequest(ws, 'GET', '/agent-boards/health', { query: { channel: p.channel, board: p.board, staleHours: p.stale_hours, projectId: identity(ctx).projectId } }))
 }
@@ -234,7 +260,7 @@ function itemCreate(ctx: ToolContext) {
     label: 'Create Card',
     description:
       'Create a card on a board. It gets a key (e.g. SUP-42) and its own thread in the board’s channel, which is where its discussion and agent work happen. ' +
-      'Assigning an agent, or creating it in a column with an agent, hands the card to that agent in the thread. Pass from_message to make a card from a channel message (it is quoted and linked). ' +
+      'Assigning an agent, or creating it in a column with an agent, hands the card to that agent in the thread and returns a task_id you are already watching (`watching: true`): you get a [Task update] when the card reaches review, waiting, done or dismissed, or that agent stops without moving it. Pass from_message to make a card from a channel message (it is quoted and linked). ' +
       'For intake from systems (tickets, alerts), pass fingerprint so repeats update the open card instead of making duplicates.',
     parameters: Type.Object({
       board: BOARD_REF,
@@ -254,7 +280,7 @@ function itemCreate(ctx: ToolContext) {
   }, async (ws, p) => {
     const { board, channel, ...rest } = p
     const r = await agentBoardsRequest(ws, 'POST', `/agent-boards/${enc(board)}/items`, { body: { ...rest, ...identity(ctx) }, query: { channel } })
-    return r.ok ? { ...r, data: { item: compactItem(r.data?.item) } } : r
+    return withCardTask(ctx, r.ok ? { ...r, data: { item: compactItem(r.data?.item) } } : r, { handoff: true })
   })
 }
 
@@ -275,7 +301,7 @@ function itemUpdate(ctx: ToolContext) {
     name: 'work_item_update',
     label: 'Update Card',
     description:
-      'Change a card’s title, description, fields (merged; set a field to null to clear it), priority, assignee or due date. Assigning an agent hands the card to it. ' +
+      'Change a card’s title, description, fields (merged; set a field to null to clear it), priority, assignee or due date. Assigning an agent hands the card to it, and you are told through a [Task update] when it comes back. ' +
       'Before you finish working a card, set history_summary to two to five sentences on where it stands and what is next, so whoever picks it up next starts from there.',
     parameters: Type.Object({
       item: ITEM_REF,
@@ -292,7 +318,7 @@ function itemUpdate(ctx: ToolContext) {
   }, async (ws, p) => {
     const { item, ...rest } = p
     const r = await agentBoardsRequest(ws, 'PATCH', `/agent-work-items/${enc(item)}`, { body: { ...rest, ...identity(ctx) } })
-    return withCardTask(ctx, r.ok ? { ...r, data: { item: compactItem(r.data?.item) } } : r)
+    return withCardTask(ctx, r.ok ? { ...r, data: { item: compactItem(r.data?.item) } } : r, { handoff: true })
   })
 }
 
@@ -302,7 +328,7 @@ function itemMove(ctx: ToolContext) {
     label: 'Move Card',
     description:
       'Move a card to another column, or to a board in another channel (e.g. escalate a support ticket to #eng’s Bug Triage). The card keeps its key and thread; the other channel gets a link. ' +
-      'Moving into a column with an agent hands the card to that agent. On boards that require human review, agents move cards to a review column and a person closes them.',
+      'Moving into a column with an agent hands the card to that agent, and you are told through a [Task update] when it comes back. On boards that require human review, agents move cards to a review column and a person closes them.',
     parameters: Type.Object({
       item: ITEM_REF,
       column: Type.String({ description: 'Column name (or category, e.g. "done").' }),
@@ -313,7 +339,7 @@ function itemMove(ctx: ToolContext) {
   }, async (ws, p) => {
     const { item, ...rest } = p
     const r = await agentBoardsRequest(ws, 'POST', `/agent-work-items/${enc(item)}/move`, { body: { ...rest, ...identity(ctx) } })
-    return withCardTask(ctx, r.ok ? { ...r, data: { item: compactItem(r.data?.item), warnings: r.data?.warnings ?? [] } } : r)
+    return withCardTask(ctx, r.ok ? { ...r, data: { item: compactItem(r.data?.item), warnings: r.data?.warnings ?? [] } } : r, { handoff: true })
   })
 }
 
@@ -645,6 +671,7 @@ export const BOARDS_GUIDE = [
   '- Finish by moving the card with `work_item_move` and setting `history_summary` with `work_item_update`: where it stands, what you did, what is next.',
   '- Work that should be tracked goes on a card (`work_item_create`), not only in a chat message. Use `from_message` when someone asks for it in chat.',
   '- On boards that require human review, move finished cards to the review column; a person closes them.',
+  '- Running a project through other agents (phases, milestones, "keep it going until it is done")? Hand each card off, then end your turn. Every card you hand to an agent is watched for you, and a `[Task update]` wakes you the moment it reaches review, waiting or done, or its agent stops without moving it. On each update: check the evidence yourself, move the card on, hand off the next card, and end your turn again. Never create a schedule or raise a heartbeat to follow cards; that only adds delay and misses agents that stop.',
   '- Escalate across teams by moving the card to the other channel’s board; do not copy it.',
   '- Set up a department’s channel, boards, agents and triggers together in shogo-system.yaml with `system_apply`; use `board_create` and `column_*` for one-off changes.',
   '- Start from a template when one fits: `work_template_list`, then `work_template_add` for a company or department (then `system_apply`), or `board_create { template }` for one board.',
@@ -654,7 +681,7 @@ export const BOARDS_GUIDE = [
 export const COMPANY_OPS_GUIDE = [
   '## Company Operations',
   '',
-  'You keep the workspace’s boards moving. On each heartbeat:',
+  'You keep the workspace’s boards moving. Cards you hand off report back through `[Task update]`; act on those as they arrive. The heartbeat is the sweep for everything else:',
   '- Run `board_health`. For each SLA breach or stale card, comment in its thread tagging its assignee with one specific question; reassign only when the owner is away or the card is unassigned.',
   '- Cards in "Needs attention" (an agent failed on them): read the thread, then fix, reassign, or ask the owner.',
   '- Once a day, post one digest per department channel with `team_chat_post` (kind status): what was finished, what is blocked and on whom, what breached SLA. Use `board_summary`.',

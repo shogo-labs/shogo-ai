@@ -1900,7 +1900,7 @@ export class AgentGateway {
   }
 
   private buildSetupPrompt(userText: string): string {
-    return `[Agent Setup — First Message]\nThis is a brand new agent that has not been configured yet. The user's message below describes what they want the agent to do. Use your tools to set up the agent:\n\n1. Write AGENTS.md with all sections: # Identity (name, emoji, tagline), # Personality (tone, boundaries), # User (preferences), and # Operating Instructions (specific to this use case — IMPORTANT: replace the default content)\n2. Write HEARTBEAT.md with a relevant checklist if the agent should run autonomously\n3. Create any relevant skills in the skills/ directory\n4. Update config.json if heartbeat should be enabled\n\nAfter setting up, give the user a brief summary of what you configured.\n\n[User Message]\n${userText}`
+    return `[Agent Setup — First Message]\nThis is a brand new agent that has not been configured yet. The user's message below describes what they want the agent to do. Use your tools to set up the agent:\n\n1. Write AGENTS.md with all sections: # Identity (name, emoji, tagline), # Personality (tone, boundaries), # User (preferences), and # Operating Instructions (specific to this use case — IMPORTANT: replace the default content)\n2. Write HEARTBEAT.md with a relevant checklist only if the agent has wall-clock work (daily digests, inbox sweeps) or needs a stall safety net\n3. Create any relevant skills in the skills/ directory\n4. Update config.json if heartbeat should be enabled. Work the agent starts or hands off reports back through task updates, so it never needs a heartbeat to follow it\n\nAfter setting up, give the user a brief summary of what you configured.\n\n[User Message]\n${userText}`
   }
 
   private buildChatPrompt(text: string): { prompt: string; activeSkill?: { name: string } } {
@@ -4462,9 +4462,14 @@ export class AgentGateway {
         actionLines.push('- For managed integrations (Google, Slack, GitHub, etc.) and MCP servers alike, call `search_integrations` then `connect`. The result\'s `source` tag (`managed` | `mcp` | `skill`) tells you which path was taken.')
       }
       if (devopsGuideOn) {
-        actionLines.push(workspaceAgentToolsRegistered({ workspaceId: process.env.WORKSPACE_ID })
-          ? '- For recurring reminders, digests, check-ins, or autonomous routines in a workspace, create a named goal schedule with `schedule_create`; use `heartbeat_configure` only for the general heartbeat sweep.'
-          : '- For recurring reminders, digests, check-ins, or autonomous routines, use `heartbeat_configure`.')
+        if (workspaceAgentToolsRegistered({ workspaceId: process.env.WORKSPACE_ID })) {
+          actionLines.push(
+            '- For work tied to the clock (a reminder at 9am, a Monday digest, a daily inbox sweep), create a named goal schedule with `schedule_create`; use `heartbeat_configure` only for the general heartbeat sweep.',
+            '- To follow work that is already running (a card you handed to an agent, a background command or agent, a project call), do not schedule check-ins: watch its task and act on the `[Task update]` the moment it finishes, as in Background Tasks. When the user asks you to "loop", "keep an eye on it" or "check back at each phase", that is what they mean; tell them you will react as soon as each piece finishes.',
+          )
+        } else {
+          actionLines.push('- For recurring reminders, digests, check-ins, or autonomous routines, use `heartbeat_configure`.')
+        }
       }
       actionLines.push(
         '- If you need a missing detail such as timezone or channel name, call `ask_user` instead of asking only in prose.',

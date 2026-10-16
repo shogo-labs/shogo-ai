@@ -284,7 +284,7 @@ const PHASE_1: AgentEval = {
       phase: 'intention',
       validate: (r) =>
         responseContains(r, 'digest') || responseContains(r, 'heartbeat') ||
-        responseContains(r, 'schedule') || usedToolAnywhere(r, 'heartbeat_configure'),
+        responseContains(r, 'schedule') || usedToolAnywhere(r, 'heartbeat_configure') || usedToolAnywhere(r, 'schedule_create'),
     },
     {
       id: 'clarifies-channel-or-timezone',
