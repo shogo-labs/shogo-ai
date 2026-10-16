@@ -310,7 +310,7 @@ jobs:
             --bundle-output "$BUNDLE_DIR/index.android.bundle" \
             --sourcemap-output "$BUNDLE_DIR/index.android.bundle.map" \
             --assets-dest "$BUNDLE_DIR/assets" \
-            --entry-file apps/mobile/index.js
+            --entry-file index.js
           EXPORT_RC=$?
           if [ "$EXPORT_RC" -ne 0 ]; then
             echo "::warning title=Sentry sourcemap upload (Android OTA)::expo export:embed exited $EXPORT_RC — skipping upload."
@@ -589,7 +589,7 @@ jobs:
             --bundle-output "$BUNDLE_DIR/index.android.bundle" \
             --sourcemap-output "$BUNDLE_DIR/index.android.bundle.packager.map" \
             --assets-dest "$BUNDLE_DIR/assets" \
-            --entry-file apps/mobile/index.js
+            --entry-file index.js
           EXPORT_RC=$?
           if [ "$EXPORT_RC" -ne 0 ]; then
             echo "::warning title=Sentry sourcemap upload (Android)::expo export:embed exited $EXPORT_RC — skipping upload."

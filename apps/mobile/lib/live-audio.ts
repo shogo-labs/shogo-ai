@@ -16,7 +16,8 @@ export const LIVE_MAX_CHUNK_SECONDS = 12
 export const LIVE_SILENCE_RMS = 0.004
 
 export interface LiveChunk {
-  wav: Blob
+  /** WAV file bytes. Not a Blob: React Native can't build one from binary parts. */
+  wav: ArrayBuffer
   /** Seconds from the start of the recording. */
   start: number
   seq: number
@@ -318,7 +319,7 @@ export function createChunker(
     const chunkSeq = seq++
     // The final tail can be short; mid-recording slivers are too short to transcribe well.
     if (rms(head) < LIVE_SILENCE_RMS || head.length < (force ? sampleRate / 4 : sampleRate)) return
-    queue.push({ wav: new Blob([encodeWav16(resampleTo16k(head, sampleRate))], { type: 'audio/wav' }), start, seq: chunkSeq })
+    queue.push({ wav: encodeWav16(resampleTo16k(head, sampleRate)), start, seq: chunkSeq })
     // Keep at most ~30 s of backlog; a stalled server shouldn't grow memory forever.
     while (queue.length > 4) {
       queue.shift()

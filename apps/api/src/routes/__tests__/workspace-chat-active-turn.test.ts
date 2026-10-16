@@ -427,6 +427,31 @@ describe('workspace chat active turn', () => {
     expect(sessions.get('s-foreign-project')!.activeTurnId).toBe('turn-foreign-project')
   })
 
+  for (const variant of [
+    { name: 'stream resume', path: '/api/workspaces/ws-1/chat/s-1/stream', ready: () => controllableRuntimeStream().response },
+    { name: 'turn poll', path: '/api/workspaces/ws-1/chat/s-1/turn', ready: () => Response.json({ status: 'running' }) },
+  ]) {
+    test(`${variant.name} waits out a runtime that is still being assigned`, async () => {
+      seedSession('s-1')
+      let calls = 0
+      fetchResponder = () => {
+        calls++
+        if (calls < 3) {
+          return Response.json(
+            { error: { code: 'runtime_not_ready', message: 'assigning' } },
+            { status: 503, headers: { 'Retry-After': '0' } },
+          )
+        }
+        return variant.ready()
+      }
+
+      const res = await buildApp().fetch(new Request(`http://x${variant.path}`))
+      expect(res.status).toBe(200)
+      expect(calls).toBe(3)
+      await res.body?.cancel()
+    })
+  }
+
   test('a stop the runtime rejects leaves the turn active', async () => {
     seedSession('s-1', { activeTurnId: 'turn-1', activeTurnStartedAt: new Date() })
     fetchResponder = () => Response.json({ success: false }, { status: 500 })

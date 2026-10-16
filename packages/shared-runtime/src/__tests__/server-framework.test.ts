@@ -361,6 +361,61 @@ describe('auth middleware', () => {
     expect(res.status).toBe(401)
   })
 
+  test('answers a runtime token with a retryable 503 while the pool pod is unassigned', async () => {
+    const { app } = await buildApp({
+      env: { PROJECT_ID: '__POOL__', WARM_POOL_MODE: 'true', WORKSPACE_ID: undefined },
+    })
+    app.get('/agent/chat/s1/stream', (c) => c.json({ ok: true }))
+    const res = await app.request('/agent/chat/s1/stream', {
+      headers: { 'x-runtime-token': 'wrt_v1_ws-9_abcdef' },
+    })
+    expect(res.status).toBe(503)
+    expect(res.headers.get('retry-after')).toBe('1')
+    expect((await res.json()).error.code).toBe('runtime_not_ready')
+    expect(fetchCalls.length).toBe(0)
+  })
+
+  test('answers a runtime token with a retryable 503 while /pool/assign is still running', async () => {
+    let finishAssign!: () => void
+    const assignGate = new Promise<void>((resolve) => { finishAssign = resolve })
+    const { app } = await buildApp({
+      env: { PROJECT_ID: '__POOL__', WARM_POOL_MODE: 'true', WORKSPACE_ID: undefined },
+      config: { onAssign: () => assignGate },
+    })
+    app.get('/agent/chat/s1/stream', (c) => c.json({ ok: true }))
+    const assigning = app.request('/pool/assign', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ workspaceId: 'ws-9', attachedProjectIds: ['p1'], env: { WORKSPACE_ID: 'ws-9' } }),
+    })
+    await new Promise((r) => setTimeout(r, 10))
+
+    const during = await app.request('/agent/chat/s1/stream', {
+      headers: { 'x-runtime-token': 'wrt_v1_ws-9_abcdef' },
+    })
+    expect(during.status).toBe(503)
+    expect((await during.json()).error.code).toBe('runtime_not_ready')
+
+    finishAssign()
+    expect((await assigning).status).toBe(200)
+    fetchResponses = [{ ok: true, body: { valid: true, workspaceId: 'ws-9' } }]
+    const after = await app.request('/agent/chat/s1/stream', {
+      headers: { 'x-runtime-token': 'wrt_v1_ws-9_abcdef' },
+    })
+    expect(after.status).toBe(200)
+  })
+
+  test('still rejects garbage tokens with 401 while the pool pod is unassigned', async () => {
+    const { app } = await buildApp({
+      env: { PROJECT_ID: '__POOL__', WARM_POOL_MODE: 'true' },
+    })
+    app.get('/agent/secret', (c) => c.json({ ok: true }))
+    const res = await app.request('/agent/secret', {
+      headers: { 'x-runtime-token': 'random-garbage' },
+    })
+    expect(res.status).toBe(401)
+  })
+
   test('rejects bogus bearer that does not match v1 prefix', async () => {
     const { app } = await buildApp()
     app.get('/agent/secret', (c) => c.json({ ok: true }))

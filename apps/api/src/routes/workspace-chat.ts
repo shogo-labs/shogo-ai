@@ -75,6 +75,19 @@ import { trackUsageFromStream } from './project-chat'
 const PROJECT_ROOT = resolve(import.meta.dir, '../../../..')
 const WORKSPACES_DIR = process.env.WORKSPACES_DIR || join(PROJECT_ROOT, 'workspaces')
 
+/** How long a resume/turn read waits for a runtime that is still being assigned. */
+const RUNTIME_NOT_READY_MAX_WAIT_MS = 10_000
+
+async function isRuntimeNotReady(response: Response): Promise<boolean> {
+  if (response.status !== 503) return false
+  try {
+    const body = (await response.clone().json()) as { error?: { code?: string } }
+    return body?.error?.code === 'runtime_not_ready'
+  } catch {
+    return false
+  }
+}
+
 export interface WorkspaceChatRoutesConfig {
   /** Local runtime manager (used in host mode). */
   runtimeManager?: IRuntimeManager
@@ -285,7 +298,17 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
     const headers = new Headers(init?.headers)
     if (!headers.has('Content-Type')) headers.set('Content-Type', 'application/json')
     headers.set('x-runtime-token', deriveWorkspaceRuntimeToken(workspaceId))
-    return fetch(`${resolved.url}${path}`, { ...init, headers })
+    const method = (init?.method ?? 'GET').toUpperCase()
+    const retryable = method === 'GET' || method === 'HEAD'
+    const deadline = Date.now() + RUNTIME_NOT_READY_MAX_WAIT_MS
+    for (;;) {
+      const response = await fetch(`${resolved.url}${path}`, { ...init, headers })
+      if (!retryable || Date.now() >= deadline || !(await isRuntimeNotReady(response))) return response
+      await response.body?.cancel().catch(() => {})
+      const retryAfterSec = Number(response.headers.get('retry-after'))
+      const waitMs = Number.isFinite(retryAfterSec) ? Math.min(retryAfterSec * 1000, 2_000) : 1_000
+      await new Promise((resolve) => setTimeout(resolve, waitMs))
+    }
   }
 
   // Generic agent-proxy passthrough for the project-less workspace runtime

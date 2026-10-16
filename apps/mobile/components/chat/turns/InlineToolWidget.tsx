@@ -20,6 +20,7 @@ import {
 import { getToolSummary, sepLabel } from "../tools/summary"
 import { useChatContextSafe } from "../ChatContext"
 import { CredentialChip } from "./CredentialChip"
+import { CodeText } from "../CodeText"
 
 const MD_IMAGE_RE = /\[([^\]]*)\]\(([^)]+\.(png|jpg|jpeg|gif|webp))\)/gi
 
@@ -267,9 +268,9 @@ function InlineToolWidgetImpl({
                 Args
               </Text>
               <ScrollView nestedScrollEnabled className="bg-background/50 rounded p-1.5 max-h-32">
-                <Text className="text-[10px] font-mono text-foreground" selectable>
+                <CodeText className="text-[10px] font-mono text-foreground">
                   {formatJson(tool.args)}
-                </Text>
+                </CodeText>
               </ScrollView>
             </View>
           )}
@@ -295,9 +296,9 @@ function InlineToolWidgetImpl({
                   Result
                 </Text>
                 <ScrollView nestedScrollEnabled className="bg-background/50 rounded p-1.5 max-h-32">
-                  <Text className="text-[10px] font-mono text-foreground" selectable>
+                  <CodeText className="text-[10px] font-mono text-foreground">
                     {formatJson(tool.result)}
-                  </Text>
+                  </CodeText>
                 </ScrollView>
               </View>
             </View>
@@ -309,9 +310,9 @@ function InlineToolWidgetImpl({
                 Connection Expired
               </Text>
               <View className="bg-orange-500/10 rounded p-1.5">
-                <Text className="text-[10px] font-mono text-orange-600 dark:text-orange-400" selectable>
+                <CodeText className="text-[10px] font-mono text-orange-600 dark:text-orange-400">
                   {getDisplayableResult() || "Authorization failed or token expired"}
-                </Text>
+                </CodeText>
                 <Text className="text-[9px] text-orange-500 mt-1">
                   Reconnect from the banner above or the Capabilities tab.
                 </Text>
@@ -325,9 +326,9 @@ function InlineToolWidgetImpl({
                 Error
               </Text>
               <ScrollView nestedScrollEnabled className="bg-red-500/10 rounded p-1.5 max-h-32">
-                <Text className="text-[10px] font-mono text-red-500" selectable>
+                <CodeText className="text-[10px] font-mono text-red-500">
                   {getDisplayableResult() || "No output captured"}
-                </Text>
+                </CodeText>
               </ScrollView>
             </View>
           )}

@@ -193,15 +193,21 @@ export class LiveTranscriptionError extends Error {
 export async function postLiveChunk(
   workspaceId: string,
   recordingId: string,
-  chunk: { wav: Blob; start: number; seq: number },
+  chunk: { wav: ArrayBuffer; start: number; seq: number },
 ): Promise<LiveChunkResponse> {
-  const form = new FormData()
-  form.append('audio', chunk.wav, `live-${chunk.seq}.wav`)
-  form.append('start', String(chunk.start))
-  form.append('seq', String(chunk.seq))
   const res = await fetch(
     `${API_URL}/api/workspaces/${encodeURIComponent(workspaceId)}/meetings/recordings/${encodeURIComponent(recordingId)}/live`,
-    { method: 'POST', body: form, headers: liveAuthHeaders(), credentials: Platform.OS === 'web' ? 'include' : 'omit' },
+    {
+      method: 'POST',
+      body: new Uint8Array(chunk.wav),
+      headers: {
+        ...liveAuthHeaders(),
+        'Content-Type': 'audio/wav',
+        'X-Live-Start': String(chunk.start),
+        'X-Live-Seq': String(chunk.seq),
+      },
+      credentials: Platform.OS === 'web' ? 'include' : 'omit',
+    },
   )
   const body = await res.json().catch(() => ({}))
   if (!res.ok) throw new LiveTranscriptionError(body?.error?.message || `Live transcription failed (${res.status})`, res.status)

@@ -242,6 +242,9 @@ export async function createRuntimeApp(config: RuntimeAppConfig): Promise<Runtim
   const IS_POOL_MODE = currentProjectId === POOL_PROJECT_ID || process.env.WARM_POOL_MODE === 'true'
   let poolAssigned = false
   let poolAssignedAt: number | null = null
+  // `state.poolAssigned` flips true at the start of /pool/assign (it is the
+  // assignment lock), so this marks the window before the pod is usable.
+  let assignInFlight = false
   let lastRequestAt: number = Date.now()
 
   const internalPaths = new Set([
@@ -551,6 +554,18 @@ export async function createRuntimeApp(config: RuntimeAppConfig): Promise<Runtim
     if (auth === `Bearer ${runtimeSecret}` || runtimeToken === runtimeSecret) return null
     if (runtimeToken && config.acceptsScopedToken?.(c.req.path, runtimeToken)) return null
 
+    const candidate = runtimeToken || (auth.startsWith('Bearer ') ? auth.slice('Bearer '.length) : '')
+    // An unassigned (or still-assigning) pool pod has no identity to check a
+    // token against. A 401 here reads as terminal to callers, so tell them to
+    // retry: the API routes to a pod as soon as it is claimed.
+    if (IS_POOL_MODE && (!state.poolAssigned || assignInFlight) && /^w?rt_v1_/.test(candidate)) {
+      c.header('Retry-After', '1')
+      return c.json(
+        { error: { code: 'runtime_not_ready', message: 'Runtime is still being assigned; retry shortly.' } },
+        503,
+      )
+    }
+
     // Slow path: byte-compare missed. That happens during warm-pool reassign
     // races, signing-secret rotation, or stale-image pods inherited across
     // a deploy. Rather than blanket-refusing — which is what produced the
@@ -560,7 +575,6 @@ export async function createRuntimeApp(config: RuntimeAppConfig): Promise<Runtim
     // recovered projectId must match the pod's currently-assigned project
     // so a token valid for project A can't authenticate calls to a pod
     // bound to project B.
-    const candidate = runtimeToken || (auth.startsWith('Bearer ') ? auth.slice('Bearer '.length) : '')
     // Local pre-filter: only proxy plausibly-structured v1 tokens to the
     // API. Without this, an attacker spamming the pod with random bearer
     // garbage would amplify into one API HMAC-verify roundtrip per unique
@@ -725,6 +739,16 @@ export async function createRuntimeApp(config: RuntimeAppConfig): Promise<Runtim
   // Pool Assignment
   // ---------------------------------------------------------------------------
   app.post('/pool/assign', async (c) => {
+    // A concurrent assign that loses the lock must not clear the winner's flag.
+    const otherAssignRunning = assignInFlight
+    try {
+      return await assignPool(c)
+    } finally {
+      if (!otherAssignRunning) assignInFlight = false
+    }
+  })
+
+  const assignPool = async (c: any) => {
     if (!IS_POOL_MODE) {
       return c.json({ error: 'Not in pool mode' }, 400)
     }
@@ -737,6 +761,7 @@ export async function createRuntimeApp(config: RuntimeAppConfig): Promise<Runtim
     // pods could both pass the check above if an await yields the event loop
     // between the check and the state mutation.
     state.poolAssigned = true
+    assignInFlight = true
 
     const startTime = Date.now()
     let body: any
@@ -863,7 +888,7 @@ export async function createRuntimeApp(config: RuntimeAppConfig): Promise<Runtim
       console.error(`[${config.name}] Pool assignment failed for ${projectId}:`, error.message)
       return c.json({ error: `Assignment failed: ${error.message}` }, 500)
     }
-  })
+  }
 
   // ---------------------------------------------------------------------------
   // POST /pool/refresh-env

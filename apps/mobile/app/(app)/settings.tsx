@@ -708,8 +708,8 @@ const WorkspaceSettingsTab = observer(function WorkspaceSettingsTab() {
               )}
             </View>
             <Switch
-              value={trainingDataEnabled}
-              onValueChange={handleTrainingDataChange}
+              checked={trainingDataEnabled}
+              onCheckedChange={(enabled) => void handleTrainingDataChange(enabled)}
               disabled={!canManageWorkspace}
             />
           </View>
