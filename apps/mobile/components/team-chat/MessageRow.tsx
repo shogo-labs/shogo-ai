@@ -19,6 +19,7 @@ import { activityTarget } from '../../lib/activity-target'
 import { formatFullTime, formatShortTime, formatTime } from '../../lib/team-chat-time'
 import { EmojiPicker } from './EmojiPicker'
 import { AgentAvatar } from './AgentAvatar'
+import { ShogoAvatar } from './ShogoAvatar'
 import { AgentProfileCard } from './AgentProfileCard'
 import { ApprovalCardView, StatusCardView } from './AgentStatus'
 import { QuestionCardView } from './QuestionCard'
@@ -163,7 +164,7 @@ function Avatar({ message, onPress }: { message: ChatMessage; onPress?: () => vo
     )
   }
   if (message.authorType === 'system') {
-    return <View className="h-8 w-8 items-center justify-center rounded-lg bg-muted" />
+    return <ShogoAvatar workspaceId={message.workspaceId} />
   }
   const name = message.author?.name ?? 'Someone'
   return (

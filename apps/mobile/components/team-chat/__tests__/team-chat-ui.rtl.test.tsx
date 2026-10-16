@@ -16,6 +16,10 @@ const decisions: Array<{ id: string; decision: string }> = []
 let decisionError: string | null = null
 const deletes: string[] = []
 let deleteError: string | null = null
+/** The viewer's own Shogo buddy look, as the buddy-look context reports it. */
+const personalLook = { color: '#FF7A8A', topper: 'cat-ears' }
+/** What `useMentionables` answers; null until a test needs the workspace agent. */
+const hookMentionables: { value: unknown } = { value: null }
 
 mock.module('react-native', () =>
   createReactNativeMock({
@@ -176,12 +180,17 @@ mock.module('../../../hooks/useTeamChat', () => ({
   }),
   useMarkReadWhileVisible: () => {},
   useTypingUsers: () => typingUsers,
+  useMentionables: () => hookMentionables.value,
 }))
 const routed: any[] = []
 mock.module('expo-router', () => ({ useRouter: () => ({ push: (r: any) => routed.push(r) }) }))
 // The real buddy draws on a canvas; here it just reports the look it was given.
 mock.module('../../island/buddy/ShogoBuddy', () => ({
   ShogoBuddy: ({ look }: any) => createElement('div', { 'data-rn-shim': 'buddy', 'data-topper': look.topper, 'data-color': look.color }),
+}))
+// The viewer's own Shogo, as the account-level buddy-look context holds it.
+mock.module('../../../contexts/buddy-look', () => ({
+  useBuddyLook: () => ({ look: personalLook, setLook: () => {}, saving: false, error: '' }),
 }))
 // The composer is the shared ChatInput; stub its agent-only dependencies.
 mock.module('@/components/ui/popover', () => ({
@@ -1231,6 +1240,39 @@ describe('agent avatars', () => {
     )
     expect(container.querySelector('img')).toBeTruthy()
     expect(shims('buddy')).toHaveLength(0)
+  })
+})
+
+describe('Shogo on its own messages', () => {
+  const notice = (overrides: Record<string, unknown> = {}) =>
+    message({ id: 'sys-1', authorType: 'system', author: null, authorUserId: null, text: '<@u:u-ana> started a huddle', ...overrides })
+
+  const renderNotice = () =>
+    render(<MessageRow message={notice()} grouped={false} me="u-me" names={names} canManage={false} {...handlers()} />)
+
+  test("a notice from Shogo wears the viewer's own Shogo, still", () => {
+    const { container } = renderNotice()
+    const buddy = shims('buddy')[0]
+    expect(buddy).toBeTruthy()
+    expect(buddy.getAttribute('data-color')).toBe(personalLook.color)
+    expect(buddy.getAttribute('data-topper')).toBe(personalLook.topper)
+    expect(shims('buddy-avatar')).toHaveLength(1)
+    // Shogo is not a person who can be present, so no dot.
+    expect(container.querySelector('[data-rn-shim^="presence-"]')).toBeNull()
+  })
+
+  test("the workspace agent's uploaded picture still wins over the buddy", () => {
+    hookMentionables.value = {
+      people: [],
+      agents: [{ key: 'ws', projectId: null, name: 'Shogo', description: null, image: 'https://cdn.example.com/shogo.png' }],
+    }
+    try {
+      const { container } = renderNotice()
+      expect(container.querySelector('img')?.getAttribute('accessibilitylabel')).toBe('Shogo avatar')
+      expect(shims('buddy')).toHaveLength(0)
+    } finally {
+      hookMentionables.value = null
+    }
   })
 })
 
