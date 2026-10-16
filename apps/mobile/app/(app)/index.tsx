@@ -76,7 +76,6 @@ import { ShogoLogoMark } from '../../components/branding/ShogoLogoMark'
 import { WorkspaceAgentChatScreen } from '../../components/workspace/WorkspaceAgentChatScreen'
 import { MobileHomeFeed } from '../../components/home/MobileHomeFeed'
 import { CreatePersonalSpaceBanner } from '../../components/personal/CreatePersonalSpaceBanner'
-import { GetStartedChecklist, useGettingStarted } from '../../components/onboarding/GetStartedChecklist'
 import { useMobileWorkspaceChrome } from '../../components/layout/MobileWorkspaceChromeContext'
 
 /**
@@ -336,13 +335,11 @@ export const HomeScreen = observer(function HomeScreen({
 
   const currentWorkspace = useActiveWorkspace()
   const currentExperience = useWorkspaceExperience()
-  // Personal (and narrow) surfaces render `WorkspaceAgentChatScreen`, which
-  // mounts its own checklist.
+  // Personal (and narrow) surfaces render `WorkspaceAgentChatScreen`.
   const rendersAgentChat =
     !forceBuilder &&
     isWorkspaceRuntimeEnabled() &&
     (isNarrowAgentSurface || currentExperience.kind === 'personal')
-  const gettingStarted = useGettingStarted(!rendersAgentChat)
 
   // Whether the user already has a `kind: 'personal'` workspace. `false`
   // surfaces `CreatePersonalSpaceBanner` below — see that component for why
@@ -929,11 +926,6 @@ export const HomeScreen = observer(function HomeScreen({
             userId={user?.id}
             onCreate={handleCreatePersonalWorkspace}
           />
-        </View>
-      ) : null}
-      {gettingStarted.visible ? (
-        <View className={isNativePhone ? 'mb-6 w-full' : 'mb-8 w-full max-w-2xl'}>
-          <GetStartedChecklist state={gettingStarted} />
         </View>
       ) : null}
       {isNativePhone ? (

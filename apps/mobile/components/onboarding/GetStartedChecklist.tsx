@@ -11,7 +11,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AppState, Pressable, Text, View } from 'react-native'
-import { useFocusEffect, useRouter } from 'expo-router'
+import { usePathname, useRouter } from 'expo-router'
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import { Check, ChevronDown, ChevronRight, ChevronUp, X } from 'lucide-react-native'
 import { cn } from '@shogo/shared-ui/primitives'
@@ -80,18 +80,15 @@ export function useGettingStarted(enabled = true): GettingStartedState {
   const teamId = pickTeamWorkspace(all, (members?.all ?? []) as any[], user?.id)?.id
 
   // Progress changes on other screens (sending a message, installing an
-  // agent, inviting someone), so refetch when this screen regains focus or
-  // the app returns to the foreground. The initial fetch covers first focus.
-  const focusedOnce = useRef(false)
-  useFocusEffect(
-    useCallback(() => {
-      if (!focusedOnce.current) {
-        focusedOnce.current = true
-        return
-      }
-      setRefreshKey((k) => k + 1)
-    }, []),
-  )
+  // agent, inviting someone), so refetch on navigation or when the app
+  // returns to the foreground. The initial fetch covers the first route.
+  const pathname = usePathname()
+  const lastPathname = useRef(pathname)
+  useEffect(() => {
+    if (lastPathname.current === pathname) return
+    lastPathname.current = pathname
+    setRefreshKey((k) => k + 1)
+  }, [pathname])
   useEffect(() => {
     const sub = AppState.addEventListener('change', (state) => {
       if (state === 'active') setRefreshKey((k) => k + 1)
@@ -232,17 +229,25 @@ export function useGettingStarted(enabled = true): GettingStartedState {
 interface GetStartedChecklistProps {
   state: GettingStartedState
   className?: string
+  /** Narrow layout for the sidebar: tighter rows, no item descriptions. */
+  compact?: boolean
 }
 
-export function GetStartedChecklist({ state, className }: GetStartedChecklistProps) {
+export function GetStartedChecklist({ state, className, compact = false }: GetStartedChecklistProps) {
   const [expanded, setExpanded] = useState(true)
   if (!state.visible) return null
   const { items, completedCount, dismiss } = state
   const pct = Math.round((completedCount / items.length) * 100)
 
   return (
-    <View className={cn('w-full overflow-hidden rounded-2xl border border-border bg-card', className)}>
-      <View className="flex-row items-center gap-3 px-4 pb-3 pt-4">
+    <View
+      className={cn(
+        'w-full overflow-hidden border border-border bg-card',
+        compact ? 'rounded-md' : 'rounded-2xl',
+        className,
+      )}
+    >
+      <View className={cn('flex-row items-center', compact ? 'gap-2 px-3 pb-2 pt-2.5' : 'gap-3 px-4 pb-3 pt-4')}>
         <Pressable
           className="min-w-0 flex-1"
           onPress={() => setExpanded((e) => !e)}
@@ -261,7 +266,7 @@ export function GetStartedChecklist({ state, className }: GetStartedChecklistPro
               <ChevronDown size={14} className="text-muted-foreground" />
             )}
           </View>
-          <View className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-muted">
+          <View className={cn('w-full overflow-hidden rounded-full bg-muted', compact ? 'mt-1.5 h-1' : 'mt-2 h-1.5')}>
             <View className="h-full rounded-full bg-primary" style={{ width: `${pct}%` }} />
           </View>
         </Pressable>
@@ -269,9 +274,12 @@ export function GetStartedChecklist({ state, className }: GetStartedChecklistPro
           onPress={dismiss}
           accessibilityRole="button"
           accessibilityLabel="Dismiss get started checklist"
-          className="h-7 w-7 items-center justify-center rounded-full active:bg-muted web:hover:bg-muted"
+          className={cn(
+            'items-center justify-center rounded-full active:bg-muted web:hover:bg-muted',
+            compact ? 'h-6 w-6' : 'h-7 w-7',
+          )}
         >
-          <X size={15} className="text-muted-foreground" />
+          <X size={compact ? 13 : 15} className="text-muted-foreground" />
         </Pressable>
       </View>
       {expanded ? (
@@ -284,34 +292,39 @@ export function GetStartedChecklist({ state, className }: GetStartedChecklistPro
               accessibilityRole={item.onPress && !item.done ? 'button' : undefined}
               accessibilityState={{ checked: item.done }}
               className={cn(
-                'flex-row items-center gap-3 px-4 py-3',
+                'flex-row items-center',
+                compact ? 'gap-2 px-3 py-2' : 'gap-3 px-4 py-3',
                 i > 0 && 'border-t border-border',
                 !item.done && item.onPress && 'active:bg-muted web:hover:bg-muted/50',
               )}
             >
               <View
                 className={cn(
-                  'h-5 w-5 items-center justify-center rounded-full border',
+                  'items-center justify-center rounded-full border',
+                  compact ? 'h-4 w-4' : 'h-5 w-5',
                   item.done ? 'border-primary bg-primary' : 'border-border',
                 )}
               >
-                {item.done ? <Check size={12} strokeWidth={3} className="text-primary-foreground" /> : null}
+                {item.done ? (
+                  <Check size={compact ? 10 : 12} strokeWidth={3} className="text-primary-foreground" />
+                ) : null}
               </View>
               <View className="min-w-0 flex-1">
                 <Text
                   className={cn(
-                    'text-sm font-medium',
+                    'font-medium',
+                    compact ? 'text-xs' : 'text-sm',
                     item.done ? 'text-muted-foreground line-through' : 'text-foreground',
                   )}
                 >
                   {item.title}
                 </Text>
-                {!item.done ? (
+                {!item.done && !compact ? (
                   <Text className="mt-0.5 text-xs text-muted-foreground">{item.description}</Text>
                 ) : null}
               </View>
               {!item.done && item.onPress ? (
-                <ChevronRight size={16} className="text-muted-foreground" />
+                <ChevronRight size={compact ? 14 : 16} className="text-muted-foreground" />
               ) : null}
             </Pressable>
           ))}

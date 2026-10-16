@@ -19,10 +19,6 @@ import {
   useProjectCollection,
   useWorkspaceCollection,
 } from "../../contexts/domain"
-import {
-  GetStartedChecklist,
-  useGettingStarted,
-} from "../onboarding/GetStartedChecklist"
 import { openInWorkspace } from "../../lib/switch-workspace"
 import { pickTeamWorkspace } from "../../lib/team-workspace"
 import { useActiveWorkspace } from "../../hooks/useActiveWorkspace"
@@ -124,7 +120,6 @@ export const WorkspaceAgentChatScreen = observer(
     const crossTabPrefill = useChatPrefill()
     const { showWelcome, dismissWelcome } = useWelcomeMessage(workspace?.id)
     const isPersonalWorkspace = experience.kind === "personal"
-    const gettingStarted = useGettingStarted()
     const workspaces = useWorkspaceCollection()
     const members = useMemberCollection()
     const teamWorkspaceId = pickTeamWorkspace(
@@ -517,9 +512,7 @@ export const WorkspaceAgentChatScreen = observer(
         ) : null}
         {usesMobileWorkspaceChrome &&
         !header &&
-        ((isPersonalWorkspace && showWelcome) ||
-          gettingStarted.visible ||
-          attachments.length > 0) ? (
+        ((isPersonalWorkspace && showWelcome) || attachments.length > 0) ? (
           // `PersonalAgentMobileHeader` floats above this content instead of
           // reserving layout space, so the welcome card / working-set chip —
           // the first normal-flow content on this screen — need their own
@@ -570,11 +563,6 @@ export const WorkspaceAgentChatScreen = observer(
                 <X size={15} className="text-muted-foreground" />
               </Pressable>
             </View>
-          </View>
-        ) : null}
-        {gettingStarted.visible ? (
-          <View className="mx-auto mt-3 w-full max-w-2xl px-4">
-            <GetStartedChecklist state={gettingStarted} />
           </View>
         ) : null}
         {attachments.length > 0 ? (
