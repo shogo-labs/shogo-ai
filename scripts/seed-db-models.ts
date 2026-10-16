@@ -85,6 +85,10 @@
  *     DEEPSEEK_API_KEY=sk-... OPENROUTER_API_KEY=sk-or-... \
  *     bun scripts/seed-db-models.ts
  *
+ * Seed a subset (comma-separated keys from `SEEDERS`), e.g. to roll out one
+ * model without refreshing every other row:
+ *   bun scripts/seed-db-models.ts --only=haiku-5-5
+ *
  * Note: the MiMo staging key shared during development MUST be rotated and set
  * via env / admin UI; do not hardcode it here.
  */
@@ -760,23 +764,41 @@ async function seedGptLive1(): Promise<void> {
   console.log('[seed-db-models] Upserted GPT-Live 1')
 }
 
-export async function main(): Promise<void> {
-  await seedOpus48()
-  await seedOpus55()
-  await seedOpus5()
-  await seedSonnet5()
-  await seedFable51()
-  await seedSonnet46()
-  await seedHaiku55()
-  await seedMimo()
-  await seedDeepSeek()
-  await seedGptLive1()
-  await seedGptAstra()
-  await seedGptSol6()
-  await seedGptLuna6()
-  await seedGptSol56()
-  await seedGptLuna56()
-  await seedGptTerra()
+export const SEEDERS: Array<[string, () => Promise<void>]> = [
+  ['opus-4-8', seedOpus48],
+  ['opus-5-5', seedOpus55],
+  ['opus-5', seedOpus5],
+  ['sonnet-5', seedSonnet5],
+  ['fable-5-1', seedFable51],
+  ['sonnet-4-6', seedSonnet46],
+  ['haiku-5-5', seedHaiku55],
+  ['mimo', seedMimo],
+  ['hoshi-2-0', seedDeepSeek],
+  ['gpt-live-1', seedGptLive1],
+  ['gpt-6-astra', seedGptAstra],
+  ['gpt-6-sol', seedGptSol6],
+  ['gpt-6-luna', seedGptLuna6],
+  ['gpt-5.6-sol', seedGptSol56],
+  ['gpt-5.6-luna', seedGptLuna56],
+  ['gpt-5.6-terra', seedGptTerra],
+]
+
+export async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
+  const onlyArg = argv.find((arg) => arg.startsWith('--only='))?.slice('--only='.length)
+  const only = onlyArg !== undefined
+    ? new Set(onlyArg.split(',').map((name) => name.trim()).filter(Boolean))
+    : null
+  if (only) {
+    const unknown = [...only].filter((name) => !SEEDERS.some(([key]) => key === name))
+    if (unknown.length || only.size === 0) {
+      throw new Error(
+        `Unknown seeder(s): ${unknown.join(', ') || '(none given)'}. Valid: ${SEEDERS.map(([key]) => key).join(', ')}`,
+      )
+    }
+  }
+  for (const [name, seed] of SEEDERS) {
+    if (!only || only.has(name)) await seed()
+  }
   console.log('[seed-db-models] Done.')
 }
 
