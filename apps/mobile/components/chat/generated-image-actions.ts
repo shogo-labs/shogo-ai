@@ -88,10 +88,14 @@ export async function runGeneratedImageAction(
     return;
   }
 
-  const MediaLibrary = await import("expo-media-library");
-  const permission = await MediaLibrary.requestPermissionsAsync();
-  if (permission.status !== "granted") {
-    throw new Error("Photo access is required to save this image");
+  const MediaLibrary = await import("expo-media-library/legacy");
+  // Android 13+ can add a new image without access to existing photos.
+  // Older Android releases still need the legacy write permission.
+  if (Platform.OS !== "android" || Number(Platform.Version) < 33) {
+    const permission = await MediaLibrary.requestPermissionsAsync(true);
+    if (permission.status !== "granted") {
+      throw new Error("Allow Shogo to save images to your photo library");
+    }
   }
   await MediaLibrary.saveToLibraryAsync(fileUri);
 }

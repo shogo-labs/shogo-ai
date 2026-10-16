@@ -21,7 +21,14 @@
         "backgroundColor": "#FB8C00"
       },
       "package": "ai.shogo.mobile",
-      "softwareKeyboardLayoutMode": "resize"
+      "softwareKeyboardLayoutMode": "resize",
+      "blockedPermissions": [
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.READ_MEDIA_IMAGES",
+        "android.permission.READ_MEDIA_VIDEO",
+        "android.permission.READ_MEDIA_AUDIO",
+        "android.permission.READ_MEDIA_VISUAL_USER_SELECTED"
+      ]
     },
     "web": {
       "bundler": "metro",
@@ -56,7 +63,8 @@
       [
         "expo-media-library",
         {
-          "photosPermission": "Allow Shogo to save generated images to your photo library."
+          "savePhotosPermission": "Allow Shogo to save generated images to your photo library.",
+          "granularPermissions": []
         }
       ],
       "expo-document-picker",
