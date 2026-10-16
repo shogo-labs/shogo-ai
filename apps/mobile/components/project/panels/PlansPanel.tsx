@@ -265,16 +265,25 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
     }
   }, [selectedPlan, fetchPlanDetail, planStream?.planRefreshNonce])
 
+  // Each open request selects its plan once; later stream updates must not
+  // pull the user back out of the list.
+  const handledRequestNonceRef = useRef<number | null>(null)
   useEffect(() => {
-    if (!visible) return
-    const requestedFilename = planFilenameFromPath(requestedPlanPath?.filepath)
+    if (!visible) {
+      handledRequestNonceRef.current = null
+      return
+    }
+    if (!requestedPlanPath || handledRequestNonceRef.current === requestedPlanPath.nonce) return
+    const requestedFilename = planFilenameFromPath(requestedPlanPath.filepath)
     if (requestedFilename) {
+      handledRequestNonceRef.current = requestedPlanPath.nonce
       setSelectedPlan(requestedFilename)
       setPlanContent(null)
       setBuildStarted(false)
       return
     }
-    if (requestedPlanPath && planStream?.streamingPlan) {
+    if (planStream?.streamingPlan) {
+      handledRequestNonceRef.current = requestedPlanPath.nonce
       setSelectedPlan("__streaming__")
       setPlanContent(null)
       setBuildStarted(false)
@@ -412,6 +421,8 @@ export function PlansPanel({ visible, projectId, agentUrl, selectedModel, reques
               setSelectedPlan(null)
               setPlanContent(null)
             }}
+            accessibilityRole="button"
+            accessibilityLabel="Back to plans"
             className={cn(
               "items-center justify-center rounded-lg",
               planHitClass,

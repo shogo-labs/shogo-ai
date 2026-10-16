@@ -626,6 +626,7 @@ export const WorkspaceAgentChatScreen = observer(
             initialMessage={capturedInitialMessage}
             className="flex-1"
             isActive
+            ownsPlanStream
             phoneTranscriptTopPadding={
               usesMobileWorkspaceChrome ? "floating-agent" : "chrome"
             }

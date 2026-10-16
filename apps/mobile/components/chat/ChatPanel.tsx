@@ -277,6 +277,7 @@ import { PermissionApprovalDialog } from "../security/PermissionApprovalDialog"
 import { IntegrationConnectCard, type IntegrationAuthRequest } from "./IntegrationConnectCard"
 import { buildStopRequest } from "../../lib/chat-stop"
 import {
+  isPlanStreamOwner,
   planToPublishToStream,
   shouldPublishPlanToStream,
 } from "../../lib/plan-stream-publish"
@@ -568,6 +569,12 @@ export interface ChatPanelProps {
   onResolveSessionModel?: (modelId: string | null) => void
   /** When false, defers non-essential network requests (quick-actions, stream reconnect). Defaults to true. */
   isActive?: boolean
+  /**
+   * Marks this panel as the owner of the shared `PlanStreamContext` when the
+   * host doesn't pass `onMessagesChange`. Only one mounted panel per
+   * `PlanStreamProvider` should set this.
+   */
+  ownsPlanStream?: boolean
   /** Enables IDE-specific context bridge and compact composer affordances. */
   ideMode?: boolean
   /**
@@ -981,6 +988,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
   onModelChange: controlledOnModelChange,
   onResolveSessionModel,
   isActive = true,
+  ownsPlanStream = false,
   ideMode = false,
   enrichMessage,
   readOnlyReason,
@@ -1588,7 +1596,10 @@ const ChatPanelContent = observer(function ChatPanelContent({
   const pendingPlanRef = useRef<PlanData | null>(null)
 
   const planStream = usePlanStreamSafe()
-  const isActivePanel = onMessagesChange != null
+  const isActivePanel = isPlanStreamOwner({
+    hasMessagesListener: onMessagesChange != null,
+    ownsPlanStream,
+  })
   const isActivePanelRef = useRef(isActivePanel)
   isActivePanelRef.current = isActivePanel
 
