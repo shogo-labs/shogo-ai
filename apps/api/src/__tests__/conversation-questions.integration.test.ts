@@ -15,6 +15,7 @@ import { rmSync } from 'fs'
 import { Hono } from 'hono'
 import { seedWorkspace, setupChannelsTestDb, sseResponse, waitFor, type SeededWorkspace } from './helpers/channels-test-db'
 import { STAGING_FIXTURES, type AskFixture } from './fixtures/staging-agent-asks'
+import type { DesignRequest } from '../services/conversation-question-designer'
 
 const { dir } = setupChannelsTestDb()
 
@@ -228,6 +229,71 @@ describe('designing cards from prose', () => {
     expect(root.status).toBe(201)
     const row = await agentSays(channel, fixture('who has access').text, { threadRootId: root.json.message.id })
     expect(row.blocks.questions[0]).toMatchObject({ interaction: 'person', to: { userIds: [seed.owner], via: 'thread' } })
+  })
+})
+
+describe('questions addressed to someone in particular', () => {
+  /** A model reply that addresses each question to the tagged names given, parsed as the real one is. */
+  function routeTo(questionsFor: Array<{ header: string; to: string[] }>) {
+    const requests: DesignRequest[] = []
+    designerModule.setQuestionDesigner(async (request) => {
+      requests.push(request)
+      const keyOf = (name: string) => request.tagged?.find((t) => t.name === name)?.key ?? name
+      const reply = { questions: questionsFor.map((q) => ({ header: q.header, prompt: `${q.header}?`, interaction: 'text', to: q.to.map(keyOf) })), moot: [] }
+      return designerModule.parseDesign(JSON.stringify(reply), new Set(request.open.map((o) => o.id)), request.tagged)
+    })
+    return requests
+  }
+
+  test('two people tagged, one question each: each gets only theirs', async () => {
+    const requests = routeTo([{ header: 'Budget', to: ['owner'] }, { header: 'Vendor', to: ['member'] }])
+    const channel = await freshChannel()
+    const row = await agentSays(channel, `<@u:${seed.owner}> can you approve the budget? <@u:${seed.member}> which vendor should we use?`)
+    expect(requests[0]!.tagged).toEqual([
+      { key: `u:${seed.owner}`, name: 'owner', kind: 'person' },
+      { key: `u:${seed.member}`, name: 'member', kind: 'person' },
+    ])
+    const [budget, vendor] = row.blocks.questions
+    expect(budget.to).toEqual({ userIds: [seed.owner], via: 'mention' })
+    expect(vendor.to).toEqual({ userIds: [seed.member], via: 'mention' })
+    const inbox = await waitFor(async () => {
+      const items = await questionInbox(row.id)
+      return items.length === 2 ? items : null
+    })
+    expect(inbox.map((i: any) => [i.userId, i.title]).sort()).toEqual([
+      [seed.member, 'Billing Bot asked you: Vendor'],
+      [seed.owner, 'Billing Bot asked you: Budget'],
+    ].sort())
+  })
+
+  test('a question for another agent is no card for the person who started the run', async () => {
+    const devops = await db.project.create({ data: { name: 'DevOps', workspaceId: seed.workspaceId } })
+    const requests = routeTo([{ header: 'Capacity', to: ['DevOps'] }])
+    const channel = await freshChannel()
+    replyText = `<@a:p:${devops.id}> can you confirm the staging cluster has spare capacity?`
+    const posted = await call(seed.owner, 'POST', `/conversations/${channel}/messages`, { text: `<@a:p:${agent.projectId}> get the deploy ready`, clientMsgId: crypto.randomUUID() })
+    expect(posted.status).toBe(201)
+    const reply = await waitFor(async () => {
+      const rows = await db.conversationMessage.findMany({ where: { threadRootId: posted.json.message.id, authorType: 'agent' } })
+      return rows.find((r: any) => r.blocks?.questionScan) ?? null
+    })
+    expect(requests[0]!.tagged).toEqual([{ key: `a:p:${devops.id}`, name: 'DevOps', kind: 'agent' }])
+    expect(reply.blocks.questions ?? []).toHaveLength(0)
+    expect(await questionInbox(reply.id)).toHaveLength(0)
+  })
+
+  test('an unaddressed question next to an agent tag still goes to the person who started the run', async () => {
+    const devops = await db.project.create({ data: { name: 'DevOps 2', workspaceId: seed.workspaceId } })
+    routeTo([{ header: 'Proceed', to: [] }])
+    const channel = await freshChannel()
+    replyText = `I've asked <@a:p:${devops.id}> to check capacity. Should I go ahead with the deploy?`
+    const posted = await call(seed.owner, 'POST', `/conversations/${channel}/messages`, { text: `<@a:p:${agent.projectId}> get the deploy ready`, clientMsgId: crypto.randomUUID() })
+    expect(posted.status).toBe(201)
+    const reply = await waitFor(async () => {
+      const rows = await db.conversationMessage.findMany({ where: { threadRootId: posted.json.message.id, authorType: 'agent' } })
+      return rows.find((r: any) => r.blocks?.questions?.length) ?? null
+    })
+    expect(reply.blocks.questions[0].to).toEqual({ userIds: [seed.owner], via: 'run' })
   })
 })
 

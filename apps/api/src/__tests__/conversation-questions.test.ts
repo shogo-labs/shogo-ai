@@ -15,7 +15,7 @@ import {
   secretNameFrom,
   type QuestionBlock,
 } from '../services/conversation-message-kind'
-import { looksLikeAsk, parseDesign } from '../services/conversation-question-designer'
+import { buildPrompt, looksLikeAsk, parseDesign, type TaggedTarget } from '../services/conversation-question-designer'
 import { collapseRepeatedMentions } from '../services/conversation-mentions'
 import { parseQuestionActionValue, promptKey, questionActionValue, questionActions } from '../services/conversation-questions'
 import { STAGING_FIXTURES } from './fixtures/staging-agent-asks'
@@ -138,6 +138,48 @@ describe('parseDesign', () => {
   test('null when the reply is not JSON', () => {
     expect(parseDesign('no questions here', open)).toBeNull()
     expect(parseDesign('{not json}', open)).toBeNull()
+  })
+
+  const tagged: TaggedTarget[] = [
+    { key: 'u:bob', name: 'Bob', kind: 'person' },
+    { key: 'u:alice', name: 'Alice', kind: 'person' },
+    { key: 'a:p:devops', name: 'DevOps', kind: 'agent' },
+  ]
+  const q = (header: string, to: unknown) => ({ header, prompt: `${header}?`, interaction: 'text', to })
+
+  test('each question goes to the people it is addressed to', () => {
+    const design = parseDesign(JSON.stringify({ questions: [q('Budget', ['u:bob']), q('Vendor', ['u:alice'])] }), open, tagged)
+    expect(design!.questions.map((d) => d.userIds)).toEqual([['bob'], ['alice']])
+  })
+
+  test('questions addressed only to agents are left out; mixed ones keep the people', () => {
+    const design = parseDesign(JSON.stringify({ questions: [q('Capacity', ['a:p:devops']), q('Sign-off', ['a:p:devops', 'u:bob'])] }), open, tagged)
+    expect(design!.questions.map((d) => [d.header, d.userIds])).toEqual([['Sign-off', ['bob']]])
+  })
+
+  test('unaddressed questions and keys it was not given fall back to the default recipients', () => {
+    const design = parseDesign(JSON.stringify({ questions: [q('A', []), q('B', ['u:made_up', 'a:p:other']), q('C', null)] }), open, tagged)
+    expect(design!.questions.map((d) => d.userIds)).toEqual([undefined, undefined, undefined])
+  })
+})
+
+describe('buildPrompt', () => {
+  test('shows tagged people and agents by name, with their keys', () => {
+    const prompt = buildPrompt({
+      agentName: 'Billing Bot',
+      text: '<@u:bob> can you approve the budget? <@a:p:devops> please check capacity. <@a:ws> FYI',
+      recipients: { names: ['Bob'], via: 'mention', anyone: false },
+      tagged: [
+        { key: 'u:bob', name: 'Bob', kind: 'person' },
+        { key: 'a:p:devops', name: 'DevOps', kind: 'agent' },
+        { key: 'a:ws', name: 'Shogo', kind: 'agent' },
+      ],
+      open: [],
+    })
+    expect(prompt).toContain('- u:bob: Bob (person)')
+    expect(prompt).toContain('- a:p:devops: DevOps (agent)')
+    expect(prompt).toContain('@Bob can you approve the budget? @DevOps (agent) please check capacity. @Shogo (agent) FYI')
+    expect(prompt).not.toContain('<@')
   })
 })
 
