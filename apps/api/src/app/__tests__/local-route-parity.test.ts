@@ -39,6 +39,16 @@ const REQUIRED_LOCAL_ROUTES = [
   'PATCH /api/workspaces/:workspaceId/schedules/:scheduleId',
   'DELETE /api/workspaces/:workspaceId/schedules/:scheduleId',
   'GET /api/types-proxy',
+  // Settings-era Usage and the Analytics screen (Usage | Cost Optimizer) read
+  // these on desktop; they 404'd when only server.ts (cloud) mounted them.
+  'GET /api/workspaces/:workspaceId/analytics/usage-summary',
+  'GET /api/workspaces/:workspaceId/analytics/usage-log',
+  'GET /api/workspaces/:workspaceId/analytics/spend-timeseries',
+  'GET /api/workspaces/:workspaceId/analytics/engagement',
+  'GET /api/workspaces/:workspaceId/analytics/team-work',
+  'GET /api/workspaces/:workspaceId/cost-analytics/agent-breakdown',
+  'GET /api/workspaces/:workspaceId/cost-analytics/trends',
+  'GET /api/me/analytics/usage-summary',
   // Project dropdown > Export / Import; these 404'd on desktop once the
   // route moved into the cloud-only island.
   'POST /api/projects/:projectId/export',
