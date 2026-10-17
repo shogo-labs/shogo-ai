@@ -617,7 +617,8 @@ test.describe("two windows on one chat", () => {
     const sid = await createChat("two windows queue")
     const a = await newWindow(sid)
     const lead = "qa"
-    await send(a, `${marker("long", lead, 600, { ms: 25 })} from A`)
+    // Opening window B can take ~20s on a slow runner; the turn must outlast that.
+    await send(a, `${marker("long", lead, 1500, { ms: 25 })} from A`)
     await llm.waitForTokens(lead, 60, 30_000)
     const b = await newWindow(sid)
     await expectFollows(b, lead, "window B opened mid-turn")
