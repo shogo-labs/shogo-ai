@@ -3159,7 +3159,7 @@ app.post('/pool/export-repo', async (c) => {
     await flushGitBeforeExport(destinationDir)
     let excludeLfsObjects = false
     if (isLfsActive()) {
-      const lfsCfg = lfsRemoteConfigFromEnv(WORKSPACE_DIR)
+      const lfsCfg = lfsRemoteConfigFromEnv(destinationDir)
       if (lfsCfg) excludeLfsObjects = await lfsPushAll(lfsCfg)
     }
     const packed = await packRepoArchive(destinationDir, tmp, { excludeLfsObjects })
@@ -3282,8 +3282,10 @@ app.post('/pool/export-repo-bundle', async (c) => {
       return s
     })
     await flushGitBeforeExport(destinationDir)
-    if (isLfsActive()) {
-      const lfsCfg = lfsRemoteConfigFromEnv(WORKSPACE_DIR)
+    // A workspace runtime keeps its members' repos in subfolders and drops
+    // the root `.git`, so the root can have no repo and nothing to push.
+    if (isLfsActive() && existsSync(join(destinationDir, '.git'))) {
+      const lfsCfg = lfsRemoteConfigFromEnv(destinationDir)
       // Bundles never carry LFS objects, so a failed push fails the export.
       // The host keeps an unmigrated project on the tarball, which does.
       if (lfsCfg && !(await lfsPushAll(lfsCfg))) {

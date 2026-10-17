@@ -45,11 +45,15 @@ export const POOL_DIST_BASE_PLACEHOLDER = '/__shogo_pool_base__/'
  */
 export const POOL_TEMPLATE_DIST_MARKER = '.shogo-pool-template'
 
-/** Root entries that belong to the workspace itself, never to a project. */
-const WORKSPACE_LEVEL_ENTRIES = new Set(['.shogo', 'memory', ...Object.keys(DEFAULT_WORKSPACE_FILES)])
+/**
+ * Root entries that belong to the workspace itself, never to a project.
+ * `.git` is the git layer's: it is seeded during the pre-seed but, once the
+ * host adopts it, holds the project's durable repo, which must stay put.
+ */
+const WORKSPACE_LEVEL_ENTRIES = new Set(['.shogo', '.git', 'memory', ...Object.keys(DEFAULT_WORKSPACE_FILES)])
 
 /** Workspace-level names the runtime template also ships a project copy of. */
-const TEMPLATE_COPY_SKIP = new Set(['node_modules', '.shogo'])
+const TEMPLATE_COPY_SKIP = new Set(['node_modules', '.shogo', '.git'])
 
 const DIST_TEXT_EXTENSIONS = new Set(['.html', '.js', '.mjs', '.cjs', '.css', '.json', '.map', '.svg', '.txt', '.webmanifest'])
 
