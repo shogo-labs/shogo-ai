@@ -1121,6 +1121,7 @@ export function validateTemplateInput(
 // ---------------------------------------------------------------------------
 
 const TRANSCRIPT_PROMPT_CHARS = 120_000
+const ENHANCE_MAX_OUTPUT_TOKENS = 24_000
 
 const ENHANCE_SYSTEM_PROMPT = `You turn a meeting into clear, useful notes for the person who attended it.
 
@@ -1220,10 +1221,19 @@ export async function enhanceMeeting(
       model: resolved.model,
       system: ENHANCE_SYSTEM_PROMPT,
       prompt: buildEnhancePrompt(meeting, template),
-      maxOutputTokens: 4000,
+      // Reasoning tokens count against this budget, and Hoshi 2.0 thinks at
+      // high effort, so it must leave room for both the reasoning and the notes.
+      maxOutputTokens: ENHANCE_MAX_OUTPUT_TOKENS,
     })
     const { title, body } = splitEnhancedNotes(result.text)
-    if (!body) throw new Error('The model returned empty notes')
+    if (!body) {
+      const usage = result.usage as any
+      console.warn(
+        `[Meetings] Empty enhancement for ${meetingId}: finishReason=${result.finishReason} ` +
+          `outputTokens=${usage?.outputTokens ?? 'n/a'} reasoningTokens=${usage?.reasoningTokens ?? 'n/a'}`,
+      )
+      throw new Error('The model returned empty notes')
+    }
 
     await db.meeting.update({
       where: { id: meetingId },
