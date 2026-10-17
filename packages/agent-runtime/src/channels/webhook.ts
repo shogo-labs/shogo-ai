@@ -10,9 +10,29 @@
  * Inbound:
  *   POST /agent/channels/webhook/incoming
  *   Body: { "message": "...", "senderId?": "...", "senderName?": "...",
- *           "callbackUrl?": "https://...", "metadata?": {...} }
+ *           "callbackUrl?": "https://...", "metadata?": {...},
+ *           "dedupeKey?": "..." }
  *   → Sync mode (no callbackUrl):  returns { "reply": "..." }
  *   → Async mode (with callbackUrl): returns 202, POSTs reply to callbackUrl
+ *
+ * Dedupe (optional):
+ *   Send a key to make the hop idempotent. A repeat of the same key inside
+ *   `dedupeTtlMs` (default 60s) is dropped with
+ *   202 { status: "duplicate-ignored" } instead of starting another agent turn.
+ *   Send no key and every request is dispatched, exactly as before, so callers
+ *   that don't need this are unaffected.
+ *
+ *   Key precedence, first match wins:
+ *     1. `metadata.dedupeKey` — the alert relay publishes this next to
+ *        `metadata.groupKey` and it is the status-aware one (status is hashed
+ *        into it), so a `resolved` is never suppressed by its firing twin.
+ *     2. `metadata.groupKey` — status-blind fallback, for senders that only
+ *        carry an Alertmanager group key.
+ *     3. `dedupeKey`         — top-level, for callers with a key of their own.
+ *
+ *   This is the receiver half of the alert-relay fix: SigNoz/Alertmanager
+ *   re-POSTs the same notification group several times within a second, and
+ *   each POST used to become its own turn.
  *
  * Auth:
  *   If a `secret` is configured, requests must include:
@@ -26,6 +46,7 @@
  *   secret          — shared secret for authenticating inbound requests (optional)
  *   callbackUrl     — default callback URL for async replies (optional)
  *   callbackHeaders — JSON-encoded headers to send with callbacks (optional)
+ *   dedupeTtlMs     — inbound dedupe window in ms (default 60000) (optional)
  */
 
 import type { ChannelAdapter, IncomingMessage, ChannelStatus } from '../types'
@@ -48,6 +69,16 @@ export interface WebhookActivityEntry {
 
 const MAX_ACTIVITY_LOG = 50
 
+/**
+ * Cap on the inbound-dedupe map. A TTL already bounds it by traffic rate; this
+ * bounds it by the number of *distinct* keys seen inside one TTL, so a
+ * misbehaving caller cannot grow the map without limit.
+ */
+const MAX_DEDUPE_KEYS = 5_000
+
+/** Default inbound-dedupe window: long enough to swallow a burst re-send. */
+const DEFAULT_DEDUPE_TTL_MS = 60_000
+
 export class WebhookAdapter implements ChannelAdapter {
   private messageHandler: ((msg: IncomingMessage) => void) | null = null
   private connected = false
@@ -69,6 +100,10 @@ export class WebhookAdapter implements ChannelAdapter {
   /** Reply timeout in ms (default: 120s — agent tool loops can take a while) */
   private replyTimeoutMs = 120_000
 
+  /** Inbound dedupe: key -> `Date.now()` at which the key stops counting. */
+  private dedupeTtlMs = DEFAULT_DEDUPE_TTL_MS
+  private dedupeSeen = new Map<string, number>()
+
   async connect(config: Record<string, string>): Promise<void> {
     this.secret = config.secret || ''
     this.defaultCallbackUrl = config.callbackUrl || ''
@@ -83,6 +118,10 @@ export class WebhookAdapter implements ChannelAdapter {
 
     if (config.replyTimeoutMs) {
       this.replyTimeoutMs = parseInt(config.replyTimeoutMs, 10) || 120_000
+    }
+
+    if (config.dedupeTtlMs) {
+      this.dedupeTtlMs = parseInt(config.dedupeTtlMs, 10) || DEFAULT_DEDUPE_TTL_MS
     }
 
     this.connected = true
@@ -100,6 +139,7 @@ export class WebhookAdapter implements ChannelAdapter {
     }
     this.pendingReplies.clear()
     outboxes.clear()
+    this.dedupeSeen.clear()
     this.connected = false
     console.log('[Webhook] Disconnected')
   }
@@ -175,6 +215,34 @@ export class WebhookAdapter implements ChannelAdapter {
   // ---------------------------------------------------------------------------
   // Inbound message handling (called by the server route)
   // ---------------------------------------------------------------------------
+
+  /**
+   * Inbound idempotency guard. True when `key` was already seen inside the
+   * dedupe TTL; records it and returns false otherwise.
+   *
+   * A falsy key is never a duplicate, so callers that send none are completely
+   * unaffected — the guard only engages for senders that opt in by including a
+   * key. Callers must run this *after* auth and message validation: a dropped
+   * duplicate should never skip a check that a real request would have to pass.
+   */
+  isDuplicate(key?: string | null): boolean {
+    if (!key) return false
+
+    const now = Date.now()
+    for (const [seen, expiresAt] of this.dedupeSeen) {
+      if (expiresAt <= now) this.dedupeSeen.delete(seen)
+    }
+
+    if (this.dedupeSeen.has(key)) return true
+
+    // Map iteration is insertion-ordered, so the first key is the oldest.
+    if (this.dedupeSeen.size >= MAX_DEDUPE_KEYS) {
+      const oldest = this.dedupeSeen.keys().next().value
+      if (oldest !== undefined) this.dedupeSeen.delete(oldest)
+    }
+    this.dedupeSeen.set(key, now + this.dedupeTtlMs)
+    return false
+  }
 
   verifyAuth(authHeader?: string, secretHeader?: string): boolean {
     if (!this.secret) return true
@@ -316,6 +384,27 @@ export class WebhookAdapter implements ChannelAdapter {
             metadata: { orderId: '12345' },
           },
         }, 400)
+      }
+
+      // Idempotency guard, after auth and validation so a dropped duplicate
+      // cannot skip a check a real request would have to pass.
+      //
+      // `metadata.dedupeKey` wins: the alert relay publishes it alongside
+      // `metadata.groupKey`, and only that one is status-aware (it hashes the
+      // status in), so it is what keeps a `resolved` from being swallowed by its
+      // firing twin. `metadata.groupKey` is the status-blind fallback for
+      // senders that only have an Alertmanager group key; `dedupeKey` is for
+      // callers with a key of their own. Absent all three this is a no-op.
+      const dedupeKey =
+        typeof body.metadata?.dedupeKey === 'string' ? body.metadata.dedupeKey
+          : typeof body.metadata?.groupKey === 'string' ? body.metadata.groupKey
+            : typeof body.dedupeKey === 'string' ? body.dedupeKey
+              : ''
+      if (dedupeKey && adapter.isDuplicate(dedupeKey)) {
+        return c.json({
+          status: 'duplicate-ignored',
+          message: 'Duplicate suppressed: same dedupeKey inside the dedupe window.',
+        }, 202)
       }
 
       try {
