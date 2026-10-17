@@ -453,6 +453,15 @@ The \`browser\` tool lets you navigate pages, interact with elements, and take s
 5. After actions that change the page, \`snapshot\` again to see the updated state
 6. Use \`screenshot\` when you need to visually verify something or see non-text content
 
+**Mobile and responsive checks:**
+The page opens at a desktop size. Use \`viewport\` with \`device: "mobile"\` (390x844), \`"tablet"\` (768x1024) or \`"desktop"\` (1440x900), or explicit \`width\`/\`height\`, then snapshot or screenshot again. The size sticks for the rest of the session.
+
+**Errors the page doesn't show:**
+Use \`console\` after navigating or interacting to read console messages, uncaught page errors and failed or 4xx/5xx network requests collected since the last call. Pass \`level: "error"\` to skip plain logs. Check it before reporting a page as working.
+
+**evaluate:**
+\`value\` can be an expression or a function body; top-level \`return\` and \`await\` work.
+
 **Waiting strategy:**
 When waiting for page changes (navigation, content loading, animations), prefer short incremental waits with snapshot checks in between rather than a single long wait. For example, instead of waiting 10 seconds: snapshot → check if ready → if not, use \`wait_for\` with a short timeout → snapshot again. This lets you proceed as soon as the page is ready.
 

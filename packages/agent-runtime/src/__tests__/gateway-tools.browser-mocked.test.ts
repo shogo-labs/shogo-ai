@@ -51,11 +51,28 @@ interface FakePage {
   waitForSelector: (sel: string, opts?: any) => Promise<void>
   close: () => Promise<void>
   context: () => { newCDPSession: (p: any) => Promise<FakeCDPSession> }
+  setViewportSize: (size: { width: number; height: number }) => Promise<void>
+  viewportSize: () => { width: number; height: number } | null
+  on: (event: string, cb: (arg: any) => void) => void
+  _emit: (event: string, arg: any) => void
+  _listeners: Record<string, Array<(arg: any) => void>>
+  _viewport: { width: number; height: number }
+  _evaluated: any[]
   _currentUrl: string
   _title: string
   _evalResult: any
   _gotoErr?: Error
   _evalErr?: Error
+}
+
+// Chromium rejects these when a string is evaluated as a plain expression.
+function chromiumSyntaxError(code: string): Error | null {
+  if (/^\s*(async\s*)?(\(|function\b)/.test(code)) return null
+  if (/(^|[;{\n])\s*return\b/.test(code)) return new Error('page.evaluate: SyntaxError: Illegal return statement')
+  if (/\bawait\b/.test(code)) {
+    return new Error('page.evaluate: SyntaxError: await is only valid in async functions and the top level bodies of modules')
+  }
+  return null
 }
 
 function makeFakePage(opts: { evalResult?: any; gotoErr?: Error; evalErr?: Error; currentUrl?: string; title?: string } = {}): FakePage {
@@ -69,8 +86,13 @@ function makeFakePage(opts: { evalResult?: any; gotoErr?: Error; evalErr?: Error
       if (page._gotoErr) throw page._gotoErr
       page._currentUrl = u
     },
-    evaluate: async (_fn: any) => {
+    evaluate: async (fn: any) => {
+      page._evaluated.push(fn)
       if (page._evalErr) throw page._evalErr
+      if (typeof fn === 'string') {
+        const syntaxErr = chromiumSyntaxError(fn)
+        if (syntaxErr) throw syntaxErr
+      }
       // Return the canned result if set; otherwise return a snapshot-like default
       if (page._evalResult !== undefined) return page._evalResult
       return { text: 'a11y-tree', refCount: 0 }
@@ -89,6 +111,19 @@ function makeFakePage(opts: { evalResult?: any; gotoErr?: Error; evalErr?: Error
     waitForSelector: async () => undefined,
     close: async () => undefined,
     context: () => ({ newCDPSession: async () => makeCdpSession() }),
+    _listeners: {},
+    _viewport: { width: 1280, height: 720 },
+    _evaluated: [],
+    setViewportSize: async (size) => {
+      page._viewport = { ...size }
+    },
+    viewportSize: () => page._viewport,
+    on: (event, cb) => {
+      ;(page._listeners[event] ??= []).push(cb)
+    },
+    _emit: (event, arg) => {
+      for (const cb of page._listeners[event] ?? []) cb(arg)
+    },
   }
   return page
 }
@@ -535,6 +570,113 @@ describe('gateway-tools browser tool (playwright-core mocked)', () => {
     expect(contextsOpened).toBe(2)
     await exec(tool, { action: 'close' })
     await exec(other, { action: 'close' })
+  })
+
+  // -------------------------------------------------------------------
+  // viewport
+  // -------------------------------------------------------------------
+  test('viewport: mobile preset resizes the page', async () => {
+    const { tool } = await freshBrowserTool()
+    const r = await exec(tool, { action: 'viewport', device: 'mobile' })
+    expect(r.details.ok).toBe(true)
+    expect(fakePage._viewport).toEqual({ width: 390, height: 844 })
+    expect(r.details.viewport).toEqual({ width: 390, height: 844 })
+  })
+
+  test('viewport: explicit width/height override presets', async () => {
+    const { tool } = await freshBrowserTool()
+    await exec(tool, { action: 'viewport', width: 1024, height: 600 })
+    expect(fakePage._viewport).toEqual({ width: 1024, height: 600 })
+  })
+
+  test('viewport: without device or size errors', async () => {
+    const { tool } = await freshBrowserTool()
+    const r = await exec(tool, { action: 'viewport' })
+    expect(r.details.error).toContain('device')
+  })
+
+  test('viewport: survives the page being reopened', async () => {
+    const { tool } = await freshBrowserTool()
+    await exec(tool, { action: 'viewport', device: 'tablet' })
+    await exec(tool, { action: 'close' })
+    fakePage._viewport = { width: 1280, height: 720 }
+    await exec(tool, { action: 'navigate', url: 'https://x.example/' })
+    expect(fakePage._viewport).toEqual({ width: 768, height: 1024 })
+  })
+
+  // -------------------------------------------------------------------
+  // console / page errors / network failures
+  // -------------------------------------------------------------------
+  test('console: returns console messages, page errors and failed requests, then clears', async () => {
+    const { tool } = await freshBrowserTool()
+    await exec(tool, { action: 'navigate', url: 'https://x.example/' })
+    fakePage._emit('console', { type: () => 'error', text: () => 'Uncaught TypeError: x is undefined', location: () => ({ url: 'https://x.example/app.js', lineNumber: 12 }) })
+    fakePage._emit('console', { type: () => 'log', text: () => 'hello', location: () => ({}) })
+    fakePage._emit('pageerror', new Error('boom at render'))
+    fakePage._emit('requestfailed', { url: () => 'https://x.example/api/a', method: () => 'GET', failure: () => ({ errorText: 'net::ERR_CONNECTION_REFUSED' }) })
+    fakePage._emit('response', { status: () => 500, url: () => 'https://x.example/api/b', request: () => ({ method: () => 'POST' }) })
+    fakePage._emit('response', { status: () => 200, url: () => 'https://x.example/ok', request: () => ({ method: () => 'GET' }) })
+
+    const r = await exec(tool, { action: 'console' })
+    expect(r.details.counts).toEqual({ console: 2, pageerror: 1, network: 2 })
+    const texts = r.details.entries.map((e: any) => e.text).join('\n')
+    expect(texts).toContain('Uncaught TypeError')
+    expect(texts).toContain('boom at render')
+    expect(texts).toContain('ERR_CONNECTION_REFUSED')
+    expect(texts).toContain('500 POST https://x.example/api/b')
+    expect(texts).not.toContain('/ok')
+
+    const again = await exec(tool, { action: 'console' })
+    expect(again.details.entries).toEqual([])
+  })
+
+  test('console: level=error drops plain logs', async () => {
+    const { tool } = await freshBrowserTool()
+    await exec(tool, { action: 'navigate', url: 'https://x.example/' })
+    fakePage._emit('console', { type: () => 'log', text: () => 'noise', location: () => ({}) })
+    fakePage._emit('console', { type: () => 'warning', text: () => 'deprecated', location: () => ({}) })
+    fakePage._emit('pageerror', new Error('real problem'))
+    const r = await exec(tool, { action: 'console', level: 'error' })
+    expect(r.details.entries.map((e: any) => e.text)).toEqual(['real problem'])
+  })
+
+  test('console: buffer is capped', async () => {
+    const { tool } = await freshBrowserTool()
+    await exec(tool, { action: 'navigate', url: 'https://x.example/' })
+    for (let i = 0; i < 500; i++) {
+      fakePage._emit('console', { type: () => 'log', text: () => `line ${i}`, location: () => ({}) })
+    }
+    const r = await exec(tool, { action: 'console' })
+    expect(r.details.entries.length).toBe(200)
+    expect(r.details.entries.at(-1).text).toBe('line 499')
+    expect(r.details.dropped).toBe(300)
+  })
+
+  // -------------------------------------------------------------------
+  // evaluate with statement-style code
+  // -------------------------------------------------------------------
+  test('evaluate: top-level return runs inside an async function', async () => {
+    const { tool } = await freshBrowserTool()
+    fakePage._evalResult = 7
+    const r = await exec(tool, { action: 'evaluate', value: 'const n = document.querySelectorAll("a").length\nreturn n' })
+    expect(r.details.error).toBeUndefined()
+    expect(r.details.result).toBe(7)
+  })
+
+  test('evaluate: top-level await expression returns its value', async () => {
+    const { tool } = await freshBrowserTool()
+    fakePage._evalResult = { status: 200 }
+    const r = await exec(tool, { action: 'evaluate', value: 'await fetch("/api/health").then(r => ({ status: r.status }))' })
+    expect(r.details.error).toBeUndefined()
+    expect(r.details.result).toEqual({ status: 200 })
+    expect(String(fakePage._evaluated.at(-1))).toContain('return (')
+  })
+
+  test('evaluate: a real error in user code is still reported', async () => {
+    const { tool } = await freshBrowserTool()
+    fakePage._evalErr = new Error('ReferenceError: foo is not defined')
+    const r = await exec(tool, { action: 'evaluate', value: 'foo()' })
+    expect(r.details.error).toContain('foo is not defined')
   })
 
   // -------------------------------------------------------------------

@@ -269,7 +269,7 @@ export const BROWSER_QA_SUBAGENT_PROMPT = `You are a QA engineer testing a runni
 **While you are doing this test, note the timing and UX of everything and compile it into a report when you are done.** The canvas IS the report — keep it updated as you work.
 
 ## Available Tools
-browser — full browser automation (navigate, snapshot, click, fill, screenshot, console messages, network activity)
+browser — full browser automation (navigate, snapshot, click, fill, screenshot, viewport, console). \`viewport\` resizes the page; \`console\` returns console messages, uncaught page errors and failed/4xx/5xx network requests since the last call.
 web — HTTP fetch for APIs or health-check endpoints
 read_file, write_file, edit_file — build and update the canvas surface + save artifacts
 
@@ -336,8 +336,9 @@ Update \`QaRun.data.json\` one last time:
    b. Record wall-clock ms for each action (click / fill / select) from dispatch to the follow-up snapshot settling.
    c. Re-snapshot after every state change.
    d. **\`screenshot\` after every navigate and every meaningful state change** so the canvas Latest Screenshot stays fresh.
-   e. Check console messages and network activity for errors after each step.
-4. After each step, write the updated \`QaRun.data.json\` (when canvas exists). When flows are complete (or blocked), finalize the canvas and save the markdown artifact.
+   e. Call \`browser({ action: "console", level: "error" })\` after each step and record what it returns in \`errors\`.
+4. **Mobile pass:** unless the directive is desktop-only, rerun the main flow after \`browser({ action: "viewport", device: "mobile" })\` (390x844). Look for horizontal overflow, clipped or overlapping content, and controls that are hidden or too small to tap. Use the viewport the directive asks for when it names one. Switch back with \`device: "desktop"\` when you're done.
+5. After each step, write the updated \`QaRun.data.json\` (when canvas exists). When flows are complete (or blocked), finalize the canvas and save the markdown artifact.
 
 ## What to Record Per Step
 - URL after the step

@@ -5420,6 +5420,27 @@ export function isDeadBrowserError(message: string | undefined): boolean {
   return !!message && DEAD_BROWSER_ERROR_RE.test(message)
 }
 
+export const BROWSER_VIEWPORT_PRESETS = {
+  mobile: { width: 390, height: 844 },
+  tablet: { width: 768, height: 1024 },
+  desktop: { width: 1440, height: 900 },
+} as const
+
+const BROWSER_LOG_LIMIT = 200
+const BROWSER_LOG_TEXT_LIMIT = 1000
+
+interface BrowserLogEntry {
+  kind: 'console' | 'pageerror' | 'network'
+  level: 'error' | 'warning' | 'info'
+  text: string
+  source?: string
+  ts: string
+}
+
+// Chromium evaluates a string as an expression, so agent code written as a
+// function body (top-level `return` / `await`) fails to parse before running.
+const EVALUATE_STATEMENT_SYNTAX_RE = /Illegal return statement|await is only valid|Unexpected reserved word/i
+
 export function createBrowserTool(ctx: ToolContext): AgentTool {
   let browser: any = null
   let lease: BrowserLease | null = null
@@ -5438,8 +5459,63 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
   // a run folder (`step-01.png`, `step-02.png`, ...). See screenshot-manager.
   let screenshotCount = 0
   let screenshotHousekeepingDone = false
+  let viewportSize: { width: number; height: number } | null = null
+  let logEntries: BrowserLogEntry[] = []
+  let droppedLogEntries = 0
+  const pagesWithLogListeners = new WeakSet<object>()
 
   scLog(`[screencast] createBrowserTool instanceId=${ctx.subagentInstanceId ?? '<none>'}`)
+
+  function pushLog(entry: Omit<BrowserLogEntry, 'ts'>) {
+    const text = entry.text.length > BROWSER_LOG_TEXT_LIMIT ? `${entry.text.slice(0, BROWSER_LOG_TEXT_LIMIT)}…` : entry.text
+    logEntries.push({ ...entry, text, ts: new Date().toISOString() })
+    if (logEntries.length > BROWSER_LOG_LIMIT) {
+      droppedLogEntries += logEntries.length - BROWSER_LOG_LIMIT
+      logEntries = logEntries.slice(-BROWSER_LOG_LIMIT)
+    }
+  }
+
+  function attachLogListeners(p: any) {
+    if (!p?.on || pagesWithLogListeners.has(p)) return
+    pagesWithLogListeners.add(p)
+    p.on('console', (msg: any) => {
+      try {
+        const type = String(msg.type?.() ?? 'log')
+        const loc = msg.location?.() ?? {}
+        pushLog({
+          kind: 'console',
+          level: type === 'error' ? 'error' : type === 'warning' ? 'warning' : 'info',
+          text: String(msg.text?.() ?? ''),
+          source: loc.url ? `${loc.url}${loc.lineNumber !== undefined ? `:${loc.lineNumber}` : ''}` : undefined,
+        })
+      } catch {}
+    })
+    p.on('pageerror', (err: any) => {
+      pushLog({ kind: 'pageerror', level: 'error', text: String(err?.message ?? err) })
+    })
+    p.on('requestfailed', (req: any) => {
+      try {
+        const reason = req.failure?.()?.errorText ?? 'failed'
+        pushLog({ kind: 'network', level: 'error', text: `${req.method?.() ?? 'GET'} ${req.url?.()} ${reason}` })
+      } catch {}
+    })
+    p.on('response', (res: any) => {
+      try {
+        const status = Number(res.status?.())
+        if (!(status >= 400)) return
+        pushLog({
+          kind: 'network',
+          level: status >= 500 ? 'error' : 'warning',
+          text: `${status} ${res.request?.()?.method?.() ?? 'GET'} ${res.url?.()}`,
+        })
+      } catch {}
+    })
+  }
+
+  async function preparePage(p: any) {
+    attachLogListeners(p)
+    if (viewportSize && p?.setViewportSize) await p.setViewportSize(viewportSize)
+  }
 
   async function ensureScreencast() {
     // Only broadcast when this tool is running inside a spawned subagent
@@ -5573,6 +5649,7 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
           unregisterSessionCleanup = registerBrowserSessionCleanup(ctx.sessionId, () => cleanup())
         }
       }
+      await preparePage(page)
       await ensureScreencast()
       return page
     } catch (err: any) {
@@ -5647,6 +5724,8 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
     const currentLease = lease
     const currentBrowser = browser
     const wasExtensionMode = isExtensionMode
+    logEntries = []
+    droppedLogEntries = 0
     page = null
     lease = null
     browser = null
@@ -5689,7 +5768,7 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
   const tool: AgentTool = {
     name: 'browser',
     description:
-      'Control a browser. MUST snapshot before any interaction to get element refs. Actions: navigate, snapshot, click, fill, select, extract, text, screenshot, evaluate, scroll, wait_for, close. Workflow: navigate → snapshot → use ref numbers → snapshot again after changes. Use read_guide("browser") for details.',
+      'Control a browser. MUST snapshot before any interaction to get element refs. Actions: navigate, snapshot, click, fill, select, extract, text, screenshot, evaluate, scroll, wait_for, viewport, console, close. Workflow: navigate → snapshot → use ref numbers → snapshot again after changes. viewport resizes the page (device: mobile 390x844, tablet 768x1024, desktop 1440x900, or width/height) — use it for mobile checks. console returns console messages, uncaught page errors and failed/4xx/5xx network requests since the last call. Use read_guide("browser") for details.',
     label: 'Browser',
     parameters: Type.Object({
       action: Type.Union(
@@ -5705,9 +5784,23 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
           Type.Literal('select'),
           Type.Literal('scroll'),
           Type.Literal('wait_for'),
+          Type.Literal('viewport'),
+          Type.Literal('console'),
           Type.Literal('close'),
         ],
         { description: 'Browser action to perform' },
+      ),
+      device: Type.Optional(
+        Type.Union([Type.Literal('mobile'), Type.Literal('tablet'), Type.Literal('desktop')], {
+          description: 'Viewport preset (for viewport action)',
+        }),
+      ),
+      width: Type.Optional(Type.Number({ description: 'Viewport width in px (for viewport action, overrides device)' })),
+      height: Type.Optional(Type.Number({ description: 'Viewport height in px (for viewport action, overrides device)' })),
+      level: Type.Optional(
+        Type.Union([Type.Literal('all'), Type.Literal('error')], {
+          description: 'For console action: "error" returns only errors (default: all)',
+        }),
       ),
       url: Type.Optional(
         Type.String({
@@ -5743,6 +5836,10 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
         selector,
         value,
         waitMs = 1000,
+        device,
+        width,
+        height,
+        level,
       } = params as {
         action: string
         url?: string
@@ -5750,6 +5847,10 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
         selector?: string
         value?: string
         waitMs?: number
+        device?: keyof typeof BROWSER_VIEWPORT_PRESETS
+        width?: number
+        height?: number
+        level?: 'all' | 'error'
       }
 
       clearIdleRelease()
@@ -5758,6 +5859,19 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
         if (action === 'close') {
           await cleanup()
           return textResult({ ok: true, action: 'close' })
+        }
+
+        let requestedViewport: { width: number; height: number } | null = null
+        if (action === 'viewport') {
+          const preset = device ? BROWSER_VIEWPORT_PRESETS[device] : undefined
+          const w = width ?? preset?.width
+          const h = height ?? preset?.height
+          if (!w || !h || w < 200 || h < 200 || w > 3840 || h > 2160) {
+            return textResult({
+              error: 'viewport needs device ("mobile" | "tablet" | "desktop") or width and height between 200 and 3840x2160',
+            })
+          }
+          requestedViewport = { width: Math.round(w), height: Math.round(h) }
         }
 
         const p = await ensureBrowser()
@@ -5920,8 +6034,39 @@ export function createBrowserTool(ctx: ToolContext): AgentTool {
               return textResult({
                 error: 'value (JS code) is required for evaluate',
               })
-            const result = await p.evaluate(value)
+            let result: unknown
+            try {
+              result = await p.evaluate(value)
+            } catch (evalErr: any) {
+              if (!EVALUATE_STATEMENT_SYNTAX_RE.test(evalErr?.message ?? '')) throw evalErr
+              // The syntax error means nothing ran, so retrying is safe.
+              const asBody = `(async () => {\n${value}\n})()`
+              if (/(^|[;{}\n])\s*return\b/.test(value)) {
+                result = await p.evaluate(asBody)
+              } else {
+                try {
+                  result = await p.evaluate(`(async () => { return (\n${value}\n) })()`)
+                } catch (exprErr: any) {
+                  if (!/SyntaxError/i.test(exprErr?.message ?? '')) throw exprErr
+                  result = await p.evaluate(asBody)
+                }
+              }
+            }
             return textResult({ result, url: p.url() })
+          }
+          case 'viewport': {
+            viewportSize = requestedViewport
+            await p.setViewportSize(viewportSize)
+            return textResult({ ok: true, action: 'viewport', viewport: viewportSize, url: p.url() })
+          }
+          case 'console': {
+            const entries = level === 'error' ? logEntries.filter((e) => e.level === 'error') : logEntries
+            const counts = { console: 0, pageerror: 0, network: 0 }
+            for (const e of entries) counts[e.kind]++
+            const dropped = droppedLogEntries
+            logEntries = []
+            droppedLogEntries = 0
+            return textResult({ entries, counts, ...(dropped ? { dropped } : {}), url: p.url() })
           }
           case 'select': {
             const locator = resolveLocator(p, ref, selector)
