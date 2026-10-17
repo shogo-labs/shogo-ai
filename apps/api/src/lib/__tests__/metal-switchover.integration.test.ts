@@ -7,14 +7,16 @@
  * The fleet models what the metal-agent does with each runtime's slots: a
  * running VM (booted from some rootfs identity), a current-image snapshot and a
  * staged-image snapshot. Everything above it is the real control-plane code:
- * the watcher's switch-over tick, the staged pre-warm job, the heartbeat's
- * `activateRootfs`, the stale-rootfs refresh queue and the rollout re-warm.
+ * the watcher's switch-over tick, the heartbeat's `activateRootfs`, the
+ * refresh queue and the rollout re-warm.
  *
  * What it pins down:
- *  - users keep being served on the current image while the staged one warms;
- *  - after activation every recently used runtime resumes on the new image;
- *  - a runtime in use during the switch is never stopped, and is re-warmed on
- *    the new image once its user leaves;
+ *  - a region activates as soon as every host holds the staged build;
+ *  - after activation every recently used runtime is warmed on the new image
+ *    through the refresh queue, a few per host at a time;
+ *  - a runtime running on the old image is never stopped from here: the host
+ *    rotates it once idle, and it is re-warmed on the new image after that;
+ *  - an always-on runtime the host rotated is booted again and left running;
  *  - the newest staged build always wins over an older one.
  */
 
@@ -131,7 +133,7 @@ class FakeFleet {
     const h = this.host(hostId)
     if (h.staged?.version !== version) throw new Error(`host ${hostId} refused ${version}`)
     h.base = h.staged.identity
-    h.rootfsSha = `sha-${version}`
+    h.rootfsSha = version
     h.staged = undefined
     h.restarts++
     for (const rt of this.runtimes.values()) {
@@ -187,13 +189,25 @@ class FakeFleet {
       rt.running.lastRealActivityAt = now
       return { mode: 'live', identity: rt.running.identity }
     }
-    // A normal open drops the staged snapshot; the next pre-warm can redo it.
+    // A normal open drops the staged snapshot; a snapshot of a replaced image never resumes.
     rt.staged = undefined
+    if (rt.current !== h.base) rt.current = undefined
     const mode = rt.current ? 'resumed' : 'assigned'
     const identity = rt.current ?? h.base
     rt.current = undefined
     rt.running = { identity, assignedAt: now, lastRealActivityAt: now, activeStreams: 0 }
     return { mode, identity }
+  }
+
+  /** metal-agent rotateStale: retire an idle VM on a replaced image and report it. */
+  async rotate(key: string, opts: { alwaysOn?: boolean } = {}) {
+    const rt = this.runtimes.get(key)
+    if (!rt?.running || this.generation(this.host(rt.hostId), rt.running.identity) !== 'stale') throw new Error(`${key} is not on a replaced image`)
+    rt.running = undefined
+    rt.current = undefined
+    this.retired.push(key)
+    const reason = opts.alwaysOn ? 'stale-rootfs-always-on' : 'stale-rootfs'
+    await enqueueRefresh(key, { hostId: rt.hostId, reason }, this.store, this.clock.t)
   }
 
   /** metal-agent suspendOrRetire, plus the placement event it reports. */
@@ -268,7 +282,7 @@ class FakeFleet {
         } else {
           if (!rt.running) {
             rt.staged = undefined
-            const identity = rt.current ?? h.base
+            const identity = rt.current === h.base ? rt.current : h.base
             rt.current = undefined
             rt.running = { identity, assignedAt: now, activeStreams: 0 }
           }
@@ -329,8 +343,27 @@ async function actions(): Promise<string[]> {
   return (await switchoverTick(fleet.deps)).map((r) => r.action)
 }
 
+/** Drain the refresh queue until it is empty, as the watcher would tick by tick. */
+async function drainAll() {
+  for (let i = 0; i < 50; i++) {
+    const res = await drainRefreshQueue(fleet.deps, CFG)
+    await Promise.all(res.running)
+    if ((await getRefreshStatus(fleet.store)).queued === 0) return
+    fleet.advance(MIN)
+  }
+  throw new Error('refresh queue did not drain')
+}
+
+async function switchTo(version: string) {
+  fleet.stage('h1', version)
+  fleet.stage('h2', version)
+  expect(await actions()).toEqual(['activated'])
+  expect(await fleet.heartbeat('h1')).toBe(version)
+  expect(await fleet.heartbeat('h2')).toBe(version)
+}
+
 describe('rootfs switch-over (simulated fleet)', () => {
-  test('pre-warms on the staged image, activates, and every recent runtime resumes on the new code', async () => {
+  test('activates once every host has the build, then warms every recent runtime on the new code', async () => {
     fleet.suspended('ws:proj:p1', 'h1')
     fleet.suspended('ws:proj:p2', 'h2')
     fleet.suspended('ws:w1', 'h2')
@@ -342,49 +375,51 @@ describe('rootfs switch-over (simulated fleet)', () => {
     // One host staged: nothing happens until the region agrees.
     fleet.stage('h1', 'v2')
     expect(await actions()).toEqual(['staged-mixed'])
-    expect(fleet.boots).toHaveLength(0)
-
-    fleet.stage('h2', 'v2')
-    expect(await actions()).toEqual(['prewarm-started'])
-    const job = await fleet.jobDone()
-    expect(job.target).toBe('staged')
-    expect(job.counts).toEqual({ warmed: 5, 'in-use': 1 })
-    expect(fleet.boots.every((b) => b.rootfs === 'staged')).toBe(true)
-
-    // Users are still served from the current image while it warms.
-    expect(fleet.status('ws:proj:p1')).toMatchObject({ state: 'suspended', rootfsFresh: true, stagedSnapshotIdentity: 'v2-h1' })
-    expect(fleet.status('ws:proj:idle')).toMatchObject({ state: 'suspended', rootfsFresh: true, stagedSnapshotIdentity: 'v2-h2' })
-    expect(fleet.status('ws:proj:busy')).toMatchObject({ state: 'assigned', rootfsFresh: true })
-    // No host is told to switch until the pre-warm is done.
     expect(await fleet.heartbeat('h1')).toBeUndefined()
 
-    expect(await actions()).toEqual(['activated'])
+    fleet.stage('h2', 'v2')
+    const [act] = await switchoverTick(fleet.deps, CFG)
+    expect(act).toMatchObject({ action: 'activated', detail: 'staged on every host', queued: 6 })
+    expect(fleet.boots).toHaveLength(0)
+    // Mid-switch the hosts still report the old sha: no rollout sweep either way.
+    expect((await rewarmWatcherTick(fleet.deps, CFG)).map((r) => r.action)).toEqual(['unchanged'])
     expect(await fleet.heartbeat('h1')).toBe('v2')
     expect(await fleet.heartbeat('h2')).toBe('v2')
     expect(await actions()).toEqual(['none'])
 
-    // Every pre-warmed runtime now resumes, from a snapshot taken on the new image.
-    for (const key of ['ws:proj:p1', 'ws:proj:p2', 'ws:w1', 'ws:proj:p3', 'ws:proj:idle']) {
+    // Nothing is booted while a host still has the build staged, nor before the delay.
+    expect((await drainRefreshQueue(fleet.deps, CFG)).started).toEqual([])
+    fleet.advance(SWITCHOVER.refreshDelayMs)
+    await drainAll()
+    expect((await getRefreshStatus(fleet.store)).counts).toEqual({ warmed: 4, 'left-running': 2 })
+    expect(fleet.boots.every((b) => b.rootfs === 'current')).toBe(true)
+
+    for (const key of ['ws:proj:p1', 'ws:proj:p2', 'ws:w1', 'ws:proj:p3']) {
       const st = fleet.status(key)!
       expect(st).toMatchObject({ state: 'suspended', rootfsFresh: true })
-      expect(st.snapshotRootfsIdentity).toBe(fleet.host(st.hostId).base)
       expect(fleet.userOpen(key)).toEqual({ mode: 'resumed', identity: fleet.host(st.hostId).base })
     }
-
-    // The runtime in use was never stopped: activation doesn't touch running VMs.
+    // Running VMs were never stopped from the control plane.
     expect(fleet.stops).not.toContain('ws:proj:busy')
-    expect(fleet.status('ws:proj:busy')).toMatchObject({ state: 'assigned', rootfsFresh: false })
+    expect(fleet.stops).not.toContain('ws:proj:idle')
+    expect(fleet.status('ws:proj:idle')).toMatchObject({ state: 'assigned', rootfsFresh: false })
+
+    // The host rotates the idle one: it comes back on the new image.
+    await fleet.rotate('ws:proj:idle')
+    fleet.advance(SWITCHOVER.refreshDelayMs)
+    await drainAll()
+    expect(fleet.status('ws:proj:idle')).toMatchObject({ state: 'suspended', rootfsFresh: true, snapshotRootfsIdentity: 'v2-h2' })
+
+    // Once the hosts report v2 the rollout sweep has nothing to start.
+    fleet.advance(CFG.settleMs)
+    expect((await rewarmWatcherTick(fleet.deps, CFG)).map((r) => r.action)).toEqual(['unchanged'])
   })
 
   test('a runtime in use during the switch is retired on suspend and refreshed on the new image', async () => {
     fleet.running('ws:proj:busy', 'h1', 1 * MIN)
-    fleet.stage('h1', 'v2')
-    fleet.stage('h2', 'v2')
-    expect(await actions()).toEqual(['prewarm-started'])
-    expect((await fleet.jobDone()).counts).toEqual({ 'in-use': 1 })
-    expect(await actions()).toEqual(['activated'])
-    await fleet.heartbeat('h1')
-    await fleet.heartbeat('h2')
+    await switchTo('v2')
+    fleet.advance(SWITCHOVER.refreshDelayMs)
+    await drainAll()
 
     // Its user leaves: a snapshot of the old image would resume old code, so
     // the host retires it instead and queues a refresh.
@@ -404,141 +439,43 @@ describe('rootfs switch-over (simulated fleet)', () => {
     expect(fleet.boots.at(-1)).toEqual({ key: 'ws:proj:busy', rootfs: 'current', hostId: 'h1' })
     const stats = await getRefreshStatus(fleet.store)
     expect(stats.queued).toBe(0)
-    expect(stats.counts).toEqual({ warmed: 1 })
+    expect(stats.counts).toEqual({ 'left-running': 1, warmed: 1 })
   })
 
-  test('the rollout re-warm after activation finds everything already warm', async () => {
-    fleet.suspended('ws:proj:p1', 'h1')
-    fleet.suspended('ws:proj:p2', 'h2')
-    await rewarmWatcherTick(fleet.deps, CFG)
-    fleet.stage('h1', 'v2')
-    fleet.stage('h2', 'v2')
-    await actions()
-    await fleet.jobDone()
-    await actions()
-    await fleet.heartbeat('h1')
-    await fleet.heartbeat('h2')
-    const bootsAfterSwitch = fleet.boots.length
+  test('an always-on runtime the host rotates is booted again at once and left running', async () => {
+    fleet.running('ws:proj:ao', 'h1', 30 * MIN)
+    await switchTo('v2')
+    await fleet.rotate('ws:proj:ao', { alwaysOn: true })
 
-    // The new sha settles, then the coverage sweep runs.
-    expect((await rewarmWatcherTick(fleet.deps, CFG)).map((r) => r.action)).toEqual(['settling'])
-    fleet.advance(CFG.settleMs)
-    expect((await rewarmWatcherTick(fleet.deps, CFG)).map((r) => r.action)).toEqual(['started'])
-    const sweep = await fleet.jobDone()
-    expect(sweep.target).toBeUndefined()
-    expect(sweep.counts).toEqual({ 'already-warm': 2 })
-    expect(fleet.boots.length).toBe(bootsAfterSwitch)
+    const res = await drainRefreshQueue(fleet.deps, CFG)
+    expect(res.started).toEqual(['ws:proj:ao'])
+    await Promise.all(res.running)
+    expect(fleet.status('ws:proj:ao')).toMatchObject({ state: 'assigned', rootfsFresh: true, snapshotRootfsIdentity: 'v2-h1' })
+    expect(fleet.stops).not.toContain('ws:proj:ao')
+    expect((await getRefreshStatus(fleet.store)).counts).toEqual({ 'kept-running': 1 })
   })
 
-  test('a newer staged build mid pre-warm cancels it and the newest build is the one activated', async () => {
-    fleet.suspended('ws:proj:p1', 'h1')
-    fleet.suspended('ws:proj:p2', 'h2')
+  test('the newest staged build is the one activated', async () => {
     fleet.stage('h1', 'v2')
-    fleet.stage('h2', 'v2')
-    let release!: () => void
-    fleet.gate = new Promise<void>((r) => (release = r))
-    expect(await actions()).toEqual(['prewarm-started'])
-    while (fleet.boots.length < 2) await new Promise((r) => setTimeout(r, 0))
-
-    // v3 lands on both hosts while v2's boots are in flight.
+    expect(await actions()).toEqual(['staged-mixed'])
+    fleet.advance(MIN)
     fleet.stage('h1', 'v3')
     fleet.stage('h2', 'v3')
-    expect(await actions()).toEqual(['prewarm-superseded'])
-    fleet.gate = null
-    release()
-    // Both VMs were already up on v2: the job sees the newer build and leaves
-    // them alone rather than parking them in a dropped slot.
-    const old = await fleet.jobDone()
-    expect(old.counts).toEqual({ superseded: 2 })
-    expect(await fleet.store.getControl()).toBe('cancel')
-    // Their idle suspend (the host reaper) retires them: v2 is gone.
-    expect(await fleet.suspend('ws:proj:p1')).toMatchObject({ retired: true })
-    expect(await fleet.suspend('ws:proj:p2')).toMatchObject({ retired: true })
-
-    expect(await actions()).toEqual(['prewarm-started'])
-    const job = await fleet.jobDone()
-    expect(job.counts).toEqual({ warmed: 2 })
     expect(await actions()).toEqual(['activated'])
-
     // A host still on v2 is never told to activate.
     expect(await activateRootfsFor('us', 'v2', fleet.store)).toBeUndefined()
     expect(await fleet.heartbeat('h1')).toBe('v3')
     expect(await fleet.heartbeat('h2')).toBe('v3')
-    expect(fleet.status('ws:proj:p1')).toMatchObject({ state: 'suspended', rootfsFresh: true, snapshotRootfsIdentity: 'v3-h1' })
-    expect(fleet.status('ws:proj:p2')).toMatchObject({ state: 'suspended', rootfsFresh: true, snapshotRootfsIdentity: 'v3-h2' })
   })
 
-  test('a user opening a runtime mid pre-warm keeps it, and is never stopped', async () => {
-    fleet.suspended('ws:proj:opened-mid-prewarm', 'h1')
-    fleet.stage('h1', 'v2')
-    fleet.stage('h2', 'v2')
-    let release!: () => void
-    fleet.gate = new Promise<void>((r) => (release = r))
-    await actions()
-    await new Promise((r) => setTimeout(r, 0))
-    // Opened through the normal path while the staged boot is pending. (Its own
-    // key: markRuntimeOpened throttles per key, process-wide.)
-    const { markRuntimeOpened } = await import('../metal-rewarm')
-    await markRuntimeOpened('ws:proj:opened-mid-prewarm', fleet.store, fleet.clock.t + 1)
-    fleet.gate = null
-    release()
-    const job = await fleet.jobDone()
-    expect(job.counts).toEqual({ 'user-opened': 1 })
-    expect(fleet.status('ws:proj:opened-mid-prewarm')).toMatchObject({ state: 'assigned' })
-    expect(fleet.stops).toEqual([])
-  })
-
-  test('a pre-warm cut off by an API deploy is resumed, not activated half-done', async () => {
-    fleet.suspended('ws:proj:p1', 'h1')
-    fleet.suspended('ws:proj:p2', 'h2')
-    fleet.stage('h1', 'v2')
-    fleet.stage('h2', 'v2')
-    expect(await actions()).toEqual(['prewarm-started'])
-    const first = await fleet.jobDone()
-    expect(first.counts).toEqual({ warmed: 2 })
-    // The replica running it died: its status still says running, but nobody holds the lease.
-    await fleet.store.setStatus({ ...first, state: 'running', finishedAt: undefined })
-    const boots = fleet.boots.length
-    fleet.advance(MIN)
-
-    expect(await actions()).toEqual(['prewarm-resumed'])
-    expect(await fleet.heartbeat('h1')).toBeUndefined()
-    const resumed = await fleet.jobDone()
-    expect(resumed.jobId).not.toBe(first.jobId)
-    expect(resumed.counts).toEqual({ 'already-warm': 2 })
-    expect(fleet.boots.length).toBe(boots)
-
-    expect(await actions()).toEqual(['activated'])
-    expect(await fleet.heartbeat('h1')).toBe('v2')
-  })
-
-  test('a pre-warm interrupted past the timeout activates', async () => {
-    fleet.suspended('ws:proj:p1', 'h1')
-    fleet.stage('h1', 'v2')
-    fleet.stage('h2', 'v2')
-    await actions()
-    const first = await fleet.jobDone()
-    await fleet.store.setStatus({ ...first, state: 'running', finishedAt: undefined })
-    fleet.advance(SWITCHOVER.prewarmTimeoutMs)
-    expect(await actions()).toEqual(['activated'])
-  })
-
-  test('a host that cannot pre-warm activates its region straight away', async () => {
-    fleet.suspended('ws:proj:p1', 'h1')
-    fleet.stage('h1', 'v2', { prewarm: false })
-    fleet.stage('h2', 'v2')
-    expect(await actions()).toEqual(['activated'])
-    expect(fleet.boots).toHaveLength(0)
-    expect(await fleet.heartbeat('h1')).toBe('v2')
-  })
-
-  test('a region that never converges is activated at the pre-warm timeout', async () => {
+  test('a region that never converges is activated after the staging wait', async () => {
     fleet.stage('h1', 'v2')
     expect(await actions()).toEqual(['staged-mixed'])
-    fleet.advance(SWITCHOVER.prewarmTimeoutMs - 1)
+    fleet.advance(SWITCHOVER.stagingWaitMs - 1)
     expect(await actions()).toEqual(['staged-mixed'])
     fleet.advance(1)
-    expect(await actions()).toEqual(['activated'])
+    const [r] = await switchoverTick(fleet.deps, CFG)
+    expect(r).toMatchObject({ action: 'activated', detail: 'staging wait over (never staged: h2)' })
     expect(await fleet.heartbeat('h1')).toBe('v2')
     // h2 has nothing staged, so nothing to activate.
     expect(await fleet.heartbeat('h2')).toBeUndefined()
@@ -546,17 +483,24 @@ describe('rootfs switch-over (simulated fleet)', () => {
     expect(sw.us.activated).toBe('v2')
   })
 
+  test("a staged pre-warm left by an older API is cancelled at activation", async () => {
+    await fleet.store.set('prewarm:us', JSON.stringify({ version: 'v2', jobId: 'old-job', startedAt: fleet.clock.t }))
+    await fleet.store.setStatus({ jobId: 'old-job', state: 'running' } as RewarmStatus)
+    await fleet.store.acquireLease('job', 'old-api', 60 * MIN)
+    await switchTo('v2')
+    expect(await fleet.store.getControl()).toBe('cancel')
+    expect(await fleet.store.get('prewarm:us')).toBeNull()
+  })
+
   test('regions switch independently', async () => {
     fleet.addHost('e1', 'eu')
     fleet.stage('h1', 'v2')
     fleet.stage('h2', 'v2')
-    const res = await switchoverTick(fleet.deps)
+    const res = await switchoverTick(fleet.deps, CFG)
     expect(res).toEqual([
-      { region: 'us', action: 'prewarm-started', stagedVersion: 'v2', detail: expect.any(String) },
+      { region: 'us', action: 'activated', stagedVersion: 'v2', detail: 'staged on every host', queued: 0 },
       { region: 'eu', action: 'none' },
     ])
-    await fleet.jobDone()
-    await actions()
     expect(await activateRootfsFor('eu', 'v2', fleet.store)).toBeUndefined()
     expect(await activateRootfsFor('us', 'v2', fleet.store)).toBe('v2')
   })
@@ -569,15 +513,15 @@ describe('stale-rootfs refresh queue', () => {
     fleet.advance(SWITCHOVER.refreshDelayMs)
   }
 
-  test('one refresh per host at a time', async () => {
-    await retire('ws:proj:a', 'h1')
-    await retire('ws:proj:b', 'h1')
+  test(`at most ${SWITCHOVER.refreshPerHost} refreshes per host at a time`, async () => {
+    const onH1 = Array.from({ length: SWITCHOVER.refreshPerHost + 1 }, (_, i) => `ws:proj:a${i}`)
+    for (const k of onH1) await retire(k, 'h1')
     await retire('ws:proj:c', 'h2')
     const first = await drainRefreshQueue(fleet.deps, CFG)
-    expect(first.started.sort()).toEqual(['ws:proj:a', 'ws:proj:c'])
+    expect(first.started.sort()).toEqual([...onH1.slice(0, SWITCHOVER.refreshPerHost), 'ws:proj:c'].sort())
     await Promise.all(first.running)
     const second = await drainRefreshQueue(fleet.deps, CFG)
-    expect(second.started).toEqual(['ws:proj:b'])
+    expect(second.started).toEqual([onH1.at(-1)!])
     await Promise.all(second.running)
     expect((await getRefreshStatus(fleet.store)).queued).toBe(0)
   })
@@ -640,5 +584,13 @@ describe('stale-rootfs refresh queue', () => {
     await Promise.all(res.running)
     expect(fleet.stops).toEqual([])
     expect((await getRefreshStatus(fleet.store)).counts).toEqual({ 'already-warm': 1 })
+  })
+})
+
+describe('warm-up utilization', () => {
+  test('uses host RAM when the host reports it, else the VM count', async () => {
+    const { warmUtilPct } = await import('../metal-rewarm')
+    expect(warmUtilPct({ utilPct: 119, load: { mem: { totalMiB: 1000, availableMiB: 600 } } })).toBe(40)
+    expect(warmUtilPct({ utilPct: 119 })).toBe(119)
   })
 })

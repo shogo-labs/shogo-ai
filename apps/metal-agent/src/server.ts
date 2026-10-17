@@ -488,7 +488,22 @@ if (config.idleSuspendMs > 0) {
         }
         if (ids.length) console.log(`[metal-agent] idle-suspended: ${ids.join(', ')}`)
         if (retired.length) console.log(`[metal-agent] idle-retired (stale rootfs): ${retired.join(', ')}`)
-      }),
+      })
+      .catch((err) => console.error('[metal-agent] idle reap error:', err?.message ?? err))
+      .then(() => pool.rotateStale())
+      .then(({ retired, alwaysOn }) => {
+        for (const id of retired) {
+          fwd.remove(id)
+          reportPlacement('cold', id, { refresh: 'stale-rootfs' })
+        }
+        for (const id of alwaysOn) {
+          fwd.remove(id)
+          reportPlacement('cold', id, { refresh: 'stale-rootfs-always-on' })
+        }
+        const all = [...retired, ...alwaysOn]
+        if (all.length) console.log(`[metal-agent] rollout-rotated (superseded rootfs): ${all.join(', ')}`)
+      })
+      .catch((err) => console.error('[metal-agent] rollout rotation error:', err?.message ?? err)),
   )
 }
 

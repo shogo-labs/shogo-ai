@@ -5060,6 +5060,54 @@ export class MetalWarmPool {
   }
 
   /**
+   * Rootfs rollout: retire assigned VMs still on a superseded image (backed up,
+   * stopped without a snapshot) so the control plane warms them on the current
+   * one. A VM goes once it has been idle for `rolloutIdleMs`, or
+   * `rolloutDeadlineMs` after this host first saw it stale, and never during an
+   * agent turn. Unlike `reapIdle`, always-on VMs rotate too; they come back
+   * separately because the control plane boots them again instead of leaving
+   * them suspended.
+   */
+  async rotateStale(now = Date.now()): Promise<{ retired: string[]; alwaysOn: string[] }> {
+    const out = { retired: [] as string[], alwaysOn: [] as string[] }
+    if (!(this.cfg.rolloutIdleMs > 0)) return out
+    const stale = [...this.assigned.values()].filter(
+      (a) => this.rootfsGeneration(this.bootRootfsIdentity(a), a.handle.vmClass) === 'stale',
+    )
+    const staleIds = new Set(stale.map((a) => a.projectId))
+    for (const id of this.staleSince.keys()) if (!staleIds.has(id)) this.staleSince.delete(id)
+    for (const a of stale) if (!this.staleSince.has(a.projectId)) this.staleSince.set(a.projectId, now)
+
+    const due = stale.filter((a) => {
+      if ((a.activeStreams ?? 0) > 0) return false
+      const idleFor = now - (a.lastRealActivityAt ?? a.assignedAt)
+      return idleFor >= this.cfg.rolloutIdleMs || now - this.staleSince.get(a.projectId)! >= this.cfg.rolloutDeadlineMs
+    })
+    const cap = this.cfg.reapMaxPerPass ?? 0
+    if (cap > 0 && due.length > cap) due.length = cap
+    for (const a of due) {
+      const alwaysOn = !!a.alwaysOn
+      try {
+        const r = await this.recycle(a.projectId, { reason: 'stale-rootfs' })
+        if (r.aborted) {
+          console.warn(`[pool] rollout rotation of ${a.projectId} aborted (${JSON.stringify(r.steps.at(-1))}); retrying next pass`)
+          continue
+        }
+      } catch (err: any) {
+        console.error(`[pool] rollout rotation failed for ${a.projectId}:`, err?.message ?? err)
+        continue
+      }
+      this.staleSince.delete(a.projectId)
+      metrics.inc(M.rolloutRotated)
+      ;(alwaysOn ? out.alwaysOn : out.retired).push(a.projectId)
+    }
+    return out
+  }
+
+  /** When this host first saw each assigned VM on a superseded rootfs (see `rotateStale`). */
+  private staleSince = new Map<string, number>()
+
+  /**
    * Tear down a tracked VM: drop it from the assigned map + adopt-on-restart
    * registry, then stopVM to reclaim tap/socket/rootfs. Shared by the open()
    * liveness/health gate (dead FC process OR mute guest) and the dead-VM reaper.

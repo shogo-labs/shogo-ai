@@ -350,6 +350,8 @@ export interface MetalHostRegistration {
      * silently unless leaked devices are being reclaimed faster than they appear.
      */
     taps?: { inUse: number; capacity: number }
+    /** Host RAM from /proc/meminfo. Absent on older agents. */
+    mem?: { totalMiB: number; availableMiB: number }
   }
   /** NVMe cache scalars (Phase 5). Absent on older agents → treated as headroom. */
   disk?: { totalBytes: number; freeBytes: number; usedPct: number; cacheBytes: number; localCount: number }

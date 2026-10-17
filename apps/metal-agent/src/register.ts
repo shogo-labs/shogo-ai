@@ -17,6 +17,7 @@
  * route new projects here until the next successful heartbeat.
  */
 
+import { readFileSync } from 'fs'
 import { config } from './config'
 import { currentIdleWindow, setIdleDirective, type IdleDirective } from './idle-policy'
 import { metrics } from './metrics'
@@ -45,6 +46,23 @@ function stagedRootfsReport(pool: MetalWarmPool) {
     prewarm: pool.stagedRootfs('standard')?.identity === staged.identities.standard,
     stagedSnapshots: pool.capacity().stagedCount,
   }
+}
+
+/** MemTotal / MemAvailable from /proc/meminfo, in MiB. Undefined off Linux. */
+export function hostMemory(meminfo?: string): { totalMiB: number; availableMiB: number } | undefined {
+  let text = meminfo
+  if (text === undefined) {
+    try {
+      text = readFileSync('/proc/meminfo', 'utf8')
+    } catch {
+      return undefined
+    }
+  }
+  const kb = (field: string) => Number(new RegExp(`^${field}:\\s+(\\d+) kB`, 'm').exec(text!)?.[1])
+  const total = kb('MemTotal')
+  const available = kb('MemAvailable')
+  if (!(total > 0) || !(available >= 0)) return undefined
+  return { totalMiB: Math.round(total / 1024), availableMiB: Math.round(available / 1024) }
 }
 
 function payload(pool: MetalWarmPool, opts: { restarting?: boolean } = {}) {
@@ -100,6 +118,10 @@ function payload(pool: MetalWarmPool, opts: { restarting?: boolean } = {}) {
       // /assign here fails. The GC reclaims leaked devices, so a number far
       // above available+assigned+suspended means the leak is outrunning it.
       taps: pool.tapUsage(),
+      // Host RAM, so warm-up work is gated on real headroom rather than on a
+      // VM count (idle VMs are small; a count cap held a staging pre-warm back
+      // for its whole window).
+      mem: hostMemory(),
     },
     // NVMe cache scalars so the control plane can route disk- and cache-aware
     // (Phase 2) without shipping per-project cache manifests in the heartbeat.
@@ -162,7 +184,7 @@ async function announce(
 export function reportPlacement(
   event: 'suspended' | 'evicted' | 'cold',
   projectId: string,
-  opts: { refresh?: 'stale-rootfs' } = {},
+  opts: { refresh?: 'stale-rootfs' | 'stale-rootfs-always-on' } = {},
 ): void {
   if (!config.controlPlaneUrl) return
   const url = `${config.controlPlaneUrl.replace(/\/$/, '')}/api/internal/metal/placement`
@@ -173,7 +195,8 @@ export function reportPlacement(
       ...(config.registerToken ? { Authorization: `Bearer ${config.registerToken}` } : {}),
     },
     // `refresh`: the VM was retired off a superseded rootfs, so the control
-    // plane should re-warm it on the current one.
+    // plane should re-warm it on the current one (and leave an always-on one
+    // running).
     body: JSON.stringify({ hostId: config.hostId, projectId, event, ...(opts.refresh ? { refresh: opts.refresh } : {}) }),
     signal: AbortSignal.timeout(3000),
   }).catch(() => {})

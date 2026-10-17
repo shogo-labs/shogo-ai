@@ -42,6 +42,10 @@ export type RewarmOutcome =
   | 'cancelled'
   /** Staged pre-warm: what ran or got snapshotted was not on the host's staged rootfs. */
   | 'superseded'
+  /** Running on a superseded rootfs: the host rotates it once idle (metal-agent `rotateStale`). */
+  | 'left-running'
+  /** Booted on the current rootfs and left up (an always-on runtime the host rotated). */
+  | 'kept-running'
 
 export interface RewarmCandidate {
   key: string
@@ -176,8 +180,8 @@ const OPENED_TTL_S = 6 * 60 * 60
 
 /** Switch-over tunables (constants, not flags; see DEFAULT_REWARM_CONFIG's env knobs for the job itself). */
 export const SWITCHOVER = {
-  /** Activate a region's staged rootfs this long after it was first seen, pre-warm finished or not. */
-  prewarmTimeoutMs: 90 * 60_000,
+  /** Activate a region this long after its staged rootfs was first seen, even if some hosts never staged it. */
+  stagingWaitMs: 90 * 60_000,
   /** A stale-rootfs retire is refreshed this long after it was reported (lets a user reopen first). */
   refreshDelayMs: 2 * 60_000,
   /** A failed refresh is retried once, this much later. */
@@ -185,7 +189,7 @@ export const SWITCHOVER = {
   /** A refresh not done by then is dropped. */
   refreshExpiryMs: 24 * 60 * 60_000,
   /** Concurrent refreshes per host. */
-  refreshPerHost: 1,
+  refreshPerHost: 4,
   /** How long one refresh may hold its host slot. */
   refreshSlotMs: 10 * 60_000,
 } as const
@@ -374,7 +378,13 @@ function stagedIdentitiesOf(hosts: RewarmHost[], hostId: string | undefined): st
 export async function warmRuntime(
   c: RewarmCandidate,
   ctx: WarmContext,
-  opts: { target: WarmTarget } = { target: 'current' },
+  opts: {
+    target: WarmTarget
+    /** A VM running on a superseded rootfs is the host's to rotate, never recycled from here. */
+    leaveRunning?: boolean
+    /** Boot and leave it up rather than suspending it (always-on runtimes). */
+    keepRunning?: boolean
+  } = { target: 'current' },
 ): Promise<Omit<RewarmItem, 'key' | 'ms'>> {
   const { deps, region } = ctx
   const staged = opts.target === 'staged'
@@ -390,6 +400,7 @@ export async function warmRuntime(
     // Running on the staged image already: its next suspend lands in the staged slot.
     if (staged && onStaged(st.hostId, st.snapshotRootfsIdentity)) return { outcome: 'already-warm', hostId: st.hostId }
     if (!staged && st.rootfsFresh) return { outcome: 'already-warm', hostId: st.hostId }
+    if (!staged && opts.leaveRunning) return { outcome: 'left-running', hostId: st.hostId }
     if ((st.activeStreams ?? 0) > 0 || (st.realIdleMs ?? 0) < IN_USE_IDLE_MS) {
       return { outcome: 'in-use', hostId: st.hostId }
     }
@@ -427,6 +438,10 @@ export async function warmRuntime(
   while (!ready && deps.now() - bootStart < BOOT_DEADLINE_MS) {
     ready = await deps.ready(c, url).catch(() => false)
     if (!ready) await deps.sleep(POLL_MS)
+  }
+  if (opts.keepRunning && !staged) {
+    const st2 = await deps.runtimeStatus(c.key).catch(() => null)
+    return ready ? { outcome: 'kept-running', hostId: st2?.hostId } : { outcome: 'warmed-api-not-ready', hostId: st2?.hostId }
   }
 
   // Someone opened it while we were booting: leave it running for them.
@@ -685,7 +700,9 @@ export async function rewarmWatcherTick(
       out.push({ region, action: 'recorded', rootfsSha: sha })
       continue
     }
-    if (last === sha) {
+    // `last` was recorded by a switch-over activation that the region's hosts
+    // are still restarting onto; the refresh queue warms it, not a sweep.
+    if (last === sha || (await deps.store.get(`activate:${region}`)) === last) {
       out.push({ region, action: 'unchanged', rootfsSha: sha })
       continue
     }
@@ -720,34 +737,33 @@ export async function rewarmWatcherTick(
   return out
 }
 
-// --- switch-over: staged pre-warm + activation --------------------------------
+// --- switch-over: activation + rollout refresh ------------------------------
 //
-// A rootfs release no longer swaps the image under a running host. Each host
-// builds `<base>.staged` and reports it (`stagedRootfs`). Once every host in a
-// region holds the same staged version, a `target: 'staged'` job boots the
-// region's recent runtimes on it and suspends them into each host's staged
-// slot, while users keep being served on the current image. Then the region is
-// activated: heartbeats return `activateRootfs`, hosts rename the staged image
-// into place, promote the pre-warmed snapshots and restart (running VMs are
-// untouched). Activation also happens on PREWARM timeout, and right away when
-// a host can't pre-warm, so a release is never held back by its warm-up.
+// A rootfs release never swaps the image under a running VM. Each host builds
+// `<base>.staged` and reports it (`stagedRootfs`). Once every host in a region
+// holds the same staged version (or `stagingWaitMs` after it was first seen,
+// for a host that never builds it), the region is activated: heartbeats return
+// `activateRootfs`, hosts rename the staged image into place and restart, and
+// running VMs are untouched. The region's recent runtimes are queued on the
+// refresh queue and booted on the new image a few per host at a time, so the
+// warm-up survives API deploys and never holds the release back.
+//
+// A VM still running the old image is the host's to rotate: once it has been
+// idle for `METAL_ROLLOUT_IDLE_MS` (or at `METAL_ROLLOUT_DEADLINE_MS`, between
+// agent turns) the host retires it and reports `refresh: 'stale-rootfs'`, or
+// `'stale-rootfs-always-on'` for an always-on runtime, which is booted again on
+// the new image straight away and left running.
 
 export interface SwitchoverTickResult {
   region: string
-  action:
-    | 'none'
-    | 'activated'
-    | 'activating'
-    | 'staged-mixed'
-    | 'prewarm-started'
-    | 'prewarm-resumed'
-    | 'prewarming'
-    | 'prewarm-superseded'
-    | 'busy'
+  action: 'none' | 'activated' | 'activating' | 'staged-mixed'
   stagedVersion?: string
   detail?: string
+  /** Runtimes queued for a refresh on the new image at activation. */
+  queued?: number
 }
 
+/** A staged pre-warm started by an API from before the refresh-queue rollout. */
 interface PrewarmRecord {
   version: string
   jobId: string
@@ -773,6 +789,23 @@ function parseJson<T>(v: string | null): T | null {
   }
 }
 
+/** Queue every recent runtime in `region` (or not placed anywhere) for a refresh on the new image. */
+async function queueRolloutRefresh(
+  deps: RewarmDeps,
+  region: string,
+  cfg: { sinceHours: number; maxRuntimes: number },
+): Promise<number> {
+  const candidates = await deps.listCandidates(deps.now() - cfg.sinceHours * 60 * 60_000, cfg.maxRuntimes)
+  let queued = 0
+  for (const c of candidates) {
+    const st = await deps.runtimeStatus(c.key).catch(() => null)
+    if (st && st.region !== region) continue
+    await enqueueRefresh(c.key, { hostId: st?.hostId, reason: 'rollout' }, deps.store, deps.now())
+    queued++
+  }
+  return queued
+}
+
 /**
  * One switch-over pass per region (runs in the watcher tick, under its lease).
  * Idempotent: every decision is re-derived from the hosts' heartbeats and the
@@ -780,7 +813,7 @@ function parseJson<T>(v: string | null): T | null {
  */
 export async function switchoverTick(
   deps: RewarmDeps,
-  start: (input: StartRewarmInput) => Promise<StartRewarmResult> = (input) => startRewarmJob(input, deps),
+  cfg: { sinceHours: number; maxRuntimes: number } = rewarmConfig(),
 ): Promise<SwitchoverTickResult[]> {
   const { store } = deps
   const hosts = await deps.listHosts()
@@ -795,8 +828,7 @@ export async function switchoverTick(
       continue
     }
     const version = staged.version
-    const activated = await store.get(`activate:${region}`)
-    if (activated === version) {
+    if ((await store.get(`activate:${region}`)) === version) {
       out.push({ region, action: 'activating', stagedVersion: version })
       continue
     }
@@ -806,92 +838,41 @@ export async function switchoverTick(
     const firstSeenAt = seenVersion === version ? Number(seenAt) : now
     if (seenVersion !== version) await store.set(`stagedSeen:${region}`, `${version}|${now}`, SWITCHOVER_TTL_S)
 
-    const pw = parseJson<PrewarmRecord>(await store.get(`prewarm:${region}`))
-    const status = await getRewarmStatus(store).catch(() => null)
-    const jobRunning = (s: typeof status, jobId?: string) =>
-      !!s && (!jobId || s.jobId === jobId) && (s.state === 'running' || s.state === 'paused')
-
-    const activate = async (why: string) => {
-      if (pw?.version === version && jobRunning(status, pw.jobId)) await store.setControl('cancel').catch(() => {})
-      await store.set(`activate:${region}`, version, SWITCHOVER_TTL_S)
-      const job = pw?.version === version && status?.jobId === pw.jobId ? status : null
-      deps.log(
-        `[MetalRewarm] ${JSON.stringify({
-          event: 'metal.switchover.activate',
-          region,
-          version,
-          reason: why,
-          prewarmJob: job?.jobId,
-          counts: job?.counts,
-          waitedMs: now - firstSeenAt,
-        })}`,
-      )
-      out.push({ region, action: 'activated', stagedVersion: version, detail: why })
-    }
-
-    if (list.some((h) => h.stagedRootfs?.version === version && h.stagedRootfs.prewarm === false)) {
-      await activate('host cannot pre-warm')
-      continue
-    }
-    if (now - firstSeenAt >= SWITCHOVER.prewarmTimeoutMs) {
-      await activate('pre-warm timeout')
-      continue
-    }
-    if (!list.every((h) => h.stagedRootfs?.version === version)) {
-      const lagging = list.filter((h) => h.stagedRootfs?.version !== version).map((h) => h.hostId)
+    const lagging = list.filter((h) => h.stagedRootfs?.version !== version).map((h) => h.hostId)
+    if (lagging.length > 0 && now - firstSeenAt < SWITCHOVER.stagingWaitMs) {
       out.push({ region, action: 'staged-mixed', stagedVersion: version, detail: `waiting on ${lagging.join(',')}` })
       continue
     }
 
-    const startPrewarm = async (resumed: boolean) => {
-      const res = await start({ reason: `pre-warm rootfs ${version.slice(0, 12)} in ${region}`, region, target: 'staged' })
-      if (!res.started || !res.jobId) {
-        out.push({ region, action: 'busy', stagedVersion: version })
-        return
-      }
-      await store.set(
-        `prewarm:${region}`,
-        JSON.stringify({ version, jobId: res.jobId, startedAt: now } satisfies PrewarmRecord),
-        SWITCHOVER_TTL_S,
-      )
-      deps.log(
-        resumed
-          ? `[MetalRewarm] region ${region}: pre-warm ${pw?.jobId} was interrupted, resuming as ${res.jobId} (${res.total} runtimes)`
-          : `[MetalRewarm] region ${region}: staged rootfs ${version.slice(0, 12)} on every host, pre-warm ${res.jobId} (${res.total} runtimes)`,
-      )
-      out.push({ region, action: resumed ? 'prewarm-resumed' : 'prewarm-started', stagedVersion: version, detail: res.jobId })
-    }
-
-    if (pw?.version !== version) {
-      // A pre-warm for an older staged build is pointless now: its snapshots
-      // were dropped when the host rebuilt. Cancel it; the next tick starts ours.
-      if (pw && jobRunning(status, pw.jobId)) {
+    const pw = parseJson<PrewarmRecord>(await store.get(`prewarm:${region}`))
+    if (pw) {
+      const status = await getRewarmStatus(store).catch(() => null)
+      if (status?.jobId === pw.jobId && (status.state === 'running' || status.state === 'paused')) {
         await store.setControl('cancel').catch(() => {})
-        out.push({ region, action: 'prewarm-superseded', stagedVersion: version, detail: `cancelled ${pw.jobId}` })
-        continue
       }
-      await startPrewarm(false)
-      continue
+      await store.del(`prewarm:${region}`)
     }
 
-    // The job dies with its API replica (any deploy). Runtimes it already
-    // warmed answer `prewarmed` straight away, so a fresh job picks up where
-    // it stopped; the timeout above still bounds the whole pre-warm.
-    if (status?.jobId === pw.jobId && status.state === 'interrupted') {
-      await startPrewarm(true)
-      continue
-    }
-
-    if (status?.jobId === pw.jobId && !jobRunning(status)) {
-      await activate(`pre-warm ${status.state}`)
-      continue
-    }
-    // A record whose job left no status (store wiped) would wait for the timeout.
-    if (status?.jobId !== pw.jobId && !(await store.leaseHolder(REWARM_JOB_LEASE))) {
-      await activate('pre-warm job gone')
-      continue
-    }
-    out.push({ region, action: 'prewarming', stagedVersion: version, detail: pw.jobId })
+    await store.set(`activate:${region}`, version, SWITCHOVER_TTL_S)
+    // Activated hosts report the staged version as their rootfsSha; recording
+    // it keeps rewarmWatcherTick from sweeping what the refresh queue covers.
+    await store.set(`lastRootfs:${region}`, version)
+    const queued = await queueRolloutRefresh(deps, region, cfg).catch((err) => {
+      deps.log(`[MetalRewarm] region ${region}: queueing the rollout refresh failed: ${err?.message ?? err}`)
+      return 0
+    })
+    const why = lagging.length > 0 ? `staging wait over (never staged: ${lagging.join(',')})` : 'staged on every host'
+    deps.log(
+      `[MetalRewarm] ${JSON.stringify({
+        event: 'metal.switchover.activate',
+        region,
+        version,
+        reason: why,
+        queued,
+        waitedMs: now - firstSeenAt,
+      })}`,
+    )
+    out.push({ region, action: 'activated', stagedVersion: version, detail: why, queued })
   }
   return out
 }
@@ -917,7 +898,6 @@ export async function getSwitchoverStatus(store: RewarmStore = getRewarmStore(),
   for (const region of regions) {
     out[region] = {
       stagedSeen: await store.get(`stagedSeen:${region}`),
-      prewarm: parseJson<PrewarmRecord>(await store.get(`prewarm:${region}`)),
       activated: await store.get(`activate:${region}`),
     }
   }
@@ -926,12 +906,16 @@ export async function getSwitchoverStatus(store: RewarmStore = getRewarmStore(),
 
 // --- refresh queue -----------------------------------------------------------
 //
-// A VM booted from a superseded rootfs is retired on suspend instead of
-// snapshotted (metal-agent `suspendOrRetire`), and the host reports it with
-// `refresh: 'stale-rootfs'`. Queued here, it is re-warmed on the CURRENT image
-// a little later, so a project that was in use during a switch is warm again
-// within minutes of its user leaving. Always the current rootfs at drain time:
-// a newer activation in between means the newest code, never an older one.
+// What gets a runtime onto the CURRENT image, a few per host at a time:
+//  - `rollout`: every recent runtime, queued at activation (switchoverTick);
+//  - `stale-rootfs`: a VM retired off a superseded rootfs (on suspend, or by
+//    the host's rollout rotation), so a project in use during a switch is warm
+//    again within minutes of its user leaving;
+//  - `stale-rootfs-always-on`: the same for an always-on runtime, booted again
+//    straight away and left running.
+// A runtime still running a superseded rootfs is never touched from here: the
+// host rotates it once idle. Always the current rootfs at drain time: a newer
+// activation in between means the newest code, never an older one.
 
 export interface RefreshItem {
   key: string
@@ -948,7 +932,8 @@ export interface RefreshStats {
 }
 
 const refreshItemKey = (key: string) => `refresh:item:${key}`
-const refreshSlotKey = (hostId: string | undefined) => `refresh:slot:${hostId ?? 'unplaced'}`
+const refreshSlotKey = (hostId: string | undefined, i: number) => `refresh:slot:${hostId ?? 'unplaced'}:${i}`
+const ALWAYS_ON_REFRESH = 'stale-rootfs-always-on'
 /** Worth one more try later; anything else is final. */
 const RETRYABLE: RewarmOutcome[] = ['boot-failed', 'suspend-failed', 'busy', 'recycle-aborted', 'cancelled']
 
@@ -959,22 +944,31 @@ export async function enqueueRefresh(
   now = Date.now(),
 ): Promise<void> {
   const prev = parseJson<RefreshItem>(await store.get(refreshItemKey(key)))
+  const reason = prev?.reason === ALWAYS_ON_REFRESH ? ALWAYS_ON_REFRESH : (opts.reason ?? 'stale-rootfs')
   const item: RefreshItem = {
     key,
     hostId: opts.hostId,
-    reason: opts.reason ?? 'stale-rootfs',
+    reason,
     queuedAt: prev?.queuedAt ?? now,
     attempts: prev?.attempts ?? 0,
   }
   await store.set(refreshItemKey(key), JSON.stringify(item), Math.ceil(SWITCHOVER.refreshExpiryMs / 1000))
-  await store.zadd(REFRESH_QUEUE, now + SWITCHOVER.refreshDelayMs, key)
+  // An always-on runtime is down until it is booted again: no grace period.
+  await store.zadd(REFRESH_QUEUE, now + (reason === ALWAYS_ON_REFRESH ? 0 : SWITCHOVER.refreshDelayMs), key)
 }
 
-async function recordRefresh(store: RewarmStore, item: RewarmItem & { attempts: number }, outcome: RewarmOutcome | 'expired' | 'dropped') {
-  const s = parseJson<RefreshStats>(await store.get('refresh:stats')) ?? { counts: {}, recent: [] }
-  s.counts[outcome] = (s.counts[outcome] ?? 0) + 1
-  s.recent = [item, ...s.recent].slice(0, 20)
-  await store.set('refresh:stats', JSON.stringify(s), 7 * 24 * 60 * 60)
+/** Serializes the stats read-modify-write across concurrent refreshes (they run on the watcher's replica). */
+let refreshStatsChain: Promise<void> = Promise.resolve()
+
+function recordRefresh(store: RewarmStore, item: RewarmItem & { attempts: number }, outcome: RewarmOutcome | 'expired' | 'dropped') {
+  const next = refreshStatsChain.then(async () => {
+    const s = parseJson<RefreshStats>(await store.get('refresh:stats')) ?? { counts: {}, recent: [] }
+    s.counts[outcome] = (s.counts[outcome] ?? 0) + 1
+    s.recent = [item, ...s.recent].slice(0, 20)
+    await store.set('refresh:stats', JSON.stringify(s), 7 * 24 * 60 * 60)
+  })
+  refreshStatsChain = next.catch(() => {})
+  return next
 }
 
 export interface RefreshDrainResult {
@@ -989,7 +983,7 @@ export interface RefreshDrainResult {
 /**
  * Start due refreshes, at most `refreshPerHost` per host, only on hosts with
  * room, and none while a job holds the lease (it is already booting things).
- * A host with a staged rootfs pending is skipped: its pre-warm covers these.
+ * A host with a staged rootfs pending is skipped until it has activated.
  * Warms run in the background; the slot keys keep replicas from doubling up.
  */
 export async function drainRefreshQueue(
@@ -1003,7 +997,8 @@ export async function drainRefreshQueue(
     return res
   }
   const now = deps.now()
-  const due = await store.zdue(REFRESH_QUEUE, now, 50)
+  // Wide enough that one saturated host's backlog doesn't hide the others'.
+  const due = await store.zdue(REFRESH_QUEUE, now, 500)
   if (due.length === 0) return res
   const hosts = await deps.listHosts().catch(() => [] as RewarmHost[])
   const claimed = new Set<string>()
@@ -1024,8 +1019,12 @@ export async function drainRefreshQueue(
       continue
     }
     if (host && (host.overWatermark || host.utilPct >= cfg.maxHostUtilPct)) continue
-    const slot = refreshSlotKey(item.hostId)
-    if (claimed.has(slot) || (await store.get(slot))) continue
+    let slot: string | undefined
+    for (let i = 0; i < SWITCHOVER.refreshPerHost && !slot; i++) {
+      const k = refreshSlotKey(item.hostId, i)
+      if (!claimed.has(k) && !(await store.get(k))) slot = k
+    }
+    if (!slot) continue
     claimed.add(slot)
     await store.set(slot, key, Math.ceil(SWITCHOVER.refreshSlotMs / 1000))
     await store.zrem(REFRESH_QUEUE, key)
@@ -1047,7 +1046,11 @@ async function runRefresh(deps: RewarmDeps, item: RefreshItem, slot: string): Pr
     }
     let r: Omit<RewarmItem, 'key' | 'ms'>
     try {
-      r = await warmRuntime(c, { deps, region: null, reason: `refresh: ${item.reason}`, capacity: async () => true })
+      r = await warmRuntime(
+        c,
+        { deps, region: null, reason: `refresh: ${item.reason}`, capacity: async () => true },
+        { target: 'current', leaveRunning: true, keepRunning: item.reason === ALWAYS_ON_REFRESH },
+      )
     } catch (err: any) {
       r = { outcome: 'boot-failed', detail: (err?.message ?? String(err)).slice(0, 300) }
     }
@@ -1086,9 +1089,7 @@ export function startMetalRewarmWatcher(intervalMs = 60_000): void {
     try {
       const deps = await defaultRewarmDeps()
       if (!(await deps.store.acquireLease(WATCHER_LEASE, holder, intervalMs * 2))) return
-      // Switch-over first: a pre-warm takes the job lease, and the rollout
-      // re-warm below then waits (busy) rather than racing it.
-      await switchoverTick(deps).catch((err) => console.warn(`[MetalRewarm] switch-over tick failed: ${err?.message ?? err}`))
+      await switchoverTick(deps, cfg).catch((err) => console.warn(`[MetalRewarm] switch-over tick failed: ${err?.message ?? err}`))
       await rewarmWatcherTick(deps, cfg)
       await drainRefreshQueue(deps, cfg).catch((err) =>
         console.warn(`[MetalRewarm] refresh drain failed: ${err?.message ?? err}`),
@@ -1430,6 +1431,17 @@ async function homeRegionOnly(out: RewarmCandidate[]): Promise<RewarmCandidate[]
   return out.filter((c) => !!c.workspaceId && homeIds.has(c.workspaceId))
 }
 
+/**
+ * How full a host is for warm-up purposes: its RAM in use when it reports
+ * memory, else the controller's VM-count figure. Idle VMs are small, so a
+ * count cap can hold a host "full" with most of its RAM free.
+ */
+export function warmUtilPct(h: { utilPct: number; load?: { mem?: { totalMiB: number; availableMiB: number } } }): number {
+  const mem = h.load?.mem
+  if (!mem || !(mem.totalMiB > 0)) return h.utilPct
+  return Math.round(((mem.totalMiB - mem.availableMiB) / mem.totalMiB) * 100)
+}
+
 /** The real controller, resolvers and Redis, wired for the job and watcher. */
 export async function defaultRewarmDeps(): Promise<RewarmDeps> {
   const ctl = await import('./metal-warm-pool-controller')
@@ -1443,7 +1455,7 @@ export async function defaultRewarmDeps(): Promise<RewarmDeps> {
         hostId: h.hostId,
         region: h.region,
         rootfsSha: h.rootfsSha,
-        utilPct: h.utilPct,
+        utilPct: warmUtilPct(h),
         overWatermark: h.overWatermark,
         stagedRootfs: h.stagedRootfs,
       })),

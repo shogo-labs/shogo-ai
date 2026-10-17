@@ -138,6 +138,10 @@ export function metalRoutes(): Hono {
           body.load?.taps && typeof body.load.taps === 'object'
             ? { inUse: Number(body.load.taps.inUse ?? 0), capacity: Number(body.load.taps.capacity ?? 0) }
             : undefined,
+        mem:
+          body.load?.mem && typeof body.load.mem === 'object' && Number(body.load.mem.totalMiB) > 0
+            ? { totalMiB: Number(body.load.mem.totalMiB), availableMiB: Number(body.load.mem.availableMiB ?? 0) }
+            : undefined,
       },
       disk: body.disk
         ? {
@@ -244,11 +248,13 @@ export function metalRoutes(): Hono {
       await registry
         .clearPlacement(String(body.projectId), body.hostId ? String(body.hostId) : undefined)
         .catch(() => {})
-      // A VM retired off a superseded rootfs: re-warm it on the current one.
-      if (body.refresh === 'stale-rootfs' && String(body.projectId).startsWith('ws:')) {
+      // A VM retired off a superseded rootfs: re-warm it on the current one
+      // (an always-on one is booted again right away and left running).
+      const refresh = body.refresh === 'stale-rootfs' || body.refresh === 'stale-rootfs-always-on' ? body.refresh : null
+      if (refresh && String(body.projectId).startsWith('ws:')) {
         await enqueueRefresh(String(body.projectId), {
           hostId: body.hostId ? String(body.hostId) : undefined,
-          reason: 'stale-rootfs',
+          reason: refresh,
         }).catch((err) => console.warn(`[metal/placement] enqueueRefresh ${body.projectId} failed:`, err?.message ?? err))
       }
     }

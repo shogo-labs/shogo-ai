@@ -67,6 +67,8 @@ export const M = {
   // idle VMs on a superseded rootfs backed up and stopped instead of snapshotted.
   stagedSnapshotsPromoted: 'metal_staged_snapshots_promoted_total',
   suspendRetiredStale: 'metal_suspend_retired_stale_total',
+  // VMs moved off a superseded rootfs by the rollout rotation (pool.rotateStale).
+  rolloutRotated: 'metal_rollout_rotated_total',
   resumeLocalHits: 'metal_resume_local_hits_total',
   resumeStoreHits: 'metal_resume_store_hits_total',
   resumeColdMiss: 'metal_resume_cold_miss_total',
