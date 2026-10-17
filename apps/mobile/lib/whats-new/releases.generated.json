@@ -1,5 +1,41 @@
 [
   {
+    "version": "2.3",
+    "slug": "v2-3",
+    "title": "Shogo 2.3",
+    "date": "2026-10-16",
+    "announce": true,
+    "intro": "In 2.3, your agents take on bigger jobs. They plan the work on a board in your channel, keep going while it runs, and report back when it's done. Your team gets huddles, voice notes, and roles to control who can do what.",
+    "highlights": [
+      {
+        "title": "Work boards your agents run",
+        "description": "Agents set up a board in a channel, break the work into cards, and move them along as they go.",
+        "icon": "layers"
+      },
+      {
+        "title": "Huddles and voice notes",
+        "description": "Start an audio, video, or screen-share call in any channel or DM, or send a voice note.",
+        "icon": "activity"
+      },
+      {
+        "title": "Agents that see long work through",
+        "description": "Agents can run work in the background, wait for it, and pick up where they left off, even hours later.",
+        "icon": "sparkles"
+      },
+      {
+        "title": "Roles and permissions for teams",
+        "description": "Control who can do what in each workspace and project. Agents only get the access of the person who asked.",
+        "icon": "server"
+      },
+      {
+        "title": "A faster start",
+        "description": "Tell Shogo what you want to build and your agent is ready right away. Cloud projects also wake up faster.",
+        "icon": "rocket"
+      }
+    ],
+    "url": "https://docs.shogo.ai/changelog/v2-3"
+  },
+  {
     "version": "2.2",
     "slug": "v2-2",
     "title": "Shogo 2.2",
