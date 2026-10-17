@@ -13,6 +13,7 @@
 import { mkdirSync, writeFileSync } from "fs"
 import { dirname, resolve } from "path"
 import { expect, test, type Page } from "@playwright/test"
+import { MAX_AGENT_PING_PONG_TURNS } from "../../apps/api/src/services/conversation-agent-limits"
 import { LOCAL_API_BASE, openTeamHome } from "./helpers"
 
 const SCRIPT_PATH =
@@ -194,6 +195,7 @@ test.describe("Team chat: agents hand off to each other", () => {
     // The pause notice shows in the thread and, as a broadcast, in the channel.
     await expect(page.getByText("reply here to continue", { exact: false }).first()).toBeVisible({ timeout: 60_000 })
     const reviews = await page.getByText("The draft also claims", { exact: false }).count()
-    expect(reviews).toBeLessThanOrEqual(2)
+    // The writer and reviewer alternate, so the reviewer gets half of the ping-pong turns.
+    expect(reviews).toBeLessThanOrEqual(MAX_AGENT_PING_PONG_TURNS / 2)
   })
 })
