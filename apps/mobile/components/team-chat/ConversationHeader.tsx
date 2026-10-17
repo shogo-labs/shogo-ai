@@ -27,6 +27,7 @@ import { usePresence } from '../../hooks/usePresence'
 import { resolveAvatarUrl } from '../../lib/chat-attachment-url'
 import { PresenceDot, presenceLabel } from './PresenceDot'
 import { AgentAvatar } from './AgentAvatar'
+import { confirmsAddToChannel } from './AddToChannelConfirm'
 import { UserAvatar } from './UserAvatar'
 import { HuddleButton } from './Huddle'
 
@@ -1005,7 +1006,14 @@ function MembersModal({
                 {people.map((p) => (
                   <Pressable
                     key={p.id}
-                    onPress={() => act(() => api.addMembers(conversation.id, [p.id]))}
+                    onPress={() => {
+                      void (async () => {
+                        // A private channel's history (and its files) is handed
+                        // over on add — the same warning the mention nudge gives.
+                        if (!(await confirmsAddToChannel(conversation.kind))) return
+                        void act(() => api.addMembers(conversation.id, [p.id]))
+                      })()
+                    }}
                     className="flex-row items-center gap-2 rounded-md px-1 py-1.5 active:bg-muted hover:bg-muted"
                   >
                     <Users size={14} className="text-muted-foreground" />

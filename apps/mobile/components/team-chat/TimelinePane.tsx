@@ -24,6 +24,8 @@ import { ActivityFilterPicker } from './ActivityFilterPicker'
 import { MessageList } from './MessageList'
 import { Composer, type ComposerHandle } from './Composer'
 import { MentionNudgeCard } from './MentionNudgeCard'
+import { EphemeralNotice } from './EphemeralNotice'
+import { AddToChannelConfirmHost, confirmsAddToChannel } from './AddToChannelConfirm'
 import { CHROME_SIZE, GlassButton, GlassChip } from './FloatingChrome'
 import { usePhoneChromeOverlay } from '../layout/PhoneChromeOverlay'
 import { GlassBlurTarget } from '../ui/LiquidGlassBackdrop'
@@ -278,25 +280,35 @@ export function TimelinePane(props: TimelinePaneProps) {
     () => (isChannel ? new Set(conversation.members.flatMap((m) => (m.type === 'user' ? [m.userId] : []))) : null),
     [isChannel, conversation.members],
   )
-  const [mentionNudge, setMentionNudge] = useState<{ ids: string[]; busy: boolean; error: string | null } | null>(null)
-  useEffect(() => setMentionNudge(null), [conversation.id, threadRootId])
+  const [mentionNudge, setMentionNudge] = useState<{ ids: string[]; busy: boolean; error: string | null; createdAt: string } | null>(null)
+  const [channelsAdded, setChannelsAdded] = useState<{ ids: string[]; createdAt: string } | null>(null)
+  useEffect(() => {
+    setMentionNudge(null)
+    setChannelsAdded(null)
+  }, [conversation.id, threadRootId])
   const handleSend = useCallback(async (input: SendInput) => {
     setMentionNudge(null)
+    setChannelsAdded(null)
     const sent = await timeline.send(input)
     if (!sent || !channelMemberIds || getMentionNudgeDismissed()) return
     const ids = nonMemberMentionIds(input.text, channelMemberIds, me)
-    if (ids.length) setMentionNudge({ ids, busy: false, error: null })
+    if (ids.length) setMentionNudge({ ids, busy: false, error: null, createdAt: new Date().toISOString() })
   }, [timeline.send, channelMemberIds, me])
   const addMentioned = useCallback(async () => {
     if (!mentionNudge) return
+    const { ids } = mentionNudge
+    // Adding to a private channel hands over the whole history, files
+    // included — the warning Slack puts in front of it.
+    if (!(await confirmsAddToChannel(conversation.kind))) return
     setMentionNudge((n) => (n ? { ...n, busy: true, error: null } : n))
     try {
-      await api.addMembers(conversation.id, mentionNudge.ids)
+      await api.addMembers(conversation.id, ids)
       setMentionNudge(null)
+      setChannelsAdded({ ids, createdAt: new Date().toISOString() })
     } catch (err) {
       setMentionNudge((n) => (n ? { ...n, busy: false, error: err instanceof Error ? err.message : 'Could not add them' } : n))
     }
-  }, [mentionNudge, conversation.id])
+  }, [mentionNudge, conversation.id, conversation.kind])
 
   const placeholder = threadRootId
     ? 'Reply in thread…'
@@ -402,7 +414,11 @@ export function TimelinePane(props: TimelinePaneProps) {
     <>
       {mentionNudge && (
         <MentionNudgeCard
-          names={mentionNudge.ids.map((id) => names.users.get(id) ?? 'Someone')}
+          ids={mentionNudge.ids}
+          names={names}
+          isPrivate={conversation.kind === 'private'}
+          workspaceId={workspaceId}
+          createdAt={mentionNudge.createdAt}
           busy={mentionNudge.busy}
           error={mentionNudge.error}
           onAdd={() => void addMentioned()}
@@ -413,6 +429,16 @@ export function TimelinePane(props: TimelinePaneProps) {
           }}
         />
       )}
+      {channelsAdded && (
+        <EphemeralNotice
+          testID="added-to-channel-notice"
+          text={`OK! ${channelsAdded.ids.map((id) => `<@u:${id}>`).join(', ')} ${channelsAdded.ids.length === 1 ? 'has' : 'have'} been added to this channel.`}
+          names={names}
+          createdAt={channelsAdded.createdAt}
+          workspaceId={workspaceId}
+        />
+      )}
+      <AddToChannelConfirmHost />
       <Composer
         ref={composerRef}
         workspaceId={workspaceId}
