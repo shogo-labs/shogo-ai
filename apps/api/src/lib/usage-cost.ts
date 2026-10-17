@@ -138,10 +138,19 @@ export const IMAGE_USD_CONFIG: Record<string, { base: number; hdMultiplier: numb
   'dall-e-2':       { base: 0.13, hdMultiplier: 1.0, largeSizeMultiplier: 1.0 },
   'gpt-image-1':    { base: 0.39, hdMultiplier: 1.5, largeSizeMultiplier: 1.5 },
   'gpt-image-1.5':  { base: 0.39, hdMultiplier: 1.5, largeSizeMultiplier: 1.5 },
+  'gpt-image-2':    { base: 0.39, hdMultiplier: 1.5, largeSizeMultiplier: 1.5 },
   'gpt-image-2.5-flare': { base: 0.39, hdMultiplier: 1.5, largeSizeMultiplier: 1.5 },
   'imagen-4':       { base: 0.20, hdMultiplier: 1.0, largeSizeMultiplier: 1.5 },
   'imagen-4-ultra': { base: 0.39, hdMultiplier: 1.0, largeSizeMultiplier: 1.5 },
   'imagen-4-fast':  { base: 0.13, hdMultiplier: 1.0, largeSizeMultiplier: 1.5 },
+  // fal list prices (fal.ai model pages, 2026-10). "hd" maps to 2K output for
+  // Nano Banana (same price as 1K) and QUALITY rendering for Ideogram.
+  'nano-banana-pro': { base: 0.15,   hdMultiplier: 1.0, largeSizeMultiplier: 1.0 },
+  'nano-banana-2':   { base: 0.08,   hdMultiplier: 1.0, largeSizeMultiplier: 1.0 },
+  'seedream-5-pro':  { base: 0.0675, hdMultiplier: 1.0, largeSizeMultiplier: 1.0 },
+  'flux-pro-ultra':  { base: 0.06,   hdMultiplier: 1.0, largeSizeMultiplier: 1.0 },
+  'ideogram-3':      { base: 0.06,   hdMultiplier: 1.5, largeSizeMultiplier: 1.0 },
+  'recraft-3':       { base: 0.04,   hdMultiplier: 1.0, largeSizeMultiplier: 1.0 },
 }
 
 const LARGE_IMAGE_SIZES = new Set(['1792x1024', '1024x1792', '1536x1024', '1024x1536'])
@@ -167,6 +176,51 @@ export function calculateImageUsageCost(
     rawUsd *= config.largeSizeMultiplier
   }
 
+  return { rawUsd, billedUsd: rawUsd * MARKUP_MULTIPLIER }
+}
+
+// =============================================================================
+// Image utility costs (upscale, background removal)
+// =============================================================================
+
+/** fal list prices: Clarity upscaler bills per output megapixel; BiRefNet per compute second (flat estimate). */
+export const IMAGE_PROCESS_USD_CONFIG = {
+  upscale: { perOutputMegapixel: 0.03, minUsd: 0.03 },
+  'remove-background': { flat: 0.005 },
+} as const
+
+export function calculateImageProcessUsageCost(
+  operation: keyof typeof IMAGE_PROCESS_USD_CONFIG,
+  output: { width?: number; height?: number } = {},
+): UsageCostResult {
+  let rawUsd: number
+  if (operation === 'upscale') {
+    const cfg = IMAGE_PROCESS_USD_CONFIG.upscale
+    const megapixels = output.width && output.height ? (output.width * output.height) / 1_000_000 : 4
+    rawUsd = Math.max(cfg.minUsd, megapixels * cfg.perOutputMegapixel)
+  } else {
+    rawUsd = IMAGE_PROCESS_USD_CONFIG['remove-background'].flat
+  }
+  return { rawUsd, billedUsd: rawUsd * MARKUP_MULTIPLIER }
+}
+
+// =============================================================================
+// Video Generation Usage Costs
+// =============================================================================
+
+/** Per-second list prices, as carried by a `VIDEO_MODEL_CATALOG` entry. */
+export interface VideoRates {
+  usdPerSecond: number
+  usdPerSecondWithAudio?: number
+}
+
+/**
+ * USD for one generated video: the model's per-second list price (the audio
+ * rate when audio is on and the model prices it separately) times duration.
+ */
+export function calculateVideoUsageCost(rates: VideoRates, seconds: number, audio = false): UsageCostResult {
+  const perSecond = audio && rates.usdPerSecondWithAudio !== undefined ? rates.usdPerSecondWithAudio : rates.usdPerSecond
+  const rawUsd = Math.max(0, seconds) * perSecond
   return { rawUsd, billedUsd: rawUsd * MARKUP_MULTIPLIER }
 }
 

@@ -17,6 +17,7 @@ import type { AgentTool } from '@mariozechner/pi-agent-core'
 import type { Message } from '@mariozechner/pi-ai'
 import { runAgentLoop, type AgentLoopResult, type LoopDetectorConfig } from './agent-loop'
 import { isSearchEnabled } from './search-flag'
+import { MEDIA_TOOL_NAMES } from './media-tool-names'
 import type { ToolContext } from './gateway-tools'
 import { createBrowserTool, disposeBrowserTool, textResult } from './gateway-tools'
 
@@ -37,7 +38,7 @@ const CORE_GATEWAY_TOOLS = new Set([
   'quick_action',
   'project_list', 'project_create', 'project_attach', 'project_detach',
   'project_configure', 'capabilities_configure', 'project_call', 'system_apply',
-  'connect_project',
+  'connect_project', 'list_models',
 ])
 
 // ---------------------------------------------------------------------------
@@ -370,18 +371,26 @@ Return a short final response (≤ 10 lines): canvas surface path if built, mark
 - Stop and report if the page fails to load after two retries — record network details.
 - Stop once every flow in the directive has a pass/fail/blocked outcome. Don't keep exploring beyond the requested scope.`
 
-export const MEDIA_SUBAGENT_PROMPT = `You are a media processing subagent. Generate images and transcribe audio.
+export const MEDIA_SUBAGENT_PROMPT = `You are a media processing subagent. Generate and edit images, generate video, and transcribe audio.
 
 ## Available Tools
-generate_image — create images from text descriptions
+list_media_models — every image and video model with capabilities and Shogo price; check it before picking a model or a batch size
+generate_image — create images from text, or edit / keep a character consistent by passing reference_images
+upscale_image, remove_background — post-process an existing workspace image
+generate_video — text-to-video, or animate a still with start_image (only present when video generation is enabled)
 transcribe_audio — convert audio files to text
 read_file, write_file — read inputs and save results to the workspace
 
 ## Guidelines
 - For image generation: provide detailed, specific descriptions for best results
+- To keep a character, product or style consistent, pass the existing images as reference_images on every shot and pick a model that accepts references (e.g. nano-banana-pro)
+- Save files where the parent asked (the path parameter accepts any workspace path, e.g. public/assets/hero.png); otherwise images/ and videos/ are the defaults
+- For video, generate a still with generate_image first, then animate it with generate_video using start_image. It is cheaper, and the result matches the approved look
+- Video is billed per second: use the shortest duration that works and do not regenerate without a reason
+- For several shots at once, submit each generate_video with wait: false, then check them with generate_video({ job_id })
 - For transcription: read the audio file path from the prompt, transcribe, and save the text output
 - Always save results to the workspace so the parent agent can access them
-- Return a clear summary of what was produced and where files were saved`
+- Return a clear summary of what was produced, which model was used, and where files were saved`
 
 export function getBuiltinSubagentConfig(
   name: string,
@@ -463,12 +472,12 @@ export function getBuiltinSubagentConfig(
     case 'media':
       return {
         name: 'media',
-        description: 'Image generation and audio transcription agent',
+        description: 'Image and video generation, image editing, and audio transcription agent',
         systemPrompt: MEDIA_SUBAGENT_PROMPT,
-        toolNames: ['generate_image', 'transcribe_audio', 'read_file', 'write_file'],
+        toolNames: [...MEDIA_TOOL_NAMES, 'transcribe_audio', 'read_file', 'write_file'],
         disallowedTools: ['task', 'skill'],
         model: AUTO_MODEL_ID,
-        maxTurns: 5,
+        maxTurns: 15,
       }
     case 'devops':
       return {

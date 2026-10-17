@@ -150,6 +150,8 @@ export interface CapabilitiesIndexFlags {
   channels?: boolean
   /** Media (image generation / audio) line (default: true) */
   media?: boolean
+  /** Whether the media line advertises video generation (default: false) */
+  video?: boolean
   /** Devops / heartbeat scheduling line (default: true) */
   devops?: boolean
   /**
@@ -213,10 +215,16 @@ export function buildCapabilitiesIndex(flags: CapabilitiesIndexFlags = {}): stri
     '- **memory**: When to save/skip memory entries in MEMORY.md. Read when deciding whether to persist information.',
   )
   if (media) {
+    const what = flags.video === true
+      ? 'Image and video generation, image editing, and audio transcription'
+      : 'Image generation and audio transcription'
+    const direct = flags.video === true
+      ? '`generate_image` / `generate_video` / `transcribe_audio`'
+      : '`generate_image` / `transcribe_audio`'
     lines.push(
       mediaDelegated
-        ? '- **media**: Image generation and audio transcription. Delegated — use `agent_spawn({ type: "media", prompt: "..." })`.'
-        : '- **media**: Image generation and audio transcription. Call `generate_image` / `transcribe_audio` directly — subagent delegation is not available in this workspace.',
+        ? `- **media**: ${what}. Delegated — use \`agent_spawn({ type: "media", prompt: "..." })\`.`
+        : `- **media**: ${what}. Call ${direct} directly — subagent delegation is not available in this workspace.`,
     )
   }
   if (channels) {

@@ -31,7 +31,7 @@ a tool you've turned off, and it won't be told the tool exists.
 ## The capabilities
 
 Most capabilities default to **on**; set a flag to `false` to disable it. Opt-in
-ones (Git worktrees, Social media, and some of the
+ones (Git worktrees, Social media, Video generation, and some of the
 [work capabilities](#work-capabilities)) default to off.
 
 | Capability | Flag | Gates (tools) | Also trims from prompt |
@@ -39,7 +39,8 @@ ones (Git worktrees, Social media, and some of the
 | Web search | `webEnabled` | `web` | — |
 | Browser control | `browserEnabled` | `browser` | Browser guide (delegated) |
 | Shell | `shellEnabled` | `exec`, `exec_wait` | — |
-| Image generation | `imageGenEnabled` | `generate_image` | `media` capability line |
+| Image generation | `imageGenEnabled` | `generate_image`, `upscale_image`, `remove_background` | `media` capability line |
+| Video generation (opt-in) | `videoGenEnabled` | `generate_video` | Video mention in the `media` line |
 | Heartbeat | `heartbeatToolsEnabled` | `heartbeat_configure`, `heartbeat_status` | `devops` line + Action Tools reminder |
 | Memory | `memoryEnabled` | `memory_read`, `memory_search` | — |
 | Quick actions | `quickActionsEnabled` | `quick_action` | Quick Action guide |

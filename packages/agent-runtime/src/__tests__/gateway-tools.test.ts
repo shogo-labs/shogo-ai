@@ -449,7 +449,9 @@ describe('gateway-tools', () => {
       // opts in (`filterDisabledCapabilityTools`). Plus the background task
       // tools: wait, task_list, task_cancel. `terminal_exec` is only
       // registered when the desktop terminal bridge (ctx.terminalExec) is wired.
-      expect(createTools(createCtx())).toHaveLength(71)
+      // Media tools add list_media_models, upscale_image, remove_background and
+      // generate_video (registered, then hidden unless videoGenEnabled).
+      expect(createTools(createCtx())).toHaveLength(75)
       expect(createTools(createCtx()).find((t) => t.name === 'heartbeat_configure')).toBeDefined()
       expect(createTools(createCtx()).find((t) => t.name === 'heartbeat_status')).toBeDefined()
       expect(createTools(createCtx()).find((t) => t.name === 'memory_search')).toBeDefined()

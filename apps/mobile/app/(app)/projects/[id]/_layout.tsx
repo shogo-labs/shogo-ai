@@ -564,6 +564,8 @@ export default observer(function ProjectLayout() {
       heartbeatToolsEnabled:
         (projectSettings.heartbeatToolsEnabled ?? projectSettings.heartbeatEnabled) !== false,
       imageGenEnabled: projectSettings.imageGenEnabled !== false,
+      // Opt-in: video is billed per second.
+      videoGenEnabled: projectSettings.videoGenEnabled === true,
       memoryEnabled: projectSettings.memoryEnabled !== false,
       quickActionsEnabled: projectSettings.quickActionsEnabled !== false,
       sdkGuideEnabled: projectSettings.sdkGuideEnabled !== false,

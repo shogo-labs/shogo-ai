@@ -8,6 +8,7 @@ import {
   Terminal,
   Clock,
   ImageIcon,
+  Clapperboard,
   Brain,
   ChevronDown,
   ChevronRight,
@@ -74,6 +75,7 @@ export interface CapabilitySettings {
   shellEnabled: boolean
   heartbeatToolsEnabled: boolean
   imageGenEnabled: boolean
+  videoGenEnabled: boolean
   memoryEnabled: boolean
   quickActionsEnabled: boolean
   sdkGuideEnabled: boolean
@@ -164,11 +166,25 @@ const CAPABILITIES: CapabilityDef[] = [
   {
     key: 'imageGenEnabled',
     label: 'Image Generation',
-    description: 'Generate images from text descriptions',
-    detail: 'Creates images using AI models from text prompts. Useful for generating app icons, placeholder graphics, concept art, social media assets, diagrams, and visual mockups.',
+    description: 'Generate and edit images from text descriptions',
+    detail: 'Creates images with GPT Image, Nano Banana, Seedream, FLUX, Ideogram, Recraft and Imagen. Pass reference images to edit a picture or keep a character consistent across shots, then upscale or cut out the background. Useful for app icons, game sprites, concept art, social media assets, and visual mockups.',
     disabledDescription: 'No image generation',
     icon: ImageIcon,
-    toolNames: ['generate_image'],
+    toolNames: ['generate_image', 'upscale_image', 'remove_background', 'list_media_models'],
+  },
+  {
+    key: 'videoGenEnabled',
+    optIn: true,
+    label: 'Video Generation',
+    description: 'Generate video clips or animate images',
+    detail: 'Creates short clips with Kling, Veo and MiniMax, from a text prompt or by animating a still image. Clips take one to five minutes to render and are billed per second of video, so this is off until you turn it on.',
+    disabledDescription: 'No video generation',
+    icon: Clapperboard,
+    toolNames: ['generate_video'],
+    examples: [
+      '"Animate the hero image into a 5 second loop for the landing page"',
+      '"Make three 9:16 product shots for TikTok from these photos"',
+    ],
   },
   {
     key: 'memoryEnabled',

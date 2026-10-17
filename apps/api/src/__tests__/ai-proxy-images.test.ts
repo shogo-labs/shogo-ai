@@ -14,9 +14,12 @@
 import { describe, test, expect } from 'bun:test'
 import {
   calculateImageUsageCost,
+  calculateImageProcessUsageCost,
+  calculateVideoUsageCost,
   IMAGE_USD_CONFIG,
   MARKUP_MULTIPLIER,
 } from '../lib/usage-cost'
+import { IMAGE_MODEL_CATALOG, VIDEO_MODEL_CATALOG } from '@shogo/model-catalog'
 
 describe('Image Usage Cost (USD)', () => {
   test('dall-e-3 standard 1024x1024 → raw = config base, billed = raw * markup', () => {
@@ -110,5 +113,51 @@ describe('Image Usage Cost (USD)', () => {
       expect(rawUsd).toBeGreaterThan(0)
       expect(billedUsd).toBeCloseTo(rawUsd * MARKUP_MULTIPLIER, 10)
     }
+  })
+})
+
+describe('fal and new catalog image pricing', () => {
+  test('every non-retired catalog image model has an explicit price', () => {
+    for (const entry of Object.values(IMAGE_MODEL_CATALOG)) {
+      if ('retired' in entry && entry.retired) continue
+      expect(IMAGE_USD_CONFIG[entry.id]).toBeDefined()
+    }
+  })
+
+  test('fal list prices', () => {
+    expect(calculateImageUsageCost('nano-banana-pro', 'standard', '1024x1024').rawUsd).toBeCloseTo(0.15, 6)
+    expect(calculateImageUsageCost('nano-banana-pro', 'hd', '1792x1024').rawUsd).toBeCloseTo(0.15, 6)
+    expect(calculateImageUsageCost('seedream-5-pro', 'standard', '1024x1024').rawUsd).toBeCloseTo(0.0675, 6)
+    expect(calculateImageUsageCost('ideogram-3', 'hd', '1024x1024').rawUsd).toBeCloseTo(0.09, 6)
+    expect(calculateImageUsageCost('recraft-3', 'standard', '1024x1024').rawUsd).toBeCloseTo(0.04, 6)
+  })
+})
+
+describe('Video Usage Cost (USD)', () => {
+  test('per-second price times duration, with markup', () => {
+    const { rawUsd, billedUsd } = calculateVideoUsageCost(VIDEO_MODEL_CATALOG['kling-2.5-turbo-pro'], 10)
+    expect(rawUsd).toBeCloseTo(0.7, 6)
+    expect(billedUsd).toBeCloseTo(0.7 * MARKUP_MULTIPLIER, 6)
+  })
+
+  test('audio uses the audio rate only when the model has one', () => {
+    expect(calculateVideoUsageCost(VIDEO_MODEL_CATALOG['veo-3.1-fast'], 8, true).rawUsd).toBeCloseTo(1.2, 6)
+    expect(calculateVideoUsageCost(VIDEO_MODEL_CATALOG['veo-3.1-fast'], 8, false).rawUsd).toBeCloseTo(0.8, 6)
+    expect(calculateVideoUsageCost(VIDEO_MODEL_CATALOG['minimax-h3-max'], 5, true).rawUsd).toBeCloseTo(0.4, 6)
+  })
+
+  test('negative duration never credits', () => {
+    expect(calculateVideoUsageCost(VIDEO_MODEL_CATALOG['kling-3-pro'], -5).rawUsd).toBe(0)
+  })
+})
+
+describe('Image utility cost (USD)', () => {
+  test('upscale bills per output megapixel with a floor', () => {
+    expect(calculateImageProcessUsageCost('upscale', { width: 2048, height: 2048 }).rawUsd).toBeCloseTo(0.03 * 4.194304, 6)
+    expect(calculateImageProcessUsageCost('upscale', { width: 100, height: 100 }).rawUsd).toBeCloseTo(0.03, 6)
+  })
+
+  test('background removal is a flat fee', () => {
+    expect(calculateImageProcessUsageCost('remove-background').rawUsd).toBeGreaterThan(0)
   })
 })

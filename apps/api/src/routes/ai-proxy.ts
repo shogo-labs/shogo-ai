@@ -52,6 +52,7 @@ import {
   MODEL_CATALOG,
   MODEL_ALIASES,
   IMAGE_MODEL_CATALOG,
+  VIDEO_MODEL_CATALOG,
   AGENT_MODE_DEFAULTS,
   OPENROUTER_MODEL_PREFIX,
   resolveAgentModeDefault,
@@ -63,9 +64,23 @@ import {
   supportsAdaptiveThinking,
   type Provider,
   type ImageProvider,
+  type ImageModelEntry,
+  type VideoModelEntry,
+  getVideoModelEntry,
   type AgentMode,
   type ModelTier,
 } from '@shogo/model-catalog'
+import { randomUUID } from 'node:crypto'
+import {
+  generateImageFal,
+  processImageFal,
+  buildFalVideoRequest,
+  falQueueSubmit,
+  falQueueStatus,
+  falQueueVideoResult,
+  type ImageProcessOperation,
+} from '../lib/fal-media'
+import { putVideoJob, getVideoJob, claimVideoCharge } from '../lib/video-job-store'
 
 // =============================================================================
 // Types
@@ -2450,7 +2465,7 @@ function normalizeThinkingForModel(parsed: any, apiModel: string): void {
 import { calculateUsageCost, proxyModelToBillingModel, getModelTier } from '../lib/usage-cost'
 import * as billingService from '../services/billing-runtime'
 import { getProjectUser } from '../lib/project-user-context'
-import { accumulateUsage, accumulateImageUsage, hasActiveSession } from '../lib/proxy-billing-session-runtime'
+import { accumulateUsage, accumulateImageUsage, accumulateVideoUsage, hasActiveSession } from '../lib/proxy-billing-session-runtime'
 import { isShogoCloudForwarding } from '../lib/cloud-forwarding'
 import { buildUsageLimitInfo } from '../lib/usage-limit-info'
 export { buildUsageLimitInfo }
@@ -2660,20 +2675,23 @@ interface ImageModelConfig {
   provider: ImageProvider
   apiModel: string
   displayName: string
+  /** Catalog entry; absent for the env-configured local model. */
+  entry?: ImageModelEntry
 }
 
 interface ImageGenerationResponse {
   created: number
-  data: Array<{ b64_json?: string; url?: string; revised_prompt?: string }>
+  data: Array<{ b64_json?: string; url?: string; revised_prompt?: string; content_type?: string }>
 }
 
 const IMAGE_MODEL_REGISTRY: Record<string, ImageModelConfig> = {}
 
-for (const entry of Object.values(IMAGE_MODEL_CATALOG)) {
+for (const entry of Object.values(IMAGE_MODEL_CATALOG) as ImageModelEntry[]) {
   IMAGE_MODEL_REGISTRY[entry.id] = {
     provider: entry.provider,
     apiModel: entry.apiModel,
     displayName: entry.displayName,
+    entry,
   }
 }
 
@@ -2696,6 +2714,7 @@ function getImageProviderApiKey(provider: ImageProvider): string | null {
   switch (provider) {
     case 'openai': return getNativeProviderApiKeySync('openai')
     case 'google': return getNativeProviderApiKeySync('google')
+    case 'fal': return getNativeProviderApiKeySync('fal')
     case 'local': return 'local'
     default: return null
   }
@@ -2854,20 +2873,32 @@ async function generateImageLocal(
   return await response.json() as ImageGenerationResponse
 }
 
-import { calculateImageUsageCost, calculateTranscriptionUsageCost } from '../lib/usage-cost'
+import {
+  calculateImageUsageCost,
+  calculateImageProcessUsageCost,
+  calculateTranscriptionUsageCost,
+  calculateVideoUsageCost,
+} from '../lib/usage-cost'
 
-async function recordImageUsage(
-  tokenPayload: ProxyTokenPayload,
-  model: string,
-  quality: string,
-  size: string,
-  n: number,
-  chatSessionId?: string | null,
-) {
+/**
+ * One billable media output. Images (including upscale / background removal)
+ * fold into the open billing session's image totals; video folds into its
+ * video totals. With no session open, it is charged as its own usage event.
+ */
+interface MediaCharge {
+  kind: 'image' | 'video'
+  model: string
+  rawUsd: number
+  billedUsd: number
+  /** Output seconds (video only). */
+  seconds?: number
+  actionType: 'ai_image_generation' | 'ai_image_processing' | 'ai_video_generation'
+  metadata: Record<string, unknown>
+}
+
+async function recordMediaUsage(tokenPayload: ProxyTokenPayload, charge: MediaCharge, chatSessionId?: string | null) {
+  const { kind, model, rawUsd, billedUsd } = charge
   try {
-    const single = calculateImageUsageCost(model, quality, size)
-    const rawUsd = single.rawUsd * n
-    const billedUsd = single.billedUsd * n
     if (billedUsd === 0) return
 
     const billingProjectId = isNonProjectSentinel(tokenPayload.projectId)
@@ -2875,32 +2906,149 @@ async function recordImageUsage(
       : (tokenPayload.projectId || null)
     const billingUserId = getProjectUser(tokenPayload.projectId) || tokenPayload.userId || 'system'
 
-    // If a billing session is open for this project, fold this image's USD
-    // into the session so the chat turn produces a single `chat_message`
-    // wallet debit instead of an extra `ai_image_generation` row.
-    if (billingProjectId && await accumulateImageUsage(billingProjectId, model, rawUsd, billedUsd, chatSessionId)) {
-      console.log(`[AI Proxy] 🎨 Accumulated image gen for session ($${billedUsd.toFixed(4)}, model: ${model}, project: ${billingProjectId}${chatSessionId ? `, chat: ${chatSessionId}` : ''})`)
-      return
+    // If a billing session is open for this project, fold the USD into the
+    // session so the chat turn produces a single `chat_message` wallet debit
+    // instead of an extra per-media row.
+    if (billingProjectId) {
+      const accumulated = kind === 'video'
+        ? await accumulateVideoUsage(billingProjectId, charge.seconds ?? 0, rawUsd, billedUsd, chatSessionId)
+        : await accumulateImageUsage(billingProjectId, model, rawUsd, billedUsd, chatSessionId)
+      if (accumulated) {
+        console.log(`[AI Proxy] 🎨 Accumulated ${charge.actionType} for session ($${billedUsd.toFixed(4)}, model: ${model}, project: ${billingProjectId}${chatSessionId ? `, chat: ${chatSessionId}` : ''})`)
+        return
+      }
     }
 
     const result = await billingService.consumeUsage({
       workspaceId: tokenPayload.workspaceId,
       projectId: billingProjectId,
       memberId: billingUserId,
-      actionType: 'ai_image_generation',
+      actionType: charge.actionType,
       rawUsd,
       billedUsd,
-      actionMetadata: { model, quality, size, n, rawUsd },
+      actionMetadata: { model, ...charge.metadata, rawUsd },
     })
 
     if (result.success) {
-      console.log(`[AI Proxy] 🎨 Charged $${billedUsd.toFixed(4)} (image gen, model: ${model}) — remaining included: $${result.remainingIncludedUsd?.toFixed(4)}`)
+      console.log(`[AI Proxy] 🎨 Charged $${billedUsd.toFixed(4)} (${charge.actionType}, model: ${model}) — remaining included: $${result.remainingIncludedUsd?.toFixed(4)}`)
     } else {
-      console.warn(`[AI Proxy] ⚠️ Could not charge image usage: ${result.error}`)
+      console.warn(`[AI Proxy] ⚠️ Could not charge ${kind} usage: ${result.error}`)
     }
   } catch (err) {
-    console.error('[AI Proxy] Failed to charge image usage:', err)
+    console.error(`[AI Proxy] Failed to charge ${kind} usage:`, err)
   }
+}
+
+function recordImageUsage(
+  tokenPayload: ProxyTokenPayload,
+  model: string,
+  quality: string,
+  size: string,
+  n: number,
+  chatSessionId?: string | null,
+) {
+  const single = calculateImageUsageCost(model, quality, size)
+  return recordMediaUsage(tokenPayload, {
+    kind: 'image',
+    model,
+    rawUsd: single.rawUsd * n,
+    billedUsd: single.billedUsd * n,
+    actionType: 'ai_image_generation',
+    metadata: { quality, size, n },
+  }, chatSessionId)
+}
+
+const DEFAULT_VIDEO_MODEL = 'kling-2.5-turbo-pro'
+
+function roundUsd(usd: number): number {
+  return Math.round(usd * 10_000) / 10_000
+}
+
+/** Response body of `GET /ai/v1/media/models`. Exported for tests. */
+export function listMediaModels() {
+  const images = (Object.values(IMAGE_MODEL_CATALOG) as ImageModelEntry[])
+    .filter((entry) => !entry.retired && !!getImageProviderApiKey(entry.provider))
+    .map((entry) => {
+      const standard = calculateImageUsageCost(entry.id, 'standard', '1024x1024')
+      const hd = calculateImageUsageCost(entry.id, 'hd', '1024x1024')
+      return {
+        id: entry.id,
+        name: entry.displayName,
+        provider: entry.provider,
+        best_for: entry.bestFor,
+        text_to_image: entry.capabilities.textToImage,
+        image_to_image: entry.capabilities.imageToImage,
+        max_reference_images: entry.capabilities.maxReferenceImages,
+        parameters: {
+          size: entry.provider === 'openai'
+            ? '1024x1024, 1024x1792, 1792x1024'
+            : 'any WxH; mapped to the closest supported aspect ratio',
+          quality: ['standard', 'hd'],
+          options: '1-4',
+        },
+        price: {
+          unit: 'image',
+          usd: roundUsd(standard.billedUsd),
+          hd_usd: roundUsd(hd.billedUsd),
+        },
+      }
+    })
+
+  const falConfigured = !!getImageProviderApiKey('fal')
+  const videos = falConfigured
+    ? (Object.values(VIDEO_MODEL_CATALOG) as VideoModelEntry[]).map((entry) => ({
+        id: entry.id,
+        name: entry.displayName,
+        provider: entry.provider,
+        best_for: entry.bestFor,
+        text_to_video: true,
+        image_to_video: !!entry.imageToVideoApiModel,
+        max_reference_images: entry.maxReferenceImages,
+        audio: entry.usdPerSecondWithAudio !== undefined,
+        parameters: {
+          durations: entry.durations,
+          default_duration: entry.defaultDuration,
+          aspect_ratios: entry.aspectRatios,
+        },
+        price: {
+          unit: 'second',
+          usd: roundUsd(calculateVideoUsageCost(entry, 1, false).billedUsd),
+          ...(entry.usdPerSecondWithAudio !== undefined
+            ? { with_audio_usd: roundUsd(calculateVideoUsageCost(entry, 1, true).billedUsd) }
+            : {}),
+          default_clip_usd: roundUsd(calculateVideoUsageCost(entry, entry.defaultDuration, false).billedUsd),
+        },
+      }))
+    : []
+
+  const utilities = falConfigured
+    ? [
+        { id: 'upscale', tool: 'upscale_image', price: { unit: 'output megapixel', usd: roundUsd(calculateImageProcessUsageCost('upscale', { width: 1000, height: 1000 }).billedUsd) } },
+        { id: 'remove-background', tool: 'remove_background', price: { unit: 'image', usd: roundUsd(calculateImageProcessUsageCost('remove-background').billedUsd) } },
+      ]
+    : []
+
+  return { images, videos, utilities, currency: 'USD', note: 'Prices include the Shogo markup and are what the workspace is charged.' }
+}
+
+function recordVideoUsage(
+  tokenPayload: ProxyTokenPayload,
+  entry: VideoModelEntry,
+  seconds: number,
+  audio: boolean,
+  metadata: Record<string, unknown>,
+  chatSessionId?: string | null,
+) {
+  const cost = calculateVideoUsageCost(entry, seconds, audio)
+  return recordMediaUsage(tokenPayload, {
+    kind: 'video',
+    model: entry.id,
+    rawUsd: cost.rawUsd,
+    billedUsd: cost.billedUsd,
+    seconds,
+    actionType: 'ai_video_generation',
+    metadata: { seconds, audio, ...metadata },
+  }, chatSessionId)
 }
 
 /**
@@ -4601,6 +4749,8 @@ export function aiProxyRoutes() {
         result = await generateImageGoogle(apiKey, imageModel.apiModel, body, signal)
       } else if (imageModel.provider === 'local') {
         result = await generateImageLocal(imageModel.apiModel, body, signal)
+      } else if (imageModel.provider === 'fal' && imageModel.entry) {
+        result = await generateImageFal(apiKey, imageModel.entry, body, signal)
       } else {
         return c.json(
           { error: { message: `Unsupported image provider: ${imageModel.provider}`, type: 'server_error', code: 'unsupported_provider' } },
@@ -4610,7 +4760,7 @@ export function aiProxyRoutes() {
 
       recordImageUsage(
         tokenPayload,
-        model,
+        imageModel.entry?.id ?? model,
         body.quality || 'standard',
         body.size || '1024x1024',
         body.n || 1,
@@ -4631,10 +4781,12 @@ export function aiProxyRoutes() {
   })
 
   /**
-   * POST /ai/v1/images/edits - Image editing proxy (reference image + prompt)
+   * POST /ai/v1/images/edits - Image editing proxy (reference images + prompt)
    *
-   * Accepts multipart/form-data with an image file and prompt.
-   * Routes to OpenAI's /v1/images/edits endpoint.
+   * Accepts multipart/form-data with one or more `image` files and a prompt.
+   * GPT image models go to OpenAI's /v1/images/edits; fal models go to their
+   * edit endpoint with the references as data URIs. The number of images is
+   * checked against the model's catalog `capabilities`.
    */
   router.post('/ai/v1/images/edits', async (c) => {
     const tokenPayload = await validateProxyAuth(c)
@@ -4663,7 +4815,7 @@ export function aiProxyRoutes() {
     try {
       const formData = await c.req.formData()
       const prompt = formData.get('prompt') as string
-      const imageFile = formData.get('image') as File | null
+      const imageFiles = formData.getAll('image').filter((v): v is File => typeof v !== 'string')
       const model = (formData.get('model') as string) || 'gpt-image-2.5-flare'
       const size = (formData.get('size') as string) || '1024x1024'
       const n = parseInt((formData.get('n') as string) || '1', 10)
@@ -4675,75 +4827,103 @@ export function aiProxyRoutes() {
           400
         )
       }
-      if (!imageFile) {
+      if (imageFiles.length === 0) {
         return c.json(
           { error: { message: 'image file is required for edits', type: 'invalid_request_error', code: 'missing_image' } },
           400
         )
       }
 
-      const openaiKey = process.env.OPENAI_API_KEY
-      if (!openaiKey) {
+      const imageModel = resolveImageModel(model)
+      if (!imageModel) {
         return c.json(
-          { error: { message: 'OpenAI is not configured on this server (required for image edits).', type: 'server_error', code: 'provider_not_configured' } },
+          { error: { message: `Image model '${model}' is not supported.`, type: 'invalid_request_error', code: 'model_not_found' } },
+          400
+        )
+      }
+      const maxRefs = imageModel.entry?.capabilities.imageToImage ? imageModel.entry.capabilities.maxReferenceImages : 0
+      if (maxRefs === 0 || (imageModel.provider !== 'openai' && imageModel.provider !== 'fal')) {
+        return c.json(
+          { error: { message: `Image model '${model}' does not accept reference images. Call list_media_models to find one that does.`, type: 'invalid_request_error', code: 'reference_images_unsupported' } },
+          400
+        )
+      }
+      if (imageFiles.length > maxRefs) {
+        return c.json(
+          { error: { message: `Image model '${model}' accepts at most ${maxRefs} reference image(s); got ${imageFiles.length}.`, type: 'invalid_request_error', code: 'too_many_reference_images' } },
+          400
+        )
+      }
+
+      const apiKey = getImageProviderApiKey(imageModel.provider)
+      if (!apiKey) {
+        return c.json(
+          { error: { message: `Image provider '${imageModel.provider}' is not configured on this server.`, type: 'server_error', code: 'provider_not_configured' } },
           503
         )
       }
 
-      console.log(`[AI Proxy] 🎨 Image edit: ${tokenPayload.projectId} → openai/${model}`)
+      console.log(`[AI Proxy] 🎨 Image edit: ${tokenPayload.projectId} → ${imageModel.provider}/${imageModel.apiModel} (${imageFiles.length} reference image(s))`)
 
-      // dall-e-2 (the previous edits-only model) is retired (OpenAI,
-      // 2026-09). gpt-image-1 supports /v1/images/edits too, so honor the
-      // caller's model instead of hardcoding a dead one — but gpt-image
-      // models reject `response_format` (400 unknown_parameter) and use
-      // different size tokens, same as the generations path above.
-      const editModel = model
-      const forwardForm = new FormData()
-      forwardForm.append('image', imageFile)
-      forwardForm.append('prompt', prompt)
-      forwardForm.append('model', editModel)
-      forwardForm.append('size', normalizeSizeForModel(editModel, size))
-      forwardForm.append('n', String(n))
-      const editQuality = normalizeQualityForModel(editModel, quality)
-      if (editQuality) forwardForm.append('quality', editQuality)
-      if (!editModel.startsWith('gpt-image')) forwardForm.append('response_format', 'b64_json')
-
-      const imageBytes = Buffer.from(await imageFile.arrayBuffer())
+      const imageDataUris = await Promise.all(imageFiles.map(async (file) => {
+        const bytes = Buffer.from(await file.arrayBuffer())
+        return `data:${file.type || 'image/png'};base64,${bytes.toString('base64')}`
+      }))
       capture = await beginCapture({
         tokenPayload,
         endpoint: 'images.edits',
-        requestBody: {
-          prompt,
-          model,
-          size,
-          n,
-          quality,
-          image: `data:${imageFile.type || 'application/octet-stream'};base64,${imageBytes.toString('base64')}`,
-        },
+        requestBody: { prompt, model, size, n, quality, images: imageDataUris },
         requestedModel: model,
-        resolvedModel: editModel,
-        provider: 'openai',
+        resolvedModel: imageModel.apiModel,
+        provider: imageModel.provider,
         stream: false,
         chatSessionId: c.req.header('x-chat-session-id') || null,
         client: c.req.header('x-shogo-client'),
         requestHeaders: c.req.raw.headers,
       })
 
-      const response = await fetch('https://api.openai.com/v1/images/edits', {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${openaiKey}` },
-        body: forwardForm,
-        signal: c.req.raw.signal,
-      })
+      let result: ImageGenerationResponse
+      if (imageModel.provider === 'fal') {
+        result = await generateImageFal(
+          apiKey,
+          imageModel.entry!,
+          { prompt, size, quality, n, referenceImages: imageDataUris },
+          c.req.raw.signal,
+        )
+      } else {
+        // gpt-image models reject `response_format` (400 unknown_parameter)
+        // and use different size tokens, same as the generations path above.
+        const editModel = imageModel.apiModel
+        const forwardForm = new FormData()
+        if (imageFiles.length === 1) {
+          forwardForm.append('image', imageFiles[0])
+        } else {
+          for (const file of imageFiles) forwardForm.append('image[]', file)
+        }
+        forwardForm.append('prompt', prompt)
+        forwardForm.append('model', editModel)
+        forwardForm.append('size', normalizeSizeForModel(editModel, size))
+        forwardForm.append('n', String(n))
+        const editQuality = normalizeQualityForModel(editModel, quality)
+        if (editQuality) forwardForm.append('quality', editQuality)
+        if (!editModel.startsWith('gpt-image')) forwardForm.append('response_format', 'b64_json')
 
-      if (!response.ok) {
-        const errorText = await response.text()
-        throw new Error(`OpenAI image edit error (${response.status}): ${errorText}`)
+        const response = await fetch('https://api.openai.com/v1/images/edits', {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${apiKey}` },
+          body: forwardForm,
+          signal: c.req.raw.signal,
+        })
+
+        if (!response.ok) {
+          const errorText = await response.text()
+          throw new Error(`OpenAI image edit error (${response.status}): ${errorText}`)
+        }
+
+        result = await response.json() as ImageGenerationResponse
       }
 
-      const result = await response.json() as ImageGenerationResponse
-
-      recordImageUsage(tokenPayload, model, quality, size, n, c.req.header('x-chat-session-id') || null)
+      recordImageUsage(tokenPayload, imageModel.entry?.id ?? model, quality, size, n, c.req.header('x-chat-session-id') || null)
 
       capture?.recordResponse({ status: 200, body: result, format: 'json' })
       return c.json(result)
@@ -4755,6 +4935,291 @@ export function aiProxyRoutes() {
         { error: { message: error.message || 'Image edit failed', type: 'server_error', code: 'edit_error' } },
         statusCode
       )
+    }
+  })
+
+  /**
+   * GET /ai/v1/media/models - Image and video models this server can run,
+   * with capabilities, main parameters and Shogo (marked-up) price. Backs
+   * the `list_media_models` tool so agents can pick a model and budget a
+   * batch before generating. Models whose provider has no key are omitted.
+   */
+  router.get('/ai/v1/media/models', async (c) => {
+    const tokenPayload = await validateProxyAuth(c)
+    if (!tokenPayload) {
+      return c.json(
+        { error: { message: 'Invalid or missing proxy token.', type: 'authentication_error', code: 'invalid_api_key' } },
+        401
+      )
+    }
+    return c.json(listMediaModels())
+  })
+
+  /**
+   * POST /ai/v1/images/process - Image utilities (upscale, background
+   * removal) on fal. JSON body `{ operation, image, scale? }` where `image`
+   * is a data URI. Returns the same `{ data: [{ b64_json, content_type }] }`
+   * shape as the generation routes and bills like an image.
+   */
+  router.post('/ai/v1/images/process', async (c) => {
+    const tokenPayload = await validateProxyAuth(c)
+    if (!tokenPayload) {
+      return c.json(
+        { error: { message: 'Invalid or missing proxy token.', type: 'authentication_error', code: 'invalid_api_key' } },
+        401
+      )
+    }
+
+    if (!(await isTurnInFlight(c, tokenPayload))) {
+      const balanceCheck = await billingService.checkUsageBalance(tokenPayload.workspaceId)
+      if (!balanceCheck.ok) {
+        const { code, message } = billingService.usageLimitErrorPayload(balanceCheck.reason)
+        const usageLimit = await buildUsageLimitInfo(tokenPayload.workspaceId)
+        return c.json({ error: { message, type: 'billing_error', code, ...usageLimit } }, 402)
+      }
+    }
+
+    try {
+      const body = await c.req.json() as { operation?: string; image?: string; scale?: number }
+      const operation = body.operation as ImageProcessOperation
+      if (operation !== 'upscale' && operation !== 'remove-background') {
+        return c.json(
+          { error: { message: 'operation must be "upscale" or "remove-background"', type: 'invalid_request_error', code: 'invalid_operation' } },
+          400
+        )
+      }
+      if (typeof body.image !== 'string' || !body.image.startsWith('data:image/')) {
+        return c.json(
+          { error: { message: 'image must be an image data URI', type: 'invalid_request_error', code: 'missing_image' } },
+          400
+        )
+      }
+      const apiKey = getImageProviderApiKey('fal')
+      if (!apiKey) {
+        return c.json(
+          { error: { message: "Image provider 'fal' is not configured on this server.", type: 'server_error', code: 'provider_not_configured' } },
+          503
+        )
+      }
+
+      console.log(`[AI Proxy] 🎨 Image ${operation}: ${tokenPayload.projectId}`)
+      const result = await processImageFal(apiKey, operation, body.image, { scale: body.scale }, c.req.raw.signal)
+
+      const cost = calculateImageProcessUsageCost(operation, { width: result.width, height: result.height })
+      recordMediaUsage(tokenPayload, {
+        kind: 'image',
+        model: operation,
+        rawUsd: cost.rawUsd,
+        billedUsd: cost.billedUsd,
+        actionType: 'ai_image_processing',
+        metadata: { operation, width: result.width, height: result.height, scale: body.scale },
+      }, c.req.header('x-chat-session-id') || null)
+
+      return c.json({
+        created: Math.floor(Date.now() / 1000),
+        data: [{ b64_json: result.b64_json, content_type: result.content_type, width: result.width, height: result.height }],
+      })
+    } catch (error: any) {
+      console.error('[AI Proxy] Image process error:', error.message)
+      const statusCode = error.message?.includes('429') ? 429 : error.message?.includes('503') ? 503 : 500
+      return c.json(
+        { error: { message: error.message || 'Image processing failed', type: 'server_error', code: 'process_error' } },
+        statusCode
+      )
+    }
+  })
+
+  // =========================================================================
+  // Video Generation Endpoints (fal queue API)
+  // =========================================================================
+
+  /**
+   * POST /ai/v1/videos/generations - Submit a video job.
+   *
+   * Body: `{ prompt, model, duration?, aspect_ratio?, audio?, start_image?,
+   * reference_images? }` with images as data URIs. Returns `{ id }` right
+   * away; poll `GET /ai/v1/videos/:id`. Nothing is charged until the job
+   * completes.
+   */
+  router.post('/ai/v1/videos/generations', async (c) => {
+    const tokenPayload = await validateProxyAuth(c)
+    if (!tokenPayload) {
+      return c.json(
+        { error: { message: 'Invalid or missing proxy token.', type: 'authentication_error', code: 'invalid_api_key' } },
+        401
+      )
+    }
+
+    if (!(await isTurnInFlight(c, tokenPayload))) {
+      const balanceCheck = await billingService.checkUsageBalance(tokenPayload.workspaceId)
+      if (!balanceCheck.ok) {
+        const { code, message } = billingService.usageLimitErrorPayload(balanceCheck.reason)
+        const usageLimit = await buildUsageLimitInfo(tokenPayload.workspaceId)
+        return c.json({ error: { message, type: 'billing_error', code, ...usageLimit } }, 402)
+      }
+    }
+
+    const invalid = (message: string, code: string) =>
+      c.json({ error: { message, type: 'invalid_request_error', code } }, 400)
+
+    try {
+      const body = await c.req.json() as {
+        prompt?: string
+        model?: string
+        duration?: number
+        aspect_ratio?: string
+        audio?: boolean
+        start_image?: string
+        reference_images?: string[]
+      }
+      if (!body.prompt) return invalid('prompt is required', 'missing_prompt')
+
+      const modelId = body.model || DEFAULT_VIDEO_MODEL
+      const entry = getVideoModelEntry(modelId)
+      if (!entry) return invalid(`Video model '${modelId}' is not supported. Call list_media_models for the list.`, 'model_not_found')
+
+      const duration = body.duration ?? entry.defaultDuration
+      if (!entry.durations.includes(duration)) {
+        return invalid(`${entry.displayName} supports durations ${entry.durations.join(', ')} seconds; got ${duration}.`, 'invalid_duration')
+      }
+      if (body.aspect_ratio && !entry.aspectRatios.includes(body.aspect_ratio)) {
+        return invalid(`${entry.displayName} supports aspect ratios ${entry.aspectRatios.join(', ')}; got ${body.aspect_ratio}.`, 'invalid_aspect_ratio')
+      }
+      if (body.start_image !== undefined) {
+        if (typeof body.start_image !== 'string' || !body.start_image.startsWith('data:image/')) {
+          return invalid('start_image must be an image data URI', 'invalid_start_image')
+        }
+        if (!entry.imageToVideoApiModel) return invalid(`${entry.displayName} does not support image-to-video.`, 'image_to_video_unsupported')
+      }
+      const refs = body.reference_images ?? []
+      if (!Array.isArray(refs) || refs.some((r) => typeof r !== 'string' || !r.startsWith('data:image/'))) {
+        return invalid('reference_images must be image data URIs', 'invalid_reference_images')
+      }
+      if (refs.length > entry.maxReferenceImages) {
+        return invalid(
+          entry.maxReferenceImages === 0
+            ? `${entry.displayName} does not accept reference images.`
+            : `${entry.displayName} accepts at most ${entry.maxReferenceImages} reference image(s); got ${refs.length}.`,
+          'too_many_reference_images',
+        )
+      }
+
+      const apiKey = getImageProviderApiKey('fal')
+      if (!apiKey) {
+        return c.json(
+          { error: { message: "Video provider 'fal' is not configured on this server.", type: 'server_error', code: 'provider_not_configured' } },
+          503
+        )
+      }
+
+      const audio = entry.usdPerSecondWithAudio !== undefined && body.audio === true
+      const request = buildFalVideoRequest(entry, {
+        prompt: body.prompt,
+        duration,
+        aspectRatio: body.aspect_ratio,
+        audio,
+        startImage: body.start_image,
+        referenceImages: refs,
+      })
+      const submission = await falQueueSubmit(apiKey, request, c.req.raw.signal)
+
+      const id = `vid_${randomUUID()}`
+      await putVideoJob({
+        id,
+        workspaceId: tokenPayload.workspaceId,
+        projectId: tokenPayload.projectId,
+        userId: tokenPayload.userId,
+        chatSessionId: c.req.header('x-chat-session-id') || null,
+        model: entry.id,
+        endpoint: request.endpoint,
+        statusUrl: submission.statusUrl,
+        responseUrl: submission.responseUrl,
+        duration,
+        audio,
+        aspectRatio: body.aspect_ratio,
+        imageToVideo: !!body.start_image,
+        createdAt: Date.now(),
+      })
+      console.log(`[AI Proxy] 🎬 Video job ${id}: ${tokenPayload.projectId} → fal/${request.endpoint} (${duration}s${audio ? ', audio' : ''})`)
+
+      const estimate = calculateVideoUsageCost(entry, duration, audio)
+      return c.json({ id, status: 'queued', model: entry.id, duration, audio, estimated_usd: roundUsd(estimate.billedUsd) })
+    } catch (error: any) {
+      console.error('[AI Proxy] Video submit error:', error.message)
+      const statusCode = error.message?.includes('429') ? 429 : error.message?.includes('422') ? 400 : 502
+      return c.json(
+        { error: { message: error.message || 'Video submission failed', type: 'server_error', code: 'video_submit_error' } },
+        statusCode
+      )
+    }
+  })
+
+  /**
+   * GET /ai/v1/videos/:id - Status of a video job. When it has completed,
+   * returns the video URL and charges for it, exactly once per job id no
+   * matter how many times (or on how many pods) it is polled.
+   */
+  router.get('/ai/v1/videos/:id', async (c) => {
+    const tokenPayload = await validateProxyAuth(c)
+    if (!tokenPayload) {
+      return c.json(
+        { error: { message: 'Invalid or missing proxy token.', type: 'authentication_error', code: 'invalid_api_key' } },
+        401
+      )
+    }
+
+    const id = c.req.param('id')
+    const job = await getVideoJob(id)
+    if (!job || job.workspaceId !== tokenPayload.workspaceId) {
+      return c.json({ error: { message: `Video job '${id}' not found.`, type: 'invalid_request_error', code: 'job_not_found' } }, 404)
+    }
+    const entry = getVideoModelEntry(job.model)
+    const apiKey = getImageProviderApiKey('fal')
+    if (!entry || !apiKey) {
+      return c.json(
+        { error: { message: "Video provider 'fal' is not configured on this server.", type: 'server_error', code: 'provider_not_configured' } },
+        503
+      )
+    }
+
+    const base = { id, model: job.model, duration: job.duration, audio: job.audio, created_at: job.createdAt }
+    try {
+      const status = await falQueueStatus(apiKey, job.statusUrl, c.req.raw.signal)
+      if (status.status !== 'COMPLETED') {
+        return c.json({
+          ...base,
+          status: status.status === 'IN_QUEUE' ? 'queued' : 'in_progress',
+          queue_position: status.queuePosition,
+        })
+      }
+      if (status.error) {
+        return c.json({ ...base, status: 'failed', error: status.error })
+      }
+
+      const video = await falQueueVideoResult(apiKey, job.responseUrl, c.req.raw.signal)
+      if (await claimVideoCharge(id)) {
+        recordVideoUsage(
+          tokenPayload,
+          entry,
+          job.duration,
+          job.audio,
+          { jobId: id, endpoint: job.endpoint, imageToVideo: job.imageToVideo, aspectRatio: job.aspectRatio },
+          c.req.header('x-chat-session-id') || job.chatSessionId || null,
+        )
+      }
+      return c.json({
+        ...base,
+        status: 'completed',
+        video: { url: video.url, content_type: video.contentType, file_size: video.fileSize },
+      })
+    } catch (error: any) {
+      // fal answers the result URL with a 4xx detail when the job itself failed.
+      const message: string = error.message || 'Video status check failed'
+      if (/fal error \((400|422)\)/.test(message)) {
+        return c.json({ ...base, status: 'failed', error: message })
+      }
+      console.error(`[AI Proxy] Video status error for ${id}:`, message)
+      return c.json({ error: { message, type: 'server_error', code: 'video_status_error' } }, 502)
     }
   })
 
@@ -4990,6 +5455,7 @@ export function aiProxyRoutes() {
       anthropic: !!process.env.ANTHROPIC_API_KEY,
       openai: !!process.env.OPENAI_API_KEY,
       google: !!process.env.GOOGLE_API_KEY,
+      fal: !!process.env.FAL_KEY,
     }
 
     return c.json({
@@ -4997,6 +5463,7 @@ export function aiProxyRoutes() {
       providers,
       modelCount: Object.keys(MODEL_REGISTRY).length,
       imageModelCount: Object.keys(IMAGE_MODEL_REGISTRY).length,
+      videoModelCount: Object.keys(VIDEO_MODEL_CATALOG).length,
     })
   })
 

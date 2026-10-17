@@ -4,10 +4,12 @@
 import {
   MODEL_CATALOG,
   IMAGE_MODEL_CATALOG,
+  VIDEO_MODEL_CATALOG,
   AUTO_MODEL_ID,
   OPENROUTER_MODEL_PREFIX,
   type ModelEntry,
   type ImageModelEntry,
+  type VideoModelEntry,
   type ModelTier,
   type ModelFamily,
   type ModelGeneration,
@@ -73,6 +75,11 @@ export function getImageModelEntry(id: string): ImageModelEntry | undefined {
     if (key.startsWith(id) || entry.apiModel.startsWith(id)) return entry
   }
   return undefined
+}
+
+/** Look up a video model by catalog id. Returns undefined for unknown models. */
+export function getVideoModelEntry(id: string): VideoModelEntry | undefined {
+  return (VIDEO_MODEL_CATALOG as Record<string, VideoModelEntry>)[id]
 }
 
 // ---------------------------------------------------------------------------

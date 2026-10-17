@@ -41,6 +41,7 @@
  */
 
 import { BOARD_ADMIN_TOOL_NAMES, BOARD_TOOL_NAMES, PROBLEM_TOOL_NAMES } from './work-tool-names'
+import { MEDIA_TOOL_NAMES } from './media-tool-names'
 
 export type CapabilityProfileName = 'team' | 'personal'
 
@@ -99,11 +100,13 @@ export const PROFILE_TOOL_GROUPS: Record<string, string[]> = {
  * still remove these; `CAPABILITY_PROFILES` never does.
  */
 export const CORE_TOOL_NAMES = [
-  'ask_user', 'skill', 'quick_action', 'generate_image',
+  'ask_user', 'skill', 'quick_action',
+  // Media generation; gated by imageGenEnabled / videoGenEnabled.
+  ...MEDIA_TOOL_NAMES,
   // Background tasks: every async source (shell, subagents, project_call, team chat, boards) shares these.
   'wait', 'task_list', 'task_cancel',
   'search_history', 'read_history', 'read_guide', 'worktree_list',
-  'project_list', 'project_create', 'project_call', 'project_configure', 'capabilities_configure', 'connect_project',
+  'project_list', 'project_create', 'project_call', 'project_configure', 'capabilities_configure', 'connect_project', 'list_models',
   'agent_profile_get', 'agent_profile_set', 'goal_create', 'goal_update', 'goal_log', 'goal_list',
   'schedule_create', 'schedule_list', 'schedule_update', 'schedule_delete', 'set_status',
   'trigger_types_list', 'trigger_create', 'trigger_list', 'trigger_update', 'trigger_delete', 'trigger_test',

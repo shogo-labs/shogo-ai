@@ -37,6 +37,7 @@ import { subagentStreamStore } from "../../../lib/subagent-stream-store";
 import { stopSubagent } from "../../../lib/subagent-stop";
 import { resolveShortName } from "../../../lib/visible-models";
 import { GenerateImageWidget } from "./GenerateImageWidget";
+import { GenerateVideoWidget } from "./GenerateVideoWidget";
 import { FileDeliveryWidget } from "./FileDeliveryWidget";
 import { GeneratedImageGallery } from "./GeneratedImageGallery";
 
@@ -147,17 +148,22 @@ function truncate(text: string, max: number): string {
   return text.length > max ? text.slice(0, max - 1) + "…" : text;
 }
 
-function extractGeneratedImageTools(
+const IMAGE_RESULT_TOOL_NAMES = new Set(["generate_image", "upscale_image", "remove_background"]);
+const VIDEO_RESULT_TOOL_NAMES = new Set(["generate_video"]);
+
+function extractMediaTools(
   parts: readonly any[] | undefined,
+  toolNames: ReadonlySet<string>,
+  fallbackId: string,
 ): ToolCallData[] {
   if (!parts) return [];
   return parts.flatMap((part) => {
     const tool = part?.type === "tool" ? part.tool : null;
-    if (!tool || tool.toolName !== "generate_image") return [];
+    if (!tool || !toolNames.has(tool.toolName)) return [];
     return [
       {
-        id: tool.id ?? part.id ?? "generated-image",
-        toolName: "generate_image",
+        id: tool.id ?? part.id ?? fallbackId,
+        toolName: tool.toolName,
         category: "other" as const,
         state: tool.state ?? "streaming",
         args: tool.args,
@@ -269,8 +275,19 @@ export function SubagentCard({ tool, className }: SubagentCardProps) {
   );
   const generatedImageTools = useMemo(
     () =>
-      extractGeneratedImageTools(
+      extractMediaTools(
         streamData?.parts?.length ? streamData.parts : output.parts,
+        IMAGE_RESULT_TOOL_NAMES,
+        "generated-image",
+      ),
+    [output.parts, streamData?.parts],
+  );
+  const generatedVideoTools = useMemo(
+    () =>
+      extractMediaTools(
+        streamData?.parts?.length ? streamData.parts : output.parts,
+        VIDEO_RESULT_TOOL_NAMES,
+        "generated-video",
       ),
     [output.parts, streamData?.parts],
   );
@@ -366,6 +383,9 @@ export function SubagentCard({ tool, className }: SubagentCardProps) {
           }))}
         />
       ) : null}
+      {generatedVideoTools.map((videoTool) => (
+        <GenerateVideoWidget key={videoTool.id} tool={videoTool} />
+      ))}
       {sharedFileTools.map((fileTool) => (
         <FileDeliveryWidget key={fileTool.id} tool={fileTool} />
       ))}

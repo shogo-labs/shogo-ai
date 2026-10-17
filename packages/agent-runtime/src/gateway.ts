@@ -503,6 +503,8 @@ export interface GatewayConfig {
   // heartbeat tools are gated by heartbeatToolsEnabled (above)
   /** Whether image generation tool is enabled (default: true) */
   imageGenEnabled?: boolean
+  /** Whether the generate_video tool is enabled (default: false — opt-in, billed per second) */
+  videoGenEnabled?: boolean
   /** Whether memory tools are enabled (default: true) */
   memoryEnabled?: boolean
   /** Whether quick action registration is enabled (default: true) */
@@ -4461,7 +4463,7 @@ export class AgentGateway {
     // integration, and heartbeat guidance from the cached prefix.
     const integrationsGuideOn = this.config.integrationsEnabled !== false
     const channelsGuideOn = this.config.channelsEnabled !== false
-    const mediaGuideOn = this.config.imageGenEnabled !== false
+    const mediaGuideOn = this.config.imageGenEnabled !== false || this.config.videoGenEnabled === true
     const devopsGuideOn = this.config.heartbeatToolsEnabled !== false
 
     this.currentGuideRegistry = buildGuideRegistry(this.promptOverrides)
@@ -4470,6 +4472,7 @@ export class AgentGateway {
       integrations: integrationsGuideOn,
       channels: channelsGuideOn,
       media: mediaGuideOn,
+      video: this.config.videoGenEnabled === true,
       // Personal workspaces have no subagent orchestration at all, so
       // generate_image/transcribe_audio are kept directly callable (see the
       // SUBAGENT_ONLY_TOOLS carve-out above) rather than delegated.

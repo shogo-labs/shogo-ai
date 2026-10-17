@@ -31,6 +31,8 @@ import { availableModelsHint, isAvailableModel } from './available-models'
 import { createWorkspaceAgentTools } from './workspace-agent-tools'
 import { createTriggerTools } from './trigger-tools'
 import { createMeetingTools } from './meeting-tools'
+import { createGenerateImageTool, createMediaTools } from './media-tools'
+import { IMAGE_TOOL_NAMES, MEDIA_TOOL_NAMES } from './media-tool-names'
 import { createAgentRunTools, createChannelTools } from './channel-tools'
 import { createBoardTools } from './board-tools'
 import { BOARD_ADMIN_TOOL_NAMES, BOARD_TOOL_NAMES, CHANNEL_TOOL_NAMES, PROBLEM_TOOL_NAMES } from './work-tool-names'
@@ -8661,6 +8663,7 @@ export function createTools(ctx: ToolContext, extraTools?: AgentTool[]): AgentTo
     createConnectTool(ctx),
     createDisconnectTool(ctx),
     g(createGenerateImageTool(ctx), 'network'),
+    ...createMediaTools(ctx).map((t) => g(t, 'network')),
     g(createTranscribeAudioTool(ctx), 'network'),
     createHeartbeatConfigureTool(ctx),
     createHeartbeatStatusTool(ctx),
@@ -9356,7 +9359,9 @@ export function filterDisabledCapabilityTools(tools: AgentTool[], config: import
   if (config.browserEnabled === false) disabled.add('browser')
   if (config.shellEnabled === false) for (const n of TOOL_GROUP_MAP.shell) disabled.add(n)
   if (config.heartbeatToolsEnabled === false) for (const n of TOOL_GROUP_MAP.heartbeat) disabled.add(n)
-  if (config.imageGenEnabled === false) disabled.add('generate_image')
+  if (config.imageGenEnabled === false) for (const n of IMAGE_TOOL_NAMES) disabled.add(n)
+  if (config.videoGenEnabled !== true) disabled.add('generate_video')
+  if (config.imageGenEnabled === false && config.videoGenEnabled !== true) disabled.add('list_media_models')
   if (config.quickActionsEnabled === false) disabled.add('quick_action')
   if (config.channelsEnabled === false) for (const n of TOOL_GROUP_MAP.messaging) disabled.add(n)
   if (config.integrationsEnabled === false) for (const n of TOOL_GROUP_MAP.integrations) disabled.add(n)
@@ -9388,7 +9393,7 @@ export function filterDisabledCapabilityTools(tools: AgentTool[], config: import
  */
 export const SUBAGENT_ONLY_TOOLS = new Set([
   'browser', // -> browser subagent
-  'generate_image',
+  ...MEDIA_TOOL_NAMES,
   'transcribe_audio', // -> media subagent
   'server_sync', // -> devops subagent
 ])
@@ -9406,7 +9411,7 @@ export const SUBAGENT_ONLY_TOOLS = new Set([
  * only the media tools need this carve-out.
  */
 export function filterSubagentOnlyTools(tools: AgentTool[], config: import('./gateway').GatewayConfig): AgentTool[] {
-  const exempt = config.capabilityProfile === 'personal' ? new Set(['generate_image', 'transcribe_audio']) : new Set<string>()
+  const exempt = config.capabilityProfile === 'personal' ? new Set<string>([...MEDIA_TOOL_NAMES, 'transcribe_audio']) : new Set<string>()
   return tools.filter((t) => exempt.has(t.name) || !SUBAGENT_ONLY_TOOLS.has(t.name))
 }
 
@@ -10392,260 +10397,6 @@ function createTranscribeAudioTool(ctx: ToolContext): AgentTool {
         return textResult({
           error: `Audio transcription failed: ${err.message}`,
         })
-      }
-    },
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Image Generation Tool
-// ---------------------------------------------------------------------------
-
-/**
- * Turn a raw upstream image-generation failure into a short, human-readable
- * message instead of surfacing the raw (sometimes doubly-JSON-nested)
- * provider error body straight into the chat transcript — e.g. the proxy
- * wraps an OpenAI failure as a string like `OpenAI image generation error
- * (400): {"error":{"message":"Unknown parameter: 'response_format'."}}`,
- * which GenerateImageWidget (apps/mobile) used to render verbatim in a
- * "Image generation failed" card. The raw text is still logged server-side
- * (agent-runtime process stdout) for debugging.
- */
-function friendlyImageGenerationError(context: string, status: number, rawErrorText: string): string {
-  console.error(`[${context}] upstream error (${status}):`, rawErrorText)
-  try {
-    const parsed = JSON.parse(rawErrorText)
-    let message: string | undefined = parsed?.error?.message
-    if (typeof message === 'string') {
-      // Unwrap one more level of nested JSON, if the proxy embedded it in
-      // the message text (see the doc comment above).
-      const nestedMatch = message.match(/:\s*(\{[\s\S]*\})\s*$/)
-      if (nestedMatch) {
-        try {
-          const nested = JSON.parse(nestedMatch[1])
-          if (typeof nested?.error?.message === 'string') message = nested.error.message
-        } catch {
-          // Keep the outer message — the embedded text wasn't valid JSON.
-        }
-      }
-      if (message) return message
-    }
-  } catch {
-    // Not JSON at all — fall through to the generic message below.
-  }
-  if (status === 429) return `${context} is rate-limited right now. Please try again in a moment.`
-  if (status >= 500) return `The image provider is temporarily unavailable. Please try again shortly.`
-  return `${context} failed. Please try a different prompt.`
-}
-
-function createGenerateImageTool(ctx: ToolContext): AgentTool {
-  return {
-    name: 'generate_image',
-    description:
-      'Generate one to four image options from a text prompt using AI (GPT Image, Imagen, etc). The images are saved to the agent workspace. Optionally provide a reference_image path to edit/modify an existing workspace image instead of generating from scratch.',
-    label: 'Generate Image',
-    parameters: Type.Object({
-      prompt: Type.String({
-        description: 'Text description of the image to generate, or edit instruction when using reference_image',
-      }),
-      filename: Type.Optional(
-        Type.String({
-          description: 'Destination filename (default: auto-generated). Saved under images/ directory.',
-        }),
-      ),
-      size: Type.Optional(
-        Type.String({
-          description: 'Image size: "1024x1024", "1024x1792", "1792x1024" (default: "1024x1024")',
-        }),
-      ),
-      options: Type.Optional(
-        Type.Integer({
-          minimum: 1,
-          maximum: 4,
-          description: 'Number of image options to generate (1-4, default: 1)',
-        }),
-      ),
-      // OpenAI retired the DALL-E 2/3 models (2026-09) — "dall-e-3" now 400s
-      // with "The model 'dall-e-3' does not exist." `gpt-image-2.5-flare`
-      // is the current default, for both generation and reference_image
-      // edits (edits used to require dall-e-2, which is also retired).
-      model: Type.Optional(
-        Type.String({
-          description: 'Image model: "gpt-image-2.5-flare", "gpt-image-1", "imagen-4", etc. (default: "gpt-image-2.5-flare")',
-        }),
-      ),
-      quality: Type.Optional(
-        Type.String({
-          description: 'Image quality: "standard" or "hd" (default: "standard")',
-        }),
-      ),
-      reference_image: Type.Optional(
-        Type.String({
-          description: 'Path to a workspace image to use as reference for editing (e.g. "images/logo.png")',
-        }),
-      ),
-    }),
-    execute: async (_toolCallId, params) => {
-      const {
-        prompt,
-        filename,
-        size = '1024x1024',
-        model = 'gpt-image-2.5-flare',
-        quality = 'standard',
-        reference_image,
-        options = 1,
-      } = params as {
-        prompt: string
-        filename?: string
-        size?: string
-        model?: string
-        quality?: string
-        reference_image?: string
-        options?: number
-      }
-
-      if (!Number.isInteger(options) || options < 1 || options > 4) {
-        return textResult({
-          error: 'The options parameter must be an integer between 1 and 4.',
-        })
-      }
-
-      const proxyUrl = ctx.aiProxyUrl || process.env.AI_PROXY_URL
-      const proxyToken = ctx.aiProxyToken || process.env.AI_PROXY_TOKEN
-      if (!proxyUrl || !proxyToken) {
-        return textResult({
-          error: 'Image generation is not available: AI proxy not configured.',
-        })
-      }
-
-      const imagesDir = join(ctx.workspaceDir, 'images')
-      mkdirSync(imagesDir, { recursive: true })
-
-      const outputFilename = filename || `generated-${Date.now()}-${Math.random().toString(36).slice(2, 6)}.png`
-      const safeFilename = outputFilename.replace(/[^a-zA-Z0-9._-]/g, '_')
-      const resolvedImagesDir = resolve(imagesDir)
-      const extension = extname(safeFilename) || '.png'
-      const stem = safeFilename.slice(0, -extension.length) || 'generated-image'
-      const outputPathFor = (index: number) => {
-        const candidateFilename = options === 1 ? safeFilename : `${stem}-${index + 1}${extension}`
-        const candidatePath = join(imagesDir, candidateFilename)
-        if (!resolve(candidatePath).startsWith(resolvedImagesDir)) {
-          throw new Error('Invalid filename: path traversal detected.')
-        }
-        return { candidateFilename, candidatePath }
-      }
-
-      try {
-        let responseData: any
-
-        if (reference_image) {
-          const refPath = assertWithinWorkspace(ctx.workspaceDir, reference_image)
-          if (!existsSync(refPath)) {
-            return textResult({
-              error: `Reference image not found: ${reference_image}`,
-            })
-          }
-
-          const imageBuffer = readFileSync(refPath)
-          const refExt = extname(refPath).toLowerCase()
-          const mimeMap: Record<string, string> = {
-            '.png': 'image/png',
-            '.jpg': 'image/jpeg',
-            '.jpeg': 'image/jpeg',
-            '.webp': 'image/webp',
-          }
-          const mimeType = mimeMap[refExt] || 'image/png'
-
-          const formData = new FormData()
-          formData.append('image', new Blob([imageBuffer], { type: mimeType }), `reference${refExt || '.png'}`)
-          formData.append('prompt', prompt)
-          // dall-e-2 (the previous edit model) is retired; the gpt-image
-          // family supports /v1/images/edits too — see the ai-proxy edits
-          // route. Send the resolved `model` (defaults to
-          // gpt-image-2.5-flare) instead of a hardcoded literal so an
-          // explicit model choice is respected for edits too.
-          formData.append('model', model)
-          formData.append('size', size)
-          formData.append('n', String(options))
-
-          const editUrl = proxyUrl.replace(/\/v1$/, '/v1/images/edits')
-          const response = await fetch(editUrl, {
-            method: 'POST',
-            headers: { Authorization: `Bearer ${proxyToken}` },
-            body: formData,
-          })
-
-          if (!response.ok) {
-            const errText = await response.text()
-            return textResult({
-              error: friendlyImageGenerationError('Image edit', response.status, errText),
-            })
-          }
-
-          responseData = await response.json()
-        } else {
-          const genUrl = proxyUrl.replace(/\/v1$/, '/v1/images/generations')
-          const response = await fetch(genUrl, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              Authorization: `Bearer ${proxyToken}`,
-            },
-            body: JSON.stringify({
-              prompt,
-              model,
-              size,
-              quality,
-              n: options,
-            }),
-          })
-
-          if (!response.ok) {
-            const errText = await response.text()
-            return textResult({
-              error: friendlyImageGenerationError('Image generation', response.status, errText),
-            })
-          }
-
-          responseData = await response.json()
-        }
-
-        if (responseData.error) {
-          return textResult({
-            error: responseData.error.message || 'Image generation failed',
-          })
-        }
-
-        const imageDataList = Array.isArray(responseData.data) ? responseData.data.slice(0, options) : []
-        if (imageDataList.length === 0 || imageDataList.some((item: any) => !item?.b64_json)) {
-          return textResult({ error: 'No image data received from provider' })
-        }
-
-        const paths: string[] = []
-        const revisedPrompts: string[] = []
-        let totalBytes = 0
-        for (const [index, imageData] of imageDataList.entries()) {
-          const imageBuffer = Buffer.from(imageData.b64_json, 'base64')
-          const { candidateFilename, candidatePath } = outputPathFor(index)
-          writeFileSync(candidatePath, imageBuffer)
-          paths.push(`images/${candidateFilename}`)
-          totalBytes += imageBuffer.length
-          revisedPrompts.push(imageData.revised_prompt || prompt)
-        }
-
-        return textResult({
-          path: paths[0],
-          paths,
-          size,
-          model,
-          quality,
-          bytes: totalBytes,
-          revised_prompt: revisedPrompts[0],
-          revised_prompts: revisedPrompts,
-          reference_image: reference_image || undefined,
-        })
-      } catch (err: any) {
-        return textResult({ error: `Image generation error: ${err.message}` })
       }
     },
   }

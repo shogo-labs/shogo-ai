@@ -99,6 +99,7 @@
     "expo-splash-screen": "~57.0.9",
     "expo-status-bar": "~57.0.1",
     "expo-updates": "~57.0.24",
+    "expo-video": "~57.0.5",
     "expo-web-browser": "~57.0.3",
     "expo-widgets": "~57.0.23",
     "html2canvas": "^1.4.1",

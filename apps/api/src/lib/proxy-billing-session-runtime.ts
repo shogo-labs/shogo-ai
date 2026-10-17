@@ -31,6 +31,7 @@ type BillingSessionSeam = Pick<
   | 'hasActiveSession'
   | 'accumulateUsage'
   | 'accumulateImageUsage'
+  | 'accumulateVideoUsage'
   | 'setQualitySignals'
 >
 
@@ -67,6 +68,7 @@ export const localBillingSession: BillingSessionSeam = {
   hasActiveSession: async () => false,
   accumulateUsage: async () => false,
   accumulateImageUsage: async () => false,
+  accumulateVideoUsage: async () => false,
   setQualitySignals: async (projectId, quality, chatSessionId) => {
     const turn = localTurns.get(turnKey(projectId, chatSessionId))
     if (!turn) return false
@@ -87,6 +89,9 @@ export const accumulateUsage: BillingSessionSeam['accumulateUsage'] = (...args) 
   session().accumulateUsage(...args)
 export const accumulateImageUsage: BillingSessionSeam['accumulateImageUsage'] = (...args) =>
   session().accumulateImageUsage(...args)
+// Partial `mock.module()` stubs of the cloud module may predate video billing.
+export const accumulateVideoUsage: BillingSessionSeam['accumulateVideoUsage'] = (...args) =>
+  (session().accumulateVideoUsage ?? localBillingSession.accumulateVideoUsage)(...args)
 export const setQualitySignals: BillingSessionSeam['setQualitySignals'] = (...args) =>
   session().setQualitySignals(...args)
 

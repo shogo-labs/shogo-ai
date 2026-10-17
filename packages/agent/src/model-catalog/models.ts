@@ -21,7 +21,8 @@ export type Provider = 'anthropic' | 'openai' | 'google' | 'local' | 'openrouter
  * `inferProviderFromModel` route requests without colliding with native
  * Anthropic/OpenAI model names. */
 export const OPENROUTER_MODEL_PREFIX = 'openrouter:' as const
-export type ImageProvider = 'openai' | 'google' | 'local'
+export type ImageProvider = 'openai' | 'google' | 'local' | 'fal'
+export type VideoProvider = 'fal'
 export type ModelTier = 'economy' | 'standard' | 'premium'
 export type ModelFamily = 'opus' | 'sonnet' | 'haiku' | 'fable' | 'gpt' | 'other'
 export type ModelGeneration = 'current' | 'legacy'
@@ -115,11 +116,47 @@ export interface ModelEntry {
   thinkingApi?: 'adaptive' | 'budget'
 }
 
+export interface ImageModelCapabilities {
+  textToImage: boolean
+  /** Accepts reference images (edits, character/style references). */
+  imageToImage: boolean
+  /** Most reference images one request accepts. 0 when `imageToImage` is false. */
+  maxReferenceImages: number
+}
+
 export interface ImageModelEntry {
   id: string
   provider: ImageProvider
   apiModel: string
   displayName: string
+  /** Endpoint for requests with reference images, when it differs from `apiModel` (fal). */
+  editApiModel?: string
+  capabilities: ImageModelCapabilities
+  /** One line telling an agent when to pick this model. */
+  bestFor?: string
+  /** Retired upstream: kept so old ids still resolve and bill, hidden from model lists. */
+  retired?: boolean
+}
+
+export interface VideoModelEntry {
+  id: string
+  provider: VideoProvider
+  displayName: string
+  /** Text-to-video endpoint. */
+  textToVideoApiModel: string
+  /** Image-to-video endpoint (animates `start_image`). */
+  imageToVideoApiModel?: string
+  /** Durations in seconds the model accepts. */
+  durations: readonly number[]
+  defaultDuration: number
+  aspectRatios: readonly string[]
+  /** Upstream list price per generated second, in USD. */
+  usdPerSecond: number
+  /** Price per second when native audio is on. Absent when the model has no audio. */
+  usdPerSecondWithAudio?: number
+  /** Most reference images (character/object elements) one request accepts. */
+  maxReferenceImages: number
+  bestFor?: string
 }
 
 // ---------------------------------------------------------------------------
@@ -606,15 +643,94 @@ export type ModelId = keyof typeof MODEL_CATALOG
 // Image Model Catalog
 // ---------------------------------------------------------------------------
 
+const TEXT_ONLY = { textToImage: true, imageToImage: false, maxReferenceImages: 0 } as const
+const GPT_IMAGE = { textToImage: true, imageToImage: true, maxReferenceImages: 16 } as const
+
 export const IMAGE_MODEL_CATALOG = {
-  'dall-e-3':       { id: 'dall-e-3',       provider: 'openai',  apiModel: 'dall-e-3',                          displayName: 'DALL-E 3' },
-  'dall-e-2':       { id: 'dall-e-2',       provider: 'openai',  apiModel: 'dall-e-2',                          displayName: 'DALL-E 2' },
-  'gpt-image-1':    { id: 'gpt-image-1',    provider: 'openai',  apiModel: 'gpt-image-1',                      displayName: 'GPT Image 1' },
-  'gpt-image-1.5':  { id: 'gpt-image-1.5',  provider: 'openai',  apiModel: 'gpt-image-1.5',                    displayName: 'GPT Image 1.5' },
-  'gpt-image-2.5-flare': { id: 'gpt-image-2.5-flare', provider: 'openai', apiModel: 'gpt-image-2.5-flare',      displayName: 'GPT Image 2.5 Flare' },
-  'imagen-4':       { id: 'imagen-4',       provider: 'google',  apiModel: 'imagen-4.0-generate-001',          displayName: 'Imagen 4' },
-  'imagen-4-ultra': { id: 'imagen-4-ultra', provider: 'google',  apiModel: 'imagen-4.0-ultra-generate-001',    displayName: 'Imagen 4 Ultra' },
-  'imagen-4-fast':  { id: 'imagen-4-fast',  provider: 'google',  apiModel: 'imagen-4.0-fast-generate-001',     displayName: 'Imagen 4 Fast' },
+  'dall-e-3':       { id: 'dall-e-3',       provider: 'openai',  apiModel: 'dall-e-3',                          displayName: 'DALL-E 3', capabilities: TEXT_ONLY, retired: true },
+  'dall-e-2':       { id: 'dall-e-2',       provider: 'openai',  apiModel: 'dall-e-2',                          displayName: 'DALL-E 2', capabilities: { textToImage: true, imageToImage: true, maxReferenceImages: 1 }, retired: true },
+  'gpt-image-1':    { id: 'gpt-image-1',    provider: 'openai',  apiModel: 'gpt-image-1',                      displayName: 'GPT Image 1', capabilities: GPT_IMAGE },
+  'gpt-image-1.5':  { id: 'gpt-image-1.5',  provider: 'openai',  apiModel: 'gpt-image-1.5',                    displayName: 'GPT Image 1.5', capabilities: GPT_IMAGE },
+  'gpt-image-2':    { id: 'gpt-image-2',    provider: 'openai',  apiModel: 'gpt-image-2',                      displayName: 'GPT Image 2', capabilities: GPT_IMAGE, bestFor: 'Detailed prompt following and clean game or UI art' },
+  'gpt-image-2.5-flare': { id: 'gpt-image-2.5-flare', provider: 'openai', apiModel: 'gpt-image-2.5-flare',      displayName: 'GPT Image 2.5 Flare', capabilities: GPT_IMAGE, bestFor: 'General-purpose default; strong prompt following and edits' },
+  'imagen-4':       { id: 'imagen-4',       provider: 'google',  apiModel: 'imagen-4.0-generate-001',          displayName: 'Imagen 4', capabilities: TEXT_ONLY },
+  'imagen-4-ultra': { id: 'imagen-4-ultra', provider: 'google',  apiModel: 'imagen-4.0-ultra-generate-001',    displayName: 'Imagen 4 Ultra', capabilities: TEXT_ONLY },
+  'imagen-4-fast':  { id: 'imagen-4-fast',  provider: 'google',  apiModel: 'imagen-4.0-fast-generate-001',     displayName: 'Imagen 4 Fast', capabilities: TEXT_ONLY },
+  'nano-banana-pro': {
+    id: 'nano-banana-pro', provider: 'fal', apiModel: 'fal-ai/nano-banana-pro', editApiModel: 'fal-ai/nano-banana-pro/edit',
+    displayName: 'Nano Banana Pro', capabilities: { textToImage: true, imageToImage: true, maxReferenceImages: 14 },
+    bestFor: 'Keeping a character consistent across images, edits, and legible text',
+  },
+  'nano-banana-2': {
+    id: 'nano-banana-2', provider: 'fal', apiModel: 'fal-ai/nano-banana-2', editApiModel: 'fal-ai/nano-banana-2/edit',
+    displayName: 'Nano Banana 2', capabilities: { textToImage: true, imageToImage: true, maxReferenceImages: 14 },
+    bestFor: 'Cheaper, faster character-consistent images and edits',
+  },
+  'seedream-5-pro': {
+    id: 'seedream-5-pro', provider: 'fal', apiModel: 'bytedance/seedream/v5/pro/text-to-image', editApiModel: 'bytedance/seedream/v5/pro/edit',
+    displayName: 'Seedream 5 Pro', capabilities: { textToImage: true, imageToImage: true, maxReferenceImages: 10 },
+    bestFor: 'Stylized art, composites from several references, and in-image text',
+  },
+  'flux-pro-ultra': {
+    id: 'flux-pro-ultra', provider: 'fal', apiModel: 'fal-ai/flux-pro/v1.1-ultra',
+    displayName: 'FLUX1.1 Pro Ultra', capabilities: { textToImage: true, imageToImage: true, maxReferenceImages: 1 },
+    bestFor: 'Photorealism',
+  },
+  'ideogram-3': {
+    id: 'ideogram-3', provider: 'fal', apiModel: 'fal-ai/ideogram/v3',
+    displayName: 'Ideogram 3', capabilities: { textToImage: true, imageToImage: true, maxReferenceImages: 3 },
+    bestFor: 'Posters, logos, and anything with text in the image (references set the style)',
+  },
+  'recraft-3': {
+    id: 'recraft-3', provider: 'fal', apiModel: 'fal-ai/recraft/v3/text-to-image',
+    displayName: 'Recraft 3', capabilities: TEXT_ONLY,
+    bestFor: 'Vector-style illustration and brand graphics',
+  },
 } as const satisfies Record<string, ImageModelEntry>
 
 export type ImageModelId = keyof typeof IMAGE_MODEL_CATALOG
+
+// ---------------------------------------------------------------------------
+// Video Model Catalog
+// ---------------------------------------------------------------------------
+
+export const VIDEO_MODEL_CATALOG = {
+  'kling-3-pro': {
+    id: 'kling-3-pro', provider: 'fal', displayName: 'Kling 3 Pro',
+    textToVideoApiModel: 'fal-ai/kling-video/v3/pro/text-to-video',
+    imageToVideoApiModel: 'fal-ai/kling-video/v3/pro/image-to-video',
+    durations: [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15], defaultDuration: 5,
+    aspectRatios: ['16:9', '9:16', '1:1'],
+    usdPerSecond: 0.112, usdPerSecondWithAudio: 0.168, maxReferenceImages: 4,
+    bestFor: 'Fluid motion and keeping characters consistent via reference images',
+  },
+  'kling-2.5-turbo-pro': {
+    id: 'kling-2.5-turbo-pro', provider: 'fal', displayName: 'Kling 2.5 Turbo Pro',
+    textToVideoApiModel: 'fal-ai/kling-video/v2.5-turbo/pro/text-to-video',
+    imageToVideoApiModel: 'fal-ai/kling-video/v2.5-turbo/pro/image-to-video',
+    durations: [5, 10], defaultDuration: 5,
+    aspectRatios: ['16:9', '9:16', '1:1'],
+    usdPerSecond: 0.07, maxReferenceImages: 0,
+    bestFor: 'Cheap, silent clips for drafts and storyboard animatics',
+  },
+  'veo-3.1-fast': {
+    id: 'veo-3.1-fast', provider: 'fal', displayName: 'Veo 3.1 Fast',
+    textToVideoApiModel: 'fal-ai/veo3.1/fast',
+    imageToVideoApiModel: 'fal-ai/veo3.1/fast/image-to-video',
+    durations: [4, 6, 8], defaultDuration: 8,
+    aspectRatios: ['16:9', '9:16'],
+    usdPerSecond: 0.10, usdPerSecondWithAudio: 0.15, maxReferenceImages: 0,
+    bestFor: 'Cinematic shots with synced dialogue and sound',
+  },
+  'minimax-h3-max': {
+    id: 'minimax-h3-max', provider: 'fal', displayName: 'MiniMax H3 Max',
+    textToVideoApiModel: 'minimax/h3-max/text-to-video',
+    imageToVideoApiModel: 'minimax/h3-max/image-to-video',
+    durations: [2, 3, 4, 5, 6, 8, 10, 12, 15], defaultDuration: 5,
+    aspectRatios: ['21:9', '16:9', '4:3', '1:1', '3:4', '9:16'],
+    usdPerSecond: 0.08, maxReferenceImages: 0,
+    bestFor: 'Stylized and animated looks at a low price',
+  },
+} as const satisfies Record<string, VideoModelEntry>
+
+export type VideoModelId = keyof typeof VIDEO_MODEL_CATALOG

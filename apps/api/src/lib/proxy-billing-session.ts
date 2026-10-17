@@ -155,6 +155,10 @@ interface BillingSession {
   imageBilledUsd: number
   imageGenerationCount: number
   imageModels: string[]
+  videoRawUsd: number
+  videoBilledUsd: number
+  videoGenerationCount: number
+  videoSeconds: number
   quality: BillingSessionQualitySignals
   openedAt: number
   lastActivityAt: number
@@ -207,6 +211,10 @@ function emptySession(projectId: string, chatSessionId: string | null, workspace
     imageBilledUsd: 0,
     imageGenerationCount: 0,
     imageModels: [],
+    videoRawUsd: 0,
+    videoBilledUsd: 0,
+    videoGenerationCount: 0,
+    videoSeconds: 0,
     quality: {},
     openedAt: Date.now(),
     lastActivityAt: Date.now(),
@@ -231,6 +239,10 @@ function parseSessionHash(hash: Record<string, string>, imageModels: string[]): 
     imageBilledUsd: Number(hash.imageBilledUsd || 0),
     imageGenerationCount: Number(hash.imageGenerationCount || 0),
     imageModels,
+    videoRawUsd: Number(hash.videoRawUsd || 0),
+    videoBilledUsd: Number(hash.videoBilledUsd || 0),
+    videoGenerationCount: Number(hash.videoGenerationCount || 0),
+    videoSeconds: Number(hash.videoSeconds || 0),
     quality: {
       success: hash['quality:success'] === undefined ? undefined : hash['quality:success'] === '1',
       hitMaxTurns: hash['quality:hitMaxTurns'] === '1',
@@ -275,6 +287,19 @@ redis.call('SADD', KEYS[2], ARGV[3])
 redis.call('HSET', KEYS[1], 'lastActivityAt', ARGV[4])
 redis.call('PEXPIRE', KEYS[1], ARGV[5])
 redis.call('PEXPIRE', KEYS[2], ARGV[5])
+return 1
+`
+
+const ACCUMULATE_VIDEO_SCRIPT = `
+if redis.call('EXISTS', KEYS[1]) == 0 then
+  return 0
+end
+redis.call('HINCRBYFLOAT', KEYS[1], 'videoRawUsd', ARGV[1])
+redis.call('HINCRBYFLOAT', KEYS[1], 'videoBilledUsd', ARGV[2])
+redis.call('HINCRBYFLOAT', KEYS[1], 'videoSeconds', ARGV[3])
+redis.call('HINCRBY', KEYS[1], 'videoGenerationCount', 1)
+redis.call('HSET', KEYS[1], 'lastActivityAt', ARGV[4])
+redis.call('PEXPIRE', KEYS[1], ARGV[5])
 return 1
 `
 
@@ -350,6 +375,23 @@ function accumulateImageUsageLocal(
   session.imageBilledUsd += billedUsd
   session.imageGenerationCount += 1
   if (!session.imageModels.includes(model)) session.imageModels.push(model)
+  session.lastActivityAt = Date.now()
+  return true
+}
+
+function accumulateVideoUsageLocal(
+  projectId: string,
+  seconds: number,
+  rawUsd: number,
+  billedUsd: number,
+  chatSessionId?: string | null,
+): boolean {
+  const session = lookupSessionLocal(projectId, chatSessionId)
+  if (!session) return false
+  session.videoRawUsd += rawUsd
+  session.videoBilledUsd += billedUsd
+  session.videoSeconds += seconds
+  session.videoGenerationCount += 1
   session.lastActivityAt = Date.now()
   return true
 }
@@ -457,6 +499,27 @@ async function accumulateImageUsageRedis(
   return false
 }
 
+async function accumulateVideoUsageRedis(
+  r: NonNullable<ReturnType<typeof redisOrNull>>,
+  projectId: string,
+  seconds: number,
+  rawUsd: number,
+  billedUsd: number,
+  chatSessionId?: string | null,
+): Promise<boolean> {
+  const composite = chatSessionId ? sessionKey(projectId, chatSessionId) : null
+  const legacy = projectId
+  const now = Date.now()
+  for (const key of composite ? [composite, legacy] : [legacy]) {
+    const result = await r.eval(
+      ACCUMULATE_VIDEO_SCRIPT, 1, redisHashKey(key),
+      String(rawUsd), String(billedUsd), String(seconds), String(now), String(REDIS_TTL_MS),
+    )
+    if (result === 1) return true
+  }
+  return false
+}
+
 async function setQualitySignalsRedis(
   r: NonNullable<ReturnType<typeof redisOrNull>>,
   projectId: string,
@@ -510,6 +573,10 @@ async function openSessionRedis(
       imageRawUsd: '0',
       imageBilledUsd: '0',
       imageGenerationCount: '0',
+      videoRawUsd: '0',
+      videoBilledUsd: '0',
+      videoGenerationCount: '0',
+      videoSeconds: '0',
       openedAt: String(fresh.openedAt),
       lastActivityAt: String(fresh.lastActivityAt),
     })
@@ -563,7 +630,7 @@ setInterval(() => {
   const now = Date.now()
   for (const [key, session] of sessions) {
     if (now - session.lastActivityAt > SESSION_TIMEOUT_MS) {
-      console.warn(`[BillingSession] Flushing orphaned session for ${key} (${session.requestCount} requests, ${session.inputTokens + session.outputTokens} tokens, ${session.imageGenerationCount} images $${session.imageBilledUsd.toFixed(4)})`)
+      console.warn(`[BillingSession] Flushing orphaned session for ${key} (${session.requestCount} requests, ${session.inputTokens + session.outputTokens} tokens, ${session.imageGenerationCount} images $${session.imageBilledUsd.toFixed(4)}, ${session.videoGenerationCount} videos $${session.videoBilledUsd.toFixed(4)})`)
       closeSession(session.projectId, { chatSessionId: session.chatSessionId ?? undefined }).catch(err =>
         console.error(`[BillingSession] Failed to flush orphaned session ${key}:`, err)
       )
@@ -730,6 +797,29 @@ export async function accumulateImageUsage(
   return accumulateImageUsageLocal(projectId, model, rawUsd, billedUsd, chatSessionId)
 }
 
+/**
+ * Accumulate video-generation USD (charged when a job completes). Returns
+ * true if accumulated against an active session, false if no session exists
+ * (caller should charge per-call).
+ */
+export async function accumulateVideoUsage(
+  projectId: string,
+  seconds: number,
+  rawUsd: number,
+  billedUsd: number,
+  chatSessionId?: string | null,
+): Promise<boolean> {
+  const r = redisOrNull()
+  if (r) {
+    try {
+      return await withRedisTimeout(accumulateVideoUsageRedis(r, projectId, seconds, rawUsd, billedUsd, chatSessionId))
+    } catch (err) {
+      console.warn(`[BillingSession] Redis accumulateVideoUsage failed, falling back to local map:`, (err as Error).message)
+    }
+  }
+  return accumulateVideoUsageLocal(projectId, seconds, rawUsd, billedUsd, chatSessionId)
+}
+
 export async function setQualitySignals(
   projectId: string,
   quality: BillingSessionQualitySignals,
@@ -800,6 +890,7 @@ export async function closeSession(
   if (
     totalTokens === 0 &&
     session.imageBilledUsd === 0 &&
+    session.videoBilledUsd === 0 &&
     options.fallbackUsage &&
     !options.discardPartial &&
     !options.bookkeeping
@@ -827,7 +918,7 @@ export async function closeSession(
     }
   }
 
-  if (totalTokens === 0 && session.imageBilledUsd === 0) {
+  if (totalTokens === 0 && session.imageBilledUsd === 0 && session.videoBilledUsd === 0) {
     // Do not bill, but still record a metrics row so turns that die before
     // the LLM (pod unreachable, 402, stream abort with no tokens) are
     // countable. Skipping this made silent dropped turns invisible in
@@ -885,6 +976,26 @@ export async function closeSession(
       `(stream EOF'd before turn-complete) — ${session.inputTokens} in, ${session.outputTokens} out, ` +
       `${session.requestCount} request(s), ${session.imageGenerationCount} image(s) NOT charged.`
     )
+    // A finished video is not regenerated when the client retries the turn,
+    // and it is too expensive to drop with the partial tokens.
+    if (session.videoBilledUsd > 0) {
+      await billingService.consumeUsage({
+        workspaceId: session.workspaceId,
+        projectId: session.projectId,
+        memberId: session.userId,
+        actionType: 'ai_video_generation',
+        rawUsd: session.videoRawUsd,
+        billedUsd: session.videoBilledUsd,
+        actionMetadata: {
+          videoGenerationCount: session.videoGenerationCount,
+          videoSeconds: session.videoSeconds,
+          rawUsd: session.videoRawUsd,
+          discardedPartialTurn: true,
+          ...(session.chatSessionId ? { chatSessionId: session.chatSessionId } : {}),
+        },
+      }).catch((err) => console.error(`[BillingSession] Failed to charge video usage for discarded ${key}:`, err))
+      return { billedUsd: session.videoBilledUsd, rawUsd: session.videoRawUsd, totalTokens }
+    }
     return { billedUsd: 0, rawUsd: 0, totalTokens }
   }
 
@@ -899,8 +1010,8 @@ export async function closeSession(
     session.inputTokens, session.outputTokens, session.model,
     session.cachedInputTokens, session.cacheWriteTokens,
   )
-  const rawUsd = tokenCost.rawUsd + session.imageRawUsd
-  const billedUsd = tokenCost.billedUsd + session.imageBilledUsd
+  const rawUsd = tokenCost.rawUsd + session.imageRawUsd + session.videoRawUsd
+  const billedUsd = tokenCost.billedUsd + session.imageBilledUsd + session.videoBilledUsd
   const durationMs = Date.now() - session.openedAt
   const finalQuality = session.quality
 
@@ -965,6 +1076,14 @@ export async function closeSession(
         imageRawUsd: session.imageRawUsd,
         imageBilledUsd: session.imageBilledUsd,
         imageModels: session.imageModels,
+        ...(session.videoGenerationCount > 0
+          ? {
+              videoGenerationCount: session.videoGenerationCount,
+              videoSeconds: session.videoSeconds,
+              videoRawUsd: session.videoRawUsd,
+              videoBilledUsd: session.videoBilledUsd,
+            }
+          : {}),
         durationMs,
         ...(session.chatSessionId ? { chatSessionId: session.chatSessionId } : {}),
         ...(usedStreamFallback ? { usageSource: 'stream-fallback' } : {}),
@@ -973,7 +1092,7 @@ export async function closeSession(
 
     if (result.success) {
       console.log(
-        `[BillingSession] Charged $${billedUsd.toFixed(4)} (raw $${rawUsd.toFixed(4)}) — ${session.inputTokens} in, ${session.cacheWriteTokens} cache-write, ${session.cachedInputTokens} cache-read, ${session.outputTokens} out (${totalTokens} total across ${session.requestCount} requests, model: ${billingModel}), ${session.imageGenerationCount} images $${session.imageBilledUsd.toFixed(4)} — remaining included: $${result.remainingIncludedUsd?.toFixed(4)}`
+        `[BillingSession] Charged $${billedUsd.toFixed(4)} (raw $${rawUsd.toFixed(4)}) — ${session.inputTokens} in, ${session.cacheWriteTokens} cache-write, ${session.cachedInputTokens} cache-read, ${session.outputTokens} out (${totalTokens} total across ${session.requestCount} requests, model: ${billingModel}), ${session.imageGenerationCount} images $${session.imageBilledUsd.toFixed(4)}, ${session.videoGenerationCount} videos $${session.videoBilledUsd.toFixed(4)} — remaining included: $${result.remainingIncludedUsd?.toFixed(4)}`
       )
     } else {
       console.warn(`[BillingSession] Could not charge usage: ${result.error}`)

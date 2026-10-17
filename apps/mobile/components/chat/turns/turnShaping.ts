@@ -125,7 +125,13 @@ function isShellRunCommand(tool: ToolCallData): boolean {
  * covered by `UNGROUPABLE_TOOLS` or the work-tool rules below. They keep
  * their own card instead of joining a work-group.
  */
-const CUSTOM_RENDER_TOOLS = new Set(["generate_image", "share_file"]);
+const CUSTOM_RENDER_TOOLS = new Set([
+  "generate_image",
+  "upscale_image",
+  "remove_background",
+  "generate_video",
+  "share_file",
+]);
 
 /**
  * A tool call with no dedicated card and no bespoke grouping, e.g.

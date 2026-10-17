@@ -41,6 +41,7 @@ import { useChatContextSafe } from "../ChatContext"
 import { resolveChatAttachmentUrl } from "../../../lib/chat-attachment-url"
 import { ChatMarkdown } from "../ChatMarkdown"
 import { GenerateImageWidget } from "./GenerateImageWidget"
+import { GenerateVideoWidget } from "./GenerateVideoWidget"
 import { FileDeliveryWidget } from "./FileDeliveryWidget"
 import { GeneratedImageGallery } from "./GeneratedImageGallery"
 import { BrowserWidget } from "./BrowserWidget"
@@ -192,10 +193,14 @@ function isItemActive(item: MessagePart): boolean {
   return false
 }
 
+/** Tools whose result card shows the produced image (same result shape as generate_image). */
+const IMAGE_RESULT_TOOL_NAMES = new Set(["generate_image", "upscale_image", "remove_background"])
+
 function isGeneratedImagePart(part: GroupedMessagePart): boolean {
   return (
     part.type === "image-gallery" ||
-    (part.type === "tool" && part.tool.toolName === "generate_image")
+    (part.type === "tool" &&
+      (IMAGE_RESULT_TOOL_NAMES.has(part.tool.toolName) || part.tool.toolName === "generate_video"))
   )
 }
 
@@ -720,8 +725,12 @@ export const AssistantContent = memo(
           }
         }
 
-        if (part.tool.toolName === "generate_image") {
+        if (IMAGE_RESULT_TOOL_NAMES.has(part.tool.toolName)) {
           return <GenerateImageWidget key={part.id} tool={part.tool} />
+        }
+
+        if (part.tool.toolName === "generate_video") {
+          return <GenerateVideoWidget key={part.id} tool={part.tool} />
         }
 
         if (part.tool.toolName === "share_file") {

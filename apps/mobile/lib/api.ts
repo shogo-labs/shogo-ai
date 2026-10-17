@@ -3135,6 +3135,7 @@ export interface TechStackSummary {
     shellEnabled?: boolean
     heartbeatToolsEnabled?: boolean
     imageGenEnabled?: boolean
+    videoGenEnabled?: boolean
     memoryEnabled?: boolean
     quickActionsEnabled?: boolean
     sdkGuideEnabled?: boolean

@@ -31,6 +31,7 @@ const PROVIDER_KEYS = [
   { id: 'openai', envKey: 'OPENAI_API_KEY' },
   { id: 'google', envKey: 'GOOGLE_API_KEY' },
   { id: 'openrouter', envKey: 'OPENROUTER_API_KEY' },
+  { id: 'fal', envKey: 'FAL_KEY' },
 ] as const
 
 const PROVIDER_BY_ID = new Map(PROVIDER_KEYS.map((p) => [p.id, p.envKey]))
