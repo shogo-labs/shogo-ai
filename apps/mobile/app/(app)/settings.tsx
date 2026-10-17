@@ -964,7 +964,8 @@ const WorkspaceSettingsTab = observer(function WorkspaceSettingsTab() {
 // ============================================================================
 
 function notificationPermissionCopy(
-  state: NotificationPermissionState | null
+  state: NotificationPermissionState | null,
+  isDesktop = false
 ): { status: string; action: "request" | "settings" | null } {
   switch (state) {
     case "granted":
@@ -975,6 +976,15 @@ function notificationPermissionCopy(
         action: "request",
       };
     case "denied":
+      // On desktop the refusal comes from the OS, not the browser, and the
+      // browser's site-settings advice would send the user to the wrong place.
+      if (isDesktop) {
+        return {
+          status:
+            "Blocked by the system. Shogo couldn't deliver its last alert — turn on notifications for Shogo in your system notification settings; the next alert will confirm it took.",
+          action: null,
+        };
+      }
       return Platform.OS === "web"
         ? {
             status:
@@ -992,11 +1002,21 @@ function notificationPermissionCopy(
   }
 }
 
+function isDesktopApp(): boolean {
+  return (
+    typeof window !== "undefined" &&
+    !!(window as unknown as { shogoDesktop?: { isDesktop?: boolean } })
+      .shogoDesktop?.isDesktop
+  );
+}
+
 function NotificationsCard() {
   const [notifyOnTurn, setNotifyOnTurn] = useNotifyOnTurnCompletePref();
   const [requireBiometric, setRequireBiometric] = useRequireBiometricApproval();
   const permission = useNotificationPermission();
-  const copy = notificationPermissionCopy(permission.state);
+  const [isDesktop] = useState(isDesktopApp);
+  const copy = notificationPermissionCopy(permission.state, isDesktop);
+
   return (
     <Card>
       <CardContent className="p-0">

@@ -17,7 +17,7 @@ if (handleSquirrelEvent()) {
 import { initSentry, setSentryDeviceTag } from './sentry'
 initSentry()
 
-import { app, BrowserWindow, protocol, net, session, ipcMain, Menu, shell, Notification, dialog, powerMonitor, systemPreferences, desktopCapturer } from 'electron'
+import { app, BrowserWindow, protocol, net, session, ipcMain, Menu, shell, Notification, nativeImage, dialog, powerMonitor, systemPreferences, desktopCapturer } from 'electron'
 import { ensureMediaAccess, ensureMicAccess, MAC_MIC_SETTINGS_URL, type MicAccess } from './media-permissions'
 import type { DictationHotkeyService } from './dictation-hotkey'
 import { normalizeDictationConfig } from './dictation-protocol'
@@ -51,6 +51,8 @@ import {
 import { readConfig, writeConfig, getDeviceInfo, getCloudUrl } from './config'
 import type { BugReportPayload } from './bug-report'
 import { initAutoUpdater, getIsApplyingUpdate } from './updater'
+import { NotificationCenter } from './notification-center'
+import { createBadgeController } from './badge'
 type RecordingModule = typeof import('./recording')
 import { registerFsIpcHandlers } from './fs-ipc'
 import { registerGitIpcHandlers, disposeGitIpc } from './git/ipc'
@@ -226,6 +228,28 @@ function loadRecording(): Promise<RecordingModule> {
   recordingP ??= import('./recording')
   return recordingP
 }
+
+const notifications = new NotificationCenter({
+  create: (options) => new Notification(options),
+  isSupported: () => Notification.isSupported(),
+  log: (message) => console.warn(message),
+})
+
+// A Windows taskbar overlay belongs to a window, not the app, so the count is
+// re-applied whenever the primary window is (re)created — see createWindow().
+const badge = createBadgeController({
+  platform: process.platform,
+  log: (message) => console.warn(message),
+  adapter: {
+    setBadgeCount: (count) => app.setBadgeCount(count),
+    setOverlayIcon: (icon, description) => {
+      const window = windowManager.getPrimaryWindow()
+      if (!window || window.isDestroyed()) return false
+      window.setOverlayIcon(icon ? nativeImage.createFromBuffer(icon) : null, description)
+      return true
+    },
+  },
+})
 
 let dictationP: Promise<DictationHotkeyService> | null = null
 function loadDictation(): Promise<DictationHotkeyService> {
@@ -487,16 +511,14 @@ let cloudKeyRejectionNotified = false
 function notifyCloudKeyRejected(): void {
   if (cloudKeyRejectionNotified) return
   cloudKeyRejectionNotified = true
-  if (!Notification.isSupported()) return
-  const n = new Notification({
-    title: 'Shogo Cloud API key needs attention',
-    body: 'Shogo Cloud rejected this device API key — open Settings to mint a fresh key.',
-    silent: false,
-  })
-  n.on('click', () => {
-    windowManager.focusAndNavigatePrimaryWindow('/general')
-  })
-  n.show()
+  notifications.show(
+    {
+      title: 'Shogo Cloud API key needs attention',
+      body: 'Shogo Cloud rejected this device API key — open Settings to mint a fresh key.',
+      silent: false,
+    },
+    { onClick: () => windowManager.focusAndNavigatePrimaryWindow('/general') },
+  )
 }
 
 function startCloudLoginHeartbeat(): void {
@@ -1450,17 +1472,23 @@ function registerIpcHandlers(): void {
     }
   })
 
-  // Unread team chat count on the dock / taskbar icon.
+  // Unread team chat count on the dock / taskbar icon. Returns `{ ok, reason }`
+  // instead of a bare boolean so the renderer can retry a count the OS refused.
   ipcMain.handle('set-badge-count', (_event, count: unknown) => {
-    const n = typeof count === 'number' && Number.isFinite(count) ? Math.max(0, Math.min(Math.floor(count), 9999)) : 0
-    return app.setBadgeCount(n)
+    return badge.apply(typeof count === 'number' ? count : 0)
   })
+
+  // What the last notification attempt actually did. Without this the renderer
+  // could only ever report "notifications enabled", which is exactly what it
+  // did while macOS was silently dropping every banner.
+  ipcMain.handle('get-notification-status', () => ({
+    ...notifications.getOutcome(),
+    supported: Notification.isSupported(),
+  }))
 
   // Desktop notification for remote actions
   ipcMain.handle('show-remote-action-notification', (_event, title: string, body: string) => {
-    if (Notification.isSupported()) {
-      new Notification({ title, body }).show()
-    }
+    notifications.show({ title, body })
   })
 
   // Chat-turn-complete notification: includes session + project so a click
@@ -1471,13 +1499,14 @@ function registerIpcHandlers(): void {
       _event,
       args: { title: string; body: string; sessionId: string; projectId: string },
     ) => {
-      if (!Notification.isSupported()) return
       const { title, body, sessionId, projectId } = args
-      const n = new Notification({ title, body, silent: false })
-      n.on('click', () => {
-        windowManager.focusAndSendToPrimaryWindow('notification-clicked', { sessionId, projectId })
-      })
-      n.show()
+      return notifications.show(
+        { title, body, silent: false },
+        {
+          onClick: () =>
+            windowManager.focusAndSendToPrimaryWindow('notification-clicked', { sessionId, projectId }),
+        },
+      )
     },
   )
 
@@ -1661,6 +1690,8 @@ function registerIpcHandlers(): void {
 
 function createWindow(): void {
   loadAppWindow(windowManager.createPrimaryWindow())
+  // A recreated window has no taskbar overlay; put the current count back.
+  badge.reattach()
 }
 
 function loadProductionWeb(window: BrowserWindow, pathWithQuery = '/'): void {
@@ -1882,6 +1913,14 @@ function setupSessionHandlers(): void {
 }
 
 app.whenReady().then(async () => {
+  // Windows needs an App User Model ID for toasts, and it only has to be set by
+  // hand when running unpackaged: Electron sets one that matches the Start Menu
+  // shortcut for Squirrel installs, and overriding that would break the match
+  // and silence notifications on installed builds.
+  if (process.platform === 'win32' && IS_DEV) {
+    app.setAppUserModelId(process.execPath)
+  }
+
   const config = readConfig()
   isCloudMode = config.mode === 'cloud'
 
