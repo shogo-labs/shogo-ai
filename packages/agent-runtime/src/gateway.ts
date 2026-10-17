@@ -4133,7 +4133,7 @@ export class AgentGateway {
             // logs above. See describeTurnFailure.
             uiWriter.write({ type: 'error', errorText: describeTurnFailure(msg) } as any)
           }
-        } else if (result.outputTokens === 0 && result.toolCalls.length === 0 && !isHeartbeat && !isUserStoppedTurn(result)) {
+        } else if (result.outputTokens === 0 && result.toolCalls.length === 0 && !result.usageLimit && !isHeartbeat && !isUserStoppedTurn(result)) {
           console.error(
             `${this.logPrefix} Agent returned 0 tokens for session ${sessionId} — possible context corruption (${session.compactionCount} compactions, ${session.messages.length} messages, model: ${modelId}, provider: ${provider})`
           )

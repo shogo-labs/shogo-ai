@@ -59,6 +59,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context"
 import { LinearGradient } from "expo-linear-gradient"
 import { DefaultChatTransport } from "ai"
 import { appendQueuedUserMessage } from "./queued-user-message"
+import { usageLimitNoticeFor } from "./usage-limit-notice"
 import AsyncStorage from "@react-native-async-storage/async-storage"
 import {
   extractTextContent,
@@ -3529,6 +3530,22 @@ const ChatPanelContent = observer(function ChatPanelContent({
     // otherwise tapping X once would permanently mute future errors.
     setErrorDismissed(false)
   }, [errorBannerText])
+
+  const usageLimitView = useMemo(
+    () =>
+      usageLimitNoticeFor({
+        error: error?.message,
+        errorDismissed,
+        stoppedTurn: usageLimitNotice,
+        currentSessionId,
+      }),
+    [error?.message, errorDismissed, usageLimitNotice, currentSessionId],
+  )
+  const usageLimitBlocked = usageLimitView?.variant === "blocked"
+  useEffect(() => {
+    if (usageLimitBlocked) refetchUsageWallet()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [usageLimitBlocked])
 
   useEffect(() => {
     if (!isTunnelError || !localAgentUrl) {
@@ -7467,68 +7484,62 @@ const ChatPanelContent = observer(function ChatPanelContent({
   useDockPanel(connectivityDockDescriptor, chatDockStore)
 
   const usageLimitDockDescriptor = useMemo<DockPanelDescriptor | null>(() => {
-    if (!usageLimitNotice || usageLimitNotice.sessionId !== currentSessionId) {
-      return null
-    }
-    const resetsAt = usageLimitNotice.resetsAt
-      ? new Date(usageLimitNotice.resetsAt)
-      : null
-    const resetLabel =
-      resetsAt && !Number.isNaN(resetsAt.getTime())
-        ? ` Your usage resets ${resetsAt.toLocaleString(undefined, {
-            weekday: "short",
-            hour: "numeric",
-            minute: "2-digit",
-          })}.`
-        : ""
+    if (!usageLimitView) return null
+    const blocked = usageLimitView.variant === "blocked"
     return {
       id: "usage-limit",
       kind: "status",
       order: 3,
-      title: "Usage limit reached",
+      title: usageLimitView.title,
       icon: AlertCircle,
       accent: "warning",
       defaultExpanded: true,
-      onDismiss: () => setUsageLimitNotice(null),
+      onDismiss: () =>
+        blocked ? setErrorDismissed(true) : setUsageLimitNotice(null),
       headerActions: (
         <View className="flex-row gap-1.5">
           <Pressable
             onPress={handleUpgradeClick}
             accessibilityRole="button"
-            accessibilityLabel="Upgrade plan"
+            accessibilityLabel={
+              usageLimitView.primaryLabel === "Upgrade"
+                ? "Upgrade plan"
+                : "Open billing settings"
+            }
             className="shrink-0 rounded-md border border-orange-400/30 px-2 py-1"
           >
             <Text className="text-xs font-medium text-orange-700 dark:text-orange-300">
-              Upgrade
+              {usageLimitView.primaryLabel}
             </Text>
           </Pressable>
           <Pressable
             onPress={() => {
+              if (blocked) {
+                handleRetry()
+                return
+              }
               setUsageLimitNotice(null)
               void handleSendMessage("continue")
             }}
             accessibilityRole="button"
-            accessibilityLabel="Continue the task"
+            accessibilityLabel={
+              blocked ? "Retry sending the message" : "Continue the task"
+            }
             className="shrink-0 rounded-md bg-orange-500/15 px-2 py-1"
           >
             <Text className="text-xs font-medium text-orange-700 dark:text-orange-300">
-              Continue
+              {usageLimitView.secondaryLabel}
             </Text>
           </Pressable>
         </View>
       ),
       render: () => (
         <Text className="text-xs text-orange-700 dark:text-orange-300">
-          {`The agent stopped partway through; completed work is saved.${resetLabel} Tap Continue after it resets, or upgrade to keep going now.`}
+          {usageLimitView.body}
         </Text>
       ),
     }
-  }, [
-    usageLimitNotice,
-    currentSessionId,
-    handleUpgradeClick,
-    handleSendMessage,
-  ])
+  }, [usageLimitView, handleUpgradeClick, handleSendMessage, handleRetry])
   useDockPanel(usageLimitDockDescriptor, chatDockStore)
 
   const toolErrorDockDescriptor = useMemo<DockPanelDescriptor | null>(() => {
@@ -7626,6 +7637,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
   useDockPanel(toolErrorDockDescriptor, chatDockStore)
 
   const errorDockDescriptor = useMemo<DockPanelDescriptor | null>(() => {
+    if (usageLimitView?.variant === "blocked") return null
     if (!(
       ((error || emptyResponseError) && !errorDismissed) ||
       streamAutoRecovering
@@ -7769,6 +7781,7 @@ const ChatPanelContent = observer(function ChatPanelContent({
     errorBannerNeedsReadMore,
     handleRetry,
     clearActiveInstance,
+    usageLimitView,
   ])
   useDockPanel(errorDockDescriptor, chatDockStore)
 

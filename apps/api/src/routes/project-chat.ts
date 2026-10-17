@@ -23,6 +23,7 @@ import { prisma } from "../lib/prisma"
 import { loadAccess } from "../lib/authz"
 import type { IRuntimeManager } from "../lib/runtime"
 import * as billingService from "../services/billing-runtime"
+import { buildUsageLimitInfo } from "../lib/usage-limit-info"
 import { AUTO_MODEL_ID, isAutoModel, resolveModelId } from "@shogo/model-catalog"
 import { isModelAccessibleForWorkspace } from "../lib/model-access"
 import { wrapSseStreamWithKeepalive } from "@shogo/shared-runtime/sse-keepalive"
@@ -1242,8 +1243,9 @@ export function projectChatRoutes(config: ProjectChatRoutesConfig) {
         if (limitUserId && limitUserId !== 'system') {
           trackEvent(limitUserId, 'usage_limit_hit', { project_id: projectId }).catch(() => {})
         }
+        const { resetsAt, window } = await buildUsageLimitInfo(project.workspaceId)
         return c.json(
-          { error: { code, message } },
+          { error: { code, message, resetsAt, window } },
           402
         )
       }

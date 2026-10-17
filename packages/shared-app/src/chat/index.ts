@@ -12,8 +12,9 @@ export {
   projectCallOf,
   taskNotificationOf,
   parseTaskUpdates,
+  parseUsageLimitError,
 } from './message-helpers'
-export type { ChannelDispatch, ProjectCallPrompt, TaskNotification, TaskUpdateLine } from './message-helpers'
+export type { ChannelDispatch, ProjectCallPrompt, TaskNotification, TaskUpdateLine, UsageLimitCode } from './message-helpers'
 
 export {
   buildChatStreamErrorReport,

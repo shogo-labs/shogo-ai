@@ -95,6 +95,10 @@ mock.module('../services/billing.service', () => ({
     }
   },
   hasAdvancedModelAccess: async () => hasAdvancedModelAccessResult,
+  getUsageWindows: async () => ({
+    fiveHour: { kind: 'fiveHour', limitUsd: 10, utilization: 1, resetsAt: new Date('2099-01-01T00:00:00.000Z') },
+    weekly: { kind: 'weekly', limitUsd: 50, utilization: 0.4, resetsAt: new Date('2099-01-05T00:00:00.000Z') },
+  }),
 }))
 
 // Model registry: a UUID-addressed DB model resolves to its native provider.
@@ -233,7 +237,11 @@ describe('POST /projects/:projectId/chat', () => {
       body: '{}',
     }))
     expect(res.status).toBe(402)
-    expect((await res.json() as any).error.code).toBe('usage_limit_reached')
+    const body = (await res.json()) as any
+    expect(body.error.code).toBe('usage_limit_reached')
+    // The client shows when usage resets next to its Upgrade button.
+    expect(body.error.resetsAt).toBe('2099-01-01T00:00:00.000Z')
+    expect(body.error.window).toBe('fiveHour')
   })
 
   // Regression: a user with on-demand usage turned on (overageEnabled=true)

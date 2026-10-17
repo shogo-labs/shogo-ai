@@ -25,6 +25,7 @@ import { ChatLatency } from '../lib/chat-latency'
 import { captureWake, type WakeInfo } from '../lib/wake-capture'
 import { prisma } from '../lib/prisma'
 import * as billingService from '../services/billing-runtime'
+import { buildUsageLimitInfo } from '../lib/usage-limit-info'
 import { AUTO_MODEL_ID, isAutoModel, resolveModelId } from '@shogo/model-catalog'
 import { isModelAccessibleForWorkspace } from '../lib/model-access'
 import { wrapSseStreamWithKeepalive } from '@shogo/shared-runtime/sse-keepalive'
@@ -654,8 +655,9 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
     const balanceCheck = await billingService.checkUsageBalance(workspaceId)
     if (!balanceCheck.ok) {
       const { code, message } = billingService.usageLimitErrorPayload(balanceCheck.reason)
+      const { resetsAt, window } = await buildUsageLimitInfo(workspaceId)
       return c.json(
-        { error: { code, message } },
+        { error: { code, message, resetsAt, window } },
         402,
       )
     }

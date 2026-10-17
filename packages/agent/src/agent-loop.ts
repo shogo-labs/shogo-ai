@@ -990,22 +990,22 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
   const coreErrorMsg = newMessages.find((m: any) => m.errorMessage)
   const rawCoreError = (coreErrorMsg as any)?.errorMessage ?? (promptError ? undefined : unresolvedFailureText)
   const coreError = rawCoreError ? parseProviderError(rawCoreError) : undefined
+
+  // A usage limit ends the turn with a notice (and the client's Upgrade
+  // prompt) whether or not the turn made progress first.
+  const usageLimit = !abortTriggered
+    ? detectUsageLimit(rawCoreError) ?? detectUsageLimit(promptError?.message)
+    : null
+  if (usageLimit && promptError) promptError = undefined
+
   const implicitError =
-    !promptError && usage.output === 0 && toolCalls.length === 0 && !abortTriggered
+    !usageLimit && !promptError && usage.output === 0 && toolCalls.length === 0 && !abortTriggered
       ? new Error(
           coreError
             ? `Provider error: ${coreError}`
             : 'Agent produced no output — possible provider error'
         )
       : undefined
-
-  // A usage limit that cuts off a turn which already made progress ends the
-  // turn with a notice. With no progress it stays a hard error, same as the
-  // API's pre-flight limit check.
-  const usageLimit =
-    !abortTriggered && !implicitError && (toolCalls.length > 0 || finalText.trim())
-      ? detectUsageLimit(rawCoreError) ?? detectUsageLimit(promptError?.message)
-      : null
 
   // If there was a core error but the agent DID make progress (tool calls executed),
   // don't treat it as a hard error — mark as exhausted so the caller can continue.
