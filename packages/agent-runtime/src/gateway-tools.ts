@@ -42,6 +42,7 @@ import { disabledToolNamesForProfile } from './capability-profiles'
 import { Type, type Static } from '@sinclair/typebox'
 import type { AgentTool, AgentToolResult } from '@mariozechner/pi-agent-core'
 import { sandboxExec, sandboxExecAsync, shouldSandbox, type CommandHandle } from './sandbox-exec'
+import { getHomeWatch, homeNotPersistedNote } from './home-state-watch'
 import { commandTargetsGateway, gatewayKillRefusal } from './gateway-self-protect'
 import { checkSelfDetach, selfDetachRefusal } from './exec-detach'
 import { CommandRegistry, type CommandEntry } from './command-registry'
@@ -1094,6 +1095,13 @@ function buildCompletedExecResult({ ctx, entry, finalResult }: BuildExecResultOp
   // generators). Re-stat them so the next edit is not rejected as stale.
   ctx.fileStateCache?.resyncMtimes()
   if (entry.backgrounded) ctx.commandRegistry?.markConsumed([entry.id])
+  let homeNotPersisted: string | undefined
+  if (!entry.handle.sandboxed) {
+    try {
+      const fresh = getHomeWatch(ctx.workspaceDir)?.checkNew() ?? []
+      if (fresh.length) homeNotPersisted = homeNotPersistedNote(fresh)
+    } catch {}
+  }
   return textResult({
     cwd: newCwd,
     exitCode: finalResult.exitCode,
@@ -1106,6 +1114,7 @@ function buildCompletedExecResult({ ctx, entry, finalResult }: BuildExecResultOp
     killedReason: finalResult.killReason,
     run_id: entry.runId,
     ...(entry.backgrounded ? { task_id: entry.id, output_file: taskOutputPath(ctx, entry) } : {}),
+    homeNotPersisted,
   })
 }
 
@@ -1292,6 +1301,12 @@ function createExecTool(ctx: ToolContext): AgentTool {
       const githubEnv = await Promise.race([githubCliEnvForProject(ctx.projectId), stoppedBeforeSpawn.promise])
       stoppedBeforeSpawn.dispose()
       if (githubEnv === STOPPED) return textResult({ error: 'Stopped before the command started.' })
+      // The baseline must predate the first command, or what it creates is never reported.
+      if (!isSandboxed) {
+        try {
+          getHomeWatch(ctx.workspaceDir)?.prime()
+        } catch {}
+      }
       const handle = sandboxExecAsync({
         command: wrappedCommand,
         workspaceDir: ctx.workspaceDir,

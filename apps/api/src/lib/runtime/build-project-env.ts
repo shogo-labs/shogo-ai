@@ -24,10 +24,8 @@ import { importCloudModule } from '../cloud-import'
 import { isDockerTechStack } from '../../../../../packages/core/src/tech-stack-registry'
 import { resolveExposedPorts } from '../project-ports'
 
-/** HKDF purpose label for the guest home-state key. Bump with the version. */
-export const HOME_STATE_KEY_PURPOSE = 'home-state:v1'
-/** Must match the key version the guest stamps into each archive header. */
-export const HOME_STATE_KEY_VERSION = '1'
+import { HOME_STATE_KEY_PURPOSE, HOME_STATE_KEY_VERSION } from './home-state-key'
+export { HOME_STATE_KEY_PURPOSE, HOME_STATE_KEY_VERSION }
 
 /**
  * Thrown when the project row is gone (typically deleted while a session was

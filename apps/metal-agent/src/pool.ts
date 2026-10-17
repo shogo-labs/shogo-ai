@@ -776,11 +776,12 @@ function publishedSubdomainFromEnv(env: Record<string, string>): string | undefi
 }
 
 /**
- * Home-directory persistence is per project: workspace runtimes (`ws:` keys)
- * span several projects, and a published site never carries the agent's home.
+ * Home-directory persistence is per runtime key. A `ws:` runtime holds at most
+ * its own anchor project (see {@link ownMemberIds}), so its home belongs to it
+ * alone. A published site never carries the agent's home.
  */
-function homeStateEligible(projectId: string, publishedSubdomain: string | undefined): boolean {
-  return !projectId.startsWith('ws:') && !publishedSubdomain
+function homeStateEligible(publishedSubdomain: string | undefined): boolean {
+  return !publishedSubdomain
 }
 
 /** A workspace runtime's member project ids from its assign env; undefined when not given. */
@@ -2041,7 +2042,7 @@ export class MetalWarmPool {
     // Best-effort like writable state, and for the same reason a failure marks
     // the VM untrusted: it now has an empty home, which must never be exported
     // over the real one.
-    if (homeStateEligible(projectId, publishedSubdomain)) {
+    if (homeStateEligible(publishedSubdomain)) {
       try {
         const h = await timer.time('hydrate_home', () => this.hydrateHomeState(projectId, vm.handle, env))
         if (h === 'unsupported') a.homeExportUnsupported = true
@@ -4022,7 +4023,7 @@ export class MetalWarmPool {
    * export before the VM goes away, whose refused bytes are quarantined.
    */
   async saveHomeStateToStore(a: AssignedVm, opts: DataSaveOpts = {}): Promise<boolean> {
-    if (!homeStateEligible(a.projectId, a.publishedSubdomain) || a.homeExportUnsupported) return false
+    if (!homeStateEligible(a.publishedSubdomain) || a.homeExportUnsupported) return false
     return this.homeFlight.run(a.projectId, () => this.saveHomeStateInner(a, opts))
   }
 
@@ -4107,7 +4108,7 @@ export class MetalWarmPool {
   async exportAllHomeState(): Promise<number> {
     let n = 0
     for (const a of this.assigned.values()) {
-      if (a.homeExportUnsupported || !homeStateEligible(a.projectId, a.publishedSubdomain)) continue
+      if (a.homeExportUnsupported || !homeStateEligible(a.publishedSubdomain)) continue
       try {
         if (await this.saveHomeStateToStore(a)) n++
         a.homeExportFailures = 0
@@ -5200,6 +5201,9 @@ export class MetalWarmPool {
     try {
       if (a.projectId.startsWith('ws:')) {
         await bounded(this.saveWorkspaceMembersToStore(a))
+        await bounded(this.saveHomeStateToStore(a, { final: true })).catch((err: any) =>
+          console.warn(`[pool] home-directory rescue for ${a.projectId} failed:`, err?.message ?? err),
+        )
         return true
       }
       // `.git` first: it is small and, once git works, carries every commit.
@@ -6134,7 +6138,7 @@ export class MetalWarmPool {
       return untrusted.length ? `database not persisted — ${untrusted.join('; ')}` : null
     })
 
-    if (homeStateEligible(a.projectId, a.publishedSubdomain)) {
+    if (homeStateEligible(a.publishedSubdomain)) {
       await run('home', async () => {
         await this.saveHomeStateToStore(a, { final: true, reason: 'recycle' })
         return a.homeUntrustedReason ? `home directory not persisted — ${a.homeUntrustedReason}` : null

@@ -16,6 +16,7 @@ import { mkdirSync, readFileSync, rmSync, existsSync } from 'fs'
 import { join } from 'path'
 import { createTools, type ToolContext } from '../gateway-tools'
 import { CommandRegistry } from '../command-registry'
+import { resetHomeWatch } from '../home-state-watch'
 import { trustWorkspaceForTests, clearTrustForTests } from './helpers/test-trust'
 
 const TEST_DIR = '/tmp/test-gw-exec-tool'
@@ -152,5 +153,56 @@ describe('createExecTool', () => {
     const result = await run(ctx, 'exec', { command: 'true' })
     expect(result.exitCode).toBe(0)
     expect(result.cwdReset).toBeUndefined()
+  })
+
+  describe('homeNotPersisted', () => {
+    const HOME = join(TEST_DIR, 'home')
+    const KEYS = ['SHOGO_DURABILITY_HOST_MEDIATED', 'PROJECT_ID', 'HOME_STATE_KEY', 'SHOGO_HOME_STATE_DIR'] as const
+    const saved: Record<string, string | undefined> = {}
+
+    beforeEach(() => {
+      mkdirSync(HOME, { recursive: true })
+      for (const k of KEYS) saved[k] = process.env[k]
+      resetHomeWatch()
+    })
+    afterEach(() => {
+      for (const k of KEYS) {
+        if (saved[k] === undefined) delete process.env[k]
+        else process.env[k] = saved[k]
+      }
+      resetHomeWatch()
+    })
+
+    const enable = () => {
+      process.env.SHOGO_DURABILITY_HOST_MEDIATED = '1'
+      process.env.PROJECT_ID = 'p1'
+      process.env.HOME_STATE_KEY = Buffer.alloc(32, 3).toString('base64')
+      process.env.SHOGO_HOME_STATE_DIR = HOME
+    }
+
+    test('a command that creates an unsaved home folder gets a note, once', async () => {
+      enable()
+      const ctx = makeCtx({ commandRegistry: new CommandRegistry() })
+      const first = await run(ctx, 'exec', { command: `mkdir ${join(HOME, '.openart')}` })
+      expect(first.exitCode).toBe(0)
+      expect(first.homeNotPersisted).toContain('~/.openart')
+      expect(first.homeNotPersisted).toContain('~/.config/openart')
+      const second = await run(ctx, 'exec', { command: 'true' })
+      expect(second.homeNotPersisted).toBeUndefined()
+    })
+
+    test('saved paths get no note', async () => {
+      enable()
+      const ctx = makeCtx({ commandRegistry: new CommandRegistry() })
+      const result = await run(ctx, 'exec', { command: `mkdir -p ${join(HOME, '.config', 'openart')}` })
+      expect(result.homeNotPersisted).toBeUndefined()
+    })
+
+    test('no note where home persistence is off', async () => {
+      for (const k of KEYS) delete process.env[k]
+      const ctx = makeCtx({ commandRegistry: new CommandRegistry() })
+      const result = await run(ctx, 'exec', { command: `mkdir ${join(HOME, '.openart')}` })
+      expect(result.homeNotPersisted).toBeUndefined()
+    })
   })
 })

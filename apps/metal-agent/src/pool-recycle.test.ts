@@ -201,7 +201,7 @@ describe('pool.recycle', () => {
     pool.add('ws:proj:m1', { workspaceMemberIds: ['m1'] })
     const r = await pool.recycle('ws:proj:m1')
     expect(r.aborted).toBe(false)
-    expect(pool.events).toEqual(['repo ws:proj:m1', 'source m1', 'data m1'])
+    expect(pool.events).toEqual(['repo ws:proj:m1', 'source m1', 'data m1', 'home ws:proj:m1'])
     expect(r.steps.find((s) => s.step === 'foreign_members')).toEqual({ step: 'foreign_members', ok: true })
     expect(pool.removed).toEqual([])
   })
@@ -211,7 +211,7 @@ describe('pool.recycle', () => {
     const a = pool.add('ws:proj:m1', { workspaceMemberIds: ['m1', 'm2'] })
     const r = await pool.recycle('ws:proj:m1')
     expect(r.aborted).toBe(false)
-    expect(pool.events).toEqual(['source m2', 'data m2', 'repo ws:proj:m1', 'source m1', 'data m1'])
+    expect(pool.events).toEqual(['source m2', 'data m2', 'repo ws:proj:m1', 'source m1', 'data m1', 'home ws:proj:m1'])
     expect(pool.removed).toEqual(['ws:proj:m1 m2'])
     expect(a.workspaceMemberIds).toEqual(['m1'])
   })
@@ -251,7 +251,7 @@ describe('pool.recycle', () => {
     const r = await pool.recycle('ws:team')
     expect(r.aborted).toBe(false)
     expect(r.steps.find((s) => s.step === 'members')).toBeUndefined()
-    expect(pool.events).toEqual(['repo ws:team'])
+    expect(pool.events).toEqual(['repo ws:team', 'home ws:team'])
   })
 
   test('the guest supplies the own member the host lost track of', async () => {
