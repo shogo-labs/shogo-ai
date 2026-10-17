@@ -74,6 +74,17 @@ export interface VisibleCatalogModel {
   description?: string
   contextWindow?: number
   reasoningEffort?: string
+  /**
+   * Per-token USD rates for DB-defined models, per 1M tokens. Clients that
+   * don't have the model in their own DB (a desktop mirroring this catalog)
+   * need them to bill usage correctly. Absent for static-catalog models.
+   */
+  pricing?: {
+    inputPerMillion: number
+    cachedInputPerMillion: number
+    cacheWritePerMillion: number
+    outputPerMillion: number
+  }
 }
 
 /** The full platform-visible model payload: the catalog allowlist resolved
@@ -207,23 +218,27 @@ export async function resolveVisibleCatalogModels(
   catalogIds: string[] | null,
   options: { includeLive?: boolean } = {},
 ): Promise<VisibleCatalogModel[]> {
-  const { getMergedCatalogSync, getMergedModelEntrySync, getDbModelEntriesSync, getCloudModelEntriesSync } =
+  const { getMergedCatalogSync, getMergedModelEntrySync, getDbModelEntriesSync, getCloudModelEntriesSync, getDbModelPricingSync } =
     await import('./model-registry.service')
-  const toVisible = (entry: any): VisibleCatalogModel => ({
-    id: entry.id,
-    provider: entry.provider,
-    displayName: entry.displayName,
-    shortDisplayName: entry.shortDisplayName,
-    tier: entry.tier,
-    family: entry.family,
-    ...(entry.kind ? { kind: entry.kind } : {}),
-    maxOutputTokens: entry.maxOutputTokens,
-    ...(typeof entry.usdPerMinute === 'number' ? { usdPerMinute: entry.usdPerMinute } : {}),
-    ...(typeof entry.sortOrder === 'number' ? { sortOrder: entry.sortOrder } : {}),
-    ...(entry.description ? { description: entry.description } : {}),
-    ...(typeof entry.contextWindow === 'number' ? { contextWindow: entry.contextWindow } : {}),
-    ...(entry.reasoningEffort ? { reasoningEffort: entry.reasoningEffort } : {}),
-  })
+  const toVisible = (entry: any): VisibleCatalogModel => {
+    const pricing = getDbModelPricingSync(entry.id)
+    return {
+      id: entry.id,
+      provider: entry.provider,
+      displayName: entry.displayName,
+      shortDisplayName: entry.shortDisplayName,
+      tier: entry.tier,
+      family: entry.family,
+      ...(entry.kind ? { kind: entry.kind } : {}),
+      maxOutputTokens: entry.maxOutputTokens,
+      ...(typeof entry.usdPerMinute === 'number' ? { usdPerMinute: entry.usdPerMinute } : {}),
+      ...(typeof entry.sortOrder === 'number' ? { sortOrder: entry.sortOrder } : {}),
+      ...(entry.description ? { description: entry.description } : {}),
+      ...(typeof entry.contextWindow === 'number' ? { contextWindow: entry.contextWindow } : {}),
+      ...(entry.reasoningEffort ? { reasoningEffort: entry.reasoningEffort } : {}),
+      ...(pricing ? { pricing } : {}),
+    }
+  }
   if (catalogIds === null) {
     // DB-managed picker: when any models are admin-managed — either defined
     // in this instance's own DB, or mirrored from a connected cloud in

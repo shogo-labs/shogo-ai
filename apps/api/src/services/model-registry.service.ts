@@ -243,6 +243,25 @@ function resolveCapabilityFallback(
 }
 
 /**
+ * Per-token rates carried on a cloud catalog entry, or undefined if the entry
+ * has none or any rate is missing or not a finite number.
+ */
+function cloudCatalogModelPricing(raw: unknown): DbModelPricing | undefined {
+  if (!raw || typeof raw !== 'object') return undefined
+  const p = (raw as Record<string, unknown>).pricing
+  if (!p || typeof p !== 'object') return undefined
+  const r = p as Record<string, unknown>
+  const rates = [r.inputPerMillion, r.cachedInputPerMillion, r.cacheWritePerMillion, r.outputPerMillion]
+  if (!rates.every((n) => typeof n === 'number' && Number.isFinite(n) && n >= 0)) return undefined
+  return {
+    inputPerMillion: r.inputPerMillion as number,
+    cachedInputPerMillion: r.cachedInputPerMillion as number,
+    cacheWritePerMillion: r.cacheWritePerMillion as number,
+    outputPerMillion: r.outputPerMillion as number,
+  }
+}
+
+/**
  * Map a cloud `visible-models` catalog entry (the `toVisible` shape served by
  * the upstream's `/api/platform/visible-models`) to a local `ModelEntry`.
  *
@@ -309,6 +328,11 @@ async function mergeCloudCatalog(next: RegistrySnapshot): Promise<void> {
     if (next.dbIds.has(entry.id)) continue
     next.merged.set(entry.id, entry)
     next.cloudIds.add(entry.id)
+    // Cloud-only models have no local DB row, so their per-token rates come
+    // with the catalog entry. Without them, usage is billed at the static
+    // `sonnet` fallback.
+    const pricing = cloudCatalogModelPricing(raw)
+    if (pricing) next.pricing.set(entry.id, pricing)
     merged++
   }
   if (merged > 0) {
