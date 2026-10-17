@@ -88,6 +88,13 @@ they're managed separately as YAML/JSON files under this directory:
   Catches the 2026-07 staging drift where the agent was parked via an
   out-of-band `nodeSelector` while the app-level OTLP export was also
   failing, so all API logs vanished with nothing to signal it.
+- `alerts/cnpg-memory-saturation.yaml` — pages when a `platform-pg`
+  Postgres container holds >90% of its memory limit for 10+ minutes.
+  A CNPG primary that pins its limit is OOMKilled, and the platform DB
+  refuses writes until it is back. Groups by `k8s.cluster.name` as well as
+  `k8s.pod.name`, because both production clusters declare `platform-pg` in
+  the same namespace. Pairs with the reservation fix pinned by
+  `scripts/__tests__/cnpg-resource-floors.test.ts`.
 - `pipelines/api-trace-correlation.yaml` — logs pipeline that parses the
   API/runtime structured JSON stdout and promotes `trace_id`/`span_id`,
   severity, and the human message into first-class log fields (clickable

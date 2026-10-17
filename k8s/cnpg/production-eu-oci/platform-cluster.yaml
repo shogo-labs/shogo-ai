@@ -99,11 +99,19 @@ spec:
     enablePodMonitor: true
 
   resources:
+    # Same symmetric move as production-us-oci: the old 1Gi request / 2Gi limit
+    # was ratio 0.50 and under-reserved the EU primary the same way. Requests
+    # == the honest reservation, limit above it.
+    # request/limit = 2/3 = 0.667; keep that above 0.6 (see
+    # scripts/__tests__/cnpg-resource-floors.test.ts).
+    # Requests drive scheduling: this adds 1Gi to the scheduled load, so confirm
+    # the EU node pool has that free allocatable before applying. Unverified —
+    # see the PR body.
     requests:
-      memory: "1Gi"
+      memory: "2Gi"
       cpu: "250m"
     limits:
-      memory: "2Gi"
+      memory: "3Gi"
       cpu: "1"
 
   affinity:
