@@ -46,6 +46,7 @@ import {
   UsageTimeseriesChart,
 } from "./SharedAnalytics";
 import { DateRangePills } from "./DateRangePills";
+import { LoadErrorNotice, type LoadErrors } from "./LoadErrorNotice";
 import { UsageLeaderboard } from "./UsageLeaderboard";
 import { WorkspaceActivitySection } from "./WorkspaceActivitySection";
 
@@ -127,38 +128,49 @@ export function WorkspaceUsagePanel() {
     loading: boolean;
   }>({ data: null, loading: true });
 
+  const [loadErrors, setLoadErrors] = useState<LoadErrors>({});
+
   const loadAll = useCallback(async () => {
     if (!workspaceId) return;
     const p = { period };
+    const errors: LoadErrors = {};
+    const section = <T,>(label: string, request: Promise<T>) =>
+      request.catch((err: any) => {
+        errors[label] = err?.message || "Request failed";
+        return null;
+      });
 
     setUsageSummary((s) => ({ ...s, loading: true }));
     setUsageLog((s) => ({ ...s, loading: true }));
     setSpend((s) => ({ ...s, loading: true }));
 
     const basicFetches = [
-      api
-        .getWorkspaceAnalytics<UsageSummaryData>(
+      section(
+        "usage summary",
+        api.getWorkspaceAnalytics<UsageSummaryData>(
           http,
           workspaceId,
           "usage-summary",
           p
         )
-        .catch(() => null),
-      api
-        .getWorkspaceAnalytics<UsageLogData>(http, workspaceId, "usage-log", {
+      ),
+      section(
+        "event log",
+        api.getWorkspaceAnalytics<UsageLogData>(http, workspaceId, "usage-log", {
           ...p,
           page: String(logPage),
           limit: "50",
         })
-        .catch(() => null),
-      api
-        .getWorkspaceAnalytics<SpendTimeseriesPayload>(
+      ),
+      section(
+        "team usage chart",
+        api.getWorkspaceAnalytics<SpendTimeseriesPayload>(
           http,
           workspaceId,
           "spend-timeseries",
           { ...p, groupBy, metric }
         )
-        .catch(() => null),
+      ),
     ] as const;
 
     if (isBusinessOrHigher) {
@@ -167,22 +179,24 @@ export function WorkspaceUsagePanel() {
 
       const [uSum, uLog, sp, us, ch] = await Promise.all([
         ...basicFetches,
-        api
-          .getWorkspaceAnalytics<UsageBreakdownData>(
+        section(
+          "usage breakdown",
+          api.getWorkspaceAnalytics<UsageBreakdownData>(
             http,
             workspaceId,
             "usage",
             p
           )
-          .catch(() => null),
-        api
-          .getWorkspaceAnalytics<ChatAnalyticsData>(
+        ),
+        section(
+          "chat stats",
+          api.getWorkspaceAnalytics<ChatAnalyticsData>(
             http,
             workspaceId,
             "chat",
             p
           )
-          .catch(() => null),
+        ),
       ]);
 
       setUsageSummary({ data: uSum, loading: false });
@@ -196,6 +210,7 @@ export function WorkspaceUsagePanel() {
       setUsageLog({ data: uLog, loading: false });
       setSpend({ data: sp, loading: false });
     }
+    setLoadErrors(errors);
   }, [http, workspaceId, period, logPage, groupBy, metric, isBusinessOrHigher]);
 
   useEffect(() => {
@@ -323,6 +338,8 @@ export function WorkspaceUsagePanel() {
       <View className="flex-row items-center justify-between flex-wrap gap-3">
         <DateRangePills value={period} onChange={setPeriod} />
       </View>
+
+      <LoadErrorNotice errors={loadErrors} />
 
       {/* Summary cards */}
       <View className="flex-row flex-wrap gap-2">

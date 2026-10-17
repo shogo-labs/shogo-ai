@@ -58,13 +58,7 @@ export const SETTINGS_TABS: readonly SettingsTabDefinition[] = [
     group: "settings",
     cloudOnly: true,
   },
-  {
-    id: "models",
-    label: "Models",
-    Icon: Boxes,
-    group: "settings",
-    cloudOnly: true,
-  },
+  { id: "models", label: "Models", Icon: Boxes, group: "settings" },
   { id: "integrations", label: "Integrations", Icon: Plug, group: "settings" },
   { id: "automations", label: "Automations", Icon: Zap, group: "settings" },
   {

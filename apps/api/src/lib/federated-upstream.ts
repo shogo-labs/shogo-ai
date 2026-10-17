@@ -491,7 +491,7 @@ export function _resetAgentModelDefaultsCache(): void {
  * upstream is unreachable — the caller should then fall back to the local
  * DB read.
  *
- * The gate mirrors `isShogoCloudForwarding()` in routes/ai-proxy.ts: only
+ * The gate mirrors `isShogoCloudForwarding()` in lib/cloud-forwarding.ts: only
  * source the catalog from cloud when AI traffic is actually routed there.
  *
  * Successful reads are cached for 30 minutes; failures are not cached, so a

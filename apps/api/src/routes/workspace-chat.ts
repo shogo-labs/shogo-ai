@@ -1102,6 +1102,7 @@ export function workspaceChatRoutes(config: WorkspaceChatRoutesConfig): Hono {
             {
               chatSessionId: sessionId,
               userId: billingUserId && billingUserId !== 'system' ? billingUserId : undefined,
+              workspaceId,
               projectName: 'Workspace project',
               resume: async (fromSeq) => {
                 try {

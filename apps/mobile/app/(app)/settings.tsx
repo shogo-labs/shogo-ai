@@ -245,6 +245,7 @@ const MOBILE_NAV_ITEMS: NavItem[] = settingsNavItems([
 
 const LOCAL_NAV_ITEMS: NavItem[] = settingsNavItems([
   "workspace",
+  "models",
   "integrations",
   "automations",
   "remote-control",
@@ -343,9 +344,8 @@ function SettingsSidebar({
   });
 
   const workspaceItems: SidebarItem[] = [
-    ...(!(localMode || !showBilling)
-      ? [tabItem("people"), tabItem("models")]
-      : []),
+    ...(!(localMode || !showBilling) ? [tabItem("people")] : []),
+    tabItem("models"),
     tabItem("integrations"),
     tabItem("automations"),
     tabItem("remote-control"),
@@ -4199,7 +4199,7 @@ export const SettingsContent = observer(function SettingsContent({
     <>
       {activeTab === "workspace" && <WorkspaceSettingsTab />}
       {activeTab === "people" && !isLocal && <PeopleTab />}
-      {activeTab === "models" && !isLocal && <WorkspaceModelsTab />}
+      {activeTab === "models" && <WorkspaceModelsTab />}
       {activeTab === "integrations" && <IntegrationsTab />}
       {activeTab === "automations" && (
         <AutomationsTab
@@ -4274,7 +4274,6 @@ export default observer(function SettingsPage({
   useEffect(() => {
     const isLocal = localMode || !features.billing;
     if (activeTab === "people" && isLocal) setActiveTab("workspace");
-    if (activeTab === "models" && isLocal) setActiveTab("workspace");
     if (activeTab === "compute" && (isLocal || HIDE_COMPUTE_PURCHASES_ON_IOS))
       setActiveTab("workspace");
     if (activeTab === "updates" && !IS_DESKTOP_CLIENT)

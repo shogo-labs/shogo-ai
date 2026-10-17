@@ -32,7 +32,7 @@ import { stampWorkspacePlan } from "../lib/stamp-workspace-plan"
 import * as checkpointService from "../services/checkpoint.service"
 import { isGitAvailable } from "../services/git.service"
 import { setProjectUser } from "../lib/project-user-context"
-import { openSession, closeSession, setQualitySignals } from "../lib/proxy-billing-session-runtime"
+import { openSession, closeSession, setQualitySignals, recordTurnUsage } from "../lib/proxy-billing-session-runtime"
 import { enrichWorkspaceReferences, enrichProjectReferences, enrichChatReferences } from "../lib/chat-references"
 import { trackEvent } from "../services/loops.service"
 import { parseProjectSettings } from "../lib/project-settings"
@@ -216,8 +216,11 @@ export async function trackUsageFromStream(
      * session and is ignored instead of overwriting this turn's row.
      */
     expectedTurnStartedAt?: number
+    /** Workspace of a `project: null` turn, so its usage can still be recorded. */
+    workspaceId?: string
   } = {},
 ): Promise<TrackedStreamResult> {
+  const trackingStartedAt = Date.now()
   const decoder = new TextDecoder()
   type UsageSnapshot = {
     promptTokens?: number
@@ -912,25 +915,35 @@ export async function trackUsageFromStream(
   // recordAgentCostMetric inside closeSession (closeSession deletes the
   // session before reading quality, so a post-close set would be a no-op).
   //
-  // Skipped entirely when there's no anchor project (a workspace-scoped
-  // chat with zero attached projects) — there's no billing session to
-  // close in the first place; see the doc comment above.
+  // With no anchor project (a workspace-scoped chat with zero attached
+  // projects) there's no billing session to close; see the doc comment above.
+  // `recordTurnUsage` covers the one setup where nothing else records it.
+  const streamUsage = {
+    model: usageRef.value?.model,
+    inputTokens,
+    outputTokens,
+    cachedInputTokens: usageRef.value?.cachedInputTokens,
+    cacheWriteTokens: usageRef.value?.cacheWriteTokens,
+  }
   if (project) {
     await setQualitySignals(project.id, qualitySignals, chatSessionId)
     const { billedUsd } = await closeSession(project.id, {
       discardPartial: false,
       chatSessionId,
-      fallbackUsage: {
-        model: usageRef.value?.model,
-        inputTokens,
-        outputTokens,
-        cachedInputTokens: usageRef.value?.cachedInputTokens,
-        cacheWriteTokens: usageRef.value?.cacheWriteTokens,
-      },
+      fallbackUsage: streamUsage,
     })
     if (billedUsd > 0) {
       console.log(`[ProjectChat] 💰 Billing session closed — charged $${billedUsd.toFixed(4)} for project ${project.id}`)
     }
+  } else if (options.workspaceId && options.userId) {
+    await recordTurnUsage({
+      workspaceId: options.workspaceId,
+      userId: options.userId,
+      chatSessionId,
+      usage: streamUsage,
+      quality: qualitySignals,
+      openedAt: options.expectedTurnStartedAt ?? trackingStartedAt,
+    }).catch((err: any) => console.warn('[ProjectChat] Failed to record unanchored turn usage:', err?.message ?? err))
   }
 
   if (chatSessionId && options.fetchWorkspaceFile && !foreignTurn && accumulatedText.includes('![')) {

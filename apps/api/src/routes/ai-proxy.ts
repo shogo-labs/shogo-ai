@@ -338,6 +338,24 @@ export function resolveModelApiKey(modelConfig: ModelConfig): string | null {
 }
 
 /**
+ * OpenAI-shaped 403 for a model the workspace admin has hidden. Used on the
+ * local path and before forwarding to Shogo Cloud, so a forwarded call can't
+ * skip this workspace's allowlist.
+ */
+function modelNotVisibleResponse(c: any, model: string) {
+  return c.json(
+    {
+      error: {
+        message: `Model '${model}' is not available for this workspace. A workspace admin has restricted the available models.`,
+        type: 'invalid_request_error',
+        code: 'model_not_visible',
+      },
+    },
+    403
+  )
+}
+
+/**
  * Resolve 'basic' / 'advanced' agent modes to actual model names.
  *
  * When local mode and LOCAL_LLM_BASE_URL are set: use admin-configured local models.
@@ -2433,6 +2451,7 @@ import { calculateUsageCost, proxyModelToBillingModel, getModelTier } from '../l
 import * as billingService from '../services/billing-runtime'
 import { getProjectUser } from '../lib/project-user-context'
 import { accumulateUsage, accumulateImageUsage, hasActiveSession } from '../lib/proxy-billing-session-runtime'
+import { isShogoCloudForwarding } from '../lib/cloud-forwarding'
 import { buildUsageLimitInfo } from '../lib/usage-limit-info'
 export { buildUsageLimitInfo }
 
@@ -3063,17 +3082,6 @@ export function aiProxyRoutes() {
   }
 
   /**
-   * Check if Shogo Cloud forwarding is active (local mode with SHOGO_API_KEY set
-   * and AI_MODE not overridden to 'api-keys' or 'local-llm').
-   */
-  function isShogoCloudForwarding(): boolean {
-    if (process.env.SHOGO_LOCAL_MODE !== 'true' || !process.env.SHOGO_API_KEY) return false
-    const aiMode = process.env.AI_MODE
-    if (aiMode === 'api-keys' || aiMode === 'local-llm') return false
-    return true
-  }
-
-  /**
    * Request headers the local proxy relays to Shogo Cloud so cloud capture can
    * group desktop calls by chat.
    */
@@ -3277,6 +3285,9 @@ export function aiProxyRoutes() {
     if (isShogoCloudForwarding()) {
       try {
         const request: ChatCompletionRequest = await c.req.json()
+        if (!(await isModelVisibleForWorkspace(tokenPayload.workspaceId, request.model))) {
+          return modelNotVisibleResponse(c, request.model)
+        }
         console.log(`[AI Proxy] Forwarding to Shogo Cloud: ${request.model} (stream: ${!!request.stream})`)
         return await forwardChatCompletionsToCloud(c, request, c.req.raw.signal)
       } catch (error: any) {
@@ -3402,17 +3413,8 @@ export function aiProxyRoutes() {
       // Enforce workspace model visibility: a workspace admin may restrict the
       // team to a subset of platform-visible models. Hidden models are blocked
       // here too, so a member can't bypass the picker via a direct API call.
-      if (!isLocalDev && !(await isModelVisibleForWorkspace(tokenPayload.workspaceId, request.model))) {
-        return c.json(
-          {
-            error: {
-              message: `Model '${request.model}' is not available for this workspace. A workspace admin has restricted the available models.`,
-              type: 'invalid_request_error',
-              code: 'model_not_visible',
-            },
-          },
-          403
-        )
+      if (!(await isModelVisibleForWorkspace(tokenPayload.workspaceId, request.model))) {
+        return modelNotVisibleResponse(c, request.model)
       }
 
       // Enforce model tier: free/basic users can only use economy-tier models.
@@ -3599,6 +3601,9 @@ export function aiProxyRoutes() {
     if (isShogoCloudForwarding()) {
       try {
         const request = await c.req.json()
+        if (!(await isModelVisibleForWorkspace(tokenPayload.workspaceId, request?.model))) {
+          return modelNotVisibleResponse(c, request?.model)
+        }
         console.log(`[AI Proxy] Forwarding Responses API to Shogo Cloud: ${request?.model} (stream: ${!!request?.stream})`)
         return await forwardResponsesToCloud(c, request, c.req.raw.signal)
       } catch (error: any) {
@@ -3667,17 +3672,8 @@ export function aiProxyRoutes() {
         )
       }
 
-      if (!isLocalDev && !(await isModelVisibleForWorkspace(tokenPayload.workspaceId, resolvedModel))) {
-        return c.json(
-          {
-            error: {
-              message: `Model '${requestedModel}' is not available for this workspace. A workspace admin has restricted the available models.`,
-              type: 'invalid_request_error',
-              code: 'model_not_visible',
-            },
-          },
-          403
-        )
+      if (!(await isModelVisibleForWorkspace(tokenPayload.workspaceId, resolvedModel))) {
+        return modelNotVisibleResponse(c, requestedModel)
       }
 
       const apiKey = getProviderApiKey(modelConfig.provider)
@@ -4004,6 +4000,17 @@ export function aiProxyRoutes() {
     if (isShogoCloudForwarding()) {
       try {
         const body = await c.req.text()
+        // Same allowlist check as the local path below, using the same model
+        // resolution, before the request leaves this machine.
+        let forwardedModel: string | undefined
+        try { forwardedModel = JSON.parse(body)?.model } catch { /* cloud reports malformed bodies */ }
+        const { resolvedModel: forwardedResolved, isLocal: forwardedIsLocal } = resolveAgentModel(forwardedModel || 'advanced')
+        if (!forwardedIsLocal && !(await isModelVisibleForWorkspace(tokenPayload.workspaceId, forwardedResolved))) {
+          return c.json(
+            { type: 'error', error: { type: 'invalid_request_error', message: `Model '${forwardedResolved}' is not available for this workspace. A workspace admin has restricted the available models.` } },
+            403
+          )
+        }
         const headers: Record<string, string> = {}
         for (const [key, value] of Object.entries(c.req.header())) {
           if (value) headers[key] = value as string
@@ -4049,7 +4056,7 @@ export function aiProxyRoutes() {
       const resolvedModelConfig = resolveModel(resolvedModel)
 
       // Enforce workspace model visibility (see chat/completions for rationale).
-      if (!isLocal && !isLocalDev && !(await isModelVisibleForWorkspace(tokenPayload.workspaceId, resolvedModel))) {
+      if (!isLocal && !(await isModelVisibleForWorkspace(tokenPayload.workspaceId, resolvedModel))) {
         return c.json(
           { type: 'error', error: { type: 'invalid_request_error', message: `Model '${resolvedModel}' is not available for this workspace. A workspace admin has restricted the available models.` } },
           403

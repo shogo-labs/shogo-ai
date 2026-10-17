@@ -79,6 +79,7 @@ import { OptimizerInActionSection, type OptimizerInActionData } from './Optimize
 import { RecommendationsSection, type CostRecommendation } from './RecommendationsSection'
 import { BudgetSection, type BudgetAlertItem, type BudgetStatus } from './BudgetSection'
 import { ExperimentsSection, type ExperimentItem } from './ExperimentsSection'
+import { LoadErrorNotice, type LoadErrors } from './LoadErrorNotice'
 
 // =============================================================================
 // Types
@@ -235,44 +236,60 @@ export function CostAnalyticsTab({
     icon: icons[icon],
   }))
 
+  const [loadErrors, setLoadErrors] = useState<LoadErrors>({})
+  const fetchSection = useCallback(
+    <T,>(label: string, endpoint: string, params?: Record<string, string>) =>
+      fetchCostAnalytics<T>(endpoint, params).then(
+        (data) => {
+          setLoadErrors(({ [label]: _cleared, ...rest }) => rest)
+          return data
+        },
+        (err: any) => {
+          setLoadErrors(errors => ({ ...errors, [label]: err?.message || 'Request failed' }))
+          return null
+        },
+      ),
+    [fetchCostAnalytics],
+  )
+
   // Phase 4.3 — per-section loaders. Each section only fetches the data it
   // actually renders and only when it becomes active. The summary cards still
   // need breakdown + budgetStatus + trends, so those three are loaded eagerly
   // on mount and re-loaded when the period changes.
   const loadBreakdown = useCallback(async () => {
     setBreakdown(s => ({ ...s, loading: true }))
-    const data = await fetchCostAnalytics<BreakdownData>('agent-breakdown', { period }).catch(() => null)
+    const data = await fetchSection<BreakdownData>('agent breakdown', 'agent-breakdown', { period })
     setBreakdown({ data, loading: false })
-  }, [fetchCostAnalytics, period])
+  }, [fetchSection, period])
 
   const loadRecommendations = useCallback(async () => {
     setRecommendations(s => ({ ...s, loading: true }))
-    const data = await fetchCostAnalytics<CostRecommendation[]>('recommendations', { period }).catch(() => null)
+    const data = await fetchSection<CostRecommendation[]>('recommendations', 'recommendations', { period })
     setRecommendations({ data, loading: false })
-  }, [fetchCostAnalytics, period])
+  }, [fetchSection, period])
 
   const loadTrends = useCallback(async () => {
     setTrends(s => ({ ...s, loading: true }))
-    const data = await fetchCostAnalytics<TrendsData>('trends', { period }).catch(() => null)
+    const data = await fetchSection<TrendsData>('trends', 'trends', { period })
     setTrends({ data, loading: false })
-  }, [fetchCostAnalytics, period])
+  }, [fetchSection, period])
 
   const loadBudget = useCallback(async () => {
     setBudgetAlerts(s => ({ ...s, loading: true }))
     setBudgetStatus(s => ({ ...s, loading: true }))
     const [ba, bs] = await Promise.all([
-      fetchCostAnalytics<BudgetAlertItem[]>('budget-alerts').catch(() => null),
-      fetchCostAnalytics<BudgetStatus>('budget-status').catch(() => null),
+      fetchSection<BudgetAlertItem[]>('budget alerts', 'budget-alerts'),
+      fetchSection<BudgetStatus>('budget status', 'budget-status'),
     ])
     setBudgetAlerts({ data: ba, loading: false })
     setBudgetStatus({ data: bs, loading: false })
-  }, [fetchCostAnalytics])
+  }, [fetchSection])
 
   const loadExperiments = useCallback(async () => {
     setExperiments(s => ({ ...s, loading: true }))
-    const data = await fetchCostAnalytics<ExperimentItem[]>('experiments').catch(() => null)
+    const data = await fetchSection<ExperimentItem[]>('experiments', 'experiments')
     setExperiments({ data, loading: false })
-  }, [fetchCostAnalytics])
+  }, [fetchSection])
 
   const loadInAction = useCallback(async () => {
     setInAction(s => ({ ...s, loading: true, error: null }))
@@ -362,6 +379,8 @@ export function CostAnalyticsTab({
         </Text>
         <PeriodSelector value={period} onChange={setPeriod} />
       </View>
+
+      <LoadErrorNotice errors={loadErrors} />
 
       {/* Summary Cards */}
       <SummaryCards

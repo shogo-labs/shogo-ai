@@ -244,7 +244,8 @@ export async function getAgentCostBreakdown(
   })
 
   // Boolean counts can't go in a groupBy `_sum` (Prisma rejects them), so we
-  // do a single raw SQL aggregation alongside. CAST to int8 to count true rows.
+  // do a single raw SQL aggregation alongside. SUM(CASE ...) rather than
+  // COUNT(*) FILTER so the same SQL runs on Postgres and local SQLite.
   const projectFilter = projectId ? Prisma.sql`AND "projectId" = ${projectId}` : Prisma.empty
   const flags = await prisma.$queryRaw<Array<{
     agentType: string
@@ -259,18 +260,17 @@ export async function getAgentCostBreakdown(
     SELECT
       "agentType",
       "model",
-      COUNT(*) FILTER (WHERE "success" = true)            AS "promiseSuccesses",
-      COUNT(*) FILTER (
-        WHERE "success" = true
-          AND "hitMaxTurns" = false
-          AND "loopDetected" = false
-          AND "escalated" = false
-          AND "responseEmpty" = false
-      )                                                   AS "qualitySuccesses",
-      COUNT(*) FILTER (WHERE "hitMaxTurns" = true)        AS "hitMaxTurns",
-      COUNT(*) FILTER (WHERE "loopDetected" = true)       AS "loopDetected",
-      COUNT(*) FILTER (WHERE "escalated" = true)          AS "escalated",
-      COUNT(*) FILTER (WHERE "responseEmpty" = true)      AS "responseEmpty"
+      SUM(CASE WHEN "success" THEN 1 ELSE 0 END)          AS "promiseSuccesses",
+      SUM(CASE WHEN "success"
+            AND NOT "hitMaxTurns"
+            AND NOT "loopDetected"
+            AND NOT "escalated"
+            AND NOT "responseEmpty"
+          THEN 1 ELSE 0 END)                              AS "qualitySuccesses",
+      SUM(CASE WHEN "hitMaxTurns" THEN 1 ELSE 0 END)      AS "hitMaxTurns",
+      SUM(CASE WHEN "loopDetected" THEN 1 ELSE 0 END)     AS "loopDetected",
+      SUM(CASE WHEN "escalated" THEN 1 ELSE 0 END)        AS "escalated",
+      SUM(CASE WHEN "responseEmpty" THEN 1 ELSE 0 END)    AS "responseEmpty"
     FROM "agent_cost_metrics"
     WHERE "workspaceId" = ${workspaceId}
       AND "createdAt"   >= ${since}
@@ -991,12 +991,23 @@ export interface ExperimentRunResult {
   responseEmpty?: boolean
 }
 
+/** Incremental mean of `column` over `runsColumn` runs, rounded; SQLite (local mode) has no ::casts. */
+function runningAverageSql(column: string, runsColumn: string, value: number, digits: number) {
+  const col = Prisma.raw(`"${column}"`)
+  const runs = Prisma.raw(`"${runsColumn}"`)
+  const places = Prisma.raw(String(digits))
+  return process.env.SHOGO_LOCAL_MODE === 'true'
+    ? Prisma.sql`ROUND(${col} + ((CAST(${value} AS REAL) - ${col}) / (${runs} + 1)), ${places})`
+    : Prisma.sql`ROUND((${col} + ((${value}::float - ${col}) / (${runs} + 1)))::numeric, ${places})::float`
+}
+
 export async function recordExperimentResult(
   experimentId: string,
   variant: 'A' | 'B',
   result: ExperimentRunResult,
 ) {
   const successInt = result.success ? 100 : 0
+  const now = new Date()
   // Quality-signal increments expressed as ints so the SQL stays simple.
   const incEsc   = result.escalated     ? 1 : 0
   const incLoop  = result.loopDetected  ? 1 : 0
@@ -1009,13 +1020,13 @@ export async function recordExperimentResult(
         "totalRunsA"     = "totalRunsA"  + 1,
         "totalCostA"     = "totalCostA"  + ${result.creditCost},
         "totalTokensA"   = "totalTokensA" + ${result.tokens},
-        "successRateA"   = ROUND(("successRateA"  + ((${successInt}::float - "successRateA")  / ("totalRunsA" + 1)))::numeric, 1)::float,
-        "avgLatencyMsA"  = ROUND(("avgLatencyMsA" + ((${result.latencyMs}::float - "avgLatencyMsA") / ("totalRunsA" + 1)))::numeric, 0)::float,
+        "successRateA"   = ${runningAverageSql('successRateA', 'totalRunsA', successInt, 1)},
+        "avgLatencyMsA"  = ${runningAverageSql('avgLatencyMsA', 'totalRunsA', result.latencyMs, 0)},
         "escalationsA"   = "escalationsA"   + ${incEsc},
         "loopDetectedA"  = "loopDetectedA"  + ${incLoop},
         "hitMaxTurnsA"   = "hitMaxTurnsA"   + ${incMax},
         "responseEmptyA" = "responseEmptyA" + ${incEmpty},
-        "updatedAt"      = NOW()
+        "updatedAt"      = ${now}
       WHERE "id" = ${experimentId} AND "status" IN ('running', 'shadow')
     `)
   } else {
@@ -1024,13 +1035,13 @@ export async function recordExperimentResult(
         "totalRunsB"     = "totalRunsB"  + 1,
         "totalCostB"     = "totalCostB"  + ${result.creditCost},
         "totalTokensB"   = "totalTokensB" + ${result.tokens},
-        "successRateB"   = ROUND(("successRateB"  + ((${successInt}::float - "successRateB")  / ("totalRunsB" + 1)))::numeric, 1)::float,
-        "avgLatencyMsB"  = ROUND(("avgLatencyMsB" + ((${result.latencyMs}::float - "avgLatencyMsB") / ("totalRunsB" + 1)))::numeric, 0)::float,
+        "successRateB"   = ${runningAverageSql('successRateB', 'totalRunsB', successInt, 1)},
+        "avgLatencyMsB"  = ${runningAverageSql('avgLatencyMsB', 'totalRunsB', result.latencyMs, 0)},
         "escalationsB"   = "escalationsB"   + ${incEsc},
         "loopDetectedB"  = "loopDetectedB"  + ${incLoop},
         "hitMaxTurnsB"   = "hitMaxTurnsB"   + ${incMax},
         "responseEmptyB" = "responseEmptyB" + ${incEmpty},
-        "updatedAt"      = NOW()
+        "updatedAt"      = ${now}
       WHERE "id" = ${experimentId} AND "status" IN ('running', 'shadow')
     `)
   }

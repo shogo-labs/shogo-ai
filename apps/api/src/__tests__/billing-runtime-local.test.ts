@@ -90,6 +90,8 @@ describe('proxy-billing-session-runtime (local mode)', () => {
     expect(await session.hasActiveSession('p')).toBe(false)
     expect(await session.accumulateUsage('p', 'm', 1, 1)).toBe(false)
     expect(await session.accumulateImageUsage('p', 'm', 0, 0)).toBe(false)
+    expect(await session.setQualitySignals('p', {} as any)).toBe(true)
+    expect(await session.closeSession('p')).toEqual({ billedUsd: 0, rawUsd: 0, totalTokens: 0 })
     expect(await session.setQualitySignals('p', {} as any)).toBe(false)
   })
 })

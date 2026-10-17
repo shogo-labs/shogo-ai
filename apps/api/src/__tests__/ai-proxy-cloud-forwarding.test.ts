@@ -10,11 +10,17 @@ process.env.SHOGO_CLOUD_URL = 'https://cloud.example/'
 process.env.SHOGO_LOCAL_MODE = 'true'
 delete process.env.AI_MODE
 
+// Rows of the workspace model allowlist (empty = inherit everything).
+let visibilityRows: string[] = []
+
 mock.module('../lib/prisma', () => withPrismaExports({
   prisma: {
     project: {
       findFirst: async () => ({ id: 'proj-1', workspaceId: 'ws-1' }),
       findUnique: async () => ({ id: 'proj-1', workspaceId: 'ws-1' }),
+    },
+    workspaceModelVisibility: {
+      findMany: async () => visibilityRows.map((modelId) => ({ modelId })),
     },
     usageWallet: {
       findUnique: async () => null,
@@ -270,6 +276,65 @@ describe('AI proxy Shogo Cloud forwarding', () => {
     expect(text).toBe(billingErrorBody)
     expect(text).not.toContain('upstream_truncated')
     expect(text).not.toContain('shogo:retryable=true')
+  })
+
+  describe('workspace model allowlist applies to forwarded calls', () => {
+    let invalidate: (workspaceId: string) => void
+
+    beforeAll(async () => {
+      ({ invalidateWorkspaceModels: invalidate } = await import('../services/workspace-models.service'))
+    })
+
+    afterAll(() => {
+      visibilityRows = []
+      invalidate('ws-1')
+    })
+
+    test('refuses a hidden model without contacting Shogo Cloud (OpenAI-compatible)', async () => {
+      visibilityRows = ['gpt-4o']
+      invalidate('ws-1')
+      const app = buildApp()
+      const res = await app.fetch(new Request('http://x/api/ai/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${TOKEN}` },
+        body: JSON.stringify({ model: 'gpt-4o-mini', messages: [{ role: 'user', content: 'hi' }] }),
+      }))
+
+      expect(res.status).toBe(403)
+      expect((await res.json() as any).error.code).toBe('model_not_visible')
+      expect(lastFetchUrl).toBeNull()
+    })
+
+    test('refuses a hidden model without contacting Shogo Cloud (Anthropic-native)', async () => {
+      visibilityRows = ['claude-3-haiku-20240307']
+      invalidate('ws-1')
+      const app = buildApp()
+      const res = await app.fetch(new Request('http://x/api/ai/anthropic/v1/messages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-api-key': TOKEN, 'anthropic-version': '2023-06-01' },
+        body: JSON.stringify({ model: 'claude-3-5-sonnet-20241022', messages: [{ role: 'user', content: 'hi' }] }),
+      }))
+
+      expect(res.status).toBe(403)
+      expect(lastFetchUrl).toBeNull()
+    })
+
+    test('forwards a model that the allowlist includes', async () => {
+      visibilityRows = ['gpt-4o-mini']
+      invalidate('ws-1')
+      nextFetchResponses.push(() => new Response(JSON.stringify({ id: 'chatcmpl_ok', choices: [] }), {
+        status: 200, headers: { 'Content-Type': 'application/json' },
+      }))
+      const app = buildApp()
+      const res = await app.fetch(new Request('http://x/api/ai/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${TOKEN}` },
+        body: JSON.stringify({ model: 'gpt-4o-mini', messages: [{ role: 'user', content: 'hi' }] }),
+      }))
+
+      expect(res.status).toBe(200)
+      expect(lastFetchUrl).toBe('https://cloud.example/api/ai/v1/chat/completions')
+    })
   })
 })
 
