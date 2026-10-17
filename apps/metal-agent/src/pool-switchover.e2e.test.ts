@@ -18,7 +18,7 @@ import { mkdtempSync, renameSync, rmSync, utimesSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { metrics, M } from './metrics'
-import { MetalWarmPool, StagedRootfsUnavailableError } from './pool'
+import { MetalWarmPool, ROTATE_RETRY_MS, StagedRootfsUnavailableError } from './pool'
 import { activateStagedImages, stagedRootfsPath } from './self-update'
 import { computeRootfsIdentity, type SnapshotStore } from './snapshot-store'
 import { FakeHost, FakeS3, fakeHostConfig, tarOf, useFakeS3Env } from './test-harness/fake-metal-host'
@@ -335,6 +335,25 @@ describe('retire on a superseded image', () => {
       expect((await pool.rotateStale(t0)).retired).toEqual([])
       vm.lastRealActivityAt = t0 + 24 * 60 * MIN - MIN
       expect(await pool.rotateStale(t0 + 24 * 60 * MIN)).toEqual({ retired: ['p1'], alwaysOn: [] })
+    }, 30_000)
+
+    test('a rotation whose backup fails leaves the VM running and waits before trying again', async () => {
+      const { pool, vm } = await onReplacedImage()
+      const t0 = Date.now()
+      vm.lastRealActivityAt = t0 - 20 * MIN
+      let attempts = 0
+      const recycle = pool.recycle.bind(pool)
+      ;(pool as any).recycle = async () => {
+        attempts++
+        return { aborted: true, steps: [{ step: 'repo', ok: false, detail: 'lfs push failed' }] }
+      }
+      expect(await pool.rotateStale(t0)).toEqual({ retired: [], alwaysOn: [] })
+      expect(await pool.rotateStale(t0 + ROTATE_RETRY_MS - 1)).toEqual({ retired: [], alwaysOn: [] })
+      expect(attempts).toBe(1)
+      expect(pool.getAssigned('p1')).toBeDefined()
+
+      ;(pool as any).recycle = recycle
+      expect(await pool.rotateStale(t0 + ROTATE_RETRY_MS)).toEqual({ retired: ['p1'], alwaysOn: [] })
     }, 30_000)
 
     test('a VM on the current image is left alone', async () => {

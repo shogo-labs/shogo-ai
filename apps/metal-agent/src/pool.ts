@@ -180,6 +180,8 @@ export class ExportTooLargeError extends Error {
 }
 
 /** Longest the periodic sweep waits before retrying a failed `.git` export. */
+/** How long a rollout rotation that aborted waits before trying again. */
+export const ROTATE_RETRY_MS = 10 * 60_000
 const REPO_EXPORT_MAX_BACKOFF_MS = 30 * 60_000
 const REPO_EXPORT_MIN_BACKOFF_MS = 60_000
 
@@ -5079,8 +5081,11 @@ export class MetalWarmPool {
     for (const id of this.staleSince.keys()) if (!staleIds.has(id)) this.staleSince.delete(id)
     for (const a of stale) if (!this.staleSince.has(a.projectId)) this.staleSince.set(a.projectId, now)
 
+    for (const id of this.rotateRetryAt.keys()) if (!staleIds.has(id)) this.rotateRetryAt.delete(id)
+
     const due = stale.filter((a) => {
       if ((a.activeStreams ?? 0) > 0) return false
+      if (now < (this.rotateRetryAt.get(a.projectId) ?? 0)) return false
       const idleFor = now - (a.lastRealActivityAt ?? a.assignedAt)
       return idleFor >= this.cfg.rolloutIdleMs || now - this.staleSince.get(a.projectId)! >= this.cfg.rolloutDeadlineMs
     })
@@ -5091,14 +5096,21 @@ export class MetalWarmPool {
       try {
         const r = await this.recycle(a.projectId, { reason: 'stale-rootfs' })
         if (r.aborted) {
-          console.warn(`[pool] rollout rotation of ${a.projectId} aborted (${JSON.stringify(r.steps.at(-1))}); retrying next pass`)
+          this.rotateRetryAt.set(a.projectId, now + ROTATE_RETRY_MS)
+          const failed = r.steps.filter((s) => !s.ok).map((s) => `${s.step}: ${s.detail ?? 'failed'}`)
+          console.warn(
+            `[pool] rollout rotation of ${a.projectId} aborted (${failed.join('; ') || 'no step failed'}); ` +
+              `retrying in ${ROTATE_RETRY_MS / 60_000}m`,
+          )
           continue
         }
       } catch (err: any) {
+        this.rotateRetryAt.set(a.projectId, now + ROTATE_RETRY_MS)
         console.error(`[pool] rollout rotation failed for ${a.projectId}:`, err?.message ?? err)
         continue
       }
       this.staleSince.delete(a.projectId)
+      this.rotateRetryAt.delete(a.projectId)
       metrics.inc(M.rolloutRotated)
       ;(alwaysOn ? out.alwaysOn : out.retired).push(a.projectId)
     }
@@ -5107,6 +5119,8 @@ export class MetalWarmPool {
 
   /** When this host first saw each assigned VM on a superseded rootfs (see `rotateStale`). */
   private staleSince = new Map<string, number>()
+  /** A rotation that aborted (a backup failed) waits until then: each attempt re-runs every backup. */
+  private rotateRetryAt = new Map<string, number>()
 
   /**
    * Tear down a tracked VM: drop it from the assigned map + adopt-on-restart
