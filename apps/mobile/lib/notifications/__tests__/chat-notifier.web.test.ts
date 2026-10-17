@@ -13,6 +13,11 @@
 
 import { describe, expect, test, beforeEach, afterEach } from 'bun:test'
 
+import {
+  getNotificationDiagnostics,
+  resetNotificationDiagnostics,
+} from '../notification-diagnostics'
+
 type NotifyMod = typeof import('../chat-notifier.web')
 
 interface FakeDocument {
@@ -501,5 +506,131 @@ describe('chat-notifier.web — subscribeNotificationClicks', () => {
 
     unsubscribe()
     expect(desktop!.removeListenerCalls).toBe(1)
+  })
+})
+
+describe('chat-notifier.web — a dropped alert is recorded, not silent', () => {
+  let originalWarn: typeof console.warn
+
+  beforeEach(() => {
+    uninstallEnv()
+    resetNotificationDiagnostics()
+    originalWarn = console.warn
+    console.warn = (() => {}) as typeof console.warn
+  })
+
+  afterEach(() => {
+    console.warn = originalWarn
+    uninstallEnv()
+    resetNotificationDiagnostics()
+  })
+
+  test('an undecided permission records permission-prompt', async () => {
+    installEnv({
+      document: makeFakeDocument(),
+      withNotification: true,
+      initialPermission: 'default',
+    })
+    const mod = await freshModule()
+    await mod.notifyChannelMessage({
+      conversationId: 'c1',
+      messageId: 'm1',
+      title: 't',
+      body: 'b',
+    })
+    const diag = getNotificationDiagnostics()
+    expect(diag.shown).toBe(0)
+    expect(diag.dropped).toBe(1)
+    expect(diag.lastDrop?.reason).toBe('permission-prompt')
+  })
+
+  test('a denied permission records permission-denied', async () => {
+    installEnv({
+      document: makeFakeDocument(),
+      withNotification: true,
+      initialPermission: 'denied',
+    })
+    const mod = await freshModule()
+    await mod.notifyChannelMessage({
+      conversationId: 'c2',
+      messageId: 'm2',
+      title: 't',
+      body: 'b',
+    })
+    expect(getNotificationDiagnostics().lastDrop?.reason).toBe('permission-denied')
+  })
+
+  test('a missing Notification API records unsupported', async () => {
+    installEnv({ document: makeFakeDocument(), withNotification: false })
+    const mod = await freshModule()
+    await mod.notifyChannelMessage({
+      conversationId: 'c3',
+      messageId: 'm3',
+      title: 't',
+      body: 'b',
+    })
+    expect(getNotificationDiagnostics().lastDrop?.reason).toBe('unsupported')
+  })
+
+  test('a constructor that throws records show-threw with the browser message', async () => {
+    installEnv({
+      document: makeFakeDocument(),
+      withNotification: true,
+      initialPermission: 'granted',
+    })
+    const Thrower = function () {
+      throw new Error('Illegal constructor')
+    } as unknown as { permission: NotificationPermission }
+    Thrower.permission = 'granted'
+    ;(globalThis as any).Notification = Thrower
+
+    const mod = await freshModule()
+    await mod.notifyChannelMessage({
+      conversationId: 'c4',
+      messageId: 'm4',
+      title: 't',
+      body: 'b',
+    })
+    const diag = getNotificationDiagnostics()
+    expect(diag.shown).toBe(0)
+    expect(diag.lastDrop?.reason).toBe('show-threw')
+    expect(diag.lastDrop?.message).toContain('Illegal constructor')
+  })
+
+  test('a granted permission counts as shown, with nothing dropped', async () => {
+    installEnv({
+      document: makeFakeDocument(),
+      withNotification: true,
+      initialPermission: 'granted',
+    })
+    const mod = await freshModule()
+    await mod.notifyChannelMessage({
+      conversationId: 'c5',
+      messageId: 'm5',
+      title: 't',
+      body: 'b',
+    })
+    expect(getNotificationDiagnostics()).toMatchObject({
+      shown: 1,
+      dropped: 0,
+      lastDrop: null,
+    })
+  })
+
+  test('the desktop path still shows without a browser permission', async () => {
+    installEnv({
+      document: makeFakeDocument(),
+      desktop: { isDesktop: true },
+      withNotification: true,
+      initialPermission: 'denied',
+    })
+    const mod = await freshModule()
+    await mod.notifyChannelMessage({
+      conversationId: 'c6',
+      messageId: 'm6',
+      title: 't',
+      body: 'b',
+    })
+    expect(getNotificationDiagnostics()).toMatchObject({ shown: 1, dropped: 0 })
   })
 })

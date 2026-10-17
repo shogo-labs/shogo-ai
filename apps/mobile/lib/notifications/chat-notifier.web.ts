@@ -14,6 +14,11 @@ import type {
   ChatNotificationPayload,
   NotificationPermissionState,
 } from './chat-notifier'
+import {
+  recordNotificationDropped,
+  recordNotificationShown,
+  type NotificationDropReason,
+} from './notification-diagnostics'
 
 type ShogoDesktopBridge = {
   isDesktop?: boolean
@@ -57,6 +62,10 @@ function toState(permission: NotificationPermission): NotificationPermissionStat
   if (permission === 'granted') return 'granted'
   if (permission === 'denied') return 'denied'
   return 'prompt'
+}
+
+function permissionDropReason(permission: NotificationPermission): NotificationDropReason {
+  return permission === 'denied' ? 'permission-denied' : 'permission-prompt'
 }
 
 /**
@@ -130,8 +139,14 @@ export async function notifyChatFinished(p: ChatNotificationPayload): Promise<vo
     return
   }
 
-  if (typeof window === 'undefined' || typeof Notification === 'undefined') return
-  if (Notification.permission !== 'granted') return
+  if (typeof window === 'undefined' || typeof Notification === 'undefined') {
+    recordNotificationDropped('unsupported')
+    return
+  }
+  if (Notification.permission !== 'granted') {
+    recordNotificationDropped(permissionDropReason(Notification.permission))
+    return
+  }
 
   try {
     const n = new Notification(p.title, {
@@ -139,6 +154,7 @@ export async function notifyChatFinished(p: ChatNotificationPayload): Promise<vo
       tag: p.sessionId,
       data: { sessionId: p.sessionId, projectId: p.projectId },
     })
+    recordNotificationShown()
     n.onclick = () => {
       try {
         window.focus()
@@ -152,8 +168,8 @@ export async function notifyChatFinished(p: ChatNotificationPayload): Promise<vo
         // ignore
       }
     }
-  } catch {
-    // e.g. Notification constructor forbidden on mobile Safari
+  } catch (err) {
+    recordNotificationDropped('show-threw', (err as Error).message)
   }
 }
 
@@ -163,10 +179,19 @@ export function setActiveChannelNotificationContext(_conversationId: string | nu
 
 /** Channel alerts use the Web Notification API, which Electron's renderer also provides. */
 export async function notifyChannelMessage(p: ChannelNotificationPayload): Promise<void> {
-  if (typeof window === 'undefined' || typeof Notification === 'undefined') return
-  if (!getDesktop() && Notification.permission !== 'granted') return
+  if (typeof window === 'undefined' || typeof Notification === 'undefined') {
+    recordNotificationDropped('unsupported')
+    return
+  }
+  // Electron's renderer handles its own OS permissions, so only the plain
+  // browser path is gated on the Web Notification permission.
+  if (!getDesktop() && Notification.permission !== 'granted') {
+    recordNotificationDropped(permissionDropReason(Notification.permission))
+    return
+  }
   try {
     const n = new Notification(p.title, { body: p.body, tag: `channel:${p.conversationId}` })
+    recordNotificationShown()
     n.onclick = () => {
       try {
         window.focus()
@@ -180,8 +205,8 @@ export async function notifyChannelMessage(p: ChannelNotificationPayload): Promi
         // ignore
       }
     }
-  } catch {
-    // e.g. Notification constructor forbidden on mobile Safari
+  } catch (err) {
+    recordNotificationDropped('show-threw', (err as Error).message)
   }
 }
 
