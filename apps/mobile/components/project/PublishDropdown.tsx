@@ -46,6 +46,7 @@ import { api } from '../../lib/api'
 import { useDomainHttp } from '../../contexts/domain'
 import { CustomDomainsSection } from './CustomDomainsSection'
 import { AlwaysOnSection } from './AlwaysOnSection'
+import { isPublishPlanError, publishErrorMessage } from './publish-errors'
 
 export type AccessLevel = 'anyone' | 'authenticated' | 'private' | 'password'
 
@@ -59,30 +60,6 @@ const ACCESS_OPTIONS: { value: AccessLevel; label: string; Icon: any }[] = [
   { value: 'private', label: 'Private', Icon: Lock },
   { value: 'password', label: 'Password protected', Icon: KeyRound },
 ]
-
-// Map a publish error to user-facing copy. The thrown ShogoError carries the
-// raw response body in `details`, so we can switch on the structured server
-// code (e.g. the cloud-proxy codes returned by the local/desktop API) and fall
-// back to the server message otherwise.
-function publishErrorMessage(err: any): string {
-  if (err?.name === 'AbortError') {
-    return "This is taking longer than expected. We're likely experiencing elevated load — please try again in a moment."
-  }
-  const code: string | undefined = err?.details?.error?.code ?? err?.details?.code
-  switch (code) {
-    case 'cloud_signin_required':
-      return 'Sign in to Shogo Cloud to publish from the desktop app.'
-    case 'project_not_synced':
-      return 'Sync this project to Shogo Cloud before publishing.'
-    case 'cloud_unreachable':
-      return "Couldn't reach Shogo Cloud. Check your connection and try again."
-    case 'upload_timeout':
-    case 'configure_timeout':
-      return "Publishing timed out while setting up your site. Please try again — if it keeps happening, we're on it."
-    default:
-      return err?.message || 'Failed to publish'
-  }
-}
 
 interface PublishDropdownProps {
   projectId: string
@@ -137,7 +114,6 @@ export function PublishDropdown({ projectId, projectName, onViewHistory }: Publi
   const checkTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
-    if (!isOpen) return
     loadPublishState()
   }, [isOpen, projectId])
 
@@ -199,7 +175,12 @@ export function PublishDropdown({ projectId, projectName, onViewHistory }: Publi
       // A fresh publish may flip the app to server-backed / consume a slot.
       bumpPublishState()
     } catch (err: any) {
-      setError(publishErrorMessage(err))
+      if (isPublishPlanError(err)) {
+        // The Pro card and Upgrade button explain the gate.
+        setPlanAllowsPublish(false)
+      } else {
+        setError(publishErrorMessage(err))
+      }
     } finally {
       setIsPublishing(false)
     }
@@ -371,9 +352,14 @@ export function PublishDropdown({ projectId, projectName, onViewHistory }: Publi
       trigger={(triggerProps) => (
         <Pressable
           {...triggerProps}
-          className="h-8 flex-row items-center px-3 rounded-md bg-primary active:bg-primary/80"
+          className="h-8 flex-row items-center gap-1.5 px-3 rounded-md bg-primary active:bg-primary/80"
         >
           <Text className="text-xs font-medium text-primary-foreground">Publish</Text>
+          {!planAllowsPublish && !isPublished && (
+            <View className="rounded px-1 bg-primary-foreground/20">
+              <Text className="text-[10px] font-medium text-primary-foreground">Pro</Text>
+            </View>
+          )}
         </Pressable>
       )}
     >

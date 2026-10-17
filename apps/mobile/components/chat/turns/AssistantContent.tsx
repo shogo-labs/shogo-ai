@@ -49,6 +49,8 @@ import { WriteFileWidget } from "./WriteFileWidget"
 import { EditFileWidget } from "./EditFileWidget"
 import type { PlanData } from "../PlanCard"
 import { PlanReferenceCard } from "./PlanReferenceCard"
+import { PublishUpgradeCard } from "./PublishUpgradeCard"
+import { isPublishPlanGate } from "./publish-plan-gate"
 import { extractPlanFilepath } from "./plan-tool"
 import { useIsNativePhoneLayout } from "../../../lib/native-phone-layout"
 import { subagentStreamStore } from "../../../lib/subagent-stream-store"
@@ -209,6 +211,7 @@ function isPinnedWorkPart(part: GroupedMessagePart): boolean {
     return installResult?.authStatus === "needs_auth" && !!installResult.authUrl
   }
   if (toolName === "ask_user") return askUserStreamVariant(result) === "bar"
+  if (isPublishPlanGate(part.tool)) return true
   return toolName === "create_plan" || toolName === "update_plan"
 }
 
@@ -723,6 +726,10 @@ export const AssistantContent = memo(
 
         if (part.tool.toolName === "share_file") {
           return <FileDeliveryWidget key={part.id} tool={part.tool} />
+        }
+
+        if (isPublishPlanGate(part.tool)) {
+          return <PublishUpgradeCard key={part.id} tool={part.tool} />
         }
 
         if (

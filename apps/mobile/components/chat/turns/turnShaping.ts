@@ -39,6 +39,7 @@ import type { UIMessage } from "@ai-sdk/react";
 import type { MessagePart, GroupedMessagePart } from "./types";
 import { type ToolCallData, isIntegrationTool } from "../tools/types";
 import { getToolSummary, LOOKUP_TOOL_NAMES } from "../tools/summary";
+import { isPublishPlanGate } from "./publish-plan-gate";
 
 // Verbs (from tools/summary.ts) that classify a tool call as a
 // read-only "exploration" action for the purposes of grouping. Note
@@ -137,7 +138,8 @@ export function isGenericTool(tool: ToolCallData): boolean {
   if (
     UNGROUPABLE_TOOLS.has(name) ||
     HIDDEN_TOOLS.has(name) ||
-    CUSTOM_RENDER_TOOLS.has(name)
+    CUSTOM_RENDER_TOOLS.has(name) ||
+    isPublishPlanGate(tool)
   ) {
     return false;
   }
@@ -258,7 +260,7 @@ export function groupWorkParts(parts: MessagePart[]): GroupedMessagePart[] {
       }
     }
 
-    if (UNGROUPABLE_TOOLS.has(part.tool.toolName)) {
+    if (UNGROUPABLE_TOOLS.has(part.tool.toolName) || isPublishPlanGate(part.tool)) {
       result.push(part);
       i++;
       continue;

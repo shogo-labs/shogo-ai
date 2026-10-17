@@ -52,6 +52,7 @@ mock.module("../ThinkingWidget", () => ({ ThinkingWidget: stub("thinking") }))
 mock.module("../WriteFileWidget", () => ({ WriteFileWidget: stub("write") }))
 mock.module("../EditFileWidget", () => ({ EditFileWidget: stub("edit") }))
 mock.module("../PlanReferenceCard", () => ({ PlanReferenceCard: stub("plan-card") }))
+mock.module("../PublishUpgradeCard", () => ({ PublishUpgradeCard: stub("publish-upgrade") }))
 mock.module("../../ChatMarkdown", () => ({
   ChatMarkdown: ({ children }: any) => createElement("p", null, children),
 }))
@@ -126,6 +127,25 @@ describe("AssistantContent pinned work", () => {
     expect(screen.getByText("Connect GitHub")).toBeTruthy()
     expect(screen.getByText("Done")).toBeTruthy()
     expect(screen.queryByText("work-group")).toBeNull()
+  })
+
+  test("a publish refused by the Pro-plan gate shows the upgrade card after the turn folds", () => {
+    const gatedPublish = {
+      type: "dynamic-tool",
+      toolCallId: "p1",
+      toolName: "publish",
+      state: "output-available",
+      input: { subdomain: "my-site" },
+      output: { error: "Publishing to a subdomain requires a Pro (or higher) plan.", code: "plan_not_allowed" },
+    }
+    render(
+      createElement(AssistantContent, {
+        message: finishedMessage([readFile, gatedPublish, { type: "text", text: "You need Pro" }]),
+        isStreaming: false,
+      }),
+    )
+    expect(screen.getByText("Worked for")).toBeTruthy()
+    expect(screen.getByText("publish-upgrade")).toBeTruthy()
   })
 
   test("ordinary work stays inside the fold", () => {

@@ -4115,7 +4115,7 @@ function createPublishTool(ctx: ToolContext): AgentTool {
         }
         if (res.code === 'plan_not_allowed') {
           return textResult({
-            error: 'Publishing to a subdomain requires a Pro (or higher) plan. Tell the user to upgrade in Settings > Billing to publish.',
+            error: 'Publishing to a subdomain requires a Pro (or higher) plan. The chat now shows the user an Upgrade button. Tell them their work is saved and they can publish again once they upgrade; meanwhile they can use the preview URL.',
             code: res.code,
           })
         }
