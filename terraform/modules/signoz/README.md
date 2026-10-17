@@ -57,7 +57,9 @@ they're managed separately as YAML/JSON files under this directory:
 - `alerts/prod-node-count-low.yaml` — pages when prod-us has fewer ready
   nodes than the terraform-declared `system_pool_min`.
 - `alerts/warm-pool-starvation.yaml` — pages when warm-pool depth
-  stays below 3 for 10+ minutes (every new project hitting cold start).
+  stays below the region's declared `WARM_POOL_MIN_PODS` floor (currently 5,
+  the lowest of the production overlays) for 10+ minutes — every new project
+  hitting cold start.
 - `alerts/metal-fc-process-leak.yaml` — pages when a metal host carries
   20+ firecracker processes beyond its tracked warm+assigned VMs for
   10+ minutes (the churn process-leak fingerprint; 2026-07 incident).
