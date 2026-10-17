@@ -503,7 +503,12 @@ if (config.idleSuspendMs > 0) {
         const all = [...retired, ...alwaysOn]
         if (all.length) console.log(`[metal-agent] rollout-rotated (superseded rootfs): ${all.join(', ')}`)
       })
-      .catch((err) => console.error('[metal-agent] rollout rotation error:', err?.message ?? err)),
+      .catch((err) => console.error('[metal-agent] rollout rotation error:', err?.message ?? err))
+      // Retry warm boots that failed (they often do right after a restart).
+      // Not awaited: a fill boots several VMs and must not hold up the sweep.
+      .then(() => {
+        pool.reconcile().catch((err) => console.error('[metal-agent] warm pool refill error:', err?.message ?? err))
+      }),
   )
 }
 
