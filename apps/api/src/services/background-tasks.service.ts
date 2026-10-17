@@ -18,8 +18,15 @@
  */
 
 import { prisma } from '../lib/prisma'
+import { envInt } from './conversation-agent-chain'
 
 const db = prisma as any
+
+/**
+ * Longest a channel agent reply runs before it is given up as timed out. A
+ * reply whose stream goes silent is given up sooner (the dispatcher's idle timeout).
+ */
+export const AGENT_REPLY_TIMEOUT_MS = envInt('SHOGO_CHANNEL_AGENT_TIMEOUT_MS', 2 * 60 * 60_000)
 
 export type BackgroundTaskStatus = 'running' | 'completed' | 'failed' | 'cancelled'
 
@@ -41,10 +48,10 @@ export const MAX_CONSECUTIVE_WAKES = 3
 export const MAX_CONSECUTIVE_CARD_WAKES = 40
 /**
  * Longest a finished card watch waits for agents still working the card's
- * thread. Outlasts a channel agent run (`AGENT_REPLY_TIMEOUT_MS`), so it only
+ * thread. Outlasts the longest channel agent run (`AGENT_REPLY_TIMEOUT_MS`), so it only
  * fires when a run hangs or ends without reporting back.
  */
-export const CARD_HOLD_MS = 31 * 60_000
+export const CARD_HOLD_MS = AGENT_REPLY_TIMEOUT_MS + 60_000
 
 export interface BackgroundTaskRow {
   id: string

@@ -58,6 +58,16 @@ describe('readAgentStream', () => {
     expect((await readAgentStream(chunkedResponse([frame({ type: 'finish' })]), () => {})).connect).toBeUndefined()
   })
 
+  test('every frame counts as activity, including the turn heartbeat', async () => {
+    let activity = 0
+    await readAgentStream(chunkedResponse([
+      frame({ type: 'data-turn-seq', data: { turnId: 't', seq: 1 }, transient: true }),
+      frame({ type: 'data-task-wait', data: { taskIds: ['t_1'], active: true }, transient: true }),
+      frame({ type: 'finish' }),
+    ]), () => {}, undefined, () => { activity++ })
+    expect(activity).toBe(3)
+  })
+
   test('non-2xx responses surface the server error', async () => {
     const res = new Response(JSON.stringify({ error: { message: 'Project not found' } }), { status: 404 })
     expect(await readAgentStream(res, () => {})).toMatchObject({ failed: true, error: 'Project not found' })

@@ -76,6 +76,30 @@ function workUntilStopped(signal: AbortSignal, text: string): Response {
   return new Response(body, { headers: { 'Content-Type': 'text/event-stream' } })
 }
 
+/** A run waiting on a background task: a heartbeat every 20ms, then `finalText` after `finishAfterMs` (never, if omitted). */
+function waitOnTask(signal: AbortSignal, opts: { finishAfterMs?: number; finalText?: string } = {}): Response {
+  const enc = new TextEncoder()
+  const frame = (f: unknown) => enc.encode(`data: ${JSON.stringify(f)}\n\n`)
+  const body = new ReadableStream({
+    start(controller) {
+      let seq = 0
+      const beat = setInterval(() => controller.enqueue(frame({ type: 'data-turn-seq', data: { turnId: 't', seq: ++seq }, transient: true })), 20)
+      controller.enqueue(frame({ type: 'tool-input-start', toolCallId: 'w1', toolName: 'wait' }))
+      signal.addEventListener('abort', () => { clearInterval(beat); controller.error(new Error('aborted')) }, { once: true })
+      if (opts.finishAfterMs === undefined) return
+      setTimeout(() => {
+        clearInterval(beat)
+        controller.enqueue(frame({ type: 'tool-output-available', toolCallId: 'w1' }))
+        controller.enqueue(frame({ type: 'text-start', id: 't2' }))
+        controller.enqueue(frame({ type: 'text-delta', id: 't2', delta: opts.finalText ?? 'Done.' }))
+        controller.enqueue(frame({ type: 'finish' }))
+        controller.close()
+      }, opts.finishAfterMs)
+    },
+  })
+  return new Response(body, { headers: { 'Content-Type': 'text/event-stream' } })
+}
+
 const tag = (projectId: string) => `<@a:p:${projectId}>`
 
 async function channel(name: string, opts: { private?: boolean } = {}) {
@@ -269,8 +293,65 @@ describe('stopping', () => {
     expect(runtimeStops).toEqual([{ projectId: builder, sessionId: running.agentSessionId, userId: seed.member }])
   })
 
+  test('a person pressing Stop still settles the reply as stopped', async () => {
+    dispatcher.configureConversationAgentDispatcher({ invoke: async (args) => workUntilStopped(args.signal, '') })
+    const ch = await channel('plain-stop-room')
+    const root = await post(seed.member, ch.id, `${tag(builder)} go`)
+    const running = await runningIn(root)
+    await app.request(`/api/conversation-messages/${running.id}/stop`, { method: 'POST', headers: { 'x-user': seed.member } })
+    const settled = await waitFor(async () => {
+      const row = await db.conversationMessage.findUnique({ where: { id: running.id } })
+      return row.agentStatus !== 'running' ? row : null
+    })
+    expect(settled).toMatchObject({ agentStatus: 'stopped', text: '_Stopped._' })
+  })
+
   test('neither a message id nor a thread is a bad request', async () => {
     const res = await asAgent('POST', '/running-agents/stop', { requester: seed.member, body: { channel: 'loop-room' } })
     expect(res.status).toBe(400)
+  })
+})
+
+describe('an agent waiting on a background task', () => {
+  async function settledReply(room: string) {
+    const ch = await channel(room)
+    const root = await post(seed.member, ch.id, `${tag(builder)} deploy it`)
+    const running = await runningIn(root)
+    const row = await waitFor(async () => {
+      const r = await db.conversationMessage.findUnique({ where: { id: running.id } })
+      return r.agentStatus !== 'running' ? r : null
+    }, 5_000)
+    return { running, row }
+  }
+
+  test('keeps running past the idle timeout while the runtime heartbeats, then finishes', async () => {
+    dispatcher.configureConversationAgentDispatcher({
+      idleTimeoutMs: 100,
+      invoke: async (args) => waitOnTask(args.signal, { finishAfterMs: 400, finalText: 'Deployed.' }),
+    })
+    const { row } = await settledReply('heartbeat-room')
+    expect(row).toMatchObject({ agentStatus: 'done', text: 'Deployed.' })
+    expect(runtimeStops).toEqual([])
+  })
+
+  test('a stream that goes silent times out as an error and stops the runtime turn', async () => {
+    dispatcher.configureConversationAgentDispatcher({ idleTimeoutMs: 100, invoke: async (args) => workUntilStopped(args.signal, '') })
+    const { running, row } = await settledReply('silent-room')
+    expect(row.agentStatus).toBe('error')
+    expect(row.text).toContain('went quiet')
+    expect(row.text).not.toContain('Stopped')
+    expect(runtimeStops).toEqual([{ projectId: builder, sessionId: running.agentSessionId, userId: seed.member }])
+  })
+
+  test('the hard cap times out as an error, not as stopped', async () => {
+    dispatcher.configureConversationAgentDispatcher({
+      replyTimeoutMs: 300,
+      idleTimeoutMs: 5_000,
+      invoke: async (args) => waitOnTask(args.signal),
+    })
+    const { running, row } = await settledReply('cap-room')
+    expect(row.agentStatus).toBe('error')
+    expect(row.text).toContain('I stopped waiting after')
+    expect(runtimeStops).toEqual([{ projectId: builder, sessionId: running.agentSessionId, userId: seed.member }])
   })
 })

@@ -54,7 +54,7 @@ import { resolveFriendlyMentions } from './conversation-directory'
 import { expirePendingApprovals, postApprovalCard, type ApprovalRequest } from './conversation-approvals'
 import type { AgentWork, IntegrationConnectRequest, StatusCard } from './conversation-message-kind'
 import { agentWorkOf } from './agent-work-log'
-import { emitTaskEvent, replyEvent, replyTargetRef } from './background-tasks.service'
+import { AGENT_REPLY_TIMEOUT_MS, emitTaskEvent, replyEvent, replyTargetRef, silenceSessionTasks } from './background-tasks.service'
 import { docContextFor } from './conversation-doc.service'
 import { parseMuteCommand, pickResponder, type RelevanceCandidate } from './conversation-agent-relevance'
 import { getAgentDefaultModel } from './workspace-agent.service'
@@ -71,7 +71,12 @@ const DEFAULT_START_RETRY_BUDGET_MS = 3 * 60_000
 const MAX_START_RETRIES = 20
 const CONTEXT_MESSAGES = 20
 const DELTA_THROTTLE_MS = 350
-export const AGENT_REPLY_TIMEOUT_MS = envInt('SHOGO_CHANNEL_AGENT_TIMEOUT_MS', 30 * 60_000)
+export { AGENT_REPLY_TIMEOUT_MS }
+/**
+ * A running turn streams a heartbeat every ~250ms, even while it waits on a
+ * background task, so this long without a frame means the runtime is gone.
+ */
+export const AGENT_REPLY_IDLE_TIMEOUT_MS = envInt('SHOGO_CHANNEL_AGENT_IDLE_TIMEOUT_MS', 10 * 60_000)
 const PROVIDER_SURFACE: Record<string, string> = { slack: 'Slack', teams: 'Microsoft Teams', google_chat: 'Google Chat' }
 
 interface DispatcherConfig {
@@ -89,6 +94,10 @@ interface DispatcherConfig {
   retryDelaysMs?: number[]
   /** Total scheduled wait before a retryable 503 is final. Defaults to 3 minutes. */
   retryBudgetMs?: number
+  /** Test seam: replaces `AGENT_REPLY_TIMEOUT_MS`. */
+  replyTimeoutMs?: number
+  /** Test seam: replaces `AGENT_REPLY_IDLE_TIMEOUT_MS`. */
+  idleTimeoutMs?: number
 }
 
 let config: DispatcherConfig = {}
@@ -882,11 +891,16 @@ export interface StreamSummary {
   error?: string
 }
 
-/** Read an AI SDK UI-message SSE stream, reporting text and tool progress. */
+/**
+ * Read an AI SDK UI-message SSE stream, reporting text and tool progress.
+ * `onActivity` fires for every frame, including the runtime's turn heartbeat,
+ * so a caller can tell a turn that is still alive from one that went silent.
+ */
 export async function readAgentStream(
   response: Response,
   onProgress: (state: StreamProgress) => void,
   onPermission?: (request: ApprovalRequest) => void,
+  onActivity?: () => void,
 ): Promise<StreamSummary> {
   if (!response.ok) {
     const raw = await response.text().catch(() => '')
@@ -915,6 +929,7 @@ export async function readAgentStream(
     if (!raw || raw === '[DONE]') return
     let chunk: any
     try { chunk = JSON.parse(raw) } catch { return }
+    onActivity?.()
     const type = chunk?.type
     if (type === 'text-start') {
       segments++
@@ -1091,8 +1106,23 @@ export async function runAgentReply(args: RunAgentReplyArgs): Promise<string | n
 
   const controller = new AbortController()
   running.set(messageId, controller)
-  const timeout = setTimeout(() => controller.abort(new Error('timed out')), AGENT_REPLY_TIMEOUT_MS)
+  const capMs = config.replyTimeoutMs ?? AGENT_REPLY_TIMEOUT_MS
+  const idleMs = config.idleTimeoutMs ?? AGENT_REPLY_IDLE_TIMEOUT_MS
+  const timeout = setTimeout(() => controller.abort(new ReplyTimeout('cap', capMs)), capMs)
   ;(timeout as any).unref?.()
+  let idle: ReturnType<typeof setTimeout> | null = null
+  const armIdle = () => {
+    if (idle) clearTimeout(idle)
+    idle = setTimeout(() => controller.abort(new ReplyTimeout('idle', idleMs)), idleMs)
+    ;(idle as any).unref?.()
+  }
+  // A timed-out reply ends its runtime turn too, so the thread never says it ended while the agent keeps going.
+  const settleAborted = async (partial: string) => {
+    const reason = controller.signal.reason
+    if (!(reason instanceof ReplyTimeout)) return settle(partial || (work ? '' : '_Stopped._'), 'stopped')
+    await stopSession({ workspaceId: conversation.workspaceId, projectId: target.projectId, sessionId, userId })
+    return settle([partial, `_${reason.describe()}_`].filter(Boolean).join('\n\n'), 'error')
+  }
 
   let lastPublish = 0
   let pending: ReturnType<typeof setTimeout> | null = null
@@ -1136,6 +1166,7 @@ export async function runAgentReply(args: RunAgentReplyArgs): Promise<string | n
     }, async () => {
       await streamAgentReply(reply, { text: 'Starting up…', tool: null, tools: [] })
     })
+    armIdle()
     const summary = await readAgentStream(response, (state) => {
       latest = state
       if (pending) return
@@ -1155,7 +1186,8 @@ export async function runAgentReply(args: RunAgentReplyArgs): Promise<string | n
       })
         .then((cardId) => { if (cardId) approvalCards.push(cardId) })
         .catch((err) => console.error('[ChannelAgent] approval card failed:', err))
-    })
+    }, armIdle)
+    if (idle) clearTimeout(idle)
     if (pending) {
       clearTimeout(pending)
       pending = null
@@ -1168,7 +1200,7 @@ export async function runAgentReply(args: RunAgentReplyArgs): Promise<string | n
     work = await agentWorkOf(sessionId, startedAt, summary.toolCount ?? 0).catch(() => null)
     connect = summary.connect ?? []
     if (controller.signal.aborted) {
-      await settle(finalText || latest.text.trim() || (work ? '' : '_Stopped._'), 'stopped')
+      await settleAborted(finalText || latest.text.trim())
     } else if (summary.failed && !finalText) {
       await settle(`I couldn't finish that: ${summary.error ?? 'the agent run failed'}`, 'error')
     } else if (summary.failed) {
@@ -1186,15 +1218,16 @@ export async function runAgentReply(args: RunAgentReplyArgs): Promise<string | n
     }
     return messageId
   } catch (err: any) {
-    const stopped = controller.signal.aborted
-    const partial = latest.text.trim()
-    await settle(
-      stopped ? partial || '_Stopped._' : `I couldn't finish that: ${err?.message ?? 'unknown error'}`,
-      stopped ? 'stopped' : 'error',
-    ).catch(() => {})
+    if (controller.signal.aborted) {
+      work = await agentWorkOf(sessionId, startedAt, latest.tools.length).catch(() => null)
+      await settleAborted(latest.text.trim()).catch(() => {})
+    } else {
+      await settle(`I couldn't finish that: ${err?.message ?? 'unknown error'}`, 'error').catch(() => {})
+    }
     return messageId
   } finally {
     if (pending) clearTimeout(pending)
+    if (idle) clearTimeout(idle)
     clearTimeout(timeout)
     running.delete(messageId)
     release?.()
@@ -1235,13 +1268,36 @@ export async function stopAgentReply(message: {
   running.get(message.id)?.abort(new Error('stopped'))
   const sessionId = message.agentSessionId
   if (!sessionId) return
-  const { silenceSessionTasks } = await import('./background-tasks.service')
-  await silenceSessionTasks(sessionId).catch((err: Error) => console.warn('[ChannelAgent] silencing stopped session failed:', err.message))
-  const input = { workspaceId: message.workspaceId, projectId: message.authorAgentRef?.projectId ?? null, sessionId, userId }
+  await stopSession({ workspaceId: message.workspaceId, projectId: message.authorAgentRef?.projectId ?? null, sessionId, userId })
+}
+
+/** Why a reply's reader gave up on its own, as opposed to someone pressing Stop. */
+class ReplyTimeout extends Error {
+  constructor(readonly kind: 'idle' | 'cap', readonly afterMs: number) {
+    super(kind === 'idle' ? 'idle timeout' : 'timed out')
+  }
+
+  describe(): string {
+    const after = formatDuration(this.afterMs)
+    return this.kind === 'idle'
+      ? `The agent went quiet for ${after}, so I stopped waiting on it.`
+      : `I stopped waiting after ${after} without the agent finishing.`
+  }
+}
+
+function formatDuration(ms: number): string {
+  if (ms >= 3_600_000 && ms % 3_600_000 === 0) return `${ms / 3_600_000}h`
+  if (ms >= 60_000) return `${Math.round(ms / 60_000)}m`
+  return `${Math.max(1, Math.round(ms / 1000))}s`
+}
+
+/** End the session's runtime turn, and keep anything it was watching from waking it again. */
+async function stopSession(input: { workspaceId: string; projectId: string | null; sessionId: string; userId: string }): Promise<void> {
+  await silenceSessionTasks(input.sessionId).catch((err: Error) => console.warn('[ChannelAgent] silencing stopped session failed:', err.message))
   try {
     await (config.stopRuntimeTurn ?? stopRuntimeTurn)(input)
   } catch (err) {
-    console.warn(`[ChannelAgent] runtime stop for ${sessionId} failed:`, (err as Error).message)
+    console.warn(`[ChannelAgent] runtime stop for ${input.sessionId} failed:`, (err as Error).message)
   }
 }
 
