@@ -21,6 +21,10 @@ export interface LocalTurnUsage {
   usage: BillingSessionFallbackUsage
   quality?: BillingSessionQualitySignals
   openedAt?: number
+  /** Proxied LLM calls in the turn, when known (recorded as `toolCalls`, like cloud). */
+  requestCount?: number
+  /** `usage_events.actionMetadata.usageSource`. */
+  usageSource?: 'stream-fallback' | 'local-proxy'
 }
 
 export async function recordLocalTurnUsage(
@@ -40,7 +44,7 @@ export async function recordLocalTurnUsage(
   )
   const durationMs = turn.openedAt ? Date.now() - turn.openedAt : 0
   const quality = turn.quality ?? {}
-  const source = { ...(turn.chatSessionId ? { chatSessionId: turn.chatSessionId } : {}), usageSource: 'stream-fallback' }
+  const source = { ...(turn.chatSessionId ? { chatSessionId: turn.chatSessionId } : {}), usageSource: turn.usageSource ?? 'stream-fallback' }
 
   await Promise.all([
     recordAgentCostMetric({
@@ -51,7 +55,8 @@ export async function recordLocalTurnUsage(
       inputTokens,
       outputTokens,
       cachedInputTokens,
-      toolCalls: 0,
+      cacheWriteTokens,
+      toolCalls: turn.requestCount ?? 0,
       creditCost: 0,
       wallTimeMs: durationMs,
       success: quality.success === true,

@@ -42,6 +42,7 @@ import {
   proxyOpenAINonStream,
   proxyAnthropicStream,
   proxyAnthropicNonStream,
+  splitOpenAIPromptUsage,
   type ChatCompletionRequest,
 } from './ai-proxy'
 import { isModelAccessibleForWorkspace } from '../lib/runtime/agent-model-defaults'
@@ -381,8 +382,8 @@ export function publicApiRoutes() {
             request,
             apiKey,
             modelConfig,
-            (inTok, outTok, cachedTok, reasoningTok) =>
-              recordUsage(payload, backingId, inTok, outTok, cachedTok, 0, null, null, reasoningTok),
+            (inTok, outTok, cachedTok, reasoningTok, cacheWriteTok) =>
+              recordUsage(payload, backingId, inTok, outTok, cachedTok, cacheWriteTok, null, null, reasoningTok),
             c.req.raw.signal,
           )
         }
@@ -403,21 +404,14 @@ export function publicApiRoutes() {
       }
 
       const usage = result?.usage || {}
-      const totalPrompt = usage.prompt_tokens || 0
-      const cachedPrompt =
-        usage.prompt_tokens_details?.cached_tokens ??
-        usage.prompt_cache_hit_tokens ??
-        0
-      const inputPrompt =
-        usage.prompt_cache_miss_tokens ??
-        Math.max(0, totalPrompt - cachedPrompt)
+      const prompt = splitOpenAIPromptUsage(usage)
       recordUsage(
         payload,
         backingId,
-        inputPrompt,
+        prompt.inputTokens,
         usage.completion_tokens || 0,
-        cachedPrompt,
-        0,
+        prompt.cachedInputTokens,
+        prompt.cacheWriteTokens,
         null,
         null,
         usage.completion_tokens_details?.reasoning_tokens || 0,

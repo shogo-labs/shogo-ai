@@ -13,9 +13,13 @@
  * Except with Shogo Cloud forwarding: then the local AI proxy relays every
  * call to cloud and records nothing, so the turn's stream-reported usage
  * (`fallbackUsage` / `recordTurnUsage`) is the only local record of it.
+ *
+ * Without forwarding, the local AI proxy accumulates each call into the open
+ * turn and the close records one `chat_message` usage event plus one
+ * `main-chat` cost-analytics row, mirroring the cloud session close.
  */
 import type * as CloudBillingSessionModule from './proxy-billing-session'
-import type { BillingSessionQualitySignals } from './proxy-billing-session'
+import type { BillingSessionFallbackUsage, BillingSessionQualitySignals } from './proxy-billing-session'
 import { isShogoCloudForwarding } from './cloud-forwarding'
 import type { LocalTurnUsage } from './local-turn-usage'
 
@@ -48,29 +52,63 @@ interface LocalTurn {
   userId: string
   openedAt: number
   quality: BillingSessionQualitySignals
+  usage: Required<BillingSessionFallbackUsage>
+  requestCount: number
 }
 const localTurns = new Map<string, LocalTurn>()
 const turnKey = (projectId: string, chatSessionId?: string | null) => `${projectId}:${chatSessionId ?? ''}`
 
+/** Composite key first, then the projectId-only key, like the cloud session lookup. */
+function lookupLocalTurn(projectId: string, chatSessionId?: string | null): LocalTurn | undefined {
+  return (chatSessionId ? localTurns.get(turnKey(projectId, chatSessionId)) : undefined)
+    ?? localTurns.get(turnKey(projectId))
+}
+
 export const localBillingSession: BillingSessionSeam = {
   openSession: async (projectId, workspaceId, userId, chatSessionId) => {
-    localTurns.set(turnKey(projectId, chatSessionId), { workspaceId, userId, openedAt: Date.now(), quality: {} })
+    localTurns.set(turnKey(projectId, chatSessionId), {
+      workspaceId,
+      userId,
+      openedAt: Date.now(),
+      quality: {},
+      usage: { model: 'sonnet', inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, cacheWriteTokens: 0 },
+      requestCount: 0,
+    })
   },
   closeSession: async (projectId, options = {}) => {
     const key = turnKey(projectId, options.chatSessionId)
     const turn = localTurns.get(key)
     localTurns.delete(key)
-    if (!turn || !options.fallbackUsage || options.discardPartial || options.bookkeeping) return EMPTY_RESULT
-    if (!isShogoCloudForwarding()) return EMPTY_RESULT
-    return recordLocalTurnUsage({ ...turn, projectId, chatSessionId: options.chatSessionId, usage: options.fallbackUsage })
+    if (!turn) return EMPTY_RESULT
+    const { usage, requestCount, ...owner } = turn
+    const base = { ...owner, projectId, chatSessionId: options.chatSessionId }
+    if (!isShogoCloudForwarding()) {
+      // Local usage is never billed, so a discarded partial still records the
+      // provider spend it already incurred.
+      if (requestCount === 0) return EMPTY_RESULT
+      return recordLocalTurnUsage({ ...base, usage, requestCount, usageSource: 'local-proxy' })
+    }
+    if (!options.fallbackUsage || options.discardPartial || options.bookkeeping) return EMPTY_RESULT
+    return recordLocalTurnUsage({ ...base, usage: options.fallbackUsage })
   },
   hasSession: async () => false,
   hasActiveSession: async () => false,
-  accumulateUsage: async () => false,
+  accumulateUsage: async (projectId, model, inputTokens, outputTokens, cachedInputTokens = 0, cacheWriteTokens = 0, chatSessionId) => {
+    if (isShogoCloudForwarding()) return false
+    const turn = lookupLocalTurn(projectId, chatSessionId)
+    if (!turn) return false
+    turn.usage.model = model
+    turn.usage.inputTokens += inputTokens
+    turn.usage.outputTokens += outputTokens
+    turn.usage.cachedInputTokens += cachedInputTokens
+    turn.usage.cacheWriteTokens += cacheWriteTokens
+    turn.requestCount += 1
+    return true
+  },
   accumulateImageUsage: async () => false,
   accumulateVideoUsage: async () => false,
   setQualitySignals: async (projectId, quality, chatSessionId) => {
-    const turn = localTurns.get(turnKey(projectId, chatSessionId))
+    const turn = lookupLocalTurn(projectId, chatSessionId)
     if (!turn) return false
     turn.quality = { ...turn.quality, ...quality }
     return true

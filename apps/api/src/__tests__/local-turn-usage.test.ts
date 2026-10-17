@@ -50,6 +50,23 @@ describe('recordLocalTurnUsage', () => {
     }))
   })
 
+  test('passes cache reads, cache writes and the call count through to the cost metric', async () => {
+    await recordLocalTurnUsage({
+      workspaceId: 'ws',
+      projectId: 'p',
+      userId: 'user',
+      usage: { model: 'claude-sonnet-4-6', inputTokens: 10, outputTokens: 20, cachedInputTokens: 3000, cacheWriteTokens: 400 },
+      requestCount: 3,
+      usageSource: 'local-proxy',
+    })
+    expect(metrics[0]).toEqual(expect.objectContaining({
+      inputTokens: 10, outputTokens: 20, cachedInputTokens: 3000, cacheWriteTokens: 400, toolCalls: 3, creditCost: 0,
+    }))
+    expect(usageEvents[0].actionMetadata).toEqual(expect.objectContaining({
+      cachedInputTokens: 3000, cacheWriteTokens: 400, totalTokens: 3430, usageSource: 'local-proxy',
+    }))
+  })
+
   test('records nothing for a turn with no tokens', async () => {
     const result = await recordLocalTurnUsage({ workspaceId: 'ws', projectId: 'p', userId: 'u', usage: {} })
     expect(result).toEqual({ billedUsd: 0, rawUsd: 0, totalTokens: 0 })

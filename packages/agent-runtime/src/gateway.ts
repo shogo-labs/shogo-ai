@@ -1245,6 +1245,7 @@ export class AgentGateway {
         inputTokens: data.inputTokens,
         outputTokens: data.outputTokens,
         cachedInputTokens: data.cachedInputTokens,
+        cacheWriteTokens: data.cacheWriteTokens,
         toolCalls: data.toolCalls,
         creditCost: data.creditCost,
         wallTimeMs: data.wallTimeMs,

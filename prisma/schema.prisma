@@ -3537,6 +3537,7 @@ model AgentCostMetric {
   inputTokens       Int      @default(0)
   outputTokens      Int      @default(0)
   cachedInputTokens Int      @default(0)
+  cacheWriteTokens  Int      @default(0)
   toolCalls         Int      @default(0)
   creditCost        Float    @default(0)
   wallTimeMs        Int      @default(0)

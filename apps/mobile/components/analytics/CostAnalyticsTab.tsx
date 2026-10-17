@@ -100,6 +100,7 @@ interface AgentBreakdownEntry {
   totalInputTokens: number
   totalOutputTokens: number
   totalCachedInputTokens: number
+  totalCacheWriteTokens?: number
   totalToolCalls: number
   totalCreditCost: number
   totalWallTimeMs: number
@@ -113,7 +114,11 @@ interface AgentBreakdownEntry {
 interface BreakdownData {
   breakdown: AgentBreakdownEntry[]
   totals: {
+    /** Raw provider cost. */
     totalCreditCost: number
+    /** Shogo's fee on top of provider cost; 0 on desktop, where usage isn't billed. */
+    shogoFeeUsd?: number
+    totalWithFeeUsd?: number
     totalRuns: number
     totalInputTokens: number
     totalOutputTokens: number
@@ -463,6 +468,8 @@ function SummaryCards({
   icons: CostAnalyticsIcons
 }) {
   const totalCost = data?.totals.totalCreditCost ?? 0
+  const shogoFee = data?.totals.shogoFeeUsd ?? 0
+  const totalWithFee = data?.totals.totalWithFeeUsd ?? totalCost + shogoFee
   const totalRuns = data?.totals.totalRuns ?? 0
   const avgCost = totalRuns > 0 ? Math.round((totalCost / totalRuns) * 100) / 100 : 0
   const forecast = trends?.forecast
@@ -470,11 +477,20 @@ function SummaryCards({
   return (
     <View className="flex-row flex-wrap gap-2">
       <MiniCard
-        label="Total Cost"
+        label="Provider Cost"
         value={formatDollarCost(totalCost)}
         icon={icons.DollarSign}
         color="text-orange-400"
       />
+      {shogoFee > 0 && (
+        <MiniCard
+          label={`Shogo Fee (${Math.round((shogoFee / totalCost) * 100)}%)`}
+          value={formatDollarCost(shogoFee)}
+          icon={icons.DollarSign}
+          color="text-orange-400"
+          subtitle={`Total ${formatDollarCost(totalWithFee)}`}
+        />
+      )}
       <MiniCard
         label="Agent Runs"
         value={formatNumber(totalRuns)}
@@ -688,7 +704,10 @@ function AgentBreakdownSection({
                         Output: {formatNumber(entry.totalOutputTokens)} tokens
                       </Text>
                       <Text className="text-[10px] text-muted-foreground">
-                        Cached: {formatNumber(entry.totalCachedInputTokens)} tokens
+                        Cache read: {formatNumber(entry.totalCachedInputTokens)} tokens
+                      </Text>
+                      <Text className="text-[10px] text-muted-foreground">
+                        Cache write: {formatNumber(entry.totalCacheWriteTokens ?? 0)} tokens
                       </Text>
                     </View>
                   </View>

@@ -569,7 +569,7 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
   /**
    * POST /api/internal/agent-cost-metrics
    *   body: { workspaceId, projectId?, agentRunId?, agentType, model,
-   *           inputTokens, outputTokens, cachedInputTokens?, toolCalls,
+   *           inputTokens, outputTokens, cachedInputTokens?, cacheWriteTokens?, toolCalls,
    *           creditCost, wallTimeMs, success, hitMaxTurns?, loopDetected?,
    *           escalated?, responseEmpty? }
    *
@@ -612,6 +612,7 @@ export function runtimeInternalRoutes(opts: RuntimeInternalRoutesOptions): Hono 
         inputTokens: numberOr(body.inputTokens, 0),
         outputTokens: numberOr(body.outputTokens, 0),
         cachedInputTokens: numberOr(body.cachedInputTokens, 0),
+        cacheWriteTokens: numberOr(body.cacheWriteTokens, 0),
         toolCalls: numberOr(body.toolCalls, 0),
         creditCost: numberOr(body.creditCost, 0),
         wallTimeMs: numberOr(body.wallTimeMs, 0),

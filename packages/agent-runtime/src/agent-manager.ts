@@ -142,6 +142,7 @@ export interface AgentCostMetricData {
   inputTokens: number
   outputTokens: number
   cachedInputTokens: number
+  cacheWriteTokens?: number
   toolCalls: number
   creditCost: number
   wallTimeMs: number
@@ -389,6 +390,7 @@ export class AgentManager {
           inputTokens: result.inputTokens,
           outputTokens: result.outputTokens,
           cachedInputTokens: result.cacheReadTokens,
+          cacheWriteTokens: result.cacheWriteTokens,
           toolCalls: result.toolCalls,
           creditCost: 0, // computed by the API server from tokens
           wallTimeMs: wallTime,

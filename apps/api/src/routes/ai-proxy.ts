@@ -1271,13 +1271,6 @@ function convertAnthropicResponseToOpenAI(anthropicResponse: any, model: string)
     }))
   }
 
-  // Same shape as the streaming path's terminal usage chunk: prompt_tokens
-  // includes cache reads; cache writes are reported separately for billing.
-  const inputTokens = anthropicResponse.usage?.input_tokens || 0
-  const cachedInputTokens = anthropicResponse.usage?.cache_read_input_tokens || 0
-  const cacheWriteTokens = anthropicResponse.usage?.cache_creation_input_tokens || 0
-  const outputTokens = anthropicResponse.usage?.output_tokens || 0
-  const promptTokens = inputTokens + cachedInputTokens
   return {
     id: anthropicResponse.id || `chatcmpl-${Date.now()}`,
     object: 'chat.completion',
@@ -1290,13 +1283,39 @@ function convertAnthropicResponseToOpenAI(anthropicResponse: any, model: string)
         finish_reason: mapAnthropicStopReason(anthropicResponse.stop_reason),
       },
     ],
-    usage: {
-      prompt_tokens: promptTokens,
-      completion_tokens: outputTokens,
-      total_tokens: promptTokens + outputTokens,
-      prompt_tokens_details: { cached_tokens: cachedInputTokens },
-      ...(cacheWriteTokens > 0 ? { cache_creation_input_tokens: cacheWriteTokens } : {}),
-    },
+    usage: anthropicUsageToOpenAI(
+      anthropicResponse.usage?.input_tokens || 0,
+      anthropicResponse.usage?.cache_read_input_tokens || 0,
+      anthropicResponse.usage?.cache_creation_input_tokens || 0,
+      anthropicResponse.usage?.output_tokens || 0,
+    ),
+  }
+}
+
+/**
+ * OpenAI-format usage for an Anthropic response, shared by the streaming
+ * terminal chunk and the non-stream converter. Follows OpenRouter's cache
+ * convention, which is what the runtime's OpenAI-completions parser reads:
+ * `prompt_tokens` and `cached_tokens` both include cache writes, and
+ * `cache_write_tokens` carries them separately. `splitOpenAIPromptUsage`
+ * reverses it. Top-level `cache_creation_input_tokens` stays for clients that
+ * read the older shape.
+ */
+function anthropicUsageToOpenAI(
+  inputTokens: number,
+  cacheReadTokens: number,
+  cacheWriteTokens: number,
+  outputTokens: number,
+) {
+  const promptTokens = inputTokens + cacheReadTokens + cacheWriteTokens
+  return {
+    prompt_tokens: promptTokens,
+    completion_tokens: outputTokens,
+    total_tokens: promptTokens + outputTokens,
+    prompt_tokens_details: cacheWriteTokens > 0
+      ? { cached_tokens: cacheReadTokens + cacheWriteTokens, cache_write_tokens: cacheWriteTokens }
+      : { cached_tokens: cacheReadTokens },
+    ...(cacheWriteTokens > 0 ? { cache_creation_input_tokens: cacheWriteTokens } : {}),
   }
 }
 
@@ -1595,7 +1614,6 @@ export async function proxyAnthropicStream(
       // it the agent runtime parses `completion_tokens: 0` and misreports a
       // fully-streamed answer as "Agent produced no output — possible provider
       // error" once the turn completes.
-      const promptTokens = inputTokens + cachedInputTokens
       controller.enqueue(
         encoder.encode(
           `data: ${JSON.stringify({
@@ -1604,12 +1622,7 @@ export async function proxyAnthropicStream(
             created: Math.floor(Date.now() / 1000),
             model: request.model,
             choices: [],
-            usage: {
-              prompt_tokens: promptTokens,
-              completion_tokens: outputTokens,
-              total_tokens: promptTokens + outputTokens,
-              prompt_tokens_details: { cached_tokens: cachedInputTokens },
-            },
+            usage: anthropicUsageToOpenAI(inputTokens, cachedInputTokens, cacheWriteTokens, outputTokens),
           })}\n\n`,
         ),
       )
@@ -2196,6 +2209,34 @@ function rewriteOpenRouterSseLine(line: string): string {
 }
 
 /**
+ * Split an OpenAI-format `usage` object into non-cached input, cache-read and
+ * cache-write tokens so each is billed at its own rate.
+ *
+ * Cache writes follow OpenRouter's convention (also emitted by
+ * `anthropicUsageToOpenAI`): `prompt_tokens_details.cache_write_tokens` is
+ * counted inside both `prompt_tokens` and `cached_tokens`. This must parse
+ * the same way as the runtime's pi-ai OpenAI-completions parser so billing
+ * and the runtime's reported turn usage agree.
+ */
+export function splitOpenAIPromptUsage(usage: any): {
+  inputTokens: number
+  cachedInputTokens: number
+  cacheWriteTokens: number
+} {
+  const totalPrompt = usage?.prompt_tokens || 0
+  const reportedCached =
+    usage?.prompt_tokens_details?.cached_tokens ??
+    usage?.prompt_cache_hit_tokens ??
+    0
+  const cacheWriteTokens = usage?.prompt_tokens_details?.cache_write_tokens || 0
+  const cachedInputTokens = Math.max(0, reportedCached - cacheWriteTokens)
+  const inputTokens =
+    usage?.prompt_cache_miss_tokens ??
+    Math.max(0, totalPrompt - cachedInputTokens - cacheWriteTokens)
+  return { inputTokens, cachedInputTokens, cacheWriteTokens }
+}
+
+/**
  * Proxy a streaming request to an OpenAI-compatible endpoint (OpenAI, Ollama, LM Studio).
  */
 export async function proxyOpenAIStream(
@@ -2207,6 +2248,7 @@ export async function proxyOpenAIStream(
     outputTokens: number,
     cachedInputTokens: number,
     reasoningTokens: number,
+    cacheWriteTokens: number,
   ) => void,
   signal?: AbortSignal,
 ): Promise<Response> {
@@ -2236,6 +2278,7 @@ export async function proxyOpenAIStream(
   let inputTokens = 0
   let outputTokens = 0
   let cachedInputTokens = 0
+  let cacheWriteTokens = 0
   let reasoningTokens = 0
   let loggedOpenRouterCost = false
   let sseBuffer = ''
@@ -2243,14 +2286,7 @@ export async function proxyOpenAIStream(
   const noteUsage = (parsed: any) => {
     if (!parsed?.usage) return
     const usage = parsed.usage
-    const totalPrompt = usage.prompt_tokens || 0
-    cachedInputTokens =
-      usage.prompt_tokens_details?.cached_tokens ??
-      usage.prompt_cache_hit_tokens ??
-      0
-    inputTokens =
-      usage.prompt_cache_miss_tokens ??
-      Math.max(0, totalPrompt - cachedInputTokens)
+    ;({ inputTokens, cachedInputTokens, cacheWriteTokens } = splitOpenAIPromptUsage(usage))
     outputTokens = usage.completion_tokens || 0
     reasoningTokens = usage.completion_tokens_details?.reasoning_tokens || 0
     if (rewriteReasoning && typeof usage.cost === 'number' && !loggedOpenRouterCost) {
@@ -2312,7 +2348,7 @@ export async function proxyOpenAIStream(
         }
         controller.enqueue(encoder.encode(`${rewritten}\n`))
       }
-      onComplete?.(inputTokens, outputTokens, cachedInputTokens, reasoningTokens)
+      onComplete?.(inputTokens, outputTokens, cachedInputTokens, reasoningTokens, cacheWriteTokens)
     },
   })
 
@@ -3657,8 +3693,8 @@ export function aiProxyRoutes() {
           }, c.req.raw.signal)
           return capture?.wrapStream(upstream, 'openai-chat') || upstream
         } else {
-          const upstream = await proxyOpenAIStream(request, apiKey, modelConfig, isByokOpenRouter ? undefined : (inTok, outTok, cachedTok, reasoningTok) => {
-            recordUsage(tokenPayload, request.model, inTok, outTok, cachedTok, 0, chatSessionId, internalUsage, reasoningTok)
+          const upstream = await proxyOpenAIStream(request, apiKey, modelConfig, isByokOpenRouter ? undefined : (inTok, outTok, cachedTok, reasoningTok, cacheWriteTok) => {
+            recordUsage(tokenPayload, request.model, inTok, outTok, cachedTok, cacheWriteTok, chatSessionId, internalUsage, reasoningTok)
           }, c.req.raw.signal)
           return capture?.wrapStream(upstream, 'openai-chat') || upstream
         }
@@ -3672,21 +3708,14 @@ export function aiProxyRoutes() {
 
         if (!isByokOpenRouter) {
           const usage = result.usage || {}
-          const totalPrompt = usage.prompt_tokens || 0
-          const cachedPrompt =
-            usage.prompt_tokens_details?.cached_tokens ??
-            usage.prompt_cache_hit_tokens ??
-            0
-          const inputPrompt =
-            usage.prompt_cache_miss_tokens ??
-            Math.max(0, totalPrompt - cachedPrompt)
+          const prompt = splitOpenAIPromptUsage(usage)
           recordUsage(
             tokenPayload,
             request.model,
-            inputPrompt,
+            prompt.inputTokens,
             usage.completion_tokens || 0,
-            cachedPrompt,
-            usage.cache_creation_input_tokens || 0,
+            prompt.cachedInputTokens,
+            prompt.cacheWriteTokens,
             chatSessionId,
             internalUsage,
             usage.completion_tokens_details?.reasoning_tokens || 0,
@@ -4367,18 +4396,17 @@ export function aiProxyRoutes() {
           return capture?.wrapStream(streamedResponse, 'anthropic') || streamedResponse
         } else {
           const openaiResult = await response.json() as any
-          const oaiTotalPrompt = openaiResult.usage?.prompt_tokens || 0
-          const oaiCachedPrompt = openaiResult.usage?.prompt_tokens_details?.cached_tokens || 0
-          recordUsage(tokenPayload, resolvedModel, oaiTotalPrompt - oaiCachedPrompt, openaiResult.usage?.completion_tokens || 0, oaiCachedPrompt, 0, chatSessionId, internalUsage)
+          const oaiPrompt = splitOpenAIPromptUsage(openaiResult.usage)
+          recordUsage(tokenPayload, resolvedModel, oaiPrompt.inputTokens, openaiResult.usage?.completion_tokens || 0, oaiPrompt.cachedInputTokens, oaiPrompt.cacheWriteTokens, chatSessionId, internalUsage)
           const anthropicResult = convertOpenAIResponseToAnthropic(openaiResult, resolvedModel)
           capture?.recordResponse({
             status: 200,
             body: anthropicResult,
             format: 'json',
             usage: {
-              inputTokens: oaiTotalPrompt - oaiCachedPrompt,
+              inputTokens: oaiPrompt.inputTokens,
               outputTokens: openaiResult.usage?.completion_tokens,
-              cachedInputTokens: oaiCachedPrompt,
+              cachedInputTokens: oaiPrompt.cachedInputTokens,
               reasoningTokens: openaiResult.usage?.completion_tokens_details?.reasoning_tokens,
             },
           })

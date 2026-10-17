@@ -1027,12 +1027,13 @@ export async function closeSession(
     projectId: session.projectId,
     agentType: 'main-chat',
     // Record the real model id so the analytics recompute path
-    // (`serverComputeCreditCost`) honors DB-defined per-token pricing too,
+    // (`calculateUsageCost`) honors DB-defined per-token pricing too,
     // keeping cost analytics consistent with the wallet debit above.
     model: session.model,
     inputTokens: session.inputTokens,
     outputTokens: session.outputTokens,
     cachedInputTokens: session.cachedInputTokens,
+    cacheWriteTokens: session.cacheWriteTokens,
     toolCalls: session.requestCount,
     creditCost: 0,
     wallTimeMs: durationMs,

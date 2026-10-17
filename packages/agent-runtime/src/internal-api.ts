@@ -105,6 +105,7 @@ export interface AgentCostMetricPayload {
   inputTokens: number
   outputTokens: number
   cachedInputTokens: number
+  cacheWriteTokens?: number
   toolCalls: number
   creditCost: number
   wallTimeMs: number

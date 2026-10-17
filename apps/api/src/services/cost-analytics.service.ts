@@ -20,13 +20,13 @@
 
 import { prisma, Prisma } from '../lib/prisma'
 import {
+  MARKUP_MULTIPLIER,
   MODEL_DOLLAR_COSTS,
-  calculateDollarCost,
+  calculateUsageCost,
   proxyModelToBillingModel,
   type ModelName,
 } from '../lib/usage-cost'
 import { resolveModelId } from '@shogo/model-catalog'
-import { getDbModelPricing } from '../lib/db-model-pricing'
 import { resolveModelLabelSync } from './model-registry.service'
 
 // ============================================================================
@@ -59,6 +59,7 @@ interface AgentBreakdownEntry {
   totalInputTokens: number
   totalOutputTokens: number
   totalCachedInputTokens: number
+  totalCacheWriteTokens: number
   totalToolCalls: number
   totalCreditCost: number
   totalWallTimeMs: number
@@ -236,6 +237,7 @@ export async function getAgentCostBreakdown(
       inputTokens: true,
       outputTokens: true,
       cachedInputTokens: true,
+      cacheWriteTokens: true,
       toolCalls: true,
       creditCost: true,
       wallTimeMs: true,
@@ -294,6 +296,7 @@ export async function getAgentCostBreakdown(
     const totalInputTokens = g._sum.inputTokens ?? 0
     const totalOutputTokens = g._sum.outputTokens ?? 0
     const totalCachedInputTokens = g._sum.cachedInputTokens ?? 0
+    const totalCacheWriteTokens = g._sum.cacheWriteTokens ?? 0
     const totalToolCalls = g._sum.toolCalls ?? 0
     const totalCreditCost = g._sum.creditCost ?? 0
     const totalWallTimeMs = g._sum.wallTimeMs ?? 0
@@ -312,6 +315,7 @@ export async function getAgentCostBreakdown(
       totalInputTokens,
       totalOutputTokens,
       totalCachedInputTokens,
+      totalCacheWriteTokens,
       totalToolCalls,
       totalCreditCost,
       totalWallTimeMs,
@@ -323,11 +327,22 @@ export async function getAgentCostBreakdown(
     }
   }).sort((a, b) => b.totalCreditCost - a.totalCreditCost)
 
+  const totalCreditCost = breakdown.reduce((s, e) => s + e.totalCreditCost, 0)
+  // `creditCost` is raw provider cost. Cloud usage is billed at
+  // MARKUP_MULTIPLIER, so the difference is the Shogo fee; desktop usage is
+  // never billed.
+  const shogoFeeUsd = process.env.SHOGO_LOCAL_MODE === 'true'
+    ? 0
+    : totalCreditCost * (MARKUP_MULTIPLIER - 1)
   const totals = {
-    totalCreditCost: breakdown.reduce((s, e) => s + e.totalCreditCost, 0),
+    totalCreditCost,
+    shogoFeeUsd,
+    totalWithFeeUsd: totalCreditCost + shogoFeeUsd,
     totalRuns: breakdown.reduce((s, e) => s + e.totalRuns, 0),
     totalInputTokens: breakdown.reduce((s, e) => s + e.totalInputTokens, 0),
     totalOutputTokens: breakdown.reduce((s, e) => s + e.totalOutputTokens, 0),
+    totalCachedInputTokens: breakdown.reduce((s, e) => s + e.totalCachedInputTokens, 0),
+    totalCacheWriteTokens: breakdown.reduce((s, e) => s + e.totalCacheWriteTokens, 0),
     totalToolCalls: breakdown.reduce((s, e) => s + e.totalToolCalls, 0),
     uniqueAgents: new Set(breakdown.map(b => b.agentType)).size,
     uniqueModels: new Set(breakdown.map(b => b.model)).size,
@@ -435,7 +450,10 @@ export async function getCostRecommendations(
     }
 
     // Cache-utilization hint (unchanged from the original recommender).
-    const cacheRatio = entry.totalCachedInputTokens / Math.max(entry.totalInputTokens + entry.totalCachedInputTokens, 1)
+    const cacheRatio = entry.totalCachedInputTokens / Math.max(
+      entry.totalInputTokens + entry.totalCachedInputTokens + entry.totalCacheWriteTokens,
+      1,
+    )
     if (cacheRatio < 0.1 && entry.totalInputTokens > 100_000 && currentTier >= 3) {
       recommendations.push({
         agentType: entry.agentType,
@@ -1683,6 +1701,7 @@ export async function recordAgentCostMetric(data: {
   inputTokens: number
   outputTokens: number
   cachedInputTokens?: number
+  cacheWriteTokens?: number
   toolCalls: number
   creditCost: number
   wallTimeMs: number
@@ -1706,14 +1725,17 @@ export async function recordAgentCostMetric(data: {
     // every caller (main-chat, sub-agents, pre-LLM failures) is consistent
     // without each write site having to remember to do it.
     const normalizedModel = resolveModelId(data.model)
+    const cachedInputTokens = data.cachedInputTokens ?? 0
+    const cacheWriteTokens = data.cacheWriteTokens ?? 0
     let creditCost = data.creditCost
-    if (creditCost === 0 && (data.inputTokens > 0 || data.outputTokens > 0)) {
-      creditCost = serverComputeCreditCost(
-        normalizedModel,
+    if (creditCost === 0 && (data.inputTokens > 0 || data.outputTokens > 0 || cachedInputTokens > 0 || cacheWriteTokens > 0)) {
+      creditCost = calculateUsageCost(
         data.inputTokens,
         data.outputTokens,
-        data.cachedInputTokens ?? 0,
-      )
+        normalizedModel,
+        cachedInputTokens,
+        cacheWriteTokens,
+      ).rawUsd
     }
     await prisma.agentCostMetric.create({
       data: {
@@ -1724,7 +1746,8 @@ export async function recordAgentCostMetric(data: {
         model: normalizedModel,
         inputTokens: data.inputTokens,
         outputTokens: data.outputTokens,
-        cachedInputTokens: data.cachedInputTokens ?? 0,
+        cachedInputTokens,
+        cacheWriteTokens,
         toolCalls: data.toolCalls,
         creditCost,
         wallTimeMs: data.wallTimeMs,
@@ -1772,25 +1795,4 @@ async function maybeRecordExperimentRun(
     escalated: data.escalated ?? false,
     responseEmpty: data.responseEmpty ?? false,
   })
-}
-
-/** Token-cost recomputation in dollar units. Mirrors the catalog used by the
- * proxy billing path so analytics and billing agree on numbers. DB-defined
- * models (custom providers, admin-added models) use their per-token pricing
- * so analytics agrees with `usage-cost.calculateUsageCost`. */
-function serverComputeCreditCost(
-  model: string,
-  inputTokens: number,
-  outputTokens: number,
-  cachedInputTokens: number,
-): number {
-  const dbPricing = getDbModelPricing(model)
-  if (dbPricing) {
-    const rawUsd =
-      (inputTokens * dbPricing.inputPerMillion / 1_000_000) +
-      (cachedInputTokens * dbPricing.cachedInputPerMillion / 1_000_000) +
-      (outputTokens * dbPricing.outputPerMillion / 1_000_000)
-    return Math.max(0, rawUsd)
-  }
-  return Math.max(0, calculateDollarCost(model, inputTokens, outputTokens, cachedInputTokens, 0))
 }
